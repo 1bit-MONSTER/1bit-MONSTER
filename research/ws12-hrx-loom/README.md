@@ -340,3 +340,58 @@ path to a `n_tiles*5120`-byte tile block, default `/tmp/q4nx_w8.bin`);
 `loom-kernels/q4nx_dequant_f32.loombc` refreshed (md5 changed with the
 kernel fix); fork patch regenerated. Full suite green: q4nx (bit-exact),
 mul_mat_f32 (rel 9.2e-5), fused (rel 2.7e-6).
+
+### UPDATE 2026-08-30 (round 7): GGML_TYPE_Q4NX — type + CPU dequant validated; graph-op path mapped ✅/⚠️
+
+**The Q4NX container format is fully decoded** (authoritative, from the
+engine's own readers): 8-byte JSON-length header; JSON tensor table with
+per-tensor `data_offsets` (relative to `df = 8 + jsonlen`); I8 tensor shape
+is `[tile_rows_total, 5120]` with `tile_rows_total = (logical_rows/32) ×
+(logical_cols/256)` (verified: q_proj 256 = (1024/32)×(2048/256), o_proj,
+k_proj ✓). Semantics locked: lane-packed signed int4 + clamp, matching
+`dequant_i8_signed_to_float_ex` (engine q4nx_raw.h byte-exact note).
+
+**`GGML_TYPE_Q4NX` added to the fork's ggml** (enum value 42, COUNT 43;
+public tile-geometry constants; `block_q4nx` = one 5120-byte tile;
+`dequantize_row_q4nx` / `quantize_row_q4nx_ref` in ggml-quants with the
+engine's lane-packed + clamp semantics; traits row registered). Validated
+through ggml's own machinery:
+
+```
+type: q4nx blck_size=8192 type_size=5120 quantized=1
+ne=[8192,8] nbytes=40960 (blob 40960)   # 8 real q_proj tiles
+dequantize_row_q4nx vs engine reference: max abs diff = 0.000000e+00  PASS
+```
+
+**HRX2 backend fused MUL_MAT dispatch written** (`supports_mul_mat_q4nx_route`
++ `dispatch_mul_mat_q4nx` in ggml-hrx2.cpp): for a Q4NX src0 it assembles
+tile-major blob → section views on device, runs the `q4nx_dequant_f32`
+route into an f32 scratch, then the `mul_mat_f32_f32` route with the scratch
+as src0 — the fused pattern, lifted into the backend. Compiles clean; the
+identical dispatch logic is what the round-6 fused harness validated
+(rel 2.7e-6).
+
+**Two honest blockers for full end-to-end serving:**
+
+1. **ggml's 1D block model cannot express the 2D Q4NX tile for the standard
+   MUL_MAT graph op.** `ggml_new_tensor` requires `ne[0]` to be a multiple of
+   `blck_size` (8192) and `ggml_mul_mat` needs `src0->ne[0] == src1->ne[0]`
+   as the k-dim. A tile is 32 rows × 256 cols (spans ne0 AND ne1) — unlike
+   K-quants whose blocks are within-ne0 slices. So a Q4NX weight cannot be a
+   normal src0 of `ggml_mul_mat` with the k-dim = in_features; the backend
+   fused dispatch works at the route level but can't be reached through the
+   standard graph builder. Fix path: a custom ggml op (e.g.
+   `GGML_OP_MUL_MAT_Q4NX` with its own compute that the HRX2 backend claims)
+   or a ggml-side reshape of how tile tensors enter the graph.
+2. **zaya1-8b-fresh's architecture has no llama.cpp implementation**
+   (conv_qk grouped/depthwise, v_proj_current/v_proj_delayed, per-layer
+   residual scale/bias, MoE gate with 17 experts, router_states_scale,
+   balancing_biases) — even with perfect type support, llama-server cannot
+   execute it. Serving a full Q4NX model needs either a standard-arch Q4NX
+   model or porting the architecture (large, separate effort).
+
+**Persisted:** `validate-ggml-q4nx-type.cpp` (type + CPU dequant validation;
+PASS bit-exact), `validate-ggml-q4nx-op.cpp` (graph-op attempt — documents
+the ne0/blck_size blocker), fork patch regenerated with the type + backend
+changes. The route-level fused demo remains the validated "Q4NX on HRX"
+evidence (rel 2.7e-6).

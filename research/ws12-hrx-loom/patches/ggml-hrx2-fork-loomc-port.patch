@@ -1,3 +1,108 @@
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index 3bb2faa..75a6b23 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -429,7 +429,16 @@ extern "C" {
+         GGML_TYPE_MXFP4   = 39, // MXFP4 (1 block)
+         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
+         GGML_TYPE_Q1_0    = 41,
+-        GGML_TYPE_COUNT   = 42,
++        GGML_TYPE_Q4NX    = 42, // 1bit-MONSTER Q4NX: 5120-byte tile = [32 BF16 rows x 256 cols]
++                                // (256 BF16 scales + 256 BF16 zeros + 4096 B packed int4)
++        GGML_TYPE_COUNT   = 43,
++    };
++
++    // Q4NX tile geometry (1bit-MONSTER engine format, engine/npu/dequant_q4nx.cpp)
++    enum {
++        GGML_Q4NX_TILE_ROWS = 32,
++        GGML_Q4NX_TILE_COLS = 256,
++        GGML_Q4NX_TILE_BYTES = 5120,
+     };
+ 
+     // precision
+diff --git a/ggml/src/ggml-common.h b/ggml/src/ggml-common.h
+index f05683b..88d50b0 100644
+--- a/ggml/src/ggml-common.h
++++ b/ggml/src/ggml-common.h
+@@ -181,6 +181,22 @@ typedef struct {
+ } block_q1_0;
+ static_assert(sizeof(block_q1_0) == sizeof(ggml_half) + QK1_0 / 8, "wrong q1_0 block size/padding");
+ 
++// Q4NX (1bit-MONSTER): one 5120-byte tile = [32 BF16 rows x 256 BF16 cols].
++//   [0..511]    256 BF16 scales, row-major: scales[row*8 + col/32] (2 B each)
++//   [512..1023] 256 BF16 zero points, same layout (trailer bytes at 1018..1023
++//               are per-tile metadata, NOT zero-points; dequant clamps outliers)
++//   [1024..5119] 4096 B packed int4: lane = row/16, byte = lane*2048 + col*8 +
++//               (row%16)/2; low nibble = even row; two's-complement signed
++#define QK4NX 8192
++#define QK4NX_TILE_ROWS 32
++#define QK4NX_TILE_COLS 256
++typedef struct {
++    uint8_t scales[512]; // 256 BF16 scales
++    uint8_t zeros[512];  // 256 BF16 zero points
++    uint8_t packed[4096]; // packed int4
++} block_q4nx;
++static_assert(sizeof(block_q4nx) == 5120, "wrong q4nx block size/padding");
++
+ #define QK4_0 32
+ typedef struct {
+     ggml_half d;           // delta
+diff --git a/ggml/src/ggml-hrx/CMakeLists.txt b/ggml/src/ggml-hrx/CMakeLists.txt
+index 58409f1..87ce671 100644
+--- a/ggml/src/ggml-hrx/CMakeLists.txt
++++ b/ggml/src/ggml-hrx/CMakeLists.txt
+@@ -72,6 +72,20 @@ function(ggml_hrx_add_kernel_source)
+         list(APPEND GGML_HRX_KERNEL_COMPILE_FLAGS -mwavefrontsize64)
+     endif()
+     list(APPEND GGML_HRX_KERNEL_COMPILE_FLAGS ${ARG_FLAGS})
++    # A system hip-runtime-amd package (/usr/include/hip) shadows TheRock's
++    # HIP headers: amdclang++ auto-adds the SDK include dir with -idirafter,
++    # which loses to /usr/include, so <hip/...> resolves to headers whose
++    # __ocml_* builtins this clang does not declare (same fix as 1bit-MONSTER
++    # commit 78af6199). Force TheRock's include dir ahead of system dirs.
++    foreach(_cand IN ITEMS
++            "${GGML_HRX_ROCM_PATH}/lib/python3.14/site-packages/_rocm_sdk_core/include"
++            "${GGML_HRX_ROCM_PATH}/lib/python3.14/site-packages/_rocm_sdk_devel/include")
++        if (EXISTS "${_cand}/hip/hip_runtime.h")
++            list(APPEND GGML_HRX_KERNEL_COMPILE_FLAGS -isystem "${_cand}")
++            message(STATUS "HRX kernel HIP headers: ${_cand}")
++            break()
++        endif()
++    endforeach()
+ 
+     foreach(GGML_HRX_AMDGPU_TARGET IN LISTS GGML_HRX_AMDGPU_TARGET_LIST_CANONICAL)
+         if (ARG_ARCH_PREFIXES)
+@@ -96,7 +110,7 @@ function(ggml_hrx_add_kernel_source)
+                 --offload-device-only
+                 --no-gpu-bundle-output
+                 "--offload-arch=${GGML_HRX_AMDGPU_TARGET}"
+-                -O2
++                -O3
+                 ${GGML_HRX_KERNEL_COMPILE_FLAGS}
+                 -c "${ARG_SOURCE}"
+                 -o "${GGML_HRX_HSACO_OUTPUT}"
+diff --git a/ggml/src/ggml-hrx/ggml-hrx.cpp b/ggml/src/ggml-hrx/ggml-hrx.cpp
+index 120a422..1f14a69 100644
+--- a/ggml/src/ggml-hrx/ggml-hrx.cpp
++++ b/ggml/src/ggml-hrx/ggml-hrx.cpp
+@@ -2521,7 +2521,7 @@ static bool ggml_backend_hrx_load_catalog_provider(
+                         executable, export_ordinal, &export_info)) &&
+                     export_info.binding_count == entry->binding_count &&
+                     export_info.parameter_count == entry->parameter_count &&
+-                    export_info.constant_count * sizeof(uint32_t) == entry->constants_size;
++                    export_info.constant_byte_length == entry->constants_size;
+     if (!ok) {
+         GGML_LOG_WARN(
+             "%s: HRX catalog kernel %s has unsupported ABI "
+@@ -2530,7 +2530,7 @@ static bool ggml_backend_hrx_load_catalog_provider(
+             entry->name,
+             export_info.binding_count,
+             entry->binding_count,
+-            export_info.constant_count,
++            export_info.constant_byte_length,
+             entry->constants_size,
+             export_info.parameter_count,
+             entry->parameter_count,
 diff --git a/ggml/src/ggml-hrx2/catalog/artifacts.json b/ggml/src/ggml-hrx2/catalog/artifacts.json
 index aaede30..6b3a73f 100644
 --- a/ggml/src/ggml-hrx2/catalog/artifacts.json
@@ -2202,6 +2307,222 @@ index e45be0b..9f4b986 100644
              &executable))) {
          return false;
      }
+diff --git a/ggml/src/ggml-hrx2/ggml-hrx2.cpp b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
+index 428c80d..196609d 100644
+--- a/ggml/src/ggml-hrx2/ggml-hrx2.cpp
++++ b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
+@@ -92,6 +92,7 @@ struct ggml_backend_hrx2_device_context {
+     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q8_0_routes;
+     std::vector<const ggml_backend_hrx2_kernel_route *> quantize_q8_1_routes;
+     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_f32_f32_routes;
++    std::vector<const ggml_backend_hrx2_kernel_route *> q4nx_dequant_routes;
+     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_routes;
+     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_swiglu_routes;
+     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_id_q4_k_routes;
+@@ -7966,6 +7967,178 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q8_0(
+     return GGML_STATUS_FAILED;
+ }
+ 
++// Q4NX MUL_MAT: fused dequant + f32 matmul on device (1bit-MONSTER Q4NX type).
++// src0 is a GGML_TYPE_Q4NX tensor with ne = [256, rows] (rows = 32 * n_tiles,
++// each 5120-byte tile = one ggml block). The tile blob is tile-major
++// ([scales 512][zeros 512][packed 4096] per tile); we assemble the
++// section-major views the q4nx_dequant_f32 kernel expects, dequant on the
++// device into an f32 scratch, then run the mul_mat_f32_f32 route with the
++// scratch as src0. Single tile-column width (k = 256) for now.
++static bool ggml_backend_hrx2_supports_mul_mat_q4nx_route(
++        ggml_backend_hrx2_device_context * device_context,
++        const ggml_tensor * op) {
++    const ggml_tensor * src0 = op->src[0];
++    const ggml_tensor * src1 = op->src[1];
++    if (op->op != GGML_OP_MUL_MAT ||
++        !src0 || !src1 || op->view_src != nullptr ||
++        src0->type != GGML_TYPE_Q4NX ||
++        src1->type != GGML_TYPE_F32 ||
++        op->type != GGML_TYPE_F32) {
++        return false;
++    }
++    const int64_t k    = src0->ne[0];
++    const int64_t rows = src0->ne[1];
++    const int64_t cols = src1->ne[1];
++    return k == GGML_Q4NX_TILE_COLS &&
++           src0->ne[0] == src1->ne[0] &&
++           op->ne[0] == src0->ne[1] &&
++           op->ne[1] == src1->ne[1] &&
++           src0->ne[2] == 1 && src0->ne[3] == 1 &&
++           src1->ne[2] == 1 && src1->ne[3] == 1 &&
++           op->ne[2] == 1 && op->ne[3] == 1 &&
++           ggml_is_contiguous(src0) &&
++           ggml_is_contiguous(src1) &&
++           ggml_is_contiguous(op) &&
++           rows > 0 && cols > 0 &&
++           rows % GGML_Q4NX_TILE_ROWS == 0 &&
++           rows <= std::numeric_limits<uint32_t>::max() &&
++           cols <= std::numeric_limits<uint32_t>::max() &&
++           !device_context->q4nx_dequant_routes.empty() &&
++           !device_context->mul_mat_f32_f32_routes.empty();
++}
++
++static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
++        ggml_backend_hrx2_context * context,
++        const ggml_tensor * dst) {
++    ggml_backend_hrx2_device_context * device_context = context->device_context;
++    const ggml_tensor * src0 = dst->src[0];
++    const ggml_tensor * src1 = dst->src[1];
++
++    const uint32_t rows = (uint32_t) src0->ne[1];
++    const uint32_t cols = (uint32_t) src1->ne[1];
++    const uint32_t k    = GGML_Q4NX_TILE_COLS;
++    const uint32_t n_tiles = rows / GGML_Q4NX_TILE_ROWS;
++    const uint32_t wg_size = 256;
++
++    hrx_buffer_ref_t src0_ref = {};
++    hrx_buffer_ref_t src1_ref = {};
++    hrx_buffer_ref_t dst_ref = {};
++    if (!ggml_backend_hrx2_tensor_buffer_ref(src0, &src0_ref) ||
++        !ggml_backend_hrx2_tensor_buffer_ref(src1, &src1_ref) ||
++        !ggml_backend_hrx2_tensor_buffer_ref(dst, &dst_ref)) {
++        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tensor is not backed by HRX2 buffers\n");
++        return GGML_STATUS_FAILED;
++    }
++
++    // scratch: section views + dequant f32 output
++    const size_t scl_bytes = (size_t) n_tiles * 512;
++    const size_t pck_bytes = (size_t) n_tiles * 4096;
++    const size_t w_bytes   = (size_t) rows * k * sizeof(float);
++    hrx_allocator_t alloc = hrx_device_allocator(device_context->device);
++    hrx_buffer_params_t params = {
++        /* .type           = */ HRX_MEMORY_TYPE_HOST_LOCAL | HRX_MEMORY_TYPE_DEVICE_VISIBLE,
++        /* .access         = */ HRX_MEMORY_ACCESS_ALL,
++        /* .usage          = */ HRX_BUFFER_USAGE_DEFAULT |
++                               HRX_BUFFER_USAGE_MAPPING_SCOPED |
++                               HRX_BUFFER_USAGE_MAPPING_PERSISTENT,
++        /* .queue_affinity = */ 0,
++    };
++    hrx_buffer_t b_scl = nullptr, b_zp = nullptr, b_pck = nullptr, b_w = nullptr;
++    if (!GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, scl_bytes, &b_scl)) ||
++        !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, scl_bytes, &b_zp)) ||
++        !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, pck_bytes, &b_pck)) ||
++        !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, w_bytes, &b_w))) {
++        return GGML_STATUS_FAILED;
++    }
++
++    // assemble tile-major blob -> section-major views (3 copies per tile)
++    for (uint32_t t = 0; t < n_tiles; ++t) {
++        const size_t tile_off = (size_t) t * 5120;
++        if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
++                context->stream, src0_ref.buffer, src0_ref.offset + tile_off,
++                b_scl, (size_t) t * 512, 512)) ||
++            !GGML_HRX2_CHECK(hrx_stream_copy_buffer(
++                context->stream, src0_ref.buffer, src0_ref.offset + tile_off + 512,
++                b_zp, (size_t) t * 512, 512)) ||
++            !GGML_HRX2_CHECK(hrx_stream_copy_buffer(
++                context->stream, src0_ref.buffer, src0_ref.offset + tile_off + 1024,
++                b_pck, (size_t) t * 4096, 4096))) {
++            return GGML_STATUS_FAILED;
++        }
++    }
++
++    // dequant provider (q4nx_dequant_f32 route)
++    const ggml_backend_hrx2_kernel_route * deq_route = device_context->q4nx_dequant_routes.front();
++    std::vector<ggml_backend_hrx2_config_binding> deq_cfg;
++    deq_cfg.push_back({"@hrx2.shape.ncols", std::to_string(k)});
++    deq_cfg.push_back({"@hrx2.shape.nrows", std::to_string(rows)});
++    deq_cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
++    const std::string deq_key = ggml_backend_hrx2_base_cache_key(device_context, deq_route) + "-q4nx-" + std::to_string(rows);
++    auto * deq = ggml_backend_hrx2_get_provider(device_context, deq_route, deq_cfg, deq_key);
++    if (!deq) {
++        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX dequant provider unavailable\n");
++        return GGML_STATUS_FAILED;
++    }
++
++    hrx_buffer_ref_t deq_bindings[4] = {
++        { b_pck, 0, pck_bytes },
++        { b_scl, 0, scl_bytes },
++        { b_zp,  0, scl_bytes },
++        { b_w,   0, w_bytes },
++    };
++    hrx_dispatch_config_t deq_config = {
++        { (rows * k + wg_size - 1) / wg_size, 1, 1 },
++        { wg_size, 1, 1 },
++        0,
++    };
++    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
++            context->stream, deq->executable, deq->export_ordinal,
++            &deq_config, nullptr, 0, deq_bindings, 4, HRX_DISPATCH_FLAG_NONE))) {
++        return GGML_STATUS_FAILED;
++    }
++
++    // f32 matmul provider (mul_mat_f32_f32 route) with W scratch as src0
++    const ggml_backend_hrx2_kernel_route * mm_route = device_context->mul_mat_f32_f32_routes.front();
++    ggml_backend_hrx2_mul_mat_shape shape = { k, rows, cols };
++    ggml_backend_hrx2_provider_plan mm_plan = {};
++    if (!ggml_backend_hrx2_make_mul_mat_q4_k_plan(device_context, mm_route, shape, &mm_plan)) {
++        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 plan failed\n");
++        return GGML_STATUS_FAILED;
++    }
++    auto * mm = ggml_backend_hrx2_get_provider(
++        device_context, mm_plan.route, mm_plan.config_bindings, mm_plan.cache_key);
++    if (!mm) {
++        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 provider unavailable\n");
++        return GGML_STATUS_FAILED;
++    }
++    if (mm->route.constant_byte_length != 0) {
++        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 route has unsupported constants\n");
++        return GGML_STATUS_FAILED;
++    }
++
++    hrx_buffer_ref_t mm_bindings[3] = {
++        { b_w,    0, w_bytes },
++        { src1_ref.buffer, src1_ref.offset, src1_ref.length },
++        { dst_ref.buffer,  dst_ref.offset,  dst_ref.length },
++    };
++    hrx_dispatch_config_t mm_config = {
++        { rows, cols, 1 },
++        { mm->export_info.workgroup_size[0] ? mm->export_info.workgroup_size[0] : mm->route.workgroup_size[0], 1, 1 },
++        0,
++    };
++    if (!GGML_HRX2_CHECK(hrx_stream_dispatch(
++            context->stream, mm->executable, mm->export_ordinal,
++            &mm_config, nullptr, 0, mm_bindings, 3, HRX_DISPATCH_FLAG_NONE))) {
++        return GGML_STATUS_FAILED;
++    }
++
++    hrx_buffer_release(b_scl);
++    hrx_buffer_release(b_zp);
++    hrx_buffer_release(b_pck);
++    hrx_buffer_release(b_w);
++    return GGML_STATUS_SUCCESS;
++}
++
+ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_f32_f32(
+         ggml_backend_hrx2_context * context,
+         const ggml_tensor * dst) {
+@@ -10164,6 +10337,12 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend,
+                 }
+                 break;
+             case GGML_OP_MUL_MAT:
++                if (ggml_backend_hrx2_supports_mul_mat_q4nx_route(context->device_context, node)) {
++                    if (ggml_backend_hrx2_dispatch_mul_mat_q4nx(context, node) != GGML_STATUS_SUCCESS) {
++                        return GGML_STATUS_FAILED;
++                    }
++                    break;
++                }
+                 if (ggml_backend_hrx2_supports_mul_mat_q8_0_route(context->device_context, node)) {
+                     if (ggml_backend_hrx2_dispatch_mul_mat_q8_0(context, node) != GGML_STATUS_SUCCESS) {
+                         return GGML_STATUS_FAILED;
+@@ -10555,6 +10734,11 @@ static std::unique_ptr<ggml_backend_hrx2_reg_context> ggml_backend_hrx2_create_r
+                 "mul_mat_f32_f32",
+                 "MUL_MAT",
+                 &device_context->mul_mat_f32_f32_routes);
++            ggml_backend_hrx2_catalog_find_routes(
++                *device_context->catalog,
++                "q4nx_dequant_f32",
++                "Q4NX_DEQUANT",
++                &device_context->q4nx_dequant_routes);
+             ggml_backend_hrx2_catalog_find_routes(
+                 *device_context->catalog,
+                 "mul_mat_q4_k_f32",
 diff --git a/ggml/src/ggml-hrx2/kernels/add_rms_norm_mul_f32.loom b/ggml/src/ggml-hrx2/kernels/add_rms_norm_mul_f32.loom
 index c07dbc6..d66aaa6 100644
 --- a/ggml/src/ggml-hrx2/kernels/add_rms_norm_mul_f32.loom
@@ -10041,3 +10362,140 @@ index 911dfd6..679c5c7 100644
    const loomc_option_entry_t emit_entries[] = {
        {
            loomc_make_cstring_view(LOOMC_EMIT_OPTION_KEY_IDENTIFIER),
+diff --git a/ggml/src/ggml-quants.c b/ggml/src/ggml-quants.c
+index 15443aa..c8d0c4e 100644
+--- a/ggml/src/ggml-quants.c
++++ b/ggml/src/ggml-quants.c
+@@ -33,6 +33,93 @@ static inline int best_index_int8(int n, const int8_t * val, float x) {
+ }
+ 
+ // reference implementation for deterministic creation of model files
++
++// Q4NX reference quantizer + dequantizer (1bit-MONSTER engine semantics).
++// One block = one 5120-byte tile = [32 x 256]; k must be a multiple of 8192
++// (a tensor of ne=[256, nrows] holds nrows/32 tiles). Row-major element
++// order within the block: e -> row = e/256, col = e%256.
++// Layout (engine dequant_q4nx.cpp / q4nx_raw.h, lane-packed signed int4):
++//   scales[row*8 + col/32] BF16, zeros same; clamps: non-finite/|x|>100 -> 0
++//   packed: lane=row/16; byte = lane*2048 + col*8 + (row%16)/2; low nibble =
++//   even row; q = nibble two's-complement (0..7, -8..-1); out = q*scale + zp
++
++static inline float ggml_bf16_bytes_to_f32(const uint8_t * p) {
++    const uint16_t v = (uint16_t) p[0] | ((uint16_t) p[1] << 8);
++    const uint32_t bits = (uint32_t) v << 16;
++    float f;
++    memcpy(&f, &bits, sizeof(f));
++    return f;
++}
++
++void quantize_row_q4nx_ref(const float * GGML_RESTRICT x, block_q4nx * GGML_RESTRICT y, int64_t k) {
++    static const int qk = QK4NX;
++    assert(k % qk == 0);
++    const int nb = k / qk;
++    for (int i = 0; i < nb; i++) {
++        block_q4nx * b = &y[i];
++        memset(b, 0, sizeof(*b));
++        // per-(row, col-group) BF16 scale/zp from the f32 block
++        for (int r = 0; r < QK4NX_TILE_ROWS; r++) {
++            for (int g = 0; g < 8; g++) {
++                float smax = 0.0f;
++                for (int c = g*32; c < g*32+32; c++) {
++                    smax = fmaxf(smax, fabsf(x[i*qk + r*QK4NX_TILE_COLS + c]));
++                }
++                const float scale = smax / 8.0f;
++                const ggml_bf16_t sb = ggml_fp32_to_bf16(scale);
++                memcpy(b->scales + (r*8+g)*2, &sb, 2);
++                // symmetric: zero point 0
++            }
++        }
++        // packed int4, lane order
++        for (int r = 0; r < QK4NX_TILE_ROWS; r++) {
++            const int lane = r / 16, lane_row = r % 16;
++            const int byte_idx = lane_row / 2;
++            const int nib = r % 2;
++            for (int c = 0; c < QK4NX_TILE_COLS; c++) {
++                const float v = x[i*qk + r*QK4NX_TILE_COLS + c];
++                const int g = c / 32;
++                ggml_bf16_t sb;
++                memcpy(&sb, b->scales + (r*8+g)*2, 2);
++                const float scale = ggml_bf16_to_fp32(sb);
++                const int q = (int) roundf(v / scale);
++                const int clamped = q < 0 ? 0 : (q > 15 ? 15 : q);
++                uint8_t * byte = &b->packed[lane*2048 + c*8 + byte_idx];
++                if (nib == 0) {
++                    *byte = (uint8_t)((*byte & 0xF0) | (clamped & 0x0F));
++                } else {
++                    *byte = (uint8_t)((*byte & 0x0F) | ((clamped & 0x0F) << 4));
++                }
++            }
++        }
++    }
++}
++
++void dequantize_row_q4nx(const block_q4nx * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
++    static const int qk = QK4NX;
++    assert(k % qk == 0);
++    const int nb = k / qk;
++    for (int i = 0; i < nb; i++) {
++        const block_q4nx * b = &x[i];
++        for (int e = 0; e < qk; e++) {
++            const int r = e / QK4NX_TILE_COLS;
++            const int c = e % QK4NX_TILE_COLS;
++            const int g = c / 32;
++            float scale = ggml_bf16_bytes_to_f32(b->scales + (r*8+g)*2);
++            float zp    = ggml_bf16_bytes_to_f32(b->zeros  + (r*8+g)*2);
++            if (!isfinite(scale) || fabsf(scale) > 100.0f) scale = 0.0f;
++            if (!isfinite(zp) || fabsf(zp) > 100.0f) zp = 0.0f;
++            const int lane = r / 16, lane_row = r % 16;
++            const int byte_idx = lane_row / 2;
++            const int nib = r % 2;
++            const uint8_t byte = b->packed[lane*2048 + c*8 + byte_idx];
++            const int q = nib == 0 ? (byte & 0x0F) : ((byte >> 4) & 0x0F);
++            const int8_t val = (int8_t)(q < 8 ? q : q - 16);
++            y[i*qk + e] = (float) val * scale + zp;
++        }
++    }
++}
++
+ void quantize_row_q1_0_ref(const float * GGML_RESTRICT x, block_q1_0 * GGML_RESTRICT y, int64_t k) {
+     static const int qk = QK1_0;
+ 
+diff --git a/ggml/src/ggml-quants.h b/ggml/src/ggml-quants.h
+index d56c86d..31071cc 100644
+--- a/ggml/src/ggml-quants.h
++++ b/ggml/src/ggml-quants.h
+@@ -15,6 +15,7 @@ extern "C" {
+ 
+ // Quantization
+ GGML_API void quantize_row_q1_0_ref(const float * GGML_RESTRICT x, block_q1_0 * GGML_RESTRICT y, int64_t k);
++GGML_API void quantize_row_q4nx_ref(const float * GGML_RESTRICT x, block_q4nx * GGML_RESTRICT y, int64_t k);
+ GGML_API void quantize_row_q4_0_ref(const float * GGML_RESTRICT x, block_q4_0 * GGML_RESTRICT y, int64_t k);
+ GGML_API void quantize_row_q4_1_ref(const float * GGML_RESTRICT x, block_q4_1 * GGML_RESTRICT y, int64_t k);
+ GGML_API void quantize_row_q5_0_ref(const float * GGML_RESTRICT x, block_q5_0 * GGML_RESTRICT y, int64_t k);
+@@ -43,6 +44,7 @@ GGML_API void quantize_row_iq2_s_ref  (const float * GGML_RESTRICT x, block_iq2_
+ 
+ // Dequantization
+ GGML_API void dequantize_row_q1_0(const block_q1_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
++GGML_API void dequantize_row_q4nx(const block_q4nx * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+ GGML_API void dequantize_row_q4_0(const block_q4_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+ GGML_API void dequantize_row_q4_1(const block_q4_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+ GGML_API void dequantize_row_q5_0(const block_q5_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index 0142498..d1a07e3 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -659,6 +659,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+         .to_float                 = (ggml_to_float_t) dequantize_row_q1_0,
+         .from_float_ref           = (ggml_from_float_t) quantize_row_q1_0_ref,
+     },
++    [GGML_TYPE_Q4NX] = {
++        .type_name                = "q4nx",
++        .blck_size                = QK4NX,
++        .type_size                = sizeof(block_q4nx),
++        .is_quantized             = true,
++        .to_float                 = (ggml_to_float_t) dequantize_row_q4nx,
++        .from_float_ref           = (ggml_from_float_t) quantize_row_q4nx_ref,
++    },
+     [GGML_TYPE_Q4_0] = {
+         .type_name                = "q4_0",
+         .blck_size                = QK4_0,
