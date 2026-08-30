@@ -43,7 +43,7 @@ def open_issues() -> list[dict]:
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", REPO, "--state", "open",
          "--limit", "1000", "--json", "number,title,labels,body,createdAt"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True, text=True, check=True, timeout=30).stdout
     return json.loads(out)
 
 
