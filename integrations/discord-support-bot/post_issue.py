@@ -61,20 +61,28 @@ def post_issue_thread(issue: dict) -> str:
 
     The starter anchors the thread in the channel feed; the issue body is
     posted INTO the thread so the conversation starts with the content.
+    Both the thread name and the starter stay SHORT — the Discord sidebar
+    shows the thread name and the first-message preview, so long titles
+    make threads unreadable at a glance.
     """
-    labels = ", ".join(l["name"] for l in issue.get("labels", []))
-    starter = (
-        f"**{issue['title']}** — {issue['url']}\n"
-        f"{'`' + labels + '`  ' if labels else ''}· {issue['state']} · "
-        f"opened {issue['createdAt'][:10]} by @{issue['author']['login']}"
-    )
+    # Compact anchor for the sidebar preview: thread name already carries
+    # "#N title", so the anchor is just the title (short) + URL — the
+    # metadata lives in the thread body.
+    short_title = issue["title"]
+    if len(short_title) > 80:
+        short_title = short_title[:77] + "…"
+    starter = f"**{short_title}** — {issue['url']}"
     msg = _api("POST", f"/channels/{ISSUE_TRACKER_CHANNEL_ID}/messages",
                {"content": starter})
 
     # Public thread anchored to the starter message (auto-archive 24h).
+    # Name is the compact sidebar form: "#N <short title>".
+    name = f"#{issue['number']} {issue['title']}"
+    if len(name) > 80:
+        name = name[:77] + "…"
     thread = _api("POST",
                   f"/channels/{ISSUE_TRACKER_CHANNEL_ID}/messages/{msg['id']}/threads",
-                  {"name": f"#{issue['number']} {issue['title'][:90]}",
+                  {"name": name,
                    "auto_archive_duration": 1440,
                    "type": 11})  # GUILD_PUBLIC_THREAD
     return thread["id"]
