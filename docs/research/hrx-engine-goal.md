@@ -141,11 +141,22 @@ Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
       (2026-08-29).
 - [x] **G1c upstream watch (2026-08-29)**: llama.cpp **PR #27218 "ggml-hrx:
       add AMD ROCm HRX native ggml backend"** exists upstream (ggml-org/
-      llama.cpp) — the HRX backend is being upstreamed. GET_ROWS remains the
-      HRX gap; note even the **Vulkan backend falls back to CPU for GET_ROWS**
-      with misaligned offsets (llama.cpp PR #26854) — validating the
-      CPU-handles-row-gather hybrid pattern. Re-benchmark when #27218 lands /
-      HRX gains GET_ROWS.
+      llama.cpp) — open draft (stellaraccident, 46k lines), **0 HRX commits
+      merged to master**; RFC #27219 open. GET_ROWS remains the HRX gap; note
+      even the **Vulkan backend falls back to CPU for GET_ROWS** with
+      misaligned offsets (llama.cpp PR #26854) — validating the
+      CPU-handles-row-gather hybrid pattern.
+- [x] **Bundle check hrx-b66 (2026-08-29)**: AMD's staging repo
+      (ROCm/ggml-staging-automation) ships a new bundle every 1–2 days;
+      **hrx-b66 released today**. Fetched + tested: **ceiling unchanged**
+      (q5_0/q8_0/Q4_K_S/IQ2XXS still fail-closed at GET_ROWS; zaya still
+      load-fails; 30B Q4_K still works). ABI structs identical to b59
+      (72/160/56) so the module runs against it unchanged. Bench too noisy
+      for a verdict (b59 swung 45.6→87 tok/s across runs under box load;
+      b66 60–65) — no reason to switch the default; b66 stays available via
+      `HRX_ROOT=/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66`.
+      GET_ROWS coverage remains the only real fix (PR #27218 / a future
+      bundle).
 
 ### P2 — HRX in-process engine (fork A core)
 - [x] **Feasibility probe — PASS (2026-08-29)**: the `hrx-b59` bundle ships the
