@@ -298,6 +298,16 @@ Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
       gate is the embedding quant, not the arch. Practical impact: models with
       K-quant embeddings run on HRX; others fall to ggml_vulkan (G1a) — the
       failover path is exercised constantly, which is exactly what it's for.
+      **Workaround attempts (all dead ends, 2026-08-29)**: `n_gpu_layers`
+      tuning (hangs/intermediate values, still GET_ROWS at 1) and
+      `tensor_buft_overrides` pinning `token_embd.weight` to a CPU buffer —
+      with `ggml_backend_dev_buffer_type(CPU)` (NULL in this fork), then with
+      `ggml_backend_cpu_buffer_type()` (valid buft, but llama.cpp maps the
+      override to **HRX0_HOST** anyway, and the sched keeps **one graph split
+      on HRX** — "using CPU instead" still assigns GET_ROWS to HRX). This
+      fork's CPU/HRX buffer plumbing makes the embedding-quant boundary a
+      **hard ceiling of hrx-b59**; fix must come upstream (PR #27218 /
+      ggml-hrx GET_ROWS coverage).
 - [x] **In-process soak (2026-08-29)**: 400-token decode on the 30B — **0
       failures**, avg 15.9 ms/tok (min 11.2, max 262 = first-token JIT), RSS
       stable ~519 MB; 10× reset (context recreate) + decode OK; model switch

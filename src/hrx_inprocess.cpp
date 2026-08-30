@@ -31,7 +31,6 @@ using llama_seq_id = int32_t;
 
 struct ggml_backend_device;
 using ggml_backend_dev_t = ggml_backend_device*;
-
 enum llama_split_mode : int { LLAMA_SPLIT_MODE_NONE = 0 };
 enum llama_load_mode : int { LLAMA_LOAD_MODE_MMAP = 0 };
 enum llama_context_type : int { LLAMA_CONTEXT_TYPE_SEQ = 0 };
