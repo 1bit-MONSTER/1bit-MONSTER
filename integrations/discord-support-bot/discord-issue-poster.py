@@ -51,7 +51,14 @@ def load_state() -> dict:
 def save_state(state: dict) -> None:
     state["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    json.dump(state, open(STATE_FILE, "w"), indent=2)
+    # Atomic write (tmp + os.replace): an in-place json.dump truncates the
+    # file first, so a crash mid-write corrupts state and load_state would
+    # fall back to last_issue=0 — re-posting every open issue as a
+    # duplicate. os.replace is atomic on POSIX.
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(state, fh, indent=2)
+    os.replace(tmp, STATE_FILE)
 
 
 def new_open_issues(after: int) -> list[dict]:

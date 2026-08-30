@@ -158,8 +158,11 @@ def main() -> int:
                   file=sys.stderr)
             return 1
 
-    json.dump({"alerts": alerts, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")},
-              open(STATE_FILE, "w"), indent=2)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"alerts": alerts, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                  fh, indent=2)
+    os.replace(tmp, STATE_FILE)  # atomic — a crash must not reset alert state
     print(f"watchdog ok ({len(failing)} failing)" if not failing
           else f"watchdog: {len(failing)} failing — posted")
     return 0 if not failing else 1
