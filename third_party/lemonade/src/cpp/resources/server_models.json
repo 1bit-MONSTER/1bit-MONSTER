@@ -966,6 +966,16 @@
         ],
         "size": 17.4
     },
+    "Qwen3-30B-A3B-Instruct-2507-HRX": {
+        "checkpoint": "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF:Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": true,
+        "labels": [
+            "chat",
+            "tool-calling"
+        ],
+        "size": 18.6
+    },
     "Qwen3-Coder-30B-A3B-Instruct-GGUF": {
         "checkpoint": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
         "recipe": "llamacpp",
@@ -2052,7 +2062,7 @@
         "labels": [
             "chat"
         ],
-        "size": 9.30
+        "size": 9.3
     },
     "RPG-HaloTales-V1": {
         "checkpoint": "lemonade-sdk/RPG-HaloTales-V1",
@@ -2062,6 +2072,15 @@
             "chat"
         ],
         "size": 39.77
+    },
+    "RPG-HaloTales-V2": {
+        "checkpoint": "lemonade-sdk/RPG-HaloTales-V2",
+        "recipe": "collection.omni",
+        "suggested": true,
+        "labels": [
+            "chat"
+        ],
+        "size": 55.77
     },
     "kokoro-v1": {
         "checkpoint": "mikkoph/kokoro-onnx",
@@ -2100,23 +2119,73 @@
         "size": 15.4
     },
     "OpenMOSS-TTS": {
-        "checkpoint": "ilintar/moss-tts-gguf:moss-tts-1.5-q8_0.gguf",
+        "checkpoints": {
+            "main": "ilintar/moss-tts-gguf:moss-tts-1.5-q8_0.gguf",
+            "main_extras": "ilintar/moss-tts-gguf:moss-tts-1.5-q8_0.extras.gguf",
+            "voicegen": "ilintar/moss-voicegen-gguf:moss-voicegen.gguf",
+            "voicegen_extras": "ilintar/moss-voicegen-gguf:moss-voicegen.extras.gguf"
+        },
         "recipe": "openmoss",
         "suggested": true,
         "labels": [
             "tts"
         ],
-        "size": 12.5
+        "size": 12.5,
+        "audio_defaults": {
+            "pcm_sample_rate": 24000,
+            "pcm_channels": 1
+        }
+    },
+    "MOSS-TTS-Local": {
+        "checkpoints": {
+            "main": "ilintar/moss-tts-local-gguf:moss-tts-local-1.5-q8_0.gguf",
+            "main_extras": "ilintar/moss-tts-local-gguf:moss-tts-local-1.5-q8_0.extras.gguf",
+            "voicegen": "ilintar/moss-voicegen-gguf:moss-voicegen.gguf",
+            "voicegen_extras": "ilintar/moss-voicegen-gguf:moss-voicegen.extras.gguf"
+        },
+        "recipe": "openmoss",
+        "suggested": true,
+        "labels": [
+            "tts"
+        ],
+        "size": 8.5,
+        "audio_defaults": {
+            "pcm_sample_rate": 48000,
+            "pcm_channels": 2
+        }
     },
     "MOSS-VoiceGen": {
-        "checkpoint": "ilintar/moss-voicegen-gguf:moss-voicegen.gguf",
+        "checkpoints": {
+            "main": "ilintar/moss-voicegen-gguf:moss-voicegen.gguf",
+            "main_extras": "ilintar/moss-voicegen-gguf:moss-voicegen.extras.gguf"
+        },
         "recipe": "openmoss",
         "suggested": true,
         "labels": [
             "tts",
             "voice-design"
         ],
-        "size": 7.3
+        "size": 7.3,
+        "audio_defaults": {
+            "pcm_sample_rate": 24000,
+            "pcm_channels": 1
+        }
+    },
+    "MOSS-SoundEffect": {
+        "checkpoints": {
+            "main": "ilintar/moss-soundeffect-gguf:moss-soundeffect-2.0.gguf",
+            "main_extras": "ilintar/moss-soundeffect-gguf:moss-soundeffect-2.0.extras.gguf"
+        },
+        "recipe": "openmoss",
+        "suggested": true,
+        "labels": [
+            "audio-generation"
+        ],
+        "size": 6.6,
+        "audio_defaults": {
+            "pcm_sample_rate": 48000,
+            "pcm_channels": 1
+        }
     },
     "Anima-Base": {
         "checkpoints": {
@@ -2171,6 +2240,44 @@
         "image_defaults": {
             "steps": 8,
             "cfg_scale": 1.0,
+            "width": 1024,
+            "height": 1024
+        }
+    },
+    "Flux-2-Klein-4B-TheNoise": {
+        "checkpoints": {
+            "main": "black-forest-labs/FLUX.2-klein-4B:flux-2-klein-4b.safetensors",
+            "text_encoder": "Comfy-Org/vae-text-encorder-for-flux-klein-4b:split_files/text_encoders/qwen_3_4b.safetensors",
+            "vae": "Comfy-Org/vae-text-encorder-for-flux-klein-4b:split_files/vae/flux2-vae.safetensors"
+        },
+        "recipe": "thenoise",
+        "suggested": true,
+        "labels": [
+            "image"
+        ],
+        "size": 16.1,
+        "image_defaults": {
+            "steps": 4,
+            "cfg_scale": 1,
+            "width": 1024,
+            "height": 1024
+        }
+    },
+    "Flux-2-Klein-9B-TheNoise": {
+        "checkpoints": {
+            "main": "unsloth/FLUX.2-klein-9B:flux-2-klein-9b.safetensors",
+            "text_encoder": "Comfy-Org/vae-text-encorder-for-flux-klein-9b:split_files/text_encoders/qwen_3_8b.safetensors",
+            "vae": "Comfy-Org/vae-text-encorder-for-flux-klein-9b:split_files/vae/flux2-vae.safetensors"
+        },
+        "recipe": "thenoise",
+        "suggested": true,
+        "labels": [
+            "image"
+        ],
+        "size": 32.5,
+        "image_defaults": {
+            "steps": 4,
+            "cfg_scale": 1,
             "width": 1024,
             "height": 1024
         }
@@ -2232,6 +2339,66 @@
             "image"
         ],
         "size": 0.017
+    },
+    "RealESRGAN-2xplus-TheNoise": {
+        "checkpoints": {
+            "main": "mikkoph/upscalers:esrgan/2x-real-esrgan-plus.safetensors"
+        },
+        "recipe": "thenoise",
+        "suggested": true,
+        "labels": [
+            "upscaling",
+            "image"
+        ],
+        "size": 0.067
+    },
+    "LSDIR-4x-TheNoise": {
+        "checkpoints": {
+            "main": "mikkoph/upscalers:esrgan/4x-lsdir-v1.safetensors"
+        },
+        "recipe": "thenoise",
+        "suggested": true,
+        "labels": [
+            "upscaling",
+            "image"
+        ],
+        "size": 0.067
+    },
+    "NMKD-Siax-CX-200k-TheNoise": {
+        "checkpoints": {
+            "main": "mikkoph/upscalers:esrgan/4x-nmkd-siax-cx-200k.safetensors"
+        },
+        "recipe": "thenoise",
+        "suggested": true,
+        "labels": [
+            "upscaling",
+            "image"
+        ],
+        "size": 0.067
+    },
+    "RealESRGAN-4xplus-TheNoise": {
+        "checkpoints": {
+            "main": "mikkoph/upscalers:esrgan/4x-real-esrgan-plus.safetensors"
+        },
+        "recipe": "thenoise",
+        "suggested": true,
+        "labels": [
+            "upscaling",
+            "image"
+        ],
+        "size": 0.067
+    },
+    "Remacri-4x-TheNoise": {
+        "checkpoints": {
+            "main": "mikkoph/upscalers:esrgan/4x-remacri.safetensors"
+        },
+        "recipe": "thenoise",
+        "suggested": true,
+        "labels": [
+            "upscaling",
+            "image"
+        ],
+        "size": 0.067
     },
     "Qwen3.5-0.8B-FP16-vLLM": {
         "checkpoint": "Qwen/Qwen3.5-0.8B",
@@ -2379,5 +2546,446 @@
             "classification"
         ],
         "size": 0.27
+    },
+    "DeepSeek-V4-Flash-IQ2XXS-DS4": {
+        "checkpoint": "antirez/deepseek-v4-gguf:DeepSeek-V4-Flash-IQ2XXS-w2Q2K-AProjQ8-SExpQ8-OutQ8-chat-v2-imatrix-0731.gguf",
+        "recipe": "ds4",
+        "suggested": true,
+        "labels": [
+            "chat",
+            "reasoning",
+            "tool-calling"
+        ],
+        "size": 81.0,
+        "min_resident_gb": 16.0
+    },
+    "MiniCPM5-1B-HRX": {
+        "checkpoint": "OpenBMB/MiniCPM5-1B-GGUF:MiniCPM5-1B-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "hot",
+            "reasoning"
+        ],
+        "size": 0.69
+    },
+    "MiniCPM4.1-8B-HRX": {
+        "checkpoint": "OpenBMB/MiniCPM4.1-8B-GGUF:MiniCPM4.1-8B-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 4.97
+    },
+    "MiniCPM4-8B-HRX": {
+        "checkpoint": "OpenBMB/MiniCPM4-8B-GGUF:MiniCPM4-8B-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 4.97
+    },
+    "MiniCPM3-4B-HRX": {
+        "checkpoint": "OpenBMB/MiniCPM3-4B-GGUF:minicpm3-4b-q4_k_m.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 2.47
+    },
+    "Qwen3-0.6B-HRX": {
+        "checkpoint": "unsloth/Qwen3-0.6B-GGUF:Q4_0",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 0.38
+    },
+    "Tiny-Test-Model-HRX": {
+        "checkpoint": "unsloth/gemma-3-270m-it-GGUF:gemma-3-270m-it-UD-IQ2_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 0.18
+    },
+    "Qwen3-1.7B-HRX": {
+        "checkpoint": "unsloth/Qwen3-1.7B-GGUF:Q4_0",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 1.06
+    },
+    "Qwen3-4B-HRX": {
+        "checkpoint": "unsloth/Qwen3-4B-GGUF:Q4_0",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 2.38
+    },
+    "Qwen3-8B-HRX": {
+        "checkpoint": "unsloth/Qwen3-8B-GGUF:Q4_1",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 5.25
+    },
+    "DeepSeek-Qwen3-8B-HRX": {
+        "checkpoint": "unsloth/DeepSeek-R1-0528-Qwen3-8B-GGUF:Q4_1",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 5.25
+    },
+    "Qwen3-14B-HRX": {
+        "checkpoint": "unsloth/Qwen3-14B-GGUF:Q4_0",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 8.54
+    },
+    "Qwen3-4B-Instruct-2507-HRX": {
+        "checkpoint": "unsloth/Qwen3-4B-Instruct-2507-GGUF:Qwen3-4B-Instruct-2507-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "tool-calling"
+        ],
+        "size": 2.5
+    },
+    "Qwen3-30B-A3B-HRX": {
+        "checkpoint": "unsloth/Qwen3-30B-A3B-GGUF:Q4_0",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 17.4
+    },
+    "Qwen3-Coder-30B-A3B-Instruct-HRX": {
+        "checkpoint": "unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF:Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "coding",
+            "tool-calling",
+            "hot"
+        ],
+        "size": 18.6
+    },
+    "Qwen3-Coder-Next-HRX": {
+        "checkpoint": "unsloth/Qwen3-Coder-Next-GGUF:Qwen3-Coder-Next-MXFP4_MOE.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "coding",
+            "tool-calling",
+            "hot"
+        ],
+        "size": 48.0
+    },
+    "Nemotron-3-Nano-30B-A3B-HRX": {
+        "checkpoint": "unsloth/Nemotron-3-Nano-30B-A3B-GGUF:Nemotron-3-Nano-30B-A3B-UD-Q4_K_XL.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 22.8
+    },
+    "NVIDIA-Nemotron-3.5-Lightning-30B-A3B-HRX": {
+        "checkpoint": "unsloth/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-GGUF:NVIDIA-Nemotron-3.5-Lightning-30B-A3B-UD-Q4_K_XL.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning",
+            "tool-calling",
+            "mtp",
+            "hot"
+        ],
+        "size": 25.5
+    },
+    "Bonsai-8B-gguf-HRX": {
+        "checkpoint": "prism-ml/Bonsai-8B-gguf:Q1_0",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "llamacpp"
+        ],
+        "size": 1.16
+    },
+    "Bonsai-4B-gguf-HRX": {
+        "checkpoint": "prism-ml/Bonsai-4B-gguf:Q1_0",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "llamacpp"
+        ],
+        "size": 0.572
+    },
+    "Bonsai-1.7B-gguf-HRX": {
+        "checkpoint": "prism-ml/Bonsai-1.7B-gguf:Q1_0",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "llamacpp"
+        ],
+        "size": 0.25
+    },
+    "Phi-4-mini-instruct-HRX": {
+        "checkpoint": "unsloth/Phi-4-mini-instruct-GGUF:Phi-4-mini-instruct-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 2.49
+    },
+    "LFM2-1.2B-HRX": {
+        "checkpoint": "LiquidAI/LFM2-1.2B-GGUF:LFM2-1.2B-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 0.731
+    },
+    "LFM2.5-1.2B-Instruct-HRX": {
+        "checkpoint": "LiquidAI/LFM2.5-1.2B-Instruct-GGUF:LFM2.5-1.2B-Instruct-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 0.731
+    },
+    "LFM2.5-8B-A1B-HRX": {
+        "checkpoint": "LiquidAI/LFM2.5-8B-A1B-GGUF:LFM2.5-8B-A1B-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 5.16
+    },
+    "PromptBridge-0.6b-Alpha-HRX": {
+        "checkpoint": "mradermacher/PromptBridge-0.6b-Alpha-GGUF:PromptBridge-0.6b-Alpha.Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 0.397
+    },
+    "Jan-nano-128k-HRX": {
+        "checkpoint": "Menlo/Jan-nano-128k-gguf:jan-nano-128k-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 2.5
+    },
+    "Jan-v1-4B-HRX": {
+        "checkpoint": "janhq/Jan-v1-4B-GGUF:Jan-v1-4B-Q4_K_M.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 2.5
+    },
+    "Llama-3.2-1B-Instruct-HRX": {
+        "checkpoint": "unsloth/Llama-3.2-1B-Instruct-GGUF:Llama-3.2-1B-Instruct-UD-Q4_K_XL.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 0.834
+    },
+    "Llama-3.2-3B-Instruct-HRX": {
+        "checkpoint": "unsloth/Llama-3.2-3B-Instruct-GGUF:Llama-3.2-3B-Instruct-UD-Q4_K_XL.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 2.06
+    },
+    "SmolLM3-3B-HRX": {
+        "checkpoint": "unsloth/SmolLM3-3B-128K-GGUF:SmolLM3-3B-128K-UD-Q4_K_XL.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 1.94
+    },
+    "Qwen3-Next-80B-A3B-Instruct-HRX": {
+        "checkpoint": "unsloth/Qwen3-Next-80B-A3B-Instruct-GGUF:Qwen3-Next-80B-A3B-Instruct-UD-Q4_K_XL.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "tool-calling"
+        ],
+        "size": 46.1
+    },
+    "Devstral-Small-2507-HRX": {
+        "checkpoint": "mistralai/Devstral-Small-2507_gguf:Q4_K_M",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "coding",
+            "tool-calling"
+        ],
+        "size": 14.3
+    },
+    "Qwen2.5-Coder-32B-Instruct-HRX": {
+        "checkpoint": "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF:Q4_K_M",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "coding"
+        ],
+        "size": 19.9
+    },
+    "gpt-oss-120b-HRX": {
+        "checkpoint": "unsloth/gpt-oss-120b-GGUF:Q4_K_M",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning",
+            "tool-calling"
+        ],
+        "size": 62.8
+    },
+    "gpt-oss-20b-HRX": {
+        "checkpoint": "unsloth/gpt-oss-20b-GGUF:Q4_K_M",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning",
+            "tool-calling"
+        ],
+        "size": 11.6
+    },
+    "gpt-oss-120b-mxfp-HRX": {
+        "checkpoint": "ggml-org/gpt-oss-120b-GGUF:*",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "hot",
+            "reasoning",
+            "tool-calling"
+        ],
+        "size": 63.4
+    },
+    "gpt-oss-20b-mxfp4-HRX": {
+        "checkpoint": "ggml-org/gpt-oss-20b-GGUF",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "hot",
+            "reasoning",
+            "tool-calling"
+        ],
+        "size": 12.1
+    },
+    "GLM-4.5-Air-UD-Q4K-XL-HRX": {
+        "checkpoint": "unsloth/GLM-4.5-Air-GGUF:UD-Q4_K_XL",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "reasoning"
+        ],
+        "size": 67.7
+    },
+    "GLM-4.7-Flash-HRX": {
+        "checkpoint": "unsloth/GLM-4.7-Flash-GGUF:GLM-4.7-Flash-UD-Q4_K_XL.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "tool-calling"
+        ],
+        "size": 17.5
+    },
+    "Playable1-HRX": {
+        "checkpoint": "playable/Playable1-GGUF:Playable1-q4_k_m.gguf",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "coding"
+        ],
+        "size": 4.68
+    },
+    "granite-4.0-h-tiny-HRX": {
+        "checkpoint": "unsloth/granite-4.0-h-tiny-GGUF:Q4_K_M",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat",
+            "tool-calling"
+        ],
+        "size": 4.25
+    },
+    "LFM2-8B-A1B-HRX": {
+        "checkpoint": "LiquidAI/LFM2-8B-A1B-GGUF:Q4_K_M",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 5.04
+    },
+    "LFM2-24B-A2B-HRX": {
+        "checkpoint": "LiquidAI/LFM2-24B-A2B-GGUF:Q4_K_M",
+        "recipe": "llamacpp-hrx",
+        "suggested": false,
+        "labels": [
+            "chat"
+        ],
+        "size": 14.4
     }
 }

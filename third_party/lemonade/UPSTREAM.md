@@ -1,18 +1,23 @@
-# Vendored: lemonade-sdk/lemonade (embedded server core)
+# Vendored: lemonade (LOCAL-ONLY source)
 
-Vendored from https://github.com/lemonade-sdk/lemonade at commit
-`2b6a7d77c71e551736f6cc8473dc46f479cd156b` (tag `v11.7.0`).
+> **LOCAL-ONLY.** This is our own snapshotted lemonade tree. Refresh the
+> `third_party/lemonade` snapshots in our projects (1bit-MONSTER, 1bit-MONSTER-pi,
+> 1bit-MONSTER-zaya, 1bit-fused-verify, …) **from this local directory**, never
+> from `github.com/lemonade-sdk/lemonade` (see `RULES.md`). Do NOT `git fetch` /
+> `pull` / `clone`, push PRs, open issues, or run CI against upstream.
 
-Vendored (instead of a submodule) because the embedded server core needs a
-patch that only exists locally, and CI can't fetch unpublished submodule
-SHAs. Re-vendor on upstream sync:
+This snapshot is synced to the repo's `third_party/lemonade` and carries the
+`llamacpp-hrx` backend (`src/cpp/server/backends/hrx/`), its registry entries /
+pins in `resources/server_models.json` + `backend_versions.json`, and the
+`tools/gen_hrx_model_entries.py` generator.
+
+Local patch: the `CMakeLists.txt` carries the one **embeddability** patch below
+(not upstream). It must be re-applied whenever the vendored tree is refreshed,
+so `lemonade-server-core` links as a subdirectory of the 1bit-MONSTER engine.
 
 ```sh
-git clone https://github.com/lemonade-sdk/lemonade /tmp/lemonade
-cd /tmp/lemonade
-git checkout 2b6a7d77c71e551736f6cc8473dc46f479cd156b  # v11.7.0
-# re-apply the embeddability patch below
-rsync -a --exclude=.git /tmp/lemonade/ third_party/lemonade/
+# Sync FROM this local snapshot INTO a project:
+rsync -a --exclude=.git --exclude=UPSTREAM.md third_party/lemonade/ <proj>/third_party/lemonade/
 ```
 
 ## Local patch: embeddability
@@ -31,7 +36,12 @@ rsync -a --exclude=.git /tmp/lemonade/ third_party/lemonade/
    `httplib` target directly when it exists.
 3. PUBLIC include dirs on `lemonade-server-core` so parent targets
    (`unified_server`, `unified_router`) linking the OBJECT library see
-   `lemon/` headers + generated headers (upstream uses a subdirectory-local
-   `include_directories()` that does not propagate to consumers).
+   `lemon/` headers + generated headers.
+4. `add_test()` police guarded by `BUILD_TESTING` so it does not leak into
+   the parent scope when embedded via `add_subdirectory()`.
+5. `add_dependencies(lemonade-server-core copy_resources)` so the resource
+   copy fires even though `lemond` (whose POST_BUILD would trigger it) is
+   never built in the embed.
 
-Drop the patch when upstream adopts any of these changes.
+Drop the patch when upstream adopts any of these changes (do not block on
+upstream — this is local-only).
