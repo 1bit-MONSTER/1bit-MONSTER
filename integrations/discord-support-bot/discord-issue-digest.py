@@ -77,8 +77,13 @@ def _post_forum(name: str, content: str, tag_ids: list[str]) -> str:
         return json.loads(r.read())["id"]
 
 
-def _channel_has_digest(channel_id: str) -> bool:
-    """Best-effort: does the text channel already carry today's digest?"""
+def _channel_has_digest(channel_id: str, day: str) -> bool:
+    """Best-effort: does the text channel already carry TODAY's digest?
+
+    Matches the dated header, so last week's digest (same text, different
+    date) does not suppress this week's.
+    """
+    marker = f"Issue digest {day}"
     try:
         req = urllib.request.Request(
             API + f"/channels/{channel_id}/messages?limit=50",
@@ -86,8 +91,7 @@ def _channel_has_digest(channel_id: str) -> bool:
         )
         with urllib.request.urlopen(req, timeout=20) as r:
             msgs = json.loads(r.read())
-        return any("Open issue backlog" in (m.get("content") or "")
-                   for m in msgs)
+        return any(marker in (m.get("content") or "") for m in msgs)
     except Exception:  # noqa: BLE001
         return False  # unknown — let the post attempt go ahead
 
@@ -141,11 +145,14 @@ def main() -> int:
             pass
 
     day = time.strftime("%Y-%m-%d")
+    # Dated header — the text-channel dedupe matches on it, so last week's
+    # digest can never suppress this week's.
+    content = f"**Issue digest {day}**\n\n{content}"
     digest_channel = os.getenv("ISSUE_DIGEST_CHANNEL", "")
     if digest_channel.isdigit():
         # Text-channel mode: dedupe against the channel's recent messages
         # (a re-run must not post a duplicate digest message).
-        if _channel_has_digest(digest_channel):
+        if _channel_has_digest(digest_channel, day):
             print(f"digest for {day} already posted to channel {digest_channel} — skipping")
             return 0
         mid = _post_message(digest_channel, content)

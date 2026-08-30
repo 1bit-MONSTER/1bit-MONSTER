@@ -244,6 +244,7 @@ def main() -> int:
         issues = kept
     posts = state.setdefault("posts", {})
     failed = state.setdefault("failed", [])
+    fresh_ids: set[str] = set()  # posts created THIS run — not in the pre-posting snapshot
     # Retry failed numbers first (ascending), then any new ones — a
     # transient failure must never drop an issue: if #N fails but #N+1
     # succeeds, last_issue only advances on success, and #N stays in
@@ -297,6 +298,7 @@ def main() -> int:
             "archived": False,
         }
         print(f"posted #{num} '{full['title']}' as forum post {tid}")
+        fresh_ids.add(tid)
         if num > after:
             state["last_issue"] = num
         save_state(state)
@@ -323,8 +325,11 @@ def main() -> int:
         # Deleted-post detection without a PATCH: an open issue with stable
         # labels/severity never triggers a PATCH, so a hand-deleted post
         # would otherwise go unnoticed forever. Only when the listing
-        # succeeded and the thread id is absent is it truly gone.
-        if listing_ok and rec["thread"] not in thread_ids:
+        # succeeded and the thread id is absent is it truly gone — and a
+        # post created earlier in THIS run (fresh_ids) is exempt, since the
+        # snapshot predates it.
+        if (listing_ok and rec["thread"] not in thread_ids
+                and rec["thread"] not in fresh_ids):
             print(f"sync #{num}: post {rec['thread']} no longer in forum — dropping/re-queueing")
             _drop_dead_post(state, num)
             continue
