@@ -180,7 +180,8 @@ static inline void write_gu_i4_bo(uint8_t* bo, const GuI4Pack& p) {
 }
 
 static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
-                                        int H, int n_ff) {
+                                        int H, int n_ff,
+                                        bool bf16_pair = false) {
     const size_t N = 2 * (size_t)n_ff;
     const size_t gbase = (size_t)expert * N;
     const int CG = (int)(N / 32);            // INTERLEAVED col-groups of 32
@@ -258,6 +259,9 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
                             int q4 = raw.q4[r * H + i];
                             uint16_t s16 = f32_to_bf16_impl(raw.scl[r * RC + (i / 32)]);
                             uint32_t sbits = (uint32_t)s16 << 16; float srow; memcpy(&srow, &sbits, 4);
+                            // FOLDED zero-point (read_q4nx_raw_1bp: q4'=v-8,
+                            // zp'=8s+zp preserves W = q4'*s + zp' = v*s + zp).
+                            float zp_cur = raw.zp[r * RC + (i / 32)];
                             // Canonical kernel dequant (byte-pinned):
                             //   w16 = q4<<4 (exact); ratio = (s/16)/S_col;
                             //   B'' = sat8(round(w16 * ratio))
@@ -274,38 +278,65 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
                                 p.tiles[byte_off] = (uint8_t)((p.tiles[byte_off] & 0xF0) | (q4 & 0x0F));
                             else
                                 p.tiles[byte_off] = (uint8_t)((p.tiles[byte_off] & 0x0F) | ((q4 & 0x0F) << 4));
-                            // v65 ratioQ22 at [4096 + group*512 + col*4] (group =
-                            // k/32, col within tile): the aie2p object-fifo
-                            // delivers only [0..5632) of each 8192-B B tile, so
-                            // the ratio moved DOWN from the old [5120..6144)
-                            // region (which straddled the 5632 boundary — group-1
-                            // dequant read never-delivered bytes, measured
-                            // 2026-08-24). The old per-tile bf16 s/S_col bytes at
-                            // [4096..4864) are UNUSED by the int4 kernel (it
-                            // dequants via the ratio alone), so the ratio
-                            // overwrites them. Q22 (2^22): Q32 overflowed for
-                            // ratio>0.5 (93.6% of real ratios).
-                            int rq = (int)std::roundf(ratio * 4194304.0);
+                            // Region at [4096 + group*512 + col*4], group =
+                            // k/32, col within tile (the aie2p object-fifo
+                            // delivers only [0..5632) of each 8192-B B tile).
+                            // v65/v66: ratioQ22 int32 (the symmetric-only
+                            // dequant B'' = round(q4*ratio/2^18), drops zp).
+                            // bf16_pair (issue #1934, round-10 layout): the
+                            // additive zero-point term as a bf16 (a, b) pair
+                            // per (K-group, col) — a = s/S_col, b = zp/S_col,
+                            // 2 bytes each = the SAME 1024 B region; the
+                            // restructured kernel (I4_BF16_PAIR) dequants
+                            // B'' = sat8(round(q4*a + b)). Q22 (2^22): Q32
+                            // overflowed for ratio>0.5 (93.6% of real ratios).
                             size_t r_off = tbase + 4096 + (size_t)((i0 * 8 + i2) / 32) * 512
                                            + (i1 * 8 + i3) * 4;
-                            p.tiles[r_off]     = (uint8_t)(rq & 0xFF);
-                            p.tiles[r_off + 1] = (uint8_t)((rq >> 8) & 0xFF);
-                            p.tiles[r_off + 2] = (uint8_t)((rq >> 16) & 0xFF);
-                            // v66: B_shadow = the kernel's EXACT B'' — computed
-                            // from the SAME ratioQ22 int32 that rides the tile
-                            // (sat8(round-half-away(q4·rq / 2^18))), NOT the
-                            // float ratio: the float path ±1 flips at round
-                            // boundaries (measured 292,796/8,388,608 on the old
-                            // bf16-S_col contract) and broke the byte-identity
-                            // gate. B_shadow is the host reference for the C1
-                            // corr gate, so it must match the NPU byte-for-byte.
-                            int xq = q4 * rq;
-                            int ax = xq < 0 ? -xq : xq;
-                            int rr = (ax + (1 << 17)) >> 18;   // round-half-away
-                            rr = xq < 0 ? -rr : rr;
-                            p.B_shadow[(size_t)i * N + j] =
-                                (int8_t)(rr > 127 ? 127 : rr < -127 ? -127 : rr);
-                            p.tiles[r_off + 3] = (uint8_t)((rq >> 24) & 0xFF);
+                            if (bf16_pair) {
+                                // a = s/S_col, b = zp'/S_col as bf16 bits,
+                                // where zp' is the FOLDED zero-point from
+                                // read_q4nx_raw_1bp (q4'=v-8, zp'=8s+zp, so
+                                // q4'*s + zp' = v*s + zp exactly). The kernel
+                                // (I4_BF16_PAIR) dequants B''=round(q4'*a+b)
+                                // with q4' the sign-extended nibble. Divide
+                                // by the FULL-precision S_col (p.scol[j]) so
+                                // the bf16 a/b match the round-10 verified
+                                // gate byte-for-byte.
+                                uint16_t ab = f32_to_bf16_impl(srow / p.scol[j]);
+                                uint16_t bb = f32_to_bf16_impl(zp_cur / p.scol[j]);
+                                p.tiles[r_off]     = (uint8_t)(ab & 0xFF);
+                                p.tiles[r_off + 1] = (uint8_t)((ab >> 8) & 0xFF);
+                                p.tiles[r_off + 2] = (uint8_t)(bb & 0xFF);
+                                p.tiles[r_off + 3] = (uint8_t)((bb >> 8) & 0xFF);
+                                // B_shadow = the kernel's EXACT B'' for the
+                                // bf16-pair contract: sat8(round(q4*a + b)).
+                                float av = i4p_bf16_to_f32(ab);
+                                float bv = i4p_bf16_to_f32(bb);
+                                float fv = (float)q4 * av + bv;
+                                int fr = (int)std::roundf(fv);
+                                p.B_shadow[(size_t)i * N + j] =
+                                    (int8_t)(fr > 127 ? 127 : fr < -127 ? -127 : fr);
+                            } else {
+                                int rq = (int)std::roundf(ratio * 4194304.0);
+                                p.tiles[r_off]     = (uint8_t)(rq & 0xFF);
+                                p.tiles[r_off + 1] = (uint8_t)((rq >> 8) & 0xFF);
+                                p.tiles[r_off + 2] = (uint8_t)((rq >> 16) & 0xFF);
+                                p.tiles[r_off + 3] = (uint8_t)((rq >> 24) & 0xFF);
+                                // v66: B_shadow = the kernel's EXACT B'' — computed
+                                // from the SAME ratioQ22 int32 that rides the tile
+                                // (sat8(round-half-away(q4·rq / 2^18))), NOT the
+                                // float ratio: the float path ±1 flips at round
+                                // boundaries (measured 292,796/8,388,608 on the old
+                                // bf16-S_col contract) and broke the byte-identity
+                                // gate. B_shadow is the host reference for the C1
+                                // corr gate, so it must match the NPU byte-for-byte.
+                                int xq = q4 * rq;
+                                int ax = xq < 0 ? -xq : xq;
+                                int rr = (ax + (1 << 17)) >> 18;   // round-half-away
+                                rr = xq < 0 ? -rr : rr;
+                                p.B_shadow[(size_t)i * N + j] =
+                                    (int8_t)(rr > 127 ? 127 : rr < -127 ? -127 : rr);
+                            }
                         }
                     }
         }
