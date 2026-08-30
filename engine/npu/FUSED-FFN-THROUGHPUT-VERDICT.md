@@ -132,3 +132,14 @@ qkv/gu/O/w3:
 Reverted.  The attention GEMVs are at the practical limit of the v1fs
 pattern; remaining ideas (multi-row blocks — failed on W-locality; f16
 WEIGHTS — not W-bound) are low-value.  Batch-32 stands at 375 agg tok/s.
+
+## 9. Round 4 (2026-08-30): GU v1fs (+12.5%) — committed; multi-row lm_head measured negative
+
+- fused_gu_batch_ws_kernel (the largest GEMV: grid 2*IM=6144, 25 MB W) was
+  still the old ws pattern: 0.978 -> 0.630 ms standalone.  In-path forward
+  63.6 -> 54.5 ms/batch, batch-32 375 -> 422 agg tok/s (+12.5%).
+  Sweep 312/368/425 at B=8/16/32.  Committed.
+- Multi-row lm_head (R=4/8/16 rows per block, W rows loaded sequentially to
+  fix the v6 W-locality problem): all SLOWER than block-per-row fp16
+  (19.35 -> 21.2-21.6 ms) — the per-row __syncthreads + reduced per-block
+  parallelism outweigh the block-count savings.  Dead end, like v6.
