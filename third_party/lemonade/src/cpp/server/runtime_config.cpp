@@ -416,7 +416,9 @@ long RuntimeConfig::stream_stall_timeout() const {
         config_["stream_stall_timeout"].is_number_integer()) {
         return config_["stream_stall_timeout"].get<long>();
     }
-    return 120;
+    // No explicit stream_stall_timeout: the streaming stall bound respects
+    // the global timeout (upstream review feedback on the new-key proposal).
+    return config_["global_timeout"].get<long>();
 }
 
 int RuntimeConfig::max_loaded_models() const {
