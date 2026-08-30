@@ -257,6 +257,157 @@ __global__ void fused_lm_head_batch_kernel_f16(float* __restrict__ y, const floa
     }
 }
 
+
+// ── int8-W batched GEMVs (per-row scales): 4x smaller W, higher occupancy ──
+// Measured (gfx1151, B=32): qkv 0.41->0.27, o 0.16->0.12, w3 0.27->0.15,
+// gu 0.65->0.40 ms vs the f32 v1fs pattern.  y[b,row] = srow[row] * dot.
+__global__ void fused_gemv_batch_v1fs_i8_kernel(float* __restrict__ y, const int8_t* __restrict__ W,
+                                                const float* __restrict__ srow, const float* __restrict__ x,
+                                                int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    constexpr int LBLOCK = 128;
+    __shared__ int8_t ws8[3072];
+    __shared__ float wsum[LBLOCK / 32];
+    const int8_t* Wr = W + (size_t)row * N;
+    for (int i = threadIdx.x; i < N; i += LBLOCK) ws8[i] = Wr[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    float sr = srow[row];
+    for (int b = 0; b < B; b++) {
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 xv = x4[k4];
+            const int8_t* w8 = ws8 + k4 * 4;
+            sum += (float)w8[0]*xv.x + (float)w8[1]*xv.y + (float)w8[2]*xv.z + (float)w8[3]*xv.w;
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) y[(size_t)b * M + row] = v * sr;
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void fused_qkv_batch_ws_i8_kernel(float* __restrict__ yq, float* __restrict__ yk, float* __restrict__ yv,
+                                             const int8_t* __restrict__ Wq, const int8_t* __restrict__ Wk,
+                                             const int8_t* __restrict__ Wv, const float* __restrict__ sq,
+                                             const float* __restrict__ sk, const float* __restrict__ sv,
+                                             const float* __restrict__ x, int s1, int s2, int N, int B) {
+    int row = blockIdx.x;
+    int rows = s1 + 2 * s2;
+    if (row >= rows) return;
+    const int8_t* Wr; float* yr; float sr;
+    if (row < s1) { Wr = Wq + (size_t)row * N; yr = yq; sr = sq[row]; }
+    else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * N; yr = yk; sr = sk[row - s1]; }
+    else { Wr = Wv + (size_t)(row - s1 - s2) * N; yr = yv; sr = sv[row - s1 - s2]; }
+    constexpr int LBLOCK = 128;
+    __shared__ int8_t ws8[3072];
+    __shared__ float wsum[LBLOCK / 32];
+    const int8_t* W8r = Wr;
+    for (int i = threadIdx.x; i < N; i += LBLOCK) ws8[i] = W8r[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int b = 0; b < B; b++) {
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 xv = x4[k4];
+            const int8_t* w8 = ws8 + k4 * 4;
+            sum += (float)w8[0]*xv.x + (float)w8[1]*xv.y + (float)w8[2]*xv.z + (float)w8[3]*xv.w;
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) {
+                if (row < s1) yq[(size_t)b * s1 + row] = v * sr;
+                else if (row < s1 + s2) yk[(size_t)b * s2 + (row - s1)] = v * sr;
+                else yv[(size_t)b * s2 + (row - s1 - s2)] = v * sr;
+            }
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void fused_gu_batch_ws_i8_kernel(float* __restrict__ y1, float* __restrict__ y2,
+                                            const int8_t* __restrict__ W1, const int8_t* __restrict__ W2,
+                                            const float* __restrict__ s1v, const float* __restrict__ s2v,
+                                            const float* __restrict__ x, int IM, int N, int B) {
+    int row = blockIdx.x;
+    int rows = 2 * IM;
+    if (row >= rows) return;
+    const int8_t* Wr; float* yr; float sr;
+    if (row < IM) { Wr = W1 + (size_t)row * N; yr = y1; sr = s1v[row]; }
+    else { Wr = W2 + (size_t)(row - IM) * N; yr = y2; sr = s2v[row - IM]; }
+    constexpr int LBLOCK = 128;
+    __shared__ int8_t ws8[3072];
+    __shared__ float wsum[LBLOCK / 32];
+    for (int i = threadIdx.x; i < N; i += LBLOCK) ws8[i] = Wr[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int b = 0; b < B; b++) {
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 xv = x4[k4];
+            const int8_t* w8 = ws8 + k4 * 4;
+            sum += (float)w8[0]*xv.x + (float)w8[1]*xv.y + (float)w8[2]*xv.z + (float)w8[3]*xv.w;
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) {
+                if (row < IM) y1[(size_t)b * IM + row] = v * sr;
+                else y2[(size_t)b * IM + (row - IM)] = v * sr;
+            }
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void fused_lm_head_batch_kernel_i8(float* __restrict__ y, const int8_t* __restrict__ W,
+                                              const float* __restrict__ srow, const __half* __restrict__ x,
+                                              int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    constexpr int LBLOCK = 128;
+    __shared__ int8_t ws8[3072];
+    __shared__ float wsum[LBLOCK / 32];
+    const int8_t* Wr = W + (size_t)row * N;
+    for (int i = threadIdx.x; i < N; i += LBLOCK) ws8[i] = Wr[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    float sr = srow[row];
+    for (int b = 0; b < B; b++) {
+        const __half2* x2 = (const __half2*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k2 = threadIdx.x; k2 < N / 2; k2 += LBLOCK) {
+            float2 f = __half22float2(x2[k2]);
+            sum += (float)ws8[k2 * 2] * f.x + (float)ws8[k2 * 2 + 1] * f.y;
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) y[(size_t)b * M + row] = v * sr;
+        }
+        __syncthreads();
+    }
+}
+
 // ── Row-wise argmax on the GPU (first-max, matches the host loop) ──
 // out[b] = argmax_v logits[b*V+v], first (lowest) index on ties.  Avoids the
 // host-side scan of B*V logits (~1 ms on 8x152K) — the token selection is
@@ -717,7 +868,16 @@ struct FusedBackend : Backend {
 
     // GPU weights
     float *d_embed = nullptr, *d_final_norm = nullptr, *d_output = nullptr;
-    struct GpuL { float *wq, *wk, *wv, *wo, *w1, *w2, *w3, *pn, *pon, *q_norm, *k_norm; };
+    int8_t* d_output8 = nullptr;   // int8 lm_head W (152 MB vs 622 MB f32)
+    float* d_output_s = nullptr;   // per-row lm_head scales
+    struct GpuL {
+        float *wq, *wk, *wv, *wo, *w1, *w2, *w3, *pn, *pon, *q_norm, *k_norm;
+        // int8 GEMV weights + per-row scales: 4x smaller W, ~35-44% faster
+        // batched GEMVs (measured 2026-08-30, gfx1151).  f32 copies stay for
+        // the small/non-GEMV paths.
+        int8_t *wq8, *wk8, *wv8, *wo8, *w18, *w28, *w38;
+        float *wq_s, *wk_s, *wv_s, *wo_s, *w1_s, *w2_s, *w3_s;
+    };
     std::vector<GpuL> L;
 
     // Scratch buffers (pre-allocated)
@@ -1054,7 +1214,31 @@ struct FusedBackend : Backend {
             if (hipMalloc(&g, c.size()*4) != hipSuccess) return false;
             HIP_CHECK(hipMemcpy(g, c.data(), c.size()*4, hipMemcpyHostToDevice)); return true;
         };
+        // int8 upload with per-row scales: rows = c.size()/N.
+        auto up8 = [&](const std::vector<float>& c, int N, int8_t*& g8, float*& gs) {
+            if (c.empty() || N <= 0 || c.size() % N != 0) { g8 = nullptr; gs = nullptr; return true; }
+            int rows = (int)(c.size() / N);
+            std::vector<int8_t> c8(c.size());
+            std::vector<float> cs(rows);
+            for (int r = 0; r < rows; r++) {
+                float amax = 0;
+                for (int k = 0; k < N; k++) { float a = fabsf(c[(size_t)r*N+k]); if (a > amax) amax = a; }
+                cs[r] = (amax < 1e-12f) ? 1.0f : amax / 127.0f;
+                float is = (amax < 1e-12f) ? 1.0f : 127.0f / amax;
+                for (int k = 0; k < N; k++) {
+                    float v = c[(size_t)r*N+k] * is;
+                    int q = (int)roundf(v); if (q > 127) q = 127; else if (q < -127) q = -127;
+                    c8[(size_t)r*N+k] = (int8_t)q;
+                }
+            }
+            if (hipMalloc(&g8, c.size()) != hipSuccess) return false;
+            if (hipMalloc(&gs, (size_t)rows * 4) != hipSuccess) return false;
+            HIP_CHECK(hipMemcpy(g8, c8.data(), c.size(), hipMemcpyHostToDevice));
+            HIP_CHECK(hipMemcpy(gs, cs.data(), (size_t)rows * 4, hipMemcpyHostToDevice));
+            return true;
+        };
         up(cpu_embed, d_embed); up(cpu_final_norm, d_final_norm); up(cpu_output, d_output);
+        up8(cpu_output, H, d_output8, d_output_s);
         L.resize(NC);
         for (int l = 0; l < NC; l++) {
             auto& t = tmp[l]; auto& gl = L[l];
@@ -1062,6 +1246,10 @@ struct FusedBackend : Backend {
             up(t.w1, gl.w1); up(t.w2, gl.w2); up(t.w3, gl.w3);
             up(t.pn, gl.pn); up(t.pon, gl.pon);
             up(t.q_norm, gl.q_norm); up(t.k_norm, gl.k_norm);
+            up8(t.wq, H, gl.wq8, gl.wq_s); up8(t.wk, H, gl.wk8, gl.wk_s);
+            up8(t.wv, H, gl.wv8, gl.wv_s); up8(t.wo, NH*HD_, gl.wo8, gl.wo_s);
+            up8(t.w1, H, gl.w18, gl.w1_s); up8(t.w2, H, gl.w28, gl.w2_s);
+            up8(t.w3, IM, gl.w38, gl.w3_s);
         }
 
         if (npu_ok && npu) {
@@ -1545,7 +1733,10 @@ struct FusedBackend : Backend {
         const float* W = d_output ? d_output : d_embed;
         if (!W) return false;
         fused_f2h_kernel<<<(am * H + BLOCK - 1) / BLOCK, BLOCK, 0, stream>>>(dxh, dh_batch, am * H);
-        fused_lm_head_batch_kernel_f16<<<VOCAB, 128, 0, stream>>>(dlogits_batch, W, dxh, VOCAB, H, am);
+        if (d_output8 && d_output_s)
+            fused_lm_head_batch_kernel_i8<<<VOCAB, 128, 0, stream>>>(dlogits_batch, d_output8, d_output_s, dxh, VOCAB, H, am);
+        else
+            fused_lm_head_batch_kernel_f16<<<VOCAB, 128, 0, stream>>>(dlogits_batch, W, dxh, VOCAB, H, am);
         HIP_CHECK(hipMemcpy(logits, dlogits_batch, (size_t)am * VOCAB * sizeof(float), hipMemcpyDeviceToHost));  // blocking
         if (argmaxs) {
             // GPU argmax (first-max, same semantics as the old host loop) —
@@ -1591,13 +1782,17 @@ struct FusedBackend : Backend {
             // 1. residual save + RMSNorm (one batched launch, grid B)
             fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pn, H_, EPS);
             // 2. batched QKV GEMVs (W read once)
-            if (gl.wq && gl.wk && gl.wv)
-                fused_qkv_batch_ws_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(
-                    datt_batch, dgate_batch, dup_batch, gl.wq, gl.wk, gl.wv, dh_batch, s1, s2, H_, B_);
+            if (gl.wq && gl.wk && gl.wv && gl.wq8 && gl.wk8 && gl.wv8)
+                fused_qkv_batch_ws_i8_kernel<<<s1 + 2*s2, 128, 0, stream>>>(
+                    datt_batch, dgate_batch, dup_batch, gl.wq8, gl.wk8, gl.wv8,
+                    gl.wq_s, gl.wk_s, gl.wv_s, dh_batch, s1, s2, H_, B_);
             else {
-                if (gl.wq) fused_gemv_batch_v1fs_kernel<<<s1, 128, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
-                if (gl.wk) fused_gemv_batch_v1fs_kernel<<<s2, 128, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
-                if (gl.wv) fused_gemv_batch_v1fs_kernel<<<s2, 128, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
+                if (gl.wq && gl.wq8) fused_gemv_batch_v1fs_i8_kernel<<<s1, 128, 0, stream>>>(datt_batch, gl.wq8, gl.wq_s, dh_batch, s1, H_, B_);
+                else if (gl.wq) fused_gemv_batch_v1fs_kernel<<<s1, 128, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
+                if (gl.wk && gl.wk8) fused_gemv_batch_v1fs_i8_kernel<<<s2, 128, 0, stream>>>(dgate_batch, gl.wk8, gl.wk_s, dh_batch, s2, H_, B_);
+                else if (gl.wk) fused_gemv_batch_v1fs_kernel<<<s2, 128, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
+                if (gl.wv && gl.wv8) fused_gemv_batch_v1fs_i8_kernel<<<s2, 128, 0, stream>>>(dup_batch, gl.wv8, gl.wv_s, dh_batch, s2, H_, B_);
+                else if (gl.wv) fused_gemv_batch_v1fs_kernel<<<s2, 128, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
             }
             // 3. batched QK-norm + RoPE (one launch per projection; the batch
             //    advances all sequences together, so pos is common)
@@ -1620,7 +1815,8 @@ struct FusedBackend : Backend {
                 fused_h2f_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dAttn_batch, B_*s1);
             }
             // 4. batched output projection (W read once)
-            if (gl.wo) fused_gemv_batch_v1fs_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
+            if (gl.wo && gl.wo8) fused_gemv_batch_v1fs_i8_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.wo8, gl.wo_s, datt_batch, H_, NH_*HD_, B_);
+            else if (gl.wo) fused_gemv_batch_v1fs_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
             // 5. residual (flat): dh = attn_out + saved
             if (gl.wo)
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
@@ -1632,9 +1828,13 @@ struct FusedBackend : Backend {
             auto& gl = L[l];
             fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pon, H_, EPS);
             if (gl.w1 && gl.w2 && gl.w3) {
-                fused_gu_batch_ws_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate_batch, dup_batch, gl.w1, gl.w2, dh_batch, IM_, H_, B_);
+                if (gl.w18 && gl.w28 && gl.w38)
+                    fused_gu_batch_ws_i8_kernel<<<2*IM_, 128, 0, stream>>>(dgate_batch, dup_batch, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh_batch, IM_, H_, B_);
+                else
+                    fused_gu_batch_ws_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate_batch, dup_batch, gl.w1, gl.w2, dh_batch, IM_, H_, B_);
                 fused_silu_kernel<<<(B_*IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dgate_batch, dup_batch, B_*IM_);
-                fused_gemv_batch_v1fs_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
+                if (gl.w38) fused_gemv_batch_v1fs_i8_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.w38, gl.w3_s, datt_batch, H_, IM_, B_);
+                else fused_gemv_batch_v1fs_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
             }
         };
