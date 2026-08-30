@@ -237,3 +237,58 @@ verified layout, corr 0.995 vs source).
 still trip the new loom's stricter verifier (barrier-in-lane-region,
 STRUCTURE/038) — AMD's kernel porting debt, irrelevant to the Q4NX proof
 (no templates, no barriers).
+
+### UPDATE 2026-08-30 (round 5): mul_mat port done — FULL backend kernels link; real matmul runs on gfx1151 ✅
+
+**All 73 kernel export roots in the fork now link through loom-link against
+the new loom (was: 31/31 mul_mat + 42/42 others).** Two systematic fixes
+unlocked the whole set:
+
+1. **`template.return`, not `func.return`** — the new loom's `template.def`
+   body region requires the `template.return` terminator (the old dialect's
+   `func.return` trips the inliner: `callee_body_invalid_terminator`). Fixed
+   in `mul_mat_q8_0_f32.loom` + `mul_mat_q4_k_swiglu_f32.loom`.
+2. **Barriers must be workgroup-uniform** (STRUCTURE/038) — the `mmq64x32`
+   tile variants (mul_mat_q8_0, mul_mat_q6_k) map 64 rows × 4 col-lanes onto
+   256 lanes, so `row_in_bounds` is a genuine lane predicate and the
+   workgroup barrier inside `scf.if %row_in_bounds` is a real deadlock
+   hazard on the tail workgroup (rows % 64 != 0). Fix: clamp the row
+   (`%row_safe = scf.if %row_in_bounds { row } else { 0 }`) so ALL lanes run
+   the barrier + loads (the load phase only touches src1/scratch — row
+   independent), and guard ONLY the final dst stores with `row_in_bounds`.
+
+**Full catalog restored + gfx1151-corrected:** the round-3 pruning existed
+only because kernels wouldn't compile. With all 73 roots linking, the fork's
+original 39-route-file catalog is restored (218 routes), then fixed:
+
+- **`"target_key": "gfx1100"` stripped to `""`** in 9 route files (25+
+  routes: mul_mat_q8_0 ×10, rope_neox ×33-route file, soft_max, rms_norm,
+  get_rows_q4_k/q5_k/q6_k/q8_0, ...) — the ORIGINAL GET_ROWS root cause, now
+  fixed at the catalog level. With the new runtime's target selection, a
+  pinned gfx1100 key would fail-closed on gfx1151 ("executable target is not
+  supported by the device"); empty key falls back to the device architecture.
+- `q4nx_dequant_f32` route + sources/artifacts/families/index entries
+  re-added on top of the full catalog.
+- CMakeLists artifact list restored to the full set.
+
+Pipeline runs green end-to-end: assemble (218 routes) → validate → loom-link
+(38 artifacts) → require-artifacts → embed (76 arrays) → libggml-hrx2.so.
+
+**GPU validation (both PASS on gfx1151):**
+
+```
+mul_mat_f32_f32  total=8192 k=2048 rows=128 cols=64
+  max abs diff : 1.73e-4   max rel diff : 9.24e-5   mismatches >1e-3: 0/8192   PASS
+q4nx_dequant_f32 (regression, full catalog)
+  max abs diff : 0.0       correlation  : 1.0       mismatches: 0/8192         PASS
+```
+
+The mul_mat_f32 route is the first REAL matmul (dot-product of length 2048
+per output element, 8192 outputs, 128×64 workgroup grid) through the ported
+loom-jit + restored catalog — numerically correct within f32 reassoc
+tolerance vs a double-precision host reference.
+
+**Persisted:** `patches/ggml-hrx2-fork-loomc-port.patch` regenerated (now 92
+files: C++ port + kernel dialect/terminator/barrier fixes + catalog restore
++ gfx1100 strip); `validate-mulmat-f32.cpp` harness added (build/run as in
+the round-4 section, replacing q4nx args).
