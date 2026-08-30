@@ -171,3 +171,69 @@ the proof and it compiles.
   registered against the amdgpu.h-unblocked loom. The full ggml-hrx2 backend
   build awaits AMD refreshing their fork's C++ to the shipped loomc API
   (or our porting the 15 C++ sites — bounded, ~1 session).
+
+### UPDATE 2026-08-30 (round 4): fork C++ ported — Q4NX route runs BIT-EXACT on gfx1151 ✅
+
+**The 15 API-drift sites are ported and `libggml-hrx2.so` builds + links
+against the shipped loomc.** The full chain now executes on the Strix Halo
+GPU:
+
+```
+JIT compiled route=q4nx_dequant_f32 target=gfx1151 source=Loom bytecode hsaco=9192 bytes
+RESULTS total=8192
+  max abs diff : 0.000000e+00     correlation  : 1.000000
+  mismatches >1e-3: 0 / 8192      PASS YES
+```
+
+Native Q4NX int4 dequant runs on HRX (loom → gfx1151 HSACO → dispatch) and
+produces output **bit-identical** to the CPU reference (`dequant_q4nx.cpp`
+verified layout, corr 0.995 vs source).
+
+**What was ported in `ggml/src/ggml-hrx2/` (AMD fork, new loomc API):**
+
+- `loom-jit/ggml-hrx2-loom-jit.cpp` — 12× `loomc_target_selection_*` →
+  `loomc_target_specialization_*` (one `loomc_target_specialization_t`
+  built from the root symbol + target profile, attached to
+  `compile_options.next`); 3× `profile_options.processor` →
+  structured `loomc_amdgpu_target_identity_t` via
+  `loomc_amdgpu_target_identity_from_hsa_isa_name` (bare `gfx1151` is
+  normalized to the full `amdgcn-amd-amdhsa--gfx1151` triple the API
+  requires); `LOOMC_LINK_FLAG_STRIP_CHECK_SYMBOLS` →
+  `STRIP_TEST_SYMBOLS`; dropped obsolete
+  `LOOMC_CONFIG_POLICY_FLAG_REJECT_UNKNOWN`; added
+  `link_options.mode = LOOMC_LINK_MODE_LINK` (MERGE rejects root symbols).
+- `ggml-hrx2-catalog.cpp` — `hrx_executable_load_data` gained a
+  `target_family` param in the new runtime: call sites pass family
+  `"amdgpu"` (device HAL family — the route's catalog `family` field is a
+  route grouping, NOT the device family) and `target_key` = device
+  architecture when the route doesn't pin one (the runtime requires both
+  non-empty and selects the executable target by them).
+- **Runtime fix** (ROCm/hrx main @ 4890cb5d7): `aql_ring.c` queried the
+  optional `HSA_AMD_AGENT_INFO_PM4_EMULATION` probe with a hard error —
+  gfx1151's ROCr rejects the query (INVALID_ARGUMENT) and
+  `hrx_gpu_initialize` aborted. Patched: probe failure → default to NATIVE
+  AQL execution mode. (`patches/hrx-runtime-pm4-emulation-optional.patch`)
+
+**Persisted artifacts** (this directory):
+
+- `patches/ggml-hrx2-fork-loomc-port.patch` — full fork delta (C++ port,
+  catalog pruning to 7 artifacts, q4nx route, kernel dialect migration)
+  against AMD fork HEAD 95b1a89; `git apply` on a fresh checkout restores
+  the ported state.
+- `patches/hrx-runtime-pm4-emulation-optional.patch` — the runtime probe fix.
+- `validate-q4nx-route.cpp` — standalone harness: opens the HRX GPU device,
+  loads the embedded catalog, compiles the q4nx route via the ported
+  loom-jit, splits the 5120-byte tile into packed/scales/zeros, dispatches
+  32×256 elements, compares vs the CPU reference. Build + run:
+  `g++ -std=c++17 -O2 validate-q4nx-route.cpp -I<fork>/ggml/src/ggml-hrx2
+  -I<hrx-install>/include -I<hrx-install>/include/hrx
+  -L<fork>/build/bin -lggml-hrx2 -L<hrx-install>/lib -lhrx
+  -Wl,-rpath,<fork>/build/bin -Wl,-rpath,<hrx-install>/lib -o validate_q4nx
+  && ./validate_q4nx /tmp/q4nx_tile.bin /tmp/q4nx_ref.f32`
+- `loom-kernels/q4nx_dequant_f32.loombc` — refreshed to the exact bytecode
+  that validated bit-exact (md5 f947ef54).
+
+**Remaining fork debt (not blocking Q4NX):** the legacy mul_mat kernels
+still trip the new loom's stricter verifier (barrier-in-lane-region,
+STRUCTURE/038) — AMD's kernel porting debt, irrelevant to the Q4NX proof
+(no templates, no barriers).
