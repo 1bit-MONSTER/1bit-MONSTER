@@ -38,28 +38,35 @@ and what breaks if the upstream RFC stalls.
 ## Tasks
 
 ### P0 (do now — next re-vendor)
-- [ ] Re-vendor lemonade `e1b31683` → `7953d7f` (9 commits: FLM 1.0.3, bench
+- [x] Re-vendor lemonade `e1b31683` → `7953d7f` (9 commits: FLM 1.0.3, bench
       checkpoints, log rotation, MTP fix, FHS cache recovery #3393, sdcpp CI,
       gpu-hang test, hrx backend) — re-apply embeddability patch per
-      `third_party/lemonade/UPSTREAM.md`.
-- [ ] Verify `hrx` backend registers in `onebin` (gfx1151 build, EMBED_LEMONADE=ON)
+      `third_party/lemonade/UPSTREAM.md`. **DONE 2026-08-29 (HRX backend
+      landed; see compliance note in TRACKING.md re: upstream provenance).**
+- [x] Verify `hrx` backend registers in `onebin` (gfx1151 build, EMBED_LEMONADE=ON)
       and that `build/1bit unified --lemonade` exposes
       `Qwen3-30B-A3B-Instruct-2507-HRX` (18.6 GB, chat-only, `suggested: true`).
-- [ ] Smoke-test the recipe end-to-end on gfx1151: `llama-server --device HRX0`
+      **DONE 2026-08-29.**
+- [x] Smoke-test the recipe end-to-end on gfx1151: `llama-server --device HRX0`
       boots, `/health` ok, single chat completion on the pinned model (or record
       the fail-closed error for a non-qualified model — that is expected
-      behavior, not a bug).
+      behavior, not a bug). **DONE 2026-08-29 ("Paris", hrx-b59 spawned).**
 
 ### P1 (next)
-- [ ] Track llama.cpp RFC #27218 / discussion #27219 status; record when
+- [x] Track llama.cpp RFC #27218 / discussion #27219 status; record when
       ggml-hrx moves from AMD staging (`ROCm/ggml-staging-automation`) to
       upstream releases — that changes the binary provenance story.
+      **PR #27218 "ggml-hrx: add AMD ROCm HRX native ggml backend" exists
+      upstream; still draft (0 HRX commits on master). GET_ROWS remains the gap.
+      Re-benchmark when it lands.**
 - [ ] Audit `hrx-v2`/`hrx-integration` branches (AMD-Ecosystem/llama.cpp fork,
       179 commits ahead) for "remove HIP bridge kernels" work; decide if our
       `third_party/llama.cpp` fork should track HRX or stay on HIP/Vulkan.
-- [ ] Benchmark HRX vs our HIP baseline on gfx1151 once the qualified model is
+- [x] Benchmark HRX vs our HIP baseline on gfx1151 once the qualified model is
       runnable (RFC claims 30–50% prefill uplift, parity→+15% decode — verify
-      with honesty tags).
+      with honesty tags). **DONE 2026-08-29 — RFC claim NOT reproduced: HIP wins
+      large prefill (1227–1313 tok/s); HRX fails closed on GET_ROWS; HRX wins
+      warm decode (~175 vs ~70). See `BENCHMARK.md`.**
 
 ### P2 (if the bet pays off)
 - [ ] Evaluate Loom (`loomc` C API, `iree-test-loom`, `iree-benchmark-loom`) as

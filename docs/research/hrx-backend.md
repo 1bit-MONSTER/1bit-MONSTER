@@ -88,13 +88,21 @@ the preferred path for models inside its fused node set.
 - `cc4fd23d` — feat(npu): fused GU/SiLU cascade + GUSILU_i4 kernels, parity &
   stability gates (separate NPU-fusion workstream, committed alongside).
 
-## Open follow-ups (tracked in research/TRACKING.md ws12-hrx-loom)
+> **Note on the lemonade re-vendor provenance (compliance).** The
+> `third_party/lemonade` re-vendor to `7953d7f` was pulled from **upstream**
+> `github.com/lemonade-sdk/lemonade`. Per the repo's `lemonade is LOCAL-ONLY`
+> rule, `third_party/lemonade` must be refreshed only from the local
+> `1bit-lemonade-v1170` worktree, never from upstream. This is flagged as an
+> open HIGH priority item in `research/TRACKING.md` (ws12-hrx-loom); do NOT
+> re-fetch from upstream. See `docs/research/hrx-engine-goal.md` for the live
+> end-state status.
 
-1. **Fallback quality** — a model HRX can't fuse falls to whichever backend is
-   next in the DynamicRouter (often `cpu_generic`); output can be poor. Prefer
-   routing the fallback to `ggml_vulkan` (the intended GPU lane) over CPU.
-2. **Two HRX paths** — native `HRX_GPU` (engine) vs lemonade `llamacpp-hrx`
-   (`1bit unified --lemonade`); document which a deployment should prefer.
-3. **Llama.cpp RFC #27218 / ggml-hrx upstreaming** — when it lands upstream,
-   HRX becomes a general GGUF backend; re-benchmark the prefill claim.
-4. **Loom authoring** (`loomc` C API) — evaluate for 1bit-specific kernels.
+## Remaining (tracked in research/TRACKING.md ws12-hrx-loom)
+
+- **Loom authoring** (`loomc` C API, `iree-test-loom`, `iree-benchmark-loom`)
+  — evaluate for 1bit-specific kernels.
+- **Llama.cpp RFC #27218 / ggml-hrx upstreaming** — when ggml-hrx lands
+  upstream, HRX becomes a general GGUF backend; re-benchmark the prefill claim.
+- **`hrx-v2` / `hrx-integration` fork audit** — decide whether the
+  `third_party/llama.cpp` fork tracks HRX or stays on HIP/Vulkan.
+- **Lemonade provenance compliance** (see note above).
