@@ -58,8 +58,10 @@ python3 docs_slash.py
 ```
 
 That starts a gateway connection and registers **`/docs`** with your bot.
-`DISCORD_GUILD_ID` (or auto-discovery) scopes the command to your server so it
-appears immediately instead of waiting up to an hour.
+The command is registered **globally** (works on every server the bot joins;
+propagation can take up to an hour). Set `DISCORD_GUILD_ID` explicitly to
+also sync instantly to your primary server — the global registration still
+happens, so the command is never guild-scoped (issue #1961).
 
 ### Run it as a service (recommended for always-on)
 The bot must stay connected to the Discord gateway, so run it as a systemd
