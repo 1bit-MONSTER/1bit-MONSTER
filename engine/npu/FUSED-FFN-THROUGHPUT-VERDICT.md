@@ -112,3 +112,23 @@ tradeoff; document the numbers, don't auto-route.
 - Remaining levers: hipGraph the ~9-kernel per-layer attention sequence
   (launch overhead), f16 attention weights (halve the 25 MB/layer f32 reads),
   and the residual lm_head x-traffic.
+
+## 8. Round 3 (2026-08-30): fp16-x on the ATTENTION GEMVs — measured negative, reverted
+
+Per-launch cost is 2.3 us (hipGraph would save ~1 ms/batch — not worth it).
+The attention GEMVs (qkv 0.41 ms, O 0.22 ms) are x-L2-read-bound (0.5-0.8 GB
+per kernel at B=32).  Applied the fp16-x pattern (f2h + __half2 x loads) to
+qkv/gu/O/w3:
+
+- SLOWER: forward 63.6 -> 70.9 ms/batch.  At these small block counts
+  (4-6K), the 2x higher load-instruction count of __half2 beats the halved
+  L2 bytes; the lm_head (152K blocks) is the opposite regime and fp16-x
+  stays there.
+- INCORRECT: token 2 flipped 13 -> 15 (fp16 precision on the attention
+  input changes QKV/FFN logits enough to flip a borderline token).  The
+  lm_head fp16 is safe (only the final dot product is half-precision
+  on a non-recurrent input); the attention fp16 is not.
+
+Reverted.  The attention GEMVs are at the practical limit of the v1fs
+pattern; remaining ideas (multi-row blocks — failed on W-locality; f16
+WEIGHTS — not W-bound) are low-value.  Batch-32 stands at 375 agg tok/s.
