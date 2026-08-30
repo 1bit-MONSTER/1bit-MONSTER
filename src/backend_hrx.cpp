@@ -38,6 +38,12 @@ std::string env_or(const char* name, const char* dflt) {
 //   2. $HRX_ROOT/bin/llama-server  (unpacked bundle root)
 //   3. "llama-server" on PATH (self-relocating wrapper)
 // Returns empty if not found (caller fails fast).
+//
+// NOTE (issue #1959): HRX_ROOT must be STABLE per process. The in-process
+// bundle path (src/hrx_inprocess.cpp) is snapshotted on first use and a
+// later HRX_ROOT change is ignored with a warning — the ggml build aborts on
+// a fresh dlopen of a different path. Do not point a new model switch at a
+// different bundle dir within one process.
 std::string locate_hrx_server() {
     std::string bin = env_or("HRX_MODEL_BIN", "");
     if (!bin.empty()) return bin;
