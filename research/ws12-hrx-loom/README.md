@@ -82,6 +82,24 @@ and what breaks if the upstream RFC stalls.
       with honesty tags). **DONE 2026-08-29 — RFC claim NOT reproduced: HIP wins
       large prefill (1227–1313 tok/s); HRX fails closed on GET_ROWS; HRX wins
       warm decode (~175 vs ~70). See `BENCHMARK.md`.**
+- [x] **HRX is the live lane (2026-08-30).** The engine's `hrx_gpu` backend
+      (first in the GGUF route) now serves the custom gfx1151 build — verified
+      `1bit unified --model Qwen3-0.6B ...` → `Backend: hrx_gpu` → "Paris".
+      Built artifacts persist at `~/hrx-gfx1151/` (RUNPATH-fixed, no env vars,
+      survives reboot): `scripts/build-hrx-gfx1151.sh` + `scripts/run-hrx-gfx1151.sh`.
+- [x] **Native Q4NX port: first Loom kernel (2026-08-30).**
+      `research/ws12-hrx-loom/loom-kernels/q4nx_dequant_f32.loom` — a Loom
+      kernel that dequantizes a real Q4NX tile (signed two's-complement int4 +
+      BF16 row-major scales, the exact `dequant_q4nx.cpp` math) with
+      `scalar.extui/sitofp/bitcast`, `scf.if` selection, and 2D views.
+      **COMPILES to `.loombc` via the pinned loom-link.** This proves 1BP's
+      format can ride the Loom/HXR compiler surface — the strategic port is
+      real, not speculative.
+- [ ] **Runtime wiring of the Q4NX kernel is BLOCKED on AMD's unreleased
+      loom**: the ggml-hrx2 backend's loom-jit includes `loomc/target/amdgpu.h`
+      (types `loomc_amdgpu_emit_options_t`, `loomc_amdgpu_profile_options_t`)
+      which exist in NO public loom (not e8275fb, not hrx-system main). Track
+      when AMD ships it; the kernel + route format are ready to plug in.
 
 ### P2 (if the bet pays off)
 - [ ] Evaluate Loom (`loomc` C API, `iree-test-loom`, `iree-benchmark-loom`) as
