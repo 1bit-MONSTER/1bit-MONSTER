@@ -29,15 +29,15 @@ fi
 
 # One-time: compile NPU instruction generator
 if [ ! -f "$INSTR_GEN_O" ] || [ "$INSTR_GEN" -nt "$INSTR_GEN_O" ]; then
-    echo "g++ -c -std=c++23 -O3 -o $INSTR_GEN_O $INSTR_GEN"
-    g++ -c -std=c++23 -O3 -fopenmp -I"$SRCDIR"/src -I"$SRCDIR"/include -I$XRT_INC \
+    echo "g++ -c -std=c++26 -O3 -o $INSTR_GEN_O $INSTR_GEN"
+    g++ -c -std=c++26 -O3 -fopenmp -I"$SRCDIR"/src -I"$SRCDIR"/include -I$XRT_INC \
         -o "$INSTR_GEN_O" "$INSTR_GEN"
 fi
 
 # One-time: compile the Zaya decode path
 if [ ! -f "$ZAYA_DECODE_O" ] || [ "$ZAYA_DECODE" -nt "$ZAYA_DECODE_O" ]; then
-    echo "g++ -c -std=c++23 -O3 -mavx2 -o $ZAYA_DECODE_O $ZAYA_DECODE"
-    g++ -c -std=c++23 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT \
+    echo "g++ -c -std=c++26 -O3 -mavx2 -o $ZAYA_DECODE_O $ZAYA_DECODE"
+    g++ -c -std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT \
         -I"$SRCDIR"/src -I"$SRCDIR"/include -I"$SRCDIR"/generators \
         -I"$REPO_ROOT"/include -I$XRT_INC \
         -o "$ZAYA_DECODE_O" "$ZAYA_DECODE"
@@ -68,7 +68,7 @@ MODELS=(
 CXX="${CXX:-g++}"
 # XRT uses shared libs (must come AFTER source on command line)
 LIBS=(-lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl)
-CXXFLAGS=(-std=c++23 -O3 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$REPO_ROOT/include" -I"$XRT_INC")
+CXXFLAGS=(-std=c++26 -O3 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$REPO_ROOT/include" -I"$XRT_INC")
 ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O")
 
 echo "=== Building NPU engine variants ==="

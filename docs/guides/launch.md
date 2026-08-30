@@ -45,7 +45,7 @@
 Hi HN,
 
 I reverse-engineered AMD's XDNA 2 NPU stack and built an open-source
-inference engine in C++23. It's 120 KB. Zero Python. Zero dependencies.
+inference engine in C++26. It's 120 KB. Zero Python. Zero dependencies.
 One binary. Runs 5 LLMs on the same chip you already have.
 
 Why this matters:
@@ -87,7 +87,7 @@ The binary auto-detects which model you have and dispatches the
 right xclbin. No recompilation per model.
 
 Tech stack:
-- C++23 NPU engine → XRT → XDNA 2 NPU
+- C++26 NPU engine → XRT → XDNA 2 NPU
 - C++ GPU engine → HIP + Vulkan → Radeon 8060S
 - Single binary, MIT license
 

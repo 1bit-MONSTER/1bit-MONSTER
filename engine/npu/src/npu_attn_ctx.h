@@ -57,6 +57,11 @@
 // the packing/quant math on real layer data WITHOUT touching the NPU.
 #include "attn_quant.h"
 
+// C++26 #embed (P1967) copies of attn.xclbin + attn_insts.txt, baked into the
+// binary at compile time. init() below falls back to them when the on-disk
+// files are missing — the NPU attention kernel runs with zero runtime files.
+#include "npu_embedded.h"
+
 struct AttnCtx {
     static constexpr int K_FRAME = 2048;   // fused A-frame row stride (bytes)
     int MAX_SEQ = 512;   // kernel-baked N (shipped attn.xclbin = N=512 build);
@@ -86,18 +91,54 @@ struct AttnCtx {
             return false;
         }
         FILE* f = fopen(ip, "rb");
-        if (!f) { fprintf(stderr, "  AttnCtx: fopen failed: %s\n", ip); return false; }
-        fseek(f, 0, 2); long sz = ftell(f); fseek(f, 0, 0);
-        instr.resize((size_t)sz / 4);
-        if (fread(instr.data(), 4, instr.size(), f) != instr.size()) {
-            fprintf(stderr, "  AttnCtx: short instr read: %s\n", ip);
-            fclose(f); return false;
+        if (!f) {
+#ifdef NPU_EMBED_ATTN_INSTS
+            // #embed fallback: instruction words baked into the binary.
+            static_assert(NPU_EMBED_ATTN_INSTS_SIZE % 4 == 0,
+                          "embedded attn_insts.txt must be a multiple of 4 bytes");
+            instr.resize(NPU_EMBED_ATTN_INSTS_SIZE / 4);
+            std::memcpy(instr.data(), kAttnInsts, NPU_EMBED_ATTN_INSTS_SIZE);
+            fprintf(stderr, "  AttnCtx: insts from embedded #embed (%zu words; file %s missing)\n",
+                    instr.size(), ip);
+#else
+            fprintf(stderr, "  AttnCtx: fopen failed: %s\n", ip);
+            return false;
+#endif
+        } else {
+            fseek(f, 0, 2); long sz = ftell(f); fseek(f, 0, 0);
+            instr.resize((size_t)sz / 4);
+            if (fread(instr.data(), 4, instr.size(), f) != instr.size()) {
+                fprintf(stderr, "  AttnCtx: short instr read: %s\n", ip);
+                fclose(f); return false;
+            }
+            fclose(f);
         }
-        fclose(f);
         fprintf(stderr, "  AttnCtx: xp=%s instr=%ld words\n", xp, instr.size());
+#ifdef NPU_EMBED_ATTN_XCLBIN
+        if (npu_embedded_stale(xp, kAttnXclbin, NPU_EMBED_ATTN_XCLBIN_SIZE))
+            fprintf(stderr, "  WARN: %s differs from the embedded copy — artifact "
+                            "regenerated after this engine was built; rebuild to "
+                            "refresh the #embed\n", xp);
+#endif
 
         try {
+#ifdef NPU_EMBED_ATTN_XCLBIN
+            // #embed fallback: try the on-disk xclbin first (env override /
+            // custom builds win), else load the copy baked into the binary.
+            FILE* xf = fopen(xp, "rb");
+            if (xf) {
+                fclose(xf);
+                xc = std::make_unique<xrt::xclbin>(std::string(xp));
+            } else {
+                std::vector<char> xcdata(kAttnXclbin,
+                                         kAttnXclbin + NPU_EMBED_ATTN_XCLBIN_SIZE);
+                xc = std::make_unique<xrt::xclbin>(xcdata);
+                fprintf(stderr, "  AttnCtx: xclbin from embedded #embed (%zu bytes; file %s missing)\n",
+                        xcdata.size(), xp);
+            }
+#else
             xc = std::make_unique<xrt::xclbin>(std::string(xp));
+#endif
             d.register_xclbin(*xc);
             hc = std::make_unique<xrt::hw_context>(d, xc->get_uuid());
             k = std::make_unique<xrt::kernel>(*hc, "MLIR_AIE");

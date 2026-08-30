@@ -12,6 +12,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <print>
 #include <algorithm>
 #include <thread>
 #include <future>
@@ -48,9 +49,9 @@ void BackendManager::discover() {
     std::lock_guard<std::mutex> lock(mtx_);
     backends_.clear();
 
-    printf("\n╔══════════════════════════════════════════╗\n");
-    printf("║   Backend Manager — Hardware Discovery   ║\n");
-    printf("╚══════════════════════════════════════════╝\n\n");
+    std::println("\n╔══════════════════════════════════════════╗");
+    std::println("║   Backend Manager — Hardware Discovery   ║");
+    std::println("╚══════════════════════════════════════════╝\n");
 
     // ── Probe each backend in priority order ──
 
@@ -76,7 +77,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "NPU XDNA (XRT)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "NPU XDNA (XRT)", info.available ? "✅ detected" : "❌ not available");
 
     // 1a5. HIP 1BP GPU — full GPU inference engine for 1BP models.
     // Loads the same 1BP files as NPU, runs on GPU via rocBLAS + custom kernels.
@@ -94,7 +95,7 @@ void BackendManager::discover() {
         info.score = 50.0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "HIP 1BP GPU (rocBLAS)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "HIP 1BP GPU (rocBLAS)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -115,7 +116,7 @@ void BackendManager::discover() {
         info.score = 3.1;  // 321 tok/s = 3.1 ms/tok
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Fused GPU+NPU", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Fused GPU+NPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -133,7 +134,7 @@ void BackendManager::discover() {
         info.score = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Vulkan-Hpp GPU", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Vulkan-Hpp GPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -151,14 +152,14 @@ void BackendManager::discover() {
         info.score = 2.8;  // 357 tok/s = 2.8 ms/tok
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "GGML-Vulkan", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "GGML-Vulkan", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
     // 1b. NPU (FLM) — production FLM engine, MIT licensed, 67.5 tok/s
     // This is the PERMANENT hotpath backend. Highest priority in the system.
     // It is always tried first during init and always selected as active.
-    {        BackendInfo info;        info.id = "npu_flm";        info.type = BackendType::NPU_XRT;        info.tier = BackendTier::T1_ACCELERATOR;        info.description = "AMD XDNA NPU via FLM engine (MIT, 67.5 tok/s)";        info.priority = tier_priority(info.tier) + 100;        info.available = true;        info.functional = false;        info.auto_selectable = true;        info.score = 67.5;        info.total_inferences = 0;        info.failed_inferences = 0;        info.cumulative_ms = 0;        info.instance = nullptr;        info.plugin_handle = nullptr;        printf("  %-25s %s\n", "NPU FLM (MIT)", "✅ available");        backends_.push_back(info);    }
+    {        BackendInfo info;        info.id = "npu_flm";        info.type = BackendType::NPU_XRT;        info.tier = BackendTier::T1_ACCELERATOR;        info.description = "AMD XDNA NPU via FLM engine (MIT, 67.5 tok/s)";        info.priority = tier_priority(info.tier) + 100;        info.available = true;        info.functional = false;        info.auto_selectable = true;        info.score = 67.5;        info.total_inferences = 0;        info.failed_inferences = 0;        info.cumulative_ms = 0;        info.instance = nullptr;        info.plugin_handle = nullptr;        std::println("  {:<25} {}", "NPU FLM (MIT)", "✅ available");        backends_.push_back(info);    }
         backends_.push_back(info);
     }
 
@@ -183,7 +184,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "ZINC GPU (Vulkan)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "ZINC GPU (Vulkan)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -203,7 +204,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "HIP GPU (ROCm)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "HIP GPU (ROCm)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -224,7 +225,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Mamba1 GPU (Mamba1 HIP)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Mamba1 GPU (Mamba1 HIP)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -245,7 +246,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Zamba2 GPU (Mamba2 HIP)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Zamba2 GPU (Mamba2 HIP)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -270,7 +271,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Zamba2 VK (ZINC C++)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Zamba2 VK (ZINC C++)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -292,7 +293,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Nemotron-H CPU", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Nemotron-H CPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -318,7 +319,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Laguna (.1bp)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Laguna (.1bp)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -338,7 +339,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Vulkan GPU", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Vulkan GPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -358,7 +359,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "CPU AVX-512", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "CPU AVX-512", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -378,7 +379,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "CPU (scalar)", "✅ always available");
+        std::println("  {:<25} {}", "CPU (scalar)", "✅ always available");
         backends_.push_back(info);
     }
 
@@ -401,7 +402,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "CPU Generic (GGUF)", "✅ always available");
+        std::println("  {:<25} {}", "CPU Generic (GGUF)", "✅ always available");
         backends_.push_back(info);
     }
 
@@ -449,7 +450,7 @@ void BackendManager::discover() {
         info.score = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "LSE GPU (MLX)", "✅ registered (lse-server at runtime)");
+        std::println("  {:<25} {}", "LSE GPU (MLX)", "✅ registered (lse-server at runtime)");
         backends_.push_back(info);
     }
 
@@ -472,7 +473,7 @@ void BackendManager::discover() {
         info.score = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "HRX GPU (fused GGUF)", "✅ registered (hrx llama-server at runtime)");
+        std::println("  {:<25} {}", "HRX GPU (fused GGUF)", "✅ registered (hrx llama-server at runtime)");
         backends_.push_back(info);
     }
 
