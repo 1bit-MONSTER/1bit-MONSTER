@@ -209,3 +209,22 @@ sweep, __ldcs (unavailable).  The toolchain exposes no L2 cache-policy
 control (no __ldg/__ldcs, no target-enableable features on gfx1151), so the
 fix (evict-first W8 loads to keep x resident) is not implementable here.
 Impact if fixed: ~+10% (613 -> ~680 agg tok/s).  Left documented, not fixed.
+
+## 14. Round 9 (2026-08-30): lm_head latency-stall identified, closed
+
+Full counter set (GL2C + MemUnit + GPUBusy), same-window:
+
+| | lm_head dispatch | MemUnitBusy | GL2C hit |
+|---|---|---|---|
+| standalone | 13.2 ms | 94% | 77% |
+| in-path | 20.9 ms | 60% | 50% |
+
+The in-path kernel is LATENCY-stalled, not memory-throughput-bound (MemUnit
+60% vs 94%): the misses don't overlap.  Consistent with everything else:
+halving the x bytes (int8-x) is flat in-path (re-verified same-window: 211
+vs 212 ms), clocks are equal (~900-1000 MHz, no boost to 2900), and no
+buffer/page/L2/queue/sync knob moves it.  Suspect: DRAM-controller state
+after the forward's 30 ms of sustained traffic (bank/refresh interaction
+with the lm_head's latency-sensitive dependent dot chains) — not fixable
+from the kernel.  Closed: the lm_head stands at ~21 ms in-path; session
+total 292 -> ~615 agg tok/s (+110%).
