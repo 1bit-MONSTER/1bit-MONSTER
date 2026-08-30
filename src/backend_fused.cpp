@@ -1260,15 +1260,16 @@ struct FusedBackend : Backend {
         struct Tmp { std::vector<float> wq,wk,wv,wo,w1,w2,w3,pn,pon,q_norm,k_norm; };
         std::vector<Tmp> tmp(NC);
         cpu_L.resize(NC);
-        // VK is the DEFAULT on-pages path: attention + on-pages FFN run as
-        // Vulkan compute straight in the SharedBO pages (zero host copies).
-        // It needs only the pages (slots_ok_), NOT the FFN xclbins (npu_ok).
-        // Opt out with FUSED_HIP_ATTN=1 (HIP attention + host_ptr handoff) or
-        // FUSED_VK_ATTN=0.
-        bool vk_default = getenv("FUSED_HIP_ATTN") == nullptr;
+        // HIP is the DEFAULT single-stream path: measured 111-114 tok/s vs
+        // 75 for the Vulkan on-pages path (2026-08-30, gfx1151, tokens
+        // bit-identical) — the int8 HIP GEMVs won.  The Vulkan on-pages
+        // path (zero host copies, SharedBO handoff) is opt-in via
+        // FUSED_VK_ATTN=1; FUSED_HIP_ATTN=1 forces HIP explicitly.
         const char* vk_env = getenv("FUSED_VK_ATTN");
-        bool vk_enabled = vk_default && (!vk_env || strcmp(vk_env, "0") != 0);
-        bool want_vk = slots_ok_ && vk_enabled;
+        const char* hip_env = getenv("FUSED_HIP_ATTN");
+        bool vk_default = vk_env != nullptr && strcmp(vk_env, "0") != 0;
+        if (hip_env && strcmp(hip_env, "1") == 0) vk_default = false;
+        bool want_vk = slots_ok_ && vk_default;
         if (want_vk) {
             vk_attn_ = true;   // enable the Vulkan in-place attention path
             vk_layers_.resize(NC);
