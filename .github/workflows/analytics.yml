@@ -151,6 +151,15 @@ jobs:
                          { date: .dimensions.date, requests: .sum.requests, pageViews: .sum.pageViews }]
                         | .[] | "\(.date)\t\(.requests) req\t\(.pageViews) pv")
                      else "zone analytics query failed: \(.errors[0].message // "unknown")" end'
+
+            echo ""
+            echo "=== Visitors by country (top 10, 7d) ==="
+            gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequestsAdaptiveGroups(limit: 10, filter: {date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [count_DESC]) { dimensions { clientCountryName } count } } } }" | \
+              jq -r 'if .data then
+                       ([.data.viewer.zones[0].httpRequestsAdaptiveGroups[] |
+                         { country: (.dimensions.clientCountryName // "Unknown"), requests: .count }]
+                        | .[] | "\(.country)\t\(.requests) req")
+                     else "country query failed: \(.errors[0].message // "unknown")" end'
           else
             echo "Zone 1bit.monster not visible to the analytics token (need Zone: Read on the WA token)."
           fi
