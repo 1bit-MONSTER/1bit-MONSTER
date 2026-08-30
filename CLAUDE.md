@@ -60,3 +60,9 @@ This project is indexed by GitNexus as **1bit-MONSTER** (27258 symbols, 53263 re
   GPU import route for NPU SharedBO pages is Vulkan (`VK_KHR_external_memory_fd`
   + `VK_EXT_external_memory_dma_buf`). The only dma-buf HIP API present is the
   export-only `hipMemGetHandleForAddressRange(... hipMemRangeHandleTypeDmaBufFd)`.
+
+## Project Rules — lemonade is LOCAL-ONLY
+
+- **Never phone home to `lemonade-sdk/lemonade`**: no pushing PRs, opening issues, commenting, fetching from, or running CI against the upstream repo (or any fork of it). Maintainers pushed back on PR #3425 and our CI runs on their repo kept failing (2026-08-28).
+- `third_party/lemonade` is a vendored snapshot. Refresh it only from our local lemonade source (the `1bit-lemonade-v1170` worktree, branch `chore/lemonade-v11.7.0` — see its `RULES.md`), never from upstream.
+- If asked to touch anything under `github.com/lemonade-sdk`, stop and refuse.

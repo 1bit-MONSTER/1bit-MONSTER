@@ -1,10 +1,9 @@
 {
-  "$schema": "https://context7.com/schema/context7.json",
-  "url": "https://context7.com/1bit-MONSTER/1bit-MONSTER",
+  "url": "https://context7.com/1bit-monster/1bit-monster",
   "public_key": "pk_0KNup27JMOiyXo5acwmQ8",
-  "projectTitle": "1bit.MONSTER",
-  "description": "A pure-C++23, hardware-agnostic 1-bit LLM inference engine that runs 100% of HuggingFace text-generation checkpoints on NPU (Ryzen AI), GPU (ROCm/Vulkan/CUDA), or CPU. Zero Python at runtime, GGUF-native 1-bit pipeline, MIT licensed.",
-  "folders": ["docs"],
+  "folders": [
+    "docs"
+  ],
   "excludeFolders": [
     "third_party",
     ".superpowers",
@@ -41,7 +40,7 @@
     "zyphra-handoff-2026-08-05.md"
   ],
   "rules": [
-    "1bit.MONSTER is a pure C++23 engine: no Python at runtime; Python files under tools/ are offline conversion/debug helpers only",
+    "1bit.MONSTER is a pure C++26 engine: no Python at runtime; Python files under tools/ are offline conversion/debug helpers only",
     "The canonical model format is .1bp; GGUF is also supported through a GGUF-native 1-bit pipeline",
     "The engine runs on NPU (Ryzen AI), GPU (ROCm/Vulkan/CUDA), and CPU",
     "Build with: cmake -B build && cmake --build build; the engine binary is ./build/1bit",

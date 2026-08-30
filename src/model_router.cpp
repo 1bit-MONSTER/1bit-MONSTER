@@ -187,6 +187,19 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"},
                 "GGUF/H1B model — HRX GPU (fused) → GGML-Vulkan → ZINC GPU → CPU"};
     }
+    // Qwen3.5-MoE (35B-A3B, GatedDeltaNet + full attn + gated MoE) —
+    // issue #1831: the HIP 1BP backend cannot run it yet. Interim route to
+    // the validated qwen3next CPU engine (src/qwen3next_engine.cpp, corr
+    // 0.9997 vs the numpy reference) until the HIP port lands, so the arch
+    // has a working non-NPU path. NPU FLM also speaks it (npu_flm maps
+    // qwen35moe -> qwen3.6-moe:35b-a3b) — tried after CPU per issue #1830's
+    // FLM decode defect; reorder once that is fixed.
+    // Scoped to the qwen35moe arch strings ONLY — RCPP_ARCH_QWEN3NEXT also
+    // covers qwen3next/gateddeltanet/qwen4exp, whose routing is unchanged.
+    if (cfg.architecture == "qwen3_5_moe_text" || cfg.architecture == "qwen35moe") {
+        return {{"cpu_qwen3_next", "npu_flm", "cpu_generic"},
+                "Qwen3.5-MoE — qwen3next CPU engine → FLM NPU → generic CPU (#1831)"};
+    }
     if (cfg.format == ModelFormat::ONEBP) {
         // fused_gpu_npu first (fixed 2026-08-29), then hip_1bp (bit-correct
         // reference), then Vulkan-Hpp, then HIP, then CPU.

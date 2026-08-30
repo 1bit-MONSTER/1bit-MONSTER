@@ -33,7 +33,7 @@ log = logging.getLogger("docsbot")
 
 API = "https://discord.com/api/v10"
 # Channel the existing inbox bot watches — used only to auto-discover the guild.
-KNOWN_CHANNEL = os.getenv("DISCORD_KNOWN_CHANNEL", "1542812729272696843")  # #general
+KNOWN_CHANNEL = os.getenv("DISCORD_KNOWN_CHANNEL", "1542589031055888386")
 
 LIBRARY_ID = os.getenv("CONTEXT7_LIBRARY_ID", "/1bit-monster/1bit-monster")
 COMMAND_NAME = os.getenv("DOCS_COMMAND_NAME", "docs")
