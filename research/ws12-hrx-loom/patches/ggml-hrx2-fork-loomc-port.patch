@@ -1,5 +1,5 @@
 diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
-index 3bb2faa..75a6b23 100644
+index 3bb2faa..cb2a27e 100644
 --- a/ggml/include/ggml.h
 +++ b/ggml/include/ggml.h
 @@ -429,7 +429,16 @@ extern "C" {
@@ -20,6 +20,27 @@ index 3bb2faa..75a6b23 100644
      };
  
      // precision
+@@ -577,6 +586,10 @@ extern "C" {
+ 
+         GGML_OP_GLU,
+ 
++        GGML_OP_MUL_MAT_Q4NX, // 1bit-MONSTER: src0 GGML_TYPE_Q4NX [8192, n_tiles]
++                              // (each 8192-elem row = one 5120-byte tile) x
++                              // src1 F32 [256, cols] -> F32 [n_tiles*32, cols]
++
+         GGML_OP_COUNT,
+     };
+ 
+@@ -1418,6 +1431,9 @@ extern "C" {
+             enum ggml_prec       prec);
+ 
+     // indirect matrix multiplication
++    GGML_API struct ggml_tensor * ggml_mul_mat_q4nx(
++            struct ggml_context * ctx, struct ggml_tensor * a, struct ggml_tensor * b);
++
+     GGML_API struct ggml_tensor * ggml_mul_mat_id(
+             struct ggml_context * ctx,
+             struct ggml_tensor  * as,
 diff --git a/ggml/src/ggml-common.h b/ggml/src/ggml-common.h
 index f05683b..88d50b0 100644
 --- a/ggml/src/ggml-common.h
@@ -2308,7 +2329,7 @@ index e45be0b..9f4b986 100644
          return false;
      }
 diff --git a/ggml/src/ggml-hrx2/ggml-hrx2.cpp b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
-index 428c80d..196609d 100644
+index 428c80d..85fc850 100644
 --- a/ggml/src/ggml-hrx2/ggml-hrx2.cpp
 +++ b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
 @@ -92,6 +92,7 @@ struct ggml_backend_hrx2_device_context {
@@ -2319,7 +2340,7 @@ index 428c80d..196609d 100644
      std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_routes;
      std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_swiglu_routes;
      std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_id_q4_k_routes;
-@@ -7966,6 +7967,178 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q8_0(
+@@ -7966,6 +7967,182 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q8_0(
      return GGML_STATUS_FAILED;
  }
  
@@ -2335,28 +2356,29 @@ index 428c80d..196609d 100644
 +        const ggml_tensor * op) {
 +    const ggml_tensor * src0 = op->src[0];
 +    const ggml_tensor * src1 = op->src[1];
-+    if (op->op != GGML_OP_MUL_MAT ||
++    if (op->op != GGML_OP_MUL_MAT_Q4NX ||
 +        !src0 || !src1 || op->view_src != nullptr ||
 +        src0->type != GGML_TYPE_Q4NX ||
 +        src1->type != GGML_TYPE_F32 ||
 +        op->type != GGML_TYPE_F32) {
 +        return false;
 +    }
-+    const int64_t k    = src0->ne[0];
-+    const int64_t rows = src0->ne[1];
-+    const int64_t cols = src1->ne[1];
-+    return k == GGML_Q4NX_TILE_COLS &&
-+           src0->ne[0] == src1->ne[0] &&
-+           op->ne[0] == src0->ne[1] &&
-+           op->ne[1] == src1->ne[1] &&
++    // src0: [8192, n_tiles] (each 8192-elem row = one 5120-byte tile)
++    // src1: F32 [256, cols]; dst: F32 [n_tiles*32, cols]
++    const int64_t n_tiles = src0->ne[1];
++    const int64_t rows    = n_tiles * GGML_Q4NX_TILE_ROWS;
++    const int64_t cols    = src1->ne[1];
++    return src0->ne[0] == GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS &&
++           src1->ne[0] == GGML_Q4NX_TILE_COLS &&
++           op->ne[0] == rows &&
++           op->ne[1] == cols &&
 +           src0->ne[2] == 1 && src0->ne[3] == 1 &&
 +           src1->ne[2] == 1 && src1->ne[3] == 1 &&
 +           op->ne[2] == 1 && op->ne[3] == 1 &&
 +           ggml_is_contiguous(src0) &&
 +           ggml_is_contiguous(src1) &&
 +           ggml_is_contiguous(op) &&
-+           rows > 0 && cols > 0 &&
-+           rows % GGML_Q4NX_TILE_ROWS == 0 &&
++           n_tiles > 0 && cols > 0 &&
 +           rows <= std::numeric_limits<uint32_t>::max() &&
 +           cols <= std::numeric_limits<uint32_t>::max() &&
 +           !device_context->q4nx_dequant_routes.empty() &&
@@ -2370,10 +2392,10 @@ index 428c80d..196609d 100644
 +    const ggml_tensor * src0 = dst->src[0];
 +    const ggml_tensor * src1 = dst->src[1];
 +
-+    const uint32_t rows = (uint32_t) src0->ne[1];
-+    const uint32_t cols = (uint32_t) src1->ne[1];
-+    const uint32_t k    = GGML_Q4NX_TILE_COLS;
-+    const uint32_t n_tiles = rows / GGML_Q4NX_TILE_ROWS;
++    const uint32_t n_tiles = (uint32_t) src0->ne[1];
++    const uint32_t rows    = n_tiles * GGML_Q4NX_TILE_ROWS;
++    const uint32_t cols    = (uint32_t) src1->ne[1];
++    const uint32_t k       = GGML_Q4NX_TILE_COLS;
 +    const uint32_t wg_size = 256;
 +
 +    hrx_buffer_ref_t src0_ref = {};
@@ -2453,16 +2475,19 @@ index 428c80d..196609d 100644
 +        return GGML_STATUS_FAILED;
 +    }
 +
-+    // f32 matmul provider (mul_mat_f32_f32 route) with W scratch as src0
++    // f32 matmul provider (mul_mat_f32_f32 route) with W scratch as src0.
++    // The catalog route's shape_domain is narrow (k=2048, rows=128); the
++    // kernel itself takes any k/rows/cols via config, so bind configs
++    // directly (same as the standalone fused harness).
 +    const ggml_backend_hrx2_kernel_route * mm_route = device_context->mul_mat_f32_f32_routes.front();
-+    ggml_backend_hrx2_mul_mat_shape shape = { k, rows, cols };
-+    ggml_backend_hrx2_provider_plan mm_plan = {};
-+    if (!ggml_backend_hrx2_make_mul_mat_q4_k_plan(device_context, mm_route, shape, &mm_plan)) {
-+        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 plan failed\n");
-+        return GGML_STATUS_FAILED;
-+    }
-+    auto * mm = ggml_backend_hrx2_get_provider(
-+        device_context, mm_plan.route, mm_plan.config_bindings, mm_plan.cache_key);
++    std::vector<ggml_backend_hrx2_config_binding> mm_cfg;
++    mm_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
++    mm_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
++    mm_cfg.push_back({"@hrx2.shape.cols", std::to_string(cols)});
++    mm_cfg.push_back({"@hrx2.tuning.workgroup_size", std::to_string(wg_size)});
++    const std::string mm_key = ggml_backend_hrx2_base_cache_key(device_context, mm_route) +
++        "-q4nx-mm-" + std::to_string(rows) + "x" + std::to_string(cols);
++    auto * mm = ggml_backend_hrx2_get_provider(device_context, mm_route, mm_cfg, mm_key);
 +    if (!mm) {
 +        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX f32 provider unavailable\n");
 +        return GGML_STATUS_FAILED;
@@ -2498,9 +2523,22 @@ index 428c80d..196609d 100644
  static ggml_status ggml_backend_hrx2_dispatch_mul_mat_f32_f32(
          ggml_backend_hrx2_context * context,
          const ggml_tensor * dst) {
-@@ -10164,6 +10337,12 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend,
+@@ -10163,7 +10340,25 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend,
+                     return GGML_STATUS_FAILED;
                  }
                  break;
++            case GGML_OP_MUL_MAT_Q4NX:
++                if (ggml_backend_hrx2_supports_mul_mat_q4nx_route(context->device_context, node)) {
++                    if (ggml_backend_hrx2_dispatch_mul_mat_q4nx(context, node) != GGML_STATUS_SUCCESS) {
++                        return GGML_STATUS_FAILED;
++                    }
++                    break;
++                }
++                {
++                    GGML_LOG_ERROR("HRX2: unsupported MUL_MAT_Q4NX shape/type/layout\n");
++                    return GGML_STATUS_FAILED;
++                }
++                break;
              case GGML_OP_MUL_MAT:
 +                if (ggml_backend_hrx2_supports_mul_mat_q4nx_route(context->device_context, node)) {
 +                    if (ggml_backend_hrx2_dispatch_mul_mat_q4nx(context, node) != GGML_STATUS_SUCCESS) {
@@ -2511,7 +2549,7 @@ index 428c80d..196609d 100644
                  if (ggml_backend_hrx2_supports_mul_mat_q8_0_route(context->device_context, node)) {
                      if (ggml_backend_hrx2_dispatch_mul_mat_q8_0(context, node) != GGML_STATUS_SUCCESS) {
                          return GGML_STATUS_FAILED;
-@@ -10555,6 +10734,11 @@ static std::unique_ptr<ggml_backend_hrx2_reg_context> ggml_backend_hrx2_create_r
+@@ -10555,6 +10750,11 @@ static std::unique_ptr<ggml_backend_hrx2_reg_context> ggml_backend_hrx2_create_r
                  "mul_mat_f32_f32",
                  "MUL_MAT",
                  &device_context->mul_mat_f32_f32_routes);
@@ -10481,7 +10519,7 @@ index d56c86d..31071cc 100644
  GGML_API void dequantize_row_q4_1(const block_q4_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
  GGML_API void dequantize_row_q5_0(const block_q5_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 0142498..d1a07e3 100644
+index 0142498..1f03fac 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -659,6 +659,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
@@ -10499,3 +10537,61 @@ index 0142498..d1a07e3 100644
      [GGML_TYPE_Q4_0] = {
          .type_name                = "q4_0",
          .blck_size                = QK4_0,
+@@ -1063,9 +1071,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
+     "OPT_STEP_SGD",
+ 
+     "GLU",
++    "MUL_MAT_Q4NX",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
++static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
+ 
+ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "none",
+@@ -1173,9 +1182,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "sgd(x)",
+ 
+     "glu(x)",
++    "Q4NX*",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 96, "GGML_OP_COUNT != 96");
++static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
+ 
+ static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
+ 
+@@ -3263,6 +3273,33 @@ void ggml_mul_mat_set_prec(
+ 
+     c ~= as[:,:,i] @ b[:,i%r,t], i = ids[e,t] for all e,t in ids
+ */
++struct ggml_tensor * ggml_mul_mat_q4nx(
++        struct ggml_context * ctx,
++        struct ggml_tensor * a,
++        struct ggml_tensor * b) {
++    // 1bit-MONSTER Q4NX fused matmul: a is a GGML_TYPE_Q4NX tensor
++    // [GGML_Q4NX_TILE_BYTES? no: ne[0]=8192 (blck), ne[1]=n_tiles]; each
++    // 8192-element row is one 5120-byte tile = [32 rows x 256 cols].
++    // b is F32 [256, cols]. result F32 [n_tiles*32, cols].
++    GGML_ASSERT(a->type == GGML_TYPE_Q4NX);
++    GGML_ASSERT(a->ne[0] == GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS); // 8192
++    GGML_ASSERT(a->ne[1] >= 1);
++    GGML_ASSERT(b->type == GGML_TYPE_F32);
++    GGML_ASSERT(b->ne[0] == GGML_Q4NX_TILE_COLS); // 256
++    GGML_ASSERT(!ggml_is_transposed(a) && !ggml_is_transposed(b));
++
++    const int64_t n_tiles = a->ne[1];
++    const int64_t rows = n_tiles * GGML_Q4NX_TILE_ROWS;
++    const int64_t ne[4] = { rows, b->ne[1], b->ne[2], b->ne[3] };
++    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
++
++    result->op     = GGML_OP_MUL_MAT_Q4NX;
++    result->src[0] = a;
++    result->src[1] = b;
++
++    return result;
++}
++
+ struct ggml_tensor * ggml_mul_mat_id(
+         struct ggml_context * ctx,
+         struct ggml_tensor  * as,

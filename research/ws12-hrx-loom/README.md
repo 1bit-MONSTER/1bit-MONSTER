@@ -390,6 +390,42 @@ identical dispatch logic is what the round-6 fused harness validated
    execute it. Serving a full Q4NX model needs either a standard-arch Q4NX
    model or porting the architecture (large, separate effort).
 
+### UPDATE 2026-08-30 (round 8): GGML_OP_MUL_MAT_Q4NX — Q4NX flows through real ggml graphs on gfx1151 ✅
+
+**Blocker 1 solved with a custom ggml op.** Added `GGML_OP_MUL_MAT_Q4NX`
+(enum + `GGML_OP_NAME`/`GGML_OP_SYMBOL` entries + `ggml_mul_mat_q4nx`
+builder) to the fork: src0 = Q4NX tensor `[8192, n_tiles]` (each 8192-element
+row is one 5120-byte tile — the only shape ggml's block model can express),
+src1 = F32 `[256, cols]`, dst = F32 `[n_tiles*32, cols]`. The HRX2 backend
+graph executor now dispatches the op through the fused path (tile-major blob
+→ section views assembled on device → `q4nx_dequant_f32` route → f32 scratch
+→ `mul_mat_f32_f32` route). Validated on gfx1151 with 8 real q_proj tiles:
+
+```
+GGML_OP_MUL_MAT_Q4NX [8 tiles -> 256x256] x [256x1] through HRX2 backend on gfx1151
+  ref range: [-1.366, 24.810]  out range: [-1.366, 24.810]
+  max abs diff : 1.64e-06   max rel diff : 2.94e-05   PASS YES
+```
+
+Notes: the f32 route kernel reads src1 as `[cols, k]` (col-major), which
+coincides with ggml's `[k, cols]` layout only at cols=1 — the route's native
+moe_logits shape. Multi-col needs a src1 transpose in the dispatch
+(device-side assembly, deferred). The plan-builder path was bypassed (route
+shape_domain pins k=2048/rows=128) in favor of direct config bindings — the
+same approach the fused harness validated.
+
+**Remaining blocker:** zaya1-8b-fresh (and zaya1-8b) use a bespoke
+architecture (conv_qk, v_proj_current/delayed, per-layer residual
+scale/bias, 17-expert MoE gate, router_states_scale) with no llama.cpp
+implementation — verified both model files. The converter (milestone 2)
+would produce a GGUF llama.cpp cannot execute, and llama-server end-to-end
+(milestone 4) needs either a standard-arch Q4NX model or an architecture
+port (large, separate effort). The op-level integration (milestone 3) is
+complete and validated.
+
+Full suite green: q4nx bit-exact, mul_mat_f32 rel 9.2e-5, fused rel 2.7e-6,
+type bit-exact, **graph op rel 2.9e-5**.
+
 **Persisted:** `validate-ggml-q4nx-type.cpp` (type + CPU dequant validation;
 PASS bit-exact), `validate-ggml-q4nx-op.cpp` (graph-op attempt — documents
 the ne0/blck_size blocker), fork patch regenerated with the type + backend

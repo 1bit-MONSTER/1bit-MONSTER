@@ -22,6 +22,7 @@
 //     -o validate_ggml_q4nx
 
 #include "ggml.h"
+#include "ggml-alloc.h"
 #include "ggml-hrx2.h"
 
 #include <algorithm>
@@ -83,7 +84,7 @@ int main() {
     }
 
     // ---- CPU reference: dequant + matmul (double) ----------------------------
-    const int rows = 256, k = 256, cols = 16;
+    const int rows = 256, k = 256, cols = 1;
     std::vector<float> W(rows * k);
     dequant_tiles(blob.data(), n_tiles, W.data());
     std::vector<float> act(k * cols);
@@ -104,16 +105,15 @@ int main() {
     ggml_init_params iparams = { 16 * 1024 * 1024, nullptr, true };
     ggml_context * ctx = ggml_init(iparams);
 
-    ggml_tensor * w = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4NX, k, rows);
+    // Q4NX src0 [8192, n_tiles] (each 8192-elem row = one tile), act [256, cols]
+    ggml_tensor * w = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4NX, 8192, n_tiles);
     ggml_tensor * a = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, cols);
-    ggml_tensor * out = ggml_mul_mat(ctx, w, a);
+    ggml_tensor * out = ggml_mul_mat_q4nx(ctx, w, a);
     ggml_cgraph * graph = ggml_new_graph(ctx);
     ggml_build_forward_expand(graph, out);
 
-    ggml_backend_buffer_t buf = ggml_backend_alloc_buffer(backend, ggml_nbytes(out));
-    ggml_backend_tensor_alloc(buf, w, w->data);
-    ggml_backend_tensor_alloc(buf, a, a->data);
-    ggml_backend_tensor_alloc(buf, out, out->data);
+    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    GGML_ASSERT(buf);
     ggml_backend_tensor_set(w, blob.data(), 0, blob.size());
     ggml_backend_tensor_set(a, act.data(), 0, act.size() * 4);
 
@@ -131,7 +131,7 @@ int main() {
         max_abs = std::max(max_abs, d);
         max_rel = std::max(max_rel, d / std::max(std::fabs(ref[i]), 1e-12));
     }
-    std::printf("GGML Q4NX MUL_MAT [256x256]x[256x16] through HRX2 backend on gfx1151\n");
+    std::printf("GGML_OP_MUL_MAT_Q4NX [8 tiles -> 256x256] x [256x1] through HRX2 backend on gfx1151\n");
     std::printf("  ref range: [%.6f, %.6f]  out range: [%.6f, %.6f]\n",
                 *std::min_element(ref.begin(), ref.end()), *std::max_element(ref.begin(), ref.end()),
                 *std::min_element(got.begin(), got.end()), *std::max_element(got.begin(), got.end()));
