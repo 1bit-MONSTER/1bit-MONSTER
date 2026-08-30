@@ -65,7 +65,9 @@ and what breaks if the upstream RFC stalls.
       get_rows lookup fails -> fail-closed. Fix: build the same stack
       (llama.cpp hrx-v2 + pinned loom e8275fb) with
       `GGML_HRX_AMDGPU_TARGETS=gfx1151` — reproducible via
-      `scripts/build-hrx-gfx1151.sh`. Verified: a 2249-token prompt that
+      `scripts/build-hrx-gfx1151.sh`, served via `scripts/run-hrx-gfx1151.sh`.
+      Built artifacts persist at `~/hrx-gfx1151/` (llama-build + hrx-runtime;
+      survives reboot). Verified: a 2249-token prompt that
       hard-fails on hrx-b66 completes with 0 GET_ROWS errors. Perf trade-off:
       ~26 tok/s warm decode vs b66's ~67 (untuned gfx1151 kernels), but large
       prompts now work at all. **The `hrx-v2` *ggml-hrx2* backend is NOT
