@@ -1,9 +1,9 @@
+#!/bin/bash
 # NOTE (2026-08-29): Qwen3 shapes with the K_GU split — the generator now
 # takes K = D input width = IM = 3072 and --K_GU = GU input width = 1024 (the
 # assert "D input width must equal the silu'd GU output" holds: 3072 == 6*64*8).
 # Emits a valid design.mlir; the xclbin build + silicon round follow.
 
-#!/bin/bash
 # build_iron_cascade.sh — build the SINGLE-LAUNCH fused GU→SiLU→D cascade
 # xclbin (issue #1775) with the iron API + peano toolchain.
 #
