@@ -149,3 +149,25 @@ stricter verifier flags barrier-in-lane-region in mul_mat_q8_0. This is AMD's
 legacy-kernel porting debt — a bounded but multi-hour migration, OR wait for
 AMD to refresh the fork's kernels. Our kernel (no templates, no barriers) is
 the proof and it compiles.
+
+### UPDATE 2026-08-30 (round 3): Q4NX catalog route registered
+
+- The Q4NX kernel is now a **registered catalog route** (`q4nx_dequant_f32`):
+  route JSON + sources.json + artifacts.json + families.json entries, using
+  the valid generic `shape.ncols`/`shape.nrows` binding sources (the
+  validator allowlists those; `shape.q4nx.*` is rejected).
+- A **minimal 7-artifact catalog** (add_rms_norm_mul, get_rows, mul_mat_f32,
+  q4nx_dequant, quantize_q8_1, rms_norm, rms_norm_mul) builds through the
+  catalog pipeline: assemble → validate → loom-link → require-artifacts.
+  ggml-hrx2.cpp + ggml-hrx2-catalog.cpp then COMPILE.
+- **Remaining blocker is AMD's WIP-fork API drift**, not ours: the fork's
+  loom-jit C++ uses `loomc_target_selection_*` (new loom renamed to
+  `target_specialization_*`, 12 sites) and
+  `loomc_amdgpu_profile_options_t.processor` (new API uses a structured
+  `loomc_amdgpu_target_identity_t`, 3 sites). The fork's kernels needed the
+  old dialect (#dense, func.template) AND its C++ needs the pre-specialization
+  loomc API — it was never meant to build against any shipped loom.
+- **Bottom line**: our Q4NX kernel is the proof and it compiles + is catalog-
+  registered against the amdgpu.h-unblocked loom. The full ggml-hrx2 backend
+  build awaits AMD refreshing their fork's C++ to the shipped loomc API
+  (or our porting the 15 C++ sites — bounded, ~1 session).

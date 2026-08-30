@@ -1,5 +1,5 @@
-config.decl @hrx2.shape.q4nx.ncols : %value: index where [range(%value, 1, 65536)]
-config.decl @hrx2.shape.q4nx.nrows : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2.shape.ncols : %value: index where [range(%value, 1, 65536)]
+config.decl @hrx2.shape.nrows : %value: index where [range(%value, 1, 1048576)]
 config.decl @hrx2.tuning.q4nx.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
 
 // Q4NX int4 dequant (1bit-MONSTER engine format, dequant_q4nx.cpp verified
@@ -20,8 +20,8 @@ config.decl @hrx2.tuning.q4nx.workgroup_size : %value: index where [range(%value
 kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
   %unit = index.constant 1 : index
   %minus_one = index.constant -1 : index
-  %ncols = config.get @hrx2.shape.q4nx.ncols : index
-  %nrows = config.get @hrx2.shape.q4nx.nrows : index
+  %ncols = config.get @hrx2.shape.ncols : index
+  %nrows = config.get @hrx2.shape.nrows : index
   %workgroup_size = config.get @hrx2.tuning.q4nx.workgroup_size : index
   %total = index.mul %ncols, %nrows : index
   %rounding = index.add %workgroup_size, %minus_one : index
@@ -43,8 +43,8 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
   %thirtytwo = index.constant 32 : index
   %sixteen = index.constant 16 : index
   %two048 = index.constant 2048 : index
-  %ncols_c = config.get @hrx2.shape.q4nx.ncols : index
-  %nrows_c = config.get @hrx2.shape.q4nx.nrows : index
+  %ncols_c = config.get @hrx2.shape.ncols : index
+  %nrows_c = config.get @hrx2.shape.nrows : index
   %workgroup_size_c = config.get @hrx2.tuning.q4nx.workgroup_size : index
   %ncols_b = index.assume %ncols_c [range(%ncols_c, 1, 65536)] : index
   %nrows_b = index.assume %nrows_c [range(%nrows_c, 1, 1048576)] : index

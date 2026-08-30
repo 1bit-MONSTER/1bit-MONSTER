@@ -1,0 +1,48 @@
+[
+ {
+  "id": "q4nx_dequant_f32",
+  "family": "q4nx_dequant_f32",
+  "op": "Q4NX_DEQUANT",
+  "target_key": "",
+  "source_id": "q4nx_dequant_f32",
+  "artifact_id": "q4nx_dequant_f32_bc",
+  "root_symbol": "@hrx2_q4nx_dequant_f32",
+  "export_name": "hrx2_q4nx_dequant_f32",
+  "loader_format": "amdgpu-hsaco",
+  "priority": 200,
+  "abi": {
+   "binding_count": 4,
+   "parameter_count": 4,
+   "constant_byte_length": 0
+  },
+  "dispatch": {
+   "workgroup_size": [
+    256,
+    1,
+    1
+   ],
+   "rows_per_workgroup": 1,
+   "cols_per_workgroup": 1
+  },
+  "shape_domain": {
+   "name": "q4nx_dequant_f32",
+   "ncols_min": 1,
+   "ncols_max": 65536,
+   "nrows_min": 1,
+   "nrows_max": 1048576
+  },
+  "specialization": {
+   "mode": "jit_config",
+   "bindings": [
+    {
+     "key": "@hrx2.shape.ncols",
+     "source": "shape.ncols"
+    },
+    {
+     "key": "@hrx2.shape.nrows",
+     "source": "shape.nrows"
+    }
+   ]
+  }
+ }
+]
