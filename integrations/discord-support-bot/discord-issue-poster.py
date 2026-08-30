@@ -117,6 +117,21 @@ def main() -> int:
             # body) — the list payload above only carries number/title/
             # createdAt.
             full = gh_issue(REPO, num)
+        except Exception as exc:  # noqa: BLE001
+            if num not in failed:
+                failed.append(num)
+            print(f"fetch #{num} FAILED (will retry): {type(exc).__name__}: {exc}")
+            save_state(state)  # persist NOW — a later success must not orphan it
+            continue
+        if (full.get("state") or "").lower() == "closed":
+            # Closed before we could post it (e.g. while sitting in
+            # `failed`) — never mirror a closed issue, and stop retrying it.
+            if num in failed:
+                failed.remove(num)
+            print(f"#{num} closed before posting — skipped")
+            save_state(state)
+            continue
+        try:
             tid = post_issue_post(full)
         except Exception as exc:  # noqa: BLE001
             if num not in failed:
