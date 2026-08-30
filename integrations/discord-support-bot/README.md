@@ -26,6 +26,7 @@ wiki, reference). `DeepSeek` supplies the **wording**. No hallucinations.
 | **`docs_slash.py`** | **Primary.** A `discord.py` component that adds a `/docs` slash command to the existing bot. |
 | `bot.py` | Alternative: a standalone bot that answers a `!docs` prefix command or any message in a support channel (no slash registration). |
 | `post_issue.py` | Posts a GitHub issue to **#issue-tracker as a Discord thread** (each issue = its own thread, never a flat message). `python3 post_issue.py <number>` — see the docstring. |
+| `discord-issue-poster.py` | **Auto-posts new GitHub issues to #issue-tracker as threads** — cron poller (every 15 min) that finds open issues newer than the last handled one and threads each. State in `~/.cache/discord-issue-poster-state.json`; never double-posts. |
 | `context7.py` | Retrieval client for Context7 `GET /v2/context` (framework-agnostic). |
 | `llm.py` | DeepSeek chat-completions client (framework-agnostic). |
 | `.env.example` | Copy to `.env` and fill in real credentials. |
