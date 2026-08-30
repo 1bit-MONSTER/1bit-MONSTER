@@ -228,3 +228,20 @@ after the forward's 30 ms of sustained traffic (bank/refresh interaction
 with the lm_head's latency-sensitive dependent dot chains) — not fixable
 from the kernel.  Closed: the lm_head stands at ~21 ms in-path; session
 total 292 -> ~615 agg tok/s (+110%).
+
+## 15. Round 10 (2026-08-30): single-stream int8 conversion — 75 -> 155 tok/s (+107%)
+
+The single-stream path (forward(), the interactive case) ran f32 weights and
+the Vulkan on-pages path by default.  Findings + fixes:
+- This model has NO lm_head.weight — the lm_head was the tied d_embed
+  (622 MB f32 per token); quantized d_embed8 for the fallback.
+- Converted all single-stream GEMVs to int8 (v4_i8 kernels: qkv, gu, wo,
+  w3, lm_head; per-row scales, fp32 accumulate).  Profile-verified no f32
+  GEMVs remain.
+- Flipped the default single-stream path to HIP (FUSED_VK_ATTN=1 restores
+  the Vulkan on-pages/SharedBO path): HIP int8 measured 155 vs Vulkan 75.
+- Single-stream: 75 -> 155 tok/s (6.5 ms/tok), tokens bit-identical.
+  Batch path unchanged: 481/554/620 at B=8/16/32.
+
+Session totals: batch 292 -> ~620 agg tok/s (+112%); single-stream
+75 -> 155 tok/s (+107%).
