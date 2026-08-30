@@ -1422,7 +1422,35 @@ int main(int argc, char** argv) {
     static ModelConfig current_cfg = default_model_config();
     if (!g_model_name.empty()) {
         std::string user_name = normalize(g_model_name);
+        // 0. Direct file path (issue #1958): an absolute/relative path or a
+        //    bare "*.gguf"-style argument is a FILE, not a registry name —
+        //    honor it directly. Registry names come from each GGUF's
+        //    general.name metadata, so a path would otherwise match nothing
+        //    and the server would silently fall back to a DIFFERENT model.
+        auto ends_with = [](const std::string& s, const char* suf) {
+            size_t n = std::strlen(suf);
+            return s.size() >= n && s.compare(s.size() - n, n, suf) == 0;
+        };
+        bool looks_like_path = g_model_name.find('/') != std::string::npos ||
+                               g_model_name.find('\\') != std::string::npos ||
+                               ends_with(g_model_name, ".gguf") ||
+                               ends_with(g_model_name, ".q4nx") ||
+                               ends_with(g_model_name, ".h1b") ||
+                               ends_with(g_model_name, ".1bp") ||
+                               ends_with(g_model_name, ".safetensors");
+        if (looks_like_path || std::filesystem::exists(g_model_name)) {
+            ModelConfig file_cfg;
+            if (read_model_file_metadata(g_model_name, file_cfg)) {
+                printf("  (matched \"%s\" as a model file → \"%s\")\n",
+                       g_model_name.c_str(), file_cfg.model_name.c_str());
+                current_cfg = file_cfg;
+            } else {
+                fprintf(stderr, "  ** Model file '%s' exists but is not a supported model format.\n",
+                        g_model_name.c_str());
+            }
+        }
         // 1. Exact match (case-sensitive)
+        if (current_cfg.model_path.empty()) {
         for (auto& m : discovered) {
             if (normalize(m.model_name) == user_name) {
                 printf("  (matched \"%s\" via exact → \"%s\")\n",
@@ -1430,6 +1458,7 @@ int main(int argc, char** argv) {
                 current_cfg = m;
                 break;
             }
+        }
         }
         // 2. Case-insensitive match
         if (current_cfg.model_path.empty()) {
@@ -1486,8 +1515,13 @@ int main(int argc, char** argv) {
             }
         }
         if (current_cfg.model_path.empty()) {
-            printf("  ** Model '%s' not found -- using first available.\n",
-                   g_model_name.c_str());
+            // Issue #1958: never silently serve a DIFFERENT model than the
+            // one requested. If -m was given but resolved to nothing, fail
+            // loudly instead of falling back to discovered.front().
+            fprintf(stderr, "  ** ERROR: model '%s' not found in the registry and not a readable model file.\n",
+                    g_model_name.c_str());
+            fprintf(stderr, "     Pass a registry name (GGUF general.name) or an existing model file path.\n");
+            return 1;
         }
     }
     if (current_cfg.model_path.empty() && !discovered.empty()) {
