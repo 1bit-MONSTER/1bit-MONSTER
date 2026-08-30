@@ -159,6 +159,7 @@ def main() -> int:
             return 1
 
     tmp = STATE_FILE + ".tmp"
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)  # ~/.cache may not exist
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump({"alerts": alerts, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")},
                   fh, indent=2)

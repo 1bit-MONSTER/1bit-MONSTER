@@ -21,6 +21,7 @@ Cron (strixhalo): */15 * * * * (every 15 min; cheap when nothing new)
 
 Token: ~/.secrets/Discord Bot token.txt (same as the other discord bots).
 """
+import datetime
 import json
 import os
 import subprocess
@@ -39,6 +40,11 @@ from post_issue import (  # noqa: E402
 
 REPO = "1bit-MONSTER/1bit-MONSTER"
 STATE_FILE = os.path.expanduser("~/.cache/discord-issue-poster-state.json")
+# Only auto-post issues created within this many days on a FRESH state
+# (missing/corrupt state file). Prevents a duplicate-post flood — with no
+# baseline, a fresh host would treat every open issue as new and mirror
+# hundreds of historical issues. Set 0 to mirror every open issue.
+BOOTSTRAP_SINCE_DAYS = int(os.getenv("BOOTSTRAP_SINCE_DAYS", "1"))
 
 
 def load_state() -> dict:
@@ -46,6 +52,14 @@ def load_state() -> dict:
         return json.load(open(STATE_FILE))
     except Exception:
         return {"last_issue": 0, "posts": {}}
+
+
+def _iso_ts(value: str) -> float:
+    """Parse a GitHub ISO-8601 timestamp (e.g. 2026-08-30T13:42:00Z) → epoch."""
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
+    except (ValueError, AttributeError):
+        return 0.0
 
 
 def save_state(state: dict) -> None:
@@ -117,6 +131,12 @@ def main() -> int:
 
     # ── job 1: post new issues (plus retry previously failed numbers) ─────
     issues = new_open_issues(after)
+    if not state.get("posts"):
+        # Fresh/unknown baseline: only mirror issues created recently, so a
+        # lost state file can't flood the forum with every historical issue.
+        cutoff = time.time() - BOOTSTRAP_SINCE_DAYS * 86400
+        issues = [i for i in issues
+                  if _iso_ts(i.get("createdAt", "")) >= cutoff]
     posts = state.setdefault("posts", {})
     failed = state.setdefault("failed", [])
     # Retry failed numbers first (ascending), then any new ones — a
