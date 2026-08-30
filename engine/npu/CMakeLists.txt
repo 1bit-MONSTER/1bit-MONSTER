@@ -30,6 +30,40 @@ set(NPU_ENGINE_SOURCES
 
 add_executable(npu_engine_universal ${NPU_ENGINE_SOURCES})
 
+# ── #embed freshness (issue #1957) ────────────────────────────────────────
+# npu_embedded.h bakes the xclbin/insts artifacts into the binary at compile
+# time (P1967 #embed). If an artifact is regenerated (e.g. a new
+# build_iron_cascade*.sh / build_attn.sh run) the embed TU MUST recompile —
+# otherwise the binary silently ships the old kernel. OBJECT_DEPENDS makes
+# any artifact change trigger a rebuild of zaya_decode.cpp.o (the TU that
+# pulls in npu_embedded.h via npu_attn_ctx.h).
+set(NPU_EMBEDDED_ARTIFACTS
+    ${CMAKE_CURRENT_SOURCE_DIR}/xclbins/attn.xclbin
+    ${CMAKE_CURRENT_SOURCE_DIR}/xclbins/attn_insts.txt
+    ${CMAKE_CURRENT_SOURCE_DIR}/xclbins/final_cascade_fused.xclbin
+    ${CMAKE_CURRENT_SOURCE_DIR}/xclbins/insts_cascade_fused.txt
+)
+set_source_files_properties(${NPU_SRC_DIR}/zaya_decode.cpp PROPERTIES
+    OBJECT_DEPENDS "${NPU_EMBEDDED_ARTIFACTS}")
+
+# Configure-time stale-embed warning: if an artifact is NEWER than the last
+# configure (i.e. it was regenerated after this build tree was configured),
+# tell the operator loudly that the next build will re-embed the new bytes.
+# This catches "regenerated but forgot to rebuild" with an actionable message
+# instead of a silent stale embed.
+foreach(_art ${NPU_EMBEDDED_ARTIFACTS})
+    if(EXISTS "${_art}")
+        file(TIMESTAMP "${_art}" _art_mtime "%s")
+        if(EXISTS "${CMAKE_BINARY_DIR}/CMakeCache.txt")
+            file(TIMESTAMP "${CMAKE_BINARY_DIR}/CMakeCache.txt" _cache_mtime "%s")
+            if(_art_mtime GREATER _cache_mtime)
+                message(WARNING "npu-embed: '${_art}' is NEWER than the last CMake configure — the previous build's embedded copy is stale. The next build will re-embed it (OBJECT_DEPENDS). If this binary is already deployed, rebuild before shipping.")
+            endif()
+        endif()
+    endif()
+endforeach()
+
+
 target_include_directories(npu_engine_universal PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/generators

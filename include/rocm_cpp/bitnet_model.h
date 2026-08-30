@@ -2446,6 +2446,29 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
     if (strcmp(s, "qwen4exp") == 0) return RCPP_ARCH_QWEN3NEXT;        // Qwen4ExpForConditionalGeneration (Qwen3.8-Flash-Next, GDN)
     if (strcmp(s, "qwen4_exp") == 0) return RCPP_ARCH_QWEN3NEXT;       // HF model_type
+    // ── 2026-08-28 census watcher second-run findings (issue #1918) ──
+    // Class names verified against live HF configs: DFlash2DraftModel has
+    // model_type qwen3 (GLM-5.3-Flash-DFlash2), same family as the already-
+    // mapped dflashdraft; LowOnMind-1M and OxMini are tiny standard-layout
+    // causal LMs (llama-style config keys), so they alias to the llama
+    // loader rather than refusing to load.
+    if (strcmp(s, "dflash2draft") == 0) return RCPP_ARCH_QWEN3;        // DFlash2DraftModel (local-inference-lab/GLM-5.3-Flash-DFlash2-MXFP8, model_type qwen3)
+    if (strcmp(s, "lowonmind") == 0) return RCPP_ARCH_LLAMA;           // LowOnMindForCausalLM (DedeProGames/LowOnMind-1M, llama-layout)
+    if (strcmp(s, "oxmini") == 0) return RCPP_ARCH_LLAMA;              // OxMiniForCausalLM (Shivam3002/OxMini, llama-layout)
+    // ── 2026-08-30 census watcher third-run findings (PR #1969 CI gate) ──
+    // Class names verified against live HF configs. cagliostro/qaptaan/
+    // speck/moe_greeting are standard llama-layout causal LMs; gmma-jepa's
+    // config declares base_model google/gemma-2b (JEPA-pretrained gemma
+    // variant); muse_moe is the Muse-MoE variant of the mapped MUSE family.
+    if (strcmp(s, "cagliostro") == 0) return RCPP_ARCH_LLAMA;          // CagliostroForCausalLM (bench-labs/cagliostro-v2, llama-layout 640/30/10/5)
+    if (strcmp(s, "gmma-jepa") == 0) return RCPP_ARCH_GEMMA;           // GmmaJEPAForCausalLM (clevrpwn/gmma-jepa, base google/gemma-2b) — model_type
+    if (strcmp(s, "gmmajepa") == 0) return RCPP_ARCH_GEMMA;            // GmmaJEPAForCausalLM — census stripped arch name
+    if (strcmp(s, "moe_greeting") == 0) return RCPP_ARCH_LLAMA;        // MoeGreetingForCausalLM (mondk/Greetings-model, tiny llama-layout) — model_type
+    if (strcmp(s, "moegreeting") == 0) return RCPP_ARCH_LLAMA;         // MoeGreetingForCausalLM — census stripped arch name
+    if (strcmp(s, "muse_moe") == 0) return RCPP_ARCH_MUSE;             // MuseMoeForConditionalGeneration (win10/Muse-MoE-65B-A30B) — model_type
+    if (strcmp(s, "musemoe") == 0) return RCPP_ARCH_MUSE;              // MuseMoeForConditionalGeneration — census stripped arch name
+    if (strcmp(s, "qaptaan") == 0) return RCPP_ARCH_LLAMA;             // QaptaanForCausalLM (kaptaan45/QaptaanLM-0.75B, llama-layout 1024/24/8/2)
+    if (strcmp(s, "speck") == 0) return RCPP_ARCH_LLAMA;               // SpeckForCausalLM (specklabs/Speck1.5-140M, llama-layout 768/18/12/3)
     // Unmapped architecture — do NOT fall back to BITNET silently.
     return RCPP_ARCH_UNKNOWN;
 }

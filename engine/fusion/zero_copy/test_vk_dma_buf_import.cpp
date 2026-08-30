@@ -268,6 +268,120 @@ int main() {
     CHECK(sh->npu_bo().map() == (void*)host, "NPU BO map() == host_ptr (single physical allocation)");
     fprintf(stderr, "host=%p  npu_map=%p  dma_fd=%d\n", (void*)host, sh->npu_bo().map(), sh->dma_buf_fd());
 
+    // ---- 9) BIDIRECTIONAL proof (issue #1946 — the full test_zero_copy
+    //      proof ported to the Vulkan dma-buf idiom) ----
+    //      Phase A (CPU -> GPU): CPU writes 0xCAFE0000^i into host_ptr.
+    //      roundtrip.comp READS it and, only where it matches, writes back
+    //      0xBEEF0000^i (else 0). Phase B (GPU -> CPU): CPU reads host_ptr
+    //      with NO copy and must see the derived 0xBEEF pattern everywhere.
+    //      Both directions aliasing the same pages is the only way this can
+    //      hold — exactly what the old hipHostRegister test proved, minus
+    //      the API TheRock HIP rejects for XRT-mapped pointers.
+    {
+        VkShaderModule rtMod = VK_NULL_HANDLE;
+        VkDescriptorSetLayout rtLayout = VK_NULL_HANDLE;
+        VkPipelineLayout rtPipeLayout = VK_NULL_HANDLE;
+        VkPipeline rtPipeline = VK_NULL_HANDLE;
+        VkDescriptorPool rtPool = VK_NULL_HANDLE;
+        VkDescriptorSet rtSet = VK_NULL_HANDLE;
+        VkCommandPool rtCmdPool = VK_NULL_HANDLE;
+        VkCommandBuffer rtCb = VK_NULL_HANDLE;
+        VkResult r;
+
+        std::ifstream rf("shaders/roundtrip.spv", std::ios::binary | std::ios::ate);
+        if (rf) {
+            size_t n = rf.tellg() / sizeof(uint32_t);
+            rf.seekg(0);
+            std::vector<uint32_t> rcode(n);
+            rf.read((char*)rcode.data(), n * sizeof(uint32_t));
+            VkShaderModuleCreateInfo smci = {VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO, nullptr, 0,
+                                             rcode.size() * sizeof(uint32_t), rcode.data()};
+            r = vkCreateShaderModule(device, &smci, nullptr, &rtMod);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkCreateShaderModule(roundtrip) -> %d\n", r); rc = 1; }
+
+            VkDescriptorSetLayoutBinding rb = {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                               VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+            VkDescriptorSetLayoutCreateInfo rdlci = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO, nullptr, 0,
+                                                     1, &rb};
+            r = vkCreateDescriptorSetLayout(device, &rdlci, nullptr, &rtLayout);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkCreateDescriptorSetLayout(roundtrip) -> %d\n", r); rc = 1; }
+            VkPipelineLayoutCreateInfo rplci = {VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, nullptr, 0,
+                                                1, &rtLayout, 0, nullptr};
+            r = vkCreatePipelineLayout(device, &rplci, nullptr, &rtPipeLayout);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkCreatePipelineLayout(roundtrip) -> %d\n", r); rc = 1; }
+            VkPipelineShaderStageCreateInfo rstage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, nullptr, 0,
+                                                      VK_SHADER_STAGE_COMPUTE_BIT, rtMod, "main", nullptr};
+            VkComputePipelineCreateInfo rcpci = {VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO, nullptr, 0,
+                                                 rstage, rtPipeLayout, VK_NULL_HANDLE, -1};
+            r = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &rcpci, nullptr, &rtPipeline);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkCreateComputePipelines(roundtrip) -> %d\n", r); rc = 1; }
+
+            VkDescriptorPoolSize rps = {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+            VkDescriptorPoolCreateInfo rdpci = {VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, nullptr,
+                                                VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, 1, 1, &rps};
+            r = vkCreateDescriptorPool(device, &rdpci, nullptr, &rtPool);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkCreateDescriptorPool(roundtrip) -> %d\n", r); rc = 1; }
+            VkDescriptorSetAllocateInfo rdsai = {VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, nullptr,
+                                                 rtPool, 1, &rtLayout};
+            r = vkAllocateDescriptorSets(device, &rdsai, &rtSet);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkAllocateDescriptorSets(roundtrip) -> %d\n", r); rc = 1; }
+            VkDescriptorBufferInfo rdbi = {buf, 0, BYTES};
+            VkWriteDescriptorSet rwds = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, rtSet, 0, 0,
+                                         1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &rdbi, nullptr};
+            vkUpdateDescriptorSets(device, 1, &rwds, 0, nullptr);
+
+            VkCommandPoolCreateInfo rcpci2 = {VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr,
+                                              VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, qf};
+            r = vkCreateCommandPool(device, &rcpci2, nullptr, &rtCmdPool);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkCreateCommandPool(roundtrip) -> %d\n", r); rc = 1; }
+            VkCommandBufferAllocateInfo rcbai = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr,
+                                                 rtCmdPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1};
+            r = vkAllocateCommandBuffers(device, &rcbai, &rtCb);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkAllocateCommandBuffers(roundtrip) -> %d\n", r); rc = 1; }
+            VkCommandBufferBeginInfo rcbbi = {VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
+                                              VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr};
+            r = vkBeginCommandBuffer(rtCb, &rcbbi);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkBeginCommandBuffer(roundtrip) -> %d\n", r); rc = 1; }
+            vkCmdBindPipeline(rtCb, VK_PIPELINE_BIND_POINT_COMPUTE, rtPipeline);
+            vkCmdBindDescriptorSets(rtCb, VK_PIPELINE_BIND_POINT_COMPUTE, rtPipeLayout, 0, 1, &rtSet, 0, nullptr);
+            vkCmdDispatch(rtCb, (uint32_t)(N + 255) / 256, 1, 1);
+            r = vkEndCommandBuffer(rtCb);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkEndCommandBuffer(roundtrip) -> %d\n", r); rc = 1; }
+
+            // Phase A: CPU writes the input pattern — the GPU must SEE it.
+            for (size_t i = 0; i < N; i++) host[i] = 0xCAFE0000u ^ (uint32_t)i;
+            VkSubmitInfo rsi = {VK_STRUCTURE_TYPE_SUBMIT_INFO, nullptr, 0, nullptr, nullptr, 1, &rtCb, 0, nullptr};
+            r = vkQueueSubmit(queue, 1, &rsi, VK_NULL_HANDLE);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkQueueSubmit(roundtrip) -> %d\n", r); rc = 1; }
+            r = vkQueueWaitIdle(queue);
+            if (r != VK_SUCCESS) { fprintf(stderr, "FAIL: vkQueueWaitIdle(roundtrip) -> %d\n", r); rc = 1; }
+
+            // Phase B: CPU reads back, NO copy — the GPU derived the pattern.
+            mism = 0; firstBadHost = 0; firstBadExp = 0; firstBadI = 0;
+            for (size_t i = 0; i < N; i++) {
+                uint32_t exp = 0xBEEF0000u ^ (uint32_t)i;   // derived by the shader
+                if (host[i] != exp) {
+                    if (mism == 0) { firstBadHost = host[i]; firstBadExp = exp; firstBadI = i; }
+                    mism++;
+                }
+            }
+            CHECK(mism == 0,
+                  "BIDIRECTIONAL: GPU read CPU-written pattern and wrote the derived pattern — both directions alias the same pages, no copy (%zu mism; first @%zu: got %08x want %08x)",
+                  mism, firstBadI, firstBadHost, firstBadExp);
+        } else {
+            fprintf(stderr, "FAIL: cannot open shaders/roundtrip.spv (run make first)\n");
+            rc = 1;
+        }
+
+        if (rtCb) vkFreeCommandBuffers(device, rtCmdPool, 1, &rtCb);
+        if (rtCmdPool) vkDestroyCommandPool(device, rtCmdPool, nullptr);
+        if (rtPool) vkDestroyDescriptorPool(device, rtPool, nullptr);
+        if (rtPipeline) vkDestroyPipeline(device, rtPipeline, nullptr);
+        if (rtPipeLayout) vkDestroyPipelineLayout(device, rtPipeLayout, nullptr);
+        if (rtLayout) vkDestroyDescriptorSetLayout(device, rtLayout, nullptr);
+        if (rtMod) vkDestroyShaderModule(device, rtMod, nullptr);
+    }
+
     }   // end scoped sections 3-8
 
 done:

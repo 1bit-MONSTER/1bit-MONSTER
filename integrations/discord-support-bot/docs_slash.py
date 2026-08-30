@@ -104,20 +104,22 @@ class DocsSlash(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
-        # If we know the guild, scope the command there so it registers instantly
-        # (global registration can take up to an hour).
+        # Issue #1961: register /docs GLOBALLY so it works on every server the
+        # bot joins (a guild-scoped command silently 404s with "Unknown
+        # interaction" on a second server). Global propagation can take up to
+        # an hour; when DISCORD_GUILD_ID is EXPLICITLY configured we ALSO sync
+        # to that guild for instant availability on the primary server.
         @self.tree.command(name=COMMAND_NAME, description=COMMAND_DESC)
         async def docs(interaction: discord.Interaction, question: str) -> None:  # noqa: ANN202
             await self._answer(interaction, question)
 
+        await self.tree.sync()
+        log.info("synced /%s globally", COMMAND_NAME)
         if self.guild_id:
             guild = self.get_guild(self.guild_id) or await self.fetch_guild(self.guild_id)
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
-            log.info("synced /%s to guild %s", COMMAND_NAME, guild.id)
-        else:
-            await self.tree.sync()
-            log.info("synced /%s globally", COMMAND_NAME)
+            log.info("synced /%s to guild %s (instant, primary server)", COMMAND_NAME, guild.id)
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%s)", self.user, self.user.id)
