@@ -273,3 +273,26 @@ Upstream reproducers to file (all have in-repo CPU-gated minimal cases):
 - `/tmp/aiesim_recipe.md` on strixhalo (this doc, condensed).
 - Kernel-only sim sources: `hw/`-adjacent scratch under `/tmp/ksim_*` (may
   be cleaned); rebuild per §2–5.
+
+### 8b. Recovering a hung NPU — driver reset path (issue #1920)
+
+`aie-reset` (mlir-aie's reset tool) is **dead on modern kernels**: its
+`mmap(/dev/mem)` fails under `CONFIG_STRICT_DEVMEM`/lockdown, leaving
+reboot as the only recovery for a hung iron-runtime launch.
+
+**Resolved 2026-08-28 by the driver upgrade** (upstream `amd/xdna-driver`,
+commit `7004f1c`, loaded as `updates/amdxdna.ko`, driver 0.17.0):
+
+- `tdr_timeout_ms=2000` (default): a deadlocked job now returns from
+  `run.wait()` in ~2 s with `state=8` (ERT_CMD_STATE_TIMEOUT) instead of
+  hanging forever; `dmesg` shows `aie2_set_cmd_timeout`.
+- `aie2_hw_reset()`: SMU power-cycle + firmware reload (suspend-all →
+  hw_stop → hw_start → resume-all) — **no `/dev/mem` needed**, and the NPU
+  self-recovers (a second launch works without reboot). This obviates
+  `aie-reset`'s broken mmap path.
+- Requires Secure Boot disabled / lockdown `none` on the host.
+
+Use `sudo rmmod amdxdna && sudo modprobe amdxdna` only to reload firmware;
+for a wedged AIE core the driver's TDR + SMU power-cycle is the recovery
+path (the `.github/workflows/npu-reset.yml` rmmod/modprobe job remains as a
+belt-and-braces fallback, not a reset).
