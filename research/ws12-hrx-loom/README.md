@@ -129,3 +129,23 @@ and what breaks if the upstream RFC stalls.
   (gfx1151), 114688 MiB`. Non-qualified model fails closed:
   `E graph_compute: unsupported HRX node 0: GET_ROWS`.
 - Full evidence dump: `FINDINGS.md`.
+
+## UPDATE 2026-08-30 (round 2): amdgpu.h blocker DISSOLVED
+
+The missing `loomc/target/amdgpu.h` landed in **ROCm/hrx main @ 4890cb5d7**
+(after our pinned e8275fb). The new loom exports
+`loomc_target_environment_create_amdgpu` from `libloomc.so` and installs the
+header. ggml-hrx2 now configures against it (shim: `loom::binding::c::loomc`
+→ `loomc::loomc`).
+
+**Our `q4nx_dequant_f32.loom` compiles with the new loom** — the Q4NX port is
+fully unblocked at the kernel level.
+
+Remaining: the fork's ~30 legacy mul_mat kernels use the OLD loom dialect
+(`#dense` views, `func.template`, `{...}` attrs on barrier/alloca) which the
+new loom rejects. I migrated the mechanics (34× `#dense` strip, 2×
+func.template→template.decl/def, 15× alloca, 12× barrier) but the new loom's
+stricter verifier flags barrier-in-lane-region in mul_mat_q8_0. This is AMD's
+legacy-kernel porting debt — a bounded but multi-hour migration, OR wait for
+AMD to refresh the fork's kernels. Our kernel (no templates, no barriers) is
+the proof and it compiles.

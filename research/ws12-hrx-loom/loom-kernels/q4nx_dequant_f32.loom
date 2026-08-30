@@ -62,10 +62,10 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
   %zeros_g = buffer.assume.memory_space<global> %zeros : buffer
   %dst_g = buffer.assume.memory_space<global> %dst : buffer
   %packed_a, %scales_a, %zeros_a, %dst_a = buffer.assume.noalias %packed_g, %scales_g, %zeros_g, %dst_g : buffer, buffer, buffer, buffer
-  %packed_v = buffer.view %packed_a[%base] : buffer -> view<1073741824xi8, #dense>
-  %scales_v = buffer.view %scales_a[%base] : buffer -> view<1073741824xi8, #dense>
-  %zeros_v = buffer.view %zeros_a[%base] : buffer -> view<1073741824xi8, #dense>
-  %dst_view = buffer.view %dst_a[%base] : buffer -> view<[%nrows_b]x[%ncols_b]xf32, #dense>
+  %packed_v = buffer.view %packed_a[%base] : buffer -> view<1073741824xi8>
+  %scales_v = buffer.view %scales_a[%base] : buffer -> view<1073741824xi8>
+  %zeros_v = buffer.view %zeros_a[%base] : buffer -> view<1073741824xi8>
+  %dst_view = buffer.view %dst_a[%base] : buffer -> view<[%nrows_b]x[%ncols_b]xf32>
 
   scf.if %in_bounds {
     %col = index.rem %linear, %ncols_b : index
@@ -77,18 +77,18 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
     %scale_idx = index.add %row8, %group : index
     %scale_lo_off = index.mul %scale_idx, %two_idx : index
     %scale_hi_off = index.add %scale_lo_off, %unit : index
-    %scale_lo = view.load %scales_v[%scale_lo_off] : view<1073741824xi8, #dense> -> i8
+    %scale_lo = view.load %scales_v[%scale_lo_off] : view<1073741824xi8> -> i8
     %scale_lo_u = scalar.extui %scale_lo : i8 to i32
-    %scale_hi = view.load %scales_v[%scale_hi_off] : view<1073741824xi8, #dense> -> i8
+    %scale_hi = view.load %scales_v[%scale_hi_off] : view<1073741824xi8> -> i8
     %scale_hi_u = scalar.extui %scale_hi : i8 to i32
     %scale_hi_shl = scalar.shli %scale_hi_u, %eight_i32 : i32
     %scale_bf16 = scalar.ori %scale_lo_u, %scale_hi_shl : i32
     %scale_f32_bits = scalar.shli %scale_bf16, %sixteen_i32 : i32
     %scale = scalar.bitcast %scale_f32_bits : i32 to f32
 
-    %zp_lo = view.load %zeros_v[%scale_lo_off] : view<1073741824xi8, #dense> -> i8
+    %zp_lo = view.load %zeros_v[%scale_lo_off] : view<1073741824xi8> -> i8
     %zp_lo_u = scalar.extui %zp_lo : i8 to i32
-    %zp_hi = view.load %zeros_v[%scale_hi_off] : view<1073741824xi8, #dense> -> i8
+    %zp_hi = view.load %zeros_v[%scale_hi_off] : view<1073741824xi8> -> i8
     %zp_hi_u = scalar.extui %zp_hi : i8 to i32
     %zp_hi_shl = scalar.shli %zp_hi_u, %eight_i32 : i32
     %zp_bf16 = scalar.ori %zp_lo_u, %zp_hi_shl : i32
@@ -104,7 +104,7 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
     %col8 = index.mul %col, %eight_idx : index
     %byte_off = index.add %lane_base, %col8 : index
     %byte_off2 = index.add %byte_off, %byte_idx : index
-    %packed_byte = view.load %packed_v[%byte_off2] : view<1073741824xi8, #dense> -> i8
+    %packed_byte = view.load %packed_v[%byte_off2] : view<1073741824xi8> -> i8
     %pb_u = scalar.extui %packed_byte : i8 to i32
 
     // q = nib==0 ? (byte & 0xF) : (byte >> 4)
@@ -131,7 +131,7 @@ kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
     // out = val * scale + zp
     %vsc = scalar.mulf %val, %scale : f32
     %out = scalar.addf %vsc, %zp : f32
-    view.store %out, %dst_view[%row, %col] : f32, view<[%nrows_b]x[%ncols_b]xf32, #dense>
+    view.store %out, %dst_view[%row, %col] : f32, view<[%nrows_b]x[%ncols_b]xf32>
   }
   kernel.return
 }
