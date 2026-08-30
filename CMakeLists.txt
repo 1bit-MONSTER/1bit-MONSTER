@@ -214,6 +214,16 @@ endfunction()
 
 _find_therock_sdk_base(THEROCK_SDK_BASE)
 
+# A system hip-runtime-amd package (e.g. /usr/include/hip) shadows TheRock's
+# HIP headers: amdclang++ auto-adds the SDK include dir with -idirafter, which
+# loses to /usr/include, so <hip/...> and <rocwmma/...> resolve to headers
+# whose __ocml_* builtins this clang does not declare. Put TheRock's include
+# dir ahead of system dirs so device math builtins match amdclang++.
+if(THEROCK_SDK_BASE AND EXISTS "${THEROCK_SDK_BASE}/include/hip/hip_runtime.h")
+    set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -isystem ${THEROCK_SDK_BASE}/include")
+    message(STATUS "rocm-cpp: TheRock HIP headers take precedence (${THEROCK_SDK_BASE}/include)")
+endif()
+
 set(ROCM_ROOT "${_RC_ROCM_DEFAULT}" CACHE PATH "ROCm install root")
 list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
 
