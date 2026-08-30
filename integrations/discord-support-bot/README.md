@@ -76,6 +76,34 @@ This creates `~/.config/systemd/user/docsbot.service` from the committed
 and starts it. Manage it with `systemctl --user status/restart docsbot` and
 watch logs with `journalctl --user -u docsbot -f`.
 
+### Availability (issue #1962) — do not run only on the dev host
+
+The default install runs as a **systemd user service on the host you run it
+on**. If that host reboots, goes offline, or is decommissioned, `/docs` goes
+down with it. The bot is self-contained and deployment-agnostic, so run it on
+a small VPS / Container app / hosted runner instead:
+
+```bash
+# on the target host (any Linux with systemd + python3):
+git clone https://github.com/1bit-MONSTER/1bit-MONSTER
+cd 1bit-MONSTER/integrations/discord-support-bot
+cp .env.example .env            # fill in the three keys (or let the install
+                                # script assemble from ~/.secrets/*)
+./install-docsbot-service.sh
+```
+
+Recommended hardening (from the systemd template, enable as needed):
+- `Restart=on-failure` + `RestartSec=5` (already in the template) so a crash
+  or a transient gateway disconnect self-heals.
+- `WatchdogSec=120` + `NotifyAccess=main` if you add sd_notify heartbeats.
+- A basic uptime check: `systemctl --user is-active docsbot` from a cron
+  with alerting to the same server.
+
+Secrets: prefer injecting `DISCORD_TOKEN` / `CONTEXT7_API_KEY` /
+`DEEPSEEK_API_KEY` via a secret manager or the host's secret store rather
+than a checked-in `.env` (see issue #1965 — the install script now assembles
+and validates them from `~/.secrets/*`).
+
 ### Smoke test
 Validate the pipeline (does **not** need the DeepSeek key):
 
