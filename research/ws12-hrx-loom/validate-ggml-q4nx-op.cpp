@@ -68,7 +68,7 @@ static void dequant_tiles(const uint8_t * tiles, int n_tiles, float * out /*[32*
 int main() {
     // ---- build the Q4NX blob: 8 real tiles = q_proj column-tile 0 ----------
     // container: [u64 jsonlen][json][data]; data_offsets[0] of layer-0 q_proj
-    const uint64_t json_len = 232421;
+    const uint64_t json_len = 232415;
     const uint64_t df = 8 + json_len;
     const uint64_t qoff = 335728640;
     std::ifstream f("/home/bcloud/models/zaya1-8b-fresh.q4nx", std::ios::binary);

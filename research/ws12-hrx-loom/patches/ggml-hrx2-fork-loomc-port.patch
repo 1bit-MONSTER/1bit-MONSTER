@@ -10595,3 +10595,23 @@ index 0142498..1f03fac 100644
  struct ggml_tensor * ggml_mul_mat_id(
          struct ggml_context * ctx,
          struct ggml_tensor  * as,
+diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
+index 0cdd1c4..b6ab108 100644
+--- a/gguf-py/gguf/constants.py
++++ b/gguf-py/gguf/constants.py
+@@ -3997,6 +3997,7 @@ class GGMLQuantizationType(IntEnum):
+     MXFP4   = 39
+     NVFP4   = 40
+     Q1_0    = 41
++    Q4NX    = 42
+ 
+ 
+ class ExpertGatingFuncType(IntEnum):
+@@ -4164,6 +4165,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
+     GGMLQuantizationType.MXFP4:   (32, 1 + 16),
+     GGMLQuantizationType.NVFP4:   (64, 4 + 32),
+     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
++    GGMLQuantizationType.Q4NX: (8192, 5120),
+ }
+ 
+ 

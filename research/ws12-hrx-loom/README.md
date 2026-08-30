@@ -426,6 +426,46 @@ complete and validated.
 Full suite green: q4nx bit-exact, mul_mat_f32 rel 9.2e-5, fused rel 2.7e-6,
 type bit-exact, **graph op rel 2.9e-5**.
 
+### UPDATE 2026-08-30 (round 9): converter done + GGUF load verified; CONTAINER OFFSET CORRECTED
+
+**Authoritative container decode correction.** The true `df` is `8 + hsz`
+with `hsz = 232415` (u64 at file offset 0, JSON parses exactly at hsz
+bytes) — my earlier hand-derived `json_end = 232429` was 6 bytes high.
+All tensor offsets shifted by -6 (q_proj: 335961069 → **335961063**). The
+earlier validations were self-consistent (references computed from the same
+shifted bytes) but the extraction was misaligned; at the true offset the
+tiles are cleaner (zeros all 0 — the "6-byte trailer garbage" from round 6
+was actually the misaligned read reaching into the next tile). All harnesses
+fixed and re-validated at the true offset — results equal or better
+(op-level: rel 2.77e-6; single-tile: bit-exact; fused: rel 7.1e-6). The
+scale/zp clamp stays (engine-conformant, defensive).
+
+**Milestone 2 — .q4nx → GGUF converter, verified.** `q4nx_to_gguf.py`
+(container reader using the authoritative hsz/data_offsets) emits GGUF with
+I8 tensors as `GGML_TYPE_Q4NX` (id 42, ggml ne=[8192, n_tiles]) and BF16
+tensors as `GGML_TYPE_BF16` (30). The fork's gguf-py gained `Q4NX = 42` +
+`GGML_QUANT_SIZES[Q4NX] = (8192, 5120)`. Verified with the fork's C++ GGUF
+reader (`validate-gguf-load.cpp` — the same machinery llama.cpp uses):
+
+```
+GGUF: 1 tensors
+  tensor[0]: model.layers.0.self_attn.q_proj.weight type=42 nbytes=1310720
+GGUF tensor data vs source container bytes: IDENTICAL   PASS
+```
+
+Full model converts cleanly: **1284 tensors, 5.99 GB** (Q4NX + BF16).
+CPU dequant of the loaded Q4NX tensors is bit-exact (round 7/8).
+
+**Milestone 4 (llama-server e2e) remains blocked by the bespoke
+architecture** (conv_qk, v_proj_current/delayed, residual scales, 17-expert
+gate — verified in both zaya model files; no llama.cpp implementation).
+The loader can now read Q4NX GGUFs; executing a model needs either a
+standard-arch Q4NX model or an architecture port.
+
+Full suite green at the true offset: q4nx bit-exact, mul_mat_f32 rel 9.2e-5,
+fused rel 7.1e-6, type bit-exact, graph op rel 2.77e-6, GGUF load
+byte-identical.
+
 **Persisted:** `validate-ggml-q4nx-type.cpp` (type + CPU dequant validation;
 PASS bit-exact), `validate-ggml-q4nx-op.cpp` (graph-op attempt — documents
 the ne0/blck_size blocker), fork patch regenerated with the type + backend
