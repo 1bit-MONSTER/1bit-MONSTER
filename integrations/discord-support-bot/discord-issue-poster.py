@@ -292,6 +292,14 @@ def main() -> int:
 
     # ── job 2: reconcile tracked posts with live issue state ──────────────
     for num, rec in list(posts.items()):
+        # Re-read the REAL archived state from the forum scan: Discord
+        # auto-archives posts after auto_archive_duration (7 days) of
+        # inactivity, and rec["archived"] only tracks our own PATCHes — an
+        # open issue's auto-archived post would otherwise never be
+        # unarchived and would silently vanish from the active view.
+        t = existing.get(int(num))
+        if t and "archived" in t:
+            rec["archived"] = bool(t.get("archived"))
         sync_post(state, int(num), rec, tags)
     save_state(state)
 

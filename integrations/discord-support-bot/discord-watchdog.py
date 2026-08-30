@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -120,6 +121,21 @@ def _post(text: str) -> None:
         r.read()
 
 
+def _sanitize(text: str) -> str:
+    """Strip secrets and URLs before anything reaches the public channel.
+
+    Exception messages can embed the full failing request URL — if a
+    Context7/DeepSeek key travels as a query parameter, a 429/timeout
+    would otherwise post the key to #general.
+    """
+    for env_key in ("CONTEXT7_API_KEY", "DEEPSEEK_API_KEY", "DISCORD_TOKEN"):
+        val = os.getenv(env_key)
+        if val and len(val) >= 8:
+            text = text.replace(val, "[redacted]")
+    text = re.sub(r"https?://[^\s'\"]+", "[url]", text)
+    return text[:500]
+
+
 def main() -> int:
     load_dotenv()
     # WATCHDOG_CHANNEL can live in .env — resolve AFTER load_dotenv() so the
@@ -141,7 +157,7 @@ def main() -> int:
     for check, detail in sorted(failing.items()):
         last = alerts.get(check, 0)
         if last == 0 or now - last >= RE_ALERT_SECONDS:
-            to_post.append(f"🔴 **{check}** — {detail}")
+            to_post.append(f"🔴 **{check}** — {_sanitize(detail)}")
             alerts[check] = now
     for check in [c for c in alerts if c not in failing]:
         if alerts.get(check):
