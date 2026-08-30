@@ -6,7 +6,7 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Sun, 30 Aug 2026 08:32:46 +0000</lastBuildDate>
+    <lastBuildDate>Sun, 30 Aug 2026 08:45:04 +0000</lastBuildDate>
     <item>
       <title>HRX: we put AMD&#x27;s experimental IREE runtime inside our engine</title>
       <link>https://1bit.monster/1bit-post-hrx-engine.html</link>
