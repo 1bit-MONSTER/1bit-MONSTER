@@ -2958,3 +2958,57 @@ PR #1889 open; merged into local `main` (`63a359e9`) so the engine builds
 from the v11.8.0 baseline. The loop is documented in
 `third_party/lemonade/UPSTREAM.md`; release notes:
 github.com/lemonade-sdk/lemonade/releases/tag/v11.8.0.
+
+---
+
+## 2026-08-29 — the HRX engine week (in-process fused decode, honest ceiling)
+
+One binary, two llama.cpps in one process. AMD's experimental HRX runtime (their
+"IREE-based, lighter subset of ROCm") moved from a spawned subprocess into our
+address space — and stayed honest about the wall we hit.
+
+**The in-process backend** (`src/hrx_inprocess.{h,cpp}`): the hrx-b59 bundle
+ships a complete `libllama.so` + `libggml-hrx.so` + headers. We `dlopen` it with
+`RTLD_DEEPBIND` (the bundle's symbols are unversioned and `1bit` statically
+links its own llama.cpp — the two copies must never see each other), resolve the
+whole C API through a dlsym'd table, static-assert the ABI structs
+(72/160/56 bytes) against the bundle's headers, and drive token-level
+`generate()` on the HRX device. No HTTP, no subprocess, no ROCm at build time.
+
+**Verified on hardware (gfx1151):**
+- E2E: `1bit unified` on Qwen3-30B-A3B Q4_K_M → "Paris", `backend: hrx_gpu`.
+- Warm decode ~80–87 tok/s in-process vs 38 tok/s for the same bundle spawned
+  fresh as a subprocess vs ~70 tok/s HIP — the in-process path removes the
+  server round trip and the fresh-start JIT cost.
+- Soak: 400 tokens, 0 failures, 10× reset (context recreate) OK, model switch
+  30B→0.6B→30B OK, RSS stable.
+
+**The ceiling, measured across six families:** HRX's fused node set excludes
+`GET_ROWS` (the token-embedding row-gather) for most quants — Q4_K fuses,
+q5_0/q8_0/Q4_K_S/IQ2XXS fail closed (`ret = -3`). Every local workaround is a
+dead end in this fork (the scheduler keeps one graph split on HRX). The
+subprocess has the identical limitation. Upstream: llama.cpp PR #27218 is a
+draft; AMD's staging repo ships a new bundle daily (b59→b66 verified — same
+ceiling) but there is no stable userspace release. The engine's route-order
+failover (G1a/G1b) carries every non-fused model to ggml_vulkan and completes
+the answer — that's the design working, not failing.
+
+**The honest reframe (committed to docs/research/hrx-engine-goal.md):** HRX is
+an acceleration lane, not the engine. The multi-lane engine is the platform and
+is complete with or without it. HRX is re-engaged on two signals: a stable
+`hrx-system` release, or PR #27218 moving past draft.
+
+**Also this week:** zero-DMA SharedBO substrate re-proven live
+(`test_vk_attn_slice` PASS — Vulkan shader reads NPU KV pages via dma-buf
+import, rel err 2e-4; the old `hipHostRegister` proof idiom is superseded —
+HIP now rejects XRT-mapped pointers). Lemonade: 43 chat models gained `-HRX`
+registry variants with the K-quant-embedding limitation documented. The
+coverage checker `tools/hf_coverage.py` maps any HF model id to a lane.
+
+**Status at session end:** committed on `feat/lse-backend` (in-process HRX,
+routing fixes, lemonade entries, docs — auto-pushed by the post-commit hook);
+follow-ups done (fork-B probe closed, b66 verified, soak + per-family tables,
+secrets moved to `~/.secrets`, ~208 GB of stale Xilinx tarballs deleted,
+mlir-aie patches backed up). Next build: the hybrid prefill/decode policy
+(HIP prefill + HRX warm decode) — needs cross-backend KV handoff, scoped as a
+real project.

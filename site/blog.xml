@@ -6,7 +6,14 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Thu, 27 Aug 2026 03:02:48 +0000</lastBuildDate>
+    <lastBuildDate>Sun, 30 Aug 2026 01:39:51 +0000</lastBuildDate>
+    <item>
+      <title>HRX: we put AMD&#x27;s experimental IREE runtime inside our engine</title>
+      <link>https://1bit.monster/1bit-post-hrx-engine.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-hrx-engine.html</guid>
+      <pubDate></pubDate>
+      <description>HRX (AMD&#x27;s IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen&#x27;d bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine.</description>
+    </item>
     <item>
       <title>Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1180.html</link>
