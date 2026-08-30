@@ -134,14 +134,23 @@ def forum_threads() -> list[dict]:
     issue N is already mirrored, so the poster records it instead of
     creating a duplicate (e.g. after a crash between the POST and the
     state write, or a client-side timeout after a server-side success).
+    The archived endpoint is paginated (before cursor) so the idempotency
+    map stays complete past 100 archived posts.
     """
     out: list[dict] = []
-    for path in ("/threads/active?limit=100", "/threads/archived/public?limit=100"):
-        try:
-            data = _api("GET", f"/channels/{ISSUE_TRACKER_CHANNEL_ID}{path}")
-            out.extend(data.get("threads", []))
-        except Exception:  # noqa: BLE001 — best-effort; a listing failure must
-            continue       # not block posting (idempotency check is a bonus)
+    for base in ("/threads/active?limit=100", "/threads/archived/public?limit=100"):
+        cursor = ""
+        while True:
+            try:
+                path = f"/channels/{ISSUE_TRACKER_CHANNEL_ID}{base}{cursor}"
+                data = _api("GET", path)
+            except Exception:  # noqa: BLE001 — best-effort; a listing failure
+                break          # must not block posting (idempotency is a bonus)
+            threads = data.get("threads", [])
+            out.extend(threads)
+            if not data.get("has_more") or not threads:
+                break
+            cursor = f"&before={threads[-1]['id']}"
     return out
 
 
@@ -216,7 +225,7 @@ def gh_issue(repo: str, number: int) -> dict:
     out = subprocess.run(
         ["gh", "issue", "view", str(number), "--repo", repo,
          "--json", "number,title,url,state,labels,author,createdAt,body"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True, text=True, check=True, timeout=30).stdout
     return json.loads(out)
 
 

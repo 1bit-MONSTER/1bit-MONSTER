@@ -92,7 +92,7 @@ def new_open_issues(after: int) -> list[dict]:
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", REPO, "--state", "open",
          "--limit", "1000", "--json", "number,title,createdAt"],
-        capture_output=True, text=True, check=True).stdout
+        capture_output=True, text=True, check=True, timeout=30).stdout
     issues = [i for i in json.loads(out) if i["number"] > after]
     return sorted(issues, key=lambda i: i["number"])
 
