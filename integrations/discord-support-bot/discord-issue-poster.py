@@ -220,7 +220,14 @@ def main() -> int:
     thread_ids = {t["id"] for t in threads}
 
     # ── job 1: post new issues (plus retry previously failed numbers) ─────
-    issues = new_open_issues(after)
+    if not listing_ok:
+        # Fail closed: without a forum listing the idempotency map is empty,
+        # so posting could re-mirror every open issue > last_issue as
+        # duplicates. Retry next run instead.
+        print("forum listing failed — skipping posting this run (fail closed)")
+        issues = []
+    else:
+        issues = new_open_issues(after)
     if not state.get("posts") and BOOTSTRAP_SINCE_DAYS > 0:
         # Fresh/unknown baseline: only mirror issues created recently, so a
         # lost state file can't flood the forum with every historical issue.
@@ -296,6 +303,22 @@ def main() -> int:
         time.sleep(2)  # rate-limit politeness between posts
 
     # ── job 2: reconcile tracked posts with live issue state ──────────────
+    # Adopt untracked "#N" posts (e.g. created by a manual post_issue.py
+    # run for an issue at/below last_issue): they would otherwise keep
+    # frozen tags forever, never closing/archiving with the issue.
+    id_to_name = {v: k for k, v in tags.items()}
+    for num, t in list(existing.items()):
+        if str(num) in posts:
+            continue
+        posts[str(num)] = {
+            "thread": t["id"],
+            "state": "OPEN",  # unknown; sync_post corrects from gh
+            "tags": [id_to_name[i] for i in (t.get("applied_tags") or [])
+                     if i in id_to_name],
+            "archived": bool((t.get("thread_metadata") or {}).get("archived")),
+        }
+        print(f"adopted untracked post #{num} ({t['id']})")
+
     for num, rec in list(posts.items()):
         # Deleted-post detection without a PATCH: an open issue with stable
         # labels/severity never triggers a PATCH, so a hand-deleted post
