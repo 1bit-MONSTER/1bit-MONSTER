@@ -36,14 +36,21 @@ import subprocess
 import sys
 import urllib.request
 
+# Absolute bot-directory anchor: cron runs with an arbitrary CWD, so a
+# relative ".env" would silently not load (no DEEPSEEK_API_KEY → no LLM
+# summary; ISSUE_DIGEST_CHANNEL/ISSUE_SUMMARY overrides ignored).
+BOT_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def _load_dotenv(path: str = ".env") -> None:
+
+def _load_dotenv(path: str | None = None) -> None:
     """Minimal .env loader so cron runs see DISCORD_TOKEN/DEEPSEEK_API_KEY etc.
 
     MUST run before TOKEN / ISSUE_TRACKER_CHANNEL_ID are bound below —
     otherwise a host that keeps secrets only in .env sends an empty
-    Authorization header and every Discord call 401s.
+    Authorization header and every Discord call 401s. Anchored to the bot
+    directory, not the CWD.
     """
+    path = path or os.path.join(BOT_DIR, ".env")
     if not os.path.exists(path):
         return
     for line in open(path, encoding="utf-8"):

@@ -103,28 +103,38 @@ def main() -> int:
     after = int(state.get("last_issue", 0))
     tags = forum_tags()
 
-    # ── job 1: post new issues ────────────────────────────────────────────
+    # ── job 1: post new issues (plus retry previously failed numbers) ─────
     issues = new_open_issues(after)
     posts = state.setdefault("posts", {})
-    for issue in issues:
+    failed = state.setdefault("failed", [])
+    # Retry failed numbers first (ascending), then any new ones — a
+    # transient failure must never drop an issue: if #N fails but #N+1
+    # succeeds, last_issue only advances on success, and #N stays in
+    # `failed` until it posts.
+    for num in sorted(set(failed) | {i["number"] for i in issues}):
         try:
             # post_issue_post needs the FULL issue dict (url/labels/state/
             # body) — the list payload above only carries number/title/
-            # createdAt. Fetching here restores the pre-forum behaviour and
-            # keeps last_issue advancing only on a successful post.
-            full = gh_issue(REPO, issue["number"])
+            # createdAt.
+            full = gh_issue(REPO, num)
             tid = post_issue_post(full)
         except Exception as exc:  # noqa: BLE001
-            print(f"post #{issue['number']} FAILED: {type(exc).__name__}: {exc}")
+            if num not in failed:
+                failed.append(num)
+            print(f"post #{num} FAILED (will retry): {type(exc).__name__}: {exc}")
+            save_state(state)  # persist NOW — a later success must not orphan it
             continue
-        posts[str(issue["number"])] = {
+        if num in failed:
+            failed.remove(num)
+        posts[str(num)] = {
             "thread": tid,
             "state": "OPEN",
             "tags": [t for t in desired_tags(full) if t in tags],
             "archived": False,
         }
-        print(f"posted #{issue['number']} '{issue['title']}' as forum post {tid}")
-        state["last_issue"] = issue["number"]
+        print(f"posted #{num} '{full['title']}' as forum post {tid}")
+        if num > after:
+            state["last_issue"] = num
         save_state(state)
         time.sleep(2)  # rate-limit politeness between posts
 

@@ -17,6 +17,7 @@ Run:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -97,6 +98,35 @@ def _split(text: str, limit: int = 1993) -> list[str]:
     return out
 
 
+def _compose_answer(question: str) -> tuple[str, str]:
+    """Synchronous Context7 + DeepSeek answer (run OFF the event loop).
+
+    Returns (answer, context_block); an empty block means no relevant docs.
+    Blocking here would stall the gateway (heartbeats, other commands).
+    """
+    data = context7.get_context(LIBRARY_ID, question, os.getenv("CONTEXT7_API_KEY"))
+    block = context7.format_context(data)
+    if not block.strip():
+        return "", ""
+    answer = llm.generate(
+        question, block, os.getenv("DEEPSEEK_API_KEY"), max_tokens=MAX_TOKENS
+    )
+    links = context7.source_links(data)
+    if links:
+        answer = answer.rstrip() + "\n\n**Sources:** " + " · ".join(links[:4])
+    return answer, block
+
+
+def _fetch_issue(number: int) -> dict:
+    """Synchronous `gh issue view` (run OFF the event loop)."""
+    out = subprocess.run(
+        ["gh", "issue", "view", str(number),
+         "--repo", "1bit-MONSTER/1bit-MONSTER",
+         "--json", "number,title,url,state,labels,createdAt"],
+        capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(out.stdout)
+
+
 class DocsSlash(discord.Client):
     def __init__(self, token: str, guild_id: int | None) -> None:
         intents = discord.Intents.default()  # message_content not needed for slash
@@ -140,19 +170,14 @@ class DocsSlash(discord.Client):
         # Defer so the user sees "thinking" while Context7 + DeepSeek run.
         await interaction.response.defer(thinking=True)
         try:
-            data = context7.get_context(LIBRARY_ID, question, os.getenv("CONTEXT7_API_KEY"))
-            block = context7.format_context(data)
+            # Context7 + DeepSeek are blocking HTTP calls — run them off the
+            # gateway loop so heartbeats and other commands stay responsive.
+            answer, block = await asyncio.to_thread(_compose_answer, question)
             if not block.strip():
                 await interaction.followup.send(
                     "I couldn't find relevant docs for that. Try rephrasing, or check the docs hub: <https://docs.1bit.monster>."
                 )
                 return
-            answer = llm.generate(
-                question, block, os.getenv("DEEPSEEK_API_KEY"), max_tokens=MAX_TOKENS
-            )
-            links = context7.source_links(data)
-            if links:
-                answer = answer.rstrip() + "\n\n**Sources:** " + " · ".join(links[:4])
         except Exception as exc:  # noqa: BLE001
             log.exception("answer failed")
             await interaction.followup.send(
@@ -166,12 +191,8 @@ class DocsSlash(discord.Client):
         """/issue <n> — compact GitHub issue card via the gh CLI."""
         await interaction.response.defer(thinking=True)
         try:
-            out = subprocess.run(
-                ["gh", "issue", "view", str(number),
-                 "--repo", "1bit-MONSTER/1bit-MONSTER",
-                 "--json", "number,title,url,state,labels,createdAt"],
-                capture_output=True, text=True, timeout=30, check=True)
-            d = json.loads(out.stdout)
+            # gh can hang — run it off the event loop.
+            d = await asyncio.to_thread(_fetch_issue, number)
         except subprocess.CalledProcessError as exc:
             await interaction.followup.send(
                 f"Could not find issue #{number}: {(exc.stderr or '').strip()[:200]}")
