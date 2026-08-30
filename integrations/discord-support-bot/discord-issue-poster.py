@@ -220,36 +220,38 @@ def main() -> int:
     thread_ids = {t["id"] for t in threads}
 
     # ── job 1: post new issues (plus retry previously failed numbers) ─────
-    if not listing_ok:
-        # Fail closed: without a forum listing the idempotency map is empty,
-        # so posting could re-mirror every open issue > last_issue as
-        # duplicates. Retry next run instead.
-        print("forum listing failed — skipping posting this run (fail closed)")
-        issues = []
-    else:
-        issues = new_open_issues(after)
-    if not state.get("posts") and BOOTSTRAP_SINCE_DAYS > 0:
-        # Fresh/unknown baseline: only mirror issues created recently, so a
-        # lost state file can't flood the forum with every historical issue.
-        # (Skipped entirely when BOOTSTRAP_SINCE_DAYS=0 = mirror everything.)
-        cutoff = time.time() - BOOTSTRAP_SINCE_DAYS * 86400
-        kept = []
-        for i in issues:
-            ts = _iso_ts(i.get("createdAt", ""))
-            if ts is None:
-                print(f"#{i['number']}: unparseable createdAt — keeping (guard is best-effort)")
-                kept.append(i)
-            elif ts >= cutoff:
-                kept.append(i)
-        issues = kept
     posts = state.setdefault("posts", {})
     failed = state.setdefault("failed", [])
+    if not listing_ok:
+        # Fail closed: without a forum listing the idempotency map is
+        # empty, so posting OR retrying `failed` could duplicate a post
+        # that actually exists server-side (e.g. a client-side timeout on
+        # the earlier POST). Skip everything; retry next run.
+        print("forum listing failed — skipping posting and retries this run (fail closed)")
+        candidates: set[int] = set()
+    else:
+        issues = new_open_issues(after)
+        if not state.get("posts") and BOOTSTRAP_SINCE_DAYS > 0:
+            # Fresh/unknown baseline: only mirror issues created recently, so a
+            # lost state file can't flood the forum with every historical issue.
+            # (Skipped entirely when BOOTSTRAP_SINCE_DAYS=0 = mirror everything.)
+            cutoff = time.time() - BOOTSTRAP_SINCE_DAYS * 86400
+            kept = []
+            for i in issues:
+                ts = _iso_ts(i.get("createdAt", ""))
+                if ts is None:
+                    print(f"#{i['number']}: unparseable createdAt — keeping (guard is best-effort)")
+                    kept.append(i)
+                elif ts >= cutoff:
+                    kept.append(i)
+            issues = kept
+        candidates = set(failed) | {i["number"] for i in issues}
     fresh_ids: set[str] = set()  # posts created THIS run — not in the pre-posting snapshot
     # Retry failed numbers first (ascending), then any new ones — a
     # transient failure must never drop an issue: if #N fails but #N+1
     # succeeds, last_issue only advances on success, and #N stays in
     # `failed` until it posts.
-    for num in sorted(set(failed) | {i["number"] for i in issues}):
+    for num in sorted(candidates):
         if num in existing:
             # Already mirrored (crash/timeout recovery) — record, don't re-post.
             if num in failed:
