@@ -33,8 +33,13 @@ GGUF_FTYPE_NAMES = {
     24: "IQ1_M", 25: "BF16",
 }
 
-# Q4_K / Q5_K / Q6_K / Q8_K = K-quant family → HRX GET_ROWS works
-K_QUANTS = {"Q4_K", "Q5_K", "Q6_K", "Q8_K", "Q3_K", "Q2_K"}
+# HRX GET_ROWS serve set — EMPIRICALLY VERIFIED 2026-08-30 on strixhalo.
+# Only Q4_K fuses cleanly on the ggml-hrx bundle; q6_K FAILS at GET_ROWS
+# (Qwen3-0.6B "Q4_K_M" file carries q6_K embeds → "decode() failed: Compute
+# error"). Q5_K/Q8_K/Q3_K/Q2_K are unverified on this bundle — keep them out
+# of the serve set until llama.cpp PR #27218 (GET_ROWS coverage) lands and a
+# re-probe confirms each ftype.
+K_QUANTS = {"Q4_K"}
 
 
 _HF_FILE_CACHE: dict[str, list[str]] = {}
