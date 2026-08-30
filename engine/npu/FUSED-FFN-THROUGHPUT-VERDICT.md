@@ -158,3 +158,17 @@ f32 baseline — the .1bp weights are q4nx-derived, so per-row int8
 re-quantization is nearly lossless vs the dequantized f32.
 
 Session totals (batch 32): 292 (start) -> 613 agg tok/s (+110%).
+
+## 11. Round 6 (2026-08-30): DP4A int8-x lm_head — measured non-win, reverted
+
+Quantized the lm_head x to int8 per batch-row (f2i8_rows, NPU-style ascale)
+and rewrote the kernel with a scalar 4-MAC dot (gfx1151's dot1-insts feature
+is not target-enableable on this toolchain; the scalar fallback still halves
+the x L2 bytes).  Standalone: 13.4 -> 10.9 ms (-19%).  But IN-PATH the
+lm_head is flat (20.9 vs 21.0 ms/batch) — the in-path lm_head is NOT
+kernel-bound: skipping the 19.4 MB logits D2H changes nothing (20.85 vs
+20.73), and all kernel variants (fp16-x, i8-W x fp16-x, int8-x) land at
+~21 ms.  The in-path lm_head is bounded by the single-kernel-per-token
+pattern + L2 state after the forward; token n+1's forward depends on
+lm_head(n)'s argmax, so it cannot be overlapped.  Reverted.  Batch-32
+stands at 621 agg tok/s (int8-W state).
