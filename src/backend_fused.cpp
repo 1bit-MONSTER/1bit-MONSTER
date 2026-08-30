@@ -1604,7 +1604,7 @@ struct FusedBackend : Backend {
                             if (gl.w18) gemv8(dgate, gl.w18, gl.w1_s, dh, IM_, H_, stream); else gemv(dgate, gl.w1, dh, IM_, H_, stream);
                             gemv(dup_,  gl.w2, dh, IM_, H_, stream);
                             fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                            gemv(dh, gl.w3, datt, H_, IM_, stream);
+                            if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream); else gemv(dh, gl.w3, datt, H_, IM_, stream);
                             fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                         }
                         HIP_CHECK(hipMemcpy(va_.pages()->host_ptr(), dh,
@@ -1629,7 +1629,7 @@ struct FusedBackend : Backend {
                             if (gl.w18 && gl.w28) fused_gu_v4_i8_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh, IM_, H_);
                             else fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
                         fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                        gemv(dh, gl.w3, datt, H_, IM_, stream);
+                        if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream); else gemv(dh, gl.w3, datt, H_, IM_, stream);
                         fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                     }
                     HIP_CHECK(hipMemcpy(va_.pages()->host_ptr(), dh,
@@ -1650,7 +1650,7 @@ struct FusedBackend : Backend {
                         if (gll.w18) gemv8(dgate, gll.w18, gll.w1_s, dh, IM_, H_, stream); else gemv(dgate, gll.w1, dh, IM_, H_, stream);
                         gemv(dup_,  gll.w2, dh, IM_, H_, stream);
                         fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                        gemv(dh, gll.w3, datt, H_, IM_, stream);
+                        if (gll.w38) gemv8(dh, gll.w38, gll.w3_s, datt, H_, IM_, stream); else gemv(dh, gll.w3, datt, H_, IM_, stream);
                         fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                     }
                 }
@@ -1781,7 +1781,7 @@ struct FusedBackend : Backend {
                     if (gl.w18 && gl.w28) fused_gu_v4_i8_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh, IM_, H_);
                             else fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
                     fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                    gemv(dh, gl.w3, datt, H_, IM_, stream);
+                    if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream); else gemv(dh, gl.w3, datt, H_, IM_, stream);
                     fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                 }
             } else {
@@ -1823,7 +1823,7 @@ struct FusedBackend : Backend {
                     if (gll.w18) gemv8(dgate, gll.w18, gll.w1_s, dh, IM_, H_, stream); else gemv(dgate, gll.w1, dh, IM_, H_, stream);
                     gemv(dup_,  gll.w2, dh, IM_, H_, stream);
                     fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                    gemv(dh, gll.w3, datt, H_, IM_, stream);
+                    if (gll.w38) gemv8(dh, gll.w38, gll.w3_s, datt, H_, IM_, stream); else gemv(dh, gll.w3, datt, H_, IM_, stream);
                     fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                 }
             }
