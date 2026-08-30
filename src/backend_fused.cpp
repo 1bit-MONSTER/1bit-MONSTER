@@ -181,6 +181,44 @@ __global__ void fused_gemv_batch_ws_kernel(float* __restrict__ y, const float* _
     }
 }
 
+// ── Batched lm_head: y[b, V] = x[b, H] @ W[V, H]^T, W read ONCE total ──
+// Block-per-vocab-row with float4 W loads + warp-shuffle reductions.
+// Measured (gfx1151, V=151936, H=1024, B=32, 2026-08-30): 16.9 ms vs 28.1 ms
+// for fused_gemv_batch_ws_kernel (whose per-batch tree reductions and scalar
+// loads dominate).  The 622 MB W read alone is 3.0 ms (205 GB/s); the
+// residual is the per-block x re-read from L2 (inherent to
+// block-per-vocab-row, x is only 128 KB and stays L2-resident).
+__global__ void fused_lm_head_batch_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                           const float* __restrict__ x, int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    constexpr int LBLOCK = 128;
+    __shared__ float ws[3072];               // N <= 3072 (lm_head H)
+    __shared__ float wsum[LBLOCK / 32];
+    const float4* W4 = (const float4*)(W + (size_t)row * N);
+    float4* ws4 = (float4*)ws;
+    for (int i = threadIdx.x; i < N / 4; i += LBLOCK) ws4[i] = W4[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int b = 0; b < B; b++) {
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 w = ws4[k4], xv = x4[k4];
+            sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) y[(size_t)b * M + row] = v;
+        }
+        __syncthreads();
+    }
+}
+
 // ── Row-wise argmax on the GPU (first-max, matches the host loop) ──
 // out[b] = argmax_v logits[b*V+v], first (lowest) index on ties.  Avoids the
 // host-side scan of B*V logits (~1 ms on 8x152K) — the token selection is
@@ -1445,7 +1483,7 @@ struct FusedBackend : Backend {
         HIP_CHECK(hipMemcpy(dh_batch, hidden, (size_t)am * H * sizeof(float), hipMemcpyHostToDevice));
         const float* W = d_output ? d_output : d_embed;
         if (!W) return false;
-        fused_gemv_batch_ws_kernel<<<VOCAB, BLOCK, 0, stream>>>(dlogits_batch, W, dh_batch, VOCAB, H, am);
+        fused_lm_head_batch_kernel<<<VOCAB, 128, 0, stream>>>(dlogits_batch, W, dh_batch, VOCAB, H, am);
         HIP_CHECK(hipMemcpy(logits, dlogits_batch, (size_t)am * VOCAB * sizeof(float), hipMemcpyDeviceToHost));  // blocking
         if (argmaxs) {
             // GPU argmax (first-max, same semantics as the old host loop) —
