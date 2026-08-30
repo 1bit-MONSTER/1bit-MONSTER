@@ -61,6 +61,29 @@ That starts a gateway connection and registers **`/docs`** with your bot.
 `DISCORD_GUILD_ID` (or auto-discovery) scopes the command to your server so it
 appears immediately instead of waiting up to an hour.
 
+### Run it as a service (recommended for always-on)
+The bot must stay connected to the Discord gateway, so run it as a systemd
+**user** service rather than a one-off process:
+
+```bash
+./install-docsbot-service.sh
+```
+
+This creates `~/.config/systemd/user/docsbot.service` from the committed
+`docsbot.service` template, installs the venv, enables linger (start at boot),
+and starts it. Manage it with `systemctl --user status/restart docsbot` and
+watch logs with `journalctl --user -u docsbot -f`.
+
+### Smoke test
+Validate the pipeline (does **not** need the DeepSeek key):
+
+```bash
+python3 smoke.py
+```
+
+It checks Context7 is retrieval-ready for `/1bit-monster/1bit-monster`, and, if
+`DEEPSEEK_API_KEY` is set, that a grounded answer is produced.
+
 ## Usage
 - **`/docs <question>`** — in any channel, e.g. `/docs how do I build the engine?`
 - The bot answers with a grounded reply plus the doc source links it used.

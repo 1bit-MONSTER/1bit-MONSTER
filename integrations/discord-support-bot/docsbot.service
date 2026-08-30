@@ -1,0 +1,25 @@
+# 1bit.MONSTER Context7 `/docs` Discord bot — systemd user unit (template).
+#
+# The username is set at install time by `install-docsbot-service.sh` (it
+# replaces @USER@ and @BOT_DIR@). This is a template committed to the repo so
+# the bot can be deployed reproducibly on any host without a build step.
+#
+# Install/start:
+#   integrations/discord-support-bot/install-docsbot-service.sh
+
+[Unit]
+Description=1bit.MONSTER Context7 /docs Discord bot (gateway)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@BOT_DIR@
+EnvironmentFile=@BOT_DIR@/.env
+ExecStart=@BOT_DIR@/.venv/bin/python @BOT_DIR@/docs_slash.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
