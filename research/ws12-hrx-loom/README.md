@@ -466,6 +466,43 @@ Full suite green at the true offset: q4nx bit-exact, mul_mat_f32 rel 9.2e-5,
 fused rel 7.1e-6, type bit-exact, graph op rel 2.77e-6, GGUF load
 byte-identical.
 
+### UPDATE 2026-08-30 (round 10): cols>1 batches + REAL standard-model weight through the op on gfx1151
+
+**`GGML_OP_MUL_MAT_Q4NX` now handles multi-column batches.** The f32 route
+reads src1 as `[cols, k]` and writes dst as `[cols, rows]`, both of which
+differ from ggml's `[k, cols]` / `[rows, cols]` conventions for cols>1; the
+dispatch now transposes src1 and dst on device (per-element stream copies).
+Validated: cols=16 rel 2.94e-5, cols=1 fast path rel 2.77e-6.
+
+**Key realization: no pre-existing standard-arch Q4NX model is needed — we
+can CREATE one.** `quantize-gguf-to-q4nx.cpp` (uses the fork's own
+validated code: `dequantize_row_q4_K/Q6_K` -> f32 -> `quantize_row_q4nx_ref`
+-> tiles in tile-grid order) quantizes a standard GGUF weight into Q4NX.
+This surfaced and FIXED a real bug in `quantize_row_q4nx_ref`: negative
+weights were clamped to 0 instead of mapping to the high nibbles
+(two's-complement: q<0 -> q+16), and the scale factor hit the q=8<->val=-8
+edge (now smax/7). Round-trip rel L2 ~10% (int4 re-quant of a Q4_K source).
+
+**Real-model validation on gfx1151** — Qwen3-0.6B `blk.0.attn_q.weight`
+(quantized Q4_K -> Q4NX), column-tile 0 (64 tiles = [2048 rows x 256 cols])
+through the op, 4-column batch:
+
+```
+GGML_OP_MUL_MAT_Q4NX — Qwen3-0.6B blk.0.attn_q col-tile 0 [2048x256]x[256x4] on gfx1151
+  max abs diff 3.69e-07   mismatches >1e-3: 0/8192   PASS
+```
+
+The standard-model Q4NX pipeline is now proven end-to-end at the op level:
+standard GGUF -> Q4NX quantizer -> GGML tensor -> GGML_OP_MUL_MAT_Q4NX ->
+HRX2 fused dispatch on gfx1151 -> numerically exact (abs 3.7e-7).
+
+**Remaining for milestone 4 (llama-server full model):** patch
+llama-build-graph.cpp to emit GGML_OP_MUL_MAT_Q4NX per column-tile for
+Q4NX-typed weights (in=1024 -> 4 column-tiles summed; token_embd/lm_head
+have vocab 151936, not tile-divisible — needs a tail-handling plan).
+Bounded but a real llama.cpp integration; every piece it needs is now
+validated.
+
 **Persisted:** `validate-ggml-q4nx-type.cpp` (type + CPU dequant validation;
 PASS bit-exact), `validate-ggml-q4nx-op.cpp` (graph-op attempt — documents
 the ne0/blck_size blocker), fork patch regenerated with the type + backend
