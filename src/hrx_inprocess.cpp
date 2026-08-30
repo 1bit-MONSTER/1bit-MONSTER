@@ -190,7 +190,7 @@ std::string bundle_lib_path() {
             if (access(bin.c_str(), F_OK) == 0) return bin;
             return lib;  // canonical path; init() will fail with a clear error
         }
-        return "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b59/lib/libllama.so";
+        return "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66/lib/libllama.so";
     }();
     const char* root = std::getenv("HRX_ROOT");
     if (root && root[0]) {

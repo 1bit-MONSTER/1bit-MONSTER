@@ -50,8 +50,11 @@ std::string locate_hrx_server() {
 
     std::string root = env_or("HRX_ROOT", "");
     if (root.empty()) {
-        // Known default unpacked bundle.
-        const char* def = "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b59";
+        // Known default unpacked bundle.  b66 is the current official bundle
+        // (fused Qwen3-MoE graphs).  Unfused graphs (dense models) still
+        // fail-closed on GET_ROWS in b59/b66 — use the gfx1151 rebuild
+        // (HRX_ROOT=/home/bcloud/hrx-gfx1151/llama-src/build) for those.
+        const char* def = "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66";
         root = def;
     }
     if (!root.empty()) {
