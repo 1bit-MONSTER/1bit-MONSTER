@@ -230,14 +230,19 @@ DDR ──► Shim ──► MemTile ──► Main16 (Q4NX GEMM)
   the documented #1207 broken config — and its dummy-weight feedback loop
   overflowed float to +inf by iter 3, false-failing on healthy silicon).
 - E2E (bench_fused_batch, models/Qwen3-0.6B.1bp, NPU FFN engaged, coherent
-  token streams): FUSED_BATCH=8 → 42 agg tok/s (m8); FUSED_BATCH=32 →
-  45 agg tok/s (m32, 32 seqs).  The per-row FFN win is real but masked at
-  e2e: the NPU FFN launch (3.2 ms standalone for 32 rows) runs ~9.5 ms/layer
-  under concurrent GPU attention (shared-DDR DMA contention), and batched
-  GPU attention itself is ~11.6 ms/layer at batch 32 — attention, not the
-  FFN, is now the bottleneck.  The 65→70 tok/s target needs the attention
-  path (batched attention scaling + zero-copy NPU FFN on SharedBO pages)
-  before the FFN amortization shows up e2e.
+  token streams; re-measured 2026-08-30 after an `amdxdna` driver reload —
+  a fresh driver roughly doubled the NPU batch path): FUSED_BATCH=8 →
+  46 agg tok/s (m8); FUSED_BATCH=16 → 54 agg tok/s (m32, am=16);
+  FUSED_BATCH=32 → 93 agg tok/s (m32, 32 seqs; was 45-48 on the degraded
+  pre-reload driver).  The m32 per-batch wall grows only ~1.5× from 8 to 32
+  sequences (174 → 345 ms/batch) while delivering 4× the sequences.
+  GPU-only batch 32 remains ahead (289 agg tok/s — the GPU's batched FFN
+  kernels win at batch ≥ 8; the NPU path's value is freeing the GPU from FFN
+  work and the B-DMA amortization per row).  Beyond the FFN, the path is
+  attention/DDR-bandwidth-bound (per-layer events on the degraded driver
+  showed ~11.6 ms/layer attention + ~9.5 ms FFN wait at batch 32; the
+  attention path and zero-copy NPU FFN on SharedBO pages are the remaining
+  levers before the FFN amortization shows up fully e2e).
 
 ### INT8 GEMM kernel state (2026-07-31)
 
