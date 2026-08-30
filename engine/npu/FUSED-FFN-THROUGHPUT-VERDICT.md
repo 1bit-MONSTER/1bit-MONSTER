@@ -95,3 +95,20 @@ throughput when the GPU is shared (big-model tenant, multi-model server) —
 but its absolute slowness (8.5 ms/layer vs GPU ~1.2) means it only wins
 under extreme (>3x) GPU degradation. USE_NPU_FFN is the knob for this
 tradeoff; document the numbers, don't auto-route.
+
+## 7. Round 2 (2026-08-30): fp16-x lm_head + v1fs attention GEMVs
+
+- lm_head now reads the hidden state as fp16 (fused_f2h_kernel converts the
+  128 KB hidden once per token): halves the per-block x re-read from L2.
+  lm_head 28.1 -> 22.0 ms/batch at batch 32 (same window).
+- The v1fs batched-GEMV pattern (float4 W loads + warp-shuffle reduction,
+  BLOCK=128) was applied to the attention GEMVs (QKV fused kernel, O proj,
+  FFN w3, q/k/v fallback): standalone qkv 0.70->0.41 ms, O 0.35->0.22 ms.
+- Batch-32 decode 287 -> 374 agg tok/s (+30% same-window; forward 83.5->63.6,
+  lm_head 28.1->22.0 ms/batch).  Sweep: 270/334/374 at B=8/16/32.  Token
+  streams bit-identical to baseline (15 13 15 ...).
+- Note: the GPU's absolute numbers drifted ~2x during this session (thermal
+  degradation after hours of stress); all A/B comparisons were same-window.
+- Remaining levers: hipGraph the ~9-kernel per-layer attention sequence
+  (launch overhead), f16 attention weights (halve the 25 MB/layer f32 reads),
+  and the residual lm_head x-traffic.
