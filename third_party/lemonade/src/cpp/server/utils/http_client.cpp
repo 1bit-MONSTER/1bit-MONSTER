@@ -32,8 +32,9 @@ std::atomic<int64_t> HttpClient::download_rate_limit_bytes_per_second_{0};
 
 // Stream stall bound (seconds): how long a stream may deliver nothing before
 // it is treated as dead. Well above any inter-token gap, well below "never".
-// Overridable via "stream_stall_timeout" in config.json (0 disables); this is
-// the historical hardcoded default.
+// The server sets this from config at startup: explicit stream_stall_timeout
+// wins, otherwise it follows global_timeout. This atomic only holds the
+// pre-config default for direct library users.
 std::atomic<long> HttpClient::stream_stall_timeout_seconds_{120};
 
 // Serializes transfers so concurrent downloads cannot exceed the cap in aggregate.
