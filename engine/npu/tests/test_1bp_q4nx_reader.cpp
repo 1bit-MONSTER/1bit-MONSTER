@@ -179,6 +179,61 @@ int main(int argc, char** argv) {
                   "%s: additive-zp fixed-point dequant vs int8 re-quant: "
                   "%ld/%ld boundary bytes, maxdiff=%.6f (rounding only)",
                   tname, dz_bad, dz_tot, dz_maxd);
+
+            // ── Issue #1934 round-10: bf16 (a,b) pair layout ──
+            // The int32 additive contract needs a SECOND int32 grid (+1024 B)
+            // but the v66 tile is full to the 5632-B delivery ceiling (nibbles
+            // [0,4096) + ratioQ22 [4096,5120) + silu meta [5120,5632)). The
+            // layout that FITS the existing 1024-B ratio region is a bf16 pair
+            // per (K-group, col): a = s/S_col, b = zp/S_col as bf16, 2 bytes
+            // each = 2*128*4 = 1024 B exactly. The ws09 note says the AIE2P
+            // peano toolchain fails VECTORIZED fp32 elementwise mul, but the
+            // scalar bf16->float dequant compiles (the original dequant_i4_b
+            // used it). Measured on real Qwen3-0.6B.1bp: corr 0.978972 vs
+            // float 0.978971 (identical to 6 dp) at every sampled layer, and
+            // byte-diff vs float is rounding-boundary only (~5.2% +-1 flips
+            // that cancel in the FFN accumulation; corr is the gate).
+            {
+                const int H_ = C, nff = R / 2;
+                const size_t N_ = 2 * (size_t)nff;
+                // corr of the bf16-pair dequant vs the float reference
+                double num = 0, d1 = 0, d2 = 0;
+                for (int i = 0; i < H_; i++)
+                    for (size_t j = 0; j < N_; j++) {
+                        int pp = (int)(j / 2);
+                        size_t r = (size_t)pp; if (j & 1) r = (size_t)nff + pp;
+                        int q4 = t.q4[(size_t)r * C + i];
+                        float s = t.scl[(size_t)r * (C/32) + i/32];
+                        float z = t.zp[(size_t)r * (C/32) + i/32];
+                        // bf16 a,b (the 1024-B grid the kernel would read)
+                        float a16 = i4p_bf16_to_f32(f32_to_bf16_impl(s / scol[j]));
+                        float b16 = i4p_bf16_to_f32(f32_to_bf16_impl(z / scol[j]));
+                        long x = (long)std::lroundf(q4 * a16 + b16);
+                        int8_t b = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                        float w = (float)q4 * s + z;
+                        num += (double)w * b; d1 += (double)w * w; d2 += (double)b * b;
+                    }
+                double corr_bf16 = num / std::sqrt(d1 * d2);
+                // float reference corr (the int8 re-quant of exact W)
+                num = d1 = d2 = 0;
+                for (int i = 0; i < H_; i++)
+                    for (size_t j = 0; j < N_; j++) {
+                        int pp = (int)(j / 2);
+                        size_t r = (size_t)pp; if (j & 1) r = (size_t)nff + pp;
+                        int q4 = t.q4[(size_t)r * C + i];
+                        float s = t.scl[(size_t)r * (C/32) + i/32];
+                        float z = t.zp[(size_t)r * (C/32) + i/32];
+                        float w = (float)q4 * s + z;
+                        long xr = (long)std::lroundf(w / scol[j]);
+                        int8_t br = (int8_t)(xr > 127 ? 127 : xr < -127 ? -127 : xr);
+                        num += (double)w * br; d1 += (double)w * w; d2 += (double)br * br;
+                    }
+                double corr_f = num / std::sqrt(d1 * d2);
+                CHECK(std::fabs(corr_bf16 - corr_f) <= 5e-4,
+                      "%s: bf16 (a,b) pair dequant corr=%.6f vs float corr=%.6f "
+                      "(<= 5e-4; fits the existing 1024-B ratio region)",
+                      tname, corr_bf16, corr_f);
+            }
         }
     }
 
