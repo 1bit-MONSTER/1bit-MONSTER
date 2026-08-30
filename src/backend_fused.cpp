@@ -181,6 +181,109 @@ __global__ void fused_gemv_batch_ws_kernel(float* __restrict__ y, const float* _
     }
 }
 
+
+// ── int8-W single-stream GEMVs (per-row scales): 4x smaller W reads ──
+__global__ void fused_gemv_v4_i8_kernel(float* __restrict__ y, const int8_t* __restrict__ W,
+                                        const float* __restrict__ srow, const float* __restrict__ x,
+                                        int M, int N) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const int8_t* Wr = W + (size_t)row * N;
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 xv = x4[k];
+        const int8_t* w8 = Wr + k * 4;
+        sum += (float)w8[0]*xv.x + (float)w8[1]*xv.y + (float)w8[2]*xv.z + (float)w8[3]*xv.w;
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = sdata[0] * srow[row];
+}
+
+__global__ void fused_qkv_v4_i8_kernel(float* __restrict__ yq, float* __restrict__ yk, float* __restrict__ yv,
+                                       const int8_t* __restrict__ Wq, const int8_t* __restrict__ Wk,
+                                       const int8_t* __restrict__ Wv, const float* __restrict__ sq,
+                                       const float* __restrict__ sk, const float* __restrict__ sv,
+                                       const float* __restrict__ x, int s1, int s2, int N) {
+    int row = blockIdx.x;
+    const int8_t* Wr; float* yr; float sr;
+    if (row < s1) { Wr = Wq + (size_t)row * N; yr = yq + row; sr = sq[row]; }
+    else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * N; yr = yk + (row - s1); sr = sk[row - s1]; }
+    else { Wr = Wv + (size_t)(row - s1 - s2) * N; yr = yv + (row - s1 - s2); sr = sv[row - s1 - s2]; }
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 xv = x4[k];
+        const int8_t* w8 = Wr + k * 4;
+        sum += (float)w8[0]*xv.x + (float)w8[1]*xv.y + (float)w8[2]*xv.z + (float)w8[3]*xv.w;
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) yr[0] = sdata[0] * sr;
+}
+
+__global__ void fused_gu_v4_i8_kernel(float* __restrict__ y1, float* __restrict__ y2,
+                                      const int8_t* __restrict__ W1, const int8_t* __restrict__ W2,
+                                      const float* __restrict__ s1v, const float* __restrict__ s2v,
+                                      const float* __restrict__ x, int IM, int N) {
+    int row = blockIdx.x;
+    const int8_t* Wr; float* yr; float sr;
+    if (row < IM) { Wr = W1 + (size_t)row * N; yr = y1 + row; sr = s1v[row]; }
+    else { Wr = W2 + (size_t)(row - IM) * N; yr = y2 + (row - IM); sr = s2v[row - IM]; }
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 xv = x4[k];
+        const int8_t* w8 = Wr + k * 4;
+        sum += (float)w8[0]*xv.x + (float)w8[1]*xv.y + (float)w8[2]*xv.z + (float)w8[3]*xv.w;
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) yr[0] = sdata[0] * sr;
+}
+
+__global__ void fused_wo_h2v4_i8_kernel(float* __restrict__ y, const int8_t* __restrict__ W,
+                                        const float* __restrict__ srow, const __half* __restrict__ x,
+                                        int M, int N) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const int8_t* Wr = W + (size_t)row * N;
+    const __half2* x2 = (const __half2*)x;
+    int N2 = N >> 1;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N2; k += BLOCK) {
+        float2 f = __half22float2(x2[k]);
+        sum += (float)Wr[k*2] * f.x + (float)Wr[k*2+1] * f.y;
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = sdata[0] * srow[row];
+}
+
 // ── Optimized batched GEMV (v1fs): y[b, M] = x[b, N] @ W[M, N]^T ──
 // Block-per-output-row with float4 W loads + warp-shuffle reductions.
 // Measured (gfx1151, B=32): lm_head 28.1 -> 16.9 ms; qkv (M=4096, N=1024)
@@ -869,7 +972,9 @@ struct FusedBackend : Backend {
     // GPU weights
     float *d_embed = nullptr, *d_final_norm = nullptr, *d_output = nullptr;
     int8_t* d_output8 = nullptr;   // int8 lm_head W (152 MB vs 622 MB f32)
+    int8_t* d_embed8 = nullptr;    // int8 tied-embedding lm_head W (no lm_head.weight models)
     float* d_output_s = nullptr;   // per-row lm_head scales
+    float* d_embed_s = nullptr;    // per-row tied-embedding scales
     struct GpuL {
         float *wq, *wk, *wv, *wo, *w1, *w2, *w3, *pn, *pon, *q_norm, *k_norm;
         // int8 GEMV weights + per-row scales: 4x smaller W, ~35-44% faster
@@ -1238,6 +1343,7 @@ struct FusedBackend : Backend {
             return true;
         };
         up(cpu_embed, d_embed); up(cpu_final_norm, d_final_norm); up(cpu_output, d_output);
+        up8(cpu_embed, H, d_embed8, d_embed_s);
         up8(cpu_output, H, d_output8, d_output_s);
         L.resize(NC);
         for (int l = 0; l < NC; l++) {
@@ -1298,6 +1404,10 @@ struct FusedBackend : Backend {
         // the shared round-trip costs more than the x re-read traffic.)
         if ((N & 3) == 0) fused_gemv_v4_kernel<<<M, BLOCK, 0, s>>>(y, W, x, M, N);
         else              fused_gemv_plain_kernel<<<M, BLOCK, 0, s>>>(y, W, x, M, N);
+    }
+    static void gemv8(float* y, const int8_t* W8, const float* srow, const float* x, int M, int N, hipStream_t s) {
+        if (!W8) return;
+        fused_gemv_v4_i8_kernel<<<M, BLOCK, 0, s>>>(y, W8, srow, x, M, N);
     }
 
     // ══════════════════════════════════════
@@ -1490,7 +1600,7 @@ struct FusedBackend : Backend {
                         if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
                         else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
                         if (gl.w1 && gl.w2 && gl.w3) {
-                            gemv(dgate, gl.w1, dh, IM_, H_, stream);
+                            if (gl.w18) gemv8(dgate, gl.w18, gl.w1_s, dh, IM_, H_, stream); else gemv(dgate, gl.w1, dh, IM_, H_, stream);
                             gemv(dup_,  gl.w2, dh, IM_, H_, stream);
                             fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
                             gemv(dh, gl.w3, datt, H_, IM_, stream);
@@ -1512,7 +1622,10 @@ struct FusedBackend : Backend {
                     if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
                     else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
                     if (gl.w1 && gl.w2 && gl.w3) {
-                        fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
+                        if (gl.w18 && gl.w28)
+                            fused_gu_v4_i8_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh, IM_, H_);
+                        else
+                            fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
                         fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
                         gemv(dh, gl.w3, datt, H_, IM_, stream);
                         fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
@@ -1532,7 +1645,7 @@ struct FusedBackend : Backend {
                     if (gll.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gll.pon, H_, EPS);
                     else         fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
                     if (gll.w1 && gll.w2 && gll.w3) {
-                        gemv(dgate, gll.w1, dh, IM_, H_, stream);
+                        if (gll.w18) gemv8(dgate, gll.w18, gll.w1_s, dh, IM_, H_, stream); else gemv(dgate, gll.w1, dh, IM_, H_, stream);
                         gemv(dup_,  gll.w2, dh, IM_, H_, stream);
                         fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
                         gemv(dh, gll.w3, datt, H_, IM_, stream);
@@ -1602,11 +1715,17 @@ struct FusedBackend : Backend {
 
             // 2. QKV GEMV (all async on stream)
             if (gl.wq && gl.wk && gl.wv)
-                fused_qkv_v4_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(datt, dgate, dup_, gl.wq, gl.wk, gl.wv, dh, s1, s2, H_);
+                if (gl.wq8 && gl.wk8 && gl.wv8)
+                    fused_qkv_v4_i8_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(datt, dgate, dup_, gl.wq8, gl.wk8, gl.wv8, gl.wq_s, gl.wk_s, gl.wv_s, dh, s1, s2, H_);
+                else
+                    fused_qkv_v4_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(datt, dgate, dup_, gl.wq, gl.wk, gl.wv, dh, s1, s2, H_);
             else {
-                if (gl.wq) gemv(datt,  gl.wq, dh, s1, H_, stream);
-                if (gl.wk) gemv(dgate, gl.wk, dh, s2, H_, stream);
-                if (gl.wv) gemv(dup_,  gl.wv, dh, s2, H_, stream);
+                if (gl.wq && gl.wq8) gemv8(datt, gl.wq8, gl.wq_s, dh, s1, H_, stream);
+                else if (gl.wq) gemv(datt, gl.wq, dh, s1, H_, stream);
+                if (gl.wk && gl.wk8) gemv8(dgate, gl.wk8, gl.wk_s, dh, s2, H_, stream);
+                else if (gl.wk) gemv(dgate, gl.wk, dh, s2, H_, stream);
+                if (gl.wv && gl.wv8) gemv8(dup_, gl.wv8, gl.wv_s, dh, s2, H_, stream);
+                else if (gl.wv) gemv(dup_, gl.wv, dh, s2, H_, stream);
             }
 
             // 2b. Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm each head's
@@ -1631,7 +1750,10 @@ struct FusedBackend : Backend {
                 rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos+1, scl, (void*)stream);
 
                 // 6. attn half→f32 + output projection
-                fused_wo_h2v4_kernel<<<H_, BLOCK, 0, stream>>>(doproj, gl.wo, dAttn, H_, s1);
+                if (gl.wo8)
+                    fused_wo_h2v4_i8_kernel<<<H_, BLOCK, 0, stream>>>(doproj, gl.wo8, gl.wo_s, dAttn, H_, s1);
+                else
+                    fused_wo_h2v4_kernel<<<H_, BLOCK, 0, stream>>>(doproj, gl.wo, dAttn, H_, s1);
 
                 // 7. Residual: dh = attn_out + saved input (dffn, pre-RMSNorm)
                 fused_residual_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, dffn, H_);
@@ -1695,7 +1817,7 @@ struct FusedBackend : Backend {
                 if (gll.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gll.pon, H_, EPS);
                 else         fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
                 if (gll.w1 && gll.w2 && gll.w3) {
-                    gemv(dgate, gll.w1, dh, IM_, H_, stream);
+                    if (gll.w18) gemv8(dgate, gll.w18, gll.w1_s, dh, IM_, H_, stream); else gemv(dgate, gll.w1, dh, IM_, H_, stream);
                     gemv(dup_,  gll.w2, dh, IM_, H_, stream);
                     fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
                     gemv(dh, gll.w3, datt, H_, IM_, stream);
@@ -1714,7 +1836,11 @@ struct FusedBackend : Backend {
     bool lm_head(const float* hidden, float* logits, int* argmax) override {
         // Upload hidden to GPU, run GEMV, read back
         HIP_CHECK(hipMemcpy(dh, hidden, H*sizeof(float), hipMemcpyHostToDevice));
-        if (d_output) {
+        int8_t* w8s = d_output8 ? d_output8 : (d_embed8 ? d_embed8 : nullptr);
+        float* w8sc = d_output8 ? d_output_s : (d_embed8 ? d_embed_s : nullptr);
+        if (w8s && w8sc) {
+            gemv8(dlogits, w8s, w8sc, dh, VOCAB, H, stream);
+        } else if (d_output) {
             gemv(dlogits, d_output, dh, VOCAB, H, stream);
         } else if (d_embed) {
             gemv(dlogits, d_embed, dh, VOCAB, H, stream);
