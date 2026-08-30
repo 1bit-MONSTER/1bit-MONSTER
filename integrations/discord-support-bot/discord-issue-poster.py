@@ -97,8 +97,18 @@ def new_open_issues(after: int) -> list[dict]:
     return sorted(issues, key=lambda i: i["number"])
 
 
+def _is_gone(exc: Exception) -> bool:
+    """True when the Discord API says the thread no longer exists (404)."""
+    return getattr(exc, "code", None) == 404 or "404" in str(exc)
+
+
 def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
-    """Reconcile one tracked post with the live issue; PATCH only on change."""
+    """Reconcile one tracked post with the live issue; PATCH only on change.
+
+    Every Discord PATCH is individually guarded: one failure (post deleted
+    → 404, or rate-limit 429 mid-batch) must not abort the whole job-2
+    loop and disable lifecycle sync for every tracked post.
+    """
     try:
         issue = gh_issue(REPO, number)
     except Exception as exc:  # noqa: BLE001 — issue may be gone; leave post alone
@@ -110,18 +120,38 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
     changed = False
 
     if want != rec.get("tags"):
-        update_post(rec["thread"], applied_tags=ids)
+        try:
+            update_post(rec["thread"], applied_tags=ids)
+        except Exception as exc:  # noqa: BLE001
+            if _is_gone(exc):
+                print(f"sync #{number}: post {rec['thread']} gone (404) — dropping from state")
+                state["posts"].pop(str(number), None)
+                save_state(state)
+            else:
+                print(f"sync #{number}: tag PATCH failed (will retry): "
+                      f"{type(exc).__name__}: {exc}")
+            return
         rec["tags"] = want
         changed = True
         print(f"sync #{number}: tags -> {want}")
 
     if closed and not rec.get("archived"):
-        update_post(rec["thread"], archived=True)
+        try:
+            update_post(rec["thread"], archived=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"sync #{number}: archive failed (will retry): "
+                  f"{type(exc).__name__}: {exc}")
+            return
         rec["archived"] = True
         changed = True
         print(f"sync #{number}: archived (closed)")
     elif not closed and rec.get("archived"):
-        update_post(rec["thread"], archived=False)
+        try:
+            update_post(rec["thread"], archived=False)
+        except Exception as exc:  # noqa: BLE001
+            print(f"sync #{number}: unarchive failed (will retry): "
+                  f"{type(exc).__name__}: {exc}")
+            return
         rec["archived"] = False
         changed = True
         print(f"sync #{number}: unarchived (reopened)")
@@ -129,6 +159,7 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
     if changed:
         rec["state"] = "CLOSED" if closed else "OPEN"
         save_state(state)
+    time.sleep(0.5)  # rate-limit politeness across a batch sync
 
 
 def main() -> int:
