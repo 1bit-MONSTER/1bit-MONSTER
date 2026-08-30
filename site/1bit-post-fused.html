@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>The fused layer engine | 1bit.MONSTER</title>
-  <meta name="description" content="How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced." />
+  <meta name="description" content="How QKV, attention and FFN combine into a single NPU dispatch, cutting per-layer xclbin calls 6x. Historical throughput figures noted as unsourced." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="The fused layer engine | 1bit.MONSTER" />
-  <meta property="og:description" content="How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced." />
+  <meta property="og:description" content="How QKV, attention and FFN combine into a single NPU dispatch, cutting per-layer xclbin calls 6x. Historical throughput figures noted as unsourced." />
   <meta property="og:url" content="https://1bit.monster/1bit-post-fused.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="The fused layer engine | 1bit.MONSTER" />
-  <meta name="twitter:description" content="How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced." />
+  <meta name="twitter:description" content="How QKV, attention and FFN combine into a single NPU dispatch, cutting per-layer xclbin calls 6x. Historical throughput figures noted as unsourced." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-fused.html" />
   <style>
@@ -118,7 +118,7 @@
     }
   </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The fused layer engine | 1bit.MONSTER", "description": "How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced.", "url": "https://1bit.monster/1bit-post-fused.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-fused.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The fused layer engine | 1bit.MONSTER", "description": "How QKV, attention and FFN combine into a single NPU dispatch, cutting per-layer xclbin calls 6x. Historical throughput figures noted as unsourced.", "url": "https://1bit.monster/1bit-post-fused.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-fused.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 </head>
 <body>
@@ -153,7 +153,7 @@
         <span class="tag corr">correction</span>
       </div>
       <h1>The fused layer engine</h1>
-      <p class="lead">How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced.</p>
+      <p class="lead">How QKV, attention and FFN combine into a single NPU dispatch, cutting per-layer xclbin calls 6x. Historical throughput figures noted as unsourced.</p>
 
       <div class="prose" data-od-id="body">
         <h2>The per-layer tax</h2>

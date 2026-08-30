@@ -164,6 +164,24 @@
       color: var(--muted-strong); margin-bottom: var(--gap-lg);
     }
     .site-badge .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--status); }
+    .latest-link {
+      display: flex; flex-direction: column; gap: 8px; text-align: left;
+      max-width: 680px; margin: var(--gap-lg) auto 0; padding: 18px 22px;
+      background: var(--surface); border: 1px solid var(--border);
+      border-left: 3px solid var(--accent); border-radius: var(--radius-lg);
+      transition: border-color 0.15s ease;
+    }
+    .latest-link:hover { border-color: var(--accent); border-left-color: var(--accent); }
+    .latest-badge {
+      display: inline-flex; align-items: center; gap: 8px;
+      font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--accent); margin-bottom: 2px;
+    }
+    .latest-badge .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--accent); }
+    .latest-title { font-size: 15px; line-height: 1.5; color: var(--fg); }
+    .latest-more { font-family: var(--font-mono); font-size: 12px; color: var(--muted-strong); }
+    .latest-more .ar { transition: transform 0.15s ease; display: inline-block; }
+    .latest-link:hover .latest-more .ar { transform: translateX(3px); }
     .site-grid {
       display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
       gap: var(--gap-md); margin-top: var(--gap-lg);
@@ -221,6 +239,11 @@
       <div class="container">
         <h1><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:0.72em;height:0.72em;display:inline-block;vertical-align:-0.06em;margin-right:0.18em;"><rect x="2" y="2" width="9" height="9" rx="2" style="fill:var(--surface);stroke:currentColor;stroke-opacity:0.28;animation:logo-relay 80s ease-in-out infinite;"/><rect x="13" y="2" width="9" height="9" rx="2" style="fill:var(--surface);stroke:currentColor;stroke-opacity:0.28;animation:logo-relay 80s ease-in-out infinite;animation-delay:20s;"/><rect x="2" y="13" width="9" height="9" rx="2" style="fill:var(--surface);stroke:currentColor;stroke-opacity:0.28;animation:logo-relay 80s ease-in-out infinite;animation-delay:40s;"/><rect x="13" y="13" width="9" height="9" rx="2" style="fill:var(--surface);stroke:currentColor;stroke-opacity:0.28;animation:logo-relay 80s ease-in-out infinite;animation-delay:60s;"/></svg>1bit.MONSTER</h1>
         <p class="lead">One engine, any model, zero Python. A model-agnostic, hardware-agnostic pure-C++ inference engine. This is the index to the whole site.</p>
+        <a class="latest-link" data-od-id="latest-hrx" href="1bit-post-hrx-engine.html">
+          <span class="latest-badge"><span class="dot"></span>latest</span>
+          <span class="latest-title">HRX: AMD's experimental IREE runtime is now an in-process decode lane in the engine — dlopen'd bundle, two llama.cpps in one process, ~2× HIP warm decode on a 30B MoE GGUF.</span>
+          <span class="latest-more">read the post <span class="ar">→</span></span>
+        </a>
         <div class="site-grid" data-od-id="pillars">
           <a class="site-card" data-od-id="pillar-story" href="1bit-post-npu-reversal.html">
             <span class="site-title">The 4-day reversal <span class="ar">→</span></span>
