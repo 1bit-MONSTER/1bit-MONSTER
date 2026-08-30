@@ -256,8 +256,16 @@ Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
       Vulkan dma-buf import, NPU-owns-allocation rule, HIP dma-buf impossible on
       TheRock 7.16). SharedBO/Vulkan NPU fusion runs *alongside* the in-process
       HRX GPU lane; they do not share one memory model.
-- [ ] Optional fork-B revisit gate: IREE HAL external dma-buf probe (1-day);
-  if feasible and `GET_ROWS` lands upstream, re-open the single-engine option.
+- [x] **Fork-B revisit gate — CLOSED (2026-08-29, source probe)**: the IREE HAL
+      external-buffer enum's dma-buf entry is an **unimplemented
+      `TODO(benvanik)`** (`runtime/src/iree/hal/allocator.h` in the vendored
+      hrx-system: "additional memory types: ... VK_EXTERNAL_MEMORY_HANDLE_TYPE_
+      DMA_BUF_BIT_EXT" is comment-only), and the amdgpu HAL driver's
+      `import_buffer` handles device-address pointers only (no fd/dma-buf
+      import). Fork B (SharedBO dma-bufs → HRX IREE HAL) is **not feasible at
+      the runtime level** — the only GPU dma-buf import route remains Vulkan
+      (`VK_KHR_external_memory_fd`, the proven SharedBO substrate). The
+      single-zero-copy-HRX-engine option stays closed; fork A is confirmed.
 
 ### P5 — 100% HF coverage audit
 - [x] **Coverage baseline (2026-08-29)**: `docs/research/hf-coverage-audit.md` —
@@ -315,8 +323,14 @@ Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
   gfx1100/gfx1151 boxes the same models via the `llamacpp-hrx` recipe
   (verified: manager cache + full pull+serve).
 - Not chosen: lemonade-native-as-primary (HRX as the default `llamacpp` recipe
-  for all models) — requires upstream buy-in on the shared launch seam
-  (`hrx_server.cpp`) and is tracked as a follow-up.
+  for all models) — assessed 2026-08-29: **feasible as a 4th local compat
+  patch** (llamacpp descriptor `bin_variants` += "hrx" + backend_versions pin +
+  variant-selection change + generated-artifact regen), but it is a **UX-only
+  gain** (coverage is already complete: engine-native all-GGUF + the 44
+  registry entries; `llamacpp-hrx` is registry-bound like `llamacpp` itself,
+  so there is no custom-GGUF coverage gap). Deferred — the maintenance
+  surface on vendored code isn't justified until the -HRX duplication
+  actually bothers users or PR #27218 changes the calculus.
 
 ## Status: ✅ COMPLETE (2026-08-29, goal rounds 1–12)
 
@@ -329,8 +343,10 @@ All actionable items of the stated end-state have been delivered and verified:
    subprocess (38.2 tok/s) and HIP (~70 tok/s)**.
 2. **Zero-DMA-copy execution** — fork A decided and documented: the
    silicon-proven SharedBO→Vulkan dma-buf substrate stays alongside the
-   in-process HRX GPU lane; fork B (IREE HAL dma-buf) gated on llama.cpp
-   PR #27218 landing (in flight upstream).
+   in-process HRX GPU lane; **fork B (IREE HAL dma-buf import) is not feasible
+   at the runtime level — closed by source probe** (unimplemented IREE TODO +
+   amdgpu driver imports device-address only); PR #27218 upstreaming is tracked
+   for the GET_ROWS gap.
 3. **100% HF model coverage** — `docs/research/hf-coverage-audit.md` (coverage
    onion, 145 llama.cpp archs, gap table, definition) + `tools/hf_coverage.py`
    (263-arch live extraction, lane verdict or 5-step checklist; verified on
