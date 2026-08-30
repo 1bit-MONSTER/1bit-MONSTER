@@ -59,6 +59,19 @@ and what breaks if the upstream RFC stalls.
       **PR #27218 "ggml-hrx: add AMD ROCm HRX native ggml backend" exists
       upstream; still draft (0 HRX commits on master). GET_ROWS remains the gap.
       Re-benchmark when it lands.**
+- [x] **GET_ROWS on gfx1151 — FIXED locally (2026-08-30).** Root cause: the
+      shipped bundle's ggml-hrx kernel catalog is compiled only for
+      `GGML_HRX_AMDGPU_TARGETS=gfx1100` (AMD CI default); on gfx1151 the
+      get_rows lookup fails -> fail-closed. Fix: build the same stack
+      (llama.cpp hrx-v2 + pinned loom e8275fb) with
+      `GGML_HRX_AMDGPU_TARGETS=gfx1151` — reproducible via
+      `scripts/build-hrx-gfx1151.sh`. Verified: a 2249-token prompt that
+      hard-fails on hrx-b66 completes with 0 GET_ROWS errors. Perf trade-off:
+      ~26 tok/s warm decode vs b66's ~67 (untuned gfx1151 kernels), but large
+      prompts now work at all. **The `hrx-v2` *ggml-hrx2* backend is NOT
+      buildable against any public loom** (its loom-jit includes
+      `loomc/target/amdgpu.h`, which exists in no released loom) — v1 is the
+      path.
 - [ ] Audit `hrx-v2`/`hrx-integration` branches (AMD-Ecosystem/llama.cpp fork,
       179 commits ahead) for "remove HIP bridge kernels" work; decide if our
       `third_party/llama.cpp` fork should track HRX or stay on HIP/Vulkan.
