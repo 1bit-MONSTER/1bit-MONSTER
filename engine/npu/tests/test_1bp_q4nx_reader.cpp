@@ -23,6 +23,7 @@
 //   /tmp/test_1bp_q4nx_reader models/Qwen3-0.6B.1bp [tensor...]
 #include "onebp_format.h"
 #include "q4nx_raw.h"
+#include "gu_i4_pack.h"
 #include "onebp_loader.cpp"   // NpuOnebpModel (defines class; no main)
 
 #include <cmath>
@@ -103,6 +104,82 @@ int main(int argc, char** argv) {
         CHECK(bad == 0 && nan == 0 && maxd <= 1e-3,
               "%s: W=q4*s+zp vs get_tensor_f32: %ld/%ld bad, nan=%ld, "
               "maxdiff=%.6f rmse=%.6f", tname, bad, tot, nan, maxd, rmse);
+
+        // ── Issue #1934 round-9: the per-(row,32-col) ZERO-POINT grid ──
+        // The v66 ratioQ22 dequant is symmetric-only (B'' = round(q4*s/S_col)
+        // drops zp). Zaya (zp=0) holds 0.9996 FFN corr; the 1BP format's
+        // asymmetric zp (|zp| mean 0.0129, same order as the scales) drops
+        // B_shadow-vs-float corr to ~0.912 (measured). The restructured
+        // kernel must carry an ADDITIVE per-(row,32-col) zp term in C1:
+        //   B'' = round((q4*s + zp)/S_col) = round(q4*a + b), b = zp/S_col.
+        // This gate pins the host-side contract: pack_gu_fused_i4_group_scales
+        // emits the zp grid byte-exactly from the raw tensor, and the additive
+        // dequant reproduces the engine's int8 re-quant to within the
+        // rounding-boundary tolerance (fixed-point (q4*16*rq + zpq)>>22 vs
+        // float round: measured 1390/3,145,728 bytes differ, all round-half
+        // boundaries).
+        {
+            GuI4Pack pg;
+            pack_gu_fused_i4_group_scales(t, 0, C, R / 2, pg);
+            long zp_bad = 0;
+            for (int r = 0; r < R; r++)
+                for (int g = 0; g < C / 32; g++) {
+                    // Compare the pack's bf16 bits against the tensor's bf16
+                    // bits (the pack re-rounds float->bf16; RNE is lossless
+                    // for values already bf16-representable, so bit equality
+                    // is the exact check).
+                    uint16_t pg_b = pg.zp_g_bf16[(size_t)r * (C / 32) + g];
+                    uint16_t t_b = f32_to_bf16_impl(t.zp[(size_t)r * (C / 32) + g]);
+                    if (pg_b != t_b) zp_bad++;
+                }
+            CHECK(zp_bad == 0,
+                  "%s: zp grid bf16-bits vs raw (folded) zp: %ld/%ld bad",
+                  tname, zp_bad, (long)R * (C / 32));
+
+            // Additive-zp dequant vs engine int8 re-quant: per-column
+            // S_col = amax/127 over K (packer convention).
+            const int H_ = C, nff = R / 2;
+            const size_t N_ = 2 * (size_t)nff;
+            std::vector<float> scol(N_, 1.0f);
+            for (size_t j = 0; j < N_; j++) {
+                float amax = 0;
+                for (int i = 0; i < H_; i++) {
+                    int pp = (int)(j / 2);
+                    size_t r = (size_t)pp; if (j & 1) r = (size_t)nff + pp;
+                    float w = (float)t.q4[(size_t)r * C + i] * t.scl[(size_t)r * (C/32) + i/32]
+                            + t.zp[(size_t)r * (C/32) + i/32];
+                    float a = std::fabs(w); if (a > amax) amax = a;
+                }
+                if (amax > 1e-12f) scol[j] = amax / 127.0f;
+            }
+            long dz_bad = 0, dz_tot = (long)H_ * (long)N_;
+            double dz_maxd = 0;
+            for (int i = 0; i < H_; i++)
+                for (size_t j = 0; j < N_; j++) {
+                    int pp = (int)(j / 2);
+                    size_t r = (size_t)pp; if (j & 1) r = (size_t)nff + pp;
+                    int q4 = t.q4[(size_t)r * C + i];
+                    float s = t.scl[(size_t)r * (C/32) + i/32];
+                    float z = t.zp[(size_t)r * (C/32) + i/32];
+                    // fixed-point additive form the kernel will use:
+                    // rq = (s/16)/S_col * 2^22 ; zpq = z/S_col * 2^22
+                    long rq = (long)std::lroundf((s * 0.0625f) / scol[j] * 4194304.0f);
+                    long zpq = (long)std::lroundf(z / scol[j] * 4194304.0f);
+                    long x = ((long)q4 * 16 * rq + zpq + (1L << 21)) >> 22;
+                    int8_t b = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                    // engine reference: int8 re-quant of the exact float W
+                    float w = (float)q4 * s + z;
+                    long xr = (long)std::lroundf(w / scol[j]);
+                    int8_t br = (int8_t)(xr > 127 ? 127 : xr < -127 ? -127 : xr);
+                    double d = std::fabs((double)b - br);
+                    if (d > dz_maxd) dz_maxd = d;
+                    if (b != br) dz_bad++;   // round-boundary bytes only
+                }
+            CHECK(dz_bad * 1000 <= dz_tot,   // <= 0.1% round-boundary diff
+                  "%s: additive-zp fixed-point dequant vs int8 re-quant: "
+                  "%ld/%ld boundary bytes, maxdiff=%.6f (rounding only)",
+                  tname, dz_bad, dz_tot, dz_maxd);
+        }
     }
 
     fprintf(stderr, "\n%s\n", failures ? "GATE FAILED" : "GATE PASSED");

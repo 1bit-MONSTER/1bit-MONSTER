@@ -50,6 +50,18 @@ struct GuI4Pack {
     // pack_gu_fused_i4_group_scales() — NOT wired into the production tile
     // stream until the kernel restructure lands (per issue #1934).
     std::vector<uint16_t> scl_g_bf16;   // [H * RC] bf16 bits (RC = raw.cols/32)
+    // Issue #1934 (round-9): the per-(row, 32-col-group) bf16 zero-point grid,
+    // same indexing as scl_g_bf16. The v66 ratioQ22 dequant is SYMMETRIC-only
+    // (B'' = round(q4*s/S_col) drops zp): Zaya (zp=0) holds 0.9996 FFN corr,
+    // but the 1BP format carries an asymmetric bf16 zp (Qwen3-0.6B.1bp:
+    // |zp| mean 0.0129, same order as the scales) which drops B_shadow-vs-
+    // float corr to ~0.912. The restructured kernel must carry an ADDITIVE
+    // per-(row,32-col) zp term in C1: B'' = round((q4*s + zp)/S_col) =
+    // round(q4*a + b), b = zp/S_col. Populated by
+    // pack_gu_fused_i4_group_scales() — CPU-gated byte-exact in
+    // test_1bp_q4nx_reader.cpp (W = q4*s + zp' with the signed fold
+    // q4'=v-8, zp'=8s+zp preserved).
+    std::vector<uint16_t> zp_g_bf16;    // [H * RC] bf16 bits (RC = raw.cols/32)
     static constexpr size_t TILE_BYTES = 64 * 128 / 2;   // nibbles (4096)
     // v65 tile layout (all within the aie2p-delivered [0..5632) region):
     //   [0,      4096)  nibbles (region A, 4096 B = 64x128 q4)
@@ -317,6 +329,7 @@ static inline void pack_gu_fused_i4_group_scales(const RawQ4Tensor& raw,
     const size_t gbase = (size_t)expert * N;
     const int RC = raw.cols / 32;            // raw tensor scale stride (H/32)
     p.scl_g_bf16.assign((size_t)N * RC, 0);  // [2*n_ff, RC] gate+up rows
+    p.zp_g_bf16.assign((size_t)N * RC, 0);   // same layout, zero-point grid
     for (size_t pp = 0; pp < (size_t)n_ff; pp++) {
         // gate row = gbase + pp, up row = gbase + n_ff + pp (w_at layout)
         for (int gate_up = 0; gate_up < 2; gate_up++) {
@@ -324,6 +337,8 @@ static inline void pack_gu_fused_i4_group_scales(const RawQ4Tensor& raw,
             for (int i = 0; i < H; i++) {
                 uint16_t s16 = f32_to_bf16_impl(raw.scl[r * RC + i / 32]);
                 p.scl_g_bf16[(r - gbase) * RC + i / 32] = s16;
+                p.zp_g_bf16[(r - gbase) * RC + i / 32] =
+                    f32_to_bf16_impl(raw.zp[r * RC + i / 32]);
             }
         }
     }
