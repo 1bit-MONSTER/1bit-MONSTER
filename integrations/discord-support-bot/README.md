@@ -25,8 +25,8 @@ wiki, reference). `DeepSeek` supplies the **wording**. No hallucinations.
 |------|---------|
 | **`docs_slash.py`** | **Primary.** A `discord.py` component that adds a `/docs` slash command to the existing bot. |
 | `bot.py` | Alternative: a standalone bot that answers a `!docs` prefix command or any message in a support channel (no slash registration). |
-| `post_issue.py` | Posts a GitHub issue to **#issue-tracker as a Discord thread** (each issue = its own thread, never a flat message). `python3 post_issue.py <number>` — see the docstring. |
-| `discord-issue-poster.py` | **Auto-posts new GitHub issues to #issue-tracker as threads** — cron poller (every 15 min) that finds open issues newer than the last handled one and threads each. State in `~/.cache/discord-issue-poster-state.json`; never double-posts. |
+| `post_issue.py` | Posts a GitHub issue to **#issue-tracker as a forum post** (each issue = one tagged post in the forum channel, never a flat message). `python3 post_issue.py <number>` — see the docstring. |
+| `discord-issue-poster.py` | **Auto-posts new GitHub issues to #issue-tracker as forum posts** — cron poller (every 15 min) that finds open issues newer than the last handled one and posts each with tags. State in `~/.cache/discord-issue-poster-state.json`; never double-posts. |
 | `context7.py` | Retrieval client for Context7 `GET /v2/context` (framework-agnostic). |
 | `llm.py` | DeepSeek chat-completions client (framework-agnostic). |
 | `.env.example` | Copy to `.env` and fill in real credentials. |
@@ -123,6 +123,22 @@ It checks Context7 is retrieval-ready for `/1bit-monster/1bit-monster`, and, if
 The `/docs` command runs its own gateway connection. Your other 1bit bots
 (`discord-inbox.py`, traffic-digest, etc.) are REST pollers and load
 separately, so they don't conflict.
+
+## Forum tags (#issue-tracker)
+
+`#issue-tracker` is a Discord **forum channel**: every GitHub issue becomes
+one forum **post**, and each post carries exactly one tag from each of three
+orthogonal dimensions, so you can filter by clicking any combination:
+
+| Dimension | Tags |
+|-----------|------|
+| **type** | `troubleshooting` 🐛 · `feature` ✨ · `inquiry` ❓ (chosen from the issue's GitHub labels) |
+| **state** | `pending` 🕘 at creation (resolved / escalated are for human triage) |
+| **severity** | `defcon-1` 🟥 → `defcon-5` ⬜ (keyword scan of title + body; lower = worse) |
+
+The tag ids are resolved from the live channel at runtime, so reordering the
+tag set in Discord never breaks the poster. To point the poster at a
+different forum channel, set `ISSUE_TRACKER_CHANNEL_ID` in `.env`.
 
 ## How answers stay accurate
 1. `context7.get_context(...)` calls

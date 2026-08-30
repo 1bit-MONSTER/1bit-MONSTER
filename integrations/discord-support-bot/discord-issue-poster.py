@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""discord-issue-poster.py — auto-post new GitHub issues to #issue-tracker as threads.
+"""discord-issue-poster.py — auto-post new GitHub issues to #issue-tracker as FORUM posts.
 
 Polls the GitHub repo for issues newer than the last-posted one and posts
-each to Discord #issue-tracker as a thread (reusing post_issue.py's thread
-logic). Runs from cron; state (last issue number handled) persists in
-~/.cache/discord-issue-poster-state.json so a re-run never double-posts.
+each to Discord #issue-tracker (a forum channel) as a tagged post (reusing
+post_issue.py's forum-post logic). Runs from cron; state (last issue number
+handled) persists in ~/.cache/discord-issue-poster-state.json so a re-run
+never double-posts.
 
 Cron (strixhalo): */15 * * * * (every 15 min; cheap when nothing new)
 
@@ -17,7 +18,7 @@ import sys
 import time
 
 sys.path.insert(0, "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot")
-from post_issue import gh_issue, post_issue_thread  # noqa: E402
+from post_issue import gh_issue, post_issue_post  # noqa: E402
 
 REPO = "1bit-MONSTER/1bit-MONSTER"
 STATE_FILE = os.path.expanduser("~/.cache/discord-issue-poster-state.json")
@@ -57,8 +58,8 @@ def main() -> int:
         return 0
     for issue in issues:
         full = gh_issue(REPO, issue["number"])
-        tid = post_issue_thread(full)
-        print(f"posted #{issue['number']} '{issue['title']}' as thread {tid}")
+        pid = post_issue_post(full)
+        print(f"posted #{issue['number']} '{issue['title']}' as forum post {pid}")
         save_last(issue["number"])
         time.sleep(2)  # rate-limit politeness between posts
     print(f"handled {len(issues)} new issue(s)")
