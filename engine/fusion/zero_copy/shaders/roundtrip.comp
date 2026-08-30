@@ -1,0 +1,33 @@
+// roundtrip.comp — bidirectional zero-copy proof (issue #1946).
+//
+// Phase A (CPU -> GPU): the CPU writes pattern 0xCAFE0000 ^ i into the
+// SharedBO host_ptr BEFORE this shader runs. Each invocation READS data[i]
+// and only if it equals the CPU-written pattern does it write back the
+// derived pattern 0xBEEF0000 ^ i; otherwise it writes 0.
+//
+// Phase B (GPU -> CPU): the CPU then reads host_ptr with NO copy and must
+// see 0xBEEF0000 ^ i everywhere. A mismatch means either the GPU never saw
+// the CPU's write (phase A broken) or the CPU can't see the GPU's write
+// (phase B broken) — both are only satisfiable if the imported Vulkan memory
+// and the NPU SharedBO alias the same physical pages.
+//
+// Used by test_vk_dma_buf_import.cpp (extended proof, replaces the
+// hipHostRegister idiom that TheRock HIP rejects for XRT-mapped pointers).
+#version 450
+
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer Buf {
+    uint data[];
+} buf;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    uint got = buf.data[i];
+    // Phase A check: did we see the CPU's write?
+    if (got == (0xCAFE0000u ^ i)) {
+        buf.data[i] = 0xBEEF0000u ^ i;  // derived pattern visible to CPU
+    } else {
+        buf.data[i] = 0u;               // distinguish "GPU never ran" from "stale"
+    }
+}

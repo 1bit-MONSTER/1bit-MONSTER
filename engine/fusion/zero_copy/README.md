@@ -2,16 +2,23 @@
 
 ## Status: ⚡ PROVEN on Strix Halo (gfx1151 + XDNA 2)
 
-> **Verification status (2026-08-29, fresh run on this box):**
+> **Verification status (2026-08-30, fresh run on this box):**
+> - ✅ `test_vk_dma_buf_import` — **PASS, now BIDIRECTIONAL** (issue #1946):
+>   the original one-way proof (GPU compute shader writes NPU pages via
+>   dma-buf import, CPU reads with NO copy) is extended with `roundtrip.comp`:
+>   CPU writes a pattern → the shader READS it and writes a derived pattern →
+>   CPU reads it back with no copy. Both directions alias the same pages
+>   (0 mismatches on Strix Halo, 2026-08-30). This is the full
+>   `test_zero_copy` proof ported to the Vulkan dma-buf idiom.
 > - ✅ `test_vk_attn_slice` — **PASS**: Vulkan compute shader reads NPU SharedBO
 >   KV pages via the dma-buf import, matches CPU reference (max rel err 2.06e-4).
 >   This is the current production zero-copy proof.
 > - ⚠️ `test_zero_copy` (the original `hipHostRegister` idiom) **no longer
 >   passes**: TheRock HIP rejects XRT-mapped NPU pointers for `hipHostRegister`
 >   (`invalid argument`; plain malloc registers fine — verified 2026-08-29).
->   That idiom is superseded (production uses the Vulkan dma-buf import; the
->   HIP side reads via the XRT `host_ptr()` view). The substrate itself is
->   unaffected — the dma-buf export still works and the Vulkan proof passes.
+>   The idiom is superseded: its proof steps are now covered by the
+>   bidirectional Vulkan dma-buf test above (production uses the Vulkan dma-buf
+>   import; the HIP side reads via the XRT `host_ptr()` view).
 
 This directory contains the **correct, empirically-verified zero-copy substrate** for NPU+GPU fused inference on Strix Halo. Every previous "fused" implementation was aspirational (lied in its headers, never compiled, IO_PAGE_FAULT'd, or ran GPU-only).
 
