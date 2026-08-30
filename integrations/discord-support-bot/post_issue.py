@@ -127,6 +127,24 @@ def forum_tags() -> dict[str, str]:
     return {t["name"]: t["id"] for t in channel.get("available_tags", [])}
 
 
+def forum_threads() -> list[dict]:
+    """All existing posts (active + archived) in the issue-tracker forum.
+
+    Used for idempotent posting: a post whose name starts with "#N " means
+    issue N is already mirrored, so the poster records it instead of
+    creating a duplicate (e.g. after a crash between the POST and the
+    state write, or a client-side timeout after a server-side success).
+    """
+    out: list[dict] = []
+    for path in ("/threads/active?limit=100", "/threads/archived/public?limit=100"):
+        try:
+            data = _api("GET", f"/channels/{ISSUE_TRACKER_CHANNEL_ID}{path}")
+            out.extend(data.get("threads", []))
+        except Exception:  # noqa: BLE001 — best-effort; a listing failure must
+            continue       # not block posting (idempotency check is a bonus)
+    return out
+
+
 def severity(text: str) -> int:
     """DEFCON severity (1 = worst, 5 = trivial) from a keyword scan."""
     lowered = (text or "").lower()

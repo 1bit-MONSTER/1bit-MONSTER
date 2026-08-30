@@ -22,8 +22,10 @@ Cron (strixhalo): */15 * * * * (every 15 min; cheap when nothing new)
 Token: ~/.secrets/Discord Bot token.txt (same as the other discord bots).
 """
 import datetime
+import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -33,6 +35,7 @@ from post_issue import (  # noqa: E402
     TAG_SEVERITY,
     desired_tags,
     forum_tags,
+    forum_threads,
     gh_issue,
     post_issue_post,
     update_post,
@@ -54,12 +57,16 @@ def load_state() -> dict:
         return {"last_issue": 0, "posts": {}}
 
 
-def _iso_ts(value: str) -> float:
-    """Parse a GitHub ISO-8601 timestamp (e.g. 2026-08-30T13:42:00Z) → epoch."""
+def _iso_ts(value: str) -> float | None:
+    """Parse a GitHub ISO-8601 timestamp (e.g. 2026-08-30T13:42:00Z) → epoch.
+
+    Returns None when unparseable — callers keep such issues rather than
+    silently dropping them.
+    """
     try:
         return datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
     except (ValueError, AttributeError):
-        return 0.0
+        return None
 
 
 def save_state(state: dict) -> None:
@@ -125,18 +132,44 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
 
 
 def main() -> int:
+    # Overlapping cron runs would double-post: one lock per run.
+    lock_fh = open(STATE_FILE + ".lock", "w")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("another run is in progress — skipping")
+        return 0
+
     state = load_state()
     after = int(state.get("last_issue", 0))
     tags = forum_tags()
 
+    # Idempotency: map issue number → existing forum post (active + archived).
+    # A post named "#N ..." means the issue is already mirrored — e.g. a
+    # previous run posted it but crashed before saving state, or the Discord
+    # POST succeeded server-side while the client timed out.
+    existing = {}
+    for t in forum_threads():
+        m = re.match(r"^#(\d+)\s", t.get("name") or "")
+        if m:
+            existing[int(m.group(1))] = t
+
     # ── job 1: post new issues (plus retry previously failed numbers) ─────
     issues = new_open_issues(after)
-    if not state.get("posts"):
+    if not state.get("posts") and BOOTSTRAP_SINCE_DAYS > 0:
         # Fresh/unknown baseline: only mirror issues created recently, so a
         # lost state file can't flood the forum with every historical issue.
+        # (Skipped entirely when BOOTSTRAP_SINCE_DAYS=0 = mirror everything.)
         cutoff = time.time() - BOOTSTRAP_SINCE_DAYS * 86400
-        issues = [i for i in issues
-                  if _iso_ts(i.get("createdAt", "")) >= cutoff]
+        kept = []
+        for i in issues:
+            ts = _iso_ts(i.get("createdAt", ""))
+            if ts is None:
+                print(f"#{i['number']}: unparseable createdAt — keeping (guard is best-effort)")
+                kept.append(i)
+            elif ts >= cutoff:
+                kept.append(i)
+        issues = kept
     posts = state.setdefault("posts", {})
     failed = state.setdefault("failed", [])
     # Retry failed numbers first (ascending), then any new ones — a
@@ -144,6 +177,17 @@ def main() -> int:
     # succeeds, last_issue only advances on success, and #N stays in
     # `failed` until it posts.
     for num in sorted(set(failed) | {i["number"] for i in issues}):
+        if num in existing:
+            # Already mirrored (crash/timeout recovery) — record, don't re-post.
+            if num in failed:
+                failed.remove(num)
+            posts[str(num)] = {"thread": existing[num]["id"], "state": "OPEN",
+                               "tags": [], "archived": bool(existing[num].get("archived"))}
+            print(f"#{num} already posted ({existing[num]['id']}) — recorded, not re-posted")
+            if num > after:
+                state["last_issue"] = num
+            save_state(state)
+            continue
         try:
             # post_issue_post needs the FULL issue dict (url/labels/state/
             # body) — the list payload above only carries number/title/
