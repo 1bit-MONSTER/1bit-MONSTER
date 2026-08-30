@@ -23,7 +23,7 @@ GPU decoding support, one entry point of the single binary `build/1bit` (run via
 | ROCm               | TheRock 7.15.0a (nightly C++ SDK, native gfx1151) |
 | CMake              | ≥ 3.28                                              |
 | Ninja              | ≥ 1.12                                              |
-| GCC                | ≥ 13 (C++20) or ≥ 14 (C++23)                        |
+| GCC                | ≥ 15 (C++26) or ≥ 14 with a C++26-capable flag set           |
 | Git                | —                                                   |
 
 Install system dependencies:

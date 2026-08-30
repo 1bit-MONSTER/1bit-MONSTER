@@ -6,7 +6,7 @@ fit together. Written from the source tree itself — the companion to
 [`docs/guides/architecture.md`](guides/architecture.md) (pipeline-level view)
 and [`docs/README.md`](README.md) (documentation index).
 
-> **TL;DR** — One pure-C++23 binary (`build/1bit`) that loads any HuggingFace
+> **TL;DR** — One pure-C++26 binary (`build/1bit`) that loads any HuggingFace
 > model (GGUF / ONNX / 1BP), auto-detects the architecture, and routes to a
 > hardware backend (AMD NPU, AMD/NVIDIA GPU via HIP/CUDA, Apple Metal, Vulkan,
 > or CPU). ~155k lines of first-party C++/HIP, 131 files in `src/`, a 109 KB
@@ -21,7 +21,7 @@ and [`docs/README.md`](README.md) (documentation index).
 |---|---|
 | Version | `2026.08.04` (date-based, from `VERSION`) |
 | License | MIT (`LICENSE`) |
-| Language | C++23 + HIP, zero Python at runtime |
+| Language | C++26 + HIP, zero Python at runtime |
 | First-party code | ~155.5k lines (`.cpp`/`.h`/`.hpp`/`.hip` excl. `third_party/`) |
 | Total code (all langs) | ~204k lines |
 | Source files | 131 in `src/` + 45 headers in `include/` |
@@ -257,6 +257,14 @@ reverse-engineering the proprietary stack (see `docs/journey.md`).
   fused multi-GEMM and overlap variants.
 - `src/zaya_decode.cpp` (566 L) — fused decode launch for Zaya-class models.
 - `src/npu_dims.h`, `src/npu_engine_i8ctx_inc.h` (859 L) — dims + INT8 context.
+- `src/npu_embedded.h` — **C++26 `#embed` (P1967) resources**: checked-in NPU
+  artifacts (`attn.xclbin` + `attn_insts.txt`, `final_cascade_fused.xclbin` +
+  `insts_cascade_fused.txt`) are baked into the binary at compile time.
+  Runtime falls back to the embedded copies when the on-disk files are
+  missing ("one binary, zero runtime files"); `npu_embedded_stale()` warns
+  when an on-disk artifact was regenerated after the build. Consumers:
+  `npu_attn_ctx.h` (`AttnCtx::init`), `tests/fused_ab_probe.cpp` (which also
+  has `--embed-dump <dir>` to extract the baked-in copies back to disk).
 - `generators/` — xclbin generation (MLIR/AIE2 tooling).
 - `kernel/`, `fused_insts/`, `pool/`, `xclbins/`, `tokenizer/`, `tools/` —
   kernels, fused instruction sets, buffer pools, prebuilt xclbins, tokenizer

@@ -368,6 +368,16 @@ rcpp_kv_cache_attn_decode(const void* Q_dev, const void* K_dev, const void* V_de
                           int num_q_heads, int num_kv_heads, int head_dim,
                           int seq_len, float scale, void* stream);
 
+// Multi-sequence variant: grid (num_q_heads, num_batch); each (s, h) block
+// runs the identical online-softmax with K/V offset by s*seq_stride —
+// bit-identical per (s, h) to the single-sequence kernel.
+rcpp_status_t
+rcpp_kv_cache_attn_decode_batch(const void* Q_dev, const void* K_dev, const void* V_dev,
+                                void* out_dev,
+                                int num_q_heads, int num_kv_heads, int head_dim,
+                                int seq_len, float scale, int num_batch,
+                                int seq_stride, void* stream);
+
 // Split-KV Flash-Decoding variant of the above. Identical signature + math,
 // but splits the seq axis into TILE=128 chunks so pass 1 grid = (num_q_heads,
 // num_kv_tiles) recovers occupancy on gfx1151 (20 Q-heads alone leaves the

@@ -7,7 +7,7 @@ Here's the path to get 1bit.MONSTER running there.
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| NPU engine (C++23) | ❌ Untested | Requires XRT for Windows + MSVC/clang-cl |
+| NPU engine (C++26) | ❌ Untested | Requires XRT for Windows + MSVC/clang-cl |
 | GPU engine (Zinc) | ❌ Vulkan untested | Zinc has Vulkan backend but hasn't been tested on Windows |
 | HTTP server | ✅ Should work | Pure C++ sockets, no platform-specific code |
 | install.sh | ❌ | Bash script, needs PowerShell equivalent |
@@ -34,10 +34,10 @@ The GPU (Vulkan) backend is the more practical path.
 
 ```powershell
 # Option A: MSVC (cl.exe)
-cl /std:c++23 /O2 /EHsc npu_engine_all.cpp dequant_q4nx.c /I engine\npu\src /link xrt_coreutil.lib
+cl /std:c++26 /O2 /EHsc npu_engine_all.cpp dequant_q4nx.c /I engine\npu\src /link xrt_coreutil.lib
 
 # Option B: clang-cl (via Visual Studio)
-clang-cl -std=c++23 -O3 npu_engine_all.cpp dequant_q4nx.c -Iengine/npu/src -lxrt_coreutil
+clang-cl -std=c++26 -O3 npu_engine_all.cpp dequant_q4nx.c -Iengine/npu/src -lxrt_coreutil
 ```
 
 ### 3. PowerShell Install Script
@@ -67,7 +67,7 @@ $release = Invoke-RestMethod "https://api.github.com/repos/1bit-monster/1bit-mon
 If you have a Strix Halo machine running Windows and want to help:
 
 1. Test if `xrt_coreutil.dll` exists after installing AMD drivers
-2. Try building with MSVC (report any C++23 compatibility issues)
+2. Try building with MSVC (report any C++26 compatibility issues)
 3. Try running the HTTP server (it's platform-independent)
 4. Open an issue with your findings
 
@@ -80,7 +80,7 @@ git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-monster
 
 # 3. Try building the HTTP server (most portable component)
-cl /std:c++23 /O2 /EHsc packaging\binary\server.cpp /Fe:1bit-server.exe
+cl /std:c++26 /O2 /EHsc packaging\binary\server.cpp /Fe:1bit-server.exe
 
 # 4. Run it
 .\1bit-server.exe 8081

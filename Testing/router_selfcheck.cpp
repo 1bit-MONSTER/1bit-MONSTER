@@ -132,7 +132,49 @@ int main() {
         c.arch = RCPP_ARCH_QWEN3;
         c.architecture = "qwen3";
         c.format = ModelFormat::ONEBP;
-        expect("qwen3 1bp", c, {"hip_1bp_gpu", "fused_gpu_npu", "vulkan_hpp_gpu", "cpu_generic"});
+        // fused_gpu_npu first since the 2026-08-29 parity fix (tokens
+        // bit-match the GPU-only baseline); hip_1bp is the bit-correct
+        // reference, Vulkan-Hpp then CPU.
+        expect("qwen3 1bp", c, {"fused_gpu_npu", "hip_1bp_gpu", "vulkan_hpp_gpu", "cpu_generic"});
+    }
+
+    // ── LSE backend lane (2026-08-29): MLX group-affine checkpoints ──
+    // MLX is the ONLY format routed to lse; every other format must be
+    // untouched. qwen3_5_moe carries experts>0, so the MLX check MUST win
+    // before the MoE/arch branches or it would route to hip_gpu.
+    {
+        ModelConfig c = make_cfg();
+        c.format = ModelFormat::MLX;
+        c.architecture = "qwen3_5_moe";
+        c.num_experts = 256;
+        expect("mlx qwen3_5_moe", c, {"lse", "cpu_generic"});
+    }
+    {
+        ModelConfig c = make_cfg();
+        c.format = ModelFormat::MLX;
+        c.architecture = "qwen3_5";
+        expect("mlx qwen3_5 dense", c, {"lse", "cpu_generic"});
+    }
+    {
+        ModelConfig c = make_cfg();
+        c.format = ModelFormat::MLX;
+        c.architecture = "lemonseed";
+        expect("mlx lemonseed", c, {"lse", "cpu_generic"});
+    }
+    // Regression: non-MLX qwen3_5 must NOT take the lse route.
+    {
+        ModelConfig c = make_cfg();
+        c.arch = RCPP_ARCH_QWEN35;
+        c.architecture = "qwen35";
+        expect("non-mlx qwen3_5 unchanged", c, {"cpu_qwen3_5", "hip_gpu", "cpu_generic"});
+    }
+    // Regression: MoE (experts>0, non-MLX) still goes to the CCA/MoE path.
+    {
+        ModelConfig c = make_cfg();
+        c.arch = RCPP_ARCH_LLAMA;
+        c.architecture = "llama";
+        c.num_experts = 8;
+        expect("MoE llama unchanged", c, {"hip_gpu", "cpu_scalar"});
     }
 
     if (fails) { std::printf("ROUTER: %d/%d FAILED\n", fails, total); return 1; }

@@ -1,10 +1,11 @@
 #pragma once
 // vulkan_rt.h — minimal, dedicated Vulkan compute runtime for the 1bit
-// engine's Vulkan backend. Adapted from the proven boilerplate in
-// npu-sandbox/vulkan-gevm/phase2.cpp (already verified working on this
-// box's RADV/Strix Halo driver) -- NOT linked from zinc, deliberately
-// small (this only ever needs a handful of DMMV-shaped pipelines, not a
-// general multi-backend engine).
+// engine's Vulkan backend, built on the official Khronos C++ bindings
+// (Vulkan-Hpp, <vulkan/vulkan.hpp> — ships with the Vulkan SDK).  Adapted
+// from the proven boilerplate in npu-sandbox/vulkan-gevm/phase2.cpp (already
+// verified working on this box's RADV/Strix Halo driver) -- NOT linked from
+// zinc, deliberately small (this only ever needs a handful of DMMV-shaped
+// pipelines, not a general multi-backend engine).
 //
 // Buffers are host-visible + host-coherent only (no staging/device-local
 // split). On this engine's target hardware (APUs with unified memory) that
@@ -14,31 +15,30 @@
 // GPU, add a staging-upload path then; don't build it speculatively now.
 //
 // External memory (dma-buf) support for NPU zero-copy (issue #1217):
-// VkCtx::init() enables VK_KHR_external_memory_fd and the related instance
-// extension when available.  GpuBuffer::create_from_dma_buf() imports a
-// SharedBO dma-buf fd as Vulkan device memory so the GPU shader can read and
-// write it without any CPU copy.
+// VkCtx::init() enables VK_KHR_external_memory_fd + VK_EXT_external_memory_dma_buf
+// when available.  GpuBuffer::create_from_dma_buf() imports a SharedBO dma-buf
+// fd as Vulkan device memory so the GPU shader can read and write it without
+// any CPU copy.  The driver takes ownership of the fd on successful import.
+//
+// Error contract: no exception ever escapes this header — every public
+// function logs to stderr and returns (or returns false / VK_NULL_HANDLE) on
+// failure, so callers can degrade gracefully (e.g. fall back to a bounce
+// path) instead of crashing the server.
 #ifndef VULKAN_RT_H
 #define VULKAN_RT_H
 
 #define VK_USE_PLATFORM_XLIB_KHR 0
-#include <vulkan/vulkan.h>
-#include <vulkan/vulkan_core.h>
+#include <vulkan/vulkan.hpp>
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cmath>
 #include <fstream>
 #include <vector>
 
 namespace vkrt {
-
-// Log Vulkan errors instead of killing the process, so transient GPU issues
-// (e.g. VK_ERROR_DEVICE_LOST) don't take down the server.
-#define VKRT_BAIL(fmt, ...) do { fprintf(stderr, "vulkan_rt FATAL: " fmt "\n", ##__VA_ARGS__); return; } while (0)
-#define VKRT_CK(call) do { VkResult r_ = (call); if (r_ != VK_SUCCESS) { \
-    fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, #call, r_); return; } } while (0)
 
 inline std::vector<uint32_t> loadSpirv(const char* path) {
     std::ifstream f(path, std::ios::binary | std::ios::ate);
@@ -50,7 +50,7 @@ inline std::vector<uint32_t> loadSpirv(const char* path) {
     return code;
 }
 
-inline uint32_t findMemType(const VkPhysicalDeviceMemoryProperties& mp, uint32_t bits, VkMemoryPropertyFlags props) {
+inline uint32_t findMemType(const vk::PhysicalDeviceMemoryProperties& mp, uint32_t bits, vk::MemoryPropertyFlags props) {
     for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
         if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props) return i;
     }
@@ -58,319 +58,676 @@ inline uint32_t findMemType(const VkPhysicalDeviceMemoryProperties& mp, uint32_t
     return 0;
 }
 
+// Like findMemType but reports failure via VK_MAX_MEMORY_TYPES instead of
+// printing a fatal and returning memory type 0 (which may itself be valid).
+inline uint32_t findMemTypeOr(const vk::PhysicalDeviceMemoryProperties& mp, uint32_t bits, vk::MemoryPropertyFlags props) {
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++) {
+        if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props) return i;
+    }
+    return VK_MAX_MEMORY_TYPES;
+}
+
+struct VkCtx;  // defined below (GpuBuffer staging helpers take it by ref)
+
 struct GpuBuffer {
-    VkBuffer buf = VK_NULL_HANDLE;
-    VkDeviceMemory mem = VK_NULL_HANDLE;
+    vk::Buffer buf;
+    vk::DeviceMemory mem;
     size_t size = 0;
     VkDevice dev = VK_NULL_HANDLE;
     bool imported_ = false;  // true when memory was imported (not owned by us)
+    bool device_local_ = false;  // true when allocated in VRAM (not host-visible)
 
-    void create(VkDevice d, const VkPhysicalDeviceMemoryProperties& mp, size_t sz, VkBufferUsageFlags usage) {
+    bool device_local() const { return device_local_; }
+
+    void create(VkDevice d, const vk::PhysicalDeviceMemoryProperties& mp, size_t sz, VkBufferUsageFlags usage) {
         dev = d;
         size = sz;
-        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bi.size = sz;
-        bi.usage = usage;
-        VKRT_CK(vkCreateBuffer(dev, &bi, nullptr, &buf));
-        VkMemoryRequirements mr;
-        vkGetBufferMemoryRequirements(dev, buf, &mr);
-        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        ai.allocationSize = mr.size;
-        ai.memoryTypeIndex = findMemType(mp, mr.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        VKRT_CK(vkAllocateMemory(dev, &ai, nullptr, &mem));
-        VKRT_CK(vkBindBufferMemory(dev, buf, mem, 0));
+        try {
+            vk::Device vd(d);
+            vk::BufferCreateInfo bi;
+            bi.size = sz;
+            bi.usage = vk::BufferUsageFlags(usage);
+            buf = vd.createBuffer(bi);
+            vk::MemoryRequirements mr = vd.getBufferMemoryRequirements(buf);
+            vk::MemoryAllocateInfo ai;
+            ai.allocationSize = mr.size;
+            ai.memoryTypeIndex = findMemType(mp, mr.memoryTypeBits,
+                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+            mem = vd.allocateMemory(ai);
+            vd.bindBufferMemory(buf, mem, 0);
+        } catch (const vk::SystemError& e) {
+            fprintf(stderr, "vulkan_rt FATAL: create: %s\n", e.what());
+            destroy();
+        }
+    }
+
+    // Allocate in VRAM (DEVICE_LOCAL) instead of host-visible system memory.
+    // GPU-only buffers (weights, shader scratch) MUST live here — a
+    // host-visible allocation is GTT/system memory that the GPU reads over a
+    // slow path (~9 MB of weights per attention layer per token measured
+    // 25x slower than HIP's device-local intermediates on Strix Halo).
+    // Falls back to host-visible when no device-local type exists.  The
+    // buffer gets TRANSFER_DST so staged uploads (upload_staged) can copy
+    // into it.
+    void create_device_local(VkDevice d, const vk::PhysicalDeviceMemoryProperties& mp,
+                             size_t sz, VkBufferUsageFlags usage) {
+        dev = d;
+        size = sz;
+        device_local_ = true;
+        try {
+            vk::Device vd(d);
+            vk::BufferCreateInfo bi;
+            bi.size = sz;
+            bi.usage = vk::BufferUsageFlags(usage) | vk::BufferUsageFlagBits::eTransferDst;
+            buf = vd.createBuffer(bi);
+            vk::MemoryRequirements mr = vd.getBufferMemoryRequirements(buf);
+            vk::MemoryAllocateInfo ai;
+            ai.allocationSize = mr.size;
+            ai.memoryTypeIndex = findMemTypeOr(mp, mr.memoryTypeBits,
+                vk::MemoryPropertyFlagBits::eDeviceLocal);
+            if (ai.memoryTypeIndex == VK_MAX_MEMORY_TYPES) {
+                // No VRAM type for this buffer — fall back to host-visible.
+                device_local_ = false;
+                ai.memoryTypeIndex = findMemType(mp, mr.memoryTypeBits,
+                    vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+            }
+            mem = vd.allocateMemory(ai);
+            vd.bindBufferMemory(buf, mem, 0);
+        } catch (const vk::SystemError& e) {
+            fprintf(stderr, "vulkan_rt FATAL: create_device_local: %s\n", e.what());
+            destroy();
+        }
     }
 
     // Import a Linux dma-buf fd (e.g. from SharedBO::dma_buf_fd()) as Vulkan
     // device memory — zero-copy NPU↔GPU path (issue #1217).
-    // Requires VK_KHR_external_memory_fd on the device (enabled in VkCtx::init).
-    // Returns false if the extension is unavailable or the import fails.
+    // Requires VK_KHR_external_memory_fd + VK_EXT_external_memory_dma_buf on
+    // the device (enabled in VkCtx::init).  The driver takes ownership of the
+    // fd on SUCCESS — callers must dup before importing and must NOT close
+    // after a successful import.  Returns false (and leaves the fd owned by
+    // the caller) if the import fails.
     bool create_from_dma_buf(VkDevice d,
-                              const VkPhysicalDeviceMemoryProperties& mp,
+                              const vk::PhysicalDeviceMemoryProperties& mp,
                               size_t sz, int dma_fd,
                               VkBufferUsageFlags usage) {
         dev = d; size = sz;
 
-        // Buffer with VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT declared.
-        VkExternalMemoryBufferCreateInfo ext_bi{
-            VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
-        ext_bi.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
+        try {
+            vk::Device vd(d);
 
-        VkBufferCreateInfo bi{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-        bi.pNext = &ext_bi;
-        bi.size  = sz;
-        bi.usage = usage;
-        if (vkCreateBuffer(dev, &bi, nullptr, &buf) != VK_SUCCESS) {
-            fprintf(stderr, "vulkan_rt: create_from_dma_buf: vkCreateBuffer failed\n");
+            // Buffer with VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT declared.
+            // (The dma-buf handle-type value comes from VK_EXT_external_memory_dma_buf
+            // and is not generated as a named vk:: enum in this vulkan.hpp, so use
+            // the raw bit value.)
+            vk::ExternalMemoryBufferCreateInfo ext_bi;
+            ext_bi.handleTypes = vk::ExternalMemoryHandleTypeFlags(VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+
+            vk::BufferCreateInfo bi;
+            bi.pNext = &ext_bi;
+            bi.size  = sz;
+            bi.usage = vk::BufferUsageFlags(usage);
+            buf = vd.createBuffer(bi);
+
+            vk::MemoryRequirements mr = vd.getBufferMemoryRequirements(buf);
+
+            // Import the dma-buf fd as Vulkan device memory.
+            vk::ImportMemoryFdInfoKHR import_info;
+            import_info.handleType = static_cast<vk::ExternalMemoryHandleTypeFlagBits>(VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT);
+            import_info.fd         = dma_fd;
+
+            vk::MemoryAllocateInfo ai;
+            ai.pNext          = &import_info;
+            ai.allocationSize = mr.size;
+            // SharedBO pages are HOST_ONLY coherent system RAM. Prefer a
+            // host-visible+coherent type (the fused backend's HIP transfers go
+            // through the XRT CPU view of the same pages). Fall back to
+            // host-visible, then device-local (the memory type the
+            // hardware-verified import proof in
+            // engine/fusion/zero_copy/test_vk_dma_buf_import.cpp uses).  Note:
+            // on RADV/Strix Halo vkMapMemory of the NPU's imported dma-buf
+            // succeeds but the mapping SIGBUSes on touch — callers should not
+            // rely on CPU access through the import (see
+            // engine/fusion/zero_copy/test_vkrt_dma_buf_import.cpp).
+            ai.memoryTypeIndex = findMemTypeOr(mp, mr.memoryTypeBits,
+                vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+            if (ai.memoryTypeIndex == VK_MAX_MEMORY_TYPES)
+                ai.memoryTypeIndex = findMemTypeOr(mp, mr.memoryTypeBits,
+                    vk::MemoryPropertyFlagBits::eHostVisible);
+            if (ai.memoryTypeIndex == VK_MAX_MEMORY_TYPES)
+                ai.memoryTypeIndex = findMemTypeOr(mp, mr.memoryTypeBits,
+                    vk::MemoryPropertyFlagBits::eDeviceLocal);
+            if (ai.memoryTypeIndex == VK_MAX_MEMORY_TYPES) {
+                fprintf(stderr, "vulkan_rt: create_from_dma_buf: no suitable memory type\n");
+                destroy();
+                return false;
+            }
+
+            mem = vd.allocateMemory(ai);   // driver takes ownership of dma_fd on success
+            vd.bindBufferMemory(buf, mem, 0);
+            imported_ = true;
+            return true;
+        } catch (const vk::SystemError& e) {
+            fprintf(stderr, "vulkan_rt: create_from_dma_buf: %s\n", e.what());
+            // Import failed — the fd was NOT consumed; caller still owns it.
+            destroy();
             return false;
         }
-
-        VkMemoryRequirements mr;
-        vkGetBufferMemoryRequirements(dev, buf, &mr);
-
-        // Import the dma-buf fd as Vulkan device memory.
-        VkImportMemoryFdInfoKHR import_info{VK_STRUCTURE_TYPE_IMPORT_MEMORY_FD_INFO_KHR};
-        import_info.handleType = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
-        import_info.fd         = dma_fd;
-
-        VkMemoryAllocateInfo ai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-        ai.pNext          = &import_info;
-        ai.allocationSize = mr.size;
-        // SharedBO pages are HOST_ONLY coherent system RAM — pick the first
-        // memory type that matches the buffer's requirements and is host-visible.
-        ai.memoryTypeIndex = findMemType(mp, mr.memoryTypeBits,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-        if (vkAllocateMemory(dev, &ai, nullptr, &mem) != VK_SUCCESS) {
-            fprintf(stderr, "vulkan_rt: create_from_dma_buf: vkAllocateMemory failed\n");
-            vkDestroyBuffer(dev, buf, nullptr); buf = VK_NULL_HANDLE;
-            return false;
-        }
-        if (vkBindBufferMemory(dev, buf, mem, 0) != VK_SUCCESS) {
-            fprintf(stderr, "vulkan_rt: create_from_dma_buf: vkBindBufferMemory failed\n");
-            vkFreeMemory(dev, mem, nullptr); mem = VK_NULL_HANDLE;
-            vkDestroyBuffer(dev, buf, nullptr); buf = VK_NULL_HANDLE;
-            return false;
-        }
-        imported_ = true;
-        return true;
     }
 
     void upload(const void* data) {
         void* p;
-        VKRT_CK(vkMapMemory(dev, mem, 0, size, 0, &p));
+        if (!map_mem(p)) return;
         memcpy(p, data, size);
-        vkUnmapMemory(dev, mem);
+        vk::Device(dev).unmapMemory(mem);
     }
+    // Upload into a DEVICE_LOCAL buffer via a host-visible staging buffer +
+    // one copy command (device-local memory can't be mapped). No-op for
+    // host-visible buffers (uses plain upload). Defined after VkCtx.
+    void upload_staged(VkCtx& ctx, const void* data);
     void download(void* data) const {
         void* p;
-        VKRT_CK(vkMapMemory(dev, mem, 0, size, 0, &p));
+        if (!map_mem(p)) return;
         memcpy(data, p, size);
-        vkUnmapMemory(dev, mem);
+        vk::Device(dev).unmapMemory(mem);
     }
+    // Read back a DEVICE_LOCAL buffer via a staging copy (mirror of
+    // upload_staged). Used by debug/inspection paths; no-op for host-visible.
+    // Defined after VkCtx.
+    void download_staged(VkCtx& ctx, void* data) const;
+
+private:
+    // Map host-visible memory; returns false (and logs) on failure.
+    bool map_mem(void*& out) const {
+        vk::Device vd(dev);
+        try {
+            out = vd.mapMemory(mem, 0, size, {});
+            return true;
+        } catch (const vk::SystemError& e) {
+            fprintf(stderr, "vulkan_rt VK_ERR mapMemory: %s\n", e.what());
+            return false;
+        }
+    }
+
+public:
     void destroy() {
-        if (mem) { vkFreeMemory(dev, mem, nullptr); mem = VK_NULL_HANDLE; }
-        if (buf) { vkDestroyBuffer(dev, buf, nullptr); buf = VK_NULL_HANDLE; }
+        if (dev) {
+            vk::Device vd(dev);
+            if (mem) vd.freeMemory(mem);
+            if (buf) vd.destroyBuffer(buf);
+        }
+        mem = nullptr;
+        buf = nullptr;
         imported_ = false;
     }
 };
 
 struct VkCtx {
-    VkInstance inst = VK_NULL_HANDLE;
-    VkPhysicalDevice phys = VK_NULL_HANDLE;
-    VkDevice dev = VK_NULL_HANDLE;
-    VkQueue queue = VK_NULL_HANDLE;
-    VkCommandPool cmdPool = VK_NULL_HANDLE;
-    VkPhysicalDeviceMemoryProperties memProps{};
-    VkDescriptorPool dpool = VK_NULL_HANDLE;
-    VkQueryPool queryPool = VK_NULL_HANDLE;
+    vk::Instance inst;
+    vk::PhysicalDevice phys;
+    vk::Device dev;
+    vk::Queue queue;
+    vk::CommandPool cmdPool;
+    vk::PhysicalDeviceMemoryProperties memProps;
+    vk::DescriptorPool dpool;
+    vk::QueryPool queryPool;
     float timestampPeriodNs = 1.0f;
     char deviceName[256] = {0};
 
-    // Whether VK_KHR_external_memory_fd is available on the chosen device.
+    // Descriptor pool sizing: the default pool (64 storage descriptors, 32
+    // sets) is fine for the tiny backends, but the Vulkan in-place attention
+    // engine (gpu_attn_vk) allocates per-layer sets (28 layers × 3 sets, 11
+    // bindings each).  Set these BEFORE init() when a big pool is needed.
+    uint32_t dpool_descriptors = 64;
+    uint32_t dpool_max_sets    = 32;
+
+    // Whether dma-buf import is usable on the chosen device: BOTH
+    // VK_KHR_external_memory_fd (the fd-import mechanism) and
+    // VK_EXT_external_memory_dma_buf (defines the dma-buf handle type) must
+    // be available.  Gated this way because create_from_dma_buf() imports
+    // VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT, which only exists with
+    // the EXT extension enabled.
     bool ext_mem_fd = false;
 
     void init() {
-        VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
-        ai.pApplicationName = "1bit-vulkan-rt";
-        ai.apiVersion = VK_API_VERSION_1_2;
+        try {
+            vk::ApplicationInfo ai;
+            ai.pApplicationName = "1bit-vulkan-rt";
+            ai.apiVersion = VK_API_VERSION_1_2;
 
-        // VK_KHR_external_memory_capabilities is an instance extension needed
-        // before VK_KHR_external_memory_fd (device extension) can be used.
-        const char* inst_exts[] = {
-            "VK_KHR_external_memory_capabilities",
-            "VK_KHR_get_physical_device_properties2",
-        };
-        VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
-        ici.pApplicationInfo        = &ai;
-        ici.enabledExtensionCount   = 2;
-        ici.ppEnabledExtensionNames = inst_exts;
-        // If the instance extensions are unsupported, fall back to no extensions.
-        if (vkCreateInstance(&ici, nullptr, &inst) != VK_SUCCESS) {
-            ici.enabledExtensionCount   = 0;
-            ici.ppEnabledExtensionNames = nullptr;
-            VKRT_CK(vkCreateInstance(&ici, nullptr, &inst));
-        }
-
-        uint32_t nd = 0;
-        VKRT_CK(vkEnumeratePhysicalDevices(inst, &nd, nullptr));
-        if (nd == 0) VKRT_BAIL("No Vulkan-capable devices found");
-        std::vector<VkPhysicalDevice> devs(nd);
-        VKRT_CK(vkEnumeratePhysicalDevices(inst, &nd, devs.data()));
-
-        for (auto d : devs) {
-            VkPhysicalDeviceProperties dp;
-            vkGetPhysicalDeviceProperties(d, &dp);
-            if (dp.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ||
-                dp.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
-                phys = d;
-                vkGetPhysicalDeviceMemoryProperties(d, &memProps);
-                timestampPeriodNs = dp.limits.timestampPeriod;
-                snprintf(deviceName, sizeof(deviceName), "%s", dp.deviceName);
-                break;
+            // VK_KHR_external_memory_capabilities is an instance extension needed
+            // before VK_KHR_external_memory_fd (device extension) can be used.
+            const char* inst_exts[] = {
+                "VK_KHR_external_memory_capabilities",
+                "VK_KHR_get_physical_device_properties2",
+            };
+            vk::InstanceCreateInfo ici;
+            ici.pApplicationInfo        = &ai;
+            ici.enabledExtensionCount   = 2;
+            ici.ppEnabledExtensionNames = inst_exts;
+            // If the instance extensions are unsupported, fall back to no extensions.
+            try {
+                inst = vk::createInstance(ici);
+            } catch (...) {
+                ici.enabledExtensionCount   = 0;
+                ici.ppEnabledExtensionNames = nullptr;
+                inst = vk::createInstance(ici);
             }
-        }
-        if (!phys) VKRT_BAIL("No integrated/discrete GPU found");
 
-        // Probe for VK_KHR_external_memory_fd device extension (needed for
-        // dma-buf import — issue #1217).
-        uint32_t ext_count = 0;
-        vkEnumerateDeviceExtensionProperties(phys, nullptr, &ext_count, nullptr);
-        std::vector<VkExtensionProperties> avail_exts(ext_count);
-        vkEnumerateDeviceExtensionProperties(phys, nullptr, &ext_count, avail_exts.data());
-        for (auto& e : avail_exts) {
-            if (strcmp(e.extensionName, "VK_KHR_external_memory_fd") == 0) {
-                ext_mem_fd = true;
-                break;
+            auto devs = vk::Instance(inst).enumeratePhysicalDevices();
+            if (devs.empty()) { fprintf(stderr, "vulkan_rt FATAL: No Vulkan-capable devices found\n"); return; }
+
+            for (auto d : devs) {
+                vk::PhysicalDeviceProperties dp = d.getProperties();
+                if (dp.deviceType == vk::PhysicalDeviceType::eIntegratedGpu ||
+                    dp.deviceType == vk::PhysicalDeviceType::eDiscreteGpu) {
+                    phys = d;
+                    memProps = d.getMemoryProperties();
+                    timestampPeriodNs = dp.limits.timestampPeriod;
+                    snprintf(deviceName, sizeof(deviceName), "%s", dp.deviceName.data());
+                    break;
+                }
             }
+            if (!phys) { fprintf(stderr, "vulkan_rt FATAL: No integrated/discrete GPU found\n"); return; }
+
+            // Probe for the external-memory device extensions needed for dma-buf
+            // import of NPU SharedBO pages (issue #1217).  Both are required:
+            // VK_KHR_external_memory_fd is the fd-import mechanism and
+            // VK_EXT_external_memory_dma_buf is what defines the dma-buf handle
+            // type (VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT).
+            auto avail_exts = phys.enumerateDeviceExtensionProperties();
+            bool has_ext_fd = false, has_ext_dma_buf = false;
+            for (auto& e : avail_exts) {
+                if (strcmp(e.extensionName, "VK_KHR_external_memory_fd") == 0) has_ext_fd = true;
+                if (strcmp(e.extensionName, "VK_EXT_external_memory_dma_buf") == 0) has_ext_dma_buf = true;
+            }
+            ext_mem_fd = has_ext_fd && has_ext_dma_buf;
+
+            float qp = 1.0f;
+            vk::DeviceQueueCreateInfo qci;
+            qci.queueCount = 1;
+            qci.pQueuePriorities = &qp;
+            vk::DeviceCreateInfo dci;
+            dci.queueCreateInfoCount = 1;
+            dci.pQueueCreateInfos = &qci;
+
+            const char* dev_exts[] = {
+                "VK_KHR_external_memory",
+                "VK_KHR_external_memory_fd",
+                "VK_EXT_external_memory_dma_buf",
+            };
+            if (ext_mem_fd) {
+                dci.enabledExtensionCount   = 3;
+                dci.ppEnabledExtensionNames = dev_exts;
+            }
+            try {
+                dev = phys.createDevice(dci);
+            } catch (...) {
+                // Retry without the external-memory extensions if unavailable.
+                dci.enabledExtensionCount   = 0;
+                dci.ppEnabledExtensionNames = nullptr;
+                ext_mem_fd = false;
+                dev = phys.createDevice(dci);
+            }
+            queue = dev.getQueue(0, 0);
+
+            vk::CommandPoolCreateInfo cpci;
+            cmdPool = dev.createCommandPool(cpci);
+
+            vk::DescriptorPoolSize dps(vk::DescriptorType::eStorageBuffer, dpool_descriptors);
+            vk::DescriptorPoolCreateInfo dpc;
+            dpc.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
+            dpc.maxSets = dpool_max_sets;
+            dpc.poolSizeCount = 1;
+            dpc.pPoolSizes = &dps;
+            dpool = dev.createDescriptorPool(dpc);
+
+            vk::QueryPoolCreateInfo qpci;
+            qpci.queryType = vk::QueryType::eTimestamp;
+            qpci.queryCount = 2;
+            queryPool = dev.createQueryPool(qpci);
+        } catch (const vk::SystemError& e) {
+            fprintf(stderr, "vulkan_rt FATAL: %s\n", e.what());
         }
-
-        float qp = 1.0f;
-        VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
-        qci.queueCount = 1;
-        qci.pQueuePriorities = &qp;
-        VkDeviceCreateInfo dci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
-        dci.queueCreateInfoCount = 1;
-        dci.pQueueCreateInfos = &qci;
-
-        const char* dev_exts[] = {
-            "VK_KHR_external_memory",
-            "VK_KHR_external_memory_fd",
-        };
-        if (ext_mem_fd) {
-            dci.enabledExtensionCount   = 2;
-            dci.ppEnabledExtensionNames = dev_exts;
-        }
-        if (vkCreateDevice(phys, &dci, nullptr, &dev) != VK_SUCCESS) {
-            // Retry without the external-memory extensions if unavailable.
-            dci.enabledExtensionCount   = 0;
-            dci.ppEnabledExtensionNames = nullptr;
-            ext_mem_fd = false;
-            VKRT_CK(vkCreateDevice(phys, &dci, nullptr, &dev));
-        }
-        vkGetDeviceQueue(dev, 0, 0, &queue);
-
-        VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
-        VKRT_CK(vkCreateCommandPool(dev, &cpci, nullptr, &cmdPool));
-
-        VkDescriptorPoolSize dps{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64};
-        VkDescriptorPoolCreateInfo dpc{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        dpc.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
-        dpc.maxSets = 32;
-        dpc.poolSizeCount = 1;
-        dpc.pPoolSizes = &dps;
-        VKRT_CK(vkCreateDescriptorPool(dev, &dpc, nullptr, &dpool));
-
-        VkQueryPoolCreateInfo qpci{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
-        qpci.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        qpci.queryCount = 2;
-        VKRT_CK(vkCreateQueryPool(dev, &qpci, nullptr, &queryPool));
     }
 
     void destroy() {
-        if (queryPool) vkDestroyQueryPool(dev, queryPool, nullptr);
-        if (dpool) vkDestroyDescriptorPool(dev, dpool, nullptr);
-        if (cmdPool) vkDestroyCommandPool(dev, cmdPool, nullptr);
-        if (dev) vkDestroyDevice(dev, nullptr);
-        if (inst) vkDestroyInstance(inst, nullptr);
+        if (dev) {
+            if (queryPool) dev.destroyQueryPool(queryPool);
+            if (dpool) dev.destroyDescriptorPool(dpool);
+            if (cmdPool) dev.destroyCommandPool(cmdPool);
+            dev.destroy();
+        }
+        if (inst) vk::Instance(inst).destroy();
+        queryPool = nullptr;
+        dpool = nullptr;
+        cmdPool = nullptr;
+        dev = nullptr;
+        queue = nullptr;
+        phys = nullptr;
+        inst = nullptr;
     }
 };
 
+// ── GpuBuffer staging helpers (need the complete VkCtx) ─────────────────────
+inline void GpuBuffer::upload_staged(VkCtx& ctx, const void* data) {
+    if (!device_local_) { upload(data); return; }
+    try {
+        vk::Device vd(ctx.dev);
+        // Staging: host-visible coherent buffer, same size.
+        vk::BufferCreateInfo sbi;
+        sbi.size = size;
+        sbi.usage = vk::BufferUsageFlagBits::eTransferSrc;
+        vk::Buffer staging = vd.createBuffer(sbi);
+        vk::MemoryRequirements smr = vd.getBufferMemoryRequirements(staging);
+        vk::MemoryAllocateInfo sai;
+        sai.allocationSize = smr.size;
+        sai.memoryTypeIndex = findMemType(ctx.memProps, smr.memoryTypeBits,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::DeviceMemory smem = vd.allocateMemory(sai);
+        vd.bindBufferMemory(staging, smem, 0);
+        void* sp = vd.mapMemory(smem, 0, size, {});
+        memcpy(sp, data, size);
+        vd.unmapMemory(smem);
+
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        vk::BufferCopy bc(0, 0, size);
+        cmd.copyBuffer(staging, buf, {bc});
+        cmd.end();
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+        vd.destroyBuffer(staging);
+        vd.freeMemory(smem);
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR upload_staged: %s\n", e.what());
+    }
+}
+
+inline void GpuBuffer::download_staged(VkCtx& ctx, void* data) const {
+    if (!device_local_) { download(data); return; }
+    try {
+        vk::Device vd(ctx.dev);
+        vk::BufferCreateInfo sbi;
+        sbi.size = size;
+        sbi.usage = vk::BufferUsageFlagBits::eTransferDst;
+        vk::Buffer staging = vd.createBuffer(sbi);
+        vk::MemoryRequirements smr = vd.getBufferMemoryRequirements(staging);
+        vk::MemoryAllocateInfo sai;
+        sai.allocationSize = smr.size;
+        sai.memoryTypeIndex = findMemType(ctx.memProps, smr.memoryTypeBits,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::DeviceMemory smem = vd.allocateMemory(sai);
+        vd.bindBufferMemory(staging, smem, 0);
+
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        vk::BufferCopy bc(0, 0, size);
+        cmd.copyBuffer(buf, staging, {bc});
+        cmd.end();
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+
+        void* sp = vd.mapMemory(smem, 0, size, {});
+        memcpy(data, sp, size);
+        vd.unmapMemory(smem);
+        vd.destroyBuffer(staging);
+        vd.freeMemory(smem);
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR download_staged: %s\n", e.what());
+    }
+}
+
+// Upload one slice (bytes at offset) of a DEVICE_LOCAL buffer via a staging
+// copy.  Used to fill packed per-layer weight buffers without re-uploading
+// the whole thing.  Host-visible buffers use a direct memcpy into the map.
+inline bool uploadSliceStaged(VkCtx& ctx, GpuBuffer& b, const void* data,
+                              size_t byte_off, size_t byte_len) {
+    if (b.mem == VK_NULL_HANDLE) return false;
+    if (byte_off + byte_len > b.size) return false;
+    try {
+        vk::Device vd(ctx.dev);
+        if (!b.device_local()) {
+            void* p = vd.mapMemory(b.mem, byte_off, byte_len, {});
+            memcpy(p, data, byte_len);
+            vd.unmapMemory(b.mem);
+            return true;
+        }
+        vk::BufferCreateInfo sbi;
+        sbi.size = byte_len;
+        sbi.usage = vk::BufferUsageFlagBits::eTransferSrc;
+        vk::Buffer staging = vd.createBuffer(sbi);
+        vk::MemoryRequirements smr = vd.getBufferMemoryRequirements(staging);
+        vk::MemoryAllocateInfo sai;
+        sai.allocationSize = smr.size;
+        sai.memoryTypeIndex = findMemType(ctx.memProps, smr.memoryTypeBits,
+            vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent);
+        vk::DeviceMemory smem = vd.allocateMemory(sai);
+        vd.bindBufferMemory(staging, smem, 0);
+        void* sp = vd.mapMemory(smem, 0, byte_len, {});
+        memcpy(sp, data, byte_len);
+        vd.unmapMemory(smem);
+
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        vk::BufferCopy bc(0, byte_off, byte_len);
+        cmd.copyBuffer(staging, b.buf, {bc});
+        cmd.end();
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+        vd.destroyBuffer(staging);
+        vd.freeMemory(smem);
+        return true;
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR uploadSliceStaged: %s\n", e.what());
+        return false;
+    }
+}
+
 struct Pipeline {
-    VkPipelineLayout layout = VK_NULL_HANDLE;
-    VkPipeline pipeline = VK_NULL_HANDLE;
-    VkShaderModule shader = VK_NULL_HANDLE;
-    VkDescriptorSetLayout dsl = VK_NULL_HANDLE;
+    vk::PipelineLayout layout;
+    vk::Pipeline pipeline;
+    vk::ShaderModule shader;
+    vk::DescriptorSetLayout dsl;
     uint32_t pcSize = 0;
 
     void create(VkCtx& ctx, const char* spvPath, int numBindings, uint32_t pcSizeIn) {
         pcSize = pcSizeIn;
-        auto spv = loadSpirv(spvPath);
-        VkShaderModuleCreateInfo sm{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        sm.codeSize = spv.size() * 4;
-        sm.pCode = spv.data();
-        VKRT_CK(vkCreateShaderModule(ctx.dev, &sm, nullptr, &shader));
+        try {
+            vk::Device vd(ctx.dev);
+            auto spv = loadSpirv(spvPath);
+            if (spv.empty()) { fprintf(stderr, "vulkan_rt FATAL: empty SPIR-V %s\n", spvPath); return; }
+            vk::ShaderModuleCreateInfo sm;
+            sm.codeSize = spv.size() * 4;
+            sm.pCode = spv.data();
+            shader = vd.createShaderModule(sm);
 
-        std::vector<VkDescriptorSetLayoutBinding> bindings(static_cast<size_t>(numBindings));
-        for (int i = 0; i < numBindings; i++) {
-            bindings[static_cast<size_t>(i)] = {static_cast<uint32_t>(i), VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+            std::vector<vk::DescriptorSetLayoutBinding> bindings(static_cast<size_t>(numBindings));
+            for (int i = 0; i < numBindings; i++) {
+                bindings[static_cast<size_t>(i)] = vk::DescriptorSetLayoutBinding(
+                    static_cast<uint32_t>(i), vk::DescriptorType::eStorageBuffer, 1,
+                    vk::ShaderStageFlagBits::eCompute, nullptr);
+            }
+            vk::DescriptorSetLayoutCreateInfo dslci;
+            dslci.bindingCount = static_cast<uint32_t>(numBindings);
+            dslci.pBindings = bindings.data();
+            dsl = vd.createDescriptorSetLayout(dslci);
+
+            vk::PushConstantRange pcr(vk::ShaderStageFlagBits::eCompute, 0, pcSize);
+            vk::PipelineLayoutCreateInfo pl;
+            pl.setLayoutCount = 1;
+            pl.pSetLayouts = &dsl;
+            pl.pushConstantRangeCount = pcSize > 0 ? 1u : 0u;
+            pl.pPushConstantRanges = pcSize > 0 ? &pcr : nullptr;
+            layout = vd.createPipelineLayout(pl);
+
+            vk::PipelineShaderStageCreateInfo stage;
+            stage.stage = vk::ShaderStageFlagBits::eCompute;
+            stage.module = shader;
+            stage.pName = "main";
+            vk::ComputePipelineCreateInfo cp;
+            cp.stage = stage;
+            cp.layout = layout;
+            // Single-create convenience doesn't exist in this vulkan.hpp — use the
+            // batch API with one entry (throws on failure in exceptions mode).
+            std::vector<vk::Pipeline> pipes = vd.createComputePipelines(vk::PipelineCache(), {cp}).value;
+            pipeline = pipes[0];
+        } catch (const vk::SystemError& e) {
+            fprintf(stderr, "vulkan_rt FATAL: Pipeline::create: %s\n", e.what());
         }
-        VkDescriptorSetLayoutCreateInfo dslci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        dslci.bindingCount = static_cast<uint32_t>(numBindings);
-        dslci.pBindings = bindings.data();
-        VKRT_CK(vkCreateDescriptorSetLayout(ctx.dev, &dslci, nullptr, &dsl));
-
-        VkPushConstantRange pcr{VK_SHADER_STAGE_COMPUTE_BIT, 0, pcSize};
-        VkPipelineLayoutCreateInfo pl{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
-        pl.setLayoutCount = 1;
-        pl.pSetLayouts = &dsl;
-        pl.pushConstantRangeCount = pcSize > 0 ? 1u : 0u;
-        pl.pPushConstantRanges = pcSize > 0 ? &pcr : nullptr;
-        VKRT_CK(vkCreatePipelineLayout(ctx.dev, &pl, nullptr, &layout));
-
-        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
-        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
-        stage.module = shader;
-        stage.pName = "main";
-        VkComputePipelineCreateInfo cp{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
-        cp.stage = stage;
-        cp.layout = layout;
-        cp.basePipelineIndex = -1;
-        VKRT_CK(vkCreateComputePipelines(ctx.dev, VK_NULL_HANDLE, 1, &cp, nullptr, &pipeline));
     }
 
-    void destroy(VkDevice dev) {
-        if (pipeline) vkDestroyPipeline(dev, pipeline, nullptr);
-        if (layout) vkDestroyPipelineLayout(dev, layout, nullptr);
-        if (dsl) vkDestroyDescriptorSetLayout(dev, dsl, nullptr);
-        if (shader) vkDestroyShaderModule(dev, shader, nullptr);
+    void destroy(VkDevice d) {
+        if (!d) return;
+        vk::Device vd(d);
+        if (pipeline) vd.destroyPipeline(pipeline);
+        if (layout) vd.destroyPipelineLayout(layout);
+        if (dsl) vd.destroyDescriptorSetLayout(dsl);
+        if (shader) vd.destroyShaderModule(shader);
+        pipeline = nullptr;
+        layout = nullptr;
+        dsl = nullptr;
+        shader = nullptr;
     }
 };
 
 inline VkDescriptorSet createDescriptorSet(VkCtx& ctx, Pipeline& p, GpuBuffer** bufs, int n) {
-    VkDescriptorSet ds;
-    VkDescriptorSetAllocateInfo dai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    dai.descriptorPool = ctx.dpool;
-    dai.descriptorSetCount = 1;
-    dai.pSetLayouts = &p.dsl;
-    { VkResult r_ = vkAllocateDescriptorSets(ctx.dev, &dai, &ds); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkAllocateDescriptorSets", r_); return VK_NULL_HANDLE; } }
+    try {
+        vk::Device vd(ctx.dev);
+        vk::DescriptorSetAllocateInfo dai(ctx.dpool, p.dsl);
+        vk::DescriptorSet ds = vd.allocateDescriptorSets(dai)[0];
 
-    std::vector<VkDescriptorBufferInfo> dbis(static_cast<size_t>(n));
-    std::vector<VkWriteDescriptorSet> writes(static_cast<size_t>(n));
-    for (int i = 0; i < n; i++) {
-        dbis[static_cast<size_t>(i)] = {bufs[i]->buf, 0, VK_WHOLE_SIZE};
-        writes[static_cast<size_t>(i)] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, ds, static_cast<uint32_t>(i), 0, 1,
-            VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &dbis[static_cast<size_t>(i)], nullptr};
+        std::vector<vk::DescriptorBufferInfo> dbis(static_cast<size_t>(n));
+        std::vector<vk::WriteDescriptorSet> writes(static_cast<size_t>(n));
+        for (int i = 0; i < n; i++) {
+            dbis[static_cast<size_t>(i)] = vk::DescriptorBufferInfo(bufs[i]->buf, 0, VK_WHOLE_SIZE);
+            writes[static_cast<size_t>(i)] = vk::WriteDescriptorSet(
+                ds, static_cast<uint32_t>(i), 0, 1, vk::DescriptorType::eStorageBuffer,
+                nullptr, &dbis[static_cast<size_t>(i)], nullptr);
+        }
+        vd.updateDescriptorSets(writes, {});
+        return ds;
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR createDescriptorSet: %s\n", e.what());
+        return VK_NULL_HANDLE;
     }
-    vkUpdateDescriptorSets(ctx.dev, static_cast<uint32_t>(n), writes.data(), 0, nullptr);
-    return ds;
+}
+
+// Free a descriptor set back to the pool (used when re-binding a set to a
+// different buffer — e.g. zero_cache() sweeping kc_ then vc_).
+inline void destroyDescriptorSet(VkCtx& ctx, VkDescriptorSet ds) {
+    if (!ds) return;
+    try {
+        vk::Device vd(ctx.dev);
+        vd.freeDescriptorSets(ctx.dpool, {vk::DescriptorSet(ds)});
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR freeDescriptorSets: %s\n", e.what());
+    }
 }
 
 // Single dispatch, blocking (submit + wait idle). Used for correctness checks.
 inline void dispatchOnce(VkCtx& ctx, Pipeline& p, VkDescriptorSet ds, uint32_t gx, uint32_t gy, uint32_t gz,
                           const void* pcData) {
-    VkCommandBuffer cmd;
-    VkCommandBufferAllocateInfo cba{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cba.commandPool = ctx.cmdPool;
-    cba.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cba.commandBufferCount = 1;
-    VKRT_CK(vkAllocateCommandBuffers(ctx.dev, &cba, &cmd));
+    try {
+        vk::Device vd(ctx.dev);
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
 
-    VkCommandBufferBeginInfo cbb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    cbb.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    VKRT_CK(vkBeginCommandBuffer(cmd, &cbb));
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0, 1, &ds, 0, nullptr);
-    if (pcData && p.pcSize > 0) vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, p.pcSize, pcData);
-    vkCmdDispatch(cmd, gx, gy, gz);
-    VKRT_CK(vkEndCommandBuffer(cmd));
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, p.pipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, p.layout, 0, {vk::DescriptorSet(ds)}, {});
+        if (pcData && p.pcSize > 0) cmd.pushConstants(p.layout, vk::ShaderStageFlagBits::eCompute, 0, p.pcSize, pcData);
+        cmd.dispatch(gx, gy, gz);
+        cmd.end();
 
-    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    VKRT_CK(vkQueueSubmit(ctx.queue, 1, &si, VK_NULL_HANDLE));
-    VKRT_CK(vkQueueWaitIdle(ctx.queue));
-    vkFreeCommandBuffers(ctx.dev, ctx.cmdPool, 1, &cmd);
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR dispatchOnce: %s\n", e.what());
+    }
+}
+
+// One dispatch stage: pipeline + descriptor set + group counts + push constants.
+struct DispatchStage {
+    Pipeline*    pipe = nullptr;
+    VkDescriptorSet ds  = VK_NULL_HANDLE;
+    uint32_t gx = 1, gy = 1, gz = 1;
+    const void* pc = nullptr;
+};
+
+// Batch of DEPENDENT compute dispatches, recorded into ONE command buffer with
+// a full compute memory barrier between stages, submitted once and waited to
+// idle once.  This is the throughput path: dispatchOnce() pays a queue
+// waitIdle + command-buffer alloc/free per dispatch (~1.8 ms each on RADV),
+// which dominates the attention layer's 4-stage pipeline (rms→qkv→decode→post)
+// — measured 25x slower than the equivalent HIP single-stream path purely from
+// that per-dispatch host sync.  Batching collapses 4 syncs into 1.
+//   `barrier_between[i]` is inserted BEFORE stage i (i>=1); stages are
+//   assumed ordered and each barrier flushes prior shader writes so the next
+//   stage sees them (buffer memory barrier would need per-buffer ranges; a
+//   global compute barrier is correct and cheap at this dispatch count).
+inline void dispatchBatchOnce(VkCtx& ctx, const DispatchStage* stages, uint32_t nStages) {
+    if (nStages == 0) return;
+    try {
+        vk::Device vd(ctx.dev);
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
+
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        for (uint32_t i = 0; i < nStages; i++) {
+            const DispatchStage& s = stages[i];
+            if (!s.pipe) continue;
+            if (i > 0) {
+                // Full compute-stage barrier: prior stage's shader writes
+                // visible to this stage's shader reads.
+                vk::MemoryBarrier mb(vk::AccessFlagBits::eShaderWrite,
+                                     vk::AccessFlagBits::eShaderRead);
+                cmd.pipelineBarrier(vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::PipelineStageFlagBits::eComputeShader,
+                                    vk::DependencyFlags(0), {mb}, {}, {});
+            }
+            cmd.bindPipeline(vk::PipelineBindPoint::eCompute, s.pipe->pipeline);
+            cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, s.pipe->layout, 0,
+                                   {vk::DescriptorSet(s.ds)}, {});
+            if (s.pc && s.pipe->pcSize > 0)
+                cmd.pushConstants(s.pipe->layout, vk::ShaderStageFlagBits::eCompute, 0,
+                                  s.pipe->pcSize, s.pc);
+            cmd.dispatch(s.gx, s.gy, s.gz);
+        }
+        cmd.end();
+
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR dispatchBatchOnce: %s\n", e.what());
+    }
 }
 
 // Repeated back-to-back dispatch of the same pipeline/descriptor set/push
@@ -379,40 +736,45 @@ inline void dispatchOnce(VkCtx& ctx, Pipeline& p, VkDescriptorSet ds, uint32_t g
 // discarded by the caller; measured pass reads elapsedMs()).
 inline double dispatchRepeatedTimed(VkCtx& ctx, Pipeline& p, VkDescriptorSet ds, uint32_t gx, uint32_t gy, uint32_t gz,
                                      const void* pcData, uint32_t iterations) {
-    VkCommandBuffer cmd;
-    VkCommandBufferAllocateInfo cba{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    cba.commandPool = ctx.cmdPool;
-    cba.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cba.commandBufferCount = 1;
-    { VkResult r_ = vkAllocateCommandBuffers(ctx.dev, &cba, &cmd); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkAllocateCommandBuffers", r_); return 0.0; } }
+    try {
+        vk::Device vd(ctx.dev);
+        vk::CommandBufferAllocateInfo cba(ctx.cmdPool, vk::CommandBufferLevel::ePrimary, 1);
+        vk::CommandBuffer cmd = vd.allocateCommandBuffers(cba)[0];
 
-    VkCommandBufferBeginInfo cbb{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-    cbb.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    { VkResult r_ = vkBeginCommandBuffer(cmd, &cbb); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkBeginCommandBuffer", r_); return 0.0; } }
-    vkCmdResetQueryPool(cmd, ctx.queryPool, 0, 2);
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.pipeline);
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, p.layout, 0, 1, &ds, 0, nullptr);
-    if (pcData && p.pcSize > 0) vkCmdPushConstants(cmd, p.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, p.pcSize, pcData);
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, ctx.queryPool, 0);
-    for (uint32_t i = 0; i < iterations; i++) {
-        vkCmdDispatch(cmd, gx, gy, gz);
+        vk::CommandBufferBeginInfo cbb(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+        cmd.begin(cbb);
+        cmd.resetQueryPool(ctx.queryPool, 0, 2);
+        cmd.bindPipeline(vk::PipelineBindPoint::eCompute, p.pipeline);
+        cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, p.layout, 0, {vk::DescriptorSet(ds)}, {});
+        if (pcData && p.pcSize > 0) cmd.pushConstants(p.layout, vk::ShaderStageFlagBits::eCompute, 0, p.pcSize, pcData);
+        cmd.writeTimestamp(vk::PipelineStageFlagBits::eTopOfPipe, ctx.queryPool, 0);
+        for (uint32_t i = 0; i < iterations; i++) {
+            cmd.dispatch(gx, gy, gz);
+        }
+        cmd.writeTimestamp(vk::PipelineStageFlagBits::eBottomOfPipe, ctx.queryPool, 1);
+        cmd.end();
+
+        vk::SubmitInfo si;
+        si.commandBufferCount = 1;
+        si.pCommandBuffers = &cmd;
+        ctx.queue.submit(si, nullptr);
+        ctx.queue.waitIdle();
+
+        uint64_t timestamps[2];
+        vk::Result r = vd.getQueryPoolResults(ctx.queryPool, 0, 2, sizeof(timestamps), timestamps,
+            sizeof(uint64_t), vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+        vd.freeCommandBuffers(ctx.cmdPool, 1, &cmd);
+        if (r != vk::Result::eSuccess) {
+            fprintf(stderr, "vulkan_rt VK_ERR dispatchRepeatedTimed: getQueryPoolResults -> %d\n", static_cast<int>(r));
+            return 0.0;
+        }
+
+        double elapsed_ns = static_cast<double>(timestamps[1] - timestamps[0]) * static_cast<double>(ctx.timestampPeriodNs);
+        return elapsed_ns / 1e6; // ms
+    } catch (const vk::SystemError& e) {
+        fprintf(stderr, "vulkan_rt VK_ERR dispatchRepeatedTimed: %s\n", e.what());
+        return 0.0;
     }
-    vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, ctx.queryPool, 1);
-    { VkResult r_ = vkEndCommandBuffer(cmd); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkEndCommandBuffer", r_); return 0.0; } }
-
-    VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-    si.commandBufferCount = 1;
-    si.pCommandBuffers = &cmd;
-    { VkResult r_ = vkQueueSubmit(ctx.queue, 1, &si, VK_NULL_HANDLE); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkQueueSubmit", r_); return 0.0; } }
-    { VkResult r_ = vkQueueWaitIdle(ctx.queue); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkQueueWaitIdle", r_); return 0.0; } }
-
-    uint64_t timestamps[2];
-    { VkResult r_ = vkGetQueryPoolResults(ctx.dev, ctx.queryPool, 0, 2, sizeof(timestamps), timestamps, sizeof(uint64_t),
-                                   VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT); if (r_ != VK_SUCCESS) { fprintf(stderr, "vulkan_rt VK_ERR %s:%d: %s -> %d\n", __FILE__, __LINE__, "vkGetQueryPoolResults", r_); return 0.0; } }
-    vkFreeCommandBuffers(ctx.dev, ctx.cmdPool, 1, &cmd);
-
-    double elapsed_ns = static_cast<double>(timestamps[1] - timestamps[0]) * static_cast<double>(ctx.timestampPeriodNs);
-    return elapsed_ns / 1e6; // ms
 }
 
 } // namespace vkrt

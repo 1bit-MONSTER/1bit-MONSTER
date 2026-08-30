@@ -663,10 +663,34 @@ combos(zero_scalar_c_func)
 // The MLIR designs always call matmul_i8_i32 / zero_i32 (the vectorized
 // names). For decode-optimized microkernels (DIM_M < 16, e.g. M=1) the
 // vectorized path can't instantiate (mmul needs m % 16 == 0), so alias the
-// names to the scalar implementations. Added 2026-08-15 for the M=1 kernels.
+// names to scalar implementations. Added 2026-08-15 for the M=1 kernels.
+//
+// B LAYOUT (silicon-verified 2026-08-29): the int8 B tile arrives in L1 in
+// the 8x8-microtiled block-major layout [kb][nb][8][8] (kb = k/8, nb = n/8,
+// element (r,c) of block (kb,nb) at ((kb*nb + nb)*8 + r)*8 + c). This is the
+// ONLY DMA-legal delivery for int8 row-major [K,N] weights — the toolchain
+// rejects byte-granular strides ("Stride N is 1 elements * 1 bytes, not
+// divisible by 4") so a plain row-major (k,n) tile cannot be delivered.
+// matmul_scalar's row-major B indexing (b[i*colB+col]) does NOT match that
+// layout — feeding it microtiled B produced uncorrelated FFN output (cosine
+// 0.04 vs 0.998 on the real-weight oracle). This alias reindexes the
+// microtiled layout; values are exact integer arithmetic, bit-identical to
+// the vectorized mmul accumulation.
 #if DIM_M < 16 && !defined(M8_VECTORIZED)
 extern "C" void matmul_i8_i32(int8_t *a_in, int8_t *b_in, int32_t *c_out) {
-    matmul_scalar<int8_t, int32_t, DIM_M, DIM_K, DIM_N, true, true>(a_in, b_in, c_out);
+    constexpr unsigned nb = DIM_N / 8;
+    for (unsigned row = 0; row < DIM_M; row++) {
+        for (unsigned col = 0; col < DIM_N; col++) {
+            const unsigned nb_ = col / 8, cc = col % 8;
+            int32_t s = 0;
+            for (unsigned i = 0; i < DIM_K; i++) {
+                const unsigned kb_ = i / 8, rr = i % 8;
+                s += (int32_t)a_in[row * DIM_K + i] *
+                     (int32_t)b_in[((kb_ * nb + nb_) * 8 + rr) * 8 + cc];
+            }
+            c_out[row * DIM_N + col] += s;
+        }
+    }
 }
 extern "C" void zero_i32(int32_t *c_out) {
     zero_scalar<int32_t, DIM_M, DIM_N>(c_out);
@@ -1378,6 +1402,9 @@ static inline void cascade_d_i8_i32_slice(const int8_t *__restrict pA,
 }
 
 #ifndef WIDE_DIM_N   // base cascade kernels — NOT emitted in the wide D object
+#if DIM_M == 8   // the a2s@b cascade slice is an 8-row kernel (static_assert
+                 // DIM_M == 8). Non-8 builds (M=1 decode, M=16/M=128) use
+                 // the scalar/vectorized matmul_i8_i32 aliases instead.
 extern "C" {
 
 extern "C" void cascade_d_first_i8_i32(const int8_t *__restrict a2s,
@@ -1397,6 +1424,7 @@ extern "C" void cascade_d_last_i8_i32(const int8_t *__restrict a2s,
 }
 
 } // extern "C" (cascade wrappers - a2s@b kernel)
+#endif // DIM_M == 8 (cascade a2s@b is an 8-row kernel only)
 
 // ── Partial-merge cascade kernels (the aie2p multi-call fix) ────────────────
 // The aie2p hardware cascade is a CONTINUOUS stream: calling the a2s@b

@@ -17,7 +17,7 @@ one session — see [Rejected Branches](#rejected-branches).
 ## Language policy (the Mojo fold)
 
 - **Runtime rule**: nothing that ships runs an interpreter. The engine binary
-  (`build/1bit`) is C++23 for compute kernels; Mojo 1.0 (`mojo==1.0.0`, pinned,
+  (`build/1bit`) is C++26 for compute kernels; Mojo 1.0 (`mojo==1.0.0`, pinned,
   no pre-1.0 community packages) is the unified language for servers,
   converters, tooling, control planes.
 - **Fold per-tool, not blanket "no new Python"**. A tool earns folding only if

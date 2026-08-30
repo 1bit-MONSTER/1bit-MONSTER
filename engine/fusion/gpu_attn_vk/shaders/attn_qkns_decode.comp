@@ -1,0 +1,164 @@
+// attn_qkns_decode.comp — fused attn_qkns + attn_decode.  Block h (one per Q
+// head) computes its OWN Q row (head-wide QK-norm + RoPE) and its kvh's K row
+// (norm + RoPE) + f16 KV store — the same arithmetic as attn_qkns.comp — then
+// runs the flash-decode exactly as attn_decode.comp.  The KV row is computed
+// redundantly by the NH/NKV heads sharing kvh (deterministic, identical
+// values) and the same block reads back what it wrote (barrier-ordered), so
+// no cross-block dependency exists.  Saves one dispatch/layer.
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer QOut { float q[]; };    // [NH*HD]
+layout(set = 0, binding = 1, std430) buffer KOut { float k[]; };    // [NKV*HD]
+layout(set = 0, binding = 2, std430) buffer Qn   { float qn[]; };   // [NC][HD]
+layout(set = 0, binding = 3, std430) buffer Kn   { float kn[]; };   // [NC][HD]
+layout(set = 0, binding = 4, std430) buffer KC   { uint kc[]; };    // [NKV*max_seq*HD] f16 bits
+layout(set = 0, binding = 5, std430) buffer VC   { uint vc[]; };    // [NKV*max_seq*HD] f16 bits
+layout(set = 0, binding = 6, std430) buffer VOut { float v[]; };    // [NKV*HD]
+layout(set = 0, binding = 7, std430) buffer OBuf { float o[]; };    // [NH*HD]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+// Max positions this build can attend over (same as attn_decode.comp).
+#define MAXP 4096
+shared float scr[MAXP];      // d[s] = q_h · k_s (pre-scale)
+shared float wts[MAXP];      // exp(d[s]*scale - max)
+shared float red[256];       // tree-reduction scratch (norm, max, sum)
+
+// FP32 -> FP16 bits (exact hardware conversion, same as __float2half).
+uint f16bits(float x) {
+    return packHalf2x16(vec2(x, 0.0)) & 0xFFFFu;
+}
+// FP16 bits -> FP32 (exact hardware conversion).
+float f16tof(uint x) {
+    return unpackHalf2x16(x & 0xFFFFu).x;
+}
+
+void main() {
+    uint h = gl_GlobalInvocationID.x / 256;
+    if (h >= uint(pc.NH)) return;
+    uint kvh = h * uint(pc.NKV) / uint(pc.NH);
+    uint tid = gl_LocalInvocationID.x;
+    uint hd = uint(pc.HD);
+
+    // ── Q head h: head-wide QK-norm, then RoPE in place (attn_qkns.comp) ──
+    uint qn_off = uint(pc.layer) * hd;
+    float ss = 0.0;
+    for (int i = int(tid); i < int(hd); i += 256) {
+        float v = q[h * hd + uint(i)];
+        ss += v * v;
+    }
+    red[tid] = ss;
+    barrier();
+    for (int s2 = 128; s2 > 0; s2 >>= 1) {
+        if (tid < uint(s2)) red[tid] += red[tid + uint(s2)];
+        barrier();
+    }
+    float inv = inversesqrt(red[0] / float(hd) + pc.eps);
+    for (int i = int(tid); i < int(hd); i += 256) {
+        uint r = uint(i);
+        uint o = h * hd + r;
+        if (r < hd / 2u) {
+            uint d = r;
+            float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
+            float c = cos(float(pc.pos) * f), sn = sin(float(pc.pos) * f);
+            float a = q[o] * inv * qn[qn_off + r];
+            float bb = q[o + hd / 2u] * inv * qn[qn_off + r + hd / 2u];
+            q[o] = a * c - bb * sn;
+            q[o + hd / 2u] = a * sn + bb * c;
+        }
+    }
+
+    // ── KV head kvh: K norm + RoPE, V raw, f16 store (attn_qkns.comp) ──
+    uint kn_off = uint(pc.layer) * hd;
+    ss = 0.0;
+    for (int i = int(tid); i < int(hd); i += 256) {
+        float v = k[kvh * hd + uint(i)];
+        ss += v * v;
+    }
+    red[tid] = ss;
+    barrier();
+    for (int s2 = 128; s2 > 0; s2 >>= 1) {
+        if (tid < uint(s2)) red[tid] += red[tid + uint(s2)];
+        barrier();
+    }
+    float kinv = inversesqrt(red[0] / float(hd) + pc.eps);
+    for (int i = int(tid); i < int(hd); i += 256) {
+        uint r = uint(i);
+        uint o = kvh * hd + r;
+        float kk = k[o] * kinv * kn[kn_off + r];
+        if (r < hd / 2u) {
+            uint d = r;
+            float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
+            float c = cos(float(pc.pos) * f), sn = sin(float(pc.pos) * f);
+            float a = kk, bb = k[o + hd / 2u] * kinv * kn[kn_off + r + hd / 2u];
+            k[o] = a * c - bb * sn;
+            k[o + hd / 2u] = a * sn + bb * c;
+        }
+    }
+    barrier();   // k[] writes visible before the store reads
+    if (tid < hd) {
+        uint o = kvh * hd + tid;
+        uint base = uint(pc.layer) * uint(pc.max_seq) * uint(pc.NKV) * hd
+                  + uint(pc.pos) * uint(pc.NKV) * hd + o;
+        kc[base] = f16bits(k[o]);
+        vc[base] = f16bits(v[o]);
+    }
+    barrier();   // q[] + KV store visible to this block's decode below
+
+    // ── Flash-decode (attn_decode.comp, verbatim) ──
+    float scl = 1.0 / sqrt(float(pc.HD));
+    int P = pc.pos + 1;
+    if (P > MAXP) return;
+    uint lay = uint(pc.layer) * uint(pc.max_seq) * uint(pc.NKV) * hd;
+
+    // 1) scores: d[s] = q_h · k_s, computed once, parallel over positions.
+    for (int s = int(tid); s < P; s += 256) {
+        float d = 0.0;
+        uint base = lay + (uint(s) * uint(pc.NKV) + kvh) * hd;
+        for (uint i = 0; i < hd; i++)
+            d += q[h * hd + i] * f16tof(kc[base + i]);
+        scr[s] = d;
+    }
+    barrier();
+
+    // 2) max over [0, P) of the SCALED scores.
+    float lmx = -1e30;
+    for (int s = int(tid); s < P; s += 256) lmx = max(lmx, scr[s] * scl);
+    red[tid] = lmx;
+    barrier();
+    for (int s2 = 128; s2 > 0; s2 >>= 1) {
+        if (tid < uint(s2)) red[tid] = max(red[tid], red[tid + uint(s2)]);
+        barrier();
+    }
+    float mx = red[0];
+
+    // 3) softmax numerator + weights, parallel over positions.
+    float lsum = 0.0;
+    for (int s = int(tid); s < P; s += 256) {
+        float w = exp(scr[s] * scl - mx);
+        wts[s] = w;
+        lsum += w;
+    }
+    red[tid] = lsum;
+    barrier();
+    for (int s2 = 128; s2 > 0; s2 >>= 1) {
+        if (tid < uint(s2)) red[tid] += red[tid + uint(s2)];
+        barrier();
+    }
+    float inv_sum = 1.0 / red[0];
+
+    // 4) weighted sum of V, parallel over the hd outputs.
+    for (uint i = tid; i < hd; i += 256) {
+        float acc = 0.0;
+        uint base = lay + kvh * hd + i;
+        for (int s = 0; s < P; s++) {
+            acc += wts[s] * f16tof(vc[base + uint(s) * uint(pc.NKV) * hd]);
+        }
+        o[h * hd + i] = acc * inv_sum;
+    }
+}

@@ -9,12 +9,15 @@
 
 #include "backend.h"
 #include "backend_fused_npu.h"
+#include "vulkan_rt.h"
 #include "../engine/npu/src/onebp_loader.cpp"
 #include "../engine/fusion/zero_copy/shared_bo.h"
+#include "../engine/fusion/gpu_attn_vk/gpu_attn_vk.h"
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <vector>
 #include <memory>
@@ -37,6 +40,43 @@ static constexpr int  BLOCK = 256;
          if (_hip_e != hipSuccess) { \
              fprintf(stderr, "HIP error (dtor) %s at %s:%d\n", \
                      hipGetErrorString(_hip_e), __FILE__, __LINE__); } } while(0)
+
+// ── NPU stability gate (out-of-process) ────────────────────────────────────
+// The XRT/amdxdna user-space driver can segfault after repeated AIE GEMM
+// executions (GP fault in libxrt_driver_xdna.so — reproduced with a minimal
+// GU->D loop, no HIP/Vulkan involved) and can wedge the NPU.  Before trusting
+// USE_NPU_FFN, run the npu_stability_probe binary, which performs FFN-shaped
+// GEMMs in its OWN process: if it dies, the crash happened in the probe, and
+// this server disables the NPU path instead of crashing.  Returns true when
+// the probe passes OR the binary cannot be found (best-effort gate — an
+// installed server without the probe binary stays permissive).
+static bool npu_stability_gate_ok() {
+    const char* bin = getenv("NPU_PROBE_BIN");
+    std::string cmd = (bin && *bin) ? bin : "";
+    if (cmd.empty()) {
+        char exe[4096] = {0};
+        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        std::string dir = n > 0 ? std::string(exe, (size_t)n) : ".";
+        auto slash = dir.find_last_of('/');
+        dir = slash == std::string::npos ? "." : dir.substr(0, slash);
+        std::vector<std::string> candidates = {
+            dir + "/npu_stability_probe",
+            "build/npu_stability_probe",
+            "npu_stability_probe",
+        };
+        for (auto& c : candidates) {
+            if (access(c.c_str(), X_OK) == 0) { cmd = c; break; }
+        }
+    }
+    if (cmd.empty()) {
+        fprintf(stderr, "[fused] NPU probe binary not found — stability gate skipped\n");
+        return true;
+    }
+    int rc = system(cmd.c_str());
+    bool ok = (rc == 0);
+    fprintf(stderr, "[fused] NPU stability probe %s (exit %d)\n", ok ? "PASS" : "FAIL", rc);
+    return ok;
+}
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Device kernels (all use "fused_" prefix — no conflict with hip_1bp_kernels)
@@ -85,6 +125,346 @@ __global__ void fused_gemv_plain_kernel(float* y, const float* W, const float* x
         __syncthreads();
     }
     if (threadIdx.x == 0) y[row] = (float)sdata[0];
+}
+
+// ── Batched GEMV: y[B, M] = W[M, N] @ x[B, N] ──
+// One block per output row; the W row (N floats) is read ONCE and reused
+// across all B batches — the multi-sequence decode win (8 sequences would
+// otherwise read each weight matrix 8x; the W read drops to 1x per batch).
+__global__ void fused_gemv_batch_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                        const float* __restrict__ x, int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const float* Wrow = W + (size_t)row * N;
+    __shared__ float sdata[BLOCK];
+    for (int b = 0; b < B; b++) {
+        float sum = 0.0;
+        const float* xrow = x + (size_t)b * N;
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * Wrow[k];
+        __syncthreads();
+        sdata[threadIdx.x] = sum;
+        __syncthreads();
+        for (int s = BLOCK/2; s > 0; s >>= 1) {
+            if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) y[(size_t)b * M + row] = sdata[0];
+    }
+}
+
+// ── Batched GEMV with the W row in SHARED (read once per block) ──
+// The plain batched kernel re-read the W row (and the full x) once per
+// batch; the W row in shared is loaded once and reused across all B batches
+// (measured 1.01-1.74x; the x re-reads stay L2-served).  Per-(row,batch)
+// accumulation order is IDENTICAL to the plain kernel (k = tid, tid+BLOCK
+// ...) — bit-identical results.
+__global__ void fused_gemv_batch_ws_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                           const float* __restrict__ x, int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    __shared__ float ws[3072];          // max N (w3: 3072)
+    __shared__ float sdata[BLOCK];
+    for (int i = threadIdx.x; i < N; i += BLOCK) ws[i] = W[(size_t)row * N + i];
+    __syncthreads();
+    for (int b = 0; b < B; b++) {
+        const float* xrow = x + (size_t)b * N;
+        float sum = 0.0f;
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
+        sdata[threadIdx.x] = sum;
+        __syncthreads();
+        for (int s = BLOCK/2; s > 0; s >>= 1) {
+            if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) y[(size_t)b * M + row] = sdata[0];
+        __syncthreads();
+    }
+}
+
+// ── Row-wise argmax on the GPU (first-max, matches the host loop) ──
+// out[b] = argmax_v logits[b*V+v], first (lowest) index on ties.  Avoids the
+// host-side scan of B*V logits (~1 ms on 8x152K) — the token selection is
+// unchanged (same values, same comparison semantics).
+__global__ void argmax_rows_kernel(const float* __restrict__ logits, int* __restrict__ out,
+                                   int M, int V) {
+    int b = blockIdx.x;
+    if (b >= M) return;
+    const float* lg = logits + (size_t)b * V;
+    int tid = threadIdx.x;
+    float best = -1e30f; int besti = -1;
+    for (int v = tid; v < V; v += BLOCK)
+        if (lg[v] > best) { best = lg[v]; besti = v; }
+    __shared__ float sb[BLOCK];
+    __shared__ int si[BLOCK];
+    sb[tid] = best; si[tid] = besti;
+    __syncthreads();
+    for (int s = BLOCK / 2; s > 0; s >>= 1) {
+        if (tid < s) {
+            if (sb[tid + s] > sb[tid] || (sb[tid + s] == sb[tid] && si[tid + s] < si[tid])) {
+                sb[tid] = sb[tid + s]; si[tid] = si[tid + s];
+            }
+        }
+        __syncthreads();
+    }
+    if (tid == 0) out[b] = si[0];
+}
+
+// ── Fused batched QKV: yq[B,s1], yk[B,s2], yv[B,s2] in ONE launch ──
+// The three projections share x and each row's W row is loaded into shared
+// once (per (row,batch) accumulation identical to the ws kernel — bit-
+// identical).  Rows: [0,s1) -> q, [s1,s1+s2) -> k, [s1+s2, +s2) -> v.
+__global__ void fused_qkv_batch_ws_kernel(float* __restrict__ yq, float* __restrict__ yk, float* __restrict__ yv,
+                                          const float* __restrict__ Wq, const float* __restrict__ Wk,
+                                          const float* __restrict__ Wv, const float* __restrict__ x,
+                                          int s1, int s2, int N, int B) {
+    int row = blockIdx.x;
+    int rows = s1 + 2 * s2;
+    if (row >= rows) return;
+    const float* Wr; float* yr;
+    if (row < s1) { Wr = Wq + (size_t)row * N; yr = yq; }
+    else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * N; yr = yk; }
+    else { Wr = Wv + (size_t)(row - s1 - s2) * N; yr = yv; }
+    __shared__ float ws[3072];
+    __shared__ float sdata[BLOCK];
+    for (int i = threadIdx.x; i < N; i += BLOCK) ws[i] = Wr[i];
+    __syncthreads();
+    for (int b = 0; b < B; b++) {
+        const float* xrow = x + (size_t)b * N;
+        float sum = 0.0f;
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
+        __syncthreads(); sdata[threadIdx.x] = sum; __syncthreads();
+        for (int st = BLOCK/2; st > 0; st >>= 1) {
+            if (threadIdx.x < st) sdata[threadIdx.x] += sdata[threadIdx.x + st];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            if (row < s1) yq[(size_t)b * s1 + row] = sdata[0];
+            else if (row < s1 + s2) yk[(size_t)b * s2 + (row - s1)] = sdata[0];
+            else yv[(size_t)b * s2 + (row - s1 - s2)] = sdata[0];
+        }
+    }
+}
+
+// ── Fused batched GU: y1[B,IM], y2[B,IM] = W1, W2 @ x in ONE launch ──
+__global__ void fused_gu_batch_ws_kernel(float* __restrict__ y1, float* __restrict__ y2,
+                                         const float* __restrict__ W1, const float* __restrict__ W2,
+                                         const float* __restrict__ x, int IM, int N, int B) {
+    int row = blockIdx.x;
+    int rows = 2 * IM;
+    if (row >= rows) return;
+    const float* Wr; float* yr;
+    if (row < IM) { Wr = W1 + (size_t)row * N; yr = y1; }
+    else { Wr = W2 + (size_t)(row - IM) * N; yr = y2; }
+    __shared__ float ws[3072];
+    __shared__ float sdata[BLOCK];
+    for (int i = threadIdx.x; i < N; i += BLOCK) ws[i] = Wr[i];
+    __syncthreads();
+    for (int b = 0; b < B; b++) {
+        const float* xrow = x + (size_t)b * N;
+        float sum = 0.0f;
+        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
+        __syncthreads(); sdata[threadIdx.x] = sum; __syncthreads();
+        for (int st = BLOCK/2; st > 0; st >>= 1) {
+            if (threadIdx.x < st) sdata[threadIdx.x] += sdata[threadIdx.x + st];
+            __syncthreads();
+        }
+        if (threadIdx.x == 0) {
+            if (row < IM) y1[(size_t)b * IM + row] = sdata[0];
+            else y2[(size_t)b * IM + (row - IM)] = sdata[0];
+        }
+    }
+}
+
+// ── Vectorized GEMV: float4 loads (N%4==0) — 1.27x on large-M shapes ──
+// Same double-accumulation; accumulation order differs from
+// fused_gemv_plain_kernel (4 consecutive k per step vs stride-BLOCK), so
+// token parity is re-verified after any use (the 13/15 borderline token is
+// the sensitive gate).
+__global__ void fused_gemv_v4_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                     const float* __restrict__ x, int M, int N) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const float4* W4 = (const float4*)(W + (size_t)row * N);
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 w = W4[k], xv = x4[k];
+        sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = sdata[0];
+}
+
+// ── Fused QKV GEMV: yq[s1], yk[s2], yv[s2] = W @ x in ONE launch ──
+// The three projections read the same x — one launch + the x re-reads gone.
+// Each output row's accumulation is IDENTICAL to fused_gemv_v4_kernel (same
+// float4 product sequence per thread), so results are bit-identical to the
+// separate v4 gemvs.
+__global__ void fused_qkv_v4_kernel(float* __restrict__ yq, float* __restrict__ yk, float* __restrict__ yv,
+                                    const float* __restrict__ Wq, const float* __restrict__ Wk,
+                                    const float* __restrict__ Wv, const float* __restrict__ x,
+                                    int s1, int s2, int N) {
+    int row = blockIdx.x;
+    const float* Wr;
+    float* yr;
+    if (row < s1) { Wr = Wq + (size_t)row * N; yr = yq + row; }
+    else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * N; yr = yk + (row - s1); }
+    else { Wr = Wv + (size_t)(row - s1 - s2) * N; yr = yv + (row - s1 - s2); }
+    const float4* W4 = (const float4*)Wr;
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 w = W4[k], xv = x4[k];
+        sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *yr = sdata[0];
+}
+
+// ── Fused GU GEMV: y1[IM], y2[IM] = W1, W2 @ x in ONE launch ──
+// The FFN gate/up projections share x (the FFN input) — one launch instead
+// of two.  Per-row accumulation matches fused_gemv_v4_kernel bit-for-bit.
+__global__ void fused_gu_v4_kernel(float* __restrict__ y1, float* __restrict__ y2,
+                                   const float* __restrict__ W1, const float* __restrict__ W2,
+                                   const float* __restrict__ x, int IM, int N) {
+    int row = blockIdx.x;
+    const float* Wr;
+    float* yr;
+    if (row < IM) { Wr = W1 + (size_t)row * N; yr = y1 + row; }
+    else { Wr = W2 + (size_t)(row - IM) * N; yr = y2 + (row - IM); }
+    const float4* W4 = (const float4*)Wr;
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 w = W4[k], xv = x4[k];
+        sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) *yr = sdata[0];
+}
+
+// ── Fused save-residual + RMSNorm: dffn = x (pre-norm), x = norm(x) ──
+// One launch instead of copy + rmsnorm; the math is identical (the save is a
+// plain copy of the pre-transform values).
+__global__ void fused_copy_norm_kernel(float* __restrict__ dffn, float* __restrict__ x,
+                                       const float* __restrict__ w, int N, float eps) {
+    int tid = threadIdx.x;
+    float local = 0.0f;
+    for (int i = tid; i < N; i += blockDim.x) local += x[i] * x[i];
+    __shared__ float sdata[BLOCK];
+    sdata[tid] = local;
+    for (int s = BLOCK/2; s > 0; s >>= 1) { __syncthreads(); if (tid < s) sdata[tid] += sdata[tid + s]; }
+    __syncthreads();
+    float inv = rsqrtf(sdata[0] / N + eps);
+    for (int i = tid; i < N; i += blockDim.x) {
+        dffn[i] = x[i];
+        x[i] = x[i] * inv * (w ? w[i] : 1.0f);
+    }
+}
+
+// ── Fused h2f + output-projection GEMV: y[H] = Wo[NH*HD, H]^T @ half(attn) ──
+// The h2f conversion (__half2float, exact) folds into the gemv's load — one
+// launch instead of h2f + gemv.  Per-row accumulation matches the v4 gemv.
+__global__ void fused_wo_h2v4_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                     const __half* __restrict__ x, int M, int N) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const float4* W4 = (const float4*)(W + (size_t)row * N);
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 w = W4[k];
+        const __half2* hx = (const __half2*)x + 2 * k;
+        float4 xv;
+        xv.x = __half2float(hx[0].x); xv.y = __half2float(hx[0].y);
+        xv.z = __half2float(hx[1].x); xv.w = __half2float(hx[1].y);
+        sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = sdata[0];
+}
+
+// ── Fused residual: dh = y + res (replaces add(y,res) + copy(dh,y)) ──
+__global__ void fused_residual_kernel(float* __restrict__ dst, const float* __restrict__ y,
+                                      const float* __restrict__ res, int N) {
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < N) dst[i] = y[i] + res[i];
+}
+
+// ── Batched save-residual + RMSNorm: grid (B,), one block per row ──
+// Same math as fused_copy_norm_kernel per row (bit-identical reductions).
+__global__ void fused_copy_norm_batch_kernel(float* __restrict__ dffn, float* __restrict__ x,
+                                             const float* __restrict__ w, int N, float eps) {
+    int row = blockIdx.x;
+    float* xr = x + (size_t)row * N;
+    float* dr = dffn + (size_t)row * N;
+    int tid = threadIdx.x;
+    float local = 0.0f;
+    for (int i = tid; i < N; i += blockDim.x) local += xr[i] * xr[i];
+    __shared__ float sdata[BLOCK];
+    sdata[tid] = local;
+    for (int s = BLOCK/2; s > 0; s >>= 1) { __syncthreads(); if (tid < s) sdata[tid] += sdata[tid + s]; }
+    __syncthreads();
+    float inv = rsqrtf(sdata[0] / N + eps);
+    for (int i = tid; i < N; i += blockDim.x) { dr[i] = xr[i]; xr[i] = xr[i] * inv * (w ? w[i] : 1.0f); }
+}
+
+// ── Batched per-head QK-norm + RoPE: grid (B*NH,), single pos ──
+// Same math as fused_head_rmsnorm_kernel then fused_rope_kernel per row/head.
+// pos is the COMMON sequence position (the batch advances all sequences
+// together; per-sequence divergence would need a device pos array).
+__global__ void fused_head_norm_rope_batch_kernel(float* __restrict__ x, const float* __restrict__ w,
+                                                  int head_dim, float eps, int pos,
+                                                  float theta_base, int nh) {
+    int sh = blockIdx.x;
+    int h = sh % nh, s = sh / nh;
+    float* hx = x + (size_t)s * nh * head_dim + (size_t)h * head_dim;
+    int tid = threadIdx.x;
+    float local = 0.0f;
+    for (int i = tid; i < head_dim; i += blockDim.x) local += hx[i] * hx[i];
+    __shared__ float sdata[BLOCK];
+    sdata[tid] = 0.0f;
+    __syncthreads();
+    sdata[tid] = local;
+    for (int s2 = BLOCK/2; s2 > 0; s2 >>= 1) { __syncthreads(); if (tid < s2) sdata[tid] += sdata[tid + s2]; }
+    __syncthreads();
+    float inv = rsqrtf(sdata[0] / head_dim + eps);
+    for (int i = tid; i < head_dim; i += blockDim.x) hx[i] = hx[i] * inv * w[i];
+    __syncthreads();
+    if (tid < head_dim/2) {
+        int d = tid;
+        float f = 1.0f / powf(theta_base, (float)d / (float)(head_dim/2));
+        float c = cosf(pos * f), sn = sinf(pos * f);
+        float a = hx[d], b = hx[d + head_dim/2];
+        hx[d] = a*c - b*sn; hx[d + head_dim/2] = a*sn + b*c;
+    }
 }
 
 // ── RMSNorm (in-place) ──
@@ -153,6 +533,22 @@ __global__ void fused_kv_store_kernel(__half* __restrict__ dK, __half* __restric
     size_t off = (size_t)pos * NKV * HD + (size_t)h * HD + d;
     dK[off] = __float2half(k[(size_t)h * HD + d]);
     dV[off] = __float2half(v[(size_t)h * HD + d]);
+}
+
+// ── Batched KV store: grid (NKV, B), per-sequence stride ──
+// Same __float2half conversions as fused_kv_store_kernel per (s,h) —
+// bit-identical; one launch for all B sequences.
+__global__ void fused_kv_store_batch_kernel(__half* __restrict__ dK, __half* __restrict__ dV,
+                                            const float* __restrict__ k, const float* __restrict__ v,
+                                            int pos, int NKV, int HD, int max_seq,
+                                            int seq_stride, int k_stride) {
+    int h = blockIdx.x, s = blockIdx.y;
+    if (h >= NKV) return;
+    int d = threadIdx.x;
+    if (d >= HD) return;
+    size_t off = (size_t)s * seq_stride + (size_t)pos * NKV * HD + (size_t)h * HD + d;
+    dK[off] = __float2half(k[(size_t)s * k_stride + (size_t)h * HD + d]);
+    dV[off] = __float2half(v[(size_t)s * k_stride + (size_t)h * HD + d]);
 }
 
 // ── Output projection: y[H] = Wo[NH*HD, H]^T @ attn[NH*HD] ──
@@ -246,23 +642,73 @@ struct FusedBackend : Backend {
     NpuState* npu = nullptr;
     bool npu_ok = false;
     fusion::SharedBO* slot[2] = {};
-    // GPU-accessible device pointers into the SharedBO pages.
-    // hipHostRegister(host_ptr, hipHostRegisterDefault) exposes the NPU-owned
-    // XRT HOST_ONLY pages to the HIP runtime so hipMemcpy can use them as the
-    // destination/source without an intermediate CPU bounce buffer (issue #1215).
-    void* slot_dev[2] = {};
+    bool slots_ok_ = false;   // NPU-owned SharedBO pages allocated (VK path + NPU-FFN handoff)
+
+    // FUSED_VK_ATTN (default ON): the attention math runs as Vulkan compute
+    // directly on the NPU SharedBO pages (dma-buf import in VkAttention)
+    // instead of the HIP kernels below — the per-token attention-output→pages
+    // host-view copy disappears.  The on-pages FFN shaders read/write the SAME
+    // pages in place, so the HIP handoff memcpys are eliminated entirely.
+    // Opt out with FUSED_HIP_ATTN=1 (HIP attention + host_ptr handoff).
+    fusion::VkAttention va_;
+    bool vk_attn_ = false;
+    bool vk_attn_ready_ = false;    // lazy va_ init attempted (once)
+    bool vk_ffn_ready_ = false;     // on-pages FFN shaders uploaded (va_.ffn)
+    // Retained f32 copies for the lazy va_ upload (only when FUSED_VK_ATTN).
+    std::vector<float> vk_embed_;
+    std::vector<fusion::VkLayerW> vk_layers_;
+    // GPU view of the SharedBO slots via the PRODUCTION dma-buf route (issue
+    // #1217): each NPU-owned HOST_ONLY BO exports a dma-buf fd, imported here
+    // as Vulkan device memory (VK_KHR_external_memory_fd +
+    // VK_EXT_external_memory_dma_buf).  The installed TheRock HIP (7.16) has
+    // no DmaBuf external-memory handle type, so hipHostRegister (the old "test idiom"
+    // from engine/fusion/zero_copy) is not the production path; the Vulkan
+    // import is the route that works and is the handle a Vulkan-compute GPU
+    // attention path would bind.
+    //
+    // NOTE (silicon-verified on RADV/Strix Halo 2026-08-29, see
+    // engine/fusion/zero_copy/test_vkrt_dma_buf_import.cpp): the NPU's
+    // exported dma-buf is NOT CPU-mappable — vkMapMemory of the import
+    // succeeds but touching the mapping SIGBUSes.  So THIS HIP backend never
+    // maps it: dh<->slot traffic goes through slot[i]->host_ptr() (the XRT
+    // CPU view of the SAME pages — the SharedBO "three views" design), which
+    // is proven working.  The import is held as the GPU-side handle for the
+    // Vulkan-compute route and to validate the dma-buf path at init.
+    vkrt::VkCtx vk_ctx_;
+    bool vk_ok_ = false;
+    bool vk_ready_ = false;      // lazy import attempted (once)
+    vkrt::GpuBuffer vk_slot_[2]; // Vulkan device memory imported from NPU dma-buf
+    int vk_fds_[2] = {-1, -1};   // dup'd dma-buf fds held until lazy import
 
     // CPU weights (for NPU pack + lm_head)
     // NPU async future — tracks the in-flight NPU FFN so we can await it
     // before starting the next layer's NPU (pipeline: GPU attn_L+1 ∥ NPU FFN_L).
     std::future<bool> npu_future_;
 
+    // ── Multi-sequence batch decode (FUSED_BATCH=N, N<=8 with the m8 xclbins) ──
+    // Each forward_batch call advances N sequences one token.  The NPU FFN
+    // batches all N rows into ONE GU + ONE D launch (the B weight DMA is read
+    // once — measured 7.6x vs per-row calls, bit-identical); the GPU attention
+    // runs per-sequence on the stream (back-to-back kernels, warm).
+    int batch_ = 0;                       // 0 = batch mode off
+    float* dh_batch = nullptr;            // [B, H] hidden states
+    __half *devKb = nullptr, *devVb = nullptr;  // [B, NC*max_seq*NKV*HD] KV
+    __half *dQ_batch = nullptr, *dAttn_batch = nullptr;   // [B, s1] halves
+    float *datt_batch = nullptr, *dgate_batch = nullptr;   // [B, s1] / [B, s2]
+    float *dup_batch = nullptr, *doproj_batch = nullptr;   // [B, s2] / [B, H]
+    float *dffn_batch = nullptr;          // [B, H] residual saves
+    float *dlogits_batch = nullptr;       // [B, VOCAB] batched lm_head
+    int* dargmaxs = nullptr;              // [B] GPU argmax scratch
+    std::vector<float> host_batch;        // [B, H] NPU FFN handoff (D2H/H2D)
+    std::vector<int> batch_pos;           // per-sequence position
+    std::future<bool> npu_batch_future_;
+
     std::vector<float> cpu_embed, cpu_final_norm, cpu_output;
     // Reusable per-token host staging — allocated once in init(), reused every
     // token. Stack-local vectors here churned 4 KB + VOCAB*4 (~608 KB) per
     // token, fragmenting the glibc arena into unbounded RSS creep (issue #1428).
     std::vector<float> h_stage, logit_stage;
-    struct CpuL { std::vector<float> w1, w2, w3; };
+    struct CpuL { std::vector<float> w1, w2, w3, pon; };
     std::vector<CpuL> cpu_L;
     int pos = 0;
 
@@ -277,8 +723,6 @@ struct FusedBackend : Backend {
         VOCAB = cfg.vocab_size;
         rope_theta = cfg.rope_theta > 0 ? cfg.rope_theta : 10000.0f;
         if (NKV == 0) NKV = NH; if (HD_ == 0) HD_ = 128;
-        printf("[fused] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d rope=%.1f\n",
-               H, NC, NH, NKV, HD_, IM, VOCAB, rope_theta);
         int nd = 0;
         if (hipGetDeviceCount(&nd) != hipSuccess || nd == 0) return false;
         HIP_CHECK(hipSetDevice(0));
@@ -310,11 +754,39 @@ struct FusedBackend : Backend {
         // every layer's attention reads the wrong layer's K/V (the generic
         // CPU backend keeps k_cache[il][...] per layer — this mirrors that).
         kvb = (size_t)NC * max_seq * NKV * HD_ * sizeof(__half);
-        if (hipHostMalloc(&dK, kvb, hipHostMallocMapped) != hipSuccess ||
-            hipHostMalloc(&dV, kvb, hipHostMallocMapped) != hipSuccess) return false;
-        memset(dK, 0, kvb); memset(dV, 0, kvb);
+        // Multi-sequence batch mode (FUSED_BATCH=N, N<=8 for the m8 xclbins):
+        // per-sequence KV + hidden states.  The NPU FFN batches all N rows in
+        // one launch; the GPU attention runs per-sequence on the stream.
+        const char* bs = getenv("FUSED_BATCH");
+        batch_ = (bs && atoi(bs) > 1) ? atoi(bs) : 0;
+        if (batch_ > 8) { fprintf(stderr, "[fused] FUSED_BATCH capped at 8 (m8 tile width)\n"); batch_ = 8; }
+        size_t kvbAlloc = kvb * (batch_ ? (size_t)batch_ : 1);
+        if (hipHostMalloc(&dK, kvbAlloc, hipHostMallocMapped) != hipSuccess ||
+            hipHostMalloc(&dV, kvbAlloc, hipHostMallocMapped) != hipSuccess) return false;
+        memset(dK, 0, kvbAlloc); memset(dV, 0, kvbAlloc);
         HIP_CHECK(hipHostGetDevicePointer((void**)&devK, dK, 0));
         HIP_CHECK(hipHostGetDevicePointer((void**)&devV, dV, 0));
+        if (batch_) {
+            if (hipMalloc(&dh_batch, (size_t)batch_ * H * 4) != hipSuccess) return false;
+            HIP_CHECK(hipMemset(dh_batch, 0, (size_t)batch_ * H * 4));
+            // Batch scratch for the batched attention GEMVs (W read once per
+            // batch instead of once per sequence): [B, s1/s2/H] each.  s2b:
+            // dgate/dup also carry the FFN's gate/up output (IM wide) — size
+            // for max(NKV*HD, IM) like the single path's scratch.
+            int s1 = NH * HD_, s2 = NKV * HD_, s2b = std::max(s2, IM);
+            if (hipMalloc(&datt_batch, (size_t)batch_ * s1 * 4) != hipSuccess ||
+                hipMalloc(&dgate_batch, (size_t)batch_ * s2b * 4) != hipSuccess ||
+                hipMalloc(&dup_batch, (size_t)batch_ * s2b * 4) != hipSuccess ||
+                hipMalloc(&doproj_batch, (size_t)batch_ * H * 4) != hipSuccess ||
+                hipMalloc(&dffn_batch, (size_t)batch_ * H * 4) != hipSuccess ||
+                hipMalloc(&dlogits_batch, (size_t)batch_ * VOCAB * 4) != hipSuccess ||
+                hipMalloc(&dargmaxs, (size_t)batch_ * sizeof(int)) != hipSuccess ||
+                hipMalloc(&dQ_batch, (size_t)batch_ * s1 * 2) != hipSuccess ||
+                hipMalloc(&dAttn_batch, (size_t)batch_ * s1 * 2) != hipSuccess) return false;
+            host_batch.resize((size_t)batch_ * H);
+            batch_pos.assign(batch_, 0);
+            printf("[fused] batch decode: %d sequences (NPU FFN batched, B DMA amortized)\n", batch_);
+        }
 
         // Init NPU (pure C++ module — no HIP context conflict)
         const char* xd = getenv("NPU_XCLBIN_DIR");
@@ -323,47 +795,72 @@ struct FusedBackend : Backend {
         npu_ok = (npu != nullptr);
         if (!npu_ok) printf("[fused] NPU unavailable — GPU-only\n");
 
-        if (!load_1bp(cfg.model_path)) return false;
+        // Stability gate: only trust the NPU FFN path if the probe GEMMs in a
+        // child process survive (the XRT/amdxdna driver can crash after
+        // repeated AIE GEMMs).  A failed probe disables the NPU path so the
+        // crash can never take down the server.
+        if (npu_ok && getenv("USE_NPU_FFN") && !npu_stability_gate_ok()) {
+            fprintf(stderr, "[fused] NPU stability probe FAILED — NPU FFN "
+                    "disabled (GPU-only)\n");
+            npu_ok = false;
+        }
 
-        if (npu_ok) {
-            // SharedBO needs a persistent xrt::device ref — create once outside
+        // SharedBO pages: needed by BOTH the VK path (attention + on-pages FFN
+        // run as Vulkan compute straight in the pages) and the NPU-FFN
+        // handoff.  The VK path only needs the NPU DEVICE (a HOST_ONLY BO
+        // allocation), NOT the FFN xclbins — so create the slots whenever the
+        // device opens, independent of npu_ok.  A wedged/failed BO allocation
+        // just means no on-pages path (HIP attention + GPU FFN instead).
+        {
             size_t sb = (size_t)H * sizeof(float) * 2;
             xrt::device npu_for_bo(0);
             slot[0] = fusion::SharedBO::create(npu_for_bo, sb);
             slot[1] = fusion::SharedBO::create(npu_for_bo, sb);
-            if (!slot[0] || !slot[1]) {
-                fprintf(stderr,"[fused] SharedBO alloc fail — GPU-only\n");
-                npu_ok = false;
+            slots_ok_ = slot[0] && slot[1];
+            if (!slots_ok_) {
+                fprintf(stderr,"[fused] SharedBO alloc fail — no on-pages path\n");
             } else {
-                // Register the NPU-owned pages with HIP so hipMemcpy can use them
-                // directly without a bounce buffer.  hipHostRegisterDefault works on
-                // Strix Halo (unified memory, APU); hipHostRegisterMapped is not needed
-                // because hipMemcpy with these pointers already avoids the CPU copy.
-                // On failure we fall back to the vector<float> bounce path (no assert).
-                for (int i = 0; i < 2; i++) {
-                    void* hp = slot[i]->host_ptr();
-                    size_t sz = slot[i]->size();
-                    hipError_t reg_err = hipHostRegister(hp, sz, hipHostRegisterDefault);
-                    if (reg_err == hipSuccess) {
-                        hipError_t gdp_err = hipHostGetDevicePointer(&slot_dev[i], hp, 0);
-                        if (gdp_err != hipSuccess) {
-                            fprintf(stderr, "[fused] SharedBO hipHostGetDevicePointer slot[%d]: %s\n",
-                                    i, hipGetErrorString(gdp_err));
-                            (void)hipHostUnregister(hp);
-                            slot_dev[i] = nullptr;
-                        }
-                    } else {
-                        fprintf(stderr, "[fused] SharedBO hipHostRegister slot[%d]: %s "
-                                "(will use bounce buffer)\n", i, hipGetErrorString(reg_err));
-                        slot_dev[i] = nullptr;
-                    }
-                }
+                // GPU view via the PRODUCTION dma-buf route (issue #1217):
+                // import each slot's exported dma-buf fd as Vulkan device
+                // memory.  hipHostRegister is NOT used here — the installed TheRock HIP
+                // (7.16) lacks a DmaBuf external-memory handle type, so the
+                // register idiom stays a test-only proof.  The import is NOT
+                // vkMapMemory'd (silicon-verified SIGBUS on RADV); the HIP
+                // transfers below use slot[i]->host_ptr() — the XRT CPU view
+                // of the same pages.  On any failure the backend still works
+                // GPU-only or via the host_ptr() path (no assert).
+                //
+                // The import is DEFERRED to first use (ensure_vk_import):
+                // the unified server creates and tears down OTHER Vulkan
+                // instances (vulkan_hpp backend, llama.cpp ggml-vulkan)
+                // during boot, and holding this backend's dma-buf import
+                // alive across that teardown raced RADV and segfaulted the
+                // server.  We only dup the fds here; the Vulkan ctx is
+                // created lazily on the first forward() call, by which time
+                // the other instances are gone.
+                for (int i = 0; i < 2; i++)
+                    vk_fds_[i] = dup(slot[i]->dma_buf_fd());
+                if (vk_fds_[0] < 0 || vk_fds_[1] < 0)
+                    fprintf(stderr, "[fused] SharedBO dma-buf fd dup failed — "
+                            "Vulkan import disabled (host_ptr() path)\n");
+                else
+                    printf("[fused] SharedBO slots ready (Vulkan dma-buf "
+                           "import deferred to first use)\n");
             }
         }
 
+        if (!load_1bp(cfg.model_path)) return false;
+        // rope_theta may have been corrected from the 1BP header by load_1bp
+        // (Qwen3 = 1e6; the ModelConfig default is 500000).
+        printf("[fused] H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d rope=%.1f\n",
+               H, NC, NH, NKV, HD_, IM, VOCAB, rope_theta);
+
         h_stage.resize(H); logit_stage.resize(VOCAB);
         gpu_ok = true; initialized = true;
-        printf(npu_ok ? "[fused] ✅ Fused GPU+NPU\n" : "[fused] ✅ GPU-only\n");
+        if (vk_attn_)
+            printf("[fused] ✅ Fused (Vulkan on-pages attention + FFN — zero host copies)\n");
+        else
+            printf(npu_ok ? "[fused] ✅ Fused GPU+NPU\n" : "[fused] ✅ GPU-only\n");
         return true;
     }
 
@@ -371,6 +868,15 @@ struct FusedBackend : Backend {
         printf("[fused] Loading: %s\n", path.c_str());
         NpuOnebpModel mdl;
         if (!mdl.open(path.c_str())) { fprintf(stderr,"[fused] open fail\n"); return false; }
+        // The 1BP header carries the authoritative rope_theta (v1 fixed-point
+        // x1000, or raw f32 for v3).  Prefer it over the ModelConfig default
+        // (500000), which is wrong for Qwen3 (1e6) — the generic backend's
+        // discovery already does this; the fused backend must too.
+        float hdr_rope = mdl.header().rope_theta();
+        if (hdr_rope > 0.0f && hdr_rope != rope_theta) {
+            printf("[fused] 1BP header rope_theta=%.0f (config had %.0f)\n", hdr_rope, rope_theta);
+            rope_theta = hdr_rope;
+        }
         auto ld = [&](const char* n, std::vector<float>& v){ return mdl.get_tensor_f32(n,v); };
         ld("token_embd.weight", cpu_embed);
         if (!ld("output_norm.weight", cpu_final_norm)) ld("token_embd_norm.weight", cpu_final_norm);
@@ -379,6 +885,20 @@ struct FusedBackend : Backend {
         struct Tmp { std::vector<float> wq,wk,wv,wo,w1,w2,w3,pn,pon,q_norm,k_norm; };
         std::vector<Tmp> tmp(NC);
         cpu_L.resize(NC);
+        // VK is the DEFAULT on-pages path: attention + on-pages FFN run as
+        // Vulkan compute straight in the SharedBO pages (zero host copies).
+        // It needs only the pages (slots_ok_), NOT the FFN xclbins (npu_ok).
+        // Opt out with FUSED_HIP_ATTN=1 (HIP attention + host_ptr handoff) or
+        // FUSED_VK_ATTN=0.
+        bool vk_default = getenv("FUSED_HIP_ATTN") == nullptr;
+        const char* vk_env = getenv("FUSED_VK_ATTN");
+        bool vk_enabled = vk_default && (!vk_env || strcmp(vk_env, "0") != 0);
+        bool want_vk = slots_ok_ && vk_enabled;
+        if (want_vk) {
+            vk_attn_ = true;   // enable the Vulkan in-place attention path
+            vk_layers_.resize(NC);
+            vk_embed_ = cpu_embed;   // retain for the lazy Vulkan upload
+        }
         char buf[128];
         for (int l = 0; l < NC; l++) {
             auto& t = tmp[l];
@@ -404,7 +924,19 @@ struct FusedBackend : Backend {
             // flat logits (Generic CPU applies this; GPU paths must too).
             gr("attn_q_norm.weight","self_attn.q_norm.weight", t.q_norm, HD_);
             gr("attn_k_norm.weight","self_attn.k_norm.weight", t.k_norm, HD_);
-            cpu_L[l].w1 = t.w1; cpu_L[l].w2 = t.w2; cpu_L[l].w3 = t.w3;
+            cpu_L[l].w1 = t.w1; cpu_L[l].w2 = t.w2; cpu_L[l].w3 = t.w3; cpu_L[l].pon = t.pon;
+            if (want_vk) {
+                // Retain the attention weights (f32, [out,in] fused layout) for
+                // the lazy VkAttention upload at first forward().
+                vk_layers_[l].wq = t.wq; vk_layers_[l].wk = t.wk;
+                vk_layers_[l].wv = t.wv; vk_layers_[l].wo = t.wo;
+                vk_layers_[l].pn = t.pn;
+                vk_layers_[l].qn = t.q_norm; vk_layers_[l].kn = t.k_norm;
+                // FFN weights for the on-pages FFN shaders (va_.ffn) — the GPU
+                // FFN without the pages->dh->pages round trip.
+                vk_layers_[l].w1 = t.w1; vk_layers_[l].w2 = t.w2;
+                vk_layers_[l].w3 = t.w3; vk_layers_[l].pon = t.pon;
+            }
         }
 
         auto up = [&](const std::vector<float>& c, float*& g) {
@@ -426,7 +958,8 @@ struct FusedBackend : Backend {
             for (int l = 0; l < NC; l++) {
                 auto& cl = cpu_L[l];
                 if (cl.w1.empty() || cl.w2.empty()) continue;
-                npu_state_pack_layer(npu, l, cl.w1.data(), cl.w2.data(), cl.w3.data());
+                npu_state_pack_layer(npu, l, cl.w1.data(), cl.w2.data(), cl.w3.data(),
+                                     cl.pon.empty() ? nullptr : cl.pon.data());
             }
             printf("[fused] NPU weights packed via C++ module\n");
         }
@@ -448,18 +981,121 @@ struct FusedBackend : Backend {
     }
 
     bool reset() override {
-        pos = 0; if (dK) memset(dK, 0, kvb); if (dV) memset(dV, 0, kvb); return true;
+        pos = 0;
+        size_t kvsz = kvb * (batch_ ? (size_t)batch_ : 1);
+        if (dK) memset(dK, 0, kvsz); if (dV) memset(dV, 0, kvsz);
+        if (batch_) {
+            std::fill(batch_pos.begin(), batch_pos.end(), 0);
+            if (dh_batch) HIP_CHECK(hipMemset(dh_batch, 0, (size_t)batch_ * H * 4));
+        }
+        if (vk_attn_) va_.zero_cache();
+        return true;
     }
 
     static void gemv(float* y, const float* W, const float* x, int M, int N, hipStream_t s) {
         if (!W) return;
-        // One block per output row — each block's 256 threads reduce dot product
-        fused_gemv_plain_kernel<<<M, BLOCK, 0, s>>>(y, W, x, M, N);
+        // One block per output row — each block's 256 threads reduce the dot
+        // product.  float4 loads (v4) when N%4==0: 1.41x end-to-end.
+        // (A 4-rows-per-block variant with x in shared was measured SLOWER —
+        // the shared round-trip costs more than the x re-read traffic.)
+        if ((N & 3) == 0) fused_gemv_v4_kernel<<<M, BLOCK, 0, s>>>(y, W, x, M, N);
+        else              fused_gemv_plain_kernel<<<M, BLOCK, 0, s>>>(y, W, x, M, N);
     }
 
     // ══════════════════════════════════════
     // forward — PURE GPU LOOP
     // ══════════════════════════════════════
+
+    // Lazily create the Vulkan dma-buf import of the SharedBO slots (issue
+    // #1217).  Deferred from init() because the unified server creates and
+    // tears down OTHER Vulkan instances (vulkan_hpp backend, llama.cpp's
+    // ggml-vulkan) during boot — holding this backend's import alive across
+    // that teardown raced RADV and segfaulted the server (measured 2026-08-29:
+    // server crashed when fused was the kept backend; clean once the import
+    // is created at first use, after the other instances are gone).  The
+    // import is a GPU-side handle only — transfers still go through
+    // host_ptr() (the imported dma-buf is not CPU-mappable on RADV).
+    void ensure_vk_import() {
+        if (vk_ready_ || !npu_ok) return;
+        vk_ready_ = true;  // attempt once, even on failure
+        const size_t sb = (size_t)H * sizeof(float) * 2;
+        vk_ctx_.init();
+        vk_ok_ = vk_ctx_.dev != VK_NULL_HANDLE && vk_ctx_.ext_mem_fd;
+        if (!vk_ok_) {
+            fprintf(stderr, "[fused] Vulkan dma-buf import unavailable%s — "
+                    "SharedBO via host_ptr() bounce\n",
+                    vk_ctx_.dev ? " (driver lacks external-memory exts)"
+                                : " (no Vulkan device)");
+            return;
+        }
+        for (int i = 0; i < 2 && vk_ok_; i++) {
+            if (vk_fds_[i] < 0) { vk_ok_ = false; break; }
+            if (!vk_slot_[i].create_from_dma_buf(
+                    vk_ctx_.dev, vk_ctx_.memProps, sb, vk_fds_[i],
+                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_DST_BIT)) {
+                close(vk_fds_[i]);  // import failed — we still own the fd
+                vk_fds_[i] = -1;
+                vk_ok_ = false;
+                break;
+            }
+            vk_fds_[i] = -1;  // fd consumed by the driver — do NOT close
+        }
+        if (!vk_ok_) {
+            for (int i = 0; i < 2; i++)
+                if (vk_slot_[i].mem) vk_slot_[i].destroy();
+        } else {
+            printf("[fused] SharedBO slots GPU-imported via Vulkan "
+                   "dma-buf (%s) — zero-copy NPU<->GPU handoff\n",
+                   vk_ctx_.deviceName);
+        }
+    }
+
+    // Lazily initialize the Vulkan in-place attention engine (FUSED_VK_ATTN=1)
+    // on the first forward() call.  Deferred for the same reason as
+    // ensure_vk_import: the unified server creates/tears down other Vulkan
+    // instances during boot; creating ours too early raced RADV.
+    void ensure_vk_attn() {
+        if (vk_attn_ready_ || !vk_attn_) return;
+        vk_attn_ready_ = true;   // attempt once, even on failure
+        const char* shdir = getenv("VK_ATTN_SHADER_DIR");
+        if (!shdir) {
+#ifdef VK_ATTN_SHADER_DIR
+            shdir = VK_ATTN_SHADER_DIR;
+#else
+            shdir = "engine/fusion/gpu_attn_vk/shaders";
+#endif
+        }
+        xrt::device npu_dev(0);
+        if (!va_.init(npu_dev, H, NH, NKV, HD_, IM, max_seq, NC, rope_theta, shdir)) {
+            fprintf(stderr, "[fused] FUSED_VK_ATTN: VkAttention init failed — "
+                            "falling back to HIP attention\n");
+            vk_attn_ = false;
+            return;
+        }
+        if (!vk_embed_.empty() && !va_.upload_embed(vk_embed_)) {
+            fprintf(stderr, "[fused] FUSED_VK_ATTN: embed upload failed\n");
+            vk_attn_ = false;
+            return;
+        }
+        for (int l = 0; l < NC; l++) {
+            if (!va_.upload_layer(l, vk_layers_[l])) {
+                fprintf(stderr, "[fused] FUSED_VK_ATTN: layer %d upload failed\n", l);
+                vk_attn_ = false;
+                return;
+            }
+        }
+        // The on-pages FFN (va_.ffn) is available iff the FFN weights were
+        // retained + uploaded (vk_layers_[0].w1 non-empty before the clear).
+        vk_ffn_ready_ = !vk_layers_.empty() && !vk_layers_[0].w1.empty();
+        vk_embed_.clear(); vk_embed_.shrink_to_fit();
+        vk_layers_.clear(); vk_layers_.shrink_to_fit();
+        printf("[fused] FUSED_VK_ATTN: Vulkan in-place attention active on "
+               "the NPU pages (dma-buf import)%s\n",
+               vk_ffn_ready_ ? " + on-pages FFN shaders" : "");
+    }
+
     bool forward(int token_id, float* hidden_out) override {
         // KV cache holds max_seq positions; the store kernel never compares
         // (issue #1267) — refuse instead of writing OOB.
@@ -468,6 +1104,158 @@ struct FusedBackend : Backend {
             return false;
         }
         const int H_ = H, NH_ = NH, NKV_ = NKV, HD_ = this->HD_, IM_ = IM, NC_ = NC;
+
+        // Lazy Vulkan dma-buf import (see ensure_vk_import) — first forward
+        // call creates it, after the server's boot-time Vulkan teardown.
+        ensure_vk_import();
+        ensure_vk_attn();
+
+        // ── FUSED_VK_ATTN path: the whole attention runs as Vulkan compute
+        //    IN PLACE on the NPU SharedBO pages (dma-buf import).  The NPU
+        //    FFN reads/writes the same pages directly.  Zero per-layer host
+        //    copies: embed→pages, per-layer attention, and the FFN all move
+        //    data through the pages themselves.  Only the final readback
+        //    pages→dh (for lm_head) touches the CPU per token.
+        if (vk_attn_) {
+            bool use_npu = (npu && npu_ok && slots_ok_ && getenv("USE_NPU_FFN"));
+            auto t_ent = std::chrono::steady_clock::now();
+
+            // Async VK dispatch: the WHOLE per-token forward (embed + every
+            // layer's attention + the on-pages FFN) in ONE command buffer —
+            // one submit + one waitIdle per token instead of 56 per-layer
+            // host waits.  The GPU stays continuously busy end-to-end.  On
+            // failure (e.g. the on-pages FFN not uploaded) fall through to
+            // the per-layer path below.
+            if (!use_npu && vk_ffn_ready_) {
+                if (va_.record_forward(token_id, pos)) {
+                    HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                        H_ * sizeof(float), hipMemcpyHostToDevice));
+                    fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh, dh, d_final_norm, H_, EPS);
+                    HIP_CHECK(hipMemcpy(hidden_out, dh, H_*4, hipMemcpyDeviceToHost));  // blocking
+                    pos++;
+                    return true;
+                }
+                fprintf(stderr, "[fused] record_forward failed — per-layer fallback\n");
+                vk_ffn_ready_ = false;
+            }
+
+            // 0) embed → pages (Vulkan writes the NPU pages directly)
+            if (token_id >= 0 && token_id < VOCAB)
+                va_.embed(token_id);
+            else
+                memset(va_.pages()->host_ptr(), 0, (size_t)H_ * sizeof(float));
+
+            for (int l = 0; l < NC_; l++) {
+                // await FFN(l-1): its output is already IN the pages (the NPU
+                // FFN writes in place) — nothing to copy.
+                auto t_w0 = std::chrono::steady_clock::now();
+                if (use_npu && l > 0) {
+                    if (!npu_future_.get()) {
+                        fprintf(stderr, "[fused] NPU FFN l=%d failed — GPU FFN from now\n", l - 1);
+                        npu_ok = false; use_npu = false;
+                    }
+                }
+                auto t_w1 = std::chrono::steady_clock::now();
+                if (getenv("VK_ATTN_TIMING") && l > 0)
+                    fprintf(stderr, "[fused] layer %2d: awaitFFN %7.1f us\n", l,
+                            std::chrono::duration<double, std::micro>(t_w1 - t_w0).count());
+                // in-place attention: pages -> rms/qkv/decode/post -> pages
+                auto t_l0 = std::chrono::steady_clock::now();
+                va_.layer(l, pos);
+                auto t_l1 = std::chrono::steady_clock::now();
+                double us_attn = std::chrono::duration<double, std::micro>(t_l1 - t_l0).count();
+                if (getenv("VK_ATTN_TIMING"))
+                    fprintf(stderr, "[fused] layer %2d: va_.layer %8.1f us\n", l, us_attn);
+                if (use_npu) {
+                    float* pg = (float*)va_.pages()->host_ptr();
+                    npu_future_ = std::async(std::launch::async, [this, l, pg, H_]() {
+                        auto t0 = std::chrono::steady_clock::now();
+                        bool ok = npu_state_ffn(npu, l, pg, H_);
+                        auto t1 = std::chrono::steady_clock::now();
+                        if (getenv("VK_ATTN_TIMING"))
+                            fprintf(stderr, "[fused] NPU FFN l=%2d: %8.1f us\n", l,
+                                    std::chrono::duration<double, std::micro>(t1 - t0).count());
+                        return ok;
+                    });
+                } else if (vk_ffn_ready_) {
+                    // On-pages FFN shaders: the whole FFN runs as Vulkan
+                    // compute directly on the pages (no pages->dh->pages
+                    // round trip, no HIP).  Mirrors the HIP GPU-FFN math.
+                    auto t_f0 = std::chrono::steady_clock::now();
+                    if (!va_.ffn(l)) {
+                        fprintf(stderr, "[fused] va_.ffn l=%d failed — HIP FFN from now\n", l);
+                        vk_ffn_ready_ = false;
+                        auto& gl = L[l];
+                        HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                            H_ * sizeof(float), hipMemcpyHostToDevice));
+                        fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
+                        if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
+                        else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+                        if (gl.w1 && gl.w2 && gl.w3) {
+                            gemv(dgate, gl.w1, dh, IM_, H_, stream);
+                            gemv(dup_,  gl.w2, dh, IM_, H_, stream);
+                            fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                            gemv(dh, gl.w3, datt, H_, IM_, stream);
+                            fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+                        }
+                        HIP_CHECK(hipMemcpy(va_.pages()->host_ptr(), dh,
+                                            H_ * sizeof(float), hipMemcpyDeviceToHost));
+                    } else {
+                        auto t_f1 = std::chrono::steady_clock::now();
+                        if (getenv("VK_ATTN_TIMING"))
+                            fprintf(stderr, "[fused] layer %2d: va_.ffn  %8.1f us\n", l,
+                                    std::chrono::duration<double, std::micro>(t_f1 - t_f0).count());
+                    }
+                } else {                    // GPU FFN fallback (needs GPU dh; pages round-trip).
+                    auto& gl = L[l];
+                    HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                        H_ * sizeof(float), hipMemcpyHostToDevice));
+                    fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
+                    if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
+                    else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+                    if (gl.w1 && gl.w2 && gl.w3) {
+                        fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
+                        fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                        gemv(dh, gl.w3, datt, H_, IM_, stream);
+                        fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+                    }
+                    HIP_CHECK(hipMemcpy(va_.pages()->host_ptr(), dh,
+                                        H_ * sizeof(float), hipMemcpyDeviceToHost));
+                }
+            }
+            // await the LAST NPU FFN (its output is in the pages)
+            if (use_npu) {
+                if (!npu_future_.get()) {
+                    fprintf(stderr, "[fused] NPU FFN final layer failed — GPU FFN fallback\n");
+                    auto& gll = L[NC_ - 1];
+                    HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                        H_ * sizeof(float), hipMemcpyHostToDevice));
+                    fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
+                    if (gll.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gll.pon, H_, EPS);
+                    else         fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+                    if (gll.w1 && gll.w2 && gll.w3) {
+                        gemv(dgate, gll.w1, dh, IM_, H_, stream);
+                        gemv(dup_,  gll.w2, dh, IM_, H_, stream);
+                        fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
+                        gemv(dh, gll.w3, datt, H_, IM_, stream);
+                        fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
+                    }
+                }
+            }
+
+            // Final: read the pages back once (for lm_head), final RMSNorm.
+            HIP_CHECK(hipMemcpy(dh, va_.pages()->host_ptr(),
+                                H_ * sizeof(float), hipMemcpyHostToDevice));
+            fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh, dh, d_final_norm, H_, EPS);
+            if (getenv("VK_ATTN_TIMING")) {
+                auto t_ex = std::chrono::steady_clock::now();
+                fprintf(stderr, "[fused] vk_attn block total: %8.1f us\n",
+                        std::chrono::duration<double, std::micro>(t_ex - t_ent).count());
+            }
+            HIP_CHECK(hipMemcpy(hidden_out, dh, H_*4, hipMemcpyDeviceToHost));  // blocking
+            pos++;
+            return true;
+        }
 
         // Embedding → GPU
         if (token_id >= 0 && token_id < VOCAB && d_embed)
@@ -478,7 +1266,7 @@ struct FusedBackend : Backend {
         for (int l = 0; l < NC_; l++) {
             auto& gl = L[l];
             int s1 = NH_ * HD_, s2 = NKV_ * HD_;
-            bool use_npu = (npu && npu_ok && getenv("USE_NPU_FFN"));
+            bool use_npu = (npu && npu_ok && slots_ok_ && getenv("USE_NPU_FFN"));
 
             // ── NPU PIPELINE PHASE A: await FFN(L-1) result BEFORE attention(L).
             //    attention(L) consumes the hidden state produced by FFN(L-1), so
@@ -493,32 +1281,35 @@ struct FusedBackend : Backend {
                     npu_ok = false;
                     use_npu = false;
                 } else {
-                    // Copy NPU result from SharedBO slot back to GPU dh
-                    if (slot_dev[prev_si]) {
-                        HIP_CHECK(hipMemcpy(dh, slot_dev[prev_si], H_*sizeof(float),
-                                            hipMemcpyDeviceToDevice));
-                    } else {
-                        HIP_CHECK(hipMemcpy(dh, slot[prev_si]->host_ptr(), H_*sizeof(float),
-                                            hipMemcpyHostToDevice));
-                    }
+                    // Copy NPU result from SharedBO slot back to GPU dh.  The
+                    // slot's GPU view is the Vulkan dma-buf import (issue
+                    // #1217), but the import is not CPU-mappable (SIGBUS on
+                    // RADV) and HIP has no dma-buf import API, so this H2D
+                    // copy reads the NPU FFN output through the XRT CPU view
+                    // of the same pages.
+                    HIP_CHECK(hipMemcpy(dh, slot[prev_si]->host_ptr(),
+                                        H_*sizeof(float), hipMemcpyHostToDevice));
                 }
             }
 
             // ── ATTENTION ──────────────────────────────────
+            auto t_hip0 = std::chrono::steady_clock::now();
             // 1. RMSNorm (in-place on dh, destroys input — save residual first).
             //    Save into dffn, NOT doproj: the output-projection GEMV below
             //    writes doproj and would clobber the saved input, making the
             //    residual add norm(x) instead of x (flat-logits bug on every
             //    model with this path). dffn is free during attention and is
             //    re-saved by the FFN section before its own residual add.
-            fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
-            if (gl.pn) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pn, H_, EPS);
-            else       fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
+            fused_copy_norm_kernel<<<1, BLOCK, 0, stream>>>(dffn, dh, gl.pn, H_, EPS);
 
             // 2. QKV GEMV (all async on stream)
-            if (gl.wq) gemv(datt,  gl.wq, dh, s1, H_, stream);
-            if (gl.wk) gemv(dgate, gl.wk, dh, s2, H_, stream);
-            if (gl.wv) gemv(dup_,  gl.wv, dh, s2, H_, stream);
+            if (gl.wq && gl.wk && gl.wv)
+                fused_qkv_v4_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(datt, dgate, dup_, gl.wq, gl.wk, gl.wv, dh, s1, s2, H_);
+            else {
+                if (gl.wq) gemv(datt,  gl.wq, dh, s1, H_, stream);
+                if (gl.wk) gemv(dgate, gl.wk, dh, s2, H_, stream);
+                if (gl.wv) gemv(dup_,  gl.wv, dh, s2, H_, stream);
+            }
 
             // 2b. Per-head QK-norm (Qwen3/Qwen2.5+): RMSNorm each head's
             // head_dim slice with the shared [head_dim] weight, before RoPE.
@@ -542,14 +1333,15 @@ struct FusedBackend : Backend {
                 rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos+1, scl, (void*)stream);
 
                 // 6. attn half→f32 + output projection
-                fused_h2f_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dAttn, s1);
-                gemv(doproj, gl.wo, datt, H_, s1, stream);
+                fused_wo_h2v4_kernel<<<H_, BLOCK, 0, stream>>>(doproj, gl.wo, dAttn, H_, s1);
 
-                // 7. Residual: doproj += saved input (dffn, pre-RMSNorm)
-                fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(doproj, dffn, H_);
-                // doproj = attn_out now. Copy back to dh for FFN.
-                fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, H_);
+                // 7. Residual: dh = attn_out + saved input (dffn, pre-RMSNorm)
+                fused_residual_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, doproj, dffn, H_);
             }
+            if (getenv("VK_ATTN_TIMING"))
+                fprintf(stderr, "[fused] HIP attn+FFN l=%2d: %7.1f us\n", l,
+                        std::chrono::duration<double, std::micro>(
+                            std::chrono::steady_clock::now() - t_hip0).count());
 
             // ── FFN (NPU backfill with GPU fallback) ──
             // With USE_NPU_FFN=1 the NPU computes FFN for layer L on a worker
@@ -564,8 +1356,7 @@ struct FusedBackend : Backend {
                 if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
                 else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
                 if (gl.w1 && gl.w2 && gl.w3) {
-                    gemv(dgate, gl.w1, dh, IM_, H_, stream);
-                    gemv(dup_,  gl.w2, dh, IM_, H_, stream);
+                    fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
                     fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
                     gemv(dh, gl.w3, datt, H_, IM_, stream);
                     fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
@@ -576,13 +1367,12 @@ struct FusedBackend : Backend {
                 float* host_buf = (float*)slot[si]->host_ptr();
                 // Copy post-attention hidden state to the slot.  dh holds the
                 // post-attention + residual output (copied from doproj above).
-                if (slot_dev[si]) {
-                    HIP_CHECK(hipMemcpy(slot_dev[si], dh, H_*sizeof(float),
-                                        hipMemcpyDeviceToDevice));
-                } else {
-                    HIP_CHECK(hipMemcpy(host_buf, dh, H_*sizeof(float),
-                                        hipMemcpyDeviceToHost));
-                }
+                // Destination is the XRT CPU view of the NPU pages (the
+                // Vulkan dma-buf import is the GPU-side handle but is not
+                // CPU-mappable on RADV) — the NPU reads its FFN input from
+                // these pages.
+                HIP_CHECK(hipMemcpy(host_buf, dh, H_*sizeof(float),
+                                    hipMemcpyDeviceToHost));
                 // Launch NPU FFN async.  The next iteration's Phase A wait
                 // collects the result before attention(L+1) reads dh.
                 npu_future_ = std::async(std::launch::async, [this, l, host_buf, H_]() {
@@ -596,13 +1386,8 @@ struct FusedBackend : Backend {
             int last_si = (NC_ - 1) & 1;
             bool ok = npu_future_.get();
             if (ok) {
-                if (slot_dev[last_si]) {
-                    HIP_CHECK(hipMemcpy(dh, slot_dev[last_si], H_*sizeof(float),
-                                        hipMemcpyDeviceToDevice));
-                } else {
-                    HIP_CHECK(hipMemcpy(dh, slot[last_si]->host_ptr(), H_*sizeof(float),
-                                        hipMemcpyHostToDevice));
-                }
+                HIP_CHECK(hipMemcpy(dh, slot[last_si]->host_ptr(),
+                                    H_*sizeof(float), hipMemcpyHostToDevice));
             } else {
                 // GPU FFN fallback for the last layer — dh still holds the
                 // post-attention hidden state (input to FFN).
@@ -641,10 +1426,196 @@ struct FusedBackend : Backend {
         return true;
     }
 
+    bool lm_head_batch(const float* hidden, float* logits, int* argmaxs, int am) override {
+        if (!batch_ || !dh_batch || am != batch_) return false;
+        // Batched GEMV: the 622 MB vocab×hidden weight is read ONCE for all
+        // am rows instead of am times (the per-sequence lm_head was ~5.5 ms x
+        // am — now the dominant batch cost after the FFN batching).
+        HIP_CHECK(hipMemcpy(dh_batch, hidden, (size_t)am * H * sizeof(float), hipMemcpyHostToDevice));
+        const float* W = d_output ? d_output : d_embed;
+        if (!W) return false;
+        fused_gemv_batch_ws_kernel<<<VOCAB, BLOCK, 0, stream>>>(dlogits_batch, W, dh_batch, VOCAB, H, am);
+        HIP_CHECK(hipMemcpy(logits, dlogits_batch, (size_t)am * VOCAB * sizeof(float), hipMemcpyDeviceToHost));  // blocking
+        if (argmaxs) {
+            // GPU argmax (first-max, same semantics as the old host loop) —
+            // the D2H copy of the full logits is kept for API compat, but the
+            // host-side scan of am*VOCAB floats (~1 ms) is removed.
+            argmax_rows_kernel<<<am, BLOCK, 0, stream>>>(dlogits_batch, dargmaxs, am, VOCAB);
+            HIP_CHECK(hipMemcpy(argmaxs, dargmaxs, (size_t)am * sizeof(int), hipMemcpyDeviceToHost));
+        }
+        return true;
+    }
+
+    // ── Multi-sequence batch decode (FUSED_BATCH=N) ──
+    // Advances all N sequences one token.  Per layer: per-sequence GPU
+    // attention on the stream (back-to-back, warm), then ONE batched NPU FFN
+    // for all N rows (B weight DMA read once — 7.6x vs per-row calls,
+    // bit-identical per row).  hidden_out is [N, H]; callers run lm_head per
+    // row with lm_head(hidden_out + s*H, ...).  The token stream is identical
+    // to N independent single-stream decodes (each sequence's KV is
+    // independent and the batched FFN is bit-identical per row).
+    bool forward_batch(int* token_ids, float* hidden_out, int am) override {
+        if (!batch_ || !dh_batch || am != batch_) {
+            fprintf(stderr, "[fused] forward_batch: batch mode off or am=%d != FUSED_BATCH=%d\n", am, batch_);
+            return false;
+        }
+        const int B_ = batch_, H_ = H, NH_ = NH, NKV_ = NKV, HD_ = this->HD_, IM_ = IM, NC_ = NC;
+        bool use_npu = (npu && npu_ok && slots_ok_ && getenv("USE_NPU_FFN"));
+
+        auto embed_one = [&](int s, int tid) {
+            float* hs = dh_batch + (size_t)s * H_;
+            if (tid >= 0 && tid < VOCAB && d_embed)
+                fused_embed_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(hs, d_embed, tid, H_);
+            else
+                HIP_CHECK(hipMemset(hs, 0, H_*4));
+        };
+        // Batched attention: the weight GEMVs (qkv, wo) read each weight
+        // matrix ONCE per batch (fused_gemv_batch_kernel reuses the W row
+        // across all B rows) instead of once per sequence; the per-sequence
+        // elementwise kernels (rmsnorm, qk-norm, rope, kv-store, decode) run
+        // on the batch rows.  Residual saves land in dffn_batch.
+        auto attn_batched = [&](int l) {
+            auto& gl = L[l];
+            int s1 = NH_ * HD_, s2 = NKV_ * HD_;
+            // 1. residual save + RMSNorm (one batched launch, grid B)
+            fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pn, H_, EPS);
+            // 2. batched QKV GEMVs (W read once)
+            if (gl.wq && gl.wk && gl.wv)
+                fused_qkv_batch_ws_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(
+                    datt_batch, dgate_batch, dup_batch, gl.wq, gl.wk, gl.wv, dh_batch, s1, s2, H_, B_);
+            else {
+                if (gl.wq) fused_gemv_batch_ws_kernel<<<s1, BLOCK, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
+                if (gl.wk) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
+                if (gl.wv) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
+            }
+            // 3. batched QK-norm + RoPE (one launch per projection; the batch
+            //    advances all sequences together, so pos is common)
+            if (gl.q_norm) fused_head_norm_rope_batch_kernel<<<B_*NH_, BLOCK, 0, stream>>>(
+                datt_batch, gl.q_norm, HD_, EPS, batch_pos[0], rope_theta, NH_);
+            if (gl.k_norm) fused_head_norm_rope_batch_kernel<<<B_*NKV_, BLOCK, 0, stream>>>(
+                dgate_batch, gl.k_norm, HD_, EPS, batch_pos[0], rope_theta, NKV_);
+            // 4. batched Q f2h; per-sequence KV store + decode (KV slices)
+            if (gl.wo) {
+                fused_f2h_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ_batch, datt_batch, B_*s1);
+                float scl = 1.0f / sqrtf((float)HD_);
+                fused_kv_store_batch_kernel<<<dim3(NKV_, B_), HD_, 0, stream>>>(
+                    devK + (size_t)l * max_seq * NKV_ * HD_, devV + (size_t)l * max_seq * NKV_ * HD_,
+                    dgate_batch, dup_batch, batch_pos[0], NKV_, HD_, max_seq,
+                    (int)((size_t)NC_ * max_seq * NKV_ * HD_), s2);
+                rcpp_kv_cache_attn_decode_batch(dQ_batch,
+                    devK + (size_t)l * max_seq * NKV_ * HD_, devV + (size_t)l * max_seq * NKV_ * HD_,
+                    dAttn_batch, NH_, NKV_, HD_, batch_pos[0]+1, scl, B_,
+                    (int)((size_t)NC_ * max_seq * NKV_ * HD_), (void*)stream);
+                fused_h2f_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dAttn_batch, B_*s1);
+            }
+            // 4. batched output projection (W read once)
+            if (gl.wo) fused_gemv_batch_ws_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
+            // 5. residual (flat): dh = attn_out + saved
+            if (gl.wo)
+                fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
+        };
+        // Batched GPU FFN for all B rows: the w1/w2/w3 weight matrices are
+        // read ONCE per layer (fused_gemv_batch_kernel) instead of once per
+        // sequence — the per-sequence loop read 37.7 MB x B per layer.
+        auto ffn_gpu_batch = [&](int l) {
+            auto& gl = L[l];
+            fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pon, H_, EPS);
+            if (gl.w1 && gl.w2 && gl.w3) {
+                fused_gu_batch_ws_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate_batch, dup_batch, gl.w1, gl.w2, dh_batch, IM_, H_, B_);
+                fused_silu_kernel<<<(B_*IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dgate_batch, dup_batch, B_*IM_);
+                fused_gemv_batch_ws_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
+                fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
+            }
+        };
+
+        for (int s = 0; s < B_; s++) embed_one(s, token_ids[s]);
+
+        // VK_ATTN_TIMING: per-layer GPU timing via stream events (no syncs
+        // added — the final readback is the only sync).
+        bool btim = getenv("VK_ATTN_TIMING") != nullptr;
+        std::vector<hipEvent_t> ev_attn, ev_ffn, ev_emb;
+        if (btim) {
+            ev_attn.resize(NC_); ev_ffn.resize(NC_); ev_emb.resize(1);
+            hipEventCreate(&ev_emb[0]);
+            hipEventRecord(ev_emb[0], stream);
+            for (int l = 0; l < NC_; l++) {
+                hipEventCreate(&ev_attn[l]); hipEventCreate(&ev_ffn[l]);
+            }
+        }
+
+        for (int l = 0; l < NC_; l++) {
+            // Phase A: await the batched FFN(l-1), copy the result back
+            if (use_npu && l > 0) {
+                if (!npu_batch_future_.get()) {
+                    fprintf(stderr, "[fused] NPU FFN batch l=%d failed — GPU FFN from now\n", l - 1);
+                    npu_ok = false; use_npu = false;
+                } else {
+                    HIP_CHECK(hipMemcpy(dh_batch, host_batch.data(),
+                                        (size_t)B_ * H_ * sizeof(float), hipMemcpyHostToDevice));
+                }
+            }
+            // attention for every sequence (batched GEMVs, W read once per batch)
+            if (btim) hipEventRecord(ev_attn[l], stream);
+            attn_batched(l);
+            if (btim) hipEventRecord(ev_ffn[l], stream);
+            // one batched FFN for all rows
+            if (!use_npu) {
+                ffn_gpu_batch(l);
+            } else {
+                HIP_CHECK(hipMemcpy(host_batch.data(), dh_batch,
+                                    (size_t)B_ * H_ * sizeof(float), hipMemcpyDeviceToHost));
+                npu_batch_future_ = std::async(std::launch::async, [this, l, H_]() {
+                    return npu_state_ffn_batch(npu, l, host_batch.data(), H_, batch_);
+                });
+            }
+        }
+        // await the LAST batched FFN
+        if (use_npu) {
+            if (!npu_batch_future_.get()) {
+                fprintf(stderr, "[fused] NPU FFN batch final layer failed — GPU FFN fallback\n");
+                ffn_gpu_batch(NC_ - 1);
+            } else {
+                HIP_CHECK(hipMemcpy(dh_batch, host_batch.data(),
+                                    (size_t)B_ * H_ * sizeof(float), hipMemcpyHostToDevice));
+            }
+        }
+        // final RMSNorm per row (8 launches), then ONE blocking readback (the
+        // rows are contiguous in dh_batch and hidden_out — 8 separate blocking
+        // hipMemcpy would each pay a stream sync).
+        for (int s = 0; s < B_; s++)
+            fused_final_norm_kernel<<<1, BLOCK, 0, stream>>>(dh_batch + (size_t)s * H_, dh_batch + (size_t)s * H_, d_final_norm, H_, EPS);
+        HIP_CHECK(hipMemcpy(hidden_out, dh_batch, (size_t)B_ * H_ * 4, hipMemcpyDeviceToHost));  // blocking
+        if (btim) {
+            // Elapsed per layer (events completed: the readback synced).
+            fprintf(stderr, "[fused] batch l  attn(us)  ffn(us)\n");
+            for (int l = 0; l < NC_; l++) {
+                float a = 0, f = 0;
+                hipEventElapsedTime(&a, ev_emb[0], ev_attn[l]);
+                hipEventElapsedTime(&f, ev_attn[l], ev_ffn[l]);
+                if (l > 0) {
+                    float prev = 0;
+                    hipEventElapsedTime(&prev, ev_ffn[l - 1], ev_attn[l]);
+                    fprintf(stderr, "[fused] batch %2d  %7.1f  %7.1f  (gap %.1f)\n", l, a, f, prev);
+                } else {
+                    fprintf(stderr, "[fused] batch %2d  %7.1f  %7.1f\n", l, a, f);
+                }
+            }
+        }
+        for (int s = 0; s < B_; s++) batch_pos[s]++;
+        return true;
+    }
+
     int generate(int token_id) override {
+        auto g0 = std::chrono::steady_clock::now();
         if (!forward(token_id, h_stage.data())) return -1;
+        auto g1 = std::chrono::steady_clock::now();
         int n = -1;
         if (!lm_head(h_stage.data(), logit_stage.data(), &n)) return -1;
+        auto g2 = std::chrono::steady_clock::now();
+        if (getenv("VK_ATTN_TIMING"))
+            fprintf(stderr, "[fused] generate: forward %7.1f us, lm_head %7.1f us\n",
+                    std::chrono::duration<double, std::micro>(g1 - g0).count(),
+                    std::chrono::duration<double, std::micro>(g2 - g1).count());
         return n;
     }
 
@@ -671,14 +1642,33 @@ struct FusedBackend : Backend {
         hfhst(dK); hfhst(dV);
         devK = devV = nullptr;
         for (int i = 0; i < 2; i++) {
-            if (slot_dev[i] && slot[i]) {
-                HIP_CHECK_D(hipHostUnregister(slot[i]->host_ptr()));
-                slot_dev[i] = nullptr;
-            }
+            if (vk_slot_[i].mem) vk_slot_[i].destroy();
+            if (vk_fds_[i] >= 0) { close(vk_fds_[i]); vk_fds_[i] = -1; }  // un-imported dup
             delete slot[i]; slot[i] = nullptr;
+        }
+        // Tear down the Vulkan context that imported the slots.  Guarded on
+        // dev so a failed init (no device ever created) is a no-op; nulled so
+        // a second destroy() pass (unload + dtor) is also a no-op.
+        if (vk_ctx_.dev) {
+            vk_ctx_.destroy();
+            vk_ctx_.dev = VK_NULL_HANDLE;
         }
         // Await any in-flight NPU FFN before destroying NPU state
         if (npu_future_.valid()) { npu_future_.wait(); }
+        if (npu_batch_future_.valid()) { npu_batch_future_.wait(); }
+        if (dh_batch) { HIP_CHECK_D(hipFree(dh_batch)); dh_batch = nullptr; }
+        if (datt_batch) { HIP_CHECK_D(hipFree(datt_batch)); datt_batch = nullptr; }
+        if (dgate_batch) { HIP_CHECK_D(hipFree(dgate_batch)); dgate_batch = nullptr; }
+        if (dup_batch) { HIP_CHECK_D(hipFree(dup_batch)); dup_batch = nullptr; }
+        if (doproj_batch) { HIP_CHECK_D(hipFree(doproj_batch)); doproj_batch = nullptr; }
+        if (dffn_batch) { HIP_CHECK_D(hipFree(dffn_batch)); dffn_batch = nullptr; }
+        if (dlogits_batch) { HIP_CHECK_D(hipFree(dlogits_batch)); dlogits_batch = nullptr; }
+        if (dargmaxs) { HIP_CHECK_D(hipFree(dargmaxs)); dargmaxs = nullptr; }
+        if (dQ_batch) { HIP_CHECK_D(hipFree(dQ_batch)); dQ_batch = nullptr; }
+        if (dAttn_batch) { HIP_CHECK_D(hipFree(dAttn_batch)); dAttn_batch = nullptr; }
+        if (vk_attn_) va_.destroy();
+        vk_embed_.clear(); vk_embed_.shrink_to_fit();
+        vk_layers_.clear(); vk_layers_.shrink_to_fit();
         if (stream) { HIP_CHECK_D(hipStreamDestroy(stream)); stream = nullptr; }
         npu_state_destroy(npu); npu = nullptr;
         cpu_L.clear(); cpu_embed.clear(); cpu_final_norm.clear(); cpu_output.clear();

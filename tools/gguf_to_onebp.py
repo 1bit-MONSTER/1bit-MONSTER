@@ -117,6 +117,20 @@ def main():
             except: pass
         return 0
 
+    def gf_f(field, alt=None, default=0.0):
+        """Float-valued metadata read (gf() truncates to int, losing RoPE)."""
+        for fn in [field, alt] if alt else [field]:
+            if not fn: continue
+            v = rd.fields.get(fn)
+            if v is None or len(v.parts) < 4: continue
+            val = v.parts[3]
+            if hasattr(val, '__len__') and len(val) > 0:
+                try: return float(val[0])
+                except: pass
+            try: return float(val)
+            except: pass
+        return default
+
     def gs_str(field):
         v = rd.fields.get(field)
         if v is None or len(v.parts) < 5: return ''
@@ -144,7 +158,18 @@ def main():
     if not NKV: NKV = NH
     if not HD and NH: HD = H // NH
 
-    print(f"Model: {arch}  H={H} L={L} NH={NH} NKV={NKV} HD={HD} IM={IM} V={V}")
+    # RoPE base — the v1 header stores it as fixed-point (theta*1000).  The
+    # old hardcoded raw float (1e6) was divided by 1000 on read (-> 1000),
+    # scrambling RoPE in every engine trusting the header (Qwen3-0.6B
+    # regression, 2026-08-29).
+    rope = gf_f(f"{arch}.rope.freq_base", "rope.freq_base", 0.0)
+    if rope <= 0:
+        rope = gf_f(f"{arch}.rope_theta", "rope_theta", 10000.0)
+    if rope <= 0: rope = 10000.0
+    rope_fp = int(round(rope * 1000.0))
+    if rope_fp >= (1 << 32): rope_fp = (1 << 32) - 1
+
+    print(f"Model: {arch}  H={H} L={L} NH={NH} NKV={NKV} HD={HD} IM={IM} V={V} rope={rope}")
     if not H or not L or not V:
         print("ERROR: could not read model config"); sys.exit(1)
 
@@ -154,7 +179,7 @@ def main():
     hdr = struct.pack('<5I8i10I',
         0x00504231, 1, 0, quant_id, 0,
         H, L, NH, NKV, HD, IM, V, 4096,
-        tr, tc, gs, 0, 0, 0, 1000000, 1, 2, 0)
+        tr, tc, gs, 0, 0, 0, rope_fp, 1, 2, 0)
     hdr = bytearray(hdr.ljust(256, b'\x00'))
     print(f"Quant: {'TQ2 (2-bit symmetric ternary)' if tq2 else 'Q4NX (4-bit)'}")
 

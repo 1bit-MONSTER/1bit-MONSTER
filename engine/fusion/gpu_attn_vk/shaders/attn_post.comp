@@ -1,0 +1,46 @@
+// attn_post.comp — out-projection + residual, written IN PLACE back into the
+// NPU SharedBO pages (the hidden state never leaves them).  out[i] = sum_j
+// Wo[i*NHHD + j] * attn[j] + h[i], where h is read from the pages (still the
+// pre-attention residual) and the result overwrites the pages.
+#version 450
+layout(local_size_x = 128) in;
+
+layout(set = 0, binding = 0, std430) buffer AttnOut { float ao[]; };  // [NH*HD]
+layout(set = 0, binding = 1, std430) buffer Wo     { float wo[]; };   // [H][NH*HD]
+layout(set = 0, binding = 2, std430) buffer Pages  { float h[]; };    // NPU pages [H] (in-place)
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+shared float part[128];   // part[r*8+s] = row r partial from lane s (16 rows x 8 lanes)
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    int n = pc.NH * pc.HD;
+    // wo is packed [layer][H][NH*HD].  8 threads cooperate per output row:
+    // lane s accumulates the strided j = s, s+8, ... slice of the n dim, then
+    // a 3-step tree reduction over the 8 lanes.  Block covers 16 rows
+    // (128/8 — 64 blocks vs the old 32, better occupancy on 40 CUs; the
+    // per-row math is identical).  (Old: one thread per row, serial n=2048
+    // loop — ~12x slower than HIP's gemv.)
+    uint wo_off = uint(pc.layer) * uint(pc.H) * uint(n);
+    uint r = tid >> 3;                  // row within this block's 16
+    uint s = tid & 7u;                  // lane
+    uint base_row = (gl_WorkGroupID.x << 4);
+    uint row = base_row + r;
+    if (row >= uint(pc.H)) return;
+    float acc = 0.0;
+    for (int j = int(s); j < n; j += 8)
+        acc += wo[wo_off + row * uint(n) + uint(j)] * ao[uint(j)];
+    part[r * 8u + s] = acc;
+    barrier();
+    // 8-lane tree reduction per row: lane 0 of each row gets the sum.
+    for (int st = 4; st > 0; st >>= 1) {
+        if ((s & uint(st)) == 0u && s < uint(st)) part[r * 8u + s] += part[r * 8u + s + uint(st)];
+        barrier();
+    }
+    if (s == 0u) h[row] = part[r * 8u] + h[row];   // residual add, in place
+}

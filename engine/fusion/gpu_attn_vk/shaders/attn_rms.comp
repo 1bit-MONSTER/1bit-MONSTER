@@ -1,0 +1,33 @@
+// attn_rms.comp — RMSNorm of the hidden state (in the NPU SharedBO pages)
+// into a scratch h_norm buffer.  Mirrors FusedBackend::fused_rmsnorm_kernel
+// exactly: inv = rsqrt(mean(x^2) + eps), out = x * inv * w.
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer HIn  { float h[]; };    // NPU pages [H]
+layout(set = 0, binding = 1, std430) buffer HNrm { float hn[]; };   // [H]
+layout(set = 0, binding = 2, std430) buffer Pn   { float pn[]; };   // [H]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+shared float red[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    float local = 0.0;
+    for (int i = int(tid); i < pc.H; i += 256) local += h[i] * h[i];
+    red[tid] = local;
+    barrier();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (tid < uint(s)) red[tid] += red[tid + uint(s)];
+        barrier();
+    }
+    float inv = inversesqrt(red[0] / float(pc.H) + pc.eps);
+    // pn is packed [layer][H] — all layers share one buffer/descriptor set.
+    uint pn_off = uint(pc.layer) * uint(pc.H);
+    for (int i = int(tid); i < pc.H; i += 256) hn[i] = h[i] * inv * pn[pn_off + uint(i)];
+}

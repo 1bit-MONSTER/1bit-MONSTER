@@ -1,0 +1,106 @@
+// attn_qkns.comp — per-head QK-norm + RoPE + f16 KV-store for the Q/K/V
+// produced by attn_qkv.comp's per-row GEMVs.
+//
+// One block per head (b < NH = Q, b in [NH, NH+NKV) = K/V).  Per-head
+// QK-norm (rsqrt(mean^2+eps) with the shared q_norm/k_norm weights over the
+// head's head_dim rows); RoPE pairs (d, d+hd/2) with f = 1/theta^(d/(hd/2)),
+// c=cos(pos*f), s=sin(pos*f); V raw.  KV cache stored as FP16 bits (uint) —
+// matches the fused backend's fused_f2h_kernel + fused_kv_store_kernel so the
+// int8 NPU FFN sees the SAME f16 KV as the HIP path (token parity).
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer QOut { float q[]; };    // [NH*HD]
+layout(set = 0, binding = 1, std430) buffer KOut { float k[]; };    // [NKV*HD]
+layout(set = 0, binding = 6, std430) buffer VOut { float v[]; };    // [NKV*HD]
+layout(set = 0, binding = 2, std430) buffer Qn   { float qn[]; };   // [NC][HD]
+layout(set = 0, binding = 3, std430) buffer Kn   { float kn[]; };   // [NC][HD]
+layout(set = 0, binding = 4, std430) buffer KC   { uint kc[]; };    // [NKV*max_seq*HD] f16 bits
+layout(set = 0, binding = 5, std430) buffer VC   { uint vc[]; };    // [NKV*max_seq*HD] f16 bits
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+shared float val[256];
+
+// FP32 -> FP16 bits (exact hardware conversion, same as __float2half).
+uint f16bits(float x) {
+    return packHalf2x16(vec2(x, 0.0)) & 0xFFFFu;
+}
+
+void main() {
+    uint b = gl_GlobalInvocationID.x / 256;   // head: [0,NH) Q, [NH,NH+NKV) KV
+    uint tid = gl_LocalInvocationID.x;
+    uint hd = uint(pc.HD);
+    if (b >= uint(pc.NH + pc.NKV)) return;
+
+    if (b < uint(pc.NH)) {
+        // ---- Q head b: head-wide QK-norm, then RoPE in place ----
+        uint qn_off = uint(pc.layer) * hd;
+        float ss = 0.0;
+        for (int i = int(tid); i < int(hd); i += 256) {
+            float v = q[b * hd + uint(i)];
+            ss += v * v;
+        }
+        val[tid] = ss;
+        barrier();
+        for (int s2 = 128; s2 > 0; s2 >>= 1) {
+            if (tid < uint(s2)) val[tid] += val[tid + uint(s2)];
+            barrier();
+        }
+        float inv = inversesqrt(val[0] / float(hd) + pc.eps);
+        for (int i = int(tid); i < int(hd); i += 256) {
+            uint r = uint(i);
+            uint o = b * hd + r;
+            if (r < hd / 2u) {
+                uint d = r;
+                float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
+                float c = cos(float(pc.pos) * f), sn = sin(float(pc.pos) * f);
+                float a = q[o] * inv * qn[qn_off + r];
+                float bb = q[o + hd / 2u] * inv * qn[qn_off + r + hd / 2u];
+                q[o] = a * c - bb * sn;
+                q[o + hd / 2u] = a * sn + bb * c;
+            }
+        }
+    } else {
+        // ---- KV head (b - NH): K norm + RoPE, V raw, f16 store ----
+        uint kv = b - uint(pc.NH);
+        uint kn_off = uint(pc.layer) * hd;
+        float ss = 0.0;
+        for (int i = int(tid); i < int(hd); i += 256) {
+            float v = k[kv * hd + uint(i)];
+            ss += v * v;
+        }
+        val[tid] = ss;
+        barrier();
+        for (int s2 = 128; s2 > 0; s2 >>= 1) {
+            if (tid < uint(s2)) val[tid] += val[tid + uint(s2)];
+            barrier();
+        }
+        float kinv = inversesqrt(val[0] / float(hd) + pc.eps);
+        for (int i = int(tid); i < int(hd); i += 256) {
+            uint r = uint(i);
+            uint o = kv * hd + r;
+            float kk = k[o] * kinv * kn[kn_off + r];
+            if (r < hd / 2u) {
+                uint d = r;
+                float f = 1.0 / pow(pc.rope_theta, float(d) / float(hd / 2));
+                float c = cos(float(pc.pos) * f), sn = sin(float(pc.pos) * f);
+                float a = kk, bb = k[o + hd / 2u] * kinv * kn[kn_off + r + hd / 2u];
+                k[o] = a * c - bb * sn;
+                k[o + hd / 2u] = a * sn + bb * c;
+            }
+        }
+        barrier();   // k[] writes visible before the store reads
+        if (tid < hd) {
+            uint o = kv * hd + tid;
+            uint base = uint(pc.layer) * uint(pc.max_seq) * uint(pc.NKV) * hd
+                      + uint(pc.pos) * uint(pc.NKV) * hd + o;
+            kc[base] = f16bits(k[o]);
+            vc[base] = f16bits(v[o]);
+        }
+    }
+}

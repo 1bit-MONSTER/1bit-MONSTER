@@ -1,0 +1,37 @@
+// ffn_gu.comp — fused gate/up GEMVs: out[2*IM] = [w1;w2] @ h.  ONE BLOCK PER
+// OUTPUT ROW, 256 threads reading k = tid (contiguous 1 KB per load round —
+// perfectly coalesced, the same structure as the HIP gemv; the 8-lane/32-row
+// pattern read 4 different rows' 8-float segments per warp and capped at
+// ~55 GB/s).
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer HNorm  { float h[]; };    // [H] (rmsnorm'd pages)
+layout(set = 0, binding = 1, std430) buffer Gu     { float gu[]; };   // [NC][2*IM][H]
+layout(set = 0, binding = 2, std430) buffer GuOut  { float go[]; };   // [2*IM]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+shared float sdata[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint rows = uint(pc.IM) * 2u;
+    if (row >= rows) return;
+    uint goff = uint(pc.layer) * rows * uint(pc.H);
+    float acc = 0.0;
+    for (int k = int(tid); k < pc.H; k += 256)
+        acc += h[k] * gu[goff + row * uint(pc.H) + uint(k)];
+    sdata[tid] = acc;
+    barrier();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (tid < uint(s)) sdata[tid] += sdata[tid + uint(s)];
+        barrier();
+    }
+    if (tid == 0u) go[row] = sdata[0];
+}

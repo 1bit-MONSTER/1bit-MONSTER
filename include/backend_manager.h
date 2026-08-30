@@ -128,10 +128,24 @@ public:
     const BackendInfo* active_info() const;
     /// List all discovered backends
     const std::vector<BackendInfo>& backends() const { return backends_; }
+    /// Backend ids in fallback order: model-route order first
+    /// (select_backend_route's backend_ids_in_order), then any remaining
+    /// discovered backends in registration order as last resort. Only ids
+    /// present in backends_ are returned. Failover paths (failover(),
+    /// unified_server's token-loop fallback) iterate this so a decode failure
+    /// cascades to the intended next lane (e.g. GGUF: hrx_gpu → ggml_vulkan →
+    /// zinc_gpu → cpu_generic) instead of whatever backend discovery happened
+    /// to register next — which for a GGUF model could be an NPU lane that
+    /// would load the wrong model (issue G1a, docs/research/hrx-engine-goal.md).
+    std::vector<std::string> fallback_order() const;
 
     // ── Inference ──
     /// Run one token — returns token ID, with automatic failover
     int generate(int token_id);
+    /// Text-level whole-prompt generation, with automatic failover: tries the
+    /// active backend's generate_text(); on failure (empty result or throw)
+    /// it cascades to the next backend in the route, exactly like generate().
+    std::string generate_text(const std::string& prompt, int max_tokens);
     /// Forward pass with hidden state output
     bool forward(int token_id, float* hidden_out);
     /// LM head

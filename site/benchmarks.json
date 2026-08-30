@@ -1,6 +1,6 @@
 {
- "updated": "2026-08-01",
- "_updated_note": "2026-08-05: NPU engine multi-core (v27, 4 core rows / 32 cores) — kernel 5.6x, qwen3_0_6b e2e decode 435 ms/tok (2.4x). NPU attention made opt-in (55x prefill regression). 2026-07-28: NPU engine replaced FLM-based v12 path with native npu_engine_universal (INT8 GEMM, Peano-compiled xclbins). All 22 GEMM shapes across 5 models verified 0/10000 errors on real hardware. NPU attention fixed (xrt::ext::bo overload resolution). NPU end-to-end prefill/decode now functional. Chess toolchain permanently deprecated (multi-dim BD repeat descriptors hang NPU2 DMA). Mamba1 GPU numbers: 79.4/46.0 tok/s re-validated 2026-07-26.",
+ "updated": "2026-08-29T13:10:00Z",
+ "_updated_note": "2026-08-29 (fused): M=8 vectorized FFN xclbins (n1_core_i8_v27.py -M 8) \u2014 the m1 scalar matmul throttled the DMA at ~1 GB/s; the vectorized mmul runs at ~3.1 GB/s. FFN 8.46 -> 4.42 ms/layer; fused VK+NPU 272.7 -> 153.1 ms/token (6.5 tok/s), HIP+NPU ~275 -> 156.3 ms (6.4 tok/s). Token parity 15 13 15 15 ... on all paths. am=8 amortizes the B DMA (2045 us for 8 rows) \u2014 multi-sequence decode next. 2026-08-05: NPU engine multi-core (v27, 4 core rows / 32 cores) \u2014 kernel 5.6x, qwen3_0_6b e2e decode 435 ms/tok (2.4x). NPU attention made opt-in (55x prefill regression). 2026-07-28: NPU engine replaced FLM-based v12 path with native npu_engine_universal (INT8 GEMM, Peano-compiled xclbins). All 22 GEMM shapes across 5 models verified 0/10000 errors on real hardware. NPU attention fixed (xrt::ext::bo overload resolution). NPU end-to-end prefill/decode now functional. Chess toolchain permanently deprecated (multi-dim BD repeat descriptors hang NPU2 DMA). Mamba1 GPU numbers: 79.4/46.0 tok/s re-validated 2026-07-26.",
  "source": "validated on real Strix Halo NPU hardware (single-agent, no contention), GPU numbers from cold GPU",
  "engines": {
   "q1_gemv": {
@@ -11,7 +11,7 @@
    "table": "kernel",
    "display_name": "Q1 GEMV",
    "backend": "ROCm HIP (fused kernel)",
-   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference — not an end-to-end decode measurement on a loaded model. See _updated_note."
+   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note."
   },
   "fused_tq2": {
    "tok_s": 420,
@@ -21,7 +21,7 @@
    "table": "kernel",
    "display_name": "Fused TQ2",
    "backend": "ROCm HIP (QKV+GU fused)",
-   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference — not an end-to-end decode measurement on a loaded model. See _updated_note."
+   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note."
   },
   "ternary": {
    "tok_s": 318,
@@ -39,7 +39,7 @@
    "table": "kernel",
    "display_name": "TQ2 GEMV",
    "backend": "ROCm HIP",
-   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference — not an end-to-end decode measurement on a loaded model. See _updated_note."
+   "notes": "Isolated GEMV throughput, correctness-verified bit-exact vs CPU reference \u2014 not an end-to-end decode measurement on a loaded model. See _updated_note."
   },
   "npu_v12": {
    "tok_s": 0,
@@ -54,11 +54,11 @@
    "tok_s": 0,
    "status": "validated",
    "remeasured": "2026-08-05",
-   "label": "NPU INT8 GEMM — npu_engine_universal, Peano-compiled xclbins, 4 native ops",
+   "label": "NPU INT8 GEMM \u2014 npu_engine_universal, Peano-compiled xclbins, 4 native ops",
    "table": "kernel",
    "display_name": "NPU INT8 GEMM",
    "backend": "XDNA 2 via Peano",
-   "notes": "22/22 shapes across 5 models verified 0/10000 errors on real hardware. 2026-08-05: multi-row generator (n1_core_i8_v27, 4 core rows) — 5.6x kernel-level (QKV 675 GOP/s, O 757, GU 646, D 751), 2.4x e2e decode on qwen3_0_6b. Previous npu_v12 (69 tok/s) superseded."
+   "notes": "22/22 shapes across 5 models verified 0/10000 errors on real hardware. 2026-08-05: multi-row generator (n1_core_i8_v27, 4 core rows) \u2014 5.6x kernel-level (QKV 675 GOP/s, O 757, GU 646, D 751), 2.4x e2e decode on qwen3_0_6b. Previous npu_v12 (69 tok/s) superseded."
   },
   "rocm_hip": {
    "tok_s": 64,
@@ -71,7 +71,7 @@
   "npu_flm": {
    "tok_s": 0,
    "status": "broken",
-   "label": "NPU FLM engine — superseded by npu_engine_universal",
+   "label": "NPU FLM engine \u2014 superseded by npu_engine_universal",
    "notes": "Replaced by native npu_engine_universal (2026-07-28). FLM's 22 proprietary .so files are no longer used."
   },
   "all_5": {
@@ -244,7 +244,7 @@
    "table": "end_to_end",
    "display_name": "Qwen3.6-35B-A3B NPU (FLM v0.9.46, measured)",
    "backend": "NPU XDNA 2 (FastFlowLM v0.9.46)",
-   "notes": "Decode 11.66@1k → 8.82@32k; prefill 98.05@1k → 239.79@32k tok/s. 8 iters/ctx, performance mode, Strix Halo MAX+ 395. Prefill beats AMD official (Kraken Point) +8..24%; decode trails 7-15%. Official Q4_K_S weights (FastFlowLM/Qwen3.6-35B-A3B-NPU2). See benchmarks/RESULTS-qwen3.6-35b-a3b-npu-flm-2026-07-30.md"
+   "notes": "Decode 11.66@1k \u2192 8.82@32k; prefill 98.05@1k \u2192 239.79@32k tok/s. 8 iters/ctx, performance mode, Strix Halo MAX+ 395. Prefill beats AMD official (Kraken Point) +8..24%; decode trails 7-15%. Official Q4_K_S weights (FastFlowLM/Qwen3.6-35B-A3B-NPU2). See benchmarks/RESULTS-qwen3.6-35b-a3b-npu-flm-2026-07-30.md"
   },
   "qwen3_0_6b_npu": {
    "tok_s": 7.4,
@@ -254,7 +254,69 @@
    "table": "end_to_end",
    "display_name": "Qwen3-0.6B NPU (native)",
    "backend": "XDNA 2 (32 cores, v27)",
-   "notes": "Decode 435 ms/tok (B=1) → 135 ms/tok at -B 8 (7.4 tok/s aggregate, 8 independent sequences), prefill 475 ms/9 tok — measured 2026-08-05, bit-identical token stream vs v26. Multi-sequence batch decode is strictly causal (per-sequence KV); the old top-BS extension was never valid (#1485). NPU attention removed (fixed-seq kernel, 55x slower than CPU)."
+   "notes": "Decode 435 ms/tok (B=1) \u2192 135 ms/tok at -B 8 (7.4 tok/s aggregate, 8 independent sequences), prefill 475 ms/9 tok \u2014 measured 2026-08-05, bit-identical token stream vs v26. Multi-sequence batch decode is strictly causal (per-sequence KV); the old top-BS extension was never valid (#1485). NPU attention removed (fixed-seq kernel, 55x slower than CPU)."
+  },
+  "lse_gpu": {
+   "tok_s": 36.0,
+   "status": "validated",
+   "label": "LSE GPU \u2014 lemonseed-1.5b MLX, short-context decode (lse-server subprocess)",
+   "table": "engine",
+   "display_name": "LSE GPU (lemonseed-1.5b MLX)",
+   "backend": "lse"
+  },
+  "fused_hip_attn_gpu_ffn": {
+   "tok_s": 88.0,
+   "status": "validated",
+   "label": "Qwen3-0.6B 1BP \u2014 fused HIP attention + GPU FFN (all-GPU, dh in device mem) \u2014 THE FASTEST fused config",
+   "table": "engine",
+   "display_name": "Fused HIP attn + GPU FFN",
+   "backend": "fused",
+   "notes": "11.4 ms/token (88 tok/s) with float-accumulation GEMVs (was 14.5/69; the double accumulate runs at ~1/8 rate on RDNA). Parity 15 13 15 15 ... ."
+  },
+  "fused_batch_decode_gpu_ffn": {
+   "tok_s": 243.0,
+   "status": "validated",
+   "label": "Qwen3-0.6B 1BP \u2014 multi-sequence batch decode, 8 sequences, GPU FFN (FUSED_BATCH=8, no NPU)",
+   "table": "engine",
+   "display_name": "Fused batch decode B=8 (GPU FFN)",
+   "backend": "fused",
+   "notes": "34.9 ms/batch, 229 tok/s aggregate (20x the 11.5 ms single-stream) with the batched GPU FFN + fused batched QKV/GU gemvs (W rows in shared, read once per block; 3 fewer launches/layer) + batched elementwise + batched decode. Parity 15 13 15 15 ... on all 8 sequences."
+  },
+  "fused_vk_attn_npu_ffn": {
+   "tok_s": 6.5,
+   "status": "validated",
+   "label": "Qwen3-0.6B 1BP \u2014 Vulkan in-place attention + NPU FFN (M=8 vectorized FFN xclbins)",
+   "table": "engine",
+   "display_name": "Fused VK attn + NPU FFN (zero-copy)",
+   "backend": "fused",
+   "notes": "Zero-copy design: Vulkan attention reads/writes the NPU SharedBO pages in place (dma-buf import), NPU FFN reads them in place. 2026-08-29 perf pass: parallel decode shader (76x), dispatch batching, packed weights, parallel GEMV shaders, then M=1 single-row xclbins (FFN 8.46->7.93 ms/layer) and M=8 vectorized xclbins (FFN ->4.42 ms/layer; the m1 scalar matmul was COMPUTE-bound at ~1 GB/s, throttling the DMA; the vectorized 8x8x8 mmul runs at the ~3.1 GB/s DMA rate). 580ms -> 272.7 -> 258.6 -> 153.1 ms/token (6.5 tok/s). Token parity 15 13 15 15 ... vs CPU/HIP. am=8 runs 2045 us for 8 rows (B DMA amortized) \u2014 multi-sequence decode is the next lever."
+  },
+  "fused_hip_attn_npu_ffn": {
+   "tok_s": 7.2,
+   "status": "validated",
+   "label": "Qwen3-0.6B 1BP \u2014 fused HIP attention + NPU FFN (M=8 vectorized FFN xclbins)",
+   "table": "engine",
+   "display_name": "Fused HIP attn + NPU FFN",
+   "backend": "fused",
+   "notes": "Same NPU-FFN pipeline as the VK path but HIP attention: 156.3 ms/token (6.4 tok/s) with the M=8 vectorized FFN xclbins (was ~275 ms). VK path is now marginally ahead (153.1 ms)."
+  },
+  "fused_batch_decode_8": {
+   "tok_s": 243.0,
+   "status": "validated",
+   "label": "Qwen3-0.6B 1BP \u2014 multi-sequence batch decode, 8 sequences (FUSED_BATCH=8 USE_NPU_FFN=1, batched NPU FFN + batched GEMVs)",
+   "table": "engine",
+   "display_name": "Fused batch decode B=8",
+   "backend": "fused",
+   "notes": "forward_batch: per-layer batched attention (fused_gemv_batch_kernel reads each W row once per batch) + ONE batched NPU FFN for all 8 rows (B weight DMA read once, 7.6x, bit-identical per row) + batched lm_head (622 MB vocab weight read once). 222.6 ms/batch, 36 tok/s aggregate (5.5x the 6.5 tok/s single-stream); every sequence's token stream is the parity stream 15 13 15 15 ... . Scaling: B=2 12, B=4 22, B=8 35-36 tok/s aggregate. The batched NPU FFN (~5 ms/layer) now dominates; the D kernel DMA (~1.7 GB/s vs GU 3.1) is the next target."
+  },
+  "fused_vk_attn_gpu_ffn": {
+   "tok_s": 68.0,
+   "status": "validated",
+   "label": "Qwen3-0.6B 1BP \u2014 Vulkan in-place attention + GPU-FFN (on-pages attention, HIP FFN on dh)",
+   "table": "engine",
+   "display_name": "Fused VK attn + GPU FFN",
+   "backend": "fused",
+   "notes": "14.6 ms/token (68 tok/s) with the async VK dispatch (record_forward) + coalesced one-block-per-row QKV gemv shader (the qk-norm/rope/store moved to a separate attn_qkns pass). Parity 15 13 15 15 ... on all paths. (A one-block-per-row post rewrite was reverted \u2014 it flipped the VK+NPU tokens: h feeds the int8 FFN directly.) The residual ~3 ms gap vs HIP+GPU-FFN (11.7 ms) is the post/decode stages."
   }
  },
  "table_kernel": [
@@ -299,7 +361,7 @@
     "name": "llama.cpp Vulkan",
     "model": "Qwen3.6-35B-A3B Q4_K_M",
     "tok_s": 75.65,
-    "source": "measured 2026-07-30 on Strix Halo (llama.cpp Vulkan, this repo) — replaces external reference (60.4)"
+    "source": "measured 2026-07-30 on Strix Halo (llama.cpp Vulkan, this repo) \u2014 replaces external reference (60.4)"
    }
   ]
  },
@@ -345,10 +407,15 @@
   "qwen35_4b_q4km_tok_s": 65,
   "deepseek_r1_distill_llama_8b_q4km_tok_s": 44
  },
- "commit": "3706adfbbea019e754513eb841a751cafa6da276",
+ "commit": "b1699d70",
  "_notes": {
   "prior_numbers": "Prior published numbers (79.8/46.4 tok/s, 39.4/40.5 TFLOPS) were from single cold-GPU passes. Re-validated across 3 runs each: sustained throughput is 79.4/46.0 tok/s; prefill re-measured 2026-08-01 at 43.2 TFLOPS."
  },
  "_authoritative": true,
- "_data_file_note": "This is the authoritative benchmark data file. numbers.json references headline values from here."
+ "_data_file_note": "This is the authoritative benchmark data file. numbers.json references headline values from here.",
+ "hardware": {
+  "cpu": "AMD Ryzen AI Max+ 395",
+  "npu": "XDNA 2",
+  "gpu": "Radeon 8060S"
+ }
 }

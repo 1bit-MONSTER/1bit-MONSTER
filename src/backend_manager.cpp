@@ -5,11 +5,14 @@
 #include "backend_plugin.h"
 #include "backend_detect.h"
 #include "backend.h"
+#include "backend_lse.h"   // create_lse_backend (LSE_GPU factory)
+#include "backend_hrx.h"   // create_hrx_backend (HRX_GPU factory)
 #include "model_router.h"
 #include "dynamic_router.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <print>
 #include <algorithm>
 #include <thread>
 #include <future>
@@ -46,9 +49,9 @@ void BackendManager::discover() {
     std::lock_guard<std::mutex> lock(mtx_);
     backends_.clear();
 
-    printf("\n╔══════════════════════════════════════════╗\n");
-    printf("║   Backend Manager — Hardware Discovery   ║\n");
-    printf("╚══════════════════════════════════════════╝\n\n");
+    std::println("\n╔══════════════════════════════════════════╗");
+    std::println("║   Backend Manager — Hardware Discovery   ║");
+    std::println("╚══════════════════════════════════════════╝\n");
 
     // ── Probe each backend in priority order ──
 
@@ -74,7 +77,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "NPU XDNA (XRT)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "NPU XDNA (XRT)", info.available ? "✅ detected" : "❌ not available");
 
     // 1a5. HIP 1BP GPU — full GPU inference engine for 1BP models.
     // Loads the same 1BP files as NPU, runs on GPU via rocBLAS + custom kernels.
@@ -92,7 +95,7 @@ void BackendManager::discover() {
         info.score = 50.0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "HIP 1BP GPU (rocBLAS)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "HIP 1BP GPU (rocBLAS)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -113,7 +116,7 @@ void BackendManager::discover() {
         info.score = 3.1;  // 321 tok/s = 3.1 ms/tok
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Fused GPU+NPU", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Fused GPU+NPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -131,7 +134,7 @@ void BackendManager::discover() {
         info.score = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Vulkan-Hpp GPU", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Vulkan-Hpp GPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -149,14 +152,14 @@ void BackendManager::discover() {
         info.score = 2.8;  // 357 tok/s = 2.8 ms/tok
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "GGML-Vulkan", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "GGML-Vulkan", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
     // 1b. NPU (FLM) — production FLM engine, MIT licensed, 67.5 tok/s
     // This is the PERMANENT hotpath backend. Highest priority in the system.
     // It is always tried first during init and always selected as active.
-    {        BackendInfo info;        info.id = "npu_flm";        info.type = BackendType::NPU_XRT;        info.tier = BackendTier::T1_ACCELERATOR;        info.description = "AMD XDNA NPU via FLM engine (MIT, 67.5 tok/s)";        info.priority = tier_priority(info.tier) + 100;        info.available = true;        info.functional = false;        info.auto_selectable = true;        info.score = 67.5;        info.total_inferences = 0;        info.failed_inferences = 0;        info.cumulative_ms = 0;        info.instance = nullptr;        info.plugin_handle = nullptr;        printf("  %-25s %s\n", "NPU FLM (MIT)", "✅ available");        backends_.push_back(info);    }
+    {        BackendInfo info;        info.id = "npu_flm";        info.type = BackendType::NPU_XRT;        info.tier = BackendTier::T1_ACCELERATOR;        info.description = "AMD XDNA NPU via FLM engine (MIT, 67.5 tok/s)";        info.priority = tier_priority(info.tier) + 100;        info.available = true;        info.functional = false;        info.auto_selectable = true;        info.score = 67.5;        info.total_inferences = 0;        info.failed_inferences = 0;        info.cumulative_ms = 0;        info.instance = nullptr;        info.plugin_handle = nullptr;        std::println("  {:<25} {}", "NPU FLM (MIT)", "✅ available");        backends_.push_back(info);    }
         backends_.push_back(info);
     }
 
@@ -181,7 +184,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "ZINC GPU (Vulkan)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "ZINC GPU (Vulkan)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -201,7 +204,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "HIP GPU (ROCm)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "HIP GPU (ROCm)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -222,7 +225,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Mamba1 GPU (Mamba1 HIP)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Mamba1 GPU (Mamba1 HIP)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -243,7 +246,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Zamba2 GPU (Mamba2 HIP)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Zamba2 GPU (Mamba2 HIP)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -268,7 +271,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Zamba2 VK (ZINC C++)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Zamba2 VK (ZINC C++)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -290,7 +293,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Nemotron-H CPU", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Nemotron-H CPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -316,7 +319,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Laguna (.1bp)", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Laguna (.1bp)", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -336,7 +339,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "Vulkan GPU", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "Vulkan GPU", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -356,7 +359,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "CPU AVX-512", info.available ? "✅ detected" : "❌ not available");
+        std::println("  {:<25} {}", "CPU AVX-512", info.available ? "✅ detected" : "❌ not available");
         backends_.push_back(info);
     }
 
@@ -376,7 +379,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "CPU (scalar)", "✅ always available");
+        std::println("  {:<25} {}", "CPU (scalar)", "✅ always available");
         backends_.push_back(info);
     }
 
@@ -399,7 +402,7 @@ void BackendManager::discover() {
         info.cumulative_ms = 0;
         info.instance = nullptr;
         info.plugin_handle = nullptr;
-        printf("  %-25s %s\n", "CPU Generic (GGUF)", "✅ always available");
+        std::println("  {:<25} {}", "CPU Generic (GGUF)", "✅ always available");
         backends_.push_back(info);
     }
 
@@ -428,6 +431,52 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
+    // 6c. LSE (Lemon Seed Engine) — text-level MLX lane via lse-server
+    // subprocess (backend_lse.cpp). The router sends ModelFormat::MLX here;
+    // availability is decided at init() by whether an lse-server binary can
+    // be spawned (LSE_SERVER_BIN / PATH), so it is auto_selectable like
+    // npu_flm: init() fails fast when the binary is absent and the loop moves
+    // on (mirrors backend_npu_flm.cpp's guard style).
+    {
+        BackendInfo info;
+        info.id = "lse";
+        info.type = BackendType::LSE_GPU;
+        info.tier = BackendTier::T2_GPU;  // AMD GPU via lse-server (HRX runtime)
+        info.description = "LSE GPU (MLX via lse-server subprocess)";
+        info.priority = tier_priority(info.tier) + 10;
+        info.available = true;
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        std::println("  {:<25} {}", "LSE GPU (MLX)", "✅ registered (lse-server at runtime)");
+        backends_.push_back(info);
+    }
+
+    // HRX GPU — fused GGUF lane on AMD GPU via the bundled HRX llama-server.
+    // Mirrors LSE: availability is decided at init() by whether the HRX
+    // llama-server can be spawned (HRX_ROOT / HRX_MODEL_BIN / PATH). The router
+    // puts hrx_gpu FIRST in the GGUF route; init() fails fast when the binary
+    // is absent or the graph isn't fused (GET_ROWS fail-closed), and the
+    // discovery/init loop cascades to ggml_vulkan → zinc_gpu → cpu_generic.
+    {
+        BackendInfo info;
+        info.id = "hrx_gpu";
+        info.type = BackendType::HRX_GPU;
+        info.tier = BackendTier::T2_GPU;  // AMD GPU via fused HRX llama-server
+        info.description = "HRX GPU (fused GGUF via hrx llama-server subprocess)";
+        info.priority = tier_priority(info.tier) + 62;  // above ggml_vulkan/zinc/HIP
+        info.available = true;
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        std::println("  {:<25} {}", "HRX GPU (fused GGUF)", "✅ registered (hrx llama-server at runtime)");
+        backends_.push_back(info);
+    }
+
     // Rack 'em
     rank_backends();
     active_idx_ = 0;
@@ -447,9 +496,12 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
         return false;
     }
 
-    // Validate model_path exists and is a regular file before passing to backends
-    // (prevents arch-specific backends from crashing when given a directory instead of a file)
-    if (!cfg.model_path.empty()) {
+    // Validate model_path exists and is a regular file before passing to
+    // backends (prevents arch-specific backends from crashing when given a
+    // directory instead of a file). MLX checkpoints are directories
+    // (config.json + model*.safetensors + tokenizer.json) — the model_path IS
+    // the checkpoint dir, so allow it for ModelFormat::MLX.
+    if (!cfg.model_path.empty() && cfg.format != ModelFormat::MLX) {
         struct stat st;
         if (stat(cfg.model_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
             fprintf(stderr, "BackendManager: model_path '%s' is not a regular file — clearing\n", cfg.model_path.c_str());
@@ -473,8 +525,10 @@ bool BackendManager::init(const ModelConfig& cfg, const std::string& weights_dir
         return false;
     }
 
-    // Validate model_path exists and is a regular file before passing to backends
-    if (!cfg.model_path.empty()) {
+    // Validate model_path exists and is a regular file before passing to
+    // backends. MLX checkpoints are directories — allow those (see the
+    // two-arg init() overload above).
+    if (!cfg.model_path.empty() && cfg.format != ModelFormat::MLX) {
         struct stat st;
         if (stat(cfg.model_path.c_str(), &st) != 0 || !S_ISREG(st.st_mode)) {
             fprintf(stderr, "BackendManager: model_path '%s' is not a regular file — clearing\n", cfg.model_path.c_str());
@@ -609,13 +663,28 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             auto* pm = monitor_.for_backend(info.id);
             if (pm) pm->healthy = true;
 
-            // Register with DynamicRouter for per-token routing
+            // Register with DynamicRouter for per-token routing. Only
+            // npu_flm is excluded when outside the loaded model's route: its
+            // init() "succeeds" on any model tag but loads FLM's own q4nx
+            // model, never the requested file — it must never be picked
+            // per-token for a GGUF/1BP model or it generates from the wrong
+            // model (G1a/G1b). Every other initialized backend registers
+            // (format may be UNKNOWN during early init, so route membership
+            // is not a reliable filter for the rest).
             DynamicRouter::Strategy ds = DynamicRouter::Strategy::FASTEST;
             if (info.id.find("npu") != std::string::npos)
                 ds = DynamicRouter::Strategy::NPU_BACKFILL;
             else if (info.id.find("gpu") != std::string::npos || info.id.find("hip") != std::string::npos)
                 ds = DynamicRouter::Strategy::GPU_BACKFILL;
-            router_.add_backend(info.id, info.instance, ds);
+            const BackendRoute route = select_backend_route(cfg_);
+            const bool in_route = std::find(route.backend_ids_in_order.begin(),
+                                            route.backend_ids_in_order.end(),
+                                            info.id) != route.backend_ids_in_order.end();
+            if (info.id == "npu_flm" && !in_route && info.tier != BackendTier::T3_CPU) {
+                printf("  → not registered with per-token router (npu_flm outside model route)\n");
+            } else {
+                router_.add_backend(info.id, info.instance, ds);
+            }
 
             // PILOT for first GPU-tier backend
             if (!pilot_active_ && info.tier <= BackendTier::T2_GPU && raw) {
@@ -768,7 +837,17 @@ int BackendManager::generate(int token_id) {
     // If DynamicRouter has active backends, use it for per-token routing
     auto rt_stats = router_.stats();
     if (!rt_stats.empty()) {
-        return router_.generate(token_id);
+        int r = router_.generate(token_id);
+        if (r >= 0) return r;
+        // Router exhausted: both the primary and the failover candidate failed
+        // (e.g. HRX is the only accelerator and fail-closed at decode, and the
+        // CPU entry could not serve either). Retire the router for this
+        // session and fall through to the manager-level path below, whose
+        // failover() on-demand-inits the next backend in the model route
+        // (GGUF: ggml_vulkan → zinc → cpu) — init policy #1427 keeps only the
+        // top accelerator + CPU live, so without this the request stalls.
+        fprintf(stderr, "BackendManager: router exhausted — switching to manager-level failover\n");
+        router_.clear();
     }
 
     if (!initialized_ || backends_.empty()) return -1;
@@ -890,6 +969,75 @@ int BackendManager::generate(int token_id) {
     return -1;
 }
 
+std::string BackendManager::generate_text(const std::string& prompt, int max_tokens) {
+    // Text-level whole-prompt generation with the same automatic failover as
+    // generate(int). Some backends (HRX, LSE, FLM) are text-level only and
+    // cannot be driven by the token loop; a compute error at generation (e.g.
+    // HRX's GET_ROWS fail-closed) surfaces as an empty return or a throw here.
+    // Cascade to the next backend in the route so the request still completes.
+    if (!initialized_ || backends_.empty()) return "";
+
+    // Router-active backends own text generation themselves (token routing is
+    // a separate path); delegate so we never double-failover.
+    auto rt_stats = router_.stats();
+    if (!rt_stats.empty()) {
+        if (auto* b = active_backend(); b) return b->generate_text(prompt, max_tokens);
+    }
+
+    // Phase 1: snapshot under lock (shared_ptr keeps the Backend alive).
+    std::shared_ptr<Backend> snap;
+    std::shared_ptr<std::mutex> compute_mtx;
+    size_t snap_idx = 0;
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (active_idx_ >= backends_.size()) return "";
+        snap_idx = active_idx_;
+        auto& info = backends_[active_idx_];
+        if (info.functional && info.instance) {
+            snap = info.instance;
+            compute_mtx = info.compute_mtx;
+        }
+    }
+
+    auto try_generate = [&](Backend* b) -> std::string {
+        try {
+            return b->generate_text(prompt, max_tokens);
+        } catch (const std::exception& e) {
+            fprintf(stderr, "BackendManager: %s threw in generate_text() (%s) — failing over\n",
+                    backends_[snap_idx].id.c_str(), e.what());
+            return "";
+        } catch (...) { return ""; }
+    };
+
+    if (snap) {
+        {
+            std::lock_guard<std::mutex> compute_lock(*compute_mtx);
+            std::string text = try_generate(snap.get());
+            if (!text.empty()) return text;
+            // Failed — mark non-functional and fall through to failover.
+            std::lock_guard<std::mutex> lock(mtx_);
+            if (snap_idx < backends_.size()) {
+                backends_[snap_idx].functional = false;
+                monitor_.record_failure(backends_[snap_idx].id, "generate_text() returned empty");
+            }
+        }
+    }
+
+    // Phase 2: failover cascade over the route / priority order.
+    {
+        std::lock_guard<std::mutex> lock(mtx_);
+        if (!failover()) { fprintf(stderr, "BackendManager: text-level failover found no backend\n"); return ""; }
+        std::string text = try_generate(backends_[active_idx_].instance.get());
+        if (!text.empty()) {
+            if (backends_[active_idx_].id != backends_[snap_idx].id)
+                monitor_.record_fallback(backends_[snap_idx].id, backends_[active_idx_].id);
+            return text;
+        }
+        fprintf(stderr, "BackendManager: ALL BACKENDS FAILED (text-level)\n");
+    }
+    return "";
+}
+
 bool BackendManager::forward(int token_id, float* hidden_out) {
     // Route through the DynamicRouter when active, exactly like generate() —
     // the router's backend is the one that processed the prefill, and the
@@ -960,6 +1108,29 @@ FallbackPolicy BackendManager::fallback_policy() const {
     return fallback_policy_;
 }
 
+std::vector<std::string> BackendManager::fallback_order() const {
+    // Model route first (the declared preference order for this model's
+    // format/arch — select_backend_route), then every remaining discovered
+    // backend in registration order as a last resort. Route ids that have no
+    // corresponding backend are dropped; the result covers all of backends_
+    // exactly once.
+    std::vector<std::string> order;
+    std::vector<bool> used(backends_.size(), false);
+    BackendRoute route = select_backend_route(cfg_);
+    for (const auto& id : route.backend_ids_in_order) {
+        for (size_t i = 0; i < backends_.size(); i++) {
+            if (!used[i] && backends_[i].id == id) {
+                order.push_back(id);
+                used[i] = true;
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; i < backends_.size(); i++)
+        if (!used[i]) order.push_back(backends_[i].id);
+    return order;
+}
+
 bool BackendManager::failover() {
     if (fallback_policy_ == FallbackPolicy::NONE) return false;
 
@@ -968,10 +1139,18 @@ bool BackendManager::failover() {
         backends_[active_idx_].functional = false;
     }
 
-    // Try each remaining backend in priority order
-    for (size_t i = 0; i < backends_.size(); i++) {
-        size_t idx = (active_idx_ + 1 + i) % backends_.size();
-        if (idx == active_idx_) continue;
+    // Cascade in model-route order (then registration order): a decode failure
+    // lands on the intended next lane (GGUF: hrx_gpu → ggml_vulkan → zinc_gpu
+    // → cpu_generic), never on a backend discovery happened to register next
+    // (e.g. an NPU lane that would load the wrong model for a GGUF — G1a).
+    const std::string failed_id =
+        (active_idx_ < backends_.size()) ? backends_[active_idx_].id : "";
+    for (const auto& id : fallback_order()) {
+        if (id == failed_id) continue;
+        size_t idx = backends_.size();
+        for (size_t i = 0; i < backends_.size(); i++)
+            if (backends_[i].id == id) { idx = i; break; }
+        if (idx == backends_.size()) continue;
         auto& info = backends_[idx];
         if (!info.available) continue;
 
@@ -1613,6 +1792,30 @@ Backend* BackendManager::create_instance_rt(const BackendInfo& info) {
         case BackendType::CPU_AVX512:
         case BackendType::CPU_SCALAR:
             return create_cpu_backend();
+        case BackendType::LSE_GPU:
+            // LSE backend lives in backend_lse.cpp (UNIFIED_SERVER_SOURCES,
+            // always compiled into onebin; create_lse_backend declared in
+            // backend_lse.h). extern "C" so plugin builds can dlsym it too.
+            b = create_lse_backend();
+            if (b) return b;
+            b = try_load_backend("librocm_cpp.so", "create_lse_backend");
+            if (!b) b = try_load_backend("liblse_backend.so", "create_lse_backend");
+            if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_lse_backend");
+                    if (fn) b = fn(); } }
+            return b;
+        case BackendType::HRX_GPU:
+            // HRX backend lives in backend_hrx.cpp (UNIFIED_SERVER_SOURCES,
+            // always compiled into onebin; create_hrx_backend declared in
+            // backend_hrx.h). extern "C" so plugin builds can dlsym it too.
+            b = create_hrx_backend();
+            if (b) return b;
+            b = try_load_backend("librocm_cpp.so", "create_hrx_backend");
+            if (!b) b = try_load_backend("libhrx_backend.so", "create_hrx_backend");
+            if (!b) { void* self = dlopen(NULL, RTLD_NOW|RTLD_LOCAL);
+                if (self) { auto* fn = (Backend*(*)())dlsym(self, "create_hrx_backend");
+                    if (fn) b = fn(); } }
+            return b;
         case BackendType::GENERIC:
             if (info.id == "laguna_gpu") {
 #ifdef ROCM_CPP_STATIC_HIP

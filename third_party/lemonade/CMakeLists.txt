@@ -5,7 +5,7 @@ if(MSVC)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-project(lemon_cpp VERSION 11.8.0)
+project(lemon_cpp VERSION 11.8.1)
 
 include(CTest)
 
@@ -154,6 +154,7 @@ include(GNUInstallDirs)
 set(LEMON_BACKENDS
     # "<recipe>|<stem>"
     "llamacpp|llamacpp"
+    "llamacpp-hrx|hrx"
     "whispercpp|whispercpp"
     "moonshine|moonshine"
     "kokoro|kokoro"
@@ -460,12 +461,19 @@ if(NOT USE_SYSTEM_HTTPLIB)
         GIT_TAG fe332fa06bac76a1c6d402c08f414052999347da  # v0.47.0
         GIT_SHALLOW TRUE
     )
-    set(HTTPLIB_REQUIRE_OPENSSL OFF CACHE INTERNAL "")
-    set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF CACHE INTERNAL "")
-    set(HTTPLIB_REQUIRE_ZSTD OFF CACHE INTERNAL "")
-    set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF CACHE INTERNAL "")
-    set(HTTPLIB_IS_USING_ZSTD ON CACHE INTERNAL "")
-    set(HTTPLIB_INSTALL OFF CACHE INTERNAL "")
+    # Scope these to lemonade's own httplib subproject: FetchContent
+    # subdirectories inherit normal variables from the caller, so plain set()
+    # is sufficient.  Writing them CACHE INTERNAL leaks into the global CMake
+    # cache and breaks the *root* project's separate cpp_httplib FetchContent
+    # at generate time — "link interface of target httplib contains
+    # zstd::libzstd but the target was not found" on every configure once
+    # lemonade has run (cache INTERNAL vars persist across runs).
+    set(HTTPLIB_REQUIRE_OPENSSL OFF)
+    set(HTTPLIB_USE_OPENSSL_IF_AVAILABLE OFF)
+    set(HTTPLIB_REQUIRE_ZSTD OFF)
+    set(HTTPLIB_USE_ZSTD_IF_AVAILABLE OFF)
+    set(HTTPLIB_IS_USING_ZSTD ON)
+    set(HTTPLIB_INSTALL OFF)
     FetchContent_MakeAvailable(httplib)
     if(NOT USE_SYSTEM_ZSTD)
         target_include_directories(httplib INTERFACE
@@ -2549,6 +2557,12 @@ if(BUILD_TESTING AND EXISTS "${_BACKEND_MODE_CONTRACT_TEST_SRC}")
     add_cpp_ci_test(BackendModeContractTest CI ON COMMAND test_backend_mode_contract)
 endif()
 
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_hrx_contract.cpp")
+    add_executable(test_hrx_contract test/cpp/test_hrx_contract.cpp)
+    target_link_libraries(test_hrx_contract PRIVATE lemonade-server-core)
+    add_cpp_ci_test(HrxContractTest CI ON COMMAND test_hrx_contract)
+endif()
+
 # Job engine pure core: the `when`/`branch` expression evaluator + reference
 # resolution, and step-graph validation (forward-only ⇒ no loops). Header-only,
 # so these link only nlohmann/json.
@@ -3086,6 +3100,13 @@ if(BUILD_TESTING AND EXISTS "${_CLI_RUNTIME_OVERRIDE_TEST_SRC}")
     add_executable(test_cli_runtime_override test/cpp/test_cli_runtime_override.cpp)
     target_link_libraries(test_cli_runtime_override PRIVATE lemonade-server-core)
     add_cpp_ci_test(CliRuntimeOverrideTest CI ON COMMAND test_cli_runtime_override)
+endif()
+
+set(_LOG_ROTATION_TEST_SRC "${CMAKE_CURRENT_SOURCE_DIR}/test/cpp/test_log_rotation.cpp")
+if(BUILD_TESTING AND EXISTS "${_LOG_ROTATION_TEST_SRC}")
+    add_executable(test_log_rotation test/cpp/test_log_rotation.cpp)
+    target_link_libraries(test_log_rotation PRIVATE lemonade-server-core)
+    add_cpp_ci_test(LogRotationTest CI ON COMMAND test_log_rotation)
 endif()
 
 # ROCm root resolution (ROCM_PATH / rocm-sdk / /opt/rocm priority): covers the

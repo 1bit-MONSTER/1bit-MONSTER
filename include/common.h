@@ -20,6 +20,8 @@ enum class BackendType : uint8_t {
     METAL_GPU = 13,   // Apple Metal GPU backend
     VART = 14,        // Vitis AI Runtime (VART) — Versal/Zynq DPU/NPU
     ONNX_NPU = 15,    // ONNX Runtime + VitisAI EP — unified NPU backend
+    LSE_GPU = 16,     // LSE (Lemon Seed Engine) via lse-server subprocess — MLX lane on AMD GPU
+    HRX_GPU = 17,     // HRX (Hip Runtime Extended) via bundled llama-server subprocess — fused GGUF lane on AMD GPU
 };
 
 inline const char* backend_name(BackendType t) {
@@ -38,6 +40,8 @@ inline const char* backend_name(BackendType t) {
         case BackendType::METAL_GPU: return "Metal GPU (Apple)";
         case BackendType::VART: return "VART (Versal/Zynq DPU)";
         case BackendType::ONNX_NPU: return "ONNX NPU (VitisAI EP)";
+        case BackendType::LSE_GPU: return "LSE GPU (MLX via lse-server)";
+        case BackendType::HRX_GPU: return "HRX GPU (fused GGUF via hrx llama-server)";
         default: return "none";
     }
 }
@@ -50,6 +54,7 @@ enum class ModelFormat : uint8_t {
     SAFETENSORS = 4,
     RAW_BIN = 5,
     ONEBP = 6,
+    MLX = 7,        // MLX group-affine safetensors (lemonade/MLX ecosystem) — LSE backend lane
 };
 
 struct ModelConfig {

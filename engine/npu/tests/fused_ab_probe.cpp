@@ -15,21 +15,107 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
+
+// C++26 #embed copies of final_cascade_fused.xclbin + insts_cascade_fused.txt:
+// the probe still takes file paths, but falls back to the baked-in copies
+// when the files are absent — zero runtime files for the silicon recipe.
+#include "npu_embedded.h"
 static constexpr int M=8,K=2048,N_GU=4096,m=8,k=64,n=128;
 static constexpr int n_k=K/k, n_cg_gu=N_GU/n/8;          // 32, 4
 static constexpr int AB_tile=m*k+k*n;                     // 8704
 static constexpr long AB_BYTES=(long)8*n_cg_gu*n_k*AB_tile; // 8.9 MB
 static constexpr long EXPECT=127L*K;                      // 260096
+
+// Load insts words: file first, embedded #embed fallback.
+static bool load_insts(const char* path, std::vector<uint32_t>& ins) {
+    FILE* f = fopen(path, "rb");
+    if (f) {
+        fseek(f, 0, SEEK_END); long sz = ftell(f); fseek(f, 0, SEEK_SET);
+        ins.resize((size_t)sz / 4);
+        if (fread(ins.data(), 4, ins.size(), f) != ins.size()) { fclose(f); return false; }
+        fclose(f);
+        return true;
+    }
+#ifdef NPU_EMBED_CASCADE_INSTS
+    fprintf(stderr, "note: %s missing — using embedded insts_cascade_fused.txt (#embed)\n", path);
+    static_assert(NPU_EMBED_CASCADE_INSTS_SIZE % 4 == 0,
+                  "embedded insts must be a multiple of 4 bytes");
+    ins.resize(NPU_EMBED_CASCADE_INSTS_SIZE / 4);
+    memcpy(ins.data(), kCascadeInsts, NPU_EMBED_CASCADE_INSTS_SIZE);
+    return true;
+#else
+    return false;
+#endif
+}
+
+// Load xclbin bytes: file first, embedded #embed fallback.
+static bool load_xclbin(const char* path, std::vector<char>& xbuf) {
+    FILE* xf = fopen(path, "rb");
+    if (xf) {
+        fseek(xf, 0, SEEK_END); long xsz = ftell(xf); fseek(xf, 0, SEEK_SET);
+        xbuf.resize((size_t)xsz);
+        if (fread(xbuf.data(), 1, xbuf.size(), xf) != xbuf.size()) { fclose(xf); return false; }
+        fclose(xf);
+        return true;
+    }
+#ifdef NPU_EMBED_CASCADE_XCLBIN
+    fprintf(stderr, "note: %s missing — using embedded final_cascade_fused.xclbin (#embed)\n", path);
+    xbuf.assign(kCascadeXclbin, kCascadeXclbin + NPU_EMBED_CASCADE_XCLBIN_SIZE);
+    return true;
+#else
+    return false;
+#endif
+}
+
 int main(int ac,char**av){
+  if(ac<2){printf("usage: %s <xclbin> <insts.txt> <N_D> [expect]\n",av[0]);return 2;}
+  // --embed-dump: extract the baked-in #embed copies back out to disk (no NPU
+  // needed). Useful for recovering the exact artifacts this probe was built
+  // against, or for testing the embed payload standalone.
+  if(ac>=3 && strcmp(av[1],"--embed-dump")==0){
+    const char* outdir=av[2];
+    int n=0;
+#ifdef NPU_EMBED_ATTN_XCLBIN
+    { char p[512]; snprintf(p,sizeof p,"%s/attn.xclbin",outdir);
+      FILE* o=fopen(p,"wb"); if(!o){fprintf(stderr,"cannot write %s\n",p);return 2;}
+      fwrite(kAttnXclbin,1,NPU_EMBED_ATTN_XCLBIN_SIZE,o); fclose(o);
+      printf("dumped %s (%zu B)\n",p,NPU_EMBED_ATTN_XCLBIN_SIZE); n++; }
+#endif
+#ifdef NPU_EMBED_ATTN_INSTS
+    { char p[512]; snprintf(p,sizeof p,"%s/attn_insts.txt",outdir);
+      FILE* o=fopen(p,"wb"); if(!o){fprintf(stderr,"cannot write %s\n",p);return 2;}
+      fwrite(kAttnInsts,1,NPU_EMBED_ATTN_INSTS_SIZE,o); fclose(o);
+      printf("dumped %s (%zu B)\n",p,NPU_EMBED_ATTN_INSTS_SIZE); n++; }
+#endif
+#ifdef NPU_EMBED_CASCADE_XCLBIN
+    { char p[512]; snprintf(p,sizeof p,"%s/final_cascade_fused.xclbin",outdir);
+      FILE* o=fopen(p,"wb"); if(!o){fprintf(stderr,"cannot write %s\n",p);return 2;}
+      fwrite(kCascadeXclbin,1,NPU_EMBED_CASCADE_XCLBIN_SIZE,o); fclose(o);
+      printf("dumped %s (%zu B)\n",p,NPU_EMBED_CASCADE_XCLBIN_SIZE); n++; }
+#endif
+#ifdef NPU_EMBED_CASCADE_INSTS
+    { char p[512]; snprintf(p,sizeof p,"%s/insts_cascade_fused.txt",outdir);
+      FILE* o=fopen(p,"wb"); if(!o){fprintf(stderr,"cannot write %s\n",p);return 2;}
+      fwrite(kCascadeInsts,1,NPU_EMBED_CASCADE_INSTS_SIZE,o); fclose(o);
+      printf("dumped %s (%zu B)\n",p,NPU_EMBED_CASCADE_INSTS_SIZE); n++; }
+#endif
+    printf("--embed-dump: %d resource(s) written to %s\n",n,outdir);
+    return n>0?0:1;
+  }
   if(ac<4){printf("usage: %s <xclbin> <insts.txt> <N_D> [expect]\n",av[0]);return 2;}
   const char*xc=av[1],*insts=av[2];
   const int N_D=atoi(av[3]);
   const int C2_ELEMS=M*N_D;
   long expect=EXPECT; if(ac>4) expect=atol(av[4]);
-  FILE*f=fopen(insts,"rb"); fseek(f,0,SEEK_END); long sz=ftell(f); fseek(f,0,SEEK_SET);
-  std::vector<uint32_t> ins(sz/4); fread(ins.data(),4,ins.size(),f); fclose(f);
-  FILE*xf=fopen(xc,"rb"); fseek(xf,0,SEEK_END); long xsz=ftell(xf); fseek(xf,0,SEEK_SET);
-  std::vector<char>xbuf(xsz); fread(xbuf.data(),1,xsz,xf); fclose(xf);
+  std::vector<uint32_t> ins;
+  if(!load_insts(insts,ins)){fprintf(stderr,"fused_ab_probe: cannot load insts (%s)\n",insts);return 2;}
+  std::vector<char>xbuf;
+  if(!load_xclbin(xc,xbuf)){fprintf(stderr,"fused_ab_probe: cannot load xclbin (%s)\n",xc);return 2;}
+#ifdef NPU_EMBED_CASCADE_XCLBIN
+  if (npu_embedded_stale(xc, kCascadeXclbin, NPU_EMBED_CASCADE_XCLBIN_SIZE))
+      fprintf(stderr, "WARN: %s differs from the embedded copy — artifact regenerated "
+                      "after this probe was built; rebuild to refresh the embed\n", xc);
+#endif
   xrt::device dev(0); xrt::xclbin x{xbuf}; dev.register_xclbin(x);
   xrt::hw_context hw(dev,x.get_uuid()); xrt::kernel k(hw,"MLIR_AIE");
   auto bI=xrt::bo(dev,ins.size()*4,XCL_BO_FLAGS_CACHEABLE,k.group_id(1));

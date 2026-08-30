@@ -46,6 +46,14 @@ struct Backend {
     /// token_id = input token, hidden_out[hidden] = output hidden state
     virtual bool forward(int token_id, float* hidden_out) = 0;
 
+    /// Multi-sequence batch decode: advance `am` sequences one token each.
+    /// token_ids[am], hidden_out[am, hidden].  Default: unsupported (sequential
+    /// callers use generate() per slot).  The fused backend batches the NPU
+    /// FFN across all rows (B weight DMA read once) — see FusedBackend.
+    virtual bool forward_batch(int* /*token_ids*/, float* /*hidden_out*/, int /*am*/) {
+        return false;
+    }
+
     /// Run one step with a precomputed embedding vector (size cfg.hidden)
     /// instead of a token_embd lookup — the splice point for multimodal
     /// inputs (e.g. a vision encoder's projected patch embeddings) at
@@ -60,6 +68,13 @@ struct Backend {
 
     /// Compute lm_head: logits[vocab] = hidden[hidden] @ embed[vocab×hidden]^T
     virtual bool lm_head(const float* hidden, float* logits, int* argmax) = 0;
+
+    /// Batched lm_head: logits[am, vocab] = hidden[am, hidden] @ W^T with W
+    /// (vocab×hidden) read ONCE for all am rows.  Default: unsupported.
+    virtual bool lm_head_batch(const float* /*hidden*/, float* /*logits*/,
+                               int* /*argmaxs*/, int /*am*/) {
+        return false;
+    }
 
     /// Generate one token (forward + lm_head in one call).
     /// Returns the predicted token ID, -1 on error.

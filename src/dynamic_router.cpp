@@ -127,14 +127,75 @@ DynamicRouter::BackendEntry* DynamicRouter::pick_backend() {
     }
 }
 
+DynamicRouter::BackendEntry* DynamicRouter::pick_backend_excluding(const std::string& exclude_id) {
+    if (entries_.empty()) return nullptr;
+    if (entries_.size() == 1)
+        return (entries_[0].id == exclude_id) ? nullptr : &entries_[0];
+
+    // Same strategy, but never return the excluded (just-failed) backend.
+    switch (strategy_) {
+        case Strategy::GPU_ONLY:
+            for (auto& e : entries_)
+                if ((e.id == "hip_gpu" || e.id == "zinc_gpu") && e.id != exclude_id) return &e;
+            break;
+        case Strategy::NPU_ONLY:
+            for (auto& e : entries_)
+                if ((e.id == "npu_flm" || e.id == "npu_xrt") && e.id != exclude_id) return &e;
+            break;
+        case Strategy::GPU_BACKFILL: {
+            int cycle = round_robin_counter_++ % 5;
+            if (cycle < 4) {
+                for (auto& e : entries_)
+                    if ((e.id.find("gpu") != std::string::npos || e.id.find("hip") != std::string::npos) && e.id != exclude_id) return &e;
+            } else {
+                for (auto& e : entries_)
+                    if (e.id.find("npu") != std::string::npos && e.id != exclude_id) return &e;
+            }
+            break;
+        }
+        case Strategy::NPU_BACKFILL: {
+            int cycle = round_robin_counter_++ % 5;
+            if (cycle < 4) {
+                for (auto& e : entries_)
+                    if (e.id.find("npu") != std::string::npos && e.id != exclude_id) return &e;
+            } else {
+                for (auto& e : entries_)
+                    if ((e.id.find("gpu") != std::string::npos || e.id.find("hip") != std::string::npos) && e.id != exclude_id) return &e;
+            }
+            break;
+        }
+        case Strategy::FASTEST:
+        default: {
+            BackendEntry* best = nullptr;
+            double best_avg = 1e30;
+            for (auto& e : entries_) {
+                if (!e.stats.alive || !e.backend || e.id == exclude_id) continue;
+                double avg = window_avg(&e);
+                if (avg < best_avg) { best_avg = avg; best = &e; }
+            }
+            if (best) return best;
+            for (auto& e : entries_)
+                if (e.stats.alive && e.backend && e.id != exclude_id) return &e;
+            break;
+        }
+    }
+    // If only the excluded backend remains, return it last-chance (caller
+    // aborts if it still fails) rather than nullptr-ing spurious failures.
+    return entries_.empty() ? nullptr : &entries_[0];
+}
+
 // ── Inference ──
 int DynamicRouter::generate(int token_id) {
+    return generate_with_failover(token_id, 0);
+}
+
+int DynamicRouter::generate_with_failover(int token_id, int depth) {
     std::shared_ptr<Backend> backend;
     std::shared_ptr<std::mutex> compute_mtx;
     std::string id;
     {
         std::lock_guard<std::mutex> lock(mtx_);
-        BackendEntry* entry = pick_backend();
+        BackendEntry* entry = (depth == 0) ? pick_backend() : pick_backend_excluding(last_failed_id_);
         if (!entry || !entry->backend) return -1;
         backend = entry->backend;            // snapshot to keep alive outside lock
         compute_mtx = entry->compute_mtx;    // #1345: serialize per backend instance
@@ -143,7 +204,16 @@ int DynamicRouter::generate(int token_id) {
 
     std::lock_guard<std::mutex> compute_lock(*compute_mtx);
     auto t0 = std::chrono::steady_clock::now();
-    int result = backend->generate(token_id);  // fixes #1315: no router lock held during inference
+    int result = -1;
+    try {
+        result = backend->generate(token_id);  // fixes #1315: no router lock held during inference
+    } catch (const std::exception& e) {
+        fprintf(stderr, "[router] backend %s threw in generate() (%s) — failing over\n", id.c_str(), e.what());
+        result = -1;
+    } catch (...) {
+        fprintf(stderr, "[router] backend %s threw an unknown exception in generate() — failing over\n", id.c_str());
+        result = -1;
+    }
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
 
@@ -155,6 +225,17 @@ int DynamicRouter::generate(int token_id) {
         for (auto& e : entries_) {
             if (e.id == id) { record_latency(&e, ms, result >= 0); break; }
         }
+    }
+
+    // Decode-time failover: a backend whose generate() fails (e.g. HRX
+    // GET_ROWS fail-closed, or HIP/DynamicRouter incompatibility) must not
+    // stall the request. Retry once with a different backend, then give up.
+    if (result < 0 && depth == 0 && entries_.size() > 1) {
+        last_failed_id_ = id;
+        fprintf(stderr, "[router] backend %s failed at decode — retrying on a different backend\n", id.c_str());
+        int retry = generate_with_failover(token_id, 1);
+        last_failed_id_.clear();
+        return retry;
     }
     return result;
 }

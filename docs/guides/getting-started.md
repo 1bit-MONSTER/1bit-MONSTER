@@ -25,7 +25,7 @@ Max+ 395) with ROCm GPU acceleration.
 > and warns. Check yours with `uname -r` before running GPU inference.
 | **CMake**     | ≥ 3.28                                                            |
 | **Ninja**     | ≥ 1.12                                                            |
-| **Compiler**  | GCC ≥ 13 (C++17) + ROCm's `amdclang++` for HIP                    |
+| **Compiler**  | GCC ≥ 15 (C++26) + ROCm's `amdclang++` for HIP              |
 | **Git**       | —                                                                 |
 
 ---

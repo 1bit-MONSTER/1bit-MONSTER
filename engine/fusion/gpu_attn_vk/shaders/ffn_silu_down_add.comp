@@ -1,0 +1,48 @@
+// ffn_silu_down_add.comp — fused ffn_silu + ffn_down + ffn_add.  The down
+// gemv computes silu inline (same expression as ffn_silu.comp:
+// (g/(1+exp(-g)))*u) and does NOT modify go in place — no other stage reads
+// go afterwards.  Accumulation order identical to ffn_down.comp (k = tid).
+// The residual add (ffn_add.comp: pages = res + d) is folded in: each block
+// owns its row's down value AND the add, so the per-row add is independent —
+// pages[row] = res[row] + d[row].  Saves two dispatches/layer.
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer GuOut { float go[]; };  // [2*IM] raw gate/up
+layout(set = 0, binding = 1, std430) buffer W3    { float w3[]; };  // [NC][H][IM]
+layout(set = 0, binding = 2, std430) buffer Down  { float d[]; };   // [H]
+layout(set = 0, binding = 3, std430) buffer Res   { float res[]; }; // [H] pre-FFN residual
+layout(set = 0, binding = 4, std430) buffer Pages { float h[]; };   // NPU pages [H]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+shared float sdata[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    if (row >= uint(pc.H)) return;
+    uint woff = uint(pc.layer) * uint(pc.H) * uint(pc.IM);
+    uint im = uint(pc.IM);
+    float acc = 0.0;
+    for (int k = int(tid); k < pc.IM; k += 256) {
+        float g = go[uint(k)], u = go[im + uint(k)];
+        float s = (g / (1.0 + exp(-g))) * u;
+        acc += s * w3[woff + row * im + uint(k)];
+    }
+    sdata[tid] = acc;
+    barrier();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (tid < uint(s)) sdata[tid] += sdata[tid + uint(s)];
+        barrier();
+    }
+    if (tid == 0u) {
+        float down = sdata[0];
+        d[row] = down;
+        h[row] = res[row] + down;   // ffn_add folded in (row-independent)
+    }
+}

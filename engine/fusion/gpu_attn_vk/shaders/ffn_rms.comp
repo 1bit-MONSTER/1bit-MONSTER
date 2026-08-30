@@ -1,0 +1,37 @@
+// ffn_rms.comp — FFN input RMSNorm in place on the pages, with the residual
+// saved to a scratch buffer first (mirrors the fused backend's GPU FFN:
+//   res = h; h = rmsnorm(h, pon); ...; h = res + down
+// The residual lands in the hn_ scratch (free during the FFN).
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer Pages { float h[]; };    // [H]
+layout(set = 0, binding = 1, std430) buffer Pon   { float pon[]; };  // [NC][H]
+layout(set = 0, binding = 2, std430) buffer Res   { float res[]; };  // [H]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+shared float sdata[256];
+
+void main() {
+    uint tid = gl_LocalInvocationID.x;
+    int H = pc.H;
+    float local = 0.0;
+    for (int i = int(tid); i < H; i += 256) {
+        res[i] = h[i];                 // save residual
+        local += h[i] * h[i];
+    }
+    sdata[tid] = local;
+    barrier();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (tid < uint(s)) sdata[tid] += sdata[tid + uint(s)];
+        barrier();
+    }
+    float inv = inversesqrt(sdata[0] / float(H) + pc.eps);
+    uint poff = uint(pc.layer) * uint(H);
+    for (int i = int(tid); i < H; i += 256) h[i] = h[i] * inv * pon[poff + uint(i)];
+}

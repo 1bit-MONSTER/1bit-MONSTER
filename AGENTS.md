@@ -1,7 +1,7 @@
 <!-- gitnexus:start -->
 # GitNexus — Code Intelligence
 
-This project is indexed by GitNexus as **1bit-MONSTER** (27073 symbols, 52783 relationships, 222 execution flows).
+This project is indexed by GitNexus as **1bit-MONSTER** (27258 symbols, 53263 relationships, 219 execution flows).
 
 > Index stale? Run `node .gitnexus/run.cjs analyze --index-only` from the project root — it auto-selects an available runner. No `.gitnexus/run.cjs` yet? Bootstrap with `npx`, `bunx`, or `pnpm dlx` — e.g. `bunx gitnexus@latest analyze` (npm 11 npx crash; #1939).
 
@@ -43,6 +43,25 @@ This project is indexed by GitNexus as **1bit-MONSTER** (27073 symbols, 52783 re
 | Index, status, clean, wiki CLI commands | `.claude/skills/gitnexus-cli/SKILL.md` |
 
 <!-- gitnexus:end -->
+## Project Rules — TheRock toolchain only
+
+- **We never use ROCm 7.2.4.** The only supported ROCm-compatible toolchain is
+  TheRock (github.com/ROCm/TheRock — TheRock 10.x and newer, incl. the 10.1.0a
+  nightly at `/opt/rocm-therock` on the dev boxes). Do not write docs, configs,
+  or build instructions that present ROCm 7.2.4 as the used stack. Older copies
+  of the zero-copy notes did, and the "7.2.4" figure was a stale attribution;
+  historical benchmark A/B records (ollama-bundled 7.2.4) may stay as history,
+  but the toolchain for any current build/run is TheRock.
+- Toolchain facts (compile-checked 2026-08-29 on the installed TheRock HIP
+  7.16): `hipExternalMemoryHandleTypeDmaBuf` does NOT exist — the
+  `hipExternalMemoryHandleType` enum is OpaqueFd/OpaqueWin32*/D3D*/NvSciBuf
+  only, and `hipMemAllocationHandleType` (mem-pool sharing) has no dma-buf
+  value either. So importing an external dma-buf fd into HIP is impossible; the
+  GPU import route for NPU SharedBO pages is Vulkan (`VK_KHR_external_memory_fd`
+  + `VK_EXT_external_memory_dma_buf`). The only dma-buf HIP API present is the
+  export-only `hipMemGetHandleForAddressRange(... hipMemRangeHandleTypeDmaBufFd)`.
+
+
 
 ## Project Rules — lemonade is LOCAL-ONLY
 

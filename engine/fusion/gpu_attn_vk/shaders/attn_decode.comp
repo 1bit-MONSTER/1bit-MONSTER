@@ -1,0 +1,100 @@
+// attn_decode.comp — causal decode attention over the FP16 KV caches.
+// One block per Q head; GQA: kv_head = h / (NH/NKV).  Two-pass softmax over
+// positions [0, pos] (causal), scale = 1/sqrt(HD).  Mirrors the fused
+// backend's flash decode (f16 KV — same math, same quantization).
+//
+// Thread-parallel: 256 threads cooperate per head.  Scores d[s] = q·k_s are
+// computed ONCE into shared memory (grid-stride over positions), max and sum
+// are tree-reduced, and the output V-weighted sum is parallel over the hd
+// outputs.  (The previous version recomputed the dot product three times and
+// ran the whole serial loop in every thread — measured 2.7 ms/layer vs
+// 37–124 us for the other stages; this rewrite targets ~tens of us.)
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer QBuf { float q[]; };    // [NH*HD]
+layout(set = 0, binding = 1, std430) buffer KBuf { uint kc[]; };    // [NKV*max_seq*HD] f16 bits
+layout(set = 0, binding = 2, std430) buffer VBuf { uint vc[]; };    // [NKV*max_seq*HD] f16 bits
+layout(set = 0, binding = 3, std430) buffer OBuf { float o[]; };    // [NH*HD]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+// Max positions this build can attend over.  Must be >= max_seq of any model
+// served (2048 for Qwen3-0.6B; 8k shared floats = 32 KiB is the default
+// shared-memory cap, so this is the ceiling).  Longer contexts fail closed.
+#define MAXP 4096
+shared float scr[MAXP];      // d[s] = q_h · k_s (pre-scale)
+shared float wts[MAXP];      // exp(d[s]*scale - max)
+shared float red[256];       // tree-reduction scratch (max then sum)
+
+// FP16 bits -> FP32 (exact hardware conversion).
+// unpackHalf2x16 reads the low 16 bits as the first f16.
+float f16tof(uint x) {
+    return unpackHalf2x16(x & 0xFFFFu).x;
+}
+
+void main() {
+    uint h = gl_GlobalInvocationID.x / 256;
+    if (h >= uint(pc.NH)) return;
+    uint kvh = h * uint(pc.NKV) / uint(pc.NH);
+    uint tid = gl_LocalInvocationID.x;
+    uint hd = uint(pc.HD);
+    float scl = 1.0 / sqrt(float(pc.HD));
+    int P = pc.pos + 1;
+    if (P > MAXP) return;   // context too long for the shared budget
+    // KV caches are indexed [layer][pos][NKV][HD] — the layer term must be
+    // added so multi-layer runs read THIS layer's keys/values.
+    uint lay = uint(pc.layer) * uint(pc.max_seq) * uint(pc.NKV) * hd;
+
+    // 1) scores: d[s] = q_h · k_s, computed once, parallel over positions.
+    for (int s = int(tid); s < P; s += 256) {
+        float d = 0.0;
+        uint base = lay + (uint(s) * uint(pc.NKV) + kvh) * hd;
+        for (uint i = 0; i < hd; i++)
+            d += q[h * hd + i] * f16tof(kc[base + i]);
+        scr[s] = d;
+    }
+    barrier();
+
+    // 2) max over [0, P) of the SCALED scores (must match the softmax
+    //    exponent exactly, or exp() underflows to 0 for every term and the
+    //    normalization divides by zero): per-thread local max, tree-reduced.
+    float lmx = -1e30;
+    for (int s = int(tid); s < P; s += 256) lmx = max(lmx, scr[s] * scl);
+    red[tid] = lmx;
+    barrier();
+    for (int s2 = 128; s2 > 0; s2 >>= 1) {
+        if (tid < uint(s2)) red[tid] = max(red[tid], red[tid + uint(s2)]);
+        barrier();
+    }
+    float mx = red[0];
+
+    // 3) softmax numerator + weights, parallel over positions.
+    float lsum = 0.0;
+    for (int s = int(tid); s < P; s += 256) {
+        float w = exp(scr[s] * scl - mx);
+        wts[s] = w;
+        lsum += w;
+    }
+    red[tid] = lsum;
+    barrier();
+    for (int s2 = 128; s2 > 0; s2 >>= 1) {
+        if (tid < uint(s2)) red[tid] += red[tid + uint(s2)];
+        barrier();
+    }
+    float inv_sum = 1.0 / red[0];
+
+    // 4) weighted sum of V, parallel over the hd outputs.
+    for (uint i = tid; i < hd; i += 256) {
+        float acc = 0.0;
+        uint base = lay + kvh * hd + i;   // v[s][i]: stride NKV*hd per position
+        for (int s = 0; s < P; s++) {
+            acc += wts[s] * f16tof(vc[base + uint(s) * uint(pc.NKV) * hd]);
+        }
+        o[h * hd + i] = acc * inv_sum;
+    }
+}

@@ -1,0 +1,63 @@
+// attn_qkv.comp — Q/K/V GEMVs from the RMSNorm'd hidden state (GEMV ONLY;
+// the per-head QK-norm/RoPE/KV-store now live in attn_qkns.comp).
+//
+// ONE BLOCK PER OUTPUT ROW, 256 threads reading k = tid (contiguous 1 KB per
+// load round — fully coalesced; the old one-block-per-head 2-lane/row pattern
+// read each thread's element from a DIFFERENT row (stride H apart) and capped
+// at ~69 GB/s).  Rows: [0, NH*HD) = Q, [NH*HD, +NKV*HD) = K, then V.
+// Mirrors the fused backend's gemv: y[o] = sum_k x[k]*W[o*H+k].
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0, std430) buffer HNorm { float hn[]; };  // [H]
+layout(set = 0, binding = 1, std430) buffer QOut  { float q[]; };   // [NH*HD]
+layout(set = 0, binding = 2, std430) buffer KOut  { float k[]; };   // [NKV*HD]
+layout(set = 0, binding = 3, std430) buffer VOut  { float v[]; };   // [NKV*HD]
+layout(set = 0, binding = 4, std430) buffer Wq    { float wq[]; };  // [NH*HD][H]
+layout(set = 0, binding = 5, std430) buffer Wk    { float wk[]; };  // [NKV*HD][H]
+layout(set = 0, binding = 6, std430) buffer Wv    { float wv[]; };  // [NKV*HD][H]
+
+layout(push_constant) uniform PC {
+    int  H; int NH; int NKV; int HD; int IM;
+    int  pos; int layer; int max_seq;
+    float eps; float rope_theta; float scale;
+} pc;
+
+shared float sdata[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;   // one block per output row
+    uint tid = gl_LocalInvocationID.x;
+    uint nq = uint(pc.NH) * uint(pc.HD);
+    uint nkv = uint(pc.NKV) * uint(pc.HD);
+    uint rows = nq + 2u * nkv;
+    if (row >= rows) return;
+
+    float acc = 0.0;
+    if (row < nq) {
+        uint off = uint(pc.layer) * nq * uint(pc.H);       // [layer][row][H]
+        for (int k = int(tid); k < pc.H; k += 256)
+            acc += hn[k] * wq[off + row * uint(pc.H) + uint(k)];
+    } else if (row < nq + nkv) {
+        uint kr = row - nq;
+        uint off = uint(pc.layer) * nkv * uint(pc.H);
+        for (int k = int(tid); k < pc.H; k += 256)
+            acc += hn[k] * wk[off + kr * uint(pc.H) + uint(k)];
+    } else {
+        uint vr = row - nq - nkv;
+        uint off = uint(pc.layer) * nkv * uint(pc.H);
+        for (int k = int(tid); k < pc.H; k += 256)
+            acc += hn[k] * wv[off + vr * uint(pc.H) + uint(k)];
+    }
+    sdata[tid] = acc;
+    barrier();
+    for (int s = 128; s > 0; s >>= 1) {
+        if (tid < uint(s)) sdata[tid] += sdata[tid + uint(s)];
+        barrier();
+    }
+    if (tid == 0u) {
+        if (row < nq) q[row] = sdata[0];
+        else if (row < nq + nkv) k[row - nq] = sdata[0];
+        else v[row - nq - nkv] = sdata[0];
+    }
+}

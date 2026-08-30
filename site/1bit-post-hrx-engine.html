@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <title>HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER</title>
+  <meta name="description" content="HRX (AMD's IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen'd bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="HRX: we put AMD's experimental IREE runtime inside our engine" />
+  <meta property="og:description" content="HRX (AMD's IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen'd bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-hrx-engine.html" />
+  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="HRX: we put AMD's experimental IREE runtime inside our engine" />
+  <meta name="twitter:description" content="HRX (AMD's IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen'd bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine." />
+  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-hrx-engine.html" />
+<style>
+    /* ─── tokens ─────────────────────────────────────────────────────────
+       Bound verbatim to the locked light modern-minimal + 1-bit identity. */
+    :root {
+      --bg:      oklch(99% 0.002 240);
+      --surface: oklch(100% 0 0);
+      --fg:      oklch(18% 0.012 250);
+      --muted:   oklch(54% 0.012 250);
+      --border:  oklch(92% 0.005 250);
+      --accent:  oklch(58% 0.18 255);
+      --status:  oklch(52% 0.14 158);
+
+      --accent-soft:   color-mix(in oklch, var(--accent) 12%, transparent);
+      --fg-soft:       color-mix(in oklch, var(--fg) 5%, transparent);
+      --muted-strong:  color-mix(in oklch, var(--muted) 76%, var(--fg));
+      --hairblock:     color-mix(in oklch, var(--fg) 7%, transparent);
+
+      --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+      --font-body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      --font-mono:    ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+
+      --fs-h1: clamp(38px, 5vw, 64px);
+      --fs-h2: clamp(26px, 3vw, 34px);
+      --fs-lead: 19px;
+      --fs-body: 17px;
+      --fs-meta: 13px;
+      --radius: 10px;
+      --radius-lg: 16px;
+      --gap-sm: 12px; --gap-md: 20px; --gap-lg: 32px; --gap-xl: 48px; --gap-2xl: 80px;
+      --container: 760px; --gutter: 32px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.7; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+    a { color: inherit; text-decoration: none; }
+    p { text-wrap: pretty; }
+    h1, h2, h3, h4 { text-wrap: balance; }
+    ::selection { background: var(--accent-soft); color: var(--fg); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
+    .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+
+    .topnav { position: sticky; top: 0; z-index: 10; background: color-mix(in oklch, var(--bg) 92%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
+    .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 14px; }
+    .topnav .logo { display: inline-flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+    .topnav .logo svg { width: 26px; height: 26px; color: var(--fg); }
+    /* header logo: 1bit relay mark - one block solid at a time, slow */
+    .topnav .logo .relay { fill: var(--surface); stroke: currentColor; stroke-opacity: 0.28; animation: logo-relay 80s ease-in-out infinite; }
+    .topnav .logo .r1 { animation-delay: 0s; }
+    .topnav .logo .r2 { animation-delay: 20s; }
+    .topnav .logo .r3 { animation-delay: 40s; }
+    .topnav .logo .r4 { animation-delay: 60s; }
+    @keyframes logo-relay {
+      0%       { fill: var(--surface); }
+      13%      { fill: var(--fg); }
+      14%      { fill: var(--fg); }
+      25%      { fill: var(--surface); }
+      100%     { fill: var(--surface); }
+    }
+    @media (prefers-reduced-motion: reduce) { .topnav .logo .relay { animation: none; } .topnav .logo .r1 { fill: var(--fg); } }
+
+    .topnav nav { display: flex; gap: var(--gap-lg); }
+    .topnav nav a { font-size: 14px; color: var(--muted-strong); }
+    .topnav nav a:hover { color: var(--fg); }
+    .topnav nav a[aria-current="page"] { color: var(--fg); font-weight: 500; }
+    .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
+    .pagefoot .place { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-lg) auto 0; }
+    .pagefoot .quote { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-sm) auto 0; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: var(--radius); border: 1px solid transparent; font-size: 14px; font-weight: 500; letter-spacing: -0.005em; transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+    .btn-ghost { background: transparent; color: var(--fg); padding-inline: 8px; }
+    .btn-ghost:hover { color: var(--accent); }
+
+    .art { padding-block: clamp(48px, 7vw, 96px) clamp(40px, 6vw, 72px); }
+    .art .back { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted-strong); display: inline-flex; gap: 6px; margin-bottom: var(--gap-lg); }
+    .art .back a:hover { color: var(--fg); }
+    .art-meta { display: flex; flex-wrap: wrap; gap: var(--gap-md); align-items: center; margin-bottom: var(--gap-md); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em; color: var(--muted-strong); }
+    .art-meta .tag { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; }
+    .art-meta .tag.corr { border-color: color-mix(in oklch, var(--accent) 40%, transparent); border-style: dashed; color: color-mix(in oklch, var(--muted) 62%, var(--fg)); }
+    .art h1 { font-family: var(--font-display); font-size: var(--fs-h1); line-height: 1.08; letter-spacing: -0.02em; font-weight: 600; margin: 0 0 var(--gap-md); }
+    .art .lead { font-size: var(--fs-lead); line-height: 1.6; color: var(--muted-strong); max-width: 64ch; margin: 0 0 var(--gap-2xl); }
+
+    .prose h2 { font-family: var(--font-display); font-size: var(--fs-h2); line-height: 1.16; letter-spacing: -0.015em; font-weight: 600; margin: var(--gap-2xl) 0 var(--gap-md); }
+    .prose p { margin: 0 0 var(--gap-md); }
+    .prose b { font-weight: 600; }
+    .prose .mono { font-family: var(--font-mono); font-size: 0.92em; }
+    .prose code { font-family: var(--font-mono); font-size: 0.9em; background: var(--hairblock); padding: 2px 6px; border-radius: 4px; }
+    .prose pre { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; overflow-x: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.85; margin: 0 0 var(--gap-lg); }
+    .prose table { width: 100%; border-collapse: collapse; margin: 0 0 var(--gap-lg); font-size: 15px; }
+    .prose th, .prose td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+    .prose th { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-strong); font-weight: 500; }
+    .prose td { font-family: var(--font-mono); font-size: 14px; }
+    .prose .callout { border-left: 1px solid var(--accent); padding: 4px 0 4px var(--gap-lg); margin: 0 0 var(--gap-lg); }
+    @media (max-width: 720px) {
+      .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+    }
+  </style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER", "description": "HRX (AMD's IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen'd bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine.", "url": "https://1bit.monster/1bit-post-hrx-engine.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-hrx-engine.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-29", "dateModified": "2026-08-29", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner" style="max-width: 1000px;">
+      <a href="index.html" class="logo">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect class="relay r1" x="2" y="2" width="9" height="9" rx="2"/><rect class="relay r2" x="13" y="2" width="9" height="9" rx="2"/><rect class="relay r3" x="2" y="13" width="9" height="9" rx="2"/><rect class="relay r4" x="13" y="13" width="9" height="9" rx="2"/>
+        </svg>
+        <span>1bit.MONSTER</span>
+      </a>
+      <nav>
+        <a href="1bit-monster-v2.html">Engine</a>
+        <a href="1bit-models.html">Models</a>
+        <a href="1bit-jarvis.html">1bit JARVIS</a>
+        <a href="1bit-blog.html" aria-current="page">Blog</a>
+        <a href="1bit-store.html">Store</a>
+        <a href="1bit-docs.html">Docs</a>
+        <a href="1bit-benchmarks.html">Benchmarks</a>
+      </nav>
+      <a class="btn btn-ghost" href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub&nbsp;↗</a>
+    </div>
+  </header>
+
+  <main id="content">
+    <article class="art container" data-od-id="1bit-post-hrx-engine">
+      <a class="back" href="1bit-blog.html">&larr; all posts</a>
+      <div class="art-meta">
+        <span class="tag">hrx</span><span class="tag">engine</span>
+        <span>2026-08-29</span>
+      </div>
+      <h1>HRX: we put AMD's experimental IREE runtime inside our engine</h1>
+      <p class="lead">AMD calls HRX "a lighter, more focused subset of ROCm" — an IREE-based HIP replacement shipped as a self-contained llama.cpp bundle. This week it moved <b>inside our engine</b>: dlopen'd in-process, token-level decode on the HRX device, two llama.cpps in one process without them colliding, and warm decode at ~2× HIP on the models its fused kernels can run. Plus the ceiling we measured, and the honest reframe that goes with it.</p>
+      <div class="prose">
+        <h2>What HRX actually is</h2>
+        <p>HRX — <b>Hip Runtime Extended</b> — is AMD's experiment at a lighter, more focused
+        subset of ROCm for client silicon (their words, in the upstream RFC). It's built on IREE
+        (LLVM MLIR) with a Loom kernel substrate, and AMD ships it as a self-contained llama.cpp
+        bundle: <span class="mono">libllama.so</span> + <span class="mono">libggml-hrx.so</span> +
+        <span class="mono">libhrx.so</span> + <span class="mono">libloomc.so</span>, no ROCm install
+        needed. We've run it as a subprocess backend for a week. This week it moved <b>into our
+        process</b>.</p>
+
+        <h2>Two llama.cpps in one process</h2>
+        <p>The bundle ships a complete <span class="mono">llama.h</span> C API — 82 KB of it — and
+        our engine already links its own llama.cpp for the Vulkan backend. Two copies of an
+        unversioned C API in one binary is normally a recipe for silent memory corruption, so we
+        did the boring careful thing: <span class="mono">dlopen</span> the bundle's
+        <span class="mono">libllama.so</span> with <span class="mono">RTLD_DEEPBIND</span>, resolve
+        every call through a dlsym'd function table, and static-assert the ABI structs
+        (72/160/56 bytes) against the bundle's own headers. The two llama.cpps never see each
+        other's symbols.</p>
+        <p>The result is a <b>token-level</b> HRX backend: <span class="mono">generate()</span>
+        decodes one token at a time on the HRX device (gfx1151), all layers offloaded, KV cache in
+        llama.cpp structures. No HTTP round trip, no subprocess — the binary we used to spawn is
+        now just a library we call.</p>
+
+        <h2>It works — and it's fast</h2>
+        <p>End to end through <span class="mono">1bit unified</span> on
+        Qwen3-30B-A3B Q4_K_M (an 18.6 GB MoE GGUF): "What is the capital of France?" →
+        <b>"Paris"</b>, <span class="mono">backend: hrx_gpu</span>. Warm decode <b>~80–87 tok/s</b>
+        in-process, vs <b>38 tok/s</b> for the same bundle spawned fresh as a subprocess, and
+        <b>~70 tok/s</b> for our HIP backend — the in-process path removes the server round trip
+        and the fresh-start JIT cost, and HRX's fused kernels genuinely run warm decode at ~2× HIP
+        for graphs they can fuse.</p>
+
+        <h2>The ceiling, measured honestly</h2>
+        <p>Then we found the wall, and measured it across six model families. HRX's fused node set
+        does not include <span class="mono">GET_ROWS</span> — the token-embedding row-gather that
+        starts every decode — for most quantization types. Q4_K embeddings fuse. q5_0, q8_0,
+        Q4_K_S and IQ2XXS fail closed with <span class="mono">llama_decode: ret = -3</span>.</p>
+        <p>We tried everything local: <span class="mono">n_gpu_layers</span> tuning, pinning the
+        embedding into a CPU buffer via buffer-type overrides. Both are dead ends in this fork —
+        the scheduler keeps one graph split on HRX and no local knob forces the row-gather onto
+        the CPU backend. The subprocess has the identical limitation, so being in-process costs us
+        nothing. <b>This is an upstream problem</b> — llama.cpp PR #27218, still a draft — not
+        ours to fix locally.</p>
+        <div class="callout"><p>The honest reframe: HRX is an <b>acceleration lane</b>, not the
+        engine. Our multi-lane router (HIP, Vulkan, FLM NPU, dedicated engines) with route-order
+        failover means a model HRX can't fuse fails over to ggml_vulkan and completes anyway —
+        verified end to end. The engine is complete with or without HRX.</p></div>
+
+        <h2>Zero-copy is a separate, proven story</h2>
+        <p>To keep the two halves of the vision straight: zero-DMA-copy on the NPU side is
+        <b>not</b> part of the HRX lane. It's the SharedBO substrate, re-proven on this box the
+        same week: a Vulkan compute shader reads the NPU's KV cache straight out of NPU-owned
+        pages via dma-buf import and matches the CPU reference (rel err 2e-4). One page set, three
+        views, no memcpy.</p>
+
+        <h2>Lemonade, too</h2>
+        <p>All 43 chat-capable lemonade models now carry <span class="mono">-HRX</span> registry
+        variants. The ones with K-quant embeddings serve directly on HRX; the rest point at the
+        Vulkan variant — and because lemond has no failover, we documented exactly which is which,
+        so nobody gets a silent 500 on a model HRX can't fuse.</p>
+
+        <h2>Run it</h2>
+        <p><span class="mono">HRX_INPROCESS=1 build/1bit unified -m "Qwen3 30B A3B Instruct"</span>
+        — the bundle loads in-process, weights go to HRX0, warm decode runs at ~2× HIP. For models
+        outside the fused set, the router does exactly what it was built to do: fail over and
+        finish the answer.</p>
+      </div>
+    </article>
+  </main>
+
+  <footer class="pagefoot" data-od-id="footer">
+    <div class="container row-between" style="max-width: 1000px;">
+      <span>© 2026 1bit.MONSTER · MIT License</span>
+      <a class="meta" href="https://discord.gg/Qy38d4Xu2h" target="_blank" rel="noopener">Join Discord &#8599;</a>
+      <a class="meta" href="https://fluxer.gg/7wqCREKi" target="_blank" rel="noopener">Community support &#8599;</a>
+      <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
+    </div>
+    <div class="container">
+      <p class="place" data-od-id="footer-place">Metepenagiag Mi’kmaq Nation, New Brunswick, Canada</p>
+      <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
+    </div>
+  </footer>
+<script src="analytics.js"></script>
+
+  <script src="analytics.js"></script>
+</body>
+</html>

@@ -9,7 +9,7 @@ research/
 ├── TRACKING.md      ← status tables (single source of truth for progress)
 ├── new-workstream.sh ← scaffold a new workstream from the template
 ├── templates/workstream/
-└── ws00..ws10/      ← one folder per workstream (README = goal/tasks/validation, FINDINGS = results)
+└── ws00..ws12/      ← one folder per workstream (README = goal/tasks/validation, FINDINGS = results)
 
 ⚠ THIS DIRECTORY WAS WIPED ONCE (2026-07-31) BY AN UNKNOWN PROCESS and recreated.
   It is now git-tracked. Mirror: ~/research-papers/backup/ — keep it in sync.
