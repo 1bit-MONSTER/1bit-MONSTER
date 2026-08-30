@@ -292,3 +292,51 @@ tolerance vs a double-precision host reference.
 files: C++ port + kernel dialect/terminator/barrier fixes + catalog restore
 + gfx1100 strip); `validate-mulmat-f32.cpp` harness added (build/run as in
 the round-4 section, replacing q4nx args).
+
+### UPDATE 2026-08-30 (round 6): FUSED Q4NX-on-HRX demo — real model weights, dequant+matmul both on the GPU ✅
+
+The two proven routes are now **pipelined on the device** (no CPU round-trip
+between kernels): `q4nx_dequant_f32` writes its f32 output straight into the
+`mul_mat_f32_f32` src0 buffer. Driven with **real Q4NX weights** extracted
+from `zaya1-8b-fresh.q4nx` (8 consecutive I8 rows of layer-0 q_proj, file
+offset 335961069 → a [32 rows × 2048 cols] weight block):
+
+```
+FUSED Q4NX pipeline (dequant [32x2048] + matmul [32x2048]x[2048]) on gfx1151
+  fused dispatch time: ~91-140 us (both kernels, one stream)
+  y_ref range: [-373.63, 1.53]   y_out range: [-373.63, 1.53]
+  max abs diff : 6.09e-06   max rel diff : 2.67e-06   PASS YES
+```
+
+Reference = engine-conformant CPU dequant (q4nx_raw.h nibble semantics +
+dequant_q4nx.cpp clamps) + double matmul. This is "Q4NX runs on HRX"
+end-to-end: weights stay int4 until the GPU.
+
+**The multi-tile demo exposed 3 real bugs in `q4nx_dequant_f32.loom`** that
+the earlier single-tile "bit-exact" run could not see (ncols=256 makes
+col/256 ≡ 0 and the trailer bytes fell outside the sampled row-groups):
+
+1. **Missing scale/zp sanity clamp.** Each 5120-byte tile's last 6 bytes of
+   the zp section (indices 253-255) carry trailer data, not zero-points; the
+   engine's reference (dequant_q4nx.cpp) zeroes non-finite/outlier
+   (`|x|>100`) scales and zps. The kernel now does the same
+   (`scalar.absf` + `scalar.cmpf olt` + select) — without it the last
+   rows × last col-groups of every tile block read garbage zero-points
+   (values up to 1e38).
+2. **Multi-tile scale indexing.** `row*8 + col/32` is only valid for
+   ncols ≤ 256. Correct per engine semantics:
+   `(col/256)*256 + row*8 + ((col%256)/32)` (per-tile 256-BF16 base).
+3. **Multi-tile packed stride.** The packed tile base is 4096 B per tile;
+   `col*8` only advances 2048 per tile, so the kernel needed
+   `+(col/256)*2048` (single-tile widths need none).
+
+The single-tile harness was re-validated against a **regenerated
+engine-conformant reference** (`/tmp/q4nx_ref.f32`, clamped) — still
+bit-exact (max diff 0.0), and the earlier "bit-exact" result is now
+understood as self-consistent-but-unclamped, not a real issue.
+
+**Persisted:** `validate-q4nx-fused.cpp` (build/run like the others; arg =
+path to a `n_tiles*5120`-byte tile block, default `/tmp/q4nx_w8.bin`);
+`loom-kernels/q4nx_dequant_f32.loombc` refreshed (md5 changed with the
+kernel fix); fork patch regenerated. Full suite green: q4nx (bit-exact),
+mul_mat_f32 (rel 9.2e-5), fused (rel 2.7e-6).
