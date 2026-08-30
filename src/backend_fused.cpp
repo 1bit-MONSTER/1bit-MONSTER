@@ -341,23 +341,33 @@ __global__ void fused_gu_batch_ws_kernel(float* __restrict__ y1, float* __restri
     const float* Wr; float* yr;
     if (row < IM) { Wr = W1 + (size_t)row * N; yr = y1; }
     else { Wr = W2 + (size_t)(row - IM) * N; yr = y2; }
+    constexpr int LBLOCK = 128;
     __shared__ float ws[3072];
-    __shared__ float sdata[BLOCK];
-    for (int i = threadIdx.x; i < N; i += BLOCK) ws[i] = Wr[i];
+    __shared__ float wsum[LBLOCK / 32];
+    const float4* W4 = (const float4*)Wr;
+    float4* ws4 = (float4*)ws;
+    for (int i = threadIdx.x; i < N / 4; i += LBLOCK) ws4[i] = W4[i];
     __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     for (int b = 0; b < B; b++) {
-        const float* xrow = x + (size_t)b * N;
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
         float sum = 0.0f;
-        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
-        __syncthreads(); sdata[threadIdx.x] = sum; __syncthreads();
-        for (int st = BLOCK/2; st > 0; st >>= 1) {
-            if (threadIdx.x < st) sdata[threadIdx.x] += sdata[threadIdx.x + st];
-            __syncthreads();
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 w = ws4[k4], xv = x4[k4];
+            sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
         }
-        if (threadIdx.x == 0) {
-            if (row < IM) y1[(size_t)b * IM + row] = sdata[0];
-            else y2[(size_t)b * IM + (row - IM)] = sdata[0];
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) {
+                if (row < IM) y1[(size_t)b * IM + row] = v;
+                else y2[(size_t)b * IM + (row - IM)] = v;
+            }
         }
+        __syncthreads();
     }
 }
 
