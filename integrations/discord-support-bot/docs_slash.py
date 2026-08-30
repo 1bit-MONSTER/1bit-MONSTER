@@ -136,7 +136,7 @@ class DocsSlash(discord.Client):
             block = context7.format_context(data)
             if not block.strip():
                 await interaction.followup.send(
-                    "I couldn't find relevant docs for that. Try rephrasing, or check the [docs hub](https://docs.1bit.monster)."
+                    "I couldn't find relevant docs for that. Try rephrasing, or check the docs hub: <https://docs.1bit.monster>."
                 )
                 return
             answer = llm.generate(
