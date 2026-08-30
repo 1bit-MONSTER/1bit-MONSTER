@@ -172,3 +172,20 @@ kernel-bound: skipping the 19.4 MB logits D2H changes nothing (20.85 vs
 pattern + L2 state after the forward; token n+1's forward depends on
 lm_head(n)'s argmax, so it cannot be overlapped.  Reverted.  Batch-32
 stands at 621 agg tok/s (int8-W state).
+
+## 12. Round 7 (2026-08-30): in-path lm_head 21 ms vs 13 ms standalone — exhaustive elimination
+
+Instrumented lm_head_batch (hipEvent per piece): H2D 0.01, f2h 0.01,
+lm_kernel 20.3-23.6 ms in-path — the kernel itself is the cost.  The
+identical kernel runs 13.2 ms standalone.  Eliminated by isolation:
+L2 pollution after the forward (a forward-like streaming kernel before it:
+no change), process memory state (1 GB of junk allocations: no change),
+the 19.4 MB logits D2H (skipped: no change), per-launch device sync
+(13.3: no change), XRT/NPU init + 263 MB pinned BOs (13.3: no change),
+fresh-x rewrite each token (13.8: no change), 30 ms idle-throttle
+(+1.2 ms only), in-path BLOCK sweep 64/128/256 (20.4-21.4: no change).
+The gap is not reproducible in isolation — it needs a profiler
+(rocprof) to pin down (suspects: physical page placement of the 152 MB
+d_output8 / 19.4 MB dlogits_batch in the full bench process, or a
+driver scheduling interaction).  Impact if solved: ~+10% (613 -> ~680).
+Left as-is; the instrumentation was reverted.
