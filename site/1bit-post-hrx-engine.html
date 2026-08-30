@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER</title>
-  <meta name="description" content="HRX (AMD's IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen'd bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine." />
+  <meta name="description" content="AMD's experimental IREE runtime is now an in-process decode lane in our engine: dlopen'd bundle, two llama.cpps, ~2x HIP warm decode on a 30B MoE GGUF." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="HRX: we put AMD's experimental IREE runtime inside our engine" />
-  <meta property="og:description" content="HRX (AMD's IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen'd bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine." />
+  <meta property="og:description" content="AMD's experimental IREE runtime is now an in-process decode lane in our engine: dlopen'd bundle, two llama.cpps, ~2x HIP warm decode on a 30B MoE GGUF." />
   <meta property="og:url" content="https://1bit.monster/1bit-post-hrx-engine.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="HRX: we put AMD's experimental IREE runtime inside our engine" />
-  <meta name="twitter:description" content="HRX (AMD's IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen'd bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine." />
+  <meta name="twitter:description" content="AMD's experimental IREE runtime is now an in-process decode lane in our engine: dlopen'd bundle, two llama.cpps, ~2x HIP warm decode on a 30B MoE GGUF." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-hrx-engine.html" />
 <style>
@@ -118,7 +118,7 @@
     }
   </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER", "description": "HRX (AMD's IREE-based HIP replacement) is now an in-process, token-level decode lane in the 1bit.MONSTER engine — dlopen'd bundle, RTLD_DEEPBIND, two llama.cpps in one process. E2E on a 30B MoE GGUF, ~2x HIP warm decode, the GET_ROWS ceiling measured across six families, and the honest reframe: HRX is an acceleration lane, not the engine.", "url": "https://1bit.monster/1bit-post-hrx-engine.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-hrx-engine.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-29", "dateModified": "2026-08-29", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER", "description": "AMD's experimental IREE runtime is now an in-process decode lane in our engine: dlopen'd bundle, two llama.cpps, ~2x HIP warm decode on a 30B MoE GGUF.", "url": "https://1bit.monster/1bit-post-hrx-engine.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-hrx-engine.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-29", "dateModified": "2026-08-29", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 </head>
 <body>
