@@ -2461,9 +2461,12 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     // config declares base_model google/gemma-2b (JEPA-pretrained gemma
     // variant); muse_moe is the Muse-MoE variant of the mapped MUSE family.
     if (strcmp(s, "cagliostro") == 0) return RCPP_ARCH_LLAMA;          // CagliostroForCausalLM (bench-labs/cagliostro-v2, llama-layout 640/30/10/5)
-    if (strcmp(s, "gmma-jepa") == 0) return RCPP_ARCH_GEMMA;           // GmmaJEPAForCausalLM (clevrpwn/gmma-jepa, base google/gemma-2b)
-    if (strcmp(s, "moe_greeting") == 0) return RCPP_ARCH_LLAMA;        // MoeGreetingForCausalLM (mondk/Greetings-model, tiny llama-layout)
-    if (strcmp(s, "muse_moe") == 0) return RCPP_ARCH_MUSE;             // MuseMoeForConditionalGeneration (win10/Muse-MoE-65B-A30B)
+    if (strcmp(s, "gmma-jepa") == 0) return RCPP_ARCH_GEMMA;           // GmmaJEPAForCausalLM (clevrpwn/gmma-jepa, base google/gemma-2b) — model_type
+    if (strcmp(s, "gmmajepa") == 0) return RCPP_ARCH_GEMMA;            // GmmaJEPAForCausalLM — census stripped arch name
+    if (strcmp(s, "moe_greeting") == 0) return RCPP_ARCH_LLAMA;        // MoeGreetingForCausalLM (mondk/Greetings-model, tiny llama-layout) — model_type
+    if (strcmp(s, "moegreeting") == 0) return RCPP_ARCH_LLAMA;         // MoeGreetingForCausalLM — census stripped arch name
+    if (strcmp(s, "muse_moe") == 0) return RCPP_ARCH_MUSE;             // MuseMoeForConditionalGeneration (win10/Muse-MoE-65B-A30B) — model_type
+    if (strcmp(s, "musemoe") == 0) return RCPP_ARCH_MUSE;              // MuseMoeForConditionalGeneration — census stripped arch name
     if (strcmp(s, "qaptaan") == 0) return RCPP_ARCH_LLAMA;             // QaptaanForCausalLM (kaptaan45/QaptaanLM-0.75B, llama-layout 1024/24/8/2)
     if (strcmp(s, "speck") == 0) return RCPP_ARCH_LLAMA;               // SpeckForCausalLM (specklabs/Speck1.5-140M, llama-layout 768/18/12/3)
     // Unmapped architecture — do NOT fall back to BITNET silently.
