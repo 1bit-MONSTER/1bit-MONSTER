@@ -47,9 +47,9 @@ def open_issues() -> list[dict]:
     return json.loads(out)
 
 
-def _post_message(content: str) -> str:
+def _post_message(channel_id: str, content: str) -> str:
     req = urllib.request.Request(
-        API + f"/channels/{FORUM_CHANNEL}/messages",
+        API + f"/channels/{channel_id}/messages",
         data=json.dumps({"content": content}).encode(),
         headers={"Authorization": "Bot " + TOKEN, "Content-Type": "application/json",
                  "User-Agent": UA},
@@ -127,7 +127,7 @@ def main() -> int:
     day = time.strftime("%Y-%m-%d")
     digest_channel = os.getenv("ISSUE_DIGEST_CHANNEL", "")
     if digest_channel.isdigit():
-        mid = _post_message(content)
+        mid = _post_message(digest_channel, content)
         print(f"digest posted to channel {digest_channel} (msg {mid})")
     else:
         tags = forum_tags()

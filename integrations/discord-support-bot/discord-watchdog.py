@@ -30,6 +30,10 @@ import urllib.request
 
 sys.path.insert(0, "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot")
 
+# systemctl --user needs the user runtime dir; cron does not set it, so a
+# bare cron run would fail every systemctl check with "inactive ()".
+os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
+
 BOT_DIR = "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot"
 ENV_FILE = os.path.join(BOT_DIR, ".env")
 API = "https://discord.com/api/v10"

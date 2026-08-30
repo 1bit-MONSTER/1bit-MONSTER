@@ -36,6 +36,25 @@ import subprocess
 import sys
 import urllib.request
 
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Minimal .env loader so cron runs see DISCORD_TOKEN/DEEPSEEK_API_KEY etc.
+
+    MUST run before TOKEN / ISSUE_TRACKER_CHANNEL_ID are bound below —
+    otherwise a host that keeps secrets only in .env sends an empty
+    Authorization header and every Discord call 401s.
+    """
+    if not os.path.exists(path):
+        return
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 API = "https://discord.com/api/v10"
 UA = "1bit-docsbot (issue-tracker, 3.0)"
 ISSUE_TRACKER_CHANNEL_ID = os.getenv(
@@ -81,20 +100,6 @@ _TYPE_LABEL_KEYWORDS = {
 # Labels that escalate a post on the state axis (triage keyword).
 ESCALATION_LABEL_KEYWORDS = ("priority", "p0", "p1", "urgent", "critical",
                              "blocker", "hotfix", "severe")
-
-
-def _load_dotenv(path: str = ".env") -> None:
-    """Minimal .env loader so cron runs see DEEPSEEK_API_KEY etc."""
-    if not os.path.exists(path):
-        return
-    for line in open(path, encoding="utf-8"):
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
-_load_dotenv()
 
 
 def _headers() -> dict[str, str]:

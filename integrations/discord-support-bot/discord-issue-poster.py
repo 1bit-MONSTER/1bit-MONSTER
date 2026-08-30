@@ -108,14 +108,19 @@ def main() -> int:
     posts = state.setdefault("posts", {})
     for issue in issues:
         try:
-            tid = post_issue_post(issue)
+            # post_issue_post needs the FULL issue dict (url/labels/state/
+            # body) — the list payload above only carries number/title/
+            # createdAt. Fetching here restores the pre-forum behaviour and
+            # keeps last_issue advancing only on a successful post.
+            full = gh_issue(REPO, issue["number"])
+            tid = post_issue_post(full)
         except Exception as exc:  # noqa: BLE001
             print(f"post #{issue['number']} FAILED: {type(exc).__name__}: {exc}")
             continue
         posts[str(issue["number"])] = {
             "thread": tid,
             "state": "OPEN",
-            "tags": [t for t in desired_tags(issue) if t in tags],
+            "tags": [t for t in desired_tags(full) if t in tags],
             "archived": False,
         }
         print(f"posted #{issue['number']} '{issue['title']}' as forum post {tid}")
