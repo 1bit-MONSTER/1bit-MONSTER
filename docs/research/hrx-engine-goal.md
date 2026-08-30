@@ -282,8 +282,35 @@ Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
       add-model checklist for a novel arch. Verified: Qwen3-0.6B → COVERED
       (L1, HRX-first), Zamba2 → COVERED (L2 specialized), fake arch → BLOCKED
       + checklist. HF_TOKEN env for gated repos.
-- [ ] Verify HRX fused-node coverage per family on gfx1151 (which of the 145
-      archs actually run inside the fused node set vs fail to ggml_vulkan).
+- [x] **Per-family HRX fused-node verification (2026-08-29, 6 families)**:
+      | Model | Arch | Embedding quant | Load | Decode |
+      |---|---|---|---|---|
+      | Qwen3-30B-A3B Q4_K_M | qwen3moe | **Q4_K** | ✅ | ✅ **PASS** |
+      | qwen2.5-0.5b Q4_K_M | qwen2 | q5_0 | ✅ | ❌ GET_ROWS |
+      | Qwen2-VL-2B Q8_0 | qwen2vl | q8_0 | ✅ | ❌ GET_ROWS |
+      | nomic-embed-text-v1 Q4_K_S | nomic-bert | Q4_K_S | ✅ | ❌ GET_ROWS |
+      | DeepSeek-V4-Flash IQ2XXS | deepseek4 | IQ2XXS | ✅ | ❌ GET_ROWS |
+      | zaya-Q4_K | zaya (not in llama.cpp) | — | ❌ | — |
+      **Finding**: the fused-set discriminator is the **token-embedding tensor's
+      quant type** — HRX `GET_ROWS` accepts **K-quants (Q4_K) but fail-closes
+      on q5_0/q8_0/IQ2XXS/Q4_K_S embeddings**. All llama.cpp-supported archs
+      LOAD in-process (qwen2vl, nomic-bert, deepseek4 included); the decode
+      gate is the embedding quant, not the arch. Practical impact: models with
+      K-quant embeddings run on HRX; others fall to ggml_vulkan (G1a) — the
+      failover path is exercised constantly, which is exactly what it's for.
+- [x] **In-process soak (2026-08-29)**: 400-token decode on the 30B — **0
+      failures**, avg 15.9 ms/tok (min 11.2, max 262 = first-token JIT), RSS
+      stable ~519 MB; 10× reset (context recreate) + decode OK; model switch
+      30B → small → 30B OK (fresh-instance pattern). Design note: `unload()`
+      is terminal per `Inprocess` instance (handle released; DSO stays mapped
+      — dlclose would abort ggml) — the engine's model switch correctly
+      creates a new instance per model; reusing one instance across models is
+      unsupported (probe caught this).
+- [ ] Benchmark recipe (#4, re-run when the bundle or PR #27218 moves):
+      `g++ -std=c++17 -O2 -Isrc -Iinclude -o /tmp/bench /tmp/hrx_inproc_bench.cpp src/hrx_inprocess.cpp -ldl` →
+      `/tmp/bench <model.gguf> 100`; baselines on gfx1151 / Qwen3-30B-A3B
+      Q4_K_M: in-process ~80–87 tok/s (fresh-server subprocess 38.2, documented
+      warm subprocess ~175, HIP ~70).
 
 ## 6. Risks & open questions
 
