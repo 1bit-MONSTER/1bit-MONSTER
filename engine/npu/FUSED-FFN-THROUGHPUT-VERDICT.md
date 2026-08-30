@@ -67,3 +67,31 @@ NOT the bC readbacks (+0.05 ms), NOT missing vectorization (-O3: no change).
 - Any future NPU-FFN throughput work should target the ONE launch per layer
   (cascade at M<=8 for small-batch, or a reworked fused design) — but it
   will not beat the GPU FFN on this hardware.
+
+## 5. GPU-path win: dedicated batched lm_head kernel (2026-08-30)
+
+fused_lm_head_batch_kernel (float4 W loads + warp-shuffle reductions,
+BLOCK=128, block-per-vocab-row): the generic fused_gemv_batch_ws_kernel's
+per-batch tree reductions (288 barriers/block) and scalar loads dominated.
+Measured (V=151936 H=1024 B=32): 16.9 ms vs 28.1 ms standalone; in-path
+lm_head 29.8 -> 17.2 ms/batch, batch-32 decode 283 -> 315 agg tok/s (+11%),
+token streams bit-identical. The 622 MB W-read floor is 3.0 ms (205 GB/s);
+the residual is the per-block x re-read from L2 (x is 128 KB, L2-resident;
+19.4 GB of L2 traffic is inherent to block-per-vocab-row). A further win
+would need fp16 x in shared (halves x traffic) or multi-row blocks with
+contiguous W streams (v6-style was strided-W-slower).
+
+## 6. NPU-FFN offload under GPU saturation (2026-08-30)
+
+Steady GPU stress (batched lm_head GEMV loop) while running batch-32 decode:
+
+| Scenario | GPU FFN | NPU FFN |
+|----------|---------|---------|
+| GPU idle | 315 agg tok/s | 95 agg tok/s |
+| GPU saturated | 141 (-55%) | 82 (-14%) |
+
+The NPU FFN is far more contention-immune (-14% vs -55%) — it protects
+throughput when the GPU is shared (big-model tenant, multi-model server) —
+but its absolute slowness (8.5 ms/layer vs GPU ~1.2) means it only wins
+under extreme (>3x) GPU degradation. USE_NPU_FFN is the knob for this
+tradeoff; document the numbers, don't auto-route.
