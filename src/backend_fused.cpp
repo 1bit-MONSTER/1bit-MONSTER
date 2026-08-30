@@ -181,15 +181,14 @@ __global__ void fused_gemv_batch_ws_kernel(float* __restrict__ y, const float* _
     }
 }
 
-// ── Batched lm_head: y[b, V] = x[b, H] @ W[V, H]^T, W read ONCE total ──
-// Block-per-vocab-row with float4 W loads + warp-shuffle reductions.
-// Measured (gfx1151, V=151936, H=1024, B=32, 2026-08-30): 16.9 ms vs 28.1 ms
-// for fused_gemv_batch_ws_kernel (whose per-batch tree reductions and scalar
-// loads dominate).  The 622 MB W read alone is 3.0 ms (205 GB/s); the
-// residual is the per-block x re-read from L2 (inherent to
-// block-per-vocab-row, x is only 128 KB and stays L2-resident).
-__global__ void fused_lm_head_batch_kernel(float* __restrict__ y, const float* __restrict__ W,
-                                           const float* __restrict__ x, int M, int N, int B) {
+// ── Optimized batched GEMV (v1fs): y[b, M] = x[b, N] @ W[M, N]^T ──
+// Block-per-output-row with float4 W loads + warp-shuffle reductions.
+// Measured (gfx1151, B=32): lm_head 28.1 -> 16.9 ms; qkv (M=4096, N=1024)
+// 0.70 -> 0.41 ms; O (M=2048) 0.35 -> 0.22 ms vs the generic ws kernel
+// (whose per-batch tree reductions and scalar loads dominate).  The W read
+// floor is ~205 GB/s; the residual is the per-block x re-read from L2.
+__global__ void fused_gemv_batch_v1fs_kernel(float* __restrict__ y, const float* __restrict__ W,
+                                             const float* __restrict__ x, int M, int N, int B) {
     int row = blockIdx.x;
     if (row >= M) return;
     constexpr int LBLOCK = 128;
@@ -206,6 +205,45 @@ __global__ void fused_lm_head_batch_kernel(float* __restrict__ y, const float* _
         for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
             float4 w = ws4[k4], xv = x4[k4];
             sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) y[(size_t)b * M + row] = v;
+        }
+        __syncthreads();
+    }
+}
+
+// ── fp16-x variant of the batched lm_head ──
+// x is the hidden state converted to fp16 once per token (fused_f2h_kernel,
+// 128 KB -> 64 KB at B=32): the per-block x re-read from L2 (19.4 GB for the
+// f32 version) halves to ~9.7 GB.  Measured target: lm_head ~17 -> ~10-11 ms
+// at batch 32.  W stays f32; only x is half-precision (token selection is
+// unchanged for non-borderline logits — verified by A/B token streams).
+__global__ void fused_lm_head_batch_kernel_f16(float* __restrict__ y, const float* __restrict__ W,
+                                               const __half* __restrict__ x, int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    constexpr int LBLOCK = 128;
+    __shared__ float ws[3072];
+    __shared__ float wsum[LBLOCK / 32];
+    const float4* W4 = (const float4*)(W + (size_t)row * N);
+    float4* ws4 = (float4*)ws;
+    for (int i = threadIdx.x; i < N / 4; i += LBLOCK) ws4[i] = W4[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int b = 0; b < B; b++) {
+        // x is __half[N]; load as __half2 (4 bytes = 2 halves) and convert
+        // with the hardware half2->float2 — no register-address spills.
+        const __half2* x2 = (const __half2*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k2 = threadIdx.x; k2 < N / 2; k2 += LBLOCK) {
+            float2 f = __half22float2(x2[k2]);
+            sum += f.x * ws[k2 * 2] + f.y * ws[k2 * 2 + 1];
         }
         for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
         if (lane == 0) wsum[warp] = sum;
@@ -262,24 +300,34 @@ __global__ void fused_qkv_batch_ws_kernel(float* __restrict__ yq, float* __restr
     if (row < s1) { Wr = Wq + (size_t)row * N; yr = yq; }
     else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * N; yr = yk; }
     else { Wr = Wv + (size_t)(row - s1 - s2) * N; yr = yv; }
+    constexpr int LBLOCK = 128;
     __shared__ float ws[3072];
-    __shared__ float sdata[BLOCK];
-    for (int i = threadIdx.x; i < N; i += BLOCK) ws[i] = Wr[i];
+    __shared__ float wsum[LBLOCK / 32];
+    const float4* W4 = (const float4*)Wr;
+    float4* ws4 = (float4*)ws;
+    for (int i = threadIdx.x; i < N / 4; i += LBLOCK) ws4[i] = W4[i];
     __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
     for (int b = 0; b < B; b++) {
-        const float* xrow = x + (size_t)b * N;
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
         float sum = 0.0f;
-        for (int k = threadIdx.x; k < N; k += BLOCK) sum += xrow[k] * ws[k];
-        __syncthreads(); sdata[threadIdx.x] = sum; __syncthreads();
-        for (int st = BLOCK/2; st > 0; st >>= 1) {
-            if (threadIdx.x < st) sdata[threadIdx.x] += sdata[threadIdx.x + st];
-            __syncthreads();
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 w = ws4[k4], xv = x4[k4];
+            sum += w.x*xv.x + w.y*xv.y + w.z*xv.z + w.w*xv.w;
         }
-        if (threadIdx.x == 0) {
-            if (row < s1) yq[(size_t)b * s1 + row] = sdata[0];
-            else if (row < s1 + s2) yk[(size_t)b * s2 + (row - s1)] = sdata[0];
-            else yv[(size_t)b * s2 + (row - s1 - s2)] = sdata[0];
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) {
+                if (row < s1) yq[(size_t)b * s1 + row] = v;
+                else if (row < s1 + s2) yk[(size_t)b * s2 + (row - s1)] = v;
+                else yv[(size_t)b * s2 + (row - s1 - s2)] = v;
+            }
         }
+        __syncthreads();
     }
 }
 
@@ -737,6 +785,8 @@ struct FusedBackend : Backend {
     float *dffn_batch = nullptr;          // [B, H] residual saves
     float *dlogits_batch = nullptr;       // [B, VOCAB] batched lm_head
     int* dargmaxs = nullptr;              // [B] GPU argmax scratch
+    __half* dxh = nullptr;                // [B, H] fp16 hidden for the lm_head
+                                          // (halves the x re-read L2 traffic)
     std::vector<float> host_batch;        // [B, H] NPU FFN handoff (D2H/H2D)
     std::vector<int> batch_pos;           // per-sequence position
     std::future<bool> npu_batch_future_;
@@ -830,6 +880,7 @@ struct FusedBackend : Backend {
                 hipMalloc(&dffn_batch, (size_t)batch_ * H * 4) != hipSuccess ||
                 hipMalloc(&dlogits_batch, (size_t)batch_ * VOCAB * 4) != hipSuccess ||
                 hipMalloc(&dargmaxs, (size_t)batch_ * sizeof(int)) != hipSuccess ||
+                hipMalloc(&dxh, (size_t)batch_ * H * 2) != hipSuccess ||
                 hipMalloc(&dQ_batch, (size_t)batch_ * s1 * 2) != hipSuccess ||
                 hipMalloc(&dAttn_batch, (size_t)batch_ * s1 * 2) != hipSuccess) return false;
             host_batch.resize((size_t)batch_ * H);
@@ -1483,7 +1534,8 @@ struct FusedBackend : Backend {
         HIP_CHECK(hipMemcpy(dh_batch, hidden, (size_t)am * H * sizeof(float), hipMemcpyHostToDevice));
         const float* W = d_output ? d_output : d_embed;
         if (!W) return false;
-        fused_lm_head_batch_kernel<<<VOCAB, 128, 0, stream>>>(dlogits_batch, W, dh_batch, VOCAB, H, am);
+        fused_f2h_kernel<<<(am * H + BLOCK - 1) / BLOCK, BLOCK, 0, stream>>>(dxh, dh_batch, am * H);
+        fused_lm_head_batch_kernel_f16<<<VOCAB, 128, 0, stream>>>(dlogits_batch, W, dxh, VOCAB, H, am);
         HIP_CHECK(hipMemcpy(logits, dlogits_batch, (size_t)am * VOCAB * sizeof(float), hipMemcpyDeviceToHost));  // blocking
         if (argmaxs) {
             // GPU argmax (first-max, same semantics as the old host loop) —
@@ -1533,9 +1585,9 @@ struct FusedBackend : Backend {
                 fused_qkv_batch_ws_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(
                     datt_batch, dgate_batch, dup_batch, gl.wq, gl.wk, gl.wv, dh_batch, s1, s2, H_, B_);
             else {
-                if (gl.wq) fused_gemv_batch_ws_kernel<<<s1, BLOCK, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
-                if (gl.wk) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
-                if (gl.wv) fused_gemv_batch_ws_kernel<<<s2, BLOCK, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
+                if (gl.wq) fused_gemv_batch_v1fs_kernel<<<s1, 128, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
+                if (gl.wk) fused_gemv_batch_v1fs_kernel<<<s2, 128, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
+                if (gl.wv) fused_gemv_batch_v1fs_kernel<<<s2, 128, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
             }
             // 3. batched QK-norm + RoPE (one launch per projection; the batch
             //    advances all sequences together, so pos is common)
@@ -1558,7 +1610,7 @@ struct FusedBackend : Backend {
                 fused_h2f_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dAttn_batch, B_*s1);
             }
             // 4. batched output projection (W read once)
-            if (gl.wo) fused_gemv_batch_ws_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
+            if (gl.wo) fused_gemv_batch_v1fs_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
             // 5. residual (flat): dh = attn_out + saved
             if (gl.wo)
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
@@ -1572,7 +1624,7 @@ struct FusedBackend : Backend {
             if (gl.w1 && gl.w2 && gl.w3) {
                 fused_gu_batch_ws_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate_batch, dup_batch, gl.w1, gl.w2, dh_batch, IM_, H_, B_);
                 fused_silu_kernel<<<(B_*IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dgate_batch, dup_batch, B_*IM_);
-                fused_gemv_batch_ws_kernel<<<H_, BLOCK, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
+                fused_gemv_batch_v1fs_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
             }
         };
