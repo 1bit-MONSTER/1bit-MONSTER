@@ -631,10 +631,11 @@ struct GenericBackend : Backend {
         if (cfg.arch == RCPP_ARCH_UNKNOWN ||
             cfg.arch == RCPP_ARCH_ZAYA || cfg.arch == RCPP_ARCH_ZAMBA2 ||
             cfg.arch == RCPP_ARCH_ZAMBA || cfg.arch == RCPP_ARCH_MAMBA ||
-            cfg.arch == RCPP_ARCH_QWEN35) {
+            cfg.arch == RCPP_ARCH_QWEN35 || cfg.arch == RCPP_ARCH_BARETORCH) {
             fprintf(stderr, "  [generic] Refusing to load %s (arch=%d%s) via safetensors\n",
                     f.c_str(), (int)cfg.arch,
-                    cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" : "");
+                    cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" :
+                    cfg.arch == RCPP_ARCH_BARETORCH ? " BARETORCH — cs_lrad registry token, engine support XL (issue #1907)" : "");
             return false;
         }
 
