@@ -147,7 +147,7 @@ class DocsBot(discord.Client):
             block = context7.format_context(data)
             if not block.strip():
                 await message.channel.send(
-                    "I couldn't find relevant docs for that. Try rephrasing, or check the [docs hub](https://docs.1bit.monster)."
+                    "I couldn't find relevant docs for that. Try rephrasing, or check the docs hub: <https://docs.1bit.monster>."
                 )
                 return
             answer = llm.generate(

@@ -420,7 +420,7 @@ def page_shell(out: Path, *, title: str, lead: str, breadcrumb: str, nav_groups:
 </div>
 <footer class="footer"><div class="wrap">
   <span>1bit.MONSTER — one engine, any model, zero Python. MIT licensed.</span>
-  <span>Docs generated from <a href="{REPO_BASE}">the repo</a> · <a href="https://1bit.monster">Main site</a></span>
+  <span>Docs generated from <a href="{REPO_BASE}">the repo</a> · <a href="https://1bit.monster">Main site</a> · <a href="https://discord.gg/Qy38d4Xu2h" target="_blank" rel="noopener">Discord</a></span>
 </div></footer>
 <script>{SEARCH_JS}</script>
 </body>
