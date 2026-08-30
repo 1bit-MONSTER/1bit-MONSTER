@@ -564,3 +564,71 @@ PASS bit-exact), `validate-ggml-q4nx-op.cpp` (graph-op attempt — documents
 the ne0/blck_size blocker), fork patch regenerated with the type + backend
 changes. The route-level fused demo remains the validated "Q4NX on HRX"
 evidence (rel 2.7e-6).
+
+---
+
+## Round 12 — Q4NX quality fixed: the mm kernel silently transposed every
+## multi-token matmul (2026-08-30)
+
+**TL;DR:** the served Q4NX model produced gibberish ("ollaplr..."). Root
+cause was NOT quantization quality (weights were byte-identical to the
+validated quantizer) — it was a silent **transpose in the fused
+`mul_mat_f32_f32_ggml` kernel** for any `cols > 1`. Fixed in the .loom
+kernel + two dispatch cache-key bugs. Both Q4NX models now score corr
+0.94–0.95 vs the BF16 reference and generate coherent text.
+
+### How it was found (debug chain)
+
+1. **Logits A/B harness** (`dump-logits.cpp`): BF16 model at ngl 0 AND 99 →
+   correct top5. Both converted models (F32 twin AND Q4NX) → degenerate
+   tail top5 [151931..151935] → converter or execution bug, not metadata
+   (KV diff clean, tensor names/order identical, attn_q data corr 1.0).
+2. **The dump dir was poisoned**: `/tmp/q4nx_src` (used by the converters)
+   was created at 18:37 — the exact mtime of a still-being-written
+   `Qwen3-0.6B-BF16.gguf`; its last 34 tensor files were all zeros
+   (blocks 7–9 + output_norm → degenerate logits). Re-dumping after the
+   file stabilized fixed that batch of zeros.
+3. **After the zeros were fixed** the Q4NX model gave spread-but-wrong
+   logits (corr −0.02) while the "Q4NX-dequant-F32 twin" (same values,
+   F32 type) gave corr 0.938 → the Q4NX *execution* was still wrong.
+4. **Cache-key bug #1**: `dispatch_mul_mat_q4nx` built provider cache keys
+   `-q4nx-<rows>` (dequant) and `-q4nx-mm-<rows>x<cols>` (mm) WITHOUT
+   ncols(k)/n_tc — a pure keyed cache (no config compare). In the model,
+   attn_k (rows=1024, k=1024, n_tc=4) compiled first; attn_output
+   (rows=1024, k=2048, n_tc=8) and ffn_down (k=3072, n_tc=12) REUSED the
+   n_tc=4 kernel → wrong tile mapping. Fixed: keys now include k, n_tc,
+   wg_size. (Caught by a 7-shape op harness `validate-op-all.cpp` that
+   tests every distinct Q4NX shape with cols=5.)
+5. **The real killer — kernel layout bug**: `mul_mat_f32_f32_ggml` indexed
+   src1 as row-major `i*cols + col` and dst as `row*cols + col`. ggml
+   tensors are **ne[0]-fastest**, so element (i,col) of [k,cols] is at
+   `i + col*k` and (row,col) of [rows,cols] is at `row + col*rows`. The
+   row-major indexing is only correct for `cols == 1` — which is why every
+   op-level test (cols=1) passed while the real model (5 tokens) got
+   silently transposed activations and outputs. Fixed in
+   `mul_mat_f32_f32.loom` (src1: `i + col*k`; dst: `row + col*rows`), with
+   the op-test reference updated to the ggml convention (all 7 shapes
+   max_abs ≤ 5.5e-7).
+6. **Upload sync hardening**: `stage_and_copy_tensor` now flushes+waits the
+   stream after each upload (cross-stream ordering with graph dispatches).
+
+### Results
+
+```
+full Q4NX (float-source):  corr 0.938 vs BF16, top1 12095 (== ref top1)
+full Q4NX (Q4_K-source):   corr 0.951 vs BF16, top1 12095
+Q4NX (float-source) gen:   "The question is a bit tricky. Let's break it down step by step"
+BF16 ref            gen:   "Paris. The capital of Italy is Rome. The capital of Spain is Madrid..."
+```
+
+Both converted models now generate coherent, meaningful text. The earlier
+"double-quantization quality loss" explanation was wrong — the pipeline was
+numerically wrong (silent transpose), and is now exact (op-level
+max_abs ≤ 5.5e-7 for all shapes at cols=5, logits corr 0.94–0.95 = pure
+4-bit quantization loss).
+
+**New persisted artifacts:** `dump-logits.cpp` (llama.h logits harness),
+`gen-tokens.cpp` (greedy sampling harness), `validate-op-all.cpp`
+(all-shape cols=5 op validation with corrected ggml-layout reference),
+`numpy-forward.py` (full Qwen3-0.6B numpy forward, used to prove the
+activations were correct at every stage), fork patch regenerated.
