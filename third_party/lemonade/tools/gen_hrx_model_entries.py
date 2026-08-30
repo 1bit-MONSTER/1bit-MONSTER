@@ -17,6 +17,12 @@ qualifies for HRX:
   suggested=false (variants; the base GGUF keeps its suggested slot so the UI
   isn't flooded with 76 "suggested" cards).
 
+KNOWN LIMITATION (2026-08-29): lemond has no failover, and the HRX runtime
+fail-closes at GET_ROWS for non-K-quant token embeddings (q5_0/q8_0/IQ2XXS/
+Q4_K_S verified). Generated entries therefore serve K-quant-embedding GGUFs
+only; for other models users should pick the `llamacpp` (Vulkan/HIP) variant
+or the engine-native path (1bit unified, which failovers).
+
 Usage: python3 gen_hrx_model_entries.py [--write]
        (default: dry-run, prints the plan)
 """

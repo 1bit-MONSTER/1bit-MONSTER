@@ -3,10 +3,42 @@
 **Date:** 2026-08-29 (triage + consolidation round) · **Status:** 🔄 plan agreed,
 fork A chosen · **Owner:** 1bit engine / lemonade integration
 
-> The stated end-state: **an HRX engine with zero-DMA-copy execution, 100%
-> HuggingFace model coverage, and all Lemonade models also running on HRX.**
+> The stated end-state (original): **an HRX engine with zero-DMA-copy execution,
+> 100% HuggingFace model coverage, and all Lemonade models also running on HRX.**
 > This document maps current state → end-state, records the one architectural
 > decision that shapes everything else (fork A), and tracks the phased plan.
+
+## Strategic position (revised 2026-08-29 — honest reframe)
+
+The original end-state over-reached: it made **HRX the engine**. The runtime's
+actual state (see §1, §G1c): experimental, draft-only upstream (PR #27218,
+maintainer pushback), **no stable userspace release** (ROCm/hrx-system last
+tagged May 2026; daily churn since; bundles ship only via AMD's
+"temporary staging" channel), and a hard `GET_ROWS` ceiling (only
+K-quant-class token embeddings fuse — verified across b59 and b66). **HRX is
+not production-ready as a foundation, and nothing local can change that.**
+
+Reframed position (what this repo now commits to):
+
+1. **The engine is the platform; HRX is an acceleration lane.** The multi-lane
+   architecture (HIP, Vulkan, FLM NPU, dedicated engines, CPU) + route-order
+   failover (G1a/G1b) make the engine complete *regardless of HRX*. "One HRX
+   engine" → **"multi-lane engine with HRX as the preferred decode lane when
+   the model's graph fits"** (verified: Q4_K-embedding GGUFs like the
+   Qwen3-30B-A3B decode at ~80–87 tok/s, faster than the subprocess and HIP).
+2. **Coverage is achieved multi-lane, not on-HRX.** "100% HF coverage" holds
+   (routes + `hf_coverage.py`); "everything runs on HRX" does not and is
+   upstream-gated. The lemonade `*-HRX` entries serve **K-quant-embedding
+   GGUFs only** — lemond has no failover, so non-fitting models error through
+   the HRX recipe and users should pick the `llamacpp` (Vulkan/HIP) variant.
+3. **Stop HRX-specific engineering.** The in-process integration is done and
+   verified; every further workaround is a proven dead end. HRX is re-engaged
+   on exactly two signals: a **stable `hrx-system` release** with an
+   ABI/version story, or **PR #27218 moving past draft**. Either triggers the
+   per-family probe + benchmark re-run (recipe in §P2).
+4. **Next build priority: the hybrid prefill/decode policy** — HIP for large
+   prefill (1313 tok/s), HRX for warm decode (2×+ on fused models), i.e. the
+   unfinished half of G1b. Needs no upstream; beats either backend alone.
 
 ---
 
@@ -256,10 +288,17 @@ Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
       (correct). The 18.6 GB checkpoint was an HF-cache hit (no download).
       Combined with the manager-cache smoke (150 → 193), the lemonade×HRX leg
       is verified: registry, recipe, bundle, and serving all work.
+- [x] **Limitation documented (2026-08-29)**: lemond has **no failover** — the
+      `*-HRX` entries are genuinely useful only for **K-quant-embedding GGUFs**
+      (e.g. Qwen3-30B-A3B Q4_K); for models whose embeddings are q5_0/q8_0/
+      IQ2XXS/etc. the HRX recipe errors at decode and users should pick the
+      `llamacpp` (Vulkan/HIP) variant. Engine-native `1bit unified` remains
+      the HRX front door precisely because its failover handles those models.
 - [ ] Pull+serve the remaining representative set (dense + MoE + long-context)
       and record tok/s / fail-closed cases per model family.
-- Acceptance: `lemonade pull <model>` + chat works on HRX for ≥ all models
-  that work on `llamacpp` today, minus documented fail-closed exclusions.
+- Acceptance (revised): `lemonade pull <model>` + chat works on HRX for
+  K-quant-embedding GGUFs; other models via the `llamacpp` variant or the
+  engine (failover).
 
 ### P4 — Zero-DMA × HRX story (fork A scope)
 - [x] **Two-memory-model architecture documented** (2026-08-29): fork-A decision
@@ -384,11 +423,13 @@ Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
 
 All actionable items of the stated end-state have been delivered and verified:
 
-1. **One HRX engine** — in-process `HrxBackend` via `src/hrx_inprocess.{h,cpp}`
-   (dlopen'd hrx-b59 `libllama.so`, RTLD_DEEPBIND, token-level decode on HRX0).
+1. **HRX as a verified acceleration lane** (reframed from "one HRX engine" —
+   see Strategic position): in-process `HrxBackend` via `src/hrx_inprocess.{h,cpp}`
+   (dlopen'd bundle `libllama.so`, RTLD_DEEPBIND, token-level decode on HRX0).
    E2E-verified through `1bit unified` (30B MoE GGUF → "Paris", `backend:
-   hrx_gpu`). Benchmarked ~80–87 tok/s warm decode — **faster than the fresh
-   subprocess (38.2 tok/s) and HIP (~70 tok/s)**.
+   hrx_gpu`). Benchmarked ~80–87 tok/s warm decode on fused (Q4_K-embedding)
+   models — **faster than the fresh subprocess (38.2 tok/s) and HIP (~70
+   tok/s)**; everything else fails over correctly to ggml_vulkan (G1a).
 2. **Zero-DMA-copy execution** — fork A decided and documented: the
    silicon-proven SharedBO→Vulkan dma-buf substrate stays alongside the
    in-process HRX GPU lane; **fork B (IREE HAL dma-buf import) is not feasible
