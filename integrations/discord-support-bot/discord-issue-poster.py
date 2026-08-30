@@ -208,12 +208,16 @@ def main() -> int:
     # Idempotency: map issue number → existing forum post (active + archived).
     # A post named "#N ..." means the issue is already mirrored — e.g. a
     # previous run posted it but crashed before saving state, or the Discord
-    # POST succeeded server-side while the client timed out.
+    # POST succeeded server-side while the client timed out. `listing_ok`
+    # guards the deleted-post check: an absent thread only counts as deleted
+    # when the listing itself succeeded.
+    threads, listing_ok = forum_threads()
     existing = {}
-    for t in forum_threads():
+    for t in threads:
         m = re.match(r"^#(\d+)\s", t.get("name") or "")
         if m:
             existing[int(m.group(1))] = t
+    thread_ids = {t["id"] for t in threads}
 
     # ── job 1: post new issues (plus retry previously failed numbers) ─────
     issues = new_open_issues(after)
@@ -243,7 +247,8 @@ def main() -> int:
             if num in failed:
                 failed.remove(num)
             posts[str(num)] = {"thread": existing[num]["id"], "state": "OPEN",
-                               "tags": [], "archived": bool(existing[num].get("archived"))}
+                               "tags": [],
+                               "archived": bool((existing[num].get("thread_metadata") or {}).get("archived"))}
             print(f"#{num} already posted ({existing[num]['id']}) — recorded, not re-posted")
             if num > after:
                 state["last_issue"] = num
@@ -292,14 +297,23 @@ def main() -> int:
 
     # ── job 2: reconcile tracked posts with live issue state ──────────────
     for num, rec in list(posts.items()):
+        # Deleted-post detection without a PATCH: an open issue with stable
+        # labels/severity never triggers a PATCH, so a hand-deleted post
+        # would otherwise go unnoticed forever. Only when the listing
+        # succeeded and the thread id is absent is it truly gone.
+        if listing_ok and rec["thread"] not in thread_ids:
+            print(f"sync #{num}: post {rec['thread']} no longer in forum — dropping/re-queueing")
+            _drop_dead_post(state, num)
+            continue
         # Re-read the REAL archived state from the forum scan: Discord
         # auto-archives posts after auto_archive_duration (7 days) of
         # inactivity, and rec["archived"] only tracks our own PATCHes — an
         # open issue's auto-archived post would otherwise never be
-        # unarchived and would silently vanish from the active view.
+        # unarchived and would silently vanish from the active view. The
+        # flag lives under thread_metadata.archived in list responses.
         t = existing.get(int(num))
-        if t and "archived" in t:
-            rec["archived"] = bool(t.get("archived"))
+        if t and t.get("thread_metadata"):
+            rec["archived"] = bool(t["thread_metadata"].get("archived"))
         sync_post(state, int(num), rec, tags)
     save_state(state)
 

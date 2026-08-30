@@ -77,6 +77,21 @@ def _post_forum(name: str, content: str, tag_ids: list[str]) -> str:
         return json.loads(r.read())["id"]
 
 
+def _channel_has_digest(channel_id: str) -> bool:
+    """Best-effort: does the text channel already carry today's digest?"""
+    try:
+        req = urllib.request.Request(
+            API + f"/channels/{channel_id}/messages?limit=50",
+            headers={"Authorization": "Bot " + TOKEN, "User-Agent": UA},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            msgs = json.loads(r.read())
+        return any("Open issue backlog" in (m.get("content") or "")
+                   for m in msgs)
+    except Exception:  # noqa: BLE001
+        return False  # unknown — let the post attempt go ahead
+
+
 def main() -> int:
     if not TOKEN:
         print("error: no DISCORD_TOKEN", file=sys.stderr)
@@ -126,18 +141,23 @@ def main() -> int:
             pass
 
     day = time.strftime("%Y-%m-%d")
-    # Idempotency: a re-run (manual or scheduler double-fire) must not create
-    # a second "Issue digest <day>" post with identical content.
-    existing = [t for t in forum_threads()
-                if (t.get("name") or "").startswith(f"Issue digest {day}")]
-    if existing:
-        print(f"digest for {day} already posted ({existing[0]['id']}) — skipping")
-        return 0
     digest_channel = os.getenv("ISSUE_DIGEST_CHANNEL", "")
     if digest_channel.isdigit():
+        # Text-channel mode: dedupe against the channel's recent messages
+        # (a re-run must not post a duplicate digest message).
+        if _channel_has_digest(digest_channel):
+            print(f"digest for {day} already posted to channel {digest_channel} — skipping")
+            return 0
         mid = _post_message(digest_channel, content)
         print(f"digest posted to channel {digest_channel} (msg {mid})")
     else:
+        # Forum mode: dedupe against existing "Issue digest <day>" posts.
+        threads, _ = forum_threads()
+        existing = [t for t in threads
+                    if (t.get("name") or "").startswith(f"Issue digest {day}")]
+        if existing:
+            print(f"digest for {day} already posted ({existing[0]['id']}) — skipping")
+            return 0
         tags = forum_tags()
         ids = [tags[t] for t in ("inquiry", "pending", "defcon-5") if t in tags]
         pid = _post_forum(f"Issue digest {day}", content, ids)

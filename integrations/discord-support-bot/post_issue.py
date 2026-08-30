@@ -127,17 +127,21 @@ def forum_tags() -> dict[str, str]:
     return {t["name"]: t["id"] for t in channel.get("available_tags", [])}
 
 
-def forum_threads() -> list[dict]:
-    """All existing posts (active + archived) in the issue-tracker forum.
+def forum_threads() -> tuple[list[dict], bool]:
+    """All existing posts (active + archived); returns (threads, complete).
 
-    Used for idempotent posting: a post whose name starts with "#N " means
-    issue N is already mirrored, so the poster records it instead of
-    creating a duplicate (e.g. after a crash between the POST and the
-    state write, or a client-side timeout after a server-side success).
-    The archived endpoint is paginated (before cursor) so the idempotency
-    map stays complete past 100 archived posts.
+    Used for idempotent posting and deleted-post detection: a post whose
+    name starts with "#N " means issue N is already mirrored. The archived
+    endpoint is paginated (before cursor) so the map stays complete past
+    100 archived posts.
+
+    ``complete`` is False when any page failed to load — callers must NOT
+    treat an absent thread as deleted when the listing itself failed.
+    Note: the archived flag lives under thread_metadata.archived, not at
+    the top level of the thread object.
     """
     out: list[dict] = []
+    complete = True
     for base in ("/threads/active?limit=100", "/threads/archived/public?limit=100"):
         cursor = ""
         while True:
@@ -145,13 +149,14 @@ def forum_threads() -> list[dict]:
                 path = f"/channels/{ISSUE_TRACKER_CHANNEL_ID}{base}{cursor}"
                 data = _api("GET", path)
             except Exception:  # noqa: BLE001 — best-effort; a listing failure
-                break          # must not block posting (idempotency is a bonus)
-            threads = data.get("threads", [])
+                complete = False  # must not block posting (idempotency is a bonus)
+                break
+            threads = data.get("threads") or []
             out.extend(threads)
             if not data.get("has_more") or not threads:
                 break
             cursor = f"&before={threads[-1]['id']}"
-    return out
+    return out, complete
 
 
 def severity(text: str) -> int:
