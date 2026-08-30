@@ -60,6 +60,12 @@ public:
     std::unique_ptr<xrt::bo> bI, bA, bB, bC;
     int8_t* Am = nullptr; int32_t* Cm = nullptr;
     bool ok = false;
+    // The instruction BO is loaded once in init() and never modified; re-syncing
+    // it on every launch costs ~ms-level driver round-trips per call (measured:
+    // the FFN path's fixed per-layer overhead is ~4.5 ms; bench_gemm_analytical
+    // syncs bI once and runs 100+ launches bit-identical).  Sync only when the
+    // BO has never been pushed (or was actually rewritten).
+    bool ins_synced = false;
 
     bool init(xrt::device& d, const char* xp, const char* ip, int md, int kd, int nd) {
         MD = md; KD = kd; ND = nd;
@@ -79,6 +85,7 @@ public:
             bI = std::make_unique<xrt::bo>(d, ins.size() * 4, XCL_BO_FLAGS_CACHEABLE, k->group_id(1));
             memcpy(bI->map(), ins.data(), ins.size() * 4);
             bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            ins_synced = true;
 
             bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD, XRT_BO_FLAGS_HOST_ONLY, k->group_id(3));
             bB = std::make_unique<xrt::bo>(d, (size_t)KD * ND, XRT_BO_FLAGS_HOST_ONLY, k->group_id(4));
@@ -139,7 +146,7 @@ public:
             }
         }
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        if (!ins_synced) { bI->sync(XCL_BO_SYNC_BO_TO_DEVICE); ins_synced = true; }
         unsigned ninstr = (ins.size() > 4 && ins[0] == 0x06040100u) ? ins[2] : (unsigned)ins.size();
         auto r = (*k)((unsigned)3, *bI, ninstr, *bA, B, *bC);
         r.wait();
@@ -163,8 +170,9 @@ public:
             Am[mi * KD + ki] = (int8_t)q;
         }
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        // Re-sync instruction buffer — XDNA AIE hardware consumes it on each run
-        bI->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // Instruction BO is static after init (see ins_synced above) — sync only
+        // on first use.
+        if (!ins_synced) { bI->sync(XCL_BO_SYNC_BO_TO_DEVICE); ins_synced = true; }
         // ninstr: the insts file is a 4-word FLM-parity header
         // {magic 0x06040100, ver, ncmds, nbytes} followed by the payload — the
         // kernel wants the COMMAND COUNT (ncmds = ins[2]), NOT the full file

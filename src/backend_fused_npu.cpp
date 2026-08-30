@@ -20,8 +20,13 @@ struct NpuState {
     std::vector<std::unique_ptr<xrt::bo>> gu_b, d_b;
     std::vector<float> gu_scale, d_scale;  // per-layer scales
     std::vector<std::vector<float>> ffn_norm;  // per-layer FFN RMSNorm weights (H)
+    // Scratch buffers (sized to xm rows at create): the per-call std::vector
+    // allocations in npu_state_ffn(_batch) cost ~ms-level malloc/mmap churn
+    // per layer (the gu scratch is 768 KB at am=32 → 2 mmap syscalls/call).
+    // Reused across calls — only the active am rows are touched.
+    std::vector<float> hnorm, gu_s, silu_in, ffn_out;
     int H = 0, IM = 0, NC = 0;
-    int xm = 0;   // AIE tile row count (1 = m1 single-row family, 128 = default)
+    int xm = 0;   // AIE tile row count (32 = m32 full grid, 8 = m8, 1 = m1, 128 = default)
     bool ok = false;
 };
 
@@ -39,13 +44,24 @@ NpuState* npu_state_create(const char* xclbin_dir, int H, int IM, int NC) {
         std::string b = xd + "/final_i8_" + tag;
         std::string i = xd + "/insts_i8_" + tag;
         // Preference order (all silicon-verified, oracle bit-identical):
-        // 1. _m8 (n1_core_i8_v27.py -M 8 + M8_VECTORIZED mmul): the fastest
+        // 1. _m32 (n1_core_i8_v27.py -M 32 -r 4 -c 8, FULL 32-core grid):
+        //    multi-sequence-decode family — one B DMA serves 32 rows (GU
+        //    2.26 ms for 32 rows vs 1.93 ms for 8 on m8 = 3.4x cheaper per
+        //    row, D 0.95 ms for 32 rows vs 0.94 ms for 8 = 4.0x).  Preferred
+        //    when FUSED_BATCH > 8 (batched decode); m8 stays the default for
+        //    single/small-batch because its launch is ~12% cheaper.
+        // 2. _m8 (n1_core_i8_v27.py -M 8 + M8_VECTORIZED mmul): the fastest
         //    single-stream launch — 2.06 ms for the 6.3 MB GU B (3.1 GB/s)
         //    vs 4.32 ms for the m1 scalar stream (the scalar matmul throttles
         //    the DMA to ~1 GB/s) and 2.76 ms for the M=128-baked stream.
         //    am=8 also amortizes the B DMA across 8 sequences (2045 us total).
-        // 2. _m1 (n1_core_i8_m1.py, DIM_M=1 scalar): correct but compute-bound.
-        // 3. default (M=128-baked FLM-parity streams).
+        // 3. _m1 (n1_core_i8_m1.py, DIM_M=1 scalar): correct but compute-bound.
+        // 4. default (M=128-baked FLM-parity streams).
+        const char* fb = getenv("FUSED_BATCH");
+        bool want_m32 = fb && atoi(fb) > 8;
+        std::string m32b = b + "_qwen3_0_6b_m32.xclbin", m32i = i + "_qwen3_0_6b_m32.txt";
+        if (want_m32 && access(m32b.c_str(), F_OK) == 0 && access(m32i.c_str(), F_OK) == 0)
+            return {m32b, m32i, 32};
         std::string m8b = b + "_qwen3_0_6b_m8.xclbin", m8i = i + "_qwen3_0_6b_m8.txt";
         if (access(m8b.c_str(), F_OK) == 0 && access(m8i.c_str(), F_OK) == 0) return {m8b, m8i, 8};
         std::string m1b = b + "_qwen3_0_6b_m1.xclbin", m1i = i + "_qwen3_0_6b_m1.txt";
@@ -63,6 +79,11 @@ NpuState* npu_state_create(const char* xclbin_dir, int H, int IM, int NC) {
     // a mixed/partial install is broken — fail and let the caller run GPU-only.
     if (xgu.empty() || xdd.empty() || xm != xmd) { delete s; return nullptr; }
     s->xm = xm;
+    // Scratch buffers sized once for the full tile width (am <= xm always).
+    s->hnorm.assign((size_t)xm * H, 0.0f);
+    s->gu_s.assign((size_t)xm * 2 * IM, 0.0f);
+    s->silu_in.assign((size_t)xm * IM, 0.0f);
+    s->ffn_out.assign((size_t)xm * H, 0.0f);
 
     s->gu = std::make_unique<fusion::NpuGemmKernel>();
     s->d  = std::make_unique<fusion::NpuGemmKernel>();
@@ -75,6 +96,7 @@ NpuState* npu_state_create(const char* xclbin_dir, int H, int IM, int NC) {
     // _m8 families are the exceptions: they are BUILT for those tile widths
     // (MD = xm) with bit-identical integer math.
     printf("[npu] FFN xclbins: %s (XM=%d, %s)\n", xgu.c_str(), xm,
+           xm == 32 ? "full 32-core grid M=32 decode" :
            xm == 8 ? "vectorized M=8 decode" :
            xm == 1 ? "true single-row decode" : "fixed 128-row tile");
     if (!s->gu->init(s->dev, xgu.c_str(), igu.c_str(), xm, H, 2*IM) ||
@@ -162,8 +184,8 @@ bool npu_state_ffn(NpuState* s, int layer, float* h, int H) {
         for (int i = 0; i < H; i++) { float a = fabsf(hnorm[i]); if (a > ascale) ascale = a; }
         ascale = (ascale < 1e-12f) ? 1.0f : ascale / 127.0f;
 
-        std::vector<float> gu(2*IM);
-        s->gu->goB(hnorm.data(), 1, H, ascale, s->gu_scale[layer], gu.data(), 2*IM, *s->gu_b[layer]);
+        float* gu = s->gu_s.data();
+        s->gu->goB(hnorm.data(), 1, H, ascale, s->gu_scale[layer], gu, 2*IM, *s->gu_b[layer]);
         for (int i = 0; i < IM; i++)
             gu[i] = (gu[i] / (1.0f + expf(-gu[i]))) * gu[IM+i];
 
@@ -171,8 +193,8 @@ bool npu_state_ffn(NpuState* s, int layer, float* h, int H) {
         for (int i = 0; i < IM; i++) { float a = fabsf(gu[i]); if (a > dscale) dscale = a; }
         dscale = (dscale < 1e-12f) ? 1.0f : dscale / 127.0f;
 
-        std::vector<float> ffn_out(H);
-        s->d->goB(gu.data(), 1, IM, dscale, s->d_scale[layer], ffn_out.data(), H, *s->d_b[layer]);
+        float* ffn_out = s->ffn_out.data();
+        s->d->goB(gu, 1, IM, dscale, s->d_scale[layer], ffn_out, H, *s->d_b[layer]);
         for (int i = 0; i < H; i++) h[i] += ffn_out[i];
         return true;
     } catch (const std::exception& e) {
@@ -195,13 +217,14 @@ bool npu_state_ffn_batch(NpuState* s, int layer, float* h, int H, int am) {
         if (layer >= (int)s->gu_b.size() || !s->gu_b[layer] || !s->d_b[layer]) return false;
 
         // Per-row FFN RMSNorm + activation scale (each sequence has its own
-        // dynamic range — the batched kernel quantizes per row).
-        std::vector<float> hnorm((size_t)am * H);
+        // dynamic range — the batched kernel quantizes per row).  Scratch
+        // buffers come from NpuState (sized to xm rows at create).
+        float* hnorm = s->hnorm.data();
         std::vector<float> ascales(am), dscales(am);
         const auto& nw = s->ffn_norm[layer];
         for (int m = 0; m < am; m++) {
             const float* hm = h + (size_t)m * H;
-            float* hn = hnorm.data() + (size_t)m * H;
+            float* hn = hnorm + (size_t)m * H;
             if (!nw.empty()) {
                 double ss = 0;
                 for (int i = 0; i < H; i++) ss += (double)hm[i] * hm[i];
@@ -215,8 +238,8 @@ bool npu_state_ffn_batch(NpuState* s, int layer, float* h, int H, int am) {
             ascales[m] = (a < 1e-12f) ? 1.0f : a / 127.0f;
         }
 
-        std::vector<float> gu((size_t)am * 2 * IM);
-        s->gu->goB_rows(hnorm.data(), am, H, ascales.data(), s->gu_scale[layer], gu.data(), 2*IM, *s->gu_b[layer]);
+        float* gu = s->gu_s.data();
+        s->gu->goB_rows(hnorm, am, H, ascales.data(), s->gu_scale[layer], gu, 2*IM, *s->gu_b[layer]);
         for (int m = 0; m < am; m++)
             for (int i = 0; i < IM; i++) {
                 float g = gu[(size_t)m * 2 * IM + i], u = gu[(size_t)m * 2 * IM + IM + i];
@@ -230,13 +253,13 @@ bool npu_state_ffn_batch(NpuState* s, int layer, float* h, int H, int am) {
         // The D kernel's A is [am, IM] contiguous — compact the silu'd first
         // half of each gu row (gu is [am, 2*IM]; goB_rows would read row m at
         // m*IM, i.e. the wrong stride, without this).
-        std::vector<float> silu_in((size_t)am * IM);
+        float* silu_in = s->silu_in.data();
         for (int m = 0; m < am; m++)
-            memcpy(silu_in.data() + (size_t)m * IM, gu.data() + (size_t)m * 2 * IM,
+            memcpy(silu_in + (size_t)m * IM, gu + (size_t)m * 2 * IM,
                    (size_t)IM * sizeof(float));
 
-        std::vector<float> ffn_out((size_t)am * H);
-        s->d->goB_rows(silu_in.data(), am, IM, dscales.data(), s->d_scale[layer], ffn_out.data(), H, *s->d_b[layer]);
+        float* ffn_out = s->ffn_out.data();
+        s->d->goB_rows(silu_in, am, IM, dscales.data(), s->d_scale[layer], ffn_out, H, *s->d_b[layer]);
         for (int m = 0; m < am; m++)
             for (int i = 0; i < H; i++) h[(size_t)m * H + i] += ffn_out[(size_t)m * H + i];
         return true;

@@ -754,12 +754,23 @@ struct FusedBackend : Backend {
         // every layer's attention reads the wrong layer's K/V (the generic
         // CPU backend keeps k_cache[il][...] per layer — this mirrors that).
         kvb = (size_t)NC * max_seq * NKV * HD_ * sizeof(__half);
-        // Multi-sequence batch mode (FUSED_BATCH=N, N<=8 for the m8 xclbins):
+        // Multi-sequence batch mode (FUSED_BATCH=N; N<=32 with the m32 full
+        // 32-core-grid FFN xclbins, else <=8 for the m8 tile width):
         // per-sequence KV + hidden states.  The NPU FFN batches all N rows in
-        // one launch; the GPU attention runs per-sequence on the stream.
+        // one launch (B DMA amortized); the GPU attention runs per-sequence
+        // on the stream.
         const char* bs = getenv("FUSED_BATCH");
         batch_ = (bs && atoi(bs) > 1) ? atoi(bs) : 0;
-        if (batch_ > 8) { fprintf(stderr, "[fused] FUSED_BATCH capped at 8 (m8 tile width)\n"); batch_ = 8; }
+        const char* xd_env = getenv("NPU_XCLBIN_DIR");
+        std::string xd0 = xd_env ? xd_env : "engine/npu/xclbins";
+        bool have_m32 = access((xd0 + "/final_i8_GU_qwen3_0_6b_m32.xclbin").c_str(), F_OK) == 0 &&
+                        access((xd0 + "/insts_i8_GU_qwen3_0_6b_m32.txt").c_str(), F_OK) == 0;
+        int ffn_cap = have_m32 ? 32 : 8;
+        if (batch_ > ffn_cap) {
+            fprintf(stderr, "[fused] FUSED_BATCH capped at %d (%s tile width)\n",
+                    ffn_cap, have_m32 ? "m32 full-grid" : "m8");
+            batch_ = ffn_cap;
+        }
         size_t kvbAlloc = kvb * (batch_ ? (size_t)batch_ : 1);
         if (hipHostMalloc(&dK, kvbAlloc, hipHostMallocMapped) != hipSuccess ||
             hipHostMalloc(&dV, kvbAlloc, hipHostMallocMapped) != hipSuccess) return false;
