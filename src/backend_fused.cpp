@@ -511,6 +511,300 @@ __global__ void fused_lm_head_batch_kernel_i8(float* __restrict__ y, const int8_
     }
 }
 
+// ── int4-W GEMVs (per-32-group asymmetric: w = zero + scale*q, q in [0,15]) ──
+// Packed 2 nibbles/byte (low nibble = even element).  The q4nx source
+// quantizes per 32-element group (group_size=32), so we re-quantize the
+// dequantized f32 the same way: per-group (scale, zero) as a __half2 pair
+// (4 B per 32 elems, finer than the source's bf16 pair).  Since N is a
+// multiple of 32, each group maps to exactly one source group — the 16-level
+// grid [min,max] reproduces the source grid (min = (c0-zp)*s, max = (c15-zp)*s
+// ⇒ (max-min)/15 = s, zero = min) to within the half rounding of scale/zero.
+// Storage: 0.5 B/elem + 0.125 B/elem (scale+zero) = 0.625 B/elem vs int8's 1.
+__device__ __forceinline__ int i4q(uint8_t b, int hi) {
+    return (int)((b >> (hi << 2)) & 0xF);
+}
+// Group scale/zero for element-column k of row r (groups = N/32).
+__device__ __forceinline__ float2 i4sz(const __half2* __restrict__ szr, int k) {
+    return __half22float2(szr[k >> 5]);
+}
+
+__global__ void fused_gemv_v4_i4_kernel(float* __restrict__ y, const uint8_t* __restrict__ W,
+                                        const __half2* __restrict__ sz, const float* __restrict__ x,
+                                        int M, int N) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const uint8_t* Wr = W + (size_t)row * (N / 2);
+    const __half2* szr = sz + (size_t)row * (N / 32);
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 xv = x4[k];
+        uint8_t b0 = Wr[k * 2], b1 = Wr[k * 2 + 1];
+        float2 z = i4sz(szr, k * 4);
+        sum += z.y * (xv.x + xv.y + xv.z + xv.w)
+             + z.x * ((float)i4q(b0,0)*xv.x + (float)i4q(b0,1)*xv.y + (float)i4q(b1,0)*xv.z + (float)i4q(b1,1)*xv.w);
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = sdata[0];
+}
+
+__global__ void fused_qkv_v4_i4_kernel(float* __restrict__ yq, float* __restrict__ yk, float* __restrict__ yv,
+                                       const uint8_t* __restrict__ Wq, const uint8_t* __restrict__ Wk,
+                                       const uint8_t* __restrict__ Wv, const __half2* __restrict__ szq,
+                                       const __half2* __restrict__ szk, const __half2* __restrict__ szv,
+                                       const float* __restrict__ x, int s1, int s2, int N) {
+    int row = blockIdx.x;
+    const uint8_t* Wr; float* yr; const __half2* szr;
+    if (row < s1) { Wr = Wq + (size_t)row * (N / 2); yr = yq + row; szr = szq + (size_t)row * (N / 32); }
+    else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * (N / 2); yr = yk + (row - s1); szr = szk + (size_t)(row - s1) * (N / 32); }
+    else { Wr = Wv + (size_t)(row - s1 - s2) * (N / 2); yr = yv + (row - s1 - s2); szr = szv + (size_t)(row - s1 - s2) * (N / 32); }
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 xv = x4[k];
+        uint8_t b0 = Wr[k * 2], b1 = Wr[k * 2 + 1];
+        float2 z = i4sz(szr, k * 4);
+        sum += z.y * (xv.x + xv.y + xv.z + xv.w)
+             + z.x * ((float)i4q(b0,0)*xv.x + (float)i4q(b0,1)*xv.y + (float)i4q(b1,0)*xv.z + (float)i4q(b1,1)*xv.w);
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) yr[0] = sdata[0];
+}
+
+__global__ void fused_gu_v4_i4_kernel(float* __restrict__ y1, float* __restrict__ y2,
+                                      const uint8_t* __restrict__ W1, const uint8_t* __restrict__ W2,
+                                      const __half2* __restrict__ sz1, const __half2* __restrict__ sz2,
+                                      const float* __restrict__ x, int IM, int N) {
+    int row = blockIdx.x;
+    const uint8_t* Wr; float* yr; const __half2* szr;
+    if (row < IM) { Wr = W1 + (size_t)row * (N / 2); yr = y1 + row; szr = sz1 + (size_t)row * (N / 32); }
+    else { Wr = W2 + (size_t)(row - IM) * (N / 2); yr = y2 + (row - IM); szr = sz2 + (size_t)(row - IM) * (N / 32); }
+    const float4* x4 = (const float4*)x;
+    int N4 = N >> 2;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N4; k += BLOCK) {
+        float4 xv = x4[k];
+        uint8_t b0 = Wr[k * 2], b1 = Wr[k * 2 + 1];
+        float2 z = i4sz(szr, k * 4);
+        sum += z.y * (xv.x + xv.y + xv.z + xv.w)
+             + z.x * ((float)i4q(b0,0)*xv.x + (float)i4q(b0,1)*xv.y + (float)i4q(b1,0)*xv.z + (float)i4q(b1,1)*xv.w);
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) yr[0] = sdata[0];
+}
+
+__global__ void fused_wo_h2v4_i4_kernel(float* __restrict__ y, const uint8_t* __restrict__ W,
+                                        const __half2* __restrict__ sz, const __half* __restrict__ x,
+                                        int M, int N) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const uint8_t* Wr = W + (size_t)row * (N / 2);
+    const __half2* szr = sz + (size_t)row * (N / 32);
+    const __half2* x2 = (const __half2*)x;
+    int N2 = N >> 1;
+    float sum = 0;
+    for (int k = threadIdx.x; k < N2; k += BLOCK) {
+        float2 f = __half22float2(x2[k]);
+        uint8_t b = Wr[k];
+        float2 z = i4sz(szr, k * 2);
+        sum += z.y * (f.x + f.y) + z.x * ((float)i4q(b,0) * f.x + (float)i4q(b,1) * f.y);
+    }
+    __shared__ float sdata[BLOCK];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = BLOCK/2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = sdata[0];
+}
+
+__global__ void fused_gemv_batch_v1fs_i4_kernel(float* __restrict__ y, const uint8_t* __restrict__ W,
+                                                const __half2* __restrict__ sz, const float* __restrict__ x,
+                                                int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    constexpr int LBLOCK = 128;
+    const int GRP = N / 32;              // groups per row
+    __shared__ uint8_t ws4[1536];        // N/2 <= 1536 (N <= 3072)
+    __shared__ __half2 wg[96];           // group (scale, zero)
+    __shared__ float wsum[LBLOCK / 32];
+    const uint8_t* Wr = W + (size_t)row * (N / 2);
+    const __half2* szr = sz + (size_t)row * GRP;
+    for (int i = threadIdx.x; i < N / 2; i += LBLOCK) ws4[i] = Wr[i];
+    for (int i = threadIdx.x; i < GRP; i += LBLOCK) wg[i] = szr[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int b = 0; b < B; b++) {
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 xv = x4[k4];
+            uint8_t b0 = ws4[k4 * 2], b1 = ws4[k4 * 2 + 1];
+            float2 z = __half22float2(wg[k4 >> 3]);   // 4 elems per k4, 32 per group
+            sum += z.y * (xv.x + xv.y + xv.z + xv.w)
+                 + z.x * ((float)i4q(b0,0)*xv.x + (float)i4q(b0,1)*xv.y + (float)i4q(b1,0)*xv.z + (float)i4q(b1,1)*xv.w);
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) y[(size_t)b * M + row] = v;
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void fused_qkv_batch_ws_i4_kernel(float* __restrict__ yq, float* __restrict__ yk, float* __restrict__ yv,
+                                             const uint8_t* __restrict__ Wq, const uint8_t* __restrict__ Wk,
+                                             const uint8_t* __restrict__ Wv, const __half2* __restrict__ szq,
+                                             const __half2* __restrict__ szk, const __half2* __restrict__ szv,
+                                             const float* __restrict__ x, int s1, int s2, int N, int B) {
+    int row = blockIdx.x;
+    int rows = s1 + 2 * s2;
+    if (row >= rows) return;
+    const uint8_t* Wr; float* yr; const __half2* szr;
+    if (row < s1) { Wr = Wq + (size_t)row * (N / 2); yr = yq; szr = szq + (size_t)row * (N / 32); }
+    else if (row < s1 + s2) { Wr = Wk + (size_t)(row - s1) * (N / 2); yr = yk; szr = szk + (size_t)(row - s1) * (N / 32); }
+    else { Wr = Wv + (size_t)(row - s1 - s2) * (N / 2); yr = yv; szr = szv + (size_t)(row - s1 - s2) * (N / 32); }
+    constexpr int LBLOCK = 128;
+    const int GRP = N / 32;
+    __shared__ uint8_t ws4[1536];
+    __shared__ __half2 wg[96];
+    __shared__ float wsum[LBLOCK / 32];
+    for (int i = threadIdx.x; i < N / 2; i += LBLOCK) ws4[i] = Wr[i];
+    for (int i = threadIdx.x; i < GRP; i += LBLOCK) wg[i] = szr[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int b = 0; b < B; b++) {
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 xv = x4[k4];
+            uint8_t b0 = ws4[k4 * 2], b1 = ws4[k4 * 2 + 1];
+            float2 z = __half22float2(wg[k4 >> 3]);
+            sum += z.y * (xv.x + xv.y + xv.z + xv.w)
+                 + z.x * ((float)i4q(b0,0)*xv.x + (float)i4q(b0,1)*xv.y + (float)i4q(b1,0)*xv.z + (float)i4q(b1,1)*xv.w);
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) {
+                if (row < s1) yq[(size_t)b * s1 + row] = v;
+                else if (row < s1 + s2) yk[(size_t)b * s2 + (row - s1)] = v;
+                else yv[(size_t)b * s2 + (row - s1 - s2)] = v;
+            }
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void fused_gu_batch_ws_i4_kernel(float* __restrict__ y1, float* __restrict__ y2,
+                                            const uint8_t* __restrict__ W1, const uint8_t* __restrict__ W2,
+                                            const __half2* __restrict__ sz1, const __half2* __restrict__ sz2,
+                                            const float* __restrict__ x, int IM, int N, int B) {
+    int row = blockIdx.x;
+    int rows = 2 * IM;
+    if (row >= rows) return;
+    const uint8_t* Wr; float* yr; const __half2* szr;
+    if (row < IM) { Wr = W1 + (size_t)row * (N / 2); yr = y1; szr = sz1 + (size_t)row * (N / 32); }
+    else { Wr = W2 + (size_t)(row - IM) * (N / 2); yr = y2; szr = sz2 + (size_t)(row - IM) * (N / 32); }
+    constexpr int LBLOCK = 128;
+    const int GRP = N / 32;
+    __shared__ uint8_t ws4[1536];
+    __shared__ __half2 wg[96];
+    __shared__ float wsum[LBLOCK / 32];
+    for (int i = threadIdx.x; i < N / 2; i += LBLOCK) ws4[i] = Wr[i];
+    for (int i = threadIdx.x; i < GRP; i += LBLOCK) wg[i] = szr[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int b = 0; b < B; b++) {
+        const float4* x4 = (const float4*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k4 = threadIdx.x; k4 < N / 4; k4 += LBLOCK) {
+            float4 xv = x4[k4];
+            uint8_t b0 = ws4[k4 * 2], b1 = ws4[k4 * 2 + 1];
+            float2 z = __half22float2(wg[k4 >> 3]);
+            sum += z.y * (xv.x + xv.y + xv.z + xv.w)
+                 + z.x * ((float)i4q(b0,0)*xv.x + (float)i4q(b0,1)*xv.y + (float)i4q(b1,0)*xv.z + (float)i4q(b1,1)*xv.w);
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) {
+                if (row < IM) y1[(size_t)b * IM + row] = v;
+                else y2[(size_t)b * IM + (row - IM)] = v;
+            }
+        }
+        __syncthreads();
+    }
+}
+
+__global__ void fused_lm_head_batch_i4_kernel(float* __restrict__ y, const uint8_t* __restrict__ W,
+                                              const __half2* __restrict__ sz, const __half* __restrict__ x,
+                                              int M, int N, int B) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    constexpr int LBLOCK = 128;
+    const int GRP = N / 32;
+    __shared__ uint8_t ws4[1536];
+    __shared__ __half2 wg[96];
+    __shared__ float wsum[LBLOCK / 32];
+    const uint8_t* Wr = W + (size_t)row * (N / 2);
+    const __half2* szr = sz + (size_t)row * GRP;
+    for (int i = threadIdx.x; i < N / 2; i += LBLOCK) ws4[i] = Wr[i];
+    for (int i = threadIdx.x; i < GRP; i += LBLOCK) wg[i] = szr[i];
+    __syncthreads();
+    int lane = threadIdx.x & 31, warp = threadIdx.x >> 5;
+    for (int b = 0; b < B; b++) {
+        const __half2* x2 = (const __half2*)(x + (size_t)b * N);
+        float sum = 0.0f;
+        for (int k2 = threadIdx.x; k2 < N / 2; k2 += LBLOCK) {
+            float2 f = __half22float2(x2[k2]);
+            uint8_t bb = ws4[k2];
+            float2 z = __half22float2(wg[k2 >> 4]);   // 2 elems per k2, 32 per group
+            sum += z.y * (f.x + f.y) + z.x * ((float)i4q(bb,0) * f.x + (float)i4q(bb,1) * f.y);
+        }
+        for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+        if (lane == 0) wsum[warp] = sum;
+        __syncthreads();
+        if (warp == 0) {
+            float v = (lane < LBLOCK/32) ? wsum[lane] : 0.0f;
+            for (int off = 16; off; off >>= 1) v += __shfl_down(v, off);
+            if (lane == 0) y[(size_t)b * M + row] = v;
+        }
+        __syncthreads();
+    }
+}
+
 // ── Row-wise argmax on the GPU (first-max, matches the host loop) ──
 // out[b] = argmax_v logits[b*V+v], first (lowest) index on ties.  Avoids the
 // host-side scan of B*V logits (~1 ms on 8x152K) — the token selection is
@@ -973,8 +1267,12 @@ struct FusedBackend : Backend {
     float *d_embed = nullptr, *d_final_norm = nullptr, *d_output = nullptr;
     int8_t* d_output8 = nullptr;   // int8 lm_head W (152 MB vs 622 MB f32)
     int8_t* d_embed8 = nullptr;    // int8 tied-embedding lm_head W (no lm_head.weight models)
+    uint8_t* d_embed4 = nullptr;   // int4 tied-embedding lm_head W (0.5 B/elem)
+    __half2* d_embed4sz = nullptr; // per-32-group (scale, zero)
     float* d_output_s = nullptr;   // per-row lm_head scales
     float* d_embed_s = nullptr;    // per-row tied-embedding scales
+    uint8_t* d_output4 = nullptr;  // int4 lm_head W (0.5 B/elem)
+    __half2* d_output4sz = nullptr;// per-32-group (scale, zero)
     struct GpuL {
         float *wq, *wk, *wv, *wo, *w1, *w2, *w3, *pn, *pon, *q_norm, *k_norm;
         // int8 GEMV weights + per-row scales: 4x smaller W, ~35-44% faster
@@ -982,6 +1280,12 @@ struct FusedBackend : Backend {
         // the small/non-GEMV paths.
         int8_t *wq8, *wk8, *wv8, *wo8, *w18, *w28, *w38;
         float *wq_s, *wk_s, *wv_s, *wo_s, *w1_s, *w2_s, *w3_s;
+        // int4 GEMV weights (2 nibbles/byte, low nibble = even element) +
+        // per-32-group (scale, zero) as __half2 (q4nx group_size=32 scheme):
+        // 0.5 B/elem + 4 B per 32 elems.  w = zero + scale*q.
+        uint8_t *wq4, *wk4, *wv4, *wo4, *w14, *w24, *w34;
+        __half2* wq4sz; __half2* wk4sz; __half2* wv4sz; __half2* wo4sz;
+        __half2* w14sz; __half2* w24sz; __half2* w34sz;
     };
     std::vector<GpuL> L;
 
@@ -1321,7 +1625,9 @@ struct FusedBackend : Backend {
             HIP_CHECK(hipMemcpy(g, c.data(), c.size()*4, hipMemcpyHostToDevice)); return true;
         };
         // int8 upload with per-row scales: rows = c.size()/N.
+        bool no_i8 = getenv("FUSED_NO_I8") != nullptr;
         auto up8 = [&](const std::vector<float>& c, int N, int8_t*& g8, float*& gs) {
+            if (no_i8) { g8 = nullptr; gs = nullptr; return true; }
             if (c.empty() || N <= 0 || c.size() % N != 0) { g8 = nullptr; gs = nullptr; return true; }
             int rows = (int)(c.size() / N);
             std::vector<int8_t> c8(c.size());
@@ -1343,9 +1649,53 @@ struct FusedBackend : Backend {
             HIP_CHECK(hipMemcpy(gs, cs.data(), (size_t)rows * 4, hipMemcpyHostToDevice));
             return true;
         };
+        // int4 upload, asymmetric per-32-group (q4nx group_size=32 scheme):
+        // source w = v*scale + zp with v in [0,15] on a uniform grid; if the
+        // group uses fewer than 16 distinct codes, re-quantizing with divisor
+        // 15 would misalign the grid (e.g. codes 2..9 -> step 7s/15).  Using
+        // the group's actual distinct-code count (ndistinct-1) as the divisor
+        // reproduces the source grid exactly (q = v - vmin).  Packed 2
+        // nibbles/byte (low nibble = even element); (scale, zero) as __half2
+        // (4 B per 32 elems — finer than the source's bf16 pair).
+        bool no_i4 = getenv("FUSED_NO_I4") != nullptr;
+        auto up4 = [&](const std::vector<float>& c, int N, uint8_t*& g4, __half2*& gsz) {
+            if (no_i4) { g4 = nullptr; gsz = nullptr; return true; }
+            if (c.empty() || N <= 0 || c.size() % N != 0) { g4 = nullptr; gsz = nullptr; return true; }
+            int rows = (int)(c.size() / N);
+            int GRP = N / 32;  // groups per row (N multiple of 32 — always true here)
+            std::vector<uint8_t> c4(c.size() / 2);
+            std::vector<__half2> cs((size_t)rows * GRP);
+            for (int r = 0; r < rows; r++) {
+                for (int g = 0; g < GRP; g++) {
+                    const float* cr = &c[(size_t)r*N + (size_t)g*32];
+                    float mn = cr[0], mx = cr[0];
+                    for (int k = 1; k < 32; k++) {
+                        float v = cr[k];
+                        if (v < mn) mn = v; else if (v > mx) mx = v;
+                    }
+                    float scale = (mx - mn) / 15.0f;
+                    if (scale < 1e-12f) scale = 1.0f;  // degenerate group: q=0, w=mn
+                    cs[(size_t)r*GRP + g] = __halves2half2(__float2half(scale), __float2half(mn));
+                    for (int k = 0; k < 32; k++) {
+                        float qf = (cr[k] - mn) / scale;
+                        int q = (int)lrintf(qf);
+                        if (q < 0) q = 0; else if (q > 15) q = 15;
+                        size_t byte = (size_t)r * (N/2) + (size_t)g * 16 + (k >> 1);
+                        c4[byte] |= (uint8_t)((k & 1) ? (q << 4) : q);
+                    }
+                }
+            }
+            if (hipMalloc(&g4, c.size() / 2) != hipSuccess) return false;
+            if (hipMalloc(&gsz, (size_t)rows * GRP * 4) != hipSuccess) return false;
+            HIP_CHECK(hipMemcpy(g4, c4.data(), c.size() / 2, hipMemcpyHostToDevice));
+            HIP_CHECK(hipMemcpy(gsz, cs.data(), (size_t)rows * GRP * 4, hipMemcpyHostToDevice));
+            return true;
+        };
         up(cpu_embed, d_embed); up(cpu_final_norm, d_final_norm); up(cpu_output, d_output);
         up8(cpu_embed, H, d_embed8, d_embed_s);
         up8(cpu_output, H, d_output8, d_output_s);
+        up4(cpu_embed, H, d_embed4, d_embed4sz);
+        up4(cpu_output, H, d_output4, d_output4sz);
         L.resize(NC);
         for (int l = 0; l < NC; l++) {
             auto& t = tmp[l]; auto& gl = L[l];
@@ -1357,8 +1707,45 @@ struct FusedBackend : Backend {
             up8(t.wv, H, gl.wv8, gl.wv_s); up8(t.wo, NH*HD_, gl.wo8, gl.wo_s);
             up8(t.w1, H, gl.w18, gl.w1_s); up8(t.w2, H, gl.w28, gl.w2_s);
             up8(t.w3, IM, gl.w38, gl.w3_s);
+            up4(t.wq, H, gl.wq4, gl.wq4sz); up4(t.wk, H, gl.wk4, gl.wk4sz);
+            up4(t.wv, H, gl.wv4, gl.wv4sz); up4(t.wo, NH*HD_, gl.wo4, gl.wo4sz);
+            up4(t.w1, H, gl.w14, gl.w14sz); up4(t.w2, H, gl.w24, gl.w24sz);
+            up4(t.w3, IM, gl.w34, gl.w34sz);
         }
 
+        // Strip to bytes: the f32 GPU weight copies are redundant once the
+        // quantized versions exist — free them (~1.8 GB for 28 layers).  All
+        // kernel paths gate on int4 first, int8 second; the f32 copies stay
+        // when a matrix failed to quantize.
+        size_t mem_before = 0, mem_total = 0;
+        hipMemGetInfo(&mem_before, &mem_total);
+        for (int l = 0; l < NC; l++) {
+            auto& gl = L[l];
+            if (gl.wq4) { hipFree(gl.wq8); gl.wq8 = nullptr; hipFree(gl.wq_s); gl.wq_s = nullptr; hipFree(gl.wq); gl.wq = nullptr; }
+            else if (gl.wq8) { hipFree(gl.wq); gl.wq = nullptr; }
+            if (gl.wk4) { hipFree(gl.wk8); gl.wk8 = nullptr; hipFree(gl.wk_s); gl.wk_s = nullptr; hipFree(gl.wk); gl.wk = nullptr; }
+            else if (gl.wk8) { hipFree(gl.wk); gl.wk = nullptr; }
+            if (gl.wv4) { hipFree(gl.wv8); gl.wv8 = nullptr; hipFree(gl.wv_s); gl.wv_s = nullptr; hipFree(gl.wv); gl.wv = nullptr; }
+            else if (gl.wv8) { hipFree(gl.wv); gl.wv = nullptr; }
+            if (gl.wo4) { hipFree(gl.wo8); gl.wo8 = nullptr; hipFree(gl.wo_s); gl.wo_s = nullptr; hipFree(gl.wo); gl.wo = nullptr; }
+            else if (gl.wo8) { hipFree(gl.wo); gl.wo = nullptr; }
+            if (gl.w14) { hipFree(gl.w18); gl.w18 = nullptr; hipFree(gl.w1_s); gl.w1_s = nullptr; hipFree(gl.w1); gl.w1 = nullptr; }
+            else if (gl.w18) { hipFree(gl.w1); gl.w1 = nullptr; }
+            if (gl.w24) { hipFree(gl.w28); gl.w28 = nullptr; hipFree(gl.w2_s); gl.w2_s = nullptr; hipFree(gl.w2); gl.w2 = nullptr; }
+            else if (gl.w28) { hipFree(gl.w2); gl.w2 = nullptr; }
+            if (gl.w34) { hipFree(gl.w38); gl.w38 = nullptr; hipFree(gl.w3_s); gl.w3_s = nullptr; hipFree(gl.w3); gl.w3 = nullptr; }
+            else if (gl.w38) { hipFree(gl.w3); gl.w3 = nullptr; }
+        }
+        if (d_output4) { hipFree(d_output8); d_output8 = nullptr; hipFree(d_output_s); d_output_s = nullptr; hipFree(d_output); d_output = nullptr; }
+        else if (d_output8) { hipFree(d_output); d_output = nullptr; }
+        // d_embed stays — the embed lookup kernel reads it; only the int8
+        // lm_head copy (d_embed8) is redundant once the int4 copy exists.
+        if (d_embed4) { hipFree(d_embed8); d_embed8 = nullptr; hipFree(d_embed_s); d_embed_s = nullptr; }
+        size_t mem_after = 0;
+        hipMemGetInfo(&mem_after, &mem_total);
+        printf("[fused] strip: freed %.1f GB of redundant f32/int8 weights (free %.2f -> %.2f GB of %.2f GB)\n",
+               (double)(mem_after - mem_before) / 1e9,
+               (double)mem_before / 1e9, (double)mem_after / 1e9, (double)mem_total / 1e9);
         if (npu_ok && npu) {
             for (int l = 0; l < NC; l++) {
                 auto& cl = cpu_L[l];
@@ -1409,6 +1796,10 @@ struct FusedBackend : Backend {
     static void gemv8(float* y, const int8_t* W8, const float* srow, const float* x, int M, int N, hipStream_t s) {
         if (!W8) return;
         fused_gemv_v4_i8_kernel<<<M, BLOCK, 0, s>>>(y, W8, srow, x, M, N);
+    }
+    static void gemv4(float* y, const uint8_t* W4, const __half2* sz, const float* x, int M, int N, hipStream_t s) {
+        if (!W4) return;
+        fused_gemv_v4_i4_kernel<<<M, BLOCK, 0, s>>>(y, W4, sz, x, M, N);
     }
 
     // ══════════════════════════════════════
@@ -1600,11 +1991,17 @@ struct FusedBackend : Backend {
                         fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
                         if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
                         else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
-                        if (gl.w1 && gl.w2 && gl.w3) {
-                            if (gl.w18) gemv8(dgate, gl.w18, gl.w1_s, dh, IM_, H_, stream); else gemv(dgate, gl.w1, dh, IM_, H_, stream);
-                            gemv(dup_,  gl.w2, dh, IM_, H_, stream);
+                        if ((gl.w14 || gl.w18 || gl.w1) && (gl.w24 || gl.w28 || gl.w2) && (gl.w34 || gl.w38 || gl.w3)) {
+                            if (gl.w14) gemv4(dgate, gl.w14, gl.w14sz, dh, IM_, H_, stream);
+                            else if (gl.w18) gemv8(dgate, gl.w18, gl.w1_s, dh, IM_, H_, stream);
+                            else gemv(dgate, gl.w1, dh, IM_, H_, stream);
+                            if (gl.w24) gemv4(dup_, gl.w24, gl.w24sz, dh, IM_, H_, stream);
+                            else if (gl.w28) gemv8(dup_, gl.w28, gl.w2_s, dh, IM_, H_, stream);
+                            else gemv(dup_, gl.w2, dh, IM_, H_, stream);
                             fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                            if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream); else gemv(dh, gl.w3, datt, H_, IM_, stream);
+                            if (gl.w34) gemv4(dh, gl.w34, gl.w34sz, datt, H_, IM_, stream);
+                            else if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream);
+                            else gemv(dh, gl.w3, datt, H_, IM_, stream);
                             fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                         }
                         HIP_CHECK(hipMemcpy(va_.pages()->host_ptr(), dh,
@@ -1622,14 +2019,16 @@ struct FusedBackend : Backend {
                     fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
                     if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
                     else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
-                    if (gl.w1 && gl.w2 && gl.w3) {
-                        if (gl.w18 && gl.w28)
+                    if ((gl.w14 || gl.w18 || gl.w1) && (gl.w24 || gl.w28 || gl.w2) && (gl.w34 || gl.w38 || gl.w3)) {
+                        if (gl.w14 && gl.w24)
+                            fused_gu_v4_i4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w14, gl.w24, gl.w14sz, gl.w24sz, dh, IM_, H_);
+                        else if (gl.w18 && gl.w28)
                             fused_gu_v4_i8_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh, IM_, H_);
-                        else
-                            if (gl.w18 && gl.w28) fused_gu_v4_i8_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh, IM_, H_);
-                            else fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
+                        else fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
                         fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                        if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream); else gemv(dh, gl.w3, datt, H_, IM_, stream);
+                        if (gl.w34) gemv4(dh, gl.w34, gl.w34sz, datt, H_, IM_, stream);
+                        else if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream);
+                        else gemv(dh, gl.w3, datt, H_, IM_, stream);
                         fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                     }
                     HIP_CHECK(hipMemcpy(va_.pages()->host_ptr(), dh,
@@ -1646,11 +2045,17 @@ struct FusedBackend : Backend {
                     fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
                     if (gll.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gll.pon, H_, EPS);
                     else         fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
-                    if (gll.w1 && gll.w2 && gll.w3) {
-                        if (gll.w18) gemv8(dgate, gll.w18, gll.w1_s, dh, IM_, H_, stream); else gemv(dgate, gll.w1, dh, IM_, H_, stream);
-                        gemv(dup_,  gll.w2, dh, IM_, H_, stream);
+                    if ((gll.w14 || gll.w18 || gll.w1) && (gll.w24 || gll.w28 || gll.w2) && (gll.w34 || gll.w38 || gll.w3)) {
+                        if (gll.w14) gemv4(dgate, gll.w14, gll.w14sz, dh, IM_, H_, stream);
+                        else if (gll.w18) gemv8(dgate, gll.w18, gll.w1_s, dh, IM_, H_, stream);
+                        else gemv(dgate, gll.w1, dh, IM_, H_, stream);
+                        if (gll.w24) gemv4(dup_, gll.w24, gll.w24sz, dh, IM_, H_, stream);
+                        else if (gll.w28) gemv8(dup_, gll.w28, gll.w2_s, dh, IM_, H_, stream);
+                        else gemv(dup_, gll.w2, dh, IM_, H_, stream);
                         fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                        if (gll.w38) gemv8(dh, gll.w38, gll.w3_s, datt, H_, IM_, stream); else gemv(dh, gll.w3, datt, H_, IM_, stream);
+                        if (gll.w34) gemv4(dh, gll.w34, gll.w34sz, datt, H_, IM_, stream);
+                        else if (gll.w38) gemv8(dh, gll.w38, gll.w3_s, datt, H_, IM_, stream);
+                        else gemv(dh, gll.w3, datt, H_, IM_, stream);
                         fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                     }
                 }
@@ -1716,17 +2121,22 @@ struct FusedBackend : Backend {
             fused_copy_norm_kernel<<<1, BLOCK, 0, stream>>>(dffn, dh, gl.pn, H_, EPS);
 
             // 2. QKV GEMV (all async on stream)
-            if (gl.wq && gl.wk && gl.wv)
-                if (gl.wq8 && gl.wk8 && gl.wv8)
+            if ((gl.wq4 || gl.wq8 || gl.wq) && (gl.wk4 || gl.wk8 || gl.wk) && (gl.wv4 || gl.wv8 || gl.wv))
+                if (gl.wq4 && gl.wk4 && gl.wv4)
+                    fused_qkv_v4_i4_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(datt, dgate, dup_, gl.wq4, gl.wk4, gl.wv4, gl.wq4sz, gl.wk4sz, gl.wv4sz, dh, s1, s2, H_);
+                else if (gl.wq8 && gl.wk8 && gl.wv8)
                     fused_qkv_v4_i8_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(datt, dgate, dup_, gl.wq8, gl.wk8, gl.wv8, gl.wq_s, gl.wk_s, gl.wv_s, dh, s1, s2, H_);
                 else
                     fused_qkv_v4_kernel<<<s1 + 2*s2, BLOCK, 0, stream>>>(datt, dgate, dup_, gl.wq, gl.wk, gl.wv, dh, s1, s2, H_);
             else {
-                if (gl.wq && gl.wq8) gemv8(datt, gl.wq8, gl.wq_s, dh, s1, H_, stream);
+                if (gl.wq4) gemv4(datt, gl.wq4, gl.wq4sz, dh, s1, H_, stream);
+                else if (gl.wq8) gemv8(datt, gl.wq8, gl.wq_s, dh, s1, H_, stream);
                 else if (gl.wq) gemv(datt, gl.wq, dh, s1, H_, stream);
-                if (gl.wk && gl.wk8) gemv8(dgate, gl.wk8, gl.wk_s, dh, s2, H_, stream);
+                if (gl.wk4) gemv4(dgate, gl.wk4, gl.wk4sz, dh, s2, H_, stream);
+                else if (gl.wk8) gemv8(dgate, gl.wk8, gl.wk_s, dh, s2, H_, stream);
                 else if (gl.wk) gemv(dgate, gl.wk, dh, s2, H_, stream);
-                if (gl.wv && gl.wv8) gemv8(dup_, gl.wv8, gl.wv_s, dh, s2, H_, stream);
+                if (gl.wv4) gemv4(dup_, gl.wv4, gl.wv4sz, dh, s2, H_, stream);
+                else if (gl.wv8) gemv8(dup_, gl.wv8, gl.wv_s, dh, s2, H_, stream);
                 else if (gl.wv) gemv(dup_, gl.wv, dh, s2, H_, stream);
             }
 
@@ -1736,11 +2146,11 @@ struct FusedBackend : Backend {
             if (gl.k_norm) fused_head_rmsnorm_kernel<<<NKV_, BLOCK, 0, stream>>>(dgate, gl.k_norm, HD_, EPS);
 
             // 3. RoPE
-            if (gl.wq) fused_rope_kernel<<<NH_, HD_/2, 0, stream>>>(datt, HD_, pos, rope_theta, NH_);
-            if (gl.wk) fused_rope_kernel<<<NKV_, HD_/2, 0, stream>>>(dgate, HD_, pos, rope_theta, NKV_);
+            if (gl.wq4 || gl.wq8 || gl.wq) fused_rope_kernel<<<NH_, HD_/2, 0, stream>>>(datt, HD_, pos, rope_theta, NH_);
+            if (gl.wk4 || gl.wk8 || gl.wk) fused_rope_kernel<<<NKV_, HD_/2, 0, stream>>>(dgate, HD_, pos, rope_theta, NKV_);
 
             // 4. Q→half + KV store (all on same stream, no sync needed)
-            if (gl.wo) {
+            if (gl.wo4 || gl.wo8 || gl.wo) {
                 fused_f2h_kernel<<<(s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ, datt, s1);
                 // Per-layer KV: layer l owns [l*max_seq*NKV*HD, (l+1)*...)
                 __half* lk = devK + (size_t)l * max_seq * NKV_ * HD_;
@@ -1752,7 +2162,9 @@ struct FusedBackend : Backend {
                 rcpp_kv_cache_attn_decode(dQ, lk, lv, dAttn, NH_, NKV_, HD_, pos+1, scl, (void*)stream);
 
                 // 6. attn half→f32 + output projection
-                if (gl.wo8)
+                if (gl.wo4)
+                    fused_wo_h2v4_i4_kernel<<<H_, BLOCK, 0, stream>>>(doproj, gl.wo4, gl.wo4sz, dAttn, H_, s1);
+                else if (gl.wo8)
                     fused_wo_h2v4_i8_kernel<<<H_, BLOCK, 0, stream>>>(doproj, gl.wo8, gl.wo_s, dAttn, H_, s1);
                 else
                     fused_wo_h2v4_kernel<<<H_, BLOCK, 0, stream>>>(doproj, gl.wo, dAttn, H_, s1);
@@ -1777,11 +2189,14 @@ struct FusedBackend : Backend {
                 fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
                 if (gl.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gl.pon, H_, EPS);
                 else        fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
-                if (gl.w1 && gl.w2 && gl.w3) {
-                    if (gl.w18 && gl.w28) fused_gu_v4_i8_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh, IM_, H_);
-                            else fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
+                if ((gl.w14 || gl.w18 || gl.w1) && (gl.w24 || gl.w28 || gl.w2) && (gl.w34 || gl.w38 || gl.w3)) {
+                    if (gl.w14 && gl.w24) fused_gu_v4_i4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w14, gl.w24, gl.w14sz, gl.w24sz, dh, IM_, H_);
+                    else if (gl.w18 && gl.w28) fused_gu_v4_i8_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh, IM_, H_);
+                    else fused_gu_v4_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate, dup_, gl.w1, gl.w2, dh, IM_, H_);
                     fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                    if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream); else gemv(dh, gl.w3, datt, H_, IM_, stream);
+                    if (gl.w34) gemv4(dh, gl.w34, gl.w34sz, datt, H_, IM_, stream);
+                    else if (gl.w38) gemv8(dh, gl.w38, gl.w3_s, datt, H_, IM_, stream);
+                    else gemv(dh, gl.w3, datt, H_, IM_, stream);
                     fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                 }
             } else {
@@ -1819,11 +2234,17 @@ struct FusedBackend : Backend {
                 fused_copy_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dffn, dh, H_);
                 if (gll.pon) fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, gll.pon, H_, EPS);
                 else         fused_rmsnorm_kernel<<<1, BLOCK, 0, stream>>>(dh, nullptr, H_, EPS);
-                if (gll.w1 && gll.w2 && gll.w3) {
-                    if (gll.w18) gemv8(dgate, gll.w18, gll.w1_s, dh, IM_, H_, stream); else gemv(dgate, gll.w1, dh, IM_, H_, stream);
-                    gemv(dup_,  gll.w2, dh, IM_, H_, stream);
+                if ((gll.w14 || gll.w18 || gll.w1) && (gll.w24 || gll.w28 || gll.w2) && (gll.w34 || gll.w38 || gll.w3)) {
+                    if (gll.w14) gemv4(dgate, gll.w14, gll.w14sz, dh, IM_, H_, stream);
+                    else if (gll.w18) gemv8(dgate, gll.w18, gll.w1_s, dh, IM_, H_, stream);
+                    else gemv(dgate, gll.w1, dh, IM_, H_, stream);
+                    if (gll.w24) gemv4(dup_, gll.w24, gll.w24sz, dh, IM_, H_, stream);
+                    else if (gll.w28) gemv8(dup_, gll.w28, gll.w2_s, dh, IM_, H_, stream);
+                    else gemv(dup_, gll.w2, dh, IM_, H_, stream);
                     fused_silu_kernel<<<(IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt, dgate, dup_, IM_);
-                    if (gll.w38) gemv8(dh, gll.w38, gll.w3_s, datt, H_, IM_, stream); else gemv(dh, gll.w3, datt, H_, IM_, stream);
+                    if (gll.w34) gemv4(dh, gll.w34, gll.w34sz, datt, H_, IM_, stream);
+                    else if (gll.w38) gemv8(dh, gll.w38, gll.w3_s, datt, H_, IM_, stream);
+                    else gemv(dh, gll.w3, datt, H_, IM_, stream);
                     fused_add_kernel<<<(H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh, dffn, H_);
                 }
             }
@@ -1839,16 +2260,25 @@ struct FusedBackend : Backend {
     bool lm_head(const float* hidden, float* logits, int* argmax) override {
         // Upload hidden to GPU, run GEMV, read back
         HIP_CHECK(hipMemcpy(dh, hidden, H*sizeof(float), hipMemcpyHostToDevice));
-        int8_t* w8s = d_output8 ? d_output8 : (d_embed8 ? d_embed8 : nullptr);
-        float* w8sc = d_output8 ? d_output_s : (d_embed8 ? d_embed_s : nullptr);
-        if (w8s && w8sc) {
-            gemv8(dlogits, w8s, w8sc, dh, VOCAB, H, stream);
+        if (d_output4) {
+            gemv4(dlogits, d_output4, d_output4sz, dh, VOCAB, H, stream);
+        } else if (d_embed4) {
+            gemv4(dlogits, d_embed4, d_embed4sz, dh, VOCAB, H, stream);
+        } else if (d_output8 && d_output_s) {
+            gemv8(dlogits, d_output8, d_output_s, dh, VOCAB, H, stream);
+        } else if (d_embed8 && d_embed_s) {
+            gemv8(dlogits, d_embed8, d_embed_s, dh, VOCAB, H, stream);
         } else if (d_output) {
             gemv(dlogits, d_output, dh, VOCAB, H, stream);
         } else if (d_embed) {
             gemv(dlogits, d_embed, dh, VOCAB, H, stream);
         }
         HIP_CHECK(hipMemcpy(logits, dlogits, VOCAB*sizeof(float), hipMemcpyDeviceToHost));  // blocking
+        if (getenv("DBG_LM")) {
+            fprintf(stderr, "[dbg] hidden[0..3]=%.4f %.4f %.4f %.4f  logits[0..3]=%.4f %.4f %.4f %.4f  logits[100..103]=%.4f %.4f %.4f %.4f\n",
+                    hidden[0],hidden[1],hidden[2],hidden[3], logits[0],logits[1],logits[2],logits[3],
+                    logits[100],logits[101],logits[102],logits[103]);
+        }
         if (argmax) { *argmax=0; float mv=logits[0]; for(int v=1;v<VOCAB;v++){ if(logits[v]>mv){ mv=logits[v]; *argmax=v; } } }
         return true;
     }
@@ -1860,11 +2290,16 @@ struct FusedBackend : Backend {
         // am — now the dominant batch cost after the FFN batching).
         HIP_CHECK(hipMemcpy(dh_batch, hidden, (size_t)am * H * sizeof(float), hipMemcpyHostToDevice));
         const float* W = d_output ? d_output : d_embed;
-        if (!W) return false;
         fused_f2h_kernel<<<(am * H + BLOCK - 1) / BLOCK, BLOCK, 0, stream>>>(dxh, dh_batch, am * H);
-        if (d_output8 && d_output_s)
+        if (d_output4 && d_output4sz)
+            fused_lm_head_batch_i4_kernel<<<VOCAB, 128, 0, stream>>>(dlogits_batch, d_output4, d_output4sz, dxh, VOCAB, H, am);
+        else if (d_embed4 && d_embed4sz)
+            fused_lm_head_batch_i4_kernel<<<VOCAB, 128, 0, stream>>>(dlogits_batch, d_embed4, d_embed4sz, dxh, VOCAB, H, am);
+        else if (d_output8 && d_output_s)
             fused_lm_head_batch_kernel_i8<<<VOCAB, 128, 0, stream>>>(dlogits_batch, d_output8, d_output_s, dxh, VOCAB, H, am);
-        else
+        else if (d_embed8 && d_embed_s)
+            fused_lm_head_batch_kernel_i8<<<VOCAB, 128, 0, stream>>>(dlogits_batch, d_embed8, d_embed_s, dxh, VOCAB, H, am);
+        else if (W)
             fused_lm_head_batch_kernel_f16<<<VOCAB, 128, 0, stream>>>(dlogits_batch, W, dxh, VOCAB, H, am);
         HIP_CHECK(hipMemcpy(logits, dlogits_batch, (size_t)am * VOCAB * sizeof(float), hipMemcpyDeviceToHost));  // blocking
         if (argmaxs) {
@@ -1911,16 +2346,23 @@ struct FusedBackend : Backend {
             // 1. residual save + RMSNorm (one batched launch, grid B)
             fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pn, H_, EPS);
             // 2. batched QKV GEMVs (W read once)
-            if (gl.wq && gl.wk && gl.wv && gl.wq8 && gl.wk8 && gl.wv8)
+            if (gl.wq4 && gl.wk4 && gl.wv4)
+                fused_qkv_batch_ws_i4_kernel<<<s1 + 2*s2, 128, 0, stream>>>(
+                    datt_batch, dgate_batch, dup_batch, gl.wq4, gl.wk4, gl.wv4,
+                    gl.wq4sz, gl.wk4sz, gl.wv4sz, dh_batch, s1, s2, H_, B_);
+            else if (gl.wq8 && gl.wk8 && gl.wv8)
                 fused_qkv_batch_ws_i8_kernel<<<s1 + 2*s2, 128, 0, stream>>>(
                     datt_batch, dgate_batch, dup_batch, gl.wq8, gl.wk8, gl.wv8,
                     gl.wq_s, gl.wk_s, gl.wv_s, dh_batch, s1, s2, H_, B_);
             else {
-                if (gl.wq && gl.wq8) fused_gemv_batch_v1fs_i8_kernel<<<s1, 128, 0, stream>>>(datt_batch, gl.wq8, gl.wq_s, dh_batch, s1, H_, B_);
+                if (gl.wq4) fused_gemv_batch_v1fs_i4_kernel<<<s1, 128, 0, stream>>>(datt_batch, gl.wq4, gl.wq4sz, dh_batch, s1, H_, B_);
+                else if (gl.wq8) fused_gemv_batch_v1fs_i8_kernel<<<s1, 128, 0, stream>>>(datt_batch, gl.wq8, gl.wq_s, dh_batch, s1, H_, B_);
                 else if (gl.wq) fused_gemv_batch_v1fs_kernel<<<s1, 128, 0, stream>>>(datt_batch, gl.wq, dh_batch, s1, H_, B_);
-                if (gl.wk && gl.wk8) fused_gemv_batch_v1fs_i8_kernel<<<s2, 128, 0, stream>>>(dgate_batch, gl.wk8, gl.wk_s, dh_batch, s2, H_, B_);
+                if (gl.wk4) fused_gemv_batch_v1fs_i4_kernel<<<s2, 128, 0, stream>>>(dgate_batch, gl.wk4, gl.wk4sz, dh_batch, s2, H_, B_);
+                else if (gl.wk8) fused_gemv_batch_v1fs_i8_kernel<<<s2, 128, 0, stream>>>(dgate_batch, gl.wk8, gl.wk_s, dh_batch, s2, H_, B_);
                 else if (gl.wk) fused_gemv_batch_v1fs_kernel<<<s2, 128, 0, stream>>>(dgate_batch, gl.wk, dh_batch, s2, H_, B_);
-                if (gl.wv && gl.wv8) fused_gemv_batch_v1fs_i8_kernel<<<s2, 128, 0, stream>>>(dup_batch, gl.wv8, gl.wv_s, dh_batch, s2, H_, B_);
+                if (gl.wv4) fused_gemv_batch_v1fs_i4_kernel<<<s2, 128, 0, stream>>>(dup_batch, gl.wv4, gl.wv4sz, dh_batch, s2, H_, B_);
+                else if (gl.wv8) fused_gemv_batch_v1fs_i8_kernel<<<s2, 128, 0, stream>>>(dup_batch, gl.wv8, gl.wv_s, dh_batch, s2, H_, B_);
                 else if (gl.wv) fused_gemv_batch_v1fs_kernel<<<s2, 128, 0, stream>>>(dup_batch, gl.wv, dh_batch, s2, H_, B_);
             }
             // 3. batched QK-norm + RoPE (one launch per projection; the batch
@@ -1930,7 +2372,7 @@ struct FusedBackend : Backend {
             if (gl.k_norm) fused_head_norm_rope_batch_kernel<<<B_*NKV_, BLOCK, 0, stream>>>(
                 dgate_batch, gl.k_norm, HD_, EPS, batch_pos[0], rope_theta, NKV_);
             // 4. batched Q f2h; per-sequence KV store + decode (KV slices)
-            if (gl.wo) {
+            if (gl.wo4 || gl.wo8 || gl.wo) {
                 fused_f2h_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dQ_batch, datt_batch, B_*s1);
                 float scl = 1.0f / sqrtf((float)HD_);
                 fused_kv_store_batch_kernel<<<dim3(NKV_, B_), HD_, 0, stream>>>(
@@ -1944,10 +2386,11 @@ struct FusedBackend : Backend {
                 fused_h2f_kernel<<<(B_*s1+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dAttn_batch, B_*s1);
             }
             // 4. batched output projection (W read once)
-            if (gl.wo && gl.wo8) fused_gemv_batch_v1fs_i8_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.wo8, gl.wo_s, datt_batch, H_, NH_*HD_, B_);
+            if (gl.wo4) fused_gemv_batch_v1fs_i4_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.wo4, gl.wo4sz, datt_batch, H_, NH_*HD_, B_);
+            else if (gl.wo8) fused_gemv_batch_v1fs_i8_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.wo8, gl.wo_s, datt_batch, H_, NH_*HD_, B_);
             else if (gl.wo) fused_gemv_batch_v1fs_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.wo, datt_batch, H_, NH_*HD_, B_);
             // 5. residual (flat): dh = attn_out + saved
-            if (gl.wo)
+            if (gl.wo4 || gl.wo8 || gl.wo)
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
         };
         // Batched GPU FFN for all B rows: the w1/w2/w3 weight matrices are
@@ -1956,13 +2399,16 @@ struct FusedBackend : Backend {
         auto ffn_gpu_batch = [&](int l) {
             auto& gl = L[l];
             fused_copy_norm_batch_kernel<<<B_, BLOCK, 0, stream>>>(dffn_batch, dh_batch, gl.pon, H_, EPS);
-            if (gl.w1 && gl.w2 && gl.w3) {
-                if (gl.w18 && gl.w28 && gl.w38)
+            if ((gl.w14 || gl.w18 || gl.w1) && (gl.w24 || gl.w28 || gl.w2) && (gl.w34 || gl.w38 || gl.w3)) {
+                if (gl.w14 && gl.w24 && gl.w34)
+                    fused_gu_batch_ws_i4_kernel<<<2*IM_, 128, 0, stream>>>(dgate_batch, dup_batch, gl.w14, gl.w24, gl.w14sz, gl.w24sz, dh_batch, IM_, H_, B_);
+                else if (gl.w18 && gl.w28 && gl.w38)
                     fused_gu_batch_ws_i8_kernel<<<2*IM_, 128, 0, stream>>>(dgate_batch, dup_batch, gl.w18, gl.w28, gl.w1_s, gl.w2_s, dh_batch, IM_, H_, B_);
                 else
                     fused_gu_batch_ws_kernel<<<2*IM_, BLOCK, 0, stream>>>(dgate_batch, dup_batch, gl.w1, gl.w2, dh_batch, IM_, H_, B_);
                 fused_silu_kernel<<<(B_*IM_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(datt_batch, dgate_batch, dup_batch, B_*IM_);
-                if (gl.w38) fused_gemv_batch_v1fs_i8_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.w38, gl.w3_s, datt_batch, H_, IM_, B_);
+                if (gl.w34) fused_gemv_batch_v1fs_i4_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.w34, gl.w34sz, datt_batch, H_, IM_, B_);
+                else if (gl.w38) fused_gemv_batch_v1fs_i8_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.w38, gl.w3_s, datt_batch, H_, IM_, B_);
                 else fused_gemv_batch_v1fs_kernel<<<H_, 128, 0, stream>>>(doproj_batch, gl.w3, datt_batch, H_, IM_, B_);
                 fused_residual_kernel<<<(B_*H_+BLOCK-1)/BLOCK, BLOCK, 0, stream>>>(dh_batch, doproj_batch, dffn_batch, B_*H_);
             }
@@ -2072,12 +2518,24 @@ struct FusedBackend : Backend {
     void destroy() override {
         // Helper that frees AND nulls the pointer
         auto hf = [](float*& p) { if (p) { HIP_CHECK_D(hipFree(p)); p = nullptr; } };
+        auto hf8 = [](int8_t*& p) { if (p) { HIP_CHECK_D(hipFree(p)); p = nullptr; } };
+        auto hf4 = [](uint8_t*& p) { if (p) { HIP_CHECK_D(hipFree(p)); p = nullptr; } };
+        auto hfh2 = [](__half2*& p) { if (p) { HIP_CHECK_D(hipFree(p)); p = nullptr; } };
         auto hfh = [](__half*& p) { if (p) { HIP_CHECK_D(hipFree(p)); p = nullptr; } };
         auto hfhst = [](__half*& p) { if (p) { HIP_CHECK_D(hipHostFree(p)); p = nullptr; } };
         hf(dh); hf(datt); hf(dgate); hf(dup_); hf(doproj); hf(dffn); hf(dlogits);
         hfh(dQ); hfh(dAttn);
         hf(d_embed); hf(d_final_norm); hf(d_output);
-        for(auto& l : L){ hf(l.wq);hf(l.wk);hf(l.wv);hf(l.wo);hf(l.w1);hf(l.w2);hf(l.w3);hf(l.pn);hf(l.pon); }
+        hf8(d_embed8); hf8(d_output8);
+        hf4(d_embed4); hf4(d_output4);
+        hfh2(d_embed4sz); hfh2(d_output4sz);
+        hf(d_embed_s); hf(d_output_s);
+        for(auto& l : L){
+            hf(l.wq);hf(l.wk);hf(l.wv);hf(l.wo);hf(l.w1);hf(l.w2);hf(l.w3);hf(l.pn);hf(l.pon);
+            hf8(l.wq8);hf8(l.wk8);hf8(l.wv8);hf8(l.wo8);hf8(l.w18);hf8(l.w28);hf8(l.w38);
+            hf4(l.wq4);hf4(l.wk4);hf4(l.wv4);hf4(l.wo4);hf4(l.w14);hf4(l.w24);hf4(l.w34);
+            hfh2(l.wq4sz);hfh2(l.wk4sz);hfh2(l.wv4sz);hfh2(l.wo4sz);hfh2(l.w14sz);hfh2(l.w24sz);hfh2(l.w34sz);
+        }
         L.clear();
         hfhst(dK); hfhst(dV);
         devK = devV = nullptr;

@@ -245,3 +245,49 @@ the Vulkan on-pages path by default.  Findings + fixes:
 
 Session totals: batch 292 -> ~620 agg tok/s (+112%); single-stream
 75 -> 155 tok/s (+107%).
+
+## 16. Round 11 (2026-08-30): strip-to-bytes — f32/int8 free + int4 weights
+
+"Strip it down to bytes": minimize the fused backend's weight footprint.
+
+### f32-free (batch bug found & fixed)
+Freed the redundant f32 GPU weight copies once the quantized versions exist
+(~1.8 GB for 28 layers + lm_head copies).  All kernel gates were made
+int8-aware.  This broke forward_batch: the fused-QKV gate still required the
+freed f32 pointers (`gl.wq && gl.wk && gl.wv && wq8...`), so the i8 kernel
+never ran and QKV output was never computed -> garbage tokens at 710 agg.
+Fixed by dropping the f32 checks (`if (gl.wq8 && gl.wk8 && gl.wv8)`); batch
+tokens back to bit-identical, throughput 481/554/620 baseline restored.
+
+### int4 weights (per-32-group, q4nx-faithful)
+- Re-quantized the dequantized f32 to int4, 2 nibbles/byte, per-32-element
+  group (scale, zero) as __half2 — the q4nx source's own group_size=32
+  scheme.  Storage 0.5 B/elem + 0.125 B/elem scale/zero = 0.625 B/elem vs
+  int8's 1.0 (half the layer W bytes: ~273 MB vs 437 MB).
+- Per-row int4 FAILED tokens (16 levels across a row spanning up to N/32
+  different group scales is too coarse); per-group reproduces the source
+  grid exactly (min = (c0-zp)*s, max = (c15-zp)*s ⇒ (max-min)/15 = s,
+  zero = min) — measured max re-quant error 3e-6 vs dequantized f32 on all
+  8 matrices + embed (151936×1024).
+- 8 new kernels (gemv/qkv/gu/wo × single-stream v4 + batch v1fs/ws,
+  lm_head batch) with per-group scale/zero; dispatch i4 → i8 → f32.
+- A second gate bug (attention/KV-store `if (gl.wo8 || gl.wo)` skipped the
+  whole block after the strip) froze the hidden state — constant 105534
+  tokens; added `gl.wo4` to all wo gates.
+
+### Results (gfx1151, same-window A/B, thermal drift ±15%)
+- Single-stream: int4 145-146 tok/s vs int8 151-152 (-4%, the per-group
+  scale/zero adds 2 mul/float4; shared-staging the scales measured WORSE
+  for the v4 kernels — 116 — so they keep global loads).
+- Batch: 533/624/654 agg tok/s at B=8/16/32 vs int8 baseline 481/554/620
+  — int4 is FASTER on the batch path (halved W bytes dominate).
+- Logits parity (parity_fused, real-prompt, 14 steps): f32 vs int4 worst
+  max|dlogit| = 0.0094 (PASS, tol 0.05); f32 vs int8 diverges to 9.28 and
+  flips 2 tokens — per-row int8 crushes heterogeneous groups, per-group
+  int4 does not.  int4 is the most faithful quantized state yet.
+- Memory: strip frees 2.4 GB (f32 + int8) vs 1.8 GB (f32 only) vs 0 (f32
+  resident).  Steady-state weights ~273 MB layers + ~78 MB embed int4.
+
+Session totals (incl. rounds 1-10): batch 292 -> ~654 agg tok/s (+124%);
+single-stream 75 -> 145-155 tok/s (+93-107%); weights 2.5 GB f32 -> ~0.35 GB
+quantized (+f32 norm/embed kept for the lookup kernel).
