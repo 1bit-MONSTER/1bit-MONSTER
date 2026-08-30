@@ -2446,6 +2446,15 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
     if (strcmp(s, "qwen4exp") == 0) return RCPP_ARCH_QWEN3NEXT;        // Qwen4ExpForConditionalGeneration (Qwen3.8-Flash-Next, GDN)
     if (strcmp(s, "qwen4_exp") == 0) return RCPP_ARCH_QWEN3NEXT;       // HF model_type
+    // ── 2026-08-28 census watcher second-run findings (issue #1918) ──
+    // Class names verified against live HF configs: DFlash2DraftModel has
+    // model_type qwen3 (GLM-5.3-Flash-DFlash2), same family as the already-
+    // mapped dflashdraft; LowOnMind-1M and OxMini are tiny standard-layout
+    // causal LMs (llama-style config keys), so they alias to the llama
+    // loader rather than refusing to load.
+    if (strcmp(s, "dflash2draft") == 0) return RCPP_ARCH_QWEN3;        // DFlash2DraftModel (local-inference-lab/GLM-5.3-Flash-DFlash2-MXFP8, model_type qwen3)
+    if (strcmp(s, "lowonmind") == 0) return RCPP_ARCH_LLAMA;           // LowOnMindForCausalLM (DedeProGames/LowOnMind-1M, llama-layout)
+    if (strcmp(s, "oxmini") == 0) return RCPP_ARCH_LLAMA;              // OxMiniForCausalLM (Shivam3002/OxMini, llama-layout)
     // Unmapped architecture — do NOT fall back to BITNET silently.
     return RCPP_ARCH_UNKNOWN;
 }
