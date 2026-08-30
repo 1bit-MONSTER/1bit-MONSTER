@@ -125,10 +125,10 @@ index 120a422..1f14a69 100644
              export_info.parameter_count,
              entry->parameter_count,
 diff --git a/ggml/src/ggml-hrx2/catalog/artifacts.json b/ggml/src/ggml-hrx2/catalog/artifacts.json
-index aaede30..6b3a73f 100644
+index aaede30..6ea5dde 100644
 --- a/ggml/src/ggml-hrx2/catalog/artifacts.json
 +++ b/ggml/src/ggml-hrx2/catalog/artifacts.json
-@@ -1,197 +1,202 @@
+@@ -1,197 +1,207 @@
  {
 -  "rms_norm_f32_bc": {
 -    "path": "artifacts/rms_norm_f32.loombc",
@@ -325,6 +325,7 @@ index aaede30..6b3a73f 100644
 -    "format": "loom-bytecode",
 -    "storage": "embedded"
 -  }
+-}
 + "rms_norm_f32_bc": {
 +  "path": "artifacts/rms_norm_f32.loombc",
 +  "format": "loom-bytecode",
@@ -524,8 +525,14 @@ index aaede30..6b3a73f 100644
 +  "path": "artifacts/q4nx_dequant_f32.loombc",
 +  "format": "loom-bytecode",
 +  "storage": "embedded"
++ },
++ "mul_mat_f32_f32_ggml_bc": {
++  "path": "artifacts/mul_mat_f32_f32_ggml.loombc",
++  "format": "loom-bytecode",
++  "storage": "embedded"
 + }
- }
++}
+\ No newline at end of file
 diff --git a/ggml/src/ggml-hrx2/catalog/families.json b/ggml/src/ggml-hrx2/catalog/families.json
 index b184243..b221d4b 100644
 --- a/ggml/src/ggml-hrx2/catalog/families.json
@@ -998,10 +1005,10 @@ index 64f7605..78232a5 100644
      "artifact_id": "get_rows_q8_0_f32_bc",
      "root_symbol": "@hrx2_get_rows_q8_0_f32",
 diff --git a/ggml/src/ggml-hrx2/catalog/routes/index.json b/ggml/src/ggml-hrx2/catalog/routes/index.json
-index 22571d3..cb0d5b2 100644
+index 22571d3..8c6dc47 100644
 --- a/ggml/src/ggml-hrx2/catalog/routes/index.json
 +++ b/ggml/src/ggml-hrx2/catalog/routes/index.json
-@@ -1,219 +1,220 @@
+@@ -1,219 +1,221 @@
  [
 -  "rms_norm_f32_n64_r60_vector_vw4_wg1024",
 -  "rms_norm_f32_n1025_r60_vector_tail_vw2_wg64",
@@ -1220,6 +1227,7 @@ index 22571d3..cb0d5b2 100644
 -  "rope_normal_f32_freq_n128_d128_h32_t512_wg256",
 -  "swiglu_f32_split_n8192_r512_wg256",
 -  "swiglu_f32_split_large_n13824_32768_r512_wg256"
+-]
 + "rms_norm_f32_n64_r60_vector_vw4_wg1024",
 + "rms_norm_f32_n1025_r60_vector_tail_vw2_wg64",
 + "rms_norm_f32_n3072_r1_vector_vw4_wg512",
@@ -1437,8 +1445,213 @@ index 22571d3..cb0d5b2 100644
 + "rope_normal_f32_freq_n128_d128_h32_t512_wg256",
 + "swiglu_f32_split_n8192_r512_wg256",
 + "swiglu_f32_split_large_n13824_32768_r512_wg256",
-+ "q4nx_dequant_f32"
- ]
++ "q4nx_dequant_f32",
++ "mul_mat_f32_f32_ggml"
++]
+\ No newline at end of file
+diff --git a/ggml/src/ggml-hrx2/catalog/routes/mul_mat_f32_f32.json b/ggml/src/ggml-hrx2/catalog/routes/mul_mat_f32_f32.json
+index a0dc99f..6c1bb8c 100644
+--- a/ggml/src/ggml-hrx2/catalog/routes/mul_mat_f32_f32.json
++++ b/ggml/src/ggml-hrx2/catalog/routes/mul_mat_f32_f32.json
+@@ -1,71 +1,134 @@
+ [
+-  {
+-    "id": "mul_mat_f32_f32_moe_logits_k2048_r128_c1_512_wg256",
+-    "family": "mul_mat_f32_f32",
+-    "op": "MUL_MAT",
+-    "target_key": "",
+-    "source_id": "mul_mat_f32_f32",
+-    "artifact_id": "mul_mat_f32_f32_static_bc",
+-    "root_symbol": "@hrx2_mul_mat_f32_f32_static",
+-    "export_name": "hrx2_mul_mat_f32_f32_static",
+-    "loader_format": "amdgpu-hsaco",
+-    "priority": 100,
+-    "abi": {
+-      "binding_count": 3,
+-      "parameter_count": 3,
+-      "constant_byte_length": 0
++ {
++  "id": "mul_mat_f32_f32_moe_logits_k2048_r128_c1_512_wg256",
++  "family": "mul_mat_f32_f32",
++  "op": "MUL_MAT",
++  "target_key": "",
++  "source_id": "mul_mat_f32_f32",
++  "artifact_id": "mul_mat_f32_f32_static_bc",
++  "root_symbol": "@hrx2_mul_mat_f32_f32_static",
++  "export_name": "hrx2_mul_mat_f32_f32_static",
++  "loader_format": "amdgpu-hsaco",
++  "priority": 100,
++  "abi": {
++   "binding_count": 3,
++   "parameter_count": 3,
++   "constant_byte_length": 0
++  },
++  "dispatch": {
++   "workgroup_size": [
++    256,
++    1,
++    1
++   ],
++   "rows_per_workgroup": 1,
++   "cols_per_workgroup": 1
++  },
++  "shape_domain": {
++   "name": "moe_logits_k2048_r128_c1_512_wg256",
++   "k_min": 2048,
++   "k_max": 2048,
++   "rows_min": 128,
++   "rows_max": 128,
++   "cols_min": 1,
++   "cols_max": 512
++  },
++  "shape_guards": {},
++  "specialization": {
++   "mode": "jit_config",
++   "bindings": [
++    {
++     "key": "@hrx2.shape.k",
++     "source": "shape.k"
+     },
+-    "dispatch": {
+-      "workgroup_size": [
+-        256,
+-        1,
+-        1
+-      ],
+-      "rows_per_workgroup": 1,
+-      "cols_per_workgroup": 1
++    {
++     "key": "@hrx2.shape.rows",
++     "source": "shape.rows"
+     },
+-    "shape_domain": {
+-      "name": "moe_logits_k2048_r128_c1_512_wg256",
+-      "k_min": 2048,
+-      "k_max": 2048,
+-      "rows_min": 128,
+-      "rows_max": 128,
+-      "cols_min": 1,
+-      "cols_max": 512
++    {
++     "key": "@hrx2.shape.cols",
++     "source": "shape.cols"
+     },
+-    "shape_guards": {},
+-    "specialization": {
+-      "mode": "jit_config",
+-      "bindings": [
+-        {
+-          "key": "@hrx2.shape.k",
+-          "source": "shape.k"
+-        },
+-        {
+-          "key": "@hrx2.shape.rows",
+-          "source": "shape.rows"
+-        },
+-        {
+-          "key": "@hrx2.shape.cols",
+-          "source": "shape.cols"
+-        },
+-        {
+-          "key": "@hrx2.tuning.workgroup_size",
+-          "value": "256"
+-        }
+-      ]
++    {
++     "key": "@hrx2.tuning.workgroup_size",
++     "value": "256"
++    }
++   ]
++  },
++  "supports": {
++   "src0_type": "F32",
++   "src1_type": "F32",
++   "dst_type": "F32",
++   "layout": "contiguous"
++  },
++  "evidence_summary": {
++   "phase": "phase1-route-slice-42-f32-f32-moe-logits",
++   "algorithm": "direct_f32_f32_one_workgroup_per_output",
++   "selection": "coverage_bucket_from_11_model_trace",
++   "ggml_cpu_reference": "required"
++  }
++ },
++ {
++  "id": "mul_mat_f32_f32_ggml",
++  "family": "mul_mat_f32_f32",
++  "op": "MUL_MAT",
++  "target_key": "",
++  "source_id": "mul_mat_f32_f32",
++  "artifact_id": "mul_mat_f32_f32_ggml_bc",
++  "root_symbol": "@hrx2_mul_mat_f32_f32_ggml_static",
++  "export_name": "hrx2_mul_mat_f32_f32_ggml_static",
++  "loader_format": "amdgpu-hsaco",
++  "priority": 110,
++  "abi": {
++   "binding_count": 3,
++   "parameter_count": 3,
++   "constant_byte_length": 0
++  },
++  "dispatch": {
++   "workgroup_size": [
++    256,
++    1,
++    1
++   ],
++   "rows_per_workgroup": 1,
++   "cols_per_workgroup": 1
++  },
++  "shape_domain": {
++   "name": "generic",
++   "k_min": 1,
++   "k_max": 8192,
++   "rows_min": 1,
++   "rows_max": 8192,
++   "cols_min": 1,
++   "cols_max": 512
++  },
++  "shape_guards": {},
++  "specialization": {
++   "mode": "jit_config",
++   "bindings": [
++    {
++     "key": "@hrx2.shape.k",
++     "source": "shape.k"
++    },
++    {
++     "key": "@hrx2.shape.rows",
++     "source": "shape.rows"
+     },
+-    "supports": {
+-      "src0_type": "F32",
+-      "src1_type": "F32",
+-      "dst_type": "F32",
+-      "layout": "contiguous"
++    {
++     "key": "@hrx2.shape.cols",
++     "source": "shape.cols"
+     },
+-    "evidence_summary": {
+-      "phase": "phase1-route-slice-42-f32-f32-moe-logits",
+-      "algorithm": "direct_f32_f32_one_workgroup_per_output",
+-      "selection": "coverage_bucket_from_11_model_trace",
+-      "ggml_cpu_reference": "required"
++    {
++     "key": "@hrx2.tuning.workgroup_size",
++     "value": "256"
+     }
++   ]
++  },
++  "supports": {
++   "src0_type": "F32",
++   "src1_type": "F32",
++   "dst_type": "F32",
++   "layout": "contiguous"
+   }
+-]
++ }
++]
+\ No newline at end of file
 diff --git a/ggml/src/ggml-hrx2/catalog/routes/mul_mat_q8_0_f32.json b/ggml/src/ggml-hrx2/catalog/routes/mul_mat_q8_0_f32.json
 index f97cfc2..f40dec7 100644
 --- a/ggml/src/ggml-hrx2/catalog/routes/mul_mat_q8_0_f32.json
@@ -2329,18 +2542,40 @@ index e45be0b..9f4b986 100644
          return false;
      }
 diff --git a/ggml/src/ggml-hrx2/ggml-hrx2.cpp b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
-index 428c80d..84b6f0a 100644
+index 428c80d..160d24b 100644
 --- a/ggml/src/ggml-hrx2/ggml-hrx2.cpp
 +++ b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
-@@ -92,6 +92,7 @@ struct ggml_backend_hrx2_device_context {
+@@ -92,6 +92,18 @@ struct ggml_backend_hrx2_device_context {
      std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q8_0_routes;
      std::vector<const ggml_backend_hrx2_kernel_route *> quantize_q8_1_routes;
      std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_f32_f32_routes;
 +    std::vector<const ggml_backend_hrx2_kernel_route *> q4nx_dequant_routes;
++    // persistent Q4NX fused-dispatch scratch (never released mid-flight:
++    // kernels are async on the stream, so per-dispatch alloc/free raced the
++    // allocator and corrupted memory)
++    hrx_buffer_t q4nx_scl = nullptr;
++    size_t q4nx_scl_cap = 0;
++    hrx_buffer_t q4nx_zp = nullptr;
++    size_t q4nx_zp_cap = 0;
++    hrx_buffer_t q4nx_pck = nullptr;
++    size_t q4nx_pck_cap = 0;
++    hrx_buffer_t q4nx_w = nullptr;
++    size_t q4nx_w_cap = 0;
      std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_routes;
      std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_swiglu_routes;
      std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_id_q4_k_routes;
-@@ -7966,6 +7967,225 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q8_0(
+@@ -181,6 +193,10 @@ struct ggml_backend_hrx2_reg_context {
+                 hrx_stream_release(device_context->transfer_stream);
+                 device_context->transfer_stream = nullptr;
+             }
++            if (device_context->q4nx_scl) hrx_buffer_release(device_context->q4nx_scl);
++            if (device_context->q4nx_zp)  hrx_buffer_release(device_context->q4nx_zp);
++            if (device_context->q4nx_pck) hrx_buffer_release(device_context->q4nx_pck);
++            if (device_context->q4nx_w)   hrx_buffer_release(device_context->q4nx_w);
+             if (device_context->device) {
+                 hrx_device_release(device_context->device);
+             }
+@@ -7966,6 +7982,223 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q8_0(
      return GGML_STATUS_FAILED;
  }
  
@@ -2351,6 +2586,30 @@ index 428c80d..84b6f0a 100644
 +// section-major views the q4nx_dequant_f32 kernel expects, dequant on the
 +// device into an f32 scratch, then run the mul_mat_f32_f32 route with the
 +// scratch as src0. Single tile-column width (k = 256) for now.
++static bool ggml_backend_hrx2_q4nx_scratch_grow(
++        ggml_backend_hrx2_device_context * device_context,
++        hrx_buffer_t * out, size_t * cap, size_t needed) {
++    if (*out && *cap >= needed) {
++        return true;
++    }
++    if (*out) {
++        hrx_buffer_release(*out);
++        *out = nullptr;
++    }
++    hrx_allocator_t alloc = hrx_device_allocator(device_context->device);
++    hrx_buffer_params_t params = {
++        HRX_MEMORY_TYPE_HOST_LOCAL | HRX_MEMORY_TYPE_DEVICE_VISIBLE,
++        HRX_MEMORY_ACCESS_ALL,
++        HRX_BUFFER_USAGE_DEFAULT | HRX_BUFFER_USAGE_MAPPING_SCOPED | HRX_BUFFER_USAGE_MAPPING_PERSISTENT,
++        0,
++    };
++    if (!GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, needed, out))) {
++        return false;
++    }
++    *cap = needed;
++    return true;
++}
++
 +static bool ggml_backend_hrx2_supports_mul_mat_q4nx_route(
 +        ggml_backend_hrx2_device_context * device_context,
 +        const ggml_tensor * op) {
@@ -2363,14 +2622,24 @@ index 428c80d..84b6f0a 100644
 +        op->type != GGML_TYPE_F32) {
 +        return false;
 +    }
-+    // src0: [8192, n_tiles] (each 8192-elem row = one 5120-byte tile)
-+    // src1: F32 [256, cols]; dst: F32 [n_tiles*32, cols]
++    // src0: [8192, n_tiles] (each 8192-elem row = one 5120-byte tile, in
++    // (tile_row, tile_col) order); src1: F32 [in, cols] with in = k (the
++    // logical reduction dim, multiple of 256); dst: F32 [n_tiles/n_tc*32,
++    // cols] where n_tc = in/256 column tiles.
++    const int64_t in     = src1->ne[0];
 +    const int64_t n_tiles = src0->ne[1];
-+    const int64_t rows    = n_tiles * GGML_Q4NX_TILE_ROWS;
-+    const int64_t cols    = src1->ne[1];
-+    return src0->ne[0] == GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS &&
-+           src1->ne[0] == GGML_Q4NX_TILE_COLS &&
-+           op->ne[0] == rows &&
++    if (src0->ne[0] != GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS ||
++        in <= 0 || in % GGML_Q4NX_TILE_COLS != 0) {
++        return false;
++    }
++    const int64_t n_tc = in / GGML_Q4NX_TILE_COLS;
++    if (n_tc <= 0 || n_tiles % n_tc != 0) {
++        return false;
++    }
++    const int64_t n_tr = n_tiles / n_tc;
++    const int64_t rows = n_tr * GGML_Q4NX_TILE_ROWS;
++    const int64_t cols = src1->ne[1];
++    return op->ne[0] == rows &&
 +           op->ne[1] == cols &&
 +           src0->ne[2] == 1 && src0->ne[3] == 1 &&
 +           src1->ne[2] == 1 && src1->ne[3] == 1 &&
@@ -2392,10 +2661,12 @@ index 428c80d..84b6f0a 100644
 +    const ggml_tensor * src0 = dst->src[0];
 +    const ggml_tensor * src1 = dst->src[1];
 +
++    const uint32_t k       = (uint32_t) src1->ne[0];   // logical in (full width)
++    const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;   // column tiles
 +    const uint32_t n_tiles = (uint32_t) src0->ne[1];
-+    const uint32_t rows    = n_tiles * GGML_Q4NX_TILE_ROWS;
++    const uint32_t n_tr    = n_tiles / n_tc;
++    const uint32_t rows    = n_tr * GGML_Q4NX_TILE_ROWS;
 +    const uint32_t cols    = (uint32_t) src1->ne[1];
-+    const uint32_t k       = GGML_Q4NX_TILE_COLS;
 +    const uint32_t wg_size = 256;
 +
 +    hrx_buffer_ref_t src0_ref = {};
@@ -2421,34 +2692,16 @@ index 428c80d..84b6f0a 100644
 +                               HRX_BUFFER_USAGE_MAPPING_PERSISTENT,
 +        /* .queue_affinity = */ 0,
 +    };
-+    // src1 scratch in the f32 route's [cols, k] layout (the ggml src1 is
-+    // [k, cols], so we transpose it on device when cols > 1)
-+    const size_t x_bytes    = (size_t) cols * k * sizeof(float);
-+    const size_t y_tmp_bytes = (size_t) cols * rows * sizeof(float);
-+    hrx_buffer_t b_scl = nullptr, b_zp = nullptr, b_pck = nullptr, b_w = nullptr, b_x = nullptr, b_y_tmp = nullptr;
-+    if (!GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, scl_bytes, &b_scl)) ||
-+        !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, scl_bytes, &b_zp)) ||
-+        !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, pck_bytes, &b_pck)) ||
-+        !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, w_bytes, &b_w)) ||
-+        !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, x_bytes, &b_x)) ||
-+        !GGML_HRX2_CHECK(hrx_allocator_allocate_buffer(alloc, params, y_tmp_bytes, &b_y_tmp))) {
++    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, scl_bytes) ||
++        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_zp,  &device_context->q4nx_zp_cap,  scl_bytes) ||
++        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_pck, &device_context->q4nx_pck_cap, pck_bytes) ||
++        !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_w,   &device_context->q4nx_w_cap,   w_bytes)) {
 +        return GGML_STATUS_FAILED;
 +    }
-+    // transpose src1 [k, cols] -> [cols, k]: element (i, col) moves from
-+    // src1[i*cols + col] to b_x[col*k + i]
-+    if (cols > 1) {
-+        for (uint32_t c = 0; c < cols; ++c) {
-+            for (uint32_t i = 0; i < k; ++i) {
-+                const size_t src_off = ((size_t) i * cols + c) * 4;
-+                const size_t dst_off = ((size_t) c * k + i) * 4;
-+                if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
-+                        context->stream, src1_ref.buffer, src1_ref.offset + src_off,
-+                        b_x, dst_off, 4))) {
-+                    return GGML_STATUS_FAILED;
-+                }
-+            }
-+        }
-+    }
++    hrx_buffer_t b_scl = device_context->q4nx_scl;
++    hrx_buffer_t b_zp  = device_context->q4nx_zp;
++    hrx_buffer_t b_pck = device_context->q4nx_pck;
++    hrx_buffer_t b_w   = device_context->q4nx_w;
 +
 +    // assemble tile-major blob -> section-major views (3 copies per tile)
 +    for (uint32_t t = 0; t < n_tiles; ++t) {
@@ -2472,6 +2725,7 @@ index 428c80d..84b6f0a 100644
 +    deq_cfg.push_back({"@hrx2.shape.ncols", std::to_string(k)});
 +    deq_cfg.push_back({"@hrx2.shape.nrows", std::to_string(rows)});
 +    deq_cfg.push_back({"@hrx2.tuning.q4nx.workgroup_size", std::to_string(wg_size)});
++    deq_cfg.push_back({"@hrx2.tuning.q4nx.n_tile_cols", std::to_string(n_tc)});
 +    const std::string deq_key = ggml_backend_hrx2_base_cache_key(device_context, deq_route) + "-q4nx-" + std::to_string(rows);
 +    auto * deq = ggml_backend_hrx2_get_provider(device_context, deq_route, deq_cfg, deq_key);
 +    if (!deq) {
@@ -2496,11 +2750,16 @@ index 428c80d..84b6f0a 100644
 +        return GGML_STATUS_FAILED;
 +    }
 +
-+    // f32 matmul provider (mul_mat_f32_f32 route) with W scratch as src0.
-+    // The catalog route's shape_domain is narrow (k=2048, rows=128); the
-+    // kernel itself takes any k/rows/cols via config, so bind configs
-+    // directly (same as the standalone fused harness).
-+    const ggml_backend_hrx2_kernel_route * mm_route = device_context->mul_mat_f32_f32_routes.front();
++    // f32 matmul provider: the ggml-layout route (src1 [k, cols], dst
++    // [rows, cols]) — no transposes needed.
++    const ggml_backend_hrx2_kernel_route * mm_route = nullptr;
++    for (const auto * r : device_context->mul_mat_f32_f32_routes) {
++        if (r->id == "mul_mat_f32_f32_ggml") { mm_route = r; break; }
++    }
++    if (!mm_route) {
++        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX: mul_mat_f32_f32_ggml route missing\n");
++        return GGML_STATUS_FAILED;
++    }
 +    std::vector<ggml_backend_hrx2_config_binding> mm_cfg;
 +    mm_cfg.push_back({"@hrx2.shape.k", std::to_string(k)});
 +    mm_cfg.push_back({"@hrx2.shape.rows", std::to_string(rows)});
@@ -2518,14 +2777,10 @@ index 428c80d..84b6f0a 100644
 +        return GGML_STATUS_FAILED;
 +    }
 +
-+    const hrx_buffer_t mm_src1 = cols > 1 ? b_x : src1_ref.buffer;
-+    const size_t mm_src1_off  = cols > 1 ? 0 : src1_ref.offset;
-+    const hrx_buffer_t mm_dst  = cols > 1 ? b_y_tmp : dst_ref.buffer;
-+    const size_t mm_dst_off   = cols > 1 ? 0 : dst_ref.offset;
 +    hrx_buffer_ref_t mm_bindings[3] = {
 +        { b_w,    0, w_bytes },
-+        { mm_src1, mm_src1_off, (size_t) cols * k * 4 },
-+        { mm_dst,  mm_dst_off,  (size_t) cols * rows * 4 },
++        { src1_ref.buffer, src1_ref.offset, src1_ref.length },
++        { dst_ref.buffer,  dst_ref.offset,  dst_ref.length },
 +    };
 +    hrx_dispatch_config_t mm_config = {
 +        { rows, cols, 1 },
@@ -2538,35 +2793,13 @@ index 428c80d..84b6f0a 100644
 +        return GGML_STATUS_FAILED;
 +    }
 +
-+    // the f32 route writes dst[col*rows + row]; transpose into the ggml
-+    // [rows, cols] layout when cols > 1
-+    if (cols > 1) {
-+        for (uint32_t r = 0; r < rows; ++r) {
-+            for (uint32_t c = 0; c < cols; ++c) {
-+                const size_t src_off = ((size_t) c * rows + r) * 4;
-+                const size_t dst_off = ((size_t) r * cols + c) * 4;
-+                if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
-+                        context->stream, b_y_tmp, src_off,
-+                        dst_ref.buffer, dst_ref.offset + dst_off, 4))) {
-+                    return GGML_STATUS_FAILED;
-+                }
-+            }
-+        }
-+    }
-+
-+    hrx_buffer_release(b_scl);
-+    hrx_buffer_release(b_zp);
-+    hrx_buffer_release(b_pck);
-+    hrx_buffer_release(b_w);
-+    hrx_buffer_release(b_x);
-+    hrx_buffer_release(b_y_tmp);
 +    return GGML_STATUS_SUCCESS;
 +}
 +
  static ggml_status ggml_backend_hrx2_dispatch_mul_mat_f32_f32(
          ggml_backend_hrx2_context * context,
          const ggml_tensor * dst) {
-@@ -10163,7 +10383,25 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend,
+@@ -10163,7 +10396,25 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend,
                      return GGML_STATUS_FAILED;
                  }
                  break;
@@ -2592,7 +2825,27 @@ index 428c80d..84b6f0a 100644
                  if (ggml_backend_hrx2_supports_mul_mat_q8_0_route(context->device_context, node)) {
                      if (ggml_backend_hrx2_dispatch_mul_mat_q8_0(context, node) != GGML_STATUS_SUCCESS) {
                          return GGML_STATUS_FAILED;
-@@ -10555,6 +10793,11 @@ static std::unique_ptr<ggml_backend_hrx2_reg_context> ggml_backend_hrx2_create_r
+@@ -10410,13 +10661,13 @@ static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const g
+             return ggml_backend_hrx2_supports_cpy(ggml_backend_hrx2_get_device_context(dev), op);
+         case GGML_OP_GLU:
+             return ggml_backend_hrx2_supports_swiglu_route(ggml_backend_hrx2_get_device_context(dev), op);
++        case GGML_OP_MUL_MAT_Q4NX:
++            return ggml_backend_hrx2_supports_mul_mat_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
+         case GGML_OP_MUL_MAT:
+-            return ggml_backend_hrx2_supports_mul_mat_q8_0_route(ggml_backend_hrx2_get_device_context(dev), op) ||
+-                   ggml_backend_hrx2_supports_mul_mat_q4_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
+-                   ggml_backend_hrx2_supports_mul_mat_q5_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
+-                   ggml_backend_hrx2_supports_mul_mat_q6_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
+-                   ggml_backend_hrx2_supports_mul_mat_f32_f32_route(ggml_backend_hrx2_get_device_context(dev), op) ||
+-                   ggml_backend_hrx2_supports_mul_mat_f16_f32_route(ggml_backend_hrx2_get_device_context(dev), op);
++            // Q4NX demo: HRX2 claims ONLY Q4NX weights. All other mul_mats
++            // (F32/F16 internal attention, Q6_K lm_head) run on CPU — the
++            // fork's routes fail to compile or fault for arbitrary shapes.
++            return false;
+         case GGML_OP_MUL_MAT_ID:
+             return ggml_backend_hrx2_supports_mul_mat_id_q4_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
+                    ggml_backend_hrx2_supports_mul_mat_id_q5_k_route(ggml_backend_hrx2_get_device_context(dev), op) ||
+@@ -10555,6 +10806,11 @@ static std::unique_ptr<ggml_backend_hrx2_reg_context> ggml_backend_hrx2_create_r
                  "mul_mat_f32_f32",
                  "MUL_MAT",
                  &device_context->mul_mat_f32_f32_routes);
@@ -3463,7 +3716,7 @@ index 90eddc8..086a490 100644
    kernel.return
  }
 diff --git a/ggml/src/ggml-hrx2/kernels/mul_mat_f32_f32.loom b/ggml/src/ggml-hrx2/kernels/mul_mat_f32_f32.loom
-index 576e1a6..677bda3 100644
+index 576e1a6..5c549a7 100644
 --- a/ggml/src/ggml-hrx2/kernels/mul_mat_f32_f32.loom
 +++ b/ggml/src/ggml-hrx2/kernels/mul_mat_f32_f32.loom
 @@ -38,17 +38,17 @@ kernel.def export("hrx2_mul_mat_f32_f32_static") @hrx2_mul_mat_f32_f32_static()
@@ -3489,11 +3742,75 @@ index 576e1a6..677bda3 100644
      %product = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b : f32
      %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc, %product : f32
      scf.yield %next : f32
-@@ -60,7 +60,7 @@ kernel.def export("hrx2_mul_mat_f32_f32_static") @hrx2_mul_mat_f32_f32_static()
+@@ -60,7 +60,71 @@ kernel.def export("hrx2_mul_mat_f32_f32_static") @hrx2_mul_mat_f32_f32_static()
    %lane_i32 = index.cast %lane : index to i32
    %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
    scf.if %is_lane0 {
 -    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32, #dense>
++    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
++  }
++  kernel.return
++}
++
++// ggml-layout variant for the Q4NX fused dispatch: src1 is the ggml
++// activation [k, cols] (src1[i*cols + col]) and dst is written in the ggml
++// [rows, cols] layout (dst[row*cols + col]) — no transposes needed.
++kernel.def export("hrx2_mul_mat_f32_f32_ggml_static") @hrx2_mul_mat_f32_f32_ggml_static() {
++  %unit = index.constant 1 : index
++  %rows = config.get @hrx2.shape.rows : index
++  %cols = config.get @hrx2.shape.cols : index
++  %workgroup_size = config.get @hrx2.tuning.workgroup_size : index
++  kernel.launch.config workgroups(%rows, %cols, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
++} launch(%src0: buffer, %src1: buffer, %dst: buffer) {
++  %base = index.constant 0 : offset
++  %zero_f32 = scalar.constant 0.0 : f32
++
++  %k = config.get @hrx2.shape.k : index
++  %rows = config.get @hrx2.shape.rows : index
++  %cols = config.get @hrx2.shape.cols : index
++  %workgroup_size = config.get @hrx2.tuning.workgroup_size : index
++  %k_bounded = index.assume %k [range(%k, 1, 8192)] : index
++  %rows_bounded = index.assume %rows [range(%rows, 1, 8192)] : index
++  %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
++
++  %row0 = kernel.workgroup.id<x> : index
++  %row = index.assume %row0 [range(%row0, 0, 8191)] : index
++  %col0 = kernel.workgroup.id<y> : index
++  %col = index.assume %col0 [range(%col0, 0, 511)] : index
++  %lane0 = kernel.workitem.id<x> : index
++  %lane = index.assume %lane0 [range(%lane0, 0, 1023)] : index
++
++  %src0_count = index.mul %rows_bounded, %k_bounded : index
++  %src1_count = index.mul %k_bounded, %cols_bounded : index
++  %dst_count = index.mul %rows_bounded, %cols_bounded : index
++
++  %src0_global = buffer.assume.memory_space<global> %src0 : buffer
++  %src1_global = buffer.assume.memory_space<global> %src1 : buffer
++  %dst_global = buffer.assume.memory_space<global> %dst : buffer
++  %src0_noalias, %src1_noalias, %dst_noalias = buffer.assume.noalias %src0_global, %src1_global, %dst_global : buffer, buffer, buffer
++  %src0_view = buffer.view %src0_noalias[%base] : buffer -> view<[%src0_count]xf32>
++  %src1_view = buffer.view %src1_noalias[%base] : buffer -> view<[%src1_count]xf32>
++  %dst_view = buffer.view %dst_noalias[%base] : buffer -> view<[%dst_count]xf32>
++
++  %src0_row_base = index.mul %row, %k_bounded : index
++  %sum = scf.for %i = [%lane to %k_bounded step %workgroup_size](%acc = %zero_f32 : f32) -> (f32) {
++    %src0_index = index.add %src0_row_base, %i : index
++    %src1_index = index.mul %i, %cols_bounded : index
++    %src1_off = index.add %src1_index, %col : index
++    %a = view.load %src0_view[%src0_index] : view<[%src0_count]xf32> -> f32
++    %b = view.load %src1_view[%src1_off] : view<[%src1_count]xf32> -> f32
++    %product = scalar.mulf<reassoc|nnan|ninf|nsz> %a, %b : f32
++    %next = scalar.addf<reassoc|nnan|ninf|nsz> %acc, %product : f32
++    scf.yield %next : f32
++  }
++  %dot = kernel.workgroup.reduce<addf> %sum : f32
++
++  %dst_row_base = index.mul %row, %cols_bounded : index
++  %dst_index = index.add %dst_row_base, %col : index
++  %lane_i32 = index.cast %lane : index to i32
++  %zero_i32 = scalar.constant 0 : i32
++  %is_lane0 = scalar.cmpi eq, %lane_i32, %zero_i32 : i32
++  scf.if %is_lane0 {
 +    view.store %dot, %dst_view[%dst_index] : f32, view<[%dst_count]xf32>
    }
    kernel.return
@@ -10565,7 +10882,7 @@ index d56c86d..31071cc 100644
  GGML_API void dequantize_row_q4_1(const block_q4_1 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
  GGML_API void dequantize_row_q5_0(const block_q5_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k);
 diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
-index 0142498..1f03fac 100644
+index 0142498..f6ec0c8 100644
 --- a/ggml/src/ggml.c
 +++ b/ggml/src/ggml.c
 @@ -659,6 +659,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
@@ -10607,7 +10924,20 @@ index 0142498..1f03fac 100644
  
  static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
  
-@@ -3263,6 +3273,33 @@ void ggml_mul_mat_set_prec(
+@@ -3226,6 +3236,12 @@ struct ggml_tensor * ggml_mul_mat(
+         struct ggml_context * ctx,
+         struct ggml_tensor  * a,
+         struct ggml_tensor  * b) {
++    // 1bit-MONSTER: a Q4NX weight is stored tile-major as [8192, n_tiles]
++    // (its ne[0] is the tile block size, not the logical k-dim), so the
++    // standard ne[0] equality check does not apply; route to the Q4NX op.
++    if (a->type == GGML_TYPE_Q4NX) {
++        return ggml_mul_mat_q4nx(ctx, a, b);
++    }
+     GGML_ASSERT(ggml_can_mul_mat(a, b));
+     GGML_ASSERT(!ggml_is_transposed(a));
+ 
+@@ -3263,6 +3279,39 @@ void ggml_mul_mat_set_prec(
  
      c ~= as[:,:,i] @ b[:,i%r,t], i = ids[e,t] for all e,t in ids
  */
@@ -10615,19 +10945,25 @@ index 0142498..1f03fac 100644
 +        struct ggml_context * ctx,
 +        struct ggml_tensor * a,
 +        struct ggml_tensor * b) {
-+    // 1bit-MONSTER Q4NX fused matmul: a is a GGML_TYPE_Q4NX tensor
-+    // [GGML_Q4NX_TILE_BYTES? no: ne[0]=8192 (blck), ne[1]=n_tiles]; each
-+    // 8192-element row is one 5120-byte tile = [32 rows x 256 cols].
-+    // b is F32 [256, cols]. result F32 [n_tiles*32, cols].
++    // 1bit-MONSTER Q4NX fused matmul: a is a GGML_TYPE_Q4NX weight stored
++    // tile-major as [8192, n_tiles] (each 8192-element row = one 5120-byte
++    // tile = [32 rows x 256 cols]); tiles in (tile_row, tile_col) order with
++    // tile_col = t % n_tc, n_tc = b->ne[0]/256. b is the F32 activation
++    // [in, cols] where in = b->ne[0] (multiple of 256). The dispatch
++    // dequantizes the FULL weight (multi column-tile) in one pass and runs
++    // the f32 matmul. result F32 [n_tiles/n_tc*32, cols].
 +    GGML_ASSERT(a->type == GGML_TYPE_Q4NX);
 +    GGML_ASSERT(a->ne[0] == GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS); // 8192
 +    GGML_ASSERT(a->ne[1] >= 1);
 +    GGML_ASSERT(b->type == GGML_TYPE_F32);
-+    GGML_ASSERT(b->ne[0] == GGML_Q4NX_TILE_COLS); // 256
++    GGML_ASSERT(b->ne[0] % GGML_Q4NX_TILE_COLS == 0);                    // in % 256
 +    GGML_ASSERT(!ggml_is_transposed(a) && !ggml_is_transposed(b));
 +
++    const int64_t n_tc  = b->ne[0] / GGML_Q4NX_TILE_COLS; // column tiles
 +    const int64_t n_tiles = a->ne[1];
-+    const int64_t rows = n_tiles * GGML_Q4NX_TILE_ROWS;
++    GGML_ASSERT(n_tc >= 1 && n_tiles % n_tc == 0);
++    const int64_t n_tr  = n_tiles / n_tc;                  // row tiles
++    const int64_t rows  = n_tr * GGML_Q4NX_TILE_ROWS;
 +    const int64_t ne[4] = { rows, b->ne[1], b->ne[2], b->ne[3] };
 +    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
 +
@@ -10661,3 +10997,29 @@ index 0cdd1c4..b6ab108 100644
  }
  
  
+diff --git a/src/llama-model-loader.cpp b/src/llama-model-loader.cpp
+index 645b481..eecd7b6 100644
+--- a/src/llama-model-loader.cpp
++++ b/src/llama-model-loader.cpp
+@@ -871,10 +871,17 @@ const struct ggml_tensor * llama_model_loader::check_tensor_dims(const std::stri
+ 
+     {
+         bool is_ok = true;
+-        for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
+-            if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
+-                is_ok = false;
+-                break;
++        // 1bit-MONSTER Q4NX weights are stored tile-major as [8192, n_tiles]
++        // (each 8192-element row = one 5120-byte tile); the model dims are
++        // [ne0 = in, ne1 = out] with n_tiles = (out/32)*(in/256). Skip the
++        // shape comparison for Q4NX tensors; the graph builder derives the
++        // logical dims from the op (ggml_mul_mat_q4nx) using src1->ne[0].
++        if (cur->type != GGML_TYPE_Q4NX) {
++            for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
++                if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
++                    is_ok = false;
++                    break;
++                }
+             }
+         }
+         if (!is_ok) {

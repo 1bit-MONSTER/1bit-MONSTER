@@ -30,10 +30,11 @@
 int main(int argc, char ** argv) {
     const char * tiles_path = argc > 1 ? argv[1] : "/tmp/attn_q_tc0.tiles";
     const char * ref_path   = argc > 2 ? argv[2] : "/tmp/attn_q_ref.f32";
-    const int n_tiles = 64;        // attn_q column-tile 0
-    const int rows = n_tiles * 32; // 2048
-    const int k = 256;
-    const int cols = 4;            // batch
+    const int n_tiles = 256;       // full blk.0.attn_q weight (4 col-tiles x 64 row-tiles)
+    const int rows = 2048;         // out
+    const int k = 1024;            // in (4 column-tiles)
+    const int n_tc = k / 256;      // 4
+    const int cols = 1;            // batch
 
     std::ifstream tf(tiles_path, std::ios::binary);
     std::vector<char> blob((std::istreambuf_iterator<char>(tf)), {});
@@ -64,9 +65,11 @@ int main(int argc, char ** argv) {
             return f;
         };
         for (int t = 0; t < n_tiles; ++t) {
+            const int tr = t / n_tc, tc = t % n_tc;
             const uint8_t * base = (const uint8_t *) blob.data() + (size_t) t * 5120;
             for (int r = 0; r < 32; ++r) {
                 int lane = r / 16, lr = r % 16, bi = lr / 2, nib = r % 2;
+                const int row = tr * 32 + r;
                 for (int c = 0; c < 256; ++c) {
                     int g = c / 32;
                     float s = bf16(base + (r * 8 + g) * 2);
@@ -76,7 +79,7 @@ int main(int argc, char ** argv) {
                     uint8_t b = base[1024 + lane * 2048 + c * 8 + bi];
                     int q = nib == 0 ? (b & 0x0F) : ((b >> 4) & 0x0F);
                     int8_t v = (int8_t)(q < 8 ? q : q - 16);
-                    W[(t * 32 + r) * k + c] = (float) v * s + z;
+                    W[row * k + tc * 256 + c] = (float) v * s + z;
                 }
             }
         }
@@ -117,7 +120,7 @@ int main(int argc, char ** argv) {
         max_rel = std::max(max_rel, d / std::max(std::fabs(ref[i]), 1e-12));
         if (d > 1e-3) ++mismatches;
     }
-    std::printf("GGML_OP_MUL_MAT_Q4NX — Qwen3-0.6B blk.0.attn_q col-tile 0 [2048x256]x[256x%d] on gfx1151\n", cols);
+    std::printf("GGML_OP_MUL_MAT_Q4NX — Qwen3-0.6B blk.0.attn_q FULL [2048x1024]x[1024x%d] on gfx1151\n", cols);
     std::printf("  ref range [%.6f, %.6f]  out range [%.6f, %.6f]\n",
                 *std::min_element(ref.begin(), ref.end()), *std::max_element(ref.begin(), ref.end()),
                 *std::min_element(got.begin(), got.end()), *std::max_element(got.begin(), got.end()));
