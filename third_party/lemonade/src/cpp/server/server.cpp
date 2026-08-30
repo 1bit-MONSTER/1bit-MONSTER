@@ -375,6 +375,10 @@ Server::Server(std::shared_ptr<RuntimeConfig> config,
     // Set global HttpClient timeout
     utils::HttpClient::set_default_timeout(config->global_timeout());
 
+    // Stream stall bound for backend streaming forwards (post_stream with no
+    // total timeout). 0 disables the bound.
+    utils::HttpClient::set_stream_stall_timeout(config->stream_stall_timeout());
+
     // Global download rate limit
     utils::HttpClient::set_download_rate_limit(config->download_rate_limit_bytes_per_second());
 
@@ -7307,14 +7311,24 @@ void Server::apply_config_side_effects(const json& applied_changes) {
                     websocket_server_->start();
                 }
             }
-        } else if (key == "log_level") {
-            std::string level = config_->log_level();
-            LOG(INFO, "Server") << "Log level changed to: " << level << std::endl;
-            reconfigure_application_logging(level);
+        } else if (key == "log_level" || key == "log_file" || key == "log_max_file_size_mb" || key == "log_max_files") {
+            LogRotationConfig rot_cfg;
+            rot_cfg.file_mode = config_->log_file();
+            rot_cfg.max_file_size_mb = config_->log_max_file_size_mb();
+            rot_cfg.max_files = config_->log_max_files();
+            LOG(INFO, "Server") << "Logging configuration updated (level=" << config_->log_level()
+                                << ", file=" << rot_cfg.file_mode
+                                << ", max_size=" << rot_cfg.max_file_size_mb << "MB"
+                                << ", max_files=" << rot_cfg.max_files << ")" << std::endl;
+            reconfigure_application_logging(config_->log_level(), rot_cfg);
         } else if (key == "global_timeout") {
             long timeout = config_->global_timeout();
             LOG(INFO, "Server") << "Global timeout changed to: " << timeout << "s" << std::endl;
             utils::HttpClient::set_default_timeout(timeout);
+        } else if (key == "stream_stall_timeout") {
+            long stall = config_->stream_stall_timeout();
+            LOG(INFO, "Server") << "Stream stall timeout changed to: " << stall << "s" << std::endl;
+            utils::HttpClient::set_stream_stall_timeout(stall);
         } else if (key == "download_rate_limit") {
             const int64_t bps = config_->download_rate_limit_bytes_per_second();
             if (bps > 0) {
