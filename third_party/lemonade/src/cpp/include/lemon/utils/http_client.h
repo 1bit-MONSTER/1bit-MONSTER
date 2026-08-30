@@ -120,6 +120,18 @@ public:
         return download_rate_limit_bytes_per_second_.load();
     }
 
+    // Stream stall bound (seconds) for post_stream requests that carry no
+    // total timeout: how long a stream may deliver nothing before it is
+    // treated as dead. 0 disables the bound. Defaults to the historical
+    // hardcoded 120s; configurable via "stream_stall_timeout" in config.json.
+    static void set_stream_stall_timeout(long seconds) {
+        stream_stall_timeout_seconds_.store(seconds);
+    }
+
+    static long get_stream_stall_timeout() {
+        return stream_stall_timeout_seconds_.load();
+    }
+
     // Simple GET request. timeout_seconds=0 (default) uses default_timeout_seconds_.
     static HttpResponse get(const std::string& url,
                            const std::map<std::string, std::string>& headers = {},
@@ -156,8 +168,9 @@ public:
     //
     // timeout_seconds=0 uses default_timeout_seconds_. A total timeout would
     // cut off a long but healthy generation, so this bounds upstream silence
-    // instead: the transfer is aborted only after kStreamStallSeconds with no
-    // progress, which a streaming response cannot legitimately exceed.
+    // instead: the transfer is aborted only after stream_stall_timeout()
+    // seconds with no progress, which a streaming response cannot legitimately
+    // exceed (0 = no bound).
     static HttpResponse post_stream(
         const std::string& url,
         const std::string& body,
@@ -186,6 +199,7 @@ public:
 private:
     static std::atomic<long> default_timeout_seconds_;
     static std::atomic<int64_t> download_rate_limit_bytes_per_second_;
+    static std::atomic<long> stream_stall_timeout_seconds_;
 
     // Single download attempt, may resume from offset
     static DownloadResult download_attempt(const std::string& url,

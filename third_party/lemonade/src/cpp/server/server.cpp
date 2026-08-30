@@ -375,6 +375,10 @@ Server::Server(std::shared_ptr<RuntimeConfig> config,
     // Set global HttpClient timeout
     utils::HttpClient::set_default_timeout(config->global_timeout());
 
+    // Stream stall bound for backend streaming forwards (post_stream with no
+    // total timeout). 0 disables the bound.
+    utils::HttpClient::set_stream_stall_timeout(config->stream_stall_timeout());
+
     // Global download rate limit
     utils::HttpClient::set_download_rate_limit(config->download_rate_limit_bytes_per_second());
 
@@ -7321,6 +7325,10 @@ void Server::apply_config_side_effects(const json& applied_changes) {
             long timeout = config_->global_timeout();
             LOG(INFO, "Server") << "Global timeout changed to: " << timeout << "s" << std::endl;
             utils::HttpClient::set_default_timeout(timeout);
+        } else if (key == "stream_stall_timeout") {
+            long stall = config_->stream_stall_timeout();
+            LOG(INFO, "Server") << "Stream stall timeout changed to: " << stall << "s" << std::endl;
+            utils::HttpClient::set_stream_stall_timeout(stall);
         } else if (key == "download_rate_limit") {
             const int64_t bps = config_->download_rate_limit_bytes_per_second();
             if (bps > 0) {

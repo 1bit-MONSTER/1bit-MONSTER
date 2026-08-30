@@ -92,6 +92,7 @@
     "vulkan_bin": "builtin",
     "width": 512
   },
+  "stream_stall_timeout": 120,
   "telemetry": {
     "enabled": false,
     "hide_inputs": false,
