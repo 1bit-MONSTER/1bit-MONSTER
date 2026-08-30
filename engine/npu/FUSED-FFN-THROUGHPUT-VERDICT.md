@@ -189,3 +189,23 @@ The gap is not reproducible in isolation — it needs a profiler
 d_output8 / 19.4 MB dlogits_batch in the full bench process, or a
 driver scheduling interaction).  Impact if solved: ~+10% (613 -> ~680).
 Left as-is; the instrumentation was reverted.
+
+## 13. Round 8 (2026-08-30): lm_head mystery SOLVED at the mechanism level (rocprofv3)
+
+Used the available rocprofv3 (--kernel-trace --pmc, GL2C counters, per-dispatch
+via the dispatch event_id) on the real bench:
+
+- In-path lm_head kernel: 20.1-22.8 ms/dispatch, GL2C_HIT=5.1M MISS=5.1M
+  (50% hit rate).  The forward's gu kernel: 79% hit rate.
+- The SAME kernel standalone: 13.2 ms, HIT=4.8M MISS=1.4M (77% hit rate).
+
+Mechanism: the lm_head's x (fp16, 64 KB) is NOT L2-resident in the full bench
+process (re-fetched ~7,200x per dispatch), while it stays resident
+standalone.  Every attempted isolation/fix failed to reproduce or change it:
+forward-like L2 pollution, process memory state, logits D2H (before/after),
+per-launch syncs, XRT/NPU init, fresh-x rewrite, idle-throttle, 11K-kernel
+queue history, an 8 MB L2-cleaner kernel, fresh dxh page allocation, BLOCK
+sweep, __ldcs (unavailable).  The toolchain exposes no L2 cache-policy
+control (no __ldg/__ldcs, no target-enableable features on gfx1151), so the
+fix (evict-first W8 loads to keep x resident) is not implementable here.
+Impact if fixed: ~+10% (613 -> ~680 agg tok/s).  Left documented, not fixed.
