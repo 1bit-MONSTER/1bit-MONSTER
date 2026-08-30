@@ -37,7 +37,7 @@ os.environ.setdefault("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")
 BOT_DIR = "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot"
 ENV_FILE = os.path.join(BOT_DIR, ".env")
 API = "https://discord.com/api/v10"
-ALERT_CHANNEL = os.getenv("WATCHDOG_CHANNEL", "1542812729272696843")  # #general
+ALERT_CHANNEL = "1542812729272696843"  # #general — default; overridden from .env in main()
 TOKEN_FILE = os.path.expanduser("~/.secrets/Discord Bot token.txt")
 STATE_FILE = os.path.expanduser("~/.cache/discord-watchdog-state.json")
 LOG_DIR = os.path.expanduser("~/.local/share")
@@ -122,6 +122,10 @@ def _post(text: str) -> None:
 
 def main() -> int:
     load_dotenv()
+    # WATCHDOG_CHANNEL can live in .env — resolve AFTER load_dotenv() so the
+    # import-time default doesn't shadow it.
+    global ALERT_CHANNEL
+    ALERT_CHANNEL = os.getenv("WATCHDOG_CHANNEL", ALERT_CHANNEL)
     results = _run_checks()
     failing = {k: v for k, v in results.items() if v != "ok"}
 
