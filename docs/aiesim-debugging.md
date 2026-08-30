@@ -296,3 +296,28 @@ Use `sudo rmmod amdxdna && sudo modprobe amdxdna` only to reload firmware;
 for a wedged AIE core the driver's TDR + SMU power-cycle is the recovery
 path (the `.github/workflows/npu-reset.yml` rmmod/modprobe job remains as a
 belt-and-braces fallback, not a reset).
+
+### 8c. Local mlir-aie npu2_40 patches — decision (issue #1948)
+
+The `~/mlir-aie` checkout on strixhalo carries **local, un-pushed patches**
+needed for the npu2_40 toolchain build path (from the NPU cascade work):
+`AIELowerDynamicBDPool.cpp`, `BdLowering.cpp` (+ headers), `python/aie/`,
+dynamic DMA/BD tests, strix AOT lit tests, and submodule bumps
+(`cmake/modulesXilinx`, `platforms/boards`).
+
+**Decision (2026-08-30): keep local-only, backup is the canonical copy.**
+Upstreaming to Xilinx/mlir-aie is deferred: the patches are WIP
+("wip(toolchain): local NPU2-40 patches" — commit `1e6b70af0`), the npu2_40
+build path is not the production path, and the Xilinx repo is not one we
+contribute CI to. Recovery on a fresh box:
+
+```bash
+# canonical backup (verified present on strixhalo):
+git clone ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.bundle mlir-aie
+# or apply the flat patch:
+cd mlir-aie && git apply ~/1bit-MONSTER-backups/mlir-aie-local-patches-2026-08-29.patch
+```
+
+Re-verify before relying on it (the bundle is a full clone; the patch is the
+same content as commit `1e6b70af0`). If the npu2_40 path ever becomes
+production, upstream the patches as a PR to Xilinx/mlir-aie first.
