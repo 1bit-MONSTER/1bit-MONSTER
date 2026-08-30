@@ -17,8 +17,10 @@ Run:
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import subprocess
 import time
 import urllib.request
 
@@ -113,6 +115,10 @@ class DocsSlash(discord.Client):
         async def docs(interaction: discord.Interaction, question: str) -> None:  # noqa: ANN202
             await self._answer(interaction, question)
 
+        @self.tree.command(name="issue", description="Look up a GitHub issue (1bit-MONSTER/1bit-MONSTER)")
+        async def issue(interaction: discord.Interaction, number: int) -> None:  # noqa: ANN202
+            await self._lookup_issue(interaction, number)
+
         await self.tree.sync()
         log.info("synced /%s globally", COMMAND_NAME)
         if self.guild_id:
@@ -155,6 +161,32 @@ class DocsSlash(discord.Client):
             return
         for chunk in _split(answer):
             await interaction.followup.send(chunk)
+
+    async def _lookup_issue(self, interaction: discord.Interaction, number: int) -> None:
+        """/issue <n> — compact GitHub issue card via the gh CLI."""
+        await interaction.response.defer(thinking=True)
+        try:
+            out = subprocess.run(
+                ["gh", "issue", "view", str(number),
+                 "--repo", "1bit-MONSTER/1bit-MONSTER",
+                 "--json", "number,title,url,state,labels,createdAt"],
+                capture_output=True, text=True, timeout=30, check=True)
+            d = json.loads(out.stdout)
+        except subprocess.CalledProcessError as exc:
+            await interaction.followup.send(
+                f"Could not find issue #{number}: {(exc.stderr or '').strip()[:200]}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.exception("issue lookup failed")
+            await interaction.followup.send(f"Sorry, I hit an error: `{type(exc).__name__}`.")
+            return
+        labels = ", ".join(l["name"] for l in d.get("labels", [])) or "none"
+        closed = (d.get("state") or "").lower() == "closed"
+        await interaction.followup.send(
+            f"{'✅' if closed else '🟡'} **#{d['number']}** {d['title']}\n"
+            f"State: {d.get('state', '?')} · Labels: {labels}\n"
+            f"Created: {(d.get('createdAt') or '?')[:10]}\n{d['url']}"
+        )
 
 
 def _load_dotenv(path: str = ".env") -> None:

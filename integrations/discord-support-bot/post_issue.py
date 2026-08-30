@@ -18,10 +18,14 @@ Usage:
 
 Requires: DISCORD_TOKEN (env or ~/.secrets/Discord Bot token.txt), and
 Network access to the Discord API. GitHub data comes from the `gh` CLI.
+When DEEPSEEK_API_KEY is set (and ISSUE_SUMMARY != 0), the starter message
+also carries a short LLM summary of the issue.
 
-Config (env):
+Config (env, from .env or the environment):
     ISSUE_TRACKER_CHANNEL_ID  Discord FORUM channel id for #issue-tracker
                              (default: 1543724070154145793)
+    ISSUE_SUMMARY             "1" (default) adds a DeepSeek 3-line summary to
+                             each post; "0" posts without one.
 """
 from __future__ import annotations
 
@@ -33,7 +37,7 @@ import sys
 import urllib.request
 
 API = "https://discord.com/api/v10"
-UA = "1bit-docsbot (issue-tracker, 2.0)"
+UA = "1bit-docsbot (issue-tracker, 3.0)"
 ISSUE_TRACKER_CHANNEL_ID = os.getenv(
     "ISSUE_TRACKER_CHANNEL_ID", "1543724070154145793"
 )
@@ -74,6 +78,24 @@ _TYPE_LABEL_KEYWORDS = {
     TAG_TYPE_FEATURE: ("feature", "enhancement", "request"),
 }
 
+# Labels that escalate a post on the state axis (triage keyword).
+ESCALATION_LABEL_KEYWORDS = ("priority", "p0", "p1", "urgent", "critical",
+                             "blocker", "hotfix", "severe")
+
+
+def _load_dotenv(path: str = ".env") -> None:
+    """Minimal .env loader so cron runs see DEEPSEEK_API_KEY etc."""
+    if not os.path.exists(path):
+        return
+    for line in open(path, encoding="utf-8"):
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            k, _, v = line.partition("=")
+            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+
+
+_load_dotenv()
+
 
 def _headers() -> dict[str, str]:
     return {"Authorization": "Bot " + TOKEN, "User-Agent": UA,
@@ -111,6 +133,55 @@ def type_tag(labels: list[dict]) -> str:
     return TAG_TYPE_INQUIRY
 
 
+def is_escalated(labels: list[dict]) -> bool:
+    """True when an issue label implies escalation (priority/critical/...)."""
+    names = " ".join((label.get("name") or "") for label in (labels or [])).lower()
+    return any(k in names for k in ESCALATION_LABEL_KEYWORDS)
+
+
+def desired_tags(issue: dict) -> list[str]:
+    """The three tags a post should carry for this issue's current state.
+
+    Closed issues are resolved; open ones are pending unless an escalation
+    label is present. Severity re-derived from title + body each call, so a
+    body edit can bump the DEFCON level on the next cron sync.
+    """
+    ttype = type_tag(issue.get("labels"))
+    if (issue.get("state") or "").lower() == "closed":
+        state = TAG_STATE_RESOLVED
+    else:
+        state = TAG_STATE_ESCALATED if is_escalated(issue.get("labels")) else TAG_STATE_PENDING
+    body = (issue.get("body") or "") if isinstance(issue.get("body"), str) else ""
+    return [ttype, state, TAG_SEVERITY[severity(issue["title"] + "\n" + body)]]
+
+
+def summarize_issue(issue: dict, api_key: str | None = None) -> str:
+    """Optional 3-line LLM summary of the issue (fail-soft: "" on any error)."""
+    if not api_key:
+        return ""
+    if os.getenv("ISSUE_SUMMARY", "1").strip() in ("0", "false", "no", ""):
+        return ""
+    try:
+        import llm
+        body = (issue.get("body") or "")[:3000] if isinstance(issue.get("body"), str) else ""
+        return llm.chat(
+            [
+                {"role": "system", "content":
+                    "You summarize GitHub issues for the 1bit.MONSTER engine. "
+                    "Reply with at most 3 plain-text lines: what the issue is, "
+                    "why it matters, and the ask. No markdown headers."},
+                {"role": "user", "content":
+                    f"Title: {issue['title']}\n\n{body}\n\n{issue['url']}"},
+            ],
+            api_key,
+            max_tokens=180,
+            temperature=0.2,
+            timeout=45,
+        )
+    except Exception:  # noqa: BLE001 — a summary must never block posting
+        return ""
+
+
 def gh_issue(repo: str, number: int) -> dict:
     out = subprocess.run(
         ["gh", "issue", "view", str(number), "--repo", repo,
@@ -119,12 +190,24 @@ def gh_issue(repo: str, number: int) -> dict:
     return json.loads(out)
 
 
+def update_post(thread_id: str, applied_tags: list[str] | None = None,
+                archived: bool | None = None) -> dict:
+    """PATCH a forum post's tags and/or archived flag (lifecycle sync)."""
+    body: dict = {}
+    if applied_tags is not None:
+        body["applied_tags"] = applied_tags
+    if archived is not None:
+        body["archived"] = archived
+    return _api("PATCH", f"/channels/{thread_id}", body)
+
+
 def post_issue_post(issue: dict) -> str:
     """Create a forum post in #issue-tracker for a GitHub issue.
 
     One request: POST /channels/{forum}/threads with the starter message
-    (title + URL + body excerpt) and applied_tags. Forum post names cap at
-    100 chars; the compact "#N title" form keeps the sidebar readable.
+    (title + URL + optional LLM summary + body excerpt) and applied_tags.
+    Forum post names cap at 100 chars; the compact "#N title" form keeps
+    the sidebar readable.
     """
     tags = forum_tags()
 
@@ -132,19 +215,19 @@ def post_issue_post(issue: dict) -> str:
     if len(name) > 100:
         name = name[:97] + "…"
 
-    body = (issue.get("body") or "").strip().replace("\r\n", "\n")
+    body = (issue.get("body") or "").strip().replace("\r\n", "\n") if isinstance(issue.get("body"), str) else ""
     excerpt = re.sub(r"\n{2,}", "\n", body)[:600]
+    summary = summarize_issue(issue, os.getenv("DEEPSEEK_API_KEY"))
+
     starter = f"**{issue['title']}** — <{issue['url']}>"
-    if excerpt:
+    if summary:
+        starter += "\n\n" + summary
+    if excerpt and not summary:
         starter += "\n\n" + excerpt
     if len(starter) > 1800:
         starter = starter[:1797] + "…"
 
-    applied = [tags[t] for t in (
-        type_tag(issue.get("labels")),
-        TAG_STATE_PENDING,
-        TAG_SEVERITY[severity(issue["title"] + "\n" + body)],
-    ) if t in tags]
+    applied = [tags[t] for t in desired_tags(issue) if t in tags]
 
     post = _api("POST", f"/channels/{ISSUE_TRACKER_CHANNEL_ID}/threads", {
         "name": name,

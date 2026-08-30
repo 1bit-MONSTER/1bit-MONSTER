@@ -23,10 +23,13 @@ wiki, reference). `DeepSeek` supplies the **wording**. No hallucinations.
 
 | File | Purpose |
 |------|---------|
-| **`docs_slash.py`** | **Primary.** A `discord.py` component that adds a `/docs` slash command to the existing bot. |
-| `bot.py` | Alternative: a standalone bot that answers a `!docs` prefix command or any message in a support channel (no slash registration). |
+| **`docs_slash.py`** | **Primary.** A `discord.py` component that adds `/docs` and `/issue` slash commands to the existing bot. |
+| `bot.py` | Companion gateway bot: answers a `!docs` prefix command in any channel or **any message in a configured support channel** (no slash registration). Runs as `docsbot-prefix.service`. |
+| `docsbot-prefix.service` | systemd template for the `bot.py` companion (installed by the same install script). |
 | `post_issue.py` | Posts a GitHub issue to **#issue-tracker as a forum post** (each issue = one tagged post in the forum channel, never a flat message). `python3 post_issue.py <number>` — see the docstring. |
-| `discord-issue-poster.py` | **Auto-posts new GitHub issues to #issue-tracker as forum posts** — cron poller (every 15 min) that finds open issues newer than the last handled one and posts each with tags. State in `~/.cache/discord-issue-poster-state.json`; never double-posts. |
+| `discord-issue-poster.py` | **Auto-posts new GitHub issues to #issue-tracker as forum posts AND syncs their lifecycle** — cron poller (every 15 min) that posts new issues and reconciles tags/archive state (closed → `resolved` + archived, escalation labels → `escalated`). State in `~/.cache/discord-issue-poster-state.json`; never double-posts. |
+| `discord-issue-digest.py` | Weekly open-issue digest (counts by type/severity, top 5, optional LLM takeaway) posted to the forum — cron `0 20 * * 0`. |
+| `discord-watchdog.py` | Fleet watchdog (services, cron-log freshness, Context7 retrieval) that alerts #general when something is silently dead — cron `*/10 * * * *`. |
 | `context7.py` | Retrieval client for Context7 `GET /v2/context` (framework-agnostic). |
 | `llm.py` | DeepSeek chat-completions client (framework-agnostic). |
 | `.env.example` | Copy to `.env` and fill in real credentials. |
@@ -66,17 +69,25 @@ also sync instantly to your primary server — the global registration still
 happens, so the command is never guild-scoped (issue #1961).
 
 ### Run it as a service (recommended for always-on)
-The bot must stay connected to the Discord gateway, so run it as a systemd
-**user** service rather than a one-off process:
+The bots must stay connected to the Discord gateway, so run them as systemd
+**user** services rather than one-off processes:
 
 ```bash
 ./install-docsbot-service.sh
 ```
 
-This creates `~/.config/systemd/user/docsbot.service` from the committed
-`docsbot.service` template, installs the venv, enables linger (start at boot),
-and starts it. Manage it with `systemctl --user status/restart docsbot` and
-watch logs with `journalctl --user -u docsbot -f`.
+This creates `~/.config/systemd/user/docsbot.service` (the `/docs` slash
+bot) **and** `docsbot-prefix.service` (the `!docs` prefix / support-channel
+auto-answer companion) from the committed templates, installs the venv,
+enables linger (start at boot), and starts both. Manage them with
+`systemctl --user status/restart docsbot` (or `docsbot-prefix`) and watch
+logs with `journalctl --user -u docsbot -f`.
+
+> **Message Content Intent:** `bot.py` needs the `message_content` gateway
+> intent, which is *not* part of the default bot scope — enable **Message
+> Content Intent** for the application in the Discord Developer Portal, or
+> the prefix/auto-answer bot connects but sees empty message content. The
+> `/docs` slash bot does not need it.
 
 ### Availability (issue #1962) — do not run only on the dev host
 
@@ -118,11 +129,35 @@ It checks Context7 is retrieval-ready for `/1bit-monster/1bit-monster`, and, if
 
 ## Usage
 - **`/docs <question>`** — in any channel, e.g. `/docs how do I build the engine?`
+- **`/issue <number>`** — compact GitHub issue card, e.g. `/issue 1956`
+- **`!docs <question>`** — prefix command, works in any channel (docsbot-prefix)
+- **Auto-answer** — any message in a channel listed in `SUPPORT_CHANNEL_IDS`
+  is treated as a support question (docsbot-prefix)
 - The bot answers with a grounded reply plus the doc source links it used.
 
-The `/docs` command runs its own gateway connection. Your other 1bit bots
+The `/docs` bot runs its own gateway connection. Your other 1bit bots
 (`discord-inbox.py`, traffic-digest, etc.) are REST pollers and load
 separately, so they don't conflict.
+
+## Issue lifecycle sync
+
+The 15-minute poster cron does more than post: every tracked post is
+reconciled with the live GitHub issue, and posts are only PATCHed when
+something changed:
+
+* **closed** → tags flipped to `resolved`, post **archived**
+* **reopened** → unarchived, tagged `pending`
+* **escalation label** (`priority` / `p0` / `p1` / `urgent` / `critical` /
+  `blocker` / `hotfix` / `severe`) → tagged `escalated`
+* label or body edits re-derive the **type** and **DEFCON** tags
+
+## Webhook / archive
+
+The legacy **GitHub · Issues** webhook still posts flat messages to
+`#issue-tracker-archive` (the retired text channel). GitHub's native Discord
+integration cannot create forum posts, so the two mirrors intentionally
+diverge: **archive = raw webhook feed**, **forum = tagged, triageable posts**.
+Keep the webhook unless you want the archive to go quiet too.
 
 ## Forum tags (#issue-tracker)
 

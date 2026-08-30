@@ -1,11 +1,21 @@
 #!/usr/bin/env python3
-"""discord-issue-poster.py — auto-post new GitHub issues to #issue-tracker as FORUM posts.
+"""discord-issue-poster.py — mirror GitHub issues to #issue-tracker as FORUM posts.
 
-Polls the GitHub repo for issues newer than the last-posted one and posts
-each to Discord #issue-tracker (a forum channel) as a tagged post (reusing
-post_issue.py's forum-post logic). Runs from cron; state (last issue number
-handled) persists in ~/.cache/discord-issue-poster-state.json so a re-run
-never double-posts.
+Two jobs, one 15-minute cron run:
+
+  1. POST   — new open issues (number > last handled) become tagged forum
+              posts in #issue-tracker (a forum channel).
+  2. SYNC   — every tracked post is reconciled with the live GitHub issue:
+              * closed   → tag `resolved` + archive the post
+              * reopened → unarchive + tag `pending`
+              * escalation label (priority/critical/...) → tag `escalated`
+              * label / body changes re-derive type + DEFCON severity
+              Tag ids resolve from the channel at runtime; posts are only
+              PATCHed when something actually changed.
+
+State persists in ~/.cache/discord-issue-poster-state.json (last issue
+handled + a {issue_number: {thread, state, tags, archived}} map), so a
+re-run never double-posts and the sync knows each post's last-known state.
 
 Cron (strixhalo): */15 * * * * (every 15 min; cheap when nothing new)
 
@@ -18,29 +28,33 @@ import sys
 import time
 
 sys.path.insert(0, "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot")
-from post_issue import gh_issue, post_issue_post  # noqa: E402
+from post_issue import (  # noqa: E402
+    TAG_SEVERITY,
+    desired_tags,
+    forum_tags,
+    gh_issue,
+    post_issue_post,
+    update_post,
+)
 
 REPO = "1bit-MONSTER/1bit-MONSTER"
 STATE_FILE = os.path.expanduser("~/.cache/discord-issue-poster-state.json")
-# Only auto-post issues created from now on — historical issues were posted
-# manually. Set to 0 to post every open issue on first run.
-BOOTSTRAP_SINCE_DAYS = 1
 
 
-def last_handled() -> int:
+def load_state() -> dict:
     try:
-        return int(json.load(open(STATE_FILE)).get("last_issue", 0))
+        return json.load(open(STATE_FILE))
     except Exception:
-        return 0
+        return {"last_issue": 0, "posts": {}}
 
 
-def save_last(n: int) -> None:
+def save_state(state: dict) -> None:
+    state["at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ")
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    json.dump({"last_issue": n, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")},
-              open(STATE_FILE, "w"))
+    json.dump(state, open(STATE_FILE, "w"), indent=2)
 
 
-def new_issues(after: int) -> list[dict]:
+def new_open_issues(after: int) -> list[dict]:
     """Open issues with number > after, oldest first."""
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", REPO, "--state", "open",
@@ -50,19 +64,71 @@ def new_issues(after: int) -> list[dict]:
     return sorted(issues, key=lambda i: i["number"])
 
 
+def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
+    """Reconcile one tracked post with the live issue; PATCH only on change."""
+    try:
+        issue = gh_issue(REPO, number)
+    except Exception as exc:  # noqa: BLE001 — issue may be gone; leave post alone
+        print(f"sync #{number}: skipped ({type(exc).__name__}: {exc})")
+        return
+    want = [t for t in desired_tags(issue) if t in tags]
+    ids = [tags[t] for t in want]
+    closed = (issue.get("state") or "").lower() == "closed"
+    changed = False
+
+    if want != rec.get("tags"):
+        update_post(rec["thread"], applied_tags=ids)
+        rec["tags"] = want
+        changed = True
+        print(f"sync #{number}: tags -> {want}")
+
+    if closed and not rec.get("archived"):
+        update_post(rec["thread"], archived=True)
+        rec["archived"] = True
+        changed = True
+        print(f"sync #{number}: archived (closed)")
+    elif not closed and rec.get("archived"):
+        update_post(rec["thread"], archived=False)
+        rec["archived"] = False
+        changed = True
+        print(f"sync #{number}: unarchived (reopened)")
+
+    if changed:
+        rec["state"] = "CLOSED" if closed else "OPEN"
+        save_state(state)
+
+
 def main() -> int:
-    after = last_handled()
-    issues = new_issues(after)
-    if not issues:
-        print(f"no new issues (last handled #{after})")
-        return 0
+    state = load_state()
+    after = int(state.get("last_issue", 0))
+    tags = forum_tags()
+
+    # ── job 1: post new issues ────────────────────────────────────────────
+    issues = new_open_issues(after)
+    posts = state.setdefault("posts", {})
     for issue in issues:
-        full = gh_issue(REPO, issue["number"])
-        pid = post_issue_post(full)
-        print(f"posted #{issue['number']} '{issue['title']}' as forum post {pid}")
-        save_last(issue["number"])
+        try:
+            tid = post_issue_post(issue)
+        except Exception as exc:  # noqa: BLE001
+            print(f"post #{issue['number']} FAILED: {type(exc).__name__}: {exc}")
+            continue
+        posts[str(issue["number"])] = {
+            "thread": tid,
+            "state": "OPEN",
+            "tags": [t for t in desired_tags(issue) if t in tags],
+            "archived": False,
+        }
+        print(f"posted #{issue['number']} '{issue['title']}' as forum post {tid}")
+        state["last_issue"] = issue["number"]
+        save_state(state)
         time.sleep(2)  # rate-limit politeness between posts
-    print(f"handled {len(issues)} new issue(s)")
+
+    # ── job 2: reconcile tracked posts with live issue state ──────────────
+    for num, rec in list(posts.items()):
+        sync_post(state, int(num), rec, tags)
+    save_state(state)
+
+    print(f"done: {len(issues)} new, {len(posts)} tracked")
     return 0
 
 

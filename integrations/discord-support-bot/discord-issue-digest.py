@@ -1,0 +1,141 @@
+#!/usr/bin/env python3
+"""discord-issue-digest.py — weekly open-issue digest → #issue-tracker forum post.
+
+Summarizes the open GitHub issue backlog: counts by type and DEFCON
+severity, the top-5 issues by severity, and (when DEEPSEEK_API_KEY is set) a
+one-line LLM takeaway. Posted to the #issue-tracker FORUM as a post tagged
+inquiry / pending / defcon-5; set ISSUE_DIGEST_CHANNEL to a text-channel id
+to post a plain message there instead.
+
+Cron (strixhalo): 0 20 * * 0 (Sunday 20:00 UTC)
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.request
+
+sys.path.insert(0, "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot")
+from post_issue import (  # noqa: E402
+    TAG_SEVERITY,
+    _load_dotenv,
+    forum_tags,
+    severity,
+    type_tag,
+)
+
+_load_dotenv()
+
+REPO = "1bit-MONSTER/1bit-MONSTER"
+API = "https://discord.com/api/v10"
+FORUM_CHANNEL = os.getenv("ISSUE_TRACKER_CHANNEL_ID", "1543724070154145793")
+TOKEN = os.getenv("DISCORD_TOKEN") or (
+    open(os.path.expanduser("~/.secrets/Discord Bot token.txt")).read().strip()
+    if os.path.exists(os.path.expanduser("~/.secrets/Discord Bot token.txt")) else ""
+)
+UA = "1bit-docsbot (issue-digest, 1.0)"
+
+
+def open_issues() -> list[dict]:
+    out = subprocess.run(
+        ["gh", "issue", "list", "--repo", REPO, "--state", "open",
+         "--limit", "100", "--json", "number,title,labels,body,createdAt"],
+        capture_output=True, text=True, check=True).stdout
+    return json.loads(out)
+
+
+def _post_message(content: str) -> str:
+    req = urllib.request.Request(
+        API + f"/channels/{FORUM_CHANNEL}/messages",
+        data=json.dumps({"content": content}).encode(),
+        headers={"Authorization": "Bot " + TOKEN, "Content-Type": "application/json",
+                 "User-Agent": UA},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())["id"]
+
+
+def _post_forum(name: str, content: str, tag_ids: list[str]) -> str:
+    body = {
+        "name": name,
+        "message": {"content": content},
+        "applied_tags": tag_ids,
+        "auto_archive_duration": 10080,
+        "type": 11,
+    }
+    req = urllib.request.Request(
+        API + f"/channels/{FORUM_CHANNEL}/threads",
+        data=json.dumps(body).encode(),
+        headers={"Authorization": "Bot " + TOKEN, "Content-Type": "application/json",
+                 "User-Agent": UA},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())["id"]
+
+
+def main() -> int:
+    if not TOKEN:
+        print("error: no DISCORD_TOKEN", file=sys.stderr)
+        return 2
+    issues = open_issues()
+    if not issues:
+        print("no open issues — skipping digest")
+        return 0
+
+    by_sev: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    by_type: dict[str, int] = {}
+    rows = []
+    for i in issues:
+        sev = severity((i.get("title") or "") + "\n" + (i.get("body") or ""))
+        ttype = type_tag(i.get("labels"))
+        by_sev[sev] = by_sev.get(sev, 0) + 1
+        by_type[ttype] = by_type.get(ttype, 0) + 1
+        rows.append((sev, i["createdAt"], i["number"], i["title"], i.get("labels") or []))
+
+    sev_labels = {1: "defcon-1 🟥", 2: "defcon-2 🟧", 3: "defcon-3 🟨",
+                  4: "defcon-4 🟩", 5: "defcon-5 ⬜"}
+    lines = [f"**Open issue backlog — {len(issues)} issues**",
+             f"Type: {', '.join(f'{k}×{v}' for k, v in sorted(by_type.items()))}",
+             "Severity: " + " · ".join(
+                 f"{sev_labels[s]} {by_sev.get(s, 0)}" for s in sorted(by_sev)),
+             "", "**Top by severity:**"]
+    for sev, created, num, title, labels in sorted(rows)[:5]:
+        names = " ".join((l.get("name") or "") for l in labels) or "—"
+        lines.append(f"• `#{num}` {title[:90]}  _({names})_")
+    lines.append("")
+    lines.append(f"<https://github.com/{REPO}/issues>")
+
+    content = "\n".join(lines)
+    if os.getenv("DEEPSEEK_API_KEY"):
+        try:
+            import llm
+            takeaway = llm.chat(
+                [{"role": "system", "content":
+                  "You are a triage assistant for the 1bit.MONSTER engine. "
+                  "Write ONE short line (under 140 chars) summarizing the most "
+                  "urgent theme in this open-issue list. No markdown."},
+                 {"role": "user", "content": content}],
+                os.getenv("DEEPSEEK_API_KEY"), max_tokens=120, timeout=45)
+            if takeaway:
+                content = "💡 " + takeaway + "\n\n" + content
+        except Exception:  # noqa: BLE001 — digest must not fail on the LLM
+            pass
+
+    day = time.strftime("%Y-%m-%d")
+    digest_channel = os.getenv("ISSUE_DIGEST_CHANNEL", "")
+    if digest_channel.isdigit():
+        mid = _post_message(content)
+        print(f"digest posted to channel {digest_channel} (msg {mid})")
+    else:
+        tags = forum_tags()
+        ids = [tags[t] for t in ("inquiry", "pending", "defcon-5") if t in tags]
+        pid = _post_forum(f"Issue digest {day}", content, ids)
+        print(f"digest posted to forum as post {pid}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

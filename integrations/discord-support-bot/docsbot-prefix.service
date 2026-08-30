@@ -1,0 +1,28 @@
+# 1bit.MONSTER support bot — `!docs` prefix + support-channel auto-answer.
+#
+# Companion to docsbot.service (the /docs slash command). bot.py answers a
+# `!docs` prefix command in any channel and ANY message in the channels
+# listed in SUPPORT_CHANNEL_IDS (no prefix needed). Installed by
+# `install-docsbot-service.sh` alongside docsbot.service; @BOT_DIR@ is
+# substituted at install time.
+#
+# Note: bot.py uses the message_content gateway intent — enable "Message
+# Content Intent" for the bot in the Discord Developer Portal, or messages
+# arrive with empty content and auto-answer silently does nothing.
+
+[Unit]
+Description=1bit.MONSTER support bot (prefix + support-channel auto-answer)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=@BOT_DIR@
+EnvironmentFile=@BOT_DIR@/.env
+ExecStart=@BOT_DIR@/.venv/bin/python @BOT_DIR@/bot.py
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target
