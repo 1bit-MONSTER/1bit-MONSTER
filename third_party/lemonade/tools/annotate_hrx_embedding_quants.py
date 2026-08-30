@@ -12,7 +12,8 @@ Usage:
     python3 third_party/lemonade/tools/annotate_hrx_embedding_quants.py
         [--limit N]          # only first N entries (quick sanity)
         [--write]            # write the annotation into server_models.json
-                              # (adds "hrx_token_embd" + "hrx_serve" per entry)
+                              # (adds "hrx_token_embd" + "hrx_serve" + "hrx_embd_w"
+                              #  per entry)
 
 Requires: gguf package (pip install gguf) or the bundled GGUF reader.
 """
@@ -155,14 +156,15 @@ def read_gguf_ftype(data: bytes) -> tuple[str | None, int]:
         for _ in range(n_tensors):
             name, off = read_str(off)
             (n_dims,) = struct.unpack_from("<I", data, off); off += 4
+            dims = struct.unpack_from(f"<{n_dims}Q", data, off)
             off += 8 * n_dims
             (ftype,) = struct.unpack_from("<I", data, off); off += 4
             off += 8  # offset_to_data
             if name == "token_embd.weight":
-                return GGUF_FTYPE_NAMES.get(ftype, f"UNK({ftype})"), n_kv
-        return None, n_kv
+                return GGUF_FTYPE_NAMES.get(ftype, f"UNK({ftype})"), dims, n_kv
+        return None, (), n_kv
     except (struct.error, UnicodeDecodeError, IndexError, OverflowError):
-        return None, 0
+        return None, (), 0
 
 
 def main() -> int:
@@ -191,38 +193,57 @@ def main() -> int:
             # GGUF metadata (kv + tensor names) can be several MB when the
             # tokenizer arrays are large — fetch in growing chunks until the
             # walk finds token_embd.weight or we give up at 64 MB.
-            ftype = None
+            ftype, dims = None, ()
             for size in (1 << 20, 4 << 20, 16 << 20, 64 << 20):
                 data = fetch_header(url, size)
                 if data[:4] != b"GGUF":
                     break
-                ftype, _ = read_gguf_ftype(data)
+                ftype, dims, _ = read_gguf_ftype(data)
                 if ftype:
                     break
             if not ftype:
                 verdicts[name] = ("?", "metadata-too-large")
                 print(f"{name:45s} {'?':10s} {'metadata-too-large':12s}")
                 continue
-            serve = "YES" if ftype in K_QUANTS else "NO (GET_ROWS)"
-            verdicts[name] = (ftype, serve)
-            print(f"{name:45s} {ftype:10s} {serve:12s}")
+            # Issue #1944 (shape refinement): the GET_ROWS ceiling is not
+            # purely quant-gated. Empirically (strixhalo 2026-08-30):
+            #   Qwen3-30B-A3B-Instruct-2507 (q4_K, w=2048) — DECODES (36.31
+            #     tok/s, verified)
+            #   MiniCPM5-1B (q4_K, w=1536) — GET_ROWS Compute error
+            # So q4_K is NECESSARY but not SUFFICIENT; only the 30B-A3B
+            # entry has been verified end-to-end. Other q4_K entries are
+            # marked SUSPECT (unverified shape) until a per-shape probe or
+            # llama.cpp PR #27218 lands. GGUF dims are reversed, so the
+            # embedding width is the MIN of the two leading dims.
+            embd_w = int(min(dims[:2])) if len(dims) >= 2 else int(dims[0] or 0)
+            if ftype in K_QUANTS:
+                if name == "Qwen3-30B-A3B-Instruct-2507-HRX":
+                    serve = "YES"   # empirically verified (36.31 tok/s)
+                else:
+                    serve = "SUSPECT (q4_K, unverified shape)"
+            else:
+                serve = "NO (GET_ROWS)"
+            verdicts[name] = (ftype, serve, embd_w)
+            print(f"{name:45s} {ftype:10s} {serve:24s} w={embd_w}")
         except Exception as exc:  # noqa: BLE001
-            verdicts[name] = ("ERR", str(exc)[:40])
+            verdicts[name] = ("ERR", str(exc)[:40], 0)
             print(f"{name:45s} {'ERR':10s} {str(exc)[:40]:12s}")
 
     n_yes = sum(1 for v in verdicts.values() if v[1] == "YES")
+    n_susp = sum(1 for v in verdicts.values() if v[1] and v[1].startswith("SUSPECT"))
     n_no = sum(1 for v in verdicts.values() if v[1] and v[1].startswith("NO"))
-    print(f"\n{len(verdicts)} entries: {n_yes} K-quant (serve on HRX), "
-          f"{n_no} non-K (fail-closed), "
-          f"{len(verdicts) - n_yes - n_no} unknown/error")
+    print(f"\n{len(verdicts)} entries: {n_yes} verified-serve, {n_susp} SUSPECT (q4_K unverified shape), "
+          f"{n_no} fail-closed, {len(verdicts) - n_yes - n_susp - n_no} unknown/error")
 
     if args.write:
-        for name, (ftype, serve) in verdicts.items():
+        for name, (ftype, serve, embd_w) in verdicts.items():
             if name in registry and ftype not in ("?", "ERR"):
                 registry[name]["hrx_token_embd"] = ftype
                 registry[name]["hrx_serve"] = serve
+                if embd_w:
+                    registry[name]["hrx_embd_w"] = embd_w
         # Match the registry's original formatting exactly (indent=4, no
-        # sort_keys) so the diff is surgical — only the two new keys per
+        # sort_keys) so the diff is surgical — only the new keys per
         # entry are added, nothing re-ordered or re-indented.
         REGISTRY.write_text(json.dumps(registry, indent=4) + "\n")
         print(f"wrote annotations to {REGISTRY}")

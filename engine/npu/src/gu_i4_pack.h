@@ -42,6 +42,14 @@ struct GuI4Pack {
     std::vector<float>    scol;         // [N] float (host math / amax pass)
     std::vector<int8_t>   B_shadow;     // [K*N] row-major B'' (kernel-exact, for the
                                         // host amax pass + emulation)
+    // Issue #1934 (per-group-scale restructure): the full per-(row, 32-col-
+    // group) bf16 scale grid, indexed scl_g[r][i/32] for B element (row r,
+    // K index i). The current production path collapses these into the
+    // per-column ratioQ22 (K-uniform), capping FFN corr at ~0.972; the
+    // restructured kernel consumes this grid through C1. Populated by
+    // pack_gu_fused_i4_group_scales() — NOT wired into the production tile
+    // stream until the kernel restructure lands (per issue #1934).
+    std::vector<uint16_t> scl_g_bf16;   // [H * RC] bf16 bits (RC = raw.cols/32)
     static constexpr size_t TILE_BYTES = 64 * 128 / 2;   // nibbles (4096)
     // v65 tile layout (all within the aie2p-delivered [0..5632) region):
     //   [0,      4096)  nibbles (region A, 4096 B = 64x128 q4)
@@ -290,4 +298,33 @@ static inline GuI4Pack pack_gu_fused_i4(const RawQ4Tensor& raw, int expert,
                     }
         }
     return p;
+}
+
+// Issue #1934 (per-group-scale restructure) — host-side enabling artifact.
+// Emits the FULL per-(row, 32-col-group) bf16 scale grid the restructured
+// kernel needs to carry through C1, in the SAME interleaved gate/up row
+// layout as w_at() in pack_gu_fused_i4(). The current production kernel
+// collapses these into a per-column ratioQ22 (K-uniform) which caps FFN
+// corr at ~0.972; this grid is the finer scale data that fixes it.
+//
+// NOT wired into the production tile stream — populated standalone and
+// consumed by the CPU gate test (test_i4_group_scales.cpp) so the kernel
+// restructure has a verified host-side contract to build against.
+static inline void pack_gu_fused_i4_group_scales(const RawQ4Tensor& raw,
+                                                 int expert, int H, int n_ff,
+                                                 GuI4Pack& p) {
+    const size_t N = 2 * (size_t)n_ff;
+    const size_t gbase = (size_t)expert * N;
+    const int RC = raw.cols / 32;            // raw tensor scale stride (H/32)
+    p.scl_g_bf16.assign((size_t)N * RC, 0);  // [2*n_ff, RC] gate+up rows
+    for (size_t pp = 0; pp < (size_t)n_ff; pp++) {
+        // gate row = gbase + pp, up row = gbase + n_ff + pp (w_at layout)
+        for (int gate_up = 0; gate_up < 2; gate_up++) {
+            size_t r = gbase + (size_t)pp + (gate_up ? (size_t)n_ff : 0);
+            for (int i = 0; i < H; i++) {
+                uint16_t s16 = f32_to_bf16_impl(raw.scl[r * RC + i / 32]);
+                p.scl_g_bf16[(r - gbase) * RC + i / 32] = s16;
+            }
+        }
+    }
 }
