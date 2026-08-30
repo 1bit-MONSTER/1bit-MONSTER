@@ -143,3 +143,18 @@ WEIGHTS — not W-bound) are low-value.  Batch-32 stands at 375 agg tok/s.
   fix the v6 W-locality problem): all SLOWER than block-per-row fp16
   (19.35 -> 21.2-21.6 ms) — the per-row __syncthreads + reduced per-block
   parallelism outweigh the block-count savings.  Dead end, like v6.
+
+## 10. Round 5 (2026-08-30): int8-W batched GEMVs — the big swing (+45%)
+
+Quantized the attention/FFN/lm_head weights to int8 with per-row scales at
+load (4x smaller W; 3 KB vs 12 KB shared/block -> higher occupancy).  Four
+new kernels (generic/qkv/gu/lm_head i8, fp32 accumulate, y = srow[row]*dot;
+x stays fp32/fp16).  f32 fallbacks kept per-matrix.
+
+Standalone: qkv 0.41->0.27, o 0.16->0.12, w3 0.27->0.15, gu 0.65->0.40 ms.
+In-path forward 54.5 -> 31.3 ms/batch; batch-32 423 -> 597-613 agg tok/s
+(+45%).  Sweep 358/475/557/597 at B=4/8/16/32, tokens bit-identical to the
+f32 baseline — the .1bp weights are q4nx-derived, so per-row int8
+re-quantization is nearly lossless vs the dequantized f32.
+
+Session totals (batch 32): 292 (start) -> 613 agg tok/s (+110%).
