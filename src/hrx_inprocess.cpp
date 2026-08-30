@@ -179,12 +179,24 @@ namespace {
 std::string bundle_lib_path() {
     static const std::string cached = []() -> std::string {
         const char* root = std::getenv("HRX_ROOT");
-        if (root && root[0]) return std::string(root) + "/lib/libllama.so";
+        if (root && root[0]) {
+            // gfx1151 llama-build puts the DSOs in bin/ (self-contained tree);
+            // the b59 tarball layout puts them in lib/.  Try the canonical
+            // lib/ first, then bin/ so both layouts resolve (GET_ROWS-capable
+            // gfx1151 build + stock bundle).
+            std::string lib = std::string(root) + "/lib/libllama.so";
+            if (access(lib.c_str(), F_OK) == 0) return lib;
+            std::string bin = std::string(root) + "/bin/libllama.so";
+            if (access(bin.c_str(), F_OK) == 0) return bin;
+            return lib;  // canonical path; init() will fail with a clear error
+        }
         return "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b59/lib/libllama.so";
     }();
     const char* root = std::getenv("HRX_ROOT");
     if (root && root[0]) {
-        std::string cur = std::string(root) + "/lib/libllama.so";
+        std::string lib = std::string(root) + "/lib/libllama.so";
+        std::string bin = std::string(root) + "/bin/libllama.so";
+        std::string cur = access(lib.c_str(), F_OK) == 0 ? lib : bin;
         if (cur != cached) {
             fprintf(stderr,
                     "[hrx] HRX_ROOT changed between instances ('%s' now vs '%s' "
@@ -225,12 +237,13 @@ bool Inprocess::init() {
     if (impl_->handle) return true;
 
     std::string lib = bundle_lib_path();
-    // RTLD_DEEPBIND is mandatory: the bundle's llama symbols are unversioned and
-    // 1bit statically links its own llama.cpp — DEEPBIND keeps the bundle's
+    // RTLD_DEEPBIND: the bundle's llama symbols are unversioned and 1bit
+    // statically links its own llama.cpp — DEEPBIND keeps the bundle's
     // internal references resolving to its own copies, not the host's.
+    // HRX_NO_DEEPBIND=1 disables it (diagnostic).
     int flags = RTLD_NOW | RTLD_LOCAL;
 #ifdef RTLD_DEEPBIND
-    flags |= RTLD_DEEPBIND;
+    if (getenv("HRX_NO_DEEPBIND") == nullptr) flags |= RTLD_DEEPBIND;
 #endif
     impl_->handle = dlopen(lib.c_str(), flags);
     if (!impl_->handle) {

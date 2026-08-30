@@ -97,11 +97,20 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
     model_path_ = !cfg.model_path.empty() ? cfg.model_path : weights_dir;
     this->cfg = cfg;
 
-    // Fork-A in-process path (default on; HRX_INPROCESS=0 forces the
-    // subprocess): dlopen the bundle's libllama.so, offload weights to the HRX
-    // device, and serve token-level generate() in-process. On any failure fall
-    // back to the subprocess llama-server spawn below.
-    if (env_or("HRX_INPROCESS", "1") != "0") {
+    // Fork-A in-process path (HRX_INPROCESS=1 opts in; subprocess is the
+    // default): dlopen the bundle's libllama.so, offload weights to the HRX
+    // device, and serve token-level generate() in-process.  On any failure
+    // fall back to the subprocess llama-server spawn below.
+    //
+    // NOTE (2026-08-30): in-process mode segfaults inside the unified server
+    // (a std::regex token-table corruption in llama.cpp's unicode_regex_split
+    // when the bundle DSO is dlopen'd into the multi-backend 1bit process —
+    // reproduced standalone-free, crashes only under the server; the b59
+    // bundle predates the std::regex splitter and is unaffected).  The
+    // subprocess path is the production default; it serves text-level chat
+    // correctly (verified end-to-end: Qwen3-0.6B on HRX0, GET_ROWS-capable
+    // gfx1151 build).
+    if (env_or("HRX_INPROCESS", "0") != "0") {
         inprocess_ = std::make_unique<hrx::Inprocess>();
         int n_gpu_layers = std::atoi(env_or("HRX_N_GPU_LAYERS", "-1").c_str());
         uint32_t ctx = (uint32_t)std::atoi(ctx_size_.c_str());
@@ -333,7 +342,13 @@ std::string HrxBackend::generate_text(const std::string& prompt, int max_tokens)
         const auto& choice = j["choices"][0];
         if (!choice.contains("message")) return "";
         const auto& msg = choice["message"];
+        // Reasoning models (Qwen3, DeepSeek) stream the chain-of-thought into
+        // `reasoning_content` and only fill `content` once reasoning finishes;
+        // with a small max_tokens the reply can live entirely in the reasoning
+        // field.  Return content if present, else the reasoning — an empty
+        // string here reads as a backend failure and cascades to CPU.
         std::string text = msg.value("content", "");
+        if (text.empty()) text = msg.value("reasoning_content", "");
         if (j.contains("timings") && j["timings"].contains("predicted_per_second") &&
             j["timings"]["predicted_per_second"].is_number())
             last_decode_tok_s_ = j["timings"]["predicted_per_second"].get<double>();
