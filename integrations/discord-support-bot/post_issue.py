@@ -66,12 +66,13 @@ def post_issue_thread(issue: dict) -> str:
     make threads unreadable at a glance.
     """
     # Compact anchor for the sidebar preview: thread name already carries
-    # "#N title", so the anchor is just the title (short) + URL — the
-    # metadata lives in the thread body.
+    # "#N title", so the anchor is just the title (short) + URL. Angle
+    # brackets around the URL force Discord to render a plain clickable link
+    # (no embed preview, no auto-expansion) — compact in the feed.
     short_title = issue["title"]
     if len(short_title) > 80:
         short_title = short_title[:77] + "…"
-    starter = f"**{short_title}** — {issue['url']}"
+    starter = f"**{short_title}** — <{issue['url']}>"
     msg = _api("POST", f"/channels/{ISSUE_TRACKER_CHANNEL_ID}/messages",
                {"content": starter})
 
