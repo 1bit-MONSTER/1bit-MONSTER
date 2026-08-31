@@ -53,11 +53,11 @@ SERVICES = ("docsbot.service", "docsbot-prefix.service")
 LOGS = {
     "cron:discord-inbox": ("discord-inbox.log", 40 * 60, r"\bok\b"),
     "cron:discord-issue-poster": ("discord-issue-poster.log", 70 * 60,
-                                  r"done:|posted|no new issues"),
+                                  r"done:|posted|no new issues|another run is in progress"),
     "cron:discord-enterprise-watch": ("discord-enterprise-watch.log", 70 * 60,
                                       r"no new enterprise|alert|posted"),
     "cron:discord-issue-digest": ("discord-issue-digest.log", 9 * 24 * 3600,
-                                  r"posted|already posted|no open issues"),
+                                  r"posted|already posted|no open issues|found via search"),
     "cron:discord-traffic-digest": ("discord-traffic-digest.log", 26 * 3600,
                                     r"posted"),
     "cron:discord-traffic-report-daily": ("discord-traffic-report-daily.log", 26 * 3600,

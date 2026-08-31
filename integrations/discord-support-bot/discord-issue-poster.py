@@ -397,13 +397,18 @@ def main() -> int:
             if num in failed:
                 failed.remove(num)
                 failed_at.pop(num, None)
-            # Seed tags from the post's live applied_tags (ids -> names):
-            # an empty record would make the sync misread the bot's own
-            # tags as human triage (ownership heuristic) and stick them.
+            # Seed tags from the post's live applied_tags: an empty record
+            # would make the sync misread the bot's own tags as human
+            # triage (ownership heuristic) and stick them. The name-based
+            # map carries ids; a search hit has none, so read them live.
+            seed_ids = post.get("applied_tags") or []
+            seed = [id_to_name[i] for i in seed_ids if i in id_to_name]
+            if not seed:
+                live = post_tags(post["id"], id_to_name)
+                if live is not None:
+                    seed = live
             posts[str(num)] = {"thread": post["id"], "state": "OPEN",
-                               "tags": [id_to_name[i] for i in (post.get("applied_tags") or [])
-                                        if i in id_to_name],
-                               "state_owner": "bot",
+                               "tags": seed, "state_owner": "bot",
                                "archived": bool((post.get("thread_metadata") or {}).get("archived"))}
             print(f"#{num} already posted ({post['id']}) — recorded, not re-posted")
             if num > after:
