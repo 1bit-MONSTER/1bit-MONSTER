@@ -71,6 +71,9 @@ BOOTSTRAP_SINCE_DAYS = int(os.getenv("BOOTSTRAP_SINCE_DAYS", "1"))
 # index (the retry dedupe) is updated asynchronously. 20 min >> index
 # delay, so the combined-miss duplicate window closes.
 RETRY_DELAY_SECONDS = int(os.getenv("RETRY_DELAY_SECONDS", str(20 * 60)))
+# A post parked in retry longer than this is not self-healing — surface it
+# as a FAILED run (watchdog alert) instead of hiding behind the cooldown.
+STUCK_SECONDS = int(os.getenv("STUCK_SECONDS", str(2 * 3600)))
 
 
 def load_state() -> dict:
@@ -141,13 +144,15 @@ def _drop_dead_post(state: dict, number: int | str) -> None:
     number = int(number)  # callers pass posts keys (strings) — keep `failed` int-only
     state["posts"].pop(str(number), None)
     state.setdefault("failed_at", {})
+    state.setdefault("failed_since", {})
     try:
         issue = gh_issue(REPO, number)
         if (issue.get("state") or "").lower() != "closed":
             failed = state.setdefault("failed", [])
             if number not in failed:
                 failed.append(number)
-                state["failed_at"][number] = time.time()
+                state["failed_since"][number] = time.time()
+            state["failed_at"][number] = time.time()
             print(f"sync #{number}: post gone (404), issue open — re-queued for re-post")
         else:
             print(f"sync #{number}: post gone (404), issue closed — dropped")
@@ -155,7 +160,8 @@ def _drop_dead_post(state: dict, number: int | str) -> None:
         failed = state.setdefault("failed", [])
         if number not in failed:
             failed.append(number)
-            state["failed_at"][number] = time.time()
+            state["failed_since"][number] = time.time()
+        state["failed_at"][number] = time.time()
         print(f"sync #{number}: post gone (404), issue state unknown — re-queued (closed-skip guard)")
     save_state(state)
 
@@ -276,6 +282,14 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
         rec["state"] = "CLOSED" if closed else "OPEN"
         save_state(state)
         time.sleep(0.5)  # rate-limit politeness only after an actual PATCH
+
+    if closed and rec.get("archived"):
+        # Fully handled (resolved + archived): prune the record so closed
+        # issues don't accumulate and cost a gh issue view subprocess every
+        # run forever. A reopen re-adopts the post from the forum scan.
+        state["posts"].pop(str(number), None)
+        print(f"sync #{number}: resolved + archived — pruned from tracking")
+        save_state(state)
     return True
 
 
@@ -371,6 +385,8 @@ def main() -> int:
         # strings — normalize.)
         failed_at = {int(k): v for k, v in state.get("failed_at", {}).items()}
         state["failed_at"] = failed_at
+        failed_since = {int(k): v for k, v in state.get("failed_since", {}).items()}
+        state["failed_since"] = failed_since
         in_cooldown = {n for n in failed_at
                        if time.time() - failed_at.get(n, 0) <= RETRY_DELAY_SECONDS}
         cooled = {n for n in failed if time.time() - failed_at.get(n, 0) > RETRY_DELAY_SECONDS}
@@ -432,7 +448,8 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             if num not in failed:
                 failed.append(num)
-                failed_at[num] = time.time()
+                state.setdefault("failed_since", {})[num] = time.time()
+            failed_at[num] = time.time()
             print(f"post #{num} FAILED (will retry): {type(exc).__name__}: {exc}")
             post_failures += 1
             save_state(state)  # persist NOW — a later success must not orphan it
@@ -514,15 +531,27 @@ def main() -> int:
     save_state(state)
 
     # A failure summary line — deliberately NOT matching the watchdog's
-    # success markers (done:/posted/no new issues) so a run where posting
-    # was skipped (listing failed) or where every post/sync failed still
-    # trips the watchdog alert.
+    # success markers (done:/posted/no new issues) so the watchdog alerts.
+    # Post failures are parked in `failed` (auto-retry with cooldown), so
+    # they do NOT fail the run — otherwise a permanently failing post
+    # would flap the watchdog between FAILED and done every cooldown
+    # cycle. A post parked past STUCK_SECONDS (clearly not self-healing)
+    # and every sync failure do fail the run.
+    stuck = [n for n in failed_since if time.time() - failed_since.get(n, 0) > STUCK_SECONDS]
     if not listing_ok:
         print("FAILED: forum listing unavailable — posting disabled (fail closed)")
-    elif post_failures or sync_failures:
-        print(f"FAILED: {post_failures} post failure(s), {sync_failures} sync failure(s)")
+    elif sync_failures:
+        print(f"FAILED: {sync_failures} sync failure(s)")
+    elif stuck:
+        print(f"FAILED: posts stuck in retry longer than {STUCK_SECONDS // 3600}h: "
+              f"{sorted(stuck)}")
     else:
-        print(f"done: {len(issues)} new, {len(posts)} tracked")
+        parked = [n for n in failed_at if time.time() - failed_at.get(n, 0) <= RETRY_DELAY_SECONDS]
+        if parked:
+            print(f"done: {len(issues)} new, {len(posts)} tracked, "
+                  f"{len(parked)} post(s) awaiting retry")
+        else:
+            print(f"done: {len(issues)} new, {len(posts)} tracked")
     return 0
 
 
