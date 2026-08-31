@@ -1102,3 +1102,34 @@ top items. Claiming RMS_NORM on the NPU was tried and reverted (net-negative:
 CPU AVX-512 wins pointwise even at batch 32, and the scheduler's shuttling
 copies cost more than the NPU saves — round 19's minimal-claims rule holds
 for prefill too).
+
+
+## Round 24 — generalized Q4NX converter + the standard-MHA fork limit
+
+To "bastardize" other models onto the HRX lane, `make-q4nx-model.py` was
+generalized from zaya-only to any GGUF:
+- arch string read from the source GGUF (was hardcoded "qwen3")
+- BF16 and F32 sources now quantize to Q4NX (was Q4_K/Q6_K only)
+- MoE 3-D expert tensors (`*.exps.weight` [in, out, n_expert]) tile per
+  expert and emit type-42 3-D [8192, tpe, n_expert] — the MUL_MAT_ID_Q4NX
+  contract
+- kept BF16 tensors pass through as raw type-30 bytes with the reader's
+  byte-shape (the fix that made Qwen3-0.6B load)
+
+Validated:
+- zaya Q4_K → Q4NX: reproduces the known-good model (196+114 tensors)
+- Qwen3-0.6B BF16 → Q4NX: 196 Q4NX weights, EVERY tensor's dequant on the
+  engine is corr 1.0 vs the source (verified via engine b_w dumps:
+  attn_q/k/v r2048/r1024 corr 1.0, ffn_gate r3072 corr 1.0, token_embd
+  byte-identical)
+
+**BLOCKER found (not the converter): the fork's llama.cpp is zaya-CCA-locked.**
+Qwen3-0.6B Q4NX loads and dispatches all 196 MUL_MAT_Q4NX correctly, but the
+model output diverges (corr 0.21 vs BF16) and llama-cli generates blank —
+and stock Qwen2.5-0.5B / Qwen3-0.6B Q4_K GGUFs (no Q4NX involvement) also
+generate blank on the fork. The Round-12/13 arch rewrite targeted zaya's
+recurrent-state CCA attention; standard-MHA graphs (RoPE + QK-norm +
+standard KV-cache SET_ROWS) don't round-trip through the fork's graph
+handling. Serving other models requires a standard-MHA fix in the fork
+(restore the Round-11 Qwen3 graph path), which is out of scope for the
+converter. The converter itself is validated and ready.
