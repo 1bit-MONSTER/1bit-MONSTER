@@ -238,7 +238,15 @@ def main() -> int:
         candidates: set[int] = set()
     else:
         issues = new_open_issues(after)
-        if not state.get("posts") and BOOTSTRAP_SINCE_DAYS > 0:
+        # The bootstrap cutoff applies ONLY when the baseline is genuinely
+        # unknown (no state file, or last_issue == 0) — NOT when the posts
+        # map happens to be empty. A host that already advanced last_issue
+        # (e.g. the pre-forum state file with last_issue=1957 and no posts
+        # key) has a known baseline: older open issues above last_issue
+        # must still be mirrored, or they'd be skipped forever once a newer
+        # issue advances the cursor.
+        baseline_known = int(state.get("last_issue", 0)) > 0 or bool(state.get("posts"))
+        if not baseline_known and BOOTSTRAP_SINCE_DAYS > 0:
             # Fresh/unknown baseline: only mirror issues created recently, so a
             # lost state file can't flood the forum with every historical issue.
             # (Skipped entirely when BOOTSTRAP_SINCE_DAYS=0 = mirror everything.)
