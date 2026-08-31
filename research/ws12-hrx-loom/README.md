@@ -3,7 +3,7 @@
 **Status:** 🏁 MILESTONE JOURNEY COMPLETE (2026-08-31) — the **Zyphra ZAYA1-8B
 runs fully Q4NX on the AMD Strix Halo NPU (gfx1151) via the HRX lane**:
 correct (logits corr 0.99999999 vs the F32 port, top5 identical), fast
-(pp32 72.1 / tg32 10.9 t/s, 7–34× over the original dispatch), and servable
+(pp32 77.4 / tg32 11.2 t/s, 7–37× over the original dispatch), and servable
 (llama-server over HTTP, 18.1/8.16 t/s). See "Milestone journey" below.
 **Papers:** none (platform-intelligence workstream — sources are the
 lemonade/llama.cpp/ROCm repos and https://rocm.github.io/hrx-system/loom/).
@@ -947,31 +947,54 @@ Correctness unchanged: logits corr 0.9999999861, top5 identical. Q4NX decode
 now matches the F32 hybrid (11.0 t/s) and is 34% off the all-CPU F32 ceiling
 (16.5 t/s). Also removed leftover ZAYA_DUMP traces from zaya.cpp.
 
-## Round 20 — group MoE tokens by expert: table-scatter mm (prefill 1.96×)
+## Round 20 — group MoE tokens by expert: table-scatter mm (RETRACTED, see Round 21)
 
-Prefill was still paying for the per-token expert dequant: MUL_MAT_ID_Q4NX
-dispatched one (dequant + cols=1 mm) per (selected, token) pair, so a 32-token
-prefill dequantized every expert once per token. Fix (fork `ffab19c`): a new
-**table-scatter matmul** kernel — `hrx2_mul_mat_f32_f32_ggml_tbl_static`
-(5 bindings: dequantized weights, full src1, full dst, two i32 column tables)
-— reads/writes arbitrary src1/dst columns through the tables, so one dispatch
-can scatter a group of tokens that selected the same expert. The dispatch now
-buckets (i,t) pairs by expert: **one dequant + one table-scatter mm per
-distinct expert** instead of per token (dequant dispatches drop from #tokens
-to #distinct-experts). Single-token groups (decode) keep the proven per-pair
-path, so decode is untouched; the tbl route is optional — dispatch falls back
-to per-pair if it is missing from the catalog.
+Round 20 (fork `ffab19c`) added a table-scatter matmul kernel
+(`hrx2_mul_mat_f32_f32_ggml_tbl_static`) to dequant each expert once per batch
+and scatter a group of tokens through two i32 column tables. It reported
+pp32 72.1 t/s and "correctness unchanged (corr 0.9999999861)". **Both claims
+were wrong** — see Round 21. The 2-token verification harness could never
+catch the bug because 2-token groups are identity (slot == token).
 
-| metric | before (round 19) | after (round 20) |
-|---|---|---|
-| pp32 | 36.8 t/s | **72.1 t/s** (+96%) |
-| tg32 | 10.9 t/s | 11.06 t/s (unchanged) |
+## Round 21 — round-20's tables were never used; the real fix is dequant-once (pp32 77.4, verified)
 
-Correctness unchanged: logits corr 0.999999986090 vs the F32 reference (float64
-computation; a float32 shortcut reads 1.00000000), top1 9731, top5 identical.
-The grouped path is per-element bit-comparable to the per-pair path (rms
-1.05e-6 across a dump — JIT-specialization reassoc noise, not an error; max
-|dlogit| vs the F32 ref is unchanged at 4.077e-3). Prefill prefill now beats
-the all-CPU F32 port on the same hardware (72 vs 149 t/s is still behind, but
-the MoE is no longer the prefill bottleneck — the remaining gap is the
-attention path).
+While wiring an 8-column tiled mm for the attention path, a 32-token prefill
+comparison against the F32 reference exposed the truth: **logits corr 0.37**
+with the round-20 grouped path (top1 11771 vs 108). The table-scatter kernel
+**silently never used its tables**: its `use_col_tables` condition compared
+the JIT config constant 1 with `index.cmp ne` against 1, so `ne(1,1)` folded
+**false** at JIT time and the whole table branch was eliminated — the kernel
+read/wrote the workgroup slot columns instead of the table-mapped columns.
+Every 2-token "verification" passed only because slot == token for 2-token
+groups. The round-20 pp32 72.1 t/s number was measuring wrong math.
+
+Root cause of the "fix" attempts: `index.min`/`index.max`/`index.rem` have
+**no amdgpu lowering** in this loom build (the lowering registry only covers
+add/sub/mul/madd/shli/cmp/cast/constant). Every attempt to bound or clamp the
+table-derived index either failed the JIT subrange proof or silently
+miscompiled at runtime.
+
+Fix (fork `07d4883`): drop the table-scatter kernel entirely. The grouped
+path now dequants each distinct expert **once** (the expensive part — the
+33.5 MB dequant write) and runs the proven per-slot f32 mm (cols=1) for each
+token in the group, scattering via the slot's src1/dst column offsets.
+Dequant dispatches drop from #tokens to #distinct-experts per layer; the mm
+stays per-token but is cheap. Also kept the 8-column tiled mm route
+(`mul_mat_f32_f32_ggml_tiled`) for cols≥8 attention projections (verified
+correct: it compiled and ran in the same trace).
+
+| metric | round 19 (per-pair) | round 20 (broken) | round 21 (fixed) |
+|---|---|---|---|
+| pp32 | 36.8 t/s | 72.1 t/s (wrong math) | **77.4 t/s** (+110% vs 36.8) |
+| tg32 | 10.9 t/s | 11.06 t/s | 11.2 t/s |
+
+Verified with a new 32-token prefill dump harness (the round-20 2-token dump
+could not detect this):
+- logits corr **0.9999996053** vs the F32 reference, **top1 108 == F32**
+  (identical to the per-pair path, 0.9999996053)
+- 2-token dump still corr 0.9999999861, top1 9731
+- llama-bench pp32 36.8 → 77.4 t/s, tg32 11.2 (unchanged — decode groups are
+  size 1, per-pair path)
+
+The MoE dequant is no longer the prefill bottleneck; the remaining gap to the
+all-CPU F32 port (149 t/s) is the attention path (see Round 22).
