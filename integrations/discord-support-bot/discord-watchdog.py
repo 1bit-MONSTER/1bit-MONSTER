@@ -45,13 +45,21 @@ LOG_DIR = os.path.expanduser("~/.local/share")
 RE_ALERT_SECONDS = 12 * 3600
 
 SERVICES = ("docsbot.service", "docsbot-prefix.service")
-# name -> (log file, max age seconds)
+# name -> (log file, max age seconds, success-marker regex on the last line).
+# Freshness alone is not enough: a cron that crashes on every run still
+# appends a traceback, keeping the mtime fresh while the job silently
+# does nothing. The last non-empty line must also carry a success marker
+# (e.g. the poster's "done: N new" / "no new issues").
 LOGS = {
-    "cron:discord-inbox": ("discord-inbox.log", 40 * 60),
-    "cron:discord-issue-poster": ("discord-issue-poster.log", 70 * 60),
-    "cron:discord-enterprise-watch": ("discord-enterprise-watch.log", 70 * 60),
-    "cron:discord-traffic-digest": ("discord-traffic-digest.log", 26 * 3600),
-    "cron:discord-traffic-report-daily": ("discord-traffic-report-daily.log", 26 * 3600),
+    "cron:discord-inbox": ("discord-inbox.log", 40 * 60, r"\bok\b"),
+    "cron:discord-issue-poster": ("discord-issue-poster.log", 70 * 60,
+                                  r"done:|posted|no new issues"),
+    "cron:discord-enterprise-watch": ("discord-enterprise-watch.log", 70 * 60,
+                                      r"no new enterprise|alert|posted"),
+    "cron:discord-traffic-digest": ("discord-traffic-digest.log", 26 * 3600,
+                                    r"posted"),
+    "cron:discord-traffic-report-daily": ("discord-traffic-report-daily.log", 26 * 3600,
+                                          r"posted"),
 }
 ENV_KEYS = ("DISCORD_TOKEN", "CONTEXT7_API_KEY", "DEEPSEEK_API_KEY")
 
@@ -79,14 +87,23 @@ def _run_checks() -> dict[str, str]:
             out[svc] = f"check error: {type(exc).__name__}: {exc}"
 
     now = time.time()
-    for name, (log, max_age) in LOGS.items():
+    for name, (log, max_age, marker) in LOGS.items():
         path = os.path.join(LOG_DIR, log)
         try:
             age = now - os.path.getmtime(path)
-            if age <= max_age:
+            if age > max_age:
+                out[name] = f"stale: last write {int(age // 60)} min ago (>{max_age // 60} min)"
+                continue
+            tail = ""
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        tail = line
+            if re.search(marker, tail):
                 out[name] = "ok"
             else:
-                out[name] = f"stale: last write {int(age // 60)} min ago (>{max_age // 60} min)"
+                out[name] = f"fresh but no success marker: last line {tail[-90:]!r}"
         except OSError:
             out[name] = "missing log file"
 

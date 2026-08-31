@@ -78,11 +78,12 @@ def _post_forum(name: str, content: str, tag_ids: list[str]) -> str:
         return json.loads(r.read())["id"]
 
 
-def _channel_has_digest(channel_id: str, day: str) -> bool:
-    """Best-effort: does the text channel already carry TODAY's digest?
+def _channel_has_digest(channel_id: str, day: str) -> bool | None:
+    """Does the text channel already carry TODAY's digest?
 
     Matches the dated header, so last week's digest (same text, different
-    date) does not suppress this week's.
+    date) does not suppress this week's. Returns None when the check
+    itself errors — callers fail CLOSED (never risk a duplicate).
     """
     marker = f"Issue digest {day}"
     try:
@@ -94,14 +95,15 @@ def _channel_has_digest(channel_id: str, day: str) -> bool:
             msgs = json.loads(r.read())
         return any(marker in (m.get("content") or "") for m in msgs)
     except Exception:  # noqa: BLE001
-        return False  # unknown — let the post attempt go ahead
+        return None  # unknown — caller must fail CLOSED
 
 
-def _forum_search_has_digest(day: str) -> bool:
+def _forum_search_has_digest(day: str) -> bool | None:
     """Guild message search fallback for the forum-mode dedupe.
 
     The active-threads listing caps at 100, so today's digest post can
     fall outside it; the search endpoint sees the whole channel.
+    Returns None when the check errors — callers fail CLOSED.
     """
     marker = f"Issue digest {day}"
     try:
@@ -186,9 +188,14 @@ def main() -> int:
     digest_channel = os.getenv("ISSUE_DIGEST_CHANNEL", "")
     if digest_channel.isdigit():
         # Text-channel mode: dedupe against the channel's recent messages
-        # (a re-run must not post a duplicate digest message).
-        if _channel_has_digest(digest_channel, day):
+        # (a re-run must not post a duplicate digest message). None from
+        # the check = could not verify → fail closed.
+        has = _channel_has_digest(digest_channel, day)
+        if has is True:
             print(f"digest for {day} already posted to channel {digest_channel} — skipping")
+            return 0
+        if has is None:
+            print(f"digest for {day}: could not verify channel dedupe — skipping (fail closed)")
             return 0
         mid = _post_message(digest_channel, content)
         print(f"digest posted to channel {digest_channel} (msg {mid})")
@@ -196,15 +203,21 @@ def main() -> int:
         # Forum mode: dedupe against existing "Issue digest <day>" posts.
         # The active listing caps at 100 (no pagination), so a same-day
         # post can fall outside it — fall back to a guild message search
-        # for the dated digest name before posting a duplicate.
-        threads, _ = forum_threads()
+        # for the dated digest name before posting a duplicate. When the
+        # listing is incomplete AND the search can't confirm absence, fail
+        # CLOSED rather than risk a duplicate public post.
+        threads, complete = forum_threads()
         existing = [t for t in threads
                     if (t.get("name") or "").startswith(f"Issue digest {day}")]
         if existing:
             print(f"digest for {day} already posted ({existing[0]['id']}) — skipping")
             return 0
-        if _forum_search_has_digest(day):
+        search = _forum_search_has_digest(day)
+        if search is True:
             print(f"digest for {day} found via search — skipping")
+            return 0
+        if search is None or not complete:
+            print(f"digest for {day}: absence unverifiable (listing incomplete / search error) — skipping")
             return 0
         tags = forum_tags()
         ids = [tags[t] for t in ("inquiry", "pending", "defcon-5") if t in tags]
