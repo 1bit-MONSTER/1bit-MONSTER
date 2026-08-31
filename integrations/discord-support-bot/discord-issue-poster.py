@@ -191,11 +191,12 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
     derived = desired_tags(issue)          # [type, state, severity]
     ttype, derived_state, sev = derived[0], derived[1], derived[2]
     closed = (issue.get("state") or "").lower() == "closed"
-    # Reopen detection uses the LIVE archived flag (refreshed from the
-    # forum scan each run), not rec["state"] — rec only flips to CLOSED
-    # when a close-sync fully succeeds, so an archive-PATCH failure or a
-    # human archiving first would otherwise make a reopen undetectable.
-    reopened = not closed and bool(rec.get("archived"))
+    # Reopen detection: open issue + post archived + the record previously
+    # said CLOSED = a genuine reopen -> force pending + unarchive. Discord
+    # ALSO auto-archives an OPEN issue's post after 7 days of inactivity;
+    # that must still unarchive, but must NOT force pending over a human's
+    # state tag — so the rec["state"] == "CLOSED" discriminator matters.
+    reopened = not closed and bool(rec.get("archived")) and rec.get("state") == "CLOSED"
     changed = False
 
     # State policy with ownership tracking (rec["state_owner"]: "bot" |
@@ -373,13 +374,14 @@ def main() -> int:
         issues = sorted((i for i in open_list if i["number"] > after),
                         key=lambda i: i["number"])
         # The bootstrap cutoff applies ONLY when the baseline is genuinely
-        # unknown (no state file, or last_issue == 0) — NOT when the posts
-        # map happens to be empty. A host that already advanced last_issue
-        # (e.g. the pre-forum state file with last_issue=1957 and no posts
-        # key) has a known baseline: older open issues above last_issue
-        # must still be mirrored, or they'd be skipped forever once a newer
-        # issue advances the cursor.
-        baseline_known = int(state.get("last_issue", 0)) > 0 or bool(state.get("posts"))
+        # unknown (no state file, or last_issue == 0). The decision must
+        # be last_issue ALONE — job 2's adoption populates state['posts']
+        # from the live forum, so a fresh host that merely adopts existing
+        # posts must not then treat the baseline as known and flood the
+        # forum with every historical open issue. (A pre-forum state file
+        # with last_issue=1957 and no posts key is still known via
+        # last_issue.)
+        baseline_known = int(state.get("last_issue", 0)) > 0
         if not baseline_known and BOOTSTRAP_SINCE_DAYS > 0:
             # Fresh/unknown baseline: only mirror issues created recently, so a
             # lost state file can't flood the forum with every historical issue.
