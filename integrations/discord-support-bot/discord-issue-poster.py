@@ -50,6 +50,11 @@ STATE_FILE = os.path.expanduser("~/.cache/discord-issue-poster-state.json")
 # baseline, a fresh host would treat every open issue as new and mirror
 # hundreds of historical issues. Set 0 to mirror every open issue.
 BOOTSTRAP_SINCE_DAYS = int(os.getenv("BOOTSTRAP_SINCE_DAYS", "1"))
+# A failed number is only retried after this long: a client-side timeout
+# may have actually created the post server-side, and Discord's search
+# index (the retry dedupe) is updated asynchronously. 20 min >> index
+# delay, so the combined-miss duplicate window closes.
+RETRY_DELAY_SECONDS = int(os.getenv("RETRY_DELAY_SECONDS", str(20 * 60)))
 
 
 def load_state() -> dict:
@@ -113,12 +118,14 @@ def _drop_dead_post(state: dict, number: int) -> None:
     last_issue cursor, so job 1 would never revisit it).
     """
     state["posts"].pop(str(number), None)
+    state.setdefault("failed_at", {})
     try:
         issue = gh_issue(REPO, number)
         if (issue.get("state") or "").lower() != "closed":
             failed = state.setdefault("failed", [])
             if number not in failed:
                 failed.append(number)
+                state["failed_at"][number] = time.time()
             print(f"sync #{number}: post gone (404), issue open — re-queued for re-post")
         else:
             print(f"sync #{number}: post gone (404), issue closed — dropped")
@@ -126,6 +133,7 @@ def _drop_dead_post(state: dict, number: int) -> None:
         failed = state.setdefault("failed", [])
         if number not in failed:
             failed.append(number)
+            state["failed_at"][number] = time.time()
         print(f"sync #{number}: post gone (404), issue state unknown — re-queued (closed-skip guard)")
     save_state(state)
 
@@ -260,7 +268,15 @@ def main() -> int:
                 elif ts >= cutoff:
                     kept.append(i)
             issues = kept
-        candidates = set(failed) | {i["number"] for i in issues}
+        # Retry failed numbers only once they've been failing long enough
+        # for Discord's search index (and any listing propagation) to have
+        # seen a post that a client-side timeout may actually have created
+        # server-side — closing the combined-miss duplicate window. New
+        # issues are always candidates. (JSON keys are strings — normalize.)
+        failed_at = {int(k): v for k, v in state.get("failed_at", {}).items()}
+        state["failed_at"] = failed_at
+        candidates = ({n for n in failed if time.time() - failed_at.get(n, 0) > RETRY_DELAY_SECONDS}
+                      | {i["number"] for i in issues})
     fresh_ids: set[str] = set()  # posts created THIS run — not in the pre-posting snapshot
     # Retry failed numbers first (ascending), then any new ones — a
     # transient failure must never drop an issue: if #N fails but #N+1
@@ -280,6 +296,7 @@ def main() -> int:
             # Already mirrored (crash/timeout recovery) — record, don't re-post.
             if num in failed:
                 failed.remove(num)
+                failed_at.pop(num, None)
             posts[str(num)] = {"thread": post["id"], "state": "OPEN",
                                "tags": [],
                                "archived": bool((post.get("thread_metadata") or {}).get("archived"))}
@@ -297,6 +314,7 @@ def main() -> int:
                 # in `failed`) — never mirror it, and stop retrying.
                 if num in failed:
                     failed.remove(num)
+                    failed_at.pop(num, None)
                 print(f"#{num} closed before posting — skipped")
                 save_state(state)
                 continue
@@ -304,11 +322,13 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001
             if num not in failed:
                 failed.append(num)
+                failed_at[num] = time.time()
             print(f"post #{num} FAILED (will retry): {type(exc).__name__}: {exc}")
             save_state(state)  # persist NOW — a later success must not orphan it
             continue
         if num in failed:
             failed.remove(num)
+            failed_at.pop(num, None)
         posts[str(num)] = {
             "thread": tid,
             "state": "OPEN",
