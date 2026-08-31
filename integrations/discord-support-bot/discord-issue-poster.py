@@ -295,6 +295,7 @@ def main() -> int:
     state = load_state()
     after = int(state.get("last_issue", 0))
     tags = forum_tags()
+    id_to_name = {v: k for k, v in tags.items()}  # used by recovery + adoption + sync
     # One gh call for the whole run — feeds both job 1 and job 2. A slow /
     # rate-limited GitHub API must not leave a raw traceback in the cron
     # log: fail cleanly (the watchdog's success-marker check then alerts).
@@ -396,8 +397,13 @@ def main() -> int:
             if num in failed:
                 failed.remove(num)
                 failed_at.pop(num, None)
+            # Seed tags from the post's live applied_tags (ids -> names):
+            # an empty record would make the sync misread the bot's own
+            # tags as human triage (ownership heuristic) and stick them.
             posts[str(num)] = {"thread": post["id"], "state": "OPEN",
-                               "tags": [], "state_owner": "bot",
+                               "tags": [id_to_name[i] for i in (post.get("applied_tags") or [])
+                                        if i in id_to_name],
+                               "state_owner": "bot",
                                "archived": bool((post.get("thread_metadata") or {}).get("archived"))}
             print(f"#{num} already posted ({post['id']}) — recorded, not re-posted")
             if num > after:
@@ -447,7 +453,6 @@ def main() -> int:
     # Adopt untracked "#N" posts (e.g. created by a manual post_issue.py
     # run for an issue at/below last_issue): they would otherwise keep
     # frozen tags forever, never closing/archiving with the issue.
-    id_to_name = {v: k for k, v in tags.items()}
     for num, t in list(existing.items()):
         if str(num) in posts:
             continue
@@ -504,9 +509,12 @@ def main() -> int:
     save_state(state)
 
     # A failure summary line — deliberately NOT matching the watchdog's
-    # success markers (done:/posted/no new issues) so a run where every
-    # post/sync failed still trips the watchdog alert.
-    if post_failures or sync_failures:
+    # success markers (done:/posted/no new issues) so a run where posting
+    # was skipped (listing failed) or where every post/sync failed still
+    # trips the watchdog alert.
+    if not listing_ok:
+        print("FAILED: forum listing unavailable — posting disabled (fail closed)")
+    elif post_failures or sync_failures:
         print(f"FAILED: {post_failures} post failure(s), {sync_failures} sync failure(s)")
     else:
         print(f"done: {len(issues)} new, {len(posts)} tracked")
