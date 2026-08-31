@@ -56,6 +56,8 @@ LOGS = {
                                   r"done:|posted|no new issues"),
     "cron:discord-enterprise-watch": ("discord-enterprise-watch.log", 70 * 60,
                                       r"no new enterprise|alert|posted"),
+    "cron:discord-issue-digest": ("discord-issue-digest.log", 9 * 24 * 3600,
+                                  r"posted|already posted|no open issues"),
     "cron:discord-traffic-digest": ("discord-traffic-digest.log", 26 * 3600,
                                     r"posted"),
     "cron:discord-traffic-report-daily": ("discord-traffic-report-daily.log", 26 * 3600,

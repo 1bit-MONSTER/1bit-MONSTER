@@ -125,6 +125,11 @@ def _is_gone(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 404 or "404" in str(exc)
 
 
+def _rec_state_tag(rec: dict) -> str | None:
+    """The state tag inside rec['tags'] — our last-known write."""
+    return next((t for t in (rec.get("tags") or []) if t in STATE_TAGS), None)
+
+
 def _drop_dead_post(state: dict, number: int | str) -> None:
     """A tracked post no longer exists (deleted / config change).
 
@@ -178,28 +183,38 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
     reopened = not closed and bool(rec.get("archived"))
     changed = False
 
-    # State policy: close forces resolved; reopen forces pending; an open
-    # issue with an escalation label is escalated (bot-managed, applied on
-    # every sync — not just at creation); otherwise a human's state tag is
-    # respected, defaulting to pending.
+    # State policy with ownership tracking (rec["state_owner"]: "bot" |
+    # "human") so bot-applied state tags can be downgraded again (e.g.
+    # escalation removed) while a human's triage choice persists:
+    #   * close forces resolved; reopen forces pending (bot)
+    #   * an escalation label forces escalated (bot) — and its removal
+    #     downgrades back to pending
+    #   * otherwise a HUMAN-owned state tag is kept; a bot-owned one is
+    #     re-derived (downgrade allowed). If the live tag differs from the
+    #     bot's last write, a human intervened — adopt it as human-owned.
+    force_state = None
     if closed:
-        state_tag = TAG_STATE_RESOLVED
+        force_state = TAG_STATE_RESOLVED
     elif reopened:
-        state_tag = TAG_STATE_PENDING
+        force_state = TAG_STATE_PENDING
     elif derived_state == TAG_STATE_ESCALATED:
-        state_tag = TAG_STATE_ESCALATED
-    else:
-        cur_state = next((t for t in (rec.get("tags") or []) if t in STATE_TAGS), None)
-        state_tag = cur_state or TAG_STATE_PENDING
-    want = [ttype, state_tag, sev]
+        force_state = TAG_STATE_ESCALATED
+
+    want = [ttype, force_state or TAG_STATE_PENDING, sev]
 
     if want != rec.get("tags"):
         live = post_tags(rec["thread"], id_to_name)
-        if not closed and not reopened and derived_state != TAG_STATE_ESCALATED:
-            live_state = next((t for t in live if t in STATE_TAGS), None)
-            if live_state:
-                state_tag = live_state      # human triage persists
-                want[1] = state_tag
+        live_state = next((t for t in live if t in STATE_TAGS), None)
+        owner = rec.get("state_owner", "bot")
+        if force_state is None:
+            if owner == "human" and live_state:
+                state_tag = live_state              # human triage persists
+            elif live_state and live_state != _rec_state_tag(rec):
+                state_tag = live_state              # bot-owned but changed -> human intervened
+                owner = "human"
+            else:
+                state_tag = TAG_STATE_PENDING       # bot-owned -> downgrade allowed
+            want[1] = state_tag
         preserved = [t for t in live if t not in MANAGED_TAGS]
         final = want + sorted(set(preserved))
         if final != live:
@@ -213,8 +228,13 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
                           f"{type(exc).__name__}: {exc}")
                 return False
             rec["tags"] = final
+            if force_state is not None:
+                rec["state_owner"] = "bot"
+            else:
+                rec["state_owner"] = owner
             changed = True
             print(f"sync #{number}: tags -> {final}")
+            save_state(state)  # persist NOW — a later archive failure must not lose this
 
     if closed and not rec.get("archived"):
         try:
@@ -368,7 +388,7 @@ def main() -> int:
                 failed.remove(num)
                 failed_at.pop(num, None)
             posts[str(num)] = {"thread": post["id"], "state": "OPEN",
-                               "tags": [],
+                               "tags": [], "state_owner": "bot",
                                "archived": bool((post.get("thread_metadata") or {}).get("archived"))}
             print(f"#{num} already posted ({post['id']}) — recorded, not re-posted")
             if num > after:
@@ -404,6 +424,7 @@ def main() -> int:
             "thread": tid,
             "state": "OPEN",
             "tags": [t for t in desired_tags(full) if t in tags],
+            "state_owner": "bot",
             "archived": False,
         }
         print(f"posted #{num} '{full['title']}' as forum post {tid}")
@@ -426,6 +447,8 @@ def main() -> int:
             "state": "OPEN",  # unknown; sync_post corrects from gh
             "tags": [id_to_name[i] for i in (t.get("applied_tags") or [])
                      if i in id_to_name],
+            # adopted posts: treat the live state tag as human triage
+            "state_owner": "human",
             "archived": bool((t.get("thread_metadata") or {}).get("archived")),
         }
         print(f"adopted untracked post #{num} ({t['id']})")

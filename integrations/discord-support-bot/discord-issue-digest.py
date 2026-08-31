@@ -232,7 +232,12 @@ def main() -> int:
             print(f"digest for {day} found via search — skipping")
             return 0
         if search is None or not complete:
-            print(f"digest for {day}: absence unverifiable (listing incomplete / search error) — skipping")
+            # Deliberately NOT matching the watchdog's digest success
+            # markers (posted/already posted/no open issues), so a
+            # repeated unverifiable skip trips the watchdog alert instead
+            # of failing silently.
+            print(f"DIGEST SKIPPED: absence unverifiable (listing complete={complete}, "
+                  f"search ok={search is not None}) — fail closed")
             return 0
         tags = forum_tags()
         ids = [tags[t] for t in ("inquiry", "pending", "defcon-5") if t in tags]
