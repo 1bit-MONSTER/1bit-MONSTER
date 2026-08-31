@@ -3,7 +3,7 @@
 **Status:** 🏁 MILESTONE JOURNEY COMPLETE (2026-08-31) — the **Zyphra ZAYA1-8B
 runs fully Q4NX on the AMD Strix Halo NPU (gfx1151) via the HRX lane**:
 correct (logits corr 0.99999999 vs the F32 port, top5 identical), fast
-(pp32 77.4 / tg32 11.2 t/s, 7–37× over the original dispatch), and servable
+(pp32 103.5 / tg32 11.1 t/s, 9–47× over the original dispatch), and servable
 (llama-server over HTTP, 18.1/8.16 t/s). See "Milestone journey" below.
 **Papers:** none (platform-intelligence workstream — sources are the
 lemonade/llama.cpp/ROCm repos and https://rocm.github.io/hrx-system/loom/).
@@ -998,3 +998,56 @@ could not detect this):
 
 The MoE dequant is no longer the prefill bottleneck; the remaining gap to the
 all-CPU F32 port (149 t/s) is the attention path (see Round 22).
+
+
+## Round 22 — table-scatter TILED MoE mm: ONE dispatch per expert group (pp32 77.4 → 103.5)
+
+Round 21 fixed correctness but left the grouped MoE doing **32 per-slot mm
+launches per expert group**: a 32-token group on one expert re-read the
+33.5 MB dequantized weight 32× (1.07 GB/layer), and every tiny launch costs
+~50–80 µs. Profiling pinned the wall: 78 MUL_MAT_ID ops = 231 ms GPU-inclusive
+of a ~400 ms pp32 phase, with the per-op time split between b_w re-reads and
+launch latency. A "gather → one tiled mm → scatter" experiment (64 tiny copy
+enqueues per op) was **correct but a net loss** (pp32 80.17±4.32 within noise,
+tg32 regressed 11.2 → 10.26) — the copies' launch latency ate the bandwidth
+win, and it was reverted.
+
+The real fix is the kernel round 20 was reaching for, done right:
+`mul_mat_f32_f32_ggml_tbl_tiled` — an 8-column tiled mm whose src1/dst
+columns are selected through i32 tables. Two things make it work where
+round 20 failed:
+
+- **No `index.min/max/rem` at all.** The table-derived index is bounded by
+  **truthful `index.assume` predicates with config-derived limits**
+  (`src1_cols < ntokens`, `dst_cols < nselected*ntokens`). The JIT's subrange
+  proof trusts assume facts and derives `t*k + i < ntokens*k = src1_count`
+  and `d*rows + row < dst_count` through its interval arithmetic — round 20's
+  fatal version assumed `[0, 4194303]`, which **lies** (4194303×k overflows
+  the view, so the JIT "proved" out-of-bounds accesses and the kernel read
+  garbage at runtime).
+- **No `use_col_tables` config condition.** Round 20's `ne(1,1)` folded dead
+  at JIT and the table branch was eliminated; the new kernel always uses the
+  tables.
+
+Dispatch (fork `cb255b5`): the grouped path uploads the two small tables with
+async host→device copies (`hrx_stream_update_buffer`, padded to
+`ceil(cols/8)*8` since table loads are unconditional) and issues **ONE**
+tbl-tiled mm per distinct expert — dequant + mm + 2 table uploads = 4 stream
+ops per group instead of 34. The per-slot mm stays as a fallback.
+
+| metric | round 21 (per-slot) | round 22 (tbl-tiled) |
+|---|---|---|
+| pp32 | 77.4 t/s | **103.5 t/s** (+34%) |
+| tg32 | 11.2 t/s | 11.1 t/s (unchanged) |
+
+Verified with the 32-token prefill harness (fork `cb255b5`):
+- logits corr **0.9999996053** vs F32 ref, **top1 108 == F32** (unchanged —
+  the tbl-tiled path matches the per-slot path bit-for-bit in correlation)
+- 2-token dump corr 0.9999999861, top1 9731 (unchanged)
+- llama-bench pp32 77.4 → **103.5 t/s** (±5, -t 16), tg32 11.1 (unchanged)
+
+Remaining gap to all-CPU F32 (149 t/s): attention projections now use the
+plain tiled route; the MoE mm is no longer the prefill wall. Next candidates
+per the op profile: MUL_MAT_Q4NX attention (~127 µs/op × 199) and the
+per-graph sync structure (600 tiny graphs per decode, each ending in a full
+stream sync).
