@@ -131,9 +131,12 @@ def forum_threads() -> tuple[list[dict], bool]:
     """All existing posts (active + archived); returns (threads, complete).
 
     Used for idempotent posting and deleted-post detection: a post whose
-    name starts with "#N " means issue N is already mirrored. The archived
-    endpoint is paginated (before cursor) so the map stays complete past
-    100 archived posts.
+    name starts with "#N " means issue N is already mirrored.
+
+    Pagination notes: the archived-public endpoint honors a `before`
+    cursor and is walked page by page; the active endpoint caps at 100
+    results and does NOT paginate with `before` (it is fetched once —
+    posts auto-archive after 7 days, so >100 active is unlikely).
 
     ``complete`` is False when any page failed to load — callers must NOT
     treat an absent thread as deleted when the listing itself failed.
@@ -143,6 +146,7 @@ def forum_threads() -> tuple[list[dict], bool]:
     out: list[dict] = []
     complete = True
     for base in ("/threads/active?limit=100", "/threads/archived/public?limit=100"):
+        paginate = "archived" in base  # only the archived endpoint takes `before`
         cursor = ""
         while True:
             try:
@@ -153,10 +157,27 @@ def forum_threads() -> tuple[list[dict], bool]:
                 break
             threads = data.get("threads") or []
             out.extend(threads)
-            if not data.get("has_more") or not threads:
+            if not paginate or not data.get("has_more") or not threads:
                 break
             cursor = f"&before={threads[-1]['id']}"
     return out, complete
+
+
+def thread_exists(thread_id: str) -> bool | None:
+    """Targeted existence check: True exists, False 404, None other error.
+
+    Used to confirm a deletion before trusting an absent thread id in the
+    (possibly truncated) listing scan.
+    """
+    try:
+        _api("GET", f"/channels/{thread_id}")
+        return True
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False  # thread does not exist
+        return None  # other HTTP errors: unknown
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def severity(text: str) -> int:

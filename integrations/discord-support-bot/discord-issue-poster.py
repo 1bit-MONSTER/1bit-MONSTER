@@ -38,6 +38,7 @@ from post_issue import (  # noqa: E402
     forum_threads,
     gh_issue,
     post_issue_post,
+    thread_exists,
     update_post,
 )
 
@@ -327,15 +328,21 @@ def main() -> int:
     for num, rec in list(posts.items()):
         # Deleted-post detection without a PATCH: an open issue with stable
         # labels/severity never triggers a PATCH, so a hand-deleted post
-        # would otherwise go unnoticed forever. Only when the listing
-        # succeeded and the thread id is absent is it truly gone — and a
-        # post created earlier in THIS run (fresh_ids) is exempt, since the
-        # snapshot predates it.
+        # would otherwise go unnoticed forever. A listing absence is only a
+        # hint — the active listing caps at 100 and can truncate, so a
+        # targeted 404 check confirms before dropping. Posts created
+        # earlier in THIS run (fresh_ids) are exempt (snapshot predates).
         if (listing_ok and rec["thread"] not in thread_ids
                 and rec["thread"] not in fresh_ids):
-            print(f"sync #{num}: post {rec['thread']} no longer in forum — dropping/re-queueing")
-            _drop_dead_post(state, num)
-            continue
+            exists = thread_exists(rec["thread"])
+            if exists is False:
+                print(f"sync #{num}: post {rec['thread']} 404 — dropping/re-queueing")
+                _drop_dead_post(state, num)
+                continue
+            if exists is True:
+                print(f"sync #{num}: post exists but missing from listing (truncated?) — keeping")
+            # exists is None (unverifiable) — proceed; the PATCH paths below
+            # surface a real 404 on their own.
         # Re-read the REAL archived state from the forum scan: Discord
         # auto-archives posts after auto_archive_duration (7 days) of
         # inactivity, and rec["archived"] only tracks our own PATCHes — an
