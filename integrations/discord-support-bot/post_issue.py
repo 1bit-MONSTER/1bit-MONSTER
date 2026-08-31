@@ -252,12 +252,17 @@ def thread_exists(thread_id: str) -> bool | None:
         return None
 
 
-def post_tags(thread_id: str, id_to_name: dict[str, str]) -> list[str]:
-    """Live applied-tag NAMES of a forum post (for preserving human tags)."""
+def post_tags(thread_id: str, id_to_name: dict[str, str]) -> list[str] | None:
+    """Live applied-tag NAMES of a forum post, or None when the read fails.
+
+    None (not []) on failure: an empty list is ambiguous with a real
+    no-tags post, and treating a transient GET failure as "no tags" would
+    make the sync PATCH away human-applied tags.
+    """
     try:
         thread = _api("GET", f"/channels/{thread_id}")
     except Exception:  # noqa: BLE001
-        return []
+        return None
     return [id_to_name[i] for i in (thread.get("applied_tags") or [])
             if i in id_to_name]
 

@@ -204,6 +204,11 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
 
     if want != rec.get("tags"):
         live = post_tags(rec["thread"], id_to_name)
+        if live is None:
+            # Transient read failure — never treat it as "no tags" (that
+            # would PATCH away human tags). Skip the tag sync this run.
+            print(f"sync #{number}: live-tag read failed — skipping tag sync")
+            return True
         live_state = next((t for t in live if t in STATE_TAGS), None)
         owner = rec.get("state_owner", "bot")
         if force_state is None:
@@ -219,7 +224,11 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
         final = want + sorted(set(preserved))
         if final != live:
             try:
-                update_post(rec["thread"], applied_tags=[tags[t] for t in final])
+                # Guard against tags removed/renamed on the channel: only
+                # PATCH ids that still resolve (a missing derived tag is
+                # simply not applied — the post must keep reconciling).
+                patch_ids = [tags[t] for t in final if t in tags]
+                update_post(rec["thread"], applied_tags=patch_ids)
             except Exception as exc:  # noqa: BLE001
                 if _is_gone(exc):
                     _drop_dead_post(state, number)
