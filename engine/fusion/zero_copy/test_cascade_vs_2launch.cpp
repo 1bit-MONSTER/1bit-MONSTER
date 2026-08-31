@@ -119,6 +119,17 @@ int main(int argc, char** argv) {
             ffn_cas[0], ffn_cas[1], ffn_cas[2], ffn_cas[3], ffn_cas[4], ffn_cas[5]);
     fprintf(stderr, "two-launch out[0..5] = %.4f %.4f %.4f %.4f %.4f %.4f\n",
             ffn_2l[0], ffn_2l[1], ffn_2l[2], ffn_2l[3], ffn_2l[4], ffn_2l[5]);
+    // correlation: is the cascade's (sign-approx) C2 predictive of the true
+    // FFN output? Pearson + cosine over the 1024-dim output.
+    double sx=0, sy=0, sxx=0, syy=0, sxy=0; long n=0;
+    for (int i = 0; i < HH; i++) { double x = ffn_cas[i], y = ffn_2l[i]; sx+=x; sy+=y; sxx+=x*x; syy+=y*y; sxy+=x*y; n++; }
+    double pear = (n*sxy - sx*sy) / sqrt((n*sxx - sx*sx) * (n*syy - sy*sy));
+    double cos_ = sxy / (sqrt(sxx) * sqrt(syy));
+    fprintf(stderr, "pearson(cascade_C2, two_launch) = %.4f   cosine = %.4f\n", pear, cos_);
+    // also: sign agreement
+    long agree = 0;
+    for (int i = 0; i < HH; i++) if ((ffn_cas[i] < 0) == (ffn_2l[i] < 0)) agree++;
+    fprintf(stderr, "sign agreement: %ld/%d (%.1f%%)\n", agree, HH, 100.0*agree/HH);
     if (!cnt) { fprintf(stderr, "no comparable elements\n"); return 2; }
     double mean_s = sum_s / cnt;
     double var = sum_s2 / cnt - mean_s * mean_s;
@@ -134,9 +145,5 @@ int main(int argc, char** argv) {
         if (s > smax) smax = s;
     }
     fprintf(stderr, "S range [%.6e, %.6e]\n", smin, smax);
-    fprintf(stderr, "cascade C2[0..5] = %.0f %.0f %.0f %.0f %.0f %.0f\n",
-            ffn_cas[0], ffn_cas[1], ffn_cas[2], ffn_cas[3], ffn_cas[4], ffn_cas[5]);
-    fprintf(stderr, "two-launch out[0..5] = %.4f %.4f %.4f %.4f %.4f %.4f\n",
-            ffn_2l[0], ffn_2l[1], ffn_2l[2], ffn_2l[3], ffn_2l[4], ffn_2l[5]);
     return 0;
 }

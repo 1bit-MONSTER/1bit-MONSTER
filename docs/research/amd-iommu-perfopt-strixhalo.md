@@ -192,3 +192,25 @@ Making C1 = real requires ascale'*gs = 1 -> A_q = A*gs -> sub-int8-resolution
 sign-approximate, NOT two-launch-equivalent, without a scale-fold mechanism
 the current int8 xclbin lacks. Next candidates: (a) an int4-silu cascade
 xclbin with the gs fold, (b) per-tile input scaling, (c) accept sign-approx.
+
+## FastFlowLM open-sourced (ROCm/FastFlowLM, MIT, 2026-08-11) — architecture verdict
+
+The production AMD NPU architecture (now open) settles the cascade float-output
+question: **FastFlowLM keeps the activation HOST-SIDE** — libgemm.so exports
+`Gemm::generate_seq(..., Activation_Type_t, ...)` (per-op GEMM instruction
+generators), and libqwen3_6_moe_npu.so has `simd_bias_add_gelu` (host SIMD
+activation) + separate `setup_expert_up_gate_q4k`/`setup_expert_down_gate_q4k`
+gate/up/down GEMM sequences. No fused on-NPU silu. This is exactly 1bit-MONSTER's
+two-launch pattern (GU + host silu + D), which is silicon-verified bit-exact.
+
+=> The fused single-launch cascade's on-core q22 silu saturation (99.4% h2 at
++-127; cascade-vs-two-launch pearson 0.035, sign agreement 52%) is a real
+limitation of the project's own fused design, NOT something AMD's production
+architecture does differently. The float-valid paths are: the two-launch
+(host silu — proven) or a rebuilt fused cascade with an int4-silu + per-column
+gs-header fold (the mechanism the int8 q22 kernel lacks). The cascade remains
+useful as the single-launch zero-h2-DMA substrate for integer/approx paths.
+
+FastFlowLM repo cloned to /tmp/fflm (628MB, shallow): 219 xclbins +
+src/lib/xrt/*.so + the runtime source. (ROCm/FastFlowLM, amd/IRON, MLIR-AIE 1.2,
+ROCm 10 / ROCm.AI.)
