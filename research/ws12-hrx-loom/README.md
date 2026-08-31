@@ -1,8 +1,10 @@
 # ws12-hrx-loom — HRX / Loom platform transition watch
 
-**Status:** ✅ vendored + validated (2026-08-29) — lemonade re-vendored to
-`7953d7f6` (HRX commit) and the `llamacpp-hrx` backend now registers and runs
-a real model in `onebin` on gfx1151. See "Validation" below.
+**Status:** 🏁 MILESTONE JOURNEY COMPLETE (2026-08-31) — the **Zyphra ZAYA1-8B
+runs fully Q4NX on the AMD Strix Halo NPU (gfx1151) via the HRX lane**:
+correct (logits corr 0.99999999 vs the F32 port, top5 identical), fast
+(pp32 35.9 / tg32 8.4 t/s, 7–17× over the original dispatch), and servable
+(llama-server over HTTP, 18.1/8.16 t/s). See "Milestone journey" below.
 **Papers:** none (platform-intelligence workstream — sources are the
 lemonade/llama.cpp/ROCm repos and https://rocm.github.io/hrx-system/loom/).
 **Owner:** bong-water-water-bong
@@ -867,3 +869,35 @@ Notes:
 - Hit-rate measurement (decode expert repeat, per-op last-expert): 0.47
   overall — a 1-slot dequant cache would recover ~10% decode, not worth the
   machinery vs the bandwidth-bound wall. Documented, not implemented.
+
+## Milestone journey — from "watch the HRX stack" to serving Zaya Q4NX on the NPU
+
+What started as a platform-transition watch (rounds 1–10: vendoring HRX,
+loom-link validation, the Q4NX tile type) turned into a full execution lane.
+The arc, in one view:
+
+| # | milestone | result |
+|---|---|---|
+| 11 | **First full Q4NX model served** (qwen3-0.6B, llama-cli) | Option A end-to-end on gfx1151; quality limited by double-quantization, pipeline numerically exact (3.7e-7) |
+| 12 | **Q4NX quality fixed** | the fused mm kernel silently transposed every multi-token matmul (row-major vs ggml col-major); fixed → real tokens |
+| 13 | **Zaya 8B port — architecture root cause** | the graph ran alternating attn/MoE blocks and ignored half the weights; rewritten to HF's both-blocks-per-layer → 8/8 top-1 vs HF, coherent "Paris." |
+| 14 | **Zaya Q4NX on HRX — MUL_MAT_ID dispatch + ids-stride bug** | GGML_OP_MUL_MAT_ID_Q4NX for the stacked MoE experts; the dispatch read the strided topk view contiguously (second-best expert of token 0 applied to token 1) → logits corr 0.99999999, top1 9731 |
+| 15 | **7–12× decode speedup** | per-tile 3-copy upload (~9,200 stream ops/token) → one raw-blob copy + tile-major dequant kernel; tg 1.22 → 8.7 t/s, pp 2.1 → 34 t/s |
+| 16 | **Perf decomposition + fused-kernel dead end** | the F32 port is the wall (pp 120 / tg 10.9, all-HRX); scalar fused dequant+mm was 55× slower and was reverted — the Q4_K kernel's vectorization is the documented path |
+| 17 | **llama-server serving** | zaya Q4NX over HTTP on HRX20: prompt 18.1 / decode 8.16 t/s, coherent output; `--parallel 1 -fit off` workaround for the auto-parallel CPY gap |
+
+### Final state (2026-08-31)
+
+- **Correct**: Q4NX-HRX vs F32-HRX logits corr **0.99999999**, max |Δlogit|
+  0.0041 (1,681× below the top-1 margin), top5 identical; F32 port itself
+  validated 8/8 vs HF.
+- **Fast**: `llama-bench -p 32 -n 32` → **pp32 35.9 / tg32 8.4 t/s** on the
+  HRX2 backend; decode 7× and prefill 17× faster than the original dispatch.
+- **Servable**: `llama-server` (HTTP) + `llama-completion` + reboot-proof
+  harnesses in `harnesses/`.
+- **Fork**: `hrx-v2` — Q4NX type, MUL_MAT_Q4NX, MUL_MAT_ID_Q4NX, raw-blob
+  dequant kernel (4 commits past the arch fix). 1bit-MONSTER
+  `feat/hrx-gfx1151-build` documents rounds 14–17 + this journey.
+- **Thesis confirmed**: the HRX lane is a real execution path for our own
+  Q4NX ("1bp") models — the engine's tile format runs on the NPU with no
+  CPU fallback for the quantized ops.
