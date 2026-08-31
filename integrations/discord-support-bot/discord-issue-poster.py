@@ -303,10 +303,12 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
     if closed and rec.get("archived") and tags_ok:
         # Fully handled (resolved + archived): prune the record so closed
         # issues don't accumulate and cost a gh issue view subprocess every
-        # run forever. A reopen re-adopts the post from the forum scan.
+        # run forever. Remember the number so a later REOPEN can be told
+        # apart from a mere auto-archive when the post is re-adopted.
         # Gated on tags_ok: a skipped/failed tag update must not prune a
         # post that still carries stale tags.
         state["posts"].pop(str(number), None)
+        state.setdefault("closed", {})[number] = time.time()
         print(f"sync #{number}: resolved + archived — pruned from tracking")
         save_state(state)
     return True
@@ -508,21 +510,36 @@ def main() -> int:
     # Closed issues are skipped — re-adopting their archived posts would
     # reintroduce the per-run gh cost the prune removes; a reopen puts
     # the issue back in open_map and adoption fires then.
+    # A number recorded in state["closed"] was bot-pruned as CLOSED: its
+    # re-adoption is a genuine reopen, so the record is seeded CLOSED
+    # (reopen detection forces pending + unarchive) instead of OPEN/human.
+    closed_history = {int(k): v for k, v in state.get("closed", {}).items()
+                      if str(k).lstrip("-").isdigit()}
+    state["closed"] = closed_history
+    # Bound growth: forget close history older than 90 days.
+    for num in [n for n, t in closed_history.items() if time.time() - t > 90 * 86400]:
+        closed_history.pop(num, None)
     for num, t in list(existing.items()):
         if str(num) in posts:
             continue
         if int(num) not in open_map:
             continue  # closed — leave the archived post alone
+        was_closed = int(num) in closed_history
         posts[str(num)] = {
             "thread": t["id"],
-            "state": "OPEN",  # unknown; sync_post corrects from gh
+            "state": "CLOSED" if was_closed else "OPEN",  # reopen vs unknown
             "tags": [id_to_name[i] for i in (t.get("applied_tags") or [])
                      if i in id_to_name],
-            # adopted posts: treat the live state tag as human triage
-            "state_owner": "human",
+            # adopted posts: treat the live state tag as human triage —
+            # except a genuine reopen, whose tags were bot-applied at the
+            # close (pending must be forced by the reopen path).
+            "state_owner": "bot" if was_closed else "human",
             "archived": bool((t.get("thread_metadata") or {}).get("archived")),
         }
-        print(f"adopted untracked post #{num} ({t['id']})")
+        if was_closed:
+            closed_history.pop(int(num), None)
+        print(f"adopted untracked post #{num} ({t['id']})"
+              + (" — reopened" if was_closed else ""))
 
     for num, rec in list(posts.items()):
         # Deleted-post detection without a PATCH: an open issue with stable
