@@ -398,13 +398,13 @@ Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
    NPU lane; zero-DMA SharedBO stays the NPU↔GPU fusion substrate.
 5. **Docs/secrets hygiene** from the repo triage (2026-08-29) is a separate
    workstream, tracked in the triage report.
-6. **Lemonade re-vendor provenance violates LOCAL-ONLY (HIGH).** The
-   `third_party/lemonade` re-vendor to `7953d7f` came from **upstream**
-   `github.com/lemonade-sdk/lemonade`, which the `lemonade is LOCAL-ONLY` rule
-   forbids (refresh only from the local `1bit-lemonade-v1170` worktree). The
-   local worktree does not contain `7953d7f`, so the vendored HRX delta is not
-   reproducible local-only. Tracked in `research/TRACKING.md` (ws12-hrx-loom);
-   do NOT re-fetch from upstream. OPEN.
+6. **Lemonade re-vendor provenance (HIGH, RESOLVED).** The `third_party/lemonade`
+   re-vendor to `7953d7f` originally came from upstream, which the
+   `lemonade is LOCAL-ONLY` rule forbids. **RESOLVED 2026-08-29:** the local
+   `1bit-lemonade-v1170/third_party/lemonade` snapshot was synced to v11.8.1 +
+   full HRX backend and is now the authoritative LOCAL-ONLY source; the repo's
+   `third_party/lemonade` content is byte-identical to it and both `UPSTREAM.md`
+   docs source locally. No upstream contact. See `research/TRACKING.md`.
 
 ## 7. References
 

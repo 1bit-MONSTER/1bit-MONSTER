@@ -25,6 +25,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 #include <unistd.h>
 #include <signal.h>
@@ -36,16 +37,31 @@ namespace {
 // hang the server's init — a timed-out probe is a failed probe.
 void hang_guard(int) { _exit(124); }
 
-// Mirror npu_state_create's xclbin selection (qwen3_0_6b preferred, _v fallback).
-std::pair<std::string, std::string> find_xclbin(const char* xd, const char* tag) {
+// Mirror npu_state_create's family selection (src/backend_fused_npu.cpp):
+// FUSED_BATCH>8 → _m32 full 32-core grid (XM=32); else _m8 (XM=8), _m1
+// (XM=1), the M=128-baked (XM=128), then _v (XM=128).  Returns
+// (xclbin, insts, XM).  The XM MUST match the chosen family's baked tile
+// width: a smaller MD on the fixed-128-row xclbins reads/writes the wrong
+// tile region and produces the #1207 all-zeros symptom or a driver GP fault
+// — that is a probe misconfiguration, NOT a genuine NPU instability.
+std::tuple<std::string, std::string, int> find_xclbin(const char* xd, const char* tag) {
     std::string dir = xd && *xd ? xd : "engine/npu/xclbins";
     auto b = dir + "/final_i8_" + tag;
     auto i = dir + "/insts_i8_" + tag;
-    auto m = b + "_qwen3_0_6b.xclbin", mi = i + "_qwen3_0_6b.txt";
-    if (access(m.c_str(), F_OK) == 0 && access(mi.c_str(), F_OK) == 0) return {m, mi};
-    auto t = b + "_v.xclbin", ti = i + "_v.txt";
-    if (access(t.c_str(), F_OK) == 0 && access(ti.c_str(), F_OK) == 0) return {t, ti};
-    return {"", ""};
+    const char* fb = getenv("FUSED_BATCH");
+    bool want_m32 = fb && atoi(fb) > 8;
+    std::string m32b = b + "_qwen3_0_6b_m32.xclbin", m32i = i + "_qwen3_0_6b_m32.txt";
+    if (want_m32 && access(m32b.c_str(), F_OK) == 0 && access(m32i.c_str(), F_OK) == 0)
+        return {m32b, m32i, 32};
+    std::string m8b = b + "_qwen3_0_6b_m8.xclbin", m8i = i + "_qwen3_0_6b_m8.txt";
+    if (access(m8b.c_str(), F_OK) == 0 && access(m8i.c_str(), F_OK) == 0) return {m8b, m8i, 8};
+    std::string m1b = b + "_qwen3_0_6b_m1.xclbin", m1i = i + "_qwen3_0_6b_m1.txt";
+    if (access(m1b.c_str(), F_OK) == 0 && access(m1i.c_str(), F_OK) == 0) return {m1b, m1i, 1};
+    std::string ms = b + "_qwen3_0_6b.xclbin", mi = i + "_qwen3_0_6b.txt";
+    if (access(ms.c_str(), F_OK) == 0 && access(mi.c_str(), F_OK) == 0) return {ms, mi, 128};
+    std::string ts = b + "_v.xclbin", ti = i + "_v.txt";
+    if (access(ts.c_str(), F_OK) == 0 && access(ti.c_str(), F_OK) == 0) return {ts, ti, 128};
+    return {"", "", 0};
 }
 
 } // namespace
@@ -60,17 +76,21 @@ int main(int argc, char** argv) {
     fprintf(stderr, "[npu_probe] %d FFN iterations (GU->silu->D, dummy weights)\n", iters);
 
     xrt::device dev(0);
-    auto [xg, ig] = find_xclbin(xd, "GU");
-    auto [xd_, id] = find_xclbin(xd, "D");
-    if (xg.empty() || xd_.empty()) {
-        fprintf(stderr, "[npu_probe] FAIL: GU/D xclbins not found in %s\n",
+    auto [xg, ig, xm] = find_xclbin(xd, "GU");
+    auto [xd_, id, xmd] = find_xclbin(xd, "D");
+    if (xg.empty() || xd_.empty() || xm != xmd) {
+        fprintf(stderr, "[npu_probe] FAIL: GU/D xclbins not found (or mixed families) in %s\n",
                 xd ? xd : "engine/npu/xclbins");
         return 2;
     }
+    fprintf(stderr, "[npu_probe] family XM=%d (%s)\n", xm,
+            xm == 32 ? "m32 full 32-core grid" :
+            xm == 8 ? "m8 vectorized" :
+            xm == 1 ? "m1 single-row" : "M=128-baked");
 
     fusion::NpuGemmKernel gu, d;
-    if (!gu.init(dev, xg.c_str(), ig.c_str(), 16, H, 2 * IM) ||
-        !d.init(dev, xd_.c_str(), id.c_str(), 16, IM, H)) {
+    if (!gu.init(dev, xg.c_str(), ig.c_str(), xm, H, 2 * IM) ||
+        !d.init(dev, xd_.c_str(), id.c_str(), xm, IM, H)) {
         fprintf(stderr, "[npu_probe] FAIL: kernel init\n");
         return 2;
     }
@@ -97,6 +117,17 @@ int main(int argc, char** argv) {
         std::vector<float> out(H);
         d.go(gu_out.data(), 1, IM, dscale, d_scale, out.data(), H);
         for (int i = 0; i < H; i++) h[i] += out[i];
+
+        // Keep the feedback loop numerically bounded: the constant positive
+        // dummy weights make h grow super-exponentially (silu(x)*x squares
+        // each iteration) and overflow float to +inf by iter ~3, after which
+        // A quantizes to 0 and the output is legitimately zero — a false
+        // "degenerate" alarm on a healthy NPU.  Renormalize h to unit max so
+        // the loop stays O(1) and only genuine driver corruption reads as
+        // zero/non-finite.
+        float hm = 0;
+        for (int i = 0; i < H; i++) if (fabsf(h[i]) > hm) hm = fabsf(h[i]);
+        if (hm > 1e-12f) for (int i = 0; i < H; i++) h[i] /= hm;
 
         // Sanity: output must be finite and non-degenerate.
         float mx = 0; bool finite = true;
