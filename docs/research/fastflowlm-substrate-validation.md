@@ -83,3 +83,17 @@ Built a driver against the PREBUILT `libqwen3_npu.so` (headers from the repo's
 real AMD generator output, and the real layer kernel is directly runnable on
 this NPU. Next: load the real weights + BOs per the sequence and run the real
 layer-1 FFN kernel, comparing its output against the project's two-launch path.
+
+## Real layer-1 buffer layout (from dump_patch_table) — 2026-08-31
+
+The real Qwen3-0.6B layer-1 sequence's host patch table (172 triples) gives the
+BO layout the runtime binds:
+- **arg1: ~7.74 MB** (offset span 0..7,741,440) — the layer weights (Q4NX 4-bit:
+  gate+up 1024x3072x2 + down 3072x1024 + attention ~ = ~7.7 MB at 4-bit ✓)
+- **arg4: ~192 KB** (span 0..196,608) — the activation/output buffers
+- **arg0, arg2, arg3: ~4 KB each** — small control/scratch buffers
+This matches the project's conceptual layout (weights BO + activation BO +
+small control BOs). To RUN the real layer-1 kernel on the NPU: allocate the 5
+BOs per this map, load Q4NX-format weights (FastFlowLM's q4_npu_eXpress format,
+not the project's int8 — needs the model files or a converter), bind via the
+patch table, launch `MLIR_AIE(3, insts, ninstr, bo0..bo4)`.
