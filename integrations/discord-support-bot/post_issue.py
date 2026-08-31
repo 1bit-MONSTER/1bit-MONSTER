@@ -204,16 +204,34 @@ def forum_search_posts(query: str) -> list[dict]:
     return out
 
 
+def _thread_matches_issue(thread_id: str, number: int) -> bool:
+    """True when the thread is a forum post FOR issue N (name starts '#N ').
+
+    Guards forum_search_issue against false positives: the issue URL can
+    be pasted in a comment on an unrelated thread, which would otherwise
+    be mistaken for the issue's own post.
+    """
+    try:
+        thread = _api("GET", f"/channels/{thread_id}")
+    except Exception:  # noqa: BLE001
+        return False
+    return bool(re.match(rf"^#{number}\s", thread.get("name") or ""))
+
+
 def forum_search_issue(number: int) -> str | None:
     """Find the forum post (thread id) for an issue, or None.
 
     The starter message always contains the issue URL
     (https://github.com/1bit-MONSTER/1bit-MONSTER/issues/N), so a search
     for ``issues/N`` scoped to the forum finds the post whether it is
-    active or archived.
+    active or archived. Every candidate is confirmed with a targeted GET
+    (name starts with "#N ") so an unrelated thread that merely mentions
+    the URL is never mistaken for the issue's post.
     """
     for m in forum_search_posts(f"issues/{number}"):
-        return m["channel_id"]
+        tid = m["channel_id"]
+        if tid and _thread_matches_issue(tid, number):
+            return tid
     return None
 
 

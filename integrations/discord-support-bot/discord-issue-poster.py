@@ -84,19 +84,19 @@ def save_state(state: dict) -> None:
     os.replace(tmp, STATE_FILE)
 
 
-def new_open_issues(after: int) -> list[dict]:
-    """Open issues with number > after, oldest first.
+def fetch_open_issues() -> list[dict]:
+    """ONE gh call for every open issue, full fields included.
 
-    --limit 1000 (gh paginates internally): with >100 open issues, a
-    --limit 100 payload would silently drop older issues and the
-    last_issue cursor could skip them forever.
+    gh paginates internally past 100. Both job 1 (posting) and job 2
+    (sync) read from this single list, so a run stays fast with hundreds
+    of tracked posts — no per-post subprocess.
     """
     out = subprocess.run(
         ["gh", "issue", "list", "--repo", REPO, "--state", "open",
-         "--limit", "1000", "--json", "number,title,createdAt"],
+         "--limit", "1000",
+         "--json", "number,title,url,state,labels,author,createdAt,body"],
         capture_output=True, text=True, check=True, timeout=30).stdout
-    issues = [i for i in json.loads(out) if i["number"] > after]
-    return sorted(issues, key=lambda i: i["number"])
+    return json.loads(out)
 
 
 def _is_gone(exc: Exception) -> bool:
@@ -130,18 +130,13 @@ def _drop_dead_post(state: dict, number: int) -> None:
     save_state(state)
 
 
-def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
-    """Reconcile one tracked post with the live issue; PATCH only on change.
+def sync_post(state: dict, number: int, rec: dict, tags: dict, issue: dict) -> None:
+    """Reconcile one tracked post with the (already-fetched) live issue.
 
     Every Discord PATCH is individually guarded: one failure (post deleted
     → 404, or rate-limit 429 mid-batch) must not abort the whole job-2
     loop and disable lifecycle sync for every tracked post.
     """
-    try:
-        issue = gh_issue(REPO, number)
-    except Exception as exc:  # noqa: BLE001 — issue may be gone; leave post alone
-        print(f"sync #{number}: skipped ({type(exc).__name__}: {exc})")
-        return
     want = [t for t in desired_tags(issue) if t in tags]
     ids = [tags[t] for t in want]
     closed = (issue.get("state") or "").lower() == "closed"
@@ -191,7 +186,7 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
     if changed:
         rec["state"] = "CLOSED" if closed else "OPEN"
         save_state(state)
-    time.sleep(0.5)  # rate-limit politeness across a batch sync
+        time.sleep(0.5)  # rate-limit politeness only after an actual PATCH
 
 
 def main() -> int:
@@ -210,6 +205,9 @@ def main() -> int:
     state = load_state()
     after = int(state.get("last_issue", 0))
     tags = forum_tags()
+    # One gh call for the whole run — feeds both job 1 and job 2.
+    open_list = fetch_open_issues()
+    open_map = {i["number"]: i for i in open_list}
 
     # Idempotency: map issue number → existing forum post (active + archived).
     # A post named "#N ..." means the issue is already mirrored — e.g. a
@@ -237,7 +235,9 @@ def main() -> int:
         print("forum listing failed — skipping posting and retries this run (fail closed)")
         candidates: set[int] = set()
     else:
-        issues = new_open_issues(after)
+        # New issues above the cursor, from the already-fetched list.
+        issues = sorted((i for i in open_list if i["number"] > after),
+                        key=lambda i: i["number"])
         # The bootstrap cutoff applies ONLY when the baseline is genuinely
         # unknown (no state file, or last_issue == 0) — NOT when the posts
         # map happens to be empty. A host that already advanced last_issue
@@ -289,25 +289,17 @@ def main() -> int:
             save_state(state)
             continue
         try:
-            # post_issue_post needs the FULL issue dict (url/labels/state/
-            # body) — the list payload above only carries number/title/
-            # createdAt.
-            full = gh_issue(REPO, num)
-        except Exception as exc:  # noqa: BLE001
-            if num not in failed:
-                failed.append(num)
-            print(f"fetch #{num} FAILED (will retry): {type(exc).__name__}: {exc}")
-            save_state(state)  # persist NOW — a later success must not orphan it
-            continue
-        if (full.get("state") or "").lower() == "closed":
-            # Closed before we could post it (e.g. while sitting in
-            # `failed`) — never mirror a closed issue, and stop retrying it.
-            if num in failed:
-                failed.remove(num)
-            print(f"#{num} closed before posting — skipped")
-            save_state(state)
-            continue
-        try:
+            # post_issue_post needs the FULL issue dict — served from the
+            # single open-list fetch (url/labels/state/body all included).
+            full = open_map.get(num)
+            if full is None:
+                # Not in the open list anymore (closed/deleted while it sat
+                # in `failed`) — never mirror it, and stop retrying.
+                if num in failed:
+                    failed.remove(num)
+                print(f"#{num} closed before posting — skipped")
+                save_state(state)
+                continue
             tid = post_issue_post(full)
         except Exception as exc:  # noqa: BLE001
             if num not in failed:
@@ -374,7 +366,17 @@ def main() -> int:
         t = existing.get(int(num))
         if t and t.get("thread_metadata"):
             rec["archived"] = bool(t["thread_metadata"].get("archived"))
-        sync_post(state, int(num), rec, tags)
+        # Serve the issue from the single open-list fetch; only closed /
+        # deleted issues (absent from it) need an individual gh call.
+        # posts keys are strings — int() for the open_map lookup.
+        issue = open_map.get(int(num))
+        if issue is None:
+            try:
+                issue = gh_issue(REPO, num)
+            except Exception as exc:  # noqa: BLE001 — gone; leave post as-is
+                print(f"sync #{num}: skipped ({type(exc).__name__}: {exc})")
+                continue
+        sync_post(state, int(num), rec, tags, issue)
     save_state(state)
 
     print(f"done: {len(issues)} new, {len(posts)} tracked")
