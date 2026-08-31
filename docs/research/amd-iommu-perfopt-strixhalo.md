@@ -153,3 +153,21 @@ perfopt_get/put/clear/restore/enable/disable, init.c clear/restore hooks).
   bad=0/8192 for both Zaya (260096) and Qwen3 (390144), state=4, ~5ms.
 - No nvme/PCIe/thermal errors in dmesg; memory/disk healthy. (nginx/llama-server units are NOT on
   this machine — those were the Bosgame M5 docs, a different box.)
+
+## Fused-cascade real-weight calibration — CLOSED (2026-08-31)
+
+The single-launch GU→SiLU→D cascade's real-weight FFN output is now verified
+BIT-EXACT vs the CPU reference: `cascade_real_weight_probe` [pad] and [rep]
+both report **EXACT MATCH (bad=0/8192, maxrel=0.0000)** on kernel 7.2.0-perfopt.
+
+Root cause of the multi-round calibration failure: the CPU mirror's D-side model
+used `ks_max=1` (a stale "A rows 1..7 = 0" assumption). The actual design:
+- The A-tile's 8 rows all carry the SAME h2 slice (batch-replicated reading —
+  A(row, K) is row-independent by construction).
+- The D phase sums ALL 8 k-slices (worker loop `for ks in range(8)`).
+The full-ks D model is silicon-exact. Everything else the calibration suspected
+was actually correct and is now independently confirmed:
+- deriv-inverse/8x8-microtiled B pack: guread one-hot-A probes 32/32 EXACT.
+- cg-major AB element order: matches the worker's cg-outer consumption.
+- GU h2 contract: h2r per-pair readouts EXACT for col 0..5 × cg 0..5.
+- D-side readback: lay one-hot probes 8/8 EXACT (scr model).

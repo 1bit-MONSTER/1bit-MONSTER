@@ -7,13 +7,16 @@
 // calibrate (the in-kernel scale fold).
 //
 // Two fill modes (argv[5]):
-//   "pad" (default): A rows 1..7 = 0  → h2b[ks>=1] = 0; only the ks=0 B_d
-//       8-block contributes to every C2 row (384 of 3072 D terms per row).
-//   "rep":           A rows 1..7 = row 0 → h2b[ks] = h2b[0]; the full 3072-term
-//       D contraction (the batch-replicated reading of the kernel).
-// Both are run back-to-back; each is compared against its own mirror of the
-// literal kernel loop (D: for cg: for ks: a8s[kstep][c_] = h2b[ks][cg*64 +
-// kstep*8 + c_]; mmul a8s[8,8] @ b8[8,N_D_row] → acc[kstep]).
+//   "pad" (default) and "rep": both pack the SAME A-tile (all 8 rows carry the
+//   identical h2 slice — the batch-replicated reading; "pad"'s old "A rows
+//   1..7 = 0" assumption was WRONG and is removed).  The D phase sums ALL 8
+//   k-slices (the worker's `for ks in range(8)` loop), so the mirror's D
+//   contraction always uses ks_max = 8.
+// The full-ks D model is SILICON-VERIFIED EXACT (2026-08-31, kernel 7.2.0:
+//   bad=0/8192, maxrel=0.0000) — the calibration is CLOSED.
+// Both are compared against the same mirror of the literal kernel loop
+// (D: for cg: for ks: a8s[kstep][c_] = h2b[ks][cg*64 + kstep*8 + c_];
+//  mmul a8s[8,8] @ b8[8,N_D_row] → acc[kstep]).
 //
 // Usage: cascade_real_weight_probe <model.1bp> <xclbin> <insts.txt> [layer] [pad|rep]
 #include <xrt/xrt_device.h>
@@ -577,7 +580,10 @@ int main(int argc, char** argv) {
             for (int col = 0; col < n_cols; col++)
                 for (int cg = 0; cg < n_cg; cg++) {
                     int ki = cg * n_cols + col;
-                    int ks_max = rep ? 8 : 1;
+                    // The D phase sums ALL 8 k-slices (worker loop `for ks in
+                    // range(8)`); the old pad-mode ks_max=1 was the calibration
+                    // bug — the full-ks model is the silicon-verified one.
+                    const int ks_max = 8;
                     for (int ks = 0; ks < ks_max; ks++)
                         for (int c_ = 0; c_ < 8; c_++) {
                             int h2 = h2s[col * (n_cg * 64) + cg * 64 + t * 8 + c_];
@@ -675,6 +681,20 @@ int main(int argc, char** argv) {
         // h2s; print rows 0..7 at col 0 (the pair t*8+hc_).
         fprintf(stderr, "guread k0=%d hidx=%d: NPU rows(pairs t*8+%d) =", gu_k0, gu_hidx, gu_hidx % 8);
         for (int t = 0; t < 8; t++) fprintf(stderr, " %d", C2[t * 8]);
+        fprintf(stderr, "\n");
+        // prediction under the CURRENT pack (cg-major + deriv-inverse):
+        // the one-hot A at A_tile[k0] feeds A(0, K=k0), and the deriv-inverse
+        // pack places w1q[j0+j][ki*64+k0] at the mmul's read position for
+        // pair j — so C1[0][2j] = 127·w1q[j0+j][k0], h2 sign = sign(w1q).
+        // w1q = q127(w1, gu_is); ki=0, col=0, cg=0 -> j0=0, K_abs=k0.
+        fprintf(stderr, "guread PREDICT (sign(g*u), ki=0 col0 cg0):");
+        for (int t = 0; t < 8; t++) {
+            int j = t * 8;
+            int g = j < (int)w1.size() ? (int)q127(w1[(size_t)j * H + gu_k0], gu_is) : -999;
+            int u = j < (int)w2.size() ? (int)q127(w2[(size_t)j * H + gu_k0], gu_is) : -999;
+            int p = (g == 0 || u == 0) ? 0 : ((g < 0) != (u < 0) ? -127 : 127);
+            fprintf(stderr, " %d", p);
+        }
         fprintf(stderr, "\n");
         // also the full rows 0..7 × cols 0..7 for the pattern
         fprintf(stderr, "guread C2[0..63] =");
