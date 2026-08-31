@@ -3,7 +3,7 @@
 **Status:** 🏁 MILESTONE JOURNEY COMPLETE (2026-08-31) — the **Zyphra ZAYA1-8B
 runs fully Q4NX on the AMD Strix Halo NPU (gfx1151) via the HRX lane**:
 correct (logits corr 0.99999999 vs the F32 port, top5 identical), fast
-(pp32 35.9 / tg32 8.4 t/s, 7–17× over the original dispatch), and servable
+(pp32 72.1 / tg32 10.9 t/s, 7–34× over the original dispatch), and servable
 (llama-server over HTTP, 18.1/8.16 t/s). See "Milestone journey" below.
 **Papers:** none (platform-intelligence workstream — sources are the
 lemonade/llama.cpp/ROCm repos and https://rocm.github.io/hrx-system/loom/).
@@ -946,3 +946,32 @@ stay on CPU.
 Correctness unchanged: logits corr 0.9999999861, top5 identical. Q4NX decode
 now matches the F32 hybrid (11.0 t/s) and is 34% off the all-CPU F32 ceiling
 (16.5 t/s). Also removed leftover ZAYA_DUMP traces from zaya.cpp.
+
+## Round 20 — group MoE tokens by expert: table-scatter mm (prefill 1.96×)
+
+Prefill was still paying for the per-token expert dequant: MUL_MAT_ID_Q4NX
+dispatched one (dequant + cols=1 mm) per (selected, token) pair, so a 32-token
+prefill dequantized every expert once per token. Fix (fork `ffab19c`): a new
+**table-scatter matmul** kernel — `hrx2_mul_mat_f32_f32_ggml_tbl_static`
+(5 bindings: dequantized weights, full src1, full dst, two i32 column tables)
+— reads/writes arbitrary src1/dst columns through the tables, so one dispatch
+can scatter a group of tokens that selected the same expert. The dispatch now
+buckets (i,t) pairs by expert: **one dequant + one table-scatter mm per
+distinct expert** instead of per token (dequant dispatches drop from #tokens
+to #distinct-experts). Single-token groups (decode) keep the proven per-pair
+path, so decode is untouched; the tbl route is optional — dispatch falls back
+to per-pair if it is missing from the catalog.
+
+| metric | before (round 19) | after (round 20) |
+|---|---|---|
+| pp32 | 36.8 t/s | **72.1 t/s** (+96%) |
+| tg32 | 10.9 t/s | 11.06 t/s (unchanged) |
+
+Correctness unchanged: logits corr 0.999999986090 vs the F32 reference (float64
+computation; a float32 shortcut reads 1.00000000), top1 9731, top5 identical.
+The grouped path is per-element bit-comparable to the per-pair path (rms
+1.05e-6 across a dump — JIT-specialization reassoc noise, not an error; max
+|dlogit| vs the F32 ref is unchanged at 4.077e-3). Prefill prefill now beats
+the all-CPU F32 port on the same hardware (72 vs 149 t/s is still behind, but
+the MoE is no longer the prefill bottleneck — the remaining gap is the
+attention path).
