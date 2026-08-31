@@ -34,13 +34,19 @@ GGUF_FTYPE_NAMES = {
     24: "IQ1_M", 25: "BF16",
 }
 
-# HRX GET_ROWS serve set — EMPIRICALLY VERIFIED 2026-08-30 on strixhalo.
-# Only Q4_K fuses cleanly on the ggml-hrx bundle; q6_K FAILS at GET_ROWS
-# (Qwen3-0.6B "Q4_K_M" file carries q6_K embeds → "decode() failed: Compute
-# error"). Q5_K/Q8_K/Q3_K/Q2_K are unverified on this bundle — keep them out
-# of the serve set until llama.cpp PR #27218 (GET_ROWS coverage) lands and a
-# re-probe confirms each ftype.
+# HRX GET_ROWS serve set — gate is PROVABLE from llama.cpp PR #27218
+# (ggml-hrx dispatch-qwen-preamble.cpp, match_qwen_token_embedding):
+#   weight->type == Q4_K
+#   is_supported_hidden_size(hidden_size)  -> hidden_size == 2048
+#   is_supported_vocabulary_count(vocab)   -> vocab <= 262144
+#   is_supported_token_count(token_count)  -> token_count <= 2048
+# Anything else (q6_K/q5_x/q8_0/Q4_0/Q4_1/F16/MXFP4, or q4_K at w != 2048)
+# fails closed at the scheduler: "unsupported HRX node 0: GET_ROWS".
+# Empirically confirmed on strixhalo (2026-08-30): Qwen3-30B-A3B-Instruct-2507
+# (q4_K w=2048) decodes 36.31 tok/s; MiniCPM5-1B (q4_K w=1536) and
+# MiniCPM4-8B (q4_K w=4096) both fail at GET_ROWS.
 K_QUANTS = {"Q4_K"}
+HRX_GET_ROWS_HIDDEN = 2048
 
 
 _HF_FILE_CACHE: dict[str, list[str]] = {}
@@ -205,22 +211,34 @@ def main() -> int:
                 verdicts[name] = ("?", "metadata-too-large")
                 print(f"{name:45s} {'?':10s} {'metadata-too-large':12s}")
                 continue
-            # Issue #1944 (shape refinement): the GET_ROWS ceiling is not
-            # purely quant-gated. Empirically (strixhalo 2026-08-30):
-            #   Qwen3-30B-A3B-Instruct-2507 (q4_K, w=2048) — DECODES (36.31
-            #     tok/s, verified)
-            #   MiniCPM5-1B (q4_K, w=1536) — GET_ROWS Compute error
-            # So q4_K is NECESSARY but not SUFFICIENT; only the 30B-A3B
-            # entry has been verified end-to-end. Other q4_K entries are
-            # marked SUSPECT (unverified shape) until a per-shape probe or
-            # llama.cpp PR #27218 lands. GGUF dims are reversed, so the
+            # Issue #1944 (shape refinement): the GET_ROWS ceiling is NOT
+            # purely quant-gated — PR #27218's qwen_token_embedding dispatch
+            # hard-codes hidden_size == 2048. So q4_K is necessary but not
+            # sufficient: q4_K at w != 2048 fails closed at GET_ROWS
+            # (MiniCPM5-1B w=1536, MiniCPM4-8B w=4096 — both measured on
+            # strixhalo 2026-08-30). Verified end-to-end on strixhalo:
+            #   30B-A3B-Instruct-2507  (q4_K w=2048) — 36.31 tok/s
+            #   Coder-30B-A3B-Instruct (q4_K w=2048) — 71.16 tok/s
+            #   GLM-4.7-Flash          (q4_K w=2048) — GET_ROWS gate OK,
+            #     then fails at RMS_NORM after the embedding (non-Qwen
+            #     graph; the HRX bundle only ships the Qwen3-MoE corpus)
+            #   Qwen3-Next-80B-A3B     (q4_K w=2048) — load-time abort on
+            #     SCALE (cross-layer attention, also outside the corpus)
+            # So the full serve condition is q4_K AND w==2048 AND a
+            # Qwen3-MoE-shaped graph. GGUF dims are reversed, so the
             # embedding width is the MIN of the two leading dims.
             embd_w = int(min(dims[:2])) if len(dims) >= 2 else int(dims[0] or 0)
-            if ftype in K_QUANTS:
-                if name == "Qwen3-30B-A3B-Instruct-2507-HRX":
-                    serve = "YES"   # empirically verified (36.31 tok/s)
+            if ftype in K_QUANTS and embd_w == HRX_GET_ROWS_HIDDEN:
+                if name in ("Qwen3-30B-A3B-Instruct-2507-HRX", "Qwen3-Coder-30B-A3B-Instruct-HRX"):
+                    serve = "YES"   # empirically verified (36.31 / 71.16 tok/s)
+                elif name == "GLM-4.7-Flash-HRX":
+                    serve = "NO (GET_ROWS gate ok, but RMS_NORM after embd unsupported — non-Qwen graph)"
+                elif name == "Qwen3-Next-80B-A3B-Instruct-HRX":
+                    serve = "NO (load-time abort: SCALE / cross-layer attention unsupported — non-Qwen3-MoE graph)"
                 else:
-                    serve = "SUSPECT (q4_K, unverified shape)"
+                    serve = "SUSPECT (q4_K w=2048, GET_ROWS gate ok, unverified e2e)"
+            elif ftype in K_QUANTS:
+                serve = "NO (GET_ROWS: hidden_size != 2048)"
             else:
                 serve = "NO (GET_ROWS)"
             verdicts[name] = (ftype, serve, embd_w)
@@ -232,7 +250,7 @@ def main() -> int:
     n_yes = sum(1 for v in verdicts.values() if v[1] == "YES")
     n_susp = sum(1 for v in verdicts.values() if v[1] and v[1].startswith("SUSPECT"))
     n_no = sum(1 for v in verdicts.values() if v[1] and v[1].startswith("NO"))
-    print(f"\n{len(verdicts)} entries: {n_yes} verified-serve, {n_susp} SUSPECT (q4_K unverified shape), "
+    print(f"\n{len(verdicts)} entries: {n_yes} verified-serve, {n_susp} SUSPECT (q4_K w=2048 unverified e2e), "
           f"{n_no} fail-closed, {len(verdicts) - n_yes - n_susp - n_no} unknown/error")
 
     if args.write:

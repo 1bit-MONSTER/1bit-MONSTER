@@ -28,24 +28,20 @@ def _system_prompt(context: str) -> str:
     )
 
 
-def generate(
-    question: str,
-    context: str,
+def chat(
+    messages: list[dict],
     api_key: str,
     model: str = DEEPSEEK_MODEL,
     max_tokens: int = 1024,
     temperature: float = 0.2,
     timeout: int = 60,
 ) -> str:
-    """Return a grounded answer for ``question`` using ``context``."""
+    """One DeepSeek chat-completions round-trip; returns the reply text."""
     if not api_key:
         raise ValueError("DEEPSEEK_API_KEY is not set")
     body = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": _system_prompt(context)},
-            {"role": "user", "content": question},
-        ],
+        "messages": messages,
         "max_tokens": max_tokens,
         "temperature": temperature,
     }
@@ -61,3 +57,26 @@ def generate(
     resp.raise_for_status()
     data = resp.json()
     return (data["choices"][0]["message"]["content"] or "").strip()
+
+
+def generate(
+    question: str,
+    context: str,
+    api_key: str,
+    model: str = DEEPSEEK_MODEL,
+    max_tokens: int = 1024,
+    temperature: float = 0.2,
+    timeout: int = 60,
+) -> str:
+    """Return a grounded answer for ``question`` using ``context``."""
+    return chat(
+        [
+            {"role": "system", "content": _system_prompt(context)},
+            {"role": "user", "content": question},
+        ],
+        api_key,
+        model=model,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        timeout=timeout,
+    )

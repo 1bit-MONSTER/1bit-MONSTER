@@ -6,7 +6,14 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Sun, 30 Aug 2026 08:45:04 +0000</lastBuildDate>
+    <lastBuildDate>Mon, 31 Aug 2026 10:05:56 +0000</lastBuildDate>
+    <item>
+      <title>Lemonade v11.8.1, and how we stay current with the SDK</title>
+      <link>https://1bit.monster/1bit-post-lemonade-v1181.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1181.html</guid>
+      <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
+      <description>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 554 architecture tokens, 1,798 HF arch strings, 317,310/317,310 checkpoints mapped.</description>
+    </item>
     <item>
       <title>HRX: we put AMD&#x27;s experimental IREE runtime inside our engine</title>
       <link>https://1bit.monster/1bit-post-hrx-engine.html</link>
@@ -26,7 +33,7 @@
       <link>https://1bit.monster/1bit-post-1775-models.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-1775-models.html</guid>
       <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
-      <description>One C++ binary, 552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.</description>
+      <description>One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.</description>
     </item>
     <item>
       <title>Local RAG with our own embeddings</title>

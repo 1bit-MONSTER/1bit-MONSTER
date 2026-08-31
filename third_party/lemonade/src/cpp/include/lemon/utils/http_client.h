@@ -122,8 +122,9 @@ public:
 
     // Stream stall bound (seconds) for post_stream requests that carry no
     // total timeout: how long a stream may deliver nothing before it is
-    // treated as dead. 0 disables the bound. Defaults to the historical
-    // hardcoded 120s; configurable via "stream_stall_timeout" in config.json.
+    // treated as dead. 0 disables the bound. The server sets this at startup
+    // from config: an explicit "stream_stall_timeout" wins, otherwise it
+    // follows "global_timeout".
     static void set_stream_stall_timeout(long seconds) {
         stream_stall_timeout_seconds_.store(seconds);
     }

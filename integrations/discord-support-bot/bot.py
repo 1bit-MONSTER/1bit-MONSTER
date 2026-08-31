@@ -105,7 +105,16 @@ class DocsBot(discord.Client):
 
     # ── message routing ── #
     async def on_message(self, message: discord.Message) -> None:
-        if message.author.bot or not message.content:
+        if message.author.bot:
+            return
+        if not message.content:
+            # Almost always the Message Content gateway intent being OFF in
+            # the Discord Developer Portal (Bot → Message Content Intent).
+            log.warning(
+                "skipped msg id=%s from %s: empty content "
+                "(enable Message Content Intent in the dev portal)",
+                message.id, message.author,
+            )
             return
         if not message.guild:  # ignore DM-based spam; only support guild channels
             return

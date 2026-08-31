@@ -1,19 +1,20 @@
 #!/usr/bin/env bash
-# install-docsbot-service.sh — install & start the /docs bot as a systemd user
-# service on this host. Idempotent (safe to re-run after updating the bot).
+# install-docsbot-service.sh — install & start the /docs bot (and its
+# `!docs` prefix companion, when present) as systemd user services on this
+# host. Idempotent (safe to re-run after updating the bot).
 #
 # Usage:   ./install-docsbot-service.sh
-# Notes:   creates ~/.config/systemd/user/docsbot.service from the template,
-#          requires linger so it starts at boot (loginctl enable-linger $USER).
+# Notes:   creates ~/.config/systemd/user/docsbot.service and
+#          docsbot-prefix.service from the committed templates, requires
+#          linger so they start at boot (loginctl enable-linger $USER).
 #          Secrets (issue #1965): the script refuses to run with an empty or
 #          invalid .env — it can assemble one from the host's existing secret
 #          locations (~/.secrets/*) when present, and validates the Discord
-#          token against the API before enabling the service.
+#          token against the API before enabling the services.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 USER_DIR="$HOME/.config/systemd/user"
-SERVICE_NAME="docsbot.service"
 ENV_FILE="$HERE/.env"
 
 # ── assemble .env from known local secret locations (if not present) ──────
@@ -93,22 +94,25 @@ echo "==> ensuring venv exists (secrets live in .env, kept out of git)"
 [ -d "$HERE/.venv" ] || python3 -m venv "$HERE/.venv"
 "$HERE/.venv/bin/pip" install -q --disable-pip-version-check -r "$HERE/requirements.txt"
 
-echo "==> writing $SERVICE_NAME from template"
+echo "==> writing service units from templates (docsbot.service + docsbot-prefix.service)"
 mkdir -p "$USER_DIR"
-sed -e "s|@BOT_DIR@|$HERE|g" "$HERE/docsbot.service" > "$USER_DIR/$SERVICE_NAME"
-chmod 644 "$USER_DIR/$SERVICE_NAME"
+for TPL in "$HERE"/docsbot*.service; do
+    [ -f "$TPL" ] || continue
+    NAME="$(basename "$TPL")"
+    sed -e "s|@BOT_DIR@|$HERE|g" "$TPL" > "$USER_DIR/$NAME"
+    chmod 644 "$USER_DIR/$NAME"
+    systemctl --user daemon-reload
+    systemctl --user enable --now "$NAME" >/dev/null 2>&1 || true
+    echo "==> installed $NAME"
+done
 
-echo "==> daemon-reload + enable/start"
-systemctl --user daemon-reload
-systemctl --user enable --now "$SERVICE_NAME" >/dev/null 2>&1 || true
-
-echo "==> enabling linger so the bot starts at boot (no login required)"
+echo "==> enabling linger so the bots start at boot (no login required)"
 loginctl enable-linger "$USER" 2>/dev/null || echo "   (could not enable linger; may need root)"
 
 echo "==> status"
-systemctl --user --no-pager status "$SERVICE_NAME" | sed 's/^/   /' | head -12
+systemctl --user --no-pager status docsbot.service | sed 's/^/   /' | head -12
 
 echo ""
-echo "The /docs command is now live in Discord."
-echo "   Follow logs:  journalctl --user -u $SERVICE_NAME -f"
-echo "   Ask the bot:  /docs <question>"
+echo "The /docs and !docs bots are now live in Discord."
+echo "   Follow logs:  journalctl --user -u docsbot.service -f   (or docsbot-prefix.service)"
+echo "   Ask the bot:  /docs <question>   or   !docs <question>"
