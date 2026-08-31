@@ -632,3 +632,78 @@ max_abs ≤ 5.5e-7 for all shapes at cols=5, logits corr 0.94–0.95 = pure
 (all-shape cols=5 op validation with corrected ggml-layout reference),
 `numpy-forward.py` (full Qwen3-0.6B numpy forward, used to prove the
 activations were correct at every stage), fork patch regenerated.
+
+---
+
+## Round 13 — Zaya 8B port: the architecture was wrong (not the math)
+
+**Headline: 8/8 top-1 agreement with the HF `Zyphra/ZAYA1-8B` reference after
+fixing the layer structure. The zaya port now produces coherent chat output.**
+
+### What was wrong
+
+The port (and the 1bit engine reference it was copied from) implemented the
+**base-era alternating structure**: even layers = CCA attention only, odd
+layers = MoE only. But **Zaya 8B runs BOTH blocks in EVERY layer** (HF
+`ZayaDecoderLayer`):
+
+```
+per layer:
+  residual = h
+  h = input_layernorm(residual)                      # attn_norm
+  attn = CCA(h)                                      # full CCA path
+  residual = (attn+hs_b)*hs_s + (residual+res_b)*res_s   # post_attention scale
+  h = post_attention_layernorm(residual)             # post_attn_norm (NEW tensor)
+  moe = MoE(h)                                       # with prev_router EDA
+  h = (moe+hs_b)*hs_s + (residual+res_b)*res_s           # post_mlp scale
+final: logits = emb @ norm(h)
+```
+
+Evidence: the container has REAL attention AND MoE weights in all 40 layers
+(corr 1.0 with HF input scales, 0.9947 with HF q_proj after int4 noise).
+The old logits were uncorrelated with HF (cos -0.10) because half the
+weights were never used.
+
+### Fixes (fork `hrx-v2`, uncommitted)
+
+- **converter** `zaya-to-gguf.py`: write both weight sets for every layer +
+  `post_attn_norm`; fixed `add_bf16` shape handling (`shape[::-1]` GGUF dims
+  convention); fixed `zaya.expert_count`/`zaya.expert_used_count` key names;
+  fixed `res_scale_hs`/`res_scale_hs_mlp` tensor names.
+- **loader** `llama-model.cpp`: create all 31-32 tensors per layer (no more
+  `i % 2` split); added `LLM_TENSOR_POST_ATTN_NORM` name/info mapping.
+- **graph** `src/models/zaya.cpp`: rewritten loop — both blocks per layer
+  with the HF residual chain; `prev_router` EDA on every MoE; final = just
+  `norm(h)` (no residual add).
+- **hybrid memory filter**: ZAYA now allocates the recurrent state for ALL
+  layers (`filter_attn = filter_recr = []{return true;}`) — the old
+  `il % 2 == 0` filter crashed (null `s_l`) once every layer needs state.
+- **tokenizer**: GGUF now uses the real HF tokenizer dir
+  (BOS=2 `<bos>`, EOS=106 `<|im_end|>` — the old GGUF had them swapped).
+
+### Validation
+
+```
+logits corr llama-vs-HF (int4 container vs BF16): 0.897
+top-1 agreement over 8 greedy steps:              8/8  (ALL match HF)
+per-step cos: 0.82–0.99  (expected int4 quantization gap)
+generation:   "<think> We have a conversation: The user asks: 'What is the
+               capital of France?' ..."  — coherent, meaningful
+```
+
+Layer-by-layer numpy cross-check (container truth): L0 attn_out corr 0.994,
+residual_post_attn 0.998, layer_out 1.0/0.9986 — the CCA + residual math was
+already exact; only the block structure was wrong.
+
+### Artifacts
+
+- `zaya-to-gguf.py` (fixed converter), `zaya-full-forward2.py` (HF-structure
+  numpy ref), `zaya-prefill3.py` (batch prefill CCA verification).
+- `/home/bcloud/zaya-f32.gguf` regenerated (F32, both blocks, 1283 tensors).
+- HF reference: `/home/bcloud/models/ZAYA1-8B` (17.7GB download, public).
+
+### Next
+
+- `zaya_q4nx.gguf` conversion (Q4NX mode) → HRX ngl=99; the attn projections
+  are 2-D MUL_MAT (already dispatched); the stacked experts need MUL_MAT_ID
+  Q4NX dispatch.
