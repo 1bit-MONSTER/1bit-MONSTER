@@ -59,3 +59,27 @@ per-op GEMMs + host-side activation, exactly 1bit-MONSTER's two-launch GU→host
 
 `amd/IRON` (Apache-2.0 — close-to-metal NPU toolchain; the `iron` the cascade generator
 uses), `MLIR-AIE 1.2` (Ryzen-AI NPU compiler), `ROCm 10 / ROCm.AI GA`.
+
+## Real sequence generation on our machine (2026-08-31) — byte-level CONFIRMED
+
+Built a driver against the PREBUILT `libqwen3_npu.so` (headers from the repo's
+`src/include`, linked `-lqwen3_npu -lmha -lq4_npu_eXpress -lgemm -ldequant
+-llm_head`). With a minimal qwen3-0.6B `config.json` loaded directly into
+`LM_Config::_json_config` (bypassing the path resolver):
+
+- `qwen3_npu_sequence(cfg, 128).gen_layer_seq(&nseq, 1)` -> **7231 words**,
+  dumped to `/tmp/fflm-layer0.seq` (28924 B).
+- Header `0x1b 0x1b00 0x378 nbytes` (word[3] = 28924 = file size; the project's
+  RE'd FLM header plays the same role).
+- Op histogram matches the project's RE'd emission exactly:
+  `0x80` TCT (169), `0x81` DDR_PATCH (172), `0x01` BLOCKWRITE (577),
+  `0x03` MASKWRITE (166), `0x00` WRITE (4437), plus the `0x30/0x18/0x1c/0x10`
+  tail-word patterns the project's `bd()/dp()/mw()/wr()` lambdas emit.
+- The Qwen3-0.6B `layer.xclbin` from the repo REGISTERS on this box's NPU:
+  kernel `MLIR_AIE` with args `(opcode:0, instr:1, ninstr:2, bo0..bo4:3..7)` —
+  the SAME invocation signature the project uses (`k(3, bI, ninstr, A, B, C)`).
+
+=> The project's RE'd instruction format is validated end-to-end against the
+real AMD generator output, and the real layer kernel is directly runnable on
+this NPU. Next: load the real weights + BOs per the sequence and run the real
+layer-1 FFN kernel, comparing its output against the project's two-launch path.
