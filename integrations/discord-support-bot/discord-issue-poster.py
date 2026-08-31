@@ -169,17 +169,25 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
     overwritten; close/reopen transitions are auto-enforced.
     """
     derived = desired_tags(issue)          # [type, state, severity]
-    ttype, _, sev = derived[0], derived[1], derived[2]
+    ttype, derived_state, sev = derived[0], derived[1], derived[2]
     closed = (issue.get("state") or "").lower() == "closed"
-    reopened = not closed and rec.get("state") == "CLOSED"
+    # Reopen detection uses the LIVE archived flag (refreshed from the
+    # forum scan each run), not rec["state"] — rec only flips to CLOSED
+    # when a close-sync fully succeeds, so an archive-PATCH failure or a
+    # human archiving first would otherwise make a reopen undetectable.
+    reopened = not closed and bool(rec.get("archived"))
     changed = False
 
-    # Guess the state tag from our record (no network); when a PATCH is
-    # actually needed, re-read the live tags and honor human triage.
+    # State policy: close forces resolved; reopen forces pending; an open
+    # issue with an escalation label is escalated (bot-managed, applied on
+    # every sync — not just at creation); otherwise a human's state tag is
+    # respected, defaulting to pending.
     if closed:
         state_tag = TAG_STATE_RESOLVED
     elif reopened:
         state_tag = TAG_STATE_PENDING
+    elif derived_state == TAG_STATE_ESCALATED:
+        state_tag = TAG_STATE_ESCALATED
     else:
         cur_state = next((t for t in (rec.get("tags") or []) if t in STATE_TAGS), None)
         state_tag = cur_state or TAG_STATE_PENDING
@@ -187,7 +195,7 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
 
     if want != rec.get("tags"):
         live = post_tags(rec["thread"], id_to_name)
-        if not closed and not reopened:
+        if not closed and not reopened and derived_state != TAG_STATE_ESCALATED:
             live_state = next((t for t in live if t in STATE_TAGS), None)
             if live_state:
                 state_tag = live_state      # human triage persists
