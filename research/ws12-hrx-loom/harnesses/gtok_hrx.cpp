@@ -20,13 +20,15 @@ int main(int argc, char ** argv) {
     int max_tokens = argc > 4 ? atoi(argv[4]) : 40;
     printf("GENERATED: ");
     fflush(stdout);
+    int64_t pos = 0;   // running position in the KV cache
     for (int step = 0; step < max_tokens; ++step) {
         llama_batch batch = llama_batch_init(toks.size(), 0, 1);
         for (size_t i = 0; i < toks.size(); ++i) {
-            batch.token[i] = toks[i]; batch.pos[i] = step + i;
+            batch.token[i] = toks[i]; batch.pos[i] = pos + i;
             batch.n_seq_id[i] = 1; batch.seq_id[i][0] = 0;
             batch.logits[i] = (i == toks.size()-1);
         }
+        pos += toks.size();
         batch.n_tokens = toks.size();
         if (llama_decode(ctx, batch) != 0) { fprintf(stderr, "decode failed\n"); return 1; }
         const float * logits = llama_get_logits_ith(ctx, toks.size()-1);
