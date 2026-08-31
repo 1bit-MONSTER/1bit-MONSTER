@@ -109,7 +109,7 @@ def _is_gone(exc: Exception) -> bool:
     return getattr(exc, "code", None) == 404 or "404" in str(exc)
 
 
-def _drop_dead_post(state: dict, number: int) -> None:
+def _drop_dead_post(state: dict, number: int | str) -> None:
     """A tracked post no longer exists (deleted / config change).
 
     Drop it from the map, and if the issue is STILL OPEN, re-queue the
@@ -117,6 +117,7 @@ def _drop_dead_post(state: dict, number: int) -> None:
     silently vanish from the triage board (the number is below the
     last_issue cursor, so job 1 would never revisit it).
     """
+    number = int(number)  # callers pass posts keys (strings) — keep `failed` int-only
     state["posts"].pop(str(number), None)
     state.setdefault("failed_at", {})
     try:
@@ -233,7 +234,11 @@ def main() -> int:
 
     # ── job 1: post new issues (plus retry previously failed numbers) ─────
     posts = state.setdefault("posts", {})
-    failed = state.setdefault("failed", [])
+    # Normalize `failed` to ints: job-1 failures append ints, while
+    # _drop_dead_post used to append posts keys (strings) — a mixed list
+    # makes sorted(candidates) raise TypeError and aborts the whole run.
+    failed = [int(n) for n in state.setdefault("failed", [])]
+    state["failed"] = failed
     issues: list[dict] = []
     if not listing_ok:
         # Fail closed: without a forum listing the idempotency map is
