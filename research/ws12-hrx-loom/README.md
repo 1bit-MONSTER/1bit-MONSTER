@@ -819,3 +819,29 @@ CCA attention path on HRX is the wall. Q4NX adds ~22 ms (80 expert slices ×
 bandwidth-bound). Q4NX now sits 24% behind the F32 port (8.68 vs 10.46 t/s),
 and the only remaining lever is fusing the dequant into the mm kernel
 (eliminates the f32 round trip) — a follow-up kernel project.
+
+## Round 16 — perf decomposition + the fused-kernel dead end (2026-08-31)
+
+Benchmarked the F32 port (same graph, all-HRX) as the reference wall:
+
+| model | pp32 | tg32 |
+|---|---|---|
+| zaya F32 (HRX2) | 120.5 t/s | 10.93 t/s |
+| zaya Q4NX (HRX2) | 33.9 t/s | 8.43 t/s |
+
+The 3.5× prefill gap is the MoE: every prefill token selects a different
+expert, so each op dequantizes ~33 MB f32 per token (bandwidth-bound). Decode
+is only 1.3× behind — the shared attention path dominates the 1-token latency.
+
+**Fused dequant+mm kernel (implemented, then reverted):** a
+`q4nx_mul_mat_f32_ggml` Loom kernel dequantizing inline in the mm inner loop
+(no f32 intermediate — halves traffic). It compiled, ran, and was numerically
+correct (corr 0.9999999861), but **prefill collapsed to 0.63 t/s (55×
+slower)**: the per-element scalar dequant (~20 index/byte ops per FMA) is
+catastrophic on the NPU. The existing `mul_mat_q4_k_f32.loom` (5,469 lines)
+shows the required design — vectorized loads + bitfield extraction, 4
+columns/lane — a substantial porting effort for Q4NX, documented as the
+follow-up. The dequant+mm split at 33.9/8.4 t/s stands.
+
+The catalog/source/artifact scaffolding for the fused route was fully
+reverted (zero net diff); the experiment is preserved in this write-up.
