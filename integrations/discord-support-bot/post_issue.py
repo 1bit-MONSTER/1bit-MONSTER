@@ -87,8 +87,10 @@ TAG_STATE_ESCALATED = "escalated"
 TAG_SEVERITY = {1: "defcon-1", 2: "defcon-2", 3: "defcon-3", 4: "defcon-4", 5: "defcon-5"}
 
 # DEFCON ladder (lower = worse), from the help-desk tag schema. Checked
-# top-down; the first matching level wins. Keywords are matched on the
-# lowercase title + body.
+# top-down; the first matching level wins. Single-word keywords use word
+# boundaries ("oom" must not match "room", "hang" must not match
+# "change", "bug" must not match "debug"); multi-word phrases and
+# "error:" are specific enough as plain substrings.
 _DEFCON_KEYWORDS: list[tuple[int, list[str]]] = [
     (1, ["optc hang", "amdgpu hang", "kernel panic", "wayland freeze",
          "hard lock", "power-cycle", "power cycle", "data loss", "security",
@@ -98,6 +100,15 @@ _DEFCON_KEYWORDS: list[tuple[int, list[str]]] = [
     (3, ["broken", "fails", "doesn't work", "does not work", "error:", "bug",
          "not working"]),
     (4, ["slow", "annoying", "quirk", "minor", "would be nice"]),
+]
+
+_DEFCON_PATTERNS: list[tuple[int, list[re.Pattern]]] = [
+    (level, [
+        re.compile(re.escape(kw)) if (" " in kw or kw.endswith(":"))
+        else re.compile(r"\b" + re.escape(kw) + r"\b")
+        for kw in keywords
+    ])
+    for level, keywords in _DEFCON_KEYWORDS
 ]
 
 _TYPE_LABEL_KEYWORDS = {
@@ -270,8 +281,8 @@ def post_tags(thread_id: str, id_to_name: dict[str, str]) -> list[str] | None:
 def severity(text: str) -> int:
     """DEFCON severity (1 = worst, 5 = trivial) from a keyword scan."""
     lowered = (text or "").lower()
-    for level, keywords in _DEFCON_KEYWORDS:
-        if any(k in lowered for k in keywords):
+    for level, patterns in _DEFCON_PATTERNS:
+        if any(p.search(lowered) for p in patterns):
             return level
     return 5
 
