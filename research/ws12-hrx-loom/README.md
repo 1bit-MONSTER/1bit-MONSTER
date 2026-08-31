@@ -901,3 +901,26 @@ The arc, in one view:
 - **Thesis confirmed**: the HRX lane is a real execution path for our own
   Q4NX ("1bp") models — the engine's tile format runs on the NPU with no
   CPU fallback for the quantized ops.
+
+## Round 18 — the F32 attention "wall" is the CPU, not the NPU (2026-08-31)
+
+Profile (env-gated per-op timing, HRX2_OPTIME) revealed the F32 port's
+attention MUL_MATs **never ran on HRX2** — `device_supports_op` returns
+false for GGML_OP_MUL_MAT, so all F32 attention matmuls execute on the CPU
+AVX-512 path; HRX2 only gets the pointwise/cont/cpy/norm ops (and the
+rope/softmax fall back to CPU too, shape-rejected by the HRX2 routes).
+
+Enabling the f32_f32 MUL_MAT route (the generic ggml-layout kernel) is
+**bit-correct** (logits corr 0.99999990 vs the CPU path, top5 identical)
+but **slower**: F32 tg32 10.93 → 9.87 t/s, pp32 120 → 93 t/s. The naive
+HRX2 f32 mm kernel cannot beat the CPU for these shapes. Q4NX impact:
+neutral (8.43 → 8.74 t/s; its router matmuls are tiny). Reverted; the
+gating stays with a comment.
+
+Conclusion: the "F32 attention wall" is the **CPU executing F32 matmuls
+efficiently**, and the Q4NX NPU kernels are 20% behind it (8.9 vs 11.0
+t/s). The levers are (a) a competitive NPU f32 matmul kernel (helps the
+F32 path and any future F32-attention model), or (b) the Q4NX MoE traffic
+(F16 intermediate / expert cache), both bounded kernel projects. The
+fused-dequant direction remains structurally blocked (Q4NX's
+column-strided packed layout; see round 16).
