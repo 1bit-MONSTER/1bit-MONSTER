@@ -3,7 +3,7 @@
 **Status:** 🏁 MILESTONE JOURNEY COMPLETE (2026-08-31) — the **Zyphra ZAYA1-8B
 runs fully Q4NX on the AMD Strix Halo NPU (gfx1151) via the HRX lane**:
 correct (logits corr 0.99999999 vs the F32 port, top5 identical), fast
-(pp32 103.5 / tg32 11.1 t/s, 9–47× over the original dispatch), and servable
+(pp32 127.4 / tg32 13.0 t/s, 11–61× over the original dispatch), and servable
 (llama-server over HTTP, 18.1/8.16 t/s). See "Milestone journey" below.
 **Papers:** none (platform-intelligence workstream — sources are the
 lemonade/llama.cpp/ROCm repos and https://rocm.github.io/hrx-system/loom/).
@@ -1051,3 +1051,54 @@ plain tiled route; the MoE mm is no longer the prefill wall. Next candidates
 per the op profile: MUL_MAT_Q4NX attention (~127 µs/op × 199) and the
 per-graph sync structure (600 tiny graphs per decode, each ending in a full
 stream sync).
+
+
+## Round 23 — fused dequant+matmul: b_w never materialized (pp32 103.5 → 127.4, tg32 11.1 → 13.0)
+
+Round 22 left a 2× weight-traffic tax on every Q4NX matmul: the dequant
+kernel wrote 33.5 MB of f32 (b_w) to scratch, then the mm read it back. The
+F16 hybrid (same split, F32 weights read directly) did pp32 136 / tg32 13.4
+while Q4NX sat at 103.5 / 11.1 — the gap was the b_w round-trip, not the NPU.
+
+Two new kernels dequant INLINE in the matmul, reading only the raw 5120-byte
+tiles (5.2 MB for a rows=4096 expert) and never materializing b_w:
+
+- `mul_mat_q4nx_fused_f32` (fork `ad07076`): per-pair decode path — one
+  dispatch reads the expert slice's packed/scales/zeros + src1 column + dst
+  column. tg32 11.06 → 12.6–13.2 (+14–19%).
+- `mul_mat_q4nx_fused_tbl_tiled` (fork `77c0963`): the round-22 table-scatter
+  tiled structure with the dequant inline — the k-loop dequants the workgroup
+  row once and reuses it across the 8 table-selected columns. Weight traffic
+  drops from (write 33.5 + read 134) MB to read 5.2 MB per expert group.
+  pp32 103.5 → 123.8–127.4 (+20–23%).
+
+The dequant index math (div/rem by JIT-constant 32/256/8/16/2048/5120, BF16
+scale/zp pairs, int4 nibble extraction, |x|>100 clamp for the trailing
+trailer bytes) is copied verbatim from the proven q4nx_dequant_f32 kernel;
+the fused kernels JIT-compile because every divisor folds at JIT time. The
+fused tbl-tiled bounds are the round-22 truthful index.assume predicates.
+
+Debug landmine: the first fused-tbl-tiled patch deleted the raw-tile stream
+copy that feeds b_raw, so the kernel read uninitialized scratch (32-token
+corr 0.51). The per-pair fused kernel passed because it binds src0_ref
+directly; the grouped path needs the slice copy. Restored before the fused
+path — always re-check the 32-token harness after dispatch surgery.
+
+| metric | round 21 | round 22 | round 23 | F16 hybrid |
+|---|---|---|---|---|
+| pp32 | 77.4 | 103.5 | **123.8–127.4** | 136 |
+| tg32 | 11.2 | 11.1 | **12.6–13.2** | 13.4 |
+
+Verified:
+- 32-token corr 0.9999996053, top1 108 == F32 (unchanged)
+- 2-token corr 0.9999999861 (unchanged)
+- llama-bench pp32 103.5 → 123.8 ± 10.9 / 127.4 ± 15.0, tg32 13.0 ± 0.5
+- Q4NX now at 91–94% (pp32) / 94–98% (tg32) of the F16 hybrid ceiling —
+  the remaining gap is the dequant compute itself, not the traffic
+
+The prefill wall has moved again: the op profile now shows MUL_MAT_Q4NX
+attention (~250 µs/op × 199) and the 800-subgraph split structure as the
+top items. Claiming RMS_NORM on the NPU was tried and reverted (net-negative:
+CPU AVX-512 wins pointwise even at batch 32, and the scheduler's shuttling
+copies cost more than the NPU saves — round 19's minimal-claims rule holds
+for prefill too).
