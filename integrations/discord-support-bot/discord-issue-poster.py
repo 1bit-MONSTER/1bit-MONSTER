@@ -212,44 +212,45 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
         live = post_tags(rec["thread"], id_to_name)
         if live is None:
             # Transient read failure — never treat it as "no tags" (that
-            # would PATCH away human tags). Skip the tag sync this run.
-            print(f"sync #{number}: live-tag read failed — skipping tag sync")
-            return True
-        live_state = next((t for t in live if t in STATE_TAGS), None)
-        owner = rec.get("state_owner", "bot")
-        if force_state is None:
-            if owner == "human" and live_state:
-                state_tag = live_state              # human triage persists
-            elif live_state and live_state != _rec_state_tag(rec):
-                state_tag = live_state              # bot-owned but changed -> human intervened
-                owner = "human"
-            else:
-                state_tag = TAG_STATE_PENDING       # bot-owned -> downgrade allowed
-            want[1] = state_tag
-        preserved = [t for t in live if t not in MANAGED_TAGS]
-        final = want + sorted(set(preserved))
-        if final != live:
-            try:
-                # Guard against tags removed/renamed on the channel: only
-                # PATCH ids that still resolve (a missing derived tag is
-                # simply not applied — the post must keep reconciling).
-                patch_ids = [tags[t] for t in final if t in tags]
-                update_post(rec["thread"], applied_tags=patch_ids)
-            except Exception as exc:  # noqa: BLE001
-                if _is_gone(exc):
-                    _drop_dead_post(state, number)
+            # would PATCH away human tags). Skip only the TAG update; the
+            # archive/unarchive step below must still run.
+            print(f"sync #{number}: live-tag read failed — skipping tag update")
+        else:
+            live_state = next((t for t in live if t in STATE_TAGS), None)
+            owner = rec.get("state_owner", "bot")
+            if force_state is None:
+                if owner == "human" and live_state:
+                    state_tag = live_state              # human triage persists
+                elif live_state and live_state != _rec_state_tag(rec):
+                    state_tag = live_state              # bot-owned but changed -> human intervened
+                    owner = "human"
                 else:
-                    print(f"sync #{number}: tag PATCH failed (will retry): "
-                          f"{type(exc).__name__}: {exc}")
-                return False
-            rec["tags"] = final
-            if force_state is not None:
-                rec["state_owner"] = "bot"
-            else:
-                rec["state_owner"] = owner
-            changed = True
-            print(f"sync #{number}: tags -> {final}")
-            save_state(state)  # persist NOW — a later archive failure must not lose this
+                    state_tag = TAG_STATE_PENDING       # bot-owned -> downgrade allowed
+                want[1] = state_tag
+            preserved = [t for t in live if t not in MANAGED_TAGS]
+            final = want + sorted(set(preserved))
+            if final != live:
+                try:
+                    # Guard against tags removed/renamed on the channel: only
+                    # PATCH ids that still resolve (a missing derived tag is
+                    # simply not applied — the post must keep reconciling).
+                    patch_ids = [tags[t] for t in final if t in tags]
+                    update_post(rec["thread"], applied_tags=patch_ids)
+                except Exception as exc:  # noqa: BLE001
+                    if _is_gone(exc):
+                        _drop_dead_post(state, number)
+                    else:
+                        print(f"sync #{number}: tag PATCH failed (will retry): "
+                              f"{type(exc).__name__}: {exc}")
+                    return False
+                rec["tags"] = final
+                if force_state is not None:
+                    rec["state_owner"] = "bot"
+                else:
+                    rec["state_owner"] = owner
+                changed = True
+                print(f"sync #{number}: tags -> {final}")
+                save_state(state)  # persist NOW — a later archive failure must not lose this
 
     if closed and not rec.get("archived"):
         try:
@@ -473,11 +474,17 @@ def main() -> int:
 
     # ── job 2: reconcile tracked posts with live issue state ──────────────
     # Adopt untracked "#N" posts (e.g. created by a manual post_issue.py
-    # run for an issue at/below last_issue): they would otherwise keep
+    # run for an issue at/below last_issue, or REOPENED issues whose
+    # archived post was pruned when it closed): they would otherwise keep
     # frozen tags forever, never closing/archiving with the issue.
+    # Closed issues are skipped — re-adopting their archived posts would
+    # reintroduce the per-run gh cost the prune removes; a reopen puts
+    # the issue back in open_map and adoption fires then.
     for num, t in list(existing.items()):
         if str(num) in posts:
             continue
+        if int(num) not in open_map:
+            continue  # closed — leave the archived post alone
         posts[str(num)] = {
             "thread": t["id"],
             "state": "OPEN",  # unknown; sync_post corrects from gh
@@ -537,7 +544,8 @@ def main() -> int:
     # would flap the watchdog between FAILED and done every cooldown
     # cycle. A post parked past STUCK_SECONDS (clearly not self-healing)
     # and every sync failure do fail the run.
-    stuck = [n for n in failed_since if time.time() - failed_since.get(n, 0) > STUCK_SECONDS]
+    stuck = [n for n in failed_since
+             if n in failed and time.time() - failed_since.get(n, 0) > STUCK_SECONDS]
     if not listing_ok:
         print("FAILED: forum listing unavailable — posting disabled (fail closed)")
     elif sync_failures:
