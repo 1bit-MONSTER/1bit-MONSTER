@@ -54,6 +54,10 @@ std::string locate_hrx_server() {
         // (fused Qwen3-MoE graphs).  Unfused graphs (dense models) still
         // fail-closed on GET_ROWS in b59/b66 — use the gfx1151 rebuild
         // (HRX_ROOT=/home/bcloud/hrx-gfx1151/llama-src/build) for those.
+        // Ported-to-new-hrx b66 (ggml-hrx on hrx-system main ae91949) lives at
+        // HRX_ROOT=/home/bcloud/hrx-gfx1151/llama-b66/build — it needs
+        // HRX_LD_LIBRARY_PATH=/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib
+        // (TheRock HSA 1.21; see spawn_server).
         const char* def = "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66";
         root = def;
     }
@@ -179,6 +183,20 @@ bool HrxBackend::spawn_server() {
         if (devnull >= 0) {
             dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2);
             if (devnull > 2) close(devnull);
+        }
+        // The new hrx-system's IREE amdgpu driver dlopens libhsa-runtime64.so.1
+        // at runtime and requires a recent HSA (HSA_AMD_AGENT_INFO_PM4_EMULATION,
+        // agent info 0xA119). The system ROCm HSA 1.18 rejects that query, so
+        // bundles built against new hrx must run with the TheRock HSA first on
+        // the library path. HRX_LD_LIBRARY_PATH is prepended to the inherited
+        // LD_LIBRARY_PATH (empty by default: the official b66 bundle uses the
+        // old hrx-system and works with the system HSA).
+        std::string extra_ld = env_or("HRX_LD_LIBRARY_PATH", "");
+        std::string ld = env_or("LD_LIBRARY_PATH", "");
+        if (!extra_ld.empty()) {
+            std::string combined = extra_ld;
+            if (!ld.empty()) combined += ":" + ld;
+            setenv("LD_LIBRARY_PATH", combined.c_str(), 1);
         }
         // HRX llama-server: fused HRX0 device + the flags AMD's recipe insists on.
         execl(server_bin_.c_str(), "llama-server",
