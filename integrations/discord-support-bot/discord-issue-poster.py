@@ -207,14 +207,18 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
         force_state = TAG_STATE_ESCALATED
 
     want = [ttype, force_state or TAG_STATE_PENDING, sev]
+    tags_ok = True  # tag reconciliation completed (or nothing to do) — gates the prune
 
     if want != rec.get("tags"):
         live = post_tags(rec["thread"], id_to_name)
         if live is None:
             # Transient read failure — never treat it as "no tags" (that
             # would PATCH away human tags). Skip only the TAG update; the
-            # archive/unarchive step below must still run.
+            # archive/unarchive step below must still run. The prune is
+            # gated on tags_ok so a close run with a failed tag read does
+            # not prune a post that still carries stale tags.
             print(f"sync #{number}: live-tag read failed — skipping tag update")
+            tags_ok = False
         else:
             live_state = next((t for t in live if t in STATE_TAGS), None)
             owner = rec.get("state_owner", "bot")
@@ -286,10 +290,12 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
         save_state(state)
         time.sleep(0.5)  # rate-limit politeness only after an actual PATCH
 
-    if closed and rec.get("archived"):
+    if closed and rec.get("archived") and tags_ok:
         # Fully handled (resolved + archived): prune the record so closed
         # issues don't accumulate and cost a gh issue view subprocess every
         # run forever. A reopen re-adopts the post from the forum scan.
+        # Gated on tags_ok: a skipped/failed tag update must not prune a
+        # post that still carries stale tags.
         state["posts"].pop(str(number), None)
         print(f"sync #{number}: resolved + archived — pruned from tracking")
         save_state(state)
