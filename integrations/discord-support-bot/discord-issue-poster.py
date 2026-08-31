@@ -33,15 +33,31 @@ import time
 sys.path.insert(0, "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot")
 from post_issue import (  # noqa: E402
     TAG_SEVERITY,
+    TAG_STATE_ESCALATED,
+    TAG_STATE_PENDING,
+    TAG_STATE_RESOLVED,
+    TAG_TYPE_FEATURE,
+    TAG_TYPE_INQUIRY,
+    TAG_TYPE_TROUBLESHOOTING,
     desired_tags,
     forum_search_issue,
     forum_tags,
     forum_threads,
     gh_issue,
     post_issue_post,
+    post_tags,
     thread_exists,
     update_post,
 )
+
+# The bot manages exactly these tags; ANY other tag on a post (human-added)
+# is preserved across syncs. Human triage on the state axis (flipping an
+# open post to resolved/escalated) is also respected while the issue stays
+# open — only close/reopen transitions are auto-enforced.
+MANAGED_TAGS = (set(TAG_SEVERITY.values())
+                | {TAG_TYPE_TROUBLESHOOTING, TAG_TYPE_FEATURE, TAG_TYPE_INQUIRY,
+                   TAG_STATE_PENDING, TAG_STATE_RESOLVED, TAG_STATE_ESCALATED})
+STATE_TAGS = {TAG_STATE_PENDING, TAG_STATE_RESOLVED, TAG_STATE_ESCALATED}
 
 REPO = "1bit-MONSTER/1bit-MONSTER"
 STATE_FILE = os.path.expanduser("~/.cache/discord-issue-poster-state.json")
@@ -139,31 +155,58 @@ def _drop_dead_post(state: dict, number: int | str) -> None:
     save_state(state)
 
 
-def sync_post(state: dict, number: int, rec: dict, tags: dict, issue: dict) -> None:
+def sync_post(state: dict, number: int, rec: dict, tags: dict,
+              id_to_name: dict[str, str], issue: dict) -> bool:
     """Reconcile one tracked post with the (already-fetched) live issue.
 
-    Every Discord PATCH is individually guarded: one failure (post deleted
-    → 404, or rate-limit 429 mid-batch) must not abort the whole job-2
-    loop and disable lifecycle sync for every tracked post.
+    Returns True when the post was reconciled without failure. Every
+    Discord PATCH is individually guarded: one failure (post deleted →
+    404, or rate-limit 429 mid-batch) must not abort the whole job-2 loop.
+
+    Tag policy — the bot manages ONLY the three derived dimension tags.
+    Other (human-added) tags are preserved, and while an issue stays open
+    a human's state tag (resolved/escalated) is respected rather than
+    overwritten; close/reopen transitions are auto-enforced.
     """
-    want = [t for t in desired_tags(issue) if t in tags]
-    ids = [tags[t] for t in want]
+    derived = desired_tags(issue)          # [type, state, severity]
+    ttype, _, sev = derived[0], derived[1], derived[2]
     closed = (issue.get("state") or "").lower() == "closed"
+    reopened = not closed and rec.get("state") == "CLOSED"
     changed = False
 
+    # Guess the state tag from our record (no network); when a PATCH is
+    # actually needed, re-read the live tags and honor human triage.
+    if closed:
+        state_tag = TAG_STATE_RESOLVED
+    elif reopened:
+        state_tag = TAG_STATE_PENDING
+    else:
+        cur_state = next((t for t in (rec.get("tags") or []) if t in STATE_TAGS), None)
+        state_tag = cur_state or TAG_STATE_PENDING
+    want = [ttype, state_tag, sev]
+
     if want != rec.get("tags"):
-        try:
-            update_post(rec["thread"], applied_tags=ids)
-        except Exception as exc:  # noqa: BLE001
-            if _is_gone(exc):
-                _drop_dead_post(state, number)
-            else:
-                print(f"sync #{number}: tag PATCH failed (will retry): "
-                      f"{type(exc).__name__}: {exc}")
-            return
-        rec["tags"] = want
-        changed = True
-        print(f"sync #{number}: tags -> {want}")
+        live = post_tags(rec["thread"], id_to_name)
+        if not closed and not reopened:
+            live_state = next((t for t in live if t in STATE_TAGS), None)
+            if live_state:
+                state_tag = live_state      # human triage persists
+                want[1] = state_tag
+        preserved = [t for t in live if t not in MANAGED_TAGS]
+        final = want + sorted(set(preserved))
+        if final != live:
+            try:
+                update_post(rec["thread"], applied_tags=[tags[t] for t in final])
+            except Exception as exc:  # noqa: BLE001
+                if _is_gone(exc):
+                    _drop_dead_post(state, number)
+                else:
+                    print(f"sync #{number}: tag PATCH failed (will retry): "
+                          f"{type(exc).__name__}: {exc}")
+                return False
+            rec["tags"] = final
+            changed = True
+            print(f"sync #{number}: tags -> {final}")
 
     if closed and not rec.get("archived"):
         try:
@@ -174,7 +217,7 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict, issue: dict) -> N
             else:
                 print(f"sync #{number}: archive failed (will retry): "
                       f"{type(exc).__name__}: {exc}")
-            return
+            return False
         rec["archived"] = True
         changed = True
         print(f"sync #{number}: archived (closed)")
@@ -187,7 +230,7 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict, issue: dict) -> N
             else:
                 print(f"sync #{number}: unarchive failed (will retry): "
                       f"{type(exc).__name__}: {exc}")
-            return
+            return False
         rec["archived"] = False
         changed = True
         print(f"sync #{number}: unarchived (reopened)")
@@ -196,6 +239,7 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict, issue: dict) -> N
         rec["state"] = "CLOSED" if closed else "OPEN"
         save_state(state)
         time.sleep(0.5)  # rate-limit politeness only after an actual PATCH
+    return True
 
 
 def main() -> int:
@@ -294,6 +338,8 @@ def main() -> int:
         cooled = {n for n in failed if time.time() - failed_at.get(n, 0) > RETRY_DELAY_SECONDS}
         candidates = cooled | ({i["number"] for i in issues} - in_cooldown)
     fresh_ids: set[str] = set()  # posts created THIS run — not in the pre-posting snapshot
+    post_failures = 0
+    sync_failures = 0
     # Retry failed numbers first (ascending), then any new ones — a
     # transient failure must never drop an issue: if #N fails but #N+1
     # succeeds, last_issue only advances on success, and #N stays in
@@ -340,6 +386,7 @@ def main() -> int:
                 failed.append(num)
                 failed_at[num] = time.time()
             print(f"post #{num} FAILED (will retry): {type(exc).__name__}: {exc}")
+            post_failures += 1
             save_state(state)  # persist NOW — a later success must not orphan it
             continue
         if num in failed:
@@ -412,10 +459,17 @@ def main() -> int:
             except Exception as exc:  # noqa: BLE001 — gone; leave post as-is
                 print(f"sync #{num}: skipped ({type(exc).__name__}: {exc})")
                 continue
-        sync_post(state, int(num), rec, tags, issue)
+        if not sync_post(state, int(num), rec, tags, id_to_name, issue):
+            sync_failures += 1
     save_state(state)
 
-    print(f"done: {len(issues)} new, {len(posts)} tracked")
+    # A failure summary line — deliberately NOT matching the watchdog's
+    # success markers (done:/posted/no new issues) so a run where every
+    # post/sync failed still trips the watchdog alert.
+    if post_failures or sync_failures:
+        print(f"FAILED: {post_failures} post failure(s), {sync_failures} sync failure(s)")
+    else:
+        print(f"done: {len(issues)} new, {len(posts)} tracked")
     return 0
 
 
