@@ -231,11 +231,13 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
             final = want + sorted(set(preserved))
             if final != live:
                 try:
-                    # Guard against tags removed/renamed on the channel: only
-                    # PATCH ids that still resolve (a missing derived tag is
-                    # simply not applied — the post must keep reconciling).
-                    patch_ids = [tags[t] for t in final if t in tags]
-                    update_post(rec["thread"], applied_tags=patch_ids)
+                    # Guard against tags removed/renamed on the channel:
+                    # only PATCH ids that still resolve. Record ONLY what
+                    # was actually applied — a missing derived tag stays
+                    # out of rec["tags"] so a later run re-attempts it
+                    # once the tag is restored to the channel.
+                    applied = [t for t in final if t in tags]
+                    update_post(rec["thread"], applied_tags=[tags[t] for t in applied])
                 except Exception as exc:  # noqa: BLE001
                     if _is_gone(exc):
                         _drop_dead_post(state, number)
@@ -243,13 +245,13 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict,
                         print(f"sync #{number}: tag PATCH failed (will retry): "
                               f"{type(exc).__name__}: {exc}")
                     return False
-                rec["tags"] = final
+                rec["tags"] = applied
                 if force_state is not None:
                     rec["state_owner"] = "bot"
                 else:
                     rec["state_owner"] = owner
                 changed = True
-                print(f"sync #{number}: tags -> {final}")
+                print(f"sync #{number}: tags -> {applied}")
                 save_state(state)  # persist NOW — a later archive failure must not lose this
 
     if closed and not rec.get("archived"):
