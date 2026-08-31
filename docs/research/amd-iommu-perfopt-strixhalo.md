@@ -171,3 +171,24 @@ was actually correct and is now independently confirmed:
 - cg-major AB element order: matches the worker's cg-outer consumption.
 - GU h2 contract: h2r per-pair readouts EXACT for col 0..5 × cg 0..5.
 - D-side readback: lay one-hot probes 8/8 EXACT (scr model).
+
+## Fused-cascade production wiring — integer chain EXACT, float fold OPEN (2026-08-31)
+
+The single-launch cascade's INTEGER C2 chain is silicon-exact (calibration CLOSED above).
+The production NpuCascadeKernel (engine/fusion/zero_copy/npu_cascade_kernel.h) now:
+- packs the deriv-inverse B_gu + cg-major elements + row-major B_d (verified),
+- launches once per layer (ninstr = ins[2]; C2 BO must be packed into the kernel's
+  OWN bBd — a caller-side B_d BO was silently empty -> C2=0),
+- reproduces the verified reference C2 bit-exactly (63627 10287 41656 ... on blk.0).
+
+**Open item — the float dequant fold:** ffn_out = C2*S is NOT a single constant
+(rel-std ~189 measured vs the two-launch path on [-1,1] input). Root cause: the
+on-core q22 silu saturates — the probe's own h2s stats show 99.4% of h2 pairs at
+±127 (the raw int dots C1 ~ +/-1e5 are ~4 orders above the q22 LUT's [-4,4]
+range). The int8 q22 path has gs_dummy (no per-column fold); the INT4 fused
+kernel (silu_quant_i8_fused_i4) has the gs-header fold that would fix this.
+Making C1 = real requires ascale'*gs = 1 -> A_q = A*gs -> sub-int8-resolution
+(dead end, verified numerically). => the cascade's float output is
+sign-approximate, NOT two-launch-equivalent, without a scale-fold mechanism
+the current int8 xclbin lacks. Next candidates: (a) an int4-silu cascade
+xclbin with the gs fold, (b) per-tile input scaling, (c) accept sign-approx.
