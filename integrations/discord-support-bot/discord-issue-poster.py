@@ -345,10 +345,11 @@ def main() -> int:
 
     # ── job 1: post new issues (plus retry previously failed numbers) ─────
     posts = state.setdefault("posts", {})
-    # Normalize `failed` to ints: job-1 failures append ints, while
-    # _drop_dead_post used to append posts keys (strings) — a mixed list
-    # makes sorted(candidates) raise TypeError and aborts the whole run.
-    failed = [int(n) for n in state.setdefault("failed", [])]
+    # Normalize `failed` to ints and DROP non-numeric garbage (earlier
+    # iterations appended posts-map keys; a stray non-numeric entry must
+    # not ValueError the whole run).
+    failed = [int(n) for n in state.setdefault("failed", [])
+              if str(n).lstrip("-").isdigit()]
     state["failed"] = failed
     issues: list[dict] = []
     if not listing_ok:
@@ -392,9 +393,11 @@ def main() -> int:
         # cooldown (a failed new issue would otherwise retry through the
         # new-issues side before the 20-min window elapses). (JSON keys are
         # strings — normalize.)
-        failed_at = {int(k): v for k, v in state.get("failed_at", {}).items()}
+        failed_at = {int(k): v for k, v in state.get("failed_at", {}).items()
+                     if str(k).lstrip("-").isdigit()}
         state["failed_at"] = failed_at
-        failed_since = {int(k): v for k, v in state.get("failed_since", {}).items()}
+        failed_since = {int(k): v for k, v in state.get("failed_since", {}).items()
+                        if str(k).lstrip("-").isdigit()}
         state["failed_since"] = failed_since
         in_cooldown = {n for n in failed_at
                        if time.time() - failed_at.get(n, 0) <= RETRY_DELAY_SECONDS}
