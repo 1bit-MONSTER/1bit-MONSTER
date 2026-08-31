@@ -61,19 +61,28 @@ STATE_TAGS = {TAG_STATE_PENDING, TAG_STATE_RESOLVED, TAG_STATE_ESCALATED}
 
 REPO = "1bit-MONSTER/1bit-MONSTER"
 STATE_FILE = os.path.expanduser("~/.cache/discord-issue-poster-state.json")
+def _env_int(name: str, default: int) -> int:
+    """int() with a fallback — an empty/non-numeric env value (e.g. a
+    .env line left as 'RETRY_DELAY_SECONDS=') must not crash the import."""
+    try:
+        return int(os.getenv(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 # Only auto-post issues created within this many days on a FRESH state
 # (missing/corrupt state file). Prevents a duplicate-post flood — with no
 # baseline, a fresh host would treat every open issue as new and mirror
 # hundreds of historical issues. Set 0 to mirror every open issue.
-BOOTSTRAP_SINCE_DAYS = int(os.getenv("BOOTSTRAP_SINCE_DAYS", "1"))
+BOOTSTRAP_SINCE_DAYS = _env_int("BOOTSTRAP_SINCE_DAYS", 1)
 # A failed number is only retried after this long: a client-side timeout
 # may have actually created the post server-side, and Discord's search
 # index (the retry dedupe) is updated asynchronously. 20 min >> index
 # delay, so the combined-miss duplicate window closes.
-RETRY_DELAY_SECONDS = int(os.getenv("RETRY_DELAY_SECONDS", str(20 * 60)))
+RETRY_DELAY_SECONDS = _env_int("RETRY_DELAY_SECONDS", 20 * 60)
 # A post parked in retry longer than this is not self-healing — surface it
 # as a FAILED run (watchdog alert) instead of hiding behind the cooldown.
-STUCK_SECONDS = int(os.getenv("STUCK_SECONDS", str(2 * 3600)))
+STUCK_SECONDS = _env_int("STUCK_SECONDS", 2 * 3600)
 
 
 def load_state() -> dict:
@@ -436,7 +445,13 @@ def main() -> int:
                 if live is not None:
                     seed = live
             posts[str(num)] = {"thread": post["id"], "state": "OPEN",
-                               "tags": seed, "state_owner": "bot",
+                               "tags": seed,
+                               # We don't know who applied the existing
+                               # tags (bot or human) — treat them as human
+                               # triage so a human 'resolved'/'escalated'
+                               # on an open issue is preserved, matching
+                               # the adoption path.
+                               "state_owner": "human",
                                "archived": bool((post.get("thread_metadata") or {}).get("archived"))}
             print(f"#{num} already posted ({post['id']}) — recorded, not re-posted")
             if num > after:
