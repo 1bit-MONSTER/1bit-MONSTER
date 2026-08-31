@@ -186,16 +186,6 @@ def main() -> int:
             to_post.append(f"🟢 **{check}** — recovered")
         alerts[check] = 0  # reset (keep key)
 
-    # Persist the alert timestamps BEFORE sending: a failed send must only
-    # retry the send, not re-alert (the 12h cadence holds), and a partial
-    # multi-chunk failure must not re-deliver the already-posted chunks.
-    tmp = STATE_FILE + ".tmp"
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)  # ~/.cache may not exist
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump({"alerts": alerts, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")},
-                  fh, indent=2)
-    os.replace(tmp, STATE_FILE)  # atomic — a crash must not reset alert state
-
     if to_post:
         # Multiple simultaneous failures (services + crons + context7 +
         # env keys) can exceed Discord's 2000-char message limit — a 400
@@ -216,10 +206,22 @@ def main() -> int:
                 _post(chunk)
             print("\n".join(chunks))
         except Exception as exc:  # noqa: BLE001
+            # Send failed — the alert never reached Discord. Do NOT persist
+            # the timestamps below, so the next 10-min run retries the
+            # alert (only after a successful send does the 12h re-alert
+            # cadence start).
             print(f"WARNING: could not post alert: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
             return 1
 
+    # Persist AFTER a successful send: a delivered alert starts the 12h
+    # re-alert cadence; a failed send retries on the next run instead.
+    tmp = STATE_FILE + ".tmp"
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)  # ~/.cache may not exist
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"alerts": alerts, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ")},
+                  fh, indent=2)
+    os.replace(tmp, STATE_FILE)  # atomic — a crash must not reset alert state
     print(f"watchdog ok ({len(failing)} failing)" if not failing
           else f"watchdog: {len(failing)} failing — posted")
     return 0 if not failing else 1
