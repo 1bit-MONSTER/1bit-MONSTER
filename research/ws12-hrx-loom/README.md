@@ -799,3 +799,23 @@ Harness note: the post-reboot recreation of `gtok_hrx` had a KV position bug
 (`batch.pos = step+i` breaks multi-token prompts); fixed to a running
 position counter. Harnesses now live in `harnesses/` (reboot-proof; /tmp is
 tmpfs).
+
+### Round 15 addendum — what does NOT move the needle (2026-08-31)
+
+Benchmarked the remaining decode budget with targeted experiments:
+
+- **Dequant cache (per-expert f32)**: counterproductive — the prefill (8
+  tokens) allocates a fresh ~33 MB buffer per (op, expert) → tens of GB of
+  allocations, prefill 4.5× slower. A 2-D-attn-only variant gave zero gain
+  (8.60 vs 8.66 t/s): the attn dequants were never the bottleneck.
+- **Ids host-sync removal** (80 syncs/token): no change (8.41 vs 8.66 t/s) —
+  the single stream already serializes; syncs are cheap.
+- **Skipping kernels entirely** made things *slower* (pathological — the
+  benchmarks were measuring a broken pipeline, not a useful bound).
+
+Real decomposition: the **F32 port is itself 95.6 ms/token** — the shared
+CCA attention path on HRX is the wall. Q4NX adds ~22 ms (80 expert slices ×
+~0.28 ms = 5.2 MB copy + 33 MB dequant write + 33 MB mm read each, all
+bandwidth-bound). Q4NX now sits 24% behind the F32 port (8.68 vs 10.46 t/s),
+and the only remaining lever is fusing the dequant into the mm kernel
+(eliminates the f32 round trip) — a follow-up kernel project.
