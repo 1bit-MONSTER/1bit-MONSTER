@@ -1,4 +1,6 @@
 <!doctype html>
+<!-- seo-sync: generated from 1bit-post-lemonade-v1180.html on 2026-08-31 — release-specific claims below are UNVERIFIED for v11.8.1; update before merge -->
+
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -7,19 +9,19 @@
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <title>HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER</title>
-  <meta name="description" content="AMD's experimental IREE runtime is now an in-process decode lane in our engine: dlopen'd bundle, two llama.cpps, ~2x HIP warm decode on a 30B MoE GGUF." />
+  <title>Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER</title>
+  <meta name="description" content="The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 554 architecture tokens, 1,798 HF arch strings, 317,310/317,310 checkpoints mapped." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="HRX: we put AMD's experimental IREE runtime inside our engine" />
-  <meta property="og:description" content="AMD's experimental IREE runtime is now an in-process decode lane in our engine: dlopen'd bundle, two llama.cpps, ~2x HIP warm decode on a 30B MoE GGUF." />
-  <meta property="og:url" content="https://1bit.monster/1bit-post-hrx-engine.html" />
+  <meta property="og:title" content="Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER" />
+  <meta property="og:description" content="Lemonade v11.8.1 re-vendored: the 15th backend (ds4/DwarfStar, DeepSeek V4 Flash for Strix Halo), download resume, rate limits, and our merged PR." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-lemonade-v1181.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="HRX: we put AMD's experimental IREE runtime inside our engine" />
-  <meta name="twitter:description" content="AMD's experimental IREE runtime is now an in-process decode lane in our engine: dlopen'd bundle, two llama.cpps, ~2x HIP warm decode on a 30B MoE GGUF." />
+  <meta name="twitter:title" content="Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER" />
+  <meta name="twitter:description" content="Lemonade v11.8.1 re-vendored: the 15th backend (ds4/DwarfStar, DeepSeek V4 Flash for Strix Halo), download resume, rate limits, and our merged PR." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/1bit-post-hrx-engine.html" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-lemonade-v1181.html" />
 <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
@@ -118,7 +120,7 @@
     }
   </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER", "description": "AMD's experimental IREE runtime is now an in-process decode lane in our engine: dlopen'd bundle, two llama.cpps, ~2x HIP warm decode on a 30B MoE GGUF.", "url": "https://1bit.monster/1bit-post-hrx-engine.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-hrx-engine.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-29", "dateModified": "2026-08-29", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER", "description": "Lemonade v11.8.1 re-vendored: the 15th backend (ds4/DwarfStar, DeepSeek V4 Flash for Strix Halo), download resume, rate limits, and our merged PR.", "url": "https://1bit.monster/1bit-post-lemonade-v1181.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-lemonade-v1181.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-27", "dateModified": "2026-08-27", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 </head>
 <body>
@@ -144,88 +146,37 @@
   </header>
 
   <main id="content">
-    <article class="art container" data-od-id="1bit-post-hrx-engine">
+    <article class="art container" data-od-id="1bit-post-lemonade-v1181">
       <a class="back" href="1bit-blog.html">&larr; all posts</a>
       <div class="art-meta">
-        <span class="tag">hrx</span><span class="tag">engine</span>
-        <span>2026-08-29</span>
+        <span class="tag">lemonade</span>
+        <span>2026-08-31</span>
       </div>
-      <h1>HRX: we put AMD's experimental IREE runtime inside our engine</h1>
-      <p class="lead">AMD calls HRX "a lighter, more focused subset of ROCm" — an IREE-based HIP replacement shipped as a self-contained llama.cpp bundle. This week it moved <b>inside our engine</b>: dlopen'd in-process, token-level decode on the HRX device, two llama.cpps in one process without them colliding, and warm decode at ~2× HIP on the models its fused kernels can run. Plus the ceiling we measured, and the honest reframe that goes with it.</p>
+      <h1>Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo</h1>
+      <p class="lead">AMD shipped the 15-backend Lemonade SDK — and the new one is literally built for our hardware. DwarfStar (ds4) runs DeepSeek V4 Flash on Strix Halo's gfx1151, and the whole release is now compiled into the same binary as our engine.</p>
       <div class="prose">
-        <h2>What HRX actually is</h2>
-        <p>HRX — <b>Hip Runtime Extended</b> — is AMD's experiment at a lighter, more focused
-        subset of ROCm for client silicon (their words, in the upstream RFC). It's built on IREE
-        (LLVM MLIR) with a Loom kernel substrate, and AMD ships it as a self-contained llama.cpp
-        bundle: <span class="mono">libllama.so</span> + <span class="mono">libggml-hrx.so</span> +
-        <span class="mono">libhrx.so</span> + <span class="mono">libloomc.so</span>, no ROCm install
-        needed. We've run it as a subprocess backend for a week. This week it moved <b>into our
-        process</b>.</p>
-
-        <h2>Two llama.cpps in one process</h2>
-        <p>The bundle ships a complete <span class="mono">llama.h</span> C API — 82 KB of it — and
-        our engine already links its own llama.cpp for the Vulkan backend. Two copies of an
-        unversioned C API in one binary is normally a recipe for silent memory corruption, so we
-        did the boring careful thing: <span class="mono">dlopen</span> the bundle's
-        <span class="mono">libllama.so</span> with <span class="mono">RTLD_DEEPBIND</span>, resolve
-        every call through a dlsym'd function table, and static-assert the ABI structs
-        (72/160/56 bytes) against the bundle's own headers. The two llama.cpps never see each
-        other's symbols.</p>
-        <p>The result is a <b>token-level</b> HRX backend: <span class="mono">generate()</span>
-        decodes one token at a time on the HRX device (gfx1151), all layers offloaded, KV cache in
-        llama.cpp structures. No HTTP round trip, no subprocess — the binary we used to spawn is
-        now just a library we call.</p>
-
-        <h2>It works — and it's fast</h2>
-        <p>End to end through <span class="mono">1bit unified</span> on
-        Qwen3-30B-A3B Q4_K_M (an 18.6 GB MoE GGUF): "What is the capital of France?" →
-        <b>"Paris"</b>, <span class="mono">backend: hrx_gpu</span>. Warm decode <b>~80–87 tok/s</b>
-        in-process, vs <b>38 tok/s</b> for the same bundle spawned fresh as a subprocess, and
-        <b>~70 tok/s</b> for our HIP backend — the in-process path removes the server round trip
-        and the fresh-start JIT cost, and HRX's fused kernels genuinely run warm decode at ~2× HIP
-        for graphs they can fuse.</p>
-
-        <h2>The ceiling, measured honestly</h2>
-        <p>Then we found the wall, and measured it across six model families. HRX's fused node set
-        does not include <span class="mono">GET_ROWS</span> — the token-embedding row-gather that
-        starts every decode — for most quantization types. Q4_K embeddings fuse. q5_0, q8_0,
-        Q4_K_S and IQ2XXS fail closed with <span class="mono">llama_decode: ret = -3</span>.</p>
-        <p>We tried everything local: <span class="mono">n_gpu_layers</span> tuning, pinning the
-        embedding into a CPU buffer via buffer-type overrides. Both are dead ends in this fork —
-        the scheduler keeps one graph split on HRX and no local knob forces the row-gather onto
-        the CPU backend. The subprocess has the identical limitation, so being in-process costs us
-        nothing. <b>This is an upstream problem</b> — llama.cpp PR #27218, still a draft — not
-        ours to fix locally.</p>
-        <div class="callout"><p>The honest reframe: HRX is an <b>acceleration lane</b>, not the
-        engine. Our multi-lane router (HIP, Vulkan, FLM NPU, dedicated engines) with route-order
-        failover means a model HRX can't fuse fails over to ggml_vulkan and completes anyway —
-        verified end to end. The engine is complete with or without HRX.</p></div>
-
-        <h2>Zero-copy is a separate, proven story</h2>
-        <p>To keep the two halves of the vision straight: zero-DMA-copy on the NPU side is
-        <b>not</b> part of the HRX lane. It's the SharedBO substrate, re-proven on this box the
-        same week: a Vulkan compute shader reads the NPU's KV cache straight out of NPU-owned
-        pages via dma-buf import and matches the CPU reference (rel err 2e-4). One page set, three
-        views, no memcpy.</p>
-
-        <h2>Lemonade, too</h2>
-        <p>All 43 chat-capable lemonade models now carry <span class="mono">-HRX</span> registry
-        variants. The ones with K-quant embeddings serve directly on HRX; the rest point at the
-        Vulkan variant — and because lemond has no failover, we documented exactly which is which,
-        so nobody gets a silent 500 on a model HRX can't fuse.</p>
-
+        <h2>The release that takes the SDK to 15 backends</h2>
+        <p>On August 26 AMD shipped Lemonade v11.8.1 — the release that pushes the SDK to <b>15 backends</b> — and the 1bit.MONSTER engine re-vendored its embedded server core the same day. Because we embed Lemonade's server core as a library (compiled into <span class="mono">build/1bit</span>, no subprocess, no wrappers), every feature in the release arrived in our binary the moment the re-vendor landed: all 15 backends, the router, the full API surface, and every breaking change.</p>
+        <p>It was also a notably personal release for this project: the changelog credits <span class="mono">@bong-water-water-bong</span> — our PR #2462, cancelling model downloads on Ctrl+C via a libcurl progress callback, shipped upstream and now runs inside our own embed.</p>
+        <h2>ds4: DwarfStar, DeepSeek V4 Flash, Strix Halo only</h2>
+        <p>The headline backend is <b>ds4 (DwarfStar4)</b> — antirez's self-contained DeepSeek V4 inference engine with an OpenAI-compatible <span class="mono">ds4-server</span>. The Lemonade catalog entry is <span class="mono">DeepSeek-V4-Flash-IQ2XXS-DS4</span> (chat, reasoning, tool-calling), and the support row is refreshingly specific: <b>Linux, ROCm, gfx1151 only — "Prebuilt ds4 for AMD Strix Halo"</b>.</p>
+        <p>That is exactly the silicon our inference box runs. The build is pinned (<span class="mono">b0001</span>) from <span class="mono">lemonade-sdk/ds4-rocm</span>, which compiles a pinned upstream commit and bundles the ROCm runtime alongside the binary — so ds4 needs no system ROCm install, and it stays out of the way on machines without a Strix Halo GPU. Experimental for now, chat-mode only, but it is compiled into our server core and ready to surface on strixhalo.</p>
+        <h2>What else landed</h2>
+        <p>New catalog models: RPG-HaloTales-V2, Flux-2-Klein-4B/9B, and new OpenMOSS voice-design and sound-effect models — all verified live in our 124-model registry. Cloud providers gained custom auth header names/prefixes and byte-for-byte Anthropic Messages passthrough via <span class="mono">wire_format</span>. Downloads can be cancelled with Ctrl+C and resumed, capped by a new <span class="mono">download_rate_limit</span> config key, with TCP keepalive and streaming heartbeats keeping long connections alive. A <span class="mono">lemonade update-models</span> command plus global and per-model auto-update settings keep installed models current.</p>
+        <p>The breaking changes are all server-side and all in our binary: <span class="mono">--port</span>/<span class="mono">--host</span> are now ephemeral overrides, custom <span class="mono">*_args</span> precedence was reworked, llama.cpp defaults to <span class="mono">--parallel 1</span>, telemetry attributes moved to the standard <span class="mono">session.id</span>/<span class="mono">user.id</span> keys, whisper transcription defaults to auto-detected language, and the undocumented <span class="mono">/v1/params</span> routes are gone.</p>
+        <h2>The re-vendor, repeatable</h2>
+        <p>This was the second run of the loop we formalized with v11.7.0: pull the pinned commit, re-apply the embeddability patch, fix any engine-facing API drift, build, smoke-test. v11.8.1 changed the <span class="mono">Server</span> constructor (new <span class="mono">config_dir</span> parameter) — both of our embed call sites were updated in the same commit. The local patch (CMAKE_CURRENT_SOURCE_DIR, system json/httplib reuse, PUBLIC include dirs, guarded test police) applied clean with no new guards needed.</p>
+        <p>One behavior change worth knowing: <span class="mono">/v1/models</span> now hides backends with no runnable models on the host — the full registry is behind <span class="mono">?show_all=true</span>. On a non-Strix-Halo machine ds4 quietly filters itself out; on strixhalo it appears automatically.</p>
+        <div class="callout"><p>15 backends in one ELF, the 15th built for the exact GPU we own. The SDK sync loop keeps it that way after every upstream release.</p></div>
         <h2>Run it</h2>
-        <p><span class="mono">HRX_INPROCESS=1 build/1bit unified -m "Qwen3 30B A3B Instruct"</span>
-        — the bundle loads in-process, weights go to HRX0, warm decode runs at ~2× HIP. For models
-        outside the fused set, the router does exactly what it was built to do: fail over and
-        finish the answer.</p>
+        <p><span class="mono">build/1bit unified --lemonade --port 8088</span> — the same binary serves all 15 backends through the OpenAI-compatible API. On a Strix Halo box, <span class="mono">DeepSeek-V4-Flash-IQ2XXS-DS4</span> is one <span class="mono">/v1/chat/completions</span> call away, ROCm runtime bundled, no system install.</p>
       </div>
     
     <section class="related">
       <h2>Related</h2>
       <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
-      <a href="https://1bit.monster/1bit-post-npu-reversal.html">I reverse-engineered AMD's NPU stack in 4 days</a>
-      <a href="https://1bit.monster/1bit-post-lemonade-v1180.html">Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo</a>
+      <a href="https://1bit.monster/1bit-post-lemonade-v1170.html">Lemonade v11.7.0: how we stay current with the SDK</a>
+      <a href="https://1bit.monster/1bit-post-hrx-engine.html">HRX: we put AMD's experimental IREE runtime inside our engine</a>
     </section>
   </article>
   </main>
@@ -234,7 +185,7 @@
     <div class="container row-between" style="max-width: 1000px;">
       <span>© 2026 1bit.MONSTER · MIT License</span>
       <a class="meta" href="https://discord.gg/Qy38d4Xu2h" target="_blank" rel="noopener">Join Discord &#8599;</a>
-      <a class="meta" href="https://fluxer.gg/7wqCREKi" target="_blank" rel="noopener">Community support &#8599;</a>
+
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
     </div>
     <div class="container">
@@ -243,7 +194,9 @@
     </div>
   </footer>
 <script src="analytics.js"></script>
+<script src="https://context7.com/widget.js" data-library="/1bit-monster/1bit-monster"></script>
 
   <script src="analytics.js"></script>
+<script src="https://context7.com/widget.js" data-library="/1bit-monster/1bit-monster"></script>
 </body>
 </html>

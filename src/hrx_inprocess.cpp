@@ -167,10 +167,34 @@ struct Inprocess::Impl {
 
 namespace {
 
+// Resolve the bundle .so path ONCE per process (issue #1959). This ggml
+// build aborts on a second dlopen after dlclose (GGML_ASSERT in its static
+// initializer), so the handle must stay mapped for the process lifetime and
+// every subsequent init MUST dlopen the SAME path (a same-path dlopen just
+// bumps the refcount — safe). Reading HRX_ROOT fresh on every call is a
+// footgun: if an operator changes HRX_ROOT between backend instances, the
+// new dlopen resolves a DIFFERENT path → the DSO is freshly mapped → ggml's
+// static initializer re-runs → process abort. So we snapshot the path on
+// first use and reject a different HRX_ROOT afterwards with a clear error.
 std::string bundle_lib_path() {
+    static const std::string cached = []() -> std::string {
+        const char* root = std::getenv("HRX_ROOT");
+        if (root && root[0]) return std::string(root) + "/lib/libllama.so";
+        return "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b59/lib/libllama.so";
+    }();
     const char* root = std::getenv("HRX_ROOT");
-    if (root && root[0]) return std::string(root) + "/lib/libllama.so";
-    return "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b59/lib/libllama.so";
+    if (root && root[0]) {
+        std::string cur = std::string(root) + "/lib/libllama.so";
+        if (cur != cached) {
+            fprintf(stderr,
+                    "[hrx] HRX_ROOT changed between instances ('%s' now vs '%s' "
+                    "at first load) — the bundle DSO is pinned for the process "
+                    "lifetime (this ggml build cannot re-dlopen a different path; "
+                    "see issue #1959). Ignoring the new HRX_ROOT.\n",
+                    cur.c_str(), cached.c_str());
+        }
+    }
+    return cached;
 }
 
 std::string env_or(const char* name, const char* dflt) {

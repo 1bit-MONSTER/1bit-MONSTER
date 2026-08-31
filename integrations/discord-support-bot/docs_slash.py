@@ -17,8 +17,11 @@ Run:
 """
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
+import subprocess
 import time
 import urllib.request
 
@@ -95,6 +98,35 @@ def _split(text: str, limit: int = 1993) -> list[str]:
     return out
 
 
+def _compose_answer(question: str) -> tuple[str, str]:
+    """Synchronous Context7 + DeepSeek answer (run OFF the event loop).
+
+    Returns (answer, context_block); an empty block means no relevant docs.
+    Blocking here would stall the gateway (heartbeats, other commands).
+    """
+    data = context7.get_context(LIBRARY_ID, question, os.getenv("CONTEXT7_API_KEY"))
+    block = context7.format_context(data)
+    if not block.strip():
+        return "", ""
+    answer = llm.generate(
+        question, block, os.getenv("DEEPSEEK_API_KEY"), max_tokens=MAX_TOKENS
+    )
+    links = context7.source_links(data)
+    if links:
+        answer = answer.rstrip() + "\n\n**Sources:** " + " · ".join(links[:4])
+    return answer, block
+
+
+def _fetch_issue(number: int) -> dict:
+    """Synchronous `gh issue view` (run OFF the event loop)."""
+    out = subprocess.run(
+        ["gh", "issue", "view", str(number),
+         "--repo", "1bit-MONSTER/1bit-MONSTER",
+         "--json", "number,title,url,state,labels,createdAt"],
+        capture_output=True, text=True, timeout=30, check=True)
+    return json.loads(out.stdout)
+
+
 class DocsSlash(discord.Client):
     def __init__(self, token: str, guild_id: int | None) -> None:
         intents = discord.Intents.default()  # message_content not needed for slash
@@ -104,20 +136,26 @@ class DocsSlash(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self) -> None:
-        # If we know the guild, scope the command there so it registers instantly
-        # (global registration can take up to an hour).
+        # Issue #1961: register /docs GLOBALLY so it works on every server the
+        # bot joins (a guild-scoped command silently 404s with "Unknown
+        # interaction" on a second server). Global propagation can take up to
+        # an hour; when DISCORD_GUILD_ID is EXPLICITLY configured we ALSO sync
+        # to that guild for instant availability on the primary server.
         @self.tree.command(name=COMMAND_NAME, description=COMMAND_DESC)
         async def docs(interaction: discord.Interaction, question: str) -> None:  # noqa: ANN202
             await self._answer(interaction, question)
 
+        @self.tree.command(name="issue", description="Look up a GitHub issue (1bit-MONSTER/1bit-MONSTER)")
+        async def issue(interaction: discord.Interaction, number: int) -> None:  # noqa: ANN202
+            await self._lookup_issue(interaction, number)
+
+        await self.tree.sync()
+        log.info("synced /%s globally", COMMAND_NAME)
         if self.guild_id:
             guild = self.get_guild(self.guild_id) or await self.fetch_guild(self.guild_id)
             self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
-            log.info("synced /%s to guild %s", COMMAND_NAME, guild.id)
-        else:
-            await self.tree.sync()
-            log.info("synced /%s globally", COMMAND_NAME)
+            log.info("synced /%s to guild %s (instant, primary server)", COMMAND_NAME, guild.id)
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (id=%s)", self.user, self.user.id)
@@ -132,19 +170,14 @@ class DocsSlash(discord.Client):
         # Defer so the user sees "thinking" while Context7 + DeepSeek run.
         await interaction.response.defer(thinking=True)
         try:
-            data = context7.get_context(LIBRARY_ID, question, os.getenv("CONTEXT7_API_KEY"))
-            block = context7.format_context(data)
+            # Context7 + DeepSeek are blocking HTTP calls — run them off the
+            # gateway loop so heartbeats and other commands stay responsive.
+            answer, block = await asyncio.to_thread(_compose_answer, question)
             if not block.strip():
                 await interaction.followup.send(
-                    "I couldn't find relevant docs for that. Try rephrasing, or check the [docs hub](https://docs.1bit.monster)."
+                    "I couldn't find relevant docs for that. Try rephrasing, or check the docs hub: <https://docs.1bit.monster>."
                 )
                 return
-            answer = llm.generate(
-                question, block, os.getenv("DEEPSEEK_API_KEY"), max_tokens=MAX_TOKENS
-            )
-            links = context7.source_links(data)
-            if links:
-                answer = answer.rstrip() + "\n\n**Sources:** " + " · ".join(links[:4])
         except Exception as exc:  # noqa: BLE001
             log.exception("answer failed")
             await interaction.followup.send(
@@ -153,6 +186,31 @@ class DocsSlash(discord.Client):
             return
         for chunk in _split(answer):
             await interaction.followup.send(chunk)
+
+    async def _lookup_issue(self, interaction: discord.Interaction, number: int) -> None:
+        """/issue <n> — compact GitHub issue card via the gh CLI."""
+        await interaction.response.defer(thinking=True)
+        try:
+            # gh can hang — run it off the event loop.
+            d = await asyncio.to_thread(_fetch_issue, number)
+        except subprocess.CalledProcessError as exc:
+            await interaction.followup.send(
+                f"Could not find issue #{number}: {(exc.stderr or '').strip()[:200]}")
+            return
+        except Exception as exc:  # noqa: BLE001
+            log.exception("issue lookup failed")
+            await interaction.followup.send(f"Sorry, I hit an error: `{type(exc).__name__}`.")
+            return
+        labels = ", ".join(l["name"] for l in d.get("labels", [])) or "none"
+        closed = (d.get("state") or "").lower() == "closed"
+        # Issue titles are untrusted public-repo input — never allow a
+        # "@everyone"/role mention in them to ping the server.
+        await interaction.followup.send(
+            f"{'✅' if closed else '🟡'} **#{d['number']}** {d['title']}\n"
+            f"State: {d.get('state', '?')} · Labels: {labels}\n"
+            f"Created: {(d.get('createdAt') or '?')[:10]}\n{d['url']}",
+            allowed_mentions=discord.AllowedMentions.none(),
+        )
 
 
 def _load_dotenv(path: str = ".env") -> None:

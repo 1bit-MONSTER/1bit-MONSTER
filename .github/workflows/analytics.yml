@@ -60,6 +60,12 @@ jobs:
             exit 0
           fi
           echo "Site token: ${SITE_TOKEN:0:8}… (read from site/analytics.js)"
+          # The dashboard embed token (SITE_TOKEN, read from analytics.js) maps to
+          # this dataset siteTag: Cloudflare attributes beacon events to the tag
+          # below, so querying by the embed token returns 0. Resolved 2026-08-31
+          # via the drift health check after re-creating the Web Analytics site.
+          SITE_TAG="${SITE_TAG:-4a2e28e96a7446c6a9933a0f816efc24}"
+          echo "Query tag: ${SITE_TAG:0:8}… (dataset siteTag for the embed token above)"
 
           TODAY=$(date -u +%Y-%m-%d)
           FROM=$(date -u -d "7 days ago" +%Y-%m-%d)
@@ -67,35 +73,35 @@ jobs:
 
           echo ""
           echo "--- Totals ---"
-          TOTAL_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 1, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}) { sum { visits } } } } }")
+          TOTAL_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 1, filter: {siteTag: \"$SITE_TAG\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}) { sum { visits } } } } }")
           TOTAL_VISITS=$(echo "$TOTAL_JSON" | jq -r '.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[0].sum.visits // 0')
           echo "Total visits: $TOTAL_VISITS (window $FROM .. $TODAY)"
           echo "$TOTAL_JSON" | jq -r 'if .errors then "query errors: \(.errors[0].message)" else empty end'
 
           echo ""
           echo "--- Top pages ---"
-          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath } sum { visits } } } } }" | \
+          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TAG\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath } sum { visits } } } } }" | \
             jq -r 'if .data then ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] | { path: .dimensions.requestPath, views: .sum.visits }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.path)") else "RUM query failed: \(.errors[0].message // "unknown")" end'
 
           echo ""
           echo "--- Top referrers (how people got here) ---"
-          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { refererHost } sum { visits } } } } }" | \
+          gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {siteTag: \"$SITE_TAG\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { refererHost } sum { visits } } } } }" | \
             jq -r 'if .data then ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] | { referer: .dimensions.refererHost, views: .sum.visits }] | sort_by(-.views) | .[:10][] | "\(.views)\t\(.referer)") else "RUM query failed: \(.errors[0].message // "unknown")" end'
 
           echo ""
           echo "--- RUM health check (token drift detection) ---"
           # If the beacon token reports no data but the account has RUM data, the
-          # site token in analytics.js has drifted from the real RUM site. Discover
-          # the actual siteTag(s) so the report keeps working (2026-08-26: the
-          # beacon was serving a stale token 33fb8448… while the real RUM site
-          # 87349337… collected the data).
+          # site tag in analytics.yml has drifted from the real RUM site. Discover
+          # the actual siteTag(s) so the report keeps working (2026-08-31: embed
+          # token 33fb8448… maps to dataset tag 4a2e28e9…; the old site 87349337…
+          # still holds legacy data).
           if [ "${TOTAL_VISITS:-0}" -eq 0 ] 2>/dev/null; then
             echo "⚠ Site token ${SITE_TOKEN:0:8}… has NO data in this window — checking for token drift:"
             gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { siteTag requestPath } sum { visits } } } } }" | \
               jq -r 'if .data then
                        ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] |
                          { tag: .dimensions.siteTag, path: .dimensions.requestPath, views: .sum.visits }]
-                        | .[] | "\(.tag[0:8])…\t\(.views)\t\(.path)")
+                        | .[] | "\(.tag)\t\(.views)\t\(.path)")
                      else "health query failed: \(.errors[0].message // "unknown")" end'
           else
             echo "Site token has data — no drift detected."
@@ -107,7 +113,7 @@ jobs:
           # because Cloudflare Web Analytics does not log query strings (documented
           # limitation). 404.html fires the RUM beacon on the /s/ URL, so requestPath
           # records the full attribution before redirecting to the target.
-          ATTRIBUTION_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 50, filter: {siteTag: \"$SITE_TOKEN\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath } sum { visits } } } } }")
+          ATTRIBUTION_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 50, filter: {siteTag: \"$SITE_TAG\", date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { requestPath } sum { visits } } } } }")
           ATTRIBUTED=$(echo "$ATTRIBUTION_JSON" | jq -r '
             if .data then
               ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[]
@@ -151,6 +157,15 @@ jobs:
                          { date: .dimensions.date, requests: .sum.requests, pageViews: .sum.pageViews }]
                         | .[] | "\(.date)\t\(.requests) req\t\(.pageViews) pv")
                      else "zone analytics query failed: \(.errors[0].message // "unknown")" end'
+
+            echo ""
+            echo "=== Visitors by country (top 10, 7d) ==="
+            gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequestsAdaptiveGroups(limit: 10, filter: {date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [count_DESC]) { dimensions { clientCountryName } count } } } }" | \
+              jq -r 'if .data then
+                       ([.data.viewer.zones[0].httpRequestsAdaptiveGroups[] |
+                         { country: (.dimensions.clientCountryName // "Unknown"), requests: .count }]
+                        | .[] | "\(.country)\t\(.requests) req")
+                     else "country query failed: \(.errors[0].message // "unknown")" end'
           else
             echo "Zone 1bit.monster not visible to the analytics token (need Zone: Read on the WA token)."
           fi

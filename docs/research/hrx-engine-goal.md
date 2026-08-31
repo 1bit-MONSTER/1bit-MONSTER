@@ -52,11 +52,16 @@ Reframed position (what this repo now commits to):
   fusion path (Vulkan import of NPU-owned dma-bufs). Zero-copy is preserved
   where it is silicon-verified; HRX handles the fast fused-decode lane.
 - NOT chosen (fork B): importing SharedBO dma-bufs into HRX's IREE HAL for a
-  single fully-zero-copy HRX engine. Rationale: unknown IREE external-buffer
-  feasibility (the HIP dma-buf import route was already proven impossible on
-  TheRock 7.16; Vulkan is the only working import API), and the HRX
-  `GET_ROWS` fail-closed limit constrains HRX regardless of memory model.
-  Revisit only after an IREE HAL dma-buf probe.
+  single fully-zero-copy HRX engine. **CLOSED (2026-08-29, issue #1953)** — the
+  IREE HAL external-buffer dma-buf entry is an **unimplemented TODO** (comment
+  only) in `runtime/src/iree/hal/allocator.h` of the vendored `hrx-system`, and
+  the amdgpu HAL driver's `import_buffer` handles device-address pointers only
+  (no fd/dma-buf import). The HIP dma-buf import route was already proven
+  impossible on TheRock 7.16 (no `hipExternalMemoryHandleTypeDmaBuf`); **Vulkan
+  (`VK_KHR_external_memory_fd` + `VK_EXT_external_memory_dma_buf`) remains the
+  only GPU import route**, so zero-DMA stays on the Vulkan/SharedBO substrate
+  (fork A). Reopen only if llama.cpp PR #27218 / `ggml-hrx` upstreaming changes
+  the IREE picture.
 
 ## 1. What HRX actually is
 
@@ -78,8 +83,16 @@ Two consumer paths exist today (the "two HRX paths" problem):
 | | HRX | HIP |
 |---|---|---|
 | Cold short prefill | 143.5 tok/s | **171.0 tok/s** |
-| Warm decode | **~175 tok/s** | ~70 tok/s |
+| Warm decode (in-process) | **~80–87 tok/s** | ~70 tok/s |
 | Large prefill (1815/7592 tok) | ❌ **fail-closed `GET_ROWS`** (row-gather unsupported node) | ✅ 1313 / 1227 tok/s |
+
+> **Benchmark caveat (issue #1952, 2026-08-29):** the earlier "~175 tok/s"
+> subprocess figure was a **warm persistent-server best case** (it2/it3), not
+> reproducible on a fresh server (measured 38.2 tok/s fresh). The in-process
+> HRX path is the reproducible spec: **~80–87 tok/s warm decode** (steady
+> ~12 ms/tok, first token ~137 ms JIT), which beats the fresh subprocess ~2×
+> and HIP. Re-benchmark recipe: `g++ -std=c++17 -O2 -Isrc -Iinclude -o /tmp/bench
+> /tmp/hrx_inproc_bench.cpp src/hrx_inprocess.cpp -ldl; /tmp/bench <model.gguf> 100`.
 
 Consequences for the plan: HRX is the **decode** engine, HIP/others must cover
 **large prefill**; any graph needing `GET_ROWS` must route away from HRX

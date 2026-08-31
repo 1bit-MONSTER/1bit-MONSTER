@@ -214,6 +214,16 @@ endfunction()
 
 _find_therock_sdk_base(THEROCK_SDK_BASE)
 
+# A system hip-runtime-amd package (e.g. /usr/include/hip) shadows TheRock's
+# HIP headers: amdclang++ auto-adds the SDK include dir with -idirafter, which
+# loses to /usr/include, so <hip/...> and <rocwmma/...> resolve to headers
+# whose __ocml_* builtins this clang does not declare. Put TheRock's include
+# dir ahead of system dirs so device math builtins match amdclang++.
+if(THEROCK_SDK_BASE AND EXISTS "${THEROCK_SDK_BASE}/include/hip/hip_runtime.h")
+    set(CMAKE_HIP_FLAGS "${CMAKE_HIP_FLAGS} -isystem ${THEROCK_SDK_BASE}/include")
+    message(STATUS "rocm-cpp: TheRock HIP headers take precedence (${THEROCK_SDK_BASE}/include)")
+endif()
+
 set(ROCM_ROOT "${_RC_ROCM_DEFAULT}" CACHE PATH "ROCm install root")
 list(PREPEND CMAKE_PREFIX_PATH "${ROCM_ROOT}" "${ROCM_ROOT}/lib/cmake")
 
@@ -915,7 +925,7 @@ if(TARGET ggml_vulkan)
     if(OpenMP_CXX_FOUND)
         target_link_libraries(spec_decode PRIVATE OpenMP::OpenMP_CXX)
     endif()
-    target_compile_options(spec_decode PRIVATE -O3 -std=c++17)
+    target_compile_options(spec_decode PRIVATE -O3 -std=c++26)
 endif()
 
 # ── Zaya GGUF-vs-BF16 logit validation ──
@@ -932,7 +942,7 @@ if(TARGET ggml_vulkan)
     if(OpenMP_CXX_FOUND)
         target_link_libraries(zaya_logit_check PRIVATE OpenMP::OpenMP_CXX)
     endif()
-    target_compile_options(zaya_logit_check PRIVATE -O3 -std=c++17)
+    target_compile_options(zaya_logit_check PRIVATE -O3 -std=c++26)
 endif()
 if(RCPP_HAVE_VULKAN)
     list(APPEND ZAYA_SERVER_SRC tests/backends/backend_vulkan.cpp)
@@ -1042,7 +1052,7 @@ set_tests_properties(test_moe_fused_math PROPERTIES LABELS "host")
 # coverage. No GPU, no model download; builds tokenizer.cpp standalone.
 add_executable(test_tokenizer_logprobs tests/test_tokenizer_logprobs.cpp src/tokenizer.cpp)
 target_include_directories(test_tokenizer_logprobs PRIVATE include include/rocm_cpp)
-target_compile_options(test_tokenizer_logprobs PRIVATE -O2 -std=c++17 -Wall)
+target_compile_options(test_tokenizer_logprobs PRIVATE -O2 -std=c++26 -Wall)
 target_link_libraries(test_tokenizer_logprobs PRIVATE m)
 add_test(NAME test_tokenizer_logprobs COMMAND test_tokenizer_logprobs)
 set_tests_properties(test_tokenizer_logprobs PROPERTIES LABELS "host")
@@ -1638,7 +1648,7 @@ if(TARGET qwen36_moe_probe)
         ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include
         ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include/npu_utils)
     target_compile_options(qwen36_moe_probe PRIVATE
-        -O2 -std=c++20 -fopenmp)
+        -O2 -std=c++26 -fopenmp)
     target_link_libraries(qwen36_moe_probe PRIVATE
         xrt_coreutil xrt_core aiebu uuid m dl pthread)
     target_link_options(qwen36_moe_probe PRIVATE
@@ -1657,7 +1667,7 @@ target_include_directories(gen_npu_insts PRIVATE
     ${CMAKE_SOURCE_DIR}/npu-infer/include
     ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include
     ${CMAKE_SOURCE_DIR}/third_party/FastFlowLM/src/include/npu_utils)
-target_compile_options(gen_npu_insts PRIVATE -O2 -std=c++20)
+target_compile_options(gen_npu_insts PRIVATE -O2 -std=c++26)
 target_link_libraries(gen_npu_insts PRIVATE uuid)
 set_target_properties(gen_npu_insts PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR}/build)
@@ -2251,12 +2261,12 @@ add_library(zaya_codec STATIC src/zaya_codec.cpp)
 target_include_directories(zaya_codec PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
-target_compile_options(zaya_codec PRIVATE -O3 -std=c++17)
+target_compile_options(zaya_codec PRIVATE -O3 -std=c++26)
 target_link_libraries(zaya_codec PUBLIC gguf_reader)
 
 add_executable(test_zaya_codec tests/test_zaya_codec.cpp)
 target_include_directories(test_zaya_codec PRIVATE include/)
-target_compile_options(test_zaya_codec PRIVATE -O3 -std=c++17)
+target_compile_options(test_zaya_codec PRIVATE -O3 -std=c++26)
 target_link_libraries(test_zaya_codec PRIVATE zaya_codec)
 rocm_hip_target(test_fd_seq3 tests/test_fd_seq3.cpp)
 add_test(NAME test_fd_seq3 COMMAND test_fd_seq3)

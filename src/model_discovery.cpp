@@ -576,6 +576,23 @@ std::vector<ModelConfig> discover_models(const std::string& dir) {
     return models;
 }
 
+// ── Read metadata for a single model file (dispatch by extension) ──────────
+// Issue #1958: `1bit unified -m <path>` used to treat the argument ONLY as a
+// registry name (from GGUF general.name), so an absolute .gguf path matched
+// nothing and the server silently fell back to a DIFFERENT model. Callers can
+// now resolve a direct file path through here; unknown formats return false.
+bool read_model_file_metadata(const std::string& path, ModelConfig& cfg) {
+    auto dot = path.find_last_of('.');
+    if (dot == std::string::npos) return false;
+    std::string ext = path.substr(dot);
+    if (ext == ".gguf")         return read_gguf_metadata(path, cfg);
+    if (ext == ".h1b")          return read_h1b_metadata(path, cfg);
+    if (ext == ".q4nx")         return read_q4nx_metadata(path, cfg);
+    if (ext == ".safetensors")  return read_safetensors_metadata(path, cfg);
+    if (ext == ".1bp")          return read_onebp_metadata(path, cfg);
+    return false;
+}
+
 // ── Read vocab size from GGUF embedding tensor shape ──────────────────────
 int read_gguf_vocab(const std::string& path) {
     GgufReader r;

@@ -28,6 +28,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <vector>
 #include <algorithm>
 #include <cmath>
@@ -1413,6 +1414,82 @@ int zaya_decode_main(int argc, char** argv) {
         }
         return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     };
+
+    // ── WORKER MODE (subprocess protocol, issue #1832) ────────────────────
+    // The unified server's NpuWorker (tests/backends/backend_npu_universal.cpp)
+    // spawns `npu_engine_universal <model.q4nx> --worker` and speaks a
+    // 4×u32 pipe protocol: header {op, layer, batch, in_dim} then
+    // batch*in_dim floats; response {0|1, out_dim} then batch*out_dim floats.
+    // op=31 resets KV/CCA state, op=32/33 runs a fused decode step
+    // (token(s) in → next-token(s) out), op=0 quits. The zaya diversion
+    // previously had no worker loop, so the universal backend rejected zaya
+    // models; this branch closes that gap so zaya q4nx serves through the
+    // own engine again.
+    bool worker_mode = false;
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], "--worker") == 0) worker_mode = true;
+    if (worker_mode) {
+        // Startup handshake (issue #365): parent waits for "READY\n" before ops.
+        write(1, "READY\n", 6);
+        setbuf(stdout, NULL);
+        clearerr(stdout);
+        fflush(stdout);
+        fprintf(stderr, "zaya worker READY (%s)\n", argv[1]);
+        fflush(stderr);
+
+        int wpos = 0;   // position counter (drives RoPE + KV append); reset on op=31
+        uint32_t hdr[4];
+        while (fread(hdr, sizeof(uint32_t), 4, stdin) == 4) {
+            uint32_t op = hdr[0], layer = hdr[1], batch = hdr[2], in_dim = hdr[3];
+            if (op == 0) break;   // QUIT
+            if (op == 31) {       // reset KV caches + CCA state (new conversation)
+                for (int l = 0; l < NC; l++) {
+                    kv_k[l].clear(); kv_v[l].clear();
+                    L[l].cs.reset(d.qkv, d.kd / 2);
+                }
+                wpos = 0;
+                uint32_t resp[2] = {0, 0};
+                fwrite(resp, sizeof(uint32_t), 2, stdout);
+                fflush(stdout);
+                continue;
+            }
+            if (op == 32 || op == 33) {   // fused decode step: token(s) → next token(s)
+                if (batch == 0 || batch > 8 || in_dim != 1) {
+                    uint32_t resp[2] = {1, 0};
+                    fwrite(resp, sizeof(uint32_t), 2, stdout);
+                    fflush(stdout);
+                    continue;
+                }
+                std::vector<float> in_data(batch);
+                if (fread(in_data.data(), sizeof(float), batch, stdin) != (size_t)batch) break;
+                std::vector<float> out_data(batch);
+                for (uint32_t s = 0; s < batch; s++) {
+                    int tok = (int)in_data[s];
+                    if (tok < 0 || tok >= NV) tok = 0;
+                    out_data[s] = (float)forward(tok, wpos);
+                    wpos++;
+                }
+                uint32_t resp[2] = {0, 1};   // out_dim = 1 token per slot
+                fwrite(resp, sizeof(uint32_t), 2, stdout);
+                fwrite(out_data.data(), sizeof(float), batch, stdout);
+                fflush(stdout);
+                continue;
+            }
+            // Unknown op: drain the payload (bounded) and respond error.
+            if (batch > 0 && in_dim > 0 && (uint64_t)batch * (uint64_t)in_dim < (1u << 20)) {
+                std::vector<float> drain((size_t)batch * (size_t)in_dim);
+                fread(drain.data(), sizeof(float), batch * in_dim, stdin);
+            }
+            uint32_t resp[2] = {1, 0};
+            fwrite(resp, sizeof(uint32_t), 2, stdout);
+            fflush(stdout);
+        }
+        fflush(stdout);
+        fflush(stderr);
+        if (getenv("NPU_CLEAN_TEARDOWN") && atoi(getenv("NPU_CLEAN_TEARDOWN")) == 1)
+            return 0;
+        _exit(0);   // skip XRT destructors (issue #1762 / #1426)
+    }
 
     std::vector<int> prompt;
     prompt.push_back(2);  // <bos>

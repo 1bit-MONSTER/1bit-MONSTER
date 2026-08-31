@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>One engine, 1,775 models | 1bit.MONSTER</title>
-  <meta name="description" content="One C++ binary, 552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
+  <meta name="description" content="One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="One engine, 1,775 models | 1bit.MONSTER" />
-  <meta property="og:description" content="One C++ binary, 552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
+  <meta property="og:description" content="One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
   <meta property="og:url" content="https://1bit.monster/1bit-post-1775-models.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="One engine, 1,775 models | 1bit.MONSTER" />
-  <meta name="twitter:description" content="One C++ binary, 552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
+  <meta name="twitter:description" content="One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-1775-models.html" />
 <style>
@@ -118,7 +118,7 @@
     }
   </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One engine, 1,775 models | 1bit.MONSTER", "description": "One C++ binary, 552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.", "url": "https://1bit.monster/1bit-post-1775-models.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1775-models.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One engine, 1,775 models | 1bit.MONSTER", "description": "One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.", "url": "https://1bit.monster/1bit-post-1775-models.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1775-models.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 </head>
 <body>
@@ -155,7 +155,7 @@
       <div class="prose">
         <h2>The claim</h2>
         <p>Go to HuggingFace. Pick any text-generation model. Any architecture — Llama, Qwen, Mistral, Gemma, Zamba, Jamba, Cohere, Falcon, DeepSeek-MoE, MiniMax, BitNet, T5 — and the 1bit.MONSTER engine can run it. Not a wrapper. Not a per-model build. One binary that auto-detects the architecture from the file and dispatches to the right backend.</p>
-        <p>The daily census keeps the claim honest: <b>552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped.</b> A workflow re-checks the numbers every night and updates the site when they move. That number is live, not a marketing figure.</p>
+        <p>The daily census keeps the claim honest: <b>554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped.</b> A workflow re-checks the numbers every night and updates the site when they move. That number is live, not a marketing figure.</p>
         <h2>Why it works: the token catalog</h2>
         <p>Every HF architecture string — <span class="mono">llama3</span>, <span class="mono">qwen2.5_moe</span>, <span class="mono">zamba2</span>, all 1,775 of them — normalizes down to one of 552 architecture tokens. The token captures what actually changes between model families: attention variant, MoE routing, norm placement, RoPE scheme, tie weights. Everything else is shared.</p>
         <p>A new model family lands on HF → the daily new-model watcher drafts the mapping → the engine gets the token → the site's numbers update. The gap between a model appearing and the engine running it is measured in days, not quarters.</p>
@@ -164,7 +164,7 @@
         <table><thead><tr><th>Format</th><th>Read</th><th>Convert</th><th>Typical use</th></tr></thead><tbody><tr><td>GGUF</td><td>native</td><td>—</td><td>off-the-shelf models</td></tr><tr><td>Q4NX 1BP</td><td>native</td><td>from GGUF</td><td>our 1-bit pipeline</td></tr><tr><td>INT8</td><td>native</td><td>from GGUF</td><td>big-batch CPU</td></tr><tr><td>TQ2</td><td>native</td><td>—</td><td>compressed weights</td></tr></tbody></table>
         <h2>What 1-bit buys you</h2>
         <p>A 70B-class model packed to 1-bit fits in the memory of a laptop with room to spare. The engine's measured path on the Ryzen AI NPU went from 244 ms/tok to 3.4 ms/tok across the optimization sprint — that's a 70× improvement on the same silicon, no new hardware.</p>
-        <div class="callout"><p>317,310 arch-bearing checkpoints resolve to 552 tokens, and 552 tokens resolve to one engine. That's the whole pitch.</p></div>
+        <div class="callout"><p>317,310 arch-bearing checkpoints resolve to 554 tokens, and 552 tokens resolve to one engine. That's the whole pitch.</p></div>
         <h2>Try it</h2>
         <p><span class="mono">build/1bit unified --port 8088 --weights models/</span> — point it at a directory of GGUFs, hit <span class="mono">/v1/models</span>, and pick any of them. The server loads what you ask for, on the backend that's fastest for your hardware, no config file required.</p>
       </div>

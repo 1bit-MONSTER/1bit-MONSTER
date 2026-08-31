@@ -2,6 +2,12 @@
 # Build the Qwen3-0.6B int4 fused GU→SiLU→D xclbin with the IRON toolchain.
 # vs the default venv (c9c5ecb7) — the newer backend may fix the scalar
 # multiply miscompile (issue #1769).
+#
+# I4_BF16_PAIR=1 (issue #1934 round-11): build the kernel with the additive
+# zero-point dequant (B'' = round(q4*a + b), a=s/S_col, b=zp/S_col as a bf16
+# pair in the [4096,5120) region) instead of the symmetric-only v66 ratioQ22.
+# Emits final_i8_GUSILU_i4_qwen3_0_6b_bf16pair.xclbin so the default build is
+# untouched; the zaya path (symmetric zp=0) keeps the verified ratioQ22 kernel.
 set -euo pipefail
 P=/home/bcloud/iron/lib/python3.14/site-packages/llvm-aie
 M=/home/bcloud/iron/lib/python3.14/site-packages/mlir_aie
@@ -10,8 +16,18 @@ G=$(cd "$(dirname "$0")" && pwd)
 W=/tmp/p1i4_iron.$$
 mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
 
+MM_FLAGS="-DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED"
+XCLBIN="$G/../xclbins/final_i8_GUSILU_i4_qwen3_0_6b.xclbin"
+INSTS="$G/../xclbins/insts_i8_GUSILU_i4_qwen3_0_6b.txt"
+if [ "${I4_BF16_PAIR:-0}" = "1" ]; then
+    MM_FLAGS="$MM_FLAGS -DI4_BF16_PAIR"
+    XCLBIN="$G/../xclbins/final_i8_GUSILU_i4_qwen3_0_6b_bf16pair.xclbin"
+    INSTS="$G/../xclbins/insts_i8_GUSILU_i4_qwen3_0_6b_bf16pair.txt"
+    echo "building bf16-pair variant -> $(basename "$XCLBIN")"
+fi
+
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
-    -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
+    $MM_FLAGS \
     -isystem $P/include/c++/v1 \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \
@@ -47,6 +63,6 @@ cd "$W"
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
     --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
     --aie-generate-npu-insts \
-    --xclbin-name="$G/../xclbins/final_i8_GUSILU_i4_qwen3_0_6b.xclbin" \
-    --npu-insts-name="$G/../xclbins/insts_i8_GUSILU_i4_qwen3_0_6b.txt" \
+    --xclbin-name="$XCLBIN" \
+    --npu-insts-name="$INSTS" \
     "$W/design.mlir" 2>&1 | tail -1
