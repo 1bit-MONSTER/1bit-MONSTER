@@ -100,7 +100,7 @@ def fetch_open_issues() -> list[dict]:
         ["gh", "issue", "list", "--repo", REPO, "--state", "open",
          "--limit", "1000",
          "--json", "number,title,url,state,labels,author,createdAt,body"],
-        capture_output=True, text=True, check=True, timeout=30).stdout
+        capture_output=True, text=True, check=True, timeout=60).stdout
     return json.loads(out)
 
 
@@ -214,8 +214,14 @@ def main() -> int:
     state = load_state()
     after = int(state.get("last_issue", 0))
     tags = forum_tags()
-    # One gh call for the whole run — feeds both job 1 and job 2.
-    open_list = fetch_open_issues()
+    # One gh call for the whole run — feeds both job 1 and job 2. A slow /
+    # rate-limited GitHub API must not leave a raw traceback in the cron
+    # log: fail cleanly (the watchdog's success-marker check then alerts).
+    try:
+        open_list = fetch_open_issues()
+    except Exception as exc:  # noqa: BLE001
+        print(f"open-issue fetch FAILED ({type(exc).__name__}: {exc}) — skipping this run")
+        return 0
     open_map = {i["number"]: i for i in open_list}
 
     # Idempotency: map issue number → existing forum post (active + archived).

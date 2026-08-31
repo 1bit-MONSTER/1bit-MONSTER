@@ -185,10 +185,24 @@ def main() -> int:
         alerts[check] = 0  # reset (keep key)
 
     if to_post:
-        body = "**1bit Discord watchdog**\n" + "\n".join(to_post)
+        # Multiple simultaneous failures (services + crons + context7 +
+        # env keys) can exceed Discord's 2000-char message limit — a 400
+        # would mean NO alert is delivered and the same oversized message
+        # is retried every 10 min. Chunk into separate posts.
+        header = "**1bit Discord watchdog**"
+        chunks, cur, size = [], [], len(header) + 1
+        for line in to_post:
+            if size + len(line) + 1 > 1800 and cur:
+                chunks.append(header + "\n" + "\n".join(cur))
+                cur, size = [], len(header) + 1
+            cur.append(line)
+            size += len(line) + 1
+        if cur:
+            chunks.append(header + "\n" + "\n".join(cur))
         try:
-            _post(body)
-            print(body)
+            for chunk in chunks:
+                _post(chunk)
+            print("\n".join(chunks))
         except Exception as exc:  # noqa: BLE001
             print(f"WARNING: could not post alert: {type(exc).__name__}: {exc}",
                   file=sys.stderr)
