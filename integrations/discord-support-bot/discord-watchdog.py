@@ -130,7 +130,10 @@ def _post(text: str) -> None:
     token = os.getenv("DISCORD_TOKEN") or open(TOKEN_FILE).read().strip()
     req = urllib.request.Request(
         API + f"/channels/{ALERT_CHANNEL}/messages",
-        data=json.dumps({"content": text}).encode(),
+        # allowed_mentions parse:[] — alert details can quote log content
+        # that includes user-posted text; "@everyone" in it must not ping
+        # the channel.
+        data=json.dumps({"content": text, "allowed_mentions": {"parse": []}}).encode(),
         headers={"Authorization": "Bot " + token, "Content-Type": "application/json",
                  "User-Agent": "1bit-docsbot (watchdog, 1.0)"},
     )
