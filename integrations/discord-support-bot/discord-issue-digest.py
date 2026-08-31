@@ -115,7 +115,7 @@ def _forum_search_has_digest(day: str) -> bool | None:
         with urllib.request.urlopen(req, timeout=20) as r:
             guild_id = json.loads(r.read()).get("guild_id", "")
         if not guild_id:
-            return False
+            return None  # cannot search — unknown; caller fails closed
         q = urllib.parse.quote(marker)
         req = urllib.request.Request(
             API + f"/guilds/{guild_id}/messages/search?channel_id={FORUM_CHANNEL}&query={q}",
@@ -130,7 +130,7 @@ def _forum_search_has_digest(day: str) -> bool | None:
                     return True
         return False
     except Exception:  # noqa: BLE001
-        return False  # unknown — let the post attempt go ahead
+        return None  # unknown — caller must fail CLOSED (no duplicate risk)
 
 
 def main() -> int:
