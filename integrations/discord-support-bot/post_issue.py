@@ -29,6 +29,7 @@ Config (env, from .env or the environment):
 """
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import re
@@ -175,7 +176,14 @@ def forum_threads() -> tuple[list[dict], bool]:
         out.extend(threads)
         if not data.get("has_more") or not threads:
             break
-        cursor = f"&before={threads[-1]['id']}"
+        # The archived-public endpoint's `before` cursor is a UNIX
+        # TIMESTAMP (seconds), not a snowflake — snowflakes get misread as
+        # creation times, skipping recently-archived posts or looping.
+        ts = _archive_ts_epoch(threads[-1])
+        if ts is None:
+            complete = False
+            break
+        cursor = f"&before={ts}"
     return out, complete
 
 
@@ -244,6 +252,20 @@ def forum_search_issue(number: int) -> str | None:
         if tid and _thread_matches_issue(tid, number):
             return tid
     return None
+
+
+def _archive_ts_epoch(thread: dict) -> int | None:
+    """thread_metadata.archive_timestamp (ISO) → epoch seconds, or None.
+
+    The archived-public listing's `before` cursor is a Unix timestamp.
+    """
+    ts = (thread.get("thread_metadata") or {}).get("archive_timestamp")
+    if not ts:
+        return None
+    try:
+        return int(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+    except (ValueError, AttributeError):
+        return None
 
 
 def thread_exists(thread_id: str) -> bool | None:

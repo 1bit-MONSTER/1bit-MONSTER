@@ -324,7 +324,24 @@ def main() -> int:
     try:
         fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        print("another run is in progress — skipping")
+        # One-off contention (a backfill overrunning the 15-min interval)
+        # is normal and matches the watchdog's success markers. But if the
+        # PREVIOUS line is also contention, the holder looks permanently
+        # stuck — print a FAILED line so the watchdog alerts.
+        prev = ""
+        log_path = os.path.expanduser("~/.local/share/discord-issue-poster.log")
+        try:
+            with open(log_path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        prev = line
+        except OSError:
+            pass
+        if "another run is in progress" in prev:
+            print("FAILED: lock contended across consecutive runs — previous run appears stuck")
+        else:
+            print("another run is in progress — skipping")
         return 0
 
     state = load_state()
@@ -364,6 +381,10 @@ def main() -> int:
               if str(n).lstrip("-").isdigit()]
     state["failed"] = failed
     issues: list[dict] = []
+    # Defined for BOTH branches — the summary reads them even when the
+    # listing failed (otherwise the fail-closed path would NameError).
+    failed_at: dict[int, float] = {}
+    failed_since: dict[int, float] = {}
     if not listing_ok:
         # Fail closed: without a forum listing the idempotency map is
         # empty, so posting OR retrying `failed` could duplicate a post
