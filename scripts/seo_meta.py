@@ -189,7 +189,7 @@ def gen_sitemap(site_dir: Path) -> None:
     urls = []
     for p in sorted(site_dir.glob("*.html")):
         name = p.name
-        loc = SITE if name == "index.html" else f"{SITE}/{name}"
+        loc = (SITE + "/") if name == "index.html" else f"{SITE}/{name}"  # slash form matches canonical
         lm = git_lastmod(f"site/{name}")
         urls.append((loc, lm, prio.get(name, "0.7"), freq.get(name, "weekly")))
     lines = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
