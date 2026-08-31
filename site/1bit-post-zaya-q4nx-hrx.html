@@ -182,8 +182,8 @@
             <tr><td>max |dlogit|</td><td>0.0041 &mdash; top-1 margin is 1,681&times; the noise</td></tr>
             <tr><td>top-5 tokens</td><td>identical to F32</td></tr>
             <tr><td>F32 port vs HF greedy</td><td>8/8 top-1</td></tr>
-            <tr><td>prefill (pp32)</td><td>77.4 t/s</td></tr>
-            <tr><td>decode (tg32)</td><td>11.2 t/s</td></tr>
+            <tr><td>prefill (pp32)</td><td>103.5 t/s</td></tr>
+            <tr><td>decode (tg32)</td><td>11.1 t/s</td></tr>
             <tr><td>decode, pre-optimization</td><td>1.22 t/s (&asymp;9&times; faster now)</td></tr>
             <tr><td>prefill, pre-optimization</td><td>2.1 t/s (&asymp;37&times; faster now)</td></tr>
             <tr><td>llama-server prompt / decode</td><td>18.1 / 8.16 t/s</td></tr>
@@ -204,6 +204,7 @@
         <p>The real win came from the split, not the kernels: the all-CPU F32 path runs 16.5 t/s while the hybrid CPU&harr;HRX2 split ran 11.0 &mdash; every HRX2-claimed pointwise op adds a crossing that costs more than the NPU saves. Restricting HRX2 to exactly the Q4NX matmuls (plus the recurrent state&rsquo;s ops) took the Q4NX decode from 8.9 to <b>10.9 t/s</b> (+23%). The remaining gap to the 16.5 t/s CPU ceiling is the price of 79% less memory.</p>
         <p>Prefill&rsquo;s gap was the per-token expert dequant: MUL_MAT_ID_Q4NX dispatched one dequant per (selected, token) pair, so a 32-token batch dequantized every expert once per token. Grouping tokens by expert gives <b>one dequant per distinct expert per batch</b>. Prefill went from 36.8 to <b>77.4 t/s</b> (+110%), decode untouched (size-1 groups keep the proven path).</p>
         <p><b>Correction (round 21):</b> the first grouping attempt (a table-scatter matmul kernel that read/wrote arbitrary output columns through i32 tables) reported 72.1 t/s but was <b>measuring wrong math</b> &mdash; the kernel&rsquo;s &ldquo;use tables&rdquo; condition compared the config constant against 1 with a not-equal test, folded false at JIT time, and the tables were silently never used; the 2-token verification passed only because slot==token for 2-token groups. A 32-token prefill dump against the F32 reference caught it (corr 0.37, wrong top-1). The real fix dequants each distinct expert once and runs the proven per-slot matmul for every token in the group &mdash; verified corr 0.9999996, top-1 identical to F32 at 32 tokens, and faster (77.4 t/s). Lesson: multi-token prefill correctness can&rsquo;t be verified with a 2-token dump.</p>
+        <p><b>Round 22:</b> round 21 left 32 per-slot matmul launches per expert group &mdash; a 32-token group re-read the 33.5 MB dequantized weight 32&times;. The table-scatter idea round 20 reached for is now done right: a new <span class="mono">mul_mat_f32_f32_ggml_tbl_tiled</span> kernel keeps the 8-column tiled structure but selects src1/dst columns through i32 tables, bounding the table-derived indices with <b>truthful</b> <span class="mono">index.assume</span> predicates (src1_cols &lt; ntokens, dst_cols &lt; nselected&times;ntokens) &mdash; round 20&rsquo;s version assumed an overflowing range and had no min/max/rem lowering to clamp with. One dispatch per expert group instead of 34 stream ops: prefill 77.4 &rarr; <b>103.5 t/s</b> (+34%), pp128 143.7 t/s, decode unchanged. Still corr 0.9999996 / top-1 108 == F32 on the 32-token dump.</p>
       </div>
     
     <section class="related">
