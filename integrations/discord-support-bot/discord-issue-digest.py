@@ -82,18 +82,33 @@ def _channel_has_digest(channel_id: str, day: str) -> bool | None:
     """Does the text channel already carry TODAY's digest?
 
     Matches the dated header, so last week's digest (same text, different
-    date) does not suppress this week's. Returns None when the check
-    itself errors — callers fail CLOSED (never risk a duplicate).
+    date) does not suppress this week's. Uses the guild message search
+    (whole channel history), not a 50-message window — a support channel
+    can easily scroll more than 50 messages between weekly digests.
+    Returns None when the check errors — callers fail CLOSED.
     """
     marker = f"Issue digest {day}"
     try:
         req = urllib.request.Request(
-            API + f"/channels/{channel_id}/messages?limit=50",
+            API + f"/channels/{channel_id}",
             headers={"Authorization": "Bot " + TOKEN, "User-Agent": UA},
         )
         with urllib.request.urlopen(req, timeout=20) as r:
-            msgs = json.loads(r.read())
-        return any(marker in (m.get("content") or "") for m in msgs)
+            guild_id = json.loads(r.read()).get("guild_id", "")
+        if not guild_id:
+            return None  # cannot search — unknown; caller fails closed
+        q = urllib.parse.quote(marker)
+        req = urllib.request.Request(
+            API + f"/guilds/{guild_id}/messages/search?channel_id={channel_id}&query={q}",
+            headers={"Authorization": "Bot " + TOKEN, "User-Agent": UA},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read())
+        for group in data.get("results") or []:
+            for m in group:
+                if marker in (m.get("content") or ""):
+                    return True
+        return False
     except Exception:  # noqa: BLE001
         return None  # unknown — caller must fail CLOSED
 

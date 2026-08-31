@@ -277,11 +277,16 @@ def main() -> int:
         # for Discord's search index (and any listing propagation) to have
         # seen a post that a client-side timeout may actually have created
         # server-side — closing the combined-miss duplicate window. New
-        # issues are always candidates. (JSON keys are strings — normalize.)
+        # issues are candidates EXCEPT numbers still inside their own
+        # cooldown (a failed new issue would otherwise retry through the
+        # new-issues side before the 20-min window elapses). (JSON keys are
+        # strings — normalize.)
         failed_at = {int(k): v for k, v in state.get("failed_at", {}).items()}
         state["failed_at"] = failed_at
-        candidates = ({n for n in failed if time.time() - failed_at.get(n, 0) > RETRY_DELAY_SECONDS}
-                      | {i["number"] for i in issues})
+        in_cooldown = {n for n in failed_at
+                       if time.time() - failed_at.get(n, 0) <= RETRY_DELAY_SECONDS}
+        cooled = {n for n in failed if time.time() - failed_at.get(n, 0) > RETRY_DELAY_SECONDS}
+        candidates = cooled | ({i["number"] for i in issues} - in_cooldown)
     fresh_ids: set[str] = set()  # posts created THIS run — not in the pre-posting snapshot
     # Retry failed numbers first (ascending), then any new ones — a
     # transient failure must never drop an issue: if #N fails but #N+1
