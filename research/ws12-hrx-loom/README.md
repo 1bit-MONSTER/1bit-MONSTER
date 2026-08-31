@@ -707,3 +707,68 @@ already exact; only the block structure was wrong.
 - `zaya_q4nx.gguf` conversion (Q4NX mode) → HRX ngl=99; the attn projections
   are 2-D MUL_MAT (already dispatched); the stacked experts need MUL_MAT_ID
   Q4NX dispatch.
+
+## Round 14 — Zaya Q4NX on HRX: MUL_MAT_ID dispatch + the ids-stride bug (2026-08-31)
+
+Milestone: **zaya1-8b-fresh runs fully on the HRX20 (gfx1151) lane at
+ngl=99** with Q4NX-quantized attention + MoE weights. Logits match the F32
+port to float noise; generation is coherent ("Paris.").
+
+### What was added
+
+- **`GGML_OP_MUL_MAT_ID_Q4NX`** + `ggml_mul_mat_id_q4nx` constructor
+  (`ggml/include/ggml.h`, `ggml/src/ggml.c`): src0 Q4NX 3-D tile-major
+  `[8192, tiles_per_expert, n_expert]` (one expert's tiles contiguous),
+  src1 F32 `[k, ntokens]`, ids `[nselected, ntokens]` → result
+  `[tpe/n_tc*32, nselected, ntokens]`.
+- **HRX2 dispatch** (`ggml-hrx2.cpp`): `ggml_mul_mat_id` now routes Q4NX
+  src0 to the new op; `dispatch_mul_mat_id_q4nx` loops `(i,t)` pairs and
+  reuses the shared 2-D slice helper (per-expert tile copy → q4nx dequant →
+  `mul_mat_f32_f32_ggml` with cols=1). CPU backend rejects both Q4NX ops.
+- **Q4NX 3-D GGUF conversion** (`zaya-to-gguf.py`): experts written with
+  `raw_shape=[n_exp, tpe, 5120]` → file `[n_exp, tpe, 8192]` → ne
+  `[8192, tpe, n_exp]`, nb0=nb1=5120, nb2=tpe*5120 (tile (t,e) at
+  `(e*tpe+t)*5120` — verified against the container blob byte-for-byte).
+
+### The root-cause bug (ids are a strided view)
+
+Symptoms: every Q4NX op verified bit-exact (dequant corr 1.0, mm corr 1.0,
+all 40 layers' MoE inputs corr ≥ 0.72), yet final logits were uncorrelated
+(0.023) and token-1 MoE weights were wrong (0.21888 instead of 0.0187).
+Bisect (per-layer tensor dumps + numpy decomposition) showed:
+
+- the router argmax ids are **`[3,4]`** (true top-1 per token), but the
+  MUL_MAT_ID dispatch saw **`[3,5]`** — the second token's id was the
+  second-best expert of the FIRST token.
+- `ffn_moe_topk` is a **VIEW of the argsort output** with `nb[1] = 17*4`
+  (17 experts sorted per token), not `4`. The CPU get_rows/mul_mat_id read
+  it stride-correctly → `[3,4]` (why the F32 port was always right); the
+  HRX2 dispatch copied the ids **contiguously** (flat `[0]=3, [1]=5`) — the
+  code even computed `ids_src_stride` but never used it.
+- Fix: copy each token row at its real `nb[1]` stride into the packed
+  host-visible scratch (`q4nx_ids`), then read `[i*ntokens+t]`.
+
+### Validation
+
+```
+logits corr Q4NX-HRX vs F32-HRX:  0.9999999
+max |Δlogit|:                      0.0123   (int4 quantization noise)
+top1:                               9731   (= F32/HF reference)
+top5:               [9731, 11861, 115314, 59820, 79030]  (identical)
+generation:        "<think> ... So answer: Paris. ... </think> Paris."
+                   (clean EOS; coherent)
+```
+
+### Artifacts
+
+- `zaya-q4nx.gguf` (Q4NX: 280 quantized tensors, 7/layer — attn_q/k,
+  cca_val_proj1/2, attn_output, gate_up/down experts; router stays F32).
+- Fork commits: `ggml.h`/`ggml.c`/`ggml-hrx2.cpp`/`ggml-cpu.{c,cpp}`.
+- Harnesses: `/tmp/dump_hrx_logits` (logits for `[2,2202]`), `/tmp/gtok_hrx`
+  (chat gen, ngl arg). Debug dumps (DEQDUMP/TENSORDUMP/WDUMP/GRTRACE/MMID)
+  were removed after the fix; `q4nx_ids` scratch + stride copy remain.
+
+### Next
+
+- Remove the last debug scaffolding, commit fork + 1bit-MONSTER
+  (`feat/hrx-gfx1151-build`), regenerate `patches/` snapshot.

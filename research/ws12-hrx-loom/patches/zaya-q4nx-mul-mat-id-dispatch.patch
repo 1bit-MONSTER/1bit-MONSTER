@@ -1,0 +1,542 @@
+From 72a7024b2e04e464d5e911e876a5273457fe92cb Mon Sep 17 00:00:00 2001
+From: bcloud <bcloud@localhost>
+Date: Mon, 31 Aug 2026 02:14:13 -0300
+Subject: [PATCH] zaya Q4NX: MUL_MAT_ID_Q4NX dispatch for stacked MoE experts
+
+- ggml_mul_mat_id now routes Q4NX src0 to the new GGML_OP_MUL_MAT_ID_Q4NX
+  (constructor result [tpe/n_tc*32, nselected, ntokens]).
+- HRX2 dispatch_mul_mat_id_q4nx: per-(i,t) slices through the shared
+  q4nx slice helper (per-expert tile copy -> q4nx dequant -> f32 mm cols=1).
+- FIX: ids tensor is a strided VIEW of the argsort output (nb[1]=17*4);
+  the dispatch copied it contiguously and picked the wrong expert for
+  token>0 (second-best of token 0). Copy each token row at its real nb[1]
+  stride into the packed q4nx_ids scratch.
+- CPU backend rejects MUL_MAT_Q4NX / MUL_MAT_ID_Q4NX.
+- logits corr vs F32 port: 0.9999999 (top1 9731, top5 identical); coherent
+  generation on HRX20. Removed all debug dump scaffolding.
+---
+ ggml/include/ggml.h              |  11 ++
+ ggml/src/ggml-cpu/ggml-cpu.c     |  19 ---
+ ggml/src/ggml-cpu/ggml-cpu.cpp   |   5 +
+ ggml/src/ggml-hrx2/ggml-hrx2.cpp | 254 ++++++++++++++++++++++++++-----
+ ggml/src/ggml.c                  |  50 +++++-
+ 5 files changed, 276 insertions(+), 63 deletions(-)
+
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index cb2a27e..103fc9d 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -590,6 +590,10 @@ extern "C" {
+                               // (each 8192-elem row = one 5120-byte tile) x
+                               // src1 F32 [256, cols] -> F32 [n_tiles*32, cols]
+ 
++        GGML_OP_MUL_MAT_ID_Q4NX, // 1bit-MONSTER: src0 GGML_TYPE_Q4NX 3-D
++                                 // [8192, tiles_per_expert, n_expert] x src1 F32
++                                 // [k, ntokens] with expert ids src2 [nsel, ntokens]
++
+         GGML_OP_COUNT,
+     };
+ 
+@@ -1440,6 +1444,13 @@ extern "C" {
+             struct ggml_tensor  * b,
+             struct ggml_tensor  * ids);
+ 
++    // 1bit-MONSTER: Q4NX expert matmul (src0 tile-major 3-D, ids selects)
++    GGML_API struct ggml_tensor * ggml_mul_mat_id_q4nx(
++            struct ggml_context * ctx,
++            struct ggml_tensor  * as,
++            struct ggml_tensor  * b,
++            struct ggml_tensor  * ids);
++
+     // A: m columns, n rows,
+     // B: p columns, n rows,
+     // result is m columns, p rows
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index f3edefd..a150a90 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -3007,25 +3007,6 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
+         if (node_n + 1 < cgraph->n_nodes) {
+             ggml_barrier(state->threadpool);
+         }
+-
+-        // post-barrier dump: node->data is complete on all threads here
+-        if (state->ith == 0 && getenv("ZAYA_DUMP") && node->name) {
+-            static int dump_count = 0;
+-            const char * want = getenv("ZAYA_DUMP");
+-            if (strstr(node->name, want)) {
+-                size_t nb = ggml_nbytes(node);
+-                bool nonzero = false;
+-                const uint8_t * p = (const uint8_t *) node->data;
+-                for (size_t i = 0; i < nb; ++i) { if (p[i]) { nonzero = true; break; } }
+-                if (nonzero) {
+-                    dump_count++;
+-                    char fname[64];
+-                    snprintf(fname, sizeof(fname), "/tmp/zcpu_%02d_%s.bin", dump_count, node->name);
+-                    FILE * f = fopen(fname, "wb");
+-                    if (f) { fwrite(node->data, 1, nb, f); fclose(f); }
+-                }
+-            }
+-        }
+     }
+ 
+ #ifdef GGML_USE_OPENMP
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.cpp b/ggml/src/ggml-cpu/ggml-cpu.cpp
+index ddf1737..f10e698 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.cpp
++++ b/ggml/src/ggml-cpu/ggml-cpu.cpp
+@@ -437,6 +437,11 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
+     }
+ 
+     switch (op->op) {
++        case GGML_OP_MUL_MAT_Q4NX:
++        case GGML_OP_MUL_MAT_ID_Q4NX:
++            // 1bit-MONSTER: Q4NX ops run only on the HRX2 backend
++            // (tile-major weights live in HRX device memory).
++            return false;
+         case GGML_OP_CPY:
+         case GGML_OP_SET_ROWS:
+             return
+diff --git a/ggml/src/ggml-hrx2/ggml-hrx2.cpp b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
+index 6a886df..f543811 100644
+--- a/ggml/src/ggml-hrx2/ggml-hrx2.cpp
++++ b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
+@@ -104,6 +104,8 @@ struct ggml_backend_hrx2_device_context {
+     size_t q4nx_pck_cap = 0;
+     hrx_buffer_t q4nx_w = nullptr;
+     size_t q4nx_w_cap = 0;
++    hrx_buffer_t q4nx_ids = nullptr;   // host-visible scratch for MUL_MAT_ID_Q4NX ids
++    size_t q4nx_ids_cap = 0;
+     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_routes;
+     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_q4_k_swiglu_routes;
+     std::vector<const ggml_backend_hrx2_kernel_route *> mul_mat_id_q4_k_routes;
+@@ -2244,9 +2246,17 @@ static bool ggml_backend_hrx2_supports_scale(
+         const ggml_tensor * op) {
+     GGML_UNUSED(device_context);
+     const ggml_tensor * src0 = op->src[0];
++    // zero-size op (worst-case reserve builds empty state views): trivially
++    // supported (the dispatch copies nothing)
++    if (op->op == GGML_OP_SCALE && src0 && ggml_nelements(src0) == 0) {
++        return true;
++    }
++    // allow in-place scale (e.g. the recurrent-state zeroing in build_rs):
++    // op->view_src points at a view of src0 that shares its buffer; the
++    // dispatch resolves both through view_src to the same region and the
++    // kernel writes in place. Contiguity + shape still gate acceptance.
+     return op->op == GGML_OP_SCALE &&
+            src0 &&
+-           op->view_src == nullptr &&
+            src0->type == GGML_TYPE_F32 &&
+            op->type == GGML_TYPE_F32 &&
+            ggml_are_same_shape(src0, op) &&
+@@ -5559,6 +5569,9 @@ static const std::vector<const ggml_backend_hrx2_kernel_route *> * ggml_backend_
+ static bool ggml_backend_hrx2_supports_pointwise_route(
+         ggml_backend_hrx2_device_context * device_context,
+         const ggml_tensor * op) {
++    if (ggml_nelements(op) == 0) {
++        return true; // zero-size no-op
++    }
+     ggml_backend_hrx2_pointwise_shape shape;
+     if (!ggml_backend_hrx2_extract_pointwise_shape(op, &shape)) {
+         return false;
+@@ -6625,6 +6638,9 @@ static ggml_status ggml_backend_hrx2_dispatch_pointwise(
+         const ggml_tensor * dst) {
+     const ggml_tensor * src0 = dst->src[0];
+     const ggml_tensor * src1 = dst->src[1];
++    if (ggml_nelements(dst) == 0) {
++        return GGML_STATUS_SUCCESS; // zero-size no-op
++    }
+     ggml_backend_hrx2_pointwise_shape shape;
+     if (!ggml_backend_hrx2_extract_pointwise_shape(dst, &shape)) {
+         GGML_LOG_ERROR("HRX2: invalid pointwise shape during dispatch: dst=%s src0=%s src1=%s\n",
+@@ -8075,54 +8091,39 @@ static bool ggml_backend_hrx2_supports_mul_mat_q4nx_route(
+            !device_context->mul_mat_f32_f32_routes.empty();
+ }
+ 
+-static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
++// Q4NX slice helper: dequant tiles [tile_base, tile_base+n_tiles) of src0 and
++// run the f32 matmul against src1 columns [src1_col, src1_col+cols), writing
++// into dst columns [dst_col, dst_col+cols). Used by both the 2-D MUL_MAT_Q4NX
++// (whole tensor) and MUL_MAT_ID_Q4NX (one expert per call).
++static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
+         ggml_backend_hrx2_context * context,
+-        const ggml_tensor * dst) {
++        const hrx_buffer_ref_t & src0_ref,
++        const hrx_buffer_ref_t & src1_ref,
++        const hrx_buffer_ref_t & dst_ref,
++        uint32_t tile_base,   // first tile to dequantize (expert offset)
++        uint32_t n_tiles,     // tiles in this slice
++        uint32_t k,           // logical in width
++        uint32_t rows,        // output rows
++        uint32_t cols,        // columns to process
++        uint32_t src1_col,    // src1 column offset (elements, multiple of k)
++        uint32_t dst_col) {   // dst column offset (elements, multiple of rows)
+     ggml_backend_hrx2_device_context * device_context = context->device_context;
+-    const ggml_tensor * src0 = dst->src[0];
+-    const ggml_tensor * src1 = dst->src[1];
+-
+-    const uint32_t k       = (uint32_t) src1->ne[0];   // logical in (full width)
+-    const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;   // column tiles
+-    const uint32_t n_tiles = (uint32_t) src0->ne[1];
+-    const uint32_t n_tr    = n_tiles / n_tc;
+-    const uint32_t rows    = n_tr * GGML_Q4NX_TILE_ROWS;
+-    const uint32_t cols    = (uint32_t) src1->ne[1];
++    const uint32_t n_tc    = k / GGML_Q4NX_TILE_COLS;
+     const uint32_t wg_size = 256;
+ 
+     ggml_backend_hrx2_trace_event(
+         "q4nx_dispatch",
+-        ggml_backend_hrx2_json_kv("dst", ggml_get_name(dst)) + "," +
+-        ggml_backend_hrx2_json_kv("src0", ggml_get_name(src0)) + "," +
+-        ggml_backend_hrx2_json_kv("src1", ggml_get_name(src1)) + "," +
+         ggml_backend_hrx2_json_kv("rows", std::to_string(rows)) + "," +
+         ggml_backend_hrx2_json_kv("k", std::to_string(k)) + "," +
+         ggml_backend_hrx2_json_kv("cols", std::to_string(cols)) + "," +
++        ggml_backend_hrx2_json_kv("n_tiles", std::to_string(n_tiles)) + "," +
++        ggml_backend_hrx2_json_kv("tile_base", std::to_string(tile_base)) + "," +
+         ggml_backend_hrx2_json_kv("n_tc", std::to_string(n_tc)));
+ 
+-    hrx_buffer_ref_t src0_ref = {};
+-    hrx_buffer_ref_t src1_ref = {};
+-    hrx_buffer_ref_t dst_ref = {};
+-    if (!ggml_backend_hrx2_tensor_buffer_ref(src0, &src0_ref) ||
+-        !ggml_backend_hrx2_tensor_buffer_ref(src1, &src1_ref) ||
+-        !ggml_backend_hrx2_tensor_buffer_ref(dst, &dst_ref)) {
+-        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tensor is not backed by HRX2 buffers\n");
+-        return GGML_STATUS_FAILED;
+-    }
+-
+     // scratch: section views + dequant f32 output
+     const size_t scl_bytes = (size_t) n_tiles * 512;
+     const size_t pck_bytes = (size_t) n_tiles * 4096;
+     const size_t w_bytes   = (size_t) rows * k * sizeof(float);
+-    hrx_allocator_t alloc = hrx_device_allocator(device_context->device);
+-    hrx_buffer_params_t params = {
+-        /* .type           = */ HRX_MEMORY_TYPE_HOST_LOCAL | HRX_MEMORY_TYPE_DEVICE_VISIBLE,
+-        /* .access         = */ HRX_MEMORY_ACCESS_ALL,
+-        /* .usage          = */ HRX_BUFFER_USAGE_DEFAULT |
+-                               HRX_BUFFER_USAGE_MAPPING_SCOPED |
+-                               HRX_BUFFER_USAGE_MAPPING_PERSISTENT,
+-        /* .queue_affinity = */ 0,
+-    };
+     if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_scl, &device_context->q4nx_scl_cap, scl_bytes) ||
+         !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_zp,  &device_context->q4nx_zp_cap,  scl_bytes) ||
+         !ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_pck, &device_context->q4nx_pck_cap, pck_bytes) ||
+@@ -8136,7 +8137,7 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
+ 
+     // assemble tile-major blob -> section-major views (3 copies per tile)
+     for (uint32_t t = 0; t < n_tiles; ++t) {
+-        const size_t tile_off = (size_t) t * 5120;
++        const size_t tile_off = (size_t) (tile_base + t) * 5120;
+         if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
+                 context->stream, src0_ref.buffer, src0_ref.offset + tile_off,
+                 b_scl, (size_t) t * 512, 512)) ||
+@@ -8183,10 +8184,7 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
+         return GGML_STATUS_FAILED;
+     }
+ 
+-
+-    // f32 matmul provider: the ggml-layout route. src1/dst are ggml tensors
+-    // (ne[0] fastest), and the dequantized weight b_w is row-major [rows, k];
+-    // the kernel indexes each accordingly (see mul_mat_f32_f32.loom).
++    // f32 matmul provider: the ggml-layout route
+     const ggml_backend_hrx2_kernel_route * mm_route = nullptr;
+     for (const auto * r : device_context->mul_mat_f32_f32_routes) {
+         if (r->id == "mul_mat_f32_f32_ggml") { mm_route = r; break; }
+@@ -8215,8 +8213,8 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
+ 
+     hrx_buffer_ref_t mm_bindings[3] = {
+         { b_w,    0, w_bytes },
+-        { src1_ref.buffer, src1_ref.offset, src1_ref.length },
+-        { dst_ref.buffer,  dst_ref.offset,  dst_ref.length },
++        { src1_ref.buffer, src1_ref.offset + (size_t) src1_col * sizeof(float), (size_t) cols * k * sizeof(float) },
++        { dst_ref.buffer,  dst_ref.offset  + (size_t) dst_col  * sizeof(float), (size_t) cols * rows * sizeof(float) },
+     };
+     hrx_dispatch_config_t mm_config = {
+         { rows, cols, 1 },
+@@ -8232,6 +8230,163 @@ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
+     return GGML_STATUS_SUCCESS;
+ }
+ 
++static ggml_status ggml_backend_hrx2_dispatch_mul_mat_q4nx(
++        ggml_backend_hrx2_context * context,
++        const ggml_tensor * dst) {
++    const ggml_tensor * src0 = dst->src[0];
++    const ggml_tensor * src1 = dst->src[1];
++    hrx_buffer_ref_t src0_ref = {};
++    hrx_buffer_ref_t src1_ref = {};
++    hrx_buffer_ref_t dst_ref = {};
++    if (!ggml_backend_hrx2_tensor_buffer_ref(src0, &src0_ref) ||
++        !ggml_backend_hrx2_tensor_buffer_ref(src1, &src1_ref) ||
++        !ggml_backend_hrx2_tensor_buffer_ref(dst, &dst_ref)) {
++        GGML_LOG_ERROR("HRX2: MUL_MAT Q4NX tensor is not backed by HRX2 buffers\n");
++        return GGML_STATUS_FAILED;
++    }
++    return ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
++        context, src0_ref, src1_ref, dst_ref,
++        /* tile_base */ 0,
++        /* n_tiles */ (uint32_t) src0->ne[1],
++        /* k */ (uint32_t) src1->ne[0],
++        /* rows */ (uint32_t) dst->ne[0],
++        /* cols */ (uint32_t) src1->ne[1],
++        /* src1_col */ 0,
++        /* dst_col */ 0);
++}
++
++static bool ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(
++        ggml_backend_hrx2_device_context * device_context,
++        const ggml_tensor * op) {
++    const ggml_tensor * src0 = op->src[0];
++    const ggml_tensor * src1 = op->src[1];
++    const ggml_tensor * src2 = op->src[2];
++    const int64_t k  = src1->ne[0];
++    const int64_t tpe = src0->ne[1];
++    const int64_t nexperts = src0->ne[2];
++    const int64_t nselected = src2->ne[0];
++    const int64_t ntokens = op->ne[2];
++    bool ok = true;
++    auto fail = [&](const char * why) {
++        (void) why;
++        ok = false;
++    };
++    if (op->op != GGML_OP_MUL_MAT_ID_Q4NX) fail("op");
++    if (!src0 || !src1 || !src2) fail("nullsrc");
++    if (op->view_src != nullptr) fail("view_src");
++    if (src0->type != GGML_TYPE_Q4NX) fail("src0type");
++    if (src1->type != GGML_TYPE_F32) fail("src1type");
++    if (src2->type != GGML_TYPE_I32) fail("src2type");
++    if (op->type != GGML_TYPE_F32) fail("optype");
++    if (k <= 0 || k % GGML_Q4NX_TILE_COLS != 0) fail("k");
++    if (src0->ne[0] != GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS) fail("ne0");
++    if (tpe <= 0 || tpe % (k / GGML_Q4NX_TILE_COLS) != 0) fail("tpe");
++    if (nexperts <= 0 || nselected <= 0 || ntokens <= 0) fail("dims0");
++    if (src0->ne[3] != 1 || src1->ne[2] != ntokens || src1->ne[3] != 1) fail("src1dims");
++    if (src2->ne[1] != ntokens || src2->ne[2] != 1 || src2->ne[3] != 1) fail("src2dims");
++    if (op->ne[1] != nselected || op->ne[3] != 1) fail("opdims");
++    if (!ggml_is_contiguous(src0)) fail("contig0");
++    if (!ggml_is_contiguous(src1)) fail("contig1");
++    if (!ggml_is_contiguous(op)) fail("contigop");
++    // src2 (ids) may be a non-contiguous view from argsort/get_rows; the
++    // dispatch reads it element-wise via nb[1] stride, so allow views with
++    // standard element strides.
++    if (src2->nb[0] != sizeof(int32_t) || src2->nb[1] % sizeof(int32_t) != 0) fail("src2nb");
++    if (src1->nb[0] != sizeof(float) || src2->nb[0] != sizeof(int32_t)) fail("nb0");
++    if (device_context->q4nx_dequant_routes.empty()) fail("nodeq");
++    if (device_context->mul_mat_f32_f32_routes.empty()) fail("nomm");
++    return ok;
++}
++
++static ggml_status ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(
++        ggml_backend_hrx2_context * context,
++        const ggml_tensor * dst) {
++    const ggml_tensor * src0 = dst->src[0]; // Q4NX [8192, tpe, n_expert]
++    const ggml_tensor * src1 = dst->src[1]; // F32 [k, ntokens]
++    const ggml_tensor * src2 = dst->src[2]; // ids [nselected, ntokens]
++    hrx_buffer_ref_t src0_ref = {};
++    hrx_buffer_ref_t src1_ref = {};
++    hrx_buffer_ref_t src2_ref = {};
++    hrx_buffer_ref_t dst_ref = {};
++    if (!ggml_backend_hrx2_tensor_buffer_ref(src0, &src0_ref) ||
++        !ggml_backend_hrx2_tensor_buffer_ref(src1, &src1_ref) ||
++        !ggml_backend_hrx2_tensor_buffer_ref(src2, &src2_ref) ||
++        !ggml_backend_hrx2_tensor_buffer_ref(dst, &dst_ref)) {
++        GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX tensor is not backed by HRX2 buffers\n");
++        return GGML_STATUS_FAILED;
++    }
++
++    const uint32_t k          = (uint32_t) src1->ne[0];
++    const uint32_t tpe        = (uint32_t) src0->ne[1]; // tiles per expert
++    const uint32_t n_tc       = k / GGML_Q4NX_TILE_COLS;
++    const uint32_t rows       = (tpe / n_tc) * GGML_Q4NX_TILE_ROWS;
++    const uint32_t nselected  = (uint32_t) src2->ne[0];
++    const uint32_t ntokens    = (uint32_t) dst->ne[2];
++
++    // The ids tensor may live in device memory (argsort output on HRX) or be
++    // a non-contiguous host view; copy it into a host-visible scratch buffer
++    // and read the expert ids from there (row stride = src2->nb[1]).
++    ggml_backend_hrx2_device_context * device_context = context->device_context;
++    const size_t ids_bytes = (size_t) nselected * (size_t) ntokens * sizeof(int32_t);
++    if (!ggml_backend_hrx2_q4nx_scratch_grow(device_context, &device_context->q4nx_ids, &device_context->q4nx_ids_cap, ids_bytes)) {
++        return GGML_STATUS_FAILED;
++    }
++    {
++        hrx_buffer_ref_t ids_ref = {};
++        if (!ggml_backend_hrx2_tensor_buffer_ref(src2, &ids_ref)) {
++            GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX ids tensor not backed by HRX2 buffers\n");
++            return GGML_STATUS_FAILED;
++        }
++        // The ids tensor is [nselected, ntokens] but may be a strided VIEW of
++        // the argsort output (nb[1] >> nselected*4). Copy each token row at
++        // its real stride into a packed host-visible scratch so the dispatch
++        // can read ids as contiguous [nselected, ntokens].
++        const size_t ids_src_stride = src2->nb[1];
++        const size_t ids_row_bytes  = (size_t) nselected * sizeof(int32_t);
++        for (uint32_t t = 0; t < ntokens; ++t) {
++            if (!GGML_HRX2_CHECK(hrx_stream_copy_buffer(
++                    context->stream, ids_ref.buffer,
++                    ids_ref.offset + (size_t) t * ids_src_stride,
++                    device_context->q4nx_ids, (size_t) t * ids_row_bytes,
++                    ids_row_bytes))) {
++                return GGML_STATUS_FAILED;
++            }
++        }
++        // the copy is async; sync before mapping/reading on the host
++        if (!GGML_HRX2_CHECK(hrx_stream_synchronize(context->stream))) {
++            return GGML_STATUS_FAILED;
++        }
++    }
++    const uint8_t * ids_host = nullptr;
++    if (!GGML_HRX2_CHECK(hrx_buffer_map(device_context->q4nx_ids, HRX_MEMORY_ACCESS_READ, 0, ids_bytes, (void**) &ids_host))) {
++        return GGML_STATUS_FAILED;
++    }
++    const int32_t * ids_data = (const int32_t *) ids_host;
++
++    // one slice per (selected expert, token) pair; zaya uses nselected=1
++    // (top-1) so this is one dispatch per expert op.
++    for (uint32_t i = 0; i < nselected; ++i) {
++        for (uint32_t t = 0; t < ntokens; ++t) {
++            const int32_t e = ids_data[i * ntokens + t];
++            if (e < 0 || (uint32_t) e >= (uint32_t) src0->ne[2]) {
++                GGML_LOG_ERROR("HRX2: MUL_MAT_ID Q4NX expert id %d out of range\n", (int) e);
++                return GGML_STATUS_FAILED;
++            }
++            const uint32_t tile_base = (uint32_t) e * tpe;
++            const uint32_t src1_col  = t * k;
++            const uint32_t dst_col   = (i + t * nselected) * rows;
++            if (ggml_backend_hrx2_dispatch_mul_mat_q4nx_slice(
++                    context, src0_ref, src1_ref, dst_ref,
++                    tile_base, tpe, k, rows, /* cols */ 1,
++                    src1_col, dst_col) != GGML_STATUS_SUCCESS) {
++                return GGML_STATUS_FAILED;
++            }
++        }
++    }
++    hrx_buffer_unmap(device_context->q4nx_ids);
++    return GGML_STATUS_SUCCESS;
++}
++
+ static ggml_status ggml_backend_hrx2_dispatch_mul_mat_f32_f32(
+         ggml_backend_hrx2_context * context,
+         const ggml_tensor * dst) {
+@@ -10441,6 +10596,18 @@ static enum ggml_status ggml_backend_hrx2_graph_compute(ggml_backend_t backend,
+                     return GGML_STATUS_FAILED;
+                 }
+                 break;
++            case GGML_OP_MUL_MAT_ID_Q4NX:
++                if (ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(context->device_context, node)) {
++                    if (ggml_backend_hrx2_dispatch_mul_mat_id_q4nx(context, node) != GGML_STATUS_SUCCESS) {
++                        return GGML_STATUS_FAILED;
++                    }
++                    break;
++                }
++                {
++                    GGML_LOG_ERROR("HRX2: unsupported MUL_MAT_ID_Q4NX shape/type/layout\n");
++                    return GGML_STATUS_FAILED;
++                }
++                break;
+             case GGML_OP_MUL_MAT:
+                 if (ggml_backend_hrx2_supports_mul_mat_q4nx_route(context->device_context, node)) {
+                     if (ggml_backend_hrx2_dispatch_mul_mat_q4nx(context, node) != GGML_STATUS_SUCCESS) {
+@@ -10651,6 +10818,11 @@ static bool ggml_backend_hrx2_device_supports_op(ggml_backend_dev_t dev, const g
+             return true;
+         case GGML_OP_MUL_MAT_Q4NX:
+             return ggml_backend_hrx2_supports_mul_mat_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
++        case GGML_OP_MUL_MAT_ID_Q4NX: {
++            bool ok = ggml_backend_hrx2_supports_mul_mat_id_q4nx_route(ggml_backend_hrx2_get_device_context(dev), op);
++            fprintf(stderr, "HRX2 supports MUL_MAT_ID_Q4NX: %d (op=%s)\n", (int)ok, op->name);
++            return ok;
++        }
+         case GGML_OP_RMS_NORM:
+             return ggml_backend_hrx2_supports_rms_norm_route(ggml_backend_hrx2_get_device_context(dev), op);
+         case GGML_OP_ADD:
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index f6ec0c8..d702568 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -1072,9 +1072,10 @@ static const char * GGML_OP_NAME[GGML_OP_COUNT] = {
+ 
+     "GLU",
+     "MUL_MAT_Q4NX",
++    "MUL_MAT_ID_Q4NX",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
++static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+ 
+ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+     "none",
+@@ -1183,9 +1184,10 @@ static const char * GGML_OP_SYMBOL[GGML_OP_COUNT] = {
+ 
+     "glu(x)",
+     "Q4NX*",
++    "Q4NX_ID*",
+ };
+ 
+-static_assert(GGML_OP_COUNT == 97, "GGML_OP_COUNT != 97");
++static_assert(GGML_OP_COUNT == 98, "GGML_OP_COUNT != 98");
+ 
+ static_assert(GGML_OP_POOL_COUNT == 2, "GGML_OP_POOL_COUNT != 2");
+ 
+@@ -3324,9 +3326,18 @@ struct ggml_tensor * ggml_mul_mat_id(
+     GGML_ASSERT(b->ne[3] == 1); // b is 3d
+     GGML_ASSERT(ids->ne[2] == 1 && ids->ne[3] == 1); // ids is 2d
+     GGML_ASSERT(ids->ne[1] == b->ne[2]); // must have an expert list per b row
+-    GGML_ASSERT(as->ne[0] == b->ne[0]); // can_mul_mat
+     GGML_ASSERT(ids->ne[0] % b->ne[1] == 0); // can broadcast
+ 
++    // 1bit-MONSTER: Q4NX expert weights are stored tile-major 3-D
++    // [8192, tiles_per_expert, n_expert]; as->ne[0] is the tile block size
++    // (8192), not the logical k-dim, so the ne[0] equality check does not
++    // apply; route to the Q4NX-aware ID op.
++    if (as->type == GGML_TYPE_Q4NX) {
++        return ggml_mul_mat_id_q4nx(ctx, as, b, ids);
++    }
++
++    GGML_ASSERT(as->ne[0] == b->ne[0]); // can_mul_mat
++
+     const int64_t ne[4] = { as->ne[1], ids->ne[0], b->ne[2], 1 };
+     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
+ 
+@@ -3338,6 +3349,39 @@ struct ggml_tensor * ggml_mul_mat_id(
+     return result;
+ }
+ 
++struct ggml_tensor * ggml_mul_mat_id_q4nx(
++        struct ggml_context * ctx,
++        struct ggml_tensor  * as,
++        struct ggml_tensor  * b,
++        struct ggml_tensor  * ids) {
++    // 1bit-MONSTER Q4NX expert matmul: as is GGML_TYPE_Q4NX stored 3-D
++    // tile-major [8192, tiles_per_expert, n_expert] (each 8192-elem row =
++    // one 5120-byte tile; tiles of one expert are contiguous). b is the F32
++    // activation [k, ntokens] (k = logical in, multiple of 256), ids is the
++    // per-token expert selection [nselected, ntokens]. The dispatch
++    // dequantizes the selected experts and runs the f32 matmul. Result F32
++    // [tpe/n_tc*32, nselected, ntokens].
++    GGML_ASSERT(as->type == GGML_TYPE_Q4NX);
++    GGML_ASSERT(as->ne[0] == GGML_Q4NX_TILE_COLS * GGML_Q4NX_TILE_ROWS); // 8192
++    GGML_ASSERT(b->type == GGML_TYPE_F32);
++    GGML_ASSERT(b->ne[0] % GGML_Q4NX_TILE_COLS == 0);
++    GGML_ASSERT(!ggml_is_transposed(as) && !ggml_is_transposed(b));
++
++    const int64_t n_tc  = b->ne[0] / GGML_Q4NX_TILE_COLS; // column tiles
++    const int64_t tpe   = as->ne[1];                       // tiles per expert
++    GGML_ASSERT(n_tc >= 1 && tpe % n_tc == 0);
++    const int64_t rows  = (tpe / n_tc) * GGML_Q4NX_TILE_ROWS;
++    const int64_t ne[4] = { rows, ids->ne[0], b->ne[2], 1 };
++    struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
++
++    result->op     = GGML_OP_MUL_MAT_ID_Q4NX;
++    result->src[0] = as;
++    result->src[1] = b;
++    result->src[2] = ids;
++
++    return result;
++}
++
+ // ggml_out_prod
+ 
+ static inline bool ggml_can_out_prod(const struct ggml_tensor * t0, const struct ggml_tensor * t1) {
+-- 
+2.53.0
+

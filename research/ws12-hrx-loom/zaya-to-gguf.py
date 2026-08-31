@@ -109,12 +109,12 @@ def main():
 
     def add_bf16(name, shape, bytes_):
         # shape is the GGUF (file) dims == ggml ne reversed: (ne_last .. ne_0)
-        if mode == 'f32':
-            arr = bf16_to_f32(np.frombuffer(bytes_, dtype=np.uint16)).reshape(-1)
-        else:
-            arr = np.frombuffer(bytes_, dtype=np.uint16).reshape(-1)
+        # Keep the small BF16 tensors (scales/biases/norms/conv) as F32 in
+        # BOTH modes: the CPU backend cannot binary-op f32 activations with
+        # bf16 weights, and these tensors are tiny.
+        arr = bf16_to_f32(np.frombuffer(bytes_, dtype=np.uint16)).reshape(-1)
         arr = arr.reshape(shape[::-1])
-        w.add_tensor(name, arr, raw_dtype=0 if mode == 'f32' else 30)
+        w.add_tensor(name, arr, raw_dtype=0)
 
     def add_i8(name, logical_shape, bytes_):
         rows, cols = logical_shape
@@ -132,7 +132,14 @@ def main():
         n_tiles = (rows // 32) * n_tc
         assert len(bytes_) == n_tiles * 5120, f"{name}: {len(bytes_)} vs {n_tiles*5120}"
         if mode == 'q4nx':
-            w.add_tensor(name, np.frombuffer(bytes_, dtype=np.uint8), raw_shape=[n_tiles, 5120], raw_dtype=42)
+            # 3-D Q4NX: [n_exp, tiles_per_expert, 5120 bytes/tile] -> ggml ne
+            # [8192, tiles_per_expert, n_expert] (tiles per expert contiguous).
+            # quant_shape_from_byte_shape turns the trailing 5120 bytes into
+            # 8192 elements, so file dims are [n_exp, tpe, 8192] -> ne
+            # [8192, tpe, n_exp].
+            tpe = n_tiles // n_exp
+            assert n_tiles % n_exp == 0, f"{name}: {n_tiles} % {n_exp}"
+            w.add_tensor(name, np.frombuffer(bytes_, dtype=np.uint8), raw_shape=[n_exp, tpe, 5120], raw_dtype=42)
         else:
             f32 = dequant_tiles(np.frombuffer(bytes_, dtype=np.uint8), rows, cols, n_tc)
             w.add_tensor(name, f32.reshape(n_exp, n_ff, H), raw_dtype=0)
@@ -150,9 +157,11 @@ def main():
 
     emb_bytes = read_i8("model.embed_tokens.weight")
     if mode == 'q4nx':
+        # embedding dequantized to F32 [VOCAB, H] (GGUF dims [VOCAB, H] ->
+        # ggml ne [H, VOCAB]). F32 keeps the CPU/HRX binary ops and the tied
+        # output matmul working (no BF16 matmul path in the backends).
         f32 = dequant_tiles(np.frombuffer(emb_bytes, dtype=np.uint8), VOCAB, H, H // 256)
-        u16 = f32.view(np.uint32) >> 16
-        w.add_tensor("token_embd.weight", u16.astype(np.uint16).reshape(-1), raw_dtype=30)
+        w.add_tensor("token_embd.weight", f32.reshape(VOCAB, H), raw_dtype=0)
     else:
         add_i8("token_embd.weight", (VOCAB, H), emb_bytes)
 
