@@ -95,7 +95,7 @@ jobs:
               jq -r 'if .data then
                        ([.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[] |
                          { tag: .dimensions.siteTag, path: .dimensions.requestPath, views: .sum.visits }]
-                        | .[] | "\(.tag[0:8])…\t\(.views)\t\(.path)")
+                        | .[] | "\(.tag)\t\(.views)\t\(.path)")
                      else "health query failed: \(.errors[0].message // "unknown")" end'
           else
             echo "Site token has data — no drift detected."
