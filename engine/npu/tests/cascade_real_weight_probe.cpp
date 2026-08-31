@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
     for (int col = 0; col < n_cols; col++)
         for (int ki = 0; ki < n_k; ki++)
             for (int cg = 0; cg < n_cg; cg++) {
-                long base = ((long)col * n_cg * n_k + ki * n_cg + cg) * AB_tile;
+                long base = ((long)col * n_cg * n_k + cg * n_k + ki) * AB_tile;
                 int8_t* A = ab.data() + base;
                 int8_t* B = A + m * k;
                 int j0 = (cg * n_cols + col) * 64;
@@ -143,16 +143,25 @@ int main(int argc, char** argv) {
                     B[0 * 128 + 2 * br_p] = 1;
                     B[0 * 128 + 2 * br_p + 1] = 1;
                 } else if (!lay && !bread) {
-                    // DIRECT B_gu packing: B[r*128 + 2j] = w1[j0+j][ki*64+r],
-                    // 2j+1 = w2 — the interleaved gate/up convention (this is
-                    // the closest GU hypothesis on silicon; the D-side is the
-                    // pinned contract, the GU-side's exact reindex is the
-                    // remaining open item).
-                    for (int r = 0; r < k; r++)
-                        for (int j = 0; j < 64; j++) {
-                            int hi = ki * 64 + r;
-                            B[r * 128 + 2 * j]     = (int8_t)q127(w1[(size_t)(j0 + j) * H + hi], gu_is);
-                            B[r * 128 + 2 * j + 1] = (int8_t)q127(w2[(size_t)(j0 + j) * H + hi], gu_is);
+                    // DERIV-INVERSE B_gu packing (the silicon read formula,
+                    // confirmed by the guread one-hot-A probes 64/64):
+                    //   B(K, n) = B_tile[n/16 + 8·(K/8),
+                    //                64·((n/8)%2) + (K%8)·8 + n%8]
+                    // So for output pair j (gate n=2j, up n=2j+1) and K within
+                    // the ki slice, the weight w1[j0+j][ki*64+K] must sit at
+                    //   row = j/8 + 8·(K/8)
+                    //   col = 64·((j/4)%2) + (K%8)·8 + 2·(j%4)   [gate]
+                    //   col = 64·((j/4)%2) + (K%8)·8 + 2·(j%4)+1 [up]
+                    // (j, K) → (row, col) is a bijection onto the even/odd
+                    // cols, so every B-tile position is filled exactly once.
+                    // The old DIRECT pack (B[r][2j] = w1[j0+j][ki*64+r]) only
+                    // coincides at j<8 ∧ K%8==0 and was the GU open item.
+                    for (int j = 0; j < 64; j++)
+                        for (int K = 0; K < k; K++) {
+                            int row = j / 8 + 8 * (K / 8);
+                            int cgc = 64 * ((j / 4) % 2) + (K % 8) * 8 + 2 * (j % 4);
+                            B[row * 128 + cgc]     = (int8_t)q127(w1[(size_t)(j0 + j) * H + ki * 64 + K], gu_is);
+                            B[row * 128 + cgc + 1] = (int8_t)q127(w2[(size_t)(j0 + j) * H + ki * 64 + K], gu_is);
                         }
                 }
             }
@@ -468,12 +477,15 @@ int main(int argc, char** argv) {
     for (int col = 0; col < n_cols; col++)
         for (int cg = 0; cg < n_cg; cg++) {
             int j0 = (cg * n_cols + col) * 64;   // MUST shadow the C-lib ::j0 (Bessel)
-            long base = ((long)col * n_cg * n_k + 0 * n_cg + cg) * AB_tile;
-            const int8_t* A = ab.data() + base;
             for (int j = 0; j < 64; j++) {
                 long g = 0, u = 0;
                 for (int ki = 0; ki < n_k; ki++) {
-                    const int8_t* B = ab.data() + ((long)col * n_cg * n_k + ki * n_cg + cg) * AB_tile + m * k;
+                    // A must be the ki-th element's A-tile (h2 slice ki*64);
+                    // the previous version pinned A at ki=0 and reused it for
+                    // every ki — a mirror bug that decoupled the mirror from
+                    // the kernel's per-ki A delivery.
+                    const int8_t* A  = ab.data() + ((long)col * n_cg * n_k + cg * n_k + ki) * AB_tile;
+                    const int8_t* B  = A + m * k;
                     // GU mirror — SILICON-CONFIRMED read (guread one-hot-A
                     // probes: 32/32): B(K, n) = B_tile[n/16 + 8·(K/8),
                     // 64·((n/8)%2) + (K%8)·8 + n%8], and the A-tile is
@@ -522,7 +534,7 @@ int main(int argc, char** argv) {
           for (int jj = 0; jj < 8; jj++) { int j = jj * 8;
               long g = 0, u = 0;
               for (int ki = 0; ki < n_k; ki++) {
-                  const int8_t* B = ab.data() + ((long)0 * n_cg * n_k + ki * n_cg + 0) * AB_tile + m * k;
+                  const int8_t* B = ab.data() + ((long)0 * n_cg * n_k + 0 * n_k + ki) * AB_tile + m * k;
                   for (int i = 0; i < 8; i++)
                       for (int kp = 0; kp < 8; kp++) {
                           int rg2 = 8 * i + j / 8;
