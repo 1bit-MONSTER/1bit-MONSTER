@@ -305,6 +305,18 @@ def sync_lemonade(today):
     anchor = '          <article class="log-row" data-od-id="post-'
     assert anchor in blog, "1bit-blog.html log-row anchor not found"
     blog = blog.replace(anchor, card + anchor, 1)
+
+    # keep the Blog schema's blogPost array in lockstep with the new card:
+    # seo_sync is the only writer of lemonade cards, and without this the
+    # JSON-LD silently drops the newest post (v11.8.1 was missing entirely).
+    # Same headline as the card; a human refines both together.
+    ld_entry = ('{"@type":"BlogPosting","headline":"Lemonade v' + ver +
+                ', and how we stay current with the SDK","url":"https://1bit.monster/' +
+                new_name + '"}')
+    ld_anchor = '"blogPost":['
+    assert ld_anchor in blog, "1bit-blog.html blogPost anchor not found"
+    blog = blog.replace(ld_anchor, ld_anchor + ld_entry + ',', 1)
+
     with open(blog_path, "w", encoding="utf-8") as f:
         f.write(blog)
 
