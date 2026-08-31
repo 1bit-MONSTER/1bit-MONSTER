@@ -182,10 +182,10 @@
             <tr><td>max |dlogit|</td><td>0.0041 &mdash; top-1 margin is 1,681&times; the noise</td></tr>
             <tr><td>top-5 tokens</td><td>identical to F32</td></tr>
             <tr><td>F32 port vs HF greedy</td><td>8/8 top-1</td></tr>
-            <tr><td>prefill (pp32)</td><td>36.8 t/s</td></tr>
+            <tr><td>prefill (pp32)</td><td>72.1 t/s</td></tr>
             <tr><td>decode (tg32)</td><td>10.9 t/s</td></tr>
             <tr><td>decode, pre-optimization</td><td>1.22 t/s (&asymp;9&times; faster now)</td></tr>
-            <tr><td>prefill, pre-optimization</td><td>2.1 t/s (&asymp;17&times; faster now)</td></tr>
+            <tr><td>prefill, pre-optimization</td><td>2.1 t/s (&asymp;34&times; faster now)</td></tr>
             <tr><td>llama-server prompt / decode</td><td>18.1 / 8.16 t/s</td></tr>
           </tbody>
         </table>
@@ -202,6 +202,7 @@
         <p>Profiling corrected the map. The F32 attention matmuls actually run on the <b>CPU</b> &mdash; the HRX2 backend never claimed plain MUL_MAT, and the CPU&rsquo;s AVX-512 handles them well (that CPU path is the real wall at ~11 t/s). Moving them to the NPU&rsquo;s naive f32 kernel is bit-correct but <b>slower</b> (9.9 t/s), so the gating stays.</p>
         <p>The fused dequant+matmul lever is structurally blocked, not just slow: Q4NX packs 4-bit values with an 8-byte column stride, so the contiguous vector loads that make the in-tree Q4_K kernel fast don&rsquo;t apply.</p>
         <p>The real win came from the split, not the kernels: the all-CPU F32 path runs 16.5 t/s while the hybrid CPU&harr;HRX2 split ran 11.0 &mdash; every HRX2-claimed pointwise op adds a crossing that costs more than the NPU saves. Restricting HRX2 to exactly the Q4NX matmuls (plus the recurrent state&rsquo;s ops) took the Q4NX decode from 8.9 to <b>10.9 t/s</b> (+23%). The remaining gap to the 16.5 t/s CPU ceiling is the price of 79% less memory.</p>
+        <p>Prefill&rsquo;s gap was the per-token expert dequant: MUL_MAT_ID_Q4NX dispatched one dequant per (selected, token) pair, so a 32-token batch dequantized every expert once per token. A new table-scatter matmul kernel (one dispatch reads/writes arbitrary output columns through i32 tables) groups tokens by expert &mdash; <b>one dequant per distinct expert per batch</b>. Prefill went from 36.8 to <b>72.1 t/s</b> (+96%), decode untouched (size-1 groups keep the proven path).</p>
       </div>
     
     <section class="related">
