@@ -845,3 +845,25 @@ follow-up. The dequant+mm split at 33.9/8.4 t/s stands.
 
 The catalog/source/artifact scaffolding for the fused route was fully
 reverted (zero net diff); the experiment is preserved in this write-up.
+
+## Round 17 — llama-server serves zaya Q4NX on HRX20 over HTTP (2026-08-31)
+
+The full product path now runs end-to-end: `llama-server` serving the Q4NX
+zaya model on the HRX2 backend.
+
+```
+llama-server -m zaya-q4nx.gguf -ngl 99 -c 256 -b 64 --parallel 1 -fit off --port 8099
+curl /v1/completions {"prompt":"The Eiffel Tower is in the city of","n_predict":40,"temperature":0}
+→ " Paris.\n\nThe user is asking if these examples follow a specific pattern..."
+  prompt: 18.1 t/s | decode: 8.16 t/s (server timings)
+```
+
+Notes:
+- The server's **auto `n_parallel=4` params-fit probe aborts**:
+  `pre-allocated tensor (cache_s_l0 ...) in a buffer (HRX20) that cannot run
+  the operation (CPY)` — the multi-parallel recurrent-state CPY shape is not
+  supported by `ggml_backend_hrx2_supports_cpy`. Workaround: `--parallel 1
+  -fit off`. Supporting the parallel CPY is a small follow-up.
+- Hit-rate measurement (decode expert repeat, per-op last-expert): 0.47
+  overall — a 1-slot dequant cache would recover ~10% decode, not worth the
+  machinery vs the bandwidth-bound wall. Documented, not implemented.
