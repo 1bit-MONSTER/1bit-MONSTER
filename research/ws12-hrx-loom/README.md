@@ -924,3 +924,25 @@ F32 path and any future F32-attention model), or (b) the Q4NX MoE traffic
 (F16 intermediate / expert cache), both bounded kernel projects. The
 fused-dequant direction remains structurally blocked (Q4NX's
 column-strided packed layout; see round 16).
+
+## Round 19 — the hybrid split was the wall: minimal HRX2 claims (+23% decode)
+
+Profiling showed the F32 port at **ngl=0 (all CPU) runs tg32 16.5 t/s vs
+11.0 with the hybrid split** — the CPU↔HRX2 shuttling is net-negative, and
+every HRX2-claimed pointwise op (ADD/MUL/CONT/RMS_NORM…) adds a crossing
+that costs more than the NPU saves.
+
+Fix (fork `94de1a5`+): `device_supports_op` now claims **only** the Q4NX
+matmuls (MUL_MAT_Q4NX / MUL_MAT_ID_Q4NX), the recurrent state's data ops
+(SCALE/CPY/SET_ROWS — they must run where cache_s_l0 lives), and the
+metadata view ops. All activation pointwise, rope, softmax, router and conv
+stay on CPU.
+
+| metric | before (broad claims) | after (minimal claims) |
+|---|---|---|
+| tg32 | 8.9 t/s | **10.9 t/s** (+23%) |
+| pp32 | 35.5 t/s | 36.8 t/s |
+
+Correctness unchanged: logits corr 0.9999999861, top5 identical. Q4NX decode
+now matches the F32 hybrid (11.0 t/s) and is 34% off the all-CPU F32 ceiling
+(16.5 t/s). Also removed leftover ZAYA_DUMP traces from zaya.cpp.
