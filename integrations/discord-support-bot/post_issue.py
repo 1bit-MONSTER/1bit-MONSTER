@@ -34,6 +34,7 @@ import os
 import re
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 
 # Absolute bot-directory anchor: cron runs with an arbitrary CWD, so a
@@ -128,39 +129,92 @@ def forum_tags() -> dict[str, str]:
 
 
 def forum_threads() -> tuple[list[dict], bool]:
-    """All existing posts (active + archived); returns (threads, complete).
+    """All existing posts (archived + active-if-available); (threads, complete).
 
     Used for idempotent posting and deleted-post detection: a post whose
     name starts with "#N " means issue N is already mirrored.
 
-    Pagination notes: the archived-public endpoint honors a `before`
-    cursor and is walked page by page; the active endpoint caps at 100
-    results and does NOT paginate with `before` (it is fetched once —
-    posts auto-archive after 7 days, so >100 active is unlikely).
+    The active listing (`/threads/active`) is NOT reliable — it returns
+    404 on this API version even for accessible channels (known Discord
+    issue, discord-api-docs#3018) — so it is best-effort: a 404 there is
+    expected and does NOT fail the listing. The archived-public endpoint
+    is paginated with a `before` cursor and is the authoritative scan;
+    callers that need to see active posts use forum_search_issue().
 
-    ``complete`` is False when any page failed to load — callers must NOT
-    treat an absent thread as deleted when the listing itself failed.
-    Note: the archived flag lives under thread_metadata.archived, not at
-    the top level of the thread object.
+    ``complete`` is False only when the archived scan itself failed —
+    callers must NOT treat an absent thread as deleted then. The archived
+    flag lives under thread_metadata.archived, not top-level.
     """
     out: list[dict] = []
     complete = True
-    for base in ("/threads/active?limit=100", "/threads/archived/public?limit=100"):
-        paginate = "archived" in base  # only the archived endpoint takes `before`
-        cursor = ""
-        while True:
-            try:
-                path = f"/channels/{ISSUE_TRACKER_CHANNEL_ID}{base}{cursor}"
-                data = _api("GET", path)
-            except Exception:  # noqa: BLE001 — best-effort; a listing failure
-                complete = False  # must not block posting (idempotency is a bonus)
-                break
-            threads = data.get("threads") or []
-            out.extend(threads)
-            if not paginate or not data.get("has_more") or not threads:
-                break
-            cursor = f"&before={threads[-1]['id']}"
+    try:
+        data = _api("GET", f"/channels/{ISSUE_TRACKER_CHANNEL_ID}/threads/active?limit=100")
+        out.extend(data.get("threads") or [])
+    except Exception:  # noqa: BLE001 — the active endpoint often 404s (unavailable)
+        pass           # archived + search cover the rest; not a listing failure
+    cursor = ""
+    while True:
+        try:
+            path = f"/channels/{ISSUE_TRACKER_CHANNEL_ID}/threads/archived/public?limit=100{cursor}"
+            data = _api("GET", path)
+        except Exception:  # noqa: BLE001
+            complete = False
+            break
+        threads = data.get("threads") or []
+        out.extend(threads)
+        if not data.get("has_more") or not threads:
+            break
+        cursor = f"&before={threads[-1]['id']}"
     return out, complete
+
+
+_GUILD_ID: str | None = None
+
+
+def _guild_id() -> str:
+    global _GUILD_ID
+    if _GUILD_ID is None:
+        _GUILD_ID = _api("GET", f"/channels/{ISSUE_TRACKER_CHANNEL_ID}").get("guild_id", "") or ""
+    return _GUILD_ID
+
+
+def forum_search_posts(query: str) -> list[dict]:
+    """Guild message search scoped to the issue-tracker forum channel.
+
+    Works even when /threads/active is unavailable. Forum posts are
+    threads, so a matching message's ``channel_id`` IS the post's thread
+    id (only messages whose channel_id differs from the forum channel
+    itself are returned).
+    """
+    gid = _guild_id()
+    if not gid:
+        return []
+    q = urllib.parse.quote(query)
+    try:
+        data = _api("GET", f"/guilds/{gid}/messages/search"
+                           f"?channel_id={ISSUE_TRACKER_CHANNEL_ID}&query={q}")
+    except Exception:  # noqa: BLE001 — best-effort
+        return []
+    out = []
+    for group in data.get("results") or []:
+        for m in group:
+            cid = m.get("channel_id")
+            if cid and cid != ISSUE_TRACKER_CHANNEL_ID:
+                out.append(m)
+    return out
+
+
+def forum_search_issue(number: int) -> str | None:
+    """Find the forum post (thread id) for an issue, or None.
+
+    The starter message always contains the issue URL
+    (https://github.com/1bit-MONSTER/1bit-MONSTER/issues/N), so a search
+    for ``issues/N`` scoped to the forum finds the post whether it is
+    active or archived.
+    """
+    for m in forum_search_posts(f"issues/{number}"):
+        return m["channel_id"]
+    return None
 
 
 def thread_exists(thread_id: str) -> bool | None:

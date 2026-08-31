@@ -16,6 +16,7 @@ import os
 import subprocess
 import sys
 import time
+import urllib.parse
 import urllib.request
 
 sys.path.insert(0, "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot")
@@ -96,6 +97,40 @@ def _channel_has_digest(channel_id: str, day: str) -> bool:
         return False  # unknown — let the post attempt go ahead
 
 
+def _forum_search_has_digest(day: str) -> bool:
+    """Guild message search fallback for the forum-mode dedupe.
+
+    The active-threads listing caps at 100, so today's digest post can
+    fall outside it; the search endpoint sees the whole channel.
+    """
+    marker = f"Issue digest {day}"
+    try:
+        # resolve the guild id from the forum channel
+        req = urllib.request.Request(
+            API + f"/channels/{FORUM_CHANNEL}",
+            headers={"Authorization": "Bot " + TOKEN, "User-Agent": UA},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            guild_id = json.loads(r.read()).get("guild_id", "")
+        if not guild_id:
+            return False
+        q = urllib.parse.quote(marker)
+        req = urllib.request.Request(
+            API + f"/guilds/{guild_id}/messages/search?channel_id={FORUM_CHANNEL}&query={q}",
+            headers={"Authorization": "Bot " + TOKEN, "User-Agent": UA},
+        )
+        with urllib.request.urlopen(req, timeout=20) as r:
+            data = json.loads(r.read())
+        # search returns {results: [[message, ...], ...], total_results}
+        for group in data.get("results") or []:
+            for m in group:
+                if marker in (m.get("content") or ""):
+                    return True
+        return False
+    except Exception:  # noqa: BLE001
+        return False  # unknown — let the post attempt go ahead
+
+
 def main() -> int:
     if not TOKEN:
         print("error: no DISCORD_TOKEN", file=sys.stderr)
@@ -159,11 +194,17 @@ def main() -> int:
         print(f"digest posted to channel {digest_channel} (msg {mid})")
     else:
         # Forum mode: dedupe against existing "Issue digest <day>" posts.
+        # The active listing caps at 100 (no pagination), so a same-day
+        # post can fall outside it — fall back to a guild message search
+        # for the dated digest name before posting a duplicate.
         threads, _ = forum_threads()
         existing = [t for t in threads
                     if (t.get("name") or "").startswith(f"Issue digest {day}")]
         if existing:
             print(f"digest for {day} already posted ({existing[0]['id']}) — skipping")
+            return 0
+        if _forum_search_has_digest(day):
+            print(f"digest for {day} found via search — skipping")
             return 0
         tags = forum_tags()
         ids = [tags[t] for t in ("inquiry", "pending", "defcon-5") if t in tags]

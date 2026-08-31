@@ -34,6 +34,7 @@ sys.path.insert(0, "/home/bcloud/1bit-MONSTER/integrations/discord-support-bot")
 from post_issue import (  # noqa: E402
     TAG_SEVERITY,
     desired_tags,
+    forum_search_issue,
     forum_tags,
     forum_threads,
     gh_issue,
@@ -194,7 +195,11 @@ def sync_post(state: dict, number: int, rec: dict, tags: dict) -> None:
 
 
 def main() -> int:
-    # Overlapping cron runs would double-post: one lock per run.
+    # Overlapping cron runs would double-post: one lock per run. The lock
+    # file lives next to the state file — create the parent dir first
+    # (~/.cache may not exist on a fresh host, and this runs BEFORE
+    # save_state's makedirs).
+    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
     lock_fh = open(STATE_FILE + ".lock", "w")
     try:
         fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -254,14 +259,23 @@ def main() -> int:
     # succeeds, last_issue only advances on success, and #N stays in
     # `failed` until it posts.
     for num in sorted(candidates):
-        if num in existing:
+        post = existing.get(num)
+        if post is None:
+            # /threads/active is unreliable (404 on this API version), so
+            # the name-based map may miss active posts — search-scope the
+            # idempotency by the issue URL fragment before posting.
+            tid = forum_search_issue(num)
+            if tid:
+                post = {"id": tid, "name": f"#{num} (search)", "thread_metadata": {}}
+                print(f"#{num}: found via search ({tid}) — recording, not re-posting")
+        if post is not None:
             # Already mirrored (crash/timeout recovery) — record, don't re-post.
             if num in failed:
                 failed.remove(num)
-            posts[str(num)] = {"thread": existing[num]["id"], "state": "OPEN",
+            posts[str(num)] = {"thread": post["id"], "state": "OPEN",
                                "tags": [],
-                               "archived": bool((existing[num].get("thread_metadata") or {}).get("archived"))}
-            print(f"#{num} already posted ({existing[num]['id']}) — recorded, not re-posted")
+                               "archived": bool((post.get("thread_metadata") or {}).get("archived"))}
+            print(f"#{num} already posted ({post['id']}) — recorded, not re-posted")
             if num > after:
                 state["last_issue"] = num
             save_state(state)
