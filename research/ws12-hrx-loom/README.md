@@ -772,3 +772,30 @@ generation:        "<think> ... So answer: Paris. ... </think> Paris."
 
 - Remove the last debug scaffolding, commit fork + 1bit-MONSTER
   (`feat/hrx-gfx1151-build`), regenerate `patches/` snapshot.
+
+## Round 15 — Zaya Q4NX decode 7–12× faster: kill the per-tile copy storm (2026-08-31)
+
+The Q4NX dispatch uploaded each tile with **3 stream copies** (scales / zp /
+packed): one gate_up expert slice (1024 tiles) enqueued 3072 copy commands,
+and a single decoded token touched ~9200 stream ops — that launch overhead,
+not NPU compute, was the 1.2 t/s wall.
+
+Fix (fork `76ab40d`): expert tiles are **contiguous** in src0
+(tile `(t,e)` at `(e*tpe+t)*5120`), so a slice is one copy. The dequant
+kernel now reads the raw tile-major blob via three views of the same buffer
+(dispatch binds it at offsets 1024/0/512 for packed/scales/zeros); the
+section-assembling scratch (`q4nx_zp`/`q4nx_pck`) is gone.
+
+| metric | before | after | speedup |
+|---|---|---|---|
+| prompt eval | 1.97 t/s | 24.08 t/s | 12.2× |
+| generation  | 1.22 t/s |  8.66 t/s |  7.1× |
+
+Correctness unchanged: logits corr 0.99999999 vs F32 port (max |Δ| 4.1e-3 —
+the float32 summation-order noise floor, 1,700× below the top-1 margin),
+top5 identical, coherent generation.
+
+Harness note: the post-reboot recreation of `gtok_hrx` had a KV position bug
+(`batch.pos = step+i` breaks multi-token prompts); fixed to a running
+position counter. Harnesses now live in `harnesses/` (reboot-proof; /tmp is
+tmpfs).
