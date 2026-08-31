@@ -73,6 +73,7 @@ jobs:
             .nojekyll CNAME apple-touch-icon.png assets favicon.ico favicon.svg
             index.html site.webmanifest  # 1bit.monster root landing files — removal-only since 2026-08 (site now deploys from site/ via deploy.yml build_type=workflow; this root copy was a stale pre-Actions duplicate)
             community  # Fluxer community ops scripts (Discord #support + role theming) — 1bit.MONSTER community operations, product-adjacent ops tooling (see PR #1797)
+            patches  # vendored upstream kernel patch series for the engine's hardware enablement (AMD IOMMU PerfOpt + fused-cascade artifacts) — engine IOMMU/GPU stack work, documented in docs/research/amd-iommu-perfopt-strixhalo.md
           '
 
           CHANGED="$(git diff --name-only "$BASE" "$HEAD" | sed 's#/.*##' | sort -u)"
