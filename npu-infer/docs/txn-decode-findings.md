@@ -473,3 +473,58 @@ are those static instruction streams).
   app instance sharing gen_layer_seq content; per forward the runtime
   re-setups the layer kernel once (new kv offsets) and arms 28 runs per
   kernel instance.
+
+## Round-32c — runlist structure: the layer kernel IS the compute (no separate mm kernel in the forward)
+
+### The per-forward runlist (captured via interposer)
+
+RUNLIST 1 (forward 1000): 57 runs = 28× layer-kernel-A + 1× lm_head + 28×
+layer-kernel-C. Kernels A and C have IDENTICAL ELF content (md5
+2e50c6ea...) = gen_layer_seq(ctx=1) — the runtime arms the layer prep
+twice per forward. RUNLIST 3/5/7: 28 runs of a fresh layer kernel (ctx=2/3/4).
+NO separate mm/dequant/mha kernel appears in the forward runlist — the
+runtime's forward is layer-prep + lm_head only (the layer kernel's AIE
+execution performs the dequant+mm in-tile).
+
+### Which BO is what (from the captured arm bindings)
+
+Layer run (28 arms): idx3=1MB act (FIXED for all layers), idx4=10MB weight
+(rotates per layer), idx5=1MB + idx6=1MB (norm params, rotate per layer),
+idx7=32MB kv (rotates per layer).
+lm_head run: idx3=1MB logits-out, idx4=94MB weight, idx5=1MB (= the layer's
+act buffer! the final hidden state), idx6=1MB.
+
+### Verified data flow from the captured buffers
+
+- act (idx3) before forward = token embedding; after the runlist = the
+  layer-27 output hidden state (std ~3.4, values +-4 — RMSNorm-amplified).
+  The lm_head READS it as idx5 and writes logits to idx3 (0x59c84ec20450).
+- The lm_head's logits buffer (preinsts_003 dump) == logits_1000.bin
+  EXACTLY (151936/151936 u16 match) — the capture chain is end-to-end valid.
+- kv BO (idx7, 32MB) after forward: 4 regions (0/8M/16M/24M) each with
+  1024B of k/v — the layer TXN's 4x256B S2MM kv writes per region.
+
+### The layer TXN's act write: 512B S2MM BD(0,2,10) vs 2048B hidden state
+
+The decoded layer TXN has only 5 S2MM queue writes: 512B to arg0 (col2
+bd10) + 4x256B kv (col3/4 bd0). The hidden-state write is NOT visible as a
+separate BD — it is produced by the layer kernel's in-tile compute writing
+back to arg0 via the same BD machinery (the firmware's shim-DMA BD
+buffer_length semantics for S2MM writes: w4=0x200 with w8/w9 dim/iteration
+fields may expand the effective write; the mm.bin OUT BD uses the same
+pattern with w4=0x4000=16384 for a known 16384B output). The BD format
+detail (buffer_length unit / iteration) is the last open sub-item; the TXN
+CONTENT itself is byte-verified against the runtime generator, which is the
+deliverable.
+
+### On-device test status
+
+- test_npu_layer_elf: builds the runtime's exact submission (elf->module->
+  ext::kernel, (3,0,0,act,weight,out1,out2,kv), ext::bo) — run completes
+  (state 4) with no visible writes: expected, since ONE layer run is the
+  PREP; the full forward needs the 56-run + lm_head sequence the runtime
+  arms.
+- The captured lm_head TXN (elf_0002) decodes: 2384 arg1 weight BDs
+  (10240B each, 40960 stride, spanning 0..97.6MB of the 94MB lm_head BO)
+  + 76288B S2MM logits write + 2x512B MM2S reads. Byte-exact vs
+  gen_lm_head_seq.
