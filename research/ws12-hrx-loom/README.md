@@ -1228,6 +1228,30 @@ scale/zp per (row, group) loaded once — the same structure as the tbl-tiled
 prefill kernel. Estimated 1.5-2× decode if it doubles the effective
 bandwidth; deferred (kernel project with JIT-bounds risk).
 
+### Round 25f/g — rabbit hunt: dormant Q4_K kernels proven, dead code removed
+
+Two findings from sweeping for more "silent fallback" class bugs:
+
+- **Dead per-pair fallback removed (fork 8bd612d).** `dispatch_mul_mat_id_q4nx`
+  hardcoded `tbl_route = (kernel_route*)-1`, so the wrapper if always folded
+  true and the outer per-pair loop was DCE'd by the compiler — the same trap
+  that ate the round-25 dump instrumentation (debug placed after the grouped
+  block silently vanished at -O1+). The per-pair path for single-member
+  groups lives inside the grouped block (`group.size()==1` → slice_fused →
+  slice), so the dead loop was pure weight. Removed the fake pointer + loop.
+- **Q4_K kernels are correct on the NPU but slower than CPU (experiment,
+  reverted).** HRX2's `device_supports_op` claims only the Q4NX matmuls —
+  the in-tree Q4_K kernels (`mul_mat_q4_k_f32_static`, `dispatch_mul_mat_q4_k`)
+  were dormant; the "Q4_K native" roster numbers are CPU AVX-512, not NPU.
+  Claiming `GGML_OP_MUL_MAT` with Q4_K src0 makes the Q4_K models run on the
+  NPU and they are CORRECT (3B and 30B both "Paris.", the 30B output matches
+  the CPU reference exactly — the stock Q4_K mmid kernel handles per-expert
+  src1 right), but slower: 3B pp32 226 vs CPU 322, tg32 21 vs 39. The Q4_K
+  NPU kernels DO beat Q4NX NPU at prefill (226 vs 121.5) — the mature Q4_K
+  kernels are 1.9× faster than Q4NX dequant+mm — so reverted to keep the
+  faster CPU default; the dormant capability is proven if a CPU-less
+  deployment ever wants it.
+
 ### Round 25b — the MoE MUL_MAT_ID per-expert src1 bug (fork 49f07b6)
 
 The first MoE runs (30B, GLM) produced **garbage** ("_tcbonaut Sic" for
