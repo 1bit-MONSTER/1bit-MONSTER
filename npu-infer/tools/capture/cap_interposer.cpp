@@ -157,6 +157,26 @@ extern "C" void _ZN3xrt3run5startEv(void* self) {
     for (auto& kv : g_run_args[(unsigned long)self])
         fprintf(g_log, "%d:%zu ", kv.first, kv.second);
     fprintf(g_log, "]\n");
+    // post-run dump of the act BO (idx3) — the layer's output written in-place
+    if (getenv("CAP_POSTRUN_ACT")) {
+        auto it = g_run_bo_ptrs.find((unsigned long)self);
+        if (it != g_run_bo_ptrs.end()) {
+            auto a3 = it->second.find(3);
+            if (a3 != it->second.end()) {
+                try {
+                    xrt::bo* bo = reinterpret_cast<xrt::bo*>(const_cast<void*>(a3->second));
+                    const uint8_t* p = (const uint8_t*)bo->map();
+                    if (p) {
+                        char fname[256];
+                        snprintf(fname, sizeof(fname), "%s/postrun_act_%03d_%zx.bin", CAP_DIR, n, (size_t)a3->second);
+                        FILE* f = fopen(fname, "wb");
+                        if (f) { fwrite(p, 1, bo->size(), f); fclose(f); }
+                        fprintf(g_log, "POSTRUN_ACT -> %s\n", fname);
+                    }
+                } catch (...) {}
+            }
+        }
+    }
 }
 
 // ===== runlist::execute hook (per-forward TXN submissions) + post-exec BO dump =====

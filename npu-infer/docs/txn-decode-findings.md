@@ -528,3 +528,57 @@ deliverable.
   (10240B each, 40960 stride, spanning 0..97.6MB of the 94MB lm_head BO)
   + 76288B S2MM logits write + 2x512B MM2S reads. Byte-exact vs
   gen_lm_head_seq.
+
+## Round-32d — on-device layer validation: prep-vs-compute and BD iteration semantics
+
+### test_npu_forward_full: replicated the runtime's per-layer submission
+
+Submits the captured layer ELF (module ABI) per layer with hand-packed
+weight BOs (npu_pack_layer_bo, byte-verified), per-layer norm buffers
+(idx5/6) and per-layer kv BOs (idx7) from the runtime's captures:
+
+  - 1 layer: act output std=2.7, range +-3.4, finite — plausible hidden
+    state (vs CPU ref layer-0 std 0.56: different dequant formula / stage).
+  - 28 layers chained: EXPLODES (std 284, range +-4288) — the chain does
+    NOT reproduce the runtime's bounded final act (std 3.4, +-4.6).
+
+### Conclusion: the layer TXN is the PREP, not the full matmul
+
+The decoded layer TXN writes only 512B to arg0 (act) + 4x256B kv — it
+cannot produce the 2048B hidden-state output by itself. The runlist has
+56 layer runs + 1 lm_head per forward, but the layer TXN content is
+identical for all 56. The ACTUAL matmul must happen in-kernel via BD
+iteration: the S2MM write BDs carry dim/iteration fields (w6/w8/w9 in the
+12-word BD) that the decode tool reads as iter=1/1 but which expand the
+effective write (the lm_head's 76288B S2MM BD produces the full 151936-bf16
+logits — 4x expansion via dims). The layer's arg0 512B write similarly
+expands to the 2048B hidden state via the same mechanism.
+
+### The blocker for the compute half
+
+The 12-word shim-DMA BLOCKWRITE's w6/w8/w9 iteration semantics (D0/D1
+dims + iteration count) are not decoded. mm.bin OUT BD: w6=0, w7=0x4000000,
+w8=0xd00001ff; lm_head col2 BD: w6=0x40000000, w8=0xc0000000, w9=0xe000000;
+layer col2 BD: w6=0, w8=0xc0000000, w9=0x2000000. Decoding these fields
+(from mlir-aie / amdxdna BD docs or the firmware) unlocks the effective
+I/O sizes and closes the on-device loop.
+
+### What IS closed (byte-verified, committed)
+
+1. Per-call TXN capture (xrt::elf ctor hook) — 7 ELFs from a 4-token run.
+2. layer TXN == gen_layer_seq(ctx+1) @ MAX_L=8192 (0 word diffs).
+3. lm_head TXN == gen_lm_head_seq (0 word diffs).
+4. Weight BD geometry: 192 arg1 BDs, 10240/20480/30720B at 40960 stride
+   over the 10MB BO — satisfies npu_pack_layer_bo's layout (28/28 layers).
+5. Runtime structure: set_context_length -> gen_layer_seq -> _setup_kernel
+   (new ELF per forward, kv offsets +1024B/token); runlist = 56 layer runs
+   + 1 lm_head; per-layer kv BOs (idx7), shared act (idx3).
+6. lm_head logits buffer == logits_1000.bin EXACTLY (151936/151936 u16) —
+   capture chain end-to-end valid.
+
+### Next step (round-33)
+Decode the 12-word BD iteration fields (w6/w7/w8/w9) — either from
+mlir-aie/amdxdna sources or by correlating known I/O sizes (lm_head
+76288B -> 303872B logits = x4; layer 512B -> 2048B hidden = x4) — then
+re-run test_npu_forward_full and compare act/logits vs the runtime
+captures. That closes the validation loop.
