@@ -582,3 +582,58 @@ mlir-aie/amdxdna sources or by correlating known I/O sizes (lm_head
 76288B -> 303872B logits = x4; layer 512B -> 2048B hidden = x4) — then
 re-run test_npu_forward_full and compare act/logits vs the runtime
 captures. That closes the validation loop.
+
+## Round-33 — weight-BO byte-identity PROVEN + the runlist flow decoded
+
+### Byte-identity: packed weight BO == runtime's weight BO (0 diffs in 10MB)
+
+/tmp/pack_check regenerates npu_pack_layer_bo layer-0 output and compares
+against the runtime's captured layer-0 weight BO (post_002_59_...capR):
+
+    weight BO diff positions: 0 of 10485760  -> IDENTICAL
+
+The hand-rolled packer produces the EXACT bytes the runtime's layer kernel
+consumes. This closes the layout half with a direct byte-for-byte proof
+(the earlier 28/28 layer verification used the packer-vs-runtime BO compare;
+this round re-confirms on a fresh capture).
+
+### The 4x S2MM write expansion (76288B -> 303872B logits; 512B -> 2048B hidden)
+
+The lm_head TXN writes 76288B to arg0 (idx3=logits), yet the logits buffer
+holds 151936 bf16 = 303872B (verified 151936/151936 against logits_1000.bin
+AND logits_1001.bin on a fresh capture). The layer TXN writes 512B to arg0
+yet the act buffer holds 2048B. The ratio is ~4x for both. The queue-write
+repeat_count=0 and the BD dims are linear (D0=D1=0, iter=1), so the
+expansion is NOT visible in the TXN ops — it is firmware behavior in
+npu.dev.sbin (the amdxdna firmware parses TXNs; the host kernel defers
+parsing to firmware). mlir-aie's WriteBdToBlockWritePattern shows
+buffer_length = sizes[0..2] product in granularity/8 units (granularity=32
+bits -> bf16 count/2), but 76288 vs the expected 75968 (303872/4) differs
+by 320 — the exact unit is not yet pinned down.
+
+### Runlist flow decoded (forward disassembly + interposer)
+
+The runtime's forward (libqwen3_npu.so @0x401d0) runs a pipeline:
+  40742-4077d: run.start() (lm_head run) -> set_context_length (regenerates
+  the layer TXN for the NEXT context: gen_layer_seq + _setup_kernel + new
+  ELF) -> run.wait() -> sync_from_device
+  407ba: runlist.execute() (the 57-armed runlist: 28 layer prep + 1 lm_head
+  + 28 layer prep, all with module-embedded control code)
+
+The runtime registers layer.xclbin, mm.xclbin, dequant.xclbin, attn.xclbin
+(rodata strings), but the forward runlist only uses the layer + lm_head
+kernels (3 EXTKERNELs observed). The layer kernel's in-tile AIE execution
+performs the dequant+matmul (the mm/dequant/attn apps are registered but
+not invoked in this decode-forward path).
+
+### On-device loop status (honest)
+
+- Single layer: produces a plausible hidden state (std 2.7, +-3.4) with
+  packed weights (byte-identical) + captured norms + empty kv.
+- 28-layer chain: EXPLODES (std 284) with identical numbers regardless of
+  kv/norm/runlist-vs-sequential submission. The layer kernel's compute
+  diverges from the runtime — the root cause is in the module's in-tile
+  execution semantics (how the AIE program consumes the TXN-setup BDs and
+  streams the 4x-expanded act I/O). Closing this needs either the
+  npu.dev.sbin BD semantics or replicating the runtime's exact
+  lm_head-first pipeline order.
