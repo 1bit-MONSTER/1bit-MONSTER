@@ -61,15 +61,31 @@ jobs:
           fi
           echo "Site token: ${SITE_TOKEN:0:8}… (read from site/analytics.js)"
           # The dashboard embed token (SITE_TOKEN, read from analytics.js) maps to
-          # this dataset siteTag: Cloudflare attributes beacon events to the tag
-          # below, so querying by the embed token returns 0. Resolved 2026-08-31
-          # via the drift health check after re-creating the Web Analytics site.
-          SITE_TAG="${SITE_TAG:-4a2e28e96a7446c6a9933a0f816efc24}"
-          echo "Query tag: ${SITE_TAG:0:8}… (dataset siteTag for the embed token above)"
+          # a dataset siteTag; querying by the wrong tag returns 0. The mapping has
+          # rotated before (2026-08-31), so we auto-discover the active tag below
+          # instead of trusting a hardcoded value.
+          SITE_TAG="${SITE_TAG:-8734933780a54a7eb50fc0ead7e0f6d3}"
+          echo "Query tag (default): ${SITE_TAG:0:8}… (dataset siteTag for the embed token above)"
 
           TODAY=$(date -u +%Y-%m-%d)
           FROM=$(date -u -d "7 days ago" +%Y-%m-%d)
           echo "Window: $FROM .. $TODAY"
+
+          echo ""
+          echo "--- RUM tag discovery (drift-safe) ---"
+          # Find whatever siteTag actually has RUM data in this window so the
+          # totals/pages/referrers below report real numbers even if the beacon
+          # token → dataset tag mapping rotated.
+          DISCOVER_JSON=$(gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 1, filter: {date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { siteTag } sum { visits } } } } }")
+          DISCOVERED_TAG=$(echo "$DISCOVER_JSON" | jq -r '.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[0].dimensions.siteTag // empty')
+          DISCOVERED_VISITS=$(echo "$DISCOVER_JSON" | jq -r '.data.viewer.accounts[0].rumPageloadEventsAdaptiveGroups[0].sum.visits // 0')
+          if [ -n "$DISCOVERED_TAG" ] && [ "$DISCOVERED_TAG" != "$SITE_TAG" ]; then
+            echo "⚠ Tag drift: configured $SITE_TAG has no data — discovered active tag $DISCOVERED_TAG ($DISCOVERED_VISITS visits). Using it."
+            SITE_TAG="$DISCOVERED_TAG"
+          else
+            echo "Tag ${SITE_TAG:0:8}… is active ($DISCOVERED_VISITS visits in window)."
+          fi
+          echo "Query tag: ${SITE_TAG:0:8}…"
 
           echo ""
           echo "--- Totals ---"
@@ -91,10 +107,9 @@ jobs:
           echo ""
           echo "--- RUM health check (token drift detection) ---"
           # If the beacon token reports no data but the account has RUM data, the
-          # site tag in analytics.yml has drifted from the real RUM site. Discover
-          # the actual siteTag(s) so the report keeps working (2026-08-31: embed
-          # token 33fb8448… maps to dataset tag 4a2e28e9…; the old site 87349337…
-          # still holds legacy data).
+          # site tag has drifted from the real RUM site (2026-08-31: embed token
+          # 33fb8448… mapped to dataset tag 4a2e28e9… while legacy data sat under
+          # 87349337…; discovery above now handles this automatically).
           if [ "${TOTAL_VISITS:-0}" -eq 0 ] 2>/dev/null; then
             echo "⚠ Site token ${SITE_TOKEN:0:8}… has NO data in this window — checking for token drift:"
             gql "{ viewer { accounts(filter: {accountTag: \"$ACCOUNT_ID\"}) { rumPageloadEventsAdaptiveGroups(limit: 10, filter: {date_geq: \"$FROM\", date_leq: \"$TODAY\"}, orderBy: [sum_visits_DESC]) { dimensions { siteTag requestPath } sum { visits } } } } }" | \
