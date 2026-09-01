@@ -1160,8 +1160,12 @@ always matches).
 | GLM-4.7-Flash (Q4_K_XL name, real Q4_K/Q5_K/Q8_0/F16) | deepseek2 | MoE + shexp | **FIXED (round 25b): "Paris." == ref** |
 | Qwen3-Next-80B-A3B (UD-Q4_K_XL) | qwen3next | MoE 512 exp | **FIXED (round 25c): "Paris." == ref** — needed pointwise ncols caps raised to 1M (recurrent-state SCALE) |
 
-Not converted: Qwen2.5-7B (the local GGUF is a 15-byte "Entry not found"
-placeholder — needs download). GLM/Qwen3-Next "Q4_K_XL" filenames are UD
+| Qwen2.5-7B (Q4_K_M) | qwen2 | 197 | **"Paris." == Q4_K ref (round 25h)** |
+
+Not converted: none — the whole roster runs on the HRX lane. (The Qwen2.5-7B
+placeholder was a 15-byte "Entry not found" — the real split GGUF was
+downloaded from the official Qwen repo and merged with `llama-gguf-split`
+--merge, then converted.) GLM/Qwen3-Next "Q4_K_XL" filenames are UD
 marketing; tensors are standard Q4_K/Q5_K/Q8_0 types.
 
 ### Round 25c — qwen3next unblocked: pointwise ncols caps (fork f25f277)
@@ -1198,9 +1202,10 @@ concurrent bench runs fight over the NPU and pollute tg32 badly):
 | model | pp32 t/s | tg32 t/s |
 |---|---|---|
 | Qwen3-0.6B | 435.8 | 42.3 |
-| Qwen2.5-3B | 121.5 | 20.6 |
-| MiniCPM4-8B | 51.1 | 9.0 |
-| GLM-4.7 (30B-A3B MoE) | 49.9 | 12.5 |
+| Qwen2.5-3B | 121.5 | 23.3 (r16) |
+| Qwen2.5-7B | 55.2 | 11.7 |
+| MiniCPM4-8B | 51.1 | 10.4 (r16) |
+| GLM-4.7 (30B-A3B MoE) | 49.9 | 12.95 |
 | Qwen3-Coder-30B (MoE) | 49-50 | 14.3-15.5 |
 | Qwen3-Next-80B (MoE) | 32.2 | 7.2 |
 
@@ -1229,6 +1234,30 @@ workgroup, reading the 64 CONTIGUOUS packed bytes per tile-column-block
 scale/zp per (row, group) loaded once — the same structure as the tbl-tiled
 prefill kernel. Estimated 1.5-2× decode if it doubles the effective
 bandwidth; deferred (kernel project with JIT-bounds risk).
+
+### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
+
+The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
+— workgroup = 16 rows × 1 col, 256 lanes = 16 rows × 16 k-block-split, so
+each k-step reads **8 contiguous bytes** (the 16 rows' nibbles at
+`lane*2048 + ck*8 + 0..7`) instead of the per-pair kernel's 1-byte stride-8
+reads. Per-row reduction via workgroup scratch + barrier (the 16 k-block
+lanes per row write partials; lane kb==0 sums them). The dispatch prefers
+r16 for the per-pair path when rows%16==0 (always true for Q4NX geometry)
+and launches rows/16 workgroups.
+
+Three real bugs surfaced while landing it (all fixed): byte_idx must be
+relative to the tile lane (`rl/2`, not `abs_in_tile_row/2` — off-by-8 for
+the second lane → memory fault); the dispatch must launch **rows/16**
+workgroups (rows workgroups → `base_row = row0*16` overruns → fault); the
+scale index is `in_tile_row*8 + group` (missing `*8` → wrong values).
+
+tg32: 3B 20.6 → **23.3** (+13%), 8B 9.0 → **10.4** (+16%), GLM 12.5 →
+12.95; 30B/0.6B ~unchanged (grouped-path / launch-bound). All roster models
+re-verified "Paris." — the coalesced reads helped ~15%, less than the 1.5-2×
+estimate, so decode remains bandwidth-bound (now ~49 GB/s effective on the
+3B); the remaining ceiling is the NPU's actual memory path, not the access
+pattern.
 
 ### Round 25f/g — rabbit hunt: dormant Q4_K kernels proven, dead code removed
 
