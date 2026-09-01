@@ -203,8 +203,46 @@ DDR ──► Shim ──► MemTile ──► Main16 (Q4NX GEMM)
 | 2 | O+GU parallel launch — hide readback behind NPU | 50→55 | ✅ Done |
 | 3 | Cross-layer pipeline — overlap cd dequant + cq quantize | 55→58 | ✅ Done (C++) |
 | 4 | Software pipeline — II=1 inner loop, 4 MACs/cycle | 58→65 | 🔄 Vectorized kernel shipped (v26, M=128, ~110 GFLOPs); II=1 recompile pending (xchesscc) |
-| 5 | Full 32-tile grid | 65→70 | ❌ (xclbin rebuild) |
+| 5 | Full 32-tile grid | 65→70 | ✅ xclbins + wiring (M=128 set is v27 32-core, verified 0/3.1M err; M=32 r=4 decode FFN xclbins give 3.4-4.0× per-row B-DMA amortization, verified 0 err; fused backend `FUSED_BATCH` cap lifted 8→32, e2e verified) — e2e tok/s now attention/bandwidth-bound, not FFN-bound |
 | 6 | INT8 via Triton-XDNA (2.5× MAC density) | 70→85+ | ❌ (toolchain fix) |
+
+#### Full 32-tile grid — status (2026-08-30)
+
+- The M=128 4-op engine xclbins (`final_i8_{QKV,O,GU,D}_qwen3_0_6b.xclbin`)
+  were already v27 full-grid (4 core rows × 8 cols = 32 cores): their
+  instruction streams are byte-identical to a fresh v27 `aiecc` build, and
+  hardware verification is clean (all 4 ops, 0/3.1M cells,
+  `bench_gemm_analytical` both passes).
+- The decode FFN xclbins used only 1 core row (m1/m8, r=1 = 8 of 32 cores).
+  Rebuilt as **M=32 full-grid decode xclbins** (`m=8, r=4, c=8` →
+  `final_i8_{GU,D}_qwen3_0_6b_m32.{xclbin,txt}`): hardware-verified 0 errors,
+  and the B (weight) DMA now serves 32 rows per launch — the same wall time
+  that previously served 8:
+  - GU 1024×6144: 1.934 ms/8 rows → 2.258 ms/32 rows = 241.8 → 70.6 µs/row (**3.4×**)
+  - D 3072×1024: 0.944 ms/8 rows → 0.954 ms/32 rows = 118.0 → 29.8 µs/row (**4.0×**)
+- Wiring: the fused backend picks the family in `npu_state_create`
+  (`src/backend_fused_npu.cpp`): `FUSED_BATCH > 8` → m32 family (XM=32),
+  else m8 (XM=8) — m8 stays the single/small-batch default because its
+  launch is ~12% cheaper.  `src/backend_fused.cpp` lifts the batch cap from
+  8 to 32 when the m32 pair is present.  The NPU stability probe
+  (`tools/npu_stability_probe.cpp`) was fixed to test the family the backend
+  actually uses (it previously ran the fixed-128-row xclbins with MD=16 —
+  the documented #1207 broken config — and its dummy-weight feedback loop
+  overflowed float to +inf by iter 3, false-failing on healthy silicon).
+- E2E (bench_fused_batch, models/Qwen3-0.6B.1bp, NPU FFN engaged, coherent
+  token streams; re-measured 2026-08-30 after an `amdxdna` driver reload —
+  a fresh driver roughly doubled the NPU batch path): FUSED_BATCH=8 →
+  46 agg tok/s (m8); FUSED_BATCH=16 → 54 agg tok/s (m32, am=16);
+  FUSED_BATCH=32 → 93 agg tok/s (m32, 32 seqs; was 45-48 on the degraded
+  pre-reload driver).  The m32 per-batch wall grows only ~1.5× from 8 to 32
+  sequences (174 → 345 ms/batch) while delivering 4× the sequences.
+  GPU-only batch 32 remains ahead (289 agg tok/s — the GPU's batched FFN
+  kernels win at batch ≥ 8; the NPU path's value is freeing the GPU from FFN
+  work and the B-DMA amortization per row).  Beyond the FFN, the path is
+  attention/DDR-bandwidth-bound (per-layer events on the degraded driver
+  showed ~11.6 ms/layer attention + ~9.5 ms FFN wait at batch 32; the
+  attention path and zero-copy NPU FFN on SharedBO pages are the remaining
+  levers before the FFN amortization shows up fully e2e).
 
 ### INT8 GEMM kernel state (2026-07-31)
 

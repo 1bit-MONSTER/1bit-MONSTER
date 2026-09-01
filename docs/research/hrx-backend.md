@@ -92,10 +92,10 @@ the preferred path for models inside its fused node set.
 > `third_party/lemonade` re-vendor to `7953d7f` was pulled from **upstream**
 > `github.com/lemonade-sdk/lemonade`. Per the repo's `lemonade is LOCAL-ONLY`
 > rule, `third_party/lemonade` must be refreshed only from the local
-> `1bit-lemonade-v1170` worktree, never from upstream. This is flagged as an
-> open HIGH priority item in `research/TRACKING.md` (ws12-hrx-loom); do NOT
-> re-fetch from upstream. See `docs/research/hrx-engine-goal.md` for the live
-> end-state status.
+> `1bit-lemonade-v1170` worktree, never from upstream. **RESOLVED 2026-08-29:**
+> the local snapshot was synced to v11.8.1 + full HRX backend (now the
+> authoritative LOCAL-ONLY source); the repo's vendored content is byte-identical
+> to it and both `UPSTREAM.md` docs source locally. No upstream contact.
 
 ## Remaining (tracked in research/TRACKING.md ws12-hrx-loom)
 
