@@ -245,3 +245,36 @@ out[o] = in[G*(o/G) + (o/2)%(G/2) + (G/2)*(o%2)].
   semantics).
 - Engine integration: per-layer packer (done) + layer/mm TXN submission +
   arg binding (done in the test) + on-device validation loop.
+
+## Round-31d — THE KERNEL ABI: insts are a BO ARG, not the ERT instr slot
+
+Disassembly of npu_app::create_run (libqwen3_npu.so @0x4b9c0) — the runtime
+builds EVERY kernel run as:
+
+    run = xrt::run(kernel)
+    set_arg(0, 3)                       ; opcode
+    set_arg(1, 0)                       ; instr slot = 0
+    set_arg(2, 0)                       ; ninstr = 0
+    set_arg(3, data_buffer.bo)          ; bo0 = the data/insts buffer's BO
+    set_arg(4, weight_buffer.bo)        ; bo1 = the weight BO (10MB tiles / 94MB lm_head)
+
+The per-call TXNs are passed as a **BO ARGUMENT (bo0)**, NOT in the ERT
+(opcode, instr_bo, ninstr) slots — the firmware takes the control code from
+the bo0 buffer (coherent memory, written post-arg, no sync — so the BO sync
+hooks never see it). The runtime's 5-BO runs add bo2/bo3/bo4 (out/out/kv)
+via the caller.
+
+This explains the engine's behavior: the engine's ABI (3, instrs_bo,
+ninstr, ...) ALSO works (the ERT accepts the insts from the instr slot) —
+the engine's mm test DID execute with it. The remaining gap is the runtime's
+per-call mm insts CONTENT (generated per call; mm.bin is the shipped
+example) and the mm tile-window dequant geometry.
+
+## Next steps (round-32)
+
+- Fix the interposer's insts-BO capture (the buffer<uint8_t> BO is created
+  via the npu_app buffer path — hook that allocation) to obtain the
+  runtime's actual per-call TXNs.
+- Decode those TXNs (the decode_txn tool handles the format) -> the exact
+  per-projection mm geometry -> validate the mm path on device.
+- Engine integration + validation loop.

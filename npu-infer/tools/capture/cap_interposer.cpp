@@ -30,6 +30,7 @@ static FILE* g_log = nullptr;
 #include <set>
 #include <vector>
 static std::set<std::pair<unsigned long, size_t>> g_bo_sizes;
+static std::set<std::pair<unsigned long, size_t>> g_extbo_sizes;
 static long g_seq = 0;
 static std::map<unsigned long, std::string> g_bo_labels;
 
@@ -121,6 +122,15 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, co
         g_run_args[(unsigned long)self].push_back({idx, b->size()});
         ensure_log();
         fprintf(g_log, "SETARG %p idx=%d size=%zu bo=%p\n", self, idx, b->size(), (void*)bo);
+        // dump the idx3 BO (the runtime's insts BO per create_run: (3,0,0,insts,weight))
+        if (idx == 3 && b->size() <= 2000000) {
+            const uint8_t* pm = (const uint8_t*)b->map();
+            char fn[256];
+            snprintf(fn, sizeof(fn), "%s/insts_%04ld_%zu.bin", CAP_DIR, g_seq, b->size());
+            FILE* ff = fopen(fn, "wb");
+            if (ff) { fwrite(pm, 1, b->size(), ff); fclose(ff); }
+            fprintf(g_log, "INSTS_DUMP -> %s\n", fn);
+        }
     } catch (...) {}
 }
 // void xrt::run::run(const xrt::kernel&)
@@ -159,7 +169,36 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
     g_runlist_n++;
     fprintf(g_log, "RUNLIST %ld: execute\n", g_runlist_n);
     int n = 0;
+    // ext::bo objects (the runtime's data/insts BOs) — dump the small ones
+    for (auto& kv : g_extbo_sizes) {
+        if (kv.second > 2000000) continue;
+        try {
+            const uint8_t* pm = (const uint8_t*)reinterpret_cast<xrt::bo*>(kv.first)->map();
+            if (pm) {
+                char fname[256];
+                snprintf(fname, sizeof(fname), "%s/extsmall_%03ld_%02d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, (size_t)kv.first, kv.second);
+                FILE* f = fopen(fname, "wb");
+                if (f) { fwrite(pm, 1, kv.second, f); fclose(f); }
+                n++;
+            }
+        } catch (...) {}
+    }
     for (auto& kv : g_bo_sizes) {
+        // dump the small BOs too (the per-call instr TXNs are written via
+        // coherent map with no sync — their BOs are small)
+        if (kv.second < 1000000 && kv.second > 512) {
+            try {
+                xrt::bo* bo = reinterpret_cast<xrt::bo*>(kv.first);
+                size_t bosz = bo->size();
+                const uint8_t* p = (const uint8_t*)bo->map();
+                char fname[256];
+                snprintf(fname, sizeof(fname), "%s/small_%03ld_%02d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, (size_t)kv.first, bosz);
+                FILE* f = fopen(fname, "wb");
+                if (f) { fwrite(p, 1, bosz, f); fclose(f); }
+                n++;
+            } catch (...) {}
+            continue;
+        }
         if (kv.second < 1000000) continue;
         try {
             xrt::bo* bo = reinterpret_cast<xrt::bo*>(kv.first);
@@ -183,4 +222,53 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiPKv(void* self, int idx, const vo
     if (real_set_arg_v) real_set_arg_v(self, idx, val);
     ensure_log();
     fprintf(g_log, "SETARGV %p idx=%d val=%p\n", self, idx, val);
+}
+
+// xrt::ext::bo::bo(const xrt::device&, size_t) — the runtime creates ALL its
+// BOs through this (including the per-call instr TXN BOs, never synced).
+typedef void (*extbo_fn)(void*, const void*, size_t);
+static extbo_fn real_extbo = nullptr;
+extern "C" void _ZN3xrt3ext2boC1ERKNS_6deviceEm(void* self, const void* dev, size_t size) {
+    if (!real_extbo) real_extbo = (extbo_fn)dlsym(RTLD_NEXT, "_ZN3xrt3ext2boC1ERKNS_6deviceEm");
+    if (real_extbo) real_extbo(self, dev, size);
+    ensure_log();
+    g_extbo_sizes.insert({(unsigned long)self, size});
+    fprintf(g_log, "EXTBO %p size=%zu\n", self, size);
+    if (size <= 2000000) {
+        // ext::bo has its own map/size: use the C API on its handle
+        // xrt::ext::bo -> handle via get()? use xrtBOAddress on the first member
+        try {
+            const uint8_t* pm = (const uint8_t*)xrtBOMap((xrtBufferHandle)self);
+            if (pm) {
+                char fn[256];
+                snprintf(fn, sizeof(fn), "%s/extbo_%04ld_%zu.bin", CAP_DIR, g_seq, size);
+                FILE* ff = fopen(fn, "wb");
+                if (ff) { fwrite(pm, 1, size, ff); fclose(ff); }
+                fprintf(g_log, "EXTBO_DUMP size=%zu -> %s\n", size, fn);
+            }
+        } catch (...) {}
+    }
+}
+
+// void xrt::run::set_arg_at_index(int, const void*, size_t) — scalars and raw pointers
+typedef void (*set_arg3_fn)(void*, int, const void*, size_t);
+static set_arg3_fn real_set_arg3 = nullptr;
+extern "C" void _ZN3xrt3run16set_arg_at_indexEiPKvm(void* self, int idx, const void* val, size_t bytes) {
+    if (!real_set_arg3) real_set_arg3 = (set_arg3_fn)dlsym(RTLD_NEXT, "_ZN3xrt3run16set_arg_at_indexEiPKvm");
+    if (real_set_arg3) real_set_arg3(self, idx, val, bytes);
+    ensure_log();
+    uint64_t v = 0;
+    if (bytes >= 1 && bytes <= 8) memcpy(&v, val, bytes);
+    fprintf(g_log, "SETARG3 %p idx=%d bytes=%zu val=0x%llx\n", self, idx, bytes, (unsigned long long)v);
+}
+
+// xrt::ext::kernel ctor (hw_context, module, name) — the runtime creates its
+// kernels here; the module may carry the instruction control code.
+typedef void (*extk_fn)(void*, const void*, const void*, const void*);
+static extk_fn real_extk = nullptr;
+extern "C" void _ZN3xrt3ext6kernelC1ERKNS_10hw_contextERKNS_6moduleERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(void* self, const void* hw, const void* mod, const void* name) {
+    if (!real_extk) real_extk = (extk_fn)dlsym(RTLD_NEXT, "_ZN3xrt3ext6kernelC1ERKNS_10hw_contextERKNS_6moduleERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE");
+    if (real_extk) real_extk(self, hw, mod, name);
+    ensure_log();
+    fprintf(g_log, "EXTKERNEL %p\n", self);
 }
