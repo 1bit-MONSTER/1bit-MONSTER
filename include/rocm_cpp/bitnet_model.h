@@ -1921,6 +1921,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "hypermambalm") == 0) return RCPP_ARCH_MAMBA;
     if (strcmp(s, "impphi3") == 0) return RCPP_ARCH_PHI;
     if (strcmp(s, "latentmoellavaqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "latentmoellavaqwen3") == 0) return RCPP_ARCH_QWEN3;  // LLaVA-Qwen3 latent-sparse-MoE VLM (KKHYA/llavaqwen3-1.7b-*-latent-sparse-moe-*, census 2026-09-01; qwen3 text backbone, sibling of latentmoellavaqwen2)
     if (strcmp(s, "lfm2idk") == 0) return RCPP_ARCH_LFM2;
     if (strcmp(s, "lfm2moecustom") == 0) return RCPP_ARCH_LFM2;
     if (strcmp(s, "lightgpthuggingface") == 0) return RCPP_ARCH_GPT2;
