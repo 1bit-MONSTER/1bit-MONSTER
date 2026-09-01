@@ -70,6 +70,8 @@ for l in range(NLAY):
     v = dequant_proj(f'model.layers.{l}.self_attn.v_proj.weight', 1024)
     o = dequant_proj(f'model.layers.{l}.self_attn.o_proj.weight', 2048)
     qq = (q @ x).reshape(16, 128); kk = (k @ x).reshape(8, 128); vv = (v @ x).reshape(8, 128)
+    np.save('/tmp/txn_decode/my_k%d.npy' % l, kk.flatten())
+    np.save('/tmp/txn_decode/my_v%d.npy' % l, vv.flatten())
     # qwen3: q_norm / k_norm RMS before attention
     qn, _ = tensor(f'model.layers.{l}.self_attn.q_norm.weight')
     kn, _ = tensor(f'model.layers.{l}.self_attn.k_norm.weight')

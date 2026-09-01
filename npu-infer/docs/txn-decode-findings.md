@@ -195,3 +195,24 @@ out[o] = in[G*(o/G) + (o/2)%(G/2) + (G/2)*(o%2)].
 4. Layer TXN arg1 tile-window reads: 2 tiles per 8-tile stride — the
    mm/layer in-kernel dequant window arithmetic (next round: map onto the
    packed layer BO).
+
+## Round-31b — runtime hidden state captured (the validation target)
+
+1. **The runtime's ACT BO (the final hidden state) is now captured** (the
+   interposer tags post-exec dumps with BO addresses; the set_arg idx=3 BO =
+   the act). The runtime's final hidden (token 1000, layer-28 output) has
+   std ~27 with outliers to ±464 — the RMS-norm outlier amplification is
+   REAL in the runtime (my CPU ref shows the same phenomenon, growing to
+   ±136 at the post-norm / ±3290 pre-norm).
+2. **The runtime's kv-cache BO** (32MB, reused per layer): 8192 nonzero bf16
+   = 4 forwards x 2048 (one layer's k+v each). Layer k/v comparisons vs my
+   CPU ref: corr ~0 at every layer; my k values are ~1.5-50x smaller than
+   the runtime's per layer — the divergence starts at layer 0 and is
+   systematic (my dequant or attention differs subtly from the runtime's
+   in-kernel math).
+3. **Status**: the CPU-reference validation of the transformer math is
+   blocked on the exact in-kernel dequant/attention semantics. The LAYOUT
+   half (byte-exact packer, arg binding, kernel structure) is complete; the
+   MATH half has the full capture toolchain + CPU ref, with the divergence
+   pinpointed to the layer-0+ per-layer math (next round: capture the
+   runtime's per-layer act or compare layer-0 k/v via a single-layer probe).

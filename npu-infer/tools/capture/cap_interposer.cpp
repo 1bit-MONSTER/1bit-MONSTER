@@ -120,7 +120,7 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, co
         const xrt::bo* b = reinterpret_cast<const xrt::bo*>(bo);
         g_run_args[(unsigned long)self].push_back({idx, b->size()});
         ensure_log();
-        fprintf(g_log, "SETARG %p idx=%d size=%zu\n", self, idx, b->size());
+        fprintf(g_log, "SETARG %p idx=%d size=%zu bo=%p\n", self, idx, b->size(), (void*)bo);
     } catch (...) {}
 }
 // void xrt::run::run(const xrt::kernel&)
@@ -166,7 +166,7 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
             size_t bosz = bo->size();
             const uint8_t* p = (const uint8_t*)bo->map();
             char fname[256];
-            snprintf(fname, sizeof(fname), "%s/post_%03ld_%02d_%zu.bin", CAP_DIR, g_runlist_n, n, bosz);
+            snprintf(fname, sizeof(fname), "%s/post_%03ld_%02d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, (size_t)kv.first, bosz);
             FILE* f = fopen(fname, "wb");
             if (f) { fwrite(p, 1, bosz, f); fclose(f); }
             n++;
