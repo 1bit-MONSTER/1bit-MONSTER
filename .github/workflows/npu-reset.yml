@@ -12,8 +12,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Stop services
         run: |
-          sudo systemctl stop 1bit-systems.service 2>/dev/null || true
-          sudo systemctl stop unified-router.service 2>/dev/null || true
+          # Production embed-server is a user service (embed-server.service,
+          # port 8088) and can hold /dev/accel/accel0, which blocks the NPU
+          # driver unload below. Stop it first. (1bit-systems.service /
+          # unified-router.service no longer exist on this box.)
+          sudo -u bcloud env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user stop embed-server.service 2>/dev/null || true
           sleep 2
       - name: Swap firmware and reload driver
         run: |
@@ -34,4 +37,4 @@ jobs:
       - name: Restore services
         if: always()
         run: |
-          sudo systemctl start 1bit-systems.service 2>/dev/null || true
+          sudo -u bcloud env XDG_RUNTIME_DIR=/run/user/1000 systemctl --user start embed-server.service 2>/dev/null || true
