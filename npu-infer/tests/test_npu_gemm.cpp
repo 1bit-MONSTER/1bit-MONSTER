@@ -78,7 +78,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 1024; i++) x[i] = (i % 7) * 0.01f - 0.3f;
     for (int r = 0; r < 256; r++) {
         double acc = 0;
-        for (int c = 0; c < 1024; c++) acc += Wf[r*1024 + c] * x[c];
+        for (int c = 0; c < 1024; c++) acc += (double)Wf[r*1024 + c] * x[c];
         ref[r] = (float)acc;
     }
 
