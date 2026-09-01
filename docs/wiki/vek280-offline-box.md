@@ -1,5 +1,10 @@
 # VEK280 Offline AI Box (Versal + ARM host, battery powered)
 
+> **Superseded (Rev 2):** compute moved to the Versal AI Edge Gen 2 VEK385
+> kit, and the box gained behind-the-scenes dataset sync + LoRA. See
+> [vek385-offline-box.md](vek385-offline-box.md). This page keeps the
+> interconnect/power research that carries over unchanged.
+
 > Design research: a self-contained, offline AI inference box — AMD Versal
 > VEK280 eval kit as the accelerator, a low-power ARM SBC as host/controller,
 > USB4 external port, separate power rail, internal LiPo battery.

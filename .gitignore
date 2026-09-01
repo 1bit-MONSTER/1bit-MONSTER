@@ -38,6 +38,7 @@ dist/
 logs/
 models/*.1bp
 models/*.gguf
+models/FastFlowLM-Qwen3-0.6B-NPU2/
 *.o
 *.obj
 *.onnx
