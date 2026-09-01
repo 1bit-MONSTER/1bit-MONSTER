@@ -40,9 +40,14 @@ NpuBo& NpuBo::operator=(NpuBo&& other) noexcept {
     bo = std::move(other.bo); map = other.map; size = other.size; label = std::move(other.label);
     other.map = nullptr; other.size = 0; return *this;
 }
-bool NpuBo::create(xrt::device& device, size_t sz, const char* label_str) {
+bool NpuBo::create(xrt::device& device, size_t sz, uint32_t group_id, const char* label_str) {
     try {
-        bo = std::make_unique<xrt::bo>(device, sz, xrt::bo::flags::host_only, 0);
+        // amdxdna binds each BO to the kernel argument slot via the BO group:
+        // opcode=0, instr=1, ninstr=2, host buffers from slot 3 on. group 0 BOs
+        // are silently ignored by kernels that declare non-zero groups (the ERT
+        // command completes but the AIE never executes); large group-0 BOs can
+        // even wedge the NPU (IO_PAGE_FAULTs). Use kernel.group_id(3+i).
+        bo = std::make_unique<xrt::bo>(device, sz, xrt::bo::flags::host_only, group_id);
         map = (uint8_t*)bo->map(); size = sz;
         if (label_str) label = label_str;
         return true;
@@ -63,18 +68,26 @@ void NpuBo::sync_from_device(size_t offset, size_t sz) {
 // ========= WeightPacker =========
 WeightPacker::WeightPacker(ModelWeights* mw, ModelConfig* config) : mw_(mw), config_(config) {}
 WeightPacker::~WeightPacker() {}
-int WeightPacker::num_bos(const TensorDesc* desc) const { return npu_weight_num_blocks(desc, config_); }
+// in_features per projection: attn q/k/v/o and FFN gate/up are [*, H]; the
+// FFN down is [H, IM]. The dequant needs the true input dimension to split
+// the Q4NX tile grid.
+static int weight_in_features(const TensorDesc* desc, const ModelConfig* cfg) {
+    const char* n = desc->name;
+    if (strstr(n, "down_proj") && !strstr(n, "gate")) return (int)cfg->intermediate_size;
+    return (int)cfg->hidden_size;
+}
+int WeightPacker::num_bos(const TensorDesc* desc) const { return npu_weight_num_blocks(desc, config_, weight_in_features(desc, config_)); }
 size_t WeightPacker::bo_size(const TensorDesc* desc) const { (void)desc; return config_->npu_weight_bo_size; }
 void WeightPacker::pack_block(uint8_t* buffer, const TensorDesc* desc, int block_idx) const {
     void* data = model_tensor_data(mw_, const_cast<TensorDesc*>(desc));
-    npu_pack_weight_bo(buffer, data, desc, config_, block_idx);
+    npu_pack_weight_bo(buffer, data, desc, config_, block_idx, weight_in_features(desc, config_));
 }
-int WeightPacker::pack_to_bos(const TensorDesc* desc, NpuBo* bos, int max_bos, xrt::device& device) const {
+int WeightPacker::pack_to_bos(const TensorDesc* desc, NpuBo* bos, int max_bos, xrt::device& device, uint32_t group_id) const {
     int n = num_bos(desc); if (n > max_bos) n = max_bos;
     size_t bsize = bo_size(desc);
     for (int i = 0; i < n; i++) {
         char label[128]; snprintf(label, sizeof(label), "%s_b%d", desc->name, i);
-        if (!bos[i].create(device, bsize, label)) return i;
+        if (!bos[i].create(device, bsize, group_id, label)) return i;
         pack_block(bos[i].map, desc, i); bos[i].sync_to_device();
     }
     return n;
@@ -96,8 +109,38 @@ bool XclbinManager::load(XclbinType type) {
         auto xclbin = std::make_unique<xrt::xclbin>(raw_data);
         device_.register_xclbin(*xclbin);
         auto kernel = std::make_unique<xrt::kernel>(device_, xclbin->get_uuid(), "MLIR_AIE");
-        e.xclbin = std::move(xclbin); e.kernel = std::move(kernel); e.loaded = true;
-        LOG_INFO("Loaded %s", path); return true;
+        e.xclbin = std::move(xclbin); e.kernel = std::move(kernel);
+
+        // Load the companion instruction stream (<xclbin>.bin). Without it the
+        // ERT command completes but the AIE never executes (silent no-op).
+        // Generate with tools/gen_mm_insts (FastFlowLM Gemm::generate_seq).
+        std::string insts_path(path);
+        size_t dot = insts_path.rfind('.');
+        if (dot != std::string::npos) insts_path = insts_path.substr(0, dot);
+        insts_path += ".bin";
+        FILE* fi = fopen(insts_path.c_str(), "rb");
+        if (fi) {
+            fseek(fi, 0, SEEK_END); long isz = ftell(fi); fseek(fi, 0, SEEK_SET);
+            if (isz > 0 && isz % 4 == 0) {
+                std::vector<uint32_t> insts(isz / 4);
+                size_t br = fread(insts.data(), 4, insts.size(), fi);
+                if (br == insts.size()) {
+                    auto insts_bo = std::make_unique<xrt::bo>(
+                        device_, (size_t)isz, XCL_BO_FLAGS_CACHEABLE, kernel->group_id(1));
+                    memcpy(insts_bo->map(), insts.data(), (size_t)isz);
+                    insts_bo->sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)isz, 0);
+                    e.insts_bo = std::move(insts_bo);
+                    e.ninstr = (uint32_t)insts.size();
+                }
+            }
+            fclose(fi);
+        }
+        if (!e.insts_bo) {
+            LOG_ERROR("No insts for %s — generate with tools/gen_mm_insts (kernel would be a silent no-op)", path);
+        }
+        e.loaded = true;
+        LOG_INFO("Loaded %s (%u insts)", path, e.ninstr);
+        return true;
     } catch (const std::exception& ex) {
         LOG_ERROR("Failed to load %s: %s", path, ex.what()); return false;
     }
@@ -106,6 +149,14 @@ xrt::kernel* XclbinManager::kernel(XclbinType type) {
     if (type < 0 || type >= XCLBIN_COUNT) return nullptr;
     return entries_[type].kernel.get();
 }
+xrt::bo* XclbinManager::insts_bo(XclbinType type) {
+    if (type < 0 || type >= XCLBIN_COUNT) return nullptr;
+    return entries_[type].insts_bo.get();
+}
+uint32_t XclbinManager::ninstr(XclbinType type) {
+    if (type < 0 || type >= XCLBIN_COUNT) return 0;
+    return entries_[type].ninstr;
+}
 
 // ========= NpuInferenceEngine =========
 NpuInferenceEngine::NpuInferenceEngine() {}
@@ -113,13 +164,14 @@ NpuInferenceEngine::~NpuInferenceEngine() { model_free(model_); }
 
 bool NpuInferenceEngine::pack_tensor_blocks(std::vector<NpuBo>& blocks, 
                                              const TensorDesc* desc,
-                                             const char* label_prefix) {
+                                             const char* label_prefix,
+                                             uint32_t group_id) {
     int n = packer_->num_bos(desc);
     blocks.resize(n);
     for (int i = 0; i < n; i++) {
         char label[128];
         snprintf(label, sizeof(label), "%s_b%d", label_prefix, i);
-        if (!blocks[i].create(*device_, packer_->bo_size(desc), label)) return false;
+        if (!blocks[i].create(*device_, packer_->bo_size(desc), group_id, label)) return false;
         packer_->pack_block(blocks[i].map, desc, i);
         blocks[i].sync_to_device();
     }
@@ -145,19 +197,25 @@ bool NpuInferenceEngine::cache_all_weights() {
         LayerWeights* lw = &model_->layers[l];
         WeightCacheLayer* cache = weight_cache_master_[l].get();
         
-        if (!pack_tensor_blocks(cache->q_proj_blocks, &lw->q_proj_weight, "q_proj")) return false;
-        if (!pack_tensor_blocks(cache->k_proj_blocks, &lw->k_proj_weight, "k_proj")) return false;
-        if (!pack_tensor_blocks(cache->v_proj_blocks, &lw->v_proj_weight, "v_proj")) return false;
-        if (!pack_tensor_blocks(cache->o_proj_blocks, &lw->o_proj_weight, "o_proj")) return false;
-        if (!pack_tensor_blocks(cache->gate_proj_blocks, &lw->gate_proj_weight, "gate_proj")) return false;
-        if (!pack_tensor_blocks(cache->up_proj_blocks, &lw->up_proj_weight, "up_proj")) return false;
-        if (!pack_tensor_blocks(cache->down_proj_blocks, &lw->down_proj_weight, "down_proj")) return false;
+        xrt::kernel* mm_kern = xclbins_->kernel(XCLBIN_MM);
+        uint32_t g_w = mm_kern ? (uint32_t)mm_kern->group_id(5) : 0;
+        if (!pack_tensor_blocks(cache->q_proj_blocks, &lw->q_proj_weight, "q_proj", g_w)) return false;
+        if (!pack_tensor_blocks(cache->k_proj_blocks, &lw->k_proj_weight, "k_proj", g_w)) return false;
+        if (!pack_tensor_blocks(cache->v_proj_blocks, &lw->v_proj_weight, "v_proj", g_w)) return false;
+        if (!pack_tensor_blocks(cache->o_proj_blocks, &lw->o_proj_weight, "o_proj", g_w)) return false;
+        if (!pack_tensor_blocks(cache->gate_proj_blocks, &lw->gate_proj_weight, "gate_proj", g_w)) return false;
+        if (!pack_tensor_blocks(cache->up_proj_blocks, &lw->up_proj_weight, "up_proj", g_w)) return false;
+        if (!pack_tensor_blocks(cache->down_proj_blocks, &lw->down_proj_weight, "down_proj", g_w)) return false;
         
         if (l % 10 == 0) LOG_DEBUG("  Layer %d weights cached", l);
     }
     
     TensorDesc* lm_head = &model_->lm_head_weight;
-    if (!pack_tensor_blocks(lm_head_blocks_, lm_head, "lm_head")) return false;
+    {
+        xrt::kernel* mm_kern = xclbins_->kernel(XCLBIN_MM);
+        uint32_t g_w = mm_kern ? (uint32_t)mm_kern->group_id(5) : 0;
+        if (!pack_tensor_blocks(lm_head_blocks_, lm_head, "lm_head", g_w)) return false;
+    }
     
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
@@ -197,9 +255,13 @@ bool NpuInferenceEngine::init(const char* model_path) {
     
     for (int c = 0; c < 3; c++) {
         hwctx_[c].current_seq_len = 0;
-        if (!hwctx_[c].act_bo.create(*device_, config_.npu_activation_bo_size, "act")) return false;
-        if (!hwctx_[c].act_workspace.create(*device_, 10485760, "workspace")) return false;
-        if (!hwctx_[c].kv_cache.create(*device_, config_.npu_kv_cache_bo_size, "kv_cache")) return false;
+        xrt::kernel* mm_kern = xclbins_->kernel(XCLBIN_MM);
+        uint32_t g_act = mm_kern ? (uint32_t)mm_kern->group_id(3) : 0;
+        uint32_t g_ws  = mm_kern ? (uint32_t)mm_kern->group_id(4) : 0;
+        uint32_t g_kv  = mm_kern ? (uint32_t)mm_kern->group_id(7) : 0;
+        if (!hwctx_[c].act_bo.create(*device_, config_.npu_activation_bo_size, g_act, "act")) return false;
+        if (!hwctx_[c].act_workspace.create(*device_, 10485760, g_ws, "workspace")) return false;
+        if (!hwctx_[c].kv_cache.create(*device_, config_.npu_kv_cache_bo_size, g_kv, "kv_cache")) return false;
         hwctx_[c].kv_cache.sync_to_device();
     }
     
@@ -216,21 +278,23 @@ bool NpuInferenceEngine::init(const char* model_path) {
 
 // === Sequential GEMM ===
 // Individual kernel call with wait
-static void run_gemm(xrt::kernel* kern, xrt::bo& act, xrt::bo& ws,
+static void run_gemm(xrt::kernel* kern, xrt::bo& insts, uint32_t ninstr,
+                      xrt::bo& act, xrt::bo& ws,
                       xrt::bo& w1, xrt::bo& w2, xrt::bo& kv) {
     auto r = (*kern)(
         (uint64_t)3,
-        (uint64_t)0,
-        (uint32_t)0,
+        insts,
+        ninstr,
         act, ws, w1, w2, kv
     );
     r.wait();
 }
 
-static void run_blocked_gemm(xrt::kernel* kern, xrt::bo& act, xrt::bo& ws,
+static void run_blocked_gemm(xrt::kernel* kern, xrt::bo& insts, uint32_t ninstr,
+                              xrt::bo& act, xrt::bo& ws,
                               xrt::bo& kv, std::vector<NpuBo>& weights) {
     for (auto& w : weights) {
-        run_gemm(kern, act, ws, *w.bo, *w.bo, kv);
+        run_gemm(kern, insts, ninstr, act, ws, *w.bo, *w.bo, kv);
     }
 }
 
@@ -242,9 +306,9 @@ void NpuInferenceEngine::run_layer_mm(HwCtxState& ctx, int layer_idx) {
     xrt::bo& act = *ctx.act_bo.bo;
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.q_proj_blocks);
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.k_proj_blocks);
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.v_proj_blocks);
+    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.q_proj_blocks);
+    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.k_proj_blocks);
+    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.v_proj_blocks);
 }
 
 // === Attention pipeline ===
@@ -256,9 +320,9 @@ void NpuInferenceEngine::run_layer_attn(HwCtxState& ctx, int layer_idx) {
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
     xrt::bo& w = (!wc.o_proj_blocks.empty()) ? *wc.o_proj_blocks[0].bo : act;
-    run_gemm(attn_kern, act, ws, w, w, kv);
+    run_gemm(attn_kern, *xclbins_->insts_bo(XCLBIN_ATTN), xclbins_->ninstr(XCLBIN_ATTN), act, ws, w, w, kv);
     if (!wc.o_proj_blocks.empty()) {
-        run_blocked_gemm(xclbins_->kernel(XCLBIN_MM), act, ws, kv, wc.o_proj_blocks);
+        run_blocked_gemm(xclbins_->kernel(XCLBIN_MM), *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.o_proj_blocks);
     }
 }
 
@@ -270,9 +334,9 @@ void NpuInferenceEngine::run_layer_mlp(HwCtxState& ctx, int layer_idx) {
     xrt::bo& act = *ctx.act_bo.bo;
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.gate_proj_blocks);
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.up_proj_blocks);
-    run_blocked_gemm(mm_kern, act, ws, kv, wc.down_proj_blocks);
+    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.gate_proj_blocks);
+    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.up_proj_blocks);
+    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.down_proj_blocks);
 }
 
 // === Prefill ===
@@ -312,7 +376,7 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
         xrt::bo& ws = *hwctx_[0].act_workspace.bo;
         xrt::bo& kv = *hwctx_[0].kv_cache.bo;
         for (auto& w : lm_head_blocks_) {
-            run_gemm(mm_kern, act, ws, *w.bo, *w.bo, kv);
+            run_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, *w.bo, *w.bo, kv);
         }
     }
     

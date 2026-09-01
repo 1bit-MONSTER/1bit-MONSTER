@@ -28,9 +28,9 @@ static void dequant_full(const TensorDesc* d, ModelWeights* mw, std::vector<floa
         int64_t R = d->shape[0];
         out.resize(R * 8 * 1024);
         static uint16_t block[256 * 1024];
-        int blocks = npu_weight_num_blocks(d, &mw->config);
+        int blocks = npu_weight_num_blocks(d, &mw->config, (int)mw->config.hidden_size);
         for (int b = 0; b < blocks; b++) {
-            npu_dequant_block(block, data, d, &mw->config, b);
+            npu_dequant_block(block, data, d, &mw->config, b, (int)mw->config.hidden_size);
             int r0 = b * 256;
             for (int r = 0; r < 256 && r0 + r < R * 8; r++)
                 for (int c = 0; c < 1024; c++)

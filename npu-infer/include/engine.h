@@ -30,7 +30,7 @@ struct NpuBo {
     NpuBo(const NpuBo&) = delete;
     NpuBo& operator=(const NpuBo&) = delete;
     
-    bool create(xrt::device& device, size_t sz, const char* label_str = nullptr);
+    bool create(xrt::device& device, size_t sz, uint32_t group_id, const char* label_str = nullptr);
     void sync_to_device(size_t offset = 0, size_t sz = 0);
     void sync_from_device(size_t offset = 0, size_t sz = 0);
 };
@@ -42,7 +42,7 @@ public:
     int num_bos(const TensorDesc* desc) const;
     size_t bo_size(const TensorDesc* desc) const;
     void pack_block(uint8_t* buffer, const TensorDesc* desc, int block_idx) const;
-    int pack_to_bos(const TensorDesc* desc, NpuBo* bos, int max_bos, xrt::device& device) const;
+    int pack_to_bos(const TensorDesc* desc, NpuBo* bos, int max_bos, xrt::device& device, uint32_t group_id) const;
 private:
     ModelWeights* mw_;
     ModelConfig* config_;
@@ -54,11 +54,19 @@ public:
     ~XclbinManager();
     bool load(XclbinType type);
     xrt::kernel* kernel(XclbinType type);
+    /// Instruction stream BO for a loaded xclbin (nullptr until load()).
+    /// The amdxdna kernel ABI is (opcode, instr, ninstr, bo0..boN): without
+    /// the instruction buffer the ERT command completes but the AIE never
+    /// executes. Companion file <xclbin>.bin is loaded at load() time.
+    xrt::bo* insts_bo(XclbinType type);
+    uint32_t ninstr(XclbinType type);
 private:
     xrt::device& device_;
     struct Entry {
         std::unique_ptr<xrt::xclbin> xclbin;
         std::unique_ptr<xrt::kernel> kernel;
+        std::unique_ptr<xrt::bo> insts_bo;
+        uint32_t ninstr = 0;
         bool loaded = false;
     };
     Entry entries_[XCLBIN_COUNT];
@@ -114,7 +122,7 @@ private:
     int current_token_ = 0;
     
     bool cache_all_weights();
-    bool pack_tensor_blocks(std::vector<NpuBo>& blocks, const TensorDesc* desc, const char* label_prefix);
+    bool pack_tensor_blocks(std::vector<NpuBo>& blocks, const TensorDesc* desc, const char* label_prefix, uint32_t group_id);
     bool run_prefill(const int* input_tokens, int num_input_tokens);
     int run_decode_step(int last_token);
     void run_layer_mm(HwCtxState& ctx, int layer_idx);

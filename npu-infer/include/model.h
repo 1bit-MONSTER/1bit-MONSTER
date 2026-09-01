@@ -57,6 +57,10 @@ typedef struct {
     // Raw file data (mmap)
     uint8_t* file_data;
     uint64_t file_size;
+    // Offset of the first tensor's data: 8 (json length) + json_len. The
+    // metadata data_offsets are relative to THIS, so tensor data lives at
+    // file_data + data_base + desc->data_offset.
+    uint64_t data_base;
 } ModelWeights;
 
 // ========== Model Loader ==========
@@ -70,25 +74,29 @@ int model_find_tensor(const char* name, ModelWeights* mw);
 
 // Get number of NPU blocks needed for a weight tensor
 // in_features is the input dimension (column dimension that gets blocked to 1024)
-int npu_weight_num_blocks(const TensorDesc* desc, const ModelConfig* config);
+int npu_weight_num_blocks(const TensorDesc* desc, const ModelConfig* config,
+                          int in_features);
 
-// Dequantize I8 tensor to BF16, one block at a time
-// out: pre-allocated buffer of block_rows * block_cols BF16 values (only first half filled if padded)
+// Dequantize Q4NX I8 tensor (torch2aie 32x256 tiles) to BF16, one [256,1024]
+// block at a time. Each I8 row (5120 B) is one tile: [512 B bf16 scales][512 B
+// bf16 zeros][4096 B packed int4]; the block grid is row-major over
+// (logical_rows/256) x (in_features/1024) blocks.
+// out: pre-allocated buffer of block_rows * block_cols BF16 values (second half padded with zeros)
 // in: Q4NX I8 weight data pointer
-// block_idx: which of the N column blocks (0..num_blocks-1)
+// block_idx: block index, row-major over (row-blocks x col-blocks)
 // Returns number of BF16 values written
 int npu_dequant_block(void* out, const void* in, 
                        const TensorDesc* desc, const ModelConfig* config,
-                       int block_idx);
+                       int block_idx, int in_features);
 
 // Pack a single 1MB BO from a tensor
 // bo_buffer: pre-allocated 1MB buffer (will be filled with [block] + zeros)
 // in: Q4NX weight data pointer
-// block_idx: which column block to pack
+// block_idx: which block to pack (row-major)
 // Returns 0 on success
 int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
                         const TensorDesc* desc, const ModelConfig* config,
-                        int block_idx);
+                        int block_idx, int in_features);
 
 #ifdef __cplusplus
 }
