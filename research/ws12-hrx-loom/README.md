@@ -1104,32 +1104,166 @@ copies cost more than the NPU saves — round 19's minimal-claims rule holds
 for prefill too).
 
 
-## Round 24 — generalized Q4NX converter + the standard-MHA fork limit
+## Round 24 — generalized Q4NX converter (corrected: the converter was always right)
 
 To "bastardize" other models onto the HRX lane, `make-q4nx-model.py` was
 generalized from zaya-only to any GGUF:
 - arch string read from the source GGUF (was hardcoded "qwen3")
-- BF16 and F32 sources now quantize to Q4NX (was Q4_K/Q6_K only)
+- BF16, F32, F16, Q5_K and Q8_0 sources now quantize to Q4NX (was
+  Q4_K/Q6_K only) — numpy dequant ports verified bit-exact vs ggml
+  `dequantize_row_*` (corr 1.0, mae 0) for Q4_K/Q5_K/Q6_K/Q8_0
 - MoE 3-D expert tensors (`*.exps.weight` [in, out, n_expert]) tile per
-  expert and emit type-42 3-D [8192, tpe, n_expert] — the MUL_MAT_ID_Q4NX
-  contract
-- kept BF16 tensors pass through as raw type-30 bytes with the reader's
-  byte-shape (the fix that made Qwen3-0.6B load)
+  expert and emit type-42 3-D raw [n_exp, tpe, 5120] — the loader sees
+  [8192, tpe, n_expert], the MUL_MAT_ID_Q4NX contract
+- kept quantized tensors (token_embd Q5_0/Q4_K etc.) pass through with the
+  per-type byte-row shape (block sizes differ: Q4_K/Q5_K/Q6_K 256, Q8_0 32)
+- kept 2-D/3-D F32/F16 tensors (ffn_gate_inp, ssm_conv1d, attn_q_b) keep
+  their natural shape (never flattened)
+- `quantize_q4nx` fully vectorized (numpy, no Python loops) — byte-identical
+  to the old loop version, ~8-100x faster (whole 80B expert stack: minutes)
 
-Validated:
-- zaya Q4_K → Q4NX: reproduces the known-good model (196+114 tensors)
-- Qwen3-0.6B BF16 → Q4NX: 196 Q4NX weights, EVERY tensor's dequant on the
-  engine is corr 1.0 vs the source (verified via engine b_w dumps:
-  attn_q/k/v r2048/r1024 corr 1.0, ffn_gate r3072 corr 1.0, token_embd
-  byte-identical)
+**The Round-24 "standard-MHA fork limit" conclusion was WRONG — retracted.**
+The fork computes standard-MHA graphs fine (llama-bench runs Qwen2.5/Qwen3
+Q4_K at ngl=99); the blank llama-cli output is a CLI/sampler/display issue,
+and the dump32 corr-0.21 diagnosis used a degenerate 32x token-id-2 prompt
+(control token -> near-random logits). The REAL gates were:
+1. kernel rows/k config caps (ffn rows 11008, lm_head rows 151936 exceeded
+   8192) — raised to 262144 rows / 65536 k in all mm kernels + routes
+2. `weight_buft_supported` built the test MUL_MAT with w->ne[0]=8192 as k,
+   forcing n_tiles % 32 == 0 — only tile counts that happened to be
+   multiples of 32 passed; fixed to k = 256*n_tiles (n_tc = n_tiles)
+3. the Q4NX kept-tensor byte-shape handling for partial blocks and 2-D F32
 
-**BLOCKER found (not the converter): the fork's llama.cpp is zaya-CCA-locked.**
-Qwen3-0.6B Q4NX loads and dispatches all 196 MUL_MAT_Q4NX correctly, but the
-model output diverges (corr 0.21 vs BF16) and llama-cli generates blank —
-and stock Qwen2.5-0.5B / Qwen3-0.6B Q4_K GGUFs (no Q4NX involvement) also
-generate blank on the fork. The Round-12/13 arch rewrite targeted zaya's
-recurrent-state CCA attention; standard-MHA graphs (RoPE + QK-norm +
-standard KV-cache SET_ROWS) don't round-trip through the fork's graph
-handling. Serving other models requires a standard-MHA fix in the fork
-(restore the Round-11 Qwen3 graph path), which is out of scope for the
-converter. The converter itself is validated and ready.
+Round 24 end state: Qwen3-0.6B BF16 -> Q4NX validated END-TO-END via
+gtok_hrx with a real prompt ("The capital of France is" -> "Paris. What is
+the capital of France in 2023?...") — coherent multi-token generation.
+
+## Round 25 — the roster: every model on the HRX lane (Q4NX)
+
+With the converter generalized and the caps/loader fixed, the whole local
+roster was converted to Q4NX and validated on HRX20 (gfx1151), fork
+3e70c36. Validation = gtok_hrx real-prompt greedy generation + top-1/top-10
+logits vs the source GGUF on the same device/prompt; format-pair corr
+0.91-0.99 is the expected noise between two different 4-bit formats (top-1
+always matches).
+
+| model | arch | Q4NX weights | result |
+|---|---|---|---|
+| Qwen3-0.6B (BF16) | qwen3 | 196 | coherent gen (round 24) |
+| Qwen2.5-3B (Q4_K_M) | qwen2 | 253 | coherent gen — lm_head rows 151936 on NPU |
+| Qwen2.5-0.5B (Q4_K_M) | qwen2 | 24 | coherent gen |
+| MiniCPM5-1B (Q4_K_M) | llama | 169 | top-1 matches ref (weak 1B argmax flips) |
+| MiniCPM4-8B (Q4_K_M) | minicpm | 224 | corr 0.986, top-1 matches ref |
+| Qwen3-Coder-30B-A3B (Q4_K_M) | qwen3moe | MoE MUL_MAT_ID_Q4NX | **FIXED (round 25b): "Paris." == Q4_K_M ref** |
+| GLM-4.7-Flash (Q4_K_XL name, real Q4_K/Q5_K/Q8_0/F16) | deepseek2 | MoE + shexp | **FIXED (round 25b): "Paris." == ref** |
+| Qwen3-Next-80B-A3B (UD-Q4_K_XL) | qwen3next | MoE 512 exp | converted; **fork cannot run the arch yet** (SCALE on recurrent-state views — the Q4_K reference aborts identically) |
+
+Not converted: Qwen2.5-7B (the local GGUF is a 15-byte "Entry not found"
+placeholder — needs download). GLM/Qwen3-Next "Q4_K_XL" filenames are UD
+marketing; tensors are standard Q4_K/Q5_K/Q8_0 types.
+
+### Round 25b — the MoE MUL_MAT_ID per-expert src1 bug (fork 49f07b6)
+
+The first MoE runs (30B, GLM) produced **garbage** ("_tcbonaut Sic" for
+"The capital of France is") while every verified sub-component looked right
+(file layout corr 0.995, gate ids identical, dequant b_w 0.995, per-pair mm
+0.998, down mm 1.0000). Layer 0 was fine (aligned gate/up dst corr 0.9963
+vs the Q4_K reference) but the L1 input had already drifted to 0.63 and
+L2+ to ~0.03.
+
+Root cause: `MUL_MAT_ID_Q4NX` treated src1 as the **shared form**
+`[k, ntokens]` (gate/up experts: one column per token) for EVERY dispatch.
+The qwen3moe/deepseek2 **down** experts feed a **per-expert** src1
+`[k, n_expert_used, ntokens]` where slot (i, t) must read column
+`(i + t*n_expert_used)*k`. The old code always used column `t*k` — i.e.
+**every expert silently computed with expert-0's activation**. The
+"down mm corr 1.0000" check passed precisely because it replicated the bug
+(verified against the same expert-0 column the kernel used). At decode
+(every group size 1) all 8 slots hit the single-member per-pair path —
+also still using `t*k` — so the MoE was wrong every layer, every step, and
+the hidden state diverged to chaos within 2 layers.
+
+Fix (fork `49f07b6`):
+- dispatch detects `src1->ne[1] > 1` (per-expert) and computes
+  `src1_cols_count = nselected*ntokens` (vs `ntokens` for shared)
+- grouped path: `src1_cols[c] = i + t*nselected` (was token index `t`)
+- per-pair path: `src1_col = (i + t*nselected)*k` (was `t*k`)
+- both tbl kernels (`mul_mat_f32_f32_ggml_tbl_tiled`,
+  `mul_mat_q4nx_fused_tbl_tiled`) take a new `@hrx2.shape.src1_cols_count`
+  config so the src1 view/bounds cover the full per-expert buffer
+  (src1_cols < nselected*ntokens instead of < ntokens)
+
+Verified: down MUL_MAT_ID all slots corr **1.0000** vs numpy dequant
+(L0/L1/L10/L47, per-layer weights); 30B Q4NX output now matches the
+Q4_K_M reference **nearly token-for-token** ("The capital of France is" →
+"Paris." for both; 10-14 identical tokens on other prompts); GLM-4.7 Q4NX
+also "Paris." — both were complete garbage before. Dense models unaffected
+(zaya Q4NX still identical to F32). The same commit carries the debug
+cleanup (all LLAMA_DUMP_GATE/HRX2_DEBUG dumps removed) plus the earlier
+uncommitted round-23 dense fused wiring and the ids-layout fix
+`t*nselected+i`.
+
+Validation method notes: never use 32x token-id-2 (dump32) for cross-model
+checks — control tokens give near-random logits where int4 noise diverges.
+Always use a real prompt (gtok_hrx / dump_prompt_logits) and compare on the
+same device with the same prompt.
+
+## Verification addendum (2026-09-01) — the 32-token corr "needs to be 1": what the number actually is
+
+The round 21/22 "logits corr **0.9999996053** vs the F32 reference" line has
+been re-derived from first principles with the current fork (`cb255b5` +
+uncommitted round-23 timing instrumentation, functionally identical). Three
+facts, all measured:
+
+**1. The Zaya Q4NX quantization is LOSSLESS.** Every one of the 280 Q4NX
+tensors dequantizes to the **bit-exact** F32 values of `zaya-f32.gguf`
+(maxdiff = 0.0 across attn_q/k, val_proj1/2, attn_output, gate_up, down; the
+full-model dequant run reproduces the F32 logits to the same corr as the F32
+model reproduces itself). The Q4NX model and the F32 model are the SAME
+weights. There is no quantization loss to hide behind: any corr < 1 vs the
+F32/twin reference is an *execution* difference, and corr = 1.0 is the right
+target.
+
+**2. The 32-token HRX execution is numerically correct — the 0.99997 is the
+cross-backend f32 summation-order noise floor, amplified by the model.**
+With the current build (CPU path unchanged since round 19; the old 15:51
+reference was generated by an older build and is stale):
+
+| comparison (32-token, [2]×32) | corr | maxdiff |
+|---|---|---|
+| Q4NX-HRX vs F32-CPU (same weights) | 0.9999732 | 2.4e-1 |
+| Q4NX-HRX vs numpy-twin (same weights) | 0.9999721 | 2.4e-1 |
+| numpy-twin vs F32-CPU (both CPU, different orders) | 0.9999989 | 4.4e-2 |
+
+Op-by-op layer-0 verification (HRX vs CPU, identical weights): Qraw/Kraw mm
+maxdiff **4e-6**, Qcur 2.6e-4, layer_out 8e-3 — the kernels are exact to f32
+rounding. The divergence **grows with depth** (input_norm: layer 0 maxdiff
+0.0 → layer 20 0.09 → layer 30 0.74) because the 32-token sequence's
+recurrent state (ssm_conv state, prev_hs, growing KV cache) is chaotically
+sensitive: the CPU-vs-CPU baseline (numpy vs ggml, different summation
+orders) shows the SAME amplification (layer_out maxdiff up to 0.145, from
+~4× smaller per-op noise). The NPU's 256-lane reduction trees carry ~4× more
+per-dot noise than the CPU order; over 30+ layers of recurrence that lands at
+~0.24 maxdiff on the logits. The 2-token decode path (no recurrence growth)
+stays at corr 0.99999990 / maxdiff 1.2e-2. Not a bug in the fused / tiled /
+tbl-tiled kernels — disabling the round-23 fused kernel changes nothing
+(bit-identical), and chunked (cols<8, naive routes) runs reproduce the
+single-batch logits bit-for-bit.
+
+**3. corr = 1.0 in the float pipeline is unreachable for this sequence.**
+The reference and the NPU sum f32 in different orders; the model amplifies
+the difference ~10⁵× over 32 recurrent tokens. Matching the CPU order in the
+kernels is the only float-side route and is impractical. The deterministic
+corr = 1.0 target lives in the **fixed-point pipeline** (1BP / FastFlowLM
+`amd-oss/`): when the NPU and the reference share the same integer arithmetic
+(`(q4*16*rq + zpq) >> 22` per the engine's int8 re-quant), the execution is
+bit-exact by construction — that is the path to "corr (32-tok) = 1".
+
+Methodology notes for re-runs (harness `harnesses/dump32_prefill.cpp`,
+`/tmp/dump32`): always regenerate the CPU reference with the SAME fork build
+(`dump32 zaya-f32.gguf 0 ref.bin`); the round 21/22 "F32 reference"
+`f32_32.bin` predates the round-21 fork state and is stale. Reference values
+are stale-build artifacts, not quantization. Verification scripts landed in
+this directory: `make-q4nx-f32-twin.py` (lossless-dequant GGUF converter),
+`zaya32_forward.py` (exact numpy port of the fork's zaya.cpp graph, validated
+corr 0.9999989 vs ggml-CPU), `cmp32.py` (comparison matrix).
