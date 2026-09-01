@@ -216,3 +216,32 @@ out[o] = in[G*(o/G) + (o/2)%(G/2) + (G/2)*(o%2)].
    MATH half has the full capture toolchain + CPU ref, with the divergence
    pinpointed to the layer-0+ per-layer math (next round: capture the
    runtime's per-layer act or compare layer-0 k/v via a single-layer probe).
+
+## Round-31c — layer TXN = prep phase; compute runs reuse run objects
+
+1. **The layer TXN (gen_layer_seq) is the PREP phase, not the compute**: its
+   only S2MM write is arg0 len=512 (RTP). All other traffic = reads (arg1
+   weight tiles 192x, arg4 kv 8x, arg0/2/3 RTP). A layer.xclbin submission
+   with the decoded layer TXN + packed layer BO executes (ERT completes) but
+   writes no layer output at any opcode (2/3/4/5) — consistent with prep.
+2. **The per-forward run structure**: ~42 unique xrt::run objects per forward
+   (reused across the 4 forwards: 169 ctor calls / 4); args set via
+   set_arg_at_index idx3-7 only (act 1MB, weight 10MB/94MB, out 1MB, out
+   1MB, kv 32MB) — opcode/instr/ninstr (idx 0-2) bound via the kernel
+   operator() internals (not observable via set_arg hooks).
+3. The runtime's per-call compute TXNs (mm/attn) are generated at runtime
+   (Gemm::generate_seq with per-projection params) and their insts are not
+   directly capturable with the current interposer. mm.bin is one shipped
+   example; its weight BDs read 32KB bf16 windows at 128KB strides — feeding
+   the packed TILE layout yields NaN (the tiles are not bf16 weights), so
+   the runtime's actual per-projection mm TXNs must use tile-aware BD
+   geometry (next round: capture via the xrt::ext path or ERT submit hook).
+
+## Open items (next round)
+
+- Capture the runtime's per-call compute TXNs (ext::kernel/ERT hook).
+- Derive the mm kernel's tile-window dequant geometry from those TXNs.
+- CPU-ref validation: per-layer divergence root cause (in-kernel dequant
+  semantics).
+- Engine integration: per-layer packer (done) + layer/mm TXN submission +
+  arg binding (done in the test) + on-device validation loop.

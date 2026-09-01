@@ -174,3 +174,13 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
     }
     fprintf(g_log, "RUNLIST %ld: dumped %d big BOs\n", g_runlist_n, n);
 }
+
+// void xrt::run::set_arg_at_index(int, const void*) — scalar args (opcode/ninstr)
+typedef void (*set_arg_v_fn)(void*, int, const void*);
+static set_arg_v_fn real_set_arg_v = nullptr;
+extern "C" void _ZN3xrt3run16set_arg_at_indexEiPKv(void* self, int idx, const void* val) {
+    if (!real_set_arg_v) real_set_arg_v = (set_arg_v_fn)dlsym(RTLD_NEXT, "_ZN3xrt3run16set_arg_at_indexEiPKv");
+    if (real_set_arg_v) real_set_arg_v(self, idx, val);
+    ensure_log();
+    fprintf(g_log, "SETARGV %p idx=%d val=%p\n", self, idx, val);
+}
