@@ -202,6 +202,20 @@
         <p><b>The converter went general.</b> <span class="mono">make-q4nx-model.py</span> now reads the architecture from any GGUF, quantizes Q4_K/Q5_K/Q6_K/Q8_0/F16/BF16 sources to Q4NX (numpy dequant ports verified bit-exact vs ggml), handles MoE 3-D expert tensors and per-type keep shapes. The whole local roster was converted and validated on HRX20: Qwen3-0.6B, Qwen2.5-3B/0.5B, MiniCPM5-1B, MiniCPM4-8B generate coherently; the two MoE models (Qwen3-Coder-30B-A3B, GLM-4.7-Flash) now run their expert matmuls on the NPU; Qwen3-Next-80B runs too &mdash; it needed the pointwise ncols caps raised to 1M (the recurrent-state SCALE builds 524288-wide views in the worst-case reserve graph), and now says &ldquo;Paris.&rdquo; like its Q4_K reference.</p>
         <p><b>The MoE bug that looked like noise.</b> The first MoE runs were complete garbage while every sub-component verified (per-pair mm corr 0.998, down mm corr 1.0000). Layer 0 was fine but layer 1&rsquo;s input had already drifted to corr 0.63. Root cause: <span class="mono">MUL_MAT_ID</span> treated src1 as the shared form <span class="mono">[k, ntokens]</span> (gate/up experts) for every dispatch &mdash; the down experts feed a <b>per-expert</b> src1 <span class="mono">[k, n_expert_used, ntokens]</span>, and the old code always read column <span class="mono">t&middot;k</span>: every expert silently computed with expert-0&rsquo;s activation. The &ldquo;corr 1.0000&rdquo; down check passed precisely because it replicated the bug. Fixed (fork 49f07b6): per-slot src1 columns <span class="mono">(i + t&middot;n_expert_used)</span> through both the grouped tables and the per-pair path, plus a new <span class="mono">src1_cols_count</span> config in the two table-scatter kernels. Down MMID now corr 1.0000 vs numpy (L0/L1/L10/L47); the 30B Q4NX matches the Q4_K_M reference nearly token-for-token &mdash; &ldquo;The capital of France is&rdquo; &rarr; &ldquo;Paris.&rdquo; for both.</p>
         <p><b>Numbers on the fixed 30B MoE</b> (HRX20, -t 16, ngl 99): pp32 49.2 t/s, pp128 67.5 t/s, tg32 14.3 t/s. An external iGPU reference on the same SoC (Q4_K_M, Vulkan) decodes the 30B-A3B at 86.1 t/s &mdash; the iGPU stays ahead at small-batch decode; the NPU&rsquo;s edge remains memory (6.96 vs 32.93 GiB) and large-batch prefill (zaya pp512 171 t/s).</p>
+        <p><b>Round 25d</b> found a silent prefill regression: the per-expert src1 fix added a required <span class="mono">src1_cols_count</span> config to the fused tbl kernel, but the dense prefill path never passed it &mdash; every dense matmul failed the JIT compile and quietly fell back to the slow dequant+mm slice. One config line restored it: pp32 3B 82 &rarr; 121.5 t/s (+47%), 0.6B 208 &rarr; <b>435.8</b> (2.1&times;), MiniCPM4-8B 33 &rarr; 51. A <span class="mono">provider_compile failed</span> trace is what exposes this class of silent fallback.</p>
+        <p><b>Final roster</b> (Q4NX on HRX20, sequential &mdash; concurrent benches fight over the NPU):</p>
+        <table>
+          <thead><tr><th>model</th><th>pp32</th><th>tg32</th></tr></thead>
+          <tbody>
+            <tr><td>Qwen3-0.6B</td><td>435.8</td><td>42.3</td></tr>
+            <tr><td>Qwen2.5-3B</td><td>121.5</td><td>20.6</td></tr>
+            <tr><td>MiniCPM4-8B</td><td>51.1</td><td>9.0</td></tr>
+            <tr><td>GLM-4.7 (30B-A3B MoE)</td><td>49.9</td><td>12.5</td></tr>
+            <tr><td>Qwen3-Coder-30B (MoE)</td><td>49&ndash;50</td><td>14.3&ndash;15.5</td></tr>
+            <tr><td>Qwen3-Next-80B (MoE)</td><td>32.2</td><td>7.2</td></tr>
+          </tbody>
+        </table>
+        <p>Decode is bandwidth-bound at ~43 GB/s effective weight reads (3B and 8B agree); the remaining lever is a 16-row &times; 8-col workgroup redesign reading contiguous packed bytes &mdash; the same structure as the prefill tbl-tiled kernel, at decode size.</p>
       </div>
     
     <section class="related">
