@@ -50,15 +50,15 @@ jobs:
 
       - name: Stop production service (issue #1036)
         # This runner is the same box as the always-on production
-        # 1bit-systems.service (unified_server, port 8088). Every historical
-        # run of this workflow failed — the CI instance's health check never
-        # connected because it was contending with the production instance
-        # for the same physical GPU (both hold /dev/accel/accel0 /
-        # ROCm device access). Stop it for the duration of this job; restarted
-        # unconditionally in Cleanup below.
+        # embed-server.service (lemonade, port 8088 — moved off 8099 2026-09-01).
+        # The old unified_server / 1bit-systems.service no longer exists on
+        # this box. Historical runs failed because the CI instance contended
+        # with production for the same physical GPU (both hold
+        # /dev/accel/accel0 / ROCm access). Production now listens on 8088 and
+        # CI owns 8099, so no systemd stop is needed here — the 8099 squatter
+        # cleanup below is sufficient.
         run: |
-          sudo systemctl stop 1bit-systems.service || true
-          # Also kill stray manual servers (vision_server etc.) that can
+          # Kill stray manual servers (vision_server etc.) that can
           # squat on 8099 and answer health checks with the wrong schema.
           pkill -f "[v]ision_server.*8099|[v]ision .*8099" || true
           # -9 fallback: a wedged instance can survive SIGTERM and squat on 8099
@@ -74,7 +74,7 @@ jobs:
           # schema and makes the test "pass" against the squatter while the
           # real server fails to bind (issue #1257 incident class, observed
           # with a stray llama-server on 2026-08-08). Kill by port, not name.
-          # Only touch 8099 — production 1bit-systems.service uses 8088.
+          # Only touch 8099 — production embed-server.service uses 8088.
           fuser -k 8099/tcp 2>/dev/null || true
           sleep 2
 
@@ -231,4 +231,5 @@ jobs:
           pkill -f "unified_server.*8099|unified .*8099" 2>/dev/null || true
           pkill -f "[v]ision_server.*8099|[v]ision .*8099" 2>/dev/null || true
           rm -f /tmp/unified_server.lock
-          sudo systemctl start 1bit-systems.service || true
+          # Nothing to restore: production embed-server.service (8088) was
+          # never stopped — only 8099 squatters were killed.
