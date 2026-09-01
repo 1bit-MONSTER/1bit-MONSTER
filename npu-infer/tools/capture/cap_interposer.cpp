@@ -14,6 +14,7 @@
 #include <string>
 #include <sstream>
 #include <map>
+#include <vector>
 #include <dlfcn.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -97,4 +98,36 @@ extern "C" void _ZN3xrt2bo4syncE18xclBOSyncDirectionmm(void* self, int dir,
             g_seq++;
         }
     } catch (...) {}
+}
+
+// ===== kernel-call capture: xrt::run::set_arg_at_index + start =====
+#include <map>
+#include <vector>
+static std::map<unsigned long, std::vector<std::pair<int, size_t>>> g_run_args; // run -> (arg_idx, bo size)
+static std::map<unsigned long, int> g_run_count;
+
+// void xrt::run::set_arg_at_index(int idx, const xrt::bo&)
+typedef void (*set_arg_fn)(void*, int, const void*);
+static set_arg_fn real_set_arg = nullptr;
+extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, const void* bo) {
+    if (!real_set_arg) real_set_arg = (set_arg_fn)dlsym(RTLD_NEXT, "_ZN3xrt3run16set_arg_at_indexEiRKNS_2boE");
+    if (real_set_arg) real_set_arg(self, idx, bo);
+    try {
+        const xrt::bo* b = reinterpret_cast<const xrt::bo*>(bo);
+        g_run_args[(unsigned long)self].push_back({idx, b->size()});
+    } catch (...) {}
+}
+
+// void xrt::run::start()
+typedef void (*start_fn)(void*);
+static start_fn real_start = nullptr;
+extern "C" void _ZN3xrt3run5startEv(void* self) {
+    if (!real_start) real_start = (start_fn)dlsym(RTLD_NEXT, "_ZN3xrt3run5startEv");
+    if (real_start) real_start(self);
+    ensure_log();
+    int n = ++g_run_count[(unsigned long)self];
+    fprintf(g_log, "RUN %03d: args=[", n);
+    for (auto& kv : g_run_args[(unsigned long)self])
+        fprintf(g_log, "%d:%zu ", kv.first, kv.second);
+    fprintf(g_log, "]\n");
 }
