@@ -33,20 +33,21 @@ int main(int argc, char** argv) {
     // block 0 = logical rows 0-255 x cols 0-1023 = I8 tile rows 0-31 (grid
     // row-major: tile_row*4 + tile_col), 32 rows * 5120 B = 160 KB.
     memset(block, 0, sizeof(block));
-    // EXPERIMENT (round-28): pack the REORDERED Q4NX tiles — the exact layout
-    // the runtime's reorder_cpy produces (captured from the real runtime via
-    // LD_PRELOAD: out_tile = 8*(ir/8) + 2*tc + (tr%2) where ir = tr*4+tc).
-    // The mm kernel dequantizes in-kernel from this layout.
+    // ROUND-29: load the REAL weight BO captured from the running FastFlowLM
+    // runtime (npu-infer/captures/bo_from_000_1048576.bin = the q_proj's
+    // 256x1024 f32 weight block as the NPU consumes it). The mm kernel's
+    // native weight format — no packing needed. Captured via LD_PRELOAD
+    // interposition on xrt::bo::sync during a real model run (issue #2015).
     {
-        const uint8_t* data = (const uint8_t*)wdata;
-        for (int ir = 0; ir < 32; ir++) {
-            int tr = ir / 4, tc = ir % 4;
-            int out_tile = 8 * (ir / 8) + 2 * tc + (tr % 2);
-            memcpy(block + (size_t)out_tile * 5120, data + (size_t)ir * 5120, 5120);
-        }
-        printf("packed REORDERED Q4NX tiles (32 x 5120 B) to weight BO\n");
+        const char* cap = getenv("MM_CAPTURED_W")
+            ? getenv("MM_CAPTURED_W")
+            : "/home/bcloud/1bit-MONSTER/npu-infer/captures/bo_from_000_1048576.bin";
+        FILE* fc = fopen(cap, "rb");
+        if (!fc) { fprintf(stderr, "captured weight BO not found: %s\n", cap); return 1; }
+        size_t got = fread(block, 1, sizeof(block), fc);
+        fclose(fc);
+        printf("loaded captured weight BO (%zu B) from %s\n", got, cap);
     }
-    printf("(f32 pack path disabled)\n");
 
     // Reference: dequantize Q4NX block 0 -> F32 [256,1024] -> y = W @ x
     float Wf[256 * 1024];
