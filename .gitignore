@@ -68,6 +68,7 @@ build_clean/
 .venv/
 venv/
 .mcp.env
+.mcp.json
 .cache/
 
 # ── Compiled binaries — source is the truth, never commit build outputs ──
