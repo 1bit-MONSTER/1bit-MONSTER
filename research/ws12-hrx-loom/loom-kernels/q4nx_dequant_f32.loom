@@ -1,0 +1,137 @@
+config.decl @hrx2.shape.ncols : %value: index where [range(%value, 1, 65536)]
+config.decl @hrx2.shape.nrows : %value: index where [range(%value, 1, 1048576)]
+config.decl @hrx2.tuning.q4nx.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+
+// Q4NX int4 dequant (1bit-MONSTER engine format, dequant_q4nx.cpp verified
+// corr 0.995 vs source): each 5120-byte I8 row is ONE tile of [32 BF16 rows ×
+// 256 BF16 cols]:
+//   [0..511]    256 BF16 scales, row-major: scales[row*8 + col/32]
+//   [512..1023] 256 BF16 zero_points, same layout
+//   [1024..5119] 4096 B packed INT4:
+//     lane = row/16, lane_row = row%16, byte_idx = lane_row/2, nib = row%2
+//     byte = packed[lane*2048 + col*8 + byte_idx]
+//     q = nib==0 ? byte&0xF : byte>>4 ; val = q<8 ? q : q-16 (signed int4)
+//     out = val * scale + zp
+// Two's-complement signed int4 (nibble 8..15 -> -8..-1), mins all 0 for Zaya.
+//
+// Kernel: one workitem per output element (row, col); dequantizes the packed
+// tile into a float32 [nrows x ncols] output.
+
+kernel.def export("hrx2_q4nx_dequant_f32") @hrx2_q4nx_dequant_f32() {
+  %unit = index.constant 1 : index
+  %minus_one = index.constant -1 : index
+  %ncols = config.get @hrx2.shape.ncols : index
+  %nrows = config.get @hrx2.shape.nrows : index
+  %workgroup_size = config.get @hrx2.tuning.q4nx.workgroup_size : index
+  %total = index.mul %ncols, %nrows : index
+  %rounding = index.add %workgroup_size, %minus_one : index
+  %rounded = index.add %total, %rounding : index
+  %workgroups = index.div %rounded, %workgroup_size : index
+  kernel.launch.config workgroups(%workgroups, %unit, %unit) workgroup_size(%workgroup_size, %unit, %unit) : index
+} launch(%packed: buffer, %scales: buffer, %zeros: buffer, %dst: buffer) {
+  %base = index.constant 0 : offset
+  %unit = index.constant 1 : index
+  %zero_i32 = scalar.constant 0 : i32
+  %two_i32 = scalar.constant 2 : i32
+  %four_i32 = scalar.constant 4 : i32
+  %eight_i32 = scalar.constant 8 : i32
+  %fifteen_i32 = scalar.constant 15 : i32
+  %sixteen_i32 = scalar.constant 16 : i32
+  %two_idx = index.constant 2 : index
+  %eight_idx = index.constant 8 : index
+  %four_idx = index.constant 4 : index
+  %thirtytwo = index.constant 32 : index
+  %sixteen = index.constant 16 : index
+  %two048 = index.constant 2048 : index
+  %ncols_c = config.get @hrx2.shape.ncols : index
+  %nrows_c = config.get @hrx2.shape.nrows : index
+  %workgroup_size_c = config.get @hrx2.tuning.q4nx.workgroup_size : index
+  %ncols_b = index.assume %ncols_c [range(%ncols_c, 1, 65536)] : index
+  %nrows_b = index.assume %nrows_c [range(%nrows_c, 1, 1048576)] : index
+  %total0 = index.mul %ncols_b, %nrows_b : index
+  %total_b = index.assume %total0 [range(%total0, 0, 1073741824)] : index
+
+  %workgroup = kernel.workgroup.id<x> : index
+  %lane = kernel.workitem.id<x> : index
+  %linear_mul = index.mul %workgroup, %workgroup_size_c : index
+  %linear = index.add %linear_mul, %lane : index
+  %in_bounds = index.cmp ult, %linear, %total_b : index
+
+  %packed_g = buffer.assume.memory_space<global> %packed : buffer
+  %scales_g = buffer.assume.memory_space<global> %scales : buffer
+  %zeros_g = buffer.assume.memory_space<global> %zeros : buffer
+  %dst_g = buffer.assume.memory_space<global> %dst : buffer
+  %packed_a, %scales_a, %zeros_a, %dst_a = buffer.assume.noalias %packed_g, %scales_g, %zeros_g, %dst_g : buffer, buffer, buffer, buffer
+  %packed_v = buffer.view %packed_a[%base] : buffer -> view<1073741824xi8>
+  %scales_v = buffer.view %scales_a[%base] : buffer -> view<1073741824xi8>
+  %zeros_v = buffer.view %zeros_a[%base] : buffer -> view<1073741824xi8>
+  %dst_view = buffer.view %dst_a[%base] : buffer -> view<[%nrows_b]x[%ncols_b]xf32>
+
+  scf.if %in_bounds {
+    %col = index.rem %linear, %ncols_b : index
+    %row = index.div %linear, %ncols_b : index
+
+    // scale/zp index: row*8 + col/32 (row-major BF16, 2 bytes each)
+    %group = index.div %col, %thirtytwo : index
+    %row8 = index.mul %row, %eight_idx : index
+    %scale_idx = index.add %row8, %group : index
+    %scale_lo_off = index.mul %scale_idx, %two_idx : index
+    %scale_hi_off = index.add %scale_lo_off, %unit : index
+    %scale_lo = view.load %scales_v[%scale_lo_off] : view<1073741824xi8> -> i8
+    %scale_lo_u = scalar.extui %scale_lo : i8 to i32
+    %scale_hi = view.load %scales_v[%scale_hi_off] : view<1073741824xi8> -> i8
+    %scale_hi_u = scalar.extui %scale_hi : i8 to i32
+    %scale_hi_shl = scalar.shli %scale_hi_u, %eight_i32 : i32
+    %scale_bf16 = scalar.ori %scale_lo_u, %scale_hi_shl : i32
+    %scale_f32_bits = scalar.shli %scale_bf16, %sixteen_i32 : i32
+    %scale = scalar.bitcast %scale_f32_bits : i32 to f32
+
+    %zp_lo = view.load %zeros_v[%scale_lo_off] : view<1073741824xi8> -> i8
+    %zp_lo_u = scalar.extui %zp_lo : i8 to i32
+    %zp_hi = view.load %zeros_v[%scale_hi_off] : view<1073741824xi8> -> i8
+    %zp_hi_u = scalar.extui %zp_hi : i8 to i32
+    %zp_hi_shl = scalar.shli %zp_hi_u, %eight_i32 : i32
+    %zp_bf16 = scalar.ori %zp_lo_u, %zp_hi_shl : i32
+    %zp_f32_bits = scalar.shli %zp_bf16, %sixteen_i32 : i32
+    %zp = scalar.bitcast %zp_f32_bits : i32 to f32
+
+    // packed nibble: lane=row/16, lane_row=row%16, byte_idx=lane_row/2, nib=row%2
+    %lane_idx = index.div %row, %sixteen : index
+    %lane_row = index.rem %row, %sixteen : index
+    %byte_idx = index.div %lane_row, %two_idx : index
+    %nib = index.rem %row, %two_idx : index
+    %lane_base = index.mul %lane_idx, %two048 : index
+    %col8 = index.mul %col, %eight_idx : index
+    %byte_off = index.add %lane_base, %col8 : index
+    %byte_off2 = index.add %byte_off, %byte_idx : index
+    %packed_byte = view.load %packed_v[%byte_off2] : view<1073741824xi8> -> i8
+    %pb_u = scalar.extui %packed_byte : i8 to i32
+
+    // q = nib==0 ? (byte & 0xF) : (byte >> 4)
+    %nib_i = index.cast %nib : index to i32
+    %nib_eq0 = scalar.cmpi eq, %nib_i, %zero_i32 : i32
+    %q_low = scalar.andi %pb_u, %fifteen_i32 : i32
+    %q_high = scalar.shrui %pb_u, %four_i32 : i32
+    %q = scf.if %nib_eq0 -> (i32) {
+      scf.yield %q_low : i32
+    } else {
+      scf.yield %q_high : i32
+    }
+
+    // val = q < 8 ? q : q - 16  (two's-complement signed int4)
+    %q_lt8 = scalar.cmpi slt, %q, %eight_i32 : i32
+    %q_minus_16 = scalar.subi %q, %sixteen_i32 : i32
+    %val_i = scf.if %q_lt8 -> (i32) {
+      scf.yield %q : i32
+    } else {
+      scf.yield %q_minus_16 : i32
+    }
+    %val = scalar.sitofp %val_i : i32 to f32
+
+    // out = val * scale + zp
+    %vsc = scalar.mulf %val, %scale : f32
+    %out = scalar.addf %vsc, %zp : f32
+    view.store %out, %dst_view[%row, %col] : f32, view<[%nrows_b]x[%ncols_b]xf32>
+  }
+  kernel.return
+}

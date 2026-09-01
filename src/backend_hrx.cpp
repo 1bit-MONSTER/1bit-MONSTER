@@ -50,8 +50,15 @@ std::string locate_hrx_server() {
 
     std::string root = env_or("HRX_ROOT", "");
     if (root.empty()) {
-        // Known default unpacked bundle.
-        const char* def = "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b59";
+        // Known default unpacked bundle.  b66 is the current official bundle
+        // (fused Qwen3-MoE graphs).  Unfused graphs (dense models) still
+        // fail-closed on GET_ROWS in b59/b66 — use the gfx1151 rebuild
+        // (HRX_ROOT=/home/bcloud/hrx-gfx1151/llama-src/build) for those.
+        // Ported-to-new-hrx b66 (ggml-hrx on hrx-system main ae91949) lives at
+        // HRX_ROOT=/home/bcloud/hrx-gfx1151/llama-b66/build — it needs
+        // HRX_LD_LIBRARY_PATH=/opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_devel/lib
+        // (TheRock HSA 1.21; see spawn_server).
+        const char* def = "/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b66";
         root = def;
     }
     if (!root.empty()) {
@@ -97,11 +104,20 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
     model_path_ = !cfg.model_path.empty() ? cfg.model_path : weights_dir;
     this->cfg = cfg;
 
-    // Fork-A in-process path (default on; HRX_INPROCESS=0 forces the
-    // subprocess): dlopen the bundle's libllama.so, offload weights to the HRX
-    // device, and serve token-level generate() in-process. On any failure fall
-    // back to the subprocess llama-server spawn below.
-    if (env_or("HRX_INPROCESS", "1") != "0") {
+    // Fork-A in-process path (HRX_INPROCESS=1 opts in; subprocess is the
+    // default): dlopen the bundle's libllama.so, offload weights to the HRX
+    // device, and serve token-level generate() in-process.  On any failure
+    // fall back to the subprocess llama-server spawn below.
+    //
+    // NOTE (2026-08-30): in-process mode segfaults inside the unified server
+    // (a std::regex token-table corruption in llama.cpp's unicode_regex_split
+    // when the bundle DSO is dlopen'd into the multi-backend 1bit process —
+    // reproduced standalone-free, crashes only under the server; the b59
+    // bundle predates the std::regex splitter and is unaffected).  The
+    // subprocess path is the production default; it serves text-level chat
+    // correctly (verified end-to-end: Qwen3-0.6B on HRX0, GET_ROWS-capable
+    // gfx1151 build).
+    if (env_or("HRX_INPROCESS", "0") != "0") {
         inprocess_ = std::make_unique<hrx::Inprocess>();
         int n_gpu_layers = std::atoi(env_or("HRX_N_GPU_LAYERS", "-1").c_str());
         uint32_t ctx = (uint32_t)std::atoi(ctx_size_.c_str());
@@ -167,6 +183,20 @@ bool HrxBackend::spawn_server() {
         if (devnull >= 0) {
             dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2);
             if (devnull > 2) close(devnull);
+        }
+        // The new hrx-system's IREE amdgpu driver dlopens libhsa-runtime64.so.1
+        // at runtime and requires a recent HSA (HSA_AMD_AGENT_INFO_PM4_EMULATION,
+        // agent info 0xA119). The system ROCm HSA 1.18 rejects that query, so
+        // bundles built against new hrx must run with the TheRock HSA first on
+        // the library path. HRX_LD_LIBRARY_PATH is prepended to the inherited
+        // LD_LIBRARY_PATH (empty by default: the official b66 bundle uses the
+        // old hrx-system and works with the system HSA).
+        std::string extra_ld = env_or("HRX_LD_LIBRARY_PATH", "");
+        std::string ld = env_or("LD_LIBRARY_PATH", "");
+        if (!extra_ld.empty()) {
+            std::string combined = extra_ld;
+            if (!ld.empty()) combined += ":" + ld;
+            setenv("LD_LIBRARY_PATH", combined.c_str(), 1);
         }
         // HRX llama-server: fused HRX0 device + the flags AMD's recipe insists on.
         execl(server_bin_.c_str(), "llama-server",
@@ -333,7 +363,13 @@ std::string HrxBackend::generate_text(const std::string& prompt, int max_tokens)
         const auto& choice = j["choices"][0];
         if (!choice.contains("message")) return "";
         const auto& msg = choice["message"];
+        // Reasoning models (Qwen3, DeepSeek) stream the chain-of-thought into
+        // `reasoning_content` and only fill `content` once reasoning finishes;
+        // with a small max_tokens the reply can live entirely in the reasoning
+        // field.  Return content if present, else the reasoning — an empty
+        // string here reads as a backend failure and cascades to CPU.
         std::string text = msg.value("content", "");
+        if (text.empty()) text = msg.value("reasoning_content", "");
         if (j.contains("timings") && j["timings"].contains("predicted_per_second") &&
             j["timings"]["predicted_per_second"].is_number())
             last_decode_tok_s_ = j["timings"]["predicted_per_second"].get<double>();

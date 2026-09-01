@@ -21,9 +21,10 @@ def main():
     ids = [int(l) for l in open(ids_path)]
     ids = torch.tensor(ids, dtype=torch.long)
 
-    from transformers import AutoTokenizer
+    from transformers import AutoTokenizer, AutoConfig
     tok = AutoTokenizer.from_pretrained(model_dir)
-    n_vocab = len(tok)
+    cfg = AutoConfig.from_pretrained(model_dir)
+    n_vocab = getattr(cfg, 'vocab_size', len(tok))
 
     with open(logits_path, 'rb') as f:
         raw = f.read()

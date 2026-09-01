@@ -1,0 +1,28 @@
+diff --git a/runtime/src/iree/hal/drivers/amdgpu/util/aql_ring.c b/runtime/src/iree/hal/drivers/amdgpu/util/aql_ring.c
+index 39248361c..7abcada1f 100644
+--- a/runtime/src/iree/hal/drivers/amdgpu/util/aql_ring.c
++++ b/runtime/src/iree/hal/drivers/amdgpu/util/aql_ring.c
+@@ -12,12 +12,18 @@ iree_status_t iree_hal_amdgpu_query_aql_queue_execution_mode(
+   IREE_ASSERT_ARGUMENT(libhsa);
+   IREE_ASSERT_ARGUMENT(out_execution_mode);
+ 
++  // HSA_AMD_AGENT_INFO_PM4_EMULATION is an optional AMD extension probe:
++  // agents (e.g. gfx1151 on Strix Halo) may not support the query and report
++  // INVALID_ARGUMENT. PM4 emulation is a legacy GCN-era feature; treat an
++  // unsupported probe as NATIVE AQL queue execution.
+   bool pm4_emulation = false;
+-  IREE_RETURN_IF_ERROR(
+-      iree_hsa_agent_get_info(
+-          IREE_LIBHSA(libhsa), device_agent,
+-          (hsa_agent_info_t)HSA_AMD_AGENT_INFO_PM4_EMULATION, &pm4_emulation),
+-      "querying HSA_AMD_AGENT_INFO_PM4_EMULATION");
++  iree_status_t query_status = iree_hsa_agent_get_info(
++      IREE_LIBHSA(libhsa), device_agent,
++      (hsa_agent_info_t)HSA_AMD_AGENT_INFO_PM4_EMULATION, &pm4_emulation);
++  if (!iree_status_is_ok(query_status)) {
++    iree_status_ignore(query_status);
++    pm4_emulation = false;
++  }
+   *out_execution_mode =
+       pm4_emulation ? IREE_HAL_AMDGPU_AQL_QUEUE_EXECUTION_MODE_PM4_EMULATED
+                     : IREE_HAL_AMDGPU_AQL_QUEUE_EXECUTION_MODE_NATIVE;

@@ -121,7 +121,7 @@
 
 ## 6. Key Takeaways
 
-1. **IOMMU off is mandatory** for Strix Halo inference — +34-38% dense PP (per Frontier Lab)
+1. ~~**IOMMU off is mandatory** for Strix Halo inference — +34-38% dense PP (per Frontier Lab)~~ **STALE (verified 2026-08-31): IOMMU is ON on strixhalo.** Current state: `amd_iommu=off` removed from cmdline, AMD-Vi active (`CONFIG_AMD_IOMMU=y`, kernel 7.0.0-30), 32 IOMMU groups. The **GPU** (`c5:00.0`, Radeon 8060S, amdgpu) sits in the **identity** domain (group 20) and the **NPU** (`c6:00.1`, amdxdna) in the **identity** domain (group 26) — both identity via the AMD IVRS unity-map for Strix Halo (2 identity groups; the other 30 are DMA/DMA-FQ translated, default `CONFIG_IOMMU_DEFAULT_DMA_LAZY=y`). The Frontier Lab +37% dense-PP figure was measured against a fully-translated IOMMU-on config; the current identity-domain design already sidesteps it for GPU+NPU DMA, and the remaining optimization (AMD IOMMU PerfOpt, `PERF_OPT_EN` @ MMIO 0x16C) targets exactly this identity-mode configuration.
 2. **Vulkan** is the production backend on Mesa 26.0.3 — proven stable at 982 t/s @ 8K ctx
 3. **Flash attention** helps dense at shallow ctx, hurts MoE at shallow ctx — use selectively
 4. **ROCm HIP** works via 1bit-monster' own stack (TheRock) but not via standard llama.cpp build
@@ -169,7 +169,16 @@ All auto-start on boot, auto-restart on crash.
 
 ## 8. NPU+GPU Hybrid Inference
 
-Despite IOMMU being off (which disables SVA), the NPU is fully operational.
+> **UPDATE (2026-08-31): "IOMMU off" is no longer the machine state.** IOMMU is
+> enabled (32 groups, AMD-Vi active); the NPU `c6:00.1` is in the **identity**
+> domain (group 26) and the GPU `c5:00.0` is **identity** (group 20). The engine
+> still works — because the NPU's identity domain makes its DMA untranslated,
+> which is functionally what the old `amd_iommu=off` config provided for it.
+> The explicit-DMA-vs-SVA distinction below remains valid: the engine uses
+> explicit DMA via the SharedBO pool, not IOMMU-mediated SVA — but it runs
+> *with* the IOMMU on, not without it.
+
+Despite the IOMMU being enabled (with the NPU in the identity domain), the NPU is fully operational.
 The 1bit-monster engine uses explicit DMA instead of SVA, enabling zero-copy
 GPU↔NPU cooperation through unified LPDDR5X memory.
 
@@ -185,7 +194,7 @@ GPU↔NPU cooperation through unified LPDDR5X memory.
 | Pipeline strategy | GPU→attention layers, NPU→expert FFNs |
 | Estimated speedup | 1.4× (pipeline overlap + zero-copy) |
 
-### How it works without IOMMU
+### How it works without SVA (IOMMU on, NPU in identity domain)
 
 The amdxdna SVA bind errors in dmesg are from other processes, not the
 1bit-monster engine. The engine uses explicit DMA transfers via the

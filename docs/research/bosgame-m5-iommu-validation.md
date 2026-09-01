@@ -1,9 +1,26 @@
 # Bosgame M5 — IOMMU-Off Validation Report
 
+> **⚠️ STATUS UPDATE (2026-08-31): this report describes a HISTORICAL config.**
+> The `amd_iommu=off` configuration below is no longer in use on strixhalo.
+> Verified current state (kernel `7.0.0-30-generic`):
+> - `/proc/cmdline` has **no** `amd_iommu=off` (and no `iommu.passthrough`);
+>   remaining params are `amdgpu.gttsize=122880 ttm.pages_limit=29360128 ttm.page_pool_size=29360128`.
+> - **IOMMU is ON**: `CONFIG_AMD_IOMMU=y`, AMD-Vi active in boot log, **32 IOMMU groups**.
+> - **NPU** `c6:00.1` → group 26, type **identity** (untranslated DMA — the NPU's
+>   direct-DMA behavior that this report attributed to `amd_iommu=off`).
+> - **GPU** `c5:00.0` (Radeon 8060S, amdgpu) → group 20, type **identity**
+>   (AMD IVRS unity-map; the GPU is NOT translated — it already has the
+>   direct-DMA path this report's `amd_iommu=off` config provided).
+>
+> The dense-PP numbers in this report (IOMMU-off vs translated-IOMMU-on) remain a
+> valid historical A/B; re-validating against the current identity-domain design
+> (NPU identity now, GPU identity/PerfOpt under investigation) is tracked in
+> `docs/research/bosgame-m5-full-validation.md` and the GPU-identity workstream.
+
 **Date:** 2026-07-23
 **System:** Bosgame M5 (AMD Ryzen AI Max+ 395, Radeon 8060S)
 **Kernel:** 7.0.0-28-generic
-**Config:** `amd_iommu=off` in GRUB_CMDLINE_LINUX_DEFAULT
+**Config:** `amd_iommu=off` in GRUB_CMDLINE_LINUX_DEFAULT (historical — see update above)
 
 ## Why IOMMU Off?
 

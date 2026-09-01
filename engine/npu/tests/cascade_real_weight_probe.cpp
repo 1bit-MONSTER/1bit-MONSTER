@@ -7,13 +7,16 @@
 // calibrate (the in-kernel scale fold).
 //
 // Two fill modes (argv[5]):
-//   "pad" (default): A rows 1..7 = 0  → h2b[ks>=1] = 0; only the ks=0 B_d
-//       8-block contributes to every C2 row (384 of 3072 D terms per row).
-//   "rep":           A rows 1..7 = row 0 → h2b[ks] = h2b[0]; the full 3072-term
-//       D contraction (the batch-replicated reading of the kernel).
-// Both are run back-to-back; each is compared against its own mirror of the
-// literal kernel loop (D: for cg: for ks: a8s[kstep][c_] = h2b[ks][cg*64 +
-// kstep*8 + c_]; mmul a8s[8,8] @ b8[8,N_D_row] → acc[kstep]).
+//   "pad" (default) and "rep": both pack the SAME A-tile (all 8 rows carry the
+//   identical h2 slice — the batch-replicated reading; "pad"'s old "A rows
+//   1..7 = 0" assumption was WRONG and is removed).  The D phase sums ALL 8
+//   k-slices (the worker's `for ks in range(8)` loop), so the mirror's D
+//   contraction always uses ks_max = 8.
+// The full-ks D model is SILICON-VERIFIED EXACT (2026-08-31, kernel 7.2.0:
+//   bad=0/8192, maxrel=0.0000) — the calibration is CLOSED.
+// Both are compared against the same mirror of the literal kernel loop
+// (D: for cg: for ks: a8s[kstep][c_] = h2b[ks][cg*64 + kstep*8 + c_];
+//  mmul a8s[8,8] @ b8[8,N_D_row] → acc[kstep]).
 //
 // Usage: cascade_real_weight_probe <model.1bp> <xclbin> <insts.txt> [layer] [pad|rep]
 #include <xrt/xrt_device.h>
@@ -108,7 +111,7 @@ int main(int argc, char** argv) {
     for (int col = 0; col < n_cols; col++)
         for (int ki = 0; ki < n_k; ki++)
             for (int cg = 0; cg < n_cg; cg++) {
-                long base = ((long)col * n_cg * n_k + ki * n_cg + cg) * AB_tile;
+                long base = ((long)col * n_cg * n_k + cg * n_k + ki) * AB_tile;
                 int8_t* A = ab.data() + base;
                 int8_t* B = A + m * k;
                 int j0 = (cg * n_cols + col) * 64;
@@ -143,16 +146,25 @@ int main(int argc, char** argv) {
                     B[0 * 128 + 2 * br_p] = 1;
                     B[0 * 128 + 2 * br_p + 1] = 1;
                 } else if (!lay && !bread) {
-                    // DIRECT B_gu packing: B[r*128 + 2j] = w1[j0+j][ki*64+r],
-                    // 2j+1 = w2 — the interleaved gate/up convention (this is
-                    // the closest GU hypothesis on silicon; the D-side is the
-                    // pinned contract, the GU-side's exact reindex is the
-                    // remaining open item).
-                    for (int r = 0; r < k; r++)
-                        for (int j = 0; j < 64; j++) {
-                            int hi = ki * 64 + r;
-                            B[r * 128 + 2 * j]     = (int8_t)q127(w1[(size_t)(j0 + j) * H + hi], gu_is);
-                            B[r * 128 + 2 * j + 1] = (int8_t)q127(w2[(size_t)(j0 + j) * H + hi], gu_is);
+                    // DERIV-INVERSE B_gu packing (the silicon read formula,
+                    // confirmed by the guread one-hot-A probes 64/64):
+                    //   B(K, n) = B_tile[n/16 + 8·(K/8),
+                    //                64·((n/8)%2) + (K%8)·8 + n%8]
+                    // So for output pair j (gate n=2j, up n=2j+1) and K within
+                    // the ki slice, the weight w1[j0+j][ki*64+K] must sit at
+                    //   row = j/8 + 8·(K/8)
+                    //   col = 64·((j/4)%2) + (K%8)·8 + 2·(j%4)   [gate]
+                    //   col = 64·((j/4)%2) + (K%8)·8 + 2·(j%4)+1 [up]
+                    // (j, K) → (row, col) is a bijection onto the even/odd
+                    // cols, so every B-tile position is filled exactly once.
+                    // The old DIRECT pack (B[r][2j] = w1[j0+j][ki*64+r]) only
+                    // coincides at j<8 ∧ K%8==0 and was the GU open item.
+                    for (int j = 0; j < 64; j++)
+                        for (int K = 0; K < k; K++) {
+                            int row = j / 8 + 8 * (K / 8);
+                            int cgc = 64 * ((j / 4) % 2) + (K % 8) * 8 + 2 * (j % 4);
+                            B[row * 128 + cgc]     = (int8_t)q127(w1[(size_t)(j0 + j) * H + ki * 64 + K], gu_is);
+                            B[row * 128 + cgc + 1] = (int8_t)q127(w2[(size_t)(j0 + j) * H + ki * 64 + K], gu_is);
                         }
                 }
             }
@@ -468,12 +480,15 @@ int main(int argc, char** argv) {
     for (int col = 0; col < n_cols; col++)
         for (int cg = 0; cg < n_cg; cg++) {
             int j0 = (cg * n_cols + col) * 64;   // MUST shadow the C-lib ::j0 (Bessel)
-            long base = ((long)col * n_cg * n_k + 0 * n_cg + cg) * AB_tile;
-            const int8_t* A = ab.data() + base;
             for (int j = 0; j < 64; j++) {
                 long g = 0, u = 0;
                 for (int ki = 0; ki < n_k; ki++) {
-                    const int8_t* B = ab.data() + ((long)col * n_cg * n_k + ki * n_cg + cg) * AB_tile + m * k;
+                    // A must be the ki-th element's A-tile (h2 slice ki*64);
+                    // the previous version pinned A at ki=0 and reused it for
+                    // every ki — a mirror bug that decoupled the mirror from
+                    // the kernel's per-ki A delivery.
+                    const int8_t* A  = ab.data() + ((long)col * n_cg * n_k + cg * n_k + ki) * AB_tile;
+                    const int8_t* B  = A + m * k;
                     // GU mirror — SILICON-CONFIRMED read (guread one-hot-A
                     // probes: 32/32): B(K, n) = B_tile[n/16 + 8·(K/8),
                     // 64·((n/8)%2) + (K%8)·8 + n%8], and the A-tile is
@@ -522,7 +537,7 @@ int main(int argc, char** argv) {
           for (int jj = 0; jj < 8; jj++) { int j = jj * 8;
               long g = 0, u = 0;
               for (int ki = 0; ki < n_k; ki++) {
-                  const int8_t* B = ab.data() + ((long)0 * n_cg * n_k + ki * n_cg + 0) * AB_tile + m * k;
+                  const int8_t* B = ab.data() + ((long)0 * n_cg * n_k + 0 * n_k + ki) * AB_tile + m * k;
                   for (int i = 0; i < 8; i++)
                       for (int kp = 0; kp < 8; kp++) {
                           int rg2 = 8 * i + j / 8;
@@ -565,7 +580,10 @@ int main(int argc, char** argv) {
             for (int col = 0; col < n_cols; col++)
                 for (int cg = 0; cg < n_cg; cg++) {
                     int ki = cg * n_cols + col;
-                    int ks_max = rep ? 8 : 1;
+                    // The D phase sums ALL 8 k-slices (worker loop `for ks in
+                    // range(8)`); the old pad-mode ks_max=1 was the calibration
+                    // bug — the full-ks model is the silicon-verified one.
+                    const int ks_max = 8;
                     for (int ks = 0; ks < ks_max; ks++)
                         for (int c_ = 0; c_ < 8; c_++) {
                             int h2 = h2s[col * (n_cg * 64) + cg * 64 + t * 8 + c_];
@@ -663,6 +681,20 @@ int main(int argc, char** argv) {
         // h2s; print rows 0..7 at col 0 (the pair t*8+hc_).
         fprintf(stderr, "guread k0=%d hidx=%d: NPU rows(pairs t*8+%d) =", gu_k0, gu_hidx, gu_hidx % 8);
         for (int t = 0; t < 8; t++) fprintf(stderr, " %d", C2[t * 8]);
+        fprintf(stderr, "\n");
+        // prediction under the CURRENT pack (cg-major + deriv-inverse):
+        // the one-hot A at A_tile[k0] feeds A(0, K=k0), and the deriv-inverse
+        // pack places w1q[j0+j][ki*64+k0] at the mmul's read position for
+        // pair j — so C1[0][2j] = 127·w1q[j0+j][k0], h2 sign = sign(w1q).
+        // w1q = q127(w1, gu_is); ki=0, col=0, cg=0 -> j0=0, K_abs=k0.
+        fprintf(stderr, "guread PREDICT (sign(g*u), ki=0 col0 cg0):");
+        for (int t = 0; t < 8; t++) {
+            int j = t * 8;
+            int g = j < (int)w1.size() ? (int)q127(w1[(size_t)j * H + gu_k0], gu_is) : -999;
+            int u = j < (int)w2.size() ? (int)q127(w2[(size_t)j * H + gu_k0], gu_is) : -999;
+            int p = (g == 0 || u == 0) ? 0 : ((g < 0) != (u < 0) ? -127 : 127);
+            fprintf(stderr, " %d", p);
+        }
         fprintf(stderr, "\n");
         // also the full rows 0..7 × cols 0..7 for the pattern
         fprintf(stderr, "guread C2[0..63] =");
