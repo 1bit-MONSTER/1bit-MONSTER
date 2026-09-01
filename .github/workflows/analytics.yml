@@ -175,18 +175,18 @@ jobs:
 
             echo ""
             echo "=== Visitors by country (top 10, 7d) ==="
-            # httpRequestsAdaptiveGroups is capped at a 1-day range, so use the
-            # 1d-groups dataset (same 7-day window as the pageviews query above)
-            # and aggregate per-day rows by country.
-            gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequests1dGroups(limit: 100, filter: {date_geq: \"$FROM\", date_leq: \"$TODAY\"}) { dimensions { date clientCountryName } count } } } }" | \
-              jq -r 'if .data then
-                       ([.data.viewer.zones[0].httpRequests1dGroups[] |
-                         { country: (.dimensions.clientCountryName // "Unknown"), requests: .count }]
-                        | group_by(.country)
-                        | map({ country: .[0].country, requests: (map(.requests) | add) })
-                        | sort_by(-.requests) | .[:10][]
-                        | "\(.country)\t\(.requests) req")
-                     else "country query failed: \(.errors[0].message // "unknown")" end'
+            # httpRequestsAdaptiveGroups is the only zone dataset exposing
+            # clientCountryName, but it caps at a 1-day range — so query
+            # day-by-day and aggregate across the window.
+            for i in 0 1 2 3 4 5 6; do
+              DAY=$(date -u -d "$FROM + $i days" +%Y-%m-%d)
+              gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequestsAdaptiveGroups(limit: 100, filter: {date_geq: \"$DAY\", date_leq: \"$DAY\"}, orderBy: [count_DESC]) { dimensions { clientCountryName } count } } } }" | \
+                jq -r 'if .data then
+                         ([.data.viewer.zones[0].httpRequestsAdaptiveGroups[] |
+                           { country: (.dimensions.clientCountryName // "Unknown"), requests: .count }]
+                          | .[] | "\(.country)\t\(.requests)")
+                       else "country query failed: \(.errors[0].message // "unknown")" end'
+            done | awk -F'\t' '{s[$1]+=$2} END {for (c in s) print s[c]"\t"c}' | sort -rn | head -10 | awk -F'\t' '{print $2"\t"$1" req"}'
           else
             echo "Zone 1bit.monster not visible to the analytics token (need Zone: Read on the WA token)."
           fi
