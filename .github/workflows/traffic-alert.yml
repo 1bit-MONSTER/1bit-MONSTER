@@ -131,16 +131,26 @@ jobs:
           TOP_PATH=$(echo "$PATH_JSON" | jq -r '.[0] | "\(.path) — \(.count) views" // "none"')
 
           # --- Spike detection ---
+          # Baseline is ~2k clones/day from CI/bots, so judge spikes against
+          # the trailing average (excluding today + yesterday) rather than a
+          # fixed threshold that would fire a spike issue every day.
           SPIKE=false
           SPIKE_MSG=""
-          if [ "$YESTERDAY" -gt 0 ] && [ "$DAY_BEFORE" -gt 0 ]; then
+          AVG7=$(echo "$CLONE_RESP" | jq '[.clones[:-2][].count] | if length > 0 then (add / length | floor) else 0 end')
+          if [ "${AVG7:-0}" -gt 0 ] 2>/dev/null && [ "$YESTERDAY" -gt 0 ]; then
+            RATIO=$(awk -v y="$YESTERDAY" -v a="$AVG7" 'BEGIN { printf "%.1f", y/a }')
+            if awk -v r="$RATIO" 'BEGIN { exit !(r >= 2.5) }'; then
+              SPIKE=true
+              SPIKE_MSG="SPIKE: ${YESTERDAY} clones yesterday vs ${AVG7} trailing avg (${RATIO}x)"
+            fi
+          elif [ "$YESTERDAY" -gt 0 ] && [ "$DAY_BEFORE" -gt 0 ]; then
             RATIO=$(( YESTERDAY / DAY_BEFORE ))
             if [ "$RATIO" -ge 3 ]; then
               SPIKE=true
               SPIKE_MSG="SPIKE: ${YESTERDAY} clones yesterday vs ${DAY_BEFORE} day before (${RATIO}x increase)"
             fi
           fi
-          if [ "$YESTERDAY" -gt 200 ]; then
+          if [ "${YESTERDAY:-0}" -gt 5000 ] 2>/dev/null; then
             SPIKE=true
             SPIKE_MSG="${SPIKE_MSG} HIGH_VOLUME: ${YESTERDAY} clones in a single day"
           fi
@@ -193,6 +203,9 @@ jobs:
       - name: Create Spike Issue
         if: steps.traffic.outputs.SPIKE == 'true'
         env:
+          # No checkout in this job, so gh can't detect the repo from git —
+          # point it at the repository explicitly.
+          GH_REPO: ${{ github.repository }}
           # Issue creation uses the built-in token (issues: write is enough).
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CY: ${{ steps.traffic.outputs.CLONE_YESTERDAY }}
