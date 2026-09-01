@@ -113,8 +113,16 @@ static const char* op_name(uint32_t h) {
 // FastFlowLM's generators emit headerless op runs (e.g. the layer TXN's
 // phase-1 memtile setup) and embed the real TXN header mid-stream — so the
 // parser must detect headers anywhere, not just at word 0.
+// The shipped .bin insts (mm.bin etc.) use the aiebu TXN header instead:
+// [magic 0x535f544e ("NTS_" le)][version 0xd00][op_count][total_bytes].
 static bool looks_like_header(const std::vector<uint32_t>& w, size_t i) {
     if (i + 4 > w.size()) return false;
+    if (w[i] == 0x535f544e) {   // aiebu TXN magic
+        uint32_t op_count = w[i+2], total_bytes = w[i+3];
+        if (op_count == 0 || op_count > 100000) return false;
+        if (total_bytes == 0 || total_bytes % 4 != 0) return false;
+        return total_bytes <= (uint32_t)((w.size() - i) * 4);
+    }
     uint32_t w0 = w[i];
     uint32_t rows = (w0 >> 24) & 0xFF, gen = (w0 >> 16) & 0xFF,
              minor = (w0 >> 8) & 0xFF, major = w0 & 0xFF;

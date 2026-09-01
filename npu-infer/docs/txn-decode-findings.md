@@ -82,3 +82,43 @@ Per TXN copy (modes 0..3 identical layout):
    (or at least bind BOs so TXN arg_idx maps to the right host BO).
 4. On-device validation loop: hand-rolled path vs runtime path on identical
    activations -> byte-identical output.
+
+## Round-30 (2026-09-01, post-reboot) — REAL runtime running + BO capture
+
+1. **The real FastFlowLM runtime now runs on this NPU** via a minimal harness
+   (`npu-infer/tools/capture/run_qwen3_npu.cpp`): links ONLY libqwen3_npu.so +
+   libq4_npu_eXpress.so + xrt, drives qwen3_npu::load_weights + forward
+   (no AutoModel/tokenizer). load_weights + 4 decode steps verified on device.
+2. **LD_PRELOAD interposer** (`npu-infer/tools/capture/cap_interposer.cpp`)
+   hooks the C++ xrt::bo::sync (mangled _ZN3xrt2bo4syncE18xclBOSyncDirectionmm,
+   defined in libxrt_coreutil) and captures every BO sync. A real run captured
+   290 syncs: 28x32MB kv init, 28x10MB workspace, 233x1MB uploads + 1x94MB.
+3. **The 1MB uploads are the NORMS / RTP weights** (2-4 KB of bf16 data in a
+   1MB BO): layer-0 input_layernorm matched EXACTLY ([0.1357, 0.7070, ...]).
+   The projection weights live in the **94MB BO** (CAP 0141) — dense bf16
+   values (~0.01-scale) in the runtime's REAL dequant layout.
+4. **B0 (captures/bo_from_000_1048576.bin) is NOT a weight BO** — it matches
+   no dequant/formula/projection; the 1MB BO_FROMs in the old capture were
+   likely activation read-backs (mislabeled). The runtime's real weight BO is
+   the 94MB upload.
+5. **mm.bin arg binding (the #2015 insts mismatch root cause)**: decoding the
+   DMA directions from the queue-write registers shows mm.bin's arg0 = OUTPUT
+   (S2MM writes), arg1 = WEIGHT (MM2S), arg2 = INPUT (MM2S), bo3/bo4 = ws/kv.
+   The engine's run_gemm bound (act, ws, w1, w2, kv) — weight at the wrong
+   slot → silent zeros. The fixed test call `(bo_out, wt, act, ws, kv)` now
+   produces real GEMM output on the NPU.
+6. **mm.bin is aiebu-format TXN**: header [magic 0x535f544e "NTS_"][0xd00]
+   [op_count][bytes], and the buffer = TWO identical TXN copies (like the
+   layer TXN). The decode tool now handles both header formats.
+7. **dequant.xclbin runs with opcode 3** + the decoded dequant TXN and is
+   input-sensitive; its output is **BF16 [256,1024] of W = q*scale + zp**
+   (the dequant KERNEL formula differs from the host lib's (q-zp)*scale!).
+
+## Next steps (round-31)
+
+- Decode the 94MB weight BO layout: correlate against the q4nx tiles
+  (reorder permutation + q*s+zp formula known) → the exact weight-BD layout
+  the mm kernel consumes → implement in npu_pack_weight_bo.
+- Validate: engine packer output == runtime 94MB slice byte-for-byte; then
+  the fixed mm call produces the reference GEMM (validation loop closed).
+- Re-run capture with the FULL runtime (chat flow) to label every BO.
