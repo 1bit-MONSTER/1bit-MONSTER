@@ -110,6 +110,7 @@ extern "C" void _ZN3xrt2bo4syncE18xclBOSyncDirectionmm(void* self, int dir,
 #include <vector>
 static std::map<unsigned long, std::vector<std::pair<int, size_t>>> g_run_args; // run -> (arg_idx, bo size)
 static std::map<unsigned long, int> g_run_count;
+static std::map<unsigned long, std::map<int, const void*>> g_run_bo_ptrs;  // run -> arg_idx -> bo ptr
 
 // void xrt::run::set_arg_at_index(int idx, const xrt::bo&)
 typedef void (*set_arg_fn)(void*, int, const void*);
@@ -120,6 +121,7 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, co
     try {
         const xrt::bo* b = reinterpret_cast<const xrt::bo*>(bo);
         g_run_args[(unsigned long)self].push_back({idx, b->size()});
+        g_run_bo_ptrs[(unsigned long)self][idx] = bo;
         ensure_log();
         fprintf(g_log, "SETARG %p idx=%d size=%zu bo=%p\n", self, idx, b->size(), (void*)bo);
         // dump the idx3 BO (the runtime's insts BO per create_run: (3,0,0,insts,weight))
@@ -164,6 +166,41 @@ static rl_exec_fn real_rl_exec = nullptr;
 extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
     if (!real_rl_exec)
         real_rl_exec = (rl_exec_fn)dlsym(RTLD_NEXT, "_ZN3xrt7runlist7executeEv");
+    // PRE-exec dump: the per-call TXNs are written into the bo0/idx3 buffer
+    // AFTER set_arg and BEFORE execute (coherent, no sync) — this is the only
+    // moment the runtime's actual per-call insts are observable.
+    {
+        ensure_log();
+        g_runlist_n++;
+        fprintf(g_log, "RUNLIST %ld: execute (pre-dump)\n", g_runlist_n);
+        int n = 0;
+        std::set<unsigned long> done;
+        for (auto& kv : g_run_bo_ptrs) {
+            unsigned long runkey = kv.first;
+            if (done.count(runkey)) continue;
+            done.insert(runkey);
+            for (auto& ab : kv.second) {
+                int aidx = ab.first;
+                const void* bop = ab.second;
+                if (bop == nullptr) continue;
+                try {
+                    xrt::bo* bo = reinterpret_cast<xrt::bo*>(const_cast<void*>(bop));
+                    size_t bosz = bo->size();
+                    if (bosz > 3000000) continue;   // skip weight/kv BOs
+                    const uint8_t* p = (const uint8_t*)bo->map();
+                    if (p) {
+                        char fname[256];
+                        snprintf(fname, sizeof(fname), "%s/preinsts_%03ld_%02d_i%d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, aidx, (size_t)bop, bosz);
+                        FILE* f = fopen(fname, "wb");
+                        if (f) { fwrite(p, 1, bosz, f); fclose(f); }
+                        fprintf(g_log, "PREINSTS run=%p arg=%d bo=%p size=%zu -> %s\n", (void*)runkey, aidx, bop, bosz, fname);
+                        n++;
+                    }
+                } catch (...) {}
+            }
+        }
+        fprintf(g_log, "RUNLIST %ld: pre-dumped %d insts BOs\n", g_runlist_n, n);
+    }
     if (real_rl_exec) real_rl_exec(self);
     ensure_log();
     g_runlist_n++;
@@ -271,4 +308,54 @@ extern "C" void _ZN3xrt3ext6kernelC1ERKNS_10hw_contextERKNS_6moduleERKNSt7__cxx1
     if (real_extk) real_extk(self, hw, mod, name);
     ensure_log();
     fprintf(g_log, "EXTKERNEL %p\n", self);
+}
+
+// ===== THE KEY HOOK: xrt::elf ctor =====
+// The runtime embeds the per-call TXNs in an ELF (from ctrl_seq->dump())
+// and creates xrt::elf -> xrt::module -> xrt::ext::kernel. The ELF buffer
+// IS the runtime's actual per-call instruction stream (TXN + aiebu header).
+// void xrt::elf::elf(const char* buf, size_t size)
+typedef void (*elf_fn)(void*, const void*, size_t);
+static elf_fn real_elf = nullptr;
+static long g_elf_n = 0;
+extern "C" void _ZN3xrt3elfC1EPKvm(void* self, const void* buf, size_t size) {
+    if (!real_elf) real_elf = (elf_fn)dlsym(RTLD_NEXT, "_ZN3xrt3elfC1EPKvm");
+    if (real_elf) real_elf(self, buf, size);
+    ensure_log();
+    g_elf_n++;
+    char fname[256];
+    snprintf(fname, sizeof(fname), "%s/elf_%04ld_%zu.bin", CAP_DIR, g_elf_n, size);
+    FILE* f = fopen(fname, "wb");
+    if (f) { fwrite(buf, 1, size, f); fclose(f); }
+    fprintf(g_log, "ELF %04ld: size=%zu -> %s\n", g_elf_n, size, fname);
+    // also try the 2-arg form symbol in case it's used instead
+}
+extern "C" void _ZN3xrt3elfC2EPKvm(void* self, const void* buf, size_t size) {
+    if (!real_elf) real_elf = (elf_fn)dlsym(RTLD_NEXT, "_ZN3xrt3elfC1EPKvm");
+    if (real_elf) real_elf(self, buf, size);
+    ensure_log();
+    g_elf_n++;
+    char fname[256];
+    snprintf(fname, sizeof(fname), "%s/elf_%04ld_%zu.bin", CAP_DIR, g_elf_n, size);
+    FILE* f = fopen(fname, "wb");
+    if (f) { fwrite(buf, 1, size, f); fclose(f); }
+    fprintf(g_log, "ELF %04ld: size=%zu -> %s\n", g_elf_n, size, fname);
+}
+// void xrt::elf::elf(const std::string& path) — load_elf from a FILE (the
+// mm/dequant/mha kernels are loaded this way from the xclbin's stored ELFs).
+typedef void (*elf_str_fn)(void*, const void*);
+static elf_str_fn real_elf_str = nullptr;
+extern "C" void _ZN3xrt3elfC1ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(void* self, const void* path) {
+    if (!real_elf_str) real_elf_str = (elf_str_fn)dlsym(RTLD_NEXT, "_ZN3xrt3elfC1ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE");
+    if (real_elf_str) real_elf_str(self, path);
+    ensure_log();
+    const std::string* s = reinterpret_cast<const std::string*>(path);
+    fprintf(g_log, "ELF_FROM_FILE %p \"%s\"\n", self, s ? s->c_str() : "?");
+}
+extern "C" void _ZN3xrt3elfC2ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE(void* self, const void* path) {
+    if (!real_elf_str) real_elf_str = (elf_str_fn)dlsym(RTLD_NEXT, "_ZN3xrt3elfC1ERKNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEE");
+    if (real_elf_str) real_elf_str(self, path);
+    ensure_log();
+    const std::string* s = reinterpret_cast<const std::string*>(path);
+    fprintf(g_log, "ELF_FROM_FILE %p \"%s\"\n", self, s ? s->c_str() : "?");
 }

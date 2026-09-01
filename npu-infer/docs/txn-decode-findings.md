@@ -299,3 +299,177 @@ example) and the mm tile-window dequant geometry.
   npu_app buffer fill or the run submit) OR decode the aiebu PDI control
   code from the xclbin's AIE_PARTITION (proper PDI extraction).
 - Derive the mm tile-window dequant geometry; validate on device.
+
+## Round-32 — THE PER-CALL TXNs ARE THE ELF/MODULE: runtime TXN capture CLOSED
+
+### The discovery: TXNs are embedded in the ELF, not passed as a BO
+
+Reading npu_utils_xrt.hpp (`npu_app`), the runtime's per-call TXN flow is:
+
+    operator()/create_run:
+      if (!module_valid || !seq_valid ||
+          module_version != ctrl_seq->sequence_version()) {
+          _setup_kernel();       // <-- regenerates the ELF+module+kernel
+      }
+      kernel->operator()(3, 0, 0, args.bo()...);   // NO TXN BO argument!
+      run.wait() / runlist.execute()
+
+    _setup_kernel():
+      data = ctrl_seq->dump();              // the raw TXN words
+      _gen_elf(&elf_buf, data);             // wraps TXN in an ELF
+      elf   = new xrt::elf(elf_buf, size);  // <-- the TXN is IN this ELF
+      module = new xrt::module(*elf);
+      kernel = new xrt::ext::kernel(ctx, *module, name);
+
+The `(3, 0, 0, ...)` args are opcode=3, instr_slot=0, ninstr=0 — the
+firmware takes the control code from the MODULE (embedded at kernel
+creation), not from a BO arg. The "data/insts buffer" bo0 is just the
+bf16 data buffer. The ELF's `.ctrltext` section IS the per-call TXN.
+
+### The hook that finally worked: xrt::elf ctor
+
+cap_interposer now interposes `_ZN3xrt3elfC1EPKvm` (xrt::elf(const char*,
+size_t)) — called by _setup_kernel with the freshly generated TXN. Every
+kernel re-setup dumps the ELF. The runtime re-setups the kernel whenever
+set_context_length() changes the sequence version — i.e. on EVERY forward
+(the kv-cache offsets move with the token position).
+
+    set_context_length(ctx):
+      gen_layer_seq(seq, ctx+1);            // L = context length + 1
+      runlist.reset();
+      if (version changed) _setup_kernel(); // new ELF with new kv offsets
+      run = xrt::run(kernel); set args; runlist.add(run);
+      ... runlist.execute() (via forward)
+
+### Captured: 7 ELFs from a 4-token run (run_qwen3_npu)
+
+    elf_0001 (37360 B)  = layer TXN @ ctx=1   -> .ctrltext 34172 B (8543 words)
+    elf_0002 (421536 B) = lm_head TXN         -> .ctrltext 392212 B (98053 words)
+    elf_0003 (37360 B)  = layer TXN @ ctx=1   (identical to 0001)
+    elf_0004 (37360 B)  = layer TXN @ ctx=2   (kv offsets +0x400/token)
+    elf_0005 (37360 B)  = layer TXN @ ctx=3
+    elf_0006 (37360 B)  = layer TXN @ ctx=4
+    elf_0007 (37360 B)  = layer TXN @ ctx=5
+
+### Byte-exact verification (0 word diffs)
+
+    captured layer @ctx=1 == gen_layer_seq(seq, 1) with MAX_L=8192   [0 diffs]
+    captured layer @ctx=2 == gen_layer_seq(seq, 2) with MAX_L=8192   [0 diffs]
+    captured layer @ctx=3 == gen_layer_seq(seq, 3) with MAX_L=8192   [0 diffs]
+    captured lm_head     == gen_lm_head_seq() (single copy)          [0 diffs]
+
+IMPORTANT: MAX_L matters! With MAX_L=4096 the generated kv offsets are
+4 MB apart; the runtime's are 8 MB apart (32 MB kv BO = 4 regions x 8 MB,
+8192 tokens x 1024 B/token per region). gen_layer_seq(seq, L) must be
+called on a sequence constructed/set with MAX_L=8192 to match the
+runtime byte-for-byte. (The harness constructs qwen3_npu(config, npu,
+4096) but set_max_length is applied from the model config; the captured
+offsets prove MAX_L=8192.)
+
+### What the decoded layer TXN says (arg1 = the weight BO)
+
+The layer TXN (8543 words, 1048 ops) has 204 BLOCKWRITE + 204 DDR_PATCH
++ 197 MASKWRITE + 197 TCT + 246 WRITE. The patch table (BD -> arg@offset):
+
+    arg0 @0        BD(0,2,0)   len=512    MM2S   (norm/RTP read)
+    arg2 @0        BD(0,2,1)   len=1024   MM2S
+    arg3 @0        BD(0,2,2)   len=192    MM2S
+    arg0 @0        BD(0,2,10)  len=512    S2MM   (RTP write)
+    arg4 @0/8M/16M/24M         len=256/4096 MM2S (kv cache, 4 regions)
+    arg1 @0..9.7MB (192 BDs)   len=10240/20480/30720  MM2S  <-- THE WEIGHTS
+
+Weight BD stream (arg1): 192 MM2S BDs reading 10240-byte windows at
+40960-byte stride across the full 10 MB weight BO:
+    - 64 BDs len=10240 @ 0..2.58 MB (q/k/v/o region? every 8th window)
+    - 16 BDs len=20480 @ 2.62..3.85 MB
+    - 96 BDs len=10240 @ 3.93..7.82 MB
+    - 16 BDs len=30720 @ 7.86..9.7 MB
+16 unique BDs (rows 0,1,6,7 x cols 0,1 x bd_id 1,2,9,10) reused 12x each.
+The 40960-byte stride = 8 Q4NX tiles (5120 B each); len 10240 = 2 tiles.
+This IS the mm kernel's tile-window read geometry over the reordered-tile
+BO that npu_pack_layer_bo already produces byte-identically (28/28
+layers) — the weight half of the decode is now closed end-to-end:
+generator output == captured runtime TXN == packer layout.
+
+### lm_head TXN (elf_0002, 98053 words)
+
+arg1 = 2384 BDs, all len=10240, at 40960 stride spanning 0..97.6 MB —
+the full 94 MB lm_head weight BO (98566144 B). arg0: BD(0,3,15) len=76288
+S2MM; arg2/arg3: 512 B MM2S each. Matches gen_lm_head_seq byte-exact.
+
+### Corrected ABI understanding (supersedes round-31d/31e)
+
+- The runtime does NOT pass TXNs as a BO arg. `(3, 0, 0, ...)` + module-
+  embedded control code is the runtime's real submission form.
+- The engine's `(3, instrs_bo, ninstr, ...)` form ALSO works (xrt accepts
+  insts from the instr slot) — the engine path is valid, but the runtime
+  path is module-embedded.
+- The pre-exec BO dumps (preinsts_*) at runlist::execute were all bf16
+  data (activations/logits), NOT TXNs — because the TXNs never touch a
+  BO. Only the xrt::elf hook sees them.
+
+### Repo evidence
+
+    npu-infer/captures/txn-elfs/elf_0001_layer.bin, elf_0002_lmhead.bin,
+        layer_ctx1/2/4_ctrl.bin, lmhead_ctrl.bin, gen_layer_MAXL8192_L1.bin
+    npu-infer/decodes/qwen3-0.6b/captured/layer_ctx1.json, lmhead.json
+
+### Next steps (round-33)
+
+- Wire the MAX_L=8192 discovery into decode_txn / gen_layer_seq usage
+  (the tool currently uses MAX_L=4096 -> doubles the kv offsets; fix the
+  driver to call set_max_length(8192) or construct with the runtime value).
+- On-device validation: submit the captured layer TXN (ELF ctrltext) via
+  the engine with the packed 10 MB weight BO + 1 MB act + 32 MB kv and
+  compare against the runtime's logits (validation loop).
+- Engine integration: npu_pack_layer_bo (done, byte-verified) + the layer
+  TXN (now byte-identical to the runtime's) + the (3,0,0,...) ABI.
+
+## Round-32b — on-device submission of the captured layer TXN (module ABI)
+
+### Replicating the runtime's submission: xrt::elf -> module -> ext::kernel
+
+test_layer_elf.cpp builds the runtime's EXACT path:
+
+    xrt::elf elf((const char*)elfbuf, esz);   // the captured ELF
+    xrt::module mod(elf);
+    xrt::ext::kernel kern(hwctx, mod, "MLIR_AIE");
+    xrt::run run(kern);
+    set_arg(0, 3); set_arg(1, 0); set_arg(2, 0);
+    set_arg(3, act 1MB); set_arg(4, weight 10MB);
+    set_arg(5, out1); set_arg(6, out2); set_arg(7, kv 32MB);
+    run.start(); run.wait();  -> state 4 (completed)
+
+With ext::bo buffers (the runtime's buffer type) the run completes (state 4)
+but writes nothing visible to act/out1/out2/kv. Why: the layer TXN is the
+PREP phase — its only S2MM writes are 512B RTP to arg0 + 4x256B kv writes
+to arg4. The hidden-state output (2048B) is NOT in this TXN; it is produced
+by the mm/dequant kernels (their ELFs are loaded via load_elf from the
+xclbin PDI at construction — not via ctrl_seq dump, hence not captured by
+the xrt::elf ctor hook; the mm.bin/mm_256_*.bin files in the xclbins dir
+are those static instruction streams).
+
+### Key validation facts from the runtime's own buffer traffic
+
+- The runtime's act buffer (idx3 of the layer run, 1MB) holds the TOKEN
+  EMBEDDING before the forward and the layer output hidden state after —
+  the layer compute happens in-place in arg0 (confirmed: preinsts vs post
+  dumps differ by exactly the hidden-state region [0:2048]).
+- The lm_head run binds idx5 = the layer's act buffer (reads the final
+  hidden state as its input) and writes logits to its own idx3 (1MB).
+- So the hand-rolled path must run: layer prep TXN (captured) + mm/dequant
+  kernels (mm.bin etc.) per layer, then lm_head TXN (captured) — matching
+  the runtime's runlist (28 layer-prep + 1 lm_head + 28 compute runs per
+  forward in the capture).
+
+### Remaining for the on-device loop (round-33+)
+
+- Wire the mm/dequant ELFs (from the xclbin PDI or the .bin files) into the
+  engine's per-layer submission so the full layer computes (prep -> dequant
+  -> mm), then compare the act buffer against the runtime's captured post-
+  exec act (post_002_156_59c84ec1fc60 style) and the logits vs
+  logits_1000.bin. That is the byte-level validation loop closure.
+- The two identical layer ELFs (0001 == 0003) are the layer app and a second
+  app instance sharing gen_layer_seq content; per forward the runtime
+  re-setups the layer kernel once (new kv offsets) and arms 28 runs per
+  kernel instance.
