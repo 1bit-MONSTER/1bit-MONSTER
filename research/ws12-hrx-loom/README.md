@@ -1156,11 +1156,27 @@ always matches).
 | MiniCPM4-8B (Q4_K_M) | minicpm | 224 | corr 0.986, top-1 matches ref |
 | Qwen3-Coder-30B-A3B (Q4_K_M) | qwen3moe | MoE MUL_MAT_ID_Q4NX | **FIXED (round 25b): "Paris." == Q4_K_M ref** |
 | GLM-4.7-Flash (Q4_K_XL name, real Q4_K/Q5_K/Q8_0/F16) | deepseek2 | MoE + shexp | **FIXED (round 25b): "Paris." == ref** |
-| Qwen3-Next-80B-A3B (UD-Q4_K_XL) | qwen3next | MoE 512 exp | converted; **fork cannot run the arch yet** (SCALE on recurrent-state views — the Q4_K reference aborts identically) |
+| Qwen3-Next-80B-A3B (UD-Q4_K_XL) | qwen3next | MoE 512 exp | **FIXED (round 25c): "Paris." == ref** — needed pointwise ncols caps raised to 1M (recurrent-state SCALE) |
 
 Not converted: Qwen2.5-7B (the local GGUF is a 15-byte "Entry not found"
 placeholder — needs download). GLM/Qwen3-Next "Q4_K_XL" filenames are UD
 marketing; tensors are standard Q4_K/Q5_K/Q8_0 types.
+
+### Round 25c — qwen3next unblocked: pointwise ncols caps (fork f25f277)
+
+The qwen3next arch aborted at `sched_reserve` for **both** the Q4_K reference
+and the Q4NX conversion: the worst-case graph (n_tokens=64) builds SCALE
+ops over the full recurrent state (ncols=524288 for the 80B's S-state), but
+the pointwise kernel's config decl **and** its 9 `index.assume` bodies
+capped ncols at 65536, and the generic scale route's `shape_domain`
+matched — so no HRX2 route accepted the op, the pre-allocated HRX20 tensor
+could not move, and `ggml_backend.cpp:810` aborted. Fix (fork `f25f277`):
+raise the ncols bound to 1048576 in the `pointwise_f32.loom` config decl +
+all kernel-body assumes + the generic scale route's `ncols_max`. The kernel
+is a flat linear loop (grid = ceil(total/wg)); the bound is only the
+truthful JIT range. Verified: Qwen3-Next-80B Q4NX runs and generates
+"Paris. The capital of Italy is Rome..." — same content as the Q4_K
+reference (which also runs now); no regression on 30B MoE / zaya / dense.
 
 ### Round 25b — the MoE MUL_MAT_ID per-expert src1 bug (fork 49f07b6)
 
