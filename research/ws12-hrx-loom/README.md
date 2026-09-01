@@ -1178,6 +1178,38 @@ truthful JIT range. Verified: Qwen3-Next-80B Q4NX runs and generates
 "Paris. The capital of Italy is Rome..." — same content as the Q4_K
 reference (which also runs now); no regression on 30B MoE / zaya / dense.
 
+### Round 25d — dense prefill regression found & fixed (fork 5c93e7a)
+
+The per-expert src1 fix (`49f07b6`) added a **required**
+`@hrx2.shape.src1_cols_count` config to the fused tbl kernel, but the dense
+prefill path (identity tables, ntokens=cols, nselected=1) never passed it —
+every dense `MUL_MAT_Q4NX` at cols>=8 failed the JIT compile and **silently
+fell back** to the slow dequant+mm slice. Prefill measured 82 t/s instead of
+the round-23 111+. A `provider_compile failed` trace (4 routes) exposed it.
+Fix: pass `src1_cols_count=cols` in the dense fused-tbl config. pp32:
+3B 82.4 → **121.5** (+47%), 0.6B 208 → **435.8** (2.1×), MiniCPM4-8B 33 → 51.
+Decode unchanged (per-pair fused path). Correctness re-verified.
+
+Final roster numbers (HRX20, `llama-bench -t 16 -ngl 99`, sequential —
+concurrent bench runs fight over the NPU and pollute tg32 badly):
+
+| model | pp32 t/s | tg32 t/s |
+|---|---|---|
+| Qwen3-0.6B | 435.8 | 42.3 |
+| Qwen2.5-3B | 121.5 | 20.6 |
+| MiniCPM4-8B | 51.1 | 9.0 |
+| GLM-4.7 (30B-A3B MoE) | 49.9 | 12.5 |
+| Qwen3-Coder-30B (MoE) | 49-50 | 14.3-15.5 |
+| Qwen3-Next-80B (MoE) | 32.2 | 7.2 |
+
+Decode is compute/bandwidth-bound (async graph compute gains ~2%: the
+per-graph syncs are cheap relative to the matmul work; the 253 sub-graphs/
+token are the backend split, not the wall). The decode gap vs the CPU Q4_K
+path and the iGPU is the Q4NX format's 8-byte column-stride int4 packing —
+element-wise dequant is the only option (contiguous vector loads don't
+apply), which the fused per-pair kernel already does. The NPU wins on
+large-batch prefill (0.6B pp32 436 t/s) and memory footprint.
+
 ### Round 25b — the MoE MUL_MAT_ID per-expert src1 bug (fork 49f07b6)
 
 The first MoE runs (30B, GLM) produced **garbage** ("_tcbonaut Sic" for
