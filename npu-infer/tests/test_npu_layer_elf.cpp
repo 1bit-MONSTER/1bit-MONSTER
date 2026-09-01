@@ -33,9 +33,17 @@ int main(int argc, char** argv) {
     if (!mw) return 1;
 
     std::vector<uint8_t> wbo(10485760);
-    int tiles = npu_pack_layer_bo(wbo.data(), mw, &cfg, layer_idx);
-    if (tiles <= 0) { fprintf(stderr, "pack failed\n"); return 1; }
-    printf("packed layer %d (%d tiles)\n", layer_idx, tiles);
+    const char* wcap = getenv("MM_CAPTURED_W");
+    if (wcap) {
+        FILE* fw = fopen(wcap, "rb");
+        if (!fw) { fprintf(stderr, "no cap weight %s\n", wcap); return 1; }
+        size_t got = fread(wbo.data(), 1, 10485760, fw); fclose(fw);
+        printf("loaded captured weight BO (%zu B) from %s\n", got, wcap);
+    } else {
+        int tiles = npu_pack_layer_bo(wbo.data(), mw, &cfg, layer_idx);
+        if (tiles <= 0) { fprintf(stderr, "pack failed\n"); return 1; }
+        printf("packed layer %d (%d tiles)\n", layer_idx, tiles);
+    }
 
     FILE* fe = fopen(elf_path, "rb");
     if (!fe) { fprintf(stderr, "no elf %s\n", elf_path); return 1; }
@@ -73,6 +81,12 @@ int main(int argc, char** argv) {
 
     memcpy(bo_w.map(), wbo.data(), wbo.size());
     bo_w.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    const char* n1 = getenv("NORM1_CAP");
+    const char* n2 = getenv("NORM2_CAP");
+    if (n1) { FILE* fa = fopen(n1, "rb"); if (fa) { fread(bo_o1.map(), 1, 1048576, fa); fclose(fa); printf("norm1 from %s\n", n1); } }
+    if (n2) { FILE* fa = fopen(n2, "rb"); if (fa) { fread(bo_o2.map(), 1, 1048576, fa); fclose(fa); printf("norm2 from %s\n", n2); } }
+    bo_o1.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    bo_o2.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     memset(bo_act.map(), 0, 1048576);
     memset(bo_o1.map(), 0, 1048576);
     memset(bo_o2.map(), 0, 1048576);
@@ -100,12 +114,9 @@ int main(int argc, char** argv) {
     run.set_arg(5, (const xrt::bo&)bo_o1);
     run.set_arg(6, (const xrt::bo&)bo_o2);
     run.set_arg(7, (const xrt::bo&)bo_kv);
-    // try the runlist path like the runtime's forward
-    xrt::runlist rl(hwctx);
-    rl.add(run);
-    rl.execute();
-    auto st = rl.wait(std::chrono::milliseconds(10000));
-    printf("runlist wait state: %d\n", (int)st);
+    run.start();
+    auto st = run.wait();
+    printf("run wait state: %d\n", (int)st);
 
     bo_act.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
     bo_o1.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
