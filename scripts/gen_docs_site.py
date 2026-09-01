@@ -423,6 +423,7 @@ def page_shell(out: Path, *, title: str, lead: str, breadcrumb: str, nav_groups:
   <span>Docs generated from <a href="{REPO_BASE}">the repo</a> · <a href="https://1bit.monster">Main site</a> · <a href="https://discord.gg/Qy38d4Xu2h" target="_blank" rel="noopener">Discord</a></span>
 </div></footer>
 <script>{SEARCH_JS}</script>
+<script src="https://context7.com/widget.js" data-library="/1bit-monster/1bit-monster"></script>
 </body>
 </html>"""
     out.write_text(html_doc, encoding="utf-8")
