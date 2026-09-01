@@ -278,3 +278,24 @@ example) and the mm tile-window dequant geometry.
 - Decode those TXNs (the decode_txn tool handles the format) -> the exact
   per-projection mm geometry -> validate the mm path on device.
 - Engine integration + validation loop.
+
+## Round-31e — insts-BO structure + engine-vs-runtime ABI tests
+
+1. The runtime's 1MB ext::bo objects (npu_app buffers) are the bf16 data
+   buffers (norms/act) — the TXN insts are written into the bo0 buffer after
+   set_arg (coherent, no sync). The xclbins' AIE_PARTITION sections hold
+   only the config metadata (no control code; the PDI binaries are small
+   config blobs).
+2. Test of the runtime's create_run ABI form (3, 0, 0, insts, weight, ...)
+   crashes in xrt (the instr slot must be a real BO/pointer) — the engine's
+   (3, instrs_bo, ninstr, ...) form is the working submission path.
+3. Engine ABI + packed-tile weight BO: the mm kernel writes ~228K nonzero
+   outputs (vs 16K with dequant-bf16 weights) — the tile bytes ARE being
+   consumed (structured reads), confirming the mm's in-kernel tile handling;
+   the exact per-call mm insts remain the key open item.
+
+## Next (round-32)
+- Extract the runtime's per-call TXNs from the bo0/insts buffer (hook the
+  npu_app buffer fill or the run submit) OR decode the aiebu PDI control
+  code from the xclbin's AIE_PARTITION (proper PDI extraction).
+- Derive the mm tile-window dequant geometry; validate on device.

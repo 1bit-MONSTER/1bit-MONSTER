@@ -144,8 +144,17 @@ int main(int argc, char** argv) {
     ws.sync(XCL_BO_SYNC_BO_TO_DEVICE, 10485760, 0);
     kv.sync(XCL_BO_SYNC_BO_TO_DEVICE, cfg.npu_kv_cache_bo_size, 0);
 
-    auto run = kern((uint64_t)3, bo_instr, (uint32_t)instrs.size(),
-                    bo_out, wt, act, ws, kv);
+    bool runtime_abi = getenv("RUNTIME_ABI") != nullptr;
+    xrt::run run;
+    if (runtime_abi) {
+        // the runtime's create_run ABI: (3, 0, 0, insts_bo, weight_bo, ...)
+        // the insts go into the FIRST host BO (bo0) via the bo0 slot
+        run = kern((uint64_t)3, (uint64_t)0, (uint32_t)0,
+                   bo_instr, wt, act, bo_out, kv);
+    } else {
+        run = kern((uint64_t)3, bo_instr, (uint32_t)instrs.size(),
+                   bo_out, wt, act, ws, kv);
+    }
     run.wait();
 
     bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE, 10485760, 0);
