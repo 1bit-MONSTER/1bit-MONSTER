@@ -1,6 +1,9 @@
 {
+  "$schema": "https://context7.com/schema/context7.json",
   "url": "https://context7.com/1bit-monster/1bit-monster",
-  "public_key": "pk_0KNup27JMOiyXo5acwmQ8",
+  "public_key": "pk_woGfNaBfmOKTjJDCp8JpR",
+  "projectTitle": "1bit.MONSTER",
+  "description": "A pure-C++26, hardware-agnostic 1-bit LLM inference engine that runs 100% of HuggingFace text-generation checkpoints on NPU (Ryzen AI), GPU (ROCm/Vulkan/CUDA), or CPU. Zero Python at runtime, GGUF-native 1-bit pipeline, MIT licensed.",
   "folders": [
     "docs"
   ],
