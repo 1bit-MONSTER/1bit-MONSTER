@@ -1,0 +1,116 @@
+name: Fix Proton DKIM CNAMEs (1bit.monster)
+
+# One-shot ops workflow: (re)creates the Proton Mail DKIM CNAME records in the
+# 1bit.monster Cloudflare zone. The selectors went missing from the zone after
+# the Namecheap -> Cloudflare DNS migration (okf log line 633 claims they were
+# auto-imported; they are not in the zone today), so external recipients cannot
+# verify outbound DKIM and DMARC p=quarantine puts mail at risk.
+#
+# Usage:  gh workflow run fix-proton-dkim.yml -f dkim1='protonmail.domainkey.uXXXXXX.wl.sendprotonmail.ch' [-f dkim2=...] [-f dkim3=...]
+# The CNAME targets come from Proton Mail -> Settings -> Proton Mail for Domains
+# -> 1bit.monster -> DNS records (or the old Namecheap zone export).
+# Uses the repo's existing CLOUDFLARE_API_TOKEN secret (same one deploy uses).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dkim1:
+        description: 'CNAME target for protonmail._domainkey (e.g. protonmail.domainkey.uXXXXXX.wl.sendprotonmail.ch)'
+        required: false
+        default: ''
+      dkim2:
+        description: 'CNAME target for protonmail2._domainkey'
+        required: false
+        default: ''
+      dkim3:
+        description: 'CNAME target for protonmail3._domainkey'
+        required: false
+        default: ''
+
+concurrency:
+  group: fix-proton-dkim
+  cancel-in-progress: false
+
+jobs:
+  add-dkim:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Create/update Proton DKIM CNAME records + verify via DoH
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          DKIM1: ${{ github.event.inputs.dkim1 }}
+          DKIM2: ${{ github.event.inputs.dkim2 }}
+          DKIM3: ${{ github.event.inputs.dkim3 }}
+        run: |
+          set -euo pipefail
+          API="https://api.cloudflare.com/client/v4"
+          ZONE="1bit.monster"
+          auth=(-H "Authorization: Bearer $CF_TOKEN" -H "Content-Type: application/json")
+
+          echo "== find zone id for $ZONE =="
+          zone_json=$(curl -s "${auth[@]}" "$API/zones?name=$ZONE&per_page=1")
+          zone_id=$(echo "$zone_json" | python3 -c "import sys,json;d=json.load(sys.stdin);r=d.get('result',[]);print(r[0]['id'] if r else '')" 2>/dev/null || true)
+          if [ -z "$zone_id" ]; then
+            echo "::error::zone '$ZONE' not visible to CLOUDFLARE_API_TOKEN (needs Zone:Read + Zone:DNS Edit on '$ZONE'); got:"
+            echo "$zone_json" | python3 -c "import sys,json;d=json.load(sys.stdin);print('  success:',d.get('success'),'errors:',d.get('errors'))" || true
+            exit 1
+          fi
+          echo "zone_id=$zone_id"
+
+          ensure_record() {
+            local sel="$1" target="$2"
+            if [ -z "$target" ]; then
+              echo "::notice::$sel: no target supplied, skipping"
+              return 0
+            fi
+            if [[ "$target" != *".wl.sendprotonmail.ch" && "$target" != *".sendprotonmail.ch" ]]; then
+              echo "::error::$sel: target '$target' does not look like a Proton DKIM CNAME (expected *(.wl).sendprotonmail.ch) — aborting, nothing changed"
+              exit 1
+            fi
+            local name="$sel._domainkey"
+            echo "== $name -> $target =="
+            local existing
+            existing=$(curl -s "${auth[@]}" "$API/zones/$zone_id/dns_records?type=CNAME&name=$name" \
+              | python3 -c "import sys,json;d=json.load(sys.stdin);r=d.get('result',[]);print(r[0]['id'] if r else '')" 2>/dev/null || true)
+            if [ -n "$existing" ]; then
+              echo "record exists (id=$existing) — updating content"
+              resp=$(curl -s -X PATCH "${auth[@]}" "$API/zones/$zone_id/dns_records/$existing" \
+                --data "{\"type\":\"CNAME\",\"name\":\"$name\",\"content\":\"$target\",\"proxied\":false}")
+            else
+              echo "record missing — creating"
+              resp=$(curl -s -X POST "${auth[@]}" "$API/zones/$zone_id/dns_records" \
+                --data "{\"type\":\"CNAME\",\"name\":\"$name\",\"content\":\"$target\",\"proxied\":false}")
+            fi
+            echo "$resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print('  success:',d.get('success'),'errors:',d.get('errors'))" || true
+            ok=$(echo "$resp" | python3 -c "import sys,json;d=json.load(sys.stdin);print('true' if d.get('success') else 'false')" 2>/dev/null || echo false)
+            if [ "$ok" != "true" ]; then
+              echo "::error::DNS write for $name failed — token needs Zone:DNS Edit on '$ZONE'"
+              exit 1
+            fi
+          }
+
+          ensure_record "protonmail" "$DKIM1"
+          ensure_record "protonmail2" "$DKIM2"
+          ensure_record "protonmail3" "$DKIM3"
+
+          echo "== end-to-end verification via Cloudflare DoH (public view) =="
+          sleep 5
+          for sel in protonmail protonmail2 protonmail3; do
+            ans=$(curl -s "https://cloudflare-dns.com/dns-query?name=$sel._domainkey.$ZONE&type=CNAME" \
+              -H "accept: application/dns-json" || true)
+            echo "$ans" | python3 -c "
+import sys,json
+try:
+    d=json.load(sys.stdin)
+    ans=d.get('Answer',[])
+    print('  $sel._domainkey:', [a.get('data') for a in ans] or 'NO ANSWER')
+except Exception as e:
+    print('  $sel._domainkey: query failed', e)
+"
+          done
+          echo "== done =="

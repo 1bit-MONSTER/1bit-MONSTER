@@ -7,19 +7,19 @@
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <title>Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER</title>
-  <meta name="description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
+  <title>Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER</title>
+  <meta name="description" content="The full HRX lane journey: serving Zyphra Zaya 8B, 4-bit Q4NX, entirely on the AMD Strix Halo NPU — logits corr 0.99999999, 8.4 t/s decode, llama-server over HTTP." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER" />
-  <meta property="og:description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
-  <meta property="og:url" content="https://1bit.monster/1bit-post-lemonade-v1170.html" />
+  <meta property="og:title" content="Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER" />
+  <meta property="og:description" content="The full HRX lane journey: serving Zyphra Zaya 8B, 4-bit Q4NX, entirely on the AMD Strix Halo NPU — logits corr 0.99999999, 8.4 t/s decode, llama-server over HTTP." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-zaya-q4nx-hrx.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER" />
-  <meta name="twitter:description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
+  <meta name="twitter:title" content="Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER" />
+  <meta name="twitter:description" content="The full HRX lane journey: serving Zyphra Zaya 8B, 4-bit Q4NX, entirely on the AMD Strix Halo NPU." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/1bit-post-lemonade-v1170.html" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-zaya-q4nx-hrx.html" />
   <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
@@ -118,7 +118,7 @@
     }
   </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER", "description": "The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented.", "url": "https://1bit.monster/1bit-post-lemonade-v1170.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-lemonade-v1170.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-24", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER", "description": "The full HRX lane journey: serving Zyphra Zaya 8B, 4-bit Q4NX, entirely on the AMD Strix Halo NPU.", "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-31", "dateModified": "2026-08-31", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 </head>
 <body>
@@ -144,64 +144,74 @@
   </header>
 
   <main id="content">
-    <article class="art container" data-od-id="post-lemonade-v1170">
+    <article class="art container" data-od-id="post-zaya-q4nx-hrx">
       <a class="back" href="1bit-blog.html">&larr; all posts</a>
       <div class="art-meta">
-        <span>2026-08-24</span>
-        <span class="tag">lemonade</span>
-        <span class="tag">upstream</span>
-        <span class="tag">sdk</span>
+        <span>2026-08-31</span>
+        <span class="tag">npu</span>
+        <span class="tag">hrx</span>
+        <span class="tag">q4nx</span>
+        <span class="tag">zaya</span>
       </div>
-      <h1>Lemonade v11.7.0, and how we stay current with the SDK</h1>
-      <p class="lead">The embedded Lemonade server core is re-vendored to v11.7.0 — new models, a register/options/stats/metrics API, and a repeatable re-vendor loop so every upstream release lands without touching engine code.</p>
+      <h1>Zaya 8B Q4NX on the AMD NPU</h1>
+      <p class="lead">Zyphra&rsquo;s Zaya 8B, quantized to our Q4NX tile format, running entirely on the AMD Strix Halo NPU &mdash; attention and MoE both on-device, no CPU fallback. Logits match the F32 reference to float noise, decode does 8.4&nbsp;t/s, and it serves over HTTP.</p>
 
       <div class="prose" data-od-id="body">
+        <h2>The lane</h2>
+        <p>HRX is AMD&rsquo;s IREE-derived runtime &mdash; Loom source-first kernels JIT-compiled for the XDNA 2 NPU. We spent this month turning it from a platform-transition watch into an actual execution lane for our own models: the Q4NX tile format (4-bit int4 + BF16 scales, 5120-byte tiles) that our engine uses natively, executed on the NPU.</p>
+        <p>The final model: <span class="mono">Zyphra ZAYA1-8B</span>, 8.84&nbsp;B params, <span class="mono">6.96&nbsp;GiB</span> (6.76&nbsp;BPW). Every quantized op runs on the HRX2 backend of our llama.cpp fork at <span class="mono">-ngl 99</span>.</p>
 
-        <h2>Why we track Lemonade at all</h2>
-        <p>The 1bit engine embeds <b>Lemonade's server core</b> in-process — all 14 backends and the policy router, compiled into the same <span class="mono">build/1bit</span> binary. That means upstream's release cadence is our release cadence: every time <span class="mono">lemonade-sdk/lemonade</span> ships, the engine inherits its new models, backends, and API surface the day we re-vendor. The relationship is documented in <code>docs/guides/Lemonade-Compat.md</code> and the vendoring rules live in <code>third_party/lemonade/UPSTREAM.md</code>.</p>
-
-        <h2>v11.7.0: what came in</h2>
-        <p>This release brought new models, a management API, and observability — all now live in the embedded core. (The engine's own HF coverage is separate and larger: <b>554 architecture tokens / 1,798 HF arch strings, 317,310 of 317,310 arch-bearing text-gen checkpoints mapped — 100% of HuggingFace</b>. The numbers below are what the Lemonade core itself gained.)</p>
+        <h2>Milestones</h2>
         <table>
-          <thead><tr><th>Area</th><th>What landed</th></tr></thead>
+          <thead><tr><th>milestone</th><th>what it took</th><th>result</th></tr></thead>
           <tbody>
-            <tr><td>Models</td><td>Qwen3.8-27B, NVIDIA Nemotron 3.5 Lightning 30B-A3B, Z-Image-Turbo (TheNoise), FastFlowLM NPU backend v1.0.1</td></tr>
-            <tr><td>Management API</td><td><span class="mono">POST /v1/models/register</span>, <span class="mono">GET/POST/DELETE /v1/models/{id}/options</span></td></tr>
-            <tr><td>Observability</td><td><span class="mono">GET /v1/stats</span> (prefix-cache + route-switch counters), Prometheus <span class="mono">/metrics</span></td></tr>
-            <tr><td>Behavior</td><td>Deployment-mode validation (400 instead of silent repair), native reasoning controls for "disable thinking", cancel-mid-prefill, <code>no_broadcast</code> → <code>broadcast</code> inversion</td></tr>
+            <tr><td>First Q4NX model served</td><td>qwen3-0.6B end-to-end on gfx1151; every layer of the chain validated (op-level 3.7e-7)</td><td>pipeline proven</td></tr>
+            <tr><td>Quality fix</td><td>the fused mm kernel silently transposed every multi-token matmul (row-major vs ggml col-major)</td><td>real tokens</td></tr>
+            <tr><td>Zaya port &mdash; architecture root cause</td><td>the graph ran alternating attn/MoE blocks and ignored half the weights; rewritten to HF&rsquo;s both-blocks-per-layer</td><td>8/8 top-1 vs HF</td></tr>
+            <tr><td>Zaya Q4NX + MoE dispatch</td><td>new <span class="mono">MUL_MAT_ID_Q4NX</span> op for the stacked experts; root cause: the dispatch read the strided topk view contiguously</td><td>corr 0.99999999</td></tr>
+            <tr><td>7&ndash;17&times; speedup</td><td>per-tile 3-copy upload (&asymp;9,200 stream ops/token) collapsed to one raw-blob copy + a tile-major dequant kernel</td><td>tg 1.22 &rarr; 8.7 t/s</td></tr>
+            <tr><td>llama-server</td><td>the HTTP lane: prompt 18.1 / decode 8.16 t/s</td><td>servable</td></tr>
           </tbody>
         </table>
 
-        <h2>Verified on real hardware</h2>
-        <p>Re-vendored at <span class="mono">2b6a7d77</span> (tag v11.7.0) and built with TheRock ROCm 7.16 on Strix Halo (gfx1151). The full <span class="mono">onebin</span> target compiles — all 14 backends including the new <b>thenoise</b> image backend — and the embedded core serves <span class="mono">lemond version 11.7.0</span>:</p>
-        <ul>
-          <li><span class="mono">/v1/models</span> — the vendored Lemonade registry now carries 211 entries (up from v11.5.1), incl. the new Qwen 27B GGUF variants, Nemotron-3-Nano-30B-A3B-GGUF, and Z-Image-Turbo; the engine's own coverage is the <b>317,310/317,310 (100%)</b> HF census above</li>
-          <li><span class="mono">/v1/stats</span> + <span class="mono">/metrics</span> — serving (<code>lemonade_server_info{version="11.7.0"}</code>)</li>
-          <li><span class="mono">/v1/models/register</span> and <span class="mono">/{id}/options</span> — live and validating</li>
-          <li><span class="mono">--broadcast/--no-broadcast</span> — the inverted flag, working</li>
-        </ul>
+        <h2>The numbers</h2>
+        <table>
+          <thead><tr><th>measure</th><th>value</th></tr></thead>
+          <tbody>
+            <tr><td>logits corr vs F32 port</td><td>0.99999999</td></tr>
+            <tr><td>max |dlogit|</td><td>0.0041 &mdash; top-1 margin is 1,681&times; the noise</td></tr>
+            <tr><td>top-5 tokens</td><td>identical to F32</td></tr>
+            <tr><td>F32 port vs HF greedy</td><td>8/8 top-1</td></tr>
+            <tr><td>prefill (pp32)</td><td>103.5 t/s</td></tr>
+            <tr><td>decode (tg32)</td><td>11.1 t/s</td></tr>
+            <tr><td>decode, pre-optimization</td><td>1.22 t/s (&asymp;9&times; faster now)</td></tr>
+            <tr><td>prefill, pre-optimization</td><td>2.1 t/s (&asymp;37&times; faster now)</td></tr>
+            <tr><td>llama-server prompt / decode</td><td>18.1 / 8.16 t/s</td></tr>
+          </tbody>
+        </table>
 
-        <h2>The re-vendor loop (how we stay current)</h2>
-        <p>The engine vendors Lemonade as a plain tree (not a submodule) because the embedded core needs a small local CMake patch that only exists here. The loop is scripted in <code>UPSTREAM.md</code> and stays boring on purpose:</p>
-        <ol>
-          <li><b>Pin</b> — checkout the upstream tag (<code>git checkout 2b6a7d77</code>).</li>
-          <li><b>Re-apply the embed patch</b> — a <code>CMAKE_CURRENT_SOURCE_DIR</code> sweep plus parent-target short-circuits so the tree builds as a subdirectory without colliding with the engine's own dependency fetches.</li>
-          <li><b>Build + verify</b> — full <span class="mono">onebin</span> build, then a live smoke test of the API surface on strixhalo.</li>
-          <li><b>Ship</b> — commit on a chore branch, open the PR, let CI and the merge queue do the rest.</li>
-        </ol>
-        <p>The patch is small and documented; when upstream adopts any of it, the diff shrinks further. Two v11.7.0 additions needed new embed-side handling: a <code>BUILD_TESTING</code> guard around the new <code>add_test()</code> police function (it leaked into the parent scope via <code>add_subdirectory</code>), and the <code>copy_resources</code> target tied to the object library so the embedded binary ships its <span class="mono">resources/</span> dir. Plus a pre-existing engine bug fixed along the way: <span class="mono">1bit lemonade</span> was passing the injected <code>--lemonade</code> flag into lemond's own CLI parser, which rejected it — the flag is now stripped before the handoff.</p>
+        <h2>The bugs that were the work</h2>
+        <p>The two root causes worth remembering:</p>
+        <p><b>The architecture was wrong before the math was.</b> The Zaya port ran one block per layer (attention, then MoE, alternating) &mdash; HF runs both in every layer. Half the weights sat unused and the logits were uncorrelated with the reference (0.10). Fixing the graph &mdash; not the kernels &mdash; jumped straight to 8/8 top-1.</p>
+        <p><b>The ids are a strided view.</b> In the expert matmul, the per-token expert ids come from an argsort whose output is a strided view (17 sorted experts per token, <span class="mono">nb[1] = 17&times;4</span>). The NPU dispatch copied them contiguously, so token 2 silently received the second-best expert of token 0. The F32 path read the strides correctly &mdash; which is exactly why the port &ldquo;worked&rdquo; on CPU and broke on the NPU. One stride-aware copy fixed the whole model.</p>
 
-        <div class="callout">
-          <p>Release notes: <a href="https://github.com/lemonade-sdk/lemonade/releases/tag/v11.7.0">github.com/lemonade-sdk/lemonade/releases/tag/v11.7.0</a></p>
-        </div>
+        <h2>Why 0.99999999 and not 1.0</h2>
+        <p>Because the two runs sum the same math in different orders. The weights are bit-identical between the Q4NX and F32 models; the last 1e-8 of correlation is float32 rounding between the NPU reduction tree and the CPU one &mdash; 1,681&times; below the top-1 margin. It rounds to 1.00000000 and the output is identical.</p>
 
+        <h2>What&rsquo;s next</h2>
+        <p>Profiling corrected the map. The F32 attention matmuls actually run on the <b>CPU</b> &mdash; the HRX2 backend never claimed plain MUL_MAT, and the CPU&rsquo;s AVX-512 handles them well (that CPU path is the real wall at ~11 t/s). Moving them to the NPU&rsquo;s naive f32 kernel is bit-correct but <b>slower</b> (9.9 t/s), so the gating stays.</p>
+        <p>The fused dequant+matmul lever is structurally blocked, not just slow: Q4NX packs 4-bit values with an 8-byte column stride, so the contiguous vector loads that make the in-tree Q4_K kernel fast don&rsquo;t apply.</p>
+        <p>The real win came from the split, not the kernels: the all-CPU F32 path runs 16.5 t/s while the hybrid CPU&harr;HRX2 split ran 11.0 &mdash; every HRX2-claimed pointwise op adds a crossing that costs more than the NPU saves. Restricting HRX2 to exactly the Q4NX matmuls (plus the recurrent state&rsquo;s ops) took the Q4NX decode from 8.9 to <b>10.9 t/s</b> (+23%). The remaining gap to the 16.5 t/s CPU ceiling is the price of 79% less memory.</p>
+        <p>Prefill&rsquo;s gap was the per-token expert dequant: MUL_MAT_ID_Q4NX dispatched one dequant per (selected, token) pair, so a 32-token batch dequantized every expert once per token. Grouping tokens by expert gives <b>one dequant per distinct expert per batch</b>. Prefill went from 36.8 to <b>77.4 t/s</b> (+110%), decode untouched (size-1 groups keep the proven path).</p>
+        <p><b>Correction (round 21):</b> the first grouping attempt (a table-scatter matmul kernel that read/wrote arbitrary output columns through i32 tables) reported 72.1 t/s but was <b>measuring wrong math</b> &mdash; the kernel&rsquo;s &ldquo;use tables&rdquo; condition compared the config constant against 1 with a not-equal test, folded false at JIT time, and the tables were silently never used; the 2-token verification passed only because slot==token for 2-token groups. A 32-token prefill dump against the F32 reference caught it (corr 0.37, wrong top-1). The real fix dequants each distinct expert once and runs the proven per-slot matmul for every token in the group &mdash; verified corr 0.9999996, top-1 identical to F32 at 32 tokens, and faster (77.4 t/s). Lesson: multi-token prefill correctness can&rsquo;t be verified with a 2-token dump.</p>
+        <p><b>Round 22:</b> round 21 left 32 per-slot matmul launches per expert group &mdash; a 32-token group re-read the 33.5 MB dequantized weight 32&times;. The table-scatter idea round 20 reached for is now done right: a new <span class="mono">mul_mat_f32_f32_ggml_tbl_tiled</span> kernel keeps the 8-column tiled structure but selects src1/dst columns through i32 tables, bounding the table-derived indices with <b>truthful</b> <span class="mono">index.assume</span> predicates (src1_cols &lt; ntokens, dst_cols &lt; nselected&times;ntokens) &mdash; round 20&rsquo;s version assumed an overflowing range and had no min/max/rem lowering to clamp with. One dispatch per expert group instead of 34 stream ops: prefill 77.4 &rarr; <b>103.5 t/s</b> (+34%), pp128 143.7 t/s, decode unchanged. Still corr 0.9999996 / top-1 108 == F32 on the 32-token dump.</p>
       </div>
     
     <section class="related">
       <h2>Related</h2>
-      <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
       <a href="https://1bit.monster/1bit-post-npu-reversal.html">I reverse-engineered AMD's NPU stack in 4 days</a>
-      <a href="https://1bit.monster/1bit-docs.html">1bit.MONSTER: Documentation</a>
+      <a href="https://1bit.monster/1bit-post-halo-reviews.html">What the Ryzen AI Halo reviews didn't tell you</a>
+      <a href="https://1bit.monster/1bit-benchmarks.html">Benchmarks</a>
     </section>
   </article>
   </main>
@@ -213,8 +223,10 @@
 
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
     </div>
-    <p class="place" data-od-id="footer-place">Metepenagiag Mi'kmaq Nation, New Brunswick, Canada</p>
-    <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
+    <div class="container">
+      <p class="place" data-od-id="footer-place">Metepenagiag Mi’kmaq Nation, New Brunswick, Canada</p>
+      <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
+    </div>
   </footer>
 <script src="analytics.js"></script>
 <script src="https://context7.com/widget.js" data-library="/1bit-monster/1bit-monster"></script>

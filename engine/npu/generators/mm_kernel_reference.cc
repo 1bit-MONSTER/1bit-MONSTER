@@ -885,21 +885,51 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
             for (unsigned jt = 0; jt < 4; ++jt) {
                 unsigned j = jg + jt;   // col-tile index 0..15
                 const uint8_t* nib = pB4 + i * 512 + j * 32;
+                const v64int4* pv = (const v64int4*)nib;
+                auto u = unpack_i4_sx(pv);
+                u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
+#ifdef I4_BF16_PAIR
+                // Issue #1934 (round-10 layout): the additive zero-point
+                // term as a bf16 (a, b) pair per (K-group, col) — a = s/S_col,
+                // b = zp/S_col, 2 bytes each, 2*128*4 = 1024 B, exactly the
+                // v66 ratioQ22 region [4096, 5120). The symmetric-only v66
+                // ratio drops zp (1BP asymmetric zp: B_shadow corr 0.912,
+                // round-9/10 gates); the restructured kernel dequants
+                // B'' = sat8(round(q4*a + b)) with the additive term. Scalar
+                // bf16->float dequant is toolchain-legal (the ws09 note: only
+                // VECTORIZED fp32 fails peano legalization; dequant_i4_b used
+                // scalar float). Region layout (packed by the host):
+                //   [4096 + group*512 + col*4 + 0] = bf16 a (s/S_col)
+                //   [4096 + group*512 + col*4 + 2] = bf16 b (zp/S_col)
+                // group = k/32 within the 64-tile = i/4 for k-chunk i.
+                const uint8_t* ab = pB4 + 4096 + (size_t)(i / 4) * 512 + (size_t)j * 32;
+                for (int e = 0; e < 64; e++) {
+                    uint16_t a16 = (uint16_t)ab[(e & 7) * 4] | ((uint16_t)ab[(e & 7) * 4 + 1] << 8);
+                    uint16_t b16 = (uint16_t)ab[(e & 7) * 4 + 2] | ((uint16_t)ab[(e & 7) * 4 + 3] << 8);
+                    // bf16 -> f32: value bits in the top half (no libm;
+                    // union bit-cast is the portable no-memcpy form).
+                    union { uint32_t u; float f; } a_ = { (uint32_t)a16 << 16 };
+                    union { uint32_t u; float f; } b_ = { (uint32_t)b16 << 16 };
+                    float af = a_.f, bf = b_.f;
+                    // q4 = (q4<<4)>>4 — sign-extended nibble (already in u)
+                    float v = (float)(int8_t)(u[e] >> 4) * af + bf;
+                    int r = silu_roundf(v);   // round-half-away (no-libm)
+                    Bb[jt][e] = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
+                }
+#else
                 // v65 ratioQ22 (int32) at [4096 + group*512 + col*4] — the
                 // old bf16 s/S_col reads at [4096..4864) were removed in the
                 // v65 pack (they overlapped the ratio region). group = k/32
                 // within the 64-tile = i/4 for k-chunk i.
                 const int32_t* rq = (const int32_t*)(pB4 + 4096 + (size_t)(i / 4) * 512
                                                      + (size_t)j * 32);
-                const v64int4* pv = (const v64int4*)nib;
-                auto u = unpack_i4_sx(pv);
-                u = u + u; u = u + u; u = u + u; u = u + u;   // q4<<4
                 for (int e = 0; e < 64; e++) {
                     // B'' = sat8(round((q4<<4) * ratioQ22 / 2^22))
                     int x = (int)(int8_t)u[e] * rq[e & 7];
                     int r = (x + (1 << 21)) >> 22;
                     Bb[jt][e] = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
                 }
+#endif
             }
             aie::vector<int8, 64> B0 = aie::load_v<64>(Bb[0]);
             aie::vector<int8, 64> B1 = aie::load_v<64>(Bb[1]);

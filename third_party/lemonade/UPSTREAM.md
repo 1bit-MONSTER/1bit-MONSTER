@@ -1,22 +1,22 @@
-# Vendored: lemonade-sdk/lemonade (embedded server core)
+# Vendored: lemonade (LOCAL-ONLY source)
 
-Vendored from https://github.com/lemonade-sdk/lemonade at commit
-`7953d7f6feat(backends): hrx backend [experimental] (#3374)` (`7953d7f6`).
-This brings the `llamacpp-hrx` backend (see `src/cpp/server/backends/hrx/`).
+> **LOCAL-ONLY.** Refresh this vendored tree from the **local** lemonade source
+> (`/home/bcloud/1bit-lemonade-v1170/third_party/lemonade`), never from
+> `github.com/lemonade-sdk/lemonade` (see that worktree's `RULES.md`). Do NOT
+> `git fetch` / `pull` / `clone`, push PRs, open issues, or run CI against
+> upstream.
 
-Re-vendored 2026-08-29 from the previous pin `e1b31683` (tag `v11.8.0`) to pick
-up the HRX backend merged upstream 2026-08-28.
-
-Vendored (instead of a submodule) because the embedded server core needs a
-patch that only exists locally, and CI can't fetch unpublished submodule
-SHAs. Re-vendor on upstream sync:
+This snapshot carries the `llamacpp-hrx` backend (`src/cpp/server/backends/hrx/`),
+its registry entries / pins in `resources/server_models.json` +
+`backend_versions.json`, and the `tools/gen_hrx_model_entries.py` generator.
+It is kept in sync with the local source (`1bit-lemonade-v1170/third_party/lemonade`,
+v11.8.1).
 
 ```sh
-git clone https://github.com/lemonade-sdk/lemonade /tmp/lemonade
-cd /tmp/lemonade
-git checkout 7953d7f6  # feat(backends): hrx backend [experimental] (#3374)
+# Re-vendor FROM the local source:
+rsync -a --exclude=.git --exclude=UPSTREAM.md \
+  /home/bcloud/1bit-lemonade-v1170/third_party/lemonade/ third_party/lemonade/
 # re-apply the embeddability patch below
-rsync -a --exclude=.git /tmp/lemonade/ third_party/lemonade/
 ```
 
 ## Local patch: embeddability

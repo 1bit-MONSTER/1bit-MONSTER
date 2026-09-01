@@ -2573,7 +2573,7 @@
         ],
         "size": 0.69,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "NO (GET_ROWS: hidden_size != 2048)",
         "hrx_embd_w": 1536
     },
     "MiniCPM4.1-8B-HRX": {
@@ -2586,7 +2586,7 @@
         ],
         "size": 4.97,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "NO (GET_ROWS: hidden_size != 2048)",
         "hrx_embd_w": 4096
     },
     "MiniCPM4-8B-HRX": {
@@ -2598,7 +2598,7 @@
         ],
         "size": 4.97,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "NO (GET_ROWS: hidden_size != 2048)",
         "hrx_embd_w": 4096
     },
     "MiniCPM3-4B-HRX": {
@@ -2741,7 +2741,7 @@
         ],
         "size": 18.6,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "YES",
         "hrx_embd_w": 2048
     },
     "Qwen3-Coder-Next-HRX": {
@@ -2956,7 +2956,7 @@
         ],
         "size": 46.1,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "NO (load-time abort: SCALE / cross-layer attention unsupported \u2014 non-Qwen3-MoE graph)",
         "hrx_embd_w": 2048
     },
     "Devstral-Small-2507-HRX": {
@@ -2970,7 +2970,7 @@
         ],
         "size": 14.3,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "NO (GET_ROWS: hidden_size != 2048)",
         "hrx_embd_w": 5120
     },
     "Qwen2.5-Coder-32B-Instruct-HRX": {
@@ -3054,7 +3054,7 @@
         ],
         "size": 67.7,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "NO (GET_ROWS: hidden_size != 2048)",
         "hrx_embd_w": 4096
     },
     "GLM-4.7-Flash-HRX": {
@@ -3067,7 +3067,7 @@
         ],
         "size": 17.5,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "NO (GET_ROWS gate ok, but RMS_NORM after embd unsupported \u2014 non-Qwen graph)",
         "hrx_embd_w": 2048
     },
     "Playable1-HRX": {
@@ -3080,7 +3080,7 @@
         ],
         "size": 4.68,
         "hrx_token_embd": "Q4_K",
-        "hrx_serve": "SUSPECT (q4_K, unverified shape)",
+        "hrx_serve": "NO (GET_ROWS: hidden_size != 2048)",
         "hrx_embd_w": 3584
     },
     "granite-4.0-h-tiny-HRX": {
