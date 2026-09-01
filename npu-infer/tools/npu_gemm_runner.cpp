@@ -130,6 +130,16 @@ int main(int argc, char** argv) {
     // B: layout_transpose_L1_1x2_8x8block(k=64, n=128) then BFP16 ebs8 encode
     auto B_shuffled = gemm_atb::layout_transpose_L1_1x2_8x8block(B_float, K, N, k_tile, n_tile);
     auto B_bfp = floatToBfp16(8, K * N, B_shuffled.data(), 0);
+    // aie2p bfp16ebs8 exponent convention (issue #2007, proven on silicon
+    // 2026-09-01): the hardware decodes value = mantissa_int8 * 2^(exp - 134),
+    // but torch2aie's floatToBfp16 stores the RAW IEEE-754 exponent field
+    // (127 for 1.0), which decodes as 0.5x on device. Bump every block's
+    // shared exponent byte (index 0 of each 9-byte record) by one:
+    //   exp+1, A=1 B=1 K=1024  -> exactly 1024 (was 512)
+    //   exp+1, A=3 B=5 K=1024  -> exactly 15360
+    for (size_t i = 0; i < B_bfp.size(); i += 9) {
+        B_bfp[i] = (uint8_t)(B_bfp[i] + 1);
+    }
 
     // --- Create XRT BOs ---
     auto bo_instr = xrt::bo(device, instr_v.size() * 4, XCL_BO_FLAGS_CACHEABLE, kernel.group_id(1));
