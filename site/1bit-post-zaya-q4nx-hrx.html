@@ -182,10 +182,10 @@
             <tr><td>max |dlogit|</td><td>0.0041 &mdash; top-1 margin is 1,681&times; the noise</td></tr>
             <tr><td>top-5 tokens</td><td>identical to F32</td></tr>
             <tr><td>F32 port vs HF greedy</td><td>8/8 top-1</td></tr>
-            <tr><td>prefill (pp32)</td><td>35.9 t/s</td></tr>
-            <tr><td>decode (tg32)</td><td>8.4 t/s</td></tr>
-            <tr><td>decode, pre-optimization</td><td>1.22 t/s (&asymp;7&times; faster now)</td></tr>
-            <tr><td>prefill, pre-optimization</td><td>2.1 t/s (&asymp;17&times; faster now)</td></tr>
+            <tr><td>prefill (pp32)</td><td>127.4 t/s (round 23)</td></tr>
+            <tr><td>decode (tg32)</td><td>13.0 t/s (round 23)</td></tr>
+            <tr><td>decode, pre-optimization</td><td>1.22 t/s (&asymp;11&times; faster now)</td></tr>
+            <tr><td>prefill, pre-optimization</td><td>2.1 t/s (&asymp;61&times; faster now)</td></tr>
             <tr><td>llama-server prompt / decode</td><td>18.1 / 8.16 t/s</td></tr>
           </tbody>
         </table>
@@ -198,8 +198,10 @@
         <h2>Why 0.99999999 and not 1.0</h2>
         <p>Because the two runs sum the same math in different orders. The weights are bit-identical between the Q4NX and F32 models; the last 1e-8 of correlation is float32 rounding between the NPU reduction tree and the CPU one &mdash; 1,681&times; below the top-1 margin. It rounds to 1.00000000 and the output is identical.</p>
 
-        <h2>What&rsquo;s next</h2>
-        <p>The wall is now the F32 attention path itself (the F32 port does pp32 120 / tg32 10.9 t/s on the same lane). The Q4NX MoE sits 20% behind it, bandwidth-bound. The big lever is a vectorized fused dequant+matmul kernel &mdash; our scalar attempt was 55&times; slower and got reverted; the Q4_K kernel in-tree shows the required design.</p>
+        <h2>What&rsquo;s next (rounds 24&ndash;25b)</h2>
+        <p><b>The converter went general.</b> <span class="mono">make-q4nx-model.py</span> now reads the architecture from any GGUF, quantizes Q4_K/Q5_K/Q6_K/Q8_0/F16/BF16 sources to Q4NX (numpy dequant ports verified bit-exact vs ggml), handles MoE 3-D expert tensors and per-type keep shapes. The whole local roster was converted and validated on HRX20: Qwen3-0.6B, Qwen2.5-3B/0.5B, MiniCPM5-1B, MiniCPM4-8B generate coherently; the two MoE models (Qwen3-Coder-30B-A3B, GLM-4.7-Flash) now run their expert matmuls on the NPU; Qwen3-Next-80B is converted but the fork cannot execute the arch yet (SCALE on recurrent-state views &mdash; the Q4_K reference aborts identically).</p>
+        <p><b>The MoE bug that looked like noise.</b> The first MoE runs were complete garbage while every sub-component verified (per-pair mm corr 0.998, down mm corr 1.0000). Layer 0 was fine but layer 1&rsquo;s input had already drifted to corr 0.63. Root cause: <span class="mono">MUL_MAT_ID</span> treated src1 as the shared form <span class="mono">[k, ntokens]</span> (gate/up experts) for every dispatch &mdash; the down experts feed a <b>per-expert</b> src1 <span class="mono">[k, n_expert_used, ntokens]</span>, and the old code always read column <span class="mono">t&middot;k</span>: every expert silently computed with expert-0&rsquo;s activation. The &ldquo;corr 1.0000&rdquo; down check passed precisely because it replicated the bug. Fixed (fork 49f07b6): per-slot src1 columns <span class="mono">(i + t&middot;n_expert_used)</span> through both the grouped tables and the per-pair path, plus a new <span class="mono">src1_cols_count</span> config in the two table-scatter kernels. Down MMID now corr 1.0000 vs numpy (L0/L1/L10/L47); the 30B Q4NX matches the Q4_K_M reference nearly token-for-token &mdash; &ldquo;The capital of France is&rdquo; &rarr; &ldquo;Paris.&rdquo; for both.</p>
+        <p><b>Numbers on the fixed 30B MoE</b> (HRX20, -t 16, ngl 99): pp32 49.2 t/s, pp128 67.5 t/s, tg32 14.3 t/s. An external iGPU reference on the same SoC (Q4_K_M, Vulkan) decodes the 30B-A3B at 86.1 t/s &mdash; the iGPU stays ahead at small-batch decode; the NPU&rsquo;s edge remains memory (6.96 vs 32.93 GiB) and large-batch prefill (zaya pp512 171 t/s).</p>
       </div>
     
     <section class="related">
