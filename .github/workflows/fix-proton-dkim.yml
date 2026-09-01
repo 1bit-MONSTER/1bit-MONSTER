@@ -103,14 +103,10 @@ jobs:
           for sel in protonmail protonmail2 protonmail3; do
             ans=$(curl -s "https://cloudflare-dns.com/dns-query?name=$sel._domainkey.$ZONE&type=CNAME" \
               -H "accept: application/dns-json" || true)
-            echo "$ans" | python3 -c "
-import sys,json
-try:
-    d=json.load(sys.stdin)
-    ans=d.get('Answer',[])
-    print('  $sel._domainkey:', [a.get('data') for a in ans] or 'NO ANSWER')
-except Exception as e:
-    print('  $sel._domainkey: query failed', e)
-"
+            if [ -n "$ans" ]; then
+              echo "$ans" | python3 -c "import sys,json;d=json.load(sys.stdin);ans=d.get('Answer',[]) or [];print('  $sel._domainkey:', [a.get('data') for a in ans] if ans else 'NO ANSWER')" || echo "  $sel._domainkey: query failed"
+            else
+              echo "  $sel._domainkey: query failed"
+            fi
           done
           echo "== done =="
