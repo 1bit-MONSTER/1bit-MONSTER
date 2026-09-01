@@ -170,15 +170,13 @@ jobs:
             echo "=== Visitors by country (top 10, 7d) ==="
             # httpRequestsAdaptiveGroups supports clientCountryName but only
             # 1-day windows (a 7d range errors out); loop the last 7 days and
-            # aggregate by country.
-            COUNTRY_JSON=""
-            for d in $(seq 0 6); do
+            # aggregate by country (codes are ISO alpha-2).
+            COUNTRIES=$(for d in $(seq 0 6); do
               DAY=$(date -u -d "$FROM + $d days" +%Y-%m-%d)
-              ROW=$(gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequestsAdaptiveGroups(limit: 100, filter: {date: \"$DAY\"}, orderBy: [count_DESC]) { dimensions { clientCountryName } count } } } }" | jq -r 'if .data then [.data.viewer.zones[0].httpRequestsAdaptiveGroups[]? | select(.dimensions.clientCountryName != null) | { country: .dimensions.clientCountryName, requests: .count }] | .[] | "\(.country)	\(.requests)" else empty end')
-              [ -n "$ROW" ] && COUNTRY_JSON="$COUNTRY_JSON\n$ROW"
-            done
-            if [ -n "$(echo "$COUNTRY_JSON" | sed '/^$/d')" ]; then
-              echo "$COUNTRY_JSON" | sed '/^$/d' | awk -F"\t" '{agg[$1]+=$2} END {for (c in agg) print c "\t" agg[c]}' | sort -t"$(printf '\t')" -k2 -rn | head -10 | awk -F"\t" '{print $1 "\t" $2 " req"}'
+              gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequestsAdaptiveGroups(limit: 100, filter: {date: \"$DAY\"}, orderBy: [count_DESC]) { dimensions { clientCountryName } count } } } }" | jq -r 'if .data then [.data.viewer.zones[0].httpRequestsAdaptiveGroups[]? | select(.dimensions.clientCountryName != null) | { country: .dimensions.clientCountryName, requests: .count }] | .[] | "\(.country)	\(.requests)" else empty end'
+            done | awk -F"\t" '/\t/ {agg[$1]+=$2} END {for (c in agg) print c "\t" agg[c]}' | sort -t"$(printf '\t')" -k2 -rn | head -10 | awk -F"\t" '{print $1 "\t" $2 " req"}')
+            if [ -n "$COUNTRIES" ]; then
+              echo "$COUNTRIES"
             else
               echo "country query failed: no country data in window"
             fi
