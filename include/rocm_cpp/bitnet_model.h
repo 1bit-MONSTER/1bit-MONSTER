@@ -915,6 +915,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "koliber") == 0) return RCPP_ARCH_LLAMA;  // KoliberForCausalLM — rms 1e-6, rope_theta 10000, GQA 12/2 (OrisTeam/Koliber-v1.0-Base, census 2026-09-01)
     if (strcmp(s, "lilm") == 0) return RCPP_ARCH_LLAMA;  // LilmForCausalLM — rms 1e-6, rope_theta 10000, GQA 16/4 (glouriousgautam/LilM1-230M, census 2026-09-01)
     if (strcmp(s, "llmjpvl") == 0) return RCPP_ARCH_LLAMA;  // LLMjpVLModel — llm-jp-4-VL VLM, text decoder LlamaForCausalLM (llm-jp-4-8b-thinking) + SigLIP vision; maps to text family (tokinasin/llm-jp-4-vl, census 2026-09-01)
+    if (strcmp(s, "youtuvl") == 0) return RCPP_ARCH_LLAMA;  // YoutuVLForConditionalGeneration — silu/rms/rope_theta-1e5/no-bias text decoder + SigLIP2 vision (DIYIN/Youtu-Parsing, census 2026-09-01)
     if (strcmp(s, "kmoshi") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
     if (strcmp(s, "livemem") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
     if (strcmp(s, "llama2") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
