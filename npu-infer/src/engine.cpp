@@ -157,6 +157,59 @@ uint32_t XclbinManager::ninstr(XclbinType type) {
     if (type < 0 || type >= XCLBIN_COUNT) return 0;
     return entries_[type].ninstr;
 }
+xrt::bo* XclbinManager::insts_for(xrt::kernel* kern, uint32_t m, uint32_t k,
+                                  uint32_t n, uint32_t woff,
+                                  uint32_t* out_ninstr) {
+    if (out_ninstr) *out_ninstr = 0;
+    if (!kern) return nullptr;
+    ShapeKey key{m, k, n, woff};
+    auto it = shape_insts_.find(key);
+    if (it != shape_insts_.end()) {
+        if (out_ninstr) *out_ninstr = it->second.ninstr;
+        return it->second.bo.get();
+    }
+    // Directory: $NPU_INSTS_DIR, else the companion <xclbin>.bin's dir.
+    if (insts_dir_.empty()) {
+        const char* dir = getenv("NPU_INSTS_DIR");
+        if (dir && *dir) {
+            insts_dir_ = dir;
+        } else {
+            std::string p = XCLBIN_PATHS[XCLBIN_MM];
+            size_t slash = p.rfind('/');
+            insts_dir_ = (slash == std::string::npos) ? "." : p.substr(0, slash);
+        }
+    }
+    char fname[256];
+    snprintf(fname, sizeof(fname), "%s/mm_%u_%u_%u_%u.bin",
+             insts_dir_.c_str(), m, k, n, woff);
+    FILE* fi = fopen(fname, "rb");
+    if (!fi) {
+        LOG_ERROR("No per-shape insts %s — run tools/gen_mm_insts_batch "
+                  "(issue #2006)", fname);
+        return nullptr;
+    }
+    fseek(fi, 0, SEEK_END); long isz = ftell(fi); fseek(fi, 0, SEEK_SET);
+    ShapeInsts si;
+    if (isz > 0 && isz % 4 == 0) {
+        std::vector<uint32_t> insts(isz / 4);
+        size_t br = fread(insts.data(), 4, insts.size(), fi);
+        if (br == insts.size()) {
+            si.bo = std::make_unique<xrt::bo>(
+                device_, (size_t)isz, XCL_BO_FLAGS_CACHEABLE, kern->group_id(1));
+            memcpy(si.bo->map(), insts.data(), (size_t)isz);
+            si.bo->sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)isz, 0);
+            si.ninstr = (uint32_t)insts.size();
+        }
+    }
+    fclose(fi);
+    if (!si.bo) {
+        LOG_ERROR("Failed to load %s", fname);
+        return nullptr;
+    }
+    LOG_DEBUG("Loaded per-shape insts %s (%u words)", fname, si.ninstr);
+    if (out_ninstr) *out_ninstr = si.ninstr;
+    return shape_insts_.emplace(key, std::move(si)).first->second.bo.get();
+}
 
 // ========= NpuInferenceEngine =========
 NpuInferenceEngine::NpuInferenceEngine() {}
@@ -277,22 +330,33 @@ bool NpuInferenceEngine::init(const char* model_path) {
 }
 
 // === Sequential GEMM ===
-// Individual kernel call with wait
-static void run_gemm(xrt::kernel* kern, xrt::bo& insts, uint32_t ninstr,
+// Individual kernel call with wait. insts/ninstr come from
+// XclbinManager::insts_for (per-shape, issue #2006); nullptr aborts the call
+// (without insts the ERT command is a silent no-op).
+static void run_gemm(xrt::kernel* kern, xrt::bo* insts, uint32_t ninstr,
                       xrt::bo& act, xrt::bo& ws,
                       xrt::bo& w1, xrt::bo& w2, xrt::bo& kv) {
+    if (!kern || !insts) return;
     auto r = (*kern)(
         (uint64_t)3,
-        insts,
+        *insts,
         ninstr,
         act, ws, w1, w2, kv
     );
     r.wait();
 }
 
-static void run_blocked_gemm(xrt::kernel* kern, xrt::bo& insts, uint32_t ninstr,
+// Blocked GEMM over one projection's weight BOs. The instruction stream is
+// per-shape: out[256, N] = W[256, K] @ act[K, N] with K = hidden (q/k/v/o/
+// gate/up) or intermediate (down) and N = token batch (engine: 128-padded
+// decode). weight_offset is 0 — each block lives in its own BO.
+static void run_blocked_gemm(XclbinManager* mgr, xrt::kernel* kern,
+                              uint32_t k, uint32_t n,
                               xrt::bo& act, xrt::bo& ws,
                               xrt::bo& kv, std::vector<NpuBo>& weights) {
+    const uint32_t M = 256;  // kernel block rows (NPU row grid)
+    uint32_t ninstr = 0;
+    xrt::bo* insts = mgr->insts_for(kern, M, k, n, 0, &ninstr);
     for (auto& w : weights) {
         run_gemm(kern, insts, ninstr, act, ws, *w.bo, *w.bo, kv);
     }
@@ -306,9 +370,10 @@ void NpuInferenceEngine::run_layer_mm(HwCtxState& ctx, int layer_idx) {
     xrt::bo& act = *ctx.act_bo.bo;
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
-    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.q_proj_blocks);
-    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.k_proj_blocks);
-    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.v_proj_blocks);
+    const uint32_t N = 128;  // decode token batch (kernel N granularity)
+    run_blocked_gemm(xclbins_.get(), mm_kern, config_.hidden_size, N, act, ws, kv, wc.q_proj_blocks);
+    run_blocked_gemm(xclbins_.get(), mm_kern, config_.hidden_size, N, act, ws, kv, wc.k_proj_blocks);
+    run_blocked_gemm(xclbins_.get(), mm_kern, config_.hidden_size, N, act, ws, kv, wc.v_proj_blocks);
 }
 
 // === Attention pipeline ===
@@ -320,9 +385,11 @@ void NpuInferenceEngine::run_layer_attn(HwCtxState& ctx, int layer_idx) {
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
     xrt::bo& w = (!wc.o_proj_blocks.empty()) ? *wc.o_proj_blocks[0].bo : act;
-    run_gemm(attn_kern, *xclbins_->insts_bo(XCLBIN_ATTN), xclbins_->ninstr(XCLBIN_ATTN), act, ws, w, w, kv);
+    uint32_t ninstr = 0;
+    xrt::bo* insts = xclbins_->insts_for(attn_kern, 256, config_.hidden_size, 128, 0, &ninstr);
+    run_gemm(attn_kern, insts, ninstr, act, ws, w, w, kv);
     if (!wc.o_proj_blocks.empty()) {
-        run_blocked_gemm(xclbins_->kernel(XCLBIN_MM), *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.o_proj_blocks);
+        run_blocked_gemm(xclbins_.get(), xclbins_->kernel(XCLBIN_MM), config_.hidden_size, 128, act, ws, kv, wc.o_proj_blocks);
     }
 }
 
@@ -334,9 +401,14 @@ void NpuInferenceEngine::run_layer_mlp(HwCtxState& ctx, int layer_idx) {
     xrt::bo& act = *ctx.act_bo.bo;
     xrt::bo& ws = *ctx.act_workspace.bo;
     xrt::bo& kv = *ctx.kv_cache.bo;
-    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.gate_proj_blocks);
-    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.up_proj_blocks);
-    run_blocked_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, kv, wc.down_proj_blocks);
+    const uint32_t N = 128;
+    run_blocked_gemm(xclbins_.get(), mm_kern, config_.hidden_size, N, act, ws, kv, wc.gate_proj_blocks);
+    run_blocked_gemm(xclbins_.get(), mm_kern, config_.hidden_size, N, act, ws, kv, wc.up_proj_blocks);
+    // down_proj: K = intermediate (3072) — the engine keeps [256, 1024]
+    // blocks; a full [256, 3072] stream needs a shared-BO layout. For now
+    // emit the K=intermediate shape (batch generator covers it) so a
+    // correctly-laid-out weight BO feeds the right stream.
+    run_blocked_gemm(xclbins_.get(), mm_kern, config_.intermediate_size, N, act, ws, kv, wc.down_proj_blocks);
 }
 
 // === Prefill ===
@@ -376,7 +448,9 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
         xrt::bo& ws = *hwctx_[0].act_workspace.bo;
         xrt::bo& kv = *hwctx_[0].kv_cache.bo;
         for (auto& w : lm_head_blocks_) {
-            run_gemm(mm_kern, *xclbins_->insts_bo(XCLBIN_MM), xclbins_->ninstr(XCLBIN_MM), act, ws, *w.bo, *w.bo, kv);
+            uint32_t ninstr = 0;
+            xrt::bo* insts = xclbins_->insts_for(mm_kern, 256, config_.hidden_size, 128, 0, &ninstr);
+            run_gemm(mm_kern, insts, ninstr, act, ws, *w.bo, *w.bo, kv);
         }
     }
     

@@ -1,0 +1,452 @@
+{
+  "config": "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2/config.json",
+  "files": [
+    "/tmp/insts_out/mm_256_1024_128_0.bin",
+    "/tmp/insts_out/mm_256_3072_128_0.bin"
+  ],
+  "n_pad": 128,
+  "n_tokens": 128,
+  "note": "out[M,N] = W[M,K] @ act[K,N]; M=block rows (mult of 256), K=reduction, N=token batch (padded to mult of 128), weight_offset=bytes into the weight BO (0 = per-block BO)",
+  "projections": {
+    "down_proj": {
+      "blocks": 4,
+      "k": 3072,
+      "out_rows": 1024,
+      "shapes": [
+        {
+          "block": 0,
+          "file": "mm_256_3072_128_0.bin",
+          "k": 3072,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 1,
+          "file": "mm_256_3072_128_0.bin",
+          "k": 3072,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 2,
+          "file": "mm_256_3072_128_0.bin",
+          "k": 3072,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 3,
+          "file": "mm_256_3072_128_0.bin",
+          "k": 3072,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        }
+      ]
+    },
+    "gate_proj": {
+      "blocks": 12,
+      "k": 1024,
+      "out_rows": 3072,
+      "shapes": [
+        {
+          "block": 0,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 1,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 2,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 3,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 4,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 5,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 6,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 7,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 8,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 9,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 10,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 11,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        }
+      ]
+    },
+    "k_proj": {
+      "blocks": 4,
+      "k": 1024,
+      "out_rows": 1024,
+      "shapes": [
+        {
+          "block": 0,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 1,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 2,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 3,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        }
+      ]
+    },
+    "lm_head": {
+      "blocks": 4,
+      "k": 1024,
+      "out_rows": 1024,
+      "shapes": [
+        {
+          "block": 0,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 1,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 2,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 3,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        }
+      ]
+    },
+    "o_proj": {
+      "blocks": 4,
+      "k": 1024,
+      "out_rows": 1024,
+      "shapes": [
+        {
+          "block": 0,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 1,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 2,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 3,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        }
+      ]
+    },
+    "q_proj": {
+      "blocks": 4,
+      "k": 1024,
+      "out_rows": 1024,
+      "shapes": [
+        {
+          "block": 0,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 1,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 2,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 3,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        }
+      ]
+    },
+    "up_proj": {
+      "blocks": 12,
+      "k": 1024,
+      "out_rows": 3072,
+      "shapes": [
+        {
+          "block": 0,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 1,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 2,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 3,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 4,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 5,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 6,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 7,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 8,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 9,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 10,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 11,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        }
+      ]
+    },
+    "v_proj": {
+      "blocks": 4,
+      "k": 1024,
+      "out_rows": 1024,
+      "shapes": [
+        {
+          "block": 0,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 1,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 2,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        },
+        {
+          "block": 3,
+          "file": "mm_256_1024_128_0.bin",
+          "k": 1024,
+          "m": 256,
+          "n": 128,
+          "weight_offset": 0
+        }
+      ]
+    }
+  }
+}
