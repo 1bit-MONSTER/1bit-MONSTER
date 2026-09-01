@@ -171,3 +171,27 @@ out[o] = in[G*(o/G) + (o/2)%(G/2) + (G/2)*(o%2)].
   arg2=input); per-shape insts → the runtime's chained 8-stage mm TXN.
 - On-device validation loop: engine mm output vs CPU reference (q*s+zp
   in-kernel dequant), then vs the real runtime's output on identical inputs.
+
+## Round-31 — runtime kernel structure + CPU-math validation status
+
+1. **The runtime submits ONE runlist per forward** (28 layers + lm_head in a
+   single xrt::runlist; 4 executes for 4 forward steps). Individual runs:
+   ~169 xrt::run objects (reused), args set via set_arg_at_index:
+   idx3=1MB act, idx4=10MB per-layer weight (or 94MB lm_head), idx5/6=1MB
+   (out/act), idx7=32MB kv. The TXN arg_idx = BO-list position (arg0..arg4)
+   consistent with the layer TXN decode (arg1=weight, arg4=kv).
+2. **The weight BO is NEVER modified on-device** (post-runlist dumps == the
+   uploaded reordered tiles, 0 bytes changed) — the layer/mm kernels read the
+   tiles and dequantize in-kernel; the hand-rolled packer's tile layout is
+   the exact device layout.
+3. **CPU reference vs the real runtime's logits** (token 1000): corr 0.34,
+   top-50 0. The dequant formula q*scale+zp is confirmed (host lib's
+   q4nx_dequantize = (q-zp)*scale gives corr ~0; q*s+zp is the runtime's
+   formula). The residual gap = per-layer accumulation divergence (the
+   hidden state grows outliers through the RMS norms; layer-27 explodes in
+   the f32 ref while the runtime's bf16 kernels stay bounded). Status: the
+   transformer-math validation needs the runtime's per-layer hidden states
+   (or a bf16-accurate ref) — next round.
+4. Layer TXN arg1 tile-window reads: 2 tiles per 8-tile stride — the
+   mm/layer in-kernel dequant window arithmetic (next round: map onto the
+   packed layer BO).

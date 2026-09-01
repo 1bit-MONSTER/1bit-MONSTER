@@ -57,6 +57,14 @@ int main(int argc, char** argv) {
         int tok = 1000 + i;
         auto out = model.forward(tok);
         fprintf(stderr, "forward(%d) done, out size %zu\n", tok, out.size());
+        char fname[64];
+        snprintf(fname, sizeof(fname), "/tmp/txn_decode/logits_%d.bin", tok);
+        FILE* f = fopen(fname, "wb");
+        if (f && out.size()) {
+            fwrite(out.data(), sizeof(bf16), out.size(), f);
+            fclose(f);
+            fprintf(stderr, "saved logits to %s (%zu bf16)\n", fname, out.size());
+        }
     }
 
     fprintf(stderr, "DONE\n");

@@ -27,6 +27,9 @@ extern "C" {
 
 static const char* CAP_DIR = getenv("CAP_DIR") ? getenv("CAP_DIR") : "/tmp/cap2";
 static FILE* g_log = nullptr;
+#include <set>
+#include <vector>
+static std::set<std::pair<unsigned long, size_t>> g_bo_sizes;
 static long g_seq = 0;
 static std::map<unsigned long, std::string> g_bo_labels;
 
@@ -84,6 +87,7 @@ extern "C" void _ZN3xrt2bo4syncE18xclBOSyncDirectionmm(void* self, int dir,
     try {
         xrt::bo* bo = reinterpret_cast<xrt::bo*>(self);
         size_t bosz = bo->size();
+        g_bo_sizes.insert({(unsigned long)self, bosz});
         bool capture = true;  // capture ALL BO syncs (TXN insts + weight + act + kv)
         if (capture) {
             const uint8_t* p = (const uint8_t*)bo->map();
@@ -115,7 +119,18 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, co
     try {
         const xrt::bo* b = reinterpret_cast<const xrt::bo*>(bo);
         g_run_args[(unsigned long)self].push_back({idx, b->size()});
+        ensure_log();
+        fprintf(g_log, "SETARG %p idx=%d size=%zu\n", self, idx, b->size());
     } catch (...) {}
+}
+// void xrt::run::run(const xrt::kernel&)
+typedef void (*run_ctor_fn)(void*, const void*);
+static run_ctor_fn real_run_ctor = nullptr;
+extern "C" void _ZN3xrt3runC1ERKNS_6kernelE(void* self, const void* kern) {
+    if (!real_run_ctor) real_run_ctor = (run_ctor_fn)dlsym(RTLD_NEXT, "_ZN3xrt3runC1ERKNS_6kernelE");
+    if (real_run_ctor) real_run_ctor(self, kern);
+    ensure_log();
+    fprintf(g_log, "RUN_CTOR %p\n", self);
 }
 
 // void xrt::run::start()
@@ -130,4 +145,32 @@ extern "C" void _ZN3xrt3run5startEv(void* self) {
     for (auto& kv : g_run_args[(unsigned long)self])
         fprintf(g_log, "%d:%zu ", kv.first, kv.second);
     fprintf(g_log, "]\n");
+}
+
+// ===== runlist::execute hook (per-forward TXN submissions) + post-exec BO dump =====
+static long g_runlist_n = 0;
+typedef void (*rl_exec_fn)(void*);
+static rl_exec_fn real_rl_exec = nullptr;
+extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
+    if (!real_rl_exec)
+        real_rl_exec = (rl_exec_fn)dlsym(RTLD_NEXT, "_ZN3xrt7runlist7executeEv");
+    if (real_rl_exec) real_rl_exec(self);
+    ensure_log();
+    g_runlist_n++;
+    fprintf(g_log, "RUNLIST %ld: execute\n", g_runlist_n);
+    int n = 0;
+    for (auto& kv : g_bo_sizes) {
+        if (kv.second < 1000000) continue;
+        try {
+            xrt::bo* bo = reinterpret_cast<xrt::bo*>(kv.first);
+            size_t bosz = bo->size();
+            const uint8_t* p = (const uint8_t*)bo->map();
+            char fname[256];
+            snprintf(fname, sizeof(fname), "%s/post_%03ld_%02d_%zu.bin", CAP_DIR, g_runlist_n, n, bosz);
+            FILE* f = fopen(fname, "wb");
+            if (f) { fwrite(p, 1, bosz, f); fclose(f); }
+            n++;
+        } catch (...) {}
+    }
+    fprintf(g_log, "RUNLIST %ld: dumped %d big BOs\n", g_runlist_n, n);
 }
