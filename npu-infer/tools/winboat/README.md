@@ -62,3 +62,32 @@ The same exe + q4_npu_eXpress.dll can run inside the winboat guest. The guest
 side would need the model file + DLL + exe copied in. Nothing in the guest
 would change the resize behavior (it is the same DLL), but it gives a real
 Windows environment if the wine path ever needs help.
+
+## Round-28b (2026-09-01): the runtime's weight path is CAPTURED
+
+The HRX wall was a red herring — the runtime runs on the **XRT** path
+(`src/lib/xrt/*.so`, zero hrx symbols). The lib exports `reorder_cpy` (T) and
+calls it via PLT, so **LD_PRELOAD interposition works**:
+
+- `reorder_cpy(dst, src, cols, 2)` — decoded from the REAL runtime's calls:
+  - p3 = the projection's column count (1024 for q/k/v/o, 2048/3072 for
+    ffn), p4 = 2 (bf16 element size).
+  - The q_proj call (first, srcsize 1310720) writes the REORDERED tiles:
+    `out_tile = 8*(ir//8) + 2*tc + (tr%2)` for `ir = tr*4+tc` — i.e. evens
+    then odds within each 2-tile-row group (verified byte-exact on the
+    captured output: a pure tile permutation of the q4nx input).
+- `xrt::bo::sync` (imported) — interposed to capture every FROM-device BO:
+  the dequant kernel's outputs. `bo_from_000/001/004` = 1MB f32 weight BOs
+  (256x1024), `006/007` = 2MB, `008` = 6MB — saved in `npu-infer/captures/`.
+
+Still open: the dequant kernel's exact formula — the captured 1MB f32 BO
+values (range ~[-6.3, 13.1]) do not match the host-side `(q-zp)*scale`
+reference (maxdiff 13.1, per-element ratios non-constant). The BO layout is
+[256,1024] f32 but the value mapping is not yet identified — the next step is
+matching the captured BO to the tile bytes (the kernel may use a per-row or
+fixed-point dequant that differs from the q4nx host dequant).
+
+With the interposer in place, the FULL weight BO set for the whole model can
+be captured by running the real runtime once — the hand-rolled npu-infer
+validation can then feed the mm kernel the exact BOs the runtime produces
+(no formula needed for the feed path).
