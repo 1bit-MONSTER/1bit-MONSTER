@@ -1210,6 +1210,24 @@ element-wise dequant is the only option (contiguous vector loads don't
 apply), which the fused per-pair kernel already does. The NPU wins on
 large-batch prefill (0.6B pp32 436 t/s) and memory footprint.
 
+### Round 25e — decode measured: bandwidth-bound at ~43 GB/s (no cheap win)
+
+Effective weight bandwidth at decode (weights read once per token, cols=1):
+3B and 8B both sit at **~43 GB/s** — consistent → bandwidth-bound on the
+fused per-pair kernel's strided packed reads (each lane reads 1 byte at
+8-byte stride per k-step; scale/zp bytes are re-loaded by 32 lanes per
+group). The 0.6B is lower (25 GB/s) → launch-overhead-bound at that size.
+Two quick levers tested and rejected: `GGML_HRX2_ASYNC_GRAPH_COMPUTE`
+(+2% — the syncs aren't the wall) and workgroup_size 1024 (16.9 vs 20.6
+t/s — 256 is better for the 1-output-per-workgroup reduction).
+
+The remaining lever is a workgroup redesign: 16 rows × 8 cols per
+workgroup, reading the 64 CONTIGUOUS packed bytes per tile-column-block
+(packed[lane*2048 + cb*64 + 0..63] covers 16 rows × 8 cols) + one
+scale/zp per (row, group) loaded once — the same structure as the tbl-tiled
+prefill kernel. Estimated 1.5-2× decode if it doubles the effective
+bandwidth; deferred (kernel project with JIT-bounds risk).
+
 ### Round 25b — the MoE MUL_MAT_ID per-expert src1 bug (fork 49f07b6)
 
 The first MoE runs (30B, GLM) produced **garbage** ("_tcbonaut Sic" for
