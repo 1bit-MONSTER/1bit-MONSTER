@@ -165,6 +165,87 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
     return 0;
 }
 
+
+// ===========================================================================
+// Runtime-layout weight packer (issues #2006/#2015) — decoded byte-exact from
+// the real FastFlowLM runtime's captured weight BOs (2026-09-01):
+//
+// Per-layer weight BO (10 MB = 1920 x 5120-B Q4NX tiles, layers in model
+// order):
+//   [0, 256)   q_proj tiles      G=8    (reorder group)
+//   [256, 384) k_proj tiles      G=8
+//   [384, 512) v_proj tiles      G=8
+//   [512, 768) o_proj tiles      G=16
+//   [768,1536) up/gate ALTERNATING 64-tile chunks: up0, gate0, up1, gate1...
+//               each chunk reordered with G=8
+//   [1536,1920) down_proj tiles  G=24
+// Tile reorder within a group G (out[o] = in[G*(o/G) + (o/2)%(G/2) + (G/2)*(o%2)]):
+//   G=8:  [0,4,1,5,2,6,3,7]  (q/k/v/gate/up)
+//   G=16: [0,8,1,9,...,7,15] (o_proj)
+//   G=24: stride 12           (down_proj)
+// The mm/layer kernels DEQUANTIZE IN-KERNEL from these raw 5120-B tiles —
+// the host never dequantizes (the old npu_dequant_block path is NOT the
+// runtime layout).
+// ===========================================================================
+#define NPU_TILE_BYTES 5120
+#define NPU_LAYER_TILES 1920       // q256+k128+v128+o256+up384+gate384+down384
+#define NPU_LAYER_BO_BYTES (NPU_LAYER_TILES * NPU_TILE_BYTES)  // 9830400
+
+static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int G) {
+    const int S = G / 2;
+    for (int o = 0; o < n_tiles; o++) {
+        int i = G * (o / G) + (o / 2) % S + S * (o % 2);
+        memcpy(dst + (size_t)o * NPU_TILE_BYTES,
+               src + (size_t)i * NPU_TILE_BYTES, NPU_TILE_BYTES);
+    }
+}
+
+// Pack one projection's reordered tiles into the layer BO at `tile_offset`.
+static void npu_pack_proj(uint8_t* bo, const TensorDesc* desc, ModelWeights* mw,
+                          int tile_offset, int G) {
+    if (desc->ndim != 2) return;
+    int n_tiles = (int)desc->shape[0];
+    const uint8_t* data = (const uint8_t*)model_tensor_data(mw, (TensorDesc*)desc);
+    npu_reorder_tiles(bo + (size_t)tile_offset * NPU_TILE_BYTES, data, n_tiles, G);
+}
+
+// Pack a full layer (all 7 projections) into the runtime's 10 MB layout.
+// Returns the number of tiles written (1920) or 0 on error.
+int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
+                      const ModelConfig* config, int layer_idx) {
+    if (!bo_buffer || !mw || !config || layer_idx < 0 || layer_idx >= config->num_layers)
+        return 0;
+    memset(bo_buffer, 0, NPU_LAYER_BO_BYTES);
+    LayerWeights* lw = &mw->layers[layer_idx];
+
+    npu_pack_proj(bo_buffer, &lw->q_proj_weight, mw, 0, 8);
+    npu_pack_proj(bo_buffer, &lw->k_proj_weight, mw, 256, 8);
+    npu_pack_proj(bo_buffer, &lw->v_proj_weight, mw, 384, 8);
+    npu_pack_proj(bo_buffer, &lw->o_proj_weight, mw, 512, 16);
+
+    // gate/up: alternating 64-tile chunks (up0, gate0, up1, gate1, ...)
+    const int CH = 64;  // chunk size
+    int up_tiles = (lw->up_proj_weight.ndim == 2) ? (int)lw->up_proj_weight.shape[0] : 0;
+    int gate_tiles = (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
+    const uint8_t* up = (const uint8_t*)model_tensor_data(mw, &lw->up_proj_weight);
+    const uint8_t* gate = (const uint8_t*)model_tensor_data(mw, &lw->gate_proj_weight);
+    int n_chunks = (up_tiles + CH - 1) / CH;
+    for (int c = 0; c < n_chunks; c++) {
+        int up_n = (up_tiles - c * CH > CH) ? CH : up_tiles - c * CH;
+        int gate_n = (gate_tiles - c * CH > CH) ? CH : gate_tiles - c * CH;
+        int base = 768 + c * 2 * CH;
+        if (up_n > 0 && up)
+            npu_reorder_tiles(bo_buffer + (size_t)(base) * NPU_TILE_BYTES,
+                              up + (size_t)c * CH * NPU_TILE_BYTES, up_n, 8);
+        if (gate_n > 0 && gate)
+            npu_reorder_tiles(bo_buffer + (size_t)(base + CH) * NPU_TILE_BYTES,
+                              gate + (size_t)c * CH * NPU_TILE_BYTES, gate_n, 8);
+    }
+
+    npu_pack_proj(bo_buffer, &lw->down_proj_weight, mw, 1536, 24);
+    return NPU_LAYER_TILES;
+}
+
 // ========= Simple JSON Parser =========
 
 static int parse_json_metadata(const uint8_t* json_data, uint64_t json_len,

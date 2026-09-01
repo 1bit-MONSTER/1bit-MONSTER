@@ -98,6 +98,12 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
                         const TensorDesc* desc, const ModelConfig* config,
                         int block_idx, int in_features);
 
+// Pack a full layer (all 7 projections) into the runtime's per-layer 10 MB
+// weight BO layout (reordered Q4NX tiles, decoded byte-exact from the real
+// runtime, issues #2006/#2015). Returns tiles written (1920) or 0 on error.
+int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
+                      const ModelConfig* config, int layer_idx);
+
 #ifdef __cplusplus
 }
 #endif

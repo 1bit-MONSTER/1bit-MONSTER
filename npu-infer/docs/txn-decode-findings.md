@@ -152,3 +152,22 @@ The captured BO traffic reveals the complete weight layout:
   on-device dequant's tile-window arithmetic.
 - Fix run_gemm arg binding (arg0=out, arg1=weight, arg2=input) in the engine.
 - On-device validation: engine path output == runtime path output.
+
+## Round-30d — THE PACKER IS BYTE-EXACT (28/28 layers)
+
+Implemented `npu_pack_layer_bo` (src/model.c): packs a full layer's 7
+projections into the runtime's per-layer 10 MB weight BO — reordered raw
+Q4NX tiles (no dequant!). Verified **28/28 layers byte-identical** against
+the captured runtime BOs (tests/verify_packer.cpp, 0 bytes different).
+Layout: layers in model order; per layer q(G=8,256 tiles), k(G=8,128),
+v(G=8,128), o(G=16,256), up/gate alternating 64-tile chunks (up0, gate0,
+up1, gate1, ..., G=8 each), down(G=24,384). Tile reorder:
+out[o] = in[G*(o/G) + (o/2)%(G/2) + (G/2)*(o%2)].
+
+## Next steps (round-31)
+
+- Engine integration: WeightPacker → npu_pack_layer_bo (per-layer 10 MB BOs,
+  layers in model order); run_gemm arg binding fix (arg0=out, arg1=weight,
+  arg2=input); per-shape insts → the runtime's chained 8-stage mm TXN.
+- On-device validation loop: engine mm output vs CPU reference (q*s+zp
+  in-kernel dequant), then vs the real runtime's output on identical inputs.
