@@ -60,8 +60,10 @@ LOGS = {
                                   r"posted|already posted|no open issues|found via search"),
     "cron:discord-traffic-digest": ("discord-traffic-digest.log", 26 * 3600,
                                     r"posted"),
-    "cron:discord-traffic-report-daily": ("discord-traffic-report-daily.log", 26 * 3600,
-                                          r"posted"),
+    # NOTE: discord-traffic-report-daily (23:50 UTC) was retired — the 23:45
+    # digest posts to #general and the #traffic-report embeds come from
+    # repo-stats.py on the ryzen host. Keeping the old log check would alert
+    # every 12 h about a cron that no longer exists.
 }
 ENV_KEYS = ("DISCORD_TOKEN", "CONTEXT7_API_KEY", "DEEPSEEK_API_KEY")
 
