@@ -39,6 +39,11 @@ Reframed position (what this repo now commits to):
 4. **Next build priority: the hybrid prefill/decode policy** — HIP for large
    prefill (1313 tok/s), HRX for warm decode (2×+ on fused models), i.e. the
    unfinished half of G1b. Needs no upstream; beats either backend alone.
+   **Design: docs/research/hybrid-prefill-decode.md (2026-09-01)** — the KV
+   handoff is cross-engine (engine 1BP kernels vs llama.cpp bundle); the
+   recommended path is D2 (a GGML_HIP build of the vendored llama.cpp for
+   prefill + llama_state blob transfer to the bundle), gated on a
+   state-format round-trip test; D1 (re-prefix) is the correctness fallback.
 
 ---
 
