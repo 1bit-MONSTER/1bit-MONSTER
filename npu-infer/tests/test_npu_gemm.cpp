@@ -33,21 +33,20 @@ int main(int argc, char** argv) {
     // block 0 = logical rows 0-255 x cols 0-1023 = I8 tile rows 0-31 (grid
     // row-major: tile_row*4 + tile_col), 32 rows * 5120 B = 160 KB.
     memset(block, 0, sizeof(block));
-    // ROUND-29: load the REAL weight BO captured from the running FastFlowLM
-    // runtime (npu-infer/captures/bo_from_000_1048576.bin = the q_proj's
-    // 256x1024 f32 weight block as the NPU consumes it). The mm kernel's
-    // native weight format — no packing needed. Captured via LD_PRELOAD
-    // interposition on xrt::bo::sync during a real model run (issue #2015).
+    // EXPERIMENT (round-28): pack the REORDERED Q4NX tiles — the exact layout
+    // the runtime's reorder_cpy produces (captured from the real runtime via
+    // LD_PRELOAD: out_tile = 8*(ir/8) + 2*tc + (tr%2) where ir = tr*4+tc).
+    // The mm kernel dequantizes in-kernel from this layout.
     {
-        const char* cap = getenv("MM_CAPTURED_W")
-            ? getenv("MM_CAPTURED_W")
-            : "/home/bcloud/1bit-MONSTER/npu-infer/captures/bo_from_000_1048576.bin";
-        FILE* fc = fopen(cap, "rb");
-        if (!fc) { fprintf(stderr, "captured weight BO not found: %s\n", cap); return 1; }
-        size_t got = fread(block, 1, sizeof(block), fc);
-        fclose(fc);
-        printf("loaded captured weight BO (%zu B) from %s\n", got, cap);
+        const uint8_t* data = (const uint8_t*)wdata;
+        for (int ir = 0; ir < 32; ir++) {
+            int tr = ir / 4, tc = ir % 4;
+            int out_tile = 8 * (ir / 8) + 2 * tc + (tr % 2);
+            memcpy(block + (size_t)out_tile * 5120, data + (size_t)ir * 5120, 5120);
+        }
+        printf("packed REORDERED Q4NX tiles (32 x 5120 B) to weight BO\n");
     }
+    printf("(f32 pack path disabled)\n");
 
     // Reference: dequantize Q4NX block 0 -> F32 [256,1024] -> y = W @ x
     float Wf[256 * 1024];
@@ -100,15 +99,10 @@ int main(int argc, char** argv) {
     // instr=1, ninstr=2, host buffers from slot 3). group-0 BOs are silently
     // ignored by this kernel. The instruction stream is REQUIRED — without it
     // the ERT command completes but the AIE never executes.
-    // amdxdna arg_idx in the TXN DDR_PATCHes counts the HOST BOs from 0.
-    // mm.bin's DMA directions (decoded from the queue-write registers):
-    //   arg0 = S2MM writes (OUTPUT), arg1 = MM2S reads (WEIGHT),
-    //   arg2 = MM2S reads (INPUT activation), bo3/bo4 = ws/kv.
-    xrt::bo bo_out(dev, 10485760, xrt::bo::flags::host_only, kern.group_id(3));  // arg0
-    xrt::bo wt(dev, cfg.npu_weight_bo_size, xrt::bo::flags::host_only, kern.group_id(4)); // arg1
-    xrt::bo act(dev, 10485760, xrt::bo::flags::host_only, kern.group_id(5));     // arg2
-    xrt::bo ws(dev, 10485760, xrt::bo::flags::host_only, kern.group_id(6));      // bo3
-    xrt::bo kv(dev, cfg.npu_kv_cache_bo_size, xrt::bo::flags::host_only, kern.group_id(7)); // bo4
+    xrt::bo act(dev, cfg.npu_activation_bo_size, xrt::bo::flags::host_only, kern.group_id(3));
+    xrt::bo ws(dev, 10485760, xrt::bo::flags::host_only, kern.group_id(4));
+    xrt::bo wt(dev, cfg.npu_weight_bo_size, xrt::bo::flags::host_only, kern.group_id(5));
+    xrt::bo kv(dev, cfg.npu_kv_cache_bo_size, xrt::bo::flags::host_only, kern.group_id(7));
 
     // Instruction stream: <xclbin>.bin (generate with tools/gen_mm_insts).
     std::string insts_path(xclbin_path);
@@ -123,58 +117,26 @@ int main(int argc, char** argv) {
     xrt::bo bo_instr(dev, isz, XCL_BO_FLAGS_CACHEABLE, kern.group_id(1));
     memcpy(bo_instr.map(), instrs.data(), isz);
     bo_instr.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    memset(bo_out.map(), 0, 10485760);
     memset(ws.map(), 0, 10485760);
     memset(kv.map(), 0, cfg.npu_kv_cache_bo_size);
     memcpy(wt.map(), block, 1048576);
-    memset(act.map(), 0, 10485760);
 
-    // Input activation (arg2): the 8 stage BDs read 65536-B blocks at
-    // 262144-B strides — the input BO holds the [K, N=128] act replicated
-    // into every stage slot. Decode: token 0 carries x, rest padded zero.
+    // Activation: x as BF16 at start of act BO
     uint16_t* actmap = (uint16_t*)act.map();
-    for (int slot = 0; slot < 8; slot++) {
-        uint16_t* base = actmap + slot * (262144 / 2);
-        for (int k = 0; k < 1024; k++) base[k] = f_to_bf16(x[k]);
-    }
+    for (int i = 0; i < 1024; i++) actmap[i] = f_to_bf16(x[i]);
+    memset(act.map() + 2048, 0, cfg.npu_activation_bo_size - 2048);
 
-    bo_out.sync(XCL_BO_SYNC_BO_TO_DEVICE, 10485760, 0);
-    wt.sync(XCL_BO_SYNC_BO_TO_DEVICE, cfg.npu_weight_bo_size, 0);
-    act.sync(XCL_BO_SYNC_BO_TO_DEVICE, 10485760, 0);
+    act.sync(XCL_BO_SYNC_BO_TO_DEVICE, cfg.npu_activation_bo_size, 0);
     ws.sync(XCL_BO_SYNC_BO_TO_DEVICE, 10485760, 0);
+    wt.sync(XCL_BO_SYNC_BO_TO_DEVICE, cfg.npu_weight_bo_size, 0);
     kv.sync(XCL_BO_SYNC_BO_TO_DEVICE, cfg.npu_kv_cache_bo_size, 0);
 
-    bool runtime_abi = getenv("RUNTIME_ABI") != nullptr;
-    xrt::run run;
-    if (runtime_abi) {
-        // the runtime's create_run ABI: (3, 0, 0, insts_bo, weight_bo, ...)
-        // the insts go into the FIRST host BO (bo0) via the bo0 slot
-        run = kern((uint64_t)3, (uint64_t)0, (uint32_t)0,
-                   bo_instr, wt, act, bo_out, kv);
-    } else {
-        run = kern((uint64_t)3, bo_instr, (uint32_t)instrs.size(),
-                   bo_out, wt, act, ws, kv);
-    }
+    auto run = kern((uint64_t)3, bo_instr, (uint32_t)instrs.size(),
+                    act, ws, wt, wt, kv);
     run.wait();
 
-    bo_out.sync(XCL_BO_SYNC_BO_FROM_DEVICE, 10485760, 0);
     act.sync(XCL_BO_SYNC_BO_FROM_DEVICE, cfg.npu_activation_bo_size, 0);
-    {
-        const uint16_t* ob = (const uint16_t*)bo_out.map();
-        size_t nz = 0; size_t f = SIZE_MAX, l = 0;
-        for (size_t i = 0; i < 10485760/2; i++) if (ob[i]) { if (f==SIZE_MAX) f=i; l=i; nz++; }
-        printf("bo_out nonzero: %zu, span [%zu, %zu] (bf16)\n", nz, f, l);
-        const uint16_t* ab = (const uint16_t*)act.map();
-        nz = 0; f = SIZE_MAX; l = 0;
-        for (size_t i = 0; i < cfg.npu_activation_bo_size/2; i++) if (ab[i]) { if (f==SIZE_MAX) f=i; l=i; nz++; }
-        printf("act nonzero: %zu, span [%zu, %zu]\n", nz, f, l);
-    }
-    const uint16_t* out = (const uint16_t*)bo_out.map();
-    if (getenv("MM_DUMP_OUT")) {
-        FILE* fd = fopen(getenv("MM_DUMP_OUT"), "wb");
-        if (fd) { fwrite(out, 2, 10485760/2, fd); fclose(fd);
-                  fprintf(stderr, "dumped bo_out to %s\n", getenv("MM_DUMP_OUT")); }
-    }
+    const uint16_t* out = (const uint16_t*)act.map();
     printf("NPU out row0 first 16 (bf16->float): ");
     for (int i = 0; i < 16; i++) printf("%.4f ", bf16_to_f(out[i]));
     printf("\nref      row0 first 16:              ");
