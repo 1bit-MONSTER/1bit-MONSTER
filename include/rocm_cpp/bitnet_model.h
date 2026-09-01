@@ -589,6 +589,7 @@ typedef enum {
     RCPP_ARCH_NEMOTRON = 989,        // Nemotron-3/4 — LayerNorm1P (weight+1, bias), relu2 non-GLU MLP, partial rope
     RCPP_ARCH_BARETORCH = 990,       // baretorch — cs_lrad chunked-state linear-recurrent (issue #1907: registry token only; engine support XL, generic loader refuses)
     RCPP_ARCH_QU_SSM = 991,          // qu_ssm — Quamba-style linear-recurrent SSM (d_state/d_ff/d_model; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_ARO_BABYLM = 992,      // aro_babylm — ARO-BabyLM (attention gates + memory layers + local/global attention; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -697,6 +698,8 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "deepseek4")    == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "dflash")       == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "dflashdraft")  == 0) return RCPP_ARCH_QWEN3;  // DFlashDraftModel (model_type qwen3 — nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4-DFlash, recon 2026-08-16)
+    if (strcmp(s, "qwen3dspark")  == 0) return RCPP_ARCH_QWEN3;  // Qwen3DSparkModel (speculative drafting on qwen3, AlayaNeW/GLM-5.2-DSpark; sibling of dflashdraft, census 2026-09-01)
+    if (strcmp(s, "engramqwen")   == 0) return RCPP_ARCH_QWEN3;  // EngramQwenForCausalLM (qwen3-0.6b layout: 1024/16/8/3072, vocab 151936; Raskoll/qwen3-0.6b-engram, census 2026-09-01)
     if (strcmp(s, "deepseek4_dspark") == 0) return RCPP_ARCH_DEEPSEEK_V4;
     if (strcmp(s, "smollm")    == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "smollm2")   == 0) return RCPP_ARCH_LLAMA;
@@ -786,6 +789,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "gfusionfordiffusionlm") == 0) return RCPP_ARCH_DEEPSEEK;  // deepseek_v3
     if (strcmp(s, "gistgptneo") == 0) return RCPP_ARCH_GPTNEO;  // gpt_neo
     if (strcmp(s, "glamm") == 0) return RCPP_ARCH_QWEN2VL;  // llava
+    if (strcmp(s, "paddleocrvl") == 0) return RCPP_ARCH_QWEN2VL;  // PaddleOCRVLForConditionalGeneration — rms + GQA 16/2 + mrope, Qwen2-VL-style VLM (unsloth/PaddleOCR-VL family, census 2026-09-01)
     if (strcmp(s, "glus") == 0) return RCPP_ARCH_QWEN2VL;  // llava
     if (strcmp(s, "gpt2forquestionanswering") == 0) return RCPP_ARCH_GPT2;  // gpt2
     if (strcmp(s, "gpt2forsequenceclassification") == 0) return RCPP_ARCH_GPT2;  // gpt2
@@ -907,6 +911,11 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "internlmxcomposer") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
     if (strcmp(s, "internvl") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
     if (strcmp(s, "k3dspark") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
+    if (strcmp(s, "kambo") == 0) return RCPP_ARCH_LLAMA;  // KamboForCausalLM — rms 1e-6, rope_theta 40000, GQA 16/4, head_dim 64 (qwen vocab 151936 but llama rope/norm; VikramPal/kambo-v1, census 2026-09-01)
+    if (strcmp(s, "koliber") == 0) return RCPP_ARCH_LLAMA;  // KoliberForCausalLM — rms 1e-6, rope_theta 10000, GQA 12/2 (OrisTeam/Koliber-v1.0-Base, census 2026-09-01)
+    if (strcmp(s, "lilm") == 0) return RCPP_ARCH_LLAMA;  // LilmForCausalLM — rms 1e-6, rope_theta 10000, GQA 16/4 (glouriousgautam/LilM1-230M, census 2026-09-01)
+    if (strcmp(s, "llmjpvl") == 0) return RCPP_ARCH_LLAMA;  // LLMjpVLModel — llm-jp-4-VL VLM, text decoder LlamaForCausalLM (llm-jp-4-8b-thinking) + SigLIP vision; maps to text family (tokinasin/llm-jp-4-vl, census 2026-09-01)
+    if (strcmp(s, "youtuvl") == 0) return RCPP_ARCH_LLAMA;  // YoutuVLForConditionalGeneration — silu/rms/rope_theta-1e5/no-bias text decoder + SigLIP2 vision (DIYIN/Youtu-Parsing, census 2026-09-01)
     if (strcmp(s, "kmoshi") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
     if (strcmp(s, "livemem") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
     if (strcmp(s, "llama2") == 0) return RCPP_ARCH_LLAMA;  // loose llama (rms+silu, rope default)
@@ -1727,6 +1736,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     // decoders (map to text family), and model_type variants (verified) ──
     if (strcmp(s, "adaptermoellavaqwen3") == 0) return RCPP_ARCH_QWEN3VL;  // llava-qwen3 VLM
     if (strcmp(s, "bananamind2pico") == 0) return RCPP_ARCH_PICO;  // bananamind2-pico (PicoDecoderHF)
+    if (strcmp(s, "bananamind21test") == 0) return RCPP_ARCH_PICO;  // BananaMind-2.1-Pico-Preview (census 2026-09-01)
     if (strcmp(s, "bunnyphi") == 0) return RCPP_ARCH_PHI;  // bunny-phi VLM
     if (strcmp(s, "bunnyphi3") == 0) return RCPP_ARCH_PHI;  // bunny-phi3 VLM
     if (strcmp(s, "colmaskmoellavaqwen3") == 0) return RCPP_ARCH_QWEN3VL;  // llava-qwen3 VLM
@@ -1921,6 +1931,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "hypermambalm") == 0) return RCPP_ARCH_MAMBA;
     if (strcmp(s, "impphi3") == 0) return RCPP_ARCH_PHI;
     if (strcmp(s, "latentmoellavaqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "latentmoellavaqwen3") == 0) return RCPP_ARCH_QWEN3;  // LLaVA-Qwen3 latent-sparse-MoE VLM (KKHYA/llavaqwen3-1.7b-*-latent-sparse-moe-*, census 2026-09-01; qwen3 text backbone, sibling of latentmoellavaqwen2)
     if (strcmp(s, "lfm2idk") == 0) return RCPP_ARCH_LFM2;
     if (strcmp(s, "lfm2moecustom") == 0) return RCPP_ARCH_LFM2;
     if (strcmp(s, "lightgpthuggingface") == 0) return RCPP_ARCH_GPT2;
@@ -2448,6 +2459,7 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "baretorch") == 0) return RCPP_ARCH_BARETORCH;       // BaretorchForCausalLM (issue #1907, registry token)
     if (strcmp(s, "cs_lrad") == 0) return RCPP_ARCH_BARETORCH;         // cs_lrad chunked-state linear-recurrent (model_type)
     if (strcmp(s, "qu_ssm") == 0) return RCPP_ARCH_QU_SSM;             // QUSSMForCausalLM (Quamba-style SSM, registry token)
+    if (strcmp(s, "arobabylm") == 0) return RCPP_ARCH_ARO_BABYLM;      // AROBabyLMForCausalLM — attention gates + memory + local/global attn (registry token, census 2026-09-01)
     if (strcmp(s, "qussm") == 0) return RCPP_ARCH_QU_SSM;              // stripped arch name (census)
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)

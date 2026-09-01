@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
            (long)l0->q_proj_weight.shape[0],
            (long)l0->q_proj_weight.shape[1],
            (unsigned long)l0->q_proj_weight.data_size,
-           npu_weight_num_blocks(&l0->q_proj_weight, &QWEN3_0_6B_CONFIG));
+           npu_weight_num_blocks(&l0->q_proj_weight, &QWEN3_0_6B_CONFIG, QWEN3_0_6B_CONFIG.hidden_size));
     
     void* q_proj_data = model_tensor_data(mw, &l0->q_proj_weight);
     printf("Q_proj data ptr: %p\n", q_proj_data);
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
     memset(block_buf, 0, sizeof(block_buf));
     
     int written = npu_dequant_block(block_buf, q_proj_data,
-                                     &l0->q_proj_weight, &QWEN3_0_6B_CONFIG, 0);
+                  &l0->q_proj_weight, &QWEN3_0_6B_CONFIG, 0, QWEN3_0_6B_CONFIG.hidden_size);
     printf("Dequantized %d BF16 values\n", written);
     
     if (written > 0) {
@@ -125,7 +125,7 @@ int main(int argc, char** argv) {
     // Test: create a 1MB BO buffer
     printf("\n=== Packing BO buffer ===\n");
     uint8_t* bo_buf = malloc(QWEN3_0_6B_CONFIG.npu_weight_bo_size);
-    npu_pack_weight_bo(bo_buf, q_proj_data, &l0->q_proj_weight, &QWEN3_0_6B_CONFIG, 0);
+    npu_pack_weight_bo(bo_buf, q_proj_data, &l0->q_proj_weight, &QWEN3_0_6B_CONFIG, 0, QWEN3_0_6B_CONFIG.hidden_size);
     
     // Verify first 512KB has data, second 512KB is zero
     int non_zero_first = 0, non_zero_second = 0;
@@ -155,12 +155,12 @@ int main(int argc, char** argv) {
            (long)l0->k_proj_weight.shape[0],
            (long)l0->k_proj_weight.shape[1],
            (unsigned long)l0->k_proj_weight.data_size,
-           npu_weight_num_blocks(&l0->k_proj_weight, &QWEN3_0_6B_CONFIG));
+           npu_weight_num_blocks(&l0->k_proj_weight, &QWEN3_0_6B_CONFIG, QWEN3_0_6B_CONFIG.hidden_size));
     
     void* k_proj_data = model_tensor_data(mw, &l0->k_proj_weight);
     memset(block_buf, 0, sizeof(block_buf));
     written = npu_dequant_block(block_buf, k_proj_data,
-                                 &l0->k_proj_weight, &QWEN3_0_6B_CONFIG, 0);
+                  &l0->k_proj_weight, &QWEN3_0_6B_CONFIG, 0, QWEN3_0_6B_CONFIG.hidden_size);
     printf("Dequantized %d BF16 values\n", written);
     
     if (written > 0) {

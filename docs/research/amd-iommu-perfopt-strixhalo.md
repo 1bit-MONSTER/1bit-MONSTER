@@ -214,3 +214,71 @@ useful as the single-launch zero-h2-DMA substrate for integer/approx paths.
 FastFlowLM repo cloned to /tmp/fflm (628MB, shallow): 219 xclbins +
 src/lib/xrt/*.so + the runtime source. (ROCm/FastFlowLM, amd/IRON, MLIR-AIE 1.2,
 ROCm 10 / ROCm.AI.)
+
+---
+
+## 2026-08-31 addendum — mid-session NPU SVA breakage (all DPU launches → state=8)
+
+**Symptom**: after the 09:12 cascade calibration (EXACT MATCH on this boot), every
+subsequent NPU launch timed out (`ERT_CMD_STATE_TIMEOUT=8`, DPU PC=0xffffffff,
+TXN OP ID=0xffffffff, Context PC=0x28b060ad) with `AMD-Vi: IO_PAGE_FAULT` events at
+host-VA addresses (e.g. `0x742b52d6c000`, flags=0x7). First faults at 10:29; the
+09:48/10:13 module-flow attempts timed out WITHOUT faults (garbage TXN header).
+
+**Mechanism** (from kernel sources):
+- The NPU (0000:c6:00.1, group 26) is in the upstream-default IDENTITY domain for
+  PASID-capable devices (`amd_iommu_def_domain_type` → IOMMU_DOMAIN_IDENTITY when
+  `pdev_pasid_supported && !SME && !SNP`; **not** from the PerfOpt patch — the patch
+  only touches attach_device's `skip_caps` for `dev_data->perfopt` devices).
+- The AMD identity domain IS SVA-capable (`pdom_is_sva_capable` = v2 page tables OR
+  identity/pt), so attach builds the GCR3 table + enables PASID; the amdxdna client
+  binds SVA (`iommu_sva_bind_device`, pasid=1) and the FW context is created with
+  that PASID. The DPU's shim DMA (host VAs) must translate via the GCR3.
+- The default paging domain is PD_MODE_V1 (`amd_iommu_pgtable = PD_MODE_V1` in
+  init.c) — v1 is **not** SVA-capable, so a DMA-domain NPU cannot do SVA at all
+  (open would fail: no PASID, no carveout). force_iova=1 allocates a v1 paging
+  domain too — verified still faulting. Identity is therefore the ONLY working
+  SVA config, and it worked at 09:12.
+- Something between 09:12 and 10:29 (repeated TDRs from the broken module-flow
+  attempts, firmware-side degradation, or an IOMMU state corruption) broke the
+  GCR3 translation for the NPU. Fresh driver reloads (12:05+) did NOT restore it.
+  Conclusion: boot-time IOMMU/firmware state must be restored → **reboot**.
+
+**Also fixed**: `/tmp/fflm-layer0.seq` header was garbage (`0x1b 0x1b00`) because
+`fflm_dump2` default-constructed `npu_sequence nseq;` (no `setup_device`) →
+uninitialized header fields. Fix: `npu_sequence nseq(device_npu2);` → header is now
+`06040100 00000108 00000378 000070fc` (Major=0 Minor=1 DevGen=4 Rows=6 Cols=8
+MemRows=1, NumOps=888, TxnSize=28924) — the SAME format as the working cascade
+control code. The corrected seq is saved at `engine/npu/fflm-run/fflm-layer0.seq`.
+
+**Post-reboot plan**: `engine/npu/fflm-run/post-reboot-verify.sh` checks group 26
+type, runs the cascade probe (silicon control), then the real layer kernel via
+`/usr/local/bin/fflm_run4 layer.xclbin fflm-layer0.seq` (module flow). Fallback if
+identity+SVA is still broken post-reboot: `amd_iommu=v2` on the kernel cmdline
+(makes paging domains v2 → SVA-capable → the NPU could use a DMA domain instead).
+
+### ✅ 2026-08-31 14:51 — THE REAL FastFlowLM MODEL RUNS ON THE NPU
+
+The actual ROCm/FastFlowLM runtime (built from the vendored
+`third_party/FastFlowLM`) + the real Qwen3-0.6B model (683 MB `model.q4nx`,
+downloaded from HuggingFace `FastFlowLM/Qwen3-0.6B-NPU2`) generates and runs
+the full model on the XDNA2 NPU on **kernel 7.2.0-perfopt with the pristine
+driver and the upstream identity IOMMU (SVA) config**:
+
+```
+Prompt "Hello" → 146 tokens, full reply
+Prefill: 502.8 ms (27.8 tok/s)    Decode: 1.366 s (96.6 tok/s)
+Zero IO_PAGE_FAULTs, zero TDR timeouts during the run
+```
+
+**Why the hand-rolled launcher deadlocked but the real runtime works**: the
+runtime calls `gen_layer_seq` with the real weights loaded and allocates the BOs
+to match the generated patch table. My weight-less dump of the sequence and my
+guessed BO sizes did not match, so the shim-DMA sync tokens never fired — the
+DPU correctly waited forever. The layer.xclbin, the identity-mode SVA, the
+module flow, and the firmware were all fine.
+
+Setup (preserved):
+- `engine/npu/fflm-run/run_real_runtime.sh` — the run command
+- `~/.config/flm/models/Qwen3-0.6B-NPU2/` — model cache
+- `/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2` → vendored xclbins

@@ -1,0 +1,161 @@
+================================================================================
+ISSUE: HRX CANNOT HANDLE GET_ROWS  ("unsupported HRX node N: GET_ROWS")
+================================================================================
+Written for: geramyl
+Date: 2026-08-30
+Updated: 2026-08-30 (added geramyl's response)
+Repo: 1bit-MONSTER
+Primary sources:
+  - research/ws12-hrx-loom/BENCHMARK.md
+  - research/ws12-hrx-loom/FINDINGS.md
+  - research/ws12-hrx-loom/README.md
+  - research/TRACKING.md (WS-12)
+  - src/backend_hrx.cpp, src/hrx_inprocess.cpp, src/backend_manager.cpp,
+    src/dynamic_router.cpp, tools/unified_server.cpp
+
+--------------------------------------------------------------------------------
+1. THE SHORT VERSION
+--------------------------------------------------------------------------------
+HRX (AMD's "Hip Runtime Extended" IREE/Loom stack, shipped as a self-contained
+llama.cpp bundle) fails closed on GET_ROWS.
+
+GET_ROWS is ggml's indexed row-gather op: it picks rows out of a 2D tensor by
+data-dependent row indices. It appears in every llama.cpp decode graph (the
+token-embedding lookup by token id at the start of decode, plus per-token
+row-gathers).
+
+AMD's ggml-hrx backend only fuses a narrow, model-specific node set. GET_ROWS is
+NOT implemented in that set, and per the RFC contract the backend refuses
+partial coverage: instead of falling back per node, the whole graph compute
+fails with:
+
+    E graph_compute: unsupported HRX node 2989: GET_ROWS
+       output=3663:f32[2048,0,1,1] <- GET_ROWS
+       inputs=[3661:f32[2048,512,1,1]<-MUL_MAT, 3662:i32[0,1,1,1]] consumers=[2991:ADD]
+    E graph_compute: ggml_backend_sched_graph_compute_async failed with error -1
+    E llama_decode: failed to decode, ret = -3
+
+That is the whole issue. "Can't get ROWS" = GET_ROWS not implemented in the
+ggml-hrx backend's node set.
+
+--------------------------------------------------------------------------------
+1b. MAINTAINER RESPONSE (geramyl, 2026-08-30)
+--------------------------------------------------------------------------------
+"Not implemented, but HRX is production ready."
+
+Meaning of the response:
+- GET_ROWS is an UPSTREAM NOT-IMPLEMENTED gap in AMD's ggml-hrx backend node
+  set, NOT a defect in HRX itself. The error is the backend's fail-closed
+  contract firing because the node is missing from its fused set.
+- HRX is production-ready on our hardware: the bundle installs and runs with no
+  ROCm install, enumerates the device (HRX0: AMD Radeon 8060S, gfx1151),
+  /health returns ok, and warm decode runs ~2.5-3x faster than HIP. Fail-closed
+  is by design - it refuses partial coverage rather than returning silently
+  wrong results.
+- The fix belongs on the llama.cpp/ggml-hrx side: implement GET_ROWS in the
+  backend (e.g. the Vulkan-style CPU fallback, PR #26854) or generalize the
+  node set - which is exactly what AMD's hrx-v2 branch ("generalize kernel
+  support") is working toward.
+- Our engine already treats the gap as expected behavior: decode-time failover
+  (ggml_vulkan -> zinc_gpu -> cpu_generic) + HRX_MAX_PREFILL_TOKENS policy, so
+  end users never see a 500. See section 4.
+
+--------------------------------------------------------------------------------
+2. WHEN IT TRIGGERS
+--------------------------------------------------------------------------------
+- Any prompt large enough that the decode graph contains a row-gather. Measured
+  failing at 1815 tokens AND at 7592 tokens on Qwen3-30B-A3B Q4_K_M (18.6 GB).
+- It fails at the FIRST decode batch (off = 0, n_batch = 2048) once the graph
+  needs a GET_ROWS node. Sequence length only decides WHEN the node is reached.
+- Non-qualified models fail immediately: nomic-embed dies at the very first
+  node with "unsupported HRX node 0: GET_ROWS".
+- Short prompts work because the whole sequence stays inside the set of fused
+  HRX nodes, so no gather is ever needed.
+
+--------------------------------------------------------------------------------
+3. WHY IT MATTERS (benchmark evidence, gfx1151, 2026-08-29)
+--------------------------------------------------------------------------------
+Same model both sides (Qwen3-30B-A3B-Instruct-2507-Q4_K_M.gguf):
+  HRX = llama-hrx-b59 bundle on HRX0 (gfx1151)
+  HIP = llama.cpp 4df29be4f with HIP/hipBLAS on ROCm0 (same GPU)
+
+  Large prefill (1815 / 7592 tokens):
+    HIP   : 1227-1313 tok/s, completed, correct
+    HRX   : FAILED CLOSED (GET_ROWS) - could not complete ANY large-prefill run
+
+  Cold short-prompt prefill ("capital of France"):
+    HIP   : 171.0 tok/s prompt / 30.0 tok/s gen
+    HRX   : 143.5 tok/s prompt / 36.8 tok/s gen
+
+  Warm short prompt (KV cache warm, incremental):
+    HIP   : ~46-62 tok/s prompt / ~70 tok/s gen
+    HRX   : ~72-75 tok/s prompt / ~175 tok/s gen
+
+CONCLUSION vs AMD's RFC claim (30-50% prefill uplift, parity->+15% decode):
+  - NOT reproduced on gfx1151. Real large prefill: HIP wins decisively; HRX
+    cannot complete it at all.
+  - HRX's genuine win is warm DECODE latency (~2.5-3x) because its kernel JIT
+    (Loom/IREE, "kernels on the fly") tightly fuses the per-token path.
+  - AMD's own RFC preface said the backend "doesn't currently qualify as a
+    GGML backend... fused Qwen3-specific hardcoded compute". Confirmed here.
+
+--------------------------------------------------------------------------------
+4. ENGINE MITIGATION (already in place - HRX fail-closed is handled)
+--------------------------------------------------------------------------------
+- Decode-time failover: when HRX generate() fails closed (empty return/throw),
+  BackendManager::generate_text failover + DynamicRouter::generate
+  retry/pick_backend_excluding re-route to the next lane in the model route:
+      ggml_vulkan -> zinc_gpu -> cpu_generic
+  (never a registration-order NPU lane). No more 500s.
+- Large-prefill policy (tools/unified_server.cpp, G1b): prompts over
+  HRX_MAX_PREFILL_TOKENS skip HRX entirely and start on ggml_vulkan, so HRX
+  never fails on big prompts. Env knob: HRX_MAX_PREFILL_TOKENS.
+- HRX is a TEXT-LEVEL backend (no forward()/lm_head()); failures surface as
+  empty return/throw at the token loop and get caught by the same failover.
+
+--------------------------------------------------------------------------------
+5. UPSTREAM STATUS (the gap is theirs, not ours)
+--------------------------------------------------------------------------------
+- Draft PR ggml-org/llama.cpp#27218 "ggml-hrx: add AMD ROCm HRX native ggml
+  backend" (RFC discussion #27219). Still DRAFT, not merged. GET_ROWS remains
+  the gap. Maintainer skepticism: "doesn't currently qualify as a GGML
+  backend... fused Qwen3-specific hardcoded compute".
+- AMD fork branches: hrx-v2 is 179 commits ahead with work like "generalize
+  kernel support and add llama support" - may eventually cover GET_ROWS.
+- The hybrid pattern that would fix it already exists: Vulkan's GET_ROWS
+  CPU-fallback (llama.cpp PR #26854) - split the graph, run unsupported nodes
+  on CPU. Not yet done for HRX.
+- Tracking in research/TRACKING.md WS-12: "HRX fails closed on GET_ROWS for
+  large prompts" (P1, benchmarked) and "GET_ROWS remains the gap" (P2 watch).
+
+--------------------------------------------------------------------------------
+6. SANITY CHECKS / REPRO COMMANDS
+--------------------------------------------------------------------------------
+# 1) Does HRX see our GPU?
+  <hrx-bundle>/llama-cli --list-devices
+  -> HRX0: AMD Radeon 8060S Graphics (Node 1) (gfx1151)
+
+# 2) Reproduce the fail-closed (large prompt):
+  llama-server -m <model.gguf> --device HRX0 --port 9876
+  # send a prompt >= ~1800 tokens, watch stderr:
+  #   E graph_compute: unsupported HRX node N: GET_ROWS
+  #   E llama_decode: failed to decode, ret = -3
+
+# 3) Engine end-to-end (failover should kick in, no 500):
+  build/1bit unified -m "Qwen3 30B A3B Instruct" --backend hrx_gpu
+  # HRX_INPROCESS=1 uses the in-process dlopen'd bundle; HRX_INPROCESS=0
+  # uses the subprocess llama-server path.
+
+--------------------------------------------------------------------------------
+7. KEY FILES
+--------------------------------------------------------------------------------
+  src/backend_hrx.cpp      - subprocess HRX llama-server backend (spawn/health)
+  src/hrx_inprocess.cpp    - in-process HRX via dlopen'd bundle libllama.so
+  src/backend_manager.cpp  - backend registration + generate_text failover
+  src/dynamic_router.cpp   - decode-time retry / pick_backend_excluding
+  tools/unified_server.cpp - HRX_MAX_PREFILL_TOKENS large-prefill policy
+  research/ws12-hrx-loom/BENCHMARK.md - full numbers (section above)
+  research/ws12-hrx-loom/FINDINGS.md  - HRX deep dive + upstream status
+================================================================================
+END OF DOCUMENT
+================================================================================

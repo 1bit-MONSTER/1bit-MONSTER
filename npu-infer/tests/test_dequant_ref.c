@@ -15,11 +15,11 @@ int main(int argc, char** argv) {
     printf("q_proj: dtype=%s shape=[%lld,%lld] data_base=%llu data_offset=%llu\n",
            q->dtype, (long long)q->shape[0], (long long)q->shape[1],
            (unsigned long long)mw->data_base, (unsigned long long)q->data_offset);
-    printf("num_blocks=%d\n", npu_weight_num_blocks(q, &mw->config));
+    printf("num_blocks=%d\n", npu_weight_num_blocks(q, &mw->config, (int)mw->config.hidden_size));
 
     static uint16_t block[256 * 1024];
     const void* data = model_tensor_data(mw, q);
-    int n = npu_dequant_block(block, data, q, &mw->config, 0);
+    int n = npu_dequant_block(block, data, q, &mw->config, 0, (int)mw->config.hidden_size);
     printf("block0 wrote %d values\n", n);
 
     // Also verify embed row 0

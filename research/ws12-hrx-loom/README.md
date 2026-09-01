@@ -1359,3 +1359,52 @@ are stale-build artifacts, not quantization. Verification scripts landed in
 this directory: `make-q4nx-f32-twin.py` (lossless-dequant GGUF converter),
 `zaya32_forward.py` (exact numpy port of the fork's zaya.cpp graph, validated
 corr 0.9999989 vs ggml-CPU), `cmp32.py` (comparison matrix).
+
+---
+
+## Round 26 — the Q4NX-twin measurement: execution gap is summation order, not quantization
+
+**Question**: the round-25 corr 0.99997 (Q4NX-HRX vs F32-CPU) mixes two gaps —
+4-bit quantization loss and NPU-vs-CPU execution difference. Can we separate
+them? **Answer: yes — via a lossless F32 "twin" of the Q4NX model.** If the
+NPU executes the quantized graph exactly, corr(Q4NX-HRX, twin) ≈ 1.0; if the
+gap persists against the twin, it is execution (summation order), not the
+quantization.
+
+**Pipeline** (all artifacts in this directory):
+- `make-q4nx-f32-twin.py` — dequantizes `zaya-q4nx.gguf` (280 Q4NX tensors,
+  torch2aie 32×256 tiles) into an F32 GGUF holding the *same* numeric values
+  (`W = q4·scale + zp`, per-(row,32-col) bf16 scales/zeros, 35.4 GB output).
+  Fixed this round: (1) the hand-rolled GGUF header copied the `GGUF.*`
+  internal fields as KVs (header corruption — llama failed to load); (2) the
+  3D MoE reshape `(experts,rows,cols)->(rows,cols,experts)` silently permuted
+  expert data (dequant output is already GGUF order — drop the reshape);
+  (3) `general.architecture` must be kept (the runtime keys the zaya graph on
+  it); (4) the ~0.44 GB/min write rate needs a >50-min timeout (earlier runs
+  were silently truncated mid-layer-23 by the 50-min wrapper timeout).
+- `zaya32_forward.py <f32.gguf>` — exact numpy port (CCA attention + MoE),
+  writes `/tmp/zaya32_numpy_logits.npy` → `f32_32_regen.bin`.
+- `harnesses/dump32_prefill.cpp` (→ `/tmp/dump32`) — 32× token-2 prefill,
+  final-token logits: `dump32 zaya-q4nx.gguf 99 out.bin` (HRX20/gfx1151) and
+  `dump32 zaya-q4nx-f32twin.gguf 0 out.bin` (CPU twin).
+- `cmp32.py` — all-vs-all matrix.
+
+**Results** (32-token, final-token logits, vocab 262272):
+
+| comparison | corr | maxdiff | meandiff | top10 |
+|---|---|---|---|---|
+| Q4NX-HRX (NPU) vs twin (CPU, same values) | 0.999973 | 0.239 | 0.040 | 10/10 |
+| Q4NX-HRX (NPU) vs F32 (CPU reference) | 0.999972 | 0.242 | 0.040 | 10/10 |
+| twin (CPU) vs F32 (CPU reference) | 0.999999 | 0.044 | 0.006 | 10/10 |
+
+**Conclusion — the round-25 claim is now proven, not asserted.** The twin
+removes the quantization variable (twin-vs-F32 corr 0.999999 — the dequant is
+faithful to 4.4e-2 max), yet the NPU-vs-twin gap (corr 0.999973, maxdiff 0.24)
+is statistically identical to the NPU-vs-F32 gap. The residual error is the
+pure execution difference — f32 summation order between the NPU's 256-lane
+reduction trees and the CPU order, amplified by the 32-token recurrence
+(round-25 §2-3) — NOT the 4-bit weights. The Q4NX kernel executes its graph
+faithfully (top1 108 on all three; top10 identical). Deterministic
+corr(32-tok) = 1.0 remains the fixed-point pipeline's property (1BP gate
+`test_1bp_q4nx_reader`: `W=q4·s+zp` byte-exact vs the engine's dequant, and
+the `(q4·16·rq+zpq)>>22` re-quant matches int8 to rounding boundaries).
