@@ -122,3 +122,33 @@ Per TXN copy (modes 0..3 identical layout):
 - Validate: engine packer output == runtime 94MB slice byte-for-byte; then
   the fixed mm call produces the reference GEMM (validation loop closed).
 - Re-run capture with the FULL runtime (chat flow) to label every BO.
+
+## Round-30c — THE RUNTIME WEIGHT LAYOUT IS DECODED (byte-exact)
+
+The captured BO traffic reveals the complete weight layout:
+
+1. **Per-layer weight BOs (10 MB) = the REORDERED Q4NX TILES** (verified
+   byte-exact for 513+ leading tiles): layers in REVERSED order (27 first,
+   layer 0 last), each layer = q,k,v,o,gate,up,down projections in that
+   order, each projection's tiles in the reorder permutation
+   out[o] = in[8*(o//8) + (o//2)%4 + 4*(o%2)] (per 8-tile group), raw
+   5120-B Q4NX tile bytes (within-tile layout unchanged).
+2. Per layer: 1920 tiles = q(256)+k(128)+v(128)+o(256)+gate(384)+up(384)+
+   down(384) = 9830400 B, in a 10485760-B BO.
+3. The 94 MB BO = the reordered lm_head tiles (18992 tiles, verified).
+4. The 1 MB uploads = per-layer small tensors (input/post_attn layernorms,
+   q/k norms, ones) — the layer TXN's arg0/2/3 RTP reads.
+5. The mm/layer kernels DEQUANTIZE IN-KERNEL from the reordered tiles
+   (round-28's conclusion, now confirmed by the captured layout): the
+   hand-rolled packer must emit the reordered tiles (NOT a dequant).
+6. Layers are uploaded reversed; the engine's packer and per-layer BO layout
+   must match (layer 27 first).
+
+## Next steps (round-31)
+
+- Implement npu_pack_weight_bo as the tile reorder (permutation + per-layer
+  BO layout, layers reversed); byte-verify the packer output == captured BO.
+- Map mm.bin's arg1 BDs (128 KB strides) onto the reordered-tile BO — the
+  on-device dequant's tile-window arithmetic.
+- Fix run_gemm arg binding (arg0=out, arg1=weight, arg2=input) in the engine.
+- On-device validation: engine path output == runtime path output.
