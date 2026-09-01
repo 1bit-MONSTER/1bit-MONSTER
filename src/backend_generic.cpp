@@ -632,12 +632,13 @@ struct GenericBackend : Backend {
             cfg.arch == RCPP_ARCH_ZAYA || cfg.arch == RCPP_ARCH_ZAMBA2 ||
             cfg.arch == RCPP_ARCH_ZAMBA || cfg.arch == RCPP_ARCH_MAMBA ||
             cfg.arch == RCPP_ARCH_QWEN35 || cfg.arch == RCPP_ARCH_BARETORCH ||
-            cfg.arch == RCPP_ARCH_QU_SSM) {
+            cfg.arch == RCPP_ARCH_QU_SSM || cfg.arch == RCPP_ARCH_ARO_BABYLM) {
             fprintf(stderr, "  [generic] Refusing to load %s (arch=%d%s) via safetensors\n",
                     f.c_str(), (int)cfg.arch,
                     cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" :
                     cfg.arch == RCPP_ARCH_BARETORCH ? " BARETORCH — cs_lrad registry token, engine support XL (issue #1907)" :
-                    cfg.arch == RCPP_ARCH_QU_SSM ? " QU_SSM — Quamba-style SSM registry token, engine support XL" : "");
+                    cfg.arch == RCPP_ARCH_QU_SSM ? " QU_SSM — Quamba-style SSM registry token, engine support XL" :
+                    cfg.arch == RCPP_ARCH_ARO_BABYLM ? " ARO_BABYLM — attention-gate + memory + local/global attn registry token, engine support XL (census 2026-09-01)" : "");
             return false;
         }
 
