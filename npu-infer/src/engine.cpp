@@ -673,23 +673,31 @@ int NpuInferenceEngine::sample_token(const float* logits, int vocab_size, float 
     std::vector<std::pair<float,int>> cand;
     cand.reserve(vocab_size);
     for (int i = 0; i < vocab_size; i++) cand.push_back({logits[i], i});
-    std::sort(cand.begin(), cand.end(),
-              [](const auto& a, const auto& b) { return a.first > b.first; });
-    if (top_k > 0 && (size_t)top_k < cand.size()) cand.resize(top_k);
-    float max_l = cand[0].first;
-    double sum = 0.0;
-    for (auto& c : cand) { c.first = expf((c.first - max_l) / temperature); sum += c.first; }
+    bool needs_order = (top_k > 0) || (top_p < 1.0f);
+    float max_l = logits[0];
+    if (needs_order) {
+        std::sort(cand.begin(), cand.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+        if (top_k > 0 && (size_t)top_k < cand.size()) cand.resize(top_k);
+        max_l = cand[0].first;
+    } else {
+        for (int i = 1; i < vocab_size; i++) if (logits[i] > max_l) max_l = logits[i];
+    }
+    for (auto& c : cand) c.first = expf((c.first - max_l) / temperature);
     if (top_p < 1.0f) {
         // nucleus: keep the smallest prefix of (sorted, now-scaled) candidates
         // whose cumulative probability >= top_p
+        double sum_all = 0.0;
+        for (auto& c : cand) sum_all += c.first;
         double acc = 0.0; size_t keep = cand.size();
         for (size_t i = 0; i < cand.size(); i++) {
-            acc += cand[i].first / sum;
+            acc += cand[i].first / sum_all;
             if (acc >= top_p) { keep = i + 1; break; }
         }
         if (keep < cand.size()) cand.resize(keep);
-        sum = 0.0; for (auto& c : cand) sum += c.first;
     }
+    double sum = 0.0;
+    for (auto& c : cand) sum += c.first;
     std::uniform_real_distribution<double> dist(0.0, sum);
     double r = dist(rng_);
     double acc = 0.0;
