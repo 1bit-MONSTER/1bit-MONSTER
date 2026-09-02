@@ -9,6 +9,22 @@ Max+ 395) with ROCm GPU acceleration.
 
 ---
 
+## Download a prebuilt binary (fastest)
+
+Prefer not to build? Every release ships ready-to-run packages — binary
+tarball, Debian package and AppImage — downloadable from the website:
+
+**https://1bit.monster/1bit-downloads.html**
+
+The tarball extracts anywhere (`./run.sh chat`), the `.deb` puts `1bit` on
+`PATH`, and the AppImage runs without installing. All three are built from the
+same staged release tree, so picking a format is just an install preference.
+You still need the runtime requirements below (hardware + ROCm runtime + a
+model file); `install.sh` and the build steps that follow are for building
+from source.
+
+---
+
 ## Prerequisites
 
 | Component     | Requirement                                                       |

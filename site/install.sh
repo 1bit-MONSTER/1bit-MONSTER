@@ -1,135 +1,177 @@
-#!/bin/bash
-set -euo pipefail
 #!/usr/bin/env bash
+# NOTE: `make package-site` copies this file to site/install.sh, which is what
+# the website serves at https://1bit.monster/install.sh (the one-liner used on
+# the Downloads page). Keep this file the source of truth — edit here, then
+# re-run `make package-site` to sync the site copy.
 set -euo pipefail
-# 1bit.monster bootstrap — Lemonade + FastFlowLM on Strix Halo.
-#
-# Usage: curl -fsSL https://1bit.monster/install.sh | bash
-#
-# What it does, in order:
-#   1. Refuses to run on anything that isn't "AMD Ryzen AI MAX+ 395" (Strix Halo).
-#   2. Installs the NPU driver layer when pacman exposes it.
-#   3. Raises memlock so GPU/NPU runtimes can pin buffers.
-#   4. Clones bong-water-water-bong/1bit to ~/1bit.
-#   5. Hands off to repo install.sh for fork builds and systemd wiring.
-#
-# Idempotent — safe to re-run to repair or upgrade.
+GREEN='\033[0;32m'; NC='\033[0m'; YELLOW='\033[1;33m'
+log() { echo -e "${GREEN}[1bit]${NC} $*"; }
+warn() { echo -e "${YELLOW}[1bit]${NC} $*"; }
 
-set -Eeuo pipefail
+REPO_URL="https://github.com/1bit-MONSTER/1bit-MONSTER.git"
+INSTALL_DIR="${INSTALL_DIR:-$HOME/1bit}"
+SKIP_ROCM=false; WITH_JARVIS=false
+for arg in "$@"; do
+    case "$arg" in
+        --skip-rocm) SKIP_ROCM=true ;;
+        --with-jarvis) WITH_JARVIS=true ;;
+    esac
+done
+MODELS_DIR="${MODELS_DIR:-$HOME/models}"
 
-# ── colours + helpers ────────────────────────────────────────
-C='\033[0;36m'; G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; B='\033[1m'; D='\033[2m'; N='\033[0m'
-banner() {
-  printf '\n'
-  printf '%b╔══════════════════════════════════════════════════════════════╗%b\n' "$C" "$N"
-  printf '%b║                                                              ║%b\n' "$C" "$N"
-  printf '%b║   %b1bit.monster · Lemonade + FastFlowLM%b        %b║%b\n' "$C" "$B" "$N" "$C" "$N"
-  printf '%b║   %bgfx1151 iGPU · XDNA NPU · local OpenAI endpoints%b      %b║%b\n' "$C" "$D" "$N" "$C" "$N"
-  printf '%b║                                                              ║%b\n' "$C" "$N"
-  printf '%b╚══════════════════════════════════════════════════════════════╝%b\n\n' "$C" "$N"
+# ── Kernel version check ───────────────────────────────────────────────────────
+# amdgpu OPTC CRTC hang on Strix Halo (gfx1151) with kernel 6.19.x (issue #1)
+# Works fine on 6.18.x LTS and 7.x. Warn users on 6.19.x.
+KERNEL_RELEASE="$(uname -r)"
+if echo "$KERNEL_RELEASE" | grep -q '^6\.19\.'; then
+    warn "Kernel $KERNEL_RELEASE detected!"
+    warn "Strix Halo (gfx1151) systems running 6.19.x kernels may experience"
+    warn "an amdgpu OPTC CRTC hang during GPU inference (issue #1)."
+    warn "Recommended: use kernel 6.18.22-lts or 7.x instead."
+    warn "See: https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1"
+    echo ""
+fi
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+    echo "Usage: curl -fsSL https://raw.githubusercontent.com/1bit-MONSTER/1bit-MONSTER/main/install.sh -o install.sh"
+    echo "       # Review the script, then:"
+    echo "       bash install.sh [--skip-rocm] [--with-jarvis]"
+    echo ""
+    echo "  --skip-rocm    Skip kernel build (use pre-build librocm_cpp.so)"
+    echo "  --with-jarvis  Also build JARVIS (voice assistant) and offer to start it"
+    echo ""
+    echo "If a SHA256 checksum file is available, verify before running:"
+    echo "       sha256sum -c install.sh.sha256"
+    echo ""
+    echo "Installs 1bit inference engine for AMD Strix Halo (gfx1151)."
+    echo "Builds pure C++ end-to-end: zaya_server, onebit (CLI), onebitd (daemon),"
+    echo "unified_router (proxy), bitnet_tui (TUI) + librocm_cpp.so — no Rust, no Python."
+    exit 0
+fi
+
+# ── Detect if running standalone (curl-piped) vs from repo root ────────────────
+SCRIPT_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || echo ".")"
+if [ -f "$SCRIPT_DIR/CMakeLists.txt" ]; then
+    DIR="$SCRIPT_DIR"
+    log "Running from repo root: $DIR"
+else
+    log "Cloning 1bit repository..."
+    if [ -d "$INSTALL_DIR/.git" ]; then
+        log "Repo already exists at $INSTALL_DIR — pulling latest"
+        git -C "$INSTALL_DIR" pull --ff-only || warn "pull failed; continuing with existing copy"
+    else
+        git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+    fi
+    DIR="$INSTALL_DIR"
+fi
+
+# ── Install deps ──────────────────────────────────────────────────────────────
+install_deps() {
+    if command -v apt-get &>/dev/null; then
+        log "Installing build deps (apt)..."
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq build-essential cmake ninja-build git curl python3-pip
+    elif command -v pacman &>/dev/null; then
+        log "Installing build deps (pacman)..."
+        sudo pacman -Sy --noconfirm base-devel cmake ninja git curl python-pip
+    elif command -v dnf &>/dev/null; then
+        log "Installing build deps (dnf)..."
+        sudo dnf install -y gcc-c++ cmake ninja-build git curl python3-pip
+    else
+        warn "Unknown package manager. Install: cmake ninja git curl build-essential python3-pip"
+    fi
+    command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
+    
+    # TheRock 7.15.0a — pip-installed HIP SDK for gfx1151
+    if ! command -v amdclang++ &>/dev/null; then
+        log "Installing TheRock 7.15.0a SDK..."
+        python3 -m pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
+            "rocm[libraries,devel,device-gfx1151]" 2>/dev/null || {
+            warn "TheRock pip install failed. Set THEROCK_PIP_ROOT manually."
+            warn "See: https://github.com/ROCm/TheRock"
+        }
+        export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock"
+    else
+        log "amdclang++ found — TheRock SDK already installed"
+    fi
+	command -v ninja >/dev/null 2>&1 || { echo "WARNING: ninja not found, using Unix Makefiles"; CMAKE_GENERATOR=""; }
 }
-info() { printf '%b  · %s%b\n' "$D" "$*" "$N"; }
-ok()   { printf '%b  ✓ %s%b\n' "$G" "$*" "$N"; }
-warn() { printf '%b  ⚠ %s%b\n' "$Y" "$*" "$N" >&2; }
-die()  { printf '%b  ✗ %s%b\n' "$R" "$*" "$N" >&2; exit 1; }
-step() { printf '\n%b▸ %s%b\n' "$B" "$*" "$N"; }
 
-banner
+install_deps
+mkdir -p "$MODELS_DIR"
 
-# ── hardware gate ────────────────────────────────────────────
-step "checking hardware"
-MODEL="$(awk -F: '/^model name/ {print $2; exit}' /proc/cpuinfo | sed 's/^ *//')"
-info "detected: ${MODEL:-unknown}"
-# Lowercase before matching: /proc/cpuinfo capitalization varies across
-# microcode/kernel versions (we've seen "Ryzen" and "RYZEN" in the wild).
-MODEL_LC="$(printf '%s' "$MODEL" | tr '[:upper:]' '[:lower:]')"
-case "$MODEL_LC" in
-  *"amd ryzen ai max+ 395"*) ok "Strix Halo confirmed" ;;
-  *"ryzen ai max"*)
-    warn "this is a Ryzen AI MAX variant but not the 395 we've tested"
-    warn "continuing at your own risk — file bugs with /proc/cpuinfo attached"
-    ;;
-  *)
-    printf '\n%b┌──────────────────────────────────────────────────────────┐%b\n' "$R" "$N"
-    printf '%b│  STOP — 1bit.monster runs on Strix Halo only, for now.   │%b\n' "$R" "$N"
-    printf '%b│                                                          │%b\n' "$R" "$N"
-    printf '%b│  Your CPU reports:                                       │%b\n' "$R" "$N"
-    printf '%b│    %-56s│%b\n' "$R" "$MODEL" "$N"
-    printf '%b│                                                          │%b\n' "$R" "$N"
-    printf '%b│  The stack may work on other AMD / NVIDIA / Apple hosts  │%b\n' "$R" "$N"
-    printf '%b│  but it is untested. Please do not file bugs against     │%b\n' "$R" "$N"
-    printf '%b│  non-Strix-Halo hardware until we label them supported.  │%b\n' "$R" "$N"
-    printf '%b└──────────────────────────────────────────────────────────┘%b\n\n' "$R" "$N"
-    die "unsupported CPU — aborting"
-    ;;
-esac
-
-# ── distro check (soft) ──────────────────────────────────────
-step "checking distro"
-if [ -r /etc/os-release ]; then
-  . /etc/os-release
-  info "distro: ${PRETTY_NAME:-unknown}"
-  case "$ID" in
-    cachyos|arch|endeavouros|manjaro) ok "pacman-family distro detected" ;;
-    *) warn "non-pacman distro ($ID) — package step may fail; you'll need to adapt it" ;;
-  esac
+# ── Build kernels + server (pure C++, no Rust) ───────────────────────────────
+if [ "$SKIP_ROCM" = false ]; then
+    log "Building C++ inference stack (server + CLI + daemon)..."
+    cd "$DIR"
+    cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
+    cmake --build build --target zaya_server onebitd onebit onebin unified_router ${WITH_JARVIS:+jarvis_app} -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
+    log "Build complete:"
+    log "  $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/onebitd      ($(stat -c%s "$DIR/build/onebitd" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/onebit       ($(stat -c%s "$DIR/build/onebit" 2>/dev/null || echo '?') bytes)"
+    log "  $DIR/build/1bit         → onebit"
+    log "  $DIR/build/unified_router"
 else
-  warn "/etc/os-release missing — unknown distro"
+    warn "--skip-rocm: kernel build skipped."
+    warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running zaya_server."
+    log "Checking for pre-built server binary..."
+    if [ -f "$DIR/build/zaya_server" ]; then
+        log "Found existing build: $DIR/build/zaya_server"
+    else
+        warn "No pre-built server found at $DIR/build/zaya_server."
+        warn "Run without --skip-rocm on a ROCm-equipped machine, or"
+        warn "download a pre-built release from GitHub."
+    fi
 fi
 
-# ── packages ─────────────────────────────────────────────────
-step "installing NPU driver packages"
-PKGS=(
-  xrt
-  xrt-plugin-amdxdna
-)
-if command -v pacman >/dev/null 2>&1; then
-  info "enabling cachyos-extra-znver4 repo (if not already)"
-  # CachyOS ships cachyos-extra-znver4 by default; on plain Arch users add it manually.
-  # Non-destructive: only install if the repo exposes the packages.
-  info "updating package db"
-  sudo pacman -Sy --noconfirm >/dev/null || warn "pacman -Sy failed; continuing"
-  info "pacman -S --needed ${PKGS[*]}"
-  if sudo pacman -S --needed --noconfirm "${PKGS[@]}"; then
-    ok "NPU + XRT packages installed"
-  else
-    warn "some packages missing from enabled repos — add cachyos-extra-znver4 or build from AUR"
-  fi
-else
-  warn "no pacman found — skipping package step (install xrt / xrt-plugin-amdxdna manually)"
-fi
-
-# ── memlock limits ───────────────────────────────────────────
-step "raising memlock limits for HIP"
-LIMITS_FILE="/etc/security/limits.d/99-1bit.conf"
-if [ ! -f "$LIMITS_FILE" ] || ! grep -q "1bit" "$LIMITS_FILE"; then
-  sudo tee "$LIMITS_FILE" >/dev/null <<EOF
-# 1bit — HIP needs to pin large contiguous buffers.
-*       soft    memlock     unlimited
-*       hard    memlock     unlimited
+# ── JARVIS (optional) ────────────────────────────────────────────────────────
+if [ "$WITH_JARVIS" = true ]; then
+    log "Installing JARVIS (Zyphra default stack)..."
+    mkdir -p "$HOME/.local/bin" "$HOME/.config/1bit"
+    ln -sf "$DIR/build/jarvis" "$HOME/.local/bin/jarvis"
+    cat > "$HOME/.config/1bit/jarvis.env" <<EOF
+# JARVIS defaults — edit to taste, or pass flags: jarvis --help
+1BIT_WEIGHTS_DIR=$MODELS_DIR
+# Uncomment to force a specific model (default: first Zyphra model found):
+# JARVIS_MODEL=ZAYA1-8B
 EOF
-  ok "wrote $LIMITS_FILE (log out + in once to apply to new shells)"
-else
-  ok "memlock config already present"
+    log "JARVIS installed: $HOME/.local/bin/jarvis (config: $HOME/.config/1bit/jarvis.env)"
+    log "Default experience is the Zyphra stack (ZAYA/ZR1/BlackMamba/Zamba2);"
+    log "use 'jarvis --model <name>' to load any other model."
+    if command -v systemctl &>/dev/null && systemctl --user list-units >/dev/null 2>&1; then
+        cat > "$HOME/.config/systemd/user/jarvis.service" <<EOF
+[Unit]
+Description=JARVIS voice assistant (1bit engine)
+After=network.target
+
+[Service]
+EnvironmentFile=$HOME/.config/1bit/jarvis.env
+ExecStart=$HOME/.local/bin/jarvis --text
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+        log "systemd user unit installed — start now with:"
+        log "  systemctl --user enable --now jarvis"
+        log "  systemctl --user status jarvis"
+    fi
 fi
 
-# ── clone + hand off ─────────────────────────────────────────
-step "cloning 1bit"
-SRC="${HOME}/1bit"
-mkdir -p "${HOME}"
-if [ ! -d "$SRC/.git" ]; then
-  git clone --depth 1 https://github.com/1bit-MONSTER/1bit-MONSTER.git "$SRC"
-  ok "cloned into $SRC"
-else
-  info "repo already present — pulling latest"
-  git -C "$SRC" pull --ff-only || warn "pull failed; local changes present?"
-  ok "$SRC up-to-date"
-fi
-
-step "handing off to 1bit install.sh"
-if [ -x "$SRC/install.sh" ]; then
-  cd "$SRC"
-  exec bash "$SRC/install.sh" "$@"
-else
-  die "$SRC/install.sh not found or not executable — clone may be corrupt"
-fi
+# ── Done ──────────────────────────────────────────────────────────────────────
+log ""
+log "Done. Run:"
+log "  export HSA_OVERRIDE_GFX_VERSION=11.5.1"
+log "  export HSA_ENABLE_SDMA=0"
+log "  export LD_LIBRARY_PATH=$DIR/build:\$LD_LIBRARY_PATH"
+log "  $DIR/build/zaya_server"
+log ""
+log "Then send requests:"
+log '  curl -X POST http://localhost:8088/completion \'
+log '    -H "Content-Type: application/json" \'
+log '    -d '\''{"prompt":"Hello","n_predict":16}'\'
+log ""
+log "Or use any OpenAI-compatible client:"
+log '  from openai import OpenAI'
+log '  client = OpenAI(base_url="http://localhost:8088/v1", api_key="any")'

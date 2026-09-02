@@ -10,6 +10,8 @@
 # Section shortcuts -> current page files
 /models       /1bit-models.html          301
 /benchmarks   /1bit-benchmarks.html      301
+/downloads    /1bit-downloads.html       301
+/download     /1bit-downloads.html       301
 /docs         /1bit-docs.html            301
 /store        /1bit-store.html           301
 /blog         /1bit-blog.html            301

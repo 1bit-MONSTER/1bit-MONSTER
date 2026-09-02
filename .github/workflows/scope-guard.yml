@@ -63,6 +63,7 @@ jobs:
             npu_smoke.py  # pyxrt NPU engine smoke test (CI/bench harness on strix-halo runner) — engine scope
             hw  # 1bit-LLM FPGA accelerator RTL (ternary GEMV decode engine for the 1-bit box) — engine hardware scope, see hw/1bit-llm/DESIGN.md
             .gitmodules .gitignore .gitnexusignore third_party  # embedded Lemonade server core — engine scope; .gitnexusignore = GitNexus index exclusions (agent tooling, like .gitignore)
+            .gitattributes  # repo-wide binary/diff attributes (like .gitignore/.clang-format) — engine scope; marks the site *.deb/*.AppImage/*.tar.xz package downloads as binary
             .clang-format  # engine C++23 style config — engine scope
             .superpowers  # agent-tooling task docs (SDD dispatch/brief/report) — same category as .claude/.abacusai
             .agent-tools .dsh-memory.md context7.json  # agent tooling + session memory + context7 parsing rules — same category as .superpowers/.claude/.abacusai (DSH/context7 agent tooling, PR #1922)
