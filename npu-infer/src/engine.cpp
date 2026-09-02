@@ -126,7 +126,8 @@ bool XclbinManager::load(XclbinType type) {
                 size_t br = fread(insts.data(), 4, insts.size(), fi);
                 if (br == insts.size()) {
                     auto insts_bo = std::make_unique<xrt::bo>(
-                        device_, (size_t)isz, XCL_BO_FLAGS_CACHEABLE, kernel->group_id(1));
+                        device_, (size_t)isz, XCL_BO_FLAGS_CACHEABLE,
+                        e.kernel->group_id(1));  // use-after-move fix:  local was moved into e.kernel
                     memcpy(insts_bo->map(), insts.data(), (size_t)isz);
                     insts_bo->sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)isz, 0);
                     e.insts_bo = std::move(insts_bo);
@@ -323,6 +324,23 @@ bool NpuInferenceEngine::init(const char* model_path) {
     int vocab_size = config_.vocab_size;
     lm_head_buffer_.resize(vocab_size);
     
+    // ---- Runtime layer path (Round 36): NPU_RUNTIME_LAYERS=1 ----
+    if (getenv("NPU_RUNTIME_LAYERS")) {
+        const char* elf_dir = getenv("NPU_LAYER_ELF_DIR");
+        const char* lmhead_elf = getenv("NPU_LMHEAD_ELF");
+        runtime_layers_ = std::make_unique<RuntimeLayerEngine>();
+        if (runtime_layers_->init(*device_, model_, config_,
+                                  elf_dir ? elf_dir : "captures/txn-elfs",
+                                  lmhead_elf ? lmhead_elf : "captures/txn-elfs/elf_0002_lmhead.bin")) {
+            use_runtime_layers_ = true;
+            rt_ctx_len_ = 0;
+            LOG_INFO("Runtime layer path ENABLED (FastFlowLM ELF submission)");
+        } else {
+            LOG_ERROR("Runtime layer path init FAILED — falling back to mm pipeline");
+            runtime_layers_.reset();
+        }
+    }
+    
     LOG_INFO("=== Init Complete ===");
     LOG_INFO("Model: %s (%d layers, %d hidden)",
              model_path, config_.num_layers, config_.hidden_size);
@@ -417,6 +435,16 @@ bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_toke
     if (num_input_tokens < 1) return false;
     
     for (int t = 0; t < num_input_tokens; t++) {
+        if (use_runtime_layers_) {
+            // Runtime path: one layer-kernel run per layer + lm_head (byte-
+            // verified vs the FastFlowLM runtime). ctx_len advances per token.
+            if (!runtime_layers_->embed(input_tokens[t])) return false;
+            rt_ctx_len_ = t + 1;
+            if (!runtime_layers_->forward(rt_ctx_len_)) return false;
+            if (t % 7 == 0) LOG_DEBUG("  Runtime layer %d/%d done (ctx=%d)",
+                                      t, num_input_tokens, rt_ctx_len_);
+            continue;
+        }
         embed_lookup(input_tokens[t], hwctx_[0].act_bo);
         
         for (int l = 0; l < config_.num_layers; l++) {
@@ -433,6 +461,13 @@ bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_toke
 
 // === Decode ===
 int NpuInferenceEngine::run_decode_step(int last_token) {
+    if (use_runtime_layers_) {
+        if (!runtime_layers_->embed(last_token)) return 0;
+        rt_ctx_len_++;
+        if (!runtime_layers_->forward(rt_ctx_len_)) return 0;
+        runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+        return sample_token(lm_head_buffer_.data(), config_.vocab_size, 1.0f);
+    }
     embed_lookup(last_token, hwctx_[0].act_bo);
     
     for (int l = 0; l < config_.num_layers; l++) {

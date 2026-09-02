@@ -18,6 +18,7 @@ target_include_directories(npu_model PUBLIC include)
 # Build inference engine library
 add_library(npu_engine STATIC
     src/engine.cpp
+    src/runtime_layer.cpp
 )
 target_include_directories(npu_engine PUBLIC include)
 target_link_libraries(npu_engine npu_model ${XRT_COREUTIL} Threads::Threads)
@@ -45,6 +46,7 @@ set_target_properties(dump_instrs PROPERTIES LINKER_LANGUAGE CXX)
 add_executable(npu_infer
     src/main.cpp
     src/engine.cpp
+    src/runtime_layer.cpp
     src/model.c
 )
 target_include_directories(npu_infer PRIVATE include)

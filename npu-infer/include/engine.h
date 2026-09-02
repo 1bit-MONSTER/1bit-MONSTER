@@ -3,6 +3,7 @@
 
 #include "common.h"
 #include "model.h"
+#include "runtime_layer.h"
 #include <cstdint>
 #include <vector>
 #include <string>
@@ -142,6 +143,13 @@ private:
     std::vector<NpuBo> lm_head_blocks_;
     std::vector<float> lm_head_buffer_;
     int current_token_ = 0;
+    
+    // FastFlowLM runtime submission path (Round 36): when enabled
+    // (NPU_RUNTIME_LAYERS=1), forward uses the runtime's layer ELFs + ABI
+    // instead of the hand-rolled mm pipeline. Byte-verified vs the runtime.
+    std::unique_ptr<RuntimeLayerEngine> runtime_layers_;
+    bool use_runtime_layers_ = false;
+    int rt_ctx_len_ = 0;
     
     bool cache_all_weights();
     bool pack_tensor_blocks(std::vector<NpuBo>& blocks, const TensorDesc* desc, const char* label_prefix, uint32_t group_id);

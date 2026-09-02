@@ -246,6 +246,24 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     return NPU_LAYER_TILES;
 }
 
+// Pack the lm_head weight (tied embedding) into the runtime's 98,566,144 B BO.
+// The q4nx stores lm_head as [18992 tiles x 5120B] (8 vocab rows per tile);
+// the runtime BO = the same tiles reordered with G=8 (npu_reorder_tiles) —
+// byte-verified against the captured runtime lm_head BO (Round 36).
+// The tensor's own data_offset (metadata, relative to data_base) points at
+// the physical data. Returns bytes written or 0 on error.
+int npu_pack_lmhead_bo(uint8_t* bo_buffer, ModelWeights* mw, const ModelConfig* config) {
+    (void)config;
+    if (!bo_buffer || !mw || mw->lm_head_weight.ndim != 2) return 0;
+    const int TILE = 5120;
+    int n_tiles = (int)mw->lm_head_weight.shape[0];
+    if (n_tiles <= 0) return 0;
+    const uint8_t* data = (const uint8_t*)model_tensor_data(mw, &mw->lm_head_weight);
+    if (!data) return 0;
+    npu_reorder_tiles(bo_buffer, data, n_tiles, 8);
+    return n_tiles * TILE;
+}
+
 // ========= Simple JSON Parser =========
 
 static int parse_json_metadata(const uint8_t* json_data, uint64_t json_len,
