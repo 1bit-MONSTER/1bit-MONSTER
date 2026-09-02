@@ -360,3 +360,29 @@ contiguous packed bytes per k-step (16 rows x 8 cols per workgroup, 16
 k-block lanes/row like r16), keeping the table-scatter. Estimated 1.5-2x on
 the mms (round-25e estimate) -> 30B q4nx pp32 48 -> ~80-100 t/s. The
 48-layer c32 MoE path is the wall; the kernel is otherwise correct.
+
+## Round 25l — r16-tbl kernel experiment: correct but NOT faster (reverted) (2026-09-02)
+
+Built hrx2_mul_mat_q4nx_fused_tbl_tiled_r16 (16 rows x 8 table-cols per
+workgroup, 256 lanes = 16 rows x 16 k-block lanes, r16-style coalesced
+packed reads via workgroup scratch + barrier reduction) + route
+(mul_mat_q4nx_fused_tbl_tiled_r16) + dispatch preference when rows%16==0.
+Compiled clean through loom-link (SSA name collisions fixed, reduction
+generated programmatically).
+
+Result (30B q4nx pp32, llama-bench): 43.5 t/s vs base kernel 48.2 — the
+r16-tbl restructure is CORRECT (corr 0.9584 unchanged) but SLOWER. The
+coalesced packed reads did NOT unlock the expected 1.5-2x (round-25e
+estimate). The ~7 ms/mm is NOT the scattered 1-byte packed-read pattern.
+
+Reverted (fork clean at 5e4f14a / round 25k): dispatch preference + kernel +
+route removed; baseline 48.3 t/s + corr 0.9584 restored.
+
+Open question: what IS the ~7 ms/mm? Candidates: (a) the per-group dequant
+weight traffic (192 tiles x 983 KB/expert read per group dispatch at the
+NPU's ~43-49 GB/s effective = ~20 ms if BW-bound — the fused path should
+avoid the b_w round trip but still reads 983 KB/expert inline); (b) the
+scale/zp scattered reads; (c) the 1128 per-group dispatches' launch
+overhead; (d) the router syncs (the actual remaining wall, ~313 x 14 ms).
+The compute-vs-sync split needs a cleaner measurement (the HRX2_OPTIME_SYNC
+7 ms/mm includes the drain).
