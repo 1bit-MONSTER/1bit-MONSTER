@@ -776,11 +776,31 @@ int main(int argc,char**argv){
     // (e.g. final_i8_QKV_K2048_N2560.xclbin) so any model sharing GEMM shapes can reuse
     // the same xclbin without a per-model rebuild.
     auto xp=[&](const char*t, int K, int N) -> std::string {
-        std::string tp=xd+"/final_i8_"+t+"_"+cfg.model_tag+".xclbin";
-        FILE* f=fopen(tp.c_str(),"rb"); if(f){fclose(f);return tp;}
+        // Try the full model_tag, then progressively strip leading
+        // underscore-separated vendor/format tokens (e.g.
+        // fastflowlm_qwen3_0_6b -> qwen3_0_6b) so vendor-prefixed model dirs
+        // (FastFlowLM-*, ...) auto-find their per-model xclbin without a
+        // manual --model-tag.  The full tag is always tried first, so this is
+        // a no-op for correctly-tagged models.
+        std::string base=xd+"/final_i8_"+t, tag=cfg.model_tag;
+        while(true){
+            std::string tp=base+"_"+tag+".xclbin";
+            FILE* f=fopen(tp.c_str(),"rb"); if(f){fclose(f);return tp;}
+            size_t u=tag.find('_'); if(u==std::string::npos||u==tag.size()-1) break;
+            tag=tag.substr(u+1);
+        }
         return xd+"/final_i8_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";
     };
-    auto ip=[&](const char*t){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+".txt";};
+    auto ip=[&](const char*t){
+        std::string base=xd+"/insts_i8_"+t, tag=cfg.model_tag;
+        while(true){
+            std::string tp=base+"_"+tag+".txt";
+            FILE* f=fopen(tp.c_str(),"rb"); if(f){fclose(f);return tp;}
+            size_t u=tag.find('_'); if(u==std::string::npos||u==tag.size()-1) break;
+            tag=tag.substr(u+1);
+        }
+        return base+"_"+cfg.model_tag+".txt";
+    };
     // bf16 path (n1_core_placed.py: bf16 activations + v8bfp16ebs8 weights)
     bool bf16_mode = getenv("NPU_BF16") != nullptr;
     auto xpb=[&](const char*t, int K, int N){return xd+"/final_bf16_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";};
