@@ -850,3 +850,64 @@ accumulation, lm_head ELF) == FastFlowLM runtime output byte-for-byte on
 identical inputs, 28 layers x 2 tokens. The runtime's own 28-layer
 activations explode (std ~194); replicating that exactly is the correct
 target, not "fixing" it.
+
+## Round 36 — Engine integration: FastFlowLM runtime path wired into npu-infer
+
+npu-infer now has a REAL FastFlowLM submission path (NPU_RUNTIME_LAYERS=1),
+byte-identical to the runtime on identical inputs:
+
+- NEW src/runtime_layer.cpp + include/runtime_layer.h: RuntimeLayerEngine.
+  init() packs per-layer weight BOs (npu_pack_layer_bo), the lm_head BO
+  (NEW npu_pack_lmhead_bo in src/model.c: G=8 tile reorder of the q4nx
+  lm_head tensor — the "q80 format" was a red herring: the lm_head BO is
+  the SAME npu_reorder_tiles G=8 used for layer projections, verified
+  byte-identical vs the captured 98MB BO), per-layer i5/i6 norm BOs and
+  32MB kv BOs, and builds per-context layer kernels from ELFs produced by
+  tools/gen_layer_elfs (gen_layer_seq + aiebu wrap, same as the runtime's
+  _setup_kernel). forward() runs ONE layer-kernel per layer per forward
+  (validated ABI (3,0,0,act,weight,i5,i6,kv)) then the lm_head kernel.
+- engine.cpp: NPU_RUNTIME_LAYERS=1 switches run_prefill/run_decode_step to
+  RuntimeLayerEngine (embed -> per-layer runs -> lm_head -> logits).
+- tools/gen_layer_elfs.cpp: generates per-context layer ELFs
+  (layer_ctxN.elf) via qwen3_npu_sequence::gen_layer_seq(N) + aiebu.
+  Captures/txn-elfs ships layer_ctx1..6.elf (verified ctrl == the runtime's
+  captured per-ctx ELFs; ctx=2 == elf_0004, ctx=3 == elf_0005).
+
+### New discoveries that made multi-token exactness possible
+
+- The norm tensors live in the q4nx file in PIPELINE order (4608B blocks
+  [ILN][PALN][k_norm][q_norm]), NOT layer order: physical position -> layer
+  = [0,1,10-19,2,20-27,3-9]. Metadata data_offsets are data_base-relative
+  (absolute = data_base + data_offset). Using NORM_PIPELINE_ORDER[L] as
+  layer->position (instead of the inverse) silently swapped layers >= 2's
+  norms — the engine's 28-layer chain then diverged at layer 2.
+- i6[0:128] is the RoPE (rotary) cos/sin table for the CURRENT token
+  position, host-written by the runtime before EVERY forward:
+  phi_j = pos * theta^(-2j/128), p[j] = cos(phi_j), p[64+j] = sin(phi_j),
+  theta = 1e6 (Qwen3). pos=0 gives the initial [1.0 x64][0 x64]. Verified
+  byte-exact for ctx=1..12 against runtime captures. The kernel READS this
+  table (it does not compute RoPE internally), so the engine must rewrite
+  i6[0:128] per forward (update_rope_i6). Without it, forward 2+ diverges.
+- The runtime reads the embedding at data_base + data_offset (SafeTensors
+  semantics), NOT absolute 0: act input = file[data_base + 2048*token].
+- xrt::ext::bo ALLOCATION ORDER matters on amdxdna: a 128MB kv BO created
+  AFTER the weight/norm BOs silently fails to bind (kernel no-ops). Create
+  the kv BO early.
+
+### Validation (on a healthy NPU)
+
+28 layers x 2 tokens: engine act == runtime actpost BYTE-IDENTICAL (corr
+1.0, maxdiff 0) for forward 1 (std 194.46) and forward 2 (std 19.82);
+logits BYTE-IDENTICAL (argmax 397 / 88). Forward 3: engine layers 0-2
+byte-identical vs 1L/2L/3L-model runtime captures (the runtime NaNs at
+4+ layers on fwd3 under load, so the full-chain fwd3 reference is
+unreliable; the NPU also gets wedged by a concurrent lemonade server +
+CAP_SKIP_BIG interposer mode, which must NOT be used — it wedges the
+device).
+
+### Environment notes
+
+- CAP_SKIP_BIG on the interposer wedges the NPU (skipped big-BO dumps
+  leave the device in a bad state) — always capture with full dumps.
+- A concurrent `npu-verify` lemonade server shares /dev/accel0 and causes
+  intermittent no-op/NaN results; validate on idle periods.
