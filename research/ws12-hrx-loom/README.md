@@ -1673,6 +1673,40 @@ n_parallel serving (cols = active sequence count); it needs a quiet box for
 an honest llama-server -np A/B. Fork 76b3694 pushed (6 files, kernel +
 catalog route + dispatch wiring).
 
+### Round 25t v2 — r16wb8: general fused decode kernel for cols 2..7 (fork eb6ff78)
+
+The stated follow-up landed: **r16wb8** — one kernel covering cols 2..8 via
+the jit `@hrx2.shape.cols` config, with 8 unrolled columns and 128 f32
+accumulators (16 rows × 8 cols). The per-column guards are *top-level
+config comparisons* and the guard design is correct even if the compiler
+does not fold them: col-c src1 loads are `scf.if (c < cols) {load} else
+{zero}` (a control-flow region — the out-of-range load never executes) and
+dst stores are `scf.if (c < cols)`-wrapped, so there are no OOB accesses at
+any cols. Probe correctness at (4096, 2048) with duplicated acts: **all
+columns bit-match r16w at cols 3, 4 and 8** (corr 1.0). Per-token dispatch
+cost vs a 1-token r16w dispatch (same-run ratios): cols=3 ≈ 0.62×, cols=4
+≈ 0.47×, cols=8 ≈ 0.33× — the weights-read-once economics scale with batch
+size, bounded below by the fixed staging/reduce + src1 traffic.
+
+Dispatcher: `dispatch_mul_mat_q4nx_slice_fused_batch(cols)` replaces the
+v1 cols==2-only path and routes dense `MUL_MAT_Q4NX` ops with
+`src1->ne[1] ∈ [2..7]` (rows % 16 == 0) to r16wb2 (cols==2) or r16wb8
+(cols 3..7); cols==8+ keep the proven r16x8/tbl routes (r16x8 already
+reads weights once per 8 cols); `GGML_HRX2_NO_R16WB2`/`_NO_R16WB8` fall
+back to the dequant slice.
+
+Honest finding from the serving attempt: llama-server (-np 4, 4 concurrent
+/completion requests) on this lane emits **cols==1 decode mms in the bench
+setup** — continuous batching did not pack the sequences into multi-col
+decode ubatches, so the batched kernels stayed dormant there (aggregate
+46-67 t/s ≈ single-stream rates; the server-side batching question is
+host-side, not kernel-side). The batched path demonstrably fires wherever
+cols==2 decode mms occur (llama-parallel route trace, v1). The kernels are
+ready for any host that batches decode — speculative verification
+(cols = draft batch) is the natural first consumer. Fork eb6ff78 pushed
+(kernel + catalog + generalized dispatcher).
+
+### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
