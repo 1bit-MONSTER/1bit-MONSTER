@@ -37,6 +37,8 @@ class qwen3_6_moe_npu_sequence {
 public:
     qwen3_6_moe_npu_sequence(qwen3_6_moe_desc& desc, LM_Config config, unsigned int MAX_L);
     void gen_layer_seq(npu_sequence* seq, unsigned int L, bool a, bool b);
+    // _ZN24qwen3_6_moe_npu_sequence13gen_lm_head_seqEP12npu_sequenceii
+    void gen_lm_head_seq(npu_sequence* seq, int a, int b);
 };
 
 int main(int argc, char** argv) {
@@ -97,6 +99,28 @@ int main(int argc, char** argv) {
         FILE* f = fopen(fname, "wb");
         if (f) { fwrite(elf_buf, 1, elf_size, f); fclose(f); }
         printf("ctx=%d txn_words=%zu elf=%u -> %s\n", L, nw, elf_size, fname);
+        free(elf_buf);
+    }
+    // ---- lm_head ELF (once) ----
+    {
+        npu_sequence seq(device_npu2);
+        qseq->gen_lm_head_seq(&seq, 0, 0);
+        seq.cmds2seq();
+        auto [ptr, nw] = seq.dump();
+        char* elf_buf = nullptr;
+        uint32_t elf_size = aiebu_assembler_get_elf(
+            aiebu_assembler_buffer_type_blob_instr_transaction,
+            (const char*)ptr, (size_t)(nw * sizeof(uint32_t)), NULL, 0,
+            (void**)&elf_buf, NULL, 0, "", "", NULL, 0);
+        if (elf_size) {
+            char fname[256];
+            snprintf(fname, sizeof(fname), "%s/moe_lm_head.elf", outdir.c_str());
+            FILE* f = fopen(fname, "wb");
+            if (f) { fwrite(elf_buf, 1, elf_size, f); fclose(f); }
+            printf("lm_head txn_words=%zu elf=%u -> %s\n", nw, elf_size, fname);
+        } else {
+            fprintf(stderr, "lm_head aiebu failed\n");
+        }
         free(elf_buf);
     }
     free(seq_mem);
