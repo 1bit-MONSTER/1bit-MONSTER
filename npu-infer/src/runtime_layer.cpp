@@ -348,6 +348,12 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             fclose(f);
         }
     }
+    if (const char* cd = getenv("RT_CLEAN_DUMP")) {
+        char cf[512];
+        snprintf(cf, sizeof(cf), "%s_pre_ctx%d.bin", cd, ctx_len);
+        FILE* fcp = fopen(cf, "wb");
+        if (fcp) { bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0); fwrite(bo_act_->map(), 1, 2048, fcp); fclose(fcp); }
+    }
     for (int L = 0; L < cfg_.num_layers; L++) {
         xrt::run run(*layer_kernels_[ctx_len]);
         uint32_t v0 = 3, v1 = 0, v2 = 0;
@@ -396,6 +402,16 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
                 fclose(f);
             }
         }
+    }
+    // clean per-forward dump (RT_CLEAN_DUMP): act + layer-0 kv after the layers
+    if (const char* cd = getenv("RT_CLEAN_DUMP")) {
+        char cf[512];
+        snprintf(cf, sizeof(cf), "%s_act_ctx%d.bin", cd, ctx_len);
+        FILE* fca = fopen(cf, "wb");
+        if (fca) { bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0); fwrite(bo_act_->map(), 1, 2048, fca); fclose(fca); }
+        snprintf(cf, sizeof(cf), "%s_kv_ctx%d.bin", cd, ctx_len);
+        FILE* fck = fopen(cf, "wb");
+        if (fck) { kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 33554432, 0); fwrite(kv_bos_[0]->map(), 1, 33554432, fck); fclose(fck); }
     }
     // lm_head
     if (kern_lmhead_) {
