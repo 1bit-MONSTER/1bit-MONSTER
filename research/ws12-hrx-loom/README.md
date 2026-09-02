@@ -1875,6 +1875,69 @@ RESOLVED in-session (fa0 build attempt, part 1):
   attention mms ~8.5 ms — collapsing ~5 dispatches/layer of tiny f16
   kq/kqv mms into one fused dispatch per layer is the target.
 
+RESOLVED in-session (fa0 build attempt, part 2 — kernel written, CPU-verified
+CORRECT, blocked on two AMDGCN codegen constraints; full state preserved):
+- The full algorithm body was written and iterated to a working kernel
+  (~270 lines, snapshot at /tmp/fa0_kernel_snapshot.loom + probe at
+  /tmp/probe_fa0_dev.cpp). It computes per-wg (n,h,s): stage q[h,n,:] to LDS,
+  score dots over kv (256-lane chunks) reading k f16 global + qL LDS,
+  +mask, LDS softmax (reduce maxnumf/addf per soft_max_f32.loom), pL[kv]
+  normalized in LDS, then 128 d-lanes accumulate out[d] = sum_kv
+  pL[kv]*v[hg,kv,d] and write dst row (h*D+d), col n.
+- CORRECTNESS PROVEN against a CPU reference in a standalone driver
+  (/tmp/probe_fa0_dev.cpp): bit-exact (max diff 0.0) at D=128 KV=256
+  N=2 H=16 with causal masks and GQA — whenever the kernel compiles.
+- Discovery 1 (the "garbage output" root cause): the kernel's
+  kernel.launch.config is AUTHORITATIVE over the host dispatch grid — the
+  fa0 dispatcher sets config.workgroup_count (N,H,S) but a launch.config
+  of workgroups(1,1,1) runs ONE workgroup (only (n=0,h=0) computed;
+  everything else unwritten). Fix: the grid must come from compile-time
+  values in the def — the kernel def now declares
+  @hrx2.shape.flash_attn_fa0.{N,H,S} jit configs and computes
+  workgroups(N,H,S); the fa0 plan maker (ggml-hrx2.cpp
+  make_flash_attn_fa0_plan) emits those config bindings + cache-key terms,
+  and validate_hrx2_catalog.py's accepted-source list was extended with
+  the six fa0 sources (shape.flash_attn_fa0.{D,KV,N,H,H_KV,S,ratio}).
+  Route abi: binding_count 6, parameter_count 58 (52 scalar + 6 buffer),
+  constant_byte_length 208; specialization jit_config with the N/H/S/ratio
+  bindings + a dummy workgroup_size binding.
+- Discovery 2 (ABI packing on AMDGCN): launch args pack 1 word (4 B)
+  EACH on the amdgpu target (module_abi.c's 2-words-for-64-bit is the
+  SPIRV path) — the 208-B host struct = 52 one-word args = 22 int64
+  fields as (lo index, hi dummy i32) pairs + the 8-word scalar tail. The
+  route abi check compares route vs export (bindings/parameters/constants)
+  and must match exactly; the dispatch additionally requires route
+  constant_byte_length == sizeof(struct) == 208.
+- Discovery 3 (H_KV config): GQA head mapping hg = h/(H/H_KV) must use
+  COMPILE-TIME H/H_KV (jit configs) — dividing by runtime launch args
+  trips AMDGCN 'amdgpu.divisor.positive_u32'. The ratio should be passed
+  as its own config (plan maker computes H/H_KV).
+- BLOCKER (unresolved): at H_KV=1 the kernel compiles and runs CORRECTLY
+  (verified). At H_KV=2 (real GQA, e.g. qwen 3B: H=16, H_KV=2, ratio 8)
+  the AMDGCN backend rejects an 'index.shrui' with
+  'low_register_unit_count requires count 1' — a 64-bit index division or
+  shift whose operands/result cannot be placed in the required low SGPR
+  register class. The surviving division is the GQA head mapping and/or
+  the stride/2,/4 element conversions; the failure is config-dependent
+  (H_KV=1 folds the division away) and appears/disappears with kernel
+  structure changes (config-grid, compare-sum loops, workload signatures
+  all tried). Workload-signature grids (kernel.def @name(%gN...)) keep
+  symbolic topology ranges that conflict with per-dimension assumes.
+- NEXT STEPS (focused continuation): (a) eliminate ALL index divisions in
+  the device body — pass element strides (already /2-/4'd) from the host
+  by pre-dividing in the plan/dispatch, and replace hg = h/ratio with a
+  grid restructure (dispatch grid y = H_KV, kernel loops the ratio q-heads
+  internally with h = hg*ratio + qsub — pure multiply, no division, and k/v
+  read once per kv-head instead of ratio times); (b) or investigate the
+  loom AMDGCN div lowering (integer.py _index_div_power_of_two_sgpr_rule)
+  for why workgroup.id-derived dividends fail the low-SGPR guard. The
+  kernel logic itself needs no further changes. All state preserved:
+  /tmp/fa0_kernel_snapshot.loom, /tmp/probe_fa0_dev.cpp,
+  /tmp/fa0_keep.loom, /tmp/fa0_full.loom; fork restored pristine at
+  8df3330 (all fa0 catalog/plan/validator edits reverted and documented
+  above for re-application).
+
+### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
