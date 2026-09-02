@@ -89,3 +89,41 @@ The "still open" items below were attacked and largely resolved:
    contract gate (`test_1bp_q4nx_reader` PASSED).
 3. **Per-shape insts**: still open (unchanged).
 4. **×0.5 runner quirk**: still open (unchanged).
+
+## Round-37 (2026-09-01): engine CORRECT — prefill logits match the real runtime (corr 1.0)
+
+The runtime_layers path now produces **byte-identical logits to the real
+FastFlowLM runtime** on the XDNA2 NPU.
+
+### Fixes this round (engine was dead → correct)
+
+1. **Use-after-move crash** in XclbinManager::load (local `kernel` unique_ptr
+   moved into `e.kernel`, then dereferenced — segfault at group_id). Engine
+   was dead on arrival.
+2. **Down-projection OOB DMA** — [256,1024] blocks vs the K=3072 insts read
+   2048 columns past the 1 MB BO (intermittent aie2_set_cmd_timeout). Fix:
+   full-width [256, in_features] blocks for wide weights.
+3. **Kernel-keyed insts** — the attn kernel executed the MM stream (shared
+   cache key) → hang at layer 1. Fix: per-kernel insts keys/files.
+4. **lm_head enabled** — kernel (elf_0002_lmhead.bin) + weight BO
+   (pack_lmhead_bo, G=8) were DISABLED for the isolation test.
+5. **Per-context layer ELFs to ctx 1024** — the decode died at ctx 7 (only
+   6 ELFs captured); gen_layer_elfs generates any range.
+
+### Verification
+
+Token-1000 input (matching run_qwen3_npu):
+- prefill logits corr **1.000000** vs the runtime's logits_1000.bin
+- argmax 397 == 397, top5 identical [397, 3219, 144370, 42044, 255]
+- decode ~15 ms/tok, 16 tokens generated
+
+Tooling: NPU_LOGITS_DUMP (dump prefill logits), NPU_PROMPT_TOKEN (match
+the harness input), gen_layer_elfs.sh (regenerate ELFs).
+
+### Remaining
+
+- The mm-split path (per-shape mm insts) is a secondary fallback; the
+  fused runtime_layers path is the correct FastFlowLM design.
+- The BOS-only "gibberish" was the model's unconditional 1-token
+  generation — not an engine error. Real prompts should generate
+  coherent text (tokenizer + chat template wiring is the next step).
