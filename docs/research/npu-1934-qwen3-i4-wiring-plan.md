@@ -448,3 +448,29 @@ Two independent tests gave the definitive answer this round:
 - `next_token` went 1 → 68930 (still wrong; float=760). The D GEMM now consumes real-but-wrong h2.
 
 **Next (deep kernel arithmetic, not routing):** fix the fold metadata that matmul_i4 stashes in C1 rows 1-4 so `silu_pair_q22` doesn't saturate — verify against the CPU-gated `silu_pair_q22` bit-exact reference (`silu_quant.h`) and the float-path h2 in the H2DBG probe. This is the remaining #1934 blocker.
+
+### Clarification: C1_TEST `[FUSED_H2]` was self-referential, not a validation
+
+The `FUSED_H2` probe (`h2corrGt=1.0, h2maeGt=0.0`) is NOT proof of a correct h2. In
+`fused_use` mode the engine sets `fuse_su_b = h2h/qn_s` (from bo4) at line ~3016
+BEFORE the C1_TEST block runs, so the probe's `h2gt` (line ~3118, `fuse_su_b*qn_s`)
+equals bo4 itself — zero-vs-zero when the writeback was dead, bo4-vs-bo4 now. The
+only independent reference is the H2DBG block's fresh `FLM_GO(cg)` recompute.
+
+**Definitive remaining blocker (verified on live NPU):**
+- Routing is FIXED (bo4 now populates; const-ramp lands exactly).
+- Silu VALUES are still wrong: `mae≈106`, heavily saturated to ±127.
+- `[FUSED_C1e]` shows the raw GU C1 in bo2 is **uncorrelated** with the host
+  Am·B_shadow reconstruction (`c1corr≈0.009`), so the GU GEMM C1 itself is wrong
+  on the live NPU (not just the on-core silu — the zaya-verified corr 0.9993 was
+  the kernel in isolation, not the engine-fed path).
+- Root causes to chase (in order): (1) the A/B fed to `matmul_i8_i32_i4` in the
+  engine differs from the zaya-verified contract (scale/layout/quant), given the
+  C1 doesn't match the host shadow; and/or (2) the known on-core silu
+  miscompilation (#1836), which the `NPU_FUSED_I4_CPUSILU` host route was built
+  to bypass.
+
+**Next:** fix the engine-fed GU GEMM C1 so bo2 matches the Am·B_shadow
+reconstruction on the live NPU, then the host-CPUSILU route will produce a
+correct h2. The default float decode is confirmed unaffected (760) by the
+routing fix.
