@@ -1405,6 +1405,41 @@ batteries on 3B/7B/MiniCPM4 (the one apparent MiniCPM4 "DIFF" was a
 stats-line extraction artifact, confirmed identical after cutting at
 "[ Prompt"); zero JIT failures in llama-bench and llama-cli.
 
+### Round 25p — r16x8t table-scatter fused mm: MoE grouped prefill (30B pp32 +33%, fork 775af44)
+
+The MoE boulder: round 25o tripled dense prefill but MoE models barely
+moved — GLM-4.7 and Qwen3-Coder-30B route expert mms through the grouped
+path (`dispatch_mul_mat_id_q4nx` → `slice_grouped`), which used
+`mul_mat_q4nx_fused_tbl_tiled` at 1 row/wg with i32 table scatter. GLM
+pp32 trace: **9,453 grouped dispatches per graph** (vs 652 dense), each
+~80 µs serialized — groups are small (rows 1536/2048, cols 2..7) so every
+group launches `rows` workgroups for a handful of columns.
+
+New kernel `hrx2_mul_mat_q4nx_fused_f32_r16x8t`: the r16x8 structure
+(16 rows/wg, 256 lanes = 16 rows × 16 k-blocks, per-row scratch reduction)
+plus the fused tbl's table machinery — the 8 output columns come from i32
+`src1_cols`/`dst_cols` tables (`src1_cols < src1_cols_count`, `dst_cols <
+nselected·ntokens`, truthful assumes copied from tbl_tiled). 7 bindings.
+Dispatched from `slice_grouped` when rows % 16 == 0.
+
+Two real bugs surfaced while landing it:
+1. **phase-2 reduction index**: `lane_part = row_reduce*16 + kk2`
+   (kb-major) but lanes are row-major (`lane = kb*16 + rl`) → r16x8t
+   produced garbage on GLM until fixed to `row_reduce + kk2*16`.
+2. **route binding validation**: sources must be `shape.mul_mat_id.*`
+   (whitelist rejects bare shape.ntokens), and `src1_cols_count` must NOT
+   be a route binding — the dispatch supplies that config key directly.
+
+verified: 30B MoE pp32 54.2 → **70.5-71.9** (+30-33%, consistent across
+runs), GLM 53.3 → **64.7** (+21%, box-noise dependent 59.6-65.8), 3B dense
+229.7 (unchanged, r16x8 still serves dense). Correctness: 14-16 token
+greedy identical vs `GGML_HRX2_NO_R16X8T=1` on GLM (gravity / Moby Dick /
+capital) and 30B (Alexandria / Pythagorean / Tokyo). The 30B poem-prompt
+garbage ("Lines Lines abcde…" / "荚荚荚…") is a PRE-EXISTING model
+degeneration — the 25o baseline produces the same "Lines Lines abcde"
+garbage — whose chaotic divergence differs by summation order between the
+two kernels, not a correctness regression.
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
