@@ -3000,6 +3000,38 @@ struct Bf16Ctx {
                                 *cg_fuse_bo[l], *cg_fuse_dbo[l], *cg_fuse_h2[l],
                                 fh, 1, H, ag);
                             fr.wait();
+                            // Issue #1934 / #1836: the on-core silu_quant_i8_fused_i4
+                            // is mis-compiled on this aie2p build (correct g/u but wrong
+                            // h for p>=1), so the host-CPUSILU fallback computes h2 from
+                            // the raw GU C1 in bo2 (now correct after the bf16_pair pack
+                            // fix) using the float-analog silu_quant_i8, and writes it to
+                            // bo4 for the D GEMM. Env NPU_FUSED_CPUSILU=1 selects it.
+                            if (getenv("NPU_FUSED_CPUSILU") && atoi(getenv("NPU_FUSED_CPUSILU")) == 1) {
+                                cg_fused_i4->bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                                const int32_t* c1m = cg_fused_i4->Cm;
+                                const int N2 = 2 * IM;   // N_GU (gate+up interleaved)
+                                // Per-GU-col fold S' = ag*S_col (gate) / ag*qn_s*S_col (up).
+                                std::vector<float> fold(N2);
+                                for (int j = 0; j < N2; j++)
+                                    fold[j] = (j & 1) ? ag * qn_s * cg_fuse_scl[l][j]
+                                                      : ag * cg_fuse_scl[l][j];
+                                int8_t* h2o = (int8_t*)cg_fuse_h2[l]->map();
+                                std::vector<int32_t> C1row(N2);
+                                std::vector<int8_t> h2row(IM);
+                                for (int r = 0; r < 8; r++) {
+                                    // Microtiled C1: element (r, c) of chunk kc at
+                                    // kc*1024 + (c/8)*64 + r*8 + (c%8) -> row-major.
+                                    for (int p = 0; p < IM; p++)
+                                        for (int t = 0; t < 2; t++) {
+                                            int j = 2 * p + t, kc = j >> 7, c = j & 127;
+                                            C1row[j] = c1m[kc * 1024 + (c >> 3) * 64 + r * 8 + (c & 7)];
+                                        }
+                                    silu_quant_i8(C1row.data(), fold.data(), h2row.data(), IM);
+                                    for (int p = 0; p < IM; p++)
+                                        h2o[(size_t)r * IM + (p >> 3) * 8 + (p & 7)] = h2row[p];
+                                }
+                                cg_fuse_h2[l]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                            }
                             // Read the kernel's own bo4 h2 (the correct fused silu
                             // output) — test whether the deeper H2 fifo makes the
                             // standalone writeback fire.
@@ -3086,6 +3118,10 @@ struct Bf16Ctx {
                                 const int32_t* mq = (const int32_t*)(dummy.data() + GuI4Pack::META_BASE);
                                 fprintf(stderr, "[FOLD l=%d] host-pad: foldg=mq[0]=%d foldu=mq[1]=%d boundg=mq[0]=%d boundu=mq[1]=%d Q=mq[0](ki3)=%d\n",
                                         l, mq[0], mq[1], mq[0], mq[1], mq[0]);
+                                // Kernel C1 gate/up pre-activation (microtiled row 0, pair 0: cols 0/1)
+                                // vs float-path GU pre-activation (fuse_gt_b). Calibrates Q/shG.
+                                fprintf(stderr, "[FOLD l=%d] kernC1: gate=cm[0]=%d up=cm[1]=%d | floatGU: gate=fgt[0]=%.4f up=fgt[IM]=%.4f ag=%.6g\n",
+                                        l, cm[0], cm[1], fuse_gt_b[0], fuse_gt_b[IM], ag);
                                 fflush(stderr);
                             }
                         } else {

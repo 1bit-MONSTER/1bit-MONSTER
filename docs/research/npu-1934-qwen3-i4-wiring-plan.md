@@ -550,3 +550,61 @@ fold delivery are now all CORRECT. The remaining #1934 blocker is the silu's
 Q/shG calibration for the dense qwen3-0.6b scale envelope — deep fixed-point
 tuning (make Q smaller, e.g. ~11, so shG≈0 and the gate survives), verified
 against the float-path h2gt and the CPU silu gate.
+
+### Round-190: silu-Q is internally consistent but h2 still mismatch — qn_s vs 2^Q scale misalignment
+
+Added kernC1/floatGU diag (NPU_FUSED_DEBUG+HB2DBG). For l=0 pair 0:
+- kernel C1: gate=2505, up=87465
+- float GU:  gate=0.8881, up=-0.5444
+- foldg=114, foldu=2107, Q=21, shG=10, shU=14
+
+silu_pair_q22(2505, 87465, foldg, foldu, boundg, boundu, 21,10,14) = 6 —
+EXACTLY the kernel's observed h2h[0]=6. So the kernel's fixed-point is
+INTERNALLY consistent; Q=21/shG=10 is what produces h2=6.
+
+But the float path gives h2gt[0]=-8 (silu(0.8881)*(-0.5444)*qn_s). The
+mismatch (6 vs -8, and the sign flips on many cols) comes from the fold's
+2^Q not being cancelled by shG/shU against qn_s: the C1*fold product
+overflows (up=87465, foldu=2107 -> up*fold ~1.8e8, saturating at Q<=19) but
+survives only at Q=21 where shG=2^10 collapses the gate to ~0 the guard keeps.
+
+The root issue is that the silu's fixed point mixes the GU pre-activation
+scale (C1*fold, carries 2^Q) with the h2 output scale (qn_s, the D input).
+The two are calibrated independently, so h2 comes out self-consistent but
+off from the float reference by an arbitrary (column-dependent) factor,
+flipping tokens. This is the deep silu fixed-point redesign that stays
+multi-session.
+
+Status (accumulated, all verified on live NPU): writeback routing (h2 arg),
+B'' dequant (bf16_pair pack), and fold delivery are all CORRECT. Remaining
+= silu fixed-point Q/qn_s scale alignment, which needs a joint
+C1-scaled-by-ag/gn_s calibration against the float-path h2gt, OR using the
+proven host-CPUSILU route (read bo2 raw C1, silu on host, write bo4) which
+is exactly what NPU_FUSED_I4_CPUSILU already implements for the MoE path.
+
+### Round-190b: host-CPUSILU confirms the C1 (GU GEMM) itself is wrong, not the silu
+
+Wired the host-CPUSILU route into the dense fused_use path (NPU_FUSED_CPUSILU=1):
+read the raw GU C1 (bo2/bC), compute h2 on host with silu_quant_i8
+(fold=ag*S_col, the float-analog), write bo4 for the D GEMM. It builds green
+and runs (next_token 105316->88673), but the host-silu on the kernel C1 gives
+nearly the SAME h2 as the on-core silu (mae 98.875 vs 98.885) — because both
+read the SAME wrong C1.
+
+Host-silu on kernel C1 pair 0 (l=0): g=2505*ag*S_col=0.136, u=87465*ag*qn_s*S_col=109,
+h=7.895, h2=182 (saturates). Float ref: g=0.888, u=-0.544, h2gt=-8. The kernel
+C1 up=87465 is ~1000x too large and the gate=2505 is ~6.5x too small vs the
+float GU — a SCALE mismatch in the kernel's GU GEMM C1 accumulator, independent
+of the silu and of B'' (both host-silu and on-core-silu agree on the wrong C1).
+
+**Definitive root cause of the remaining #1934 mismatch:** the engine-fed GU
+GEMM C1 (from matmul_i8_i32_i4) does not match the float GU in either
+magnitude or per-column scale — the A*B accumulation (Am·B_shadow) and/or the
+fold's per-column scale applied to it are inconsistent with the float W. This
+is separate from (and now all of) the routing, the bf16_pair B'' layout, and
+the silu, which are corrected.
+
+Next: reconcile the kernel C1 magnitudes with the float GU (check whether the
+kernel A (Am) or the fold/scale per column is wrong, and whether the D-GEMM
+input scale qn_s should match ag*S_col). The host-CPUSILU route is committed
+as the correct-by-construction path once the C1 is fixed.
