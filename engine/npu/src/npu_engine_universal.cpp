@@ -909,6 +909,10 @@ int main(int argc,char**argv){
     I8Ctx cq,co,cg,cd;
     std::unique_ptr<I8Ctx> cu_ptr;
     std::unique_ptr<I8Ctx> cg_fused_i4;   // env-gated #1934 int4 fused GU->SiLU (dense FFN)
+    // #1934: per-layer fused GU (P1) weight BO + h2 (C1->silu) scratch BOs.
+    std::vector<std::unique_ptr<xrt::bo>> cg_fuse_bo, cg_fuse_h2;
+    std::vector<std::vector<float>> cg_fuse_scl;   // per-layer S_col (amax pass)
+    std::vector<std::vector<int8_t>> cg_fuse_row;  // per-layer B_shadow (host amax)
     // Hybrid FLM contexts (only used when --use-flm-xclbin and xclbin found)
     std::unique_ptr<HybridFlmCtx> hcq, hco, hcg, hcd, hcu_ptr;
     cq.MD=XM;cq.KD=cfg.xclbin_qkv_k;cq.ND=cfg.xclbin_qkv_n;
@@ -1368,6 +1372,24 @@ struct Bf16Ctx {
             int t2=gr+ur;std::vector<float>w2((size_t)H*t2);
             transpose_pack(gw,GUOUT,H,w2.data(),t2,0);transpose_pack(uw,GUOUT,H,w2.data(),t2,GUOUT);
             FLM_PACKB(cg,l,w2.data(),H,t2,gsc[l]);
+            // #1934 env-gated int4 fused GU pack (B'' via raw-Q4NX + GuI4Pack).
+            if (cg_fused_i4 && cg_fused_i4->isReady()) {
+                if ((int)cg_fuse_bo.size() <= l) { cg_fuse_bo.resize(l+1); cg_fuse_h2.resize(l+1); cg_fuse_scl.resize(l+1); cg_fuse_row.resize(l+1); }
+                if (!cg_fuse_bo[l]) cg_fuse_bo[l] = cg_fused_i4->make_fused_weight_bo_i4(dev, H, 2*IM);
+                if (!cg_fuse_h2[l]) cg_fuse_h2[l] = cg_fused_i4->make_scratch_bo(dev, (size_t)8 * H);
+                int gi8r = gr/32, ui8r = ur/32;
+                auto rg = read_q4nx_raw(i8p(0), gp[l], gi8r, H);
+                auto ru = read_q4nx_raw(i8p(0), up[l], ui8r, H);
+                RawQ4Tensor raw_gu; raw_gu.rows = 2*IM; raw_gu.cols = H;
+                raw_gu.q4.assign((size_t)(2*IM)*H, 0);
+                raw_gu.scl.assign((size_t)(2*IM)*(H/32), 0.0f);
+                raw_gu.zp.assign((size_t)(2*IM)*(H/32), 0.0f);
+                for (int rr = 0; rr < IM; rr++) { memcpy(&raw_gu.q4[(size_t)rr*H], &rg.q4[(size_t)rr*H], sizeof(int8_t)*H); }
+                for (int rr = 0; rr < IM; rr++) { memcpy(&raw_gu.q4[(size_t)(IM+rr)*H], &ru.q4[(size_t)rr*H], sizeof(int8_t)*H); }
+                for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)rr*(H/32)+gg]=rg.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)rr*(H/32)+gg]=rg.zp[(size_t)rr*(H/32)+gg]; }
+                for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)(IM+rr)*(H/32)+gg]=ru.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)(IM+rr)*(H/32)+gg]=ru.zp[(size_t)rr*(H/32)+gg]; }
+                cg_fused_i4->packB_into_fused_i4(*cg_fuse_bo[l], raw_gu, 0, H, IM, cg_fuse_scl[l], cg_fuse_row[l]);
+            }
         }free(gw);free(uw);
         }
         if (dp[l]) {
