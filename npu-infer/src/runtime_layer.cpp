@@ -108,9 +108,9 @@ bool RuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelCon
     bo_fnorm_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
 
-    // lm_head kernel (context-independent ELF) — was DISABLED for the
-    // isolation test; now enabled so get_logits returns real vocab logits.
-    if (!lmhead_elf_path_.empty()) {
+    // lm_head kernel (context-independent ELF)
+    if (getenv("RT_NO_LMHEAD")) { /* disabled for isolation */ }
+    else if (!lmhead_elf_path_.empty()) {
         std::vector<uint8_t> elfb;
         if (read_file(lmhead_elf_path_.c_str(), elfb)) {
             try {
@@ -260,9 +260,22 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
     // RoPE table for the current position (pos = ctx_len-1), every layer
     for (int L = 0; L < cfg_.num_layers; L++)
         update_rope_i6(*i6_bos_[L], ctx_len - 1, 1e6f);
+    // per-ctx kv dump for the layout diff (RT_KV_DUMP_DIR)
+    if (const char* kd = getenv("RT_KV_DUMP_DIR")) {
+        char kf[512];
+        snprintf(kf, sizeof(kf), "%s/kv_ctx%d.bin", kd, ctx_len);
+        FILE* fk = fopen(kf, "wb");
+        if (fk) {
+            kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 33554432, 0);
+            fwrite(kv_bos_[0]->map(), 1, 33554432, fk);  // full 32MB
+            fclose(fk);
+        }
+    }
     if (getenv("RT_DUMP_I6")) {
         FILE* fi6 = fopen(getenv("RT_DUMP_I6"), "wb");
         if (fi6) { i6_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0); fwrite(i6_bos_[0]->map(), 1, 768, fi6); fclose(fi6); }
+        FILE* fi27 = fopen("/tmp/eng_i6_L27.bin", "wb");
+        if (fi27) { i6_bos_[27]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0); fwrite(i6_bos_[27]->map(), 1, 768, fi27); fclose(fi27); }
     }
     if (getenv("RT_DUMP_PREACT")) {
         FILE* fpa = fopen(getenv("RT_DUMP_PREACT"), "wb");
@@ -335,23 +348,8 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             fclose(f);
         }
     }
-    // TEMP: fresh kernel per forward (test)
-    std::string elfpath = elf_dir_ + "/layer_ctx" + std::to_string(ctx_len) + ".elf";
-    std::vector<uint8_t> elfb2;
-    xrt::ext::kernel* use_kern = nullptr;
-    if (read_file(elfpath.c_str(), elfb2)) {
-        try {
-            xrt::elf elf2((const char*)elfb2.data(), elfb2.size());
-            xrt::module mod2(elf2);
-            auto k2 = std::make_unique<xrt::ext::kernel>(*hwctx_, mod2, "MLIR_AIE");
-            use_kern = k2.get();
-            layer_kernels_[ctx_len] = std::move(k2);
-        } catch (...) { use_kern = layer_kernels_[ctx_len].get(); }
-    } else use_kern = layer_kernels_[ctx_len].get();
-    int npass = getenv("RT_2PASS") ? 2 : 1;
-    for (int pass = 0; pass < npass; pass++) {
     for (int L = 0; L < cfg_.num_layers; L++) {
-        xrt::run run(*use_kern);
+        xrt::run run(*layer_kernels_[ctx_len]);
         uint32_t v0 = 3, v1 = 0, v2 = 0;
         run.set_arg(0, (const void*)&v0, sizeof(v0));
         run.set_arg(1, (const void*)&v1, sizeof(v1));
@@ -399,7 +397,6 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             }
         }
     }
-    }  // pass loop
     // lm_head
     if (kern_lmhead_) {
         xrt::run run(*kern_lmhead_);
