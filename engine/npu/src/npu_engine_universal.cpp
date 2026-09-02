@@ -908,6 +908,7 @@ int main(int argc,char**argv){
     // Legacy I8Ctx pointers (always available, fallback if FLM xclbin not found)
     I8Ctx cq,co,cg,cd;
     std::unique_ptr<I8Ctx> cu_ptr;
+    std::unique_ptr<I8Ctx> cg_fused_i4;   // env-gated #1934 int4 fused GU->SiLU (dense FFN)
     // Hybrid FLM contexts (only used when --use-flm-xclbin and xclbin found)
     std::unique_ptr<HybridFlmCtx> hcq, hco, hcg, hcd, hcu_ptr;
     cq.MD=XM;cq.KD=cfg.xclbin_qkv_k;cq.ND=cfg.xclbin_qkv_n;
@@ -961,6 +962,24 @@ int main(int argc,char**argv){
         if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){fprintf(stderr,"FAIL O\n");return 1;}
         if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL GU\n");return 1;}}
         if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){fprintf(stderr,"FAIL D\n");return 1;}
+        // #1934: env-gated int4 fused GU->SiLU (GUSILU_i4) for the DENSE FFN
+        // (qwen3-0.6b). Kernel contract silicon-verified (zaya 0.999336); this
+        // inits the fused P1 context so the dense GU->host-SiLU->D can be
+        // swapped for the single GU+SiLU launch. Opt-in (NPU_QWEN_I4=1) until
+        // its per-weight fused corr gate passes. Geometry pinned from the p1_i4
+        // generator (-M 8 -K H -N_GU 2*IM -N_D H): P1 KD=H ND=H bC_nd=N_GU.
+        if (!cfg.gu_split && getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1) {
+            cg_fused_i4 = std::make_unique<I8Ctx>();
+            cg_fused_i4->MD = 8; cg_fused_i4->KD = H; cg_fused_i4->ND = H;
+            cg_fused_i4->bC_nd = 2 * IM;   // N_GU (silu'd GU output width)
+            if (!cg_fused_i4->init(dev, xp("GUSILU_i4", H, 2 * IM).c_str(),
+                                   ip("GUSILU_i4").c_str(), 4, NC)) {
+                cg_fused_i4.reset();
+                fprintf(stderr, "QWEN_I4 fused ctx init FAILED (fallback to int8 GU+D)\n");
+            } else {
+                fprintf(stderr, "QWEN_I4 fused ctx ready (GUSILU_i4, KD=%d N_GU=%d)\n", H, 2 * IM);
+            }
+        }
         if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!init_i8(*cu_ptr,"U",cfg.xclbin_u_k,cfg.xclbin_u_n)){fprintf(stderr,"FAIL U\n");return 1;}}
         }
     }
