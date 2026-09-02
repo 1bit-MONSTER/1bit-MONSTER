@@ -79,3 +79,13 @@ byte-for-byte (100.00%). The k-orders + crosses are fully characterized
 (see the commit message). The gate_proj/qkv/share_*/router/norms rows
 (100963+) follow the same 4736-slice pattern with their own k-orders —
 the last mapping step before the engine integration.
+
+## UPDATE 4 — gate_proj k-order + full-BO map
+
+- rows 100963+ = self_attn.gate_proj (8.9 MB): the rows = [3912+4736k]
+  with k-order [232,225,233,226,234,227,...] = the A/B pairs (a, a-7)
+  interleaved (the collaborator's out[o]=trimmed[o//2+8*(o%2)] family).
+- the down's ks continue past 32767 to the tensor end (35426 rows total);
+  the up/gate truncate at 32767 (their regions are the desc-aligned 32768
+  rows). The layer BO = [up+gate (65536 rows incl. crosses 0/32)][ssm_out
+  cross + down (35426 rows)][gate_proj][qkv/share/router/norms].
