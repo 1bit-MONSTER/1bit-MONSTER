@@ -50,24 +50,30 @@ def _slug(v: str) -> str:
     return s or "model"
 
 
-def _meta(model_id, arch, family, desc):
-    title = f"The engine now runs {family or arch}"
+def _meta(model_id, arch, family, desc, mode="covered"):
+    fam = family or arch
+    if mode == "announcement":
+        title = f"A new significant architecture arrived: {fam}"
+        slug = f"1bit-post-announcement-{_slug(model_id)}"
+    else:
+        title = f"The engine now runs {fam}"
+        slug = f"1bit-post-significant-{_slug(model_id)}"
     jsonld = {
         "@context": "https://schema.org", "@type": "BlogPosting",
         "headline": f"{title} | 1bit.MONSTER",
         "description": desc,
-        "url": f"{SITE_URL}/1bit-post-significant-{_slug(model_id)}.html",
-        "mainEntityOfPage": f"{SITE_URL}/1bit-post-significant-{_slug(model_id)}.html",
+        "url": f"{SITE_URL}/{slug}.html",
+        "mainEntityOfPage": f"{SITE_URL}/{slug}.html",
         "image": OG_IMG,
         "datePublished": "2026-09-02", "dateModified": "2026-09-02",
         "author": AUTHOR, "publisher": AUTHOR,
     }
-    return title, json.dumps(jsonld, separators=(",", ":"))
+    return title, slug, json.dumps(jsonld, separators=(",", ":"))
 
 
-def render(model_id, arch, family, date, desc, body_paras, style, nav, foot):
-    title, jsonld = _meta(model_id, arch, family, desc)
-    fname = f"1bit-post-significant-{_slug(model_id)}.html"
+def render(model_id, arch, family, date, desc, body_paras, style, nav, foot, mode="covered"):
+    title, slug, jsonld = _meta(model_id, arch, family, desc, mode=mode)
+    fname = f"{slug}.html"
     body = "\n".join(f"        <p>{p}</p>" for p in body_paras)
     html = f"""<!doctype html>
 <html lang="en">
@@ -139,40 +145,62 @@ def main():
     ap.add_argument("--family", default=None, help="family name for the title, e.g. DeepSeek V4")
     ap.add_argument("--date", default="2026-09-02")
     ap.add_argument("--desc", default=None)
+    ap.add_argument("--mode", choices=["announcement", "covered"], default="covered",
+                    help="announcement = arrival detected, support in progress; "
+                         "covered = the engine now maps it")
     args = ap.parse_args()
 
     models = json.loads(STATE.read_text()) if STATE.exists() else {}
-    if args.model in models:
-        print(f"[sigpost] already generated a post for {args.model} ({models[args.model]}) — skip")
+    key = f"{args.mode}:{args.model}"
+    if key in models:
+        print(f"[sigpost] already generated a {args.mode} post for {args.model} "
+              f"({models[key]}) — skip")
         return 0
 
     family = args.family or args.arch
-    desc = args.desc or (f"A significant new model architecture arrived — {args.arch} "
-                         f"(example: {args.model}) — and the engine now maps it to a token. "
-                         f"This post scaffolds the entry; details are a draft.")
-    body = [
-        f"<b>{family}</b> is a <b>significant architecture arrival</b> — "
-        f"a major-family or vision/multimodal model the engine did not previously map. "
-        f"Example checkpoint on HuggingFace: <span class=\"mono\">{args.model}</span> "
-        f"(stripped class <span class=\"mono\">{args.arch}</span>).",
-        "The engine maps it to an architecture token, so the whole class now resolves to one binary — "
-        "the census claim stays at 100% coverage.",
-        "<b>Draft scaffold:</b> fill in what the architecture actually does, kernel/backend support, "
-        "and decode-validation status before publishing. This entry exists so the blog updates the way "
-        "the Lemonade SDK loop does — a new post per significant arrival, not just a number change.",
-        "The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts "
-        "the alias, and this post is generated so the change is discoverable.",
-    ]
+    if args.mode == "announcement":
+        desc = args.desc or (f"A significant new model architecture just arrived — {family} "
+                             f"(example: {args.model}). The engine is on it: this is the "
+                             f"announcement, with support and decode validation in progress.")
+        body = [
+            f"<b>{family}</b> is a <b>significant architecture arrival</b> — a major-family or "
+            f"vision/multimodal model we don't fully map yet. "
+            f"Example checkpoint on HuggingFace: <span class=\"mono\">{args.model}</span> "
+            f"(stripped class <span class=\"mono\">{args.arch}</span>).",
+            "This is the announcement: the model exists, the engine is tracking it, and support + "
+            "decode validation are underway. When it lands, a follow-up post says so.",
+            "<b>Draft scaffold:</b> fill in what the architecture actually does and the "
+            "support/validation status before publishing. This entry exists so the blog updates the "
+            "way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.",
+        ]
+    else:
+        desc = args.desc or (f"A significant new model architecture arrived — {family} "
+                             f"(example: {args.model}) — and the engine now maps it to a token. "
+                             f"This post scaffolds the entry; details are a draft.")
+        body = [
+            f"<b>{family}</b> is a <b>significant architecture arrival</b> — "
+            f"a major-family or vision/multimodal model the engine did not previously map. "
+            f"Example checkpoint on HuggingFace: <span class=\"mono\">{args.model}</span> "
+            f"(stripped class <span class=\"mono\">{args.arch}</span>).",
+            "The engine maps it to an architecture token, so the whole class now resolves to one binary — "
+            "the census claim stays at 100% coverage.",
+            "<b>Draft scaffold:</b> fill in what the architecture actually does, kernel/backend support, "
+            "and decode-validation status before publishing.",
+            "The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts "
+            "the alias, and this post is generated so the change is discoverable.",
+        ]
 
     dry = os.getenv("CENSUS_DRY_RUN") == "1"
     tpl = TEMPLATE.read_text(encoding="utf-8")
     style, nav, foot = _carve(tpl)
-    fname, html = render(args.model, args.arch, family, args.date, desc, body, style, nav, foot)
+    fname, html = render(args.model, args.arch, family, args.date, desc, body, style, nav, foot,
+                         mode=args.mode)
     print(f"[sigpost] {'DRY-RUN ' if dry else ''}would write site/{fname} ({len(html)//1024} KB)")
     if dry:
         return 0
     (SITE / fname).write_text(html, encoding="utf-8")
-    models[args.model] = {"arch": args.arch, "family": family, "date": args.date, "file": fname}
+    models[key] = {"arch": args.arch, "family": family, "date": args.date, "file": fname,
+                   "mode": args.mode}
     STATE.write_text(json.dumps(models, indent=1, sort_keys=True))
     print(f"[sigpost] wrote site/{fname}")
     return 0
