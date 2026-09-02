@@ -157,6 +157,26 @@ extern "C" void _ZN3xrt3run5startEv(void* self) {
     for (auto& kv : g_run_args[(unsigned long)self])
         fprintf(g_log, "%d:%zu ", kv.first, kv.second);
     fprintf(g_log, "]\n");
+    // post-run dump of the kv BO (idx7, 32MB) — the runtime's KV write
+    if (getenv("CAP_POSTRUN_KV")) {
+        auto it = g_run_bo_ptrs.find((unsigned long)self);
+        if (it != g_run_bo_ptrs.end()) {
+            auto a7 = it->second.find(7);
+            if (a7 != it->second.end()) {
+                try {
+                    xrt::bo* bo = reinterpret_cast<xrt::bo*>(const_cast<void*>(a7->second));
+                    const uint8_t* p = (const uint8_t*)bo->map();
+                    if (p) {
+                        char fname[256];
+                        snprintf(fname, sizeof(fname), "%s/postrun_kv_%03d.bin", CAP_DIR, n);
+                        FILE* f = fopen(fname, "wb");
+                        if (f) { fwrite(p, 1, bo->size(), f); fclose(f); }
+                        fprintf(g_log, "POSTRUN_KV -> %s (%zu B)\n", fname, bo->size());
+                    }
+                } catch (...) {}
+            }
+        }
+    }
     // post-run dump of the act BO (idx3) — the layer's output written in-place
     if (getenv("CAP_POSTRUN_ACT")) {
         auto it = g_run_bo_ptrs.find((unsigned long)self);
@@ -227,7 +247,21 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
     fprintf(g_log, "RUNLIST %ld: execute\n", g_runlist_n);
     int n = 0;
     // ext::bo objects (the runtime's data/insts BOs) — dump the small ones
+    // plus the 32 MB kv BO (the runtime's per-layer KV cache)
     for (auto& kv : g_extbo_sizes) {
+        if (kv.second == 33554432 && getenv("CAP_RUNLIST_KV")) {
+            try {
+                const uint8_t* pm = (const uint8_t*)reinterpret_cast<xrt::bo*>(kv.first)->map();
+                if (pm) {
+                    char fname[256];
+                    snprintf(fname, sizeof(fname), "%s/runlist_kv_%03ld_%zx.bin",
+                             CAP_DIR, g_runlist_n, (size_t)kv.first);
+                    FILE* f = fopen(fname, "wb");
+                    if (f) { fwrite(pm, 1, kv.second, f); fclose(f); }
+                    fprintf(g_log, "RUNLIST_KV -> %s\n", fname);
+                }
+            } catch (...) {}
+        }
         if (kv.second > 2000000) continue;
         try {
             const uint8_t* pm = (const uint8_t*)reinterpret_cast<xrt::bo*>(kv.first)->map();
@@ -257,6 +291,7 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
             continue;
         }
         if (kv.second < 1000000) continue;
+        if (getenv("CAP_SKIP_BIG")) continue;
         try {
             xrt::bo* bo = reinterpret_cast<xrt::bo*>(kv.first);
             size_t bosz = bo->size();
@@ -359,7 +394,7 @@ extern "C" void _ZNK3xrt7runlist4waitERKNSt6chrono8durationIlSt5ratioILl1ELl1000
         } catch (...) {}
     }
     // post-wait dump of ALL big ext::bo (complete per-layer kv/weight state)
-    {
+    if (!getenv("CAP_SKIP_BIG")) {
         int n = 0;
         for (auto& kv : g_extbo_sizes) {
             if (kv.second <= 1000000) continue;
