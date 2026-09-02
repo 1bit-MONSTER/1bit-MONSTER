@@ -175,3 +175,24 @@ The remaining step is the ctx-2 layer kernel's token-1 write-descriptor
 audit (the layer ELF's 2-token BD/offsets vs the engine's BO binding) —
 a FastFlowLM-internals analysis that the capture toolchain (RT_CLEAN_DUMP
 + interposer kvpost) is now fully equipped to verify.
+
+## 35B MoE (Qwen3.6-35B-A3B-NPU2) — path assessment (Round 37)
+
+- The Unsupported intermediate size: 512 blocker was a HARNESS bug: the
+  capture harness instantiated qwen3_npu (dense) for the MoE config. The
+  qwen3_npu::Impl validates config.intermediate_size against
+  {3072, 6144, 9728, 12288}; the qwen3_6_moe_npu class has no such check.
+- The runtime's own qwen3_6_moe_npu::load_weights SEGFAULTS (upstream binary
+  bug — qwen3_6_reorder_cpy BF16-vector reorder overflows its memcpy length,
+  -169867392; gdb evidence in docs/35b-moe-load-crash.md). The runtime
+  cannot serve as the 35B verification reference until ROCm ships a fixed .so.
+- Engine parse fixes committed: tensor cap 512->2048, model.layer (singular)
+  naming, derive num_layers/vocab/hidden from metadata (35B now reports
+  673 tensors / 40 layers / vocab 248320 / hidden 2048), per-model xclbin
+  selection (FLM_XCLBIN_PATH/xclbins/<model-name>, dequant_mm fallback).
+- 35B layer-ELF path: libqwen3_6_moe_npu.so exports the layer-sequence
+  primitives (generate_gate_delta_net_prefill_sequence, gen_mha_main,
+  gen_mha_engine_seq) but the MoE-FFN sequence builder (router -> top-8
+  experts -> up/down/gate dequant_mm gemms + shared expert) is internal to
+  the binary Impl. Building it from npu_sequence primitives is the
+  remaining engine feature (multi-day).
