@@ -241,16 +241,47 @@ bool RuntimeLayerEngine::embed(int token) {
 
 // RoPE cos/sin table for the current token position (pos = ctx_len-1).
 // The runtime host-writes this into i6[0:128] before EVERY forward; the layer
-// kernel reads it (it does NOT compute RoPE internally). Verified formula
-// against runtime captures for ctx=1..12 (Round 36): the initial [1.0 x64]
-// [0 x64] is exactly pos=0 (cos(0)=1, sin(0)=0).
-static void update_rope_i6(xrt::ext::bo& i6bo, int pos, float theta) {
+// kernel reads it (it does NOT compute RoPE internally).
+//
+// EXACT runtime formula (reverse-engineered from libqwen3_npu.so, Round 38):
+// the runtime keeps a HARDCODED float32 inv_freq[64] table in .rodata
+// (NOT 1e6^(-2j/128) in double — the f32 literals are off by up to ~1.5e-5
+// relative, which previously caused 1-ULP i6 flips at positions >= 3), then
+// computes  phi = inv_freq[j] * (float)pos   (float32 vmulss)
+// and calls glibc sincosf(phi), converting the f32 results to bf16 (RNE).
+// Reproduced byte-for-byte across all captured positions 0..40 (5248 entries).
+// The table below is the exact .rodata dump at 0x152740.
+static const float RT_INV_FREQ[64] = {
+    1.000000000e+00f, 8.058400154e-01f, 6.493800282e-01f, 5.232999921e-01f,
+    4.217000008e-01f, 3.398199975e-01f, 2.738400102e-01f, 2.206699997e-01f,
+    1.778299958e-01f, 1.432999969e-01f, 1.154799983e-01f, 9.305699915e-02f,
+    7.498899847e-02f, 6.043000147e-02f, 4.869699851e-02f, 3.924199939e-02f,
+    3.162299842e-02f, 2.548299916e-02f, 2.053499967e-02f, 1.654800028e-02f,
+    1.333499979e-02f, 1.074600033e-02f, 8.659600280e-03f, 6.978299934e-03f,
+    5.623400211e-03f, 4.531600047e-03f, 3.651699983e-03f, 2.942699939e-03f,
+    2.371399896e-03f, 1.910999999e-03f, 1.539899968e-03f, 1.240900019e-03f,
+    1.000000047e-03f, 8.058400126e-04f, 6.493799738e-04f, 5.233000265e-04f,
+    4.217000096e-04f, 3.398199915e-04f, 2.738400071e-04f, 2.206700010e-04f,
+    1.778300066e-04f, 1.432999998e-04f, 1.154799975e-04f, 9.305700223e-05f,
+    7.498900231e-05f, 6.043000030e-05f, 4.869699842e-05f, 3.924200064e-05f,
+    3.162299981e-05f, 2.548299926e-05f, 2.053500066e-05f, 1.654799962e-05f,
+    1.333500040e-05f, 1.074600004e-05f, 8.659600098e-06f, 6.978300007e-06f,
+    5.623399829e-06f, 4.531600098e-06f, 3.651699899e-06f, 2.942699894e-06f,
+    2.371399887e-06f, 1.911000027e-06f, 1.539900040e-06f, 1.240900019e-06f,
+};
+
+// glibc float32 sincos (the runtime links sincosf@GLIBC_2.2.5)
+extern "C" void sincosf(float x, float* s, float* c);
+
+static void update_rope_i6(xrt::ext::bo& i6bo, int pos) {
     uint16_t* w = (uint16_t*)i6bo.map();
-    double t = (double)theta;
+    float fpos = (float)pos;
     for (int j = 0; j < 64; j++) {
-        double phi = pos * pow(t, -2.0 * j / 128.0);
-        w[j] = f32_to_bf16((float)cos(phi));
-        w[64 + j] = f32_to_bf16((float)sin(phi));
+        float phi = RT_INV_FREQ[j] * fpos;   // float32 multiply (vmulss)
+        float s, c;
+        sincosf(phi, &s, &c);
+        w[j] = f32_to_bf16(c);
+        w[64 + j] = f32_to_bf16(s);
     }
     i6bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, 1048576, 0);
 }
@@ -259,7 +290,7 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
     if (!ensure_layer_kernel(ctx_len)) return false;
     // RoPE table for the current position (pos = ctx_len-1), every layer
     for (int L = 0; L < cfg_.num_layers; L++)
-        update_rope_i6(*i6_bos_[L], ctx_len - 1, 1e6f);
+        update_rope_i6(*i6_bos_[L], ctx_len - 1);
     // per-ctx kv dump for the layout diff (RT_KV_DUMP_DIR)
     if (const char* kd = getenv("RT_KV_DUMP_DIR")) {
         char kf[512];

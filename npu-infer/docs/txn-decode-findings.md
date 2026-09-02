@@ -1080,3 +1080,28 @@ COMMITTED sources (they survive; /tmp copies don't):
 Note: the npu-verify `1bit unified --lemonade` server auto-restarts at
 boot and shares /dev/accel0 — validation runs while it holds the NPU can
 wedge; if logits come back NaN/no-op, re-run after stopping it.
+
+### Round 38 — rope EXACT formula found: hardcoded f32 inv_freq in the .so
+
+The ctx17+ 1-2 ULP logits diffs and the ctx22/26/41 argmax flips (40-token
+run) were traced to the ENGINE's rope table being *too accurate*: the
+engine computed phi = pos * 1e6^(-2j/128) in double, but the RUNTIME keeps
+a HARDCODED float32 inv_freq[64] table in libqwen3_npu.so .rodata
+(@0x152740) that is NOT the f32 rounding of the double formula — the
+literals are off by up to ~1.5e-5 relative (e.g. j=4: 0.4217000 vs
+0.4216965; j=7: -1.5e-5) in a non-monotonic per-j pattern that no
+powf/expf/logf/sincosf chain reproduces (28/5248 captured entries flipped
+vs exact math, all at |value| near zero-crossings and beyond).
+
+Decoded from disassembly of _ZN9qwen3_npu4Impl9_rope_rms:
+  phi = inv_freq[j] * (float)pos     (vmulss — float32 multiply)
+  sincosf(phi)                        (glibc float32 sincos)
+  f32 -> bf16 (RNE)
+The engine's update_rope_i6 now embeds the exact 64-float .rodata dump and
+uses the same float32 multiply + glibc sincosf.
+
+Result: engine per-ctx logits byte-identical to the runtime for ALL 40
+contexts of the 40-token generate (ctx2..41, 0 ULP, 0 argmax flips) —
+the final byte-exactness gap is CLOSED. The runtime table values are baked
+per-model-family (Qwen3 lib); a different model family would need its own
+.rodata dump at its own inv_freq symbol offset.
