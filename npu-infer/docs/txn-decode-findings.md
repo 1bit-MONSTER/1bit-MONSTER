@@ -1234,3 +1234,28 @@ must match what FastFlowLM SERVES (not just its decode path), the mm
 prefill path needs its own replication/validation. Documented as a runtime
 quirk; engine claim stated precisely: byte-identical to the runtime's
 per-token forward (decode) path.
+
+### Round 38c-reconciled — prefill(mm) vs forward(seq): TWO confounders, not one
+
+Round 39 (parallel session) attributed the prefill-vs-forward divergence to a
+rope-table difference (keys differ only at rotary elements 50/51 + 114/115,
+freq classes j=25/j=57, the .rodata-vs-exact classes). A fresh decisive test
+at POSITION 0 (where rope is identity for BOTH paths: cos(0)=1, sin(0)=0 in
+any table) shows K still differs: ~6/1024 entries, 2-6 bf16 ULP on large
+values (e.g. -118.5 vs -121.5, 129 vs 130), corr 0.99992. So:
+
+- Confounder A (projection GEMM numerics): the batched-mm K projection
+  differs from the per-token-mv K projection by a few ULP even at pos 0,
+  where no rope is applied. Present in every slot; grows with slot (slot0
+  maxdiff 3.0, slot1 4.0, slot2 8.0, slot3 10.0 — the per-slot growth is
+  kv-state feedback, not rope).
+- Confounder B (rope table, pos>0 only): the mm path applies RoPE internally
+  from an exact-math table (Round 39's i6 capture shows its host i6 never
+  advances past pos 0), while the seq path / engine use the .rodata table.
+  At j=25/j=57 (.rodata deviates from exact) this adds bf16 flips for pos>0.
+
+Both are real; they compound. Either alone flips argmax on near-ties. The
+engine == runtime-seq byte-identity (1000 ctx) is unaffected — the engine
+replicates the seq path exactly, including its .rodata rope and its mv-GEMM
+numerics. Matching a real batched-prefill server session would require
+replicating BOTH confounders (mm projection numerics + exact-math rope).
