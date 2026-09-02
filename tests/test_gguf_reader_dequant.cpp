@@ -56,6 +56,8 @@ int main() {
     ok &= check("Q5_K", GGUF_DTYPE_Q5_K, REF_Q5_K_RAW, REF_Q5_K_EXPECTED, 256);
     ok &= check("Q6_K", GGUF_DTYPE_Q6_K, REF_Q6_K_RAW, REF_Q6_K_EXPECTED, 256);
     ok &= check("Q8_K", GGUF_DTYPE_Q8_K, REF_Q8_K_RAW, REF_Q8_K_EXPECTED, 256);
+    ok &= check("TQ1_0", GGUF_DTYPE_TQ1_0_LLAMA, REF_TQ1_0_RAW, REF_TQ1_0_EXPECTED, 256);
+    ok &= check("TQ2_0", GGUF_DTYPE_TQ2_0_LLAMA, REF_TQ2_0_RAW, REF_TQ2_0_EXPECTED, 256);
 
     if (ok) { printf("OK: all dtypes byte-exact against the Python gguf reference\n"); return 0; }
     fprintf(stderr, "FAIL: one or more dtypes mismatched the reference\n");
