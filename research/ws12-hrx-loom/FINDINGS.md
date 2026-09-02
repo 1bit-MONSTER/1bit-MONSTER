@@ -386,3 +386,32 @@ scale/zp scattered reads; (c) the 1128 per-group dispatches' launch
 overhead; (d) the router syncs (the actual remaining wall, ~313 x 14 ms).
 The compute-vs-sync split needs a cleaner measurement (the HRX2_OPTIME_SYNC
 7 ms/mm includes the drain).
+
+## Isolated dispatch costs — the mm is ~1ms, not 7ms (2026-09-02)
+
+Microbench (ggml_backend direct, real 30B q4nx tiles, idle stream,
+compute+sync, 30 reps): single-expert down mm (32 tok, 1 group) 0.21-0.23 ms;
+8-group gate mm (32 tok, 8 experts) 1.02-1.07 ms; attention KQ^T f16xf32
+batched (k128 r256 c32 x16 heads) 0.26-0.27 ms.
+
+The HRX2_OPTIME_SYNC "7 ms per MUL_MAT_Q4NX" was DRAIN-inclusive, not
+execution. TRUE per-op costs are ~1 ms (MoE) / ~0.27 ms (attention).
+
+30B q4nx pp32 eval budget (~667 ms): MoE mms ~144 x 1.07 = ~154 ms;
+attention ~576 dispatches x 0.27 = ~155 ms (KQ^T + PV); the rest (~350 ms)
+is pointwise, the router syncs, launch, and JIT. The MoE mm is neither
+bandwidth- nor compute-bound at the NPU's capability: 7.9 MB weight traffic
+in ~1 ms = ~7.9 GB/s effective (the NPU does ~43-49 GB/s on the r16 decode
+kernel), 402 MMACs in 1 ms = ~750 GFLOP/s (NPU is ~TOPS-class). Per-group
+~0.13 ms = launch/latency-bound: the 8 groups dispatch sequentially on one
+stream.
+
+Verdict for the prefill-vs-CPU question: q4nx MoE-on-NPU pp32 48 t/s vs
+Q4_K CPU-MoE 133 t/s. The NPU MoE path is correct but not throughput-
+competitive; the 1 ms/mm is dominated by per-group launch/sync latency
+(0.13 ms/group), so the levers are: (a) merge the 8 groups into ONE dispatch
+(a single dequant of the selected experts + one scatter-mm, instead of 8
+sequential group dispatches); (b) overlap the groups across streams; (c)
+fold the router (softmax+argsort+grouping) on-device to remove the 313
+syncs. The r16 coalesced-read restructure (round 25l) was orthogonal — the
+packed reads were never the wall.
