@@ -1270,6 +1270,62 @@ large activations, where the CPU→GTT→NPU coherency tax dominates — that
 regression is the documented cost of shared-memory zero-copy on this NPU
 until the attention mms move to HRX2.
 
+### Round 25j — attention mms on HRX2 + prefill tax removed (fork 4518abd): pp32 up to 3.4×
+
+The user asked for "a strided GQA batched f32 mm kernel to move those last
+attention mms onto HRX2" — and the honest answer turned out to be two-part:
+the mms were F16×F32 (K/V come from the F16 KV cache), and an EXISTING
+complete kernel already handled exactly that (`mul_mat_f16_f32_batched.loom`,
+GQA broadcast + full stride config), it was just never claimed in
+`supports_op`. Claiming it surfaced two real bugs, and the dispatch trace
+then revealed the attention mms were never the biggest tax anyway.
+
+1. **Claim `GGML_OP_MUL_MAT` → `supports_mul_mat_f16_f32_route`** (F16 src0
+   = KV cache × F32 src1 = q/kq, strided GQA batched views). The F32 mm
+   scaffold from 25i was dead code — kq/kqv src0 is F16, so the F32 base
+   check never fired (traced: `mmBASE check=1/1/1/0/0/1/1`, src0-F32 bit 0).
+2. **Loom JIT view-bound bug**: `src0_count` omitted the
+   `(src0_ne2-1)*src0_stride_ne2` term, so with GQA (`src0_ne2=2`) kqv's
+   loads reached element 65535 while the view bound was 32768 — JIT
+   correctly rejected with "view.load scalar footprint upper bound is not
+   proven". Fixed in all four kernel variants.
+3. **Trace said the mms were only ~10 ms of 2.9 s** — the real prefill tax
+   was ROPE (612×) and GLU (432×) still running on CPU and writing into
+   shared GTT: K-rope (h2) had no routes at all, Q-rope t8/t32 and split
+   GLU ncols=11008 were uncovered shapes. Added generic
+   `rope_neox_f32(_freq)_generic_wg256` and `swiglu_f32_split_generic_wg256`
+   routes. After this, only 12 GET_ROWS stay on CPU.
+4. **cols8 route domain widened** (cols 8–512, multiple of 8): the generic
+   batched kernel is 1 output per workgroup, which starved wide-head models
+   (30B dst_ne2=32 → 256×1024 workgroups). The existing cols8 kernel (8
+   cols/workgroup) now serves them: 30B pp32 41.8 → 47.1 (matches the
+   CPU-attention baseline while staying on NPU).
+5. **Stride config decls widened to 2^30**: llama-cli decode (ubatch 2048,
+   KV stride 268435456) previously exceeded the 104857600 decl range and
+   failed JIT (llama-bench shapes stayed under it, so bench worked while
+   llama-cli died).
+
+Verified (sequential, `llama-bench -p 32 -n 32 -r 1 -ngl 99`):
+
+| model | 25i pp32 | 25j pp32 | 25i tg32 | 25j tg32 |
+|---|---|---|---|---|
+| Qwen2.5-0.5B | 180 | **617** | 84.5 | 80.5 |
+| Qwen3-0.6B | 211 | **461** | 63.0 | 81.9 |
+| Qwen2.5-3B | 27.8 | **81.3** | 26.7 | 29.5 |
+| MiniCPM5-1B | — | 325 | — | 69.7 |
+| Qwen2.5-7B | 29.9 | 30.3 | 13.7 | 14.1 |
+| GLM-4.7 | 39.9 | 43.1 | 14.8 | 15.7 |
+| MiniCPM4-8B | 24.3 | 24.4 | 11.9 | 12.2 |
+| Qwen3-Coder-30B | 47.7 | 47.1 | 18.3 | 18.8 |
+| Qwen3-Next-80B | 32.6 | 32.7 | 7.9 | 8.0 |
+
+The 3B prefill regression is fully recovered (27.8 → 81.3, vs 121.5
+pre-zero-copy) and decode is still up everywhere; small models more than
+tripled prefill. Correctness re-verified on 3B/7B/30B/GLM ("Paris." →
+"Paris is the capital and most populous city"). 30B llama-cli still fails
+on the pre-existing nselected=128 fused-tbl range (A/B'd against the
+baseline stash — unchanged).
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
