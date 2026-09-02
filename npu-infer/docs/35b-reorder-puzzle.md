@@ -29,3 +29,24 @@ tensor crashes + grab the 512 MB weight BOs before the load aborts).
 ### Cleanup note
 /tmp model copies (23 GB x2) removed; the patched dir /tmp/moe-p +
 xclbins/moe-p symlinks remain for the next capture attempt.
+
+## UPDATE — reorder captured + decoded (shape-0 patch + interposer)
+
+The shape-0 model-file patch (zero the small BF16/F32 tensor SHAPES so the
+reorder's size arg = 0 -> loop skipped) lets the runtime's load_weights
+COMPLETE (40 layers, 36 GB of captures). The 512 MB weight BOs are the
+ground truth:
+
+- The runtime's expert rows are 4736 B and equal the FILE's raw bytes at
+  strided offsets: row0 = share_up @ file-rel 1113288 (its last 824 B +
+  the next tensor's start), the up_exps rows at file-rel 3912 + 4736k
+  (k=0..7 then a 4-row break), gate_exps interleaved. The BO layout =
+  the layer tensors' data re-sliced at 4736-byte boundaries in a strided
+  interleave (NOT a per-tile permutation; the 4736 = 4096 data + 512
+  scales + 128 zps with NO value transform — byte-identical slices).
+- The capture set is at ~/.cache/moe-cap (50 x 512 MB weight BOs + ELFs).
+
+Remaining: extract the reorder_cpy's chunk-offset rule (the stride math
+from the disassembly, or a full row->file map) so the engine's packer
+reproduces the interleave; then the weight BOs + forward loop complete the
+35B engine path.
