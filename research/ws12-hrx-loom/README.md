@@ -1590,6 +1590,51 @@ real-model decode gains: dispatch-level shape grouping for small attention
 mms, then batched decode (cols ∈ [2..16], the round-25t item), not more
 single-token kernel bandwidth work.
 
+### Round 25s — the full-tile 32-row kernel is built, verified bit-exact, and SLOWER: the ~150 GB/s plateau survives every structural attack (density included); single-token q4nx decode bandwidth is exhausted on this hardware
+
+25r's verdict left one untested structural hypothesis: r16w's per-column
+read is a 2 KB packed chunk (+512 B scales/zeros) = 49% of a 5.12 KB tile
+(the sibling 16-row wg owns the other half), and the f32 run-length sweep
+showed the memory side rewards long per-workgroup runs. Round 25s built the
+test: **r32w** — a full-tile 32-row workgroup (rows/32 grid, 256 lanes,
+each lane owns one k and all 32 output rows) that reads the ENTIRE tile per
+column: scales [0..512) + zeros [512..1024) + packed [1024..5120) staged
+and consumed densely, rows 16-31 reading their 8 packed bytes from the
+second half-tile slab at +2048, 32 f32 accumulators, 32 reduces, 4×1 B
+staging per lane, 1024 B LDS.
+
+Built via a parameterized generator from the shipped r16w kernel; the
+correctness gate was a dst-dump comparison at (4096, 2048): **max abs diff
+0.0, corr 1.0** vs r16w — the 32-row partition computes bit-identical
+results (pure f32 summation-order identity). Catalog route added
+(`mul_mat_q4nx_fused_f32_r32w`, rows_per_workgroup 32), probe extended to
+honor `route.rows_per_workgroup` for the dispatch grid (the 25q wg_rows
+bug class, caught again at the probe level).
+
+Result — **falsified**: at the plateau shapes r32w is *slower* than r16w:
+
+    (131072,4096):  r16w 150.6   r32w 132.9 GB/s
+    (16384,16384):  r16w 152.7   r32w 132.1 GB/s
+    (4096,2048):    r16w 88.1    r32w 69.7 GB/s   (small shape; halved wgs hurt)
+
+Reading 5.12 KB densely per column did not break ~150 — the doubled
+per-lane work (32 accs, 128 B LDS reads/column, 2 slab loads) and halved
+workgroup count cost ~12%. Combined with 25r's seven instruction-side
+negatives, the conclusion is now exhaustive: **single-token q4nx decode
+bandwidth on this NPU is capped at ~145-153 GB/s by the memory subsystem's
+behavior with the quantized-read access class (three streams, byte-granular
+scale staging, sub-tile half-tile reads) — no kernel-side change moves it**,
+and the f32 fabric reference (~188-231 GB/s) is not reachable by a
+quantized kernel of this layout. r32w is a correct artifact with no
+dispatch value (slower everywhere measured); it was removed from the tree
+and the fork remains pristine at 52e69e5.
+
+The perfect-kernel question is answered: for single-token decode it does
+not exist beyond ~150 GB/s on this layout/hardware. Real decode gains now
+require either dispatch-level shape restructuring (small attention tensors
+are shape-bound at 83-137) or batched decode (cols ∈ [2..16]) — not more
+single-token kernel bandwidth work.
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
