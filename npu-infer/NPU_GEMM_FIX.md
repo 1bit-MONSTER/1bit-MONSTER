@@ -153,3 +153,25 @@ capture/diff tooling committed (RT_CLEAN_DUMP, interposer kv captures,
 gen_layer_elfs raw TXN). Next: audit the ctx-2 kernel's token-1 write
 descriptors (the layer ELF's 2-token BD/offsets vs the engine's BO
 binding) — the last step to full multi-token correctness.
+npu-infer: KV rope test — token-1 K partial (0.81) vs V mismatched (0.02)
+
+Rope-hypothesis test (engine token-1 vs runtime captures):
+- engine token-1 K vs runtime token-1 K (pos 1): corr 0.81 — the K is
+  PARTIALLY right (not the un-roped version: corr 0.03 vs pos-0).
+- engine token-1 V vs runtime token-1 V: corr 0.02-0.11 — the V does not
+  match (and not the token-1001-as-pos0 V either: corr -0.03).
+- The engine's token-1 K/V differ from the runtime's in VALUE but match
+  in MAGNITUDE (stds 2.8-11.8 vs 3.1-9.5) — a computation-order/descriptor
+  difference, not a scale bug.
+- The runtime's kvpost capture timing remains a confounder (its own
+  token-1001-as-first KV appears to match the engine's token-0, which
+  cannot be right for different tokens — the capture is mid-state).
+
+Definitive, capture-independent facts:
+- engine token-0: logits corr 1.0, final hidden corr 1.0, KV byte-identical
+- engine token-1: logits corr 0.988 (very close), KV values differ
+
+The remaining step is the ctx-2 layer kernel's token-1 write-descriptor
+audit (the layer ELF's 2-token BD/offsets vs the engine's BO binding) —
+a FastFlowLM-internals analysis that the capture toolchain (RT_CLEAN_DUMP
++ interposer kvpost) is now fully equipped to verify.
