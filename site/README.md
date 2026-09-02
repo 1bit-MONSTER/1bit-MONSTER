@@ -76,6 +76,13 @@ with a 1-bit pixel identity.
 ### Design system
 
 - **Light modern-minimal ground** — near-white background, ink type, hairline structure.
+- **Theme modes** — **light** (default) / **auto** (follows the OS) / **dark**, via the
+  segmented switch in the top nav. Choice persists in `localStorage` (`1bit-theme`);
+  `theme.js` in `<head>` applies it before first paint so there is no flash.
+  Dark mode swaps the oklch tokens per page and pins the intentionally inverted
+  pieces (ink console screens, merch plates) to their light-design values.
+  Regenerate on every page with `python3 scripts/site_theme_modes.py`.
+
 - **1-bit pixel identity** — the relay mark, crisp pixel art, one blue accent + one status green.
 - **Type** — system display sans + system body; mono for numerics, labels, micro-labels.
 
