@@ -2143,3 +2143,101 @@ faithfully (top1 108 on all three; top10 identical). Deterministic
 corr(32-tok) = 1.0 remains the fixed-point pipeline's property (1BP gate
 `test_1bp_q4nx_reader`: `W=q4·s+zp` byte-exact vs the engine's dequant, and
 the `(q4·16·rq+zpq)>>22` re-quant matches int8 to rounding boundaries).
+
+## Round 27 — decode bandwidth ceiling hunt (25q): the ~65 GB/s premise is resolved, and fa0 fused decode-attention landed (fork 8f10eea94)
+
+### fa0 fused decode attention — COMPLETE and committed (fork `8f10eea94`)
+
+The fa0 build (parts 1-2 above, lines 1839-1937) shipped. Fuses
+kq→softmax(+mask)→kqv→permute→cont into ONE kernel at the real GQA decode
+config (D=128 KV=256 N=2 H=16 H_KV=2). The three blockers listed there were
+all root-caused:
+
+1. **NPU dispatch faults at multi-wg x/z grids** (deterministic page faults
+   with 256-lane wgs whenever grid.x>1 or grid.z>1, 24+ wgs; pure-y grids
+   never fault, verified to 96 wgs with interleaved controls). Fix: y-packed
+   launch grid `(1, N*H, S)`; kernel decodes n = y div H, h = y mod H from
+   wg.id<y> with division-free compare-sum loops (dispatch emits
+   `workgroup_count {1, N*H, S}`). Ruled out first: buffer sizes, LDS size
+   (32KB→24KB→tiny), mask use, workgroup.reduce, d2h ordering, compiled
+   resources (byte-identical between faulting/passing configs).
+2. **TARGET/004 (`index.shrui low_register_unit_count`) at N≥3**: byte-sum
+   divisions (q_elem = (n·q_nb1 + h·q_nb2 + s·q_nb3)/4 …) widened to 64-bit
+   once ids couldn't be config-narrowed. Fix: pre-divide all q/k/v strides
+   into element strides so every index.div operates on a ≤2^25 operand
+   (single 32-bit shrui).
+3. **Silent all-NaN in-model decode**: llama stores the V cache TRANSPOSED
+   (v tensor ne=[KV,D,H_KV], kv unit-stride; k stays interleaved
+   [kv][hg][d]). Kernel assumed v like k (d unit). Fix: S4 reads
+   d·(v_nb1/2) + kv·(v_nb0/2). Probes re-fixed to the real llama cache
+   conventions; an in-situ host check (d2h q/k/v/mask + recompute attention
+   per layer/step) confirms reference-exactness at every decode step at
+   KV=256 (≤3.3e-6) and KV=512 (≤1.1e-5).
+
+Route wiring: ratio config binding (route JSON + plan maker H/H_KV +
+catalog validator); fusion capped at N≤32 so batched prompt eval stays on
+the faster tiled unfused path (fa0 is decode-attention; prompt eval N=205
+was ~3× slower fused + paid per-process JIT).
+
+Real-model A/B (qwen2.5-3b-q4nx, HRX20 gfx1151, 205-token prompt):
+**token-identical to the fusion-disabled baseline across all 40 decode
+steps** in the KV≤256 region (where trajectories diverge at KV=512, fa0
+matches the exact host reference while the *unfused* path deviates — the
+unfused baseline is the KV-512-inconsistent one). Decode throughput parity /
+slightly positive: 42.2-42.4 t/s fused vs 41.5-42.3 t/s unfused
+(llama-simple -n 60, interleaved). Kernel: 256 lanes/wg, LDS 24576 B
+(D≤2048, KV≤2048), compare-sum kv-head (division-free), y-packed grid.
+
+### 25q decode-bandwidth ceiling hunt — the ~65 GB/s premise is stale; the device ceiling ≈ iGPU parity (~137 GB/s single-dispatch)
+
+Goal premise: "weight-stream reads top out at ~65 GB/s vs the iGPU's ~129
+GB/s on the same SoC". Re-measured with the round-25q probe harness
+(real-kernel dispatch + per-dispatch sync on synthetic device-local weight
+buffers, `probe_bw`; 3B gate shape rows=11008 k=2048, 14.1 MB/dispatch):
+
+| kernel (cols) | GB/s (dev-local, sync per dispatch) |
+|---|---|
+| r16 (pre-25q) | ~64 (the goal's "~65") |
+| r16w (25q, cols=1) | **110-127** (cold slices=8: ~110; rows=70400/90 MB: **137**) |
+| r16wb2 (cols=2) | 94 |
+| r16wb4c (cols=4) | 66 (register/occupancy cost of 64 f32 accs) |
+| r16wb8 (cols=4) | 46 |
+| iGPU reference | ~129 |
+
+So the "~65" was the pre-r16w kernel; round 25q's own r16w fix already
+closed it. Single-dispatch ceiling on this NPU ≈ **137 GB/s** (90 MB
+dispatch, 4400 wgs) — parity-or-better vs the iGPU's ~129 for the same
+DRAM streaming. Rate is occupancy-limited per dispatch (rows 11008 = 688
+wgs → 115; 44032 → 133; 70400 → 137), not access-pattern-limited (the
+2 KB-contiguous-per-k-step r16w pattern already coalesces; larger rows don't
+change the pattern, only parallelism).
+
+**Model-level decode (~42 t/s single-seq, 3B) is NOT read-bound per-mm:**
+144 q4nx mms/token at probe rates (gate/up 122 µs, down 110 µs, out_proj
+~28 µs @ 74 GB/s) + fa0 attention (58 µs × 36) + small ops ≈ 21-24 ms/token
+serial floor ≈ the measured 23.8 ms. The limiter is the serial dependency
+chain per token (layer → layer), not the memory path. Short-k/small-row mms
+(out_proj 2048×2048 = 128 wgs, 74 GB/s) are occupancy-laggards but <2% of
+the byte stream — no material kernel lever there.
+
+**Measurement trap found (documented for future rounds):** back-to-back
+dispatches without per-dispatch syncs appeared to overlap at 2-8 TB/s
+aggregate (burst=64 → 8.4 TB/s) — impossible for DRAM. Wall-clock refutes
+it: 32 000 dispatches × 14.1 MB ("451 GB") in 0.61 s total process wall with
+221 ms internal loop time ⇒ `hrx_stream_synchronize` does NOT drain a
+multi-dispatch queue (returns after ~the first dispatch; the ~6.9 µs/
+dispatch loop time is host issue rate ~145 K dispatches/s). All dst slices
+were still correct after the loop (the final d2h drains the queue), so the
+artifact is timing-only, but any "concurrent dispatch" bandwidth number
+needs per-dispatch syncs or a drain before t1. Genuine dispatch overlap
+exists for independent work (4-seq server ~2× single-seq ≈ DRAM-bounded
+~270 GB/s), but single-dispatch syncs are the only trustworthy per-mm rates.
+
+**Ceiling proof (this round):** the NPU's practical per-dispatch read rate
+for the q4nx decode kernels is ~110-137 GB/s (dev-local, cold) ≈ the iGPU's
+~129 — the "~65 vs ~129" gap was the pre-r16w kernel and is closed; single-
+seq decode sits at the serial-dependency floor (~54-71 GB/s effective, all
+per-mm rates at probe parity); no further kernel access-pattern lever
+remains for single-seq decode. Round-25q's r16w (fork 52e69e5c2) is the
+landed win; this round contributes the ceiling proof + the sync-drain
+measurement trap.
