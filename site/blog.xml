@@ -6,20 +6,20 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Wed, 02 Sep 2026 11:52:28 +0000</lastBuildDate>
-    <item>
-      <title>Lemonade v11.8.1, and how we stay current with the SDK</title>
-      <link>https://1bit.monster/1bit-post-lemonade-v1181.html</link>
-      <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1181.html</guid>
-      <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
-      <description>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 554 architecture tokens, 1,798 HF arch strings, 317,310/317,310 checkpoints mapped.</description>
-    </item>
+    <lastBuildDate>Wed, 02 Sep 2026 15:17:43 +0000</lastBuildDate>
     <item>
       <title>Zaya 8B Q4NX on the AMD NPU</title>
       <link>https://1bit.monster/1bit-post-zaya-q4nx-hrx.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-zaya-q4nx-hrx.html</guid>
       <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
       <description>The full HRX lane journey: serving Zyphra Zaya 8B, 4-bit Q4NX, entirely on the AMD Strix Halo NPU — 8.4 t/s decode, llama-server over HTTP — with Qwen3-0.6B prefill logits corr 1.00000, byte-identical to the real FastFlowLM runtime, and the Windows-NPU (MCDM) memory model matched on Linux: one heap, one chained API call per layer, SharedBO pages with zero copies.</description>
+    </item>
+    <item>
+      <title>Lemonade v11.8.1, and how we stay current with the SDK</title>
+      <link>https://1bit.monster/1bit-post-lemonade-v1181.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1181.html</guid>
+      <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
+      <description>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 554 architecture tokens, 1,798 HF arch strings, 317,310/317,310 checkpoints mapped.</description>
     </item>
     <item>
       <title>HRX: we put AMD&#x27;s experimental IREE runtime inside our engine</title>
