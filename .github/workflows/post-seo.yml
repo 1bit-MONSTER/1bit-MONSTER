@@ -1,0 +1,96 @@
+name: Post SEO
+
+# Generate discoverability tags for a blog post AFTER it lands, so the new
+# post is findable. When a post is added to main (or the block/index changes),
+# regenerate the offline SEO artifacts and open a PR:
+#   * seo_meta.py  -> Open Graph / Twitter card / canonical / JSON-LD / sitemap
+#   * gen_rss.py   -> blog.xml (RSS item for the new post)
+#   * gen_llms.py  -> llms.txt / llms-full.txt
+#   * seo_sync.py  -> the live claim numbers (arch tokens / strings / coverage)
+#
+# NOT run here: build_embed_index.py (semantic search-index.json + related.json)
+# needs the engine's /v1/embeddings server on strixhalo, so it is regenerated
+# against the live endpoint off-CI (see scripts/build_embed_index.py).
+#
+# The tags are generated for whatever posts exist on the checked-out main, so a
+# post authored with just <title> + <meta name="description"> gets its
+# og/twitter/JSON-LD/canonical/sitemap + RSS + llms entries filled in.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "site/1bit-post-*.html"
+      - "site/1bit-blog.html"
+      - "site/index.html"
+  workflow_dispatch:
+  # Daily safety net in case a post branch bypassed the push filter.
+  schedule:
+    - cron: "40 5 * * *"   # 05:40 UTC, just after the seo-sync numbers job
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: post-seo
+  cancel-in-progress: false
+
+jobs:
+  seo-tags:
+    name: Regenerate SEO tags / RSS / llms for posts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Generate post SEO tags
+        id: gen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 scripts/seo_meta.py
+          python3 scripts/gen_rss.py
+          python3 scripts/gen_llms.py
+          python3 scripts/seo_sync.py
+          if git status --porcelain site/ | grep -q .; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "changed files:"; git status --porcelain site/
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR when post tags changed
+        if: steps.gen.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          DATE="$(date -u +%Y%m%d)"
+          BRANCH="seo/post-$DATE"
+          if gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' | grep -q .; then
+            echo "PR for $BRANCH already open — nothing to do"
+            exit 0
+          fi
+          if git ls-remote --exit-code origin "$BRANCH" >/dev/null 2>&1; then
+            git push origin --delete "$BRANCH"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add site/
+          git commit -m "seo: generate tags/RSS/llms for posts ($DATE)"
+          git push origin "$BRANCH"
+
+          {
+            echo "Automated post SEO generation (seo_meta + gen_rss + gen_llms + seo_sync)."
+            echo "A blog post was added/updated on main, so its Open Graph / Twitter / JSON-LD / canonical, RSS item, llms.txt and claim numbers are regenerated for discovery."
+            echo
+            echo '```'
+            git status --porcelain site/
+            echo '```'
+          } > /tmp/seo_pr_body.md
+          gh pr create --base main --head "$BRANCH" \
+            --title "seo: post SEO tags $DATE" \
+            --body-file /tmp/seo_pr_body.md
