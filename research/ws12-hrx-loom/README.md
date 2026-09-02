@@ -1764,9 +1764,20 @@ penalty. Bit-exact vs r16w at cols=4 (probe corr 1.0). Dispatch prefers
 r16wb4c at cols==4 (`GGML_HRX2_NO_R16WB4C` falls back). End-to-end
 4-parallel server aggregate on 3B: **61.6-67.8 -> 76.0-83.7 t/s (+22%)** —
 consistent with the per-byte gain over the Q4NX share of the step. The
-64-acc penalty itself (64 vs r16w's 113 GB/s) remains; the k-split+merge
-design (<=32 accs per workgroup at the full r16w rate) is still the
-documented path to the next ~1.5x, now capped by attention/non-Q4NX ops.
+64-acc penalty itself (64 vs r16w's 113 GB/s) remains — but note the
+"k-split+merge" path advertised in the v3 text above was re-analyzed and is
+**not viable**: accumulators = rows x cols per lane regardless of how k is
+partitioned, so splitting k across workgroups does not reduce the 64-acc
+single-read requirement (each wg still needs all 4 cols x 16 rows live for
+its k-portion; two k-half workgroups = 64 accs each + a merge). 8-row
+workgroups (32 accs) break slab density (21 GB/s, measured). The 64-acc
+single-read bound (~64-70 GB/s) is therefore structural for cols=4 on this
+layout, and r16wb4c at 64 GB/s is already at it — the Q4NX side of batched
+decode is essentially exhausted; the attention/non-Q4NX side (~19.6 ms/step
+at np=4, 73 tiny f16 kq/kqv dispatches per step at np=1, launch-bound at
+~45 us each, served by mul_mat_f16_f32_batched_attention over the f16 KV
+cache) is the remaining lever, with the in-tree flash_attn_fa0 fusion as
+the named clean variant to evaluate for decode shapes.
 
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
