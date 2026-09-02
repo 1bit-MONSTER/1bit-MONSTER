@@ -61,6 +61,23 @@ per-weight corr gate → env-gated OFF by default until that gate is run.
 3. **Per-token decode** — replace the GU→host-SiLU→D two-launch with the
    fused single launch (silu is in-kernel); read C2 and add to h. Keep the
    int8 GU+D fallback when the xclbin/env is absent.
+
+### Qwen3-0.6b fused geometry (pinned from the generator, 2026-09-02)
+
+The p1 fused generator (`n1_core_fused_gu_silu_d_p1_i4.py`) takes `-M -K -N_GU
+-N_D`; the qwen3-0.6b build used `-M 8 -K 1024 -N_GU 6144 -N_D 1024` (round 1).
+So the I8Ctx fused context needs:
+
+| ctx | xclbin | MD | KD | ND | bC_nd (see i8ctx_inc.h) |
+|-----|--------|----|----|----|------|
+| P1 (GU+SiLU) | `final_i8_GUSILU_i4_qwen3_0_6b.xclbin` | 8 | H=1024 | H=1024 (D out) | N_GU=6144 |
+| P2 (D) | `final_i8_D_qwen3_0_6b.xclbin` | 8 | N_GU/2=3072 (silu'd) | H=1024 | — |
+
+This mirrors the zaya P1/P2 split (`fused_ctx.MD=8, KD=d.H, ND=d.H, bC_nd=2*n_ff`
++ `fused_ctx_p2` with the D xclbin). The remaining challenge is **not** the
+geometry — it is the concat→per-expert remap + the GuI4Pack bf16-pair packing of
+the qwen3-0.6b MoE weights (asymmetric-ZP) into the P1 fuse boxes, and the
+silu-in-kernel readback.
 4. **Gate** — env-gated OFF by default; when `NPU_QWEN_I4=1`, run the
    per-weight fused corr gate (compare MoE out vs CPU float ref, same as the
    zaya `[MoE Lx fused dbg] corr=` line). Gate target ≥ 0.999 (int8 baseline
