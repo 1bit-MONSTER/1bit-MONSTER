@@ -118,10 +118,204 @@
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
       .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
     }
-  </style>
+      
+
+    
+
+    /* ─── 1bit theme modes ────────────────────────────────────────────────
+       light mode (default) | auto (follows OS) | dark mode.
+       Appended by scripts/site_theme_modes.py — rerun to regenerate. */
+    :root {
+      color-scheme: light;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+    }
+    :root[data-theme="dark"] {
+        color-scheme: dark;
+        --bg:      oklch(16.5% 0.014 250);
+        --surface: oklch(21% 0.016 250);
+        --fg:      oklch(94% 0.01 250);
+        --muted:   oklch(68% 0.02 250);
+        --border:  oklch(29% 0.018 250);
+        --accent:  oklch(74% 0.15 258);
+        --status:  oklch(79% 0.13 156);
+        /* pinned: these carry the "ink console / paper" identity in both modes */
+        --ink-deep:      oklch(26% 0.011 250);
+        --on-dark:       oklch(97% 0.004 250);
+        --on-dark-muted: color-mix(in oklch, white 68%, transparent);
+        --border-dark:   color-mix(in oklch, white 18%, transparent);
+    }
+    :root[data-theme="dark"] .btn-primary {
+        background: color-mix(in oklch, var(--accent) 62%, black);
+        color: oklch(98% 0.002 250);
+    }
+    :root[data-theme="dark"] .btn-primary:hover {
+        background: color-mix(in oklch, var(--accent) 74%, black);
+    }
+    :root[data-theme="dark"] .section-dark .btn-primary {
+        background: var(--accent-bright);
+        color: var(--ink-deep);
+    }
+    :root[data-theme="dark"] .section-dark .btn-primary:hover {
+        background: color-mix(in oklch, var(--accent) 88%, white);
+    }
+    :root[data-theme="dark"] .codeblock {
+        background: oklch(23% 0.015 250);
+        color: oklch(95% 0.005 250);
+    }
+    :root[data-theme="dark"] .codeblock .c {
+        color: color-mix(in oklch, oklch(95% 0.005 250) 55%, transparent);
+    }
+    :root[data-theme="dark"] .product-tile {
+        background: linear-gradient(180deg, oklch(99.4% 0.002 240), oklch(96% 0.004 250));
+    }
+    :root[data-theme="dark"] .sticker-tile {
+        background-color: oklch(96.8% 0.004 250);
+        background-image: radial-gradient(color-mix(in oklch, oklch(18% 0.012 250) 16%, transparent) 1px, transparent 1px);
+        color: oklch(26% 0.011 250);
+    }
+    :root[data-theme="dark"] .product-tile .sheet {
+        fill: oklch(99.4% 0.002 240);
+        stroke: oklch(26% 0.011 250);
+    }
+    :root[data-theme="dark"] .product-tile .ink, .product-tile .p-ink, .product-tile .ink-stroke {
+        fill: oklch(26% 0.011 250);
+    }
+    :root[data-theme="dark"] .product-tile .ink-stroke {
+        stroke: oklch(26% 0.011 250);
+    }
+    :root[data-theme="dark"] .product-tile .ink2 {        fill: oklch(39% 0.009 250);
+    }
+    :root[data-theme="dark"] .product-tile .sub {        fill: oklch(52% 0.008 250);
+    }
+    :root[data-theme="dark"] .product-tile .shade {        fill: color-mix(in oklch, oklch(18% 0.012 250) 13%, transparent);
+    }
+    :root[data-theme="dark"] .product-tile .p-mid {        fill: oklch(45% 0.009 250);
+    }
+    :root[data-theme="dark"] .product-tile .p-soft {        fill: oklch(75% 0.005 250);
+    }
+    :root[data-theme="dark"] .product-tile .p-foot {        fill: color-mix(in oklch, oklch(18% 0.012 250) 16%, transparent);
+    }
+    :root[data-theme="dark"] .product-tile .print, .product-tile .p-print, .product-tile .p-line, .product-tile .relay {
+        fill: oklch(99% 0.001 240);
+    }
+    :root[data-theme="dark"] .product-tile .print-stroke {
+        stroke: oklch(99% 0.001 240);
+    }
+
+    @media (prefers-color-scheme: dark) {
+    :root[data-theme="auto"] {
+    color-scheme: dark;
+    --bg:      oklch(16.5% 0.014 250);
+    --surface: oklch(21% 0.016 250);
+    --fg:      oklch(94% 0.01 250);
+    --muted:   oklch(68% 0.02 250);
+    --border:  oklch(29% 0.018 250);
+    --accent:  oklch(74% 0.15 258);
+    --status:  oklch(79% 0.13 156);
+    /* pinned: these carry the "ink console / paper" identity in both modes */
+    --ink-deep:      oklch(26% 0.011 250);
+    --on-dark:       oklch(97% 0.004 250);
+    --on-dark-muted: color-mix(in oklch, white 68%, transparent);
+    --border-dark:   color-mix(in oklch, white 18%, transparent);
+    }
+    :root[data-theme="auto"] .btn-primary {
+    background: color-mix(in oklch, var(--accent) 62%, black);
+    color: oklch(98% 0.002 250);
+    }
+    :root[data-theme="auto"] .btn-primary:hover {
+    background: color-mix(in oklch, var(--accent) 74%, black);
+    }
+    :root[data-theme="auto"] .section-dark .btn-primary {
+    background: var(--accent-bright);
+    color: var(--ink-deep);
+    }
+    :root[data-theme="auto"] .section-dark .btn-primary:hover {
+    background: color-mix(in oklch, var(--accent) 88%, white);
+    }
+    :root[data-theme="auto"] .codeblock {
+    background: oklch(23% 0.015 250);
+    color: oklch(95% 0.005 250);
+    }
+    :root[data-theme="auto"] .codeblock .c {
+    color: color-mix(in oklch, oklch(95% 0.005 250) 55%, transparent);
+    }
+    :root[data-theme="auto"] .product-tile {
+    background: linear-gradient(180deg, oklch(99.4% 0.002 240), oklch(96% 0.004 250));
+    }
+    :root[data-theme="auto"] .sticker-tile {
+    background-color: oklch(96.8% 0.004 250);
+    background-image: radial-gradient(color-mix(in oklch, oklch(18% 0.012 250) 16%, transparent) 1px, transparent 1px);
+    color: oklch(26% 0.011 250);
+    }
+    :root[data-theme="auto"] .product-tile .sheet {
+    fill: oklch(99.4% 0.002 240);
+    stroke: oklch(26% 0.011 250);
+    }
+    :root[data-theme="auto"] .product-tile .ink, .product-tile .p-ink, .product-tile .ink-stroke {
+    fill: oklch(26% 0.011 250);
+    }
+    :root[data-theme="auto"] .product-tile .ink-stroke {
+    stroke: oklch(26% 0.011 250);
+    }
+    :root[data-theme="auto"] .product-tile .ink2 {    fill: oklch(39% 0.009 250);
+    }
+    :root[data-theme="auto"] .product-tile .sub {    fill: oklch(52% 0.008 250);
+    }
+    :root[data-theme="auto"] .product-tile .shade {    fill: color-mix(in oklch, oklch(18% 0.012 250) 13%, transparent);
+    }
+    :root[data-theme="auto"] .product-tile .p-mid {    fill: oklch(45% 0.009 250);
+    }
+    :root[data-theme="auto"] .product-tile .p-soft {    fill: oklch(75% 0.005 250);
+    }
+    :root[data-theme="auto"] .product-tile .p-foot {    fill: color-mix(in oklch, oklch(18% 0.012 250) 16%, transparent);
+    }
+    :root[data-theme="auto"] .product-tile .print, .product-tile .p-print, .product-tile .p-line, .product-tile .relay {
+    fill: oklch(99% 0.001 240);
+    }
+    :root[data-theme="auto"] .product-tile .print-stroke {
+    stroke: oklch(99% 0.001 240);
+    }
+    }
+    /* auto + light: nothing to override — the base tokens are already light. */
+
+    /* ─── theme switch (light / auto / dark) ───────────────────────── */
+    .theme-switch {
+      display: inline-flex; align-items: center; gap: 2px;
+      padding: 3px; border: 1px solid var(--border); border-radius: 999px;
+      background: color-mix(in oklch, var(--fg) 4%, transparent);
+      flex: 0 0 auto;
+    }
+    .theme-switch .ts-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 24px; padding: 0; border: 0; border-radius: 999px;
+      background: transparent; color: var(--muted); cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .theme-switch .ts-btn:hover { color: var(--fg); }
+    .theme-switch .ts-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    html[data-theme="light"] .theme-switch [data-choice="light"],
+    html[data-theme="auto"]  .theme-switch [data-choice="auto"],
+    html[data-theme="dark"]  .theme-switch [data-choice="dark"] {
+      background: var(--surface); color: var(--fg);
+      box-shadow: 0 1px 3px color-mix(in oklch, var(--fg) 18%, transparent);
+    }
+    @media (max-width: 720px) {
+      .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+      .theme-switch { order: 4; }
+    }
+
+
+</style>
   <script type="application/ld+json">
   {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER", "description": "Lemonade v11.8.1 re-vendored: the 15th backend (ds4/DwarfStar, DeepSeek V4 Flash for Strix Halo), download resume, rate limits, and our merged PR.", "url": "https://1bit.monster/1bit-post-lemonade-v1181.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-lemonade-v1181.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-27", "dateModified": "2026-08-27", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
+
+
+
+  <script src="theme.js"></script>
 </head>
 <body>
   <header class="topnav" data-od-id="topnav">
@@ -140,8 +334,22 @@
         <a href="1bit-store.html">Store</a>
         <a href="1bit-docs.html">Docs</a>
         <a href="1bit-benchmarks.html">Benchmarks</a>
+        <a href="1bit-downloads.html">Downloads</a>
       </nav>
-      <a class="btn btn-ghost" href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub&nbsp;↗</a>
+      
+      <span class="theme-switch" role="group" aria-label="Theme: light, auto, or dark">
+        <button type="button" class="ts-btn" data-choice="light" title="Light mode" aria-label="Light mode" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.4v2.6M12 19v2.6M2.4 12H5M19 12h2.6M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
+        </button>
+        <button type="button" class="ts-btn" data-choice="auto" title="Auto (follow system)" aria-label="Auto (follow system)" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18V3Z" fill="currentColor"/><circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+        </button>
+        <button type="button" class="ts-btn" data-choice="dark" title="Dark mode" aria-label="Dark mode" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.2 14.6A8.4 8.4 0 1 1 9.4 3.8 6.9 6.9 0 0 0 20.2 14.6Z"/></svg>
+        </button>
+      </span>
+
+<a class="btn btn-ghost" href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub&nbsp;↗</a>
     </div>
   </header>
 
