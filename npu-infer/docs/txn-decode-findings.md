@@ -637,3 +637,216 @@ not invoked in this decode-forward path).
   streams the 4x-expanded act I/O). Closing this needs either the
   npu.dev.sbin BD semantics or replicating the runtime's exact
   lm_head-first pipeline order.
+
+## Round 34: 4x S2MM expansion RESOLVED — buffer_length is in 32-bit words
+
+### The authoritative BD format (FastFlowLM source == the spec)
+
+The runtime's own encoders (src/include/npu_utils/instr_utils/*.hpp) define
+every command record exactly, and the captured TXN == gen_layer_seq output
+byte-for-byte, so the source IS the format spec:
+
+- BD descriptor (BLOCKWRITE, op 0x01, 12 words):
+    [0]=op(1) [1]=0 [2]=row<<20|col<<25|bd<<5|0x1D000 [3]=48 (op_size*4)
+    [4]=buffer_length [5]=buffer_offset [6]=packet [7]=D0
+    [8]=0xc0000000|D1 [9]=AXCACHE<<24|D2 [10]=iter [11]=next/valid/locks
+- Queue push (WRITE, op 0x00, 6 words):
+    [0]=op(0) [1]=0 [2]=row<<20|col<<25|0x1D204(+0x8 ch1, +0x10 MM2S) [3]=0
+    [4]=bd_id&0xF | repeat<<16 | token<<31 [5]=24
+- Issue token (MASKWRITE, op 0x03, 7 words): [3][0][0x1D200+...][0][pkt<<8][0x1f00][28]
+- DDR_PATCH (op 0x81, 12 words): [0x81][0x30][0][0][0][0][loc][0][arg_idx][0][arg_offset][0]
+- Wait sync (TCT, op 0x80, 4 words)
+
+### buffer_length unit: 32-bit words, NOT bytes
+
+npu_dma_memcpy_nd() (npu_instr_utils.hpp) converts elem_size before building
+the BD:
+    elem_size==1 -> 4; size[3]>>=2; strides>>=2
+    elem_size==2 -> 4; size[3]>>=1; strides>>=1
+and buffer_length = size[3]*size[2]*size[1] (the value written verbatim).
+The hardware transfers buffer_length*4 bytes. The runtime pre-divides by
+elem_size so the byte total is exact. There is NO firmware 4x expansion:
+
+- layer act write:  len=512 words -> 2048 B (1024 bf16)  == arg0 act BO  (exact)
+- lm_head logits:   len=76288 words -> 305152 B; real logits = 151936 bf16
+  = 303872 B; the extra 1280 B = 640 bf16 tail padding (149 aligned
+  2048-B blocks vs 148.375 needed). logits buffer shows exactly 151936
+  nonzero u16 -> the runtime just reads the first 151936.
+- weight reads:     len=10240/20480/30720 words -> 40960/81920/122880 B
+
+### Layer TXN geometry (gen_layer_seq @ MAX_L=8192, L=1) — fully decoded
+
+Per layer TXN (arg mapping: 0=act, 1=weight, 2=norm1, 3=norm2, 4=kv):
+- RTP writes: DMA enable on cols {0,1,2,3,4,6,7} rows 2-5
+- act read:  MM2S c2 len=512w(2048B) arg0+0
+- norm read: MM2S c2 len=1024w(4096B) arg2+0;  MM2S c2 len=192w(768B) arg3+0
+- act write: S2MM c2 bd10 len=512w(2048B) arg0+0 + token
+- kv write:  S2MM c3 len=256w(1024B) arg4+0;  S2MM c4 len=256w(1024B)
+  arg4+0x1000000 (16MB = K/V split of the 32MB kv BO) + tokens
+- weight: ONE ROUND of 192 MM2S reads covering all 1920 tiles x 5120 B =
+  0..0x960000 (9.83MB of the 10MB weight BO) contiguously, each tile read
+  EXACTLY ONCE (multiplicity 1). [CORRECTION: the "two rounds" in the first
+  draft was an artifact of gen_layer_seq_driver2 writing the sequence twice
+  (gen file == captured ctrl + captured ctrl, verified byte-equal halves);
+  the runtime's ELF .ctrltext embeds ONE copy (8543 words, layer_ctx1_ctrl
+  == elf_0001 .ctrltext byte-exact). The 2x in the runlist comes from the
+  runtime arming each layer's kernel TWICE per forward (kernel A + kernel C,
+  identical ELF), see Round 34b.]
+  Reads: cols {0,1,6,7} x ch0/ch1 x bd1/2 + bd9/10 (16 slots) with 40960-B
+  (8-tile) chunks stepping 0xa000; last waves use 81920-B and 122880-B
+  chunks (20480/30720 words).
+
+### lm_head TXN geometry — fully decoded
+
+- logits S2MM: c3 bd15 len=76288w(305152B) arg0+0 + token + WAIT S2MM ch1 c3
+- act read:  MM2S c2 len=512w(2048B) arg2+0;  arg3+0 (2048B)
+- weight: 2384 MM2S reads of 40960 B each, 2384 unique offsets, covering
+  19072 tiles x 5120 B = 0..0x5D20000 (~93.1MB) exactly once (multiplicity 1).
+- 8x MM2S WAITs at end.
+
+### Verified consistency with prior findings
+
+- kv offsets advance +0x400/token (L-dependent), MAX_L=8192 (kv BO 32MB =
+  4 x 8MB regions) — matches round-32 byte-exact capture at MAX_L=8192.
+- npu_pack_layer_bo (1920 tiles) == runtime weight BO byte-exact: the TXN
+  reads exactly the tiles the packer produces (1920 tiles/round, 1 round).
+- The old decode_txn.cpp read the right field (w[i+4]) but labeled it
+  bytes; the JSON output has no unit claim so only the doc was wrong.
+
+### Next step
+
+Re-run test_npu_forward_full with the corrected understanding: the layer
+TXN's act I/O is 2048 B (not 512 B); the 28-layer chain explosion must be
+re-examined with the full arg mapping above (per-layer norm/kv offsets and
+the runlist's 2x layer arming), and compared against runtime logits_1000.bin
+to close the validation loop.
+
+## Round 34b: the layer kernel runs TWICE per layer (attention + MLP passes); norms verified
+
+### The runlist's 2x layer arming is real — each layer = kernel A run + kernel C run
+
+- RUN_CTOR (interposer): 28x @0x9d20 (kernel A pool) + 1x @0x9e60 (lm_head)
+  + 28x @0xaa000 (kernel C pool) BEFORE RUNLIST 1; forwards 2-4 rebuild 28
+  layer runs each @0x9f20. PREINSTS dump 9-12 small BOs per runlist (3-4
+  runkeys x i3/i5/i6: act + norm1 + norm2).
+- ELF md5s: elf_0001 == elf_0003 (both layer, ctx=1); elf_0004..0007 differ
+  (regenerated per ctx). All layer ELFs 37360 B, .ctrltext 34172 B = ONE
+  192-read round.
+- POST dumps after RUNLIST 1: 28 weight BOs (10MB), 28 kv BOs (32MB), 58x
+  1MB (28 layers x norm1/norm2 + act + logits), 1 lm_head weight (94MB).
+- act BO (0x962c60) is FIXED across all layer runs (in-place chaining);
+  norm BOs 0x962490/0x9629b0 are also shared (content re-synced per layer
+  by the runtime, 229x 1MB sync-to-device captures).
+
+### Decisive evidence: layer kernel = ONE layer-transform, applied TWICE
+
+On-device test with the captured layer ELF, packed weights (byte-identical),
+per-layer norms (verified below), act = token-1000 embedding (verified
+byte-exact vs model.embed_tokens.row[1000]):
+
+- 1 run of layer 0 -> act std 0.3156 (matches CPU ref "L0 after attn"
+  std 0.316)
+- 2 runs of layer 0 -> act std 0.5410 (matches CPU ref "L0 after MLP"
+  final std 0.563)
+- => each layer's transform needs TWO kernel runs (A = attention pass,
+  C = MLP pass), matching the 57-run runlist (28 A + 1 lm_head + 28 C).
+  The ELF is identical for both; the phase is distinguished by which
+  norm/weight regions the kernel consumes (not by TXN content).
+
+### Norm buffers verified against model.q4nx (byte-exact)
+
+- run arg5 (i5, 0x962490) = 4096 B = input_layernorm(2048B) +
+  post_attention_layernorm(2048B) of layer L — verified byte-exact vs
+  model.layers.L.input_layernorm.weight + post_attention_layernorm.weight.
+  (preinsts i5 == layer-27 ILN because preinsts dump the LAST-armed layer.)
+- run arg6 (i6, 0x9629b0) = 768 B = [64 x 1.0 const][64 x 0][q_norm 128
+  bf16][k_norm 128 bf16] — q_norm/k_norm verified byte-exact at those
+  offsets vs model.layers.L.self_attn.q_norm/k_norm.weight.
+- ACT_CAP = preinsts_001_00_i3 == model.embed_tokens.weight row 1000
+  byte-exact (the harness drives forward(1000)).
+
+### Remaining blocker (unchanged): 28-layer chain explosion
+
+1 pass x 28 layers -> act std 194 (still explodes); 2 passes -> std 284.
+Single layer is plausible but chaining diverges — deterministic and
+input-independent (per-layer kv vs empty, per-layer norms vs fixed all give
+identical numbers). This is NOT the run pattern (1 vs 2 passes both
+explode); the divergence is systematic inside the layer transform itself
+(the CPU ref shows the same explosion at layer 27: std 282 vs runtime's
+bounded 3.39). Likely candidates: in-kernel dequant semantics (the
+q*scale+zp vs (q-zp)*scale question resurfacing at chain scale), or a
+norm/scale ordering difference that only compounds across 28 layers.
+Next: compare single-layer NPU act vs runtime's post-layer-0 act (need a
+fresh capture with CAP_POSTRUN_ACT or per-layer post dumps), then bisect
+the layer transform (attn-only vs mlp-only halves).
+
+## Round 35 — VALIDATION LOOP CLOSED: hand-rolled path == runtime byte-for-byte
+
+The "28-layer chain explosion" is NOT a divergence: **the runtime itself
+explodes** (fresh capture, correct BF16 interpretation: act std 194.46,
+range [-1216, 780] after forward 1 of the 28-layer model). The earlier
+"bounded std 3.39" was a measurement artifact (FP16 interpretation of BF16
+bytes in numpy, plus stale post-execute BO dumps). My hand-rolled chain
+reproduces the runtime byte-for-byte.
+
+### Decisive experiments (1-layer / 2-layer / 3-layer / 28-layer configs)
+
+- Config lever: the runtime reads num_hidden_layers from config.json, so a
+  model-dir copy with patched layer count builds a short runlist. The
+  xclbin lookup uses the model dir BASENAME (xclbins/<name>/layer.xclbin),
+  so keep the dir named Qwen3-0.6B-NPU2 and toggle the config.
+- 1 layer, 1 run (NPASS=1): act == runtime actpost (BYTE-IDENTICAL).
+- 2 layers, 1 run/layer: act == runtime actpost_002 (BYTE-IDENTICAL).
+- 3 layers, 1 run/layer: act == runtime actpost_002 (BYTE-IDENTICAL,
+  std 222.55 — the runtime itself explodes at 3 layers too).
+- 28 layers, 1 run/layer: act == runtime actpost_002 (BYTE-IDENTICAL,
+  std 194.4619, maxdiff 0.0). Then lm_head logits == runtime logits
+  (BYTE-IDENTICAL, argmax 397, std 3.38).
+- 28 layers, forward 2 (ctx=2): use the ctx-2 ELF (elf_0004, gen_layer_seq
+  at L=2) + per-layer kv accumulated from forward 1 (complete post-wait
+  kv dumps) → act BYTE-IDENTICAL (std 19.82) and logits BYTE-IDENTICAL
+  (argmax 88). Same for the 1-layer model's forward 2.
+
+### What the runtime really does per layer (resolved)
+
+- The runlist = 2 IDENTICAL runs per layer (same ELF, same args, same
+  runlist object), but the combined act equals ONE kernel application.
+  My runlist of 2 identical runs produces layer^2 (std 0.54), so the
+  runtime's 2nd run is a no-op w.r.t. the act (mechanism still unknown —
+  possibly an ERT/chain quirk; irrelevant for replication: 1 run per layer
+  reproduces the runtime byte-exactly at every layer count tested).
+- The kernel is the full layer (attn+MLP): one run reads all 1920 weight
+  tiles (q256+k128+v128+o256+up384+gate384+down384 = 9.8MB) and writes the
+  act + kv. 1 run ≈ after-attn-correlated CPU ref only by coincidence of
+  the buggy CPU ref; byte-exactness vs the runtime is the ground truth.
+- Per-context ELF: forward n uses gen_layer_seq(ctx+1) — ELF 0001 (ctx=1)
+  for forward 1, ELF 0004 (ctx=2) for forward 2 (different md5; the kv
+  read/write offsets are context-dependent). The lm_head ELF is constant.
+- KV: per-layer 32MB BOs accumulate across forwards. Post-EXECUTE BO dumps
+  are STALE (device still running); post-WAIT dumps (new ACTPOST/KVPOST/
+  WAITPOST hooks) give the complete state.
+- Norm i6 (arg6) [0:128] region: initial = [1.875 x64][0 x64], kernel
+  overwrites it during execution (ramp) and it is NOT re-synced between
+  forwards — but the kernel does NOT read it (identical output with any
+  content); only qn/kn at [128:384] matter (verified byte-exact).
+- Norm i5 (arg5): unchanged between forwards (byte-exact ILN+PALN).
+
+### Tooling added this round (npu-infer/tools/capture/cap_interposer.cpp)
+
+- runlist::wait hook: dumps the act BO (actpost_*), the kv BO (kvpost_*)
+  and all big ext::bo (waitpost_*) AFTER the device completes — fixes the
+  stale-dump problem.
+- runlist::add hooks log the runlist `self` pointer (confirmed all layer
+  runs go to ONE runlist) and record a3/a7 for the wait hook.
+- numpy note: BF16 bytes must be decoded as (u32<<16) view float32 —
+  viewing as float16 silently corrupts std/corr (source of the old
+  "bounded 3.39" and "1 run ≈ attn" confusions).
+
+### Net result
+
+The on-device validation loop is CLOSED: hand-rolled (packed weights via
+npu_pack_layer_bo, captured per-context layer ELFs, verified norms, kv
+accumulation, lm_head ELF) == FastFlowLM runtime output byte-for-byte on
+identical inputs, 28 layers x 2 tokens. The runtime's own 28-layer
+activations explode (std ~194); replicating that exactly is the correct
+target, not "fixing" it.
