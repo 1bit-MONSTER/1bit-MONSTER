@@ -30,13 +30,6 @@ std::atomic<long> HttpClient::default_timeout_seconds_{300};
 
 std::atomic<int64_t> HttpClient::download_rate_limit_bytes_per_second_{0};
 
-// Stream stall bound (seconds): how long a stream may deliver nothing before
-// it is treated as dead. Well above any inter-token gap, well below "never".
-// The server sets this from config at startup: explicit stream_stall_timeout
-// wins, otherwise it follows global_timeout. This atomic only holds the
-// pre-config default for direct library users.
-std::atomic<long> HttpClient::stream_stall_timeout_seconds_{120};
-
 // Serializes transfers so concurrent downloads cannot exceed the cap in aggregate.
 static std::mutex g_download_gate;
 
@@ -777,19 +770,10 @@ HttpResponse HttpClient::post_stream(const std::string& url,
         curl_easy_cleanup(curl);
         throw std::runtime_error("Failed to apply HTTP security policy");
     }
-    // A total timeout would kill a long but healthy generation, so an
-    // unqualified request is bounded by upstream silence instead of duration.
-    // The stall bound is configurable ("stream_stall_timeout" in config.json);
-    // 0 disables it, leaving the stream unbounded.
-    const long stall_seconds = HttpClient::get_stream_stall_timeout();
-    if (timeout_seconds == 0) {
-        if (stall_seconds > 0) {
-            curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-            curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, stall_seconds);
-        }
-    } else {
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, effective_timeout(timeout_seconds));
-    }
+    // A total timeout would kill a long but healthy generation, so the timeout
+    // bounds upstream silence instead of duration.
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, effective_timeout(timeout_seconds));
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, kConnectTimeoutSeconds);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "lemon.cpp/1.0");
 

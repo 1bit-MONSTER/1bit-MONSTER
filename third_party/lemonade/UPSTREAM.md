@@ -6,11 +6,29 @@
 > `git fetch` / `pull` / `clone`, push PRs, open issues, or run CI against
 > upstream.
 
-This snapshot carries the `llamacpp-hrx` backend (`src/cpp/server/backends/hrx/`),
-its registry entries / pins in `resources/server_models.json` +
-`backend_versions.json`, and the `tools/gen_hrx_model_entries.py` generator.
-It is kept in sync with the local source (`1bit-lemonade-v1170/third_party/lemonade`,
-v11.8.1).
+This snapshot is at **lemonade v11.9.0**.
+
+## What is upstream vs local
+
+As of v11.9.0, **upstream now carries the `llamacpp-hrx` backend itself**
+(`src/cpp/server/backends/hrx/hrx_server.cpp` + `lemon/backends/hrx/`), so that
+part of our HRX work is no longer a local patch — the HRX backend code is
+byte-identical to upstream.
+
+The **local-only** deltas carried on top of v11.9.0 are:
+
+1. **`hrx-b66` pin** (newer than upstream's `hrx-b59`): in
+   `src/cpp/resources/backend_versions.json` and `test/cpp/test_hrx_contract.cpp`.
+2. **HRX model-registry annotations**: `src/cpp/resources/server_models.json`
+   carries the `*-HRX` entries (`hrx_serve` / `hrx_token_embd` / `hrx_embd_w`),
+   `tools/gen_hrx_model_entries.py` and `tools/annotate_hrx_embedding_quants.py`
+   are local-only (upstream does not read or generate these).
+3. **Embeddability patch** in `CMakeLists.txt` (see below).
+
+> Note: the `stream_stall_timeout` config key that our v11.8.x snapshot carried
+> was **dropped** in this re-vendor — v11.9.0 handles the streaming-stall bound
+> via `global_timeout` (upstream #3386), and local review confirmed the extra
+> config key is not needed.
 
 ```sh
 # Re-vendor FROM the local source:

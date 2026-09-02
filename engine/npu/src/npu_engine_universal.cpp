@@ -776,11 +776,31 @@ int main(int argc,char**argv){
     // (e.g. final_i8_QKV_K2048_N2560.xclbin) so any model sharing GEMM shapes can reuse
     // the same xclbin without a per-model rebuild.
     auto xp=[&](const char*t, int K, int N) -> std::string {
-        std::string tp=xd+"/final_i8_"+t+"_"+cfg.model_tag+".xclbin";
-        FILE* f=fopen(tp.c_str(),"rb"); if(f){fclose(f);return tp;}
+        // Try the full model_tag, then progressively strip leading
+        // underscore-separated vendor/format tokens (e.g.
+        // fastflowlm_qwen3_0_6b -> qwen3_0_6b) so vendor-prefixed model dirs
+        // (FastFlowLM-*, ...) auto-find their per-model xclbin without a
+        // manual --model-tag.  The full tag is always tried first, so this is
+        // a no-op for correctly-tagged models.
+        std::string base=xd+"/final_i8_"+t, tag=cfg.model_tag;
+        while(true){
+            std::string tp=base+"_"+tag+".xclbin";
+            FILE* f=fopen(tp.c_str(),"rb"); if(f){fclose(f);return tp;}
+            size_t u=tag.find('_'); if(u==std::string::npos||u==tag.size()-1) break;
+            tag=tag.substr(u+1);
+        }
         return xd+"/final_i8_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";
     };
-    auto ip=[&](const char*t){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+".txt";};
+    auto ip=[&](const char*t){
+        std::string base=xd+"/insts_i8_"+t, tag=cfg.model_tag;
+        while(true){
+            std::string tp=base+"_"+tag+".txt";
+            FILE* f=fopen(tp.c_str(),"rb"); if(f){fclose(f);return tp;}
+            size_t u=tag.find('_'); if(u==std::string::npos||u==tag.size()-1) break;
+            tag=tag.substr(u+1);
+        }
+        return base+"_"+cfg.model_tag+".txt";
+    };
     // bf16 path (n1_core_placed.py: bf16 activations + v8bfp16ebs8 weights)
     bool bf16_mode = getenv("NPU_BF16") != nullptr;
     auto xpb=[&](const char*t, int K, int N){return xd+"/final_bf16_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";};
@@ -888,6 +908,11 @@ int main(int argc,char**argv){
     // Legacy I8Ctx pointers (always available, fallback if FLM xclbin not found)
     I8Ctx cq,co,cg,cd;
     std::unique_ptr<I8Ctx> cu_ptr;
+    std::unique_ptr<I8Ctx> cg_fused_i4;   // env-gated #1934 int4 fused GU->SiLU (dense FFN)
+    // #1934: per-layer fused GU (P1) weight BO + h2 (C1->silu) scratch BOs.
+    std::vector<std::unique_ptr<xrt::bo>> cg_fuse_bo, cg_fuse_h2;
+    std::vector<std::vector<float>> cg_fuse_scl;   // per-layer S_col (amax pass)
+    std::vector<std::vector<int8_t>> cg_fuse_row;  // per-layer B_shadow (host amax)
     // Hybrid FLM contexts (only used when --use-flm-xclbin and xclbin found)
     std::unique_ptr<HybridFlmCtx> hcq, hco, hcg, hcd, hcu_ptr;
     cq.MD=XM;cq.KD=cfg.xclbin_qkv_k;cq.ND=cfg.xclbin_qkv_n;
@@ -941,6 +966,24 @@ int main(int argc,char**argv){
         if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){fprintf(stderr,"FAIL O\n");return 1;}
         if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL GU\n");return 1;}}
         if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){fprintf(stderr,"FAIL D\n");return 1;}
+        // #1934: env-gated int4 fused GU->SiLU (GUSILU_i4) for the DENSE FFN
+        // (qwen3-0.6b). Kernel contract silicon-verified (zaya 0.999336); this
+        // inits the fused P1 context so the dense GU->host-SiLU->D can be
+        // swapped for the single GU+SiLU launch. Opt-in (NPU_QWEN_I4=1) until
+        // its per-weight fused corr gate passes. Geometry pinned from the p1_i4
+        // generator (-M 8 -K H -N_GU 2*IM -N_D H): P1 KD=H ND=H bC_nd=N_GU.
+        if (!cfg.gu_split && getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1) {
+            cg_fused_i4 = std::make_unique<I8Ctx>();
+            cg_fused_i4->MD = 8; cg_fused_i4->KD = H; cg_fused_i4->ND = H;
+            cg_fused_i4->bC_nd = 2 * IM;   // N_GU (silu'd GU output width)
+            if (!cg_fused_i4->init(dev, xp("GUSILU_i4", H, 2 * IM).c_str(),
+                                   ip("GUSILU_i4").c_str(), 4, NC)) {
+                cg_fused_i4.reset();
+                fprintf(stderr, "QWEN_I4 fused ctx init FAILED (fallback to int8 GU+D)\n");
+            } else {
+                fprintf(stderr, "QWEN_I4 fused ctx ready (GUSILU_i4, KD=%d N_GU=%d)\n", H, 2 * IM);
+            }
+        }
         if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!init_i8(*cu_ptr,"U",cfg.xclbin_u_k,cfg.xclbin_u_n)){fprintf(stderr,"FAIL U\n");return 1;}}
         }
     }
@@ -1329,6 +1372,24 @@ struct Bf16Ctx {
             int t2=gr+ur;std::vector<float>w2((size_t)H*t2);
             transpose_pack(gw,GUOUT,H,w2.data(),t2,0);transpose_pack(uw,GUOUT,H,w2.data(),t2,GUOUT);
             FLM_PACKB(cg,l,w2.data(),H,t2,gsc[l]);
+            // #1934 env-gated int4 fused GU pack (B'' via raw-Q4NX + GuI4Pack).
+            if (cg_fused_i4 && cg_fused_i4->isReady()) {
+                if ((int)cg_fuse_bo.size() <= l) { cg_fuse_bo.resize(l+1); cg_fuse_h2.resize(l+1); cg_fuse_scl.resize(l+1); cg_fuse_row.resize(l+1); }
+                if (!cg_fuse_bo[l]) cg_fuse_bo[l] = cg_fused_i4->make_fused_weight_bo_i4(dev, H, 2*IM);
+                if (!cg_fuse_h2[l]) cg_fuse_h2[l] = cg_fused_i4->make_scratch_bo(dev, (size_t)8 * H);
+                int gi8r = gr/32, ui8r = ur/32;
+                auto rg = read_q4nx_raw(i8p(0), gp[l], gi8r, H);
+                auto ru = read_q4nx_raw(i8p(0), up[l], ui8r, H);
+                RawQ4Tensor raw_gu; raw_gu.rows = 2*IM; raw_gu.cols = H;
+                raw_gu.q4.assign((size_t)(2*IM)*H, 0);
+                raw_gu.scl.assign((size_t)(2*IM)*(H/32), 0.0f);
+                raw_gu.zp.assign((size_t)(2*IM)*(H/32), 0.0f);
+                for (int rr = 0; rr < IM; rr++) { memcpy(&raw_gu.q4[(size_t)rr*H], &rg.q4[(size_t)rr*H], sizeof(int8_t)*H); }
+                for (int rr = 0; rr < IM; rr++) { memcpy(&raw_gu.q4[(size_t)(IM+rr)*H], &ru.q4[(size_t)rr*H], sizeof(int8_t)*H); }
+                for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)rr*(H/32)+gg]=rg.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)rr*(H/32)+gg]=rg.zp[(size_t)rr*(H/32)+gg]; }
+                for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)(IM+rr)*(H/32)+gg]=ru.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)(IM+rr)*(H/32)+gg]=ru.zp[(size_t)rr*(H/32)+gg]; }
+                cg_fused_i4->packB_into_fused_i4(*cg_fuse_bo[l], raw_gu, 0, H, IM, cg_fuse_scl[l], cg_fuse_row[l]);
+            }
         }free(gw);free(uw);
         }
         if (dp[l]) {
