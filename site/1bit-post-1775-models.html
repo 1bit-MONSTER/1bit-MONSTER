@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>One engine, 1,775 models | 1bit.MONSTER</title>
-  <meta name="description" content="One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
+  <meta name="description" content="Every model on Hugging Face runs on one engine: a single binary that auto-detects thousands of model types and checkpoints, no Python involved. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hf-coverage-audit.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="One engine, 1,775 models | 1bit.MONSTER" />
-  <meta property="og:description" content="One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
+  <meta property="og:description" content="Every model on Hugging Face runs on one engine: a single binary that auto-detects thousands of model types and checkpoints, no Python involved. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hf-coverage-audit.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-1775-models.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="One engine, 1,775 models | 1bit.MONSTER" />
-  <meta name="twitter:description" content="One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download." />
+  <meta name="twitter:description" content="Every model on Hugging Face runs on one engine: a single binary that auto-detects thousands of model types and checkpoints, no Python involved. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hf-coverage-audit.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-1775-models.html" />
 <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One engine, 1,775 models | 1bit.MONSTER", "description": "One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.", "url": "https://1bit.monster/1bit-post-1775-models.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1775-models.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One engine, 1,775 models | 1bit.MONSTER", "description": "Every model on Hugging Face runs on one engine: a single binary that auto-detects thousands of model types and checkpoints, no Python involved. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hf-coverage-audit.md", "url": "https://1bit.monster/1bit-post-1775-models.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1775-models.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -354,6 +354,8 @@
       </div>
       <h1>One engine, 1,775 models</h1>
       <p class="lead">Every architecture token on HuggingFace — 552 of them — resolves to one binary. 317,310 checkpoints map to a single 1-bit engine. This is how.</p>
+      
+      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hf-coverage-audit.md">HF-coverage audit</a> — the full technical details, numbers and corrections.</p></div>
       <div class="prose">
         <h2>The claim</h2>
         <p>Go to HuggingFace. Pick any text-generation model. Any architecture — Llama, Qwen, Mistral, Gemma, Zamba, Jamba, Cohere, Falcon, DeepSeek-MoE, MiniMax, BitNet, T5 — and the 1bit.MONSTER engine can run it. Not a wrapper. Not a per-model build. One binary that auto-detects the architecture from the file and dispatches to the right backend.</p>

@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER</title>
-  <meta name="description" content="A 24x speedup in one session, from 244 to 10 ms/tok, beating FLM Kraken Point by 46%. OpenMP attention plus LM head. Full C++23, zero Python." />
+  <meta name="description" content="NPU inference got 24x faster in one session: batch decoding and an attention rework turned 244 ms/token into 10 ms/token on a laptop NPU. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER" />
-  <meta property="og:description" content="A 24x speedup in one session, from 244 to 10 ms/tok, beating FLM Kraken Point by 46%. OpenMP attention plus LM head. Full C++23, zero Python." />
+  <meta property="og:description" content="NPU inference got 24x faster in one session: batch decoding and an attention rework turned 244 ms/token into 10 ms/token on a laptop NPU. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-npu-v12.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER" />
-  <meta name="twitter:description" content="A 24x speedup in one session, from 244 to 10 ms/tok, beating FLM Kraken Point by 46%. OpenMP attention plus LM head. Full C++23, zero Python." />
+  <meta name="twitter:description" content="NPU inference got 24x faster in one session: batch decoding and an attention rework turned 244 ms/token into 10 ms/token on a laptop NPU. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-npu-v12.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER", "description": "A 24x speedup in one session, from 244 to 10 ms/tok, beating FLM Kraken Point by 46%. OpenMP attention plus LM head. Full C++23, zero Python.", "url": "https://1bit.monster/1bit-post-npu-v12.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-npu-v12.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER", "description": "NPU inference got 24x faster in one session: batch decoding and an attention rework turned 244 ms/token into 10 ms/token on a laptop NPU. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md", "url": "https://1bit.monster/1bit-post-npu-v12.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-npu-v12.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -356,6 +356,8 @@
       <h1>NPU v12: M=32 batch decode at 97 tok/s</h1>
       <p class="lead">One session took decode from 244 to 10 ms per token, a 24x speedup, and put v12 at 97 tok/s with M=32 batch decode, 46% ahead of FLM Kraken Point. OpenMP attention plus an LM head, all C++23, zero Python.</p>
 
+      
+      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md">NPU benchmarks</a> — the full technical details, numbers and corrections.</p></div>
       <div class="prose" data-od-id="body">
         <h2>One session</h2>
         <p>V12 did not arrive through a long campaign of tuning. In a single session decode went from 244 to 10 ms per token, a 24x speedup, by moving to M=32 batch decode and clearing the two biggest stalls in the path.</p>
