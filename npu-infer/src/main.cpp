@@ -1,3 +1,4 @@
+#include <vector>
 #include "engine.h"
 #include "common.h"
 #include <cstdio>
@@ -27,14 +28,30 @@ int main(int argc, char** argv) {
     }
     
     // Test generate: BOS token → a few output tokens
-    // NPU_PROMPT_TOKEN env overrides the BOS prompt (used to match the
-    // runtime harness run_qwen3_npu for logits comparison).
+    // NPU_PROMPT_IDS (comma-separated) or NPU_PROMPT_TOKEN overrides the
+    // default BOS prompt. A chat driver encodes a real prompt via the
+    // tokenizer and passes the token stream here.
+    const char* pids = getenv("NPU_PROMPT_IDS");
     const char* pt = getenv("NPU_PROMPT_TOKEN");
-    const int prompt[] = { pt ? atoi(pt) : 151643 };
+    std::vector<int> prompt;
+    if (pids && *pids) {
+        std::string s(pids);
+        size_t pos = 0;
+        while (pos < s.size()) {
+            size_t c = s.find(',', pos);
+            prompt.push_back(atoi(s.substr(pos, c - pos).c_str()));
+            if (c == std::string::npos) break;
+            pos = c + 1;
+        }
+    } else if (pt) {
+        prompt.push_back(atoi(pt));
+    } else {
+        prompt.push_back(151643);  // BOS
+    }
     int output[32];
     
     auto t0 = std::chrono::steady_clock::now();
-    int num_out = engine.generate(prompt, 1, output, 16);
+    int num_out = engine.generate(prompt.data(), (int)prompt.size(), output, 16);
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     
