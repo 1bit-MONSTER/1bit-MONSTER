@@ -595,6 +595,8 @@ typedef enum {
     RCPP_ARCH_BANANAMIND21CODER = 995,  // bananamind21_coder — BananaMind21CoderForCausalLM (BananaMind-2.1 code LM; registry token, engine support XL, PICO-family candidate)
     RCPP_ARCH_BANANAMIND21LITE = 996,   // bananamind21_lite_25m — BananaMind21Lite25MForCausalLM (registry token, engine support XL, PICO-family candidate)
     RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT = 997, // concept_dominant_gptbert — ConceptDominantGPTBertForPreTraining (GPT/BERT-hybrid pre-training class; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_TRHASH = 998,          // tr_hash_moe — TR-HASH-MoE (GQA + RMSNorm/QK-norm + standard RoPE + hash-routed shared-expert MoE; mlp_type tr_hash_engine, routing_strategy token_id_multi_hash; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_LLAVAONEVISION = 999,  // llava_onevision — LlavaOnevisionForConditionalGeneration (SigLIP vision tower + GELU projector + Qwen2 text decoder; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2493,6 +2495,23 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "bananamind21lite25m") == 0) return RCPP_ARCH_BANANAMIND21LITE;   // census stripped arch name
     if (strcmp(s, "concept_dominant_gptbert") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // HF model_type (issue #2031)
     if (strcmp(s, "conceptdominantgptbertforpretraining") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // census stripped class name
+    // ── 2026-09-02 census watcher (PR #2046 CI gate) ──
+    // Both classes are GENUINELY NEW architectures, verified against live HF
+    // configs, so they get a real registry token (own identity) rather than an
+    // alias into a sibling family. tr_hash_moe = AETHORIA-AI/TR-HASH-MoE-*
+    // (TRHashForCausalLM; hash-routed shared-expert MoE, mlp_type
+    // tr_hash_engine, routing_strategy token_id_multi_hash); llava_onevision =
+    // aacudad/AnomalyThink-LLaVA-OneVision-7B-SFT-GRPO
+    // (LlavaOnevisionForConditionalGeneration; SigLIP vision tower + GELU
+    // projector + Qwen2 text decoder). The generic loader refuses these cleanly
+    // ("engine support XL") so nothing mis-executes; the token makes the census
+    // count them covered while the real implementations land separately.
+    if (strcmp(s, "trhash") == 0) return RCPP_ARCH_TRHASH;             // TRHashForCausalLM — census stripped arch name (registry token)
+    if (strcmp(s, "tr_hash_moe") == 0) return RCPP_ARCH_TRHASH;        // HF model_type (tr_hash_moe)
+    if (strcmp(s, "trhashforcausallm") == 0) return RCPP_ARCH_TRHASH;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "llavaonevision") == 0) return RCPP_ARCH_LLAVAONEVISION;  // LlavaOnevisionForConditionalGeneration — census stripped arch name (registry token)
+    if (strcmp(s, "llava_onevision") == 0) return RCPP_ARCH_LLAVAONEVISION; // HF model_type (llava_onevision)
+    if (strcmp(s, "llavaonevisionforconditionalgeneration") == 0) return RCPP_ARCH_LLAVAONEVISION;  // raw HF architecture string (regression guard)
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
