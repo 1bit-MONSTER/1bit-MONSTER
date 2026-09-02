@@ -1259,3 +1259,27 @@ engine == runtime-seq byte-identity (1000 ctx) is unaffected — the engine
 replicates the seq path exactly, including its .rodata rope and its mv-GEMM
 numerics. Matching a real batched-prefill server session would require
 replicating BOTH confounders (mm projection numerics + exact-math rope).
+
+### Round 38c-adjudicated — neither path is byte-correct vs fp64; both are valid bf16 pipelines
+
+fp64 layer-0 K reference (confirmed q*scale+zp dequant, token 151643 at pos
+0 / rope identity) vs the two runtime paths' slot-0 K:
+- mm-prefill: maxdiff 3.16, meandiff 0.046, 92/1024 byte-match, 834/1024
+  within 1 bf16 ULP
+- seq-forward: maxdiff 3.29, meandiff 0.046, 17/1024 byte-match, 866/1024
+  within 1 bf16 ULP
+
+Both are ~equally approximate (0.5% mean rel error on std-9 values) — the
+NPU bf16 pipelines round differently from any fp64 reference, and the two
+paths round differently from EACH OTHER (2-6 ULP on ~6/1024 entries at
+pos 0). There is no "correct path" at byte level; mm-prefill is not buggy,
+it is a different-but-valid bf16 variant of the same math.
+
+Final position (engine): the engine is byte-identical to the runtime's
+seq/decode path — the path the per-ctx harness drives and the one the
+Round 35-38 validations used. A real AutoModel-chat server session
+(batched mm prefill) will differ from the engine at ~first-token argmax on
+near-ties because the runtime itself has two divergent bf16 pipelines; this
+is a runtime property, not an engine defect, and is now fully characterized
+(confounder A: mv-vs-mm projection ULP; confounder B: .rodata-vs-exact rope
+at pos>0; neither path byte-matches fp64 ground truth).
