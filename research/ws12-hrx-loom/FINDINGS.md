@@ -308,3 +308,29 @@ when src2 is host-backed; (c) batch the syncs per ubatch. The ids are tiny
 Also noted: the kernel itself is correct and fast (59 ms of real compute for
 all 48 layers of MoE+attention+pointwise on the NPU). The grouped
 fused_tbl_tiled path at c32 is NOT the problem (previous finding corrected).
+
+## Round 25k — MUL_MAT_ID ids direct-read (fork 5e4f14a)
+
+The remaining prefill bottleneck after the sync-bound finding: the ROUTER.
+Per layer: scores MUL_MAT (NPU) -> softmax (NPU) -> argsort (CPU for the
+[128, 32] prefill shape — HRX2 only claims n128_r1) -> the CPU reads the NPU
+scores -> stream synchronize. 313 of the 322 remaining syncs follow MUL ops
+(avg 14 ms each — each drains the accumulated submit batch).
+
+Fix landed (round 25k): the MUL_MAT_ID ids tensor is CPU-written into the
+host-coherent GTT (round-25i zero-copy); the dispatch copied it to a host
+scratch + full stream synchronize before grouping (144x/eval). Now reads
+src2->data directly when host-buft-backed (ids_direct) — zero copy, zero
+sync. Fallback copy+sync path retained for device-produced ids.
+
+Verified: 30B q4nx pp32 logits unchanged (top1 576, corr 0.9584 vs Q4_K
+CPU); sync calls 1186 -> 322 on the pp32 trace. Speed: 45 -> 48 t/s
+(marginal — the router argsort syncs still dominate).
+
+Remaining lever: the router. Options: (a) HRX2 argsort for [128, nrows>1]
+(removes the CPU round-trip; the ids still need a host read for grouping —
+but host-coherent device-written ids could be read without a full drain if
+the sync is scoped to the argsort's completion); (b) flush the submit batch
+before the router sync so each drain is short; (c) on-device grouping (big).
+The dispatch compute is only ~59 ms/eval — the sync structure is the whole
+gap to the ~500 t/s ceiling.
