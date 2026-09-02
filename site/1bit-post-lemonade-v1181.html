@@ -84,7 +84,7 @@
     @media (prefers-reduced-motion: reduce) { .topnav .logo .relay { animation: none; } .topnav .logo .r1 { fill: var(--fg); } }
 
     .topnav nav { display: flex; gap: var(--gap-lg); }
-    .topnav nav a { font-size: 14px; color: var(--muted-strong); }
+    .topnav nav a { font-size: 14px; color: var(--muted-strong); white-space: nowrap; }
     .topnav nav a:hover { color: var(--fg); }
     .topnav nav a[aria-current="page"] { color: var(--fg); font-weight: 500; }
     .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
@@ -116,7 +116,7 @@
     .prose .callout { border-left: 1px solid var(--accent); padding: 4px 0 4px var(--gap-lg); margin: 0 0 var(--gap-lg); }
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
-      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; flex-wrap: wrap; }
     }
       /* ─── 1bit theme modes ────────────────────────────────────────────────
        light mode (default) | auto (follows OS) | dark mode.
@@ -299,7 +299,7 @@
     }
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
-      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; flex-wrap: wrap; }
       .theme-switch { order: 4; }
     }
 
