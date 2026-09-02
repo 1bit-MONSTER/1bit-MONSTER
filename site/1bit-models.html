@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>1bit.MONSTER: One engine, Any model.</title>
-  <meta name="description" content="554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage. The validated model families the engine runs, with real parameter sizes and backend availability." />
+  <meta name="description" content="554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage. The validated model families the engine runs, with real parameter sizes and backend availability. Every family serves from one zero-copy memory pool — SharedBO, NPU + GPU + host — with one chained API call per layer." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="1bit.MONSTER: One engine, Any model." />
-  <meta property="og:description" content="554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage. The validated model families the engine runs, with real parameter sizes and backend availability." />
+  <meta property="og:description" content="554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage. The validated model families the engine runs, with real parameter sizes and backend availability. Every family serves from one zero-copy memory pool — SharedBO, NPU + GPU + host — with one chained API call per layer." />
   <meta property="og:url" content="https://1bit.monster/1bit-models.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="1bit.MONSTER: One engine, Any model." />
-  <meta name="twitter:description" content="554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage. The validated model families the engine runs, with real parameter sizes and backend availability." />
+  <meta name="twitter:description" content="554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage. The validated model families the engine runs, with real parameter sizes and backend availability. Every family serves from one zero-copy memory pool — SharedBO, NPU + GPU + host — with one chained API call per layer." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-models.html" />
   <style>
@@ -413,7 +413,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: One engine, Any model.", "description": "554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage. The validated model families the engine runs, with real parameter sizes and backend availability.", "url": "https://1bit.monster/1bit-models.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: One engine, Any model.", "description": "554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage. The validated model families the engine runs, with real parameter sizes and backend availability. Every family serves from one zero-copy memory pool — SharedBO, NPU + GPU + host — with one chained API call per layer.", "url": "https://1bit.monster/1bit-models.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -460,7 +460,7 @@
     <section class="section hero-center" data-od-id="hero">
       <div class="container">
         <h1>One engine, Any model.</h1>
-        <p class="lead">The engine reads the model header, picks the architecture and kernel path, and runs. No config, no per-model glue, no registry to maintain.</p>
+        <p class="lead">The engine reads the model header, picks the architecture and kernel path, and runs. No config, no per-model glue, no registry to maintain. And every family serves from one shared memory pool — NPU, GPU and host alias the same SharedBO pages, zero copies — with one chained API call per layer (the Windows NPU model, matched on Linux).</p>
         <div class="stat-row" data-od-id="coverage-stats">
           <div class="stat" data-od-id="stat-tokens"><span class="n">554</span><span class="l">architecture tokens</span></div>
           <div class="stat" data-od-id="stat-strings"><span class="n">1,798</span><span class="l">HF arch strings</span></div>
