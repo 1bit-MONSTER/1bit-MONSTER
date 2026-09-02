@@ -1326,6 +1326,23 @@ tripled prefill. Correctness re-verified on 3B/7B/30B/GLM ("Paris." →
 on the pre-existing nselected=128 fused-tbl range (A/B'd against the
 baseline stash — unchanged).
 
+### Round 28 — engine lane: logits byte-identical to the real FastFlowLM runtime (corr 1.000000)
+
+Engine-side milestone (npu-infer lane): the hand-rolled NPU launcher's
+prefill logits are now BYTE-IDENTICAL to the real FastFlowLM runtime on the
+same xclbin — for the token-1000 input, corr 1.000000, argmax 397==397,
+top-5 identical [397, 3219, 144370, 42044, 255], verified via NPU_LOGITS_DUMP
+vs the runtime's logits_1000.bin; decode ~15 ms/tok on Qwen3-0.6B/XDNA 2.
+This closes the round-26 "why 0.99999999 and not 1.0" question in the
+strongest way: same instruction stream, same bytes — the residual corr gap
+in the llama.cpp lane is summation order between reduction trees, not the
+Q4NX math. Fix trail: amdxdna ABI needs the (opcode, instr_bo, ninstr,
+bo0..boN) instruction buffer (without it ERT reports COMPLETED but the AIE
+never executes — silent no-op, proven with sentinel buffers); host BOs must
+use their kernel-argument group ids (group-0 BOs ignored, can wedge the NPU
+with IO_PAGE_FAULTs); Q4NX dequant is W = (q − zp) · scale (group-major bf16
+scales/zeros, lane-swizzled nibbles), maxdiff 0.0 over the whole projection.
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
