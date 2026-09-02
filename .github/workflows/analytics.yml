@@ -173,7 +173,13 @@ jobs:
             # aggregate by country (codes are ISO alpha-2).
             COUNTRIES=$(for d in $(seq 0 6); do
               DAY=$(date -u -d "$FROM + $d days" +%Y-%m-%d)
-              gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequestsAdaptiveGroups(limit: 100, filter: {date: \"$DAY\"}, orderBy: [count_DESC]) { dimensions { clientCountryName } count } } } }" | jq -r 'if .data then [.data.viewer.zones[0].httpRequestsAdaptiveGroups[]? | select(.dimensions.clientCountryName != null) | { country: .dimensions.clientCountryName, requests: .count }] | .[] | "\(.country)	\(.requests)" else empty end'
+              if RESP=$(gql "{ viewer { zones(filter: {zoneTag: \"$ZONE_ID\"}) { httpRequestsAdaptiveGroups(limit: 100, filter: {date: \"$DAY\"}, orderBy: [count_DESC]) { dimensions { clientCountryName } count } } } }"); then
+                ERR=$(printf '%s' "$RESP" | jq -r '.errors[0].message // empty')
+                [ -z "$ERR" ] || echo "country query failed (day $DAY): $ERR" >&2
+                printf '%s' "$RESP" | jq -r 'if .data then [.data.viewer.zones[0].httpRequestsAdaptiveGroups[]? | select(.dimensions.clientCountryName != null) | { country: .dimensions.clientCountryName, requests: .count }] | .[] | "\(.country)	\(.requests)" else empty end'
+              else
+                echo "country query failed (day $DAY): HTTP error" >&2
+              fi
             done | awk -F"\t" '/\t/ {agg[$1]+=$2} END {for (c in agg) print c "\t" agg[c]}' | sort -t"$(printf '\t')" -k2 -rn | head -10 | awk -F"\t" '{print $1 "\t" $2 " req"}')
             if [ -n "$COUNTRIES" ]; then
               echo "$COUNTRIES"
