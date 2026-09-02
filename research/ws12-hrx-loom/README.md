@@ -1719,6 +1719,41 @@ theoretical 4x batched ceiling (~176 t/s) is the subject of further rounds
 for r16wb8, so attention/kv and kernel overhead at cols 4-8 are next).
 Fork eb6ff78 pushed (kernel + catalog + generalized dispatcher).
 
+### Round 25t v3 — cols=4 step profiled: the gap is r16wb8's 64+ accumulator register penalty (44 GB/s vs r16w's 113); cols=4 is at a structural local optimum with current designs
+
+HRX2_OPTIME+SYNC profile of the 4-parallel bench decomposes a cols=4 decode
+step (~84 ms wall): **MUL_MAT_Q4NX = 64.3 ms (77%)**, then F32 attention
+MUL_MAT 8.5 ms, ADD 2.5, ROPE 1.3, SET_ROWS 1.3, GLU 1.0, SOFT_MAX 1.0,
+CONT 0.8 — i.e. the Q4NX weight mms dominate and run at only ~44 GB/s
+(r16wb8 at cols=4) vs r16w's 113 GB/s at cols=1. Probe quantification at the
+real 3B gate shape (11008, 2048), weights read once per dispatch:
+
+    r16w   cols=1  16 accs  113 GB/s
+    r16wb2 cols=2  32 accs   90 GB/s
+    r16wb8 cols=4  64-128    44 GB/s
+    r16wb8 cols=8  128       31 GB/s
+
+The accumulator-count penalty is severe and roughly halves the memory rate
+per acc doubling past 32. Two attempted fixes were measured and rejected:
+an **8-row workgroup** (8 rows x 4 cols = 32 accs) reads 4 B per lane at 8 B
+stride — half-density per wg on the 8-B-slab layout — and collapses to 21
+GB/s (the r16 1-B-stride syndrome at 4-B scale; 8-row wgs cannot read
+densely in this layout); and a clean guard-free exact-cols=4 variant was
+abandoned mid-generation. 2 col-groups of r16wb2 (2 weight reads at 90
+GB/s) is numerically identical to r16wb8's single read at 44 GB/s (~43-44
+ms/step either way), so **cols=4 sits at a local optimum** across every
+kernel structure tried: 16-row dense reads force >=64 accs (rate
+collapse), fewer rows break density, more col-groups multiply reads.
+
+Breaking it requires a k-split + merge design (two workgroups per output
+over k-halves, each holding <=32 accs at the r16w rate, plus a partial-sum
+merge pass) or an LDS-accumulation scheme — deferred, since the ceiling is
+also bounded by the non-Q4NX step cost (~19.6 ms: attention F32 mms scale
+with token count). The delivered win stands: 4-parallel decode 10.9 -> 62-68
+t/s aggregate (~6x; ~1.4-1.55x over single-seq). Failed kernels (r8wb4,
+clean-4col) removed; fork remains pristine at eb6ff78.
+
+### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
