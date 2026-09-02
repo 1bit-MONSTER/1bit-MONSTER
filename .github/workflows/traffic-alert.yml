@@ -46,7 +46,7 @@ jobs:
             "https://api.github.com/app/installations" | \
             jq -r --arg o "$GITHUB_REPOSITORY_OWNER" '.[] | select(.account.login == $o) | .id' | head -1)
           if [ -z "$INSTALL_ID" ]; then
-            echo "::warning::GitHub App not installed on $GITHUB_REPOSITORY_OWNER — install it at https://github.com/apps/$GITHUB_REPOSITORY_OWNER/installations/new"
+            echo "::warning::GitHub App not installed on $GITHUB_REPOSITORY_OWNER — install it at https://github.com/apps/1bit-traffice-bot/installations/new"
             echo "TOKEN=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
