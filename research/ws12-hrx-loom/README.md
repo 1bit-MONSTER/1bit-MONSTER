@@ -1499,6 +1499,97 @@ weight-bandwidth-bound, but now at the memory path's real rate; the residual
 gap to the f32 kernel's 205 GB/s (r16w's 16-row/LDS/reduce overhead) is the
 next lever if decode needs more.
 
+### Round 25r — the ~150 GB/s plateau is NOT r16w's overhead: six instruction-side experiments all flat; the gap is memory-side read topology, and the roster is tensor-shape-bound below it anyway
+
+25q ended with "the residual gap to the f32 kernel's 205 GB/s (r16w's
+16-row/LDS/reduce overhead) is the next lever". Round 25r attacked that
+hypothesis with shape-matched probes and kernel variants. It is falsified:
+**r16w plateaus at ~145-153 GB/s regardless of every instruction-side change
+tested**, and the shape-matched dense-f32 reference reads the same
+device-local memory at **188-231 GB/s** (true-bytes accounting — the 25q
+"205-219" figure was real, and it is the *floor* of the f32 curve, not the
+ceiling). The plateau is memory-side (per-workgroup read-run length and
+3-stream read topology); and separately, every real decode tensor on the
+roster is **shape-bound below the plateau** (83-137 GB/s), so the plateau is
+not even the binding constraint for current models.
+
+Method. The 25q probe (one dispatch + one sync, cold via an 8-region
+rotating ring, dev-local buffers) was extended with a shape-matched f32
+control (`/tmp/probe_f32`): the real `mul_mat_f32_f32_ggml` route (cols==1,
+the decode f32 path) dispatched on a pure-f32 buffer at rows×k×4 **true**
+bytes, grid (rows, 1) exactly as the real Q4NX slice helper launches it —
+so f32 GB/s and r16w GB/s are the same unit (actual bytes read per
+dispatch). Warm ≈ cold at ≥21 MB rings (NPU L2 cannot hold them) — the real
+decode regime.
+
+r16w plateau (cold, dev-local, all shapes ≥ 21 MB):
+
+    rows=131072 k=4096  8192 wgs × 16 cols  150.6 GB/s
+    rows=16384  k=16384 1024 wgs × 64 cols  152.7 GB/s
+    rows=49152  k=8192  3072 wgs × 32 cols  146.5-152.2 GB/s (run-to-run)
+    rows=8192   k=49152  512 wgs × 192 cols  149.6 GB/s
+
+Shape-matched f32 (same shapes, true bytes):
+
+    (2048,2048)    160.5     (11008,2048)    205.7     (2048,11008)    216.6
+    (16384,4096)   225.1     (18944,3584)    229.6     (16384,16384)   226.8
+    (49152,8192)   231.0
+
+Six negative kernel experiments (each a scratch patch on the real r16w .loom,
+probed, then reverted; tree clean after):
+
+1. **+30% ALU** — 128 dummy FMAs/lane/column fed into the real FMAs:
+   147.4 → 150.2 → 150.0 GB/s. Not ALU-issue-bound.
+2. **8→1 vectorized packed loads** — one vector<2xi32> load per lane
+   replacing 8 scalar i8 loads (same DRAM footprint): 145.2. Not
+   load-instruction-bound.
+3. **Barrier removed** (racy LDS, rate-only): 145.3. Not barrier-bound.
+4. **4× fewer LDS ops** — interleaved scale+zero staging, one aligned i32
+   LDS load per row replacing 4 byte loads (64→16 per lane per column):
+   145.5. Not LDS-op-bound.
+5. **wg count 1024→8192** (rows 16384→131072, cols/wg 16): 152.7 → 150.6.
+   Not parallelism-bound at the top.
+6. **cols/wg 16→192** at comparable wg counts: 139 → 150. Longer sequential
+   per-wg walks help up to ~150, then plateau.
+
+The one knob that moves the memory side: **per-workgroup read-run length**.
+f32 itself, at fixed rows=16384, drops 226.2 → 187.8 GB/s as per-wg runs
+shrink 64 KB → 1 KB (k 16384→256); r16w's per-column read is a 2 KB packed
+chunk (+256 B scales +256 B zeros, half of a 5.12 KB tile; the sibling
+16-row wg owns the other half). Even at matched ~2-4 KB granularity f32
+predicts ~195-205, so r16w's residual ~150 also carries a read-topology
+penalty (three interleaved streams, half-tile density). A full-tile 32-row
+workgroup (5 KB dense per column, single staging) is the one untested
+structural variant that could close 150 → ~190-210 — but see below.
+
+Separately, the roster never reaches the plateau. Real decode tensors
+measured cold:
+
+    (11008,2048)  3B up/gate      112.2    (2048,11008) 3B down    118.9
+    (2048,2048)   attn (2048²)     83.5-88.7 (noisy; box ±25% at this size)
+    (18944,3584)  7B up/gate      136.6    (3584,18944) 7B down    121.9
+    (8192,49152)  down-class      149.6    (49152,8192) up-class   152.2
+
+Their rate tracks the wg-count × cols-per-wg product (a (2048,2048) tensor
+has only 128 wgs × 8 cols; the cols ladder at fixed 128 wgs lifts 89 → 138
+as cols/wg goes 8 → 128). 3B's measured decode effective rate (~118 GB/s at
+tg32 51.2) is exactly its shape mix — the model already runs at its per-
+tensor ceiling. Dense-roster decode is **tensor-shape-bound**, and the
+shape-bound small tensors (attention 2048² at ~83-89) drag the average;
+fusing the independent q/k/v mm's into one wider-row dispatch is the
+dispatch-level lever, worth a few % on 3B/7B tg32, not the ~1.5× the
+plateau gap once promised.
+
+Verdict. r16w's ~150 GB/s plateau is memory-side, not the "16-row/LDS/
+reduce overhead" 25q guessed; every instruction-side change is flat. The
+structural fix (full-tile 32-row wg for dense 5 KB runs) would only pay on
+tensors already at the plateau — no current roster tensor qualifies, so it
+is parked until either the shape-bound tensors are fixed or an 80B-class
+dense model re-bench shows plateau-reaching tensors in real decode. Next
+real-model decode gains: dispatch-level shape grouping for small attention
+mms, then batched decode (cols ∈ [2..16], the round-25t item), not more
+single-token kernel bandwidth work.
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
