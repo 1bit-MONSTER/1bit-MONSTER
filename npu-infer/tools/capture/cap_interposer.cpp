@@ -89,7 +89,7 @@ extern "C" void _ZN3xrt2bo4syncE18xclBOSyncDirectionmm(void* self, int dir,
         xrt::bo* bo = reinterpret_cast<xrt::bo*>(self);
         size_t bosz = bo->size();
         g_bo_sizes.insert({(unsigned long)self, bosz});
-        bool capture = true;  // capture ALL BO syncs (TXN insts + weight + act + kv)
+        bool capture = !getenv("CAP_NO_SYNC");  // gate: CAP_NO_SYNC keeps only runlist preinsts (i6) dumps — the per-sync 32MB kv writes fill /tmp on long runs
         if (capture) {
             const uint8_t* p = (const uint8_t*)bo->map();
             ensure_log();
@@ -365,7 +365,7 @@ extern "C" void _ZNK3xrt7runlist4waitERKNSt6chrono8durationIlSt5ratioILl1ELl1000
     if (real_rl_wait) real_rl_wait(self, dur);
     ensure_log();
     fprintf(g_log, "RUNLIST wait done\n");
-    if (g_act_bo) {
+    if (g_act_bo && !getenv("CAP_NO_SYNC")) {
         try {
             xrt::bo* bo = reinterpret_cast<xrt::bo*>(const_cast<void*>(g_act_bo));
             size_t bosz = bo->size();
@@ -379,7 +379,7 @@ extern "C" void _ZNK3xrt7runlist4waitERKNSt6chrono8durationIlSt5ratioILl1ELl1000
             }
         } catch (...) {}
     }
-    if (g_kv_bo) {
+    if (g_kv_bo && !getenv("CAP_NO_SYNC")) {
         try {
             xrt::bo* bo = reinterpret_cast<xrt::bo*>(const_cast<void*>(g_kv_bo));
             size_t bosz = bo->size();
@@ -394,7 +394,7 @@ extern "C" void _ZNK3xrt7runlist4waitERKNSt6chrono8durationIlSt5ratioILl1ELl1000
         } catch (...) {}
     }
     // post-wait dump of ALL big ext::bo (complete per-layer kv/weight state)
-    if (!getenv("CAP_SKIP_BIG")) {
+    if (!getenv("CAP_SKIP_BIG") && !getenv("CAP_NO_SYNC")) {
         int n = 0;
         for (auto& kv : g_extbo_sizes) {
             if (kv.second <= 1000000) continue;
