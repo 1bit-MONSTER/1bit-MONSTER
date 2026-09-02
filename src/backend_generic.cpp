@@ -632,13 +632,21 @@ struct GenericBackend : Backend {
             cfg.arch == RCPP_ARCH_ZAYA || cfg.arch == RCPP_ARCH_ZAMBA2 ||
             cfg.arch == RCPP_ARCH_ZAMBA || cfg.arch == RCPP_ARCH_MAMBA ||
             cfg.arch == RCPP_ARCH_QWEN35 || cfg.arch == RCPP_ARCH_BARETORCH ||
-            cfg.arch == RCPP_ARCH_QU_SSM || cfg.arch == RCPP_ARCH_ARO_BABYLM) {
+            cfg.arch == RCPP_ARCH_QU_SSM || cfg.arch == RCPP_ARCH_ARO_BABYLM ||
+            cfg.arch == RCPP_ARCH_BREEZE_TTS || cfg.arch == RCPP_ARCH_HYV4 ||
+            cfg.arch == RCPP_ARCH_BANANAMIND21CODER || cfg.arch == RCPP_ARCH_BANANAMIND21LITE ||
+            cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT) {
             fprintf(stderr, "  [generic] Refusing to load %s (arch=%d%s) via safetensors\n",
                     f.c_str(), (int)cfg.arch,
                     cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" :
                     cfg.arch == RCPP_ARCH_BARETORCH ? " BARETORCH — cs_lrad registry token, engine support XL (issue #1907)" :
                     cfg.arch == RCPP_ARCH_QU_SSM ? " QU_SSM — Quamba-style SSM registry token, engine support XL" :
-                    cfg.arch == RCPP_ARCH_ARO_BABYLM ? " ARO_BABYLM — attention-gate + memory + local/global attn registry token, engine support XL (census 2026-09-01)" : "");
+                    cfg.arch == RCPP_ARCH_ARO_BABYLM ? " ARO_BABYLM — attention-gate + memory + local/global attn registry token, engine support XL (census 2026-09-01)" :
+                    cfg.arch == RCPP_ARCH_BREEZE_TTS ? " BREEZE_TTS — text-to-speech registry token, engine support XL (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_HYV4 ? " HYV4 — Gated-MLA text LM registry token, engine support XL (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_BANANAMIND21CODER ? " BANANAMIND21CODER — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_BANANAMIND21LITE ? " BANANAMIND21LITE — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ? " CONCEPT_DOMINANT_GPTBERT — pre-training-class registry token (issue #2031)" : "");
             return false;
         }
 
@@ -1513,7 +1521,11 @@ struct GenericBackend : Backend {
         // their own dedicated backends.
         if (hdr_cfg.arch == RCPP_ARCH_ZAYA || hdr_cfg.arch == RCPP_ARCH_ZAMBA2 ||
             hdr_cfg.arch == RCPP_ARCH_ZAMBA || hdr_cfg.arch == RCPP_ARCH_MAMBA ||
-            hdr_cfg.arch == RCPP_ARCH_QWEN35) {
+            hdr_cfg.arch == RCPP_ARCH_QWEN35 || hdr_cfg.arch == RCPP_ARCH_BARETORCH ||
+            hdr_cfg.arch == RCPP_ARCH_QU_SSM || hdr_cfg.arch == RCPP_ARCH_ARO_BABYLM ||
+            hdr_cfg.arch == RCPP_ARCH_BREEZE_TTS || hdr_cfg.arch == RCPP_ARCH_HYV4 ||
+            hdr_cfg.arch == RCPP_ARCH_BANANAMIND21CODER || hdr_cfg.arch == RCPP_ARCH_BANANAMIND21LITE ||
+            hdr_cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT) {
             const char* hint = "";
             if (hdr_cfg.arch == RCPP_ARCH_QWEN35)
                 hint = " — Qwen3.5 Gate-Delta requires NPU (FLM/XRT) or HIP backend";

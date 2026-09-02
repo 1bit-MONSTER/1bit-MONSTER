@@ -590,6 +590,11 @@ typedef enum {
     RCPP_ARCH_BARETORCH = 990,       // baretorch — cs_lrad chunked-state linear-recurrent (issue #1907: registry token only; engine support XL, generic loader refuses)
     RCPP_ARCH_QU_SSM = 991,          // qu_ssm — Quamba-style linear-recurrent SSM (d_state/d_ff/d_model; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_ARO_BABYLM = 992,      // aro_babylm — ARO-BabyLM (attention gates + memory layers + local/global attention; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_BREEZE_TTS = 993,      // breeze — Breeze-TTS (BreezeForConditionalGeneration, text-to-speech; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_HYV4 = 994,            // hy_v4 — HYV4ForCausalLM (Gated-MLA + indexed-latent MoE text LM; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_BANANAMIND21CODER = 995,  // bananamind21_coder — BananaMind21CoderForCausalLM (BananaMind-2.1 code LM; registry token, engine support XL, PICO-family candidate)
+    RCPP_ARCH_BANANAMIND21LITE = 996,   // bananamind21_lite_25m — BananaMind21Lite25MForCausalLM (registry token, engine support XL, PICO-family candidate)
+    RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT = 997, // concept_dominant_gptbert — ConceptDominantGPTBertForPreTraining (GPT/BERT-hybrid pre-training class; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2461,6 +2466,33 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "qu_ssm") == 0) return RCPP_ARCH_QU_SSM;             // QUSSMForCausalLM (Quamba-style SSM, registry token)
     if (strcmp(s, "arobabylm") == 0) return RCPP_ARCH_ARO_BABYLM;      // AROBabyLMForCausalLM — attention gates + memory + local/global attn (registry token, census 2026-09-01)
     if (strcmp(s, "qussm") == 0) return RCPP_ARCH_QU_SSM;              // stripped arch name (census)
+    // ── 2026-09-02 census watcher fourth-run findings (issue #2031) ──
+    // breeze = Breeze-TTS-2 (xy979475348/Breeze-TTS-2, class
+    // BreezeForConditionalGeneration, model_type breeze, pipeline text-to-
+    // speech) — a TTS decoder, not a text causal LM; registry token so the
+    // census counts it covered while the loader refuses cleanly. hy_v4 =
+    // HYV4ForCausalLM (Vaibhavhome30/Hy4-preview-FP8, pipeline text-geration)
+    // — a Gated-MLA + routed-MoE text LM with indexer/layer-type/learnable-
+    // sink config keys (not standard llama/qwen layout); registry token now,
+    // candidate for the Gated-MLA loader family (Moonlight/Kimi-K3/DSV4)
+    // once its layer math is config-mapped — no silent llama-layout fallback.
+    if (strcmp(s, "breeze") == 0) return RCPP_ARCH_BREEZE_TTS;         // BreezeForConditionalGeneration (issue #2031, registry token)
+    if (strcmp(s, "hy_v4") == 0) return RCPP_ARCH_HYV4;               // HYV4ForCausalLM — HF model_type (issue #2031, registry token)
+    if (strcmp(s, "hyv4") == 0) return RCPP_ARCH_HYV4;                // HYV4ForCausalLM — census stripped arch name
+    // Fifth-run crop (same census gate run): BananaMind-2.1-Coder/Lite are
+    // standard-layout causal LMs (RMSNorm + GQA + rope_theta 1e5, no exotic
+    // keys) in the bananamind21 release line — PICO-family candidates per the
+    // 09-01 bananamind21test alias, but kept as registry tokens until a
+    // config-mapping round verifies the loader contract (the 2.1-Pico-Preview
+    // config carries loop_*/refresh_kernel_* keys, so the line is NOT plain
+    // llama). concept_dominant_gptbert is a GPT/BERT-hybrid PRE-TRAINING
+    // class (ConceptDominantGPTBertForPreTraining) — not causal inference.
+    if (strcmp(s, "bananamind21_coder") == 0) return RCPP_ARCH_BANANAMIND21CODER;   // HF model_type (issue #2031)
+    if (strcmp(s, "bananamind21coder") == 0) return RCPP_ARCH_BANANAMIND21CODER;    // census stripped arch name
+    if (strcmp(s, "bananamind21_lite_25m") == 0) return RCPP_ARCH_BANANAMIND21LITE; // HF model_type (issue #2031)
+    if (strcmp(s, "bananamind21lite25m") == 0) return RCPP_ARCH_BANANAMIND21LITE;   // census stripped arch name
+    if (strcmp(s, "concept_dominant_gptbert") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // HF model_type (issue #2031)
+    if (strcmp(s, "conceptdominantgptbertforpretraining") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // census stripped class name
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
