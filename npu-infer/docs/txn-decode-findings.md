@@ -1144,3 +1144,54 @@ returned argmax. Implemented real decoding:
 - verified: greedy default yields the canonical chain (144370 91145 30
   220 17 15 17 18); temp=1.0 seed=42 reproducible (A==B); seed=7 differs;
   temp=0.5 top_k=10 samples from the filtered distribution
+
+### Round 39 — runtime batched prefill(ids) != N x forward(): rope-table divergence (2026-09-02)
+
+Question (probe_prefill.cpp, from the 06:04-06:07 session): does the FastFlowLM
+runtime's batched `model.prefill(ids)` produce the same state as N sequential
+`model.forward(tok)` calls on the same prompt? The engine's prefill is
+per-token sequential (engine.cpp run_prefill -> RuntimeLayerEngine.forward per
+token, byte-verified vs the runtime's forward path), so this decides whether a
+real runtime session (which prefills batched) matches the engine.
+
+**Answer: NO.** For the 4-token probe prompt (BOS 10671 2415 44123, a JS-code
+prefix) on Qwen3-0.6B:
+
+- kv (layer-0, all 8 kv heads): keys corr 0.9999 with only 3-8/1024 bf16
+  differing per token slot (deterministic, bit-reproducible across runs);
+  values differ by <= 0.014 (~10 bf16 ULP) at later slots. Keys differ ONLY at
+  rotary elements 50/51 and 114/115 of each 128-dim head (rope freq classes
+  j=25 / j=57), in a per-token growing set of heads.
+- final logits after the 4-token prompt: corr 0.9777, argmax flip (368 seq vs
+  7078 prefill at 06:04; 97462 seq vs 7829 prefill on re-run).
+- greedy continuation (fresh, on-device):
+  - seq (4x forward): 97462 368 715 262 470 419 401 630 322 419 ... == the
+    engine's canonical chain, byte-for-byte.
+  - prefill (batched): 7829 368 369 1817 315 279 1378 7332 13 2055 (diverges
+    from the 3rd token; still plausible text via the tokenizer).
+
+Root cause (interposer i6 capture, lean CAP_NO_SYNC run of both paths):
+- The batched prefill path NEVER advances the host-side RoPE (i6) table — all
+  56 i6 dumps across the prefill run carry the IDENTITY table (cos=1, sin=0,
+  position 0). The sequential path updates i6 per position (4 distinct tables
+  = pos 0..3), which is what the engine replicates (update_rope_i6).
+- Yet prefill keys are ~identical to seq keys (not un-roped) — so the batched
+  kernels apply RoPE internally from a table that disagrees with the runtime's
+  hardcoded .rodata inv_freq only at the frequencies where the .rodata values
+  deviate from exact math (the Round-38 finding: .rodata off by up to 1.5e-5
+  in a non-monotonic per-j pattern; j=25/j=57 are exactly such classes). The
+  seq path (and engine) use the .rodata table -> byte-identical; prefill uses
+  the exact-math variant -> bf16 flips at those classes -> argmax flips on
+  near-ties downstream.
+
+Implications:
+1. Engine == runtime-seq is reaffirmed (1000-ctx byte-identity unchanged);
+   the engine's per-token prefill remains the correct byte-level reference.
+2. Runtime's own batched prefill is a divergent rope variant of its own
+   decode path — any future engine adoption of a batched-prefill kernel must
+   match the runtime's prefill rope semantics (or the runtime's .rodata table
+   gets corrected upstream), not the seq path.
+3. Validation methodology note: per-ctx logits comparisons against the
+   runtime MUST use the RT_TOKENS/forward per-ctx mode (as round-36..38 did);
+   kvpost/actpost references captured from a batched-prefill run will not be
+   byte-comparable (mid-state + rope-variant confounders).
