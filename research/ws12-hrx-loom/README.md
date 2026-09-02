@@ -1635,6 +1635,44 @@ require either dispatch-level shape restructuring (small attention tensors
 are shape-bound at 83-137) or batched decode (cols ∈ [2..16]) — not more
 single-token kernel bandwidth work.
 
+### Round 25t v1 — r16wb2: fused cols==2 decode kernel (weights read once per batch), bit-exact, wired; fork 76b3694
+
+Batched decode (parallel sequences, speculative verification) produces
+decode mms with cols ∈ [2..16], and round 25s found no fused kernel serves
+cols 2..7 — those fell to the dequant + f32-mm slice (full f32 materialization
++ a second mm pass). Round 25t v1 closes the cols==2 case with **r16wb2**: a
+col-2 generalization of the r16w wide-read kernel. Same geometry (wg = 16
+rows × 1 k-column, 256 lanes, lane = k, 2 KB contiguous packed reads per
+tile-column) but each lane holds **32 f32 accumulators (16 rows × 2 cols)**:
+the dequantized weight value for a row is computed ONCE and feeds both
+output columns, so the weight stream is read once per 2-token batch instead
+of twice. src1 is the [2, k] col-major batch (col c at src1[c*k + i]);
+dst is [2, rows]. Generated from the shipped r16w kernel by transform;
+correctness gate = probe dst-dump with duplicated acts at (4096, 2048):
+**col0 and col1 both max diff 0.0 / corr 1.0 vs r16w** — the two columns are
+bit-identical to two independent single-token runs.
+
+Dispatch: new `dispatch_mul_mat_q4nx_slice_fused2` routes dense
+`MUL_MAT_Q4NX` ops with `src1->ne[1] == 2` (and rows % 16 == 0) to r16wb2
+instead of the dequant slice; `GGML_HRX2_NO_R16WB2=1` restores the old path.
+Route trace verified the swap: ON fires `hrx2_mul_mat_q4nx_fused_f32_r16wb2`
+(518 dispatches in a 32-token llama-parallel run), OFF routes the same mms to
+`mul_mat_f32_f32_ggml`. MoE/MUL_MAT_ID and cols==1 paths untouched.
+
+Measured impact is modest on the only available batched harness
+(llama-parallel decodes at cols==2 even at np=1 because it always carries a
++1 system sequence, and its decode mix is dominated by cols==1 r16w mms —
+r16wb2 handles a small share): llama-parallel np=1/2 on 3B, kernel ON vs
+OFF, **+1-3%** (within noise; the box was under heavy co-worker load, load
+avg ~17). The probe shows the kernel-level truth: a 2-token r16wb2 dispatch
+takes **76.6 µs vs 58.2 µs for a 1-token r16w** at (4096, 2048) — ~34% per-
+token faster — so the win lands where cols==2 mms dominate the step.
+
+Generalization to cols 3..8 (r16wb4/r16wb8) is the stated follow-up for real
+n_parallel serving (cols = active sequence count); it needs a quiet box for
+an honest llama-server -np A/B. Fork 76b3694 pushed (6 files, kernel +
+catalog route + dispatch wiring).
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
