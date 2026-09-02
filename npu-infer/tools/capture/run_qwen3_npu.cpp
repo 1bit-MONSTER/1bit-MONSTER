@@ -6,7 +6,8 @@
 // weight BO contents (the runtime layer-TXN weight-BD decode, #2006/#2015).
 //
 // Build:
-//   g++ -O2 -std=c++20 -include climits run_qwen3_npu.cpp -o run_qwen3_npu \
+//   g++ -O2 -std=c++20 -include climits run_qwen3_npu.cpp utils_stub.cpp \
+//     -o run_qwen3_npu \
 //     -I/home/bcloud/amd-oss/fastflowlm/src/include \
 //     -I/home/bcloud/amd-oss/fastflowlm/src/include/npu_utils \
 //     -L/home/bcloud/amd-oss/fastflowlm/src/lib/xrt \
@@ -55,9 +56,18 @@ int main(int argc, char** argv) {
     // 5. one forward step (decode) — submits the layer TXNs.
     // NPU_PROMPT_IDS (comma-separated) feeds a real prompt stream; greedy
     // sampling reports the next token. Otherwise 1000+i (legacy).
+    // RT_TOKENS <file> overrides with a whitespace-separated token file
+    // (the ENGINE's processed sequence for per-ctx logits comparison);
+    // HLOG_DIR redirects the per-ctx hlogits_ctxN.bin dumps.
     const char* pids = getenv("NPU_PROMPT_IDS");
+    const char* tokfile = getenv("RT_TOKENS");
+    const char* hdir = getenv("HLOG_DIR");
     std::vector<int> prompt;
-    if (pids && *pids) {
+    if (tokfile) {
+        FILE* ft = fopen(tokfile, "r");
+        if (ft) { int t; while (fscanf(ft, "%d", &t) == 1) prompt.push_back(t); fclose(ft); }
+        fprintf(stderr, "tokens from %s: %zu\n", tokfile, prompt.size());
+    } else if (pids && *pids) {
         std::string s(pids);
         size_t pos = 0;
         while (pos < s.size()) {
@@ -69,17 +79,24 @@ int main(int argc, char** argv) {
     } else {
         for (int i = 0; i < n_tokens; i++) prompt.push_back(1000 + i);
     }
+    int ctx = 0;
     for (size_t i = 0; i < prompt.size(); i++) {
         int tok = prompt[i];
+        ctx++;
         auto out = model.forward(tok);
-        fprintf(stderr, "forward(%d) done, out size %zu\n", tok, out.size());
+        fprintf(stderr, "forward(%d) ctx=%d done, out size %zu\n", tok, ctx, out.size());
         char fname[64];
-        snprintf(fname, sizeof(fname), "/tmp/txn_decode/logits_%d.bin", tok);
+        if (tokfile) {
+            // per-ctx mode: one logits dump per processed token
+            snprintf(fname, sizeof(fname), "%s/hlogits_ctx%d.bin", hdir ? hdir : "/tmp/txn_decode", ctx);
+        } else {
+            snprintf(fname, sizeof(fname), "/tmp/txn_decode/logits_%d.bin", tok);
+        }
         FILE* f = fopen(fname, "wb");
         if (f && out.size()) {
             fwrite(out.data(), sizeof(bf16), out.size(), f);
             fclose(f);
-            fprintf(stderr, "saved logits to %s (%zu bf16)\n", fname, out.size());
+            if (!tokfile) fprintf(stderr, "saved logits to %s (%zu bf16)\n", fname, out.size());
         }
         // greedy next-token after the full prompt (matches the engine's argmax)
         if (i == prompt.size() - 1) {
