@@ -248,3 +248,30 @@ with the ws12 dump32_prefill harness (round-25h methodology), not llama-bench.
   cosmetic (no ftype case for GGML_TYPE_Q4NX=42); the 253 q4nx tensors load
   as Q4NX and hit the NPU. ngl=0 fails to load (ggml-cpu claims no Q4NX ops)
   — the NPU is the only execution path for Q4NX models, as intended.
+
+## 30B Q4NX conversion is BROKEN (experts scrambled) — fork MoE path exonerated (2026-09-02)
+
+Chasing the 30B q4nx prefill (46.9 t/s, corr 0.55 to Q4_K reference): the
+q4nx-converted MoE models are unusable — the EXPERT (3-D) tensors are
+scrambled. Verified with the f32-twin dequant (make-q4nx-f32-twin.py, the
+proven Q4NX dequant) vs the Q4_K source dequant (make-q4nx-model.py):
+
+- DENSE attn_q (blk.0.attn_q): corr 0.99197 — conversion correct.
+- MoE blk.0.ffn_gate_exps expert 0: corr **0.0025** vs q4_K expert 0; vs
+  q4_K experts 0..7 all |corr| < 0.006. NOT an expert-order permutation.
+- Sorted-value corr 0.99927 (same value multiset, same ranges) — the data
+  is present but the tile/position mapping is wrong (global scramble across
+  the 3-D expert tensor). Suspect: q4nx_to_gguf.py / upstream .q4nx expert
+  tile layout (axis order or tile-grid mapping for ne=[8192, tpe, n_expert]).
+
+Consequences:
+- qwen3coder-30b-q4nx.gguf (and by extension qwen3next-80b-q4nx) cannot be
+  used for HRX2 prefill/decode validation — the wrong logits (top5 disjoint
+  vs Q4_K CPU, corr 0.55) are the FILE, not the fork.
+- The fork's MUL_MAT_ID_Q4NX path (fused_tbl_tiled compiled for the 30B
+  shapes r768-cN-k2048-nt32; kill-switches change nothing) is unproven until
+  a correctly-converted MoE Q4NX model exists. The 3B dense Q4NX path IS
+  proven correct (top1 matches CPU).
+- Fix target: the converter's 3-D expert tiling. Validation gate: expert
+  dequant corr > 0.99 vs source (like the dense 0.99197) before any MoE
+  Q4NX bench.
