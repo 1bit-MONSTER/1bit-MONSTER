@@ -77,7 +77,14 @@ static int weight_in_features(const TensorDesc* desc, const ModelConfig* cfg) {
     return (int)cfg->hidden_size;
 }
 int WeightPacker::num_bos(const TensorDesc* desc) const { return npu_weight_num_blocks(desc, config_, weight_in_features(desc, config_)); }
-size_t WeightPacker::bo_size(const TensorDesc* desc) const { (void)desc; return config_->npu_weight_bo_size; }
+size_t WeightPacker::bo_size(const TensorDesc* desc) const {
+    int in = weight_in_features(desc, config_);
+    // Wide weights (FFN down: in=3072) use full-width [256, in] blocks:
+    // 256 * in * 2 bytes, rounded up. Narrow weights keep the 1 MB BO.
+    if (in > (int)config_->npu_block_cols)
+        return (size_t)config_->npu_block_rows * (size_t)in * 2;
+    return config_->npu_weight_bo_size;
+}
 void WeightPacker::pack_block(uint8_t* buffer, const TensorDesc* desc, int block_idx) const {
     void* data = model_tensor_data(mw_, const_cast<TensorDesc*>(desc));
     npu_pack_weight_bo(buffer, data, desc, config_, block_idx, weight_in_features(desc, config_));
@@ -163,7 +170,17 @@ xrt::bo* XclbinManager::insts_for(xrt::kernel* kern, uint32_t m, uint32_t k,
                                   uint32_t* out_ninstr) {
     if (out_ninstr) *out_ninstr = 0;
     if (!kern) return nullptr;
-    ShapeKey key{m, k, n, woff};
+    // Kernel-specific stream key: mm vs attn vs layer encode different
+    // DMA/compute graphs. The previous shared key made the attn kernel
+    // execute the MM stream (hang at layer 1; NPU_GEMM_FIX.md, #2006).
+    const char* kern_name = "mm";
+    {
+        static const char* names[XCLBIN_COUNT] = {"mm", "attn", "layer", "dequant"};
+        for (int i = 0; i < XCLBIN_COUNT; i++) {
+            if (kern == entries_[i].kernel.get()) { kern_name = names[i]; break; }
+        }
+    }
+    ShapeKey key{m, k, n, woff, std::string(kern_name)};
     auto it = shape_insts_.find(key);
     if (it != shape_insts_.end()) {
         if (out_ninstr) *out_ninstr = it->second.ninstr;
@@ -181,8 +198,8 @@ xrt::bo* XclbinManager::insts_for(xrt::kernel* kern, uint32_t m, uint32_t k,
         }
     }
     char fname[256];
-    snprintf(fname, sizeof(fname), "%s/mm_%u_%u_%u_%u.bin",
-             insts_dir_.c_str(), m, k, n, woff);
+    snprintf(fname, sizeof(fname), "%s/%s_%u_%u_%u_%u.bin",
+             insts_dir_.c_str(), kern_name, m, k, n, woff);
     FILE* fi = fopen(fname, "rb");
     if (!fi) {
         LOG_ERROR("No per-shape insts %s — run tools/gen_mm_insts_batch "
@@ -353,15 +370,21 @@ bool NpuInferenceEngine::init(const char* model_path) {
 // (without insts the ERT command is a silent no-op).
 static void run_gemm(xrt::kernel* kern, xrt::bo* insts, uint32_t ninstr,
                       xrt::bo& act, xrt::bo& ws,
-                      xrt::bo& w1, xrt::bo& w2, xrt::bo& kv) {
+                      xrt::bo& w1, xrt::bo& w2, xrt::bo& kv,
+                      const char* tag = "") {
     if (!kern || !insts) return;
-    auto r = (*kern)(
-        (uint64_t)3,
-        *insts,
-        ninstr,
-        act, ws, w1, w2, kv
-    );
-    r.wait();
+    try {
+        auto r = (*kern)(
+            (uint64_t)3,
+            *insts,
+            ninstr,
+            act, ws, w1, w2, kv
+        );
+        r.wait();
+    } catch (const std::exception& e) {
+        LOG_ERROR("run_gemm FAILED %s: %s", tag, e.what());
+        throw;
+    }
 }
 
 // Blocked GEMM over one projection's weight BOs. The instruction stream is
@@ -375,8 +398,11 @@ static void run_blocked_gemm(XclbinManager* mgr, xrt::kernel* kern,
     const uint32_t M = 256;  // kernel block rows (NPU row grid)
     uint32_t ninstr = 0;
     xrt::bo* insts = mgr->insts_for(kern, M, k, n, 0, &ninstr);
+    int bi = 0;
     for (auto& w : weights) {
-        run_gemm(kern, insts, ninstr, act, ws, *w.bo, *w.bo, kv);
+        char tag[128];
+        snprintf(tag, sizeof(tag), "k=%u n=%u block=%d", k, n, bi++);
+        run_gemm(kern, insts, ninstr, act, ws, *w.bo, *w.bo, kv, tag);
     }
 }
 

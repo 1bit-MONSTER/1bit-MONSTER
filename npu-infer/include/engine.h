@@ -83,11 +83,13 @@ private:
     Entry entries_[XCLBIN_COUNT];
     struct ShapeKey {
         uint32_t m, k, n, woff;
+        std::string kern;
         bool operator<(const ShapeKey& o) const {
             if (m != o.m) return m < o.m;
             if (k != o.k) return k < o.k;
             if (n != o.n) return n < o.n;
-            return woff < o.woff;
+            if (woff != o.woff) return woff < o.woff;
+            return kern < o.kern;
         }
     };
     struct ShapeInsts { std::unique_ptr<xrt::bo> bo; uint32_t ninstr = 0; };

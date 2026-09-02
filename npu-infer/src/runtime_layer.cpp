@@ -77,6 +77,12 @@ bool RuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelCon
     dev.register_xclbin(*xclbin);
     hwctx_ = std::make_unique<xrt::hw_context>(dev, xclbin->get_uuid());
     if (!ensure_layer_kernel(1)) return false;   // eager: like the test
+    // ---- shared kv BO (128MB, zero) — matches the byte-verified test ----
+    kv_bos_.resize(1);
+    kv_bos_[0] = std::make_unique<xrt::ext::bo>(dev, 134217728);
+    memset(kv_bos_[0]->map(), 0, 134217728);
+    kv_bos_[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
 
     // lm_head kernel (context-independent ELF)
     std::vector<uint8_t> elfh;
@@ -107,11 +113,6 @@ bool RuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelCon
     // ---- norms i5/i6 per layer (physical pipeline blocks) ----
     if (!build_norm_bos()) return false;
 
-    // ---- shared kv BO (128MB, zero) — matches the byte-verified test ----
-    kv_bos_.resize(1);
-    kv_bos_[0] = std::make_unique<xrt::ext::bo>(dev, 134217728);
-    memset(kv_bos_[0]->map(), 0, 134217728);
-    kv_bos_[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     // ---- act / logits / final-norm BOs ----
     bo_act_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
@@ -235,6 +236,13 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             fwrite(weight_bos_[0]->map(), 1, 9830400, f);
             fclose(f);
         }
+        snprintf(fn, sizeof(fn), "%s_w2.bin", dbg);
+        f = fopen(fn, "wb");
+        if (f) {
+            weight_bos_[2]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 10485760, 0);
+            fwrite(weight_bos_[2]->map(), 1, 9830400, f);
+            fclose(f);
+        }
         snprintf(fn, sizeof(fn), "%s_i5_0.bin", dbg);
         f = fopen(fn, "wb");
         if (f) {
@@ -274,6 +282,26 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
         } catch (const std::exception& e) {
             fprintf(stderr, "RuntimeLayer: layer %d run FAILED: %s\n", L, e.what());
             return false;
+        }
+        if (dbg && L == 0) {
+            char fn0[256];
+            snprintf(fn0, sizeof(fn0), "%s_kv_after_L00.bin", dbg);
+            FILE* fk0 = fopen(fn0, "wb");
+            if (fk0) {
+                kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 134217728, 0);
+                fwrite(kv_bos_[0]->map(), 1, 134217728, fk0);
+                fclose(fk0);
+            }
+        }
+        if (dbg && L == 2) {
+            char fn[256];
+            snprintf(fn, sizeof(fn), "%s_kv_after_L02.bin", dbg);
+            FILE* fk = fopen(fn, "wb");
+            if (fk) {
+                kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 134217728, 0);
+                fwrite(kv_bos_[0]->map(), 1, 134217728, fk);
+                fclose(fk);
+            }
         }
         if (dbg) {
             char fn[256];

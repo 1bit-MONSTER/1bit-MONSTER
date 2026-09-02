@@ -73,7 +73,13 @@ int npu_weight_num_blocks(const TensorDesc* desc, const ModelConfig* config,
     int64_t i8_rows = desc->shape[0];
     int64_t logical_rows = i8_rows * 8192 / in_features;
     int n_rb = (int)((logical_rows + config->npu_block_rows - 1) / config->npu_block_rows);
-    int n_cb = (int)((in_features + config->npu_block_cols - 1) / config->npu_block_cols);
+    // Full-width blocks for wide weights (FFN down: in=3072 > block_cols):
+    // the K=3072 insts expect a [256, 3072] weight in ONE BO, so n_cb=1 and
+    // the block holds the whole width (issue #2006 / NPU_GEMM_FIX.md — the
+    // previous [256, 1024] slice layout made the down GEMM read 2048 columns
+    // past the 1 MB BO -> intermittent aie2_set_cmd_timeout).
+    int n_cb = (in_features > config->npu_block_cols) ? 1
+               : (int)((in_features + config->npu_block_cols - 1) / config->npu_block_cols);
     return n_rb * n_cb;
 }
 
@@ -100,19 +106,21 @@ int npu_dequant_block(void* out, const void* in,
     if (n_tile_cols <= 0) return 0;
     int64_t logical_rows = i8_rows * 8192 / in_features;
     int n_row_blocks = (int)((logical_rows + block_rows - 1) / block_rows);
-    int n_col_blocks = (int)((in_features + block_cols - 1) / block_cols);
+    int n_col_blocks = (in_features > block_cols) ? 1
+                       : (int)((in_features + block_cols - 1) / block_cols);
+    int block_width = (in_features > block_cols) ? in_features : block_cols;
     int rb = block_idx / n_col_blocks;      // row block
     int cb = block_idx % n_col_blocks;      // col block
     if (rb >= n_row_blocks || cb >= n_col_blocks) return 0;
     int64_t row_start = (int64_t)rb * block_rows;
-    int col_start = cb * block_cols;
+    int col_start = cb * block_width;
     int num_rows = (int)MIN64(logical_rows - row_start, block_rows);
-    int num_cols = (int)MIN64(in_features - col_start, block_cols);
+    int num_cols = (int)MIN64(in_features - col_start, block_width);
     if (num_rows <= 0 || num_cols <= 0) return 0;
 
     const uint8_t* data = (const uint8_t*)in;
     uint16_t* bf16_out = (uint16_t*)out;
-    memset(bf16_out, 0, (size_t)num_rows * block_cols * 2);
+    memset(bf16_out, 0, (size_t)num_rows * block_width * 2);
 
     for (int r = 0; r < num_rows; r++) {
         int64_t lr_global = row_start + r;
@@ -147,7 +155,7 @@ int npu_dequant_block(void* out, const void* in,
             // (the torch2aie/zaya convention W = q*scale + zp does NOT match
             // this file — it mis-dequantizes every element).
             float w = ((float)q - zp) * scale;
-            bf16_out[r * block_cols + c] = f32_to_bf16(w);
+            bf16_out[r * block_width + c] = f32_to_bf16(w);
         }
     }
     return num_rows * num_cols;
