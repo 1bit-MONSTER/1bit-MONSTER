@@ -277,6 +277,14 @@ int npu_pack_lmhead_bo(uint8_t* bo_buffer, ModelWeights* mw, const ModelConfig* 
 static int parse_json_metadata(const uint8_t* json_data, uint64_t json_len,
                                 TensorDesc* tensors, int max_tensors);
 static int find_tensor(const char* name, TensorDesc* tensors, int count);
+// find a per-layer tensor by name with both layer namings
+static int find_layer_tensor(const char* name_plural, const char* name_singular,
+                             TensorDesc* tensors, int count, TensorDesc* out) {
+    int idx = find_tensor(name_plural, tensors, count);
+    if (idx < 0 && name_singular) idx = find_tensor(name_singular, tensors, count);
+    if (idx >= 0) { memcpy(out, &tensors[idx], sizeof(TensorDesc)); return 1; }
+    return 0;
+}
 
 // ========= Model Loader =========
 
@@ -316,7 +324,7 @@ ModelWeights* model_load(const char* path, ModelConfig config) {
     const char* json_start = (const char*)(mw->file_data + 8);
     size_t json_len = header_size;
     
-    int max_tensors = 512;
+    int max_tensors = 2048;
     TensorDesc* tensors = calloc(max_tensors, sizeof(TensorDesc));
     int num_tensors = parse_json_metadata((const uint8_t*)json_start, json_len,
                                            tensors, max_tensors);
@@ -327,67 +335,113 @@ ModelWeights* model_load(const char* path, ModelConfig config) {
     int idx_emb = find_tensor("model.embed_tokens.weight", tensors, num_tensors);
     if (idx_emb >= 0) memcpy(&mw->embed_tokens, &tensors[idx_emb], sizeof(TensorDesc));
     
+    // ── Derive the actual model config from the parsed tensors, overriding
+    //    the hardcoded 0.6B profile when they disagree (40-layer MoE, etc.).
+    {
+        int max_layer = -1;
+        for (int t = 0; t < num_tensors; t++) {
+            const char* n = tensors[t].name;
+            if (!n || !strstr(n, ".input_layernorm.weight")) continue;
+            const char* p = strstr(n, "model.layer");
+            if (!p) continue;
+            p += strlen("model.layer");
+            if (*p == 's') p++;          // "model.layers." vs "model.layer."
+            if (*p == '.') p++;
+            int ln = atoi(p);
+            if (ln > max_layer) max_layer = ln;
+        }
+        if (max_layer >= 0) {
+            int derived = max_layer + 1;
+            if (derived != config.num_layers) {
+                LOG_INFO("Derived %d layers from metadata (was %d)", derived, config.num_layers);
+                config.num_layers = derived;
+                mw->config = config;
+            }
+        }
+    }
+    if (mw->embed_tokens.shape[0] > 0 &&
+        ((int)mw->embed_tokens.shape[0] != config.vocab_size ||
+         (int)mw->embed_tokens.shape[1] != config.hidden_size)) {
+        LOG_INFO("Derived vocab=%lld hidden=%lld from embed_tokens",
+                 (long long)mw->embed_tokens.shape[0], (long long)mw->embed_tokens.shape[1]);
+        config.vocab_size = (int)mw->embed_tokens.shape[0];
+        config.hidden_size = (int)mw->embed_tokens.shape[1];
+        mw->config = config;
+    }
+    
     // Allocate per-layer weights
     mw->layers = calloc(config.num_layers, sizeof(LayerWeights));
     
     char name_buf[128];
+    char name_buf2[128];
     for (int l = 0; l < config.num_layers; l++) {
         LayerWeights* layer = &mw->layers[l];
         
-        snprintf(name_buf, sizeof(name_buf),
+                snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.input_layernorm.weight", l);
-        int idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->input_layernorm_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.input_layernorm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->input_layernorm_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.post_attention_layernorm.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->post_attention_layernorm_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.post_attention_layernorm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->post_attention_layernorm_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.q_norm.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->q_norm_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.q_norm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->q_norm_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.k_norm.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->k_norm_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.k_norm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->k_norm_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.q_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->q_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.q_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->q_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.k_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->k_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.k_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->k_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.v_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->v_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.v_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->v_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.o_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->o_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.o_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->o_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.mlp.gate_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->gate_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.gate_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->gate_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.mlp.up_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->up_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.up_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->up_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.mlp.down_proj.weight", l);
-        idx = find_tensor(name_buf, tensors, num_tensors);
-        if (idx >= 0) memcpy(&layer->down_proj_weight, &tensors[idx], sizeof(TensorDesc));
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.down_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->down_proj_weight);
     }
     
     // Final norm
