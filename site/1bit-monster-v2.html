@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>1bit.MONSTER: One engine. Any model. Zero Python.</title>
-  <meta name="description" content="A model-agnostic, hardware-agnostic pure-C++ inference engine. One engine, NPU + GPU + CPU, 100% HuggingFace architecture coverage, zero Python. MIT." />
+  <meta name="description" content="A model-agnostic, hardware-agnostic pure-C++ inference engine. One engine, NPU + GPU + CPU, 100% HuggingFace architecture coverage, zero Python. MIT. Models share one zero-copy memory pool — NPU, GPU and host — with one chained API call per layer: the Windows NPU (MCDM) memory model, matched on Linux." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="website" />
   <meta property="og:title" content="1bit.MONSTER: One engine. Any model. Zero Python." />
-  <meta property="og:description" content="A model-agnostic, hardware-agnostic pure-C++ inference engine. One engine, NPU + GPU + CPU, 100% HuggingFace architecture coverage, zero Python. MIT." />
+  <meta property="og:description" content="A model-agnostic, hardware-agnostic pure-C++ inference engine. One engine, NPU + GPU + CPU, 100% HuggingFace architecture coverage, zero Python. MIT. Models share one zero-copy memory pool — NPU, GPU and host — with one chained API call per layer: the Windows NPU (MCDM) memory model, matched on Linux." />
   <meta property="og:url" content="https://1bit.monster/1bit-monster-v2.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="1bit.MONSTER: One engine. Any model. Zero Python." />
-  <meta name="twitter:description" content="A model-agnostic, hardware-agnostic pure-C++ inference engine. One engine, NPU + GPU + CPU, 100% HuggingFace architecture coverage, zero Python. MIT." />
+  <meta name="twitter:description" content="A model-agnostic, hardware-agnostic pure-C++ inference engine. One engine, NPU + GPU + CPU, 100% HuggingFace architecture coverage, zero Python. MIT. Models share one zero-copy memory pool — NPU, GPU and host — with one chained API call per layer: the Windows NPU (MCDM) memory model, matched on Linux." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-monster-v2.html" />
   <style>
@@ -449,7 +449,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: One engine. Any model. Zero Python.", "description": "A model-agnostic, hardware-agnostic pure-C++ inference engine. One engine, NPU + GPU + CPU, 100% HuggingFace architecture coverage, zero Python. MIT.", "url": "https://1bit.monster/1bit-monster-v2.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: One engine. Any model. Zero Python.", "description": "A model-agnostic, hardware-agnostic pure-C++ inference engine. One engine, NPU + GPU + CPU, 100% HuggingFace architecture coverage, zero Python. MIT. Models share one zero-copy memory pool — NPU, GPU and host — with one chained API call per layer: the Windows NPU (MCDM) memory model, matched on Linux.", "url": "https://1bit.monster/1bit-monster-v2.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -530,9 +530,9 @@ $<span class="caret"></span></code></pre>
         </div>
         <div class="stack" style="max-width: 44ch;">
           <h2>Every checkpoint maps. Nothing is dropped.</h2>
-          <p class="lead">317,310 arch-bearing checkpoints resolve to 554 tokens, 32 families, 12 backends. Measured, not projected.</p>
+          <p class="lead">317,310 arch-bearing checkpoints resolve to 554 tokens, 32 families, 12 backends. Measured, not projected. And every model serves from one shared memory pool — NPU, GPU and host alias the same SharedBO pages, zero copies between lanes — with one chained API call per layer: the Windows NPU memory model, matched on Linux.</p>
         </div>
-        <p class="meta census-line">100% coverage / 6 hardware targets probed / 0 Python</p>
+        <p class="meta census-line">100% coverage / 6 hardware targets probed / 0 Python / 1 pool · 0 copies</p>
         <div class="map-chain" data-od-id="census-map">
           <div class="map-head">
             <span class="map-title">coverage map</span>
