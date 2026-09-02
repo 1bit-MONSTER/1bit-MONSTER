@@ -946,3 +946,23 @@ npu-verify/lemonade NPU holder):
    BYTE-IDENTICAL, fwd3 act vs actpost_006.
 4. If the fwd3 kv reference is needed, use the interposer's POST-WAIT
    kvpost files (kvpost_006 = complete fwd3 kv), never post-execute dumps.
+
+### Round 36 FINAL — full multi-token validation CLOSED (post-reboot)
+
+After a clean reboot (clears the wedged amdxdna driver + the competing
+lemonade NPU holder) and a fresh 28-layer 3-token capture, the engine is
+byte-identical to the runtime for ALL THREE forwards:
+
+- fwd1 act corr 1.0 maxdiff 0 (std 194.4619), logits argmax 397
+- fwd2 act corr 1.0 maxdiff 0 (std 19.8162), logits argmax 88
+- fwd3 act corr 1.0 maxdiff 0 (std 25.6497), logits argmax 284
+
+The LAST bug was a leftover from the concurrent session's shared-BO test:
+run.set_arg(7, kv_bos_[0]) (shared kv for all layers) instead of kv_bos_[L]
+(per-layer). With the shared BO every layer overwrites the previous layer's
+kv at the same offsets -> fwd2+ attention reads corrupted kv. Restored
+per-layer binding -> byte-identical end-to-end.
+
+Note: the pre-reboot "fwd3 corr 0.91 vs 23.3" was a WEDGE artifact of the
+old reference (capP2, captured while the lemonade server shared the NPU) —
+the healthy runtime fwd3 is 25.6497, exactly the engine's value.

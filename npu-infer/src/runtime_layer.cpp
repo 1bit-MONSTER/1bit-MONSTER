@@ -364,7 +364,7 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
         run.set_arg(4, (const xrt::bo&)*weight_bos_[L]);
         run.set_arg(5, (const xrt::bo&)*i5_bos_[L]);
         run.set_arg(6, (const xrt::bo&)*i6_bos_[L]);
-        run.set_arg(7, (const xrt::bo&)*kv_bos_[0]); // shared-BO test
+        run.set_arg(7, (const xrt::bo&)*kv_bos_[L]);
         try {
             run.start();
             run.wait();
