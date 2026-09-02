@@ -249,29 +249,44 @@ with the ws12 dump32_prefill harness (round-25h methodology), not llama-bench.
   as Q4NX and hit the NPU. ngl=0 fails to load (ggml-cpu claims no Q4NX ops)
   — the NPU is the only execution path for Q4NX models, as intended.
 
-## 30B Q4NX conversion is BROKEN (experts scrambled) — fork MoE path exonerated (2026-09-02)
+## 30B Q4NX MoE prefill is WRONG on the fork — conversion is FINE (CORRECTION) (2026-09-02)
 
-Chasing the 30B q4nx prefill (46.9 t/s, corr 0.55 to Q4_K reference): the
-q4nx-converted MoE models are unusable — the EXPERT (3-D) tensors are
-scrambled. Verified with the f32-twin dequant (make-q4nx-f32-twin.py, the
-proven Q4NX dequant) vs the Q4_K source dequant (make-q4nx-model.py):
+CORRECTION of the previous entry: the qwen3coder-30b-q4nx conversion is
+CORRECT. The earlier "experts scrambled, corr 0.0025" result was my own
+verification bug: dequant_tensor(raw, rows, cols) was called with the axes
+SWAPPED (2048,768 instead of 768,2048). The converter quantizes experts as
+quantize_q4nx(W, rows=out, cols=in); reading the file's expert-0 tiles with
+rows=768, cols=2048 gives corr 0.99516 vs the Q4_K source (quant-rounding
+level), and a quantize->dequant round trip of the converter's own functions
+gives corr 0.99515 vs source and 1.0 vs the file. Dense and expert Q4NX
+conversions are both correct (dense attn_q 0.99197).
 
-- DENSE attn_q (blk.0.attn_q): corr 0.99197 — conversion correct.
-- MoE blk.0.ffn_gate_exps expert 0: corr **0.0025** vs q4_K expert 0; vs
-  q4_K experts 0..7 all |corr| < 0.006. NOT an expert-order permutation.
-- Sorted-value corr 0.99927 (same value multiset, same ranges) — the data
-  is present but the tile/position mapping is wrong (global scramble across
-  the 3-D expert tensor). Suspect: q4nx_to_gguf.py / upstream .q4nx expert
-  tile layout (axis order or tile-grid mapping for ne=[8192, tpe, n_expert]).
+The REAL problem is the fork's MoE execution: 30B q4nx pp32 logits are wrong
+(top5 disjoint vs Q4_K CPU reference, corr 0.55). Facts:
+- ggml-cpu REFUSES MUL_MAT_Q4NX / MUL_MAT_ID_Q4NX (supports_op false; no
+  compute path — "Q4NX ops run only on the HRX2 backend"), so the MoE mms
+  necessarily run on HRX2's dispatch (the run completes, exit 0).
+- GGML_HRX2_TRACE shows the q4nx kernels JIT-compile for the 30B expert
+  shapes (mul_mat_q4nx_fused_tbl_tiled r768-cN-k2048-nt32, r4096/r2048-c32)
+  but no MUL_MAT_ID_Q4NX dispatch event (same trace-logging gap as the 3B
+  dense — dispatch happens, event not emitted for the q4nx path).
+- HRX2_NO_FUSED_TBL=1 / HRX2_NO_FUSED_PAIR=1 change NOTHING (logits corr 1.0)
+  -> the MoE runs via the grouped dequant+table-scatter path
+  (dispatch_mul_mat_id_q4nx: dequant once per distinct expert + table-scatter
+  mm), NOT the fused_tbl_tiled route. The per-pair (decode) path is only used
+  for single-member groups.
+- Dispatch code reads correct tile_base = e*tpe and validates ids; the wrong
+  math is inside the grouped dequant/scatter for the 30B prefill shapes
+  (128 experts, per-expert src1, cols=32). Suspect: expert tile dequant range
+  or src1_col/dst_col indexing in the grouped path at c32 (the round-25b/25d
+  "per-expert src1 column" bug class — those fixes were for the fused tbl
+  route; the grouped dequant+mm path may carry an analogous defect).
+- 3B dense Q4NX (MUL_MAT_Q4NX, fused_tbl_tiled) is PROVEN correct (top1
+  matches CPU). Decode-path correctness on the 30B q4nx not yet established
+  (llama-completion invocation issue) — decode uses the per-pair path.
 
-Consequences:
-- qwen3coder-30b-q4nx.gguf (and by extension qwen3next-80b-q4nx) cannot be
-  used for HRX2 prefill/decode validation — the wrong logits (top5 disjoint
-  vs Q4_K CPU, corr 0.55) are the FILE, not the fork.
-- The fork's MUL_MAT_ID_Q4NX path (fused_tbl_tiled compiled for the 30B
-  shapes r768-cN-k2048-nt32; kill-switches change nothing) is unproven until
-  a correctly-converted MoE Q4NX model exists. The 3B dense Q4NX path IS
-  proven correct (top1 matches CPU).
-- Fix target: the converter's 3-D expert tiling. Validation gate: expert
-  dequant corr > 0.99 vs source (like the dense 0.99197) before any MoE
-  Q4NX bench.
+Next: fix dispatch_mul_mat_id_q4nx grouped path for the 30B prefill shapes;
+validation gate: pp32 logits corr > 0.9 vs the Q4_K CPU reference (or the
+f32 twin methodology). Bench target after fix: 30B q4nx pp32 should beat the
+Q4_K 133 t/s (MoE on NPU instead of CPU AVX-512).
+
