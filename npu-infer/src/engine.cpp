@@ -13,7 +13,9 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <sys/stat.h>
 #include <chrono>
+#include <sys/stat.h>
 #include <random>
 
 // ========= BF16 helpers =========
@@ -106,7 +108,21 @@ XclbinManager::~XclbinManager() {}
 bool XclbinManager::load(XclbinType type) {
     if (type < 0 || type >= XCLBIN_COUNT) return false;
     Entry& e = entries_[type]; if (e.loaded) return true;
-    const char* path = XCLBIN_PATHS[type];
+    std::string resolved;
+    if (!xclbin_dir_.empty()) {
+        resolved = xclbin_dir_ + "/" + XCLBIN_NAMES[type];
+        // The 35B MoE dir names its dequant kernel dequant_mm.xclbin.
+        if (type == XCLBIN_DEQUANT) {
+            struct stat st;
+            if (stat(resolved.c_str(), &st) != 0) {
+                std::string alt = xclbin_dir_ + "/dequant_mm.xclbin";
+                if (stat(alt.c_str(), &st) == 0) resolved = alt;
+            }
+        }
+    } else {
+        resolved = XCLBIN_PATHS[type];
+    }
+    const char* path = resolved.c_str();
     LOG_DEBUG("Loading %s ...", path);
     FILE* f = fopen(path, "rb"); if (!f) { LOG_ERROR("Cannot open %s", path); return false; }
     fseek(f, 0, SEEK_END); long fsize = ftell(f); fseek(f, 0, SEEK_SET);
@@ -310,6 +326,15 @@ bool NpuInferenceEngine::init(const char* model_path) {
     
     model_ = model_load(model_path, config_);
     if (!model_) return false;
+    // model_load derives num_layers/vocab/hidden from the metadata for
+    // non-0.6B models — propagate the corrected config back.
+    if (model_->config.num_layers != config_.num_layers ||
+        model_->config.hidden_size != config_.hidden_size ||
+        model_->config.vocab_size != config_.vocab_size) {
+        config_ = model_->config;
+        LOG_INFO("Engine config updated: %d layers, hidden %d, vocab %d",
+                 config_.num_layers, config_.hidden_size, config_.vocab_size);
+    }
     
     device_ = std::make_unique<xrt::device>();
     try { *device_ = xrt::device(0); }
@@ -319,6 +344,27 @@ bool NpuInferenceEngine::init(const char* model_path) {
     }
     
     xclbins_ = std::make_unique<XclbinManager>(*device_);
+    // Per-model xclbin selection: NPU_XCLBIN_DIR wins, else
+    // $FLM_XCLBIN_PATH/xclbins/<model-dir-name>, else the hardcoded default.
+    if (const char* xd = getenv("NPU_XCLBIN_DIR")) {
+        xclbins_->set_xclbin_dir(xd);
+    } else {
+        std::string mp = model_path;
+        auto slash = mp.rfind('/');
+        std::string model_name = (slash == std::string::npos) ? mp : mp.substr(slash + 1);
+        if (model_name == "model.q4nx") {
+            std::string dir = mp.substr(0, slash);
+            auto s2 = dir.rfind('/');
+            model_name = (s2 == std::string::npos) ? dir : dir.substr(s2 + 1);
+        }
+        const char* flm = getenv("FLM_XCLBIN_PATH");
+        if (flm) {
+            std::string d = std::string(flm) + "/xclbins/" + model_name;
+            struct stat st;
+            if (stat(d.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+                xclbins_->set_xclbin_dir(d);
+        }
+    }
     for (int i = 0; i < XCLBIN_COUNT; i++)
         if (!xclbins_->load((XclbinType)i)) return false;
     

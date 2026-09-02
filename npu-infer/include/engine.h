@@ -54,6 +54,10 @@ class XclbinManager {
 public:
     XclbinManager(xrt::device& device);
     ~XclbinManager();
+    /// Override the per-model xclbin directory (e.g. .../xclbins/Qwen3.6-35B...).
+    /// Empty keeps the hardcoded default paths.
+    void set_xclbin_dir(const std::string& dir) { xclbin_dir_ = dir; }
+    const std::string& xclbin_dir() const { return xclbin_dir_; }
     bool load(XclbinType type);
     xrt::kernel* kernel(XclbinType type);
     /// Instruction stream BO for a loaded xclbin (nullptr until load()).
@@ -73,6 +77,7 @@ public:
                        uint32_t n, uint32_t woff, uint32_t* out_ninstr);
 private:
     xrt::device& device_;
+    std::string xclbin_dir_;
     struct Entry {
         std::unique_ptr<xrt::xclbin> xclbin;
         std::unique_ptr<xrt::kernel> kernel;
