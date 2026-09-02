@@ -1144,178 +1144,82 @@ returned argmax. Implemented real decoding:
 - verified: greedy default yields the canonical chain (144370 91145 30
   220 17 15 17 18); temp=1.0 seed=42 reproducible (A==B); seed=7 differs;
   temp=0.5 top_k=10 samples from the filtered distribution
+## Round 39 — runtime batched prefill(ids) != N x forward(): root cause (final)
 
-### Round 39 — runtime batched prefill(ids) != N x forward(): rope-table divergence (2026-09-02)
-> ***SUPERSEDED — see Round 38c-CORRECTION below***: the rope-table reading in
-> this section was a magnitude artifact (dims 50/115 are the largest-|K| dims,
-> never rope-paired, present at pos 0 where rope is identity). The real cause
-> is ONE confounder: mm-vs-mv GEMM accumulation numerics. Kept as history.
+Question: does the FastFlowLM runtime's batched `model.prefill(ids)` produce
+the same state as N sequential `model.forward(tok)` calls on the same
+prompt? The engine's prefill is per-token sequential (byte-verified vs the
+runtime's forward path), so this decides whether a real runtime session
+(which prefills batched) matches the engine.
 
+### Finding
 
+**NO — the runtime's two prompt paths disagree numerically.** Same prompt
+([BOS,10671,2415,44123] and a 30-token variant), same 28-layer model,
+runtime vs itself:
 
-Question (probe_prefill.cpp, from the 06:04-06:07 session): does the FastFlowLM
-runtime's batched `model.prefill(ids)` produce the same state as N sequential
-`model.forward(tok)` calls on the same prompt? The engine's prefill is
-per-token sequential (engine.cpp run_prefill -> RuntimeLayerEngine.forward per
-token, byte-verified vs the runtime's forward path), so this decides whether a
-real runtime session (which prefills batched) matches the engine.
-
-**Answer: NO.** For the 4-token probe prompt (BOS 10671 2415 44123, a JS-code
-prefix) on Qwen3-0.6B:
-
-- kv (layer-0, all 8 kv heads): keys corr 0.9999 with only 3-8/1024 bf16
-  differing per token slot (deterministic, bit-reproducible across runs);
-  values differ by <= 0.014 (~10 bf16 ULP) at later slots. Keys differ ONLY at
-  rotary elements 50/51 and 114/115 of each 128-dim head (rope freq classes
-  j=25 / j=57), in a per-token growing set of heads.
-- final logits after the 4-token prompt: corr 0.9777, argmax flip (368 seq vs
-  7078 prefill at 06:04; 97462 seq vs 7829 prefill on re-run).
-- greedy continuation (fresh, on-device):
-  - seq (4x forward): 97462 368 715 262 470 419 401 630 322 419 ... == the
-    engine's canonical chain, byte-for-byte.
-  - prefill (batched): 7829 368 369 1817 315 279 1378 7332 13 2055 (diverges
-    from the 3rd token; still plausible text via the tokenizer).
-
-Root cause (interposer i6 capture, lean CAP_NO_SYNC run of both paths):
-- The batched prefill path NEVER advances the host-side RoPE (i6) table — all
-  56 i6 dumps across the prefill run carry the IDENTITY table (cos=1, sin=0,
-  position 0). The sequential path updates i6 per position (4 distinct tables
-  = pos 0..3), which is what the engine replicates (update_rope_i6).
-- Yet prefill keys are ~identical to seq keys (not un-roped) — so the batched
-  kernels apply RoPE internally from a table that disagrees with the runtime's
-  hardcoded .rodata inv_freq only at the frequencies where the .rodata values
-  deviate from exact math (the Round-38 finding: .rodata off by up to 1.5e-5
-  in a non-monotonic per-j pattern; j=25/j=57 are exactly such classes). The
-  seq path (and engine) use the .rodata table -> byte-identical; prefill uses
-  the exact-math variant -> bf16 flips at those classes -> argmax flips on
-  near-ties downstream.
-
-Implications:
-1. Engine == runtime-seq is reaffirmed (1000-ctx byte-identity unchanged);
-   the engine's per-token prefill remains the correct byte-level reference.
-2. Runtime's own batched prefill is a divergent rope variant of its own
-   decode path — any future engine adoption of a batched-prefill kernel must
-   match the runtime's prefill rope semantics (or the runtime's .rodata table
-   gets corrected upstream), not the seq path.
-3. Validation methodology note: per-ctx logits comparisons against the
-   runtime MUST use the RT_TOKENS/forward per-ctx mode (as round-36..38 did);
-   kvpost/actpost references captured from a batched-prefill run will not be
-   byte-comparable (mid-state + rope-variant confounders).
-
-### Round 38c — RUNTIME-INTERNAL inconsistency: prefill() (mm) != forward() per token
-
-Probing "what invisible corner is left" surfaced a significant one — and it
-lives INSIDE the runtime, not the engine:
-
-The FastFlowLM runtime exposes TWO prompt paths that disagree numerically:
-- `qwen3_npu::prefill(ids)` — batched. Dispatches to _prefill_with_mm
-  (Gemm::generate_seq + MHA batched sequences) for most sizes; this is what
-  the REAL chat stack calls (AutoModel/_chunked_insert -> lm_engine->prefill,
-  used by runner/rest_handler servers, default max_prefill_len 4096).
-- `qwen3_npu::forward(token)` per token — sequential mv path; what my
-  harness + ALL engine byte-identity validations used.
-
-Measured (same prompt [BOS,10671,2415,44123], same 28-layer model):
 - prefill() last-token logits vs forward@ctx4: corr 0.945, maxdiff 3.69,
-  argmax 7829 vs 97462
-- 30-token prompt: corr 0.934, argmax 82 (prefill) vs 29123 (seq)
-- greedy chains diverge at the FIRST token: prefill -> 7829 368 369 1817...;
-  sequential/engine -> 97462 368 715 262...
-- layer-0 K cache: mm vs seq corr 0.9999 but maxdiff grows with position
-  (idx0: 3.0, idx1: 4.0, idx2: 8.0, idx3: 10.0); V nearly identical
-  (<= 0.014). NOT a rope-table diff (hardcoded vs exact tables identical to
-  pos 3; only 1/128 entry differs at pos 3) — it is a systematic ~0.7%
-  scale difference in the QKV GEMM numerics between the batched-mm and
-  per-token-mv kernels. Even pos 0 (rope identity) differs -> projection
-  numerics, not positional handling.
-- CPU f32 reference of L0 K (cpu_ref.py dequant): both paths corr ~0.9999
-  with it; seq slope 1.0039 vs mm 1.0113 (mm ~0.7% high) — suggestive but
-  within reference noise; no clean winner without a full fp64 model.
+  argmax 7829 vs 97462; 30-token prompt: corr 0.934, argmax 82 vs 29123
+- greedy chains diverge from the FIRST token:
+  - prefill (batched): 7829 368 369 1817 315 279 ... (still plausible text)
+  - seq/engine (4x forward): 97462 368 715 262 470 419 ... == the engine's
+    canonical chain byte-for-byte
+- layer-0 K cache: mm vs seq corr 0.9999, but a few entries differ by
+  2-6 bf16 ULP on the LARGEST-|K| values; maxdiff grows per slot via
+  kv-state feedback (slot0 3.0, slot1 4.0, slot2 8.0, slot3 10.0). V is
+  nearly identical (<= 0.014).
 
-Implication for the engine: the engine's runtime path is byte-identical to
-the runtime's SEQUENTIAL path (decode, 1000+ ctx validated). But a real
-FastFlowLM server session (AutoModel chat) prefills via the mm path, whose
-first generated token differs from the sequential path. If engine output
-must match what FastFlowLM SERVES (not just its decode path), the mm
-prefill path needs its own replication/validation. Documented as a runtime
-quirk; engine claim stated precisely: byte-identical to the runtime's
-per-token forward (decode) path.
+### Root cause (single confounder: GEMM accumulation numerics — NOT rope)
 
-### Round 38c-reconciled — prefill(mm) vs forward(seq): TWO confounders, not one
+The early "rope-table divergence" reading was wrong. Decisive evidence:
 
-Round 39 (parallel session) attributed the prefill-vs-forward divergence to a
-rope-table difference (keys differ only at rotary elements 50/51 + 114/115,
-freq classes j=25/j=57, the .rodata-vs-exact classes). A fresh decisive test
-at POSITION 0 (where rope is identity for BOTH paths: cos(0)=1, sin(0)=0 in
-any table) shows K still differs: ~6/1024 entries, 2-6 bf16 ULP on large
-values (e.g. -118.5 vs -121.5, 129 vs 130), corr 0.99992. So:
+1. The big-diff dims (50, 115) are simply the largest-|K| dims: slot-0 mean
+   |K| by dim = 85.9 (dim 50) and 13.4 (dim 115) vs 7.5 next-largest. bf16
+   absolute ULP differences scale with value size — a magnitude artifact.
+2. The big-diff dims are NEVER rope-paired: dim 50's rope partner (114) is
+   clean and dim 115's partner (51) is clean (0/1 paired across all heads).
+   A rope difference would rotate BOTH members of a pair together.
+3. Diffs appear at pos 0, where rope is identity for every table
+   (cos(0)=1, sin(0)=0) — impossible for any rope-table effect.
+4. The .rodata-vs-exact inv_freq error (Round 38, up to 1.5e-5 relative)
+   gives phi errors <= 5e-8 rad even at pos 3 -> cos/sin shift ~1e-8, far
+   below bf16 resolution (~1e-3 at these magnitudes): physically invisible
+   at pos 0..3.
+5. The diff is magnitude-correlated (corr |diff| vs |K| = 0.63/0.59/0.78/0.84
+   across slots).
 
-- Confounder A (projection GEMM numerics): the batched-mm K projection
-  differs from the per-token-mv K projection by a few ULP even at pos 0,
-  where no rope is applied. Present in every slot; grows with slot (slot0
-  maxdiff 3.0, slot1 4.0, slot2 8.0, slot3 10.0 — the per-slot growth is
-  kv-state feedback, not rope).
-- Confounder B (rope table, pos>0 only): the mm path applies RoPE internally
-  from an exact-math table (Round 39's i6 capture shows its host i6 never
-  advances past pos 0), while the seq path / engine use the .rodata table.
-  At j=25/j=57 (.rodata deviates from exact) this adds bf16 flips for pos>0.
+So the divergence is ONE confounder: the batched-mm and per-token-mv QKV
+GEMMs accumulate with different numerics (tiling/precision), giving a
+few-ULP difference on the largest-magnitude outputs. The mm path's host i6
+never advancing past pos 0 (seen in interposer captures) is bookkeeping —
+the batched kernels apply RoPE internally — and does NOT cause a rope
+divergence.
 
-Both are real; they compound. Either alone flips argmax on near-ties. The
-engine == runtime-seq byte-identity (1000 ctx) is unaffected — the engine
-replicates the seq path exactly, including its .rodata rope and its mv-GEMM
-numerics. Matching a real batched-prefill server session would require
-replicating BOTH confounders (mm projection numerics + exact-math rope).
+### Which path is "correct"? (fp64 adjudication)
 
-### Round 38c-adjudicated — neither path is byte-correct vs fp64; both are valid bf16 pipelines
+fp64 layer-0 K reference (confirmed q*scale+zp dequant, token 151643 at
+pos 0 / rope identity) vs both runtime paths:
+- mm-prefill: maxdiff 3.16, meandiff 0.046, 92/1024 byte-match,
+  834/1024 within 1 bf16 ULP
+- seq-forward: maxdiff 3.29, meandiff 0.046, 17/1024 byte-match,
+  866/1024 within 1 bf16 ULP
 
-fp64 layer-0 K reference (confirmed q*scale+zp dequant, token 151643 at pos
-0 / rope identity) vs the two runtime paths' slot-0 K:
-- mm-prefill: maxdiff 3.16, meandiff 0.046, 92/1024 byte-match, 834/1024
-  within 1 bf16 ULP
-- seq-forward: maxdiff 3.29, meandiff 0.046, 17/1024 byte-match, 866/1024
-  within 1 bf16 ULP
+Both are ~equally approximate (0.5% mean rel error on std-9 values): the
+NPU bf16 pipelines round differently from any fp64 reference and from each
+other. Neither is byte-correct; mm-prefill is not buggy, it is a
+different-but-valid bf16 variant of the same math.
 
-Both are ~equally approximate (0.5% mean rel error on std-9 values) — the
-NPU bf16 pipelines round differently from any fp64 reference, and the two
-paths round differently from EACH OTHER (2-6 ULP on ~6/1024 entries at
-pos 0). There is no "correct path" at byte level; mm-prefill is not buggy,
-it is a different-but-valid bf16 variant of the same math.
+### Implications
 
-Final position (engine): the engine is byte-identical to the runtime's
-seq/decode path — the path the per-ctx harness drives and the one the
-Round 35-38 validations used. A real AutoModel-chat server session
-(batched mm prefill) will differ from the engine at ~first-token argmax on
-near-ties because the runtime itself has two divergent bf16 pipelines; this
-is a runtime property, not an engine defect, and is now fully characterized
-(confounder A: mv-vs-mm projection ULP; confounder B: .rodata-vs-exact rope
-at pos>0; neither path byte-matches fp64 ground truth).
-
-### Round 38c-CORRECTION — the rope confounder (B) was an artifact; it is ONE confounder (GEMM numerics)
-
-Critical re-audit of the prefill(mm) vs forward(seq) K divergence:
-
-1. Dims 50/115 where the "big" K diffs appear are simply the LARGEST-|K|
-   dims: slot-0 mean |K| by dim = 85.9 (dim 50) and 13.4 (dim 115), 6x and
-   1.5x the next-largest dims (7.5, 5.4). The "rope-element" reading was a
-   magnitude artifact — bf16 absolute ULP differences scale with value size.
-2. The big-diff dims are NEVER rope-paired: dim 50's rope partner 114 is
-   clean, dim 115's partner 51 is clean (0/1 paired across all heads).
-   A rope-table difference would rotate BOTH pair members; isolated
-   single-dims prove it is not rope.
-3. The .rodata-vs-exact inv_freq error (Round 38, up to 1.5e-5 relative)
-   produces phi errors <= 5e-8 rad even at pos 3 -> cos/sin change ~1e-8,
-   FAR below bf16 resolution (~1e-3 at these magnitudes). A rope-table
-   difference is physically INVISIBLE at pos 0..3.
-4. The diff is magnitude-correlated (corr |diff| vs |K| = 0.63/0.59/0.78/0.84
-   across slots) and present at pos 0 where rope is identity.
-
-CONCLUSION: Round 39's "rope-table divergence" and my earlier "confounder B"
-were both wrong — the prefill-vs-forward K difference is ONE confounder:
-the mm (batched) and mv (per-token) QKV GEMMs accumulate with different
-numerics (different tiling/precision), giving a few-ULP difference on the
-largest-magnitude outputs. This is consistent with the fp64 adjudication
-(neither path byte-matches fp64; both ~85% within 1 ULP).
-
-The engine's claim is unaffected (byte-identical to runtime-seq), but the
-DOCUMENTED ROOT CAUSE is now corrected: not rope, not two confounders —
-one GEMM-numerics confounder.
+1. Engine == runtime-seq reaffirmed: the engine's runtime path is
+   byte-identical to the runtime's per-token forward/decode path (the path
+   the per-ctx harness drives; 1000+ ctx validated, Rounds 35-38).
+2. A real AutoModel-chat server session (runner/rest_handler -> prefill,
+   batched mm) differs from the engine at ~first-token argmax on near-ties.
+   This is a runtime-internal property (two divergent bf16 pipelines), not
+   an engine defect. If engine output must match what FastFlowLM SERVES
+   (not just its decode path), the mm prefill path needs its own
+   replication/validation.
+3. Validation methodology: per-ctx logits comparisons against the runtime
+   MUST use the RT_TOKENS/forward per-ctx mode; kvpost/actpost references
+   captured from a batched-prefill run are not byte-comparable.
