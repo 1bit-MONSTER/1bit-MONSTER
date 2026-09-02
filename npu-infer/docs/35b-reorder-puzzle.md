@@ -89,3 +89,48 @@ the last mapping step before the engine integration.
   the up/gate truncate at 32767 (their regions are the desc-aligned 32768
   rows). The layer BO = [up+gate (65536 rows incl. crosses 0/32)][ssm_out
   cross + down (35426 rows)][gate_proj][qkv/share/router/norms].
+
+## UPDATE 5 — reorder dtype dispatch + the 8704-col tensors (qkv family)
+
+The runtime's `qwen3_6_reorder_cpy` (both constprop.0 @ 0x7abb0 and
+constprop.2 @ 0x68b80 clones) dispatches on the dtype arg (ecx):
+
+| dtype | elsize (src/dst row stride) | used by |
+|---|---|---|
+| 8 | 0x1280 = 4736 | ALL MoE experts AND the qkv/ssm_out/share_*/gate_proj (the 8704-col tensors) |
+| 1 | 4608 | (unused in the 35B path) |
+| 2 / 4 | 9216 | (unused — the "8704→9216 padded" theory is WRONG) |
+
+Verified via gdb on the live load (`run_qwen3_6_moe` + /tmp/moe-q):
+- qkv:        n=2048 dtype=8 flag=64 src=17825792 (raw file data)
+- ssm_out:    n=2048 dtype=8 flag=64 src= 8912896
+- share_*:    n=512  dtype=8 flag=64 src= 1114112
+- gate_proj:  n=4096 dtype=8 flag=64 src= 8912896
+All take the RAW file tensor as src (no dequant/trim before the reorder);
+the reorder output = the same 4736-slice + A/B interleave as the experts.
+
+FILE FORMAT DIFFERENCES (the two 8704-row tensor families):
+- experts (up/gate/down/share_*): each 5120-B file row =
+  [512 bf16 scales][512 bf16 zps][4096 B 4-bit packed] (block-16, zp).
+- qkv/ssm_out/gate_proj (the [*, *, 8704] I8 tensors): each 8704-B file
+  row = [256 bf16 scales (512 B)][8192 I8 values (block-32, zp=0)].
+  value = i8 × scale[block]. Verified sane weights (std 0.018 vs the
+  ~0.011 expected for 1/sqrt(8704)).
+
+BO LAYOUT (layer-0 weight BO, byte offsets; verified from bo_to_0140):
+- 0 → 310.4M: up+gate interleaved (65536 rows incl. crosses at 0/32)
+- 310.4M → 478.2M: down (35426 rows to the tensor end)
+- 478.15M → 486.03M: self_attn.gate_proj (1024 rows, k-order A/B pairs)
+- 486.03M → 512M: ALL ZEROS — the qkv/share_*/router/norms were NOT
+  written in the moe-cap capture run (the shape-0-patched model load
+  skipped them; the captured layer-0 BO ends at gate_proj).
+
+=> The qkv's TRUE BO layout is still OPEN and needs a capture where the
+qkv load survives: the unpatched model crashes at the small tensors
+(ssm_a/ssm_dt.bias/shared_expert_gate) BEFORE the qkv reorder completes
+the BO; the gdbskip (set $rdx=0) loop alone does not reliably advance
+past the mid-memcpy faults. Recommended: a targeted shape-0 patch that
+zeroes ONLY the small-tensor shapes (shared_expert_gate/ssm_a/ssm_dt.bias)
+while leaving qkv/ssm_out/gate_proj intact, then capture the layer-0
+512MB BO (the previous moe-cap run's patch skipped the qkv too, or the
+down overwrote its region).
