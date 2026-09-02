@@ -71,3 +71,11 @@ col-major k-order for the 8-col experts; the down at 2196680 + 4736j; the
 share tensors at their tails). The captures (~/.cache/moe-cap) verify the
 packer byte-for-byte. The qkv/gate_proj/ssm_out (the 8704-col tensors)
 follow the same rule with their own bases.
+
+## UPDATE 3 — packer 100% VERIFIED (up+gate+down, 465 MB byte-exact)
+
+tools/verify_moe_packer.py reproduces the layer-6 weight BO rows 0..98303
+byte-for-byte (100.00%). The k-orders + crosses are fully characterized
+(see the commit message). The gate_proj/qkv/share_*/router/norms rows
+(100963+) follow the same 4736-slice pattern with their own k-orders —
+the last mapping step before the engine integration.
