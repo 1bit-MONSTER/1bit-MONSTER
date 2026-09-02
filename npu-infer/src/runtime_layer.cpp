@@ -36,6 +36,12 @@ static const int NORM_PIPELINE_ORDER[28] = {
     2, 20, 21, 22, 23, 24, 25, 26, 27,
     3, 4, 5, 6, 7, 8, 9
 };
+// layer -> position in the physical norm array (inverse of PIPELINE_ORDER)
+static const int NORM_POS_OF_LAYER[28] = {
+    0, 1, 12, 21, 22, 23, 24, 25, 26, 27,
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 11,
+    13, 14, 15, 16, 17, 18, 19, 20
+};
 
 static bool read_file(const char* path, std::vector<uint8_t>& out) {
     FILE* f = fopen(path, "rb");
@@ -82,15 +88,42 @@ bool RuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelCon
     kv_bos_[0] = std::make_unique<xrt::ext::bo>(dev, 134217728);
     memset(kv_bos_[0]->map(), 0, 134217728);
     kv_bos_[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    // ---- act / logits / final-norm BOs ----
+    bo_act_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
+    bo_logits_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
+    memset(bo_act_->map(), 0, 1048576);
+    memset(bo_logits_->map(), 0, 1048576);
+    bo_fnorm_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
+    memset(bo_fnorm_->map(), 0, 1048576);
+    if (mw_ && mw_->file_data && mw_->file_size >= mw_->data_base + META_FINAL_NORM_OFF + 2048) {
+        memcpy(bo_fnorm_->map(), (const uint8_t*)mw_->file_data + mw_->data_base + META_FINAL_NORM_OFF, 2048);
+    } else {
+        fprintf(stderr, "RuntimeLayer: cannot read final norm from model file\n");
+        return false;
+    }
+    bo_act_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    bo_logits_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    bo_fnorm_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
 
-    // lm_head kernel (context-independent ELF)
-    std::vector<uint8_t> elfh;
-    if (!read_file(lmhead_elf_path_.c_str(), elfh)) return false;
-    {
-        xrt::elf elf((const char*)elfh.data(), elfh.size());
-        xrt::module mod(elf);
-        kern_lmhead_ = std::make_unique<xrt::ext::kernel>(*hwctx_, mod, "MLIR_AIE");
+    // lm_head kernel (context-independent ELF) — was DISABLED for the
+    // isolation test; now enabled so get_logits returns real vocab logits.
+    if (!lmhead_elf_path_.empty()) {
+        std::vector<uint8_t> elfb;
+        if (read_file(lmhead_elf_path_.c_str(), elfb)) {
+            try {
+                xrt::elf elf((const char*)elfb.data(), elfb.size());
+                xrt::module mod(elf);
+                kern_lmhead_ = std::make_unique<xrt::ext::kernel>(*hwctx_, mod, "MLIR_AIE");
+                fprintf(stderr, "RuntimeLayer: lm_head kernel ready (%s)\n",
+                        lmhead_elf_path_.c_str());
+            } catch (const std::exception& e) {
+                fprintf(stderr, "RuntimeLayer: lm_head kernel build failed: %s\n", e.what());
+            }
+        } else {
+            fprintf(stderr, "RuntimeLayer: cannot read lm_head ELF %s\n",
+                    lmhead_elf_path_.c_str());
+        }
     }
 
     // ---- per-layer weight BOs: npu_pack_layer_bo (byte-verified) ----
@@ -108,28 +141,15 @@ bool RuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelCon
     fprintf(stderr, "RuntimeLayer: packed %d layer weight BOs\n", cfg_.num_layers);
 
     // ---- lm_head weight BO: reorder with G=8 (byte-verified) ----
-    if (!pack_lmhead_bo()) return false;
+    if (!pack_lmhead_bo()) {
+        fprintf(stderr, "RuntimeLayer: lm_head weight BO pack failed\n");
+        return false;
+    }
 
     // ---- norms i5/i6 per layer (physical pipeline blocks) ----
     if (!build_norm_bos()) return false;
 
 
-    // ---- act / logits / final-norm BOs ----
-    bo_act_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
-    bo_logits_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
-    memset(bo_act_->map(), 0, 1048576);
-    memset(bo_logits_->map(), 0, 1048576);
-    bo_fnorm_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
-    memset(bo_fnorm_->map(), 0, 1048576);
-    if (mw_ && mw_->file_data && mw_->file_size >= mw_->data_base + META_FINAL_NORM_OFF + 2048) {
-        memcpy(bo_fnorm_->map(), (const uint8_t*)mw_->file_data + mw_->data_base + META_FINAL_NORM_OFF, 2048);
-    } else {
-        fprintf(stderr, "RuntimeLayer: cannot read final norm from model file\n");
-        return false;
-    }
-    bo_act_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    bo_logits_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-    bo_fnorm_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     fprintf(stderr, "RuntimeLayer: init OK (%d layers)\n", cfg_.num_layers);
     return true;
@@ -159,7 +179,7 @@ bool RuntimeLayerEngine::build_norm_bos() {
     i5_bos_.resize(cfg_.num_layers);
     i6_bos_.resize(cfg_.num_layers);
     for (int L = 0; L < cfg_.num_layers; L++) {
-        int pos = NORM_PIPELINE_ORDER[L];
+        int pos = NORM_POS_OF_LAYER[L];
         const uint8_t* blk = base + (uint64_t)pos * NORM_BLOCK_BYTES;
         // i5 = ILN(2048) + PALN(2048)
         i5_bos_[L] = std::make_unique<xrt::ext::bo>(*dev_, 1048576);
@@ -172,7 +192,7 @@ bool RuntimeLayerEngine::build_norm_bos() {
         uint8_t* m6 = static_cast<uint8_t*>(i6_bos_[L]->map());
         memset(m6, 0, 1048576);
         uint16_t* w6 = (uint16_t*)m6;
-        for (int i = 0; i < 64; i++) w6[i] = f32_to_bf16(1.875f);
+        for (int i = 0; i < 64; i++) w6[i] = f32_to_bf16(1.0f);
         memcpy(m6 + 256, blk + 4352, 256);   // q_norm (block tail second half)
         memcpy(m6 + 512, blk + 4096, 256);   // k_norm (block tail first half)
         i6_bos_[L]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -236,6 +256,13 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             fwrite(weight_bos_[0]->map(), 1, 9830400, f);
             fclose(f);
         }
+        snprintf(fn, sizeof(fn), "%s_w1.bin", dbg);
+        f = fopen(fn, "wb");
+        if (f) {
+            weight_bos_[1]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 10485760, 0);
+            fwrite(weight_bos_[1]->map(), 1, 9830400, f);
+            fclose(f);
+        }
         snprintf(fn, sizeof(fn), "%s_w2.bin", dbg);
         f = fopen(fn, "wb");
         if (f) {
@@ -257,16 +284,43 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             fwrite(kv_bos_[0]->map(), 1, 4096, f);
             fclose(f);
         }
-        snprintf(fn, sizeof(fn), "%s_i6_0.bin", dbg);
+        snprintf(fn, sizeof(fn), "%s_i5_1.bin", dbg);
         f = fopen(fn, "wb");
         if (f) {
-            i6_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
-            fwrite(i6_bos_[0]->map(), 1, 768, f);
+            i5_bos_[1]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+            fwrite(i5_bos_[1]->map(), 1, 4096, f);
+            fclose(f);
+        }
+        snprintf(fn, sizeof(fn), "%s_i6_1.bin", dbg);
+        f = fopen(fn, "wb");
+        if (f) {
+            i6_bos_[1]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+            fwrite(i6_bos_[1]->map(), 1, 768, f);
+            fclose(f);
+        }
+        snprintf(fn, sizeof(fn), "%s_i6_2.bin", dbg);
+        f = fopen(fn, "wb");
+        if (f) {
+            i6_bos_[2]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+            fwrite(i6_bos_[2]->map(), 1, 768, f);
             fclose(f);
         }
     }
+    // TEMP: fresh kernel per forward (test)
+    std::string elfpath = elf_dir_ + "/layer_ctx" + std::to_string(ctx_len) + ".elf";
+    std::vector<uint8_t> elfb2;
+    xrt::ext::kernel* use_kern = nullptr;
+    if (read_file(elfpath.c_str(), elfb2)) {
+        try {
+            xrt::elf elf2((const char*)elfb2.data(), elfb2.size());
+            xrt::module mod2(elf2);
+            auto k2 = std::make_unique<xrt::ext::kernel>(*hwctx_, mod2, "MLIR_AIE");
+            use_kern = k2.get();
+            layer_kernels_[ctx_len] = std::move(k2);
+        } catch (...) { use_kern = layer_kernels_[ctx_len].get(); }
+    } else use_kern = layer_kernels_[ctx_len].get();
     for (int L = 0; L < cfg_.num_layers; L++) {
-        xrt::run run(*layer_kernels_[ctx_len]);
+        xrt::run run(*use_kern);
         uint32_t v0 = 3, v1 = 0, v2 = 0;
         run.set_arg(0, (const void*)&v0, sizeof(v0));
         run.set_arg(1, (const void*)&v1, sizeof(v1));
@@ -315,7 +369,7 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
         }
     }
     // lm_head
-    {
+    if (kern_lmhead_) {
         xrt::run run(*kern_lmhead_);
         uint32_t v0 = 3, v1 = 0, v2 = 0;
         run.set_arg(0, (const void*)&v0, sizeof(v0));
@@ -334,6 +388,12 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
         }
     }
     ctx_len_ = ctx_len;
+    if (getenv("RT_DUMP_KV")) {
+        kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 134217728, 0);
+        FILE* fk = fopen(getenv("RT_DUMP_KV"), "wb");
+        if (fk) { fwrite(kv_bos_[0]->map(), 1, 134217728, fk); fclose(fk); }
+        fprintf(stderr, "kv dumped -> %s\n", getenv("RT_DUMP_KV"));
+    }
     return true;
 }
 
