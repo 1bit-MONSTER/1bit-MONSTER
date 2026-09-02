@@ -985,6 +985,7 @@ int main(int argc,char**argv){
             // _bf16pair xclbin/insts pair (built by build_p1i4_qwen3_iron.sh).
             const bool bf16pair = getenv("NPU_GUSILU_BF16PAIR")
                 && atoi(getenv("NPU_GUSILU_BF16PAIR")) == 1;
+            cg_fused_i4->bf16_pair = bf16pair;   // so packB_into_fused_i4 uses the SAME B'' layout the bf16pair xclbin dequants
             std::string gx = xp("GUSILU_i4", H, 2 * IM);
             std::string gi = ip("GUSILU_i4");
             if (bf16pair) {

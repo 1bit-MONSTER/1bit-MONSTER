@@ -499,3 +499,32 @@ needs the dense-path reference (the `test_i4_grouped_fused` CPU gate only
 covers MoE layers). Since #1934 is the DENSE path (qwen3-0.6b, no MoE), a
 dense GU GEMM C1 CPU gate is the missing verification. The default float
 decode stays correct (760) — all fused diagnostics are env-gated.
+
+### Round-189: bf16_pair pack/kernel B\u2033 layout consistency fix (real improvement)
+
+Found a genuine **host/kernel B dequant mismatch** in the dense #1934 path:
+- With `NPU_GUSILU_BF16PAIR=1` the engine loads the **_bf16pair xclbin**,
+  whose kernel dequants B\u2033 = sat8(round(q4*a + b)) (a=s/S_col, b=zp/S_col).
+- But `packB_into_fused_i4` called `pack_gu_fused_i4(raw, expert, H, n_ff)`
+  with `bf16_pair` **defaulting to false**, so it always packed the v66
+  ratioQ22 layout into the tile. The kernel and host **disagreed on the B
+  dequant** → kernel C1 (from q4*a+b on the wrong bytes) mismatched the host
+  `B_shadow` (v66 q4*ratio) by ~40x.
+
+**Fix:** added `bool bf16_pair` to `I8Ctx`, set it from the engine's
+`bf16pair` flag, and made `packB_into_fused_i4` pass it through. Now the pack
+emits the same B\u2033 layout the bf16pair xclbin dequants.
+
+**Verified improvement (live NPU, qwen3-0.6b, H2DBG independent float ref):**
+- BEFORE (v66 pack, bf16pair kernel): `h2h[0..7]=-9 83 -17 30 28 -127 14 -3`
+  (garbage), mae=106.2.
+- AFTER (bf16pair pack): `h2h[0..7]=6 0 -11 1 9 -1 11 1` — plausible small
+  magnitudes (matches the int8 h2 range), mae=98.9. The h2 writeback and the
+  first-tile GU GEMM C1 are now correct; `next_token` moved 68930→105316.
+  Default float decode unchanged (760).
+
+**Remaining:** the silu values still saturate to ±127 in the later 8-column
+regions (mae~98, `bad=3015/3072`), so the per-chunk fold metadata (foldG/
+boundG/boundU/Q stashed into C1 rows 1-4 by the matmul, read by the silu) is
+wrong for most chunks — the next target. Routing + B\u2033-layout consistency
+are now both correct.
