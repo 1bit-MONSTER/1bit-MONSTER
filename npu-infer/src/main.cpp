@@ -50,7 +50,7 @@ int main(int argc, char** argv) {
     }
     int max_out = getenv("NPU_MAX_TOKENS") ? atoi(getenv("NPU_MAX_TOKENS")) : 16;
     if (max_out < 1) max_out = 16;
-    if (max_out > 64) max_out = 64;
+    if (max_out > 4096) max_out = 4096;   // MAX_L ceiling (runtime + engine ELF range)
     std::vector<int> output(max_out);
     
     auto t0 = std::chrono::steady_clock::now();

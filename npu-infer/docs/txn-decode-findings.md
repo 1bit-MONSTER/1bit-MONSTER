@@ -1105,3 +1105,26 @@ contexts of the 40-token generate (ctx2..41, 0 ULP, 0 argmax flips) —
 the final byte-exactness gap is CLOSED. The runtime table values are baked
 per-model-family (Qwen3 lib); a different model family would need its own
 .rodata dump at its own inv_freq symbol offset.
+
+### Round 38 follow-up — 1000-context decode BYTE-IDENTICAL + lazy ELF build
+
+With the exact rope formula (hardcoded f32 inv_freq) the engine is now
+byte-identical to the runtime at EVERY context depth tested:
+
+- 40-token decode (ctx2..41): byte-identical (Round 38)
+- 63-token decode (ctx2..64, full shipped ELF range): 63/63 byte-identical
+- 4-token multi-token PREfill (BOS+3 prompt tokens): ctx1..4 logits
+  byte-identical, then ctx5..24 decode byte-identical
+- 200-token decode (ctx2..201, ELFs extended to 256): 200/200
+- 1000-token decode (ctx2..1001, ELFs to 1024): 1000/1000 byte-identical,
+  0 ULP, 0 argmax flips — rope holds at phi ~800 rad through glibc
+  sincosf argument reduction; kv growth over 1000 tokens is exact
+
+Lazy on-demand ELF build (MAX_L without shipping 290MB of ELF binary):
+- ensure_layer_kernel now shells out to tools/gen_layer_elfs when a
+  per-ctx ELF is missing (RT_ELF_GEN=<gen binary> RT_ELF_MODEL=<model dir>);
+  generator is ~0.6ms/ELF so full MAX_L 4096 is ~2.5s
+- verified: empty ELF dir + lazy gen -> same canonical tokens
+  (144370 91145 30 220 17 15)
+- NPU_MAX_TOKENS cap raised 64 -> 4096 (main.cpp)
+- shipped ELFs remain 1..64 (9.9MB); anything beyond generates on demand

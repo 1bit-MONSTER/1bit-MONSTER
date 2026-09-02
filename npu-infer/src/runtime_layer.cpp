@@ -210,8 +210,26 @@ bool RuntimeLayerEngine::ensure_layer_kernel(int ctx_len) {
     snprintf(fname, sizeof(fname), "%s/layer_ctx%d.elf", elf_dir_.c_str(), ctx_len);
     std::vector<uint8_t> elfb;
     if (!read_file(fname, elfb)) {
-        fprintf(stderr, "RuntimeLayer: missing layer ELF for ctx=%d (%s)\n", ctx_len, fname);
-        return false;
+        // Lazy on-demand ELF build (Round 38): if the per-ctx ELF is missing,
+        // shell out to tools/gen_layer_elfs (0.6ms/ELF — full MAX_L 4096 is
+        // ~2.5s). Configure via RT_ELF_GEN=<gen_layer_elfs path> and
+        // RT_ELF_MODEL=<model dir>; otherwise this stays a hard error.
+        const char* gen = getenv("RT_ELF_GEN");
+        const char* mdir = getenv("RT_ELF_MODEL");
+        if (gen && mdir && gen[0] && mdir[0]) {
+            char cmd[1024];
+            snprintf(cmd, sizeof(cmd), "%s %s %s %d %d", gen, mdir, elf_dir_.c_str(),
+                     ctx_len, ctx_len);
+            fprintf(stderr, "RuntimeLayer: generating missing ELF ctx=%d (%s)\n",
+                    ctx_len, cmd);
+            int rc = system(cmd);
+            if (rc == 0) read_file(fname, elfb);
+        }
+        if (elfb.empty()) {
+            fprintf(stderr, "RuntimeLayer: missing layer ELF for ctx=%d (%s)\n",
+                    ctx_len, fname);
+            return false;
+        }
     }
     try {
         xrt::elf elf((const char*)elfb.data(), elfb.size());
