@@ -1283,3 +1283,33 @@ near-ties because the runtime itself has two divergent bf16 pipelines; this
 is a runtime property, not an engine defect, and is now fully characterized
 (confounder A: mv-vs-mm projection ULP; confounder B: .rodata-vs-exact rope
 at pos>0; neither path byte-matches fp64 ground truth).
+
+### Round 38c-CORRECTION — the rope confounder (B) was an artifact; it is ONE confounder (GEMM numerics)
+
+Critical re-audit of the prefill(mm) vs forward(seq) K divergence:
+
+1. Dims 50/115 where the "big" K diffs appear are simply the LARGEST-|K|
+   dims: slot-0 mean |K| by dim = 85.9 (dim 50) and 13.4 (dim 115), 6x and
+   1.5x the next-largest dims (7.5, 5.4). The "rope-element" reading was a
+   magnitude artifact — bf16 absolute ULP differences scale with value size.
+2. The big-diff dims are NEVER rope-paired: dim 50's rope partner 114 is
+   clean, dim 115's partner 51 is clean (0/1 paired across all heads).
+   A rope-table difference would rotate BOTH pair members; isolated
+   single-dims prove it is not rope.
+3. The .rodata-vs-exact inv_freq error (Round 38, up to 1.5e-5 relative)
+   produces phi errors <= 5e-8 rad even at pos 3 -> cos/sin change ~1e-8,
+   FAR below bf16 resolution (~1e-3 at these magnitudes). A rope-table
+   difference is physically INVISIBLE at pos 0..3.
+4. The diff is magnitude-correlated (corr |diff| vs |K| = 0.63/0.59/0.78/0.84
+   across slots) and present at pos 0 where rope is identity.
+
+CONCLUSION: Round 39's "rope-table divergence" and my earlier "confounder B"
+were both wrong — the prefill-vs-forward K difference is ONE confounder:
+the mm (batched) and mv (per-token) QKV GEMMs accumulate with different
+numerics (different tiling/precision), giving a few-ULP difference on the
+largest-magnitude outputs. This is consistent with the fp64 adjudication
+(neither path byte-matches fp64; both ~85% within 1 ULP).
+
+The engine's claim is unaffected (byte-identical to runtime-seq), but the
+DOCUMENTED ROOT CAUSE is now corrected: not rope, not two confounders —
+one GEMM-numerics confounder.
