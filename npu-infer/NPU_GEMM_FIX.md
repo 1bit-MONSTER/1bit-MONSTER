@@ -196,3 +196,5 @@ a FastFlowLM-internals analysis that the capture toolchain (RT_CLEAN_DUMP
   experts -> up/down/gate dequant_mm gemms + shared expert) is internal to
   the binary Impl. Building it from npu_sequence primitives is the
   remaining engine feature (multi-day).
+
+## 35B forward integration map (Round 37 continued) — see docs/35b-forward-integration.md
