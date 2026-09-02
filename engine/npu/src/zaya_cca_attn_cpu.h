@@ -22,9 +22,51 @@
 
 #include <cmath>
 #include <cstring>
+#include <cstdio>
+#include <cstdlib>
 #include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace zaya_cca {
+
+// Cap OpenMP threads to the PHYSICAL core count when OMP_NUM_THREADS is unset,
+// to avoid SMT oversubscription. Issue #1776 measured on strixhalo (16 physical
+// cores / 32 threads): the CPU CCA attention running with the default 32 omp
+// threads thrashes DRAM (row-buffer contention across one 8 MB region) and is
+// ~40% SLOWER than 16 threads (42.7s vs 30.6s for a 60-token zaya1-8b decode).
+// OMP_NUM_THREADS, if set explicitly, is always respected. Without -fopenmp or
+// a resolvable topology this is a no-op.
+inline void cap_omp_threads() {
+    (void)0;
+#ifdef _OPENMP
+    if (getenv("OMP_NUM_THREADS")) return;   // user explicitly chose a thread count
+    int phys = 0;
+    if (FILE* f = fopen("/proc/cpuinfo", "r")) {
+        char line[256];
+        int cur_phys = -1, cur_core = -1;
+        // Visit each processor block and record distinct (physical id, core id).
+        // Linux /proc/cpuinfo lists every logical CPU (SMT siblings included);
+        // the physical core count is the number of unique physical/core id pairs.
+        static int seen = 0, stored = 0;
+        static int pids[256], cids[256];
+        while (fgets(line, sizeof line, f)) {
+            if (strncmp(line, "processor", 9) == 0) { cur_phys = -1; cur_core = -1; }
+            else if (strncmp(line, "physical id", 11) == 0) cur_phys = atoi(strchr(line, ':') + 1);
+            else if (strncmp(line, "core id", 7) == 0) cur_core = atoi(strchr(line, ':') + 1);
+            else if (line[0] == '\n' && cur_phys >= 0 && cur_core >= 0) {
+                bool dup = false;
+                for (int i = 0; i < stored; i++) if (pids[i] == cur_phys && cids[i] == cur_core) dup = true;
+                if (!dup && stored < 256) { pids[stored] = cur_phys; cids[stored] = cur_core; stored++; }
+            }
+        }
+        fclose(f);
+        phys = stored;
+    }
+    if (phys > 0) omp_set_num_threads(phys);
+#endif
+}
 
 struct CcaDims {
     int H;      // hidden size (2048)

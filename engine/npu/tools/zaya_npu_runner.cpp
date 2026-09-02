@@ -105,6 +105,7 @@ static void rmsnorm(float* h, const float* w, int n, float eps = 1e-5f) {
 
 int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s model.q4nx [token_id...]\n", argv[0]); return 1; }
+    zaya_cca::cap_omp_threads();   // default to physical cores (#1776 oversubscription)
     int token_id = argc > 2 ? atoi(argv[2]) : 0;
 
     int fd = open(argv[1], O_RDONLY);
