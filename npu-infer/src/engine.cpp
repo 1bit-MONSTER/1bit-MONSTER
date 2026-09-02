@@ -569,7 +569,18 @@ int NpuInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
         LOG_ERROR("Prefill failed");
         return 0;
     }
-    
+
+    // dump the prefill logits for comparison vs the runtime (NPU_LOGITS_DUMP)
+    if (const char* ld = getenv("NPU_LOGITS_DUMP")) {
+        FILE* f = fopen(ld, "wb");
+        if (f && use_runtime_layers_) {
+            runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+            fwrite(lm_head_buffer_.data(), sizeof(float), config_.vocab_size, f);
+            fprintf(stderr, "prefill logits dumped (%d floats)\n", config_.vocab_size);
+        }
+        if (f) fclose(f);
+    }
+
     current_token_ = input_tokens[num_input_tokens - 1];
     int num_out = 0;
     

@@ -27,7 +27,10 @@ int main(int argc, char** argv) {
     }
     
     // Test generate: BOS token → a few output tokens
-    const int prompt[] = {151643}; // BOS=151643 for Qwen3
+    // NPU_PROMPT_TOKEN env overrides the BOS prompt (used to match the
+    // runtime harness run_qwen3_npu for logits comparison).
+    const char* pt = getenv("NPU_PROMPT_TOKEN");
+    const int prompt[] = { pt ? atoi(pt) : 151643 };
     int output[32];
     
     auto t0 = std::chrono::steady_clock::now();
