@@ -1,28 +1,28 @@
 <!doctype html>
-<html lang="en"><head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <title>1bit.MONSTER</title>
-  <meta name="description" content="One engine, any model, zero Python. A model-agnostic, hardware-agnostic pure-C++ inference engine. MIT. Navigate the engine, models, JARVIS, blog, store, docs, and benchmarks.">
+  <title>The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER</title>
+  <meta name="description" content="AMD's own loader crashes on Qwen3.6-35B, so we decoded how the runtime packs 465 MB of MoE experts per layer from its own artifacts: the descriptor map, the 5120→4736 trim, and a reorder formula verified byte-exact against the runtime's own function." />
   <meta property="og:site_name" content="1bit.MONSTER" />
-  <meta property="og:type" content="website" />
-  <meta property="og:title" content="1bit.MONSTER" />
-  <meta property="og:description" content="One engine, any model, zero Python. A model-agnostic, hardware-agnostic pure-C++ inference engine. MIT. Navigate the engine, models, JARVIS, blog, store, docs, and benchmarks." />
-  <meta property="og:url" content="https://1bit.monster/" />
-  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER" />
+  <meta property="og:description" content="AMD's own loader crashes on Qwen3.6-35B, so we decoded how the runtime packs 465 MB of MoE experts per layer from its own artifacts: the descriptor map, the 5120→4736 trim, and a reorder formula verified byte-exact against the runtime's own function." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-35b-moe-layout.html" />
+  meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="1bit.MONSTER" />
-  <meta name="twitter:description" content="One engine, any model, zero Python. A model-agnostic, hardware-agnostic pure-C++ inference engine. MIT. Navigate the engine, models, JARVIS, blog, store, docs, and benchmarks." />
+  <meta name="twitter:title" content="The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER" />
+  <meta name="twitter:description" content="AMD's own loader crashes on Qwen3.6-35B, so we decoded how the runtime packs 465 MB of MoE experts per layer from its own artifacts: the descriptor map, the 5120→4736 trim, and a reorder formula verified byte-exact against the runtime's own function." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-35b-moe-layout.html" />
   <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
-       Bound verbatim to the locked light modern-minimal + 1-bit identity.
-       All derived values stay in oklch - no new hex. */
+       Bound verbatim to the locked light modern-minimal + 1-bit identity. */
     :root {
       --bg:      oklch(99% 0.002 240);
       --surface: oklch(100% 0 0);
@@ -30,82 +30,39 @@
       --muted:   oklch(54% 0.012 250);
       --border:  oklch(92% 0.005 250);
       --accent:  oklch(58% 0.18 255);
-
       --status:  oklch(52% 0.14 158);
 
-      /* derived - do not change */
       --accent-soft:   color-mix(in oklch, var(--accent) 12%, transparent);
       --fg-soft:       color-mix(in oklch, var(--fg) 5%, transparent);
       --muted-strong:  color-mix(in oklch, var(--muted) 76%, var(--fg));
+      --hairblock:     color-mix(in oklch, var(--fg) 7%, transparent);
 
-      /* type - system-first per direction */
       --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
       --font-body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
       --font-mono:    ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
 
-      /* scale */
-      --fs-h1: clamp(44px, 6vw, 76px);
-      --fs-h2: clamp(32px, 4vw, 48px);
-      --fs-h3: 20px;
+      --fs-h1: clamp(38px, 5vw, 64px);
+      --fs-h2: clamp(26px, 3vw, 34px);
       --fs-lead: 19px;
-      --fs-body: 16px;
+      --fs-body: 17px;
       --fs-meta: 13px;
-
-      /* spacing - 8-point grid */
-      --gap-xs: 8px;
-      --gap-sm: 12px;
-      --gap-md: 20px;
-      --gap-lg: 32px;
-      --gap-xl: 48px;
-      --gap-2xl: 80px;
-      --container: 1120px;
-      --gutter: 32px;
-
       --radius: 10px;
       --radius-lg: 16px;
+      --gap-sm: 12px; --gap-md: 20px; --gap-lg: 32px; --gap-xl: 48px; --gap-2xl: 80px;
+      --container: 760px; --gutter: 32px;
     }
-
-    /* ─── reset & base ──────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; }
-    html { -webkit-text-size-adjust: 100%; }
-    body {
-      margin: 0;
-      background: var(--bg);
-      color: var(--fg);
-      font-family: var(--font-body);
-      font-size: var(--fs-body);
-      line-height: 1.6;
-      text-rendering: optimizeLegibility;
-      -webkit-font-smoothing: antialiased;
-    }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.7; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
     a { color: inherit; text-decoration: none; }
     p { text-wrap: pretty; }
-    h1, h2, h3 { text-wrap: balance; }
+    h1, h2, h3, h4 { text-wrap: balance; }
     ::selection { background: var(--accent-soft); color: var(--fg); }
     :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 
-    /* ─── layout primitives ─────────────────────────────────────────── */
-    .container {
-      max-width: var(--container);
-      margin-inline: auto;
-      padding-inline: var(--gutter);
-    }
-    .section { padding-block: clamp(40px, 5vw, 72px); }
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
     .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
 
-    /* ─── type ──────────────────────────────────────────────────────── */
-    h1 { font-family: var(--font-display); font-size: var(--fs-h1); line-height: 1.08; letter-spacing: -0.02em; margin: 0; font-weight: 600; }
-    h2 { font-family: var(--font-display); font-size: var(--fs-h2); line-height: 1.12; letter-spacing: -0.015em; margin: 0; font-weight: 600; }
-    .lead { font-size: var(--fs-lead); line-height: 1.6; color: var(--muted-strong); max-width: 60ch; margin: 0; }
-    .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted-strong); }
-
-    /* ─── chrome: nav + footer ──────────────────────────────────────── */
-    .topnav {
-      position: sticky; top: 0; z-index: 10;
-      background: color-mix(in oklch, var(--bg) 92%, transparent);
-      backdrop-filter: blur(12px);
-      border-bottom: 1px solid var(--border);
-    }
+    .topnav { position: sticky; top: 0; z-index: 10; background: color-mix(in oklch, var(--bg) 92%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
     .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 14px; }
     .topnav .logo { display: inline-flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
     .topnav .logo svg { width: 26px; height: 26px; color: var(--fg); }
@@ -131,75 +88,30 @@
     .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
     .pagefoot .place { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-lg) auto 0; }
     .pagefoot .quote { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-sm) auto 0; }
-    .pagefoot a:hover { color: var(--fg); }
-    .pagefoot .row-between { flex-wrap: wrap; gap: var(--gap-md); }
-
-    /* ─── buttons ───────────────────────────────────────────────────── */
-    .btn {
-      display: inline-flex; align-items: center; gap: 8px;
-      padding: 11px 20px;
-      border-radius: var(--radius);
-      border: 1px solid transparent;
-      font-size: 14px; font-weight: 500; letter-spacing: -0.005em;
-      transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
-    }
-    .btn:active { transform: translateY(1px); }
-    .btn-primary {
-      background: color-mix(in oklch, var(--accent) 78%, black);
-      color: var(--surface);
-    }
-    .btn-primary:hover { background: color-mix(in oklch, var(--accent) 68%, black); }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: var(--radius); border: 1px solid transparent; font-size: 14px; font-weight: 500; letter-spacing: -0.005em; transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
     .btn-ghost { background: transparent; color: var(--fg); padding-inline: 8px; }
     .btn-ghost:hover { color: var(--accent); }
 
-    /* ─── hero (centered) ───────────────────────────────────────────── */
-    .hero-center { padding-block: clamp(56px, 8vw, 112px); text-align: center; }
-    .hero-center h1 { margin-bottom: var(--gap-md); }
-    .hero-center .lead { margin: var(--gap-md) auto 0; }
+    .art { padding-block: clamp(48px, 7vw, 96px) clamp(40px, 6vw, 72px); }
+    .art .back { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted-strong); display: inline-flex; gap: 6px; margin-bottom: var(--gap-lg); }
+    .art .back a:hover { color: var(--fg); }
+    .art-meta { display: flex; flex-wrap: wrap; gap: var(--gap-md); align-items: center; margin-bottom: var(--gap-md); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em; color: var(--muted-strong); }
+    .art-meta .tag { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; }
+    .art-meta .tag.corr { border-color: color-mix(in oklch, var(--accent) 40%, transparent); border-style: dashed; color: color-mix(in oklch, var(--muted) 62%, var(--fg)); }
+    .art h1 { font-family: var(--font-display); font-size: var(--fs-h1); line-height: 1.08; letter-spacing: -0.02em; font-weight: 600; margin: 0 0 var(--gap-md); }
+    .art .lead { font-size: var(--fs-lead); line-height: 1.6; color: var(--muted-strong); max-width: 64ch; margin: 0 0 var(--gap-2xl); }
 
-    /* ─── site index grid ───────────────────────────────────────────── */
-    .site-badge {
-      display: inline-flex; align-items: center; gap: 8px;
-      font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
-      color: var(--muted-strong); margin-bottom: var(--gap-lg);
-    }
-    .site-badge .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--status); }
-    .latest-link {
-      display: flex; flex-direction: column; gap: 8px; text-align: left;
-      max-width: 680px; margin: var(--gap-lg) auto 0; padding: 18px 22px;
-      background: var(--surface); border: 1px solid var(--border);
-      border-left: 3px solid var(--accent); border-radius: var(--radius-lg);
-      transition: border-color 0.15s ease;
-    }
-    .latest-link:hover { border-color: var(--accent); border-left-color: var(--accent); }
-    .latest-badge {
-      display: inline-flex; align-items: center; gap: 8px;
-      font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
-      color: var(--accent); margin-bottom: 2px;
-    }
-    .latest-badge .dot { width: 8px; height: 8px; border-radius: 999px; background: var(--accent); }
-    .latest-title { font-size: 15px; line-height: 1.5; color: var(--fg); }
-    .latest-more { font-family: var(--font-mono); font-size: 12px; color: var(--muted-strong); }
-    .latest-more .ar { transition: transform 0.15s ease; display: inline-block; }
-    .latest-link:hover .latest-more .ar { transform: translateX(3px); }
-    .site-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: var(--gap-md); margin-top: var(--gap-lg);
-    }
-    .site-card {
-      display: flex; flex-direction: column; gap: 10px;
-      background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg);
-      padding: 22px; position: relative;
-      transition: border-color 0.15s ease;
-    }
-    .site-card:hover { border-color: var(--fg); }
-    .site-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .site-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; display: flex; align-items: baseline; gap: 8px; }
-    .site-title .ar { color: var(--muted-strong); font-size: 13px; transition: transform 0.15s ease; }
-    .site-card:hover .site-title .ar { transform: translateX(2px); color: var(--accent); }
-    .site-desc { margin: 0; font-size: 14px; color: var(--muted-strong); }
-    .site-path { font-family: var(--font-mono); font-size: 12px; color: var(--muted-strong); margin-top: auto; }
-
+    .prose h2 { font-family: var(--font-display); font-size: var(--fs-h2); line-height: 1.16; letter-spacing: -0.015em; font-weight: 600; margin: var(--gap-2xl) 0 var(--gap-md); }
+    .prose p { margin: 0 0 var(--gap-md); }
+    .prose b { font-weight: 600; }
+    .prose .mono { font-family: var(--font-mono); font-size: 0.92em; }
+    .prose code { font-family: var(--font-mono); font-size: 0.9em; background: var(--hairblock); padding: 2px 6px; border-radius: 4px; }
+    .prose pre { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; overflow-x: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.85; margin: 0 0 var(--gap-lg); }
+    .prose table { width: 100%; border-collapse: collapse; margin: 0 0 var(--gap-lg); font-size: 15px; }
+    .prose th, .prose td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+    .prose th { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-strong); font-weight: 500; }
+    .prose td { font-family: var(--font-mono); font-size: 14px; }
+    .prose .callout { border-left: 1px solid var(--accent); padding: 4px 0 4px var(--gap-lg); margin: 0 0 var(--gap-lg); }
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
       .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
@@ -392,17 +304,17 @@
 
 </style>
   <script type="application/ld+json">
-  [{"@context": "https://schema.org", "@type": "WebSite", "name": "1bit.MONSTER", "url": "https://1bit.monster", "description": "The 1-bit inference engine. One engine, any model — 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, running on Ryzen AI NPUs and ROCm.", "potentialAction": {"@type": "SearchAction", "target": {"@type": "EntryPoint", "urlTemplate": "https://1bit.monster/search.html?q={search_term_string}"}, "query-input": "required name=search_term_string"}}, {"@context": "https://schema.org", "@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster", "logo": "https://1bit.monster/assets/apple-touch-icon.png", "sameAs": ["https://github.com/1bit-MONSTER"]}]
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER", "description": "AMD's own loader crashes on Qwen3.6-35B, so we decoded how the runtime packs 465 MB of MoE experts per layer from its own artifacts: the descriptor map, the 5120→4736 trim, and a reorder formula verified byte-exact against the runtime's own function.", "url": "https://1bit.monster/1bit-post-35b-moe-layout.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-35b-moe-layout.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-09-02", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
 </head>
 <body>
   <header class="topnav" data-od-id="topnav">
-    <div class="container topnav-inner">
+    <div class="container topnav-inner" style="max-width: 1000px;">
       <a href="index.html" class="logo">
         <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
-          <rect class="relay r1" x="2" y="2" width="9" height="9" rx="2"></rect><rect class="relay r2" x="13" y="2" width="9" height="9" rx="2"></rect><rect class="relay r3" x="2" y="13" width="9" height="9" rx="2"></rect><rect class="relay r4" x="13" y="13" width="9" height="9" rx="2"></rect>
+          <rect class="relay r1" x="2" y="2" width="9" height="9" rx="2"/><rect class="relay r2" x="13" y="2" width="9" height="9" rx="2"/><rect class="relay r3" x="2" y="13" width="9" height="9" rx="2"/><rect class="relay r4" x="13" y="13" width="9" height="9" rx="2"/>
         </svg>
         <span>1bit.MONSTER</span>
       </a>
@@ -410,12 +322,11 @@
         <a href="1bit-monster-v2.html">Engine</a>
         <a href="1bit-models.html">Models</a>
         <a href="1bit-jarvis.html">1bit JARVIS</a>
-        <a href="1bit-blog.html">Blog</a>
+        <a href="1bit-blog.html" aria-current="page">Blog</a>
         <a href="1bit-store.html">Store</a>
         <a href="1bit-docs.html">Docs</a>
         <a href="1bit-benchmarks.html">Benchmarks</a>
         <a href="1bit-downloads.html">Downloads</a>
-        <a href="search.html">Search</a>
       </nav>
       
       <span class="theme-switch" role="group" aria-label="Theme: light, auto, or dark">
@@ -435,86 +346,83 @@
   </header>
 
   <main id="content">
-
-    <!-- Overview -->
-    <section class="section hero-center" data-od-id="hero">
-      <div class="container">
-        <h1><svg viewBox="0 0 24 24" fill="none" aria-hidden="true" style="width:0.72em;height:0.72em;display:inline-block;vertical-align:-0.06em;margin-right:0.18em;"><rect x="2" y="2" width="9" height="9" rx="2" style="fill:var(--surface);stroke:currentColor;stroke-opacity:0.28;animation:logo-relay 80s ease-in-out infinite;"/><rect x="13" y="2" width="9" height="9" rx="2" style="fill:var(--surface);stroke:currentColor;stroke-opacity:0.28;animation:logo-relay 80s ease-in-out infinite;animation-delay:20s;"/><rect x="2" y="13" width="9" height="9" rx="2" style="fill:var(--surface);stroke:currentColor;stroke-opacity:0.28;animation:logo-relay 80s ease-in-out infinite;animation-delay:40s;"/><rect x="13" y="13" width="9" height="9" rx="2" style="fill:var(--surface);stroke:currentColor;stroke-opacity:0.28;animation:logo-relay 80s ease-in-out infinite;animation-delay:60s;"/></svg>1bit.MONSTER</h1>
-        <p class="lead">One engine, any model, zero Python. A model-agnostic, hardware-agnostic pure-C++ inference engine. This is the index to the whole site.</p>
-        <div style="display:flex;gap:var(--gap-sm);justify-content:center;margin-top:var(--gap-lg);flex-wrap:wrap;">
-          <a class="btn btn-primary" data-od-id="cta-download" href="1bit-downloads.html">Download the engine&nbsp;&darr;</a>
-          <a class="btn btn-ghost" data-od-id="cta-engine" href="1bit-monster-v2.html">Meet the engine&nbsp;&rarr;</a>
-        </div>
-        <a class="latest-link" data-od-id="latest-byte-identical" href="1bit-post-byte-identical.html">
-          <span class="latest-badge"><span class="dot"></span>latest</span>
-          <span class="latest-title">Our NPU decode is now byte-identical to AMD's real FastFlowLM runtime — forward-chain maxdiff 0, then a 1,000-token decode: 1000/1000 byte-identical, 0 ULP, 0 argmax flips. The rope table reverse-engineered out of the runtime's .rodata, and the batched-prefill caveat found afterwards.</span>
-          <span class="latest-more">read the post <span class="ar">→</span></span>
-        </a>
-        <div class="site-grid" data-od-id="pillars">
-          <a class="site-card" data-od-id="pillar-story" href="1bit-post-npu-reversal.html">
-            <span class="site-title">The 4-day reversal <span class="ar">→</span></span>
-            <p class="site-desc">AMD's XDNA 2 NPU shipped closed — 22 proprietary .so files, zero docs. Reverse-engineered from scratch in the open.</p>
-          </a>
-          <a class="site-card" data-od-id="pillar-engine" href="1bit-monster-v2.html">
-            <span class="site-title">One engine, every model <span class="ar">→</span></span>
-            <p class="site-desc">100% of HuggingFace's arch-bearing checkpoints map to a token this engine runs. Same binary on NPU, GPU, or CPU.</p>
-          </a>
-          <a class="site-card" data-od-id="pillar-jarvis" href="1bit-jarvis.html">
-            <span class="site-title">JARVIS, out of the box <span class="ar">→</span></span>
-            <p class="site-desc">Mic → VAD → STT → LLM → TTS → speaker. One process, zero cloud, ships with the engine.</p>
-          </a>
-        </div>
+    <article class="art container" data-od-id="1bit-post-35b-moe-layout">
+      <a class="back" href="1bit-blog.html">&larr; all posts</a>
+      <div class="art-meta">
+        <span>2026-09-02</span>
+        <span class="tag">npu</span><span class="tag">moe</span><span class="tag">weights</span><span class="tag">reverse-engineering</span>
       </div>
-    </section>
+      <h1>The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave</h1>
+      <p class="lead">The 35B MoE was blocked by a crash in AMD&rsquo;s own weight loader &mdash; so we decoded the layout from the runtime&rsquo;s artifacts instead: where the 465 MB of experts per layer live, why rows are 4,736 B when tiles are 5,120 B, and the A/B interleave that made our packer byte-exact.</p>
 
-    <!-- Page index -->
-    <section class="section" data-od-id="site-index">
-      <div class="container">
-        <span class="site-badge"><span class="dot"></span>site index</span>
-        <div class="site-grid" data-od-id="page-grid">
-          <a class="site-card" data-od-id="card-engine" href="1bit-monster-v2.html">
-            <span class="site-title">Engine <span class="ar">→</span></span>
-            <p class="site-desc">The claim, the census, the console. One engine, any model, zero Python.</p>
-            <span class="site-path">engine</span>
-          </a>
-          <a class="site-card" data-od-id="card-models" href="1bit-models.html">
-            <span class="site-title">Models <span class="ar">→</span></span>
-            <p class="site-desc">The families the engine runs, with real sizes and backend availability.</p>
-            <span class="site-path">models</span>
-          </a>
-          <a class="site-card" data-od-id="card-jarvis" href="1bit-jarvis.html">
-            <span class="site-title">1bit JARVIS <span class="ar">→</span></span>
-            <p class="site-desc">The in-process voice assistant that ships with the engine.</p>
-            <span class="site-path">jarvis</span>
-          </a>
-          <a class="site-card" data-od-id="card-blog" href="1bit-blog.html">
-            <span class="site-title">Blog <span class="ar">→</span></span>
-            <p class="site-desc">The build log: the four-day NPU reversal, the gates, the journey.</p>
-            <span class="site-path">blog</span>
-          </a>
-          <a class="site-card" data-od-id="card-store" href="1bit-store.html">
-            <span class="site-title">Store <span class="ar">→</span></span>
-            <p class="site-desc">Merch with real inventory and a working cart. Checkout on the live store.</p>
-            <span class="site-path">store</span>
-          </a>
-          <a class="site-card" data-od-id="card-docs" href="1bit-docs.html">
-            <span class="site-title">Docs <span class="ar">→</span></span>
-            <p class="site-desc">From scratch to NPU. The docs index, routed to the real sources.</p>
-            <span class="site-path">docs</span>
-          </a>
-          <a class="site-card" data-od-id="card-benchmarks" href="1bit-benchmarks.html">
-            <span class="site-title">Benchmarks <span class="ar">→</span></span>
-            <p class="site-desc">Measured, not projected. Kernel-level and end-to-end numbers.</p>
-            <span class="site-path">benchmarks</span>
-          </a>
-        </div>
+      <div class="prose" data-od-id="body">
+        <h2>The crash that started it</h2>
+        <p>We want the 35B-class models on the NPU &mdash; starting with Qwen3.6-35B-A3B (the <span class="mono">qwen3_6_moe_npu</span> class, 673 tensors, 40 layers, vocab 248320). The blocker was not the NPU: <b>AMD&rsquo;s own runtime crashes loading this model</b>. <span class="mono">load_weights</span> SIGSEGVs inside <span class="mono">qwen3_6_reorder_cpy</span> with a memcpy length of <span class="mono">0xF5E56C80</span> (&asymp;&minus;169&nbsp;MB &mdash; an unsigned wrap). The gdb evidence is in the docs. (A second, unrelated wall: the <span class="mono">qwen3_npu</span> class rejects intermediate size 512 &mdash; the 35B is a MoE class with different checks, and our first harness instantiated the wrong one.)</p>
+        <p>So the plan changed: don&rsquo;t wait for the loader &mdash; <b>decode how the runtime packs the weights onto the device</b> from the artifacts it leaves behind (instruction streams, TXN buffer descriptors, memory descriptors), and pack them ourselves.</p>
+
+        <h2>The map</h2>
+        <p>The layer kernel ABI is the same 5-BO shape as the 0.6B: <span class="mono">(opcode, instr, ninstr, bo0..bo4)</span> = act, weights, i5, i6, kv/state. The NPU2 buffer descriptors carry <i>device</i> addresses that are deterministic per allocation order &mdash; which is exactly why the 0.6B&rsquo;s ELFs run byte-exact: our BOs land where the runtime&rsquo;s would. The 35B layer-0 map:</p>
+        <table>
+          <thead><tr><th>region</th><th>device address</th><th>contents</th></tr></thead>
+          <tbody>
+            <tr><td>activations</td><td>0x40000000 (1 GB)</td><td>6 refs at 16 MB</td></tr>
+            <tr><td>kv / state</td><td>0x2000000 (32 MB)</td><td>632 refs</td></tr>
+            <tr><td>MoE weights (base)</td><td>0xe000000 (224 MB)</td><td>550 refs</td></tr>
+            <tr><td>per-expert blocks</td><td>0x1bc00000&ndash;0x1ca00000 (444&ndash;459 MB)</td><td>4 MB steps</td></tr>
+            <tr><td>linear-attn state</td><td>0xc0000000 (3 GB)</td><td>560 refs</td></tr>
+          </tbody>
+        </table>
+        <p>And from the descriptor walk (each descriptor is 8 words; the offset lives at word 8) &mdash; layer 0&rsquo;s weight BO:</p>
+        <table>
+          <thead><tr><th>tensor</th><th>offset</th><th>size</th></tr></thead>
+          <tbody>
+            <tr><td>up_exps_proj</td><td>0x0</td><td>155,189,248 (32768 &times; 4736)</td></tr>
+            <tr><td>gate_exps_proj</td><td>0x9400000 (148 MiB)</td><td>155,189,248</td></tr>
+            <tr><td>down_exps_proj</td><td>0x12800000 (296 MiB)</td><td>155,189,248</td></tr>
+            <tr><td>share_up / share_gate / share_down</td><td>0x1bc00000 / 0x1bc94000 / 0x1bd28000 (444&ndash;445 MiB)</td><td>&mdash;</td></tr>
+            <tr><td>self_attn.gate_proj</td><td>0x1c6fc000</td><td>&mdash;</td></tr>
+            <tr><td>linear_attn.qkv_proj</td><td>0x1bdbc000</td><td>2304 &times; 5120 tiles</td></tr>
+            <tr><td>moe_router / shared_expert_gate</td><td>0x3000 / 0x2000</td><td>12 KiB / 8 KiB</td></tr>
+          </tbody>
+        </table>
+        <p>Three expert tensors dominate: <b>465 MB per layer</b> before anything else fits.</p>
+
+        <h2>The puzzle: 5,120-byte tiles, 4,736-byte rows</h2>
+        <p>Here is the mismatch that cost the most. The GGUF file stores each expert tile as <b>5,120 B</b> &mdash; <span class="mono">[512 B scales][512 B zeros][4096 B packed]</span>. The runtime&rsquo;s in-memory rows are <b>4,736 B</b>. Comparing the two: the runtime <b>trims each tile to <span class="mono">tile[0:4736]</span></b>, dropping the last 384 B of the packed payload &mdash; then interleaves rows in <b>16-row blocks</b> (75,776 B):</p>
+        <p class="mono" style="margin-left:1em;">out[o] = trimmed[o/2 + 8&middot;(o%2)]</p>
+        <p>i.e. <span class="mono">[A0, B0, A1, B1, &hellip;, A7, B7]</span> where A is the first 8 rows and B the next 8 &mdash; the A/B half-interleave visible in the runtime&rsquo;s disassembly as two memcpys of 4,736 B with sources 37,888 B apart. Per expert tensor that is 32,768 rows &times; 4,736 B = 155,189,248 B = <b>exactly</b> 2,048 blocks &mdash; which is also exactly the descriptor&rsquo;s gate_exps offset delta (up at 0 &rarr; gate at 148 MiB). The block structure even matches the layer TXN weight BDs: 18,944-B reads (4 rows) at 75,776-B strides (16-row blocks).</p>
+        <p>The proof it is right: <span class="mono">tools/verify_moe_reorder.cpp</span> calls the runtime&rsquo;s <i>own</i> <span class="mono">qwen3_6_reorder_cpy</span> on real up_exps tiles and compares byte-for-byte &mdash; <b>PASS</b>, row 0 == tile 0 [0:4736], row 1 == tile 8 [0:4736], row 2 == tile 1 [0:4736].</p>
+
+        <h2>Verified, then the next wall</h2>
+        <p>The packer built on the formula is <b>100% verified</b>: layer-6 rows 0..98303 reconstruct byte-for-byte (<span class="mono">verify_moe_packer.py</span>). More structure fell out along the way:</p>
+        <ul>
+          <li><b>gate_proj&rsquo;s k-order is (a, a&minus;7) A/B pairs</b> &mdash; [232, 225, 233, 226, &hellip;] &mdash; not sequential.</li>
+          <li><b>Every tensor is dtype=8 (elsize 4736)</b> &mdash; the &ldquo;8704&rarr;9216 padded&rdquo; theory for the qkv family is wrong; those files are 8,704-B rows with a different block format ([256 B scales][8192 B int8], block-32, zero-point 0).</li>
+          <li><b>Row 0 of an expert tensor crosses the tensor boundary</b>: share_up&rsquo;s 824-B tail + up&rsquo;s first 3,912 B.</li>
+          <li><b>The MoE layer ELFs generate without <span class="mono">load_weights</span></b>, via the exported sequence builder: linear layers 24,636 words, full-attention layers 20,566 words (every 4th layer), <span class="mono">lm_head</span> 260 words.</li>
+        </ul>
+        <p>What is left, honestly: the engine&rsquo;s 35B weight-packing + forward loop (no 35B <span class="mono">generate()</span> yet &mdash; the E2E milestones are the 0.6B), and the qkv/ssm_out tensors&rsquo; true layout &mdash; layer-0&rsquo;s captured BO is all zeros after 486.03 MB, and a capture that survives the small-tensor crashes is still needed. The upstream <span class="mono">reorder_cpy</span> crash also means the runtime cannot serve as the 35B reference until ROCm ships a fix &mdash; so our byte-exact verification against its own function is currently the strongest check that exists.</p>
+
+        <h2>The numbers</h2>
+        <table>
+          <thead><tr><th>measure</th><th>value</th></tr></thead>
+          <tbody>
+            <tr><td>model</td><td>Qwen3.6-35B-A3B-NPU2 (qwen3_6_moe_npu), 673 tensors / 40 layers / vocab 248320</td></tr>
+            <tr><td>expert tensor size</td><td>32768 rows &times; 4736 B = 155,189,248 B (2048 blocks) &times; 3 = 465 MB/layer</td></tr>
+            <tr><td>file tile vs runtime row</td><td>5120 B &rarr; 4736 B (trim [0:4736], drop 384 B packed tail)</td></tr>
+            <tr><td>reorder formula</td><td>out[o] = trimmed[o/2 + 8&middot;(o%2)], 16-row blocks (75776 B)</td></tr>
+            <tr><td>verification</td><td>byte-exact vs runtime&rsquo;s own qwen3_6_reorder_cpy; packer 100% (layer-6 rows 0..98303)</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Related</h2>
+        <p><a href="1bit-post-byte-identical.html">Byte-identical: 1,000 tokens of proof against AMD&rsquo;s real runtime</a> &middot; <a href="1bit-post-npu-reversal.html">I reverse-engineered AMD&rsquo;s NPU stack in 4 days</a> &middot; the full map + gdb evidence are in <span class="mono">npu-infer/docs/35b-forward-integration.md</span> and <span class="mono">npu-infer/docs/35b-moe-load-crash.md</span> on the feat branch.</p>
       </div>
-    </section>
-
+    </article>
   </main>
 
   <footer class="pagefoot" data-od-id="footer">
-    <div class="container row-between">
+    <div class="container row-between" style="max-width: 1000px;">
       <span>© 2026 1bit.MONSTER · MIT License</span>
       <a class="meta" href="https://discord.gg/Qy38d4Xu2h" target="_blank" rel="noopener">Join Discord &#8599;</a>
 
@@ -525,8 +433,7 @@
       <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
     </div>
   </footer>
-
-
 <script src="analytics.js"></script>
 <script src="https://context7.com/widget.js" data-library="/1bit-monster/1bit-monster"></script>
-</body></html>
+</body>
+</html>

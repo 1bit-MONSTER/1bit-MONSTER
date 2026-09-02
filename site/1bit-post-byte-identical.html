@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <title>Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER</title>
+  <meta name="description" content="Our hand-rolled NPU launcher is byte-identical to AMD's real FastFlowLM runtime through a 1,000-token decode — 0 ULP, 0 argmax flips. The hardcoded f32 rope table that made the engine 'too accurate', the validation loop that closed, and the batched-prefill caveat we only found by chasing it." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="article" />
+  <meta property="og:title" content="Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER" />
+  <meta property="og:description" content="Our hand-rolled NPU launcher is byte-identical to AMD's real FastFlowLM runtime through a 1,000-token decode — 0 ULP, 0 argmax flips. The hardcoded f32 rope table that made the engine 'too accurate', the validation loop that closed, and the batched-prefill caveat we only found by chasing it." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-byte-identical.html" />
+  meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER" />
+  <meta name="twitter:description" content="Our hand-rolled NPU launcher is byte-identical to AMD's real FastFlowLM runtime through a 1,000-token decode — 0 ULP, 0 argmax flips. The hardcoded f32 rope table that made the engine 'too accurate', the validation loop that closed, and the batched-prefill caveat we only found by chasing it." />
+  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-byte-identical.html" />
+  <style>
+    /* ─── tokens ─────────────────────────────────────────────────────────
+       Bound verbatim to the locked light modern-minimal + 1-bit identity. */
+    :root {
+      --bg:      oklch(99% 0.002 240);
+      --surface: oklch(100% 0 0);
+      --fg:      oklch(18% 0.012 250);
+      --muted:   oklch(54% 0.012 250);
+      --border:  oklch(92% 0.005 250);
+      --accent:  oklch(58% 0.18 255);
+      --status:  oklch(52% 0.14 158);
+
+      --accent-soft:   color-mix(in oklch, var(--accent) 12%, transparent);
+      --fg-soft:       color-mix(in oklch, var(--fg) 5%, transparent);
+      --muted-strong:  color-mix(in oklch, var(--muted) 76%, var(--fg));
+      --hairblock:     color-mix(in oklch, var(--fg) 7%, transparent);
+
+      --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+      --font-body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      --font-mono:    ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+
+      --fs-h1: clamp(38px, 5vw, 64px);
+      --fs-h2: clamp(26px, 3vw, 34px);
+      --fs-lead: 19px;
+      --fs-body: 17px;
+      --fs-meta: 13px;
+      --radius: 10px;
+      --radius-lg: 16px;
+      --gap-sm: 12px; --gap-md: 20px; --gap-lg: 32px; --gap-xl: 48px; --gap-2xl: 80px;
+      --container: 760px; --gutter: 32px;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--fg); font-family: var(--font-body); font-size: var(--fs-body); line-height: 1.7; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; }
+    a { color: inherit; text-decoration: none; }
+    p { text-wrap: pretty; }
+    h1, h2, h3, h4 { text-wrap: balance; }
+    ::selection { background: var(--accent-soft); color: var(--fg); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+    .container { max-width: var(--container); margin-inline: auto; padding-inline: var(--gutter); }
+    .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+
+    .topnav { position: sticky; top: 0; z-index: 10; background: color-mix(in oklch, var(--bg) 92%, transparent); backdrop-filter: blur(12px); border-bottom: 1px solid var(--border); }
+    .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 14px; }
+    .topnav .logo { display: inline-flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+    .topnav .logo svg { width: 26px; height: 26px; color: var(--fg); }
+    /* header logo: 1bit relay mark - one block solid at a time, slow */
+    .topnav .logo .relay { fill: var(--surface); stroke: currentColor; stroke-opacity: 0.28; animation: logo-relay 80s ease-in-out infinite; }
+    .topnav .logo .r1 { animation-delay: 0s; }
+    .topnav .logo .r2 { animation-delay: 20s; }
+    .topnav .logo .r3 { animation-delay: 40s; }
+    .topnav .logo .r4 { animation-delay: 60s; }
+    @keyframes logo-relay {
+      0%       { fill: var(--surface); }
+      13%      { fill: var(--fg); }
+      14%      { fill: var(--fg); }
+      25%      { fill: var(--surface); }
+      100%     { fill: var(--surface); }
+    }
+    @media (prefers-reduced-motion: reduce) { .topnav .logo .relay { animation: none; } .topnav .logo .r1 { fill: var(--fg); } }
+
+    .topnav nav { display: flex; gap: var(--gap-lg); }
+    .topnav nav a { font-size: 14px; color: var(--muted-strong); }
+    .topnav nav a:hover { color: var(--fg); }
+    .topnav nav a[aria-current="page"] { color: var(--fg); font-weight: 500; }
+    .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
+    .pagefoot .place { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-lg) auto 0; }
+    .pagefoot .quote { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-sm) auto 0; }
+    .btn { display: inline-flex; align-items: center; gap: 8px; padding: 11px 20px; border-radius: var(--radius); border: 1px solid transparent; font-size: 14px; font-weight: 500; letter-spacing: -0.005em; transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+    .btn-ghost { background: transparent; color: var(--fg); padding-inline: 8px; }
+    .btn-ghost:hover { color: var(--accent); }
+
+    .art { padding-block: clamp(48px, 7vw, 96px) clamp(40px, 6vw, 72px); }
+    .art .back { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; color: var(--muted-strong); display: inline-flex; gap: 6px; margin-bottom: var(--gap-lg); }
+    .art .back a:hover { color: var(--fg); }
+    .art-meta { display: flex; flex-wrap: wrap; gap: var(--gap-md); align-items: center; margin-bottom: var(--gap-md); font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em; color: var(--muted-strong); }
+    .art-meta .tag { padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px; }
+    .art-meta .tag.corr { border-color: color-mix(in oklch, var(--accent) 40%, transparent); border-style: dashed; color: color-mix(in oklch, var(--muted) 62%, var(--fg)); }
+    .art h1 { font-family: var(--font-display); font-size: var(--fs-h1); line-height: 1.08; letter-spacing: -0.02em; font-weight: 600; margin: 0 0 var(--gap-md); }
+    .art .lead { font-size: var(--fs-lead); line-height: 1.6; color: var(--muted-strong); max-width: 64ch; margin: 0 0 var(--gap-2xl); }
+
+    .prose h2 { font-family: var(--font-display); font-size: var(--fs-h2); line-height: 1.16; letter-spacing: -0.015em; font-weight: 600; margin: var(--gap-2xl) 0 var(--gap-md); }
+    .prose p { margin: 0 0 var(--gap-md); }
+    .prose b { font-weight: 600; }
+    .prose .mono { font-family: var(--font-mono); font-size: 0.92em; }
+    .prose code { font-family: var(--font-mono); font-size: 0.9em; background: var(--hairblock); padding: 2px 6px; border-radius: 4px; }
+    .prose pre { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px 20px; overflow-x: auto; font-family: var(--font-mono); font-size: 13px; line-height: 1.85; margin: 0 0 var(--gap-lg); }
+    .prose table { width: 100%; border-collapse: collapse; margin: 0 0 var(--gap-lg); font-size: 15px; }
+    .prose th, .prose td { text-align: left; padding: 11px 14px; border-bottom: 1px solid var(--border); }
+    .prose th { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-strong); font-weight: 500; }
+    .prose td { font-family: var(--font-mono); font-size: 14px; }
+    .prose .callout { border-left: 1px solid var(--accent); padding: 4px 0 4px var(--gap-lg); margin: 0 0 var(--gap-lg); }
+    @media (max-width: 720px) {
+      .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+    }
+      /* ─── 1bit theme modes ────────────────────────────────────────────────
+       light mode (default) | auto (follows OS) | dark mode.
+       Appended by scripts/site_theme_modes.py — rerun to regenerate. */
+    :root {
+      color-scheme: light;
+    }
+    :root[data-theme="dark"] {
+      color-scheme: dark;
+    }
+    :root[data-theme="dark"] {
+        color-scheme: dark;
+        --bg:      oklch(16.5% 0.014 250);
+        --surface: oklch(21% 0.016 250);
+        --fg:      oklch(94% 0.01 250);
+        --muted:   oklch(68% 0.02 250);
+        --border:  oklch(29% 0.018 250);
+        --accent:  oklch(74% 0.15 258);
+        --status:  oklch(79% 0.13 156);
+        /* pinned: these carry the "ink console / paper" identity in both modes */
+        --ink-deep:      oklch(26% 0.011 250);
+        --on-dark:       oklch(97% 0.004 250);
+        --on-dark-muted: color-mix(in oklch, white 68%, transparent);
+        --border-dark:   color-mix(in oklch, white 18%, transparent);
+    }
+    :root[data-theme="dark"] .btn-primary {
+        background: color-mix(in oklch, var(--accent) 62%, black);
+        color: oklch(98% 0.002 250);
+    }
+    :root[data-theme="dark"] .btn-primary:hover {
+        background: color-mix(in oklch, var(--accent) 74%, black);
+    }
+    :root[data-theme="dark"] .section-dark .btn-primary {
+        background: var(--accent-bright);
+        color: var(--ink-deep);
+    }
+    :root[data-theme="dark"] .section-dark .btn-primary:hover {
+        background: color-mix(in oklch, var(--accent) 88%, white);
+    }
+    :root[data-theme="dark"] .codeblock {
+        background: oklch(23% 0.015 250);
+        color: oklch(95% 0.005 250);
+    }
+    :root[data-theme="dark"] .codeblock .c {
+        color: color-mix(in oklch, oklch(95% 0.005 250) 55%, transparent);
+    }
+    :root[data-theme="dark"] .product-tile {
+        background: linear-gradient(180deg, oklch(99.4% 0.002 240), oklch(96% 0.004 250));
+    }
+    :root[data-theme="dark"] .sticker-tile {
+        background-color: oklch(96.8% 0.004 250);
+        background-image: radial-gradient(color-mix(in oklch, oklch(18% 0.012 250) 16%, transparent) 1px, transparent 1px);
+        color: oklch(26% 0.011 250);
+    }
+    :root[data-theme="dark"] .product-tile .sheet {
+        fill: oklch(99.4% 0.002 240);
+        stroke: oklch(26% 0.011 250);
+    }
+    :root[data-theme="dark"] .product-tile .ink, .product-tile .p-ink, .product-tile .ink-stroke {
+        fill: oklch(26% 0.011 250);
+    }
+    :root[data-theme="dark"] .product-tile .ink-stroke {
+        stroke: oklch(26% 0.011 250);
+    }
+    :root[data-theme="dark"] .product-tile .ink2 {        fill: oklch(39% 0.009 250);
+    }
+    :root[data-theme="dark"] .product-tile .sub {        fill: oklch(52% 0.008 250);
+    }
+    :root[data-theme="dark"] .product-tile .shade {        fill: color-mix(in oklch, oklch(18% 0.012 250) 13%, transparent);
+    }
+    :root[data-theme="dark"] .product-tile .p-mid {        fill: oklch(45% 0.009 250);
+    }
+    :root[data-theme="dark"] .product-tile .p-soft {        fill: oklch(75% 0.005 250);
+    }
+    :root[data-theme="dark"] .product-tile .p-foot {        fill: color-mix(in oklch, oklch(18% 0.012 250) 16%, transparent);
+    }
+    :root[data-theme="dark"] .product-tile .print, .product-tile .p-print, .product-tile .p-line, .product-tile .relay {
+        fill: oklch(99% 0.001 240);
+    }
+    :root[data-theme="dark"] .product-tile .print-stroke {
+        stroke: oklch(99% 0.001 240);
+    }
+
+    @media (prefers-color-scheme: dark) {
+    :root[data-theme="auto"] {
+    color-scheme: dark;
+    --bg:      oklch(16.5% 0.014 250);
+    --surface: oklch(21% 0.016 250);
+    --fg:      oklch(94% 0.01 250);
+    --muted:   oklch(68% 0.02 250);
+    --border:  oklch(29% 0.018 250);
+    --accent:  oklch(74% 0.15 258);
+    --status:  oklch(79% 0.13 156);
+    /* pinned: these carry the "ink console / paper" identity in both modes */
+    --ink-deep:      oklch(26% 0.011 250);
+    --on-dark:       oklch(97% 0.004 250);
+    --on-dark-muted: color-mix(in oklch, white 68%, transparent);
+    --border-dark:   color-mix(in oklch, white 18%, transparent);
+    }
+    :root[data-theme="auto"] .btn-primary {
+    background: color-mix(in oklch, var(--accent) 62%, black);
+    color: oklch(98% 0.002 250);
+    }
+    :root[data-theme="auto"] .btn-primary:hover {
+    background: color-mix(in oklch, var(--accent) 74%, black);
+    }
+    :root[data-theme="auto"] .section-dark .btn-primary {
+    background: var(--accent-bright);
+    color: var(--ink-deep);
+    }
+    :root[data-theme="auto"] .section-dark .btn-primary:hover {
+    background: color-mix(in oklch, var(--accent) 88%, white);
+    }
+    :root[data-theme="auto"] .codeblock {
+    background: oklch(23% 0.015 250);
+    color: oklch(95% 0.005 250);
+    }
+    :root[data-theme="auto"] .codeblock .c {
+    color: color-mix(in oklch, oklch(95% 0.005 250) 55%, transparent);
+    }
+    :root[data-theme="auto"] .product-tile {
+    background: linear-gradient(180deg, oklch(99.4% 0.002 240), oklch(96% 0.004 250));
+    }
+    :root[data-theme="auto"] .sticker-tile {
+    background-color: oklch(96.8% 0.004 250);
+    background-image: radial-gradient(color-mix(in oklch, oklch(18% 0.012 250) 16%, transparent) 1px, transparent 1px);
+    color: oklch(26% 0.011 250);
+    }
+    :root[data-theme="auto"] .product-tile .sheet {
+    fill: oklch(99.4% 0.002 240);
+    stroke: oklch(26% 0.011 250);
+    }
+    :root[data-theme="auto"] .product-tile .ink, .product-tile .p-ink, .product-tile .ink-stroke {
+    fill: oklch(26% 0.011 250);
+    }
+    :root[data-theme="auto"] .product-tile .ink-stroke {
+    stroke: oklch(26% 0.011 250);
+    }
+    :root[data-theme="auto"] .product-tile .ink2 {    fill: oklch(39% 0.009 250);
+    }
+    :root[data-theme="auto"] .product-tile .sub {    fill: oklch(52% 0.008 250);
+    }
+    :root[data-theme="auto"] .product-tile .shade {    fill: color-mix(in oklch, oklch(18% 0.012 250) 13%, transparent);
+    }
+    :root[data-theme="auto"] .product-tile .p-mid {    fill: oklch(45% 0.009 250);
+    }
+    :root[data-theme="auto"] .product-tile .p-soft {    fill: oklch(75% 0.005 250);
+    }
+    :root[data-theme="auto"] .product-tile .p-foot {    fill: color-mix(in oklch, oklch(18% 0.012 250) 16%, transparent);
+    }
+    :root[data-theme="auto"] .product-tile .print, .product-tile .p-print, .product-tile .p-line, .product-tile .relay {
+    fill: oklch(99% 0.001 240);
+    }
+    :root[data-theme="auto"] .product-tile .print-stroke {
+    stroke: oklch(99% 0.001 240);
+    }
+    }
+    /* auto + light: nothing to override — the base tokens are already light. */
+
+    /* ─── theme switch (light / auto / dark) ───────────────────────── */
+    .theme-switch {
+      display: inline-flex; align-items: center; gap: 2px;
+      padding: 3px; border: 1px solid var(--border); border-radius: 999px;
+      background: color-mix(in oklch, var(--fg) 4%, transparent);
+      flex: 0 0 auto;
+    }
+    .theme-switch .ts-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 26px; height: 24px; padding: 0; border: 0; border-radius: 999px;
+      background: transparent; color: var(--muted); cursor: pointer;
+      transition: background 0.15s ease, color 0.15s ease;
+    }
+    .theme-switch .ts-btn:hover { color: var(--fg); }
+    .theme-switch .ts-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+    html[data-theme="light"] .theme-switch [data-choice="light"],
+    html[data-theme="auto"]  .theme-switch [data-choice="auto"],
+    html[data-theme="dark"]  .theme-switch [data-choice="dark"] {
+      background: var(--surface); color: var(--fg);
+      box-shadow: 0 1px 3px color-mix(in oklch, var(--fg) 18%, transparent);
+    }
+    @media (max-width: 720px) {
+      .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+      .theme-switch { order: 4; }
+    }
+
+
+</style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER", "description": "Our hand-rolled NPU launcher is byte-identical to AMD's real FastFlowLM runtime through a 1,000-token decode — 0 ULP, 0 argmax flips. The hardcoded f32 rope table that made the engine 'too accurate', the validation loop that closed, and the batched-prefill caveat we only found by chasing it.", "url": "https://1bit.monster/1bit-post-byte-identical.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-byte-identical.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-09-02", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
+
+  <script src="theme.js"></script>
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner" style="max-width: 1000px;">
+      <a href="index.html" class="logo">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect class="relay r1" x="2" y="2" width="9" height="9" rx="2"/><rect class="relay r2" x="13" y="2" width="9" height="9" rx="2"/><rect class="relay r3" x="2" y="13" width="9" height="9" rx="2"/><rect class="relay r4" x="13" y="13" width="9" height="9" rx="2"/>
+        </svg>
+        <span>1bit.MONSTER</span>
+      </a>
+      <nav>
+        <a href="1bit-monster-v2.html">Engine</a>
+        <a href="1bit-models.html">Models</a>
+        <a href="1bit-jarvis.html">1bit JARVIS</a>
+        <a href="1bit-blog.html" aria-current="page">Blog</a>
+        <a href="1bit-store.html">Store</a>
+        <a href="1bit-docs.html">Docs</a>
+        <a href="1bit-benchmarks.html">Benchmarks</a>
+        <a href="1bit-downloads.html">Downloads</a>
+      </nav>
+      
+      <span class="theme-switch" role="group" aria-label="Theme: light, auto, or dark">
+        <button type="button" class="ts-btn" data-choice="light" title="Light mode" aria-label="Light mode" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.4v2.6M12 19v2.6M2.4 12H5M19 12h2.6M4.9 4.9l1.9 1.9M17.2 17.2l1.9 1.9M19.1 4.9l-1.9 1.9M6.8 17.2l-1.9 1.9"/></svg>
+        </button>
+        <button type="button" class="ts-btn" data-choice="auto" title="Auto (follow system)" aria-label="Auto (follow system)" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path d="M12 3a9 9 0 1 0 0 18V3Z" fill="currentColor"/><circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+        </button>
+        <button type="button" class="ts-btn" data-choice="dark" title="Dark mode" aria-label="Dark mode" aria-pressed="false">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.2 14.6A8.4 8.4 0 1 1 9.4 3.8 6.9 6.9 0 0 0 20.2 14.6Z"/></svg>
+        </button>
+      </span>
+
+<a class="btn btn-ghost" href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub&nbsp;↗</a>
+    </div>
+  </header>
+
+  <main id="content">
+    <article class="art container" data-od-id="1bit-post-byte-identical">
+      <a class="back" href="1bit-blog.html">&larr; all posts</a>
+      <div class="art-meta">
+        <span>2026-09-02</span>
+        <span class="tag">npu</span><span class="tag">correctness</span><span class="tag">runtime</span><span class="tag">reverse-engineering</span>
+      </div>
+      <h1>Byte-identical: 1,000 tokens of proof against AMD's real runtime</h1>
+      <p class="lead">Last week ended with corr 1.000000 on one prefill shape. This is what it took to hold byte-identity through a whole generation &mdash; a validation loop that closed layer-by-layer, a rope table reverse-engineered out of the runtime&rsquo;s .rodata, and the one place byte-identity does not hold, found honestly.</p>
+
+      <div class="prose" data-od-id="body">
+        <h2>The bar we set</h2>
+        <p>Last week&rsquo;s <a href="1bit-post-zaya-q4nx-hrx.html">Zaya post</a> ended with a number that sounded like a rounding: the engine&rsquo;s hand-rolled NPU launcher hit <b>corr 1.000000</b> against the real FastFlowLM runtime on prefill, argmax 397&nbsp;==&nbsp;397. This post is what it took to hold that through a <b>whole generation</b> &mdash; and the one place where byte-identity does <i>not</i> hold, which we only found by chasing it.</p>
+        <p>Why byte-identity and not &ldquo;corr 0.9999&rdquo;? Because once the Q4NX dequant was proven lossless (<span class="mono">W = (q &minus; zp) &middot; scale</span>, maxdiff 0.0 over the whole projection) and the weights were bit-identical to the reference, any corr &lt; 1 is an <i>execution</i> difference &mdash; summation order, a missed table entry, a silently no-op&rsquo;d kernel. Same instruction stream, same bytes, is the only number with nothing hiding behind it.</p>
+
+        <h2>The validation loop closes</h2>
+        <p>The prefill result validated one shape. To close the loop we diffed the <b>whole forward chain</b> &mdash; every layer&rsquo;s activations, not just final logits &mdash; against runtime captures at every context depth. Three facts made it hard, then made it possible:</p>
+        <ul>
+          <li><b>The 28-layer &ldquo;explosion&rdquo; is real.</b> After one forward the activations have std <b>194.4619</b> (range [&minus;1216, 780]) &mdash; the earlier &ldquo;std 3.39&rdquo; that looked like divergence was an FP16-vs-BF16 numpy artifact in our own reference tooling.</li>
+          <li><b>The runtime arms its layer kernel twice per layer.</b> One run reproduces the capture byte-exactly; the second arm is invisible unless you look.</li>
+          <li><b>One layer kernel is the whole layer</b> &mdash; attention + MLP fused, reading 1,920 weight tiles (9.8&nbsp;MB) per forward.</li>
+        </ul>
+        <table>
+          <thead><tr><th>check</th><th>activations</th><th>logits argmax</th><th>vs runtime</th></tr></thead>
+          <tbody>
+            <tr><td>fwd1 (ctx 1, 1/2/3/28 layers)</td><td>std 194.4619</td><td>397 == 397</td><td>maxdiff <b>0</b></td></tr>
+            <tr><td>fwd2 (ctx 2)</td><td>std 19.8162</td><td>88 == 88</td><td>maxdiff <b>0</b></td></tr>
+            <tr><td>fwd3 (ctx 3)</td><td>std 25.6497</td><td>284 == 284</td><td>maxdiff <b>0</b></td></tr>
+          </tbody>
+        </table>
+
+        <h2>generate() end-to-end on the runtime path</h2>
+        <p>With the layer path validated, we wired it into the engine (<span class="mono">RuntimeLayerEngine</span>, <span class="mono">NPU_RUNTIME_LAYERS=1</span>) and ran a real generation, BOS&rarr;16 tokens. ctx1..16: maxdiff 0. Then ctx17 lit up: maxdiff 0.3399 &mdash; exactly <b>one bf16 ULP</b>, argmax 9695. It turned out to be a rope-table tie-boundary artifact where the <i>engine</i> was the more accurate side: the runtime&rsquo;s table value sat 0.7% of an ULP <i>above</i> a rounding tie, so it rounded up one bf16 ULP, while the engine&rsquo;s exact double-precision math kept the lower ULP. The remaining contexts validated on-device (ctx18..21, ~19&nbsp;ms/tok). Two clean-reboot drills later, the whole chain was reproducible &mdash; the hardware state survives, the ELF set survives, the bytes survive.</p>
+
+        <h2>The rope table that was too accurate</h2>
+        <p>Chasing ULP-level diffs is where the interesting reverse engineering happens. The engine computed rope&rsquo;s <span class="mono">phi = pos &middot; 1e6<sup>(&minus;2j/128)</sup></span> in double precision &mdash; and that was the bug: the runtime keeps a <b>hardcoded float32 <span class="mono">inv_freq[64]</span> table in <span class="mono">libqwen3_npu.so</span>&rsquo;s .rodata @0x152740</b>, and the literals are <i>not</i> the f32 rounding of the double formula (off by up to ~1.5e-5 relative, in a non-monotonic per-j pattern no powf/expf/sincosf chain reproduces). Decoded from disassembly of the runtime&rsquo;s <span class="mono">_rope_rms</span>: <span class="mono">phi = inv_freq[j] &middot; (float)pos</span> (float32 multiply), glibc <span class="mono">sincosf</span>, f32&rarr;bf16 RNE. We now embed the exact 64-float dump and use the same arithmetic.</p>
+        <table>
+          <thead><tr><th>test</th><th>result</th></tr></thead>
+          <tbody>
+            <tr><td>40-token decode (ctx2..41)</td><td>40/40 byte-identical, 0 ULP, 0 argmax flips</td></tr>
+            <tr><td>63-token decode (ctx2..64, full shipped ELF range)</td><td>63/63 byte-identical</td></tr>
+            <tr><td>multi-token prefill (ctx1..4) then decode</td><td>byte-identical</td></tr>
+            <tr><td>200-token decode (ctx2..201)</td><td>200/200 byte-identical</td></tr>
+            <tr><td><b>1000-token decode (ctx2..1001)</b></td><td><b>1000/1000 byte-identical, 0 ULP, 0 argmax flips</b></td></tr>
+          </tbody>
+        </table>
+        <p>Rope holds to phi ~800 rad through glibc&rsquo;s argument reduction, and 1,000 tokens of KV growth stay exact. Two things made the ladder cheap to run: per-context ELFs now <b>generate on demand</b> (~0.6&nbsp;ms each; full MAX_L 4096 is ~2.5&nbsp;s) instead of shipping 290&nbsp;MB of binaries, and capture hygiene &mdash; a <span class="mono">CAP_NO_SYNC</span> gate cut the interposer&rsquo;s sync/wait dumps from 45&nbsp;GB to 500&nbsp;MB of lean i6-only captures. Same round: the decoder finally got <b>real sampling</b> (temperature / top-k / top-p, seeded) replacing a dead greedy stub &mdash; and one genuine bug: the RNG was reseeding every draw, so every token sampled the same stream value.</p>
+
+        <h2>The honest footnote: batched prefill &ne; N&times; forward</h2>
+        <p>Byte-identity held for the sequence path. Then we asked the obvious next question: is the runtime&rsquo;s <i>batched</i> prefill (what a served session actually uses) equal to N&times; single-token forward? No: prefill vs forward@ctx4 logits corr 0.945, maxdiff 3.69, argmax 7829 vs 97462. The root-cause hunt went through three claims in under an hour &mdash; worth keeping because the first two were wrong:</p>
+        <ul>
+          <li><b>Claim 1: rope-table divergence.</b> Wrong &mdash; the batched mm never advances the host i6 table, so every dump sat at pos 0 where rope is identity.</li>
+          <li><b>Claim 2: two confounders</b> (mv-vs-mm projection ULP at pos 0, rope table at pos&gt;0). The fp64 adjudication then showed <b>neither path is byte-correct</b>: mm 92/1024 byte-match (834/1024 &le;1 ULP), seq 17/1024 (866/1024) &mdash; both valid bf16 pipelines, ~0.5% mean relative error.</li>
+          <li><b>Claim 3 (final): the rope confounder was a magnitude artifact.</b> The big-diff dimensions (50/115) are the <i>largest-|K|</i> dims (mean |K| 85.9/13.4 vs 7.5 next-largest), never rope-paired, present at pos 0; |diff| vs |K| corr 0.63&ndash;0.84. The .rodata-vs-exact error is &le;5e-8 rad in phi &mdash; physically invisible in bf16.</li>
+        </ul>
+        <p>Final root cause: <b>one</b> confounder &mdash; batched-mm vs per-token-mv GEMM accumulation numerics. The engine stays byte-identical to the runtime&rsquo;s sequence path at every context; a served AutoModel-chat session (batched prefill) can differ at first-token argmax on near-ties. That is runtime-internal, not an engine defect &mdash; and it is exactly the kind of caveat we keep in the docs rather than hiding.</p>
+
+        <h2>The numbers</h2>
+        <table>
+          <thead><tr><th>measure</th><th>value</th></tr></thead>
+          <tbody>
+            <tr><td>prefill logits vs runtime (token-1000 input)</td><td>corr 1.000000, argmax 397 == 397 (round 28)</td></tr>
+            <tr><td>forward chain fwd1/2/3 vs runtime</td><td>byte-identical, maxdiff 0</td></tr>
+            <tr><td>decode through 1,000 tokens (ctx2..1001)</td><td>1000/1000 byte-identical, 0 ULP, 0 argmax flips</td></tr>
+            <tr><td>decode speed (Qwen3-0.6B / XDNA 2)</td><td>~15 ms/tok; on-device gen ~19 ms/tok</td></tr>
+            <tr><td>per-context ELF generation</td><td>~0.6 ms/ELF on demand (shipped set stays 1..64, 9.9 MB)</td></tr>
+            <tr><td>capture size (CAP_NO_SYNC)</td><td>45 GB &rarr; 500 MB</td></tr>
+          </tbody>
+        </table>
+
+        <h2>Related</h2>
+        <p><a href="1bit-post-zaya-q4nx-hrx.html">Zaya 8B Q4NX on the AMD NPU</a> &middot; <a href="1bit-post-hrx-engine.html">HRX: in-process fused decode</a> &middot; the full round-by-round record (including the retracted claims) lives in <span class="mono">npu-infer/docs/txn-decode-findings.md</span> on the feat branch.</p>
+      </div>
+    </article>
+  </main>
+
+  <footer class="pagefoot" data-od-id="footer">
+    <div class="container row-between" style="max-width: 1000px;">
+      <span>© 2026 1bit.MONSTER · MIT License</span>
+      <a class="meta" href="https://discord.gg/Qy38d4Xu2h" target="_blank" rel="noopener">Join Discord &#8599;</a>
+
+      <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
+    </div>
+    <div class="container">
+      <p class="place" data-od-id="footer-place">Metepenagiag Mi’kmaq Nation, New Brunswick, Canada</p>
+      <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
+    </div>
+  </footer>
+<script src="analytics.js"></script>
+<script src="https://context7.com/widget.js" data-library="/1bit-monster/1bit-monster"></script>
+</body>
+</html>
