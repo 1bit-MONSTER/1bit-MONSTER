@@ -467,6 +467,17 @@ bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_toke
             if (!runtime_layers_->embed(input_tokens[t])) return false;
             rt_ctx_len_ = t + 1;
             if (!runtime_layers_->forward(rt_ctx_len_)) return false;
+            // per-token logits dump for the runtime A/B (RT_LOGITS_PREFIX)
+            if (const char* rp = getenv("RT_LOGITS_PREFIX")) {
+                runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+                char fn[512];
+                snprintf(fn, sizeof(fn), "%s_%d.bin", rp, input_tokens[t]);
+                FILE* f = fopen(fn, "wb");
+                if (f) {
+                    fwrite(lm_head_buffer_.data(), sizeof(float), config_.vocab_size, f);
+                    fclose(f);
+                }
+            }
             if (t % 7 == 0) LOG_DEBUG("  Runtime layer %d/%d done (ctx=%d)",
                                       t, num_input_tokens, rt_ctx_len_);
             continue;
