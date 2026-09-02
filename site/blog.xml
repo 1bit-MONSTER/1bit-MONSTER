@@ -6,7 +6,7 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Wed, 02 Sep 2026 13:55:42 +0000</lastBuildDate>
+    <lastBuildDate>Wed, 02 Sep 2026 13:58:39 +0000</lastBuildDate>
     <item>
       <title>Byte-identical: 1,000 tokens of proof against AMD&#x27;s real runtime</title>
       <link>https://1bit.monster/1bit-post-byte-identical.html</link>
@@ -15,7 +15,7 @@
       <description>Milestone: our NPU decode is now bit-for-bit identical to AMD&#x27;s own runtime — verified across a full 1,000-token generation, zero differences. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md</description>
     </item>
     <item>
-      <title>The 35B MoE&#x27;s NPU packing: 5,120-byte tiles, 4,736-byte rows</title>
+      <title>The 35B MoE&#x27;s NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave</title>
       <link>https://1bit.monster/1bit-post-35b-moe-layout.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-35b-moe-layout.html</guid>
       <pubDate>Wed, 02 Sep 2026 00:00:00 +0000</pubDate>

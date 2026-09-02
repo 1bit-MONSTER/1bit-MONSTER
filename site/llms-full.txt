@@ -370,7 +370,7 @@ AMD calls HRX "a lighter, more focused subset of ROCm" — an IREE-based HIP rep
 
 ---
 
-# Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER
+# Lemonade v11.7.0, and how we stay current with the SDK | 1bit.MONSTER
 
 Lemonade v11.7.0, and how we stay current with the SDK
 
@@ -408,9 +408,9 @@ AMD shipped the 15-backend Lemonade SDK — and the new one is literally built f
 
 ---
 
-# Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER
+# Lemonade v11.8.1, and how we stay current with the SDK | 1bit.MONSTER
 
-Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo
+Lemonade v11.8.1, and how we stay current with the SDK
 
 The release that takes the SDK to 15 backends
 
