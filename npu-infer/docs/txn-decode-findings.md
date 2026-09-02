@@ -1128,3 +1128,19 @@ Lazy on-demand ELF build (MAX_L without shipping 290MB of ELF binary):
   (144370 91145 30 220 17 15)
 - NPU_MAX_TOKENS cap raised 64 -> 4096 (main.cpp)
 - shipped ELFs remain 1..64 (9.9MB); anything beyond generates on demand
+
+### Round 38b — real decoder sampling (was: dead greedy stub)
+
+sample_token() previously discarded its temperature parameter and always
+returned argmax. Implemented real decoding:
+
+- NPU_TEMPERATURE (default 0) — >0 enables temperature softmax sampling
+- NPU_TOP_K / NPU_TOP_P — top-k / nucleus filters (default off)
+- NPU_SEED (default 42) — seeded RNG; same seed -> same output, so
+  sampling runs are reproducible
+- temperature <= 0 -> greedy argmax (the DEFAULT), so the runtime-path
+  byte-identity validations (greedy chain == runtime GREEDY_NEXT) are
+  unchanged; the engine's canonical output is still deterministic
+- verified: greedy default yields the canonical chain (144370 91145 30
+  220 17 15 17 18); temp=1.0 seed=42 reproducible (A==B); seed=7 differs;
+  temp=0.5 top_k=10 samples from the filtered distribution

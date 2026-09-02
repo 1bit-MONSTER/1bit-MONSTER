@@ -518,6 +518,13 @@ void NpuInferenceEngine::run_layer_mlp(HwCtxState& ctx, int layer_idx) {
     run_blocked_gemm(xclbins_.get(), mm_kern, config_.intermediate_size, N, act, ws, kv, wc.down_proj_blocks);
 }
 
+// Decoder temperature: NPU_TEMPERATURE env (default 0 = greedy, which keeps
+// the runtime-path byte-identity validations deterministic).
+static float sampler_temperature() {
+    const char* t = getenv("NPU_TEMPERATURE");
+    return t ? (float)atof(t) : 0.0f;
+}
+
 // === Prefill ===
 bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_tokens) {
     LOG_INFO("=== Prefill %d tokens ===", num_input_tokens);
@@ -545,7 +552,7 @@ bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_toke
                                       t, num_input_tokens, rt_ctx_len_);
             if (t == num_input_tokens - 1) {
                 runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
-                rt_first_token_ = sample_token(lm_head_buffer_.data(), config_.vocab_size, 1.0f);
+                rt_first_token_ = sample_token(lm_head_buffer_.data(), config_.vocab_size, sampler_temperature());
                 LOG_DEBUG("  runtime prefill first token: %d", rt_first_token_);
             }
             continue;
@@ -602,7 +609,7 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
                 fclose(fl);
             }
         }
-        return sample_token(lm_head_buffer_.data(), config_.vocab_size, 1.0f);
+        return sample_token(lm_head_buffer_.data(), config_.vocab_size, sampler_temperature());
     }
     embed_lookup(last_token, hwctx_[0].act_bo);
     
@@ -633,21 +640,56 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
         lm_head_buffer_[i] = bf16_to_float_cpp(logits_bf16[i]);
     }
     
-    return sample_token(lm_head_buffer_.data(), config_.vocab_size, 1.0f);
+    return sample_token(lm_head_buffer_.data(), config_.vocab_size, sampler_temperature());
 }
 
-// === Sample ===
+// === Sample ===// Real decoder sampling (Round 38): temperature softmax + optional top-k /
+// top-p filtering, drawn from the engine's seeded RNG. temperature <= 0
+// (or 1e-6-ish) falls back to greedy argmax — the default, which keeps the
+// runtime-path byte-identity validations deterministic. Env knobs:
+//   NPU_SEED         RNG seed (default 42)
+//   NPU_TEMPERATURE  >0 enables sampling (softmax /T)
+//   NPU_TOP_K        top-k filter (default 0 = off)
+//   NPU_TOP_P        nucleus filter (default 1.0 = off)
 int NpuInferenceEngine::sample_token(const float* logits, int vocab_size, float temperature) {
-    (void)temperature;
-    int max_idx = 0;
-    float max_val = logits[0];
-    for (int i = 1; i < vocab_size; i++) {
-        if (logits[i] > max_val) {
-            max_val = logits[i];
-            max_idx = i;
+    if (const char* s = getenv("NPU_SEED")) rng_.seed((uint64_t)strtoull(s, nullptr, 0));
+    int top_k = getenv("NPU_TOP_K") ? atoi(getenv("NPU_TOP_K")) : 0;
+    float top_p = getenv("NPU_TOP_P") ? (float)atof(getenv("NPU_TOP_P")) : 1.0f;
+    if (temperature <= 0.0f) {
+        // greedy argmax (default; matches the runtime harness GREEDY_NEXT)
+        int max_idx = 0;
+        float max_val = logits[0];
+        for (int i = 1; i < vocab_size; i++) {
+            if (logits[i] > max_val) { max_val = logits[i]; max_idx = i; }
         }
+        return max_idx;
     }
-    return max_idx;
+    // temperature softmax over the top-k / top-p survivors
+    std::vector<std::pair<float,int>> cand;
+    cand.reserve(vocab_size);
+    for (int i = 0; i < vocab_size; i++) cand.push_back({logits[i], i});
+    std::sort(cand.begin(), cand.end(),
+              [](const auto& a, const auto& b) { return a.first > b.first; });
+    if (top_k > 0 && (size_t)top_k < cand.size()) cand.resize(top_k);
+    float max_l = cand[0].first;
+    double sum = 0.0;
+    for (auto& c : cand) { c.first = expf((c.first - max_l) / temperature); sum += c.first; }
+    if (top_p < 1.0f) {
+        // nucleus: keep the smallest prefix of (sorted, now-scaled) candidates
+        // whose cumulative probability >= top_p
+        double acc = 0.0; size_t keep = cand.size();
+        for (size_t i = 0; i < cand.size(); i++) {
+            acc += cand[i].first / sum;
+            if (acc >= top_p) { keep = i + 1; break; }
+        }
+        if (keep < cand.size()) cand.resize(keep);
+        sum = 0.0; for (auto& c : cand) sum += c.first;
+    }
+    std::uniform_real_distribution<double> dist(0.0, sum);
+    double r = dist(rng_);
+    double acc = 0.0;
+    for (auto& c : cand) { acc += c.first; if (r <= acc) return c.second; }
+    return cand.back().second;
 }
 
 // === Embed lookup ===

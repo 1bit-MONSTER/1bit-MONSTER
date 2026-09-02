@@ -9,6 +9,7 @@
 #include <string>
 #include <map>
 #include <memory>
+#include <random>
 
 namespace xrt {
     class device;
@@ -171,6 +172,7 @@ private:
                         int opcode = 3, int num_runs_limit = 5);
     int sample_token(const float* logits, int vocab_size, float temperature);
     void embed_lookup(int token, NpuBo& dest);
+    std::mt19937 rng_{42u};              // seeded multinomial sampler (NPU_SEED)
 };
 
 #endif // NPU_INFER_ENGINE_H
