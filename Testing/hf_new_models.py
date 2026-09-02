@@ -29,6 +29,7 @@ except Exception as _e:  # never kill the watch on an autopr wiring issue
           file=sys.stderr)
 
 STATE = os.path.join(ROOT, "Testing", "hf_new_models_state.json")
+SIG_STATE = os.path.join(ROOT, "Testing", "significant_arrivals.json")
 API = "https://huggingface.co/api/models"
 CFG = "https://huggingface.co/{mid}/resolve/main/config.json"
 MAX_SEEN = 5000  # cap state growth; oldest dropped
@@ -47,9 +48,18 @@ VISION_TAGS = ("image-text-to-text", "image-to-text", "visual-question-answering
                "document-question-answering", "image-feature-extraction")
 
 
+def _family_of(stripped):
+    """Human-ish family label for the title, matched from NOTABLE_FAMILIES."""
+    low = stripped.lower()
+    for f in NOTABLE_FAMILIES:
+        if f in low:
+            return f.title()
+    return stripped
+
+
 def _is_significant(stripped, tags):
     """True when a new class is a major-family arch or a vision/multimodal
-    variant of one — the arrivals that deserve real support, not an alias."""
+    variant of one — the arrivals that deserve a real blog entry, not an alias."""
     low = stripped.lower()
     if any(f in low for f in NOTABLE_FAMILIES):
         return True
@@ -230,6 +240,24 @@ def main():
         print(f"  !! SIGNIFICANT {s}: {len(ids)} model(s), e.g. {ids[0]}")
         print(f"     -> major-family/vision arrival — needs REAL engine arch "
               f"support + decode validation, NOT an alias")
+    # Record significant arrivals (covered + uncovered) so the post generator
+    # (significant-post workflow) can publish a blog entry for the ones the
+    # engine now maps. Only COVERED significant classes get a post — an
+    # uncovered one has no real support yet, so it would be a false claim.
+    try:
+        sig_state = json.loads(open(SIG_STATE).read()) if os.path.exists(SIG_STATE) else {}
+        today = time.strftime("%Y-%m-%d")
+        for s, ids in sorted(new_classes.items()):
+            if _is_significant(s, class_tags.get(s)):
+                e = sig_state.setdefault(s, {"arch": s, "model": ids[0], "family": _family_of(s),
+                                             "date": today, "covered": False})
+                e.update({"model": ids[0], "covered": True})
+        for s, ids in sorted(significant.items()):
+            sig_state.setdefault(s, {"arch": s, "model": ids[0], "family": _family_of(s),
+                                     "date": today, "covered": False})
+        json.dump(sig_state, open(SIG_STATE, "w"), indent=1, sort_keys=True)
+    except Exception as _e:
+        print(f"[watch] significant_arrivals not recorded: {_e}", file=sys.stderr)
     for s, ids in sorted(basic_uncovered.items()):
         print(f"  !! UNCOVERED {s}: {len(ids)} model(s), e.g. {ids[0]}")
         print(f"     -> add to include/rocm_cpp/bitnet_model.h + selfcheck, "
