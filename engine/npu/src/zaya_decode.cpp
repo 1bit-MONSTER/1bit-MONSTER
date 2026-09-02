@@ -690,6 +690,10 @@ int zaya_decode_main(int argc, char** argv) {
                 // (fallback / diag reference) or the NPU flash-attention
                 // kernel (NPU_ATTN=1, issue #1776).
                 auto cpu_attn_scan = [&](std::vector<float>& aout) {
+                    // Heads are independent (disjoint aout writes, per-head
+                    // softmax), so parallelize the O(seq) GQA scan across the
+                    // nq heads (#1776 CPU-attention bottleneck).
+                    #pragma omp parallel for schedule(static)
                     for (int hh = 0; hh < d.nq; hh++) {
                         int kv = hh / gqa;
                         std::vector<float> sc(seq); float mx = -1e30f;

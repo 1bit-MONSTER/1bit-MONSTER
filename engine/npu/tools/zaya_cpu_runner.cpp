@@ -265,6 +265,10 @@ int main(int argc, char** argv) {
                 int seq = (int)old + 1;
                 int gqa = d.nq / d.nkv;
                 std::vector<float> ao(qd);
+                // O(seq) GQA sequence attention — heads are independent
+                // (disjoint ao writes, per-head softmax), so parallelize over
+                // the nq heads (#1776 CPU-attention bottleneck).
+                #pragma omp parallel for schedule(static)
                 for (int hh = 0; hh < d.nq; hh++) {
                     int kv = hh / gqa;
                     std::vector<float> sc(seq); float mx = -1e30f;

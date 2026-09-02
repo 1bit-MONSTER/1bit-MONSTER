@@ -189,10 +189,17 @@ inline void cca_attention(const CcaDims& d, const CcaWeights& w, CcaState& st,
     const float scale = 1.0f / std::sqrt((float)hd);
 
     // Q/K/V projections (GEMV, transposed weights: wq[i*H+j] for output i).
+    // Each output index i is independent (no cross-element reduction), so the
+    // four projections parallelize cleanly over i — the #1776 CPU-attention
+    // bottleneck. Without -fopenmp the pragma is a no-op (serial).
     std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < qd; i++) { float a = 0; for (int j = 0; j < H; j++) a += w.wq[i * H + j] * h_norm[j]; q[i] = a; }
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < kd; i++) { float a = 0; for (int j = 0; j < H; j++) a += w.wk[i * H + j] * h_norm[j]; k[i] = a; }
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < hv2; i++) { float a = 0; for (int j = 0; j < H; j++) a += w.wv1[i * H + j] * h_norm[j]; vc[i] = a; }
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < hv2; i++) { float a = 0; for (int j = 0; j < H; j++) a += w.wv2[i * H + j] * prev_hs[j]; vd[i] = a; }
 
     std::vector<float> qo(qd), ko(kd), vo(kd);
@@ -200,7 +207,11 @@ inline void cca_attention(const CcaDims& d, const CcaWeights& w, CcaState& st,
              qo.data(), ko.data(), vo.data(), pos);
 
     // GQA sequence attention: attn[h] = softmax(q[h]·K^T * scale) · V.
+    // Heads are fully independent (each writes disjoint ao[h*hd+dd], and the
+    // softmax reduction is local to the head's `scores`). Parallelize the O(seq)
+    // attention across the nq heads — the dominant growing cost per token.
     std::vector<float> ao(qd);
+    #pragma omp parallel for schedule(static)
     for (int h = 0; h < nq; h++) {
         int kv = h / gqa;
         const float* qh = &qo[h * hd];
@@ -221,6 +232,8 @@ inline void cca_attention(const CcaDims& d, const CcaWeights& w, CcaState& st,
     }
 
     // o_proj: wo is [H, qd] (attn_output.weight), attn_out = wo @ ao.
+    // Each output element independent — parallelize over i.
+    #pragma omp parallel for schedule(static)
     for (int i = 0; i < H; i++) {
         float a = 0; for (int j = 0; j < qd; j++) a += w.wo[i * qd + j] * ao[j];
         attn_out[i] = a;
