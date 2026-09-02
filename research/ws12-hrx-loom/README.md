@@ -1695,16 +1695,29 @@ v1 cols==2-only path and routes dense `MUL_MAT_Q4NX` ops with
 reads weights once per 8 cols); `GGML_HRX2_NO_R16WB2`/`_NO_R16WB8` fall
 back to the dequant slice.
 
-Honest finding from the serving attempt: llama-server (-np 4, 4 concurrent
-/completion requests) on this lane emits **cols==1 decode mms in the bench
-setup** — continuous batching did not pack the sequences into multi-col
-decode ubatches, so the batched kernels stayed dormant there (aggregate
-46-67 t/s ≈ single-stream rates; the server-side batching question is
-host-side, not kernel-side). The batched path demonstrably fires wherever
-cols==2 decode mms occur (llama-parallel route trace, v1). The kernels are
-ready for any host that batches decode — speculative verification
-(cols = draft batch) is the natural first consumer. Fork eb6ff78 pushed
-(kernel + catalog + generalized dispatcher).
+CORRECTION (measured after the v2 commit): the "serving attempt" below
+originally claimed llama-server emits cols==1 decode and the batched kernels
+stayed dormant — that was **trace blindness** (the fused r16wb paths do not
+emit the `q4nx_dispatch` JSONL event, only the dequant slice does). A route
+trace of a 4-parallel bench tells the real story: **37,449 r16wb8
+dispatches + 1,017 r16wb2 + 11 r16w, zero dequant** — the server batches the
+parallel sequences into cols≈4 decode ubatches and r16wb8 served every one.
+End-to-end A/B on qwen25-3b, 4 concurrent /completion requests × 150 tokens
+(aggregate tokens/s, wall clock):
+
+    before 25t (cols 2-7 -> dequant + f32-mm):   10.9 t/s   (4-parallel was
+                                                            ~4x SLOWER than
+                                                            single-seq 44)
+    round 25t (r16wb2/r16wb8 fused, cols 2-7):   61.6-67.8 t/s
+
+That is a **~6x fix of the parallel-serving path** (dequant f32
+materialization per batched step was catastrophic) and ~1.4-1.55x over a
+single sequence (43.7 t/s) — weights now read once per batch. Single-seq
+(cols==1, r16w) is untouched at ~44-51 t/s. The remaining gap to the
+theoretical 4x batched ceiling (~176 t/s) is the subject of further rounds
+(the 4-token step costs ~2.7x a 1-token step vs the ~1.9x the probe predicts
+for r16wb8, so attention/kv and kernel overhead at cols 4-8 are next).
+Fork eb6ff78 pushed (kernel + catalog + generalized dispatcher).
 
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
