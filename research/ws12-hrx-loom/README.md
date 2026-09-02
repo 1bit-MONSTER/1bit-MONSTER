@@ -1372,6 +1372,39 @@ MiniCPM4 24.4→31.9, 30B 47.1→54.3. Correctness "Paris." unchanged.
 Note: 25k/25m (co-worker, on the same fork line) are included in the
 pushed history (a1f573b's parents 5e4f14a, 3cd275b).
 
+### Round 25o — r16x8 fused prefill mm: 16 rows × 8 cols per workgroup, pp32 ×2 (fork ae01f22)
+
+Prefill mm forensics pointed at the tbl_tiled kernel's structure: **1 row ×
+8 cols per workgroup**. For the 3B gate mm (11008 rows × 2048 k × 32 cols)
+that is 44,032 workgroups, each re-reading scales/zp per k element at
+1-row granularity. Workgroup-size A/B (256→512→1024: 108→95→58 t/s) and
+routing prefill through the decode r16 kernel (57 t/s — each col-wg
+re-reads weights) ruled out launch-count and confirmed the 1-row/wg
+structure is the limit.
+
+New kernel `hrx2_mul_mat_q4nx_fused_f32_r16x8`: adapts the r16 decode
+kernel (16 rows/wg, 256 lanes = 16 rows × 16 k-blocks, 8-byte coalesced
+packed reads) to process **8 output columns per workgroup**. Each lane
+walks its row's k-chunk ONCE and feeds 8 matmuls — one packed-byte stream,
+8 src1 loads + 8 MACs per k — so workgroups drop to rows/16 × cols/8
+(gate: 44,032 → 2,752). Per-row reduction over the 16 kb-lanes via
+workgroup scratch (8 KB; phase 2: lanes 0..127, one (row,col) each, sum
+16 kb-partials). Dense identity col mapping only; MoE grouped path keeps
+tbl_tiled. Route `mul_mat_q4nx_fused_f32_r16x8` (family mul_mat_f32_f32,
+priority 131), dispatched from the dense-prefill branch when cols % 8 == 0
+and rows % 16 == 0. The cols%8 guard is REQUIRED: r16x8 indexes src1 at
+col_group*8+7, so non-multiple-of-8 cols (llama-cli's c33) read past the
+src1 view — JIT rejected those shapes until the guard landed.
+
+verified (sequential): 3B pp32 108 → **229** (2.1×), tg32 flat (29.4 —
+decode path unchanged, as designed); roster 0.5B 652→835, 0.6B 523→786,
+7B 38.5→**98** (2.5×), GLM 48.9→53.3, MiniCPM4 31.9→**78.5** (2.5×),
+30B 54.3→54.2 (MoE unchanged — grouped path). Correctness: 20-40 token
+greedy generations identical vs `GGML_HRX2_NO_R16X8=1` across multi-prompt
+batteries on 3B/7B/MiniCPM4 (the one apparent MiniCPM4 "DIFF" was a
+stats-line extraction artifact, confirmed identical after cutting at
+"[ Prompt"); zero JIT failures in llama-bench and llama-cli.
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
