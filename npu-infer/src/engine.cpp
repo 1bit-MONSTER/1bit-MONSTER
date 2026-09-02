@@ -652,7 +652,12 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
 //   NPU_TOP_K        top-k filter (default 0 = off)
 //   NPU_TOP_P        nucleus filter (default 1.0 = off)
 int NpuInferenceEngine::sample_token(const float* logits, int vocab_size, float temperature) {
-    if (const char* s = getenv("NPU_SEED")) rng_.seed((uint64_t)strtoull(s, nullptr, 0));
+    // seed the RNG ONCE per run — reseeding before every draw would make
+    // each token use the same first value of the stream (biased sampling)
+    if (!rng_seeded_) {
+        if (const char* s = getenv("NPU_SEED")) rng_.seed((uint64_t)strtoull(s, nullptr, 0));
+        rng_seeded_ = true;
+    }
     int top_k = getenv("NPU_TOP_K") ? atoi(getenv("NPU_TOP_K")) : 0;
     float top_p = getenv("NPU_TOP_P") ? (float)atof(getenv("NPU_TOP_P")) : 1.0f;
     if (temperature <= 0.0f) {

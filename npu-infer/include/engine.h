@@ -173,6 +173,7 @@ private:
     int sample_token(const float* logits, int vocab_size, float temperature);
     void embed_lookup(int token, NpuBo& dest);
     std::mt19937 rng_{42u};              // seeded multinomial sampler (NPU_SEED)
+    bool rng_seeded_ = false;            // NPU_SEED applied once per run
 };
 
 #endif // NPU_INFER_ENGINE_H
