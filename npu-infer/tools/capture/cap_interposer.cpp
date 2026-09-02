@@ -292,6 +292,7 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
         }
         if (kv.second < 1000000) continue;
         if (getenv("CAP_SKIP_BIG")) continue;
+        if (getenv("CAP_NO_SYNC")) continue;   // lean: preinsts (i6) only
         try {
             xrt::bo* bo = reinterpret_cast<xrt::bo*>(kv.first);
             size_t bosz = bo->size();
