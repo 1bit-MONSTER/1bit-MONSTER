@@ -1779,6 +1779,23 @@ at np=4, 73 tiny f16 kq/kqv dispatches per step at np=1, launch-bound at
 cache) is the remaining lever, with the in-tree flash_attn_fa0 fusion as
 the named clean variant to evaluate for decode shapes.
 
+Round 25t v5 scoping (flash lever): the fa0 path is **dormant scaffolding,
+not a wire-up** — the graph_compute fusion hook, the 5-op pattern extractor
+(kq f16x32 -> softmax -> kqv -> permute -> cont), the 208-byte constants
+struct (D/KV/N/H/H_KV/S dims, strides, scale, has_mask, ALiBi m0/m1,
+logit_softcap, sinks), the plan maker, and the dispatcher (6 bindings:
+q/k/v/mask/scratch/dst) all exist — but the **route was never registered**
+(flash_attn_fa0_f32_f16.json is empty in both catalog/ and catalog/routes.full/
+and no kernel .loom exists), so flash_attn_fa0_routes is empty and the fusion
+can never fire (route trace confirms only mul_mat_f16_f32_batched attention
+mms run; llama.cpp's own flash_attn=auto also disables because the FLASH_ATTN
+op has no backend). The decode attention structure per layer is compact
+(kq ne=[kv,2,16,1], softmax+mask, kqv, permute, cont — ~5 dispatches/layer),
+so the lever is to **implement the fa0 fused-attention kernel** matching the
+specified contract (decode-simplified: causal mask over growing kv) — a
+substantial new Loom kernel with careful numerics/mask verification, scoped
+for a fresh round.
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
