@@ -254,6 +254,45 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     return NPU_LAYER_TILES;
 }
 
+// ===========================================================================
+// 35B MoE weight-BO packing (Round 38) — docs/35b-forward-integration.md
+// ---------------------------------------------------------------------------
+// The runtime's weight BO stores the MoE expert tensors as 4736-B rows
+// (each file 5120-B Q4NX tile trimmed to [0:4736]) in 16-row reorder blocks:
+//   out[o] = in[o/2 + 8*(o%2)]        (A/B half interleave)
+// Verified byte-exact against the runtime's qwen3_6_reorder_cpy on real
+// up_exps tiles (tools/call_reorder*). Per-layer weight-BO map (layer 0):
+//   up_exps @ 0x0        (32768 rows x 4736 = 2048 blocks of 16)
+//   gate_exps @ 0x9400000 (148 MiB, same geometry)
+//   down_exps @ 0x12800000 (296 MiB, same geometry)
+//   share_up/down/gate @ 0x1bc00000/0x1bd28000/0x1bc94000
+//   moe_router @ 0x3000, shared_expert_gate @ 0x2000 (small, norm region)
+//   qkv_proj @ 0x1bdbc000 (2304 x 5120-B tiles; out padded 8704 -> 9216)
+//   gate_proj @ 0x1c6fc000
+// ===========================================================================
+#define NPU_MOE_ROW_BYTES   4736
+#define NPU_MOE_BLOCK_ROWS  16
+#define NPU_MOE_BLOCK_BYTES (NPU_MOE_ROW_BYTES * NPU_MOE_BLOCK_ROWS)
+
+// Pack one expert tensor (n_tiles x 5120-B file rows) into 4736-B rows in
+// 16-row blocks: out[blk*75776 + o*4736] = trimmed_tile[o/2 + 8*(o%2)].
+// n_tiles must be a multiple of 16 (32768 for the 35B experts).
+static int npu_pack_moe_experts(uint8_t* bo, const uint8_t* tiles, int n_tiles) {
+    if (!bo || !tiles || n_tiles <= 0 || (n_tiles % NPU_MOE_BLOCK_ROWS) != 0)
+        return 0;
+    int nblocks = n_tiles / NPU_MOE_BLOCK_ROWS;
+    for (int blk = 0; blk < nblocks; blk++) {
+        const uint8_t* src = tiles + (size_t)blk * NPU_MOE_BLOCK_ROWS * NPU_TILE_BYTES;
+        uint8_t* dst = bo + (size_t)blk * NPU_MOE_BLOCK_BYTES;
+        for (int o = 0; o < NPU_MOE_BLOCK_ROWS; o++) {
+            int ti = o / 2 + (NPU_MOE_BLOCK_ROWS / 2) * (o % 2);
+            memcpy(dst + (size_t)o * NPU_MOE_ROW_BYTES,
+                   src + (size_t)ti * NPU_TILE_BYTES, NPU_MOE_ROW_BYTES);
+        }
+    }
+    return nblocks * NPU_MOE_BLOCK_BYTES;
+}
+
 // Pack the lm_head weight (tied embedding) into the runtime's 98,566,144 B BO.
 // The q4nx stores lm_head as [18992 tiles x 5120B] (8 vocab rows per tile);
 // the runtime BO = the same tiles reordered with G=8 (npu_reorder_tiles) —
