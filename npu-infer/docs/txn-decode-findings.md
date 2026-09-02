@@ -1146,6 +1146,12 @@ returned argmax. Implemented real decoding:
   temp=0.5 top_k=10 samples from the filtered distribution
 
 ### Round 39 — runtime batched prefill(ids) != N x forward(): rope-table divergence (2026-09-02)
+> ***SUPERSEDED — see Round 38c-CORRECTION below***: the rope-table reading in
+> this section was a magnitude artifact (dims 50/115 are the largest-|K| dims,
+> never rope-paired, present at pos 0 where rope is identity). The real cause
+> is ONE confounder: mm-vs-mv GEMM accumulation numerics. Kept as history.
+
+
 
 Question (probe_prefill.cpp, from the 06:04-06:07 session): does the FastFlowLM
 runtime's batched `model.prefill(ids)` produce the same state as N sequential
