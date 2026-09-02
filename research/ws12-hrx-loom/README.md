@@ -1796,6 +1796,54 @@ specified contract (decode-simplified: causal mask over growing kv) — a
 substantial new Loom kernel with careful numerics/mask verification, scoped
 for a fresh round.
 
+### Round 25t v6 — fa0 build contract (instrumented, ready to execute)
+
+Temporary instrumentation of the fusion hook (since reverted; fork pristine
+at 8df3330) proved the decoder-side blockers are nil: on a real decode
+graph the pattern fires with **extract=1 can_fuse=1** and the extracted
+shape is D=128 KV=256 N=2 H=16 H_KV=2 (k is [D,KV] with ne0=128, ne1=KV;
+q is [D,N,H]; softmax has a mask operand, no src[2]; K f16, Q f32). The
+only reason fusion never runs is **flash_attn_fa0_routes is empty** — the
+route JSON is empty in catalog/ and catalog/routes.full/, and no kernel
+.loom exists.
+
+Build contract (all file:line-verified):
+- Route: catalog/routes/flash_attn_fa0_f32_f16.json — family
+  "flash_attn_fa0_f32_f16", op "CONT" (the fusion's 5th node), binding
+  count 6, parameter count 6, **constant_byte_length 208**, workgroup
+  size 256, rows_per_workgroup 1, shape domain covering D=128, KV 1..ctx,
+  N 1..512, H 1..16, H_KV 1..2, S=1. Registered via
+  catalog_find_routes(family, "CONT") at ggml-hrx2.cpp:11994.
+- Dispatch (ggml-hrx2.cpp:7819): grid (N/rows_pwg, H, S); 6 bindings =
+  q, k, v, mask, q (bound twice by the caller), cont(dst); 208-byte
+  constants struct (ggml-hrx2.cpp:283, static_assert 208): D,KV,N,H,H_KV,S
+  + q/k/v/dst/mask byte strides (nb1..3) + scale (from softmax op_params)
+  + has_mask=1, max_bias/m0/m1/logit_softcap/n_head_log2/has_sinks.
+  dst layout: dst_nb1 = D*4 (head stride), dst_nb2 = cont->nb[1] (token
+  stride), so out(h,n,d) at n*dst_nb2 + (h*D+d)*4.
+- Kernel semantics per workgroup (q-head h, query n): kv-head
+  hg = h/(H/H_KV) (GQA; q->ne[2] % k->ne[2] == 0 enforced); scores[kv] =
+  scale * sum_d q[h,n,d]*k[hg,kv,d] over the mask-valid kv range; softmax
+  over kv; out[d] = sum_kv p[kv]*v[hg,kv,d]; write cont.
+- Unknown to resolve first: the .loom syntax for the 208-byte constants
+  block (loom SPIRV backend exposes it as push-constants behind a BDA
+  root — loom/src/loom/target/emit/spirv/module_abi.c: constant words +
+  bda root; launch signature supports scalar args per
+  guide/kernels-and-launch.md, but the C-struct-to-word layout and the
+  .loom declaration form have NO in-tree example — this is the first
+  loom-internals task). Fallback if the constants ABI is intractable:
+  jit_config specialization per (D,H,H_KV) with KV read dynamically from
+  the mask binding's byte size (mask is [KV,N] f32, current KV = size /
+  (N*4)), keeping KV out of the constants entirely.
+- Correctness gate: with GGML_HRX2_DISABLE_F16_FA0_ATTENTION_FUSION unset,
+  decode generations must be token-identical to the env-set (non-fused)
+  path on 3B/7B; per-layer fused outputs vs the reference kq/softmax/kqv
+  sequence can be compared via dst dumps at fixed kv.
+- Payoff measured earlier: np=4 non-Q4NX ~19.6 ms/step, of which f32
+  attention mms ~8.5 ms — collapsing ~5 dispatches/layer of tiny f16
+  kq/kqv mms into one fused dispatch per layer is the target.
+
+### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
