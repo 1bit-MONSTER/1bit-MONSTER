@@ -1753,6 +1753,21 @@ with token count). The delivered win stands: 4-parallel decode 10.9 -> 62-68
 t/s aggregate (~6x; ~1.4-1.55x over single-seq). Failed kernels (r8wb4,
 clean-4col) removed; fork remains pristine at eb6ff78.
 
+CORRECTION (round 25t v4, fork 8df3330): the "local optimum" verdict above
+was built on r16wb8's cols=4 measurement (44 GB/s) — but r16wb8 carries 128
+unrolled columns' worth of guards and accumulators even when the config
+folds to 4 live columns, so it conflated the genuine 64-acc penalty with
+guard/SSA overhead. The clean exact-cols=4 kernel (**r16wb4c**: 64 accs, no
+guards, no dead columns) measures **64.0 GB/s** at the 3B gate shape vs
+r16wb8's 44.3 — the guard machinery cost ~45% on top of the register
+penalty. Bit-exact vs r16w at cols=4 (probe corr 1.0). Dispatch prefers
+r16wb4c at cols==4 (`GGML_HRX2_NO_R16WB4C` falls back). End-to-end
+4-parallel server aggregate on 3B: **61.6-67.8 -> 76.0-83.7 t/s (+22%)** —
+consistent with the per-byte gain over the Q4NX share of the step. The
+64-acc penalty itself (64 vs r16w's 113 GB/s) remains; the k-split+merge
+design (<=32 accs per workgroup at the full r16w rate) is still the
+documented path to the next ~1.5x, now capped by attention/non-Q4NX ops.
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
