@@ -9,11 +9,12 @@ on:
 # The GitHub Traffic API requires push-level access, but instead of elevating
 # the built-in GITHUB_TOKEN to `contents: write` on a schedule-triggered
 # workflow (a supply-chain risk — see issue #159), we read traffic with a
-# fine-grained PAT (secrets.TRAFFIC_PAT) scoped to `Administration: read` /
-# traffic only. The built-in token keeps its least-privilege scope below.
+# short-lived GitHub App installation token minted from APP_ID +
+# APP_PRIVATE_KEY (scoped to `Administration: read` / traffic only). The
+# built-in token keeps its least-privilege scope below.
 permissions:
   issues: write
-  contents: read   # downgraded from write — use TRAFFIC_PAT secret for API
+  contents: read
   pull-requests: read
 
 jobs:
@@ -21,14 +22,50 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      - name: Mint GitHub App installation token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$APP_ID" ] || [ -z "$APP_PRIVATE_KEY" ]; then
+            echo "::warning::APP_ID / APP_PRIVATE_KEY secrets not set — skipping traffic fetch."
+            echo "TOKEN=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # RS256 JWT signed with the app private key (openssl only, no deps)
+          NOW=$(date +%s)
+          B64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          HEADER=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | B64)
+          PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":%s}' "$((NOW-60))" "$((NOW+540))" "$APP_ID" | B64)
+          SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign <(printf '%s' "$APP_PRIVATE_KEY") -binary | B64)
+          JWT="$HEADER.$PAYLOAD.$SIG"
+          AUTH="Authorization: Bearer $JWT"
+          INSTALL_ID=$(curl -s -H "$AUTH" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations" | \
+            jq -r --arg o "$GITHUB_REPOSITORY_OWNER" '.[] | select(.account.login == $o) | .id' | head -1)
+          if [ -z "$INSTALL_ID" ]; then
+            echo "::warning::GitHub App not installed on $GITHUB_REPOSITORY_OWNER — install it at https://github.com/apps/1bit-traffice-bot/installations/new"
+            echo "TOKEN=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TOKEN=$(curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations/$INSTALL_ID/access_tokens" | jq -r '.token // empty')
+          if [ -z "$TOKEN" ]; then
+            echo "::warning::Could not mint installation token — check the app's permissions"
+            echo "TOKEN=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "TOKEN=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Fetch GitHub Traffic Data
         id: traffic
         env:
-          GH_TOKEN: ${{ secrets.TRAFFIC_PAT || secrets.GITHUB_TOKEN }}
-          HAS_PAT: ${{ secrets.TRAFFIC_PAT != '' }}
+          GH_TOKEN: ${{ steps.app-token.outputs.TOKEN }}
         run: |
-          if [ -z "${{ secrets.TRAFFIC_PAT }}" ]; then
-            echo "::warning::TRAFFIC_PAT not set — skipping traffic fetch. Set TRAFFIC_PAT secret to enable."
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::No app token available — skipping traffic fetch (check APP_ID / APP_PRIVATE_KEY secrets and the app install)."
             # Export empty/default outputs so downstream steps don't crash
             {
               echo "CLONE_14D=0"
@@ -37,11 +74,11 @@ jobs:
               echo "CLONE_YESTERDAY_UNIQ=0"
               echo "VIEW_14D=0"
               echo "VIEW_UNIQUES_14D=0"
-              echo "TOP_REFERRER=unavailable (TRAFFIC_PAT not set)"
-              echo "TOP_PATH=unavailable (TRAFFIC_PAT not set)"
+              echo "TOP_REFERRER=unavailable (no app token)"
+              echo "TOP_PATH=unavailable (no app token)"
               echo "SPIKE=false"
               echo "SPIKE_MSG<<SPIKE_EOF"
-              echo "TRAFFIC_PAT secret not configured — set it to enable traffic monitoring"
+              echo "GitHub App token unavailable — check APP_ID / APP_PRIVATE_KEY secrets and the app install"
               echo "SPIKE_EOF"
             } >> "$GITHUB_OUTPUT"
             exit 0
@@ -94,16 +131,26 @@ jobs:
           TOP_PATH=$(echo "$PATH_JSON" | jq -r '.[0] | "\(.path) — \(.count) views" // "none"')
 
           # --- Spike detection ---
+          # Baseline is ~2k clones/day from CI/bots, so judge spikes against
+          # the trailing average (excluding today + yesterday) rather than a
+          # fixed threshold that would fire a spike issue every day.
           SPIKE=false
           SPIKE_MSG=""
-          if [ "$YESTERDAY" -gt 0 ] && [ "$DAY_BEFORE" -gt 0 ]; then
+          AVG7=$(echo "$CLONE_RESP" | jq '[.clones[:-2][].count] | if length > 0 then (add / length | floor) else 0 end')
+          if [ "${AVG7:-0}" -gt 0 ] 2>/dev/null && [ "$YESTERDAY" -gt 0 ]; then
+            RATIO=$(awk -v y="$YESTERDAY" -v a="$AVG7" 'BEGIN { printf "%.1f", y/a }')
+            if awk -v r="$RATIO" 'BEGIN { exit !(r >= 2.5) }'; then
+              SPIKE=true
+              SPIKE_MSG="SPIKE: ${YESTERDAY} clones yesterday vs ${AVG7} trailing avg (${RATIO}x)"
+            fi
+          elif [ "$YESTERDAY" -gt 0 ] && [ "$DAY_BEFORE" -gt 0 ]; then
             RATIO=$(( YESTERDAY / DAY_BEFORE ))
             if [ "$RATIO" -ge 3 ]; then
               SPIKE=true
               SPIKE_MSG="SPIKE: ${YESTERDAY} clones yesterday vs ${DAY_BEFORE} day before (${RATIO}x increase)"
             fi
           fi
-          if [ "$YESTERDAY" -gt 200 ]; then
+          if [ "${YESTERDAY:-0}" -gt 5000 ] 2>/dev/null; then
             SPIKE=true
             SPIKE_MSG="${SPIKE_MSG} HIGH_VOLUME: ${YESTERDAY} clones in a single day"
           fi
@@ -156,6 +203,9 @@ jobs:
       - name: Create Spike Issue
         if: steps.traffic.outputs.SPIKE == 'true'
         env:
+          # No checkout in this job, so gh can't detect the repo from git —
+          # point it at the repository explicitly.
+          GH_REPO: ${{ github.repository }}
           # Issue creation uses the built-in token (issues: write is enough).
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CY: ${{ steps.traffic.outputs.CLONE_YESTERDAY }}
