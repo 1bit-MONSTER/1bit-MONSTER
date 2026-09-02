@@ -6,7 +6,7 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Wed, 02 Sep 2026 11:13:47 +0000</lastBuildDate>
+    <lastBuildDate>Wed, 02 Sep 2026 11:52:28 +0000</lastBuildDate>
     <item>
       <title>Lemonade v11.8.1, and how we stay current with the SDK</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1181.html</link>
@@ -19,7 +19,7 @@
       <link>https://1bit.monster/1bit-post-zaya-q4nx-hrx.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-zaya-q4nx-hrx.html</guid>
       <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
-      <description>The full HRX lane journey: serving Zyphra Zaya 8B, 4-bit Q4NX, entirely on the AMD Strix Halo NPU — 8.4 t/s decode, llama-server over HTTP. Round 28 caps it: Qwen3-0.6B prefill logits corr 1.00000 — byte-identical to the real FastFlowLM runtime on the same xclbin.</description>
+      <description>The full HRX lane journey: serving Zyphra Zaya 8B, 4-bit Q4NX, entirely on the AMD Strix Halo NPU — 8.4 t/s decode, llama-server over HTTP — with Qwen3-0.6B prefill logits corr 1.00000, byte-identical to the real FastFlowLM runtime, and the Windows-NPU (MCDM) memory model matched on Linux: one heap, one chained API call per layer, SharedBO pages with zero copies.</description>
     </item>
     <item>
       <title>HRX: we put AMD&#x27;s experimental IREE runtime inside our engine</title>
