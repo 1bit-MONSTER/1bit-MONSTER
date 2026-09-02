@@ -83,11 +83,13 @@ bool RuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelCon
     dev.register_xclbin(*xclbin);
     hwctx_ = std::make_unique<xrt::hw_context>(dev, xclbin->get_uuid());
     if (!ensure_layer_kernel(1)) return false;   // eager: like the test
-    // ---- shared kv BO (128MB, zero) — matches the byte-verified test ----
-    kv_bos_.resize(1);
-    kv_bos_[0] = std::make_unique<xrt::ext::bo>(dev, 134217728);
-    memset(kv_bos_[0]->map(), 0, 134217728);
-    kv_bos_[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    // ---- per-layer kv BOs (32MB each, zero) — the runtime's design ----
+    kv_bos_.resize(cfg_.num_layers);
+    for (int L = 0; L < cfg_.num_layers; L++) {
+        kv_bos_[L] = std::make_unique<xrt::ext::bo>(dev, 33554432);
+        memset(kv_bos_[L]->map(), 0, 33554432);
+        kv_bos_[L]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    }
     // ---- act / logits / final-norm BOs ----
     bo_act_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
     bo_logits_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
@@ -237,8 +239,35 @@ bool RuntimeLayerEngine::embed(int token) {
     return true;
 }
 
+// RoPE cos/sin table for the current token position (pos = ctx_len-1).
+// The runtime host-writes this into i6[0:128] before EVERY forward; the layer
+// kernel reads it (it does NOT compute RoPE internally). Verified formula
+// against runtime captures for ctx=1..12 (Round 36): the initial [1.0 x64]
+// [0 x64] is exactly pos=0 (cos(0)=1, sin(0)=0).
+static void update_rope_i6(xrt::ext::bo& i6bo, int pos, float theta) {
+    uint16_t* w = (uint16_t*)i6bo.map();
+    double t = (double)theta;
+    for (int j = 0; j < 64; j++) {
+        double phi = pos * pow(t, -2.0 * j / 128.0);
+        w[j] = f32_to_bf16((float)cos(phi));
+        w[64 + j] = f32_to_bf16((float)sin(phi));
+    }
+    i6bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, 1048576, 0);
+}
+
 bool RuntimeLayerEngine::forward(int ctx_len) {
     if (!ensure_layer_kernel(ctx_len)) return false;
+    // RoPE table for the current position (pos = ctx_len-1), every layer
+    for (int L = 0; L < cfg_.num_layers; L++)
+        update_rope_i6(*i6_bos_[L], ctx_len - 1, 1e6f);
+    if (getenv("RT_DUMP_I6")) {
+        FILE* fi6 = fopen(getenv("RT_DUMP_I6"), "wb");
+        if (fi6) { i6_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0); fwrite(i6_bos_[0]->map(), 1, 768, fi6); fclose(fi6); }
+    }
+    if (getenv("RT_DUMP_PREACT")) {
+        FILE* fpa = fopen(getenv("RT_DUMP_PREACT"), "wb");
+        if (fpa) { bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0); fwrite(bo_act_->map(), 1, 2048, fpa); fclose(fpa); }
+    }
     const char* dbg = getenv("RT_DUMP_ACT_PREFIX");
     if (dbg) {
         char fn[512];
@@ -319,6 +348,8 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             layer_kernels_[ctx_len] = std::move(k2);
         } catch (...) { use_kern = layer_kernels_[ctx_len].get(); }
     } else use_kern = layer_kernels_[ctx_len].get();
+    int npass = getenv("RT_2PASS") ? 2 : 1;
+    for (int pass = 0; pass < npass; pass++) {
     for (int L = 0; L < cfg_.num_layers; L++) {
         xrt::run run(*use_kern);
         uint32_t v0 = 3, v1 = 0, v2 = 0;
@@ -329,7 +360,7 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
         run.set_arg(4, (const xrt::bo&)*weight_bos_[L]);
         run.set_arg(5, (const xrt::bo&)*i5_bos_[L]);
         run.set_arg(6, (const xrt::bo&)*i6_bos_[L]);
-        run.set_arg(7, (const xrt::bo&)*kv_bos_[0]);
+        run.set_arg(7, (const xrt::bo&)*kv_bos_[0]); // shared-BO test
         try {
             run.start();
             run.wait();
@@ -368,6 +399,7 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             }
         }
     }
+    }  // pass loop
     // lm_head
     if (kern_lmhead_) {
         xrt::run run(*kern_lmhead_);
@@ -389,7 +421,17 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
     }
     ctx_len_ = ctx_len;
     if (getenv("RT_DUMP_KV")) {
-        kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 134217728, 0);
+        for (int kk = 0; kk < cfg_.num_layers; kk++) {
+            char kfn[64]; snprintf(kfn, sizeof(kfn), "/tmp/engine_kv_L%02d.bin", kk);
+            kv_bos_[kk]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 33554432, 0);
+            FILE* fkk=fopen(kfn,"wb");
+            if(fkk){ fwrite(kv_bos_[kk]->map(),1,33554432,fkk); fclose(fkk); }
+        }
+        {
+            FILE* fk2=fopen("/tmp/engine_i6_post_fwd1.bin","wb");
+            if(fk2){ i6_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0); fwrite(i6_bos_[0]->map(),1,768,fk2); fclose(fk2); }
+        }
+        kv_bos_[cfg_.num_layers-1]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 33554432, 0);
         FILE* fk = fopen(getenv("RT_DUMP_KV"), "wb");
         if (fk) { fwrite(kv_bos_[0]->map(), 1, 134217728, fk); fclose(fk); }
         fprintf(stderr, "kv dumped -> %s\n", getenv("RT_DUMP_KV"));
