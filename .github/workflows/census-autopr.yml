@@ -46,17 +46,18 @@ jobs:
           python3 Testing/hf_new_models.py --limit 120 2>&1 | tee /tmp/census-autopr.log
           echo "--- (draft PRs for plausible aliases; SIGNIFICANT/manual left as alerts) ---"
 
-      - name: Generate blog posts for covered significant arrivals
+      - name: Generate blog posts for significant arrivals (announce + covered)
         id: sigpost
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # A significant architecture arrival gets a blog entry the moment the
-          # engine maps it (covered=True in significant_arrivals.json, written by
-          # hf_new_models.py). Uncovered arrivals are left as alerts — a post
-          # claiming support would be false. significant_model_post.py dedupes
-          # via Testing/significant_posts.json so each arrival posts once.
+          # A significant architecture arrival gets a blog entry: an ANNOUNCEMENT
+          # (arrival detected, support in progress) the moment it is spotted, and
+          # a COVERED post ("the engine now maps it") once support lands.
+          # significant_model_post.py dedupes by (mode, model) so each stage
+          # posts once. Uncovered arrivals get the announcement, not a false
+          # "the engine runs it" claim.
           python3 - <<'PY'
           import json, subprocess, sys
           try:
@@ -65,11 +66,11 @@ jobs:
               print("no significant_arrivals.json yet"); sys.exit(0)
           made = 0
           for arch, e in sorted(data.items()):
-              if not e.get("covered"):
-                  continue
+              mode = "covered" if e.get("covered") else "announcement"
               r = subprocess.run(
                   ["python3", "Testing/significant_model_post.py", "--arch", arch,
-                   "--model", e.get("model", "?"), "--family", e.get("family", "")],
+                   "--model", e.get("model", "?"), "--family", e.get("family", ""),
+                   "--mode", mode],
                   capture_output=True, text=True)
               out = (r.stdout or r.stderr).strip()
               print(out)
