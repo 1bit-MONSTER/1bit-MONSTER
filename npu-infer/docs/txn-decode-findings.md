@@ -1081,7 +1081,7 @@ Note: the npu-verify `1bit unified --lemonade` server auto-restarts at
 boot and shares /dev/accel0 — validation runs while it holds the NPU can
 wedge; if logits come back NaN/no-op, re-run after stopping it.
 
-### Round 38 — rope EXACT formula found: hardcoded f32 inv_freq in the .so
+## Round 38 — rope EXACT formula found: hardcoded f32 inv_freq in the .so
 
 The ctx17+ 1-2 ULP logits diffs and the ctx22/26/41 argmax flips (40-token
 run) were traced to the ENGINE's rope table being *too accurate*: the
