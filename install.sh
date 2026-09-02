@@ -1,4 +1,8 @@
 #!/usr/bin/env bash
+# NOTE: `make package-site` copies this file to site/install.sh, which is what
+# the website serves at https://1bit.monster/install.sh (the one-liner used on
+# the Downloads page). Keep this file the source of truth — edit here, then
+# re-run `make package-site` to sync the site copy.
 set -euo pipefail
 GREEN='\033[0;32m'; NC='\033[0m'; YELLOW='\033[1;33m'
 log() { echo -e "${GREEN}[1bit]${NC} $*"; }

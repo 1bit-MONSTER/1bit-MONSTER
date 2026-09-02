@@ -148,6 +148,7 @@
         <a href="1bit-store.html">Store</a>
         <a href="1bit-docs.html" aria-current="page">Docs</a>
         <a href="1bit-benchmarks.html">Benchmarks</a>
+        <a href="1bit-downloads.html">Downloads</a>
       </nav>
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub ↗</a>
     </div>
@@ -175,6 +176,10 @@
         <h2>What you get</h2>
         <p><code>build/1bit</code> is a single MIT-licensed C++26 binary. It is the engine, the serving server, the voice assistant, and the CLI all at once. There is no virtualenv, no pip, no runtime interpreter. The repo's one through-line is the engine (NPU + GPU + CPU) and the app that proves it: JARVIS.</p>
         <p>One engine, any model, zero Python. The routes from checkpoint to kernel path are detected at load, not configured.</p>
+
+        <h2>Download a prebuilt binary</h2>
+        <p>Prefer not to build? Every release ships ready-to-run packages &mdash; binary tarball, Debian package and AppImage &mdash; on the <a href="1bit-downloads.html">Downloads page</a>. The tarball extracts anywhere (<code>./run.sh chat</code>), the <code>.deb</code> puts <code>1bit</code> on <code>PATH</code>, and the AppImage runs without installing. All three are built from the same staged release tree, so the format is just an install preference.</p>
+        <p class="meta">Same runtime requirements as a source build: Strix Halo (gfx1151), ROCm/TheRock runtime, and a model file &mdash; see the Downloads page.</p>
 
         <h2>Install</h2>
         <p>Build from source with the bundled installer. The script detects the platform, pulls header-only deps, and warns on a known-bad kernel.</p>

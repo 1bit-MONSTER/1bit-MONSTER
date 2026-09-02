@@ -5,11 +5,12 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 
 | Format | Status | Command |
 |--------|--------|---------|
-| **GitHub Release** | ✅ [Latest](https://github.com/1bit-MONSTER/1bit-MONSTER/releases/latest) | `gh release download` |
+| **Website downloads** | ✅ [1bit.monster/downloads](https://1bit.monster/1bit-downloads.html) | tarball, `.deb`, AppImage — hosted on the site, updated by `make package-site` |
 | **One-liner install** | ✅ | `curl -sL https://1bit.monster/install.sh \| bash` |
-| **Debian (.deb)** | ✅ Built by CI on every tagged release | `sudo dpkg -i 1bit-monster_*_amd64.deb` |
-| **AppImage** | ✅ Built by CI on every tagged release | `chmod +x 1bit-monster-*.AppImage && ./1bit-monster-*.AppImage` |
-| **Binary tarball** | ✅ | `make package-tarball` |
+| **Debian (.deb)** | ✅ | `sudo dpkg -i 1bit-monster_*_amd64.deb` (download from the website) |
+| **AppImage** | ✅ | `chmod +x 1bit-monster-*.AppImage && ./1bit-monster-*.AppImage` (download from the website) |
+| **Binary tarball** | ✅ | `make package-tarball` — the website hosts the `.tar.xz` build |
+| **GitHub Releases** | 📋 attached when a `v*` tag is pushed | `gh release download` |
 | **Docker** | ✅ Dockerfile ready | `docker run 1bit-monster/npu` |
 | **Ollama** | ✅ Modelfile | `ollama create qwen3-npu -f Modelfile` |
 | **OpenAI SDK** | ✅ Drop-in | `client = OpenAI(base_url="http://localhost:8081/v1")` |
@@ -52,6 +53,11 @@ make package-tarball
 
 # Debian package
 make package-deb
+
+# Website packages — sync tarball (.tar.xz) + .deb + AppImage into
+# site/downloads/ and regenerate SHA256SUMS + manifest.json (deployed to
+# https://1bit.monster/1bit-downloads.html by deploy.yml)
+make package-site
 
 # Docker image
 docker build -t 1bit-monster/npu:2026.08.04 -f packaging/docker/Dockerfile .

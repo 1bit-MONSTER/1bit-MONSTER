@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" type="image/svg+xml" href="assets/favicon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
+  <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+  <title>1bit.MONSTER: Downloads</title>
+  <meta name="description" content="Download 1bit.MONSTER — the open-source, pure-C++ inference engine for AMD Strix Halo. Binary tarball, Debian package and AppImage, all from one website." />
+  <meta property="og:site_name" content="1bit.MONSTER" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="1bit.MONSTER: Downloads" />
+  <meta property="og:description" content="Download 1bit.MONSTER — the open-source, pure-C++ inference engine for AMD Strix Halo. Binary tarball, Debian package and AppImage, all from one website." />
+  <meta property="og:url" content="https://1bit.monster/1bit-downloads.html" />
+  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="1bit.MONSTER: Downloads" />
+  <meta name="twitter:description" content="Download 1bit.MONSTER — the open-source, pure-C++ inference engine for AMD Strix Halo. Binary tarball, Debian package and AppImage, all from one website." />
+  <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
+  <link rel="canonical" href="https://1bit.monster/1bit-downloads.html" />
+  <style>
+    /* ─── tokens ─────────────────────────────────────────────────────────
+       Bound verbatim to the locked light modern-minimal + 1-bit identity.
+       All derived values stay in oklch - no new hex. */
+    :root {
+      --bg:      oklch(99% 0.002 240);
+      --surface: oklch(100% 0 0);
+      --fg:      oklch(18% 0.012 250);
+      --muted:   oklch(54% 0.012 250);
+      --border:  oklch(92% 0.005 250);
+      --accent:  oklch(58% 0.18 255);
+
+      --status:  oklch(52% 0.14 158);
+
+      /* derived - do not change */
+      --accent-soft:   color-mix(in oklch, var(--accent) 12%, transparent);
+      --fg-soft:       color-mix(in oklch, var(--fg) 5%, transparent);
+      --muted-strong:  color-mix(in oklch, var(--muted) 76%, var(--fg));
+
+      /* type - system-first per direction */
+      --font-display: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;
+      --font-body:    -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      --font-mono:    ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Consolas, monospace;
+
+      /* scale */
+      --fs-h1: clamp(44px, 6vw, 76px);
+      --fs-h2: clamp(32px, 4vw, 48px);
+      --fs-h3: 20px;
+      --fs-lead: 19px;
+      --fs-body: 16px;
+      --fs-meta: 13px;
+
+      /* spacing - 8-point grid */
+      --gap-xs: 8px;
+      --gap-sm: 12px;
+      --gap-md: 20px;
+      --gap-lg: 32px;
+      --gap-xl: 48px;
+      --gap-2xl: 80px;
+      --container: 1120px;
+      --gutter: 32px;
+
+      --radius: 10px;
+      --radius-lg: 16px;
+    }
+
+    /* ─── reset & base ──────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; }
+    html { -webkit-text-size-adjust: 100%; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: var(--font-body);
+      font-size: var(--fs-body);
+      line-height: 1.6;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+    img, svg { display: block; max-width: 100%; }
+    a { color: inherit; text-decoration: none; }
+    button { font: inherit; cursor: pointer; }
+    p { text-wrap: pretty; }
+    h1, h2, h3, h4 { text-wrap: balance; }
+    ::selection { background: var(--accent-soft); color: var(--fg); }
+    :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+
+    /* ─── layout primitives ─────────────────────────────────────────── */
+    .container {
+      max-width: var(--container);
+      margin-inline: auto;
+      padding-inline: var(--gutter);
+    }
+    .section {
+      padding-block: clamp(40px, 5vw, 72px);
+    }
+    .section + .section { border-top: 1px solid var(--border); }
+    .stack { display: flex; flex-direction: column; }
+    .stack > * + * { margin-top: var(--gap-md); }
+    .row-between { display: flex; align-items: center; justify-content: space-between; gap: var(--gap-md); }
+
+    /* ─── type ──────────────────────────────────────────────────────── */
+    .h1, h1 { font-family: var(--font-display); font-size: var(--fs-h1); line-height: 1.08; letter-spacing: -0.02em; margin: 0; font-weight: 600; }
+    .h2, h2 { font-family: var(--font-display); font-size: var(--fs-h2); line-height: 1.12; letter-spacing: -0.015em; margin: 0; font-weight: 600; }
+    .h3, h3 { font-size: var(--fs-h3); font-weight: 600; line-height: 1.3; letter-spacing: -0.005em; margin: 0; }
+    .lead   { font-size: var(--fs-lead); line-height: 1.6; color: var(--muted-strong); max-width: 60ch; margin: 0; }
+    .meta { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--muted-strong); }
+
+    /* ─── chrome: nav + footer ──────────────────────────────────────── */
+    .topnav {
+      position: sticky; top: 0; z-index: 10;
+      background: color-mix(in oklch, var(--bg) 92%, transparent);
+      backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+    .topnav-inner { display: flex; align-items: center; justify-content: space-between; padding-block: 14px; }
+    .topnav .logo { display: inline-flex; align-items: center; gap: 10px; font-size: 17px; font-weight: 700; letter-spacing: -0.02em; }
+    .topnav .logo svg { width: 26px; height: 26px; color: var(--fg); }
+    /* header logo: 1bit relay mark - one block solid at a time, slow */
+    .topnav .logo .relay { fill: var(--surface); stroke: currentColor; stroke-opacity: 0.28; animation: logo-relay 80s ease-in-out infinite; }
+    .topnav .logo .r1 { animation-delay: 0s; }
+    .topnav .logo .r2 { animation-delay: 20s; }
+    .topnav .logo .r3 { animation-delay: 40s; }
+    .topnav .logo .r4 { animation-delay: 60s; }
+    @keyframes logo-relay {
+      0%       { fill: var(--surface); }
+      13%      { fill: var(--fg); }
+      14%      { fill: var(--fg); }
+      25%      { fill: var(--surface); }
+      100%     { fill: var(--surface); }
+    }
+    @media (prefers-reduced-motion: reduce) { .topnav .logo .relay { animation: none; } .topnav .logo .r1 { fill: var(--fg); } }
+
+    .topnav nav { display: flex; gap: var(--gap-lg); }
+    .topnav nav a { font-size: 14px; color: var(--muted-strong); }
+    .topnav nav a:hover { color: var(--fg); }
+    .topnav nav a[aria-current="page"] { color: var(--fg); font-weight: 500; }
+    .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
+    .pagefoot .place { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-lg) auto 0; }
+    .pagefoot .quote { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.02em; color: var(--muted-strong); text-align: center; margin: var(--gap-sm) auto 0; }
+    .pagefoot a:hover { color: var(--fg); }
+    .pagefoot .row-between { flex-wrap: wrap; gap: var(--gap-md); }
+
+    /* ─── buttons ───────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 11px 20px;
+      border-radius: var(--radius);
+      border: 1px solid transparent;
+      font-size: 14px;
+      font-weight: 500;
+      letter-spacing: -0.005em;
+      transition: transform 0.05s ease, background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    }
+    .btn:active { transform: translateY(1px); }
+    .btn-primary {
+      background: color-mix(in oklch, var(--accent) 78%, black);
+      color: var(--surface);
+      border-color: transparent;
+    }
+    .btn-primary:hover { background: color-mix(in oklch, var(--accent) 68%, black); }
+    .btn-secondary { background: transparent; color: var(--fg); border-color: var(--border); }
+    .btn-secondary:hover { border-color: var(--fg); }
+    .btn-ghost { background: transparent; color: var(--fg); border-color: transparent; padding-inline: 8px; }
+    .btn-ghost:hover { color: var(--accent); }
+
+    /* ─── hero (centered) ───────────────────────────────────────────── */
+    .hero-center { padding-block: clamp(52px, 6vw, 84px); text-align: center; }
+    .hero-center h1 { margin-bottom: var(--gap-md); }
+    .hero-center .lead { margin: var(--gap-md) auto 0; }
+
+    /* ─── section heading ───────────────────────────────────────────── */
+    .section-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: var(--gap-lg); }
+    .section-head .h2 { max-width: 34ch; }
+    .section-head .meta { text-align: right; }
+
+    /* ─── install one-liner ─────────────────────────────────────────── */
+    .codeblock {
+      margin: var(--gap-md) 0 0;
+      padding: 18px 20px;
+      background: var(--fg);
+      color: var(--surface);
+      border-radius: var(--radius);
+      font-family: var(--font-mono);
+      font-size: 14px;
+      line-height: 1.7;
+      overflow-x: auto;
+    }
+    .codeblock .c { color: color-mix(in oklch, var(--surface) 55%, transparent); }
+
+    /* ─── package rows ──────────────────────────────────────────────── */
+    .pkg-row {
+      display: grid;
+      grid-template-columns: minmax(0, 300px) minmax(0, 1fr) auto;
+      gap: var(--gap-lg);
+      align-items: center;
+      padding: 18px 0;
+      border-top: 1px solid var(--border);
+    }
+    .pkg-row:last-of-type { border-bottom: 1px solid var(--border); }
+    .pkg-name { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; display: inline-flex; gap: 9px; align-items: baseline; }
+    .pkg-sub { font-family: var(--font-mono); font-size: 12px; color: var(--muted-strong); margin-top: 4px; }
+    .pkg-desc { font-size: 14px; color: var(--muted-strong); max-width: 52ch; }
+    .pkg-sha { font-family: var(--font-mono); font-size: 11px; color: var(--muted-strong); margin-top: 6px; word-break: break-all; max-width: 60ch; }
+    .pkg-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+    .pkg-size { font-family: var(--font-mono); font-size: 12px; color: var(--muted-strong); }
+    @media (max-width: 920px) {
+      .pkg-row { grid-template-columns: 1fr; gap: 10px; }
+      .pkg-actions { align-items: flex-start; }
+    }
+
+    /* ─── other formats (compact link list) ─────────────────────────── */
+    .fmt-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: var(--gap-sm);
+      margin-top: var(--gap-md);
+    }
+    .fmt {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+      font-size: 14px;
+      transition: border-color 0.15s ease, transform 0.05s ease;
+    }
+    .fmt:hover { border-color: var(--accent); }
+    .fmt b { display: block; font-size: 15px; letter-spacing: -0.01em; margin-bottom: 2px; }
+    .fmt span { color: var(--muted-strong); font-size: 13px; }
+    .fmt .go { color: var(--accent); font-family: var(--font-mono); font-size: 12px; }
+
+    /* ─── info tables (requirements) ────────────────────────────────── */
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+    th { font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-strong); font-weight: 500; }
+    td:first-child { white-space: nowrap; font-weight: 500; }
+
+    /* ─── callout ───────────────────────────────────────────────────── */
+    .note {
+      margin-top: var(--gap-xl);
+      padding: clamp(18px, 3vw, 24px);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      font-size: 15px; color: var(--muted-strong); line-height: 1.65;
+    }
+    .note b { color: var(--fg); font-weight: 600; }
+    .warn {
+      margin-top: var(--gap-md);
+      padding: 14px 18px;
+      border: 1px solid color-mix(in oklch, var(--accent) 35%, var(--border));
+      background: var(--accent-soft);
+      border-radius: var(--radius);
+      font-size: 14px;
+      color: var(--muted-strong);
+    }
+    .warn b { color: var(--fg); }
+      
+
+    
+
+</style>
+  <script type="application/ld+json">
+  {"@context": "https://schema.org", "@type": "WebPage", "name": "1bit.MONSTER: Downloads", "description": "Download 1bit.MONSTER — the open-source, pure-C++ inference engine for AMD Strix Halo. Binary tarball, Debian package and AppImage, all from one website.", "url": "https://1bit.monster/1bit-downloads.html", "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  </script>
+
+
+
+</head>
+<body>
+  <header class="topnav" data-od-id="topnav">
+    <div class="container topnav-inner">
+      <a href="index.html" class="logo">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <rect class="relay r1" x="2" y="2" width="9" height="9" rx="2"/><rect class="relay r2" x="13" y="2" width="9" height="9" rx="2"/><rect class="relay r3" x="2" y="13" width="9" height="9" rx="2"/><rect class="relay r4" x="13" y="13" width="9" height="9" rx="2"/>
+        </svg>
+        <span>1bit.MONSTER</span>
+      </a>
+      <nav>
+        <a href="1bit-monster-v2.html">Engine</a>
+        <a href="1bit-models.html">Models</a>
+        <a href="1bit-jarvis.html">1bit JARVIS</a>
+        <a href="1bit-blog.html">Blog</a>
+        <a href="1bit-store.html">Store</a>
+        <a href="1bit-docs.html">Docs</a>
+        <a href="1bit-benchmarks.html">Benchmarks</a>
+        <a href="1bit-downloads.html" aria-current="page">Downloads</a>
+      </nav>
+      
+
+
+<a class="btn btn-ghost" href="https://github.com/1bit-MONSTER/1bit-MONSTER">GitHub&nbsp;↗</a>
+    </div>
+  </header>
+
+  <main id="content">
+
+    <!-- Hero -->
+    <section class="section hero-center" data-od-id="hero">
+      <div class="container">
+        <h1>Download 1bit.MONSTER.</h1>
+        <p class="lead">One binary. Every server and CLI. Pure C++, zero Python at runtime. Pick a format below — tarball, Debian package or AppImage — and be chatting with an NPU model in minutes. Latest release: <span class="meta" id="dl-version">2026.08.04</span></p>
+      </div>
+    </section>
+
+    <!-- One-line install -->
+    <section class="section" data-od-id="one-liner">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="h2">Or install from source in one line.</h2>
+          <span class="meta">clone · build · no pip</span>
+        </div>
+        <p class="lead">Prefer to build yourself, or want the NPU engine plus the coding-agent CLI? <code>install.sh</code> clones the repo and builds the single <code>1bit</code> binary on your Strix Halo box.</p>
+        <pre class="codeblock">curl -fsSL https://1bit.monster/install.sh -o install.sh
+bash install.sh            <span class="c"># build + nothing else</span>
+bash install.sh --with-jarvis  <span class="c"># build + JARVIS launcher + config</span></pre>
+        <div class="warn">
+          <b>Kernel check:</b> Strix Halo (gfx1151) systems on Linux <b>6.19.x</b> can hit an amdgpu display hang under sustained NPU/GPU load (issue #1). <code>install.sh</code> detects 6.19.x and warns — use <b>6.18.22-lts</b> or the <b>7.x</b> series.
+        </div>
+      </div>
+    </section>
+
+    <!-- Release packages -->
+    <section class="section" data-od-id="packages">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="h2">Release packages.</h2>
+          <span class="meta">built from the same staged tree · sizes &amp; checksums load live</span>
+        </div>
+
+        <div class="pkg-row" data-od-id="pkg-tarball" id="pkg-tarball">
+          <div>
+            <span class="pkg-name">Binary tarball <span class="pkg-size">(<span data-size>13 MiB</span>)</span></span>
+            <div class="pkg-sub">1bit-monster-2026.08.04-linux-amd64.tar.xz</div>
+            <p class="pkg-desc">Extract anywhere, run <code>./run.sh</code>. The <code>1bit</code> ELF holds every server + CLI; a loader script wires up <code>librocm_cpp.so</code> for you.</p>
+            <p class="pkg-sha">sha256 <span data-sha>—</span></p>
+          </div>
+          <div class="pkg-actions">
+            <a class="btn btn-primary" data-dl href="downloads/1bit-monster-2026.08.04-linux-amd64.tar.xz" download>Download&nbsp;.tar.xz</a>
+          </div>
+        </div>
+
+        <div class="pkg-row" data-od-id="pkg-deb" id="pkg-deb">
+          <div>
+            <span class="pkg-name">Debian package <span class="pkg-size">(<span data-size>14 MiB</span>)</span></span>
+            <div class="pkg-sub">1bit-monster_2026.08.04_amd64.deb</div>
+            <p class="pkg-desc">Installs <code>1bit</code> (and its legacy symlinks) onto <code>PATH</code> plus the shared HIP kernel library and Vulkan shaders.</p>
+            <p class="pkg-sha">sha256 <span data-sha>—</span></p>
+          </div>
+          <div class="pkg-actions">
+            <a class="btn btn-primary" data-dl href="downloads/1bit-monster_2026.08.04_amd64.deb" download>Download&nbsp;.deb</a>
+          </div>
+        </div>
+
+        <div class="pkg-row" data-od-id="pkg-appimage" id="pkg-appimage">
+          <div>
+            <span class="pkg-name">AppImage <span class="pkg-size">(<span data-size>21 MiB</span>)</span></span>
+            <div class="pkg-sub">1bit-monster-2026.08.04-x86_64.AppImage</div>
+            <p class="pkg-desc">No install needed — <code>chmod +x</code> and run. Portable single-file desktop app for Linux.</p>
+            <p class="pkg-sha">sha256 <span data-sha>—</span></p>
+          </div>
+          <div class="pkg-actions">
+            <a class="btn btn-primary" data-dl href="downloads/1bit-monster-2026.08.04-x86_64.AppImage" download>Download&nbsp;.AppImage</a>
+          </div>
+        </div>
+
+        <p class="meta" style="margin-top: var(--gap-md);">Verify before running: <a href="downloads/SHA256SUMS">SHA256SUMS</a> · machine-readable: <a href="downloads/manifest.json">manifest.json</a></p>
+        <div class="note">
+          <b>Every package is the same tree.</b> The tarball, <code>.deb</code> and AppImage are built from one staged release tree (<code>make package-site</code>), so picking a format is purely about how you like to install — the contents are identical.
+        </div>
+      </div>
+    </section>
+
+    <!-- Other formats -->
+    <section class="section" data-od-id="other-formats">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="h2">Other formats &amp; channels.</h2>
+          <span class="meta">configs in the repo — build when you need them</span>
+        </div>
+        <div class="fmt-grid">
+          <a class="fmt" href="https://github.com/1bit-MONSTER/1bit-MONSTER/tree/main/packaging/docker" target="_blank" rel="noopener">
+            <b>Docker</b><span>Dockerfile ready</span><span class="go">packaging/docker ↗</span>
+          </a>
+          <a class="fmt" href="https://github.com/1bit-MONSTER/1bit-MONSTER/tree/main/packaging/aur" target="_blank" rel="noopener">
+            <b>AUR</b><span>PKGBUILD ready</span><span class="go">packaging/aur ↗</span>
+          </a>
+          <a class="fmt" href="https://github.com/1bit-MONSTER/1bit-MONSTER/tree/main/packaging/snap" target="_blank" rel="noopener">
+            <b>Snap</b><span>snapcraft.yaml ready</span><span class="go">packaging/snap ↗</span>
+          </a>
+          <a class="fmt" href="https://github.com/1bit-MONSTER/1bit-MONSTER/tree/main/packaging/flatpak" target="_blank" rel="noopener">
+            <b>Flatpak</b><span>build script ready</span><span class="go">packaging/flatpak ↗</span>
+          </a>
+          <a class="fmt" href="https://github.com/1bit-MONSTER/1bit-MONSTER/tree/main/packaging/rpm" target="_blank" rel="noopener">
+            <b>RPM</b><span>spec ready</span><span class="go">packaging/rpm ↗</span>
+          </a>
+          <a class="fmt" href="https://github.com/1bit-MONSTER/1bit-MONSTER/tree/main/packaging/ollama" target="_blank" rel="noopener">
+            <b>Ollama</b><span>Modelfile — point at the NPU server</span><span class="go">packaging/ollama ↗</span>
+          </a>
+        </div>
+      </div>
+    </section>
+
+    <!-- Requirements -->
+    <section class="section" data-od-id="requirements">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="h2">Requirements.</h2>
+          <span class="meta">Strix Halo only, for now</span>
+        </div>
+        <table>
+          <thead>
+            <tr><th>Component</th><th>Requirement</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Hardware</td><td>AMD Ryzen AI Max+ 395 (Strix Halo, gfx1151) — NPU or Radeon 8060S GPU</td></tr>
+            <tr><td>OS</td><td>Ubuntu 24.04 LTS or later (Debian-family); AppImage runs on most glibc Linux</td></tr>
+            <tr><td>Kernel</td><td><b>6.18.22-lts or 7.x</b> — avoid 6.19.x (amdgpu display hang, issue #1)</td></tr>
+            <tr><td>ROCm runtime</td><td>ROCm/TheRock 7.15.0a runtime (<code>libhsa-runtime64</code>) for the GPU/HIP path; the NPU engine needs XRT (<code>amdxdna</code>)</td></tr>
+            <tr><td>Model file</td><td>A <code>.h1b</code>, <code>.q4nx</code> or <code>.gguf</code> model — see <a href="docs-models.html">Models</a></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Quick start -->
+    <section class="section" data-od-id="quickstart">
+      <div class="container">
+        <div class="section-head">
+          <h2 class="h2">Quick start.</h2>
+          <span class="meta">tarball path</span>
+        </div>
+        <pre class="codeblock">tar xJf 1bit-monster-2026.08.04-linux-amd64.tar.xz
+cd 1bit-monster-2026.08.04
+export HSA_OVERRIDE_GFX_VERSION=11.5.1
+export HSA_ENABLE_SDMA=0
+./run.sh chat           <span class="c"># NPU-native coding-agent CLI</span></pre>
+        <p class="meta" style="margin-top: var(--gap-md);">Then point any OpenAI-compatible client at <code>http://127.0.0.1:13305/v1</code> — see <a href="docs-getting-started.html">Getting started</a> for the full walkthrough.</p>
+      </div>
+    </section>
+
+  </main>
+
+  <footer class="pagefoot" data-od-id="footer">
+    <div class="container row-between">
+      <span>© 2026 1bit.MONSTER · MIT License</span>
+      <a class="meta" href="https://discord.gg/Qy38d4Xu2h" target="_blank" rel="noopener">Join Discord &#8599;</a>
+
+      <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
+    </div>
+    <div class="container">
+      <p class="place" data-od-id="footer-place">Metepenagiag Mi’kmaq Nation, New Brunswick, Canada</p>
+      <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
+    </div>
+  </footer>
+<script src="analytics.js"></script>
+<script src="https://context7.com/widget.js" data-library="/1bit-monster/1bit-monster"></script>
+<script>
+/* Downloads page — refresh sizes/checksums/links from downloads/manifest.json
+ * (written by `make package-site`). Same-origin fetch, so no CORS worries;
+ * if the manifest is missing the static values above stay in place. */
+(function () {
+  "use strict";
+  function human(n) {
+    if (!isFinite(n)) return "—";
+    return n >= 1048576 ? (n / 1048576).toFixed(1) + " MiB" : n + " B";
+  }
+  var ROWS = [
+    { suffix: "_amd64.deb",   row: "pkg-deb" },
+    { suffix: "-x86_64.AppImage", row: "pkg-appimage" },
+    { suffix: "-linux-amd64.tar.xz", row: "pkg-tarball" }
+  ];
+  fetch("downloads/manifest.json")
+    .then(function (r) { if (!r.ok) throw new Error("manifest " + r.status); return r.json(); })
+    .then(function (m) {
+      var v = document.getElementById("dl-version");
+      if (v && m.version) v.textContent = m.version;
+      (m.files || []).forEach(function (f) {
+        var hit = null;
+        for (var i = 0; i < ROWS.length; i++) {
+          if (f.name.indexOf(ROWS[i].suffix) !== -1) { hit = ROWS[i]; break; }
+        }
+        if (!hit) return;
+        var el = document.getElementById(hit.row);
+        if (!el) return;
+        var link = el.querySelector("a[data-dl]");
+        if (link && f.url) link.href = f.url;
+        var size = el.querySelector("[data-size]");
+        if (size) size.textContent = human(f.size);
+        var sha = el.querySelector("[data-sha]");
+        if (sha && f.sha256) sha.textContent = f.sha256;
+      });
+    })
+    .catch(function () { /* keep static values */ });
+})();
+</script>
+</body>
+</html>

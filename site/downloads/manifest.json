@@ -1,0 +1,23 @@
+{
+  "version": "2026.08.04",
+  "files": [
+    {
+      "name": "1bit-monster_2026.08.04_amd64.deb",
+      "size": 14567188,
+      "sha256": "9b7e3e31f8f5aa309270f2ebe4e5fa4b4afff330404546f4b45bfac8349853e7",
+      "url": "downloads/1bit-monster_2026.08.04_amd64.deb"
+    },
+    {
+      "name": "1bit-monster-2026.08.04-x86_64.AppImage",
+      "size": 21072376,
+      "sha256": "6c372ed6aca1310697f6063f30aa246ed3a25b0d0b66d7b451a1bcc0c561b187",
+      "url": "downloads/1bit-monster-2026.08.04-x86_64.AppImage"
+    },
+    {
+      "name": "1bit-monster-2026.08.04-linux-amd64.tar.xz",
+      "size": 12705568,
+      "sha256": "2c5fcabf6b245c64265fde78e1e2e350d9efd25d4ee4dff686b802c1730d6dc2",
+      "url": "downloads/1bit-monster-2026.08.04-linux-amd64.tar.xz"
+    }
+  ]
+}

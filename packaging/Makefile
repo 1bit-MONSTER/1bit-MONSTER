@@ -4,9 +4,12 @@
 VERSION := $(shell [ -f ../VERSION ] && tr -d '[:space:]' < ../VERSION || echo "0.0.0")
 BUILD_DIR := ../build
 STAGE := build/stage/1bit-monster-$(VERSION)
+# Where the website's downloadable packages live (deployed to 1bit.monster
+# from the site/ dir by .github/workflows/deploy.yml).
+SITE_DL := ../site/downloads
 # Non-root rpmbuild needs a writable rpm db (Ubuntu's /var/lib/rpm is root-owned)
 RPM_DB ?= $(HOME)/.rpmdb
-.PHONY: all stage package-deb package-tarball package-appimage package-rpm package-snap package-flatpak clean
+.PHONY: all stage package-deb package-tarball package-appimage package-rpm package-site package-snap package-flatpak clean
 
 all: stage
 
@@ -78,6 +81,22 @@ package-rpm: stage
 	sed 's|^Version: .*|Version: $(VERSION)|' ../packaging/rpm/1bit-monster.spec > build/rpmbuild/SPECS/1bit-monster.spec
 	rpmbuild --define "_topdir $(abspath build/rpmbuild)" --define "_dbpath $(RPM_DB)" -bb build/rpmbuild/SPECS/1bit-monster.spec
 	@echo "rpm: build/rpmbuild/RPMS/x86_64/1bit-monster-$(VERSION)-1.*.rpm"
+
+package-site: stage
+	# Sync the website's downloadable packages into ../site/downloads (deployed
+	# to 1bit.monster by deploy.yml). The tarball is xz, NOT gzip: Cloudflare
+	# Pages caps a single site asset at 25 MiB and the gzip tarball (~26 MB)
+	# exceeds it — xz lands ~12 MB. Also regenerates SHA256SUMS + manifest.json
+	# (read client-side by site/1bit-downloads.html).
+	rm -f $(SITE_DL)/1bit-monster_*_amd64.deb $(SITE_DL)/1bit-monster-*-x86_64.AppImage $(SITE_DL)/1bit-monster-*-linux-amd64.tar.xz
+	mkdir -p $(SITE_DL)
+	cp build/1bit-monster_$(VERSION)_amd64.deb $(SITE_DL)/
+	cp build/1bit-monster-$(VERSION)-x86_64.AppImage $(SITE_DL)/ 2>/dev/null || echo "warn: no AppImage in build/ (package-appimage + appimagetool) — manifest will skip it"
+	tar -cJf $(SITE_DL)/1bit-monster-$(VERSION)-linux-amd64.tar.xz -C build/stage 1bit-monster-$(VERSION)
+	# one-line installer, served from the website
+	cp ../install.sh $(SITE_DL)/../install.sh
+	python3 ../packaging/site-manifest.py "$(VERSION)" "$(abspath $(SITE_DL))"
+	@echo "site packages -> $(SITE_DL)"
 
 package-flatpak:
 	bash ../packaging/flatpak/build-flatpak.sh

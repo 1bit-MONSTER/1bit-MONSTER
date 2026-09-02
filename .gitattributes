@@ -25,6 +25,9 @@
 *.zst binary
 *.zip binary
 *.tar.gz binary
+*.tar.xz binary
+*.deb binary
+*.AppImage binary
 
 # ── GitHub linguist: keep the language bar accurate ──
 # GPU compute shaders are compiled to SPIR-V at build time (glslc), loaded as data

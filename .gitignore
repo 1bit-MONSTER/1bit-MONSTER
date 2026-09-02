@@ -121,6 +121,9 @@ build/*.ninja*
 .zig-cache/
 **/.zig-cache/
 *.AppImage
+# ...except the website's downloadable package set (site/downloads is deployed
+# to 1bit.monster as-is; an ignored file never reaches the CI checkout)
+!site/downloads/*.AppImage
 scripts/.reconvert.lock
 research/ws05-1bp-v2/RECONVERT-REPORT.md.tmp
 
