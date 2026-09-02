@@ -3056,17 +3056,25 @@ struct Bf16Ctx {
                                 fflush(stderr);
                             }
                             if (getenv("NPU_FUSED_DEBUG") && atoi(getenv("NPU_FUSED_DEBUG")) == 1) {
-                                // Dump bo2 (bC) tile-0 rows 1-4 (the FOLD the
-                                // kernel silu reads: foldg/foldu/boundg/boundu/Q).
+                                // Dump bo2 (bC) C1 rows 1-4 at the EXACT
+                                // microtiled positions the silu reads
+                                // (st[go+8]=foldg, go+16=boundg, go+25=boundu,
+                                // st[32..34]=Q/shG/shU). Compares against the
+                                // host write_silu_pad_meta fold for pair 0.
                                 cg_fused_i4->bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
                                 const int32_t* cm = cg_fused_i4->Cm;
-                                fprintf(stderr, "[FOLD l=%d] bo2[128..143]=", l);
-                                for (int k = 128; k < 144; k++) fprintf(stderr, "%d ", cm[k]);
-                                fprintf(stderr, "\n[FOLD l=%d] bo2[384..399]=", l);
-                                for (int k = 384; k < 400; k++) fprintf(stderr, "%d ", cm[k]);
-                                fprintf(stderr, "\n[FOLD l=%d] bo2[512..519]=", l);
-                                for (int k = 512; k < 520; k++) fprintf(stderr, "%d ", cm[k]);
-                                fprintf(stderr, "\n");
+                                unsigned go0 = 0;   // gos[0] = 0 (pair 0)
+                                fprintf(stderr, "[FOLD l=%d] silu-read: foldg=cm[%u]=%d foldu=cm[%u]=%d boundg=cm[%u]=%d boundu=cm[%u]=%d Q=cm[32]=%d shG=cm[33]=%d shU=cm[34]=%d\n",
+                                        l, go0 + 8, cm[go0 + 8], go0 + 9, cm[go0 + 9],
+                                        go0 + 16, cm[go0 + 16], go0 + 25, cm[go0 + 25],
+                                        cm[32], cm[33], cm[34]);
+                                // Host-computed fold via write_silu_pad_meta (nt=0, ki=0 foldG chunk).
+                                std::vector<uint8_t> dummy(GuI4Pack::TILE_TOTAL, 0);
+                                write_silu_pad_meta(dummy.data(), cg_fuse_scl[l].data(), 0, 0,
+                                                    ag, qn_s, 2 * IM);
+                                const int32_t* mq = (const int32_t*)(dummy.data() + GuI4Pack::META_BASE);
+                                fprintf(stderr, "[FOLD l=%d] host-pad: foldg=mq[0]=%d foldu=mq[1]=%d boundg=mq[0]=%d boundu=mq[1]=%d Q=mq[0](ki3)=%d\n",
+                                        l, mq[0], mq[1], mq[0], mq[1], mq[0]);
                                 fflush(stderr);
                             }
                         } else {
