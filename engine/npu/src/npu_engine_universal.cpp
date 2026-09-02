@@ -3005,6 +3005,17 @@ struct Bf16Ctx {
                             // standalone writeback fire.
                             cg_fuse_h2[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
                             const int8_t* h2m = (const int8_t*)cg_fuse_h2[l]->map();
+                            if (getenv("NPU_FUSED_DEBUG") && atoi(getenv("NPU_FUSED_DEBUG")) == 1) {
+                                float minS = 1e30f;
+                                for (int j = 0; j < 2 * IM; j++) {
+                                    float sval = cg_fuse_scl[l][j];
+                                    float a = sval < 0 ? -sval : sval;
+                                    if (a > 1e-12f && a < minS) minS = a;
+                                }
+                                fprintf(stderr, "[FOLDS l=%d] ag=%.6g qn_s=%.6g minScol=%.6g scol[0]=%.6g scol[1]=%.6g\n",
+                                        l, ag, qn_s, minS, cg_fuse_scl[l][0], cg_fuse_scl[l][1]);
+                                fflush(stderr);
+                            }
                             if (getenv("NPU_FUSED_H2DBG") && atoi(getenv("NPU_FUSED_H2DBG")) == 1) {
                                 fprintf(stderr, "[H2RAW l=%d] bo4[0..63]=", l);
                                 for (int k = 0; k < 64; k++) fprintf(stderr, "%d ", (int)h2m[k]);

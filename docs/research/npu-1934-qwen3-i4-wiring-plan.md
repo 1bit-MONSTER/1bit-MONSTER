@@ -528,3 +528,25 @@ regions (mae~98, `bad=3015/3072`), so the per-chunk fold metadata (foldG/
 boundG/boundU/Q stashed into C1 rows 1-4 by the matmul, read by the silu) is
 wrong for most chunks — the next target. Routing + B\u2033-layout consistency
 are now both correct.
+
+### Round-189b: fold delivery confirmed correct; residual = silu-Q calibration
+
+Added a FOLDS diagnostic (NPU_FUSED_DEBUG=1) printing ag/qn_s/minScol/scol.
+For l=0: ag=0.0235, minScol=0.001, scol[0]=0.00231 → sv=ag*scol[0]=5.42e-5,
+foldg=round(sv*2^21)=114, matching the silu-read fold exactly. So the fold
+metadata and B\u2033 dequant are BOTH now correct.
+
+The remaining h2 saturation traces to the silu's Q/shG/shU: Q=21 → shG=Q-11=10
+(boundu=4*boundg+3). With Q=21/shG=10 the silu collapses the gate to ~0 for
+the small c1g the GU GEMM produces (verified: silu_pair_q22 with
+foldg=114/Q=21/shG=10 → h2=0 for c1g in [0,60000]), while Q=11/shG=0 gives
+h2=86. The kernel's Q (22-s, s=15+ceil(log2(minS))) is computed from the tile
+MIN per-column scale, which for the dense qwen3-0.6b scale distribution
+(minScol~1e-3, so s≈0, Q≈21) is too high — the fold is quantized at 2^21 but
+the stage shift shG=2^10 collapses the small c1g.
+
+**Status:** writeback routing (h2 arg), B\u2033 dequant (bf16_pair pack), and
+fold delivery are now all CORRECT. The remaining #1934 blocker is the silu's
+Q/shG calibration for the dense qwen3-0.6b scale envelope — deep fixed-point
+tuning (make Q smaller, e.g. ~11, so shG≈0 and the gate survives), verified
+against the float-path h2gt and the CPU silu gate.
