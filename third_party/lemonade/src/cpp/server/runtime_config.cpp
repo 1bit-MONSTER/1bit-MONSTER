@@ -410,17 +410,6 @@ long RuntimeConfig::global_timeout() const {
     return config_["global_timeout"].get<long>();
 }
 
-long RuntimeConfig::stream_stall_timeout() const {
-    std::shared_lock lock(mutex_);
-    if (config_.contains("stream_stall_timeout") &&
-        config_["stream_stall_timeout"].is_number_integer()) {
-        return config_["stream_stall_timeout"].get<long>();
-    }
-    // No explicit stream_stall_timeout: the streaming stall bound respects
-    // the global timeout (upstream review feedback on the new-key proposal).
-    return config_["global_timeout"].get<long>();
-}
-
 int RuntimeConfig::max_loaded_models() const {
     std::shared_lock lock(mutex_);
     return config_["max_loaded_models"].get<int>();
@@ -437,6 +426,24 @@ int64_t RuntimeConfig::download_rate_limit_bytes_per_second() const {
         return 0;
     }
     return parsed;
+}
+
+std::string RuntimeConfig::allowed_origins_unlocked() const {
+    if (allowed_origins_override_.has_value()) {
+        return *allowed_origins_override_;
+    }
+    if (const char* env = std::getenv("LEMONADE_ALLOWED_ORIGINS")) {
+        return std::string(env);
+    }
+    if (config_.contains("allowed_origins") && config_["allowed_origins"].is_string()) {
+        return config_["allowed_origins"].get<std::string>();
+    }
+    return "";
+}
+
+std::string RuntimeConfig::allowed_origins() const {
+    std::shared_lock lock(mutex_);
+    return allowed_origins_unlocked();
 }
 
 std::string RuntimeConfig::models_dir() const {
@@ -854,6 +861,10 @@ void RuntimeConfig::validate(const std::string& key, const json& value) const {
                 "'download_rate_limit' must be a byte rate like \"512\", \"100K\", \"10M\", etc. "
                 "Use \"\" for unlimited download speed");
         }
+    } else if (key == "allowed_origins") {
+        if (!value.is_string()) {
+            throw std::invalid_argument("'allowed_origins' must be a string");
+        }
     } else if (key == "broadcast" || key == "no_broadcast" || key == "offline" ||
                key == "auto_check_model_updates" ||
                key == "auto_update_models" ||
@@ -868,14 +879,6 @@ void RuntimeConfig::validate(const std::string& key, const json& value) const {
         }
         if (value.get<long>() <= 0) {
             throw std::invalid_argument("'global_timeout' must be positive");
-        }
-    } else if (key == "stream_stall_timeout") {
-        if (!value.is_number_integer()) {
-            throw std::invalid_argument("'stream_stall_timeout' must be an integer");
-        }
-        if (value.get<long>() < 0) {
-            throw std::invalid_argument(
-                "'stream_stall_timeout' must be >= 0 (0 disables the stall bound)");
         }
     } else if (key == "max_loaded_models") {
         if (!value.is_number_integer()) {
@@ -1250,6 +1253,14 @@ void RuntimeConfig::apply_changes(const json& changes, json& applied_diff) {
             broadcast_override_ = std::nullopt;
             if (prev_effective_bcast != bcast) {
                 applied_diff["broadcast"] = bcast;
+            }
+        } else if (key == "allowed_origins") {
+            std::string prev_effective = allowed_origins_unlocked();
+            std::string new_origins = value.is_string() ? value.get<std::string>() : "";
+            config_["allowed_origins"] = new_origins;
+            allowed_origins_override_ = new_origins;
+            if (prev_effective != new_origins) {
+                applied_diff["allowed_origins"] = new_origins;
             }
         } else {
             if (!config_.contains(key) || config_[key] != value) {

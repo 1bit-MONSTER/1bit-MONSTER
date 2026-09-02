@@ -6,7 +6,14 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Wed, 02 Sep 2026 17:20:33 +0000</lastBuildDate>
+    <lastBuildDate>Wed, 02 Sep 2026 22:38:19 +0000</lastBuildDate>
+    <item>
+      <title>Lemonade v11.9.0: origin hardening, and upstream took our HRX backend</title>
+      <link>https://1bit.monster/1bit-post-lemonade-v1190.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1190.html</guid>
+      <pubDate></pubDate>
+      <description>The embedded Lemonade server core is re-vendored to v11.9.0 — allowed_origins/CORS hardening, llama.cpp to b10723, the streaming-stall fix, and directory-watcher + extra-model classification fixes. We retired stream_stall_timeout and kept the newer hrx-b66 pin; everything else now matches upstream.</description>
+    </item>
     <item>
       <title>Zaya 8B Q4NX on the AMD NPU</title>
       <link>https://1bit.monster/1bit-post-zaya-q4nx-hrx.html</link>
