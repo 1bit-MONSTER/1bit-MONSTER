@@ -49,7 +49,7 @@ inline void cap_omp_threads() {
         // Visit each processor block and record distinct (physical id, core id).
         // Linux /proc/cpuinfo lists every logical CPU (SMT siblings included);
         // the physical core count is the number of unique physical/core id pairs.
-        static int seen = 0, stored = 0;
+        static int stored = 0;
         static int pids[256], cids[256];
         while (fgets(line, sizeof line, f)) {
             if (strncmp(line, "processor", 9) == 0) { cur_phys = -1; cur_core = -1; }
