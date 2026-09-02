@@ -1018,3 +1018,28 @@ entry for positions >= 16; argmax unchanged).
 4096 is ~3.5s if ever needed). The engine's default ELF dir is
 `captures/txn-elfs`, so `generate()` works out of the box for
 sequences up to 64 tokens without running the generator.
+
+### Round 37 follow-up — generate() past ctx17 (ELFs 18..64 on-device)
+
+Ran the engine with `NPU_MAX_TOKENS=20` (BOS + 20 decoded tokens, 382 ms,
+19 ms/tok): the first 16 sampled tokens are deterministic-identical to the
+16-token run, then 4 new tokens (126558 93721 52300 84255 17380) — the
+shipped layer_ctx18..21 ELFs load and run correctly on the NPU (no wedge,
+no no-op; argmax coherent).
+
+Per-ctx logits vs the harness on the PROCESSED sequence
+(BOS, 3219, 144370, ..., 17380 — note the harness token file must include
+the prefill-sampled `rt_first_token_` 3219, the engine's printed tokens
+are the SAMPLES, not the processed sequence):
+
+- ctx2..16: maxdiff 0 (byte-identical)
+- ctx17..21: maxdiff 0.34..0.58 (1-2 bf16 ULP), argmax identical at every ctx
+
+The ctx18-21 ULPs are the same rope-table rounding-boundary artifact seen
+at ctx17: at pos 17-20, more of the 128 i6 entries sit within ~1% of an
+ULP of a bf16 tie boundary, so the runtime's fixed-point sin (device
+artifact) flips those entries vs exact double math. Bounded, deterministic,
+argmax-preserving — documented, not replicated.
+
+`NPU_MAX_TOKENS` (default 16, cap 64) added to main.cpp to make the
+output-token count env-configurable for these longer runs.

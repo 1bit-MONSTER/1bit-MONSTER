@@ -48,10 +48,13 @@ int main(int argc, char** argv) {
     } else {
         prompt.push_back(151643);  // BOS
     }
-    int output[32];
+    int max_out = getenv("NPU_MAX_TOKENS") ? atoi(getenv("NPU_MAX_TOKENS")) : 16;
+    if (max_out < 1) max_out = 16;
+    if (max_out > 64) max_out = 64;
+    std::vector<int> output(max_out);
     
     auto t0 = std::chrono::steady_clock::now();
-    int num_out = engine.generate(prompt.data(), (int)prompt.size(), output, 16);
+    int num_out = engine.generate(prompt.data(), (int)prompt.size(), output.data(), max_out);
     auto t1 = std::chrono::steady_clock::now();
     double ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     
