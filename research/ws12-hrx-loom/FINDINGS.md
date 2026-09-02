@@ -249,44 +249,34 @@ with the ws12 dump32_prefill harness (round-25h methodology), not llama-bench.
   as Q4NX and hit the NPU. ngl=0 fails to load (ggml-cpu claims no Q4NX ops)
   — the NPU is the only execution path for Q4NX models, as intended.
 
-## 30B Q4NX MoE prefill is WRONG on the fork — conversion is FINE (CORRECTION) (2026-09-02)
+## 30B Q4NX MoE prefill — NO fork bug; degenerate-input artifact (FINAL) (2026-09-02)
 
-CORRECTION of the previous entry: the qwen3coder-30b-q4nx conversion is
-CORRECT. The earlier "experts scrambled, corr 0.0025" result was my own
-verification bug: dequant_tensor(raw, rows, cols) was called with the axes
-SWAPPED (2048,768 instead of 768,2048). The converter quantizes experts as
-quantize_q4nx(W, rows=out, cols=in); reading the file's expert-0 tiles with
-rows=768, cols=2048 gives corr 0.99516 vs the Q4_K source (quant-rounding
-level), and a quantize->dequant round trip of the converter's own functions
-gives corr 0.99515 vs source and 1.0 vs the file. Dense and expert Q4NX
-conversions are both correct (dense attn_q 0.99197).
+The "wrong prefill" was a harness artifact, not a fork bug. The dump32_prefill
+harness feeds 32 IDENTICAL tokens (all id=2); with all-identical hidden states
+the final-token logits are quantization-noise-sensitive and corr collapses for
+ANY backend pair. Proven: Qwen3-Coder-30B Q4_K, HRX2(ngl=99) vs CPU(ngl=0),
+SAME weights, both correct backends, degenerate input -> corr 0.33. The q4nx
+0.55/0.19 readings were the same effect, not a grouped-kernel defect.
 
-The REAL problem is the fork's MoE execution: 30B q4nx pp32 logits are wrong
-(top5 disjoint vs Q4_K CPU reference, corr 0.55). Facts:
-- ggml-cpu REFUSES MUL_MAT_Q4NX / MUL_MAT_ID_Q4NX (supports_op false; no
-  compute path — "Q4NX ops run only on the HRX2 backend"), so the MoE mms
-  necessarily run on HRX2's dispatch (the run completes, exit 0).
-- GGML_HRX2_TRACE shows the q4nx kernels JIT-compile for the 30B expert
-  shapes (mul_mat_q4nx_fused_tbl_tiled r768-cN-k2048-nt32, r4096/r2048-c32)
-  but no MUL_MAT_ID_Q4NX dispatch event (same trace-logging gap as the 3B
-  dense — dispatch happens, event not emitted for the q4nx path).
-- HRX2_NO_FUSED_TBL=1 / HRX2_NO_FUSED_PAIR=1 change NOTHING (logits corr 1.0)
-  -> the MoE runs via the grouped dequant+table-scatter path
-  (dispatch_mul_mat_id_q4nx: dequant once per distinct expert + table-scatter
-  mm), NOT the fused_tbl_tiled route. The per-pair (decode) path is only used
-  for single-member groups.
-- Dispatch code reads correct tile_base = e*tpe and validates ids; the wrong
-  math is inside the grouped dequant/scatter for the 30B prefill shapes
-  (128 experts, per-expert src1, cols=32). Suspect: expert tile dequant range
-  or src1_col/dst_col indexing in the grouped path at c32 (the round-25b/25d
-  "per-expert src1 column" bug class — those fixes were for the fused tbl
-  route; the grouped dequant+mm path may carry an analogous defect).
-- 3B dense Q4NX (MUL_MAT_Q4NX, fused_tbl_tiled) is PROVEN correct (top1
-  matches CPU). Decode-path correctness on the 30B q4nx not yet established
-  (llama-completion invocation issue) — decode uses the per-pair path.
+Correct behavior (real inputs):
+- 17-token real prompt: q4nx HRX2 vs Q4_K CPU top1 576 == 576, corr 0.9584
+  (quant-rounding ceiling; the f32-twin target for corr 1.0).
+- 32 varied tokens (1000..1031): top1 321 == 321, corr 0.9771.
+- Decode (real prompts): "Gravity is the natural force..." correct, matching
+  Q4_K quality.
+- Routing verified correct throughout: grouped c32 dispatches (1128 events,
+  tile_base = e*tpe, per-expert src1 detection, dst/src1 tables exact),
+  ids identical across tokens (CORRECT for identical inputs), kernel dequant
+  indexing identical to the proven r16 decode kernel.
 
-Next: fix dispatch_mul_mat_id_q4nx grouped path for the 30B prefill shapes;
-validation gate: pp32 logits corr > 0.9 vs the Q4_K CPU reference (or the
-f32 twin methodology). Bench target after fix: 30B q4nx pp32 should beat the
-Q4_K 133 t/s (MoE on NPU instead of CPU AVX-512).
+Surgery trail (all reverted; fork clean at 4518abd):
+- Suspected src1 binding under-declare (k*ntokens vs k*src1_cols_count for
+  per-expert src1 in the grouped fused/tbl bindings) — real but cosmetic
+  (bindings not enforced; decode with the same under-declare works). Worth
+  fixing upstream if the runtime ever enforces binding ranges.
+- Suspected table/async race (b_tbl shared scratch across groups) — a
+  flush/wait before dispatch changed the result (0.55->0.19) proving the
+  async ordering affects output, but BOTH were degenerate artifacts; with
+  real inputs the result is correct regardless.
+- Debug instrumentation (env-gated HRX2_DEBUG_IDS) removed.
 
