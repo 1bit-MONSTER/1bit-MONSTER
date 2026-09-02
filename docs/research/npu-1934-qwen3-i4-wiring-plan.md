@@ -29,10 +29,16 @@ per-weight corr gate → env-gated OFF by default until that gate is run.
 - **Engine path works** — rebuilt `npu_engine_universal` runs the q4nx model on
   the live NPU (`--model-tag qwen3_0_6b`, or auto-detect after the round-8
   model_tag fix). The i8 GU+D two-launch path is confirmed.
-- **I4 host machinery** — `engine/npu/src/npu_engine_i8ctx_inc.h` already has
-  `make_fused_weight_bo_i4()` (line ~766) and `packB_into_fused_i4()`; the zaya
-  reference (`engine/npu/src/zaya_decode.cpp` FUSED_I4, lines 384–469) shows the
-  exact call pattern: `read_q4nx_raw(...)` → `make_fused_weight_bo_i4(...)` →
+- **I4 host machinery is REUSABLE** — the zaya `fused_ctx` is an `I8Ctx`
+  (`zaya_decode.cpp:367`: `I8Ctx fused_ctx, fused_ctx_p2`), so
+  `make_fused_weight_bo_i4()` / `packB_into_fused_i4()` /
+  `launch_fused()` / `update_fused_header_i4()` / `quantize_async()` /
+  `make_scratch_bo()` are on the generic `I8Ctx` class
+  (`engine/npu/src/npu_engine_i8ctx_inc.h`) — **not** zaya-specific. So the
+  qwen3-0.6b wiring is a focused *I8Ctx adaptation* (init a fused ctx with the
+  qwen3 GUSILU_i4 xclbin + qwen3 geometry, pack via the same i4 methods), not a
+  reimplementation. The zaya reference (lines 384–469) shows the call pattern:
+  `read_q4nx_raw(...)` → `make_fused_weight_bo_i4(...)` →
   `packB_into_fused_i4(...)`, plus a p2 D context.
 - **Reference contract** — `docs/research/npu-ffn-levers.md` §Lever-1 (wiring
   spec, GuI4Pack, kernel BO layout) + GuI4Pack in `engine/npu/src/gu_i4_pack.h`.
