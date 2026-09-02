@@ -52,9 +52,25 @@ int main(int argc, char** argv) {
     model.load_weights(q4nx);
     fprintf(stderr, "load_weights done\n");
 
-    // 5. one forward step (decode) — submits the layer TXNs
-    for (int i = 0; i < n_tokens; i++) {
-        int tok = 1000 + i;
+    // 5. one forward step (decode) — submits the layer TXNs.
+    // NPU_PROMPT_IDS (comma-separated) feeds a real prompt stream; greedy
+    // sampling reports the next token. Otherwise 1000+i (legacy).
+    const char* pids = getenv("NPU_PROMPT_IDS");
+    std::vector<int> prompt;
+    if (pids && *pids) {
+        std::string s(pids);
+        size_t pos = 0;
+        while (pos < s.size()) {
+            size_t c = s.find(',', pos);
+            prompt.push_back(atoi(s.substr(pos, c - pos).c_str()));
+            if (c == std::string::npos) break;
+            pos = c + 1;
+        }
+    } else {
+        for (int i = 0; i < n_tokens; i++) prompt.push_back(1000 + i);
+    }
+    for (size_t i = 0; i < prompt.size(); i++) {
+        int tok = prompt[i];
         auto out = model.forward(tok);
         fprintf(stderr, "forward(%d) done, out size %zu\n", tok, out.size());
         char fname[64];
@@ -64,6 +80,12 @@ int main(int argc, char** argv) {
             fwrite(out.data(), sizeof(bf16), out.size(), f);
             fclose(f);
             fprintf(stderr, "saved logits to %s (%zu bf16)\n", fname, out.size());
+        }
+        // greedy next-token after the full prompt (matches the engine's argmax)
+        if (i == prompt.size() - 1) {
+            int best = 0;
+            for (size_t j = 1; j < out.size(); j++) if (out[j] > out[best]) best = (int)j;
+            fprintf(stderr, "GREEDY_NEXT: %d\n", best);
         }
     }
 
