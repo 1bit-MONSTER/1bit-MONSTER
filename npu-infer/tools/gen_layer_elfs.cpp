@@ -33,6 +33,13 @@ int main(int argc, char** argv) {
             (const char*)ptr, (size_t)(nw * sizeof(uint32_t)), NULL, 0,
             (void**)&elf_buf, NULL, 0, "", "", NULL, 0);
         if (elf_size == 0) { fprintf(stderr, "L=%d aiebu failed\n", L); continue; }
+        // raw TXN dump alongside the ELF (for runtime A/B)
+        {
+            char rname[256];
+            snprintf(rname, sizeof(rname), "%s/layer_ctx%d.txn", outdir.c_str(), L);
+            FILE* fr = fopen(rname, "wb");
+            if (fr) { fwrite(ptr, 4, nw, fr); fclose(fr); }
+        }
         char fname[256];
         snprintf(fname, sizeof(fname), "%s/layer_ctx%d.elf", outdir.c_str(), L);
         FILE* f = fopen(fname, "wb");
