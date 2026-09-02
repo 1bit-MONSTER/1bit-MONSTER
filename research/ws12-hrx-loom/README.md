@@ -1440,6 +1440,65 @@ degeneration — the 25o baseline produces the same "Lines Lines abcde"
 garbage — whose chaotic divergence differs by summation order between the
 two kernels, not a correctness regression.
 
+### Round 25q — the decode "wall" was never the memory path: r16w wide-read kernel (fork 52e69e5), tg32 3B +66%, 7B +72%
+
+The standing decode model said time/token = 3.7 ms fixed + weights @ **65
+GB/s**, and 25h's note guessed "the remaining ceiling is the NPU's actual
+memory path". Round 25q falsified that with a load-only probe
+(`probe_bw`, built on the q4nx-route harness): dispatching the **dense f32
+mm kernel** on the same device-local weight buffer reads at **205-219 GB/s
+cold** (8-slice rotating ring), while the q4nx r16 decode kernel reads the
+same memory at 64-74 GB/s cold. The "wall" was the access pattern, not the
+fabric — ~3× headroom existed. Compiler evidence matched: r16's inner body
+issues six 1-4 byte scalar loads per lane per k-step (packed 1B, scale lo/hi,
+zp lo/hi, src1 4B); the f32 kernel issues 4B/lane contiguous (~1KB per
+instruction).
+
+New kernel `hrx2_mul_mat_q4nx_fused_f32_r16w` restructures decode (cols==1)
+around the packed layout's contiguous axis: 8 bytes at one k-position hold
+all 16 rows of a half-tile (2 rows/byte), so each of the 256 lanes owns ONE
+k-position of the 256-k tile-column and ALL 16 output rows of the workgroup.
+Per tile-column the wavefront reads **2KB contiguous** (256 lanes × 8B);
+each lane keeps 16 f32 row accumulators; scales/zeros for its fixed
+(row, group) set are staged cooperatively into 512B of workgroup LDS once
+per tile-column (256 lanes × 2B) and read back from LDS — cutting 64 × 1B
+global scale loads to 2 per lane per tile-column. After all tile-columns, 16
+`workgroup.reduce<addf>` over the 256 k-lanes produce the 16 output rows.
+Signed-nibble decode is branchless (`((q+8)&15)-8`). Route
+`mul_mat_q4nx_fused_f32_r16w` (family mul_mat_f32_f32, cols==1 only, rows%16)
+is preferred in the fused decode dispatch; `GGML_HRX2_NO_R16W=1` falls back
+to r16.
+
+Bugs found landing it: the dispatch's workgroup-count expression special-
+cased r16 (`rows/16`) but fell through to `rows` for r16w — 16× too many
+workgroups, each reading 16 rows past its slice → memory fault (caught by the
+real-model A/B, not the probe, which only exercised one shape); LDS-staging
+offset for the zeros half had a bogus +256 (zeros live in their own binding);
+and an early no-LDS variant kept 64 × 1B global scale loads per tile-column
+(no speedup over LDS staging, which won on instruction count).
+
+tg32 (llama-bench -p 32 -n 32, sequential):
+
+  qwen25-05b      ~84  -> ~91    (flat; launch-bound at that size)
+  qwen25-3b       29.6 -> 49.2   (+66%)
+  qwen25-7b       14.0 -> 24.1   (+72%)
+  GLM-4.7         14.2 -> 18.6   (+31%)
+  MiniCPM4-8B     12.2 -> 21.3   (+75%)
+  Qwen3-Coder-30B 18.8 -> 23.8   (+27%)
+
+pp32 unchanged (r16w only claims the cols==1 decode path; dense prefill still
+serves r16x8). Correctness: multi-prompt greedy A/B identical vs
+`GGML_HRX2_NO_R16W=1` on 3B/7B/GLM/30B/MiniCPM4 ("The capital of France is"
+→ "Paris." both ways, 12-20 tokens); probe-level dst corr 1.0 with max diff
+1.9e-6 (f32 summation order only — the garbage-scale probe fixture had
+already been made finite to expose this). Isolated cold rate: 111-113 GB/s
+vs r16's 64 (~1.75×) at the 3B gate shape — the real-model win (3B tg32
+49.2 t/s ≈ 20.3 ms/token → weights at ~118 GB/s) slightly exceeds the probe
+because decode's other mms also inherit the pattern. Decode remains
+weight-bandwidth-bound, but now at the memory path's real rate; the residual
+gap to the f32 kernel's 205 GB/s (r16w's 16-row/LDS/reduce overhead) is the
+next lever if decode needs more.
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
