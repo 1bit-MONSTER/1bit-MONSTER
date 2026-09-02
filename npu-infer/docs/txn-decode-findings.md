@@ -1043,3 +1043,40 @@ argmax-preserving — documented, not replicated.
 
 `NPU_MAX_TOKENS` (default 16, cap 64) added to main.cpp to make the
 output-token count env-configurable for these longer runs.
+
+### Round 37 post-reboot drill (2nd clean reboot)
+
+/tmp is tmpfs — every reboot wipes the scratch tools. Rebuild from the
+COMMITTED sources (they survive; /tmp copies don't):
+
+1. `mkdir -p /tmp/txn_decode`
+2. Harness (needs utils_stub.cpp for find_xclbin_path):
+   `g++ -O2 -std=c++20 -include climits tools/capture/run_qwen3_npu.cpp
+    tools/capture/utils_stub.cpp -o /tmp/txn_decode/run_qwen3_npu
+    -I/home/bcloud/amd-oss/fastflowlm/src/include
+    -I.../include/npu_utils -L.../src/lib/xrt -lqwen3_npu
+    -lq4_npu_eXpress -lgemm -ldequant -lmha -llm_head -L/usr/local/lib
+    -laiebu -lxrt_coreutil -lxrt_core
+    -Wl,-rpath,.../src/lib/xrt`
+3. Engine test: `gcc -O2 -Iinclude -c src/model.c -o /tmp/txn_decode/model.o`
+   then `g++ -O2 -std=c++17 -fpermissive tests/test_runtime_layer.cpp
+    src/runtime_layer.cpp /tmp/txn_decode/model.o -Iinclude
+    -lxrt_coreutil -lxrt_core -o /tmp/txn_decode/test_runtime_layer`
+   (model.c MUST be compiled as C or its symbols mangle — the CMake
+   target does this automatically, hand builds must not).
+4. Health check: `NPU_PROMPT_IDS=1000 /tmp/txn_decode/run_qwen3_npu
+   /home/bcloud/Qwen3-0.6B-NPU2 1` then read logits_1000.bin (bf16 x
+   151936) as f32: argmax == 397, std ~3.38 = healthy; argmax 1121 /
+   std 0.65 = wedged.
+5. Engine E2E re-validation: `NPU_RUNTIME_LAYERS=1
+   RT_DUMP_LOGITS_STEP=/tmp/englgR ./build/npu_infer
+   <model>/model.q4nx` (16 tokens), then feed the harness the PROCESSED
+   sequence (BOS, engine's prefill first token, then the samples —
+   NOT the printed samples alone) via RT_TOKENS + HLOG_DIR, and compare
+   per-ctx bf16 logits. Expected after a healthy reboot: ctx2..16
+   byte-identical, ctx17 1 bf16 ULP (0.34375, rope artifact), argmax
+   match at every ctx. (Verified 2026-09-02 post-reboot: identical.)
+
+Note: the npu-verify `1bit unified --lemonade` server auto-restarts at
+boot and shares /dev/accel0 — validation runs while it holds the NPU can
+wedge; if logits come back NaN/no-op, re-run after stopping it.
