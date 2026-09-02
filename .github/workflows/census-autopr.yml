@@ -1,0 +1,47 @@
+name: Census autopr
+
+# Auto-file DRAFT PRs proposing a one-line bitnet_model.h alias for uncovered
+# architecture classes that are plausible variants of a family the engine
+# already knows (e.g. `kimik3` -> `kimi_k3`). census_autopr.py (called from
+# hf_new_models.py) only guesses a candidate when the class is an edit-distance
+# / known-family match; genuinely-new architectures and SIGNIFICANT arrivals
+# (major family or vision/multimodal variant) are left as a manual alert — they
+# need a real engine implementation, not an alias.
+#
+# Deliberately separate from census-watch.yml, which is ALERT-ONLY (read-only
+# perms, no write token on schedule runs). This one runs the same watcher with
+# the write/PR permissions needed to open draft PRs.
+#
+# Scheduled after census-watch (04:30 UTC) so the alert fires first.
+
+on:
+  schedule:
+    - cron: "45 4 * * *"   # 04:45 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: census-autopr
+  cancel-in-progress: false
+
+jobs:
+  autopr:
+    name: File draft alias PRs for plausible new arch classes
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Run the watcher with alias-autopr enabled
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # CENSUS_SKIP_PR stays UNSET so census_autopr may file draft PRs.
+          python3 Testing/hf_new_models.py --limit 120 2>&1 | tee /tmp/census-autopr.log
+          echo "--- (draft PRs for plausible aliases; SIGNIFICANT/manual left as alerts) ---"
