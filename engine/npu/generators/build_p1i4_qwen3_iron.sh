@@ -46,7 +46,7 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -c "$G/i4_dequant_kernel.cc" -o "$W/dequant.o" 2>/dev/null
 $P/bin/ld.lld -r "$W/mm.o" "$W/silu.o" "$W/dequant.o" -o "$W/mm_32x64x128.o"
 
-for sym in matmul_i8_i32_i4 silu_quant_i8_fused_i4 unpack_i4_b zero_i32 zero_c1; do
+for sym in matmul_i8_i32_i4 silu_quant_i8_fused_i4 unpack_i4_b zero_i32 zero_c1 copy_c1; do
     if ! $P/bin/llvm-nm "$W/mm_32x64x128.o" 2>/dev/null | grep -qE " T $sym\$"; then
         echo "ERROR: missing symbol '$sym'" >&2
         exit 1

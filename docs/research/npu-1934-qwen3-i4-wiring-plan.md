@@ -115,8 +115,336 @@ silu-in-kernel readback.
   (safe — the model + NPU path are confirmed working); read the fused corr.
 - Parity: `tools/parity_fused` / `fused_ab_probe` once wired.
 
+## Round-65 root cause: dense GUSILU_i4 kernel emits NO C1 — fuse needs a kernel rebuild
+
+The round-64 probe was reading the wrong buffer. The round-65 `[FUSED_H2]` + bC/bA/bo4 dumps
+(`NPU_FUSED_C1_TEST=1`, `NPU_FUSED_C1_DUMP=1`) on the live NPU (qwen3-0.6b) are decisive:
+
+- **`bA` (bo0) is nonzero**, **`bC`/`Cm` (bo2) is ALL-ZERO**, and **`h2_bo` (bo4) is nonzero**.
+  So the GUSILU_i4 kernel writes the int8 h2 to **bo4**, and does **NOT** emit the raw C1 to bo2.
+- The h2 (bo4) is **garbage**: `[FUSED_H2] h2corr≈0.000`, `h2bad≈3000/3072`, `h2peak≈127–221`,
+  `h2mae≈98` for **every** layer — the on-core silu is mis-compiled (issue #1836), so the
+  kernel's bo4 h2 is **uncorrelated** with the host silu.
+- Both the **plain** (`final_i8_GUSILU_i4_qwen3_0_6b.xclbin`, Aug-30) and the
+  **bf16pair** (`..._bf16pair.*`, `NPU_GUSILU_BF16PAIR=1`) variants behave the same: garbage h2,
+  no C1 emit. The pack (`pack_gu_fused_i4`) does emit the I4_BF16_PAIR layout, so the engine now
+  honors `NPU_GUSILU_BF16PAIR=1` to load the matching bf16pair xclbin — but that does **not** change
+  the C1/silu outcome.
+
+**Conclusion:** unlike the MoE GUSILU_i4 kernel that zaya reads (C1 emitted to bC, corr 0.999336),
+the **dense** qwen3 GUSILU_i4 kernel does **not** emit C1 and its on-core silu is broken, so **neither**
+the fused-h2 path nor the CPU-silu(C1-readback) fallback is usable as currently built. The
+`[FUSED_C1]`/`corr`/`bad` numbers in earlier rounds were all reading an all-zero bC (the C1 probe
+itself was the artifact). 
+
+**Round-66 ground-truth confirmation:** the probe was re-based AFTER the float-path silu
+(`fuse_su_b`), so the kernel's bo4 h2 is now compared to the **ground-truth** float silu (not just the
+`Am·B_shadow` reconstruction). Result for every layer: `h2corrGt≈0.000`, `h2badGt≈2950–3013/3072`,
+`h2maeGt≈97`, and `bC_zero=1`. This rules out a wrong host reference — the kernel's bo4 h2 genuinely
+does not correlate with the correct float silu, and bC/bo2 is confirmed all-zero.
+
+**Why the kernel can't emit C1:** `n1_core_fused_gu_silu_d_p1_i4.py` (the dense p1 design) declares
+`bo2 = C2 [M·N_D]` (the D output, NOT written by the p1 core — the core only writes `H2`→bo4, and
+`C1` is a **tile-local** `aie.buffer`). Both core output-DMA channels are used (`H2`→bo4, `C2`→bo2),
+so a produce-only C1 fifo would need a 3rd channel (the design comment already notes this exceeds the
+AIE2 tile limit). The engine's `bC_nd = 2·IM` (bo2 sized for C1) does not match the kernel's `C2 [M·N_D]`
+bo2 — an intent mismatch. The on-core `silu_quant_i8_fused_i4` is the mis-compiled #1836 path.
+
+**Option to make the dense fuse work:** repurpose the unused `bo2`/C2 channel of the dense p1 kernel to
+**emit the raw GU C1** (as the MoE design does) so the host can run the verified CPU-silu fallback
+(`silu_quant_i8`) into bo4 for the P2 D-GEMM — this also sidesteps the broken on-core silu. That is a
+`n1_core_fused_gu_silu_d_p1_i4.py` + IRON rebuild (`build_p1i4_qwen3_iron.sh`) + re-silicon-verify
+kernel-design change (multi-cycle), not an in-repo code tweak.
+
+### Exact implementation plan (kernel C1-emit via C2/bo2)
+
+1. **Kernel source** — add an int32 tile copy to the mm object and link it into `mm_32x64x128.o`:
+   `void copy_c1(const int32_t* src, int32_t* dst)` that copies a `[m=8, n=128]` int32 C1 tile (add to
+   `engine/npu/generators/mm_kernel_reference.cc` or a new `copy_c1.cc`, then add it to the
+   `ld.lld -r` list in `build_p1i4_qwen3_iron.sh`; the symbol check loop (lines ~41-47) already
+   validates a fixed symbol set — add `copy_c1` there).
+2. **Generator** — `n1_core_fused_gu_silu_d_p1_i4.py`:
+   - `copy = external_func("copy_c1", [C_ty, C_ty], link_with=kernel_o)`.
+   - Wire the `C2_c[c]`/`C2_s[c]` object-fifos (like `H2_*`) with `C_ty` and `object_fifo_link`, and
+     add the `C2_s[c]` shim-S2MM writeback task in `seq` (mirror the `h2_tasks` loop, lines ~280-289).
+   - In the core per col_group, after `matmul_i4(...C1buf[c])`: `C2buf = C2_c[c].acquire(Produce,1);
+     copy(C1buf[c], C2buf); C2_c[c].release(Produce,1)`. The on-core `silu(...H2buf)` can stay (h2 is
+     discarded; the host overrides bo4) — or drop it to free the H2 path.
+   - Change `seq`'s `bo2` declaration from `np.ndarray[(M * N_D,), dtype_out]` to
+     `np.ndarray[(M * N_GU,), dtype_out]` so bo2 holds the `[M, N_GU]` C1.
+3. **Engine** — in the `npu_engine_universal.cpp` dense-FFN probe, after `launch_fused` (bo2 already
+   sized `bC_nd = 2·IM`): read the raw C1 from `cg_fused_i4->Cm`, fold `ag`/`qn_s`/`scol` and run
+   `silu_quant_i8` → **write int8 h2 into `cg_fuse_h2[l]` (bo4)**, then launch the P2 D ctx reading bo4
+   (add a `cg_fused_d` P2 context like zaya's `fused_ctx_p2`).
+4. **Rebuild + verify** — `I4_BF16_PAIR=1 bash engine/npu/generators/build_p1i4_qwen3_iron.sh` (or the
+   plain variant), then run the engine with `NPU_QWEN_I4=1 NPU_GUSILU_BF16PAIR=1 NPU_FUSED_C1_TEST=1`
+   and gate on `h2corrGt ≥ 0.999`; also confirm `bC_zero=0` (C1 now present).
+
+The `C2`/bo2 reuse is within the existing 2-out-channel budget (`H2`→bo4, `C2`→bo2 — already declared
+in the design's channel accounting, lines 48-50), so it does not need a 3rd output DMA channel. The
+remaining risk is the IRON `aiecc` codegen of the `copy_c1` extern call + the P2 D-GEMM wiring.
+
+### Round-69 breakthrough: removed the unused debug buffers → C1-emit BUILDS + on-core silu FIXED
+
+The round-68 L1 failure was resolved by **dropping the 4 unused `v1` debug buffers**
+(`Gg/Btmp/Scol/Srow`, ~4 x 8 KB, declared but never referenced — see the generator) to free the core
+L1 the `C2`/C1-output fifo needs. `I4_BF16_PAIR=1 bash build_p1i4_qwen3_iron.sh` now **builds**
+(BUILD_EXIT=0, `final_i8_GUSILU_i4_qwen3_0_6b_bf16pair.xclbin` grows 77424 → 83232 B). Live-NPU probe
+(`NPU_QWEN_I4=1 NPU_GUSILU_BF16PAIR=1 NPU_FUSED_C1_TEST=1`) on qwen3-0.6b:
+
+- **`bC_zero=0` for every layer** — the C1 is now actually emitted to bo2 (the C1-emit works).
+- **The on-core silu is now CORRECT**: `[FUSED_H2] h2maeGt ≈ 2`, `h2peakGt ≈ 32–82` (was `≈97` garbage
+  before). Removing the debug buffers changed the core memory layout and **fixed the mis-compiled
+  on-core `silu_quant_i8_fused_i4`** — so the fused GU→SiLU→h2 path produces a correct h2 (bo4) that
+  can feed the P2 D-GEMM directly. (`h2corrGt=-1` is the Pearson NaN-fallback for the near-constant
+  small int8 vector — trust `h2maeGt`/`h2peakGt`.)
+- The `[FUSED_C1e]` C1-readback shows `c1corr≈0` — the C1 *layout* in bo2 needs tuning against the
+  engine's microtile readback (copy_c1 emits it contiguously), but this is moot: the **h2 path now
+  works directly**, so the C1/host-silu fallback is no longer needed.
+
+**Net state:** the fused kernel now emits correct h2 (bo4) AND C1 (bo2, layout to tune). The
+compiler/design blocker is **resolved**. Remaining work is the **engine P2 D-GEMM wiring** (see the
+`## Round-68 execution` steps 3–4 above, simplified: no CPU-silu fallback needed — read `h2` from bo4
+and feed the P2 int8 D; `cg_fused_d` P2 ctx + `packB_into_fused_d` D weights) + a full-decode parity
+check (fused path vs the float reference).
+
+### Round-71: wired fused_use; partial h2 writeback gap + C1 value mismatch
+
+Added an env-gated `NPU_FUSED_USE=1` path that replaces the float GU+SiLU with the fused `launch_fused`
+→ dequant h2 (`fuse_su_b[p] = h2m[(p>>3)*8 + (p&7)] / qn_s`) → the existing D-GEMM. Builds green; the
+default float path is untouched (gates env-OFF). Live-NPU reconcile (`NPU_FUSED_C1_TEST=1`):
+
+- **`h2` (bo4) is MOSTLY correct** — `h2maeGt ≈ 2`, `h2peakGt ≈ 32–82` overall, so the removal of the
+  debug buffers did NOT corrupt the on-core silu.
+- **But `h2[0..7] = 0`** while `h2gt[0..3] = -13,0,5,-1` — a **targeted writeback gap**: the first ~8
+  h2 columns come back zero (the design comment's "h2 writeback broke when the buffers were removed").
+  This is the remaining kernel-side defect to close (or use `h2` starting at offset 8 / fix the H2 tile
+  writeback for the first col_group).
+- The **C1/bo2 emit is unreliable for decode**: `[FUSED_C1e]` readback mismatches the host
+  `Am·B_shadow` (microtile c1mae ~24–62 K; row-major-tile c1mae in the millions), so the emitted C1
+  values do not equal the GU output (either copy_c1 copies a non-GU buffer or the bo2 layout/scale
+  differs). With `NPU_FUSED_USE=1` the fused D emits a degenerate next-token (1 vs 760 float baseline),
+  confirming the fused path is not yet end-to-end correct.
+- **Next action (two concrete leads):** (a) fix the h2 writeback gap so bo4 is fully populated, or
+  (b) decode the emitted bo2 C1 correctly (dump bo2 raw and match it to the host GU reconstruction to
+  pin its true layout/scale), then wire the host silu fallback → P2 D-GEMM and run the full-decode
+  parity check.
+
+### Round-72: C1 dump shows the host reference is unreliable (C1c/bo2 is NOT the GU output)
+
+Dumped bo2 raw + searched for the host C1h. Findings:
+- **The host `Am·B_shadow` reference is unreliable** — at layer 0 it is **all-zero** (`C1h[0..15]=0`),
+  and the kernel C1h value 7531 (layer 1) is **not found in bo2** (`C1h[0]=7531 @bo2[-1]`). So
+  `[FUSED_C1e] c1corr≈0` compares the emitted bo2 against a wrong/offset reference, and is invalid.
+- The **reliable** signal is the h2: `h2maeGt≈2` (on-core silu mostly correct) but `h2[0..7]=0` (the
+  H2 writeback gap). The emitted C1/bo2 does **not** equal the GU output (or the host B_shadow reference
+  is wrong), so the C1-emit path is not the clean route yet.
+
+**Decision:** the cleanest route is to fix the **H2 writeback gap** (bo4) so the fused h2 (which is
+mostly correct) is fully populated, then feed it to the P2 D-GEMM. The C1/bo2 emit + host-silu fallback
+is a secondary route that needs the B_shadow/reference reconciled first.
+
+### Round-73/74: state-dependency hypothesis DISPROVEN (warm-up float GU doesn't help)
+
+Hypothesized the fused_use h2 writeback needs the float path to prime the NPU. Tested by adding a
+warm-up `FLM_GO(cg, ...)` before the fused launch (`NPU_FUSED_WARMUP=1`): **no change** — the fused
+`h2[0..7]` is still `0` and the fused D still emits a degenerate next-token (1 vs 760 float baseline).
+So it is **not** a simple "float path primes the fused launch" state dependency.
+
+**Remaining mystery:** the `NPU_FUSED_C1_TEST` probe (which runs `launch_fused` in the float-path
+context) reads a **correct** h2 (`h2maeGt≈2`), while the standalone `NPU_FUSED_USE=1` fused path reads
+`h2[0..7]=0` and produces a wrong token — even with the kernel having emitted C1/build-green. The two
+paths invoke the same `launch_fused` with the same inputs, so the divergence is an unresolved
+kernel/host interaction (possibly the bo4 H2 writeback only lands when the prior per-layer float ops
+have touched the same shim/mem tile, or a launch-order/fifo-state issue). Deeper AIE kernel work or a
+revert of the debug-buffer removal (to restore the h2 writeback, sacrificing the C1 fifo) is the next
+probe.
+
+### Round-75: partial output writeback confirmed (both bo4 h2 and bo2 C1)
+
+Switched the `fused_use` path to the **C1/bo2 + host `silu_quant_i8`** fallback (read row-0 C1 in the
+tile layout, fold `ag`/`qn_s`/`scol`, `silu_quant_i8` → int8 h2 → dequant `h2/qn_s` → D-GEMM). The
+engine builds; live-NPU result is still wrong but no longer degenerate:
+
+- `[FUSED_USE] h2[0..3] = -11,95,-35,22 ... h2[4..7] = 0,0,0,0` — the first ~4 columns are nonzero,
+  columns ≥4 are **zero**. The fused next-token is 74842 (float baseline 760). Same signature as the
+  bo4-h2 path (first ~8 columns, then zero).
+
+**Root cause consolidated:** the kernel (after removing the unused debug buffers to fit the C1 fifo)
+has a **partial output writeback** — only the first ~4–8 columns of bo2/bo4 are written; the rest
+stay zero. This is the literal "h2 writeback broke when the buffers were removed" design comment, and
+it now affects **both** the bo4 h2 and the bo2 C1. Fixing it (restore the full per-column writeback
+within the core-L1 budget) is the remaining kernel-blocking item. **Options:** (1) revert the debug-
+buffer removal (restore h2 writeback, drop the C1 fifo) and accept the C1 route is off the table; or
+(2) shave more L1 (e.g., smaller B-fifo/H2 depth) to fit BOTH the h2 writeback and the C1 emit, then
+re-verify. Either way the fused decode can only be correct once the full output writeback is restored.
+
+### Round-78: launch-order/warm-up also ruled out
+
+Tried a warm-up fused launch (`NPU_FUSED_DBL=1`) before the real one in the `fused_use` path: the double
+launch produces the **same** next-token (74842) and the same `h2[4..7]=0` partial writeback — so the
+issue is **not** launch-order or a stale-launch state. Also: the C1-tile-layout → `silu_quant_i8` gives
+**saturated ±127** h2 at several layers, so the bo2 C1 the host reads is huge/wrong (a raw accumulator
+with an unapplied scale, or the GU output is genuinely not present in bo2). **Conclusion:** the
+standalone fused decode needs either the correctly-scaled GU output out of bo2 or a fully-written bo4 —
+both blocked by the kernel's partial writeback / un-scaled C1. This is deep AIE kernel work (restore the
+full per-column writeback + clarify the bo2 C1 scale/layout) and is left open with this diagnosis.
+
+### Round-85: bo2 C1 layout identified (microtile), but host silu fold/scale mismatch
+
+Tried the **zaya microtile** row-0 readback for bo2 C1 (`cm[kc*1024 + (cl>>3)*64 + (cl&7)]`) in the
+`fused_use` path: it reads a **FULL** C1 (all 8 columns nonzero, versus the row-major-tile layout which
+read `h2[4..7]=0`), so the microtile is the correct layout. But the resulting host
+`silu_quant_i8` → D still emits a wrong token (17694 vs float 760). So **the bo2 C1 is fully written in
+the microtile layout, but the host silu_quant_i8 fold/scale does not reproduce the kernel's correct
+bo4 h2** — the `S'` fold (or the raw-C1 scale) the host applies differs from what the on-core silu uses
+(the fold that rides in C1 rows 1–4 / the bf16-pair scale). Meanwhile the kernel's own bo4 h2 is correct
+per the probe (`h2maeGt≈2`) but is partial in the standalone fused path. **Remaining:** reconcile the
+host fold/scale with the kernel's (the fold rides in C1 rows 1–4 via the v66 mechanism, not just the
+host `ag*scol`), or read the (correct but partial-in-standalone) bo4 h2. Both are kernel/fold-level
+detail left open for the next session.
+
+### Round-86: bo2-C1 readback gives full-but-wrong; host Am·B_shadow is the correct reference
+
+Confirmed: the bo2 C1 microtile readback is **full but wrong** — it does not reproduce the host
+`Am·B_shadow` reconstruction, which the `NPU_FUSED_C1_TEST` probe independently verifies **matches the
+kernel's bo4 h2** (`h2maeGt≈2`). So the fused kernel's **only reliable output is the bo4 h2**, and it is
+correct+full only in the float-path (probe) context but partial (`h2[4..7]=0`) in the standalone fused
+path. Net: the fused decode's correctness hinges on the **bo4 h2 writeback being full in the standalone
+path** — which is the deep kernel/runtime interaction I could not reproduce with host warm-ups. This
+pins the remaining work precisely: make the bo4 h2 writeback deliver the full tile in the standalone
+launch (or restore/produce a correct standalone writeback), then feed it to the P2 D-GEMM.
+
+### Round-89: bo4 h2 scratch buffer was 3x too small (real bug, not the root cause)
+
+Found a real bug: `cg_fuse_h2[l]` (bo4, the h2 scratch) was allocated `8*H` (=8·1024=8192 B), but the h2
+(silu) output is `[M, IM]` = 8·3072 = 24576 B. Fixed to `8*IM`. **But** this did **not** change the
+outcome — the bo4 h2 is still **all-zero** in the standalone `fused_use` path (token 1), while the bo2 C1
+is **full**. So the `H2` writeback is genuinely **context-dependent** (full in the float-path probe,
+all-zero standalone) and is **not** a buffer-size issue. The real remaining defect is the H2-writeback
+failing in the standalone launch — a kernel/runtime interaction, not an allocation size.
+
+### Round-90: K (A-layout stride) is NOT the issue — context-dependency confirmed
+
+Checked the `K` A-layout stride in the h2 writeback (`strides=[8*K, K, 8, 1]`): the probe verifies the
+bo4 h2 (written with `K=1024`) matches the float silu at `h2maeGt≈2`, so `K=1024` is the CORRECT stride
+and the h2 A-layout is right. Therefore neither the buffer size (round 89) nor the `K` stride is the
+defect. The bo4-h2 writeback is **purely context-dependent**: correct+full in the float-path probe,
+all-zero in the standalone `fused_use` launch, while the bo2 C1 writeback is full in both. The defect is
+the H2-writeback path (silu→H2 fifo→bo4) silently failing when the fused launch runs standalone — a
+kernel/runtime interaction (not host, not layout, not allocation) left open for the kernel-side fix.
+
+### Round-79: all warm-up/launch-order routes ruled out
+
+Tested the **full float GU** as a warm-up before the fused launch (`NPU_FUSED_FULLWARM=1`, i.e.,
+`FLM_GO(cg)` + `cn`): still `h2[4..7]=0` and next-token 74842 — **no change**. Combined with the earlier
+`FLM_GO(cg)`-only warm-up and the double-fused-launch tests, **every** warm-up/launch-order variant
+fails to reproduce the state the `NPU_FUSED_C1_TEST` probe benefits from. So the fused h2/C1 writeback
+requires the **full per-layer forward sequence** (QKV→attn→O→GU→D), not any single preceding GEMM —
+a deep NPU runtime state interaction that is not isolatable via a host warm-up. This is left open; the
+diagnosis is complete (kernel emits C1/build-green/silu-correct per probe, but the standalone fused
+decode cannot read a full correct output without the full-forward state).
+
+### Round-99: fold hypothesis DISPROVEN — the defect is the silu→H2-fifo→bo4 writeback
+
+Dumped bo2 (bC) C1 rows 1–4 (the fold the kernel silu reads) in the `fused_use` path: they are
+**nonzero** (`bo2[128..143] = -20681, -146812, ...`). So the fold IS populated in the standalone launch,
+yet the bo4 h2 is still all-zero. **This rules out the fold** as the cause. The failure is in the
+**silu→H2-fifo→bo4 writeback** (the kernel writes h2 to a hardcoded `0x7F000` H2 slot; the seq's
+H2_s→bo4 DMA doesn't surface it in a standalone launch). The defect is specifically the H2-writeback
+not landing bo4 in a standalone fused launch (kernel/AIE-side), not the silu fold computation.
+
+### Round-102: BOTH h2 writeback layouts fail standalone — not a layout issue
+
+Rebuilt the kernel with a **contiguous** h2 writeback (`sizes=[1,1,1,m·(n//2)], strides=[1,1,1,1]`,
+matching the working C1 writeback) + matching contiguous host readback: the fused decode STILL gives a
+degenerate next-token (1), i.e. the h2 is still not surfacing standalone. **This confirms the defect is
+NOT the layout** (both the A-layout and contiguous fail); it is the **H2-fifo→bo4 writeback path not
+firing in a standalone fused launch** (regardless of DMA shape). Reverted to the probe-verified A-layout;
+the bf16pair xclbin is rebuilt green. The remaining fix is a kernel/AIE-side runtime issue: making the
+H2-S2MM→bo4 DMA deliver the silu output in a standalone launch (the FUSED path works only after the
+full float forward primes it).
+
+### Round-104/105: host silu_pair_q22 replication from bo2 — non-degenerate, closer but not exact
+
+Since the bo4 h2 writeback is all-zero standalone and `silu_pair_q22` is host-callable (`silu_quant.h`
+line 184), I replaced the `fused_use` with a **host replication of the kernel's silu**: read bo2 (bC)
+row-0 C1 + rows 1-4 fold (via the kernel's `gos[]` microtile positions + the per-tile Q/shG/shU), call
+`silu_pair_q22` per pair → int8 h2 → `fuse_su_b = h2/qn_s` → D GEMM. Result: the fused decode emits a
+**non-degenerate** next-token (**5583** vs the all-zero token=1 before, and the wrong 17694/74842 from
+the earlier folds). So the **C1/bo2 + silu_pair_q22 path is viable and close**, but not exact (5583 ≠
+760 float). The residual error is a small detail in the bo2 C1 microtile position / fold offset mapping
+(the `gos[]`-indexed readback vs the exact kernel C1buf layout). Next refinement: pin the exact bo2
+microtile position (compare the replicated h2 to the float-path h2 layer-per-layer).
+
+### Round-107: the bo2 C1 (copy_c1) is NOT the kernel's real GU output
+
+Compared the replicated Q22 h2 (from bo2 via `silu_pair_q22`) against the float-path h2: `mae=106,
+bad≈3050/3072` — i.e. the Q22 h2 does NOT match the float silu. But the kernel's own bo4 h2 **does**
+match the float silu at `mae≈2`. So **copy_c1 → bo2 does not carry the kernel's real GU C1** — the C1
+in bo2 (row 0) is wrong (corrupted/not the actual GU output; the fold rides in the same C1buf and likely
+overwrites/perturbs row 0 before copy_c1). My `silu_pair_q22` replication merely produced a
+non-degenerate but incorrect h2 (token 5583). **Conclusion:** BOTH output paths fail to surface the
+correct fused h2 — the bo4 h2 writeback fails standalone, and the bo2 C1 is not the genuine GU output.
+The fused decode is blocked at the kernel level (both the H2-S2MM→bo4 writeback AND the copy_c1→bo2 C1
+content), confirmed. The remaining fix is a kernel/AIE-side correction of the C1buf/H2 writeback so the
+real GU output (bo4 h2) survives a standalone launch.
+
+### Round-109: reordering copy_c1 before silu does NOT fix the bo2 C1 (dead-end confirmed)
+
+Rebuilt the kernel with `copy_c1` moved **before** the on-core silu (hypothesis: the silu's in-place fold
+writes corrupt C1buf row 0). Result: **identical** — token 5583, `h2maeGt=106`. So the silu does not
+corrupt C1buf, yet the bo2 C1 (via copy_c1) still does not match the kernel's real GU output (the kernel's
+own bo4 h2 matches the float silu at `mae≈2`). **Conclusion: the bo2 C1 is not the genuine GU C1** — it
+carries a different representation/order than what the on-core silu reads, so the host `silu_pair_q22`
+replication from bo2 is not the correct output source either. Combined with the bo4-h2 writeback failing
+standalone, the fused decode is confirmed blocked at the kernel level (neither the bo4 h2 nor the bo2 C1
+exposes the correct standalone GU output). This closes off the host-side replication path.
+
+### Round-122: H2 fifo DEPTH is the root cause — bo4 h2 goes from garbage (mae 106) to near-correct (3.1)
+
+The standalone bo4-h2 writeback all-zero was because the **H2 fifo was DEPTH-1** ("DEPTH-1 TEST: single H2
+slot" — a single slot doesn't drain standalone). Bumping the `H2_C`/`H2_S` fifo depth to **3** (debug
+buffers already removed, so L1 fits; bf16pair xclbin gr0ws to 85920 B, builds green) makes the standalone
+bo4-h2 writeback **fire**: `[H2DBG]` mae drops from **~106 → 3.1** (layer 0) / 7.4 (layer 1), matching the
+kernel's correct bo4 h2 (`mae≈2`). **So the depth-1 H2 fifo was the root cause of the standalone all-zero
+h2.** Remaining: a small first-tile gap (`h2[0..3]=0`) + a `mae≈3` residual. The fused decode still yields a
+degenerate next-token (1), so end-to-end D isn't correct yet, but the h2 reconstruction is now
+substantially correct — a major step toward the fused decode.
+
+### Round-123: residual is a first-tile h2 gap + a few large localized errors
+
+With the H2 fifo depth-3 fix, `[H2DBG]` shows `mae=3.1` (l0) / `7.4` (l1) / `5.4` (l2) but **`h2[0..7]=0`**
+everywhere (a first-tile gap — the first 8 h2 elements come back zero while `h2gt[0..7]=-13 0 5 -1 ...`)
+and **a few large localized errors (`bmax=127@p=1520`)**. So the h2 is mae≈3 but the first 8 columns + a
+handful of elements are badly off — these large-element errors are what corrupt the D GEMM into the
+degenerate token 1. **Next:** (1) fix the first-h2-tile gap (the first 8 columns), (2) close the few
+large-error elements (likely the same first-tile/tile-boundary A-layout readback or the H2 fifo token
+order), to reach the probe's exact `mae≈2` int8 h2 — which should make the fused D produce the correct
+token.
+
 ## Why this is the right next session
 
 Everything else is proven; only the qwen3 MoE path needs the fused switch.
 The round-8 model_tag fix already makes the qwen3 path runnable end-to-end, so
 the wiring can be tested immediately against the live NPU.
+
+### Round-190+: WRITEBACK ROUTING ROOT CAUSE — kernel wrote h2 to dead 0x7F000, not bo4
+
+Two independent tests gave the definitive answer this round:
+
+1. **CONST-RAMP probe** (temporarily wrote `h2w[p]=p&0x3F` to the kernel silu, ran the live NPU):
+   - With `h2w=(int8_t*)0x7F000` (the original hardcoded address): `[H2SCAN] n_nonzero=0` — **bo4 is entirely zero**. `0x7F000` is a DEAD address; it does NOT alias the bo4 buffer the host reads.
+   - With `h2w=(int8_t*)h2` (the actual silu ARGUMENT): `[H2SCAN] first_nz=0 last_nz=3071 n_nonzero=3053` and `bo4[0..63]=0 1 2 ... 63` — the ramp **lands in bo4 exactly**. So the `h2` arg IS bo4, and the offset mapping is correct.
+
+   → **Root cause: the silu kernel wrote its h2 to the hardcoded `0x7F000` (a leftover depth-1-fifo address), which is NOT the object-fifo slot the generator binds to `H2buf`/bo4.** Fix it by writing to the `h2` argument. This is a ONE-LINE kernel fix.
+
+2. **Ground-truth trap resolved.** With the routing fixed, `[FUSED_H2]` reports `h2corrGt=1.000000 h2maeGt=0.000` — but this is **self-referential**: in `fused_use` mode the engine overwrites `fuse_su_b=h2h/qn_s` (from bo4) at line 3016, so the C1_TEST probe (line 3118) computes `h2gt` from bo4 itself. The **real** reference is the H2DBG block's independent `FLM_GO(cg)` recompute (line 3018), which shows **`mae=106`** with heavily saturated **±127** values.
+
+**REVISED CONCLUSION (redraws the whole problem):**
+- The prior `mae≈3.1` "near-correct" was the **all-zero-baseline** artifact (small int8 reference vs. a zero buffer), NOT real fused h2. The error was always ~**106**.
+- The writeback **routes** now (bo4 populates after the 0x7F000→h2 fix) — a genuine, important bug fixed.
+- But the silu **values are wrong**: `silu_pair_q22` saturates to ±127, meaning the fold/bound/Q metadata it reads from C1 rows 1-4 (`st[go+8]`, `st[go+16]`, `st[go+25]`, `st[32..34]`) is wrong/too small, so the fixed-point fold overflows.
+- `next_token` went 1 → 68930 (still wrong; float=760). The D GEMM now consumes real-but-wrong h2.
+
+**Next (deep kernel arithmetic, not routing):** fix the fold metadata that matmul_i4 stashes in C1 rows 1-4 so `silu_pair_q22` doesn't saturate — verify against the CPU-gated `silu_pair_q22` bit-exact reference (`silu_quant.h`) and the float-path h2 in the H2DBG probe. This is the remaining #1934 blocker.

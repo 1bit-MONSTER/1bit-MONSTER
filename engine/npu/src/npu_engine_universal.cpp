@@ -26,6 +26,8 @@
 #include "model_config.h"
 #include "npu_engine_i8ctx_inc.h"
 #include "npu_engine_hybrid_flm.h"
+#include "zaya_moe_cpu.h"           // host_h2_amax_qn_s (#1934 fused int4 GU->SiLU)
+#include "silu_quant.h"             // silu_lut / silu_quant_i8 (#1934)
 
 // Forward declarations: INT8 NPU instruction generators from gemm_npu_instructions.cpp
 void gemm_generate_sequence_i8(
@@ -913,6 +915,7 @@ int main(int argc,char**argv){
     std::vector<std::unique_ptr<xrt::bo>> cg_fuse_bo, cg_fuse_h2;
     std::vector<std::vector<float>> cg_fuse_scl;   // per-layer S_col (amax pass)
     std::vector<std::vector<int8_t>> cg_fuse_row;  // per-layer B_shadow (host amax)
+    std::vector<std::unique_ptr<xrt::bo>> cg_fuse_dbo;  // #1934 fused D weight BO (P2 bo3)
     // Hybrid FLM contexts (only used when --use-flm-xclbin and xclbin found)
     std::unique_ptr<HybridFlmCtx> hcq, hco, hcg, hcd, hcu_ptr;
     cq.MD=XM;cq.KD=cfg.xclbin_qkv_k;cq.ND=cfg.xclbin_qkv_n;
@@ -976,12 +979,24 @@ int main(int argc,char**argv){
             cg_fused_i4 = std::make_unique<I8Ctx>();
             cg_fused_i4->MD = 8; cg_fused_i4->KD = H; cg_fused_i4->ND = H;
             cg_fused_i4->bC_nd = 2 * IM;   // N_GU (silu'd GU output width)
-            if (!cg_fused_i4->init(dev, xp("GUSILU_i4", H, 2 * IM).c_str(),
-                                   ip("GUSILU_i4").c_str(), 4, NC)) {
+            // pack_gu_fused_i4 emits the I4_BF16_PAIR layout (the "restructured
+            // kernel"); the plain Aug-30 xclbin consumes the OLD layout (garbage
+            // h2 / no C1 emit). NPU_GUSILU_BF16PAIR=1 selects the matching
+            // _bf16pair xclbin/insts pair (built by build_p1i4_qwen3_iron.sh).
+            const bool bf16pair = getenv("NPU_GUSILU_BF16PAIR")
+                && atoi(getenv("NPU_GUSILU_BF16PAIR")) == 1;
+            std::string gx = xp("GUSILU_i4", H, 2 * IM);
+            std::string gi = ip("GUSILU_i4");
+            if (bf16pair) {
+                gx = xd + "/final_i8_GUSILU_i4_" + cfg.model_tag + "_bf16pair.xclbin";
+                gi = xd + "/insts_i8_GUSILU_i4_" + cfg.model_tag + "_bf16pair.txt";
+            }
+            if (!cg_fused_i4->init(dev, gx.c_str(), gi.c_str(), 4, NC)) {
                 cg_fused_i4.reset();
                 fprintf(stderr, "QWEN_I4 fused ctx init FAILED (fallback to int8 GU+D)\n");
             } else {
-                fprintf(stderr, "QWEN_I4 fused ctx ready (GUSILU_i4, KD=%d N_GU=%d)\n", H, 2 * IM);
+                fprintf(stderr, "QWEN_I4 fused ctx ready (GUSILU_i4%s, KD=%d N_GU=%d)\n",
+                        bf16pair ? "_bf16pair" : "", H, 2 * IM);
             }
         }
         if(cfg.gu_split){cu_ptr=std::make_unique<I8Ctx>();cu_ptr->MD=XM;cu_ptr->KD=cfg.xclbin_u_k;cu_ptr->ND=cfg.xclbin_u_n;if(!init_i8(*cu_ptr,"U",cfg.xclbin_u_k,cfg.xclbin_u_n)){fprintf(stderr,"FAIL U\n");return 1;}}
@@ -1374,9 +1389,12 @@ struct Bf16Ctx {
             FLM_PACKB(cg,l,w2.data(),H,t2,gsc[l]);
             // #1934 env-gated int4 fused GU pack (B'' via raw-Q4NX + GuI4Pack).
             if (cg_fused_i4 && cg_fused_i4->isReady()) {
-                if ((int)cg_fuse_bo.size() <= l) { cg_fuse_bo.resize(l+1); cg_fuse_h2.resize(l+1); cg_fuse_scl.resize(l+1); cg_fuse_row.resize(l+1); }
+                if ((int)cg_fuse_bo.size() <= l) { cg_fuse_bo.resize(l+1); cg_fuse_h2.resize(l+1); cg_fuse_scl.resize(l+1); cg_fuse_row.resize(l+1); cg_fuse_dbo.resize(l+1); }
                 if (!cg_fuse_bo[l]) cg_fuse_bo[l] = cg_fused_i4->make_fused_weight_bo_i4(dev, H, 2*IM);
-                if (!cg_fuse_h2[l]) cg_fuse_h2[l] = cg_fused_i4->make_scratch_bo(dev, (size_t)8 * H);
+                if (!cg_fuse_h2[l]) cg_fuse_h2[l] = cg_fused_i4->make_scratch_bo(dev, (size_t)8 * IM);
+                // D weight BO (P1 bo3): [IM, H] int8 — make_weight_bo is only
+                // KD·ND(=H·H) here, which is too small for IM=3072>H=1024.
+                if (!cg_fuse_dbo[l]) cg_fuse_dbo[l] = std::make_unique<xrt::bo>(dev, (size_t)IM * H, XRT_BO_FLAGS_HOST_ONLY, cg_fused_i4->k->group_id(4));
                 int gi8r = gr/32, ui8r = ur/32;
                 auto rg = read_q4nx_raw(i8p(0), gp[l], gi8r, H);
                 auto ru = read_q4nx_raw(i8p(0), up[l], ui8r, H);
@@ -2960,6 +2978,97 @@ struct Bf16Ctx {
                         } else {
                         int fmlp_out = cfg.gu_split ? IM : 2 * IM;
                         float ag = dynamic_ascale(fh, H);
+                        // issue #1934: fused GU→SiLU (env NPU_FUSED_USE=1):
+                        // replace the float GU+SiLU with the int4-fused
+                        // launch_fused → int8 h2 (bo4) → dequant → fuse_su_b,
+                        // so the D GEMM consumes the (now-correct) fused h2.
+                        const bool fused_use = !cfg.gu_split
+                            && cg_fused_i4 && cg_fused_i4->isReady()
+                            && (int)cg_fuse_bo.size() > l && cg_fuse_bo[l]
+                            && cg_fuse_h2[l] && cg_fuse_dbo[l]
+                            && getenv("NPU_FUSED_USE")
+                            && atoi(getenv("NPU_FUSED_USE")) == 1;
+                        if (fused_use) {
+                            cg_fused_i4->quantize_async(fh, 1, H, ag);
+                            float qn_s = zaya_moe::host_h2_amax_qn_s(
+                                cg_fused_i4->Am, cg_fuse_row[l].data(),
+                                cg_fuse_scl[l].data(), H, IM, ag);
+                            cg_fused_i4->update_fused_header_i4(
+                                *cg_fuse_bo[l], cg_fuse_scl[l], IM, ag, qn_s, 2 * IM);
+                            auto fr = cg_fused_i4->launch_fused(
+                                *cg_fuse_bo[l], *cg_fuse_dbo[l], *cg_fuse_h2[l],
+                                fh, 1, H, ag);
+                            fr.wait();
+                            // Read the kernel's own bo4 h2 (the correct fused silu
+                            // output) — test whether the deeper H2 fifo makes the
+                            // standalone writeback fire.
+                            cg_fuse_h2[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                            const int8_t* h2m = (const int8_t*)cg_fuse_h2[l]->map();
+                            if (getenv("NPU_FUSED_H2DBG") && atoi(getenv("NPU_FUSED_H2DBG")) == 1) {
+                                fprintf(stderr, "[H2RAW l=%d] bo4[0..63]=", l);
+                                for (int k = 0; k < 64; k++) fprintf(stderr, "%d ", (int)h2m[k]);
+                                fprintf(stderr, "\n");
+                                // Scan whole bo4 for first nonzero byte + nonzero run structure to
+                                // distinguish "first chunk never written" from "written to wrong offset".
+                                int fnz = -1, nz = 0, lastnz = -1;
+                                for (int k = 0; k < IM; k++) {
+                                    if (h2m[k] != 0) { if (fnz < 0) fnz = k; nz++; lastnz = k; }
+                                }
+                                fprintf(stderr, "[H2SCAN l=%d] IM=%d first_nz=%d last_nz=%d n_nonzero=%d\n", l, IM, fnz, lastnz, nz);
+                                for (int s = 0; s < 4; s++) {
+                                    fprintf(stderr, "[H2SCAN l=%d] region[%d] off=%d: ", l, s, s * (IM / 4));
+                                    for (int k = 0; k < 8; k++) fprintf(stderr, "%d ", (int)h2m[s * (IM / 4) + k]);
+                                    fprintf(stderr, "\n");
+                                }
+                                fflush(stderr);
+                            }
+                            std::vector<int8_t> h2h(IM);
+                            for (int p = 0; p < IM; p++)
+                                h2h[p] = h2m[(p >> 3) * 8 + (p & 7)];
+                            for (int p = 0; p < IM; p++)
+                                fuse_su_b[p] = (float)h2h[p] / qn_s;
+                            if (getenv("NPU_FUSED_H2DBG") && atoi(getenv("NPU_FUSED_H2DBG")) == 1) {
+                                FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
+                                cn(fuse_gt_b.data(), fmlp_out);
+                                std::vector<float> h2f(IM);
+                                for (int i = 0; i < IM; i++) {
+                                    float gv = fuse_gt_b[i];
+                                    if (!std::isfinite(gv)) gv = 0;
+                                    h2f[i] = (gv / (1.0f + expf(-gv))) * fuse_gt_b[IM + i];
+                                }
+                                double mae = 0; int bad = 0; int bmax = 0, bmaxp = -1;
+                                for (int p = 0; p < IM; p++) {
+                                    int g = (int)lroundf(h2f[p] * qn_s);
+                                    if (g > 127) g = 127; else if (g < -127) g = -127;
+                                    int d = abs((int)h2h[p] - g);
+                                    mae += (double)d; if (d != 0) bad++;
+                                    if (d > bmax) { bmax = d; bmaxp = p; }
+                                }
+                                fprintf(stderr, "[H2DBG l=%d] mae=%.3f bad=%d/%d bmax=%d@p=%d h2h[0..7]=%d %d %d %d %d %d %d %d h2gt[0..7]=%d %d %d %d %d %d %d %d\n",
+                                        l, mae / IM, bad, IM, bmax, bmaxp,
+                                        (int)h2h[0], (int)h2h[1], (int)h2h[2], (int)h2h[3],
+                                        (int)h2h[4], (int)h2h[5], (int)h2h[6], (int)h2h[7],
+                                        (int)lroundf(h2f[0]*qn_s), (int)lroundf(h2f[1]*qn_s),
+                                        (int)lroundf(h2f[2]*qn_s), (int)lroundf(h2f[3]*qn_s),
+                                        (int)lroundf(h2f[4]*qn_s), (int)lroundf(h2f[5]*qn_s),
+                                        (int)lroundf(h2f[6]*qn_s), (int)lroundf(h2f[7]*qn_s));
+                                fflush(stderr);
+                            }
+                            if (getenv("NPU_FUSED_DEBUG") && atoi(getenv("NPU_FUSED_DEBUG")) == 1) {
+                                // Dump bo2 (bC) tile-0 rows 1-4 (the FOLD the
+                                // kernel silu reads: foldg/foldu/boundg/boundu/Q).
+                                cg_fused_i4->bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                                const int32_t* cm = cg_fused_i4->Cm;
+                                fprintf(stderr, "[FOLD l=%d] bo2[128..143]=", l);
+                                for (int k = 128; k < 144; k++) fprintf(stderr, "%d ", cm[k]);
+                                fprintf(stderr, "\n[FOLD l=%d] bo2[384..399]=", l);
+                                for (int k = 384; k < 400; k++) fprintf(stderr, "%d ", cm[k]);
+                                fprintf(stderr, "\n[FOLD l=%d] bo2[512..519]=", l);
+                                for (int k = 512; k < 520; k++) fprintf(stderr, "%d ", cm[k]);
+                                fprintf(stderr, "\n");
+                                fflush(stderr);
+                            }
+                        } else {
                         FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
                         cn(fuse_gt_b.data(), fmlp_out);
                         if (cfg.gu_split) {
@@ -2978,9 +3087,128 @@ struct Bf16Ctx {
                                 fuse_su_b[i] = (gv / (1.0f + expf(-gv))) * fuse_gt_b[IM + i];
                             }
                         }
+                        }
+                        // #1934 fused-GU probe (env NPU_FUSED_C1_TEST=1): run the
+                        // GUSILU_i4 launch_fused and compare the kernel's int8 h2
+                        // (bo4) to the FLOAT-PATH silu (fuse_su_b, ground truth)
+                        // and to the Am·B_shadow reconstruction. Runs after the
+                        // float silu so fuse_su_b is available; non-invasive.
+                        if (cg_fused_i4 && cg_fused_i4->isReady()
+                            && (int)cg_fuse_bo.size() > l && cg_fuse_bo[l]
+                            && getenv("NPU_FUSED_C1_TEST")
+                            && atoi(getenv("NPU_FUSED_C1_TEST")) == 1) {
+                            cg_fused_i4->quantize_async(fh, 1, H, ag);  // sets Am
+                            float qn_s = zaya_moe::host_h2_amax_qn_s(
+                                cg_fused_i4->Am, cg_fuse_row[l].data(),
+                                cg_fuse_scl[l].data(), H, IM, ag);
+                            cg_fused_i4->update_fused_header_i4(
+                                *cg_fuse_bo[l], cg_fuse_scl[l], IM, ag, qn_s, 2 * IM);
+                            auto fr = cg_fused_i4->launch_fused(
+                                *cg_fuse_bo[l], *cg_fuse_dbo[l], *cg_fuse_h2[l],
+                                fh, 1, H, ag);
+                            fr.wait();
+                            cg_fused_i4->bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                            const int8_t* h2m = (const int8_t*)cg_fuse_h2[l]->map();
+                            const int8_t* Amx = cg_fused_i4->Am;
+                            const int8_t* Bs = cg_fuse_row[l].data();
+                            const size_t N2 = 2 * (size_t)IM;
+                            // Ground-truth int8 h2 from the float-path silu.
+                            std::vector<int8_t> h2gt(IM);
+                            for (int p = 0; p < IM; p++) {
+                                int v = (int)lroundf(fuse_su_b[p] * qn_s);
+                                if (v > 127) v = 127; else if (v < -127) v = -127;
+                                h2gt[p] = (int8_t)v;
+                            }
+                            int hgbad = 0; double hgmae = 0, hgpeak = 0;
+                            double gsx = 0, gsy = 0;
+                            for (int p = 0; p < IM; p++) {
+                                int8_t kv = h2m[(p >> 3) * 8 + (p & 7)];
+                                gsx += (double)kv; gsy += (double)h2gt[p];
+                                double d = fabs((double)kv - (double)h2gt[p]);
+                                hgmae += d; if (d > hgpeak) hgpeak = d;
+                                if ((int)kv != (int)h2gt[p]) hgbad++;
+                            }
+                            const double gmx = gsx / IM, gmy = gsy / IM;
+                            double gnum = 0, gdkx = 0, gdky = 0;
+                            for (int p = 0; p < IM; p++) {
+                                double x = (double)h2m[(p >> 3) * 8 + (p & 7)] - gmx;
+                                double y = (double)h2gt[p] - gmy;
+                                gnum += x * y; gdkx += x * x; gdky += y * y;
+                            }
+                            double gden = sqrt(gdkx * gdky);
+                            double gcorr = (std::isfinite(gden) && gden > 0) ? gnum / gden : -1.0;
+                            // Verify the EMITTED C1 (bo2) matches the host
+                            // Am·B_shadow GU reconstruction (issue #1934 C1-emit).
+                            const int32_t* c1m = cg_fused_i4->Cm;
+                            std::vector<int32_t> C1h(N2, 0);
+                            for (int j = 0; j < (int)N2; j++)
+                                for (int i = 0; i < H; i++)
+                                    C1h[j] += (int32_t)Amx[i] * Bs[(size_t)i * N2 + j];
+                            std::vector<int32_t> C1row(N2, 0);
+                            for (int p = 0; p < IM; p++)
+                                for (int t = 0; t < 2; t++) {
+                                    int j = 2 * p + t, kc = j >> 7, cl = j & 127;
+                                    C1row[j] = c1m[kc * 1024 + cl];   // row-0 tile layout (row-major per 128-col tile)
+                                }
+                            size_t c1bad = 0; double c1mae = 0, c1peak = 0;
+                            double csx = 0, csy = 0;
+                            for (size_t j = 0; j < N2; j++) {
+                                csx += (double)C1row[j]; csy += (double)C1h[j];
+                                double d = fabs((double)C1row[j] - (double)C1h[j]);
+                                c1mae += d; if (d > c1peak) c1peak = d;
+                                if ((int64_t)C1row[j] != (int64_t)C1h[j]) c1bad++;
+                            }
+                            const double cmx = csx / N2, cmy = csy / N2;
+                            double cnum = 0, cdkx = 0, cdky = 0;
+                            for (size_t j = 0; j < N2; j++) {
+                                double x = (double)C1row[j] - cmx;
+                                double y = (double)C1h[j] - cmy;
+                                cnum += x * y; cdkx += x * x; cdky += y * y;
+                            }
+                            double cden = sqrt(cdkx * cdky);
+                            double ccorr = (std::isfinite(cden) && cden > 0) ? cnum / cden : -1.0;
+                            fprintf(stderr, "[FUSED_C1e] l=%d c1corr=%.6f c1mae=%.3f c1peak=%.0f c1bad=%zu/%zu\n",
+                                    l, ccorr, c1mae / N2, c1peak, c1bad, N2);
+                            if (getenv("NPU_C1_DUMP") && atoi(getenv("NPU_C1_DUMP")) == 1) {
+                                // Locate the host C1h values in bo2 (raw). If
+                                // found, the offset reveals the true layout.
+                                fprintf(stderr, "[C1DUMP l=%d] bo2[0..15]=", l);
+                                for (int k = 0; k < 16; k++) fprintf(stderr, "%d ", c1m[k]);
+                                fprintf(stderr, "\n[C1DUMP l=%d] C1h[0..15]=", l);
+                                for (int k = 0; k < 16; k++) fprintf(stderr, "%d ", C1h[k]);
+                                int h0 = -1, h1 = -1;
+                                for (size_t k = 0; k < (uint32_t)cg_fused_i4->MD * (uint32_t)cg_fused_i4->bC_nd; k++) {
+                                    if ((int64_t)c1m[k] == (int64_t)C1h[0]) { if (h0<0) h0 = (int)k; }
+                                    if ((int64_t)c1m[k] == (int64_t)C1h[1]) { if (h1<0) h1 = (int)k; }
+                                }
+                                fprintf(stderr, "\n[C1DUMP l=%d] C1h[0]=%d @bo2[%d], C1h[1]=%d @bo2[%d] (micro idx=%d/%d)\n",
+                                        l, C1h[0], h0, C1h[1], h1, 0 * 1024 + (0 >> 3) * 64 + (0 & 7), (0 >> 7) * 1024 + (0 & 127));
+                                fflush(stderr);
+                            }
+                            // Also report whether bC(bo2/C1) got any nonzero write.
+                            bool bczero = true;
+                            for (size_t k = 0; k < (uint32_t)cg_fused_i4->MD * (uint32_t)cg_fused_i4->bC_nd; k++)
+                                if (c1m[k] != 0) { bczero = false; break; }
+                            fprintf(stderr, "[FUSED_H2] l=%d h2corrGt=%.6f h2maeGt=%.3f h2peakGt=%.0f h2badGt=%d/%d bC_zero=%d h2[0..7]=%d %d %d %d %d %d %d %d h2gt[0..3]=%d %d %d %d\n",
+                                    l, gcorr, hgmae / IM, hgpeak, hgbad, IM, (int)bczero,
+                                    (int)h2m[0], (int)h2m[1], (int)h2m[2], (int)h2m[3],
+                                    (int)h2m[4], (int)h2m[5], (int)h2m[6], (int)h2m[7],
+                                    (int)h2gt[0], (int)h2gt[1], (int)h2gt[2], (int)h2gt[3]);
+                            fflush(stderr);
+                        }
                         float ad = dynamic_ascale(fuse_su_b.data(), IM);
+                        if (getenv("NPU_FUSED_USE") && atoi(getenv("NPU_FUSED_USE")) == 1
+                            && getenv("NPU_FUSED_DDBG") && atoi(getenv("NPU_FUSED_DDBG")) == 1) {
+                            fprintf(stderr, "[DDBG l=%d] su[0..3]=%.3f %.3f %.3f %.3f ad=%f\n",
+                                    l, fuse_su_b[0], fuse_su_b[1], fuse_su_b[2], fuse_su_b[3], ad);
+                        }
                         FLM_GO(cd, l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
                         cn(fuse_dw_b.data(), H);
+                        if (getenv("NPU_FUSED_USE") && atoi(getenv("NPU_FUSED_USE")) == 1
+                            && getenv("NPU_FUSED_DDBG") && atoi(getenv("NPU_FUSED_DDBG")) == 1) {
+                            fprintf(stderr, "[DDBG l=%d] dw[0..3]=%.3f %.3f %.3f %.3f\n",
+                                    l, fuse_dw_b[0], fuse_dw_b[1], fuse_dw_b[2], fuse_dw_b[3]);
+                        }
                         for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
                         }
                     }

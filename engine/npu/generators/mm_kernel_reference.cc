@@ -1215,7 +1215,7 @@ extern "C" void silu_quant_i8_fused_i4(int32_t *c1, const float *gs, int8_t *h2)
     const int Q = st[32];                                  // per-tile fold Q
     const int shG = st[33];                                // Q - 11 (host-precomputed)
     const int shU = st[34];                                // Q - 7
-    int8_t *h2w = (int8_t *)0x7F000;
+    int8_t *h2w = (int8_t *)h2;    // write to the ACTUAL h2 ARG pointer (not hardcoded 0x7F000) — the address the host reads as bo4
     for (unsigned p = 0; p < DIM_N / 2; p++) {
         int go = gos[p];
 #ifdef I4_C00_DUMP
@@ -1598,5 +1598,12 @@ extern "C" void c1_emit(const int32_t *src, const uint8_t *unused, int32_t *dst)
     const int32_t *s = (const int32_t *)0x7d000;
     int32_t *d = (int32_t *)0x7c000;
     for (unsigned i = 0; i < DIM_M * DIM_N; i++) d[i] = s[i];
+}
+// issue #1934 round-68: emit the raw GU C1 tile (C1buf) to a C2/bo2 fifo
+// buffer so the host can run the CPU-silu fallback (the on-core
+// silu_quant_i8_fused_i4 is mis-compiled, #1836). Pure int32 copy of the
+// [DIM_M, DIM_N] microtiled C1 tile.
+extern "C" void copy_c1(const int32_t *__restrict src, int32_t *__restrict dst) {
+    for (unsigned i = 0; i < DIM_M * DIM_N; i++) dst[i] = src[i];
 }
 #endif  // !WIDE_DIM_N
