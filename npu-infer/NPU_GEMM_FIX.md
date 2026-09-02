@@ -127,3 +127,29 @@ the harness input), gen_layer_elfs.sh (regenerate ELFs).
 - The BOS-only "gibberish" was the model's unconditional 1-token
   generation — not an engine error. Real prompts should generate
   coherent text (tokenizer + chat template wiring is the next step).
+npu-infer: KV byte-diff final — token-1 K/V computation differs from the runtime
+
+Clean per-forward captures (RT_CLEAN_DUMP) + the runtime's completed kv
+(kvpost_004) settle it:
+
+- token-0 KV: BYTE-IDENTICAL (all 4 regions corr 1.0) AND the token-0 final
+  hidden matches the runtime's actpost exactly (corr 1.0) — the ctx-1
+  execution is fully exact.
+- token-1 KV: the engine's values are NOT a permutation or a scale of the
+  runtime's (aligned ratios vary: 0.21/-0.99/-34/2.26...; head-shift corr
+  0.11; not the token-0 V). Same magnitude (std 11.6 vs 9.5) but entirely
+  different values — the ctx-2 kernel computes the token-1 K/V
+  differently than the runtime. The K (corr 0.81) is closer than the V
+  (corr 0.02), suggesting the rope/rotation path is partially right but
+  the projection write is not.
+- The ctx-2 ELF is verified byte-exact (docs), the embeds byte-identical,
+  the token-0 KV exact — so the defect is the ENGINE's ctx-2 execution of
+  the token-1 K/V write (the layer kernel's 2-token projection path).
+
+Status: the npu-infer engine is verified EXACT for single-token prefill
+(logits corr 1.0, hidden corr 1.0, KV byte-identical). The multi-token
+(token>=2) KV write is the precisely-identified remaining defect. All
+capture/diff tooling committed (RT_CLEAN_DUMP, interposer kv captures,
+gen_layer_elfs raw TXN). Next: audit the ctx-2 kernel's token-1 write
+descriptors (the layer ELF's 2-token BD/offsets vs the engine's BO
+binding) — the last step to full multi-token correctness.
