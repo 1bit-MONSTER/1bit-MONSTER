@@ -474,3 +474,28 @@ only independent reference is the H2DBG block's fresh `FLM_GO(cg)` recompute.
 reconstruction on the live NPU, then the host-CPUSILU route will produce a
 correct h2. The default float decode is confirmed unaffected (760) by the
 routing fix.
+
+### Round-188: C1 probe fixed to real microtile index → GU GEMM C1 genuinely wrong
+
+The `[FUSED_C1e] c1corr≈0.009` was initially suspect, so I fixed the probe's
+C1 indexing from the (wrong) linear `c1m[kc*1024 + cl]` to the real
+microtiled `c1m[kc*1024 + (cl>>3)*64 + (cl&7)]` — matching the established
+zaya CPUSILU index (`zaya_decode.cpp:954`). With the corrected index the
+result is **still** essentially uncorrelated (`c1corr≈0.03`) and
+`c1bad=6144/6144`, so the probe was NOT the problem.
+
+The kernel's raw GU C1 (bo2) does NOT match the host `Am·B_shadow`
+reconstruction even though both use the SAME `Amx` (quantize_async output
+fed to launch_fused) and the SAME `Bs` (B_shadow). Magnitudes differ ~40×
+(kernel `617131` vs host `15672`) and the per-column pattern differs, so
+this is a genuine arithmetic mismatch in the engine-fed GU GEMM: the kernel
+appears to dequant the int4 B with a DIFFERENT scale order than the host
+reconstruction (likely the S_col vs s_row scaling, or the per-section vs
+per-column scale), not a routing/indexing artifact.
+
+**Status:** writeback routing is fixed (bo4 populates); the remaining
+#1934 blocker is the engine-fed int4 GU GEMM C1 scale/dequant mismatch —
+needs the dense-path reference (the `test_i4_grouped_fused` CPU gate only
+covers MoE layers). Since #1934 is the DENSE path (qwen3-0.6b, no MoE), a
+dense GU GEMM C1 CPU gate is the missing verification. The default float
+decode stays correct (760) — all fused diagnostics are env-gated.

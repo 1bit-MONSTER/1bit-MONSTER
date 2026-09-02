@@ -3148,7 +3148,7 @@ struct Bf16Ctx {
                             for (int p = 0; p < IM; p++)
                                 for (int t = 0; t < 2; t++) {
                                     int j = 2 * p + t, kc = j >> 7, cl = j & 127;
-                                    C1row[j] = c1m[kc * 1024 + cl];   // row-0 tile layout (row-major per 128-col tile)
+                                    C1row[j] = c1m[kc * 1024 + (cl >> 3) * 64 + (cl & 7)];   // MICROTILED (c/8)*64 + r*8 + (c%8), row 0
                                 }
                             size_t c1bad = 0; double c1mae = 0, c1peak = 0;
                             double csx = 0, csy = 0;
