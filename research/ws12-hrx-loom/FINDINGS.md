@@ -280,3 +280,31 @@ Surgery trail (all reverted; fork clean at 4518abd):
   real inputs the result is correct regardless.
 - Debug instrumentation (env-gated HRX2_DEBUG_IDS) removed.
 
+
+## 30B q4nx prefill is SYNC-BOUND, not compute-bound (2026-09-02)
+
+The 45 t/s (pp32) vs Q4_K's 133 t/s gap is NOT kernel throughput — it's the
+per-MUL_MAT_ID ids-sync serializing the NPU pipeline.
+
+GGML_HRX2_TRACE_JSONL on the 30B q4nx pp32 (clean 4518abd):
+- dispatch execution: ~59 ms per eval (32 tokens -> ~540 t/s ceiling).
+- stream synchronize: 1186 calls, 3812 ms total, avg 3.2 ms each.
+- cold eval: ~611 ms (JIT compiles included); steady-state graph-cached
+  replay measures 0 ms (cache artifact, not a real number).
+
+Mechanism: dispatch_mul_mat_id_q4nx copies the ids tensor to the host-visible
+q4nx_ids scratch, then calls hrx_stream_synchronize() before the host groups
+(144 ops/eval x 48 layers x gate/up/down). Every sync drains ALL pending
+dispatches -> the async pipeline collapses per MoE mm. The Q4_K MoE runs on
+CPU (round 25f/g) and never hits this sync -> 133 t/s.
+
+Lever (est. 45 -> ~300-500 t/s on the 30B q4nx): eliminate the per-op full
+sync. Options: (a) two-phase MUL_MAT_ID eval — copy all ids up-front, ONE
+sync per graph, then dispatch all groups; (b) read the ids directly from the
+producer (CPU argsort -> host tensor) without the device copy+sync round-trip
+when src2 is host-backed; (c) batch the syncs per ubatch. The ids are tiny
+(256 i32/op); the sync cost is the drain, not the copy.
+
+Also noted: the kernel itself is correct and fast (59 ms of real compute for
+all 48 layers of MoE+attention+pointwise on the NPU). The grouped
+fused_tbl_tiled path at c32 is NOT the problem (previous finding corrected).
