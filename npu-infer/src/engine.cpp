@@ -344,11 +344,18 @@ bool NpuInferenceEngine::init(const char* model_path) {
     }
     
     xclbins_ = std::make_unique<XclbinManager>(*device_);
-    // Per-model xclbin selection: NPU_XCLBIN_DIR wins, else
-    // $FLM_XCLBIN_PATH/xclbins/<model-dir-name>, else the hardcoded default.
+    // Per-model xclbin selection: NPU_XCLBIN_DIR wins (only if it actually
+    // exists — a stale export (e.g. an old worktree's engine/npu/xclbins)
+    // must not shadow the FLM path), else $FLM_XCLBIN_PATH/xclbins/<model>,
+    // else the hardcoded default.
     if (const char* xd = getenv("NPU_XCLBIN_DIR")) {
-        xclbins_->set_xclbin_dir(xd);
-    } else {
+        struct stat st;
+        if (stat(xd, &st) == 0 && S_ISDIR(st.st_mode))
+            xclbins_->set_xclbin_dir(xd);
+        else
+            LOG_WARNING("NPU_XCLBIN_DIR=%s does not exist — ignoring", xd);
+    }
+    if (xclbins_->xclbin_dir().empty()) {
         std::string mp = model_path;
         auto slash = mp.rfind('/');
         std::string model_name = (slash == std::string::npos) ? mp : mp.substr(slash + 1);
