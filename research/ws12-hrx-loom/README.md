@@ -2241,3 +2241,24 @@ per-mm rates at probe parity); no further kernel access-pattern lever
 remains for single-seq decode. Round-25q's r16w (fork 52e69e5c2) is the
 landed win; this round contributes the ceiling proof + the sync-drain
 measurement trap.
+
+**Round-27 addendum — the 8-rows/workgroup lever was tested and falsified
+(fork 8dfdfce76, reverted).** The occupancy table (r16w 91 vgpr/100%, wb2 109/75%,
+wb4c 142/62%, wb8 143/62%) suggested an 8-rows-per-workgroup r16w restructure
+(r16w8r: 1376 wgs at the 3B gate, 8 f32 accs) would lift single-dispatch
+reads toward the ~130-137 GB/s seen at larger row counts. Built via line-span
+splice of r16w (rows 0-7 blocks kept; quarter-tile addressing sub4; 128-lane
+scale staging; 4-B/k reads — L2 absorbs the line-sharing between row-quadrant
+wgs). Result: **bit-identical dst (maxdiff 0.0) but rate-parity**: 113-123
+GB/s vs r16w's 109-127 at the gate shape, 68.9 vs 72.9 at 2048x2048, 94.7 vs
+87.3 at 4096x2048 (noise-level). Doubling wg count at half the per-wg work
+adds no in-flight read depth: the fixed-shape single-dispatch rate is
+per-wg read-depth / ALU-latency bound, not wg-count bound (the 115->137
+scaling with bigger rows is more TOTAL work, which a fixed decode shape
+cannot exploit). Remaining (deferred) lever for the fixed shapes: deeper
+per-wg reads per iteration (tc-unroll with scale double-buffering, or
+split-k with global partials) — modest expected gain (~10% of the mm
+portion), high JIT risk. Confirms the round-27 conclusion: no further
+access-pattern lever remains for single-seq decode at the current pack
+layout; cols=4 (wb4c, 66 GB/s at 62% occupancy) headroom is register-bound
+and needs the same deeper-read or repack work.
