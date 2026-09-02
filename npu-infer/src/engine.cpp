@@ -556,6 +556,26 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
         rt_ctx_len_++;
         if (!runtime_layers_->forward(rt_ctx_len_)) return 0;
         runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+        if (const char* lsd = getenv("RT_DUMP_LOGITS_STEP")) {
+            char lf[256];
+            snprintf(lf, sizeof(lf), "%s_ctx%d.bin", lsd, rt_ctx_len_);
+            FILE* fl = fopen(lf, "wb");
+            if (fl) {
+                const uint16_t* lg16 = (const uint16_t*)lm_head_buffer_.data();
+                // lm_head_buffer_ is float; write as bf16 for comparison
+                FILE* fb = fopen(lf, "wb");
+                if (fb) {
+                    for (int i = 0; i < config_.vocab_size; i++) {
+                        float v = lm_head_buffer_[i];
+                        uint32_t bits; memcpy(&bits, &v, 4);
+                        uint16_t bf = (uint16_t)((bits + 0x7FFF + ((bits >> 16) & 1)) >> 16);
+                        fwrite(&bf, 2, 1, fb);
+                    }
+                    fclose(fb);
+                }
+                fclose(fl);
+            }
+        }
         return sample_token(lm_head_buffer_.data(), config_.vocab_size, 1.0f);
     }
     embed_lookup(last_token, hwctx_[0].act_bo);
