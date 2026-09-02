@@ -165,3 +165,86 @@ extracted, ran:
 | 2026-08-28 | Lemonade merges hrx backend `7953d7f` (PR #3374) |
 | 2026-08-28 | hrx-graph-develop-v2 branch: "generalize kernel support + llama support" |
 | next | Our re-vendor e1b31683 → 7953d7f picks up HRX automatically |
+
+## D2 state-format round-trip — GATE PASSED (2026-09-02)
+
+hybrid-prefill-decode.md §5.1 executed. The "binary question" is answered:
+the vendored llama.cpp (third_party/llama.cpp 0.1.0, 4df29be4f, LLAMA_SESSION_VERSION 9)
+state blob round-trips into the hrx-v2 fork (cdb8110 round-25i, LLAMA_SESSION_VERSION 9).
+
+Harnesses: harnesses/state_exp.cpp (A: vendored, exports via llama_state_get_data)
+and harnesses/state_imp.cpp (B: fork, imports via llama_state_set_data).
+
+- Qwen3-0.6B-Q4_K_M: 5-token prompt + 8 gen → 1,491,797 B blob → import OK →
+  continuation token-identical (A == B, byte-for-byte).
+- Qwen3-Coder-30B-A3B-Instruct-Q4_K_M (the §1 target): 49-token prompt + 8 gen →
+  5,605,192 B blob → import OK → continuation token-identical:
+  " crashing waves—\nGuiding ships home<|im_end".
+
+Notes:
+- State size is cell-count-dependent (empty ctx reports ~17 B); do NOT size-check
+  against a fresh ctx — import directly (llama-cli --session path).
+- Both contexts must match on n_ctx (512 here) and model; rope/cache-type defaults
+  line up between the two builds (both 2026-era, session v9).
+- A-side ran CPU (n_gpu_layers=0) — the format gate is backend-independent.
+  Next: GGML_HIP=ON build of the vendored fork for the actual HIP prefill lane.
+
+## Hybrid direction reset — "HRX is supposed to eliminate that need" (2026-09-02)
+
+After the D2 gate, the GGML_HIP build of the vendored llama.cpp (the D2 prefill
+lane) was stopped: the strategic steer is that HRX2 prefill catching up should
+eliminate the need for an iGPU HIP prefill lane + state transfer, not that the
+engine adds a second llama.cpp HIP stack. Engine context: `backend_hip.cpp`
+(Zaya) and `backend_hip_1bp.cpp` are standalone HIP engines with custom KV —
+no llama.cpp state path; the only llama.cpp-context GPU backend is ggml-vulkan
+(spec-decode demo). hrx_inprocess.cpp (G2) dlsym's the bundle with a vtable
+that has NO llama_state_* entries yet (the D2 shim surface if ever needed).
+
+Measured on the fork (cdb8110, llama-bench -t 16 -ngl 99, sequential):
+- 30B-A3B Q4_K pp32: 83–105 t/s (contention variance). GGML_HRX2_TRACE_JSONL
+  shows ALL 576 attention MUL_MATs dispatch to HRX2 via
+  mul_mat_f16_f32_batched_attention_wg256 (rows 256/128, cols 32, k 128/256).
+  NO MUL_MAT_ID dispatch: MoE expert mms run CPU (Q4_K claim reverted, 25f/g).
+  The prefill gap vs HIP (1227–1313) is the MoE mms being CPU-side.
+- q4nx-converted GGUF (qwen25-3b-q4nx, qwen3coder-30b-q4nx): llama-bench
+  labels "all F32 (guessed)" (cosmetic — no ftype case for GGML_TYPE_Q4NX=42),
+  pp32 77 t/s (3B) / 42.9 (30B). The q4nx kernels compile+cache
+  (provider_compile: mul_mat_q4nx_fused_tbl_tiled, mul_mat_q4nx_fused_f32_r16)
+  but the dispatch trace shows only the attention batched route — the Q4NX
+  FFN/MoE mms never dispatch to HRX2. Suspected blocker: q4nx weight tensors
+  land on CPU buft (same "cannot be used with preferred buffer type
+  HRX20_host" path seen for Q4_K), so MUL_MAT_Q4NX never reaches the NPU.
+  (Round-25d's 121.5 t/s dense prefill was measured via the ws12 dump
+  harnesses, not llama-bench on the converted GGUF.)
+
+Next lever (fork-side, "eliminate the need"): get Q4NX weights into HRX2
+buffers so the compiled fused_tbl_tiled kernel dispatches at prefill — verify
+with the ws12 dump32_prefill harness (round-25h methodology), not llama-bench.
+
+## D2 gate + round 25j verification (2026-09-02, harnesses/state_exp|state_imp)
+
+- **D2 state-format gate (hybrid-prefill-decode.md §5.1) PASSED**: the vendored
+  llama.cpp (third_party/llama.cpp 0.1.0, LLAMA_SESSION_VERSION 9) state blob
+  round-trips into the hrx-v2 fork (cdb8110, session 9). Qwen3-0.6B (5-token
+  prompt + 8 gen → 1,491,797 B blob) and Qwen3-Coder-30B-A3B (49-token prompt
+  + 8 gen → 5,605,192 B blob): import OK, continuation byte-identical. Note:
+  state size is cell-count-dependent — an empty ctx reports ~17 B; import
+  directly (llama-cli --session path), don't size-check a fresh ctx.
+  Strategic reset after the gate: HRX prefill catching up should eliminate the
+  need for the iGPU HIP prefill lane + transfer machinery (GGML_HIP build of
+  the vendored llama.cpp stopped). Engine HIP lanes (Zaya/1BP) have custom KV
+  and no llama.cpp state path; hrx_inprocess.cpp vtable has no llama_state_*.
+- **Round 25j verified (fork 4518abd)**: 30B-A3B Q4_K pp32 **133.16 ± 3.33 t/s**
+  (cdb8110 was 83–105; the attention-mms-on-NPU + prefill coherency-tax fix
+  lands ~+30-60%). 0.6B pp32 502.8 (contention). Generation correct
+  ("The capital of France is Paris.").
+- **Q4NX routing corrected**: on the q4nx-converted GGUFs the earlier
+  "FFN mms CPU-side" reading was wrong — the q4nx kernels DO dispatch.
+  Load log: weights land on HRX20_w (device-local, 1839 MiB on the 3B);
+  "cannot be used with preferred buffer type HRX20_host" refers only to the
+  host-visible buft preference. mul_mat_q4nx_fused_tbl_tiled JIT-compiles and
+  runs for the prefill shapes (r2048/r11008 × c32 × k2048/k11008), plus the
+  c1 lm_head tail via mul_mat_q4nx_fused_f32_r16. "all F32 (guessed)" is
+  cosmetic (no ftype case for GGML_TYPE_Q4NX=42); the 253 q4nx tensors load
+  as Q4NX and hit the NPU. ngl=0 fails to load (ggml-cpu claims no Q4NX ops)
+  — the NPU is the only execution path for Q4NX models, as intended.
