@@ -1480,11 +1480,11 @@ and an early no-LDS variant kept 64 × 1B global scale loads per tile-column
 tg32 (llama-bench -p 32 -n 32, sequential):
 
   qwen25-05b      ~84  -> ~91    (flat; launch-bound at that size)
-  qwen25-3b       29.6 -> 49.2   (+66%)
-  qwen25-7b       14.0 -> 24.1   (+72%)
-  GLM-4.7         14.2 -> 18.6   (+31%)
-  MiniCPM4-8B     12.2 -> 21.3   (+75%)
-  Qwen3-Coder-30B 18.8 -> 23.8   (+27%)
+  qwen25-3b       29.8 -> 51.2   (+72%)   [same-run A/B]
+  qwen25-7b       14.0 -> 26.5   (+89%)
+  GLM-4.7         16.4 -> 19.9   (+21%)
+  MiniCPM4-8B     12.1 -> 21.7   (+79%)
+  Qwen3-Coder-30B 19.9 -> 25.7   (+29%)
 
 pp32 unchanged (r16w only claims the cols==1 decode path; dense prefill still
 serves r16x8). Correctness: multi-prompt greedy A/B identical vs
@@ -1493,7 +1493,7 @@ serves r16x8). Correctness: multi-prompt greedy A/B identical vs
 1.9e-6 (f32 summation order only — the garbage-scale probe fixture had
 already been made finite to expose this). Isolated cold rate: 111-113 GB/s
 vs r16's 64 (~1.75×) at the 3B gate shape — the real-model win (3B tg32
-49.2 t/s ≈ 20.3 ms/token → weights at ~118 GB/s) slightly exceeds the probe
+51.2 t/s ≈ 19.5 ms/token → weights at ~118 GB/s) slightly exceeds the probe
 because decode's other mms also inherit the pattern. Decode remains
 weight-bandwidth-bound, but now at the memory path's real rate; the residual
 gap to the f32 kernel's 205 GB/s (r16w's 16-row/LDS/reduce overhead) is the
