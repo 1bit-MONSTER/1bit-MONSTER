@@ -437,7 +437,7 @@
             <span class="log-date">2026-09-01</span>
             <div class="log-body">
               <h3><a href="1bit-post-zaya-q4nx-hrx.html" class="log-link">Zaya 8B Q4NX on the AMD NPU</a></h3>
-              <p>Zyphra Zaya 8B, 4-bit Q4NX, running entirely on the Strix Halo NPU via the HRX lane — decode 8.4 t/s (7&times; faster than the original dispatch), served over HTTP. Rounds 26-28: the F32-twin proof that the corr gap is summation order, the real Qwen3-0.6B on the XDNA 2 NPU (29.6/92.8 t/s), and then byte-identity — Qwen3-0.6B prefill logits corr 1.00000 vs the real FastFlowLM runtime on the same xclbin.</p>
+              <p>Zyphra Zaya 8B, 4-bit Q4NX, running entirely on the Strix Halo NPU via the HRX lane — decode 8.4 t/s (7&times; faster than the original dispatch), served over HTTP. Rounds 26-28: the F32-twin proof that the corr gap is summation order, the real Qwen3-0.6B on the XDNA 2 NPU (29.6/92.8 t/s), and then byte-identity — Qwen3-0.6B prefill logits corr 1.00000 vs the real FastFlowLM runtime on the same xclbin. Plus the memory model: one heap, one chained API call per layer, SharedBO pages with zero copies — the Windows NPU (MCDM) model matched on Linux.</p>
               <div class="log-tags"><span class="log-tag">zaya</span><span class="log-tag">q4nx</span><span class="log-tag">hrx</span><span class="log-tag">npu</span></div>
             </div>
           </article>
