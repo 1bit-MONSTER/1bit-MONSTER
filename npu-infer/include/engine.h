@@ -157,6 +157,7 @@ private:
     std::unique_ptr<RuntimeLayerEngine> runtime_layers_;
     bool use_runtime_layers_ = false;
     int rt_ctx_len_ = 0;
+    int rt_first_token_ = -1;   // prefill sampled first output token
     
     bool cache_all_weights();
     bool pack_tensor_blocks(std::vector<NpuBo>& blocks, const TensorDesc* desc, const char* label_prefix, uint32_t group_id);

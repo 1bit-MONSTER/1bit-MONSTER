@@ -70,6 +70,8 @@ public:
     bool dump_logits(const char* path, int vocab);
 
     int layers() const { return cfg_.num_layers; }
+    /// Debug: raw map of a layer's kv BO (for byte-diff captures).
+    const void* map_kv(int layer) const;
 
 private:
     bool ensure_layer_kernel(int ctx_len);

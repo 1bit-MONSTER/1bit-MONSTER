@@ -452,6 +452,12 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
     return true;
 }
 
+const void* RuntimeLayerEngine::map_kv(int layer) const {
+    if (layer < 0 || layer >= (int)kv_bos_.size()) return nullptr;
+    kv_bos_[layer]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 33554432, 0);
+    return kv_bos_[layer]->map();
+}
+
 bool RuntimeLayerEngine::get_logits(float* out, int vocab) {
     bo_logits_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
     const uint16_t* lg = (const uint16_t*)bo_logits_->map();

@@ -966,3 +966,55 @@ per-layer binding -> byte-identical end-to-end.
 Note: the pre-reboot "fwd3 corr 0.91 vs 23.3" was a WEDGE artifact of the
 old reference (capP2, captured while the lemonade server shared the NPU) —
 the healthy runtime fwd3 is 25.6497, exactly the engine's value.
+
+## Round 37 — engine generate() end-to-end on a healthy NPU (BOS -> 16 tokens)
+
+Closed the two remaining gaps from Round 36: the engine's own `generate()`
+(prefill + autoregressive decode loop in main.cpp) now runs the runtime
+layer path end-to-end, and per-context layer ELFs are shipped past the
+original 1..6.
+
+### The off-by-one that hid prefill's first output token
+
+The engine's prefill embeds/forwards the LAST input token, then
+`generate()` started its decode loop by re-embedding that same token —
+BOS got processed TWICE (the runtime's own chain would have the prefill
+forward already produce the first output logits). Fixed with
+`rt_first_token_`: after the last input token, `run_prefill`'s runtime
+branch calls `get_logits` + `sample_token` and stores the result;
+`generate()` seeds the decode loop from it instead of from
+`input_tokens[num_input_tokens-1]`.
+
+Verified sequence (16-token BOS->t16 generation, engine == harness token
+sequence): ctx1..17 per-ctx logits, engine vs the harness's own logits
+dumps (no interposer in the reference path):
+
+- ctx1..16: maxdiff **0** (byte-identical), argmax identical per ctx
+- ctx17: maxdiff 0.3399 (one bf16 ULP), argmax identical (9695)
+
+### ctx17 1-ULP is a rope-table rounding-boundary artifact (NOT a formula gap)
+
+The single ctx17 ULP traces to ONE byte in the engine's per-ctx RoPE i6
+table: idx65 (j=1, sin), engine 0x3ea5 vs runtime 0x3ea4. Compared
+engine i6 against the runtime's captured ctx17 table (preinsts_033 i6
+dumps): 127/128 entries byte-identical with exact double math.
+
+The true sin(16 * 1e6^-2/128) = sin(12.893475) = 0.32130230 sits **0.7% of
+a bf16 ULP above the 0x3ea4/0x3ea5 tie boundary** (0.32128906). Every
+precision variant (double, float32 phi, float32 argument reduction,
+theta fits) still rounds to 0x3ea5 and/or breaks other entries — the
+runtime's value (0.3203125) implies its own sin lands below the tie, i.e.
+its host code computes the table with a lower-precision sin (error
+~1.5e-5 — consistent with a fixed-point/table sin, not libm), and this is
+the ONE position where that error crosses a rounding boundary. The engine
+is the MORE accurate side. Conclusion: **device sin-table artifact, not
+replicated**; downstream effect is bounded (single bf16 ULP at one rope
+entry for positions >= 16; argmax unchanged).
+
+### Per-context ELFs shipped past ctx12
+
+`captures/txn-elfs/layer_ctx1..64.elf` now covers 64 contexts
+(generator: `tools/gen_layer_elfs` — 0.015s for 17 ELFs, so full MAX_L
+4096 is ~3.5s if ever needed). The engine's default ELF dir is
+`captures/txn-elfs`, so `generate()` works out of the box for
+sequences up to 64 tokens without running the generator.

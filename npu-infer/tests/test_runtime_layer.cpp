@@ -64,8 +64,14 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ---- forward 1: token 1000, ctx=1 ----
-    if (!rt.embed(1000)) { fprintf(stderr, "embed(1000) failed\n"); return 1; }
+    // ---- tokens from RT_TOKENS file (default 1000,1001,1002) ----
+    std::vector<int> toks = {1000, 1001, 1002};
+    if (const char* tf = getenv("RT_TOKENS")) {
+        FILE* ft = fopen(tf, "r");
+        if (ft) { toks.clear(); int t; while (fscanf(ft, "%d", &t) == 1) toks.push_back(t); fclose(ft); }
+    }
+    // ---- forward 1: token toks[0], ctx=1 ----
+    if (!rt.embed(toks[0])) { fprintf(stderr, "embed(%d) failed\n", toks[0]); return 1; }
     if (!rt.forward(1)) { fprintf(stderr, "forward(1) failed\n"); return 1; }
     std::string a1 = prefix + "_act_fwd1.bin";
     std::string l1 = prefix + "_logits_fwd1.bin";
@@ -74,8 +80,13 @@ int main(int argc, char** argv) {
     fprintf(stderr, "fwd1: act -> %s logits -> %s\n", a1.c_str(), l1.c_str());
     if (getenv("RT_ONLY_FWD1")) return 0;
 
-    // ---- forward 2: token 1001, ctx=2 ----
-    if (!rt.embed(1001)) { fprintf(stderr, "embed(1001) failed\n"); return 1; }
+    // ---- forward 2: token toks[1], ctx=2 ----
+    if (toks.size() < 2) return 0;
+    if (getenv("RT_TEST_GETLOGITS")) {
+        float tmp[151936];
+        rt.get_logits(tmp, 151936);  // like the engine's prefill
+    }
+    if (!rt.embed(toks[1])) { fprintf(stderr, "embed(%d) failed\n", toks[1]); return 1; }
     if (!rt.forward(2)) { fprintf(stderr, "forward(2) failed\n"); return 1; }
     std::string a2 = prefix + "_act_fwd2.bin";
     std::string l2 = prefix + "_logits_fwd2.bin";
@@ -85,7 +96,8 @@ int main(int argc, char** argv) {
 
     // ---- forward 3: token 1002, ctx=3 (optional) ----
     if (getenv("RT_FWD3")) {
-        if (!rt.embed(1002)) { fprintf(stderr, "embed(1002) failed\n"); return 1; }
+        if (toks.size() < 3) return 0;
+        if (!rt.embed(toks[2])) { fprintf(stderr, "embed(%d) failed\n", toks[2]); return 1; }
         if (!rt.forward(3)) { fprintf(stderr, "forward(3) failed\n"); return 1; }
         rt.dump_act((prefix + "_act_fwd3.bin").c_str());
         rt.dump_logits((prefix + "_logits_fwd3.bin").c_str(), cfg.vocab_size);

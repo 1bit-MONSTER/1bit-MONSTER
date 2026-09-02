@@ -405,6 +405,16 @@ bool NpuInferenceEngine::init(const char* model_path) {
             use_runtime_layers_ = true;
             rt_ctx_len_ = 0;
             LOG_INFO("Runtime layer path ENABLED (FastFlowLM ELF submission)");
+            if (getenv("NPU_RUNTIME_SELFTEST")) {
+                LOG_INFO("Runtime layer self-test: forward(1000) then forward(1001)");
+                runtime_layers_->embed(1000);
+                runtime_layers_->forward(1);
+                runtime_layers_->dump_act(getenv("RT_ST_ACT1") ? getenv("RT_ST_ACT1") : "/tmp/st_act1.bin");
+                runtime_layers_->embed(1001);
+                runtime_layers_->forward(2);
+                runtime_layers_->dump_act(getenv("RT_ST_ACT2") ? getenv("RT_ST_ACT2") : "/tmp/st_act2.bin");
+                LOG_INFO("self-test dumps written");
+            }
         } else {
             LOG_ERROR("Runtime layer path init FAILED — falling back to mm pipeline");
             runtime_layers_.reset();
@@ -533,6 +543,11 @@ bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_toke
             }
             if (t % 7 == 0) LOG_DEBUG("  Runtime layer %d/%d done (ctx=%d)",
                                       t, num_input_tokens, rt_ctx_len_);
+            if (t == num_input_tokens - 1) {
+                runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+                rt_first_token_ = sample_token(lm_head_buffer_.data(), config_.vocab_size, 1.0f);
+                LOG_DEBUG("  runtime prefill first token: %d", rt_first_token_);
+            }
             continue;
         }
         embed_lookup(input_tokens[t], hwctx_[0].act_bo);
@@ -555,6 +570,17 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
         if (!runtime_layers_->embed(last_token)) return 0;
         rt_ctx_len_++;
         if (!runtime_layers_->forward(rt_ctx_len_)) return 0;
+        if (const char* ksd = getenv("RT_DUMP_KV_STEP")) {
+            char kf[256];
+            snprintf(kf, sizeof(kf), "%s_ctx%d.bin", ksd, rt_ctx_len_);
+            FILE* fk = fopen(kf, "wb");
+            if (fk) { fwrite(runtime_layers_->map_kv(0), 1, 33554432, fk); fclose(fk); }
+        }
+        if (const char* asd = getenv("RT_DUMP_ACT_STEP")) {
+            char af[256];
+            snprintf(af, sizeof(af), "%s_ctx%d.bin", asd, rt_ctx_len_);
+            runtime_layers_->dump_act(af);
+        }
         runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
         if (const char* lsd = getenv("RT_DUMP_LOGITS_STEP")) {
             char lf[256];
@@ -665,7 +691,8 @@ int NpuInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
         if (f) fclose(f);
     }
 
-    current_token_ = input_tokens[num_input_tokens - 1];
+    current_token_ = use_runtime_layers_ && rt_first_token_ >= 0
+        ? rt_first_token_ : input_tokens[num_input_tokens - 1];
     int num_out = 0;
     
     for (int i = 0; i < max_output_tokens; i++) {
