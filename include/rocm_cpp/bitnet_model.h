@@ -2512,6 +2512,13 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "llavaonevision") == 0) return RCPP_ARCH_LLAVAONEVISION;  // LlavaOnevisionForConditionalGeneration — census stripped arch name (registry token)
     if (strcmp(s, "llava_onevision") == 0) return RCPP_ARCH_LLAVAONEVISION; // HF model_type (llava_onevision)
     if (strcmp(s, "llavaonevisionforconditionalgeneration") == 0) return RCPP_ARCH_LLAVAONEVISION;  // raw HF architecture string (regression guard)
+    // lladamodellm = LLaDAModelLM (albertge/llada-8b-dllm-*; the alias-autopr
+    // guessed LLADA2 from llada2moemodellm, but the live config declares
+    // model_type llada, which is already mapped to the config-verified llama
+    // profile) — so it's a genuine family-variant alias to LLAMA, not a registry
+    // token (matches model_type llada).
+    if (strcmp(s, "lladamodellm") == 0) return RCPP_ARCH_LLAMA;        // LLaDAModelLM — census stripped arch name (model_type llada -> llama profile)
+    if (strcmp(s, "llada_model_lm") == 0) return RCPP_ARCH_LLAMA;      // HF model_type variant
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type

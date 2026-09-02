@@ -635,7 +635,8 @@ struct GenericBackend : Backend {
             cfg.arch == RCPP_ARCH_QU_SSM || cfg.arch == RCPP_ARCH_ARO_BABYLM ||
             cfg.arch == RCPP_ARCH_BREEZE_TTS || cfg.arch == RCPP_ARCH_HYV4 ||
             cfg.arch == RCPP_ARCH_BANANAMIND21CODER || cfg.arch == RCPP_ARCH_BANANAMIND21LITE ||
-            cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT) {
+            cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ||
+            cfg.arch == RCPP_ARCH_TRHASH || cfg.arch == RCPP_ARCH_LLAVAONEVISION) {
             fprintf(stderr, "  [generic] Refusing to load %s (arch=%d%s) via safetensors\n",
                     f.c_str(), (int)cfg.arch,
                     cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" :
@@ -646,7 +647,9 @@ struct GenericBackend : Backend {
                     cfg.arch == RCPP_ARCH_HYV4 ? " HYV4 — Gated-MLA text LM registry token, engine support XL (issue #2031)" :
                     cfg.arch == RCPP_ARCH_BANANAMIND21CODER ? " BANANAMIND21CODER — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
                     cfg.arch == RCPP_ARCH_BANANAMIND21LITE ? " BANANAMIND21LITE — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
-                    cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ? " CONCEPT_DOMINANT_GPTBERT — pre-training-class registry token (issue #2031)" : "");
+                    cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ? " CONCEPT_DOMINANT_GPTBERT — pre-training-class registry token (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_TRHASH ? " TRHASH — tr_hash_moe hash-routed shared-expert MoE registry token, engine support XL (census 2026-09-02)" :
+                    cfg.arch == RCPP_ARCH_LLAVAONEVISION ? " LLAVAONEVISION — LlavaOnevision (SigLIP+Qwen2) VLM registry token, engine support XL (census 2026-09-02)" : "");
             return false;
         }
 
