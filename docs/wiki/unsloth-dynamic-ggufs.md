@@ -41,8 +41,28 @@ snapshot_download(
 
 ## Compatibility with 1bit.MONSTER
 
-UD GGUFs are standard GGUF files under the hood. The 1bit.MONSTER GGUF loader
-auto-detects architecture from GGUF metadata — no special handling needed.
+UD GGUFs are standard GGUF files, so the architecture is auto-detected from GGUF
+metadata. But the quant *dtype* support is backend-specific — do not assume a
+single UD file loads everywhere:
+
+| Quant dtype | Project reader (`cpu_generic`, `gguf_to_onebp`) | llama.cpp path (`ggml_vulkan`, HRX) |
+|---|---|---|
+| `F16/BF16`, `Q4_0..Q8_K`, `Q2_K..Q8_K` | Supported | Supported |
+| `UD-TQ1_0` / `TQ2_0` (~1-bit ternary) | **Supported** | Supported |
+| `IQ` family (`IQ1_S/M`, `IQ2_XS/S`, `IQ3_S`, `IQ4_NL/XS`) | Not decoded | Supported |
+| `UD-Q*_K_XL`, `IQ2_M` | Not understood | Not in the vendored llama.cpp snapshot |
+
+Notes:
+- The project's own reader (`src/gguf_reader.cpp`) decodes the block quants and
+  ternary `TQ1_0`/`TQ2_0`. For any other dtype it returns a clear error (it
+  never silently reads raw f32), so an unsupported model fails loudly at load.
+- Route `IQ`-family files to the llama.cpp backend (`ggml_vulkan`, or the HRX
+  bundle), which uses self-consistent current ggml dtype numbering. The router
+  already prefers `hrx_gpu → ggml_vulkan → zinc → cpu_generic` for GGUFs.
+- `UD-Q*_K_XL` and `IQ2_M` are not present in the vendored llama.cpp enum at
+  all. Supporting them requires a newer llama.cpp snapshot (or a project-reader
+  port); until then such files are refused with a clear error.
+
 
 ## Where to Find Them
 
