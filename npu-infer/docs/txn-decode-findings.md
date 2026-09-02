@@ -1195,3 +1195,42 @@ Implications:
    runtime MUST use the RT_TOKENS/forward per-ctx mode (as round-36..38 did);
    kvpost/actpost references captured from a batched-prefill run will not be
    byte-comparable (mid-state + rope-variant confounders).
+
+### Round 38c — RUNTIME-INTERNAL inconsistency: prefill() (mm) != forward() per token
+
+Probing "what invisible corner is left" surfaced a significant one — and it
+lives INSIDE the runtime, not the engine:
+
+The FastFlowLM runtime exposes TWO prompt paths that disagree numerically:
+- `qwen3_npu::prefill(ids)` — batched. Dispatches to _prefill_with_mm
+  (Gemm::generate_seq + MHA batched sequences) for most sizes; this is what
+  the REAL chat stack calls (AutoModel/_chunked_insert -> lm_engine->prefill,
+  used by runner/rest_handler servers, default max_prefill_len 4096).
+- `qwen3_npu::forward(token)` per token — sequential mv path; what my
+  harness + ALL engine byte-identity validations used.
+
+Measured (same prompt [BOS,10671,2415,44123], same 28-layer model):
+- prefill() last-token logits vs forward@ctx4: corr 0.945, maxdiff 3.69,
+  argmax 7829 vs 97462
+- 30-token prompt: corr 0.934, argmax 82 (prefill) vs 29123 (seq)
+- greedy chains diverge at the FIRST token: prefill -> 7829 368 369 1817...;
+  sequential/engine -> 97462 368 715 262...
+- layer-0 K cache: mm vs seq corr 0.9999 but maxdiff grows with position
+  (idx0: 3.0, idx1: 4.0, idx2: 8.0, idx3: 10.0); V nearly identical
+  (<= 0.014). NOT a rope-table diff (hardcoded vs exact tables identical to
+  pos 3; only 1/128 entry differs at pos 3) — it is a systematic ~0.7%
+  scale difference in the QKV GEMM numerics between the batched-mm and
+  per-token-mv kernels. Even pos 0 (rope identity) differs -> projection
+  numerics, not positional handling.
+- CPU f32 reference of L0 K (cpu_ref.py dequant): both paths corr ~0.9999
+  with it; seq slope 1.0039 vs mm 1.0113 (mm ~0.7% high) — suggestive but
+  within reference noise; no clean winner without a full fp64 model.
+
+Implication for the engine: the engine's runtime path is byte-identical to
+the runtime's SEQUENTIAL path (decode, 1000+ ctx validated). But a real
+FastFlowLM server session (AutoModel chat) prefills via the mm path, whose
+first generated token differs from the sequential path. If engine output
+must match what FastFlowLM SERVES (not just its decode path), the mm
+prefill path needs its own replication/validation. Documented as a runtime
+quirk; engine claim stated precisely: byte-identical to the runtime's
+per-token forward (decode) path.
