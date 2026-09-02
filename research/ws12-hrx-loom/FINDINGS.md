@@ -334,3 +334,29 @@ the sync is scoped to the argsort's completion); (b) flush the submit batch
 before the router sync so each drain is short; (c) on-device grouping (big).
 The dispatch compute is only ~59 ms/eval — the sync structure is the whole
 gap to the ~500 t/s ceiling.
+
+## 30B q4nx prefill is COMPUTE-bound (correction to the sync-bound claim) (2026-09-02)
+
+HRX2_OPTIME_SYNC (per-op execution-inclusive) shows MUL_MAT_Q4NX at ~6.9-7.1 ms
+per op — the syncs were waiting on REAL NPU execution, not draining idle
+batches. The "59 ms compute" reading was dispatch-SUBMIT time, not execution.
+
+Fused-path check (30B q4nx pp32, llama-bench):
+- default: 48.2 t/s (fused_tbl_tiled engaged — the fast path IS used)
+- HRX2_NO_FUSED_TBL=1: 43.3 (fallback dequant+b_w+mm ~10% slower)
+- HRX2_NO_FUSED_PAIR=1: 41.0
+- GGML_HRX2_DISABLE_SUBMIT_BATCHING: 44.1 (no win — the syncs aren't
+  batch-drain dominated)
+
+Root cause of the ~7 ms/mm: the fused_tbl_tiled c32 kernel dequants ONE
+scattered byte per (row, k) — lane reads packed[lane*2048 + (i%256)*8 +
+byte_idx] at stride 8 (the round-25e "~43 GB/s effective" bandwidth wall).
+The r16 DECODE kernel fixed this (16 rows/workgroup, 8 CONTIGUOUS packed
+bytes per k-step) — decode is bandwidth-fine; the c32 PREFILL kernel never
+got the contiguous-read restructure.
+
+Lever: restructure mul_mat_q4nx_fused_tbl_tiled's workgroup to read 8
+contiguous packed bytes per k-step (16 rows x 8 cols per workgroup, 16
+k-block lanes/row like r16), keeping the table-scatter. Estimated 1.5-2x on
+the mms (round-25e estimate) -> 30B q4nx pp32 48 -> ~80-100 t/s. The
+48-layer c32 MoE path is the wall; the kernel is otherwise correct.
