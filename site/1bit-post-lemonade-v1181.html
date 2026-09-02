@@ -10,16 +10,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER</title>
-  <meta name="description" content="How the engine stays current with AMD's SDK: the re-vendor loop that keeps every Lemonade release in step with the engine. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
+  <meta name="description" content="Milestone: the re-vendor loop in action — Lemonade v11.8.1 synced into the engine days after release, with every checkpoint mapped. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER" />
-  <meta property="og:description" content="How the engine stays current with AMD's SDK: the re-vendor loop that keeps every Lemonade release in step with the engine. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
+  <meta property="og:description" content="Milestone: the re-vendor loop in action — Lemonade v11.8.1 synced into the engine days after release, with every checkpoint mapped. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-lemonade-v1181.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER" />
-  <meta name="twitter:description" content="How the engine stays current with AMD's SDK: the re-vendor loop that keeps every Lemonade release in step with the engine. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
+  <meta name="twitter:description" content="Milestone: the re-vendor loop in action — Lemonade v11.8.1 synced into the engine days after release, with every checkpoint mapped. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-lemonade-v1181.html" />
 <style>
@@ -306,7 +306,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER", "description": "How the engine stays current with AMD's SDK: the re-vendor loop that keeps every Lemonade release in step with the engine. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md", "url": "https://1bit.monster/1bit-post-lemonade-v1181.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-lemonade-v1181.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-27", "dateModified": "2026-08-27", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER", "description": "Milestone: the re-vendor loop in action — Lemonade v11.8.1 synced into the engine days after release, with every checkpoint mapped. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md", "url": "https://1bit.monster/1bit-post-lemonade-v1181.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-lemonade-v1181.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-27", "dateModified": "2026-08-27", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -357,7 +357,7 @@
       <h1>Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo</h1>
       <p class="lead">AMD shipped the 15-backend Lemonade SDK — and the new one is literally built for our hardware. DwarfStar (ds4) runs DeepSeek V4 Flash on Strix Halo's gfx1151, and the whole release is now compiled into the same binary as our engine.</p>
       
-      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md">Lemonade compat guide</a> — the full technical details, numbers and corrections.</p></div>
+      <div class="callout"><p><b>Milestone:</b> the re-vendor loop in action — Lemonade v11.8.1 synced into the engine days after release, with every checkpoint mapped. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md">Full technical write-up &rarr; Lemonade compat guide</a></p></div>
       <div class="prose">
         <h2>The release that takes the SDK to 15 backends</h2>
         <p>On August 26 AMD shipped Lemonade v11.8.1 — the release that pushes the SDK to <b>15 backends</b> — and the 1bit.MONSTER engine re-vendored its embedded server core the same day. Because we embed Lemonade's server core as a library (compiled into <span class="mono">build/1bit</span>, no subprocess, no wrappers), every feature in the release arrived in our binary the moment the re-vendor landed: all 15 backends, the router, the full API surface, and every breaking change.</p>

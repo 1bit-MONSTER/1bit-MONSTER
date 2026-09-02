@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>The fused layer engine | 1bit.MONSTER</title>
-  <meta name="description" content="Why fusing a model's layers into single NPU calls makes inference dramatically faster — the fused-layer engine, explained. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md" />
+  <meta name="description" content="Milestone: a model's layers fused into single NPU calls — six times fewer dispatches per layer, making the laptop NPU a practical inference target. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="The fused layer engine | 1bit.MONSTER" />
-  <meta property="og:description" content="Why fusing a model's layers into single NPU calls makes inference dramatically faster — the fused-layer engine, explained. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md" />
+  <meta property="og:description" content="Milestone: a model's layers fused into single NPU calls — six times fewer dispatches per layer, making the laptop NPU a practical inference target. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-fused.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="The fused layer engine | 1bit.MONSTER" />
-  <meta name="twitter:description" content="Why fusing a model's layers into single NPU calls makes inference dramatically faster — the fused-layer engine, explained. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md" />
+  <meta name="twitter:description" content="Milestone: a model's layers fused into single NPU calls — six times fewer dispatches per layer, making the laptop NPU a practical inference target. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-fused.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The fused layer engine | 1bit.MONSTER", "description": "Why fusing a model's layers into single NPU calls makes inference dramatically faster — the fused-layer engine, explained. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md", "url": "https://1bit.monster/1bit-post-fused.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-fused.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The fused layer engine | 1bit.MONSTER", "description": "Milestone: a model's layers fused into single NPU calls — six times fewer dispatches per layer, making the laptop NPU a practical inference target. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md", "url": "https://1bit.monster/1bit-post-fused.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-fused.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -358,7 +358,7 @@
       <p class="lead">How QKV, attention and FFN combine into a single NPU dispatch, cutting per-layer xclbin calls 6x. Historical throughput figures noted as unsourced.</p>
 
       
-      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md">fusion-level-0 doc</a> — the full technical details, numbers and corrections.</p></div>
+      <div class="callout"><p><b>Milestone:</b> a model's layers fused into single NPU calls — six times fewer dispatches per layer, making the laptop NPU a practical inference target. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md">Full technical write-up &rarr; fusion-level-0 doc</a></p></div>
       <div class="prose" data-od-id="body">
         <h2>The per-layer tax</h2>
         <p>Before the fused engine, every transformer layer paid for the same work in separate installments. QKV projection, attention and the feed-forward each went out as its own xclbin dispatch, and each dispatch carried launch overhead that did no math.</p>

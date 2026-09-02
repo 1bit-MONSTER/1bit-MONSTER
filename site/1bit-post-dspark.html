@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>DSpark speculative decoding, disproven | 1bit.MONSTER</title>
-  <meta name="description" content="We tested a speculative-decoding technique that promised huge speedups — and measured what it really delivers today, and why. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md" />
+  <meta name="description" content="Milestone: a speculative-decoding method that promised 572 tok/s delivered ~0.1-0.2 tok/s — disproven with measurements, and what it would take to fix. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="DSpark speculative decoding, disproven | 1bit.MONSTER" />
-  <meta property="og:description" content="We tested a speculative-decoding technique that promised huge speedups — and measured what it really delivers today, and why. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md" />
+  <meta property="og:description" content="Milestone: a speculative-decoding method that promised 572 tok/s delivered ~0.1-0.2 tok/s — disproven with measurements, and what it would take to fix. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-dspark.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="DSpark speculative decoding, disproven | 1bit.MONSTER" />
-  <meta name="twitter:description" content="We tested a speculative-decoding technique that promised huge speedups — and measured what it really delivers today, and why. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md" />
+  <meta name="twitter:description" content="Milestone: a speculative-decoding method that promised 572 tok/s delivered ~0.1-0.2 tok/s — disproven with measurements, and what it would take to fix. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-dspark.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "DSpark speculative decoding, disproven | 1bit.MONSTER", "description": "We tested a speculative-decoding technique that promised huge speedups — and measured what it really delivers today, and why. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md", "url": "https://1bit.monster/1bit-post-dspark.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-dspark.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "DSpark speculative decoding, disproven | 1bit.MONSTER", "description": "Milestone: a speculative-decoding method that promised 572 tok/s delivered ~0.1-0.2 tok/s — disproven with measurements, and what it would take to fix. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md", "url": "https://1bit.monster/1bit-post-dspark.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-dspark.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -358,7 +358,7 @@
       <p class="lead">DSpark was projected to hit 572 tok/s on Strix Halo. We measured it end to end on the NPU and the projection did not survive: 0.1 to 0.2 tok/s at 0% draft acceptance. Here is how and why, what it would take to fix, and why these figures are historical and unsourced.</p>
 
       
-      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md">spec-decode README</a> — the full technical details, numbers and corrections.</p></div>
+      <div class="callout"><p><b>Milestone:</b> a speculative-decoding method that promised 572 tok/s delivered ~0.1-0.2 tok/s — disproven with measurements, and what it would take to fix. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md">Full technical write-up &rarr; spec-decode README</a></p></div>
       <div class="prose" data-od-id="body">
 
         <h2>The projection</h2>

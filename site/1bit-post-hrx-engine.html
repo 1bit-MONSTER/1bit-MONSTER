@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER</title>
-  <meta name="description" content="We embedded AMD's experimental NPU runtime inside our engine: one process, two runtimes, and a measured honest ceiling. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md" />
+  <meta name="description" content="Milestone: AMD's experimental NPU runtime now runs inside our engine — one process, two runtimes, roughly twice the warm decode, with the honest ceiling measured. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="HRX: we put AMD's experimental IREE runtime inside our engine" />
-  <meta property="og:description" content="We embedded AMD's experimental NPU runtime inside our engine: one process, two runtimes, and a measured honest ceiling. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md" />
+  <meta property="og:description" content="Milestone: AMD's experimental NPU runtime now runs inside our engine — one process, two runtimes, roughly twice the warm decode, with the honest ceiling measured. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-hrx-engine.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="HRX: we put AMD's experimental IREE runtime inside our engine" />
-  <meta name="twitter:description" content="We embedded AMD's experimental NPU runtime inside our engine: one process, two runtimes, and a measured honest ceiling. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md" />
+  <meta name="twitter:description" content="Milestone: AMD's experimental NPU runtime now runs inside our engine — one process, two runtimes, roughly twice the warm decode, with the honest ceiling measured. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-hrx-engine.html" />
 <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER", "description": "We embedded AMD's experimental NPU runtime inside our engine: one process, two runtimes, and a measured honest ceiling. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md", "url": "https://1bit.monster/1bit-post-hrx-engine.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-hrx-engine.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-29", "dateModified": "2026-08-29", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER", "description": "Milestone: AMD's experimental NPU runtime now runs inside our engine — one process, two runtimes, roughly twice the warm decode, with the honest ceiling measured. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md", "url": "https://1bit.monster/1bit-post-hrx-engine.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-hrx-engine.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-29", "dateModified": "2026-08-29", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -355,7 +355,7 @@
       <h1>HRX: we put AMD's experimental IREE runtime inside our engine</h1>
       <p class="lead">AMD calls HRX "a lighter, more focused subset of ROCm" — an IREE-based HIP replacement shipped as a self-contained llama.cpp bundle. This week it moved <b>inside our engine</b>: dlopen'd in-process, token-level decode on the HRX device, two llama.cpps in one process without them colliding, and warm decode at ~2× HIP on the models its fused kernels can run. Plus the ceiling we measured, and the honest reframe that goes with it.</p>
       
-      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md">HRX backend research</a> — the full technical details, numbers and corrections.</p></div>
+      <div class="callout"><p><b>Milestone:</b> AMD's experimental NPU runtime now runs inside our engine — one process, two runtimes, roughly twice the warm decode, with the honest ceiling measured. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md">Full technical write-up &rarr; HRX backend research</a></p></div>
       <div class="prose">
         <h2>What HRX actually is</h2>
         <p>HRX — <b>Hip Runtime Extended</b> — is AMD's experiment at a lighter, more focused

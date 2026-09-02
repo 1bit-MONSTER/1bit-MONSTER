@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER</title>
-  <meta name="description" content="How AMD packs a 35-billion-parameter model's weights for its NPU — and how we decoded the layout ourselves when the official loader crashed. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
+  <meta name="description" content="Milestone: we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER" />
-  <meta property="og:description" content="How AMD packs a 35-billion-parameter model's weights for its NPU — and how we decoded the layout ourselves when the official loader crashed. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
+  <meta property="og:description" content="Milestone: we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-35b-moe-layout.html" />
   meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER" />
-  <meta name="twitter:description" content="How AMD packs a 35-billion-parameter model's weights for its NPU — and how we decoded the layout ourselves when the official loader crashed. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
+  <meta name="twitter:description" content="Milestone: we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-35b-moe-layout.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER", "description": "How AMD packs a 35-billion-parameter model's weights for its NPU — and how we decoded the layout ourselves when the official loader crashed. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-35b-moe-layout.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-35b-moe-layout.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-09-02", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER", "description": "Milestone: we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-35b-moe-layout.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-35b-moe-layout.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-09-02", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -356,7 +356,7 @@
       <p class="lead">The 35B MoE was blocked by a crash in AMD&rsquo;s own weight loader &mdash; so we decoded the layout from the runtime&rsquo;s artifacts instead: where the 465 MB of experts per layer live, why rows are 4,736 B when tiles are 5,120 B, and the A/B interleave that made our packer byte-exact.</p>
 
       
-      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">journey.md — 09-02 session</a> — the full technical details, numbers and corrections.</p></div>
+      <div class="callout"><p><b>Milestone:</b> we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">Full technical write-up &rarr; journey.md — 09-02 session</a></p></div>
       <div class="prose" data-od-id="body">
         <h2>The crash that started it</h2>
         <p>We want the 35B-class models on the NPU &mdash; starting with Qwen3.6-35B-A3B (the <span class="mono">qwen3_6_moe_npu</span> class, 673 tensors, 40 layers, vocab 248320). The blocker was not the NPU: <b>AMD&rsquo;s own runtime crashes loading this model</b>. <span class="mono">load_weights</span> SIGSEGVs inside <span class="mono">qwen3_6_reorder_cpy</span> with a memcpy length of <span class="mono">0xF5E56C80</span> (&asymp;&minus;169&nbsp;MB &mdash; an unsigned wrap). The gdb evidence is in the docs. (A second, unrelated wall: the <span class="mono">qwen3_npu</span> class rejects intermediate size 512 &mdash; the 35B is a MoE class with different checks, and our first harness instantiated the wrong one.)</p>

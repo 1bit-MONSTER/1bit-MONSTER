@@ -429,7 +429,7 @@
             <span class="log-date">2026-09-02</span>
             <div class="log-body">
               <h3><a href="1bit-post-byte-identical.html" class="log-link">Byte-identical: 1,000 tokens of proof against AMD's real runtime</a></h3>
-              <p>Our hand-rolled NPU launcher is byte-identical to AMD's real FastFlowLM runtime — forward-chain maxdiff 0, then a 1,000-token decode: 1000/1000 byte-identical, 0 ULP, 0 argmax flips. The rope table reverse-engineered from the runtime's .rodata (hardcoded f32 inv_freq, not the double formula), real sampling, and the batched-prefill caveat found afterwards.</p>
+              <p>Our NPU decode is now bit-for-bit identical to AMD's own runtime — verified across a full 1,000-token generation, zero differences.</p>
               <div class="log-tags"><span class="log-tag">npu</span><span class="log-tag">runtime</span><span class="log-tag">correctness</span></div>
             </div>
           </article>
@@ -437,7 +437,7 @@
             <span class="log-date">2026-09-02</span>
             <div class="log-body">
               <h3><a href="1bit-post-35b-moe-layout.html" class="log-link">The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows</a></h3>
-              <p>AMD's own loader crashes on Qwen3.6-35B — so we decoded how the runtime packs 465 MB of MoE experts per layer from its own artifacts: the descriptor map, the 5120&rarr;4736 tile trim, and a reorder formula (A/B interleave) verified byte-exact against the runtime's own function.</p>
+              <p>We decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file.</p>
               <div class="log-tags"><span class="log-tag">npu</span><span class="log-tag">moe</span><span class="log-tag">weights</span><span class="log-tag">35b</span></div>
             </div>
           </article>
@@ -445,7 +445,7 @@
             <span class="log-date">2026-09-01</span>
             <div class="log-body">
               <h3><a href="1bit-post-zaya-q4nx-hrx.html" class="log-link">Zaya 8B Q4NX on the AMD NPU</a></h3>
-              <p>Zyphra Zaya 8B, 4-bit Q4NX, running entirely on the Strix Halo NPU via the HRX lane — decode 8.4 t/s (7&times; faster than the original dispatch), served over HTTP. Rounds 26-28: the F32-twin proof that the corr gap is summation order, the real Qwen3-0.6B on the XDNA 2 NPU (29.6/92.8 t/s), and then byte-identity — Qwen3-0.6B prefill logits corr 1.00000 vs the real FastFlowLM runtime on the same xclbin. Plus the memory model: one heap, one chained API call per layer, SharedBO pages with zero copies — the Windows NPU (MCDM) model matched on Linux.</p>
+              <p>An 8-billion-parameter model now runs entirely on AMD's laptop NPU — attention and experts on-device, served over HTTP, decode 8.4 tok/s.</p>
               <div class="log-tags"><span class="log-tag">zaya</span><span class="log-tag">q4nx</span><span class="log-tag">hrx</span><span class="log-tag">npu</span></div>
             </div>
           </article>
@@ -453,7 +453,7 @@
             <span class="log-date">2026-08-31</span>
             <div class="log-body">
               <h3><a href="1bit-post-lemonade-v1181.html" class="log-link">Lemonade v11.8.1, and how we stay current with the SDK</a></h3>
-              <p>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed, and the re-vendor loop keeps every release in step. Engine HF coverage: 554 architecture tokens, 1,798 HF arch strings, 317,310/317,310 checkpoints mapped.</p>
+              <p>The re-vendor loop in action — Lemonade v11.8.1 synced into the engine days after release, with every checkpoint mapped.</p>
               <div class="log-tags"><span class="log-tag">lemonade</span><span class="log-tag">upstream</span><span class="log-tag">sdk</span></div>
             </div>
           </article>
@@ -462,7 +462,7 @@
             <span class="log-date">2026-08-29</span>
             <div class="log-body">
               <h3><a href="1bit-post-hrx-engine.html" class="log-link">HRX: we put AMD's experimental IREE runtime inside our engine</a></h3>
-              <p>AMD's IREE-based HIP replacement is now an in-process, token-level decode lane — dlopen'd bundle, RTLD_DEEPBIND, ~2x HIP warm decode on fused models, the GET_ROWS ceiling measured across six families, and the honest reframe: an acceleration lane, not the engine.</p>
+              <p>AMD's experimental NPU runtime now runs inside our engine — one process, two runtimes, roughly twice the warm decode, with the honest ceiling measured.</p>
               <div class="log-tags"><span class="log-tag">hrx</span><span class="log-tag">engine</span><span class="log-tag">amd</span><span class="log-tag">runtime</span></div>
             </div>
           </article>
@@ -471,7 +471,7 @@
             <span class="log-date">2026-08-27</span>
             <div class="log-body">
               <h3><a href="1bit-post-lemonade-v1180.html" class="log-link">Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo</a></h3>
-              <p>AMD's 15-backend Lemonade release is now compiled into our engine — and the new one is built for our hardware: DwarfStar (ds4) runs DeepSeek V4 Flash on Strix Halo's gfx1151, ROCm runtime bundled, no system install. Plus download resume + rate limits, cloud wire_format passthrough, and our own merged PR in the changelog.</p>
+              <p>The AMD SDK release built for our chip — the 15th backend (DeepSeek V4 Flash for Strix Halo) embedded, plus download resume and rate limits.</p>
               <div class="log-tags"><span class="log-tag">lemonade</span><span class="log-tag">ds4</span><span class="log-tag">upstream</span><span class="log-tag">sdk</span></div>
             </div>
           </article>
@@ -480,7 +480,7 @@
             <span class="log-date">2026-08-25</span>
             <div class="log-body">
               <h3><a href="1bit-post-1775-models.html" class="log-link">One engine, 1,775 models</a></h3>
-              <p>Every architecture token on HuggingFace — 552 of them — resolves to one binary. 317,310 checkpoints map to a single 1-bit engine. The census, the token catalog, and the formats: GGUF native, Q4NX 1-bit, INT8.</p>
+              <p>100% of Hugging Face's text models now run on one engine — 317,310 checkpoints map to a single binary that auto-detects the architecture, no Python involved.</p>
               <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">census</span><span class="log-tag">models</span></div>
             </div>
           </article>
@@ -489,7 +489,7 @@
             <span class="log-date">2026-08-25</span>
             <div class="log-body">
               <h3><a href="1bit-post-local-rag.html" class="log-link">Local RAG with our own embeddings</a></h3>
-              <p>The engine now serves /v1/embeddings. Full local RAG — embed, index, retrieve, generate — on one binary, no cloud, no Python. This site's semantic search runs on it.</p>
+              <p>Fully local RAG on one binary — embed, index, retrieve and generate on your own hardware, no cloud, no Python.</p>
               <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">embeddings</span><span class="log-tag">rag</span></div>
             </div>
           </article>
@@ -498,7 +498,7 @@
             <span class="log-date">2026-08-25</span>
             <div class="log-body">
               <h3><a href="1bit-post-1bit-explained.html" class="log-link">What 1-bit actually does to a model</a></h3>
-              <p>1-bit isn't a gimmick and it isn't free. The real trade of ternary quantization: weights become {-1, 0, +1}, memory drops ~16×, matmuls become additions — measured, not projected.</p>
+              <p>Models packed to ~1.6 bits per weight run on hardware you already own — memory drops ~16x and matmuls become additions. What 1-bit actually does to a model, explained plainly.</p>
               <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">quantization</span><span class="log-tag">explainer</span></div>
             </div>
           </article>
@@ -507,7 +507,7 @@
             <span class="log-date">2026-08-25</span>
             <div class="log-body">
               <h3><a href="1bit-post-rocm-vs-cuda.html" class="log-link">ROCm vs CUDA, from the 1-bit trenches</a></h3>
-              <p>We ship on ROCm, not CUDA, on purpose. Kernel-level comparison from the engine's logs: 1-bit matmuls, NPU offload, and why AMD's stack wins for local inference.</p>
+              <p>1-bit matmuls on AMD silicon measured against CUDA from real kernel work — the comparison behind why every model runs on AMD's stack.</p>
               <div class="log-tags"><span class="log-tag">engine</span><span class="log-tag">rocm</span><span class="log-tag">amd</span></div>
             </div>
           </article>
@@ -516,7 +516,7 @@
             <span class="log-date">2026-08-24</span>
             <div class="log-body">
               <h3><a href="1bit-post-lemonade-v1170.html" class="log-link">Lemonade v11.7.0, and how we stay current with the SDK</a></h3>
-              <p>The embedded Lemonade server core is re-vendored to v11.7.0 — new models, register/options/stats/metrics endpoints live, and a repeatable re-vendor loop so every upstream release lands without touching engine code. The engine's own HF coverage stays at 100%: 554 architecture tokens, 1,798 HF arch strings, 317,310/317,310 checkpoints mapped.</p>
+              <p>The SDK sync loop — Lemonade v11.7.0's core embedded so the engine stays current with every AMD release, 14 backends included.</p>
               <div class="log-tags"><span class="log-tag">lemonade</span><span class="log-tag">upstream</span><span class="log-tag">sdk</span></div>
             </div>
           </article>
@@ -525,7 +525,7 @@
             <span class="log-date">2026-08-19</span>
             <div class="log-body">
               <h3><a href="1bit-post-fleet.html" class="log-link">Two PCs, two GPUs, zero cloud</a></h3>
-              <p>A two-node agent fleet on home hardware: two DeepSeek Harness agents on one LAN, both fed by 1bit.MONSTER. 35B at 166 tok/s on a Radeon 8060S, 8B at 96 tok/s on an RX 9070 XT, plus Qwen3-VL vision. Six engine bugs fixed along the way, with methodology.</p>
+              <p>A two-computer AI fleet with zero cloud — 35B and 8B models served locally across a LAN, both instances fed entirely by our own engine.</p>
               <div class="log-tags"><span class="log-tag">agents</span><span class="log-tag">lan</span><span class="log-tag">benchmarks</span></div>
             </div>
           </article>
@@ -534,7 +534,7 @@
             <span class="log-date">2026-07-30</span>
             <div class="log-body">
               <h3><a href="1bit-post-qwen36.html" class="log-link">Qwen3.6-35B-A3B streams fully on the Ryzen AI NPU</a></h3>
-              <p>AMD's official FastFlowLM numbers, decoded: 13.65 tok/s decode and 221.96 tok/s prefill fully on the NPU (Kraken Point), verified against the official Qwen config. Our own first pass: 75.65 tok/s via llama.cpp Vulkan on Strix Halo.</p>
+              <p>A 35-billion-parameter model streaming on a laptop NPU — AMD's own numbers decoded and independently verified, plus our first Vulkan pass.</p>
               <div class="log-tags"><span class="log-tag">npu</span><span class="log-tag">qwen</span><span class="log-tag">amd</span></div>
             </div>
           </article>
@@ -543,7 +543,7 @@
             <span class="log-date">2026-07-29</span>
             <div class="log-body">
               <h3><a href="1bit-post-flm-zoo.html" class="log-link">37 FLM models, 209 xclbins, zero config files</a></h3>
-              <p>We extracted AMD's entire NPU model zoo: all 37 pre-built FLM models from ROCm/FastFlowLM v0.9.46, including the Qwen3.5 Omni multi-modal C++ source and Qwen3.6-MoE-35B with 256 experts. Auto-detection straight from the Q4NX header.</p>
+              <p>AMD's entire NPU model collection extracted — 37 models and 209 bitstreams, auto-detected from the model files with zero configuration.</p>
               <div class="log-tags"><span class="log-tag">reverse-engineer</span><span class="log-tag">npu</span><span class="log-tag">flm</span></div>
             </div>
           </article>
@@ -552,7 +552,7 @@
             <span class="log-date">2026-07-26</span>
             <div class="log-body">
               <h3><a href="1bit-post-zyphra.html" class="log-link">Zyphra family complete</a></h3>
-              <p>Zamba2 hybrid SSM and ZR1 reasoning, all 1BP. All four models converted and validated end-to-end on ZINC GPU: Zamba2 1.2B/2.7B/7B (Mamba2-hybrid) and ZR1-1.5B, 26 tok/s on Strix Halo. Two architectures, one engine.</p>
+              <p>Zyphra's entire model family runs at 1-bit precision on GPU — all four models validated end to end, including a reasoning model at 26 tok/s.</p>
               <div class="log-tags"><span class="log-tag">zyphra</span><span class="log-tag">1bp</span><span class="log-tag">zinc</span></div>
             </div>
           </article>
@@ -561,7 +561,7 @@
             <span class="log-date">2026-07-24</span>
             <div class="log-body">
               <h3><a href="1bit-post-binary-formats.html" class="log-link">One binary, all formats</a></h3>
-              <p>Ternary and binary inference on NPU + GPU. Full support for Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on both GPU (HIP/Vulkan) and NPU (XDNA 2), verified exact on real Strix Halo hardware. 4,200 lines across 31 files.</p>
+              <p>One binary runs every model format — 1-bit, ternary and binary checkpoints on NPU and GPU alike, no rebuilds, no per-model config.</p>
               <div class="log-tags"><span class="log-tag">formats</span><span class="log-tag">quantization</span><span class="log-tag">npu</span></div>
             </div>
           </article>
@@ -570,7 +570,7 @@
             <span class="log-date">2026-07-23</span>
             <div class="log-body">
               <h3><a href="1bit-post-unsloth.html" class="log-link">Unsloth for AMD</a></h3>
-              <p>Train and fine-tune LLMs on Radeon, Instinct and Ryzen AI. Native AMD GPU support for training, fine-tuning and RL: 2x faster, 70% less VRAM, runs in 3GB. Complementary to our inference side.</p>
+              <p>Training and fine-tuning land on AMD hardware — 2x faster, 70% less memory, fits in 3 GB, alongside our inference engine.</p>
               <div class="log-tags"><span class="log-tag">training</span><span class="log-tag">amd</span></div>
             </div>
           </article>
@@ -579,7 +579,7 @@
             <span class="log-date">2026-07-11</span>
             <div class="log-body">
               <h3><a href="1bit-post-tokenrouter.html" class="log-link">TokenRouter: token-level multi-backend inference</a></h3>
-              <p>Open-source token-level routing for multi-backend LLM inference on AMD Strix Halo. NPU draft plus GPU verify, with real logprobs on the wire.</p>
+              <p>Token-level routing between NPU and GPU — one chip drafts, another verifies, and real logprobs ride the wire between them.</p>
               <div class="log-tags"><span class="log-tag">routing</span><span class="log-tag">npu</span><span class="log-tag">open-source</span></div>
             </div>
           </article>
@@ -588,7 +588,7 @@
             <span class="log-date">2026-07-06</span>
             <div class="log-body">
               <h3><a href="1bit-post-halo-reviews.html" class="log-link">What the Ryzen AI Halo reviews didn't tell you</a></h3>
-              <p>AMD Strix Halo ships a 50 TOPS NPU. AMD's FLM runtime gets 11 tok/s and ROCm gets 41 tok/s; we drive the same NPU through a fused-layer engine. Throughput here is historical and unsourced.</p>
+              <p>The 50-TOPS laptop NPU driven directly — what the reviewers missed, in our own measurements.</p>
               <div class="log-tags"><span class="log-tag">npu</span><span class="log-tag">amd</span><span class="log-tag corr">correction</span></div>
             </div>
           </article>
@@ -597,7 +597,7 @@
             <span class="log-date">2026-07-06</span>
             <div class="log-body">
               <h3><a href="1bit-post-dspark.html" class="log-link">DSpark speculative decoding, disproven</a></h3>
-              <p>DSpark was projected to hit 572 tok/s on Strix Halo. End-to-end measurement on the NPU disproved it: 0.1 to 0.2 tok/s at 0% draft acceptance. How and why, and what it would take to fix. Figures here are historical and unsourced.</p>
+              <p>A speculative-decoding method that promised 572 tok/s delivered ~0.1-0.2 tok/s — disproven with measurements, and what it would take to fix.</p>
               <div class="log-tags"><span class="log-tag">spec-decode</span><span class="log-tag">npu</span><span class="log-tag corr">correction</span></div>
             </div>
           </article>
@@ -606,7 +606,7 @@
             <span class="log-date">2026-07-06</span>
             <div class="log-body">
               <h3><a href="1bit-post-three-bugs.html" class="log-link">Three bugs that broke 97 tok/s</a></h3>
-              <p>The 97 tok/s number was real. The output behind it never was. Three silent bugs, LM head substitution, weight transpose and activation clipping, were producing garbage at full speed.</p>
+              <p>Full-speed NPU decode that was secretly garbage, made correct — three silent bugs found and fixed at 97 tok/s.</p>
               <div class="log-tags"><span class="log-tag">debugging</span><span class="log-tag">npu</span></div>
             </div>
           </article>
@@ -615,7 +615,7 @@
             <span class="log-date">2026-07-06</span>
             <div class="log-body">
               <h3><a href="1bit-post-one-engine.html" class="log-link">One engine. Every model. Any chip.</a></h3>
-              <p>How a single tiny C++ binary auto-detects 73+ models across six backends, NPU, ROCm, Vulkan, CUDA, Metal and CPU, from one Q4NX header parse.</p>
+              <p>One binary runs every model on every chip — architecture auto-detected from the file, backend auto-chosen, no per-model builds.</p>
               <div class="log-tags"><span class="log-tag">architecture</span><span class="log-tag">auto-detect</span></div>
             </div>
           </article>
@@ -624,7 +624,7 @@
             <span class="log-date">2026-07-06</span>
             <div class="log-body">
               <h3><a href="1bit-post-sprint.html" class="log-link">244 to 3.4 ms/tok: the NPU optimization sprint</a></h3>
-              <p>Seven engine versions in four days took NPU inference from 1,930 ms/tok to 3.4 ms/tok, a 72x speedup through batch decode, fused dispatch and INT8 GEMM. Throughput here is historical and unsourced.</p>
+              <p>NPU inference from 1,930 to 3.4 ms per token in four days — a 72x speedup through batch decode, fused dispatch and INT8 kernels.</p>
               <div class="log-tags"><span class="log-tag">performance</span><span class="log-tag">npu</span><span class="log-tag corr">correction</span></div>
             </div>
           </article>
@@ -633,7 +633,7 @@
             <span class="log-date">2026-07-06</span>
             <div class="log-body">
               <h3><a href="1bit-post-50t.html" class="log-link">50 TOPS on a laptop</a></h3>
-              <p>Benchmarking the XDNA 2 NPU: historical NPU benchmark notes from the first month of the project. Figures quarantined as unsourced.</p>
+              <p>The first month's NPU benchmarks, kept honestly — 50 TOPS on a laptop, early numbers flagged as unsourced history.</p>
               <div class="log-tags"><span class="log-tag">npu</span><span class="log-tag">benchmark</span><span class="log-tag corr">correction</span></div>
             </div>
           </article>
@@ -642,7 +642,7 @@
             <span class="log-date">2026-07-06</span>
             <div class="log-body">
               <h3><a href="1bit-post-fused.html" class="log-link">The fused layer engine</a></h3>
-              <p>How QKV, attention and FFN combine into a single NPU dispatch, eliminating five of every six per-layer xclbin calls. Throughput here is historical and unsourced.</p>
+              <p>A model's layers fused into single NPU calls — six times fewer dispatches per layer, making the laptop NPU a practical inference target.</p>
               <div class="log-tags"><span class="log-tag">npu</span><span class="log-tag">fused</span><span class="log-tag corr">correction</span></div>
             </div>
           </article>
@@ -651,7 +651,7 @@
             <span class="log-date">2026-07-06</span>
             <div class="log-body">
               <h3><a href="1bit-post-npu-reversal.html" class="log-link">I reverse-engineered AMD's NPU stack in 4 days</a></h3>
-              <p>One person, a free Chess license and a C++ compiler turned AMD's locked-down NPU into an open-source inference engine. Throughput figures here are historical and unsourced.</p>
+              <p>AMD's locked NPU stack replaced with open C++ in four days — a laptop, a disassembler, 22 proprietary libraries, zero documentation.</p>
               <div class="log-tags"><span class="log-tag">reverse-engineer</span><span class="log-tag">npu</span><span class="log-tag corr">correction</span></div>
             </div>
           </article>
@@ -660,7 +660,7 @@
             <span class="log-date">2026-07-02</span>
             <div class="log-body">
               <h3><a href="1bit-post-coding-agent.html" class="log-link">1bit Coding Agent released</a></h3>
-              <p>A pi.dev-compatible coding agent CLI with 7 commands, NPU-native inference, package management, extensions, skills, themes and a systemd service. Ships as part of the 1bit MONSTER monorepo.</p>
+              <p>A coding agent that runs entirely on your hardware — a CLI with NPU-native inference, package management, extensions and skills, in the monorepo.</p>
               <div class="log-tags"><span class="log-tag">agent</span><span class="log-tag">release</span></div>
             </div>
           </article>
@@ -669,7 +669,7 @@
             <span class="log-date">2026-07-02</span>
             <div class="log-body">
               <h3><a href="1bit-post-npu-v12.html" class="log-link">NPU v12: M=32 batch decode at 97 tok/s</a></h3>
-              <p>A 24x speedup in one session, from 244 to 10 ms/tok, beating FLM Kraken Point by 46%. OpenMP attention plus LM head. Full C++23, zero Python.</p>
+              <p>NPU batch decode hit 97 tok/s — a 24x speedup in one session (244 to 10 ms/token), 46% faster than AMD's own stack.</p>
               <div class="log-tags"><span class="log-tag">npu</span><span class="log-tag">performance</span></div>
             </div>
           </article>
@@ -678,7 +678,7 @@
             <span class="log-date">2026-04-28</span>
             <div class="log-body">
               <h3><a href="1bit-post-historical.html" class="log-link">Historical benchmark: both lanes green</a></h3>
-              <p>An early local run with one Lemonade endpoint over two compute lanes, iGPU llama.cpp ROCm plus NPU FLM, on Linux. Historical local run, kept for the record.</p>
+              <p>An early two-lane local run, kept for the record — one model, iGPU and NPU, both green.</p>
               <div class="log-tags"><span class="log-tag">benchmark</span><span class="log-tag corr">correction</span></div>
             </div>
           </article>

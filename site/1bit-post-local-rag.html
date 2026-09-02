@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>Local RAG with our own embeddings | 1bit.MONSTER</title>
-  <meta name="description" content="Ask questions over your own documents: search, retrieval and generation fully on one local binary — no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md" />
+  <meta name="description" content="Milestone: fully local RAG on one binary — embed, index, retrieve and generate on your own hardware, no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="Local RAG with our own embeddings | 1bit.MONSTER" />
-  <meta property="og:description" content="Ask questions over your own documents: search, retrieval and generation fully on one local binary — no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md" />
+  <meta property="og:description" content="Milestone: fully local RAG on one binary — embed, index, retrieve and generate on your own hardware, no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-local-rag.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Local RAG with our own embeddings | 1bit.MONSTER" />
-  <meta name="twitter:description" content="Ask questions over your own documents: search, retrieval and generation fully on one local binary — no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md" />
+  <meta name="twitter:description" content="Milestone: fully local RAG on one binary — embed, index, retrieve and generate on your own hardware, no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-local-rag.html" />
 <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Local RAG with our own embeddings | 1bit.MONSTER", "description": "Ask questions over your own documents: search, retrieval and generation fully on one local binary — no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md", "url": "https://1bit.monster/1bit-post-local-rag.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-local-rag.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Local RAG with our own embeddings | 1bit.MONSTER", "description": "Milestone: fully local RAG on one binary — embed, index, retrieve and generate on your own hardware, no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md", "url": "https://1bit.monster/1bit-post-local-rag.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-local-rag.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -355,7 +355,7 @@
       <h1>Local RAG with our own embeddings</h1>
       <p class="lead">The engine now serves /v1/embeddings. Full local RAG — embed, index, retrieve, generate — on one binary, no cloud, no Python.</p>
       
-      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md">CODEBASE reference</a> — the full technical details, numbers and corrections.</p></div>
+      <div class="callout"><p><b>Milestone:</b> fully local RAG on one binary — embed, index, retrieve and generate on your own hardware, no cloud, no Python. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md">Full technical write-up &rarr; CODEBASE reference</a></p></div>
       <div class="prose">
         <h2>Embeddings, in the engine</h2>
         <p>The engine's server now exposes <span class="mono">/v1/embeddings</span> alongside <span class="mono">/v1/chat/completions</span>. Load an embedding model — <span class="mono">nomic-embed-text-v1-GGUF</span> is one command away — and the same binary that generates tokens also produces 768-dim vectors. No second server, no Python, no cloud API.</p>

@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER</title>
-  <meta name="description" content="A full 8-billion-parameter model running entirely on AMD's laptop NPU: attention and experts on-device, served over HTTP. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md" />
+  <meta name="description" content="Milestone: an 8-billion-parameter model now runs entirely on AMD's laptop NPU — attention and experts on-device, served over HTTP, decode 8.4 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER" />
-  <meta property="og:description" content="A full 8-billion-parameter model running entirely on AMD's laptop NPU: attention and experts on-device, served over HTTP. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md" />
+  <meta property="og:description" content="Milestone: an 8-billion-parameter model now runs entirely on AMD's laptop NPU — attention and experts on-device, served over HTTP, decode 8.4 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-zaya-q4nx-hrx.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER" />
-  <meta name="twitter:description" content="A full 8-billion-parameter model running entirely on AMD's laptop NPU: attention and experts on-device, served over HTTP. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md" />
+  <meta name="twitter:description" content="Milestone: an 8-billion-parameter model now runs entirely on AMD's laptop NPU — attention and experts on-device, served over HTTP, decode 8.4 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-zaya-q4nx-hrx.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER", "description": "A full 8-billion-parameter model running entirely on AMD's laptop NPU: attention and experts on-device, served over HTTP. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md", "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-31", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER", "description": "Milestone: an 8-billion-parameter model now runs entirely on AMD's laptop NPU — attention and experts on-device, served over HTTP, decode 8.4 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md", "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-31", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -359,7 +359,7 @@
       <p class="lead">Zyphra&rsquo;s Zaya 8B, quantized to our Q4NX tile format, running entirely on the AMD Strix Halo NPU &mdash; attention and MoE both on-device, no CPU fallback. Logits match the F32 reference to float noise, decode does 8.4&nbsp;t/s, and it serves over HTTP.</p>
 
       
-      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md">ws12-hrx-loom rounds</a> — the full technical details, numbers and corrections.</p></div>
+      <div class="callout"><p><b>Milestone:</b> an 8-billion-parameter model now runs entirely on AMD's laptop NPU — attention and experts on-device, served over HTTP, decode 8.4 tok/s. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md">Full technical write-up &rarr; ws12-hrx-loom rounds</a></p></div>
       <div class="prose" data-od-id="body">
         <h2>The lane</h2>
         <p>HRX is AMD&rsquo;s IREE-derived runtime &mdash; Loom source-first kernels JIT-compiled for the XDNA 2 NPU. We spent this month turning it from a platform-transition watch into an actual execution lane for our own models: the Q4NX tile format (4-bit int4 + BF16 scales, 5120-byte tiles) that our engine uses natively, executed on the NPU.</p>

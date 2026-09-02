@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER</title>
-  <meta name="description" content="We proved our NPU engine runs models bit-for-bit the way AMD's own software does — verified across a full 1,000-token generation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
+  <meta name="description" content="Milestone: our NPU decode is now bit-for-bit identical to AMD's own runtime — verified across a full 1,000-token generation, zero differences. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER" />
-  <meta property="og:description" content="We proved our NPU engine runs models bit-for-bit the way AMD's own software does — verified across a full 1,000-token generation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
+  <meta property="og:description" content="Milestone: our NPU decode is now bit-for-bit identical to AMD's own runtime — verified across a full 1,000-token generation, zero differences. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-byte-identical.html" />
   meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER" />
-  <meta name="twitter:description" content="We proved our NPU engine runs models bit-for-bit the way AMD's own software does — verified across a full 1,000-token generation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
+  <meta name="twitter:description" content="Milestone: our NPU decode is now bit-for-bit identical to AMD's own runtime — verified across a full 1,000-token generation, zero differences. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-byte-identical.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER", "description": "We proved our NPU engine runs models bit-for-bit the way AMD's own software does — verified across a full 1,000-token generation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-byte-identical.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-byte-identical.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-09-02", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER", "description": "Milestone: our NPU decode is now bit-for-bit identical to AMD's own runtime — verified across a full 1,000-token generation, zero differences. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-byte-identical.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-byte-identical.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-09-02", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -356,7 +356,7 @@
       <p class="lead">Last week ended with corr 1.000000 on one prefill shape. This is what it took to hold byte-identity through a whole generation &mdash; a validation loop that closed layer-by-layer, a rope table reverse-engineered out of the runtime&rsquo;s .rodata, and the one place byte-identity does not hold, found honestly.</p>
 
       
-      <div class="callout"><p><b>Technical write-up:</b> <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">journey.md — 09-02 session</a> — the full technical details, numbers and corrections.</p></div>
+      <div class="callout"><p><b>Milestone:</b> our NPU decode is now bit-for-bit identical to AMD's own runtime — verified across a full 1,000-token generation, zero differences. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">Full technical write-up &rarr; journey.md — 09-02 session</a></p></div>
       <div class="prose" data-od-id="body">
         <h2>The bar we set</h2>
         <p>Last week&rsquo;s <a href="1bit-post-zaya-q4nx-hrx.html">Zaya post</a> ended with a number that sounded like a rounding: the engine&rsquo;s hand-rolled NPU launcher hit <b>corr 1.000000</b> against the real FastFlowLM runtime on prefill, argmax 397&nbsp;==&nbsp;397. This post is what it took to hold that through a <b>whole generation</b> &mdash; and the one place where byte-identity does <i>not</i> hold, which we only found by chasing it.</p>
