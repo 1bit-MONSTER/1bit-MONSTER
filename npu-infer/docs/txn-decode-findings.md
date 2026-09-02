@@ -927,3 +927,22 @@ engine's post-fwd2 kv == the runtime's POST-WAIT kvpost (0 diffs for both
 L0 and L27). The kvpost reference MUST come from the interposer's
 runlist::wait hook (post-wait dumps), never the post-execute/post-loop
 dumps.
+
+### Post-reboot validation steps (Round 36 close)
+
+After a clean reboot (clears the wedged amdxdna driver + the competing
+npu-verify/lemonade NPU holder):
+
+1. Verify the NPU is healthy: `cd /tmp/txn_decode && ./run_qwen3_npu
+   /home/bcloud/Qwen3-0.6B-NPU2 1` then check logits_1000.bin argmax == 397
+   (std 3.38). If argmax == 1121 (std 0.65) the NPU is still wedged.
+2. Fresh 28-layer 3-token capture (FULL dumps — never CAP_SKIP_BIG):
+   `CAP_DIR=/tmp/capR LD_PRELOAD=/tmp/txn_decode/cap_interposer.so
+   ./run_qwen3_npu /home/bcloud/Qwen3-0.6B-NPU2 3`
+   (model config: num_hidden_layers=28 in /home/bcloud/Qwen3-0.6B-NPU2).
+3. Run the engine test: `RT_FWD3=1 CAP_DIR=/tmp/capR
+   /tmp/txn_decode/test_runtime_layer /home/bcloud/Qwen3-0.6B-NPU2
+   /tmp/txn_decode/rt` — expect fwd1+fwd2 act BYTE-IDENTICAL, logits
+   BYTE-IDENTICAL, fwd3 act vs actpost_006.
+4. If the fwd3 kv reference is needed, use the interposer's POST-WAIT
+   kvpost files (kvpost_006 = complete fwd3 kv), never post-execute dumps.
