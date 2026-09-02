@@ -62,6 +62,30 @@ per-weight corr gate → env-gated OFF by default until that gate is run.
    fused single launch (silu is in-kernel); read C2 and add to h. Keep the
    int8 GU+D fallback when the xclbin/env is absent.
 
+### Qwen3-0.6b dense-FFN decode scope (pinned 2026-09-02)
+
+The dense FFN runs GU→host-SiLU→D (e.g. single-token path:
+`FLM_GO(cg,…,GU)` → host `gate*silu(up)` → `FLM_GO(cd,…,D)`). Swapping in the
+fused GU+SiLU requires:
+
+1. **Weight switch (the real change)**: the dense GU currently loads via
+   float-dequant + int8 `FLM_PACKB(cg,l,wg.data(),H,gr,gsc[l])`. The i4 fused
+   needs the **raw Q4NX** tiles (`read_q4nx_raw` → `RawQ4Tensor`) into
+   `packB_into_fused_i4` (GuI4Pack), building `cg_fused_i4`'s weight BO — a
+   different packing path than the float→int8 packB.
+2. **Decode swap (multiple paths)**: in each dense-FFN decode (single-token
+   line ~2941, batched rows, batch2), when `cg_fused_i4` is ready, use the
+   fused P1 (GU→C1 via `launch_fused` + h2) instead of `FLM_GO(cg)`, then the
+   **quantized host-siLU** (`silu_quant_i8_fused_q22` — the on-core silu is
+   miscompiled on aie2p, so the P1 writes C1 and the host applies the q22
+   sigmoid+fold), then `FLM_GO(cd,…,D)`.
+3. **Gate**: per-weight fused corr (MoE out vs CPU float) target ≥0.999.
+
+This is why the wiring is multi-session: it changes the GU load path
+(float→raw-Q4NX+GuI4Pack) and touches every dense-FFN decode path with a
+different (quantized) silu contract. The geometry + xclbin + fused machinery
+are all confirmed; the remaining is this load-path + decode-path integration.
+
 ### Qwen3-0.6b fused geometry (pinned from the generator, 2026-09-02)
 
 The p1 fused generator (`n1_core_fused_gu_silu_d_p1_i4.py`) takes `-M -K -N_GU
