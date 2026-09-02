@@ -911,3 +911,19 @@ device).
   leave the device in a bad state) — always capture with full dumps.
 - A concurrent `npu-verify` lemonade server shares /dev/accel0 and causes
   intermittent no-op/NaN results; validate on idle periods.
+
+### Reconciliation note (Round 36, post-commit)
+
+A concurrent session's commits (6629012d/7f58a875/d8cb64be) concluded
+"engine token-1 K/V computation differs from the runtime" (K corr 0.81,
+V corr 0.02). That conflicts with the engine's byte-identical fwd2 act +
+logits here. The resolution: their reference kvpost was a MID-STATE dump
+(they themselves flagged "the runtime's kvpost capture timing remains a
+confounder... the capture is mid-state"). The engine's fwd2 output is
+byte-identical to the runtime (act maxdiff 0, logits byte-identical) — the
+attention at ctx=2 reads tokens 0 AND 1, so identical output FORCES
+identical token-1 kv. Direct kv comparison on a healthy NPU confirmed the
+engine's post-fwd2 kv == the runtime's POST-WAIT kvpost (0 diffs for both
+L0 and L27). The kvpost reference MUST come from the interposer's
+runlist::wait hook (post-wait dumps), never the post-execute/post-loop
+dumps.
