@@ -50,3 +50,24 @@ Remaining: extract the reorder_cpy's chunk-offset rule (the stride math
 from the disassembly, or a full row->file map) so the engine's packer
 reproduces the interleave; then the weight BOs + forward loop complete the
 35B engine path.
+
+## UPDATE 2 — the reorder algorithm formalized (from the full BO mapping)
+
+The layer-0 weight BO (486 MB nonzero) structure:
+- rows 0..65535: up_exps + gate_exps INTERLEAVED (32768+32768 rows)
+  - the up/gate rows at file-rel [3912 + 4736k], k-order =
+    [7,15, 0,8,16,24, 1,9,17,25, ...] = col-major over 8 tile-cols in
+    4-row blocks with the col-7 rows at the block heads
+    (k = 32b-1, 32b+7, 32b+15, 32b+23, then cols 0-6 rows 4b..4b+3)
+- rows 65536..66000: the down_exps' FIRST 2196680 B (~464 rows)
+- rows 66000..102624: the down_exps at [2196680 + 4736j] (j = 0..36600)
+- row0 = the share_up's last 824 B + the up_exps' first 3912 B (the
+  tensors are file-contiguous; the 4736-slices cross the boundaries)
+- the 4736 = 4096 data + 512 scales + 128 zps, NO value transform
+
+The packer algorithm: per tensor in the desc order, emit the file's
+[base + 4736k] slices where base/k follow the per-tensor pattern (3912 +
+col-major k-order for the 8-col experts; the down at 2196680 + 4736j; the
+share tensors at their tails). The captures (~/.cache/moe-cap) verify the
+packer byte-for-byte. The qkv/gate_proj/ssm_out (the 8704-col tensors)
+follow the same rule with their own bases.
