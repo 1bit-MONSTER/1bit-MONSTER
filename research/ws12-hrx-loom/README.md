@@ -1835,6 +1835,38 @@ Build contract (all file:line-verified):
   jit_config specialization per (D,H,H_KV) with KV read dynamically from
   the mask binding's byte size (mask is [KV,N] f32, current KV = size /
   (N*4)), keeping KV out of the constants entirely.
+
+RESOLVED in-session (fa0 build attempt, part 1):
+- Constants ABI CONFIRMED workable: the 208-B host struct maps onto the
+  kernel's launch scalar args positionally. module_abi.c: scalar args pack
+  at 4-byte words: bool/i32/f32 = 1 word, index/64-bit = 2 words. The
+  struct = 22 index args (6 dims + 16 byte-strides) + f32 scale + i32
+  has_mask + f32 max_bias,m0,m1,logit_softcap + i32 n_head_log2,has_sinks
+  = 52 words = 208 B. A minimal kernel with mixed launch args
+  (index/f32/i32/buffer) COMPILES via loom-link, and the def must contain
+  a kernel.launch.config (dummy workgroups(1,1,1) workgroup_size(256) is
+  fine — the host dispatch overrides the grid).
+- All kernel primitives verified in-tree: f16 reads via
+  view<[N]xf16> + scalar.extf (mul_mat_f16_f32_batched.loom), byte-strides
+  -> element index via div-by-elementsize, workgroup.reduce<maxnumf>
+  (soft_max_f32.loom) and reduce<addf>, scalar.expf<afn>. The reference
+  softmax (soft_max_f32.loom) gives the exact masked-softmax pattern
+  (mask added to score; -inf -> exp 0).
+- Kernel structure designed (256 lanes, per wg = (n,h,s)): stage q to LDS;
+  kv-chunk loop (256 kv/lane-iter) with per-lane d-loop dot (reads qL LDS
+  broadcast + k f16 global), scores to LDS (v1 caps KV <= 2048 via the
+  route shape domain -> graceful fallback beyond); masked softmax over LDS
+  scores (reduce maxnumf/addf per the reference); pL[kv] normalized in
+  LDS; then 128 d-lanes accumulate out[d] = sum_kv pL[kv]*v(hg,kv,d) and
+  write dst row (h*D+d) at byte n*dst_nb2 + (h*D+d)*4 (+ s*dst_nb3).
+- REMaining work = pure careful writing of the algorithm body (~200 lines:
+  the d-loop dots, LDS softmax with barriers, output pass, mask read,
+  dst bound proofs) — no remaining unknowns. Route JSON: family
+  flash_attn_fa0_f32_f16, op CONT, binding_count 6, parameter_count 6,
+  constant_byte_length 208, workgroup_size 256, rows_per_workgroup 1,
+  shape domain D=128 KV 1..2048 N 1..512 H 1..16 H_KV 1..2 S 1;
+  sources/artifacts/index entries mirror r16w's pattern. Kernel file:
+  kernels/flash_attn_fa0_f32_f16.loom, export hrx2_flash_attn_fa0.
 - Correctness gate: with GGML_HRX2_DISABLE_F16_FA0_ATTENTION_FUSION unset,
   decode generations must be token-identical to the env-set (non-fused)
   path on 3B/7B; per-layer fused outputs vs the reference kq/softmax/kqv
