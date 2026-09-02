@@ -1343,6 +1343,35 @@ use their kernel-argument group ids (group-0 BOs ignored, can wedge the NPU
 with IO_PAGE_FAULTs); Q4NX dequant is W = (q − zp) · scale (group-major bf16
 scales/zeros, lane-swizzled nibbles), maxdiff 0.0 over the whole projection.
 
+### Round 25n — generic norm fusions: prefill is launch-bound, pp32 +33% (fork a1f573b)
+
+Decode trace forensics corrected a wrong model: the per-dispatch
+`elapsed_us` is only HOST submit time (~1 µs) — the real GPU execution
+hides inside `hrx_stream_synchronize` (which is why batch syncs were
+28 ms/token while per-dispatch syncs showed 13-26 µs kernels). Fitting
+time/token vs model size across 0.5B/3B/7B gives decode = 3.7 ms fixed +
+weights @ **65 GB/s** — decode is weight-bandwidth-bound, so kernel COUNT
+is irrelevant there (and the norm fusion correctly did nothing to tg32).
+Prefill is the opposite: 652 dispatches/token at ~31 µs launch overhead
+each → cutting dispatch count is the lever.
+
+The ADD→RMS_NORM→MUL and RMS_NORM→MUL fusion routes existed but NEVER
+fired on the 3B: they only covered ncols=3072/4096 while n_embd=2048 was
+uncovered (same class of route-coverage gap as 25j's ROPE/GLU). Added
+generic `rms_norm_mul_f32_generic_wg512` + `add_rms_norm_mul_f32_generic_wg512`
+(ncols 1-65536, nrows 1-1048576). Two gotchas: the kernels need the
+`vector_width=4` tuning binding the exact routes carried (my first generic
+append omitted it → JIT CONFIG/INVALID "ncols=2048 violates"), and the
+route JSONs are hand-formatted (compact arrays) — json.dump reformats the
+whole file, so append text-level in the original style.
+
+pp32 dispatches per graph ~2600 → 2028. Verified (sequential): 3B pp32
+81.6 → **108.3** (+33%), tg32 29.7 → 30.1 (noise-flat, as expected);
+roster 0.5B 617→652, 0.6B 461→523, 7B 30.3→38.5, GLM 43.1→48.9,
+MiniCPM4 24.4→31.9, 30B 47.1→54.3. Correctness "Paris." unchanged.
+Note: 25k/25m (co-worker, on the same fork line) are included in the
+pushed history (a1f573b's parents 5e4f14a, 3cd275b).
+
 ### Round 25h — the 16-row decode kernel landed (fork e452b5e): tg32 +13-16%
 
 The deferred kernel project from 25e shipped: `hrx2_mul_mat_q4nx_fused_f32_r16`
