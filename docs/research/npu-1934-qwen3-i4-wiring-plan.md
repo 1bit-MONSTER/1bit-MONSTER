@@ -817,3 +817,22 @@ a subtle per-layer scale, or the compounding of small errors over 28 layers.
 Next: validate fuse_dw_b against the true float FFN per layer and reconcile
 the residual/dsc scale. This is now a much narrower refinement than the
 garbage-C1 blocker (which is resolved).
+
+### Round-202: D GEMM output is WRONG vs host float D (DREF diagnosis)
+
+Added a DREF diagnostic (NPU_FUSED_DDBG): dequant the down_proj to float
+(dwf=[IM,H]), compute the host float D GEMM dref[o]=sum_i fuse_su_b[i]*dwf[i*H+o],
+and compare to the NPU D GEMM output (fuse_dw_b). Result: corr=0.068
+(l=0), bad=1024/1024, with dw[0]=2.882 vs dref[0]=2.702. So the NPU D GEMM
+output does NOT match the host float D computation.
+
+The h2 input (fuse_su_b) is correct (bit-exact int4). So the D GEMM itself
+(FLM_GO(cd, l, fuse_su_b, 1, IM, ad, dsc[l], ...)) is producing the wrong
+output — the input scale ad (dynamic_ascale of fuse_su_b) and/or the int8 D
+weight quantization (dsc[l]) are misaligned with the model's D down_proj.
+
+Next: reconcile the D GEMM input scale (ad) and D-weight scale (dsc) with a
+known-correct float FFN down. This is the last major #1934 blocker (the GU
+and h2 are now correct). Also confirm the fused_use D GEMM should use
+cg_fuse_dbo (the fused D BO) rather than the separate int8 cd, OR ensure the
+int8 cd D weights are scaled to match the fused h2 units.

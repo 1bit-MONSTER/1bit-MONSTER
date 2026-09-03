@@ -3339,6 +3339,25 @@ struct Bf16Ctx {
                             && getenv("NPU_FUSED_DDBG") && atoi(getenv("NPU_FUSED_DDBG")) == 1) {
                             fprintf(stderr, "[DDBG l=%d] dw[0..3]=%.3f %.3f %.3f %.3f\n",
                                     l, fuse_dw_b[0], fuse_dw_b[1], fuse_dw_b[2], fuse_dw_b[3]);
+                            if (dp[l]) {
+                                int dr2, dc2;
+                                float* dwf = dequant_i8_to_float_ex(i8p(dp[l]), d_i8, DIN, &dr2, &dc2);
+                                // Host float D GEMM: D_ref[o] = sum_i fuse_su_b[i] * W[i][o]
+                                std::vector<double> dref(H, 0.0);
+                                for (int o = 0; o < H; o++)
+                                    for (int i = 0; i < IM; i++)
+                                        dref[o] += (double)fuse_su_b[i] * dwf[(size_t)i * H + o];
+                                double dmae = 0; int dbad = 0; double dnum = 0, ddk = 0, ddc = 0;
+                                for (int o = 0; o < H; o++) {
+                                    double d = fabs((double)fuse_dw_b[o] - dref[o]);
+                                    dmae += d; if (d > 1e-3) dbad++;
+                                    dnum += fuse_dw_b[o] * dref[o]; ddk += fuse_dw_b[o]*fuse_dw_b[o]; ddc += dref[o]*dref[o];
+                                }
+                                fprintf(stderr, "[DREF l=%d] npu_vs_hostfloat: mae=%.4f bad=%d/%d corr=%.6f dw[0]=%.3f dref[0]=%.3f dref[1]=%.3f dref[2]=%.3f dref[3]=%.3f\n",
+                                        l, dmae / H, dbad, H, dnum / sqrt(ddk * ddc),
+                                        fuse_dw_b[0], dref[0], dref[1], dref[2], dref[3]);
+                                free(dwf);
+                            }
                         }
                         for (int i = 0; i < H; i++) fh[i] = fsb[i] + fuse_dw_b[i];
                         }
