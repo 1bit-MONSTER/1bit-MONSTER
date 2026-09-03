@@ -732,3 +732,28 @@ Next concrete step: decode the accel ioctl numbers from the loaded amdxdna.ko
 (ioctl dispatch) or drive the probe through the runlist-capable XRT 2.26 at
 /usr/local/xrt-runlist (built for this driver), which may expose correct VAs
 for XRT-created BOs.
+
+## Round 63 — driver probe: deterministic allocation map captured (2026-09-03)
+
+The ioctl interposer (corrected with the debugfs-confirmed request numbers
+CREATE_BO=0xC0206443, GET_BO_INFO=0xC0206444) captured the runtime's FULL
+1576-BO allocation sequence + per-BO DRM map offsets:
+
+- First: DEV_HEAP 64MB @ map 0x100000000; then DEV BOs (no map); then the
+  40x 512MB SHMEM pools SEQUENTIALLY from 0x104000000 (512MB stride:
+  0x104000000, 0x124000000, 0x144000000...) — exactly the load order from
+  the moe-cap4 manifest. Smaller BOs (2MB @0x464000000 etc.) interleave at
+  deterministic positions.
+- get_bo_info.xdna_addr stays 0 even after BO use on this driver build
+  (not populated); the DRM map_offset = the deterministic per-allocation
+  handle. vaddr = 0 for the runtime's BOs (driver-managed).
+- Debugfs /sys/kernel/debug/accel/0000:c6:00.1/ exposes ioctl_id (confirms
+  the request numbers), ctx_rq, get_app_health, powerstate, telemetry*.
+
+Implication for the replay: the allocation MAP is deterministic and now
+known (replicate the sizes/order → same map offsets). Whether the map offset
+= the device-VA basis the moe ELF TXNs reference collapses into the
+empirical single-layer run: allocate the runtime's BO sequence, load the moe
+layer ELF, submit — if the kernel reads the right content, the map offsets
+ARE the VA basis and the replay works. Tools banked: ioctl interposer +
+allocation map + the exact request numbers.
