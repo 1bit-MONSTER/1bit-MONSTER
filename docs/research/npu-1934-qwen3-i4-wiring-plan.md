@@ -940,3 +940,24 @@ sign-flipped vs the int8 GU up (which is negative). This is why the int4 h2
 Next: fix the int4 C1 up column (sign + qn_s scale) so u4 matches the int8 GU
 up (negative, ~0.54 magnitude). Check whether B_shadow's up column is
 sign-flipped, or the qn_s in the up fold should be removed/negated.
+
+### Round-211: qn_s in the up fold + sign flip — the int4 up needs scale/sign reconciliation
+
+GUDIAG shows: gate g4=1.42 vs g8=0.888 (1.6x, same sign); up u4=18.63 vs
+u8=-0.54 (34x, SIGN-FLIPPED). If I drop qn_s from the up fold (u4=C1[up]*ag*S_col),
+u4 -> 0.81 vs -0.54 (magnitude ~1.5x, consistent with the gate's 1.6x), so qn_s
+in the up fold is a MAGNITUDE over-count. But the up is still SIGN-FLIPPED
+(int4 up +, int8 GU up -), which qn_s removal doesn't fix.
+
+So there are TWO int4 up issues: (1) qn_s over-counts the up magnitude
+(34x -> ~1.5x), and (2) the up C1 sign is flipped vs the int8 GU up. Issue
+(2) is suspicious given B_shadow is byte-verified correct and C1[up] matches
+the host C1h — so either fuse_gt_b[IM] (int8 GU up) is not the same up as the
+int4 C1 up column (a gate/up layout difference between the int8 and int4 GU),
+or the int4 B'' up column genuinely has the antipodal sign. Deep analysis
+needed: compare B_shadow[:, up] sign to the model up weight sign directly.
+
+Next: fix the up fold (drop qn_s) AND reconcile the up sign so u4 matches the
+int8 GU up (negative, ~0.54). With both g and u at ~1.5x/1.6x a single scale
+factor, the h2 = silu(g)*u should then match the int8 reference and give token
+760.
