@@ -757,3 +757,32 @@ empirical single-layer run: allocate the runtime's BO sequence, load the moe
 layer ELF, submit — if the kernel reads the right content, the map offsets
 ARE the VA basis and the replay works. Tools banked: ioctl interposer +
 allocation map + the exact request numbers.
+
+## Round 64 — replay allocation replication DIVERGES at seq 1 (2026-09-03)
+
+The single-layer probe's determinism test: allocate the runtime's BO sizes in
+order via XRT, compare the driver CREATE_BO sequence to the runtime's (R63
+log). Result: **divergence at seq 1** — the runtime's XRT creates internal
+DEV BOs (~400KB/268KB: xclbin/insts buffers) before the pools; a bare
+XRT ext::bo sequence creates a different internal BO (64MB SHMEM scratch)
+instead. XRT's internal allocations (xclbin load, insts buffers, hwctx
+setup) are part of the driver sequence and cannot be skipped.
+
+Conclusion: reproducing the runtime's device-VA layout from userspace
+requires replicating the ENTIRE XRT call sequence including its internal
+BOs — i.e., driving the identical init path as the runtime, which is fragile
+and offers no advantage over the runtime itself. The moe ELFs' addresses are
+bound to the runtime's full allocation context.
+
+Realistic paths for the 35B engine replay, in order:
+1. Drive the same XRT init sequence (register xclbin -> hwctx -> the runtime's
+   BO set incl. internal DEV BOs) then layer ELFs — a full re-implementation
+   of the runtime's init, fragile but self-contained.
+2. Runtime source or the flm server binary (the model's proper serving path).
+3. Accept the 35B runtime is NaN/broken on this lib (R59) until a fixed lib
+   or the Q4NX open-source release (arXiv 2602.06063 group) arrives.
+
+The R43-64 bank: byte-verified packer specs (pools+linear, R50), the capture
+oracle, the get_logits/lm_head map, the driver allocation map + ioctl numbers
+(R63), and this divergence finding. The 35B lane is at a genuine
+architectural boundary for userspace replication.
