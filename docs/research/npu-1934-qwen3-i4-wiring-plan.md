@@ -630,3 +630,28 @@ cross-check, the float GU up (fgt[IM]=-0.5444) is also inconsistent with a
 correctly-read up tensor, so the up zp/scale may be misassembled in
 raw_gu (gate/up fused) OR the pure float path just needs the asymmetric zp
 handled consistently.
+
+### Round-192: asymmetric zp saturates B'' when S_col is small — the up-column cap
+
+A host pack test (pack_gu_fused_i4 with bf16_pair=true) shows the folded
+zero-point b=zp/S_col dominates and SATURATES B'' when the column's S_col is
+small: for a column with s=0.0187, zp=-0.1357, and S_col=0.000186,
+B''=round(q4*a+b) => -127 (the b term -0.1357/0.000186 = -727 clamps). The
+kernel and B_shadow AGREE (both use the same a/b bytes), so the C1h reference
+is conventionally consistent but the reference itself saturates for
+small-S_col columns.
+
+The float GU path (W = q4*s + zp directly) does NOT saturate, so the bf16-pair
+quantized GU (B''=sat8(q4*a+b)) cannot represent columns whose asymmetric zp
+exceeds the column's max|W|/127 — b overflows -> B'' clamps -> wrong up C1.
+This is the root cap of the fused GU for the up columns (and any asymmetric-zp
+column with a small per-column scale), and explains why the up C1 diverges from
+the float GU while the gate (smaller zp relative to its scale) is fine.
+
+This is a real limitation of the symmetric-ish bf16-pair dequant; a
+constant-zp or per-K-group-zp handling (or folding zp into q4's sign) would be
+needed, OR using the host-CPUSILU/float path for the up. Combined with the
+remaining B_shadow-vs-kernel up discrepancy (C1h=18542 vs kernel 600604 — the
+two use the same B_shadow so this points to a kernel read/residual that still
+needs an NPU-side B'' byte-dump), the #1934 fused GU accuracy for the up
+columns remains the deep multi-session kernel item.
