@@ -1092,3 +1092,19 @@ CONCLUSION: #1934 (int4 fused FFN) is functionally COMPLETE at the 4-bit level
 remaining accuracy is the inherent 4-bit weight quantization (expected). The
 per-group restructure is a refinement that improves int4 fidelity but doesn't
 close the 4-bit-vs-8-bit gap. Default float decode unchanged (760).
+
+### Round-247: refining the "4-bit fundamental" conclusion — per-column S_col scale error is partially fixable
+
+Correcting the earlier "4-bit fundamental limit" overstatement. The int4/float
+token gap (3936 vs 760) has TWO components: (1) the 4-bit nibble RESOLUTION
+(16 levels/weight — fundamental, caps below 8-bit), and (2) the PER-COLUMN
+S_col scale error in B''=W/S_col (a single coarse scale per column, which
+mis-scales the 4-bit weights when a column has large dynamic range). Component
+(2) is PARTIALLY fixable by the per-group restructure (finer per-K-group S_col),
+which would move the token from 3936 toward the true 4-bit optimum. It still
+cannot reach 760 (the 4-bit resolution caps it below the 8-bit int8 path).
+
+So the per-group restructure has genuine value: reduce the per-column S_col
+scale error to improve the int4 fidelity within the 4-bit domain. This is the
+multi-session next step (a coupled kernel+pack+fold change with silicon
+revalidation), not a pure "fundamental limit" with no gain.
