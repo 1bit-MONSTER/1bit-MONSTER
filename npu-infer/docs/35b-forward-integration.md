@@ -341,3 +341,41 @@ arg conventions (dtype/flags per the crash evidence: dtype=8 family) and
 match the output against the layer-6 BOs; once one qkv/ssm_out row shape is
 byte-verified, the region A+B packer spec follows (per-tensor orders are the
 same mapping class already solved for up/gate/down).
+
+## Round 49 — PARKED: qkv transform blocked; reorder_cpy ruled out as pool producer (2026-09-03)
+
+Three further negatives close this RE sub-thread for now:
+
+1. **reorder_cpy output does NOT appear in the captured expert pool.** The
+   verify_moe_reorder direct-call (dlopen + `(gen_layer_seq−0x97ad0)+0x68b80`,
+   still PASSES on the current lib) emits 16 rows of A/B-interleaved trimmed
+   tiles for up_exps; those exact bytes are absent from the layer-0 pool
+   (bo_to_0140). The pool is filled by a plain window-copy in gen_k_up order
+   (R43's byte-verified model) — the R38 "reorder produces the pool layout"
+   framing is superseded; reorder_cpy serves a different (linear-attn)
+   purpose, if any.
+2. **reorder_cpy direct calls on qkv rows segfault** (geometry-specific: the
+   16x8704/4736-trim geometries crash the clone — consistent with its
+   documented latent chunk-overflow bug). Blind function probing is not
+   productive.
+3. qkv raw/windowed/reordered content matches NO captured file under any
+   tested geometry after R43-49 (pool/2MB/5MB BOs, all conventions).
+
+### Recommendation — park the byte-exact 35B runtime-replication lane
+
+The npu-infer 35B runtime-replication (byte-identical weight BOs) is blocked
+on one transform (qkv/region A+B) behind: (a) no FastFlowLM source on-box,
+(b) a latent runtime bug, (c) exhaustive-negative content probes. The lane's
+hard-won assets remain valuable: expert-pool layout byte-verified (R43),
+load architecture + per-layer BO map (R46-48), runtime text-load unlock +
+73GB capture oracle (R47). Genuine options, in order of leverage:
+
+1. **Runtime-as-server**: the 35B text tower now loads + prefills on the
+   runtime (vision-off config) — usable as the 35B reference/serving path
+   directly (npu-infer engine replication optional).
+2. **1bit production engine**: npu_engine_universal.cpp's own NPU_MOE path
+   (per-expert kernels + packers, #1473 line) already targets the 35B with
+   its own xclbins — the npu-infer replication is not the only route.
+3. Re-engage the qkv transform only if runtime source becomes available
+   (upstream fetch) or a captured qkv BO is obtained (interposer capture
+   requires beating the ASLR-dependent reorder bug ~50% of the time).
