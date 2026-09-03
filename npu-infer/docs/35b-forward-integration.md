@@ -470,3 +470,32 @@ Status: the qkv kernel-format BOs are now OBSERVABLE (map-hook or this
 arg-dump path), so the remaining permutation is a mapping puzzle on real
 captures — no longer a capture problem. The 100% packer spec awaits that
 permutation; everything else per-layer is byte-verified.
+
+## Round 53 — qkv permutation: exhaustive structural negatives (2026-09-03)
+
+With the layer-0 kernel-format captures in hand (moe-cap4/qkv_l0_fmt_bo{,2}.
+bin), tested every tractable structural hypothesis for the qkv → kernel
+layout:
+
+- not a contiguous file slice (head/tail)
+- not a column-slice (any 512-col window, contiguous or strided), not rows
+- not a [256,8,4352] axis rotation / blocked col slice / transposed
+  [4352,2048] out-row slice
+- d-rows (2048x512) not contained in single qkv rows; d-columns not equal to
+  single qkv columns → values interleave across qkv rows/cols at fine
+  (sub-512) granularity
+- d/d2 value composition (68-69% |v|>5000, ~53% positive, mean 974-983) is a
+  near-uniform representative sample of qkv's (72.7% / 53.5% / 974) — the
+  selection is spread across the whole tensor
+
+Also: the runlist-1 i5 2MB arg BOs are SHARED buffers (same bo pointer across
+runs/layers: 54790 x3, 55770 x2, 55f60 x3) — they are the layer kernel's
+shared norm/state args, NOT the per-layer qkv BOs (which sync as bo_to_0159-
+equiv, mean ~1000 for layer 6).
+
+Conclusion: the qkv kernel-format permutation is a fine-grained
+rearrangement produced by the runtime's closed weight-prep (qwen3_6_reorder
+family). Deriving it byte-exactly requires the runtime source or a
+considerably deeper differential campaign (e.g., per-value flips mapped
+through the BO). Everything else in the per-layer layout is byte-verified
+100% (R50).
