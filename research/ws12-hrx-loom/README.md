@@ -2364,3 +2364,13 @@ that delivered token-identical single-seq decode and the +50% r16wb4c8r
 r16wb4c8r cols=4 +50% aggregate 4-parallel (fd43e14ac), 0-col no-op fix
 (0f52c297a), all committed; cols=4 = 94% of 4-parallel mms (round-28) so
 the occupancy lever is exhausted.
+
+**Round-30 note — 80B MoE re-bench (backlog item, done):** qwen3next-80b-q4nx
+single-seq decode on the current kernel set (r16w/r16x8t/r16wb4c8r + fa0):
+llama-bench tg32 **7.06 t/s** (pp32 7.08) — the MoE decode path (mul_mat_id
+grouped/tbl) is unchanged by the dense r16-family kernels, so no gain over
+the 25-era ~7.2 baseline (the round-25 "+10% to 7.9" figure was measured
+under different conditions). llama-simple -n 40 decode reads 9.42 t/s on the
+same model — harness-dependent (bench includes its own eval pattern).
+Coherent output verified. The 80B MoE decode lever would be on the grouped
+mul_mat_id path (out of scope for the dense r16 work).
