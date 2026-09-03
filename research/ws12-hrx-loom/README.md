@@ -2374,3 +2374,14 @@ under different conditions). llama-simple -n 40 decode reads 9.42 t/s on the
 same model — harness-dependent (bench includes its own eval pattern).
 Coherent output verified. The 80B MoE decode lever would be on the grouped
 mul_mat_id path (out of scope for the dense r16 work).
+
+**Round-31 note — two corrections + 30B bench deferred.** (1) The earlier
+"llama-server streaming responses never close under concurrency" hypothesis
+is RETRACTED: single/2/4-concurrent streaming completions all close cleanly
+(rc=0, full SSE bodies) — the recurring "hangs" were the test harness's
+plain `kill` blocking on servers busy in GPU work, not a server bug. (2)
+Reported earlier "device-fault-window" noise is the standing confound: after
+the 4-parallel burst suite the device enters HSA_STATUS_ERROR_MEMORY_FAULT
+state (30B bench: qwen3coder-30b-q4nx llama-bench tg32 faulted twice, even
+after 90s idle; the 3B and 80B benches ran clean earlier in the same
+window). 30B roster number deferred to a clean device/reboot window.
