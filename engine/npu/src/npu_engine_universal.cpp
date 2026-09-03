@@ -3110,8 +3110,12 @@ struct Bf16Ctx {
                             std::vector<int8_t> h2h(IM);
                             for (int p = 0; p < IM; p++)
                                 h2h[p] = h2m[(p >> 3) * 8 + (p & 7)];
+                            // fuse_su_b = the float model h2 (silu(g)*u) for the D GEMM.
+                            // h2h = sat8(round(model_h2)) is already model-scale; qn_s is
+                            // the FOLD scale (up fold ag*qn_s*S_col), NOT a h2 dequant
+                            // scale — dividing by it makes the D input ~qn_s too small.
                             for (int p = 0; p < IM; p++)
-                                fuse_su_b[p] = (float)h2h[p] / qn_s;
+                                fuse_su_b[p] = (float)h2h[p];
                             if (getenv("NPU_FUSED_H2DBG") && atoi(getenv("NPU_FUSED_H2DBG")) == 1) {
                                 FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
                                 cn(fuse_gt_b.data(), fmlp_out);

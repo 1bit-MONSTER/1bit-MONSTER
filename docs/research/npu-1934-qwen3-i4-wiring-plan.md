@@ -836,3 +836,18 @@ known-correct float FFN down. This is the last major #1934 blocker (the GU
 and h2 are now correct). Also confirm the fused_use D GEMM should use
 cg_fuse_dbo (the fused D BO) rather than the separate int8 cd, OR ensure the
 int8 cd D weights are scaled to match the fused h2 units.
+
+### Round-202b: fuse_su_b was over-divided by qn_s — D GEMM scale fix
+
+fuse_su_b[p] = h2h[p]/qn_s made the D GEMM input ~qn_s too small. h2h =
+sat8(round(model_h2)) is ALREADY model-scale; qn_s is the FOLD scale (up fold
+ag*qn_s*S_col), NOT a h2 dequant scale. Changed to fuse_su_b[p] = h2h[p].
+
+Result (live NPU): dw[0] went 2.882 -> 66.27 (23x larger, correct scale), and
+next_token 56538 -> 3936 (much closer to float 760). The D GEMM input is now
+model-scale.
+
+The remaining DREF corr=0.068 (with the correct scale) reflects the int8 D
+GEMM quantization vs full float — a smaller, separate residual. Next: refine
+the D GEMM input scale / int8 D weight scale so the D output matches the float
+FFN more closely, driving next_token toward 760.
