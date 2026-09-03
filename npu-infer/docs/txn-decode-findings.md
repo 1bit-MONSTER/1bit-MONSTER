@@ -1390,3 +1390,26 @@ Both relevant boots survive in journalctl — the DRIFTING boot (-1: Sep-2
    firmware internal config set at device bring-up, not distinguishable in
    dmesg. Root-causing further needs firmware-level tracing (dump_fw_trace/
    telemetry at a drifting boot) or a captured drifting-boot device state.
+
+## Round 67 — #2052 re-verified on the restored boot: mm-vs-seq divergence is intrinsic (2026-09-03)
+
+Re-ran the round-39 A/B (runtime batched model.prefill(ids) vs N x
+model.forward(tok), Qwen3-0.6B, 162-token prompt) on the CURRENT restored
+boot (R41 re-gate state, argmax-397 signature) to rule out drift
+contamination of the round-39 conclusion:
+
+- corr(mm logits, seq logits) = **0.926976** (round-39: 0.934-0.945 on
+  shorter prompts)
+- maxdiff = **6.91** (round-39: 3.29-3.69 on 4/30-token prompts — grows with
+  prompt length, consistent with the magnitude-correlated GEMM-numerics
+  finding)
+- argmax matches (151667) on this prompt (round-39 saw diverging argmax on
+  some prompts = near-tie dependent, expected)
+
+Conclusion: the runtime's two prefill paths disagree numerically on a
+HEALTHY boot with the same magnitudes as round-39 → the divergence is an
+intrinsic property (batched-mm vs per-token-mv GEMM accumulation), NOT
+drift. Round-39's root cause (single confounder = GEMM accumulation
+numerics; engine == runtime-seq byte-exact) is confirmed drift-independent.
+The #2052 open question (replicate the SERVED mm-prefill) remains a
+product-matching decision, not a correctness gap.
