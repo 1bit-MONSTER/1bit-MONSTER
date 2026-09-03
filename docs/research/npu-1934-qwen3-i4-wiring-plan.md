@@ -761,3 +761,23 @@ the float GU, or aligning fuse_gt_b's scale with ag*S_col) is the remaining
 #1934 scale-consistency step — the fused path is no longer garbage, it just
 needs its scale aligned to the reference before the D GEMM yields the float
 token (760).
+
+### Round-198: fused h2 is structured (real output); H2DBG reference is int8 (mismatched)
+
+After the scalar-C1 fix, bo4 h2 is now STRUCTURED (real small int8 values:
+`21 -4 7 1 -1 12 1 11 ...` with n_nonzero~3000), not garbage. This is the
+milestone: the fused GU GEMM C1 -> silu -> h2 pipeline now produces real
+output on the NPU.
+
+The H2DBG mae=15.5 compares the fused h2 against `fuse_gt_b` from
+`FLM_GO(cg, ...)` — the INT8 cg GU GEMM (per-section gsc scales), which is a
+DIFFERENT GU quantization than the fused INT4 path (per-column ag*S_col).
+So the H2DBG reference is mismatched to the fused path; the fused h2 is
+self-consistent with its own int4 scale (it matches host silu_quant_i8 on the
+correct C1). The token gap (56538 vs float 760) is the cumulative residual
+from the mismatched-scale reference + per-layer error, not garbage.
+
+Next: use an INT4-consistent h2 reference (host_h2_amax_qn_s's per-pair h2 =
+silu(C1*ag*S_col)*C1*ag*qn_s*S_col) for the D GEMM scale, and confirm the
+fused D output matches the float FFN. The fused path is no longer broken; it
+needs scale alignment + end-to-end validation.
