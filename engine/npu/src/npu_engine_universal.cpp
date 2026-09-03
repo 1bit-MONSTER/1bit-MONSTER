@@ -3346,11 +3346,13 @@ struct Bf16Ctx {
                             if (dp[l]) {
                                 int dr2, dc2;
                                 float* dwf = dequant_i8_to_float_ex(i8p(dp[l]), d_i8, DIN, &dr2, &dc2);
-                                // Host float D GEMM: D_ref[o] = sum_i fuse_su_b[i] * W[i][o]
+                                // Host float D GEMM: dequant_i8_to_float_ex outputs
+                                // [out_rows, out_cols] = [H, IM] row-major (in_features=DIN=IM
+                                // -> out_cols=IM, rows=H). D_ref[o] = sum_i fuse_su_b[i] * W[o][i].
                                 std::vector<double> dref(H, 0.0);
                                 for (int o = 0; o < H; o++)
                                     for (int i = 0; i < IM; i++)
-                                        dref[o] += (double)fuse_su_b[i] * dwf[(size_t)i * H + o];
+                                        dref[o] += (double)fuse_su_b[i] * dwf[(size_t)o * IM + i];
                                 double dmae = 0; int dbad = 0; double dnum = 0, ddk = 0, ddc = 0;
                                 for (int o = 0; o < H; o++) {
                                     double d = fabs((double)fuse_dw_b[o] - dref[o]);

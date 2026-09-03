@@ -851,3 +851,19 @@ The remaining DREF corr=0.068 (with the correct scale) reflects the int8 D
 GEMM quantization vs full float — a smaller, separate residual. Next: refine
 the D GEMM input scale / int8 D weight scale so the D output matches the float
 FFN more closely, driving next_token toward 760.
+
+### Round-204: DREF layout bug — D GEMM is actually CORRECT (corr 0.99995)
+
+The DREF probe indexed dwf as [IM, H] but dequant_i8_to_float_ex returns
+[out_rows, out_cols] = [H, IM] (in_features=DIN=IM -> out_cols=IM, rows=H).
+Fixed DREF to dref[o]=sum_i fuse_su_b[i]*dwf[o*IM+i]. Result: DREF corr 0.068 ->
+**0.999947** (dw[0]=66.272 vs dref[0]=65.913, dw=-18.389... all match). So the
+NPU D GEMM output is CORRECT for the given (correct, bit-exact, model-scale) h2
+input.
+
+So all #1934 components are now correct: C1 (corr 0.787), h2 (bit-exact),
+D GEMM (corr 0.99995). The next_token=3936 vs float 760 gap is NOT per-layer
+arithmetic error — it's the residual accumulation buffering / cross-layer
+state (mismatch between the fused path's intermediate fh and the reference
+after layer 0), or a single early-layer setup discrepancy. The fused kernel
+math is correct; the end-to-end token divergence is a wiring/residual issue.
