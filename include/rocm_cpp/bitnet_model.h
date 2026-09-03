@@ -595,6 +595,8 @@ typedef enum {
     RCPP_ARCH_BANANAMIND21CODER = 995,  // bananamind21_coder — BananaMind21CoderForCausalLM (BananaMind-2.1 code LM; registry token, engine support XL, PICO-family candidate)
     RCPP_ARCH_BANANAMIND21LITE = 996,   // bananamind21_lite_25m — BananaMind21Lite25MForCausalLM (registry token, engine support XL, PICO-family candidate)
     RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT = 997, // concept_dominant_gptbert — ConceptDominantGPTBertForPreTraining (GPT/BERT-hybrid pre-training class; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_SPARK2_5 = 1000,        // spark2_5 — Spark-X2.5 (XHToken) hybrid sliding/full-attention GQA: 3x sliding-window-512 per full-attn layer, per-layer-type partial RoPE, headwise attn output gate (sigmoid), gelu, head_dim 256, 1M native ctx (registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_TINYTRANSFORMER = 1001, // tinytransformer — TinyTransformerForCausalLM minimal custom-code transformer (Mayuresh231/tiny-transformer-29m; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2493,6 +2495,21 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "bananamind21lite25m") == 0) return RCPP_ARCH_BANANAMIND21LITE;   // census stripped arch name
     if (strcmp(s, "concept_dominant_gptbert") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // HF model_type (issue #2031)
     if (strcmp(s, "conceptdominantgptbertforpretraining") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // census stripped class name
+    // ── 2026-09-03 census breach (issue #2061): spark2_5 + tinytransformer ──
+    // spark2_5 = Spark-X2.5-4B (XHToken/Spark-X2.5-4B, base of ProCreations/
+    // BetterWright-4b): hybrid 3:1 sliding/full attention (window 512),
+    // per-layer-type partial RoPE (full 0.25, sliding 1.0; thetas 5e6/1e4),
+    // sigmoid headwise attn output gate, gelu MLP, head_dim 256, kv=4 GQA,
+    // native 1M position range. NOT llama/qwen/GDN — sliding + partial-rope
+    // + output gating need config-mapped layer math (engine support XL).
+    if (strcmp(s, "spark2_5") == 0) return RCPP_ARCH_SPARK2_5;             // HF model_type (issue #2061, registry token)
+    if (strcmp(s, "spark2_5forcausallm") == 0) return RCPP_ARCH_SPARK2_5;  // raw HF architecture string (regression guard)
+    // tinytransformer = Mayuresh231/tiny-transformer-29m: minimal custom-code
+    // transformer (config uses dim/ff_dim/layers/heads/context keys, custom
+    // modeling file, vocab 4096, max_pos 256) — no profile fit (registry token).
+    if (strcmp(s, "tinytransformer") == 0) return RCPP_ARCH_TINYTRANSFORMER;         // census stripped arch name (issue #2061, registry token)
+    if (strcmp(s, "tiny_transformer") == 0) return RCPP_ARCH_TINYTRANSFORMER;       // HF model_type
+    if (strcmp(s, "tinytransformerforcausallm") == 0) return RCPP_ARCH_TINYTRANSFORMER;  // raw HF architecture string (regression guard)
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type

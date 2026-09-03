@@ -635,7 +635,8 @@ struct GenericBackend : Backend {
             cfg.arch == RCPP_ARCH_QU_SSM || cfg.arch == RCPP_ARCH_ARO_BABYLM ||
             cfg.arch == RCPP_ARCH_BREEZE_TTS || cfg.arch == RCPP_ARCH_HYV4 ||
             cfg.arch == RCPP_ARCH_BANANAMIND21CODER || cfg.arch == RCPP_ARCH_BANANAMIND21LITE ||
-            cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT) {
+            cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ||
+            cfg.arch == RCPP_ARCH_SPARK2_5 || cfg.arch == RCPP_ARCH_TINYTRANSFORMER) {
             fprintf(stderr, "  [generic] Refusing to load %s (arch=%d%s) via safetensors\n",
                     f.c_str(), (int)cfg.arch,
                     cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" :
@@ -646,7 +647,9 @@ struct GenericBackend : Backend {
                     cfg.arch == RCPP_ARCH_HYV4 ? " HYV4 — Gated-MLA text LM registry token, engine support XL (issue #2031)" :
                     cfg.arch == RCPP_ARCH_BANANAMIND21CODER ? " BANANAMIND21CODER — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
                     cfg.arch == RCPP_ARCH_BANANAMIND21LITE ? " BANANAMIND21LITE — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
-                    cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ? " CONCEPT_DOMINANT_GPTBERT — pre-training-class registry token (issue #2031)" : "");
+                    cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ? " CONCEPT_DOMINANT_GPTBERT — pre-training-class registry token (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_SPARK2_5 ? " SPARK2_5 — Spark-X2.5 hybrid sliding/full-attention GQA registry token, engine support XL (issue #2061)" :
+                    cfg.arch == RCPP_ARCH_TINYTRANSFORMER ? " TINYTRANSFORMER — minimal custom-code transformer registry token, engine support XL (issue #2061)" : "");
             return false;
         }
 
@@ -1525,7 +1528,8 @@ struct GenericBackend : Backend {
             hdr_cfg.arch == RCPP_ARCH_QU_SSM || hdr_cfg.arch == RCPP_ARCH_ARO_BABYLM ||
             hdr_cfg.arch == RCPP_ARCH_BREEZE_TTS || hdr_cfg.arch == RCPP_ARCH_HYV4 ||
             hdr_cfg.arch == RCPP_ARCH_BANANAMIND21CODER || hdr_cfg.arch == RCPP_ARCH_BANANAMIND21LITE ||
-            hdr_cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT) {
+            hdr_cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ||
+            hdr_cfg.arch == RCPP_ARCH_SPARK2_5 || hdr_cfg.arch == RCPP_ARCH_TINYTRANSFORMER) {
             const char* hint = "";
             if (hdr_cfg.arch == RCPP_ARCH_QWEN35)
                 hint = " — Qwen3.5 Gate-Delta requires NPU (FLM/XRT) or HIP backend";
