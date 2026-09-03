@@ -706,3 +706,29 @@ device-VA scheme for ext::bo. Everything else for the 35B engine replay is
 banked (captured BOs, moe ELFs, verified content, 5-BO ABI). The probe
 utility (alloc order → addresses) is the starting point once the VA query
 is resolved.
+
+## Round 62 — driver-VA probe: GET_BO_INFO located; raw-ioctl + interposer results (2026-09-03)
+
+Attacked the device-VA question at the driver level:
+
+- The amdxdna ioctl header is IN-REPO (npu-infer/include/npu_utils/amdxdna_accel.h):
+  `amdxdna_drm_get_bo_info` returns `xdna_addr` (the XDNA device VA) + vaddr/
+  map_offset; CREATE_BO takes size/type/vaddr. Types: INVALID/SHMEM/DEV_HEAP/DEV/
+  CMD/DMA.
+- Raw CREATE_BO on /dev/accel/accel0 fails EINVAL for all types without the
+  proper hwctx setup (XRT's xclbin→hwctx handshake is a prerequisite — not
+  replicable in a few lines).
+- An LD_PRELOAD ioctl interposer on the runtime catches calls on fd 3 =
+  /dev/accel/accel0, but the request numbering (0xc0206443-style: nr bits =
+  100, type byte 0x20) does not trivially equal DRM_COMMAND_BASE+enum — the
+  driver's _IOC encoding needs decoding from the module. Interposers also
+  destabilize the 35B load (segfaults), making iteration slow.
+- No amdxdna debugfs BO map exists (debugfs/dri = the iGPU only).
+
+State: the device-VA question (do replicated BOs land at the moe ELF's
+0x40000000/0x1bc00000... addresses?) remains OPEN. The tools are banked:
+GET_BO_INFO struct + header, the allocation-order probe, the ioctl interposer.
+Next concrete step: decode the accel ioctl numbers from the loaded amdxdna.ko
+(ioctl dispatch) or drive the probe through the runlist-capable XRT 2.26 at
+/usr/local/xrt-runlist (built for this driver), which may expose correct VAs
+for XRT-created BOs.
