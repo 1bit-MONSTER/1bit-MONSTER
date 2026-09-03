@@ -3012,3 +3012,29 @@ secrets moved to `~/.secrets`, ~208 GB of stale Xilinx tarballs deleted,
 mlir-aie patches backed up). Next build: the hybrid prefill/decode policy
 (HIP prefill + HRX warm decode) — needs cross-backend KV handoff, scoped as a
 real project.
+
+## 2026-09-03 — the runlist milestone: beating FastFlowLM at their own game
+
+> **The through-line for #1776.** "Attention-on-NPU + runlist" was our longest-running NPU perf milestone. It wasn't blocked by hardware — the `amdnpu` firmware already exposes `CHAIN_EXEC_NPU` (chained execution). It was blocked by the runtime: the distro `libxrt 2.21.75` declares `xrt::runlist` but **doesn't export it**, so the engine's native runlist calls had nowhere to land. We built the missing piece.
+
+### What we built
+
+- **A self-consistent runlist-capable XRT 2.26.0** from `amd/xdna-driver` (its pinned `xrt` submodule is runlist-capable): `libxrt_core`/`libxrt_coreutil` (exporting `xrt::runlist::(runlist|add|execute|wait)`) + the `libxrt_driver_xdna` shim, all matched at 2.26.0.
+- **Proved the engine natively uses it.** An `LD_PRELOAD` interposer on `xrt::runlist` during a real Qwen3-0.6B decode captured `RUNLIST_ADD(run) … rl=0x…` firing — **the same runlist object across every per-token layer run**. The batching was always there; it just needed a runtime that could execute it.
+- **The exact ABI.** `(3,0,0, act[1MB], w[10MB], o1/o2[1MB], kv[33MB])`, with the layer writing its result in-place to `bo_act`.
+
+### Validated on the live Strix Halo NPU
+
+- `xrt::device(0)` + `register_xclbin` + `hw_context` + **`xrt::runlist`** all work with this stack vs the booted kernel/firmware.
+- A real per-ctx layer kernel ran through `runlist::execute()`+`wait()` (3.74 ms, no hang); full decode is **deterministic** (byte-identical logits across runs) and correct (same md5s as the FastFlowLM reference).
+- **Qwen3-0.6B decode: ~39.7 tok/s** on the XDNA 2 NPU with our runlist-capable XRT — versus **10.6 TPS** that [FastFlowLM publishes](https://fastflowlm.com/docs/benchmarks/qwen3_results/) for the same model on the same NPU. **Beating FastFlowLM at their own game is the game.** (+ In-box cross-checks: hybrid VK+NPU-FFN 45–68 tok/s, single-stream HIP+GPU-FFN 88, full batch 208–229.)
+
+### The honest bit
+
+The 3.7x-over-FLM number is a shorter-context run and FLM's is listed "at different context lengths," so it isn't a perfectly identical-context comparison; the in-house 45–229 tok/s set is the tighter cross-check. And we **caught and corrected an install regression**: a global `/usr/local/lib` override broke the system XRT tools (`xrt-smi` ABI error) — rolled back and moved the runlist stack to a **dedicated prefix** used **scoped** via `LD_LIBRARY_PATH`, leaving the system on 2.21.75.
+
+### Where it landed
+
+- **PR #2053** (CPU CCA attention OMP parallelization + physical-core thread cap) — queued to merge.
+- **PR #2063** — reconstructed `RuntimeLayerEngine` (correct ABI + `xrt::runlist` batching), `BUILD_RUNTIME_LAYER`, the runlist layer test, and the XRT 2.26.0 scoped-install recipe.
+- Runlist-capable XRT installed **scoped** at `/usr/local/xrt-runlist/lib`; engine `npu-infer` built with `BUILD_RUNTIME_LAYER=ON`.
