@@ -28,6 +28,11 @@ typedef enum {
     RCPP_WEIGHT_FORMAT_Q1_0_BINARY  = 8,   // 1-bit binary (Q1_0, 128-block, fp16 scale + sign bits)
     RCPP_WEIGHT_FORMAT_TQ2_0_LLAMA  = 9,   // llama.cpp TQ2_0 native (2.0625 bpw, 256-block)
     RCPP_WEIGHT_FORMAT_TQ1_0_LLAMA  = 10,  // llama.cpp TQ1_0 native (1.6875 bpw, 256-block)
+    RCPP_WEIGHT_FORMAT_Q4_K         = 11,  // llama.cpp Q4_K native (4.5 bpw, 256-block)
+    RCPP_WEIGHT_FORMAT_Q6_K         = 12,  // llama.cpp Q6_K native (6.56 bpw, 256-block)
+    RCPP_WEIGHT_FORMAT_Q8_0         = 13,  // llama.cpp Q8_0 native (8.5 bpw, 32-block)
+    RCPP_WEIGHT_FORMAT_IQ1_S        = 14,  // llama.cpp IQ1_S native (1.5625 bpw, 256-block)
+    RCPP_WEIGHT_FORMAT_IQ1_M        = 15,  // llama.cpp IQ1_M native (1.75 bpw, 256-block)
 } rcpp_weight_format_t;
 
 typedef enum {

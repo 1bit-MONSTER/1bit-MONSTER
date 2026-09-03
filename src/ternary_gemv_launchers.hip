@@ -134,6 +134,18 @@ extern "C" rcpp_status_t rcpp_iq_gemv(
     return RCPP_OK;
 }
 
+extern "C" void q4k_gemv_f16_launch(const void*, const void*, void*, int, int, void*);
+
+extern "C" rcpp_status_t rcpp_q4k_gemv_f16(
+    const void* packed, const void* x_fp16, void* y_f16,
+    int M, int K, void* stream)
+{
+    if(!packed || !x_fp16 || !y_f16) return RCPP_INVALID_ARG;
+    if(M <= 0 || K <= 0) return RCPP_INVALID_ARG;
+    q4k_gemv_f16_launch(packed, x_fp16, y_f16, M, K, stream);
+    return RCPP_OK;
+}
+
 extern "C" rcpp_status_t rcpp_standalone_gemm(const void* A_dev, const void* B_dev_packed, void* C_dev, int M, int N, int K, void* stream) {
     if(!A_dev || !B_dev_packed || !C_dev) return RCPP_INVALID_ARG;
     if(M <= 0 || N <= 0 || K <= 0) return RCPP_INVALID_ARG;

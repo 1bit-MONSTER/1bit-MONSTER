@@ -212,6 +212,15 @@ rcpp_iq_gemv(const void* packed_weights_dev,
              int M, int K, int dtype, void* stream);
 
 // -----------------------------------------------------------------------------
+// Q4_K native GGUF GEMV — fp16-in / fp16-out, dequant-in-kernel.
+// Weights are raw llama.cpp Q4_K block bytes (GGUF dtype 12): [M][nb*144].
+rcpp_status_t
+rcpp_q4k_gemv_f16(const void* packed_weights_dev,
+                  const void* x_fp16_dev,
+                  void*       y_f16_dev,
+                  int M, int K, void* stream);
+
+// -----------------------------------------------------------------------------
 // Primitive kernels — support math so consumers don't have to write their own.
 // All are batch=1 (decode). Batched variants come with Phase 6 KV cache work.
 

@@ -1,93 +1,70 @@
-// Q4_K packed GEMV with WMMA — 4 independent warps, minimal registers.
-// Header/scales broadcast from lane 0; nibbles loaded on-the-fly.
+// q4k_gemv.hip — Q4_K native GGUF GEMV (dequant-in-kernel).
+//
+// Reads llama.cpp GGML_TYPE_Q4_K blocks (GGUF dtype 12) directly on device —
+// no CPU dequant, no conversion. Block layout (256 elements, 144 bytes):
+//   d[fp16] dmin[fp16] scales[12] qs[128]
+// Element e of the block sits at qs byte (e>>6)*32 + (e&31), low nibble when
+// (e&32)==0 else high nibble; scale group is e>>5 (8 groups of 32) decoded
+// with llama.cpp's get_scale_min_k4. Bit-exact decode is pinned by
+// Testing/q4k_selfcheck.cpp (kernel port vs dequantize_row_q4_K).
+//
+// This is a correctness-first GEMV: one thread per output row, fp32
+// accumulate, fp16 out — the same contract as the sherry_fp16 lane. WMMA /
+// DP4A variants for prefill are a later optimization (the original WMMA
+// version in this file computed the same dot for every row in a block —
+// issue #1274 — so it is not a usable baseline).
 
 #include <hip/hip_runtime.h>
 #include <hip/hip_fp16.h>
 
-using half16_t = __attribute__((ext_vector_type(16))) __fp16;
-using float8_t = __attribute__((ext_vector_type(8))) float;
+#define Q4K_BLOCK_K 256
+#define Q4K_BYTES 144     // d(2) + dmin(2) + scales(12) + qs(128)
 
-// ── Header read: returns d, dm, and full scales[12] ───────────────
-// All 32 lanes get the header from lane 0 via __shfl.
-__device__ __forceinline__ void read_q4k_header(
-    const uint8_t* blk,
-    float& d, float& dm, uint8_t sc[12])
-{
-    if (threadIdx.x % 32 == 0) {
-        d  = (float)*(const __fp16*)(blk);
-        dm = (float)*(const __fp16*)(blk + 2);
-        for (int i = 0; i < 12; i++) sc[i] = blk[4 + i];
-    }
-    d  = __shfl(d, 0);
-    dm = __shfl(dm, 0);
-    for (int i = 0; i < 12; i++) sc[i] = (uint8_t)__shfl((int)sc[i], 0);
-}
-
-// ── On-the-fly dequant of one tile (16 elements) ──────────────────
-// Reads nibbles from blk + 16, returns half16_t vector.
-__device__ __forceinline__ half16_t dequant_q4k_tile(
-    const uint8_t* blk, int tile, float d, float dm, const uint8_t sc[12])
-{
-    int group = tile >> 1;
-    uint8_t sv, mv;
-    if (group < 4) { sv = sc[group] & 63; mv = sc[group + 4] & 63; }
-    else { sv = (sc[group + 4] & 0xF) | ((sc[group - 4] >> 6) << 4);
-           mv = (sc[group + 4] >> 4) | ((sc[group] >> 6) << 4); }
-    float sf = d * (float)sv, mf = dm * (float)mv;
-    const uint8_t* qs = blk + 16 + tile * 8;
-    half16_t r;
-    #pragma unroll
-    for (int i = 0; i < 16; i++)
-        r[i] = (__fp16)((float)(int)((qs[i/2] >> ((i&1)<<2)) & 0xF) * sf - mf);
-    return r;
-}
-
-// ── Q4_K WMMA GEMV: 4 warps, 64 rows/block ───────────────────────
-// Grid = (M/64, 1), block = 128. No shared memory, no sync.
-// Each warp loads the Q4_K block independently (L1 cache hit after warp 0).
-__global__ void q4k_gemv_wmma(
-    __half* __restrict__ out_,
-    const __half* __restrict__ in_,
-    const uint8_t* __restrict__ W,
+__global__ void q4k_gemv_kernel(
+    const uint8_t* __restrict__ W,      // [M][nb * Q4K_BYTES] raw GGUF rows
+    const __half*  __restrict__ x,      // [K] fp16 activations
+    __half*        __restrict__ y,      // [M] fp16 out
     int M, int K)
 {
-    int warp = threadIdx.x >> 5;
-    int lane = threadIdx.x & 31;
-    int row = blockIdx.x * 64 + warp * 16;
+    int row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= M) return;
 
-    const __fp16* in = (const __fp16*)in_;
-    __fp16* out = (__fp16*)out_;
-    int nb = (K + 255) / 256;
-    float8_t acc = {};
+    const int nb = (K + Q4K_BLOCK_K - 1) / Q4K_BLOCK_K;
+    const size_t row_stride = (size_t)nb * Q4K_BYTES;
+    const uint8_t* base = W + (size_t)row * row_stride;
 
+    float sum = 0.0f;
     for (int b = 0; b < nb; b++) {
-        // warp*16 row offset — all 4 warps used to read warp 0's weights
-        // (issue #1274), so every row of the block got dot(x, W[row0]).
-        const uint8_t* blk = W + (((size_t)(blockIdx.x * 64) + (size_t)warp * 16) * nb + b) * 144;
+        const uint8_t* blk = base + (size_t)b * Q4K_BYTES;
+        float d   = (float)*(const __fp16*)(blk);
+        float dm  = (float)*(const __fp16*)(blk + 2);
+        const uint8_t* sc  = blk + 4;
+        const uint8_t* qs  = blk + 16;
+        const int k0 = b * Q4K_BLOCK_K;
 
-        // Read header: all lanes get d, dm, scales (broadcast from lane 0)
-        float d, dm; uint8_t sc[12];
-        read_q4k_header(blk, d, dm, sc);
-
-        int ks = b * 256;
-        #pragma unroll
-        for (int t = 0; t < 16; t++) {
-            half16_t A;
-            int ka = ks + t * 16;
-            if (lane < 16)
-                for (int i = 0; i < 16; i++)
-                    A[i] = (ka + i < K) ? in[ka + i] : (__fp16)0.0f;
-            for (int i = 0; i < 16; i++) A[i] = __shfl(A[i], 0);
-            half16_t B = dequant_q4k_tile(blk, t, d, dm, sc);
-            acc = __builtin_amdgcn_wmma_f32_16x16x16_f16_w32(A, B, acc);
+        for (int e = 0; e < Q4K_BLOCK_K; e++) {
+            int k = k0 + e;
+            if (k >= K) break;
+            int group = e >> 5;
+            uint8_t sv, mv;
+            if (group < 4) { sv = sc[group] & 63; mv = sc[group + 4] & 63; }
+            else { sv = (sc[group + 4] & 0xF) | ((sc[group - 4] >> 6) << 4);
+                   mv = (sc[group + 4] >> 4) | ((sc[group] >> 6) << 4); }
+            float sf = d * (float)sv, mf = dm * (float)mv;
+            uint8_t nib = (qs[(e >> 6) * 32 + (e & 31)] >> ((e & 32) ? 4 : 0)) & 0xF;
+            float w = (float)(int)nib * sf - mf;
+            sum += w * (float)x[k];
         }
     }
+    y[row] = (__half)sum;
+}
 
-    if (lane == 0)
-        for (int j = 0; j < 8 && row + j < M; j++)
-            out[row + j] = (__fp16)acc[j];
-    if (lane == 16)
-        for (int j = 0; j < 8 && row + 8 + j < M; j++)
-            out[row + 8 + j] = (__fp16)acc[j];
+extern "C" void q4k_gemv_f16_launch(
+    const void* W, const void* x, void* y, int M, int K, void* stream_void)
+{
+    if (M <= 0 || K <= 0) return;
+    hipStream_t stream = stream_void ? *(hipStream_t*)stream_void : hipStreamPerThread;
+    dim3 block(256), grid((M + 255) / 256);
+    hipLaunchKernelGGL(q4k_gemv_kernel, grid, block, 0, stream,
+        (const uint8_t*)W, (const __half*)x, (__half*)y, M, K);
 }
