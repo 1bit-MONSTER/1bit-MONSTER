@@ -786,3 +786,24 @@ The R43-64 bank: byte-verified packer specs (pools+linear, R50), the capture
 oracle, the get_logits/lm_head map, the driver allocation map + ioctl numbers
 (R63), and this divergence finding. The 35B lane is at a genuine
 architectural boundary for userspace replication.
+
+## Round 68 — vision tower tested: NaN persists with the FULL model (2026-09-03)
+
+The last untested variable: R59's NaN was measured in TEXT-ONLY (vision-off)
+mode. Downloaded vision_weight.q4nx (0.94GB, exact HF size) → model dir now
+complete (all 5 files). Ran the full config (is_vlm=1, vision tower loads
+clean, load_weights DONE):
+
+- prefill 1.2s, act.size=248320
+- get_logits over the post-prefill state: argmax 0, **248320/248320 NaN**
+
+The layer forward NaNs identically with the vision tower present. The
+FastFlowLM lib's 35B hybrid forward is definitively non-functional on this
+build for BOTH text-only and full (vision-capable) configurations. Not a
+missing-tensor / config artifact.
+
+Conclusion: the 35B cannot run via this lib at all (crash ~50% of loads
+[ASLR bug] + NaN forward otherwise). The vision file stays on-disk for a
+future fixed lib / the flm server. This closes the runtime-as-server thread
+with finality; the engine replay path remains the only 35B route and it is
+blocked at the device-VA wall (R61-65). Assets + docs banked.
