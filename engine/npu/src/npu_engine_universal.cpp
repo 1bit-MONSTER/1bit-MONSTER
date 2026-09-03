@@ -1396,9 +1396,21 @@ struct Bf16Ctx {
                 // D weight BO (P1 bo3): [IM, H] int8 — make_weight_bo is only
                 // KD·ND(=H·H) here, which is too small for IM=3072>H=1024.
                 if (!cg_fuse_dbo[l]) cg_fuse_dbo[l] = std::make_unique<xrt::bo>(dev, (size_t)IM * H, XRT_BO_FLAGS_HOST_ONLY, cg_fused_i4->k->group_id(4));
-                int gi8r = gr/32, ui8r = ur/32;
-                auto rg = read_q4nx_raw(i8p(0), gp[l], gi8r, H);
-                auto ru = read_q4nx_raw(i8p(0), up[l], ui8r, H);
+                // #1934: the fuse pack MUST read the FULL tensor and in the model's
+                // actual layout. gi8r = gr/32 (out_rows/32) was 1/4 of the tensor
+                // (reads only the first tile_col's tiles) AND read_q4nx_raw uses the
+                // symmetric/zaya layout (signed nibbles, row-major scales) which
+                // corrupts the asymmetric Qwen3 model (~99% of weights). Use the
+                // manifest i8-row count (g_i8/u_i8 = full tile grid) and the
+                // asymmetric reader when the bf16-pair (asymmetric-zp) kernel is
+                // selected; read_q4nx_raw_asym is the exact inverse of
+                // dequant_i8_to_float_ex (CPU-gated byte-exact, test_i4_asym_reader).
+                int gi8r = g_i8, ui8r = u_i8;
+                const bool asym = cg_fused_i4->bf16_pair;
+                auto rg = asym ? read_q4nx_raw_asym(i8p(0), gp[l], gi8r, H)
+                               : read_q4nx_raw(i8p(0), gp[l], gi8r, H);
+                auto ru = asym ? read_q4nx_raw_asym(i8p(0), up[l], ui8r, H)
+                               : read_q4nx_raw(i8p(0), up[l], ui8r, H);
                 if (getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1 && l < 2) {
                     fprintf(stderr, "[GUASSEM l=%d] gr=%d ur=%d gi8r=%d ui8r=%d rg.q4[0]=%d rg.scl[0]=%.6g rg.zp[0]=%.6g | ru.q4[0]=%d ru.scl[0]=%.6g ru.zp[0]=%.6g\n",
                             l, gr, ur, gi8r, ui8r,
@@ -3864,6 +3876,60 @@ struct Bf16Ctx {
             //    first token while boot/prefill were correct (issue #1699).
             //    cu (gu_split) launches alongside on the same input. ──
             float cg_ascale=dynamic_ascale(h_b.data(),batch_size*H);
+            // #1934: fused GU→SiLU for the dense FFN (env NPU_FUSED_USE=1 +
+            // NPU_QWEN_I4=1): replace the int8 GU GEMM + host SiLU with the
+            // single launch_fused (GU+SiLU on the NPU), reading the int8 h2
+            // (bo4) into su_b for the D GEMM. Uses the corrected bf16-pair
+            // weights (read_q4nx_raw_asym). Env-gated; default path untouched.
+            const bool fused_use = !cfg.gu_split
+                && cg_fused_i4 && cg_fused_i4->isReady()
+                && (int)cg_fuse_bo.size() > l && cg_fuse_bo[l]
+                && cg_fuse_h2[l] && cg_fuse_dbo[l]
+                && getenv("NPU_FUSED_USE") && atoi(getenv("NPU_FUSED_USE")) == 1;
+            if (fused_use) {
+                cg_fused_i4->quantize_async(h_b.data(), batch_size, H, cg_ascale);
+                float qn_s = zaya_moe::host_h2_amax_qn_s(
+                    cg_fused_i4->Am, cg_fuse_row[l].data(),
+                    cg_fuse_scl[l].data(), H, IM, cg_ascale);
+                cg_fused_i4->update_fused_header_i4(
+                    *cg_fuse_bo[l], cg_fuse_scl[l], IM, cg_ascale, qn_s, 2 * IM);
+                auto fr = cg_fused_i4->launch_fused(
+                    *cg_fuse_bo[l], *cg_fuse_dbo[l], *cg_fuse_h2[l],
+                    h_b.data(), batch_size, H, cg_ascale);
+                fr.wait();
+                cg_fuse_h2[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                const int8_t* h2m = (const int8_t*)cg_fuse_h2[l]->map();
+                if (getenv("NPU_FUSED_DEBUG") && atoi(getenv("NPU_FUSED_DEBUG")) == 1) {
+                    fprintf(stderr, "[FUSEDUSE l=%d] fused_launch qn_s=%.6g | h2[0..15]=", l, qn_s);
+                    for (int k = 0; k < 16; k++) fprintf(stderr, "%d ", (int)h2m[(k>>3)*8+(k&7)]);
+                    fprintf(stderr, "\n");
+                }
+                // A-layout int8 h2 -> model-scale float h2 (the fused silu
+                // output) for the D GEMM.
+                for (int b = 0; b < batch_size; b++)
+                    for (int p = 0; p < IM; p++)
+                        su_b[b*IM+p] = (float)h2m[(p >> 3) * 8 + (p & 7)];
+                // Quantify the fused int4 h2 vs the int8-reference h2 (the
+                // model-scale silu(g)*u from the int8 GU) per layer — NPU_FUSED_H2DBG.
+                if (getenv("NPU_FUSED_H2DBG") && atoi(getenv("NPU_FUSED_H2DBG")) == 1) {
+                    FLM_GO(cg, l, h_b.data(), batch_size, H, cg_ascale, gsc[l], gt_b.data(), mlp_out);
+                    cn(gt_b.data(), batch_size*mlp_out);
+                    double mae = 0; int bad = 0, bmax = 0, bmaxp = -1;
+                    for (int p = 0; p < IM; p++) {
+                        float gv = gt_b[p]; if (!std::isfinite(gv)) gv = 0;
+                        float h2ref = (gv / (1.0f + expf(-gv))) * gt_b[IM + p];
+                        int g = (int)lroundf(h2ref * qn_s);
+                        if (g > 127) g = 127; else if (g < -127) g = -127;
+                        int h2v = (int)h2m[(p >> 3) * 8 + (p & 7)];
+                        int d = g > h2v ? g - h2v : h2v - g;
+                        mae += (double)d; if (d != 0) bad++;
+                        if (d > bmax) { bmax = d; bmaxp = p; }
+                    }
+                    fprintf(stderr, "[H2DBG l=%d] fused-vs-int8ref mae=%.3f bad=%d/%d bmax=%d@p=%d\n",
+                            l, mae / IM, bad, IM, bmax, bmaxp);
+                }
+                if (byte_stats) bs.gu_a.down += (uint64_t)batch_size * (2 * IM) * 4;
+            } else {
             FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
             FLM_SYNC_A(cg,l);
             auto r_cg=FLM_LAUNCH(cg,l);
@@ -3884,6 +3950,7 @@ struct Bf16Ctx {
                 FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l);
                 cn(gt_b.data(),batch_size*mlp_out);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[b*mlp_out+IM+i];}}}
+            }
             if (byte_stats) bs.gu_a.down += (uint64_t)batch_size * (mlp_out + (cfg.gu_split ? IM : 0)) * 4;  // gate(+up) readback
 
             // ── D GEMM ──

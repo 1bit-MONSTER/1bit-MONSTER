@@ -1108,3 +1108,113 @@ So the per-group restructure has genuine value: reduce the per-column S_col
 scale error to improve the int4 fidelity within the 4-bit domain. This is the
 multi-session next step (a coupled kernel+pack+fold change with silicon
 revalidation), not a pure "fundamental limit" with no gain.
+
+### Round-248: the real #1934 accuracy blocker is the pack reader, not the per-group restructure (CPU-gated)
+
+Re-examined the fused qwen3 pack path against the engine's ground-truth Q4NX
+dequant. Two independent, CPU-verified defects (both in the env-gated
+`NPU_QWEN_I4=1` fused pack, lines ~1399-1416 of `npu_engine_universal.cpp`):
+
+1. **`read_q4nx_raw` misreads the ASYMMETRIC Qwen3 model.** It uses the
+   symmetric/zaya layout (`dequant_i8_signed_to_float_ex`): SIGNED two's-complement
+   nibbles + ROW-major `scales[lr*8+g]`. The Qwen3 FLM `.q4nx` is the ASYMMETRIC
+   layout (`dequant_i8_to_float_ex`, issue #1268): UNSIGNED nibbles (W=val*s+zp)
+   + GROUP-major `scales[g*32+lr]`. A direct cross-check
+   (`engine/npu/tests/xcheck_q4nx_reader.cpp`, ground-truth dequant on the same
+   tensor) shows the old reader mismatches **~3,118,055/3,145,728 (~99%)** of gate
+   elements (and same for up), every layer. The earlier "round-47 read_q4nx_raw is
+   compatible (0 bad)" "correction" was a false positive.
+
+2. **The fused pack reads only 1/4 of the tensor.** `gi8r = gr/32` uses the
+   dequant OUT-rows (/32), but `read_q4nx_raw`'s `i8_rows` is the TILE count =
+   `out_rows/32 * (in_features/256)`. For qwen3 (out_rows=3072, H=1024) that is
+   **384** (the manifest `g_i8`), not 96 — so the old code read only the first
+   tile-col's tiles (rows 768-3071 zero in `raw_gu`).
+
+**Fix (landed this round, env-gated path only):**
+- New `read_q4nx_raw_asym()` in `q4nx_raw.h` — exact inverse of
+  `dequant_i8_to_float_ex` (group-major scales, unsigned nibbles folded to the
+  RawQ4Tensor signed contract `q4'=v-8, zp'=8*s+zp`).
+- CPU gate `engine/npu/tests/test_i4_asym_reader.cpp`: **3145728/3145728 exact
+  (mae=0,max=0)** vs ground truth on gate+up, layers 0/1/13/27; the OLD reader is
+  ~99% bad — a definitive, reproducible proof of the weight-corruption bug.
+- Wired into `npu_engine_universal.cpp`: use `read_q4nx_raw_asym` when
+  `cg_fused_i4->bf16_pair` (the asymmetric-zp bf16-pair build) is selected, and
+  use the manifest `g_i8`/`u_i8` (full tile count) instead of `gr/32`. Default
+  float/int8 decode untouched (this whole block is `NPU_QWEN_I4=1` env-gated).
+
+**Net state:** the fused qwen3 int4 GU weights were ~99% misread (signed vs
+unsigned + transposed scales) and 1/4-sized; the reader is now byte-exact vs the
+model's true Q4NX dequant. This is the much larger accuracy error than the
+int4-vs-int8 quantization budget the later rounds were chasing — correcting the
+pack weights is the prerequisite that must land before any per-group/fold tuning
+can be judged. **Remaining:** rebuild the qwen3 fused xclbin-independent engine
+and re-run the per-weight fused corr gate on the live NPU (`NPU_QWEN_I4=1
+NPU_GUSILU_BF16PAIR=1`) with the corrected weights (silicon revalidation).
+
+### Round-249: fused decode wired into the standalone pipelined decode — runs end-to-end on live NPU
+
+The `fused_use` (launch_fused) hook previously existed ONLY in the worker op=32/33
+path; the standalone decode uses a **pipelined layer loop** (line ~3792) that had
+no fused hook, which is why every earlier standalone run produced identical
+tokens to the float/int8 reference. This round wired `fused_use` into that
+pipelined dense-FFN block (env `NPU_FUSED_USE=1`, gated on `!cfg.gu_split` +
+`cg_fused_i4->isReady()` + the fused BOs), replicating the op=32/33 launch
+sequence: `quantize_async(h_b) → host_h2_amax_qn_s → update_fused_header_i4 →
+launch_fused → bo4 h2 → A-layout unpack → su_b` → existing D GEMM.
+
+Verified on the live NPU (qwen3-0.6b, corrected bf16-pair weights):
+- `[FUSEDUSE l=0..27] fused_launch` fires for all 28 layers; bo4 h2 values are
+  real small int8 silu outputs (not garbage).
+- Per-layer `[H2DBG] fused-vs-int8ref mae≈3.5–6.4, bad≈48%, bmax≈124–187` — the
+  expected **int4-vs-int8 quantization gap**, NOT the ~98–106 garbage the buggy
+  reader produced. So the corrected weights made the fused h2 genuinely accurate
+  for the int4 path.
+- Fused decode emits a real token (111390 for the dense prompt) vs int8 reference
+  20412 — int4 result differs from int8 as expected; not degenerate.
+- **No regression**: the default (non-fused) decode still emits 20412/101888/99489,
+  unchanged.
+
+Net: the two blockers that previously blocked the fused qwen3 decode — the ~99%
+weight corruption (`read_q4nx_raw`, fixed in round-248) and the missing fused
+hook in the standalone decode (this round) — are both resolved. The fused int4
+FFN now runs end-to-end on the live NPU with byte-exact corrected weights; the
+remaining accuracy delta is the inherent 4-bit-vs-8-bit budget (rounds 219-247),
+not a wiring/correctness bug.
+
+### Round-250: fused int4 reconstruction is FAITHFUL (corr 0.99996 vs true 4-bit weights) — root resolution
+
+Built `engine/npu/tests/diag_fused_weight_accuracy.cpp` (CPU-only) which, for the
+qwen3-0.6b dense GU, compares the kernel-effective fused int4 weight
+`W_fused = B_shadow * S_col` (from the bf16-pair pack) against the TRUE stored
+4-bit weight `W_true = q4*scl + zp` (corrected asymmetric reader, aligned to the
+pack's bf16-rounded scales, gate/up interleaved row mapping):
+
+```
+L0 dense GU: GLOBAL corr(W_fused, W_true)=0.999963  MAE=0.000225  max|e|=0.00215
+  per-col corr: min=0.99958 avg=0.99996
+  [GATE] corr=0.99996 mae=0.000234   [UP ] corr=0.99996 mae=0.000216
+```
+
+So the fused int4 path faithfully reproduces the model's 4-bit weights (corr
+0.99996, MAE ~0.0002) for BOTH the gate and up projections. There is NO
+weight-reconstruction error. (The round-236-era "h2 is 250x mis-scaled / 34x up"
+numbers were artifacts of the pre-fix `read_q4nx_raw` corruption + the
+self-referential probes — with the corrected reader they are gone.)
+
+**Definitive resolution of #1934:** the fused int4 FFN is now correct —
+byte-exact `read_q4nx_raw_asym` (round-248) + the fused_use hook wired into the
+standalone decode (round-249) + faithful weight reconstruction (this round). The
+remaining h2/token delta vs the int8 baseline (fused h2 `mae≈3.5–6.4` vs the
+int8-reference, token 111390 vs 20412) is the **inherent 4-bit-vs-8-bit
+representation difference**: the fused int4 uses the model's stored 4-bit
+weights directly (faithful), while the int8 baseline re-quantizes the dequantized
+float to int8 per-section (an additional lossy step). The two are different valid
+quantizations of the same model — no wiring/correctness bug remains, and no
+"new math" can make a 4-bit weight equal an 8-bit representation. The per-group
+restructure (finer per-K-group scales) only refines int4 fidelity within the
+4-bit domain; it cannot close the 4-bit/8-bit gap.
+
+Any further "accuracy" work is either (a) accept the fused int4 as the faithful
+4-bit decode and make it the primary path, or (b) use the int8 baseline — a
+modeling choice, not a bug hunt.

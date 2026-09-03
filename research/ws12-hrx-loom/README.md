@@ -1472,3 +1472,23 @@ faithfully (top1 108 on all three; top10 identical). Deterministic
 corr(32-tok) = 1.0 remains the fixed-point pipeline's property (1BP gate
 `test_1bp_q4nx_reader`: `W=q4·s+zp` byte-exact vs the engine's dequant, and
 the `(q4·16·rq+zpq)>>22` re-quant matches int8 to rounding boundaries).
+
+---
+
+## Round 27 — scoping: land prefill GQA-batched attention mms on HRX2 (next)
+
+The round-25i pp32 regression (3B 121.5→27.8) is the attention KQ^T/kqv mms
+running CPU-side under zero-copy. Scope note written 2026-09-02 (read-only,
+no fork edits): **`ROUND27-BATCHED-GQA-SCOPE.md`** in this directory.
+
+Summary: AMD's F16 batched attention machinery (kernel + 4 routes +
+supports claim + scheduler graph fusion `{MUL_MAT, SOFT_MAX, MUL_MAT,
+PERMUTE, CONT}`) exists and is shape-agnostic, but its route shape domains
+cap at `rows 128–512` (decode window) and the supports predicate is
+F16-src0-only — so prefill (KV=32) never matches and F32-KV runs never
+match. Bounded round = C0 (pin actual KV dtype/shape on the live fork via
+trace) → C1 route-only widen (F16 KV) or C2 mechanical f32-src0 sibling +
+route widen (F32 KV). Decode-side runtime-variant shapes and any fused
+attention kernel are explicitly out of scope (constants-ABI unknown; the
+fused kernel is a multi-session project with the workstream's worst failure
+mode — silent numerical wrongness).
