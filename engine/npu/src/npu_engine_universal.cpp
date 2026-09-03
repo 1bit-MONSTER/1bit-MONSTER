@@ -1399,6 +1399,12 @@ struct Bf16Ctx {
                 int gi8r = gr/32, ui8r = ur/32;
                 auto rg = read_q4nx_raw(i8p(0), gp[l], gi8r, H);
                 auto ru = read_q4nx_raw(i8p(0), up[l], ui8r, H);
+                if (getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1 && l < 2) {
+                    fprintf(stderr, "[GUASSEM l=%d] gr=%d ur=%d gi8r=%d ui8r=%d rg.q4[0]=%d rg.scl[0]=%.6g rg.zp[0]=%.6g | ru.q4[0]=%d ru.scl[0]=%.6g ru.zp[0]=%.6g\n",
+                            l, gr, ur, gi8r, ui8r,
+                            rg.q4[0], rg.scl[0], rg.zp[0], ru.q4[0], ru.scl[0], ru.zp[0]);
+                    fflush(stderr);
+                }
                 RawQ4Tensor raw_gu; raw_gu.rows = 2*IM; raw_gu.cols = H;
                 raw_gu.q4.assign((size_t)(2*IM)*H, 0);
                 raw_gu.scl.assign((size_t)(2*IM)*(H/32), 0.0f);

@@ -608,3 +608,25 @@ Next: reconcile the kernel C1 magnitudes with the float GU (check whether the
 kernel A (Am) or the fold/scale per column is wrong, and whether the D-GEMM
 input scale qn_s should match ag*S_col). The host-CPUSILU route is committed
 as the correct-by-construction path once the C1 is fixed.
+
+### Round-191: gate/up C1 asymmetry traced to up tensor's asymmetric zp
+
+Added a GUASSEM diagnostic (NPU_QWEN_I4=1) printing gr/ur and the raw Q4NX
+gate/up first element. For l=0: gr=ur=3072, gi8r=ui8r=96 (both correct).
+gate: q4=6, scl=0.01868, zp=-0.1357. up: q4=0, scl=0.00705, zp=-0.0420.
+
+The gate C1 (kernel 28930 vs host 26262) matches, but the up C1 (kernel
+600604 vs host 18542) is ~32x too large. Both tensors carry a nonzero
+asymmetric zero-point (zp). The up's zp=-0.0420 with a smaller scale
+(0.00705) means the bf16-pair additive term b=zp/S_col is large and
+dominates B'' for the up columns, amplifying the C1. So the up-column
+C1 mismatch is a zero-point/dequant correctness issue: the folded zp
+(q4'*a + b, b=zp/S_col) over-amplifies when S_col is small and zp is
+asymmetric.
+
+This is separate from routing/bf16_pair-layout/silu (all fixed). The next
+target is the folded zero-point handling for the up columns. As a
+cross-check, the float GU up (fgt[IM]=-0.5444) is also inconsistent with a
+correctly-read up tensor, so the up zp/scale may be misassembled in
+raw_gu (gate/up fused) OR the pure float path just needs the asymmetric zp
+handled consistently.
