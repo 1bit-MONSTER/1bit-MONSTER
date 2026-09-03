@@ -1039,3 +1039,17 @@ validated); the remaining 1.6x gate + up precision gap to the int8 reference
 is inherent to the per-column B'' int4 quant (needs the per-group restructure,
 already scaffolded as pack_gu_fused_i4_group_scales). Closing it is multi-
 session deep quantization work, not a wiring/correctness bug.
+
+### Round-220: corrected — int4 model h2 is ~2.8x the int8, not 36x (B'' int8 precision)
+
+Correcting the 36x claim: with proper qn_s removal, the int4 model h2 =
+silu(1.42)*0.81 = 0.93 vs int8 silu(0.888)*0.54 = 0.33 — ~2.8x, NOT 36x.
+The 36x was the qn_s inflation (foldu includes qn_s, which doesn't cancel).
+The real gap is gate 1.6x + up 1.5x, both from the int4 B'' (Q8(W)) int8
+per-element rounding propagating through the GU GEMM and silu.
+
+So the inherent int4-vs-int8 h2 accuracy gap is ~2.8x magnitude — the int4
+path computes the model correctly but with the B'' int8-quantization error.
+Closing it to ~1x (the int8 reference, token 760) needs finer int4 scaling
+(the per-group restructure, pack_gu_fused_i4_group_scales) to reduce the B''
+rounding. This is the definitive multi-session closing work.
