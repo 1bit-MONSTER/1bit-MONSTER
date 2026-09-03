@@ -139,9 +139,58 @@ verify_moe_bo_layout.py's structure.
 
 ### Still open
 - row-65536's 824-B fragment origin.
-- rows 100960..113358 (share_up/down/gate + qkv + self-attn gate + router +
-  ssm + norms + splices; 12,399 rows ≈ 58.7 MB) — same signature-mapping
-  approach applies (tools/verify_moe_bo_layout.py machinery).
+- rows 102624..113358 (share_up/down/gate + qkv + self-attn gate + router +
+  ssm + norms + splices; 10,736 rows ≈ 50.8 MB) — qkv/ssm_out/share_* need
+  their own in-BO form (Round 45: NOT raw file bytes in any convention).
+
+## Round 45 — qkv/ssm_out/share tail: exhaustive negative + sharpened attack (2026-09-03)
+
+### Result: no linear-attn/share tensor file bytes exist RAW in any captured BO
+
+Searched every kept capture in `/home/bcloud/.cache/moe-cap/` (all 40 x 512 MB
+layer BOs, the 542,113,792-B BO, and the assorted bo_from/actpost/waitpost
+files) for qkv_proj / ssm_out_proj / share_{up,gate,down}_exps file content at
+every plausible convention (4736-windows @0/@3912, 5120-tile trims, 8704-row
+trims, raw spans 512/4096/4736/5120/8704) — **zero hits**. The share_* experts
+are 8704-B-row I8 tensors (shape [16,8,8704]/[64,2,8704] etc.), yet their 824-B
+fragments appear in the expert region splices (row 0 = share_up[-824:]...) while
+their main bodies do not appear anywhere in raw form → they (and qkv/ssm_out)
+are **transformed into the BO** (likely the 8704→9216 column-padded tile form,
+the doc's flagged "different generator").
+
+### Corrections to the earlier map
+
+- The Round-38 desc-word OFF table is the **logical layout** (up@0, gate@155 MiB,
+  ...) — NOT the BO-local physical layout. The physical (capture) layout packs
+  tensors with 824/3912 splice rows and 31/32-row blocks: gate's content sits at
+  BO-local rows 33..65535 (~156 KiB..310 MiB), not 155 MiB. The engine packer
+  must use the physical layout (verify_moe_bo_layout.py), never the desc table.
+- Full-attention layers (every 4th: 3,7,11,...,39) use the bigger
+  542,113,792-B weight BO (3 such syncs in the manifest); linear layers use the
+  536,870,912-B BO. Layer 6 (analysed) is linear_attention.
+
+### Manifest BO-traffic histogram (decisive for the fresh-capture attack)
+
+From capture_manifest.log (moe-cap): 245 x 536,870,912 (layer BO syncs), 3 x
+542,113,792 (full-attn), 121 x 134,217,728 (staging/state BOs), 363 x 3 MiB +
+182 x 5 MiB + 263 x 2 MiB (per-expert staging), 5 x 9,437,184 (ssm_out/gate-
+class uploads), **no 17.8-MB sync** → qkv_proj travels inside the 512-MB layer
+BO in transformed form.
+
+### Attack plan for the qkv transform (next round, NPU-free)
+
+1. Reverse the in-BO qkv/share form from the **generated moe layer ELFs**:
+   `gen_layer_elfs_moe` emits the runtime's own sequence/TXN BDs — the weight
+   BD (addr, len) for the qkv reads give the exact in-BO destination of each
+   qkv byte; compare against file bytes to derive the tile transform. Plus
+   `tools/dump_moe_desc.cpp` exposes the desc word table + addr_qk/addr_kv
+   cross-checks.
+2. If (1) stalls: fresh full-load interposer capture keeping ALL bo_to files
+   (~130 GB; 528 GB free) — requires resolving the vision_weight.q4nx blocker
+   (runtime dies opening the missing VLM tower today; the Sep-2 capture proves
+   a full load ran then).
+3. Runtime source fix (35b-moe-load-crash) needs the FastFlowLM source — not
+   on-box; blocked without an upstream fetch.
 
 ## Round 44 — gate_proj tail mapped; BO coverage 90.5% (2026-09-03)
 
