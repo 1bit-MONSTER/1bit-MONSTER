@@ -1,7 +1,7 @@
 # Native HRX_GPU Backend
 
 Added 2026-08-29. Gives the engine its own `BackendType::HRX_GPU` that spawns
-the self-contained AMD HRX `llama-server` (the `hrx-b59` bundle) as a
+the self-contained AMD HRX `llama-server` (the `hrx-b66` release bundle) as a
 subprocess on `HRX0` (gfx1151) and serves text over the OpenAI wire format.
 This is distinct from (and additive to) the lemonade `llamacpp-hrx` recipe that
 already rides the HRX runtime; the native backend puts HRX in the engine's own
@@ -20,6 +20,19 @@ The HRX bundle is fully self-contained (`libhrx.so`, `libloomc.so`,
 on target**. The binary is located at runtime via `HRX_ROOT` (or `HRX_MODEL_BIN`
 / PATH); when absent, `init()` fails fast.
 
+## b66 vs HRX2 (2026-09-03 status)
+
+- **b66** (`/opt/hrx`, staged from ~/hrx-slice/hrx-llamacpp/out/llama-hrx-b66):
+  the released bundle. Serves standard llama.cpp GGUFs on HRX0 (gfx1151) but has
+  op-coverage gaps (q6_K GET_ROWS, multimodal chat) — loads clean, fails at graph
+  time on unsupported nodes. Q4NX GGUF files are NOT readable by b66 (its ggml
+  lacks block_q4nx) — the 'tensor offset' errors on q4nx-converted/*.gguf are
+  b66 misreading the type, not file corruption.
+- **HRX2** (~/hrx-ws/hrx-v2-src/build): the dev build WITH native Q4NX
+  (ggml block_q4nx + ggml-hrx2 mul_mat_q4nx kernels, Loom JIT on gfx1151).
+  Verified serving q4nx-converted/qwen25-3b-q4nx.gguf end-to-end (correct
+  replies, live kernel JIT). **Use HRX2 for q4nx models; b66 for standard GGUF.**
+
 ## Files
 
 - `include/common.h` — `BackendType::HRX_GPU = 17` + `backend_name()`.
@@ -36,7 +49,7 @@ on target**. The binary is located at runtime via `HRX_ROOT` (or `HRX_MODEL_BIN`
 
 | Var | Meaning |
 |---|---|
-| `HRX_ROOT` | path to the unpacked HRX bundle (default: `/home/bcloud/hrx-slice/hrx-llamacpp/out/llama-hrx-b59`) |
+| `HRX_ROOT` | path to the unpacked HRX bundle (canonical: `/opt/hrx` = the **b66** release staged 2026-09-03; the b59 default in the text below is stale) |
 | `HRX_MODEL_BIN` | full path to the `llama-server` executable (overrides `HRX_ROOT`) |
 | `HRX_CTX_SIZE` | context size (default 4096) |
 | `HRX_SPAWN_RETRIES` / `HRX_RETRY_DELAY_S` / `HRX_INIT_TIMEOUT_S` | spawn/health tuning |
