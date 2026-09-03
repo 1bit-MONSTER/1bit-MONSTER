@@ -277,6 +277,13 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
 // Pack one expert tensor (n_tiles x 5120-B file rows) into 4736-B rows in
 // 16-row blocks: out[blk*75776 + o*4736] = trimmed_tile[o/2 + 8*(o%2)].
 // n_tiles must be a multiple of 16 (32768 for the 35B experts).
+//
+// ⚠ ROUND 43 CORRECTION: this helper does NOT reproduce the runtime's actual
+// 35B layer weight-BO layout — the capture-backed spec in
+// tools/verify_moe_bo_layout.py + docs/35b-forward-integration.md Round 43
+// supersedes it (runtime rows are 4736-B windows at 4736-B strides from file
+// offset 3912 with cross-tensor 824/3912 splice rows; down uses an 8-window
+// [1,3,5,0,2,4,6,7] order). Do not build the 35B engine packer on this.
 static int npu_pack_moe_experts(uint8_t* bo, const uint8_t* tiles, int n_tiles) {
     if (!bo || !tiles || n_tiles <= 0 || (n_tiles % NPU_MOE_BLOCK_ROWS) != 0)
         return 0;

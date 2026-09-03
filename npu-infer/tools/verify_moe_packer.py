@@ -1,5 +1,8 @@
 import numpy as np, glob, json, struct
 
+# ⚠ SUPERSEDED by tools/verify_moe_bo_layout.py (Round 43): this script's
+# down_exps order was wrong (67% match). Keep as the round-38 record.
+
 D = '/home/bcloud/.cache/moe-cap'
 MODEL = '/home/bcloud/.config/flm/models/Qwen3.6-35B-A3B-NPU2/model.q4nx'
 
@@ -44,20 +47,15 @@ def gen_k_up(n_tiles):
 
 
 def gen_k_down(n_tiles):
-    """down order: cols [1,3,5,0,2,4,6,7], rows 0-3 per block."""
+    """down order (solved Round 43, byte-verified vs the captured runtime BO):
+    within each 8-window group, output order is [1,3,5,0,2,4,6,7] (+8b)."""
     ks = []
     b = 0
-    while True:
-        for c in [1, 3, 5, 0, 2, 4, 6, 7]:
-            for r in range(4):
-                k = 8 * (4 * b + r) + c
-                if k < n_tiles:
-                    ks.append(k)
-        if 8 * (4 * (b + 1)) + 7 >= n_tiles:
-            break
+    while 8*b+7 < n_tiles:
+        for off in [1,3,5,0,2,4,6,7]:
+            ks.append(8*b+off)
         b += 1
     return ks
-
 
 def emit_row(out, pos, src, off):
     seg = src[off:off + ROW]

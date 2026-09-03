@@ -91,3 +91,54 @@ row 2 == tile 1 [0:4736]:  yes
   exps, share_*, moe_router, shared_expert_gate, qkv, ssm_*), build the
   per-layer weight BO (3 expert tensors dominate: 465 MB/layer), then the
   RuntimeLayerEngine forward loop (5-BO ABI + per-context moe_layer_ctxN.elf).
+
+## Round 43 — expert-region BO layout SOLVED byte-exact vs the runtime capture (2026-09-03)
+
+### Asset: moe-cap = the COMPLETE 40-layer runtime weight capture
+
+`/home/bcloud/.cache/moe-cap/` holds **40 x 536,870,912-B layer weight BOs**
+(bo_to_0140.., Sep-2 00:51) captured from the real runtime's load_weights via
+the round-35 wait-hook interposer. That means load_weights DID complete for
+all 40 layers on Sep-2 — qualifying the 35b-moe-load-crash doc (the crash is
+env/version-specific, not universal). Today the live runtime is additionally
+blocked by the missing VLM tower (config `vision_model_weight` =
+vision_weight.q4nx, absent locally — the model_list entry is `vlm: true`).
+The captures remain the ground-truth oracle for engine-side packing.
+
+### Solved: up/gate/down expert region (rows 0..100959 of the 512 MB BO)
+
+Byte-verified (tools/verify_moe_bo_layout.py) against bo_to_0158 (= layer 6):
+
+- Expert tensor file data is read as **4736-B rows at 4736-B strides from
+  file offset 3912** (row j = file[3912+4736j : +4736]) — NOT 5120-tile
+  trimmed rows as the earlier doc assumed. Each up/gate/down file is
+  167,772,160 B = 35423 usable windows.
+- **Boundary splice rows** pack the previous tensor's last 824 B with the
+  next tensor's first 3912 B into one 4736-B row:
+  row 0 = share_up[-824:]+up[:3912]; row 32 = down[-824:]+gate[:3912];
+  row 65536 = [824 B unresolved] + down[:3912].
+- up/gate: 31-row block 0 then alternating 32-row blocks, k-order
+  gen_k_up ([7,15,23] + cols0-6, then col7/cols0-6 per block); windows
+  0..32766 placed (32767). Rows 1..65535.
+- down: ALL 35423 windows, order per **8-window group [1,3,5,0,2,4,6,7]**
+  (+8 per group) — empirically exact with ZERO violations across all
+  35423 rows. Rows 65537..100959.
+- Result: rows 0..100959 byte-identical to the capture **except one
+  824-B fragment at row 65536** (runtime boundary artifact; not file bytes
+  of any layer-6 tensor — checked up/gate/down/share_*/router/gate/qkv).
+  99.9998% of the 458 MB expert region.
+
+### Caveat on the old packer
+
+`model.c`'s `npu_pack_moe_experts` (Round-38 16-row A/B interleave on
+5120-tile trims) does NOT reproduce this layout — the earlier
+"byte-exact on up+gate+down" claim was premature (the old
+verify_moe_packer.py matched 67%: up+gate only). The verified spec above
+supersedes it; the engine packer for the 35B must be built from
+verify_moe_bo_layout.py's structure.
+
+### Still open
+- row-65536's 824-B fragment origin.
+- rows 100960..113358 (share_up/down/gate + qkv + self-attn gate + router +
+  ssm + norms + splices; 12,399 rows ≈ 58.7 MB) — same signature-mapping
+  approach applies (tools/verify_moe_bo_layout.py machinery).
