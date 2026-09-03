@@ -641,3 +641,47 @@ layer pipeline (linear-attn/ssm state, hybrid routing) NaNs. A working 35B
 runtime needs the flm server binary with the proper (vision-capable) model
 set, or lib source. The lane's verified assets (R50 specs, get_logits map,
 pools-correct proof) remain banked.
+
+## Round 60 — the engine (not the runtime) is now the 35B path: replay design (2026-09-03)
+
+With the runtime's text-only forward proven NaN at the layer level (R59) and
+the model not servable via the lib, the npu-infer ENGINE becomes the only
+route to a working 35B. Its prerequisites are mostly banked:
+
+- moe per-context layer ELFs: gen_layer_elfs_moe ✓ (moe_layer_ctxN.elf +
+  moe_lm_head.elf, the runtime's own sequence generator)
+- decode-side weight layouts: R50 byte-verified spec (pool + 5MB linear BO),
+  + capture oracle /home/bcloud/.cache/moe-cap4 = the runtime's ACTUAL
+  per-layer BOs (pool + 2MB + 5MB + 128MB state + smalls) — the replay can
+  feed the CAPTURED bytes directly, bypassing the unknown 2MB/qkv format
+  entirely (the 0.6B replay path pattern: captured BOs as weights).
+- 5-BO kernel ABI + RuntimeLayerEngine machinery (0.6B, proven).
+
+### Engine 35B forward design (replay path)
+
+1. Driver allocates per-layer BOs to land at the device addresses the moe
+   ELF TXNs reference (0x40000000 act, 0xe000000-region expert pool, 0x1bc00000
+   region-B, 0x2000000 + 0xc0000000 kv/linear state) by replicating the
+   runtime's BO allocation order (the 0.6B determinism trick) — needs a probe
+   run to confirm address determinism for the 35B BO set.
+2. Load the captured per-layer BO bytes (moe-cap4) as weights — no qkv format
+   decoding needed for a replay.
+3. Per layer: submit moe_layer_ctxN.elf via the 5-BO ABI (act, weights, i5,
+   i6, kv/state); the hybrid linear layers additionally need the
+   linear-attn state BOs (addr_qk/addr_kv/addr_kk regions).
+4. Validation: the runtime is NaN (no byte reference), so validate by
+   DETERMINISM + non-NaN + (once generating) coherence — the engine becomes
+   the first working 35B on this box if the kernels are correct.
+
+### Feasibility notes / risks
+- Device-address replication for the 35B BO set (40 layers x several BOs) is
+  the delicate unknown — needs an empirical probe (allocate in the driver in
+  the runtime's order, compare landed addresses vs the ELF's BD addresses).
+- The linear-attn state (GateDeltaNet: qk/kk/conv state, addr_* config) needs
+  its own BO layout — partially mapped (128MB state BOs in moe-cap4).
+- Multi-session effort; the single-layer run (one linear layer, captured BOs,
+  generated ELF, determinism check) is the first milestone.
+
+This closes the R43-60 35B arc with a concrete, unblocked-by-design path:
+engine replay with captured BOs, validated by determinism since the runtime
+is NaN.
