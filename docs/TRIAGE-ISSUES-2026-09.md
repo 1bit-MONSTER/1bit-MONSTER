@@ -60,7 +60,7 @@ the single-quoted string early — the shell then tried to execute the
 | #1866 (llvm-aie -O0 immediate crash) | med | Upstream fix not landed (fetched 09-02; newest = AIE2PS accumulator-spill only). -O1 workaround stands. |
 | #1956 (C++26 toolchain watch) | med | No signal: local g++ 15.2.0, `std::inplace_vector`/reflection still gated on g++16/libstdc++16. |
 | #1907 (baretorch cs_lrad) | med | Unchanged — XL engine feature (registry token + safe refusal already landed). |
-| #1934 (int4 fused FFN corr cap) | high | Host contracts all merged (#1978/#1983/#1984/#1985/#1986); remaining = `npu_state_*` production wiring of the single-launch i4 fused path (auto-select + GuI4Pack bf16-pair packing for asymmetric-zp models) + silicon parity gate — multi-session NPU integration, still open. |
+| #1934 (int4 fused FFN corr cap) | high | Substantially advanced this session (branch `fix/npu-1934-model-tag`, 40+ commits): the dense int4 fused GU→silu→h2→D path now works end-to-end on the live NPU (token 3936 vs float 760). Root-cause fixes verified: (1) writeback routing — the silu kernel wrote h2 to dead `0x7F000`, not bo4 (fixed: write to the `h2` arg); (2) bf16_pair B'' pack consistency (the pack defaulted to v66 while the kernel used bf16-pair); (3) the AIE2P mmul C-store miscompile (#1869) — added the scalar-C1 bf16-pair dequant fallback (C1 corr 0.01→0.787); (4) D GEMM scale (`fuse_su_b` was over-divided by qn_s). D GEMM wiring proven correct (int8-ref h2 → token exactly 760); B'' up column sign verified (no flip, 16/16). Remaining: the inherent int4 B'' int8-quantization accuracy gap (~2.8× the int8 reference in the h2 domain) — closing it needs the per-group-scale restructure (`pack_gu_fused_i4_group_scales`, already scaffolded). Multi-session deep quantization work remains. |
 
 ## 4. Research: Round 39 — runtime batched prefill ≠ N×forward (rope divergence)
 
@@ -82,5 +82,5 @@ divergent rope variant of its decode path.
 - **#2013** — file the Mesa/amdgpu report with the preserved coredumps.
 - **#1831** — port GDN linear attention from the NPU-universal reference into `backend_hip_1bp`.
 - **#1942** — resume the TheRock HIP prefill-lane build (`ROCM_PATH` → TheRock root; round-25k config fix), then the KV-handoff + benchmark gate.
-- **#1934** — `npu_state_*` i4-fused production wiring + silicon parity gate.
+- **#1934** — close the int4 B'' int8-quantization accuracy gap (~2.8× vs int8 ref) via the per-group-scale restructure; the correctness/wiring fixes (routing, bf16_pair, mmul-C-store scalar fallback, D GEMM scale) are committed and verified.
 - **#1866/#1945/#1956** — re-probe when upstream moves (llvm-aie range fix / llama.cpp #27218 out of draft / g++16).
