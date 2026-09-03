@@ -1223,3 +1223,38 @@ different-but-valid bf16 variant of the same math.
 3. Validation methodology: per-ctx logits comparisons against the runtime
    MUST use the RT_TOKENS/forward per-ctx mode; kvpost/actpost references
    captured from a batched-prefill run are not byte-comparable.
+
+## Round 40 — POST-REBOOT re-gate: the runtime drifted, the engine/replay did not (2026-09-03)
+
+The machine rebooted 2026-09-02 23:19 (kernel 7.2.0-perfopt era ->
+7.2.0-next-20260821-unstable). Rounds 35-39 byte-parity evidence is
+PRE-REBOOT. Re-gate on the current kernel (issue #2065 filed):
+
+### Fresh post-WAIT capture (round-35 wait-hook interposer, token 1000)
+
+| | Sep-1 runtime (pre-reboot, rtcap artifacts) | hand-rolled replay + engine (today) | runtime today (post-reboot) |
+|---|---|---|---|
+| final act std | 194.46 | 194.46 | 188.62 |
+| logits argmax | 397 @ 12.8125 | 397 @ 12.8125 | 144370 @ 13.25 |
+| logits top-5 | [397, 3219, 144370, 42044, 255] | identical | [144370, 3219, 397, 42044, 255] |
+
+- corr(replay act, Sep-1 runtime act) = **1.00000000** (byte-exact).
+- corr(today runtime act, Sep-1 act / replay) = 0.99789104.
+- corr(today runtime logits, Sep-1 logits) = 0.99803301.
+- Post-WAIT (not stale post-execute) dumps — drift is real, not a dump
+  artifact. Deterministic per boot on both sides (no race).
+
+### What this means
+
+1. The engine + hand-rolled replay are the STABLE cross-boot reference:
+   byte-exact vs the round-37-era runtime, unchanged by the reboot.
+2. The real FastFlowLM runtime's on-device arithmetic moved across the
+   reboot (~0.2% logits / act std 194.46 -> 188.62). Same class of
+   phenomenon as FINDINGS.md ("a fresh boot does NOT restore it") and the
+   round-27 'x0.5 runner quirk'.
+3. Rounds 35-39 runtime-side references (actpost/kvpost/logits captures)
+   need re-validation against the current kernel before use. Engine-side
+   claims (== Sep-1 runtime) hold.
+4. Root cause of the runtime drift is open (#2065): candidates are
+   kernel/driver-dependent execution (SVA vs identity IOMMU), load-time
+   staging interaction, or firmware arithmetic config. Not a race.
