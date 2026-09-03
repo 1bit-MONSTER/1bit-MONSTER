@@ -676,3 +676,24 @@ GU GEMM were correct.
 the up (odd) columns incorrectly on the NPU. Pack, routing, bf16_pair layout,
 fold delivery, and host-CPUSILU route are all correct. Next: NPU-side B''
 byte-dump / odd-column microtile check in matmul_i8_i32_i4.
+
+### Round-194: kernel odd-column analysis — host contract fully consistent
+
+Traced the up(gate/up-interleaved odd GU col) mismatch through matmul_i8_i32_i4:
+the nibble unpack (`u[e] = nib[e>>1] nibble e&1`), the bf16 a/b read
+(`ab[(e&7)*4]`, per-column), and the mmul `B0..B3` load / `pC + jg*64 + jg'*64`
+store all map (k, col) to the SAME absolute GU column as the pack — verified
+byte-consistent end to end. The host contract (pack B_shadow) is correct.
+
+So the up-column C1 (~32x too large vs the C1h reference on the live NPU) is
+an AIE2P kernel-execution bug in the odd-column microtile row — not the
+host pack/dequant. Could be the mmul's B-lane ordering for odd (up) columns or
+a store aliasing at the 8-col boundary. Resolving it needs an NPU-side
+byte-dump of the B'' vector actually fed to the mmul for an up column
+(compare to the correct B_shadow), which the round-190 I4_B_DUMP path can
+provide now that the bf16_pair pack is verified correct.
+
+Status (all verified on live NPU): writeback routing, bf16_pair B'' layout,
+fold delivery, host-CPUSILU route, AND the pack (B_shadow byte-exact gate+up)
+are all CORRECT. The single remaining #1934 blocker is the kernel-side
+odd(up)-column C1 accumulation bug — deep AIE2P microtile work.
