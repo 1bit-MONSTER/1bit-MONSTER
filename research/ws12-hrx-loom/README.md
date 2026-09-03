@@ -2262,3 +2262,25 @@ portion), high JIT risk. Confirms the round-27 conclusion: no further
 access-pattern lever remains for single-seq decode at the current pack
 layout; cols=4 (wb4c, 66 GB/s at 62% occupancy) headroom is register-bound
 and needs the same deeper-read or repack work.
+
+**Round-27 addendum 2 — the cols=4 occupancy lever LANDED (fork fd43e14ac):
+r16wb4c8r (+18% at the 3B gate).** The r16w8r (cols=1) negative pointed at
+the right mechanism: cols=1 was already at 100% occupancy / ALU-bound, so
+halving rows did nothing; cols=4 (r16wb4c) was register-bound at 142 vgpr /
+62% occupancy. r16wb4c8r (8 rows x 4 cols, 32 accs) cuts vgpr to **74** and
+restores **100% occupancy (max_waves)**; probe rates at cols=4:
+11008x2048 **77.6 vs 65.6 GB/s (+18%)**, 2048x11008 85.1 vs 78.2 (+9%),
+4096x2048 57.9 vs 50.3 (+15%), 2048x2048 47.7 vs 37.7 (+27%) — dst
+bit-identical to r16wb4c (maxdiff 0.0). Dispatch prefers r16wb4c8r for
+cols==4 (rows/8 grid; GGML_HRX2_NO_R16WB4C8R falls back to r16wb4c);
+cols==1/2 unchanged (single-seq decode verified unregressed, r16w route
+firing). The cols=4 rate-vs-rows curve (66 -> 72.5 -> 74.6) shows the
+4-col kernel's ALU wall ~75; r16wb4c8r reaches it at the real shape.
+
+**Blocked follow-up — the parallel-decode harness crashes in the current
+build (pre-existing, independent of r16wb4c8r):** llama-parallel np>=1 and
+llama-server --parallel 4 both abort in llama_decode/update_slots after
+only r16w/r16wb2 JIT-compile; reproduces with GGML_HRX2_DISABLE_F16_FA0_
+ATTENTION_FUSION=1 (rules out the fa0 runtime path) and predates this
+kernel. The 4-parallel server aggregate A/B for r16wb4c8r therefore needs
+that harness crash fixed first.
