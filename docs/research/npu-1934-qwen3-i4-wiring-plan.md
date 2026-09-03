@@ -961,3 +961,21 @@ Next: fix the up fold (drop qn_s) AND reconcile the up sign so u4 matches the
 int8 GU up (negative, ~0.54). With both g and u at ~1.5x/1.6x a single scale
 factor, the h2 = silu(g)*u should then match the int8 reference and give token
 760.
+
+### Round-212: BSIGN proves up column is NOT sign-flipped — only qn_s over-count
+
+Added BSIGN (NPU_QWEN_I4=1): compare int4 B'' up weight sign vs the int8-model
+up weight (W=q4*s+zp from raw_gu). l=0: gate W=-85.77 B4=-37215 (sign match),
+up W=-58.96 B4=-31723 (sign match). up_sign_match=16/16, gate_sign_match=16/16.
+
+So my earlier "up sign flip" (rounds 209-211) was WRONG — the int4 B'' up
+column MATCHES the model up weight sign. The up fold's u4=+18.63 vs int8
+u8=-0.54 difference is because C1[up] (the dot product re) has a positive value
+(even with negative weights) — the model W sum being negative doesn't mean the
+dot is negative (the activation fh signs vary). BSIGN sums B_shadow which is
+~538x the model W (B_shadow is sat8(q4*a+b), per-element, summed over H).
+
+So the ONLY up issue is the qn_s magnitude over-count in the up fold (34x),
+NOT a sign flip. The gate is ~1.6x (a smaller scale mismatch). Fix: drop qn_s
+from the up fold (u4=C1[up]*ag*S_col) and reconcile the remaining gate/up
+common scale with the int8 GU. Then the int4 h2 should match and give token 760.

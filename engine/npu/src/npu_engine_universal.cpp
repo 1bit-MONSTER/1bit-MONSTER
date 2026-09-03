@@ -1447,6 +1447,29 @@ struct Bf16Ctx {
                         }
                     fprintf(stderr, "[BVERIFY l=%d] B_shadow==tile-dequant gate=%d up=%d (of %d) scol_g=%.6g scol_u=%.6g\n",
                             l, neqG, neqU, H, cg_fuse_scl[l][0], cg_fuse_scl[l][1]);
+                    // BSIGN: compare int4 B'' up weight sign vs the int8-model up weight
+                    // (W=q4*s+zp from raw_gu). Gate should match sign; a sign flip on up
+                    // means the int4 up fold is wrong.
+                    int gate_match = 0, gate_tot = 0, up_match = 0, up_tot = 0;
+                    int nk = H < 16 ? H : 16;
+                    for (int p = 0; p < nk; p++) {
+                        int jg = 2 * p, ju = 2 * p + 1;
+                        float wg = 0, wu = 0;
+                        for (int i = 0; i < H; i++) {
+                            int rr = p;
+                            wg += (float)raw_gu.q4[(size_t)rr * H + i] * raw_gu.scl[(size_t)rr * (H/32) + i/32] + raw_gu.zp[(size_t)rr * (H/32) + i/32];
+                        }
+                        for (int i = 0; i < H; i++) {
+                            int rr = IM + p;
+                            wu += (float)raw_gu.q4[(size_t)rr * H + i] * raw_gu.scl[(size_t)rr * (H/32) + i/32] + raw_gu.zp[(size_t)rr * (H/32) + i/32];
+                        }
+                        float b4g = 0, b4u = 0;
+                        for (int i = 0; i < H; i++) { b4g += (float)Bs[(size_t)i * N2 + jg]; b4u += (float)Bs[(size_t)i * N2 + ju]; }
+                        if (wg != 0) { gate_tot++; if ((wg > 0) == (b4g > 0)) gate_match++; }
+                        if (wu != 0) { up_tot++; if ((wu > 0) == (b4u > 0)) up_match++; }
+                        if (p == 0) fprintf(stderr, "[BSIGN l=%d] gate W=%.4f B4=%.4f | up W=%.4f B4=%.4f\n", l, wg, b4g, wu, b4u);
+                    }
+                    fprintf(stderr, "[BSIGN l=%d] gate_sign_match=%d/%d up_sign_match=%d/%d\n", l, gate_match, gate_tot, up_match, up_tot);
                     fflush(stderr);
                 }
             }
