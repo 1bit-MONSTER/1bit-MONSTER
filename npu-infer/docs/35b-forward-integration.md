@@ -522,3 +522,21 @@ Status: the 2MB BO's exact content/role is OPEN (black-box analysis
 exhausted without the runtime source). Not qkv-derived in any simple way;
 a projection-family slice in the runtime's kernel format. Everything else
 per-layer (pool + 5MB BO) stays byte-verified 100% (R50).
+
+## Round 55 — external Q4NX spec + prefill/decode architecture (arXiv 2602.06063)
+
+Read + banked the Clemson/URI NPU paper (docs/research/q4nx-npu-paper-2602-06063.md):
+
+1. **Canonical Q4NX spec**: 32x256 int4 blocks, dequant w_i = d_g*wq_i + m_g
+   (g=32), block = 256 bf16 scales + 256 bf16 offsets + packed int4 = 5120 B.
+   ⚠ FastFlowLM's variant files differ (experts ARE 5120-tiled 32768x5120;
+   linear-attn 8704-B-row tensors are NOT) — canonical spec = reference only.
+2. **Prefill/decode split explains our buffer archaeology**: prefill dequantizes
+   Q4NX→bf16 written to DDR (map-written, never xrtBOSync'd — the R50-54
+   invisible qkv payloads = PREFILL-side bf16 intermediates); decode keeps
+   weights QUANTIZED with fused dequant (FusedDQP, 32x256 tiles / 16x8
+   sub-blocks = the 8/16/32-row blocks in the captured BOs). R51-54 int16
+   analyses were partially confounded by reading mixed int4+bf16 content as
+   uniform int16.
+3. Benchmarks (Gemma3 1B/4B, Ryzen AI 7 350): 5.2x prefill / 4.8x decode vs
+   iGPU — cross-platform calibration only. No code released (review-anonymous).
