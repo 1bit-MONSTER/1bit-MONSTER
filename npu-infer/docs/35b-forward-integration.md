@@ -142,3 +142,24 @@ verify_moe_bo_layout.py's structure.
 - rows 100960..113358 (share_up/down/gate + qkv + self-attn gate + router +
   ssm + norms + splices; 12,399 rows ≈ 58.7 MB) — same signature-mapping
   approach applies (tools/verify_moe_bo_layout.py machinery).
+
+## Round 44 — gate_proj tail mapped; BO coverage 90.5% (2026-09-03)
+
+Extended the row map past the expert region with the same signature method
+(tools/map_moe_bo_rows.py — committed for continuation):
+
+- **self_attn.gate_proj SOLVED**: rows 100960..102623 (1663 rows) = 4736-B
+  windows at 4736-stride from file offset 3912 (same convention as the
+  experts), j range 0..1878 of ~1880 windows. Its window ORDER is not the
+  simple row order (2 runs — interleaved/spliced) — permutation rule still
+  to derive, same as down was before Round 43.
+- **Whole-BO coverage now 102,620/113,359 rows = 90.5%** (up 32767, gate
+  32767, down 35423, gate_proj 1663, splice rows).
+- **Remaining: rows 102624..113358 (10,736 rows ≈ 50.8 MB)** =
+  linear_attn.qkv_proj (17.8 MB file) + linear_attn.ssm_out_proj (8.9 MB) +
+  mlp.share_{up,gate,down}_exps_proj (3 x 1.11 MB) + moe_router (1 MB) +
+  norms/ssm small tensors + splices. qkv/ssm_out/share_* match NO tested
+  convention (4736-window @0/@3912, 5120-tile trim, 8704-row trim) — they
+  need the column-padded (8704→9216) tile transform, the "different
+  generator" flagged as open in the map above. Next: reverse that generator
+  from the capture.
