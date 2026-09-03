@@ -6,7 +6,14 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Wed, 02 Sep 2026 22:38:19 +0000</lastBuildDate>
+        <item>
+      <title>Beating FastFlowLM at their own game: runlist batching on the XDNA 2 NPU</title>
+      <link>https://1bit.monster/1bit-post-runlist-npu.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-runlist-npu.html</guid>
+      <pubDate>Wed, 03 Sep 2026 07:30:00 +0000</pubDate>
+      <description>Built our own runlist-capable XRT 2.26.0, proved xrt::runlist natively batches the per-token layers on the XDNA 2 NPU, and decoded Qwen3-0.6B at ~40 tok/s — ~3.7x faster than FastFlowLM's published 10.6 TPS for the same model on the same NPU.</description>
+    </item>
+    <lastBuildDate>Thu, 03 Sep 2026 07:30:00 +0000</lastBuildDate>
     <item>
       <title>Lemonade v11.9.0: origin hardening, and upstream took our HRX backend</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1190.html</link>
