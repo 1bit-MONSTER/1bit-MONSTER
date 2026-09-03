@@ -562,3 +562,56 @@ fast). BUT:
   serve binary (not on-box) or the lib source. The architecture/assets from
   R43-55 (byte-verified packer specs, capture oracle, runtime load unlock)
   remain the banked value of the lane.
+
+## Round 57 — "no blockers, undiscovered code": Impl::get_logits found + disassembled (2026-09-03)
+
+Direct .so mining (the closed lib is callable/readable — it was never a wall):
+
+- **`qwen3_6_moe_npu::Impl::get_logits` is an EXPORTED symbol**
+  (`_ZN15qwen3_6_moe_npu4Impl10get_logitsER6bufferIN8biovault10bfloat16_tEE`,
+  addr 0x6cfb0). The public class holds `Impl* _impl` at +0x30 (confirmed via
+  wrapper disassembly `mov 0x30(%rdi),%rdi` on get_current_context_length /
+  clear_context).
+- **get_logits's disassembly reveals its semantics**: it memcpy's
+  `buffer.data (+0x10)` → an internal activation BO (impl+0x4d0, byte count
+  from impl+0xb8), then runs an **xrt::run (the lm_head kernel**, run object at
+  impl+0x5b8), syncs the lm_head output BO (impl+0x528, dir FROM), and writes
+  the result back to the buffer (+0x10). So get_logits COMPUTES lm_head over an
+  input activation buffer — it is not a "fetch after forward" getter.
+- My first call attempt SEGV'd (rc=139): ABI/semantics mismatch (the function
+  reads impl-relative fields at +0x4d0..+0x5b8 and expects an activation
+  buffer, not a logits sink). Calling it correctly = feed the post-layer
+  activation buffer the way the flm server does.
+- forward()'s returned 248320-bf16 buffer remains deterministic garbage — the
+  real lm_head path lives in get_logits/Impl, now located.
+
+Next (concrete): disassemble Impl::forward (0x73c10) to find which internal
+buffer holds the final hidden state + how the server drives forward→get_logits;
+call get_logits with that activation buffer (matching the .so's own usage) →
+real 35B logits → generation.
+
+## Round 58 — the logits path IS in the lib: _prefill_with_mm calls get_logits (2026-09-03)
+
+Continued the .so mining (no blockers):
+
+- get_logits (0x6cfb0) has exactly ONE caller inside the lib:
+  **qwen3_6_moe_npu::Impl::_prefill_with_mm** (0x76320, call at 0x76d94). The
+  MM prefill path runs the layers, then calls get_logits to compute lm_head.
+- The call site shows the real convention (nonstandard regs): rdi = a REAL
+  stack-constructed buffer<bf16> (vtable set from _ZTV6buffer...), rsi = the
+  Impl, rdx = an input buffer whose data(+0x10) get_logits memcpy's into the
+  lm_head input BO (impl+0x4d0, count impl+0xb8), runs the lm_head xrt::run
+  (impl+0x5b8), syncs the output BO (impl+0x528 FROM), writes logits back.
+- buffer<bf16> = the REAL header class with a VTABLE at offset 0 + device
+  members — my bare 4-field Buf (vtable=nullptr) was why the direct call
+  SEGV'd. Need real buffer<bf16> objects (construct via buffer.hpp).
+- Public prefill/forward return buffers decode as all-NaN bf16 in EVERY path
+  (32/44/382-token prompts) — the returned buffer's data pointer is not
+  host-valid logits; the real logits materialize through get_logits only.
+
+Next (concrete): construct real header buffer<bf16> objects and drive
+prefill → get_logits(act_buf, impl, out_buf) exactly as _prefill_with_mm
+does (need the final-hidden-state buffer as the rdx input — likely the
+prefill-returned buffer read as the act, or impl+0x4d0's content). The
+lm_head path is now fully mapped at the instruction level; it is a matter of
+replicating the call, not discovering it.
