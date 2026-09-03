@@ -252,3 +252,50 @@ Extended the row map past the expert region with the same signature method
   need the column-padded (8704→9216) tile transform, the "different
   generator" flagged as open in the map above. Next: reverse that generator
   from the capture.
+
+## Round 47 — runtime 35B text load UNBLOCKED + fresh full capture landed (2026-09-03)
+
+### The runtime loads the full 35B text tower now
+
+`LM_Config::_resolve_paths` sets `is_vlm = !vision_model_weight.empty()` — the
+model dir's config.json names `vision_weight.q4nx` (missing locally; the model
+list entry is `vlm: true`), which made load_weights die opening the vision
+tower before any text loading. Setting `vision_model_weight: ""` in the model
+dir config.json → text-only load **completes**: "load_weights done", prefill(2
+tokens) runs, full 248320-vocab logits out (`/tmp/txn_decode/moe_logits.bin`,
+bf16 — the 35B's first real runtime output captured). Config restored after.
+The "35B dead on load" ⛔ is RESOLVED for text; the runtime is a live 35B
+reference. (The `35b-moe-load-crash` SIGSEGV is a real latent
+heap-layout-dependent bug in `qwen3_6_reorder_cpy` on small BF16 vectors —
+seen intermittently WITH and WITHOUT interposers; the crash doc + a gdb
+repro today both hit it at `load_linear_weights`.)
+
+### Fresh full-load capture: /home/bcloud/.cache/moe-cap4 (73 GB, 854 files)
+
+The wait-hook interposer (cap_interposer.so) triggers the latent reorder bug
+on ~half the runs (layout-dependent) — retry until "load_weights done"
+(attempt 2 of 6 succeeded). Captured with CAP_MAX_KEEP=67108864 (note: the
+512MB expert-pool writes bypass the filter in the runlist post-dump path —
+120 x 512MB files are present). Contents: 415 bo_* (incl. 5MB x90, 9MB x6,
+8MB x4, 2-3MB staging), 19 insts, 27 preinsts, 15 extsmall, 35 elf, plus the
+forward's post/waitpost (168/173) + actpost + kvpost (128MB) dumps = the 35B's
+first real on-device forward capture.
+
+### ssm_out transform structure identified (in bo_to_0160_5242880.bin)
+
+layer-6 `linear_attn.ssm_out_proj` (1024 x 8704-B file rows) is stored in a
+5,242,880-B BO as **4736-B windows from file offset 0** (NOT the experts'
+3912 head offset): window j=0 at BO byte 328,192; j=0..15 sequential at
++9472 (2-row) stride, then the order permutes (group structure, same class
+as the expert up/gate/down orders). BO content is NOT row-aligned (weights
+placed at byte granularity with cross-tensor splices). qkv_proj raw bytes
+still not found in ANY capture file (even multi-offset probes) — its in-BO
+form is the deepest remaining transform.
+
+### Next (tooling ready: tools/map_moe_bo_rows.py signature method)
+
+Map the moe-cap4 small/medium BOs (5MB/9MB/8MB x N) window-by-window vs the
+layer-6 (and layer-0/3) tensor files: derive each tensor's window order in
+its BO (ssm_out done structurally; then ssm_out full order, share_*, qkv,
+gate_proj) → complete region A+B spec → engine packer for the linear-attn
+BOs. Runtime load with vision-off config remains the reference generator.
