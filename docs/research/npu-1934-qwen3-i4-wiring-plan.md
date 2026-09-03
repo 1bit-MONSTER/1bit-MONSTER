@@ -994,3 +994,26 @@ B'' int8 quantization + S_col reconstruction precision, not a simple qn_s
 fold bug). Closing the gap to 760 needs the int4 h2 scale calibated against
 the int8 model h2 (per-layer), or accepting the int4 accuracy budget. Deep
 multi-session work; the wiring (D GEMM, residual) is proven correct (I8REF=760).
+
+### Round-215: scale-cancellation analysis — the qn_s-inflated up is the residual magnitude bug
+
+Mathematical analysis of the int4 h2: B_shadow = sat8(W/S_col) (q4*a+b,
+a=s/S_col, b=zp/S_col). C1 = Am·B_shadow = fh/ag · W/S_col. With the fold
+g4 = C1[gate]*ag*S_col[gate], S_col should CANCEL: C1*ag*S_col = fh·W = the
+int8 GU gate. GUDIAG confirmed the cancellation only holds to ~1.6x (the
+int8-quantization of Am and B'' loses precision). 
+
+The up fold u4 = C1[up]*ag*qn_s*S_col[up] includes an EXTRA qn_s (23x) that
+does NOT cancel — so the int4 up is qn_s-inflated. The on-core h2h therefore
+saturates (model_h2_int4 ~250x the int8 ref), which is why the fused token
+diverges. But dropping qn_s AND using the direct C1->silu (INT4H2) gave an
+even worse token (49270) — so the correct fix isn't a pure fold edit; the
+dequant (fuse_su_b = h2h) and the fold must be reconciled together so the
+int4 h2 lands at the int8-ref scale (rms ~0.15) and feeds the (proven-correct)
+D GEMM to give 760.
+
+All correctness/wiring issues are resolved (I8REF=760, D GEMM corr 0.9999,
+h2 int4 bit-exact vs its own contract, BSIGN 16/16). The remaining is the
+int4 h2 dequant/fold scale reconciliation against the int8 model h2 — deep,
+multi-session, needing the int4 h2 correctly dequantized to the model scale
+(not qn_s-inflated, not int8-saturated) before the D GEMM.
