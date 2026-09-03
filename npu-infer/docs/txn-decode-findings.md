@@ -1299,3 +1299,73 @@ tokens 1000+1001 — and compared against the round-37-era artifacts
 
 Evidence + receipts: `npu-infer/captures/round41-regate/` (RE-GATE.md + this
 boot's actpost_002/004 and bo_from_0199/0229 captures).
+
+## Round 42 — real-prompt tokenizer wiring: coherent engine generation (2026-09-03)
+
+Round 37's remaining item ("real-prompt tokenizer wiring for coherent engine
+generation") is CLOSED. The engine's main.cpp took token IDs only (BOS or
+NPU_PROMPT_IDS); the missing chat-driver half — text prompt -> tokens ->
+text — is now in-tree.
+
+### What was added
+
+- `tools/qwen3_tokenizer.{h,cpp}` — minimal HF-format byte-level BPE
+  tokenizer for Qwen3, reads tokenizer.json directly (bundled JSON parser;
+  no new deps beyond pcre2-8 for the GPT-2 pre-tokenizer regex with
+  \p{L}/\p{N} unicode classes). Implements special-token pre-split
+  (<|im_start|>/<|im_end|>/<|endoftext|> stay whole), byte<->unicode
+  (tiktoken tables; full byte coverage verified — no byte-fallback needed),
+  rank-ordered BPE merges, and byte-level decode. NFC assumed (prompts are
+  NFC in practice).
+- `src/main.cpp` — real-prompt mode: `npu_infer <model.q4nx> "prompt text"`
+  (or NPU_PROMPT) wraps the text in the Qwen3 chat template (NPU_RAW_PROMPT=1
+  for plain continuation), encodes, generates, decodes the sampled tokens to
+  text. NPU_TOK_ONLY=1 = tokenizer self-check (no NPU).
+- `src/engine.cpp` — generate() now stops at the Qwen EOS ids
+  (<|endoftext|> 151643 / <|im_end|> 151645). The old stop-at-0 was wrong
+  for text: token 0 is '!' in this vocab, so real output truncated
+  mid-sentence at any exclamation.
+- `captures/txn-elfs/layer_ctx65..128.{elf,txn}` — per-context layer ELFs
+  extended past 64 so chat prompts (tens of prompt tokens) + long decode
+  don't die at the ctx-64 boundary (observed: past ctx 64 the forward
+  stalls and the sampler emits 0='!' repeatedly).
+
+### Tokenizer validation (vs the `tokenizers` python package, same file)
+
+Encode is byte-identical to HF for every class tested: plain prose,
+contractions (don't / I'm / believin' / l'école), emoji, code with
+newlines/indent, CJK, whitespace runs, accents:
+
+| prompt | cpp ids == python ids |
+|---|---|
+| "The capital of France is" | [785, 6722, 315, 9625, 374] — identical |
+| 6 more (contractions/emoji/code/CJK/ws/accents) | all identical |
+
+Chat template round-trips exactly: encode(decode(ids)) == prompt text.
+
+### Coherent generation on the NPU (runtime-layer path, greedy)
+
+    NPU_RUNTIME_LAYERS=1 NPU_LAYER_ELF_DIR=captures/txn-elfs \
+    NPU_LMHEAD_ELF=captures/txn-elfs/elf_0002_lmhead.bin NPU_MAX_TOKENS=64 \
+    ./npu_infer <model>/model.q4nx "What is the capital of France? Answer in
+    one short sentence."
+
+32-token chat prompt -> 64 decoded tokens in 1263 ms (~19.7 ms/tok), clean
+coherent text (no 0/! artifacts once ctx 65+ ELFs exist):
+
+> Okay, the user is asking the capital of France. I know the answer is
+> Paris. But they want it in a short sentence. Let me check if there's any
+> trick here. No, it's straightforward. I should just state it clearly...
+
+The model is the base Qwen3-0.6B (not -Instruct), so it roleplays the
+instruction instead of answering directly — expected, and fine for the
+generation-coherence milestone. 0 IO_PAGE_FAULTs across the runs.
+
+### Notes
+
+- Tokenizer ids go to 151668 (151643 vocab + 26 added); engine vocab is
+  151936 — the last 268 ids are tokenizer-unreachable and decode empty.
+- The chat driver design intent from main.cpp's original comment
+  ("A chat driver encodes a real prompt via the tokenizer and passes the
+  token stream here") is now realized inside main.cpp; a future server/API
+  can reuse Qwen3Tokenizer directly.

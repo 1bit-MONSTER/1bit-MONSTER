@@ -753,8 +753,12 @@ int NpuInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
     for (int i = 0; i < max_output_tokens; i++) {
         current_token_ = run_decode_step(current_token_);
         output_tokens[num_out++] = current_token_;
-        
-        if (current_token_ == 0) break;
+
+        // Stop at the Qwen3 end-of-sequence ids (<|endoftext|> 151643,
+        // <|im_end|> 151645). The historical stop-at-0 was wrong for text
+        // generation — token 0 is '!' in this vocab, so real output could
+        // truncate mid-sentence.
+        if (current_token_ == 151643 || current_token_ == 151645) break;
     }
     
     auto t_end = std::chrono::steady_clock::now();
