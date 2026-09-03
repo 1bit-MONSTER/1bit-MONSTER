@@ -799,3 +799,21 @@ The remaining gap to the float token is therefore NOT in the h2 (now exact)
 but in the D GEMM scale / residual accumulation (fuse_su_b = h2h/qn_s) or
 downstream. This is the next target: validate the D GEMM output against the
 float FFN. The fused GU+silu is correct.
+
+### Round-200: D GEMM inputs are float-scale & realistic; remaining gap is downstream
+
+With NPU_FUSED_DDBG, the fused_use D GEMM consumes fuse_su_b[0..3] =
+0.913 -0.174 0.304 0.043 (the float h2, dequantized from the bit-exact int8
+h2 by /qn_s) and produces realistic D output (dw=2.882, -0.792, ...). The D
+GEMM is a SEPARATE launch (FLM_GO(cd, ...), line 3336) using the correctly
+packed int8 D weights (dsc[l]/cd), while cg_fuse_dbo[l] (bo3, passed to
+launch_fused) is allocated but never packed — the split-launch design uses
+the separate cd for the D GEMM, not the fused kernel's internal D phase.
+
+So the fused GU->silu->h2 is bit-exact, and the D GEMM consumes correct-scale
+float h2 with correct D weights. The remaining token gap (56538/6004 vs float
+760) is downstream of the D GEMM — the residual accumulation (fh=fsb+fuse_dw_b),
+a subtle per-layer scale, or the compounding of small errors over 28 layers.
+Next: validate fuse_dw_b against the true float FFN per layer and reconcile
+the residual/dsc scale. This is now a much narrower refinement than the
+garbage-C1 blocker (which is resolved).
