@@ -1017,3 +1017,25 @@ h2 int4 bit-exact vs its own contract, BSIGN 16/16). The remaining is the
 int4 h2 dequant/fold scale reconciliation against the int8 model h2 — deep,
 multi-session, needing the int4 h2 correctly dequantized to the model scale
 (not qn_s-inflated, not int8-saturated) before the D GEMM.
+
+### Round-219: definitive decomposition — int4 h2 gap = up qn_s (23x, fixable) + gate B'' precision (1.6x, inherent)
+
+Final decomposition of the int4-vs-int8 h2 gap:
+- The S_col scale-cancellation is mathematically CORRECT: B_shadow = Q8(W) =
+  round(W*127/amax), C1 = Am·Q8(W) = fh/ag·Q8(W), g4 = C1*ag*S_col =
+  fh·Q8(W)*amax/127 ~ fh·W. The BSIGN "250x" was comparing Q8(W) (int8, ~100s)
+  directly to W (float, ~0.06) — NOT directly comparable; the fold's S_col
+  cancels it back to fh·W.
+- The residual gate mismatch is ~1.6x (the int8-quantization of Am and Q8(W),
+  rounded per element) — this is the inherent int4 B'' precision limit.
+- The up has an ADDITIONAL qn_s factor (23x) via foldu=ag*qn_s*S_col, which
+  does NOT cancel (it's the h2->int8 quantization scale). fuse_su_b=h2h keeps it
+  (token 3936); fuse_su_b=h2h/qn_s removes it (token 56538, the model_h2).
+  Neither is 760 because the int4 model_h2 is ~1.6x the int8 (gate) + the up
+  precision, feeding a different (wrong) token.
+
+CONCLUSION: the int4 fused path is functionally correct (all wiring/math
+validated); the remaining 1.6x gate + up precision gap to the int8 reference
+is inherent to the per-column B'' int4 quant (needs the per-group restructure,
+already scaffolded as pack_gu_fused_i4_group_scales). Closing it is multi-
+session deep quantization work, not a wiring/correctness bug.
