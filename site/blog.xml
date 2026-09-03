@@ -6,7 +6,21 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Wed, 02 Sep 2026 15:17:43 +0000</lastBuildDate>
+        <item>
+      <title>Beating FastFlowLM at their own game: runlist batching on the XDNA 2 NPU</title>
+      <link>https://1bit.monster/1bit-post-runlist-npu.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-runlist-npu.html</guid>
+      <pubDate>Wed, 03 Sep 2026 07:30:00 +0000</pubDate>
+      <description>Built our own runlist-capable XRT 2.26.0, proved xrt::runlist natively batches the per-token layers on the XDNA 2 NPU, and decoded Qwen3-0.6B at ~40 tok/s — ~3.7x faster than FastFlowLM's published 10.6 TPS for the same model on the same NPU.</description>
+    </item>
+    <lastBuildDate>Thu, 03 Sep 2026 07:30:00 +0000</lastBuildDate>
+    <item>
+      <title>Lemonade v11.9.0: origin hardening, and upstream took our HRX backend</title>
+      <link>https://1bit.monster/1bit-post-lemonade-v1190.html</link>
+      <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1190.html</guid>
+      <pubDate></pubDate>
+      <description>The embedded Lemonade server core is re-vendored to v11.9.0 — allowed_origins/CORS hardening, llama.cpp to b10723, the streaming-stall fix, and directory-watcher + extra-model classification fixes. We retired stream_stall_timeout and kept the newer hrx-b66 pin; everything else now matches upstream.</description>
+    </item>
     <item>
       <title>Zaya 8B Q4NX on the AMD NPU</title>
       <link>https://1bit.monster/1bit-post-zaya-q4nx-hrx.html</link>
@@ -19,7 +33,7 @@
       <link>https://1bit.monster/1bit-post-lemonade-v1181.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1181.html</guid>
       <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
-      <description>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 554 architecture tokens, 1,798 HF arch strings, 317,310/317,310 checkpoints mapped.</description>
+      <description>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 560 architecture tokens, 1,818 HF arch strings, 317,310/317,310 checkpoints mapped.</description>
     </item>
     <item>
       <title>HRX: we put AMD&#x27;s experimental IREE runtime inside our engine</title>
@@ -36,11 +50,11 @@
       <description>Lemonade v11.8.0 re-vendored: the 15th backend (ds4/DwarfStar, DeepSeek V4 Flash for Strix Halo), download resume, rate limits, and our merged PR.</description>
     </item>
     <item>
-      <title>One engine, 1,775 models</title>
+      <title>One engine, every model</title>
       <link>https://1bit.monster/1bit-post-1775-models.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-1775-models.html</guid>
       <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
-      <description>One C++ binary, 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.</description>
+      <description>One C++ binary, 560 architecture tokens, 1,818 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.</description>
     </item>
     <item>
       <title>Local RAG with our own embeddings</title>

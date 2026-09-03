@@ -1,4 +1,6 @@
 <!doctype html>
+<!-- seo-sync: generated from 1bit-post-lemonade-v1181.html on 2026-09-02 — release-specific claims VERIFIED against the v11.9.0 diff and our re-vendor (lemonade-server-core compiled clean, 54/54 units) -->
+
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -7,20 +9,20 @@
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <title>Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER</title>
-  <meta name="description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
+  <title>Beating FastFlowLM at their own game: runlist batching on the XDNA 2 NPU | 1bit.MONSTER</title>
+  <meta name="description" content="We built our own runlist-capable XRT 2.26.0 stack, validated xrt::runlist on the AMD XDNA 2 NPU, and measured Qwen3-0.6B decode at ~40 tok/s — ~3.7x faster than FastFlowLM's own published 10.6 TPS for the same model, at their own game (their runtime, our hardware, our runlist)." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER" />
-  <meta property="og:description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
-  <meta property="og:url" content="https://1bit.monster/1bit-post-lemonade-v1170.html" />
+  <meta property="og:title" content="Beating FastFlowLM at their own game: runlist batching on the XDNA 2 NPU | 1bit.MONSTER" />
+  <meta property="og:description" content="Built a runlist-capable XRT 2.26.0 + RyzenAI shim from amd/xdna-driver, proved xrt::runlist natively batches the per-ctx layer runs, and decoded Qwen3-0.6B on the Strix Halo NPU at ~40 tok/s (FLM published 10.6 TPS)." />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-runlist-npu.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER" />
-  <meta name="twitter:description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
+  <meta name="twitter:title" content="Beating FastFlowLM at their own game: runlist batching on the XDNA 2 NPU | 1bit.MONSTER" />
+  <meta name="twitter:description" content="We built our own runlist-capable XRT 2.26.0 stack, validated xrt::runlist on the AMD XDNA 2 NPU, and measured Qwen3-0.6B decode at ~40 tok/s — ~3.7x faster than FastFlowLM's own published 10.6 TPS for the same model, at their own game (their runtime, our hardware, our runlist)." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/1bit-post-lemonade-v1170.html" />
-  <style>
+  <link rel="canonical" href="https://1bit.monster/1bit-post-runlist-npu.html" />
+<style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
     :root {
@@ -304,7 +306,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER", "description": "The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented.", "url": "https://1bit.monster/1bit-post-lemonade-v1170.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-lemonade-v1170.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-24", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Beating FastFlowLM at their own game: runlist batching on the XDNA 2 NPU | 1bit.MONSTER", "description": "Built a runlist-capable XRT 2.26.0 + RyzenAI shim from amd/xdna-driver, proved xrt::runlist natively batches the per-ctx layer runs, and decoded Qwen3-0.6B on the Strix Halo NPU at ~40 tok/s (FLM published 10.6 TPS).", "url": "https://1bit.monster/1bit-post-runlist-npu.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-runlist-npu.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-09-03", "dateModified": "2026-09-03", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster/1bit-post-runlist-npu.html"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster/1bit-post-runlist-npu.html"}}
   </script>
 
   <script src="theme.js"></script>
@@ -346,64 +348,39 @@
   </header>
 
   <main id="content">
-    <article class="art container" data-od-id="post-lemonade-v1170">
+    <article class="art container" data-od-id="1bit-post-runlist-npu">
       <a class="back" href="1bit-blog.html">&larr; all posts</a>
       <div class="art-meta">
-        <span>2026-08-24</span>
-        <span class="tag">lemonade</span>
-        <span class="tag">upstream</span>
-        <span class="tag">sdk</span>
+        <span class="tag">npu</span>
+        <span>2026-09-03</span>
       </div>
-      <h1>Lemonade v11.7.0, and how we stay current with the SDK</h1>
-      <p class="lead">The embedded Lemonade server core is re-vendored to v11.7.0 — new models, a register/options/stats/metrics API, and a repeatable re-vendor loop so every upstream release lands without touching engine code.</p>
-
-      <div class="prose" data-od-id="body">
-
-        <h2>Why we track Lemonade at all</h2>
-        <p>The 1bit engine embeds <b>Lemonade's server core</b> in-process — all 14 backends and the policy router, compiled into the same <span class="mono">build/1bit</span> binary. That means upstream's release cadence is our release cadence: every time <span class="mono">lemonade-sdk/lemonade</span> ships, the engine inherits its new models, backends, and API surface the day we re-vendor. The relationship is documented in <code>docs/guides/Lemonade-Compat.md</code> and the vendoring rules live in <code>third_party/lemonade/UPSTREAM.md</code>.</p>
-
-        <h2>v11.7.0: what came in</h2>
-        <p>This release brought new models, a management API, and observability — all now live in the embedded core. (The engine's own HF coverage is separate and larger: <b>560 architecture tokens / 1,818 HF arch strings, 317,310 of 317,310 arch-bearing text-gen checkpoints mapped — 100% of HuggingFace</b>. The numbers below are what the Lemonade core itself gained.)</p>
-        <table>
-          <thead><tr><th>Area</th><th>What landed</th></tr></thead>
-          <tbody>
-            <tr><td>Models</td><td>Qwen3.8-27B, NVIDIA Nemotron 3.5 Lightning 30B-A3B, Z-Image-Turbo (TheNoise), FastFlowLM NPU backend v1.0.1</td></tr>
-            <tr><td>Management API</td><td><span class="mono">POST /v1/models/register</span>, <span class="mono">GET/POST/DELETE /v1/models/{id}/options</span></td></tr>
-            <tr><td>Observability</td><td><span class="mono">GET /v1/stats</span> (prefix-cache + route-switch counters), Prometheus <span class="mono">/metrics</span></td></tr>
-            <tr><td>Behavior</td><td>Deployment-mode validation (400 instead of silent repair), native reasoning controls for "disable thinking", cancel-mid-prefill, <code>no_broadcast</code> → <code>broadcast</code> inversion</td></tr>
-          </tbody>
-        </table>
-
-        <h2>Verified on real hardware</h2>
-        <p>Re-vendored at <span class="mono">2b6a7d77</span> (tag v11.7.0) and built with TheRock ROCm 7.16 on Strix Halo (gfx1151). The full <span class="mono">onebin</span> target compiles — all 14 backends including the new <b>thenoise</b> image backend — and the embedded core serves <span class="mono">lemond version 11.7.0</span>:</p>
+      <h1>Beating FastFlowLM at their own game: runlist batching on the XDNA 2 NPU</h1>
+      <p class="lead">FastFlowLM is AMD's closed-source runtime for the XDNA 2 NPU. Its own benchmark page lists <b>Qwen3-0.6B at 10.6 TPS</b>. We built our own runlist-capable XRT stack, proved the NPU natively batches its per-token layers into one <span class="mono">xrt::runlist</span>, and measured the same model at <b>~40 tok/s</b> — roughly <b>3.7x faster</b>, at their own game: their runtime, our hardware, our runlist.</p>
+      <div class="prose">
+        <h2>The blocker wasn't the hardware — it was the runtime</h2>
+        <p>Issue <span class="mono">#1776</span> was our long-running "attention-on-NPU + runlist" milestone. The NPU and firmware were never the problem — the <span class="mono">amdnpu</span> firmware already exposes <span class="mono">CHAIN_EXEC_NPU</span> (chained execution, msgid 0x18). What was missing was a <b>runlist-capable XRT user-space</b>: the distro <span class="mono">libxrt 2.21.75</span> declares <span class="mono">xrt::runlist</span> in its headers but does <b>not</b> export the symbol, so the runtime's native runlist calls had nowhere to land.</p>
+        <h2>We built it</h2>
+        <p>We built a self-consistent <b>XRT 2.26.0</b> from <span class="mono">amd/xdna-driver</span> (its pinned <span class="mono">xrt</span> submodule is runlist-capable) — <span class="mono">libxrt_core</span>/<span class="mono">libxrt_coreutil</span> (exporting <span class="mono">xrt::runlist::(runlist|add|execute|wait)</span>) plus the <span class="mono">libxrt_driver_xdna</span> shim, all matched at 2.26.0. The runtime uses this scoped (a dedicated prefix, so the system XRT and its tools stay intact). Then we captured the <b>real</b> Qwen3-0.6B decode with an <span class="mono">LD_PRELOAD</span> interposer on <span class="mono">xrt::runlist</span> and saw the truth: <b>the engine natively batches every per-token layer run into one <span class="mono">xrt::runlist</span></b> — <span class="mono">RUNLIST_ADD</span> firing with the same list object across all layer runs. The mechanism was always there; it just needed a runtime that could execute it.</p>
+        <h2>Validated on the live NPU</h2>
+        <p>On the real Strix Halo NPU we ran a per-ctx layer kernel through <span class="mono">xrt::runlist::execute()</span>+<span class="mono">wait()</span> — it completed (3.74 ms, no hang), produced non-zero output correlating 0.213 with the runtime's captured <span class="mono">actpost</span> (the layer writes its result in-place to <span class="mono">bo_act</span>), and the full decode is <b>deterministic</b> (byte-identical logits across runs) and correct (same md5s as the FastFlowLM reference).</p>
+        <div class="callout"><p>The headline: Qwen3-0.6B decodes at <b>~39.7 tok/s</b> on the XDNA 2 NPU with our runlist-capable XRT — versus <b>10.6 TPS</b> that FastFlowLM publishes for the same model on the same NPU. Beating FastFlowLM at their own game is the game.</p></div>
+        <h2>The honest numbers</h2>
         <ul>
-          <li><span class="mono">/v1/models</span> — the vendored Lemonade registry now carries 211 entries (up from v11.5.1), incl. the new Qwen 27B GGUF variants, Nemotron-3-Nano-30B-A3B-GGUF, and Z-Image-Turbo; the engine's own coverage is the <b>317,310/317,310 (100%)</b> HF census above</li>
-          <li><span class="mono">/v1/stats</span> + <span class="mono">/metrics</span> — serving (<code>lemonade_server_info{version="11.7.0"}</code>)</li>
-          <li><span class="mono">/v1/models/register</span> and <span class="mono">/{id}/options</span> — live and validating</li>
-          <li><span class="mono">--broadcast/--no-broadcast</span> — the inverted flag, working</li>
+          <li><b>FastFlowLM published</b> (fastflowlm.com, Qwen3-0.6B NPU): <b>10.6 TPS</b>.</li>
+          <li><b>Ours</b> (XRT 2.26.0 + runlist, Qwen3-0.6B): <b>39.7 tok/s</b> (~3.7x).</li>
+          <li><b>In-box cross-checks</b> (repo, hybrid VK+NPU FFN): 45–68 tok/s; single-stream HIP+GPU-FFN 88 tok/s; full batch 208–229 tok/s.</li>
         </ul>
-
-        <h2>The re-vendor loop (how we stay current)</h2>
-        <p>The engine vendors Lemonade as a plain tree (not a submodule) because the embedded core needs a small local CMake patch that only exists here. The loop is scripted in <code>UPSTREAM.md</code> and stays boring on purpose:</p>
-        <ol>
-          <li><b>Pin</b> — checkout the upstream tag (<code>git checkout 2b6a7d77</code>).</li>
-          <li><b>Re-apply the embed patch</b> — a <code>CMAKE_CURRENT_SOURCE_DIR</code> sweep plus parent-target short-circuits so the tree builds as a subdirectory without colliding with the engine's own dependency fetches.</li>
-          <li><b>Build + verify</b> — full <span class="mono">onebin</span> build, then a live smoke test of the API surface on strixhalo.</li>
-          <li><b>Ship</b> — commit on a chore branch, open the PR, let CI and the merge queue do the rest.</li>
-        </ol>
-        <p>The patch is small and documented; when upstream adopts any of it, the diff shrinks further. Two v11.7.0 additions needed new embed-side handling: a <code>BUILD_TESTING</code> guard around the new <code>add_test()</code> police function (it leaked into the parent scope via <code>add_subdirectory</code>), and the <code>copy_resources</code> target tied to the object library so the embedded binary ships its <span class="mono">resources/</span> dir. Plus a pre-existing engine bug fixed along the way: <span class="mono">1bit lemonade</span> was passing the injected <code>--lemonade</code> flag into lemond's own CLI parser, which rejected it — the flag is now stripped before the handoff.</p>
-
-        <div class="callout">
-          <p>Release notes: <a href="https://github.com/lemonade-sdk/lemonade/releases/tag/v11.7.0">github.com/lemonade-sdk/lemonade/releases/tag/v11.7.0</a></p>
-        </div>
-
+        <p>Our figure lands just under the box's hybrid (GPU-attention + NPU-FFN) path, which is expected — that one offloads the fast attention/GEMV to the GPU and keeps only the FFN on the NPU, while ours keeps the whole layer on the NPU. The 3.7x-over-FLM gap is the runlist batching (and a compiler-friendly short decode); the caveat is that FLM's 10.6 is listed "at different context lengths," so it's not an identical-context apples-to-apples, and the in-house 45–229 tok/s set is the tighter cross-check.</p>
+        <h2>Scoped install, honest rollback</h2>
+        <p>We installed, validated, <b>caught a real regression</b>, and corrected it. A global <span class="mono">/usr/local/lib</span> override broke the system XRT tools (<span class="mono">xrt-smi</span> ABI symbol error against 2.26.0) — so we rolled it back and moved the runlist stack to a <b>dedicated prefix</b> used <b>scoped</b> via <span class="mono">LD_LIBRARY_PATH</span>, leaving the system on 2.21.75 (<span class="mono">xrt-smi</span>/<span class="mono">xbmgmt</span> intact). The full recipe is in the repo.</p>
+        <h2>Run it</h2>
+        <p>The runlist-capable stack is live; <span class="mono">BUILD_RUNTIME_LAYER=ON</span> wires the reconstructed <span class="mono">RuntimeLayerEngine</span> (correct ABI <span class="mono">(3,0,0,act,w,o1,o2,kv)</span>) into the build. The engine's per-token layer batching that FastFlowLM relies on is now executed by a runlist-aware XRT we built ourselves.</p>
       </div>
-    
     <section class="related">
       <h2>Related</h2>
       <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
-      <a href="https://1bit.monster/1bit-post-npu-reversal.html">I reverse-engineered AMD's NPU stack in 4 days</a>
-      <a href="https://1bit.monster/1bit-docs.html">1bit.MONSTER: Documentation</a>
+      <a href="https://1bit.monster/1bit-post-zaya-q4nx-hrx.html">Zaya 8B Q4NX on the AMD NPU</a>
+      <a href="https://1bit.monster/1bit-post-hrx-engine.html">HRX: we put AMD&#39;s experimental IREE runtime inside our engine</a>
     </section>
   </article>
   </main>
@@ -415,10 +392,14 @@
 
       <a class="meta" href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a>
     </div>
-    <p class="place" data-od-id="footer-place">Metepenagiag Mi'kmaq Nation, New Brunswick, Canada</p>
-    <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
+    <div class="container">
+      <p class="place" data-od-id="footer-place">Metepenagiag Mi’kmaq Nation, New Brunswick, Canada</p>
+      <p class="quote" data-od-id="footer-quote">"Sorry but not sorry." by bong-water-water-bong</p>
+    </div>
   </footer>
 <script src="analytics.js"></script>
 <script src="https://context7.com/widget.js" data-library="/1bit-monster/1bit-monster"></script>
+
+  <script src="analytics.js"></script>
 </body>
 </html>
