@@ -3137,6 +3137,40 @@ struct Bf16Ctx {
                                         (int)lroundf(h2f[2]*qn_s), (int)lroundf(h2f[3]*qn_s),
                                         (int)lroundf(h2f[4]*qn_s), (int)lroundf(h2f[5]*qn_s),
                                         (int)lroundf(h2f[6]*qn_s), (int)lroundf(h2f[7]*qn_s));
+                                // INT4-consistent reference: recompute h2 from the
+                                // corrected C1 (bo2) via silu_quant_i8 (fold=ag*S_col)
+                                // and compare to the on-core silu's bo4 h2. This is
+                                // the correct reference for the fused int4 path (the
+                                // int8 fuse_gt_b above is a mismatched scale).
+                                if (getenv("NPU_FUSED_CPUSILU") && atoi(getenv("NPU_FUSED_CPUSILU")) == 1) {
+                                    const int32_t* c1m = cg_fused_i4->Cm;
+                                    const size_t N2 = 2 * (size_t)IM;
+                                    std::vector<float> fold(N2);
+                                    for (int j = 0; j < (int)N2; j++)
+                                        fold[j] = (j & 1) ? ag * qn_s * cg_fuse_scl[l][j]
+                                                          : ag * cg_fuse_scl[l][j];
+                                    // Host silu_quant_i8 on the corrected C1 row 0 -> h2ref.
+                                    std::vector<int32_t> C1row(N2);
+                                    std::vector<int8_t> h2ref(IM);
+                                    for (int p = 0; p < IM; p++)
+                                        for (int t = 0; t < 2; t++) {
+                                            int j = 2 * p + t, kc = j >> 7, cl = j & 127;
+                                            C1row[j] = c1m[kc * 1024 + (cl >> 3) * 64 + (cl & 7)];
+                                        }
+                                    silu_quant_i8(C1row.data(), fold.data(), h2ref.data(), IM);
+                                    int cbad = 0; double cmae = 0; int cbmax = 0;
+                                    for (int p = 0; p < IM; p++) {
+                                        int d = abs((int)h2h[p] - (int)h2ref[p]);
+                                        cmae += (double)d; if (d != 0) cbad++;
+                                        if (d > cbmax) cbmax = d;
+                                    }
+                                    fprintf(stderr, "[H2I4 l=%d] mae=%.3f bad=%d/%d bmax=%d h2h[0..7]=%d %d %d %d %d %d %d %d h2ref[0..7]=%d %d %d %d %d %d %d %d\n",
+                                            l, cmae / IM, cbad, IM, cbmax,
+                                            (int)h2h[0], (int)h2h[1], (int)h2h[2], (int)h2h[3],
+                                            (int)h2h[4], (int)h2h[5], (int)h2h[6], (int)h2h[7],
+                                            (int)h2ref[0], (int)h2ref[1], (int)h2ref[2], (int)h2ref[3],
+                                            (int)h2ref[4], (int)h2ref[5], (int)h2ref[6], (int)h2ref[7]);
+                                }
                                 fflush(stderr);
                             }
                             if (getenv("NPU_FUSED_DEBUG") && atoi(getenv("NPU_FUSED_DEBUG")) == 1) {
