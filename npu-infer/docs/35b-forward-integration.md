@@ -424,3 +424,28 @@ bo_to_0159-equiv (per-layer, differs across layers, ~2MB): content matches no
 raw tensor bytes/windows and is not clean bf16 (value mode 0x39; int8-ish)
 — believed qkv-family derived state. All other per-layer content (pool +
 5MB linear-attn) is now byte-verified 100%.
+
+## Round 51 — the 2MB BO IS qkv: int16 fixed-point, value-multiset 99.996% (2026-09-03)
+
+Closed the identity question on the 2MB per-layer BO:
+
+- The data is **int16 fixed-point** (NOT int8, NOT bf16): every other byte = the
+  value's high byte; the dominant 0x39 high byte = 0x39xx/16384 ≈ 0.90 weights.
+  NaN in bf16 view = exponent patterns, not float.
+- **Value multiset overlap with the layer's `linear_attn.qkv_proj.weight` file =
+  99.996%** (unique-value overlap); int16 stats nearly identical (mean 1001 vs
+  990, std 13614 vs 13629). The 2MB BO = a per-layer selection/permutation of
+  the qkv file's fixed-point values.
+- qkv file = 8,912,896 int16 values (17.8MB, 2048 rows x 4352 values); the 2MB
+  BO holds 1,048,576 of them (~1/8.5). Linear-attn dims (config): Q/K heads
+  16x128, V 32x128 — 1,048,576 = 2048x512 = plausibly one projection slice.
+- The exact selection + order (its permutation) is not derivable statically:
+  qkv payload is map-written (never xrtBOSync'd — Round-50 byte-flip
+  differentials) so no sync-capture exists; the runtime's qkv kernel-format
+  transform is closed-source.
+
+State: ALL per-layer BO content EXCEPT the 2MB BO permutation is byte-verified
+100% (30 pools + 5MB linear-attn, Round 50). The 2MB BO identity is now pinned
+(qkv int16 fixed-point, kernel-format buffer); reproducing its exact bytes
+requires the runtime's qkv format generator (source) or a map-write capture
+(xrt::bo::map interposition — a possible future interposer extension).
