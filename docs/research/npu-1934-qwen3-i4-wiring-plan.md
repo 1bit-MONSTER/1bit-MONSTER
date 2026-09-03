@@ -655,3 +655,24 @@ remaining B_shadow-vs-kernel up discrepancy (C1h=18542 vs kernel 600604 — the
 two use the same B_shadow so this points to a kernel read/residual that still
 needs an NPU-side B'' byte-dump), the #1934 fused GU accuracy for the up
 columns remains the deep multi-session kernel item.
+
+### Round-193: B_shadow verified byte-exact for gate AND up — kernel is the bug
+
+Added a BVERIFY diagnostic (NPU_QWEN_I4=1) that recomputes B'' from the packed
+tile's bf16-pair a/b bytes and compares it to the pack's B_shadow. Result
+(l=0 and l=1): **gate=1024/1024 AND up=1024/1024 exact**. So the pack is FULLY
+consistent: B_shadow == the kernel's B'' dequant for every gate and up column
+(initial up-only 19/1024 was a bug in my BVERIFY — I had used col-0's a/b for
+the up column; corrected to col-1's a/b -> 1024/1024).
+
+Therefore the C1h reference (Am * B_shadow) is correct, and the earlier
+symmetric/asymmetric-zp-saturation hypothesis is WRONG — B_shadow is not the
+problem. The kernel's up-column C1 (600604) diverging from the correct host
+C1h (18542) is a GENUINE kernel-side bug in matmul_i8_i32_i4's odd (up)
+column accumulation/dequant, since the SAME B_shadow would produce C1h if the
+GU GEMM were correct.
+
+**Definitive remaining #1934 blocker:** the kernel's fused GU GEMM dequants/accumulates
+the up (odd) columns incorrectly on the NPU. Pack, routing, bf16_pair layout,
+fold delivery, and host-CPUSILU route are all correct. Next: NPU-side B''
+byte-dump / odd-column microtile check in matmul_i8_i32_i4.

@@ -1414,6 +1414,41 @@ struct Bf16Ctx {
                 for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)rr*(H/32)+gg]=rg.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)rr*(H/32)+gg]=rg.zp[(size_t)rr*(H/32)+gg]; }
                 for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)(IM+rr)*(H/32)+gg]=ru.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)(IM+rr)*(H/32)+gg]=ru.zp[(size_t)rr*(H/32)+gg]; }
                 cg_fused_i4->packB_into_fused_i4(*cg_fuse_bo[l], raw_gu, 0, H, IM, cg_fuse_scl[l], cg_fuse_row[l]);
+                if (getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1 && l < 2) {
+                    // Verify B_shadow (the C1h reference) matches the packed tile's
+                    // bf16-pair dequant for gate/up columns — distinguishes a pack
+                    // inconsistency from a genuine kernel-side gate/up asymmetry.
+                    const std::vector<int8_t>& Bs = cg_fuse_row[l];
+                    size_t N2 = 2 * (size_t)IM;
+                    uint8_t* Bm = (uint8_t*)cg_fuse_bo[l]->map();
+                    int neqG = 0, neqU = 0;
+                    // column 0 = gate pair0 gate, column 1 = up pair0 up (gate/up interleaved)
+                    for (int ki = 0; ki < H / 64; ki++)
+                        for (int i0 = 0; i0 < 8; i0++) for (int i2 = 0; i2 < 8; i2++) {
+                            int i = ki * 64 + i0 * 8 + i2;
+                            // col 0 (gate): nt=0, j=i1*8+i3=0 -> i1=0,i3=0
+                            size_t tbase = ((size_t)ki * (N2 / 128) + 0) * GuI4Pack::TILE_TOTAL;
+                            size_t byte_off = tbase + (size_t)i0 * 512 + 0 * 32 + i2 * 4 + 0 / 2;
+                            uint8_t b = Bm[byte_off];
+                            int q4 = (b & 0x0F); if (q4 >= 8) q4 -= 16;
+                            size_t r_off = tbase + 4096 + (size_t)((i0 * 8 + i2) / 32) * 512 + 0 * 4;
+                            float av = i4p_bf16_to_f32((uint16_t)Bm[r_off] | ((uint16_t)Bm[r_off+1] << 8));
+                            float bv = i4p_bf16_to_f32((uint16_t)Bm[r_off+2] | ((uint16_t)Bm[r_off+3] << 8));
+                            int8_t bpp = (int8_t)std::roundf((float)q4 * av + bv);
+                            if (bpp == Bs[(size_t)i * N2 + 0]) neqG++;
+                            // col 1 (up): a/b at column offset 1*4, nibble high
+                            b = Bm[tbase + (size_t)i0 * 512 + 0 * 32 + i2 * 4 + 1 / 2];
+                            q4 = ((b >> 4) & 0x0F); if (q4 >= 8) q4 -= 16;
+                            size_t r_offU = tbase + 4096 + (size_t)((i0 * 8 + i2) / 32) * 512 + 1 * 4;
+                            float avU = i4p_bf16_to_f32((uint16_t)Bm[r_offU] | ((uint16_t)Bm[r_offU+1] << 8));
+                            float bvU = i4p_bf16_to_f32((uint16_t)Bm[r_offU+2] | ((uint16_t)Bm[r_offU+3] << 8));
+                            int8_t bppU = (int8_t)std::roundf((float)q4 * avU + bvU);
+                            if (bppU == Bs[(size_t)i * N2 + 1]) neqU++;
+                        }
+                    fprintf(stderr, "[BVERIFY l=%d] B_shadow==tile-dequant gate=%d up=%d (of %d) scol_g=%.6g scol_u=%.6g\n",
+                            l, neqG, neqU, H, cg_fuse_scl[l][0], cg_fuse_scl[l][1]);
+                    fflush(stderr);
+                }
             }
         }free(gw);free(uw);
         }
