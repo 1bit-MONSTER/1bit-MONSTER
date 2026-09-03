@@ -3119,6 +3119,27 @@ struct Bf16Ctx {
                             if (getenv("NPU_FUSED_H2DBG") && atoi(getenv("NPU_FUSED_H2DBG")) == 1) {
                                 FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
                                 cn(fuse_gt_b.data(), fmlp_out);
+                                // Compare the fused INT4 h2 (fuse_su_b=h2h) against the
+                                // INT8-reference h2 (silu(fuse_gt_b[i])*fuse_gt_b[IM+i]).
+                                // Large gap => residual scaling bug; small gap => int4 noise.
+                                double s4 = 0, s8 = 0, d4 = 0, d8 = 0, num = 0, dnum = 0;
+                                for (int i = 0; i < IM; i++) {
+                                    float gv = fuse_gt_b[i]; if (!std::isfinite(gv)) gv = 0;
+                                    float s8i = (gv / (1.0f + expf(-gv))) * fuse_gt_b[IM + i];
+                                    s4 += (double)h2h[i]; s8 += (double)s8i;
+                                    d4 += (double)h2h[i]*h2h[i]; d8 += (double)s8i*s8i;
+                                    num += (double)h2h[i] * s8i;
+                                }
+                                double mn = s4 / IM, mb = s8 / IM;
+                                double n2 = 0, dk2 = 0, dc2 = 0;
+                                for (int i = 0; i < IM; i++) {
+                                    float gv = fuse_gt_b[i]; if (!std::isfinite(gv)) gv = 0;
+                                    float s8i = (gv / (1.0f + expf(-gv))) * fuse_gt_b[IM + i];
+                                    n2 += ((double)h2h[i]-mn) * (s8i-mb); dk2 += ((double)h2h[i]-mn)*((double)h2h[i]-mn); dc2 += (s8i-mb)*(s8i-mb);
+                                }
+                                fprintf(stderr, "[H2I8 l=%d] fused_int4_vs_int8ref: corr=%.6f mean4=%.3f mean8=%.3f rms4=%.3f rms8=%.3f\n",
+                                        l, n2 / sqrt(dk2 * dc2), mn, mb, sqrt(d4/IM), sqrt(d8/IM));
+                                fflush(stderr);
                                 std::vector<float> h2f(IM);
                                 for (int i = 0; i < IM; i++) {
                                     float gv = fuse_gt_b[i];
