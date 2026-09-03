@@ -685,3 +685,24 @@ route to a working 35B. Its prerequisites are mostly banked:
 This closes the R43-60 35B arc with a concrete, unblocked-by-design path:
 engine replay with captured BOs, validated by determinism since the runtime
 is NaN.
+
+## Round 61 — 35B engine replay probe: device-VA question is the crux (2026-09-03)
+
+Started the Round-60 milestone (single linear layer via captured BOs + moe
+ELF). Built an allocation-order probe (addr_probe.cpp) replicating the
+runtime's BO sequence from the moe-cap4 EXTBO manifest.
+
+Result: `xrt::ext::bo::address()` returns HOST-backing ranges
+(0x7f54xxxxxxxx descending per allocation) — NOT the low device-VA space the
+moe ELF TXNs reference (act 0x40000000, region B 0x1bc00000, state
+0x2000000/0xc0000000). With PASID/SVM the driver's device-VA assignment for
+system-memory BOs is the unresolved variable; whether ext::bo addresses map
+1:1 to the ELF's expected VAs (the 0.6B determinism trick) needs a driver-
+level probe (amdxdna BO-info ioctl / xclbin hwctx VA query), not a
+userspace address() read on this build.
+
+The replay milestone is therefore parked on one question: the amdxdna
+device-VA scheme for ext::bo. Everything else for the 35B engine replay is
+banked (captured BOs, moe ELFs, verified content, 5-BO ABI). The probe
+utility (alloc order → addresses) is the starting point once the VA query
+is resolved.
