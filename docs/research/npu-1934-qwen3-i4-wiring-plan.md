@@ -739,3 +739,25 @@ bf16_pair B'' pack consistency, and the mmul C-store miscompile (#1869 ->
 use the scalar C1 fallback with bf16-pair dequant). The remaining h2 error
 (mae~15.5) is the on-core silu fixed-point vs the float reference (the Q/shG
 calibration noted at round 190), a much smaller residual.
+
+### Round-197: fused h2 is internally consistent but disagrees with the float GU scale
+
+With the C1 now correct (bo2 == host C1h), I compared the on-core silu to the
+reference. For pair 0 (l=0): host silu_quant_i8 on the correct C1
+(gate=26262, up=18542) gives g=1.42, u=18.63, h=21.38, h2=21 — EXACTLY the
+kernel's h2h[0]=21. So the on-core silu is now bit-consistent with the host
+silu_quant_i8 (both use ag*S_col scale on the same C1).
+
+But the H2DBG float reference h2gt[0]=-8 uses fuse_gt_b (the float GU
+path), whose gate=0.8881, up=-0.5444. The C1-derived gate
+(26262*ag*S_col[0]=1.42) does NOT equal the float-GU gate (0.8881): they
+differ by ~1.6x. So the C1/silu scale (ag*S_col) and the float-GU scale
+(fuse_gt_b) are inconsistently calibrated.
+
+The fused h2 (21) is self-consistent with the correct C1 (requires the
+fused-path qn_s/scale to drive the D GEMM). The float reference h2gt (-8)
+uses its OWN GU scale. Reconciling the two (matching the fused H2 scale to
+the float GU, or aligning fuse_gt_b's scale with ag*S_col) is the remaining
+#1934 scale-consistency step — the fused path is no longer garbage, it just
+needs its scale aligned to the reference before the D GEMM yields the float
+token (760).
