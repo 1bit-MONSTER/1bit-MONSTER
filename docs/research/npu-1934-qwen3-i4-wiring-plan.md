@@ -781,3 +781,21 @@ Next: use an INT4-consistent h2 reference (host_h2_amax_qn_s's per-pair h2 =
 silu(C1*ag*S_col)*C1*ag*qn_s*S_col) for the D GEMM scale, and confirm the
 fused D output matches the float FFN. The fused path is no longer broken; it
 needs scale alignment + end-to-end validation.
+
+### Round-199: fused GU->silu->h2 is BIT-EXACT against the int4 contract
+
+Added an H2I4 diagnostic (NPU_FUSED_H2DBG + NPU_FUSED_CPUSILU): recompute h2
+from the corrected C1 (bo2) via host silu_quant_i8 (fold=ag*S_col, the exact
+int4 contract) and compare to the on-core silu's bo4 h2. Result (l=0 and
+across layers): **mae=0.000, bad=0/3072, bmax=0** — h2h[0..7] ==
+h2ref[0..7] === 21 -4 7 1 -1 12 1 11.
+
+So the fused int4 pipeline (GU GEMM C1 -> on-core silu -> h2 -> bo4) is now
+BIT-EXACT against the int4 host contract. The earlier mae=15.5 was entirely
+the mismatched INT8 fuse_gt_b reference, not a real error. next_token moved
+56538 -> 6004 (closer to the 760 float).
+
+The remaining gap to the float token is therefore NOT in the h2 (now exact)
+but in the D GEMM scale / residual accumulation (fuse_su_b = h2h/qn_s) or
+downstream. This is the next target: validate the D GEMM output against the
+float FFN. The fused GU+silu is correct.
