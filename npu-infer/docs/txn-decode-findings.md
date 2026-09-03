@@ -1369,3 +1369,24 @@ generation-coherence milestone. 0 IO_PAGE_FAULTs across the runs.
   ("A chat driver encodes a real prompt via the tokenizer and passes the
   token stream here") is now realized inside main.cpp; a future server/API
   can reuse Qwen3Tokenizer directly.
+
+## Round 66 — #2065 root-cause narrowing: drift is below kernel visibility (2026-09-03)
+
+Both relevant boots survive in journalctl — the DRIFTING boot (-1: Sep-2
+23:19 → Sep-3 10:36, where R40 measured argmax 144370) and the RESTORED boot
+(0: Sep-3 10:37, R41 re-gate argmax 397):
+
+1. amdxdna init logs are BYTE-IDENTICAL between the boots (same BARs, same
+   PASID-address-mode, same driver 1.0.0, same PMF sensor errors, same IOMMU
+   group 26). No kernel-visible difference explains the drift.
+2. The harness/runtime resolve libxrt_coreutil.so.2 → the DISTRO XRT
+   (/usr/lib/x86_64-linux-gnu, 2.21.75) via RPATH fallthrough — NOT the
+   /usr/local/lib 2.26.0 copies that were swapped in (07:22) and moved to
+   /usr/local/xrt-runlist (07:25) during boot -1. The XRT-swap event is ruled
+   out as the drift cause (the affected runs used the distro XRT throughout).
+3. Conclusion: the per-boot drift variable (R40: corr 0.998 act/logits,
+   deterministic per boot, reversible at the next reboot per R41) lives in the
+   NPU firmware/driver runtime state BELOW kernel-visible init — AIE tile /
+   firmware internal config set at device bring-up, not distinguishable in
+   dmesg. Root-causing further needs firmware-level tracing (dump_fw_trace/
+   telemetry at a drifting boot) or a captured drifting-boot device state.
