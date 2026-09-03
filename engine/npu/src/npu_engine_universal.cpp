@@ -3139,6 +3139,21 @@ struct Bf16Ctx {
                             // scale — dividing by it makes the D input ~qn_s too small.
                             for (int p = 0; p < IM; p++)
                                 fuse_su_b[p] = (float)h2h[p];
+                            // NPU_FUSED_INT4H2=1: recompute fuse_su_b as silu(g4)*u4 from the
+                            // int4 C1 (g4=C1[gate]*ag*S_col[gate], u4=C1[up]*ag*S_col[up],
+                            // WITHOUT the qn_s over-count) and feed to the D GEMM. Tests
+                            // whether dropping qn_s from the up fold gives token 760.
+                            if (getenv("NPU_FUSED_INT4H2") && atoi(getenv("NPU_FUSED_INT4H2")) == 1) {
+                                const int32_t* c1m = cg_fused_i4->Cm;
+                                for (int p = 0; p < IM; p++) {
+                                    int jg = 2 * p, ju = 2 * p + 1;
+                                    float gc = (float)c1m[(jg>>7)*1024 + ((jg&127)>>3)*64 + (jg&7)];
+                                    float uc = (float)c1m[(ju>>7)*1024 + ((ju&127)>>3)*64 + (ju&7)];
+                                    float g4 = gc * ag * cg_fuse_scl[l][jg];
+                                    float u4 = uc * ag * cg_fuse_scl[l][ju];   // NO qn_s
+                                    fuse_su_b[p] = (g4 / (1.0f + expf(-g4))) * u4;
+                                }
+                            }
                             // gate/up scale diagnosis: compare int4-C1-derived g/u
                             // vs int8-reference g/u (fuse_gt_b) per pair, to see
                             // whether the ~250x gap is gate, up, or both.

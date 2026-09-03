@@ -979,3 +979,18 @@ So the ONLY up issue is the qn_s magnitude over-count in the up fold (34x),
 NOT a sign flip. The gate is ~1.6x (a smaller scale mismatch). Fix: drop qn_s
 from the up fold (u4=C1[up]*ag*S_col) and reconcile the remaining gate/up
 common scale with the int8 GU. Then the int4 h2 should match and give token 760.
+
+### Round-213: INT4H2 (drop qn_s, direct C1->silu) is WORSE (token 49270) — fold is not simply wrong
+
+Tested NPU_FUSED_INT4H2=1: recompute fuse_su_b as silu(g4)*u4 from the int4 C1
+with g4=C1[gate]*ag*S_col[gate], u4=C1[up]*ag*S_col[up] (NO qn_s), feed to the
+D GEMM. next_token=49270 — WORSE than the on-core silu h2h (3936). So the fold
+is NOT simply "qn_s over-count"; the int4 C1 * ag*S_col does not directly
+reproduce the model h2 at the right scale. The best result remains the on-core
+silu h2h (fuse_su_b=h2h, token 3936); the int8-ref h2 (I8REF) gives 760.
+
+The int4 C1 -> ag*S_col -> silu(g)*u path produces a mis-scaled h2 (the int4
+B'' int8 quantization + S_col reconstruction precision, not a simple qn_s
+fold bug). Closing the gap to 760 needs the int4 h2 scale calibated against
+the int8 model h2 (per-layer), or accepting the int4 accuracy budget. Deep
+multi-session work; the wiring (D GEMM, residual) is proven correct (I8REF=760).
