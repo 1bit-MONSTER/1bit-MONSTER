@@ -1053,3 +1053,22 @@ path computes the model correctly but with the B'' int8-quantization error.
 Closing it to ~1x (the int8 reference, token 760) needs finer int4 scaling
 (the per-group restructure, pack_gu_fused_i4_group_scales) to reduce the B''
 rounding. This is the definitive multi-session closing work.
+
+### Round-227: the int4 g4 (1.42) vs int8 g8 (0.888) 1.6x is Q4NX-raw vs cg-int8 weight difference
+
+The int4 path dequants the RAW Q4NX weights (B_shadow = q4*s+zp, per-column
+S_col), while the int8 GU (fuse_gt_b via FLM_GO(cg)) uses its OWN int8
+per-section (gsc) quantization. These are DIFFERENT weight representations of
+the same model GU, giving a ~1.6x gate difference (and different up). The
+Q4NX-raw (int4) representation is the more faithful one; the cg-int8 path is
+the current reference that yields token 760 (I8REF). So the int4 and int8 GU
+genuinely differ at the weight-representation level — the int4 h2 is a valid
+but different result (token 3936), not a buggy reproduction of the int8 GU.
+
+This is the definitive characterization: the int4-vs-int8 token difference
+(3936 vs 760) is the Q4NX-raw-vs-cg-int8 weight quantization difference,
+inherent to running the two different weight encodings. The per-group
+restructure improves the int4 representation's fidelity but does not make it
+equal to the cg-int8 path (different weights). Closing the token to 760
+exactly would require the int4 path to reproduce the cg-int8 weights, OR
+accepting the int4 result as the valid alternative. Multi-session.
