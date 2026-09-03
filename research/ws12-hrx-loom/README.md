@@ -2346,3 +2346,21 @@ yield at most a few percent model-level — not worth the JIT-bounds risk.
 The occupancy lever (8 rows/wg) is fully captured where it matters; cols=2
 (wb2, 94 GB/s at 75% occ) is already near the ALU wall. No new kernel for
 this round; r16wb4c8r (fork fd43e14ac) stands as the round-27 win.
+
+**Round-29 note — 4-parallel aggregate gap vs the 25t-era 76-84 t/s is a
+measurement difference, and fa0-at-N=4 shows no reliable regression.** The
+current 4-parallel single-client aggregate (~52 t/s decode from 4 concurrent
+streams at ~12-13 t/s each) is below the round-25t headline 76-84 t/s; that
+gap was investigated and is a measurement-methodology difference (the server
+serializes the 4 slots in one update_slots loop; 25t's aggregate summed a
+different per-seq pattern), not a code regression. fa0-at-N=4 vs the f16
+batched-attention fallback was A/B'd (4 streams x 60 tokens, matched
+harness): fa0-on {11.8, 12.9, 11.8}, fa0-off {13.0}, capped fa0-N<=2
+{11.2, 12.2} t/s per stream — the apparent ~9% fa0 penalty did not survive
+bracketing (run-to-run harness noise is ~+/-1 t/s). The N<=2 fusion cap was
+tested and REVERTED (no reliable gain; keep the validated N<=32 fa0 path
+that delivered token-identical single-seq decode and the +50% r16wb4c8r
+4-parallel win). Decode-side HRX2 state stands: r16w cols=1 ~110-137 GB/s,
+r16wb4c8r cols=4 +50% aggregate 4-parallel (fd43e14ac), 0-col no-op fix
+(0f52c297a), all committed; cols=4 = 94% of 4-parallel mms (round-28) so
+the occupancy lever is exhausted.
