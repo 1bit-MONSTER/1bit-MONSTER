@@ -6,6 +6,7 @@ After=network.target
 [Service]
 Type=simple
 User=monster
+Environment=HRX_ROOT=/opt/hrx
 ExecStart=/usr/bin/unified_server --port 8088
 Restart=on-failure
 RestartSec=5

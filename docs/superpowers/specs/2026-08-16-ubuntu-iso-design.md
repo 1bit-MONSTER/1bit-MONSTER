@@ -46,10 +46,13 @@ rootfs. It:
    - A `/pool/` directory on the ISO containing:
      - The built `1bit-MONSTER` `.deb` (from `packaging/deb`, current
        `VERSION`).
-     - The pinned driver payload (TheRock `10.1.0a20260822` gfx1151 libs
-       package; cached `mesa-vulkan-drivers=26.0.3-1ubuntu1`,
-       `libvulkan1=1.4.341.0-1`, and `bolt=0.9.10-1` `.deb`s — the last one
-       is the Thunderbolt/USB4 userspace daemon; see the new bullet below).
+     - The pinned driver payload: the sha256-pinned `hrx-b66`
+       self-contained HRX llama-server bundle (~36 MB tarball from
+       `ROCm/ggml-staging-automation`; ships its own libhrx/libggml-hrx/
+       libhsa-runtime64/libvulkan), plus cached
+       `mesa-vulkan-drivers=26.0.3-1ubuntu1`, `libvulkan1=1.4.341.0-1`,
+       and `bolt=0.9.10-1` `.deb`s — the last one is the
+       Thunderbolt/USB4 userspace daemon; see the new bullet below).
      - The new systemd unit files (`1bit-unified.service`,
        `1bit-model-fetch.service`).
 3. Repacks with `xorriso`, preserving the hybrid El Torito boot catalog so
@@ -64,9 +67,24 @@ update story — no separate rootfs to maintain.
 
 ## Driver/runtime stack baked in (no Ubuntu-default drift)
 
-- **ROCm/HIP (GPU compute)**: TheRock `10.1.0a20260822` (gfx1151 device
-  libs) — bundled as a payload on the ISO, installed via `late-commands`,
-  never sourced from any Ubuntu apt ROCm package.
+- **ROCm/HIP (GPU compute)**: Ubuntu 26.04's own ROCm 7.1 runtime
+  packages — `libamdhip64-7`, `libhipblas3`, `librocblas5`,
+  `librocsolver0`, `libhsa-runtime64-1` — installed from the archive via
+  the autoinstall `packages:` list and `apt-mark hold`-ed. The engine's
+  HIP 1BP path was gate-verified against exactly this runtime (49.3 tok/s,
+  qwen2.5-0.5b, 2026-08-31). This replaces the former ~5 GB TheRock
+  pip-SDK wheel payload: the engine's own kernels need only the HIP
+  runtime + hipblas sonames (~92 MB of actual .so files), and Ubuntu
+  ships them.
+- **HRX (NPU/fused + llama.cpp lane)**: the `hrx-b66` bundle (AMD "Hip
+  Runtime Extended") — a self-contained llama-server with `libhrx`/
+  `libggml-hrx` and its own `libhsa-runtime64`/`libvulkan`, extracted to
+  `/opt/hrx` by `late-commands` and found via `HRX_ROOT=/opt/hrx`
+  (`/etc/ld.so.conf.d/hrx.conf` + the unit env). Pinned by asset + sha256
+  in `fetch-payload.sh` (source of truth: the engine's
+  `build/resources/backend_versions.json`). NPU kernel side stays on the
+  amdxdna driver + Ubuntu `libxrt2`/`libxrt-npu2` — no ROCm install needed
+  on target for the HRX path either.
 - **Vulkan**: `mesa-vulkan-drivers=26.0.3-1ubuntu1` + `libvulkan1=1.4.341.0-1`
   — the only Vulkan stack ever tested with this engine is Ubuntu's own
   Mesa/RADV; there is no separate "stable Vulkan SDK." These exact `.deb`s
@@ -108,13 +126,17 @@ update story — no separate rootfs to maintain.
    at this point in the installer):
    - `dpkg -i` the `.deb` from `/pool/` on the ISO — no network required
      for the engine install itself.
-   - `dpkg -i` the pinned Vulkan and `bolt` `.deb`s from `/pool/`, install
-     the TheRock gfx1151 payload to `/opt/rocm-therock` (matching the path
-     `CMakeLists.txt` / `env.sh` already expect).
-   - `apt-mark hold` on `mesa-vulkan-drivers`, `libvulkan1`, `bolt`, and
-     the kernel meta-package (whichever tracks `7.0.0-27-generic`), so a
-     later `apt upgrade` can't silently drift the driver stack or kernel
-     and break ABI/GTT-tuning compatibility with the engine.
+   - `dpkg -i` the pinned Vulkan and `bolt` `.deb`s from `/pool/`; extract
+     the sha256-pinned `hrx-b66` HRX bundle from `/pool/` to `/opt/hrx`
+     (with `/etc/ld.so.conf.d/hrx.conf` + `ldconfig`, and
+     `HRX_ROOT=/opt/hrx` in the service unit). Ubuntu's ROCm 7.1 runtime
+     packages arrive earlier via the autoinstall `packages:` list.
+   - `apt-mark hold` on `mesa-vulkan-drivers`, `libvulkan1`, `bolt`, the
+     ROCm 7.1 runtime packages (`libamdhip64-7`, `libhipblas3`,
+     `librocblas5`, `librocsolver0`, `libhsa-runtime64-1`), and the kernel
+     meta-package (whichever tracks `7.0.0-27-generic`), so a later
+     `apt upgrade` can't silently drift the driver stack or kernel and
+     break ABI/GTT-tuning compatibility with the engine.
    - `lspci | grep -i xdna` — if a Strix Halo NPU is detected, note it
      for the first-boot MOTD ("NPU detected — see docs for the manual
      driver setup to enable acceleration"). No driver install attempted.

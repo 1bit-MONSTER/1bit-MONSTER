@@ -5,31 +5,28 @@ set -euo pipefail
 # nothing is resolved from Ubuntu's live apt repo at install time, only
 # the exact versions fetched here. See:
 # docs/superpowers/specs/2026-08-16-ubuntu-iso-design.md
+#
+# Payload contents (2026-08-31):
+#   - mesa-vulkan-drivers / libvulkan1 / bolt  (pinned .debs, unchanged)
+#   - hrx-b66 self-contained llama-server bundle (AMD "Hip Runtime Extended";
+#     ships its own libhrx/libggml-hrx/libhsa-runtime64/libvulkan — no ROCm
+#     install needed on target). Pinned asset + sha256 from the engine's
+#     build/resources/backend_versions.json (source of truth for the pin).
+# The full TheRock pip-SDK wheel payload (rocm-sdk-core/devel/libraries,
+# ~5 GB) is GONE: the engine's own HIP 1BP path was gate-verified against
+# Ubuntu 26.04's ROCm 7.1 runtime packages (libamdhip64-7/libhipblas3/
+# librocblas5/librocsolver0/libhsa-runtime64-1, installed from the archive
+# by autoinstall.yaml's packages: list), and the NPU/fused path runs on the
+# HRX bundle + amdxdna kernel driver + Ubuntu libxrt2 — neither needs TheRock.
 
 ISO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PAYLOAD="${ISO_DIR}/build/payload"
 mkdir -p "$PAYLOAD"
-# All scratch space (pip staging, wheel unzip, nested-tar extraction) lives
-# under the payload dir, which is on the big disk — /tmp is often a small
-# tmpfs and the extracted TheRock wheel alone is ~5 GB.
+# All scratch space lives under the payload dir, which is on the big disk —
+# /tmp is often a small tmpfs.
 export TMPDIR="${PAYLOAD}/.tmp"
 mkdir -p "$TMPDIR"
 
-THEROCK_VER="10.1.0a20260822"
-# Where to look for a local TheRock pip-SDK install when the exact pinned
-# version is no longer in the nightlies index. Default: the first candidate
-# that exists — the reference box's /opt/rocm-therock, else ~/.cache/pip/therock
-# (see docs/superpowers/plans/...); override explicitly with
-# THEROCK_PIP_ROOT=<venv-root>.
-if [ -n "${THEROCK_PIP_ROOT:-}" ]; then
-  :
-elif [ -d /opt/rocm-therock ]; then
-  THEROCK_PIP_ROOT="/opt/rocm-therock"
-elif [ -d "${HOME}/.cache/pip/therock" ]; then
-  THEROCK_PIP_ROOT="${HOME}/.cache/pip/therock"
-else
-  THEROCK_PIP_ROOT="/opt/rocm-therock"  # let the fallback's checks report the miss
-fi
 MESA_VER="26.0.3-1ubuntu1"
 VULKAN1_VER="1.4.341.0-1"
 BOLT_VER="0.9.10-1"
@@ -51,108 +48,50 @@ test -f "${PAYLOAD}/bolt_${BOLT_VER}_amd64.deb" || {
   exit 1
 }
 
-# TheRock wheel → payload tarball. `pip download` only fetches the raw .whl
-# (itself a zip archive) — it does NOT unpack it the way `pip install` would.
-# Tarring the download dir directly produces a tarball containing just the
-# .whl file, not the _rocm_sdk_* tree the rest of the pipeline expects
-# (caught by booting a built ISO in QEMU: /opt/rocm-therock ended up with
-# two .whl files and unified_server died on missing libhipblas.so.3).
-vendor_therock() {
-  local pip_pkg="$1"   # e.g. rocm-sdk-devel
-  local content_dir="$2"  # e.g. _rocm_sdk_devel
-  local out_tar="$3"   # e.g. therock-...-devel.tar.gz
-  local tmp_pip tmp_unzip whl
+# ── HRX bundle (self-contained llama-server runtime) ──
+# Pin source of truth: build/resources/backend_versions.json in the repo
+# (checksums/github/ROCm/ggml-staging-automation/hrx-b66/...).
+# The bundle ships bin/llama-server + lib/ (libhrx, libggml-hrx, its own
+# libhsa-runtime64 + libvulkan), so the target needs no ROCm install.
+HRX_RELEASE_REPO="ROCm/ggml-staging-automation"
+HRX_RELEASE_TAG="hrx-b66"
+HRX_ASSET="llama-hrx-b66-bin-manylinux-hrx-x64.tar.gz"
+HRX_SHA256="b54df34bf7a94ea05445b9058920f7da179ecb8789b9a1930c05d815781c7e2c"
+HRX_TARBALL="${PAYLOAD}/hrx-b66.tar.gz"
 
-  tmp_pip="$(mktemp -d)"
-  if TMPDIR="${PAYLOAD}/.pip-tmp" pip download "${pip_pkg}==${THEROCK_VER}" \
-      --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \
-      --no-deps -d "$tmp_pip" > /tmp/therock-pip.log 2>&1; then
-    whl="$(ls "${tmp_pip}"/*.whl | head -1)"
-    tmp_unzip="$(mktemp -d)"
-    python3 -m zipfile -e "$whl" "$tmp_unzip"
-    if [ -d "${tmp_unzip}/${content_dir}" ]; then
-      # Normal wheel: the content tree is in the wheel directly.
-      tar czf "${PAYLOAD}/${out_tar}" -C "$tmp_unzip" "$content_dir"
-    else
-      # Shim wheel (10.x nightly scheme): the wheel only carries a small
-      # python package whose payload is a nested tarball (e.g.
-      # rocm_sdk_devel/_devel.tar) holding the real _rocm_sdk_* tree.
-      # `pip install` extracts it at install time; we must do the same.
-      # Without this, the payload would be just the .whl (or a stub dir)
-      # and the appliance's unified_server dies on missing libhipblas.so.3
-      # — caught by booting a built ISO in QEMU.
-      local nested_tar
-      nested_tar="$(find "$tmp_unzip" -name '*.tar' -o -name '*.tar.gz' | head -1)"
-      test -n "$nested_tar" || {
-        echo "FATAL: ${whl} has no ${content_dir}/ and no nested payload tar." >&2
-        exit 1
-      }
-      tmp_nested="$(mktemp -d)"
-      tar xf "$nested_tar" -C "$tmp_nested"
-      test -d "${tmp_nested}/${content_dir}" || {
-        echo "FATAL: ${nested_tar} did not contain ${content_dir}/ once extracted." >&2
-        exit 1
-      }
-      tar czf "${PAYLOAD}/${out_tar}" -C "$tmp_nested" "$content_dir"
-      rm -rf "$tmp_nested"
-    fi
-    rm -rf "$tmp_unzip"
-    echo "   fetched ${pip_pkg}==${THEROCK_VER} from nightlies index"
-  else
-    echo "   ${pip_pkg}==${THEROCK_VER} not in nightlies index (log: /tmp/therock-pip.log)"
-    echo "   falling back to vendoring the matching build already on this box"
-    local local_root dist_info content_dir_abs
-    local_root="${THEROCK_PIP_ROOT}/lib/python3.14/site-packages"
-    dist_info="${local_root}/${pip_pkg//-/_}-${THEROCK_VER}.dist-info"
-    content_dir_abs="${local_root}/${content_dir}"
-    # The real installed files live under the underscore-prefixed content dir, NOT under
-    # the versioned *.dist-info dir (which is only a pip metadata manifest — RECORD/METADATA/WHEEL,
-    # a few KB, no .so/.hsaco files). A glob anchored on the dist-info's own versioned name
-    # can never match the content dir, since the content dir's name carries no version at all.
-    if [ ! -d "$dist_info" ] || [ ! -d "$content_dir_abs" ]; then
-      echo "FATAL: ${THEROCK_VER} not found in the nightlies index, and the local" >&2
-      echo "       dist-info/content pair for ${pip_pkg} is incomplete" >&2
-      echo "       (dist-info: $([ -d "$dist_info" ] && echo present || echo MISSING)," >&2
-      echo "        content dir: $([ -d "$content_dir_abs" ] && echo present || echo MISSING))" >&2
-      echo "       — cannot vendor a payload for this pinned version." >&2
-      exit 1
-    fi
-    # Correlate the content dir to this exact dist-info/version before trusting it:
-    # the dist-info's RECORD manifest lists every file it installed, content-dir-relative.
-    # If the content dir's own basename doesn't appear as a path prefix in RECORD, this
-    # dist-info does not describe what's currently sitting in the content dir (e.g. a later
-    # install overwrote the content dir without updating this dist-info) — refuse rather than
-    # silently vendor a possibly-mismatched payload.
-    if ! grep -q "^${content_dir}/" "${dist_info}/RECORD"; then
-      echo "FATAL: ${dist_info}/RECORD does not reference ${content_dir}/" >&2
-      echo "       — version correlation failed, refusing to vendor a possibly-stale" >&2
-      echo "       or mismatched payload." >&2
-      exit 1
-    fi
-    tar czf "${PAYLOAD}/${out_tar}" -C "$local_root" "$content_dir"
-    echo "   vendored $(du -sh "$content_dir_abs" | cut -f1) from ${content_dir_abs}"
-    echo "   (correlated against ${dist_info}/RECORD)"
-  fi
-  rm -rf "$tmp_pip"
+echo "-- HRX bundle ${HRX_RELEASE_TAG} (pinned, sha256-verified) --"
+if [ -f "$HRX_TARBALL" ]; then
+  echo "   cached: $(du -h "$HRX_TARBALL" | cut -f1)"
+else
+  curl -fL --retry 3 --progress-bar \
+    "https://github.com/${HRX_RELEASE_REPO}/releases/download/${HRX_RELEASE_TAG}/${HRX_ASSET}" \
+    -o "${HRX_TARBALL}.part"
+  mv "${HRX_TARBALL}.part" "$HRX_TARBALL"
+fi
+echo "${HRX_SHA256}  ${HRX_TARBALL}" | sha256sum -c - > /dev/null || {
+  echo "FATAL: sha256 mismatch on ${HRX_TARBALL}" >&2
+  echo "       expected ${HRX_SHA256} — re-download or update the pin" >&2
+  exit 1
 }
-
-echo "-- TheRock runtime libs ${THEROCK_VER}: rocm-sdk-devel --"
-# unified_server dynamically links against libhipblas/libamdhip64/libamd_comgr/
-# libroctx64 (HIP runtime + comgr) and libomp — these ship in rocm-sdk-devel,
-# rocm-sdk-libraries and rocm-sdk-core, the three payloads fetched below.
-# Without them the appliance's API service fails to start at all (dynamic
-# linker can't resolve these at exec time) — found by actually booting a
-# built ISO in QEMU and inspecting the failing systemd unit. NOTE: in the
-# 10.x nightly scheme rocm-sdk-devel's lib/*.so.N entries are RELATIVE
-# SYMLINKS into ../../_rocm_sdk_libraries/lib/ — the real files live in
-# rocm-sdk-libraries, so all three packages must ship together or the
-# symlinks dangle and the API service dies on missing libhipblas.so.3.
-vendor_therock "rocm-sdk-devel" "_rocm_sdk_devel" "therock-${THEROCK_VER}-devel.tar.gz"
-
-vendor_therock "rocm-sdk-libraries" "_rocm_sdk_libraries" "therock-${THEROCK_VER}-libraries.tar.gz"
-
-echo "-- TheRock core runtime ${THEROCK_VER}: rocm-sdk-core --"
-vendor_therock "rocm-sdk-core" "_rocm_sdk_core" "therock-${THEROCK_VER}-core.tar.gz"
+# Sanity-check the bundle shape before it goes on an ISO: it must contain a
+# runnable llama-server and the HRX runtime libs the engine's backend spawns.
+# NOTE: capture the listing first — `grep -q` on a live `tar tzf` pipe exits at
+# the first match and SIGPIPEs tar, which trips `set -o pipefail` and reports a
+# false failure.
+BUNDLE_LISTING="$(tar tzf "$HRX_TARBALL")"
+echo "$BUNDLE_LISTING" | grep -qE 'bin/llama-server$' || {
+  echo "FATAL: ${HRX_ASSET} has no bin/llama-server — bundle layout changed?" >&2
+  exit 1
+}
+echo "$BUNDLE_LISTING" | grep -qE 'lib/libhrx\.so' || {
+  echo "FATAL: ${HRX_ASSET} has no libhrx — bundle layout changed?" >&2
+  exit 1
+}
+echo "$BUNDLE_LISTING" | grep -qE 'lib/libggml-hrx\.so' || {
+  echo "FATAL: ${HRX_ASSET} has no libggml-hrx — bundle layout changed?" >&2
+  exit 1
+}
+echo "   verified sha256 + bundle shape (llama-server, libhrx, libggml-hrx present)"
 
 echo ""
 echo "Payload ready in ${PAYLOAD}:"

@@ -66,7 +66,7 @@ echo "  Console recovery password: ${OUT_DIR}/console-recovery-password.txt (NOT
 mkdir -p "${EXTRACT}/pool"
 cp "$DEB_PATH" "${EXTRACT}/pool/"
 cp "${WORK}/payload/"*.deb "${EXTRACT}/pool/"
-cp "${WORK}/payload/therock-"*.tar.gz "${EXTRACT}/pool/"
+cp "${WORK}/payload/hrx-b66.tar.gz" "${EXTRACT}/pool/"
 cp "${REPO_ROOT}/packaging/services/1bit-unified.service" "${EXTRACT}/pool/"
 cp "${REPO_ROOT}/packaging/services/1bit-model-fetch.service" "${EXTRACT}/pool/"
 cp "${REPO_ROOT}/packaging/model-download.sh" "${EXTRACT}/pool/"

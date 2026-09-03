@@ -19,8 +19,15 @@ die()  { printf "${RED}✗${NC} %s\n" "$*"; exit 1; }
 
 # ── Model registry ──
 # Format: name|description|size|url|sha256
+#
+# qwen3-0.6b supply note (2026-09-03): the old HF source
+# (bong-water-water-bong/qwen3-0.6b-q4nx) went private → 401. Repointed to the
+# sha256-pinned release asset on the org GitHub. Q4NX is fully decoded — the
+# artifact is regenerable from any public Qwen3-0.6B Q4_K_M GGUF via
+# fastflowlm_analysis/q4nx_assemble.py (payload-identical; safetensors header
+# tensor order may differ).
 MODELS=(
-  "qwen3-0.6b|Qwen3-0.6B — 610 MB|610M|https://huggingface.co/bong-water-water-bong/qwen3-0.6b-q4nx/resolve/main/qwen3-0.6b.q4nx|"
+  "qwen3-0.6b|Qwen3-0.6B — 652 MB|652M|https://github.com/1bit-MONSTER/1bit-MONSTER/releases/download/qwen3-0.6b-q4nx/model.q4nx|db8dec4dff653817218ff920c5d25d28d1805512906485e654f03980053fa667"
   "qwen3-8b|Qwen3-8B — 6.0 GB|6.0G|https://huggingface.co/bong-water-water-bong/qwen3-8b-q4nx/resolve/main/qwen3-8b.q4nx|"
   "qwen3-vl-4b|Qwen3-VL-4B — 3.2 GB|3.2G|https://huggingface.co/bong-water-water-bong/qwen3-vl-4b-q4nx/resolve/main/qwen3-vl-4b.q4nx|"
   "gemma4-e2b|Gemma4-E2B — 4.7 GB|4.7G|https://huggingface.co/bong-water-water-bong/gemma4-e2b-q4nx/resolve/main/gemma4-e2b.q4nx|"

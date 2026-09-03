@@ -11,12 +11,13 @@ bash fetch-payload.sh          # vendors the pinned driver stack (once, or when 
 bash build.sh --ssh-key ~/.ssh/id_ed25519.pub
 ```
 
-`fetch-payload.sh` needs a TheRock pip-SDK install to vendor from when the
-pinned version is no longer in the nightlies index — it probes
-`/opt/rocm-therock` then `~/.cache/pip/therock`, or set `THEROCK_PIP_ROOT`.
-Both need ~7 GB of scratch space on the build machine's big disk (the
-extracted TheRock wheels alone are ~5 GB; `TMPDIR` is pointed at the payload
-dir for this reason).
+`fetch-payload.sh` vendors the pinned driver stack with no special
+prerequisites beyond network access: pinned `.deb`s via `apt-get download`
+(mesa-vulkan, libvulkan1, bolt) plus the sha256-verified `hrx-b66`
+self-contained HRX llama-server bundle (~36 MB) from AMD's
+`ROCm/ggml-staging-automation` release. The former ~5 GB TheRock pip-SDK
+wheel payload is gone — the engine runs on Ubuntu's ROCm 7.1 runtime
+packages + the HRX bundle (see "What's baked in").
 
 Output: `build/1bit-monster-26.04-amd64.iso` and
 `build/console-recovery-password.txt` (a randomly generated local-console
@@ -29,11 +30,17 @@ build output).
 
 - Baked in (no network needed at install time): the engine `.deb`, pinned
   `mesa-vulkan-drivers`/`libvulkan1`/`bolt` (Thunderbolt/USB4 — stock
-  Ubuntu, frozen at the tested version, same rationale as Vulkan), pinned
-  TheRock `10.1.0a20260822` runtime (rocm-sdk-core + rocm-sdk-devel +
-  rocm-sdk-libraries — all three ship together because the 10.x devel
-  package's `lib/*.so.N` entries are relative symlinks into libraries),
+  Ubuntu, frozen at the tested version, same rationale as Vulkan), the
+  sha256-pinned `hrx-b66` HRX bundle (AMD "Hip Runtime Extended":
+  self-contained llama-server + `libhrx`/`libggml-hrx`, shipping its own
+  `libhsa-runtime64` and `libvulkan` — no ROCm install needed on target;
+  extracted to `/opt/hrx` with `HRX_ROOT=/opt/hrx` in the service unit),
   the `1bit-unified.service` and `1bit-model-fetch.service` units.
+  Ubuntu ROCm 7.1 runtime packages (`libamdhip64-7`, `libhipblas3`,
+  `librocblas5`, `librocsolver0`, `libhsa-runtime64-1`) plus `libxrt2`/
+  `libxrt-npu2`/`libwebsockets19t64` come from the archive via the
+  autoinstall `packages:` list — gate-verified 2026-08-31 (HIP 1BP path,
+  49.3 tok/s) — and are `apt-mark hold`-ed with the rest of the stack.
 - First boot (needs network): the `1bit-model-fetch` service downloads the
   default `qwen3-0.6b` model in the background; the API is listening on
   `:8088` immediately but has nothing to serve until that finishes.
