@@ -33,6 +33,7 @@ static std::set<std::pair<unsigned long, size_t>> g_bo_sizes;
 static std::set<std::pair<unsigned long, size_t>> g_extbo_sizes;
 static long g_seq = 0;
 static std::map<unsigned long, std::string> g_bo_labels;
+static std::set<size_t> g_seen_big;
 
 static void ensure_log() {
     if (!g_log) {
@@ -226,7 +227,11 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
                 try {
                     xrt::bo* bo = reinterpret_cast<xrt::bo*>(const_cast<void*>(bop));
                     size_t bosz = bo->size();
-                    if (bosz > 3000000) continue;   // skip weight/kv BOs
+                    if (bosz > 3000000) {           // weight/kv BOs: dump once if CAP_DUMP_BIG
+                        if (!getenv("CAP_DUMP_BIG")) continue;
+                        if (g_seen_big.count(bosz)) continue;
+                        g_seen_big.insert(bosz);
+                    }
                     const uint8_t* p = (const uint8_t*)bo->map();
                     if (p) {
                         char fname[256];

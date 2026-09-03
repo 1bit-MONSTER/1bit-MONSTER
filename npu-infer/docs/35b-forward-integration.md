@@ -449,3 +449,24 @@ State: ALL per-layer BO content EXCEPT the 2MB BO permutation is byte-verified
 (qkv int16 fixed-point, kernel-format buffer); reproducing its exact bytes
 requires the runtime's qkv format generator (source) or a map-write capture
 (xrt::bo::map interposition — a possible future interposer extension).
+
+## Round 52 — qkv-format BOs CAPTURED as layer-kernel args (2026-09-03)
+
+Extended the interposer (CAP_DUMP_BIG: pre-exec arg-BO dump deduped by size,
+no >3MB skip) and recaptured the load+forward (moe-cap8, ASLR retry #4). The
+layer kernel's runlist args include the per-layer qkv-format 2MB BOs:
+
+- preinsts_001_*_2097152 = runlist-1 (token-1) exec args; the i5 2MB BOs have
+  value multisets FULLY contained in the layer's qkv_proj file (coverage
+  1.0000 for layer 0's qkv — two variants at int16 mean 974 and 983 = two
+  qkv subsets). Layer 0's copies archived to moe-cap4/qkv_l0_fmt_bo{,2}.bin.
+- Their internal permutation (which qkv elements + order) resisted col-slice,
+  row-block and [256,8,4352] axis-rotation hypotheses — the layout is a
+  deeper block arrangement tied to the linear-attn MM geometry.
+- Note: the earlier moe-cap4 0159 2MB BO (mean ~1000, 0x39 fixed-point
+  pattern) is the layer-6 sibling of these captured layer-0 args.
+
+Status: the qkv kernel-format BOs are now OBSERVABLE (map-hook or this
+arg-dump path), so the remaining permutation is a mapping puzzle on real
+captures — no longer a capture problem. The 100% packer spec awaits that
+permutation; everything else per-layer is byte-verified.
