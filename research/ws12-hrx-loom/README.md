@@ -2324,3 +2324,25 @@ isolated mm gain (74 vgpr / 100% occupancy vs 142/62%) lands as a ~+50%
 decode-stream win. Round-27 complete: cols=1 lever negative (r16w8r), cols=4
 occupancy lever landed + model-verified (kernel fd43e14ac, harness fix
 0f52c297a).
+
+**Round-28 note — the occupancy lever is exhausted at the model level: cols=4
+is 94% of 4-parallel decode mms.** Before building 8-row variants of the
+other cols-batched kernels (r16wb2 94 GB/s at cols=2; r16wb8 ~46 GB/s at
+cols 3/5-8), the decode-batch cols distribution was measured on the
+llama-server --parallel 4 qwen2.5-3b run (4 streams x 60 tokens, temp 0,
+per-dispatch counter in dispatch_mul_mat_q4nx_slice_fused_batch):
+
+| cols | dispatches | share | kernel |
+|---|---|---|---|
+| 2 | 498 | 3.2% | r16wb2 |
+| 3 | 257 | 1.6% | r16wb8 |
+| **4** | **14674** | **93.6%** | **r16wb4c8r** |
+| 5 | 249 | 1.6% | r16wb8 |
+
+cols=4 (the r16wb4c8r path from round 27) dominates the 4-parallel decode,
+which is why that single kernel delivered +50% aggregate. The remaining
+cols=2/3/5 mms are ~6.4% combined, so 8-row variants of r16wb2/r16wb8 would
+yield at most a few percent model-level — not worth the JIT-bounds risk.
+The occupancy lever (8 rows/wg) is fully captured where it matters; cols=2
+(wb2, 94 GB/s at 75% occ) is already near the ALU wall. No new kernel for
+this round; r16wb4c8r (fork fd43e14ac) stands as the round-27 win.
