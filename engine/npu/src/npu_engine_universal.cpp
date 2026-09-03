@@ -3116,6 +3116,20 @@ struct Bf16Ctx {
                             // scale — dividing by it makes the D input ~qn_s too small.
                             for (int p = 0; p < IM; p++)
                                 fuse_su_b[p] = (float)h2h[p];
+                            // NPU_FUSED_I8REF=1: replace fuse_su_b with the INT8 GU
+                            // reference h2 (silu(fuse_gt_b[i])*fuse_gt_b[IM+i], the model h2)
+                            // for the D GEMM. Isolates whether the int8-reference h2 + D GEMM
+                            // gives the float token (760) — separating the int4-h2 scale bug
+                            // from the D GEMM wiring.
+                            if (getenv("NPU_FUSED_I8REF") && atoi(getenv("NPU_FUSED_I8REF")) == 1) {
+                                FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
+                                cn(fuse_gt_b.data(), fmlp_out);
+                                for (int i = 0; i < IM; i++) {
+                                    float gv = fuse_gt_b[i];
+                                    if (!std::isfinite(gv)) gv = 0;
+                                    fuse_su_b[i] = (gv / (1.0f + expf(-gv))) * fuse_gt_b[IM + i];
+                                }
+                            }
                             if (getenv("NPU_FUSED_H2DBG") && atoi(getenv("NPU_FUSED_H2DBG")) == 1) {
                                 FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
                                 cn(fuse_gt_b.data(), fmlp_out);

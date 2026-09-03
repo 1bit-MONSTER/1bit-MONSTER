@@ -905,3 +905,21 @@ the correct model-scale h2.
 CORRECTION to rounds 202/205: the token 3936 was NOT "int4 accuracy" — it was
 the mis-scaled h2 (39 vs 0.15) feeding the D GEMM. The fused h2 dequant scale
 is still wrong; fixing it should move the token toward 760.
+
+### Round-208: int8-ref h2 in the fused D GEMM gives EXACTLY token 760 — D GEMM correct, int4 h2 scale is the bug
+
+Added NPU_FUSED_I8REF=1: replace fuse_su_b (the fused int4 h2) with the int8
+GU reference h2 (silu(fuse_gt_b[i])*fuse_gt_b[IM+i]) before the D GEMM.
+Result: **next_token=760** — the EXACT float reference token!
+
+This decisively proves:
+1. The D GEMM + residual wiring is CORRECT (with the right h2, it gives 760).
+2. The single remaining #1934 bug is the **int4 fused h2 dequant scale**: the
+   int4 C1 -> ag*S_col -> silu produces h2 ~250x too large (the int8 GU's
+   model h2 is rms~0.15, the int4 h2h is rms~38). fuse_su_b=h2h over-scaled it.
+
+The int4 C1 (Am*B_shadow) and the int8 GU (FLM_GO(cg)) must produce the same
+model gate/up, but they're ~250x apart — so B_shadow (int4 B'') is NOT at the
+model weight scale, OR the ag*S_col scale applied to the int4 C1 doesn't match
+the int8 GU's scale. Next: reconcile the int4 C1 scale with the int8 GU so the
+fused int4 h2 matches the model h2 and yields token 760.
