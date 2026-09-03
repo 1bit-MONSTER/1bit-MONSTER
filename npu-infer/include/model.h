@@ -98,6 +98,12 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
                         const TensorDesc* desc, const ModelConfig* config,
                         int block_idx, int in_features);
 
+// Pack a full layer's 7 projections into the runtime's 10 MB reordered-tile
+// layout (issues #2006/#2015 — byte-verified against the real runtime's
+// captured weight BOs). Returns the number of tiles written (1920) or 0.
+int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
+                      const ModelConfig* config, int layer_idx);
+
 #ifdef __cplusplus
 }
 #endif

@@ -637,3 +637,101 @@ not invoked in this decode-forward path).
   streams the 4x-expanded act I/O). Closing this needs either the
   npu.dev.sbin BD semantics or replicating the runtime's exact
   lm_head-first pipeline order.
+
+## Round-34 (2026-09-03) — write-geometry + replay-validation receipts (corr 0.9979 chain / 1.0000 lm_head)
+
+Fresh real-runtime captures (run_qwen3_npu, XRT path; interposers in
+tools/capture/) with byte-verified inputs nail the I/O geometry and retire two
+round-33 myths. All numbers below are from fresh captures + on-device replays.
+
+### 1. I/O write geometry (ground truth from buffer diffs)
+
+- Act: the runtime's post-forward act diff vs pre-forward is EXACTLY
+  [0:2047] (2048 B = 1024 bf16 in place). One layer submission writes a full
+  2048-B hidden state (verified on device: real embedding + packed weights
+  + real norms -> 1022/1024 nonzero bf16, nothing beyond byte 2046).
+- Logits: diff = [0:303871] (151936 bf16), byte-matching logits_1000.bin
+  (bo_from sync == logits_1000.bin EXACTLY).
+- **The "4x BD buffer_length expansion" claim is DISPROVEN.** Layer act-write
+  BD(0,2,10) len=512 -> 2048 B actual (x4), but lm_head BD(0,3,15) len=76288
+  -> 303872 B actual (x3.983 — not x4). Effective write volumes are NOT a
+  function of TXN buffer_length; the kernels drive their own S2MM volumes.
+  mm.bin-style BD lens are likewise not transfer volumes. The TXN BD lens
+  configure; the shim-tile program transfers.
+
+### 2. Per-layer run inputs decoded (byte-exact replication)
+
+- idx3 = act (1 MB, [0:2048] active), idx4 = 10 MB packed layer weight BO
+  (28/28 byte-identical, fresh capture), idx7 = per-layer 32 MB kv (zero at
+  load for a first token).
+- idx5 = [input_layernorm @0 | post_attention_layernorm @2048] (2048 bf16).
+- idx6 = [64x bf16 1.0 @0 | 64x 0.0 @128 | q_norm @256 | k_norm @512]
+  (384 bf16). The 64 ones = position-0 RoPE cos (sin=0), confirmed by
+  forward-1001's i6 differing.
+- All 28 layers' i5/i6 replicated from model.q4nx are byte-identical to the
+  runtime's arm-time buffers (arms 30-85 of a per-arm set_arg capture).
+- kv BOs are all-zero at load AND at layer-run arm time (arms with real
+  content = the NEXT context's re-arming, 512 bf16 = one token's k/v write).
+
+### 3. The 28-layer chain does NOT intrinsically explode
+
+Round-32d/33's "EXPLODES (std 284 vs runtime 3.4)" compared against the WRONG
+target: the runtime's RAW pre-norm act is std 188.6 (fresh measure), not 3.4
+(3.4 was a post-norm/misread state). With byte-exact inputs (runtime
+embedding + real per-layer norms + packed weights + zero kv):
+
+- 1-pass 28-layer replay (sequential OR one xrt::runlist — identical):
+  corr 0.9979 vs the runtime act, std 194.5 vs 188.6.
+- 2-pass replay: corr 0.8824 (the old "explosion" signature was double
+  application).
+- 27/26/25-layer replays: corr ~-0.22 (chaotic tail — not gradual).
+
+### 4. lm_head path CLOSED (corr 1.0000)
+
+Hand-rolled lm_head run (captured ELF + runtime's own 94 MB weight BO + final
+model.norm via idx6): logits corr 1.0000 vs logits_1000.bin, argmax identical
+(144370). The runtime's true final act (dumped at logits-sync time) is
+byte-identical to the post-runlist dump (execute is synchronous).
+
+### 5. The residual (0.9979 -> 1.0000) is isolated to layer 0 itself
+
+With EVERY input byte-verified (embedding, norms, weights, kv, ELF md5
+2e50c6ea = fresh capture) the single-layer replay is still corr 0.999877
+(delta magnitude ~1% low, uniform across heads, not bf16-rounding: mean abs
+0.0054 at std 0.32). Ruled out: runlist-vs-sequential (identical), warmup
+runs, determinism (runtime is bit-stable). The remaining suspect is
+runtime load_weights-time device/AIE state (tile staging) that a
+fresh-hwctx replay does not replicate — the layer kernel's in-tile math
+consumes device state beyond the 5 BO args.
+
+### 6. RESOLVED — the residual was RUNTIME DRIFT across the Sep-2 reboot (round-37's corr 1.0 was real)
+
+The "0.998 gap" between the replay/engine and the runtime is now fully
+explained by device-state drift, not a replay or engine error:
+
+- Round-37 (Sep 1, commit 681eb05c) claimed corr 1.000000 vs the runtime
+  (argmax 397 == 397). The machine REBOOTED 2026-09-02 23:19 into kernel
+  7.2.0-next-20260821 (round-37 ran on the previous boot/kernel).
+- The runtime's OWN logits changed across the reboot:
+  /home/bcloud/.cache/rtcap/bo_from_0199_1048576.bin (Sep-1 era capture)
+  has argmax 397 @ 12.8125 with top-6 [397, 3219, 144370, 42044, 255,
+  1784] — byte-identical to the engine's/replay's logits. TODAY's runtime
+  logits_1000.bin: argmax 144370 @ 13.25. corr(Sep-1 runtime, today
+  runtime) = 0.99803 — EXACTLY the engine-vs-today gap.
+- Same at the act level: rtcap/actpost_002_* (Sep-1) = std 194.46 =
+  identical to this round's replay (std 194.46); corr(Sep-1 act, today
+  act) = 0.997891 = this round's replay-vs-today number.
+- So: the replay and the engine are BYTE-EXACT against the round-37-era
+  runtime (corr 1.0, argmax 397 == 397 — confirmed via the Sep-1 capture
+  artifacts). The runtime's on-device arithmetic drifted post-reboot (the
+  same class of phenomenon FINDINGS.md documents: "a fresh boot does NOT
+  restore it"), moving its logits to 144370 @ 13.25 and its act to
+  std 188.62.
+- The layer-0 ~1% delta this round isolated was the drift manifesting at
+  layer granularity — not a missing input, kernel difference, or
+  submission-mode effect (all ruled out byte-for-byte above).
+- The "why 0.99999999 and not 1.0" question from round 26 is answered
+  twice over: on a matched device state the replay/engine are exact
+  (1.0); the llama.cpp-lane residual is device-state drift + reduction-
+  tree summation order. Re-gate against the round-37-era kernel/state if
+  byte-parity with today's runtime is required.

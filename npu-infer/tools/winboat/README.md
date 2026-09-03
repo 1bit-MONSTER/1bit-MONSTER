@@ -56,6 +56,28 @@ convention has been decoded (sizes, order, mangled names) — a future attempt
 only needs a valid object-internal buffer (e.g., running the full engine
 load_weights with the HRX runtime present).
 
+## RESOLVED (2026-09-03) — the layout is extracted, byte-verified 28/28
+
+This open item is CLOSED — the real engine's `load_weights` flow WAS run (the
+HRX runtime was never needed: the runtime runs on the XRT path), and the
+reorder's output layout was captured and reproduced byte-exactly:
+
+- The full model was run under `LD_PRELOAD` (reorder_cpy + xrt::bo::sync
+  interposers); every per-layer 10 MB weight BO upload was captured
+  (see npu-infer/docs/txn-decode-findings.md rounds 30c/30d/33).
+- Per-layer BO = the 7 projections' tiles reordered per group
+  `out[o] = in[G*(o/G) + (o/2)%(G/2) + (G/2)*(o%2)]` (G=8 q/k/v/gate/up,
+  G=16 o_proj, G=24 down; up/gate interleaved in 64-tile chunks), raw
+  5120-B Q4NX tiles, within-tile bytes unchanged.
+- `npu_pack_layer_bo` (npu-infer/src/model.c) reproduces every captured
+  layer BO byte-for-byte — re-verified on a fresh runtime capture
+  2026-09-03: 28/28 layers, 0 diff bytes (captures/manifest-2026-09-03).
+- lm_head = the same reorder over the lm_head tiles (18992 tiles) into the
+  94 MB BO.
+
+The winboat/probe route (object-internal scratch segfault) is therefore
+moot — the layout was extracted from the real runtime instead.
+
 ## Alternative: run in the winboat Windows guest
 
 The same exe + q4_npu_eXpress.dll can run inside the winboat guest. The guest
@@ -86,6 +108,12 @@ reference (maxdiff 13.1, per-element ratios non-constant). The BO layout is
 [256,1024] f32 but the value mapping is not yet identified — the next step is
 matching the captured BO to the tile bytes (the kernel may use a per-row or
 fixed-point dequant that differs from the q4nx host dequant).
+
+> RESOLVED 2026-09-03 (superseded, see txn-decode-findings rounds 30-31):
+> the 1MB BO_FROM syncs were mislabeled activation read-backs, not dequant
+> outputs; the runtime's real dequant formula is `W = q*scale + zp`
+> (in-kernel; the host lib's (q-zp)*scale gives corr ~0) and the weight
+> path is the reordered raw tiles (see RESOLVED note above).
 
 With the interposer in place, the FULL weight BO set for the whole model can
 be captured by running the real runtime once — the hand-rolled npu-infer
