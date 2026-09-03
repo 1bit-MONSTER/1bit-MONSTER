@@ -615,3 +615,29 @@ does (need the final-hidden-state buffer as the rdx input — likely the
 prefill-returned buffer read as the act, or impl+0x4d0's content). The
 lm_head path is now fully mapped at the instruction level; it is a matter of
 replicating the call, not discovering it.
+
+## Round 59 — 35B text-only forward = NaN at the layer level (runtime-lib, definitive)
+
+Isolated WHERE the 35B breaks with a clean discriminator chain:
+
+- get_logits + lm_head work PERFECTLY on a clean input: feeding a 2048-ones
+  buffer → real 248320-vocab logits (argmax 7535, 0 NaN). The lm_head BO
+  chain (impl+0x4d0 input, impl+0x528 output BO) is functional.
+- The loaded weights are CORRECT: fresh interposer capture (moe-cap9) pools
+  for layers 0/6/30 = 100.000000% match vs the byte-verified R50 spec. NOT
+  silent reorder corruption.
+- The LAYER forward is genuinely NaN: prefill's returned buffer = 248320 host
+  bf16 all-NaN (no device BO backing — a stub), and the impl's own lm_head
+  output BO (0x528, 524288 elems) after MM-prefill = NaN over the vocab
+  region. With correct weights + a working lm_head, the NaN must originate in
+  the layer kernels/state under the text-only (vision-off) configuration of
+  this lib build.
+
+Conclusion: the FastFlowLM lib's 35B hybrid forward is non-functional in the
+text-only configuration available on-box (matches the "35B dead on load" doc
+in spirit — the model cannot be served via this lib even past the crash). The
+lib's mm/mv prefills, expert pools and lm_head are individually sound; the
+layer pipeline (linear-attn/ssm state, hybrid routing) NaNs. A working 35B
+runtime needs the flm server binary with the proper (vision-capable) model
+set, or lib source. The lane's verified assets (R50 specs, get_logits map,
+pools-correct proof) remain banked.
