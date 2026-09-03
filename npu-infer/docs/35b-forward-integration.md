@@ -379,3 +379,48 @@ load architecture + per-layer BO map (R46-48), runtime text-load unlock +
 3. Re-engage the qkv transform only if runtime source becomes available
    (upstream fetch) or a captured qkv BO is obtained (interposer capture
    requires beating the ASLR-dependent reorder bug ~50% of the time).
+
+## Round 50 — 100% BYTE-VERIFIED: today's layout is clean, all 30 linear-layer pools + 5MB BO (2026-09-03)
+
+### The current runtime's layout DIFFERS from the Sep-2 capture (R43 spec superseded)
+
+The Sep-2 moe-cap (R43: w3912 windows, splice rows, 31-row first blocks,
+824-B fragments) is a STALE runtime state. Today's runtime (moe-cap4,
+vision-off load) produces a far simpler layout — and it reconstructs
+byte-for-byte:
+
+### 512 MB expert pool (ALL 30 linear layers = 100.000000%)
+
+rows 0..65535 — alternating 32-row up/gate blocks (1024 each), windows from
+FILE OFFSET 0 (stride 4736, j 0..32767), block order `j = base+8·(i%4)+i//4`;
+rows 65536..100959 — down, ALL 35424 windows, 8-groups `[0,2,4,6,1,3,5,7]`;
+rows 100960..102623 — self_attn.gate_proj (1664 windows: j ∈ {0..7, 224..1879}
+in interleaved (v, v+8 mod 1880) pairs from v=224); rows 102624+ = ZEROS
+(allocator slack — the 50.8MB "mystery tail" of R44-48 was empty padding).
+
+Byte-verified: layers 0,1,2,4,5,6,8,9,10,12,13,14,16,17,18,20,21,22,24,25,
+26,28,29,30,32,33,34,36,37,38 — ALL 100.000000% vs their moe-cap4 pools.
+(tools/verify_moe_current_layout.py)
+
+### 5 MB linear-attn BO (100.000000%)
+
+head 328,192 B = byte-packed [ssm_conv1d 64K][ssm_norm 256][ssm_a 128]
+[ssm_dt.bias 128][ssm_alpha_proj 128K][ssm_beta_proj 128K]; then ssm_out_proj
+windows from FILE OFFSET 0 in 32-row blocks order `j = base+16·(i%2)+i//2`
+(windows 0..1045). Rest zero. No tail, no gaps.
+
+### Byte-flip differentials (decisive method, R50)
+
+One-byte flips in model.q4nx + recapture + 3-way diff vs run-variance isolated
+the effect precisely: qkv data byte0 = a loader control byte (0 → qkv load
+skipped, downstream 1MB BOs stay default-filled); qkv payload bytes (deep
+flips) NEVER change any synced BO → qkv's content is written map-only
+(never xrtBOSync'd) and is invisible to sync-capture. This explains every
+prior qkv negative (R45-49).
+
+### Remaining (1 item): the 2 MB per-layer BO
+
+bo_to_0159-equiv (per-layer, differs across layers, ~2MB): content matches no
+raw tensor bytes/windows and is not clean bf16 (value mode 0x39; int8-ish)
+— believed qkv-family derived state. All other per-layer content (pool +
+5MB linear-attn) is now byte-verified 100%.
