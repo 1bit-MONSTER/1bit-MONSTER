@@ -19,9 +19,24 @@ Produces a self-consistent 2.26.0 stack:
 - `xrt/src/runtime_src/core/pcie/linux/libxrt_core.so.2.26.0`
 - `src/shim/libxrt_driver_xdna.so.2.26.0` — the AMD NPU shim
 
-## Consume it
+## Consume it — SCOPED (do NOT override the default library path)
 
-Point the runtime at the stack (e.g. `LD_LIBRARY_PATH` to the lib dirs, or install to `/usr/local`), and build the engine runlist path:
+**Important:** install the runlist stack to a **dedicated prefix**, not the default
+library path. A global override (e.g. copying the 2.26.0 libs into `/usr/local/lib`)
+breaks the system XRT tools built against 2.21.75 (`xrt-smi` ABI symbol-lookup error).
+Keep the 2.26.0 libs at their own prefix and add them **scoped** via `LD_LIBRARY_PATH`
+for the runtime only; the system default stays on 2.21.75.
+
+```bash
+# install to a dedicated prefix (not the default path)
+mkdir -p /usr/local/xrt-runlist/lib
+cp -a <build>/xrt/src/runtime_src/core/common/libxrt_coreutil.so.2.26.0       <build>/xrt/src/runtime_src/core/pcie/linux/libxrt_core.so.2.26.0       <build>/src/shim/libxrt_driver_xdna.so.2.26.0 /usr/local/xrt-runlist/lib/
+cd /usr/local/xrt-runlist/lib && for l in core coreutil driver_xdna; do
+  ln -sf lib${l}${l#core}.so.2.26.0 lib${l}${l#core}.so.2 2>/dev/null
+done  # (adjust soname symlinks; or use the .so.2 -> .so.2.26.0 links from the build)
+```
+
+Then build the engine runlist path and run it with the scoped path:
 
 ```bash
 cmake -S npu-infer -B npu-infer/build-rl \
@@ -30,9 +45,13 @@ cmake -S npu-infer -B npu-infer/build-rl \
       -DXRT_CORE_PATH=<path/to/core-dir> \
       -DCMAKE_BUILD_TYPE=Release
 cmake --build npu-infer/build-rl --target npu_infer -j "$(nproc)"
+
+# scoped runtime use (add the runlist prefix, do NOT touch the system default):
+export LD_LIBRARY_PATH=<flm-lib-dir>:/usr/local/xrt-runlist/lib
 ```
 
-## Verified on strixhalo
+
+## Verified on strixhalo (scoped stack)
 - `xrt::device(0)` opens with the 2.26.0 stack vs the booted kernel/firmware.
 - `hw_context` + `xrt::runlist` construct; a real per-ctx layer kernel runs via `runlist::execute()`+`wait()` (3.74 ms), deterministic output.
 - The runtime natively batches per-token layers into one `xrt::runlist` (`RUNLIST_ADD`).
