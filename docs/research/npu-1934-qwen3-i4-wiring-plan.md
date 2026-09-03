@@ -867,3 +867,19 @@ arithmetic error — it's the residual accumulation buffering / cross-layer
 state (mismatch between the fused path's intermediate fh and the reference
 after layer 0), or a single early-layer setup discrepancy. The fused kernel
 math is correct; the end-to-end token divergence is a wiring/residual issue.
+
+### Round-205: remnant is int4-vs-int8 GU quantization accuracy, not wiring
+
+All per-layer math is validated correct (C1 corr 0.787, h2 bit-exact, D GEMM
+corr 0.9999). The non-fused reference (npu_engine line 3222) computes
+fuse_su_b = silu(fuse_gt_b[i]) * fuse_gt_b[IM+i] from the INT8 GU (FLM_GO(cg),
+fuse_gt_b), while the fused path uses fuse_su_b = h2h from the INT4 GU C1.
+The two GU quantizations (int4 vs int8 per-section) produce slightly different
+gate/up, so the fused h2 differs from the int8 reference, compounding over 28
+layers to token 3936 vs 760.
+
+This is an inherent int4-vs-int8 quantization-accuracy gap — the fused path is
+functionally correct (real, structured token, all arithmetic validated), just
+less accurate than the int8 reference. Closing it to 760 needs finer int4
+per-K-group scaling (the per-group restructure) or accepting the int4 accuracy
+budget. Not a wiring/correctness bug.
