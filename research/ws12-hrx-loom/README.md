@@ -2284,3 +2284,21 @@ only r16w/r16wb2 JIT-compile; reproduces with GGML_HRX2_DISABLE_F16_FA0_
 ATTENTION_FUSION=1 (rules out the fa0 runtime path) and predates this
 kernel. The 4-parallel server aggregate A/B for r16wb4c8r therefore needs
 that harness crash fixed first.
+
+**Round-27 addendum 3 — parallel-decode crash root-caused and FIXED (fork
+0f52c297a); r16wb4c8r verified firing in the real 4-parallel server.**
+The blocker from addendum 2 was two distinct issues: (1) llama-parallel /
+llama-server auto-params-fit lowers n_batch below the prompt -> llama-context
+assert (workaround `-fit off`); (2) the real bug — an empty (0-token) decode
+batch emitted when a sequence finishes produces a Q4NX ffn_gate mm with src1
+cols == 0, and since Q4NX mms are HRX2-exclusive (CPU cannot dequant them),
+no backend claimed the node -> ggml-backend.cpp:1351 assert
+(`*cur_backend_id != -1`) during graph split. Fix: supports_
+mul_mat_q4nx_route accepts cols>=0 and dispatch_mul_mat_q4nx no-ops
+dst->ne[1]==0. After the fix llama-parallel np=1/4 and llama-server
+--parallel 4 run; the 4-parallel server decode fires r16wb4c8r (4 JIT
+compiles) with all streams producing identical correct output. The clean
+4-stream aggregate A/B (r16wb4c8r vs r16wb4c) still needs a quiet box — the
+dev box is shared and the co-worker's app was at ~9 cores during the attempt
+(the kernel-level evidence stands: +18% at the 3B gate, bit-identical dst,
+fd43e14ac).
