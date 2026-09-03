@@ -597,6 +597,8 @@ typedef enum {
     RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT = 997, // concept_dominant_gptbert — ConceptDominantGPTBertForPreTraining (GPT/BERT-hybrid pre-training class; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_SPARK2_5 = 1000,        // spark2_5 — Spark-X2.5 (XHToken) hybrid sliding/full-attention GQA: 3x sliding-window-512 per full-attn layer, per-layer-type partial RoPE, headwise attn output gate (sigmoid), gelu, head_dim 256, 1M native ctx (registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_TINYTRANSFORMER = 1001, // tinytransformer — TinyTransformerForCausalLM minimal custom-code transformer (Mayuresh231/tiny-transformer-29m; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_IKNN = 1002,            // iknn-rl1-a1 — IKNN-Rl1-A1ForCausalLM (deeprcurs/IKNN-Rl1-A1; MLX-era file_* config, RoPE 1e4 + RMSNorm, gpt2-shaped; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_K2HORIZON = 1003,       // k2horizon — K2-Horizon-MoVA (Moonshot K2-Horizon MoE: 100E/8, layernorm_num_groups, query_key_norm, rope_head_dim, attention_gate_func, decoder_sparse_step; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2510,6 +2512,25 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "tinytransformer") == 0) return RCPP_ARCH_TINYTRANSFORMER;         // census stripped arch name (issue #2061, registry token)
     if (strcmp(s, "tiny_transformer") == 0) return RCPP_ARCH_TINYTRANSFORMER;       // HF model_type
     if (strcmp(s, "tinytransformerforcausallm") == 0) return RCPP_ARCH_TINYTRANSFORMER;  // raw HF architecture string (regression guard)
+    // Same-run crop (census gate 2026-09-03, #2061 + coverage gate):
+    // tinygemma (roshan-soni/tinygemma-10m) is a Gemma-3-layout tiny model —
+    // config-verified alias (qk_norm + query_pre_attn_scalar + rope_base/
+    // rope_local_base + sliding_window + n_kv_groups = gemma3 key set), same
+    // precedent as tinyllama->llama. decodertransformer / iknn / k2horizon
+    // are genuinely new (custom modeling / MoVA MoE) — registry tokens
+    // (decodertransformer reuses the pre-existing DECODERONLYTRANSFORMER token).
+    if (strcmp(s, "tinygemma") == 0) return RCPP_ARCH_GEMMA;          // TinyGemmaForCausalLM — config-verified gemma3-style layout (qk_norm, rope_base/local, sliding)
+    if (strcmp(s, "tinygemmaforcausallm") == 0) return RCPP_ARCH_GEMMA;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "decodertransformer") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;   // census stripped arch name (registry token)
+    if (strcmp(s, "decoder_transformer_scratch") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;  // HF model_type
+    if (strcmp(s, "decodertransformerforcausallm") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "iknn") == 0) return RCPP_ARCH_IKNN;                // HF model_type
+    if (strcmp(s, "iknn-rl1-a1") == 0) return RCPP_ARCH_IKNN;         // census stripped arch name (registry token)
+    if (strcmp(s, "iknnrl1a1forcausallm") == 0) return RCPP_ARCH_IKNN;  // raw HF architecture string (regression guard, stripped)
+    if (strcmp(s, "iknn-rl1-a1forcausallm") == 0) return RCPP_ARCH_IKNN; // raw HF architecture string (regression guard)
+    if (strcmp(s, "k2horizon") == 0) return RCPP_ARCH_K2HORIZON;      // census stripped arch name (registry token)
+    if (strcmp(s, "k2_horizon_mova") == 0) return RCPP_ARCH_K2HORIZON; // HF model_type
+    if (strcmp(s, "k2horizonforcausallm") == 0) return RCPP_ARCH_K2HORIZON;  // raw HF architecture string (regression guard)
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
