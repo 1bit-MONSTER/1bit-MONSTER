@@ -923,3 +923,20 @@ model gate/up, but they're ~250x apart — so B_shadow (int4 B'') is NOT at the
 model weight scale, OR the ag*S_col scale applied to the int4 C1 doesn't match
 the int8 GU's scale. Next: reconcile the int4 C1 scale with the int8 GU so the
 fused int4 h2 matches the model h2 and yields token 760.
+
+### Round-209: gate is 1.6x, up is 34x AND sign-flipped — the int4 up scale/sign is the bug
+
+Added GUDIAG (NPU_FUSED_GUDIAG): per-pair compare int4-C1-derived g/u
+(g4=g*ag*S_col, u4=u*ag*qn_s*S_col) vs int8-reference g/u (fuse_gt_b). l=0 p0:
+gate g4=1.4229 vs g8=0.8881 (1.6x); up u4=18.6326 vs u8=-0.5444 (**34x and
+SIGN-FLIPPED**). Across layers meanU4=5.19 vs meanU8=0.07: the int4 up is
+~34x larger and opposite sign to the int8 GU up.
+
+The gate is close (1.6x, a minor scale mismatch); the UP is the dominant
+error: the int4 C1 up column, after ag*qn_s*S_col, is ~34x too large AND
+sign-flipped vs the int8 GU up (which is negative). This is why the int4 h2
+(wrong up) diverges from the int8 reference and gives token 3936 vs 760.
+
+Next: fix the int4 C1 up column (sign + qn_s scale) so u4 matches the int8 GU
+up (negative, ~0.54 magnitude). Check whether B_shadow's up column is
+sign-flipped, or the qn_s in the up fold should be removed/negated.

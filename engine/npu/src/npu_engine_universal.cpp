@@ -3116,6 +3116,32 @@ struct Bf16Ctx {
                             // scale — dividing by it makes the D input ~qn_s too small.
                             for (int p = 0; p < IM; p++)
                                 fuse_su_b[p] = (float)h2h[p];
+                            // gate/up scale diagnosis: compare int4-C1-derived g/u
+                            // vs int8-reference g/u (fuse_gt_b) per pair, to see
+                            // whether the ~250x gap is gate, up, or both.
+                            if (getenv("NPU_FUSED_GUDIAG") && atoi(getenv("NPU_FUSED_GUDIAG")) == 1) {
+                                FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
+                                cn(fuse_gt_b.data(), fmlp_out);
+                                const int32_t* c1m = cg_fused_i4->Cm;
+                                double svG4=0, svG8=0, svU4=0, svU8=0;
+                                int ncmp = IM < 16 ? IM : 16;
+                                for (int p = 0; p < ncmp; p++) {
+                                    // int4 C1 gate (GU col 2p) / up (GU col 2p+1),
+                                    // microtiled: kc*1024 + (cl>>3)*64 + (cl&7), kc=j>>7, cl=j&127.
+                                    int jg = 2*p, ju = 2*p+1;
+                                    int gc = c1m[(jg>>7)*1024 + ((jg&127)>>3)*64 + (jg&7)];
+                                    int uc = c1m[(ju>>7)*1024 + ((ju&127)>>3)*64 + (ju&7)];
+                                    float g4 = gc * ag * cg_fuse_scl[l][jg];
+                                    float u4 = uc * ag * qn_s * cg_fuse_scl[l][ju];
+                                    float g8 = fuse_gt_b[p];
+                                    float u8 = fuse_gt_b[IM+p];
+                                    svG4 += g4; svG8 += g8; svU4 += u4; svU8 += u8;
+                                    if (p == 0) fprintf(stderr, "[GUDIAG l=%d] p0: g4=%.4f g8=%.4f u4=%.4f u8=%.4f\n", l, g4, g8, u4, u8);
+                                }
+                                fprintf(stderr, "[GUDIAG l=%d] meanG4=%.4f meanG8=%.4f meanU4=%.4f meanU8=%.4f\n",
+                                        l, svG4/ncmp, svG8/ncmp, svU4/ncmp, svU8/ncmp);
+                                fflush(stderr);
+                            }
                             // NPU_FUSED_I8REF=1: replace fuse_su_b with the INT8 GU
                             // reference h2 (silu(fuse_gt_b[i])*fuse_gt_b[IM+i], the model h2)
                             // for the D GEMM. Isolates whether the int8-reference h2 + D GEMM
