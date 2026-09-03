@@ -299,3 +299,45 @@ layer-6 (and layer-0/3) tensor files: derive each tensor's window order in
 its BO (ssm_out done structurally; then ssm_out full order, share_*, qkv,
 gate_proj) → complete region A+B spec → engine packer for the linear-attn
 BOs. Runtime load with vision-off config remains the reference generator.
+
+## Round 48 — per-layer load BO map SOLVED; qkv transform bounded (2026-09-03)
+
+### The load's per-layer BO structure (from moe-cap4 seq + content matching)
+
+Every LINEAR layer uploads, in order: `[512 MB expert pool]` + `[2 MB]` +
+`[5 MB]`. The 512 MB pool seq = 140 + 3L with full-attn layers (3,7,11..)
+skipped (they use 542,113,792-B BOs). Content-verified: layer 6 = pool
+bo_to_0158 (the R43 ground truth), 2 MB bo_to_0159, 5 MB bo_to_0160
+(ssm_out). self_attn.gate_proj lives INSIDE the pool (rows 100960..102623,
+R44). The 2 MB BO = the region-A class (norms/router/ssm smalls); the 5 MB
+BO = the ssm_out windowed BO.
+
+### ssm_out: window order is 2-row-strided then permuted
+
+In bo_to_0160 (5 MB): ssm_out (1024 x 8704-B file rows) windows j=0..15 sit
+at BO byte 328192 + j·9472 (2-row stride, window = file[4736j:+4736] from
+file offset 0), then the order permutes (group structure). BO content is
+placed at byte granularity — NOT row-aligned (BO local 328192 is not a 4736
+multiple; cross-tensor splices fill the gaps).
+
+### qkv: no window/offset convention matches ANY capture (bounded)
+
+qkv_proj (2048 x 8704-B rows) raw/windowed content (offsets 0/3912, strides
+4736/8704, widths 4736/8704/2048/4096) is absent from every moe-cap4 file
+incl. layer 6's own 512 MB pool + 2 MB + 5 MB BOs. Its in-BO form is a
+per-tensor transform (not the expert/simple-window class). The runtime's
+`qwen3_6_reorder_cpy` is the probable producer — verify_moe_reorder.cpp
+calls it directly (dlopen + hardcoded offset to the constprop.2 clone,
+`(gen_layer_seq−0x97ad0)+0x68b80`), verified byte-exact for up_exps tiles.
+Note a discrepancy to resolve: R38's reorder-on-trimmed-tiles A/B
+interleave output ≠ R43's captured window layout — one of the two
+verification framings mislabels its ground truth; reorder_cpy's actual
+row-source convention needs re-deriving per tensor shape.
+
+### Next (bounded experiment, ~1 session)
+
+Call qwen3_6_reorder_cpy directly on qkv rows with the load_linear_weights
+arg conventions (dtype/flags per the crash evidence: dtype=8 family) and
+match the output against the layer-6 BOs; once one qkv/ssm_out row shape is
+byte-verified, the region A+B packer spec follows (per-tensor orders are the
+same mapping class already solved for up/gate/down).
