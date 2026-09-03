@@ -1258,3 +1258,44 @@ PRE-REBOOT. Re-gate on the current kernel (issue #2065 filed):
 4. Root cause of the runtime drift is open (#2065): candidates are
    kernel/driver-dependent execution (SVA vs identity IOMMU), load-time
    staging interaction, or firmware arithmetic config. Not a race.
+
+## Round 41 — RE-GATE on the 2026-09-03 fresh boot: runtime drift REVERTED (2026-09-03)
+
+The machine rebooted again 2026-09-03 10:37 ADT (same OGC kernel
+`7.2.0-next-20260821-unstable-ogc-g2a559b27-1`; clean-reboot drill green:
+Round 37 health gate logits argmax 397 / std 3.38). Re-ran the Round-40
+procedure on this boot — round-35 wait-hook interposer, run_qwen3_npu,
+tokens 1000+1001 — and compared against the round-37-era artifacts
+(`/home/bcloud/.cache/rtcap/`) and the pre-reboot drifted baseline
+(`/home/bcloud/.cache/rtcap-postreboot-20260903/`, 10:31, 6 min pre-boot).
+
+### Result: TODAY == round-37 era, byte-for-byte, at every level
+
+| | TODAY vs Sep-1 (R37) | TODAY vs pre-reboot (drifted) |
+|---|---|---|
+| actpost_002 (ctx-1 acts) | corr **1.00000000**, byte-identical | 0.99788541 |
+| actpost_004 (ctx-2 acts) | corr **1.00000000**, byte-identical | 0.99776887 |
+| logits ctx-1 (bo_from_0199) | corr **1.00000000**, maxdiff 0.0, byte-identical | 0.99803301 |
+| logits ctx-2 (bo_from_0229) | corr **1.00000000**, maxdiff 0.0, byte-identical | 0.99454453 |
+
+- Today: actpost std 8.6037/0.8758, logits argmax 397 @ 12.8125 (ctx-1)
+  and 88 @ 13.75 (ctx-2) — all identical to the Sep-1 runtime artifacts.
+- The TODAY-vs-PREREB correlations reproduce Round-40's drift magnitudes
+  exactly (0.997891 / 0.998033 / 0.9945), confirming methodology parity.
+- **Round-37's engine↔runtime corr 1.000000 now reproduces**: the engine /
+  replay (stable, 397 @ 12.8125) equals this boot's runtime byte-for-byte.
+
+### Interpretation
+
+1. **The drift is reversible per boot, not a permanent shift.** The
+   Sep-2-23:19 boot drifted; the Sep-3-10:37 boot restored the round-37-era
+   signature exactly. The Round-40/FINDINGS observation "a fresh boot does
+   NOT restore it" was one transition, not a law.
+2. **Rounds 35-39 runtime-side references are re-validated**: captured in
+   the round-37-era state = this boot's state. Engine-side claims hold.
+3. Root cause remains open (#2065): runtime arithmetic is a per-boot
+   device/firmware init-state variable (SVA vs identity IOMMU, AIE tile
+   config, load-time staging), not a code change in the closed runtime.
+
+Evidence + receipts: `npu-infer/captures/round41-regate/` (RE-GATE.md + this
+boot's actpost_002/004 and bo_from_0199/0229 captures).
