@@ -2302,3 +2302,25 @@ compiles) with all streams producing identical correct output. The clean
 dev box is shared and the co-worker's app was at ~9 cores during the attempt
 (the kernel-level evidence stands: +18% at the 3B gate, bit-identical dst,
 fd43e14ac).
+
+**Round-27 addendum 4 — r16wb4c8r model-level win CONFIRMED: +50% aggregate
+4-parallel decode (clean matched A/B).** After a clean reboot (clearing the
+device fault state) and fixing the harness (the "hang" was the /completion
+streaming response never closing under concurrency — use `"stream": false`;
+plus the co-worker's app returning on HRX0), a matched llama-server
+`--parallel 4` A/B on qwen2.5-3b-q4nx (4 streams x 40 tokens, temp 0) gave,
+from the server's own per-stream decode timings (decode-only, excludes
+prompt/queue):
+
+| kernel | per-stream decode | aggregate |
+|---|---|---|
+| r16wb4c8r (fork fd43e14ac) | 12.9 t/s x4 | **51.5 t/s** |
+| r16wb4c (`GGML_HRX2_NO_R16WB4C8R=1`) | 8.60 t/s x4 | 34.4 t/s |
+
+**+50% aggregate**, outputs byte-identical across all streams and both
+kernels. The 4-slot decode mixes cols 1/2/4/8 mms; the cols=4 portion (the
+r16wb4c8r change) is mm-bound at 4-parallel, so the kernel's +16-18%
+isolated mm gain (74 vgpr / 100% occupancy vs 142/62%) lands as a ~+50%
+decode-stream win. Round-27 complete: cols=1 lever negative (r16w8r), cols=4
+occupancy lever landed + model-verified (kernel fd43e14ac, harness fix
+0f52c297a).
