@@ -20,7 +20,7 @@ MM_FLAGS="-DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED"
 XCLBIN="$G/../xclbins/final_i8_GUSILU_i4_qwen3_0_6b.xclbin"
 INSTS="$G/../xclbins/insts_i8_GUSILU_i4_qwen3_0_6b.txt"
 if [ "${I4_BF16_PAIR:-0}" = "1" ]; then
-    MM_FLAGS="$MM_FLAGS -DI4_BF16_PAIR"
+    MM_FLAGS="$MM_FLAGS -DI4_BF16_PAIR -DI4_SCALAR_C1"
     XCLBIN="$G/../xclbins/final_i8_GUSILU_i4_qwen3_0_6b_bf16pair.xclbin"
     INSTS="$G/../xclbins/insts_i8_GUSILU_i4_qwen3_0_6b_bf16pair.txt"
     echo "building bf16-pair variant -> $(basename "$XCLBIN")"

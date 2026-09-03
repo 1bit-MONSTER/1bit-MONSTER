@@ -848,11 +848,25 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                         int q4 = (cc % 2 == 0) ? (int)(b & 0x0F)
                                                : (int)((b >> 4) & 0x0F);
                         if (q4 >= 8) q4 -= 16;
+#ifdef I4_BF16_PAIR
+                        // bf16-pair scalar dequant: B'' = sat8(round(q4*a + b))
+                        // with a = s/S_col, b = zp/S_col (bf16) at
+                        // [4096 + group*512 + col*4]. The mmul C-store is
+                        // miscompiled (#1869), so the scalar path must use the
+                        // SAME bf16-pair dequant as the pack to be bit-correct.
+                        const uint8_t* ab = pB4 + gbase + (j << 5) + (cc << 2);
+                        union { uint32_t u; float f; } aa = { (uint32_t)((uint16_t)ab[0] | ((uint16_t)ab[1] << 8)) << 16 };
+                        union { uint32_t u; float f; } bb = { (uint32_t)((uint16_t)ab[2] | ((uint16_t)ab[3] << 8)) << 16 };
+                        float v = (float)q4 * aa.f + bb.f;
+                        int r = silu_roundf(v);
+                        int32_t av32 = r > 127 ? 127 : r < -127 ? -127 : r;
+#else
                         int x = q4 * rq[cc];          // q4 * ratioQ22 (int32)
                         int ax = x < 0 ? -x : x;
                         int r = (ax + (1 << 17)) >> 18;  // round-half-away
                         r = x < 0 ? -r : r;
                         int32_t av32 = r > 127 ? 127 : r < -127 ? -127 : r;
+#endif
                         int col = (int)j * 8 + cc;
                         pC[(col / 8) * 64 + (col % 8)] +=
                             (int32_t)pA[i * 64 + kk] * av32;

@@ -711,3 +711,31 @@ gate+up=1024/1024, so the host contract is correct).
 Confirmed: default float decode=760 unchanged, engine green, all fused
 diagnostics env-gated. The dense fused path needs bf16pair; remaining #1934
 blocker is the kernel-side up-column C1 accumulation (AIE2P microtile).
+
+### Round-196: mmul C-store miscompile (#1869) was the GU GEMM bug — scalar C1 fix
+
+The up-column C1 divergence had a ROOT CAUSE I'd been dancing around: the
+comment at mm_kernel_reference.cc:792-794 states the AIE2P aie::mmul C-store
+is MISCOMPILED on this toolchain ("A and B'' byte-exact but the mmul C1
+garbage", issue #1869). My default `matmul_i8_i32_i4` used the mmul path, so
+its C1 was garbage.
+
+FIX: added a bf16-pair scalar-C1 dequant branch to `matmul_i8_i32_i4`'s
+`I4_SCALAR_C1` fallback (B'' = sat8(round(q4*a + b)) from the a/b bytes, the
+exact bf16-pair contract the pack uses), and added `-DI4_SCALAR_C1` to the
+bf16pair build so the scalar path compiles instead of the mmul.
+
+Result (live NPU, qwen3-0.6b):
+- C1 bo2[0..7] = 26262 18542 ... bit-EXACT match to the host C1h (Am*B_shadow);
+  C1h was at @bo2[-1] before, now @bo2[0]/@bo2[1].
+- c1corr 0.01 -> 0.787 (the residual 1024/6144 bad = rows 1-7, zero for
+  decode M=1); c1bad 6144/6144 -> 1024/6144.
+- fused h2 mae ~98 -> ~15.5 (H2DBG independent float ref), next_token
+  105316 -> 56538.
+- Default float decode unchanged (760).
+
+So THREE stacked causes are now all fixed: writeback routing (h2 arg),
+bf16_pair B'' pack consistency, and the mmul C-store miscompile (#1869 ->
+use the scalar C1 fallback with bf16-pair dequant). The remaining h2 error
+(mae~15.5) is the on-core silu fixed-point vs the float reference (the Q/shG
+calibration noted at round 190), a much smaller residual.
