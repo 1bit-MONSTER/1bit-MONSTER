@@ -697,3 +697,17 @@ Status (all verified on live NPU): writeback routing, bf16_pair B'' layout,
 fold delivery, host-CPUSILU route, AND the pack (B_shadow byte-exact gate+up)
 are all CORRECT. The single remaining #1934 blocker is the kernel-side
 odd(up)-column C1 accumulation bug — deep AIE2P microtile work.
+
+### Round-195: v66 rejects dense path — bf16pair is the correct dense build
+
+Tested the dense fused_use with NPU_GUSILU_BF16PAIR=0 (v66 ratioQ22) +
+host-CPUSILU: bo2 C1 is ALL-ZERO (bo2[0..15]=0) and next_token=1. The v66
+xclbin never emits C1 in the dense fused_use path ("OLD layout: no C1 emit")
+— it's only wired for the MoE fused_ctx flow. So bf16_pair is definitively
+the correct dense #1934 build, and the up-column C1 bug lives in the
+bf16pair kernel's odd(up)-column handling (B_shadow verified byte-exact
+gate+up=1024/1024, so the host contract is correct).
+
+Confirmed: default float decode=760 unchanged, engine green, all fused
+diagnostics env-gated. The dense fused path needs bf16pair; remaining #1934
+blocker is the kernel-side up-column C1 accumulation (AIE2P microtile).
