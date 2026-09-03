@@ -883,3 +883,25 @@ functionally correct (real, structured token, all arithmetic validated), just
 less accurate than the int8 reference. Closing it to 760 needs finer int4
 per-K-group scaling (the per-group restructure) or accepting the int4 accuracy
 budget. Not a wiring/correctness bug.
+
+### Round-207: fused int4 h2 is ~250x MIS-SCALED vs int8 reference (real bug)
+
+Added H2I8 diagnostic comparing the fused int4 h2 (fuse_su_b=h2h) against the
+int8-reference h2 (silu(fuse_gt_b[i])*fuse_gt_b[IM+i]):
+l=0 corr=0.005, mean4=3.640, mean8=-0.004, rms4=38.995, rms8=0.151. The fused
+int4 h2 (rms 39) is ~250x the int8 reference (rms 0.15) with ~zero correlation.
+
+This is NOT int4-vs-int8 quantization noise — it's a SCALE mismatch. The int8
+reference h2 (0.15) is the KNOWN-good model h2. The fused int4 h2 (39) is
+~250x too large, so fuse_su_b=h2h (my round-202 change) over-scaled it. The
+correct dequant is fuse_su_b = h2h / scale where scale maps the folded h2
+(fold-units, ~39 rms) back to model units (~0.15 rms). Neither h2h (round 202)
+nor h2h/qn_s (before) is right.
+
+Next: determine the exact dequant scale for the fused h2 (the fold's 2^Q/shG,
+not qn_s) so fuse_su_b matches the model h2 (rms ~0.15) and the D GEMM is fed
+the correct model-scale h2.
+
+CORRECTION to rounds 202/205: the token 3936 was NOT "int4 accuracy" — it was
+the mis-scaled h2 (39 vs 0.15) feeding the D GEMM. The fused h2 dequant scale
+is still wrong; fixing it should move the token toward 760.
