@@ -540,3 +540,25 @@ Read + banked the Clemson/URI NPU paper (docs/research/q4nx-npu-paper-2602-06063
    uniform int16.
 3. Benchmarks (Gemma3 1B/4B, Ryzen AI 7 350): 5.2x prefill / 4.8x decode vs
    iGPU — cross-platform calibration only. No code released (review-anonymous).
+
+## Round 56 — 35B runtime public API returns a deterministic non-logits buffer (2026-09-03)
+
+Attempted the runtime-as-server 35B generation demo (qwen3_6_generate harness:
+vision-off config, chat-prompt prefill + autoregressive greedy loop). Load
+succeeds (ASLR-retry ~attempt 3; the latent reorder segfault is ~50%+ per run),
+prefill ~1.3 s, forward ~60 ms/tok (~17 tok/s wall — the 3B-active experts are
+fast). BUT:
+
+- `qwen3_6_moe_npu::prefill()/forward()` return a 248320-bf16 buffer that is
+  100% NaN-as-bf16 / fp16-garbage (mean 39543, near fp16 max), and the content
+  is DETERMINISTIC across different prompts (2-token dummy == 32-token chat) —
+  it is not input-derived logits.
+- Token 0 ('!') argmaxes everywhere → the returned buffer is a fixed
+  scratch/internal buffer, not the lm_head output. The real logits path for the
+  closed moe model needs an internal call not exposed in qwen3_6_moe_npu.hpp
+  (no public get_logits/sample on this class, unlike the runtime-layer path).
+- Conclusion: harness-level 35B generation through the public lib API is
+  blocked at the closed-lib boundary. A working 35B server needs the flm
+  serve binary (not on-box) or the lib source. The architecture/assets from
+  R43-55 (byte-verified packer specs, capture oracle, runtime load unlock)
+  remain the banked value of the lane.
