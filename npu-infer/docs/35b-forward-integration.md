@@ -499,3 +499,26 @@ family). Deriving it byte-exactly requires the runtime source or a
 considerably deeper differential campaign (e.g., per-value flips mapped
 through the BO). Everything else in the per-layer layout is byte-verified
 100% (R50).
+
+## Round 54 — CORRECTION: the 2MB BO overlap was codebook coincidence, not qkv derivation (2026-09-03)
+
+The "99.996% qkv value overlap" (R51) is RETRACTED: all int16-quantized tensors
+(qkv, ssm_out, gate/up/down_exps...) share one ~65K-value codebook, so unique-
+value overlap vs ANY of them is ~100%. The overlap proved nothing about qkv.
+
+What IS established about the 2MB per-layer BOs (bo_to_141+3L-equiv):
+
+- Two families across the load: mean ~+1000 / std ~13600 (the qkv/ssm_out/
+gate_proj/o_proj projection-value family) AND mean ~-440 / std ~11666 (a
+different scale — present at ~11 seqs ≈ the full-attn layers + boundary).
+- 1,048,576 int16 values = 2048x512 — a slice of the 8.9M/4.46M-value
+  projection tensors, but matching no file windowing/slice/permutation
+  (R48-53 tests).
+- True per-tensor int16 sizes (correcting earlier confusion): qkv 8,912,896;
+  ssm_out 4,456,448; self_attn.gate_proj 4,456,448; full-attn L3 q/k/v/o =
+  8,912,896/557,056/557,056/4,456,448.
+
+Status: the 2MB BO's exact content/role is OPEN (black-box analysis
+exhausted without the runtime source). Not qkv-derived in any simple way;
+a projection-family slice in the runtime's kernel format. Everything else
+per-layer (pool + 5MB BO) stays byte-verified 100% (R50).
