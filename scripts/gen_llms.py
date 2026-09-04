@@ -9,9 +9,15 @@ it turns the site into a citation source for AI answers.
 Usage: python3 scripts/gen_llms.py [--site-dir site]
 """
 import html
+import os
 import re
 import sys
 from pathlib import Path
+
+# Reuse seo_sync's live number extraction (arch tokens / HF arch strings /
+# coverage) so llms.txt can't drift from the site's SEO tags.
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts"))
+import seo_sync  # noqa: E402
 
 SITE = "https://1bit.monster"
 HEADING = re.compile(r"<h([12])[^>]*>(.*?)</h\1>", re.S)
@@ -55,10 +61,15 @@ def main() -> int:
     pages = sorted(p for p in site_dir.glob("*.html")
                    if p.name not in ("sticker-gallery.html",))
 
+    tokens = seo_sync.count_tokens()
+    arch = seo_sync.count_arch_strings()
+    covered, with_arch = seo_sync.census_coverage()
+    pct = seo_sync._pct(covered, with_arch)  # same formatter as the site HTML
     blurb = ("One engine, any model. A model-agnostic, hardware-agnostic pure-C++ "
-             "inference engine (MIT): 552 architecture tokens, 1,775 HF arch strings, "
-             "100% HuggingFace coverage, 317,310 checkpoints mapped, running on Ryzen "
-             "AI NPUs and ROCm with a GGUF-native 1-bit pipeline. Zero Python at runtime.")
+             f"inference engine (MIT): {tokens:,} architecture tokens, "
+             f"{arch:,} HF arch strings, {pct} HuggingFace coverage, "
+             f"{covered:,} checkpoints mapped, running on Ryzen AI NPUs and ROCm "
+             "with a GGUF-native 1-bit pipeline. Zero Python at runtime.")
 
     # llms.txt — the index
     out = ["# 1bit.MONSTER", "", f"> {blurb}", "", "## Pages", ""]

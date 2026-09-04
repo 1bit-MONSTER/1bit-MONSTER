@@ -11,13 +11,16 @@ here") instead of going stale:
        rcpp_arch_from_string -> "HF arch strings" count +1 -> site updates.
     2. New family token     -> RCPP_ARCH_* def added -> "architecture tokens" +1.
     3. Census re-sweep      -> coverage numbers move (X/Y checkpoints mapped).
-    4. Upstream lemonade    -> vendored version bumps -> new post + blog card.
+    4. Watcher delta        -> hf_new_models.py accrues new-model counts into
+       its state; added to the snapshot so checkpoints mapped keeps climbing.
+    5. Upstream lemonade    -> vendored version bumps -> new post + blog card.
 
 All facts are derived OFFLINE from committed files (no network):
 
     tokens       = distinct RCPP_ARCH_* tokens in include/rocm_cpp/bitnet_model.h
     arch_strings = mapped cases in rcpp_arch_from_string (excl. RCPP_ARCH_UNKNOWN)
     coverage     = registry_covered / with_arch from Testing/census_full_summary.json
+                   PLUS the watcher delta (Testing/hf_new_models_state.json)
     lemonade     = project(lemon_cpp VERSION ...) in third_party/lemonade/CMakeLists.txt
 
 Idempotent: a second run with nothing changed touches nothing and exits 0.
@@ -34,6 +37,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE = os.path.join(ROOT, "site")
 HEADER = os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")
 CENSUS = os.path.join(ROOT, "Testing", "census_full_summary.json")
+WATCH_STATE = os.path.join(ROOT, "Testing", "hf_new_models_state.json")
 LEMONADE_CMAKE = os.path.join(ROOT, "third_party", "lemonade", "CMakeLists.txt")
 
 # ── fact extraction ────────────────────────────────────────────────────────
@@ -66,13 +70,28 @@ def count_arch_strings():
 
 
 def census_coverage():
-    """(covered, with_arch) from census_full_summary.json."""
+    """(covered, with_arch) = census snapshot + the watcher's live delta.
+
+    census_full_summary.json is the frozen 2026-08-15 snapshot
+    (317,310/317,310). hf_new_models.py accrues delta_with_arch /
+    delta_covered in its state as it observes new HF models daily; add those
+    so the SEO claim numbers keep moving without a full re-sweep.
+    """
     try:
         with open(CENSUS, encoding="utf-8") as f:
             d = json_load(f)
-        return int(d.get("registry_covered", 0)), int(d.get("with_arch", 0))
+        covered = int(d.get("registry_covered", 0))
+        with_arch = int(d.get("with_arch", 0))
     except (OSError, ValueError, TypeError):
         return 0, 0
+    try:
+        with open(WATCH_STATE, encoding="utf-8") as f:
+            w = json_load(f)
+        covered += max(0, int(w.get("delta_covered", 0)))
+        with_arch += max(0, int(w.get("delta_with_arch", 0)))
+    except (OSError, ValueError, TypeError):
+        pass  # watcher state is optional; snapshot numbers stand alone
+    return covered, with_arch
 
 
 def json_load(f):
@@ -180,7 +199,13 @@ def _pct(covered, with_arch):
     if with_arch <= 0:
         return "0%"
     p = 100.0 * covered / with_arch
-    return f"{p:.1f}%".rstrip("0").rstrip(".") + "%" if p % 1 else f"{int(p)}%"
+    # Round to 2dp; whole numbers drop the decimals (100.0 -> "100%").
+    # Near-100 fractions (e.g. 99.97) must NOT collapse to "100%" — the old
+    # ":.1f" path rounded 99.97 -> 100.0 and emitted a broken "100%%".
+    r = round(p, 2)
+    if r == int(r):
+        return f"{int(r)}%"
+    return f"{r:g}%"
 
 
 def sync_site_numbers(apply=True):
