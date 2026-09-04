@@ -166,7 +166,7 @@ jobs:
           tar -xzf oras.tgz oras
           chmod +x oras
           echo "$GHCR_TOKEN" | ./oras login ghcr.io -u "${{ github.actor }}" --password-stdin
-          ARTIFACT="ghcr.io/1bit-MONSTER/1bit-MONSTER"
+          ARTIFACT="ghcr.io/1bit-monster/1bit-monster"
           # Rolling + immutable tags. No git tags, no GitHub Release.
           for TAG in latest sha-${SHA}; do
             ./oras push "${ARTIFACT}:${TAG}" \
@@ -179,4 +179,4 @@ jobs:
           echo ""
           echo "Packages: https://github.com/orgs/1bit-MONSTER/packages?repo_name=1bit-MONSTER"
           echo "Pull any time with:"
-          echo "  oras pull ghcr.io/1bit-MONSTER/1bit-MONSTER:latest"
+          echo "  oras pull ghcr.io/1bit-monster/1bit-monster:latest"
