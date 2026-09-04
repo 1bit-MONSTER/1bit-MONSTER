@@ -1,0 +1,115 @@
+name: Census sweep
+
+# Full HuggingFace text-generation enumeration, run daily. Walks EVERY page of
+# /api/models?pipeline_tag=text-generation&config=true (Testing/census_sweep.py,
+# the "archive train"), rebuilds the raw census inputs, recomputes coverage
+# (Testing/census_coverage.py against the REAL rcpp_arch_from_string registry),
+# then refreshes the SEO claim numbers (scripts/seo_sync.py) and opens one PR.
+#
+# This is the exact daily counterpart to the 2026-08-15 manual snapshot — it
+# supersedes the incremental watcher delta (hf_new_models.py, which only
+# samples the newest models) by making the census exact again every day.
+#
+# Ordering (all UTC):
+#   03:30 census-sweep (this job) — full sweep -> coverage -> SEO -> PR
+#   04:30 census-watch  — watcher accrues same-day delta against the fresh base
+#   05:30 seo-sync      — picks up any same-day delta (no drift if sweep merged)
+#
+# --reset-delta zeroes the watcher delta after the sweep: the snapshot is now
+# fresh, so the incremental baseline restarts from 0 (otherwise seo_sync would
+# double-count new models against the refreshed snapshot).
+
+on:
+  schedule:
+    - cron: "30 3 * * *"   # 03:30 UTC daily
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: census-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: Full HF census sweep + SEO refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Full HF census sweep
+        id: sweep
+        run: |
+          set -euo pipefail
+          python3 Testing/census_sweep.py --reset-delta
+
+      # census_coverage.py compiles a small C++ probe against the real
+      # bitnet_model.h with g++ (preinstalled on ubuntu-latest) and writes
+      # Testing/census_full_summary.json.
+      - name: Recompute coverage from the fresh sweep
+        run: |
+          set -euo pipefail
+          python3 Testing/census_coverage.py
+
+      - name: Refresh SEO claim numbers
+        id: seo
+        run: |
+          set -euo pipefail
+          OUT="$(python3 scripts/seo_sync.py)"
+          echo "$OUT"
+          echo "$OUT" > /tmp/seo_sync_out.txt
+          if echo "$OUT" | grep -qE '^(CHANGED|NEW):'; then
+            echo "seo_changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "seo_changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Open PR when the census moved
+        if: steps.seo.outputs.seo_changed == 'true' || steps.sweep.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Only open a PR when something actually changed on disk.
+          if ! git status --porcelain | grep -q .; then
+            echo "no changes — nothing to open"
+            exit 0
+          fi
+          DATE="$(date -u +%Y%m%d)"
+          BRANCH="census/sweep-$DATE"
+          if gh pr list --head "$BRANCH" --state open --json number -q '.[0].number' | grep -q .; then
+            echo "PR for $BRANCH already open — nothing to do"
+            exit 0
+          fi
+          if git ls-remote --exit-code origin "$BRANCH" >/dev/null 2>&1; then
+            git push origin --delete "$BRANCH"
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add Testing/ site/ scripts/seo_sync.py
+          git commit -m "census: full HF sweep $DATE — refresh coverage + SEO claim numbers"
+          git push origin "$BRANCH"
+
+          {
+            echo "Automated full HF census sweep (Testing/census_sweep.py → census_coverage.py → seo_sync.py)."
+            echo
+            echo '```'
+            cat /tmp/seo_sync_out.txt
+            echo '```'
+            echo
+            echo "Changed files:"
+            echo
+            echo '```'
+            git status --porcelain
+            echo '```'
+          } > /tmp/sweep_pr_body.md
+          gh pr create --base main --head "$BRANCH" \
+            --title "census: full sweep $DATE" \
+            --body-file /tmp/sweep_pr_body.md
