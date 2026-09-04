@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>Three bugs that broke 97 tok/s | 1bit.MONSTER</title>
-  <meta name="description" content="97 tok/s was real; the output never was. Three silent bugs — LM head substitution, weight transpose, activation clipping — produced garbage at full speed." />
+  <meta name="description" content="Milestone: full-speed NPU decode that was secretly garbage, made correct — three silent bugs found and fixed at 97 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="Three bugs that broke 97 tok/s | 1bit.MONSTER" />
-  <meta property="og:description" content="97 tok/s was real; the output never was. Three silent bugs — LM head substitution, weight transpose, activation clipping — produced garbage at full speed." />
+  <meta property="og:description" content="Milestone: full-speed NPU decode that was secretly garbage, made correct — three silent bugs found and fixed at 97 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-three-bugs.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="Three bugs that broke 97 tok/s | 1bit.MONSTER" />
-  <meta name="twitter:description" content="97 tok/s was real; the output never was. Three silent bugs — LM head substitution, weight transpose, activation clipping — produced garbage at full speed." />
+  <meta name="twitter:description" content="Milestone: full-speed NPU decode that was secretly garbage, made correct — three silent bugs found and fixed at 97 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-three-bugs.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Three bugs that broke 97 tok/s | 1bit.MONSTER", "description": "97 tok/s was real; the output never was. Three silent bugs — LM head substitution, weight transpose, activation clipping — produced garbage at full speed.", "url": "https://1bit.monster/1bit-post-three-bugs.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-three-bugs.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Three bugs that broke 97 tok/s | 1bit.MONSTER", "description": "Milestone: full-speed NPU decode that was secretly garbage, made correct — three silent bugs found and fixed at 97 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-three-bugs.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-three-bugs.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -356,6 +356,8 @@
       <h1>Three bugs that broke 97 tok/s</h1>
       <p class="lead">The 97 tok/s number was real. The output behind it never was. Three silent bugs, LM head substitution, weight transpose, and activation clipping, were producing garbage at full speed. This is the classic story of a fast number with wrong output, and the discipline of not shipping it.</p>
 
+      
+      <div class="callout"><p><b>Milestone:</b> full-speed NPU decode that was secretly garbage, made correct — three silent bugs found and fixed at 97 tok/s. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">Full technical write-up &rarr; journey.md</a></p></div>
       <div class="prose" data-od-id="body">
 
         <h2>The number was real</h2>

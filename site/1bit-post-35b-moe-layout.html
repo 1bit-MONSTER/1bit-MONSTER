@@ -7,19 +7,19 @@
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <title>NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER</title>
-  <meta name="description" content="Milestone: NPU batch decode hit 97 tok/s — a 24x speedup in one session (244 to 10 ms/token), 46% faster than AMD's own stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md" />
+  <title>The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER</title>
+  <meta name="description" content="Milestone: we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER" />
-  <meta property="og:description" content="Milestone: NPU batch decode hit 97 tok/s — a 24x speedup in one session (244 to 10 ms/token), 46% faster than AMD's own stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md" />
-  <meta property="og:url" content="https://1bit.monster/1bit-post-npu-v12.html" />
-  <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
+  <meta property="og:title" content="The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER" />
+  <meta property="og:description" content="Milestone: we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
+  <meta property="og:url" content="https://1bit.monster/1bit-post-35b-moe-layout.html" />
+  meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER" />
-  <meta name="twitter:description" content="Milestone: NPU batch decode hit 97 tok/s — a 24x speedup in one session (244 to 10 ms/token), 46% faster than AMD's own stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md" />
+  <meta name="twitter:title" content="The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER" />
+  <meta name="twitter:description" content="Milestone: we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
-  <link rel="canonical" href="https://1bit.monster/1bit-post-npu-v12.html" />
+  <link rel="canonical" href="https://1bit.monster/1bit-post-35b-moe-layout.html" />
   <style>
     /* ─── tokens ─────────────────────────────────────────────────────────
        Bound verbatim to the locked light modern-minimal + 1-bit identity. */
@@ -82,7 +82,7 @@
     @media (prefers-reduced-motion: reduce) { .topnav .logo .relay { animation: none; } .topnav .logo .r1 { fill: var(--fg); } }
 
     .topnav nav { display: flex; gap: var(--gap-lg); }
-    .topnav nav a { font-size: 14px; color: var(--muted-strong); white-space: nowrap; }
+    .topnav nav a { font-size: 14px; color: var(--muted-strong); }
     .topnav nav a:hover { color: var(--fg); }
     .topnav nav a[aria-current="page"] { color: var(--fg); font-weight: 500; }
     .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
@@ -114,7 +114,7 @@
     .prose .callout { border-left: 1px solid var(--accent); padding: 4px 0 4px var(--gap-lg); margin: 0 0 var(--gap-lg); }
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
-      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; flex-wrap: wrap; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
     }
       /* ─── 1bit theme modes ────────────────────────────────────────────────
        light mode (default) | auto (follows OS) | dark mode.
@@ -297,14 +297,14 @@
     }
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
-      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; flex-wrap: wrap; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
       .theme-switch { order: 4; }
     }
 
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "NPU v12: M=32 batch decode at 97 tok/s | 1bit.MONSTER", "description": "Milestone: NPU batch decode hit 97 tok/s — a 24x speedup in one session (244 to 10 ms/token), 46% faster than AMD's own stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md", "url": "https://1bit.monster/1bit-post-npu-v12.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-npu-v12.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER", "description": "Milestone: we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-35b-moe-layout.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-35b-moe-layout.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-09-02", "dateModified": "2026-09-02", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -346,49 +346,81 @@
   </header>
 
   <main id="content">
-    <article class="art container" data-od-id="post-npu-v12">
+    <article class="art container" data-od-id="1bit-post-35b-moe-layout">
       <a class="back" href="1bit-blog.html">&larr; all posts</a>
       <div class="art-meta">
-        <span>2026-07-02</span>
-        <span class="tag">npu</span>
-        <span class="tag">performance</span>
+        <span>2026-09-02</span>
+        <span class="tag">npu</span><span class="tag">moe</span><span class="tag">weights</span><span class="tag">reverse-engineering</span>
       </div>
-      <h1>NPU v12: M=32 batch decode at 97 tok/s</h1>
-      <p class="lead">One session took decode from 244 to 10 ms per token, a 24x speedup, and put v12 at 97 tok/s with M=32 batch decode, 46% ahead of FLM Kraken Point. OpenMP attention plus an LM head, all C++23, zero Python.</p>
+      <h1>The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave</h1>
+      <p class="lead">The 35B MoE was blocked by a crash in AMD&rsquo;s own weight loader &mdash; so we decoded the layout from the runtime&rsquo;s artifacts instead: where the 465 MB of experts per layer live, why rows are 4,736 B when tiles are 5,120 B, and the A/B interleave that made our packer byte-exact.</p>
 
       
-      <div class="callout"><p><b>Milestone:</b> NPU batch decode hit 97 tok/s — a 24x speedup in one session (244 to 10 ms/token), 46% faster than AMD's own stack. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md">Full technical write-up &rarr; NPU benchmarks</a></p></div>
+      <div class="callout"><p><b>Milestone:</b> we decoded how AMD packs a 35-billion-parameter model for its NPU — verified byte-for-byte against AMD's own code, even though AMD's loader crashes on the same file. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">Full technical write-up &rarr; journey.md — 09-02 session</a></p></div>
       <div class="prose" data-od-id="body">
-        <h2>One session</h2>
-        <p>V12 did not arrive through a long campaign of tuning. In a single session decode went from 244 to 10 ms per token, a 24x speedup, by moving to M=32 batch decode and clearing the two biggest stalls in the path.</p>
+        <h2>The crash that started it</h2>
+        <p>We want the 35B-class models on the NPU &mdash; starting with Qwen3.6-35B-A3B (the <span class="mono">qwen3_6_moe_npu</span> class, 673 tensors, 40 layers, vocab 248320). The blocker was not the NPU: <b>AMD&rsquo;s own runtime crashes loading this model</b>. <span class="mono">load_weights</span> SIGSEGVs inside <span class="mono">qwen3_6_reorder_cpy</span> with a memcpy length of <span class="mono">0xF5E56C80</span> (&asymp;&minus;169&nbsp;MB &mdash; an unsigned wrap). The gdb evidence is in the docs. (A second, unrelated wall: the <span class="mono">qwen3_npu</span> class rejects intermediate size 512 &mdash; the 35B is a MoE class with different checks, and our first harness instantiated the wrong one.)</p>
+        <p>So the plan changed: don&rsquo;t wait for the loader &mdash; <b>decode how the runtime packs the weights onto the device</b> from the artifacts it leaves behind (instruction streams, TXN buffer descriptors, memory descriptors), and pack them ourselves.</p>
+
+        <h2>The map</h2>
+        <p>The layer kernel ABI is the same 5-BO shape as the 0.6B: <span class="mono">(opcode, instr, ninstr, bo0..bo4)</span> = act, weights, i5, i6, kv/state. The NPU2 buffer descriptors carry <i>device</i> addresses that are deterministic per allocation order &mdash; which is exactly why the 0.6B&rsquo;s ELFs run byte-exact: our BOs land where the runtime&rsquo;s would. The 35B layer-0 map:</p>
+        <table>
+          <thead><tr><th>region</th><th>device address</th><th>contents</th></tr></thead>
+          <tbody>
+            <tr><td>activations</td><td>0x40000000 (1 GB)</td><td>6 refs at 16 MB</td></tr>
+            <tr><td>kv / state</td><td>0x2000000 (32 MB)</td><td>632 refs</td></tr>
+            <tr><td>MoE weights (base)</td><td>0xe000000 (224 MB)</td><td>550 refs</td></tr>
+            <tr><td>per-expert blocks</td><td>0x1bc00000&ndash;0x1ca00000 (444&ndash;459 MB)</td><td>4 MB steps</td></tr>
+            <tr><td>linear-attn state</td><td>0xc0000000 (3 GB)</td><td>560 refs</td></tr>
+          </tbody>
+        </table>
+        <p>And from the descriptor walk (each descriptor is 8 words; the offset lives at word 8) &mdash; layer 0&rsquo;s weight BO:</p>
+        <table>
+          <thead><tr><th>tensor</th><th>offset</th><th>size</th></tr></thead>
+          <tbody>
+            <tr><td>up_exps_proj</td><td>0x0</td><td>155,189,248 (32768 &times; 4736)</td></tr>
+            <tr><td>gate_exps_proj</td><td>0x9400000 (148 MiB)</td><td>155,189,248</td></tr>
+            <tr><td>down_exps_proj</td><td>0x12800000 (296 MiB)</td><td>155,189,248</td></tr>
+            <tr><td>share_up / share_gate / share_down</td><td>0x1bc00000 / 0x1bc94000 / 0x1bd28000 (444&ndash;445 MiB)</td><td>&mdash;</td></tr>
+            <tr><td>self_attn.gate_proj</td><td>0x1c6fc000</td><td>&mdash;</td></tr>
+            <tr><td>linear_attn.qkv_proj</td><td>0x1bdbc000</td><td>2304 &times; 5120 tiles</td></tr>
+            <tr><td>moe_router / shared_expert_gate</td><td>0x3000 / 0x2000</td><td>12 KiB / 8 KiB</td></tr>
+          </tbody>
+        </table>
+        <p>Three expert tensors dominate: <b>465 MB per layer</b> before anything else fits.</p>
+
+        <h2>The puzzle: 5,120-byte tiles, 4,736-byte rows</h2>
+        <p>Here is the mismatch that cost the most. The GGUF file stores each expert tile as <b>5,120 B</b> &mdash; <span class="mono">[512 B scales][512 B zeros][4096 B packed]</span>. The runtime&rsquo;s in-memory rows are <b>4,736 B</b>. Comparing the two: the runtime <b>trims each tile to <span class="mono">tile[0:4736]</span></b>, dropping the last 384 B of the packed payload &mdash; then interleaves rows in <b>16-row blocks</b> (75,776 B):</p>
+        <p class="mono" style="margin-left:1em;">out[o] = trimmed[o/2 + 8&middot;(o%2)]</p>
+        <p>i.e. <span class="mono">[A0, B0, A1, B1, &hellip;, A7, B7]</span> where A is the first 8 rows and B the next 8 &mdash; the A/B half-interleave visible in the runtime&rsquo;s disassembly as two memcpys of 4,736 B with sources 37,888 B apart. Per expert tensor that is 32,768 rows &times; 4,736 B = 155,189,248 B = <b>exactly</b> 2,048 blocks &mdash; which is also exactly the descriptor&rsquo;s gate_exps offset delta (up at 0 &rarr; gate at 148 MiB). The block structure even matches the layer TXN weight BDs: 18,944-B reads (4 rows) at 75,776-B strides (16-row blocks).</p>
+        <p>The proof it is right: <span class="mono">tools/verify_moe_reorder.cpp</span> calls the runtime&rsquo;s <i>own</i> <span class="mono">qwen3_6_reorder_cpy</span> on real up_exps tiles and compares byte-for-byte &mdash; <b>PASS</b>, row 0 == tile 0 [0:4736], row 1 == tile 8 [0:4736], row 2 == tile 1 [0:4736].</p>
+
+        <h2>Verified, then the next wall</h2>
+        <p>The packer built on the formula is <b>100% verified</b>: layer-6 rows 0..98303 reconstruct byte-for-byte (<span class="mono">verify_moe_packer.py</span>). More structure fell out along the way:</p>
+        <ul>
+          <li><b>gate_proj&rsquo;s k-order is (a, a&minus;7) A/B pairs</b> &mdash; [232, 225, 233, 226, &hellip;] &mdash; not sequential.</li>
+          <li><b>Every tensor is dtype=8 (elsize 4736)</b> &mdash; the &ldquo;8704&rarr;9216 padded&rdquo; theory for the qkv family is wrong; those files are 8,704-B rows with a different block format ([256 B scales][8192 B int8], block-32, zero-point 0).</li>
+          <li><b>Row 0 of an expert tensor crosses the tensor boundary</b>: share_up&rsquo;s 824-B tail + up&rsquo;s first 3,912 B.</li>
+          <li><b>The MoE layer ELFs generate without <span class="mono">load_weights</span></b>, via the exported sequence builder: linear layers 24,636 words, full-attention layers 20,566 words (every 4th layer), <span class="mono">lm_head</span> 260 words.</li>
+        </ul>
+        <p>What is left, honestly: the engine&rsquo;s 35B weight-packing + forward loop (no 35B <span class="mono">generate()</span> yet &mdash; the E2E milestones are the 0.6B), and the qkv/ssm_out tensors&rsquo; true layout &mdash; layer-0&rsquo;s captured BO is all zeros after 486.03 MB, and a capture that survives the small-tensor crashes is still needed. The upstream <span class="mono">reorder_cpy</span> crash also means the runtime cannot serve as the 35B reference until ROCm ships a fix &mdash; so our byte-exact verification against its own function is currently the strongest check that exists.</p>
+
         <h2>The numbers</h2>
         <table>
           <thead><tr><th>measure</th><th>value</th></tr></thead>
           <tbody>
-            <tr><td>batch width M</td><td>32</td></tr>
-            <tr><td>decode before</td><td>244 ms/tok</td></tr>
-            <tr><td>decode after</td><td>10 ms/tok</td></tr>
-            <tr><td>speedup</td><td>24x</td></tr>
-            <tr><td>throughput</td><td>97 tok/s</td></tr>
-            <tr><td>vs FLM Kraken Point</td><td>+46%</td></tr>
+            <tr><td>model</td><td>Qwen3.6-35B-A3B-NPU2 (qwen3_6_moe_npu), 673 tensors / 40 layers / vocab 248320</td></tr>
+            <tr><td>expert tensor size</td><td>32768 rows &times; 4736 B = 155,189,248 B (2048 blocks) &times; 3 = 465 MB/layer</td></tr>
+            <tr><td>file tile vs runtime row</td><td>5120 B &rarr; 4736 B (trim [0:4736], drop 384 B packed tail)</td></tr>
+            <tr><td>reorder formula</td><td>out[o] = trimmed[o/2 + 8&middot;(o%2)], 16-row blocks (75776 B)</td></tr>
+            <tr><td>verification</td><td>byte-exact vs runtime&rsquo;s own qwen3_6_reorder_cpy; packer 100% (layer-6 rows 0..98303)</td></tr>
           </tbody>
         </table>
-        <p>The M=32 number matters: at M=1 the NPU spends most of a dispatch waiting. Batch decode spreads the fixed launch cost across 32 tokens instead of one.</p>
-        <h2>What changed</h2>
-        <p>Two changes did the work. Attention moved to an OpenMP parallel path so the batch width actually scales, and the LM head moved out of a separate round trip and into the same steady pipeline. Same hardware, less time standing still.</p>
-        <h2>The stack</h2>
-        <p>The whole engine is full <b>C++23</b> with <b>zero Python</b> in the inference path. No interpreter, no glue process, no second runtime to break. The kernel is a single binary that talks to the NPU directly.</p>
-        <h2>The session result</h2>
-        <p>This is one session's before and after, written down while it was still fresh. A session result is not a guarantee, but it is the kind of record a build log is for.</p>
+
+        <h2>Related</h2>
+        <p><a href="1bit-post-byte-identical.html">Byte-identical: 1,000 tokens of proof against AMD&rsquo;s real runtime</a> &middot; <a href="1bit-post-npu-reversal.html">I reverse-engineered AMD&rsquo;s NPU stack in 4 days</a> &middot; the full map + gdb evidence are in <span class="mono">npu-infer/docs/35b-forward-integration.md</span> and <span class="mono">npu-infer/docs/35b-moe-load-crash.md</span> on the feat branch.</p>
       </div>
-    
-    <section class="related">
-      <h2>Related</h2>
-      <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
-      <a href="https://1bit.monster/1bit-post-npu-reversal.html">I reverse-engineered AMD's NPU stack in 4 days</a>
-      <a href="https://1bit.monster/1bit-post-sprint.html">244 to 3.4 ms/tok: the NPU optimization sprint</a>
-    </section>
-  </article>
+    </article>
   </main>
 
   <footer class="pagefoot" data-od-id="footer">

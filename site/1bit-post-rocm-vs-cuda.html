@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER</title>
-  <meta name="description" content="ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine — 1-bit matmuls, NPU offload, and why we bet on AMD's stack." />
+  <meta name="description" content="Milestone: 1-bit matmuls on AMD silicon measured against CUDA from real kernel work — the comparison behind why every model runs on AMD's stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/engine_comparison_report.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER" />
-  <meta property="og:description" content="ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine — 1-bit matmuls, NPU offload, and why we bet on AMD's stack." />
+  <meta property="og:description" content="Milestone: 1-bit matmuls on AMD silicon measured against CUDA from real kernel work — the comparison behind why every model runs on AMD's stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/engine_comparison_report.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-rocm-vs-cuda.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER" />
-  <meta name="twitter:description" content="ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine — 1-bit matmuls, NPU offload, and why we bet on AMD's stack." />
+  <meta name="twitter:description" content="Milestone: 1-bit matmuls on AMD silicon measured against CUDA from real kernel work — the comparison behind why every model runs on AMD's stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/engine_comparison_report.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-rocm-vs-cuda.html" />
 <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER", "description": "ROCm vs CUDA for local LLM inference: kernel-level comparison from the 1bit.MONSTER engine \u2014 1-bit matmuls, NPU offload, and why we bet on AMD's stack.", "url": "https://1bit.monster/1bit-post-rocm-vs-cuda.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-rocm-vs-cuda.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER", "description": "Milestone: 1-bit matmuls on AMD silicon measured against CUDA from real kernel work — the comparison behind why every model runs on AMD's stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/engine_comparison_report.md", "url": "https://1bit.monster/1bit-post-rocm-vs-cuda.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-rocm-vs-cuda.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -354,6 +354,8 @@
       </div>
       <h1>ROCm vs CUDA, from the 1-bit trenches</h1>
       <p class="lead">We ship on ROCm, not CUDA, on purpose. Real kernels, real benchmarks, and the 1-bit reason AMD's stack wins for our use case.</p>
+      
+      <div class="callout"><p><b>Milestone:</b> 1-bit matmuls on AMD silicon measured against CUDA from real kernel work — the comparison behind why every model runs on AMD's stack. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/engine_comparison_report.md">Full technical write-up &rarr; engine comparison report</a></p></div>
       <div class="prose">
         <h2>The setup</h2>
         <p>The engine's backends run on the Ryzen AI NPU (Strix Halo, Kraken Point) and ROCm GPUs — with Vulkan and CPU as the fallback layer. We've shipped to real silicon on both AMD stacks, so the comparison below is from our kernel logs, not a vendor deck.</p>
