@@ -1,8 +1,16 @@
 # Hybrid prefill/decode policy — HIP prefill → HRX decode (issue #1942)
 
-**Status:** design (2026-09-01)
+**Status:** design + D2 implementation in progress (2026-09-03)
 **Owner:** bong-water-water-bong
 **Context:** docs/research/hrx-engine-goal.md §Strategic position item 4.
+**Live state:** docs/research/hip-prefill-lane-build-status.md (#2054) + issue #1942 thread (09-02/09-03 rounds).
+
+## 0. Status delta vs the 09-01 body below
+
+- **D2 build blocker RESOLVED (09-02)**: the vendored llama.cpp builds with GGML_HIP on TheRock — CMake rejects `hipcc` as CMAKE_HIP_COMPILER, but amdclang++ (Clang 23, /home/bcloud/therock100/bin/amdclang++) configures cleanly (HIP + hipBLAS found, gfx1151). Recipe + artifacts in docs/research/hip-prefill-lane-build-status.md (#2054). §2's "no HIP backend" is stale — see the build-status doc.
+- **State-format gate PASSED (09-02)**: vendored llama.cpp and the HRX bundle's libllama round-trip the full-state blob byte-identically (round-25j sessions, feat/hrx, FINDINGS.md). D2's binary question is answered — same-family state format.
+- **Lane runtime NOT yet trusted (09-02/09-03)**: the 09-02 direct-`llama_decode` harness showed an input-dependent, nondeterministic SIGSEGV (2-token prompts, CPU and HIP alike; gdb-serialized passes; NT=1/4 sometimes pass). 2026-09-03 re-probe (agent round): ~300 llama-bench pp2/tg2 evals clean on BOTH the clang build-hip binary and a fresh gcc build; no upstream ggml threadpool fix in the 08-16→09-03 window. Trigger is suspected in the harness's context config (n_ubatch/n_ctx/KV cache type/flash-attn) or the interposer-capture environment, not the stock llama_decode path. Recommended gate before trusting the lane: N×200 pp2/tg2 evals clean (see #1942).
+- **Open items**: reproduce with the exact round-13 harness; decide the HIP-lane vs HRX2-fork-prefill question (the ws12 round-27 GQA-batched prefill work is the parallel path to the same goal — if HRX2 closes its pp32 gap, the hybrid may not need the HIP lane at all).
 
 ## 1. Thesis and measured numbers
 
@@ -35,7 +43,10 @@ the entire project.**
 | KV cache | engine's own per-layer tensors | llama.cpp `kv_self` (ggml tensors, rope applied at compute) |
 | state export API | none | `llama_state_get_data/set_data` (llama.cpp) |
 
-The engine's vendored llama.cpp has **no HIP backend** (0 GGML_HIP refs), so
+The engine's vendored llama.cpp previously had no HIP backend; the D2 lane build
+now configures GGML_HIP=ON with the TheRock amdclang++ toolchain (§0, build
+status doc #2054) — but the lane's runtime is not yet trusted (prefill crash
+under investigation, §0), so
 the HIP prefill lane cannot today produce a llama.cpp-compatible state blob.
 The engine's own 1BP KV layout is unrelated to llama.cpp's `kv_self`. There is
 no shared KV format between the lanes.
