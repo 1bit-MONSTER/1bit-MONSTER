@@ -6,7 +6,7 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Fri, 04 Sep 2026 19:47:42 +0000</lastBuildDate>
+    <lastBuildDate>Fri, 04 Sep 2026 20:29:16 +0000</lastBuildDate>
     <item>
       <title>Lemonade v11.9.0: origin hardening, and upstream took our HRX backend</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1190.html</link>
@@ -26,7 +26,7 @@
       <link>https://1bit.monster/1bit-post-lemonade-v1181.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1181.html</guid>
       <pubDate>Fri, 04 Sep 2026 00:00:00 +0000</pubDate>
-      <description>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 560 architecture tokens, 1,818 HF arch strings, 317,310/317,310 checkpoints mapped.</description>
+      <description>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 566 architecture tokens, 1,843 HF arch strings, 317,310/317,310 checkpoints mapped.</description>
     </item>
     <item>
       <title>HRX: we put AMD&#x27;s experimental IREE runtime inside our engine</title>
@@ -47,7 +47,7 @@
       <link>https://1bit.monster/1bit-post-1775-models.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-1775-models.html</guid>
       <pubDate>Fri, 04 Sep 2026 00:00:00 +0000</pubDate>
-      <description>One C++ binary, 560 architecture tokens, 1,818 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.</description>
+      <description>One C++ binary, 566 architecture tokens, 1,843 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. Every model you can download.</description>
     </item>
     <item>
       <title>Local RAG with our own embeddings</title>
