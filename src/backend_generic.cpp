@@ -636,6 +636,7 @@ struct GenericBackend : Backend {
             cfg.arch == RCPP_ARCH_BREEZE_TTS || cfg.arch == RCPP_ARCH_HYV4 ||
             cfg.arch == RCPP_ARCH_BANANAMIND21CODER || cfg.arch == RCPP_ARCH_BANANAMIND21LITE ||
             cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ||
+            cfg.arch == RCPP_ARCH_TRHASH || cfg.arch == RCPP_ARCH_LLAVAONEVISION ||
             cfg.arch == RCPP_ARCH_SPARK2_5 || cfg.arch == RCPP_ARCH_TINYTRANSFORMER ||
             cfg.arch == RCPP_ARCH_DECODERONLYTRANSFORMER || cfg.arch == RCPP_ARCH_IKNN ||
             cfg.arch == RCPP_ARCH_K2HORIZON) {
@@ -650,6 +651,8 @@ struct GenericBackend : Backend {
                     cfg.arch == RCPP_ARCH_BANANAMIND21CODER ? " BANANAMIND21CODER — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
                     cfg.arch == RCPP_ARCH_BANANAMIND21LITE ? " BANANAMIND21LITE — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
                     cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ? " CONCEPT_DOMINANT_GPTBERT — pre-training-class registry token (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_TRHASH ? " TRHASH — tr_hash_moe hash-routed shared-expert MoE registry token, engine support XL (census 2026-09-02)" :
+                    cfg.arch == RCPP_ARCH_LLAVAONEVISION ? " LLAVAONEVISION — LlavaOnevision (SigLIP+Qwen2) VLM registry token, engine support XL (census 2026-09-02)" :
                     cfg.arch == RCPP_ARCH_SPARK2_5 ? " SPARK2_5 — Spark-X2.5 hybrid sliding/full-attention GQA registry token, engine support XL (issue #2061)" :
                     cfg.arch == RCPP_ARCH_TINYTRANSFORMER ? " TINYTRANSFORMER — minimal custom-code transformer registry token, engine support XL (issue #2061)" :
                     cfg.arch == RCPP_ARCH_DECODERONLYTRANSFORMER ? " DECODERONLYTRANSFORMER — from-scratch decoder registry token, engine support XL (census 2026-09-03)" :

@@ -595,6 +595,8 @@ typedef enum {
     RCPP_ARCH_BANANAMIND21CODER = 995,  // bananamind21_coder — BananaMind21CoderForCausalLM (BananaMind-2.1 code LM; registry token, engine support XL, PICO-family candidate)
     RCPP_ARCH_BANANAMIND21LITE = 996,   // bananamind21_lite_25m — BananaMind21Lite25MForCausalLM (registry token, engine support XL, PICO-family candidate)
     RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT = 997, // concept_dominant_gptbert — ConceptDominantGPTBertForPreTraining (GPT/BERT-hybrid pre-training class; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_TRHASH = 998,          // tr_hash_moe — TR-HASH-MoE (GQA + RMSNorm/QK-norm + standard RoPE + hash-routed shared-expert MoE; mlp_type tr_hash_engine, routing_strategy token_id_multi_hash; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_LLAVAONEVISION = 999,  // llava_onevision — LlavaOnevisionForConditionalGeneration (SigLIP vision tower + GELU projector + Qwen2 text decoder; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_SPARK2_5 = 1000,        // spark2_5 — Spark-X2.5 (XHToken) hybrid sliding/full-attention GQA: 3x sliding-window-512 per full-attn layer, per-layer-type partial RoPE, headwise attn output gate (sigmoid), gelu, head_dim 256, 1M native ctx (registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_TINYTRANSFORMER = 1001, // tinytransformer — TinyTransformerForCausalLM minimal custom-code transformer (Mayuresh231/tiny-transformer-29m; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_IKNN = 1002,            // iknn-rl1-a1 — IKNN-Rl1-A1ForCausalLM (deeprcurs/IKNN-Rl1-A1; MLX-era file_* config, RoPE 1e4 + RMSNorm, gpt2-shaped; registry token, engine support XL, generic loader refuses)
@@ -2531,6 +2533,30 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "k2horizon") == 0) return RCPP_ARCH_K2HORIZON;      // census stripped arch name (registry token)
     if (strcmp(s, "k2_horizon_mova") == 0) return RCPP_ARCH_K2HORIZON; // HF model_type
     if (strcmp(s, "k2horizonforcausallm") == 0) return RCPP_ARCH_K2HORIZON;  // raw HF architecture string (regression guard)
+    // ── 2026-09-02 census watcher (PR #2046 CI gate) ──
+    // Both classes are GENUINELY NEW architectures, verified against live HF
+    // configs, so they get a real registry token (own identity) rather than an
+    // alias into a sibling family. tr_hash_moe = AETHORIA-AI/TR-HASH-MoE-*
+    // (TRHashForCausalLM; hash-routed shared-expert MoE, mlp_type
+    // tr_hash_engine, routing_strategy token_id_multi_hash); llava_onevision =
+    // aacudad/AnomalyThink-LLaVA-OneVision-7B-SFT-GRPO
+    // (LlavaOnevisionForConditionalGeneration; SigLIP vision tower + GELU
+    // projector + Qwen2 text decoder). The generic loader refuses these cleanly
+    // ("engine support XL") so nothing mis-executes; the token makes the census
+    // count them covered while the real implementations land separately.
+    if (strcmp(s, "trhash") == 0) return RCPP_ARCH_TRHASH;             // TRHashForCausalLM — census stripped arch name (registry token)
+    if (strcmp(s, "tr_hash_moe") == 0) return RCPP_ARCH_TRHASH;        // HF model_type (tr_hash_moe)
+    if (strcmp(s, "trhashforcausallm") == 0) return RCPP_ARCH_TRHASH;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "llavaonevision") == 0) return RCPP_ARCH_LLAVAONEVISION;  // LlavaOnevisionForConditionalGeneration — census stripped arch name (registry token)
+    if (strcmp(s, "llava_onevision") == 0) return RCPP_ARCH_LLAVAONEVISION; // HF model_type (llava_onevision)
+    if (strcmp(s, "llavaonevisionforconditionalgeneration") == 0) return RCPP_ARCH_LLAVAONEVISION;  // raw HF architecture string (regression guard)
+    // lladamodellm = LLaDAModelLM (albertge/llada-8b-dllm-*; the alias-autopr
+    // guessed LLADA2 from llada2moemodellm, but the live config declares
+    // model_type llada, which is already mapped to the config-verified llama
+    // profile) — so it's a genuine family-variant alias to LLAMA, not a registry
+    // token (matches model_type llada).
+    if (strcmp(s, "lladamodellm") == 0) return RCPP_ARCH_LLAMA;        // LLaDAModelLM — census stripped arch name (model_type llada -> llama profile)
+    if (strcmp(s, "llada_model_lm") == 0) return RCPP_ARCH_LLAMA;      // HF model_type variant
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
