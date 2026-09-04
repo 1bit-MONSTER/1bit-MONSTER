@@ -198,14 +198,15 @@ def _build_patterns(tokens, arch, covered, with_arch):
 def _pct(covered, with_arch):
     if with_arch <= 0:
         return "0%"
+    if covered >= with_arch:
+        return "100%"
     p = 100.0 * covered / with_arch
-    # Round to 2dp; whole numbers drop the decimals (100.0 -> "100%").
-    # Near-100 fractions (e.g. 99.97) must NOT collapse to "100%" — the old
-    # ":.1f" path rounded 99.97 -> 100.0 and emitted a broken "100%%".
-    r = round(p, 2)
-    if r == int(r):
-        return f"{int(r)}%"
-    return f"{r:g}%"
+    # 2dp normally; 4dp in the near-100 band so a single missing checkpoint
+    # (e.g. 321,590/321,591 = 99.9997%) never rounds up to an overclaimed
+    # "100%". 4dp is safe: integer checkpoints can't sit within 5e-7 of 100%
+    # while still being below it.
+    digits = 4 if p >= 99.995 else 2
+    return f"{p:.{digits}f}".rstrip("0").rstrip(".") + "%"
 
 
 def sync_site_numbers(apply=True):

@@ -17,7 +17,10 @@ name: Census sweep
 #
 # --reset-delta zeroes the watcher delta after the sweep: the snapshot is now
 # fresh, so the incremental baseline restarts from 0 (otherwise seo_sync would
-# double-count new models against the refreshed snapshot).
+# double-count new models against the refreshed snapshot). The zeroed delta and
+# the fresh snapshot land in the SAME commit/PR, so they become live on main
+# atomically on merge — until then main keeps its previous snapshot + delta,
+# so a delayed merge never publishes an undercounted figure.
 
 on:
   schedule:
