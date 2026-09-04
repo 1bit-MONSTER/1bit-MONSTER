@@ -33,6 +33,7 @@ on:
 permissions:
   contents: read
   issues: write
+  pull-requests: write
 
 concurrency:
   group: census-watch
@@ -58,7 +59,34 @@ jobs:
         id: watch
         run: |
           bash scripts/census-watch.sh --limit 120 2>&1 | tee /tmp/census-watch.log
-          exit ${PIPESTATUS[0]}
+          RC=${PIPESTATUS[0]}
+          # #2084: do NOT let this gate deadlock same-day census PRs. The
+          # watcher compares against the LIVE HF snapshot, so a PR that maps
+          # classes A/B would fail for classes C/D mapped only by a sibling PR.
+          # On PRs the check is ADVISORY (uncovered classes -> warning + comment,
+          # exit 0); the blocking gate is the nightly schedule/workflow_dispatch
+          # run on main. Runtime failures (RC > 1) still fail the check.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            if [ "$RC" = "1" ]; then
+              echo "::warning::census watcher found uncovered classes (advisory on PR — the nightly run on main is the blocking gate)"
+              grep -E "UNCOVERED|UNVERIFIABLE" /tmp/census-watch.log > /tmp/census-pr.txt || true
+              if [ -s /tmp/census-pr.txt ] && command -v gh >/dev/null 2>&1; then
+                {
+                  echo "## census: advisory (this PR's branch)"
+                  echo ""
+                  echo "Uncovered classes vs the live HF snapshot. Advisory on PRs (#2084) — same-day sibling PRs map different classes. The blocking gate is the nightly schedule run."
+                  echo ""
+                  echo '```'
+                  cat /tmp/census-pr.txt
+                  echo '```'
+                } > /tmp/census-pr.md
+                gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/census-pr.md || true
+              fi
+              exit 0
+            fi
+            exit "$RC"
+          fi
+          exit "$RC"
 
       # Only alert on scheduled/manual runs — on PRs the red check itself is
       # the signal. Guard on the watch step specifically so a checkout/setup
