@@ -41,6 +41,11 @@ void gemm_generate_sequence_i8(
 struct I8Ctx {
     int MD, KD, ND, NL;
     int bC_nd = 0;   // bo2 (C2) size override: MD*bC_nd*4 bytes when > 0.
+    bool bf16_pair = false;  // #1934: kernel B dequant mode. true = the
+                             // I4_BF16_PAIR bf16-(a,b) q4*a+b dequant; false
+                             // = v66 ratioQ22. MUST match the xclbin the ctx
+                             // was built with so packB_into_fused_i4 packs
+                             // the same B'' layout the kernel dequants.
                      // The int4 P1 launch writes the FULL C1 (32 chunks x
                      // 4 KB = 128 KB) to bo2 (issue #1769 CPU-silu fallback),
                      // while ND is the logical D output width (2048) — set
@@ -782,7 +787,7 @@ struct I8Ctx {
     void packB_into_fused_i4(xrt::bo& bo, const RawQ4Tensor& raw, int expert,
                              int H, int n_ff, std::vector<float>& col_out,
                              std::vector<int8_t>& row_out) {
-        auto pack = pack_gu_fused_i4(raw, expert, H, n_ff);
+        auto pack = pack_gu_fused_i4(raw, expert, H, n_ff, bf16_pair);
         uint8_t* Bm = (uint8_t*)bo.map();
         write_gu_i4_bo(Bm, pack);
         // gs-header region: the int4 path's SiLU uses the per-token folded
