@@ -67,10 +67,33 @@ single-launch is stable.
   `[fused-t] p1wait=3.100 p2=1.521 total=4.651 ms`, same tokens/corr.
 - The timing instrumentation (`[fused-t]` p1wait/h2sync/p2 breakdown) stays in
   `zaya_decode.cpp`.
-- **Still to run before shipping widely**: an extended multi-hundred-token
-  soak (the #1775 nondeterminism was intermittent, so that is the real gate,
-  not the 10-run check).
+- **Soak test: PASSED** (2026-09-04, see §5) — the extended multi-hundred-token
+  determinism gate is satisfied.
 - Remaining after that: the 3.1 ms/layer is still ~12 MB/layer weight-DMA
   bound; the next lever is resident-on-device weights (runlist + NPU-resident
   BOs, the issue's original "resident weights" plan) rather than more host-side
   micro-opt.
+
+## 5. Extended soak test (the #1775 determinism gate) — PASSED
+
+Ran the shipped `npu_engine_zr1` (single-launch default) on
+`zaya1-8b-fresh.q4nx`, 300 tokens/run, on strixhalo with the Windows VM killed
+(clean bandwidth):
+
+| prompt | runs | N | result |
+|---|---|---|---|
+| `<bos>` | 3 | 300 | **byte-identical** (md5 `db2e8a70…`) |
+| `236778` (#1775 repro) | 2 | 300 | **byte-identical** (md5 `2897fa17…`) |
+
+5/5 runs deterministic (1500 tokens, ~60k MoE layer evals). `[MoE L1 single dbg]
+corr=0.998469` every run; `[NPU dbg] logits min=-29.1048 max=19.3443 rms=5.4135`
+identical across runs.
+
+**Perf (clean box):** 104–107 ms/tok (**9.3–9.6 tok/s**) — ~1.7× faster than
+§3's 175–186 ms/tok, which was measured under co-tenant contention (the Windows
+VM + other jobs). The single-launch decode is deterministic and ~9.5 tok/s when
+the box is quiet.
+
+**Verdict:** the single-launch fused GU→SiLU→D is deterministic over extended
+generations. The #1775 nondeterminism (CPU-attention omp + BO reuse) is
+definitively gone with #2053 + per-layer `h2_bo` in main.
