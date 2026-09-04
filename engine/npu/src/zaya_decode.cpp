@@ -273,6 +273,16 @@ int zaya_decode_main(int argc, char** argv) {
     // fp32 loads are gated on them, issue #1776 memory fix).
     const bool FUSED = getenv("NPU_FUSED") && atoi(getenv("NPU_FUSED")) == 1;
     const bool FUSED_I4 = FUSED && getenv("NPU_FUSED_I4") && atoi(getenv("NPU_FUSED_I4")) == 1;
+    // Fused GU→SiLU→D runs SINGLE-LAUNCH by default (final_i8_MOE_FUSED_zaya
+    // .xclbin — the original #1759 design: one kernel, h2 via a 2 KB DDR
+    // round-trip). Verified deterministic + 1.74x faster than the split
+    // (2026-09-04, see FUSED-MOE-SINGLE-LAUNCH-FINDING.md): the #1775
+    // nondeterminism was CPU-attention omp + BO-reuse (fixed by #2053 +
+    // per-layer h2_bo), not the in-kernel h2 handoff.
+    //   NPU_FUSED_SPLIT=1  → restore the old two-launch split (fallback).
+    //   NPU_FUSED_I4=1     → int4 GU (always split; no int4 single-launch).
+    const bool FUSED_SINGLE = FUSED && !FUSED_I4 &&
+        !(getenv("NPU_FUSED_SPLIT") && atoi(getenv("NPU_FUSED_SPLIT")) == 1);
     std::vector<Layer> L(NC);
     char key[256];
     for (int l = 0; l < NC; l++) {
@@ -377,12 +387,15 @@ int zaya_decode_main(int argc, char** argv) {
         // width (2048) — enlarge bC via bC_nd (npu_engine_i8ctx_inc.h).
         fused_ctx.bC_nd = 2 * m.n_ff;
         char fx[512], fi[512];
-        // Split launch (issue #1775): p1 = GU->SiLU->h2 writeback, p2 = D
-        // reading h2 from bo4. A host-side h2_bo sync between the launches
-        // provides the cross-shim write->read visibility barrier the
-        // single-launch design lacked (run-to-run nondeterminism at MoE
-        // layers 3+; reproduced on strixhalo).
-        if (FUSED_I4) {   // issue #1769 ws09: int4 GU (GUSILU) xclbin
+        // Single launch (default): GU→SiLU→D in ONE kernel (h2 via a 2 KB
+        // DDR round-trip inside the kernel). NPU_FUSED_SPLIT=1 selects the
+        // old two-launch split (p1 = GU→SiLU→h2 writeback, p2 = D reading
+        // h2 from bo4, with a host-side h2_bo sync between them) — kept as
+        // the fallback for the #1775 nondeterminism class.
+        if (FUSED_SINGLE) {   // single-launch fused xclbin (original #1759)
+            snprintf(fx, sizeof fx, "%s/final_i8_MOE_FUSED_zaya.xclbin", xd);
+            snprintf(fi, sizeof fi, "%s/insts_i8_MOE_FUSED_zaya.txt", xd);
+        } else if (FUSED_I4) {   // issue #1769 ws09: int4 GU (GUSILU) xclbin
             snprintf(fx, sizeof fx, "%s/final_i8_MOE_GUSILU_i4_zaya.xclbin", xd);
             snprintf(fi, sizeof fi, "%s/insts_i8_MOE_GUSILU_i4_zaya.txt", xd);
         } else {
@@ -392,12 +405,14 @@ int zaya_decode_main(int argc, char** argv) {
         if (getenv("NPU_FUSED_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_XCLBIN"));
         if (getenv("NPU_FUSED_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_INSTS"));
         if (!fused_ctx.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p1 ctx init failed\n"); return 1; }
-        fused_ctx_p2.MD = 8; fused_ctx_p2.KD = d.H; fused_ctx_p2.ND = d.H;
-        snprintf(fx, sizeof fx, "%s/final_i8_MOE_D_zaya_m8h2.xclbin", xd);
-        snprintf(fi, sizeof fi, "%s/insts_i8_MOE_D_zaya_m8h2.txt", xd);
-        if (getenv("NPU_FUSED_D_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_D_XCLBIN"));
-        if (getenv("NPU_FUSED_D_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_D_INSTS"));
-        if (!fused_ctx_p2.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p2 ctx init failed\n"); return 1; }
+        if (!FUSED_SINGLE) {
+            fused_ctx_p2.MD = 8; fused_ctx_p2.KD = d.H; fused_ctx_p2.ND = d.H;
+            snprintf(fx, sizeof fx, "%s/final_i8_MOE_D_zaya_m8h2.xclbin", xd);
+            snprintf(fi, sizeof fi, "%s/insts_i8_MOE_D_zaya_m8h2.txt", xd);
+            if (getenv("NPU_FUSED_D_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_D_XCLBIN"));
+            if (getenv("NPU_FUSED_D_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_D_INSTS"));
+            if (!fused_ctx_p2.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p2 ctx init failed\n"); return 1; }
+        }
         for (int l = 1; l < NC; l += 2)
             h2_bo[l] = fused_ctx.make_scratch_bo(dev, (size_t)fused_ctx.MD * d.H);
         fgu_bo.resize(NC); fd_bo.resize(NC); fgu_cs.resize(NC); fd_cs.resize(NC);
@@ -619,6 +634,7 @@ int zaya_decode_main(int argc, char** argv) {
                 const int qd = d.qd, kd = d.kd, hv2 = kd/2, H = d.H;
                 std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
                 if (NPU_PROJ && proj_ctx.isReady()) {
+                    auto tp_q0 = std::chrono::steady_clock::now();
                     float ag = dynamic_ascale(residual.data(), d.H);
                     auto rq = proj_ctx.launch_async_with_bo(*proj_ctx.layerB[2 * l],
                                                             residual.data(), 1, d.H, ag);
@@ -626,6 +642,10 @@ int zaya_decode_main(int argc, char** argv) {
                     // dequant's group_scales size check matches
                     std::vector<float> qkv(qd + 2 * kd);
                     proj_ctx.finish_async(rq, qkv.data(), 1, qd + 2 * kd, ag, 0.0f, 2 * l);
+                    auto tp_q1 = std::chrono::steady_clock::now();
+                    if (getenv("NPU_PROJ_TIMING") && l == 0 && pos == 1)
+                        fprintf(stderr, "[proj-t qkv] l=%d %.3f ms\n", l,
+                                std::chrono::duration<double, std::milli>(tp_q1 - tp_q0).count());
                     memcpy(q.data(), qkv.data(), (size_t)qd * 4);
                     memcpy(k.data(), qkv.data() + qd, (size_t)kd * 4);
                     memcpy(vc.data(), qkv.data() + qd + kd, (size_t)hv2 * 4);
@@ -679,6 +699,7 @@ int zaya_decode_main(int argc, char** argv) {
                     }
                 }
                 std::vector<float> qo(qd), ko(kd), vo(kd);
+                auto tp_c0 = std::chrono::steady_clock::now();
                 zaya_cca::cca_prep(d, w.cw, w.cs, q.data(), k.data(), vc.data(), vd.data(),
                                    qo.data(), ko.data(), vo.data(), pos);
                 size_t old = lk.size() / (size_t)(d.nkv * d.hd);
@@ -746,12 +767,21 @@ int zaya_decode_main(int argc, char** argv) {
                 } else {
                     cpu_attn_scan(ao);
                 }
+                auto tp_c1 = std::chrono::steady_clock::now();
+                if (getenv("NPU_ATTNCPU_TIMING") && l == 0 && pos == 1)
+                    fprintf(stderr, "[attn-cpu-t] l=%d cca_prep+scan %.3f ms\n", l,
+                            std::chrono::duration<double, std::milli>(tp_c1 - tp_c0).count());
                 // o_proj: NPU GEMM (NPU_PROJ=1, resident wo^T, K=qd padded) or CPU.
                 if (NPU_PROJ && proj_ctx.isReady()) {
+                    auto tp_o0 = std::chrono::steady_clock::now();
                     float ag2 = dynamic_ascale(ao.data(), qd);
                     auto ro = proj_ctx.launch_async_with_bo(*proj_ctx.layerB[2 * l + 1],
                                                             ao.data(), 1, qd, ag2);
                     proj_ctx.finish_async(ro, h.data(), 1, d.H, ag2, 0.0f, 2 * l + 1);
+                    auto tp_o1 = std::chrono::steady_clock::now();
+                    if (getenv("NPU_PROJ_TIMING") && l == 0 && pos == 1)
+                        fprintf(stderr, "[proj-t o] l=%d %.3f ms\n", l,
+                                std::chrono::duration<double, std::milli>(tp_o1 - tp_o0).count());
                     if (PROJ_DIAG && l == 0 && pos == 0) {
                         std::vector<float> ch(d.H);
                         for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; ch[i]=a; }
@@ -766,11 +796,17 @@ int zaya_decode_main(int argc, char** argv) {
             } else {
                 // MoE FFN (NPU): router on CPU, GEMMs on NPU with resident experts.
                 float wt;
+                auto tp_r0 = std::chrono::steady_clock::now();
                 int e = zaya_moe::router(m, w.rw, residual.data(), prev_router, &wt);
+                auto tp_r1 = std::chrono::steady_clock::now();
+                if (getenv("NPU_ROUTER_TIMING") && l == 3 && pos == 1)
+                    fprintf(stderr, "[router-t] l=%d %.3f ms\n", l,
+                            std::chrono::duration<double, std::milli>(tp_r1 - tp_r0).count());
                 if (FUSED) {
                     // ── fused GU→SiLU→D: one launch ──
                     fused_ctx.group_scales[l] = fd_cs[l][e];
-                    fused_ctx_p2.group_scales[l] = fd_cs[l][e];
+                    if (!FUSED_SINGLE)
+                        fused_ctx_p2.group_scales[l] = fd_cs[l][e];
                     if (getenv("NPU_C1_TEST") && l == 1 && pos == 0) {
                         for (int i = 0; i < d.H; i++) residual[i] = 1.0f;  // A = all-127
                     }
@@ -780,25 +816,52 @@ int zaya_decode_main(int argc, char** argv) {
                         fused_ctx.Am, fgu_row[l][e].data(),
                         fgu_cs[l][e].data(), d.H, m.n_ff, ag);
                     auto tb0 = std::chrono::steady_clock::now();
+                    std::chrono::steady_clock::time_point tb2, tp1, tpsync, tb3;
+                    xrt::run frun, frun2;
                     if (FUSED_I4)
                         fused_ctx.update_fused_header_i4(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     else
                         fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
+                    if (FUSED_SINGLE) {
+                        // single-launch fused (original #1759): GU→SiLU→D in
+                        // ONE kernel, h2 via the in-kernel 2 KB DDR round-trip.
+                        auto run = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                         residual.data(), 1, d.H, ag);
+                        fused_ctx.dequant_fused(run, moe_out.data(), 1, d.H, qn_s, l);
+                        if (l == 1 && pos == 0) {
+                            std::vector<float> cpu_out(d.H);
+                            zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
+                            double num=0, d1=0, d2=0;
+                            for (int i = 0; i < d.H; i++) {
+                                num += (double)cpu_out[i]*moe_out[i]; d1 += (double)cpu_out[i]*cpu_out[i]; d2 += (double)moe_out[i]*moe_out[i];
+                            }
+                            fprintf(stderr, "[MoE L1 single dbg] corr=%.6f (cpu rms=%.4f npu rms=%.4f)\n",
+                                    num/std::sqrt(d1*d2), std::sqrt(d1/d.H), std::sqrt(d2/d.H));
+                        }
+                        auto tb3s = std::chrono::steady_clock::now();
+                        if (getenv("NPU_TIMING") && pos == 0 && l == 3)
+                            fprintf(stderr, "[fused-single-t] l=%d hdr=%.3f total=%.3f ms\n", l,
+                                    std::chrono::duration<double, std::milli>(tb1 - tb0).count(),
+                                    std::chrono::duration<double, std::milli>(tb3s - tb0).count());
+                        goto fused_single_done;
+                    }
                     // P1: GU GEMM → C1 writeback to bo2 (the CPU-silu
                     // fallback, issue #1769/#1836: the on-core silu is
                     // mis-compiled by the aie2p backend, so the P1 kernel
                     // only writes the C1 — 32 chunks x 4 KB — and the HOST
                     // computes the silu from the verified bit-exact C1).
-                    auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
-                                                       residual.data(), 1, d.H, ag);
-                    auto tb2 = std::chrono::steady_clock::now();
+                    frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                   residual.data(), 1, d.H, ag);
+                    tb2 = std::chrono::steady_clock::now();
                     frun.wait();
+                    tp1 = std::chrono::steady_clock::now();
                     // Visibility barrier (issue #1775 fix): the h2 S2MM
                     // writeback (shim[c] -> DDR) must be globally visible
                     // before the P2 D-phase MM2S read (shim[0]). The host
                     // sync forces the write path to drain.
                     h2_bo[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                    tpsync = std::chrono::steady_clock::now();
                     // DIAG (v63): kernel C1 (via c1 arg at gos) vs host C1h
                     if (getenv("NPU_DIAG_H2") && l == 1 && pos == 0) {
                         const int8_t* h2m = (const int8_t*)h2_bo[l]->map();
@@ -1010,15 +1073,18 @@ int zaya_decode_main(int argc, char** argv) {
                                 d.H, h2host[0], h2host[1], h2host[2], h2host[3],
                                 h2host[4], h2host[5], h2host[6], h2host[7]);
                     }
-                    auto frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
-                                                           residual.data(), 1, d.H, ag);
+                    frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                       residual.data(), 1, d.H, ag);
                     fused_ctx_p2.dequant_fused(frun2, moe_out.data(), 1, d.H, qn_s, l);
-                    auto tb3 = std::chrono::steady_clock::now();
+                    tb3 = std::chrono::steady_clock::now();
                     if (getenv("NPU_TIMING") && pos == 0 && l == 3)
-                        fprintf(stderr, "[fused-t] l=%d hdr=%.3f launch=%.3f wait+deq=%.3f ms\n", l,
+                        fprintf(stderr, "[fused-t] l=%d hdr=%.3f launch=%.3f p1wait=%.3f h2sync=%.3f p2=%.3f total=%.3f ms\n", l,
                                 std::chrono::duration<double, std::milli>(tb1 - tb0).count(),
                                 std::chrono::duration<double, std::milli>(tb2 - tb1).count(),
-                                std::chrono::duration<double, std::milli>(tb3 - tb2).count());
+                                std::chrono::duration<double, std::milli>(tp1 - tb2).count(),
+                                std::chrono::duration<double, std::milli>(tpsync - tp1).count(),
+                                std::chrono::duration<double, std::milli>(tb3 - tpsync).count(),
+                                std::chrono::duration<double, std::milli>(tb3 - tb0).count());
                     if (l == 1 && pos == 0) {
                         std::vector<float> cpu_out(d.H);
                         zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
@@ -1348,6 +1414,8 @@ int zaya_decode_main(int argc, char** argv) {
                         for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", moe_out[i]);
                         fprintf(stderr, "\n");
                     }
+fused_single_done:
+                    ;
                 } else {
                     gu_ctx.group_scales[l] = gu_cs[l][e];
                     d_ctx.group_scales[l] = d_cs[l][e];
