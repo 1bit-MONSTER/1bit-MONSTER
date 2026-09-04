@@ -36,6 +36,14 @@ UNKNOWN = int(_re.search(r"RCPP_ARCH_UNKNOWN\s*=\s*(\d+)", _HDR).group(1))
 # string. The plan declared encoder-decoders OUT of scope; the engine has no
 # cross-attention or TTS path. Excluded from the with_arch denominator.
 NON_TEXT_GEN = {
+    "addition",  # 2026-09 sweep: out-of-scope,
+    "charngram",  # 2026-09 sweep: out-of-scope,
+    "dalton",  # 2026-09 sweep: out-of-scope,
+    "multimodalitycausallm",  # 2026-09 sweep: out-of-scope,
+    "pebble10mlm",  # 2026-09 sweep: out-of-scope,
+    "retriever500m",  # 2026-09 sweep: out-of-scope,
+    "testgeniy",  # 2026-09 sweep: out-of-scope,
+    "tliveomni",  # 2026-09 sweep: out-of-scope
     "parlertts",      # TTS (Parler-TTS)
     "t5", "mt5", "umt5",              # encoder-decoder
     "bart", "mbart", "marian", "longformerbart",  # encoder-decoder
