@@ -125,7 +125,7 @@
     @media (prefers-reduced-motion: reduce) { .topnav .logo .relay { animation: none; } .topnav .logo .r1 { fill: var(--fg); } }
 
     .topnav nav { display: flex; gap: var(--gap-lg); }
-    .topnav nav a { font-size: 14px; color: var(--muted-strong); }
+    .topnav nav a { font-size: 14px; color: var(--muted-strong); white-space: nowrap; }
     .topnav nav a:hover { color: var(--fg); }
     .topnav nav a[aria-current="page"] { color: var(--fg); font-weight: 500; }
     .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
@@ -202,7 +202,7 @@
 
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
-      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; flex-wrap: wrap; }
     }
       /* ─── 1bit theme modes ────────────────────────────────────────────────
        light mode (default) | auto (follows OS) | dark mode.
@@ -385,14 +385,14 @@
     }
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
-      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; flex-wrap: wrap; }
       .theme-switch { order: 4; }
     }
 
 
 </style>
   <script type="application/ld+json">
-  [{"@context": "https://schema.org", "@type": "WebSite", "name": "1bit.MONSTER", "url": "https://1bit.monster", "description": "The 1-bit inference engine. One engine, any model — 554 architecture tokens, 1,798 HF arch strings, 100% HuggingFace coverage, running on Ryzen AI NPUs and ROCm.", "potentialAction": {"@type": "SearchAction", "target": {"@type": "EntryPoint", "urlTemplate": "https://1bit.monster/search.html?q={search_term_string}"}, "query-input": "required name=search_term_string"}}, {"@context": "https://schema.org", "@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster", "logo": "https://1bit.monster/assets/apple-touch-icon.png", "sameAs": ["https://github.com/1bit-MONSTER"]}]
+  [{"@context": "https://schema.org", "@type": "WebSite", "name": "1bit.MONSTER", "url": "https://1bit.monster", "description": "The 1-bit inference engine. One engine, any model — 560 architecture tokens, 1,818 HF arch strings, 100% HuggingFace coverage, running on Ryzen AI NPUs and ROCm.", "potentialAction": {"@type": "SearchAction", "target": {"@type": "EntryPoint", "urlTemplate": "https://1bit.monster/search.html?q={search_term_string}"}, "query-input": "required name=search_term_string"}}, {"@context": "https://schema.org", "@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster", "logo": "https://1bit.monster/assets/apple-touch-icon.png", "sameAs": ["https://github.com/1bit-MONSTER"]}]
   </script>
 
   <script src="theme.js"></script>
@@ -445,9 +445,9 @@
           <a class="btn btn-primary" data-od-id="cta-download" href="1bit-downloads.html">Download the engine&nbsp;&darr;</a>
           <a class="btn btn-ghost" data-od-id="cta-engine" href="1bit-monster-v2.html">Meet the engine&nbsp;&rarr;</a>
         </div>
-        <a class="latest-link" data-od-id="latest-byte-identical" href="1bit-post-byte-identical.html">
+        <a class="latest-link" data-od-id="latest-zaya" href="1bit-post-zaya-q4nx-hrx.html">
           <span class="latest-badge"><span class="dot"></span>latest</span>
-          <span class="latest-title">Milestone: our NPU decode is now bit-for-bit identical to AMD&rsquo;s own runtime &mdash; verified across a full 1,000-token generation, zero differences.</span>
+          <span class="latest-title">Every model sits in one shared pool — SharedBO pages that NPU, GPU and host all alias, zero copies between lanes. Zaya 8B Q4NX runs entirely on the Strix Halo NPU via the HRX lane (decode 8.4 t/s, served over HTTP), Qwen3-0.6B prefill logits are byte-identical to the real FastFlowLM runtime (corr 1.00000), and the Windows-NPU memory model — one heap, one chained API call per layer — is matched on Linux.</span>
           <span class="latest-more">read the post <span class="ar">→</span></span>
         </a>
         <div class="site-grid" data-od-id="pillars">

@@ -82,7 +82,7 @@
     @media (prefers-reduced-motion: reduce) { .topnav .logo .relay { animation: none; } .topnav .logo .r1 { fill: var(--fg); } }
 
     .topnav nav { display: flex; gap: var(--gap-lg); }
-    .topnav nav a { font-size: 14px; color: var(--muted-strong); }
+    .topnav nav a { font-size: 14px; color: var(--muted-strong); white-space: nowrap; }
     .topnav nav a:hover { color: var(--fg); }
     .topnav nav a[aria-current="page"] { color: var(--fg); font-weight: 500; }
     .pagefoot { padding-block: var(--gap-xl); color: var(--muted-strong); font-size: 13px; border-top: 1px solid var(--border); }
@@ -114,7 +114,7 @@
     .prose .callout { border-left: 1px solid var(--accent); padding: 4px 0 4px var(--gap-lg); margin: 0 0 var(--gap-lg); }
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
-      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; flex-wrap: wrap; }
     }
       /* ─── 1bit theme modes ────────────────────────────────────────────────
        light mode (default) | auto (follows OS) | dark mode.
@@ -297,7 +297,7 @@
     }
     @media (max-width: 720px) {
       .topnav-inner { flex-wrap: wrap; row-gap: 12px; }
-      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; }
+      .topnav nav { order: 3; width: 100%; gap: var(--gap-md); justify-content: space-between; flex-wrap: wrap; }
       .theme-switch { order: 4; }
     }
 
@@ -464,6 +464,28 @@
             <tr><td>MiniCPM4-8B</td><td>31.9</td><td><b>78.5</b></td><td>12.2</td><td>12.1</td></tr>
             <tr><td>Qwen3-Coder-30B (MoE)</td><td>54.3</td><td>54.2</td><td>19.7</td><td>18.0</td></tr>
             <tr><td>Qwen3-Next-80B (MoE)</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td></tr>
+          </tbody>
+        </table>
+        <p><b>Round 25p &mdash; the MoE boulder moved: the r16x8t table-scatter kernel, grouped prefill +21&ndash;33%.</b> Round 25o tripled dense prefill but the MoE models barely moved &mdash; GLM-4.7 and Qwen3-Coder-30B route their expert matmuls through the grouped path (<span class="mono">slice_grouped</span>), which still used the 1-row-per-workgroup <span class="mono">tbl_tiled</span> kernel with i32 table scatter. GLM&rsquo;s pp32 trace shows why: <b>9,453 grouped dispatches per graph</b> (vs 652 dense), each ~80&nbsp;&micro;s serialized &mdash; groups are small (rows 1536/2048, cols 2..7), so every group launches rows&times; workgroups to compute a handful of columns. The new <span class="mono">hrx2_mul_mat_q4nx_fused_f32_r16x8t</span> kernel gives the fused tbl the r16x8 structure &mdash; 16 rows &times; 8 columns per workgroup, 256 lanes as 16 rows &times; 16 k-blocks, one packed-byte stream feeding 8 table-scattered matmuls, per-row scratch reduction &mdash; so workgroups drop from rows&times; to rows/16&times;. Two real bugs surfaced: the phase-2 reduction indexed its 16 k-block partials kb-major while lanes are row-major (&rarr; garbage on GLM until fixed to <span class="mono">row_reduce + kk2&middot;16</span>), and the route-binding validator whitelists only <span class="mono">shape.mul_mat_id.*</span> sources while <span class="mono">src1_cols_count</span> must ride the dispatch config, not a binding. Result: MoE grouped prefill 30B 54.2&rarr;<b>71.9</b> (+33%), GLM 53.3&rarr;<b>64.7</b> (+21%); dense untouched (r16x8 still serves it) and decode flat as designed. Greedy generations verified identical vs the old path on GLM and 30B (multi-prompt batteries); the 30B poem-prompt degeneration reproduces on the pre-25p build too &mdash; a pre-existing chaotic divergence, not a regression.</p>
+        <table>
+          <thead><tr><th>model</th><th>pp32 (25o)</th><th>pp32 (25p)</th><th>tg32 (25o)</th><th>tg32 (25p)</th></tr></thead>
+          <tbody>
+            <tr><td>Qwen2.5-3B</td><td>229</td><td>229.7</td><td>29.4</td><td>29.8</td></tr>
+            <tr><td>Qwen2.5-7B</td><td>98.0</td><td>97.6</td><td>14.2</td><td>14.1</td></tr>
+            <tr><td>GLM-4.7 (30B-A3B MoE)</td><td>53.3</td><td><b>64.7</b></td><td>16.2</td><td>16.3</td></tr>
+            <tr><td>Qwen3-Coder-30B (MoE)</td><td>54.2</td><td><b>71.9</b></td><td>18.0</td><td>19.7</td></tr>
+            <tr><td>MiniCPM4-8B</td><td>78.5</td><td><b>80.0</b></td><td>12.1</td><td>12.2</td></tr>
+          </tbody>
+        </table>
+        <p><b>Round 25q &mdash; the decode &ldquo;65&nbsp;GB/s wall&rdquo; was never the memory path: the r16w wide-read kernel, tg32 3B +72%, 7B +89%.</b> The standing decode model said time/token = 3.7&nbsp;ms fixed + weights @ <b>65&nbsp;GB/s</b>, and 25h guessed the ceiling was &ldquo;the NPU&rsquo;s actual memory path&rdquo;. Round 25q falsified that with a load-only probe: dispatching the <i>dense f32 mm kernel</i> on the same device-local weight buffer reads at <b>205&ndash;219&nbsp;GB/s cold</b> (8-slice rotating ring), while the q4nx r16 decode kernel reads the same memory at only 64&ndash;74&nbsp;GB/s cold &mdash; the gap was the access pattern, not the fabric (~3&times; headroom existed). Compiler evidence matched: r16&rsquo;s inner body issues six 1&ndash;4 byte scalar loads per lane per k-step; the f32 kernel issues 4B/lane contiguous (~1&nbsp;KB per instruction). The new <span class="mono">hrx2_mul_mat_q4nx_fused_f32_r16w</span> kernel restructures decode around the packed layout&rsquo;s contiguous axis &mdash; 8 bytes at one k-position hold all 16 rows of a half-tile &mdash; so each of the 256 lanes owns ONE k-position and ALL 16 output rows of the workgroup: per tile-column the wavefront reads <b>2&nbsp;KB contiguous</b> (256 lanes &times; 8B). 16 f32 row accumulators per lane; scales/zeros staged cooperatively into 512&nbsp;B of workgroup LDS once per tile-column (cutting 64 &times; 1B global scale loads to 2 per lane); 16 <span class="mono">workgroup.reduce</span>s produce the outputs; signed-nibble decode is branchless. One real bug: the dispatch&rsquo;s workgroup-count expression special-cased r16 (<span class="mono">rows/16</span>) but fell through to <span class="mono">rows</span> for r16w &mdash; 16&times; too many workgroups reading past their slice (memory fault, caught by the real-model A/B the probe could not see).</p>
+        <table>
+          <thead><tr><th>model</th><th>tg32 (r16)</th><th>tg32 (r16w)</th></tr></thead>
+          <tbody>
+            <tr><td>Qwen2.5-3B</td><td>29.8</td><td><b>51.2</b> (+72%)</td></tr>
+            <tr><td>Qwen2.5-7B</td><td>14.0</td><td><b>26.5</b> (+89%)</td></tr>
+            <tr><td>MiniCPM4-8B</td><td>12.1</td><td><b>21.7</b> (+79%)</td></tr>
+            <tr><td>GLM-4.7 (30B-A3B MoE)</td><td>16.4</td><td><b>19.9</b> (+21%)</td></tr>
+            <tr><td>Qwen3-Coder-30B (MoE)</td><td>19.9</td><td><b>25.7</b> (+29%)</td></tr>
           </tbody>
         </table>
 <p><b>Round 26 &mdash; the twin: the gap is summation order, now proven.</b> The &ldquo;Why 0.99999999 and not 1.0&rdquo; claim above was asserted; round 26 proved it. We built a lossless F32 <i>twin</i> of the Q4NX model: every Q4NX tensor dequantized to F32 holding the <i>same numeric values</i> (<span class="mono">W = q4&middot;scale + zp</span>, per-(row, 32-col) bf16 scales/zeros, 35.4 GB output). If the NPU executes the quantized graph exactly, corr(Q4NX, twin) &asymp; 1.0; if the gap persists against the twin, it is execution &mdash; not quantization. The twin-vs-F32 comparison (corr 0.999999, maxdiff 4.4e-2) confirms the dequant is faithful, yet the NPU-vs-twin gap (corr 0.999973, maxdiff 0.24) is statistically identical to the NPU-vs-F32 gap. Top-1 and top-10 are identical on all three. The residual is pure f32 summation order between the NPU&rsquo;s 256-lane reduction trees and the CPU order, amplified by the 32-token recurrence &mdash; <b>not</b> the 4-bit weights. Deterministic corr(32-tok) = 1.0 remains the fixed-point pipeline&rsquo;s property (the 1BP reader reconstructs <span class="mono">W = q4&middot;s + zp</span> byte-exact: 0/3,145,728 mismatches vs the engine&rsquo;s own dequant; the <span class="mono">(q4&middot;16&middot;rq + zpq) &gt;&gt; 22</span> re-quant matches int8 to rounding boundaries only).</p>

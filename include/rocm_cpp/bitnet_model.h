@@ -590,6 +590,17 @@ typedef enum {
     RCPP_ARCH_BARETORCH = 990,       // baretorch — cs_lrad chunked-state linear-recurrent (issue #1907: registry token only; engine support XL, generic loader refuses)
     RCPP_ARCH_QU_SSM = 991,          // qu_ssm — Quamba-style linear-recurrent SSM (d_state/d_ff/d_model; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_ARO_BABYLM = 992,      // aro_babylm — ARO-BabyLM (attention gates + memory layers + local/global attention; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_BREEZE_TTS = 993,      // breeze — Breeze-TTS (BreezeForConditionalGeneration, text-to-speech; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_HYV4 = 994,            // hy_v4 — HYV4ForCausalLM (Gated-MLA + indexed-latent MoE text LM; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_BANANAMIND21CODER = 995,  // bananamind21_coder — BananaMind21CoderForCausalLM (BananaMind-2.1 code LM; registry token, engine support XL, PICO-family candidate)
+    RCPP_ARCH_BANANAMIND21LITE = 996,   // bananamind21_lite_25m — BananaMind21Lite25MForCausalLM (registry token, engine support XL, PICO-family candidate)
+    RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT = 997, // concept_dominant_gptbert — ConceptDominantGPTBertForPreTraining (GPT/BERT-hybrid pre-training class; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_TRHASH = 998,          // tr_hash_moe — TR-HASH-MoE (GQA + RMSNorm/QK-norm + standard RoPE + hash-routed shared-expert MoE; mlp_type tr_hash_engine, routing_strategy token_id_multi_hash; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_LLAVAONEVISION = 999,  // llava_onevision — LlavaOnevisionForConditionalGeneration (SigLIP vision tower + GELU projector + Qwen2 text decoder; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_SPARK2_5 = 1000,        // spark2_5 — Spark-X2.5 (XHToken) hybrid sliding/full-attention GQA: 3x sliding-window-512 per full-attn layer, per-layer-type partial RoPE, headwise attn output gate (sigmoid), gelu, head_dim 256, 1M native ctx (registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_TINYTRANSFORMER = 1001, // tinytransformer — TinyTransformerForCausalLM minimal custom-code transformer (Mayuresh231/tiny-transformer-29m; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_IKNN = 1002,            // iknn-rl1-a1 — IKNN-Rl1-A1ForCausalLM (deeprcurs/IKNN-Rl1-A1; MLX-era file_* config, RoPE 1e4 + RMSNorm, gpt2-shaped; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_K2HORIZON = 1003,       // k2horizon — K2-Horizon-MoVA (Moonshot K2-Horizon MoE: 100E/8, layernorm_num_groups, query_key_norm, rope_head_dim, attention_gate_func, decoder_sparse_step; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2461,6 +2472,91 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "qu_ssm") == 0) return RCPP_ARCH_QU_SSM;             // QUSSMForCausalLM (Quamba-style SSM, registry token)
     if (strcmp(s, "arobabylm") == 0) return RCPP_ARCH_ARO_BABYLM;      // AROBabyLMForCausalLM — attention gates + memory + local/global attn (registry token, census 2026-09-01)
     if (strcmp(s, "qussm") == 0) return RCPP_ARCH_QU_SSM;              // stripped arch name (census)
+    // ── 2026-09-02 census watcher fourth-run findings (issue #2031) ──
+    // breeze = Breeze-TTS-2 (xy979475348/Breeze-TTS-2, class
+    // BreezeForConditionalGeneration, model_type breeze, pipeline text-to-
+    // speech) — a TTS decoder, not a text causal LM; registry token so the
+    // census counts it covered while the loader refuses cleanly. hy_v4 =
+    // HYV4ForCausalLM (Vaibhavhome30/Hy4-preview-FP8, pipeline text-geration)
+    // — a Gated-MLA + routed-MoE text LM with indexer/layer-type/learnable-
+    // sink config keys (not standard llama/qwen layout); registry token now,
+    // candidate for the Gated-MLA loader family (Moonlight/Kimi-K3/DSV4)
+    // once its layer math is config-mapped — no silent llama-layout fallback.
+    if (strcmp(s, "breeze") == 0) return RCPP_ARCH_BREEZE_TTS;         // BreezeForConditionalGeneration (issue #2031, registry token)
+    if (strcmp(s, "hy_v4") == 0) return RCPP_ARCH_HYV4;               // HYV4ForCausalLM — HF model_type (issue #2031, registry token)
+    if (strcmp(s, "hyv4") == 0) return RCPP_ARCH_HYV4;                // HYV4ForCausalLM — census stripped arch name
+    // Fifth-run crop (same census gate run): BananaMind-2.1-Coder/Lite are
+    // standard-layout causal LMs (RMSNorm + GQA + rope_theta 1e5, no exotic
+    // keys) in the bananamind21 release line — PICO-family candidates per the
+    // 09-01 bananamind21test alias, but kept as registry tokens until a
+    // config-mapping round verifies the loader contract (the 2.1-Pico-Preview
+    // config carries loop_*/refresh_kernel_* keys, so the line is NOT plain
+    // llama). concept_dominant_gptbert is a GPT/BERT-hybrid PRE-TRAINING
+    // class (ConceptDominantGPTBertForPreTraining) — not causal inference.
+    if (strcmp(s, "bananamind21_coder") == 0) return RCPP_ARCH_BANANAMIND21CODER;   // HF model_type (issue #2031)
+    if (strcmp(s, "bananamind21coder") == 0) return RCPP_ARCH_BANANAMIND21CODER;    // census stripped arch name
+    if (strcmp(s, "bananamind21_lite_25m") == 0) return RCPP_ARCH_BANANAMIND21LITE; // HF model_type (issue #2031)
+    if (strcmp(s, "bananamind21lite25m") == 0) return RCPP_ARCH_BANANAMIND21LITE;   // census stripped arch name
+    if (strcmp(s, "concept_dominant_gptbert") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // HF model_type (issue #2031)
+    if (strcmp(s, "conceptdominantgptbertforpretraining") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // census stripped class name
+    // ── 2026-09-03 census breach (issue #2061): spark2_5 + tinytransformer ──
+    // spark2_5 = Spark-X2.5-4B (XHToken/Spark-X2.5-4B, base of ProCreations/
+    // BetterWright-4b): hybrid 3:1 sliding/full attention (window 512),
+    // per-layer-type partial RoPE (full 0.25, sliding 1.0; thetas 5e6/1e4),
+    // sigmoid headwise attn output gate, gelu MLP, head_dim 256, kv=4 GQA,
+    // native 1M position range. NOT llama/qwen/GDN — sliding + partial-rope
+    // + output gating need config-mapped layer math (engine support XL).
+    if (strcmp(s, "spark2_5") == 0) return RCPP_ARCH_SPARK2_5;             // HF model_type (issue #2061, registry token)
+    if (strcmp(s, "spark2_5forcausallm") == 0) return RCPP_ARCH_SPARK2_5;  // raw HF architecture string (regression guard)
+    // tinytransformer = Mayuresh231/tiny-transformer-29m: minimal custom-code
+    // transformer (config uses dim/ff_dim/layers/heads/context keys, custom
+    // modeling file, vocab 4096, max_pos 256) — no profile fit (registry token).
+    if (strcmp(s, "tinytransformer") == 0) return RCPP_ARCH_TINYTRANSFORMER;         // census stripped arch name (issue #2061, registry token)
+    if (strcmp(s, "tiny_transformer") == 0) return RCPP_ARCH_TINYTRANSFORMER;       // HF model_type
+    if (strcmp(s, "tinytransformerforcausallm") == 0) return RCPP_ARCH_TINYTRANSFORMER;  // raw HF architecture string (regression guard)
+    // Same-run crop (census gate 2026-09-03, #2061 + coverage gate):
+    // tinygemma (roshan-soni/tinygemma-10m) is a Gemma-3-layout tiny model —
+    // config-verified alias (qk_norm + query_pre_attn_scalar + rope_base/
+    // rope_local_base + sliding_window + n_kv_groups = gemma3 key set), same
+    // precedent as tinyllama->llama. decodertransformer / iknn / k2horizon
+    // are genuinely new (custom modeling / MoVA MoE) — registry tokens
+    // (decodertransformer reuses the pre-existing DECODERONLYTRANSFORMER token).
+    if (strcmp(s, "tinygemma") == 0) return RCPP_ARCH_GEMMA;          // TinyGemmaForCausalLM — config-verified gemma3-style layout (qk_norm, rope_base/local, sliding)
+    if (strcmp(s, "tinygemmaforcausallm") == 0) return RCPP_ARCH_GEMMA;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "decodertransformer") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;   // census stripped arch name (registry token)
+    if (strcmp(s, "decoder_transformer_scratch") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;  // HF model_type
+    if (strcmp(s, "decodertransformerforcausallm") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "iknn") == 0) return RCPP_ARCH_IKNN;                // HF model_type
+    if (strcmp(s, "iknn-rl1-a1") == 0) return RCPP_ARCH_IKNN;         // census stripped arch name (registry token)
+    if (strcmp(s, "iknnrl1a1forcausallm") == 0) return RCPP_ARCH_IKNN;  // raw HF architecture string (regression guard, stripped)
+    if (strcmp(s, "iknn-rl1-a1forcausallm") == 0) return RCPP_ARCH_IKNN; // raw HF architecture string (regression guard)
+    if (strcmp(s, "k2horizon") == 0) return RCPP_ARCH_K2HORIZON;      // census stripped arch name (registry token)
+    if (strcmp(s, "k2_horizon_mova") == 0) return RCPP_ARCH_K2HORIZON; // HF model_type
+    if (strcmp(s, "k2horizonforcausallm") == 0) return RCPP_ARCH_K2HORIZON;  // raw HF architecture string (regression guard)
+    // ── 2026-09-02 census watcher (PR #2046 CI gate) ──
+    // Both classes are GENUINELY NEW architectures, verified against live HF
+    // configs, so they get a real registry token (own identity) rather than an
+    // alias into a sibling family. tr_hash_moe = AETHORIA-AI/TR-HASH-MoE-*
+    // (TRHashForCausalLM; hash-routed shared-expert MoE, mlp_type
+    // tr_hash_engine, routing_strategy token_id_multi_hash); llava_onevision =
+    // aacudad/AnomalyThink-LLaVA-OneVision-7B-SFT-GRPO
+    // (LlavaOnevisionForConditionalGeneration; SigLIP vision tower + GELU
+    // projector + Qwen2 text decoder). The generic loader refuses these cleanly
+    // ("engine support XL") so nothing mis-executes; the token makes the census
+    // count them covered while the real implementations land separately.
+    if (strcmp(s, "trhash") == 0) return RCPP_ARCH_TRHASH;             // TRHashForCausalLM — census stripped arch name (registry token)
+    if (strcmp(s, "tr_hash_moe") == 0) return RCPP_ARCH_TRHASH;        // HF model_type (tr_hash_moe)
+    if (strcmp(s, "trhashforcausallm") == 0) return RCPP_ARCH_TRHASH;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "llavaonevision") == 0) return RCPP_ARCH_LLAVAONEVISION;  // LlavaOnevisionForConditionalGeneration — census stripped arch name (registry token)
+    if (strcmp(s, "llava_onevision") == 0) return RCPP_ARCH_LLAVAONEVISION; // HF model_type (llava_onevision)
+    if (strcmp(s, "llavaonevisionforconditionalgeneration") == 0) return RCPP_ARCH_LLAVAONEVISION;  // raw HF architecture string (regression guard)
+    // lladamodellm = LLaDAModelLM (albertge/llada-8b-dllm-*; the alias-autopr
+    // guessed LLADA2 from llada2moemodellm, but the live config declares
+    // model_type llada, which is already mapped to the config-verified llama
+    // profile) — so it's a genuine family-variant alias to LLAMA, not a registry
+    // token (matches model_type llada).
+    if (strcmp(s, "lladamodellm") == 0) return RCPP_ARCH_LLAMA;        // LLaDAModelLM — census stripped arch name (model_type llada -> llama profile)
+    if (strcmp(s, "llada_model_lm") == 0) return RCPP_ARCH_LLAMA;      // HF model_type variant
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type

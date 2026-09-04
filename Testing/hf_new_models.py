@@ -21,10 +21,50 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "Testing"))
 from census_coverage import strip_arch, NON_TEXT_GEN, build_mapper, probe, UNKNOWN
 
+try:
+    from census_autopr import maybe_file_draft_pr
+except Exception as _e:  # never kill the watch on an autopr wiring issue
+    maybe_file_draft_pr = None
+    print(f"[watch] census_autopr import failed ({_e}) — alias autopr disabled",
+          file=sys.stderr)
+
 STATE = os.path.join(ROOT, "Testing", "hf_new_models_state.json")
+SIG_STATE = os.path.join(ROOT, "Testing", "significant_arrivals.json")
 API = "https://huggingface.co/api/models"
 CFG = "https://huggingface.co/{mid}/resolve/main/config.json"
 MAX_SEEN = 5000  # cap state growth; oldest dropped
+
+# Significant-architecture escalation. These are major public model families;
+# when one ships a NEW architecture class (especially a vision/multimodal
+# variant, e.g. a DeepSeek V4-flash that adds image-text-to-text), it must not
+# be silently auto-aliased into a nearby sibling — it needs real engine support
+# and decode validation. Matching is on the stripped arch class substring.
+NOTABLE_FAMILIES = (
+    "deepseek", "qwen", "glm", "nemotron", "llama", "mistral", "phi",
+    "gemma", "kimi", "minicpm", "gpt-oss", "granite", "zamba", "zyphra",
+    "smollm", "olmo", "falcon", "rwkv",
+)
+VISION_TAGS = ("image-text-to-text", "image-to-text", "visual-question-answering",
+               "document-question-answering", "image-feature-extraction")
+
+
+def _family_of(stripped):
+    """Human-ish family label for the title, matched from NOTABLE_FAMILIES."""
+    low = stripped.lower()
+    for f in NOTABLE_FAMILIES:
+        if f in low:
+            return f.title()
+    return stripped
+
+
+def _is_significant(stripped, tags):
+    """True when a new class is a major-family arch or a vision/multimodal
+    variant of one — the arrivals that deserve a real blog entry, not an alias."""
+    low = stripped.lower()
+    if any(f in low for f in NOTABLE_FAMILIES):
+        return True
+    tags = tags or []
+    return bool(any(v in (t or "") for t in tags for v in VISION_TAGS))
 
 # Causal-decoder + VLM tags: new conditional-generation models (e.g. Muse
 # Glimmer) carry image-text-to-text, not text-generation. Gated orgs 401 on
@@ -130,6 +170,7 @@ def main():
     mapper = build_mapper()
     new_classes = {}   # stripped class -> [model ids]
     uncovered = {}     # stripped class -> [model ids]
+    class_tags = {}    # stripped class -> set(pipeline tags) for significance
     unverifiable = {}  # model id -> reason (gated/fetch-fail, no config)
     n_in_scope = n_covered = 0
 
@@ -172,6 +213,8 @@ def main():
             n_covered += 1
         for s, t in toks.items():
             (new_classes if t != UNKNOWN else uncovered).setdefault(s, []).append(mid)
+            if t == UNKNOWN:
+                class_tags.setdefault(s, set()).update(m.get("tags") or [])
         seen[mid] = True
         time.sleep(0.2)
 
@@ -186,10 +229,48 @@ def main():
           f"{len(unverifiable)} unverifiable (gated/no-config)")
     for s, ids in sorted(new_classes.items()):
         print(f"  covered family {s}: {len(ids)} model(s), e.g. {ids[0]}")
+    significant = {}  # stripped class -> [ids] — major-family/vision arrivals
+    basic_uncovered = {}
     for s, ids in sorted(uncovered.items()):
+        if _is_significant(s, class_tags.get(s)):
+            significant[s] = ids
+        else:
+            basic_uncovered[s] = ids
+    for s, ids in sorted(significant.items()):
+        print(f"  !! SIGNIFICANT {s}: {len(ids)} model(s), e.g. {ids[0]}")
+        print(f"     -> major-family/vision arrival — needs REAL engine arch "
+              f"support + decode validation, NOT an alias")
+    # Record significant arrivals (covered + uncovered) so the post generator
+    # (significant-post workflow) can publish a blog entry for the ones the
+    # engine now maps. Only COVERED significant classes get a post — an
+    # uncovered one has no real support yet, so it would be a false claim.
+    try:
+        sig_state = json.loads(open(SIG_STATE).read()) if os.path.exists(SIG_STATE) else {}
+        today = time.strftime("%Y-%m-%d")
+        for s, ids in sorted(new_classes.items()):
+            if _is_significant(s, class_tags.get(s)):
+                e = sig_state.setdefault(s, {"arch": s, "model": ids[0], "family": _family_of(s),
+                                             "date": today, "covered": False})
+                e.update({"model": ids[0], "covered": True})
+        for s, ids in sorted(significant.items()):
+            sig_state.setdefault(s, {"arch": s, "model": ids[0], "family": _family_of(s),
+                                     "date": today, "covered": False})
+        json.dump(sig_state, open(SIG_STATE, "w"), indent=1, sort_keys=True)
+    except Exception as _e:
+        print(f"[watch] significant_arrivals not recorded: {_e}", file=sys.stderr)
+    for s, ids in sorted(basic_uncovered.items()):
         print(f"  !! UNCOVERED {s}: {len(ids)} model(s), e.g. {ids[0]}")
         print(f"     -> add to include/rocm_cpp/bitnet_model.h + selfcheck, "
               f"then re-run census_coverage.py")
+    # Auto-file draft PRs proposing a one-line alias for plausible
+    # family-variant classes. Significant arrivals are deliberately excluded —
+    # aliasing them would fake support. On genuine-new archs the autopr prints
+    # "manual" and they stay a daily alert for a real engine implementation.
+    if maybe_file_draft_pr is not None and basic_uncovered:
+        try:
+            maybe_file_draft_pr(list(basic_uncovered), models=basic_uncovered)
+        except Exception as _e:
+            print(f"[watch] census_autopr failed: {_e}", file=sys.stderr)
     for mid, why in sorted(unverifiable.items()):
         print(f"  ? UNVERIFIABLE {mid} ({why}) — gated repos need a token; "
               f"retried next run")

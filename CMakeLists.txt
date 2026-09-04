@@ -1521,6 +1521,11 @@ if(TARGET ggml_vulkan)
         "${GGML_BUILD_DIR}/common/libllama-common.a"
         "${GGML_BUILD_DIR}/common/libllama-common-base.a"
         -lvulkan -ldl -lpthread -lm)
+    # backend_ggml_vulkan.h declares the real factory only under this define;
+    # without it the header self-stubs to nullptr so onebin still links when
+    # llama.cpp's static libs weren't pre-built (its headers may still be
+    # present via recursive submodules — header presence != backend linked).
+    target_compile_definitions(onebin PRIVATE GGML_VULKAN_LINKED=1)
 endif()
 if(EMBED_LEMONADE)
     target_link_libraries(onebin PRIVATE lemonade-server-core)
@@ -1830,6 +1835,9 @@ endif()
 # -- bench_ggml_vk: GGML-Vulkan backend benchmark (llama.cpp MIT License) ---
 if(TARGET ggml_vulkan)
     add_executable(bench_ggml_vk tools/bench_ggml_vk.cpp src/backend_ggml_vulkan.cpp)
+    # Same contract as onebin: bench_ggml_vk.cpp calls create_ggml_vulkan_backend()
+    # directly, so the real factory declaration must be visible in this target.
+    target_compile_definitions(bench_ggml_vk PRIVATE GGML_VULKAN_LINKED=1)
     target_include_directories(bench_ggml_vk PRIVATE
         include
         src

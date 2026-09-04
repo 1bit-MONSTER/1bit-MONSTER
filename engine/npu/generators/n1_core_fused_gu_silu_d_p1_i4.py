@@ -121,6 +121,10 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         silu = external_func("silu_quant_i8_fused_i4", inputs=[C_ty, B4_ty, H2_ty], link_with=kernel_o)
         matmul_i4 = external_func("matmul_i8_i32_i4", inputs=[A_ty, B4_ty, C_ty],
                                   link_with=kernel_o)   # (A, B4864, C1)
+        # issue #1934: emit the raw GU C1 tile (C1buf) to the C2/bo2 fifo so
+        # the host can run the CPU-silu fallback (on-core silu is mis-compiled,
+        # #1836). copy_c1(src=C1buf, dst=C2buf).
+        copy_c1fn = external_func("copy_c1", inputs=[C_ty, C_ty], link_with=kernel_o)
         # Issue #1865: zero_c1 is GONE — matmul_i8_i32_i4 zeroes its own pC
         # through the delivered pC arg at each col_group start (g_i4_call % 32
         # == 0, the f59d8027 pattern). The old 0-arg hardcoded-0xE000 zero_c1
@@ -157,26 +161,22 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         # ('aie.tile' op number of output DMA channel exceeded — measured).
         C1buf = [buffer(core_tiles[0][c], C_ty, name=f"C1_{c}")
                  for c in range(n_aie_cols)]
-        # dummy buffer for the silu's unused 2nd arg (passing C1buf twice
-        # broke the h2 writeback path in the aiecc — measured 2026-08-24)
-        Gg = [buffer(core_tiles[0][c], B_ty, name=f"Gg_{c}")
-              for c in range(n_aie_cols)]
-        Btmp = [buffer(core_tiles[0][c], B_ty, name=f"Btmp_{c}")
-                for c in range(n_aie_cols)]
-        Scol = [buffer(core_tiles[0][c], B_ty, name=f"Scol_{c}")
-                for c in range(n_aie_cols)]
-        Srow = [buffer(core_tiles[0][c], B_ty, name=f"Srow_{c}")
-                for c in range(n_aie_cols)]
-        # TEST: re-add the v1 debug buffers to restore the pre-v3 core
-        # memory layout (the h2 writeback broke when they were removed).
-
-        # h2: core → mem → shim → DDR (bo4). C2: core → mem → shim → DDR (bo2).
+        # issue #1934: the v1 "debug" buffers Gg/Btmp/Scol/Srow (~4 x 8 KB) are
+        # declared but never referenced — kept only to align the pre-v3 core
+        # memory layout so the (now host-redundant) h2 writeback works. Since
+        # the host does the silu (CPU fallback), they are dropped here to free
+        # the L1 the C1/C2 output fifo needs.
+        # h2: core → mem → shim → DDR (bo4). C2: core → mem → shim → DDR (bo2),
+        # carrying the raw GU C1 (copy_c1) for the host CPU-silu fallback.
         H2_c = [None] * n_aie_cols; H2_s = [None] * n_aie_cols
         C2_c = [None] * n_aie_cols; C2_s = [None] * n_aie_cols
         for c in range(n_aie_cols):
-            H2_c[c] = object_fifo(f"H2_C{c}", core_tiles[0][c], mem_tiles[c], 1, H2_ty)  # DEPTH-1 TEST: single H2 slot
-            H2_s[c] = object_fifo(f"H2_S{c}", mem_tiles[c], shim_tiles[c], 1, H2_ty)
+            H2_c[c] = object_fifo(f"H2_C{c}", core_tiles[0][c], mem_tiles[c], 3, H2_ty)
+            H2_s[c] = object_fifo(f"H2_S{c}", mem_tiles[c], shim_tiles[c], 3, H2_ty)
             object_fifo_link(H2_c[c], H2_s[c])
+            C2_c[c] = object_fifo(f"C2_C{c}", core_tiles[0][c], mem_tiles[c], 1, C_ty)
+            C2_s[c] = object_fifo(f"C2_S{c}", mem_tiles[c], shim_tiles[c], 1, C_ty)
+            object_fifo_link(C2_c[c], C2_s[c])
 
         for j in range(n_aie_rows):
             for c in range(n_aie_cols):
@@ -207,6 +207,13 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                             # 2-arg/plain-buffer-arg2 calls — measured
                             # 2026-08-24); its (stale) data is unused.
                             Gsbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)  # gs tile (unused)
+                            # issue #1934: emit the raw GU C1 tile to C2/bo2 for
+                            # the host CPU-silu fallback — BEFORE the on-core silu
+                            # (the silu's in-place fold writes corrupt C1buf row 0,
+                            # so copy_c1 AFTER silu copies a corrupted C1).
+                            C2buf = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
+                            copy_c1fn(C1buf[c], C2buf)
+                            C2_c[c].release(ObjectFifoPort.Produce, 1)
                             H2buf = H2_c[c].acquire(ObjectFifoPort.Produce, 1)
                             silu(C1buf[c], Gsbuf, H2buf)
                             H2_c[c].release(ObjectFifoPort.Produce, 1)
@@ -214,7 +221,7 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         @runtime_sequence(
             np.ndarray[(M * K,), np.dtype[dtype_in]],       # A   (bo0, residual)
             np.ndarray[(((K // 64) * (N_GU // 128)) * (8192),), np.dtype[dtype_in]],  # bo1: 5120-B per-tile chunks
-            np.ndarray[(M * N_D,), np.dtype[dtype_out]],    # C2  (bo2)
+            np.ndarray[(M * N_GU,), np.dtype[dtype_out]],    # C1 (bo2, raw GU C1 for host silu)
             np.ndarray[(K * N_D,), np.dtype[dtype_in]],     # B_d (bo3)
             np.ndarray[(M * K,), np.dtype[dtype_in]],       # H2  (bo4, scratch)
         )
@@ -287,5 +294,19 @@ def my_fused_p1(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                     dma_start_task(ht); h2_tasks.append(ht)
                 dma_await_task(*h2_tasks)
                 dma_free_task(*h2_tasks)
+                # issue #1934: C1 writeback. copy_c1 already laid the [m,n] C1
+                # tile in the microtile order the engine reads
+                # (c1m[kc*1024 + (c>>3)*64 + r*8 + (c&7)]), so a CONTIGUOUS
+                # write of m*n int32 at k_chunk*1024 lands it in bo2 exactly.
+                c2_tasks = []
+                for c in range(n_aie_cols):
+                    k_chunk = cg * n_aie_cols + c
+                    ct = shim_dma_single_bd_task(
+                        C2_s[c], C2, offset=k_chunk * (m * n),
+                        sizes=[1, 1, 1, m * n], strides=[1, 1, 1, 1],
+                        issue_token=True)
+                    dma_start_task(ct); c2_tasks.append(ct)
+                dma_await_task(*c2_tasks)
+                dma_free_task(*c2_tasks)
 
 main()

@@ -632,13 +632,32 @@ struct GenericBackend : Backend {
             cfg.arch == RCPP_ARCH_ZAYA || cfg.arch == RCPP_ARCH_ZAMBA2 ||
             cfg.arch == RCPP_ARCH_ZAMBA || cfg.arch == RCPP_ARCH_MAMBA ||
             cfg.arch == RCPP_ARCH_QWEN35 || cfg.arch == RCPP_ARCH_BARETORCH ||
-            cfg.arch == RCPP_ARCH_QU_SSM || cfg.arch == RCPP_ARCH_ARO_BABYLM) {
+            cfg.arch == RCPP_ARCH_QU_SSM || cfg.arch == RCPP_ARCH_ARO_BABYLM ||
+            cfg.arch == RCPP_ARCH_BREEZE_TTS || cfg.arch == RCPP_ARCH_HYV4 ||
+            cfg.arch == RCPP_ARCH_BANANAMIND21CODER || cfg.arch == RCPP_ARCH_BANANAMIND21LITE ||
+            cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ||
+            cfg.arch == RCPP_ARCH_TRHASH || cfg.arch == RCPP_ARCH_LLAVAONEVISION ||
+            cfg.arch == RCPP_ARCH_SPARK2_5 || cfg.arch == RCPP_ARCH_TINYTRANSFORMER ||
+            cfg.arch == RCPP_ARCH_DECODERONLYTRANSFORMER || cfg.arch == RCPP_ARCH_IKNN ||
+            cfg.arch == RCPP_ARCH_K2HORIZON) {
             fprintf(stderr, "  [generic] Refusing to load %s (arch=%d%s) via safetensors\n",
                     f.c_str(), (int)cfg.arch,
                     cfg.arch == RCPP_ARCH_UNKNOWN ? " UNKNOWN — add an arch mapping" :
                     cfg.arch == RCPP_ARCH_BARETORCH ? " BARETORCH — cs_lrad registry token, engine support XL (issue #1907)" :
                     cfg.arch == RCPP_ARCH_QU_SSM ? " QU_SSM — Quamba-style SSM registry token, engine support XL" :
-                    cfg.arch == RCPP_ARCH_ARO_BABYLM ? " ARO_BABYLM — attention-gate + memory + local/global attn registry token, engine support XL (census 2026-09-01)" : "");
+                    cfg.arch == RCPP_ARCH_ARO_BABYLM ? " ARO_BABYLM — attention-gate + memory + local/global attn registry token, engine support XL (census 2026-09-01)" :
+                    cfg.arch == RCPP_ARCH_BREEZE_TTS ? " BREEZE_TTS — text-to-speech registry token, engine support XL (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_HYV4 ? " HYV4 — Gated-MLA text LM registry token, engine support XL (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_BANANAMIND21CODER ? " BANANAMIND21CODER — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_BANANAMIND21LITE ? " BANANAMIND21LITE — BananaMind-2.1 registry token, PICO-family candidate (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ? " CONCEPT_DOMINANT_GPTBERT — pre-training-class registry token (issue #2031)" :
+                    cfg.arch == RCPP_ARCH_TRHASH ? " TRHASH — tr_hash_moe hash-routed shared-expert MoE registry token, engine support XL (census 2026-09-02)" :
+                    cfg.arch == RCPP_ARCH_LLAVAONEVISION ? " LLAVAONEVISION — LlavaOnevision (SigLIP+Qwen2) VLM registry token, engine support XL (census 2026-09-02)" :
+                    cfg.arch == RCPP_ARCH_SPARK2_5 ? " SPARK2_5 — Spark-X2.5 hybrid sliding/full-attention GQA registry token, engine support XL (issue #2061)" :
+                    cfg.arch == RCPP_ARCH_TINYTRANSFORMER ? " TINYTRANSFORMER — minimal custom-code transformer registry token, engine support XL (issue #2061)" :
+                    cfg.arch == RCPP_ARCH_DECODERONLYTRANSFORMER ? " DECODERONLYTRANSFORMER — from-scratch decoder registry token, engine support XL (census 2026-09-03)" :
+                    cfg.arch == RCPP_ARCH_IKNN ? " IKNN — IKNN-Rl1-A1 registry token, engine support XL (census 2026-09-03)" :
+                    cfg.arch == RCPP_ARCH_K2HORIZON ? " K2HORIZON — K2-Horizon-MoVA MoE registry token, engine support XL (census 2026-09-03)" : "");
             return false;
         }
 
@@ -1513,7 +1532,14 @@ struct GenericBackend : Backend {
         // their own dedicated backends.
         if (hdr_cfg.arch == RCPP_ARCH_ZAYA || hdr_cfg.arch == RCPP_ARCH_ZAMBA2 ||
             hdr_cfg.arch == RCPP_ARCH_ZAMBA || hdr_cfg.arch == RCPP_ARCH_MAMBA ||
-            hdr_cfg.arch == RCPP_ARCH_QWEN35) {
+            hdr_cfg.arch == RCPP_ARCH_QWEN35 || hdr_cfg.arch == RCPP_ARCH_BARETORCH ||
+            hdr_cfg.arch == RCPP_ARCH_QU_SSM || hdr_cfg.arch == RCPP_ARCH_ARO_BABYLM ||
+            hdr_cfg.arch == RCPP_ARCH_BREEZE_TTS || hdr_cfg.arch == RCPP_ARCH_HYV4 ||
+            hdr_cfg.arch == RCPP_ARCH_BANANAMIND21CODER || hdr_cfg.arch == RCPP_ARCH_BANANAMIND21LITE ||
+            hdr_cfg.arch == RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT ||
+            hdr_cfg.arch == RCPP_ARCH_SPARK2_5 || hdr_cfg.arch == RCPP_ARCH_TINYTRANSFORMER ||
+            hdr_cfg.arch == RCPP_ARCH_DECODERONLYTRANSFORMER || hdr_cfg.arch == RCPP_ARCH_IKNN ||
+            hdr_cfg.arch == RCPP_ARCH_K2HORIZON) {
             const char* hint = "";
             if (hdr_cfg.arch == RCPP_ARCH_QWEN35)
                 hint = " — Qwen3.5 Gate-Delta requires NPU (FLM/XRT) or HIP backend";

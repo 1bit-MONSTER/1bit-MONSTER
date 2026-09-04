@@ -105,6 +105,7 @@ static void rmsnorm(float* h, const float* w, int n, float eps = 1e-5f) {
 
 int main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s model.q4nx [token_id...]\n", argv[0]); return 1; }
+    zaya_cca::cap_omp_threads();   // default to physical cores (#1776 oversubscription)
     int token_id = argc > 2 ? atoi(argv[2]) : 0;
 
     int fd = open(argv[1], O_RDONLY);
@@ -327,6 +328,9 @@ int main(int argc, char** argv) {
                 int seq = (int)old + 1;
                 int gqa = d.nq / d.nkv;
                 std::vector<float> ao(qd);
+                // Heads independent (disjoint ao writes, per-head softmax) —
+                // parallelize the O(seq) GQA scan across the nq heads.
+                #pragma omp parallel for schedule(static)
                 for (int hh = 0; hh < d.nq; hh++) {
                     int kv = hh / gqa;
                     std::vector<float> sc(seq); float mx = -1e30f;

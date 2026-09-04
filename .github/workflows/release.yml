@@ -2,8 +2,8 @@ name: Release
 
 on:
   push:
-    tags: ['v*']
-  workflow_dispatch:    # manual runs (branch builds) — Create Release is guarded to tag-only so no junk release is published
+    branches: ['main']   # rebuild + republish GHCR packages on every main push
+  workflow_dispatch:     # manual rebuild + republish (no git tag, no GitHub Release)
 
 permissions: {}
 
@@ -17,7 +17,8 @@ jobs:
     # ONLY ROCm in the build — same environment CI's C++ job uses.
     timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
+      packages: write    # push OCI packages to GHCR (no releases, no tags)
     defaults:
       run:
         shell: bash -leo pipefail {0}
@@ -152,48 +153,30 @@ jobs:
           ARCH=x86_64 ./appimagetool --appimage-extract-and-run appimage-build \
             "1bit-monster-${VERSION}-x86_64.AppImage"
 
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')   # only on real tag pushes; skip manual workflow_dispatch runs
-        uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3.0.2
-        with:
-          files: |
-            1bit-linux-x86_64.tar.gz
-            1bit-monster_*_amd64.deb
-            1bit-monster-*-x86_64.AppImage
-          generate_release_notes: true
-          prerelease: false
-          body: |
-            ## 1bit — Monorepo Release (Pure C++)
-
-            End-to-end C++ inference stack: no Rust, no Python, no Node.js.
-            Single CMake build produces all binaries.
-
-            ### Formats
-            - **Tarball** (`1bit-linux-x86_64.tar.gz`) — extract anywhere, `./run.sh chat`
-            - **Debian package** (`.deb`) — `sudo dpkg -i 1bit-monster_*_amd64.deb`, binaries land on `PATH`
-            - **AppImage** (`.AppImage`) — `chmod +x`, run directly, no install needed
-
-            ### Includes
-            - `1bit` — one ELF, every server + CLI, dispatched by subcommand:
-              - `1bit` (no args) — NPU-native coding agent CLI (chat, up, down, status, build, config, serve)
-              - `1bit zaya` — C++ HIP inference engine + OpenAI-compatible server; `--lemonade` runs the embedded Lemonade server core in-process
-              - `1bit unified` — multi-backend server with the **embedded Lemonade server core** (llama.cpp, FastFlowLM, whisper.cpp, stable-diffusion.cpp, kokoro, ryzenai-llm, vllm backends + policy router); `--lemonade` runs Lemonade's full server in-process
-              - `1bit router` — NPU+GPU routing proxy; decisions run through Lemonade's policy engine (keyword classifier → GPU, default → NPU)
-              - `1bit jarvis` / `1bit vision` / `1bit onebitd` — agent server, vision-language server, inference daemon
-            - `bitnet_tui` — C++ FTXUI terminal chat UI (separate binary)
-            - `librocm_cpp.so` — ternary GEMV/GEMM HIP kernels
-            - install script, docs, license
-
-            ### Requires
-            - AMD Strix Halo (gfx1151)
-            - ROCm 7.15.0a runtime (libhsa-runtime64) — TheRock nightly C++ SDK
-            - A model file (.h1b, .q4nx, .gguf)
-
-            ### Quick Start
-            ```bash
-            tar xzf 1bit-linux-x86_64.tar.gz
-            export HSA_OVERRIDE_GFX_VERSION=11.5.1
-            export HSA_ENABLE_SDMA=0
-            ./run.sh chat
-            ```
-            Then point any OpenAI client at `http://127.0.0.1:13305/v1`.
+      - name: Publish packages to GHCR (no releases, no tags)
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          SHA="$(git rev-parse --short HEAD)"
+          # oras is not preinstalled on runners; fetch the binary (a tool
+          # download — unrelated to GitHub Releases).
+          curl -sL -o oras.tgz https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz
+          tar -xzf oras.tgz oras
+          chmod +x oras
+          echo "$GHCR_TOKEN" | ./oras login ghcr.io -u "${{ github.actor }}" --password-stdin
+          ARTIFACT="ghcr.io/1bit-MONSTER/1bit-MONSTER"
+          # Rolling + immutable tags. No git tags, no GitHub Release.
+          for TAG in latest sha-${SHA}; do
+            ./oras push "${ARTIFACT}:${TAG}" \
+              --artifact-type application/vnd.1bit.package \
+              1bit-linux-x86_64.tar.gz:application/gzip \
+              1bit-monster_${VERSION}_amd64.deb:application/vnd.debian.binary-package \
+              1bit-monster-${VERSION}-x86_64.AppImage:application/vnd.appimage
+            echo "published ${ARTIFACT}:${TAG}"
+          done
+          echo ""
+          echo "Packages: https://github.com/orgs/1bit-MONSTER/packages?repo_name=1bit-MONSTER"
+          echo "Pull any time with:"
+          echo "  oras pull ghcr.io/1bit-MONSTER/1bit-MONSTER:latest"

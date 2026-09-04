@@ -299,6 +299,58 @@ bool dequant_q8_k(const uint8_t* bd, float* out, int count) {
     return true;
 }
 
+// Ternary quantization. Port of llama.cpp's dequantize_row_tq1_0 /
+// dequantize_row_tq2_0 (ggml-quants.c). QK_K is fixed at 256 for these
+// block types; d is an fp16 scale at the end of the block.
+//
+// block_tq1_0 (1.6875 bpw, 256 el / 54 B): qs[48] + qh[4] + d[2].
+//   qs packs 5 base-3 digits per byte (3^5 = 243 < 256), qh packs 4 per byte.
+//   The 48 qs bytes split as [0..31] (5*32 elems) + [32..47] (5*16 elems),
+//   plus 4 qh bytes (4*4 elems) = 256.
+// block_tq2_0 (2.0625 bpw, 256 el / 66 B): qs[64] + d[2]. 2-bit ternary.
+bool dequant_tq1_0(const uint8_t* bd, float* out, int count) {
+    const int BS = 256, BLOCK = 54;
+    constexpr uint8_t pow3[6] = {1, 3, 9, 27, 81, 243};
+    int nb = (count + BS - 1) / BS;
+    int pos = 0;
+    for (int b = 0; b < nb; b++) {
+        const uint8_t* x = bd + (size_t)b * BLOCK;
+        float d = read_f16(x + 52);            // d at offset 48(qs) + 4(qh)
+        auto emit = [&](uint8_t q) {
+            if (pos >= count) return;
+            int xi = (int)(((uint16_t)((uint16_t)q * 3u)) >> 8);
+            out[pos++] = (float)(xi - 1) * d;
+        };
+        // qs[0..31]: 5 base-3 digits per byte, digit-major (n outer, m inner)
+        for (int n = 0; n < 5; n++)
+            for (int m = 0; m < 32; m++) emit((uint8_t)(x[m] * pow3[n]));
+        // qs[32..47]: 5 base-3 digits per byte, digit-major
+        for (int n = 0; n < 5; n++)
+            for (int m = 32; m < 48; m++) emit((uint8_t)(x[m] * pow3[n]));
+        // qh[0..3]: 4 base-3 digits per byte, digit-major
+        for (int n = 0; n < 4; n++)
+            for (int j = 0; j < 4; j++) emit((uint8_t)(x[48 + j] * pow3[n]));
+    }
+    return true;
+}
+
+bool dequant_tq2_0(const uint8_t* bd, float* out, int count) {
+    const int BS = 256, BLOCK = 66;
+    int nb = (count + BS - 1) / BS;
+    int pos = 0;
+    for (int b = 0; b < nb; b++) {
+        const uint8_t* x = bd + (size_t)b * BLOCK;
+        float d = read_f16(x + 64);            // d at offset 64(qs)
+        for (int j = 0; j < 64; j++)
+            for (int l = 0; l < 4; l++) {
+                if (pos >= count) return true;
+                int8_t q = (x[j] >> (l * 2)) & 3;
+                out[pos++] = (float)(q - 1) * d;
+            }
+    }
+    return true;
+}
+
 } // namespace
 
 inline float bf16_to_fp32(uint16_t bf16) {
@@ -347,6 +399,9 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         // TQ2_0_g128: ternary, 2-bit packed, group=128 → blocks of 128 el, 33 bytes
         // TQ2_0 ternary: fp16 scale (2) + 2-bit codes (128*2/8=32) = 34 bytes
         case GGUF_DTYPE_TQ2_0_G128: return {128, 34};
+        // llama.cpp ternary block types (GGML_TYPE_TQ1_0/TQ2_0, QK_K=256)
+        case GGUF_DTYPE_TQ1_0_LLAMA: return {256, 54};  // qs[48]+qh[4]+d[2]
+        case GGUF_DTYPE_TQ2_0_LLAMA: return {256, 66};  // qs[64]+d[2]
         // Q1_0: fp16 scale (2) + 1-bit sign codes (128/8=16) = 18 bytes
         case GGUF_DTYPE_Q1_0: return {128, 18};
         // ROCmFP4: Codebook10 4-bit packed 2/byte + UE4M3 scales.
@@ -392,6 +447,8 @@ bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
         case GGUF_DTYPE_Q5_K: return dequant_q5_k(data, out, count);
         case GGUF_DTYPE_Q6_K: return dequant_q6_k(data, out, count);
         case GGUF_DTYPE_Q8_K: return dequant_q8_k(data, out, count);
+        case GGUF_DTYPE_TQ1_0_LLAMA: return dequant_tq1_0(data, out, count);
+        case GGUF_DTYPE_TQ2_0_LLAMA: return dequant_tq2_0(data, out, count);
         case GGUF_DTYPE_Q1_0: {
             // llama.cpp Q1_0 (QK1_0=128): fp16 scale + sign bits (1 bit per element)
             for (int i = 0; i < count; i++) {
@@ -738,7 +795,12 @@ bool GgufReader::get_tensor_f32(const std::string& name, std::vector<float>& out
     if (out_n) *out_n = ti.numel;
 
     GgufBlockInfo bi = gguf_block_info(ti.dtype);
-    if (bi.block_bytes <= 0) return false;
+    if (bi.block_bytes <= 0) {
+        fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend cannot decode it; "
+                        "route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
+                name.c_str(), ti.dtype);
+        return false;
+    }
     fseeko(f_, (off_t)ti.abs_offset, SEEK_SET);
     uint64_t n_blocks = (ti.numel + bi.block_size - 1) / bi.block_size;
     std::vector<uint8_t> block_buf((size_t)bi.block_bytes);
@@ -746,7 +808,12 @@ bool GgufReader::get_tensor_f32(const std::string& name, std::vector<float>& out
         uint64_t start = b * bi.block_size;
         uint64_t count = std::min<uint64_t>(bi.block_size, ti.numel - start);
         if (fread(block_buf.data(), (size_t)bi.block_bytes, 1, f_) != 1) return false;
-        if (!gguf_dequant(ti.dtype, block_buf.data(), out.data() + start, (int)count)) return false;
+        if (!gguf_dequant(ti.dtype, block_buf.data(), out.data() + start, (int)count)) {
+            fprintf(stderr, "GGUF: tensor '%s' dtype %u decode failed (unsupported) — "
+                            "route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
+                    name.c_str(), ti.dtype);
+            return false;
+        }
     }
     return true;
 }

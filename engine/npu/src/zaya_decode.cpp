@@ -211,6 +211,7 @@ static void rmsnorm(float* h, const float* w, int n, float eps = 1e-5f) {
 
 int zaya_decode_main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s model.q4nx [token_id...]\n", argv[0]); return 1; }
+    zaya_cca::cap_omp_threads();   // default to physical cores (#1776 oversubscription)
     int token_id = argc > 2 ? atoi(argv[2]) : 0;
 
     int fd = open(argv[1], O_RDONLY);
@@ -690,6 +691,10 @@ int zaya_decode_main(int argc, char** argv) {
                 // (fallback / diag reference) or the NPU flash-attention
                 // kernel (NPU_ATTN=1, issue #1776).
                 auto cpu_attn_scan = [&](std::vector<float>& aout) {
+                    // Heads are independent (disjoint aout writes, per-head
+                    // softmax), so parallelize the O(seq) GQA scan across the
+                    // nq heads (#1776 CPU-attention bottleneck).
+                    #pragma omp parallel for schedule(static)
                     for (int hh = 0; hh < d.nq; hh++) {
                         int kv = hh / gqa;
                         std::vector<float> sc(seq); float mx = -1e30f;
