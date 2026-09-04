@@ -7,17 +7,17 @@
   <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32x32.png">
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
-  <title>Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER</title>
-  <meta name="description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
+  <title>Lemonade v11.7.0, and how we stay current with the SDK | 1bit.MONSTER</title>
+  <meta name="description" content="Milestone: the SDK sync loop — Lemonade v11.7.0's core embedded so the engine stays current with every AMD release, 14 backends included. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
-  <meta property="og:title" content="Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER" />
-  <meta property="og:description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
+  <meta property="og:title" content="Lemonade v11.7.0, and how we stay current with the SDK | 1bit.MONSTER" />
+  <meta property="og:description" content="Milestone: the SDK sync loop — Lemonade v11.7.0's core embedded so the engine stays current with every AMD release, 14 backends included. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-lemonade-v1170.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER" />
-  <meta name="twitter:description" content="The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented." />
+  <meta name="twitter:title" content="Lemonade v11.7.0, and how we stay current with the SDK | 1bit.MONSTER" />
+  <meta name="twitter:description" content="Milestone: the SDK sync loop — Lemonade v11.7.0's core embedded so the engine stays current with every AMD release, 14 backends included. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-lemonade-v1170.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER", "description": "The embedded Lemonade server core re-vendored to v11.7.0: 14 backends incl. TheNoise, register/options/stats/metrics endpoints live, re-vendor loop documented.", "url": "https://1bit.monster/1bit-post-lemonade-v1170.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-lemonade-v1170.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-24", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Lemonade v11.7.0, and how we stay current with the SDK | 1bit.MONSTER", "description": "Milestone: the SDK sync loop — Lemonade v11.7.0's core embedded so the engine stays current with every AMD release, 14 backends included. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md", "url": "https://1bit.monster/1bit-post-lemonade-v1170.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-lemonade-v1170.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-24", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -357,6 +357,8 @@
       <h1>Lemonade v11.7.0, and how we stay current with the SDK</h1>
       <p class="lead">The embedded Lemonade server core is re-vendored to v11.7.0 — new models, a register/options/stats/metrics API, and a repeatable re-vendor loop so every upstream release lands without touching engine code.</p>
 
+      
+      <div class="callout"><p><b>Milestone:</b> the SDK sync loop — Lemonade v11.7.0's core embedded so the engine stays current with every AMD release, 14 backends included. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md">Full technical write-up &rarr; Lemonade compat guide</a></p></div>
       <div class="prose" data-od-id="body">
 
         <h2>Why we track Lemonade at all</h2>

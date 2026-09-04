@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER</title>
-  <meta name="description" content="A laptop, a disassembler, no docs: AMD's 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries, replaced with open C++ in four days." />
+  <meta name="description" content="Milestone: AMD's locked NPU stack replaced with open C++ in four days — a laptop, a disassembler, 22 proprietary libraries, zero documentation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/fastflowlm-analysis/README.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER" />
-  <meta property="og:description" content="A laptop, a disassembler, no docs: AMD's 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries, replaced with open C++ in four days." />
+  <meta property="og:description" content="Milestone: AMD's locked NPU stack replaced with open C++ in four days — a laptop, a disassembler, 22 proprietary libraries, zero documentation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/fastflowlm-analysis/README.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-npu-reversal.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER" />
-  <meta name="twitter:description" content="A laptop, a disassembler, no docs: AMD's 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries, replaced with open C++ in four days." />
+  <meta name="twitter:description" content="Milestone: AMD's locked NPU stack replaced with open C++ in four days — a laptop, a disassembler, 22 proprietary libraries, zero documentation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/fastflowlm-analysis/README.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-npu-reversal.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER", "description": "A laptop, a disassembler, no docs: AMD's 50 TOPS XDNA 2 NPU locked behind 22 proprietary libraries, replaced with open C++ in four days.", "url": "https://1bit.monster/1bit-post-npu-reversal.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-npu-reversal.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER", "description": "Milestone: AMD's locked NPU stack replaced with open C++ in four days — a laptop, a disassembler, 22 proprietary libraries, zero documentation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/fastflowlm-analysis/README.md", "url": "https://1bit.monster/1bit-post-npu-reversal.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-npu-reversal.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -356,6 +356,8 @@
       <h1>I reverse-engineered AMD's NPU stack in 4 days</h1>
       <p class="lead">A laptop, a disassembler, and no docs. AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime: 22 proprietary libraries, 209 xclbin bitstreams, zero documentation. We took it apart and replaced it with open C++. This is the story, and the unavoidable corrections.</p>
 
+      
+      <div class="callout"><p><b>Milestone:</b> AMD's locked NPU stack replaced with open C++ in four days — a laptop, a disassembler, 22 proprietary libraries, zero documentation. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/fastflowlm-analysis/README.md">Full technical write-up &rarr; fastflowlm-analysis</a></p></div>
       <div class="prose" data-od-id="body">
 
         <h2>The wall</h2>
