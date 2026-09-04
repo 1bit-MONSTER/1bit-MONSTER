@@ -38,9 +38,33 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Mint GitHub App installation token
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          { [ -n "$APP_ID" ] && [ -n "$APP_PRIVATE_KEY" ]; } || { echo "::error::APP_ID / APP_PRIVATE_KEY secrets not set — autopr cannot create PRs"; exit 1; }
+          B64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          NOW=$(date +%s)
+          HEADER=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | B64)
+          PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":%s}' "$((NOW-60))" "$((NOW+540))" "$APP_ID" | B64)
+          SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign <(printf '%s' "$APP_PRIVATE_KEY") -binary | B64)
+          JWT="$HEADER.$PAYLOAD.$SIG"
+          AUTH="Authorization: Bearer $JWT"
+          INSTALL_ID=$(curl -s -H "$AUTH" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations" | \
+            jq -r --arg o "$GITHUB_REPOSITORY_OWNER" '.[] | select(.account.login == $o) | .id' | head -1)
+          { [ -n "$INSTALL_ID" ]; } || { echo "::error::GitHub App not installed on $GITHUB_REPOSITORY_OWNER"; exit 1; }
+          TOKEN=$(curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations/$INSTALL_ID/access_tokens" | jq -r '.token // empty')
+          { [ -n "$TOKEN" ]; } || { echo "::error::Could not mint installation token — check app permissions (Contents + Pull requests R/W)"; exit 1; }
+          echo "TOKEN=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Run the watcher with alias-autopr enabled
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.TOKEN }}
         run: |
           # CENSUS_SKIP_PR stays UNSET so census_autopr may file draft PRs.
           python3 Testing/hf_new_models.py --limit 120 2>&1 | tee /tmp/census-autopr.log
@@ -88,7 +112,7 @@ jobs:
       - name: Open draft PR for significant posts
         if: steps.sigpost.outputs.changed == 'true'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.TOKEN }}
         run: |
           set -euo pipefail
           DATE="$(date -u +%Y%m%d)"
