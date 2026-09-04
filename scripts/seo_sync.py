@@ -142,6 +142,12 @@ def _num_between(m, value):
     return g[0] + (g[1] if g[1] == value else value) + g[2]
 
 
+def _bare(m, value):
+    """groups: (num, suffix) — bare checkpoint count without a fraction."""
+    g = m.groups()
+    return (g[0] if g[0] == value else value) + g[1]
+
+
 def _meta_pair(m, covered, tokens):
     """groups: (num, ' checkpoints · ', num, ' tokens')."""
     g = m.groups()
@@ -192,6 +198,16 @@ def _build_patterns(tokens, arch, covered, with_arch):
          lambda m: _pct_claim(m, covered, with_arch, 2)),
         (re.compile(r"(<span class=\"n\">)(\d+(?:\.\d+)?)(</span><span class=\"l\">checkpoints mapped</span>)"),
          lambda m: _pct_claim(m, covered, with_arch, 3)),
+        # bare prose forms (no fraction): "321,611 checkpoints mapped",
+        # "321,611 checkpoints map to", "mapping 321,611 checkpoints".
+        # Run LAST so the fraction pattern above has already rewritten
+        # "X/Y checkpoints mapped" -> "X'/Y' checkpoints mapped" first.
+        (re.compile(r"(\d[\d,]*)( checkpoints mapped)"),
+         lambda m: _bare(m, c)),
+        (re.compile(r"(\d[\d,]*)( checkpoints map to)"),
+         lambda m: _bare(m, c)),
+        (re.compile(r"(mapping )(\d[\d,]*)( checkpoints)"),
+         lambda m: _num_between(m, c)),
     ]
 
 

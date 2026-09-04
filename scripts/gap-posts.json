@@ -1,22 +1,22 @@
 {
   "1bit-post-1775-models.html": {
-    "title": "One engine, 1,775 models",
+    "title": "One engine, 1,946 models",
     "tag": "engine",
-    "lead": "Every architecture token on HuggingFace — 552 of them — resolves to one binary. 317,310 checkpoints map to a single 1-bit engine. This is how.",
-    "description": "One C++ binary, 552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped. The 1-bit engine that runs every model you can download.",
+    "lead": "Every architecture token on HuggingFace — 566 of them — resolves to one binary. 321,611 checkpoints map to a single 1-bit engine. This is how.",
+    "description": "One C++ binary, 566 architecture tokens, 1,946 HF arch strings, 100% HuggingFace coverage, 321,611 checkpoints mapped. The 1-bit engine that runs every model you can download.",
     "body": [
       ["h2", "The claim"],
       ["p", "Go to HuggingFace. Pick any text-generation model. Any architecture — Llama, Qwen, Mistral, Gemma, Zamba, Jamba, Cohere, Falcon, DeepSeek-MoE, MiniMax, BitNet, T5 — and the 1bit.MONSTER engine can run it. Not a wrapper. Not a per-model build. One binary that auto-detects the architecture from the file and dispatches to the right backend."],
-      ["p", "The daily census keeps the claim honest: <b>552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, 317,310 checkpoints mapped.</b> A workflow re-checks the numbers every night and updates the site when they move. That number is live, not a marketing figure."],
+      ["p", "The daily census keeps the claim honest: <b>566 architecture tokens, 1,946 HF arch strings, 100% HuggingFace coverage, 321,611 checkpoints mapped.</b> A workflow re-checks the numbers every night and updates the site when they move. That number is live, not a marketing figure."],
       ["h2", "Why it works: the token catalog"],
-      ["p", "Every HF architecture string — <span class=\"mono\">llama3</span>, <span class=\"mono\">qwen2.5_moe</span>, <span class=\"mono\">zamba2</span>, all 1,775 of them — normalizes down to one of 552 architecture tokens. The token captures what actually changes between model families: attention variant, MoE routing, norm placement, RoPE scheme, tie weights. Everything else is shared."],
+      ["p", "Every HF architecture string — <span class=\"mono\">llama3</span>, <span class=\"mono\">qwen2.5_moe</span>, <span class=\"mono\">zamba2</span>, all 1,946 of them — normalizes down to one of 566 architecture tokens. The token captures what actually changes between model families: attention variant, MoE routing, norm placement, RoPE scheme, tie weights. Everything else is shared."],
       ["p", "A new model family lands on HF → the daily new-model watcher drafts the mapping → the engine gets the token → the site's numbers update. The gap between a model appearing and the engine running it is measured in days, not quarters."],
       ["h2", "One binary, every format"],
       ["p", "The engine reads whatever you give it: GGUF (native), Q4NX 1-bit packed, INT8, TQ2 packed, and raw safetensors. One binary, six backends: NPU, HIP/ROCm, CPU, Vulkan, and more. The <span class=\"mono\">gguf_to_q4nx</span> path converts a 4-bit GGUF to a 1-bit pack; the converter is part of the same binary."],
       ["table", [["Format", "Read", "Convert", "Typical use"], ["GGUF", "native", "—", "off-the-shelf models"], ["Q4NX 1BP", "native", "from GGUF", "our 1-bit pipeline"], ["INT8", "native", "from GGUF", "big-batch CPU"], ["TQ2", "native", "—", "compressed weights"]]],
       ["h2", "What 1-bit buys you"],
       ["p", "A 70B-class model packed to 1-bit fits in the memory of a laptop with room to spare. The engine's measured path on the Ryzen AI NPU went from 244 ms/tok to 3.4 ms/tok across the optimization sprint — that's a 70× improvement on the same silicon, no new hardware."],
-      ["callout", "317,310 arch-bearing checkpoints resolve to 552 tokens, and 552 tokens resolve to one engine. That's the whole pitch."],
+      ["callout", "321,611 arch-bearing checkpoints resolve to 566 tokens, and 566 tokens resolve to one engine. That's the whole pitch."],
       ["h2", "Try it"],
       ["p", "<span class=\"mono\">build/1bit unified --port 8088 --weights models/</span> — point it at a directory of GGUFs, hit <span class=\"mono\">/v1/models</span>, and pick any of them. The server loads what you ask for, on the backend that's fastest for your hardware, no config file required."]
     ]

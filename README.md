@@ -20,7 +20,7 @@ A model-agnostic, hardware-agnostic inference engine in a single C++26 binary. P
 ## What you get
 
 - **One binary** — `build/1bit` is busybox-style: every server and CLI in a single ELF, dispatched by subcommand (`1bit zaya`, `unified`, `router`, `jarvis`, `vision`, …).
-- **Any model** — 552 architecture tokens mapping 1,774 HuggingFace arch strings; 317,310 / 317,310 text-generation checkpoints on the hub (100%) land on an engine token.
+- **Any model** — 566 architecture tokens mapping 1,946 HuggingFace arch strings; 321,611 / 321,611 text-generation checkpoints on the hub (100%) land on an engine token.
 - **Any hardware** — NPU (XDNA 2, reverse-engineered in 4 days — [the story](docs/journey.md)), GPU (HIP, CUDA, Metal, Vulkan), CPU (AVX-512/scalar). Auto-routed per model.
 - **Zero Python** — pure C++26 at runtime. No virtualenv, no interpreter, no runtime stack to babysit.
 

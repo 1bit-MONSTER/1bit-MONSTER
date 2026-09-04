@@ -39,13 +39,13 @@ passing** — each deserves a headline-grade post.
 | AI coding agent local | 0.608 | 1bit-post-coding-agent | owned |
 | local RAG embeddings | 0.583 | 1bit-post-flm-zoo | **close: dedicated post** |
 | model compression techniques | 0.579 | docs-models | **close: dedicated post** |
-| HuggingFace model zoo | 0.564 | 1bit-post-flm-zoo | **close: "One engine, 1,775 models"** |
+| HuggingFace model zoo | 0.564 | 1bit-post-flm-zoo | **close: "One engine, 1,946 models"** |
 | vLLM alternatives | 0.559 | 1bit-post-historical | **close: stack post** |
 | voice assistant local | 0.556 | 1bit-post-historical | **close: JARVIS deep-dive** |
 
 ## Close plan (blog posts, in priority order)
 
-1. **One engine, 1,775 models** — the census story (552 arch tokens, 100% HF coverage, 317,310 checkpoints) — killer-stat post
+1. **One engine, 1,946 models** — the census story (566 arch tokens, 100% HF coverage, 321,611 checkpoints) — killer-stat post
 2. **Local RAG with our own embeddings** — first-mover on the new capability
 3. **What 1-bit does to a model** — compression explainer
 4. **ROCm vs CUDA from the 1-bit trenches** — debate + real numbers
