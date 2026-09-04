@@ -44,10 +44,10 @@ def pull_number(pattern, default):
 
 
 def main():
-    tokens = pull_number(r"(\d[\d,]*)\s*architecture tokens", "552")
-    arch = pull_number(r"(\d[\d,]*)\s*HF arch strings", "1,775")
+    tokens = pull_number(r"(\d[\d,]*)\s*architecture tokens", "566")
+    arch = pull_number(r"(\d[\d,]*)\s*HF arch strings", "1,946")
     coverage = pull_number(r"(\d+(?:\.\d+)?)%\s*HuggingFace coverage", "100") + "%"
-    checkpoints = pull_number(r"(\d[\d,]*)\s*checkpoints mapped", "317,310")
+    checkpoints = pull_number(r"(\d[\d,]*)\s*checkpoints mapped", "321,611")
 
     img = Image.new("RGB", (W, H), BG)
     d = ImageDraw.Draw(img)

@@ -46,6 +46,17 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 API = "https://huggingface.co/api/models"
 QUERY = "pipeline_tag=text-generation&config=true&limit=1000"
 
+# HuggingFace User Access Tokens look like `hf_` + 34+ alphanumeric chars.
+# A handful of gated/junk model repos are NAMED with token-looking strings;
+# GitHub push protection rejects any commit containing them. Redact them so the
+# census can be committed without tripping secret scanning — the model is still
+# counted, only its token-looking id is anonymized.
+_TOKEN_RE = re.compile(r"hf_[A-Za-z0-9]{34,}")
+
+
+def _redact(s):
+    return _TOKEN_RE.sub("hf_REDACTED", s)
+
 
 def hf_get(url, tries=4):
     """GET a URL, returning (parsed_json, Link_header). Retries w/ backoff."""
@@ -146,7 +157,7 @@ def main():
             break
         for m in batch:
             total += 1
-            mid = str(m.get("id") or "").lower()
+            mid = _redact(str(m.get("id") or "").lower())
             mt = model_type_of(m)
             index[mid] = [mt] if mt else []
             mt_key = mt or "<none>"
