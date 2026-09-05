@@ -1036,14 +1036,22 @@ struct Hip1bpBackend : Backend {
             h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dsilu, dh, 2048);
             h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, w.an, 2048, 1e-6f);
             if (full) {
-                // q/k/v gemvs
+                // q/k/v gemvs (attn_q rows = per-head [q 256 | gate 256] pairs at 512-stride)
                 h1bp_q8gemv_kernel<<<8192, 256, 0, stream>>>(q35_sc_qk, w.q, dh, 8192, 2048);
                 h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v2, w.k, dh, 512, 2048);
-                // q per-head rmsnorm (16 x 256, weight qn); k norm on v2 (2 x 256)
-                h1bp_head_rmsnorm_kernel<<<16, 256, 0, stream>>>(q35_sc_qk, w.qn, 256, 1e-6f);
+                // de-interleave q/gate halves into contiguous per-head buffers:
+                // q35_sc_att = q (16x256), q35_sc_qc = gate (16x256)
+                for (int h = 0; h < 16; h++) {
+                    HIP_CHECK(hipMemcpyAsync(q35_sc_att + (size_t)h * 256, q35_sc_qk + (size_t)h * 512,
+                                             256 * 4, hipMemcpyDeviceToDevice, stream));
+                    HIP_CHECK(hipMemcpyAsync(q35_sc_qc + (size_t)h * 256, q35_sc_qk + (size_t)h * 512 + 256,
+                                             256 * 4, hipMemcpyDeviceToDevice, stream));
+                }
+                // q per-head rmsnorm on contiguous q halves; k norm on v2 (2 x 256)
+                h1bp_head_rmsnorm_kernel<<<16, 256, 0, stream>>>(q35_sc_att, w.qn, 256, 1e-6f);
                 h1bp_head_rmsnorm_kernel<<<2, 256, 0, stream>>>(q35_sc_v2, w.kn, 256, 1e-6f);
-                // rope nrot64: q stored as per-head [q 256 | gate 256] pairs (hd=512 layout)
-                h1bp_rope_nrot_kernel<<<16, 256, 0, stream>>>(q35_sc_qk, 512, 64, d_pos, rope_theta, 16);
+                // rope nrot64 on contiguous q (16 heads x 256) and k (2 heads x 256)
+                h1bp_rope_nrot_kernel<<<16, 256, 0, stream>>>(q35_sc_att, 256, 64, d_pos, rope_theta, 16);
                 h1bp_rope_nrot_kernel<<<2, 256, 0, stream>>>(q35_sc_v2, 256, 64, d_pos, rope_theta, 2);
                 // store k (v2) and v into the per-layer kv cache [seq][k0 k1 v0 v1]
                 int f = n_full_layers;
@@ -1052,10 +1060,10 @@ struct Hip1bpBackend : Backend {
                 h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v, w.v, dh, 512, 2048);
                 HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024 + 512, q35_sc_v, 512 * 4, hipMemcpyDeviceToDevice, stream));
                 // attention over the cache, then sigmoid-gate multiply, then o_proj
-                h1bp_q35_fattn_kernel<<<16, 256, 0, stream>>>(q35_sc_qk, kvbase, q35_sc_att,
+                h1bp_q35_fattn_kernel<<<16, 256, 0, stream>>>(q35_sc_att, kvbase, q35_sc_att,
                     q35_kv_scores, 16, 2, 256, max_seq, d_pos);
                 for (int h = 0; h < 16; h++) {
-                    float* g = q35_sc_qk + (size_t)h * 512 + 256;
+                    float* g = q35_sc_qc + (size_t)h * 256;
                     float* a = q35_sc_att + (size_t)h * 256;
                     h1bp_sigmoid_mul_kernel<<<(256 + 255) / 256, 256, 0, stream>>>(a, g, 256);
                 }
