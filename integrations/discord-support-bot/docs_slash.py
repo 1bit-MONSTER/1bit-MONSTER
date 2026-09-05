@@ -175,7 +175,7 @@ class DocsSlash(discord.Client):
             answer, block = await asyncio.to_thread(_compose_answer, question)
             if not block.strip():
                 await interaction.followup.send(
-                    "I couldn't find relevant docs for that. Try rephrasing, or check the docs hub: <https://docs.1bit.monster>."
+                    "I couldn't find relevant docs for that. Try rephrasing, or check the docs hub: <https://1bit.monster/docs/>."
                 )
                 return
         except Exception as exc:  # noqa: BLE001
