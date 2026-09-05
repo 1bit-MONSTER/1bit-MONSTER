@@ -1,6 +1,12 @@
 # feat(engine): baretorch — cs_lrad chunked-state linear-recurrent — port map (#1907)
 
-**Status:** scoped / M1 plan. Issue #1907. Branch `feat/baretorch-cslrad-port`.
+**Status:** M1 port map + M2/M3 CPU engine landed (2026-09-05, commits 6c47e693 +
+6b48a73c on `feat/baretorch-cslrad-port`, PR #2123). The baretorch CPU engine
+(`src/baretorch_engine.cpp`, `baretorch_cpu`) now runs the real 500M-Base:
+engine logits vs torch chunked-prefill reference = max abs err 2.7e-4 / corr 1.0
+over 96 positions x 49152 vocab; discovery → route → engine init → generate
+verified end-to-end. Remaining: M4 (GGUF/quant) + M5 (GPU), per milestones below.
+Census coverage stays 100%. Issue #1907. Branch `feat/baretorch-cslrad-port`.
 
 ## Goal
 
