@@ -99,3 +99,30 @@ so the GU read / silu pair indexing is now the prime suspect.
 ## To confirm (next)
 - Run the CPU mirror of GU→SiLU (silu_q22 on C1 = A_tile @ B_gu deriv-inverse) for the same one-hot A and
   diff vs the NPU h2 (C2 with identity B_d). If nonzero positions/values differ → GU read map is #2078.
+
+## GU read vs CPU true-math — DECISIVE: GU read scrambles h2 (2026-09-04)
+Added a CPU true-math GU mirror to the GU probe: `h2_cpu[p] = silu(w1[p][H0])·w2[p][H0]` for each
+one-hot A (float weights from w.gu). Compare density vs the NPU h2 (C2 with identity B_d).
+
+**Result (H0=0..7):**
+| H0 | NPU h2 nz (frac) | CPU true-math nz |
+|----|----|----|
+| 0 | 224 / 2048 (11%) | 1526 |
+| 1 | 219 (11%) | 1543 |
+| 2 | 224 (11%) | 1525 |
+| 3 | 221 (11%) | 1519 |
+| 4 | 221 (11%) | 1522 |
+| 5 | 223 (11%) | 1576 |
+
+NPU h2 is nonzero ONLY at column multiples of 8 (~11% density); the correct GU math is DENSE (~75%).
+A ~7× structural mismatch — quantization (float→int8) cannot drop 1300+ of 2048 outputs to zero.
+
+**CONCLUSION (silicon-verified):** the cascade GU read map is SCRAMBLING the silu'd GU output (h2) to a
+sparse subset at multiples of 8. Combined with the no_gu result that proved the D read is CORRECT,
+**the #2078 root cause is in the GU phase** — the GU B_gu deriv-inverse read / A-tile fill / silu pair
+indexing for the Zaya n_cg=4 geometry — NOT packB_d_into. This explains corr=0.02 (dense correct h2
+vs sparse scrambled h2).
+
+## Next
+Diff the NPU GU h2 nonzero positions against the deriv-inverse B_gu read formula to find which index
+term (row/col/pair) is misindexed for Zaya; then fix `packB_gu_into` / the generator GU core_fn.

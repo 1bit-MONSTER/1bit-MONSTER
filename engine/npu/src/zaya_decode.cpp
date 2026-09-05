@@ -1584,6 +1584,20 @@ int zaya_decode_main(int argc, char** argv) {
                                     fprintf(stderr, "  (nz=%d) | first16:", nz);
                                     for (int nn = 0; nn < 16; nn++) fprintf(stderr, " %d", rc2[nn]);
                                     fprintf(stderr, "\n");
+                                    // CPU true-math GU mirror: h2_cpu[p] = silu(gate)*up,
+                                    // gate/up = w[?][H0] for a one-hot h at H0. DENSE if the
+                                    // GU read is correct; SPARSE => the kernel's GU A/B read is
+                                    // scrambling (the #2078 suspect).
+                                    const float* gb2 = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                                    const float* ub2 = gb2 + (size_t)m.n_ff * d.H;
+                                    int cpu_nz = 0;
+                                    for (int p = 0; p < m.n_ff; p++) {
+                                        float gate = gb2[(size_t)p * d.H + H0];
+                                        float up = ub2[(size_t)p * d.H + H0];
+                                        float sg = gate / (1.0f + expf(-gate));
+                                        if (fabsf(sg * up) > 1e-6f) cpu_nz++;
+                                    }
+                                    fprintf(stderr, "[GUcpu] H0=%3d cpu-nz=%d n_ff=%d\n", H0, cpu_nz, m.n_ff);
                                 }
                             }
                         }
