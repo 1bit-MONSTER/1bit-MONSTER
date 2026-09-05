@@ -115,6 +115,59 @@ llama.cpp debug harness. Deliverable: exact flat offsets for the fused tensors +
 rope layout + repeat mapping + expert slice indexing — the loader/kernels are
 written to the capture, not to inference.
 
+## M3 empirical capture — findings (2026-09-05, strixhalo)
+
+### llama.cpp CPU decode is BROKEN for qwen35moe (upstream finding)
+
+Both `ggml-org/llama.cpp` **master 6a1a922d** and **v0.4.0** crash / corrupt the
+heap running the Q8_0 GGUF on CPU (strixhalo): `malloc(): invalid size
+(unsorted)` abort; gdb backtrace shows the poisoned heap surfacing on the first
+post-compute malloc; a pristine (unpatched, no M3CAP) run degenerates into a
+multi-GB `> ` REPL loop after eval. The GGUF itself is structurally sound
+(gguf-py full read, 733 tensors, data readable; earlier crashes were against
+the pre-completion file that was 15 MB short of the HF listing). Working
+hypothesis: the fused-GPU strided q/k/v VIEW extraction (qwen35moe.cpp, nb1 =
+full 8192-elt row between heads) reads OOB when the CPU non-fused path consumes
+the same tensors. Implication for #1831: **llama.cpp CPU cannot serve as the
+corr-gate golden** until fixed upstream (or validated on a CUDA host) — the
+in-repo CPU reference (below) replaces it.
+
+### Layout lock from source (replaces the ⚠ items; run-free, authoritative)
+
+Read op-for-op against v0.4.0 `src/models/qwen35moe.cpp` +
+`src/models/delta-net-base.cpp` + `ggml/src/ggml-cuda/gated_delta_net.cu`:
+
+- **GDN recurrence (per token, decode):** state `S[i][col]` per head h, stored
+transposed `M[col][i]` (S_v×S_v = 128×128, 32 v-heads); per token:
+  `kv[col] = Σ_i S[i][col]·k[i]`; `delta[col] = (v[col] − exp(g_h)·kv[col])·β[col]`;
+  `S[i][col] ← exp(g_h)·S[i][col] + k[i]·delta[col]`; `out[col] = (1/√128)·Σ_i S[i][col]·q[i]`.
+  g_h = ssm_a[head]·softplus(alpha[head] + dt_bias[head]); β = sigmoid(beta[head]).
+- **k-repeat 16→32:** q/k heads map `h % 16` (tiled ggml_repeat); CPU non-fused
+decode keeps H_k=16 with `h%16` semantics via broadcast.
+- **MoE expert indexing (locked):** fused 3-D GGUF tensors are expert-major
+  contiguous: gate/up expert e block = floats `e·(512·2048)` (512 out × 2048 in);
+  down expert e = `e·(2048·512)`; consumed via `ggml_mul_mat_id` semantics
+  (W[k,n,ne]; out rows = n per expert). Router: softmax over 256 → top-8.
+- **Full-attn:** `attn_q` rows = per-head [q 256 | gate 256] pairs (head stride
+  512); q/k per-head RMSNorm; IMRoPE `ggml_rope_multi` sections [11,11,10,0] over
+  64-dim blocks; `attn × sigmoid(gate)`; `attn_output` 4096→2048.
+- **GDN fused-row channel order (remaining crux, hypothesis H):** attn_qkv rows
+  (8192, = conv channels) = HF qkv_proj verbatim order: `[q 2048 | k 2048 | v
+  4096]`, heads contiguous within each block (head dim 128 consecutive per
+  head). Verified empirically by the in-repo CPU reference (below) whose
+  per-layer dumps must be internally consistent + corr-matched against the
+  qwen3next-engine-validated math family — before any HIP kernel uses it.
+
+### Reference plan (replaces llama.cpp CPU for the corr gate)
+
+In-repo CPU reference `tools/qwen35moe_cpu_ref.cpp` (GgufReader f32 path):
+implements the exact math above for the qwen35moe GGUF schema; validated by the
+math-family parity trick — the SAME GDN/MoE math compiled against the
+qwen3next-80B q4nx GGUF (this repo's own converted file on strixhalo) must
+match the repo's validated `qwen3next_engine.cpp` outputs (corr 0.9997 vs HF),
+proving the math; then the 35B GGUF run is the trustworthy golden for the HIP
+kernels (decode-vs-golden corr ≥ 0.99).
+
 ## Validation gate (unchanged from M1 doc)
 
 Decode-vs-CPU corr ≥ 0.99 over ≥100 tokens on strixhalo; byte-parity for
