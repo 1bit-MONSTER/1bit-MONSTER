@@ -57,7 +57,7 @@ struct Hip1bpBackend : Backend {
     std::unique_ptr<GgufReader> gguf_;  // GGUF-direct mode (lossless f32, no 1BP conversion)
 
     // qwen35moe (Qwen3.6-35B-A3B) device weights — GGUF-direct, Q8_0 raw tiles
-    // (36 B/block; GGUF dtype 8 Q8_1 layout: fp16 d | fp16 s | 32 int8, val = qs*d)
+    // (34 B/block Q8_0) + f32 small tensors. Rows = out dim, K = ne0.
     struct Q35L {
         float* an = nullptr, *pan = nullptr;            // attn_norm / post_attention_norm (H f32)
         uint8_t* qkv = nullptr, *gate = nullptr;        // GDN: 8192xH / 4096xH Q8_0
@@ -332,15 +332,15 @@ struct Hip1bpBackend : Backend {
                         H, NC, n_full);
             }
             // M3 loader/kernel self-check (env H1BP_Q35_SELFCHECK): pull
-            // blk.0.attn_qkv (dtype-8 raw, 36 B/block) and run the device Q8 gemv
+            // blk.0.attn_qkv (Q8_0 raw, 34 B/block) and run the device Q8 gemv
             // against a host dequant of the same rows. Exercises the raw-GGUF
             // loader + h1bp_q8gemv_kernel on real hardware without a decode
             // path. Dense models never reach here (arch gate above).
             if (ok && getenv("H1BP_Q35_SELFCHECK")) {
                 std::vector<uint8_t> raw;
                 const int K0 = 2048, M0 = 8192;
-                const size_t rowb = (size_t)(K0 / 32) * 36;
-                if (gguf_->get_tensor_raw("blk.0.attn_qkv.weight", 32, 36, raw) &&
+                const size_t rowb = (size_t)(K0 / 32) * 34;
+                if (gguf_->get_tensor_raw("blk.0.attn_qkv.weight", 32, 34, raw) &&
                     raw.size() == (size_t)M0 * rowb) {
                     auto host_h2f = [](unsigned short h) -> float {
                         unsigned s = (h & 0x8000u) ? -1 : 1;
@@ -353,7 +353,7 @@ struct Hip1bpBackend : Backend {
                     for (int j = 0; j < K0; j++) x[j] = ((j % 13) - 6) * 0.25f;  // deterministic ramp
                     double ref0 = 0;
                     for (int j = 0; j < K0; j++) {
-                        const uint8_t* bp = raw.data() + (j >> 5) * 36;
+                        const uint8_t* bp = raw.data() + (j >> 5) * 34;
                         float d = host_h2f(*(const unsigned short*)bp);
                         float v = d * (float)((signed char)bp[2 + (j & 31)]);
                         ref0 += (double)v * x[j];
@@ -394,11 +394,11 @@ struct Hip1bpBackend : Backend {
                     if (l < 0) snprintf(bn, sizeof bn, "%s", nm);
                     else       snprintf(bn, sizeof bn, "blk.%d.%s", l, nm);
                     std::vector<uint8_t> raw;
-                    if (!gguf_->get_tensor_raw(bn, 32, 36, raw)) {
+                    if (!gguf_->get_tensor_raw(bn, 32, 34, raw)) {
                         if (optional) return true;
                         fprintf(stderr, "[hip1bp] q35 load: MISSING %s\n", bn); return false;
                     }
-                    size_t want = (size_t)M * ((size_t)(K >> 5) * 36);
+                    size_t want = (size_t)M * ((size_t)(K >> 5) * 34);
                     if (raw.size() != want) {
                         fprintf(stderr, "[hip1bp] q35 load: %s size %zu != want %zu "
                                         "(M=%d K=%d)\n", bn, raw.size(), want, M, K);
