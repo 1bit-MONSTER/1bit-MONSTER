@@ -1,0 +1,25 @@
+Read the full cross-validation end to end — agreed, so this is a short reply. The two-failure split is right, and the old "FlowKV is the primary broken component" model should be retired: INT4 attention-out GEMV (K2048/N2048/8col) is the first catastrophic event, the uniform 0x7F81 in FlowKV is downstream persistent-state damage, and the Q NaNs are a later cascade. NaN guards are a safety net, not a root fix.
+
+Strongest evidence, in my read: v1 and v2 share the failure, and K12288/N4096/8col (tsi=2, m_input=2, internally consistent) is clean while K2048/N2048/8col (tsi=4 vs m_input=8) is not. That shape-dependence points at a common geometry-contract bug, not a kernel implementation bug — exactly what host/kernel grouping disagreement looks like.
+
+I've hit this failure class from the Linux side: a kernel baked for one geometry silently consuming a different runtime geometry. Ours hung (M=128-baked tiling; REG_M can't resize → deadlock) — loud. Yours misaligns and computes garbage — quiet, and worse. "COMPLETED ≠ correct" stays a governance rule here too.
+
+On H1: if host m_input and kernel tsi describe the same K-grouping, it's a contract violation. In the AIE GEMV contract the input-tile dimension is also the row-replication width. Packing 8-row groups while the kernel consumes 4 means scale/weight reads land on every second group boundary — ±1e36 in half the accumulator lanes is exactly the expected signature. The 4-of-8 split also fits H2 (output/column mapping) as a second fault; fix the shared contract (select_gemv_tiles() with the packed-fragment capacity model for INT4), not a K2048 special case.
+
+One detail worth noting: your test is Q4_0, and frag = K/2 + (K/32)·2 is Q4_0-consistent (2-byte fp16 scale per 32 rows). Q4_K's 256-block/6-bit layout carries far more scale metadata — that's where I've measured compounding ~10% rel-L2 from double repack before. Q4_0 has fewer places to hide, which makes it a clean target for the byte-level test.
+
+---
+
+Independent work I can do from here without your binaries:
+
+1) Export the host packed buffer + scale stream for K2048/N2048/8col (your Decisive Test #1). I'll derive the expected layout against our ggml dequant reference and diff byte-by-byte — no kernel execution required, so it isolates packing from runtime entirely.
+2) Zero-input + deterministic-pattern synthetic GEMV for the same geometry on our harness (Tests #2/#3), and I'll report whether our compiler also selects tsi=4 for K2048 — an independent data point on the selector logic.
+3) Happy to share our descriptor checklist (NoC DMA 32B/8-dword vs Memory-Module 24B/6-dword, IRON 4D-DMA stride semantics) if it helps the BO-canary and column-offset logging.
+
+Smallest artifact set that proves or kills H1:
+(a) packed-buffer hexdump with scale offsets,
+(b) the actual select_gemv_tiles() output for K2048/N2048/8col (verify the 7.375→4 and 26.22→8 figures against current compile.py),
+(c) xclbin MD5 + timestamp for the 4col and 8col binaries (cache staleness),
+(d) confirmation v1 and v2 consumed byte-identical packed input.
+
+I'd keep FlowKV parked until the GEMV fault is proven fixed, then return to the 9B helper-kernel chain. Ping me with the dump whenever ready.

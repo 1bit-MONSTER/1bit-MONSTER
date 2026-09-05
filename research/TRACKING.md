@@ -1,6 +1,6 @@
 # Workstream Tracking
 
-> Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed. Updated: 2026-08-29.
+> Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed. Updated: 2026-09-05.
 
 ## Phase 0 — Stabilize the floor
 
@@ -28,8 +28,16 @@
 | WS-09 | Router unification | 🔲 | 🔲 | 🔲 | gated on P0.2 |
 | WS-10 | Metal/M5 + MLIR toolchain | 🔲 | 🔲 | 🔲 | — |
 | WS-12 | HRX/Loom platform transition | ✅ | 🔲 | 🔲 | re-vendored 7953d7f + native `HRX_GPU` backend + decode-time failover (commits 43b38b4e, cc4fd23d, 2026-08-29) |
+| WS-13 | gatman45 XDNA cross-validation (external, Discord) | 🔄 | 🔲 | 🔲 | Windows↔Linux INT4 GEMV collab; replied w/ H1 ABI-mismatch assessment; awaiting packed-buffer artifacts (2026-09-05) |
 
 ## Task detail
+
+### ws13-gatman45-xdna-collab
+- [ ] P0: Await gatman45 artifacts (a–d) in Discord thread `1545394554956423269` — packed-buffer hexdump, `select_gemv_tiles()` output, xclbin MD5s, v1/v2 identical-input confirm (requested 2026-09-05)
+- [ ] P1: Run packed-buffer expected-vs-actual diff against ggml dequant reference (commitment 1; add Q4_0 ref if needed — current set is Q4_K/Q5_K/Q6_K/Q8_0)
+- [ ] P1: Synthetic GEMV (zero-input + deterministic pattern) K2048/N2048/8col on strixhalo; report whether our compiler also selects tsi=4 (commitment 2)
+- [ ] P2: Share NoC/MemMod descriptor checklist if useful to gatman45's canary/column-offset tests (commitment 3)
+- [ ] P2: After GEMV fault proven fixed — resume 9B helper-kernel chain. Full context: `ws13-gatman45-xdna-collab/README.md` (2026-09-05)
 
 ### ws12-hrx-loom
 - [x] P0: Re-vendor lemonade e1b31683 → 7953d7f (hrx backend arrives) — verified onebin registers `llamacpp-hrx` on gfx1151 (2026-08-29)
