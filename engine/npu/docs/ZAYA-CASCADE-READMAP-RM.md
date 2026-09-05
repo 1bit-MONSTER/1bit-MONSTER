@@ -214,3 +214,13 @@ exact misindexed term is in the A-tile fill / deriv-inverse B_gu read / silu pai
 indexing (mm_kernel_reference.cc matmul_vectorized_8x8x8_i8_i32_m8, the
 GU mm matmul_i8_i32_ab). Localizing that term (and the fix) is the next step, but
 the DIFF's core question (is it the GU read or the D read) is now answered.
+
+## Full GU one-hot read map (H0=0..63) — preserved for the read-solver
+Ran NPU_CASCADE_GU_H=0 N=64 (identity B_d, real GU weights, no_gu h2 input one-hot). Every H0:
+  - h2 is nonzero ONLY at column multiples of 8 (c_=0), never at c_=1..7.
+  - The nz set shifts with H0 (e.g. H0=0 starts at col 0; H0=1 starts at 64; H0=63 starts at 0),
+    but ALL nonzero cols are ≡0 (mod 8). (nz ~208-232 per H0.)
+Confirms the GU read collapses the silu'd h2 to the c_=0 sub-position of each 8x8 micro-group
+across the entire input space (not input-dependent) -> the GU read map is the #2078 fault. This
+full (H0 -> output-c_0-set) table is the target for the read-formula solver (guread/gusolve port):
+diff each H0's output set against the deriv-inverse B_gu/A-tile read formula to name the misindex.
