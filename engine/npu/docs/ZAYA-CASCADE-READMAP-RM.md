@@ -224,3 +224,16 @@ Confirms the GU read collapses the silu'd h2 to the c_=0 sub-position of each 8x
 across the entire input space (not input-dependent) -> the GU read map is the #2078 fault. This
 full (H0 -> output-c_0-set) table is the target for the read-formula solver (guread/gusolve port):
 diff each H0's output set against the deriv-inverse B_gu/A-tile read formula to name the misindex.
+
+## Read-formula hypothesis (for the solver) — 64*((j/4)%2) high-block term
+From the deriv-inverse col formula `col = 64*((j/4)%2) + (K%8)*8 + 2*(j%4)`:
+  - For output pair j with j%8==0 (the ONLY nonzero h2 in the c_=0 collapse): (j/4)%2 == 0
+    (j=0,8,16,... -> j/4 = 0,2,4,... even). So col = (K%8)*8  -- always in the LOW 64-block.
+  - For j%8!=0 (which collapse to 0): j=1..7 have (j/4)%2 = 0 (j<4) or 1 (j=4..7); j=4..7 land
+    in the HIGH 64-block (64*((j/4)%2)=64).
+=> LEADING HYPOTHESIS: the kernel's B_gu (or A-tile) read OMITS the `64*((j/4)%2)` term, so it
+   only ever reaches the LOW 64-block cols -> j%8!=0 outputs (which require the HIGH block) come
+   back 0 -> the observed c_=0 collapse. The GUI read is therefore reading a SINGLE micro-header
+   block instead of the full deriv-inverse 8x8 layout.
+This is the first concrete candidate term for the read-formula solver to test (enumerate col
+variants: full deriv-inverse vs no-64*((j/4)%2) vs alt, and score against the kernel h2).
