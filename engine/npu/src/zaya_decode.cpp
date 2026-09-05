@@ -285,6 +285,10 @@ int zaya_decode_main(int argc, char** argv) {
         !(getenv("NPU_FUSED_SPLIT") && atoi(getenv("NPU_FUSED_SPLIT")) == 1);
     std::vector<Layer> L(NC);
     char key[256];
+    // Parallelize the per-layer model load (dequant ~15s single-threaded):
+    // each layer's tensors dequantize independently; get_offsets is a
+    // read-only scan of the manifest blob. key is thread-private.
+    #pragma omp parallel for schedule(dynamic) private(key)
     for (int l = 0; l < NC; l++) {
         auto& w = L[l];
         w.cs.reset(d.qkv, d.kd / 2);
@@ -607,6 +611,15 @@ int zaya_decode_main(int argc, char** argv) {
             }
         }
         fprintf(stderr, "resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
+    }
+
+    // Free the float weight expansion once resident BOs are packed: only the
+    // l==1 CPU-reference probe touches w.gu/w.dn during decode (all uses are
+    // gated l==1 && pos==0). Saves ~15 GB per engine (peak ~26.5 -> ~11 GB)
+    // so 4+ concurrent engines fit alongside the live services.
+    for (int l = 3; l < NC; l += 2) {
+        L[l].gu.clear(); L[l].gu.shrink_to_fit();
+        L[l].dn.clear(); L[l].dn.shrink_to_fit();
     }
 
     auto forward = [&](int tok, int pos) -> int {
