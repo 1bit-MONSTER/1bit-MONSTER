@@ -151,3 +151,89 @@ Zaya does not) and measure single-launch vs 2-launch on a real layer.
   or keep behind NPU_PROFILE=1 if promoted).
 - decode cmd: NPU_FUSED=1 NPU_N_GEN=16 ./engine/npu/build/npu_engine_m1
   ~/models/zaya1-8b-fresh.q4nx (stderr has [perf]/[M1prof]).
+
+---
+
+## int4 vectorized mmul — root cause + verified fix (2026-09-05)
+
+**Symptom:** the vectorized int4 fused GU xclbin (no `I4_SCALAR_C1`) gave
+`[MoE L1 fused dbg] corr=-0.055` (wrong) but good perf (P1 GU ~11 ms,
+0.6→3.0 tok/s). The scalar int4 was correct (0.9993) but 17× slow.
+
+**Root cause (corrects earlier mis-diagnosis):** the mmul C-store was NOT the
+bug. The aie2p backend mis-compiles the *register-array (V[4]) + nested
+inner-loop* form (measured "blocks 4-15 unwritten + block-2 row-corruption",
+see `cascade_d_i8_i32_slice`). The int4 dequant used exactly that shape:
+`int8_t Bb[4][64]` + a nested `jt` loop + `load_v(Bb[jt])`. The `B''` thus
+arrived scrambled at the mmul even though the scalar dequant math was correct.
+
+**Fix (`mm_kernel_reference.cc`, `matmul_i8_i32_i4`):** restructured the `B''`
+dequant into four named `aie::vector<int8,64>` registers (`B0..B3`, unrolled
+`jt`, lambda `deq_b`), feeding them directly to the mmul — no array, no nested
+loop. The backend spill fix (llvm-aie `a36c62b9d`: ACC1024 fp-acc → cmh) is
+also required so the vectorized mmul path is selectable at all.
+
+**Verified on strixhalo (reproducible ×2):**
+| path | corr (`[MoE L1 fused dbg]`) | GU ms/layer | tok/s |
+|---|---|---|---|
+| int8 single-launch (production) | 0.9985 | ~9 | 9.5–10.3 |
+| int4 scalar (correct, old) | 0.9993 | 35.3 | 0.6 |
+| **int4 vectorized (fixed)** | **0.999336** | **9.68** | **3.1–3.3** |
+
+- `[C2gate] corr=1.0` (byte-identical), `maxdiff=0.0231`, `npu rms=0.1919`
+  vs `cpu 0.1930`.
+- Build: `generators/build_fixed_zaya_i4_vec.sh` →
+  `xclbins/final_i8_MOE_GUSILU_i4_zaya_VECFIX.xclbin` (production
+  `final_i8_MOE_GUSILU_i4_zaya.xclbin` untouched).
+
+**Honest framing:** int4 is an *accuracy*-over-speed trade. The vectorized fix
+turns int4 from "correct but 17× slow" into "correct and ~3.3× slower than
+int8" (0.9993 vs 0.9985 accuracy, 3.1 vs 10.3 tok/s). It does not beat int8 on
+throughput; it buys ~1e-3 of accuracy at ~3× the cost.
+
+---
+
+## cascade (issue #2078 single-launch) — M=1 decode + config deadlock (2026-09-05)
+
+**Design verified working:** the iron cascade (`build_iron_cascade.sh`,
+`n1_core_fused_gu_silu_d_iron.py`) runs `final_cascade_fused_zaya_nd2048`
+correctly at **M=8 all-ones**: `launch state=4, 7 ms, bad=0/20480` for
+**N_D=2560** (N_D_row=640) and the generator-verified N_D=3840. So the
+cascade DESIGN and the device are valid — it is NOT fundamentally broken.
+
+**A-layout bug FIXED (`npu_cascade_kernel.h::go`):** for decode (one token)
+the A-tiles must be **replicated** across the 8 mmul rows (the mmul reads
+A as row-major `(8 rows, K=c)`). The old write `A[i*64+c] = h[ki*64 + i*8 +
+c%8]` SPREAD h across rows and used only 8 of the 64 K values (`c%8`),
+scrambling the GU C1 → the M=1 `corr=0.12` garbage. Fixed to
+`A[i*64+c] = q127(h[ki*64 + c], a_is)` (replicated, full 64-K chunk).
+
+**Config-specific deadlock (blocker for the user's D=2048):** N_D=2048 is
+forced into `rows=4` (the array has only 4 compute rows; rows=1/2 give
+N_D_row=2048/1024 which exceed the shim BD ≤1023 limit), yielding
+**N_D_row=512**, which DEADLOCKS (`launch state=8`, 7–8 s timeout), while
+N_D_row=640 (N_D=2560) and N_D_row=960 (N_D=3840) work. rows=8 avoids the
+deadlock but is invalid (only 4 array rows) → wrong C2 (bad=8192). The
+deadlock is documented in the generator ("launch deadlock state=8 timeout";
+memtile-split lock protocol) and is a power-of-2/memtile-boundary quirk at
+N_D_row=512. Only N_D=2560/3840 were silicon-verified; N_D=2048 was not.
+
+## cascade N_D=2048 deadlock — FIXED (2026-09-05, RE toolchain = Peano a36c62b9d)
+The N_D_row=512 deadlock (`state=8`) was a **Peano-version bug**, not the design or
+BD-pool. Building the cascade with the **newer open-source Peano `a36c62b9d`
+(clang-22, license-free; `llvm-aie-src/install_aie`)** instead of the old
+`c9c5ecb7` (clang-21, iron venv) FIXES it. Verified (reproducible):
+- `final_cascade_fused_zaya_nd2048_RE.xclbin` (a36c62b9d, rows=4): **M=8 all-ones
+  `state=4, 6-7ms, bad=0/16384`** (was `state=8` deadlock on c9c5ecb7).
+- N_D=2560 (a36c62b9d) also `bad=0/20480`.
+Build: `generators/build_re_test.sh` (P=`/home/bcloud/llvm-aie-src/install_aie`,
+peano flow `--no-xchesscc`). The upstream mlir-aie `c80b88c` BD-field fixes are
+NOT needed and conflict with the local NPU2-40 patches.
+
+## cascade M=1 decode — A-layout FIXED (zero-pad), corr 0.578 (open)
+The A-layout bug: the design is an **M=8 batch**; for decode (one token) the
+token's h belongs in **row 0**, rows 1-7 **ZERO-PADDED** (AM=1), not replicated
+or spread. `go()` now writes `A[i*64+c] = (i==0 ? q127(h[ki*64+c]) : 0)`. M=1
+decode `corr` went -0.021 → **0.578**. Still <1.0 — the cascade's real-weight
+GU→SiLU→D / per-column scale convention for the MoE needs the calibrated S (the
+probe passes S=1.0) — open.

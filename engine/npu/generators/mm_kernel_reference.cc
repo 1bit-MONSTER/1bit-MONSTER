@@ -886,6 +886,11 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     
     // 4 accumulators per col-tile group (C00..C03 pattern of the m8 kernel);
     // iterate col-tiles in groups of 4.
+    // BUGFIX (issue #1776 parity): zero pC at the start of each col_group so
+    // the mmul accumulates onto ZERO (not stale pC). Mirrors the scalar path.
+    if (g_i4_call % 32 == 0) {
+        for (unsigned z = 0; z < DIM_M * DIM_N; z++) pC[z] = 0;
+    }
     for (unsigned jg = 0; jg < nct; jg += 4) {
         int32_t *pC1 = pC + jg * MMUL::size_C;   // col-tile stride 64 (jg*8 clobbered cols 0-31, never wrote 32-127)
         aie::vector<int32, 64> acc0 = aie::load_v<64>(pC1);
@@ -895,9 +900,16 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
         MMUL C00(acc0), C01(acc1), C02(acc2), C03(acc3);
         for (unsigned i = 0; i < nk; ++i) {
             aie::vector<int8, 64> A0 = aie::load_v<64>(pA + i * 64);
-            int8_t Bb[4][64];
-            for (unsigned jt = 0; jt < 4; ++jt) {
-                unsigned j = jg + jt;   // col-tile index 0..15
+            aie::vector<int8, 64> B0, B1, B2, B3;
+            // #1872/#1858: the aie2p backend mis-compiles the register-array
+            // (V[4]) + nested jt-loop form ("blocks 4-15 unwritten + block-2
+            // row-corruption", see cascade_d_i8_i32_slice). The old
+            // `int8_t Bb[4][64]` + `load_v(Bb[jt])` round-trip is exactly that
+            // shape, so B'' arrives at the mmul scrambled even though the
+            // scalar dequant math is correct. Keep B'' in four named
+            // aie::vector registers (no array, no nested loop) and feed them
+            // straight to the mmul.
+            auto deq_b = [&](aie::vector<int8, 64>& Bv, unsigned j) {
                 const uint8_t* nib = pB4 + i * 512 + j * 32;
                 const v64int4* pv = (const v64int4*)nib;
                 auto u = unpack_i4_sx(pv);
@@ -928,7 +940,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                     // q4 = (q4<<4)>>4 — sign-extended nibble (already in u)
                     float v = (float)(int8_t)(u[e] >> 4) * af + bf;
                     int r = silu_roundf(v);   // round-half-away (no-libm)
-                    Bb[jt][e] = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
+                    Bv[e] = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
                 }
 #else
                 // v65 ratioQ22 (int32) at [4096 + group*512 + col*4] — the
@@ -941,18 +953,18 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                     // B'' = sat8(round((q4<<4) * ratioQ22 / 2^22))
                     int x = (int)(int8_t)u[e] * rq[e & 7];
                     int r = (x + (1 << 21)) >> 22;
-                    Bb[jt][e] = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
+                    Bv[e] = (int8_t)(r > 127 ? 127 : r < -127 ? -127 : r);
                 }
 #endif
-            }
-            aie::vector<int8, 64> B0 = aie::load_v<64>(Bb[0]);
-            aie::vector<int8, 64> B1 = aie::load_v<64>(Bb[1]);
-            aie::vector<int8, 64> B2 = aie::load_v<64>(Bb[2]);
-            aie::vector<int8, 64> B3 = aie::load_v<64>(Bb[3]);
+            };
+            deq_b(B0, jg + 0);
+            deq_b(B1, jg + 1);
+            deq_b(B2, jg + 2);
+            deq_b(B3, jg + 3);
 #ifdef I4_B_DUMP
             if (g_i4_dq_once) {
                 g_i4_dq_once = 0;
-                for (int e = 0; e < 64; e++) g_i4_dq_dump[e] = Bb[0][e];
+                for (int e = 0; e < 64; e++) g_i4_dq_dump[e] = B0[e];
                 for (int e = 0; e < 8; e++) g_i4_rq_dump[e] = ((const int32_t*)(pB4 + 4096))[e];
                 // nibble bytes the kernel unpacked (first 32 B of the tile)
                 for (int e = 0; e < 32; e++) g_i4_trace_b0[e] = pB4[e];
@@ -984,29 +996,29 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
                     g_i4_mmul_c1[j] = pC[(j / 8) * 64 + (j % 8)];
             }
             if (i == nk - 1 && jg == nct - 4) {   // last k-step, last col-tile group
-                for (int e = 0; e < 64; e++) g_i4_dq_dump2[e] = Bb[3][e];
+                for (int e = 0; e < 64; e++) g_i4_dq_dump2[e] = B3[e];
                 for (int e = 0; e < 8; e++) g_i4_rq_dump2[e] = ((const int32_t*)(pB4 + 4096 + (i / 4) * 512 + 15 * 32))[e];
             }
             if (g_i4_call == 32 && i == 0 && jg == 0) {   // cg1 first call, first chunk
-                for (int e = 0; e < 64; e++) g_i4_dq_dump3[e] = Bb[0][e];
+                for (int e = 0; e < 64; e++) g_i4_dq_dump3[e] = B0[e];
             }
             if (g_i4_call == 0) {   // first matmul call = tile (ki=0, nt=0)
                 if (g_cap5 && i == 0 && jg == 0) {   // chunk (0, jt=3)
                     g_cap5 = 0;
-                    for (int e = 0; e < 64; e++) g_i4_dq_dump5[e] = Bb[3][e];
+                    for (int e = 0; e < 64; e++) g_i4_dq_dump5[e] = B3[e];
                 }
                 if (g_cap6 && i == 1 && jg == 0) {   // chunk (1, jt=0)
                     g_cap6 = 0;
-                    for (int e = 0; e < 64; e++) g_i4_dq_dump6[e] = Bb[0][e];
+                    for (int e = 0; e < 64; e++) g_i4_dq_dump6[e] = B0[e];
                 }
                 if (g_cap3 && i == 1 && jg == 0) {   // chunk (1, jt=3)
                     g_cap3 = 0;
-                    for (int e = 0; e < 64; e++) g_i4_dq_dump3[e] = Bb[3][e];
+                    for (int e = 0; e < 64; e++) g_i4_dq_dump3[e] = B3[e];
                     for (int e = 0; e < 8; e++) g_i4_rq_dump3[e] = ((const int32_t*)(pB4 + 4096 + (i / 4) * 512 + 3 * 32))[e];
                 }
                 if (g_cap4 && i == 3 && jg == 4) {   // chunk (3, jt=7)
                     g_cap4 = 0;
-                    for (int e = 0; e < 64; e++) g_i4_dq_dump4[e] = Bb[3][e];
+                    for (int e = 0; e < 64; e++) g_i4_dq_dump4[e] = B3[e];
                     for (int e = 0; e < 8; e++) g_i4_rq_dump4[e] = ((const int32_t*)(pB4 + 4096 + (i / 4) * 512 + 7 * 32))[e];
                 }
             }
@@ -1178,6 +1190,41 @@ extern "C" void silu_quant_i8_fused_q22(int32_t *c1, int32_t *gs_dummy, int8_t *
             h2[r * (DIM_N / 2) + p] = (int8_t)hv;
         }
     }
+}
+
+// ── Fold-aware q22 silu for the CASCADE (issue #2078 scale fold) ─────────
+// Full-precision port of the production silu_pair_q22 pattern (silu_quant.h):
+// the per-token fold metadata keeps gQ = c1·fold = dot·2^Q as fixed point (NO
+// >>22-to-int truncation — that lost the sub-1 gate dots). Meta buffer per
+// tile (272 int32 = 1088 B):
+//   [0..63]   foldg[p]  = round(ag·gs_g[p]·2^Q)
+//   [64..127] foldu[p]  = round(ag·qn_s·gs_u[p]·2^Q)
+//   [128..191] boundg[p] = (2^31-1)/|foldg[p]|
+//   [192..255] boundu[p]
+//   [256] Q   [257] shG = Q-11   [258] shU = Q-7
+// h2 = sat8(round(silu(dot_g)·dot_u·qn_s)) — dot from the q22 LUT at full
+// fixed-point precision; u carries qn_s.
+extern "C" void silu_quant_i8_fused_q22_fold(int32_t *c1, const int32_t *meta, int8_t *h2) {
+    const int Q = meta[256];
+    const int shG = meta[257];
+    const int shU = meta[258];
+    for (unsigned r = 0; r < DIM_M; r++) {
+        for (unsigned p = 0; p < DIM_N / 2; p++) {
+            unsigned go = ((2 * p) / 8) * 64 + r * 8 + ((2 * p) % 8);
+            unsigned uo = ((2 * p + 1) / 8) * 64 + r * 8 + ((2 * p + 1) % 8);
+            h2[r * (DIM_N / 2) + p] = silu_pair_q22(
+                c1[go], c1[uo],
+                meta[p], meta[64 + p], meta[128 + p], meta[192 + p],
+                Q, shG, shU);
+        }
+    }
+}
+
+// ── Fold-header copy for the cascade (issue #2078): the per-token fold
+// element (8704-B AB stream element) carries 128 int32 Q22 folds in its first
+// 512 B; this copies them into a small per-core buffer the fold silu reads.
+extern "C" void cascade_copy_fold(const int8_t *__restrict src, int8_t *__restrict dst) {
+    for (unsigned i = 0; i < 1088; i++) dst[i] = src[i];
 }
 
 // ── Fused GU→SiLU→D, INT4 path (issue #1769, ws09): per-column scales ──

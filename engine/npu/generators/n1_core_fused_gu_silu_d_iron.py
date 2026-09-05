@@ -111,6 +111,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
     # chunk cg at local col cg*(n//2)); this is 2 KB for n_cg_gu=4 vs a full
     # (8xK) 16 KB — the 64 KB core L1 cannot also hold the wide B_d element.
     H2F_ty = np.ndarray[(m, n_cg_gu * (n // 2)), np.dtype[np.int8]]
+    Fold_ty = np.ndarray[(1088,), np.dtype[np.int8]]  # per-cg silu_pair meta (272 int32)
     A8_ty = np.ndarray[(8, 8), np.dtype[np.int8]]      # k-sliced A staging (8x8)
     if multi:
         # memtile elements are [row0 (8,N_D_row) | row1 | ...] CONTIGUOUS
@@ -127,7 +128,8 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
     shims = [Tile(c, 0, tile_type=AIETileType.ShimNOCTile) for c in range(n_aie_cols)]
 
     matmul_ab = Kernel("matmul_i8_i32_ab", "mm_32x64x128.o", [AB_ty, C_ty])
-    silu = Kernel("silu_quant_i8_fused_q22", "mm_32x64x128.o", [C_ty, C_ty, H2_ty])
+    silu = Kernel("silu_quant_i8_fused_q22_fold", "mm_32x64x128.o", [C_ty, Fold_ty, H2_ty])
+    copyfold = Kernel("cascade_copy_fold", "mm_32x64x128.o", [AB_ty, Fold_ty])
     mm_wk8 = Kernel("matmul_i8_i32_wide_k8", "wide_d.o", [A8_ty, B8_ty, C_W_ty])
     crf_w = Kernel("cascade_reduce_first_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
     crm_w = Kernel("cascade_reduce_mid_i32_wide", "wide_d.o", [C_W_ty, C_W_ty])
@@ -182,6 +184,10 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
         h2buf = Buffer(H2F_ty, tile=cores[r][c])
         h2scr = Buffer(H2_ty, tile=cores[r][c])
         c1buf = Buffer(C_ty, tile=cores[r][c])
+        fbuf0 = Buffer(Fold_ty, tile=cores[r][c])
+        fbuf1 = Buffer(Fold_ty, tile=cores[r][c])
+        fbuf2 = Buffer(Fold_ty, tile=cores[r][c])
+        fbuf3 = Buffer(Fold_ty, tile=cores[r][c])
         # Tail core (col n_aie_cols-1): accumulate the row's D partial
         # DIRECTLY in the C2 fifo element (multi: the join sub-fifo element;
         # single: of_c2.prod()), so it needs no separate (8xN_D_row) int32
@@ -201,7 +207,9 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
             b8_cons = of_b8[c].cons()
 
         def core_fn(ab_in, bd8_in, c2_out, c2scr_b, h2b, h2s, c1b, a8s,
-                    row, col, mmab_k, silu_k, mm_wk8, crf_w, crm_w, crl_w, crla_w):
+                    fb0, fb1, fb2, fb3,
+                    row, col, mmab_k, silu_k, copyfold_k, mm_wk8, crf_w, crm_w, crl_w, crla_w):
+            fbs = [fb0, fb1, fb2, fb3]
             # ── GU phase (ONE combined A|B channel per core) ──
             if no_gu:
                 if multi:
@@ -214,7 +222,11 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
                     for j_ in range_(n_cg_gu * (n // 2)):
                         h2b[i_, j_] = h2_const
             else:
-                for cg in range_(n_cg_gu):
+                for fcg in range(n_cg_gu):
+                    fab = ab_in.acquire(1)
+                    copyfold_k(fab, fbs[fcg])
+                    ab_in.release(1)   # fold copy
+                for cg in range(n_cg_gu):     # python-unrolled for fbs[cg]
                     for i_ in range_(m):
                         for j_ in range_(n):
                             c1b[i_, j_] = 0
@@ -222,7 +234,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
                         ab = ab_in.acquire(1)
                         mmab_k(ab, c1b)
                         ab_in.release(1)
-                    silu_k(c1b, c1b, h2s)
+                    silu_k(c1b, fbs[cg], h2s)
                     if silu_const is not None:
                         for i_ in range_(m):
                             for j_ in range_(n // 2):
@@ -252,7 +264,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
                     for kstep in range_(8):
                         for c_ in range_(8):
                             a8s[kstep, c_] = \
-                                h2b[ks, cg * (n // 2) + kstep * 8 + c_]
+                                h2b[kstep, cg * (n // 2) + ks * 8 + c_]
                     mm_wk8(a8s, b8, acc)
                     bd8_in.release(1)
             if col == n_aie_cols - 1:
@@ -268,8 +280,8 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
         workers[r][c] = Worker(
             core_fn,
             fn_args=[ab_cons, b8_cons, c2_out_handle, c2scr,
-                     h2buf, h2scr, c1buf, a8scr, r, c,
-                     matmul_ab, silu, mm_wk8, crf_w, crm_w, crl_w, crla_w],
+                     h2buf, h2scr, c1buf, a8scr, fbuf0, fbuf1, fbuf2, fbuf3, r, c,
+                     matmul_ab, silu, copyfold, mm_wk8, crf_w, crm_w, crl_w, crla_w],
             tile=cores[r][c],
         )
       # per-row cascade chain
@@ -281,7 +293,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
     # The MLIR_AIE XRT kernel exposes only FIVE data buffers (groups 3-7), so
     # the per-column AB streams must live in ONE buffer laid out [col][ki][cg]
     # and each column's fill taps its own region. Sequence = (AB, C2, B_d).
-    AB_total = n_aie_cols * n_cg_gu * n_k * AB_tile
+    AB_total = n_aie_cols * (n_cg_gu * n_k + 4) * AB_tile
     AB_gu_bo = np.ndarray[(AB_total,), np.dtype[np.int8]]
     C2_bo = np.ndarray[(M * N_D,), np.dtype[np.int32]]
     B_d_bo = np.ndarray[(K * N_D,), np.dtype[np.int8]]
@@ -292,9 +304,9 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
         # rows via the memtile forward. In no_gu the GU consumes nothing; fill
         # ONE element so the prod endpoint exists (a single element completes
         # without blocking on a full fifo).
-        n_fill = 1 if no_gu else (n_cg_gu * n_k)
+        n_fill = 1 if no_gu else (n_cg_gu * n_k + 4)
         for c in range(n_aie_cols):
-            base = c * n_cg_gu * n_k * AB_tile
+            base = c * (n_cg_gu * n_k + 4) * AB_tile
             for fi in range(n_fill):
                 tg = rt.task_group()
                 rt.fill(of_ab[c].prod(), ab_bo,

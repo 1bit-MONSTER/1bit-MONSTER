@@ -1444,10 +1444,11 @@ int zaya_decode_main(int argc, char** argv) {
                                 cas_done = true;
                                 char cxp[640], cip[640];
                                 snprintf(cxp, sizeof cxp, "%s/final_cascade_fused_zaya_nd2048.xclbin", xd);
-                                snprintf(cip, sizeof cip, "%s/insts_cascade_fused_zaya_nd2048.txt", xd);
+                                snprintf(cip, sizeof cip, "%s/insts_final_cascade_fused_zaya_nd2048.txt", xd);   // FIX: match the build output name
                                 if (getenv("NPU_CASCADE_XCLBIN")) snprintf(cxp, sizeof cxp, "%s", getenv("NPU_CASCADE_XCLBIN"));
                                 if (getenv("NPU_CASCADE_INSTS"))  snprintf(cip, sizeof cip, "%s", getenv("NPU_CASCADE_INSTS"));
-                                cas_ok = cas.init(dev, cxp, cip, d.H, m.n_ff, casc_nd, 4);   // nd2048 artifact = ROWS=4
+                                int cas_rows = getenv("NPU_CASCADE_ROWS") ? atoi(getenv("NPU_CASCADE_ROWS")) : (casc_nd <= 1024 ? 1 : 4);
+                                cas_ok = cas.init(dev, cxp, cip, d.H, m.n_ff, casc_nd, cas_rows);
                                 if (cas_ok) {
                                     casAB = std::make_unique<xrt::bo>(dev, (size_t)cas.AB_bytes, XRT_BO_FLAGS_HOST_ONLY,
                                                                       cas.kk->group_id(3));
@@ -1468,7 +1469,7 @@ int zaya_decode_main(int argc, char** argv) {
                                     if (d_amax < 1e-12f) d_amax = 1.0f;
                                     fprintf(stderr, "[CAS] expert=%d gu_amax=%.3e d_amax=%.3e n_k=%d n_cg=%d AB=%ld B\n",
                                             e, gu_amax, d_amax, cas.n_k, cas.n_cg, (long)cas.AB_bytes);
-                                    cas.packB_gu_into(*casAB, gb, ub, 127.0f / gu_amax);
+                                    cas.packB_gu_into(*casAB, gb, ub);   // per-column scales
                                     cas.packB_d_into(dnp, 127.0f / d_amax);
                                     fprintf(stderr, "[CAS] packed ok\n");
                                 } else fprintf(stderr, "[CAS] cascade init FAILED\n");
@@ -1478,8 +1479,41 @@ int zaya_decode_main(int argc, char** argv) {
                                 float ag_eff = ag;
                                 if (getenv("NPU_CASCADE_AGSCALE")) ag_eff *= (float)atof(getenv("NPU_CASCADE_AGSCALE"));
                                 auto ct0 = std::chrono::steady_clock::now();
-                                cas.go(residual.data(), ag_eff, 1.0f, ffn_cas.data(), *casAB);
+                                float qns2 = 1.0f;
+                                if (!(getenv("NPU_CASCADE_NOQNS") && atoi(getenv("NPU_CASCADE_NOQNS")) == 1)) {
+                                    const float* gbq = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                                    const float* ubq = gbq + (size_t)m.n_ff * d.H;
+                                    const float* rr2 = residual.data();
+                                    double mx2 = 0;
+                                    for (int p2 = 0; p2 < m.n_ff; p2++) {
+                                        const float* gp = gbq + (size_t)p2 * d.H;
+                                        const float* up = ubq + (size_t)p2 * d.H;
+                                        double dg2 = 0, du2 = 0;
+                                        for (int i2 = 0; i2 < d.H; i2++) { dg2 += (double)rr2[i2] * gp[i2]; du2 += (double)rr2[i2] * up[i2]; }
+                                        float sg2 = (float)(dg2 / (1.0 + exp(-dg2)));
+                                        double h2f2 = (double)sg2 * du2;
+                                        double a2 = fabs(h2f2); if (a2 > mx2) mx2 = a2;
+                                    }
+                                    qns2 = mx2 > 1e-12 ? (float)(127.0 / mx2) : 1.0f;
+                                }
+                                fprintf(stderr, "[CAS] qn_s=%.4f\n", qns2);
+                                cas.go(residual.data(), ag_eff, 1.0f, ffn_cas.data(), *casAB, qns2);
                                 auto ct1 = std::chrono::steady_clock::now();
+                                // ── DECODE INTEGRATION (NPU_CASCADE_DECODE=1): the
+                                // cascade output becomes the layer's FFN result, so the
+                                // decode continues with h = cascade_moe + residual and the
+                                // downstream logits reflect the cascade. Compares the
+                                // cascade vs the fused/split path on the REAL decode flow.
+                                if (getenv("NPU_CASCADE_DECODE") && atoi(getenv("NPU_CASCADE_DECODE")) == 1) {
+                                    double cn0=0, cd1a=0, cd1b=0;
+                                    for (int nn = 0; nn < d.H; nn++) {
+                                        double c2 = ffn_cas[nn], m2 = moe_out[nn];
+                                        cn0 += c2*m2; cd1a += c2*c2; cd1b += m2*m2;
+                                    }
+                                    fprintf(stderr, "[DECODE] l=%d pos=%d e=%d | cascade-vs-fused corr=%.6f | copying cascade -> moe_out\n",
+                                            l, pos, e, cn0/sqrt(cd1a*cd1b));
+                                    for (int nn = 0; nn < d.H; nn++) moe_out[nn] = ffn_cas[nn];
+                                }
                                 if (getenv("NPU_CASCADE_NOGU")) {
                                     // no_gu artifact: h2 = const 1 -> out[c] = sum_kk bd_true[kk][c]
                                     // (bd_true = q127(w3[c][kk]) -- the cascade's int8 D rows)
@@ -1672,8 +1706,25 @@ int zaya_decode_main(int argc, char** argv) {
                                 // real-residual discriminator: dense GU output => the c_=0
                                 // collapse was a one-hot/A-tile artifact; sparse => GU read bug.
                                 {
+                                    // qn_s for the probe (same as the main path)
+                                    float gq = 1.0f;
+                                    if (getenv("NPU_CASCADE_H2CPU")) {
+                                        const float* gbc = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                                        const float* ubc = gbc + (size_t)m.n_ff * d.H;
+                                        const float* rrc = residual.data();
+                                        double mxv = 0;
+                                        for (int p2 = 0; p2 < m.n_ff; p2++) {
+                                            const float* gp = gbc + (size_t)p2 * d.H;
+                                            const float* up = ubc + (size_t)p2 * d.H;
+                                            double dg = 0, du = 0;
+                                            for (int i2 = 0; i2 < d.H; i2++) { dg += (double)rrc[i2] * gp[i2]; du += (double)rrc[i2] * up[i2]; }
+                                            float sg = (float)(dg / (1.0 + exp(-dg)));
+                                            double a = fabs((double)sg * du); if (a > mxv) mxv = a;
+                                        }
+                                        gq = mxv > 1e-12 ? (float)(127.0 / mxv) : 1.0f;
+                                    }
                                     std::vector<float> gu_real(NDr, 0.0f);
-                                    cas.go(residual.data(), ag, 1.0f, gu_real.data(), *casAB);
+                                    cas.go(residual.data(), ag, 1.0f, gu_real.data(), *casAB, gq);
                                     int nzr = 0; long mx2 = 0; int mxnn = 0;
                                     for (int nn = 0; nn < NDr; nn++) {
                                         long v = (long)gu_real[nn];
@@ -1683,6 +1734,97 @@ int zaya_decode_main(int argc, char** argv) {
                                     fprintf(stderr, "[GUrl] real-residual h2 nz=%d/%d max|h2|=%ld at nn=%d | first8: %d %d %d %d %d %d %d %d\n",
                                         nzr, NDr, mx2, mxnn, (int)gu_real[0],(int)gu_real[1],(int)gu_real[2],(int)gu_real[3],
                                         (int)gu_real[4],(int)gu_real[5],(int)gu_real[6],(int)gu_real[7]);
+                                    if (getenv("NPU_CASCADE_H2CPU")) {
+                                        // CPU float h2 truth for the SAME residual:
+                                        // h2c[p] = silu(dot_g[p])*dot_u[p]*gq (the up fold
+                                        // carries qn_s in the cascade)
+                                        const float* gbc = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                                        const float* ubc = gbc + (size_t)m.n_ff * d.H;
+                                        const float* rrc = residual.data();
+                                        double mxv = 0;
+                                        std::vector<float> h2c(NDr, 0.0f);
+                                        for (int p2 = 0; p2 < NDr; p2++) {
+                                            const float* gp = gbc + (size_t)p2 * d.H;
+                                            const float* up = ubc + (size_t)p2 * d.H;
+                                            double dg = 0, du = 0;
+                                            for (int i2 = 0; i2 < d.H; i2++) { dg += (double)rrc[i2] * gp[i2]; du += (double)rrc[i2] * up[i2]; }
+                                            float sg = (float)(dg / (1.0 + exp(-dg)));
+                                            h2c[p2] = (float)(sg * du * gq);
+                                            double a = fabs(h2c[p2]); if (a > mxv) mxv = a;
+                                        }
+                                        // NPU h2 = gu_real/127 (identity bd, S=1); compare signs
+                                        double cn=0, cd1=0, cd2=0; int sgn=0;
+                                        for (int nn = 0; nn < NDr; nn++) {
+                                            double a = (double)gu_real[nn] / 127.0, b = (double)h2c[nn];
+                                            cn += a*b; cd1 += a*a; cd2 += b*b;
+                                            if ((a>0)==(b>0) && (a!=0 || b!=0)) sgn++;
+                                        }
+                                        fprintf(stderr, "[H2C] cpu max|h2|=%.4f | corr(npu_h2, cpu_h2)=%.4f | signmatch=%d/%d | cpu first8: %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
+                                            mxv, cn/sqrt(cd1*cd2), sgn, NDr,
+                                            h2c[0],h2c[1],h2c[2],h2c[3],h2c[4],h2c[5],h2c[6],h2c[7]);
+                                        fprintf(stderr, "[H2PAIR] p: npu(gu_real/127) vs cpu(h2c):\n");
+                                        for (int pn = 0; pn < 24; pn++) {
+                                            int npv = (int)gu_real[pn];
+                                            fprintf(stderr, "  %2d: %6d %7.3f %s\n", pn, npv, h2c[pn],
+                                                (npv == 0 && fabs(h2c[pn]) < 0.5) ? "" : ((npv > 0) == (h2c[pn] > 0) ? "" : "  <-- SIGN/STRUCT"));
+                                        }
+                                        if (getenv("NPU_CASCADE_EMU")) {
+                                            // exact int8 emulation of the cascade GU: for the
+                                            // first EMUP pairs compute c1 via the SAME int8
+                                            // quant, apply the fold, silu, and compare.
+                                            int emu_n = getenv("NPU_CASCADE_EMU") ? atoi(getenv("NPU_CASCADE_EMU")) : 32;
+                                            float mx2v = 0;
+                                            for (int i2 = 0; i2 < d.H; i2++) { float a = fabsf(residual[i2]); if (a > mx2v) mx2v = a; }
+                                            if (mx2v < 1e-12f) mx2v = 1.0f;
+                                            float a_is2 = 127.0f / mx2v;
+                                            std::vector<int8_t> Aq(d.H);
+                                            for (int i2 = 0; i2 < d.H; i2++) {
+                                                int x = (int)roundf(residual[i2] * a_is2);
+                                                Aq[i2] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                                            }
+                                            const float* gbe = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                                            const float* ube = gbe + (size_t)m.n_ff * d.H;
+                                            const double Q22 = 4194304.0;
+                                            double cn2=0, cdA=0, cdB=0; int sgn2 = 0;
+                                            for (int pn = 0; pn < emu_n && pn < m.n_ff; pn++) {
+                                                float amg = 0, amu = 0;
+                                                for (int i2 = 0; i2 < d.H; i2++) {
+                                                    float a = fabsf(gbe[(size_t)pn * d.H + i2]); if (a > amg) amg = a;
+                                                    float b = fabsf(ube[(size_t)pn * d.H + i2]); if (b > amu) amu = b;
+                                                }
+                                                if (amg < 1e-12f) amg = 1.0f; if (amu < 1e-12f) amu = 1.0f;
+                                                long cg2 = 0, cu2 = 0;
+                                                for (int i2 = 0; i2 < d.H; i2++) {
+                                                    int bg = (int)roundf(gbe[(size_t)pn * d.H + i2] * (127.0f / amg));
+                                                    if (bg > 127) bg = 127; else if (bg < -127) bg = -127;
+                                                    int bu = (int)roundf(ube[(size_t)pn * d.H + i2] * (127.0f / amu));
+                                                    if (bu > 127) bu = 127; else if (bu < -127) bu = -127;
+                                                    cg2 += (long)Aq[i2] * bg;
+                                                    cu2 += (long)Aq[i2] * bu;
+                                                }
+                                                int fg2 = (int)llround((double)(mx2v / 127.0f) * (amg / 127.0f) * Q22);
+                                                int fu2 = (int)llround((double)(mx2v / 127.0f) * gq * (amu / 127.0f) * Q22);
+                                                long g2 = (cg2 * fg2) >> 22;
+                                                long u2 = (cu2 * fu2) >> 22;
+                                                if (pn < 8 && getenv("NPU_CASCADE_EMUDBG")) {
+                                                    double dgf = 0, duf = 0;
+                                                    for (int i2 = 0; i2 < d.H; i2++) { dgf += (double)residual[i2] * gbe[(size_t)pn * d.H + i2]; duf += (double)residual[i2] * ube[(size_t)pn * d.H + i2]; }
+                                                    fprintf(stderr, "[EMUG] p=%d g2=%ld dot_g_float=%.4f | u2=%ld dot_u_float*gq=%.4f | fg2=%d fu2=%d\n",
+                                                        pn, g2, dgf, u2, duf * gq, fg2, fu2);
+                                                }
+                                                double gc2 = g2 < -4 ? -4 : (g2 > 4 ? 4 : (double)g2);
+                                                double sig2 = 1.0 / (1.0 + exp(-gc2));   // float sigmoid (emulation)
+                                                double slu2 = (double)g2 * sig2;
+                                                long h2e = (long)(slu2 * (double)u2);
+                                                int he = h2e > 127 ? 127 : (h2e < -127 ? -127 : (int)h2e);
+                                                double npv2 = (double)gu_real[pn] / 127.0;
+                                                cn2 += npv2 * he; cdA += npv2 * npv2; cdB += (double)he * he;
+                                                if ((npv2 > 0) == (he > 0) && (npv2 != 0 || he != 0)) sgn2++;
+                                            }
+                                            fprintf(stderr, "[EMU] corr(npu_h2, int8-emu_h2)=%.4f signmatch=%d/%d (gq=%.2f)\n",
+                                                cn2/sqrt(cdA*cdB), sgn2, emu_n, gq);
+                                        }
+                                    }
                                 }
                             }
                             // ── Read-solver (NPU_CASCADE_SOLVER): port the Qwen-verified deriv-\n                            // inverse GU read (vB_reidx) to Zaya, compute c1->silu->h2_cpu, and\n                            // report its nonzero-count to compare against the kernel's c_=0 collapse.\n                            if (getenv("NPU_CASCADE_SOLVER") && atoi(getenv("NPU_CASCADE_SOLVER")) == 1) {\n                                const int H0 = getenv("NPU_CASCADE_SOLVER_H") ? atoi(getenv("NPU_CASCADE_SOLVER_H")) : 0;\n                                const float* gb2 = &w.gu[(size_t)e * 2 * m.n_ff * d.H];\n                                const float* ub2 = gb2 + (size_t)m.n_ff * d.H;\n                                // int8 A (one-hot h at H0) + int8 gate/up weights\n                                float a_is = (ag < 1e-9f) ? 1.0f : 1.0f / ag;\n                                float gu_amax2 = 0;\n                                for (int pp = 0; pp < m.n_ff; pp++) for (int kk = 0; kk < d.H; kk++) {\n                                    float a = fabsf(gb2[(size_t)pp * d.H + kk]); if (a > gu_amax2) gu_amax2 = a;\n                                    float b = fabsf(ub2[(size_t)pp * d.H + kk]); if (b > gu_amax2) gu_amax2 = b;\n                                }\n                                float guis = gu_amax2 < 1e-9f ? 1.0f : 127.0f / gu_amax2;\n                                std::vector<int8_t> aq(d.H, 0);\n                                std::vector<int8_t> w1q((size_t)m.n_ff * d.H), w2q((size_t)m.n_ff * d.H);\n                                for (int i = 0; i < d.H; i++) aq[i] = (int8_t)roundf((i == H0 ? 1.0f : 0.0f) * a_is);\n                                for (size_t i = 0; i < w1q.size(); i++) w1q[i] = (int8_t)roundf(gb2[i] * guis);\n                                for (size_t i = 0; i < w2q.size(); i++) w2q[i] = (int8_t)roundf(ub2[i] * guis);\n                                int nzfull = 0, nzno64 = 0;\n                                for (int p = 0; p < m.n_ff; p++) {\n                                    long g = 0, u = 0, g2 = 0, u2 = 0;\n                                    for (int ki = 0; ki < cas.n_k; ki++)\n                                        for (int i = 0; i < 8; i++)\n                                            for (int kp = 0; kp < 8; kp++) {\n                                                // full deriv-inverse (vB_reidx)\n                                                int pair = 32 * ((2 * p / 8) % 2) + 4 * kp + p % 4;\n                                                if (pair < m.n_ff)\n                                                    g += (long)aq[ki * 64 + 8 * i + kp] * w1q[(size_t)pair * d.H + ki * 64 + 8 * i + p / 8];\n                                                int pairu = 32 * (((2 * p + 1) / 8) % 2) + 4 * kp + ((2 * p + 1) % 8) / 2;\n                                                if (pairu < m.n_ff)\n                                                    u += (long)aq[ki * 64 + 8 * i + kp] * w2q[(size_t)pairu * d.H + ki * 64 + 8 * i + p / 8];\n                                                // no-64*((j/4)%2) hypothess: drop the 32*((...)%2) high block\n                                                int pair2 = 4 * kp + p % 4;\n                                                if (pair2 < m.n_ff)\n                                                    g2 += (long)aq[ki * 64 + 8 * i + kp] * w1q[(size_t)pair2 * d.H + ki * 64 + 8 * i + p / 8];\n                                                int pairu2 = 4 * kp + ((2 * p + 1) % 8) / 2;\n                                                if (pairu2 < m.n_ff)\n                                                    u2 += (long)aq[ki * 64 + 8 * i + kp] * w2q[(size_t)pairu2 * d.H + ki * 64 + 8 * i + p / 8];\n                                            }\n                                    int h = (int)((float)g / (1.0f + expf(-(float)g)) * (float)u);\n                                    if (h != 0) nzfull++;\n                                    int h2 = (int)((float)g2 / (1.0f + expf(-(float)g2)) * (float)u2);\n                                    if (h2 != 0) nzno64++;\n                                }\n                                fprintf(stderr, "[SOLVER-H0=%d] deriv-inverse nz=%d  no-64block nz=%d  n_ff=%d\n", H0, nzfull, nzno64, m.n_ff);\n                            }
