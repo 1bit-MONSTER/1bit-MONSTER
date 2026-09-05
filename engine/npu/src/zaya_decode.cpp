@@ -285,6 +285,10 @@ int zaya_decode_main(int argc, char** argv) {
         !(getenv("NPU_FUSED_SPLIT") && atoi(getenv("NPU_FUSED_SPLIT")) == 1);
     std::vector<Layer> L(NC);
     char key[256];
+    // Parallelize the per-layer model load (dequant ~15s single-threaded):
+    // each layer's tensors dequantize independently; get_offsets is a
+    // read-only scan of the manifest blob. key is thread-private.
+    #pragma omp parallel for schedule(dynamic) private(key)
     for (int l = 0; l < NC; l++) {
         auto& w = L[l];
         w.cs.reset(d.qkv, d.kd / 2);
@@ -331,10 +335,16 @@ int zaya_decode_main(int argc, char** argv) {
             snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", l);
             // FUSED_I4: fp32 gu only needed for l==1 (CPU reference diag);
             // packing uses the raw q4nx bytes (read_q4nx_raw).
-            if (!(FUSED && FUSED_I4 && l != 1))
+            // Non-fused: gu/dn floats load lazily in the resident-pack batch
+            // loop (memory streaming, see MOE_BATCH below) — only l==1's
+            // floats stay resident for the CPU-reference probe at decode.
+            if (((FUSED && !(FUSED_I4 && l != 1)) || (!FUSED && l == 1)))
                 GETI8(key, w.gu, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
             { uint64_t o_, s_; if (get_offsets(js, jl, key, &o_, &s_)) { w.gu_off = o_; w.gu_size = s_; w.gu_i8_rows = (m.n_exp*2*m.n_ff/32)*(d.H/256); } }
-            snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l); GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
+            if (FUSED || l == 1) {
+                snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l);
+                GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
+            }
         }
         #undef GET
         #undef GETI8
@@ -585,28 +595,65 @@ int zaya_decode_main(int argc, char** argv) {
     // Skipped in fused mode (NPU_FUSED=1) — the fused kernel packs its own
     // interleaved GU + D BOs above.
     if (!FUSED) {
-        for (int l = 1; l < NC; l += 2) {
-            auto& w = L[l];
-            for (int e = 0; e < m.n_exp; e++) {
-                const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
-                #pragma omp parallel for schedule(static)
-                for (int j = 0; j < d.H; j++)
-                    for (int i = 0; i < 2 * m.n_ff; i++)
-                        gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
-                gu_bo[l][e] = gu_ctx.make_weight_bo(dev);
-                float gu_sc = 0;
-                gu_ctx.packB_into(*gu_bo[l][e], gu_T.data(), d.H, 2 * m.n_ff, gu_sc, gu_cs[l][e]);
-                const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
-                #pragma omp parallel for schedule(static)
-                for (int j = 0; j < m.n_ff; j++)
-                    for (int i = 0; i < d.H; i++)
-                        dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
-                d_bo[l][e] = d_ctx.make_weight_bo(dev);
-                float d_sc = 0;
-                d_ctx.packB_into(*d_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, d_cs[l][e]);
+        // Stream gu/dn through packing in batches of odd layers: load a
+        // batch's floats (layer-parallel), pack all its experts, then free.
+        // The all-at-once load peaked ~26.5 GB/engine (float gu ~10.7 GB +
+        // dn ~5.4 GB) and blocked 3+ concurrent engines; batching caps float
+        // residency to MOE_BATCH layers so 8 engines fit the 122 GB box.
+        const int MOE_BATCH = 4;   // odd MoE layers per load/pack/free group
+        char bkey[256];
+        for (int b0 = 1; b0 < NC; b0 += 2 * MOE_BATCH) {
+            const int b1 = std::min(NC, b0 + 2 * MOE_BATCH);
+            // (a) load this batch's moe gu/dn floats (layer-parallel)
+            #pragma omp parallel for schedule(dynamic) private(bkey)
+            for (int l = b0; l < b1; l += 2) {
+                auto& w = L[l];
+                uint64_t o_, s_;
+                snprintf(bkey, sizeof bkey, "model.layers.%d.mlp.experts.gate_up_proj.weight", l);
+                if (get_offsets(js, jl, bkey, &o_, &s_))
+                    w.gu = load_i8(D, o_, s_, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
+                snprintf(bkey, sizeof bkey, "model.layers.%d.mlp.experts.down_proj.weight", l);
+                if (get_offsets(js, jl, bkey, &o_, &s_))
+                    w.dn = load_i8(D, o_, s_, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
+            }
+            // (b) pack this batch's experts into resident BOs
+            for (int l = b0; l < b1; l += 2) {
+                auto& w = L[l];
+                for (int e = 0; e < m.n_exp; e++) {
+                    const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                    #pragma omp parallel for schedule(static)
+                    for (int j = 0; j < d.H; j++)
+                        for (int i = 0; i < 2 * m.n_ff; i++)
+                            gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
+                    gu_bo[l][e] = gu_ctx.make_weight_bo(dev);
+                    float gu_sc = 0;
+                    gu_ctx.packB_into(*gu_bo[l][e], gu_T.data(), d.H, 2 * m.n_ff, gu_sc, gu_cs[l][e]);
+                    const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                    #pragma omp parallel for schedule(static)
+                    for (int j = 0; j < m.n_ff; j++)
+                        for (int i = 0; i < d.H; i++)
+                            dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
+                    d_bo[l][e] = d_ctx.make_weight_bo(dev);
+                    float d_sc = 0;
+                    d_ctx.packB_into(*d_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, d_cs[l][e]);
+                }
+            }
+            // (c) release this batch's floats (keep l==1 for the CPU probe)
+            for (int l = b0 + 2; l < b1; l += 2) {
+                L[l].gu.clear(); L[l].gu.shrink_to_fit();
+                L[l].dn.clear(); L[l].dn.shrink_to_fit();
             }
         }
         fprintf(stderr, "resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
+    }
+
+    // Free the float weight expansion once resident BOs are packed: only the
+    // l==1 CPU-reference probe touches w.gu/w.dn during decode (all uses are
+    // gated l==1 && pos==0). Saves ~15 GB per engine (peak ~26.5 -> ~11 GB)
+    // so 4+ concurrent engines fit alongside the live services.
+    for (int l = 3; l < NC; l += 2) {
+        L[l].gu.clear(); L[l].gu.shrink_to_fit();
+        L[l].dn.clear(); L[l].dn.shrink_to_fit();
     }
 
     auto forward = [&](int tok, int pos) -> int {

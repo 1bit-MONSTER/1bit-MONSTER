@@ -1,0 +1,7 @@
+# OOM-killer evidence from N8 dmesg
+[32287.396741] Out of memory: Killed process 504853 (1bit) total-vm:2431764kB, anon-rss:30900kB, file-rss:16kB, shmem-rss:0kB, UID:1000 pgtables:1224kB oom_score_adj:200
+[32287.759522] Out of memory: Killed process 504794 (python) total-vm:62784kB, anon-rss:19048kB, file-rss:12kB, shmem-rss:0kB, UID:1000 pgtables:144kB oom_score_adj:200
+[32287.802717] Out of memory: Killed process 507038 (xdg-desktop-por) total-vm:829652kB, anon-rss:9756kB, file-rss:16kB, shmem-rss:8kB, UID:60588 pgtables:296kB oom_score_adj:200
+[32288.112755] Out of memory: Killed process 505215 (wireplumber) total-vm:639196kB, anon-rss:8784kB, file-rss:16kB, shmem-rss:8kB, UID:60588 pgtables:320kB oom_score_adj:200
+[32288.119658] Out of memory: Killed process 507371 (xdg-desktop-por) total-vm:493368kB, anon-rss:7304kB, file-rss:16kB, shmem-rss:252kB, UID:60588 pgtables:184kB oom_score_adj:200
+[32288.133016] Out of memory: Killed process 505662 (gjs) total-vm:2737188kB, anon-rss:6436kB, file-rss:12kB, shmem-rss:0kB, UID:60588 pgtables:256kB oom_score_adj:200

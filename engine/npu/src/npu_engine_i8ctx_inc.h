@@ -275,6 +275,9 @@ struct I8Ctx {
         memset(Bm, 0, (size_t)KD * ND);
         std::vector<float> col(N);
         double ssum = 0;
+        // Per-column quantization is fully independent (disjoint Bm/col[j]);
+        // parallelize the column loop (resident-expert pack was ~63s serial).
+        #pragma omp parallel for reduction(+:ssum) schedule(static)
         for (int j = 0; j < N; j++) {
             float amax = 0;
             for (int i = 0; i < K; i++) {

@@ -1,0 +1,12 @@
+# N=8 empirical attempt (flm paused) — 2026-09-05
+N8 WALL: 56s
+n8_1: perf=1 enomem=0 last=[[perf] 8 tokens in 5946 ms (743.2 ms/tok, 1.3 tok/s)]
+n8_2: perf=0 enomem=0 last=[NPU contexts ready (GU 2048x4096, D 2048x2048)]
+n8_3: perf=1 enomem=0 last=[[perf] 8 tokens in 5989 ms (748.7 ms/tok, 1.3 tok/s)]
+n8_4: perf=1 enomem=0 last=[[perf] 8 tokens in 5901 ms (737.6 ms/tok, 1.4 tok/s)]
+n8_5: perf=1 enomem=0 last=[[perf] 8 tokens in 5864 ms (733.0 ms/tok, 1.4 tok/s)]
+n8_6: perf=1 enomem=0 last=[[perf] 8 tokens in 5812 ms (726.6 ms/tok, 1.4 tok/s)]
+n8_7: perf=1 enomem=0 last=[[perf] 8 tokens in 5761 ms (720.1 ms/tok, 1.4 tok/s)]
+n8_8: perf=1 enomem=0 last=[[perf] 8 tokens in 6003 ms (750.3 ms/tok, 1.3 tok/s)]
+completed: 7/8
+dmesg: 2369 lines; shmem-fail: 0

@@ -1,0 +1,9 @@
+# soak 3xN2 with dmesg — 2026-09-05
+round 1 done @ 1788649565
+round 2 done @ 1788649581
+round 3 done @ 1788649598
+SOAK WALL: 53s
+dmesg lines: 0
+refusals/errors: 0
+completed runs: 6/6
+-- dmesg:
