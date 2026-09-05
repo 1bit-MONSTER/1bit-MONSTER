@@ -200,23 +200,17 @@ struct Hip1bpBackend : Backend {
                                 "q4nx conversion for GDN/MoE not wired yet — #1831 M2)\n");
                 return false;
             }
-            // Per-layer tensor family (19/layer; every layer carries the fused
-            // attn_qkv + ssm_* family + MoE; every 4th layer executes full
-            // attention per qwen35moe.full_attention_interval=4). GGUF-native
-            // shapes (shape[0] fastest-varying) from the Q8_0 capture.
+            // Per-layer tensor families. Every layer shares the norm + MoE set
+            // (10); the attention block differs by kind: GDN layers (l+1 % 4 != 0,
+            // e.g. 0,1,2,4…) carry the fused attn_qkv + attn_gate + ssm_* family
+            // (19 total), full-attention layers (l+1 % 4 == 0 → 3,7,…,39 — 10 of
+            // 40, matching qwen35moe.full_attention_interval=4) carry the split
+            // attn_q/k/v + q/k_norm + attn_output instead (16 total). Captured
+            // from the Q8_0 header (GGUF-native shapes, shape[0] fastest).
             struct E { const char* n; std::vector<uint64_t> sh; };
-            const E LAYER0[] = {
+            const E SHARED[] = {
                 {"attn_norm.weight",            {2048}},
-                {"attn_qkv.weight",             {2048, 8192}},   // fused q/k/v (+GDN q halves)
-                {"attn_gate.weight",            {2048, 4096}},   // output/gate proj
                 {"post_attention_norm.weight",  {2048}},
-                {"ssm_a",                       {32}},           // decay (already -A conv.)
-                {"ssm_alpha.weight",            {2048, 32}},
-                {"ssm_beta.weight",             {2048, 32}},
-                {"ssm_conv1d.weight",           {4, 8192}},      // conv kernel 4 over fused 8192
-                {"ssm_dt.bias",                 {32}},
-                {"ssm_norm.weight",             {128}},
-                {"ssm_out.weight",              {4096, 2048}},
                 {"ffn_gate_inp.weight",         {2048, 256}},    // MoE router (256 experts)
                 {"ffn_gate_exps.weight",        {2048, 512, 256}},
                 {"ffn_up_exps.weight",          {2048, 512, 256}},
@@ -225,6 +219,25 @@ struct Hip1bpBackend : Backend {
                 {"ffn_up_shexp.weight",         {2048, 512}},
                 {"ffn_down_shexp.weight",       {512, 2048}},
                 {"ffn_gate_inp_shexp.weight",   {2048}},         // shared-expert scalar gate
+            };
+            const E GDN[] = {   // fused QKV + GDN linear attention (19/layer incl. SHARED)
+                {"attn_qkv.weight",             {2048, 8192}},   // fused q/k/v (+GDN q halves)
+                {"attn_gate.weight",            {2048, 4096}},   // GDN output gate
+                {"ssm_a",                       {32}},           // decay (already -A conv.)
+                {"ssm_alpha.weight",            {2048, 32}},
+                {"ssm_beta.weight",             {2048, 32}},
+                {"ssm_conv1d.weight",           {4, 8192}},      // conv kernel 4 over fused 8192
+                {"ssm_dt.bias",                 {32}},
+                {"ssm_norm.weight",             {128}},
+                {"ssm_out.weight",              {4096, 2048}},
+            };
+            const E FULL[] = {  // split MHA (16/layer incl. SHARED)
+                {"attn_q.weight",               {2048, 8192}},   // NH*HD*2 = q + gate halves
+                {"attn_k.weight",               {2048, 512}},    // NKV*HD
+                {"attn_v.weight",               {2048, 512}},
+                {"attn_q_norm.weight",          {256}},
+                {"attn_k_norm.weight",          {256}},
+                {"attn_output.weight",          {4096, 2048}},
             };
             auto chk = [&](const char* nm, const std::vector<uint64_t>& want,
                            int l) -> bool {
@@ -248,9 +261,15 @@ struct Hip1bpBackend : Backend {
             bool ok = chk("token_embd.weight", {2048, 248320}, -1) &&
                       chk("output_norm.weight", {2048}, -1) &&
                       chk("output.weight", {2048, 248320}, -1);
-            for (int l = 0; ok && l < NC; l++)
-                for (const E& e : LAYER0)
+            int n_full = 0;
+            for (int l = 0; ok && l < NC; l++) {
+                bool is_full = ((l + 1) % 4 == 0);   // layers 3,7,…,39 (10 of 40)
+                if (is_full) n_full++;
+                for (const E& e : SHARED)
                     if (!(ok = chk(e.n, e.sh, l))) break;
+                for (const E& e : (is_full ? FULL : GDN))
+                    if (!(ok = chk(e.n, e.sh, l))) break;
+            }
             // Cross-check the cfg dims the router/discovery computed vs the file.
             if (ok && (cfg.hidden_size != 2048 || cfg.num_layers != 40 ||
                        cfg.num_experts != 256 || cfg.vocab_size != 248320))
@@ -260,10 +279,12 @@ struct Hip1bpBackend : Backend {
                         cfg.hidden_size, cfg.num_layers, cfg.num_experts, cfg.vocab_size);
             if (ok) {
                 fprintf(stderr, "[hip1bp] qwen35moe structure verified (H=%d L=%d, "
-                                "19 tensors/layer, fused attn_qkv 8192 rows, MoE 256x8 + "
+                                "10 shared + kind-specific per layer; %d full-attn MHA "
+                                "layers 3,7,…,39 with split attn_q/k/v + q/k-norm, "
+                                "rest GDN fused attn_qkv 8192 rows + ssm; MoE 256x8 + "
                                 "shared): GDN/MoE decode kernels not implemented yet "
                                 "(#1831 M3/M4) — use the CPU (qwen3next) or NPU path.\n",
-                        H, NC);
+                        H, NC, n_full);
             }
             return false;   // decode kernels are M3/M4; fall through to CPU/NPU
         }
