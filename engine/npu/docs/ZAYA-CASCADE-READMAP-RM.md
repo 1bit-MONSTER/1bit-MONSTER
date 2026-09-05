@@ -53,3 +53,29 @@ H0=11 groups: 497397 -24123 -475533 -5734 52734 1083687 126091 -74692
 - Generator: `engine/npu/generators/n1_core_fused_gu_silu_d_iron.py` (D core_fn: `ki = cg*n_aie_cols+col`,
   `a8s[kstep,c_] = h2b[ks, cg*64 + kstep*8 + c_]`).
 - Host packer: `engine/fusion/zero_copy/npu_cascade_kernel.h` (`packB_d_into`: `bd[kk*N_D+nn] = w3[nn*IM+kk]`).
+
+## No_gu discriminator build (2026-09-04, issue #2109 step 1) — CONFIRMED D read ≈ correct
+Built `final_cascade_fused_zaya_nogu_nd2048.xclbin` (117440 B, N_D=2048 ROWS=4, `--no-gu --h2-const 1`,
+via `build_iron_cascade.sh` NO_GU=1 OUT=final_cascade_fused_zaya_nogu_nd2048). h2 is a baked-in
+constant (1), so C2 directly reflects the kernel's B_d read (no GU convolution).
+
+**Silicon result (RM probe, B_d = ramp):** C2 is UNIFORM across every output column = **101504**
+(identical for H0=0 and H0=1, as expected — no_gu ignores the h2 input).
+
+**Host mirror derivation:** the generator's D read reads each of the 2048 distinct B_d rows exactly
+once across (col=8 × cg=4 × ks=8 × t=8), so `Σ_{row=0}^{2047} (row%99+1) = 101346`.
+
+**Verdict:** NPU 101504 vs host 101346 → delta **158 = 0.156%**, uniform (not a scramble). A truly
+mismatched D index would scramble C2 (large, per-column-variable delta). A small *uniform* delta is a
+scale/rounding artifact, not an index bug. ⇒ **The D phase reads the B_d layout correctly.**
+
+**Strong implication for #2078:** corr 0.02 (full scramble on real weights) is NOT explained by the
+D read. The bug is in the **GU phase / GU→SiLU→h2 handoff** (the h2 that feeds the D), i.e. the GU
+B-tile read / A-tile fill / silu pair indexing for the Zaya `n_cg=4` geometry — not `packB_d_into`.
+
+## To confirm (next)
+- Explain the 158 (1.0056×) uniform scale — likely a host fold / h2 quant factor; check `packB_gu`'s
+  A-tile `ascale`/`S` composition vs the no_gu constant.
+- Verify C2 is uniform across ALL 4 ROWS chunks (cols 512/1024/1536) to rule out row-specific reading.
+- Move the probe to the GU phase: one-hot-A `guread`/`bread` (cascade_real_weight_probe modes ported to
+  Zaya) to isolate the GU B-tile read / silu pair indexing — the new prime suspect.

@@ -24,6 +24,14 @@ PYTHON=/home/bcloud/iron/bin/python3
 N_D="${N_D:-128}"
 ROWS="${ROWS:-1}"
 N_DROW=$((N_D / ROWS))
+# no_gu: skip the GU phase (h2 = H2_CONST constant) so the D B_d read map can
+# be isolated (issue #2109 step 1). OUT names the artifact so a no_gu build
+# NEVER clobbers the committed GU cascade.
+NO_GU="${NO_GU:-0}"
+H2C="${H2C:-1}"
+OUT="${OUT:-final_cascade_fused}"
+NOGU_ARGS=""
+[ "$NO_GU" = "1" ] && NOGU_ARGS="--no-gu --h2-const $H2C"
 W=/tmp/iron_cascade.$$ ; mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
 
 # 1. GU kernel object (n=128): matmul_i8_i32 + q22 silu
@@ -67,7 +75,7 @@ done
 
 # 3. design.mlir (iron API)
 $PYTHON "$G/n1_core_fused_gu_silu_d_iron.py" -M 8 -K 2048 -N_GU 4096 -N_D "$N_D" \
-    -m 8 -k 64 -n 128 -c 8 --rows "$ROWS" -b 2 > "$W/design.mlir" 2>/dev/null
+    -m 8 -k 64 -n 128 -c 8 --rows "$ROWS" -b 2 $NOGU_ARGS > "$W/design.mlir" 2>/dev/null
 grep -q "cascade_flow" "$W/design.mlir" || { echo "ERROR: no cascade_flow in design" >&2; exit 1; }
 
 # 4. aiecc → xclbin (peano flow; the cascade kernels are peano-only)
@@ -80,7 +88,7 @@ cd "$W"
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
     --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
     --aie-generate-npu-insts \
-    --xclbin-name="$G/../xclbins/final_cascade_fused.xclbin" \
-    --npu-insts-name="$G/../xclbins/insts_cascade_fused.txt" \
-    "$W/design.mlir" 2>&1 | tail -3
-echo "OK: $(ls -la "$G/../xclbins/final_cascade_fused.xclbin" | awk '{print $5}') B xclbin + insts (N_D=$N_D rows=$ROWS nd_row=$N_DROW)"
+    --xclbin-name="$G/../xclbins/${OUT}.xclbin" \
+    --npu-insts-name="$G/../xclbins/insts_${OUT}.txt" \
+    "$W/design.mlir" 2>&1 | tail -6
+echo "OK: $(ls -la "$G/../xclbins/${OUT}.xclbin" | awk '{print $5}') B xclbin + insts (N_D=$N_D rows=$ROWS nd_row=$N_DROW no_gu=$NO_GU h2=$H2C)"
