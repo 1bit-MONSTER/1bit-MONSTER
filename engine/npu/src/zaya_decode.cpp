@@ -830,6 +830,9 @@ int zaya_decode_main(int argc, char** argv) {
                     auto tb0 = std::chrono::steady_clock::now();
                     std::chrono::steady_clock::time_point tb2, tp1, tpsync, tb3;
                     xrt::run frun, frun2;
+                    // Timing doubles declared BEFORE the single-launch goto so
+                    // `goto fused_single_done` does not cross their init.
+                    double _ppre0 = 0, _pmid0 = 0, _pp20 = 0;
                     if (FUSED_I4)
                         fused_ctx.update_fused_header_i4(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     else
@@ -863,7 +866,7 @@ int zaya_decode_main(int argc, char** argv) {
                     // mis-compiled by the aie2p backend, so the P1 kernel
                     // only writes the C1 — 32 chunks x 4 KB — and the HOST
                     // computes the silu from the verified bit-exact C1).
-                    double _ppre0 = _now_ms();
+                    _ppre0 = _now_ms();
                     frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                    residual.data(), 1, d.H, ag);
                     tb2 = std::chrono::steady_clock::now();
@@ -876,7 +879,7 @@ int zaya_decode_main(int argc, char** argv) {
                     h2_bo[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
                     tpsync = std::chrono::steady_clock::now();
                     if (pos > 0 && FUSED) { t_fp1 += _now_ms() - _ppre0; c_fp1++; }
-                    double _pmid0 = _now_ms();
+                    _pmid0 = _now_ms();
                     // DIAG (v63): kernel C1 (via c1 arg at gos) vs host C1h
                     if (getenv("NPU_DIAG_H2") && l == 1 && pos == 0) {
                         const int8_t* h2m = (const int8_t*)h2_bo[l]->map();
@@ -1089,7 +1092,7 @@ int zaya_decode_main(int argc, char** argv) {
                                 h2host[4], h2host[5], h2host[6], h2host[7]);
                     }
                     if (pos > 0 && FUSED) { t_fmid += _now_ms() - _pmid0; c_fmid++; }
-                    double _pp20 = _now_ms();
+                    _pp20 = _now_ms();
                     frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                        residual.data(), 1, d.H, ag);
                     fused_ctx_p2.dequant_fused(frun2, moe_out.data(), 1, d.H, qn_s, l);
@@ -1518,6 +1521,41 @@ int zaya_decode_main(int argc, char** argv) {
                                     if (cr > best_corr) { best_corr = cr; best_m = mrow; }
                                 }
                                 fprintf(stderr, "  (best m=%d)\n", best_m);
+                            }
+                            // ── Blind D read-map probe (NPU_CASCADE_RM) ──────
+                            // One-hot h2 input at NPU_CASCADE_RM_H, B_d = a
+                            // row-identifying ramp so each B_d row is recoverable
+                            // from C2. Dumping raw C2 lets us DERIVE the kernel's
+                            // B_d read per output column (non-circular: does not
+                            // assume any Zaya read formula).
+                            if (getenv("NPU_CASCADE_RM") && atoi(getenv("NPU_CASCADE_RM")) == 1) {
+                                // Blind D read-map: B_d = row-identifying ramp
+                                // (bd[kk][nn] = (kk%99)+1), one-hot h2 input at
+                                // each H0; C2[nn] = sum_k h2[k]·ramp(k) over the
+                                // B_d rows the kernel READS for col nn. Constant
+                                // blocks of 8 in C2 reveal the read grouping.
+                                const int NDr = casc_nd;
+                                std::vector<int8_t> bd_ramp((size_t)m.n_ff * NDr, 0);
+                                for (int kk = 0; kk < m.n_ff; kk++)
+                                    for (int nn = 0; nn < NDr; nn++)
+                                        bd_ramp[(size_t)kk * NDr + nn] = (int8_t)((kk % 99) + 1);
+                                memcpy(cas.bBd->map(), bd_ramp.data(), bd_ramp.size());
+                                cas.bBd->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                                const int HSTART = getenv("NPU_CASCADE_RM_H") ? atoi(getenv("NPU_CASCADE_RM_H")) : 0;
+                                const int HCOUNT = getenv("NPU_CASCADE_RM_N") ? atoi(getenv("NPU_CASCADE_RM_N")) : 12;
+                                for (int H0 = HSTART; H0 < HSTART + HCOUNT; H0++) {
+                                    std::vector<float> hh(d.H, 0.0f); hh[H0] = 1.0f;
+                                    std::vector<float> rm_out(NDr, 0.0f);
+                                    cas.go(hh.data(), ag, 1.0f, rm_out.data(), *casAB);
+                                    const int32_t* rc2 = (const int32_t*)cas.bC2->map();
+                                    // digest: the 8-block group leaders C2[8q]
+                                    // (cols constant within each group of 8)
+                                    fprintf(stderr, "[RM] H0=%3d groups=", H0);
+                                    for (int q = 0; q < 8; q++) fprintf(stderr, " %d", rc2[8 * q]);
+                                    fprintf(stderr, "  | C2[0..15]=");
+                                    for (int nn = 0; nn < 16; nn++) fprintf(stderr, " %d", rc2[nn]);
+                                    fprintf(stderr, "\n");
+                                }
                             }
                         }
                     }
