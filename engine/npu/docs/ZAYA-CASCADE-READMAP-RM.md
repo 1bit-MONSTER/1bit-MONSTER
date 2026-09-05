@@ -237,3 +237,21 @@ From the deriv-inverse col formula `col = 64*((j/4)%2) + (K%8)*8 + 2*(j%4)`:
    block instead of the full deriv-inverse 8x8 layout.
 This is the first concrete candidate term for the read-formula solver to test (enumerate col
 variants: full deriv-inverse vs no-64*((j/4)%2) vs alt, and score against the kernel h2).
+
+## MAJOR CORRECTION (2026-09-05): GU read is DENSE for real input => NOT the bug
+The real-residual GU probe (identity B_d, real layer-1 residual) shows:
+    [GUrl] real-residual h2 nz=2048/2048 max|h2|=127 (first8: -127 -127 ... )
+=> the GU read produces a CORRECT, DENSE h2 (all ±1 quantized) for a real input.
+The earlier "GU read collapse / GU bug" conclusion was WRONG — it was conflated with
+the ONE-HOT A probe (one-hot input -> sparse GU output is EXPECTED, not a bug). The
+one-hot read map (H0=0..63, c_=0) is therefore NOT a GU fault; it's the one-hot
+response pattern. So #2078's corr=0.02 is NOT the GU read.
+
+Recalibration: with GU dense (correct) and D full-K (read-count 2048, RAMP≈full-K),
+the real cascade output (CAS corr) should be high, but it's ~0.02-0.58 (varies). The
+fault is therefore in the GU->h2 ->D *dataflow/scale* (e.g. the D B_d read of REAL
+weights, the GU->D handoff scale), NOT the GU read map per se. The identity-B_d probe
+(which verified the D row-set is full-K) CANNOT reveal a REAL-weight D index/scale bug
+because identity is permutation- and scale-neutral. This invalidates the "GU read bug"
+conclusion in #2078/#2109; the exact fault is still open (now narrowed to the real
+GU->D dataflow, likely the real-weight B_d index or the h2->D scale).
