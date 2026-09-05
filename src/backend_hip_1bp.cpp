@@ -1123,6 +1123,12 @@ struct Hip1bpBackend : Backend {
         // output norm + lm head + argmax
         h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, q35_onorm, 2048, 1e-6f);
         h1bp_q8gemv_kernel<<<248320, 256, 0, stream>>>(dlogits, q35_out, dh, 248320, 2048);
+        if (const char* ld = getenv("H1BP_Q35_LOGDIR")) {
+            std::vector<float> lg(248320);
+            HIP_CHECK(hipMemcpy(lg.data(), dlogits, 248320 * 4, hipMemcpyDeviceToHost));
+            char fn[1024]; snprintf(fn, sizeof fn, "%s/p%04d.f32", ld, pos);
+            FILE* f = fopen(fn, "wb"); if (f) { fwrite(lg.data(), 4, 248320, f); fclose(f); }
+        }
         int nblk = std::min(AMX_MAXB, (248320 + 255) / 256);
         h1bp_argmax_pass1_kernel<<<nblk, 256, 0, stream>>>(dlogits, 248320, d_amx, d_ami);
         h1bp_argmax_pass2_kernel<<<1, 256, 0, stream>>>(d_amx, d_ami, nblk, d_argmax);
