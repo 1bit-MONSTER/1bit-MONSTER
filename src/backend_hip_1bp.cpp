@@ -267,8 +267,12 @@ struct Hip1bpBackend : Backend {
                 if (is_full) n_full++;
                 for (const E& e : SHARED)
                     if (!(ok = chk(e.n, e.sh, l))) break;
-                for (const E& e : (is_full ? FULL : GDN))
-                    if (!(ok = chk(e.n, e.sh, l))) break;
+                const E* fam = is_full ? FULL : GDN;      // array → ptr + count (no
+                size_t nfam = is_full ?                  // ternary range-for, which
+                    sizeof(FULL)/sizeof(FULL[0]) :       // would decay to a pointer)
+                    sizeof(GDN)/sizeof(GDN[0]);
+                for (size_t i = 0; i < nfam; i++)
+                    if (!(ok = chk(fam[i].n, fam[i].sh, l))) break;
             }
             // Cross-check the cfg dims the router/discovery computed vs the file.
             if (ok && (cfg.hidden_size != 2048 || cfg.num_layers != 40 ||
