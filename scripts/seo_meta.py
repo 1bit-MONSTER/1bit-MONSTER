@@ -114,7 +114,7 @@ def json_ld(html: str, name: str) -> str:
                 "@type": "WebSite",
                 "name": "1bit.MONSTER",
                 "url": SITE,
-                "description": "The 1-bit inference engine. One engine, any model — 552 architecture tokens, 1,775 HF arch strings, 100% HuggingFace coverage, running on Ryzen AI NPUs and ROCm.",
+                "description": "The 1-bit inference engine. One engine, any model — 566 architecture tokens, 1,946 HF arch strings, 100% HuggingFace coverage, running on Ryzen AI NPUs and ROCm.",
                 "potentialAction": {
                     "@type": "SearchAction",
                     "target": {"@type": "EntryPoint", "urlTemplate": f"{SITE}/search.html?q={{search_term_string}}"},

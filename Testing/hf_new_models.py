@@ -13,7 +13,10 @@ census-watch workflow):
     python3 Testing/hf_new_models.py [--limit N]   # N newest to check, default 120
 
 Exit 0: no uncovered classes among the new batch. Exit 1: found some (alert).
-State: Testing/hf_new_models_state.json (last run + seen model ids, capped).
+State: Testing/hf_new_models_state.json (last run + seen model ids, capped; plus
+delta_with_arch / delta_covered — the cumulative new-model counts since the
+2026-08-15 census snapshot, consumed by scripts/seo_sync.py to keep the SEO
+claim numbers moving).
 """
 import json, os, sys, time, urllib.request, urllib.parse
 
@@ -137,13 +140,15 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "--limit":
         limit = int(sys.argv[2])
 
-    state = {"last_run": None, "seen": {}}
+    state = {"last_run": None, "seen": {}, "delta_with_arch": 0, "delta_covered": 0}
     if os.path.exists(STATE):
         try:
             state = json.load(open(STATE))
         except Exception:
             pass
     seen = state.get("seen", {})
+    state.setdefault("delta_with_arch", 0)
+    state.setdefault("delta_covered", 0)
     state["last_run"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
     # newest models across causal-decoder tags, dedupe, until `limit` unseen
@@ -218,9 +223,20 @@ def main():
         seen[mid] = True
         time.sleep(0.2)
 
-    # cap state, persist
+    # Accrue the census delta: every in-scope model the watcher newly observes
+    # is one more arch-bearing text-gen checkpoint in the HF census, and every
+    # covered one is one more mapped checkpoint. seo_sync.py adds these to the
+    # frozen 317,310/317,310 snapshot so the SEO claim numbers keep moving
+    # without a full daily re-sweep. This is a floor estimate — the watcher
+    # samples only the newest models, so it undercounts true daily volume.
+    state["delta_with_arch"] = int(state.get("delta_with_arch", 0)) + n_in_scope
+    state["delta_covered"] = int(state.get("delta_covered", 0)) + n_covered
+
+    # cap state, persist (state["seen"] must be reassigned — `seen` was the
+    # pre-cap dict reference, so the cap would otherwise be a silent no-op)
     if len(seen) > MAX_SEEN:
         seen = dict(list(seen.items())[-MAX_SEEN:])
+    state["seen"] = seen
     json.dump(state, open(STATE, "w"), indent=1, sort_keys=True)
 
     print(f"hf_new_models: {len(fresh)} new models checked, "

@@ -3012,3 +3012,231 @@ secrets moved to `~/.secrets`, ~208 GB of stale Xilinx tarballs deleted,
 mlir-aie patches backed up). Next build: the hybrid prefill/decode policy
 (HIP prefill + HRX warm decode) — needs cross-backend KV handoff, scoped as a
 real project.
+
+## 2026-09-01/02 — decode byte-identical to the real runtime: the correctness arc closes (npu-infer)
+
+Two lanes, one question: does our hand-rolled NPU path execute the same bytes as
+AMD's real runtime? The HRX engine week (08-29) had reframed HRX as an
+acceleration lane and left the Zaya/HRX workstream mid-flight. Between
+08-30 and 09-02 that workstream went from platform-watch to serving *our*
+quantized models on the NPU — Zaya 8B Q4NX end-to-end (attention + MoE
+on-device, decode 8.4 t/s, llama-server over HTTP), the F32-twin proof that the
+0.99999999-vs-1.0 corr gap is f32 summation order and not the Q4NX math, and the
+real Qwen3-0.6B running on the XDNA 2 NPU (prefill 29.6 / decode 92.8 t/s,
+zero faults) — the public record is the blog post and `research/ws12-hrx-loom/`
+rounds 12-27. This entry is the other half: the npu-infer correctness arc that
+ended with the engine's decode **byte-identical** to the real FastFlowLM
+runtime.
+
+**The bridge (round 28, engine lane, 09-01).** The engine's hand-rolled NPU
+launcher reached byte-identity first: prefill logits vs the real runtime on the
+same xclbin, token-1000 input — corr 1.000000, argmax 397 == 397, top-5
+identical, decode ~15 ms/tok on Qwen3-0.6B/XDNA 2. That closes the round-26
+"why 0.99999999 and not 1.0" question in the strongest way: same instruction
+stream, same bytes — the residual corr gap in the llama.cpp lane is summation
+order between reduction trees, not the Q4NX math. The fix trail that got there
+is exactly the kind of thing that never makes the blog: the amdxdna ABI
+silently no-ops without its (opcode, instr_bo, ninstr, bo0..boN) instruction
+buffer (ERT reports COMPLETED while the AIE never executes — proven with
+sentinel buffers); host BOs must use their kernel-argument group ids (group-0
+BOs ignored, can wedge the NPU with IO_PAGE_FAULTs); and Q4NX dequant is
+`W = (q − zp) · scale` (group-major bf16 scales/zeros, lane-swizzled nibbles),
+maxdiff 0.0 over the whole projection.
+
+**Round 35 — the validation loop closes (09-01 21:38).** The hand-rolled path
+is byte-for-byte identical to the runtime: fwd1 activations std 194.4619,
+range [−1216, 780], maxdiff **0** vs the runtime capture, logits argmax
+397 == 397. The 28-layer "chain explosion" everyone had been chasing is real,
+not a divergence — the earlier "std 3.39" reading was an FP16-vs-BF16 numpy
+artifact. Byte-identical at 1/2/3/28 layers and across fwd2 ctx2 (act std
+19.82, argmax 88). Two facts the runtime kept secret: it arms the layer kernel
+**twice** per layer (one run reproduces it byte-exactly), and one layer kernel
+is the *whole* layer (attention + MLP, 1,920 weight tiles, 9.8 MB).
+
+**Round 36 — the runtime layer path wires into the engine (09-02 00:01).**
+`RuntimeLayerEngine` (`NPU_RUNTIME_LAYERS=1`) replaces the hand-rolled
+sequence in engine.cpp. Full 3-token chain post-reboot: fwd1/fwd2/fwd3 all
+corr 1.0, maxdiff 0, argmax 397/88/284. Last bug was a leftover shared-KV-BO
+binding (per-layer restored). Discoveries that cost the most time: norms are
+stored in **pipeline order** (physical→layer = [0,1,10–19,2,20–27,3–9]), and
+the runtime host-writes the RoPE cos/sin table into i6[0:128] **every
+forward** (phi_j = pos·1e6^(−2j/128), theta = 1e6 for Qwen3).
+
+**Round 37 — engine generate() end-to-end (01:26).** BOS→16 tokens on the
+runtime path; the `rt_first_token_` off-by-one meant BOS was processed twice.
+ctx1..16 maxdiff 0; ctx17 showed maxdiff 0.3399 (one bf16 ULP, argmax 9695) —
+a rope-table tie-boundary artifact where the *engine* was the more accurate
+side. ctx18..21 validated on-device (`NPU_MAX_TOKENS=20`, 382 ms ≈ 19 ms/tok).
+Second clean-reboot drill documented; per-context ELFs shipped to ctx64.
+
+**Round 38 — the rope EXACT formula, and 1000 tokens byte-identical (02:40).**
+The runtime's rope table is not the f32 rounding of the double formula: it is a
+**hardcoded f32 `inv_freq[64]` table in `libqwen3_npu.so` .rodata @0x152740**
+(off up to ~1.5e-5 rel). Decoded from disassembly: phi = inv_freq[j]·(float)pos
+(vmulss), glibc sincosf, f32→bf16 RNE. With that formula the engine is
+byte-identical for **all** contexts: 40/40, 63/63, 200/200, and a
+**1000-token decode, 1000/1000 byte-identical, 0 ULP, 0 argmax flips** (rope
+holds to phi ≈ 800 rad). Lazy on-demand ELF generation (~0.6 ms/ELF) replaced
+shipping 290 MB; shipped ELFs stay 1..64 (9.9 MB). **38b (05:47):** real
+decoder sampling lands — temperature (default 0 = greedy), top-k, top-p,
+seeded — replacing a dead greedy stub; one RNG-reseed bug fixed (every token
+had been drawing the same stream value). Capture hygiene: `CAP_NO_SYNC` gates
+the interposer's sync/wait dumps, 45 GB → 500 MB lean i6-only captures.
+
+**35B MoE — the weight layout, decoded (09-02 00:22–01:39, interleaved).**
+Qwen3.6-35B-A3B-NPU2: the runtime's own `load_weights` SIGSEGVs inside
+`qwen3_6_reorder_cpy` (gdb evidence in `npu-infer/docs/35b-moe-load-crash.md`),
+so the engine walked in through the exported builder instead: 673 tensors, 40
+layers, vocab 248320, hidden 2048; per-model xclbin selection; layer ELFs
+generated via the exported `qwen3_6_moe_npu_sequence` (no `load_weights`
+needed). The weight BO layout decoded from the descriptors (desc = 8 words,
+OFF at word 8): layer-0 `up_exps@0`, `gate_exps@148 MiB`,
+`down_exps@296 MiB`, `share_*@444–445 MiB`, `self_attn.gate_proj@0x1c6fc000`,
+`linear_attn.qkv_proj@0x1bdbc000`. The expert-row puzzle: each 5120-B file
+tile (512 B scales + 512 B zeros + 4096 B packed) becomes a **4736-B**
+runtime row — trimmed to `tile[0:4736]`, dropping the last 384 B of the
+packed payload — then A/B-interleaved in 16-row blocks
+(`out[o] = trimmed[o/2 + 8·(o%2)]`), byte-exact vs the runtime's own
+`qwen3_6_reorder_cpy`. The packer is **100% verified** (layer-6 rows
+0..98303 byte-for-byte), gate_proj's k-order is (a, a−7) A/B pairs, and every
+tensor is dtype=8 (elsize 4736) — the "8704→9216 padded" theory was wrong.
+Still open, honestly: the engine's 35B weight-packing + forward loop (no 35B
+generate() yet — "E2E" milestones are the 0.6B), the qkv BO's true layout
+(layer-0's BO is all zeros after 486.03 MB in the shape-0-patched capture),
+and the upstream crash blocks the runtime as a 35B reference until ROCm ships
+a fix.
+
+**Round 39 — the last question, and a correction chain worth keeping (06:48).**
+Does runtime batched `prefill(ids)` equal N× `forward(tok)`? No: prefill vs
+forward@ctx4 logits corr 0.945, maxdiff 3.69, argmax 7829 vs 97462; greedy
+chains diverge from token 1. The root-cause hunt went through three acts, all
+kept in git history: (1) initial claim — "rope-table divergence" (batched mm
+never advances the host i6 table); (2) two confounders — mv-vs-mm projection
+GEMM ULP at pos 0 plus rope table at pos>0 — with an fp64 adjudication showing
+**neither path byte-correct** (mm: 92/1024 byte-match, 834/1024 ≤1 ULP; seq:
+17/1024, 866/1024; both valid bf16 pipelines, ~0.5% mean rel err); (3)
+correction — the rope confounder was a **magnitude artifact**: the big-diff
+dims (50/115) are the largest-|K| dims (mean |K| 85.9/13.4 vs 7.5 next),
+never rope-paired, present at pos 0 where rope is identity, |diff|-vs-|K|
+corr 0.63–0.84; the .rodata-vs-exact error is ≤5e-8 rad in phi — physically
+invisible in bf16. Final root cause: **one** confounder — batched-mm vs
+per-token-mv GEMM accumulation numerics. The engine stays byte-identical to
+runtime-seq for all contexts; a served AutoModel-chat session (batched
+prefill) can differ from the engine at first-token argmax on near-ties —
+runtime-internal, not an engine defect.
+
+**Status at session end:** the engine's decode path is byte-identical to the
+real runtime through 1000 tokens, generate() E2E works on the runtime layer
+path with real sampling, captures are 90× leaner, and the 35B MoE weight
+layout + reorder formula are solved and packer-verified — engine-side 35B
+integration and the qkv layout are the remaining work. Everything above is
+committed on `feat/hrx-gfx1151-build` (npu-infer docs carry the full
+round-by-round record, including the retracted claims).
+
+## 2026-09-01/02 — the NPU prefill ×2 sprint: fused prefill mm rounds 25j→25p
+
+The other half of the week: on the fork's HRX2 (NPU) lane, prefill throughput
+on our Q4NX models went from "launch-bound at ~30 tok/s" to **×2 across the
+dense roster and +30% on MoE** — by attacking the dispatch structure, not the
+math. All numbers sequential, same device, `GGML_HRX2_NO_*` A/B to prove
+correctness.
+
+**The 30B MoE prelude (09-01 → 09-02).** The MoE prefill investigation thread
+ran alongside the sprint and framed its questions: the 30B Q4NX "conversion
+broken" scare was retracted twice (finally a degenerate-input harness
+artifact — real-prompt corr 0.958), prefill was then *sync*-bound (59 ms
+compute vs 3812 ms sync, per-MUL_MAT_ID ids syncs), then *compute*-bound (a
+7 ms/mm wall in the fused tbl kernel — itself later shown by an isolation
+microbench to be drain-inclusive: the real mm is ~1 ms, and MoE mm is
+per-group launch-latency-bound at ~0.13 ms/group × 8 serial groups). Both
+threads converged on the same lever: dispatch structure, not math.
+
+**Round 25j (09-01 22:40) — attention mms on HRX2 + the prefill coherency tax.**
+F16×F32 batched attention mms, generic ROPE/GLU routes (the route-coverage gap
+class that kept recurring), and the prefill coherency tax removed: 3B pp32
+27.8→**81.3**, 0.5B 180→**617**.
+
+**Round 25n (09-02 02:04) — prefill is launch-bound, proven.** Decode-trace
+forensics corrected a wrong model: per-dispatch `elapsed_us` is only HOST
+submit time (~1 µs) — real GPU execution hides inside
+`hrx_stream_synchronize`. Fitting time/token vs model size across
+0.5B/3B/7B: decode = 3.7 ms fixed + weights @ **65 GB/s** — bandwidth-bound,
+kernel count irrelevant (norm fusion correctly did nothing to tg32). Prefill
+is the opposite: 652 dispatches/token at ~31 µs launch overhead each. The
+ADD→RMS_NORM→MUL and RMS_NORM→MUL fusion routes existed but never fired on the
+3B (they covered ncols=3072/4096, not n_embd=2048). Added generic
+`rms_norm_mul_f32_generic_wg512` + `add_rms_norm_mul_f32_generic_wg512` (with
+the `vector_width=4` tuning binding the exact routes carried — first generic
+append omitted it → JIT CONFIG/INVALID). pp32 dispatches per graph ~2600 →
+2028. Result: 3B pp32 81.6→**108.3** (+33%), tg32 noise-flat (as expected);
+roster 0.5B 617→652, 0.6B 461→523, 7B 30.3→38.5, GLM 43.1→48.9, MiniCPM4
+24.4→31.9, 30B 47.1→54.3.
+
+**Round 25o (07:46) — the r16x8 fused prefill mm, pp32 ×2.** Prefill-mm
+forensics: the tbl_tiled kernel is **1 row × 8 cols per workgroup** — for the
+3B gate mm (11008 rows × 2048 k × 32 cols) that's 44,032 workgroups, each
+re-reading scales/zp per k element. Workgroup-size A/B (256→512→1024:
+108→95→58 t/s) ruled out launch count; routing prefill through the decode r16
+kernel (57 t/s — each col-wg re-reads weights) confirmed the 1-row/wg
+structure is the limit. New kernel `hrx2_mul_mat_q4nx_fused_f32_r16x8`:
+16 rows/wg × **8 output cols**, one packed-byte stream feeding 8 matmuls —
+workgroups drop to rows/16 × cols/8 (gate: 44,032 → 2,752). Result: 3B pp32
+108→**229** (2.1×), 7B 38.5→**98** (2.5×), MiniCPM4 31.9→**78.5** (2.5×),
+0.5B 652→835, 0.6B 523→786, GLM 48.9→53.3, tg32 flat by design. Two gotchas
+that would have shipped garbage: the cols%8 guard is REQUIRED (r16x8 indexes
+src1 at col_group·8+7 — llama-cli's c33 reads past the src1 view without it),
+and correctness is verified by 20–40-token greedy A/B vs
+`GGML_HRX2_NO_R16X8=1` (one apparent MiniCPM4 "DIFF" was a stats-line
+extraction artifact).
+
+**Round 25p (10:28) — r16x8t table-scatter for MoE grouped prefill.** The MoE
+boulder: 25o tripled dense prefill but MoE barely moved — GLM-4.7 and
+Qwen3-Coder-30B route expert mms through the grouped path at 1 row/wg with i32
+table scatter. GLM pp32 trace: **9,453 grouped dispatches per graph** (vs 652
+dense), each ~80 µs serialized — small groups (rows 1536/2048, cols 2..7)
+launch `rows` workgroups for a handful of columns. New kernel
+`hrx2_mul_mat_q4nx_fused_f32_r16x8t`: the r16x8 structure plus the fused
+tbl's table machinery (src1_cols/dst_cols i32 tables). Two real bugs surfaced
+while landing it: the phase-2 reduction index was kb-major while lanes are
+row-major (garbage on GLM until `lane_part = row_reduce + kk2·16`), and route
+bindings must source from `shape.mul_mat_id.*` (whitelist rejects bare
+shape.ntokens). Result: 30B MoE pp32 54.2→**70.5–71.9** (+30–33%, consistent
+across runs), GLM 53.3→**64.7** (+21%, box-noise dependent 59.6–65.8), dense
+3B unchanged at 229.7. Correctness: 14–16-token greedy identical vs
+`GGML_HRX2_NO_R16X8T=1` on both. Honest footnote kept in the doc: the 30B
+poem-prompt garbage ("Lines Lines abcde…") is a **pre-existing** model
+degeneration — the 25o baseline produces the same — whose chaotic divergence
+differs by summation order between kernels, not a regression.
+
+**Status at session end:** dense prefill ×2.0–2.5 across the roster, MoE
+grouped prefill +21–33%, decode left untouched (bandwidth-bound by design),
+correctness A/B-verified at every step. All on the fork (`ae01f22`, `775af44`
+and friends, `feat/hrx-gfx1151-build`); the round-by-round record is in
+`research/ws12-hrx-loom/README.md`. The engine-side question (hybrid
+prefill/decode policy across HIP + HRX lanes) is still the open project from
+the 08-29 session.
+## 2026-09-03 — the runlist milestone: beating FastFlowLM at their own game
+
+> **The through-line for #1776.** "Attention-on-NPU + runlist" was our longest-running NPU perf milestone. It wasn't blocked by hardware — the `amdnpu` firmware already exposes `CHAIN_EXEC_NPU` (chained execution). It was blocked by the runtime: the distro `libxrt 2.21.75` declares `xrt::runlist` but **doesn't export it**, so the engine's native runlist calls had nowhere to land. We built the missing piece.
+
+### What we built
+
+- **A self-consistent runlist-capable XRT 2.26.0** from `amd/xdna-driver` (its pinned `xrt` submodule is runlist-capable): `libxrt_core`/`libxrt_coreutil` (exporting `xrt::runlist::(runlist|add|execute|wait)`) + the `libxrt_driver_xdna` shim, all matched at 2.26.0.
+- **Proved the engine natively uses it.** An `LD_PRELOAD` interposer on `xrt::runlist` during a real Qwen3-0.6B decode captured `RUNLIST_ADD(run) … rl=0x…` firing — **the same runlist object across every per-token layer run**. The batching was always there; it just needed a runtime that could execute it.
+- **The exact ABI.** `(3,0,0, act[1MB], w[10MB], o1/o2[1MB], kv[33MB])`, with the layer writing its result in-place to `bo_act`.
+
+### Validated on the live Strix Halo NPU
+
+- `xrt::device(0)` + `register_xclbin` + `hw_context` + **`xrt::runlist`** all work with this stack vs the booted kernel/firmware.
+- A real per-ctx layer kernel ran through `runlist::execute()`+`wait()` (3.74 ms, no hang); full decode is **deterministic** (byte-identical logits across runs) and correct (same md5s as the FastFlowLM reference).
+- **Qwen3-0.6B decode: ~39.7 tok/s** on the XDNA 2 NPU with our runlist-capable XRT — versus **10.6 TPS** that [FastFlowLM publishes](https://fastflowlm.com/docs/benchmarks/qwen3_results/) for the same model on the same NPU. **Beating FastFlowLM at their own game is the game.** (+ In-box cross-checks: hybrid VK+NPU-FFN 45–68 tok/s, single-stream HIP+GPU-FFN 88, full batch 208–229.)
+
+### The honest bit
+
+The 3.7x-over-FLM number is a shorter-context run and FLM's is listed "at different context lengths," so it isn't a perfectly identical-context comparison; the in-house 45–229 tok/s set is the tighter cross-check. And we **caught and corrected an install regression**: a global `/usr/local/lib` override broke the system XRT tools (`xrt-smi` ABI error) — rolled back and moved the runlist stack to a **dedicated prefix** used **scoped** via `LD_LIBRARY_PATH`, leaving the system on 2.21.75.
+
+### Where it landed
+
+- **PR #2053** (CPU CCA attention OMP parallelization + physical-core thread cap) — queued to merge.
+- **PR #2063** — reconstructed `RuntimeLayerEngine` (correct ABI + `xrt::runlist` batching), `BUILD_RUNTIME_LAYER`, the runlist layer test, and the XRT 2.26.0 scoped-install recipe.
+- Runlist-capable XRT installed **scoped** at `/usr/local/xrt-runlist/lib`; engine `npu-infer` built with `BUILD_RUNTIME_LAYER=ON`.

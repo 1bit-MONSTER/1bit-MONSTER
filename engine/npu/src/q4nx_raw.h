@@ -75,6 +75,68 @@ static inline RawQ4Tensor read_q4nx_raw(const uint8_t* D, uint64_t off,
     return t;
 }
 
+// read_q4nx_raw_asym — read a Q4NX tensor in the ASYMMETRIC (Qwen3) chunk
+// layout into the RawQ4Tensor contract. This is the layout the engine's
+// dequant_i8_to_float_ex() reads (issue #1268), and it differs from the
+// symmetric/zaya layout read_q4nx_raw() assumes in TWO ways (measured 2026-09-02
+// on FastFlowLM-Qwen3-0.6B-NPU2/model.q4nx — feeding those bytes to
+// read_q4nx_raw() corrupts ~99% of elements):
+//   1. nibbles are UNSIGNED 0..15 (W = val*scale + zp); the raw reader signs
+//      them as two's-complement (W = q4*scale + zp), flipping ~every high-bit
+//      nibble.
+//   2. scales/zps are GROUP-major: scales[g*32 + lr] (g = col/32, lr = row in
+//      tile); the raw reader uses ROW-major scales[lr*8 + g] — transposed for
+//      all but the first group.
+// To preserve the exact value semantics W = val*scale + zp (the GuI4Pack /
+// zaya_moe contracts), the unsigned nibble v is re-mapped to a signed q4 with a
+// FOLDED zero-point: q4' = v - 8, zp' = 8*scale + zp (W unchanged). The nibble
+// byte layout (lane*2048 + c*8 + (r%16)/2, even row in low nibble) is identical
+// to both the raw and 1bp readers.
+static inline RawQ4Tensor read_q4nx_raw_asym(const uint8_t* D, uint64_t off,
+                                             int i8_rows, int cols) {
+    const int n_tc = cols / 256;
+    RawQ4Tensor t;
+    t.rows = i8_rows * 32;
+    t.cols = cols;
+    t.q4.assign((size_t)t.rows * cols, 0);
+    t.scl.assign((size_t)t.rows * (cols / 32), 0.0f);
+    t.zp.assign((size_t)t.rows * (cols / 32), 0.0f);
+    auto rdbf16 = [](const uint8_t* p) {
+        uint16_t v = (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+        uint32_t bits = (uint32_t)v << 16;
+        float f; std::memcpy(&f, &bits, 4);
+        return f;
+    };
+    const uint8_t* rd = D + off;
+    for (int ir = 0; ir < i8_rows; ir++) {
+        int tile_row = ir / n_tc, tile_col = ir % n_tc;
+        const uint8_t* scales = rd + (size_t)ir * 5120;
+        const uint8_t* zeros  = rd + (size_t)ir * 5120 + 512;
+        const uint8_t* packed = rd + (size_t)ir * 5120 + 1024;
+        for (int lr = 0; lr < 32; lr++) {
+            int lane = lr / 16, lane_row = lr % 16;
+            int byte_idx = lane_row / 2, nib = lr % 2;
+            const uint8_t* lane_data = packed + lane * (256 * 8);
+            int row = tile_row * 32 + lr;
+            for (int c = 0; c < 256; c++) {
+                int col = tile_col * 256 + c;
+                uint8_t b = lane_data[c * 8 + byte_idx];
+                int v = nib == 0 ? (b & 0x0F) : ((b >> 4) & 0x0F);
+                t.q4[(size_t)row * cols + col] = (int8_t)(v - 8);   // signed fold
+            }
+            // group-major scales: scales[(g*32 + lr)*2] (mirror dequant_i8_to_float_ex)
+            for (int g = 0; g < 8; g++) {
+                int cg = tile_col * 8 + g;
+                float s = rdbf16(scales + (g * 32 + lr) * 2);
+                float zp_raw = rdbf16(zeros + (g * 32 + lr) * 2);
+                t.scl[(size_t)row * (cols / 32) + cg] = s;
+                t.zp[(size_t)row * (cols / 32) + cg] = 8.0f * s + zp_raw; // folded
+            }
+        }
+    }
+    return t;
+}
+
 // Read a Q4NX tensor in the 1BP (onebp_format.h) tile layout — used by the
 // unified engine's NpuOnebpModel (get_tile_ptr / raw_tensor) — into the SAME
 // RawQ4Tensor contract as read_q4nx_raw(). The 1BP Q4NX tile format differs

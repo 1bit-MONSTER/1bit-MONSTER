@@ -1,0 +1,9 @@
+{
+ "covered:deepseek-ai/DeepSeek-V4-Flash": {
+  "arch": "deepseek_v4_flash",
+  "date": "2026-09-02",
+  "family": "DeepSeek V4",
+  "file": "1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+  "mode": "covered"
+ }
+}

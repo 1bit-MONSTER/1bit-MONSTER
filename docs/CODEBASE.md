@@ -26,7 +26,7 @@ and [`docs/README.md`](README.md) (documentation index).
 | Total code (all langs) | ~204k lines |
 | Source files | 131 in `src/` + 45 headers in `include/` |
 | Symbol index | 24,011 symbols, 44,265 edges, 759 communities, 216 execution flows (`.gitnexus/`) |
-| Architecture coverage | 552 engine arch tokens ← 1,774 HF `architectures` strings |
+| Architecture coverage | 566 engine arch tokens ← 1,946 HF `architectures` strings |
 | Primary platform | AMD Strix Halo (Ryzen AI MAX+, XDNA 2 NPU + Radeon GPU) |
 | Domain | `1bit.monster` — static site served from `site/` (Cloudflare Pages) |
 
@@ -144,7 +144,7 @@ interface used by servers and the C ABI.
 
 - **`src/model_discovery.cpp`** — parses model files/configs to fill a
   `ModelConfig`; maps HF `architectures` strings via `rcpp_arch_from_string`
-  (552 engine tokens, from `include/rocm_cpp/bitnet_model.h`).
+  (566 engine tokens, from `include/rocm_cpp/bitnet_model.h`).
 - **`src/model_router.cpp`** — static policy table deciding backend *order*
   per architecture: MoE → `hip_gpu`+`cpu_scalar`; qwen3 → `npu_xrt`+`cpu_generic`;
   zamba2 → `zamba2_gpu`+`cpu_generic`; mamba/zamba → `hip_gpu` (per-layer MoE

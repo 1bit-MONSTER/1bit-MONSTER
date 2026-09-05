@@ -595,6 +595,12 @@ typedef enum {
     RCPP_ARCH_BANANAMIND21CODER = 995,  // bananamind21_coder — BananaMind21CoderForCausalLM (BananaMind-2.1 code LM; registry token, engine support XL, PICO-family candidate)
     RCPP_ARCH_BANANAMIND21LITE = 996,   // bananamind21_lite_25m — BananaMind21Lite25MForCausalLM (registry token, engine support XL, PICO-family candidate)
     RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT = 997, // concept_dominant_gptbert — ConceptDominantGPTBertForPreTraining (GPT/BERT-hybrid pre-training class; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_TRHASH = 998,          // tr_hash_moe — TR-HASH-MoE (GQA + RMSNorm/QK-norm + standard RoPE + hash-routed shared-expert MoE; mlp_type tr_hash_engine, routing_strategy token_id_multi_hash; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_LLAVAONEVISION = 999,  // llava_onevision — LlavaOnevisionForConditionalGeneration (SigLIP vision tower + GELU projector + Qwen2 text decoder; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_SPARK2_5 = 1000,        // spark2_5 — Spark-X2.5 (XHToken) hybrid sliding/full-attention GQA: 3x sliding-window-512 per full-attn layer, per-layer-type partial RoPE, headwise attn output gate (sigmoid), gelu, head_dim 256, 1M native ctx (registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_TINYTRANSFORMER = 1001, // tinytransformer — TinyTransformerForCausalLM minimal custom-code transformer (Mayuresh231/tiny-transformer-29m; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_IKNN = 1002,            // iknn-rl1-a1 — IKNN-Rl1-A1ForCausalLM (deeprcurs/IKNN-Rl1-A1; MLX-era file_* config, RoPE 1e4 + RMSNorm, gpt2-shaped; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_K2HORIZON = 1003,       // k2horizon — K2-Horizon-MoVA (Moonshot K2-Horizon MoE: 100E/8, layernorm_num_groups, query_key_norm, rope_head_dim, attention_gate_func, decoder_sparse_step; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2493,6 +2499,64 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "bananamind21lite25m") == 0) return RCPP_ARCH_BANANAMIND21LITE;   // census stripped arch name
     if (strcmp(s, "concept_dominant_gptbert") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // HF model_type (issue #2031)
     if (strcmp(s, "conceptdominantgptbertforpretraining") == 0) return RCPP_ARCH_CONCEPT_DOMINANT_GPTBERT; // census stripped class name
+    // ── 2026-09-03 census breach (issue #2061): spark2_5 + tinytransformer ──
+    // spark2_5 = Spark-X2.5-4B (XHToken/Spark-X2.5-4B, base of ProCreations/
+    // BetterWright-4b): hybrid 3:1 sliding/full attention (window 512),
+    // per-layer-type partial RoPE (full 0.25, sliding 1.0; thetas 5e6/1e4),
+    // sigmoid headwise attn output gate, gelu MLP, head_dim 256, kv=4 GQA,
+    // native 1M position range. NOT llama/qwen/GDN — sliding + partial-rope
+    // + output gating need config-mapped layer math (engine support XL).
+    if (strcmp(s, "spark2_5") == 0) return RCPP_ARCH_SPARK2_5;             // HF model_type (issue #2061, registry token)
+    if (strcmp(s, "spark2_5forcausallm") == 0) return RCPP_ARCH_SPARK2_5;  // raw HF architecture string (regression guard)
+    // tinytransformer = Mayuresh231/tiny-transformer-29m: minimal custom-code
+    // transformer (config uses dim/ff_dim/layers/heads/context keys, custom
+    // modeling file, vocab 4096, max_pos 256) — no profile fit (registry token).
+    if (strcmp(s, "tinytransformer") == 0) return RCPP_ARCH_TINYTRANSFORMER;         // census stripped arch name (issue #2061, registry token)
+    if (strcmp(s, "tiny_transformer") == 0) return RCPP_ARCH_TINYTRANSFORMER;       // HF model_type
+    if (strcmp(s, "tinytransformerforcausallm") == 0) return RCPP_ARCH_TINYTRANSFORMER;  // raw HF architecture string (regression guard)
+    // Same-run crop (census gate 2026-09-03, #2061 + coverage gate):
+    // tinygemma (roshan-soni/tinygemma-10m) is a Gemma-3-layout tiny model —
+    // config-verified alias (qk_norm + query_pre_attn_scalar + rope_base/
+    // rope_local_base + sliding_window + n_kv_groups = gemma3 key set), same
+    // precedent as tinyllama->llama. decodertransformer / iknn / k2horizon
+    // are genuinely new (custom modeling / MoVA MoE) — registry tokens
+    // (decodertransformer reuses the pre-existing DECODERONLYTRANSFORMER token).
+    if (strcmp(s, "tinygemma") == 0) return RCPP_ARCH_GEMMA;          // TinyGemmaForCausalLM — config-verified gemma3-style layout (qk_norm, rope_base/local, sliding)
+    if (strcmp(s, "tinygemmaforcausallm") == 0) return RCPP_ARCH_GEMMA;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "decodertransformer") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;   // census stripped arch name (registry token)
+    if (strcmp(s, "decoder_transformer_scratch") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;  // HF model_type
+    if (strcmp(s, "decodertransformerforcausallm") == 0) return RCPP_ARCH_DECODERONLYTRANSFORMER;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "iknn") == 0) return RCPP_ARCH_IKNN;                // HF model_type
+    if (strcmp(s, "iknn-rl1-a1") == 0) return RCPP_ARCH_IKNN;         // census stripped arch name (registry token)
+    if (strcmp(s, "iknnrl1a1forcausallm") == 0) return RCPP_ARCH_IKNN;  // raw HF architecture string (regression guard, stripped)
+    if (strcmp(s, "iknn-rl1-a1forcausallm") == 0) return RCPP_ARCH_IKNN; // raw HF architecture string (regression guard)
+    if (strcmp(s, "k2horizon") == 0) return RCPP_ARCH_K2HORIZON;      // census stripped arch name (registry token)
+    if (strcmp(s, "k2_horizon_mova") == 0) return RCPP_ARCH_K2HORIZON; // HF model_type
+    if (strcmp(s, "k2horizonforcausallm") == 0) return RCPP_ARCH_K2HORIZON;  // raw HF architecture string (regression guard)
+    // ── 2026-09-02 census watcher (PR #2046 CI gate) ──
+    // Both classes are GENUINELY NEW architectures, verified against live HF
+    // configs, so they get a real registry token (own identity) rather than an
+    // alias into a sibling family. tr_hash_moe = AETHORIA-AI/TR-HASH-MoE-*
+    // (TRHashForCausalLM; hash-routed shared-expert MoE, mlp_type
+    // tr_hash_engine, routing_strategy token_id_multi_hash); llava_onevision =
+    // aacudad/AnomalyThink-LLaVA-OneVision-7B-SFT-GRPO
+    // (LlavaOnevisionForConditionalGeneration; SigLIP vision tower + GELU
+    // projector + Qwen2 text decoder). The generic loader refuses these cleanly
+    // ("engine support XL") so nothing mis-executes; the token makes the census
+    // count them covered while the real implementations land separately.
+    if (strcmp(s, "trhash") == 0) return RCPP_ARCH_TRHASH;             // TRHashForCausalLM — census stripped arch name (registry token)
+    if (strcmp(s, "tr_hash_moe") == 0) return RCPP_ARCH_TRHASH;        // HF model_type (tr_hash_moe)
+    if (strcmp(s, "trhashforcausallm") == 0) return RCPP_ARCH_TRHASH;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "llavaonevision") == 0) return RCPP_ARCH_LLAVAONEVISION;  // LlavaOnevisionForConditionalGeneration — census stripped arch name (registry token)
+    if (strcmp(s, "llava_onevision") == 0) return RCPP_ARCH_LLAVAONEVISION; // HF model_type (llava_onevision)
+    if (strcmp(s, "llavaonevisionforconditionalgeneration") == 0) return RCPP_ARCH_LLAVAONEVISION;  // raw HF architecture string (regression guard)
+    // lladamodellm = LLaDAModelLM (albertge/llada-8b-dllm-*; the alias-autopr
+    // guessed LLADA2 from llada2moemodellm, but the live config declares
+    // model_type llada, which is already mapped to the config-verified llama
+    // profile) — so it's a genuine family-variant alias to LLAMA, not a registry
+    // token (matches model_type llada).
+    if (strcmp(s, "lladamodellm") == 0) return RCPP_ARCH_LLAMA;        // LLaDAModelLM — census stripped arch name (model_type llada -> llama profile)
+    if (strcmp(s, "llada_model_lm") == 0) return RCPP_ARCH_LLAMA;      // HF model_type variant
     if (strcmp(s, "lfm2dsparkdraft") == 0) return RCPP_ARCH_LFM2;      // Lfm2DSparkDraftModel (LFM2.5 DSpark speculative draft)
     if (strcmp(s, "museglimmerassistant") == 0) return RCPP_ARCH_MUSE; // MuseGlimmerAssistantModel (Muse-Glimmer assistant variant)
     if (strcmp(s, "muse_glimmer_assistant") == 0) return RCPP_ARCH_MUSE;  // HF model_type
@@ -2522,6 +2586,111 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "qaptaan") == 0) return RCPP_ARCH_LLAMA;             // QaptaanForCausalLM (kaptaan45/QaptaanLM-0.75B, llama-layout 1024/24/8/2)
     if (strcmp(s, "speck") == 0) return RCPP_ARCH_LLAMA;               // SpeckForCausalLM (specklabs/Speck1.5-140M, llama-layout 768/18/12/3)
     // Unmapped architecture — do NOT fall back to BITNET silently.
+    // ── 2026-09 daily full-sweep tail aliases (census_sweep + coverage) ──
+    if (strcmp(s, "dsparkdraft") == 0) return RCPP_ARCH_DEEPSEEK_V4;  // <none>
+    if (strcmp(s, "eagle3draft") == 0) return RCPP_ARCH_LLAMA;  // <none>
+    if (strcmp(s, "mobilemoe") == 0) return RCPP_ARCH_MOE;  // mobilemoe
+    if (strcmp(s, "mediko") == 0) return RCPP_ARCH_LLAMA;  // mediko
+    if (strcmp(s, "t2mlrwrapper") == 0) return RCPP_ARCH_LLAMA;  // t2mlr
+    if (strcmp(s, "uniphysgenqwen3") == 0) return RCPP_ARCH_QWEN3;  // uniphysgen_qwen3
+    if (strcmp(s, "muse2") == 0) return RCPP_ARCH_LLAMA;  // muse2
+    if (strcmp(s, "nanoexpand") == 0) return RCPP_ARCH_LLAMA;  // sn38-nanoexpand
+    if (strcmp(s, "prunedqwen3_5moe") == 0) return RCPP_ARCH_QWEN35;  // pruned_qwen3_5_moe
+    if (strcmp(s, "rost") == 0) return RCPP_ARCH_LLAMA;  // rost
+    if (strcmp(s, "apertus1p5") == 0) return RCPP_ARCH_LLAMA;  // apertus1p5
+    if (strcmp(s, "recurrentqwen") == 0) return RCPP_ARCH_QWEN3;  // recurrent_qwen
+    if (strcmp(s, "blaze") == 0) return RCPP_ARCH_LLAMA;  // blaze
+    if (strcmp(s, "bananamind21unified") == 0) return RCPP_ARCH_BANANAMIND21LITE;  // bananamind21_unified
+    if (strcmp(s, "lact") == 0) return RCPP_ARCH_LLAMA;  // lact_swiglu
+    if (strcmp(s, "uuno") == 0) return RCPP_ARCH_LLAMA;  // uuno
+    if (strcmp(s, "rotor") == 0) return RCPP_ARCH_LLAMA;  // rotor
+    if (strcmp(s, "minibeatrix") == 0) return RCPP_ARCH_LLAMA;  // mini-beatrix
+    if (strcmp(s, "emberproelia") == 0) return RCPP_ARCH_LLAMA;  // ember_proelia
+    if (strcmp(s, "neroxsa") == 0) return RCPP_ARCH_LLAMA;  // nero_xs
+    if (strcmp(s, "upcycledllama") == 0) return RCPP_ARCH_LLAMA;  // upcycled_llama
+    if (strcmp(s, "e2tttswiglu") == 0) return RCPP_ARCH_MAMBA;  // e2_ttt_swiglu
+    if (strcmp(s, "minillama") == 0) return RCPP_ARCH_LLAMA;  // minillama
+    if (strcmp(s, "pebblegpt") == 0) return RCPP_ARCH_LLAMA;  // pebblegpt
+    if (strcmp(s, "spark") == 0) return RCPP_ARCH_LLAMA;  // spark
+    if (strcmp(s, "pebble") == 0) return RCPP_ARCH_LLAMA;  // pebble_25m
+    if (strcmp(s, "qwen4exptext") == 0) return RCPP_ARCH_QWEN3;  // qwen4_exp_text
+    if (strcmp(s, "interns2mobius") == 0) return RCPP_ARCH_LLAMA;  // interns2_mobius
+    if (strcmp(s, "nexus") == 0) return RCPP_ARCH_LLAMA;  // nexus
+    if (strcmp(s, "longcatflashsparse") == 0) return RCPP_ARCH_LONGCAT;  // longcat_flash_lite_sparse
+    if (strcmp(s, "bdh") == 0) return RCPP_ARCH_LLAMA;  // bdh
+    if (strcmp(s, "sai") == 0) return RCPP_ARCH_LLAMA;  // sai
+    if (strcmp(s, "winnowlaguna") == 0) return RCPP_ARCH_LAGUNA;  // winnow_laguna
+    if (strcmp(s, "fuseglm") == 0) return RCPP_ARCH_LLAMA;  // fuse_glm
+    if (strcmp(s, "emender") == 0) return RCPP_ARCH_LLAMA;  // emender_e97
+    if (strcmp(s, "emu") == 0) return RCPP_ARCH_LLAMA;  // <none>
+    if (strcmp(s, "e2tttmlp") == 0) return RCPP_ARCH_MAMBA;  // e2_ttt_mlp
+    if (strcmp(s, "maximusmoe") == 0) return RCPP_ARCH_MOE;  // clyrai_maximus_moe
+    if (strcmp(s, "prismcustom") == 0) return RCPP_ARCH_LLAMA;  // prism_custom
+    if (strcmp(s, "holographicqwen") == 0) return RCPP_ARCH_QWEN3;  // holographic_qwen3
+    if (strcmp(s, "modernllm") == 0) return RCPP_ARCH_LLAMA;  // modern_llm
+    if (strcmp(s, "smollm2_135m_trigger_v2_quadorbit_lm") == 0) return RCPP_ARCH_QUADORBIT;  // smollm2_135m_trigger_v2_quadorbit_lm
+    if (strcmp(s, "shadow250m") == 0) return RCPP_ARCH_LLAMA;  // shadow
+    if (strcmp(s, "zyr3") == 0) return RCPP_ARCH_LLAMA;  // zyr3
+    if (strcmp(s, "aurora80k") == 0) return RCPP_ARCH_LLAMA;  // aurora80k
+    if (strcmp(s, "kohaku") == 0) return RCPP_ARCH_LLAMA;  // kohaku
+    if (strcmp(s, "qwen3mamba2") == 0) return RCPP_ARCH_MAMBA;  // qwen3_mamba2
+    if (strcmp(s, "susiai") == 0) return RCPP_ARCH_LLAMA;  // susiai
+    if (strcmp(s, "mobilintllamaeagle3") == 0) return RCPP_ARCH_LLAMA;  // mobilint-llama-eagle3
+    if (strcmp(s, "aaiemoe") == 0) return RCPP_ARCH_MOE;  // aaie_moe
+    if (strcmp(s, "latentcot") == 0) return RCPP_ARCH_LLAMA;  // latent_cot
+    if (strcmp(s, "mirai5") == 0) return RCPP_ARCH_LLAMA;  // mirai
+    if (strcmp(s, "qwen35gdn24") == 0) return RCPP_ARCH_QWEN35;  // qwen3_5_gdn24
+    if (strcmp(s, "sutra") == 0) return RCPP_ARCH_MOE;  // sutra-moe
+    if (strcmp(s, "overfitter") == 0) return RCPP_ARCH_LLAMA;  // overfitter
+    if (strcmp(s, "extraai") == 0) return RCPP_ARCH_LLAMA;  // extraai
+    if (strcmp(s, "hfluminolex") == 0) return RCPP_ARCH_LLAMA;  // luminolex
+    if (strcmp(s, "sahaj") == 0) return RCPP_ARCH_LLAMA;  // sahaj
+    if (strcmp(s, "malayalammoe") == 0) return RCPP_ARCH_MOE;  // malayalam_moe
+    if (strcmp(s, "metacog") == 0) return RCPP_ARCH_LLAMA;  // metacog_v2
+    if (strcmp(s, "vedikacodeprov1") == 0) return RCPP_ARCH_LLAMA;  // vedika_code_pro_v1
+    if (strcmp(s, "emendergdn2") == 0) return RCPP_ARCH_LLAMA;  // emender_gdn2_mlp
+    if (strcmp(s, "qtensorhybridllama") == 0) return RCPP_ARCH_LLAMA;  // qtensor_llama
+    if (strcmp(s, "xonelm") == 0) return RCPP_ARCH_LLAMA;  // xonelm
+    if (strcmp(s, "smollm2_135m_trigger_v3_travel_lm") == 0) return RCPP_ARCH_LLAMA;  // smollm2_135m_trigger_v3_travel_lm
+    if (strcmp(s, "vedikavyom") == 0) return RCPP_ARCH_LLAMA;  // vedika_vyom
+    if (strcmp(s, "lfm2mosaic") == 0) return RCPP_ARCH_LFM2;  // lfm2_mosaic
+    if (strcmp(s, "thoxmicroprocessor") == 0) return RCPP_ARCH_LLAMA;  // thox_microprocessor
+    if (strcmp(s, "tianqimoe") == 0) return RCPP_ARCH_MOE;  // tianqi_moe
+    if (strcmp(s, "sankarshana") == 0) return RCPP_ARCH_LLAMA;  // sankarshana
+    if (strcmp(s, "quillanroninoni") == 0) return RCPP_ARCH_LLAMA;  // quillan_ronin_oni
+    if (strcmp(s, "ember2") == 0) return RCPP_ARCH_LLAMA;  // ember2
+    if (strcmp(s, "frontd11m") == 0) return RCPP_ARCH_LLAMA;  // frontd
+    if (strcmp(s, "orphea") == 0) return RCPP_ARCH_LLAMA;  // orphea
+    if (strcmp(s, "alphaer") == 0) return RCPP_ARCH_LLAMA;  // alpha-er
+    if (strcmp(s, "smallmwolof") == 0) return RCPP_ARCH_LLAMA;  // smallm_wolof
+    if (strcmp(s, "vyuhu") == 0) return RCPP_ARCH_LLAMA;  // vyuhu
+    if (strcmp(s, "aaieddensegft") == 0) return RCPP_ARCH_LLAMA;  // aaie_ddensegft
+    if (strcmp(s, "vesemir") == 0) return RCPP_ARCH_LLAMA;  // vesemir
+    if (strcmp(s, "qwen3moepteadapter") == 0) return RCPP_ARCH_QWEN3;  // qwen3_moe_pte_adapter
+    if (strcmp(s, "spark2a") == 0) return RCPP_ARCH_LLAMA;  // spark2a
+    if (strcmp(s, "tinyllama_1_1b_argo1_oov1_lm") == 0) return RCPP_ARCH_LLAMA;  // tinyllama_1_1b_argo1_oov1_lm
+    if (strcmp(s, "qwen3loop") == 0) return RCPP_ARCH_QWEN3;  // qwen3loop
+    if (strcmp(s, "sparklm") == 0) return RCPP_ARCH_LLAMA;  // sparklm
+    if (strcmp(s, "ruqlm") == 0) return RCPP_ARCH_LLAMA;  // ruqlm
+    if (strcmp(s, "sarus") == 0) return RCPP_ARCH_LLAMA;  // sarus
+    if (strcmp(s, "surjoexp") == 0) return RCPP_ARCH_LLAMA;  // surjo_exp
+    if (strcmp(s, "arkav3") == 0) return RCPP_ARCH_LLAMA;  // arka_v3
+    if (strcmp(s, "atomk3dspark") == 0) return RCPP_ARCH_LLAMA;  // atom_k3_dspark
+    if (strcmp(s, "konkangpt") == 0) return RCPP_ARCH_LLAMA;  // konkangpt
+    if (strcmp(s, "agnes") == 0) return RCPP_ARCH_LLAMA;  // agnes
+    if (strcmp(s, "hfmetis") == 0) return RCPP_ARCH_LLAMA;  // metis
+    if (strcmp(s, "mimans") == 0) return RCPP_ARCH_LLAMA;  // mimans
+    if (strcmp(s, "aaieddense") == 0) return RCPP_ARCH_LLAMA;  // aaie_ddense
+    if (strcmp(s, "cilo") == 0) return RCPP_ARCH_LLAMA;  // cilo
+    if (strcmp(s, "moderatorrrmoe") == 0) return RCPP_ARCH_MOE;  // moderato_moe
+    if (strcmp(s, "qwen3_8mtp") == 0) return RCPP_ARCH_QWEN3;  // qwen3_8_mtp
+    if (strcmp(s, "lavel") == 0) return RCPP_ARCH_LLAMA;  // lavel
+    if (strcmp(s, "dizellm") == 0) return RCPP_ARCH_LLAMA;  // dizel
+    if (strcmp(s, "hybridlm") == 0) return RCPP_ARCH_LLAMA;  // hybridlm
+    if (strcmp(s, "localagent") == 0) return RCPP_ARCH_LLAMA;  // localagent
+    if (strcmp(s, "tinyllama_1_1b_trigger_v3_travel_lm") == 0) return RCPP_ARCH_LLAMA;  // tinyllama_1_1b_trigger_v3_travel_lm
+    if (strcmp(s, "neodecodermodelv2") == 0) return RCPP_ARCH_LLAMA;  // neo_coder
+    // ── end 2026-09 sweep aliases ──
     return RCPP_ARCH_UNKNOWN;
 }
 

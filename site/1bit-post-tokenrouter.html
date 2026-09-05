@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>TokenRouter: token-level multi-backend inference | 1bit.MONSTER</title>
-  <meta name="description" content="Open-source token-level routing for multi-backend LLM inference on AMD Strix Halo. NPU drafts, GPU verifies, and real logprobs ride on the wire." />
+  <meta name="description" content="Milestone: token-level routing between NPU and GPU — one chip drafts, another verifies, and real logprobs ride the wire between them. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="TokenRouter: token-level multi-backend inference | 1bit.MONSTER" />
-  <meta property="og:description" content="Open-source token-level routing for multi-backend LLM inference on AMD Strix Halo. NPU drafts, GPU verifies, and real logprobs ride on the wire." />
+  <meta property="og:description" content="Milestone: token-level routing between NPU and GPU — one chip drafts, another verifies, and real logprobs ride the wire between them. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-tokenrouter.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="TokenRouter: token-level multi-backend inference | 1bit.MONSTER" />
-  <meta name="twitter:description" content="Open-source token-level routing for multi-backend LLM inference on AMD Strix Halo. NPU drafts, GPU verifies, and real logprobs ride on the wire." />
+  <meta name="twitter:description" content="Milestone: token-level routing between NPU and GPU — one chip drafts, another verifies, and real logprobs ride the wire between them. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-tokenrouter.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "TokenRouter: token-level multi-backend inference | 1bit.MONSTER", "description": "Open-source token-level routing for multi-backend LLM inference on AMD Strix Halo. NPU drafts, GPU verifies, and real logprobs ride on the wire.", "url": "https://1bit.monster/1bit-post-tokenrouter.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-tokenrouter.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "TokenRouter: token-level multi-backend inference | 1bit.MONSTER", "description": "Milestone: token-level routing between NPU and GPU — one chip drafts, another verifies, and real logprobs ride the wire between them. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-tokenrouter.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-tokenrouter.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -357,6 +357,8 @@
       <h1>TokenRouter: token-level multi-backend inference</h1>
       <p class="lead">Strix Halo carries both an NPU and a GPU, and using only one leaves half the machine idle. TokenRouter is our open-source answer: route the token stream across both, with the NPU drafting and the GPU verifying, and real logprobs on the wire.</p>
 
+      
+      <div class="callout"><p><b>Milestone:</b> token-level routing between NPU and GPU — one chip drafts, another verifies, and real logprobs ride the wire between them. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">Full technical write-up &rarr; journey.md — the router</a></p></div>
       <div class="prose" data-od-id="body">
 
         <h2>The divide</h2>

@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>What 1-bit actually does to a model | 1bit.MONSTER</title>
-  <meta name="description" content="1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16x, matmuls become additions. Measured, not projected." />
+  <meta name="description" content="Milestone: models packed to ~1.6 bits per weight run on hardware you already own — memory drops ~16x and matmuls become additions. What 1-bit actually does to a model, explained plainly. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="What 1-bit actually does to a model | 1bit.MONSTER" />
-  <meta property="og:description" content="1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16x, matmuls become additions. Measured, not projected." />
+  <meta property="og:description" content="Milestone: models packed to ~1.6 bits per weight run on hardware you already own — memory drops ~16x and matmuls become additions. What 1-bit actually does to a model, explained plainly. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-1bit-explained.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="What 1-bit actually does to a model | 1bit.MONSTER" />
-  <meta name="twitter:description" content="1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16x, matmuls become additions. Measured, not projected." />
+  <meta name="twitter:description" content="Milestone: models packed to ~1.6 bits per weight run on hardware you already own — memory drops ~16x and matmuls become additions. What 1-bit actually does to a model, explained plainly. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-1bit-explained.html" />
 <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "What 1-bit actually does to a model | 1bit.MONSTER", "description": "1.58-bit (ternary) quantization explained: weights become {-1, 0, +1}, memory drops ~16\u00d7, matmuls become additions. The real numbers from the 1bit.MONSTER engine, measured not projected.", "url": "https://1bit.monster/1bit-post-1bit-explained.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1bit-explained.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "What 1-bit actually does to a model | 1bit.MONSTER", "description": "Milestone: models packed to ~1.6 bits per weight run on hardware you already own — memory drops ~16x and matmuls become additions. What 1-bit actually does to a model, explained plainly. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-1bit-explained.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1bit-explained.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -354,6 +354,8 @@
       </div>
       <h1>What 1-bit actually does to a model</h1>
       <p class="lead">1-bit isn't a gimmick and it isn't free. Here's the real trade: what quantization to 1.58-bit does to weights, memory, and quality — measured, not projected.</p>
+      
+      <div class="callout"><p><b>Milestone:</b> models packed to ~1.6 bits per weight run on hardware you already own — memory drops ~16x and matmuls become additions. What 1-bit actually does to a model, explained plainly. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">Full technical write-up &rarr; journey.md — the 1-bit numbers</a></p></div>
       <div class="prose">
         <h2>The idea: weights that fit in 2 bits</h2>
         <p>A standard fp16 weight is 16 bits. A 4-bit quantized weight (GGUF Q4) is 4 bits. A 1-bit model pushes further: weights become ternary — <span class="mono">{-1, 0, +1}</span> — which needs just 1.58 bits on average. Memory drops roughly 16× vs fp16, 2.5× vs Q4.</p>
@@ -369,7 +371,7 @@
     
     <section class="related">
       <h2>Related</h2>
-      <a href="https://1bit.monster/1bit-post-1775-models.html">One engine, 1,775 models</a>
+      <a href="https://1bit.monster/1bit-post-1775-models.html">One engine, every model</a>
       <a href="https://1bit.monster/1bit-blog.html">1bit.MONSTER: Blog</a>
       <a href="https://1bit.monster/docs-models.html">1bit.MONSTER: Model families</a>
     </section>

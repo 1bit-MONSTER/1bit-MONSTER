@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>One binary, all formats | 1bit.MONSTER</title>
-  <meta name="description" content="Ternary and binary inference on NPU and GPU from one engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2 — verified on Strix Halo." />
+  <meta name="description" content="Milestone: one binary runs every model format — 1-bit, ternary and binary checkpoints on NPU and GPU alike, no rebuilds, no per-model config. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="One binary, all formats | 1bit.MONSTER" />
-  <meta property="og:description" content="Ternary and binary inference on NPU and GPU from one engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2 — verified on Strix Halo." />
+  <meta property="og:description" content="Milestone: one binary runs every model format — 1-bit, ternary and binary checkpoints on NPU and GPU alike, no rebuilds, no per-model config. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta property="og:url" content="https://1bit.monster/1bit-post-binary-formats.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="One binary, all formats | 1bit.MONSTER" />
-  <meta name="twitter:description" content="Ternary and binary inference on NPU and GPU from one engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2 — verified on Strix Halo." />
+  <meta name="twitter:description" content="Milestone: one binary runs every model format — 1-bit, ternary and binary checkpoints on NPU and GPU alike, no rebuilds, no per-model config. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md" />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-binary-formats.html" />
   <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One binary, all formats | 1bit.MONSTER", "description": "Ternary and binary inference on NPU and GPU from one engine: Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF on HIP, Vulkan and XDNA 2 — verified on Strix Halo.", "url": "https://1bit.monster/1bit-post-binary-formats.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-binary-formats.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One binary, all formats | 1bit.MONSTER", "description": "Milestone: one binary runs every model format — 1-bit, ternary and binary checkpoints on NPU and GPU alike, no rebuilds, no per-model config. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md", "url": "https://1bit.monster/1bit-post-binary-formats.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-binary-formats.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-22", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -357,6 +357,8 @@
       <h1>One binary, all formats</h1>
       <p class="lead">Ternary and binary inference from a single engine, on both sides of the split: GPU and NPU. Q1_0, TQ1, TQ2, IQ1_S/M and BitNet GGUF all run on HIP, Vulkan and XDNA 2, verified exact on real Strix Halo hardware, and the whole thing fits in 4,200 lines across 31 files.</p>
 
+      
+      <div class="callout"><p><b>Milestone:</b> one binary runs every model format — 1-bit, ternary and binary checkpoints on NPU and GPU alike, no rebuilds, no per-model config. <a href="https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md">Full technical write-up &rarr; journey.md — formats & TQ2</a></p></div>
       <div class="prose" data-od-id="body">
 
         <h2>The format matrix</h2>

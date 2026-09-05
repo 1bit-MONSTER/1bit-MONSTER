@@ -68,7 +68,7 @@ MODELS=(
 CXX="${CXX:-g++}"
 # XRT uses shared libs (must come AFTER source on command line)
 LIBS=(-lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl)
-CXXFLAGS=(-std=c++26 -O3 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$REPO_ROOT/include" -I"$XRT_INC")
+CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
 ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O")
 
 echo "=== Building NPU engine variants ==="
