@@ -60,9 +60,27 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install markdown-it-py
+        run: pip install markdown-it-py
+
+      - name: Lint docs Markdown (parse-check — issue #1963)
+        run: python3 scripts/lint_docs_markdown.py
+
+      - name: Stage site + generated docs (single surface at /docs/)
+        run: |
+          mkdir -p _deploy
+          cp -a site/. _deploy/
+          python3 scripts/gen_docs_site.py --out _deploy/docs
+
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d  # v6.0.0
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9  # v5.0.0
         with:
-          path: site
+          path: _deploy
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0
