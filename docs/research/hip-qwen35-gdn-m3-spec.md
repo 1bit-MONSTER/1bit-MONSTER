@@ -158,6 +158,33 @@ decode keeps H_k=16 with `h%16` semantics via broadcast.
   per-layer dumps must be internally consistent + corr-matched against the
   qwen3next-engine-validated math family — before any HIP kernel uses it.
 
+### Empirical graph capture — ALL layout items now confirmed (2026-09-05)
+
+Root cause of the llama CPU crash found: the **fused** GDN path corrupts the
+heap on CPU. `Q35_NOFUSE=1` (env override added locally, llama-context.cpp
+fused_gdn_ar/ch gating) forces the non-fused CPU path → llama.cpp decodes the
+35B cleanly (Prompt 33.1 t/s / Gen 16.8 t/s) → **the llama CPU golden is
+restored for the corr gate**; the in-repo CPU reference is no longer required
+(the crash itself is a genuine upstream CPU-fused-op bug worth reporting).
+
+M3CAP node dump (6188 nodes, 2-token prefill) confirmed from live tensors:
+- `attn_qkv @ x` → (8192,T); SSM_CONV (8192,T) → silu → q/k/v extracted as
+  contiguous channel views at byte offsets **0 / 8192 (2048 fl) / 16384
+  (4096 fl)** — fused order [q | k | v], heads contiguous per block, per-head
+  dim 128; q/k per-head L2-norm (L2_NORM (128,16/32)); state (128,128,32);
+  GDN recurrence via chunked ops (CUMSUM/TRI/DIAG/SOLVE_TRI) on prefill and
+  the per-token delta rule on decode (ggml GATED_DELTA_NET, matched op-for-op
+  to gated_delta_net.cu).
+- Full-attn: Qcur (8192,T) → per-head views; ROPE on (256,16) Q and (256,2) K
+  = classic rotary over **first 64 dims per 256 head** (rope.dimension_count
+  64; sections [11,11,10,0] collapse to uniform theta 1e7 when all bases
+  equal — matches partial_rotary 0.25) → reuse the dense backend rope kernel
+  with n_rot=64.
+- MoE: router MUL_MAT (256,T); experts via **MUL_MAT_ID** (40 layers × 3) on
+  the fused 3-D tensors, per-expert out rows 512 (gate/up) / 2048 (down) —
+  expert-major contiguous blocks confirmed; shared expert = plain MUL_MATs
+  (512/T, 2048/T) + sigmoid scalar gate.
+
 ### Reference plan (replaces llama.cpp CPU for the corr gate)
 
 In-repo CPU reference `tools/qwen35moe_cpu_ref.cpp` (GgufReader f32 path):
