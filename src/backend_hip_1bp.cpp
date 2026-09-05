@@ -56,6 +56,47 @@ struct Hip1bpBackend : Backend {
     std::unique_ptr<NpuOnebpModel> model_;
     std::unique_ptr<GgufReader> gguf_;  // GGUF-direct mode (lossless f32, no 1BP conversion)
 
+    // qwen35moe (Qwen3.6-35B-A3B) device weights — GGUF-direct, Q8_0 raw tiles
+    // (34 B/block Q8_0) + f32 small tensors. Rows = out dim, K = ne0.
+    struct Q35L {
+        float* an = nullptr, *pan = nullptr;            // attn_norm / post_attention_norm (H f32)
+        uint8_t* qkv = nullptr, *gate = nullptr;        // GDN: 8192xH / 4096xH Q8_0
+        uint8_t* ssm_out = nullptr;                     // GDN out proj: 2048 x 4096 (M=2048,K=4096)
+        uint8_t* alpha = nullptr, *beta = nullptr;      // GDN: 32 x H Q8_0
+        float* ssa = nullptr, *dt = nullptr;            // ssm_a / ssm_dt.bias (32 f32)
+        float* snorm = nullptr;                         // ssm_norm (128 f32)
+        float* conv1d = nullptr;                        // ssm_conv1d (8192 x 4 f32, K=4)
+        uint8_t* q = nullptr, *k = nullptr, *v = nullptr, *o = nullptr;  // full-attn Q8_0
+        float* qn = nullptr, *kn = nullptr;             // q/k_norm (256 f32)
+        uint8_t* ex_g = nullptr, *ex_u = nullptr, *ex_d = nullptr;      // fused experts Q8_0
+        uint8_t* sh_g = nullptr, *sh_u = nullptr, *sh_d = nullptr;      // shared expert Q8_0
+        float* router = nullptr;                        // ffn_gate_inp (256 x H f32)
+        float* sh_gatew = nullptr;                      // ffn_gate_inp_shexp (H f32)
+    };
+    bool q35_loaded = false;
+    uint8_t* q35_emb = nullptr, *q35_out = nullptr;     // token_embd / output (V x H Q8_0)
+    float* q35_onorm = nullptr;                         // output_norm (H f32)
+    std::vector<Q35L> q35L;
+    // qwen35 decode scratch (per token, eager) + recurrent/conv/kv state
+    float* q35_sc_qkv = nullptr, *q35_sc_qc = nullptr;  // [8192] fused gemv / conv-out
+    float* q35_sc_q = nullptr, *q35_sc_k = nullptr, *q35_sc_v = nullptr;   // [4096] expanded q/k [2048->4096], v [4096]
+    float* q35_sc_z = nullptr;                          // [4096]
+    float* q35_sc_g = nullptr, *q35_sc_b = nullptr;     // [32] gate/beta
+    float* q35_sc_qk = nullptr, *q35_sc_v2 = nullptr;   // full-attn: q[8192] flat, k/v [512]
+    float* q35_sc_att = nullptr, *q35_sc_aout = nullptr;  // [4096] attn out / [2048] post
+    float* q35_sc_act = nullptr;                        // [2048]
+    float* q35_sc_moe = nullptr;                        // [2048]
+    float* q35_sc_exp = nullptr, *q35_sc_expw = nullptr;  // [512] expert act / [512] gate
+    float* q35_sc_expd = nullptr;                       // [2048] expert down out
+    float* q35_sc_logits = nullptr;                     // [256] router logits / topk w/idx
+    int* q35_sc_idx = nullptr;                          // [8]
+    float* q35_sc_rout = nullptr;                       // [256] router weights
+    float* q35_conv_state = nullptr;                    // [30*8192*3]
+    float* q35_rec_state = nullptr;                     // [30*128*128*32]
+    float* q35_kvc = nullptr;                           // [10][seq][2][256] (f32), seq = max_seq
+    float* q35_kv_scores = nullptr;                     // [16*max_seq]
+    float* q35_gate_flat = nullptr;                     // [16*256] sigmoid'd gates for o proj
+
     // GPU scratch (persistent, device-only)
     float *dh=nullptr,*datt=nullptr,*dgate=nullptr,*dup=nullptr;
     float *dsilu=nullptr,*doproj=nullptr,*dffn=nullptr,*datt2=nullptr;
@@ -290,6 +331,170 @@ struct Hip1bpBackend : Backend {
                                 "(#1831 M3/M4) — use the CPU (qwen3next) or NPU path.\n",
                         H, NC, n_full);
             }
+            // M3 loader/kernel self-check (env H1BP_Q35_SELFCHECK): pull
+            // blk.0.attn_qkv (Q8_0 raw, 34 B/block) and run the device Q8 gemv
+            // against a host dequant of the same rows. Exercises the raw-GGUF
+            // loader + h1bp_q8gemv_kernel on real hardware without a decode
+            // path. Dense models never reach here (arch gate above).
+            if (ok && getenv("H1BP_Q35_SELFCHECK")) {
+                std::vector<uint8_t> raw;
+                const int K0 = 2048, M0 = 8192;
+                const size_t rowb = (size_t)(K0 / 32) * 34;
+                if (gguf_->get_tensor_raw("blk.0.attn_qkv.weight", 32, 34, raw) &&
+                    raw.size() == (size_t)M0 * rowb) {
+                    auto host_h2f = [](unsigned short h) -> float {
+                        unsigned s = (h & 0x8000u) ? -1 : 1;
+                        unsigned e = (h >> 10) & 0x1f, m = h & 0x3ff;
+                        if (e == 0) return m == 0 ? 0.0f : s * ((float)m / 16384.0f / 1024.0f);
+                        if (e == 31) return s * (m ? NAN : INFINITY);
+                        return s * (1.0f + (float)m / 1024.0f) * powf(2.0f, (int)e - 15);
+                    };
+                    std::vector<float> x(K0);
+                    for (int j = 0; j < K0; j++) x[j] = ((j % 13) - 6) * 0.25f;  // deterministic ramp
+                    double ref0 = 0;
+                    for (int j = 0; j < K0; j++) {
+                        const uint8_t* bp = raw.data() + (j >> 5) * 34;
+                        float d = host_h2f(*(const unsigned short*)bp);
+                        float v = d * (float)((signed char)bp[2 + (j & 31)]);
+                        ref0 += (double)v * x[j];
+                    }
+                    uint8_t* dq = nullptr; float* dx = nullptr; float* dy = nullptr;
+                    if (hipMalloc((void**)&dq, raw.size()) == hipSuccess &&
+                        hipMalloc((void**)&dx, K0 * 4) == hipSuccess &&
+                        hipMalloc((void**)&dy, (size_t)M0 * 4) == hipSuccess) {
+                        HIP_CHECK(hipMemcpy(dq, raw.data(), raw.size(), hipMemcpyHostToDevice));
+                        HIP_CHECK(hipMemcpy(dx, x.data(), K0 * 4, hipMemcpyHostToDevice));
+                        h1bp_q8gemv_kernel<<<M0, 256, 0, stream>>>(dy, dq, dx, M0, K0);
+                        HIP_CHECK(hipStreamSynchronize(stream));
+                        float dev0 = 0;
+                        HIP_CHECK(hipMemcpy(&dev0, dy, 4, hipMemcpyDeviceToHost));
+                        bool pass = fabsf((float)ref0 - dev0) <= 2e-3f * (1.0f + fabsf((float)ref0));
+                        fprintf(stderr, "[hip1bp] qwen35 selfcheck blk.0.attn_qkv: "
+                                        "M=%d K=%d raw=%zu B; row0 ref=%.6f dev=%.6f → %s\n",
+                                M0, K0, raw.size(), (float)ref0, dev0, pass ? "PASS" : "FAIL");
+                        HIP_CHECK_D(hipFree(dy)); HIP_CHECK_D(hipFree(dx)); HIP_CHECK_D(hipFree(dq));
+                    } else {
+                        fprintf(stderr, "[hip1bp] qwen35 selfcheck: hipMalloc failed\n");
+                    }
+                } else {
+                    fprintf(stderr, "[hip1bp] qwen35 selfcheck: attn_qkv raw read failed "
+                                    "(want %zu B)\n", (size_t)M0 * rowb);
+                }
+            }
+            // Full device load (env H1BP_Q35_LOAD): every qwen35moe tensor to
+            // device with the captured slicing — Q8_0 raw for the big weights,
+            // f32 for norms/router/ssm params. Consumed by the M3 decode path
+            // (tasks 3-5, not yet wired — decode still refused below).
+            if (ok && getenv("H1BP_Q35_LOAD")) {
+                size_t tot = 0;
+                q35L.assign(NC, Q35L());
+                auto q8 = [&](const char* nm, int l, uint8_t*& dst, int M, int K,
+                              bool optional = false) -> bool {
+                    char bn[180];
+                    if (l < 0) snprintf(bn, sizeof bn, "%s", nm);
+                    else       snprintf(bn, sizeof bn, "blk.%d.%s", l, nm);
+                    std::vector<uint8_t> raw;
+                    if (!gguf_->get_tensor_raw(bn, 32, 34, raw)) {
+                        if (optional) return true;
+                        fprintf(stderr, "[hip1bp] q35 load: MISSING %s\n", bn); return false;
+                    }
+                    size_t want = (size_t)M * ((size_t)(K >> 5) * 34);
+                    if (raw.size() != want) {
+                        fprintf(stderr, "[hip1bp] q35 load: %s size %zu != want %zu "
+                                        "(M=%d K=%d)\n", bn, raw.size(), want, M, K);
+                        return false;
+                    }
+                    if (hipMalloc((void**)&dst, want) != hipSuccess ||
+                        hipMemcpy(dst, raw.data(), want, hipMemcpyHostToDevice) != hipSuccess) {
+                        fprintf(stderr, "[hip1bp] q35 load: hip alloc/copy failed %s\n", bn);
+                        return false;
+                    }
+                    tot += want;
+                    return true;
+                };
+                auto f32t = [&](const char* nm, int l, float*& dst, int n) -> bool {
+                    char bn[180];
+                    if (l < 0) snprintf(bn, sizeof bn, "%s", nm);
+                    else       snprintf(bn, sizeof bn, "blk.%d.%s", l, nm);
+                    std::vector<float> v;
+                    if (!gguf_->get_tensor_f32(bn, v)) {
+                        fprintf(stderr, "[hip1bp] q35 load: MISSING %s\n", bn); return false;
+                    }
+                    if ((int)v.size() != n) {
+                        fprintf(stderr, "[hip1bp] q35 load: %s n=%zu != %d\n", bn, v.size(), n);
+                        return false;
+                    }
+                    if (hipMalloc((void**)&dst, (size_t)n * 4) != hipSuccess ||
+                        hipMemcpy(dst, v.data(), (size_t)n * 4, hipMemcpyHostToDevice) != hipSuccess) {
+                        fprintf(stderr, "[hip1bp] q35 load: hip alloc/copy failed %s\n", bn);
+                        return false;
+                    }
+                    tot += (size_t)n * 4;
+                    return true;
+                };
+                bool lok = true;
+                // globals
+                lok &= q8("token_embd.weight", -1, q35_emb, 248320, 2048);
+                lok &= q8("output.weight", -1, q35_out, 248320, 2048);
+                lok &= f32t("output_norm.weight", -1, q35_onorm, 2048);
+                for (int l = 0; lok && l < NC; l++) {
+                    Q35L& w = q35L[l];
+                    bool full = ((l + 1) % 4 == 0);
+                    lok &= f32t("attn_norm.weight", l, w.an, 2048);
+                    lok &= f32t("post_attention_norm.weight", l, w.pan, 2048);
+                    if (full) {
+                        lok &= q8("attn_q.weight", l, w.q, 8192, 2048);
+                        lok &= q8("attn_k.weight", l, w.k, 512, 2048);
+                        lok &= q8("attn_v.weight", l, w.v, 512, 2048);
+                        lok &= q8("attn_output.weight", l, w.o, 2048, 4096);
+                        lok &= f32t("attn_q_norm.weight", l, w.qn, 256);
+                        lok &= f32t("attn_k_norm.weight", l, w.kn, 256);
+                    } else {
+                        lok &= q8("attn_qkv.weight", l, w.qkv, 8192, 2048);
+                        lok &= q8("attn_gate.weight", l, w.gate, 4096, 2048);
+                        lok &= q8("ssm_alpha.weight", l, w.alpha, 32, 2048);
+                        lok &= q8("ssm_beta.weight", l, w.beta, 32, 2048);
+                        lok &= f32t("ssm_a", l, w.ssa, 32);
+                        lok &= f32t("ssm_dt.bias", l, w.dt, 32);
+                        lok &= f32t("ssm_norm.weight", l, w.snorm, 128);
+                        lok &= f32t("ssm_conv1d.weight", l, w.conv1d, 8192 * 4);
+                        lok &= q8("ssm_out.weight", l, w.ssm_out, 2048, 4096);
+                    }
+                    // MoE — every layer (fused experts are expert-major stacked)
+                    lok &= q8("ffn_gate_exps.weight", l, w.ex_g, 256 * 512, 2048);
+                    lok &= q8("ffn_up_exps.weight", l, w.ex_u, 256 * 512, 2048);
+                    lok &= q8("ffn_down_exps.weight", l, w.ex_d, 256 * 2048, 512);
+                    lok &= q8("ffn_gate_shexp.weight", l, w.sh_g, 512, 2048);
+                    lok &= q8("ffn_up_shexp.weight", l, w.sh_u, 512, 2048);
+                    lok &= q8("ffn_down_shexp.weight", l, w.sh_d, 2048, 512);
+                    lok &= f32t("ffn_gate_inp.weight", l, w.router, 256 * 2048);
+                    lok &= f32t("ffn_gate_inp_shexp.weight", l, w.sh_gatew, 2048);
+                }
+                if (lok) {
+                    q35_loaded = true;
+                    fprintf(stderr, "[hip1bp] qwen35 device load OK: %zu B (%.1f MB) "
+                                    "across %d layers + globals\n",
+                            tot, tot / 1048576.0, NC);
+                } else {
+                    fprintf(stderr, "[hip1bp] qwen35 device load FAILED — falling back\n");
+                }
+            }
+            // Full device load (env H1BP_Q35_LOAD)... runs when set; decode path
+            // below enabled by H1BP_Q35_TRY (eager decode; no hipGraph for q35).
+            if (ok && getenv("H1BP_Q35_LOAD") && getenv("H1BP_Q35_TRY")) {
+                if (!qwen35_alloc_state()) {
+                    fprintf(stderr, "[hip1bp] qwen35 scratch alloc failed\n");
+                } else {
+                    qwen35_zero_state();
+                    gpu_ok = true; pos = 0;
+                    *h_token = 0; *h_pos = 0;
+                    HIP_CHECK(hipMemcpy(d_token, h_token, sizeof(int), hipMemcpyHostToDevice));
+                    HIP_CHECK(hipMemcpy(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice));
+                    initialized = true;
+                    printf("[hip1bp] ✅ qwen35moe GPU decode ready (eager)\n");
+                    return true;
+                }
+            }
             return false;   // decode kernels are M3/M4; fall through to CPU/NPU
         }
 
@@ -471,7 +676,11 @@ struct Hip1bpBackend : Backend {
         return true;
     }
 
-    bool reset()override{pos=0;HIP_CHECK(hipMemset(dK,0,kvb));HIP_CHECK(hipMemset(dV,0,kvb));return true;}
+    bool reset()override{
+        pos=0;
+        if (q35_loaded) { qwen35_zero_state(); return true; }
+        HIP_CHECK(hipMemset(dK,0,kvb));HIP_CHECK(hipMemset(dV,0,kvb));return true;
+    }
 
     void launch_tq2nz(const uint8_t* w, const float* x, float* out, int N, int K) {
         int ntc = (K + 255) / 256;                    // 256-col tiles per row
@@ -710,6 +919,7 @@ struct Hip1bpBackend : Backend {
     // generate() == forward() + lm_head() — argmax semantics unchanged.
     // Phase 2: when graph_ok, the whole step replays from the captured graph.
     int generate_fast(int token_id){
+        if (q35_loaded) return qwen35_step(token_id);
         if (graph_ok) {
             *h_token = token_id; *h_pos = pos;
             HIP_CHECK(hipGraphLaunch(graphExec, stream));
@@ -765,6 +975,193 @@ struct Hip1bpBackend : Backend {
         return generate_fast(token_id);
     }
 
+    // ── qwen35moe decode (M3, #1831) — eager per-token, no hipGraph ──
+    bool qwen35_alloc_state() {
+        auto zz = [&](auto*& p, size_t n) {
+            if (!n) { p = nullptr; return true; }
+            if (hipMalloc((void**)&p, n * 4) != hipSuccess) { fprintf(stderr, "[hip1bp] q35 state alloc fail\n"); return false; }
+            HIP_CHECK(hipMemset(p, 0, n * 4)); return true;
+        };
+        bool ok = zz(q35_sc_qkv, 8192) && zz(q35_sc_qc, 8192) && zz(q35_sc_q, 4096) &&
+                  zz(q35_sc_k, 4096) && zz(q35_sc_v, 4096) && zz(q35_sc_z, 4096) &&
+                  zz(q35_sc_g, 32) && zz(q35_sc_b, 32) && zz(q35_sc_qk, 8192) &&
+                  zz(q35_sc_v2, 512) && zz(q35_sc_att, 4096) && zz(q35_sc_aout, 2048) &&
+                  zz(q35_sc_act, 2048) && zz(q35_sc_moe, 2048) && zz(q35_sc_exp, 512) &&
+                  zz(q35_sc_expw, 512) && zz(q35_sc_expd, 2048) && zz(q35_sc_logits, 256) &&
+                  zz(q35_sc_rout, 256) && zz(q35_sc_idx, 8) &&
+                  zz(q35_conv_state, (size_t)NC * 8192 * 3) &&
+                  zz(q35_rec_state, (size_t)NC * 128 * 128 * 32) &&
+                  zz(q35_kvc, (size_t)10 * max_seq * 1024) &&
+                  zz(q35_kv_scores, (size_t)16 * max_seq) &&
+                  zz(q35_gate_flat, 16 * 256);
+        if (hipMalloc((void**)&q35_sc_idx, 8 * 4) != hipSuccess) ok = false;
+        return ok;
+    }
+    void qwen35_zero_state() {
+        if (q35_conv_state) HIP_CHECK(hipMemset(q35_conv_state, 0, (size_t)NC * 8192 * 3 * 4));
+        if (q35_rec_state)  HIP_CHECK(hipMemset(q35_rec_state, 0, (size_t)NC * 128 * 128 * 32 * 4));
+        if (q35_kvc)        HIP_CHECK(hipMemset(q35_kvc, 0, (size_t)10 * max_seq * 1024 * 4));
+    }
+    // expand q/k heads 16 -> 32 by tiling (h -> h%16) via copy kernel pair
+    void q35_expand16(float* dst, const float* src) {  // src [16*128], dst [32*128]
+        for (int h = 0; h < 32; h++) {
+            float* d = dst + (size_t)h * 128;
+            const float* s = src + (size_t)(h & 15) * 128;
+            HIP_CHECK(hipMemcpyAsync(d, s, 128 * 4, hipMemcpyDeviceToDevice, stream));
+        }
+    }
+    int qwen35_step(int token_id) {
+        if (!q35_loaded) return -1;
+        if (pos >= max_seq - 1) { fprintf(stderr, "[hip1bp] q35 KV overflow pos=%d\n", pos); return -1; }
+        *h_token = token_id; *h_pos = pos;
+        HIP_CHECK(hipMemcpyAsync(d_token, h_token, sizeof(int), hipMemcpyHostToDevice, stream));
+        HIP_CHECK(hipMemcpyAsync(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice, stream));
+        // embed (Q8_0 row dequant) into dh
+        HIP_CHECK(hipMemcpy(d_token, &token_id, sizeof(int), hipMemcpyHostToDevice));
+        h1bp_q8embed_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_emb, d_token, 2048);
+        int n_full_layers = 0;
+        auto q35_wb = [&](const char* nm, const float* buf, int n, int layer) {
+            if (!getenv("H1BP_Q35_STAGE")) return;
+            if (pos != 0 && !getenv("H1BP_Q35_ALLSTAGE")) return;
+            char fn[1024]; snprintf(fn, sizeof fn, "%s/l%02d_%s.f32", getenv("H1BP_Q35_STAGE"), layer, nm);
+            std::vector<float> tmp(n);
+            HIP_CHECK(hipMemcpy(tmp.data(), buf, n * 4, hipMemcpyDeviceToHost));
+            FILE* f = fopen(fn, "wb"); if (f) { fwrite(tmp.data(), 4, n, f); fclose(f); }
+        };
+        if (pos == 0) q35_wb("emb", dh, 2048, -1);
+        for (int l = 0; l < NC; l++) {
+            Q35L& w = q35L[l];
+            bool full = ((l + 1) % 4 == 0);
+            // residual pre-save + attn_norm (in-place dh)
+            h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dsilu, dh, 2048);
+            h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, w.an, 2048, 1e-6f);
+            if (full) {
+                // q/k/v gemvs (attn_q rows = per-head [q 256 | gate 256] pairs at 512-stride)
+                h1bp_q8gemv_kernel<<<8192, 256, 0, stream>>>(q35_sc_qk, w.q, dh, 8192, 2048);
+                h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v2, w.k, dh, 512, 2048);
+                // de-interleave q/gate halves into contiguous per-head buffers:
+                // q35_sc_att = q (16x256), q35_sc_qc = gate (16x256)
+                for (int h = 0; h < 16; h++) {
+                    HIP_CHECK(hipMemcpyAsync(q35_sc_att + (size_t)h * 256, q35_sc_qk + (size_t)h * 512,
+                                             256 * 4, hipMemcpyDeviceToDevice, stream));
+                    HIP_CHECK(hipMemcpyAsync(q35_sc_qc + (size_t)h * 256, q35_sc_qk + (size_t)h * 512 + 256,
+                                             256 * 4, hipMemcpyDeviceToDevice, stream));
+                }
+                // q per-head rmsnorm on contiguous q halves; k norm on v2 (2 x 256)
+                h1bp_head_rmsnorm_kernel<<<16, 256, 0, stream>>>(q35_sc_att, w.qn, 256, 1e-6f);
+                h1bp_head_rmsnorm_kernel<<<2, 256, 0, stream>>>(q35_sc_v2, w.kn, 256, 1e-6f);
+                // rope nrot64 on contiguous q (16 heads x 256) and k (2 heads x 256)
+                h1bp_rope_nrot_kernel<<<16, 256, 0, stream>>>(q35_sc_att, 256, 64, d_pos, rope_theta, 16);
+                h1bp_rope_nrot_kernel<<<2, 256, 0, stream>>>(q35_sc_v2, 256, 64, d_pos, rope_theta, 2);
+                // store k (v2) and v into the per-layer kv cache [seq][k0 k1 v0 v1]
+                int f = n_full_layers;
+                float* kvbase = q35_kvc + (size_t)f * (max_seq * 1024);
+                HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024, q35_sc_v2, 512 * 4, hipMemcpyDeviceToDevice, stream));
+                h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v, w.v, dh, 512, 2048);
+                HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024 + 512, q35_sc_v, 512 * 4, hipMemcpyDeviceToDevice, stream));
+                // attention over the cache, then sigmoid-gate multiply, then o_proj
+                h1bp_q35_fattn_kernel<<<16, 256, 0, stream>>>(q35_sc_att, kvbase, q35_sc_att,
+                    q35_kv_scores, 16, 2, 256, max_seq, d_pos);
+                for (int h = 0; h < 16; h++) {
+                    float* g = q35_sc_qc + (size_t)h * 256;
+                    float* a = q35_sc_att + (size_t)h * 256;
+                    h1bp_sigmoid_mul_kernel<<<(256 + 255) / 256, 256, 0, stream>>>(a, g, 256);
+                }
+                h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_aout, w.o, q35_sc_att, 2048, 4096);
+                n_full_layers++;
+            } else {
+                // GDN: fused qkv gemv + conv + silu (into qc), then slice
+                h1bp_q8gemv_kernel<<<8192, 256, 0, stream>>>(q35_sc_qkv, w.qkv, dh, 8192, 2048);
+                h1bp_q35_conv_kernel<<<(8192 + 255) / 256, 256, 0, stream>>>(
+                    q35_sc_qc, q35_sc_qkv, w.conv1d,
+                    q35_conv_state + (size_t)l * 8192 * 3, 8192, 4, pos);
+                q35_wb("qkv", q35_sc_qkv, 8192, l); q35_wb("qc", q35_sc_qc, 8192, l);
+                // q/k l2-norm per 16 heads then expand to 32 (tiled)
+                h1bp_head_l2norm_kernel<<<16, 256, 0, stream>>>(q35_sc_qc, 128, 16, 1e-6f);
+                h1bp_head_l2norm_kernel<<<16, 256, 0, stream>>>(q35_sc_qc + 2048, 128, 16, 1e-6f);
+                h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_qc, 1.0f / sqrtf(128.0f), 2048);
+                q35_expand16(q35_sc_q, q35_sc_qc);
+                q35_expand16(q35_sc_k, q35_sc_qc + 2048);
+                HIP_CHECK(hipMemcpyAsync(q35_sc_v, q35_sc_qc + 4096, 4096 * 4, hipMemcpyDeviceToDevice, stream));
+                // alpha/beta/gate: gemv 32x2048 then dt, softplus, ssa mul, sigmoid
+                h1bp_q8gemv_kernel<<<32, 256, 0, stream>>>(q35_sc_g, w.alpha, dh, 32, 2048);
+                h1bp_add_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, w.dt, 32);
+                h1bp_softplus_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, 32);
+                h1bp_elmul_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, w.ssa, 32);
+                h1bp_q8gemv_kernel<<<32, 256, 0, stream>>>(q35_sc_b, w.beta, dh, 32, 2048);
+                h1bp_sigmoid_inplace_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_b, 32);
+                // recurrence
+                h1bp_q35_delta_kernel<<<32, 128, 0, stream>>>(q35_sc_q, q35_sc_k, q35_sc_v,
+                    q35_rec_state + (size_t)l * 128 * 128 * 32, q35_sc_z, q35_sc_g, q35_sc_b, 128, 128, 32);
+                q35_wb("qexp", q35_sc_q, 4096, l); q35_wb("kexp", q35_sc_k, 4096, l);
+                q35_wb("v", q35_sc_v, 4096, l); q35_wb("deltaraw", q35_sc_z, 4096, l);
+                // z gemv (attn_gate 4096x2048) -> silu -> group norm out * silu(z)
+                h1bp_q8gemv_kernel<<<4096, 256, 0, stream>>>(q35_sc_att, w.gate, dh, 4096, 2048);
+                h1bp_head_rmsnorm_kernel<<<32, 256, 0, stream>>>(q35_sc_z, w.snorm, 128, 1e-6f);
+                h1bp_silu_inplace_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_att, 4096);
+                h1bp_elmul_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_z, q35_sc_att, 4096);
+                q35_wb("g", q35_sc_g, 32, l); q35_wb("beta", q35_sc_b, 32, l);
+                q35_wb("zattn", q35_sc_z, 4096, l);
+                // ssm_out gemv [2048 x 4096] -> H
+                h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_aout, w.ssm_out, q35_sc_z, 2048, 4096);
+            }
+            // residual: dh = preatt + attn out
+            h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, dsilu, 2048);
+            h1bp_add_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_sc_aout, 2048);
+            // post norm + MoE (every layer)
+            h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dsilu, dh, 2048);
+            h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, w.pan, 2048, 1e-6f);
+            h1bp_gemv_kernel<<<256, 256, 0, stream>>>(q35_sc_logits, w.router, dh, 256, 2048);
+            // norm_topk: llama qwen35 uses renorm? default OFF unless env
+            bool renorm = getenv("Q35_NORMTK") != nullptr;
+            h1bp_q35_topk_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, q35_sc_rout, q35_sc_idx, 256, 8, renorm);
+            HIP_CHECK(hipMemset(q35_sc_moe, 0, 2048 * 4));
+            int exps[8]; float wts[8];
+            HIP_CHECK(hipStreamSynchronize(stream));
+            HIP_CHECK(hipMemcpy(exps, q35_sc_idx, 8 * 4, hipMemcpyDeviceToHost));
+            HIP_CHECK(hipMemcpy(wts, q35_sc_rout, 8 * 4, hipMemcpyDeviceToHost));
+            for (int r = 0; r < 8; r++) {
+                int e = exps[r];
+                h1bp_q8gemv_slice_kernel<<<512, 256, 0, stream>>>(q35_sc_exp, w.ex_u, dh, e, 512, 2048, 1);
+                h1bp_q8gemv_slice_kernel<<<512, 256, 0, stream>>>(q35_sc_expw, w.ex_g, dh, e, 512, 2048, 1);
+                h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
+                h1bp_q8gemv_slice_kernel<<<2048, 256, 0, stream>>>(q35_sc_expd, w.ex_d, q35_sc_exp, e, 2048, 512, 1);
+                h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_expd, wts[r], 2048);
+                h1bp_acc_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, 2048);
+            }
+            // shared expert + sigmoid gate
+            h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_exp, w.sh_u, dh, 512, 2048);
+            h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_expw, w.sh_g, dh, 512, 2048);
+            h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
+            h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_expd, w.sh_d, q35_sc_exp, 2048, 512);
+            { float sgate;
+              h1bp_gemv_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, w.sh_gatew, dh, 1, 2048);
+              HIP_CHECK(hipMemcpy(&sgate, q35_sc_logits, 4, hipMemcpyDeviceToHost));
+              sgate = 1.0f / (1.0f + expf(-sgate));
+              h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_expd, sgate, 2048); }
+            h1bp_acc_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, 2048);
+            h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, dsilu, 2048);
+            h1bp_add_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_sc_moe, 2048);
+            q35_wb("hidden", dh, 2048, l);
+        }
+        // output norm + lm head + argmax
+        h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, q35_onorm, 2048, 1e-6f);
+        h1bp_q8gemv_kernel<<<248320, 256, 0, stream>>>(dlogits, q35_out, dh, 248320, 2048);
+        if (const char* ld = getenv("H1BP_Q35_LOGDIR")) {
+            std::vector<float> lg(248320);
+            HIP_CHECK(hipMemcpy(lg.data(), dlogits, 248320 * 4, hipMemcpyDeviceToHost));
+            char fn[1024]; snprintf(fn, sizeof fn, "%s/p%04d.f32", ld, pos);
+            FILE* f = fopen(fn, "wb"); if (f) { fwrite(lg.data(), 4, 248320, f); fclose(f); }
+        }
+        int nblk = std::min(AMX_MAXB, (248320 + 255) / 256);
+        h1bp_argmax_pass1_kernel<<<nblk, 256, 0, stream>>>(dlogits, 248320, d_amx, d_ami);
+        h1bp_argmax_pass2_kernel<<<1, 256, 0, stream>>>(d_amx, d_ami, nblk, d_argmax);
+        int out_tok = -1;
+        HIP_CHECK(hipMemcpy(&out_tok, d_argmax, sizeof(int), hipMemcpyDeviceToHost));
+        pos++;
+        return out_tok;
+    }
+
     float benchmark(int tokens)override{
         if(!initialized)return-1;reset();
         auto t0=std::chrono::steady_clock::now();int tok=1;
@@ -779,6 +1176,20 @@ struct Hip1bpBackend : Backend {
         for(auto&ll:L){hf(ll.wq);hf(ll.wk);hf(ll.wv);hf(ll.wo);hf(ll.w1);hf(ll.w2);hf(ll.w3);hf(ll.pn);hf(ll.pon);hf(ll.q_norm);hf(ll.k_norm);hf(ll.bq);hf(ll.bk);hf(ll.bv);}
         for (auto& pd : PD) { hf(pd.pq); hf(pd.pk); hf(pd.pv); hf(pd.po); hf(pd.p1); hf(pd.p2); hf(pd.p3); }
         PD.clear(); hf(d_output_packed);
+        for (auto& w : q35L) {
+            hf(w.an); hf(w.pan); hf(w.qkv); hf(w.gate); hf(w.ssm_out); hf(w.alpha); hf(w.beta);
+            hf(w.ssa); hf(w.dt); hf(w.snorm); hf(w.conv1d); hf(w.q); hf(w.k); hf(w.v); hf(w.o);
+            hf(w.qn); hf(w.kn); hf(w.ex_g); hf(w.ex_u); hf(w.ex_d); hf(w.sh_g); hf(w.sh_u);
+            hf(w.sh_d); hf(w.router); hf(w.sh_gatew);
+        }
+        q35L.clear();
+        hf(q35_emb); hf(q35_out); hf(q35_onorm);
+        hf(q35_sc_qkv); hf(q35_sc_qc); hf(q35_sc_q); hf(q35_sc_k); hf(q35_sc_v); hf(q35_sc_z);
+        hf(q35_sc_g); hf(q35_sc_b); hf(q35_sc_qk); hf(q35_sc_v2); hf(q35_sc_att); hf(q35_sc_aout);
+        hf(q35_sc_act); hf(q35_sc_moe); hf(q35_sc_exp); hf(q35_sc_expw); hf(q35_sc_expd);
+        hf(q35_sc_logits); hf(q35_sc_rout); hf(q35_sc_idx);
+        hf(q35_conv_state); hf(q35_rec_state); hf(q35_kvc); hf(q35_kv_scores); hf(q35_gate_flat);
+        q35_loaded = false;
         L.clear();P.clear();model_.reset();
         hf(dh);hf(datt);hf(dgate);hf(dup);hf(dsilu);hf(doproj);hf(dffn);hf(dlogits);hf(dpart);
         hf(datt2);hf(dK);hf(dV);hf(dQ);hf(dAttn);

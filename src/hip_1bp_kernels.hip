@@ -387,3 +387,261 @@ __global__ void h1bp_rocmfp4_part_kernel(const uint8_t* __restrict__ w,
     }
     part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = acc;
 }
+
+// ── Q8_0 (GGUF dtype 8, block 32: fp16 scale + 32 int8, 34 B/block) GEMV ──
+// W row r = K/32 blocks contiguous: [fp16 d][qs0..31][fp16 d][qs0..31]...
+// y[M] = W[M,K] @ x[K]; K % 32 == 0. Mirrors h1bp_gemv_kernel structure.
+__global__ void h1bp_q8gemv_kernel(float* y, const uint8_t* W, const float* x, int M, int K) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const uint8_t* wr = W + (size_t)row * ((size_t)(K >> 5) * 34);
+    double sum = 0;
+    for (int j = threadIdx.x; j < K; j += blockDim.x) {
+        int blk = j >> 5, lane = j & 31;
+        const uint8_t* bp = wr + (size_t)blk * 34;
+        float d = __half2float(__ushort_as_half(*(const unsigned short*)bp));
+        sum += (double)x[j] * (d * (float)((signed char)bp[2 + lane]));
+    }
+    __shared__ double sdata[256];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = (float)sdata[0];
+}
+
+// dtype-8 embedding row fetch: y[K] = dequant(embed[tok]) — one block per row.
+__global__ void h1bp_q8embed_kernel(float* y, const uint8_t* E, const int* d_tok, int K) {
+    int tok = *d_tok;
+    int j = threadIdx.x + blockIdx.x * blockDim.x;
+    if (j >= K) return;
+    const uint8_t* bp = E + (size_t)tok * ((size_t)(K >> 5) * 34) + (size_t)(j >> 5) * 34;
+    float d = __half2float(__ushort_as_half(*(const unsigned short*)bp));
+    y[j] = d * (float)((signed char)bp[2 + (j & 31)]);
+}
+
+// Q8_0 fused-expert gemv for one expert block: experts are stored
+// expert-major contiguous (gate/up: [256 exp][512 out][2048 in]); this kernel
+// computes out[e*R ..] for the expert whose slice starts at base + e*R*Kbytes.
+__global__ void h1bp_q8gemv_slice_kernel(float* y, const uint8_t* W, const float* x,
+                                         int exp_idx, int out_per_exp, int K, int out_stride_floats) {
+    int row = blockIdx.x;               // 0..out_per_exp-1
+    if (row >= out_per_exp) return;
+    const uint8_t* wr = W + (size_t)exp_idx * ((size_t)out_per_exp * (K >> 5) * 34)
+                          + (size_t)row * ((size_t)(K >> 5) * 34);
+    double sum = 0;
+    for (int j = threadIdx.x; j < K; j += blockDim.x) {
+        int blk = j >> 5, lane = j & 31;
+        const uint8_t* bp = wr + (size_t)blk * 34;
+        float d = __half2float(__ushort_as_half(*(const unsigned short*)bp));
+        sum += (double)x[j] * (d * (float)((signed char)bp[2 + lane]));
+    }
+    __shared__ double sdata[256];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[(size_t)row * out_stride_floats] = (float)sdata[0];
+}
+
+// ── qwen35moe (M3) kernels ────────────────────────────────────────────────
+// RoPE over the first n_rot dims of a head_dim head (qwen35: 64 of 256),
+// head h owns contiguous [head_dim] floats; pairs (d, d+n_rot/2), d<n_rot/2.
+__global__ void h1bp_rope_nrot_kernel(float* __restrict__ x, int head_dim, int n_rot,
+                                  const int* __restrict__ d_pos, float theta_base, int num_heads) {
+    const int pos = *d_pos;
+    int h = blockIdx.x, d = threadIdx.x;
+    if (h >= num_heads || d >= n_rot / 2) return;
+    float freq = 1.0f / powf(theta_base, (float)(2 * d) / (float)n_rot);
+    float t = (float)pos * freq, c = cosf(t), s = sinf(t);
+    int idx = h * head_dim + d;
+    float a = x[idx], b = x[idx + n_rot / 2];
+    x[idx] = a * c - b * s;
+    x[idx + n_rot / 2] = a * s + b * c;
+}
+__global__ void h1bp_softplus_kernel(float* __restrict__ x, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) x[i] = log1pf(__expf(x[i]));
+}
+__global__ void h1bp_sigmoid_mul_kernel(float* __restrict__ x, const float* __restrict__ g, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) x[i] = x[i] * (1.0f / (1.0f + __expf(-g[i])));
+}
+// in-place a[i] *= b[i]
+__global__ void h1bp_elmul_kernel(float* __restrict__ a, const float* __restrict__ b, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) a[i] *= b[i];
+}
+// causal depthwise conv1d (d_conv taps over time) + silu on the 8192 fused
+// channels; state: per channel last d_conv-1 inputs, prepended at token t.
+// weights layout: tap-major rows? llama conv1d ne=[d_conv, channels]:
+// kernel[k][c] at flat c*d_conv + k (channels row-major over taps).
+__global__ void h1bp_q35_conv_kernel(float* __restrict__ out, const float* __restrict__ qkv,
+                                  const float* __restrict__ w, float* __restrict__ state,
+                                  int channels, int d_conv, int tok) {
+    int c = blockIdx.x * blockDim.x + threadIdx.x;
+    if (c >= channels) return;
+    float* st = state + (size_t)c * (d_conv - 1);
+    const float* wr = w + (size_t)c * d_conv;
+    // causal: out = sum_{k=0..d_conv-1} wr[k] * inp[t - (d_conv-1) + k]
+    // inp history: st[0]=x_{t-2}, st[1]=x_{t-1} for d_conv=4 (tok 0..). We keep
+    // st[j] = x_{t - (d_conv-1) + j} for j<d_conv-1 (oldest first).
+    float acc = 0.0f;
+    float xcur = qkv[c];
+    // taps k=0..d_conv-1: input index = tok - (d_conv-1) + k
+    //   index < 0 -> history st[tok + k]... maintain state as x_{t-3},x_{t-2},x_{t-1}
+    // (llama decode: conv_state holds last d_conv-1 inputs; output[t] =
+    //  sum_k w[k] * (k < d_conv-1 ? state[k] : x[t]) with state advancing)
+    for (int k = 0; k < d_conv - 1; k++) acc += wr[k] * st[k];
+    acc += wr[d_conv - 1] * xcur;
+    // advance state: shift left, push xcur
+    for (int k = 0; k < d_conv - 2; k++) st[k] = st[k + 1];
+    st[d_conv - 2] = xcur;
+    out[c] = acc * (1.0f / (1.0f + __expf(-acc)));   // silu
+}
+// per-head L2-norm over len with scale 1/sqrt(len) applied AFTER (llama scales
+// q by 1/sqrt(S_k) separately); here: normalize rows of x, heads contiguous.
+__global__ void h1bp_head_l2norm_kernel(float* __restrict__ x, int len, int heads, float eps) {
+    __shared__ float ssum[256];
+    int h = blockIdx.x, tid = threadIdx.x;
+    float* hx = x + (size_t)h * len;
+    float loc = 0.0f;
+    for (int i = tid; i < len; i += blockDim.x) loc += hx[i] * hx[i];
+    ssum[tid] = loc;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) { if (tid < s) ssum[tid] += ssum[tid + s]; __syncthreads(); }
+    if (tid == 0) ssum[0] = rsqrtf(ssum[0] / len + eps);
+    __syncthreads();
+    float inv = ssum[0];
+    for (int i = tid; i < len; i += blockDim.x) hx[i] *= inv;
+}
+// GDN delta rule, one token, per head h of H_v (heads pre-expanded to H_v):
+// q/k per head length S_k, v per head S_v, state S[i][col] natural
+// (i = k/q dim, col = v dim), stored h*S_v*S_v + i*S_v + col. g_h = decay
+// (exp of gate), beta_h scalar. out[col] = sum_i S[i][col] q[i] (q pre-scaled
+// by 1/sqrt(S_k) by the caller, matching llama's scale-then-recurrence).
+__global__ void h1bp_q35_delta_kernel(const float* __restrict__ q, const float* __restrict__ k,
+                                   const float* __restrict__ v, float* __restrict__ state,
+                                   float* __restrict__ out, const float* __restrict__ g,
+                                   const float* __restrict__ beta, int S_k, int S_v, int H_v) {
+    int h = blockIdx.x; if (h >= H_v) return;
+    int col = threadIdx.x; if (col >= S_v) return;
+    const float* kh = k + (size_t)h * S_k;
+    const float* qh = q + (size_t)h * S_k;
+    float* Scol = state + ((size_t)h * S_v * S_v + col);  // S[i][col]: stride S_v per i
+    float gv = __expf(g[h]);                             // decay for this head
+    float kv = 0.0f;
+    for (int i = 0; i < S_k; i++) kv += Scol[(size_t)i * S_v] * kh[i];
+    float delta = (v[h * S_v + col] - gv * kv) * beta[h];
+    float outv = 0.0f;
+    for (int i = 0; i < S_k; i++) {
+        float s = gv * Scol[(size_t)i * S_v] + kh[i] * delta;
+        Scol[(size_t)i * S_v] = s;
+        outv += s * qh[i];
+    }
+    out[h * S_v + col] = outv;
+}
+
+// full-attention decode over the f32 per-layer KV cache (10 full layers).
+// Cache layout per (layer, seq): [k kvh0 hd | k kvh1 hd | v kvh0 hd | v kvh1 hd]
+// = 4*hd floats/seq. q: [n_qh x hd] rope'd/qk-normed (contiguous heads);
+// probs computed into global scratch (per-head region) then v-weighted sum.
+__global__ void h1bp_q35_fattn_kernel(const float* __restrict__ q, const float* __restrict__ kv,
+                                   float* __restrict__ out, float* __restrict__ probs,
+                                   int n_qh, int n_kvh, int hd, int seq, int* d_pos) {
+    int h = blockIdx.x, tid = threadIdx.x;
+    if (h >= n_qh) return;
+    int pos = *d_pos;
+    if (pos >= seq) return;
+    int kvh = h / (n_qh / n_kvh);
+    const float* qh = q + (size_t)h * hd;
+    float* ph = probs + (size_t)h * seq;
+    const int row = 2 * n_kvh * hd;
+    const float inv = 1.0f / sqrtf((float)hd);
+    // pass 1: scores -> probs
+    for (int s = 0; s <= pos; s++) {
+        const float* kh = kv + (size_t)s * row + (size_t)kvh * hd;
+        float sc = 0;
+        for (int d = tid; d < hd; d += blockDim.x) sc += qh[d] * kh[d];
+        __shared__ float red[256];
+        red[tid] = sc; __syncthreads();
+        for (int x = blockDim.x / 2; x > 0; x >>= 1) { if (tid < x) red[tid] += red[tid + x]; __syncthreads(); }
+        if (tid == 0) ph[s] = red[0] * inv;
+        __syncthreads();
+    }
+    if (tid == 0) {
+        float mx = -1e30f;
+        for (int s = 0; s <= pos; s++) mx = fmaxf(mx, ph[s]);
+        float su = 0;
+        for (int s = 0; s <= pos; s++) { ph[s] = __expf(ph[s] - mx); su += ph[s]; }
+        for (int s = 0; s <= pos; s++) ph[s] /= su;
+    }
+    __syncthreads();
+    for (int d = tid; d < hd; d += blockDim.x) {
+        float a = 0;
+        for (int s = 0; s <= pos; s++) {
+            const float* vh = kv + (size_t)s * row + (size_t)n_kvh * hd + (size_t)kvh * hd;
+            a += ph[s] * vh[d];
+        }
+        out[(size_t)h * hd + d] = a;
+    }
+}
+__global__ void h1bp_sigmoid_inplace_kernel(float* __restrict__ x, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) x[i] = 1.0f / (1.0f + __expf(-x[i]));
+}
+__global__ void h1bp_silu_inplace_kernel(float* __restrict__ x, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) x[i] = x[i] / (1.0f + __expf(-x[i]));
+}
+// MoE router: softmax 256 -> top-8 (serial argmax w/ masking) -> weights.
+// renorm=true divides by the selected sum (llama norm_topk_prob semantics).
+__global__ void h1bp_q35_topk_kernel(const float* __restrict__ logits, float* __restrict__ w,
+                                  int* __restrict__ idx, int n_exp, int topk, bool renorm) {
+    __shared__ float p[512];
+    int t = threadIdx.x;
+    // softmax
+    if (t < n_exp) p[t] = logits[t];
+    __syncthreads();
+    float mx = -1e30f;
+    for (int i = t; i < n_exp; i += blockDim.x) mx = fmaxf(mx, p[i]);
+    __shared__ float smx, ssum;
+    if (t == 0) {
+        float m2 = -1e30f;
+        for (int i = 0; i < n_exp; i++) m2 = fmaxf(m2, p[i]);
+        float su = 0;
+        for (int i = 0; i < n_exp; i++) { p[i] = __expf(p[i] - m2); su += p[i]; }
+        smx = m2; ssum = su;
+    }
+    __syncthreads();
+    for (int i = t; i < n_exp; i += blockDim.x) p[i] /= ssum;
+    __syncthreads();
+    if (t == 0) {
+        float sel[16];
+        for (int r = 0; r < topk; r++) {
+            float best = -1e30f; int bi = -1;
+            for (int i = 0; i < n_exp; i++) if (p[i] > best) { best = p[i]; bi = i; }
+            sel[r] = best; idx[r] = bi; p[bi] = -1e30f;
+        }
+        float sel_sum = 0;
+        for (int r = 0; r < topk; r++) sel_sum += sel[r];
+        for (int r = 0; r < topk; r++) w[r] = renorm ? sel[r] / sel_sum : sel[r];
+    }
+}
+// combine: y = silu(gate) * up (in-place on up), 512 floats
+__global__ void h1bp_silu_gate_mul_kernel(float* __restrict__ up, const float* __restrict__ gate, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) up[i] = up[i] * (gate[i] / (1.0f + __expf(-gate[i])));
+}
+__global__ void h1bp_mul_scalar_kernel(float* __restrict__ x, float s, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) x[i] *= s;
+}
+__global__ void h1bp_acc_kernel(float* __restrict__ acc, const float* __restrict__ src, int n) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) acc[i] += src[i];
+}

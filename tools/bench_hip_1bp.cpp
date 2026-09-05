@@ -48,15 +48,25 @@ int main(int argc, char** argv) {
     auto t1 = std::chrono::steady_clock::now();
     printf("  Init: %.0f ms\n", std::chrono::duration<double,std::milli>(t1-t0).count());
 
-    // Warmup
+    // Warmup / prompt (qwen35 validation): H1BP_Q35_PROMPT="id,id,..." feeds the
+    // prompt tokens through generate() (positions advance), loop starts at the last id.
     b->reset();
     int tok = 1;
+    if (const char* pr = getenv("H1BP_Q35_PROMPT")) {
+        std::vector<int> ids;
+        const char* p = pr;
+        while (*p) { while (*p == ',' || *p == ' ') p++; if (!*p) break; ids.push_back(atoi(p)); while (*p && *p != ',') p++; }
+        if (ids.size() >= 1) {
+            for (size_t i = 0; i + 1 < ids.size(); i++) { if (b->generate(ids[i]) < 0) break; }
+            tok = ids.back();
+            printf("  Prompt: %zu tokens, decode continues from token %d\n", ids.size(), tok);
+        }
+    }
     for (int i = 0; i < warmup; i++) { tok = b->generate(tok); if (tok < 0) break; }
     printf("  Warmup: %d tokens (last token id: %d)\n", warmup, tok);
 
-    // Benchmark
-    b->reset();
-    tok = 1;
+    bool prompt_mode = getenv("H1BP_Q35_PROMPT") != nullptr;
+    if (!prompt_mode) { b->reset(); tok = 1; }
     t0 = std::chrono::steady_clock::now();
     int generated = 0;
     fprintf(stderr, "[bench_hip_1bp] tokens:");
@@ -76,6 +86,7 @@ int main(int argc, char** argv) {
     printf("  Time:       %.0f ms\n", ms);
     printf("  Per token:  %.1f ms\n", ms / generated);
     printf("  Throughput: %.0f tok/s\n", generated / (ms/1000.0));
+    if (prompt_mode) { b->destroy(); delete b; return 0; }
     printf("  Tokens:    ");
     b->reset();
     tok = 1;
