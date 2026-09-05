@@ -77,6 +77,25 @@ struct Hip1bpBackend : Backend {
     uint8_t* q35_emb = nullptr, *q35_out = nullptr;     // token_embd / output (V x H Q8_0)
     float* q35_onorm = nullptr;                         // output_norm (H f32)
     std::vector<Q35L> q35L;
+    // qwen35 decode scratch (per token, eager) + recurrent/conv/kv state
+    float* q35_sc_qkv = nullptr, *q35_sc_qc = nullptr;  // [8192] fused gemv / conv-out
+    float* q35_sc_q = nullptr, *q35_sc_k = nullptr, *q35_sc_v = nullptr;   // [4096] expanded q/k [2048->4096], v [4096]
+    float* q35_sc_z = nullptr;                          // [4096]
+    float* q35_sc_g = nullptr, *q35_sc_b = nullptr;     // [32] gate/beta
+    float* q35_sc_qk = nullptr, *q35_sc_v2 = nullptr;   // full-attn: q[8192] flat, k/v [512]
+    float* q35_sc_att = nullptr, *q35_sc_aout = nullptr;  // [4096] attn out / [2048] post
+    float* q35_sc_act = nullptr;                        // [2048]
+    float* q35_sc_moe = nullptr;                        // [2048]
+    float* q35_sc_exp = nullptr, *q35_sc_expw = nullptr;  // [512] expert act / [512] gate
+    float* q35_sc_expd = nullptr;                       // [2048] expert down out
+    float* q35_sc_logits = nullptr;                     // [256] router logits / topk w/idx
+    int* q35_sc_idx = nullptr;                          // [8]
+    float* q35_sc_rout = nullptr;                       // [256] router weights
+    float* q35_conv_state = nullptr;                    // [30*8192*3]
+    float* q35_rec_state = nullptr;                     // [30*128*128*32]
+    float* q35_kvc = nullptr;                           // [10][seq][2][256] (f32), seq = max_seq
+    float* q35_kv_scores = nullptr;                     // [16*max_seq]
+    float* q35_gate_flat = nullptr;                     // [16*256] sigmoid'd gates for o proj
 
     // GPU scratch (persistent, device-only)
     float *dh=nullptr,*datt=nullptr,*dgate=nullptr,*dup=nullptr;
@@ -460,6 +479,22 @@ struct Hip1bpBackend : Backend {
                     fprintf(stderr, "[hip1bp] qwen35 device load FAILED — falling back\n");
                 }
             }
+            // Full device load (env H1BP_Q35_LOAD)... runs when set; decode path
+            // below enabled by H1BP_Q35_TRY (eager decode; no hipGraph for q35).
+            if (ok && getenv("H1BP_Q35_LOAD") && getenv("H1BP_Q35_TRY")) {
+                if (!q35_alloc_state()) {
+                    fprintf(stderr, "[hip1bp] qwen35 scratch alloc failed\n");
+                } else {
+                    qwen35_zero_state();
+                    gpu_ok = true; pos = 0;
+                    *h_token = 0; *h_pos = 0;
+                    HIP_CHECK(hipMemcpy(d_token, h_token, sizeof(int), hipMemcpyHostToDevice));
+                    HIP_CHECK(hipMemcpy(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice));
+                    initialized = true;
+                    printf("[hip1bp] ✅ qwen35moe GPU decode ready (eager)\n");
+                    return true;
+                }
+            }
             return false;   // decode kernels are M3/M4; fall through to CPU/NPU
         }
 
@@ -641,7 +676,11 @@ struct Hip1bpBackend : Backend {
         return true;
     }
 
-    bool reset()override{pos=0;HIP_CHECK(hipMemset(dK,0,kvb));HIP_CHECK(hipMemset(dV,0,kvb));return true;}
+    bool reset()override{
+        pos=0;
+        if (q35_loaded) { qwen35_zero_state(); return true; }
+        HIP_CHECK(hipMemset(dK,0,kvb));HIP_CHECK(hipMemset(dV,0,kvb));return true;
+    }
 
     void launch_tq2nz(const uint8_t* w, const float* x, float* out, int N, int K) {
         int ntc = (K + 255) / 256;                    // 256-col tiles per row
@@ -880,6 +919,7 @@ struct Hip1bpBackend : Backend {
     // generate() == forward() + lm_head() — argmax semantics unchanged.
     // Phase 2: when graph_ok, the whole step replays from the captured graph.
     int generate_fast(int token_id){
+        if (q35_loaded) return qwen35_step(token_id);
         if (graph_ok) {
             *h_token = token_id; *h_pos = pos;
             HIP_CHECK(hipGraphLaunch(graphExec, stream));
@@ -935,6 +975,163 @@ struct Hip1bpBackend : Backend {
         return generate_fast(token_id);
     }
 
+    // ── qwen35moe decode (M3, #1831) — eager per-token, no hipGraph ──
+    bool qwen35_alloc_state() {
+        auto zz = [&](float*& p, size_t n) {
+            if (!n) { p = nullptr; return true; }
+            if (hipMalloc((void**)&p, n * 4) != hipSuccess) { fprintf(stderr, "[hip1bp] q35 state alloc fail\n"); return false; }
+            HIP_CHECK(hipMemset(p, 0, n * 4)); return true;
+        };
+        bool ok = zz(q35_sc_qkv, 8192) && zz(q35_sc_qc, 8192) && zz(q35_sc_q, 4096) &&
+                  zz(q35_sc_k, 4096) && zz(q35_sc_v, 4096) && zz(q35_sc_z, 4096) &&
+                  zz(q35_sc_g, 32) && zz(q35_sc_b, 32) && zz(q35_sc_qk, 8192) &&
+                  zz(q35_sc_v2, 512) && zz(q35_sc_att, 4096) && zz(q35_sc_aout, 2048) &&
+                  zz(q35_sc_act, 2048) && zz(q35_sc_moe, 2048) && zz(q35_sc_exp, 512) &&
+                  zz(q35_sc_expw, 512) && zz(q35_sc_expd, 2048) && zz(q35_sc_logits, 256) &&
+                  zz(q35_sc_rout, 256) && zz(q35_sc_idx, 8) &&
+                  zz(q35_conv_state, (size_t)NC * 8192 * 3) &&
+                  zz(q35_rec_state, (size_t)NC * 128 * 128 * 32) &&
+                  zz(q35_kvc, (size_t)10 * max_seq * 1024) &&
+                  zz(q35_kv_scores, (size_t)16 * max_seq) &&
+                  zz(q35_gate_flat, 16 * 256);
+        if (hipMalloc((void**)&q35_sc_idx, 8 * 4) != hipSuccess) ok = false;
+        return ok;
+    }
+    void qwen35_zero_state() {
+        if (q35_conv_state) HIP_CHECK(hipMemset(q35_conv_state, 0, (size_t)NC * 8192 * 3 * 4));
+        if (q35_rec_state)  HIP_CHECK(hipMemset(q35_rec_state, 0, (size_t)NC * 128 * 128 * 32 * 4));
+        if (q35_kvc)        HIP_CHECK(hipMemset(q35_kvc, 0, (size_t)10 * max_seq * 1024 * 4));
+    }
+    // expand q/k heads 16 -> 32 by tiling (h -> h%16) via copy kernel pair
+    void q35_expand16(float* dst, const float* src) {  // src [16*128], dst [32*128]
+        for (int h = 0; h < 32; h++) {
+            float* d = dst + (size_t)h * 128;
+            const float* s = src + (size_t)(h & 15) * 128;
+            HIP_CHECK(hipMemcpy(d, s, 128 * 4, hipMemcpyDeviceToDevice));
+        }
+    }
+    int qwen35_step(int token_id) {
+        if (!q35_loaded) return -1;
+        if (pos >= max_seq - 1) { fprintf(stderr, "[hip1bp] q35 KV overflow pos=%d\n", pos); return -1; }
+        *h_token = token_id; *h_pos = pos;
+        HIP_CHECK(hipMemcpyAsync(d_token, h_token, sizeof(int), hipMemcpyHostToDevice, stream));
+        HIP_CHECK(hipMemcpyAsync(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice, stream));
+        // embed (Q8_0 row dequant) into dh
+        HIP_CHECK(hipMemcpy(d_token, &token_id, sizeof(int), hipMemcpyHostToDevice));
+        h1bp_q8embed_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_emb, d_token, 2048);
+        int n_full_layers = 0;
+        for (int l = 0; l < NC; l++) {
+            Q35L& w = q35L[l];
+            bool full = ((l + 1) % 4 == 0);
+            // residual pre-save + attn_norm (in-place dh)
+            h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dsilu, dh, 2048);
+            h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, w.an, 2048, 1e-6f);
+            if (full) {
+                // q/k/v gemvs
+                h1bp_q8gemv_kernel<<<8192, 256, 0, stream>>>(q35_sc_qk, w.q, dh, 8192, 2048);
+                h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v2, w.k, dh, 512, 2048);
+                // q per-head rmsnorm (16 x 256, weight qn); k norm on v2 (2 x 256)
+                h1bp_head_rmsnorm_kernel<<<16, 256, 0, stream>>>(q35_sc_qk, w.qn, 256, 1e-6f);
+                h1bp_head_rmsnorm_kernel<<<2, 256, 0, stream>>>(q35_sc_v2, w.kn, 256, 1e-6f);
+                // rope nrot64: q stored as per-head [q 256 | gate 256] pairs (hd=512 layout)
+                h1bp_rope_nrot_kernel<<<16, 256, 0, stream>>>(q35_sc_qk, 512, 64, d_pos, rope_theta, 16);
+                h1bp_rope_nrot_kernel<<<2, 256, 0, stream>>>(q35_sc_v2, 256, 64, d_pos, rope_theta, 2);
+                // store k (v2) and v into the per-layer kv cache [seq][k0 k1 v0 v1]
+                int f = n_full_layers;
+                float* kvbase = q35_kvc + (size_t)f * (max_seq * 1024);
+                HIP_CHECK(hipMemcpy(kvbase + (size_t)pos * 1024, q35_sc_v2, 512 * 4, hipMemcpyDeviceToDevice));
+                h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v, w.v, dh, 512, 2048);
+                HIP_CHECK(hipMemcpy(kvbase + (size_t)pos * 1024 + 512, q35_sc_v, 512 * 4, hipMemcpyDeviceToDevice));
+                // attention over the cache, then sigmoid-gate multiply, then o_proj
+                h1bp_q35_fattn_kernel<<<16, 256, 0, stream>>>(q35_sc_qk, kvbase, q35_sc_att,
+                    q35_kv_scores, 16, 2, 256, max_seq, d_pos);
+                for (int h = 0; h < 16; h++) {
+                    float* g = q35_sc_qk + (size_t)h * 512 + 256;
+                    float* a = q35_sc_att + (size_t)h * 256;
+                    h1bp_sigmoid_mul_kernel<<<(256 + 255) / 256, 256, 0, stream>>>(a, g, 256);
+                }
+                h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_aout, w.o, q35_sc_att, 2048, 4096);
+                n_full_layers++;
+            } else {
+                // GDN: fused qkv gemv + conv + silu (into qc), then slice
+                h1bp_q8gemv_kernel<<<8192, 256, 0, stream>>>(q35_sc_qkv, w.qkv, dh, 8192, 2048);
+                h1bp_q35_conv_kernel<<<(8192 + 255) / 256, 256, 0, stream>>>(
+                    q35_sc_qc, q35_sc_qkv, w.conv1d,
+                    q35_conv_state + (size_t)l * 8192 * 3, 8192, 4, pos);
+                // q/k l2-norm per 16 heads then expand to 32 (tiled)
+                h1bp_head_l2norm_kernel<<<16, 256, 0, stream>>>(q35_sc_qc, 128, 16, 1e-6f);
+                h1bp_head_l2norm_kernel<<<16, 256, 0, stream>>>(q35_sc_qc + 2048, 128, 16, 1e-6f);
+                h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_qc, 1.0f / sqrtf(128.0f), 2048);
+                q35_expand16(q35_sc_q, q35_sc_qc);
+                q35_expand16(q35_sc_k, q35_sc_qc + 2048);
+                HIP_CHECK(hipMemcpy(q35_sc_v, q35_sc_qc + 4096, 4096 * 4, hipMemcpyDeviceToDevice));
+                // alpha/beta/gate: gemv 32x2048 then dt, softplus, ssa mul, sigmoid
+                h1bp_q8gemv_kernel<<<32, 256, 0, stream>>>(q35_sc_g, w.alpha, dh, 32, 2048);
+                h1bp_add_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, w.dt, 32);
+                h1bp_softplus_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, 32);
+                h1bp_elmul_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, w.ssa, 32);
+                h1bp_q8gemv_kernel<<<32, 256, 0, stream>>>(q35_sc_b, w.beta, dh, 32, 2048);
+                h1bp_sigmoid_inplace_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_b, 32);
+                // recurrence
+                h1bp_q35_delta_kernel<<<32, 128, 0, stream>>>(q35_sc_q, q35_sc_k, q35_sc_v,
+                    q35_rec_state + (size_t)l * 128 * 128 * 32, q35_sc_z, q35_sc_g, q35_sc_b, 128, 128, 32);
+                // z gemv (attn_gate 4096x2048) -> silu -> group norm out * silu(z)
+                h1bp_q8gemv_kernel<<<4096, 256, 0, stream>>>(q35_sc_att, w.gate, dh, 4096, 2048);
+                h1bp_head_rmsnorm_kernel<<<32, 256, 0, stream>>>(q35_sc_z, w.snorm, 128, 1e-6f);
+                h1bp_silu_inplace_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_att, 4096);
+                h1bp_elmul_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_z, q35_sc_att, 4096);
+                // ssm_out gemv [2048 x 4096] -> H
+                h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_aout, w.ssm_out, q35_sc_z, 2048, 4096);
+            }
+            // residual: dh = preatt + attn out
+            h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, dsilu, 2048);
+            h1bp_add_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_sc_aout, 2048);
+            // post norm + MoE (every layer)
+            h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dsilu, dh, 2048);
+            h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, w.pan, 2048, 1e-6f);
+            h1bp_gemv_kernel<<<256, 256, 0, stream>>>(q35_sc_logits, w.router, dh, 256, 2048);
+            // norm_topk: llama qwen35 uses renorm? default OFF unless env
+            bool renorm = getenv("Q35_NORMTK") != nullptr;
+            h1bp_q35_topk_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, q35_sc_rout, q35_sc_idx, 256, 8, renorm);
+            HIP_CHECK(hipMemset(q35_sc_moe, 0, 2048 * 4));
+            int exps[8]; float wts[8];
+            HIP_CHECK(hipMemcpy(exps, q35_sc_idx, 8 * 4, hipMemcpyDeviceToHost));
+            HIP_CHECK(hipMemcpy(wts, q35_sc_rout, 8 * 4, hipMemcpyDeviceToHost));
+            for (int r = 0; r < 8; r++) {
+                int e = exps[r];
+                h1bp_q8gemv_slice_kernel<<<512, 256, 0, stream>>>(q35_sc_exp, w.ex_u, dh, e, 512, 2048, 1);
+                h1bp_q8gemv_slice_kernel<<<512, 256, 0, stream>>>(q35_sc_expw, w.ex_g, dh, e, 512, 2048, 1);
+                h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
+                h1bp_q8gemv_slice_kernel<<<2048, 256, 0, stream>>>(q35_sc_expd, w.ex_d, q35_sc_exp, e, 2048, 512, 1);
+                h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_expd, wts[r], 2048);
+                h1bp_acc_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, 2048);
+            }
+            // shared expert + sigmoid gate
+            h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_exp, w.sh_u, dh, 512, 2048);
+            h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_expw, w.sh_g, dh, 512, 2048);
+            h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
+            h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_expd, w.sh_d, q35_sc_exp, 2048, 512);
+            { float sgate;
+              h1bp_gemv_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, w.sh_gatew, dh, 1, 2048);
+              HIP_CHECK(hipMemcpy(&sgate, q35_sc_logits, 4, hipMemcpyDeviceToHost));
+              sgate = 1.0f / (1.0f + expf(-sgate));
+              h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_expd, sgate, 2048); }
+            h1bp_acc_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, 2048);
+            h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, dsilu, 2048);
+            h1bp_add_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_sc_moe, 2048);
+        }
+        // output norm + lm head + argmax
+        h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, q35_onorm, 2048, 1e-6f);
+        h1bp_q8gemv_kernel<<<248320, 256, 0, stream>>>(dlogits, q35_out, dh, 248320, 2048);
+        int nblk = std::min(AMX_MAXB, (248320 + 255) / 256);
+        h1bp_argmax_pass1_kernel<<<nblk, 256, 0, stream>>>(dlogits, 248320, d_amx, d_ami);
+        h1bp_argmax_pass2_kernel<<<1, 256, 0, stream>>>(d_amx, d_ami, nblk, d_argmax);
+        int out_tok = -1;
+        HIP_CHECK(hipMemcpy(&out_tok, d_argmax, sizeof(int), hipMemcpyDeviceToHost));
+        pos++;
+        return out_tok;
+    }
+
     float benchmark(int tokens)override{
         if(!initialized)return-1;reset();
         auto t0=std::chrono::steady_clock::now();int tok=1;
@@ -957,6 +1154,11 @@ struct Hip1bpBackend : Backend {
         }
         q35L.clear();
         hf(q35_emb); hf(q35_out); hf(q35_onorm);
+        hf(q35_sc_qkv); hf(q35_sc_qc); hf(q35_sc_q); hf(q35_sc_k); hf(q35_sc_v); hf(q35_sc_z);
+        hf(q35_sc_g); hf(q35_sc_b); hf(q35_sc_qk); hf(q35_sc_v2); hf(q35_sc_att); hf(q35_sc_aout);
+        hf(q35_sc_act); hf(q35_sc_moe); hf(q35_sc_exp); hf(q35_sc_expw); hf(q35_sc_expd);
+        hf(q35_sc_logits); hf(q35_sc_rout); hf(q35_sc_idx);
+        hf(q35_conv_state); hf(q35_rec_state); hf(q35_kvc); hf(q35_kv_scores); hf(q35_gate_flat);
         q35_loaded = false;
         L.clear();P.clear();model_.reset();
         hf(dh);hf(datt);hf(dgate);hf(dup);hf(dsilu);hf(doproj);hf(dffn);hf(dlogits);hf(dpart);
