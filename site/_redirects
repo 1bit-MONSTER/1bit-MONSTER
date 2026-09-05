@@ -12,15 +12,23 @@
 /benchmarks   /1bit-benchmarks.html      301
 /downloads    /1bit-downloads.html       301
 /download     /1bit-downloads.html       301
-/docs         /1bit-docs.html            301
 /store        /1bit-store.html           301
 /blog         /1bit-blog.html            301
 /jarvis       /1bit-jarvis.html          301
 /engine       /1bit-monster-v2.html      301
 
-# Docs section shortcuts
-/docs/getting-started  /docs-getting-started.html   301
-/docs/building         /docs-building.html          301
-/docs/running          /docs-running.html           301
-/docs/models           /docs-models.html            301
-/docs/jarvis           /docs-jarvis.html            301
+# Docs -> single generated surface at /docs/
+/docs          /docs/                    301
+/docs/getting-started   /docs/guides/getting-started   301
+/docs/building          /docs/guides/building          301
+/docs/running           /docs/guides/launch             301
+/docs/models            /docs/model-families/           301
+/docs/jarvis            /docs/jarvis                   301
+
+# Retired hand-authored docs hub -> single surface
+/1bit-docs.html          /docs/                        301
+/docs-getting-started.html  /docs/guides/getting-started   301
+/docs-building.html         /docs/guides/building          301
+/docs-running.html          /docs/guides/launch             301
+/docs-models.html           /docs/model-families/           301
+/docs-jarvis.html           /docs/jarvis                   301

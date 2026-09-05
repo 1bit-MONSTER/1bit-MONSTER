@@ -192,6 +192,8 @@ def gen_sitemap(site_dir: Path) -> None:
         loc = (SITE + "/") if name == "index.html" else f"{SITE}/{name}"  # slash form matches canonical
         lm = git_lastmod(f"site/{name}")
         urls.append((loc, lm, prio.get(name, "0.7"), freq.get(name, "weekly")))
+    # Single docs surface — generated at deploy time into /docs/ (gen_docs_site.py).
+    urls.append((SITE.rstrip("/") + "/docs/", git_lastmod("docs/README.md"), "0.9", "weekly"))
     lines = ["<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
              "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">"]
     for loc, lm, p, f in urls:
