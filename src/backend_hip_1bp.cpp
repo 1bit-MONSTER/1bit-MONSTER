@@ -482,7 +482,7 @@ struct Hip1bpBackend : Backend {
             // Full device load (env H1BP_Q35_LOAD)... runs when set; decode path
             // below enabled by H1BP_Q35_TRY (eager decode; no hipGraph for q35).
             if (ok && getenv("H1BP_Q35_LOAD") && getenv("H1BP_Q35_TRY")) {
-                if (!q35_alloc_state()) {
+                if (!qwen35_alloc_state()) {
                     fprintf(stderr, "[hip1bp] qwen35 scratch alloc failed\n");
                 } else {
                     qwen35_zero_state();
@@ -977,7 +977,7 @@ struct Hip1bpBackend : Backend {
 
     // ── qwen35moe decode (M3, #1831) — eager per-token, no hipGraph ──
     bool qwen35_alloc_state() {
-        auto zz = [&](float*& p, size_t n) {
+        auto zz = [&](auto*& p, size_t n) {
             if (!n) { p = nullptr; return true; }
             if (hipMalloc((void**)&p, n * 4) != hipSuccess) { fprintf(stderr, "[hip1bp] q35 state alloc fail\n"); return false; }
             HIP_CHECK(hipMemset(p, 0, n * 4)); return true;
