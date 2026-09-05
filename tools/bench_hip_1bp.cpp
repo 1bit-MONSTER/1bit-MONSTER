@@ -65,9 +65,8 @@ int main(int argc, char** argv) {
     for (int i = 0; i < warmup; i++) { tok = b->generate(tok); if (tok < 0) break; }
     printf("  Warmup: %d tokens (last token id: %d)\n", warmup, tok);
 
-    // Benchmark
-    b->reset();
-    tok = 1;
+    bool prompt_mode = getenv("H1BP_Q35_PROMPT") != nullptr;
+    if (!prompt_mode) { b->reset(); tok = 1; }
     t0 = std::chrono::steady_clock::now();
     int generated = 0;
     fprintf(stderr, "[bench_hip_1bp] tokens:");
@@ -87,6 +86,7 @@ int main(int argc, char** argv) {
     printf("  Time:       %.0f ms\n", ms);
     printf("  Per token:  %.1f ms\n", ms / generated);
     printf("  Throughput: %.0f tok/s\n", generated / (ms/1000.0));
+    if (prompt_mode) { b->destroy(); delete b; return 0; }
     printf("  Tokens:    ");
     b->reset();
     tok = 1;
