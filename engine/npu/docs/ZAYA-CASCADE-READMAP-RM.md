@@ -255,3 +255,15 @@ weights, the GU->D handoff scale), NOT the GU read map per se. The identity-B_d 
 because identity is permutation- and scale-neutral. This invalidates the "GU read bug"
 conclusion in #2078/#2109; the exact fault is still open (now narrowed to the real
 GU->D dataflow, likely the real-weight B_d index or the h2->D scale).
+
+## RESOLUTION (2026-09-05): production cascade is CORRECT — #2078 was a probe-scale artifact
+The E2 probe (NPU_CASCADE_TEST, NpuCascadeKernel) packs the real weights with UNIFORM per-tensor
+scales. The PRODUCTION fused path (now single-launch via #2091) uses per-section/per-column scale
+BOs (update_fused_header + per-column fd_cs) and a qn_s scale fold. Probing the production path:
+  [MoE L1 fused dbg] corr=0.998 (cpu rms 0.1930 / npu rms 0.1925)  -- production cascade CORRECT
+  [C2gate] corr=1.0, bad=0/2048, BYTE-IDENTICAL                        -- D read (real weights) CORRECT
+  [CAS] rawC2-vs-cpu corr=0.044                                        -- only the E2 probe is off
+=> The single-launch fused GU->SiLU->D cascade is CORRECT in production (corr 0.998, byte-identical
+   D gate). The #2078 corr=0.02 is an E2-PROBE convention gap (uniform per-tensor scales, no
+   per-section/qn_s fold), NOT a kernel numerics bug. Earlier read-map/no_gu/RD/RC/GU probing was
+   chasing this probe-scale mismatch. The kernel never needed a fix.
