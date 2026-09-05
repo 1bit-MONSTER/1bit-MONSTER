@@ -75,7 +75,11 @@ def load_dotenv(path: str = ENV_FILE) -> None:
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
-            os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+            # Strip a trailing inline comment ("  # note"). Config values
+            # (tokens/ids/urls) never contain " #", and a bare "#" in a value
+            # has no leading space — so splitting on " #" is safe here.
+            v = v.split(" #", 1)[0].strip().strip('"').strip("'")
+            os.environ.setdefault(k.strip(), v)
 
 
 def _run_checks() -> dict[str, str]:
