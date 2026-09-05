@@ -1,9 +1,128 @@
 {
+ "covered:AnkitBirGurung/Granite-4.2-8b-BoardPolitics": {
+  "arch": "granite",
+  "date": "2026-09-02",
+  "family": "Granite",
+  "file": "1bit-post-significant-ankitbirgurung-granite-4-2-8b-boardpolitics.html",
+  "mode": "covered"
+ },
+ "covered:AnonimXxx/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive": {
+  "arch": "qwen3next",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-anonimxxx-qwen3-6-35b-a3b-uncensored-hauhaucs-aggressive.html",
+  "mode": "covered"
+ },
+ "covered:BosonicJustin/transcendent-logic-model": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-bosonicjustin-transcendent-logic-model.html",
+  "mode": "covered"
+ },
+ "covered:Chinook416/caracat-pro": {
+  "arch": "deepseek",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-chinook416-caracat-pro.html",
+  "mode": "covered"
+ },
+ "covered:Healshsj/smollm3-3b-claude-fable5": {
+  "arch": "smollm3",
+  "date": "2026-09-02",
+  "family": "Smollm",
+  "file": "1bit-post-significant-healshsj-smollm3-3b-claude-fable5.html",
+  "mode": "covered"
+ },
+ "covered:Jkatdare/gemma-3-4b-it-tulumix-30k": {
+  "arch": "gemma3",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html",
+  "mode": "covered"
+ },
+ "covered:SAIFIINDUSTRIES/Qwen3.5-35B-A3B": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-saifiindustries-qwen3-5-35b-a3b.html",
+  "mode": "covered"
+ },
+ "covered:Ttimms/Bible-Assistant-Qwen3.5-4B-v3.2": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ttimms-bible-assistant-qwen3-5-4b-v3-2.html",
+  "mode": "covered"
+ },
+ "covered:a15846/DeepSeek-v4-Fable": {
+  "arch": "deepseekv4",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-a15846-deepseek-v4-fable.html",
+  "mode": "covered"
+ },
  "covered:deepseek-ai/DeepSeek-V4-Flash": {
   "arch": "deepseek_v4_flash",
   "date": "2026-09-02",
   "family": "DeepSeek V4",
   "file": "1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+  "mode": "covered"
+ },
+ "covered:destr8803/GLM-5.3-224E-FP8-MAN": {
+  "arch": "glmmoedsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+  "mode": "covered"
+ },
+ "covered:dharun2049/kaveri-stgrpo-0.5b": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-dharun2049-kaveri-stgrpo-0-5b.html",
+  "mode": "covered"
+ },
+ "covered:dureduck/Olmo-3-7B-PostTraining8K-SFT-step-40": {
+  "arch": "olmo3",
+  "date": "2026-09-02",
+  "family": "Olmo",
+  "file": "1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html",
+  "mode": "covered"
+ },
+ "covered:icysunny/gemma4_e2b_reasoner_merged": {
+  "arch": "gemma4",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+  "mode": "covered"
+ },
+ "covered:inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i": {
+  "arch": "qwen4exp",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html",
+  "mode": "covered"
+ },
+ "covered:joincrksilverb/Nemotron-Mini-4B-Instruct": {
+  "arch": "nemotron",
+  "date": "2026-09-02",
+  "family": "Nemotron",
+  "file": "1bit-post-significant-joincrksilverb-nemotron-mini-4b-instruct.html",
+  "mode": "covered"
+ },
+ "covered:scouzi1966/GLM-5.3-Flash-AFM-MLX-4bit": {
+  "arch": "glm5next",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+  "mode": "covered"
+ },
+ "covered:zhongweixie/inplace-ttt-qwen3-4b-64k-baseline": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-zhongweixie-inplace-ttt-qwen3-4b-64k-baseline.html",
   "mode": "covered"
  }
 }
