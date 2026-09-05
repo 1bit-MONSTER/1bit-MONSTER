@@ -12,6 +12,7 @@
 #include <vector>
 #include <chrono>
 #include <memory>
+#include <algorithm>
 
 #include "hip_1bp_kernels.hip"
 
@@ -180,6 +181,92 @@ struct Hip1bpBackend : Backend {
         // F16/F32 stay on the f32 path (quant2 = 0): the packed GEMV kernels
         // are 4-bit-only, and lossless weights must not be re-quantized.
         if (getenv("H1BP_F32")) quant2 = 0;   // debug: force f32 path
+
+        // #1831 M2: qwen3_5_moe (Qwen3.6-35B-A3B — GatedDeltaNet linear attention
+        // + gated GQA + gated MoE) on the HIP backend. GGUF-direct only for now.
+        // The dense #1624 check below would reject this family with a misleading
+        // "missing attn_v/ffn_gate/ffn_up/ffn_down" error, so detect it FIRST and
+        // validate its real structure (names+dims from the schema captured on the
+        // actual unsloth/Qwen3.6-35B-A3B-GGUF file, arch token "qwen35moe" — see
+        // docs/research/hip-qwen35-gdn-port.md §captured-schema). tensor_info()
+        // lookups read the GGUF header table only (no tensor data), so this costs
+        // nothing on the failure path and stays out of the way of the multi-GB
+        // embed dequant below.
+        bool qwen35 = (cfg.arch == RCPP_ARCH_QWEN35) ||
+                      (gguf_ && gguf_->architecture() == "qwen35moe");
+        if (qwen35) {
+            if (!gguf_) {
+                fprintf(stderr, "[hip1bp] qwen35moe requires GGUF-direct mode (1BP "
+                                "q4nx conversion for GDN/MoE not wired yet — #1831 M2)\n");
+                return false;
+            }
+            // Per-layer tensor family (19/layer; every layer carries the fused
+            // attn_qkv + ssm_* family + MoE; every 4th layer executes full
+            // attention per qwen35moe.full_attention_interval=4). GGUF-native
+            // shapes (shape[0] fastest-varying) from the Q8_0 capture.
+            struct E { const char* n; std::vector<uint64_t> sh; };
+            const E LAYER0[] = {
+                {"attn_norm.weight",            {2048}},
+                {"attn_qkv.weight",             {2048, 8192}},   // fused q/k/v (+GDN q halves)
+                {"attn_gate.weight",            {2048, 4096}},   // output/gate proj
+                {"post_attention_norm.weight",  {2048}},
+                {"ssm_a",                       {32}},           // decay (already -A conv.)
+                {"ssm_alpha.weight",            {2048, 32}},
+                {"ssm_beta.weight",             {2048, 32}},
+                {"ssm_conv1d.weight",           {4, 8192}},      // conv kernel 4 over fused 8192
+                {"ssm_dt.bias",                 {32}},
+                {"ssm_norm.weight",             {128}},
+                {"ssm_out.weight",              {4096, 2048}},
+                {"ffn_gate_inp.weight",         {2048, 256}},    // MoE router (256 experts)
+                {"ffn_gate_exps.weight",        {2048, 512, 256}},
+                {"ffn_up_exps.weight",          {2048, 512, 256}},
+                {"ffn_down_exps.weight",        {512, 2048, 256}},
+                {"ffn_gate_shexp.weight",       {2048, 512}},    // shared expert (A3B: 1 shared)
+                {"ffn_up_shexp.weight",         {2048, 512}},
+                {"ffn_down_shexp.weight",       {512, 2048}},
+                {"ffn_gate_inp_shexp.weight",   {2048}},         // shared-expert scalar gate
+            };
+            auto chk = [&](const char* nm, const std::vector<uint64_t>& want,
+                           int l) -> bool {
+                char bn[160];
+                if (l < 0) snprintf(bn, sizeof bn, "%s", nm);
+                else       snprintf(bn, sizeof bn, "blk.%d.%s", l, nm);
+                const GgufTensorInfo* ti = gguf_->tensor_info(bn);
+                if (!ti) {
+                    fprintf(stderr, "[hip1bp] qwen35moe: MISSING %s\n", bn); return false;
+                }
+                if (ti->shape.size() != want.size() ||
+                    !std::equal(want.begin(), want.end(), ti->shape.begin())) {
+                    fprintf(stderr, "[hip1bp] qwen35moe: %s shape mismatch (want", bn);
+                    for (uint64_t w : want) fprintf(stderr, " %llu", (unsigned long long)w);
+                    fprintf(stderr, " got");
+                    for (uint64_t w : ti->shape) fprintf(stderr, " %llu", (unsigned long long)w);
+                    fprintf(stderr, ")\n"); return false;
+                }
+                return true;
+            };
+            bool ok = chk("token_embd.weight", {2048, 248320}, -1) &&
+                      chk("output_norm.weight", {2048}, -1) &&
+                      chk("output.weight", {2048, 248320}, -1);
+            for (int l = 0; ok && l < NC; l++)
+                for (const E& e : LAYER0)
+                    if (!(ok = chk(e.n, e.sh, l))) break;
+            // Cross-check the cfg dims the router/discovery computed vs the file.
+            if (ok && (cfg.hidden_size != 2048 || cfg.num_layers != 40 ||
+                       cfg.num_experts != 256 || cfg.vocab_size != 248320))
+                fprintf(stderr, "[hip1bp] qwen35moe: cfg dims differ from file "
+                                "(H=%d L=%d NE=%d V=%d) — schema check still passed on "
+                                "tensor shapes; verify discovery (#1831)\n",
+                        cfg.hidden_size, cfg.num_layers, cfg.num_experts, cfg.vocab_size);
+            if (ok) {
+                fprintf(stderr, "[hip1bp] qwen35moe structure verified (H=%d L=%d, "
+                                "19 tensors/layer, fused attn_qkv 8192 rows, MoE 256x8 + "
+                                "shared): GDN/MoE decode kernels not implemented yet "
+                                "(#1831 M3/M4) — use the CPU (qwen3next) or NPU path.\n",
+                        H, NC);
+            }
+            return false;   // decode kernels are M3/M4; fall through to CPU/NPU
+        }
 
         std::vector<float> emb,fn,out;
         auto ld=[&](const char* n,std::vector<float>& v){return get_w(n,v);};

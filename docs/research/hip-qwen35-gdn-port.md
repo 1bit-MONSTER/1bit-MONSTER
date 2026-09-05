@@ -101,6 +101,61 @@ capture is in hand.
 ```
 Expected output drives M2's exact name table + fused-QKV slice geometry.
 
+## Captured schema (authoritative — 2026-09-05)
+
+Captured from the header of the real target file (`unsloth/Qwen3.6-35B-A3B-GGUF`
+`Qwen3.6-35B-A3B-Q8_0.gguf`, arch token **`qwen35moe`**, GGUF v3, 733 tensors,
+40 layers × 19 tensors). This is the M2 loader table.
+
+KV (arch `qwen35moe.*`):
+
+| Key | Value |
+|-----|-------|
+| embedding_length | 2048 (H) |
+| block_count | 40 |
+| attention.head_count / head_count_kv | 16 / 2 |
+| attention.key_length / value_length | 256 / 256 |
+| attention.layer_norm_rms_epsilon | 1e-6 |
+| rope.dimension_count / dimension_sections | 64 / [11, 11, 10, 0] |
+| rope.freq_base | 1e7 |
+| ssm.conv_kernel / group_count | 4 / 16 |
+| ssm.inner_size / state_size | 4096 / 128 |
+| ssm.time_step_rank | 32 |
+| expert_count / expert_used_count | 256 / 8 |
+| expert_feed_forward_length / expert_shared_… | 512 / 512 |
+| full_attention_interval | 4 (every 4th layer full MHA) |
+| context_length | 262144 |
+
+Per-layer tensors (GGUF-native shape, shape[0] fastest; row-major = reversed):
+
+| blk.N. name | gguf shape | row-major | dtype |
+|-------------|-----------|----------|-------|
+| attn_norm.weight | (2048,) | (2048,) | F32 |
+| attn_qkv.weight | (2048, 8192) | (8192, 2048) | Q8_K |
+| attn_gate.weight | (2048, 4096) | (4096, 2048) | Q8_K |
+| post_attention_norm.weight | (2048,) | — | F32 |
+| ssm_a | (32,) | — | F32 |
+| ssm_alpha.weight / ssm_beta.weight | (2048, 32) | (32, 2048) | Q8_K |
+| ssm_conv1d.weight | (4, 8192) | (8192, 4) | F32 |
+| ssm_dt.bias | (32,) | — | F32 |
+| ssm_norm.weight | (128,) | — | F32 |
+| ssm_out.weight | (4096, 2048) | (2048, 4096) | Q8_K |
+| ffn_gate_inp.weight | (2048, 256) | (256, 2048) | F32 |
+| ffn_gate_exps / ffn_up_exps | (2048, 512, 256) | (256, 512, 2048) | Q8_K |
+| ffn_down_exps | (512, 2048, 256) | (256, 2048, 512) | Q8_K |
+| ffn_gate_shexp / ffn_up_shexp | (2048, 512) | (512, 2048) | Q8_K |
+| ffn_down_shexp | (512, 2048) | (2048, 512) | Q8_K |
+| ffn_gate_inp_shexp.weight | (2048,) | — | F32 |
+
+Globals: `token_embd.weight` + `output.weight` both (248320, 2048) Q8_K
+(probably tied — compare data offsets at load); `output_norm.weight` (2048) F32.
+Vocab 248320.
+
+Open questions for M3 (kernel math, NOT M2): attn_qkv 8192-row slice semantics
+(full-attn q/k/v vs GDN q/q-halves), attn_gate 4096-row role, conv1d over which
+8192 slice, ssm group/head mapping (32 vs group_count 16 × state 128), and the
+fused-expert tensor row indexing (256×512×2048).
+
 ## References
 
 - Issue #1831 (parent), #1830 (NPU-universal 35B decode bug), #1624/#1627
