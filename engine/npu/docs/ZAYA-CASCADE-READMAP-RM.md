@@ -190,3 +190,27 @@ so read() being full-K does NOT prove read(nn)=nn (identity). The identity-B_d G
 probe's sparse h2 is still A (GU output genuinely sparse) vs B (full-K permutation)
 — not fully resolved. But the D is now confirmed to read the full K (correct
 contraction magnitude), so the D read is NOT collapsing; packB_d_into exonerated.
+
+## RESOLVED (2026-09-05): A (GU read bug) confirmed, B (permutation) ruled out
+Combinatorial reasoning from the established facts:
+  (1) read-count: |read(nn)| = 2048 for EVERY column (same full-K set per col).
+  (2) RAMP: uniform 101504 across all columns (same Σ over full-K ramp) => read(nn)
+      = the SAME full-K row-set for all nn (a different per-col set would make the
+      RAMP non-uniform).
+  (3) Therefore C2[nn] = Σ_k h2[k]·B_d[k][nn] is the standard full-K GEMM — the
+      hardware's internal summation ORDER is irrelevant (it is a sum), so a
+      permutation cannot change C2. => identity B_d gives C2[nn] = h2[nn] EXACTLY.
+  (4) Real-residual GU probe ([GUrl]) gave C2 (= h2) nz=183/2048 — SPARSE for a
+      dense input. The CPU true-math h2 is DENSE (1526). A real dense input must
+      produce a dense GU output; 183/2048 (9%) is far too sparse to be int8
+      quantization (which rounds to small NONZERO, not exact 0).
+  => The GU read produces a SPARSE h2 (collapse) -> the cascade GU read map is the
+     #2078 bug (A). The D read is correct/full-K (exonerated). Hypothesis B (D
+     permutation) is impossible given (1)-(3).
+
+## Remaining (the exact term)
+The GU micro-tile collapse (c_=0 / 9%-sparse h2) is confined to the GU read. The
+exact misindexed term is in the A-tile fill / deriv-inverse B_gu read / silu pair
+indexing (mm_kernel_reference.cc matmul_vectorized_8x8x8_i8_i32_m8, the
+GU mm matmul_i8_i32_ab). Localizing that term (and the fix) is the next step, but
+the DIFF's core question (is it the GU read or the D read) is now answered.

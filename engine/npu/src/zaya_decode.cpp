@@ -1478,6 +1478,27 @@ int zaya_decode_main(int argc, char** argv) {
                                 auto ct0 = std::chrono::steady_clock::now();
                                 cas.go(residual.data(), ag, 1.0f, ffn_cas.data(), *casAB);
                                 auto ct1 = std::chrono::steady_clock::now();
+                                if (getenv("NPU_CASCADE_NOGU")) {
+                                    // no_gu artifact: h2 = const 1 -> out[c] = sum_kk bd_true[kk][c]
+                                    // (bd_true = q127(w3[c][kk]) -- the cascade's int8 D rows)
+                                    std::vector<int8_t> bdt((size_t)m.n_ff * casc_nd);
+                                    for (int kk = 0; kk < m.n_ff; kk++)
+                                        for (int nn = 0; nn < casc_nd; nn++)
+                                            bdt[(size_t)kk * casc_nd + nn] = (int8_t)fusion::NpuCascadeKernel::q127(dnp[(size_t)nn * m.n_ff + kk], 127.0f / d_amax);
+                                    std::vector<double> expect(casc_nd, 0);
+                                    for (int nn = 0; nn < casc_nd; nn++) {
+                                        long acc2 = 0;
+                                        for (int kk = 0; kk < m.n_ff; kk++) acc2 += (long)bdt[(size_t)kk * casc_nd + nn];
+                                        expect[nn] = (double)acc2;
+                                    }
+                                    double e0=0,e1=0,e2=0; 
+                                    for (int nn = 0; nn < casc_nd; nn++) { double a = ffn_cas[nn], b = expect[nn];
+                                        e0 += a*b; e1 += a*a; e2 += b*b; }
+                                    fprintf(stderr, "[NOGU] corr(go_out, sum_kk bd_true) = %.6f | first8 ffn: %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f | expect: %.0f %.0f %.0f %.0f %.0f %.0f %.0f %.0f\n",
+                                        e0/sqrt(e1*e2), ffn_cas[0],ffn_cas[1],ffn_cas[2],ffn_cas[3],ffn_cas[4],ffn_cas[5],ffn_cas[6],ffn_cas[7],
+                                        expect[0],expect[1],expect[2],expect[3],expect[4],expect[5],expect[6],expect[7]);
+                                    return 0;
+                                }
                                 double cas_ms = std::chrono::duration<double, std::milli>(ct1 - ct0).count();
                                 double cn=0, cd1=0, cd2=0, mx=0; long cnt=0;
                                 double ssum=0, ssum2=0, smin=1e30, smax=-1e30;
@@ -1688,6 +1709,26 @@ int zaya_decode_main(int argc, char** argv) {
                                 fprintf(stderr, "[RC] read-count C2[0..15] =");
                                 for (int nn = 0; nn < 16; nn++) fprintf(stderr, " %d", rc2[nn]);
                                 fprintf(stderr, "   (full-K≈2048 r0-only≈256)\n");
+                            }
+                            // ── Permutation-sensitive probe (NPU_CASCADE_PS): no_gu + bd[kk][nn]
+                            // = (kk+nn)%63 + 1 (row- and col-dependent). With const h2,
+                            // C2[nn] = Σ_k ((k+nn)%63+1) is a clean func of nn under an IDENTITY
+                            // read; a DIFFERENT func under a permutation. Compares vs the
+                            // identity-read host prediction.
+                            if (getenv("NPU_CASCADE_PS") && atoi(getenv("NPU_CASCADE_PS")) == 1) {
+                                const int NDr = casc_nd;
+                                std::vector<int8_t> bd_ps((size_t)m.n_ff * NDr, 0);
+                                for (int kk = 0; kk < m.n_ff; kk++)
+                                    for (int nn = 0; nn < NDr; nn++)
+                                        bd_ps[(size_t)kk * NDr + nn] = (int8_t)(((kk + nn) % 63) + 1);
+                                memcpy(cas.bBd->map(), bd_ps.data(), bd_ps.size());
+                                cas.bBd->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                                std::vector<float> ps_out(NDr, 0.0f);
+                                cas.go(residual.data(), ag, 1.0f, ps_out.data(), *casAB);
+                                const int32_t* rc2 = (const int32_t*)cas.bC2->map();
+                                fprintf(stderr, "[PS] C2[0..31] =");
+                                for (int nn = 0; nn < 32; nn++) fprintf(stderr, " %d", rc2[nn]);
+                                fprintf(stderr, "\n");
                             }
                         }
                     }
