@@ -1,0 +1,45 @@
+name: Retire docs subdomain
+
+# One-time (re-runnable) step in the docs consolidation: the single docs
+# surface now lives at https://1bit.monster/docs/ (GitHub Pages). Point the
+# retired docs.1bit.monster Cloudflare Pages project at it so the old
+# subdomain redirects instead of serving a stale second surface.
+
+# NOTE: this only deploys a static `_redirects` to the `1bit-monster-docs`
+# Cloudflare Pages project (which `docs.1bit.monster` resolves to). It does
+# NOT delete the project or touch DNS. Removing the project / the `docs` CNAME
+# is a dashboard/DNS action (the repo token is Account/Pages-only).
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  retire:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Deploy catch-all redirect to 1bit-monster-docs
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0  # v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: |
+            tmp=$(mktemp -d)
+            printf '%s\n' \
+              '# Retired docs.1bit.monster -> 1bit.monster/docs' \
+              '/            https://1bit.monster/docs/   302' \
+              '/*           https://1bit.monster/docs/   302' \
+              > "$tmp/_redirects"
+            printf '%s\n' \
+              '<!doctype html><html><head><meta charset="utf-8">' \
+              '<meta http-equiv="refresh" content="0; url=https://1bit.monster/docs/">' \
+              '<link rel="canonical" href="https://1bit.monster/docs/"></head>' \
+              '<body><p>Docs moved to <a href="https://1bit.monster/docs/">https://1bit.monster/docs/</a></p>' \
+              '<script>window.location.replace("https://1bit.monster/docs/")</script></body></html>' \
+              > "$tmp/index.html"
+            printf '%s\n' "$tmp/_redirects" "$tmp/index.html"
+            npx wrangler pages deploy "$tmp" --project-name=1bit-monster-docs
