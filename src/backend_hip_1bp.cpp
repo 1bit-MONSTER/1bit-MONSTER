@@ -298,8 +298,9 @@ struct Hip1bpBackend : Backend {
             if (ok && getenv("H1BP_Q35_SELFCHECK")) {
                 std::vector<uint8_t> raw;
                 const int K0 = 2048, M0 = 8192;
+                const size_t rowb = (size_t)(K0 / 32) * 34;
                 if (gguf_->get_tensor_raw("blk.0.attn_qkv.weight", 32, 34, raw) &&
-                    raw.size() == (size_t)M0 * ((size_t)(K0 / 32) * 34)) {
+                    raw.size() == (size_t)M0 * rowb) {
                     auto host_h2f = [](unsigned short h) -> float {
                         unsigned s = (h & 0x8000u) ? -1 : 1;
                         unsigned e = (h >> 10) & 0x1f, m = h & 0x3ff;
@@ -307,7 +308,6 @@ struct Hip1bpBackend : Backend {
                         if (e == 31) return s * (m ? NAN : INFINITY);
                         return s * (1.0f + (float)m / 1024.0f) * powf(2.0f, (int)e - 15);
                     };
-                    const size_t rowb = (size_t)(K0 / 32) * 34;
                     std::vector<float> x(K0);
                     for (int j = 0; j < K0; j++) x[j] = ((j % 13) - 6) * 0.25f;  // deterministic ramp
                     double ref0 = 0;
