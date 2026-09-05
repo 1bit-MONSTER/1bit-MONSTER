@@ -105,7 +105,9 @@ Expected output drives M2's exact name table + fused-QKV slice geometry.
 
 Captured from the header of the real target file (`unsloth/Qwen3.6-35B-A3B-GGUF`
 `Qwen3.6-35B-A3B-Q8_0.gguf`, arch token **`qwen35moe`**, GGUF v3, 733 tensors,
-40 layers × 19 tensors). This is the M2 loader table.
+40 layers). Two layer kinds — validated on real hardware (strixhalo gfx1151,
+2026-09-05): **full-attention** layers `(l+1)%4==0` (3,7,…,39; 10 of 40) carry
+16 tensors; **GDN** layers carry 19. MoE set is identical on both.
 
 KV (arch `qwen35moe.*`):
 
@@ -126,7 +128,7 @@ KV (arch `qwen35moe.*`):
 | full_attention_interval | 4 (every 4th layer full MHA) |
 | context_length | 262144 |
 
-Per-layer tensors (GGUF-native shape, shape[0] fastest; row-major = reversed):
+Per-layer tensors — GDN kind (19/layer; GGUF-native shape):
 
 | blk.N. name | gguf shape | row-major | dtype |
 |-------------|-----------|----------|-------|
@@ -146,6 +148,16 @@ Per-layer tensors (GGUF-native shape, shape[0] fastest; row-major = reversed):
 | ffn_gate_shexp / ffn_up_shexp | (2048, 512) | (512, 2048) | Q8_K |
 | ffn_down_shexp | (512, 2048) | (2048, 512) | Q8_K |
 | ffn_gate_inp_shexp.weight | (2048,) | — | F32 |
+
+Full-attention kind (16/layer — replaces attn_qkv/attn_gate/ssm_* with split MHA):
+
+| blk.N. name | gguf shape | row-major | dtype |
+|-------------|-----------|----------|-------|
+| attn_q.weight | (2048, 8192) | (8192, 2048) | Q8_K |  ← NH·HD·2 (q + gate halves), 16 heads × 256
+| attn_k.weight / attn_v.weight | (2048, 512) | (512, 2048) | Q8_K |  ← NKV·HD, 2 × 256
+| attn_q_norm.weight / attn_k_norm.weight | (256,) | — | F32 |
+| attn_output.weight | (4096, 2048) | (2048, 4096) | Q8_K |  ← NH·HD = 4096
+| (shared: attn_norm, post_attention_norm, ffn_* × 8 as above) |
 
 Globals: `token_embd.weight` + `output.weight` both (248320, 2048) Q8_K
 (probably tied — compare data offsets at load); `output_norm.weight` (2048) F32.
