@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """lint_docs_markdown.py — parse-check the curated docs with markdown-it-py.
 
-Context7 (and docs.1bit.monster's generator) index the repo's curated docs/
+Context7 (and the 1bit.monster/docs generator) index the repo's curated docs/
 Markdown; pages that fail to parse are silently missing from the index
 (issue #1963: 37 -> 56 parse failures as snippets grew). This script runs the
 same parser family over the curated set and FAILS on any file that does not

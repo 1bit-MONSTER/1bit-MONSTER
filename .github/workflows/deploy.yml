@@ -5,6 +5,9 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'docs/**'
+      - 'scripts/gen_docs_site.py'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 concurrency:
@@ -20,12 +23,30 @@ jobs:
       deployments: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Install markdown-it-py
+        run: pip install markdown-it-py
+
+      - name: Lint docs Markdown (parse-check — issue #1963)
+        run: python3 scripts/lint_docs_markdown.py
+
+      - name: Stage site + generated docs (single surface at /docs/)
+        run: |
+          mkdir -p _deploy
+          cp -a site/. _deploy/
+          python3 scripts/gen_docs_site.py --out _deploy/docs
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0  # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site --project-name=1bit-monster
+          command: pages deploy _deploy --project-name=1bit-monster
 
   deploy-github-pages:
     runs-on: ubuntu-latest
