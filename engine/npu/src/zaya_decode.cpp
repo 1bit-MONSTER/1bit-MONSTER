@@ -21,6 +21,7 @@
 #include "zaya_moe_cpu.h"
 #include "npu_engine_i8ctx_inc.h"
 #include "npu_attn_ctx.h"
+#include "../../fusion/zero_copy/npu_cascade_kernel.h"
 
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
@@ -209,6 +210,15 @@ static void rmsnorm(float* h, const float* w, int n, float eps = 1e-5f) {
     for (int i = 0; i < n; i++) h[i] = h[i] * r * w[i];
 }
 
+// ── M1 phase profiling (temporary instrumentation) ────────────────
+static double t_attn_ms = 0, t_moe_ms = 0, t_tot_ms = 0;
+static double t_fp1 = 0, t_fmid = 0, t_fp2 = 0, t_fpre = 0;
+static long c_fp1 = 0, c_fmid = 0, c_fp2 = 0, c_fpre = 0;
+static long c_attn = 0, c_moe = 0, c_tok = 0;
+static inline double _now_ms() {
+    using C = std::chrono::steady_clock;
+    return std::chrono::duration<double, std::milli>(C::now().time_since_epoch()).count();
+}
 int zaya_decode_main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s model.q4nx [token_id...]\n", argv[0]); return 1; }
     zaya_cca::cap_omp_threads();   // default to physical cores (#1776 oversubscription)
@@ -595,11 +605,13 @@ int zaya_decode_main(int argc, char** argv) {
     }
 
     auto forward = [&](int tok, int pos) -> int {
+        double _f0 = _now_ms();
         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
         std::vector<float> residual(d.H, 0.0f);
         bool has_res = false;
         std::vector<float> prev_router;
         for (int l = 0; l < NC; l++) {
+            double _l0 = _now_ms();
             auto& w = L[l];
             auto& lk = kv_k[l]; auto& lv = kv_v[l];
             const float* hs; const float* hb; const float* rs; const float* rb;
@@ -785,11 +797,7 @@ int zaya_decode_main(int argc, char** argv) {
                     else
                         fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
-                    // P1: GU GEMM → C1 writeback to bo2 (the CPU-silu
-                    // fallback, issue #1769/#1836: the on-core silu is
-                    // mis-compiled by the aie2p backend, so the P1 kernel
-                    // only writes the C1 — 32 chunks x 4 KB — and the HOST
-                    // computes the silu from the verified bit-exact C1).
+                    double _ppre0 = _now_ms();
                     auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                        residual.data(), 1, d.H, ag);
                     auto tb2 = std::chrono::steady_clock::now();
@@ -799,6 +807,8 @@ int zaya_decode_main(int argc, char** argv) {
                     // before the P2 D-phase MM2S read (shim[0]). The host
                     // sync forces the write path to drain.
                     h2_bo[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                    if (pos > 0 && FUSED) { t_fp1 += _now_ms() - _ppre0; c_fp1++; }
+                    double _pmid0 = _now_ms();
                     // DIAG (v63): kernel C1 (via c1 arg at gos) vs host C1h
                     if (getenv("NPU_DIAG_H2") && l == 1 && pos == 0) {
                         const int8_t* h2m = (const int8_t*)h2_bo[l]->map();
@@ -1010,9 +1020,12 @@ int zaya_decode_main(int argc, char** argv) {
                                 d.H, h2host[0], h2host[1], h2host[2], h2host[3],
                                 h2host[4], h2host[5], h2host[6], h2host[7]);
                     }
+                    if (pos > 0 && FUSED) { t_fmid += _now_ms() - _pmid0; c_fmid++; }
+                    double _pp20 = _now_ms();
                     auto frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
                                                            residual.data(), 1, d.H, ag);
                     fused_ctx_p2.dequant_fused(frun2, moe_out.data(), 1, d.H, qn_s, l);
+                    if (pos > 0 && FUSED) { t_fp2 += _now_ms() - _pp20; c_fp2++; }
                     auto tb3 = std::chrono::steady_clock::now();
                     if (getenv("NPU_TIMING") && pos == 0 && l == 3)
                         fprintf(stderr, "[fused-t] l=%d hdr=%.3f launch=%.3f wait+deq=%.3f ms\n", l,
@@ -1347,6 +1360,95 @@ int zaya_decode_main(int argc, char** argv) {
                         fprintf(stderr, "\n[moecmp] npu: ");
                         for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", moe_out[i]);
                         fprintf(stderr, "\n");
+                        if (getenv("NPU_CASCADE_TEST") && atoi(getenv("NPU_CASCADE_TEST")) == 1) {
+                            // E2 probe: single-launch cascade (nd2048) vs CPU float + 2-launch
+                            static bool cas_done = false, cas_ok = false;
+                            static fusion::NpuCascadeKernel cas;
+                            static std::unique_ptr<xrt::bo> casAB;
+                            const int casc_nd = (getenv("NPU_CASCADE_ND") ? atoi(getenv("NPU_CASCADE_ND")) : d.H);
+                            if (!cas_done) {
+                                cas_done = true;
+                                char cxp[640], cip[640];
+                                snprintf(cxp, sizeof cxp, "%s/final_cascade_fused_zaya_nd2048.xclbin", xd);
+                                snprintf(cip, sizeof cip, "%s/insts_cascade_fused_zaya_nd2048.txt", xd);
+                                if (getenv("NPU_CASCADE_XCLBIN")) snprintf(cxp, sizeof cxp, "%s", getenv("NPU_CASCADE_XCLBIN"));
+                                if (getenv("NPU_CASCADE_INSTS"))  snprintf(cip, sizeof cip, "%s", getenv("NPU_CASCADE_INSTS"));
+                                cas_ok = cas.init(dev, cxp, cip, d.H, m.n_ff, casc_nd);
+                                if (cas_ok) {
+                                    casAB = std::make_unique<xrt::bo>(dev, (size_t)cas.AB_bytes, XRT_BO_FLAGS_HOST_ONLY,
+                                                                      cas.kk->group_id(3));
+                                    const float* gb = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                                    const float* ub = gb + (size_t)m.n_ff * d.H;
+                                    float gu_amax = 0, d_amax = 0;
+                                    for (int pp = 0; pp < m.n_ff; pp++)
+                                        for (int kk2 = 0; kk2 < d.H; kk2++) {
+                                            float a = fabsf(gb[(size_t)pp * d.H + kk2]); if (a > gu_amax) gu_amax = a;
+                                            float b = fabsf(ub[(size_t)pp * d.H + kk2]); if (b > gu_amax) gu_amax = b;
+                                        }
+                                    const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                                    for (int nn = 0; nn < d.H; nn++)
+                                        for (int ii = 0; ii < m.n_ff; ii++) {
+                                            float a = fabsf(dnp[(size_t)nn * m.n_ff + ii]); if (a > d_amax) d_amax = a;
+                                        }
+                                    if (gu_amax < 1e-12f) gu_amax = 1.0f;
+                                    if (d_amax < 1e-12f) d_amax = 1.0f;
+                                    fprintf(stderr, "[CAS] expert=%d gu_amax=%.3e d_amax=%.3e n_k=%d n_cg=%d AB=%ld B\n",
+                                            e, gu_amax, d_amax, cas.n_k, cas.n_cg, (long)cas.AB_bytes);
+                                    cas.packB_gu_into(*casAB, gb, ub, 127.0f / gu_amax);
+                                    cas.packB_d_into(dnp, 127.0f / d_amax);
+                                    fprintf(stderr, "[CAS] packed ok\n");
+                                } else fprintf(stderr, "[CAS] cascade init FAILED\n");
+                            }
+                            if (cas_ok) {
+                                std::vector<float> ffn_cas(casc_nd);
+                                auto ct0 = std::chrono::steady_clock::now();
+                                cas.go(residual.data(), ag, 1.0f, ffn_cas.data(), *casAB);
+                                auto ct1 = std::chrono::steady_clock::now();
+                                double cas_ms = std::chrono::duration<double, std::milli>(ct1 - ct0).count();
+                                double cn=0, cd1=0, cd2=0, mx=0; long cnt=0;
+                                double ssum=0, ssum2=0, smin=1e30, smax=-1e30;
+                                for (int nn = 0; nn < casc_nd; nn++) {
+                                    double c2 = ffn_cas[nn], r2 = cpu_out[nn];
+                                    cn += c2*r2; cd1 += c2*c2; cd2 += r2*r2;
+                                    double ad = fabs(c2 - r2); if (ad > mx) mx = ad;
+                                    if (fabsf(c2) > 1e-6f) {
+                                        double ss = r2 / c2; ssum += ss; ssum2 += ss*ss; cnt++;
+                                        if (ss < smin) smin = ss; if (ss > smax) smax = ss;
+                                    }
+                                }
+                                double corr = cn / sqrt(cd1*cd2);
+                                double smean = cnt ? ssum/cnt : 0, svar = cnt ? (ssum2/cnt - smean*smean) : 0;
+                                double an=0, ad1=0, ad2=0, bn=0, bd1=0, bd2=0;
+                                for (int nn = 0; nn < casc_nd; nn++) {
+                                    double c2 = ffn_cas[nn]*smean, r2 = cpu_out[nn], m2 = moe_out[nn];
+                                    an += c2*r2; ad1 += c2*c2; ad2 += r2*r2; bn += c2*m2; bd1 += c2*c2; bd2 += m2*m2;
+                                }
+                                fprintf(stderr,
+                                    "[CAS] rawC2-vs-cpu corr=%.6f maxabs=%.4f | S mean=%.6e relstd=%.4f range[%.3e,%.3e] n=%ld\n"
+                                    "[CAS] C2*Smean vs cpu corr=%.6f | vs 2launch corr=%.6f | single-launch %.3f ms\n",
+                                    corr, mx, smean, svar>0?sqrt(svar)/fabs(smean):0.0, smin, smax, cnt,
+                                    an/sqrt(ad1*ad2), bn/sqrt(bd1*bd2), cas_ms);
+                                // M-row scan: for ROWS=4 the token row may not be M-row 0.
+                                // raw C2 BO = 4 chunks (r) x 8 M-rows x 512 cols, out col j =
+                                // chunk j/512, m-row ?, col j%512.
+                                const int32_t* rawc2 = (const int32_t*)cas.bC2->map();
+                                fprintf(stderr, "[CAS] mrow-scan corr(rawC2[mrow],cpu):");
+                                double best_corr = -2; int best_m = -1;
+                                for (int mrow = 0; mrow < 8; mrow++) {
+                                    double x=0, y=0, xx=0, yy=0, xy=0;
+                                    for (int j = 0; j < d.H; j++) {
+                                        int idx = (j >> 9) * 4096 + mrow * 512 + (j & 511);
+                                        double c2 = rawc2[idx], r2 = cpu_out[j];
+                                        x += c2; y += r2; xx += c2*c2; yy += r2*r2; xy += c2*r2;
+                                    }
+                                    double den = sqrt((d.H*xx - x*x) * (d.H*yy - y*y));
+                                    double cr = den > 0 ? (d.H*xy - x*y)/den : 0.0;
+                                    fprintf(stderr, " %+.4f", cr);
+                                    if (cr > best_corr) { best_corr = cr; best_m = mrow; }
+                                }
+                                fprintf(stderr, "  (best m=%d)\n", best_m);
+                            }
+                        }
                     }
                 } else {
                     gu_ctx.group_scales[l] = gu_cs[l][e];
@@ -1375,6 +1477,10 @@ int zaya_decode_main(int argc, char** argv) {
                     }
                 }
                 for (int i = 0; i < d.H; i++) h[i] = moe_out[i];
+            }
+            if (pos > 0) {
+                double _dt = _now_ms() - _l0;
+                if (l % 2 == 0) { t_attn_ms += _dt; c_attn++; } else { t_moe_ms += _dt; c_moe++; }
             }
         }
         for (int i = 0; i < d.H; i++) tmp[i] = h[i] + residual[i];
@@ -1417,6 +1523,7 @@ int zaya_decode_main(int argc, char** argv) {
                         num/std::sqrt(d1*d2), maxd, a1, a2, a1 == a2 ? "SAME" : "DIFF");
             }
         }
+        if (pos > 0) { t_tot_ms += _now_ms() - _f0; c_tok++; }
         return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     };
 
@@ -1515,6 +1622,17 @@ int zaya_decode_main(int argc, char** argv) {
     fflush(stdout);
     double gen_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tgen0).count();
     fprintf(stderr, "[perf] %d tokens in %.0f ms (%.1f ms/tok, %.1f tok/s)\n", N_GEN, gen_ms, gen_ms / N_GEN, 1000.0 * N_GEN / gen_ms);
+    if (c_tok > 0) {
+        double attn_tok = t_attn_ms / c_tok, moe_tok = t_moe_ms / c_tok, tot_tok = t_tot_ms / c_tok;
+        fprintf(stderr, "[M1prof] per tok: attn(10 layers)=%.1f ms  moe(10 layers)=%.1f ms  norm+logits+other=%.1f ms  (tot %.1f; attn %.2f ms/layer, moe %.2f ms/layer)\n",
+                attn_tok, moe_tok, tot_tok - attn_tok - moe_tok, tot_tok,
+                t_attn_ms / (c_attn ? (double)c_attn : 1), t_moe_ms / (c_moe ? (double)c_moe : 1));
+        double fp1l = t_fp1 / (c_fp1 ? (double)c_fp1 : 1), fmidl = t_fmid / (c_fmid ? (double)c_fmid : 1),
+               fp2l = t_fp2 / (c_fp2 ? (double)c_fp2 : 1);
+        double prel = (t_moe_ms / (c_moe ? (double)c_moe : 1)) - fp1l - fmidl - fp2l;
+        fprintf(stderr, "[M1prof] fused layer: pre(router+amax+hdr)=%.2f  P1(GU+silu->h2)=%.2f  mid(host+sync)=%.2f  P2(D)=%.2f ms\n",
+                prel, fp1l, fmidl, fp2l);
+    }
     // ── Teardown (issue #1762) ──────────────────────────────────────────────
     // Root cause: the xrt destructors wedge the NPU — NOT a BO sync on destroy
     // (every launch is r.wait()ed before the next and xrt::bo never syncs on

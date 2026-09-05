@@ -30,18 +30,18 @@ W=/tmp/iron_cascade.$$ ; mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
     -isystem $P/include/c++/v1 \
-    -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
+    -isystem $M/include \
     -I $M/include/aie_kernels/aie2p \
     -c "$G/mm_kernel_reference.cc" -o "$W/mm.o" 2>/dev/null
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
     -isystem $P/include/c++/v1 \
-    -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
+    -isystem $M/include \
     -I $M/include/aie_kernels/aie2p \
     -c "$G/attn_kernel_reference.cc" -o "$W/silu.o" 2>/dev/null
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -isystem $P/include/c++/v1 \
-    -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
+    -isystem $M/include \
     -I $M/include/aie_kernels/aie2p -I "$G" \
     -c "$G/i4_dequant_kernel.cc" -o "$W/dequant.o" 2>/dev/null
 $P/bin/ld.lld -r "$W/mm.o" "$W/silu.o" "$W/dequant.o" -o "$W/mm_32x64x128.o"
@@ -51,7 +51,7 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
     -DWIDE_DIM_N="$N_DROW" \
     -isystem $P/include/c++/v1 \
-    -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
+    -isystem $M/include \
     -I $M/include/aie_kernels/aie2p \
     -c "$G/mm_kernel_reference.cc" -o "$W/wide.o" 2>/dev/null
 $P/bin/ld.lld -r "$W/wide.o" -o "$W/wide_d.o"
