@@ -1599,6 +1599,16 @@ int zaya_decode_main(int argc, char** argv) {
                                     }
                                     fprintf(stderr, "[GUcpu] H0=%3d cpu-nz=%d n_ff=%d\n", H0, cpu_nz, m.n_ff);
                                 }
+                                // real-residual discriminator: dense GU output => the c_=0
+                                // collapse was a one-hot/A-tile artifact; sparse => GU read bug.
+                                {
+                                    std::vector<float> gu_real(NDr, 0.0f);
+                                    cas.go(residual.data(), ag, 1.0f, gu_real.data(), *casAB);
+                                    const int32_t* rc2r = (const int32_t*)cas.bC2->map();
+                                    int nzr = 0;
+                                    for (int nn = 0; nn < NDr; nn++) if (rc2r[nn] != 0) nzr++;
+                                    fprintf(stderr, "[GUrl] real-residual h2 nz=%d/%d\n", nzr, NDr);
+                                }
                             }
                         }
                     }

@@ -142,3 +142,22 @@ read is not spreading the GU output across the 8 sub-positions → h2 is ~1/8 as
 the correct GU output. This is the #2078 root (D exonerated by no_gu). The mm kernel:
 `matmul_i8_i32_ab`→`matmul_vectorized_8x8x8_i8_i32_m8` (mm_kernel_reference.cc:714/307),
 A=ab[0..512], B_gu=ab[512..8704].
+
+## CAVEAT (2026-09-04) — the c_=0 "GU read" claim is AMBIGUOUS, not conclusive
+The real-residual GU discriminator (`[GUrl] real-residual h2 nz=183/2048`) shows the identity-B_d
+h2 (C2) is SPARSE (~9%) even for the REAL layer-1 h2 input — so the pattern is NOT purely a one-hot/
+A-tile artifact. HOWEVER: identity B_d only recovers `C2[nn] = h2[nn]` if the D read maps kk→nn as a
+true identity. The no_gu ramp test proved the D read is *uniform* (same k-set per output column), NOT
+that it is *identity*. So the sparse-at-multiples-of-8 h2 could be either:
+  (A) the GU read genuinely collapsing h2 (the #2078 bug), or
+  (B) identity-B_d mapping h2 through a non-identity D k-slice permutation (read(nn) != nn).
+These are indistinguishable from C2 alone. The earlier "c_=0 = GU read bug" conclusion is therefore
+**not proven**; it is a hypothesis with a confound. Resolving A vs B requires knowing the D read map
+read(nn) (from the no_gu one-hot B_d) or a GU-isolated probe (no D), i.e. the read-formula solver.
+
+## Honest status
+- CONFIRMED: D read is correct (no_gu, uniform + 0.16% scale). packB_d_into exonerated.
+- UNRESOLVED: whether the sparse h2 is a GU read bug (A) or an identity-B_d D-mapping artifact (B).
+- The real #2078 bug (corr=0.02) is in the GU->h2 phase broadly, but the exact misindexed term /
+  whether it's GU-read or D-mapping is NOT determined. Needs the read-solver (port guread/bread/one-hot
+  to Zaya + the no_gu one-hot B_d read map) — multi-cycle.
