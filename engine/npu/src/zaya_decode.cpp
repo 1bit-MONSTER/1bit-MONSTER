@@ -1447,7 +1447,7 @@ int zaya_decode_main(int argc, char** argv) {
                                 snprintf(cip, sizeof cip, "%s/insts_cascade_fused_zaya_nd2048.txt", xd);
                                 if (getenv("NPU_CASCADE_XCLBIN")) snprintf(cxp, sizeof cxp, "%s", getenv("NPU_CASCADE_XCLBIN"));
                                 if (getenv("NPU_CASCADE_INSTS"))  snprintf(cip, sizeof cip, "%s", getenv("NPU_CASCADE_INSTS"));
-                                cas_ok = cas.init(dev, cxp, cip, d.H, m.n_ff, casc_nd);
+                                cas_ok = cas.init(dev, cxp, cip, d.H, m.n_ff, casc_nd, 4);   // nd2048 artifact = ROWS=4
                                 if (cas_ok) {
                                     casAB = std::make_unique<xrt::bo>(dev, (size_t)cas.AB_bytes, XRT_BO_FLAGS_HOST_ONLY,
                                                                       cas.kk->group_id(3));
@@ -1608,6 +1608,29 @@ int zaya_decode_main(int argc, char** argv) {
                                     int nzr = 0;
                                     for (int nn = 0; nn < NDr; nn++) if (rc2r[nn] != 0) nzr++;
                                     fprintf(stderr, "[GUrl] real-residual h2 nz=%d/%d\n", nzr, NDr);
+                                }
+                            }
+                            // ── D read map probe (NPU_CASCADE_RD): no_gu + one-hot B_d row ──
+                            // On the no_gu artifact h2=const, so C2[nn] nonzero iff output col
+                            // nn reads B_d row k0 -> recovers read(nn). Resolves A (GU bug) vs B
+                            // (identity-B_d D-mapping artifact).
+                            if (getenv("NPU_CASCADE_RD") && atoi(getenv("NPU_CASCADE_RD")) == 1) {
+                                const int NDr = casc_nd;
+                                const int KSTART = getenv("NPU_CASCADE_RD_K") ? atoi(getenv("NPU_CASCADE_RD_K")) : 0;
+                                const int KCOUNT = getenv("NPU_CASCADE_RD_N") ? atoi(getenv("NPU_CASCADE_RD_N")) : 8;
+                                for (int k0 = KSTART; k0 < KSTART + KCOUNT; k0++) {
+                                    std::vector<int8_t> bd_one((size_t)m.n_ff * NDr, 0);
+                                    for (int nn = 0; nn < NDr && k0 < m.n_ff; nn++) bd_one[(size_t)k0 * NDr + nn] = 127;
+                                    memcpy(cas.bBd->map(), bd_one.data(), bd_one.size());
+                                    cas.bBd->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                                    std::vector<float> rd_out(NDr, 0.0f);
+                                    cas.go(residual.data(), ag, 1.0f, rd_out.data(), *casAB);
+                                    const int32_t* rc2 = (const int32_t*)cas.bC2->map();
+                                    int nz = 0;
+                                    fprintf(stderr, "[RD] k0=%4d read-cols:", k0);
+                                    for (int nn = 0; nn < NDr; nn++)
+                                        if (rc2[nn] != 0) { if (nz < 40) fprintf(stderr, " %d", nn); nz++; }
+                                    fprintf(stderr, "  (nz=%d)\n", nz);
                                 }
                             }
                         }

@@ -161,3 +161,17 @@ read(nn) (from the no_gu one-hot B_d) or a GU-isolated probe (no D), i.e. the re
 - The real #2078 bug (corr=0.02) is in the GU->h2 phase broadly, but the exact misindexed term /
   whether it's GU-read or D-mapping is NOT determined. Needs the read-solver (port guread/bread/one-hot
   to Zaya + the no_gu one-hot B_d read map) — multi-cycle.
+
+## D read map probe (NPU_CASCADE_RD, no_gu one-hot B_d) — CONTRADICTS RAMP, unresolved
+Ran no_gu artifact with a single one-hot B_d row (bd[k0][nn]=127, all nn), scanning k0=0..7:
+
+    [RD] k0=0 -> all 2048 cols nonzero
+    [RD] k0=1..7 -> 0 cols nonzero
+
+Suggests only B_d row 0 is read. BUT this CONTRADICTS the no_gu RAMP result (C2=101504 ≈ full-K
+101346, diff 158): the r=0-only ramp sum is 12688, NOT 101504. So "D reads only row 0" is NOT
+consistent with the RAMP (which implies the kernel reads the full K). The two probes cannot both
+be right => there is an unresolved subtlety in how the one-hot/identity B_d interacts with the D
+k-slice mm read (mm_wk8 B-tile / a8s contraction / cascade-reduce). Hypothesis A (GU bug) vs B
+(D identity-mapping artifact) remains UNDETERMINED; neither the identity-B_d nor the one-hot-B_d
+probe cleanly isolates the D read map.
