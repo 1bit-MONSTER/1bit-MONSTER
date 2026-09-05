@@ -1084,12 +1084,16 @@ struct Hip1bpBackend : Backend {
                 // recurrence
                 h1bp_q35_delta_kernel<<<32, 128, 0, stream>>>(q35_sc_q, q35_sc_k, q35_sc_v,
                     q35_rec_state + (size_t)l * 128 * 128 * 32, q35_sc_z, q35_sc_g, q35_sc_b, 128, 128, 32);
+                if (l == 0) { q35_wb("qexp", q35_sc_q, 4096); q35_wb("kexp", q35_sc_k, 4096);
+                              q35_wb("v", q35_sc_v, 4096); q35_wb("deltaraw", q35_sc_z, 4096); }
                 // z gemv (attn_gate 4096x2048) -> silu -> group norm out * silu(z)
                 h1bp_q8gemv_kernel<<<4096, 256, 0, stream>>>(q35_sc_att, w.gate, dh, 4096, 2048);
                 h1bp_head_rmsnorm_kernel<<<32, 256, 0, stream>>>(q35_sc_z, w.snorm, 128, 1e-6f);
                 h1bp_silu_inplace_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_att, 4096);
                 h1bp_elmul_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_z, q35_sc_att, 4096);
-                if (l == 0) { q35_wb("g", q35_sc_g, 32); q35_wb("beta", q35_sc_b, 32); q35_wb("zattn", q35_sc_z, 4096); }
+                if (l == 0) { q35_wb("g", q35_sc_g, 32); q35_wb("beta", q35_sc_b, 32); q35_wb("zattn", q35_sc_z, 4096);
+                              q35_wb("q16n", q35_sc_qc, 2048); q35_wb("k16n", q35_sc_qc + 2048, 2048);
+                              q35_wb("zraw", q35_sc_att, 4096); }
                 // ssm_out gemv [2048 x 4096] -> H
                 h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_aout, w.ssm_out, q35_sc_z, 2048, 4096);
             }
