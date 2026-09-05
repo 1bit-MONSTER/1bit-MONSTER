@@ -126,3 +126,19 @@ vs sparse scrambled h2).
 ## Next
 Diff the NPU GU h2 nonzero positions against the deriv-inverse B_gu read formula to find which index
 term (row/col/pair) is misindexed for Zaya; then fix `packB_gu_into` / the generator GU core_fn.
+
+## Precise DIFF (NPU GU h2 vs CPU true-math) — c_=0 micro-tile collapse
+h2 index p = ks*256 + cg*64 + kstep*8 + c_  (kernel D read of h2b). So p % 8 == 0 ⟺ c_ == 0.
+
+| metric | NPU GU h2 | CPU true-math |
+|----|----|----|
+| nonzero cols | 224 (all ≡0 mod 8) | 1526 |
+| collapse factor | — | **6.8×** |
+| multiples-of-8 density | 88% (224/256) | — |
+
+⇒ the cascade GU mm produces h2 ONLY in the **c_==0** column of each 8×8 micro-group
+(p%8==0); c_=1..7 are all zero. A micro-tile collapse: the A-tile / B_gu deriv-inverse
+read is not spreading the GU output across the 8 sub-positions → h2 is ~1/8 as dense as
+the correct GU output. This is the #2078 root (D exonerated by no_gu). The mm kernel:
+`matmul_i8_i32_ab`→`matmul_vectorized_8x8x8_i8_i32_m8` (mm_kernel_reference.cc:714/307),
+A=ab[0..512], B_gu=ab[512..8704].
