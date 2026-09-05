@@ -91,6 +91,20 @@ static void synth_q8_rows(std::vector<uint8_t>& out, int rows, int mode = 0) {
     }
 }
 
+// ── synthetic Q4_K_S rows: [640 B meta][4096 B nibbles] (dtype 8, 4736 B/tile) ──
+static void synth_q4k_rows(std::vector<uint8_t>& out, int rows, int meta_val, int nib_mode) {
+    out.resize((size_t)rows * 4736);
+    for (int r = 0; r < rows; r++) {
+        uint8_t* row = out.data() + (size_t)r * 4736;
+        for (int i = 0; i < 640; i++) row[i] = (uint8_t)meta_val;
+        for (int i = 0; i < 4096; i++) {
+            int n0 = nib_mode == 0 ? (i & 0x0F) : nib_mode == 1 ? 0 : 15;
+            int n1 = nib_mode == 0 ? ((i + 1) & 0x0F) : nib_mode == 1 ? 0 : 15;
+            row[640 + i] = (uint8_t)((n0 & 0x0F) | ((n1 & 0x0F) << 4));
+        }
+    }
+}
+
 // ── synthetic INT4 rows: [512 B bf16 scales][512 B mins][4096 B nibbles] ──
 static void synth_int4_rows(std::vector<uint8_t>& out, int rows) {
     out.resize((size_t)rows * 5120);
@@ -137,8 +151,9 @@ int main(int argc, char** argv) {
         int rows = (int)M;
         int mode = (dtype >> 8) & 1;   // high byte in the unused top bits of dtype
         if (dtype == 1 || dtype == 0x101) synth_q8_rows(raw, rows, dtype == 0x101 ? 1 : 0);
+        else if (dtype == 8)             synth_q4k_rows(raw, rows, (int)m, (int)off);
         else                             synth_int4_rows(raw, rows);
-        printf("synthetic %s input: %zu B (%d rows)%s\n", dtype == 1 ? "Q8_0" : dtype == 0x101 ? "Q8_0-hi" : "INT4", raw.size(), rows, mode ? " (hi ramp)" : "");
+        printf("synthetic %s input: %zu B (%d rows)%s\n", dtype == 1 ? "Q8_0" : dtype == 8 ? "Q4_K_S(meta=1,nib=ramp)" : dtype == 0x101 ? "Q8_0-hi" : "INT4", raw.size(), rows, mode ? " (hi ramp)" : "");
     } else {
         if (!load_q4nx_raw(q4nx_path, key, raw)) {
             fprintf(stderr, "cannot load %s from %s\n", key, q4nx_path);
