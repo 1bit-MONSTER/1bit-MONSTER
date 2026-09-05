@@ -79,3 +79,23 @@ B-tile read / A-tile fill / silu pair indexing for the Zaya `n_cg=4` geometry �
 - Verify C2 is uniform across ALL 4 ROWS chunks (cols 512/1024/1536) to rule out row-specific reading.
 - Move the probe to the GU phase: one-hot-A `guread`/`bread` (cascade_real_weight_probe modes ported to
   Zaya) to isolate the GU B-tile read / silu pair indexing — the new prime suspect.
+
+## GU-phase probe (NPU_CASCADE_GU) — h2 clustered at multiples of 8 (2026-09-04)
+Identity B_d (bd[kk][nn] = 127·δ) so C2[nn] == h2[nn] (the silu'd GU output). One-hot A input at H0,
+real layer-1 expert (e=7) GU weights; run on `final_cascade_fused_zaya_nd2048.xclbin`.
+
+**Silicon result (H0=0..7):** h2 is NONZERO **only at columns ≡ 0 (mod 8)** — the nz columns are
+{0, 8, 16, 24, …, 552+} (nz≈220-226), and columns 1-7, 9-15, … are all ZERO. e.g. H0=0
+`first16 = [48387, 0,0,0,0,0,0,0, 16129, 0,0,0,0,0,0,0]` (nonzero at col0, col8), H0=1
+`[-16129, 0×7, 32258, 0×7]`, H0=6 `[16129, 0×7, -80645, 0×7]`.
+
+**Observation / open question:** the A-tile one-hot fill (`A[i*64+c] = h[ki*64+i*8+(c%8)]`) puts a
+one-hot h at (row i, cols c%8) — so the *input* is already clustered at multiples of 8 → a *clustered
+output* may be the expected consequence and NOT itself the bug. Distinguishing "correct GU read with a
+clustered A" vs "GU read map is wrong" requires the CPU GU→SiLU mirror comparison (the #2078 derivation).
+This is the current open branch — the no_gu D-read-verified result already proved the D is NOT at fault,
+so the GU read / silu pair indexing is now the prime suspect.
+
+## To confirm (next)
+- Run the CPU mirror of GU→SiLU (silu_q22 on C1 = A_tile @ B_gu deriv-inverse) for the same one-hot A and
+  diff vs the NPU h2 (C2 with identity B_d). If nonzero positions/values differ → GU read map is #2078.

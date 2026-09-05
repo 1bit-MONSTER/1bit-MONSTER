@@ -1557,6 +1557,35 @@ int zaya_decode_main(int argc, char** argv) {
                                     fprintf(stderr, "\n");
                                 }
                             }
+                            // ── GU-phase read-map probe (NPU_CASCADE_GU) ──────
+                            // Identity B_d so C2[nn] == h2[nn] (the silu'd GU
+                            // output). A one-hot A input reveals which GU weight
+                            // (B_gu) read each output pair uses — isolating the
+                            // GU B-tile read / silu pair indexing (the #2078
+                            // suspect after the no_gu D-read-verified result).
+                            if (getenv("NPU_CASCADE_GU") && atoi(getenv("NPU_CASCADE_GU")) == 1) {
+                                const int NDr = casc_nd;
+                                std::vector<int8_t> bd_id((size_t)m.n_ff * NDr, 0);
+                                for (int kk = 0; kk < m.n_ff && kk < NDr; kk++)
+                                    bd_id[(size_t)kk * NDr + kk] = 127;
+                                memcpy(cas.bBd->map(), bd_id.data(), bd_id.size());
+                                cas.bBd->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                                const int HSTART = getenv("NPU_CASCADE_GU_H") ? atoi(getenv("NPU_CASCADE_GU_H")) : 0;
+                                const int HCOUNT = getenv("NPU_CASCADE_GU_N") ? atoi(getenv("NPU_CASCADE_GU_N")) : 8;
+                                for (int H0 = HSTART; H0 < HSTART + HCOUNT; H0++) {
+                                    std::vector<float> hh(d.H, 0.0f); hh[H0] = 1.0f;
+                                    std::vector<float> gu_out(NDr, 0.0f);
+                                    cas.go(hh.data(), ag, 1.0f, gu_out.data(), *casAB);
+                                    const int32_t* rc2 = (const int32_t*)cas.bC2->map();
+                                    int nz = 0;
+                                    fprintf(stderr, "[GU] H0=%3d h2-nz-col:", H0);
+                                    for (int nn = 0; nn < NDr; nn++)
+                                        if (rc2[nn] != 0) { if (nz < 64) fprintf(stderr, " %d", nn); nz++; }
+                                    fprintf(stderr, "  (nz=%d) | first16:", nz);
+                                    for (int nn = 0; nn < 16; nn++) fprintf(stderr, " %d", rc2[nn]);
+                                    fprintf(stderr, "\n");
+                                }
+                            }
                         }
                     }
 fused_single_done:
