@@ -532,7 +532,7 @@ __global__ void h1bp_q35_delta_kernel(const float* __restrict__ q, const float* 
     int col = threadIdx.x; if (col >= S_v) return;
     const float* kh = k + (size_t)h * S_k;
     const float* qh = q + (size_t)h * S_k;
-    float* Scol = state + ((size_t)h * S_v + col);       // S[i][col]: stride S_v per i
+    float* Scol = state + ((size_t)h * S_v * S_v + col);  // S[i][col]: stride S_v per i
     float gv = __expf(g[h]);                             // decay for this head
     float kv = 0.0f;
     for (int i = 0; i < S_k; i++) kv += Scol[(size_t)i * S_v] * kh[i];
