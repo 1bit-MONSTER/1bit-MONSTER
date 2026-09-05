@@ -1020,6 +1020,14 @@ struct Hip1bpBackend : Backend {
         HIP_CHECK(hipMemcpy(d_token, &token_id, sizeof(int), hipMemcpyHostToDevice));
         h1bp_q8embed_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_emb, d_token, 2048);
         int n_full_layers = 0;
+        auto q35_wb = [&](const char* nm, const float* buf, int n) {
+            if (pos != 0 || !getenv("H1BP_Q35_STAGE")) return;
+            std::vector<float> tmp(n);
+            HIP_CHECK(hipMemcpy(tmp.data(), buf, n * 4, hipMemcpyDeviceToHost));
+            char fn[1024]; snprintf(fn, sizeof fn, "%s/%s.f32", getenv("H1BP_Q35_STAGE"), nm);
+            FILE* f = fopen(fn, "wb"); if (f) { fwrite(tmp.data(), 4, n, f); fclose(f); }
+        };
+        if (pos == 0) q35_wb("emb", dh, 2048);
         for (int l = 0; l < NC; l++) {
             Q35L& w = q35L[l];
             bool full = ((l + 1) % 4 == 0);
@@ -1058,6 +1066,7 @@ struct Hip1bpBackend : Backend {
                 h1bp_q35_conv_kernel<<<(8192 + 255) / 256, 256, 0, stream>>>(
                     q35_sc_qc, q35_sc_qkv, w.conv1d,
                     q35_conv_state + (size_t)l * 8192 * 3, 8192, 4, pos);
+                if (l == 0) { q35_wb("qkv", q35_sc_qkv, 8192); q35_wb("qc", q35_sc_qc, 8192); }
                 // q/k l2-norm per 16 heads then expand to 32 (tiled)
                 h1bp_head_l2norm_kernel<<<16, 256, 0, stream>>>(q35_sc_qc, 128, 16, 1e-6f);
                 h1bp_head_l2norm_kernel<<<16, 256, 0, stream>>>(q35_sc_qc + 2048, 128, 16, 1e-6f);
@@ -1080,6 +1089,7 @@ struct Hip1bpBackend : Backend {
                 h1bp_head_rmsnorm_kernel<<<32, 256, 0, stream>>>(q35_sc_z, w.snorm, 128, 1e-6f);
                 h1bp_silu_inplace_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_att, 4096);
                 h1bp_elmul_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_z, q35_sc_att, 4096);
+                if (l == 0) { q35_wb("g", q35_sc_g, 32); q35_wb("beta", q35_sc_b, 32); q35_wb("zattn", q35_sc_z, 4096); }
                 // ssm_out gemv [2048 x 4096] -> H
                 h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_aout, w.ssm_out, q35_sc_z, 2048, 4096);
             }
@@ -1119,6 +1129,7 @@ struct Hip1bpBackend : Backend {
             h1bp_acc_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, 2048);
             h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, dsilu, 2048);
             h1bp_add_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_sc_moe, 2048);
+            if (l == 0) q35_wb("l0out", dh, 2048);
         }
         // output norm + lm head + argmax
         h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, q35_onorm, 2048, 1e-6f);
