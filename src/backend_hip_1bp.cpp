@@ -290,6 +290,56 @@ struct Hip1bpBackend : Backend {
                                 "(#1831 M3/M4) — use the CPU (qwen3next) or NPU path.\n",
                         H, NC, n_full);
             }
+            // M3 loader/kernel self-check (env H1BP_Q35_SELFCHECK): pull
+            // blk.0.attn_qkv (Q8_0 raw, 34 B/block) and run the device Q8 gemv
+            // against a host dequant of the same rows. Exercises the raw-GGUF
+            // loader + h1bp_q8gemv_kernel on real hardware without a decode
+            // path. Dense models never reach here (arch gate above).
+            if (ok && getenv("H1BP_Q35_SELFCHECK")) {
+                std::vector<uint8_t> raw;
+                const int K0 = 2048, M0 = 8192;
+                if (gguf_->get_tensor_raw("blk.0.attn_qkv.weight", 32, 34, raw) &&
+                    raw.size() == (size_t)M0 * ((size_t)(K0 / 32) * 34)) {
+                    auto host_h2f = [](unsigned short h) -> float {
+                        unsigned s = (h & 0x8000u) ? -1 : 1;
+                        unsigned e = (h >> 10) & 0x1f, m = h & 0x3ff;
+                        if (e == 0) return m == 0 ? 0.0f : s * ((float)m / 16384.0f / 1024.0f);
+                        if (e == 31) return s * (m ? NAN : INFINITY);
+                        return s * (1.0f + (float)m / 1024.0f) * powf(2.0f, (int)e - 15);
+                    };
+                    const size_t rowb = (size_t)(K0 / 32) * 34;
+                    std::vector<float> x(K0);
+                    for (int j = 0; j < K0; j++) x[j] = ((j % 13) - 6) * 0.25f;  // deterministic ramp
+                    double ref0 = 0;
+                    for (int j = 0; j < K0; j++) {
+                        const uint8_t* bp = raw.data() + (j >> 5) * 34;
+                        float d = host_h2f(*(const unsigned short*)bp);
+                        float v = d * (float)((signed char)bp[2 + (j & 31)]);
+                        ref0 += (double)v * x[j];
+                    }
+                    uint8_t* dq = nullptr; float* dx = nullptr; float* dy = nullptr;
+                    if (hipMalloc((void**)&dq, raw.size()) == hipSuccess &&
+                        hipMalloc((void**)&dx, K0 * 4) == hipSuccess &&
+                        hipMalloc((void**)&dy, (size_t)M0 * 4) == hipSuccess) {
+                        HIP_CHECK(hipMemcpy(dq, raw.data(), raw.size(), hipMemcpyHostToDevice));
+                        HIP_CHECK(hipMemcpy(dx, x.data(), K0 * 4, hipMemcpyHostToDevice));
+                        h1bp_q8gemv_kernel<<<M0, 256, 0, stream>>>(dy, dq, dx, M0, K0);
+                        HIP_CHECK(hipStreamSynchronize(stream));
+                        float dev0 = 0;
+                        HIP_CHECK(hipMemcpy(&dev0, dy, 4, hipMemcpyDeviceToHost));
+                        bool pass = fabsf((float)ref0 - dev0) <= 2e-3f * (1.0f + fabsf((float)ref0));
+                        fprintf(stderr, "[hip1bp] qwen35 selfcheck blk.0.attn_qkv: "
+                                        "M=%d K=%d raw=%zu B; row0 ref=%.6f dev=%.6f → %s\n",
+                                M0, K0, raw.size(), (float)ref0, dev0, pass ? "PASS" : "FAIL");
+                        HIP_CHECK_D(hipFree(dy)); HIP_CHECK_D(hipFree(dx)); HIP_CHECK_D(hipFree(dq));
+                    } else {
+                        fprintf(stderr, "[hip1bp] qwen35 selfcheck: hipMalloc failed\n");
+                    }
+                } else {
+                    fprintf(stderr, "[hip1bp] qwen35 selfcheck: attn_qkv raw read failed "
+                                    "(want %zu B)\n", (size_t)M0 * rowb);
+                }
+            }
             return false;   // decode kernels are M3/M4; fall through to CPU/NPU
         }
 

@@ -387,3 +387,63 @@ __global__ void h1bp_rocmfp4_part_kernel(const uint8_t* __restrict__ w,
     }
     part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = acc;
 }
+
+// ── Q8_0 (GGUF dtype 8, block 32: fp16 scale + 32 int8, 34 B/block) GEMV ──
+// W row r = K/32 blocks contiguous: [fp16 d][qs0..31][fp16 d][qs0..31]...
+// y[M] = W[M,K] @ x[K]; K % 32 == 0. Mirrors h1bp_gemv_kernel structure.
+__global__ void h1bp_q8gemv_kernel(float* y, const uint8_t* W, const float* x, int M, int K) {
+    int row = blockIdx.x;
+    if (row >= M) return;
+    const uint8_t* wr = W + (size_t)row * ((size_t)(K >> 5) * 34);
+    double sum = 0;
+    for (int j = threadIdx.x; j < K; j += blockDim.x) {
+        int blk = j >> 5, lane = j & 31;
+        const uint8_t* bp = wr + (size_t)blk * 34;
+        float d = __half2float(__ushort_as_half(*(const unsigned short*)bp));
+        sum += (double)x[j] * (d * (float)((signed char)bp[2 + lane]));
+    }
+    __shared__ double sdata[256];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[row] = (float)sdata[0];
+}
+
+// Q8_0 embedding row fetch: y[K] = dequant(embed[tok]) — one block per row.
+__global__ void h1bp_q8embed_kernel(float* y, const uint8_t* E, const int* d_tok, int K) {
+    int tok = *d_tok;
+    int j = threadIdx.x + blockIdx.x * blockDim.x;
+    if (j >= K) return;
+    const uint8_t* bp = E + (size_t)tok * ((size_t)(K >> 5) * 34) + (size_t)(j >> 5) * 34;
+    float d = __half2float(__ushort_as_half(*(const unsigned short*)bp));
+    y[j] = d * (float)((signed char)bp[2 + (j & 31)]);
+}
+
+// Q8_0 fused-expert gemv for one expert block: experts are stored
+// expert-major contiguous (gate/up: [256 exp][512 out][2048 in]); this kernel
+// computes out[e*R ..] for the expert whose slice starts at base + e*R*Kbytes.
+__global__ void h1bp_q8gemv_slice_kernel(float* y, const uint8_t* W, const float* x,
+                                         int exp_idx, int out_per_exp, int K, int out_stride_floats) {
+    int row = blockIdx.x;               // 0..out_per_exp-1
+    if (row >= out_per_exp) return;
+    const uint8_t* wr = W + (size_t)exp_idx * ((size_t)out_per_exp * (K >> 5) * 34)
+                          + (size_t)row * ((size_t)(K >> 5) * 34);
+    double sum = 0;
+    for (int j = threadIdx.x; j < K; j += blockDim.x) {
+        int blk = j >> 5, lane = j & 31;
+        const uint8_t* bp = wr + (size_t)blk * 34;
+        float d = __half2float(__ushort_as_half(*(const unsigned short*)bp));
+        sum += (double)x[j] * (d * (float)((signed char)bp[2 + lane]));
+    }
+    __shared__ double sdata[256];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[(size_t)row * out_stride_floats] = (float)sdata[0];
+}
