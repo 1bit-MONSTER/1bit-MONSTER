@@ -2,6 +2,7 @@
 #include <cstdio>
 #include <chrono>
 #include <string>
+#include <cstring>
 
 extern "C" Backend* create_hip_1bp_backend();
 
@@ -23,15 +24,22 @@ int main(int argc, char** argv) {
     uint8_t hdr[256];
     FILE* f = fopen(path, "rb"); if (!f) { fprintf(stderr, "Cannot open %s\n", path); return 1; }
     fread(hdr, 1, 256, f); fclose(f);
-    memcpy(&cfg.hidden_size, hdr+20, 4); memcpy(&cfg.num_layers, hdr+24, 4);
-    memcpy(&cfg.num_heads, hdr+28, 4); memcpy(&cfg.num_kv_heads, hdr+32, 4);
-    memcpy(&cfg.head_dim, hdr+36, 4); memcpy(&cfg.intermediate_size, hdr+40, 4);
-    memcpy(&cfg.vocab_size, hdr+44, 4);
+    // GGUF-direct models: the header is NOT a 1BP header — skip the parse and
+    // let backend_hip_1bp's GGUF path drive (dims stay at ModelConfig defaults,
+    // which match the qwen35moe family this driver validates).
+    bool is_gguf = strlen(path) > 5 && strcmp(path + strlen(path) - 5, ".gguf") == 0;
+    if (!is_gguf) {
+        memcpy(&cfg.hidden_size, hdr+20, 4); memcpy(&cfg.num_layers, hdr+24, 4);
+        memcpy(&cfg.num_heads, hdr+28, 4); memcpy(&cfg.num_kv_heads, hdr+32, 4);
+        memcpy(&cfg.head_dim, hdr+36, 4); memcpy(&cfg.intermediate_size, hdr+40, 4);
+        memcpy(&cfg.vocab_size, hdr+44, 4);
+    }
 
     printf("  Model: %s\n", path);
-    printf("  Dims:  H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d\n",
+    printf("  Dims:  H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d V=%d %s\n",
            cfg.hidden_size, cfg.num_layers, cfg.num_heads, cfg.num_kv_heads,
-           cfg.head_dim, cfg.intermediate_size, cfg.vocab_size);
+           cfg.head_dim, cfg.intermediate_size, cfg.vocab_size,
+           is_gguf ? "(GGUF-direct)" : "");
     printf("  Tokens: %d (%d warmup + %d measured)\n\n", tokens + warmup, warmup, tokens);
 
     // Init
