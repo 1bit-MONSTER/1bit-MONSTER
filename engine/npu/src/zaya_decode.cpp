@@ -1497,6 +1497,47 @@ int zaya_decode_main(int argc, char** argv) {
                                     double c2 = ffn_cas[nn]*smean, r2 = cpu_out[nn], m2 = moe_out[nn];
                                     an += c2*r2; ad1 += c2*c2; ad2 += r2*r2; bn += c2*m2; bd1 += c2*c2; bd2 += m2*m2;
                                 }
+                                if (getenv("NPU_CASCADE_DUMP")) {
+                                    {
+                                        FILE* f = fopen("/tmp/c2_raw.bin", "wb");
+                                        const int32_t* rc2d = (const int32_t*)cas.bC2->map();
+                                        if (f) { fwrite(rc2d, 4, (size_t)(8 * cas.bC2->size() / 4), f); fclose(f); }
+                                    }
+                                    {
+                                        FILE* f = fopen("/tmp/c2_cpu.bin", "wb");
+                                        if (f) { fwrite(cpu_out.data(), 4, (size_t)d.H, f); fclose(f); }
+                                    }
+                                    {
+                                        FILE* f = fopen("/tmp/c2_2launch.bin", "wb");
+                                        if (f) { fwrite(moe_out.data(), 4, (size_t)d.H, f); fclose(f); }
+                                    }
+                                    fprintf(stderr, "[CAS] dumped rawC2(%d) cpu(%d) 2launch(%d)\n",
+                                            (int)(8 * cas.bC2->size() / 4), (int)d.H, (int)d.H);
+                                }
+                                if (getenv("NPU_CASCADE_DBG")) {
+                                    fprintf(stderr, "[CAS-dbg] ffn_cas[0..63]=");
+                                    for (int nn = 0; nn < 64; nn++) fprintf(stderr, "%d ", (int)ffn_cas[nn]);
+                                    fprintf(stderr, "\n[CAS-dbg] cpu_out [0..63]=");
+                                    for (int nn = 0; nn < 64; nn++) fprintf(stderr, "%.2f ", cpu_out[nn]);
+                                    fprintf(stderr, "\n");
+                                    double bcorr[8];
+                                    for (int blk = 0; blk < 8; blk++) {
+                                        double x=0,y=0,xx=0,yy=0,xy=0; int cnt=0;
+                                        for (int nn = blk*256; nn < blk*256+256; nn++) {
+                                            double a = ffn_cas[nn], b = cpu_out[nn];
+                                            x+=a;y+=b;xx+=a*a;yy+=b*b;xy+=a*b;cnt++;
+                                        }
+                                        double den = sqrt((cnt*xx-x*x)*(cnt*yy-y*y));
+                                        bcorr[blk] = den>0?(cnt*xy-x*y)/den:0;
+                                    }
+                                    fprintf(stderr, "[CAS-dbg] per-256-block corr: %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f\n",
+                                        bcorr[0],bcorr[1],bcorr[2],bcorr[3],bcorr[4],bcorr[5],bcorr[6],bcorr[7]);
+                                    fprintf(stderr, "[CAS-dbg] ratios ffn/cpu first 24 (nn with |cpu|>1e-3): ");
+                                    int shown = 0;
+                                    for (int nn = 0; nn < 2048 && shown < 24; nn++)
+                                        if (fabsf(cpu_out[nn]) > 1e-3f) { fprintf(stderr, "%d:%.4f ", nn, ffn_cas[nn]/cpu_out[nn]); shown++; }
+                                    fprintf(stderr, "\n");
+                                }
                                 fprintf(stderr,
                                     "[CAS] rawC2-vs-cpu corr=%.6f maxabs=%.4f | S mean=%.6e relstd=%.4f range[%.3e,%.3e] n=%ld\n"
                                     "[CAS] C2*Smean vs cpu corr=%.6f | vs 2launch corr=%.6f | single-launch %.3f ms\n",
@@ -1632,6 +1673,21 @@ int zaya_decode_main(int argc, char** argv) {
                                         if (rc2[nn] != 0) { if (nz < 40) fprintf(stderr, " %d", nn); nz++; }
                                     fprintf(stderr, "  (nz=%d)\n", nz);
                                 }
+                            }
+                            // ── D read-count probe (NPU_CASCADE_RC): all-ones B_d, no_gu.
+                            // C2[nn] = |read(nn)| (rows read per output col). Resolves full-K
+                            // (==2048) vs r=0-only (==256) vs the RAMP 101504 contradiction.
+                            if (getenv("NPU_CASCADE_RC") && atoi(getenv("NPU_CASCADE_RC")) == 1) {
+                                const int NDr = casc_nd;
+                                std::vector<int8_t> bd_ones((size_t)m.n_ff * NDr, 1);
+                                memcpy(cas.bBd->map(), bd_ones.data(), bd_ones.size());
+                                cas.bBd->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+                                std::vector<float> rc_out(NDr, 0.0f);
+                                cas.go(residual.data(), ag, 1.0f, rc_out.data(), *casAB);
+                                const int32_t* rc2 = (const int32_t*)cas.bC2->map();
+                                fprintf(stderr, "[RC] read-count C2[0..15] =");
+                                for (int nn = 0; nn < 16; nn++) fprintf(stderr, " %d", rc2[nn]);
+                                fprintf(stderr, "   (full-K≈2048 r0-only≈256)\n");
                             }
                         }
                     }

@@ -175,3 +175,18 @@ be right => there is an unresolved subtlety in how the one-hot/identity B_d inte
 k-slice mm read (mm_wk8 B-tile / a8s contraction / cascade-reduce). Hypothesis A (GU bug) vs B
 (D identity-mapping artifact) remains UNDETERMINED; neither the identity-B_d nor the one-hot-B_d
 probe cleanly isolates the D read map.
+
+## D read-count probe (NPU_CASCADE_RC, all-ones B_d, no_gu) — D reads FULL K
+bd[kk][nn]=1 (all rows), no_gu h2=const=1 => C2[nn] = |read(nn)| (rows read per col):
+
+    [RC] read-count C2[0..15] = 2048 2048 2048 ... (2048 for EVERY col)
+
+So |read(nn)| = 2048 for every output column => the D reads ALL 2048 B_d rows
+(FULL K). This agrees with the no_gu RAMP (101504 ≈ full-K 101346) and RULES OUT
+the earlier "r=0-only / D collapse" interpretation. The RD one-hot probe
+(k0=0 -> all, k0=1..7 -> none) is therefore an ANOMALY inconsistent with the
+read-count -> discounted as a probe artifact. NOTE: full-K is PERMUTATION-INVARIANT,
+so read() being full-K does NOT prove read(nn)=nn (identity). The identity-B_d GU
+probe's sparse h2 is still A (GU output genuinely sparse) vs B (full-K permutation)
+— not fully resolved. But the D is now confirmed to read the full K (correct
+contraction magnitude), so the D read is NOT collapsing; packB_d_into exonerated.
