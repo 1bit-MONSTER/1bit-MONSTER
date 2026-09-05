@@ -115,6 +115,12 @@ int main() {
     }
     {
         ModelConfig c = make_cfg();
+        c.arch = RCPP_ARCH_BARETORCH;
+        c.architecture = "baretorch";
+        expect("baretorch cs_lrad", c, {"cpu_baretorch", "hip_gpu", "cpu_generic"});
+    }
+    {
+        ModelConfig c = make_cfg();
         c.arch = RCPP_ARCH_LLAMA;
         c.architecture = "llama";
         c.num_experts = 8;

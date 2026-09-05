@@ -1083,6 +1083,11 @@ int main() {
     check("detikzify", RCPP_ARCH_LLAMA, "detikzify (#1687) — llama text decoder");
     check("iquestcoder", RCPP_ARCH_LLAMA, "iquestcoder (#1687) — llama profile");
     check("helix", RCPP_ARCH_GPT2, "helix (#1687) — gpt2 profile");
+    // ── census registry tokens (engine-supported families + XL refusals) ──
+    check("baretorch", RCPP_ARCH_BARETORCH, "baretorch (#1907) — cs_lrad engine support");
+    check("cs_lrad", RCPP_ARCH_BARETORCH, "cs_lrad model_type (#1907)");
+    check("qu_ssm", RCPP_ARCH_QU_SSM, "qu_ssm registry token");
+    check("arobabylm", RCPP_ARCH_ARO_BABYLM, "arobabylm registry token");
     // ── 2026-09 daily full-sweep tail checks ──
     check("dsparkdraft", RCPP_ARCH_DEEPSEEK_V4, "dsparkdraft (2026-09 sweep)");
     check("eagle3draft", RCPP_ARCH_LLAMA, "eagle3draft (2026-09 sweep)");
