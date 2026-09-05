@@ -1007,7 +1007,7 @@ struct Hip1bpBackend : Backend {
         for (int h = 0; h < 32; h++) {
             float* d = dst + (size_t)h * 128;
             const float* s = src + (size_t)(h & 15) * 128;
-            HIP_CHECK(hipMemcpy(d, s, 128 * 4, hipMemcpyDeviceToDevice));
+            HIP_CHECK(hipMemcpyAsync(d, s, 128 * 4, hipMemcpyDeviceToDevice, stream));
         }
     }
     int qwen35_step(int token_id) {
@@ -1047,9 +1047,9 @@ struct Hip1bpBackend : Backend {
                 // store k (v2) and v into the per-layer kv cache [seq][k0 k1 v0 v1]
                 int f = n_full_layers;
                 float* kvbase = q35_kvc + (size_t)f * (max_seq * 1024);
-                HIP_CHECK(hipMemcpy(kvbase + (size_t)pos * 1024, q35_sc_v2, 512 * 4, hipMemcpyDeviceToDevice));
+                HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024, q35_sc_v2, 512 * 4, hipMemcpyDeviceToDevice, stream));
                 h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v, w.v, dh, 512, 2048);
-                HIP_CHECK(hipMemcpy(kvbase + (size_t)pos * 1024 + 512, q35_sc_v, 512 * 4, hipMemcpyDeviceToDevice));
+                HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024 + 512, q35_sc_v, 512 * 4, hipMemcpyDeviceToDevice, stream));
                 // attention over the cache, then sigmoid-gate multiply, then o_proj
                 h1bp_q35_fattn_kernel<<<16, 256, 0, stream>>>(q35_sc_qk, kvbase, q35_sc_att,
                     q35_kv_scores, 16, 2, 256, max_seq, d_pos);
@@ -1073,7 +1073,7 @@ struct Hip1bpBackend : Backend {
                 h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_qc, 1.0f / sqrtf(128.0f), 2048);
                 q35_expand16(q35_sc_q, q35_sc_qc);
                 q35_expand16(q35_sc_k, q35_sc_qc + 2048);
-                HIP_CHECK(hipMemcpy(q35_sc_v, q35_sc_qc + 4096, 4096 * 4, hipMemcpyDeviceToDevice));
+                HIP_CHECK(hipMemcpyAsync(q35_sc_v, q35_sc_qc + 4096, 4096 * 4, hipMemcpyDeviceToDevice, stream));
                 // alpha/beta/gate: gemv 32x2048 then dt, softplus, ssa mul, sigmoid
                 h1bp_q8gemv_kernel<<<32, 256, 0, stream>>>(q35_sc_g, w.alpha, dh, 32, 2048);
                 h1bp_add_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, w.dt, 32);
@@ -1109,6 +1109,7 @@ struct Hip1bpBackend : Backend {
             h1bp_q35_topk_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, q35_sc_rout, q35_sc_idx, 256, 8, renorm);
             HIP_CHECK(hipMemset(q35_sc_moe, 0, 2048 * 4));
             int exps[8]; float wts[8];
+            HIP_CHECK(hipStreamSynchronize(stream));
             HIP_CHECK(hipMemcpy(exps, q35_sc_idx, 8 * 4, hipMemcpyDeviceToHost));
             HIP_CHECK(hipMemcpy(wts, q35_sc_rout, 8 * 4, hipMemcpyDeviceToHost));
             for (int r = 0; r < 8; r++) {
