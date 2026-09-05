@@ -179,6 +179,19 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         return {{"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"},
                 "qwen3 GGUF — HRX GPU (fused) → GGML-Vulkan → ZINC GPU → CPU"};
     }
+    // Baretorch (cs_lrad chunked-state linear-recurrent + GQA transformer
+    // hybrid, 3:1) — issue #1907. Registry token RCPP_ARCH_BARETORCH landed
+    // in #1974 with a clean generic-loader refusal; the baretorch CPU engine
+    // (src/baretorch_engine.cpp) implements the SERVED chunked math
+    // (validated corr 1.0 / max-abs-err 2.7e-4 vs the HF reference on the
+    // real BareTorch-500M at every position). Routed by arch BEFORE the
+    // GGUF/H1B format lane so a baretorch file of any format is claimed by
+    // the engine; hip_gpu/cpu_generic stay as fallbacks but the generic
+    // loader still refuses baretorch (no silent mis-execution).
+    if (cfg.arch == RCPP_ARCH_BARETORCH) {
+        return {{"cpu_baretorch", "hip_gpu", "cpu_generic"},
+                "Baretorch — baretorch CPU engine (cs_lrad chunked-state) → HIP → generic CPU (#1907)"};
+    }
     if (cfg.format == ModelFormat::GGUF || cfg.format == ModelFormat::H1B) {
         // HRX-first: HRX is tried before ggml_vulkan/zinc/cpu. HRX init()
         // succeeds only when the HRX llama-server can spawn AND the graph is

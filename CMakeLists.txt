@@ -611,6 +611,7 @@ set(BACKEND_MANAGER_SOURCES
     src/mimo_v2.cpp
     src/qwen3_5.cpp
     src/qwen3next_engine.cpp   # Qwen3-Next (GatedDeltaNet) CPU engine — #1831 interim fallback
+    src/baretorch_engine.cpp    # BareTorch (cs_lrad chunked-state + GQA hybrid) CPU engine — #1907
     src/backend_laguna.cpp
     src/backend_zamba2.cpp
     src/backend_lse.cpp
