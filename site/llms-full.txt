@@ -30,9 +30,7 @@ research · field notes Public notes on the work. Papers we steal from, benchmar
 
 # 1bit.MONSTER: Documentation
 
-Documentation
-
-Docs home User Reference Docs home Everything from scratch to NPU, written to be read. The docs describe the engine as it is, not as it is pitched. Build it, run it, pick a model, talk to it. The one-line install, running your first model, and a health check. Shortest path from nothing to a model. TheRock 7.15.0a, the onebin target, FastFlowLM, optional GPU decode, and the exact gotchas that stop people. Weights, launch, health check, and the OpenAI-compatible API. Serve the same binary over HTTP. Mic to VAD to STT to LLM to TTS to speaker, all in-process, pure C++, on any backend. The engine is the app. 16 families, the 1BP canonical format, and the Zyphra stack the engine was tuned against. Kernel-level and end-to-end numbers, with honest labels and the gaps called out. Live help from the maintainers and other users — builds, models, NPU quirks, and everything in between. The operational wiki also covers installation, NPU architecture, boot configuration, and network topology. Goals and vision live separately, kept out of the engine narrative.
+Redirecting to the documentation hub… If you are not redirected, go to https://1bit.monster/docs/ .
 
 ---
 
@@ -719,92 +717,6 @@ Cart 0 1bit.MONSTER · physical Printed hardware for the people who run it. Ever
 Taking you there…
 
 Redirecting to the shared page. ← Back to 1bit.monster
-
----
-
-# 1bit.MONSTER: Building the engine
-
-Building the engine
-
-Prerequisites
-
-Build
-
-Gotchas
-
-Docs home User Reference User · Build One target, one binary. The onebin build drops the engine, the serving server, JARVIS, vision, and the CLI into build/1bit . Here is how to get it to compile on your hardware, and the exact gotchas that stop people. $ sudo apt update && sudo apt install -y cmake ninja-build build-essential git TheRock 7.15.0a The Rock is the NPU-and-GPU toolchain. Install the nightly pip wheel that ships the gfx1151 code objects. $ pip install --index-url https://rocm.nightlies.amd.com/whl-multi-arch/ \ "rocm[libraries,devel,device-gfx1151]" $ export THEROCK_PIP_ROOT="$HOME/.cache/pip/therock" CMake auto-discovers TheRock: /opt/rocm-therock → $THEROCK_PIP_ROOT → ~/.cache/lemonade/bin/therock . Never point CMAKE_PREFIX_PATH at system ROCm ( /opt/rocm ). Always set the target architecture. $ export CMAKE_HIP_ARCHITECTURES=gfx1151 Build $ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \ -DCMAKE_HIP_ARCHITECTURES=gfx1151 $ cmake --build build --target onebin The result is the single binary build/1bit . There is no standalone zaya_server target; packaged installs ship a zaya_server symlink, dispatched by argv[0] . Header-only deps (cpp-httplib, nlohmann_json, FTXUI) are fetched automatically via CMake FetchContent. Discovery order, no source build for the first two: $ cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \ -DCMAKE_HIP_ARCHITECTURES=gfx1151 -DZAYA_ENABLE_GPU_DECODE=ON $ cmake --build build --target zaya_gpu_decode # -> build/libzaya_gpu_decode.so Auto-detected at startup for Q4NX models. Without it, inference stays on CPU. The build is proven on Strix Halo with TheRock. If you are on a different ROCm stack, expect to solve the architecture flag first; the engine does not hide that the NPU path is the tuned one.
-
----
-
-# 1bit.MONSTER: Getting started
-
-Getting started
-
-What you get
-
-Download a prebuilt binary
-
-Install
-
-Run a model
-
-First health check
-
-What's next
-
-Docs home User Reference User · Quick start The engine is one binary. Build it, point it at a model, and it runs on NPU, GPU, or CPU with no config, no Python, and no glue. Here is the shortest path from nothing to a model. build/1bit is a single MIT-licensed C++26 binary. It is the engine, the serving server, the voice assistant, and the CLI all at once. There is no virtualenv, no pip, no runtime interpreter. The repo's one through-line is the engine (NPU + GPU + CPU) and the app that proves it: JARVIS. One engine, any model, zero Python. The routes from checkpoint to kernel path are detected at load, not configured. Prefer not to build? Every release ships ready-to-run packages — binary tarball, Debian package and AppImage — on the Downloads page . The tarball extracts anywhere ( ./run.sh chat ), the .deb puts 1bit on PATH , and the AppImage runs without installing. All three are built from the same staged release tree, so the format is just an install preference. Same runtime requirements as a source build: Strix Halo (gfx1151), ROCm/TheRock runtime, and a model file — see the Downloads page. Build from source with the bundled installer. The script detects the platform, pulls header-only deps, and warns on a known-bad kernel. $ git clone https://github.com/1bit-MONSTER/1bit-MONSTER && cd 1bit-MONSTER $ bash install.sh # build + nothing else $ bash install.sh --with-jarvis # build + JARVIS launcher + config That is the whole install. Source to a running binary in three commands, and the app adds the voice pipeline when you ask for it. Point it at any supported checkpoint. Backend selection and kernel routing are automatic. $ ./build/1bit zaya # serve on :8088 $ ./build/1bit zaya --port 8080 # custom port $ ./build/1bit zaya --model /path/to/model.h1b Or skip the server and sit in the voice assistant, which is the reference app that exercises the whole pipeline in one process. $ ./build/1bit jarvis --model "Qwen3-0.6B" --text # text chat $ ./build/1bit jarvis --model "Qwen3-0.6B" \ --whisper models/whisper-tiny.gguf \ --piper-model ~/piper/en_US-lessac-medium.onnx # voice First health check Once the server is up, hit the health endpoint before you trust anything. $ curl http://localhost:8088/ # {"status":"ok","model":"Zaya1-8B",...} $ curl -X POST http://localhost:8088/completion -H 'Content-Type: application/json' \ -d '{"prompt":"The future of AI is","n_predict":32}' # {"tokens":[...],"text":"...","gen_ms":2850.12,"tok_s":11.2} What's next Build from source on your hardware, including the NPU and optional GPU decode, in the building guide . Serve it behind the OpenAI-compatible API in running & serving . Pick a model from the supported families in model families . Talk to it with the reference voice app in JARVIS . Honesty Numbers here are measured on Strix Halo and the engine's own benchmarks. Verify on your hardware before you trust them. One legitimate gap: the CUDA backend exists but is not yet validated — it needs NVIDIA hardware and testers (issue #1703), and the engine says so rather than pretending.
-
----
-
-# 1bit.MONSTER: JARVIS
-
-JARVIS
-
-The pipeline
-
-JARVIS v2 (rebuild 2026-08-06)
-
-Default stack: Zyphra
-
-Run it
-
-Status
-
-Docs home User Reference User · Voice The reference application that proves the engine: mic to VAD to STT to LLM to TTS to speaker, all in-process, pure C++, with the LLM on any backend. The engine is the app. mic -> VAD -> STT (libwhisper) -> LLM (engine) -> TTS (piper) -> speaker Every stage is in-process and pure C++, and the LLM stage runs on any engine backend: NPU, GPU, CPU. v1 was a C++ port of a deleted Python package that carried the whole deleted product stack (auth, billing, usage, beacon, personas, RAG, an HTTP agent server). v2 gutted all of it: Without --model , JARVIS picks the first Zyphra model in the weights dir (preference: ZAYA1-8B to ZAYA1-74B to BlackMamba-2.8B to BlackMamba-1.5B to Zamba2 to ZR1-1.5B). --model <any> bypasses it. $ cmake --build build --target jarvis_app # build/jarvis $ ./build/1bit jarvis --model "Qwen3-0.6B" --text # text chat $ ./build/1bit jarvis --model "Qwen3-0.6B" \ --whisper models/whisper-tiny.gguf \ --piper-model ~/piper/en_US-lessac-medium.onnx # voice Status Stage Status VAD energy-based, 20 ms frames LLM in-process, any backend, last-6-turns; default Zyphra TTS piper (fork/exec, 22050 Hz); codec voice = P2 STT GPU-accelerated; WHISPER_GPU=0 forces scalar Barge-in not yet; utterances during a reply are dropped (P1) Honesty STT is GPU-accelerated when a HIP device is present, scalar CPU fallback otherwise. Verify on hardware before you trust it.
-
----
-
-# 1bit.MONSTER: Model families
-
-Model families
-
-The families
-
-1BP format
-
-Zyphra, the engine-tuned family
-
-Docs home User Reference Reference · Coverage 16 documented families, one canonical format. The engine imports GGUF, ONNX, and the native 1BP, detects the architecture, and picks a kernel path. No config, no glue. Per-family coverage matrices live in docs/model-families/<family>.md . The set: bitnet-bonsai , deepseek , falcon , gemma , gpt-oss , granite , kimi , laguna , llama , mistral , olmo , phi , qwen , smollm , whisper , zyphra . 1BP is the single canonical format; importers exist for GGUF, ONNX, Q4NX, and H1B. The quantization path: Q4NX (4-bit, per-group BF16 scales) to dequantized float32, then re-quantized to symmetric INT8 (per-tensor max-abs) once at startup. Activations are quantized on the fly with a fixed 5.0 / 127.0 scale, empirically validated on Strix Halo. This is the family the engine was tuned against and the one that powers JARVIS by default. ZAYA1-8B 1BP is ~6.6 GB full-weight; the 149 MB entry on HF is MoE-expert-stripped. And the 739 MB 1BP for the 74B is physically impossible for a full 74B model; the runnable Q4_K_M GGUF is 45.8 GB.
-
----
-
-# 1bit.MONSTER: Running the server
-
-Running the server
-
-Weights
-
-Launch
-
-Health and generate
-
-API surface
-
-Performance (measured)
-
-Troubleshooting
-
-Docs home User Reference User · Serve Run the serving server and talk to it over HTTP. Same binary as everything else: ./build/1bit zaya . It speaks an OpenAI-compatible API, so any client that knows the shape can use it. Weights are flat float16 .bin files under /tmp/zaya_weights/ , one file per tensor named after the HF-style key (e.g. model_embed_tokens_weight.bin , model_layers_0_self_attn_o_proj_weight.bin , x 40 layers). About 6 GB fp16 plus MoE params in GPU memory. Download from the releases page or export from an HF checkpoint. $ source env.sh # sets HSA_OVERRIDE_GFX_VERSION=11.5.1 etc. $ ./build/1bit zaya # default port 8088 $ ./build/1bit zaya --port 8080 # custom port $ ./build/1bit zaya --model /path/to/model.h1b Health and generate $ curl http://localhost:8088/ # {"status":"ok","model":"Zaya1-8B",...} $ curl -X POST http://localhost:8088/completion -H 'Content-Type: application/json' \ -d '{"prompt":"The future of AI is","n_predict":32}' # -> {"tokens":[...],"text":"...","gen_ms":2850.12,"tok_s":11.2} API surface OpenAI-compatible: POST /v1/chat/completions , POST /v1/batch/completions , GET /v1/models , plus A2A agent-card endpoints. Decode speed is bound by GPU memory bandwidth. MoE expert memory pressure (16 experts x 2 layers) matters. These are Strix Halo numbers. Your bandwidth and expert count change the output; re-measure rather than assume.
 
 ---
 
