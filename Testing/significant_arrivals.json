@@ -1,0 +1,79 @@
+{
+ "deepseekv4": {
+  "arch": "deepseekv4",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Deepseek",
+  "model": "Coder40-95/DeepSeek-V4-Flash-Vision-Exp"
+ },
+ "glm5next": {
+  "arch": "glm5next",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Glm",
+  "model": "Coder40-95/GLM-5.3-Flash"
+ },
+ "glmmoedsa": {
+  "arch": "glmmoedsa",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Glm",
+  "model": "DripGhad1223/GLM-5.3-CYBERSECURITY-FP8"
+ },
+ "llama": {
+  "arch": "llama",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Llama",
+  "model": "minjaechoi/Midm-2.0-Mini-Instruct-W4A16"
+ },
+ "phi3": {
+  "arch": "phi3",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Phi",
+  "model": "minjaechoi/Phi-4-mini-instruct-W4A16"
+ },
+ "qwen2": {
+  "arch": "qwen2",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Qwen",
+  "model": "HarithSami/qwen2.5-7b-instruct-arabic-yt-merged"
+ },
+ "qwen2_5_vl": {
+  "arch": "qwen2_5_vl",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Qwen",
+  "model": "Aeronix-zzz/SpaSEViLA-7B"
+ },
+ "qwen3": {
+  "arch": "qwen3",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Qwen",
+  "model": "minjaechoi/Qwen3-4B-W4A16"
+ },
+ "qwen3_5": {
+  "arch": "qwen3_5",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Qwen",
+  "model": "HerrHruby/MR_midtrain_9B_v4_quarter"
+ },
+ "qwen3_5moe": {
+  "arch": "qwen3_5moe",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Qwen",
+  "model": "AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP"
+ },
+ "smollm3": {
+  "arch": "smollm3",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Smollm",
+  "model": "smshahbaj/RIFA-PRO-3B"
+ }
+}

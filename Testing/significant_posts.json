@@ -1,9 +1,86 @@
 {
+ "covered:Aeronix-zzz/SpaSEViLA-7B": {
+  "arch": "qwen2_5_vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-aeronix-zzz-spasevila-7b.html",
+  "mode": "covered"
+ },
+ "covered:AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-automatosx-ax-ornith-1-5-35b-a3b-mlx-axq-6bit-mtp.html",
+  "mode": "covered"
+ },
+ "covered:Coder40-95/DeepSeek-V4-Flash-Vision-Exp": {
+  "arch": "deepseekv4",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html",
+  "mode": "covered"
+ },
+ "covered:Coder40-95/GLM-5.3-Flash": {
+  "arch": "glm5next",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-coder40-95-glm-5-3-flash.html",
+  "mode": "covered"
+ },
+ "covered:DripGhad1223/GLM-5.3-CYBERSECURITY-FP8": {
+  "arch": "glmmoedsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-dripghad1223-glm-5-3-cybersecurity-fp8.html",
+  "mode": "covered"
+ },
+ "covered:HarithSami/qwen2.5-7b-instruct-arabic-yt-merged": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-harithsami-qwen2-5-7b-instruct-arabic-yt-merged.html",
+  "mode": "covered"
+ },
+ "covered:HerrHruby/MR_midtrain_9B_v4_quarter": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-herrhruby-mr-midtrain-9b-v4-quarter.html",
+  "mode": "covered"
+ },
  "covered:deepseek-ai/DeepSeek-V4-Flash": {
   "arch": "deepseek_v4_flash",
   "date": "2026-09-02",
   "family": "DeepSeek V4",
   "file": "1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+  "mode": "covered"
+ },
+ "covered:minjaechoi/Midm-2.0-Mini-Instruct-W4A16": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-minjaechoi-midm-2-0-mini-instruct-w4a16.html",
+  "mode": "covered"
+ },
+ "covered:minjaechoi/Phi-4-mini-instruct-W4A16": {
+  "arch": "phi3",
+  "date": "2026-09-02",
+  "family": "Phi",
+  "file": "1bit-post-significant-minjaechoi-phi-4-mini-instruct-w4a16.html",
+  "mode": "covered"
+ },
+ "covered:minjaechoi/Qwen3-4B-W4A16": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+  "mode": "covered"
+ },
+ "covered:smshahbaj/RIFA-PRO-3B": {
+  "arch": "smollm3",
+  "date": "2026-09-02",
+  "family": "Smollm",
+  "file": "1bit-post-significant-smshahbaj-rifa-pro-3b.html",
   "mode": "covered"
  }
 }
