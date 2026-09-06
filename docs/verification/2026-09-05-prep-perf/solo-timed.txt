@@ -1,0 +1,20 @@
+# solo phased timing (patched build)
+1788647857 [ModelConfig] manifest: H=2048 NC=40 NH=8 NKV=2 HD=128 IM=2048 NV=262272 experts=16 top_k=2
+1788647857 H=2048 NC=40 NV=262272 nq=8 nkv=2 hd=128 n_ff=2048 n_exp=16
+1788647858 embed int8 expansion (NV=262272 H=2048): 110.6 ms
+1788647862   I8Ctx::init xp=engine/npu/xclbins/final_i8_MOE_GU_zaya_m16.xclbin ip=engine/npu/xclbins/insts_i8_MOE_GU_zaya_m16.txt
+1788647862   instr file size=194192
+1788647862   grp_a=65536 grp_w=65536 grp_c=65536 grp_ins=65537
+1788647862   creating bA size=262144 (MD=128 KD=2048)
+1788647862   creating bC size=2097152 (MD=128 ND=4096 bC_nd=0)
+1788647862   I8Ctx::init xp=engine/npu/xclbins/final_i8_MOE_D_zaya_m16.xclbin ip=engine/npu/xclbins/insts_i8_MOE_D_zaya_m16.txt
+1788647862   instr file size=97104
+1788647862   grp_a=131072 grp_w=131072 grp_c=131072 grp_ins=131073
+1788647862   creating bA size=262144 (MD=128 KD=2048)
+1788647862   creating bC size=1048576 (MD=128 ND=2048 bC_nd=0)
+1788647862 NPU contexts ready (GU 2048x4096, D 2048x2048)
+1788647873 resident experts packed (16 experts x 20 MoE layers)
+1788647873 [MoE L1 dbg] corr=0.999342 maxdiff=0.022679 (cpu rms=0.1930 npu rms=0.1923)
+1788647873 [NPU dbg] logits min=-25.2570 max=27.0142 rms=3.9344
+1788647875 53889 53889 8574 24759 90353 38898 20128 20128 
+1788647875 [perf] 8 tokens in 1297 ms (162.1 ms/tok, 6.2 tok/s)
