@@ -305,15 +305,23 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
         # ONE element so the prod endpoint exists (a single element completes
         # without blocking on a full fifo).
         n_fill = 1 if no_gu else (n_cg_gu * n_k + 4)
+        # PERF: batch wait=True fills per task_group so all the DMA starts are
+        # emitted before the awaits (the group finish) -- the shim DMAs overlap
+        # instead of one start+await round trip per element (~10us x 1300).
+        fb = getattr(__import__('os'), 'environ').get('CASCADE_FILL_BATCH', '4')
+        FILL_BATCH = max(1, min(64, int(fb)))
         for c in range(n_aie_cols):
             base = c * (n_cg_gu * n_k + 4) * AB_tile
-            for fi in range(n_fill):
+            fi = 0
+            while fi < n_fill:
                 tg = rt.task_group()
-                rt.fill(of_ab[c].prod(), ab_bo,
-                        tap=TensorAccessPattern((AB_total,),
-                                                base + fi * AB_tile,
-                                                [1, 1, 1, AB_tile], [1, 1, 1, 1]),
-                        tile=shims[c], task_group=tg, wait=True)
+                for _ in range(min(FILL_BATCH, n_fill - fi)):
+                    rt.fill(of_ab[c].prod(), ab_bo,
+                            tap=TensorAccessPattern((AB_total,),
+                                                    base + fi * AB_tile,
+                                                    [1, 1, 1, AB_tile], [1, 1, 1, 1]),
+                            tile=shims[c], task_group=tg, wait=True)
+                    fi += 1
                 rt.finish_task_group(tg)
         # ── D: B_d k-slices. Single-row: FULL-width (8,N_D) per (cg, core)
         # direct to the core. Multi-row: ONE (n_aie_rows,8,N_D_row) element
@@ -321,11 +329,18 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
         # [r*N_D_row, (r+1)*N_D_row) of each of the 8 k-rows (strided), the
         # memtile splits it into the rows' contiguous blocks.
         if multi:
+            fb = getattr(__import__('os'), 'environ').get('CASCADE_FILL_BATCH', '4')
+            FILL_BATCH = max(1, min(64, int(fb)))
             for c in range(n_aie_cols):
+                jobs = []
                 for cg in range(n_cg_gu):
                     ki = cg * n_aie_cols + c
                     for ks in range(8):
-                        tg = rt.task_group()
+                        jobs.append((ki, ks))
+                j = 0
+                while j < len(jobs):
+                    tg = rt.task_group()
+                    for (ki, ks) in jobs[j:j + FILL_BATCH]:
                         rt.fill(of_b8[c].prod(), bd_bo,
                                 tap=TensorAccessPattern(
                                     (K * N_D,),
@@ -333,7 +348,8 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
                                     [1, n_aie_rows, 8, N_D_row],
                                     [1, N_D_row, N_D, 1]),
                                 tile=shims[c], task_group=tg, wait=True)
-                        rt.finish_task_group(tg)
+                    rt.finish_task_group(tg)
+                    j += FILL_BATCH
         else:
             for cg in range(n_cg_gu):
                 for c in range(n_aie_cols):
