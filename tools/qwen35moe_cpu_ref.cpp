@@ -212,6 +212,18 @@ int main(int argc, char** argv) {
         }
     };
 
+    bool resident = getenv("Q35REF_RESIDENT") != nullptr;
+    std::vector<std::vector<uint8_t>> resid_u, resid_g, resid_d;
+    if (resident) {
+        resid_u.resize(NC); resid_g.resize(NC); resid_d.resize(NC);
+        for (int l = 0; l < NC; l++) {
+            char bn[180];
+            snprintf(bn, sizeof bn, "blk.%d.ffn_up_exps.weight", l);   rd.g.get_tensor_raw(bn, 32, 34, resid_u[l]);
+            snprintf(bn, sizeof bn, "blk.%d.ffn_gate_exps.weight", l); rd.g.get_tensor_raw(bn, 32, 34, resid_g[l]);
+            snprintf(bn, sizeof bn, "blk.%d.ffn_down_exps.weight", l); rd.g.get_tensor_raw(bn, 32, 34, resid_d[l]);
+        }
+        fprintf(stderr, "[q35ref] resident expert raw cached\n");
+    }
     for (size_t pos = 0; pos < toks.size(); pos++) {
         embed_row(toks[pos], x.data());
         if (getenv("Q35REF_DBG")) {
@@ -354,8 +366,10 @@ int main(int argc, char** argv) {
             char bn[180];
             // fetch the layer's fused expert raw blobs once (285 MB each, cached
             // per layer per token; decode only the selected rows)
-            std::vector<uint8_t> rb_u, rb_g, rb_d;
-            {
+            std::vector<uint8_t>& rb_u = resident ? resid_u[l] : resid_u[0];
+            std::vector<uint8_t>& rb_g = resident ? resid_g[l] : resid_g[0];
+            std::vector<uint8_t>& rb_d = resident ? resid_d[l] : resid_d[0];
+            if (!resident) {
                 snprintf(bn, sizeof bn, "blk.%d.ffn_up_exps.weight", l);
                 rd.g.get_tensor_raw(bn, 32, 34, rb_u);
                 snprintf(bn, sizeof bn, "blk.%d.ffn_gate_exps.weight", l);
