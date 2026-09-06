@@ -1113,7 +1113,7 @@ struct Hip1bpBackend : Backend {
             h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, w.pan, 2048, 1e-6f);
             h1bp_gemv_kernel<<<256, 256, 0, stream>>>(q35_sc_logits, w.router, dh, 256, 2048);
             // norm_topk: llama qwen35 uses renorm? default OFF unless env
-            bool renorm = getenv("Q35_NORMTK") != nullptr;
+            bool renorm = getenv("Q35_NORMTK") == nullptr || atoi(getenv("Q35_NORMTK")) != 0;  // norm_topk default ON
             h1bp_q35_topk_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, q35_sc_rout, q35_sc_idx, 256, 8, renorm);
             HIP_CHECK(hipMemset(q35_sc_moe, 0, 2048 * 4));
             int exps[8]; float wts[8];
