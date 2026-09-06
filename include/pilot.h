@@ -70,19 +70,30 @@ enum class SubLayer : uint8_t {
     ROUTER        = 7,
 };
 
+// Display-name tables beside their enums (issue #1956) — see common.h
+// kBackendTypeNames for the rationale; RCPP26_REQUIRE_ENUM_TABLE below makes
+// a missing row a compile error under g++-16 -freflection builds.
+inline constexpr rcpp26::EnumName<SubLayer> kSubLayerNames[] = {
+    {SubLayer::ATTENTION_Q, "attn_q"},
+    {SubLayer::ATTENTION_K, "attn_k"},
+    {SubLayer::ATTENTION_V, "attn_v"},
+    {SubLayer::ATTENTION_O, "attn_o"},
+    {SubLayer::FFN_GATE,    "ffn_gate"},
+    {SubLayer::FFN_UP,      "ffn_up"},
+    {SubLayer::FFN_DOWN,    "ffn_down"},
+    {SubLayer::ROUTER,      "router"},
+};
+
 inline const char* sublayer_name(SubLayer sl) {
-    switch (sl) {
-        case SubLayer::ATTENTION_Q: return "attn_q";
-        case SubLayer::ATTENTION_K: return "attn_k";
-        case SubLayer::ATTENTION_V: return "attn_v";
-        case SubLayer::ATTENTION_O: return "attn_o";
-        case SubLayer::FFN_GATE:    return "ffn_gate";
-        case SubLayer::FFN_UP:      return "ffn_up";
-        case SubLayer::FFN_DOWN:    return "ffn_down";
-        case SubLayer::ROUTER:      return "router";
-        default: return "?";
-    }
+    if (const char* n = rcpp26::lookup_enum_name(kSubLayerNames, sl)) return n;
+    return "?";
 }
+
+// g++-16 -freflection builds: prove kSubLayerNames covers every enumerator.
+RCPP26_REQUIRE_ENUM_TABLE(rcpp26_verify_sub_layer_names, SubLayer,
+                          kSubLayerNames,
+                          "SubLayer: new enumerator missing a row in "
+                          "kSubLayerNames (include/pilot.h)")
 
 // ── Backend preference for a sub-layer ──
 // The pilot predicts which backend each sub-layer will use.
@@ -96,14 +107,23 @@ enum class PilotBackend : uint8_t {
     CPU     = 3,
 };
 
+inline constexpr rcpp26::EnumName<PilotBackend> kPilotBackendNames[] = {
+    {PilotBackend::UNKNOWN, "?"},
+    {PilotBackend::NPU,     "NPU"},
+    {PilotBackend::GPU,     "GPU"},
+    {PilotBackend::CPU,     "CPU"},
+};
+
 inline const char* pilot_backend_name(PilotBackend pb) {
-    switch (pb) {
-        case PilotBackend::NPU: return "NPU";
-        case PilotBackend::GPU: return "GPU";
-        case PilotBackend::CPU: return "CPU";
-        default: return "?";
-    }
+    if (const char* n = rcpp26::lookup_enum_name(kPilotBackendNames, pb)) return n;
+    return "?";
 }
+
+// g++-16 -freflection builds: prove kPilotBackendNames covers every enumerator.
+RCPP26_REQUIRE_ENUM_TABLE(rcpp26_verify_pilot_backend_names, PilotBackend,
+                          kPilotBackendNames,
+                          "PilotBackend: new enumerator missing a row in "
+                          "kPilotBackendNames (include/pilot.h)")
 
 static inline PilotBackend backend_type_to_pilot(BackendType bt) {
     switch (bt) {

@@ -3,6 +3,7 @@
 #include <string>
 #include <vector>
 #include "rocm_cpp/bitnet_model.h"
+#include "cpp26_reflect.h"
 
 enum class BackendType : uint8_t {
     NONE = 0,
@@ -24,27 +25,40 @@ enum class BackendType : uint8_t {
     HRX_GPU = 17,     // HRX (Hip Runtime Extended) via bundled llama-server subprocess — fused GGUF lane on AMD GPU
 };
 
+// Display names live in one table beside the enum (issue #1956): a backend
+// added to the enum without a row here is a compile error under a
+// g++-16 -std=c++26 -freflection build (RCPP26_REQUIRE_ENUM_TABLE below),
+// instead of silently degrading to "none" at runtime.
+inline constexpr rcpp26::EnumName<BackendType> kBackendTypeNames[] = {
+    {BackendType::NONE,         "none"},
+    {BackendType::HIP_GPU,      "HIP GPU (ROCm)"},
+    {BackendType::VULKAN,       "Vulkan GPU (portable)"},
+    {BackendType::NPU_XRT,      "NPU XDNA (XRT)"},
+    {BackendType::CPU_AVX512,   "CPU AVX-512"},
+    {BackendType::CPU_SCALAR,   "CPU (scalar)"},
+    {BackendType::GENERIC,      "Generic CPU (GGUF)"},
+    {BackendType::ZAMBA2,       "Zamba2 (Mamba2 CPU)"},
+    {BackendType::ZAMBA2_GPU,   "Zamba2 (Mamba2 GPU)"},
+    {BackendType::ZINC_GPU,     "ZINC GPU (Vulkan, multi-arch)"},
+    {BackendType::Q4NX_FUSION,  "Q4NX Fusion (CPU)"},
+    {BackendType::CUDA_GPU,     "CUDA GPU (NVIDIA)"},
+    {BackendType::METAL_GPU,    "Metal GPU (Apple)"},
+    {BackendType::VART,         "VART (Versal/Zynq DPU)"},
+    {BackendType::ONNX_NPU,     "ONNX NPU (VitisAI EP)"},
+    {BackendType::LSE_GPU,      "LSE GPU (MLX via lse-server)"},
+    {BackendType::HRX_GPU,      "HRX GPU (fused GGUF via hrx llama-server)"},
+};
+
 inline const char* backend_name(BackendType t) {
-    switch(t) {
-        case BackendType::HIP_GPU: return "HIP GPU (ROCm)";
-        case BackendType::VULKAN: return "Vulkan GPU (portable)";
-        case BackendType::NPU_XRT: return "NPU XDNA (XRT)";
-        case BackendType::CPU_AVX512: return "CPU AVX-512";
-        case BackendType::CPU_SCALAR: return "CPU (scalar)";
-        case BackendType::GENERIC: return "Generic CPU (GGUF)";
-        case BackendType::ZAMBA2: return "Zamba2 (Mamba2 CPU)";
-        case BackendType::ZAMBA2_GPU: return "Zamba2 (Mamba2 GPU)";
-        case BackendType::ZINC_GPU: return "ZINC GPU (Vulkan, multi-arch)";
-        case BackendType::Q4NX_FUSION: return "Q4NX Fusion (CPU)";
-        case BackendType::CUDA_GPU: return "CUDA GPU (NVIDIA)";
-        case BackendType::METAL_GPU: return "Metal GPU (Apple)";
-        case BackendType::VART: return "VART (Versal/Zynq DPU)";
-        case BackendType::ONNX_NPU: return "ONNX NPU (VitisAI EP)";
-        case BackendType::LSE_GPU: return "LSE GPU (MLX via lse-server)";
-        case BackendType::HRX_GPU: return "HRX GPU (fused GGUF via hrx llama-server)";
-        default: return "none";
-    }
+    if (const char* n = rcpp26::lookup_enum_name(kBackendTypeNames, t)) return n;
+    return "none";
 }
+
+// g++-16 -freflection builds: prove kBackendTypeNames covers every enumerator.
+RCPP26_REQUIRE_ENUM_TABLE(rcpp26_verify_backend_type_names, BackendType,
+                          kBackendTypeNames,
+                          "BackendType: new enumerator missing a row in "
+                          "kBackendTypeNames (include/common.h)")
 
 enum class ModelFormat : uint8_t {
     UNKNOWN = 0,
