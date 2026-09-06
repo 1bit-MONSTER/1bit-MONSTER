@@ -1,0 +1,102 @@
+diff --git a/engine/npu/src/zaya_decode.cpp b/engine/npu/src/zaya_decode.cpp
+index 73166f5b..7f26a54e 100644
+--- a/engine/npu/src/zaya_decode.cpp
++++ b/engine/npu/src/zaya_decode.cpp
+@@ -210,7 +210,7 @@ static void rmsnorm(float* h, const float* w, int n, float eps = 1e-5f) {
+     for (int i = 0; i < n; i++) h[i] = h[i] * r * w[i];
+ }
+ 
+-// ── M1 phase profiling (temporary instrumentation) ────────────────
++// ── M1 phase profiling (NPU_PROFILE=1 gated, issue #2110) ─────────
+ static double t_attn_ms = 0, t_moe_ms = 0, t_tot_ms = 0;
+ static double t_fp1 = 0, t_fmid = 0, t_fp2 = 0, t_fpre = 0;
+ static long c_fp1 = 0, c_fmid = 0, c_fp2 = 0, c_fpre = 0;
+@@ -283,6 +283,9 @@ int zaya_decode_main(int argc, char** argv) {
+     // fp32 loads are gated on them, issue #1776 memory fix).
+     const bool FUSED = getenv("NPU_FUSED") && atoi(getenv("NPU_FUSED")) == 1;
+     const bool FUSED_I4 = FUSED && getenv("NPU_FUSED_I4") && atoi(getenv("NPU_FUSED_I4")) == 1;
++    // M1 phase profiler (#2108) is OFF by default: enable with NPU_PROFILE=1
++    // (issue #2110 — the [M1prof] summary must never print on a stock run).
++    const bool PROF = getenv("NPU_PROFILE") && atoi(getenv("NPU_PROFILE")) == 1;
+     // Fused GU→SiLU→D runs SINGLE-LAUNCH by default (final_i8_MOE_FUSED_zaya
+     // .xclbin — the original #1759 design: one kernel, h2 via a 2 KB DDR
+     // round-trip). Verified deterministic + 1.74x faster than the split
+@@ -620,13 +623,13 @@ int zaya_decode_main(int argc, char** argv) {
+     }
+ 
+     auto forward = [&](int tok, int pos) -> int {
+-        double _f0 = _now_ms();
++        double _f0 = PROF ? _now_ms() : 0;
+         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
+         std::vector<float> residual(d.H, 0.0f);
+         bool has_res = false;
+         std::vector<float> prev_router;
+         for (int l = 0; l < NC; l++) {
+-            double _l0 = _now_ms();
++            double _l0 = PROF ? _now_ms() : 0;
+             auto& w = L[l];
+             auto& lk = kv_k[l]; auto& lv = kv_v[l];
+             const float* hs; const float* hb; const float* rs; const float* rb;
+@@ -866,7 +869,7 @@ int zaya_decode_main(int argc, char** argv) {
+                     // mis-compiled by the aie2p backend, so the P1 kernel
+                     // only writes the C1 — 32 chunks x 4 KB — and the HOST
+                     // computes the silu from the verified bit-exact C1).
+-                    _ppre0 = _now_ms();
++                    _ppre0 = PROF ? _now_ms() : 0;
+                     frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                    residual.data(), 1, d.H, ag);
+                     tb2 = std::chrono::steady_clock::now();
+@@ -878,8 +881,8 @@ int zaya_decode_main(int argc, char** argv) {
+                     // sync forces the write path to drain.
+                     h2_bo[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                     tpsync = std::chrono::steady_clock::now();
+-                    if (pos > 0 && FUSED) { t_fp1 += _now_ms() - _ppre0; c_fp1++; }
+-                    _pmid0 = _now_ms();
++                    if (PROF && pos > 0 && FUSED) { t_fp1 += _now_ms() - _ppre0; c_fp1++; }
++                    _pmid0 = PROF ? _now_ms() : 0;
+                     // DIAG (v63): kernel C1 (via c1 arg at gos) vs host C1h
+                     if (getenv("NPU_DIAG_H2") && l == 1 && pos == 0) {
+                         const int8_t* h2m = (const int8_t*)h2_bo[l]->map();
+@@ -1091,12 +1094,12 @@ int zaya_decode_main(int argc, char** argv) {
+                                 d.H, h2host[0], h2host[1], h2host[2], h2host[3],
+                                 h2host[4], h2host[5], h2host[6], h2host[7]);
+                     }
+-                    if (pos > 0 && FUSED) { t_fmid += _now_ms() - _pmid0; c_fmid++; }
+-                    _pp20 = _now_ms();
++                    if (PROF && pos > 0 && FUSED) { t_fmid += _now_ms() - _pmid0; c_fmid++; }
++                    _pp20 = PROF ? _now_ms() : 0;
+                     frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                        residual.data(), 1, d.H, ag);
+                     fused_ctx_p2.dequant_fused(frun2, moe_out.data(), 1, d.H, qn_s, l);
+-                    if (pos > 0 && FUSED) { t_fp2 += _now_ms() - _pp20; c_fp2++; }
++                    if (PROF && pos > 0 && FUSED) { t_fp2 += _now_ms() - _pp20; c_fp2++; }
+                     tb3 = std::chrono::steady_clock::now();
+                     if (getenv("NPU_TIMING") && pos == 0 && l == 3)
+                         fprintf(stderr, "[fused-t] l=%d hdr=%.3f launch=%.3f p1wait=%.3f h2sync=%.3f p2=%.3f total=%.3f ms\n", l,
+@@ -1665,7 +1668,7 @@ fused_single_done:
+                 }
+                 for (int i = 0; i < d.H; i++) h[i] = moe_out[i];
+             }
+-            if (pos > 0) {
++            if (PROF && pos > 0) {
+                 double _dt = _now_ms() - _l0;
+                 if (l % 2 == 0) { t_attn_ms += _dt; c_attn++; } else { t_moe_ms += _dt; c_moe++; }
+             }
+@@ -1710,7 +1713,7 @@ fused_single_done:
+                         num/std::sqrt(d1*d2), maxd, a1, a2, a1 == a2 ? "SAME" : "DIFF");
+             }
+         }
+-        if (pos > 0) { t_tot_ms += _now_ms() - _f0; c_tok++; }
++        if (PROF && pos > 0) { t_tot_ms += _now_ms() - _f0; c_tok++; }
+         return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+     };
+ 
+@@ -1809,7 +1812,7 @@ fused_single_done:
+     fflush(stdout);
+     double gen_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tgen0).count();
+     fprintf(stderr, "[perf] %d tokens in %.0f ms (%.1f ms/tok, %.1f tok/s)\n", N_GEN, gen_ms, gen_ms / N_GEN, 1000.0 * N_GEN / gen_ms);
+-    if (c_tok > 0) {
++    if (PROF && c_tok > 0) {
+         double attn_tok = t_attn_ms / c_tok, moe_tok = t_moe_ms / c_tok, tot_tok = t_tot_ms / c_tok;
+         fprintf(stderr, "[M1prof] per tok: attn(10 layers)=%.1f ms  moe(10 layers)=%.1f ms  norm+logits+other=%.1f ms  (tot %.1f; attn %.2f ms/layer, moe %.2f ms/layer)\n",
+                 attn_tok, moe_tok, tot_tok - attn_tok - moe_tok, tot_tok,
