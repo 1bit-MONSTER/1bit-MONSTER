@@ -351,18 +351,26 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, n_aie_rows=1, BATCH_SIZE=2,
                     rt.finish_task_group(tg)
                     j += FILL_BATCH
         else:
+            fb = getattr(__import__('os'), 'environ').get('CASCADE_FILL_BATCH', '4')
+            FILL_BATCH = max(1, min(64, int(fb)))
             for cg in range(n_cg_gu):
+                jobs = []
                 for c in range(n_aie_cols):
                     ki = cg * n_aie_cols + c
                     for ks in range(8):
-                        tg = rt.task_group()
-                        rt.fill(of_b8[c].prod(), bd_bo,
+                        jobs.append((c, ki, ks))
+                j = 0
+                while j < len(jobs):
+                    tg = rt.task_group()
+                    for (cc, ki, ks) in jobs[j:j + FILL_BATCH]:
+                        rt.fill(of_b8[cc].prod(), bd_bo,
                                 tap=TensorAccessPattern((K * N_D,),
                                                         (ki * k + ks * 8) * N_D,
                                                         [1, 1, 1, 8 * N_D],
                                                         [1, 1, 1, 1]),
-                                tile=shims[c], task_group=tg, wait=True)
-                        rt.finish_task_group(tg)
+                                tile=shims[cc], task_group=tg, wait=True)
+                    rt.finish_task_group(tg)
+                    j += FILL_BATCH
         # ── C2 writeback. Single-row: tail's FULL (8xN_D) → C2_bo (linear).
         # Multi-row: the memtile join assembles the (n_aie_rows,8,N_D_row)
         # element from the N row partials; one drain writes each row's chunk
