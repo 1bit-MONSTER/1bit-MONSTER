@@ -109,6 +109,12 @@ public:
             heap_dev_base_ = bi.xdna_addr;
         }
 
+        // Fault in ALL heap pages now (memset). The 7.2/ogc driver maps the
+        // heap UVA into the PASID domain at hwctx start; the NPU RTOS rejects
+        // the MAP_HOST_BUFFER (status 0x4000003 INVALID_PARAM) when the range
+        // has holes (untouched shmem pages). Full touch = full page tables.
+        ::memset(heap_base_, 0, heap_size_);
+
         // Create a hardware context (plain, no QoS/UMQ/log). qos_p must point
         // at a valid (zeroed) QoS struct — the kernel unconditionally copies
         // sizeof(amdxdna_qos_info)=24B from it. num_tiles must be >0 and a
@@ -117,7 +123,12 @@ public:
         struct amdxdna_qos_info qos{};
         struct amdxdna_drm_create_hwctx c{};
         c.qos_p = reinterpret_cast<uint64_t>(&qos);
-        c.max_opc = 0; c.num_tiles = num_tiles_; c.mem_size = 0;
+        // Env-tunable so the ctx-creation fields can be swept against the
+        // current (KMQ, 7.2/ogc) driver without rebuilds.
+        c.max_opc = (uint32_t)atoi(getenv("POOL_MAX_OPC") ?: "0");
+        c.num_tiles = num_tiles_;
+        c.mem_size = (uint32_t)strtoull(getenv("POOL_MEM_SIZE") ?: "0", nullptr, 0);
+        c.umq_bo = 0;
         if (::ioctl(fd_, DRM_IOCTL_AMDXDNA_CREATE_HWCTX, &c) != 0)
             throw std::runtime_error(std::string("CREATE_HWCTX: ") + strerror(errno));
         hwctx_ = c.handle;

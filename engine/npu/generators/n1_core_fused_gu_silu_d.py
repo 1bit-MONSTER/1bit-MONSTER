@@ -64,6 +64,8 @@ def main():
     parser.add_argument("-k", type=int, default=64)
     parser.add_argument("-n", type=int, default=128)
     parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols")
+    parser.add_argument("-x", "--col-offset", type=int, default=0,
+                        help="place the tile grid starting at this AIE column (0 or 4 on 8-col Strix)")
     parser.add_argument("-b", "--batch-size", type=int, default=2,
                         help="K-tiles per DMA round (fifo depth = batch+1). MUST be 2: "
                              "the core L1 is 64 KB and the fused design's buffers "
@@ -76,11 +78,12 @@ def main():
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
         my_fused(args.M, args.K, args.N_GU, args.N_D, args.m, args.k, args.n,
-                 args.cols, args.batch_size)
+                 args.cols, args.batch_size, args.col_offset)
         print(ctx.module)
 
 
-def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
+def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2,
+             col_off=0):
     dtype_in = np.int8
     dtype_out = np.int32
 
@@ -103,7 +106,8 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         matmul = external_func("matmul_i8_i32", inputs=[A_ty, B_ty, C_ty], link_with=kernel_o)
         silu = external_func("silu_quant_i8_fused", inputs=[C_ty, B_ty, H2_ty], link_with=kernel_o)
 
-        tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + n_aie_rows)]
+        tiles = [[tile(col_off + col, row) for col in range(n_aie_cols)]
+                 for row in range(2 + n_aie_rows)]
         shim_tiles, mem_tiles = tiles[0], tiles[1]
         core_tiles = tiles[2:]               # core_tiles[j][c] = tile(c, 2+j)
 
