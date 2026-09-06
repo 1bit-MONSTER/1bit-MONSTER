@@ -109,10 +109,11 @@ static void rms_h(float* x, const float* w, int heads, int hd) {
     for (int h = 0; h < heads; h++) rms(x + (size_t)h * hd, w, hd);
 }
 static void l2_h(float* x, int heads, int hd) {
+    // llama ggml_l2_norm semantics: divide by sqrt(sum(x^2)+eps) -> unit rows
     for (int h = 0; h < heads; h++) {
         float* p = x + (size_t)h * hd;
         double s = 0; for (int i = 0; i < hd; i++) s += (double)p[i] * p[i];
-        float r = (float)(1.0 / std::sqrt(s / hd + EPS));
+        float r = (float)(1.0 / std::sqrt(s + EPS));
         for (int i = 0; i < hd; i++) p[i] *= r;
     }
 }
