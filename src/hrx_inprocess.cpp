@@ -12,6 +12,7 @@
 #define _GNU_SOURCE
 #endif
 #include <dlfcn.h>
+#include <unistd.h>   // access(), F_OK
 
 namespace hrx {
 
