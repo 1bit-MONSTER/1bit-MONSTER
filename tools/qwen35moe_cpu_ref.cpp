@@ -366,16 +366,17 @@ int main(int argc, char** argv) {
             char bn[180];
             // fetch the layer's fused expert raw blobs once (285 MB each, cached
             // per layer per token; decode only the selected rows)
-            std::vector<uint8_t>& rb_u = resident ? resid_u[l] : resid_u[0];
-            std::vector<uint8_t>& rb_g = resident ? resid_g[l] : resid_g[0];
-            std::vector<uint8_t>& rb_d = resident ? resid_d[l] : resid_d[0];
+            std::vector<uint8_t> lru, lrg, lrd;
+            std::vector<uint8_t>& rb_u = resident ? resid_u[l] : lru;
+            std::vector<uint8_t>& rb_g = resident ? resid_g[l] : lrg;
+            std::vector<uint8_t>& rb_d = resident ? resid_d[l] : lrd;
             if (!resident) {
                 snprintf(bn, sizeof bn, "blk.%d.ffn_up_exps.weight", l);
-                rd.g.get_tensor_raw(bn, 32, 34, rb_u);
+                rd.g.get_tensor_raw(bn, 32, 34, lru);
                 snprintf(bn, sizeof bn, "blk.%d.ffn_gate_exps.weight", l);
-                rd.g.get_tensor_raw(bn, 32, 34, rb_g);
+                rd.g.get_tensor_raw(bn, 32, 34, lrg);
                 snprintf(bn, sizeof bn, "blk.%d.ffn_down_exps.weight", l);
-                rd.g.get_tensor_raw(bn, 32, 34, rb_d);
+                rd.g.get_tensor_raw(bn, 32, 34, lrd);
             }
             auto q8mem = [&](const std::vector<uint8_t>& rb, int r0, int n, int cols,
                              std::vector<float>& out) {
