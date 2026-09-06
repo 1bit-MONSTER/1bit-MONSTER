@@ -514,7 +514,7 @@ __global__ void h1bp_head_l2norm_kernel(float* __restrict__ x, int len, int head
     ssum[tid] = loc;
     __syncthreads();
     for (int s = blockDim.x / 2; s > 0; s >>= 1) { if (tid < s) ssum[tid] += ssum[tid + s]; __syncthreads(); }
-    if (tid == 0) ssum[0] = rsqrtf(ssum[0] / len + eps);
+    if (tid == 0) ssum[0] = rsqrtf(ssum[0] + eps);
     __syncthreads();
     float inv = ssum[0];
     for (int i = tid; i < len; i += blockDim.x) hx[i] *= inv;

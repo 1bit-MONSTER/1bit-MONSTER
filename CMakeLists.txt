@@ -703,6 +703,13 @@ endif()
 # -- gguf_htok / make_gate : per-vocab ppl gate sets (issue #1243) --
 # gguf_htok exports a GGUF tokenizer to .htok v2; make_gate tokenizes the
 # gate corpus with it into ppl_generic's jsonl format.
+# qwen35moe CPU reference (host formula, #1831 M3): corr-gate golden where
+# llama.cpp CPU qwen35moe decode is broken upstream (see
+# docs/research/hip-qwen35-gdn-m3-spec.md). Standalone, no HIP.
+add_executable(qwen35moe_cpu_ref tools/qwen35moe_cpu_ref.cpp src/gguf_reader.cpp)
+target_include_directories(qwen35moe_cpu_ref PRIVATE src include)
+target_compile_options(qwen35moe_cpu_ref PRIVATE -O2 -std=c++26)
+
 add_executable(gguf_htok tools/gguf_htok.cpp src/gguf_reader.cpp)
 target_include_directories(gguf_htok PRIVATE src include)
 target_compile_options(gguf_htok PRIVATE -O2 -std=c++23)
