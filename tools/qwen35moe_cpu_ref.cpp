@@ -224,6 +224,8 @@ int main(int argc, char** argv) {
         }
         fprintf(stderr, "[q35ref] resident expert raw cached\n");
     }
+    auto maxabs = [](const std::vector<float>& v){ double m = 0; for (float f : v) m = fmax(m, fabs((double)f)); return m; };
+    int maxl = getenv("Q35REF_MAXL") ? atoi(getenv("Q35REF_MAXL")) : NC;
     for (size_t pos = 0; pos < toks.size(); pos++) {
         embed_row(toks[pos], x.data());
         if (getenv("Q35REF_DBG")) {
@@ -231,7 +233,7 @@ int main(int argc, char** argv) {
             if (f) { fwrite(x.data(), 4, H, f); fclose(f); }
         }
         int full_seen = 0;
-        for (int l = 0; l < NC; l++) {
+        for (int l = 0; l < maxl; l++) {
             LW& w = L[l];
             copy_n(pre.data(), x.data(), H);
             rms(x.data(), w.an.data(), H);
@@ -240,6 +242,7 @@ int main(int argc, char** argv) {
                 if (f) { fwrite(x.data(), 4, H, f); fclose(f); }
             }
             if (!w.full) {
+                for (int i = 0; i < H; i++) if (std::isnan(x[i])) { fprintf(stderr, "[q35ref] NaN x pos %zu l %d\n", pos, l); break; }
                 gemv(w.wqkv.data(), 8192, H, x.data(), qkv.data());
                 if (getenv("Q35REF_DBG") && l == 0) {
                     FILE* f = fopen("/tmp/q35d_qkv.f32", "wb");
@@ -276,6 +279,10 @@ int main(int argc, char** argv) {
                     const float* vhh = v32.data() + (size_t)h * S;
                     float gv = expf(fminf(gb[h], 40.0f));
                     float* Sh = Sst + (size_t)h * S * S;
+                    if (getenv("Q35REF_DBG") && pos == 6 && l == 0) {
+                        double mx = 0; for (int i = 0; i < S * S; i++) mx = fmax(mx, fabs((double)Sh[i]));
+                        if (mx > 1e6) fprintf(stderr, "[q35ref] head %d g=%.6f gv=%.6f beta=%.6f Shmax=%.4g\n", h, (double)gb[h], (double)gv, (double)bb[h], mx);
+                    }
                     for (int col = 0; col < S; col++) {
                         double kv = 0;
                         for (int i = 0; i < S; i++) kv += (double)Sh[(size_t)i * S + col] * khh[i];
@@ -294,6 +301,12 @@ int main(int argc, char** argv) {
                 rms_h(zz.data(), w.snorm.data(), 32, S);
                 for (int i = 0; i < 4096; i++) zz[i] *= attn[i];
                 gemv(w.wout.data(), H, 4096, zz.data(), aout.data());
+                if (getenv("Q35REF_DBG") && pos == 23 && l == 0) {
+                    auto anybad = [](const std::vector<float>& v){ for (float f : v) if (std::isnan(f) || std::isinf(f)) return true; return false; };
+                    fprintf(stderr, "[q35ref] dbg23 l0: xbad=%d qkvbad=%d qcbad=%d zzrawbad=%d gbad=%d bbad=%d aoutbad=%d convSmax=%g recSmax=%g\n",
+                            anybad(x), anybad(qkv), anybad(qc), anybad(zz), anybad(gb), anybad(bb), anybad(aout),
+                            (double)maxabs(st.conv[0]), (double)maxabs(st.rec[0]));
+                }
                 if (getenv("Q35REF_DBG") && l == 0) {
                     FILE* f1 = fopen("/tmp/q35d_qc.f32", "wb"); if (f1) { fwrite(qc.data(), 4, 8192, f1); fclose(f1); }
                     FILE* f2 = fopen("/tmp/q35d_zattn.f32", "wb"); if (f2) { fwrite(zz.data(), 4, 4096, f2); fclose(f2); }
@@ -438,6 +451,11 @@ int main(int argc, char** argv) {
                 FILE* f = fopen(fn, "wb");
                 if (f) { fwrite(x.data(), 4, H, f); fclose(f); }
             }
+        }
+        if (getenv("Q35REF_DBG") && pos < 40) {
+            double m0 = maxabs(st.rec[0]);
+            double c0 = maxabs(st.conv[0]);
+            fprintf(stderr, "[q35ref] pos %zu l0 recSmax=%.6g convSmax=%.4g\n", pos, m0, c0);
         }
         // output norm + lm head
         rms(x.data(), onorm.data(), H);
