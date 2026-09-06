@@ -2045,6 +2045,12 @@ fused_single_done:
             }
         }
         if (pos > 0) { t_tot_ms += _now_ms() - _f0; c_tok++; }
+        if (pos == 0 && getenv("NPU_DUMP_LOGITS")) {
+            FILE* lf = fopen(getenv("NPU_DUMP_LOGITS"), "wb");
+            if (lf) { fwrite(logits.data(), 4, (size_t)NV, lf); fclose(lf); }
+            fprintf(stderr, "[LOGITS] dumped %d floats (argmax %d)\n", NV,
+                    (int)(std::max_element(logits.begin(), logits.end()) - logits.begin()));
+        }
         return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     };
 
