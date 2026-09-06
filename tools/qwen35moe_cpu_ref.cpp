@@ -253,7 +253,8 @@ int main(int argc, char** argv) {
                 for (int c = 0; c < 8192; c++) {
                     const float* cw = w.conv1d.data() + c * 4;
                     float* s3 = cs + c * 3;
-                    float acc = cw[0] * s3[0] + cw[1] * s3[1] + cw[2] * s3[2] + cw[3] * qkv[c];
+                    float acc = getenv("Q35REF_CONVFLIP") ? (cw[0] * qkv[c] + cw[1] * s3[2] + cw[2] * s3[1] + cw[3] * s3[0])
+                                                            : (cw[0] * s3[0] + cw[1] * s3[1] + cw[2] * s3[2] + cw[3] * qkv[c]);
                     s3[0] = s3[1]; s3[1] = s3[2]; s3[2] = qkv[c];
                     qc[c] = silu(acc);
                 }
@@ -273,6 +274,8 @@ int main(int argc, char** argv) {
                 for (int h = 0; h < 32; h++) gb[h] = log1pf(expf(gb[h] + w.dt[h])) * w.ssa[h];
                 gemv(w.wb.data(), 32, H, x.data(), bb.data());
                 for (int h = 0; h < 32; h++) bb[h] = sigm(bb[h]);
+                if (getenv("Q35REF_NOBETA")) for (int h = 0; h < 32; h++) bb[h] = 1.0f;
+                if (getenv("Q35REF_BETAINV")) for (int h = 0; h < 32; h++) bb[h] = 1.0f - bb[h];
                 float* Sst = st.rec[l].data();
                 for (int h = 0; h < NV_G; h++) {
                     const float* qhh = qq.data() + (size_t)h * S;
@@ -371,11 +374,14 @@ int main(int argc, char** argv) {
             for (int i = 0; i < NE; i++) probs[i] /= (float)su;
             // top-8 selection
             std::vector<char> used(NE, 0);
+            double sel_sum = 0;
             for (int r = 0; r < TOPK; r++) {
                 float best = -1e30f; int bi = -1;
                 for (int i = 0; i < NE; i++) if (!used[i] && probs[i] > best) { best = probs[i]; bi = i; }
-                used[bi] = 1; idx8[r] = bi; exsel[r] = probs[bi];
+                used[bi] = 1; idx8[r] = bi; exsel[r] = probs[bi]; sel_sum += probs[bi];
             }
+            // norm_topk renorm (llama: sum+clamp of selected probs) — default ON
+            if (!getenv("Q35REF_NORENORM")) for (int r = 0; r < TOPK; r++) exsel[r] = (float)(exsel[r] / sel_sum);
             for (int i = 0; i < H; i++) sout[i] = 0.0f;
             char bn[180];
             // fetch the layer's fused expert raw blobs once (285 MB each, cached
