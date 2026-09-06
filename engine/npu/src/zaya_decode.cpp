@@ -1916,6 +1916,87 @@ fused_single_done:
                             num/std::sqrt(d1*d2), maxd, std::sqrt(d1/d.H), std::sqrt(d2/d.H));
                     }
                 }
+                // ── FULL-DECODE CASCADE SWEEP (#2114): validate the
+                // single-launch cascade numerics at EVERY MoE layer with the
+                // layer's real weights, in-flow. Under NPU_CASCADE_DECODE=1 the
+                // cascade output REPLACES moe_out so the decode continues with
+                // it (end-to-end). NPU_CASCADE_SWEEP_POS bounds the positions.
+                if (l % 2 == 1 && getenv("NPU_CASCADE_SWEEP") &&
+                    atoi(getenv("NPU_CASCADE_SWEEP")) == 1) {
+                    int sw_pos_cap = getenv("NPU_CASCADE_SWEEP_POS") ? atoi(getenv("NPU_CASCADE_SWEEP_POS")) : 1;
+                    if (pos <= sw_pos_cap) {
+                        static bool sw_done = false, sw_ok = false;
+                        static fusion::NpuCascadeKernel sw;
+                        static std::unique_ptr<xrt::bo> swAB;
+                        if (!sw_done) {
+                            sw_done = true;
+                            char swxp[640], swip[640];
+                            snprintf(swxp, sizeof swxp, "%s/final_cascade_fused_zaya_nd2048.xclbin", xd);
+                            snprintf(swip, sizeof swip, "%s/insts_final_cascade_fused_zaya_nd2048.txt", xd);
+                            if (getenv("NPU_CASCADE_XCLBIN")) snprintf(swxp, sizeof swxp, "%s", getenv("NPU_CASCADE_XCLBIN"));
+                            if (getenv("NPU_CASCADE_INSTS"))  snprintf(swip, sizeof swip, "%s", getenv("NPU_CASCADE_INSTS"));
+                            int sw_nd = getenv("NPU_CASCADE_ND") ? atoi(getenv("NPU_CASCADE_ND")) : d.H;
+                            int sw_rows = getenv("NPU_CASCADE_ROWS") ? atoi(getenv("NPU_CASCADE_ROWS")) : (sw_nd <= 1024 ? 1 : 4);
+                            sw_ok = sw.init(dev, swxp, swip, d.H, m.n_ff, sw_nd, sw_rows);
+                            if (sw_ok)
+                                swAB = std::make_unique<xrt::bo>(dev, (size_t)sw.AB_bytes,
+                                                                 XRT_BO_FLAGS_HOST_ONLY, sw.kk->group_id(3));
+                            else fprintf(stderr, "[SWEEP] cascade init FAILED\n");
+                        }
+                        if (sw_ok && (int)sw.N_D == d.H) {
+                            // per-(layer,expert) real weights: gate/up blocks
+                            const float* sw_gb = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                            const float* sw_ub = sw_gb + (size_t)m.n_ff * d.H;
+                            float gu_amax = 0;
+                            for (int pp = 0; pp < m.n_ff; pp++)
+                                for (int kk2 = 0; kk2 < d.H; kk2++) {
+                                    float a = fabsf(sw_gb[(size_t)pp * d.H + kk2]); if (a > gu_amax) gu_amax = a;
+                                    float b = fabsf(sw_ub[(size_t)pp * d.H + kk2]); if (b > gu_amax) gu_amax = b;
+                                }
+                            if (gu_amax < 1e-12f) gu_amax = 1.0f;
+                            sw.packB_gu_into(*swAB, sw_gb, sw_ub);
+                            const float* sw_dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                            float d_amax = 0;
+                            for (int nn = 0; nn < d.H; nn++)
+                                for (int ii = 0; ii < m.n_ff; ii++) {
+                                    float a = fabsf(sw_dnp[(size_t)nn * m.n_ff + ii]); if (a > d_amax) d_amax = a;
+                                }
+                            if (d_amax < 1e-12f) d_amax = 1.0f;
+                            sw.packB_d_into(sw_dnp, 127.0f / d_amax);
+                            // per-token qn_s from the residual (float h2 max)
+                            float sw_qns = 1.0f;
+                            if (!(getenv("NPU_CASCADE_NOQNS") && atoi(getenv("NPU_CASCADE_NOQNS")) == 1)) {
+                                double mx2 = 0;
+                                for (int p2 = 0; p2 < m.n_ff; p2++) {
+                                    const float* gp = sw_gb + (size_t)p2 * d.H;
+                                    const float* up = sw_ub + (size_t)p2 * d.H;
+                                    double dg2 = 0, du2 = 0;
+                                    for (int i2 = 0; i2 < d.H; i2++) { dg2 += (double)residual[i2] * gp[i2]; du2 += (double)residual[i2] * up[i2]; }
+                                    float sg2 = (float)(dg2 / (1.0 + exp(-dg2)));
+                                    double h2f2 = (double)sg2 * du2;
+                                    double a2 = fabs(h2f2); if (a2 > mx2) mx2 = a2;
+                                }
+                                sw_qns = mx2 > 1e-12 ? (float)(127.0 / mx2) : 1.0f;
+                            }
+                            float sw_ag = dynamic_ascale(residual.data(), d.H);
+                            std::vector<float> ffn_sw((size_t)d.H);
+                            sw.go(residual.data(), sw_ag, 1.0f, ffn_sw.data(), *swAB, sw_qns);
+                            // per-layer validation vs the production moe_out
+                            double cn = 0, cd1 = 0, cd2 = 0; float mx = 0;
+                            for (int nn = 0; nn < d.H; nn++) {
+                                double c2 = ffn_sw[nn], m2 = moe_out[nn];
+                                cn += c2 * m2; cd1 += c2 * c2; cd2 += m2 * m2;
+                                float ad = fabsf(c2 - m2); if (ad > mx) mx = ad;
+                            }
+                            double sw_corr = cd1 * cd2 > 0 ? cn / sqrt(cd1 * cd2) : 0;
+                            fprintf(stderr, "[SWEEP] l=%d pos=%d e=%d corr(casc,prod)=%.6f maxabs=%.4f casc_rms=%.4f prod_rms=%.4f qn_s=%.3f\n",
+                                    l, pos, e, sw_corr, mx, sqrt(cd1 / d.H), sqrt(cd2 / d.H), sw_qns);
+                            if (getenv("NPU_CASCADE_DECODE") && atoi(getenv("NPU_CASCADE_DECODE")) == 1)
+                                for (int nn = 0; nn < d.H; nn++) moe_out[nn] = ffn_sw[nn];
+                        } else if (sw_ok)
+                            fprintf(stderr, "[SWEEP] l=%d skipped: N_D=%d != H=%d (use NPU_CASCADE_ND=%d)\n", l, sw.N_D, d.H, d.H);
+                    }
+                }
                 for (int i = 0; i < d.H; i++) h[i] = moe_out[i];
             }
             if (pos > 0) {
