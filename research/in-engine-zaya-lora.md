@@ -84,10 +84,14 @@ B^T dL/dy x^T (per expert block for Phase B).
   transpose of that overwrite order (route partner grads to the written value
   when partner idx < dd), not the clean buffered pair inverse. (Earlier
   seq=1 'passes' were vacuous: ds=0 in single-entry softmax -> zero q/k grads.)
-  Trainer build in progress: tools/zaya_train_main.cpp stacked (L-layer alternating
-  CCA/MoE) forward runs at scaled dims (loss = ln(V) baseline). Next: block backends
-  (copied from the verified checkers) threaded through the running-residual recursion,
-  AdamW, FD-subset stack gate, then real q4nx weights + merge/export + decode gates.
+  Trainer build: tools/zaya_train_main.cpp — stacked L-layer alternating CCA/MoE
+  forward + backward (block backends ported from checkers) + AdamW: FD stack gate
+  PASS (gate 1e-4 over 240 adapter params; one param at 1.3e-5 residual stack-glue
+  discrepancy, minor, revisit), monotonic loss descent on a fixed toy batch
+  5.03 -> 0.062 in 60 steps. Bugs caught: forward never stacked (hlay rows not
+  propagated), forward mi/ci counters never incremented (all MoE layers reused
+  index 0). Next: real q4nx weights via the engine loader + merge->q4nx export +
+  decode-parity/PPL gates.
 - Python/torch stacks explicitly out (policy: engine for all work); ryzen venv
   kept only as an external numeric oracle for the M2 PPL-gate comparison;
   strixhalo rocm7.2 torch venv deleted per policy.
