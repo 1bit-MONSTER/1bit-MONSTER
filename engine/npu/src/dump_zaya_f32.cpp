@@ -82,6 +82,7 @@ struct LayerW {
     zaya_cca::CcaWeights cw;
     zaya_moe::RouterWeights rw;
     std::vector<float> gu, dn, nw;
+    std::vector<float> pahss, pahsb, parss, parsb, pmhss, pmhsb, pmrss, pmrsb;
 };
 static FILE* g_out = nullptr;
 static void write_vec(const std::vector<float>& v) {
@@ -149,6 +150,14 @@ int main(int argc, char** argv) {
         snprintf(key, sizeof key, "model.layers.%d.self_attn.conv_qk_grouped.weight", l); GET(key, w.cw.cgw);
         snprintf(key, sizeof key, "model.layers.%d.self_attn.conv_qk_grouped.bias", l); GET(key, w.cw.cgb);
         snprintf(key, sizeof key, "model.layers.%d.self_attn.qk_norm.temp", l); GET(key, w.cw.ks);
+        snprintf(key, sizeof key, "model.layers.%d.post_attention_residual_scale.hidden_states_scale", l); GET(key, w.pahss);
+        snprintf(key, sizeof key, "model.layers.%d.post_attention_residual_scale.hidden_states_bias", l); GET(key, w.pahsb);
+        snprintf(key, sizeof key, "model.layers.%d.post_attention_residual_scale.residual_scale", l); GET(key, w.parss);
+        snprintf(key, sizeof key, "model.layers.%d.post_attention_residual_scale.residual_bias", l); GET(key, w.parsb);
+        snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.hidden_states_scale", l); GET(key, w.pmhss);
+        snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.hidden_states_bias", l); GET(key, w.pmhsb);
+        snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.residual_scale", l); GET(key, w.pmrss);
+        snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.residual_bias", l); GET(key, w.pmrsb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.down_proj.weight", l); GET(key, w.rw.gdw);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.down_proj.bias", l); GET(key, w.rw.gdb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.norm.weight", l); GET(key, w.rw.rfn);
@@ -157,6 +166,7 @@ int main(int argc, char** argv) {
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.fc2.weight", l); GET(key, w.rw.rf2);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.fc2.bias", l); GET(key, w.rw.rf2b);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.out_proj.weight", l); GET(key, w.rw.rout);
+        snprintf(key, sizeof key, "model.layers.%d.mlp.gate.balancing_biases", l); GET(key, w.rw.bb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_states_scale", l);
         { uint64_t o_, s_; if (get_offsets(js, jl, key, &o_, &s_)) {
             if (s_ == 2) s_ = (uint64_t)m.rtr_h * 2;
@@ -184,6 +194,8 @@ int main(int argc, char** argv) {
         write_vec(w.rw.rf1); write_vec(w.rw.rf1b); write_vec(w.rw.rf2); write_vec(w.rw.rf2b);
         write_vec(w.rw.rout); write_vec(w.rw.bb); write_vec(w.rw.eda);
         write_vec(w.gu); write_vec(w.dn);
+        write_vec(w.pahss); write_vec(w.pahsb); write_vec(w.parss); write_vec(w.parsb);
+        write_vec(w.pmhss); write_vec(w.pmhsb); write_vec(w.pmrss); write_vec(w.pmrsb);
     }
     int endtag = 0xFFFF;
     fwrite(&endtag, sizeof endtag, 1, g_out);

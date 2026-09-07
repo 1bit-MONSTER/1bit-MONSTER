@@ -52,6 +52,7 @@ struct Net {
     Dims d;
     std::vector<double> embed, fw_final;                 // [V*H], [H]
     std::vector<std::vector<double>> fw_l;               // per-layer norm weights [L][H]
+    std::vector<std::vector<double>> hs_l, hb_l, rs_l, rb_l;  // per-layer residual scales
     std::vector<int> kind;                               // 0=CCA,1=MoE per layer
     std::vector<CcaW> cca; std::vector<MoeW> moe;        // indexed by block counter
     int ncca = 0, nmoe = 0;
@@ -65,6 +66,10 @@ struct Net {
         for (int l = 0; l < d.L; l++) kind.push_back((l % 2 == 0) ? 0 : 1);
         embed.assign((size_t)d.V * d.H, 0); fw_final.assign(d.H, 1);
         fw_l.assign(d.L, std::vector<double>(d.H, 1));
+        hs_l.assign(d.L, std::vector<double>(d.H, 1));
+        hb_l.assign(d.L, std::vector<double>(d.H, 0));
+        rs_l.assign(d.L, std::vector<double>(d.H, 1));
+        rb_l.assign(d.L, std::vector<double>(d.H, 0));
         for (int l = 0; l < d.L; l++) {
             if (kind[l] == 0) {
                 ncca++;
@@ -259,7 +264,10 @@ int main(int argc, char** argv) {
                 // res update: unit scales in stage 1 -> res_new = h_prev + res_v
                 std::vector<double> rn_v(d.H);
                 double ms = 0;
-                for (int i = 0; i < d.H; i++) { double v = h_prev[i] + res_v[i]; rn_v[i] = v; ms += v * v; }
+                for (int i = 0; i < d.H; i++) {
+                    double v = (h_prev[i] + net.hb_l[li][i]) * net.hs_l[li][i]
+                             + (res_v[i] + net.rb_l[li][i]) * net.rs_l[li][i];
+                    rn_v[i] = v; ms += v * v; }
                 double inv = 1.0 / std::sqrt(ms / d.H + d.eps);
                 inv1[li][p] = inv;
                 std::vector<double> cur(d.H);
@@ -603,7 +611,10 @@ int main(int argc, char** argv) {
                 // add residual carry into rn[li] (from layer above), then split to h_in & rn[li-1]
                 for (int i = 0; i < d.H; i++) grn[i] += gResAcc[li][(size_t)p * d.H + i];
                 if (li > 0) {
-                    for (int i = 0; i < d.H; i++) { gBlk[li - 1][(size_t)p * d.H + i] += grn[i]; gResAcc[li - 1][(size_t)p * d.H + i] += grn[i]; }
+                    for (int i = 0; i < d.H; i++) {
+                        gBlk[li - 1][(size_t)p * d.H + i] += grn[i] * net.hs_l[li][i];
+                        gResAcc[li - 1][(size_t)p * d.H + i] += grn[i] * net.rs_l[li][i];
+                    }
                 } else {
                     (void)0; // embed input grads dropped (frozen)
                 }
