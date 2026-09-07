@@ -134,3 +134,11 @@ B^T dL/dy x^T (per expert block for Phase B).
   residual/scales; embed rows verified sane/distinct). Next: bisect at the
   BLOCK level — compare layer-0 CCA outputs (q/k/attn/o_proj) against the
   engine's own per-layer values for one token.
+
+- 2026-09-07 (M2 parity, round 3): residual-scale SET parity tested CLEANLY
+  (even=pm/odd=pa, v_del fix held): decisively WORSE (loss 36.1, prob 7e-59) =>
+  even=pa/odd=pm confirmed correct. Committed best state: v_del at hlay[li][p-1]
+  (loss 24.9, prob 27213 = 9.5e-7) + par diagnostics + input-affine. Remaining
+  divergence: block-internal (attention/prep/MoE framing) or position-major vs
+  token-major state ordering. Next: faithful token-major single-token reference
+  decoder against the dumped weights to reproduce engine's 27213 independently.
