@@ -372,8 +372,8 @@ struct Hip1bpBackend : Backend {
                                 "10 shared + kind-specific per layer; %d full-attn MHA "
                                 "layers 3,7,…,39 with split attn_q/k/v + q/k-norm, "
                                 "rest GDN fused attn_qkv 8192 rows + ssm; MoE 256x8 + "
-                                "shared): GDN/MoE decode kernels not implemented yet "
-                                "(#1831 M3/M4) — use the CPU (qwen3next) or NPU path.\n",
+                                "shared): eager decode behind H1BP_Q35_LOAD+TRY "
+                                "(Q8_0 GGUF since #2127; Q4NX 1BP since M2)",
                         H, NC, n_full);
             }
             // M3 loader/kernel self-check (env H1BP_Q35_SELFCHECK): pull
