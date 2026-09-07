@@ -133,23 +133,119 @@ struct Net {
     }
 };
 
+// ---- real-weight loader ----
+struct BinReader {
+    FILE* f;
+    size_t rd_u64() { size_t n; fread(&n, sizeof n, 1, f); return n; }
+    std::vector<double> rd_vec() { size_t n = rd_u64(); std::vector<double> v(n);
+        if (n) { std::vector<float> tmp(n); fread(tmp.data(), 4, n, f); for (size_t i=0;i<n;i++) v[i]=tmp[i]; }
+        return v; }
+    int rd_i32() { int x; fread(&x, 4, 1, f); return x; }
+    explicit BinReader(const char* path) { f = fopen(path, "rb"); }
+    ~BinReader() { if (f) fclose(f); }
+    bool ok() const { return f != nullptr; }
+};
+
+static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& data) {
+    BinReader br(bin);
+    if (!br.ok()) { fprintf(stderr, "cannot open %s\n", bin); return false; }
+    int dims[9];
+    fread(dims, sizeof dims, 1, br.f);
+    Dims& d = net.d;
+    if (dims[0]!=d.H || dims[1]!=d.L || dims[6]!=d.ff || dims[7]!=d.nslots-1) {
+        fprintf(stderr, "dims mismatch file(H=%d L=%d ff=%d n_exp=%d) vs net(H=%d L=%d ff=%d nslots=%d)\n",
+                dims[0], dims[1], dims[6], dims[7], d.H, d.L, d.ff, d.nslots); return false; }
+    auto embed = br.rd_vec();
+    if (embed.size() == (size_t)d.V * d.H) net.embed = embed;
+    auto fnw = br.rd_vec();
+    if (fnw.size() == (size_t)d.H) net.fw_final = fnw;
+    for (int l = 0; l < d.L; l++) {
+        int tag = br.rd_i32();
+        if ((tag & 0xF000) != 0x1000) { fprintf(stderr, "bad tag at layer %d: %04x\n", l, tag); return false; }
+        auto nw = br.rd_vec();
+        if (nw.size() == (size_t)d.H) net.fw_l[l] = nw;
+        auto wq = br.rd_vec(); auto wk = br.rd_vec(); auto wv1 = br.rd_vec(); auto wv2 = br.rd_vec();
+        auto wo = br.rd_vec(); auto cdw = br.rd_vec(); auto cdb = br.rd_vec();
+        auto cgw = br.rd_vec(); auto cgb = br.rd_vec(); auto ks = br.rd_vec();
+        auto gdw = br.rd_vec(); auto gdb = br.rd_vec(); auto rfn = br.rd_vec();
+        auto rf1 = br.rd_vec(); auto rf1b = br.rd_vec(); auto rf2 = br.rd_vec(); auto rf2b = br.rd_vec();
+        auto rout = br.rd_vec(); auto bb = br.rd_vec(); auto eda = br.rd_vec();
+        auto gu = br.rd_vec(); auto dn = br.rd_vec();
+        auto pahss = br.rd_vec(); auto pahsb = br.rd_vec(); auto parss = br.rd_vec(); auto parsb = br.rd_vec();
+        auto pmhss = br.rd_vec(); auto pmhsb = br.rd_vec(); auto pmrss = br.rd_vec(); auto pmrsb = br.rd_vec();
+        (void)bb; (void)eda;
+        if (net.kind[l] == 0) {
+            int ci = net.cca_at(l);
+            CcaW& c = net.cca[ci];
+            if (wq.size()  == (size_t)d.qd * d.H) c.wq = wq;
+            if (wk.size()  == (size_t)d.kd * d.H) c.wk = wk;
+            if (wv1.size() == (size_t)d.hv2 * d.H) c.wv1 = wv1;
+            if (wv2.size() == (size_t)d.hv2 * d.H) c.wv2 = wv2;
+            if (wo.size()  == (size_t)d.H * d.qd) c.wo = wo;
+            if (cdw.size() == (size_t)d.qkv * 2) c.cdw = cdw;
+            if (cdb.size() == (size_t)d.qkv) c.cdb = cdb;
+            if (cgw.size() == (size_t)d.qkv * d.gc * 2) c.cgw = cgw;
+            if (cgb.size() == (size_t)d.qkv) c.cgb = cgb;
+            if (ks.size()  == (size_t)d.nkv) c.ks = ks;
+            net.hs_l[l] = pahss; net.hb_l[l] = pahsb; net.rs_l[l] = parss; net.rb_l[l] = parsb;
+        } else {
+            int mi = net.moe_at(l);
+            MoeW& m = net.moe[mi];
+            if (gdw.size() == (size_t)d.H * d.rtr) m.gdw = gdw;
+            if (gdb.size() == (size_t)d.rtr) m.gdb = gdb;
+            if (rfn.size() == (size_t)d.rtr) m.rn = rfn;
+            if (rf1.size() == (size_t)d.rtr * d.rtr) m.rf1 = rf1;
+            if (rf1b.size()== (size_t)d.rtr) m.rf1b = rf1b;
+            if (rf2.size() == (size_t)d.rtr * d.rtr) m.rf2 = rf2;
+            if (rf2b.size()== (size_t)d.rtr) m.rf2b = rf2b;
+            if (rout.size()== (size_t)d.nslots * d.rtr) m.rout = rout;
+            if (gu.size() == (size_t)(d.nslots - 1) * 2 * d.ff * d.H) {
+                m.gu.assign((size_t)d.nslots * 2 * d.ff * d.H, 0.0);
+                size_t blk = (size_t)2 * d.ff * d.H;
+                for (int e = 0; e < d.nslots - 1; e++)
+                    std::copy(gu.begin() + (size_t)e * blk, gu.begin() + (size_t)(e+1) * blk, m.gu.begin() + (size_t)e * blk);
+            }
+            if (dn.size() == (size_t)(d.nslots - 1) * d.H * d.ff) {
+                m.dn.assign((size_t)d.nslots * d.H * d.ff, 0.0);
+                size_t blk = (size_t)d.H * d.ff;
+                for (int e = 0; e < d.nslots - 1; e++)
+                    std::copy(dn.begin() + (size_t)e * blk, dn.begin() + (size_t)(e+1) * blk, m.dn.begin() + (size_t)e * blk);
+            }
+            net.hs_l[l] = pmhss; net.hb_l[l] = pmhsb; net.rs_l[l] = pmrss; net.rb_l[l] = pmrsb;
+        }
+    }
+    std::vector<int> seq = {9079,236761,107,2717,108,1882,
+                            27213,9942,9942,36209,12992,971,677,167798};
+    d.P = (int)seq.size();
+    data.assign(1, seq);
+    return true;
+}
+
 int main(int argc, char** argv) {
     std::string mode = argc > 1 ? argv[1] : "train";
     int steps = argc > 2 ? atoi(argv[2]) : 20;
-    // small config (structural validation stage)
+    bool real = (mode == "real");
     Dims d;
-    d.H = 64; d.ff = 64; d.rtr = 16; d.nslots = 5; d.nq = 4; d.nkv = 2; d.hd = 16;
-    d.V = 96; d.L = 4; d.P = 4; d.r = 2;
+    if (real) {
+        d.H = 2048; d.ff = 2048; d.rtr = 256; d.nslots = 17; d.nq = 8; d.nkv = 2;
+        d.hd = 128; d.V = 262272; d.L = 40; d.P = 14; d.r = 2;
+    } else {
+        d.H = 64; d.ff = 64; d.rtr = 16; d.nslots = 5; d.nq = 4; d.nkv = 2; d.hd = 16;
+        d.V = 96; d.L = 4; d.P = 4; d.r = 2;
+    }
     d.derive();
     Net net(d);
-    std::mt19937 rng(7);
-    net.randfill(rng, 0.2);
-
-    // toy data: 8 sequences (P tokens each) of token ids; label = shifted by 1
-    const int NB = 8;
+    const int NB = real ? 1 : 8;
     std::vector<std::vector<int>> data(NB, std::vector<int>(d.P));
-    std::mt19937 r2(99);
-    for (int b = 0; b < NB; b++) for (int p = 0; p < d.P; p++) data[b][p] = 1 + r2() % (d.V - 1);
+    if (real) {
+        const char* bin = argc > 3 ? argv[3] : "/home/bcloud/zaya-f32t.bin";
+        if (!load_real(net, bin, data)) return 1;
+    } else {
+        std::mt19937 rng(7);
+        net.randfill(rng, 0.2);
+        std::mt19937 r2(99);
+        for (int b = 0; b < NB; b++) for (int p = 0; p < d.P; p++) data[b][p] = 1 + r2() % (d.V - 1);
+    }
 
     printf("M2 stacked trainer (L=%d alt CCA/MoE, H=%d, V=%d, P=%d, r=%d) mode=%s\n",
            d.L, d.H, d.V, d.P, d.r, mode.c_str());
@@ -192,13 +288,13 @@ int main(int argc, char** argv) {
         a.Bv1.assign((size_t)d.hv2*d.r,0); a.Av1.assign((size_t)d.r*d.H,0);
         a.Bv2.assign((size_t)d.hv2*d.r,0); a.Av2.assign((size_t)d.r*d.H,0);
         a.Bo.assign((size_t)d.H*d.r,0); a.Ao.assign((size_t)d.r*d.qd,0);
-        std::mt19937 g2(100+ci); for (auto* vp : {&a.Bq,&a.Aq,&a.Bk,&a.Ak,&a.Bv1,&a.Av1,&a.Bv2,&a.Av2,&a.Bo,&a.Ao}) for (auto& v : *vp) v = rnd_unif(g2,0.03);
+        std::mt19937 g2(100+ci); for (auto* vp : {&a.Bq,&a.Aq,&a.Bk,&a.Ak,&a.Bv1,&a.Av1,&a.Bv2,&a.Av2,&a.Bo,&a.Ao}) for (auto& v : *vp) v = rnd_unif(g2, real ? 0.02 : 0.03);
     }
     for (int mi = 0; mi < net.nmoe; mi++) {
         MoeAd& a = moe_ad[mi];
         a.Bg.assign((size_t)d.nslots*2*d.ff*d.r,0); a.Ag.assign((size_t)d.nslots*d.r*d.H,0);
         a.Bd.assign((size_t)d.nslots*d.H*d.r,0); a.Ad.assign((size_t)d.nslots*d.r*d.ff,0);
-        std::mt19937 g2(200+mi); for (auto* vp : {&a.Bg,&a.Ag,&a.Bd,&a.Ad}) for (auto& v : *vp) v = rnd_unif(g2,0.03);
+        std::mt19937 g2(200+mi); for (auto* vp : {&a.Bg,&a.Ag,&a.Bd,&a.Ad}) for (auto& v : *vp) v = rnd_unif(g2, real ? 0.02 : 0.03);
     }
     // grads
     std::vector<CcaAd> cca_gd(net.ncca); std::vector<MoeAd> moe_gd(net.nmoe);
@@ -623,6 +719,7 @@ int main(int argc, char** argv) {
     };
 
     // mode dispatch
+    if (real) mode = "train";
     if (mode == "train") {
         // AdamW over all adapters (flat lists)
         struct AP { std::vector<double>& p; std::vector<double>& g; std::vector<double> m, v; };
@@ -639,7 +736,7 @@ int main(int argc, char** argv) {
             MoeAd& P = moe_ad[mi]; MoeAd& G = moe_gd[mi];
             add_ap(P.Bg,G.Bg); add_ap(P.Ag,G.Ag); add_ap(P.Bd,G.Bd); add_ap(P.Ad,G.Ad);
         }
-        const double lr = 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
+        const double lr = real ? 1e-3 : 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
         double prev = 1e30;
         int b = 0;   // fixed batch for a clean descent check
         for (int st = 0; st < steps; st++) {
@@ -653,8 +750,8 @@ int main(int argc, char** argv) {
                 double stepd = lr * a.m[i] / (std::sqrt(a.v[i]) + eps) + wd * lr * a.p[i];
                 a.p[i] -= stepd;
             }
-            if (st % 5 == 0 || st == steps - 1)
-                printf("step %3d loss %.4f\n", st, L);
+            if (st % 2 == 0 || st == steps - 1)
+                fprintf(stderr, "step %3d loss %.4f\n", st, L), fflush(stderr);
             prev = L;
         }
         (void)prev;
