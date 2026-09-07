@@ -238,3 +238,40 @@ question: is the decode-rate gap harness/bundle-config specific (engine path use
 dlopen+DEEPBIND + engine ctx params) or a bundle regression? Resolve via the
 engine-path integration (wire llama_state import into HrxBackend, bench through
 1bit unified) before the hybrid policy ships. The §0 HRX2 decision stands.
+
+
+## §5.2 benchmark — measured 2026-09-07 (clean run, quiet box)
+
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_M · 2,962-token prompt · 500-token continuation,
+standalone harnesses: rt_A (vendored 4df29be4f GGML_HIP ngl99), rt_HRX (gfx1151
+llama-build bundle: libllama + ggml-hrx 0.9.11, HRX0, all layers offloaded).
+
+| config | wall | notes |
+|---|---|---|
+| **hybrid**: HIP prefill + HRX0 decode | **404.5 s** | prefill 4.50 s (~660 tok/s) + HRX decode 400.0 s (1.25 tok/s) |
+| **HIP-only** | **12.2 s** | prefill + 500 decode end-to-end incl. model load |
+| **HRX-only** | **596.3 s** | HRX prefill ~196 s (~15 tok/s) + decode ~400 s |
+
+Token comparisons: hybrid-vs-hip-only and hybrid-vs-hrx-only diverge at token 0
+(cross-backend prefill/decode kernel numerics — HIP == fork-CPU decode agreed
+48/48 on identical kv earlier; HRX0-device decode drifts from token 0 vs both).
+Continuations are fluent/coherent on all three paths (no context loss).
+
+**Verdict:** D2 handoff is functionally proven (lossless state transfer; decode on
+HIP, fork-CPU and HRX0 all work from the shared blob), but the §5.2 perf criterion
+(hybrid total beats either backend alone) is **NOT met** with this bundle: HRX0
+decode measured 1.25 tok/s in the standalone harness vs the 80-87 tok/s documented
+for the engine's in-process path (hrx_inprocess) and HIP decode ~70 tok/s. Open
+question: is the decode-rate gap harness/bundle-config specific (engine path uses
+dlopen+DEEPBIND + engine ctx params) or a bundle regression? Resolve via the
+engine-path integration (wire llama_state import into HrxBackend, bench through
+1bit unified) before the hybrid policy ships. The §0 HRX2 decision stands.
+
+## 2026-09-07 follow-up — HRX0 import-decode blocker filed (#2145)
+
+b66 release bundle and the amd-hrx-graph fork both FAIL llama_decode at token 2 on
+HRX0 after llama_state_load_file of the 292 MB HIP-prefill blob (graph compute -1);
+the local llama-build (GET_ROWS-capable) decodes from the imported state (500 tokens,
+coherent) but at 1.25 tok/s. Handoff losslessness stands (fork-CPU + HIP 48/48).
+Filed as 1bit-MONSTER/1bit-MONSTER#2145 — blocks the D2 shipped fast path; D1
+tokens-only re-prefix remains the correctness fallback; §0 HRX2 decision untouched.
