@@ -275,3 +275,14 @@ the local llama-build (GET_ROWS-capable) decodes from the imported state (500 to
 coherent) but at 1.25 tok/s. Handoff losslessness stands (fork-CPU + HIP 48/48).
 Filed as 1bit-MONSTER/1bit-MONSTER#2145 — blocks the D2 shipped fast path; D1
 tokens-only re-prefix remains the correctness fallback; §0 HRX2 decision untouched.
+
+## #2145 triage refinement (2026-09-07) — not import-specific
+
+amd-hrx-graph fork fails NATIVE 30B-Coder decode on HRX0 with no state import
+(graph compute -1 in the chunked prefill itself); its envelope is qwen3 <= 4B +
+zaya. b66 stock = engine non-default for this model (GET_ROWS limit); the
+engine serves the 30B through the GET_ROWS-capable llama-build bundle, which
+decodes imported state correctly at 1.25 tok/s. The 80-87 tok/s historical
+rate remains unreproduced on current bundles (flash-attn irrelevant); 30B
+qwen3moe decode on the HRX2 stack is fleet roadmap. D2 shipped fast path stays
+gated on HRX decode throughput; shim landing point merged (PR #2146).
