@@ -1,6 +1,6 @@
 # qwen35moe on 1BP q4nx — M2 wiring plan (#1831, 1BP q4nx lane milestone 2)
 
-Status: IMPLEMENTED + validated on strixhalo 2026-09-06 (commit 0a849f80 + follow-ups); corr-gate verdict below. Parent: docs/research/hip-qwen35-gdn-port.md.
+Status: IMPLEMENTED + validated on strixhalo 2026-09-06/07; SAME-FILE corr gate PASSED via tools/qwen35moe_cpu_ref_1bp (fork, this branch). Parent: docs/research/hip-qwen35-gdn-port.md.
 Branch: feat/qwen35-1bp-q4nx. Worktree: ~/wt/q35-1bp (strixhalo).
 
 ## Goal
@@ -114,3 +114,14 @@ Validation order (structural -> corr):
   (a) same-file oracle (extend cpu_ref to 1BP) = true wiring gate, keeps
   q4nx; (b) accept documented quant delta (mean 0.975/argmax 92%) as the
   lane gate; (c) F16 artifact instead (perf lane dies).
+
+
+## Same-file gate (final, 2026-09-07) — PASSED
+
+tools/qwen35moe_cpu_ref_1bp (fork of the #2131 reference; reads the 1BP file
+through NpuOnebpModel, same host formula) run on qwen35-1bp-v2.1bp over the
+same 100-token sequence: engine-on-q4nx vs q4nx-cpu-ref corr **mean 0.9983 /
+min 0.9791 @pos56 / argmax-eq 99/100 / pos0-2 corr 1.0000** (bit-identical)
+— statistically equal to the M3 GGUF-vs-GGUF baseline (mean 0.9982, pos0-3
+1.0000, same 0.982 floor @pos56 = accumulation-order residual, lane-
+independent). Full evidence: docs/research/hip-qwen35-m2-correlation.txt.
