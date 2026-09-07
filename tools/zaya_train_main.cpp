@@ -43,7 +43,7 @@ struct CcaW {
 };
 // ---- MoE layer weights + adapters (fused per-expert) ----
 struct MoeW {
-    std::vector<double> gdw, gdb, rn, rf1, rf1b, rf2, rf2b, rout;  // router (frozen)
+    std::vector<double> gdw, gdb, rn, rf1, rf1b, rf2, rf2b, rout, bb, eda;  // router
     std::vector<double> gu, dn;                 // fused experts base (frozen)
     std::vector<double> Bg, Ag, Bd, Ad;         // per-slot adapters
 };
@@ -208,6 +208,8 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
             if (rf2.size() == (size_t)d.rtr * d.rtr) m.rf2 = rf2;
             if (rf2b.size()== (size_t)d.rtr) m.rf2b = rf2b;
             if (rout.size()== (size_t)d.nslots * d.rtr) m.rout = rout;
+            if (bb.size() == (size_t)d.nslots) m.bb = bb;
+            if (eda.size() == (size_t)d.rtr) m.eda = eda;
             if (gu.size() == (size_t)(d.nslots - 1) * 2 * d.ff * d.H) {
                 m.gu.assign((size_t)d.nslots * 2 * d.ff * d.H, 0.0);
                 size_t blk = (size_t)2 * d.ff * d.H;
@@ -373,8 +375,9 @@ int main(int argc, char** argv) {
                 std::vector<double> rn_v(d.H);
                 double ms = 0;
                 for (int i = 0; i < d.H; i++) {
-                    double v = (h_prev[i] + net.hb_l[li][i]) * net.hs_l[li][i]
-                             + (res_v[i] + net.rb_l[li][i]) * net.rs_l[li][i];
+                    double v = (h_prev[i] + net.hb_l[li][i]) * net.hs_l[li][i];
+                    if (li > 0)
+                        v += (res_v[i] + net.rb_l[li][i]) * net.rs_l[li][i];
                     rn_v[i] = v; ms += v * v; }
                 double inv = 1.0 / std::sqrt(ms / d.H + d.eps);
                 inv1[li][p] = inv;
@@ -401,8 +404,15 @@ int main(int argc, char** argv) {
                         gemv(m.rf2.data(), rtr, rtr, f2.data(), f1.data());
                         for (int i = 0; i < rtr; i++) f1[i] = 0.5 * (f1[i] + m.rf2b[i]) * (1 + std::erf((f1[i] + m.rf2b[i]) / std::sqrt(2.0)));
                         gemv(m.rout.data(), d.nslots, rtr, f1.data(), l17.data());
-                        msav.e = 0; double bv = -1e30;
-                        for (int e2 = 0; e2 < d.nslots; e2++) if (l17[e2] > bv) { bv = l17[e2]; msav.e = e2; }
+                        // top-1 over the 16 experts only (skip slot never routed),
+                        // with balancing bias bb (zaya_moe.h semantics)
+                        double bb0 = (m.bb.size() > 0) ? m.bb[0] : 0.0;
+                        msav.e = 0; double bv = l17[0] + bb0;
+                        for (int e2 = 1; e2 < d.nslots - 1; e2++) {
+                            double bbv = (m.bb.size() > (size_t)e2) ? m.bb[e2] : 0.0;
+                            double v = l17[e2] + bbv;
+                            if (v > bv) { bv = v; msav.e = e2; }
+                        }
                     }
                     if (msav.e < d.nslots - 1) {
                         int ee = msav.e;
@@ -788,6 +798,13 @@ int main(int argc, char** argv) {
                 corr(&hlay[1][0], &hlay[1][(size_t)d.H], d.H),
                 corr(&hlay[1][(size_t)4*d.H], &hlay[1][(size_t)5*d.H], d.H),
                 corr(&cur_f[0], &cur_f[(size_t)d.H], d.H));
+        }
+        {
+            FILE* tf = fopen("/tmp/mytrace.txt", "w");
+            if (tf) { for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", cur_l[0][(size_t)5 * d.H + i], i == d.H-1 ? '\n' : ' '); fclose(tf); }
+            fprintf(stderr, "moe-exps pos5: ");
+            for (int li = 1; li < d.L; li += 2) { int mi2 = net.moe_at(li); fprintf(stderr, "%d ", msa[mi2][5].e); }
+            fprintf(stderr, "\n");
         }
         fprintf(stderr, "par: loss=%.3f argmax5=%d prob(27213)=%.4e (engine continuation=27213)\n",
                 L, argmax, pr[27213]);

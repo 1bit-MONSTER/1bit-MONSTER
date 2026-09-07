@@ -161,3 +161,16 @@ B^T dL/dy x^T (per expert block for Phase B).
   INSTRUMENTING npu_engine_zr1 itself to dump its per-token, per-layer
   intermediates (router logits/selected expert, q/k/v, attn out, h stream) for
   the oracle prompt, then matching the trainer to THAT trace layer-by-layer.
+
+- 2026-09-07 (M2 parity, round 6 — ROOT CAUSE on the MoE side): the trainer's
+  router kept selecting the SKIP slot (16) because its argmax covered all 17
+  slots; the engine's router does top-1 over the 16 experts only (skip is never
+  routed) with balancing-bias bb added. Fixed (top-16 + bb). Expert path at
+  pos5 now rich: [10,0,10,7,1,11,...] vs engine [0,1,10,13,1,11,...]. Also
+  confirmed engine pos semantics are 0-based (pos5 = 6th prompt token) via an
+  ALLL trace; engine instrumentation (ZR_TRACE/ZL_TRACE_POS/ZL_ALLL + file dump
+  of per-layer rmsnorm'd block inputs + moe e/wt) works and stays in the engine
+  tree (strixhalo). Layer-0 block-input corr vs engine = 0.72 (gate fix);
+  deeper layers diverge. Entry still not exact (0.72) and expert choices differ
+  => remaining hunt: exact entry semantics + router gdw orientation, validated
+  against the engine trace. Engine decode oracle restored (corr 0.998, 10 t/s).
