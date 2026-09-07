@@ -268,6 +268,34 @@ int main(int argc, char** argv) {
         for (int b = 0; b < NB; b++) for (int p = 0; p < d.P; p++) data[b][p] = 1 + r2() % (d.V - 1);
     }
 
+    int jl_nb = 1;
+    if (mode == "jl") {
+        const char* jlp = argc > 3 ? argv[3] : nullptr;
+        FILE* f = jlp ? fopen(jlp, "r") : nullptr;
+        if (!f) { fprintf(stderr, "jsonl: cannot open %s\n", jlp ? jlp : "(none)"); return 1; }
+        char line[1 << 20];
+        std::vector<std::vector<int>> lines;
+        while (fgets(line, sizeof line, f)) {
+            std::vector<int> toks;
+            for (char* p = line; *p; ) {
+                if (*p == ',' || *p == '[' || *p == ']' || *p == '{' || *p == '}' ||
+                    *p == ':' || *p == '"' || *p == '\n' || *p == '\r' || *p == ' ' || *p == '\t') { p++; continue; }
+                if (*p == '-' || (*p >= '0' && *p <= '9')) {
+                    toks.push_back(atoi(p));
+                    while (*p && *p != ',' && *p != ' ' && *p != ']' && *p != '\n' && *p != '\r') p++;
+                } else p++;
+            }
+            if (!toks.empty()) lines.push_back(toks);
+        }
+        fclose(f);
+        if (lines.empty()) { fprintf(stderr, "jsonl: no lines\n"); return 1; }
+        for (auto& ln : lines)
+            if ((int)ln.size() != d.P) { fprintf(stderr, "jsonl: line len %zu != P %d\n", ln.size(), d.P); return 1; }
+        jl_nb = (int)lines.size();
+        data.assign(lines.begin(), lines.end());
+        fprintf(stderr, "jsonl: %d sequences of len %d\n", jl_nb, d.P);
+    }
+
     printf("M2 stacked trainer (L=%d alt CCA/MoE, H=%d, V=%d, P=%d, r=%d) mode=%s\n",
            d.L, d.H, d.V, d.P, d.r, mode.c_str());
 
@@ -444,9 +472,10 @@ int main(int argc, char** argv) {
                         double sv = 0; for (int i = 0; i < d.nslots; i++) { l17[i] = std::exp(l17[i] - mx); sv += l17[i]; }
                         double isv = 1.0 / (sv + 1e-10);
                         for (int i = 0; i < d.nslots; i++) l17[i] *= isv;
-                        int best = 0; double bv = l17[0] + m.bb[0];
+                        auto bbv = [&](int i) -> double { return m.bb.empty() ? 0.0 : m.bb[i]; };
+                        int best = 0; double bv = l17[0] + bbv(0);
                         for (int i = 1; i < d.nslots - 1; i++) {
-                            double v = l17[i] + m.bb[i];
+                            double v = l17[i] + bbv(i);
                             if (v > bv) { bv = v; best = i; }
                         }
                         msav.e = best;
@@ -779,14 +808,17 @@ int main(int argc, char** argv) {
                       for (int j = 0; j < d.H; j++) gx_cur[j] += gxd[j]; }
                     for (int i = 0; i < d.H; i++) gcur[i] += gx_cur[i];
                 }
-                // rmsnorm bwd: cur = rmsnorm(res_new[li][p]); then rn split
+                // rmsnorm bwd. Engine in-place clobber semantics: layer li+1's residual
+                // branch reads cur_l[li] (the NORMED block input), so the carry in
+                // gResAcc[li] is a gradient into cur_l[li] and must be folded into the
+                // rmsnorm INPUT (normed space) before the backprop, not after it.
                 const double* rnp = &res_new[li][(size_t)p * d.H];
                 double inv = inv1[li][p];
+                std::vector<double> gcurT(d.H);
+                for (int i = 0; i < d.H; i++) gcurT[i] = gcur[i] + gResAcc[li][(size_t)p * d.H + i];
                 std::vector<double> grn(d.H);
-                { double acc = 0; for (int i = 0; i < d.H; i++) acc += gcur[i] * rnp[i];
-                  for (int i = 0; i < d.H; i++) grn[i] = gcur[i] * inv - acc * inv * inv * inv * rnp[i] / d.H; }
-                // add residual carry into rn[li] (from layer above), then split to h_in & rn[li-1]
-                for (int i = 0; i < d.H; i++) grn[i] += gResAcc[li][(size_t)p * d.H + i];
+                { double acc = 0; for (int i = 0; i < d.H; i++) acc += gcurT[i] * rnp[i];
+                  for (int i = 0; i < d.H; i++) grn[i] = gcurT[i] * inv - acc * inv * inv * inv * rnp[i] / d.H; }
                 if (li > 0) {
                     for (int i = 0; i < d.H; i++) {
                         gBlk[li - 1][(size_t)p * d.H + i] += grn[i] * net.hs_l[li][i];
@@ -942,7 +974,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     if (real) mode = "train";
-    if (mode == "train") {
+    if (mode == "train" || mode == "jl") {
         // AdamW over all adapters (flat lists)
         struct AP { std::vector<double>& p; std::vector<double>& g; std::vector<double> m, v; };
         std::vector<AP> aps;
@@ -976,6 +1008,7 @@ int main(int argc, char** argv) {
         int b = 0;   // fixed batch for a clean descent check
         auto now_ms = []{ return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
         for (int st = 0; st < steps; st++) {
+            if (jl_nb > 1) b = st % jl_nb;   // JSONL batch cycling
             double t0 = now_ms();
             double L = run_fwd(b);
             double t1 = now_ms();
