@@ -95,3 +95,9 @@ B^T dL/dy x^T (per expert block for Phase B).
 - Python/torch stacks explicitly out (policy: engine for all work); ryzen venv
   kept only as an external numeric oracle for the M2 PPL-gate comparison;
   strixhalo rocm7.2 torch venv deleted per policy.
+
+- 2026-09-07 (NPU follow-up task): NPU_WBO_FLAGS root-caused (driver rejects
+  none/cacheable/SVM BOs; HOST_ONLY only) and batch-M fused writeback verified
+  single-row (full-buffer scan: 2048 nonzero int32, row-0 only, at am=8 with 8
+  real rows). Both verdicts in docs/verification/2026-09-07-xrt-split/
+  dispatch-fattening-notes.md.

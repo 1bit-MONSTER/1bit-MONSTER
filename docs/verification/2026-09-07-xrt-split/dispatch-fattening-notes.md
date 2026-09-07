@@ -48,3 +48,22 @@
   tuning knob — weight-DMA is NOT improvable from userspace via BO flags.
   (Alternative levers, if ever pursued: driver-side BO-type support, or kernel
   changes to reduce per-launch weight traffic — e.g. caching/streaming.)
+
+## Batch-M fused-kernel feasibility (2026-09-07, evidence)
+- Probe: header-corrected fused launch (h0 half xclbin), A filled with 8 REAL
+  distinct rows (values 1..8), am=8. Full-buffer scan of bC (32768 int32):
+  nonzero = EXACTLY 2048, ALL in the first 2048 indices (row-0 region), last
+  nonzero at index 2047. Rows 1-7 zero at stride 2048 (and the tile-interleaved
+  hypothesis is excluded: 8-row writeback would leave ~16K nonzero across the
+  buffer; a single row of D-width 2048 is written).
+- The mm microkernel itself computes memref<8x128> tiles (design: matmul_i8_i32
+  on 8x64x128) — the SILICON produces 8 rows; the insts' C2 writeback only
+  surfaces row 0. => single-token decode is a WRITEBACK/DESCRIPTOR property of
+  the generated insts, not an mm capability.
+- Verdict: multi-token (batch-M) decode per launch requires regenerating the
+  fused design/insts so the C2 S2MM writeback covers the full MxN tile grid
+  (n1_core_fused_gu_silu_d.py change) + a matching host row map in
+  launch_fused/dequant_fused. Concrete blocker = generator writeback coverage
+  (no knob exists today); feasibility of the generator change is open work,
+  not ruled out. Evidence files: pool/scan2.cpp result above; am=1/8 timing
+  remains ~2.9 ms/launch (latency-bound), so batch-M would amortize it.
