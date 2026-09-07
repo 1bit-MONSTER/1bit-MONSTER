@@ -20,6 +20,7 @@
 #include <random>
 #include <algorithm>
 #include <cstring>
+#include <chrono>
 #include <sstream>
 
 static inline double silu(double x) { return x / (1.0 + std::exp(-x)); }
@@ -973,9 +974,14 @@ int main(int argc, char** argv) {
         const double lr = real ? 3e-4 : 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
         double prev = 1e30;
         int b = 0;   // fixed batch for a clean descent check
+        auto now_ms = []{ return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
         for (int st = 0; st < steps; st++) {
+            double t0 = now_ms();
             double L = run_fwd(b);
+            double t1 = now_ms();
             run_bwd(b);
+            double t2 = now_ms();
+            if (st < 4) fprintf(stderr, "  [t] step %d fwd %.1f ms bwd %.1f ms\n", st, t1-t0, t2-t1), fflush(stderr);
             double beta1t = b1, beta2t = b2;  // (no bias correction for the smoke)
             for (auto& a : aps) for (size_t i = 0; i < a.p.size(); i++) {
                 double gg = a.g[i];
