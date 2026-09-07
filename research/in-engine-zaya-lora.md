@@ -205,3 +205,10 @@ B^T dL/dy x^T (per expert block for Phase B).
   instrumentation or a python prep-model (from engine raw + dump weights) to
   reproduce engine qo/ko at 1.0, then diff the trainer's prep sub-stages
   against it to find the slip.
+
+- 2026-09-07 (M2 parity, round 10 — gap confined to L2/rope): post-mix qkv
+  (conv+grouped+qk_means output, pre-L2) corr = 1.000000 vs engine; vo (vc+vrec)
+  corr 0.999982 with the vd fix. q0/k0 remain 0.974/0.971 => the residual gap is
+  confined to the L2-normalize / RoPE substage of cca_prep. Engine header hook
+  (ZL_MID) + trainer mid-dump added. Next: post-L2 pre-rope comparison to split
+  L2 vs rope.

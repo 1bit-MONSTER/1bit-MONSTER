@@ -798,6 +798,11 @@ int main(int argc, char** argv) {
                 fprintf(tq, "q0 "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c0.qo[i], i == d.qd-1 ? '\n' : ' ');
                 fprintf(tq, "k0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c0.ko[i], i == d.kd-1 ? '\n' : ' ');
                 fprintf(tq, "v0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c0.vo[i], i == d.kd-1 ? '\n' : ' ');
+                fprintf(tq, "qr "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c0.q[i], i == d.qd-1 ? '\n' : ' ');
+                fprintf(tq, "kr "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c0.k[i], i == d.kd-1 ? '\n' : ' ');
+                fprintf(tq, "vcr "); for (int i = 0; i < d.hv2; i++) fprintf(tq, "%.8e%c", c0.vc[i], i == d.hv2-1 ? '\n' : ' ');
+                fprintf(tq, "vdr "); for (int i = 0; i < d.hv2; i++) fprintf(tq, "%.8e%c", c0.vd[i], i == d.hv2-1 ? '\n' : ' ');
+                fprintf(tq, "mix "); for (int i = 0; i < d.qkv; i++) fprintf(tq, "%.8e%c", c0.sqk_pre[i], i == d.qkv-1 ? '\n' : ' ');
                 fclose(tq);
             }
             FILE* tf = fopen("/tmp/mytrace.txt", "w");
