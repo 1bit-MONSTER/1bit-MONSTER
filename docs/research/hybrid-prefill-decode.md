@@ -533,3 +533,99 @@ Wiring a modern bundle into the engine = repin the ABI mirrors + ctx-param usage
 lane-stable bundle. Premature while the fork fix branch is mid-flight and a stable
 hrx-system release is upstream-gated (#1945); dependency: lane ships a stable
 modern bundle -> repin -> retest 30B decode leg. Tracked via #2145/#2147.
+
+
+## §5.2 benchmark — measured 2026-09-07 (clean run, quiet box)
+
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_M · 2,962-token prompt · 500-token continuation,
+standalone harnesses: rt_A (vendored 4df29be4f GGML_HIP ngl99), rt_HRX (gfx1151
+llama-build bundle: libllama + ggml-hrx 0.9.11, HRX0, all layers offloaded).
+
+| config | wall | notes |
+|---|---|---|
+| **hybrid**: HIP prefill + HRX0 decode | **404.5 s** | prefill 4.50 s (~660 tok/s) + HRX decode 400.0 s (1.25 tok/s) |
+| **HIP-only** | **12.2 s** | prefill + 500 decode end-to-end incl. model load |
+| **HRX-only** | **596.3 s** | HRX prefill ~196 s (~15 tok/s) + decode ~400 s |
+
+Token comparisons: hybrid-vs-hip-only and hybrid-vs-hrx-only diverge at token 0
+(cross-backend prefill/decode kernel numerics — HIP == fork-CPU decode agreed
+48/48 on identical kv earlier; HRX0-device decode drifts from token 0 vs both).
+Continuations are fluent/coherent on all three paths (no context loss).
+
+**Verdict:** D2 handoff is functionally proven (lossless state transfer; decode on
+HIP, fork-CPU and HRX0 all work from the shared blob), but the §5.2 perf criterion
+(hybrid total beats either backend alone) is **NOT met** with this bundle: HRX0
+decode measured 1.25 tok/s in the standalone harness vs the 80-87 tok/s documented
+for the engine's in-process path (hrx_inprocess) and HIP decode ~70 tok/s. Open
+question: is the decode-rate gap harness/bundle-config specific (engine path uses
+dlopen+DEEPBIND + engine ctx params) or a bundle regression? Resolve via the
+engine-path integration (wire llama_state import into HrxBackend, bench through
+1bit unified) before the hybrid policy ships. The §0 HRX2 decision stands.
+
+## 2026-09-07 follow-up — HRX0 import-decode blocker filed (#2145)
+
+b66 release bundle and the amd-hrx-graph fork both FAIL llama_decode at token 2 on
+HRX0 after llama_state_load_file of the 292 MB HIP-prefill blob (graph compute -1);
+the local llama-build (GET_ROWS-capable) decodes from the imported state (500 tokens,
+coherent) but at 1.25 tok/s. Handoff losslessness stands (fork-CPU + HIP 48/48).
+Filed as 1bit-MONSTER/1bit-MONSTER#2145 — blocks the D2 shipped fast path; D1
+tokens-only re-prefix remains the correctness fallback; §0 HRX2 decision untouched.
+
+## 2026-09-07 rate-gap RESOLVED — llama-bench: 40.9 tok/s tg256 at KV 2.9-3.2k (llama-build/HRX0, 30B Coder)
+
+The 1.25 tok/s harness figure was an artifact of the auto-pos decode loop at
+large n_pos (flat 400-730 ms/decode; thread- and config-invariant; not seen by
+llama-bench on the same libllama). Bundle long-ctx decode capability = ~41
+tok/s. Hybrid re-estimate with real rate: HIP prefill 4.5 s + 500-token HRX
+decode ~12-13 s ≈ 17 s vs HIP-only 12.2 s — within 1.4x, not beating. Decisive
+remaining question: does the ENGINE in-process decode (explicit-pos, own
+counter, n_batch 2048) hit the auto-pos stall at long ctx? Measure in-engine.
+
+## 2026-09-07 handoff — CPU-busy, llama_decode-internal
+
+The slow engine-shaped decode at long ctx is CPU-busy (user+sys ~= wall, sys-heavy
+per-decode churn), thread- and config-invariant, with llama-bench fast on the
+identical libs+params. Root cause is inside llama_decode per-call behavior on the
+HRX build (ctx-state-dependent), needs llama_decode/kv-cache instrumentation —
+HRX-fork owner territory (llama-build built from a wiped /tmp tree; rebuild from
+~/hrx-ws/hrx-v2-src enables source work). Repro artifacts on strixhalo:
+/tmp/m2/rt_HRX + rt_session.cpp + /tmp/m2/rt_30b_f16.bin. Full record: #2145.
+
+## 2026-09-07 ROOT CAUSE: stale-binary artifact — modern fork has NO stall
+
+amd-hrx-graph fork (current, HRX0): 0.6B 2,962-token prefill + 16 decodes @
+pos 2962+ in 2 s total. The 400-730 ms/decode stall was specific to the old
+llama-build lib (wiped-tree build, older commit). HRX long-ctx decode is fine
+on the current stack (validated envelope). D2 hybrid decode-leg blocker =
+30B support on the HRX2 fork (roadmap) + engine bundle modernization; no
+llama_decode bug to fix. #2145 rate sub-question CLOSED.
+
+## Engine modernization scope (2026-09-07, recorded not started)
+
+hrx_inprocess.h ABI mirrors are pinned to the b59-era bundle llama.h (0.0.10320:
+4-arg llama_batch_get_one, static_asserted sizes). The modern HRX2 fork's llama.h
+differs (2-arg batch_get_one, kv_unified/flash_attn_type era, GDN fused flags).
+Wiring a modern bundle into the engine = repin the ABI mirrors + ctx-param usage
+(offload_kqv/op_offload defaults changed between eras) + re-run the P2 smoke on a
+lane-stable bundle. Premature while the fork fix branch is mid-flight and a stable
+hrx-system release is upstream-gated (#1945); dependency: lane ships a stable
+modern bundle -> repin -> retest 30B decode leg. Tracked via #2145/#2147.
+
+## 2026-09-07 (evening) — 30B qwen3moe path UNBLOCKED; D2 functional leg PROVEN on the modern stack
+
+Combined build (their local fix/hrx-ngl-init-order incl. 8000c0925 + 540e9815e +
+my ADD/CLAMP/DIV standalone-claim exclusion, commit b2975bb1d on
+fix/qwen35-prefill-coverage):
+- 30B Coder prefill (5/8/16 tok) + decode: FULL PASS, no workarounds (was graph
+  compute -1 at three successive layers: SUM_ROWS -> ADD [2048,5] -> ADD [2048,1]).
+- D2 decode leg: HIP-prefill blob (292 MB, 2,962 tok) imported -> 200-token
+  coherent decode at pos 2962+ (stream 2581 6932... = HRX-family), exit 0.
+- Measured decode ~8-10 tok/s (residual ADDs split to CPU per-layer at 48
+  layers — qwen3moe decode ADDs lack the fused attention-output coverage that
+  dense qwen3 decode has).
+- §5.2 perf verdict: hybrid ≈ 4.5 s prefill + ~55 s/500-token HRX decode ≈
+  60 s vs HIP-only 12.2 s — criterion NOT met on current stacks (HRX decode of
+  the 30B at ~8-10 tok/s CPU-ADD-bound now; even with ADD fusion (~40 tok/s)
+  it would not beat HIP ~70). Product-level conclusion stands: on the 30B
+  workload HIP-only wins; the hybrid policy's value would be on workloads where
+  HRX decode > HIP decode (small-ctx warm decode) — the §0 decision's domain.
