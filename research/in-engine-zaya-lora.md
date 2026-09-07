@@ -73,13 +73,18 @@ B^T dL/dy x^T (per expert block for Phase B).
   (~1e-11): per-head L2 norm, GQA softmax attention (q/K/V), grouped conv
   (dw0/dw1), vrec 1-step delay.
 - 2026-09-07: M2 FULL MoE-LAYER GRAPH DONE — tools/zaya_layer_moe_check.cpp
-  gradcheck PASS (P=1 1.05e-7 / P=2 4.3e-8 over 3200 adapter params): embed ->
-  residual chain -> rmsnorm -> router top-1 -> fused expert GU->SiLU->D with
-  per-expert LoRA -> tail norm -> embed logits -> CE, manual backward.
-  (Bugs caught by the gate: router gemv transpose; CE grad used p_tgt instead
-  of per-logit probs; vacuous-pass guard = force real-expert routing.)
-  Next: CCA-attention layer assembly, then full 40-layer/sequence trainer +
-  AdamW + JSONL loop + q4nx export.
+  gradcheck PASS (P=1 1.05e-7 / P=2 4.3e-8 over 3200 adapter params). Bugs
+  caught by the gate: router gemv transpose; CE grad used p_tgt instead of
+  per-logit probs; vacuous-pass guard = force real-expert routing.
+- 2026-09-07: M2 CCA-LAYER GRAPH — tools/zaya_layer_cca_check.cpp. v-proj + o-proj
+  adapters PASS (~1e-9); q/k adapters PASS for P=1 and for single-cache-entry
+  attention (self-only or all->token0); FAIL (~1e-3) only when softmax ranges
+  over MULTIPLE cached positions (seq>=2). Attention-over-cache backward was
+  validated standalone (ops2 attn/q K V, T=9) and the inline code matches it —
+  the residual discrepancy is an open item (likely a small indexing slip in the
+  multi-t key/query accumulation visible on a clean re-read).
+  Next: fix seq>=2 q/k discrepancy; then full 40-layer trainer + AdamW + JSONL
+  loop + q4nx export.
 - Python/torch stacks explicitly out (policy: engine for all work); ryzen venv
   kept only as an external numeric oracle for the M2 PPL-gate comparison;
   strixhalo rocm7.2 torch venv deleted per policy.
