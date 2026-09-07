@@ -375,30 +375,50 @@ int main(int argc, char** argv) {
                     MoeW& m = net.moe[mi];
                     MoeSave& msav = msa[mi][p];
                     msav.cur_p = cur;
-                    // router (frozen) top-1 (force expert 0 for determinism in stage 1)
-                    msav.e = 0;
-                    // fused expert 0 + LoRA (reuse layer-check math)
-                    std::vector<double> ygu(2 * d.ff);
-                    double* wgu = &m.gu[0];
-                    MoeAd& ma = moe_ad[mi];
-                    double* wbg = ma.Bg.data(); double* wag = ma.Ag.data();
-                    for (int i = 0; i < 2 * d.ff; i++) {
-                        double a = 0;
-                        for (int j = 0; j < d.H; j++) a += wgu[(size_t)i * d.H + j] * cur[j];
-                        for (int k = 0; k < d.r; k++) { double la = 0; for (int j = 0; j < d.H; j++) la += wag[(size_t)k * d.H + j] * cur[j]; a += wbg[(size_t)i * d.r + k] * la; }
-                        ygu[i] = a;
+                                        // REAL top-1 router over nslots (slot nslots-1 = skip passthrough)
+                    {
+                        int rtr = d.rtr;
+                        std::vector<double> rs(rtr), f1(rtr), f2(rtr), l17(d.nslots);
+                        gemv(m.gdw.data(), rtr, d.H, cur.data(), rs.data());
+                        for (int i = 0; i < rtr; i++) rs[i] += m.gdb[i];
+                        double ssum = 0; for (double v : rs) ssum += v * v;
+                        double ir = 1.0 / std::sqrt(ssum / rtr + d.eps);
+                        for (int i = 0; i < rtr; i++) f1[i] = rs[i] * ir * m.rn[i];
+                        gemv(m.rf1.data(), rtr, rtr, f1.data(), f2.data());
+                        for (int i = 0; i < rtr; i++) f2[i] = 0.5 * (f2[i] + m.rf1b[i]) * (1 + std::erf((f2[i] + m.rf1b[i]) / std::sqrt(2.0)));
+                        gemv(m.rf2.data(), rtr, rtr, f2.data(), f1.data());
+                        for (int i = 0; i < rtr; i++) f1[i] = 0.5 * (f1[i] + m.rf2b[i]) * (1 + std::erf((f1[i] + m.rf2b[i]) / std::sqrt(2.0)));
+                        gemv(m.rout.data(), d.nslots, rtr, f1.data(), l17.data());
+                        msav.e = 0; double bv = -1e30;
+                        for (int e2 = 0; e2 < d.nslots; e2++) if (l17[e2] > bv) { bv = l17[e2]; msav.e = e2; }
                     }
-                    msav.ygu = ygu;
-                    msav.hh.assign(d.ff, 0);
-                    if (getenv("ZL_DBG") && li == d.L - 1 && p == d.P - 1)
-                        fprintf(stderr, "fwd dbg li=%d p=%d mi=%d kind=%d hh=%zu cur=%zu\n", li, p, mi, net.kind[li], msav.hh.size(), msav.cur_p.size());
-                    for (int j = 0; j < d.ff; j++) msav.hh[j] = silu(ygu[j]) * ygu[d.ff + j];
-                    double* wdn = &m.dn[0]; double* wbd = ma.Bd.data(); double* wad = ma.Ad.data();
-                    for (int i = 0; i < d.H; i++) {
-                        double a = 0;
-                        for (int j = 0; j < d.ff; j++) a += wdn[(size_t)i * d.ff + j] * msav.hh[j];
-                        for (int k = 0; k < d.r; k++) { double la = 0; for (int j = 0; j < d.ff; j++) la += wad[(size_t)k * d.ff + j] * msav.hh[j]; a += wbd[(size_t)i * d.r + k] * la; }
-                        hout[i] = a;
+                    if (msav.e < d.nslots - 1) {
+                        int ee = msav.e;
+                        std::vector<double> ygu(2 * d.ff);
+                        double* wgu = &m.gu[(size_t)ee * 2 * d.ff * d.H];
+                        MoeAd& ma = moe_ad[mi];
+                        double* wbg = &ma.Bg[(size_t)ee * 2 * d.ff * d.r];
+                        double* wag = &ma.Ag[(size_t)ee * d.r * d.H];
+                        for (int i = 0; i < 2 * d.ff; i++) {
+                            double a = 0;
+                            for (int j = 0; j < d.H; j++) a += wgu[(size_t)i * d.H + j] * cur[j];
+                            for (int k = 0; k < d.r; k++) { double la = 0; for (int j = 0; j < d.H; j++) la += wag[(size_t)k * d.H + j] * cur[j]; a += wbg[(size_t)i * d.r + k] * la; }
+                            ygu[i] = a;
+                        }
+                        msav.ygu = ygu;
+                        msav.hh.assign(d.ff, 0);
+                        for (int j = 0; j < d.ff; j++) msav.hh[j] = silu(ygu[j]) * ygu[d.ff + j];
+                        double* wdn = &m.dn[(size_t)ee * d.H * d.ff];
+                        double* wbd = &ma.Bd[(size_t)ee * d.H * d.r];
+                        double* wad = &ma.Ad[(size_t)ee * d.r * d.ff];
+                        for (int i = 0; i < d.H; i++) {
+                            double a = 0;
+                            for (int j = 0; j < d.ff; j++) a += wdn[(size_t)i * d.ff + j] * msav.hh[j];
+                            for (int k = 0; k < d.r; k++) { double la = 0; for (int j = 0; j < d.ff; j++) la += wad[(size_t)k * d.ff + j] * msav.hh[j]; a += wbd[(size_t)i * d.r + k] * la; }
+                            hout[i] = a;
+                        }
+                    } else {
+                        std::copy(cur.begin(), cur.end(), hout);
                     }
                     mi++;
                 } else {
@@ -577,6 +597,8 @@ int main(int argc, char** argv) {
                     if (getenv("ZL_DBG"))
                         fprintf(stderr, "dbg li=%d p=%d mi=%d e=%d hh=%zu ygu=%zu cur=%zu gu=%zu ad=%zu,%zu\n", li, p, mi, b.e, b.hh.size(), b.ygu.size(), b.cur_p.size(), m.gu.size(), moe_ad[mi].Bg.size(), moe_ad[mi].Bd.size());
                     MoeAd& ga = moe_gd[mi];
+                    if (b.e >= d.nslots - 1) { for (int i = 0; i < d.H; i++) gcur[i] += gH[i]; }
+                    else {
                     double* wgu = &m.gu[(size_t)b.e * 2 * d.ff * d.H];
                     double* wdn = &m.dn[(size_t)b.e * d.H * d.ff];
                     double* wbg = &moe_ad[mi].Bg[(size_t)b.e * 2 * d.ff * d.r];
@@ -605,6 +627,7 @@ int main(int argc, char** argv) {
                     for (int k = 0; k < d.r; k++) for (int j = 0; j < d.H; j++) agx[k] += wag[(size_t)k * d.H + j] * b.cur_p[j];
                     for (int i = 0; i < 2 * d.ff; i++) for (int k = 0; k < d.r; k++) ga.Bg[(size_t)b.e * 2 * d.ff * d.r + (size_t)i * d.r + k] += gygu[i] * agx[k];
                     for (int k = 0; k < d.r; k++) for (int j = 0; j < d.H; j++) { double a = 0; for (int i = 0; i < 2 * d.ff; i++) a += gygu[i] * wbg[(size_t)i * d.r + k]; ga.Ag[(size_t)b.e * d.r * d.H + (size_t)k * d.H + j] += a * b.cur_p[j]; }
+                    }
                 } else {
                     CcaW& c = net.cca[ci];
                     CcaSave& b = csa[ci][p];

@@ -101,3 +101,12 @@ B^T dL/dy x^T (per expert block for Phase B).
   single-row (full-buffer scan: 2048 nonzero int32, row-0 only, at am=8 with 8
   real rows). Both verdicts in docs/verification/2026-09-07-xrt-split/
   dispatch-fattening-notes.md.
+
+- 2026-09-07 (M2 real phase): trainer real-mode pipeline DONE (loader reads the
+  19.2GB f32 dump; real dims 40L/H2048/V262272; real top-1 router in fwd +
+  skip-passthrough + bwd skip-guard; toy FD stack gate still PASS; real model
+  runs ~30-60s/step and backprops). OPEN for full task completion: real-forward
+  parity with engine decode (base CE ~28 vs expected ~3-8: EDA router recurrence,
+  pa/pm residual-scale parity, v_del source are the suspects — check via argmax
+  vs engine's 27213 continuation), then merge->q4nx export + decode-parity + PPL
+  gates. Real-router bugs caught: dead-zero LoRA init, mi++ double increment.
