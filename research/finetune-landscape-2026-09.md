@@ -91,6 +91,22 @@ hands-on reports — transfers directly to Zaya:
    (tools exist from the Zaya archaeology: dequant_q4nx.py / convert_*.py) -> load in
    the 1bit engine -> verify on the NPU + GPU decoders.
 
+## 7. LlamaFactory (hiyouga/LlamaFactory) — the research-grade framework
+
+- What it is: unified fine-tuning framework (Apache-2.0, actively maintained, 1000+ citations): zero-code CLI + LLaMA-Board (Gradio) Web UI; SFT/pre-training/reward/PPO/DPO/KTO/ORPO/GRPO; LoRA/QLoRA (2-8 bit via AQLM/AWQ/GPTQ/LLM.int8/HQQ/EETQ) + advanced optimizers (GaLore, BAdam, APOLLO, Adam-mini, Muon, OFT, DoRA, LoftQ, PiSSA) + practical tricks (FlashAttention-2, Unsloth kernels, Liger, NEFTune, rsLoRA); vLLM/SGLang serving; Docker; experiment monitors.
+- Platform reach: official AMD ROCm docs + AMD GPU-cloud notebooks; **Ascend-NPU multi-backend docs** ("multibackend/npu") — note: Ascend (torch_npu), NOT XDNA; no XDNA NPU training backend exists anywhere.
+- Model list: 100+ families, but **Zaya/Zyphra NOT in the registry**.
+
+## 8. Tooling verdict for a Zaya QLoRA pilot (2026-09)
+
+- **ZAYA1-8B is transformers-native**: config.json says `ZayaForCausalLM` / `model_type: zaya`, built against transformers 5.10.0.dev0 -> loadable/trainable by any HF-native stack (peft + TRL), provided local transformers >= the zaya-support version.
+- **Unsloth is NOT an option for zaya**: its fast kernels are arch-registered (unsloth/models registry: llama/qwen2+3/qwen3_moe/gemma/glm4_moe/granite/cohere/falcon_h1/llama4... no zaya) and it refuses/gates unsupported archs. Its 2x/70%-VRAM claims only apply to those families.
+- **LlamaFactory**: no zaya entry out of the box; would need its custom-model path (registry config entry + chat template + LoRA target modules). Feasible but friction.
+- **Lowest-friction path**: peft + TRL SFTTrainer directly on the transformers-native zaya arch, with explicit target modules (no registry gating). Speed-ups (flash-attn/Liger) only where they support the arch's ops (CCA conv-state ops may not have fused kernels -> fall back to eager).
+- Target modules for zaya (tensor names from 1bit engine archaeology): attn q/k/v/o projections + expert FFN gate/up/down; conv-state projections (ssm_conv1d/cca_conv_grp) conservative or frozen; router frozen for run 1 (MoE playbook).
+- Still applies: QLoRA 4-bit base + 16-bit adapters; on ROCm verify bitsandbytes + peft on gfx1201 before committing (or rent ~$0.13/run).
+- Sources: github hiyouga/LlamaFactory README; Zyphra/ZAYA1-8B config.json; unslothai/unsloth model registry.
+
 ## Sources
 
 - Unsloth README/docs (unsloth.ai, github unslothai/unsloth)
