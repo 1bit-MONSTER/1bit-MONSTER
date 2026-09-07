@@ -32,3 +32,19 @@
 - FastFlowLM qwen3.6-35B-A3B Q4_K: 17.5 t/s (published) / 17.1 measured
 - IRON (AMD): llama3.2 1B = 4.4 t/s (179 dispatches/token, 1.4ms each = 75% ovhd)
 - AMD marketing 30 t/s gpt-oss-120B = iGPU (8060S), NOT NPU
+
+## NPU_WBO_FLAGS verdict (2026-09-07, closed)
+- Test: fused full-array decode with NPU_WBO_FLAGS 0/1/2 (engine npu_engine_i8ctx
+  make_weight_bo/make_fused_weight_bo env switch). ALL fail at BO allocation,
+  before any decode:
+  - 0 (no flags):  DRM_IOCTL_AMDXDNA_CREATE_BO -> "unsupported buffer type: none
+    flag" (err=95) — amdxdna requires an explicit BO type.
+  - 1 (CACHEABLE): CREATE_BO err=-28 "No space left on device" — cacheable host
+    BO unsupported by the NPU allocator for these groups.
+  - 2 (SVM):       "Bad BO type" (err=22) — SVM BOs unsupported on this driver.
+- Conclusion: HOST_ONLY is the ONLY supported weight-BO path on this
+  driver/kernel stack (7.2-era amdxdna + XRT). The ~3.6 GB/s cache-coherent
+  weight-DMA ceiling flagged in the header comment is a DRIVER constraint, not a
+  tuning knob — weight-DMA is NOT improvable from userspace via BO flags.
+  (Alternative levers, if ever pursued: driver-side BO-type support, or kernel
+  changes to reduce per-launch weight traffic — e.g. caching/streaming.)
