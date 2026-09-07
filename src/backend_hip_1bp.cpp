@@ -390,8 +390,9 @@ struct Hip1bpBackend : Backend {
             // blk.0.attn_qkv (Q8_0 raw, 34 B/block) and run the device Q8 gemv
             // against a host dequant of the same rows. Exercises the raw-GGUF
             // loader + h1bp_q8gemv_kernel on real hardware without a decode
-            // path. Dense models never reach here (arch gate above).
-            if (ok && getenv("H1BP_Q35_SELFCHECK")) {
+            // path. Dense models never reach here (arch gate above); GGUF-only
+            // — a 1BP model has no gguf_ reader to pull raw rows from.
+            if (ok && gguf_ && getenv("H1BP_Q35_SELFCHECK")) {
                 std::vector<uint8_t> raw;
                 const int K0 = 2048, M0 = 8192;
                 const size_t rowb = (size_t)(K0 / 32) * 34;
