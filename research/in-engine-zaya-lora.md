@@ -142,3 +142,10 @@ B^T dL/dy x^T (per expert block for Phase B).
   divergence: block-internal (attention/prep/MoE framing) or position-major vs
   token-major state ordering. Next: faithful token-major single-token reference
   decoder against the dumped weights to reproduce engine's 27213 independently.
+
+- 2026-09-07 (M2 parity, round 4): REAL BACKWARD FIX — v_del input grads must
+  backprop through hlay[li][p-1] (a LIVE hidden = block out of li-1) into
+  gBlk[li-1][p-1]; was dropped as 'frozen'. Toy FD stack gate PASS restored
+  (was failing). Also fixed Net ctor input_scale/bias init (toy OOB). Forward
+  parity unchanged (24.9/30072) — backward is now fully consistent; the real
+  divergence is FORWARD-only. Next: token-major reference decoder vs engine.

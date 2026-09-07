@@ -65,6 +65,7 @@ struct Net {
         d.derive();
         for (int l = 0; l < d.L; l++) kind.push_back((l % 2 == 0) ? 0 : 1);
         embed.assign((size_t)d.V * d.H, 0); fw_final.assign(d.H, 1);
+        input_scale.assign(d.H, 1.0); input_bias.assign(d.H, 0.0);
         fw_l.assign(d.L, std::vector<double>(d.H, 1));
         hs_l.assign(d.L, std::vector<double>(d.H, 1));
         hb_l.assign(d.L, std::vector<double>(d.H, 0));
@@ -725,11 +726,16 @@ int main(int argc, char** argv) {
                     proj_bwd(c.wv1, cca_ad[ci].Bv1, cca_ad[ci].Av1, d.hv2, d.H, b.cur_p.data(), gvc_l.data(), ga.Bv1, ga.Av1, gx_cur.data());
                     std::vector<double> gvd_full = gvd_l;
                     for (int i = 0; i < d.hv2; i++) gvd_full[i] += gvd_d[ci][p][i];
-                    { double* xprev = (p >= 1) ? &hlay[0][(size_t)(p - 1) * d.H] : nullptr;
+                    { double* xprev = (p >= 1) ? &hlay[li][(size_t)(p - 1) * d.H] : nullptr;
                       std::vector<double> xpv(d.H, 0.0);
                       if (xprev) std::copy(xprev, xprev + d.H, xpv.begin());
                       std::vector<double> gxd(d.H, 0);
-                      proj_bwd(c.wv2, cca_ad[ci].Bv2, cca_ad[ci].Av2, d.hv2, d.H, xpv.data(), gvd_full.data(), ga.Bv2, ga.Av2, gxd.data()); }
+                      proj_bwd(c.wv2, cca_ad[ci].Bv2, cca_ad[ci].Av2, d.hv2, d.H, xpv.data(), gvd_full.data(), ga.Bv2, ga.Av2, gxd.data());
+                      // v_del input = hlay[li][p-1] = block out of layer li-1 (live):
+                      // backprop its grads into gBlk[li-1] at position p-1
+                      if (li > 0 && p >= 1)
+                          for (int j = 0; j < d.H; j++)
+                              gBlk[li - 1][(size_t)(p - 1) * d.H + j] += gxd[j]; }
                     for (int i = 0; i < d.H; i++) gcur[i] += gx_cur[i];
                 }
                 // rmsnorm bwd: cur = rmsnorm(res_new[li][p]); then rn split
