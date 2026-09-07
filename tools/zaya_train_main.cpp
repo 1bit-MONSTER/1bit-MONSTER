@@ -20,6 +20,7 @@
 #include <random>
 #include <algorithm>
 #include <cstring>
+#include <sstream>
 
 static inline double silu(double x) { return x / (1.0 + std::exp(-x)); }
 static inline double silu_d(double x) { double s = 1.0 / (1.0 + std::exp(-x)); return s * (1.0 + x * (1.0 - s)); }
@@ -52,7 +53,8 @@ struct Net {
     Dims d;
     std::vector<double> embed, fw_final, input_scale, input_bias;                 // [V*H], [H]
     std::vector<std::vector<double>> fw_l;               // per-layer norm weights [L][H]
-    std::vector<std::vector<double>> hs_l, hb_l, rs_l, rb_l;  // per-layer residual scales
+    std::vector<std::vector<double>> hs_l, hb_l, rs_l, rb_l;  // per-layer residual scales (kind-selected: even=pa, odd=pm)
+    std::vector<std::vector<double>> pa_hs, pa_hb, pa_rs, pa_rb; // always the pa set per layer (probe)
     std::vector<int> kind;                               // 0=CCA,1=MoE per layer
     std::vector<CcaW> cca; std::vector<MoeW> moe;        // indexed by block counter
     int ncca = 0, nmoe = 0;
@@ -71,6 +73,10 @@ struct Net {
         hb_l.assign(d.L, std::vector<double>(d.H, 0));
         rs_l.assign(d.L, std::vector<double>(d.H, 1));
         rb_l.assign(d.L, std::vector<double>(d.H, 0));
+        pa_hs.assign(d.L, std::vector<double>(d.H, 1));
+        pa_hb.assign(d.L, std::vector<double>(d.H, 0));
+        pa_rs.assign(d.L, std::vector<double>(d.H, 1));
+        pa_rb.assign(d.L, std::vector<double>(d.H, 0));
         for (int l = 0; l < d.L; l++) {
             if (kind[l] == 0) {
                 ncca++;
@@ -197,6 +203,7 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
             if (cgb.size() == (size_t)d.qkv) c.cgb = cgb;
             if (ks.size()  == (size_t)d.nkv) c.ks = ks;
             net.hs_l[l] = pahss; net.hb_l[l] = pahsb; net.rs_l[l] = parss; net.rb_l[l] = parsb;
+            net.pa_hs[l] = pahss; net.pa_hb[l] = pahsb; net.pa_rs[l] = parss; net.pa_rb[l] = parsb;
         } else {
             int mi = net.moe_at(l);
             MoeW& m = net.moe[mi];
@@ -223,6 +230,7 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
                     std::copy(dn.begin() + (size_t)e * blk, dn.begin() + (size_t)(e+1) * blk, m.dn.begin() + (size_t)e * blk);
             }
             net.hs_l[l] = pmhss; net.hb_l[l] = pmhsb; net.rs_l[l] = pmrss; net.rb_l[l] = pmrsb;
+            net.pa_hs[l] = pahss; net.pa_hb[l] = pahsb; net.pa_rs[l] = parss; net.pa_rb[l] = parsb;
         }
     }
     std::vector<int> seq = {2,   /* BOS (engine pos0) */
@@ -236,7 +244,7 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
 int main(int argc, char** argv) {
     std::string mode = argc > 1 ? argv[1] : "train";
     int steps = argc > 2 ? atoi(argv[2]) : 20;
-    bool real = (mode == "real" || mode == "par");
+    bool real = (mode == "real" || mode == "par" || mode == "rp");
     Dims d;
     if (real) {
         d.H = 2048; d.ff = 2048; d.rtr = 256; d.nslots = 17; d.nq = 8; d.nkv = 2;
@@ -285,6 +293,7 @@ int main(int argc, char** argv) {
     // MoE block saves
     struct MoeSave {
         int e = 0;
+        double wt = 1.0;
         std::vector<double> ygu, hh, cur_p;
     };
     std::vector<std::vector<MoeSave>> msa(net.nmoe, std::vector<MoeSave>(d.P));
@@ -369,6 +378,7 @@ int main(int argc, char** argv) {
                 hlay[0][(size_t)p * d.H + i] = (em + net.input_bias[i]) * net.input_scale[i];
             }
             std::vector<double> res_v(d.H, 0.0);
+            std::vector<double> prev_router;
             int ci = 0, mi = 0;
             for (int li = 0; li < d.L; li++) {
                 double* h_prev = &hlay[li][(size_t)p * d.H];
@@ -391,29 +401,51 @@ int main(int argc, char** argv) {
                     MoeW& m = net.moe[mi];
                     MoeSave& msav = msa[mi][p];
                     msav.cur_p = cur;
-                                        // REAL top-1 router over nslots (slot nslots-1 = skip passthrough)
+                                        // ENGINE router (zaya_moe.h): transposed gate_down, tanh-GELU,
+                    // EDA recurrence, softmax-17, top-1 over 16 + bb, wt
                     {
                         int rtr = d.rtr;
-                        std::vector<double> rs(rtr), f1(rtr), f2(rtr), l17(d.nslots);
-                        gemv(m.gdw.data(), rtr, d.H, cur.data(), rs.data());
-                        for (int i = 0; i < rtr; i++) rs[i] += m.gdb[i];
-                        double ssum = 0; for (double v : rs) ssum += v * v;
-                        double ir = 1.0 / std::sqrt(ssum / rtr + d.eps);
-                        for (int i = 0; i < rtr; i++) f1[i] = rs[i] * ir * m.rn[i];
-                        gemv(m.rf1.data(), rtr, rtr, f1.data(), f2.data());
-                        for (int i = 0; i < rtr; i++) f2[i] = 0.5 * (f2[i] + m.rf1b[i]) * (1 + std::erf((f2[i] + m.rf1b[i]) / std::sqrt(2.0)));
-                        gemv(m.rf2.data(), rtr, rtr, f2.data(), f1.data());
-                        for (int i = 0; i < rtr; i++) f1[i] = 0.5 * (f1[i] + m.rf2b[i]) * (1 + std::erf((f1[i] + m.rf2b[i]) / std::sqrt(2.0)));
-                        gemv(m.rout.data(), d.nslots, rtr, f1.data(), l17.data());
-                        // top-1 over the 16 experts only (skip slot never routed),
-                        // with balancing bias bb (zaya_moe.h semantics)
-                        double bb0 = (m.bb.size() > 0) ? m.bb[0] : 0.0;
-                        msav.e = 0; double bv = l17[0] + bb0;
-                        for (int e2 = 1; e2 < d.nslots - 1; e2++) {
-                            double bbv = (m.bb.size() > (size_t)e2) ? m.bb[e2] : 0.0;
-                            double v = l17[e2] + bbv;
-                            if (v > bv) { bv = v; msav.e = e2; }
+                        std::vector<double> rs(rtr), r2(rtr), l17(d.nslots);
+                        auto tanhgelu = [](double x){ double t = std::tanh(0.7978845608 * (x + 0.044715 * x * x * x)); return 0.5 * x * (1.0 + t); };
+                        for (int i = 0; i < rtr; i++) {
+                            double ssum = m.gdb[i];
+                            for (int j = 0; j < d.H; j++) ssum += cur[j] * m.gdw[(size_t)j * rtr + i];
+                            rs[i] = ssum;
                         }
+                        if (!prev_router.empty() && !m.eda.empty()) {
+                            int n = std::min(rtr, std::min((int)prev_router.size(), (int)m.eda.size()));
+                            for (int i = 0; i < n; i++) rs[i] += prev_router[i] * m.eda[i];
+                        }
+                        prev_router = rs;
+                        double ss = 0; for (double v : rs) ss += v * v;
+                        double rr = 1.0 / std::sqrt(ss / rtr + d.eps);
+                        for (int i = 0; i < rtr; i++) rs[i] = rs[i] * rr * m.rn[i];
+                        for (int i = 0; i < rtr; i++) {
+                            double ssum = m.rf1b[i];
+                            for (int j = 0; j < rtr; j++) ssum += rs[j] * m.rf1[(size_t)i * rtr + j];
+                            r2[i] = tanhgelu(ssum);
+                        }
+                        for (int i = 0; i < rtr; i++) {
+                            double ssum = m.rf2b[i];
+                            for (int j = 0; j < rtr; j++) ssum += r2[j] * m.rf2[(size_t)i * rtr + j];
+                            rs[i] = tanhgelu(ssum);
+                        }
+                        for (int i = 0; i < d.nslots; i++) {
+                            double ssum = 0;
+                            for (int j = 0; j < rtr; j++) ssum += rs[j] * m.rout[(size_t)i * rtr + j];
+                            l17[i] = ssum;
+                        }
+                        double mx = l17[0]; for (int i = 1; i < d.nslots; i++) mx = std::max(mx, l17[i]);
+                        double sv = 0; for (int i = 0; i < d.nslots; i++) { l17[i] = std::exp(l17[i] - mx); sv += l17[i]; }
+                        double isv = 1.0 / (sv + 1e-10);
+                        for (int i = 0; i < d.nslots; i++) l17[i] *= isv;
+                        int best = 0; double bv = l17[0] + m.bb[0];
+                        for (int i = 1; i < d.nslots - 1; i++) {
+                            double v = l17[i] + m.bb[i];
+                            if (v > bv) { bv = v; best = i; }
+                        }
+                        msav.e = best;
+                        msav.wt = bv;
                     }
                     if (msav.e < d.nslots - 1) {
                         int ee = msav.e;
@@ -522,7 +554,8 @@ int main(int argc, char** argv) {
                 }
                 // propagate block output to next layer input
                 for (int i = 0; i < d.H; i++) hlay[li + 1][(size_t)p * d.H + i] = hout[i];
-                res_v = rn_v;
+                res_v = cur;   // engine rmsnorm clobbers residual in place: layer l+1's
+                                // residual branch reads the NORMED block input cur_l, not rn_v
             }
             // final: cur_f = rmsnorm(h_L + res_v)  (h_L = block out of last layer)
             for (int i = 0; i < d.H; i++) tail_v[(size_t)p * d.H + i] = hlay[d.L][(size_t)p * d.H + i] + res_v[i];
@@ -762,6 +795,58 @@ int main(int argc, char** argv) {
     };
 
     // mode dispatch
+    if (mode == "rp") {
+        // router probe: read the engine l1 input (pos6) from /tmp/ztrace.txt and
+        // evaluate candidate router transcriptions against engine expert 6
+        std::vector<double> xin;
+        FILE* zt = fopen("/tmp/ztrace.txt", "r");
+        char buf[65536];
+        while (zt && fgets(buf, sizeof buf, zt)) {
+            std::string ln = buf;
+            if (ln.rfind("pos=6 l=1", 0) == 0 && ln.find("moe") == std::string::npos) {
+                std::istringstream iss(ln);
+                std::string tok; iss >> tok >> tok;
+                double v; while (iss >> v) xin.push_back(v);
+                break;
+            }
+        }
+        if (zt) fclose(zt);
+        if ((int)xin.size() != d.H) { fprintf(stderr, "no engine l1 input (got %zu)\n", xin.size()); return 1; }
+        MoeW& m = net.moe[0];   // layer 1 -> moe index 0
+        int rtr = d.rtr;
+        auto probe = [&](bool gdwT, bool tanhG, bool top16, bool bb0) {
+            std::vector<double> rs(rtr), r2(rtr), l17(d.nslots);
+            auto gelu = [&](double x){ if (tanhG) { double t=std::tanh(0.7978845608*(x+0.044715*x*x*x)); return 0.5*x*(1+t);} return 0.5*x*(1+std::erf(x/std::sqrt(2.0))); };
+            for (int i = 0; i < rtr; i++) {
+                double ss = m.gdb[i];
+                if (gdwT) { for (int j = 0; j < d.H; j++) ss += xin[j]*m.gdw[(size_t)j*rtr+i]; }
+                else      { for (int j = 0; j < d.H; j++) ss += m.gdw[(size_t)i*d.H+j]*xin[j]; }
+                rs[i] = ss;
+            }
+            double sss = 0; for (double v:rs) sss+=v*v;
+            double rr = 1.0/std::sqrt(sss/rtr + d.eps);
+            for (int i=0;i<rtr;i++) rs[i] = rs[i]*rr*m.rn[i];
+            for (int i=0;i<rtr;i++){ double a=m.rf1b[i]; for(int j=0;j<rtr;j++) a+=rs[j]*m.rf1[(size_t)i*rtr+j]; r2[i]=gelu(a); }
+            for (int i=0;i<rtr;i++){ double a=m.rf2b[i]; for(int j=0;j<rtr;j++) a+=r2[j]*m.rf2[(size_t)i*rtr+j]; rs[i]=gelu(a); }
+            for (int i=0;i<d.nslots;i++){ double a=0; for(int j=0;j<rtr;j++) a+=rs[j]*m.rout[(size_t)i*rtr+j]; l17[i]=a; }
+            double mx=l17[0]; for(int i=1;i<d.nslots;i++) mx=std::max(mx,l17[i]);
+            double sv=0; for(int i=0;i<d.nslots;i++){ l17[i]=std::exp(l17[i]-mx); sv+=l17[i]; }
+            for(int i=0;i<d.nslots;i++) l17[i]/=sv;
+            double bbv0 = (bb0||m.bb.empty())?0.0:m.bb[0];
+            int best=0; double bv=l17[0]+bbv0;
+            int lim = top16 ? d.nslots-1 : d.nslots;
+            for (int i=1;i<lim;i++){ double b=(bb0||m.bb.empty())?0.0:m.bb[i]; double v=l17[i]+b; if(v>bv){bv=v;best=i;} }
+            return best;
+        };
+        for (int g=0;g<2;g++) for (int t=0;t<2;t++) for (int s=0;s<2;s++) for (int z=0;z<2;z++)
+            fprintf(stderr, "gdwT=%d tanh=%d top16=%d bb0=%d -> %d%s\n", g,t,s,z, probe(g,t,s,z), (probe(g,t,s,z)==6)?"  <== MATCH":"");
+        { FILE* sf = fopen("/tmp/scales1.txt", "w");
+          const char* nm[8] = {"pa_hs","pa_hb","pa_rs","pa_rb","pm_hs","pm_hb","pm_rs","pm_rb"};
+          std::vector<double>* vv[8] = {&net.pa_hs[1],&net.pa_hb[1],&net.pa_rs[1],&net.pa_rb[1],
+                                                     &net.hs_l[1],&net.hb_l[1],&net.rs_l[1],&net.rb_l[1]};
+          for (int k=0;k<8;k++){ if(sf){ fprintf(sf,"%s ",nm[k]); for(int i=0;i<d.H;i++) fprintf(sf,"%.8e%c",(*vv[k])[i], i==d.H-1?'\n':' ');} } if(sf) fclose(sf); }
+        return 0;
+    }
     if (mode == "par") {
         double L = run_fwd(0);
         double* pr = probs[6].data();
@@ -806,8 +891,31 @@ int main(int argc, char** argv) {
                 fprintf(tq, "vcr "); for (int i = 0; i < d.hv2; i++) fprintf(tq, "%.8e%c", c0.vc[i], i == d.hv2-1 ? '\n' : ' ');
                 fprintf(tq, "vdr "); for (int i = 0; i < d.hv2; i++) fprintf(tq, "%.8e%c", c0.vd[i], i == d.hv2-1 ? '\n' : ' ');
                 fprintf(tq, "mix "); for (int i = 0; i < d.qkv; i++) fprintf(tq, "%.8e%c", c0.sqk_pre[i], i == d.qkv-1 ? '\n' : ' ');
+                fprintf(tq, "L1cur "); { int QP = getenv("ZL_QP") ? atoi(getenv("ZL_QP")) : 6; for (int i = 0; i < d.H; i++) fprintf(tq, "%.8e%c", cur_l[1][(size_t)QP*d.H+i], i == d.H-1 ? '\n' : ' '); }
+                fprintf(tq, "L1res "); { int QP = getenv("ZL_QP") ? atoi(getenv("ZL_QP")) : 6; for (int i = 0; i < d.H; i++) fprintf(tq, "%.8e%c", res_new[1][(size_t)QP*d.H+i], i == d.H-1 ? '\n' : ' '); }
+                fprintf(tq, "L0res "); { int QP = getenv("ZL_QP") ? atoi(getenv("ZL_QP")) : 6; for (int i = 0; i < d.H; i++) fprintf(tq, "%.8e%c", res_new[0][(size_t)QP*d.H+i], i == d.H-1 ? '\n' : ' '); }
+                for (int LL = 0; LL < 12; LL++) {
+                    fprintf(tq, "curL%d ", LL); { int QP = getenv("ZL_QP") ? atoi(getenv("ZL_QP")) : 6; for (int i = 0; i < d.H; i++) fprintf(tq, "%.8e%c", cur_l[LL][(size_t)QP*d.H+i], i == d.H-1 ? '\n' : ' '); }
+                    if (LL % 2 == 0) {
+                        fprintf(tq, "hout%d ", LL); { int QP = getenv("ZL_QP") ? atoi(getenv("ZL_QP")) : 6; for (int i = 0; i < d.H; i++) fprintf(tq, "%.8e%c", hout_l[LL][(size_t)QP*d.H+i], i == d.H-1 ? '\n' : ' '); }
+                    }
+                }
                 fprintf(tq, "qp "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c0.qo_pr[i], i == d.qd-1 ? '\n' : ' ');
                 fprintf(tq, "kp "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c0.ko_pr[i], i == d.kd-1 ? '\n' : ' ');
+                CcaSave& c6 = csa[3][QP];
+                fprintf(tq, "c6q0 "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c6.qo[i], i == d.qd-1 ? '\n' : ' ');
+                fprintf(tq, "c6k0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c6.ko[i], i == d.kd-1 ? '\n' : ' ');
+                fprintf(tq, "c6v0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c6.vo[i], i == d.kd-1 ? '\n' : ' ');
+                fprintf(tq, "c6mix "); for (int i = 0; i < d.qkv; i++) fprintf(tq, "%.8e%c", c6.sqk_pre[i], i == d.qkv-1 ? '\n' : ' ');
+                fprintf(tq, "c6ao "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c6.ao[i], i == d.qd-1 ? '\n' : ' ');
+                fprintf(tq, "c6h "); for (int i = 0; i < d.H; i++) fprintf(tq, "%.8e%c", c6.hout[i], i == d.H-1 ? '\n' : ' ');
+                CcaSave& c4 = csa[2][QP];
+                fprintf(tq, "c4q0 "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c4.qo[i], i == d.qd-1 ? '\n' : ' ');
+                fprintf(tq, "c4k0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c4.ko[i], i == d.kd-1 ? '\n' : ' ');
+                fprintf(tq, "c4v0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c4.vo[i], i == d.kd-1 ? '\n' : ' ');
+                fprintf(tq, "c4mix "); for (int i = 0; i < d.qkv; i++) fprintf(tq, "%.8e%c", c4.sqk_pre[i], i == d.qkv-1 ? '\n' : ' ');
+                fprintf(tq, "c4ao "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c4.ao[i], i == d.qd-1 ? '\n' : ' ');
+                fprintf(tq, "c4h "); for (int i = 0; i < d.H; i++) fprintf(tq, "%.8e%c", c4.hout[i], i == d.H-1 ? '\n' : ' ');
                 fclose(tq);
             }
             FILE* tf = fopen("/tmp/mytrace.txt", "w");
