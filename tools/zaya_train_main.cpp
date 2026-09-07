@@ -957,6 +957,19 @@ int main(int argc, char** argv) {
             MoeAd& P = moe_ad[mi]; MoeAd& G = moe_gd[mi];
             add_ap(P.Bg,G.Bg); add_ap(P.Ag,G.Ag); add_ap(P.Bd,G.Bd); add_ap(P.Ad,G.Ad);
         }
+        auto save_adapters = [&](const char* path) {
+            FILE* sf = fopen(path, "wb");
+            if (!sf) { fprintf(stderr, "save %s failed\n", path); return; }
+            auto w = [&](const std::vector<double>& v) { size_t n = v.size(); fwrite(&n, sizeof n, 1, sf); fwrite(v.data(), sizeof(double), n, sf); };
+            for (int ci = 0; ci < net.ncca; ci++) { CcaAd& P = cca_ad[ci];
+                w(P.Bq); w(P.Aq); w(P.Bk); w(P.Ak); w(P.Bv1); w(P.Av1); w(P.Bv2); w(P.Av2); w(P.Bo); w(P.Ao); }
+            for (int mi = 0; mi < net.nmoe; mi++) { MoeAd& P = moe_ad[mi];
+                w(P.Bg); w(P.Ag); w(P.Bd); w(P.Ad); }
+            int dims[3] = {net.d.H, net.d.L, net.d.r};
+            fwrite(dims, sizeof dims, 1, sf);
+            fclose(sf);
+            fprintf(stderr, "[ckpt] saved adapters -> %s\n", path); fflush(stderr);
+        };
         const double lr = real ? 3e-4 : 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
         double prev = 1e30;
         int b = 0;   // fixed batch for a clean descent check
@@ -973,6 +986,8 @@ int main(int argc, char** argv) {
             }
             if (st % 2 == 0 || st == steps - 1)
                 fprintf(stderr, "step %3d loss %.4f\n", st, L), fflush(stderr);
+            if (st % 10 == 9)
+                save_adapters("/tmp/zaya_adapters.bin");
             prev = L;
         }
         (void)prev;
