@@ -1,6 +1,6 @@
 # qwen35moe on 1BP q4nx — M2 wiring plan (#1831, 1BP q4nx lane milestone 2)
 
-Status: plan (recon complete 2026-09-06). Parent: docs/research/hip-qwen35-gdn-port.md.
+Status: IMPLEMENTED + validated on strixhalo 2026-09-06 (commit 0a849f80 + follow-ups); corr-gate verdict below. Parent: docs/research/hip-qwen35-gdn-port.md.
 Branch: feat/qwen35-1bp-q4nx. Worktree: ~/wt/q35-1bp (strixhalo).
 
 ## Goal
@@ -92,3 +92,25 @@ Validation order (structural -> corr):
   #2131 (cpu_ref), #2134 (L2-norm/norm_topk fixes), #2135 (C++23 toolchain).
 - Code: backend_hip_1bp.cpp (qwen35 block lines ~231-494, qwen35_step
   ~1013+), engine/npu/src/onebp_loader.cpp (NpuOnebpModel API), src/gguf_to_onebp.cpp.
+
+
+## Validation outcome (2026-09-06/07, strixhalo gfx1151, 100-token seq, same inputs)
+
+| comparison | corr min | corr mean | argmax-eq |
+|---|---|---|---|
+| GGUF Q8_0 engine vs qwen35moe_cpu_ref (M3 repro) | 0.9823 | 0.9982 | 98/100 |
+| qwen35-1bp.1bp (all-Q4NX) engine vs cpu_ref | 0.8096 | 0.9690 | 91/100 |
+| qwen35-1bp-v2.1bp (emb/lm_head/router/conv1d -> F16) vs cpu_ref | 0.8127 | 0.9754 | 92/100 |
+| v2 vs GGUF-engine (wiring, identical curve to vs-ref) | 0.8127 | 0.9754 | 92/100 |
+| v1 vs v2 engines (route effect) | 0.9751 | 0.9909 | 95/100 |
+
+- GGUF-engine == cpu_ref is **corr 1.0000 at pos 0-3** (bit-identical logits);
+  the Q4NX-vs-oracle delta curve is identical whether the oracle is the GGUF
+  engine or cpu_ref => M2 wiring is faithful (engine math == reference math;
+  delta = Q4NX quantization of per-layer weights, 40-layer compound; worst at
+  pos0, no recurrent state to dampen).
+- The >=0.99-min gate vs a Q8_0 GGUF oracle is NOT attainable for an all-Q4NX
+  artifact (v2 still Q4NX for attn/ssm/exps/shexp). OPEN (owner decision):
+  (a) same-file oracle (extend cpu_ref to 1BP) = true wiring gate, keeps
+  q4nx; (b) accept documented quant delta (mean 0.975/argmax 92%) as the
+  lane gate; (c) F16 artifact instead (perf lane dies).

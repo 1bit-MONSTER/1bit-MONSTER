@@ -76,6 +76,7 @@ struct Hip1bpBackend : Backend {
     bool q35_loaded = false;
     bool q35_q4nx = false;            // #1831 M2: weights are 1BP Q4NX tiles, not GGUF Q8_0 raw
     size_t q35_exp_bytes[3] = {0,0,0}; // per-expert bytes: [0]=gate [1]=up [2]=down (ndim==3 stacks)
+    float* q35_out_f32 = nullptr;        // lm_head as f32 (F16/F32-routed output.weight)
     uint8_t* q35_emb = nullptr, *q35_out = nullptr;     // token_embd / output (V x H; Q8_0 raw or Q4NX tile)
     float* q35_onorm = nullptr;                         // output_norm (H f32)
     std::vector<Q35L> q35L;
@@ -337,10 +338,19 @@ struct Hip1bpBackend : Backend {
                             te->ndim, te->rows, te->cols, te->num_experts);
                     return false;
                 }
-                if (te->ndim > 1 && te->quant != ONEBP_Q4NX) {
-                    fprintf(stderr, "[hip1bp] qwen35moe: %s 1BP quant %u != Q4NX\n",
-                            bn, (unsigned)te->quant);
-                    return false;
+                if (te->ndim > 1) {
+                    // #1831 M2 per-tensor routing (gguf_to_onebp --q4nx):
+                    // token_embd/output -> F16, router/conv1d -> F32; every
+                    // other ndim>=2 tensor must be a Q4NX packed tile.
+                    bool lossless = te->quant == ONEBP_F16 || te->quant == ONEBP_F32;
+                    bool emb = (strcmp(nm, "token_embd.weight") == 0 || strcmp(nm, "output.weight") == 0);
+                    bool route32 = (strstr(nm, "ffn_gate_inp.weight") || strstr(nm, "ssm_conv1d.weight"));
+                    bool okq = (te->quant == ONEBP_Q4NX) || (lossless && (emb || route32));
+                    if (!okq) {
+                        fprintf(stderr, "[hip1bp] qwen35moe: %s 1BP quant %u unexpected\n",
+                                bn, (unsigned)te->quant);
+                        return false;
+                    }
                 }
                 return true;
             };
@@ -548,18 +558,33 @@ struct Hip1bpBackend : Backend {
                 // embed-copy kernel reads f32 rows; dense packed-path convention).
                 if (onebp) {
                     q35_q4nx = true;
-                    lok &= q4("token_embd.weight", -1, q35_emb, 248320, 2048);
-                    lok &= q4("output.weight", -1, q35_out, 248320, 2048);
-                    if (lok) {
-                        std::vector<float> em;
-                        if (model_->get_tensor_f32("token_embd.weight", em) &&
-                            (int)em.size() == 248320 * 2048) {
-                            if (hipMalloc((void**)&d_embed, em.size() * 4) != hipSuccess ||
-                                hipMemcpy(d_embed, em.data(), em.size() * 4,
+                    // token_embd: f32-dequant once into d_embed regardless of
+                    // its file quant (Q4NX/F16/F32) — embed-copy kernel reads f32.
+                    std::vector<float> em;
+                    if (model_->get_tensor_f32("token_embd.weight", em) &&
+                        (int)em.size() == 248320 * 2048) {
+                        if (hipMalloc((void**)&d_embed, em.size() * 4) != hipSuccess ||
+                            hipMemcpy(d_embed, em.data(), em.size() * 4,
+                                      hipMemcpyHostToDevice) != hipSuccess)
+                            lok = false;
+                        tot += em.size() * 4;
+                        em.clear(); em.shrink_to_fit();
+                    } else lok = false;
+                    // output.weight: Q4NX -> packed tile (launch_q4nx); F16/F32
+                    // (converter per-tensor route) -> f32 lm_head buffer.
+                    const auto* ot = model_->find_tensor("output.weight");
+                    if (ot && ot->quant == ONEBP_Q4NX) {
+                        lok &= q4("output.weight", -1, q35_out, 248320, 2048);
+                    } else {
+                        std::vector<float> ow;
+                        if (model_->get_tensor_f32("output.weight", ow) &&
+                            (int)ow.size() == 248320 * 2048) {
+                            if (hipMalloc((void**)&q35_out_f32, ow.size() * 4) != hipSuccess ||
+                                hipMemcpy(q35_out_f32, ow.data(), ow.size() * 4,
                                           hipMemcpyHostToDevice) != hipSuccess)
                                 lok = false;
-                            tot += em.size() * 4;
-                            em.clear(); em.shrink_to_fit();
+                            tot += ow.size() * 4;
+                            ow.clear(); ow.shrink_to_fit();
                         } else lok = false;
                     }
                 } else {
@@ -1294,7 +1319,10 @@ struct Hip1bpBackend : Backend {
         }
         // output norm + lm head + argmax
         h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, q35_onorm, 2048, 1e-6f);
-        gemv(dlogits, q35_out, dh, 248320, 2048);
+        if (q35_q4nx && q35_out_f32)
+            h1bp_gemv_kernel<<<248320, 256, 0, stream>>>(dlogits, q35_out_f32, dh, 248320, 2048);
+        else
+            gemv(dlogits, q35_out, dh, 248320, 2048);
         if (const char* ld = getenv("H1BP_Q35_LOGDIR")) {
             std::vector<float> lg(248320);
             HIP_CHECK(hipMemcpy(lg.data(), dlogits, 248320 * 4, hipMemcpyDeviceToHost));
@@ -1331,7 +1359,7 @@ struct Hip1bpBackend : Backend {
             hf(w.sh_d); hf(w.router); hf(w.sh_gatew);
         }
         q35L.clear();
-        hf(q35_emb); hf(q35_out); hf(q35_onorm);
+        hf(q35_emb); hf(q35_out); hf(q35_out_f32); hf(q35_onorm);
         hf(q35_sc_qkv); hf(q35_sc_qc); hf(q35_sc_q); hf(q35_sc_k); hf(q35_sc_v); hf(q35_sc_z);
         hf(q35_sc_g); hf(q35_sc_b); hf(q35_sc_qk); hf(q35_sc_v2); hf(q35_sc_att); hf(q35_sc_aout);
         hf(q35_sc_act); hf(q35_sc_moe); hf(q35_sc_exp); hf(q35_sc_expw); hf(q35_sc_expd);
