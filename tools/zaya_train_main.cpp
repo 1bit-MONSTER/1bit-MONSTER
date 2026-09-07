@@ -216,6 +216,7 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
     }
     std::vector<int> seq = {9079,236761,107,2717,108,1882,
                             27213,9942,9942,36209,12992,971,677,167798};
+    if (getenv("ZL_PAR")) seq.resize(7);
     d.P = (int)seq.size();
     data.assign(1, seq);
     return true;
@@ -224,7 +225,7 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
 int main(int argc, char** argv) {
     std::string mode = argc > 1 ? argv[1] : "train";
     int steps = argc > 2 ? atoi(argv[2]) : 20;
-    bool real = (mode == "real");
+    bool real = (mode == "real" || mode == "par");
     Dims d;
     if (real) {
         d.H = 2048; d.ff = 2048; d.rtr = 256; d.nslots = 17; d.nq = 8; d.nkv = 2;
@@ -742,6 +743,15 @@ int main(int argc, char** argv) {
     };
 
     // mode dispatch
+    if (mode == "par") {
+        double L = run_fwd(0);
+        double* pr = probs[5].data();
+        int argmax = 0; double bv = -1;
+        for (int v = 0; v < d.V; v++) if (pr[v] > bv) { bv = pr[v]; argmax = v; }
+        fprintf(stderr, "par: loss=%.3f argmax5=%d prob(27213)=%.4e (engine continuation=27213)\n",
+                L, argmax, pr[27213]);
+        return 0;
+    }
     if (real) mode = "train";
     if (mode == "train") {
         // AdamW over all adapters (flat lists)

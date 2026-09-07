@@ -110,3 +110,15 @@ B^T dL/dy x^T (per expert block for Phase B).
   pa/pm residual-scale parity, v_del source are the suspects — check via argmax
   vs engine's 27213 continuation), then merge->q4nx export + decode-parity + PPL
   gates. Real-router bugs caught: dead-zero LoRA init, mi++ double increment.
+
+- 2026-09-07 (M2 parity probe): added trainer 'par' mode (ZL_PAR) comparing the
+  real forward against the engine's decode oracle: at the 6-token oracle-prefix
+  end the trainer's argmax = 30777 with prob(27213)=3.4e-10 vs the engine's
+  27213 — the real forward diverges from the engine decode. Tested & REJECTED
+  hypotheses: v_del source (embed[p-1] correct-ish, layer-hidden worse), scale
+  set parity (even->pa correct-ish; swapping made it worse). The divergence is
+  architectural (CCA prep/attention framing or residual-chain ordering vs the
+  engine's per-token decode) — the layer checkers validated my math against
+  ITSELF, so the engine decode is the only true oracle. Next debugging step:
+  trace/compare intermediate activations (rmsnorm input, qkv, attention out,
+  block out) layer-by-layer against npu_engine_zr1's CPU ref at one layer.
