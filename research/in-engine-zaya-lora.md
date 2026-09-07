@@ -71,9 +71,15 @@ B^T dL/dy x^T (per expert block for Phase B).
   (~1e-10): rmsnorm/x+g, residual-scale h+r, softmax-CE, conv2tap BPTT, partial-RoPE.
 - 2026-09-07: M2 attention ops DONE — tools/zaya_train_ops2.cpp gradchecks PASS
   (~1e-11): per-head L2 norm, GQA softmax attention (q/K/V), grouped conv
-  (dw0/dw1), vrec 1-step delay. Differentiable op inventory complete for the
-  CCA prep + attention core. Next: qk_means + projection linears in assembly,
-  full layer/sequence graph, AdamW, train loop, export.
+  (dw0/dw1), vrec 1-step delay.
+- 2026-09-07: M2 FULL MoE-LAYER GRAPH DONE — tools/zaya_layer_moe_check.cpp
+  gradcheck PASS (P=1 1.05e-7 / P=2 4.3e-8 over 3200 adapter params): embed ->
+  residual chain -> rmsnorm -> router top-1 -> fused expert GU->SiLU->D with
+  per-expert LoRA -> tail norm -> embed logits -> CE, manual backward.
+  (Bugs caught by the gate: router gemv transpose; CE grad used p_tgt instead
+  of per-logit probs; vacuous-pass guard = force real-expert routing.)
+  Next: CCA-attention layer assembly, then full 40-layer/sequence trainer +
+  AdamW + JSONL loop + q4nx export.
 - Python/torch stacks explicitly out (policy: engine for all work); ryzen venv
   kept only as an external numeric oracle for the M2 PPL-gate comparison;
   strixhalo rocm7.2 torch venv deleted per policy.
