@@ -149,3 +149,15 @@ B^T dL/dy x^T (per expert block for Phase B).
   (was failing). Also fixed Net ctor input_scale/bias init (toy OOB). Forward
   parity unchanged (24.9/30072) — backward is now fully consistent; the real
   divergence is FORWARD-only. Next: token-major reference decoder vs engine.
+
+- 2026-09-07 (M2 parity, round 5): engine-faithful router captured from
+  zaya_moe_cpu.h (transposed gate_down gdw[j*rtr+i], tanh-GELU, softmax-17,
+  top-1 over 16 experts, EDA prev_router recurrence, wt) — implementing ALL of
+  it regressed parity (26.9 vs 24.9 baseline), indicating the ORACLE decode
+  path (fused NPU decode -> 27213) does NOT use this exact CPU router frame
+  (or additional per-layer semantics differ). REVERTED to green baseline
+  (fb062e52 + vd=hlay[li]): toy FD gate PASS, real par 24.9/30072. Conclusion:
+  guess-based parity fixing has diminishing returns; the decisive next step is
+  INSTRUMENTING npu_engine_zr1 itself to dump its per-token, per-layer
+  intermediates (router logits/selected expert, q/k/v, attn out, h stream) for
+  the oracle prompt, then matching the trainer to THAT trace layer-by-layer.
