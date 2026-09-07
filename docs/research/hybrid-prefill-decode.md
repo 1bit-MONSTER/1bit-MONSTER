@@ -158,3 +158,19 @@ HIP wins; short prompts amortize the handoff cost poorly).
   one process (both dlopen HIP/ROCm — the in-process HRX path already loads
   the bundle's libllama; adding the engine's own HIP-linked llama.cpp may
   conflict on ROCm symbols; the subprocess llama-server path avoids this).
+
+## §5.1 gate — RE-VERIFIED 2026-09-07 (rt_session harness)
+
+A = vendored third_party/llama.cpp @4df29be4f GGML_HIP build (session 9) · B = hrx-v2-src
+fork @0f52c297a (session 9) · Qwen3-0.6B-Q4_K_M · 5-token prompt + 8 gens → blob
+1,491,865 B (llama_state_save_file/load_file, ctx 512/512/8).
+
+- A-imported == A-native: **IDENTICAL** (13/13).
+- B-imported == B-native: **IDENTICAL** (13/13) — handoff is faithful (kv+rng fully
+  transferred; fork resumed from the vendored blob continues exactly as it natively would).
+- A-native vs B-native (no state): diverges after ~4-5 tokens = cross-build ggml-cpu
+  numeric drift (fork vs vendored kernels), reproducible under forced F16 and F32 KV
+  (rules out cache-type disagreement; §6 open question answered). Not a handoff defect.
+- Consequence for D2 hybrid correctness: per §4, continuation equality vs pure-HIP is
+  bounded by this drift ("identical up to the first diverging top-1"); the state format
+  round-trips losslessly. D1 harness remains the no-context-loss proof.
