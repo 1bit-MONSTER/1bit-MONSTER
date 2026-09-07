@@ -174,3 +174,14 @@ B^T dL/dy x^T (per expert block for Phase B).
   deeper layers diverge. Entry still not exact (0.72) and expert choices differ
   => remaining hunt: exact entry semantics + router gdw orientation, validated
   against the engine trace. Engine decode oracle restored (corr 0.998, 10 t/s).
+
+- 2026-09-07 (M2 parity, round 7 — LOCALIZED): aligned engine traces show the
+  trainer's real forward is EXACT at the layer-0 block INPUT (corr 1.000000 at
+  the correct engine pos6 == trainer pos5; the earlier comparisons were off by
+  one engine position). The divergence is INSIDE the layer-0 CCA attention
+  block: block OUTPUT corr 0.70 with block INPUT exact -> a cca_prep/attention
+  internals transcription gap (conv-state/grouped/L2/rope/GQA framing vs the
+  engine), compounding through the stack. Engine trace hooks now: per-layer
+  block inputs (ZL_TRACE), pre-norm residual (ZL_PRE), even-layer h outputs
+  (zh.txt), moe e/wt (auto). Next: engine-side qo/ko/vo + attention-score hooks
+  to diff cca_prep internals element-by-element against the trainer at layer 0.

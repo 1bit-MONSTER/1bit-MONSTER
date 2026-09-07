@@ -801,7 +801,9 @@ int main(int argc, char** argv) {
         }
         {
             FILE* tf = fopen("/tmp/mytrace.txt", "w");
-            if (tf) { for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", cur_l[0][(size_t)5 * d.H + i], i == d.H-1 ? '\n' : ' '); fclose(tf); }
+            if (tf) { for (int li = 0; li < d.L; li += 2) { fprintf(tf, "in L%d ", li); for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", cur_l[li][(size_t)5 * d.H + i], i == d.H-1 ? '\n' : ' '); fprintf(tf, "out L%d ", li); for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", hout_l[li][(size_t)5 * d.H + i], i == d.H-1 ? '\n' : ' '); } fclose(tf); }
+            FILE* tp2 = fopen("/tmp/mypre.txt", "w");
+            if (tp2) { for (int pp = 0; pp < d.P; pp++) { fprintf(tp2, "pos=%d ", pp); for (int i = 0; i < d.H; i++) fprintf(tp2, "%.8e%c", res_new[0][(size_t)pp * d.H + i], i == d.H-1 ? '\n' : ' '); } fclose(tp2); }
             fprintf(stderr, "moe-exps pos5: ");
             for (int li = 1; li < d.L; li += 2) { int mi2 = net.moe_at(li); fprintf(stderr, "%d ", msa[mi2][5].e); }
             fprintf(stderr, "\n");
