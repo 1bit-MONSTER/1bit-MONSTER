@@ -1,0 +1,73 @@
+# qwen35moe 1BP Q4NX lane — M2 correlation artifact (#1831)
+
+Date: 2026-09-07 (~00:30Z) · strixhalo (gfx1151, ROCm TheRock, C++23 per #2135)
+Branch: feat/qwen35-1bp-q4nx · Worktree: ~/wt/q35-1bp
+Artifacts: /tmp/m2/{lg_eng,lg_engv2,lg_eng8b,lg_ref,lg_ref1bp} (per-position
+logits p%04d.f32, 100 positions x 248320 logits)
+
+## Models
+
+- GGUF oracle: ~/models/Qwen3.6-35B-A3B-Q8_0.gguf (36.9 GB, 733 tensors,
+  arch qwen35moe) — the M3-validated artifact.
+- 1BP v1: /var/tmp/cas/qwen35-1bp.1bp (21.7 GB) — all-Q4NX conversion
+  (gguf_to_onebp --q4nx, as staged for this lane).
+- 1BP v2: /var/tmp/cas/qwen35-1bp-v2.1bp (22.1 GB) — --q4nx with per-tensor
+  routing: token_embd/output + ffn_gate_inp + ssm_conv1d -> F16 (lossless),
+  everything else Q4NX.
+- Refs: tools/qwen35moe_cpu_ref (GGUF, #2131), tools/qwen35moe_cpu_ref_1bp
+  (1BP fork, this PR). Same host decode formula in both.
+
+## Methodology (M3)
+
+Fixed 100-token input sequence (same for every decoder): prompt [1000, 2000]
+then argmax chain from the q4nx run; every position's logits dumped to
+p%04d.f32 by the engine (H1BP_Q35_LOGDIR) and by the CPU refs. Pearson
+correlation per position over the full vocab; report min/mean + argmax
+agreement. Commands:
+
+```
+H1BP_Q35_LOAD=1 H1BP_Q35_TRY=1 H1BP_Q35_LOGDIR=<dir> H1BP_Q35_PROMPT=<ids> \
+  ./bench_hip_1bp <model> 0 1
+./qwen35moe_cpu_ref[_1bp] <model> <refdir> <100 ids>
+python3 corr.py <engdir> <refdir>
+```
+
+## Results (100 positions, same inputs)
+
+| pair | corr min | corr mean | argmax-eq | notes |
+|---|---|---|---|---|
+| GGUF engine vs GGUF cpu_ref (M3 baseline repro) | 0.9823 @pos56 | 0.9982 | 98/100 | pos0-3 corr 1.0000 (bit-identical) |
+| Q4NX engine (v2) vs 1BP cpu_ref (SAME FILE) | 0.9791 @pos56 | 0.9983 | 99/100 | pos0-2 corr 1.0000 (bit-identical) |
+| Q4NX engine (v2) vs GGUF cpu_ref (cross-file) | 0.8127 @pos0 | 0.9754 | 92/100 | quantization delta only |
+| Q4NX engine (v1 all-Q4NX) vs GGUF cpu_ref | 0.8096 @pos0 | 0.9690 | 91/100 | quantization delta only |
+| Q4NX engine (v2) vs GGUF engine | = vs-ref curve | = 0.9754 | 92/100 | oracle-invariant => wiring faithful |
+| Q4NX v1 vs v2 engines | 0.9751 @pos22 | 0.9909 | 95/100 | F16-routing effect |
+
+## Interpretation
+
+- The M2 wiring is faithful: on the SAME file the HIP engine and the CPU
+  reference agree to corr 1.0000 (bit-identical) at state-free positions
+  0-2 and 0.9983 mean over 100 tokens, 99/100 argmax — statistically equal
+  to the M3 GGUF baseline (0.9982 mean, 98/100).
+- The single-position min floor (~0.98 @pos56) is engine-vs-reference
+  accumulation-order noise, lane-independent: the identical position shows
+  the same floor in the GGUF-vs-GGUF pair (0.9823). Documented residual per
+  the M3 methodology (M3 reported min 0.99555 on a different sequence).
+- Cross-file (Q4NX vs Q8_0 GGUF oracle): mean 0.9754 is pure 4-bit
+  quantization delta of per-layer weights (attn/ssm/exps stay Q4NX in v2);
+  F16 routing of embed/lm_head/router/conv1d recovered ~0.006 mean
+  (0.9690 -> 0.9754). Same-file gating removes this delta entirely.
+- Structural: v1 loads 22,670.8 MB, v2 24,004.6 MB device, "structure
+  verified (H=2048 L=40, 10 full-attn / 30 GDN, MoE 256x8)" + eager decode
+  ready; 28 tok/s decode (Q4NX), 11 tok/s (GGUF Q8_0) on the same driver.
+
+## Files
+
+- src/backend_hip_1bp.cpp — qwen35 1BP Q4NX lane (detection, structure
+  check vs NpuOnebpModel, Q35L population from Q4NX tiles, launch_q4nx
+  decode dispatch; mixed-quant F16 output/router/conv1d support)
+- src/gguf_to_onebp.cpp — per-tensor F16 routing under --q4nx
+  (token_embd/output/lm_head, ffn_gate_inp, ssm_conv1d)
+- tools/qwen35moe_cpu_ref_1bp.cpp — 1BP fork of the CPU reference (new)
+- docs/research/hip-qwen35-1bp-q4nx-wiring.md — design + validation outcome
+- docs/research/hip-qwen35-gdn-port.md — parent port map (#2121)
