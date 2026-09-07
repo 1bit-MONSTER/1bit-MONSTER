@@ -38,6 +38,12 @@ public:
     // model_path: path to a .gguf; n_gpu_layers: <0 = all; ctx_size: 0 = model default.
     bool load_model(const std::string& model_path, int n_gpu_layers, uint32_t ctx_size);
 
+    // #1942 D2 hybrid: import a llama_state session blob (saved by a compatible
+    // llama.cpp build, e.g. the GGML_HIP prefill lane) into the current context
+    // so generate() continues from the imported KV. Call AFTER load_model(),
+    // BEFORE generate(). Returns the number of imported tokens, or -1.
+    long load_session_file(const std::string& session_path);
+
     // One decode step: feed token_id, return argmax next token, or -1 on failure.
     int generate(int token_id);
 

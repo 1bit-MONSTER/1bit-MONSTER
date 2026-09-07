@@ -7,6 +7,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -129,6 +130,7 @@ using fn_llama_model_get_vocab = llama_vocab* (*)(const llama_model*);
 using fn_llama_vocab_n_tokens = int32_t (*)(const llama_vocab*);
 using fn_llama_model_n_embd = int32_t (*)(const llama_model*);
 using fn_llama_model_desc = int32_t (*)(const llama_model*, char*, size_t);
+using fn_llama_state_load_file = bool (*)(llama_context*, const char*, llama_token*, size_t, size_t*);
 using fn_ggml_backend_dev_by_name = ggml_backend_dev_t (*)(const char*);
 using fn_ggml_backend_dev_name = const char* (*)(ggml_backend_dev_t);
 using fn_ggml_backend_hrx_get_device_count = int32_t (*)(void);
@@ -151,6 +153,8 @@ struct Inprocess::Impl {
     fn_llama_vocab_n_tokens llama_vocab_n_tokens = nullptr;
     fn_llama_model_n_embd llama_model_n_embd = nullptr;
     fn_llama_model_desc llama_model_desc = nullptr;
+    fn_llama_state_load_file llama_state_load_file = nullptr;
+    size_t n_session = 0;
     fn_ggml_backend_dev_by_name ggml_backend_dev_by_name = nullptr;
     fn_ggml_backend_dev_name ggml_backend_dev_name = nullptr;
     fn_ggml_backend_hrx_get_device_count ggml_backend_hrx_get_device_count = nullptr;
@@ -268,6 +272,7 @@ bool Inprocess::init() {
     impl_->llama_vocab_n_tokens = (fn_llama_vocab_n_tokens)sym(impl_->handle, "llama_vocab_n_tokens");
     impl_->llama_model_n_embd = (fn_llama_model_n_embd)sym(impl_->handle, "llama_model_n_embd");
     impl_->llama_model_desc = (fn_llama_model_desc)sym(impl_->handle, "llama_model_desc");
+    impl_->llama_state_load_file = (fn_llama_state_load_file)sym(impl_->handle, "llama_state_load_file");  // optional (D2 hybrid)
     impl_->ggml_backend_dev_by_name = (fn_ggml_backend_dev_by_name)sym(impl_->handle, "ggml_backend_dev_by_name");
     impl_->ggml_backend_dev_name = (fn_ggml_backend_dev_name)sym(impl_->handle, "ggml_backend_dev_name");
     impl_->ggml_backend_hrx_get_device_count = (fn_ggml_backend_hrx_get_device_count)sym(impl_->handle, "ggml_backend_hrx_get_device_count");
@@ -352,6 +357,24 @@ bool Inprocess::load_model(const std::string& model_path, int n_gpu_layers, uint
             impl_->llama_n_ctx ? impl_->llama_n_ctx(impl_->ctx) : 0u,
             impl_->vocab, impl_->n_embd);
     return true;
+}
+
+long Inprocess::load_session_file(const std::string& path) {
+    if (!impl_->ctx || !impl_->llama_state_load_file) {
+        fprintf(stderr, "[hrx] load_session_file: no context, or bundle lacks llama_state_load_file\n");
+        return -1;
+    }
+    std::vector<llama_token> toks(65536);
+    size_t n = 0;
+    if (!impl_->llama_state_load_file(impl_->ctx, path.c_str(), toks.data(), toks.size(), &n)) {
+        fprintf(stderr, "[hrx] load_session_file: import failed for %s\n", path.c_str());
+        return -1;
+    }
+    impl_->n_session = n;
+    impl_->pos = (llama_pos)n;  // continue after the imported tokens
+    fprintf(stderr, "[hrx] session imported: %zu tokens from %s (pos=%lld)\n",
+            n, path.c_str(), (long long)impl_->pos);
+    return (long)n;
 }
 
 int Inprocess::generate(int token_id) {
