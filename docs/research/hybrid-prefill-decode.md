@@ -158,3 +158,120 @@ HIP wins; short prompts amortize the handoff cost poorly).
   one process (both dlopen HIP/ROCm — the in-process HRX path already loads
   the bundle's libllama; adding the engine's own HIP-linked llama.cpp may
   conflict on ROCm symbols; the subprocess llama-server path avoids this).
+
+## §5.1 gate — RE-VERIFIED 2026-09-07 (rt_session harness)
+
+A = vendored third_party/llama.cpp @4df29be4f GGML_HIP build (session 9) · B = hrx-v2-src
+fork @0f52c297a (session 9) · Qwen3-0.6B-Q4_K_M · 5-token prompt + 8 gens → blob
+1,491,865 B (llama_state_save_file/load_file, ctx 512/512/8).
+
+- A-imported == A-native: **IDENTICAL** (13/13).
+- B-imported == B-native: **IDENTICAL** (13/13) — handoff is faithful (kv+rng fully
+  transferred; fork resumed from the vendored blob continues exactly as it natively would).
+- A-native vs B-native (no state): diverges after ~4-5 tokens = cross-build ggml-cpu
+  numeric drift (fork vs vendored kernels), reproducible under forced F16 and F32 KV
+  (rules out cache-type disagreement; §6 open question answered). Not a handoff defect.
+- Consequence for D2 hybrid correctness: per §4, continuation equality vs pure-HIP is
+  bounded by this drift ("identical up to the first diverging top-1"); the state format
+  round-trips losslessly. D1 harness remains the no-context-loss proof.
+
+## §5.2 D2 handoff — correctness PROVEN on the 30B (2026-09-07)
+
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_M (the HRX-bundle model), 2,962-token prompt:
+- A (vendored 4df29be4f GGML_HIP, ngl99) prefills on HIP (~620 tok/s incl. save),
+  292,011,596 B session blob via llama_state_save_file.
+- B (hrx2 fork @0f52c297a, session 9) imports the blob (llama_state_load_file) and
+  decodes. **A-run (HIP decode of own kv) vs B-run (fork decode of imported kv):
+  48/48 continuation tokens IDENTICAL** — the handoff is lossless; no context loss.
+- B-imported vs B-native (fork re-prefill from scratch) diverges from token 0 =
+  A-HIP-prefill vs B-CPU-prefill kernel drift (anticipated by §4: equality is bounded
+  by the first diverging top-1; decode-on-identical-kv agrees 100%).
+- Remaining for full §5.2 acceptance: decode leg on the real HRX device (bundle),
+  ≥500-token continuation, and the hybrid-vs-single-backend timing table.
+
+## §5.2 benchmark — measured 2026-09-07 (clean run, quiet box)
+
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_M · 2,962-token prompt · 500-token continuation,
+standalone harnesses: rt_A (vendored 4df29be4f GGML_HIP ngl99), rt_HRX (gfx1151
+llama-build bundle: libllama + ggml-hrx 0.9.11, HRX0, all layers offloaded).
+
+| config | wall | notes |
+|---|---|---|
+| **hybrid**: HIP prefill + HRX0 decode | **404.5 s** | prefill 4.50 s (~660 tok/s) + HRX decode 400.0 s (1.25 tok/s) |
+| **HIP-only** | **12.2 s** | prefill + 500 decode (~41+ tok/s end-to-end incl. load) |
+| **HRX-only** | **596.3 s** | HRX prefill ~196 s (~15 tok/s) + decode ~400 s |
+
+Token comparisons: hybrid-vs-hip-only and hybrid-vs-hrx-only diverge at token 0
+(cross-backend prefill/decode kernel numerics — HIP == fork-CPU decode agreed
+48/48 on identical kv earlier; HRX0-device decode drifts from token 0 vs both).
+Continuations are fluent/coherent on all three paths (no context loss).
+
+**Verdict:** D2 handoff is functionally proven (lossless state transfer, decode on
+HIP/fork-CPU/HRX0 all work from the shared blob), but the §5.2 perf criterion
+(hybrid total beats either backend alone) is **NOT met**: HRX0 decode measured
+1.25 tok/s in this harness vs the 80-87 tok/s documented for the engines
+
+
+## §5.2 benchmark — measured 2026-09-07 (clean run, quiet box)
+
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_M · 2,962-token prompt · 500-token continuation,
+standalone harnesses: rt_A (vendored 4df29be4f GGML_HIP ngl99), rt_HRX (gfx1151
+llama-build bundle: libllama + ggml-hrx 0.9.11, HRX0, all layers offloaded).
+
+| config | wall | notes |
+|---|---|---|
+| **hybrid**: HIP prefill + HRX0 decode | **404.5 s** | prefill 4.50 s (~660 tok/s) + HRX decode 400.0 s (1.25 tok/s) |
+| **HIP-only** | **12.2 s** | prefill + 500 decode end-to-end incl. model load |
+| **HRX-only** | **596.3 s** | HRX prefill ~196 s (~15 tok/s) + decode ~400 s |
+
+Token comparisons: hybrid-vs-hip-only and hybrid-vs-hrx-only diverge at token 0
+(cross-backend prefill/decode kernel numerics — HIP == fork-CPU decode agreed
+48/48 on identical kv earlier; HRX0-device decode drifts from token 0 vs both).
+Continuations are fluent/coherent on all three paths (no context loss).
+
+**Verdict:** D2 handoff is functionally proven (lossless state transfer; decode on
+HIP, fork-CPU and HRX0 all work from the shared blob), but the §5.2 perf criterion
+(hybrid total beats either backend alone) is **NOT met** with this bundle: HRX0
+decode measured 1.25 tok/s in the standalone harness vs the 80-87 tok/s documented
+for the engine's in-process path (hrx_inprocess) and HIP decode ~70 tok/s. Open
+question: is the decode-rate gap harness/bundle-config specific (engine path uses
+dlopen+DEEPBIND + engine ctx params) or a bundle regression? Resolve via the
+engine-path integration (wire llama_state import into HrxBackend, bench through
+1bit unified) before the hybrid policy ships. The §0 HRX2 decision stands.
+
+
+## §5.2 benchmark — measured 2026-09-07 (clean run, quiet box)
+
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_M · 2,962-token prompt · 500-token continuation,
+standalone harnesses: rt_A (vendored 4df29be4f GGML_HIP ngl99), rt_HRX (gfx1151
+llama-build bundle: libllama + ggml-hrx 0.9.11, HRX0, all layers offloaded).
+
+| config | wall | notes |
+|---|---|---|
+| **hybrid**: HIP prefill + HRX0 decode | **404.5 s** | prefill 4.50 s (~660 tok/s) + HRX decode 400.0 s (1.25 tok/s) |
+| **HIP-only** | **12.2 s** | prefill + 500 decode end-to-end incl. model load |
+| **HRX-only** | **596.3 s** | HRX prefill ~196 s (~15 tok/s) + decode ~400 s |
+
+Token comparisons: hybrid-vs-hip-only and hybrid-vs-hrx-only diverge at token 0
+(cross-backend prefill/decode kernel numerics — HIP == fork-CPU decode agreed
+48/48 on identical kv earlier; HRX0-device decode drifts from token 0 vs both).
+Continuations are fluent/coherent on all three paths (no context loss).
+
+**Verdict:** D2 handoff is functionally proven (lossless state transfer; decode on
+HIP, fork-CPU and HRX0 all work from the shared blob), but the §5.2 perf criterion
+(hybrid total beats either backend alone) is **NOT met** with this bundle: HRX0
+decode measured 1.25 tok/s in the standalone harness vs the 80-87 tok/s documented
+for the engine's in-process path (hrx_inprocess) and HIP decode ~70 tok/s. Open
+question: is the decode-rate gap harness/bundle-config specific (engine path uses
+dlopen+DEEPBIND + engine ctx params) or a bundle regression? Resolve via the
+engine-path integration (wire llama_state import into HrxBackend, bench through
+1bit unified) before the hybrid policy ships. The §0 HRX2 decision stands.
+
+## 2026-09-07 follow-up — HRX0 import-decode blocker filed (#2145)
+
+b66 release bundle and the amd-hrx-graph fork both FAIL llama_decode at token 2 on
+HRX0 after llama_state_load_file of the 292 MB HIP-prefill blob (graph compute -1);
+the local llama-build (GET_ROWS-capable) decodes from the imported state (500 tokens,
+coherent) but at 1.25 tok/s. Handoff losslessness stands (fork-CPU + HIP 48/48).
+Filed as 1bit-MONSTER/1bit-MONSTER#2145 — blocks the D2 shipped fast path; D1
+tokens-only re-prefix remains the correctness fallback; §0 HRX2 decision untouched.

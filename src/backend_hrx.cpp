@@ -123,6 +123,14 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
         uint32_t ctx = (uint32_t)std::atoi(ctx_size_.c_str());
         if (ctx == 0) ctx = 4096;
         if (inprocess_->init() && inprocess_->load_model(model_path_, n_gpu_layers, ctx)) {
+            // #1942 D2 hybrid: HRX_STATE_FILE=<session.bin> imports a llama_state
+            // blob (HIP-prefill lane output) so decode continues from its KV.
+            if (const char* sf = std::getenv("HRX_STATE_FILE")) {
+                long n = inprocess_->load_session_file(sf);
+                if (n < 0) {
+                    fprintf(stderr, "HRX: state import failed (%s) — continuing with empty KV\n", sf);
+                }
+            }
             inprocess_mode_ = true;
             initialized_ = true;
             fprintf(stderr, "HRX: in-process engine active (token-level, %s)\n",
