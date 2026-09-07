@@ -68,9 +68,12 @@ B^T dL/dy x^T (per expert block for Phase B).
   PASS (tools/zaya_lora_gradcheck.cpp: scaled dims H=256/ff=256/r=3/B=4, all 3840
   adapter params, max rel err ~4e-9 vs finite diff, gate 1e-6).
 - 2026-09-07: M2 universal ops DONE — tools/zaya_train_ops.cpp gradchecks PASS
-  (~1e-10, gate 1e-6): rmsnorm/x+g, residual-scale h+r, softmax-CE, CCA conv-state
-  2-tap shift-register BPTT (conv2tap), partial-RoPE. Next: GQA attention backward
-  assembly (L2/qk_means/vrec) + full-graph layer backward + AdamW + train loop.
+  (~1e-10): rmsnorm/x+g, residual-scale h+r, softmax-CE, conv2tap BPTT, partial-RoPE.
+- 2026-09-07: M2 attention ops DONE — tools/zaya_train_ops2.cpp gradchecks PASS
+  (~1e-11): per-head L2 norm, GQA softmax attention (q/K/V), grouped conv
+  (dw0/dw1), vrec 1-step delay. Differentiable op inventory complete for the
+  CCA prep + attention core. Next: qk_means + projection linears in assembly,
+  full layer/sequence graph, AdamW, train loop, export.
 - Python/torch stacks explicitly out (policy: engine for all work); ryzen venv
   kept only as an external numeric oracle for the M2 PPL-gate comparison;
   strixhalo rocm7.2 torch venv deleted per policy.
