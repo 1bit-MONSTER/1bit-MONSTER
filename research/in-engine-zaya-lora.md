@@ -76,15 +76,15 @@ B^T dL/dy x^T (per expert block for Phase B).
   gradcheck PASS (P=1 1.05e-7 / P=2 4.3e-8 over 3200 adapter params). Bugs
   caught by the gate: router gemv transpose; CE grad used p_tgt instead of
   per-logit probs; vacuous-pass guard = force real-expert routing.
-- 2026-09-07: M2 CCA-LAYER GRAPH — tools/zaya_layer_cca_check.cpp. v-proj + o-proj
-  adapters PASS (~1e-9); q/k adapters PASS for P=1 and for single-cache-entry
-  attention (self-only or all->token0); FAIL (~1e-3) only when softmax ranges
-  over MULTIPLE cached positions (seq>=2). Attention-over-cache backward was
-  validated standalone (ops2 attn/q K V, T=9) and the inline code matches it —
-  the residual discrepancy is an open item (likely a small indexing slip in the
-  multi-t key/query accumulation visible on a clean re-read).
-  Next: fix seq>=2 q/k discrepancy; then full 40-layer trainer + AdamW + JSONL
-  loop + q4nx export.
+- 2026-09-07: M2 CCA-LAYER GRAPH DONE — tools/zaya_layer_cca_check.cpp FULL PASS
+  (P=2 1.4e-10, P=3 1.3e-10 over all 1664 projection LoRA adapters, full-causal
+  attention). Root cause of the seq>=2 q/k failure: the engine's partial-RoPE
+  writes base[dd] IN PLACE (zaya_cca_attn_cpu.h cca_prep), so second-half
+  iterations read ALREADY-ROTATED partners; the backward must be the exact
+  transpose of that overwrite order (route partner grads to the written value
+  when partner idx < dd), not the clean buffered pair inverse. (Earlier
+  seq=1 'passes' were vacuous: ds=0 in single-entry softmax -> zero q/k grads.)
+  Next: full 40-layer trainer + AdamW + JSONL loop + q4nx export.
 - Python/torch stacks explicitly out (policy: engine for all work); ryzen venv
   kept only as an external numeric oracle for the M2 PPL-gate comparison;
   strixhalo rocm7.2 torch venv deleted per policy.

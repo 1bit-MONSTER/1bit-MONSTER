@@ -319,15 +319,24 @@ int main(int argc, char** argv) {
                     }
                 }
             }
-            // 4. rope backward on qo section + ko section
+            // 4. rope backward: exact TRANSPOSE of the engine's IN-PLACE loop
+            // (zaya_cca_attn_cpu.h cca_prep: for dd ascending, overwrites base[dd]
+            // reading base[d2] — so for dd >= nrot/2 the partner d2 is the ALREADY-
+            // ROTATED value. The old clean-pair backward was wrong for this.)
             auto rope_bwd = [&](double* g, const std::vector<double>& rc, const std::vector<double>& rs) {
-                std::vector<double> c(nrot);
-                for (int dd = 0; dd < nrot; dd++) c[dd] = g[dd];
-                for (int a = 0; a < nrot / 2; a++) {
-                    int b = a + nrot / 2;
-                    g[a] = c[a] * rc[a] + c[b] * rs[a];
-                    g[b] = -c[a] * rs[a] + c[b] * rc[a];
+                std::vector<double> work(nrot), gx(nrot, 0.0);
+                for (int dd = 0; dd < nrot; dd++) work[dd] = g[dd];
+                for (int dd = nrot - 1; dd >= 0; dd--) {
+                    int d2 = (dd < nrot / 2) ? (dd + nrot / 2) : (dd - nrot / 2);
+                    double sgn = (dd < nrot / 2) ? -1.0 : 1.0;
+                    double gdd = work[dd];
+                    gx[dd] += gdd * rc[dd];            // orig x[dd]
+                    double gxw = gdd * sgn * rs[dd];   // grad into the read partner
+                    if (d2 > dd) gx[d2] += gxw;        // partner was ORIGINAL at fwd time
+                    else         work[d2] += gxw;      // partner was already rotated: route to its out
                 }
+                for (int dd = 0; dd < nrot; dd++) g[dd] = gx[dd];
+                for (int dd = nrot; dd < hd; dd++) g[dd] = g[dd];  // untouched dims unchanged
             };
             for (int h = 0; h < nq; h++) rope_bwd(&gqo[(size_t)h * hd], s.rc, s.rs);
             std::vector<double> gko_local(kd, 0);
