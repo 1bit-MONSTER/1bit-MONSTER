@@ -309,13 +309,17 @@ int main(int argc, char** argv) {
         a.Bv1.assign((size_t)d.hv2*d.r,0); a.Av1.assign((size_t)d.r*d.H,0);
         a.Bv2.assign((size_t)d.hv2*d.r,0); a.Av2.assign((size_t)d.r*d.H,0);
         a.Bo.assign((size_t)d.H*d.r,0); a.Ao.assign((size_t)d.r*d.qd,0);
-        std::mt19937 g2(100+ci); for (auto* vp : {&a.Bq,&a.Aq,&a.Bk,&a.Ak,&a.Bv1,&a.Av1,&a.Bv2,&a.Av2,&a.Bo,&a.Ao}) for (auto& v : *vp) v = rnd_unif(g2, real ? 0.02 : 0.03);
+        std::mt19937 g2(100+ci);
+        for (auto* vp : {&a.Bq,&a.Aq,&a.Bk,&a.Ak,&a.Bv1,&a.Av1,&a.Bv2,&a.Av2,&a.Bo,&a.Ao})
+            for (auto& v : *vp) v = (real && (vp == &a.Bq || vp == &a.Bk || vp == &a.Bv1 || vp == &a.Bv2 || vp == &a.Bo)) ? 0.0 : rnd_unif(g2, real ? 0.02 : 0.03);
     }
     for (int mi = 0; mi < net.nmoe; mi++) {
         MoeAd& a = moe_ad[mi];
         a.Bg.assign((size_t)d.nslots*2*d.ff*d.r,0); a.Ag.assign((size_t)d.nslots*d.r*d.H,0);
         a.Bd.assign((size_t)d.nslots*d.H*d.r,0); a.Ad.assign((size_t)d.nslots*d.r*d.ff,0);
-        std::mt19937 g2(200+mi); for (auto* vp : {&a.Bg,&a.Ag,&a.Bd,&a.Ad}) for (auto& v : *vp) v = rnd_unif(g2, real ? 0.02 : 0.03);
+        std::mt19937 g2(200+mi);
+        for (auto* vp : {&a.Bg,&a.Ag,&a.Bd,&a.Ad})
+            for (auto& v : *vp) v = (real && (vp == &a.Bg || vp == &a.Bd)) ? 0.0 : rnd_unif(g2, real ? 0.02 : 0.03);
     }
     // grads
     std::vector<CcaAd> cca_gd(net.ncca); std::vector<MoeAd> moe_gd(net.nmoe);
@@ -953,7 +957,7 @@ int main(int argc, char** argv) {
             MoeAd& P = moe_ad[mi]; MoeAd& G = moe_gd[mi];
             add_ap(P.Bg,G.Bg); add_ap(P.Ag,G.Ag); add_ap(P.Bd,G.Bd); add_ap(P.Ad,G.Ad);
         }
-        const double lr = real ? 1e-3 : 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
+        const double lr = real ? 3e-4 : 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
         double prev = 1e30;
         int b = 0;   // fixed batch for a clean descent check
         for (int st = 0; st < steps; st++) {
