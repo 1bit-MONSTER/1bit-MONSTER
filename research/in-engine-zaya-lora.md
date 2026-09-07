@@ -122,3 +122,15 @@ B^T dL/dy x^T (per expert block for Phase B).
   ITSELF, so the engine decode is the only true oracle. Next debugging step:
   trace/compare intermediate activations (rmsnorm input, qkv, attention out,
   block out) layer-by-layer against npu_engine_zr1's CPU ref at one layer.
+
+- 2026-09-07 (M2 parity, more): input-affine (model.input_hidden_states_scale/
+  bias) added to dump+loader+forward — small effect only. v_del source fix
+  (prev token's hidden AT THE LAYER, hlay[li][p-1]) improves: loss 30.0->24.9,
+  prob(27213) 3e-10->9.5e-7. REJECTED: input-affine as root cause; scale-set
+  parity swap made it worse. Current diagnostic: per-position argmax invariance
+  (all pos -> 30777/30072) with hidden-state correlation 0.96-0.99 between
+  positions (info present but output under-differentiates) => suspect the
+  attention/expert path is not functioning as in the engine decode (not the
+  residual/scales; embed rows verified sane/distinct). Next: bisect at the
+  BLOCK level — compare layer-0 CCA outputs (q/k/attn/o_proj) against the
+  engine's own per-layer values for one token.

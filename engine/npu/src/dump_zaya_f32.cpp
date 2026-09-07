@@ -131,6 +131,8 @@ int main(int argc, char** argv) {
     write_vec(embed);
     uint64_t no, ns; get_offsets(js, jl, "model.norm.weight", &no, &ns);
     write_vec(load_bf16(D, no, ns));
+    { uint64_t so2, ss2; if (get_offsets(js, jl, "model.input_hidden_states_scale", &so2, &ss2)) write_vec(load_bf16(D, so2, ss2)); else { std::vector<float> e0(1,1.f); write_vec(e0);} }
+    { uint64_t bo2, bs2; if (get_offsets(js, jl, "model.input_hidden_states_bias", &bo2, &bs2)) write_vec(load_bf16(D, bo2, bs2)); else { std::vector<float> e0(1,0.f); write_vec(e0);} }
 
     std::vector<LayerW> L(NC);
     char key[256];

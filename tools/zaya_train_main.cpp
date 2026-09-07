@@ -50,7 +50,7 @@ struct MoeW {
 
 struct Net {
     Dims d;
-    std::vector<double> embed, fw_final;                 // [V*H], [H]
+    std::vector<double> embed, fw_final, input_scale, input_bias;                 // [V*H], [H]
     std::vector<std::vector<double>> fw_l;               // per-layer norm weights [L][H]
     std::vector<std::vector<double>> hs_l, hb_l, rs_l, rb_l;  // per-layer residual scales
     std::vector<int> kind;                               // 0=CCA,1=MoE per layer
@@ -159,6 +159,14 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
     if (embed.size() == (size_t)d.V * d.H) net.embed = embed;
     auto fnw = br.rd_vec();
     if (fnw.size() == (size_t)d.H) net.fw_final = fnw;
+    auto isc = br.rd_vec();
+    if (isc.size() == 1 && net.input_scale.empty()) net.input_scale.assign(d.H, isc[0]);
+    else if (isc.size() == (size_t)d.H) net.input_scale = isc;
+    auto ibs = br.rd_vec();
+    if (ibs.size() == 1 && net.input_bias.empty()) net.input_bias.assign(d.H, ibs[0]);
+    else if (ibs.size() == (size_t)d.H) net.input_bias = ibs;
+    if (net.input_scale.empty()) net.input_scale.assign(d.H, 1.0);
+    if (net.input_bias.empty()) net.input_bias.assign(d.H, 0.0);
     for (int l = 0; l < d.L; l++) {
         int tag = br.rd_i32();
         if ((tag & 0xF000) != 0x1000) { fprintf(stderr, "bad tag at layer %d: %04x\n", l, tag); return false; }
@@ -216,7 +224,6 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
     }
     std::vector<int> seq = {9079,236761,107,2717,108,1882,
                             27213,9942,9942,36209,12992,971,677,167798};
-    if (getenv("ZL_PAR")) seq.resize(7);
     d.P = (int)seq.size();
     data.assign(1, seq);
     return true;
@@ -353,7 +360,10 @@ int main(int argc, char** argv) {
         // per-layer res chains: res state runs as vector per layer across positions
         for (int p = 0; p < d.P; p++) {
             std::vector<double> res_dummy;
-            for (int i = 0; i < d.H; i++) hlay[0][(size_t)p * d.H + i] = net.embed[(size_t)data[batch][p] * d.H + i];
+            for (int i = 0; i < d.H; i++) {
+                double em = net.embed[(size_t)data[batch][p] * d.H + i];
+                hlay[0][(size_t)p * d.H + i] = (em + net.input_bias[i]) * net.input_scale[i];
+            }
             std::vector<double> res_v(d.H, 0.0);
             int ci = 0, mi = 0;
             for (int li = 0; li < d.L; li++) {
@@ -433,7 +443,7 @@ int main(int argc, char** argv) {
                         proj(c.wq, a.Bq, a.Aq, d.qd, d.H, cur.data(), cs.q.data());
                         proj(c.wk, a.Bk, a.Ak, d.kd, d.H, cur.data(), cs.k.data());
                         proj(c.wv1, a.Bv1, a.Av1, d.hv2, d.H, cur.data(), cs.vc.data());
-                        double* prev_hs = (p == 0) ? nullptr : &hlay[0][(size_t)(p - 1) * d.H];
+                        double* prev_hs = (p == 0) ? nullptr : &hlay[li][(size_t)(p - 1) * d.H];
                         std::vector<double> ph(d.H, 0.0);
                         if (prev_hs) std::copy(prev_hs, prev_hs + d.H, ph.begin());
                         proj(c.wv2, a.Bv2, a.Av2, d.hv2, d.H, ph.data(), cs.vd.data());
@@ -748,8 +758,39 @@ int main(int argc, char** argv) {
         double* pr = probs[5].data();
         int argmax = 0; double bv = -1;
         for (int v = 0; v < d.V; v++) if (pr[v] > bv) { bv = pr[v]; argmax = v; }
+        if (getenv("ZL_STAT")) {
+            double acc[6] = {0,0,0,0,0,0};
+            const std::vector<double>* vs[6] = {&net.input_scale, &net.input_bias, &net.hs_l[0], &net.hb_l[0], &net.rs_l[0], &net.rb_l[0]};
+            for (int k = 0; k < 6; k++) { double a = 0; for (double v : *vs[k]) a += v*v; acc[k] = sqrt(a / (vs[k]->empty()?1:vs[k]->size())); }
+            fprintf(stderr, "stat: |in_scale|=%.3e |in_bias|=%.3e |L0 hs|=%.3e |L0 hb|=%.3e |L0 rs|=%.3e |L0 rb|=%.3e\n",
+                    acc[0], acc[1], acc[2], acc[3], acc[4], acc[5]);
+        }
+        if (getenv("ZL_STAT")) {
+            double nn[3] = {1e30, -1e30, 0};
+            for (int t = 0; t < 2000; t++) { double a = 0; const double* r = &net.embed[(size_t)t * d.H];
+                for (int j = 0; j < d.H; j++) a += r[j]*r[j]; a = sqrt(a/d.H);
+                nn[0]=std::min(nn[0],a); nn[1]=std::max(nn[1],a); nn[2]+=a; }
+            double dot = 0; for (int j = 0; j < d.H; j++) dot += net.embed[(size_t)9079*d.H+j]*net.embed[(size_t)236761*d.H+j];
+            fprintf(stderr, "emb: row-rms min=%.3e max=%.3e mean(2000)=%.3e | dot(9079,236761)=%.3e\n", nn[0], nn[1], nn[2]/2000, dot/d.H);
+        }
+        if (getenv("ZL_STAT")) {
+            auto corr = [&](const double* a, const double* b, int n) {
+                double ma=0,mb=0; for(int i=0;i<n;i++){ma+=a[i];mb+=b[i];} ma/=n; mb/=n;
+                double aa=0,bb=0,ab=0; for(int i=0;i<n;i++){double x=a[i]-ma,y=b[i]-mb; aa+=x*x;bb+=y*y;ab+=x*y;}
+                return ab/std::sqrt(aa*bb); };
+            fprintf(stderr, "corr: h_in0(p0,p1)=%.4f h_in0(p4,p5)=%.4f curf(p0,p1)=%.4f\n",
+                corr(&hlay[1][0], &hlay[1][(size_t)d.H], d.H),
+                corr(&hlay[1][(size_t)4*d.H], &hlay[1][(size_t)5*d.H], d.H),
+                corr(&cur_f[0], &cur_f[(size_t)d.H], d.H));
+        }
         fprintf(stderr, "par: loss=%.3f argmax5=%d prob(27213)=%.4e (engine continuation=27213)\n",
                 L, argmax, pr[27213]);
+        for (int pp = 0; pp < d.P - 1; pp++) {
+            double* pv = probs[pp].data();
+            int am = 0; double bv = -1;
+            for (int v = 0; v < d.V; v++) if (pv[v] > bv) { bv = pv[v]; am = v; }
+            fprintf(stderr, "  pos %d -> argmax %d  want %d\n", pp, am, data[0][pp + 1]);
+        }
         return 0;
     }
     if (real) mode = "train";
