@@ -107,6 +107,21 @@ hands-on reports — transfers directly to Zaya:
 - Still applies: QLoRA 4-bit base + 16-bit adapters; on ROCm verify bitsandbytes + peft on gfx1201 before committing (or rent ~$0.13/run).
 - Sources: github hiyouga/LlamaFactory README; Zyphra/ZAYA1-8B config.json; unslothai/unsloth model registry.
 
+## 9. HF ecosystem map + field-proven Zaya LoRA recipes (2026-09 survey)
+
+**Official family (HuggingFace):** Zyphra/ZAYA1-8B (12.4k dl, 588 likes), ZAYA1-base, ZAYA1-reasoning-base, ZAYA1-VL-8B, ZAYA1-74B-preview, ZAYA1-8B-legacy, ZAYA1-8B-{FP8,MXFP4}-Experts; plus the Zamba2/ZR1/ZUNA/ZONOS family. Quant ecosystem already rich: MXFP4 (OsaurusAI), BNB-4bit, NVFP4, JANGTQ4/TQ_K, GGUF (Abiray 1.9k dl), MLX (kyr0), ONNX.
+
+**Community LoRA fine-tunes exist** (the field is young, space is open):
+- josephmayo/ZAYA1-8B-Coder-LoRA (+ merged ZAYA1-8B-Coder, + GGUF): rank 16 / alpha 32 / dropout 0.05; 160 adapter tensors = per-layer self_attn.o_proj + zaya_block.router.down_proj (40 layers x 2 targets). Eval = deterministic 0-10 heuristic on 50 prompts, merge gate >=20% lift (base 2.36 -> 4.76, passed, merged). Warning in their card: broad Llama-style target names do NOT map cleanly onto zaya (it is not weight-compatible with LlamaForCausalLM); use explicit zaya tensor names.
+- dtarkenton/sprocket-gex-zaya1-8b-lora-paper-exact-final: TRL 1.5.0 SFT, PEFT 0.19.1, transformers 4.57.1, torch 2.12.0, datasets 4.8.5 — i.e. mainline HF stack works (no Zyphra fork needed); "paper-exact" = reproduces the Zaya paper's training data mix.
+- arxyzan/zaya-{1b,3b,4b}-it (instruct variants, GGUF), tiny-random/zaya1 + yujiepan/zaya1-tiny-random (transformers CI fixtures => zaya is a first-class arch).
+
+**Field-proven pilot recipe (from the above):**
+1. Base Zyphra/ZAYA1-8B; stack transformers >=4.57 (5.x native ok), TRL ~1.5, PEFT ~0.19, torch 2.x, datasets; load zaya arch (remote code or mainline).
+2. LoRA with EXPLICIT zaya target modules (attn q/k/v/o proj + expert ffn gate/up/down; conv-state + router handled deliberately - the Coder-LoRA trained router.down_proj and passed, but the hybrid-FT playbook says freeze the router for run 1 and save base router traces).
+3. Deterministic eval gate + merge threshold (the Coder heuristic pattern fits 1bit's gate culture).
+4. Export: merge adapters -> safetensors -> 1bit q4nx pipeline -> NPU/GPU verify.
+
 ## Sources
 
 - Unsloth README/docs (unsloth.ai, github unslothai/unsloth)
