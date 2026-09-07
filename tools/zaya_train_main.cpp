@@ -454,10 +454,7 @@ int main(int argc, char** argv) {
                         proj(c.wq, a.Bq, a.Aq, d.qd, d.H, cur.data(), cs.q.data());
                         proj(c.wk, a.Bk, a.Ak, d.kd, d.H, cur.data(), cs.k.data());
                         proj(c.wv1, a.Bv1, a.Av1, d.hv2, d.H, cur.data(), cs.vc.data());
-                        double* prev_hs = (p == 0) ? nullptr : &hlay[li][(size_t)(p - 1) * d.H];
-                        std::vector<double> ph(d.H, 0.0);
-                        if (prev_hs) std::copy(prev_hs, prev_hs + d.H, ph.begin());
-                        proj(c.wv2, a.Bv2, a.Av2, d.hv2, d.H, ph.data(), cs.vd.data());
+                        proj(c.wv2, a.Bv2, a.Av2, d.hv2, d.H, cur.data(), cs.vd.data());
                     }
                     // cca_prep (engine-faithful, with state)
                     std::vector<double> sqk0(d.qkv);
@@ -736,16 +733,10 @@ int main(int argc, char** argv) {
                     proj_bwd(c.wv1, cca_ad[ci].Bv1, cca_ad[ci].Av1, d.hv2, d.H, b.cur_p.data(), gvc_l.data(), ga.Bv1, ga.Av1, gx_cur.data());
                     std::vector<double> gvd_full = gvd_l;
                     for (int i = 0; i < d.hv2; i++) gvd_full[i] += gvd_d[ci][p][i];
-                    { double* xprev = (p >= 1) ? &hlay[li][(size_t)(p - 1) * d.H] : nullptr;
-                      std::vector<double> xpv(d.H, 0.0);
-                      if (xprev) std::copy(xprev, xprev + d.H, xpv.begin());
+                    { std::vector<double> xpv = b.cur_p;
                       std::vector<double> gxd(d.H, 0);
                       proj_bwd(c.wv2, cca_ad[ci].Bv2, cca_ad[ci].Av2, d.hv2, d.H, xpv.data(), gvd_full.data(), ga.Bv2, ga.Av2, gxd.data());
-                      // v_del input = hlay[li][p-1] = block out of layer li-1 (live):
-                      // backprop its grads into gBlk[li-1] at position p-1
-                      if (li > 0 && p >= 1)
-                          for (int j = 0; j < d.H; j++)
-                              gBlk[li - 1][(size_t)(p - 1) * d.H + j] += gxd[j]; }
+                      for (int j = 0; j < d.H; j++) gx_cur[j] += gxd[j]; }
                     for (int i = 0; i < d.H; i++) gcur[i] += gx_cur[i];
                 }
                 // rmsnorm bwd: cur = rmsnorm(res_new[li][p]); then rn split
@@ -800,6 +791,15 @@ int main(int argc, char** argv) {
                 corr(&cur_f[0], &cur_f[(size_t)d.H], d.H));
         }
         {
+            FILE* tq = fopen("/tmp/myqkv.txt", "w");
+            if (tq) {
+                int QP = getenv("ZL_QP") ? atoi(getenv("ZL_QP")) : 5;
+                CcaSave& c0 = csa[0][QP];
+                fprintf(tq, "q0 "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c0.qo[i], i == d.qd-1 ? '\n' : ' ');
+                fprintf(tq, "k0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c0.ko[i], i == d.kd-1 ? '\n' : ' ');
+                fprintf(tq, "v0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c0.vo[i], i == d.kd-1 ? '\n' : ' ');
+                fclose(tq);
+            }
             FILE* tf = fopen("/tmp/mytrace.txt", "w");
             if (tf) { for (int li = 0; li < d.L; li += 2) { fprintf(tf, "in L%d ", li); for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", cur_l[li][(size_t)5 * d.H + i], i == d.H-1 ? '\n' : ' '); fprintf(tf, "out L%d ", li); for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", hout_l[li][(size_t)5 * d.H + i], i == d.H-1 ? '\n' : ' '); } fclose(tf); }
             FILE* tp2 = fopen("/tmp/mypre.txt", "w");

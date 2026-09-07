@@ -185,3 +185,14 @@ B^T dL/dy x^T (per expert block for Phase B).
   block inputs (ZL_TRACE), pre-norm residual (ZL_PRE), even-layer h outputs
   (zh.txt), moe e/wt (auto). Next: engine-side qo/ko/vo + attention-score hooks
   to diff cca_prep internals element-by-element against the trainer at layer 0.
+
+- 2026-09-07 (M2 parity, round 8 — v_del FIXED, trace-proven): engine traces
+  showed vo's vrec half (delayed v_del) was ~10x too small (rms 0.15 vs 1.63).
+  Root cause: the engine computes vd = wv2 @ CUR (current rmsnorm'd residual);
+  the one-token delay lives in cca_prep's internal vrec state. Fixed fwd+bwd
+  (vd=wv2@cur, input grads into gx_cur). Result: vc corr 0.999993, vrec corr
+  0.999961 (rms equal 1.633), layer-0 block OUT corr 0.70 -> 0.87. FD stack
+  gate PASS. Remaining: qo/ko corr ~0.97 (cca_prep internals: conv-state/
+  grouped/L2/rope small transcription gap) -> next diff at that level; deeper
+  layers compound from the residual 0.97 error. Engine traces + trainer dumps
+  all aligned at engine pos6 == trainer pos5.
