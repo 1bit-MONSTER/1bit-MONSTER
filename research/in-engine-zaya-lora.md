@@ -196,3 +196,12 @@ B^T dL/dy x^T (per expert block for Phase B).
   grouped/L2/rope small transcription gap) -> next diff at that level; deeper
   layers compound from the residual 0.97 error. Engine traces + trainer dumps
   all aligned at engine pos6 == trainer pos5.
+
+- 2026-09-07 (M2 parity, round 9 — prep-chain isolated): raw projections at
+  layer 0 / aligned pos are EXACT: qr 0.999978, kr 1.000000, vcr 0.999993,
+  vdr 0.999986 (engine ZL_RAW hook). The remaining qo/ko ~0.97 gap is inside
+  the cca_prep chain (conv taps / grouped conv / qk_means mix / L2 / rope) —
+  a transcription slip in the trainer's prep mirror. Next: header-level
+  instrumentation or a python prep-model (from engine raw + dump weights) to
+  reproduce engine qo/ko at 1.0, then diff the trainer's prep sub-stages
+  against it to find the slip.
