@@ -6,201 +6,201 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Fri, 04 Sep 2026 23:09:55 +0000</lastBuildDate>
+    <lastBuildDate>Sun, 06 Sep 2026 09:38:58 +0000</lastBuildDate>
     <item>
       <title>Lemonade v11.9.0: origin hardening, and upstream took our HRX backend</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1190.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1190.html</guid>
-      <pubDate>Wed, 02 Sep 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>The embedded Lemonade server core is re-vendored to v11.9.0 — allowed_origins/CORS hardening, llama.cpp to b10723, the streaming-stall fix, and directory-watcher + extra-model classification fixes. We retired stream_stall_timeout and kept the newer hrx-b66 pin; everything else now matches upstream.</description>
     </item>
     <item>
       <title>Zaya 8B Q4NX on the AMD NPU</title>
       <link>https://1bit.monster/1bit-post-zaya-q4nx-hrx.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-zaya-q4nx-hrx.html</guid>
-      <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: an 8-billion-parameter model now runs entirely on AMD&#x27;s laptop NPU — attention and experts on-device, served over HTTP, decode 8.4 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/research/ws12-hrx-loom/README.md</description>
     </item>
     <item>
       <title>Lemonade v11.8.1, and how we stay current with the SDK</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1181.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1181.html</guid>
-      <pubDate>Mon, 31 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>The embedded Lemonade server core is re-vendored to v11.8.1 — upstream sync landed; see the post for what changed. Engine HF coverage: 566 architecture tokens, 1,946 HF arch strings, 321,611/321,611 checkpoints mapped.</description>
     </item>
     <item>
       <title>HRX: we put AMD&#x27;s experimental IREE runtime inside our engine</title>
       <link>https://1bit.monster/1bit-post-hrx-engine.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-hrx-engine.html</guid>
-      <pubDate>Sun, 30 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: AMD&#x27;s experimental NPU runtime now runs inside our engine — one process, two runtimes, roughly twice the warm decode, with the honest ceiling measured. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/hrx-backend.md</description>
     </item>
     <item>
       <title>Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1180.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1180.html</guid>
-      <pubDate>Thu, 27 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: the AMD SDK release built for our chip — the 15th backend (DeepSeek V4 Flash for Strix Halo) embedded, plus download resume and rate limits. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md</description>
     </item>
     <item>
       <title>One engine, every model</title>
       <link>https://1bit.monster/1bit-post-1775-models.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-1775-models.html</guid>
-      <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>One C++ binary, 566 architecture tokens, 1,946 HF arch strings, 100% HuggingFace coverage, 321,611 checkpoints mapped. Every model you can download.</description>
     </item>
     <item>
       <title>Local RAG with our own embeddings</title>
       <link>https://1bit.monster/1bit-post-local-rag.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-local-rag.html</guid>
-      <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: fully local RAG on one binary — embed, index, retrieve and generate on your own hardware, no cloud, no Python. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md</description>
     </item>
     <item>
       <title>What 1-bit actually does to a model</title>
       <link>https://1bit.monster/1bit-post-1bit-explained.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-1bit-explained.html</guid>
-      <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: models packed to ~1.6 bits per weight run on hardware you already own — memory drops ~16x and matmuls become additions. What 1-bit actually does to a model, explained plainly. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md</description>
     </item>
     <item>
       <title>ROCm vs CUDA, from the 1-bit trenches</title>
       <link>https://1bit.monster/1bit-post-rocm-vs-cuda.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-rocm-vs-cuda.html</guid>
-      <pubDate>Tue, 25 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: 1-bit matmuls on AMD silicon measured against CUDA from real kernel work — the comparison behind why every model runs on AMD&#x27;s stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/engine_comparison_report.md</description>
     </item>
     <item>
       <title>Lemonade v11.7.0, and how we stay current with the SDK</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1170.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-lemonade-v1170.html</guid>
-      <pubDate>Mon, 24 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: the SDK sync loop — Lemonade v11.7.0&#x27;s core embedded so the engine stays current with every AMD release, 14 backends included. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/guides/Lemonade-Compat.md</description>
     </item>
     <item>
       <title>Two PCs, two GPUs, zero cloud</title>
       <link>https://1bit.monster/1bit-post-fleet.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-fleet.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: a two-computer AI fleet with zero cloud — 35B and 8B models served locally across a LAN, both instances fed entirely by our own engine. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md</description>
     </item>
     <item>
       <title>Qwen3.6-35B-A3B streams fully on the Ryzen AI NPU</title>
       <link>https://1bit.monster/1bit-post-qwen36.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-qwen36.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: a 35-billion-parameter model streaming on a laptop NPU — AMD&#x27;s own numbers decoded and independently verified, plus our first Vulkan pass. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md</description>
     </item>
     <item>
       <title>37 FLM models, 209 xclbins, zero config files</title>
       <link>https://1bit.monster/1bit-post-flm-zoo.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-flm-zoo.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: AMD&#x27;s entire NPU model collection extracted — 37 models and 209 bitstreams, auto-detected from the model files with zero configuration. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/fastflowlm-analysis/README.md</description>
     </item>
     <item>
       <title>Zyphra family complete</title>
       <link>https://1bit.monster/1bit-post-zyphra.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-zyphra.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: Zyphra&#x27;s entire model family runs at 1-bit precision on GPU — all four models validated end to end, including a reasoning model at 26 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/model-families/zyphra.md</description>
     </item>
     <item>
       <title>One binary, all formats</title>
       <link>https://1bit.monster/1bit-post-binary-formats.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-binary-formats.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: one binary runs every model format — 1-bit, ternary and binary checkpoints on NPU and GPU alike, no rebuilds, no per-model config. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md</description>
     </item>
     <item>
       <title>Unsloth for AMD</title>
       <link>https://1bit.monster/1bit-post-unsloth.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-unsloth.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: training and fine-tuning land on AMD hardware — 2x faster, 70% less memory, fits in 3 GB, alongside our inference engine. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/wiki/unsloth-dynamic-ggufs.md</description>
     </item>
     <item>
       <title>TokenRouter: token-level multi-backend inference</title>
       <link>https://1bit.monster/1bit-post-tokenrouter.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-tokenrouter.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: token-level routing between NPU and GPU — one chip drafts, another verifies, and real logprobs ride the wire between them. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md</description>
     </item>
     <item>
       <title>What the Ryzen AI Halo reviews didn&#x27;t tell you</title>
       <link>https://1bit.monster/1bit-post-halo-reviews.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-halo-reviews.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: the 50-TOPS laptop NPU driven directly — what the reviewers missed, in our own measurements. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md</description>
     </item>
     <item>
       <title>DSpark speculative decoding, disproven</title>
       <link>https://1bit.monster/1bit-post-dspark.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-dspark.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: a speculative-decoding method that promised 572 tok/s delivered ~0.1-0.2 tok/s — disproven with measurements, and what it would take to fix. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/spec-decode/README.md</description>
     </item>
     <item>
       <title>Three bugs that broke 97 tok/s</title>
       <link>https://1bit.monster/1bit-post-three-bugs.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-three-bugs.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: full-speed NPU decode that was secretly garbage, made correct — three silent bugs found and fixed at 97 tok/s. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md</description>
     </item>
     <item>
       <title>One engine. Every model. Any chip.</title>
       <link>https://1bit.monster/1bit-post-one-engine.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-one-engine.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: one binary runs every model on every chip — architecture auto-detected from the file, backend auto-chosen, no per-model builds. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/CODEBASE.md</description>
     </item>
     <item>
       <title>244 to 3.4 ms/tok: the NPU optimization sprint</title>
       <link>https://1bit.monster/1bit-post-sprint.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-sprint.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: NPU inference from 1,930 to 3.4 ms per token in four days — a 72x speedup through batch decode, fused dispatch and INT8 kernels. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md</description>
     </item>
     <item>
       <title>50 TOPS on a laptop</title>
       <link>https://1bit.monster/1bit-post-50t.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-50t.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: the first month&#x27;s NPU benchmarks, kept honestly — 50 TOPS on a laptop, early numbers flagged as unsourced history. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md</description>
     </item>
     <item>
       <title>The fused layer engine</title>
       <link>https://1bit.monster/1bit-post-fused.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-fused.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: a model&#x27;s layers fused into single NPU calls — six times fewer dispatches per layer, making the laptop NPU a practical inference target. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/npu-infer/docs/fusion-level-0.md</description>
     </item>
     <item>
       <title>I reverse-engineered AMD&#x27;s NPU stack in 4 days</title>
       <link>https://1bit.monster/1bit-post-npu-reversal.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-npu-reversal.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: AMD&#x27;s locked NPU stack replaced with open C++ in four days — a laptop, a disassembler, 22 proprietary libraries, zero documentation. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/research/fastflowlm-analysis/README.md</description>
     </item>
     <item>
       <title>1bit Coding Agent released</title>
       <link>https://1bit.monster/1bit-post-coding-agent.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-coding-agent.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: a coding agent that runs entirely on your hardware — a CLI with NPU-native inference, package management, extensions and skills, in the monorepo. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/archive/openspec/changes/1bit-pi-clone/proposal.md</description>
     </item>
     <item>
       <title>NPU v12: M=32 batch decode at 97 tok/s</title>
       <link>https://1bit.monster/1bit-post-npu-v12.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-npu-v12.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: NPU batch decode hit 97 tok/s — a 24x speedup in one session (244 to 10 ms/token), 46% faster than AMD&#x27;s own stack. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md</description>
     </item>
     <item>
       <title>Historical benchmark: both lanes green</title>
       <link>https://1bit.monster/1bit-post-historical.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-historical.html</guid>
-      <pubDate>Sat, 22 Aug 2026 00:00:00 +0000</pubDate>
+      <pubDate>Sun, 06 Sep 2026 00:00:00 +0000</pubDate>
       <description>Milestone: an early two-lane local run, kept for the record — one model, iGPU and NPU, both green. Full technical write-up: https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/engine/npu/BENCHMARKS.md</description>
     </item>
   </channel>
