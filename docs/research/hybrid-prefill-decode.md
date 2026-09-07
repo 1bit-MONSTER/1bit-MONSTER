@@ -174,3 +174,17 @@ fork @0f52c297a (session 9) · Qwen3-0.6B-Q4_K_M · 5-token prompt + 8 gens → 
 - Consequence for D2 hybrid correctness: per §4, continuation equality vs pure-HIP is
   bounded by this drift ("identical up to the first diverging top-1"); the state format
   round-trips losslessly. D1 harness remains the no-context-loss proof.
+
+## §5.2 D2 handoff — correctness PROVEN on the 30B (2026-09-07)
+
+Qwen3-Coder-30B-A3B-Instruct-Q4_K_M (the HRX-bundle model), 2,962-token prompt:
+- A (vendored 4df29be4f GGML_HIP, ngl99) prefills on HIP (~620 tok/s incl. save),
+  292,011,596 B session blob via llama_state_save_file.
+- B (hrx2 fork @0f52c297a, session 9) imports the blob (llama_state_load_file) and
+  decodes. **A-run (HIP decode of own kv) vs B-run (fork decode of imported kv):
+  48/48 continuation tokens IDENTICAL** — the handoff is lossless; no context loss.
+- B-imported vs B-native (fork re-prefill from scratch) diverges from token 0 =
+  A-HIP-prefill vs B-CPU-prefill kernel drift (anticipated by §4: equality is bounded
+  by the first diverging top-1; decode-on-identical-kv agrees 100%).
+- Remaining for full §5.2 acceptance: decode leg on the real HRX device (bundle),
+  ≥500-token continuation, and the hybrid-vs-single-backend timing table.
