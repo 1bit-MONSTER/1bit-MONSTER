@@ -710,6 +710,12 @@ add_executable(qwen35moe_cpu_ref tools/qwen35moe_cpu_ref.cpp src/gguf_reader.cpp
 target_include_directories(qwen35moe_cpu_ref PRIVATE src include)
 target_compile_options(qwen35moe_cpu_ref PRIVATE -O2 -std=c++26)
 
+# 1BP fork of the CPU reference (#1831 M2 q4nx lane): same formula, reads the
+# converted 1BP file via the TU-included NpuOnebpModel (no GGUF reader).
+add_executable(qwen35moe_cpu_ref_1bp tools/qwen35moe_cpu_ref_1bp.cpp)
+target_include_directories(qwen35moe_cpu_ref_1bp PRIVATE src include)
+target_compile_options(qwen35moe_cpu_ref_1bp PRIVATE -O2 -std=c++26)
+
 add_executable(gguf_htok tools/gguf_htok.cpp src/gguf_reader.cpp)
 target_include_directories(gguf_htok PRIVATE src include)
 target_compile_options(gguf_htok PRIVATE -O2 -std=c++23)

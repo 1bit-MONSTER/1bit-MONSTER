@@ -489,6 +489,18 @@ int main(int argc, char** argv) {
     auto route_quant = [&](OnebpQuant q, const std::string& tn) -> OnebpQuant {
         if (getenv("ONEBP_NO_ROUTE")) return q;
         bool is_emb = (tn == "token_embd.weight" || tn == "output.weight" || tn == "lm_head.weight");
+        // #1831 M2 q4nx lane (and the dense q4nx quality note above): coarse
+        // codebooks destroy low-rank/embedding structure AND the MoE router
+        // (topk flips) / conv kernels. Keep them lossless under --q4nx:
+        // emb/lm_head -> F16, router + ssm conv -> F16 too (they were F32 in
+        // the GGUF source; the converter writer has no F32 tile branch, so
+        // lossless = F16 here). Everything else stays on the requested quant.
+        if (q == ONEBP_Q4NX) {
+            if (is_emb) return ONEBP_F16;
+            if (tn.find("ffn_gate_inp.weight") != std::string::npos ||
+                tn.find("ssm_conv1d.weight") != std::string::npos) return ONEBP_F16;
+            return q;
+        }
         if (!is_emb) return q;
         if (q == ONEBP_TQ2NZ || q == ONEBP_TQ2NZ_E4M3) return ONEBP_Q4NX;
         if (q == ONEBP_Q4_ROCMFP4 || q == ONEBP_Q4_ROCMFP4_FAST) return ONEBP_F16;

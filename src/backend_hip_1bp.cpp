@@ -74,7 +74,10 @@ struct Hip1bpBackend : Backend {
         float* sh_gatew = nullptr;                      // ffn_gate_inp_shexp (H f32)
     };
     bool q35_loaded = false;
-    uint8_t* q35_emb = nullptr, *q35_out = nullptr;     // token_embd / output (V x H Q8_0)
+    bool q35_q4nx = false;            // #1831 M2: weights are 1BP Q4NX tiles, not GGUF Q8_0 raw
+    size_t q35_exp_bytes[3] = {0,0,0}; // per-expert bytes: [0]=gate [1]=up [2]=down (ndim==3 stacks)
+    float* q35_out_f32 = nullptr;        // lm_head as f32 (F16/F32-routed output.weight)
+    uint8_t* q35_emb = nullptr, *q35_out = nullptr;     // token_embd / output (V x H; Q8_0 raw or Q4NX tile)
     float* q35_onorm = nullptr;                         // output_norm (H f32)
     std::vector<Q35L> q35L;
     // qwen35 decode scratch (per token, eager) + recurrent/conv/kv state
@@ -233,12 +236,24 @@ struct Hip1bpBackend : Backend {
         // lookups read the GGUF header table only (no tensor data), so this costs
         // nothing on the failure path and stays out of the way of the multi-GB
         // embed dequant below.
+        // 1BP files carry no GGUF arch token, but the qwen35moe tensor index
+        // is self-describing — fused attn_qkv + ssm_a is the GDN signature, so
+        // probe it when cfg.arch did not already classify the file (bench/CLI
+        // drivers that set cfg.arch == RCPP_ARCH_QWEN35 keep working too).
         bool qwen35 = (cfg.arch == RCPP_ARCH_QWEN35) ||
-                      (gguf_ && gguf_->architecture() == "qwen35moe");
+                      (gguf_ && gguf_->architecture() == "qwen35moe") ||
+                      (model_ && model_->find_tensor("blk.0.attn_qkv.weight") &&
+                                model_->find_tensor("blk.0.ssm_a") != nullptr);
         if (qwen35) {
-            if (!gguf_) {
-                fprintf(stderr, "[hip1bp] qwen35moe requires GGUF-direct mode (1BP "
-                                "q4nx conversion for GDN/MoE not wired yet — #1831 M2)\n");
+            // #1831 M2: the 1BP Q4NX lane is wired — Q4NX-packed tiles are
+            // consumed through the same Q35L structs with launch_q4nx-style
+            // gemvs. Other 1BP quants (ROCmFP4/F16/TQ2NZ/…) are not; refuse
+            // loudly (dense #1627 rule) instead of decoding garbage.
+            if (!gguf_ && quant2 != 3) {
+                fprintf(stderr, "[hip1bp] qwen35moe 1BP: only ONEBP_Q4NX files are wired "
+                                "(#1831 M2); this file is quant=%u — convert with "
+                                "gguf_to_onebp --q4nx first\n",
+                        (unsigned)model_->header().quant);
                 return false;
             }
             // Per-layer tensor families. Every layer shares the norm + MoE set
@@ -285,17 +300,57 @@ struct Hip1bpBackend : Backend {
                 char bn[160];
                 if (l < 0) snprintf(bn, sizeof bn, "%s", nm);
                 else       snprintf(bn, sizeof bn, "blk.%d.%s", l, nm);
-                const GgufTensorInfo* ti = gguf_->tensor_info(bn);
-                if (!ti) {
-                    fprintf(stderr, "[hip1bp] qwen35moe: MISSING %s\n", bn); return false;
+                if (gguf_) {
+                    const GgufTensorInfo* ti = gguf_->tensor_info(bn);
+                    if (!ti) {
+                        fprintf(stderr, "[hip1bp] qwen35moe: MISSING %s\n", bn); return false;
+                    }
+                    if (ti->shape.size() != want.size() ||
+                        !std::equal(want.begin(), want.end(), ti->shape.begin())) {
+                        fprintf(stderr, "[hip1bp] qwen35moe: %s shape mismatch (want", bn);
+                        for (uint64_t w : want) fprintf(stderr, " %llu", (unsigned long long)w);
+                        fprintf(stderr, " got");
+                        for (uint64_t w : ti->shape) fprintf(stderr, " %llu", (unsigned long long)w);
+                        fprintf(stderr, ")\n"); return false;
+                    }
+                    return true;
                 }
-                if (ti->shape.size() != want.size() ||
-                    !std::equal(want.begin(), want.end(), ti->shape.begin())) {
-                    fprintf(stderr, "[hip1bp] qwen35moe: %s shape mismatch (want", bn);
+                // 1BP index: gguf_to_onebp preserved the GGUF names; entries
+                // carry ndim / rows(=shape[1]) / cols(=shape[0]) /
+                // num_experts(=shape[2]) per tensor (verified against the live
+                // conversion log /var/tmp/cas/conv35.log on strixhalo).
+                const auto* te = model_->find_tensor(bn);
+                if (!te) {
+                    fprintf(stderr, "[hip1bp] qwen35moe: MISSING %s (1BP)\n", bn); return false;
+                }
+                bool dim_ok = false;
+                if (want.size() == 1)      dim_ok = (te->ndim == 1 && (uint64_t)te->cols == want[0]);
+                else if (want.size() == 2) dim_ok = (te->ndim == 2 && (uint64_t)te->rows == want[1] &&
+                                                     (uint64_t)te->cols == want[0]);
+                else if (want.size() == 3) dim_ok = (te->ndim == 3 &&
+                                                     (uint64_t)te->num_experts == want[2] &&
+                                                     (uint64_t)te->rows == want[1] &&
+                                                     (uint64_t)te->cols == want[0]);
+                if (!dim_ok) {
+                    fprintf(stderr, "[hip1bp] qwen35moe: %s 1BP dim mismatch (want", bn);
                     for (uint64_t w : want) fprintf(stderr, " %llu", (unsigned long long)w);
-                    fprintf(stderr, " got");
-                    for (uint64_t w : ti->shape) fprintf(stderr, " %llu", (unsigned long long)w);
-                    fprintf(stderr, ")\n"); return false;
+                    fprintf(stderr, " got ndim=%d rows=%d cols=%d exps=%d)\n",
+                            te->ndim, te->rows, te->cols, te->num_experts);
+                    return false;
+                }
+                if (te->ndim > 1) {
+                    // #1831 M2 per-tensor routing (gguf_to_onebp --q4nx):
+                    // token_embd/output -> F16, router/conv1d -> F32; every
+                    // other ndim>=2 tensor must be a Q4NX packed tile.
+                    bool lossless = te->quant == ONEBP_F16 || te->quant == ONEBP_F32;
+                    bool emb = (strcmp(nm, "token_embd.weight") == 0 || strcmp(nm, "output.weight") == 0);
+                    bool route32 = (strstr(nm, "ffn_gate_inp.weight") || strstr(nm, "ssm_conv1d.weight"));
+                    bool okq = (te->quant == ONEBP_Q4NX) || (lossless && (emb || route32));
+                    if (!okq) {
+                        fprintf(stderr, "[hip1bp] qwen35moe: %s 1BP quant %u unexpected\n",
+                                bn, (unsigned)te->quant);
+                        return false;
+                    }
                 }
                 return true;
             };
@@ -327,16 +382,17 @@ struct Hip1bpBackend : Backend {
                                 "10 shared + kind-specific per layer; %d full-attn MHA "
                                 "layers 3,7,…,39 with split attn_q/k/v + q/k-norm, "
                                 "rest GDN fused attn_qkv 8192 rows + ssm; MoE 256x8 + "
-                                "shared): GDN/MoE decode kernels not implemented yet "
-                                "(#1831 M3/M4) — use the CPU (qwen3next) or NPU path.\n",
+                                "shared): eager decode behind H1BP_Q35_LOAD+TRY "
+                                "(Q8_0 GGUF since #2127; Q4NX 1BP since M2)",
                         H, NC, n_full);
             }
             // M3 loader/kernel self-check (env H1BP_Q35_SELFCHECK): pull
             // blk.0.attn_qkv (Q8_0 raw, 34 B/block) and run the device Q8 gemv
             // against a host dequant of the same rows. Exercises the raw-GGUF
             // loader + h1bp_q8gemv_kernel on real hardware without a decode
-            // path. Dense models never reach here (arch gate above).
-            if (ok && getenv("H1BP_Q35_SELFCHECK")) {
+            // path. Dense models never reach here (arch gate above); GGUF-only
+            // — a 1BP model has no gguf_ reader to pull raw rows from.
+            if (ok && gguf_ && getenv("H1BP_Q35_SELFCHECK")) {
                 std::vector<uint8_t> raw;
                 const int K0 = 2048, M0 = 8192;
                 const size_t rowb = (size_t)(K0 / 32) * 34;
@@ -417,7 +473,9 @@ struct Hip1bpBackend : Backend {
                     if (l < 0) snprintf(bn, sizeof bn, "%s", nm);
                     else       snprintf(bn, sizeof bn, "blk.%d.%s", l, nm);
                     std::vector<float> v;
-                    if (!gguf_->get_tensor_f32(bn, v)) {
+                    bool got = gguf_ ? gguf_->get_tensor_f32(bn, v)
+                                      : model_->get_tensor_f32(bn, v);
+                    if (!got) {
                         fprintf(stderr, "[hip1bp] q35 load: MISSING %s\n", bn); return false;
                     }
                     if ((int)v.size() != n) {
@@ -432,10 +490,108 @@ struct Hip1bpBackend : Backend {
                     tot += (size_t)n * 4;
                     return true;
                 };
+                // #1831 M2 1BP lane: same Q35L structs, Q4NX-packed tiles.
+                // q4 = ndim==2 whole-tile copy (validated M/K), q4x = ndim==3
+                // expert stack copied whole (per-expert slices at decode via
+                // q35_exp_bytes[slot]); f32 tensors keep f32t (model dequant
+                // for the Q4NX-quantized router/conv1d).
+                const bool onebp = (model_ != nullptr);
+                auto q4 = [&](const char* nm, int l, uint8_t*& dst, int M, int K,
+                              bool optional = false) -> bool {
+                    char bn[180];
+                    if (l < 0) snprintf(bn, sizeof bn, "%s", nm);
+                    else       snprintf(bn, sizeof bn, "blk.%d.%s", l, nm);
+                    const auto* te = model_->find_tensor(bn);
+                    if (!te || te->ndim != 2 || te->quant != ONEBP_Q4NX ||
+                        te->rows != M || te->cols != K) {
+                        if (optional) return true;
+                        fprintf(stderr, "[hip1bp] q35 load: %s 1BP tile mismatch "
+                                        "(ndim=%d q=%u %dx%d want %dx%d)\n", bn,
+                                te ? te->ndim : -1, te ? (unsigned)te->quant : 0u,
+                                te ? te->rows : 0, te ? te->cols : 0, M, K);
+                        return false;
+                    }
+                    if (hipMalloc((void**)&dst, te->total_bytes) != hipSuccess ||
+                        hipMemcpy(dst, model_->raw_tensor(bn), te->total_bytes,
+                                  hipMemcpyHostToDevice) != hipSuccess) {
+                        fprintf(stderr, "[hip1bp] q35 load: hip alloc/copy failed %s\n", bn);
+                        return false;
+                    }
+                    tot += te->total_bytes;
+                    return true;
+                };
+                auto q4x = [&](const char* nm, int l, uint8_t*& dst, int slot,
+                               bool optional = false) -> bool {
+                    char bn[180];
+                    if (l < 0) snprintf(bn, sizeof bn, "%s", nm);
+                    else       snprintf(bn, sizeof bn, "blk.%d.%s", l, nm);
+                    const auto* te = model_->find_tensor(bn);
+                    if (!te || te->ndim != 3 || te->quant != ONEBP_Q4NX) {
+                        if (optional) return true;
+                        fprintf(stderr, "[hip1bp] q35 load: %s 1BP expert-stack "
+                                        "mismatch (ndim=%d q=%u)\n", bn,
+                                te ? te->ndim : -1, te ? (unsigned)te->quant : 0u);
+                        return false;
+                    }
+                    if (hipMalloc((void**)&dst, te->total_bytes) != hipSuccess ||
+                        hipMemcpy(dst, model_->raw_tensor(bn), te->total_bytes,
+                                  hipMemcpyHostToDevice) != hipSuccess) {
+                        fprintf(stderr, "[hip1bp] q35 load: hip alloc/copy failed %s\n", bn);
+                        return false;
+                    }
+                    q35_exp_bytes[slot] = te->total_bytes / (uint64_t)te->num_experts;
+                    tot += te->total_bytes;
+                    return true;
+                };
+                // mode dispatch: GGUF Q8_0 raw rows vs 1BP Q4NX whole tiles
+                auto tile = [&](const char* nm, int l, uint8_t*& dst, int M, int K,
+                                bool optional = false) -> bool {
+                    if (!onebp) return q8(nm, l, dst, M, K, optional);
+                    return q4(nm, l, dst, M, K, optional);
+                };
+                auto tile3 = [&](const char* nm, int l, uint8_t*& dst, int slot,
+                                 int M, int K, bool optional = false) -> bool {
+                    if (!onebp) return q8(nm, l, dst, M, K, optional);
+                    return q4x(nm, l, dst, slot, optional);
+                };
                 bool lok = true;
-                // globals
-                lok &= q8("token_embd.weight", -1, q35_emb, 248320, 2048);
-                lok &= q8("output.weight", -1, q35_out, 248320, 2048);
+                // globals — Q4NX embeds are f32-dequantized once at load (the
+                // embed-copy kernel reads f32 rows; dense packed-path convention).
+                if (onebp) {
+                    q35_q4nx = true;
+                    // token_embd: f32-dequant once into d_embed regardless of
+                    // its file quant (Q4NX/F16/F32) — embed-copy kernel reads f32.
+                    std::vector<float> em;
+                    if (model_->get_tensor_f32("token_embd.weight", em) &&
+                        (int)em.size() == 248320 * 2048) {
+                        if (hipMalloc((void**)&d_embed, em.size() * 4) != hipSuccess ||
+                            hipMemcpy(d_embed, em.data(), em.size() * 4,
+                                      hipMemcpyHostToDevice) != hipSuccess)
+                            lok = false;
+                        tot += em.size() * 4;
+                        em.clear(); em.shrink_to_fit();
+                    } else lok = false;
+                    // output.weight: Q4NX -> packed tile (launch_q4nx); F16/F32
+                    // (converter per-tensor route) -> f32 lm_head buffer.
+                    const auto* ot = model_->find_tensor("output.weight");
+                    if (ot && ot->quant == ONEBP_Q4NX) {
+                        lok &= q4("output.weight", -1, q35_out, 248320, 2048);
+                    } else {
+                        std::vector<float> ow;
+                        if (model_->get_tensor_f32("output.weight", ow) &&
+                            (int)ow.size() == 248320 * 2048) {
+                            if (hipMalloc((void**)&q35_out_f32, ow.size() * 4) != hipSuccess ||
+                                hipMemcpy(q35_out_f32, ow.data(), ow.size() * 4,
+                                          hipMemcpyHostToDevice) != hipSuccess)
+                                lok = false;
+                            tot += ow.size() * 4;
+                            ow.clear(); ow.shrink_to_fit();
+                        } else lok = false;
+                    }
+                } else {
+                    lok &= q8("token_embd.weight", -1, q35_emb, 248320, 2048);
+                    lok &= q8("output.weight", -1, q35_out, 248320, 2048);
+                }
                 lok &= f32t("output_norm.weight", -1, q35_onorm, 2048);
                 for (int l = 0; lok && l < NC; l++) {
                     Q35L& w = q35L[l];
@@ -443,38 +599,40 @@ struct Hip1bpBackend : Backend {
                     lok &= f32t("attn_norm.weight", l, w.an, 2048);
                     lok &= f32t("post_attention_norm.weight", l, w.pan, 2048);
                     if (full) {
-                        lok &= q8("attn_q.weight", l, w.q, 8192, 2048);
-                        lok &= q8("attn_k.weight", l, w.k, 512, 2048);
-                        lok &= q8("attn_v.weight", l, w.v, 512, 2048);
-                        lok &= q8("attn_output.weight", l, w.o, 2048, 4096);
+                        lok &= tile("attn_q.weight", l, w.q, 8192, 2048);
+                        lok &= tile("attn_k.weight", l, w.k, 512, 2048);
+                        lok &= tile("attn_v.weight", l, w.v, 512, 2048);
+                        lok &= tile("attn_output.weight", l, w.o, 2048, 4096);
                         lok &= f32t("attn_q_norm.weight", l, w.qn, 256);
                         lok &= f32t("attn_k_norm.weight", l, w.kn, 256);
                     } else {
-                        lok &= q8("attn_qkv.weight", l, w.qkv, 8192, 2048);
-                        lok &= q8("attn_gate.weight", l, w.gate, 4096, 2048);
-                        lok &= q8("ssm_alpha.weight", l, w.alpha, 32, 2048);
-                        lok &= q8("ssm_beta.weight", l, w.beta, 32, 2048);
+                        lok &= tile("attn_qkv.weight", l, w.qkv, 8192, 2048);
+                        lok &= tile("attn_gate.weight", l, w.gate, 4096, 2048);
+                        lok &= tile("ssm_alpha.weight", l, w.alpha, 32, 2048);
+                        lok &= tile("ssm_beta.weight", l, w.beta, 32, 2048);
                         lok &= f32t("ssm_a", l, w.ssa, 32);
                         lok &= f32t("ssm_dt.bias", l, w.dt, 32);
                         lok &= f32t("ssm_norm.weight", l, w.snorm, 128);
                         lok &= f32t("ssm_conv1d.weight", l, w.conv1d, 8192 * 4);
-                        lok &= q8("ssm_out.weight", l, w.ssm_out, 2048, 4096);
+                        lok &= tile("ssm_out.weight", l, w.ssm_out, 2048, 4096);
                     }
-                    // MoE — every layer (fused experts are expert-major stacked)
-                    lok &= q8("ffn_gate_exps.weight", l, w.ex_g, 256 * 512, 2048);
-                    lok &= q8("ffn_up_exps.weight", l, w.ex_u, 256 * 512, 2048);
-                    lok &= q8("ffn_down_exps.weight", l, w.ex_d, 256 * 2048, 512);
-                    lok &= q8("ffn_gate_shexp.weight", l, w.sh_g, 512, 2048);
-                    lok &= q8("ffn_up_shexp.weight", l, w.sh_u, 512, 2048);
-                    lok &= q8("ffn_down_shexp.weight", l, w.sh_d, 2048, 512);
+                    // MoE — every layer (GGUF: expert-major stacked Q8_0 rows;
+                    // 1BP: ndim==3 per-expert-contiguous Q4NX stacks)
+                    lok &= tile3("ffn_gate_exps.weight", l, w.ex_g, 0, 256 * 512, 2048);
+                    lok &= tile3("ffn_up_exps.weight", l, w.ex_u, 1, 256 * 512, 2048);
+                    lok &= tile3("ffn_down_exps.weight", l, w.ex_d, 2, 256 * 2048, 512);
+                    lok &= tile("ffn_gate_shexp.weight", l, w.sh_g, 512, 2048);
+                    lok &= tile("ffn_up_shexp.weight", l, w.sh_u, 512, 2048);
+                    lok &= tile("ffn_down_shexp.weight", l, w.sh_d, 2048, 512);
                     lok &= f32t("ffn_gate_inp.weight", l, w.router, 256 * 2048);
                     lok &= f32t("ffn_gate_inp_shexp.weight", l, w.sh_gatew, 2048);
                 }
                 if (lok) {
                     q35_loaded = true;
                     fprintf(stderr, "[hip1bp] qwen35 device load OK: %zu B (%.1f MB) "
-                                    "across %d layers + globals\n",
-                            tot, tot / 1048576.0, NC);
+                                    "across %d layers + globals [%s]\n",
+                            tot, tot / 1048576.0, NC,
+                            q35_q4nx ? "1BP Q4NX" : "GGUF Q8_0");
                 } else {
                     fprintf(stderr, "[hip1bp] qwen35 device load FAILED — falling back\n");
                 }
@@ -1018,7 +1176,11 @@ struct Hip1bpBackend : Backend {
         HIP_CHECK(hipMemcpyAsync(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice, stream));
         // embed (Q8_0 row dequant) into dh
         HIP_CHECK(hipMemcpy(d_token, &token_id, sizeof(int), hipMemcpyHostToDevice));
-        h1bp_q8embed_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_emb, d_token, 2048);
+        if (q35_q4nx)
+            h1bp_embed_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(
+                dh, d_embed, d_token, 2048, 248320);
+        else
+            h1bp_q8embed_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_emb, d_token, 2048);
         int n_full_layers = 0;
         auto q35_wb = [&](const char* nm, const float* buf, int n, int layer) {
             if (!getenv("H1BP_Q35_STAGE")) return;
@@ -1029,6 +1191,18 @@ struct Hip1bpBackend : Backend {
             FILE* f = fopen(fn, "wb"); if (f) { fwrite(tmp.data(), 4, n, f); fclose(f); }
         };
         if (pos == 0) q35_wb("emb", dh, 2048, -1);
+        // #1831 M2: 1BP Q4NX mode runs the same M3 math over packed tiles —
+        // Q8_0 raw rows (GGUF) vs launch_q4nx over Q4NX tiles (expert stacks
+        // sliced by per-expert byte offset into the copied ndim==3 buffers).
+        auto gemv = [&](float* y, const uint8_t* W, const float* x, int M, int K) {
+            if (q35_q4nx) launch_q4nx(W, x, y, M, K);
+            else          h1bp_q8gemv_kernel<<<M, 256, 0, stream>>>(y, W, x, M, K);
+        };
+        auto gemvE = [&](float* y, const uint8_t* W, const float* x, int e,
+                         int M, int K, int slot) {
+            if (q35_q4nx) launch_q4nx(W + (size_t)e * q35_exp_bytes[slot], x, y, M, K);
+            else          h1bp_q8gemv_slice_kernel<<<M, 256, 0, stream>>>(y, W, x, e, M, K, 1);
+        };
         for (int l = 0; l < NC; l++) {
             Q35L& w = q35L[l];
             bool full = ((l + 1) % 4 == 0);
@@ -1037,8 +1211,8 @@ struct Hip1bpBackend : Backend {
             h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, w.an, 2048, 1e-6f);
             if (full) {
                 // q/k/v gemvs (attn_q rows = per-head [q 256 | gate 256] pairs at 512-stride)
-                h1bp_q8gemv_kernel<<<8192, 256, 0, stream>>>(q35_sc_qk, w.q, dh, 8192, 2048);
-                h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v2, w.k, dh, 512, 2048);
+                gemv(q35_sc_qk, w.q, dh, 8192, 2048);
+                gemv(q35_sc_v2, w.k, dh, 512, 2048);
                 // de-interleave q/gate halves into contiguous per-head buffers:
                 // q35_sc_att = q (16x256), q35_sc_qc = gate (16x256)
                 for (int h = 0; h < 16; h++) {
@@ -1057,7 +1231,7 @@ struct Hip1bpBackend : Backend {
                 int f = n_full_layers;
                 float* kvbase = q35_kvc + (size_t)f * (max_seq * 1024);
                 HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024, q35_sc_v2, 512 * 4, hipMemcpyDeviceToDevice, stream));
-                h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_v, w.v, dh, 512, 2048);
+                gemv(q35_sc_v, w.v, dh, 512, 2048);
                 HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024 + 512, q35_sc_v, 512 * 4, hipMemcpyDeviceToDevice, stream));
                 // attention over the cache, then sigmoid-gate multiply, then o_proj
                 h1bp_q35_fattn_kernel<<<16, 256, 0, stream>>>(q35_sc_att, kvbase, q35_sc_att,
@@ -1067,11 +1241,11 @@ struct Hip1bpBackend : Backend {
                     float* a = q35_sc_att + (size_t)h * 256;
                     h1bp_sigmoid_mul_kernel<<<(256 + 255) / 256, 256, 0, stream>>>(a, g, 256);
                 }
-                h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_aout, w.o, q35_sc_att, 2048, 4096);
+                gemv(q35_sc_aout, w.o, q35_sc_att, 2048, 4096);
                 n_full_layers++;
             } else {
                 // GDN: fused qkv gemv + conv + silu (into qc), then slice
-                h1bp_q8gemv_kernel<<<8192, 256, 0, stream>>>(q35_sc_qkv, w.qkv, dh, 8192, 2048);
+                gemv(q35_sc_qkv, w.qkv, dh, 8192, 2048);
                 h1bp_q35_conv_kernel<<<(8192 + 255) / 256, 256, 0, stream>>>(
                     q35_sc_qc, q35_sc_qkv, w.conv1d,
                     q35_conv_state + (size_t)l * 8192 * 3, 8192, 4, pos);
@@ -1084,11 +1258,11 @@ struct Hip1bpBackend : Backend {
                 q35_expand16(q35_sc_k, q35_sc_qc + 2048);
                 HIP_CHECK(hipMemcpyAsync(q35_sc_v, q35_sc_qc + 4096, 4096 * 4, hipMemcpyDeviceToDevice, stream));
                 // alpha/beta/gate: gemv 32x2048 then dt, softplus, ssa mul, sigmoid
-                h1bp_q8gemv_kernel<<<32, 256, 0, stream>>>(q35_sc_g, w.alpha, dh, 32, 2048);
+                gemv(q35_sc_g, w.alpha, dh, 32, 2048);
                 h1bp_add_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, w.dt, 32);
                 h1bp_softplus_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, 32);
                 h1bp_elmul_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_g, w.ssa, 32);
-                h1bp_q8gemv_kernel<<<32, 256, 0, stream>>>(q35_sc_b, w.beta, dh, 32, 2048);
+                gemv(q35_sc_b, w.beta, dh, 32, 2048);
                 h1bp_sigmoid_inplace_kernel<<<(32 + 255) / 256, 256, 0, stream>>>(q35_sc_b, 32);
                 // recurrence
                 h1bp_q35_delta_kernel<<<32, 128, 0, stream>>>(q35_sc_q, q35_sc_k, q35_sc_v,
@@ -1096,14 +1270,14 @@ struct Hip1bpBackend : Backend {
                 q35_wb("qexp", q35_sc_q, 4096, l); q35_wb("kexp", q35_sc_k, 4096, l);
                 q35_wb("v", q35_sc_v, 4096, l); q35_wb("deltaraw", q35_sc_z, 4096, l);
                 // z gemv (attn_gate 4096x2048) -> silu -> group norm out * silu(z)
-                h1bp_q8gemv_kernel<<<4096, 256, 0, stream>>>(q35_sc_att, w.gate, dh, 4096, 2048);
+                gemv(q35_sc_att, w.gate, dh, 4096, 2048);
                 h1bp_head_rmsnorm_kernel<<<32, 256, 0, stream>>>(q35_sc_z, w.snorm, 128, 1e-6f);
                 h1bp_silu_inplace_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_att, 4096);
                 h1bp_elmul_kernel<<<(4096 + 255) / 256, 256, 0, stream>>>(q35_sc_z, q35_sc_att, 4096);
                 q35_wb("g", q35_sc_g, 32, l); q35_wb("beta", q35_sc_b, 32, l);
                 q35_wb("zattn", q35_sc_z, 4096, l);
                 // ssm_out gemv [2048 x 4096] -> H
-                h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_aout, w.ssm_out, q35_sc_z, 2048, 4096);
+                gemv(q35_sc_aout, w.ssm_out, q35_sc_z, 2048, 4096);
             }
             // residual: dh = preatt + attn out
             h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, dsilu, 2048);
@@ -1122,18 +1296,18 @@ struct Hip1bpBackend : Backend {
             HIP_CHECK(hipMemcpy(wts, q35_sc_rout, 8 * 4, hipMemcpyDeviceToHost));
             for (int r = 0; r < 8; r++) {
                 int e = exps[r];
-                h1bp_q8gemv_slice_kernel<<<512, 256, 0, stream>>>(q35_sc_exp, w.ex_u, dh, e, 512, 2048, 1);
-                h1bp_q8gemv_slice_kernel<<<512, 256, 0, stream>>>(q35_sc_expw, w.ex_g, dh, e, 512, 2048, 1);
+                gemvE(q35_sc_exp, w.ex_u, dh, e, 512, 2048, 1);
+                gemvE(q35_sc_expw, w.ex_g, dh, e, 512, 2048, 0);
                 h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
-                h1bp_q8gemv_slice_kernel<<<2048, 256, 0, stream>>>(q35_sc_expd, w.ex_d, q35_sc_exp, e, 2048, 512, 1);
+                gemvE(q35_sc_expd, w.ex_d, q35_sc_exp, e, 2048, 512, 2);
                 h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_expd, wts[r], 2048);
                 h1bp_acc_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, 2048);
             }
             // shared expert + sigmoid gate
-            h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_exp, w.sh_u, dh, 512, 2048);
-            h1bp_q8gemv_kernel<<<512, 256, 0, stream>>>(q35_sc_expw, w.sh_g, dh, 512, 2048);
+            gemv(q35_sc_exp, w.sh_u, dh, 512, 2048);
+            gemv(q35_sc_expw, w.sh_g, dh, 512, 2048);
             h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
-            h1bp_q8gemv_kernel<<<2048, 256, 0, stream>>>(q35_sc_expd, w.sh_d, q35_sc_exp, 2048, 512);
+            gemv(q35_sc_expd, w.sh_d, q35_sc_exp, 2048, 512);
             { float sgate;
               h1bp_gemv_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, w.sh_gatew, dh, 1, 2048);
               HIP_CHECK(hipMemcpy(&sgate, q35_sc_logits, 4, hipMemcpyDeviceToHost));
@@ -1146,7 +1320,10 @@ struct Hip1bpBackend : Backend {
         }
         // output norm + lm head + argmax
         h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, q35_onorm, 2048, 1e-6f);
-        h1bp_q8gemv_kernel<<<248320, 256, 0, stream>>>(dlogits, q35_out, dh, 248320, 2048);
+        if (q35_q4nx && q35_out_f32)
+            h1bp_gemv_kernel<<<248320, 256, 0, stream>>>(dlogits, q35_out_f32, dh, 248320, 2048);
+        else
+            gemv(dlogits, q35_out, dh, 248320, 2048);
         if (const char* ld = getenv("H1BP_Q35_LOGDIR")) {
             std::vector<float> lg(248320);
             HIP_CHECK(hipMemcpy(lg.data(), dlogits, 248320 * 4, hipMemcpyDeviceToHost));
@@ -1183,7 +1360,7 @@ struct Hip1bpBackend : Backend {
             hf(w.sh_d); hf(w.router); hf(w.sh_gatew);
         }
         q35L.clear();
-        hf(q35_emb); hf(q35_out); hf(q35_onorm);
+        hf(q35_emb); hf(q35_out); hf(q35_out_f32); hf(q35_onorm);
         hf(q35_sc_qkv); hf(q35_sc_qc); hf(q35_sc_q); hf(q35_sc_k); hf(q35_sc_v); hf(q35_sc_z);
         hf(q35_sc_g); hf(q35_sc_b); hf(q35_sc_qk); hf(q35_sc_v2); hf(q35_sc_att); hf(q35_sc_aout);
         hf(q35_sc_act); hf(q35_sc_moe); hf(q35_sc_exp); hf(q35_sc_expw); hf(q35_sc_expd);
