@@ -225,7 +225,8 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
             net.hs_l[l] = pmhss; net.hb_l[l] = pmhsb; net.rs_l[l] = pmrss; net.rb_l[l] = pmrsb;
         }
     }
-    std::vector<int> seq = {9079,236761,107,2717,108,1882,
+    std::vector<int> seq = {2,   /* BOS (engine pos0) */
+                            9079,236761,107,2717,108,1882,
                             27213,9942,9942,36209,12992,971,677,167798};
     d.P = (int)seq.size();
     data.assign(1, seq);
@@ -275,7 +276,7 @@ int main(int argc, char** argv) {
     std::vector<std::vector<double>> hout_l(d.L, std::vector<double>((size_t)d.P * d.H));
     // CCA block saves (per cca-layer index, per position)
     struct CcaSave {
-        std::vector<double> q, k, vc, vd, qo, ko, vo, sqk_pre, ao, hout;
+        std::vector<double> q, k, vc, vd, qo, ko, vo, qo_pr, ko_pr, sqk_pre, ao, hout;
         std::vector<double> rc, rs;
         std::vector<double> res_new_p, cur_p;
         double inv2 = 0;
@@ -487,10 +488,11 @@ int main(int argc, char** argv) {
                         for (int dd = 0; dd < d.hd; dd++) g2[off + dd] *= iv; };
                     for (int h = 0; h < d.nq; h++) l2(h * d.hd, shd);
                     for (int khv = 0; khv < d.nkv; khv++) l2(d.qd + khv * d.hd, shd * c.ks[khv]);
-                    rope_angles(p, cs.rc, cs.rs);
+                    rope_angles(p, cs.rc, cs.rs);   // engine pos == trainer index after BOS prepend
                     cs.qo.assign(d.qd, 0); cs.ko.assign(d.kd, 0);
-                    for (int i = 0; i < d.qd; i++) cs.qo[i] = g2[i];
-                    for (int i = 0; i < d.kd; i++) cs.ko[i] = g2[d.qd + i];
+                    cs.qo_pr.assign(d.qd, 0); cs.ko_pr.assign(d.kd, 0);
+                    for (int i = 0; i < d.qd; i++) { cs.qo[i] = g2[i]; cs.qo_pr[i] = g2[i]; }
+                    for (int i = 0; i < d.kd; i++) { cs.ko[i] = g2[d.qd + i]; cs.ko_pr[i] = g2[d.qd + i]; }
                     for (int h = 0; h < d.nq; h++) rope_fwd(&cs.qo[(size_t)h * d.hd], cs.rc, cs.rs);
                     for (int h = 0; h < d.nkv; h++) rope_fwd(&cs.ko[(size_t)h * d.hd], cs.rc, cs.rs);
                     cs.vo.assign(d.kd, 0);
@@ -762,7 +764,7 @@ int main(int argc, char** argv) {
     // mode dispatch
     if (mode == "par") {
         double L = run_fwd(0);
-        double* pr = probs[5].data();
+        double* pr = probs[6].data();
         int argmax = 0; double bv = -1;
         for (int v = 0; v < d.V; v++) if (pr[v] > bv) { bv = pr[v]; argmax = v; }
         if (getenv("ZL_STAT")) {
@@ -793,7 +795,7 @@ int main(int argc, char** argv) {
         {
             FILE* tq = fopen("/tmp/myqkv.txt", "w");
             if (tq) {
-                int QP = getenv("ZL_QP") ? atoi(getenv("ZL_QP")) : 5;
+                int QP = getenv("ZL_QP") ? atoi(getenv("ZL_QP")) : 6;
                 CcaSave& c0 = csa[0][QP];
                 fprintf(tq, "q0 "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c0.qo[i], i == d.qd-1 ? '\n' : ' ');
                 fprintf(tq, "k0 "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c0.ko[i], i == d.kd-1 ? '\n' : ' ');
@@ -803,6 +805,8 @@ int main(int argc, char** argv) {
                 fprintf(tq, "vcr "); for (int i = 0; i < d.hv2; i++) fprintf(tq, "%.8e%c", c0.vc[i], i == d.hv2-1 ? '\n' : ' ');
                 fprintf(tq, "vdr "); for (int i = 0; i < d.hv2; i++) fprintf(tq, "%.8e%c", c0.vd[i], i == d.hv2-1 ? '\n' : ' ');
                 fprintf(tq, "mix "); for (int i = 0; i < d.qkv; i++) fprintf(tq, "%.8e%c", c0.sqk_pre[i], i == d.qkv-1 ? '\n' : ' ');
+                fprintf(tq, "qp "); for (int i = 0; i < d.qd; i++) fprintf(tq, "%.8e%c", c0.qo_pr[i], i == d.qd-1 ? '\n' : ' ');
+                fprintf(tq, "kp "); for (int i = 0; i < d.kd; i++) fprintf(tq, "%.8e%c", c0.ko_pr[i], i == d.kd-1 ? '\n' : ' ');
                 fclose(tq);
             }
             FILE* tf = fopen("/tmp/mytrace.txt", "w");
@@ -813,7 +817,7 @@ int main(int argc, char** argv) {
             for (int li = 1; li < d.L; li += 2) { int mi2 = net.moe_at(li); fprintf(stderr, "%d ", msa[mi2][5].e); }
             fprintf(stderr, "\n");
         }
-        fprintf(stderr, "par: loss=%.3f argmax5=%d prob(27213)=%.4e (engine continuation=27213)\n",
+        fprintf(stderr, "par: loss=%.3f argmax6=%d prob(27213)=%.4e (engine continuation=27213)\n",
                 L, argmax, pr[27213]);
         for (int pp = 0; pp < d.P - 1; pp++) {
             double* pv = probs[pp].data();

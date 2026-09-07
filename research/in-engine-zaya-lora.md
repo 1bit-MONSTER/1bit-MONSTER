@@ -212,3 +212,13 @@ B^T dL/dy x^T (per expert block for Phase B).
   confined to the L2-normalize / RoPE substage of cca_prep. Engine header hook
   (ZL_MID) + trainer mid-dump added. Next: post-L2 pre-rope comparison to split
   L2 vs rope.
+
+- 2026-09-07 (M2 parity, round 11 — CCA BLOCK EXACT + engine timeline mapped):
+  engine trace showed the extra leading position is the BOS token (tok 2) at
+  pos0; the engine timeline = BOS + 6 prompt + 8 gen (15 positions). Root cause
+  of the q0/k0 0.97 gap: the trainer's RoPE used theta(myPos) while the engine
+  uses theta(enginePos) = theta(myPos+1) due to its BOS. Fixes: trainer data now
+  prepends BOS (index == engine pos), rope_angles(p). Result: layer-0 CCA block
+  q0 corr 0.999983 / k0 1.000000 / v0 0.999982 at the aligned pos6; FD stack
+  gate PASS. End loss still ~28.8 -> the remaining divergence is now DOWNSTREAM
+  of layer 0 (trace layer 2+ and MoE under the new aligned indices next).
