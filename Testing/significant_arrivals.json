@@ -1,0 +1,114 @@
+{
+ "deepseekv4": {
+  "arch": "deepseekv4",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Deepseek",
+  "model": "Solstice-AI/DeepSeek-V4-Flash-Vision-Exp-MXFP4"
+ },
+ "gemma2": {
+  "arch": "gemma2",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Gemma",
+  "model": "imtixz/gemma-2-2b-it-sleeper-multi-token-fixed-string-poison5pct"
+ },
+ "gemma4": {
+  "arch": "gemma4",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Gemma",
+  "model": "Titanfrm/gemma-4-E4B-it-uncensored-heretic"
+ },
+ "glm4v": {
+  "arch": "glm4v",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Glm",
+  "model": "cont1037/GLM-4.6V-Flash"
+ },
+ "glmmoedsa": {
+  "arch": "glmmoedsa",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Glm",
+  "model": "0xSero/GLM-5.3-500B-EXL3-3.0bpw"
+ },
+ "granite": {
+  "arch": "granite",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Granite",
+  "model": "madiaxa/granite-4.2-3b-openvino"
+ },
+ "llama": {
+  "arch": "llama",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Llama",
+  "model": "emese-tech/patak"
+ },
+ "minicpmsala": {
+  "arch": "minicpmsala",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Minicpm",
+  "model": "zhiyaowang/MiniCPM-SALA-NVFP4-GPTQ"
+ },
+ "olmo3": {
+  "arch": "olmo3",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Olmo",
+  "model": "ArchSpace-Collection/OLMo3-3B-stage4-instruct"
+ },
+ "olmo3siamesedepth": {
+  "arch": "olmo3siamesedepth",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Olmo",
+  "model": "ArchSpace-Collection/OLMo3-3B-SiameseNorm-DepthAttention-stage4-instruct"
+ },
+ "qwen2": {
+  "arch": "qwen2",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Qwen",
+  "model": "IzNrsydn/legal-chatbot-llama3-finetuned"
+ },
+ "qwen2_5_vl": {
+  "arch": "qwen2_5_vl",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Qwen",
+  "model": "Darmm/darmm-ocr-kazakh-vl-3b"
+ },
+ "qwen3": {
+  "arch": "qwen3",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Qwen",
+  "model": "zhezi12138/Qwen3-4B-formal-r1-RL-50iter-seed42"
+ },
+ "qwen3_5": {
+  "arch": "qwen3_5",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Qwen",
+  "model": "ikppramesh/irx-1"
+ },
+ "qwen3_5moe": {
+  "arch": "qwen3_5moe",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Qwen",
+  "model": "pgmharikrishnan/grug-35b-v2-MLX-4bit"
+ },
+ "qwen3vl": {
+  "arch": "qwen3vl",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Qwen",
+  "model": "shahedm2001/qwen3-vl-2b-cataract-sft"
+ }
+}
