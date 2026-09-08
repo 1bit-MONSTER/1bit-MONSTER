@@ -145,3 +145,24 @@ flips from fp32-vs-fp64 rounding ~1e-7/layer => different experts => different
 function). The earlier merge-regression table (25.35 -> 26.2/28.5/30.2 at steps
 9/19/39) was measured on the stale-target/buggy-timeline eval basis; the
 mechanism is the same and is superseded by the bitwise-fidelity root cause.
+
+## Third confirmation (corrected timeline + current targets + corrected loss)
+
+40-step real run on the FIXED timeline (16 tokens: BOS + 6-prompt + dup-1882 +
+current 8-token continuation), trainer loss 31.91 -> 13.42 @ step 38 (its own
+fp64 metric, now on the correct target list incl. the final token). Merged and
+evaluated engine-side on the identical teacher-forced basis:
+
+| model | all-16 mean CE | continuation pos 7-14 CE range |
+|---|---|---|
+| base | 14.20 | 0.09 - 1.9 (p 0.15-0.92) |
+| merged (corrected 40-step) | 27.14 | 12.7 - 37.7 (p ~1e-6..1e-16) |
+
+The training that improved the fp64 function by ~18 nats makes the engine's
+continuation predictions catastrophically worse at every position — the fp64
+deltas move the engine's function in the WRONG direction everywhere. Combined
+with the two earlier bases (stale-target greedy-state: 25.35 -> 30.23; stale
+adapter on non-stale teacher-forced basis: 24.75 -> 26.17), the blocker is
+confirmed on three independent setups: fp64-trained LoRA deltas cannot transfer
+to the engine decode. Bitwise engine-faithful forward is the only path
+(scoped below).
