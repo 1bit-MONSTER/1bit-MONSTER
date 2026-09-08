@@ -598,6 +598,11 @@ int zaya_decode_main(int argc, char** argv) {
         gu_cs[l].resize(m.n_exp); d_cs[l].resize(m.n_exp);
     }
 
+    // CPU-expert decode mode (NPU_CPU_EXPERT=1) keeps every MoE layer's fp32
+    // gu/dn resident so the host expert_ffn path can run — gate BOTH the
+    // per-batch release and the post-pack release on it.
+    const bool CPU_EXPERT_KEEP = getenv("NPU_CPU_EXPERT") && atoi(getenv("NPU_CPU_EXPERT")) == 1;
+
     // Pack all 16 experts for every MoE (odd) layer into resident BOs at startup.
     // Skipped in fused mode (NPU_FUSED=1) — the fused kernel packs its own
     // interleaved GU + D BOs above.
@@ -645,20 +650,23 @@ int zaya_decode_main(int argc, char** argv) {
                     d_ctx.packB_into(*d_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, d_cs[l][e]);
                 }
             }
-            // (c) release this batch's floats (keep l==1 for the CPU probe)
-            for (int l = b0 + 2; l < b1; l += 2) {
-                L[l].gu.clear(); L[l].gu.shrink_to_fit();
-                L[l].dn.clear(); L[l].dn.shrink_to_fit();
+            // (c) release this batch's floats (keep l==1 for the CPU probe;
+            //     keep ALL resident in CPU-expert mode for the host decode path)
+            if (!CPU_EXPERT_KEEP) {
+                for (int l = b0 + 2; l < b1; l += 2) {
+                    L[l].gu.clear(); L[l].gu.shrink_to_fit();
+                    L[l].dn.clear(); L[l].dn.shrink_to_fit();
+                }
             }
         }
         fprintf(stderr, "resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
     }
 
-    // Free the float weight expansion once resident BOs are packed: only the
-    // l==1 CPU-reference probe touches w.gu/w.dn during decode (all uses are
-    // gated l==1 && pos==0). Saves ~15 GB per engine (peak ~26.5 -> ~11 GB)
-    // so 4+ concurrent engines fit alongside the live services.
-    const bool CPU_EXPERT_KEEP = getenv("NPU_CPU_EXPERT") && atoi(getenv("NPU_CPU_EXPERT")) == 1;
+    // Free the float weight expansion once resident BOs are packed (skipped
+    // wholesale in CPU-expert mode above): only the l==1 CPU-reference probe
+    // touches w.gu/w.dn during NPU decode (all uses are gated l==1 && pos==0).
+    // Saves ~15 GB per engine (peak ~26.5 -> ~11 GB) so 4+ concurrent engines
+    // fit alongside the live services.
     for (int l = 3; l < NC; l += 2) {
         if (CPU_EXPERT_KEEP) continue;   // keep fp32 experts resident for the CPU decode path
         L[l].gu.clear(); L[l].gu.shrink_to_fit();
