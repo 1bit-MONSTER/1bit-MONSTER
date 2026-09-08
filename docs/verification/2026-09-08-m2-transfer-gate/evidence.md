@@ -214,3 +214,13 @@ required to isolate routing. This is the final scoping datum for the
 engine-bitwise trainer: the router schedule must be traced per (layer, position)
 and fixed during training (router drift under small deltas is then the only
 residual risk).
+
+Breakthrough test (schedule + int8, forward only): engine-traced per-position
+expert schedule (16 pos x 20 MoE layers, from npu_engine_zr1 ZL_TRACE runs) +
+the ZL_I8MOE int8 expert path gives the trainer's forward loss 18.9 (was 31.9
+fp64 / 35.9 int8-no-sched) and its pos-7..14 argmaxes move INTO the
+continuation family (pos 7 argmax 100652 = the engine's pos-8 token; vs random
+junk before). The trainer's function now tracks the engine's structure;
+remaining misalignment is the fp64-CCA-vs-fp32 drift at depth. Next: QAT
+training loop (adapters requantized into the int8 weights per step +
+straight-through backward) + fp32 CCA, then the merge/eval transfer test.

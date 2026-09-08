@@ -569,14 +569,26 @@ int main(int argc, char** argv) {
                         msav.e = best;
                         msav.wt = bv;
                         if (I8MOE && getenv("ZL_SCHED")) {
-                            // debug: force the engine-traced expert schedule
-                            static std::vector<int> sched;
+                            // debug: force the engine-traced expert schedule, read from
+                            // a file: 16 lines (positions 0..15) x 20 comma values
+                            // (MoE layer indices 0..19) — per-(layer,pos) routing.
+                            static std::vector<std::vector<int>> sched;
                             if (sched.empty()) {
-                                const char* s = getenv("ZL_SCHED");
-                                char buf[512]; snprintf(buf, sizeof buf, "%s", s);
-                                for (char* tk = strtok(buf, ","); tk; tk = strtok(nullptr, ",")) sched.push_back(atoi(tk));
+                                FILE* sf = fopen("/tmp/moe_sched.txt", "r");
+                                if (sf) {
+                                    char line[512];
+                                    while (fgets(line, sizeof line, sf)) {
+                                        std::vector<int> row;
+                                        for (char* tk = strtok(line, ",\n"); tk; tk = strtok(nullptr, ",\n")) row.push_back(atoi(tk));
+                                        if (!row.empty()) sched.push_back(row);
+                                    }
+                                    fclose(sf);
+                                }
+                                fprintf(stderr, "ZL_SCHED: loaded %zu pos x %zu layer schedule\n", sched.size(), sched.empty() ? 0 : sched[0].size());
                             }
-                            if (mi < (int)sched.size()) { msav.e = sched[mi]; msav.wt = 0.0; }
+                            if (p < (int)sched.size() && mi < (int)sched[p].size()) {
+                                msav.e = sched[p][mi]; msav.wt = 0.0;
+                            }
                         }
                     }
                     if (msav.e < d.nslots - 1) {
