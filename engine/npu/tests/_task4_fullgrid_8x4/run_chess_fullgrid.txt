@@ -1,0 +1,5 @@
+Analytical GEMM  M=128 K=2048 N=8192
+  pass 0 (all-ones/dataflow): min=2048 max=2048  wrong=0/1048576  zero=0  PASS
+  pass 1 (coord-dep/placement): min=2048 max=24576  wrong=0/1048576  zero=0  PASS
+PASS
+  6.066 ms/launch   708.0 GOP/s   (200 iters)
