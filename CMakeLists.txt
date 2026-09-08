@@ -617,6 +617,7 @@ set(BACKEND_MANAGER_SOURCES
     src/backend_lse.cpp
     src/backend_hrx.cpp
     src/hrx_inprocess.cpp
+    src/router/phase_router.cpp
     src/simple_tokenizer.cpp
     src/q4nx_reader.cpp
     src/safetensors_reader.cpp
