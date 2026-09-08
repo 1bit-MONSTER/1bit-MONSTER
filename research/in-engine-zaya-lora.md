@@ -283,3 +283,27 @@ B^T dL/dy x^T (per expert block for Phase B).
   docs/verification/2026-09-08-m2-transfer-gate/evidence.md. A genuine drop
   requires a trainer computing in the engine's own arithmetic (fp32 CCA
   op-order + fused-INT8 expert path) — scoped, not funded.
+
+- 2026-09-08 (M2 transfer gate, SECOND PASS — timeline bug fixed; root cause =
+  bitwise-fidelity): (1) found + fixed a latent real-mode bug: main's local
+  d.P stayed at the pre-load default 14 while load_real built the 15/16-token
+  seq — the last target(s) were never trained and the final position trained a
+  wrap-to-BOS target; all earlier real-dims loss numbers (incl. 31.26->17.05)
+  were on that truncated loss. d.P is now synced after load_real (FD stack
+  gate still PASS 8.3e-6 0/240). (2) Retargeted load_real to the CURRENT
+  engine's deterministic continuation (15283 100652 100652 23044 15283 93544
+  35999 171244); the hardcoded 27213... continuation was from an older engine
+  state (current decode verified = 15283, not 27213). (3) Decisive measurement
+  on the corrected 16-token timeline: the engine (fp32, NPU_FUSED) predicts
+  its own continuation at p 0.15-0.92 (CE 0.09-1.9 nats, positions 7-14; the
+  ~22-31-nat positions are only the stale 6-token prompt) while the trainer's
+  fp64 forward scores those same tokens ~e^-31 (argmax junk at every
+  continuation position). Per-layer block corr ~0.999 does not survive to the
+  logits: ~1e-7/layer fp32-vs-fp64 rounding flips deep-layer ROUTER ARGMAX
+  decisions (near-tie logits -> different experts -> different function, logit
+  disagreement ~e^28). Merge-transfer is impossible regardless of targets; a
+  transferable trainer needs a BITWISE engine-faithful forward (fp32, verbatim
+  engine op order + same router comparisons + fused-INT8 expert path). VERDICT:
+  engine-side PPL-drop gate BLOCKED-with-evidence (bitwise-fidelity
+  requirement), scoped ~2-4h in docs/verification/2026-09-08-m2-transfer-gate/
+  evidence.md. Commit 575caaaa.
