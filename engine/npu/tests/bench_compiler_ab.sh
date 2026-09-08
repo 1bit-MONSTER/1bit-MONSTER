@@ -53,6 +53,7 @@ XCHESS_BIN="$XILINX/Vitis/aietools/bin"  # peano-arm config only
 # chess KERNEL .o AND the aiecc core-wrapper build must both use this stack.
 VITIS_AIETOOLS="$HOME/Downloads/ryzen_ai-1.3.0/vitis_aie_essentials"
 IRON_AIECC="$HOME/iron/lib/python3.14/site-packages/mlir_aie/bin/aiecc"
+IRON_WRAPPER="$HOME/iron/lib/python3.14/site-packages/mlir_aie/bin/xchesscc_wrapper"
 IRON_LLVM_BIN="$HOME/iron/lib/python3.14/site-packages/llvm-aie/bin"
 
 # Generator / kernel / bench parameters (same as check_mm_kernel_2x4.sh)
@@ -110,8 +111,11 @@ build_kernel_chess() { # $1 = out dir
   # 2024-essentials chess (unguarded acquire; guarded-acquire hangs this NPU2 —
   # Xilinx/mlir-aie#3690). AIETOOLS_ROOT must point at the 2024 essentials and
   # the iron-lane mlir_aie pip bin (xchesscc_wrapper) must precede it on PATH.
+  # Use the IRON pip wrapper by absolute path: the mlir-aie install wrapper
+  # maps AIE2P->aie2ps, but the 2024 vitis_aie_essentials tree ships target_aie2p
+  # (no 's') — the iron wrapper maps AIE2P->aie2p and matches the 2024 tree.
   PATH="$VITIS_AIETOOLS/bin:$IRON_LLVM_BIN:$PATH" \
-    xchesscc_wrapper aie2p -c \
+    "$IRON_WRAPPER" aie2p -c \
     -I "$MLIR_AIE_INC" -I "$AIE_KERNELS_INC" \
     -O2 -DNDEBUG -D__AIE_API_AIE_ADF_HPP__ \
     "${DIMS[@]}" "$KERNEL_SRC" -o "$1/$KERNEL_O"
