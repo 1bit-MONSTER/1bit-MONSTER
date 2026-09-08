@@ -629,3 +629,21 @@ fix/qwen35-prefill-coverage):
   it would not beat HIP ~70). Product-level conclusion stands: on the 30B
   workload HIP-only wins; the hybrid policy's value would be on workloads where
   HRX decode > HIP decode (small-ctx warm decode) — the §0 decision's domain.
+
+## 2026-09-08 (post-reboot) — conditional-claim A/B on the 30B path (fresh numbers)
+
+Lane head 15ff48549 (conditional standalone ADD claim + alias-skip) verified on the
+30B side after the 23:06 ADT cold reboot (q35-hrx-fix build survived in ~/wt):
+
+- D2 imported-blob decode leg: HIP blob regenerated (292,011,596 B, 2,962-tok prompt,
+  vendored 4df29be4f GGML_HIP) -> llama_state_load_file on HRX0 -> 120/200/500-token
+  decode, exit 0, deterministic (identical streams across runs) — no context loss.
+- 30B decode rate ~6 tok/s (CPU-residual-ADD bound, 48 layers) — qwen3moe decode ADDs
+  still lack fused attention-output coverage under the conditional claim (by design:
+  VIEW-wrapped/MUL_MAT_ID-src ADDs stay CPU). Perf verdict unchanged: hybrid ~60-85 s
+  vs HIP-only 12.2 s on the 30B ≥2k workload — criterion NOT met on current stacks.
+- Dense qwen3-0.6B decode restored (~98 tok/s via harness; lane llama-bench tg128
+  227.96 ± 1.70) — the conditional claim is strictly better than the blanket exclusion
+  (b2975bb1d) for dense models and does not regress the 30B qwen3moe path.
+- Recorded on #2147 (comment 5578201386). Engine bundle modernization remains gated on
+  a stable modern hrx-system release (#1945); qwen3moe-30B decode ADD fusion = fork roadmap.
