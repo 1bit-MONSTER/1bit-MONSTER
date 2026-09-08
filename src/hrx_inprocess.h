@@ -53,6 +53,10 @@ public:
     /// Last input token of the imported session (for continuation), or -1.
     int resume_token() const;
 
+    /// Export the current context state into a caller-provided memfd (session
+    /// layout, resume-token aware). Returns raw state bytes, or -1.
+    int export_session_mem(int fd_out);
+
     // One decode step: feed token_id, return argmax next token, or -1 on failure.
     int generate(int token_id);
 
