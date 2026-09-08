@@ -3402,7 +3402,7 @@ struct Bf16Ctx {
                                 fprintf(stderr, "\n[C1DUMP l=%d] C1h[0..15]=", l);
                                 for (int k = 0; k < 16; k++) fprintf(stderr, "%d ", C1h[k]);
                                 int h0 = -1, h1 = -1;
-                                for (size_t k = 0; k < (uint32_t)cg_fused_i4->MD * (uint32_t)cg_fused_i4->bC_nd; k++) {
+                                for (size_t k = 0; k < (size_t)cg_fused_i4->MD * (size_t)cg_fused_i4->bC_nd; k++) {
                                     if ((int64_t)c1m[k] == (int64_t)C1h[0]) { if (h0<0) h0 = (int)k; }
                                     if ((int64_t)c1m[k] == (int64_t)C1h[1]) { if (h1<0) h1 = (int)k; }
                                 }
@@ -3412,7 +3412,7 @@ struct Bf16Ctx {
                             }
                             // Also report whether bC(bo2/C1) got any nonzero write.
                             bool bczero = true;
-                            for (size_t k = 0; k < (uint32_t)cg_fused_i4->MD * (uint32_t)cg_fused_i4->bC_nd; k++)
+                            for (size_t k = 0; k < (size_t)cg_fused_i4->MD * (size_t)cg_fused_i4->bC_nd; k++)
                                 if (c1m[k] != 0) { bczero = false; break; }
                             fprintf(stderr, "[FUSED_H2] l=%d h2corrGt=%.6f h2maeGt=%.3f h2peakGt=%.0f h2badGt=%d/%d bC_zero=%d h2[0..7]=%d %d %d %d %d %d %d %d h2gt[0..3]=%d %d %d %d\n",
                                     l, gcorr, hgmae / IM, hgpeak, hgbad, IM, (int)bczero,
