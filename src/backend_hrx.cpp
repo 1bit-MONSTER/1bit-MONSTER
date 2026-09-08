@@ -125,7 +125,16 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
         if (inprocess_->init() && inprocess_->load_model(model_path_, n_gpu_layers, ctx)) {
             // #1942 D2 hybrid: HRX_STATE_FILE=<session.bin> imports a llama_state
             // blob (HIP-prefill lane output) so decode continues from its KV.
-            if (const char* sf = std::getenv("HRX_STATE_FILE")) {
+            // Zero-copy variant: HRX_STATE_MEMFD=<fd> imports the same session-v9
+            // blob from SHARED MEMORY (producer passes a memfd/dma-buf fd) - no
+            // file round trip. HRX_STATE_MEMFD wins when both are set.
+            if (const char* mf = std::getenv("HRX_STATE_MEMFD")) {
+                int fd = std::atoi(mf);
+                long n = inprocess_->load_session_mem(fd);
+                if (n < 0) {
+                    fprintf(stderr, "HRX: mem state import failed (fd %d) — continuing with empty KV\n", fd);
+                }
+            } else if (const char* sf = std::getenv("HRX_STATE_FILE")) {
                 long n = inprocess_->load_session_file(sf);
                 if (n < 0) {
                     fprintf(stderr, "HRX: state import failed (%s) — continuing with empty KV\n", sf);

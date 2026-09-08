@@ -8,6 +8,11 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <cstring>
+
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
@@ -131,6 +136,8 @@ using fn_llama_vocab_n_tokens = int32_t (*)(const llama_vocab*);
 using fn_llama_model_n_embd = int32_t (*)(const llama_model*);
 using fn_llama_model_desc = int32_t (*)(const llama_model*, char*, size_t);
 using fn_llama_state_load_file = bool (*)(llama_context*, const char*, llama_token*, size_t, size_t*);
+using fn_llama_state_set_data  = size_t (*)(llama_context*, const uint8_t*, size_t);
+using fn_llama_state_get_size  = size_t (*)(llama_context*);
 using fn_ggml_backend_dev_by_name = ggml_backend_dev_t (*)(const char*);
 using fn_ggml_backend_dev_name = const char* (*)(ggml_backend_dev_t);
 using fn_ggml_backend_hrx_get_device_count = int32_t (*)(void);
@@ -154,6 +161,8 @@ struct Inprocess::Impl {
     fn_llama_model_n_embd llama_model_n_embd = nullptr;
     fn_llama_model_desc llama_model_desc = nullptr;
     fn_llama_state_load_file llama_state_load_file = nullptr;
+    fn_llama_state_set_data  llama_state_set_data  = nullptr;
+    fn_llama_state_get_size  llama_state_get_size  = nullptr;
     size_t n_session = 0;
     fn_ggml_backend_dev_by_name ggml_backend_dev_by_name = nullptr;
     fn_ggml_backend_dev_name ggml_backend_dev_name = nullptr;
@@ -273,6 +282,8 @@ bool Inprocess::init() {
     impl_->llama_model_n_embd = (fn_llama_model_n_embd)sym(impl_->handle, "llama_model_n_embd");
     impl_->llama_model_desc = (fn_llama_model_desc)sym(impl_->handle, "llama_model_desc");
     impl_->llama_state_load_file = (fn_llama_state_load_file)sym(impl_->handle, "llama_state_load_file");  // optional (D2 hybrid)
+    impl_->llama_state_set_data  = (fn_llama_state_set_data)sym(impl_->handle, "llama_state_set_data");
+    impl_->llama_state_get_size  = (fn_llama_state_get_size)sym(impl_->handle, "llama_state_get_size");
     impl_->ggml_backend_dev_by_name = (fn_ggml_backend_dev_by_name)sym(impl_->handle, "ggml_backend_dev_by_name");
     impl_->ggml_backend_dev_name = (fn_ggml_backend_dev_name)sym(impl_->handle, "ggml_backend_dev_name");
     impl_->ggml_backend_hrx_get_device_count = (fn_ggml_backend_hrx_get_device_count)sym(impl_->handle, "ggml_backend_hrx_get_device_count");
@@ -375,6 +386,56 @@ long Inprocess::load_session_file(const std::string& path) {
     fprintf(stderr, "[hrx] session imported: %zu tokens from %s (pos=%lld)\n",
             n, path.c_str(), (long long)impl_->pos);
     return (long)n;
+}
+
+long Inprocess::load_session_mem(int fd) {
+    if (!impl_->ctx || !impl_->llama_state_set_data) {
+        fprintf(stderr, "[hrx] load_session_mem: no context, or bundle lacks llama_state_set_data\n");
+        return -1;
+    }
+    if (fd < 0) {
+        fprintf(stderr, "[hrx] load_session_mem: invalid fd %d\n", fd);
+        return -1;
+    }
+    // Size the shared region (memfd/dma-buf) via fstat, then mmap MAP_SHARED.
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 12) {
+        fprintf(stderr, "[hrx] load_session_mem: fstat failed or empty region\n");
+        return -1;
+    }
+    const size_t fsz = (size_t)st.st_size;
+    uint8_t * shm = (uint8_t *)mmap(nullptr, fsz, PROT_READ, MAP_SHARED, fd, 0);
+    if (shm == MAP_FAILED) {
+        fprintf(stderr, "[hrx] load_session_mem: mmap failed\n");
+        return -1;
+    }
+    // Session file layout: magic(u32) version(u32) n_tokens(u32) tokens(i32*n) raw_state.
+    // llama_state_set_data wants ONLY the raw state region (the file API strips the
+    // header+tokens internally); parse n_tokens from the header, slice, import.
+    uint32_t ntok = 0;
+    memcpy(&ntok, shm + 8, 4);
+    const size_t hdr = 12 + 4 * (size_t)ntok;
+    if (hdr >= fsz) {
+        fprintf(stderr, "[hrx] load_session_mem: bad header (ntok=%u, size=%zu)\n", ntok, fsz);
+        munmap(shm, fsz);
+        return -1;
+    }
+    const uint8_t * state = shm + hdr;
+    const size_t state_sz = fsz - hdr;
+    size_t consumed = impl_->llama_state_set_data(impl_->ctx, state, state_sz);
+    munmap(shm, fsz);
+    if (consumed != state_sz) {
+        fprintf(stderr, "[hrx] load_session_mem: set_data consumed %zu of %zu bytes\n",
+                consumed, state_sz);
+        return -1;
+    }
+    // The session token count is not returned by set_data (3-arg API); the caller
+    // (D2 hybrid) tracks positions itself - expose ntok as the import count.
+    impl_->n_session = ntok;
+    impl_->pos = (llama_pos)ntok;  // continue after the imported tokens
+    fprintf(stderr, "[hrx] session imported (shared mem): %u tokens, %zu bytes state (pos=%lld)\n",
+            ntok, state_sz, (long long)impl_->pos);
+    return (long)ntok;
 }
 
 int Inprocess::generate(int token_id) {

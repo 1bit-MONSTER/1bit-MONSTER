@@ -44,6 +44,12 @@ public:
     // BEFORE generate(). Returns the number of imported tokens, or -1.
     long load_session_file(const std::string& session_path);
 
+    // #1942 D2 zero-copy hybrid: import a llama_state session blob from SHARED
+    // MEMORY (memfd/dma-buf fd, mmap'd MAP_SHARED) instead of a file path -
+    // same session-v9 format, zero file I/O. Call AFTER load_model(), BEFORE
+    // generate(). Returns the number of imported tokens, or -1.
+    long load_session_mem(int fd);
+
     // One decode step: feed token_id, return argmax next token, or -1 on failure.
     int generate(int token_id);
 
