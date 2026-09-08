@@ -104,6 +104,18 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
     model_path_ = !cfg.model_path.empty() ? cfg.model_path : weights_dir;
     this->cfg = cfg;
 
+    // #2147: qwen3moe-30B decode on the HRX device is wrong unless the device
+    // RMSNorm path is bypassed (device per-head RMS for [128, 32/4, 1] decode
+    // shapes produces cascading errors; verified against the CPU oracle, and
+    // the fix costs ~nothing on this model because decode is expert-matmul
+    // bound - RMS_NORM=CPU runs at the same ~9 tok/s as the broken fused path).
+    // Auto-set GGML_HRX_CPU_OPS=RMS_NORM for qwen3moe unless the operator has
+    // explicitly configured it.
+    if (cfg.architecture == "qwen3moe" && std::getenv("GGML_HRX_CPU_OPS") == nullptr) {
+        setenv("GGML_HRX_CPU_OPS", "RMS_NORM", 1);
+        fprintf(stderr, "HRX: qwen3moe decode needs CPU RMSNorm (#2147) - set GGML_HRX_CPU_OPS=RMS_NORM\n");
+    }
+
     // Fork-A in-process path (HRX_INPROCESS=1 opts in; subprocess is the
     // default): dlopen the bundle's libllama.so, offload weights to the HRX
     // device, and serve token-level generate() in-process.  On any failure
