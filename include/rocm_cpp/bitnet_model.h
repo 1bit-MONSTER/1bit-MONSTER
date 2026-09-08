@@ -601,6 +601,8 @@ typedef enum {
     RCPP_ARCH_TINYTRANSFORMER = 1001, // tinytransformer — TinyTransformerForCausalLM minimal custom-code transformer (Mayuresh231/tiny-transformer-29m; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_IKNN = 1002,            // iknn-rl1-a1 — IKNN-Rl1-A1ForCausalLM (deeprcurs/IKNN-Rl1-A1; MLX-era file_* config, RoPE 1e4 + RMSNorm, gpt2-shaped; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_K2HORIZON = 1003,       // k2horizon — K2-Horizon-MoVA (Moonshot K2-Horizon MoE: 100E/8, layernorm_num_groups, query_key_norm, rope_head_dim, attention_gate_func, decoder_sparse_step; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_JUGNUVR = 1004,         // jugnuvr — JugnuVRForCausalLM (altslate/JugnuLM-110M-R1; custom-code dense transformer, per-layer layer_types plan, silu, head_dim 64; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_M2R = 1005,             // m2r — gdiamos/amx-reasoning-v1-instruct (hybrid lin/SSM + sliding-window-attn layer types, d_state 32, d_ff 640, route_block 1024; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2533,6 +2535,10 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "k2horizon") == 0) return RCPP_ARCH_K2HORIZON;      // census stripped arch name (registry token)
     if (strcmp(s, "k2_horizon_mova") == 0) return RCPP_ARCH_K2HORIZON; // HF model_type
     if (strcmp(s, "k2horizonforcausallm") == 0) return RCPP_ARCH_K2HORIZON;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "jugnuvr") == 0) return RCPP_ARCH_JUGNUVR;              // census stripped arch name (registry token)
+    if (strcmp(s, "jugnuvrforcausallm") == 0) return RCPP_ARCH_JUGNUVR;   // raw HF architecture string (regression guard)
+    if (strcmp(s, "m2r") == 0) return RCPP_ARCH_M2R;                      // census stripped arch name (registry token)
+    if (strcmp(s, "m2rforcausallm") == 0) return RCPP_ARCH_M2R;           // raw HF architecture string (regression guard)
     // ── 2026-09-02 census watcher (PR #2046 CI gate) ──
     // Both classes are GENUINELY NEW architectures, verified against live HF
     // configs, so they get a real registry token (own identity) rather than an
