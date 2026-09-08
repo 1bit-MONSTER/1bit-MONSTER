@@ -330,3 +330,46 @@ Framing / caveats (honest):
   noise); the torch/HF reference achieved its clean 1.94->0.44 on the HF stack
   with a different optimizer context. Both limitations documented; the gate's
   contract (taught-code PPL drop, engine-side) is satisfied.
+
+## Addendum (2026-09-08 afternoon) — independent end-to-end reproduction + engine fix
+
+The gate-PASS numbers above were re-derived from scratch on the current
+committed code (trainer HEAD 9f52c107 + engine fix dea14607), full logs in
+/tmp on ryzen (rt_train_zlteach2.log, merge_zlteach2.log) and strixhalo
+(fresh_eval.log):
+
+- Engine fix REQUIRED first: committed NPU_CPU_EXPERT=1 segfaulted at the first
+  MoE layer — the per-batch fp32-expert release inside the pack loop (keep l==1
+  only) had already cleared l>=3 gu/dn before the (post-pack) CPU_EXPERT_KEEP
+  gate ran; the host expert_ffn dereferenced empty vectors (zaya_moe_cpu.h:167).
+  dea14607 hoists CPU_EXPERT_KEEP before the pack loop and gates the batch
+  release too. After the fix the engine reproduces the gate basis exactly
+  (own-continuation CE 1.668 teacher-forced, pos 7-14).
+- Fresh 40-step full-timeline run toward the taught code (ZAYA_CONT=15283...,
+  lr 3e-4): trainer fp64 CE 31.91 -> 13.42 @ step 38 (same trajectory as the
+  original corrected run). Merge -> q4nx: 8,398,394 differing bytes (0.1505%)
+  — byte-count identical to the surviving historical merge (/tmp on strixhalo,
+  zaya_merged_corr.q4nx), i.e. the run is reproducible to the byte.
+- CPU-expert engine eval of the fresh merge (teacher-forced, full-array logits):
+  taught continuation (pos 7-14) mean CE 34.26 (base) -> 21.33 (merged);
+  all-16 32.62 -> 25.71. Identical to the table above. Greedy decode on the
+  merged file runs deterministically (8.8 tok/s) and differs from base.
+- Quantified caveats (strengthen the framing above):
+  1. Own-continuation fine-tune (base CE 1.67) is knife-edge: windowed
+     (ZL_CONT=7,14) AdamW runs toward the model's own continuation explode at
+     EVERY lr tested — 1.69 -> 22/41 by step 4 at lr 3e-4, and 1.69 -> 30.5 by
+     step 2 at lr 1e-6 (log /tmp/rt_train_zlcont.log + probe). The fp64 forward
+     matches the engine to corr 1.0, but the already-well-predicted continuation
+     sits on near-tie deep-router knife-edges; any LoRA perturbation scrambles
+     routing (response is lr-independent over 1e-6..3e-4). An unwindowed
+     retargeted 40-step merge confirms it engine-side: continuation CE
+     1.668 -> 24.95 (regression).
+  2. Sub-resolution deltas are silently erased: a windowed taught-code run that
+     stalled at ~26 nats produced max|delta| 0.029 — 0 differing bytes across
+     the first 256 MB of the merge (int4 requantization rounds them away);
+     engine-visible transfer requires a descent deep enough to move >~0.1% of
+     nibbles (the 13.42 run moves 0.1505%).
+- No open items: this gate is closed PASS per its contract (engine-side PPL
+  drop on taught code vs base, measured on the engine's CPU float reference);
+  the own-continuation drop remains a documented, evidence-backed limitation
+  (chaotic 40-layer regime), not a dangling flag.
