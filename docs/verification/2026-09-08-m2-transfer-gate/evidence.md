@@ -245,3 +245,31 @@ gap) AND (c) a stabilized QAT backward. (a) is committed; (b)+(c) are the
 remaining scoped work (~multi-day precision engineering, with residual risk from
 int8-kernel internals measured at 0.9985-0.9996 corr). This is a funding/scope
 decision, not a bounded task.
+
+## Final measurement (fp64 path continuation-only CE) + conclusion
+
+Continuation-only CE (positions 7-14, ZL_CONT=7,14) of the trainer's PLAIN fp64
+forward (no int8, no schedule): 32.9 nats with junk argmaxes at every
+continuation position (engine: 1.05, p 0.15-0.92). Cumulative trainer-engine
+continuation-CE comparison on identical weights/timeline:
+
+| trainer config | continuation CE |
+|---|---|
+| engine (fp32 + INT8-NPU fused experts) | 1.05 |
+| fp64, own routing | 32.9 |
+| int8 experts + fixed engine schedule | 12.3 |
+
+No host-side trainer configuration reaches logit agreement with the NPU-fused
+decode. CONCLUSION (architectural): the engine's expert path runs opaque NPU
+INT8 kernels whose internals are NOT CPU-reproducible (kernel-vs-host-reference
+corr measured 0.9985-0.9996/layer; silu_quant.h is dual-compiled but the GEMM
+accumulation orders are not), and the per-token A-quantization boundary flips
+amplify ANY residual input difference chaotically through the MoE stack (a
+~1e-5 input diff at an early MoE layer produces O(0.01-0.1) output jumps via qA
+flips). A host trainer therefore cannot match the decode's function, and trained
+deltas cannot transfer. The ONLY route to the engine-side PPL-drop gate is an
+engine change: a CPU decode mode executing the host int8 reference (the
+arithmetic the trainer's ZL_I8MOE path replicates to ~1e-7) so trainer and
+engine share one bitwise-consistent function — a new engine capability
+(scoped: ~1-2 days incl. validation), NOT a trainer fix. Gate verdict final:
+blocked-with-evidence (architectural).
