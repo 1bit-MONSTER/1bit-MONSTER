@@ -48,6 +48,13 @@ AIE_KERNELS_INC="$MLIR_AIE/aie_kernels/aie2p"
 XILINX="${XILINX:-$HOME/Xilinx/2026.1}"  # unused for chess arm (2024 stack below)
 XCHESS_BIN="$XILINX/Vitis/aietools/bin"  # peano-arm config only
 
+# 2024 vitis_aie_essentials chess (unguarded acquire; the guarded-acquire form
+# emitted by 2025.2+/2026.1 chess hangs this NPU2 — Xilinx/mlir-aie#3690). The
+# chess KERNEL .o AND the aiecc core-wrapper build must both use this stack.
+VITIS_AIETOOLS="$HOME/Downloads/ryzen_ai-1.3.0/vitis_aie_essentials"
+IRON_AIECC="$HOME/iron/lib/python3.14/site-packages/mlir_aie/bin/aiecc"
+IRON_LLVM_BIN="$HOME/iron/lib/python3.14/site-packages/llvm-aie/bin"
+
 # Generator / kernel / bench parameters (same as check_mm_kernel_2x4.sh)
 M=128; K=2048; N=8192
 M_T=32; K_T=64; N_T=128
@@ -103,7 +110,8 @@ build_kernel_chess() { # $1 = out dir
   # 2024-essentials chess (unguarded acquire; guarded-acquire hangs this NPU2 —
   # Xilinx/mlir-aie#3690). AIETOOLS_ROOT must point at the 2024 essentials and
   # the iron-lane mlir_aie pip bin (xchesscc_wrapper) must precede it on PATH.
-  xchesscc_wrapper aie2p -c \
+  PATH="$VITIS_AIETOOLS/bin:$IRON_LLVM_BIN:$PATH" \
+    xchesscc_wrapper aie2p -c \
     -I "$MLIR_AIE_INC" -I "$AIE_KERNELS_INC" \
     -O2 -DNDEBUG -D__AIE_API_AIE_ADF_HPP__ \
     "${DIMS[@]}" "$KERNEL_SRC" -o "$1/$KERNEL_O"
@@ -134,9 +142,6 @@ build_xclbin_peano() { # $1 = arm dir, $2 = design dir
 # locates chess-llvm-link at <aietools>/tps/lnx64/target_aie2p/bin/LNa64bin/
 # (target_aie2p is symlinked to target_aie2ps). Pointing it at mlir-aie's own
 # build_tmp makes that step silently skip and the .chesslinked.ll never appear.
-VITIS_AIETOOLS="$HOME/Downloads/ryzen_ai-1.3.0/vitis_aie_essentials"   # 2024 essentials (unguarded acquire)
-IRON_AIECC="$HOME/iron/lib/python3.14/site-packages/mlir_aie/bin/aiecc"        # iron-lane pip aiecc (attr-form dma_bd)
-IRON_LLVM_BIN="$HOME/iron/lib/python3.14/site-packages/llvm-aie/bin"
 build_xclbin_chess() { # $1 = arm dir, $2 = design dir
   # The chess-arm aiecc parses the ATTR dma_bd form only (modern DSL emits the
   # operand-list form) -> port the design (tools/port_v27_design.py).

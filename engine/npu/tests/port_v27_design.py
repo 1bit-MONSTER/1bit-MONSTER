@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
-# port_v27_design.py — convert modern-DSL aie.dma_bd operand-list form
-# (buf, OFF, LEN, [<size=N,stride=M>...]) to the attr form the
-# iron-lane pip aiecc parses (offset = N len = M sizes=[..] strides=[..]).
+# v27 design port: convert modern dma_bd operand-list form to the v142/iron
+# attr form (sizes/strides lists). Also fixes known attribute syntax deltas.
+import re, sys
+
+src = open(sys.argv[1]).read()
+
 # modern: aie.dma_bd(%buf : memref<...>, OFF, LEN, [<size = s, stride = t>, ...]) {burst_length = B : i32}
 # target: aie.dma_bd(%buf : memref<...> offset = OFF len = LEN sizes = [s..] strides = [t..]) {burst_length = B : i32}
 pat = re.compile(
