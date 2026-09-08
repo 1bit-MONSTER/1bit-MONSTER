@@ -141,14 +141,33 @@ HIP wins; short prompts amortize the handoff cost poorly).
    If the blob is rejected (size/version mismatch) → log the exact drift and
    fall back to D1; do NOT start D3.
 
-### 5.2 End-to-end (issue #1942 acceptance)
+### 5.2 End-to-end (issue #1942 acceptance — RE-SCOPED 2026-09-08, Option A)
 - One request: prompt prefill on HIP, continuation decode on HRX, correct
   continuation (no context loss) — D1 harness proves correctness; D2 is the
   shipped fast path.
-- Benchmark: total time beats either backend alone on the same model
-  (30B-A3B Q4_K_M, ≥2k-token prompt, ≥500-token continuation).
+- ~~Benchmark: total time beats either backend alone on the same model
+  (30B-A3B Q4_K_M, ≥2k-token prompt, ≥500-token continuation).~~
+  **Re-scoped by owner decision (Option A, 2026-09-08)**: the ≥2k/≥500
+  single-request wall-clock comparison is HIP-favored by construction on every
+  correct stack (HRX0 30B decode ~9-12 tok/s vs HIP ~65-70 tok/s; even the
+  historical best 40.9 tok/s cannot beat HIP decode on the 30B). The
+  criterion is re-defined to the hybrid's actual value case: **the D2 shipped
+  path delivers CORRECT warm decode on the HRX device** — HIP large-prefill →
+  llama_state handoff → HRX continuation from the imported context, correct
+  (matches CPU/vendored references) and at a viable rate, on the corrected
+  decode stack. Measured (correct decode, 30B ≥2k ctx):
+  - dense qwen3: decode == CPU oracle (fork scheduler reorder, adopted) at
+    227-231 t/s (0.6B) — the earlier throughput baselines were valid
+    measurements of a wrong-function decode; now correct at zero perf cost.
+  - 30B qwen3moe: decode correct via GGML_HRX_CPU_OPS=RMS_NORM (~9 tok/s,
+    expert-matmul bound — same class as the broken fused path; engine main
+    auto-sets it, PR #2156 / e10490af).
+  - Hybrid single-request totals (correct decode, 30B ≥2k + 500 cont): ~60 s
+    vs HIP-only 12.2 s — documented as HIP-favored; the hybrid's product
+    value = the small-ctx warm-decode / serving-stack dimension (§0), not the
+    ≥2k single-request wall clock.
 - Documented state-format compatibility: the round-trip result + the exact
-  `LLAMA_STATE_VERSION`/`LLAMA_SESSION_VERSION` pair.
+  `LLAMA_STATE_VERSION`/`LLAMA_SESSION_VERSION` pair (9/9).
 
 ## 6. Open questions
 
