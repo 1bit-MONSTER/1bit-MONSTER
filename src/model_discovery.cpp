@@ -4,6 +4,7 @@
 #include "model_discovery.h"
 #include "gguf_reader.h"
 #include "q4nx_reader.h"
+#include "onebp_format.h"
 #include "safetensors_reader.h"
 #include <cstdio>
 #include <cstring>
@@ -300,6 +301,38 @@ static bool read_gguf_metadata(const std::string& path, ModelConfig& cfg) {
 }
 
 // ── Read .1bp (oneBP) metadata header ────────────────────────────────────
+// 1BP tensor-index probe: the index follows the 256-byte header with
+// tensor_count entries of
+//   [name_len:u32][name bytes][ndim:u32][dims:u32 × ndim][offset:u64][bytes:u64]
+// (v4 alias entries have bytes==0 and offset=index — names/dims still written).
+// Reads names only (no tensor data); bails on truncated/corrupt files.
+static bool onebp_index_has(const std::string& path, const char* want) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    uint8_t hdr[256];
+    if (fread(hdr, 1, 256, f) != 256) { fclose(f); return false; }
+    uint32_t magic, tensor_count;
+    memcpy(&magic, hdr, 4);
+    memcpy(&tensor_count, hdr + 88, 4);
+    if (magic != 0x00504231 || tensor_count > 100000) { fclose(f); return false; }
+    const size_t wl = strlen(want);
+    bool found = false;
+    for (uint32_t i = 0; i < tensor_count && !found; i++) {
+        uint32_t name_len = 0, ndim = 0;
+        if (fread(&name_len, 4, 1, f) != 1 || name_len > 4096) break;
+        std::vector<char> nb(name_len);
+        if (fread(nb.data(), 1, name_len, f) != name_len) break;
+        if (fread(&ndim, 4, 1, f) != 1 || ndim > 8) break;
+        if (ndim > 0 && fseek(f, (long)ndim * 4, SEEK_CUR) != 0) break;
+        uint64_t off = 0, bytes = 0;
+        if (fread(&off, 8, 1, f) != 1 || fread(&bytes, 8, 1, f) != 1) break;
+        (void)off; (void)bytes;
+        if (name_len == wl && memcmp(nb.data(), want, wl) == 0) found = true;
+    }
+    fclose(f);
+    return found;
+}
+
 static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
     FILE* f = fopen(path.c_str(), "rb");
     if (!f) return false;
@@ -317,7 +350,9 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
     // Read version
     uint32_t version;
     memcpy(&version, hdr_buf + 4, 4);
-    if (version < 1 || version > 3) return false;
+    // Accept through ONEBP_VERSION (v4 = dedup-alias index entries). The old
+    // `> 3` cap made every current conversion (v4) undiscoverable — #2140.
+    if (version < 1 || version > ONEBP_VERSION) return false;
 
     // Extract fields from header at known offsets (OnebpHeader layout)
     // WARNING: offsets must match OnebpHeader struct — scale_type at 16 means
@@ -384,11 +419,13 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
         cfg.model_name = path.substr(slash + 1, dot - slash - 1);
     }
 
-    // Architecture string from enum
+    // Architecture string from the OnebpArch enum (include/onebp_format.h).
     // Note: ONEBP_DENSE (arch=0) is shared by all dense transformers.
     // We infer the specific architecture from model dimensions and name.
+    // #2140: the pre-2026-08 switch used a stale enum table (1→"llama") that
+    // misrouted every ONEBP_MOE file to the llama backend.
     switch (arch_raw) {
-        case 0: {
+        case ONEBP_DENSE: {
             // Dense transformer (ONEBP_DENSE) — disambiguate by model name or dims.
             // Since arch=0 covers Qwen3, Qwen2, Llama, Mistral, Gemma, Phi, etc.,
             // the model_name (from filename) is the most reliable signal.
@@ -439,25 +476,58 @@ static bool read_onebp_metadata(const std::string& path, ModelConfig& cfg) {
             }
             break;
         }
-        case 1:  cfg.architecture = "llama"; break;
-        case 2:  cfg.architecture = "mistral"; break;
-        case 3:  cfg.architecture = "phi3"; break;
-        case 4:  cfg.architecture = "gemma"; break;
-        case 5:  cfg.architecture = "falcon"; break;
-        case 6:  cfg.architecture = "starcoder"; break;
-        case 7:  cfg.architecture = "deepseek2"; break;
-        case 8:  cfg.architecture = "qwen2moe"; break;
-        case 9:  cfg.architecture = "qwen3moe"; break;
-        case 10: cfg.architecture = "qwen35"; break;
-        case 11: cfg.architecture = "qwen35moe"; break;
-        case 12: cfg.architecture = "zamba"; break;
-        case 13: cfg.architecture = "zamba2"; break;
-        case 14: cfg.architecture = "mamba"; break;
-        case 15: cfg.architecture = "gemma3"; break;
-        case 16: cfg.architecture = "gemma4"; break;
-        case 17: cfg.architecture = "olmo"; break;
-        case 18: cfg.architecture = "laguna"; break;
-        case 19: cfg.architecture = "zaya1"; break;
+        case ONEBP_MOE: {
+            // Generic MoE — probe the tensor index for the qwen35 GDN
+            // signature (fused attn_qkv + ssm_a; same probe as
+            // backend_hip_1bp), then fall back to name/dims inference.
+            const bool gdn = onebp_index_has(path, "blk.0.attn_qkv.weight") &&
+                             onebp_index_has(path, "blk.0.ssm_a");
+            const std::string nm = cfg.model_name;
+            if (gdn)
+                cfg.architecture = "qwen35";
+            else if (nm.find("zaya") != std::string::npos || nm.find("Zaya") != std::string::npos)
+                cfg.architecture = "zaya";
+            else if (nm.find("cohere2") != std::string::npos || nm.find("Cohere2") != std::string::npos)
+                cfg.architecture = "cohere2moe";
+            else if (nm.find("Qwen3") != std::string::npos || nm.find("qwen3") != std::string::npos)
+                cfg.architecture = "qwen3moe";
+            else if (nm.find("Phi") != std::string::npos || nm.find("phi") != std::string::npos)
+                cfg.architecture = "phi_moe";
+            else if (hidden_size == 2048 && intermediate_size == 2048 &&
+                     num_layers == 40 && num_experts == 16)
+                cfg.architecture = "zaya";  // zaya1 dims (matches raw-bin discovery)
+            else
+                cfg.architecture = "unknown(" + std::to_string(arch_raw) + ")";  // refuse loudly
+            break;
+        }
+        case ONEBP_VISION: {
+            const std::string nm = cfg.model_name;
+            if (nm.find("Ovis") != std::string::npos || nm.find("ovis") != std::string::npos ||
+                nm.find("PaliGemma") != std::string::npos || nm.find("paligemma") != std::string::npos)
+                cfg.architecture = "paligemma";
+            else
+                cfg.architecture = "llava";  // generic VL → QWEN2VL-family loader
+            break;
+        }
+        case ONEBP_AUDIO:     cfg.architecture = "whisper"; break;
+        case ONEBP_TERNARY:   cfg.architecture = "bitnet"; break;
+        case ONEBP_MAMBA:     cfg.architecture = "mamba"; break;
+        case ONEBP_LAGUNA:    cfg.architecture = "laguna"; break;
+        case ONEBP_SMOLVLM:   cfg.architecture = "smolvlm"; break;
+        case ONEBP_LLAVA:     cfg.architecture = "llava"; break;
+        case ONEBP_MOLMO:     cfg.architecture = "molmo"; break;
+        case ONEBP_OVIS:      cfg.architecture = "ovis"; break;
+        case ONEBP_PALIGEMMA: cfg.architecture = "paligemma"; break;
+        case ONEBP_FLORENCE:  cfg.architecture = "florence"; break;
+        case ONEBP_DEEPSEEK2:   cfg.architecture = "deepseek2"; break;
+        case ONEBP_PHI_MOE:     cfg.architecture = "phi_moe"; break;
+        case ONEBP_DEEPSEEK_V4: cfg.architecture = "deepseek4"; break;
+        case ONEBP_WHISPER:   cfg.architecture = "whisper"; break;
+        case ONEBP_KIMI_K3:   cfg.architecture = "kimi_k3"; break;
+        case ONEBP_MOONLIGHT: cfg.architecture = "moonlight"; break;
+        case ONEBP_KIMI_VL:   cfg.architecture = "kimi_vl"; break;
+        // Diffusion (ONEBP_SD..LTX) and ONEBP_AUDIO_CPP: no text-LM engine
+        // mapping yet — refuse loudly rather than silently misroute.
         default: cfg.architecture = "unknown(" + std::to_string(arch_raw) + ")"; break;
     }
     // 1BP has no self-describing arch field (ONEBP_DENSE is shared by all
