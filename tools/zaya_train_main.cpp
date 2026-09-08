@@ -257,6 +257,18 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
     std::vector<int> seq = {2,   /* BOS (engine pos0) */
                             9079,236761,107,2717,108,1882, 1882, /* dup (runner gen-step-0 input) */
                             15283,100652,100652,23044,15283,93544,35999,171244};
+    // ZAYA_CONT overrides the 8 continuation tokens (e.g. the CPU-expert
+    // engine's own deterministic continuation for trainer-matched evals).
+    if (const char* zc = getenv("ZAYA_CONT")) {
+        std::vector<int> ns; char buf[512]; snprintf(buf, sizeof buf, "%s", zc);
+        for (char* tk = strtok(buf, ","); tk; tk = strtok(nullptr, ",")) ns.push_back(atoi(tk));
+        if ((int)ns.size() == 8) {
+            seq.resize(8);
+            for (int i = 0; i < 8; i++) seq.push_back(ns[i]);
+            fprintf(stderr, "ZAYA_CONT: 8-token continuation override -> %d %d ... %d %d\n",
+                    ns[0], ns[1], ns[6], ns[7]);
+        }
+    }
     d.P = (int)seq.size();
     data.assign(1, seq);
     return true;
@@ -1282,7 +1294,8 @@ int main(int argc, char** argv) {
             fclose(sf);
             fprintf(stderr, "[ckpt] saved adapters -> %s\n", path); fflush(stderr);
         };
-        const double lr = real ? 3e-4 : 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
+        double lr = real ? 3e-4 : 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
+        if (const char* lr_e = getenv("ZAYA_LR")) lr = atof(lr_e);
         double prev = 1e30;
         int b = 0;   // fixed batch for a clean descent check
         auto now_ms = []{ return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
