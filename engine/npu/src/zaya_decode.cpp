@@ -209,8 +209,12 @@ static void rmsnorm(float* h, const float* w, int n, float eps = 1e-5f) {
     for (int i = 0; i < n; i++) h[i] = h[i] * r * w[i];
 }
 
+
+static float hlf_rms(const float* v, int n) { float a = 0; for (int i = 0; i < n; i++) a += v[i]*v[i]; return std::sqrt(a / (n?n:1)); }
+
 int zaya_decode_main(int argc, char** argv) {
     if (argc < 2) { fprintf(stderr, "usage: %s model.q4nx [token_id...]\n", argv[0]); return 1; }
+    zaya_cca::cap_omp_threads();   // default to physical cores (#1776 oversubscription)
     int token_id = argc > 2 ? atoi(argv[2]) : 0;
 
     int fd = open(argv[1], O_RDONLY);
@@ -272,8 +276,22 @@ int zaya_decode_main(int argc, char** argv) {
     // fp32 loads are gated on them, issue #1776 memory fix).
     const bool FUSED = getenv("NPU_FUSED") && atoi(getenv("NPU_FUSED")) == 1;
     const bool FUSED_I4 = FUSED && getenv("NPU_FUSED_I4") && atoi(getenv("NPU_FUSED_I4")) == 1;
+    // Fused GU→SiLU→D runs SINGLE-LAUNCH by default (final_i8_MOE_FUSED_zaya
+    // .xclbin — the original #1759 design: one kernel, h2 via a 2 KB DDR
+    // round-trip). Verified deterministic + 1.74x faster than the split
+    // (2026-09-04, see FUSED-MOE-SINGLE-LAUNCH-FINDING.md): the #1775
+    // nondeterminism was CPU-attention omp + BO-reuse (fixed by #2053 +
+    // per-layer h2_bo), not the in-kernel h2 handoff.
+    //   NPU_FUSED_SPLIT=1  → restore the old two-launch split (fallback).
+    //   NPU_FUSED_I4=1     → int4 GU (always split; no int4 single-launch).
+    const bool FUSED_SINGLE = FUSED && !FUSED_I4 &&
+        !(getenv("NPU_FUSED_SPLIT") && atoi(getenv("NPU_FUSED_SPLIT")) == 1);
     std::vector<Layer> L(NC);
     char key[256];
+    // Parallelize the per-layer model load (dequant ~15s single-threaded):
+    // each layer's tensors dequantize independently; get_offsets is a
+    // read-only scan of the manifest blob. key is thread-private.
+    #pragma omp parallel for schedule(dynamic) private(key)
     for (int l = 0; l < NC; l++) {
         auto& w = L[l];
         w.cs.reset(d.qkv, d.kd / 2);
@@ -320,10 +338,16 @@ int zaya_decode_main(int argc, char** argv) {
             snprintf(key, sizeof key, "model.layers.%d.mlp.experts.gate_up_proj.weight", l);
             // FUSED_I4: fp32 gu only needed for l==1 (CPU reference diag);
             // packing uses the raw q4nx bytes (read_q4nx_raw).
-            if (!(FUSED && FUSED_I4 && l != 1))
+            // Non-fused: gu/dn floats load lazily in the resident-pack batch
+            // loop (memory streaming, see MOE_BATCH below) — only l==1's
+            // floats stay resident for the CPU-reference probe at decode.
+            if (((FUSED && !(FUSED_I4 && l != 1)) || (!FUSED && l == 1)))
                 GETI8(key, w.gu, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
             { uint64_t o_, s_; if (get_offsets(js, jl, key, &o_, &s_)) { w.gu_off = o_; w.gu_size = s_; w.gu_i8_rows = (m.n_exp*2*m.n_ff/32)*(d.H/256); } }
-            snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l); GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
+            if (FUSED || l == 1) {
+                snprintf(key, sizeof key, "model.layers.%d.mlp.experts.down_proj.weight", l);
+                GETI8(key, w.dn, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
+            }
         }
         #undef GET
         #undef GETI8
@@ -348,8 +372,12 @@ int zaya_decode_main(int argc, char** argv) {
     if (getenv("NPU_GU_INSTS")) snprintf(gu_ip, sizeof gu_ip, "%s", getenv("NPU_GU_INSTS"));
     if (getenv("NPU_D_XCLBIN"))  snprintf(d_xp,  sizeof d_xp,  "%s", getenv("NPU_D_XCLBIN"));
     if (getenv("NPU_D_INSTS"))  snprintf(d_ip,  sizeof d_ip,  "%s", getenv("NPU_D_INSTS"));
-    if (!gu_ctx.init(dev, gu_xp, gu_ip, 0, NC)) { fprintf(stderr, "GU ctx init failed\n"); return 1; }
-    if (!d_ctx.init(dev, d_xp, d_ip, 0, NC))   { fprintf(stderr, "D ctx init failed\n");  return 1; }
+    if (!FUSED) {
+        if (!gu_ctx.init(dev, gu_xp, gu_ip, 0, NC)) { fprintf(stderr, "GU ctx init failed\n"); return 1; }
+        if (!d_ctx.init(dev, d_xp, d_ip, 0, NC))   { fprintf(stderr, "D ctx init failed\n");  return 1; }
+    } else {
+        fprintf(stderr, "fused mode: GU/D M=128 contexts skipped (1 ctx per process)\n");
+    }
     // NOTE: M is always 128 — the v27 microkernel is M=128-baked (4×32-row
     // slices) and the instruction stream is a pure function of (K, N); there is
     // no valid M=1 stream (issue #1761). Single-token decode reuses the M=128
@@ -376,12 +404,15 @@ int zaya_decode_main(int argc, char** argv) {
         // width (2048) — enlarge bC via bC_nd (npu_engine_i8ctx_inc.h).
         fused_ctx.bC_nd = 2 * m.n_ff;
         char fx[512], fi[512];
-        // Split launch (issue #1775): p1 = GU->SiLU->h2 writeback, p2 = D
-        // reading h2 from bo4. A host-side h2_bo sync between the launches
-        // provides the cross-shim write->read visibility barrier the
-        // single-launch design lacked (run-to-run nondeterminism at MoE
-        // layers 3+; reproduced on strixhalo).
-        if (FUSED_I4) {   // issue #1769 ws09: int4 GU (GUSILU) xclbin
+        // Single launch (default): GU→SiLU→D in ONE kernel (h2 via a 2 KB
+        // DDR round-trip inside the kernel). NPU_FUSED_SPLIT=1 selects the
+        // old two-launch split (p1 = GU→SiLU→h2 writeback, p2 = D reading
+        // h2 from bo4, with a host-side h2_bo sync between them) — kept as
+        // the fallback for the #1775 nondeterminism class.
+        if (FUSED_SINGLE) {   // single-launch fused xclbin (original #1759)
+            snprintf(fx, sizeof fx, "%s/final_i8_MOE_FUSED_zaya.xclbin", xd);
+            snprintf(fi, sizeof fi, "%s/insts_i8_MOE_FUSED_zaya.txt", xd);
+        } else if (FUSED_I4) {   // issue #1769 ws09: int4 GU (GUSILU) xclbin
             snprintf(fx, sizeof fx, "%s/final_i8_MOE_GUSILU_i4_zaya.xclbin", xd);
             snprintf(fi, sizeof fi, "%s/insts_i8_MOE_GUSILU_i4_zaya.txt", xd);
         } else {
@@ -391,12 +422,14 @@ int zaya_decode_main(int argc, char** argv) {
         if (getenv("NPU_FUSED_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_XCLBIN"));
         if (getenv("NPU_FUSED_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_INSTS"));
         if (!fused_ctx.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p1 ctx init failed\n"); return 1; }
-        fused_ctx_p2.MD = 8; fused_ctx_p2.KD = d.H; fused_ctx_p2.ND = d.H;
-        snprintf(fx, sizeof fx, "%s/final_i8_MOE_D_zaya_m8h2.xclbin", xd);
-        snprintf(fi, sizeof fi, "%s/insts_i8_MOE_D_zaya_m8h2.txt", xd);
-        if (getenv("NPU_FUSED_D_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_D_XCLBIN"));
-        if (getenv("NPU_FUSED_D_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_D_INSTS"));
-        if (!fused_ctx_p2.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p2 ctx init failed\n"); return 1; }
+        if (!FUSED_SINGLE) {
+            fused_ctx_p2.MD = 8; fused_ctx_p2.KD = d.H; fused_ctx_p2.ND = d.H;
+            snprintf(fx, sizeof fx, "%s/final_i8_MOE_D_zaya_m8h2.xclbin", xd);
+            snprintf(fi, sizeof fi, "%s/insts_i8_MOE_D_zaya_m8h2.txt", xd);
+            if (getenv("NPU_FUSED_D_XCLBIN")) snprintf(fx, sizeof fx, "%s", getenv("NPU_FUSED_D_XCLBIN"));
+            if (getenv("NPU_FUSED_D_INSTS"))  snprintf(fi, sizeof fi, "%s", getenv("NPU_FUSED_D_INSTS"));
+            if (!fused_ctx_p2.init(dev, fx, fi, 0, NC)) { fprintf(stderr, "FUSED p2 ctx init failed\n"); return 1; }
+        }
         for (int l = 1; l < NC; l += 2)
             h2_bo[l] = fused_ctx.make_scratch_bo(dev, (size_t)fused_ctx.MD * d.H);
         fgu_bo.resize(NC); fd_bo.resize(NC); fgu_cs.resize(NC); fd_cs.resize(NC);
@@ -569,31 +602,72 @@ int zaya_decode_main(int argc, char** argv) {
     // Skipped in fused mode (NPU_FUSED=1) — the fused kernel packs its own
     // interleaved GU + D BOs above.
     if (!FUSED) {
-        for (int l = 1; l < NC; l += 2) {
-            auto& w = L[l];
-            for (int e = 0; e < m.n_exp; e++) {
-                const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
-                #pragma omp parallel for schedule(static)
-                for (int j = 0; j < d.H; j++)
-                    for (int i = 0; i < 2 * m.n_ff; i++)
-                        gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
-                gu_bo[l][e] = gu_ctx.make_weight_bo(dev);
-                float gu_sc = 0;
-                gu_ctx.packB_into(*gu_bo[l][e], gu_T.data(), d.H, 2 * m.n_ff, gu_sc, gu_cs[l][e]);
-                const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
-                #pragma omp parallel for schedule(static)
-                for (int j = 0; j < m.n_ff; j++)
-                    for (int i = 0; i < d.H; i++)
-                        dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
-                d_bo[l][e] = d_ctx.make_weight_bo(dev);
-                float d_sc = 0;
-                d_ctx.packB_into(*d_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, d_cs[l][e]);
+        // Stream gu/dn through packing in batches of odd layers: load a
+        // batch's floats (layer-parallel), pack all its experts, then free.
+        // The all-at-once load peaked ~26.5 GB/engine (float gu ~10.7 GB +
+        // dn ~5.4 GB) and blocked 3+ concurrent engines; batching caps float
+        // residency to MOE_BATCH layers so 8 engines fit the 122 GB box.
+        const int MOE_BATCH = 4;   // odd MoE layers per load/pack/free group
+        char bkey[256];
+        for (int b0 = 1; b0 < NC; b0 += 2 * MOE_BATCH) {
+            const int b1 = std::min(NC, b0 + 2 * MOE_BATCH);
+            // (a) load this batch's moe gu/dn floats (layer-parallel)
+            #pragma omp parallel for schedule(dynamic) private(bkey)
+            for (int l = b0; l < b1; l += 2) {
+                auto& w = L[l];
+                uint64_t o_, s_;
+                snprintf(bkey, sizeof bkey, "model.layers.%d.mlp.experts.gate_up_proj.weight", l);
+                if (get_offsets(js, jl, bkey, &o_, &s_))
+                    w.gu = load_i8(D, o_, s_, (m.n_exp*2*m.n_ff/32)*(d.H/256), d.H);
+                snprintf(bkey, sizeof bkey, "model.layers.%d.mlp.experts.down_proj.weight", l);
+                if (get_offsets(js, jl, bkey, &o_, &s_))
+                    w.dn = load_i8(D, o_, s_, (m.n_exp*d.H/32)*(m.n_ff/256), m.n_ff);
+            }
+            // (b) pack this batch's experts into resident BOs
+            for (int l = b0; l < b1; l += 2) {
+                auto& w = L[l];
+                for (int e = 0; e < m.n_exp; e++) {
+                    const float* gup = &w.gu[(size_t)e * 2 * m.n_ff * d.H];
+                    #pragma omp parallel for schedule(static)
+                    for (int j = 0; j < d.H; j++)
+                        for (int i = 0; i < 2 * m.n_ff; i++)
+                            gu_T[(size_t)j * 2 * m.n_ff + i] = gup[(size_t)i * d.H + j];
+                    gu_bo[l][e] = gu_ctx.make_weight_bo(dev);
+                    float gu_sc = 0;
+                    gu_ctx.packB_into(*gu_bo[l][e], gu_T.data(), d.H, 2 * m.n_ff, gu_sc, gu_cs[l][e]);
+                    const float* dnp = &w.dn[(size_t)e * d.H * m.n_ff];
+                    #pragma omp parallel for schedule(static)
+                    for (int j = 0; j < m.n_ff; j++)
+                        for (int i = 0; i < d.H; i++)
+                            dn_T[(size_t)j * d.H + i] = dnp[(size_t)i * m.n_ff + j];
+                    d_bo[l][e] = d_ctx.make_weight_bo(dev);
+                    float d_sc = 0;
+                    d_ctx.packB_into(*d_bo[l][e], dn_T.data(), m.n_ff, d.H, d_sc, d_cs[l][e]);
+                }
+            }
+            // (c) release this batch's floats (keep l==1 for the CPU probe)
+            for (int l = b0 + 2; l < b1; l += 2) {
+                L[l].gu.clear(); L[l].gu.shrink_to_fit();
+                L[l].dn.clear(); L[l].dn.shrink_to_fit();
             }
         }
         fprintf(stderr, "resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
     }
 
+    // Free the float weight expansion once resident BOs are packed: only the
+    // l==1 CPU-reference probe touches w.gu/w.dn during decode (all uses are
+    // gated l==1 && pos==0). Saves ~15 GB per engine (peak ~26.5 -> ~11 GB)
+    // so 4+ concurrent engines fit alongside the live services.
+    const bool CPU_EXPERT_KEEP = getenv("NPU_CPU_EXPERT") && atoi(getenv("NPU_CPU_EXPERT")) == 1;
+    for (int l = 3; l < NC; l += 2) {
+        if (CPU_EXPERT_KEEP) continue;   // keep fp32 experts resident for the CPU decode path
+        L[l].gu.clear(); L[l].gu.shrink_to_fit();
+        L[l].dn.clear(); L[l].dn.shrink_to_fit();
+    }
+
     auto forward = [&](int tok, int pos) -> int {
+        if (getenv("ZL_TOK"))
+            fprintf(stderr, "TOK pos=%d tok=%d\n", pos, tok);
         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
         std::vector<float> residual(d.H, 0.0f);
         bool has_res = false;
@@ -604,20 +678,68 @@ int zaya_decode_main(int argc, char** argv) {
             const float* hs; const float* hb; const float* rs; const float* rb;
             if (l % 2 == 0) { hs = w.pahss.data(); hb = w.pahsb.data(); rs = w.parss.data(); rb = w.parsb.data(); }
             else            { hs = w.pmhss.data(); hb = w.pmhsb.data(); rs = w.pmrss.data(); rb = w.pmrsb.data(); }
+            if (getenv("ZL_PRE") && getenv("ZL_TRACE_POS") && l == atoi(getenv("ZL_PRE")) && pos == atoi(getenv("ZL_TRACE_POS"))) {
+                FILE* tf = fopen("/tmp/zpre.txt", "a");
+                if (tf) { fprintf(tf, "hpre pos=%d l=%d ", pos, l);
+                    for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", h[i], i == d.H-1 ? '\n' : ' ');
+                    fclose(tf); }
+            }
             for (int i = 0; i < d.H; i++) tmp[i] = (h[i] + hb[i]) * hs[i];
+            if (getenv("ZL_PRE") && getenv("ZL_TRACE_POS") && l == atoi(getenv("ZL_PRE")) && pos == atoi(getenv("ZL_TRACE_POS")) && l == 1) {
+                FILE* tf = fopen("/tmp/zpre.txt", "a");
+                if (tf) { fprintf(tf, "rpre pos=%d l=%d ", pos, l);
+                    for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", residual[i], i == d.H-1 ? '\n' : ' ');
+                    fclose(tf); }
+            }
             if (has_res) {
                 for (int i = 0; i < d.H; i++) residual[i] = tmp[i] + (residual[i] + rb[i]) * rs[i];
             } else {
                 for (int i = 0; i < d.H; i++) residual[i] = tmp[i];
                 has_res = true;
             }
+            if (getenv("ZL_PRE") && getenv("ZL_TRACE_POS") && l == atoi(getenv("ZL_PRE")) && pos == atoi(getenv("ZL_TRACE_POS"))) {
+                FILE* tf = fopen("/tmp/zpre.txt", "a");
+                if (tf) { fprintf(tf, "pre pos=%d l=%d ", pos, l);
+                    for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", residual[i], i == d.H-1 ? '\n' : ' ');
+                    if (l == 1) {
+                        // also dump the engine's own layer-1 scale vectors for alignment checks
+                        fprintf(tf, "e_hs "); for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", hs[i], i == d.H-1 ? '\n' : ' ');
+                        fprintf(tf, "e_hb "); for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", hb[i], i == d.H-1 ? '\n' : ' ');
+                        fprintf(tf, "e_rs "); for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", rs[i], i == d.H-1 ? '\n' : ' ');
+                        fprintf(tf, "e_rb "); for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", rb[i], i == d.H-1 ? '\n' : ' ');
+                    }
+                    fclose(tf); }
+            }
             rmsnorm(residual.data(), w.nw.data(), d.H);
+            if (getenv("ZL_ALLL") && l == 0) {
+                FILE* tf = fopen("/tmp/ztrace.txt", "a");
+                if (tf) { fprintf(tf, "ALLL pos=%d l=%d rms=%.4f\n", pos, l, hlf_rms(residual.data(), d.H)); fclose(tf); }
+            }
+            if (getenv("ZL_TRACE") && getenv("ZL_TRACE_POS") && pos == atoi(getenv("ZL_TRACE_POS"))) {
+                const char* zp = getenv("ZL_TRACE");
+                int tp = atoi(getenv("ZL_TRACE_POS"));
+                char tmp[256]; snprintf(tmp, sizeof tmp, "%s", zp);
+                char* save = nullptr;
+                for (char* t = strtok_r(tmp, ",", &save); t; t = strtok_r(nullptr, ",", &save)) {
+                    int tl = atoi(t);
+                    if (l == tl) {
+                        FILE* tf = fopen("/tmp/ztrace.txt", "a");
+                        if (tf) {
+                            fprintf(tf, "pos=%d l=%d ", pos, l);
+                            for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", residual[i], i == d.H-1 ? '\n' : ' ');
+                            fclose(tf);
+                        }
+                    }
+                }
+                (void)tp;
+            }
             if (l % 2 == 0) {
                 // CCA attention — q/k/v projections: CPU GEMVs or the NPU
                 // QKV-concat GEMM (NPU_PROJ=1, resident weights).
                 const int qd = d.qd, kd = d.kd, hv2 = kd/2, H = d.H;
                 std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
                 if (NPU_PROJ && proj_ctx.isReady()) {
+                    auto tp_q0 = std::chrono::steady_clock::now();
                     float ag = dynamic_ascale(residual.data(), d.H);
                     auto rq = proj_ctx.launch_async_with_bo(*proj_ctx.layerB[2 * l],
                                                             residual.data(), 1, d.H, ag);
@@ -625,6 +747,10 @@ int zaya_decode_main(int argc, char** argv) {
                     // dequant's group_scales size check matches
                     std::vector<float> qkv(qd + 2 * kd);
                     proj_ctx.finish_async(rq, qkv.data(), 1, qd + 2 * kd, ag, 0.0f, 2 * l);
+                    auto tp_q1 = std::chrono::steady_clock::now();
+                    if (getenv("NPU_PROJ_TIMING") && l == 0 && pos == 1)
+                        fprintf(stderr, "[proj-t qkv] l=%d %.3f ms\n", l,
+                                std::chrono::duration<double, std::milli>(tp_q1 - tp_q0).count());
                     memcpy(q.data(), qkv.data(), (size_t)qd * 4);
                     memcpy(k.data(), qkv.data() + qd, (size_t)kd * 4);
                     memcpy(vc.data(), qkv.data() + qd + kd, (size_t)hv2 * 4);
@@ -678,8 +804,31 @@ int zaya_decode_main(int argc, char** argv) {
                     }
                 }
                 std::vector<float> qo(qd), ko(kd), vo(kd);
+                auto tp_c0 = std::chrono::steady_clock::now();
+                if (getenv("ZL_RAW") && getenv("ZL_TRACE_POS") && l == (getenv("ZL_LAYER") ? atoi(getenv("ZL_LAYER")) : 0) && pos == atoi(getenv("ZL_TRACE_POS"))) {
+                    FILE* tf = fopen("/tmp/zqkv.txt", "a");
+                    if (tf) {
+                        fprintf(tf, "qr l=%d ", l); for (int i = 0; i < d.qd; i++) fprintf(tf, "%.8e%c", q[i], i == d.qd-1 ? '\n' : ' ');
+                        fprintf(tf, "kr l=%d ", l); for (int i = 0; i < d.kd; i++) fprintf(tf, "%.8e%c", k[i], i == d.kd-1 ? '\n' : ' ');
+                        fprintf(tf, "vcr l=%d ", l); for (int i = 0; i < d.kd/2; i++) fprintf(tf, "%.8e%c", vc[i], i == d.kd/2-1 ? '\n' : ' ');
+                        fprintf(tf, "vdr l=%d ", l); for (int i = 0; i < d.kd/2; i++) fprintf(tf, "%.8e%c", vd[i], i == d.kd/2-1 ? '\n' : ' ');
+                        fclose(tf);
+                    }
+                }
                 zaya_cca::cca_prep(d, w.cw, w.cs, q.data(), k.data(), vc.data(), vd.data(),
                                    qo.data(), ko.data(), vo.data(), pos);
+                if (getenv("ZL_TRACE") && getenv("ZL_TRACE_POS") && l == (getenv("ZL_LAYER") ? atoi(getenv("ZL_LAYER")) : 0) && pos == atoi(getenv("ZL_TRACE_POS"))) {
+                    FILE* tf = fopen("/tmp/zqkv.txt", "a");
+                    if (tf) {
+                        fprintf(tf, "q0 l=%d pos=%d ", l, pos);
+                        for (int i = 0; i < d.qd; i++) fprintf(tf, "%.8e%c", qo[i], i == d.qd-1 ? '\n' : ' ');
+                        fprintf(tf, "k0 l=%d pos=%d ", l, pos);
+                        for (int i = 0; i < d.kd; i++) fprintf(tf, "%.8e%c", ko[i], i == d.kd-1 ? '\n' : ' ');
+                        fprintf(tf, "v0 l=%d pos=%d ", l, pos);
+                        for (int i = 0; i < d.kd; i++) fprintf(tf, "%.8e%c", vo[i], i == d.kd-1 ? '\n' : ' ');
+                        fclose(tf);
+                    }
+                }
                 size_t old = lk.size() / (size_t)(d.nkv * d.hd);
                 lk.insert(lk.end(), ko.begin(), ko.end());
                 lv.insert(lv.end(), vo.begin(), vo.end());
@@ -690,6 +839,10 @@ int zaya_decode_main(int argc, char** argv) {
                 // (fallback / diag reference) or the NPU flash-attention
                 // kernel (NPU_ATTN=1, issue #1776).
                 auto cpu_attn_scan = [&](std::vector<float>& aout) {
+                    // Heads are independent (disjoint aout writes, per-head
+                    // softmax), so parallelize the O(seq) GQA scan across the
+                    // nq heads (#1776 CPU-attention bottleneck).
+                    #pragma omp parallel for schedule(static)
                     for (int hh = 0; hh < d.nq; hh++) {
                         int kv = hh / gqa;
                         std::vector<float> sc(seq); float mx = -1e30f;
@@ -741,12 +894,27 @@ int zaya_decode_main(int argc, char** argv) {
                 } else {
                     cpu_attn_scan(ao);
                 }
+                auto tp_c1 = std::chrono::steady_clock::now();
+                if (getenv("NPU_ATTNCPU_TIMING") && l == 0 && pos == 1)
+                    fprintf(stderr, "[attn-cpu-t] l=%d cca_prep+scan %.3f ms\n", l,
+                            std::chrono::duration<double, std::milli>(tp_c1 - tp_c0).count());
+                if (getenv("ZL_RAW") && getenv("ZL_TRACE_POS") && l == (getenv("ZL_LAYER") ? atoi(getenv("ZL_LAYER")) : 0) && pos == atoi(getenv("ZL_TRACE_POS"))) {
+                    FILE* tf = fopen("/tmp/zqkv.txt", "a");
+                    if (tf) { fprintf(tf, "ao l=%d pos=%d ", l, pos);
+                        for (int i = 0; i < d.qd; i++) fprintf(tf, "%.8e%c", ao[i], i == d.qd-1 ? '\n' : ' ');
+                        fclose(tf); }
+                }
                 // o_proj: NPU GEMM (NPU_PROJ=1, resident wo^T, K=qd padded) or CPU.
                 if (NPU_PROJ && proj_ctx.isReady()) {
+                    auto tp_o0 = std::chrono::steady_clock::now();
                     float ag2 = dynamic_ascale(ao.data(), qd);
                     auto ro = proj_ctx.launch_async_with_bo(*proj_ctx.layerB[2 * l + 1],
                                                             ao.data(), 1, qd, ag2);
                     proj_ctx.finish_async(ro, h.data(), 1, d.H, ag2, 0.0f, 2 * l + 1);
+                    auto tp_o1 = std::chrono::steady_clock::now();
+                    if (getenv("NPU_PROJ_TIMING") && l == 0 && pos == 1)
+                        fprintf(stderr, "[proj-t o] l=%d %.3f ms\n", l,
+                                std::chrono::duration<double, std::milli>(tp_o1 - tp_o0).count());
                     if (PROJ_DIAG && l == 0 && pos == 0) {
                         std::vector<float> ch(d.H);
                         for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; ch[i]=a; }
@@ -757,15 +925,37 @@ int zaya_decode_main(int argc, char** argv) {
                 } else {
                     #pragma omp parallel for schedule(static)
                     for (int i = 0; i < H; i++) { float a=0; for (int j=0;j<qd;j++) a += w.cw.wo[i*qd+j]*ao[j]; h[i]=a; }
+                    if (getenv("ZL_TRACE") && getenv("ZL_TRACE_POS") && pos == atoi(getenv("ZL_TRACE_POS"))) {
+                        FILE* tf = fopen("/tmp/zh.txt", "a");
+                        if (tf) { fprintf(tf, "h pos=%d l=%d ", pos, l);
+                            for (int i = 0; i < d.H; i++) fprintf(tf, "%.8e%c", h[i], i == d.H-1 ? '\n' : ' ');
+                            fclose(tf); }
+                    }
                 }
             } else {
                 // MoE FFN (NPU): router on CPU, GEMMs on NPU with resident experts.
                 float wt;
+                auto tp_r0 = std::chrono::steady_clock::now();
                 int e = zaya_moe::router(m, w.rw, residual.data(), prev_router, &wt);
-                if (FUSED) {
+                if (getenv("ZL_TRACE") && getenv("ZL_TRACE_POS") && pos == atoi(getenv("ZL_TRACE_POS"))) {
+                    FILE* tf = fopen("/tmp/ztrace.txt", "a");
+                    if (tf) { fprintf(tf, "moe pos=%d l=%d e=%d wt=%.6f rms=%.4f\n", pos, l, e, wt, hlf_rms(residual.data(), d.H)); fclose(tf); }
+                }
+                auto tp_r1 = std::chrono::steady_clock::now();
+                if (getenv("NPU_ROUTER_TIMING") && l == 3 && pos == 1)
+                    fprintf(stderr, "[router-t] l=%d %.3f ms\n", l,
+                            std::chrono::duration<double, std::milli>(tp_r1 - tp_r0).count());
+                const bool CPU_EXPERT = getenv("NPU_CPU_EXPERT") && atoi(getenv("NPU_CPU_EXPERT")) == 1;
+                if (CPU_EXPERT) {
+                    // CPU-fp32 expert decode (host-reference mode): the engine's own
+                    // verified float MoE (expert_ffn on the dequantized f32 weights).
+                    // Deterministic + CPU-reproducible - used for trainer-matched eval.
+                    zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), moe_out.data());
+                } else if (FUSED) {
                     // ── fused GU→SiLU→D: one launch ──
                     fused_ctx.group_scales[l] = fd_cs[l][e];
-                    fused_ctx_p2.group_scales[l] = fd_cs[l][e];
+                    if (!FUSED_SINGLE)
+                        fused_ctx_p2.group_scales[l] = fd_cs[l][e];
                     if (getenv("NPU_C1_TEST") && l == 1 && pos == 0) {
                         for (int i = 0; i < d.H; i++) residual[i] = 1.0f;  // A = all-127
                     }
@@ -775,25 +965,52 @@ int zaya_decode_main(int argc, char** argv) {
                         fused_ctx.Am, fgu_row[l][e].data(),
                         fgu_cs[l][e].data(), d.H, m.n_ff, ag);
                     auto tb0 = std::chrono::steady_clock::now();
+                    std::chrono::steady_clock::time_point tb2, tp1, tpsync, tb3;
+                    xrt::run frun, frun2;
                     if (FUSED_I4)
                         fused_ctx.update_fused_header_i4(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     else
                         fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
                     auto tb1 = std::chrono::steady_clock::now();
+                    if (FUSED_SINGLE) {
+                        // single-launch fused (original #1759): GU→SiLU→D in
+                        // ONE kernel, h2 via the in-kernel 2 KB DDR round-trip.
+                        auto run = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                         residual.data(), 1, d.H, ag);
+                        fused_ctx.dequant_fused(run, moe_out.data(), 1, d.H, qn_s, l);
+                        if (l == 1 && pos == 0) {
+                            std::vector<float> cpu_out(d.H);
+                            zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
+                            double num=0, d1=0, d2=0;
+                            for (int i = 0; i < d.H; i++) {
+                                num += (double)cpu_out[i]*moe_out[i]; d1 += (double)cpu_out[i]*cpu_out[i]; d2 += (double)moe_out[i]*moe_out[i];
+                            }
+                            fprintf(stderr, "[MoE L1 single dbg] corr=%.6f (cpu rms=%.4f npu rms=%.4f)\n",
+                                    num/std::sqrt(d1*d2), std::sqrt(d1/d.H), std::sqrt(d2/d.H));
+                        }
+                        auto tb3s = std::chrono::steady_clock::now();
+                        if (getenv("NPU_TIMING") && pos == 0 && l == 3)
+                            fprintf(stderr, "[fused-single-t] l=%d hdr=%.3f total=%.3f ms\n", l,
+                                    std::chrono::duration<double, std::milli>(tb1 - tb0).count(),
+                                    std::chrono::duration<double, std::milli>(tb3s - tb0).count());
+                        goto fused_single_done;
+                    }
                     // P1: GU GEMM → C1 writeback to bo2 (the CPU-silu
                     // fallback, issue #1769/#1836: the on-core silu is
                     // mis-compiled by the aie2p backend, so the P1 kernel
                     // only writes the C1 — 32 chunks x 4 KB — and the HOST
                     // computes the silu from the verified bit-exact C1).
-                    auto frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
-                                                       residual.data(), 1, d.H, ag);
-                    auto tb2 = std::chrono::steady_clock::now();
+                    frun = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                   residual.data(), 1, d.H, ag);
+                    tb2 = std::chrono::steady_clock::now();
                     frun.wait();
+                    tp1 = std::chrono::steady_clock::now();
                     // Visibility barrier (issue #1775 fix): the h2 S2MM
                     // writeback (shim[c] -> DDR) must be globally visible
                     // before the P2 D-phase MM2S read (shim[0]). The host
                     // sync forces the write path to drain.
                     h2_bo[l]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                    tpsync = std::chrono::steady_clock::now();
                     // DIAG (v63): kernel C1 (via c1 arg at gos) vs host C1h
                     if (getenv("NPU_DIAG_H2") && l == 1 && pos == 0) {
                         const int8_t* h2m = (const int8_t*)h2_bo[l]->map();
@@ -1005,15 +1222,18 @@ int zaya_decode_main(int argc, char** argv) {
                                 d.H, h2host[0], h2host[1], h2host[2], h2host[3],
                                 h2host[4], h2host[5], h2host[6], h2host[7]);
                     }
-                    auto frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
-                                                           residual.data(), 1, d.H, ag);
+                    frun2 = fused_ctx_p2.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                       residual.data(), 1, d.H, ag);
                     fused_ctx_p2.dequant_fused(frun2, moe_out.data(), 1, d.H, qn_s, l);
-                    auto tb3 = std::chrono::steady_clock::now();
+                    tb3 = std::chrono::steady_clock::now();
                     if (getenv("NPU_TIMING") && pos == 0 && l == 3)
-                        fprintf(stderr, "[fused-t] l=%d hdr=%.3f launch=%.3f wait+deq=%.3f ms\n", l,
+                        fprintf(stderr, "[fused-t] l=%d hdr=%.3f launch=%.3f p1wait=%.3f h2sync=%.3f p2=%.3f total=%.3f ms\n", l,
                                 std::chrono::duration<double, std::milli>(tb1 - tb0).count(),
                                 std::chrono::duration<double, std::milli>(tb2 - tb1).count(),
-                                std::chrono::duration<double, std::milli>(tb3 - tb2).count());
+                                std::chrono::duration<double, std::milli>(tp1 - tb2).count(),
+                                std::chrono::duration<double, std::milli>(tpsync - tp1).count(),
+                                std::chrono::duration<double, std::milli>(tb3 - tpsync).count(),
+                                std::chrono::duration<double, std::milli>(tb3 - tb0).count());
                     if (l == 1 && pos == 0) {
                         std::vector<float> cpu_out(d.H);
                         zaya_moe::expert_ffn(m, e, w.gu, w.dn, residual.data(), cpu_out.data());
@@ -1343,6 +1563,8 @@ int zaya_decode_main(int argc, char** argv) {
                         for (int i = 0; i < 8; i++) fprintf(stderr, "%.4f ", moe_out[i]);
                         fprintf(stderr, "\n");
                     }
+fused_single_done:
+                    ;
                 } else {
                     gu_ctx.group_scales[l] = gu_cs[l][e];
                     d_ctx.group_scales[l] = d_cs[l][e];
@@ -1410,6 +1632,17 @@ int zaya_decode_main(int argc, char** argv) {
                 int a2 = (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
                 fprintf(stderr, "[EMB dbg] corr=%.7f maxdiff=%.6f argmax %d vs %d (%s)\n",
                         num/std::sqrt(d1*d2), maxd, a1, a2, a1 == a2 ? "SAME" : "DIFF");
+            }
+        }
+        if (getenv("ZL_EXP")) {
+            std::vector<int> expv; const char* es = getenv("ZL_EXP");
+            char buf[8192]; snprintf(buf, sizeof buf, "%s", es);
+            for (char* tk = strtok(buf, ","); tk; tk = strtok(nullptr, ",")) expv.push_back(atoi(tk));
+            if (pos < (int)expv.size()) {
+                float mx = *std::max_element(logits.begin(), logits.end());
+                double s = 0; for (int v = 0; v < NV; v++) s += std::exp((double)logits[v] - mx);
+                double lp = (double)logits[expv[pos]] - mx - std::log(s);
+                fprintf(stderr, "ENG loss pos=%d exp=%d lprob=%.6f nats\n", pos, expv[pos], lp);
             }
         }
         return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
