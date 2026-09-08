@@ -59,6 +59,26 @@ chess kernel-fault) is therefore unavailable without fixing that upstream stack
 or using a different simulator (Vitis ADF-native, or a newer aie-rt with aie2p
 sim core-enable/PM support).
 
+## Sim core-start: three independent aie-rt/aie2p-sim gaps (disassembly-verified)
+
+1. **XAie_LoadElf does NOT load program code.** It only parses the sibling
+   `.map` file for the line containing "items) : Stack" (chess linker maps
+   have it; peano ELFs have no .map) and issues ONE stack-config
+   XAie_CmdWrite. Manual ELF .text -> PM@(tile+0x20000) via XAie_Write32 IS
+   accepted by the ISS (no invalid-AXI warnings; reads are rejected but
+   writes land).
+2. **XAie_CoreEnable does not enable the core in the ISS** — hang-detect still
+   reports "Core Disabled" at T=15ns even with code present in PM. The lib's
+   enable write (backend vtable -> aie2 core reg path) does not reach the
+   aie2p model. Peano poke core: identical result.
+3. **AIE2P PM/clock ops segfault the ISS**: XAie_PmRequestTiles rc=0 then
+   XAie_PmSetColumnClk crashes aie2psimmsm.
+
+=> the mlir-aie sim xaiengine lib cannot run AIE2P (npu2) cores at all in
+   aiesimulator 2025.2 — the sim discriminator needs upstream aie-rt aie2p-sim
+   core-enable/PM support (same family as #1908-#1913). `poke_ps_main.cpp`
+   carries the manual ELF->PM loader (`load_text_into_pm`, `POKE_ELF` env).
+
 ## What the sim DOES establish
 
 Independent of the enable gap: with byte-identical insts and only the core ELF
