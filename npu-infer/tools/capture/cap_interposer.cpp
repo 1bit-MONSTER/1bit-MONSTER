@@ -35,6 +35,14 @@ static long g_seq = 0;
 static std::map<unsigned long, std::string> g_bo_labels;
 static std::set<size_t> g_seen_big;
 
+// Size gate: when CAP_SKIP_SYNC_GT=<bytes> is set, dumps larger than the
+// threshold are skipped (keeps the 2MiB/5MB per-layer BOs, drops the 512MB
+// pools so a load capture fits in tmpfs).
+static inline bool skip_dump(size_t bosz) {
+    const char* gt = getenv("CAP_SKIP_SYNC_GT");
+    return gt && *gt && bosz > (size_t)strtoul(gt, nullptr, 10);
+}
+
 static void ensure_log() {
     if (!g_log) {
         mkdir(CAP_DIR, 0755);
@@ -60,6 +68,7 @@ static void dump_bo(xrtBufferHandle bhdl, size_t size, size_t offset, int dir, s
     void* p = bo_map_cached(bhdl);
     size_t bosz = xrtBOSize(bhdl);
     if (!p) { fprintf(g_log, "CAP %04ld: size=%zu dir=%d (map failed)\n", g_seq, bosz, dir); return; }
+    if (skip_dump(bosz)) { fprintf(g_log, "CAP %04ld: size=%zu dir=%d SKIPPED (gate)\n", g_seq, bosz, dir); return; }
     char fname[256];
     const char* dn = (dir == XCL_BO_SYNC_BO_TO_DEVICE) ? "to" : "from";
     snprintf(fname, sizeof(fname), "%s/bo_%s_%04ld_%zu.bin", CAP_DIR, dn, g_seq, bosz);
@@ -90,7 +99,7 @@ extern "C" void _ZN3xrt2bo4syncE18xclBOSyncDirectionmm(void* self, int dir,
         xrt::bo* bo = reinterpret_cast<xrt::bo*>(self);
         size_t bosz = bo->size();
         g_bo_sizes.insert({(unsigned long)self, bosz});
-        bool capture = !getenv("CAP_NO_SYNC");  // gate: CAP_NO_SYNC keeps only runlist preinsts (i6) dumps — the per-sync 32MB kv writes fill /tmp on long runs
+        bool capture = !getenv("CAP_NO_SYNC") && !skip_dump(bosz);  // gate: CAP_NO_SYNC keeps only runlist preinsts (i6) dumps — the per-sync 32MB kv writes fill /tmp on long runs; CAP_SKIP_SYNC_GT drops >threshold BOs
         if (capture) {
             const uint8_t* p = (const uint8_t*)bo->map();
             ensure_log();
@@ -298,6 +307,7 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
         if (kv.second < 1000000) continue;
         if (getenv("CAP_SKIP_BIG")) continue;
         if (getenv("CAP_NO_SYNC")) continue;   // lean: preinsts (i6) only
+        if (skip_dump(kv.second)) continue;     // size gate (CAP_SKIP_SYNC_GT)
         try {
             xrt::bo* bo = reinterpret_cast<xrt::bo*>(kv.first);
             size_t bosz = bo->size();

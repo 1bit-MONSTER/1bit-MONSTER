@@ -807,3 +807,17 @@ Conclusion: the 35B cannot run via this lib at all (crash ~50% of loads
 future fixed lib / the flm server. This closes the runtime-as-server thread
 with finality; the engine replay path remains the only 35B route and it is
 blocked at the device-VA wall (R61-65). Assets + docs banked.
+
+## Round 69 — #2069 UN-PARKED + 2MiB BO identity solved; Family A byte-exact 11/11 (2026-09-08, goal mtt01i0d-w3tg1s)
+
+Fresh Q4_K-era captures under the CURRENT runtime (FLM **v1.0.4** + Q4_K model — every prior moe-cap/moe-cap4 capture predates the v1.0.4 lib (Sep 3 14:23) AND the Q4_K model file (Sep 3 12:06); md5s differ). Methodology: `run_qwen3_6_moe_v104` (load driver linked against /opt v1.0.4) + `cap_interposer_lean.so` (Sep-5 interposer + `CAP_SKIP_SYNC_GT` gate dropping >6 MiB sync dumps so the 512 MB pools don't fill tmpfs). Full 40-layer text-only load completes (vision-off scratch config; model-dir basename must equal `Qwen3.6-35B-A3B-NPU2` for xclbin resolution). 2 full baseline loads + 2 byte-flip differential models (19-flip + 300/200/100 spread) run.
+
+### Findings
+1. **The per-layer 2MiB BO is NOT a qkv kernel-format permutation** (R51 retracted in R54 — now byte-proven): spread flips of 300×ssm_out + 200×qkv + 100×gate_proj → the L6 2MiB BO changed only at positions traced 68/68 to the **ssm_out** flips; qkv/gate flips changed NOTHING. Old-runtime (moe-cap4) vs v1.0.4 captures are byte-identical (L0/L6/L6-5MB).
+2. **Two per-layer families** (layer anchors = 5 MiB BO content-verified per R50 per layer):
+   - **Family A — L0 + the 10 full-attn layers (3,7,…,39)** (the "−440/50 %" int16 family): region-A pack `[input_layernorm 4 KB][post_attention_layernorm 4 KB][shared_expert_gate 4 KB][moe_router 1 MB (BO row 12+r = router row r)][zeros to 2 MiB]` — **reconstructed byte-exact 11/11** (`tools/verify_familyA.py`). Packer formula DONE for this family.
+   - **Family B — the other 29 linear layers (1,2,4,5,6,…,38)** (the "+1000/99 %" family): **pure ssm_out_proj content** at 1024-B granularity; 1674/2048 rows byte-mapped to exact ssm file offsets (rowmap table `tools/l6_rowmap.txt`: row → src byte; −1 = boundary row); ssm file windows ≈1031–1491 of 1882 used, paired Δ15 streams {1031,1046}… ; 374 cross-boundary rows (isolated, ~every 4.6 rows; 512-B splice Δ−75264 seen on a subset) + exact window order still open.
+3. moe-cap4-era L6/L0 2MiB + 5 MiB == fresh v1.0.4 captures byte-identical ⇒ the Q4_1→Q4_K switch did not change these BOs (int16 projections unchanged).
+
+### Remaining (Family B completion)
+Exact window order + the 374 boundary-row assembly — next lever = R45's planned attack: `gen_layer_elfs_moe` L6 TXN BD decode (BD addr/len → in-BO destinations for the ssm reads) crossed with the BO device base from the capture (deterministic allocation per R63). Artifacts: `~/npu-2069-caps/` on strixhalo (q4k-v104/q4k-flip/q4k-spread captures + tools), goal notes `~/npu-2069-qkv-bo/` on ryzen. Issue #2069 comment 5590629264.
