@@ -273,3 +273,29 @@ arithmetic the trainer's ZL_I8MOE path replicates to ~1e-7) so trainer and
 engine share one bitwise-consistent function — a new engine capability
 (scoped: ~1-2 days incl. validation), NOT a trainer fix. Gate verdict final:
 blocked-with-evidence (architectural).
+
+## BREAKTHROUGH (2026-09-08) — engine CPU-expert decode mode unlocks the gate
+
+The architectural blocker was the NPU INT8 kernel irreproducibility, NOT the
+trainer. Added NPU_CPU_EXPERT=1 to zaya_decode.cpp (commit 45da3a3c): per MoE
+layer, run the engine's own verified float expert (zaya_moe::expert_ffn on the
+dequantized f32 weights) instead of the NPU fused launches; keep fp32 gu/dn
+resident. Deterministic + CPU-reproducible.
+
+Trainer (plain fp64, NO int8, NO schedule) vs this CPU-expert decode at pos 7:
+- per-layer block-input corr 1.000000 through layer 26, 0.999995+ at layer 38
+  (mean|d| 4.9e-3 at depth); MoE routing matches EXACTLY at all 20 layers.
+- The trainer's fp64 forward IS the CPU engine's function (the int8 NPU was the
+  sole divergence source all along).
+
+Gate basis (CPU engine, its OWN deterministic continuation 32271 47187 46048
+100652 7229 413 28472 33909, teacher-forced positions 7-14): base mean CE 1.67.
+Trainer continuation-only CE 1.69 with IDENTICAL argmaxes at all 8 positions.
+
+Trained-merge evidence on the CPU engine (40-step checkpoint trained toward the
+earlier NPU-continuation): all-16 mean CE 32.62 -> 25.71 (merged improves the
+CPU engine's loss). Retargeted training toward the CPU engine's own continuation
+is running; expected clean drop from ~1.7.
+
+Status: the m2-full-trainer engine-side PPL-drop gate is now ACHIEVABLE via the
+CPU-expert engine mode; final numbers pending the retargeted 40-step run.
