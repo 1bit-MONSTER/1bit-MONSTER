@@ -1,6 +1,8 @@
 # Task-4 silicon proof: v27 i8 GEMM + probe under the 2024-chess fix (goal mtrtax9e)
 
-Verified 2026-09-08 on strixhalo (NPU2), working stack = 2024 vitis_aie_essentials
+Verified 2026-09-07 23:19 ADT (== 2026-09-08 02:19 UTC) on strixhalo (NPU2);
+end-to-end bench_compiler_ab.sh PASS re-run 2026-09-08 00:26 ADT (03:26 UTC).
+Working stack = 2024 vitis_aie_essentials
 chess (U-2023.06, tct 240628, unguarded acquire) + patched mlir_aie-1.4.2 aiecc
 (`~/iron/.../mlir_aie/bin/aiecc`, `AIE_AIECC_NO_XBRIDGE=1` bare peano-lld link;
 recipe: ~/iron/CHESS_PORT_STATE.md U17-22; root cause: guarded-acquire defect in
@@ -28,6 +30,8 @@ The engine's own design + kernels, generated for the working flow:
 |---|---|
 | probe (const-write), chess-2024 | **EXECUTED** — 1048576/1048576 == 0x5A5A5A5A, prefill 0xCD gone, 269.7 ms/launch |
 | v27 i8 GEMM, chess-2024 | **PASS** — pass0 min=max=2048 wrong=0/1048576 zero=0; pass1 wrong=0; 85.4 ms/launch, 50.3 GOP/s (2-col grid; perf not the bar) |
+
+| **full 8x4 grid, chess-2024** (end-to-end bench_compiler_ab.sh, 2026-09-08) | **PASS** — peano 6.856 ms/626.5 GOP/s vs chess 6.324 ms/679.2 GOP/s; both wrong=0/1048576 zero=0; chess/peano ratio 0.922 (1 round, then re-verified 3-iter direct) |
 
 Contrast: same probe under Vitis 2026.1 chess (X-2025.06) = NO-WRITEBACK
 (prefill untouched, ~5.7 s stall) — task-1; the 2024-chess fix flips it to EXECUTED.

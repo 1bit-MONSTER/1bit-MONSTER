@@ -49,13 +49,18 @@ built v27 GEMM running on silicon:
    chess flow (replace the guarded-acquire intrinsic exposure) and keep the
    modern generator.
 
-## Task status
-- task-1 (silicon repro): DONE (commits 553bf727...).
-- task-2 (sim): instrument-blocked (aie-rt npu2-sim gaps, 889da334) — MOOT for
-  the root cause now (found via silicon isolation by the iron lane).
-- task-3 (root cause + fix in owning lever): DONE in substance — guarded-
-  acquire codegen defect pinned; working fix verified (chess executes +
-  correct on NPU2).
-- task-4 (v27 GEMM chess on silicon): minimal-core proof achieved at the
-  iron-lane level (axpy/silu chess PASS); the v27-specific revalidation needs
-  one of the two ports above.
+## Task status (supersedes earlier status lines)
+- task-1 (silicon repro): DONE (553bf727).
+- task-2 (sim): SKIPPED — instrument-blocked (aie-rt npu2-sim gaps, 889da334 +
+  #1908/#1910); MOOT for the root cause (found via silicon isolation).
+- task-3 (root cause + fix): DONE — guarded-acquire codegen defect pinned;
+  2024 vitis_aie_essentials chess + patched mlir_aie-1.4.2 aiecc recipe works.
+- task-4 (v27 GEMM chess on silicon): **DONE — port path 1 executed and
+  PROVEN.** The v27 design was ported to the attr-form dma_bd dialect the v142
+  aiecc parses (tools/port_v27_design.py + the bench_compiler_ab.sh chess arm
+  now builds through the 2024 stack end-to-end). The literal
+  `bench_compiler_ab.sh` gate PASSES on the NPU2 (peano 6.856 ms / chess
+  6.324 ms, wrong=0 both — see README-CHESS-TASK4-PROOF.md + commits
+  75912ff1/21c46ed9/592c63d1). Note this file is kept as the historical
+  resolution record; README-CHESS-TASK4-PROOF.md and _task4_fullgrid_8x4/
+  carry the final evidence.

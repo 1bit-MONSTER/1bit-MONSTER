@@ -1,0 +1,32 @@
+== 1/5 compile kernel .o (i8_i32, 32x64x128) — both compilers ==
+  [peano] clang version 21.0.0 (https://github.com/Xilinx/llvm-aie c9c5ecb725fc8c765e4b687356e6ec1e54da7a0e)
+  [chess] chesscc version X-2025.06#764cd94af1#260213 built on 17-Feb-2026 at 10:30:53
+Warning in "": (imprecise line-number, the error occurred somewhere in this function): loop found to have 2 iterations, fewer than the explicitly annotated minimum 4 [-Wincorrect-annotation]
+  OK: /home/bcloud/wt/chess-core-exec/engine/npu/tests/_ab_out/peano/mm_32x64x128.o  /home/bcloud/wt/chess-core-exec/engine/npu/tests/_ab_out/chess/mm_32x64x128.o
+── object comparison ───────────────────────────────────────────
+  arm                             size(B)        code(B)
+  peano (mm_32x64x128.o)            16192           8496
+  chess (mm_32x64x128.o)            31732           6204
+  (code = sum of .text* section sizes, hex→dec via shell arithmetic)
+== 2/5 generate design.mlir (one design, both arms) ==
+  OK: /home/bcloud/wt/chess-core-exec/engine/npu/tests/_ab_out/design.mlir (1341527 B)
+== 3/5 aiecc → xclbin (peano arm) ==
+  OK: /home/bcloud/wt/chess-core-exec/engine/npu/tests/_ab_out/peano/final_peano.xclbin (131360 B)
+== 4/5 aiecc → xclbin (chess arm, --xchesscc --xbridge) ==
+converted 3136 dma_bd ops
+  OK: /home/bcloud/wt/chess-core-exec/engine/npu/tests/_ab_out/chess/final_chess.xclbin (124031 B)
+== 5/5 interleaved NPU timing (1 rounds x 50 iters) ==
+  WARNING: NPU must be otherwise idle (no zaya/1bit server) for valid numbers.
+  round 1: peano [PASS 6.856 626.5]  chess [PASS 6.324 679.2]
+── results ────────────────────────────────────────────────────────
+  round      peano (ms, GOP/s)      chess (ms, GOP/s)     
+  1          PASS 6.856 626.5       PASS 6.324 679.2      
+  ───────────────────────────────────────────────────────────────
+  peano mean: 6.856 ms, 626.5 GOP/s (1 rounds)
+  chess mean: 6.324 ms, 679.2 GOP/s (1 rounds)
+  chess/peano ms ratio: 0.922  (1.00 = identical, >1 = chess slower)
+  peano/chess GOP/s ratio: 0.922
+Artifacts kept in: /home/bcloud/wt/chess-core-exec/engine/npu/tests/_ab_out  (bench + both xclbins + insts + aiecc logs)
+--- direct 3-iter re-verification of both xclbins from _ab_out (2026-09-08) ---
+chess:  pass 0 min=max=2048 wrong=0/1048576 zero=0 PASS; pass 1 wrong=0/1048576 PASS; 7.229 ms/launch
+peano:  pass 0 min=max=2048 wrong=0/1048576 zero=0 PASS; pass 1 wrong=0/1048576 PASS; 6.400 ms/launch
