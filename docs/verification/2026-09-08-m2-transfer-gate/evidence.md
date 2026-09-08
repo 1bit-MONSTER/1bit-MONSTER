@@ -57,24 +57,35 @@ engine/model state, not the current decode): base 24.745 vs step19-merged
 
 ## Root cause (documented, evidence-backed)
 
-1. **fp64-vs-fp32(+INT8-NPU) function gap at depth 40.** The trainer's
-   zero-delta fp64 forward scores 31.26 on the taught sequence; the engine's
-   fp32 forward on the same weights scores 25.35 — a ~6-nat gap that grows from
-   ~1e-3-per-layer float differences through 40 softmax-adjacent stages
-   (round-12 note: per-layer corr ~0.999, logits decorrelate). The layer-0 CCA
-   block was made EXACT (corr 0.999983/1.0/0.999982, round 11) and expert
-   routing matches through layer 5, but the residual fp32-vs-fp64 amplification
-   means fp64 gradient directions are not engine descent directions.
-2. **INT8 NPU expert path.** The engine's fused MOE runs INT8 kernels
-   (per-layer corr 0.9985 vs CPU-f32, measured in-run); an fp64 CPU trainer
-   cannot model that quantization.
-3. **Runner position-major quirk.** The standalone decode main re-feeds the last
-   prompt token at the first generation position (forward(cur=prompt.back(),
-   pos=prompt.size())), duplicating it in the KV/CCA state; the trainer models a
-   clean token-major timeline. Teacher-forced prompt evals at identical states
-   differ between runs only by this duplication (e.g. pos-7 target: −6.5 nats
-   greedy-state vs −31.2 teacher-forced). Any learned delta is therefore
-   evaluated under state semantics the trainer never trained against.
+**Refined (2026-09-08 second pass — bitwise-fidelity requirement):** the
+engine predicts its own continuation tokens (15283 … 171244, the deterministic
+NPU_FUSED greedy output of zaya1-8b-fresh.q4nx) at p = 0.15–0.92 (CE 0.09–1.9
+nats per position, positions 7–14 of the 16-token timeline). The trainer's fp64
+forward on the IDENTICAL 16-token timeline assigns those same tokens ~e^-31
+(argmax junk at every continuation position: 32271/34848/29252/8755/12339/…
+vs expected 15283/100652/…). Per-layer block corr ~0.999 (round 12) does NOT
+survive to the logits: ~1e-7-per-op fp32-vs-fp64 rounding differences flip
+ROUTER ARGMAX decisions at deep layers (near-tie logits), switching which
+experts run → the fp64 trainer computes a different function than the engine
+(logit disagreement ~e^28 on tokens the engine predicts at p~0.9). Training
+deltas are therefore learned against the wrong function, and merge-transfer is
+impossible regardless of target choice. A transferable trainer requires a
+BITWISE engine-faithful forward: fp32 with the engine's exact op order and the
+same router comparisons (plus an expert path matching the fused INT8
+quantization), i.e. the trainer math must be a verbatim port of the engine CPU
+reference — the layer checkers validated the trainer against ITSELF (documented
+in the parity rounds), never bitwise against the engine at depth.
+
+Also fixed during the second pass: the trainer's real-mode timeline was silently
+TRUNCATED — main's local d.P stayed 14 while load_real built a 15/16-token seq,
+so the last target(s) were never trained and the final position trained a
+wrap-to-BOS target instead. Commit … syncs d.P after load_real.
+
+Original root-cause notes (superseded by the refined one, kept for the record):
+
+1. **fp64-vs-fp32(+INT8-NPU) function gap at depth 40.** …
+2. **INT8 NPU expert path.** …
+3. **Runner position-major quirk.** …
 
 ## What PASSED (the M2 artifact chain, all committed on feat/hrx-gfx1151-build)
 
@@ -90,10 +101,47 @@ engine/model state, not the current decode): base 24.745 vs step19-merged
 
 ## What remains for a genuine engine-side PPL drop
 
-A trainer that computes in the engine's own arithmetic: fp32 CPU CCA (op-order
-matched to zaya_cca_attn_cpu.h) + an expert path matching the engine's fused
-INT8 quantization (per-tile scales/zp) instead of fp64/fp32-CPU experts, trained
-against the current model's own decode continuation. Estimated 2-4 h of engine
-work + re-verification. Alternative: accept the engine decode's full-array CE as
-a *verification-only* metric and treat the trainer's own (engine-structure)
-CE/PPL as the training signal, documenting the transfer limitation.
+A BITWISE engine-faithful trainer forward (fp32, verbatim engine op order,
+same router comparisons — the layer checkers must validate against engine
+traces at depth, not self-consistency) + an expert path matching the fused
+INT8 quantization, trained on the current model's own deterministic
+continuation, evaluated teacher-forced over the continuation positions only
+(base CE ~1.05 nats there, PPL ~2.9 — a drop is well-posed). Estimated 2-4 h
+of engine work + re-verification. Alternative: accept the engine decode's
+full-array CE as a *verification-only* metric and treat the trainer's own
+(engine-structure) CE/PPL as the training signal, documenting the transfer
+limitation.
+
+## Second-pass measurements (2026-09-08, corrected timeline)
+
+Timeline bug found + fixed in the trainer (main's d.P was never synced after
+load_real; 15/16-token seqs were truncated to 14 with a wrap-to-BOS final
+target). Corrected 16-token timeline = BOS + 6-token prompt + dup-1882 +
+current 8-token continuation. Engine (fp32, NPU_FUSED) teacher-forced CE per
+position on zaya1-8b-fresh.q4nx:
+
+| pos | target | CE nats | | pos | target | CE nats |
+|---|---|---|---|---|---|
+| 0 | 9079 | 22.79 | | 8 | 100652 | 1.91 |
+| 1 | 236761 | 31.52 | | 9 | 100652 | 1.02 |
+| 2 | 107 | 22.12 | | 10 | 23044 | 1.39 |
+| 3 | 2717 | 27.46 | | 11 | 15283 | 0.15 |
+| 4 | 108 | 25.76 | | 12 | 93544 | 0.91 |
+| 5 | 1882 | 24.08 | | 13 | 35999 | 1.21 |
+| 6 | 1882(dup) | 22.43 | | 14 | 171244 | 1.71 |
+| 7 | 15283 | **0.09** | | 15 | BOS wrap | 42.64 |
+
+Positions 7-14 (the model's own continuation): mean CE 1.05 nats (PPL 2.86) —
+the model is healthy and self-consistent there; the giant prompt-position losses
+(0-6) are the stale 6-token prompt (from an older engine/model context), not
+model damage. Any PPL-drop gate must score the continuation positions only.
+
+Trainer fp64 forward (same 16-token timeline, zero-delta): CE 31.91 overall;
+per-position argmaxes at positions 7-14 are 32271/34848/29252/8755/12339/
+12339/29743/237439 vs the expected 15283/100652/100652/23044/15283/93544/35999/
+171244 — the fp64 forward disagrees with the engine by ~e^28 on tokens the
+engine predicts at p 0.15-0.92. Root cause above (deep-layer router argmax
+flips from fp32-vs-fp64 rounding ~1e-7/layer => different experts => different
+function). The earlier merge-regression table (25.35 -> 26.2/28.5/30.2 at steps
+9/19/39) was measured on the stale-target/buggy-timeline eval basis; the
+mechanism is the same and is superseded by the bitwise-fidelity root cause.

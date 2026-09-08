@@ -234,9 +234,16 @@ static bool load_real(Net& net, const char* bin, std::vector<std::vector<int>>& 
             net.pa_hs[l] = pahss; net.pa_hb[l] = pahsb; net.pa_rs[l] = parss; net.pa_rb[l] = parsb;
         }
     }
+    // Timeline == the engine's standalone decode main: BOS + 6-token prompt +
+    // the runner's position-major re-feed of the LAST prompt token (dup) + the
+    // 8-token greedy continuation the CURRENT engine+model produces
+    // (npu_engine_zr1 NPU_FUSED on zaya1-8b-fresh.q4nx, deterministic:
+    // 15283 100652 100652 23044 15283 93544 35999 171244). The earlier
+    // hardcoded continuation (27213 9942 ...) came from an older engine state
+    // and is NOT this model's continuation (verified).
     std::vector<int> seq = {2,   /* BOS (engine pos0) */
-                            9079,236761,107,2717,108,1882,
-                            27213,9942,9942,36209,12992,971,677,167798};
+                            9079,236761,107,2717,108,1882, 1882, /* dup (runner gen-step-0 input) */
+                            15283,100652,100652,23044,15283,93544,35999,171244};
     d.P = (int)seq.size();
     data.assign(1, seq);
     return true;
@@ -261,6 +268,13 @@ int main(int argc, char** argv) {
     if (real) {
         const char* bin = argc > 3 ? argv[3] : "/home/bcloud/zaya-f32t.bin";
         if (!load_real(net, bin, data)) return 1;
+        // load_real fixes the timeline (seq) and data but main's local d.P was
+        // the pre-load default (14); the forward/backward lambdas and P-sized
+        // buffers use the LOCAL d, so a longer seq would silently truncate and
+        // the final position would train a wrap-to-BOS target. Sync d.P here
+        // (before the P-sized buffers are allocated below).
+        d.P = (int)data[0].size();
+        net.d.P = d.P;
     } else {
         std::mt19937 rng(7);
         net.randfill(rng, 0.2);
