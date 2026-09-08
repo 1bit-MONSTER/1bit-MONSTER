@@ -1,0 +1,107 @@
+{
+ "deepseekv4": {
+  "arch": "deepseekv4",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Deepseek",
+  "model": "Joyfulxp/DeepSeek-V4-Flash-Vision-Exp-Abliterated"
+ },
+ "gemma2forcausallm_polysurgery": {
+  "arch": "gemma2forcausallm_polysurgery",
+  "covered": false,
+  "date": "2026-09-08",
+  "family": "Gemma",
+  "model": "aecetin/Gemma-2-2B-PolySurgery"
+ },
+ "gemma4": {
+  "arch": "gemma4",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Gemma",
+  "model": "0x795E2795/Vanta-Alpha-26B-A4B-it-qat-w4a16-ct"
+ },
+ "glm5next": {
+  "arch": "glm5next",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Glm",
+  "model": "bullerwins/GLM-5.3-Flash-exl3-4bpw-ablit"
+ },
+ "glmmoedsa": {
+  "arch": "glmmoedsa",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Glm",
+  "model": "0xSero/GLM-5.3-EXL3-4.0bpw"
+ },
+ "llama": {
+  "arch": "llama",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Llama",
+  "model": "arefehRajabian/phi_finetune_reasoning_plus_16bit"
+ },
+ "llama3forcausallm_polysurgery": {
+  "arch": "llama3forcausallm_polysurgery",
+  "covered": false,
+  "date": "2026-09-08",
+  "family": "Llama",
+  "model": "aecetin/Llama-3.2-3B-PolySurgery"
+ },
+ "minimindvlm": {
+  "arch": "minimindvlm",
+  "covered": false,
+  "date": "2026-09-08",
+  "family": "minimindvlm",
+  "model": "scikit-plots/minimind-3v"
+ },
+ "mistral": {
+  "arch": "mistral",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Mistral",
+  "model": "yamatazen/Himeyuri-Magnum-12B-HereticLoRA"
+ },
+ "qwen2": {
+  "arch": "qwen2",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Qwen",
+  "model": "aasim-m/daft-qwen2.5-coder-7b-instruct-checkpoint-2000"
+ },
+ "qwen2forcausallm_polysurgery": {
+  "arch": "qwen2forcausallm_polysurgery",
+  "covered": false,
+  "date": "2026-09-08",
+  "family": "Qwen",
+  "model": "aecetin/Qwen-2.5-7B-PolySurgery"
+ },
+ "qwen3": {
+  "arch": "qwen3",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Qwen",
+  "model": "aasim-m/DAFT-Qwen3-0.6B-checkpoint-4000"
+ },
+ "qwen3-vl": {
+  "arch": "qwen3-vl",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Qwen",
+  "model": "Wing22/lvr-align-v2-1000"
+ },
+ "qwen3_5": {
+  "arch": "qwen3_5",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Qwen",
+  "model": "JJarvinen/Qwen3.5-2B-EU-Tool-JARVIS-Compact-v1.1"
+ },
+ "qwen4exp": {
+  "arch": "qwen4exp",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Qwen",
+  "model": "FalconZypp/Qwen3.8-Flash-Next-AWQ-INT4"
+ }
+}
