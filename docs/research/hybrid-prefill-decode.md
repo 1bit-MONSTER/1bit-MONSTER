@@ -647,3 +647,78 @@ Lane head 15ff48549 (conditional standalone ADD claim + alias-skip) verified on 
   (b2975bb1d) for dense models and does not regress the 30B qwen3moe path.
 - Recorded on #2147 (comment 5578201386). Engine bundle modernization remains gated on
   a stable modern hrx-system release (#1945); qwen3moe-30B decode ADD fusion = fork roadmap.
+
+## 2026-09-08 — HRX decode-fusion root cause: the model is NOT yet built to the engine decode plan
+
+Goal mtsjhonv (unified two-engine stack), task 1 prerequisite. The modern fork
+(amd-hrx-graph / q35-hrx-fix @ 15ff48549) decodes Qwen3-30B-A3B Q4_K_M at
+~11.6-12 tok/s (llama-bench tg256, BOTH short KV<2048 and long KV 2.9-3.2k),
+vs the old llama-build bundle (ggml-hrx 0.9.11) at 39.9-40.1 tok/s on the same
+box/model — a 3.4x regression. Three layered causes, all "model not built to
+the engines own decode design:
+
+1. DECODE RESIDUAL ADDs split to CPU (dominant). The conditional-claim policy
+   (device_supports_op, ggml-hrx.cpp ~line 1017) deliberately routes qwen3moe
+   VIEW-wrapped / MUL_MAT_ID-src ADDs to CPU (#2147 legacy: claiming them
+   orphaned the graph). Consequence: llama.cpp's ggml_backend_sched fragments
+   each decode token into ~98 executor graph_compute calls (~2/layer x 48) at
+   ~140-350us fixed cost each — the old bundle kept whole layers in 1-2 fused
+   calls (it had MUL_MAT_ADD / ADD_RMS_NORM_MUL kernels: 38 fused-op symbols
+   in libggml-hrx.so.0.9.11).
+
+2. Long-context decode-split FA unwired. The loom corpus defines the
+   long-context path (flash_attention_decode_split_produce_partials + _reduce_f32
+   exports, both 32768-capable, reduce via an execution barrier) but the C++
+   dispatch (dispatch-flash-attention.cpp) only emits the SHORT fused kernel
+   (decode_split..._next_q8). is_supported_decode_key_value_token_count caps KV
+   at 2048; the reduce_fused loom template only has bands [64,256] and
+   [257,2048] — no >2048 band. Raising the C++ cap alone (tested) makes
+   KV>2048 decode FAIL at loom JIT link (1 reachable template applications
+
+## 2026-09-08 — HRX decode-fusion root cause: the model is NOT yet built to the engine decode plan
+
+Goal mtsjhonv (unified two-engine stack), task 1 prerequisite. The modern fork
+(amd-hrx-graph / q35-hrx-fix @ 15ff48549) decodes Qwen3-30B-A3B Q4_K_M at
+~11.6-12 tok/s (llama-bench tg256, BOTH short KV<2048 and long KV 2.9-3.2k),
+vs the old llama-build bundle (ggml-hrx 0.9.11) at 39.9-40.1 tok/s on the same
+box/model — a 3.4x regression. Three layered causes, all "model not built to
+the engine's own decode design":
+
+1. DECODE RESIDUAL ADDs split to CPU (dominant). The conditional-claim policy
+   (device_supports_op, ggml-hrx.cpp ~line 1017) deliberately routes qwen3moe
+   VIEW-wrapped / MUL_MAT_ID-src ADDs to CPU (#2147 legacy: claiming them
+   orphaned the graph). Consequence: llama.cpp's ggml_backend_sched fragments
+   each decode token into ~98 executor graph_compute calls (~2/layer x 48) at
+   ~140-350us fixed cost each — the old bundle kept whole layers in 1-2 fused
+   calls (it had MUL_MAT_ADD / ADD_RMS_NORM_MUL kernels: 38 fused-op symbols
+   in libggml-hrx.so.0.9.11).
+
+2. Long-context decode-split FA unwired. The loom corpus defines the
+   long-context path (flash_attention_decode_split_produce_partials + _reduce_f32
+   exports, both 32768-capable, reduce via an execution barrier) but the C++
+   dispatch (dispatch-flash-attention.cpp) only emits the SHORT fused kernel
+   (decode_split..._next_q8). is_supported_decode_key_value_token_count caps KV
+   at 2048; the reduce_fused loom template only has bands [64,256] and
+   [257,2048] — no >2048 band. Raising the C++ cap alone (tested) makes
+   KV>2048 decode FAIL at loom JIT link ("1 reachable template applications
+   remain unresolved") — the missing band/export wiring is required, not just a
+   number bump.
+
+3. The engine's OWN intended decode plan (benchmarks/loom/qwen3_30b_a3b_q4_k_m.tg8.json:
+   14 fused dispatches incl. flash_attention_decode_split_next_q8,
+   dense_linear_q4k_q8_1_x4_next_q8, routed_down_q4k/q6k_next_q8 — ZERO
+   standalone ADDs) does not match what llama.cpp actually schedules, because
+   the fused matchers are gated to patterns the live qwen3moe decode graph
+   does not produce (e.g. attention_output_next_q8 requires input_size==4096;
+   the decode attn-out mm is 2048-wide on this model) and the residual-ADD
+   claim gap (cause 1) prevents chain formation.
+
+Fix direction (per owner: complete new build, each model built to the engine
+design): wire the long-context produce+reduce decode path in dispatch +
+scheduler (two-dispatch sequence with execution barrier; add the >2048
+reduce_fused loom band or emit the corpus exports), and give qwen3moe decode
+residual ADDs fused-chain coverage (absorb into next_q8 chains like the old
+bundle's MUL_MAT_ADD) so llama.cpp stops fragmenting per layer. Target: modern
+fork tg256 >= 40 tok/s at KV 2.9-3.2k with the fused decode plan engaged.
+Current state: baseline re-measured (old 40.0, modern 11.96); cap-raise
+attempt reverted (tree restored, working at 11.64).
