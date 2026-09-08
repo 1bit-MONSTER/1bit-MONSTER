@@ -205,3 +205,12 @@ router decisions that cannot flip (fixed engine-traced schedule or bitwise
 router). This is fully scoped by the artifacts in this file; effort est. 4-8 h,
 with residual risk from the int8-kernel's internal rounding (measured
 kernel-vs-host-reference corr 0.9985-0.9996 — not bitwise reproducible CPU-side).
+
+Follow-up test: forcing the ENGINE's pos-7 expert schedule (single 20-layer
+schedule via ZL_SCHED) did NOT align the trainer's pos-7 logits — the forward
+state is recurrent across positions (attention + v_del + conv), so a
+per-position schedule (16 positions x 20 layers, from 16 engine trace runs) is
+required to isolate routing. This is the final scoping datum for the
+engine-bitwise trainer: the router schedule must be traced per (layer, position)
+and fixed during training (router drift under small deltas is then the only
+residual risk).

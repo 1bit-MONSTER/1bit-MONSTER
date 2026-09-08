@@ -568,6 +568,16 @@ int main(int argc, char** argv) {
                         }
                         msav.e = best;
                         msav.wt = bv;
+                        if (I8MOE && getenv("ZL_SCHED")) {
+                            // debug: force the engine-traced expert schedule
+                            static std::vector<int> sched;
+                            if (sched.empty()) {
+                                const char* s = getenv("ZL_SCHED");
+                                char buf[512]; snprintf(buf, sizeof buf, "%s", s);
+                                for (char* tk = strtok(buf, ","); tk; tk = strtok(nullptr, ",")) sched.push_back(atoi(tk));
+                            }
+                            if (mi < (int)sched.size()) { msav.e = sched[mi]; msav.wt = 0.0; }
+                        }
                     }
                     if (msav.e < d.nslots - 1) {
                         int ee = msav.e;
