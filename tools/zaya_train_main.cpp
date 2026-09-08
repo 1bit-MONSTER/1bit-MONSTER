@@ -39,6 +39,8 @@ static bool I8MOE = false;
 static bool I8_DIRTY = false;               // adapters changed -> requantize int8 expert tables
 static std::vector<std::vector<I8E>> i8e;
 static int CONT_A = -1, CONT_B = -1;   // ZL_CONT="a,b": train only on positions [a,b] (gate: continuation-only)
+static bool BIASCORR = false;              // ZAYA_BIASCORR=1: Adam bias correction
+static int WARMUP = 0;                      // ZAYA_WARMUP=k: linear lr warmup over k steps
 
 struct Dims {
     int H = 0, ff = 0, rtr = 0, nslots = 0, nq = 0, nkv = 0, hd = 0, V = 0, L = 0, P = 0, r = 0;
@@ -1296,6 +1298,9 @@ int main(int argc, char** argv) {
         };
         double lr = real ? 3e-4 : 5e-3, b1 = 0.9, b2 = 0.999, eps = 1e-8, wd = 0.0;
         if (const char* lr_e = getenv("ZAYA_LR")) lr = atof(lr_e);
+        BIASCORR = getenv("ZAYA_BIASCORR") && atoi(getenv("ZAYA_BIASCORR")) == 1;
+        WARMUP = getenv("ZAYA_WARMUP") ? atoi(getenv("ZAYA_WARMUP")) : 0;
+        if (BIASCORR || WARMUP > 0) fprintf(stderr, "opt: biascorr=%d warmup=%d lr=%.1e\n", (int)BIASCORR, WARMUP, lr);
         double prev = 1e30;
         int b = 0;   // fixed batch for a clean descent check
         auto now_ms = []{ return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count(); };
@@ -1308,11 +1313,19 @@ int main(int argc, char** argv) {
             double t2 = now_ms();
             if (st < 4) fprintf(stderr, "  [t] step %d fwd %.1f ms bwd %.1f ms\n", st, t1-t0, t2-t1), fflush(stderr);
             double beta1t = b1, beta2t = b2;  // (no bias correction for the smoke)
+            double bc1 = 1.0, bc2 = 1.0;
+            double lr_eff = lr;
+            if (BIASCORR) {
+                double t = st + 1.0;
+                bc1 = 1.0 - std::pow(b1, t);
+                bc2 = 1.0 - std::pow(b2, t);
+            }
+            if (WARMUP > 0 && st < WARMUP) lr_eff = lr * (double)(st + 1) / WARMUP;
             for (auto& a : aps) for (size_t i = 0; i < a.p.size(); i++) {
                 double gg = a.g[i];
                 a.m[i] = beta1t * a.m[i] + (1 - beta1t) * gg;
                 a.v[i] = beta2t * a.v[i] + (1 - beta2t) * gg * gg;
-                double stepd = lr * a.m[i] / (std::sqrt(a.v[i]) + eps) + wd * lr * a.p[i];
+                double stepd = lr_eff * (a.m[i] / bc1) / (std::sqrt(a.v[i] / bc2) + eps) + wd * lr_eff * a.p[i];
                 a.p[i] -= stepd;
             }
             if (I8MOE) I8_DIRTY = true;   // requantize int8 tables next forward
