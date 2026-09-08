@@ -138,6 +138,7 @@ using fn_llama_model_desc = int32_t (*)(const llama_model*, char*, size_t);
 using fn_llama_state_load_file = bool (*)(llama_context*, const char*, llama_token*, size_t, size_t*);
 using fn_llama_state_set_data  = size_t (*)(llama_context*, const uint8_t*, size_t);
 using fn_llama_state_get_size  = size_t (*)(llama_context*);
+using fn_llama_state_get_data  = size_t (*)(llama_context*, uint8_t*, size_t);
 using fn_ggml_backend_dev_by_name = ggml_backend_dev_t (*)(const char*);
 using fn_ggml_backend_dev_name = const char* (*)(ggml_backend_dev_t);
 using fn_ggml_backend_hrx_get_device_count = int32_t (*)(void);
@@ -163,6 +164,7 @@ struct Inprocess::Impl {
     fn_llama_state_load_file llama_state_load_file = nullptr;
     fn_llama_state_set_data  llama_state_set_data  = nullptr;
     fn_llama_state_get_size  llama_state_get_size  = nullptr;
+    fn_llama_state_get_data  llama_state_get_data  = nullptr;
     size_t n_session = 0;
     fn_ggml_backend_dev_by_name ggml_backend_dev_by_name = nullptr;
     fn_ggml_backend_dev_name ggml_backend_dev_name = nullptr;
@@ -285,6 +287,7 @@ bool Inprocess::init() {
     impl_->llama_state_load_file = (fn_llama_state_load_file)sym(impl_->handle, "llama_state_load_file");  // optional (D2 hybrid)
     impl_->llama_state_set_data  = (fn_llama_state_set_data)sym(impl_->handle, "llama_state_set_data");
     impl_->llama_state_get_size  = (fn_llama_state_get_size)sym(impl_->handle, "llama_state_get_size");
+    impl_->llama_state_get_data  = (fn_llama_state_get_data)sym(impl_->handle, "llama_state_get_data");
     impl_->ggml_backend_dev_by_name = (fn_ggml_backend_dev_by_name)sym(impl_->handle, "ggml_backend_dev_by_name");
     impl_->ggml_backend_dev_name = (fn_ggml_backend_dev_name)sym(impl_->handle, "ggml_backend_dev_name");
     impl_->ggml_backend_hrx_get_device_count = (fn_ggml_backend_hrx_get_device_count)sym(impl_->handle, "ggml_backend_hrx_get_device_count");
@@ -441,10 +444,57 @@ long Inprocess::load_session_mem(int fd) {
     // The session token count is not returned by set_data (3-arg API); the caller
     // (D2 hybrid) tracks positions itself - expose ntok as the import count.
     impl_->n_session = ntok;
-    impl_->pos = (llama_pos)ntok;  // continue after the imported tokens
+    // The state does not carry logits; the session resumes by re-decoding the
+    // LAST stored token IN PLACE at slot ntok-1 (regenerates its KV + the
+    // logits that predict the true next token). Decoding at slot ntok would
+    // DUPLICATE the resume token and shift the continuation (rt_session run
+    // semantics, P==C-verified 203926057).
+    impl_->pos = (llama_pos)(ntok > 0 ? ntok - 1 : 0);  // resume overwrites slot ntok-1
     fprintf(stderr, "[hrx] session imported (shared mem): %u tokens, %zu bytes state (pos=%lld, resume=%d)\n",
             ntok, state_sz, (long long)impl_->pos, impl_->resume_token);
     return (long)ntok;
+}
+
+int Inprocess::export_session_mem(int fd_out) {
+    if (!impl_->ctx || !impl_->llama_state_get_data) {
+        fprintf(stderr, "[hrx] export_session_mem: no context or no state_get_data\n");
+        return -1;
+    }
+    const size_t raw_sz = impl_->llama_state_get_size(impl_->ctx);
+    if (raw_sz == 0) { fprintf(stderr, "[hrx] export: empty state\n"); return -1; }
+    // Session layout: magic u32 (0x6767736e) | version u32 (9) | ntok u32 |
+    // tokens i32[ntok] | raw state. load_session_mem needs ntok for pos and
+    // only the LAST token for resume; both are tracked in Impl.
+    uint32_t ntok = (uint32_t)impl_->n_session;
+    if (ntok == 0) ntok = (impl_->resume_token >= 0) ? 1u : 0u;
+    const size_t hdr = 12 + 4 * (size_t)ntok;
+    if (ftruncate(fd_out, (off_t)(hdr + raw_sz)) != 0) { perror("export ftruncate"); return -1; }
+    uint8_t* dst = (uint8_t*)mmap(nullptr, hdr + raw_sz, PROT_READ | PROT_WRITE,
+                                  MAP_SHARED, fd_out, 0);
+    if (dst == MAP_FAILED) { perror("export mmap"); return -1; }
+    const uint32_t magic = 0x6767736e;
+    memcpy(dst, &magic, 4);
+    const uint32_t ver = 9;
+    memcpy(dst + 4, &ver, 4);
+    memcpy(dst + 8, &ntok, 4);
+    if (ntok > 0) {
+        for (uint32_t i = 0; i + 1 < ntok; i++) {
+            int32_t zero = 0;
+            memcpy(dst + 12 + 4 * (size_t)i, &zero, 4);
+        }
+        int32_t rt = impl_->resume_token >= 0 ? (int32_t)impl_->resume_token : 0;
+        memcpy(dst + 12 + 4 * (size_t)(ntok - 1), &rt, 4);
+    }
+    const size_t consumed = impl_->llama_state_get_data(impl_->ctx, dst + hdr, raw_sz);
+    if (consumed != raw_sz) {
+        fprintf(stderr, "[hrx] export: state_get_data consumed %zu/%zu\n", consumed, raw_sz);
+        munmap(dst, hdr + raw_sz);
+        return -1;
+    }
+    munmap(dst, hdr + raw_sz);
+    fprintf(stderr, "[hrx] session exported to memfd: %u tokens, %zu bytes state (raw %zu)\n",
+            ntok, hdr + raw_sz, raw_sz);
+    return (int)raw_sz;
 }
 
 int Inprocess::resume_token() const {
@@ -456,6 +506,8 @@ int Inprocess::generate(int token_id) {
     llama_token tok = (llama_token)token_id;
     llama_batch b = impl_->llama_batch_get_one(&tok, 1, impl_->pos, 0);
     impl_->pos++;
+    impl_->resume_token = (int)tok;          // last INPUT token (live producer)
+    impl_->n_session = (size_t)impl_->pos;   // token count for export headers
     if (impl_->llama_decode(impl_->ctx, b) != 0) {
         fprintf(stderr, "[hrx] llama_decode failed at pos %d\n", (int)impl_->pos - 1);
         return -1;
