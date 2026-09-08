@@ -53,6 +53,7 @@ private:
     pid_t pid_ = -1;
     bool initialized_ = false;
     bool inprocess_mode_ = false;
+    bool cpu_ops_set_by_us_ = false;  // #2147 follow-up: we set GGML_HRX_CPU_OPS in init() — restore it on destroy()
     std::unique_ptr<hrx::Inprocess> inprocess_;
     std::string server_bin_;
     std::string model_path_;
