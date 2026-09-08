@@ -153,13 +153,22 @@ build_xclbin_chess() { # $1 = arm dir, $2 = design dir
     || { echo "chess design port failed"; return 1; }
   cp "$2/design_chess.mlir" "$1/design.mlir"
   cp "$2/$KERNEL_O" "$1/$KERNEL_O" 2>/dev/null || true
-  ( cd "$1" && AIE_AIECC_NO_XBRIDGE=1 PATH="$VITIS_AIETOOLS/bin:$IRON_LLVM_BIN:$PATH" \
+  (
+    cd "$1"
+    # aiecc locates xchesscc_wrapper on PATH. The harness's global PATH carries
+    # $MLIR_AIE/install/bin whose wrapper maps AIE2P->aie2ps (wrong for the 2024
+    # tree, which ships target_aie2p); strip it and lead with the iron pip
+    # mlir_aie bin (wrapper maps AIE2P->aie2p) + the 2024 essentials bin.
+    CHESS_PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v "^$MLIR_AIE/install/bin$" | paste -sd:)
+    export AIE_AIECC_NO_XBRIDGE=1
+    PATH="$VITIS_AIETOOLS/bin:$HOME/iron/lib/python3.14/site-packages/mlir_aie/bin:$IRON_LLVM_BIN:$CHESS_PATH" \
       "$IRON_AIECC" design.mlir --unified --xchesscc --xbridge=false \
       --aietools="$VITIS_AIETOOLS" \
       --alloc-scheme=basic-sequential --dynamic-objFifos \
       --get-xclbin --xclbin-name="$PWD/final_chess.xclbin" \
       --get-npu-insts --npu-insts-name="$PWD/insts_chess.txt" \
-      --output-dir="$PWD" > aiecc_chess.log 2>&1 )
+      --output-dir="$PWD" > aiecc_chess.log 2>&1
+  )
 }
 
 # ── Host harness (built once) ────────────────────────────────────────────────
