@@ -57,6 +57,10 @@ public:
     /// layout, resume-token aware). Returns raw state bytes, or -1.
     int export_session_mem(int fd_out);
 
+    /// Tokenize text with the loaded model vocab (llama_tokenize, add_special).
+    /// Returns token count, or -1 on failure (n_max too small = -needed).
+    int tokenize(const std::string& text, int32_t* out_tokens, int32_t n_max) const;
+
     // One decode step: feed token_id, return argmax next token, or -1 on failure.
     int generate(int token_id);
 

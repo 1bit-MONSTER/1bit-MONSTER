@@ -133,6 +133,8 @@ using fn_llama_get_logits_ith = float* (*)(llama_context*, int32_t);
 using fn_llama_batch_get_one = llama_batch (*)(llama_token*, int32_t, llama_pos, llama_seq_id);
 using fn_llama_model_get_vocab = llama_vocab* (*)(const llama_model*);
 using fn_llama_vocab_n_tokens = int32_t (*)(const llama_vocab*);
+using fn_llama_tokenize = int32_t (*)(const llama_vocab*, const char*, int32_t,
+                                      llama_token*, int32_t, bool, bool);
 using fn_llama_model_n_embd = int32_t (*)(const llama_model*);
 using fn_llama_model_desc = int32_t (*)(const llama_model*, char*, size_t);
 using fn_llama_state_load_file = bool (*)(llama_context*, const char*, llama_token*, size_t, size_t*);
@@ -158,6 +160,7 @@ struct Inprocess::Impl {
     fn_llama_get_logits_ith llama_get_logits_ith = nullptr;
     fn_llama_batch_get_one llama_batch_get_one = nullptr;
     fn_llama_model_get_vocab llama_model_get_vocab = nullptr;
+    fn_llama_tokenize        llama_tokenize        = nullptr;
     fn_llama_vocab_n_tokens llama_vocab_n_tokens = nullptr;
     fn_llama_model_n_embd llama_model_n_embd = nullptr;
     fn_llama_model_desc llama_model_desc = nullptr;
@@ -281,6 +284,7 @@ bool Inprocess::init() {
     impl_->llama_get_logits_ith = (fn_llama_get_logits_ith)sym(impl_->handle, "llama_get_logits_ith");
     impl_->llama_batch_get_one = (fn_llama_batch_get_one)sym(impl_->handle, "llama_batch_get_one");
     impl_->llama_model_get_vocab = (fn_llama_model_get_vocab)sym(impl_->handle, "llama_model_get_vocab");
+    impl_->llama_tokenize        = (fn_llama_tokenize)sym(impl_->handle, "llama_tokenize");
     impl_->llama_vocab_n_tokens = (fn_llama_vocab_n_tokens)sym(impl_->handle, "llama_vocab_n_tokens");
     impl_->llama_model_n_embd = (fn_llama_model_n_embd)sym(impl_->handle, "llama_model_n_embd");
     impl_->llama_model_desc = (fn_llama_model_desc)sym(impl_->handle, "llama_model_desc");
@@ -455,6 +459,17 @@ long Inprocess::load_session_mem(int fd) {
     return (long)ntok;
 }
 
+int Inprocess::tokenize(const std::string& text, int32_t* out_tokens, int32_t n_max) const {
+    if (!impl_->ctx || !impl_->model || !impl_->llama_tokenize) {
+        fprintf(stderr, "[hrx] tokenize: no model or bundle lacks llama_tokenize\n");
+        return -1;
+    }
+    llama_vocab* vocab = impl_->llama_model_get_vocab(impl_->model);
+    if (!vocab) { fprintf(stderr, "[hrx] tokenize: no vocab\n"); return -1; }
+    return impl_->llama_tokenize(vocab, text.c_str(), (int32_t)text.size(),
+                                 out_tokens, n_max, true, false);
+}
+
 int Inprocess::export_session_mem(int fd_out) {
     if (!impl_->ctx || !impl_->llama_state_get_data) {
         fprintf(stderr, "[hrx] export_session_mem: no context or no state_get_data\n");
@@ -528,6 +543,8 @@ bool Inprocess::reset() {
     if (impl_->ctx) impl_->llama_free(impl_->ctx);
     impl_->ctx = impl_->llama_init_from_model(impl_->model, impl_->ctx_params);
     impl_->pos = 0;
+    impl_->n_session = 0;
+    impl_->resume_token = -1;
     return impl_->ctx != nullptr;
 }
 
