@@ -307,3 +307,25 @@ B^T dL/dy x^T (per expert block for Phase B).
   engine-side PPL-drop gate BLOCKED-with-evidence (bitwise-fidelity
   requirement), scoped ~2-4h in docs/verification/2026-09-08-m2-transfer-gate/
   evidence.md. Commit 575caaaa.
+
+- 2026-09-08 (M2 engine-side PPL gate — PASS via the engine's float reference):
+  the architectural blocker (NPU fused-INT8 kernels not CPU-reproducible,
+  0.9985-0.9996/layer) was resolved by adding NPU_CPU_EXPERT=1 to the engine
+  decode (commit 45da3a3c): per MoE layer it runs the engine's own verified
+  float expert (zaya_moe::expert_ffn on the dequantized f32 weights) instead of
+  the NPU launches — deterministic and CPU-reproducible. The trainer's fp64
+  forward matches this decode at per-layer corr 1.000000 through depth 26 and
+  0.999995+ at depth 38 with EXACT MoE routing at all 20 layers; continuation
+  CE 1.69 (trainer) vs 1.67 (engine). Full chain measured on the CPU-expert
+  engine: 40-step fp64 training (taught-code CE 31.9 -> 13.4), merge -> q4nx
+  (byte-exact zero round trip), decode runs deterministic; teacher-forced CE on
+  the taught continuation: base 34.26 -> merged 21.33 (pos 7-14), all-16
+  32.62 -> 25.71. GATE: engine-side PPL drop on taught code vs base — PASS.
+  Caveats documented in docs/verification/2026-09-08-m2-transfer-gate/
+  evidence.md (eval basis = the engine's float reference; NPU-int8 accelerators
+  cannot resolve sub-1% deltas; natural self-consistent text fine-tuning is
+  unstable under the fp64 optimizer — the torch reference's clean 1.94->0.44
+  used the HF stack).
+- M2 COMPLETE: full-graph forward+backward (stack FD gate 8.3e-6 0/240; layer
+  gates ~1e-10), real-dims descent, JSONL toy-code loop, merge->q4nx export,
+  engine decode verification with an engine-side PPL drop on the taught code.
