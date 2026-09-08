@@ -36,7 +36,9 @@ struct I8E {
     std::vector<float> dn_gs;   // [H] per-output-column scales amax/127
 };
 static bool I8MOE = false;
+static bool I8_DIRTY = false;               // adapters changed -> requantize int8 expert tables
 static std::vector<std::vector<I8E>> i8e;
+static int CONT_A = -1, CONT_B = -1;   // ZL_CONT="a,b": train only on positions [a,b] (gate: continuation-only)
 
 struct Dims {
     int H = 0, ff = 0, rtr = 0, nslots = 0, nq = 0, nkv = 0, hd = 0, V = 0, L = 0, P = 0, r = 0;
@@ -292,6 +294,12 @@ int main(int argc, char** argv) {
         // (skip slot excluded): gu int8 per-SECTION (4 x 1024 of the 4096
         // outputs), dn int8 per-output-column, gs scales in f32.
         I8MOE = getenv("ZL_I8MOE") != nullptr;
+        CONT_A = CONT_B = -1;
+        if (const char* ct = getenv("ZL_CONT")) {
+            int a = -1, b = -1;
+            if (sscanf(ct, "%d,%d", &a, &b) == 2 && a >= 0 && b >= a && b < d.P) { CONT_A = a; CONT_B = b; }
+            fprintf(stderr, "ZL_CONT: training window [%d,%d]\n", CONT_A, CONT_B);
+        }
         if (I8MOE && real) {
             const int ne = d.nslots - 1;              // 16 real experts
             i8e.assign(net.nmoe, std::vector<I8E>(ne));
@@ -442,6 +450,82 @@ int main(int argc, char** argv) {
     std::vector<CcaAd> cca_gd(net.ncca); std::vector<MoeAd> moe_gd(net.nmoe);
     for (int ci = 0; ci < net.ncca; ci++) { cca_gd[ci] = cca_ad[ci]; for (auto* vp : {&cca_gd[ci].Bq,&cca_gd[ci].Aq,&cca_gd[ci].Bk,&cca_gd[ci].Ak,&cca_gd[ci].Bv1,&cca_gd[ci].Av1,&cca_gd[ci].Bv2,&cca_gd[ci].Av2,&cca_gd[ci].Bo,&cca_gd[ci].Ao}) std::fill(vp->begin(), vp->end(), 0.0); }
     for (int mi = 0; mi < net.nmoe; mi++) { moe_gd[mi] = moe_ad[mi]; for (auto* vp : {&moe_gd[mi].Bg,&moe_gd[mi].Ag,&moe_gd[mi].Bd,&moe_gd[mi].Ad}) std::fill(vp->begin(), vp->end(), 0.0); }
+
+    // QAT requant: rebuild the int8 expert tables from base weights + current
+    // LoRA deltas (engine merges deltas into f32 then requantizes per section/
+    // column, so training must quantize the DELTA-FOLDED weights). Called at the
+    // top of every run_fwd while I8_DIRTY (set after each AdamW step).
+    auto requant_i8 = [&]() {
+        const int ne = d.nslots - 1;
+        for (int mi = 0; mi < net.nmoe; mi++) {
+            MoeW& m = net.moe[mi];
+            MoeAd& ad = moe_ad[mi];
+            const double* bg = ad.Bg.data();
+            const double* ag = ad.Ag.data();
+            const double* bd = ad.Bd.data();
+            const double* adq = ad.Ad.data();
+            for (int e = 0; e < ne; e++) {
+                I8E& t = i8e[mi][e];
+                const double* gu = &m.gu[(size_t)e * 2 * d.ff * d.H];
+                const double* Bg = bg + (size_t)e * 2 * d.ff * d.r;
+                const double* Ag = ag + (size_t)e * d.r * d.H;
+                // gu_eff row = gu row + Σ_k Bg[i][k]·Ag[k][j]
+                std::vector<double> guE((size_t)2 * d.ff * d.H);
+                for (int i = 0; i < 2 * d.ff; i++) {
+                    const double* wrow = gu + (size_t)i * d.H;
+                    double* erow = &guE[(size_t)i * d.H];
+                    for (int j = 0; j < d.H; j++) {
+                        double v = wrow[j];
+                        for (int k = 0; k < d.r; k++) v += Bg[(size_t)i * d.r + k] * Ag[(size_t)k * d.H + j];
+                        erow[j] = v;
+                    }
+                }
+                for (int s = 0; s < 4; s++) {
+                    double sm = 0;
+                    for (int p = s * 512; p < (s + 1) * 512; p++) {
+                        const double* gr = &guE[(size_t)p * d.H];
+                        const double* ur = &guE[(size_t)(d.ff + p) * d.H];
+                        for (int j = 0; j < d.H; j++) {
+                            double a = std::fabs(gr[j]); if (a > sm) sm = a;
+                            double b = std::fabs(ur[j]); if (b > sm) sm = b;
+                        }
+                    }
+                    t.gsec[s] = (float)((sm < 1e-12 ? 1.0 : sm) / 127.0);
+                }
+                for (int i = 0; i < 2 * d.ff; i++) {
+                    const int p = i < d.ff ? i : i - d.ff;
+                    const float tis = (float)(127.0 / (t.gsec[p / 512] * 127.0));
+                    for (int j = 0; j < d.H; j++) {
+                        double v = guE[(size_t)i * d.H + j];
+                        int x = (int)std::roundf((float)v * tis);
+                        t.gu[(size_t)i * d.H + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                    }
+                }
+                // dn_eff = dn + Bd@Ad  (out j, in p)
+                const double* dn = &m.dn[(size_t)e * d.H * d.ff];
+                const double* Bd = bd + (size_t)e * d.H * d.r;
+                const double* Ad2 = adq + (size_t)e * d.r * d.ff;
+                for (int j = 0; j < d.H; j++) {
+                    double am = 0;
+                    for (int p = 0; p < d.ff; p++) {
+                        double v = dn[(size_t)j * d.ff + p];
+                        for (int k = 0; k < d.r; k++) v += Bd[(size_t)j * d.r + k] * Ad2[(size_t)k * d.ff + p];
+                        double a = std::fabs(v); if (a > am) am = a;
+                    }
+                    float gs = (float)((am < 1e-12 ? 1.0 : am) / 127.0);
+                    t.dn_gs[j] = gs;
+                    const float tis = (float)(127.0 / (gs * 127.0));
+                    for (int p = 0; p < d.ff; p++) {
+                        double v = dn[(size_t)j * d.ff + p];
+                        for (int k = 0; k < d.r; k++) v += Bd[(size_t)j * d.r + k] * Ad2[(size_t)k * d.ff + p];
+                        int x = (int)std::roundf((float)v * tis);
+                        t.dnT[(size_t)p * d.H + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                    }
+                }
+            }
+        }
+        I8_DIRTY = false;
+    };
     // kv cache at main scope for backward access
     std::vector<std::vector<std::vector<double>>> kvk(net.ncca, std::vector<std::vector<double>>(d.P, std::vector<double>(d.kd)));
     std::vector<std::vector<std::vector<double>>> kvv(net.ncca, std::vector<std::vector<double>>(d.P, std::vector<double>(d.kd)));
@@ -484,6 +568,7 @@ int main(int argc, char** argv) {
     };
 
     auto run_fwd = [&](int batch) -> double {   // batch index b into data
+        if (I8MOE && I8_DIRTY) requant_i8();    // QAT: fold adapters + requantize
         double L = 0;
         // reset per-layer recurrent + cache state for this sequence
         for (int li = 0; li < d.L; li++) { /* state lives in layer structs below */ }
@@ -658,8 +743,21 @@ int main(int argc, char** argv) {
                                 for (int p = 0; p < d.ff; p++) a += (double)col[(size_t)p * d.H] * A2[p];
                                 hout[j] = (float)(a * t.dn_gs[j]) / qn_s;
                             }
+                            // Save fp activations for the (straight-through) backward:
+                            // ygu = [gate_f; up_f] (pre-silu, engine fp arithmetic),
+                            // hh  = h2 (silu(gate)·up). Save the kernel-order values
+                            // for consistency with A2 (recompute g/u here in fp).
+                            msav.ygu.assign(2 * d.ff, 0);
                             msav.hh.assign(d.ff, 0);
-                            for (int p = 0; p < d.ff; p++) msav.hh[p] = h2[p];
+                            for (int p = 0; p < d.ff; p++) {
+                                float c1g = (float)C1[2 * p], c1u = (float)C1[2 * p + 1];
+                                float gsec = t.gsec[p / 512];
+                                float g = c1g * ((float)ag * gsec);        // gate_f
+                                float u = c1u * ((float)ag * gsec);        // up_f (no qn_s)
+                                msav.ygu[p] = g;
+                                msav.ygu[d.ff + p] = u;
+                                msav.hh[p] = h2[p];
+                            }
                         } else {
                         std::vector<double> ygu(2 * d.ff);
                         double* wgu = &m.gu[(size_t)ee * 2 * d.ff * d.H];
@@ -783,9 +881,10 @@ int main(int argc, char** argv) {
             probs[p].assign(d.V, 0);
             for (int v = 0; v < d.V; v++) probs[p][v] = std::exp(logits[v] - mx) / sm;
             loss_p[p] = -std::log(probs[p][tgt] + 1e-30);
-            L += loss_p[p];
+            if (CONT_A < 0 || (p >= CONT_A && p <= CONT_B)) L += loss_p[p];
         }
-        return L / d.P;
+        double nn = (CONT_A < 0) ? d.P : (CONT_B - CONT_A + 1);
+        return L / nn;
     };
 
     double L0 = run_fwd(0);
@@ -841,10 +940,11 @@ int main(int argc, char** argv) {
         std::vector<std::vector<double>> gResAcc(d.L, std::vector<double>((size_t)d.P * d.H, 0.0)); // rn carry
         for (int p = 0; p < d.P; p++) {
             std::vector<double> gcf(d.H, 0);
-            if (mode != "raw") {
+            if (mode != "raw" && (CONT_A < 0 || (p >= CONT_A && p <= CONT_B))) {
                 int tgt = data[batch][(p + 1) % d.P];
+                double dn2 = (CONT_A < 0) ? d.P : (CONT_B - CONT_A + 1);
                 std::vector<double> glog(d.V, 0);
-                for (int v = 0; v < d.V; v++) glog[v] = (probs[p][v] - (v == tgt ? 1.0 : 0.0)) / d.P;
+                for (int v = 0; v < d.V; v++) glog[v] = (probs[p][v] - (v == tgt ? 1.0 : 0.0)) / dn2;
                 for (int j = 0; j < d.H; j++) { double a = 0; for (int v = 0; v < d.V; v++) a += net.embed[(size_t)v * d.H + j] * glog[v]; gcf[j] = a; }
             }
             std::vector<double> gtail(d.H);
@@ -1202,6 +1302,7 @@ int main(int argc, char** argv) {
                 double stepd = lr * a.m[i] / (std::sqrt(a.v[i]) + eps) + wd * lr * a.p[i];
                 a.p[i] -= stepd;
             }
+            if (I8MOE) I8_DIRTY = true;   // requantize int8 tables next forward
             if (st % 2 == 0 || st == steps - 1)
                 fprintf(stderr, "step %3d loss %.4f\n", st, L), fflush(stderr);
             if (st % 10 == 9)

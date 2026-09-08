@@ -224,3 +224,24 @@ junk before). The trainer's function now tracks the engine's structure;
 remaining misalignment is the fp64-CCA-vs-fp32 drift at depth. Next: QAT
 training loop (adapters requantized into the int8 weights per step +
 straight-through backward) + fp32 CCA, then the merge/eval transfer test.
+
+## QAT attempt (schedule+int8+ST backward) — no stable descent; remaining gap quantified
+
+Built the QAT training loop: adapter-aware requantization of the int8 expert
+tables at every step (ZL_I8MOE + I8_DIRTY), fp activation saves for a
+straight-through backward, and ZL_CONT=7,14 to restrict training loss to the 8
+continuation positions (matching the eval/gate basis). Results:
+- Base continuation-only CE in the trainer: 12.29 (the engine's is ~1.05) —
+  the fp64-vs-fp32 CCA drift at depth costs ~11 nats on the continuation even
+  with schedule+int8 experts.
+- QAT loss wanders 9.4-22.7 over 10 steps (no stable descent): ST gradients
+  through the int8 quantizers on top of the residual CCA drift are near-noise.
+
+Verdict (final for this investigation): a transferable trainer requires BOTH
+(a) the int8 expert path (DONE, corr 0.865 -> 0.9999 at the historical layer-5/6
+collapse, routing fixed per-position from engine traces, corr 0.87-1.0 through
+all 40 layers) AND (b) fp32 engine-op-order CCA (kills the ~11-nat continuation
+gap) AND (c) a stabilized QAT backward. (a) is committed; (b)+(c) are the
+remaining scoped work (~multi-day precision engineering, with residual risk from
+int8-kernel internals measured at 0.9985-0.9996 corr). This is a funding/scope
+decision, not a bounded task.
