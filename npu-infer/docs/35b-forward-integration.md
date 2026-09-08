@@ -821,3 +821,13 @@ Fresh Q4_K-era captures under the CURRENT runtime (FLM **v1.0.4** + Q4_K model �
 
 ### Remaining (Family B completion)
 Exact window order + the 374 boundary-row assembly — next lever = R45's planned attack: `gen_layer_elfs_moe` L6 TXN BD decode (BD addr/len → in-BO destinations for the ssm reads) crossed with the BO device base from the capture (deterministic allocation per R63). Artifacts: `~/npu-2069-caps/` on strixhalo (q4k-v104/q4k-flip/q4k-spread captures + tools), goal notes `~/npu-2069-qkv-bo/` on ryzen. Issue #2069 comment 5590629264.
+
+## Round 69 (addendum) — #2069 SOLVED: ALL 40 per-layer 2MiB BOs byte-exact (2026-09-08)
+
+Family B completed with the same-session continuation: the dense 2MiB BO = a **continuous byte stream of ssm_out_proj 4736-B windows in a fixed emission order E**, cut from byte 3456 of the stream, taking exactly 2 MiB. E = 444 windows (indices 1031-1491) emitted as alternating B/A tracks (E = [1046, 1031, 1047, 1032, …, 1055, 1056, 1072, 1057, …], Δ+16/−15 alternation; A track = 1031-1039 ∪ 1056-1476, B track = 1046-1055 ∪ 1072-1491). Junction rows (the old "374 unmatched") = ordinary window boundaries in the stream (4736 mod 1024 = 640 → drift). Spread-flip differential confirmed ssm-only provenance (68/68 flip traces).
+
+**Validation: 40/40 per-layer 2MiB BOs byte-exact (diff = 0)**
+- Family A (L0 + full-attn 3,7,…,39): 11/11 (tools/verify_familyA.py)
+- Family B (linear 1,2,4,5,…,38): 29/29 (tools/verify_familyB.py — shared E derived from the L6 rowmap)
+
+Engine packer formulas are now deterministic for every per-layer BO; ssm_out_proj's windows split between the 5MiB BO (0-~1045) and the 2MiB BO (1031-1491 window range in E order). #2069 closed as resolved; follow-up = packer integration (engine) + the router-pack sync-visibility nuance for linear layers (map-only, R50).
