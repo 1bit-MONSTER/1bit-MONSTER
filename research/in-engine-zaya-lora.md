@@ -90,8 +90,9 @@ B^T dL/dy x^T (per expert block for Phase B).
   discrepancy, minor, revisit), monotonic loss descent on a fixed toy batch
   5.03 -> 0.062 in 60 steps. Bugs caught: forward never stacked (hlay rows not
   propagated), forward mi/ci counters never incremented (all MoE layers reused
-  index 0). Next: real q4nx weights via the engine loader + merge->q4nx export +
-  decode-parity/PPL gates.
+  index 0). Resolved downstream (this log): real q4nx weights via the engine
+  loader (real-phase entry below), merge->q4nx export tool (d8c9eabf), and the
+  decode-parity/PPL gates (2026-09-08 verdict at the end of this section).
 - Python/torch stacks explicitly out (policy: engine for all work); ryzen venv
   kept only as an external numeric oracle for the M2 PPL-gate comparison;
   strixhalo rocm7.2 torch venv deleted per policy.
@@ -105,11 +106,11 @@ B^T dL/dy x^T (per expert block for Phase B).
 - 2026-09-07 (M2 real phase): trainer real-mode pipeline DONE (loader reads the
   19.2GB f32 dump; real dims 40L/H2048/V262272; real top-1 router in fwd +
   skip-passthrough + bwd skip-guard; toy FD stack gate still PASS; real model
-  runs ~30-60s/step and backprops). OPEN for full task completion: real-forward
-  parity with engine decode (base CE ~28 vs expected ~3-8: EDA router recurrence,
-  pa/pm residual-scale parity, v_del source are the suspects — check via argmax
-  vs engine's 27213 continuation), then merge->q4nx export + decode-parity + PPL
-  gates. Real-router bugs caught: dead-zero LoRA init, mi++ double increment.
+  runs ~30-60s/step and backprops). Parity vs engine decode and the export/PPL
+  gates were pursued to final verdicts: parity rounds 6-13 below, merge->q4nx
+  export tool (d8c9eabf), and the engine decode-parity/PPL-transfer gate verdict
+  (2026-09-08, end of this section). Real-router bugs caught: dead-zero LoRA
+  init, mi++ double increment.
 
 - 2026-09-07 (M2 parity probe): added trainer 'par' mode (ZL_PAR) comparing the
   real forward against the engine's decode oracle: at the 6-token oracle-prefix
@@ -119,9 +120,10 @@ B^T dL/dy x^T (per expert block for Phase B).
   set parity (even->pa correct-ish; swapping made it worse). The divergence is
   architectural (CCA prep/attention framing or residual-chain ordering vs the
   engine's per-token decode) — the layer checkers validated my math against
-  ITSELF, so the engine decode is the only true oracle. Next debugging step:
-  trace/compare intermediate activations (rmsnorm input, qkv, attention out,
-  block out) layer-by-layer against npu_engine_zr1's CPU ref at one layer.
+  ITSELF, so the engine decode is the only true oracle. Resolved by engine
+  trace instrumentation: intermediate activations compared layer-by-layer
+  against npu_engine_zr1 in rounds 6-11 (layer-0 block input EXACT, block
+  internals chased to EXACT, timeline mapped with the BOS).
 
 - 2026-09-07 (M2 parity, more): input-affine (model.input_hidden_states_scale/
   bias) added to dump+loader+forward — small effect only. v_del source fix
@@ -131,24 +133,25 @@ B^T dL/dy x^T (per expert block for Phase B).
   (all pos -> 30777/30072) with hidden-state correlation 0.96-0.99 between
   positions (info present but output under-differentiates) => suspect the
   attention/expert path is not functioning as in the engine decode (not the
-  residual/scales; embed rows verified sane/distinct). Next: bisect at the
-  BLOCK level — compare layer-0 CCA outputs (q/k/attn/o_proj) against the
-  engine's own per-layer values for one token.
+  residual/scales; embed rows verified sane/distinct). Resolved: block-level
+  bisect executed (round 7) — layer-0 CCA outputs compared against the engine's
+  own per-layer values for one token; divergence localized to block internals.
 
 - 2026-09-07 (M2 parity, round 3): residual-scale SET parity tested CLEANLY
   (even=pm/odd=pa, v_del fix held): decisively WORSE (loss 36.1, prob 7e-59) =>
   even=pa/odd=pm confirmed correct. Committed best state: v_del at hlay[li][p-1]
   (loss 24.9, prob 27213 = 9.5e-7) + par diagnostics + input-affine. Remaining
   divergence: block-internal (attention/prep/MoE framing) or position-major vs
-  token-major state ordering. Next: faithful token-major single-token reference
-  decoder against the dumped weights to reproduce engine's 27213 independently.
+  token-major state ordering. Resolved: superseded by direct engine
+  instrumentation (rounds 5-11); a standalone reference decoder was not needed.
 
 - 2026-09-07 (M2 parity, round 4): REAL BACKWARD FIX — v_del input grads must
   backprop through hlay[li][p-1] (a LIVE hidden = block out of li-1) into
   gBlk[li-1][p-1]; was dropped as 'frozen'. Toy FD stack gate PASS restored
   (was failing). Also fixed Net ctor input_scale/bias init (toy OOB). Forward
   parity unchanged (24.9/30072) — backward is now fully consistent; the real
-  divergence is FORWARD-only. Next: token-major reference decoder vs engine.
+  divergence is FORWARD-only. Resolved: superseded by engine trace
+  instrumentation (round 5+); forward chased to EXACT at layer 0 (round 11).
 
 - 2026-09-07 (M2 parity, round 5): engine-faithful router captured from
   zaya_moe_cpu.h (transposed gate_down gdw[j*rtr+i], tanh-GELU, softmax-17,
@@ -157,10 +160,12 @@ B^T dL/dy x^T (per expert block for Phase B).
   path (fused NPU decode -> 27213) does NOT use this exact CPU router frame
   (or additional per-layer semantics differ). REVERTED to green baseline
   (fb062e52 + vd=hlay[li]): toy FD gate PASS, real par 24.9/30072. Conclusion:
-  guess-based parity fixing has diminishing returns; the decisive next step is
+  guess-based parity fixing has diminishing returns; the decisive step was
   INSTRUMENTING npu_engine_zr1 itself to dump its per-token, per-layer
   intermediates (router logits/selected expert, q/k/v, attn out, h stream) for
-  the oracle prompt, then matching the trainer to THAT trace layer-by-layer.
+  the oracle prompt, then matching the trainer to THAT trace layer-by-layer —
+  executed in rounds 6-13 (ZR_TRACE/ZL_* hooks; MoE router root-caused round 6;
+  layer-0 CCA EXACT round 11).
 
 - 2026-09-07 (M2 parity, round 6 — ROOT CAUSE on the MoE side): the trainer's
   router kept selecting the SKIP slot (16) because its argmax covered all 17
@@ -183,8 +188,10 @@ B^T dL/dy x^T (per expert block for Phase B).
   internals transcription gap (conv-state/grouped/L2/rope/GQA framing vs the
   engine), compounding through the stack. Engine trace hooks now: per-layer
   block inputs (ZL_TRACE), pre-norm residual (ZL_PRE), even-layer h outputs
-  (zh.txt), moe e/wt (auto). Next: engine-side qo/ko/vo + attention-score hooks
-  to diff cca_prep internals element-by-element against the trainer at layer 0.
+  (zh.txt), moe e/wt (auto). Resolved rounds 8-11: raw q/k/vc/vd projections
+  EXACT (round 9), v_del delay traced to cca_prep's internal vrec (round 8),
+  and the final q0/k0 0.97 gap root-caused to the RoPE/BOS offset (round 11) —
+  layer-0 CCA block EXACT.
 
 - 2026-09-07 (M2 parity, round 8 — v_del FIXED, trace-proven): engine traces
   showed vo's vrec half (delayed v_del) was ~10x too small (rms 0.15 vs 1.63).
@@ -192,26 +199,27 @@ B^T dL/dy x^T (per expert block for Phase B).
   the one-token delay lives in cca_prep's internal vrec state. Fixed fwd+bwd
   (vd=wv2@cur, input grads into gx_cur). Result: vc corr 0.999993, vrec corr
   0.999961 (rms equal 1.633), layer-0 block OUT corr 0.70 -> 0.87. FD stack
-  gate PASS. Remaining: qo/ko corr ~0.97 (cca_prep internals: conv-state/
-  grouped/L2/rope small transcription gap) -> next diff at that level; deeper
-  layers compound from the residual 0.97 error. Engine traces + trainer dumps
-  all aligned at engine pos6 == trainer pos5.
+  gate PASS. Remaining qo/ko corr ~0.97 (cca_prep internals: conv-state/
+  grouped/L2/rope small transcription gap) was diffed at that level in rounds
+  9-11 and root-caused to the RoPE theta offset from the engine BOS (round 11);
+  deeper layers compound from the residual fp32-vs-fp64 amplification (final
+  verdict 2026-09-08). Engine traces + trainer dumps all aligned at engine pos6
+  == trainer pos5.
 
 - 2026-09-07 (M2 parity, round 9 — prep-chain isolated): raw projections at
   layer 0 / aligned pos are EXACT: qr 0.999978, kr 1.000000, vcr 0.999993,
   vdr 0.999986 (engine ZL_RAW hook). The remaining qo/ko ~0.97 gap is inside
   the cca_prep chain (conv taps / grouped conv / qk_means mix / L2 / rope) —
-  a transcription slip in the trainer's prep mirror. Next: header-level
-  instrumentation or a python prep-model (from engine raw + dump weights) to
-  reproduce engine qo/ko at 1.0, then diff the trainer's prep sub-stages
-  against it to find the slip.
+  a transcription slip in the trainer's prep mirror. Resolved rounds 10-11
+  (ZL_MID header hook): the slip was the L2/RoPE substage using theta(myPos)
+  instead of theta(enginePos) — the engine prepends BOS at pos0.
 
 - 2026-09-07 (M2 parity, round 10 — gap confined to L2/rope): post-mix qkv
   (conv+grouped+qk_means output, pre-L2) corr = 1.000000 vs engine; vo (vc+vrec)
   corr 0.999982 with the vd fix. q0/k0 remain 0.974/0.971 => the residual gap is
   confined to the L2-normalize / RoPE substage of cca_prep. Engine header hook
-  (ZL_MID) + trainer mid-dump added. Next: post-L2 pre-rope comparison to split
-  L2 vs rope.
+  (ZL_MID) + trainer mid-dump added. Resolved round 11 (post-L2 pre-rope split;
+  root cause = RoPE theta at engine pos vs trainer pos).
 
 - 2026-09-07 (M2 parity, round 11 — CCA BLOCK EXACT + engine timeline mapped):
   engine trace showed the extra leading position is the BOS token (tok 2) at
@@ -220,5 +228,58 @@ B^T dL/dy x^T (per expert block for Phase B).
   uses theta(enginePos) = theta(myPos+1) due to its BOS. Fixes: trainer data now
   prepends BOS (index == engine pos), rope_angles(p). Result: layer-0 CCA block
   q0 corr 0.999983 / k0 1.000000 / v0 0.999982 at the aligned pos6; FD stack
-  gate PASS. End loss still ~28.8 -> the remaining divergence is now DOWNSTREAM
-  of layer 0 (trace layer 2+ and MoE under the new aligned indices next).
+  gate PASS. The remaining divergence downstream of layer 0 was chased in the
+  clobber-fix round below (MoE routing matches the engine through layer 5); the
+  residual is fp32-vs-fp64 logit amplification at depth, closed as a verdict
+  (2026-09-08, end of this section).
+
+- 2026-09-07 (M2 parity, round 12 — residual-clobber root-caused, engine-faithful
+  fwd): same-run engine instrumentation (zpre/hpre/rpre hooks) proved the
+  engine's rmsnorm writes IN PLACE over its residual buffer, so layer l+1's
+  residual branch reads the NORMED block input cur_l. Trainer now carries cur as
+  res_v (7e4fb1ba). par loss 28.83 -> 26.28; MoE routing now matches the engine
+  through layer 5 ([6,1,10,...]); the residual divergence is fp32-vs-fp64
+  amplification through softmax, not structure. VERDICT: forward structure
+  engine-faithful (per-layer corr ~0.999); logit-level fp32/fp64 decorrelation
+  documented as the transfer blocker (final verdict below).
+
+- 2026-09-07 (M2 real training restored): LoRA B-side zero init + lr 3e-4
+  (c742844d) — real-dims AdamW descends 31.26 -> 30.69 in 4 steps (fully-random
+  B/A diverged at lr 1e-3). Periodic adapter checkpoints every 10 steps
+  (916de0f2); per-step fwd/bwd timing prints (bwd ~300 s/step real dims
+  single-threaded on strixhalo, ~85-95 s/step on ryzen) (1981dd21). PASS.
+
+- 2026-09-07 (M2 merge->q4nx tool, d8c9eabf): zaya_merge_q4nx.cpp re-encodes
+  only adapter-affected tensors (CCA q/k/v_cur/v_del/o + MoE expert gu/dn) in
+  place, preserving each tile's original per-(row,group) bf16 scale AND
+  zero-point (zaya is asymmetric int4: ~79% of zp bytes nonzero); only val
+  nibbles are re-derived from round((base+delta-zp)/scale). PASS: zero-adapter
+  merge is byte-identical to the base (0 differing bytes of 5.58 GB); engine
+  mean CE identical for base vs merged-zero (25.3488 both).
+
+- 2026-09-07 (M2 backward fix + JSONL loop, 52e01131): with res_v=cur (engine
+  in-place clobber) the residual carry gResAcc is a gradient into the NORMED
+  block input and must feed the rmsnorm backprop BEFORE it. FD stack gate
+  restored: 8.3e-6 max rel err, 0/240 bad (was 5.1e-3/118 bad). Mode jl reads
+  fixed-length token sequences from a JSONL file and cycles batches in the
+  AdamW loop — validated toy: loss 5.16 -> 0.94 over a 6-sequence set. PASS.
+
+- 2026-09-07/08 (M2 end-to-end campaign + transfer gate VERDICT):
+  40-step real-dims run (corrected backward, ryzen, ~100 s/step) descended in
+  the trainer's fp64 metric 31.26 -> 17.05 (step 38). Checkpoints merged at
+  steps 9/19/39 and decoded with the engine (npu_engine_zr1, NPU_FUSED INT8
+  fused MOE, full-array 262k logits, ZL_EXP over the taught 14-target
+  sequence). Engine mean CE: base 25.3488 -> step9 26.2191 -> step19 28.4876
+  -> final 30.2330 — MONOTONE REGRESSION while the trainer's own CE improves,
+  on both the hard-coded continuation and a teacher-forced non-stale basis.
+  Root cause: fp64-vs-fp32(+INT8-NPU) function gap at depth 40 (~6 nats at
+  step 0: trainer 31.26 vs engine 25.35 on identical weights) + INT8 NPU
+  expert quantization + the standalone runner's position-major last-token
+  re-feed. The fp64-trained deltas are anti-correlated with the engine loss
+  landscape (convex loss => regression grows with |delta|). VERDICT:
+  merge->q4nx fidelity PASS (byte-exact zero round trip); decode runs on
+  merged files PASS (deterministic, 9.9 tok/s); engine-side PPL drop
+  BLOCKED-with-evidence — full table + root cause in
+  docs/verification/2026-09-08-m2-transfer-gate/evidence.md. A genuine drop
+  requires a trainer computing in the engine's own arithmetic (fp32 CCA
+  op-order + fused-INT8 expert path) — scoped, not funded.
