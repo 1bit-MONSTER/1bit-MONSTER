@@ -164,6 +164,7 @@ struct Inprocess::Impl {
     fn_llama_state_set_data  llama_state_set_data  = nullptr;
     fn_llama_state_get_size  llama_state_get_size  = nullptr;
     size_t n_session = 0;
+    int resume_token = -1;   // last stored token in the imported session
     fn_ggml_backend_dev_by_name ggml_backend_dev_by_name = nullptr;
     fn_ggml_backend_dev_name ggml_backend_dev_name = nullptr;
     fn_ggml_backend_hrx_get_device_count ggml_backend_hrx_get_device_count = nullptr;
@@ -433,9 +434,25 @@ long Inprocess::load_session_mem(int fd) {
     // (D2 hybrid) tracks positions itself - expose ntok as the import count.
     impl_->n_session = ntok;
     impl_->pos = (llama_pos)ntok;  // continue after the imported tokens
-    fprintf(stderr, "[hrx] session imported (shared mem): %u tokens, %zu bytes state (pos=%lld)\n",
-            ntok, state_sz, (long long)impl_->pos);
+    // Resume token: the session header stores the input tokens (i32 array after
+    // the 12-byte header); the LAST one is the token whose logits the state is
+    // positioned after - decoding it again at pos reproduces the continuation
+    // (rt_session run-mode semantics, verified token-identical in the fork
+    // proofs 203926057/ec7610180).
+    if (ntok > 0) {
+        int32_t resume = 0;
+        memcpy(&resume, shm + 12 + 4 * (size_t)(ntok - 1), 4);
+        impl_->resume_token = (int)resume;
+    } else {
+        impl_->resume_token = -1;
+    }
+    fprintf(stderr, "[hrx] session imported (shared mem): %u tokens, %zu bytes state (pos=%lld, resume=%d)\n",
+            ntok, state_sz, (long long)impl_->pos, impl_->resume_token);
     return (long)ntok;
+}
+
+int Inprocess::resume_token() const {
+    return impl_ ? impl_->resume_token : -1;
 }
 
 int Inprocess::generate(int token_id) {

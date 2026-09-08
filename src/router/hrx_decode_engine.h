@@ -38,21 +38,23 @@ public:
         if (!hrx_ || state_fd < 0) return "";
         // Zero-copy state import: the fd is a memfd/dma-buf carrying the
         // session-v9 state; Inprocess::load_session_mem mmaps it and calls
-        // llama_state_set_data (no file, no host copy) - 0a54070c.
+        // llama_state_set_data (no file, no host copy) - 0a54070c. It also
+        // exposes the resume token (last stored input), which the state is
+        // positioned after - decoding it again at pos reproduces the exact
+        // continuation (rt_session semantics, fork-verified 203926057).
         long imported = hrx_->load_session_mem(state_fd);
         if (imported < 0) {
             fprintf(stderr, "[hrxdec] load_session_mem failed (fd %d)\n", state_fd);
             return "";
         }
-        fprintf(stderr, "[hrxdec] imported %ld tokens from shared state\n", imported);
-        // Continue greedy decode from the imported position. The Inprocess
-        // generate() feeds one token at a time; the caller (PhaseRouter) or a
-        // sampling loop drives it. Return token ids as text for the demo.
-        // NOTE: resume input for the first step is the caller's responsibility
-        // (raw state has no token bookkeeping); here we decode from the
-        // imported position with the engine tracking pos internally.
+        int resume = hrx_->resume_token();
+        fprintf(stderr, "[hrxdec] imported %ld tokens from shared state (resume=%d)\n",
+                imported, resume);
+        // Greedy continuation: first decode the resume token at the imported
+        // position (produces the logits for the true next token), then argmax
+        // loop via the engine generate().
         std::string out;
-        int tok = 0;  // first input token: supplied by caller in the real flow
+        int tok = resume >= 0 ? resume : 0;
         (void)n_tokens;
         for (int i = 0; i < max_tokens; i++) {
             int next = hrx_->generate(tok);

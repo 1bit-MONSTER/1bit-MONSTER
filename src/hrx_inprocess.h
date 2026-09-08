@@ -50,6 +50,9 @@ public:
     // generate(). Returns the number of imported tokens, or -1.
     long load_session_mem(int fd);
 
+    /// Last input token of the imported session (for continuation), or -1.
+    int resume_token() const;
+
     // One decode step: feed token_id, return argmax next token, or -1 on failure.
     int generate(int token_id);
 
