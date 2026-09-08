@@ -619,6 +619,7 @@ int zaya_decode_main(int argc, char** argv) {
         fprintf(stderr, "resident experts packed (%d experts x %d MoE layers)\n", m.n_exp, NC / 2);
     }
 
+    int dump_gen_pos = -1;   // first GENERATED position for the #2114 logits gate (set after prompt build; lambda reads it by reference)
     auto forward = [&](int tok, int pos) -> int {
         double _f0 = _now_ms();
         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
@@ -1980,7 +1981,10 @@ fused_single_done:
                             }
                             float sw_ag = dynamic_ascale(residual.data(), d.H);
                             std::vector<float> ffn_sw((size_t)d.H);
+                            auto _sw0 = std::chrono::steady_clock::now();
                             sw.go(residual.data(), sw_ag, 1.0f, ffn_sw.data(), *swAB, sw_qns);
+                            double sw_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - _sw0).count();
+                            fprintf(stderr, "[CASC] l=%d pos=%d e=%d go_ms=%.3f\n", l, pos, e, sw_ms);
                             // per-layer validation vs the production moe_out
                             double cn = 0, cd1 = 0, cd2 = 0; float mx = 0;
                             for (int nn = 0; nn < d.H; nn++) {
@@ -2045,7 +2049,7 @@ fused_single_done:
             }
         }
         if (pos > 0) { t_tot_ms += _now_ms() - _f0; c_tok++; }
-        if (pos == 0 && getenv("NPU_DUMP_LOGITS")) {
+        if (pos == dump_gen_pos && dump_gen_pos >= 0 && getenv("NPU_DUMP_LOGITS")) {  // first generated token (gate fix: was pos==0 = unconditioned prefill state)
             FILE* lf = fopen(getenv("NPU_DUMP_LOGITS"), "wb");
             if (lf) { fwrite(logits.data(), 4, (size_t)NV, lf); fclose(lf); }
             fprintf(stderr, "[LOGITS] dumped %d floats (argmax %d)\n", NV,
@@ -2135,6 +2139,7 @@ fused_single_done:
     for (int i = 2; i < argc; i++) prompt.push_back(atoi(argv[i]));
     if (prompt.size() == 1) prompt.push_back(token_id);
     for (int i = 0; i < (int)prompt.size(); i++) forward(prompt[i], i);
+    dump_gen_pos = (int)prompt.size();   // next forward() = first generated position
 
     const int N_GEN = getenv("NPU_N_GEN") ? atoi(getenv("NPU_N_GEN")) : 8;
     int cur = prompt.back();
