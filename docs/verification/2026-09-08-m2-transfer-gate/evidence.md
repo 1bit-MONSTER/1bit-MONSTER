@@ -166,3 +166,42 @@ adapter on non-stale teacher-forced basis: 24.75 -> 26.17), the blocker is
 confirmed on three independent setups: fp64-trained LoRA deltas cannot transfer
 to the engine decode. Bitwise engine-faithful forward is the only path
 (scoped below).
+
+## Fourth pass — layer-level root cause VERIFIED; engine-fused INT8 expert path replicated in the trainer (ZL_I8MOE)
+
+Per-layer block-input correlation trainer-vs-engine at pos 7 (16-token corrected
+timeline), fp64 trainer: layer 0 EXACT (max|d| 2e-6), layers 2/4 at corr
+0.9998/0.9995 — then SHARP COLLAPSE at the first MoE layer: layer-6 input corr
+0.865, degrading to negative by layer 20. The parity work had only validated
+through layer 5; the layer-5/6 boundary is the engine's INT8 fused-expert path.
+
+The engine's fused MoE arithmetic (fully host-visible and deterministic, from
+zaya_decode.cpp + npu_engine_i8ctx_inc.h + silu_quant.h):
+  qA = sat8(round(x/ag)), ag = max|x|/127 (single per-token scale)
+  C1[c] = Σ_j qA[j]·qB_gu[c][j]       (int8×int8 → int32, exact)
+    qB_gu: PER-SECTION int8 — 4 sections of 1024 interleaved gate/up columns,
+    scale = smax_section/127 (section s = gate rows p∈[512s,512s+512) ∪ up rows
+    2048+[512s,512s+512))
+  gate_f = C1[2p]·(ag·gsec[p/512]);  up_f = C1[2p+1]·(ag·gsec[p/512])
+  h2 = silu_lut(gate_f)·up_f (sigmoid LUT over [-4,4]); qn_s = 127/max|h2|
+  A2 = sat8(roundf(silu_lut(gate_f)·(up_f·qn_s)))   (kernel, folded float scales)
+  C2[j] = Σ_p A2[p]·qB_d[p][j];  out[j] = C2[j]·(gs_d[j]/qn_s)
+    qB_d: PER-OUTPUT-COLUMN (H) int8, scale = amax_col/127
+
+Trainer change (commit …): ZL_I8MOE=1 builds the int8 expert tables at load and
+computes the MoE expert path per the above contract (float(c1) rounding + folded
+float scales + silu LUT + float dequant). Result — per-layer corr vs engine:
+layer 6: 0.865 → **0.999915**; layers 8-20: 0.9994-0.9998 (was 0.87→0.44→neg);
+router choices match the engine EXACTLY through MoE layer 23 (l=1..23), first
+flip at l=25 (trainer e7 vs engine e0). Remaining: per-MoE-layer residual
+~1e-3-1e-2 (CCA fp64-vs-fp32 + kernel-internal details) compounds and the l=25
+router flip cascades → logits still decorrelate (trainer continuation argmaxes
+junk vs the engine's p-0.15-0.92 predictions).
+
+VERDICT (now layer-verified): a transferable trainer requires engine-bitwise
+fidelity through ALL 40 layers — fp32 CCA with engine op order (kills the
+fp64-vs-fp32 CCA compounding) + the fused-INT8 expert path (replicated above) +
+router decisions that cannot flip (fixed engine-traced schedule or bitwise
+router). This is fully scoped by the artifacts in this file; effort est. 4-8 h,
+with residual risk from the int8-kernel's internal rounding (measured
+kernel-vs-host-reference corr 0.9985-0.9996 — not bitwise reproducible CPU-side).

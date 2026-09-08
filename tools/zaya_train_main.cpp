@@ -22,10 +22,21 @@
 #include <cstring>
 #include <chrono>
 #include <sstream>
+#include "silu_quant.h"   // engine fused GU→SiLU→D int8 contract (silu_lut/silu_sat8)
 
 static inline double silu(double x) { return x / (1.0 + std::exp(-x)); }
 static inline double silu_d(double x) { double s = 1.0 / (1.0 + std::exp(-x)); return s * (1.0 + x * (1.0 - s)); }
 static inline double rnd_unif(std::mt19937& g, double s) { return std::uniform_real_distribution<double>(-1, 1)(g) * s; }
+
+// Engine-fused INT8 expert tables (ZL_I8MOE forward-only validation mode).
+struct I8E {
+    std::vector<int8_t> gu;     // [2ff * H] per-section int8 (row=output neuron)
+    std::vector<float> gsec;    // [4] section scales smax/127 (1024 rows each)
+    std::vector<int8_t> dnT;    // [ff * H] transposed int8 dn (row=ff-input p, col=H-out j)
+    std::vector<float> dn_gs;   // [H] per-output-column scales amax/127
+};
+static bool I8MOE = false;
+static std::vector<std::vector<I8E>> i8e;
 
 struct Dims {
     int H = 0, ff = 0, rtr = 0, nslots = 0, nq = 0, nkv = 0, hd = 0, V = 0, L = 0, P = 0, r = 0;
@@ -275,6 +286,69 @@ int main(int argc, char** argv) {
         // (before the P-sized buffers are allocated below).
         d.P = (int)data[0].size();
         net.d.P = d.P;
+        // ZL_I8MOE: build the engine-fused INT8 expert tables (forward-only
+        // validation mode; replication of zaya_decode.cpp packB_into_fused /
+        // packB_into_fused_d + silu_quant.h). Per MoE layer, per real expert
+        // (skip slot excluded): gu int8 per-SECTION (4 x 1024 of the 4096
+        // outputs), dn int8 per-output-column, gs scales in f32.
+        I8MOE = getenv("ZL_I8MOE") != nullptr;
+        if (I8MOE && real) {
+            const int ne = d.nslots - 1;              // 16 real experts
+            i8e.assign(net.nmoe, std::vector<I8E>(ne));
+            for (int mi = 0; mi < net.nmoe; mi++) {
+                MoeW& m = net.moe[mi];
+                const int secN = 4, secW = 512;   // interleaved-col section = 1024 cols = 512 (gate,up) pairs
+                for (int e = 0; e < ne; e++) {
+                    I8E& t = i8e[mi][e];
+                    const double* gu = &m.gu[(size_t)e * 2 * d.ff * d.H];
+                    t.gu.assign((size_t)2 * d.ff * d.H, 0);
+                    t.gsec.assign(secN, 0.0f);
+                    // per-section amax: section s covers gate rows p in
+                    // [512s,512s+512) AND up rows nff+p in [2048+512s, ...)
+                    for (int s = 0; s < secN; s++) {
+                        double sm = 0;
+                        for (int p = s * secW; p < (s + 1) * secW; p++) {
+                            const double* gr = gu + (size_t)p * d.H;             // gate row p
+                            const double* ur = gu + (size_t)(d.ff + p) * d.H;    // up row nff+p
+                            for (int j = 0; j < d.H; j++) {
+                                double a = std::fabs(gr[j]); if (a > sm) sm = a;
+                                double b = std::fabs(ur[j]); if (b > sm) sm = b;
+                            }
+                        }
+                        t.gsec[s] = (float)((sm < 1e-12 ? 1.0 : sm) / 127.0);
+                    }
+                    // gu rows: gate row p (i=p<ff) has column 2p -> section p/512;
+                    // up row i=ff+p has column 2p+1 -> section p/512 too.
+                    for (int i = 0; i < 2 * d.ff; i++) {
+                        const int p = i < d.ff ? i : i - d.ff;
+                        const int sec = p / 512;
+                        const float tis = (float)(127.0 / (t.gsec[sec] * 127.0));
+                        for (int j = 0; j < d.H; j++) {
+                            double v = gu[(size_t)i * d.H + j];
+                            int x = (int)std::roundf((float)v * tis);
+                            t.gu[(size_t)i * d.H + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                        }
+                    }
+                    // dn per-output-column (H out cols), stored transposed [ff][H]
+                    const double* dn = &m.dn[(size_t)e * d.H * d.ff];
+                    t.dnT.assign((size_t)d.ff * d.H, 0);
+                    t.dn_gs.assign(d.H, 0.0f);
+                    for (int j = 0; j < d.H; j++) {
+                        double am = 0;
+                        for (int p = 0; p < d.ff; p++) { double a = std::fabs(dn[(size_t)j * d.ff + p]); if (a > am) am = a; }
+                        float gs = (float)((am < 1e-12 ? 1.0 : am) / 127.0);
+                        t.dn_gs[j] = gs;
+                        const float tis = (float)(127.0 / (gs * 127.0));
+                        for (int p = 0; p < d.ff; p++) {
+                            double v = dn[(size_t)j * d.ff + p];
+                            int x = (int)std::roundf((float)v * tis);
+                            t.dnT[(size_t)p * d.H + j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                        }
+                    }
+                }
+            }
+            fprintf(stderr, "ZL_I8MOE: int8 expert tables built (%d layers x %d experts; forward-only)\n", net.nmoe, ne);
+        }
     } else {
         std::mt19937 rng(7);
         net.randfill(rng, 0.2);
@@ -497,6 +571,74 @@ int main(int argc, char** argv) {
                     }
                     if (msav.e < d.nslots - 1) {
                         int ee = msav.e;
+                        if (I8MOE) {
+                            // Engine-fused INT8 path (zaya_decode.cpp contract):
+                            //   qA = sat8(round(x/ag)), ag = max|x|/127
+                            //   C1[c] = Σ_j qA[j]·gu_q[c][j] (exact int sum)
+                            //   gate_f = C1[2p]·ag·gsec[(2p)/1024]
+                            //   up_f   = C1[2p+1]·ag·gsec[(2p+1)/1024]
+                            //   h2[p]  = silu_lut(gate_f)·up_f ; qn_s = 127/max|h2|
+                            //   A2[p]  = sat8(round(h2·qn_s))
+                            //   C2[j]  = Σ_p A2[p]·dnT[p][j] ; out = C2·dn_gs[j]/qn_s
+                            I8E& t = i8e[mi][ee];
+                            std::vector<double> xv(cur.begin(), cur.end());
+                            double amx = 0; for (double v : xv) { double a = std::fabs(v); if (a > amx) amx = a; }
+                            if (amx < 1e-12) amx = 1.0;
+                            const float ag = (float)(amx / 127.0);   // engine dynamic_ascale
+                            const float ais = 1.0f / ag;              // engine quantize_async
+                            std::vector<int8_t> qA(d.H);
+                            for (int j = 0; j < d.H; j++) {
+                                float v = (float)xv[j];
+                                if (!std::isfinite(v)) v = 0;
+                                int x = (int)roundf(v * ais);
+                                qA[j] = (int8_t)(x > 127 ? 127 : x < -127 ? -127 : x);
+                            }
+                            std::vector<double> C1(2 * d.ff, 0), h2(d.ff), A2v(d.ff);
+                            // interleaved columns: c=2p -> gate row p, c=2p+1 -> up row nff+p
+                            for (int p = 0; p < d.ff; p++) {
+                                const int8_t* gr = &t.gu[(size_t)p * d.H];          // gate row p
+                                const int8_t* ur = &t.gu[(size_t)(d.ff + p) * d.H]; // up row nff+p
+                                double ag_ = 0, au_ = 0;
+                                for (int j = 0; j < d.H; j++) { ag_ += (double)gr[j] * qA[j]; au_ += (double)ur[j] * qA[j]; }
+                                C1[2 * p] = ag_; C1[2 * p + 1] = au_;
+                            }
+                            // Host amax pass (zaya_moe host_h2_amax_qn_s order):
+                            //   g_h = float(float(c1_g)·gsec)·ag, u_h = same for up;
+                            //   h2h = silu_lut(g_h)·u_h  (float);  qn_s = 127/max|h2h|
+                            float h2max = 0;
+                            for (int p = 0; p < d.ff; p++) {
+                                float c1g = (float)C1[2 * p], c1u = (float)C1[2 * p + 1];
+                                float gsec = t.gsec[p / 512];
+                                float g_h = (c1g * gsec) * (float)ag;   // host order
+                                float u_h = (c1u * gsec) * (float)ag;
+                                float hh = silu_lut(g_h) * u_h;
+                                float a = silu_absf(hh); if (a > h2max) h2max = a;
+                                h2[p] = hh;
+                            }
+                            const float qn_s = (h2max < 1e-12f) ? 1.0f : 127.0f / h2max;
+                            // Kernel order (silu_quant_i8 with folded gs):
+                            //   gs_g = ag·gsec, gs_u = ag·qn_s·gsec (float folds)
+                            //   g = c1g·gs_g, u = c1u·gs_u; A2 = sat8(roundf(silu_lut(g)·u))
+                            std::vector<int8_t> A2(d.ff);
+                            for (int p = 0; p < d.ff; p++) {
+                                float c1g = (float)C1[2 * p], c1u = (float)C1[2 * p + 1];
+                                float gsec = t.gsec[p / 512];
+                                float gs_g = (float)ag * gsec;
+                                float gs_u = (float)ag * qn_s * gsec;
+                                float g = c1g * gs_g;
+                                float u = c1u * gs_u;
+                                float hq = silu_lut(g) * u;
+                                A2[p] = silu_sat8(silu_roundf(hq));
+                            }
+                            for (int j = 0; j < d.H; j++) {
+                                const int8_t* col = &t.dnT[j];  // [p][H] col-major j
+                                double a = 0;
+                                for (int p = 0; p < d.ff; p++) a += (double)col[(size_t)p * d.H] * A2[p];
+                                hout[j] = (float)(a * t.dn_gs[j]) / qn_s;
+                            }
+                            msav.hh.assign(d.ff, 0);
+                            for (int p = 0; p < d.ff; p++) msav.hh[p] = h2[p];
+                        } else {
                         std::vector<double> ygu(2 * d.ff);
                         double* wgu = &m.gu[(size_t)ee * 2 * d.ff * d.H];
                         MoeAd& ma = moe_ad[mi];
@@ -519,6 +661,7 @@ int main(int argc, char** argv) {
                             for (int j = 0; j < d.ff; j++) a += wdn[(size_t)i * d.ff + j] * msav.hh[j];
                             for (int k = 0; k < d.r; k++) { double la = 0; for (int j = 0; j < d.ff; j++) la += wad[(size_t)k * d.ff + j] * msav.hh[j]; a += wbd[(size_t)i * d.r + k] * la; }
                             hout[i] = a;
+                        }
                         }
                     } else {
                         std::copy(cur.begin(), cur.end(), hout);
