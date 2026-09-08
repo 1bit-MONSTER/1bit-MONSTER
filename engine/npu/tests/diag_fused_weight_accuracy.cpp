@@ -115,7 +115,7 @@ int main(int argc, char** argv) {
     double mT=sT/n, mF=sF/n, cxx=sT2/n-mT*mT, cyy=sF2/n-mF*mF, cxy=sTF/n-mT*mF;
     double corr = (cxx>0&&cyy>0)?cxy/std::sqrt(cxx*cyy):(cxx==0&&cyy==0)?1.0:0.0;
     fprintf(stderr, "\n=== qwen3-0.6b L%d dense GU: fused int4 reconstruction vs TRUE 4-bit Q4NX ===\n", L);
-    fprintf(stderr, "  N=%ld samples, W_true rms=%.5f, W_fused rms=%.5f\n", cnt, std::sqrt(cxx), std::sqrt(cyy));
+    fprintf(stderr, "  N=%lld samples, W_true rms=%.5f, W_fused rms=%.5f\n", cnt, std::sqrt(cxx), std::sqrt(cyy));
     fprintf(stderr, "  GLOBAL corr(W_fused, W_true)=%.6f   MAE=%.6g  max|e|=%.6g\n", corr, mae/n, maxe);
     fprintf(stderr, "  per-col corr (first %d cols): min=%.6f avg=%.6f\n", ccnt, cmin, csum/ccnt);
     // sample a few
@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
         double m1=gT/gc, m2=gF/gc, cx=gT2/gc-m1*m1, cy=gF2/gc-m2*m2, cxy=gTF/gc-m1*m2;
         double cor = (cx>0&&cy>0)?cxy/std::sqrt(cx*cy):0.0;
         fprintf(stderr, "  [%s] corr=%.5f mae=%.6f rms_true=%.5f rms_fused=%.5f satB=%lld/%lld\n",
-                which?"UP ":"GATE", cor, gmae/gc, std::sqrt(cx), std::sqrt(cy), sat, gc);
+                which?"UP ":"GATE", cor, gmae/gc, std::sqrt(cx), std::sqrt(cy), (long long)sat, gc);
     }
     munmap(md, st.st_size);
     return 0;
