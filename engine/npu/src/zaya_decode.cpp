@@ -263,7 +263,8 @@ int zaya_decode_main(int argc, char** argv) {
     auto ibias = load_bf16(D, bo, bs);
 
     struct Layer {
-        zaya_cca::CcaWeights cw; zaya_cca::CcaState cs;
+        zaya_cca::CcaWeights cw;
+        std::vector<zaya_cca::CcaState> cs;   // per-sequence CCA state (NPU_BATCH_BS)
         zaya_moe::RouterWeights rw;
         std::vector<float> gu, dn, nw, pahss, pahsb, parss, parsb, pmhss, pmhsb, pmrss, pmrsb;
         uint64_t gu_off = 0, gu_size = 0;   // raw Q4NX bytes (NPU_FUSED_I4)
@@ -283,6 +284,16 @@ int zaya_decode_main(int argc, char** argv) {
     //   NPU_FUSED_I4=1     → int4 GU (always split; no int4 single-launch).
     const bool FUSED_SINGLE = FUSED && !FUSED_I4 &&
         !(getenv("NPU_FUSED_SPLIT") && atoi(getenv("NPU_FUSED_SPLIT")) == 1);
+    // Multi-sequence batch size (Phase 1 shell): BS independent sequences decode
+    // concurrently, each with its own KV/CCA/router state. Default 1 = current
+    // single-sequence behavior (byte-identical).
+    const int BS = [&]() {
+        const char* e = getenv("NPU_BATCH_BS");
+        int v = e ? atoi(e) : 1;
+        if (v < 1) v = 1;
+        if (v > 8) v = 8;
+        return v;
+    }();
     std::vector<Layer> L(NC);
     char key[256];
     // Parallelize the per-layer model load (dequant ~15s single-threaded):
@@ -291,7 +302,8 @@ int zaya_decode_main(int argc, char** argv) {
     #pragma omp parallel for schedule(dynamic) private(key)
     for (int l = 0; l < NC; l++) {
         auto& w = L[l];
-        w.cs.reset(d.qkv, d.kd / 2);
+        w.cs.resize(BS);
+        for (int b = 0; b < BS; b++) w.cs[b].reset(d.qkv, d.kd / 2);
         #define GET(name, dst) do { uint64_t o_, s_; if (get_offsets(js, jl, name, &o_, &s_)) dst = load_bf16(D, o_, s_); } while(0)
         #define GETI8(name, dst, rows, ifeat) do { uint64_t o_, s_; if (get_offsets(js, jl, name, &o_, &s_)) dst = load_i8(D, o_, s_, rows, ifeat); } while(0)
         snprintf(key, sizeof key, "model.layers.%d.input_layernorm.weight", l); GET(key, w.nw);
@@ -576,8 +588,10 @@ int zaya_decode_main(int argc, char** argv) {
     }
 
     // ── forward ──
-    std::vector<std::vector<float>> kv_k(NC), kv_v(NC);
+    std::vector<std::vector<std::vector<float>>> kv_k(NC), kv_v(NC);
+    for (int l = 0; l < NC; l++) { kv_k[l].resize(BS); kv_v[l].resize(BS); }
     std::vector<float> h(d.H), tmp(d.H), moe_out(d.H);
+    std::vector<std::vector<float>> prev_router(BS);  // per-sequence router EDA state
     std::vector<float> gu_T((size_t)2 * m.n_ff * d.H), dn_T((size_t)m.n_ff * d.H);
     std::vector<float> gu_out(2 * m.n_ff), silu(m.n_ff);
 
@@ -656,14 +670,14 @@ int zaya_decode_main(int argc, char** argv) {
         L[l].dn.clear(); L[l].dn.shrink_to_fit();
     }
 
-    auto forward = [&](int tok, int pos) -> int {
+    auto forward = [&](int tok, int pos, int b) -> int {
         for (int i = 0; i < d.H; i++) h[i] = (embed[(size_t)tok * d.H + i] + ibias[i]) * iscale[i];
         std::vector<float> residual(d.H, 0.0f);
         bool has_res = false;
-        std::vector<float> prev_router;
+        prev_router[b].clear();   // matches the old local-per-call reset (byte-identical for BS=1)
         for (int l = 0; l < NC; l++) {
             auto& w = L[l];
-            auto& lk = kv_k[l]; auto& lv = kv_v[l];
+            auto& lk = kv_k[l][b]; auto& lv = kv_v[l][b];
             const float* hs; const float* hb; const float* rs; const float* rb;
             if (l % 2 == 0) { hs = w.pahss.data(); hb = w.pahsb.data(); rs = w.parss.data(); rb = w.parsb.data(); }
             else            { hs = w.pmhss.data(); hb = w.pmhsb.data(); rs = w.pmrss.data(); rb = w.pmrsb.data(); }
@@ -747,7 +761,7 @@ int zaya_decode_main(int argc, char** argv) {
                 }
                 std::vector<float> qo(qd), ko(kd), vo(kd);
                 auto tp_c0 = std::chrono::steady_clock::now();
-                zaya_cca::cca_prep(d, w.cw, w.cs, q.data(), k.data(), vc.data(), vd.data(),
+                zaya_cca::cca_prep(d, w.cw, w.cs[b], q.data(), k.data(), vc.data(), vd.data(),
                                    qo.data(), ko.data(), vo.data(), pos);
                 size_t old = lk.size() / (size_t)(d.nkv * d.hd);
                 lk.insert(lk.end(), ko.begin(), ko.end());
@@ -844,7 +858,7 @@ int zaya_decode_main(int argc, char** argv) {
                 // MoE FFN (NPU): router on CPU, GEMMs on NPU with resident experts.
                 float wt;
                 auto tp_r0 = std::chrono::steady_clock::now();
-                int e = zaya_moe::router(m, w.rw, residual.data(), prev_router, &wt);
+                int e = zaya_moe::router(m, w.rw, residual.data(), prev_router[b], &wt);
                 auto tp_r1 = std::chrono::steady_clock::now();
                 if (getenv("NPU_ROUTER_TIMING") && l == 3 && pos == 1)
                     fprintf(stderr, "[router-t] l=%d %.3f ms\n", l,
@@ -1564,8 +1578,8 @@ fused_single_done:
             if (op == 0) break;   // QUIT
             if (op == 31) {       // reset KV caches + CCA state (new conversation)
                 for (int l = 0; l < NC; l++) {
-                    kv_k[l].clear(); kv_v[l].clear();
-                    L[l].cs.reset(d.qkv, d.kd / 2);
+                    for (int b = 0; b < BS; b++) { kv_k[l][b].clear(); kv_v[l][b].clear(); }
+                    for (int b = 0; b < BS; b++) L[l].cs[b].reset(d.qkv, d.kd / 2);
                 }
                 wpos = 0;
                 uint32_t resp[2] = {0, 0};
@@ -1586,7 +1600,7 @@ fused_single_done:
                 for (uint32_t s = 0; s < batch; s++) {
                     int tok = (int)in_data[s];
                     if (tok < 0 || tok >= NV) tok = 0;
-                    out_data[s] = (float)forward(tok, wpos);
+                    out_data[s] = (float)forward(tok, wpos, (int)(s % BS));
                     wpos++;
                 }
                 uint32_t resp[2] = {0, 1};   // out_dim = 1 token per slot
@@ -1615,16 +1629,18 @@ fused_single_done:
     prompt.push_back(2);  // <bos>
     for (int i = 2; i < argc; i++) prompt.push_back(atoi(argv[i]));
     if (prompt.size() == 1) prompt.push_back(token_id);
-    for (int i = 0; i < (int)prompt.size(); i++) forward(prompt[i], i);
+    for (int b = 0; b < BS; b++)
+        for (int i = 0; i < (int)prompt.size(); i++) forward(prompt[i], i, b);
 
     const int N_GEN = getenv("NPU_N_GEN") ? atoi(getenv("NPU_N_GEN")) : 8;
-    int cur = prompt.back();
+    std::vector<int> cur(BS, prompt.back());
     auto tgen0 = std::chrono::steady_clock::now();
     for (int step = 0; step < N_GEN; step++) {
-        int arg = forward(cur, (int)prompt.size() + step);
-        printf("%d ", arg);
-        fflush(stdout);
-        cur = arg;
+        for (int b = 0; b < BS; b++) {
+            cur[b] = forward(cur[b], (int)prompt.size() + step, b);
+            printf("%d ", cur[b]);
+            fflush(stdout);
+        }
     }
     printf("\n");
     fflush(stdout);
