@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # tools/train/Makefile — Training pipeline for 1bit.MONSTER
 #

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 # Qwen3-0.6B GRPO — RL fine-tuning for reasoning tasks on Strix Halo
 model: "unsloth/Qwen3-0.6B"
 load_in_4bit: true

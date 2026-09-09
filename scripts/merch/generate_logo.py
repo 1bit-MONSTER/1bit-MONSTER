@@ -80,7 +80,7 @@ def og_ops(w, h):
     ops += [
         ('txtl', x, y, 'One engine. Every model. Any chip.', 'serif-i', int(48 * s), gm.AMBER, 0),
         ('txtl', x, y + int(70 * s), '1bit.monster · zero python · npu + gpu + cpu', 'mono', int(26 * s), gm.MUTED, 3),
-        ('txtl', x, y + int(112 * s), 'MIT · OPEN SOURCE', 'mono-m', int(24 * s), gm.DIM, 4),
+        ('txtl', x, y + int(112 * s), 'GPL-3.0 · OPEN SOURCE', 'mono-m', int(24 * s), gm.DIM, 4),
     ]
     return ops
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // test_sherry_e2e.cpp — minimal end-to-end smoke test for the fp16-Sherry
 // dispatch path.

@@ -6,7 +6,7 @@ AMD shipped 48M Strix Halo APUs this year — every one has a 32-tile XDNA 2 NPU
 
 We reverse-engineered that stack in 4 days, then pulled every pre-built model from ROCm/FastFlowLM v0.9.46: **37 models, 209 compiled NPU xclbins**, including multi-modal Qwen3.5 Omni (C++ source for audio + vision + text) and Qwen3.6-MoE-35B with 256 experts.
 
-**How it works:** drop a Q4NX file onto our single C++ binary and it auto-detects the architecture from the header, picks the right xclbin, and runs. No config files. No Python at runtime. MIT.
+**How it works:** drop a Q4NX file onto our single C++ binary and it auto-detects the architecture from the header, picks the right xclbin, and runs. No config files. No Python at runtime. GPL-3.0.
 
 **What's in the box:**
 - 37 FLM models across Qwen3/3.5/3.6, Gemma3/4, Phi4, Llama3, DeepSeek-R1, GPT-OSS, Whisper, and more — now mapped with auto-detection

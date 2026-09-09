@@ -3,7 +3,7 @@ name = "npu-engine-sys"
 version = "0.1.0"
 edition = "2021"
 description = "Rust FFI bindings to the NPU inference engine — XDNA2 NPU inference on Strix Halo"
-license = "MIT"
+license = "GPL-3.0-only"
 
 [lib]
 name = "npu_engine_sys"

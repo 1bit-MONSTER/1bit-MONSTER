@@ -4,8 +4,8 @@ Train and export models for 1bit's C++ inference engine — completely Python-fr
 
 ## License
 
-All code in `tools/train/` is **MIT**. It imports Unsloth (Apache 2.0) but **never** imports
-`unsloth_cli` or `studio` (both AGPL-3.0). The C++ binary stays pure MIT.
+All code in `tools/train/` is **GPL-3.0**. It imports Unsloth (Apache 2.0) but **never** imports
+`unsloth_cli` or `studio` (both AGPL-3.0). The C++ binary stays pure GPL-3.0.
 
 ## Quick Start
 

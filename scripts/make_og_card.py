@@ -71,7 +71,7 @@ def main():
     # footer
     d.text((80, 455), f"{checkpoints} arch-bearing checkpoints, one 1-bit engine",
            font=font(31), fill=FG)
-    d.text((80, 515), "Ryzen AI NPU · ROCm · GGUF-native · FastFlowLM · MIT",
+    d.text((80, 515), "Ryzen AI NPU · ROCm · GGUF-native · FastFlowLM · GPL-3.0",
            font=font(26), fill=MUTED)
 
     OUT.parent.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # export.py — Export trained model to GGUF for 1bit's C++ binary
 #

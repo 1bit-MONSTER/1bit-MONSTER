@@ -30,7 +30,7 @@
 //       // ... actual compute ...
 //       pilot.on_layer_done(layer, backend, ms);  // record latency
 //
-// License: MIT (same as 1bit.MONSTER)
+// License: GPL-3.0-only (same as 1bit.MONSTER)
 
 #ifndef PILOT_H
 #define PILOT_H

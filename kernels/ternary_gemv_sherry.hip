@@ -1,7 +1,7 @@
 #include <cstdio>
 #include "hip_check.h"
 
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Sherry 1.25-bit ternary GEMV — halo-1bit v3 packing (Lane B of rocprof plan).
 //

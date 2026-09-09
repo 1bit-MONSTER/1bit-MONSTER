@@ -73,7 +73,7 @@ Add `backend_lse` to the existing `BackendManager` router as a new route:
 ## Blockers / risks
 
 1. **License:** LSE is custom non-commercial (Exhibit A: AMD, Lemonade SDK).
-   1bit-MONSTER is MIT. Embedding needs a written license from Geramy Loveless.
+   1bit-MONSTER is GPL-3.0. Embedding needs a written license from Geramy Loveless.
 2. **Runtime deps:** LSE needs ROCm + HRX + comgr at runtime; not suitable for
    `-pi` / `-iso` / NPU-only targets (keep pre-built kernels there).
 3. **Toolchain:** C++26 + P2996 reflection behind `-freflection`; g++-16 only

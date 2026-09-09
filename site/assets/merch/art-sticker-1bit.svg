@@ -10,5 +10,5 @@
 <line x1="330" y1="722" x2="870" y2="722" stroke="#0e1217" stroke-width="3"/>
 <circle cx="600" cy="722" r="6" fill="#0e1217"/>
 <text x="600" y="802" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="38" fill="#0e1217" letter-spacing="2">ONE ENGINE · EVERY MODEL · ANY CHIP</text>
-<text x="600" y="872" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="28" fill="#6a6f76" letter-spacing="4">ZERO PYTHON · MIT · EST. 2026</text>
+<text x="600" y="872" text-anchor="middle" dominant-baseline="central" font-family="'DM Mono', ui-monospace, Menlo, monospace" font-size="28" fill="#6a6f76" letter-spacing="4">ZERO PYTHON · GPL-3.0 · EST. 2026</text>
 </svg>
