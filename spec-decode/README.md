@@ -146,4 +146,4 @@ The speculative decoding engine was originally designed to hook into the FLM pro
 
 ## License
 
-MIT — use freely. Built from research by DeepSeek, LMSYS, Google, and the open-source community.
+GPL-3.0 — use freely. Built from research by DeepSeek, LMSYS, Google, and the open-source community.

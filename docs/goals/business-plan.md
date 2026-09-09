@@ -205,7 +205,7 @@ Your hardware is the moat. Strix Halo does 373 tok/s on GGML-Vulkan (662 tok/s S
 | **Own hardware** | ✅ AMD | ❌ | ❌ | ✅ Any | ❌ |
 | **Zero inference cost** | ✅ | ❌ | ❌ | ❌ (GPU cost) | ❌ |
 | **Real-time streaming** | ✅ | ✅ | ✅ | ❌ | ✅ |
-| **Open source codec** | ✅ MIT | ❌ | ❌ | ❌ (NC license) | ❌ |
+| **Open source codec** | ✅ GPL-3.0 | ❌ | ❌ | ❌ (NC license) | ❌ |
 | **LLM agnostic** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **OBS / Discord** | ✅ | ❌ | ❌ | ❌ | ❌ |
 

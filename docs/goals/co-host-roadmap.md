@@ -36,7 +36,7 @@
 | **Hardware** | Needs GPU for training | **AMD ROCm, CUDA, CPU** |
 | **LLM integration** | Separate model | **Tight — tokens flow through ZAYA** |
 | **Streaming** | Chunked utterance | **Frame-level (13ms frames)** |
-| **License** | CC-BY-NC 4.0 | **MIT** |
+| **License** | CC-BY-NC 4.0 | **GPL-3.0** |
 
 ### 1.2 Agnostic TTS Engine (replaces Piper)
 | Task | Status | Notes |

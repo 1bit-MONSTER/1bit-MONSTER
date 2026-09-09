@@ -187,4 +187,4 @@ Because snippets come from your curated docs, you control what it can answer.
 
 ---
 
-*MIT — part of 1bit.MONSTER.*
+*GPL-3.0 — part of 1bit.MONSTER.*

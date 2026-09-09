@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // Adds the official 1bit.MONSTER #support channel (idempotent) and seeds a
 // short welcome message. Reuses fluxer-mcp's own .env config loader so the

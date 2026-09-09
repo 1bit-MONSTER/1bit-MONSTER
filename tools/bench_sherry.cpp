@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // bench_sherry.cpp — Sherry 1.25-bit ternary GEMV microbench
 //

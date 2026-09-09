@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 /*
  * windows_npu_driver.h — Windows XDNA2 NPU driver abstraction for npu-infer.
  *

@@ -227,7 +227,7 @@
 ## 6. Project Source Code
 
 - **Repository**: https://github.com/1bit-MONSTER/1bit-MONSTER
-- **License**: MIT
+- **License**: GPL-3.0
 - **Language**: C++23 (server, agent CLI, proxy), HIP C++ (GPU kernels), Python (converters/benchmarks)
 - **Build**: CMake + Ninja, `cmake -B build -G Ninja && ninja -C build zaya_server`
 - **Binary size**: ~1.4 MB server (`zaya_server`) + ~1.7 MB HIP kernel library (`librocm_cpp.so`)

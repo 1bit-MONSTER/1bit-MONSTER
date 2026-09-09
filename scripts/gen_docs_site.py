@@ -422,7 +422,7 @@ def page_shell(out: Path, *, title: str, lead: str, breadcrumb: str, nav_groups:
   </main>
 </div>
 <footer class="footer"><div class="wrap">
-  <span>1bit.MONSTER — one engine, any model, zero Python. MIT licensed.</span>
+  <span>1bit.MONSTER — one engine, any model, zero Python. GPL-3.0 licensed.</span>
   <span>Docs generated from <a href="{REPO_BASE}">the repo</a> · <a href="https://1bit.monster">Main site</a> · <a href="https://discord.gg/Qy38d4Xu2h" target="_blank" rel="noopener">Discord</a></span>
 </div></footer>
 <script>var DOCS_BASE = {json.dumps(base_path)};</script>

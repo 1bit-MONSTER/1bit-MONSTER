@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # tools/train/Dockerfile — Training container for 1bit.MONSTER
 #

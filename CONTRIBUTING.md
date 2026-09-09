@@ -62,7 +62,7 @@ This guide covers how to build, test, and contribute to the project.
 | CPU fallback | Any x86-64 with OpenMP |
 | Auto-detect | Reads Q4NX model header — no config files |
 | Linux kernel | Ubuntu 24.04 LTS or later / kernel 7.0.0+ (6.18.22-lts recommended for stability) |
-| License | MIT |
+| License | GPL-3.0 |
 | ⚠️ Known issue | Kernel 6.19.x has an amdgpu OPTC CRTC hang under sustained NPU+GPU load on Strix Halo (gfx1151). Use 7.0.0+ or 6.18.22-lts. See issue #1. |
 
 ---
@@ -450,7 +450,7 @@ Be excellent to each other. This is a solo-developed open-source project built f
 - **Be patient**: This is a small project with one primary maintainer. Reviews take time.
 - **Be size-conscious**: a small binary is a feature. Every byte counts (current: ~1.5 MB, tracked in `site/numbers.json`).
 
-This project is MIT-licensed.
+This project is GPL-3.0-licensed (see `LICENSE`). By contributing, you agree your contributions are licensed under GPL-3.0.
 
 ---
 

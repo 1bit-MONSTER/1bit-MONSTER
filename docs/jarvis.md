@@ -10,7 +10,7 @@ pure C++, and (for the LLM stage) runs on any engine backend — NPU, GPU, CPU.
 ## Default stack: Zyphra (the crown jewel)
 
 JARVIS's default experience is the **Zyphra ecosystem** — the complete
-MIT open-source pipeline (ZR1 routing → ZAYA / BlackMamba / Zamba2 LLMs →
+open-source pipeline — Zyphra models are MIT; 1bit.MONSTER code is GPL-3.0 (ZR1 routing → ZAYA / BlackMamba / Zamba2 LLMs →
 codec voice). When started without `--model`, JARVIS picks the first Zyphra
 model found in the weights dir (preference: ZAYA1-8B → ZAYA1-74B →
 BlackMamba-2.8B → BlackMamba-1.5B → Zamba2-7B/2.7B/1.2B → ZR1-1.5B).

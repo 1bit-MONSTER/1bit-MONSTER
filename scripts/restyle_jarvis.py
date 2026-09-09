@@ -19,7 +19,7 @@ NAV = '''<nav class="site-nav">
 </div>
 </nav>'''
 
-FOOT = '''<footer class="site-foot">MIT License · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."
+FOOT = '''<footer class="site-foot">GPL-3.0 · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."
 <div class="fine">Built with DeepSeek v4 (99.9%) · Shipped with Claude (0.1%) · One human.<br>
 NPU: XDNA2 · GPU: Radeon 8060S · CPU: Zen 5 · 94 tok/s on a consumer laptop · 50 TOPS INT8 · Open source.<br>
 —bong-water-water-bong · "Sorry but not Sorry :)"</div>

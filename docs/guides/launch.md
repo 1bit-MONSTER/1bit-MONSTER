@@ -6,7 +6,7 @@
 
 ## One-Liner Pitch
 
-> **120 KB binary. 94 tok/s on AMD's NPU. Zero Python. Zero dependencies. MIT license.**
+> **120 KB binary. 94 tok/s on AMD's NPU. Zero Python. Zero dependencies. GPL-3.0 license.**
 > I reverse-engineered AMD's proprietary NPU stack in 4 days. Here's what I built.
 
 ## Target Audience
@@ -37,7 +37,7 @@
 *Alternative titles:*
 - *120 KB binary. 94 tok/s on AMD NPU. Zero deps. Open source.*
 - *I beat AMD's proprietary NPU runtime with a 120 KB open-source binary*
-- *Show HN: 1bit.MONSTER — 120 KB NPU inference engine, 94 tok/s, MIT*
+- *Show HN: 1bit.MONSTER — 120 KB NPU inference engine, 94 tok/s, GPL-3.0*
 
 ### Body
 
@@ -52,7 +52,7 @@ Why this matters:
 
 AMD's NPU is rated for 50 TOPS INT8. FastFlowLM (their proprietary
 runtime) gets ~94 tok/s on Qwen3-0.6B. My engine matches that — but
-it's 120 KB, MIT-licensed, and compiles with one g++ command.
+it's 120 KB, GPL-3.0-licensed, and compiles with one g++ command.
 
 No Python. No pip. No Docker. No MLIR toolchain. Just g++ and run.
 
@@ -89,7 +89,7 @@ right xclbin. No recompilation per model.
 Tech stack:
 - C++26 NPU engine → XRT → XDNA 2 NPU
 - C++ GPU engine → HIP + Vulkan → Radeon 8060S
-- Single binary, MIT license
+- Single binary, GPL-3.0 license
 
 If you have a Ryzen AI Max+ 395 (Strix Halo), you can run this
 right now:
@@ -146,5 +146,5 @@ everything else.
 - **"No Python. No pip. No Docker. One binary."** — This is the hook.
 - **"120 KB — not 2 GB."** — Contrast with AMD's MLIR toolchain.
 - **"Open source beats proprietary on their own silicon."** — The narrative.
-- **"MIT license. Do what you want with it."** — Lowers barrier to adoption.
+- **"GPL-3.0. Do what you want with it — so long as forks stay open."** — Lowers barrier to adoption.
 - **"One person vs. AMD's team."** — The human angle.

@@ -21,7 +21,7 @@ Version:       2026.08.04
 Release:       1%{?dist}
 Summary:       One binary, all backends — NPU + GPU + CPU inference engine
 
-License:       MIT
+License:       GPL-3.0-only
 URL:           https://1bit.monster
 Source0:       %{name}-%{version}.tar.gz
 

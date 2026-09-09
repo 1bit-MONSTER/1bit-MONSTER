@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // test_sherry_gemv.cpp — differential test for the Sherry 1.25-bpw GEMV.
 //
