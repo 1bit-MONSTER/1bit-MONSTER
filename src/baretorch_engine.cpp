@@ -301,7 +301,7 @@ private:
     // ── cs_lrad layer: exact chunked math, incremental ──
     void cs_lrad_step(BrLayer& ly, const float* xn, float* out) {
         // project this token
-        std::vector<float> q(D), k(D), v(D), U(H * r_), R(H * r_), gate(H), beta(H), lg(H), sw(D);
+        std::vector<float> q(D), k(D), v(D), U((size_t)H * r_), R((size_t)H * r_), gate(H), beta(H), lg(H), sw(D);
         mm(ly.W_q, xn, D, D, q.data());
         mm(ly.W_k, xn, D, D, k.data());
         mm(ly.W_v, xn, D, D, v.data());
@@ -345,7 +345,7 @@ private:
 
         // Y_local: chunked decay-link causal attention over current chunk
         //   out[h,d] = sum_{j<=pos} exp(min(lam_pos(h)-lam_j(h),0)) * (q_pos . k_j) * v_j / sqrt(dh)
-        std::vector<float> yloc(H * dh, 0.0f);
+        std::vector<float> yloc((size_t)H * dh, 0.0f);
         const float* qp = ly.cq[pos].data();
         for (int j = 0; j <= pos; j++) {
             const float* kj = ly.ck[j].data();
