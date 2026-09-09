@@ -124,6 +124,7 @@
   "microloopfordiffusionlm": 1,
   "minimaxm3vl": 2,
   "mlongformerencoderdecoder": 1,
+  "mnemosyne": 1,
   "mobilebertforpretraining": 1,
   "modelarchitecture": 1,
   "modernmarianmt": 1,
@@ -500,7 +501,7 @@
   "LIGHTBRAINHYBRID": 2,
   "LIGHTNINGTRANSFORMER": 1,
   "LLADA2": 34,
-  "LLAMA": 114963,
+  "LLAMA": 114962,
   "LLAMA4": 113,
   "LLAMAMOE": 12,
   "LLAVAMONET": 1,
@@ -796,9 +797,9 @@
   "ZZJRABBIT22": 2,
   "ZZJRABBIT3": 1
  },
- "n_archs": 2050,
+ "n_archs": 2049,
  "no_arch": 79543,
- "registry_covered": 321611,
+ "registry_covered": 321610,
  "total": 405884,
- "with_arch": 321611
+ "with_arch": 321610
 }
