@@ -314,6 +314,15 @@ int zaya_decode_main(int argc, char** argv) {
         snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.residual_scale", l); GET(key, w.pmrss);
         snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.residual_bias", l); GET(key, w.pmrsb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.down_proj.weight", l); GET(key, w.rw.gdw);
+        // Transpose gdw [H, rtr_h] -> [rtr_h, H] so the router gate_down GEMV
+        // reads contiguously (the stride-256 access was ~0.8 ms/layer on CPU).
+        if (!w.rw.gdw.empty() && w.rw.gdw.size() == (size_t)d.H * m.rtr_h) {
+            std::vector<float> gdwT((size_t)m.rtr_h * d.H);
+            for (int i = 0; i < m.rtr_h; i++)
+                for (int j = 0; j < d.H; j++)
+                    gdwT[(size_t)i * d.H + j] = w.rw.gdw[(size_t)j * m.rtr_h + i];
+            w.rw.gdw.swap(gdwT);
+        }
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.down_proj.bias", l); GET(key, w.rw.gdb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.norm.weight", l); GET(key, w.rw.rfn);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.fc1.weight", l); GET(key, w.rw.rf1);
@@ -1495,11 +1504,12 @@ fused_single_done:
         for (int i = 0; i < d.H; i++) tmp[i] = h[i] + residual[i];
         rmsnorm(tmp.data(), fnw.data(), d.H);
         std::vector<float> logits(NV);
-        // int8 logits (NPU_EMB_INT8=1): AVX2 dots over the expanded int8
+        // int8 logits (default): AVX2 dots over the expanded int8
         // embed (1.07 GB stream) + bf16 scales instead of the 2.15 GB float
-        // embed — same math, only the summation order differs. Falls back to
-        // the float GEMV.
-        static const bool EMB_INT8 = getenv("NPU_EMB_INT8") && atoi(getenv("NPU_EMB_INT8")) == 1;
+        // embed — same math, only the summation order differs (token-parity
+        // verified, ~2.7x faster lm_head). NPU_EMB_INT8=0 opts back out to the
+        // float GEMV; both fall back to float if the int8 expansion is absent.
+        static const bool EMB_INT8 = !(getenv("NPU_EMB_INT8") && atoi(getenv("NPU_EMB_INT8")) == 0);
         auto t_e0 = std::chrono::steady_clock::now();
         if (EMB_INT8 && !emb8.e8.empty()) {
             std::vector<float> S_t((size_t)emb8.TC * 8);
