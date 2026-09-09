@@ -231,6 +231,15 @@ NON_TEXT_GEN = {
     "plusmodel",  # LiltForTokenClassification (token classification, not causal LM)
     "kosine",  # SpeechT5 TTS
     "helloworld",  # junk test repo (model_type custom)
+
+    # ── 2026-09-09 pass-5: #2166 watch breach — biology-domain + junk classes ──
+    # Both arch-string and model_type forms covered (sweep emits either).
+    "esmcar", "esmc_ar",  # ESM-C AR (EsmcARForCausalLM / model_type esmc_ar — evolutionary-
+               #   scale Cambrian): causal PROTEIN-sequence LM, non-text-token domain — biology
+               #   precedent prot2text/torchmultiomics (pass-3/4); not in engine roster
+    "hca",  # HCAForCausalLM / model_type hca: single ~0-download repo
+             #   BIBLIOKLEPT/Mnemosyne-64M-Instruct — unverifiable custom arch / test-uploader
+    "mnemosyne", "mnemosyneforcausallm",  # same junk repo under its arch-string form
 }
 
 
