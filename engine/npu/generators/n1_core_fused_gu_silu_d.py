@@ -233,7 +233,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                             # wait for the 12.4 MB/launch weight stream).
                             bt = shim_dma_single_bd_task(
                                 B_s[c], B_gu,
-                                offset=(ki * (N_GU // n) + n_tile) * (k * n),
+                                offset=(n_tile * (K // k) + ki) * (k * n),
                                 sizes=[1, 1, 1, k * n],
                                 strides=[1, 1, 1, 1], issue_token=True)
                             dma_start_task(bt); bt_list.append(bt)
@@ -302,7 +302,7 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                             n_tile = cg2 * n_aie_cols + c
                             bt = shim_dma_single_bd_task(
                                 B_s[c], B_d,
-                                offset=(ki * (N_D // n) + n_tile) * (k * n),
+                                offset=(n_tile * (K // k) + ki) * (k * n),
                                 sizes=[1, 1, 1, k * n],
                                 strides=[1, 1, 1, 1], issue_token=True)
                             dma_start_task(bt); bt_list.append(bt)

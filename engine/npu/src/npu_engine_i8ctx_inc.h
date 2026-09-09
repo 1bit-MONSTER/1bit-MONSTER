@@ -685,7 +685,7 @@ struct I8Ctx {
     // shadow (row_out) is kept for the host amax pass / host emulation.
     static inline void pack_tile_chunk(int8_t* dst, const float* w, int K, int N,
                                        int ki, int nt, int n_tiles_k, float tis) {
-        size_t tbase = ((size_t)ki * n_tiles_k + nt) * (64 * 128);
+        size_t tbase = ((size_t)nt * (K / 64) + ki) * (64 * 128);  // column-major (nt,ki): one BD can stream a column's k-chunks
         for (int i0 = 0; i0 < 8; i0++)
             for (int i1 = 0; i1 < 16; i1++)
                 for (int i2 = 0; i2 < 8; i2++) {
@@ -856,7 +856,7 @@ struct I8Ctx {
         row_out.resize((size_t)K * N);
         for (int ki = 0; ki < n_k; ki++)
             for (int nt = 0; nt < n_tiles_k; nt++) {
-                size_t tbase = ((size_t)ki * n_tiles_k + nt) * (64 * 128);
+                size_t tbase = ((size_t)nt * n_k + ki) * (64 * 128);  // column-major (nt,ki) — matches pack_tile_chunk
                 for (int i0 = 0; i0 < 8; i0++)
                     for (int i1 = 0; i1 < 16; i1++)
                         for (int i2 = 0; i2 < 8; i2++) {
