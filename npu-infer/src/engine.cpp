@@ -126,7 +126,7 @@ bool XclbinManager::load(XclbinType type) {
                 size_t br = fread(insts.data(), 4, insts.size(), fi);
                 if (br == insts.size()) {
                     auto insts_bo = std::make_unique<xrt::bo>(
-                        device_, (size_t)isz, XCL_BO_FLAGS_CACHEABLE, kernel->group_id(1));
+                        device_, (size_t)isz, XCL_BO_FLAGS_CACHEABLE, e.kernel->group_id(1));
                     memcpy(insts_bo->map(), insts.data(), (size_t)isz);
                     insts_bo->sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)isz, 0);
                     e.insts_bo = std::move(insts_bo);
@@ -433,13 +433,16 @@ bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_toke
 
 // === Decode ===
 int NpuInferenceEngine::run_decode_step(int last_token) {
+    LOG_INFO("[decode-step] start tok=%d", last_token);
     embed_lookup(last_token, hwctx_[0].act_bo);
     
     for (int l = 0; l < config_.num_layers; l++) {
         run_layer_mm(hwctx_[0], l);
         run_layer_attn(hwctx_[1], l);
         run_layer_mlp(hwctx_[2], l);
+        if (l % 4 == 0) LOG_INFO("[decode-step] layer %d done", l);
     }
+    LOG_INFO("[decode-step] layers done, lm_head...");
     
     // LM head
     xrt::kernel* mm_kern = xclbins_->kernel(XCLBIN_MM);
@@ -513,10 +516,12 @@ int NpuInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
     int num_out = 0;
     
     for (int i = 0; i < max_output_tokens; i++) {
+        auto t0 = std::chrono::steady_clock::now();
         current_token_ = run_decode_step(current_token_);
+        auto t1 = std::chrono::steady_clock::now();
+        double dms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         output_tokens[num_out++] = current_token_;
-        
-        if (current_token_ == 0) break;
+        LOG_INFO("[decode %d] tok=%d %.1f ms", i, current_token_, dms);
     }
     
     auto t_end = std::chrono::steady_clock::now();
