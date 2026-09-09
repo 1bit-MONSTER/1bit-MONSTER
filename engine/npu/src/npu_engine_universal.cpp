@@ -574,7 +574,26 @@ int main(int argc,char**argv){
                 const char* jz = (const char*)hdrz + 8;
                 const char* zz = (const char*)memmem(jz, (size_t)hszz, "zaya", 4);
                 munmap(hdrz, stz.st_size);
-                if (zz) return zaya_decode_main(argc, argv);
+                if (zz) {
+                    // #2114 fix: zaya_decode_main takes prompt tokens as argv,
+                    // so the dispatcher's token-file argument never reached it
+                    // (every file run decoded prompt [2,<decode_tokens>,0]).
+                    // Synthesize the zaya argv from the token file when given.
+                    std::vector<std::string> zargs;
+                    zargs.push_back(argv[0]);
+                    zargs.push_back(argv[1]);
+                    if (argc > 3 && argv[3][0] != '\0' && strcmp(argv[3], "-") != 0) {
+                        FILE* tf = fopen(argv[3], "r");
+                        if (tf) {
+                            int tid;
+                            while (fscanf(tf, "%d", &tid) == 1) zargs.push_back(std::to_string(tid));
+                            fclose(tf);
+                        }
+                    }
+                    std::vector<char*> zargv;
+                    for (auto& s : zargs) zargv.push_back(s.data());
+                    return zaya_decode_main((int)zargv.size(), zargv.data());
+                }
             }
         }
     }
