@@ -168,7 +168,11 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                                 matmul(Abuf, Bbuf, C1buf[c])
                                 A_c.release(ObjectFifoPort.Consume, 1)
                                 B_c[c].release(ObjectFifoPort.Consume, 1)
-                            # ── SiLU + quant → h2 (row 0 valid; rows 1-7 zero) ──
+                            # ── SiLU + quant → h2 (ALL 8 rows — batch-M) ──
+                            # 2026-09-07: silu_quant_i8_fused loops all DIM_M rows
+                            # (M=8-baked mmul computes all 8 C1 rows); the old
+                            # row-0-only kernel zeroed h2 rows 1-7 → C2 rows 1-7
+                            # were 0 on silicon. gs section header still shared.
                             Gsbuf = B_c[c].acquire(ObjectFifoPort.Consume, 1)  # gs tile
                             H2buf = H2_c[c].acquire(ObjectFifoPort.Produce, 1)
                             silu(C1buf[c], Gsbuf, H2buf)
