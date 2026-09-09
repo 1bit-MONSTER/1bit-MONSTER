@@ -314,6 +314,15 @@ int zaya_decode_main(int argc, char** argv) {
         snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.residual_scale", l); GET(key, w.pmrss);
         snprintf(key, sizeof key, "model.layers.%d.post_mlp_residual_scale.residual_bias", l); GET(key, w.pmrsb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.down_proj.weight", l); GET(key, w.rw.gdw);
+        // Transpose gdw [H, rtr_h] -> [rtr_h, H] so the router gate_down GEMV
+        // reads contiguously (the stride-256 access was ~0.8 ms/layer on CPU).
+        if (!w.rw.gdw.empty() && w.rw.gdw.size() == (size_t)d.H * m.rtr_h) {
+            std::vector<float> gdwT((size_t)m.rtr_h * d.H);
+            for (int i = 0; i < m.rtr_h; i++)
+                for (int j = 0; j < d.H; j++)
+                    gdwT[(size_t)i * d.H + j] = w.rw.gdw[(size_t)j * m.rtr_h + i];
+            w.rw.gdw.swap(gdwT);
+        }
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.down_proj.bias", l); GET(key, w.rw.gdb);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.norm.weight", l); GET(key, w.rw.rfn);
         snprintf(key, sizeof key, "model.layers.%d.mlp.gate.router_mlp.fc1.weight", l); GET(key, w.rw.rf1);

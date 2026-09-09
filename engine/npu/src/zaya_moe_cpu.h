@@ -60,7 +60,7 @@ struct MoeDims {
 };
 
 struct RouterWeights {
-    std::vector<float> gdw;   // [H, rtr_h]
+    std::vector<float> gdw;   // [rtr_h, H] transposed (load-time; see zaya_decode.cpp)
     std::vector<float> gdb;   // [rtr_h]
     std::vector<float> rfn;   // [rtr_h]
     std::vector<float> rf1;   // [rtr_h, rtr_h]
@@ -86,11 +86,13 @@ inline int router(const MoeDims& d, const RouterWeights& w,
                   float* expert_wt) {
     const int H = d.H, rtr_h = d.rtr_h, n_exp = d.n_exp, n_exp_t = d.n_exp_t;
 
-    // 1. gate_down: rs[i] = gdb[i] + sum_j hs[j]*gdw[j*rtr_h + i]
+    // 1. gate_down: rs[i] = gdb[i] + sum_j hs[j]*gdwT[i*H + j]  (gdw is stored
+    // transposed [rtr_h, H] — see zaya_decode.cpp load) for a contiguous GEMV.
     std::vector<float> rs(rtr_h);
     for (int i = 0; i < rtr_h; i++) {
         float s = w.gdb[i];
-        for (int j = 0; j < H; j++) s += hs[j] * w.gdw[(size_t)j * rtr_h + i];
+        const float* row = &w.gdw[(size_t)i * H];
+        for (int j = 0; j < H; j++) s += hs[j] * row[j];
         rs[i] = s;
     }
     // 2. EDA (recurrent, before norm): rs += prev_router * eda
