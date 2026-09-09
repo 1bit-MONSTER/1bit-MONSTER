@@ -1,0 +1,107 @@
+{
+ "eagle3deepseekv2": {
+  "arch": "eagle3deepseekv2",
+  "covered": false,
+  "date": "2026-09-09",
+  "family": "Deepseek",
+  "model": "lightseekorg/kimi-k3-eagle3.1-mla"
+ },
+ "gemma3": {
+  "arch": "gemma3",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Gemma",
+  "model": "con-cord/GRPO-MOD2adv-sft-agreed-no-ref"
+ },
+ "gemma4unified": {
+  "arch": "gemma4unified",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Gemma",
+  "model": "Endersand/Gemma-4-12B-StyleTune"
+ },
+ "glm_moe_dsa": {
+  "arch": "glm_moe_dsa",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Glm",
+  "model": "defiobi00/GLM-5.3-DERISKED-Int4-Int8Mix"
+ },
+ "isomqwen25coder": {
+  "arch": "isomqwen25coder",
+  "covered": false,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "Prannesshkva/ISOM-Qwen2.5-Coder-1.5B-Instruct"
+ },
+ "llama": {
+  "arch": "llama",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Llama",
+  "model": "SongSeungJae/Llama-VARCO-8b-news2stock-analyzer-4bit-merged"
+ },
+ "mobilintllama": {
+  "arch": "mobilintllama",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Llama",
+  "model": "mobilint/Llama-3.2-1B-Instruct-regulus-rb-usb"
+ },
+ "ncpolmo3": {
+  "arch": "ncpolmo3",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Olmo",
+  "model": "ArchSpace-Collection/NCP_ArchPreview_dolma3_8.9B_Stage1_Step1300000"
+ },
+ "nemotronh": {
+  "arch": "nemotronh",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Nemotron",
+  "model": "Spangler3000/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp"
+ },
+ "qwen2": {
+  "arch": "qwen2",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "MuhHendri12/qwen2.5-3b-legal-id-grpo"
+ },
+ "qwen2_5_vl": {
+  "arch": "qwen2_5_vl",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "amad-iq/amad-vlm6"
+ },
+ "qwen3": {
+  "arch": "qwen3",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "HYU-NLP-EVAL/qwen3-4b-rar-medicine-onlinerubrics-seed11-step-045"
+ },
+ "qwen3_5": {
+  "arch": "qwen3_5",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "Earlychildhoodeducation/EleMo-V3-Base"
+ },
+ "qwen3_5moe": {
+  "arch": "qwen3_5moe",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "Rab007/Qwen3.8-2.4T-A95B"
+ },
+ "qwen3vl": {
+  "arch": "qwen3vl",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "zhongweixie/claw-rl-v13-grpo-dr-rubric"
+ }
+}
