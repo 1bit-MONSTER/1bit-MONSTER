@@ -1549,6 +1549,117 @@ fused_single_done:
         return (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
     };
 
+    // ── batched layer-major decode (NPU_BATCH_MODE=1, FUSED_SINGLE only) ──
+    // Processes B sequences through each layer together so the fused MoE
+    // launch can batch tokens that route to the same expert (am=|group|).
+    // Numerics: shared batch ag/qn_s (batch-min), so B>1 output is correct
+    // but not byte-identical to B separate single-token passes.
+    auto batched_forward = [&](const std::vector<int>& toks,
+                               const std::vector<int>& poss,
+                               std::vector<int>& out) {
+        const int B = (int)toks.size();
+        out.assign(B, 0);
+        std::vector<std::vector<float>> hb2(B, std::vector<float>(d.H));
+        std::vector<std::vector<float>> rb2(B, std::vector<float>(d.H, 0.0f));
+        std::vector<bool> has_res(B, false);
+        for (int b = 0; b < B; b++) {
+            for (int i = 0; i < d.H; i++)
+                hb2[b][i] = (embed[(size_t)toks[b] * d.H + i] + ibias[i]) * iscale[i];
+            prev_router[b].clear();
+        }
+        for (int l = 0; l < NC; l++) {
+            auto& w = L[l];
+            // residual prelude (same math as forward's per-layer head)
+            for (int b = 0; b < B; b++) {
+                const float* hs; const float* hbb; const float* rs; const float* rb;
+                if (l % 2 == 0) { hs = w.pahss.data(); hbb = w.pahsb.data(); rs = w.parss.data(); rb = w.parsb.data(); }
+                else            { hs = w.pmhss.data(); hbb = w.pmhsb.data(); rs = w.pmrss.data(); rb = w.pmrsb.data(); }
+                for (int i = 0; i < d.H; i++) tmp[i] = (hb2[b][i] + hbb[i]) * hs[i];
+                if (has_res[b]) {
+                    for (int i = 0; i < d.H; i++) rb2[b][i] = tmp[i] + (rb2[b][i] + rb[i]) * rs[i];
+                } else {
+                    for (int i = 0; i < d.H; i++) rb2[b][i] = tmp[i];
+                    has_res[b] = true;
+                }
+                rmsnorm(rb2[b].data(), w.nw.data(), d.H);
+            }
+            if (l % 2 == 0) {
+                // CCA attention (CPU): per sequence (no batching yet)
+                const int qd = d.qd, kd = d.kd, hv2 = kd / 2, H = d.H;
+                for (int b = 0; b < B; b++) {
+                    auto& lk = kv_k[l][b]; auto& lv = kv_v[l][b];
+                    std::vector<float> q(qd), k(kd), vc(hv2), vd(hv2);
+                    const int nproj = qd + kd + hv2 + hv2;
+                    #pragma omp parallel for schedule(static)
+                    for (int ii = 0; ii < nproj; ii++) {
+                        float a = 0;
+                        if (ii < qd) { for (int j = 0; j < H; j++) a += w.cw.wq[(size_t)ii * H + j] * rb2[b][j]; q[ii] = a; }
+                        else if (ii < qd + kd) { int i = ii - qd; for (int j = 0; j < H; j++) a += w.cw.wk[(size_t)i * H + j] * rb2[b][j]; k[i] = a; }
+                        else if (ii < qd + kd + hv2) { int i = ii - qd - kd; for (int j = 0; j < H; j++) a += w.cw.wv1[(size_t)i * H + j] * rb2[b][j]; vc[i] = a; }
+                        else { int i = ii - qd - kd - hv2; for (int j = 0; j < H; j++) a += w.cw.wv2[(size_t)i * H + j] * rb2[b][j]; vd[i] = a; }
+                    }
+                    std::vector<float> qo(qd), ko(kd), vo(kd);
+                    zaya_cca::cca_prep(d, w.cw, w.cs[b], q.data(), k.data(), vc.data(), vd.data(),
+                                       qo.data(), ko.data(), vo.data(), poss[b]);
+                    size_t old = lk.size() / (size_t)(d.nkv * d.hd);
+                    lk.insert(lk.end(), ko.begin(), ko.end());
+                    lv.insert(lv.end(), vo.begin(), vo.end());
+                    int seq = (int)old + 1;
+                    int gqa = d.nq / d.nkv;
+                    std::vector<float> ao(qd);
+                    #pragma omp parallel for schedule(static)
+                    for (int hh = 0; hh < d.nq; hh++) {
+                        int kv = hh / gqa;
+                        std::vector<float> sc(seq); float mx = -1e30f;
+                        for (int t = 0; t < seq; t++) { float s = 0; const float* kt = &lk[(size_t)t * d.nkv * d.hd + kv * d.hd]; for (int dd = 0; dd < d.hd; dd++) s += qo[hh * d.hd + dd] * kt[dd]; s *= 1.0f / sqrtf((float)d.hd); sc[t] = s; mx = std::max(mx, s); }
+                        float sm = 0; for (int t = 0; t < seq; t++) { sc[t] = expf(sc[t] - mx); sm += sc[t]; }
+                        for (int dd = 0; dd < d.hd; dd++) { float a = 0; for (int t = 0; t < seq; t++) a += sc[t] * lv[(size_t)t * d.nkv * d.hd + kv * d.hd + dd]; ao[hh * d.hd + dd] = a / (sm + 1e-12f); }
+                    }
+                    #pragma omp parallel for schedule(static)
+                    for (int i = 0; i < H; i++) { float a = 0; for (int j = 0; j < qd; j++) a += w.cw.wo[(size_t)i * qd + j] * ao[j]; hb2[b][i] = a; }
+                }
+            } else {
+                // MoE FFN: route all B, group by expert, batched fused launch.
+                std::vector<int> eb(B);
+                for (int b = 0; b < B; b++) {
+                    float wt;
+                    eb[b] = zaya_moe::router(m, w.rw, rb2[b].data(), prev_router[b], &wt);
+                }
+                for (int e = 0; e < m.n_exp; e++) {
+                    std::vector<int> grp;
+                    for (int b = 0; b < B; b++) if (eb[b] == e) grp.push_back(b);
+                    if (grp.empty()) continue;
+                    const int am = (int)grp.size();
+                    std::vector<float> Abuf((size_t)am * d.H);
+                    for (int r = 0; r < am; r++)
+                        memcpy(&Abuf[(size_t)r * d.H], rb2[grp[r]].data(), (size_t)d.H * 4);
+                    fused_ctx.group_scales[l] = fd_cs[l][e];
+                    float ag = dynamic_ascale(Abuf.data(), am * d.H);
+                    fused_ctx.quantize_async(Abuf.data(), am, d.H, ag);
+                    float qn_s = zaya_moe::host_h2_amax_qn_s(
+                        fused_ctx.Am, fgu_row[l][e].data(), fgu_cs[l][e].data(),
+                        d.H, m.n_ff, ag, am);
+                    fused_ctx.update_fused_header(*fgu_bo[l][e], fgu_cs[l][e], m.n_ff, ag, qn_s, 2 * m.n_ff);
+                    auto run = fused_ctx.launch_fused(*fgu_bo[l][e], *fd_bo[l][e], *h2_bo[l],
+                                                      Abuf.data(), am, d.H, ag);
+                    std::vector<float> moe_out_b((size_t)am * d.H);
+                    fused_ctx.dequant_fused(run, moe_out_b.data(), am, d.H, qn_s, l);
+                    for (int r = 0; r < am; r++)
+                        for (int i = 0; i < d.H; i++)
+                            hb2[grp[r]][i] = moe_out_b[(size_t)r * d.H + i];
+                }
+            }
+        }
+        for (int b = 0; b < B; b++) {
+            for (int i = 0; i < d.H; i++) tmp[i] = hb2[b][i] + rb2[b][i];
+            rmsnorm(tmp.data(), fnw.data(), d.H);
+            std::vector<float> logits(NV);
+            #pragma omp parallel for schedule(static)
+            for (int v = 0; v < NV; v++) { float a = 0; for (int j = 0; j < d.H; j++) a += embed[(size_t)v * d.H + j] * tmp[j]; logits[v] = a; }
+            out[b] = (int)(std::max_element(logits.begin(), logits.end()) - logits.begin());
+        }
+    };
+
     // ── WORKER MODE (subprocess protocol, issue #1832) ────────────────────
     // The unified server's NpuWorker (tests/backends/backend_npu_universal.cpp)
     // spawns `npu_engine_universal <model.q4nx> --worker` and speaks a
@@ -1634,12 +1745,22 @@ fused_single_done:
 
     const int N_GEN = getenv("NPU_N_GEN") ? atoi(getenv("NPU_N_GEN")) : 8;
     std::vector<int> cur(BS, prompt.back());
+    const bool BATCH_MODE = FUSED_SINGLE && BS > 1
+        && getenv("NPU_BATCH_MODE") && atoi(getenv("NPU_BATCH_MODE")) == 1;
     auto tgen0 = std::chrono::steady_clock::now();
     for (int step = 0; step < N_GEN; step++) {
-        for (int b = 0; b < BS; b++) {
-            cur[b] = forward(cur[b], (int)prompt.size() + step, b);
-            printf("%d ", cur[b]);
-            fflush(stdout);
+        if (BATCH_MODE) {
+            std::vector<int> poss(BS);
+            for (int b = 0; b < BS; b++) poss[b] = (int)prompt.size() + step;
+            std::vector<int> outs;
+            batched_forward(cur, poss, outs);
+            for (int b = 0; b < BS; b++) { cur[b] = outs[b]; printf("%d ", cur[b]); fflush(stdout); }
+        } else {
+            for (int b = 0; b < BS; b++) {
+                cur[b] = forward(cur[b], (int)prompt.size() + step, b);
+                printf("%d ", cur[b]);
+                fflush(stdout);
+            }
         }
     }
     printf("\n");
