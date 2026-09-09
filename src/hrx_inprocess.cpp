@@ -573,6 +573,7 @@ int Inprocess::resume_token() const {
 
 int Inprocess::generate(int token_id) {
     if (!impl_->ctx || !impl_->llama_decode) return -1;
+    if (!impl_->ctx || !impl_->llama_decode) return -1;
     llama_token tok = (llama_token)token_id;
     llama_batch b = impl_->llama_batch_get_one(&tok, 1, impl_->pos, 0);
     impl_->pos++;
