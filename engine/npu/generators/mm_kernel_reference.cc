@@ -1118,9 +1118,14 @@ extern "C" void zero_c1(void) {
 // Called between the GU and D GEMM phases of the fused kernel. Each tile's C1
 // (DIM_M × DIM_N int32, cols 2p/2p+1 = (gate, up) pair p, interleaved pack)
 // is reduced to h2 (DIM_M × DIM_N/2 int8) via the fixed-point LUT SiLU with
-// the host-folded per-column header gs' (ag·gs_g | ag·qn_s·gs_u). Rows 1-7
-// are zero for decode M=1 (rows 1-7 of C1 are zero → h2 = 0), which keeps the
-// D-phase A-DMA (8×64 tiles) consistent.
+// the host-folded per-column header gs' (ag·gs_g | ag·qn_s·gs_u).
+//
+// batch-M (2026-09-07 dispatch-fattening): the M=8-baked mmul computes ALL 8
+// rows of C1, but the original row-0-only loop below was a decode-M=1 leftover
+// that zeroed h2 rows 1-7 → C2 rows 1-7 measured 0 on silicon (fused_am_probe).
+// All-rows loop mirrors the already-verified silu_quant_i8_fused_q22. NOTE the
+// gs section header (gs[0]/gs[4]) is still SHARED across all 8 rows — true
+// per-token qn_s batching needs a per-row header (host-side, separate).
 extern "C" void silu_quant_i8_fused(int32_t *c1, const float *gs, int8_t *h2) {
 #ifdef I4_H2_RAMP
     for (unsigned p = 0; p < DIM_M * (DIM_N / 2); p++) h2[p] = (int8_t)(42 + (p % 3));
@@ -1133,16 +1138,18 @@ extern "C" void silu_quant_i8_fused(int32_t *c1, const float *gs, int8_t *h2) {
     // slices). Tile (c, cg) covers exactly one GU section (index cg).
     // C1 is the mmul MICROTILED layout: element (r,c) at (c/8)·64 + r·8 +
     // (c%8) — MEASURED via c1 dump vs host GEMM (exact match to sat8).
-    // Decode M=1: only row 0 is valid (rows 1-7 of C1 are zero → h2 = 0).
-    for (unsigned p = 0; p < DIM_N / 2; p++) {
-        unsigned go = ((2 * p) / 8) * 64 + ((2 * p) % 8);
-        unsigned uo = ((2 * p + 1) / 8) * 64 + ((2 * p + 1) % 8);
-        float g = (float)c1[go] * gs[0];
-        float u = (float)c1[uo] * gs[4];
-        float h = silu_lut(g) * u;
-        h2[p] = silu_sat8(silu_roundf(h));
+    // h2 (DIM_M × DIM_N/2) gets ONE int8 per (gate,up) pair: row r, pair p
+    // reads C1 row r cols (2p, 2p+1) at the r*8 microtile offset.
+    for (unsigned r = 0; r < DIM_M; r++) {
+        for (unsigned p = 0; p < DIM_N / 2; p++) {
+            unsigned go = ((2 * p) / 8) * 64 + r * 8 + ((2 * p) % 8);
+            unsigned uo = ((2 * p + 1) / 8) * 64 + r * 8 + ((2 * p + 1) % 8);
+            float g = (float)c1[go] * gs[0];
+            float u = (float)c1[uo] * gs[4];
+            float h = silu_lut(g) * u;
+            h2[r * (DIM_N / 2) + p] = silu_sat8(silu_roundf(h));
+        }
     }
-    for (unsigned i = DIM_N / 2; i < DIM_M * (DIM_N / 2); i++) h2[i] = 0;
 }
 
 // ── Q22 fixed-point int8 silu (#1836 float-miscompile fix) ──────────────────
