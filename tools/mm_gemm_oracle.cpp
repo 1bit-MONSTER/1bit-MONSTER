@@ -81,16 +81,28 @@ int main(int argc,char**argv){
     // A input (M*K) and the C output (M*N); using M*K alone caused heap corruption
     // (free(): invalid size) whenever N > K. Sized max(M*K, M*N)*2 bf16 bytes.
     // (size_t casts before multiply avoid int overflow for large dims.)
-    const size_t a_elems = (size_t)M * (size_t)K;
-    const size_t c_elems = (size_t)M * (size_t)N;
-    const size_t act_required = std::max(a_elems, c_elems) * 2; // required: in-place C overwrites A
-    const size_t actB = act_required; // actual allocation — kept separate so the guard below stays meaningful
+    const size_t a_elems = (size_t)M * (size_t)K;   // A-input footprint (elements)
+    const size_t c_elems = (size_t)M * (size_t)N;   // C-output footprint (elements)
+    const size_t act_required = std::max(a_elems, c_elems) * 2; // required bytes: in-place C overwrites A
+
+    // Actual allocation, derived INDEPENDENTLY from the A-input footprint (M*K —
+    // the expression that historically regressed to M*K-only sizing). Comparing it
+    // against act_required is the non-tautological #2106 guard: an undersized
+    // allocation is detected and grown instead of corrupting the heap when N > K.
+    size_t actB = a_elems * 2;
     if (actB < act_required) {
-        fprintf(stderr, "assert failed: act must be sized >= max(M*K, M*N)*2 (allocated %zu, required %zu, M=%d K=%d N=%d)\n",
-                actB, act_required, M, K, N);
+        fprintf(stderr, "act: growing A BO %zu -> %zu bytes to hold in-place C output (N=%d > K=%d)\n",
+                actB, act_required, N, K);
+        actB = act_required;
+    }
+    xrt::bo act(dev,actB,XRT_BO_FLAGS_HOST_ONLY,gA);
+    // Hard guard: the driver-allocated BO must actually cover the required size.
+    if (act.size() < act_required) {
+        fprintf(stderr, "assert failed: act BO %zu bytes < required %zu (M=%d K=%d N=%d)\n",
+                act.size(), act_required, M, K, N);
         return 1;
     }
-    xrt::bo act(dev,actB,XRT_BO_FLAGS_HOST_ONLY,gA); uint16_t*am=(uint16_t*)act.map();
+    uint16_t*am=(uint16_t*)act.map();
     memset(am,0,actB); for(int i=0;i<M&&i<K;i++)am[i*K+i]=f_to_bf16(1.0f); act.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     // ws zeros, wt = fused-dequant tiles, kv zeros
     xrt::bo ws(dev,(size_t)M*N,XRT_BO_FLAGS_HOST_ONLY,gW0); memset(ws.map(),0,(size_t)M*N); ws.sync(XCL_BO_SYNC_BO_TO_DEVICE);
