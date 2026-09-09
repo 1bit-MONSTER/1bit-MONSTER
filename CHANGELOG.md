@@ -3,6 +3,17 @@
 All notable changes to 1bit.MONSTER. Versioning is **date-based** (`YYYY.MM.DD`),
 matching the GitHub release tags (`vYYYY.MM.DD`).
 
+## 2026.09.09 — relicensed MIT → GPL-3.0 🔒
+
+- **License change**: the project moved from **MIT** to **GPL-3.0-only**
+  (see `LICENSE`; SPDX `GPL-3.0-only` in `package.json`/packaging). All
+  1bit.MONSTER code is original / clean-room and owned by the project; the
+  Sherry sources were re-verified clean-room (PR #1894) before the move.
+- Vendored third-party code keeps its own upstream licenses (llama.cpp/ggml,
+  AMD CK examples, ROCm/FastFlowLM-derived files, Lemonade, Zyphra models).
+- Copies of the repository made before 2026-09-09 keep the MIT grant they
+  received under the previous license.
+
 ## 2026.08.10 — JARVIS ships NPU-FLM STT + SSE, amdxdna driver regression fixed, eeg-medical archived 🎙️
 
 - **JARVIS: NPU-FLM speech-to-text, SSE streaming, loopback-trusted web UI** (PR #1576).
@@ -287,12 +298,6 @@ matching the GitHub release tags (`vYYYY.MM.DD`).
 - **Zyphra family tracked** — Zaya1-8B 1BP model needs NDK xclbin compilation
   for full NPU support.
 
-## 1.0.0 — 2026.07.26 — First Stable Release 🎉
-
-# Changelog
-
-All notable changes to 1bit.MONSTER. Versioning is **date-based** (`YYYY.MM.DD`),
-matching the GitHub release tags (`vYYYY.MM.DD`).
 
 ## 1.0.0 — 2026.07.26 — First Stable Release 🎉
 

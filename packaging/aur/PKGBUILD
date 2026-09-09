@@ -5,7 +5,7 @@ pkgrel=1
 pkgdesc="50 TOPS INT8 NPU inference engine for AMD Strix Halo"
 arch=('x86_64')
 url="https://1bit.monster"
-license=('MIT')
+license=('GPL-3.0-only')
 depends=('libxrt' 'gcc-libs')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/1bit-MONSTER/1bit-MONSTER/archive/refs/tags/v$pkgver.tar.gz")
 # sha256 of the v$pkgver release tarball — must be regenerated on every

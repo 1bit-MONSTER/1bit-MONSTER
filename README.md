@@ -3,11 +3,11 @@
 <img src="site/assets/banner.svg" alt="1bit.MONSTER — One engine. Any model. Zero Python." width="820">
 
 [![CI](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml/badge.svg)](https://github.com/1bit-MONSTER/1bit-MONSTER/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
 **[Website](https://1bit.monster)** · **[Community (Fluxer)](https://fluxer.gg/7wqCREKi)** · **[Join Discord](https://discord.gg/Qy38d4Xu2h)** · **[Docs](docs/README.md)** · **[Model families](docs/model-families/README.md)** · **[Benchmarks](docs/wiki/performance.md)** · **[JARVIS](docs/jarvis.md)** · **[The story](docs/journey.md)** · **[Roadmap](docs/guides/roadmap.md)**
 
-pure C++26 · zero Python at runtime · MIT
+pure C++26 · zero Python at runtime · GPL-3.0
 
 </div>
 
@@ -52,4 +52,4 @@ Also in the box: **JARVIS** — a fully-local voice pipeline (mic → STT → LL
 
 ## License
 
-MIT — do whatever you want.
+GPL-3.0 — free software: redistribute and modify freely, forks must stay open under the same license.

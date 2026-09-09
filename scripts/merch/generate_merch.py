@@ -360,7 +360,7 @@ def design_sticker_1bit():
         ('line', 330, 722, 870, 722, 3, INK),
         ('circ', 600, 722, 6, INK, 0, None),
         ('txt', 600, 802, 'ONE ENGINE · EVERY MODEL · ANY CHIP', 'mono-m', 38, INK, 2),
-        ('txt', 600, 872, 'ZERO PYTHON · MIT · EST. 2026', 'mono', 28, GRAY, 4),
+        ('txt', 600, 872, 'ZERO PYTHON · GPL-3.0 · EST. 2026', 'mono', 28, GRAY, 4),
     ]
 
 
@@ -431,7 +431,7 @@ def design_sticker_amd():
     return plate + chip + [
         ('line', 340, 812, 860, 812, 3, INK),
         ('txt', 600, 878, 'REVERSE-ENGINEERED IN 4 DAYS', 'mono-m', 32, INK, 2),
-        ('txt', 600, 942, 'HOMEBREWED DRIVER · MIT LICENSED', 'mono', 24, GRAY, 2),
+        ('txt', 600, 942, 'HOMEBREWED DRIVER · GPL-3.0 LICENSED', 'mono', 24, GRAY, 2),
     ]
 
 
@@ -589,7 +589,7 @@ def design_tshirt_npu_back():
     ops += _tile_grid(760, 1560, 46, 18, 8, 4, [CYAN, AMBER, BLUE, TEXT])
     ops += [
         ('txt', AW / 2, 2060, 'NPU + GPU + CPU · ONE BINARY', 'mono-m', 62, MUTED, 8),
-        ('txt', AW / 2, 2200, 'ZERO PYTHON · MIT · OPEN SOURCE', 'mono', 46, DIM, 6),
+        ('txt', AW / 2, 2200, 'ZERO PYTHON · GPL-3.0 · OPEN SOURCE', 'mono', 46, DIM, 6),
     ]
     return ops
 
@@ -607,7 +607,7 @@ def design_hoodie_back():
         ('txt', AW / 2, 650, 'One engine.', 'serif', 220, CYAN, 0),
         ('txt', AW / 2, 940, 'Every model.', 'serif', 220, TEXT, 0),
         ('txt', AW / 2, 1230, 'Any chip.', 'serif-i', 220, AMBER, 0),
-        ('txt', AW / 2, 1560, 'ZERO DEPENDENCIES · MIT · OPEN SOURCE', 'mono-m', 62, MUTED, 8),
+        ('txt', AW / 2, 1560, 'ZERO DEPENDENCIES · GPL-3.0 · OPEN SOURCE', 'mono-m', 62, MUTED, 8),
         ('txt', AW / 2, 1700, 'THE RUNTIME HAS NO PYTHON. NEITHER DOES THE HOODIE.', 'mono', 44, DIM, 6),
     ]
     return ops
@@ -630,7 +630,7 @@ def design_mug():
         ('txt', 1200, 560, '1bit', 'serif', 300, CYAN, 0),
         ('txt', 1200, 920, 'MONSTER', 'serif', 200, TEXT, 0),
         ('line', 640, 1150, 1760, 1150, 6, (14, 128, 190)),
-        ('txt', 1200, 1300, '94 tok/s · ZERO CLOUD · MIT', 'mono-m', 76, AMBER, 10),
+        ('txt', 1200, 1300, '94 tok/s · ZERO CLOUD · GPL-3.0', 'mono-m', 76, AMBER, 10),
     ]
 
 

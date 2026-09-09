@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 /*
  * test_windows_npu_driver.cpp — validates the reverse-engineered Windows NPU
  * driver constants (issue #1504) recovered from NPU_RAI_376_WHQL.zip.

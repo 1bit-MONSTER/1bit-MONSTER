@@ -2,7 +2,7 @@
 
 > **This is the hero story of 1bit.MONSTER.** It started with a laptop, a disassembler, and no docs: AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed-source runtime (FastFlowLM) — 22 proprietary `.so` files, 209 xclbin bitstreams, zero documentation. We reverse-engineered the entire stack in 4 days and replaced it with open C++.
 >
-> Every crash, breakthrough, and bug below is documented in real-time. ~600 hours of engineering, all open source, MIT. Since UPDATE 34 the through-line is one binary (`build/1bit`) and one language direction: C++23 for compute kernels, **Mojo 1.0 as the unified language** for everything around them — servers, converters, tooling, control planes. No interpreter at runtime, anywhere.
+> Every crash, breakthrough, and bug below is documented in real-time. ~600 hours of engineering, all open source — MIT until the 2026-09-09 relicense to GPL-3.0. Since UPDATE 34 the through-line is one binary (`build/1bit`) and one language direction: C++23 for compute kernels, **Mojo 1.0 as the unified language** for everything around them — servers, converters, tooling, control planes. No interpreter at runtime, anywhere.
 
 ## Table of Contents
 

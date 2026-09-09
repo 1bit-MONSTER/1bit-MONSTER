@@ -76,10 +76,10 @@ Show a comparison chart or table.
 - The reverse-engineering journey: AMD NPU decompiled
 - The 1BP format: 256-byte header animation
 - The architecture diagram
-- The GitHub repo: 1,322 source files, MIT license
+- The GitHub repo: 1,322 source files, GPL-3.0 license
 
 **Narration**:
-> "What we built: We reverse-engineered AMD's NPU in 4 days with no documentation. We created the 1BP format — one file, zero config. We built a token router that dispatches across GPU, NPU, and CPU. And we made it all open source under the MIT license — one binary, all backends, zero Python."
+> "What we built: We reverse-engineered AMD's NPU in 4 days with no documentation. We created the 1BP format — one file, zero config. We built a token router that dispatches across GPU, NPU, and CPU. And we made it all open source under the GPL-3.0 license — one binary, all backends, zero Python."
 
 ### Scene 8: Call to Action (3:45–4:00)
 

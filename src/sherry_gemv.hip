@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // sherry_gemv.hip — Clean-room Sherry 1.25-bit ternary GEMV for gfx1151.
 //

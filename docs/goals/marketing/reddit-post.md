@@ -73,4 +73,4 @@ GitHub: https://github.com/1bit-MONSTER/1bit-MONSTER
 Audit trail: `docs/journey.md` — 1800+ lines, every bug and fix documented
 PR #579: https://github.com/1bit-MONSTER/1bit-MONSTER/pull/579
 
-MIT. Your hardware, your model, your choice of backend.
+GPL-3.0. Your hardware, your model, your choice of backend.

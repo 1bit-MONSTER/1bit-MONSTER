@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: GPL-3.0-only
 #
 # train_rl.py — Reinforcement learning (GRPO) via Unsloth (Apache 2.0)
 #

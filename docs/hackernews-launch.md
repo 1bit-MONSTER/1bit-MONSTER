@@ -8,7 +8,7 @@
 
 1. `Show HN: Reverse-engineered AMD's XDNA2 NPU in 4 days — any LLM, one C++ binary`
 2. `Show HN: One C++ binary runs any LLM on NPU/GPU/CPU — zero Python`
-3. `Show HN: 100% of HuggingFace LLMs run on one MIT C++ binary, zero Python`
+3. `Show HN: 100% of HuggingFace LLMs run on one GPL-3.0 C++ binary, zero Python`
 
 Recommended: **#1** (the reverse-engineering hook is what HN clicks on).
 
@@ -16,7 +16,7 @@ Recommended: **#1** (the reverse-engineering hook is what HN clicks on).
 
 ## Story (paste into the "text" box; 1,995 chars — under the 2,000 limit)
 
-**1bit.MONSTER — one C++ binary, any LLM, any hardware, zero Python. MIT.**
+**1bit.MONSTER — one C++ binary, any LLM, any hardware, zero Python. GPL-3.0.**
 
 AMD shipped a 50 TOPS XDNA 2 NPU locked behind a closed runtime (FastFlowLM): 22 proprietary .so files, 209 xclbin bitstreams, zero docs. I took it apart in 4 days — RSA-2048-signed firmware, mailbox protocol decoded by hand with a disassembler, ftrace and bpftrace — and replaced the whole stack with open C++. Unedited session logs:  https://github.com/1bit-MONSTER/1bit-MONSTER/blob/main/docs/journey.md
 
@@ -26,13 +26,13 @@ What came out of it:
 * 554 architecture tokens mapping 1,798 HuggingFace arch strings — 317,310 / 317,310 text-generation checkpoints on the hub (100%) land on a supported token. 16+ families: Zyphra, Qwen, Llama, Mistral, Gemma, Phi, Falcon, OLMo, Granite, SmolLM, DeepSeek, GPT-OSS, Kimi, BitNet/Bonsai, Whisper. Reads GGUF, 1BP, ONNX, H1B, safetensors.
 * Zero Python at runtime — pure C++26. No interpreter, no venv, nothing to babysit.
 * JARVIS: a fully-local voice pipeline (mic → STT → LLM → TTS → speaker), one subcommand.
-* Lemonade v11.8.1 vendored (15-backend SDK). ~600 hours of engineering, public from day one, MIT.
+* Lemonade v11.8.1 vendored (15-backend SDK). ~600 hours of engineering, public from day one — MIT until the 2026-09-09 relicense to GPL-3.0.
 
 Numbers: Q1_0 HIP kernel = 24-33x faster prompt processing on gfx1151; 4,172 t/s prompt on Bonsai-1.7B; the NPU runtime replacement is now byte-identical to the closed original, 2x on the 35B.
 
 Site (docs, model families, benchmarks, the full RE writeup): https://1bit.monster
 
-Honest caveats: young project — NPU support targets Strix Halo-class XDNA2 SKUs today; GPU/CPU paths are the battle-tested ones. Issues and contributions welcome (MIT).
+Honest caveats: young project — NPU support targets Strix Halo-class XDNA2 SKUs today; GPU/CPU paths are the battle-tested ones. Issues and contributions welcome (GPL-3.0).
 
 Try it:
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER && cd 1bit-MONSTER && cmake -B build && cmake --build build

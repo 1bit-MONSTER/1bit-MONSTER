@@ -21,7 +21,7 @@ Peak performance: 433 tok/s Q1 GEMV kernel, 79.4 tok/s e2e BlackMamba 1.5B — b
 What's broken: 22 xclbin shapes need Peano compilation. Qwen3.5 Omni source extracted but not wired into NPU dispatch yet. No e2e benchmarks on new models. We tell you what doesn't work.
 
 6/6
-Every Strix Halo APU (~48M shipped) has a 50 TOPS NPU gathering dust. Our binary makes it usable. MIT licensed.
+Every Strix Halo APU (~48M shipped) has a 50 TOPS NPU gathering dust. Our binary makes it usable. GPL-3.0 licensed.
 Blog: https://1bit.monster/blog/flm-37-models-extracted
 GitHub: https://github.com/1bit-MONSTER/1bit-MONSTER
 Models: https://1bit.monster/wiki/models

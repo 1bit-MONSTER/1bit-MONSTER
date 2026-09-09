@@ -2,13 +2,13 @@
 
 <sub>**One engine. Any model. Zero Python.**</sub>
 
-A model-agnostic, hardware-agnostic, pure-C++26 inference engine — MIT licensed.
+A model-agnostic, hardware-agnostic, pure-C++26 inference engine — GPL-3.0 licensed.
 One binary that runs Hugging Face models on **NPU + GPU + CPU**. 16 model families,
 the native **1BP** format, and **JARVIS** (the flagship voice assistant) all inside
 `build/1bit`.
 
 100% HF model coverage, any hardware. An open-source, pure-C++ inference engine.
-NPU + GPU + CPU in one engine. Zero Python. MIT.
+NPU + GPU + CPU in one engine. Zero Python. GPL-3.0.
 
 ---
 
@@ -90,4 +90,4 @@ with a 1-bit pixel identity.
 
 ### License
 
-MIT. See [`LICENSE`](LICENSE).
+GPL-3.0. See [`LICENSE`](LICENSE).

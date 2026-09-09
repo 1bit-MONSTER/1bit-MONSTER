@@ -1,6 +1,6 @@
 # 1bit.MONSTER
 
-> One engine, any model. A model-agnostic, hardware-agnostic pure-C++ inference engine (MIT): 566 architecture tokens, 1,946 HF arch strings, 100% HuggingFace coverage, 321,611 checkpoints mapped, running on Ryzen AI NPUs and ROCm with a GGUF-native 1-bit pipeline. Zero Python at runtime.
+> One engine, any model. A model-agnostic, hardware-agnostic pure-C++ inference engine (GPL-3.0): 566 architecture tokens, 1,946 HF arch strings, 100% HuggingFace coverage, 321,611 checkpoints mapped, running on Ryzen AI NPUs and ROCm with a GGUF-native 1-bit pipeline. Zero Python at runtime.
 
 ## Pages
 

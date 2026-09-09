@@ -1,5 +1,5 @@
 #pragma once
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // rocm-cpp — Sherry 1.25-bit ternary GEMV C API (clean-room fp16 path).
 //

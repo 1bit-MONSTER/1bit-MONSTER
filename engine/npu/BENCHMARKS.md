@@ -114,7 +114,7 @@ These are the open-source C++ engine numbers — no FLM, no proprietary code. Si
 | Feature | 1bit.MONSTER | FastFlowLM |
 |---------|-------------|------------|
 | Production engine | ✅ native `npu_xrt` (default since 2026-07-20), FLM proxy kept as fallback (was 94.7 tok/s) | ✅ FLM native |
-| Open-source engine | ✅ C++23, MIT, 69 tok/s (see correction note above) | ❌ |
+| Open-source engine | ✅ C++23, GPL-3.0, 69 tok/s (see correction note above) | ❌ |
 | Models supported | **5** (0.6B, 8B, VL-4B, Llama, Gemma4) | 10+ (8B-focused) |
 | Auto-detect | ✅ Q4NX header parse | ❌ Per-model Python build |
 | Binary size | 120 KB | Python + 114KB xclbins |
@@ -124,7 +124,7 @@ These are the open-source C++ engine numbers — no FLM, no proprietary code. Si
 | GPU engine | ✅ Vulkan (281 tok/s) | ❌ NPU only |
 | 1-bit models | ✅ Bonsai IQ1_S (385 MB) | ❌ |
 | Windows | ❌ Linux-only (XRT) | ✅ Windows + Linux |
-| License | ✅ MIT | ❌ Proprietary |
+| License | ✅ GPL-3.0 | ❌ Proprietary |
 
 ---
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: GPL-3.0-only
 //
 // sherry_gemv_scalar_ref.hip — 1 thread per row Sherry reference.
 //
