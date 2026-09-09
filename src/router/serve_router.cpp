@@ -30,9 +30,13 @@ ServedRouter make_served_router(const std::string& model_path,
     const std::string decode_pin = (klass == "moat-q4nx") ? "HRX0" : "Vulkan0";
     sr.decode_pin = decode_pin;
     auto router = std::make_shared<PhaseRouter>();
+    // [sage-3] SAGE_PREFILL_PIN overrides the prefill leg device (Vulkan0 for
+    // long-KV stock-q4k prefill where the dual-bundle HRX0 batch path fails).
+    const char* ppin = std::getenv("SAGE_PREFILL_PIN");
+    std::string prefill_pin = (ppin && ppin[0]) ? std::string(ppin) : "HRX0";
     auto prod = std::make_shared<hrx::Inprocess>();
     auto pe = std::make_shared<HrxPrefillEngine>(prod, model_path,
-                                                 n_gpu_layers, ctx_size, "HRX0");
+                                                 n_gpu_layers, ctx_size, prefill_pin);
     auto dec_inprocess = std::make_shared<hrx::Inprocess>();
     auto de = std::make_shared<HrxDecodeEngine>(dec_inprocess, model_path,
                                                 n_gpu_layers, ctx_size, decode_pin);
