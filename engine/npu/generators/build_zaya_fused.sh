@@ -64,6 +64,7 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     "${I4_SCALAR_FLAGS[@]}" \
     ${NPU_C1_DUMP:+-DNPU_C1_DUMP} ${I4_SUM_A:+-DI4_SUM_A} ${I4_B_DUMP:+-DI4_B_DUMP} ${I4_C1_DUMP:+-DI4_C1_DUMP} ${I4_A_DUMP:+-DI4_A_DUMP} ${I4_REF_DUMP:+-DI4_REF_DUMP} ${I4_C12_DUMP:+-DI4_C12_DUMP} ${I4_B4_DUMP:+-DI4_B4_DUMP} ${I4_NO_ZERO_TAIL:+-DI4_NO_ZERO_TAIL} ${I4_C00_DUMP:+-DI4_C00_DUMP} \
     -isystem $P/include/c++/v1 \
+    -I $M/include \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \
     -c "$GENERATOR_DIR/mm_kernel_reference.cc" -o "$workdir/mm_8x64x128_fused.o"
@@ -278,8 +279,8 @@ PYEOF
 xclbin="$XCLBIN_DIR/final_i8_MOE_GUSILU_i4_zaya.xclbin"
 insts="$XCLBIN_DIR/insts_i8_MOE_GUSILU_i4_zaya.txt"
 if [ "$I4" != "1" ]; then
-    xclbin="$XCLBIN_DIR/final_i8_MOE_GUSILU_zaya.xclbin"
-    insts="$XCLBIN_DIR/insts_i8_MOE_GUSILU_zaya.txt"
+    xclbin="$XCLBIN_DIR/final_i8_MOE_FUSED_zaya.xclbin"
+    insts="$XCLBIN_DIR/insts_i8_MOE_FUSED_zaya.txt"
 fi
 cd "$workdir"
 $AIECC --peano="$P" --aietools="$AIETOOLS" \
