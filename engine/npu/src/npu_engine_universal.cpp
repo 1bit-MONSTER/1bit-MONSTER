@@ -803,6 +803,9 @@ int main(int argc,char**argv){
         }
         return base+"_"+cfg.model_tag+".txt";
     };
+    // M-suffixed small-M xclbin/insts (decode M=1 -> _m1; batch -> _m8/_m32).
+    auto xpm=[&](const char*t, int M){return xd+"/final_i8_"+t+"_"+cfg.model_tag+"_m"+std::to_string(M)+".xclbin";};
+    auto ipm=[&](const char*t, int M){return xd+"/insts_i8_"+t+"_"+cfg.model_tag+"_m"+std::to_string(M)+".txt";};
     // bf16 path (n1_core_placed.py: bf16 activations + v8bfp16ebs8 weights)
     bool bf16_mode = getenv("NPU_BF16") != nullptr;
     auto xpb=[&](const char*t, int K, int N){return xd+"/final_bf16_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";};
@@ -911,6 +914,10 @@ int main(int argc,char**argv){
     I8Ctx cq,co,cg,cd;
     std::unique_ptr<I8Ctx> cu_ptr;
     std::unique_ptr<I8Ctx> cg_fused_i4;   // env-gated #1934 int4 fused GU->SiLU (dense FFN)
+    // task-2: small-M decode contexts (GU/D run M=1 per decode token; the M=128
+    // xclbin wastes 127 rows). _m1/_m8/_m32 built by build_qwen3_0_6b_m{1,8,32}.sh.
+    I8Ctx cg_m, cd_m;
+    bool have_small_m = false;
     // #1934: per-layer fused GU (P1) weight BO + h2 (C1->silu) scratch BOs.
     std::vector<std::unique_ptr<xrt::bo>> cg_fuse_bo, cg_fuse_h2;
     std::vector<std::vector<float>> cg_fuse_scl;   // per-layer S_col (amax pass)
@@ -969,6 +976,34 @@ int main(int argc,char**argv){
         if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){fprintf(stderr,"FAIL O\n");return 1;}
         if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL GU\n");return 1;}}
         if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){fprintf(stderr,"FAIL D\n");return 1;}
+        // task-2: init small-M decode contexts (GU + D) when the _m{M} xclbin/insts
+        // pair is present. M defaults to 1 (single-token decode); NPU_SMALL_M overrides.
+        {
+            int sm = 0;   // default OFF: the _m1 kernel's weight contract differs from the M=128 path (garbage decode, no perf win — launch-bound)
+            const char* e = getenv("NPU_SMALL_M");
+            if (e && *e) sm = atoi(e);
+            if (sm != 1 && sm != 8 && sm != 32) sm = 0;
+            std::string gx1 = xpm("GU", sm), gi1 = ipm("GU", sm);
+            std::string dx1 = xpm("D", sm),  di1 = ipm("D", sm);
+            FILE* fg = fopen(gx1.c_str(),"rb"); FILE* fgi = fopen(gi1.c_str(),"rb");
+            FILE* fd = fopen(dx1.c_str(),"rb"); FILE* fdi = fopen(di1.c_str(),"rb");
+            if (fg && fgi && fd && fdi) {
+                fclose(fg); fclose(fgi); fclose(fd); fclose(fdi);
+                cg_m.MD = sm; cg_m.KD = cfg.xclbin_gu_k; cg_m.ND = cfg.xclbin_gu_n;
+                cd_m.MD = sm; cd_m.KD = cfg.xclbin_d_k; cd_m.ND = cfg.xclbin_d_n;
+                if (cg_m.init(dev, gx1.c_str(), gi1.c_str(), 4, NC) &&
+                    cd_m.init(dev, dx1.c_str(), di1.c_str(), 4, NC)) {
+                    have_small_m = true;
+                    fprintf(stderr, "  small-M(_m%d) decode contexts ready (GU KD=%d ND=%d, D KD=%d ND=%d)\n",
+                            sm, cg_m.KD, cg_m.ND, cd_m.KD, cd_m.ND);
+                } else {
+                    fprintf(stderr, "  small-M(_m%d) ctx init FAILED; decode falls back to M=128\n", sm);
+                }
+            } else {
+                if (fg) fclose(fg); if (fgi) fclose(fgi); if (fd) fclose(fd); if (fdi) fclose(fdi);
+                fprintf(stderr, "  small-M(_m%d) xclbins absent; decode uses M=128 ctx\n", sm);
+            }
+        }
         // #1934: env-gated int4 fused GU->SiLU (GUSILU_i4) for the DENSE FFN
         // (qwen3-0.6b). Kernel contract silicon-verified (zaya 0.999336); this
         // inits the fused P1 context so the dense GU->host-SiLU->D can be
@@ -1382,6 +1417,7 @@ struct Bf16Ctx {
         if(cfg.gu_split){
             std::vector<float>wg((size_t)H*gr);transpose_pack(gw,GUOUT,H,wg.data(),gr,0);
             FLM_PACKB(cg,l,wg.data(),H,gr,gsc[l]);
+            if(have_small_m) cg_m.packB(l,wg.data(),H,gr,gsc[l]);
             std::vector<float>wu((size_t)H*ur);transpose_pack(uw,GUOUT,H,wu.data(),ur,0);
             FLM_PACKB_PTR(cu_ptr,l,wu.data(),H,ur,usc[l]);
         }else{
@@ -1491,6 +1527,7 @@ struct Bf16Ctx {
         int dr2,dc2;float*dw=dequant_i8_to_float_ex(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
         FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);
+        if(have_small_m) cd_m.packB(l,wd.data(),DIN,DOUT,dsc[l]);
         }
         } // end else if (standard layer)
         } // end for l
@@ -3294,7 +3331,8 @@ struct Bf16Ctx {
                                 fflush(stderr);
                             }
                         } else {
-                        FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
+                        if (have_small_m) cg_m.go(l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
+                        else FLM_GO(cg, l, fh, 1, H, ag, gsc[l], fuse_gt_b.data(), fmlp_out);
                         cn(fuse_gt_b.data(), fmlp_out);
                         if (cfg.gu_split) {
                             float au = dynamic_ascale(fh, H);
@@ -3427,7 +3465,8 @@ struct Bf16Ctx {
                             fprintf(stderr, "[DDBG l=%d] su[0..3]=%.3f %.3f %.3f %.3f ad=%f\n",
                                     l, fuse_su_b[0], fuse_su_b[1], fuse_su_b[2], fuse_su_b[3], ad);
                         }
-                        FLM_GO(cd, l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
+                        if (have_small_m) cd_m.go(l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
+                        else FLM_GO(cd, l, fuse_su_b.data(), 1, IM, ad, dsc[l], fuse_dw_b.data(), H);
                         cn(fuse_dw_b.data(), H);
                         if (getenv("NPU_FUSED_USE") && atoi(getenv("NPU_FUSED_USE")) == 1
                             && getenv("NPU_FUSED_DDBG") && atoi(getenv("NPU_FUSED_DDBG")) == 1) {
@@ -3803,6 +3842,9 @@ struct Bf16Ctx {
         float cq_ascale=1.0f;
         std::vector<double> rn_ss(batch_size>0?batch_size:1,0.0);
         for(int l=0;l<NC;l++){
+            // task-2 small-M decode: use the _m1 GU/D contexts (M=1) for the
+            // native I8Ctx path (no bf16/flm twin, and gu_split has no _m1 build).
+            const bool sm = have_small_m && !bf16_mode && !flm_xclbin_available && !cfg.gu_split;
             // ── QKV input: for l>0 produced by layer l-1's fused boundary
             //    (h_b = rn'd QKV input, sb_data = pre-QKV residual, cq_ascale set).
             //    Layer 0 initializes from embeddings. ──
@@ -3930,9 +3972,14 @@ struct Bf16Ctx {
                 }
                 if (byte_stats) bs.gu_a.down += (uint64_t)batch_size * (2 * IM) * 4;
             } else {
-            FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
-            FLM_SYNC_A(cg,l);
-            auto r_cg=FLM_LAUNCH(cg,l);
+            if (sm) {
+                cg_m.quantize_async(h_b.data(),batch_size,H,cg_ascale);
+                cg_m.sync_A(l);
+            } else {
+                FLM_QUANTIZE_ASYNC(cg,h_b.data(),batch_size,H,cg_ascale);
+                FLM_SYNC_A(cg,l);
+            }
+            auto r_cg = sm ? cg_m.launch(l) : FLM_LAUNCH(cg,l);
             if (byte_stats) bs.gu_a.up += (uint64_t)batch_size * H;
 
             // SiLU gate + U GEMM (gu_split) or combined gate*up
@@ -3946,8 +3993,8 @@ struct Bf16Ctx {
                 cn(su_b.data(),batch_size*IM);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*IM+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*su_b[b*IM+i];}}}
             else{
-                FLM_WAIT_KERNEL(cg,r_cg);
-                FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l);
+                if (sm) { cg_m.wait_kernel(r_cg); cg_m.sync_back_and_dequant(gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l); }
+                else { FLM_WAIT_KERNEL(cg,r_cg); FLM_SYNC_BACK(cg,gt_b.data(),batch_size,mlp_out,cg_ascale,gsc[l],l); }
                 cn(gt_b.data(),batch_size*mlp_out);
                 for(int b=0;b<batch_size;b++){for(int i=0;i<IM;i++){float gv=gt_b[b*mlp_out+i];if(!std::isfinite(gv))gv=0;su_b[b*IM+i]=(gv/(1.0f+expf(-gv)))*gt_b[b*mlp_out+IM+i];}}}
             }
@@ -3955,26 +4002,31 @@ struct Bf16Ctx {
 
             // ── D GEMM ──
             float cd_ascale=dynamic_ascale(su_b.data(),batch_size*IM);
-            FLM_QUANTIZE_ASYNC(cd,su_b.data(),batch_size,IM,cd_ascale);
-            auto r_cd=FLM_SYNC_AND_LAUNCH(cd,l);
+            if (sm) {
+                cd_m.quantize_async(su_b.data(),batch_size,IM,cd_ascale);
+            } else {
+                FLM_QUANTIZE_ASYNC(cd,su_b.data(),batch_size,IM,cd_ascale);
+            }
+            auto r_cd = sm ? cd_m.sync_and_launch(l) : FLM_SYNC_AND_LAUNCH(cd,l);
             if (byte_stats) bs.d_a.up += (uint64_t)batch_size * IM;
 
             // ── Cross-layer boundary (roadmap step 3): fused D-output → l+1 QKV input ──
             if(l+1<NC){
-                FLM_WAIT_KERNEL(cd,r_cd);
-                FLM_READBACK(cd);
+                if (sm) { cd_m.wait_kernel(r_cd); cd_m.readback(); }
+                else { FLM_WAIT_KERNEL(cd,r_cd); FLM_READBACK(cd); }
                 if (byte_stats) bs.d_a.down += (uint64_t)batch_size * H * 4;
                 float cs=cd_ascale*dsc[l];
                 if(flm_xclbin_available){
                     cq_ascale=fused_cross_layer_boundary<int16_t>(hcd->Cm,hcd->ND,cs,
                         sb_data.data(),h_b.data(),in_n[l+1].data(),H,batch_size,rn_ss.data());
                 }else{
-                    cq_ascale=fused_cross_layer_boundary<int32_t>(cd.Cm,cd.ND,cs,
+                    cq_ascale=fused_cross_layer_boundary<int32_t>(sm ? cd_m.Cm : cd.Cm, sm ? cd_m.ND : cd.ND, cs,
                         sb_data.data(),h_b.data(),in_n[l+1].data(),H,batch_size,rn_ss.data());
                 }
             }else{
                 // Last layer: keep the final hidden state in h_b for the LM head
-                FLM_DEQUANTIZE(cd,r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
+                if (sm) cd_m.dequantize(r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
+                else FLM_DEQUANTIZE(cd,r_cd,dw_b.data(),batch_size,H,cd_ascale,dsc[l],l);
                 if (byte_stats) bs.d_a.down += (uint64_t)batch_size * H * 4;
                 cn(dw_b.data(),batch_size*H);
 
