@@ -240,7 +240,10 @@ for fifo, offset, sizes, strides in ops:
                 if msg not in seen:
                     errors.append(msg); seen.add(msg)
         else:
-            if sizes == [1, 1, 1, 8192] and strides == [1, 1, 1, 1]:
+            # big-BD feed (issue #1776) uses 256 KB linear B slices (262144); the
+            # original design used 8192-byte tiles. Accept any 8192-multiple tile.
+            if (sizes[0:3] == [1, 1, 1] and len(sizes) == 4 and
+                sizes[3] % 8192 == 0 and strides == [1, 1, 1, 1]):
                 b_ok = True
                 # Format A passes offset as a scalar (int); Format B as a list.
                 # Normalize to a list and verify EVERY offset dim is an 8192-multiple.
@@ -252,7 +255,7 @@ for fifo, offset, sizes, strides in ops:
                     if msg not in seen:
                         errors.append(msg); seen.add(msg)
             else:
-                msg = f"B_S tap sizes {sizes} strides {strides}, expected linear 8192-byte tile"
+                msg = f"B_S tap sizes {sizes} strides {strides}, expected linear 8192-multiple tile"
                 if msg not in seen:
                     errors.append(msg); seen.add(msg)
 
