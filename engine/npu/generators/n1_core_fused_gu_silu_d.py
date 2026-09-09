@@ -213,32 +213,34 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
             # order against the per-batch awaits and deadlock the launch
             # (measured: core stalls, C2 never written).
             for cg in range(n_cg_gu):
+                # big-BD B feed: ONE linear BD per column covering ALL n_k
+                # k-chunks (contiguous in the column-major pack). Streams into
+                # the B fifo; the core's per-ki consume flow-controls it. The
+                # tokens are on the B_s[c] channels, independent of A_c's.
+                bt_list = []
+                for c in range(n_aie_cols):
+                    n_tile = cg * n_aie_cols + c
+                    bt = shim_dma_single_bd_task(
+                        B_s[c], B_gu,
+                        offset=n_tile * (K // k) * (k * n),
+                        sizes=[1, 1, 1, (K // k) * (k * n)],
+                        strides=[1, 1, 1, 1], issue_token=True)
+                    dma_start_task(bt); bt_list.append(bt)
+                # A stays per-ki-batch (shim0 16-slot limit). A_c and B_s[c]
+                # are separate channels so their token order is independent.
                 for ki0 in range(0, n_k, BATCH_SIZE):
                     ki_end = min(ki0 + BATCH_SIZE, n_k)
-                    at_list, bt_list = [], []
+                    at_list = []
                     for ki in range(ki0, ki_end):
                         at = shim_dma_single_bd_task(
                             A_c, A, offset=ki * k,
                             sizes=[m // 8, k // 8, 8, 8],
                             strides=[8 * K, 8, K, 1], issue_token=True)
                         dma_start_task(at); at_list.append(at)
-                        for c in range(n_aie_cols):
-                            n_tile = cg * n_aie_cols + c
-                            # LINEAR tap: the host packs each (64,128) B tile
-                            # CONTIGUOUSLY in the mmul chunk order (byte s =
-                            # i0*1024 + i1*64 + i2*8 + i3), so one tile is one
-                            # 8 KB linear DMA — the row-major 4D tap read
-                            # 8-byte bursts at 4096-byte strides (cache-line
-                            # waste -> ~2.4 GB/s effective; measured 5.1 ms
-                            # wait for the 12.4 MB/launch weight stream).
-                            bt = shim_dma_single_bd_task(
-                                B_s[c], B_gu,
-                                offset=(n_tile * (K // k) + ki) * (k * n),
-                                sizes=[1, 1, 1, k * n],
-                                strides=[1, 1, 1, 1], issue_token=True)
-                            dma_start_task(bt); bt_list.append(bt)
-                    dma_await_task(*at_list, *bt_list)
-                    dma_free_task(*at_list, *bt_list)
+                    dma_await_task(*at_list)
+                    dma_free_task(*at_list)
+                dma_await_task(*bt_list)
+                dma_free_task(*bt_list)
                 # gs' header tile (end of this cg's B stream): the FULL
                 # (64,128) B-tile tap reads the WEIGHT BO header at W (the
                 # first 32 delivered bytes are the reliably delivered 8-float
@@ -286,28 +288,31 @@ def my_fused(M, K, N_GU, N_D, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                 dma_await_task(*h2_tasks)
                 dma_free_task(*h2_tasks)
 
-            # ── D phase: 2 col_groups × 32 K-chunks (A = h2 broadcast via the
-            # shared A_c fifo + B_d) ──
+            # ── D phase: 2 col_groups (A = h2 broadcast via the shared A_c
+            # fifo + B_d) — same big-BD feed as the GU phase ──
             for cg2 in range(n_cg_d):
+                bt_list = []
+                for c in range(n_aie_cols):
+                    n_tile = cg2 * n_aie_cols + c
+                    bt = shim_dma_single_bd_task(
+                        B_s[c], B_d,
+                        offset=n_tile * (K // k) * (k * n),
+                        sizes=[1, 1, 1, (K // k) * (k * n)],
+                        strides=[1, 1, 1, 1], issue_token=True)
+                    dma_start_task(bt); bt_list.append(bt)
                 for ki0 in range(0, n_k, BATCH_SIZE):
                     ki_end = min(ki0 + BATCH_SIZE, n_k)
-                    at_list, bt_list = [], []
+                    at_list = []
                     for ki in range(ki0, ki_end):
                         at = shim_dma_single_bd_task(
                             A_c, H2, offset=ki * k,
                             sizes=[m // 8, k // 8, 8, 8],
                             strides=[8 * K, 8, K, 1], issue_token=True)
                         dma_start_task(at); at_list.append(at)
-                        for c in range(n_aie_cols):
-                            n_tile = cg2 * n_aie_cols + c
-                            bt = shim_dma_single_bd_task(
-                                B_s[c], B_d,
-                                offset=(n_tile * (K // k) + ki) * (k * n),
-                                sizes=[1, 1, 1, k * n],
-                                strides=[1, 1, 1, 1], issue_token=True)
-                            dma_start_task(bt); bt_list.append(bt)
-                    dma_await_task(*at_list, *bt_list)
-                    dma_free_task(*at_list, *bt_list)
+                    dma_await_task(*at_list)
+                    dma_free_task(*at_list)
+                dma_await_task(*bt_list)
+                dma_free_task(*bt_list)
                 # C2 writeback (v27 C tap; N_D = the C buffer's col stride)
                 c_tasks = []
                 for c in range(n_aie_cols):
