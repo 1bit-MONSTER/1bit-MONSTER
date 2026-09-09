@@ -65,6 +65,10 @@ public:
     /// Returns token count, or -1 on failure (n_max too small = -needed).
     int tokenize(const std::string& text, int32_t* out_tokens, int32_t n_max) const;
 
+    /// Chunked batched prompt decode (positions 0..n-1, ubatch 512).
+    /// Returns n, or -1. Leaves pos=n, resume_token=toks[n-1] for export.
+    int prefill_batch(const int32_t* toks, int n);
+
     // One decode step: feed token_id, return argmax next token, or -1 on failure.
     int generate(int token_id);
 

@@ -54,13 +54,20 @@ public:
         }
         toks.resize((size_t)np);
         fprintf(stderr, "[hrxpre] prompt tokens: %d\n", np);
-        // Live prefill: decode each prompt token at its position on HRX0.
-        // Inprocess::generate feeds one token per llama_decode; the context
-        // tracks pos/resume_token/n_session for the export.
+        // Live prefill: batched chunked decode for prompts (positions 0..n-1,
+        // ubatch 512 inside the seam) — 2048-token prompts are feasible; the
+        // single-token generate loop is used only for very short prompts.
         hrx_->reset();
-        for (int i = 0; i < np; i++) {
-            int nx = hrx_->generate(toks[(size_t)i]);
-            if (nx < 0) { fprintf(stderr, "[hrxpre] prefill decode failed at %d\n", i); return r; }
+        if (np > 64) {
+            if (hrx_->prefill_batch(toks.data(), np) != np) {
+                fprintf(stderr, "[hrxpre] prefill_batch failed\n");
+                return r;
+            }
+        } else {
+            for (int i = 0; i < np; i++) {
+                int nx = hrx_->generate(toks[(size_t)i]);
+                if (nx < 0) { fprintf(stderr, "[hrxpre] prefill decode failed at %d\n", i); return r; }
+            }
         }
         // Export the live state into a fresh memfd (zero-copy handoff).
         int fd = (int)syscall(319, "hrxpre-state", 0);

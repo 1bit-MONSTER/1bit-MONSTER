@@ -481,6 +481,46 @@ int Inprocess::tokenize(const std::string& text, int32_t* out_tokens, int32_t n_
                                  out_tokens, n_max, true, false);
 }
 
+int Inprocess::prefill_batch(const int32_t* toks, int n) {
+    if (!impl_->ctx || !impl_->llama_decode || !toks || n <= 0) return -1;
+    // Chunked prompt decode at explicit positions (llama_batch mirrors the
+    // bundle ABI; n_ubatch is 512 in load_model). After the batch decode the
+    // context logits predict the token AFTER the prompt, pos == n.
+    const int chunk = 512;
+    int off = 0;
+    while (off < n) {
+        int nc = (n - off) < chunk ? (n - off) : chunk;
+        std::vector<int32_t> pos(nc), nseq(nc);
+        std::vector<int32_t*> seq(nc);
+        std::vector<int8_t> logits(nc);
+        for (int i = 0; i < nc; i++) {
+            pos[i] = off + i;
+            nseq[i] = 1;
+            static int32_t seq0 = 0;
+            seq[i] = &seq0;
+            logits[i] = (off + i == n - 1) ? 1 : 0;  // last ubatch token of prompt
+        }
+        llama_batch b;
+        b.n_tokens = nc;
+        b.token = const_cast<int32_t*>(toks + off);
+        b.embd = nullptr;
+        b.pos = pos.data();
+        b.n_seq_id = nseq.data();
+        b.seq_id = seq.data();
+        b.logits = logits.data();
+        if (impl_->llama_decode(impl_->ctx, b) != 0) {
+            fprintf(stderr, "[hrx] prefill_batch decode failed at off %d\n", off);
+            return -1;
+        }
+        off += nc;
+    }
+    impl_->pos = (llama_pos)n;
+    impl_->n_session = (size_t)n;
+    impl_->resume_token = (int)toks[n - 1];
+    fprintf(stderr, "[hrx] prefill_batch: %d tokens decoded (chunked 512)\n", n);
+    return n;
+}
+
 int Inprocess::export_session_mem(int fd_out) {
     if (!impl_->ctx || !impl_->llama_state_get_data) {
         fprintf(stderr, "[hrx] export_session_mem: no context or no state_get_data\n");
