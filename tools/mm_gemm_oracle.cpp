@@ -22,6 +22,9 @@
 //     <model.q4nx> "model.layer.3.self_attn.q_proj.weight" \
 //     <mm.xclbin> <xclbin>.bin M K N
 // (First build gen_mm_insts and produce <xclbin>.bin with the real Gemm.)
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE  // for memmem (GNU extension) — required under strict -std=c++20
+#endif
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -77,13 +80,16 @@ int main(int argc,char**argv){
     // INTO act (in-place, #2106). act must therefore be sized for the LARGER of the
     // A input (M*K) and the C output (M*N); using M*K alone caused heap corruption
     // (free(): invalid size) whenever N > K. Sized max(M*K, M*N)*2 bf16 bytes.
-    const size_t act_needed = (size_t)std::max(M * K, M * N) * 2;
-    if ((size_t)M * N * 2 > act_needed || (size_t)M * K * 2 > act_needed) {
-        fprintf(stderr, "assert failed: act must be sized max(M*K, M*N)*2 (got %zu, M=%d K=%d N=%d)\n",
-                act_needed, M, K, N);
+    // (size_t casts before multiply avoid int overflow for large dims.)
+    const size_t a_elems = (size_t)M * (size_t)K;
+    const size_t c_elems = (size_t)M * (size_t)N;
+    const size_t act_required = std::max(a_elems, c_elems) * 2; // required: in-place C overwrites A
+    const size_t actB = act_required; // actual allocation — kept separate so the guard below stays meaningful
+    if (actB < act_required) {
+        fprintf(stderr, "assert failed: act must be sized >= max(M*K, M*N)*2 (allocated %zu, required %zu, M=%d K=%d N=%d)\n",
+                actB, act_required, M, K, N);
         return 1;
     }
-    const size_t actB = act_needed;
     xrt::bo act(dev,actB,XRT_BO_FLAGS_HOST_ONLY,gA); uint16_t*am=(uint16_t*)act.map();
     memset(am,0,actB); for(int i=0;i<M&&i<K;i++)am[i*K+i]=f_to_bf16(1.0f); act.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     // ws zeros, wt = fused-dequant tiles, kv zeros
