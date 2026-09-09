@@ -16,14 +16,17 @@ namespace engine {
 class HrxDecodeEngine : public DecodeEngine {
 public:
     HrxDecodeEngine(std::shared_ptr<hrx::Inprocess> inprocess, const std::string& model_path,
-                    int n_gpu_layers, uint32_t ctx_size)
+                    int n_gpu_layers, uint32_t ctx_size,
+                    const std::string& device_pin = "HRX0")
         : hrx_(std::move(inprocess)), model_(model_path),
-          ngl_(n_gpu_layers), ctx_(ctx_size) {}
+          ngl_(n_gpu_layers), ctx_(ctx_size), devpin_(device_pin) {}
 
-    /// Initialize the in-process HRX engine + load the model. Must be called
-    /// before decode(). Returns true on success.
+    /// Initialize the in-process engine (device per policy: Vulkan0 for the
+    /// stock Q4_K class, HRX0 for moat Q4NX/zaya) + load the model. Must be
+    /// called before decode(). Returns true on success.
     bool init() {
         if (!hrx_) return false;
+        hrx_->set_device_pin(devpin_);
         if (!hrx_->init()) { fprintf(stderr, "[hrxdec] Inprocess::init failed\n"); return false; }
         if (!hrx_->load_model(model_, ngl_, ctx_)) {
             fprintf(stderr, "[hrxdec] load_model failed\n");
@@ -72,6 +75,7 @@ private:
     std::string model_;
     int ngl_ = -1;
     uint32_t ctx_ = 0;
+    std::string devpin_ = "HRX0";
 };
 
 }  // namespace engine

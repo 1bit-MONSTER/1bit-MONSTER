@@ -23,13 +23,15 @@ namespace engine {
 class HrxPrefillEngine final : public PrefillEngine {
 public:
     HrxPrefillEngine(std::shared_ptr<hrx::Inprocess> inprocess,
-                     std::string model_path, int n_gpu_layers, uint32_t ctx_size)
+                     std::string model_path, int n_gpu_layers, uint32_t ctx_size,
+                     const std::string& device_pin = "HRX0")
         : hrx_(std::move(inprocess)), model_path_(std::move(model_path)),
-          n_gpu_layers_(n_gpu_layers), ctx_size_(ctx_size) {}
+          n_gpu_layers_(n_gpu_layers), ctx_size_(ctx_size), devpin_(device_pin) {}
 
     bool init() {
         if (!hrx_) return false;
         if (!hrx_->has_model()) {
+            hrx_->set_device_pin(devpin_);
             if (!hrx_->init()) { fprintf(stderr, "[hrxpre] init FAILED\n"); return false; }
             if (!hrx_->load_model(model_path_, n_gpu_layers_, ctx_size_)) {
                 fprintf(stderr, "[hrxpre] load_model FAILED\n"); return false;
@@ -83,6 +85,7 @@ private:
     std::string model_path_;
     int n_gpu_layers_;
     uint32_t ctx_size_;
+    std::string devpin_ = "HRX0";
 };
 
 }  // namespace engine

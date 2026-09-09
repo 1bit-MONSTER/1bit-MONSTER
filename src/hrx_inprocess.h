@@ -50,6 +50,10 @@ public:
     // generate(). Returns the number of imported tokens, or -1.
     long load_session_mem(int fd);
 
+    /// Pin this instance's offload device before init() ("HRX0", "Vulkan0",
+    /// or "none" for default order). Router policy chooses per model class.
+    void set_device_pin(const std::string& dev);
+
     /// Last input token of the imported session (for continuation), or -1.
     int resume_token() const;
 

@@ -179,6 +179,7 @@ struct Inprocess::Impl {
     ggml_backend_dev_t hrx_dev = nullptr;
     ggml_backend_dev_t devs[2] = {nullptr, nullptr};
     std::string hrx_dev_name;
+    std::string pin_override;  // set_device_pin() before init()
     int vocab = 0;
     int n_embd = 0;
     llama_pos pos = 0;
@@ -310,16 +311,26 @@ bool Inprocess::init() {
 
     if (impl_->ggml_backend_dev_by_name && impl_->ggml_backend_dev_name &&
         env_or("HRX_PIN_DEVICES", "1") != "0") {
-        ggml_backend_dev_t d = impl_->ggml_backend_dev_by_name("HRX0");  // device 0 of the HRX backend
-        if (d) {
-            impl_->hrx_dev = d;
-            const char* n = impl_->ggml_backend_dev_name(d);
-            impl_->hrx_dev_name = n ? n : "HRX";
-            impl_->devs[0] = d;
-            impl_->devs[1] = nullptr;
-            fprintf(stderr, "[hrx] HRX device found: %s\n", impl_->hrx_dev_name.c_str());
-        } else {
-            fprintf(stderr, "[hrx] warning: no device named HRX0 — offload will use default device order\n");
+        // Pinned device by name (set_device_pin() wins; else HRX_PIN_DEV;
+        // default HRX0). The single-API router serves stock Q4_K models on
+        // the policy-winning Vulkan0 leg and moat Q4NX/zaya on HRX0 — the
+        // same Inprocess seam, different pin (audit follow-up, goal
+        // mtsy05dx). "none" = no pin (default order).
+        std::string pin = impl_->pin_override.empty() ? env_or("HRX_PIN_DEV", "HRX0")
+                                                      : impl_->pin_override;
+        if (pin != "none") {
+            ggml_backend_dev_t d = impl_->ggml_backend_dev_by_name(pin.c_str());
+            if (d) {
+                impl_->hrx_dev = d;
+                const char* n = impl_->ggml_backend_dev_name(d);
+                impl_->hrx_dev_name = n ? n : pin;
+                impl_->devs[0] = d;
+                impl_->devs[1] = nullptr;
+                fprintf(stderr, "[hrx] device pinned: %s\n", impl_->hrx_dev_name.c_str());
+            } else {
+                fprintf(stderr, "[hrx] warning: no device named %s — offload will use default device order\n",
+                        pin.c_str());
+            }
         }
     }
     if (impl_->ggml_backend_hrx_get_device_count) {
@@ -510,6 +521,10 @@ int Inprocess::export_session_mem(int fd_out) {
     fprintf(stderr, "[hrx] session exported to memfd: %u tokens, %zu bytes state (raw %zu)\n",
             ntok, hdr + raw_sz, raw_sz);
     return (int)raw_sz;
+}
+
+void Inprocess::set_device_pin(const std::string& dev) {
+    impl_->pin_override = dev;  // read at init(); "none" = default order
 }
 
 int Inprocess::resume_token() const {
