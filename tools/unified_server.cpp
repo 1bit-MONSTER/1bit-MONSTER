@@ -29,6 +29,7 @@
 #include "batch_scheduler.h"
 #include "model_discovery.h"
 #include "model_router.h"
+#include "router/serve_router.h"
 #include "gguf_reader.h"
 #include "simple_tokenizer.h"
 #include "vl_processor.h"
@@ -624,6 +625,59 @@ static bool run_spec_decode(Backend* target, Backend* draft,
 }
 
 
+
+// [sage-1] SAGE_PHASE_ROUTE=1: serve one request through the single-API
+// PhaseRouter (policy class -> prefill leg -> memfd -> decode leg). Returns
+// an empty json on any failure so the caller falls through to the standard
+// path (fail-close). Engines are cached per (model_path, class).
+static json route_phase_request(const ModelConfig& cfg, const std::string& prompt,
+                                int max_tokens) {
+    json out;
+    const std::string klass =
+        (cfg.format == ModelFormat::Q4NX || cfg.format == ModelFormat::H1B)
+            ? "moat-q4nx" : "stock-q4k";
+    static std::unordered_map<std::string, engine::ServedRouter> cache;
+    auto key = cfg.model_path + "|" + klass;
+    auto it = cache.find(key);
+    if (it == cache.end()) {
+        engine::ServedRouter sr =
+            engine::make_served_router(cfg.model_path, klass, -1, 4096u);
+        if (!sr.ready) {
+            fprintf(stderr, "[serve-router] engine init failed for %s (%s)\n",
+                    cfg.model_path.c_str(), klass.c_str());
+            return out;
+        }
+        it = cache.emplace(key, std::move(sr)).first;
+    }
+    auto t0 = std::chrono::steady_clock::now();
+    std::string ids = engine::served_generate(it->second, prompt, max_tokens);
+    double ms = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - t0).count();
+    if (ids.empty()) return out;  // fail-close
+    std::vector<int> toks;
+    {
+        std::istringstream iss(ids);
+        int v;
+        while (iss >> v) toks.push_back(v);
+    }
+    std::string text = g_tokenizer.decode(toks);
+    out["backend_used"] = "phase:hrx0->" + it->second.decode_pin;
+    out["strategy"] = "none";
+    out["tokens"] = toks;
+    out["text"] = text;
+    out["gen_tokens"] = (int)toks.size();
+    out["gen_ms"] = (long)ms;
+    out["tok_s"] = toks.empty() ? 0.0f : (float)toks.size() / (float)(ms / 1000.0);
+    out["phase_route"] = json{{"model_class", klass},
+                             {"prefill", "hrx(HRX0)"},
+                             {"decode", it->second.decode_pin},
+                             {"state", "memfd"}};
+    fprintf(stderr, "[serve-router] phase route %s: %d tok in %.1f ms (%.1f t/s)\n",
+            klass.c_str(), (int)toks.size(), ms,
+            toks.empty() ? 0.0 : (double)toks.size() / (ms / 1000.0));
+    return out;
+}
+
 static json generate_completion(BackendManager& mgr,
                                  const std::vector<int>& prompt_tokens,
                                  const std::vector<double>& prompt_logprobs,
@@ -636,7 +690,16 @@ static json generate_completion(BackendManager& mgr,
                                  const std::string& raw_prompt = "",
                                  float repeat_penalty = 0.0f,
                                  float top_p = 0.0f,
-                                 const std::string& session_id = "") {
+                                 const std::string& session_id = "",
+                                 const ModelConfig* phase_cfg = nullptr) {
+    // [sage-1] phase-routed single-API serve (env-gated; fail-close to the
+    // standard path below on any router error).
+    if (phase_cfg != nullptr && std::getenv("SAGE_PHASE_ROUTE") != nullptr &&
+        !raw_prompt.empty() && max_tokens > 0) {
+        json routed = route_phase_request(*phase_cfg, raw_prompt, max_tokens);
+        if (!routed.empty()) return routed;
+        fprintf(stderr, "[serve-router] routed attempt failed - falling back\n");
+    }
     json result;
 
     // Select fixed backend if specified (overrides strategy routing).
@@ -2194,7 +2257,8 @@ int main(int argc, char** argv) {
                                                max_tokens, backend_id,
                                                se, last_user_msg,
                                                temperature, top_k, prompt, repeat_penalty, top_p,
-                                               session_id);
+                                               session_id,
+                                               &switch_cfg);
 
         // Build OpenAI-compatible response
         json response;
@@ -2377,7 +2441,8 @@ int main(int argc, char** argv) {
             try {
                 gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
                                                  nullptr, "", temperature, top_k, raw_prompt, repeat_penalty, top_p,
-                                                 session_id);
+                                                 session_id,
+                                                 &switch_cfg);
             } catch (const std::exception& e) {
                 fprintf(stderr, "[completions] generate error: %s\n", e.what());
                 gen_result = {{"error", std::string("Generation failed: ") + e.what()}};
