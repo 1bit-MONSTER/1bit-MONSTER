@@ -101,11 +101,32 @@ def round_trip():
     return maxdiff == 0.0 and exact == 8192
 
 
+def reorder_tiles_g8(tiles: bytes, G: int = 8) -> bytes:
+    """Apply the reorder_cpy tile-group interleave (byte-exact vs the real
+    runtime capture rc_dst_0_1310720.bin, 2026-09-09):
+        out[o] = in[G*(o//G) + (o//2)%(G//2) + (G//2)*(o%2)]
+      G=8 -> [0,4,1,5,2,6,3,7] per group of 8 tiles.
+    Pure tile permutation: within-tile bytes are unchanged."""
+    n = len(tiles) // TILE_BYTES
+    out = bytearray(len(tiles))
+    for o in range(n):
+        src = G * (o // G) + (o // 2) % (G // 2) + (G // 2) * (o % 2)
+        out[o * TILE_BYTES:(o + 1) * TILE_BYTES] = tiles[src * TILE_BYTES:(src + 1) * TILE_BYTES]
+    return bytes(out)
+
+
 if __name__ == "__main__":
     ok = round_trip()
-    # also decode a real tile if a path is given
     import sys
-    if len(sys.argv) > 1:
+    # --verify-g8 <raw_tiles> <rc_dst> : confirm the G=8 interleave reproduces
+    # the runtime's reorder_cpy output byte-exact.
+    if len(sys.argv) >= 4 and sys.argv[1] == "--verify-g8":
+        raw = open(sys.argv[2], "rb").read()
+        rc = open(sys.argv[3], "rb").read()
+        got = reorder_tiles_g8(raw)
+        print(f"verify-g8: reorder(raw) == rc_dst -> {got == rc}")
+        print(f"  tiles: raw={len(raw)//TILE_BYTES} rc_dst={len(rc)//TILE_BYTES}")
+    elif len(sys.argv) > 1:
         raw = open(sys.argv[1], "rb").read()
         n = len(raw) // TILE_BYTES
         print(f"{sys.argv[1]}: {n} tile(s), decoding tile 0")
