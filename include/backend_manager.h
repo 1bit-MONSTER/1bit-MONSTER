@@ -100,6 +100,8 @@ struct BackendPlugin {
 // monitors health, and handles failover.
 class BackendManager {
 public:
+    /// [sage-1] current model config (model_path etc.), as passed to init().
+    const ModelConfig& config() const { return cfg_; }
     BackendManager();
     ~BackendManager();
 

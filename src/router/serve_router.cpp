@@ -36,8 +36,8 @@ ServedRouter make_served_router(const std::string& model_path,
     auto dec_inprocess = std::make_shared<hrx::Inprocess>();
     auto de = std::make_shared<HrxDecodeEngine>(dec_inprocess, model_path,
                                                 n_gpu_layers, ctx_size, decode_pin);
-    if (!pe->init()) { fprintf(stderr, "[serve] prefill engine init FAILED\\n"); return sr; }
-    if (!de->init()) { fprintf(stderr, "[serve] decode engine init FAILED\\n"); return sr; }
+    if (!pe->init()) { fprintf(stderr, "[serve] prefill engine init FAILED\n"); return sr; }
+    if (!de->init()) { fprintf(stderr, "[serve] decode engine init FAILED\n"); return sr; }
     router->add_prefill_engine("hrx", pe);
     router->add_decode_engine("hrx", de);
     PhasePolicy pol = phase_policy_for_class(klass);

@@ -694,9 +694,16 @@ static json generate_completion(BackendManager& mgr,
                                  const ModelConfig* phase_cfg = nullptr) {
     // [sage-1] phase-routed single-API serve (env-gated; fail-close to the
     // standard path below on any router error).
+    ModelConfig phase_model;
+    if (phase_cfg != nullptr) phase_model = *phase_cfg;
+    if (phase_model.model_path.empty()) phase_model = mgr.config();
     if (phase_cfg != nullptr && std::getenv("SAGE_PHASE_ROUTE") != nullptr &&
-        !raw_prompt.empty() && max_tokens > 0) {
-        json routed = route_phase_request(*phase_cfg, raw_prompt, max_tokens);
+        !raw_prompt.empty() && max_tokens > 0 &&
+        !phase_model.model_path.empty()) {
+        fprintf(stderr, "[serve-router] hook: model=%s path=%s class=%s\n",
+                phase_model.model_name.c_str(), phase_model.model_path.c_str(),
+                phase_model.format == ModelFormat::Q4NX ? "moat-q4nx" : "stock-q4k");
+        json routed = route_phase_request(phase_model, raw_prompt, max_tokens);
         if (!routed.empty()) return routed;
         fprintf(stderr, "[serve-router] routed attempt failed - falling back\n");
     }
@@ -2253,6 +2260,16 @@ int main(int argc, char** argv) {
         }
 
         // Generate with strategy-aware routing (#696 fix: no global lock held)
+        ModelConfig route_cfg = switch_cfg;
+        if (route_cfg.model_path.empty()) {
+            std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+            for (auto& dm : discovered) {
+                if (dm.model_name == req_model) { route_cfg = dm; break; }
+            }
+            if (route_cfg.model_path.empty()) route_cfg = current_cfg;
+        }
+        fprintf(stderr, "[serve-router] route_cfg: model=%s path=%s\n",
+                route_cfg.model_name.c_str(), route_cfg.model_path.c_str());
         json gen_result = generate_completion(mgr, prompt_tokens, prompt_logprobs,
                                                max_tokens, backend_id,
                                                se, last_user_msg,
@@ -2439,6 +2456,14 @@ int main(int argc, char** argv) {
         } else {
             std::vector<double> empty_logprobs;
             try {
+                ModelConfig route_cfg = switch_cfg;
+                if (route_cfg.model_path.empty()) {
+                    std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+                    for (auto& dm : discovered) {
+                        if (dm.model_name == req_model) { route_cfg = dm; break; }
+                    }
+                    if (route_cfg.model_path.empty()) route_cfg = current_cfg;
+                }
                 gen_result = generate_completion(mgr, prompt_tokens, empty_logprobs, max_tokens, backend_id,
                                                  nullptr, "", temperature, top_k, raw_prompt, repeat_penalty, top_p,
                                                  session_id,
