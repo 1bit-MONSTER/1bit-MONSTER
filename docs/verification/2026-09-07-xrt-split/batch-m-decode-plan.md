@@ -120,6 +120,19 @@ that actually fills the fused kernel's 8 rows on the MoE layers.
    tokens spread across experts, the MoE layer wins are small and the dense
    layers carry the throughput gain. Measure `P(same expert | consecutive
    batch)` before committing to Phase 2's complexity.
+   **Favorable prior (2026-09-09):** the router is RECURRENT —
+   `zaya_moe::router` carries `prev_router` (the gate-down state) forward and
+   adds `prev_router * eda` (router_states_scale) each token before the norm
+   (EDA = the model's own recurrent router-state coupling). Consecutive
+   tokens therefore share router state *and* highly-correlated hidden states,
+   so consecutive-token same-expert routing is expected to be high — but the
+   number still needs a real decode measurement.
+   **Recipe:** rebuild the zaya decode object with an env-gated expert log
+   (`g++ -c -std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I engine/npu/src
+   -I engine/npu/include -I engine/npu/generators -I include
+   engine/npu/src/zaya_decode.cpp`), run `NPU_FUSED=1 engine/npu/build/npu_engine
+   ~/models/zaya1-8b.q4nx <prompt tokens>` for ~64 tokens, and histogram
+   `e[l][t] == e[l][t-1]` over the 20 MoE layers.
 2. **Shared batch qn_s precision**: batch-min qn_s squeezes quiet rows; the
    corr delta vs per-token qn_s is unmeasured. A per-row header (8 floats per
    section, kernel change) is the follow-up if the delta is unacceptable.
