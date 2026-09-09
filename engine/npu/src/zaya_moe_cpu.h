@@ -260,8 +260,7 @@ inline void pack_d_percol(const MoeDims& d, int expert,
 // ~1–2 ms scalar) vs ~2.9 ms saved dispatch per layer. The i-outer loop keeps
 // B access row-major (cache-friendly) — this runs on the decode critical path.
 inline float host_h2_amax_qn_s(const int8_t* A, const int8_t* guB,
-                               const float* guGs, int H, int n_ff, float ag,
-                               int am = 1) {
+                               const float* guGs, int H, int n_ff, float ag) {
     const size_t N = 2 * (size_t)n_ff;
     // AVX2: the interleaved pack (col 2p = gate[p], 2p+1 = up[p]) makes the
     // even/odd byte lanes the gate/up pairs. Sign-extend 16 bytes, blend the
@@ -269,44 +268,36 @@ inline float host_h2_amax_qn_s(const int8_t* A, const int8_t* guB,
     // adjacent lanes (partner lane = 0) -> 8 int32 per 16 bytes. int32
     // accumulation is order-independent, so this is bit-identical to the
     // scalar loop (measured: 3.8 ms -> ~0.3 ms per MoE layer).
-    // batch-M (am > 1): loops over am activation rows (A is [am x H]) and
-    // returns the SHARED qn_s = 127 / max-over-all-rows |h2| — the
-    // batch-min scale that keeps every row saturation-free under the fused
-    // kernel's single shared gs section header (per-row qn_s would need a
-    // per-row header the kernel does not carry).
     const int nv = n_ff / 8;   // 8 pairs per vector group (16 bytes)
+    std::vector<__m256i> sgv(nv, _mm256_setzero_si256());
+    std::vector<__m256i> suv(nv, _mm256_setzero_si256());
     const __m256i ZERO = _mm256_setzero_si256();
-    float amax = 0;
-    for (int r = 0; r < am; r++) {
-        const int8_t* Ar = A + (size_t)r * H;
-        std::vector<__m256i> sgv(nv, _mm256_setzero_si256());
-        std::vector<__m256i> suv(nv, _mm256_setzero_si256());
-        for (int i = 0; i < H; i++) {
-            int8_t ai = Ar[i];
-            const __m256i ai16 = _mm256_set1_epi16((short)ai);
-            const int8_t* row = guB + (size_t)i * N;
-            for (int v = 0; v < nv; v++) {
-                const int8_t* rp = row + (size_t)v * 16;
-                __m256i lanes = _mm256_cvtepi8_epi16(
-                    _mm_loadu_si128((const __m128i*)rp));   // [g0,u0,...,g7,u7]
-                __m256i gate = _mm256_blend_epi16(lanes, ZERO, 0xAA);
-                __m256i up   = _mm256_blend_epi16(lanes, ZERO, 0x55);
-                sgv[v] = _mm256_add_epi32(sgv[v], _mm256_madd_epi16(gate, ai16));
-                suv[v] = _mm256_add_epi32(suv[v], _mm256_madd_epi16(up, ai16));
-            }
-        }
+    for (int i = 0; i < H; i++) {
+        int8_t ai = A[i];
+        const __m256i ai16 = _mm256_set1_epi16((short)ai);
+        const int8_t* row = guB + (size_t)i * N;
         for (int v = 0; v < nv; v++) {
-            int32_t sg8[8], su8[8];
-            _mm256_storeu_si256((__m256i*)sg8, sgv[v]);
-            _mm256_storeu_si256((__m256i*)su8, suv[v]);
-            for (int k = 0; k < 8; k++) {
-                int p = v * 8 + k;
-                float g = (float)sg8[k] * guGs[2 * p]     * ag;
-                float u = (float)su8[k] * guGs[2 * p + 1] * ag;
-                float h = silu_lut(g) * u;
-                float a = std::fabs(h);
-                if (a > amax) amax = a;
-            }
+            const int8_t* rp = row + (size_t)v * 16;
+            __m256i lanes = _mm256_cvtepi8_epi16(
+                _mm_loadu_si128((const __m128i*)rp));   // [g0,u0,...,g7,u7]
+            __m256i gate = _mm256_blend_epi16(lanes, ZERO, 0xAA);
+            __m256i up   = _mm256_blend_epi16(lanes, ZERO, 0x55);
+            sgv[v] = _mm256_add_epi32(sgv[v], _mm256_madd_epi16(gate, ai16));
+            suv[v] = _mm256_add_epi32(suv[v], _mm256_madd_epi16(up, ai16));
+        }
+    }
+    float amax = 0;
+    for (int v = 0; v < nv; v++) {
+        int32_t sg8[8], su8[8];
+        _mm256_storeu_si256((__m256i*)sg8, sgv[v]);
+        _mm256_storeu_si256((__m256i*)su8, suv[v]);
+        for (int k = 0; k < 8; k++) {
+            int p = v * 8 + k;
+            float g = (float)sg8[k] * guGs[2 * p]     * ag;
+            float u = (float)su8[k] * guGs[2 * p + 1] * ag;
+            float h = silu_lut(g) * u;
+            float a = std::fabs(h);
+            if (a > amax) amax = a;
         }
     }
     return amax < 1e-12f ? 1.0f : 127.0f / amax;
