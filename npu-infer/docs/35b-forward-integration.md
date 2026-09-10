@@ -1410,3 +1410,20 @@ instruction streams as modules.
    (register one xclbin, load the 4 insts as 4 kernels), then add the two
    independent runs to one xrt::runlist per stage. This is the bounded ~2x
    launch-count reduction toward the goal's metric.
+
+## Round 98 — runlist batching INFASIBLE (group IDs differ); v28 fused is the 2-launch path (2026-09-10)
+
+Tried the #2150 runlist batching (share mgu's hwctx + kernel for GU∥SGU /
+D∥SD) on the live 35B engine. Loaded clean but the runlist timed out
+(ERT_CMD_STATE_TIMEOUT). Root cause: the engine MoE xclbins, while all
+"MLIR_AIE" with dpu_kernel_id 0x901, have DIFFERENT ERT group_ids
+(MOE_D grp=393216, MOE_SGU grp=458752, MOE_SD grp=524288) — each xclbin is a
+distinct AIE partition, so its BOs cannot run on another xclbin's kernel. A
+runlist can only batch runs from the SAME xclbin (same group ids), which is
+why the dense path (one layer.xclbin) batches but the MoE GEMMs cannot.
+
+=> The 2-launch/layer reduction is ALREADY delivered by the v28 FUSED path
+   (MOE_GUSGU + MOE_DSD, opt-in NPU_MOE_FUSED=1) — those are single combined
+   xclbins (GU+SGU in one partition, D+SD in one), which is the correct
+   mechanism (xclbin fusion), not cross-xclbin runlists. Reverted the broken
+   runlist attempt; the fused path stands as option (a).
