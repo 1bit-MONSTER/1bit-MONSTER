@@ -1657,7 +1657,15 @@ int main(int argc, char** argv) {
         //    canonical entry by path, so keying discovery by canonical ids (R5)
         //    never breaks an existing `-m <general.name>` invocation.
         if (current_cfg.model_path.empty()) {
-            if (const onebit::ModelArtifact* art = g_registry.find(g_model_name)) {
+            const onebit::ModelArtifact* art = g_registry.find(g_model_name);
+            if (!art) {
+                // find() indexes ids/aliases; a GGUF general.name is the artifact's
+                // display_name, which legacy -m invocations still use.
+                for (const auto& a : g_registry.artifacts()) {
+                    if (a.display_name == g_model_name || a.id == g_model_name) { art = &a; break; }
+                }
+            }
+            if (art) {
                 const std::string p = art->files.empty() ? std::string() : art->files.front().path;
                 for (auto& m : discovered) {
                     if (!p.empty() && m.model_path == p) {
