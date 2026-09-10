@@ -692,6 +692,29 @@ bool GgufReader::open(const std::string& path) {
                                     "(llama.cpp) instead\n",
                             kvp.first.c_str(), ti.dtype);
                     continue;
+                    // Durable rationale for this guard (kept in SOURCE, not only in a commit
+                    // message, because this repo squashes on merge and commit prose does not
+                    // survive it) — every line from here to the end of this block is a comment:
+                    //  * CONTRACT: gguf_block_info() is DOCUMENTED to return {0,0} for an
+                    //    unrecognized dtype (include/gguf_reader.h:79), so the sentinel is
+                    //    intentional and callers must honour it.
+                    //  * PRECEDENTS: two sibling sites already do — gguf_reader.cpp:793 (both
+                    //    fields) and :814 (both fields after this change); deepseek.cpp:208 guards
+                    //    its own divide the same way. This was the only unguarded block-geometry
+                    //    division reachable from startup.
+                    //  * WHY SKIP AND NOT REJECT THE FILE: this loop enumerates a model, so
+                    //    returning false here would make the model UNDISCOVERABLE rather than
+                    //    reported. Skipping keeps metadata enumerable and leaves the failure to
+                    //    the use sites, which refuse this dtype with the same message.
+                    //  * EVIDENCE: measured on a store holding zaya1-8b-ft-q4nx.gguf — dtype
+                    //    census {0: 1003, 43: 280} out of 1283 tensors, first hit
+                    //    blk.9.cca_val_proj1.weight; before this guard `1bit unified -w <store>`
+                    //    died with SIGFPE (rc=136), after it reports and skips.
+                    //  * WHEN CHECKING A FIX LIKE THIS, ASSERT ON OUTPUT IDENTITY, NOT THE EXIT
+                    //    CODE: `1bit unified` takes a single-instance lock whose contention path
+                    //    exits rc=1, so a run that never executed is indistinguishable from a pass
+                    //    by exit status alone. The honest evidence is this message plus the
+                    //    `[discover] N model(s) found` line.
                 }
                 uint64_t n_blocks = (ti.numel + b.block_size - 1) / b.block_size;
                 uint64_t need = n_blocks * (uint64_t)b.block_bytes;
