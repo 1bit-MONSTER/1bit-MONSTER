@@ -591,7 +591,8 @@ int main(int argc,char**argv){
     {
         const char* rl = getenv("NPU_RUNLIST");
         const bool dense_qwen3 = cfg.NV == 151936 && !cfg.has_moe &&
-            ((cfg.NC == 28 && cfg.H == 1024) || (cfg.NC == 28 && cfg.H == 2048) || (cfg.NC == 36 && cfg.H == 2560));
+            ((cfg.NC == 28 && cfg.H == 1024) || (cfg.NC == 28 && cfg.H == 2048) ||
+             (cfg.NC == 36 && cfg.H == 2560) || (cfg.NC == 36 && cfg.H == 4096));
         if (dense_qwen3 && (!rl || atoi(rl) != 0)) {
             int rc = npu_runlist_decode(mp, ng, input_tok_file,
                                         cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.IM, cfg.NV);

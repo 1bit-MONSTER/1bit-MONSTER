@@ -52,9 +52,13 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
     cfg.max_seq_len = 4096;
 
     // 3) per-model layer.xclbin + per-ctx ELF dir (env overrides first)
-    const char* mdir = H == 2048 ? "Qwen3-1.7B-NPU2" : H == 2560 ? "Qwen3-4B-NPU2" : "Qwen3-0.6B-NPU2";
+    const char* mdir = H == 2048 ? "Qwen3-1.7B-NPU2"
+                     : H == 2560 ? "Qwen3-4B-NPU2"
+                     : H == 4096 ? "Qwen3-8B-NPU2"
+                                 : "Qwen3-0.6B-NPU2";
     const char* elf_default = H == 2048 ? "npu-infer/captures/txn-elfs-1p7b"
                             : H == 2560 ? "npu-infer/captures/txn-elfs-4b"
+                            : H == 4096 ? "npu-infer/captures/txn-elfs-8b"
                                         : "npu-infer/captures/txn-elfs";
     if (!getenv("LAYER_XCLBIN")) {
         std::string xb = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + mdir + "/layer.xclbin";

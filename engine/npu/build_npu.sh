@@ -4,6 +4,7 @@ set -euo pipefail
 
 SRCDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$SRCDIR/build"
+REPO_ROOT="$(cd "$SRCDIR/../.." && pwd)"
 SRC="$SRCDIR/src/npu_engine_universal.cpp"
 DEQUANT="$SRCDIR/src/dequant_q4nx.cpp"
 DEQUANT_O="$BUILDDIR/dequant_q4nx.o"
@@ -30,7 +31,6 @@ NPU_INFER_INC="$REPO_ROOT/npu-infer/include"
 
 # XRT headers at /usr/include, libs at system default path
 XRT_INC="/usr/include"
-REPO_ROOT="$(cd "$SRCDIR/../.." && pwd)"
 
 # One-time: compile dequantizer
 if [ ! -f "$DEQUANT_O" ] || [ "$DEQUANT" -nt "$DEQUANT_O" ]; then
