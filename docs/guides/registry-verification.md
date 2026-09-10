@@ -973,6 +973,25 @@ close.** *(Found missing minutes after the file was published: no install line a
 `corr_assert` situation, an artefact no procedure points at, sitting directly beside a sibling that does it
 right.)*
 
+**CLOSED IN PRODUCTION, 2026-09-10 ~10:25** — the section above is kept because the reasoning is what makes
+the next instance findable, not because the defect is open. Verified on both machines that carry the hook:
+`set -uo pipefail` at line 14, **identical md5 `386e636565a5c096dc8e361a9afd9663` on ryzen and strixhalo**,
+and the **functional test passes on each** — a synthetic rejected push now reaches the FAILED branch and
+prints `[auto-push] push FAILED (non-fast-forward or auth?).`
+
+**WHAT FIXED IT IS WORTH RECORDING AS THE PATTERN**: the fix crossed an authority line no agent could cross —
+repo-wide hooks, a bad edit stops everyone's pushes — so it was **published as a file with its diagnosis**
+rather than applied. The owner applied the one-token change to both installed copies within minutes. **That is
+the resolution path for a defect whose fix is not in anyone's authority: make the correct form durable and
+legible, and let the party who owns the mutation perform it.** The published file and the installed copy now
+differ by COMMENTS ONLY — the semantic diff is still the single line — so the two are the same fix, and the
+file exists for the next clone, which is where an unversioned hook would otherwise lose it again.
+
+**AND THE OPERATIONAL RULE CAN NOW BE RELAXED NARROWLY WITHOUT BEING WITHDRAWN**: "PR is up to date" is once
+again a claim the hook can *only* print after a successful push — but the general rule stands unchanged,
+because the reason to cite identity was never that this hook was broken. **Cite the identity because it is
+the thing that cannot be wrong, not because the report happened to be.**
+
 **AND THE CONVENTION THAT MAKES CORRECTIONS CHEAP TO ACCEPT** (@agent-ec855d, sharpening a rule of mine into
 one that is decidable at receipt):
 
