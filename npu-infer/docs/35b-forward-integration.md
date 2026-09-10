@@ -1652,3 +1652,17 @@ region-B (qkv @0x1bdbc000, 2304×5120) reordering is a SEPARATE open question
 from the expert pool's. Split with @agent-3ad863 confirmed: they keep the
 dense bf16mm bridge (gate/up non-contiguous flag + 2-batch/LSB flags noted);
 I own the region-B Q8_0→Q4NX + its BO reordering.
+
+## Round 113 — BO physical layout = 4736-B windows; desc offsets are LOGICAL (2026-09-10)
+
+Byte-verified against moe-cap-rb/bo_to_0248 (layer-0 weight BO):
+  up_exps[0:4736] == cap[0:4736]  TRUE,  reordered 32-windows == cap  TRUE.
+So the expert pool is 4736-B windows (each Q4NX 5120-B tile drops its last
+384 B = 3 int4 rows), NOT 5120-B tiles. R93's "5120-B tiles" is the DESC-logical
+size; the physical is 4736-B. The desc offsets are therefore shifted by
+384 B per preceding window: gate_proj physical = 0x1c6fc000 - 100960*384
+= 0x1a203000 (clean BF16 scales 0.002 confirmed). The gate_proj's window
+ORDER is not identity (cap != model tile 0) — R50's "j in {0..7,224..1879}"
+reordering is the next thing to nail, then the Q8_0->4736-B trim + qkv's
+5120-B re-quant. Region-B remains the last closed piece; needs a dedicated
+reverse-engineering pass using verify_moe_current_layout.py + moe-cap-rb.
