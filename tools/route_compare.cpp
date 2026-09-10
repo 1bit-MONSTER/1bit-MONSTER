@@ -67,6 +67,10 @@ int route_compare_main(int argc, char** argv) {
         if (!art) {
             printf("  registry: (no artifact — the registry does not know this file)\n");
         } else {
+            // The FLIP as it would ship: registry wins the head, router tail preserved.
+            BackendRoute merged = merge_router_and_registry(shipped, plan_route(*art, at_context));
+            printf("  merged  : %s   <- what a flip would do\n",
+                   join(merged.backend_ids_in_order).c_str());
             printf("  registry: %s   %s\n", join(reg_route.backend_ids_in_order).c_str(),
                    same ? "[SAME]" : "[DIFFERS]");
             if (!same) printf("            reason: %s\n", reg_route.reason.c_str());

@@ -326,4 +326,18 @@ const char* type_collapse_note(BackendType t);
 // cannot be audited.
 BackendRoute to_backend_route(const RoutePlan& plan);
 
+// ── THE FLIP PRIMITIVE (one call, no lane lost) ───────────────────────────────
+// The decision table showed two reasons NOT to flip wholesale: the registry's
+// vocabulary cannot express a class-specific CPU backend (cpu_qwen3_5) and there is an
+// unresolved container disagreement. Both are solved by a UNION rather than a
+// replacement: the registry's order wins the HEAD, and every router id not already
+// present is appended as a tail fallback. That means the registry can only DEMOTE a
+// lane, never remove one — so flipping cannot lose a route the engine has today, which
+// is the property that makes a per-lane flip safe to attempt at all.
+//
+// Verified intent: for the four classes where HRX is measured to FAIL, the head moves
+// off hrx_gpu; for the one measured-PASS class the head is unchanged (both already lead
+// with hrx_gpu); and every router id survives somewhere in the list.
+BackendRoute merge_router_and_registry(const BackendRoute& router, const RoutePlan& plan);
+
 }  // namespace onebit

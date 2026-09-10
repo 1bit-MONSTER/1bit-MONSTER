@@ -145,6 +145,26 @@ const char* type_collapse_note(BackendType t) {
     }
 }
 
+BackendRoute merge_router_and_registry(const BackendRoute& router, const RoutePlan& plan) {
+    BackendRoute reg = to_backend_route(plan);
+    if (reg.backend_ids_in_order.empty()) return router;   // registry has nothing to say
+
+    BackendRoute out;
+    out.backend_ids_in_order = reg.backend_ids_in_order;
+    size_t appended = 0;
+    for (const auto& id : router.backend_ids_in_order) {
+        bool present = false;
+        for (const auto& have : out.backend_ids_in_order) if (have == id) { present = true; break; }
+        if (!present) { out.backend_ids_in_order.push_back(id); appended++; }
+    }
+    out.reason = reg.reason;
+    if (appended) {
+        out.reason += " | router tail preserved (" + std::to_string(appended) +
+                      " id(s) the registry vocabulary cannot express)";
+    }
+    return out;
+}
+
 const char* backend_evidence(Capability c) {
     switch (c) {
         // The two rows with box evidence, credited to @agent-ca60cf on strixhalo.
