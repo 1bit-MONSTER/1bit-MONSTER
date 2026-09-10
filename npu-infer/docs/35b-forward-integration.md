@@ -856,3 +856,39 @@ Still open (documented, blocked on the unidentified transforms / missing
 captures): self_attn.gate_proj pool rows 100960..102623 (order under-
 specified), the 2 MB qkv-format BO (R50-54), and the full-attn layers'
 542 MB BO. These do not block the expert-pool + linear-attn core.
+
+## Round 71 — DDR_PATCH offsets are BO-relative; device-VA wall de-risked (2026-09-10)
+
+Decoded the DENSE 0.6B layer TXN (txn-elfs/layer_ctx1.txn) with the same
+decoder as a control, then compared arg_idx semantics against the MoE TXNs:
+
+| arg_idx | dense 0.6B (proven ABI) | MoE linear L0 | MoE full L3 |
+|---|---|---|---|
+| 0 | act (4 patches @0) | **weight** 544 patches, 0x0..0x1cb89800 (~460 MB) | weight 512 patches, 0x0..0x1cc9f000 |
+| 1 | **weight** 384 patches, 0x0..0x942000 (~9.7 MB) | 4 patches @0 | 4 patches @0 |
+| 2 | i5 (2 @0) | 4 patches, 0x0/0x3000 (moe_router) | same |
+| 3 | i6 (2 @0) | 70 patches, 0x0..0x4cb200 (~5 MB) | 2 @0 |
+| 4 | kv 16 patches, 0x0..0x1800000 (25 MB) | 8 patches @0..0xc000 | 8 @0..0x800800 |
+
+Conclusions (corrects R46 / R61-64):
+
+1. **DDR_PATCH arg_off is a BO-relative offset**, patched onto the arg BO base
+   at submit — the dense path proves it (weight offsets 0..0x942000 into the
+   10 MB BO, kv 0..0x1800000 into the 32 MB BO, all relative). The MoE ELF's
+   arg_off values are likewise all ≤ 0x1cc9f000 (460 MB) with NONE in the
+   R46 "absolute" ranges (0x40000000 act / 0x2000000 kv / 0xe000000 experts /
+   0xc0000000 state). The R61-64 "device-VA wall" was a misreading of the
+   arg_off field — the engine does NOT need to replicate absolute addresses.
+2. **The MoE layer kernel has a DIFFERENT BO arg order than the dense kernel.**
+   In the MoE ELF arg_idx 0 = the ~460 MB weight BO (region A at offset 0,
+   region B at offset 0x1bc00000 — the 439 MB gap between them is where the
+   expert pool lives, unreferenced by the layer ELF, matching R46/R50).
+   The dense kernel puts act at arg_idx 0 and weight at arg_idx 1.
+3. Region B (share_*/qkv/ssm_out/gate_proj) is NOT a separate BO — it is
+   offsets 0x1bc00000..0x1cb8e200 inside the SAME weight BO (arg_idx 0).
+
+=> task-3 wiring is unblocked at the address layer: allocate one ~460 MB
+   weight BO + act + router/norms smalls + kv in the MoE kernel's arg order,
+   submit via xrt::runlist (the proven dense mechanism). Remaining task-3
+   unknowns: the MoE kernel's exact arg→BO map (act/kv slots) and the
+   per-token expert GEMM sequences (setup_expert_up/down_gate_q4k exports).
