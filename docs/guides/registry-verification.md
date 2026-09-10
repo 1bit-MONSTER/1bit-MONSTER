@@ -184,6 +184,21 @@ one file. Read-only; wired into no caller. It exists because step 2 ("extend
 `src/model_discovery.cpp` into the registry of record") is a behaviour change and therefore the
 operator's call — the evidence for it should be numbers, not an impression.
 
+**This number has a bad-input run — added after §8's rule showed it had none, and it was worth
+running.** The same tool on a synthetic 5-artifact fixture (`tools/registry_fixture.py`):
+
+```
+fixture : same-file=0   id-divergent=0   legacy-invisible=5
+store   : same-file=18  id-divergent=18  legacy-invisible=13
+```
+
+The numbers **move with the input**, so the tool is reading the directory rather than emitting a
+constant — that is what the control establishes, and it is all it establishes. **The fixture's own
+`0/0/5` must NOT be read as a second finding**: the fixture is synthetic, so "the flat scan sees
+nothing in it" is a property of my fixture's shape, not evidence about real artifacts. A control that
+produced a publishable-looking result is exactly the trap §8 describes; it is recorded here as
+instrument evidence.
+
 Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=13`** — every file
 the flat scan finds carries a different canonical id, 13 artifacts are invisible to a
 non-recursive scan, and three sets of distinct files share one legacy id (the `-m` silent-pick
