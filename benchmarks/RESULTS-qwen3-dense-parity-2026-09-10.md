@@ -727,3 +727,28 @@ of France is" → **32** (=FLM). Layer-0 QKV/O/GU/D all corr ≥0.994 vs the int
 The mm GEMMs are ~329 ms per 256-token batch, but `attn_omp` is O(npt²) (~1.7 s/256tok),
 so end-to-end prefill ≈ 128 tok/s (vs int8 ~85, FLM 1269). Next: wire attn.xclbin (NPU
 attention) to close it — the bf16 GEMM path itself is done and token-parity.
+
+## 2026-09-10 (session 2u): attn.xclbin scoped — the last prefill gap (CPU attn → NPU attn)
+
+### Measured: bf16 prefill = ~166 tok/s (256-tok batch), GEMMs ~329ms, CPU attn ~1.2s
+`attn_omp` is O(npt²) and now dominates. FLM's attn.xclbin does the same causal attention
+on the NPU (~25× faster). To meet FLM's 1269 tok/s the CPU attention must be replaced.
+
+### FLM prefill kernel ABI (re-captured via cap_interposer on run_qwen3_prefill, 9-tok prompt)
+Every prefill run is `(opcode=3, instr=0, ninstr=0, act, ws, w1, w2, kv)` — a 5-BO ABI
+(same shape as the layer.xclbin decode, but with per-op w1 sizes):
+| op | act | ws | w1 | w2 | kv | count |
+|---|---|---|---|---|---|---|
+| QKV GEMM | 1MB | 1MB | **8MB** (dequant W) | 1MB | 32MB | 54 |
+| O GEMM | 1MB | 1MB | **4MB** | 1MB | 32MB | 18 |
+| GU/D GEMM | 2MB/1MB | 1MB | **6MB** | 1MB | 32MB | 36+18 |
+| **attention** | 1MB | 1MB | **32MB** | 1MB | 32MB | 18 |
+
+The attention kernel reads w1=32MB + kv=32MB (two KV buffers) + act (Q/K/V) and writes w2.
+The MHA sequence comes from `qwen3_npu_sequence::gen_mha_engine_seq(seq, L0, L1)` (libmha
+`MHA::generate_mha_sequence`, already dlsym'd in npu-infer/src/flm_bridge.cpp::gen_attn_instrs)
+— its DDR patches use arg_idx 0/1/2 (Q/K/V reads) with the KV cache at 4MB-strided offsets.
+
+### Next (task-3 close-out)
+Wire attn.xclbin: generate the MHA sequence per layer, run the 5-BO ABI (act=Q/K/V,
+w1/kv=KV caches, w2=attn out), replace attn_omp. Then flm_parity.sh for the full sweep.
