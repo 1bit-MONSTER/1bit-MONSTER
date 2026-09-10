@@ -1375,3 +1375,21 @@ Characterized the engine's own MoE path (npu_engine_universal.cpp NPU_MOE,
    (no lib ELF, no closed region-B generator). This is the on-box route to a
    working fast 35B; the per-ctx-ELF replication lane is closed (lib gen_layer_seq
    35B NaNs, R59; region-B 8704->5120-B int4 generator closed, R93).
+
+## Round 95 — fundamental conclusion: MoE "one runlist/token" needs a whole-layer ELF (2026-09-10)
+
+Read moe_ffn_npu (npu_engine_universal.cpp #1473) end-to-end. The engine's
+MoE FFN is per-GEMM with CPU interleave: router(CPU) → pack(CPU) →
+MOE_GU go() → dequant-corr+SiLU(CPU) → MOE_D go() → MOE_SGU go() →
+SiLU(CPU) → MOE_SD go() → sigmoid-blend(CPU). The SiLU/combine are ON CPU,
+so the GEMMs cannot batch into one whole-layer runlist — only the independent
+pairs (GU∥SGU, D∥SD) could merge (a ~2x launch cut, not the dense 88 tok/s
+class). The dense 88 tok/s comes from the lib's WHOLE-LAYER ELF (everything
+on-device), which for the 35B NaNs (R59).
+
+=> The objective's "one xrt::runlist submit/token toward the dense class"
+   for the 35B MoE requires a WORKING whole-layer ELF — the lib's is broken,
+   and building the engine's own (fusing its GEMMs + SiLU/combine on-device)
+   is a new ELF-authoring effort on the scale of the original xclbin work.
+   Path 2 narrows to: (a) merge GU∥SGU + D∥SD into 2 runlists/layer (~2x,
+   bounded), or (b) author an engine-side whole-layer MoE ELF (large).
