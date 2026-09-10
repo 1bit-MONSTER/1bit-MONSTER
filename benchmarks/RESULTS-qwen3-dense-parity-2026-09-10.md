@@ -173,9 +173,17 @@ Per synchronous GEMM launch (`go_rows`):
    (= dequantized column-sum −84.0 × 98304) — the mm.xclbin reads the Q4NX W
    from the SAME layer BO the decode path already produces, dequantizes Q4
    internally, and the host dequant is just **C_float = C_int32 / 98304**.
-   nz=524288=half confirms the strided C write. Remaining: (1) C
-   strided-write → logical M×N mapping, (2) wire into the prefill,
-   (3) attn.xclbin + overlap.
+   nz=524288=half confirms the strided C write.
+
+   **Dequant is NOT just /98304 — the W has its own fixed-point scale.**
+   Q4NX format (dequant_q4nx.cpp): tile = [256 BF16 scales][256 BF16 zps][4096B
+   packed UNSIGNED int4], W = nibble×scale + zp. Dequantizing the QKV tiles via
+   dequant_q4nx.cpp gives colsum0 = −0.0966; my GEMM's A=1.0 raw C = −8257537
+   (= −84.0 × 98304), so the kernel's internal W_int ≈ W_dequant × **~870**
+   (full dequant C_float = C_int32 / ~85.5M, not /98304). The exact W fixed-
+   point scale needs a byte-diff of raw C vs FLM's QKV output for a known A.
+   Remaining: (1) exact dequant scale, (2) C strided-write → M×N mapping,
+   (3) wire into the prefill, (4) attn.xclbin + overlap.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
