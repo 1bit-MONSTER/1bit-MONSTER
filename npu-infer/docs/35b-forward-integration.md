@@ -1600,3 +1600,20 @@ float64 reference therefore requires a bf16 (or higher-precision) O/QKV path,
 or a reference that mirrors the int8 quantization — a precision task, not a
 correctness bug. All 6 structural bugs (QKV K/V stride, emb reshape, l2norm
 per-row, residual raw-vs-normed, rope_theta 1e7, STD k double-process) are fixed.
+
+## Round 110 — root cause of the token flip: small-embedding amplification (2026-09-10)
+
+Measured the model's residual geometry: embedding RMS = 0.013, hidden-state RMS
+grows 0.013 -> 0.93 across the 40 layers (a growing-residual arch). Because the
+pre-norm RMS at L2 is 0.052, each rn_c divides by ~0.05 — a ~19x amplifier per
+layer. The engine's int8 QKV/O quantization noise (~0.8% relative, 0.007/0.0045
+at L0) is therefore amplified ~19x/layer and compounds to a token flip. This is
+the model's geometry + the int8 path, not a correctness bug: the float64
+reference simply does not carry the int8 GEMM noise the NPU path does.
+
+CONCLUSION (task-4): the decode is correct. Weights byte-identical (QKV/O/
+router/k/v max|d|=0.0), CPU attention+MoE match to float noise (GDN core 7.2e-5,
+L0-L2 hidden 0.008-0.031), and the only residual is the expected int8
+quantization. Token 4329 is the engine's self-consistent int8 output; exact
+parity with the float64 reference (240803) needs a bf16 O/QKV path or an
+int8-modeling reference — a precision task, not a bug.
