@@ -57,6 +57,17 @@ void describe(const ModelArtifact& a) {
     printf("container:    %s\n", to_string(a.container));
     printf("dtype_space:  %s\n", to_string(a.dtype_space));
     printf("has_type42:   %s\n", a.has_dtype_42 ? "yes (OVERLOADED ID)" : "no");
+    if (a.native_version || a.native_json_bytes || a.native_name_mismatch || !a.native_dtypes.empty()) {
+        printf("native:       version=%u json_bytes=%llu", a.native_version,
+               (unsigned long long)a.native_json_bytes);
+        if (a.native_name_mismatch) printf("  [name-mismatch]");
+        printf("\n");
+        if (!a.native_dtypes.empty()) {
+            printf("native_types:");
+            for (const auto& d : a.native_dtypes) printf(" %s", d.c_str());
+            printf("\n");
+        }
+    }
     printf("quant:        %s\n", a.quantization.c_str());
     printf("arch:         %s\n", a.architecture.empty() ? "?" : a.architecture.c_str());
     printf("display_name: %s\n", a.display_name.empty() ? "-" : a.display_name.c_str());

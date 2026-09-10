@@ -7,6 +7,10 @@
 // engine wires this in, ScanOptions::probe_headers can be swapped for
 // read_gguf_metadata() from include/model_discovery.h.
 #include "model_registry.h"
+// OnebpHeader / OnebpQuant / OnebpArch. Dependency-light (std headers only),
+// so including it keeps the registry free of HIP/XRT while avoiding a second
+// copy of the native enums that could silently drift.
+#include "onebp_format.h"
 
 #include <algorithm>
 #include <cctype>
@@ -403,6 +407,132 @@ GgufProbe probe_gguf(const std::string& path) {
     return out;
 }
 
+// ── native container probe (ONEBP header / FLM-aie-rt Q4NX JSON) ────────
+//
+// Raised by @agent-ec855d (2026-09-10): a 46 GiB `.1bp` — the canonical native
+// format — reported dtype_space=EMPTY, which is the same value as "not probed"
+// and made the registry unable to describe the format it is named after.
+//
+// There are in fact TWO native layouts, and both self-describe:
+//   1. ONEBP_HEADER — magic 0x00504231 ("1BP\0") then a 256-byte OnebpHeader
+//      carrying version/arch/quant/scale/dims/tile geometry/model_tag.
+//   2. Q4NX_JSON   — NO magic: u64 JSON-header-size at offset 0, then an
+//      FLM/aie-rt JSON tensor manifest. Measured instance: hsz = 232415 in
+//      research/ws12-hrx-loom/README.md; documented in
+//      engine/fusion/cpu_q4nx_loader.h.
+// Neither carries GGUF type ids, which is why EMPTY was wrong: the space is not
+// empty, it is native.
+struct NativeProbe {
+    DtypeSpace space = DtypeSpace::EMPTY;
+    uint32_t version = 0;
+    bool header_valid = false;
+    std::string quant, arch, tag;
+    uint64_t json_bytes = 0;
+    std::vector<std::string> json_dtypes;
+};
+
+const char* onebp_quant_name(uint32_t q) {
+    switch (q) {
+        case ONEBP_Q4NX: return "q4nx";
+        case ONEBP_I8: return "i8";
+        case ONEBP_TQ1: return "tq1";
+        case ONEBP_TQ2: return "tq2";
+        case ONEBP_F16: return "f16";
+        case ONEBP_F32: return "f32";
+        case ONEBP_TQ2NZ: return "tq2nz";
+        case ONEBP_TQ2NZ_E4M3: return "tq2nz_e4m3";
+        case ONEBP_TQ2BS: return "tq2bs";
+        case ONEBP_Q4_ROCMFP4: return "q4_rocmfp4";
+        case ONEBP_Q4_ROCMFP4_FAST: return "q4_rocmfp4_fast";
+        default: return nullptr;
+    }
+}
+const char* onebp_arch_name(uint32_t a) {
+    switch (a) {
+        case ONEBP_DENSE: return "dense";
+        case ONEBP_MOE: return "moe";
+        case ONEBP_VISION: return "vision";
+        case ONEBP_AUDIO: return "audio";
+        case ONEBP_TERNARY: return "ternary";
+        case ONEBP_MAMBA: return "mamba";
+        case ONEBP_LAGUNA: return "laguna";
+        case ONEBP_SMOLVLM: return "smolvlm";
+        case ONEBP_LLAVA: return "llava";
+        case ONEBP_MOLMO: return "molmo";
+        case ONEBP_OVIS: return "ovis";
+        case ONEBP_PALIGEMMA: return "paligemma";
+        case ONEBP_FLORENCE: return "florence";
+        case ONEBP_DEEPSEEK2: return "deepseek2";
+        case ONEBP_PHI_MOE: return "phi_moe";
+        case ONEBP_DEEPSEEK_V4: return "deepseek_v4";
+        case ONEBP_SD: return "sd";
+        default: return nullptr;
+    }
+}
+
+// Collect `"dtype"` values from a Q4NX JSON manifest. The manifest is a flat
+// name -> {dtype, shape, offsets} map, so a text scan is enough and a malformed
+// manifest must not be fatal.
+std::vector<std::string> scan_json_dtypes(const std::string& txt) {
+    std::vector<std::string> out;
+    const std::string key = "\"dtype\"";
+    size_t p = 0;
+    while ((p = txt.find(key, p)) != std::string::npos) {
+        p += key.size();
+        while (p < txt.size() && (txt[p] == ' ' || txt[p] == '\t' || txt[p] == ':')) p++;
+        if (p < txt.size() && txt[p] == '"') {
+            p++;
+            std::string v;
+            while (p < txt.size() && txt[p] != '"') v += txt[p++];
+            if (!v.empty() && std::find(out.begin(), out.end(), v) == out.end()) out.push_back(v);
+        }
+    }
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+NativeProbe probe_native(const std::string& path) {
+    NativeProbe np;
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return np;
+    uint32_t w0 = 0, w1 = 0;
+    if (!f.read((char*)&w0, 4) || !f.read((char*)&w1, 4)) return np;
+
+    if (w0 == ONEBP_MAGIC) {
+        OnebpHeader hdr{};
+        memcpy(&hdr.magic, &w0, 4);
+        memcpy(&hdr.version, &w1, 4);
+        if (!f.read((char*)&hdr.arch, (std::streamsize)(sizeof(OnebpHeader) - 8))) return np;
+        np.space = DtypeSpace::ONEBP_HEADER;
+        np.version = hdr.version;
+        np.header_valid = hdr.valid();
+        if (const char* q = onebp_quant_name(hdr.quant)) np.quant = q;
+        if (const char* a = onebp_arch_name(hdr.arch)) np.arch = a;
+        np.tag.assign(hdr.model_tag, strnlen(hdr.model_tag, sizeof hdr.model_tag));
+        return np;
+    }
+
+    // Not 1BP: the Q4NX layout is [u64 json_size][json][payloads].
+    uint64_t hsz = ((uint64_t)w1 << 32) | (uint64_t)w0;
+    if (hsz > 16 && hsz <= (64ull << 20)) {
+        std::vector<char> buf((size_t)hsz + 1, '\0');
+        f.clear();
+        f.seekg(8);
+        if (f.read(buf.data(), (std::streamsize)hsz)) {
+            size_t i = 0;
+            while (i < (size_t)hsz && (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\r' || buf[i] == '\t')) i++;
+            if (i < (size_t)hsz && buf[i] == '{') {
+                np.space = DtypeSpace::Q4NX_JSON;
+                np.json_bytes = hsz;
+                np.json_dtypes = scan_json_dtypes(std::string(buf.data(), (size_t)hsz));
+                return np;
+            }
+        }
+    }
+    np.space = DtypeSpace::UNRECOGNIZED_NATIVE;
+    return np;
+}
+
 // ── shard detection:  foo-00001-of-00002.gguf ──────────────────────────────
 struct ShardInfo {
     std::string base;       // "foo"
@@ -455,6 +585,9 @@ const char* to_string(DtypeSpace d) {
         case DtypeSpace::ENGINE_TERNARY: return "engine-ternary";
         case DtypeSpace::HRX2_Q4NX: return "hrx2-q4nx";
         case DtypeSpace::AMBIGUOUS: return "ambiguous";
+        case DtypeSpace::ONEBP_HEADER: return "onebp-header";
+        case DtypeSpace::Q4NX_JSON: return "q4nx-json";
+        case DtypeSpace::UNRECOGNIZED_NATIVE: return "unrecognized-native";
     }
     return "unknown";
 }
@@ -648,9 +781,14 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
 
     auto add_file = [&](const std::string& path, uint64_t sz, Container c,
                         const std::string& base_key, const std::string& base,
-                        const std::string& quant, const GgufProbe& probe, bool q4nx_named,
+                        const std::string& ext, const std::string& quant,
+                        const GgufProbe& probe, bool q4nx_named,
                         uint16_t shard_index, uint16_t shard_count) {
+        // Key on (container, EXTENSION, base): shards of one artifact share all
+        // three, while same-stem/different-container siblings (foo.q4nx vs
+        // foo.1bp — very common for native conversions) must stay separate.
         std::string k = to_string(c);
+        k += '|'; k += ext;
         k += '|'; k += base_key;
         auto it = pending.find(k);
         if (it == pending.end()) {
@@ -779,7 +917,7 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
                     if (q4nx_named) quant = "q4nx";
                     else if (quant.empty()) quant = "1bp";
                 }
-                add_file(path, sz, c, base_key, sh.base, quant, probe, q4nx_named,
+                add_file(path, sz, c, base_key, sh.base, ext, quant, probe, q4nx_named,
                          sh.index, sh.count);
             }
         }
@@ -802,21 +940,41 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
         for (uint32_t t : p.probe.dtypes) a.dtype_ids.push_back(t);
         a.has_dtype_42 = std::find(a.dtype_ids.begin(), a.dtype_ids.end(), 42u) != a.dtype_ids.end();
 
-        bool q4nx_in_gguf = false;
+        // Two flags on purpose: the ID stays filename-derived so it is stable
+        // across probe success/failure, while CAPABILITY follows the bytes.
+        bool q4nx_in_gguf = false;   // filename-derived  -> id
+        bool q4nx_bytes = false;     // bytes-derived     -> capability/quant
         if (p.container == Container::GGUF) {
             if (a.has_dtype_42 && p.q4nx_named) { a.dtype_space = DtypeSpace::HRX2_Q4NX; q4nx_in_gguf = true; }
             else if (a.has_dtype_42) a.dtype_space = DtypeSpace::ENGINE_TERNARY;
             else if (!p.probe.ok) a.dtype_space = DtypeSpace::AMBIGUOUS;
             else a.dtype_space = DtypeSpace::GGML_MAINLINE;
             if (p.q4nx_named && p.probe.ok && !a.has_dtype_42) a.q4nx_name_mismatch = true;
+            q4nx_bytes = q4nx_in_gguf;
         } else if (p.container == Container::ONEBP) {
             q4nx_in_gguf = p.q4nx_named;
+            q4nx_bytes = p.q4nx_named;
+            if (opt.probe_headers && !p.files.empty()) {
+                NativeProbe np = probe_native(p.files.front().path);
+                a.dtype_space = np.space;
+                a.native_version = np.version;
+                a.native_json_bytes = np.json_bytes;
+                a.native_dtypes = np.json_dtypes;
+                if (np.space == DtypeSpace::UNRECOGNIZED_NATIVE) a.native_name_mismatch = true;
+                // For native containers the bytes are authoritative: the header
+                // declares the quant and arch, so neither is guessed from the
+                // filename (this also retires the F8 "filename lies" class).
+                if (!np.quant.empty()) a.quantization = np.quant;
+                if (!np.arch.empty()) a.architecture = np.arch;
+                if (!np.tag.empty() && a.display_name.empty()) a.display_name = np.tag;
+                if (np.quant == "q4nx") q4nx_bytes = true;
+            }
         } else {
             a.dtype_space = DtypeSpace::EMPTY;
         }
 
         a.id = canonical_id(p.base, p.container, q4nx_in_gguf);
-        a.capabilities = derive_capabilities(p.container, a.dtype_space, q4nx_in_gguf);
+        a.capabilities = derive_capabilities(p.container, a.dtype_space, q4nx_bytes);
         for (const auto& f : p.files) a.aliases.push_back(basename_of(f.path));
         a.files = p.files;
         if (opt.digest) {
@@ -1014,6 +1172,7 @@ std::string ModelRegistry::to_table() const {
           << pad_right(std::to_string(a.capabilities.size()), 6) << caps
           << (a.has_dtype_42 ? "  [type42!]" : "")
           << (a.q4nx_name_mismatch ? "  [name-says-q4nx-no-type42]" : "")
+          << (a.native_name_mismatch ? "  [native-name-mismatch]" : "")
           << (a.id_quality().empty() ? "" : "  " + a.id_quality()) << "\n";
     }
     return o.str();
@@ -1051,6 +1210,15 @@ std::string ModelRegistry::to_json() const {
         o << "      \"lineage\": \"" << json_escape(a.lineage) << "\",\n";
         o << "      \"has_dtype_42\": " << (a.has_dtype_42 ? "true" : "false")
           << ", \"q4nx_name_mismatch\": " << (a.q4nx_name_mismatch ? "true" : "false") << ",\n";
+        o << "      \"native\": {\"version\": " << a.native_version
+          << ", \"json_bytes\": " << a.native_json_bytes
+          << ", \"name_mismatch\": " << (a.native_name_mismatch ? "true" : "false")
+          << ", \"dtypes\": [";
+        for (size_t i = 0; i < a.native_dtypes.size(); i++) {
+            if (i) o << ", ";
+            o << "\"" << json_escape(a.native_dtypes[i]) << "\"";
+        }
+        o << "]},\n";
         o << "      \"tokenizer\": \"" << json_escape(a.tokenizer_path) << "\",\n";
         o << "      \"capabilities\": [";
         for (size_t i = 0; i < a.capabilities.size(); i++) {

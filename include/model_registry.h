@@ -51,6 +51,10 @@ enum class DtypeSpace {
     ENGINE_TERNARY,    // id 42 present, read as TQ2_0_g128 / Q1_0 id 41
     HRX2_Q4NX,         // id 42 present, read as block_q4nx tiles
     AMBIGUOUS,         // id 42 present and we cannot tell which space
+    // ── native containers (no GGUF type ids at all — but NOT "unknown") ──
+    ONEBP_HEADER,      // magic 0x00504231 "1BP\0" -> OnebpHeader self-describes quant/arch
+    Q4NX_JSON,         // u64 JSON-header-size, then an FLM/aie-rt JSON tensor manifest
+    UNRECOGNIZED_NATIVE, // .1bp/.q4nx by name, but neither layout: the name lies
 };
 
 // ── Capability: what lane can actually serve this artifact ─────────────────
@@ -117,6 +121,15 @@ struct ModelArtifact {
     // Seen on zaya1-8b-ft-q4nx.gguf (2026-09-10) — a *q4nx*.gguf carrying
     // mainline quant types. Capability must follow the bytes, not the name.
     bool q4nx_name_mismatch = false;
+    // ── native container probe (ONEBP_HEADER / Q4NX_JSON) ────────────────
+    // The native formats are self-describing, so the registry can report an
+    // authoritative quant/arch instead of guessing from the filename. Raised by
+    // @agent-ec855d: a 46 GiB `.1bp` reporting dtype_space=EMPTY made the
+    // canonical native format look like "nothing to say".
+    uint32_t native_version = 0;               // OnebpHeader.version, or 0
+    uint64_t native_json_bytes = 0;            // Q4NX_JSON manifest size
+    std::vector<std::string> native_dtypes;    // dtype names found in the manifest
+    bool native_name_mismatch = false;         // name says native, bytes say otherwise
 
     std::vector<Capability> capabilities;
     std::vector<ArtifactFile> files;
