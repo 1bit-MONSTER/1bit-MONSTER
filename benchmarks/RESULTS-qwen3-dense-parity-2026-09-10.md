@@ -325,3 +325,40 @@ To drive mm.xclbin natively we must reproduce FLM's 8 MB W packing (or call FLM'
 `load_weights`), NOT reuse `npu_pack_layer_bo`. Next step: dump the 8 MB EXTBO content
 (via a sub-buffer hook on `xrt::bo`) or locate FLM's mm W packer, then re-verify the
 GEMM against the captured C.
+
+---
+
+## 2026-09-10 (session 2e): BREAKTHROUGH — mm.xclbin is a BF16 GEMM (A_bf16 × W_bf16 → C_bf16)
+
+### The whole "int32 accumulator + dequant scale" line of investigation was WRONG
+Definitive: running mm.xclbin with **W = the captured 8 MB bf16 dequantized weights**
+and A = the captured bf16 activations reproduces FLM's C **byte-exactly**:
+- **Q projection: match = 524288/524288** with M=256, K=1024, N=2048, woff=0,
+  A = bf16 256×1024, W = bf16 1024×2048 (first 4 MB of the 8 MB W), C = bf16 256×2048.
+
+So the mm.xclbin GEMM is **pure bf16**: A_bf16 × W_bf16 → C_bf16. There is **no int32
+accumulator, no per-group dequant scale, no C→bf16 conversion step**. All the earlier
+"int32 C", "near-overflow 2.1e9", "dequant scale ~85.5M" findings were just bf16 bytes
+misread as int32.
+
+### Corrected prefill flow (dense Qwen3)
+1. **dequant.xclbin** — Q4NX (int4+scale+zp) → **W_bf16** (dequantized weights).
+   QKV W = 8 MB (q 1024×2048 + k 1024×1024 + v 1024×1024 bf16 = 4+2+2 MB).
+2. **mm.xclbin** — A_bf16 × W_bf16 → C_bf16 (bf16 GEMM). Q: K=1024,N=2048,woff=0.
+3. **attn.xclbin** — attention on bf16 Q/K/V (no int32 anywhere).
+
+### 8 MB W layout (QKV)
+`[q_proj 1024×2048 bf16 @0 | k_proj 1024×1024 bf16 @4MB | v_proj 1024×1024 bf16 @6MB]`
+(verified: Q matches woff=0; K/V weight_offsets are 4MB/6MB).
+
+### Key correction to earlier session-1 conclusions
+`npu_pack_layer_bo` (10 MB Q4NX, reordered tiles) is the **layer.xclbin (decode)** W
+format only. The **mm.xclbin (prefill)** reads **dequantized bf16 W** (8 MB for QKV),
+produced by `dequant.xclbin`. The earlier "W = npu_pack_layer_bo byte-identical" was
+valid only for layer.xclbin, not mm.xclbin.
+
+### Next steps
+- Verify K/V/O/gate/up/down GEMMs (need the per-projection dequantized W BOs + the
+  per-GEMM A — note the K GEMM's A (seq 172) differs from Q's A (seq 170), likely RoPE).
+- Wire: dequant.xclbin (Q4NX→bf16) + mm.xclbin (bf16 GEMM) + attn.xclbin into the
+  split-path prefill in `engine/npu/src/npu_engine_universal.cpp`.

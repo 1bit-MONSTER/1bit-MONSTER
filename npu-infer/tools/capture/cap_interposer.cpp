@@ -254,6 +254,18 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
     // ext::bo objects (the runtime's data/insts BOs) — dump the small ones
     // plus the 32 MB kv BO (the runtime's per-layer KV cache)
     for (auto& kv : g_extbo_sizes) {
+        if (kv.second == 8388608 && getenv("CAP_MM_W")) {
+            try {
+                const uint8_t* pm = (const uint8_t*)reinterpret_cast<xrt::bo*>(kv.first)->map();
+                if (pm) {
+                    char fname[256];
+                    snprintf(fname, sizeof(fname), "%s/mmw_%03ld_%zx_%zu.bin", CAP_DIR, g_runlist_n, (size_t)kv.first, kv.second);
+                    FILE* f = fopen(fname, "wb");
+                    if (f) { fwrite(pm, 1, kv.second, f); fclose(f); }
+                    fprintf(g_log, "MMW -> %s\n", fname);
+                }
+            } catch (...) {}
+        }
         if (kv.second == 33554432 && getenv("CAP_RUNLIST_KV")) {
             try {
                 const uint8_t* pm = (const uint8_t*)reinterpret_cast<xrt::bo*>(kv.first)->map();
