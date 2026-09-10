@@ -1498,3 +1498,19 @@ Engine token remains 21953.
 
 => task-4 reference is now CORRECT (137554); the remaining gate failure is the
    engine's int8 attention (bounded: bisect the QKV/O dequant vs float).
+
+## Round 103 — QKV divergence localized: K/V per-section scales wrong (2026-09-10)
+
+Diffed the engine's post-QKV (l0_qkv.bin, int8) vs the reference's float
+`w["qkv"] @ x` for layer 0:
+
+    Q[0:2048]   max|d| = 0.032  (correct, ~1%)
+    K[2048:4096] max|d| = 3.82  (WRONG)
+    V[4096:8192] max|d| = 7.70  (WRONG)
+
+The Q section is fine but K/V are ~4x off — the #1699 per-section scale bug
+(v_proj rms ~0.007 vs q/k ~0.02-0.03) is mis-applied for the 35B: the K/V
+sections' dequant scales are wrong (or the section split nq/nk/nv is wrong),
+so the K/V attention inputs are garbage and the token flips (21953 vs the
+corrected 137554). Bounded next: check `cq.sec_scales[l]` / `sec_n0`/`sec_n1`
+computation vs the reference's Q/K/V split, and the pack_qkv_sec scales.
