@@ -1333,3 +1333,26 @@ NOT the device-VA replication issue.
    in a way that NaNs. Both are unverifiable without the map-written weight-BO
    content (R82) or the FastFlowLM source. The wiring itself is confirmed
    structurally correct (clean execution).
+
+## Round 93 — CORRECTION: region-B qkv uses 5120-B tiles (8704→9216 pad), NOT 4736-row trim (2026-09-10)
+
+Re-read R37's desc table (line 82, which I had overlooked) — it already
+answers the region-B qkv question:
+
+    linear_attn.qkv_proj @ 0x1bdbc000 = 11,796,480 = 2304 x 5120
+        (out dim padded 8704 -> 9216; 36 col-tiles x 64 row-tiles)
+
+So the 8704-row tensors (qkv, and the same class: share_*/gate_proj/ssm_out)
+use the STANDARD 5120-B tile format with the out dim padded 8704->9216 —
+NOT the 4736-row trim I implemented in Round 83. The qkv dequant is
+Q(2048)+K(2048)+V(4096)=8192 outputs, so my "first 4736 B" (=512 scales +
+4224 int8 = Q+K+128-of-V) cannot be right — it drops V. The real transform
+is the "different generator" (R37 line 89): 8704-row -> 9216-padded ->
+5120-B tiles (int8 Q8_0 -> int4 Q4 class), which is the closed reorder_cpy
+8704-row path.
+
+=> My Round-83 "region-B derived" claim is RETRACTED for qkv/share_*/gate_proj:
+   the A/B interleave was real, but the trim subset is wrong. The region-B
+   content for the 8704-row tensors remains the closed 8704->9216->5120-B
+   generator (R37/R44-45/R55). The expert pool + 5MB linear + router packings
+   (byte-verified) are unaffected.
