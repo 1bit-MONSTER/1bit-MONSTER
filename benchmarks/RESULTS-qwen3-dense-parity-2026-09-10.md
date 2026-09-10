@@ -110,7 +110,14 @@ Per synchronous GEMM launch (`go_rows`):
 1. **Fast M=128 GEMM**: fix `HybridFlmCtx` to actually run FLM's fused
    `mm.xclbin` at ~0.86 ms/launch (its current 151 ms/tok is a broken weight-BO
    / instruction layout), OR rebuild the per-op xclbins with the multi-row
-   v27 topology instead of the single-core-row v26.
+   v27 topology instead of the single-core-row v26 (`n1_core_i8_v27.py` exists;
+   the v26 stream from `gemm_generate_sequence_i8` won't drive a v27 xclbin).
+   Captured FLM mm.xclbin streams already exist as a format reference:
+   `amd-oss/fastflowlm/src/xclbins/Qwen3-0.6B-NPU2/mm.bin` (3952 words,
+   "NT_S" npu_sequence header) + `mm_256_{1024,3072}_128_0.bin` (2804 words) —
+   a DIFFERENT word layout than the per-op `insts_i8_*.txt` (32804 words).
+   `run_qwen3_prefill` (this session) drives `qwen3_npu::prefill()` under the
+   interposer to re-capture the exact per-shape streams.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
