@@ -47,6 +47,15 @@ public:
     // One decode step: feed token_id, return argmax next token, or -1 on failure.
     int generate(int token_id);
 
+    // #2145: the bundle's HRX flash-attn kernel supports KV <= 2048 only
+    // (measured: KV 2048 decodes, 2304/2560/3072 die with
+    // "unsupported HRX node FLASH_ATTN_EXT" -> compute -1, no CPU fallback).
+    // max_decode_ctx() is that ceiling (env HRX_MAX_CTX_TOKENS, default 2048,
+    // 0 disables). generate() fail-closes once pos reaches it instead of
+    // letting the bundle emit an opaque compute -1.
+    long max_decode_ctx() const;
+    long current_pos() const;
+
     // Reset KV state (recreates the context — this fork exports no kv-clear C API).
     bool reset();
 
