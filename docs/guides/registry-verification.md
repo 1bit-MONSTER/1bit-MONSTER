@@ -205,7 +205,7 @@ operator's call — the evidence for it should be numbers, not an impression.
 ```sh
 clang++ -std=c++23 -O2 -Iinclude -Isrc -DREGISTRY_DIFF_STANDALONE \
   tools/registry_diff.cpp src/model_registry.cpp src/model_discovery.cpp \
-  src/safetensors_reader.cpp src/q4nx_reader.cpp src/gguf_reader.cpp -o registry-diff
+  src/safetensors_reader.cpp src/q4nx_reader.cpp src/gguf_reader.cpp -o b/registry-diff
 ```
 
 **FOUR POPULATIONS, all measured** (this is the bad-input run §8's rule requires, and the reason the

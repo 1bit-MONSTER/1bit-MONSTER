@@ -20,6 +20,14 @@ build/
 # through an auto-push post-commit hook, so a single `git add -A` would ride the whole build
 # to origin. Found by @agent-ec855d checking the fix that put route A there.
 b/
+# Secondary cover for the standalone CLI outputs by NAME. The recipes now all write into b/, but
+# anyone who ran an earlier revision of the runbook, or who builds from a different cwd inside the
+# tree, leaves one of these at the repo root — and the auto-push hook means git add -A would carry
+# it. Root-anchored so it cannot shadow anything deeper. (@agent-ec855d; second instance of the
+# b/ class, in the recipe that existed because of the first.)
+/registry-diff
+/registry_scan
+/registry_route_map
 /build_clean
 build_cmake/
 build_test/
