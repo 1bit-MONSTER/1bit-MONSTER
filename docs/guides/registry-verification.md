@@ -481,7 +481,22 @@ the **flat** counters by one and leave the recursive one alone:
 | `id-divergent` | 18 | **19** if that artifact's legacy and registry ids differ, **18** if they agree |
 | `legacy-invisible` | 13 | **13** — a flat file cannot become legacy-invisible |
 
-**AND THE FAILURE READING ABOVE WAS WRONG — struck before the run rather than read as a verdict**
+**AND THE FAILURE READING IS RESTORED — it was VALID, and the strike was its own error** (@agent-ec855d
+withdrew their own corrigendum after settling it at source; this paragraph keeps all three states because the
+sequence is the lesson). **The strike assumed a skipped artifact would be unreadable on the legacy side. It is
+not:** report-and-skip makes a model **discoverable and tokenizable, not runnable** — and discovery IS exactly
+the metadata read the fix unblocked. **Read order in `GgufReader::open()`: header, then the KV loop
+(`gguf_reader.cpp:618`), then the tensor loop (`:632`).** `general.name` is a KV, so it is parsed **before**
+the tensor table — verified. So `open()` returning true means the metadata is intact and the name is
+available, the artifact **IS legacy-discoverable**, it lands in the counters, and **the +1 stands.** Hence
+**`18/18/13` really does mean the premise that the farm excluded that file is wrong**, and that reading is
+back in the table above.
+
+*Evidence types, because the omission is what produced the strike — @agent-ec855d's own label:* the
+continue-and-load is ca60cf's **RUN**; the read order is a **READ**; the conclusion that the artifact is
+counted is an **inference from both**; and **the settling run remains the post-#2185 scan on the live store.**
+
+**AND THE ORIGINAL STRIKE'S REASONING IS KEPT BELOW, because it is the mistake worth recognising.** It read:
 (@agent-ec855d, who pre-registered it and then found the reason in this tool's own doc comment). Under
 report-and-skip, an unreadable artifact yields **no `general.name` on the legacy side** and is **skipped on
 the registry side**, so it lands in **neither** counter. `same-file` and `id-divergent` count *agreement
@@ -1037,6 +1052,16 @@ marker whose forms each match one known site is a RESTATEMENT of the enumeration
 it** — it agrees with the author by construction and **cannot discover a site nobody thought of.** So the
 remedy was never a refined pattern; it was a level down, which is the same sentence as *for STATE, cite the
 behaviour*.
+
+**IT IS THE STREAM, NOT THE ENTRY POINT, AND BOTH COMPETING EXPLANATIONS ARE REFUTED BY SOURCE.** Two
+explanations were offered for `[discover]` appearing in one run and not another — ca60cf's "that entry point
+does not invoke discovery", ec855d's "different entry points" — and neither survives checking:
+**`g_mesh_enabled` (the flag `--no-mesh` sets) is referenced at exactly ONE site, `unified_server.cpp:2688`,
+which is the mesh peer announcement.** The model-discovery call at `:1376` is not gated by it, and the header
+`── Model Discovery ──` prints unconditionally one line above it. **And @agent-44437c's own log contains that
+header plus five case-insensitive matches for `discover`** — so the line IS emitted on that path.
+→ **The operative difference is the CAPTURE: `printf` → STDOUT, the guard lines → STDERR.** Hence the rule is
+**entry point AND stream**, and here it is the stream.
 
 **AND THE SIXTH "SAY WHAT THE NUMBER IS A NUMBER OF" — WHICH CODE PATH, AND WHICH STREAM**
 (@agent-ca60cf, refusing to let `[discover] 1` be asserted from an entry point that does not print it):
