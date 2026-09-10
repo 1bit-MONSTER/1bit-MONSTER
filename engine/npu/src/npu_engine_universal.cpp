@@ -2681,6 +2681,10 @@ struct Bf16Ctx {
                 s += (double)conv_state[(size_t)kk * gdn_conv_dim[l] + cc] * cw[(size_t)kk * gdn_conv_dim[l] + cc];
             fqo[cc] = silu_f((float)s);
         }
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fc = fopen("/tmp/l0_conv.bin", "wb");
+            if (fc) { fwrite(fqo, 4, gdn_conv_dim[l], fc); fclose(fc); }
+        }
         // split q [0,k_off) k [k_off,v_off) v [v_off,2*v_off); repeat q/k vh/2→vh + l2norm
         const int gdn_k_off = (gdn_vh[l] / 2) * gdn_hd[l];
         const int gdn_v_off = gdn_vh[l] * gdn_hd[l];
@@ -2715,6 +2719,12 @@ struct Bf16Ctx {
             gb[h] = 1.0f / (1.0f + expf(-(float)sb));
             for (int d = 0; d < gdn_hd[l]; d++) ggate[(size_t)h * gdn_hd[l] + d] = ga[h];
         }
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fg = fopen("/tmp/l0_g.bin", "wb");
+            if (fg) { fwrite(ga.data(), 4, gdn_vh[l], fg); fclose(fg); }
+            FILE* fb = fopen("/tmp/l0_b.bin", "wb");
+            if (fb) { fwrite(gb.data(), 4, gdn_vh[l], fb); fclose(fb); }
+        }
         // recurrent delta rule over v-heads
         gdn_attn_cpu(qq.data(), kk.data(), fqo + gdn_v_off, ggate.data(), gb.data(),
                      delta_state, out, gdn_hd[l], gdn_vh[l], 1.0f / sqrtf((float)gdn_hd[l]));
@@ -2727,6 +2737,10 @@ struct Bf16Ctx {
             zout[i] = (float)s;
         }
         const float* nw = gdn_norm_w[l].data();
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fz = fopen("/tmp/l0_z.bin", "wb");
+            if (fz) { fwrite(zout.data(), 4, gdn_vh[l] * gdn_hd[l], fz); fclose(fz); }
+        }
         for (int h = 0; h < gdn_vh[l]; h++) {
             float* ch = out + (size_t)h * gdn_hd[l];
             double var = 0;

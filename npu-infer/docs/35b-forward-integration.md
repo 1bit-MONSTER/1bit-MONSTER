@@ -1528,3 +1528,19 @@ int8-quantization-level. Token moved 21953 -> 4329 (still != 137554), so a
 FURTHER divergence remains in the attention/O/MoE path (L0 hidden max|d|=3.96).
 Next: diff l0_attn.bin/l0_o.bin vs the reference gdn_layer output to localize
 the second bug (likely the O projection or gdn_attn_step conv/delta).
+
+## Round 105 — delta-rule isolated: everything upstream matches (2026-09-10)
+
+Bisected layer 0 with NPU_DUMP_L0 dumps vs the reference. All UPSTREAM pieces
+now match exactly (post-QKV-fix):
+  post-conv qkv  max|d|=0.007  corr 0.99996
+  g (ssm_a·softplus) max|d|=7.9e-6
+  beta max|d|=4.7e-8
+  z-gate (gate_proj) max|d|=1.8e-7
+Yet the attention core is ~100x off (ref ~1e-6 vs engine ~1e-4), so the bug is
+CONFINED to gdn_attn_cpu (the recurrent delta rule) — the only piece left. Its
+Step1..Step4 look transpose-consistent with the reference, so the defect is a
+subtle indexing/precision detail (candidate: the [j][i] state transpose vs the
+reference's [i][j], or a float-vs-double accumulation). Next: dump the engine's
+delta_state after the update and diff element-wise vs the reference's
+delta_state to pin the exact op.
