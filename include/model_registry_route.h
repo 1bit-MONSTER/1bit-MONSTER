@@ -173,6 +173,31 @@ Availability availability_for(bool available_is_a_predicate, bool available, boo
 // id each). The unpredictable entry is GENERIC, which holds `laguna_gpu` (a GPU
 // backend, has_hip_gpu()) beside `cpu_generic` / `nemotron_h_cpu` (literal true).
 //
+// THE STRONGEST FORM OF THE (type,id) RULE, from @agent-ca60cf reading the factory:
+// **Vulkan-capable ids span THREE different BackendTypes** — `ggml_vulkan` and
+// `vulkan_hpp_gpu` under HIP_GPU, `zamba2_vulkan` under ZINC_GPU, `vulkan_gpu` under
+// VULKAN. So "Vulkan" is not expressible as a BackendType AT ALL; for this capability
+// the (type,id) pair list is not a safety rule, it is the only possible representation.
+//
+// AND THE COST OF GETTING THE TYPE WRONG IS A DEAD LANE, not an untidy table:
+// `case BackendType::VULKAN` (backend_manager.cpp:1759-1765) calls
+// `create_vulkan_backend()` — the portable lane with score 0 and functional=false —
+// while `ggml_vulkan` and `vulkan_hpp_gpu` have ID-SPECIFIC branches inside
+// `case BackendType::HIP_GPU`:
+//     fused_gpu_npu   -> create_fused_backend        (GPU attention + NPU FFN)
+//     vulkan_hpp_gpu  -> create_vulkan_hpp_backend   (Vulkan-Hpp / ZINC shaders)
+//     ggml_vulkan     -> create_ggml_vulkan_backend  (llama.cpp Vulkan, "MIT, 357 tok/s")
+//     fall-through    -> create_hip_backend
+// A type-based dispatcher seeing VULKAN for `ggml_vulkan` would call the score-0
+// dead lane instead of the creator the source rates at 357 tok/s — the second instance
+// of today's pattern behind npu_flm/npu_xrt (67.5 vs 0.06 tok/s).
+//
+// `vulkan_gpu` (line 329-338) is therefore carried as REGISTERED_DRY or omitted, NEVER
+// exposed as a target: type=VULKAN, available=has_vulkan(), functional=false, score=0,
+// and ZERO router mentions in model_router.cpp and dynamic_router.cpp — a
+// registered-but-unrouted legacy lane, exactly like `npu_xrt`. This table names it
+// nowhere, which is now correct by construction rather than an oversight.
+//
 // This is derivable and it GENERALISES FORWARD: any id later added under those four
 // types inherits the confusion, which a per-id list cannot express. It is also why
 // the probe signature below is keyed by engine_id and why `availability_for` takes
