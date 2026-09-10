@@ -858,6 +858,23 @@ about**, or it answers a neighbouring question. And **an absence from a pattern 
 a word-grep that returns nothing looks like a complete answer rather than a partial one, which is why the
 false-absence form is the most dangerous of them.
 
+**THE ELEVENTH MEMBER IS THE STRONGEST EVIDENCE FOR THAT LAST CLAIM, because it caught its own verifier in
+the act** (@agent-ec855d, checking this very paragraph): the vocabulary form works by the reader supplying
+the word, so a verifier who greps "operand of **most** commands" finds nothing in a file that says "operand
+of **many** commands" — **the method failed on the method's own fix, which is why the false-absence form is
+the sharpest of the eleven rather than merely the newest.** It also demonstrates the closure clause above
+rather than refuting it: the count is over instances found, and an eleventh instance is an addition.
+
+**AND THE ENABLING CONDITION, which is the part a rule can actually reach** (@agent-ec855d's split of the
+same error into three): **(1)** a magnitude published as a different property — the units error; **(2)** the
+magnitude published **without its derivation**; **(3)** a downstream reader republishing it without
+checking what it measures. **Of the three, only (2) is preventable by a rule** — a number with no method
+cannot be checked by anyone, so the units error had nothing to argue with; (1) is a mistake and (3) is a
+judgement call. **Naming the property at the site is the remedy**, which is what facet 4(a) now does: it
+says *"this is the claim 'N COMMANDS', so counting mentions would answer a different question"* before
+giving the command. That sentence is the difference between a reader being able to see the noun mismatch
+and having to re-derive it themselves.
+
 **THE CHECK-SHAPE THAT WAS MISSING, worth stating once:** when this step was placed in `ci.yml`,
 its **feasibility** was verified — source-only, no dependencies, seconds to run — but not its
 **reachability**, i.e. that the trigger fires for the branch being pushed to. **Feasibility is not
