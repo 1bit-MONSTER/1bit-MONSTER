@@ -664,6 +664,8 @@ const char* to_string(DtypeSpace d) {
 }
 const char* to_string(Capability c) {
     switch (c) {
+        case Capability::FUSED_GPU_NPU: return "FUSED-GPU-NPU";
+        case Capability::VULKAN_1BP: return "VULKAN-1BP";
         case Capability::NPU_Q4NX: return "NPU-Q4NX";
         case Capability::NPU_1BP: return "NPU-1BP";
         case Capability::HIP_1BP: return "HIP-1BP";
@@ -678,6 +680,7 @@ const char* to_string(Capability c) {
 }
 std::optional<Capability> capability_from_string(const std::string& s) {
     static const Capability all[] = {
+        Capability::FUSED_GPU_NPU, Capability::VULKAN_1BP,
         Capability::NPU_Q4NX, Capability::NPU_1BP, Capability::HIP_1BP, Capability::HIP_GGUF,
         Capability::RADV_GGUF, Capability::HRX2_GGUF_Q4NX, Capability::HRX_GGUF,
         Capability::MLX_GPU, Capability::CPU};
@@ -799,20 +802,28 @@ std::vector<Capability> derive_capabilities(Container c, DtypeSpace sp, bool q4n
     std::vector<Capability> caps;
     switch (c) {
         case Container::ONEBP:
-            // A native 1BP/Q4NX artifact is served by TWO FAMILIES, not one: the
-            // NPU lane (native worker engine / npu_flm) AND the HIP-1BP GPU lane
-            // (hip_1bp_gpu). @agent-ca60cf made HIP-1BP the DEFAULT for qwen35moe
-            // 1BP on 2026-09-10, so collapsing onebp onto NPU-only makes that lane
-            // UNREACHABLE and offers a qwen35moe 1BP file to an NPU path that does
-            // not implement the architecture. The family cannot be derived from
-            // `arch` either (F12: the 74B's v1 header omits the expert block).
-            if (q4nx_named) caps = {Capability::NPU_Q4NX, Capability::HIP_1BP};
-            else caps = {Capability::NPU_1BP, Capability::HIP_1BP};
+            // ORDER IS THE ENGINE'S OWN ONEBP CHAIN, not my preference: the router
+            // returns {fused_gpu_npu, hip_1bp_gpu, vulkan_hpp_gpu, cpu_generic} for
+            // this format (model_router.cpp, ONEBP return). Mapping 1BP to
+            // hip_1bp_gpu alone dropped BOTH the fused GPU+NPU lane (its first
+            // preference) and the HPP-Vulkan fallback; the Vulkan id differs by
+            // container, so ggml_vulkan would have been the wrong id here anyway.
+            // The NPU entry is RETAINED as a fallback (after the GPU lanes) so the
+            // earlier reachability fix is not undone, and because npu_flm is
+            // Q4NX-only the constraint text says so.
+            caps = {Capability::FUSED_GPU_NPU, Capability::HIP_1BP, Capability::VULKAN_1BP,
+                    q4nx_named ? Capability::NPU_Q4NX : Capability::NPU_1BP};
             break;
         case Container::GGUF:
             if (sp == DtypeSpace::HRX2_Q4NX) caps = {Capability::HRX2_GGUF_Q4NX};
             else if (sp == DtypeSpace::ENGINE_TERNARY) caps = {Capability::HIP_GGUF, Capability::CPU};
-            else caps = {Capability::RADV_GGUF, Capability::HRX_GGUF, Capability::HIP_GGUF, Capability::CPU};
+            // HRX-FIRST, matching the router's GGUF chain comment. HIP-GGUF is
+            // present here but the BRIDGE gates it on the artifact's bytes: the
+            // engine's create_hip_backend() cannot read Qwen/Llama blk.N-style
+            // models (it zero-fills them and fails the coherence probe), which is
+            // why Hip1bpBackendAdapter is registered after it. See plan_route()'s
+            // conditional bucket — the capability exists; the TARGET is conditional.
+            else caps = {Capability::HRX_GGUF, Capability::RADV_GGUF, Capability::HIP_GGUF, Capability::CPU};
             caps.push_back(Capability::CPU);
             break;
         case Container::MLX:
@@ -827,7 +838,9 @@ std::vector<Capability> derive_capabilities(Container c, DtypeSpace sp, bool q4n
         default:
             caps = {Capability::UNKNOWN};
     }
-    std::sort(caps.begin(), caps.end());
+    // NO SORT. Each branch's order is now deliberate and mirrors the engine's own
+    // chain for that container — sorting alphabetically by enum value was putting
+    // lanes in an order the engine does not use.
     caps.erase(std::unique(caps.begin(), caps.end()), caps.end());
     return caps;
 }

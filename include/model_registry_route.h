@@ -35,7 +35,17 @@
 namespace onebit {
 
 // Availability must be declared before BackendTarget, which carries it.
-enum class Availability { UNKNOWN, PRESENT, ABSENT };
+enum class Availability {
+    UNKNOWN,         // nobody asked
+    PRESENT,         // the probe confirmed it works
+    ABSENT,          // the probe confirmed the hardware is not here
+    // "Looks runnable while being dry" (@agent-ca60cf): registered with
+    // available=true but functional=false until init. They are right that the
+    // intersection must test FUNCTIONAL, not available — npu_flm sits here before
+    // init, and a lane reporting available while being dry is the same
+    // blank-reads-as-confident problem as everywhere else in this module.
+    REGISTERED_DRY,
+};
 
 struct BackendTarget {
     Capability capability;
@@ -91,6 +101,11 @@ struct RoutePlan {
     // constraint is violated" need different fixes, so they must not read the same.
     std::vector<std::pair<Capability, std::string>> refused;           // no backend exists
     std::vector<std::pair<Capability, std::string>> unavailable_here;  // hardware absent
+    // A FOURTH bucket, on @agent-ca60cf's review: targets that exist but are not
+    // unconditional — architecture-mismatched (hip_gpu vs a Qwen GGUF) or registered
+    // but dry. Kept apart from `refused` because the capability IS real here; what is
+    // conditional is the target.
+    std::vector<std::pair<Capability, std::string>> conditional;
     std::vector<std::pair<Capability, std::string>> skipped_by_context; // constraint violated
     QualityGate quality_gate = QualityGate::NOT_EVALUATED;
     std::string quality_note;

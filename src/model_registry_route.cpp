@@ -38,6 +38,21 @@ bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
                 "native (ONEBP/RAW_BIN) containers only: npu_flm is Q4NX-only and would "
                 "accept the init then serve its own q4nx model rather than the requested file";
             return true;
+        case Capability::FUSED_GPU_NPU:
+            // The router's FIRST preference in the ONEBP chain — the GPU+NPU fused
+            // lane, opt-in per token via USE_NPU_FFN=1.
+            out_type = BackendType::HIP_GPU;
+            out_id = "fused_gpu_npu";
+            out_constraint = "GPU+NPU fused lane; opt-in per token via USE_NPU_FFN=1 "
+                             "(without it the fused backend is GPU-only attention+FFN)";
+            return true;
+        case Capability::VULKAN_1BP:
+            // CONTAINER-DEPENDENT id, from ca60cf's review: the GGUF chain uses
+            // ggml_vulkan, the 1BP chain uses vulkan_hpp_gpu. One rule for both
+            // would leave 1BP artifacts with no Vulkan fallback.
+            out_type = BackendType::VULKAN;
+            out_id = "vulkan_hpp_gpu";
+            return true;
         case Capability::HIP_1BP:
             out_type = BackendType::HIP_GPU;
             out_id = "hip_1bp_gpu";
@@ -45,6 +60,13 @@ bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
         case Capability::HIP_GGUF:
             out_type = BackendType::HIP_GPU;
             out_id = "hip_gpu";
+            // CONDITIONAL, not a plain mapping: create_hip_backend() is the
+            // ZAYA-shaped backend and cannot read Qwen/Llama blk.N models (it
+            // zero-fills them and fails the coherence probe), which is why
+            // Hip1bpBackendAdapter is registered after it. plan_route() applies the
+            // gate; this text says why the target is not unconditional.
+            out_constraint = "architecture-conditional: create_hip_backend() cannot read "
+                             "blk.N-style models (it zero-fills and fails the coherence probe)";
             return true;
         case Capability::RADV_GGUF:
             // The router's GGUF/Vulkan lane is ggml_vulkan, not zinc_gpu: ZINC is a
@@ -110,7 +132,29 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
         }
         // THE BOX, NOT THE TABLE: intersect with the engine's own probe so a
         // hardware-blind registry cannot hand out a lane this machine lacks.
+        // HIP-GGUF is emitted only when the artifact's BYTES say the engine's HIP
+        // backend can read it: experts present (a MoE/zaya shape), or the metadata
+        // name hints the zaya family. The experts test is bytes; the name test is a
+        // hint and is labelled as one, because F11/F12 established that names lie.
+        if (c == Capability::HIP_GGUF && a.declared_experts <= 0) {
+            std::string arch_l = a.architecture;
+            for (char& ch : arch_l) ch = (char)tolower((unsigned char)ch);
+            if (arch_l.find("zaya") == std::string::npos &&
+                arch_l.find("mamba") == std::string::npos) {
+                plan.conditional.emplace_back(
+                    c, "not architecture-matched for hip_gpu: no experts declared and no "
+                       "zaya/mamba signature in the metadata (create_hip_backend() cannot "
+                       "read blk.N-style models) — excluded rather than handed over");
+                continue;
+            }
+        }
         Availability av = backend_availability(t.type);
+        if (av == Availability::REGISTERED_DRY) {
+            plan.conditional.emplace_back(
+                c, std::string("registered but DRY (available=true, functional=false until "
+                               "init) for ") + t.engine_id + " — looks runnable while being dry");
+            continue;
+        }
         if (av == Availability::ABSENT) {
             plan.unavailable_here.emplace_back(
                 c, std::string("capability present, HARDWARE ABSENT on this machine (") +
@@ -156,6 +200,10 @@ BackendRoute to_backend_route(const RoutePlan& plan) {
     if (!plan.refused.empty()) {
         why += " | refused:";
         for (const auto& r : plan.refused) why += " " + std::string(to_string(r.first));
+    }
+    if (!plan.conditional.empty()) {
+        why += " | conditional:";
+        for (const auto& r : plan.conditional) why += " " + std::string(to_string(r.first));
     }
     if (!plan.unavailable_here.empty()) {
         why += " | hardware absent:";

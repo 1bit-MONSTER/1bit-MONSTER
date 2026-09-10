@@ -27,6 +27,7 @@
 using namespace onebit;
 
 static const Capability kAll[] = {
+    Capability::FUSED_GPU_NPU, Capability::VULKAN_1BP,
     Capability::NPU_Q4NX, Capability::NPU_1BP, Capability::HIP_1BP, Capability::HIP_GGUF,
     Capability::RADV_GGUF, Capability::HRX2_GGUF_Q4NX, Capability::HRX_GGUF,
     Capability::MLX_GPU, Capability::CPU, Capability::UNKNOWN};
@@ -149,6 +150,8 @@ int main(int argc, char** argv) {
                    t.constraint.empty() ? "" : t.constraint.c_str());
         for (const auto& r : plan.refused)
             printf("  !! %-12s refused: %s\n", to_string(r.first), r.second.c_str());
+        for (const auto& r : plan.conditional)
+            printf("  ~~ %-12s conditional: %s\n", to_string(r.first), r.second.c_str());
         for (const auto& r : plan.unavailable_here)
             printf("  ?? %-12s %s\n", to_string(r.first), r.second.c_str());
         for (const auto& r : plan.skipped_by_context)

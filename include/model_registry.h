@@ -59,6 +59,14 @@ enum class DtypeSpace {
 
 // ── Capability: what lane can actually serve this artifact ─────────────────
 enum class Capability {
+    // Two lanes from @agent-ca60cf's mapping review (2026-09-10): the engine's ONEBP
+    // chain is {fused_gpu_npu, hip_1bp_gpu, vulkan_hpp_gpu, cpu_generic}, so mapping
+    // 1BP onto hip_1bp_gpu alone silently dropped the GPU+NPU fused lane (the
+    // router's FIRST preference, opt-in per token via USE_NPU_FFN=1) and the
+    // HPP-Vulkan fallback. Note the Vulkan id is CONTAINER-DEPENDENT: the GGUF
+    // chain uses ggml_vulkan, the 1BP chain uses vulkan_hpp_gpu.
+    FUSED_GPU_NPU,  // GPU+NPU fused lane -> id fused_gpu_npu
+    VULKAN_1BP,     // 1BP chain's Vulkan fallback -> id vulkan_hpp_gpu
     NPU_Q4NX,       // native .q4nx / 1BP tiled -> XDNA2 (rt_HRX / npu_engine_*)
     NPU_1BP,        // native .1bp
     HIP_1BP,        // 1BP weights on the HIP lane
