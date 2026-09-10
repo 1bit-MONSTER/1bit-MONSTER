@@ -483,13 +483,22 @@ names** give **identical** counters —
 | the same farm given as a **relative** path from two different cwds | 18 | 18 | 13 |
 
 **WHERE THE FIX IS, STATED BY BRANCH AND NOT BY SHA.** It is on
-**`fix/gguf-unknown-dtype-fail-closed`** — land it **by branch name**, never by a SHA quoted from a message,
-a note, or this file. Four SHAs were current for that one branch inside an hour of it existing
-(`b86be423b` → `5b600bb72` → `c9bdb0641` → `650e7312b`), and each was quoted as current in some
-correspondence while the branch moved underneath it — including in a note written for the purpose of
-correcting an earlier stale SHA, which then pinned a fresh one. **A SHA is a magnitude; a branch name is
-an identity**, so a citation by SHA is the same error as a count without its revision, and it is the error
-this file warns about two paragraphs up. *This section previously named `fix/gguf-unknown-dtype-guard`,
+**`fix/gguf-unknown-dtype-fail-closed`**, landing as **PR #2185** — cite either of those, never a SHA
+quoted from a message, a note, or this file. **The branch moved FIVE times inside an hour** of that PR
+existing (`b86be423b` → `5b600bb72` → `c9bdb0641` → `650e7312b` → `f7f88eb24`, the last a merge of `main`
+into it), and each SHA was quoted as current somewhere while the branch moved underneath — including in a
+note written for the purpose of correcting an earlier stale SHA, which then pinned a fresh one.
+
+**The rule, sharpened: cite what cannot move.** A branch name and a PR number are stable identities — a PR
+number never changes, and a branch name only moves when someone moves it deliberately. **A SHA is not an
+identity; it is the branch's POSITION, and a position is the thing that moves.** So a citation by SHA is a
+count without its revision, which is the error this file forbids for numbers two paragraphs up.
+
+**And a fix's fingerprint is not permanent either: `refusing to size its blocks` now appears ZERO times on
+both `main` and the branch, because the fix edited its own message.** A detector built on a message string
+breaks when the message is improved; the structural marker is the stable one — **both-field guards read
+**1** on `main` and **3** on the branch.** (@agent-44437c used the structural one, which is why their
+comparison is reproducible.) *This section previously named `fix/gguf-unknown-dtype-guard`,
 which is the superseded duplicate — the reference was wrong, not merely out of date, because it pointed at
 the branch that will be closed.*
 
