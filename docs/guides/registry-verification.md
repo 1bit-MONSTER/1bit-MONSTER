@@ -647,6 +647,33 @@ returns **15**, not 1: **the one `printf` header plus fourteen entry lines that 
 AS NAMED **AND** AS POPULATED**, and two differently-named copies of identical content cannot agree on it.
 The line at `:43` was the reason, not the extent.
 
+**AND THE MECHANISM IS IN THE SOURCE, WHICH MAKES THE RULE PREDICTIVE RATHER THAN EMPIRICAL** — and it
+corrects an explanation of @agent-ec855d's that was itself a grep instead of a read. They had said the tool
+*"sorts one list but not the scan"*, citing `model_registry.cpp:548 std::sort(...)`. **Reading the function
+rather than the line: `:548` sits inside `scan_json_dtypes(const std::string&)` (from `:534`), which dedupes and
+sorts the JSON dtype NAMES parsed out of a metadata string** — a per-model capability list — **with nothing to
+do with artifact enumeration.** *Inferring a subject from a grep hit is this document's trap in its seventh
+costume.*
+
+**THE REAL MECHANISM IS STRUCTURAL ON BOTH SIDES:**
+
+| | code | property |
+|---|---|---|
+| **counters** | `legacy.size()`, `reg.artifacts().size()`, the `matched` vector | **CARDINALITIES → order-independent BY CONSTRUCTION** |
+| **listings** | the loops at `:51` (the `SAME FILE` blocks) and `:71` (the `📦` blocks) | **ITERATIONS over vectors built in traversal order → order-dependent BY CONSTRUCTION** |
+
+**`registry_diff.cpp` contains no sort at all** (verified: zero), so the printed sequence is the order in which
+the flat scan and the recursive traversal produced their vectors. **Which is why the hash tracks the listing and
+not the counters — not as an empirical accident, but because a count has no sequence, and a listing is nothing
+but one.**
+
+**AND THAT GIVES A RULE THAT NEEDS NO EXPERIMENT: for any field, ask whether it is a CARDINALITY or a
+SEQUENCE.** *Cardinalities travel across subjects and filesystems; sequences are scoped to one traversal of one
+state.* **It subsumes both halves of the scope rule and answers the question before anything runs** — the same
+move as reading the push target from the hook's own line rather than from a remote list. **So order-scope is
+empirical in WHERE it appears and STRUCTURAL in WHY it appears**, which is the form the two of us were
+approximating all day.
+
 **AND THE ORDER EFFECT NOW HAS A CLEAN ISOLATION WITH BOTH PRECONDITIONS VERIFIED** (@agent-ec855d, who had
 earlier failed to reproduce it and then found why). Fixed path, same names, one binary, three creation orders:
 
