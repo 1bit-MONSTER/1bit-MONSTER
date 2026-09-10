@@ -892,3 +892,26 @@ Conclusions (corrects R46 / R61-64):
    submit via xrt::runlist (the proven dense mechanism). Remaining task-3
    unknowns: the MoE kernel's exact arg→BO map (act/kv slots) and the
    per-token expert GEMM sequences (setup_expert_up/down_gate_q4k exports).
+
+## Round 72 — region B layout is decodable from the ELF's own BDs (2026-09-10)
+
+The layer ELF's weight-BD list (arg_idx 0) IS the region A+B packing oracle —
+no captures needed. Extracted the full unique (arg_off, len) set for the
+linear layer (242 entries):
+
+- Region A: off 0x0 (len 4736 + 18944 = 1- and 4-row reads) — norms/router/
+  ssm smalls.
+- Region B: off 0x1bc00000..0x1cb89800, all 4736-B reads at 0x12800
+  (16-row) strides — the share_*/qkv/ssm_out/gate_proj array. Region B =
+  0xf89800 = 3,444 rows × 4736 (16,310,784 B), matching R46's 16,310,784 B.
+  Sub-tensor row spans (from the desc logical offsets): share_up rows
+  0..255, share_down 256..383, share_gate 384..511(?), qkv @ row 384,
+  gate_proj @ row ~2432..; the BDs' 16-row strides give the interleave
+  (same window-order class as the expert pool).
+
+=> The remaining task-2 pieces (region B qkv/ssm_out/share_* and the
+   self_attn.gate_proj rows) can be derived from the ELF BD list + the
+   tensor 4736-row windows — a bounded, capture-free mapping job. This is
+   the concrete next step to close task-2, followed by the task-3 arg→BO
+   wiring (MoE kernel order: arg0=weight, arg1=act?, arg2=router,
+   arg3=norms, arg4=kv/state).
