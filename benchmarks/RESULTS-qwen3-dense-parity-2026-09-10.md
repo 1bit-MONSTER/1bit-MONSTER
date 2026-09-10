@@ -95,9 +95,15 @@ Per synchronous GEMM launch (`go_rows`):
   `mm.xclbin` (6×8 tile array) runs the same M=128 GEMM in ~0.86 ms; the
   native per-op xclbins (`final_i8_QKV/O/GU/D`) use a single-core-row topology
   → ~4–7× slower kernel.
-- `HybridFlmCtx` (FLM `mm.xclbin` wrapper) exists but is measured 15× *slower*
-  than `I8Ctx` (151 ms/tok) — its contiguous weight BO / instruction
-  generation is not producing FLM's fast stream; not a drop-in win.
+- `HybridFlmCtx` (FLM `mm.xclbin` wrapper) is measured 15× *slower* than
+  `I8Ctx` (151 ms/tok). Timed breakdown: wait=164 ms/launch (vs I8Ctx's
+  3–6 ms) — a DMA-hang/TDR, not compute. Root cause: `gemm_generate_sequence_i8`
+  emits the *single-core-row* (v26) instruction stream that the per-op xclbins
+  were built for, but FLM's `mm.xclbin` is the multi-row 6×8 fused kernel
+  (8-arg ABI: opcode,instr,ninstr,bo0..bo4) — the stream's tile addresses don't
+  exist on the mm.xclbin topology. Fixing it needs either FLM's multi-row
+  mm.xclbin stream (reverse-engineer `Gemm::generate_seq` from a capture) or a
+  v27 multi-row rebuild of the per-op xclbins.
 
 ### Plan to close prefill
 
