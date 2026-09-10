@@ -872,3 +872,30 @@ __global__ void h1bp_q4nx_gemv_idx8_kernel(const uint8_t* __restrict__ w,
     for (int off = 16; off; off >>= 1) acc += __shfl_down(acc, off);
     if (lane == 0) y8[(size_t)slot * N + row] = acc;
 }
+
+
+// ═══ #2139 item-2: int8 lm_head GEMV (one warp per row, per-row scale) ═══
+// output.weight is 248320x2048 = 508 MB as int8 (vs 1 GB packed f16, 2 GB f32),
+// which is the whole point: the lm_head is a pure weight-streaming op.
+__global__ void h1bp_int8gemv_kernel(float* __restrict__ y,
+                                     const int8_t* __restrict__ W,
+                                     const float* __restrict__ scales,
+                                     const float* __restrict__ x, int M, int K) {
+    const int lane = threadIdx.x & 31;
+    const int row  = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    if (row >= M) return;
+    const uint4* wrow = reinterpret_cast<const uint4*>(W + (size_t)row * K);
+    const int n16 = K >> 4;                     // 16 int8 per uint4
+    // float accumulation: the double accumulator made this kernel slower than the
+    // 1 GB f16 path it is meant to beat (FP64 is rate-limited on gfx1151).
+    float acc = 0.0f;
+    for (int k = lane; k < n16; k += 32) {
+        uint4 v = wrow[k];
+        const int8_t* b = reinterpret_cast<const int8_t*>(&v);
+#pragma unroll
+        for (int j = 0; j < 16; j++)
+            acc += (float)b[j] * x[k * 16 + j];
+    }
+    for (int off = 16; off; off >>= 1) acc += __shfl_down(acc, off);
+    if (lane == 0) y[row] = (float)acc * scales[row];
+}
