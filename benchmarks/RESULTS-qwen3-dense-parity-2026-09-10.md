@@ -24,12 +24,32 @@ tracks FLM decode at every context by construction. Spot measurements:
 
 | model | native decode (short ctx) | native decode @1k | published @1k | verdict |
 |---|---|---|---|---|
-| Qwen3-0.6B | 87 tok/s | **73 tok/s** | 66.5 | ✓ |
-| Qwen3-1.7B | 52 tok/s | — | 40.2 | ✓ (52>40.2) |
-| Qwen3-4B | 24 tok/s | — | 19.6 | ✓ (24>19.6) |
+| Qwen3-0.6B | 87 tok/s | **72 tok/s** | 66.5 | ✓ |
+| Qwen3-1.7B | 75 tok/s | — | 40.2 | ✓ |
+| Qwen3-4B | 36 tok/s | — | 19.6 | ✓ |
+| Qwen3-8B | 21 tok/s | — | 11.9 | ✓ |
 
-Greedy token parity confirmed: "The capital of France is" → Paris continuation
-for all three.
+Greedy token parity vs FLM's real runtime (run_qwen3_npu) confirmed for all
+FOUR dense Qwen3 on "The capital of France is":
+
+| model | native next-token | FLM next-token |
+|---|---|---|
+| 0.6B | 32 | 32 |
+| 1.7B | 32 | 32 |
+| 4B | 59604 | 59604 |
+| 8B | 32 | 32 |
+
+## Fixed this session (2 bugs + 8B bring-up)
+
+1. **1.7B/4B lm_head ELF missing** — `elf_0002_lmhead.bin` was absent, so the
+   lm_head kernel was skipped and `get_logits` returned zeros → token 0.
+   `gen_layer_elfs` now dlsym's `gen_lm_head_seq` and emits the ELF (d764972ba).
+2. **8B NaN (and 32k-incapable KV)** — `RuntimeLayerEngine` hardcoded 32MB KV
+   BOs but the layer ELF is generated with MAX_L=32768 (128MB of KV at
+   NKV=8/HD=128), so attention BDs walked past the BO → NaN → token 0. KV BO
+   now uses `cfg.npu_kv_cache_bo_size` (128MB) (f67d72e47).
+3. **8B wired** — weights downloaded, `dense_qwen3` gate + bridge mapping
+   extended (a5e3c9e3e), build_npu.sh REPO_ROOT bug fixed.
 
 ### Fixed this session: 1.7B/4B lm_head ELF was missing
 
@@ -88,10 +108,11 @@ TTFT carries the same gap: native TTFT @1k ≈ 1000×14 ms = 14 s vs FLM 0.77 s.
 4. Reduce per-launch overhead in `I8Ctx` (overlap quantize/DMA with kernel
    execution; avoid full-BO `update_rope_i6` syncs in the runlist path).
 
-## 8B
+## 8B — DONE (decode correct, 21 tok/s short ctx)
 
-- Weights downloading (`flm pull qwen3:8b`, 5.7 GB model.q4nx).
+- Weights downloaded (`flm pull qwen3:8b`, 5.7 GB).
 - Config: H=4096 IM=12288 NC=36 NH=32 NKV=8 HD=128 NV=151936,
   `tie_word_embeddings: false` (separate lm_head).
-- Needs: add `NC==36 && H==4096` to the `dense_qwen3` gate in
-  `npu_engine_universal.cpp`, generate layer + lm_head ELFs, verify.
+- Wired into the runlist path (gate + bridge + ELFs), decode now greedy-parity
+  with FLM (32). Weight BO packing byte-identical to FLM's runtime capture
+  (layer-0 120,586,240 B, 0 diffs).
