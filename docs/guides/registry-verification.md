@@ -1862,7 +1862,12 @@ Two uses on this branch, and the same shape both times:
 
 The form, one line: **claim — window — cause — successor identity**, each field with an
 **external witness** (the window has the git log, the cause has the diff, the identity has a
-rebuild). #2185's body now carries both the then-true assertion and its dated invalidation;
+rebuild). The witness must be able to observe the property it is cited for: counting changed
+lines by leading marker characters cannot tell an indented comment from indented code, so the
+witness for **"comment-only"** is not the diff text — it is a **rebuild**: pinned tooling built
+from the pre-#2188 file and from `b150bc55…` produced the *same* `ce005c2cf1f004ed…` binary.
+Two source versions, one binary. **The compiler is the instrument for "comment-only"; marker
+counting is a proxy that cannot see the property.** #2185's body now carries both the then-true assertion and its dated invalidation;
 a rewrite would have shown only the correction and destroyed the window. Generalisable
 instance of the same rule: **a file hash is a position, a binary hash is an identity** —
 register the instrument's hash, date the artifact's.
