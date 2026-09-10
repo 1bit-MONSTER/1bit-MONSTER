@@ -1165,6 +1165,7 @@ static void acquire_singleton_lock() {}
 #include <lemon/logging_config.h>
 #include <lemon/runtime_config.h>
 #include <lemon/server.h>
+#include <lemon/backends/onebit/onebit_server.h>
 #include <lemon/utils/path_utils.h>
 #include <memory>
 
@@ -1202,6 +1203,7 @@ static int run_embedded_lemonade(int argc, char** argv) {
     // this face until R8 is wired. Failures are swallowed: a registry scan must
     // never stop Lemonade from serving.
     std::vector<lemon::Server::RegistryModelView> registry_views;
+    std::vector<lemon::ModelInfo> onebit_models;
     {
         const char* env_root = getenv("LEMONADE_ENGINE_REGISTRY_ROOT");
         if (!env_root || !*env_root) env_root = getenv("ZAYA_WEIGHTS_DIR");
@@ -1219,20 +1221,37 @@ static int run_embedded_lemonade(int argc, char** argv) {
                 v.path = a.files.empty() ? std::string() : a.files.front().path;
                 for (auto c : a.capabilities) v.capabilities.push_back(onebit::to_string(c));
                 registry_views.push_back(std::move(v));
+
+                // The same artifact as a ROUTABLE Lemonade model (recipe "onebit"),
+                // so the --lemonade face can EXECUTE it, not only list it. OnebitServer
+                // spawns `1bit unified -m <path>` and forwards /v1/chat/completions.
+                lemon::ModelInfo mi;
+                mi.model_name = a.id;
+                mi.recipe = "onebit";
+                mi.checkpoints["main"] = v.path;
+                mi.resolved_paths["main"] = v.path;
+                mi.downloaded = true;
+                mi.source = "engine-registry";
+                mi.labels.push_back("chat");
+                for (auto c : a.capabilities) mi.labels.push_back(onebit::to_string(c));
+                onebit_models.push_back(std::move(mi));
             }
         } catch (...) {
             total = 0; native = 0;
             registry_views.clear();
         }
         printf("[registry-surface] --lemonade path entered: %zu artifact(s) from %s "
-               "(%zu native ONEBP/RAW_BIN) surfaced on this face's /v1/models and "
-               "/v1/registry as canonical engine ids. LISTING ONLY: Lemonade's own "
-               "router still has no executor for a native id, so the R8 execution half "
-               "remains open. This line is the coverage guard — a registry check run "
-               "against --lemonade is vacuous if it is absent.\n",
+               "(%zu native ONEBP/RAW_BIN) registered as recipe=onebit executor models "
+               "(spawn: `1bit unified -m <path>`) and served at /v1/registry. Coverage "
+               "guard: a registry/execution check run against --lemonade is vacuous if "
+               "this line is absent.\n",
                total, root.c_str(), native);
         fflush(stdout);
     }
+
+    // Injected BEFORE Server construction so ModelManager's dynamic discovery sees
+    // them on its first cache build (descriptor dynamic_models = true).
+    lemon::backends::onebit::set_onebit_models(std::move(onebit_models));
     if (cli_config.port != -1) config_json["port"] = cli_config.port;
     if (!cli_config.host.empty()) config_json["host"] = cli_config.host;
     auto config = std::make_shared<lemon::RuntimeConfig>(config_json);

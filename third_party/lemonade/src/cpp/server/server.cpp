@@ -2940,23 +2940,11 @@ void Server::handle_models(const httplib::Request& req, httplib::Response& res) 
         }
     }
 
-    // Engine registry surface (goal mtvd3pmx R7): append the artifacts the
-    // engine's registry of record knows about, so /v1/models reports registry
-    // state on this face too. Read-only; nothing here is loadable by Lemonade's
-    // own router unless a matching recipe/executor exists.
-    for (const auto& m : registry_surface_) {
-        response["data"].push_back({
-            {"id", m.id},
-            {"object", "model"},
-            {"created", 1234567890},
-            {"owned_by", "1bit-engine"},
-            {"source", "engine-registry"},
-            {"container", m.container},
-            {"path", m.path},
-            {"labels", m.capabilities},
-        });
-    }
-
+    // Engine-registry artifacts are NOT appended here: the `onebit` backend
+    // (dynamic_models) registers them with ModelManager, so they already appear via
+    // get_supported_models()/get_downloaded_models() as routable recipe=onebit
+    // models. Appending them again would duplicate every id. /v1/registry still
+    // serves the registry view (registry_surface_).
     res.set_content(response.dump(), "application/json");
 }
 
