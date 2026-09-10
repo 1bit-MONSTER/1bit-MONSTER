@@ -494,6 +494,12 @@ number never changes, and a branch name only moves when someone moves it deliber
 identity; it is the branch's POSITION, and a position is the thing that moves.** So a citation by SHA is a
 count without its revision, which is the error this file forbids for numbers two paragraphs up.
 
+**THIS INSTRUCTION EXPIRES AT THE MERGE IT ASKS FOR.** It is a reference to a PENDING STATE: once PR #2185
+merges, the guard is on `main` and there is nothing left to land — while this paragraph would still tell a
+reader to land it. **After that merge, read this as history: "the guard reached `main` via PR #2185"**
+(@agent-ec855d named the class, and it is the SHA problem one level out — **a reference whose expiry
+nothing records** — so the expiry is now recorded in the sentence that makes the request).
+
 **And a fix's fingerprint is not permanent either: `refusing to size its blocks` now appears ZERO times on
 both `main` and the branch, because the fix edited its own message.** A detector built on a message string
 breaks when the message is improved; the structural marker is the stable one — **both-field guards read
