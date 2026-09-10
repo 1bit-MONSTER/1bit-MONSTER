@@ -158,6 +158,21 @@ struct ModelArtifact {
     // 120 layers) while its sibling `...-a4b-...gguf` is the MoE variant.
     int32_t native_num_experts = 0;
     int32_t native_top_k = 0;
+    int32_t native_n_ff_exp = 0;      // OnebpHeader.n_ff_exp (expert FFN width)
+    int32_t native_n_ff_shexp = 0;    // OnebpHeader.n_ff_shexp (shared-expert width)
+    // Declared dims/experts from whichever source this artifact came with (GGUF
+    // metadata or the native header). Used to cross-check two artifacts of what
+    // is supposed to be the same model — see experts_underdeclared below.
+    int32_t declared_hidden = 0;
+    int32_t declared_layers = 0;
+    int32_t declared_experts = 0;
+    // F12 — the MIRROR of F11. A native header can UNDER-DECLARE, and it does so
+    // silently: ZAYA1-74B-preview.1bp writes arch=0 (DENSE) with every expert
+    // field zero, while the dims-identical sibling ZAYA1PREVIEW-74B-A4B-Q4_K_M.gguf
+    // in the same directory declares zaya.expert_count=24, expert_used_count=1.
+    // Reported, never acted on: capability never keys on `arch` (see
+    // derive_capabilities), so this is a warning to a consumer, not a route change.
+    bool experts_underdeclared = false;
     // `arch` is header metadata like everything else, so it is CROSS-CHECKED
     // rather than trusted: flagged when arch says DENSE but experts are present,
     // or arch says MOE with none. Raised by @agent-ec855d, who spotted the

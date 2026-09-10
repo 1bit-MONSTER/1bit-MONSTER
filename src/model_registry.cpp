@@ -304,7 +304,20 @@ struct GgufProbe {
     std::set<uint32_t> dtypes;
     std::string general_name;
     std::string architecture;
+    // Declared architecture facts, keyed by SUFFIX so any model prefix works
+    // (zaya.expert_count, qwen3.expert_count, ...). Needed for F12: comparing a
+    // native header against a dims-identical sibling GGUF.
+    int32_t declared_hidden = 0;
+    int32_t declared_layers = 0;
+    int32_t declared_experts = 0;
+    int32_t declared_expert_used = 0;
+    int32_t declared_n_ff_exp = 0;
 };
+
+bool ends_with(const std::string& s, const char* suf) {
+    size_t l = strlen(suf);
+    return s.size() >= l && s.compare(s.size() - l, l, suf) == 0;
+}
 
 class Cursor {
 public:
@@ -324,6 +337,15 @@ public:
 private:
     std::ifstream& f_;
 };
+
+bool read_scalar_u64(Cursor& c, uint32_t t, uint64_t& out) {
+    if (t == 0) { uint8_t v = 0; if (!c.u8(v)) return false; out = v; return true; }
+    if (t == 2) { uint16_t v = 0; if (!c.u16(v)) return false; out = v; return true; }
+    if (t == 4) { uint32_t v = 0; if (!c.u32(v)) return false; out = v; return true; }
+    if (t == 5) { uint32_t v = 0; if (!c.u32(v)) return false; out = (uint64_t)(int32_t)v; return true; }
+    if (t == 10) { uint64_t v = 0; if (!c.u64(v)) return false; out = v; return true; }
+    return false;
+}
 
 size_t scalar_size(uint32_t t) {
     switch (t) {
@@ -387,6 +409,22 @@ GgufProbe probe_gguf(const std::string& path) {
             else out.architecture = v;
             continue;
         }
+        // Scalar architecture facts, matched by suffix so the model prefix
+        // (zaya., qwen3., llama., ...) does not matter.
+        bool want_num = (t == 0 || t == 2 || t == 4 || t == 5 || t == 10);
+        if (want_num && (ends_with(key, "expert_count") || ends_with(key, "expert_used_count") ||
+                         ends_with(key, "expert_feed_forward_length") ||
+                         ends_with(key, "embedding_length") || ends_with(key, "block_count"))) {
+            uint64_t n = 0;
+            if (!read_scalar_u64(c, t, n)) return GgufProbe{};
+            int32_t v = (int32_t)n;
+            if (ends_with(key, "expert_used_count")) out.declared_expert_used = v;
+            else if (ends_with(key, "expert_feed_forward_length")) out.declared_n_ff_exp = v;
+            else if (ends_with(key, "expert_count")) out.declared_experts = v;
+            else if (ends_with(key, "embedding_length")) out.declared_hidden = v;
+            else if (ends_with(key, "block_count")) out.declared_layers = v;
+            continue;
+        }
         if (!skip_value(c, t)) return GgufProbe{};
     }
 
@@ -430,6 +468,10 @@ struct NativeProbe {
     int32_t vocab = 0;
     int32_t num_experts = 0;
     int32_t top_k = 0;
+    int32_t n_ff_exp = 0;
+    int32_t n_ff_shexp = 0;
+    int32_t hidden = 0;
+    int32_t layers = 0;
     uint64_t json_bytes = 0;
     std::vector<std::string> json_dtypes;
 };
@@ -512,6 +554,10 @@ NativeProbe probe_native(const std::string& path) {
         np.vocab = hdr.vocab_size;
         np.num_experts = (int32_t)hdr.num_experts;
         np.top_k = (int32_t)hdr.n_expert_used;
+        np.n_ff_exp = (int32_t)hdr.n_ff_exp;
+        np.n_ff_shexp = (int32_t)hdr.n_ff_shexp;
+        np.hidden = hdr.hidden_size;
+        np.layers = hdr.num_layers;
         if (const char* q = onebp_quant_name(hdr.quant)) np.quant = q;
         if (const char* a = onebp_arch_name(hdr.arch)) np.arch = a;
         np.tag.assign(hdr.model_tag, strnlen(hdr.model_tag, sizeof hdr.model_tag));
@@ -940,6 +986,9 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
         a.container = p.container;
         a.display_name = p.probe.general_name;
         a.architecture = p.probe.architecture;
+        a.declared_hidden = p.probe.declared_hidden;
+        a.declared_layers = p.probe.declared_layers;
+        a.declared_experts = p.probe.declared_experts;
         a.quantization = p.quant;
         a.lineage = guess_lineage(lower(p.base));
         a.config_dir = p.config_dir;
@@ -969,7 +1018,15 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
                 a.native_vocab = np.vocab;
                 a.native_num_experts = np.num_experts;
                 a.native_top_k = np.top_k;
-                // Cross-check arch against the expert count (see header comment).
+                a.native_n_ff_exp = np.n_ff_exp;
+                a.native_n_ff_shexp = np.n_ff_shexp;
+                a.declared_hidden = np.hidden;
+                a.declared_layers = np.layers;
+                a.declared_experts = np.num_experts;
+                // Internal contradiction only: arch says MOE but no experts, or
+                // arch says DENSE while this same header reports experts.
+                // F12 (under-declaration) cannot be seen from ONE source and is
+                // caught by the sibling cross-check in scan().
                 if (np.space == DtypeSpace::ONEBP_HEADER &&
                     (np.arch == "dense" || np.arch == "moe")) {
                     if ((np.arch == "moe") != (np.num_experts > 0)) a.arch_suspect = true;
@@ -1032,6 +1089,27 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
 
     for (const auto& h : htok_paths)
         if (!claimed.count(h)) reg.dangling_tokenizers_++;
+
+    // ── F12: native header vs dims-identical sibling GGUF ──────────────────
+    // A native header that declares DENSE with zero experts may simply be
+    // SILENT, not correct: 0 is a meaningful value for both OnebpArch and
+    // OnebpQuant, so an unwritten header reads as "dense Q4NX" and earns
+    // NPU-Q4NX. The only way to catch it is a second source. We do not assert —
+    // we compare declared dims and report the disagreement.
+    for (auto& nat : reg.artifacts_) {
+        if (nat.container != Container::ONEBP) continue;
+        if (nat.dtype_space != DtypeSpace::ONEBP_HEADER) continue;
+        if (nat.native_num_experts > 0) continue;         // header is explicit
+        if (!nat.declared_hidden || !nat.declared_layers) continue;
+        for (const auto& sib : reg.artifacts_) {
+            if (sib.container != Container::GGUF) continue;
+            if (sib.declared_experts <= 0) continue;
+            if (sib.declared_hidden != nat.declared_hidden) continue;
+            if (sib.declared_layers != nat.declared_layers) continue;
+            nat.experts_underdeclared = true;
+            break;
+        }
+    }
 
     // ── id collisions: two artifacts claiming the same canonical id ────────
     std::map<std::string, int> id_count;
@@ -1211,6 +1289,7 @@ std::string ModelRegistry::to_table(uint32_t at_context) const {
           << (a.q4nx_name_mismatch ? "  [name-says-q4nx-no-type42]" : "")
           << (a.native_name_mismatch ? "  [native-name-mismatch]" : "")
           << (a.arch_suspect ? "  [arch-suspect]" : "")
+          << (a.experts_underdeclared ? "  [experts-underdeclared!]" : "")
           << (a.display_name_suspect ? "  [display-name-suspect]" : "")
           << (a.id_quality().empty() ? "" : "  " + a.id_quality()) << "\n";
     }
@@ -1247,6 +1326,11 @@ std::string ModelRegistry::to_json() const {
         o << "      \"architecture\": \"" << json_escape(a.architecture) << "\",\n";
         o << "      \"display_name\": \"" << json_escape(a.display_name) << "\",\n";
         o << "      \"display_name_suspect\": " << (a.display_name_suspect ? "true" : "false") << ",\n";
+        // Source-agnostic declared architecture facts (GGUF metadata or native
+        // header). Top level because they are not native-specific.
+        o << "      \"declared_hidden\": " << a.declared_hidden
+          << ", \"declared_layers\": " << a.declared_layers
+          << ", \"declared_experts\": " << a.declared_experts << ",\n";
         o << "      \"lineage\": \"" << json_escape(a.lineage) << "\",\n";
         o << "      \"has_dtype_42\": " << (a.has_dtype_42 ? "true" : "false")
           << ", \"q4nx_name_mismatch\": " << (a.q4nx_name_mismatch ? "true" : "false") << ",\n";
@@ -1255,6 +1339,9 @@ std::string ModelRegistry::to_json() const {
           << ", \"num_experts\": " << a.native_num_experts
           << ", \"top_k\": " << a.native_top_k
           << ", \"arch_suspect\": " << (a.arch_suspect ? "true" : "false")
+          << ", \"experts_underdeclared\": " << (a.experts_underdeclared ? "true" : "false")
+          << ", \"n_ff_exp\": " << a.native_n_ff_exp
+          << ", \"n_ff_shexp\": " << a.native_n_ff_shexp
           << ", \"json_bytes\": " << a.native_json_bytes
           << ", \"name_mismatch\": " << (a.native_name_mismatch ? "true" : "false")
           << ", \"dtypes\": [";
