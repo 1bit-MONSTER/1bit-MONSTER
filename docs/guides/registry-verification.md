@@ -30,8 +30,8 @@ The registry module is deliberately engine-independent, so the oracle builds wit
 compiler:
 
 ```sh
-g++ -std=c++20 -O2 -Iinclude -DREGISTRY_SCAN_STANDALONE \
-    tools/registry_scan.cpp src/model_registry.cpp -o registry_scan
+mkdir -p b && g++ -std=c++20 -O2 -Iinclude -DREGISTRY_SCAN_STANDALONE \
+    tools/registry_scan.cpp src/model_registry.cpp -o b/registry_scan
 ```
 
 Expected: builds clean with no HIP/XRT. `-Wall -Wextra` clean too.
@@ -52,14 +52,21 @@ cmake --build b --target registry_route_map -j32
 
 Expected: `b/1bit`, `b/registry_scan`, `b/registry_route_map`.
 
+**Both routes put `registry_scan` in `b/`** — route A explicitly (`-o b/registry_scan`, with the
+`mkdir -p b` above so it does not need cmake to have run), route B because that is where the target
+lands. **Every invocation in §2–§7 therefore works under either route.** This was not true before: the
+header build wrote `./registry_scan` while cmake writes `b/registry_scan`, and the engine-side
+sections — which a reader can only reach via the cmake route — used the standalone route's path, so
+the readers who most needed them had no such file. The fix is to remove the fork, not to document it.
+
 ---
 
 ## 2. The registry describes the store truthfully
 
 ```sh
-./registry_scan ~/models                       # or any store
-./registry_scan --resolve <artifact> ~/models
-./registry_scan --json ~/models | python3 -c 'import json,sys; print(json.load(sys.stdin)["report"])'
+b/registry_scan ~/models                       # or any store
+b/registry_scan --resolve <artifact> ~/models
+b/registry_scan --json ~/models | python3 -c 'import json,sys; print(json.load(sys.stdin)["report"])'
 ```
 
 Expected: every artifact carries `container`, `dtype_space`, `capabilities`, `quantization`,
@@ -78,9 +85,9 @@ whose finding says it should not, the finding or the code is wrong.
 ## 3. Capability constraints carry provenance and enforcement scope
 
 ```sh
-./registry_scan --capability HRX-GGUF --at-context 2048 ~/models   # NONZERO artifacts
-./registry_scan --capability HRX-GGUF --at-context 4096 ~/models   # 0 artifacts
-./registry_scan --engine-limit HRX-GGUF=4096:b66-fork \
+b/registry_scan --capability HRX-GGUF --at-context 2048 ~/models   # NONZERO artifacts
+b/registry_scan --capability HRX-GGUF --at-context 4096 ~/models   # 0 artifacts
+b/registry_scan --engine-limit HRX-GGUF=4096:b66-fork \
                 --route <a gguf> --at-context 4096 --prefer HRX-GGUF ~/models
 ```
 
@@ -100,10 +107,10 @@ its own output, and `report.gate_enforces` is `false` in the JSON.
 ## 4. The resolver refuses with distinguishable reasons
 
 ```sh
-./registry_scan --route <id> ~/models                              # YES -> <capability>
-./registry_scan --route <id> --prefer NPU-1BP ~/models             # NO  -> not available
-./registry_scan --route <id> --at-context 4096 --prefer HRX-GGUF ~/models
-./registry_scan --route no-such-artifact.gguf ~/models             # exit 1
+b/registry_scan --route <id> ~/models                              # YES -> <capability>
+b/registry_scan --route <id> --prefer NPU-1BP ~/models             # NO  -> not available
+b/registry_scan --route <id> --at-context 4096 --prefer HRX-GGUF ~/models
+b/registry_scan --route no-such-artifact.gguf ~/models             # exit 1
 ```
 
 Expected: **three** distinct rejection kinds that must not read the same — *no backend
@@ -518,7 +525,7 @@ test and will feel like enough.
 sh tools/dispatch_key_check.sh src/backend_manager.cpp     # exit 0; 1 = the set CHANGED
 python3 tools/registry_flag_audit.py --static-only         # A + C, source-only
 python3 tools/registry_fixture.py /tmp/fixture
-python3 tools/registry_flag_audit.py --binary ./registry_scan --fixture /tmp/fixture   # A-D
+python3 tools/registry_flag_audit.py --binary b/registry_scan --fixture /tmp/fixture   # A-D
 ```
 
 Plus the one enforcement that lives outside `tools/` at runtime — the commit-msg tripwire for
