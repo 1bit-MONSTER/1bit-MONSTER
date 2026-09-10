@@ -35,8 +35,11 @@ everything it builds. Stated because it was assumed: **26 invocations use relati
 stated cwd **no relative path can be shown to be WRONG — only inconsistent with another path**, which is
 how `./registry_scan` and `b/registry_scan` coexisted here without either contradicting a written rule.
 
-**3. Machine.** These need **no engine link** — `clang++` and `python3` suffice, on any machine: §1
-route A, §2, §3, §4, §7's standalone recipe, and the §8 checks. These **link the engine** and need the
+**3. Machine.** These need **no engine link** — a **C++23 compiler** and `python3` suffice, on any
+machine: §1 route A, §2, §3, §4, §7's standalone recipe, and the §8 checks. **Not `clang++`
+specifically**, which is what this said until @agent-ec855d checked: **strixhalo has no `clang++`** and
+builds §7's recipe with **`g++ 15.2.0`**. Naming one compiler made this precondition false on the exact
+box the evidence was produced on. These **link the engine** and need the
 ROCm/TheRock toolchain (route B) plus a built `b/1bit`: §5, §6, §6.1, and §7's `b/1bit` form.
 
 **4. Environment — in two parts, the first of which behaves like facet 5 rather than like 1–3: an
@@ -336,10 +339,17 @@ one file. Read-only; wired into no caller. It exists because step 2 ("extend
 operator's call — the evidence for it should be numbers, not an impression.
 
 **RUNNABLE WITHOUT THE ENGINE LINK** — the header used to say "engine-side, onebin", which reads as
-*not checkable until the link lands*. It is checkable now, in one line, with plain `clang++`:
+*not checkable until the link lands*. It is checkable now, in one line, with any **C++23 compiler**:
 
 ```sh
+# clang++ and g++ 15 both build this. Use g++ on strixhalo, which has NO clang++ — and that is the
+# box these numbers came from, so naming one compiler would make the recipe unreproducible where the
+# evidence was produced. (@agent-ec855d found clang++ missing there.)
 clang++ -std=c++23 -O2 -Iinclude -Isrc -DREGISTRY_DIFF_STANDALONE \
+  tools/registry_diff.cpp src/model_registry.cpp src/model_discovery.cpp \
+  src/safetensors_reader.cpp src/q4nx_reader.cpp src/gguf_reader.cpp -o b/registry-diff
+# or, identically:
+g++     -std=c++23 -O2 -Iinclude -Isrc -DREGISTRY_DIFF_STANDALONE \
   tools/registry_diff.cpp src/model_registry.cpp src/model_discovery.cpp \
   src/safetensors_reader.cpp src/q4nx_reader.cpp src/gguf_reader.cpp -o b/registry-diff
 ```
@@ -393,8 +403,31 @@ Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=1
 Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=13`** — every file
 the flat scan finds carries a different canonical id, 13 artifacts are invisible to a
 non-recursive scan, and three sets of distinct files share one legacy id (the `-m` silent-pick
-hazard). Caveat: run it over a directory that EXCLUDES a file with an unknown dtype until the
-`fix/gguf-unknown-dtype-guard` branch lands, because the unfixed scan SIGFPEs on one (F14).
+hazard). **The file to exclude is `zaya1-8b-ft-q4nx.gguf`** — in the measured store it is
+`~/models/zaya1-8b-ft-q4nx.gguf`. Running in place reproduces the crash exactly: **`rc=136`, SIGFPE, core
+dumped, no output** (verified by @agent-ec855d, and again here). Until
+`fix/gguf-unknown-dtype-guard` lands, exclude it — and rather than bisect a **419 GiB** store, do this:
+
+```sh
+mkdir -p /tmp/farm
+for e in ~/models/*; do
+  case "$(basename "$e")" in zaya1-8b-ft-q4nx.gguf) ;; *) ln -sf "$e" /tmp/farm/ ;; esac
+done
+b/registry-diff /tmp/farm
+```
+
+**THE FARM METHOD IS VALIDATED, NOT ASSUMED** — which it needed to be, because §7's own finding is that
+**a native `.q4nx`'s id follows its containing directory**, so a symlink farm could plausibly shift the
+ids and therefore the counters. Measured: two farms with the same contents and **different directory
+names** give **identical** counters —
+
+| farm | same-file | id-divergent | legacy-invisible |
+|---|---|---|---|
+| `/tmp/farm_alpha` | 18 | 18 | 13 |
+| `/tmp/farm_beta` | 18 | 18 | 13 |
+
+So the counters are **invariant under the rename**, and the headline number is comparable to an in-place
+run rather than an artifact of how the subset was built.
 
 **The claim to check:** the three numbers, and the fact that a native `.q4nx`'s legacy id is its
 **containing directory** (proved by running it in two differently-named directories — same files,
