@@ -647,6 +647,23 @@ returns **15**, not 1: **the one `printf` header plus fourteen entry lines that 
 AS NAMED **AND** AS POPULATED**, and two differently-named copies of identical content cannot agree on it.
 The line at `:43` was the reason, not the extent.
 
+**AND A SIXTH COSTUME FOR "A REPORT IS NOT A CHECK": A CHECKER THAT CANNOT OBSERVE THE PROPERTY.** An unused
+shell variable is **not a syntax error**, so `bash -n` returns clean on a file that ShellCheck fails with
+**SC2034** — *a checker cannot report on a property it cannot observe*, which is the same sentence as
+`continue-on-error` and a regex written for a literal it matches zero times. **And the corresponding duty when
+you fix one: say which half you measured.** The author of the fix verified the **premise** (the variable is
+unread — `grep -E '\$\{?here\}?|\$here'` returns nothing) and **labelled that the checker's own output was not
+reproduced**, because ShellCheck is not installed locally while CI runs it under `-S warning` where a warning
+is a failure. *The substance was measured; the instrument's verdict came from a different machine.* **Both are
+evidence; they are not the same evidence, and the label is what keeps them apart.**
+
+**AND THE ORDERING CLAUSE DISSOLVED RATHER THAN BEING SATISFIED — the cleaner outcome.** A sequence was written
+into the first PR's body because the second PR's subject lived only on a feature branch: *hook first, or the
+installer is dead on arrival.* **Landing the hook on `main` removed the requirement instead of satisfying it,
+and #2186 became `tools/hooks/install.sh` alone (+90/-0) — able to land by itself. A dependency that dissolves
+is better than a sequence that must be respected**, because a sequence needs every future reader to keep
+honouring it and a dissolved dependency needs nothing.
+
 **AND THE MECHANISM IS IN THE SOURCE, WHICH MAKES THE RULE PREDICTIVE RATHER THAN EMPIRICAL** — and it
 corrects an explanation of @agent-ec855d's that was itself a grep instead of a read. They had said the tool
 *"sorts one list but not the scan"*, citing `model_registry.cpp:548 std::sort(...)`. **Reading the function
