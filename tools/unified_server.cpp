@@ -1167,6 +1167,9 @@ static void acquire_singleton_lock() {}
 #include <lemon/server.h>
 #include <lemon/backends/onebit/onebit_server.h>
 #include <lemon/utils/path_utils.h>
+#ifndef _WIN32
+#include <unistd.h>   // access() — system FLM probe
+#endif
 #include <memory>
 
 static int run_embedded_lemonade(int argc, char** argv) {
@@ -1190,6 +1193,34 @@ static int run_embedded_lemonade(int argc, char** argv) {
 
     lemon::utils::set_cache_dir(cli_config.cache_dir);
     auto config_json = lemon::ConfigFile::load(cli_config.cache_dir);
+
+    // ── R8: let the embedded Lemonade's `flm` recipe find the SYSTEM FLM ──────
+    // Lemonade resolves the flm binary from its own download dir unless the bin is
+    // overridden (find_external_backend_binary -> LEMONADE_FLM_NPU_BIN / flm.npu_bin),
+    // and its PATH lookup is gated on flm.prefer_system. On a box where FLM is a
+    // system install (/opt/fastflowlm/bin/flm) that leaves `flm` contributing ZERO
+    // models to /v1/models. Pin the recipe to the same binary the engine's npu_flm
+    // uses; discovered from NPU_FLM_BIN, then the known system locations.
+    {
+        std::string flm_bin;
+        const char* env_bin = getenv("NPU_FLM_BIN");
+        if (env_bin && *env_bin) flm_bin = env_bin;
+#ifndef _WIN32
+        if (flm_bin.empty()) {
+            for (const char* cand : {"/opt/fastflowlm/bin/flm", "/opt/rocm/bin/flm"}) {
+                if (access(cand, X_OK) == 0) { flm_bin = cand; break; }
+            }
+        }
+#endif
+        if (!flm_bin.empty()) {
+            if (!config_json.contains("flm") || !config_json["flm"].is_object())
+                config_json["flm"] = nlohmann::json::object();
+            config_json["flm"]["npu_bin"] = flm_bin;
+            config_json["flm"]["prefer_system"] = true;
+            printf("[registry-surface] flm recipe pinned to system FLM: %s\n", flm_bin.c_str());
+            fflush(stdout);
+        }
+    }
 
     // ── Coverage guard for the --lemonade face (goal mtvd3pmx, R7/R8) ──────────
     // This branch returns BEFORE any native arg parsing, hardware init, or route
