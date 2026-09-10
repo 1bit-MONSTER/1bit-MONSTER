@@ -523,3 +523,29 @@ Dump FLM's `qwen3_npu_sequence::gen_layer_seq(seq, 256)` and decode the Q GEMM's
 A/C B-DP offsets to see how FLM feeds the odd rows (likely a second generate_seq with a
 different A base offset or an A interleave the harness hasn't tried). Then Q = 2 invocations
 (even+odd) interleaved → full QKV done → wire into `npu_engine_universal.cpp`.
+
+---
+
+## 2026-09-10 (session 2l): C BO is 512×1024 (not 256×2048); Q even tokens; odd-token A still open
+
+### KEY: the Q GEMM C BO is stored TRANSPOSED as 512×1024
+Decoding the C write BD with the 4-byte DMA element size (FLM npu_cmd_write_dma.hpp):
+d0=64 (4B)=128 bf16, d1=256 iters @ stride 1024 (4B)=2048 bf16=2 rows of 1024.
+So the C write emits 128 GEMM C rows, each packed as TWO 1024-bf16 C-BO rows
+(first half then second half). One-hot probe confirms: A[k]=1.0 → C BO rows 2k,2k+1.
+
+### Empirical Q output (contiguous A = hidden tokens 0..255)
+Q1[2j] = R[2j][:1024], Q1[2j+1] = R[2j][1024:]  (128/128) — i.e. the C write emits the
+EVEN tokens R[0],R[2],…,R[254] (each 2 C-BO rows), and the C BO's second 512 KB stays 0.
+
+### Remaining contradiction (odd tokens)
+The one-hot A[1] → C BO row 2 = W[0] (== C[1] for that probe), but the contiguous A gives
+row 2 = R[2] (== C[2]). So the A-read row selection is not a simple stride-2 — it maps
+A[k]→C[2k] in one probe and A[k]→C[k] in the other, i.e. the A-read/C-write tiling has an
+off-by-one or 16/32-bit element-size ambiguity still to pin down. This is the last item
+before the Q (and O, N=2048) second invocation can be wired.
+
+### Definitive next step
+Trace the A-read BD (d0=256,d1=64@512,d2=2@256) under BOTH 16-bit and 32-bit element
+interpretations against the one-hot + contiguous observations, or byte-diff FLM's captured
+elf_0009 (Q GEMM) vs my generated stream to pin the exact A/C tiling.
