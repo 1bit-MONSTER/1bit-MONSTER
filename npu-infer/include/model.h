@@ -147,6 +147,11 @@ int64_t npu_pack_moe_expert_pool(uint8_t* bo, ModelWeights* mw, int layer);
 // (5,242,880) or 0 on error.
 int64_t npu_pack_moe_linear5_bo(uint8_t* bo, ModelWeights* mw, int layer);
 
+// Pack one linear layer's region-B weight content (share_* + qkv + gate_proj,
+// 8704-B tiles trimmed to 4736 + A/B interleave). Returns bytes written
+// (16,367,616) or 0 on error.
+int64_t npu_pack_moe_region_b(uint8_t* bo, ModelWeights* mw, int layer);
+
 #ifdef __cplusplus
 }
 #endif

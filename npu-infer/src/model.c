@@ -381,6 +381,59 @@ int64_t npu_pack_moe_expert_pool(uint8_t* bo, ModelWeights* mw, int layer) {
     return (int64_t)(dst - bo);   // 478,146,560
 }
 
+// ===========================================================================
+// 35B MoE region-B packing (the layer ELF's arg-0 weight BO, desc-logical
+// offsets relative to 0x1bc00000). Each 8704-B Q8_0 tile (256 bf16 scales +
+// 8192 int8) is TRIMMED to 4736 B (keep the first 4736 B: scales + 4224
+// int8), then the tiles are A/B-interleaved in 16-tile blocks — the same
+// reorder formula byte-verified in Round 79 (out[o] = in[o/2 + 8*(o%2)]),
+// now applied to PRE-TRIMMED tiles (the load_linear_weights trim is a
+// separate step from the reorder_cpy A/B shuffle).
+//
+// Desc offsets (rows, relative to region-B base):
+//   share_up   0     128 tiles  [16,8,8704]
+//   share_gate 128   128 tiles  [16,8,8704]
+//   share_down 256   128 tiles  [64,2,8704]
+//   qkv        384  2048 tiles  [256,8,8704]
+//   gate_proj  2432 1024 tiles  [128,8,8704]
+// Total 3456 rows x 4736 B = 16,367,616 B (the layer ELF reads via 4736-B
+// LINEAR BDs at 16-row strides, Round 72).
+// ===========================================================================
+#define NPU_MOE_8704_ROW 8704
+
+// Trim each 8704-B tile to 4736 + A/B interleave in 16-tile blocks, into `bo`
+// starting at `row_start` (4736-B rows). n_tiles must be a multiple of 16.
+static void npu_pack_8704_tiles(uint8_t* bo, const uint8_t* tensor, int n_tiles,
+                                int row_start) {
+    for (int blk = 0; blk < n_tiles / 16; blk++) {
+        for (int o = 0; o < 16; o++) {
+            int ti = o / 2 + 8 * (o % 2);
+            memcpy(bo + (size_t)(row_start + blk * 16 + o) * NPU_MOE_ROW_BYTES,
+                   tensor + (size_t)(blk * 16 + ti) * NPU_MOE_8704_ROW,
+                   NPU_MOE_ROW_BYTES);
+        }
+    }
+}
+
+// Pack one linear layer's region-B weight content (share_* + qkv + gate_proj)
+// into a 3456-row buffer. Returns bytes written (16,367,616) or 0 on error.
+int64_t npu_pack_moe_region_b(uint8_t* bo, ModelWeights* mw, int layer) {
+    if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
+    LayerWeights* lw = &mw->layers[layer];
+    TensorDesc* tens[5] = { &lw->share_up_exps_weight, &lw->share_gate_exps_weight,
+                            &lw->share_down_exps_weight, &lw->qkv_proj_weight,
+                            &lw->self_attn_gate_proj_weight };
+    const int tiles[5]  = { 128, 128, 128, 2048, 1024 };
+    const int rowstart[5] = { 0, 128, 256, 384, 2432 };
+    for (int i = 0; i < 5; i++) {
+        if (tens[i]->ndim == 0) return 0;   // all five must exist (linear layer)
+        const uint8_t* d = (const uint8_t*)model_tensor_data(mw, tens[i]);
+        if (!d) return 0;
+        npu_pack_8704_tiles(bo, d, tiles[i], rowstart[i]);
+    }
+    return (int64_t)3456 * NPU_MOE_ROW_BYTES;   // 16,367,616
+}
+
 // Pack one linear layer's 5 MB linear-attn BO: 328,192-B head (ssm_conv1d,
 // ssm_norm, ssm_a, ssm_dt.bias, ssm_alpha_proj, ssm_beta_proj) then ssm_out
 // windows in 32-row blocks (order j = base + 16*(i%2) + i/2).
