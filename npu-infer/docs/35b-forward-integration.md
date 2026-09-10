@@ -1154,3 +1154,16 @@ region-B weight packing is no longer a blocker — the last weight-BO piece
 (expert pool + 5MB linear + region B) is now packable from the model file.
 Byte-exactness vs the runtime remains gated on task-4 (moe_ffn_cpu), since
 the runtime's weight BO is map-written (R82).
+
+## Round 84 — CPU reference banked (task-4 correctness baseline) (2026-09-10)
+
+Ran tools/qwen36_full_ref.py (the moe_ffn_cpu-equivalent numpy reference):
+
+    prompt [151644] -> greedy next token 76740
+    first-position per-layer hidden states saved (40 x 2048)
+      -> /tmp/ref_first_hidden.npy
+
+This is the ground truth for the task-4 correctness gate (token parity + the
+per-layer hidden-state byte compare). The engine side (MoERuntimeLayerEngine +
+routed-expert GEMMs) must reproduce token 76740 and the 40 hidden states once
+the routed experts are wired.
