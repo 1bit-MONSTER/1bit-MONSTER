@@ -1116,7 +1116,13 @@ static void acquire_singleton_lock() {
             } else {
                 // Previous instance is still alive. Log and exit.
                 fprintf(stderr, "Another instance is already running (pid %d). Exiting.\n", (int)old_pid);
-                fprintf(stderr, "  Use a different --port or stop the existing instance first.\n");
+                // The lock is a single fixed path (see lock_file_path()), NOT port-derived, so
+                // the old advice ("use a different --port") described something that cannot work.
+                // State the remedies that do: stop that instance, or give this one a private
+                // XDG_RUNTIME_DIR so it computes a different lock path.
+                fprintf(stderr, "  The lock is one fixed path (%s), not per-port, so a different --port cannot help.\n",
+                        kLockPath);
+                fprintf(stderr, "  Stop that instance, or set XDG_RUNTIME_DIR to a private directory and retry.\n");
                 close(fd);
                 exit(EXIT_FAILURE);
             }
