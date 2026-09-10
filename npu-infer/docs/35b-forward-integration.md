@@ -1207,3 +1207,25 @@ Replay path (next): (1) map elf_*.bin to runs via the capture order +
 preinsts arg sizes, (2) load each ELF on the single MLIR_AIE kernel
 (Round 77), (3) bind the task-2 BOs per the preinsts arg map, (4) one
 xrt::runlist submit, (5) compare logits vs the banked token-76740 reference.
+
+## Round 87 — runtime's per-token forward is ONE runlist of ~40 runs (2026-09-10)
+
+Decoded the capture manifest's RUNLIST_ADD stream (the lean interposer logs
+each run add + its BO pointers). The runtime's per-token forward is a SINGLE
+xrt::runlist (rl fixed) of ~40 runs, each:
+
+    a3 = the layer's 512 MB expert pool (distinct pointer per run)
+    a4 = a SHARED 1 MB BO (same pointer 0x...b1160 across runs)
+    a5/a6/a7 = per-run small BOs (2-4 MB / norms / state)
+
+The ELF creation stream interleaves: small control ELFs (384/480 B), one
+45,072-B sequence, and one 856,160-B combined sequence per token — the
+runtime already batches the whole per-token forward (expert GEMMs + layer +
+lm_head) into one runlist submit.
+
+=> The "0.7 tok/s" is NOT a launch-count problem (the runtime already does
+   1 submit/token); the bottleneck is the ~40 heavy runs/token (each touching
+   a 512 MB expert pool + dequant). The npu-infer single-runlist path
+   (MoERuntimeLayerEngine) targets the same structure; the replay oracle
+   (35 captured ELFs + this runlist arg map) lets it reproduce the runtime's
+   exact per-token runlist without the closed sequence generators.
