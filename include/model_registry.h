@@ -130,6 +130,11 @@ struct ModelArtifact {
     uint64_t native_json_bytes = 0;            // Q4NX_JSON manifest size
     std::vector<std::string> native_dtypes;    // dtype names found in the manifest
     bool native_name_mismatch = false;         // name says native, bytes say otherwise
+    // F11 — GGUF `general.name` is NOT authoritative either. Official Qwen GGUF
+    // repos report "Qwen3 4B Instruct Awq" and "Qwen3 30B Gptq Fp16" for plain
+    // K-quants (found by @agent-ec855d, 2026-09-10). Reported, never used for a
+    // lane decision — display_name is metadata, not evidence.
+    bool display_name_suspect = false;
     // OnebpHeader.vocab_size. Verified against @agent-ca60cf's qwen35 reference:
     // 248320 declared == 248,320 f32 per position (993,280 B) observed. So the
     // per-position logits WIDTH every lane must produce is declared by the

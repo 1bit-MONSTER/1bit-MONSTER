@@ -33,7 +33,13 @@ namespace {
 void usage(const char* argv0) {
     fprintf(stderr,
             "usage: %s [--json] [--digest] [--no-probe] [--max-depth N]\n"
-            "          [--capability NAME] [--resolve PATH|ID] [--quiet] <root>...\n"
+            "          [--capability NAME] [--at-context N]\n"
+            "          [--catalog PATH | --catalog-default]\n"
+            "          [--resolve PATH|ID] [--quiet] <root>...\n"
+            "\n"
+            "  --at-context N     apply capability constraints at N context tokens\n"
+            "  --catalog PATH     ingest a recipe-keyed catalog as a VIEW\n"
+            "  --catalog-default  same, at ~/.config/lemonade/user_models.json\n"
             "\n"
             "capabilities: NPU-Q4NX NPU-1BP HIP-1BP HIP-GGUF RADV-GGUF\n"
             "              HRX2-GGUF-Q4NX HRX-GGUF MLX-GPU CPU\n",

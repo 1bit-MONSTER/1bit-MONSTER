@@ -977,6 +977,20 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
         }
 
         a.id = canonical_id(p.base, p.container, q4nx_in_gguf);
+        // F11: a display name that claims a DIFFERENT quantization than the
+        // tensor census. Metadata, not evidence — flagged so nobody routes on it.
+        if (p.probe.ok && !a.quantization.empty()) {
+            std::string dn = lower(a.display_name);
+            if (!dn.empty()) {
+                static const char* contradicting[] = {"awq", "gptq", "int4", "int8", "fp8", "bnb"};
+                for (const char* q : contradicting) {
+                    if (contains(dn, q) && !contains(lower(a.quantization), q)) {
+                        a.display_name_suspect = true;
+                        break;
+                    }
+                }
+            }
+        }
         a.capabilities = derive_capabilities(p.container, a.dtype_space, q4nx_bytes);
         for (const auto& f : p.files) a.aliases.push_back(basename_of(f.path));
         a.files = p.files;
@@ -1176,6 +1190,7 @@ std::string ModelRegistry::to_table() const {
           << (a.has_dtype_42 ? "  [type42!]" : "")
           << (a.q4nx_name_mismatch ? "  [name-says-q4nx-no-type42]" : "")
           << (a.native_name_mismatch ? "  [native-name-mismatch]" : "")
+          << (a.display_name_suspect ? "  [display-name-suspect]" : "")
           << (a.id_quality().empty() ? "" : "  " + a.id_quality()) << "\n";
     }
     return o.str();
@@ -1210,6 +1225,7 @@ std::string ModelRegistry::to_json() const {
         o << "      \"quantization\": \"" << json_escape(a.quantization) << "\",\n";
         o << "      \"architecture\": \"" << json_escape(a.architecture) << "\",\n";
         o << "      \"display_name\": \"" << json_escape(a.display_name) << "\",\n";
+        o << "      \"display_name_suspect\": " << (a.display_name_suspect ? "true" : "false") << ",\n";
         o << "      \"lineage\": \"" << json_escape(a.lineage) << "\",\n";
         o << "      \"has_dtype_42\": " << (a.has_dtype_42 ? "true" : "false")
           << ", \"q4nx_name_mismatch\": " << (a.q4nx_name_mismatch ? "true" : "false") << ",\n";
