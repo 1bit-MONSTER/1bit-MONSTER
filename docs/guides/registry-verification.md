@@ -184,21 +184,61 @@ one file. Read-only; wired into no caller. It exists because step 2 ("extend
 `src/model_discovery.cpp` into the registry of record") is a behaviour change and therefore the
 operator's call — the evidence for it should be numbers, not an impression.
 
-**This number has a bad-input run — added after §8's rule showed it had none, and it was worth
-running.** The same tool on a synthetic 5-artifact fixture (`tools/registry_fixture.py`):
+**RUNNABLE WITHOUT THE ENGINE LINK** — the header used to say "engine-side, onebin", which reads as
+*not checkable until the link lands*. It is checkable now, in one line, with plain `clang++`:
+
+```sh
+clang++ -std=c++23 -O2 -Iinclude -Isrc -DREGISTRY_DIFF_STANDALONE \
+  tools/registry_diff.cpp src/model_registry.cpp src/model_discovery.cpp \
+  src/safetensors_reader.cpp src/q4nx_reader.cpp src/gguf_reader.cpp -o registry-diff
+```
+
+**FOUR POPULATIONS, all measured** (this is the bad-input run §8's rule requires, and the reason the
+tool had to become runnable):
+
+| population | same-file | id-divergent | legacy-invisible |
+|---|---|---|---|
+| the store (F14 file excluded) | 18 | 18 | 13 |
+| `/home/bcloud/bench-models` | 4 | 4 | 0 |
+| `/home/bcloud/models` | 0 | 0 | 2 |
+| the synthetic fixture (before) | 0 | 0 | 5 |
+
+The counters **move with the input** — the tool reads the directory rather than emitting a constant.
+That is what the control establishes, and it is all it establishes: the fixture's own numbers are
+**instrument evidence, not a finding about artifacts.**
+
+**`same-file == id-divergent` in all four, and that equality IS the claim** (@agent-ec855d, who
+nearly reported it as a redundancy and it is the opposite). My gloss — *"every file the flat scan
+finds carries a different canonical id"* — **is** the equality of the two counters, so `18/18` is the
+evidence rather than two views of one fact. Two counters that always agree usually deserve suspicion;
+here the agreement is the measurement.
+
+**AND THE COUNTER HAD NO CASE WHERE IT COULD DISAGREE — now closed.** No population had ever made the
+counters differ, so the branch that reports a difference was dead code: had `id-divergent` regressed
+to a constant `0`, no fixture or store we have would have noticed. `tools/registry_fixture.py` now
+emits **two complete GGUFs** — one whose `general.name` equals the registry's id for it (the
+basename), and one where they differ:
 
 ```
-fixture : same-file=0   id-divergent=0   legacy-invisible=5
-store   : same-file=18  id-divergent=18  legacy-invisible=13
+fixture now : same-file=2  id-divergent=1  legacy-invisible=5     (both branches live)
 ```
 
-The numbers **move with the input**, so the tool is reading the directory rather than emitting a
-constant — that is what the control establishes, and it is all it establishes. **The fixture's own
-`0/0/5` must NOT be read as a second finding**: the fixture is synthetic, so "the flat scan sees
-nothing in it" is a property of my fixture's shape, not evidence about real artifacts. A control that
-produced a publishable-looking result is exactly the trap §8 describes; it is recorded here as
-instrument evidence.
+Both are needed. With only the matching case the fixture still reads `id-divergent=0`, and a
+regression to a constant 0 stays invisible; with both, the expected `id-divergent` is **non-zero**,
+so the counter has to actually count for the fixture to agree.
 
+**Verified by mutating the counter** (§8's negative-control rule applied to the *counter*, not just
+the tool): pinning `id_divergent` to a constant `0` yields `same-file=2 id-divergent=0` against the
+fixture's expected `1` — **the fixture disagrees, so the regression is caught.**
+
+**Why the fixture's other artifacts are invisible to the legacy scan, now known rather than
+assumed:** they are metadata-only, and the strict engine reader refuses them (*"GGUF truncated:
+'blk.2.weight' needs 53760 bytes at offset 2336 but file is 2318 bytes"*) while the registry's
+metadata reader accepts them. So `legacy-invisible` there is **reader strictness, not artifact
+class** — the complete GGUFs above are seen by both. That is exactly why a control's own output must
+not be read as a second finding.
+
+Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=13`**
 Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=13`** — every file
 the flat scan finds carries a different canonical id, 13 artifacts are invisible to a
 non-recursive scan, and three sets of distinct files share one legacy id (the `-m` silent-pick

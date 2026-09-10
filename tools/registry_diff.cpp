@@ -84,3 +84,15 @@ int registry_diff_main(int argc, char** argv) {
     printf("legacy-invisible is what a recursive registry sees that a flat scan cannot.\n");
     return 0;
 }
+
+#ifdef REGISTRY_DIFF_STANDALONE
+// This tool was reachable only through `1bit registry-diff` (onebin), which made the claim it
+// carries look like it needed the engine link before it could be checked. It does not: the six TUs
+// below build with plain clang++ and no HIP/XRT. Added so §7's headline number is one line for any
+// reader, which is the whole point of an evidence tool.
+//
+//   clang++ -std=c++23 -O2 -Iinclude -Isrc -DREGISTRY_DIFF_STANDALONE \
+//     tools/registry_diff.cpp src/model_registry.cpp src/model_discovery.cpp \
+//     src/safetensors_reader.cpp src/q4nx_reader.cpp src/gguf_reader.cpp -o registry-diff
+int main(int argc, char** argv) { return registry_diff_main(argc, argv); }
+#endif
