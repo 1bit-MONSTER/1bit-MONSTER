@@ -1498,14 +1498,30 @@ int zaya_decode_main(int argc, char** argv) {
                                     qns2 = mx2 > 1e-12 ? (float)(127.0 / mx2) : 1.0f;
                                 }
                                 fprintf(stderr, "[CAS] qn_s=%.4f\n", qns2);
-                                cas.go(residual.data(), ag_eff, 1.0f, ffn_cas.data(), *casAB, qns2);
+                                // #2114 — position-adaptive fold-scale guard. The 180-point sweep
+                                // (20 MoE layers x 9 positions, 2026-09-10) shows the only large errors
+                                // are points where the fold scale collapses: l=35 pos1 qn_s=0.223 ->
+                                // maxabs 12.28, corr 0.9955, 82.8% of that position's whole error budget
+                                // (l=35 pos3/4 at 41.6%/30.9%), while healthy points sit at corr
+                                // 0.9998-0.9999 with qn_s >= 4.87. Below the threshold take the
+                                // production path for that layer/position instead of the cascade.
+                                const float cas_min_qn = getenv("NPU_CASCADE_MIN_QN")
+                                                       ? (float)atof(getenv("NPU_CASCADE_MIN_QN")) : 0.0f;
+                                const bool cas_qn_ok = !(cas_min_qn > 0.0f) || qns2 >= cas_min_qn;
+                                if (cas_qn_ok) {
+                                    cas.go(residual.data(), ag_eff, 1.0f, ffn_cas.data(), *casAB, qns2);
+                                } else {
+                                    fprintf(stderr,
+                                        "[CAS] SKIP l=%d pos=%d e=%d qn_s=%.4f < NPU_CASCADE_MIN_QN=%.3f -> production path\n",
+                                        l, pos, e, qns2, cas_min_qn);
+                                }
                                 auto ct1 = std::chrono::steady_clock::now();
                                 // ── DECODE INTEGRATION (NPU_CASCADE_DECODE=1): the
                                 // cascade output becomes the layer's FFN result, so the
                                 // decode continues with h = cascade_moe + residual and the
                                 // downstream logits reflect the cascade. Compares the
                                 // cascade vs the fused/split path on the REAL decode flow.
-                                if (getenv("NPU_CASCADE_DECODE") && atoi(getenv("NPU_CASCADE_DECODE")) == 1) {
+                                if (cas_qn_ok && getenv("NPU_CASCADE_DECODE") && atoi(getenv("NPU_CASCADE_DECODE")) == 1) {
                                     double cn0=0, cd1a=0, cd1b=0;
                                     for (int nn = 0; nn < d.H; nn++) {
                                         double c2 = ffn_cas[nn], m2 = moe_out[nn];
