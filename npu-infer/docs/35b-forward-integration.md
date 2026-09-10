@@ -1249,3 +1249,22 @@ the empirical test; if the lib's layer sequence is the NaN source, the replay
 will reproduce it (and the correct path then needs the engine's own layer
 sequence, not the lib's). The reference (token 76740) + all BOs/ELFs are
 banked for that test.
+
+## Round 89 — MoE layer ELF + lm_head EXECUTE on the NPU (smoke test) (2026-09-10)
+
+Built tools/moe_smoke.cpp (MoERuntimeLayerEngine + model.c + runlist XRT
+2.26.0) and ran it on the 35B layer.xclbin + task-1 ELFs + task-2 BO packing:
+
+    forward(1): EXECUTED      (no hang, no xrt::runlist error)
+    logits: argmax=0 max=0.0 NaN=0 (of 248320)
+
+=> The Round-73 MoE arg order (slot3=weight/460MB, slot4=act, slot5=router,
+   slot6=norms, slot7=kv) and the region-B + router + 5MB + lm_head packing
+   are STRUCTURALLY CORRECT — the layer ELF + lm_head run in one runlist
+   submit without faulting. The all-zero logits are expected: the routed-expert
+   FFN is not yet wired (MoE FFN incomplete), region-A norms are zeroed, and
+   the lm_head ABI may still need the MoE-specific arg order.
+
+Next: (1) confirm the post-layer act is non-zero (isolate layer vs lm_head),
+(2) wire the routed/shared expert FFN (gen_dequant_mm_512 + send_manual_*),
+(3) fill region-A norms, then re-check logits vs token 76740.
