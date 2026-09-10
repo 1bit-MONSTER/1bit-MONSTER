@@ -7,13 +7,41 @@ produce. If a command's output differs, the claim is wrong and the branch should
 The branch's whole argument is that its claims are **checkable**, so this file exists to make
 checking cheap. It is the artifact I would want if someone handed me the branch.
 
-**Every command in this file runs from the repository root**, and §1 creates `b/` for everything it
-builds. Stated here rather than assumed, because it was assumed for the file's whole life: 26
-invocations use relative paths and the working directory was named nowhere. **With no stated working
-directory, no relative path can be shown to be WRONG — only inconsistent with another path**, which is
-precisely how `./registry_scan` (§1's standalone route) and `b/registry_scan` (cmake's) coexisted here
-without either contradicting a written rule. @agent-ec855d found this as the condition under which the
-whole path class was possible, after three of its instances had been patched by hand.
+## Preconditions
+
+Read these once. This file assumed them for its whole life, and its whole value is that a stranger can
+re-run it — which means it has to say what the stranger must have.
+
+**1. Ref.** This describes branch `goal/one-registry-one-router`, **not `main`**. Five tools it tells you
+to run **do not exist on `main`** — 11 references between them:
+
+| tool | refs in this file | on `origin/main` |
+|---|---|---|
+| `tools/registry_scan.cpp` | 1 (the §1 build line itself) | **absent** |
+| `tools/registry_diff.cpp` | 1 | **absent** |
+| `tools/registry_fixture.py` | 2 | **absent** |
+| `tools/registry_flag_audit.py` | 3 | **absent** |
+| `tools/dispatch_key_check.sh` | 4 | **absent** |
+
+On a fresh clone — which gets `main` — **§1's first command fails with "No such file"**, and that reads
+as a defect in the branch rather than *"you are on the wrong ref"*, which is the worst way for this
+document to be wrong. (`tools/corr_assert.py`, the corrections-assertion harness referenced in §8,
+lives on branch `chore/tools-corr-assert`.)
+
+**2. Working directory.** Every command runs from the **repository root**, and §1 creates `b/` for
+everything it builds. Stated because it was assumed: **26 invocations use relative paths**, and with no
+stated cwd **no relative path can be shown to be WRONG — only inconsistent with another path**, which is
+how `./registry_scan` and `b/registry_scan` coexisted here without either contradicting a written rule.
+
+**3. Machine.** These need **no engine link** — `clang++` and `python3` suffice, on any machine: §1
+route A, §2, §3, §4, §7's standalone recipe, and the §8 checks. These **link the engine** and need the
+ROCm/TheRock toolchain (route B) plus a built `b/1bit`: §5, §6, §6.1, and §7's `b/1bit` form.
+
+**Why this block exists rather than a line about the working directory**: @agent-ec855d pointed out that
+cwd was one facet of a larger condition — **unstated execution context** — after three instances of the
+path class had each been patched by hand. A block named for the condition absorbs its facets; a rule
+about one facet leaves the others unstated, which is how the §1 build line came to reference a file that
+does not exist on the ref most readers start from.
 
 ---
 
@@ -601,6 +629,12 @@ python3 tools/registry_flag_audit.py --static-only         # A + C, source-only
 python3 tools/registry_fixture.py /tmp/fixture
 python3 tools/registry_flag_audit.py --binary b/registry_scan --fixture /tmp/fixture   # A-D
 ```
+
+Two harnesses exist that this section does not invoke, listed so they are reachable from the
+procedure that documents them: **`tools/corr_assert.py`** (the corrections-assertion harness, on branch
+`chore/tools-corr-assert` — not on this one, so it is named rather than run here) and
+`tools/registry_merge_invariants.cpp` (§6.1). A file that exists but that no procedure points to is the
+same failure as one that does not exist, from the reader's side.
 
 Plus the one enforcement that lives outside `tools/` at runtime — the commit-msg tripwire for
 a shell-interpolated commit message (a backticked span the shell EXECUTED, deleting the text
