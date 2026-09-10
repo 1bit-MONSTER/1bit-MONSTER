@@ -18,13 +18,31 @@
 //         but the router picks the right kernel via the MoE config.
 //
 //   qwen3 architecture
-//     ├─ npu_xrt (native NPU engine — INT8, single-core)
-//     └─ cpu_generic
-//         npu_xrt is the sole NPU route since PR #567 (2026-07-20), once its
-//         single-core GEMM kernels passed correctness verification against
-//         the HuggingFace BF16 reference. The FastFlowLM subprocess fallback
-//         (a proprietary AMD binary) was removed entirely — this project
-//         ships zero proprietary code — FLM is MIT."
+//     ├─ Q4NX  → npu_flm (FLM NPU engine, MIT) → cpu_generic      [see the
+//     │          ModelFormat::Q4NX return further down for the reason string]
+//     ├─ ONEBP → fused_gpu_npu → hip_1bp_gpu → vulkan_hpp_gpu → cpu_generic
+//     └─ GGUF/H1B → hrx_gpu → GGML-Vulkan → zinc_gpu → cpu_generic
+//         NPU route state, corrected 2026-09-10 (the previous text claimed
+//         "npu_xrt is the sole NPU route" and that the FastFlowLM subprocess
+//         had been "removed entirely" — that described the PR #567 era and was
+//         never updated when the FLM lane returned; found as drift by
+//         @agent-dc0fb9 while bridging registry capabilities to BackendType):
+//         * model_router returns **npu_flm** for Q4NX (and for the family in
+//           the block below); **npu_xrt is never returned** by this file or by
+//           dynamic_router.cpp, whose accept-lists simply treat either NPU id
+//           as "the NPU route" (dynamic_router.cpp:80,143).
+//         * npu_xrt is still registered (backend_manager.cpp:58-66) and
+//           npu_flm at backend_manager.cpp:162 — both with
+//           BackendType::NPU_XRT, so a capability→TYPE mapping cannot tell them
+//           apart; the ID is not interchangeable.
+//         * npu_flm speaks Q4NX only: its token-level forward()/generate() are
+//           text-level stubs (backend_npu_flm.cpp returns false) and its init
+//           "succeeds" on any model tag but then loads FLM's own q4nx model
+//           instead of the requested file — never hand it GGUF/H1B.
+//         * the teardown/orphan guard for its forked child is
+//           prctl(PR_SET_PDEATHSIG) in backend_npu_flm.cpp; backend_hrx.cpp,
+//           backend_lse.cpp and backend_npu.cpp adopted the same pattern in
+//           fix/hrx-child-pdeathsig (2026-09-10).
 //
 //   zamba2 architecture (Mamba2 hybrid SSD)
 //     └─ zamba2_gpu + cpu_generic
