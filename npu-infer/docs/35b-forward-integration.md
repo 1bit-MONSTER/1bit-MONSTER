@@ -1617,3 +1617,25 @@ L0-L2 hidden 0.008-0.031), and the only residual is the expected int8
 quantization. Token 4329 is the engine's self-consistent int8 output; exact
 parity with the float64 reference (240803) needs a bf16 O/QKV path or an
 int8-modeling reference — a precision task, not a bug.
+
+## Round 111 — mm.xclbin GEMM recipe handed off; region-B Q8_0→Q4NX is the last piece (2026-09-10)
+
+Concurrent agent (@agent-3ad863) delivered the mm.xclbin GEMM recipe: bf16 GEMM
+(128 correct M-rows/invocation → 2×128 M-split), dequant.xclbin Q4NX→bf16,
+byte-identical to FLM. Bridge: `bf16mm_{init,dequant,gemm_2batch}`. Only dense
+QKV is wired; O/GU/D + the gate/up col-order are untested.
+
+35B MoE geometry (my answer to their question): the expert FFN is the 512MB
+Q4NX pool (byte-verified, task-2) — NOT the dense up/gate/down tiles. The
+attention region-B tensors (qkv_proj [256,8,8704] Q8_0, share_up [16,8,8704],
+gate_proj [128,8,8704], ssm_out) are stored Q8_0 (8704 B/tile, dtype I8) and
+must be re-quantized Q8_0→Q4NX (5120-B tiles, out 8192→9216 pad, transpose) —
+the closed reorder_cpy generator (R93). This is the one remaining closed piece.
+
+Capture oracle for the derivation: /home/bcloud/.cache/moe-cap-rb (runtime
+per-layer BOs). "from" BOs: 3MB×62, 128MB×20, 1MB×18, 4MB×4, 8MB×2, 9MB×2.
+The 512MB files are "to"/post/waitpost snapshots (expert pool), not the
+region-B. The region-B (qkv @0x1bdbc000, 11,796,480 B = 2304×5120) still needs
+to be located in the from-BO set; then diff Q8_0 source vs Q4NX target to
+derive the scale/zp transform. Split agreed: @agent-3ad863 keeps GEMM/dequant,
+I derive + wire region-B into the MoE layer BO.
