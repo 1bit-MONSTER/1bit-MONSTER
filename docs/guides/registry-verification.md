@@ -82,6 +82,28 @@ access. **A reader who lacks access does not know they lack it**, which is why t
 handled the way the other four are — it is caught at read time by the control, not by a sentence. It is
 named here only so the failure has a name; the guard is in §8.
 
+**6. Present but wrong — the subject is there, and is not the right thing.** No non-zero control can
+catch this, because the subject is not *absent*: a store that exists but holds the wrong artifacts reads
+exactly like a correct one. The guard is an **IDENTITY assertion** — the sha from `git ls-remote`, or a
+known `--resolve <id>` answering YES.
+
+**The composition of the three guards, which is the useful form:**
+
+> a **non-zero control** proves the instrument touched **SOMETHING**;
+> an **identity assertion** proves it touched **THE RIGHT THING**;
+> and for subjects whose names can be plausible but wrong, a **content** check — `--digest`, or
+> corr_assert's vector comparison — proves the right thing is **THE RIGHT CONTENT**.
+
+**Identity has a limit, stated so facet 6 is not oversold:** it covers subjects whose identity is stable
+and checkable. A store populated with plausible artifacts carrying the *right names* defeats it, and that
+case needs content, not identity. **The store therefore carries both** — `--resolve <known id>` as the
+identity guard and `--digest` as the content guard. For the API query identity is sufficient, because a
+wrong repository answers with a different `full_name`; for the store it is not.
+
+**Generalised over all six: an absent subject needs a non-zero control; a wrong subject needs an identity
+assertion; a right-named-but-wrong subject needs a content check. Stating a precondition fixes none of
+these — it only helps when the failure would otherwise be an error rather than a plausible number.**
+
 **Why this block exists rather than a line about the working directory**: @agent-ec855d pointed out that
 cwd was one facet of a larger condition — **unstated execution context** — after three instances of the
 path class had each been patched by hand. A block named for the condition absorbs its facets; a rule
@@ -599,9 +621,26 @@ was, as written, exactly the n=0 case a broken or mistyped query also produces. 
 
 | query | result |
 |---|---|
-| `branch=main` — *must* be non-zero | **`total_count=6271`** |
+| `branch=main` — **the control: non-zero AND `head_branch == "main"`** | non-zero (magnitude NOT pinned — see below) |
 | `branch=goal/one-registry-one-router` | `0` |
 | `branch=no-such-branch-zzz` | `0` |
+
+**DO NOT PIN THE MAGNITUDE — pin identity.** This file originally recorded `total_count=6271` as the
+control's expected value. That number is not reproducible, and worse than drift: @agent-ec855d sampled
+the same query seconds apart and got **3659** then **6274**; I recorded **6271**; four samples taken
+today all read **6274**. **The value is a fact about *when you asked* — a cold call can answer from a
+partial index — not a fact about the repository.** A control built on a magnitude will be disabled by
+the first person it flaps on, and **that returns you to having no control while believing you have one.**
+Anchor on fields that identify the subject instead:
+
+```sh
+# identity, stable across the query that moved the count by 40%:
+#   .workflow_runs[0].head_branch              == "main"
+#   .workflow_runs[0].head_repository.full_name == "1bit-MONSTER/1bit-MONSTER"
+# NOTE: both are NESTED in workflow_runs[0]. The response's top level has only
+#       `total_count` and `workflow_runs` — there is no top-level `repository` key.
+```
+The assertion is therefore **non-zero count AND a matching identity**, never `== 6271`.
 
 `main` non-zero establishes the **instrument** touches reality. But `0` is also what a *typo* returns,
 so the claim needs a second control on the **subject**: `git ls-remote origin
