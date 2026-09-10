@@ -147,6 +147,33 @@ Availability backend_availability(const std::string& engine_id);
 // HRX bundle at all. The probe is therefore MANDATORY for that row, not optional.
 Availability availability_for(bool available_is_a_predicate, bool available, bool functional);
 
+// ── WHICH TYPES ARE DISPATCH-KEYED: a mechanical test, not comment reading ────
+// Asked and answered by @agent-ec855d, and it replaces the "I cannot see it from my
+// side" I had been saying:
+//
+//   A TYPE IS A DISPATCH KEY IFF THE IDS UNDER IT DO NOT ALL SHARE ONE `available`
+//   EXPRESSION.
+//
+// Grouping the 19 registrations by that test gives FOUR dispatch-keyed types:
+//   NPU_XRT    has_npu() + literal `true`                      -> 2 kinds
+//   HIP_GPU    7 ids: 5x has_hip_gpu(), 2x has_vulkan()        -> 2 kinds
+//   ZINC_GPU   (has_vulkan()||has_hip_gpu()) + has_vulkan()    -> 2 kinds
+//   GENERIC    literal true + has_hip_gpu() + literal true     -> 2 kinds
+// and five consistent ones (VULKAN, CPU_AVX512, CPU_SCALAR, HRX_GPU, LSE_GPU — one
+// id each). The unpredictable entry is GENERIC, which holds `laguna_gpu` (a GPU
+// backend, has_hip_gpu()) beside `cpu_generic` / `nemotron_h_cpu` (literal true).
+//
+// This is derivable and it GENERALISES FORWARD: any id later added under those four
+// types inherits the confusion, which a per-id list cannot express. It is also why
+// the probe signature below is keyed by engine_id and why `availability_for` takes
+// `available_is_a_predicate` as an explicit argument rather than inferring anything
+// from the type.
+//
+// Two rows were briefly uncertain in ec855d's audit and are now read directly:
+//   zinc_gpu (line 170):      `available = false;` then `available = has_vulkan() || has_hip_gpu();`
+//   zamba2_vulkan (line 257): `available = false;` then `available = has_vulkan();`
+// i.e. an init-to-false followed by the real predicate — not a competing definition.
+
 struct RoutePlan {
     const ModelArtifact* artifact = nullptr;
     std::vector<BackendTarget> targets;                              // in order

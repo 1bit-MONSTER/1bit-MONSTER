@@ -155,36 +155,54 @@ def check_b_behaviour(binary, fixture):
 
 
 # ── D. REPEAT SAFETY ───────────────────────────────────────────────────────────
-# Fifth instance of "a flag that looks accepted and is silently ignored"
-# (@agent-ec855d). A/B/C cannot see it: B exercises each flag ONCE, so a flag that
-# behaves correctly alone and loses data on repeat passes B.
+# Sixth instance of "a flag that looks accepted and is silently ignored"
+# (@agent-ec855d), and now the THIRD time my check for that class had the class's
+# own disease in it.
 #
-# THE PREDICATE MATTERS AND MY FIRST VERSION HAD IT WRONG — it passed on a binary
-# with the known defect, which is the failure this whole file exists to avoid.
-# "The output differs when the flag is repeated" is NOT evidence of accumulation:
-#   last-wins(A,B) differs from once(A) too. So the test is comparative:
-#     FAIL if repeat(A,B) == once(B)     -> the FIRST value was silently discarded
-#     FAIL if repeat(A,B) == once(A)     -> the SECOND value was silently discarded
-#     PASS if repeat(A,B) matches neither (merged/accumulated), OR rc != 0 (refused)
+# v1 compared "output differs when repeated" -> passed on the known-bad binary
+#    (last-wins differs from the single run too; "differs" is not evidence).
+# v2 required refusals to be attributable -> flagged a correct flag, because
+#    informational stderr was read as a refusal.
+# v3 (this one) fixes a FALSE POSITIVE found on a store I could not test:
+#    repeat(A,B) == once(A) was read as "B discarded", but equality is ALSO produced
+#    by a CORRECT implementation whose second value is serveable and simply does not
+#    win, so it leaves no trace. The check could not separate "silently discarded"
+#    from "silently invisible" and resolved toward the defect. "Identical is not
+#    evidence of discard" is the mirror of "differs is not evidence of accumulation".
 #
-# Booleans are exempt and the exemption is EXPLICIT, not a silent skip.
-BOOLEAN_FLAGS = {"json", "quiet", "digest", "no-probe", "help", "catalog-default"}
-# flag -> (first value, second value)
+# TWO PART FIX:
+#   1. OBSERVABILITY PRECONDITION — a check must first establish that what it
+#      measures is measurable HERE. For list-valued flags, once(v1), once(v2) and
+#      once(v1,v2) must be pairwise distinct; otherwise the list form is not
+#      observable on this fixture and the verdict is INCONCLUSIVE — never PASS,
+#      never FAIL. Verdicts must not depend on which fixture someone runs.
+#   2. POSITIVE ASSERTIONS instead of "matches neither":
+#      - list-valued: repeat(v1,v2) must EQUAL once("v1,v2") exactly. The comma form
+#        is a valid oracle and it catches ORDER REVERSAL directly, which the old rule
+#        only caught by luck of which element happened to win.
+#      - single-value: the repeat must be REFUSED. Fixture-independent, because it
+#        asserts on the exit status rather than on output equality.
+# A list flag's oracle depends on whether it accepts CSV. --prefer parses commas, so
+# the comma form is a valid oracle; --engine-limit does NOT (each occurrence is one
+# CAP=TOKENS[:bundle] spec), so it needs a different positive assertion.
+CSV_LIST_FLAGS = {"--prefer"}
+NO_CSV_LIST_FLAGS = {"--engine-limit"}
+SINGLE_VALUE_FLAGS = ["--max-depth", "--capability", "--at-context", "--resolve", "--route"]
 REPEAT_VALUES = {
     "--max-depth": ("1", "4"),
     "--capability": ("CPU", "NPU-Q4NX"),
     "--at-context": ("1024", "4096"),
     "--prefer": ("RADV-GGUF", "CPU"),
-    "--engine-limit": ("HRX-GGUF=4096:b1", "HRX-GGUF=2048:b2"),
-    "--resolve": (None, None),   # value filled from the fixture's first artifact id
+    # Two DIFFERENT capabilities on purpose: with the same capability twice,
+    # overwrite-in-place and accumulation are identical by design, so the values would
+    # prove nothing about either (my first version made exactly that mistake).
+    "--engine-limit": ("HRX-GGUF=4096:b1", "CPU=100:c1"),
+    "--resolve": (None, None),
     "--route": (None, None),
 }
 
 
 def first_artifact_id(binary, fixture):
-    """A real target, so value-taking flags are actually exercised rather than
-    failing before they are read — which is how my first predicate silently skipped
-    the --prefer case entirely."""
     _rc, out, _err = run(binary, [fixture])
     for line in out.splitlines():
         parts = line.split()
@@ -198,40 +216,68 @@ def check_d_repeats(binary, fixture):
     parsed = {f[2:] for f in parsed_flags(text)}
     target = first_artifact_id(binary, fixture)
     problems, inconclusive = [], []
+
     for flag, (v1, v2) in REPEAT_VALUES.items():
         if flag[2:] not in parsed:
             continue
+        extra = []
         if flag in ("--resolve", "--route"):
             if not target:
                 continue
             v1, v2 = target, "no-such-artifact-xyz"
-        extra = ["--route", target] if flag == "--prefer" and target else []
-        if flag == "--prefer" and not target:
-            continue
-        # a legal baseline for --at-context/--capability so the value is read
-        if flag == "--at-context":
-            extra = ["--capability", "HRX-GGUF"]
-        rc_a, out_a, err_a = run(binary, extra + [flag, v1, fixture])
-        rc_b, out_b, err_b = run(binary, extra + [flag, v2, fixture])
-        rc_ab, out_ab, err_ab = run(binary, extra + [flag, v1, flag, v2, fixture])
-        # A non-zero exit only counts as "explicitly refused" when the refusal is
-        # ATTRIBUTABLE TO THE REPEAT. Otherwise the second value simply failed on its
-        # own and the repeat went unexamined — which silently passed --route on the
-        # known-bad binary in my first tightening.
-        # Only the EXIT STATUS means "refused". Non-empty stderr is NOT a failure:
-        # --engine-limit prints an informational line, and treating that as a refusal
-        # made the check report INCONCLUSIVE on a flag that was already correct.
-        if rc_ab != 0:
-            attributable = ("more than once" in err_ab) or (flag in err_ab)
-            if attributable:
+        elif flag == "--prefer":
+            if not target:
                 continue
-            inconclusive.append("%s (run failed for another reason: %s)"
-                                % (flag, err_ab.strip().splitlines()[0] if err_ab.strip() else "rc=%d" % rc_ab))
+            extra = ["--route", target]
+        elif flag == "--at-context":
+            extra = ["--capability", "HRX-GGUF"]
+
+        rc_ab, out_ab, err_ab = run(binary, extra + [flag, v1, flag, v2, fixture])
+
+        if flag in SINGLE_VALUE_FLAGS:
+            # POSITIVE ASSERTION, fixture-independent: a repeat must be refused.
+            if rc_ab == 0 and not (("more than once" in err_ab) or (flag in err_ab)):
+                problems.append("%s (repeat accepted silently; single-value flags must refuse)"
+                                % flag)
             continue
-        if (out_ab, err_ab) == (out_b, err_b):
-            problems.append("%s (first value %r silently discarded)" % (flag, v1))
-        elif (out_ab, err_ab) == (out_a, err_a):
-            problems.append("%s (second value %r silently discarded)" % (flag, v2))
+
+        # List-valued: establish observability BEFORE interpreting anything.
+        _r1, out1, e1 = run(binary, extra + [flag, v1, fixture])
+        _r2, out2, e2 = run(binary, extra + [flag, v2, fixture])
+        if (out1, e1) == (out2, e2):
+            inconclusive.append(
+                "%s (list form NOT OBSERVABLE here: once(v1) == once(v2), so no "
+                "output-comparing check can see a two-element list)" % flag)
+            continue
+
+        if flag in CSV_LIST_FLAGS:
+            _rc, outc, ec = run(binary, extra + [flag, "%s,%s" % (v1, v2), fixture])
+            if (outc, ec) in ((out1, e1), (out2, e2)):
+                inconclusive.append(
+                    "%s (list form NOT OBSERVABLE here: once(v1,v2) equals a single-value "
+                    "run)" % flag)
+                continue
+            if rc_ab != 0:
+                if ("more than once" in err_ab) or (flag in err_ab):
+                    continue
+                inconclusive.append("%s (run failed for another reason)" % flag)
+                continue
+            # POSITIVE: the repeat must equal the comma oracle exactly. This also
+            # catches ORDER REVERSAL, which "matches neither" only caught by luck.
+            if (out_ab, err_ab) != (outc, ec):
+                problems.append("%s (repeat != comma oracle: value dropped or ORDER lost)" % flag)
+        else:
+            # No CSV oracle. Both values must still leave a trace, so assert positively
+            # that the repeat differs from EACH single-value run.
+            if rc_ab != 0:
+                if ("more than once" in err_ab) or (flag in err_ab):
+                    continue
+                inconclusive.append("%s (run failed for another reason)" % flag)
+                continue
+            if (out_ab, err_ab) == (out1, e1):
+                problems.append("%s (first value silently discarded)" % flag)
+            elif (out_ab, err_ab) == (out2, e2):
+                problems.append("%s (second value silently discarded)" % flag)
     return problems, inconclusive
 
 

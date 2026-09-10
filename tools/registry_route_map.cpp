@@ -76,6 +76,13 @@ int main(int argc, char** argv) {
         {"lse",         false, true,  true},
         {"cpu_generic", false, true,  true},
         {"ggml_vulkan", true,  true,  true},
+        // The state the demo was MISSING, found by @agent-ec855d running it: a
+        // predicate-backed id that is available but NOT yet functional. That is the
+        // NORMAL STARTUP STATE for every GPU predicate row, because functional only
+        // flips true after init (backend_manager.cpp:654, 1096, 1167, 1313, 1333), so
+        // the contract's most common early answer was the one outcome its table never
+        // showed. With four outcomes and five rows the demo had three.
+        {"hip_1bp_gpu", true,  true,  false},
     };
     for (const auto& c : cases) {
         Availability a = availability_for(c.predicate, c.available, c.functional);
