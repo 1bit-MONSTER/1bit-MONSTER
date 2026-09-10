@@ -678,18 +678,20 @@ bool GgufReader::open(const std::string& path) {
                 // `<= 0` rather than `== 0`: GgufBlockInfo's fields are signed, so a future
                 // table entry with a negative size would be caught too (raised by @agent-dc0fb9).
                 if (b.block_size <= 0 || b.block_bytes <= 0) {
-                    // An unknown GGUF dtype makes gguf_block_info() return {0,0}, and using that
-                    // as a divisor was a divide-by-zero (SIGFPE) right here — reachable from
-                    // discover_models() during server startup, so `1bit unified -w <store>` died
-                    // before serving. Reproduced with a store holding zaya1-8b-ft-q4nx.gguf, whose
-                    // 280 expert tensors carry dtype 43 (unknown to this reader's table).
-                    // Fail closed and name the id, matching get_tensor_f32()'s handling; the
-                    // caller skips the file instead of the process dying.
-                    fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — refusing to "
-                                    "size its blocks (fail closed) — route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
+                    // An unrecognized dtype makes gguf_block_info() return {0,0} (documented at
+                    // include/gguf_reader.h:79), so this tensor's extent CANNOT be validated — and
+                    // using {0,0} as the divisor above was a divide-by-zero (SIGFPE) in this very
+                    // loop, reachable from discover_models() at server startup (measured with a
+                    // store holding a file whose 280 tensors carry dtype 43).
+                    // This loop ENUMERATES a model, so report and carry on instead of rejecting the
+                    // file: rejecting it makes the model undiscoverable rather than visible, while
+                    // skipping keeps its metadata enumerable and defers the failure to the use
+                    // sites, which already refuse this dtype with the same message and remedy.
+                    fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend "
+                                    "cannot decode it; route the model to ggml_vulkan/HRX "
+                                    "(llama.cpp) instead\n",
                             kvp.first.c_str(), ti.dtype);
-                    fclose(f_); f_ = nullptr;
-                    return false;
+                    continue;
                 }
                 uint64_t n_blocks = (ti.numel + b.block_size - 1) / b.block_size;
                 uint64_t need = n_blocks * (uint64_t)b.block_bytes;
