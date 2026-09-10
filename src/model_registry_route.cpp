@@ -466,4 +466,19 @@ BackendRoute to_backend_route(const RoutePlan& plan) {
     return out;
 }
 
+BackendRoute select_route_with_registry(const ModelConfig& cfg,
+                                        const std::string& model_path,
+                                        const ModelRegistry* registry,
+                                        uint32_t context_tokens) {
+    // The router's shipped order is the baseline; a missing registry or an unknown
+    // artifact is not an error, it is "the registry has nothing to say here" —
+    // which is exactly why the fallback keeps the router route.
+    BackendRoute router = select_backend_route(cfg);
+    if (!registry || model_path.empty()) return router;
+    const ModelArtifact* art = registry->resolve_path(model_path);
+    if (!art && !cfg.model_name.empty()) art = registry->find(cfg.model_name);
+    if (!art) return router;
+    return merge_router_and_registry(router, plan_route(*art, context_tokens));
+}
+
 }  // namespace onebit

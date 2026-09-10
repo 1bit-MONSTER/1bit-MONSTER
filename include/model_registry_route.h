@@ -340,4 +340,17 @@ BackendRoute to_backend_route(const RoutePlan& plan);
 // with hrx_gpu); and every router id survives somewhere in the list.
 BackendRoute merge_router_and_registry(const BackendRoute& router, const RoutePlan& plan);
 
+// ── THE FLIP, packaged: the resolver consumed by the serving path ─────────────
+// The whole per-lane flip in one call, so a caller swaps one line and keeps a
+// fallback. `cfg` is the engine's own ModelConfig for the model being served,
+// `model_path` locates its artifact, and `registry` is the already-scanned registry.
+// Pass nullptr (or an unknown path) and this returns select_backend_route(cfg)
+// UNCHANGED — so a caller can flip unconditionally without a fallback branch. The
+// result is the UNION from merge_router_and_registry: the registry demotes the head
+// ONLY where it states an exclusion for it, and it never removes a router lane.
+BackendRoute select_route_with_registry(const ModelConfig& cfg,
+                                        const std::string& model_path,
+                                        const ModelRegistry* registry,
+                                        uint32_t context_tokens = 0);
+
 }  // namespace onebit

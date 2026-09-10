@@ -29,6 +29,7 @@
 #include "batch_scheduler.h"
 #include "model_discovery.h"
 #include "model_registry.h"
+#include "model_registry_route.h"
 #include "model_router.h"
 #include "gguf_reader.h"
 #include "simple_tokenizer.h"
@@ -1557,7 +1558,10 @@ int main(int argc, char** argv) {
     // much as backend routing for arbitrary (non-Zaya) models. Falls back
     // silently (keeps whatever tokenizer was already loaded) if unavailable.
     load_model_tokenizer(cfg.model_path);
-    BackendRoute route = select_backend_route(cfg);
+    // The flip: the registry resolver is consumed here. The merge is a UNION — the
+    // registry can demote the head only for a stated exclusion, and never drops a
+    // router lane — so this cannot lose a route the engine has today.
+    BackendRoute route = onebit::select_route_with_registry(cfg, cfg.model_path, &g_registry);
     printf("  Router: %s\n", route.reason.c_str());
     // mgr state is read by /v1/health + /v1/models under g_config_mutex —
     // mutate under the same lock (issue #1271).
@@ -2179,7 +2183,8 @@ int main(int argc, char** argv) {
         // ── Phase 1b: Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
             load_model_tokenizer(switch_cfg.model_path);
-            BackendRoute swrt = select_backend_route(switch_cfg);
+            BackendRoute swrt = onebit::select_route_with_registry(
+                switch_cfg, switch_cfg.model_path, &g_registry);
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
 
@@ -2399,7 +2404,8 @@ int main(int argc, char** argv) {
         // ── Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
             load_model_tokenizer(switch_cfg.model_path);
-            BackendRoute swrt = select_backend_route(switch_cfg);
+            BackendRoute swrt = onebit::select_route_with_registry(
+                switch_cfg, switch_cfg.model_path, &g_registry);
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
 

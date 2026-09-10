@@ -11,6 +11,11 @@
 //          router's head, the router's head id must appear in one of the registry's
 //          exclusion lists (refused / unavailable_here / blocked / skipped_by_context /
 //          conditional). "The registry named a different lane" is NOT a reason.
+//   INV-3  the FLIP is the primitive: select_route_with_registry() must equal
+//          merge_router_and_registry(select_backend_route(cfg), plan_route(*a)) for the
+//          same artifact, and a null registry must return the router route unchanged.
+//          Without this the gate would check the primitive while the serving path called
+//          something else — the exact gap the flip closes.
 //
 // Validated against the known-bad version: run against the pre-defer merge and INV-2 must
 // fail on the 35B-A3B. A check that has not failed on a bad input is not a check.
@@ -36,7 +41,7 @@ int registry_merge_invariants_main(int argc, char** argv) {
     std::vector<ModelConfig> legacy = discover_models(dir);
     ModelRegistry reg = ModelRegistry::scan({dir});
 
-    size_t checked = 0, inv1 = 0, inv2 = 0;
+    size_t checked = 0, inv1 = 0, inv2 = 0, inv3 = 0;
     for (const auto& m : legacy) {
         const ModelArtifact* a = reg.resolve_path(m.model_path);
         if (!a) continue;
@@ -75,9 +80,26 @@ int registry_merge_invariants_main(int argc, char** argv) {
                        a->id.c_str(), moved.c_str(), merged.backend_ids_in_order[0].c_str());
             }
         }
+
+        // INV-3 (the FLIP): the packaged call must be exactly the primitive for the same
+        // artifact, and a missing registry must be the router route — so the one-line
+        // swap in unified_server cannot change what this tool just verified.
+        BackendRoute via_flip = select_route_with_registry(m, m.model_path, &reg, 0);
+        BackendRoute no_registry = select_route_with_registry(m, m.model_path, nullptr, 0);
+        if (via_flip.backend_ids_in_order != merged.backend_ids_in_order) {
+            inv3++;
+            printf("INV-3 VIOLATED  %s: select_route_with_registry != merge_router_and_registry\n",
+                   a->id.c_str());
+        }
+        if (no_registry.backend_ids_in_order != router.backend_ids_in_order) {
+            inv3++;
+            printf("INV-3 VIOLATED  %s: null registry changed the router route\n", a->id.c_str());
+        }
     }
-    printf("\nchecked=%zu  INV-1 violations=%zu  INV-2 violations=%zu\n", checked, inv1, inv2);
-    if (!violations_ok(inv1, inv2)) return 1;
-    printf("both invariants hold\n");
+    printf("\nchecked=%zu  INV-1 violations=%zu  INV-2 violations=%zu  INV-3 violations=%zu\n",
+           checked, inv1, inv2, inv3);
+    if (!violations_ok(inv1, inv2) || inv3 != 0) return 1;
+    printf("all invariants hold (INV-1 no lane dropped, INV-2 head needs a stated exclusion, "
+           "INV-3 the flip == the primitive)\n");
     return 0;
 }
