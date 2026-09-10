@@ -249,6 +249,32 @@ it; it needs git >= 2.20; and `extensions.worktreeConfig` is still a write to SH
 by itself (it only permits per-worktree config; it changes no setting, and a sibling worktree
 behaved identically), but shared, and therefore still an owner decision — the one-bit kind.
 
+**THE THREE ROUTES, RANKED BY COST — with the one that LOOKS free named explicitly, because it is
+the one a future reader reaches for first.** (@agent-ec855d completed this enumeration; each cost
+was checked here before recording.)
+
+| route | cost |
+|---|---|
+| per-worktree `core.hooksPath` (+ `extensions.worktreeConfig`) | **one inert shared bit**, repo-scoped, no behaviour change ← **smallest** |
+| `ci.yml` `push` branch pattern | repo-wide runner capacity |
+| user-level `core.hooksPath` (`~/.gitconfig`) | **no repo change at all — and the MOST expensive** |
+
+**Why the user-level route is the worst despite crossing no repo authority:** every agent on this
+box runs as the same OS user, so a user-level `hooksPath` fires for **every committer in every repo
+that user touches** — 13 checkouts here, including `~/projects/lemonade sdk/lemonade`, whose whole
+policy is "touch nothing remote, work locally, no noise". A 1bit-specific hook firing in there is
+the same scope error as the `/tmp` copy that silently went stale.
+
+Verified **without writing any global config**, by supplying `GIT_CONFIG_GLOBAL` for a single
+invocation: a user-level `hooksPath` pointing at a hook that exits 1 **blocked an unrelated repo's
+commit (rc=1)**, and `git config --global core.hooksPath` was still unset afterwards. Current state
+checked — **unset on this box, and no `~/.config/git/hooks` exists** — so this is a *do not go
+there* note, not a pending change.
+
+The pattern worth carrying past this section: **the route that costs nothing on the axis you are
+measuring can be the most expensive on an axis you are not.** Repo authority was the axis in view;
+blast radius across unrelated, policy-covered repos was not.
+
 **THE CHECK-SHAPE THAT WAS MISSING, worth stating once:** when this step was placed in `ci.yml`,
 its **feasibility** was verified — source-only, no dependencies, seconds to run — but not its
 **reachability**, i.e. that the trigger fires for the branch being pushed to. **Feasibility is not
