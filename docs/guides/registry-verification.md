@@ -261,8 +261,27 @@ requirement on every other user of it. Measured:
 - setting `extensions.worktreeConfig` does **not** bump `core.repositoryformatversion` (stays `0`);
 - **v0 + an unknown extension → tolerated**: clone `rc=0`, local git operations `rc=0`;
 - **v1 + the same unknown extension → `rc=128`**, on clone and on every local operation;
-- and at v1 git **cannot even undo it** — `git config` is itself refused, so recovery is a hand-edit
-  of `.git/config`. A self-inflicted, git-invisible brick.
+- and at v1 an **in-repo** `git config --unset` is itself refused (**rc=128, no repair** — version
+  still 1, extension still present, `git status` still 128). The repo cannot be fixed from inside.
+  Recovery is nevertheless **one command, from OUTSIDE**, because the fatal check lives in
+  repository *discovery* and `--file` with an absolute path skips discovery entirely:
+
+```sh
+git config --file=/abs/path/to/repo/.git/config --unset extensions.<name>   # rc=0
+git -C /abs/path/to/repo status                                            # rc=0 — repaired
+```
+
+  Verified end-to-end on a repo bricked a moment earlier. Recording the command rather than
+  "hand-edit `.git/config`" is deliberate: that phrasing makes a correct rule sound unactionable,
+  and it points someone who is already in a bad state at the one fix where a second, unrelated
+  mistake gets made.
+
+**A measuring artifact that nearly buried the above** (reported by @agent-ec855d; identical in shape
+to my own two wrong probes in the previous bullet). Their first pass ran three candidate escapes
+*in sequence* and read the config afterwards: version 0, no extensions — which looked like all three
+had worked. Isolated, **only the `--file`-from-outside form repairs anything.** A chain reports green
+because *some* element did the work, and the aggregate cannot tell you which one. **Probing several
+variants in sequence is not probing; each variant needs its own bricked repo.**
 - this repo is at **version 0**, so the bit leaves it at 0 and an older git tolerates it.
 
 **So the rule is: never bump `core.repositoryformatversion`.** And the "needs git >= 2.20" limit is
