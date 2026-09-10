@@ -21,6 +21,10 @@
 //     --route ID|PATH        run the RESOLVER: id -> artifact -> capability
 //     --prefer A,B,C         capability preference order for --route
 //     --quiet                summary only
+// FLAG CLASS CHECK: `tools/registry_flag_audit.py` enforces usage parity (every
+// parsed flag documented) and no silent no-ops (each flag alone must change the
+// output or exit non-zero). Four instances of that class were hand-patched before
+// the check existed; run the audit after touching this file's flags.
 #include "model_registry.h"
 
 #include <cstdio>
