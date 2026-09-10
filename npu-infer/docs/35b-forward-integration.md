@@ -1458,3 +1458,24 @@ mirrors moe_ffn_cpu + gdn_attn_step + std_attn_step + rn_c, so one of the
 two has a bug. Bounded next step: dump the engine's per-layer hidden states
 and diff against the reference's /tmp/ref_first_hidden.npy to localize the
 first diverging layer.
+
+## Round 101 — token gap localizes to layer 0 (max|d|=163): engine int8 ATTENTION, not MoE (2026-09-10)
+
+Dumped the engine's per-layer hidden states (NPU_DUMP_HIDDEN, CPU MoE
+fallback NPU_MOE=0) and diffed against the reference (qwen36_full_ref.py
+--dump-first, 40x2048):
+
+    layer 0 max|d| = 1.63e+02  (HUGE — not int8 quantization noise)
+    layers 1+ max|d| grow from 4 to 45 (compounding)
+
+The first layer already diverges by 163 — so the bug is the engine's layer-0
+GDN attention (or its int8 QKV/O projection), NOT the MoE FFN (which is float
+on this run). The reference uses float attention; the engine's QKV + O
+projections are int8 kernels (cq/co). The 163-magnitude divergence implies a
+real bug in gdn_attn_step or the int8 QKV/O dequant (per-section scales #1699
+/ the GateDeltaNet conv state), not mere quantization.
+
+=> task-4 correctness gate fails at layer 0. Bounded next: bisect layer 0 —
+   dump the post-QKV (fqo), post-attention (fat), and post-O (oo) tensors vs
+   the reference's qkv/attn/o, and compare the int8 QKV/O dequant against the
+   float reference (the same technique that fixed #1699's per-section scales).
