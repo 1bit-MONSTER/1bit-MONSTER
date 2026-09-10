@@ -30,6 +30,7 @@
 #include <sys/select.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/syscall.h>   // SYS_gettid — PDEATHSIG is per creator-thread
 
 // ── FLM Model Tags ──
 // Maps generic model dimensions to FLM's :tag naming convention.
@@ -283,7 +284,17 @@ public:
             // Die with the parent so a crashed service cannot leak an FLM
             // child holding an NPU context (see ensure_serve() in the zaya
             // backend — same orphan/NOAVAIL problem).
-            prctl(PR_SET_PDEATHSIG, SIGTERM);
+            //
+            // BUT PDEATHSIG fires when the CREATING THREAD exits, not only the
+            // process. The engine forks FLM from a short-lived worker, so the
+            // child was SIGTERM'd the instant that thread ended — observed as
+            // "FLM ready" followed by "write to FLM failed: child killed by
+            // signal 15" at request time, i.e. 0 tokens. Arm it only on the main
+            // thread, where thread-exit == process-exit; a worker-forked child is
+            // reclaimed by destroy() instead.
+            if (::getpid() == static_cast<pid_t>(::syscall(SYS_gettid))) {
+                prctl(PR_SET_PDEATHSIG, SIGTERM);
+            }
 
             setenv("FLM_CONFIG_PATH", flm_config_.c_str(), 1);
             setenv("FLM_XCLBIN_PATH", flm_xclbins_.c_str(), 1);
