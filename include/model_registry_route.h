@@ -8,8 +8,11 @@
 // so the translation lives on the engine side where both vocabularies are already
 // visible. The registry stays pure; this bridge translates.
 //
-// This is ADDITIVE: nothing calls it yet, so no existing route selection changes.
-// Flipping a caller is a separate, announced step.
+// This WAS additive; the flip has now landed. `select_route_with_registry()` below is the
+// packaged caller and `tools/unified_server.cpp` calls it at all three serving entry points
+// (initial init + both model-switch paths), so the registry resolver is now consumed by the
+// serving path rather than merely available to it. The merge remains a UNION: it can only
+// demote a head (for a stated exclusion) or append a lane, never remove one.
 //
 // Mapping facts are from @agent-ca60cf's read of the code (2026-09-10), not from
 // the file header comment, which is stale:
