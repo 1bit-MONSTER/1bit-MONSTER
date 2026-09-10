@@ -146,8 +146,17 @@ Per synchronous GEMM launch (`go_rows`):
      (row-major, 64-row chunks).
    - **C**: 8 offsets 0/0x100/0x200/… (256 B apart) = 64-col int32 chunks.
    So W is plain row-major (native packB-compatible); A is the remaining
-   unknown (a 2×-spanned blocked layout). Next: capture FLM's A BO
-   (run_qwen3_prefill+interposer) and reverse the A blocking.
+   unknown (a 2×-spanned blocked layout).
+
+   **SOLVED (empirical, 256-token capture):** the mm.xclbin A operand is
+   **BF16**, not int8 — `bo_to` capture of FLM's prefill A BO shows 512 KB of
+   bf16 hidden states (256×1024×2), values like [-0.036, 0.836, -1.555]. So
+   the kernel does **bf16 × int8 → int32**. BO order is **(C, A, W)** (argw
+   C→0/A→1/W→2), and it now EXECUTES and produces non-zero output
+   (A=bf16 1.0, W=int8 1 → C ≈ 0x06000000, a fixed-point-scaled accumulation,
+   not raw 1024). Remaining: (1) the full-M A read (first pass covers ~half of
+   M=256 — a second K/M-loop pass needs mapping), (2) the dequant scale to
+   recover float C, (3) wire into the prefill.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
