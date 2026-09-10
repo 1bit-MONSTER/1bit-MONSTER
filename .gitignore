@@ -202,3 +202,6 @@ build100/
 
 # ── Generated docs site (built by scripts/gen_docs_site.py) ──
 /docs-site/
+
+# gen_layer_elfs binary (built by gen_layer_elfs.sh)
+npu-infer/tools/gen_layer_elfs
