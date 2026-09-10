@@ -428,6 +428,8 @@ struct NativeProbe {
     bool header_valid = false;
     std::string quant, arch, tag;
     int32_t vocab = 0;
+    int32_t num_experts = 0;
+    int32_t top_k = 0;
     uint64_t json_bytes = 0;
     std::vector<std::string> json_dtypes;
 };
@@ -508,6 +510,8 @@ NativeProbe probe_native(const std::string& path) {
         np.version = hdr.version;
         np.header_valid = hdr.valid();
         np.vocab = hdr.vocab_size;
+        np.num_experts = (int32_t)hdr.num_experts;
+        np.top_k = (int32_t)hdr.n_expert_used;
         if (const char* q = onebp_quant_name(hdr.quant)) np.quant = q;
         if (const char* a = onebp_arch_name(hdr.arch)) np.arch = a;
         np.tag.assign(hdr.model_tag, strnlen(hdr.model_tag, sizeof hdr.model_tag));
@@ -963,6 +967,13 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
                 a.native_json_bytes = np.json_bytes;
                 a.native_dtypes = np.json_dtypes;
                 a.native_vocab = np.vocab;
+                a.native_num_experts = np.num_experts;
+                a.native_top_k = np.top_k;
+                // Cross-check arch against the expert count (see header comment).
+                if (np.space == DtypeSpace::ONEBP_HEADER &&
+                    (np.arch == "dense" || np.arch == "moe")) {
+                    if ((np.arch == "moe") != (np.num_experts > 0)) a.arch_suspect = true;
+                }
                 if (np.space == DtypeSpace::UNRECOGNIZED_NATIVE) a.native_name_mismatch = true;
                 // For native containers the bytes are authoritative: the header
                 // declares the quant and arch, so neither is guessed from the
@@ -1190,6 +1201,7 @@ std::string ModelRegistry::to_table() const {
           << (a.has_dtype_42 ? "  [type42!]" : "")
           << (a.q4nx_name_mismatch ? "  [name-says-q4nx-no-type42]" : "")
           << (a.native_name_mismatch ? "  [native-name-mismatch]" : "")
+          << (a.arch_suspect ? "  [arch-suspect]" : "")
           << (a.display_name_suspect ? "  [display-name-suspect]" : "")
           << (a.id_quality().empty() ? "" : "  " + a.id_quality()) << "\n";
     }
@@ -1231,6 +1243,9 @@ std::string ModelRegistry::to_json() const {
           << ", \"q4nx_name_mismatch\": " << (a.q4nx_name_mismatch ? "true" : "false") << ",\n";
         o << "      \"native\": {\"version\": " << a.native_version
           << ", \"vocab\": " << a.native_vocab
+          << ", \"num_experts\": " << a.native_num_experts
+          << ", \"top_k\": " << a.native_top_k
+          << ", \"arch_suspect\": " << (a.arch_suspect ? "true" : "false")
           << ", \"json_bytes\": " << a.native_json_bytes
           << ", \"name_mismatch\": " << (a.native_name_mismatch ? "true" : "false")
           << ", \"dtypes\": [";

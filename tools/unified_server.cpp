@@ -1887,7 +1887,7 @@ int main(int argc, char** argv) {
                 info["capabilities"] = caps;
                 if (!art->tokenizer_path.empty()) info["tokenizer"] = art->tokenizer_path;
                 if (art->files.size() > 1) info["shards"] = (int)art->files.size();
-                if (art->has_dtype_42) info["dtype42"] = true;
+                if (art->has_dtype_42) info["has_dtype_42"] = true;
             }
             models.push_back(info);
         }
@@ -1914,7 +1914,7 @@ int main(int argc, char** argv) {
             if (!art.files.empty()) info["path"] = art.files.front().path;
             if (!art.tokenizer_path.empty()) info["tokenizer"] = art.tokenizer_path;
             if (art.files.size() > 1) info["shards"] = (int)art.files.size();
-            if (art.has_dtype_42) info["dtype42"] = true;
+            if (art.has_dtype_42) info["has_dtype_42"] = true;
             if (art.q4nx_name_mismatch) info["q4nx_name_mismatch"] = true;
             models.push_back(info);
         }

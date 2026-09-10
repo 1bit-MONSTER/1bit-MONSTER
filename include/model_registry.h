@@ -95,6 +95,17 @@ struct CapabilityLimit {
 // Returns nullptr when the capability is unconstrained (or unknown).
 const CapabilityLimit* capability_limit(Capability c);
 
+// ── Wire-field naming (JSON from `registry_scan --json` and the HTTP routes) ──
+// One name per concept, mirroring the C++ members, so a consumer can be written
+// once. Flagged by @agent-ec855d after finding three names for one idea:
+//   top level : has_dtype_42, q4nx_name_mismatch, display_name_suspect,
+//               arch_suspect(no — nested), native_name_mismatch(no — nested)
+//   nested under "native": version, vocab, num_experts, top_k, arch_suspect,
+//               json_bytes, name_mismatch, dtypes
+// Inside the `native` object the `native_` prefix is dropped because the nesting
+// already supplies the scope; at the top level it is kept because it does not.
+// Only `native_*` members appear nested; all others are top level.
+
 // ── Files ──────────────────────────────────────────────────────────────────
 struct ArtifactFile {
     std::string path;              // absolute
@@ -141,6 +152,17 @@ struct ModelArtifact {
     // artifact, and a width mismatch is checkable from the registry without
     // running anything. 0 when not a native header.
     int32_t native_vocab = 0;
+    // OnebpHeader MoE fields. These are what actually distinguish two artifacts
+    // of the same base model in different architectures — measured:
+    // ZAYA1-74B-preview.1bp is DENSE (arch=0, num_experts=0, 1923 tensors,
+    // 120 layers) while its sibling `...-a4b-...gguf` is the MoE variant.
+    int32_t native_num_experts = 0;
+    int32_t native_top_k = 0;
+    // `arch` is header metadata like everything else, so it is CROSS-CHECKED
+    // rather than trusted: flagged when arch says DENSE but experts are present,
+    // or arch says MOE with none. Raised by @agent-ec855d, who spotted the
+    // dense-vs-"a4b" sibling and asked whether arch was a landmine.
+    bool arch_suspect = false;
 
     std::vector<Capability> capabilities;
     std::vector<ArtifactFile> files;
