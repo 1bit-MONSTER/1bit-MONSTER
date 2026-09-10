@@ -50,7 +50,6 @@ int main(int argc, char** argv) {
     }
 
     printf("%-18s %-14s %-18s %s\n", "capability", "BackendType", "engine_id", "constraint / refusal");
-    printf("%s\n", std::string(18 + 1 + 14 + 1 + 18 + 1 + 40, '=').c_str());
     printf("%s\n", std::string(18 + 1 + 14 + 1 + 18 + 1 + 40, '-').c_str());
     std::vector<Capability> refused;
     for (Capability c : kAll) {
