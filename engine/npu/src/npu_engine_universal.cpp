@@ -1740,6 +1740,10 @@ struct Bf16Ctx {
                 o = jo(js, jl, bn);
                 if (key_exists(js, jl, bn)) { int kr, kc; float* vw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
                     if (vw && kr == std_nkv[l] * std_hd[l]) std_v_w[l].assign(vw, vw + (size_t)kr * kc);
+                    if (l == 3 && vw && getenv("NPU_DUMP_L0")) {
+                        FILE* fv = fopen("/tmp/l3_vw.bin", "wb");
+                        if (fv) { fwrite(vw, 4, (size_t)kr * kc, fv); fclose(fv); }
+                    }
                     free(vw); }
                 snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
                 o = jo(js, jl, bn);
@@ -2794,6 +2798,10 @@ struct Bf16Ctx {
             }
             kv[i] = (float)sk; kv[std_kv_dim + i] = (float)sv;
         }
+        if (l == 3 && getenv("NPU_DUMP_L0")) {
+            FILE* fv = fopen("/tmp/l3_v.bin", "wb");
+            if (fv) { fwrite(kv.data() + std_kv_dim, 4, std_kv_dim, fv); fclose(fv); }
+        }
         const float* qnw = std_qn_w[l].data();
         const float* knw = std_kn_w[l].data();
         int l_rope_dim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);
@@ -2810,18 +2818,23 @@ struct Bf16Ctx {
             for (int d = 0; d < std_hd[l]; d++) qh[d] *= iq * qnw[d];
             ra2(qh, pos, l_rope_dim, l_slot);
             int kvh = h / (std_nh[l] / std_nkv[l]);
-            float* kh = kv.data() + (size_t)kvh * std_hd[l];
-            double sk = 0;
-            for (int d = 0; d < std_hd[l]; d++) sk += (double)kh[d] * kh[d];
-            float ik = 1.0f / sqrtf((float)(sk / std_hd[l]) + EPS);
-            for (int d = 0; d < std_hd[l]; d++) kh[d] *= ik * knw[d];
-            ra2(kh, pos, l_rope_dim, l_slot);
-            if (pos >= 4096) {
-                fprintf(stderr, "[npu] KV overflow (pos=%d) — restarting context\n", pos);
-                pos = 0;
+            // k norm + rotary + KV write once per KV head (not once per query
+            // head: with GQA the same kvh is visited std_nh/std_nkv times and
+            // the in-place norm+rotary would otherwise be applied repeatedly).
+            if (h % (std_nh[l] / std_nkv[l]) == 0) {
+                float* kh = kv.data() + (size_t)kvh * std_hd[l];
+                double sk = 0;
+                for (int d = 0; d < std_hd[l]; d++) sk += (double)kh[d] * kh[d];
+                float ik = 1.0f / sqrtf((float)(sk / std_hd[l]) + EPS);
+                for (int d = 0; d < std_hd[l]; d++) kh[d] *= ik * knw[d];
+                ra2(kh, pos, l_rope_dim, l_slot);
+                if (pos >= 4096) {
+                    fprintf(stderr, "[npu] KV overflow (pos=%d) — restarting context\n", pos);
+                    pos = 0;
+                }
+                memcpy(&kvc.k[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kh, std_hd[l] * 4);
+                memcpy(&kvc.v[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kv.data() + std_kv_dim + (size_t)kvh * std_hd[l], std_hd[l] * 4);
             }
-            memcpy(&kvc.k[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kh, std_hd[l] * 4);
-            memcpy(&kvc.v[((size_t)pos * std_nkv[l] + kvh) * std_hd[l]], kv.data() + std_kv_dim + (size_t)kvh * std_hd[l], std_hd[l] * 4);
         }
         kvc.n = pos + 1;
         attn_omp(fqo, out, kvc.n, kvc.k.data(), kvc.v.data(),
@@ -3737,6 +3750,12 @@ struct Bf16Ctx {
             FILE* fa = fopen("/tmp/l0_attn.bin", "wb");
             if (fa) { fwrite(at_b.data(), 4, (size_t)npt * NH * HD, fa); fclose(fa); }
             FILE* fo = fopen("/tmp/l0_o.bin", "wb");
+            if (fo) { fwrite(oo_b.data(), 4, H, fo); fclose(fo); }
+        }
+        if (l == 3 && getenv("NPU_DUMP_L0")) {
+            FILE* fa = fopen("/tmp/l3_attn.bin", "wb");
+            if (fa) { fwrite(at_b.data(), 4, (size_t)npt * NH * HD, fa); fclose(fa); }
+            FILE* fo = fopen("/tmp/l3_o.bin", "wb");
             if (fo) { fwrite(oo_b.data(), 4, H, fo); fclose(fo); }
         }
         fprintf(stderr,"o");fflush(stderr);

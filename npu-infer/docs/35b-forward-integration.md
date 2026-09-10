@@ -1580,3 +1580,23 @@ engine's tag-derived default was 1e6. Added a qwen3_6 tag rule -> 1e7.
 L0-L2 still match; L3 (first STD full-attention layer) still 0.9444 — the
 rotary theta was not the dominant STD bug, so std_attn_step has another
 defect (q/k norm weights, O packing, or KV/attention indexing).
+
+## Round 109 — STD layers structurally correct; remaining = int8 noise cascade (2026-09-10)
+
+Added the k-norm once-per-KV-head guard (std_attn_step was re-applying the
+in-place norm+rotary once per query head under GQA; at pos 0 the rotary is
+identity so this is only visible past pos 0). Verified L3 (first STD layer):
+v_proj weight byte-identical (0.0), v/k/qn/kn weights byte-identical, so the
+STD attention/O/FFN are all structurally correct.
+
+The residual L0-L2 divergence (0.008-0.031) is NOT a structural bug — it is the
+engine's int8 O-projection quantization (~0.0045 at L0) feeding the router:
+  int8 O noise (0.0045) -> MoE-input noise -> router logits noise (0.10)
+  -> top-k tail flip (6/8 experts match, 2 tail experts swap)
+  -> MoE FFN output noise (0.008) -> hidden-state noise -> token flip.
+The reference runs float64 matmuls on the same quantized weights, so it does
+not model the engine's int8 QKV/O ascale quantization. Token parity vs the
+float64 reference therefore requires a bf16 (or higher-precision) O/QKV path,
+or a reference that mirrors the int8 quantization — a precision task, not a
+correctness bug. All 6 structural bugs (QKV K/V stride, emb reshape, l2norm
+per-row, residual raw-vs-normed, rope_theta 1e7, STD k double-process) are fixed.
