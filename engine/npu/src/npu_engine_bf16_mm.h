@@ -63,6 +63,12 @@ struct Bf16Mm {
 
     bool ok = false;
 
+    // Persistent 8 MB W BO — avoids the 8 MB host→device memcpy on every GEMM
+    // call (the prefill reuses the same dequant W across all 256-token batches
+    // and the two M-batches, so the W is memcpy'd once per projection).
+    std::unique_ptr<buffer<uint16_t>> w_cache;
+    const uint16_t* w_cache_ptr = nullptr;
+
     ~Bf16Mm() { /* BOs owned by xrt */ }
 
     /// Load mm.xclbin + dequant.xclbin from xclbin_dir and construct the
@@ -177,12 +183,14 @@ struct Bf16Mm {
             gemm_->generate_seq(app.seq(), M, K, N, woff, false, Gemm::NO_Activation, 0, ooff);
         app.update_ctrl_seq();
         auto bA = app.create_bo_buffer<uint16_t>((size_t)M * K);
-        auto bW = app.create_bo_buffer<uint16_t>((size_t)2048 * 2048);
         auto bC = app.create_bo_buffer<uint16_t>((size_t)M * 2048);
+        // W: reuse the persistent 8 MB BO; only re-memcpy when the W pointer
+        // changes (the caller holds the dequant W stable per projection).
+        if (!w_cache) w_cache = std::make_unique<buffer<uint16_t>>(*dev, (size_t)2048 * 2048);
+        if (W != w_cache_ptr) { memcpy(w_cache->data(), W, (size_t)2048 * 2048 * 2); w_cache_ptr = W; }
         memcpy(bA.data(), A, (size_t)M * K * 2);
-        memcpy(bW.data(), W, (size_t)2048 * 2048 * 2);
         memset(bC.data(), 0, (size_t)M * 2048 * 2);
-        app.safe_run(bC, bA, bW);
+        app.safe_run(bC, bA, *w_cache);
         memcpy(C, bC.data(), (size_t)M * N * 2);
     }
 };

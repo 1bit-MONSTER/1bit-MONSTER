@@ -640,3 +640,16 @@ device BOs, so the prefill itself is GEMM-kernel-bound.
 3. Then wire dequant+mm into `npu_engine_universal.cpp` prefill (replace I8Ctx int8
    `FLM_LAUNCH_ASYNC_ROWS`/`FLM_GO_ROWS` with the bridge; gate/up output col-order to be
    determined empirically from the layer-BO alternating layout).
+
+## 2026-09-10 (session 2p): Bf16Mm W-BO cache — 2.3× GEMM speedup
+
+Persistent 8 MB W BO in `Bf16Mm` (reused across the 2 M-batches and all 256-token
+batches; re-memcpy only when the W pointer changes). Measured:
+- Q GEMM N=2048 (2-batch): 5.64 → **2.44 ms** (1.22 ms/invocation, ~440 GMAC/s)
+- QKV (3 GEMMs): 21.8 → **9.1 ms**
+- dequant QKV: 12.5 → 10.7 ms (still memcpy-bound: 10 MB layer-BO + 8 MB out)
+
+Estimated full prefill (6 GEMMs/layer, cached W, 28 layers): ~13 ms/layer ≈ ~690 tok/s
+for 0.6B — closes the 6–17× gap to ~1.9× vs FLM's 1269. Remaining gap = per-invocation
+bA/bC alloc+sync overhead and the 2-batch doubling; next wins are bA/bC reuse + (for a
+byte-exact FLM replay) its N=128 tile schedule.
