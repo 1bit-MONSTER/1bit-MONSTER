@@ -47,7 +47,7 @@ inline const BackendDescriptor descriptor = {
     /*exposes_prometheus_metrics*/ false,
     /*rocm_requires_cwsr_fix*/ false,
     /*version_policy*/  VersionPolicy::AtLeast,
-    /*self_manages_downloads*/ false,
+    /*self_manages_downloads*/ true,  // the native file is already on disk; never query a registry
     /*takes_args*/      true,
     /*arg_variants*/    {},
     /*bin_variants*/    {},

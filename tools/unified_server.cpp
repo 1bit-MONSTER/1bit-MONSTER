@@ -1215,10 +1215,12 @@ static int run_embedded_lemonade(int argc, char** argv) {
             for (const auto& a : reg.artifacts()) {
                 if (a.container == onebit::Container::ONEBP ||
                     a.container == onebit::Container::RAW_BIN) native++;
+                const std::string artifact_path =
+                    a.files.empty() ? std::string() : a.files.front().path;
                 lemon::Server::RegistryModelView v;
                 v.id = a.id;
                 v.container = onebit::to_string(a.container);
-                v.path = a.files.empty() ? std::string() : a.files.front().path;
+                v.path = artifact_path;
                 for (auto c : a.capabilities) v.capabilities.push_back(onebit::to_string(c));
                 registry_views.push_back(std::move(v));
 
@@ -1228,8 +1230,8 @@ static int run_embedded_lemonade(int argc, char** argv) {
                 lemon::ModelInfo mi;
                 mi.model_name = a.id;
                 mi.recipe = "onebit";
-                mi.checkpoints["main"] = v.path;
-                mi.resolved_paths["main"] = v.path;
+                mi.checkpoints["main"] = artifact_path;
+                mi.resolved_paths["main"] = artifact_path;
                 mi.downloaded = true;
                 mi.source = "engine-registry";
                 mi.labels.push_back("chat");
