@@ -15,7 +15,6 @@
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
-#include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -139,14 +138,6 @@ bool LseBackend::spawn_server() {
     pid_t pid = fork();
     if (pid < 0) { perror("LSE: fork"); return false; }
     if (pid == 0) {
-    // Never outlive the parent: the destructor's SIGTERM->SIGKILL->waitpid
-    // teardown does not run when the parent is SIGKILLed or crashes, and an orphaned
-    // child keeps the accelerator device plus its port (the orphan/NOAVAIL class
-    // backend_npu_flm.cpp already guards with PR_SET_PDEATHSIG). The getppid()
-    // re-check closes the fork->prctl race: if the parent died first, prctl
-    // never fires, so exit immediately.
-    prctl(PR_SET_PDEATHSIG, SIGTERM);
-    if (getppid() == 1) _exit(127);
         // Child: detach stdio unless asked to keep it.
         if (env_or("LSE_KEEP_STDIO", "").empty()) {
             int devnull = open("/dev/null", O_RDWR);

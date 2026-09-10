@@ -27,7 +27,6 @@
 #include <chrono>
 #include <algorithm>
 #include <unistd.h>
-#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
@@ -199,14 +198,6 @@ struct NpuWorker {
         if (pid < 0) { perror("NPU: fork"); close(to_child[0]); close(to_child[1]); close(from_child[0]); close(from_child[1]); return false; }
 
         if (pid == 0) {
-        // Never outlive the parent: the destructor's SIGTERM->SIGKILL->waitpid
-        // teardown does not run when the parent is SIGKILLed or crashes, and an orphaned
-        // child keeps the accelerator device plus its port (the orphan/NOAVAIL class
-        // backend_npu_flm.cpp already guards with PR_SET_PDEATHSIG). The getppid()
-        // re-check closes the fork->prctl race: if the parent died first, prctl
-        // never fires, so exit immediately.
-        prctl(PR_SET_PDEATHSIG, SIGTERM);
-        if (getppid() == 1) _exit(127);
             // Child: npu_engine_universal process
             close(to_child[1]); dup2(to_child[0], STDIN_FILENO); close(to_child[0]);
             close(from_child[0]); dup2(from_child[1], STDOUT_FILENO); close(from_child[1]);
