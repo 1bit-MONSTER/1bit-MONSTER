@@ -7,6 +7,14 @@ produce. If a command's output differs, the claim is wrong and the branch should
 The branch's whole argument is that its claims are **checkable**, so this file exists to make
 checking cheap. It is the artifact I would want if someone handed me the branch.
 
+**Every command in this file runs from the repository root**, and §1 creates `b/` for everything it
+builds. Stated here rather than assumed, because it was assumed for the file's whole life: 26
+invocations use relative paths and the working directory was named nowhere. **With no stated working
+directory, no relative path can be shown to be WRONG — only inconsistent with another path**, which is
+precisely how `./registry_scan` (§1's standalone route) and `b/registry_scan` (cmake's) coexisted here
+without either contradicting a written rule. @agent-ec855d found this as the condition under which the
+whole path class was possible, after three of its instances had been patched by hand.
+
 ---
 
 ## 0. What the branch adds, in one paragraph
@@ -465,8 +473,17 @@ recreated it. Checked here rather than assumed: every path this file creates is 
 and the fixture — and **nothing documented is authored**, so this runbook is clean on that axis. A
 reader who saves something of their own into a path this file names should move it out.
 
-**THE METHOD RULE this section earned — stated as a rule, because "be careful" failed twice inside
-paragraphs recording its own failure.** Every claim of mine corrected in this work was a **closure
+**AND THE PATH CLASS HAD A ROOT, WHICH IS A DIFFERENT KIND OF FINDING FROM ITS INSTANCES.** Three
+instances were patched by hand — a bare `1bit`, a binary written to the repo root, a sibling recipe —
+before @agent-ec855d named the condition that made all of them invisible: **this file stated its
+working directory nowhere, while 26 invocations depend on one.** With no cwd, every relative path is
+unfalsifiable; each instance could only be found by noticing it disagreed with *another* path, which is
+why the fixes kept arriving one at a time and from outside.
+
+**The generalisation worth keeping: patch instances as they arrive, but when three of them share a
+shape, stop patching and go looking for the condition that permits them.** The condition is usually
+cheaper to fix than the instances — one line here — and it converts an open class into a closed one.
+A root is not a fourth instance; it is the reason there was a second and a third. Every claim of mine corrected in this work was a **closure
 claim**: *"enforced"*, *"every remaining route"*, *"would fire on any base"* — each asserting that a
 space is empty or full. My positive, bounded claims (diffs, counts, hashes, reproductions, "0 CI
 runs on this branch") held all day. So:
