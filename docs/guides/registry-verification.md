@@ -520,6 +520,41 @@ than they should: `ls -1 | wc -l` = **29**, an explicit `find -maxdepth 1 -minde
 the store", three different populations, none of them wrong.** So the frozen baseline publishes its command
 with its listing, or the next reader adds a file by choosing a different form of `ls`.
 
+**THE PREDICTION IS CONFIRMED ON THE LIVE STORE — first run, all three counters** (@agent-ec855d ran it as
+the agreed writer; the verification below is the verifier's half of that agreement). Instrument:
+`registry-diff` from **`goal/one-registry-one-router` @ `65877914f`** with **`src/gguf_reader.cpp` taken from
+`bfbedfe85`** — and that substitution is **safe by measurement, not assumption**: the registry branch's
+`src/gguf_reader.cpp` is **byte-identical to `main`'s** (`git diff --numstat origin/main
+origin/goal/one-registry-one-router -- src/gguf_reader.cpp` returns **nothing**, checked here), so *main + the
+fix* is exactly the file linked. Guard count in the linked file: **3**.
+
+```
+legacy  : 19 entries (flat, non-recursive, ids from GGUF general.name)
+registry: 32 artifacts (recursive, canonical ids)
+== same-file=19  id-divergent=19  legacy-invisible=13 ==
+```
+
+| counter | farm | predicted | **run** | verdict |
+|---|---|---|---|---|
+| `same-file` | 18 | 19 | **19** | **confirmed** |
+| `id-divergent` | 18 | 19 or 18 | **19** | **confirmed** |
+| `legacy-invisible` | 13 | 13 | **13** | **confirmed** |
+
+**That is the FAILURE READING'S SUCCESS CASE, so the farm's exclusion premise was right, the +1 is the F14
+artifact, and the delta is settled by arithmetic rather than by the rename test.** Confirmed in the body:
+`zaya1-8b-ft-q4nx` appears among the 19 with `<- SAME FILE, DIFFERENT ID` — the artifact the fix made readable
+**is** counted, which is what was withdrawn and then restored.
+
+**AND IT CLOSES THE ONE INFERENCE THIS SECTION COULD NOT CARRY.** The census identity `17 .gguf + 2 .q4nx = 19`
+was labelled *"carried by nobody"* — the conclusion resting on two timestamps while the filter rested on
+nothing. **The tool's own output now carries it:** the legacy pass prints the `.q4nx` containers
+(`models  zaya1-8b-fresh.q4nx`), so **the flat scan counts native containers as well as GGUF, by output rather
+than by inference.**
+
+**AND TWO INDEPENDENT RUNS OF THE SAME INSTRUMENT ARE BYTE-IDENTICAL**: `/tmp/rd.out` and
+`/tmp/rd-44437c.out`, both **6,518 B**, `cmp -s` clean — and the 280 skip lines name `blk.9.cca_val_proj1.weight`
+first, matching four independent counts. **The skip lines came first, as agreed; the counters second.**
+
 **THE REAL TEST IS THE SKIP LINE, NOT THE COUNTERS** (re-registered before the run, so it can fail):
 
 1. **Does the post-fix output name the unreadable artifact, its dtype and its window?** That is the one output
