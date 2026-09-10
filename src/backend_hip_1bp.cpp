@@ -688,7 +688,20 @@ struct Hip1bpBackend : Backend {
                             (int)ow.size() == 248320 * 2048) {
                             // #2139 item-2: an F16-routed output tensor is uploaded as
                             // packed f16 (half the per-token lm_head read) instead of f32.
+                            // #2139 quality call (2026-09-10): the lm_head on the
+                            // 1BP Q4NX lane defaults to int8 (per-row scale). Measured
+                            // against packed f16 on the same 102-position chain: corr mean
+                            // 0.996279 -> 0.996235 (-4.4e-5, below this metric's positional
+                            // spread), argmax parity unchanged 101/102, 100-token greedy
+                            // stream bit-identical, wall 26.7 -> 21.6 ms/token (-19%).
+                            // Q4NX lm_head is NOT recommended (corr -2.6e-3, argmax 98/102,
+                            // stream differs, only 0.7 ms faster than int8) and stays behind
+                            // an explicit flag. H1BP_Q35_LMHEAD=f16 restores packed f16
+                            // exactly; =q4nx opts into the 318 MB variant.
                             const char* lmh = getenv("H1BP_Q35_LMHEAD");
+                            const bool want_f16 = lmh && (!strcmp(lmh, "f16") ||
+                                                          !strcmp(lmh, "float") ||
+                                                          !strcmp(lmh, "0"));
                             if (ot && ot->quant == ONEBP_F16 && lmh && !strcmp(lmh, "q4nx")) {
                                 std::vector<uint8_t> qw;
                                 if (!h1bp_pack_q4nx(ow, 248320, 2048, qw) ||
@@ -700,7 +713,7 @@ struct Hip1bpBackend : Backend {
                                     printf("[hip1bp] q35 lm_head: Q4NX-packed (%.0f MB)\n", qw.size() / 1e6);
                                 tot += qw.size();
                                 std::vector<uint8_t>().swap(qw);
-                            } else if (ot && ot->quant == ONEBP_F16 && lmh && !strcmp(lmh, "int8")) {
+                            } else if (ot && ot->quant == ONEBP_F16 && !want_f16) {
                                 std::vector<int8_t> qi; std::vector<float> sc;
                                 h1bp_quant_int8(ow, 248320, 2048, qi, sc);
                                 if (hipMalloc((void**)&q35_out_i8, qi.size()) != hipSuccess ||
