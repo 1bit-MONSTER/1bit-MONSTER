@@ -728,7 +728,8 @@ const CapabilityLimit* capability_limit(Capability c) {
 // ── ModelArtifact ──────────────────────────────────────────────────────────
 uint64_t ModelArtifact::total_bytes() const {
     uint64_t n = 0;
-    for (const auto& f : files) n += f.bytes;
+    for (const auto& f : files)
+        if (!f.duplicate_copy) n += f.bytes;   // unique bytes only
     return n;
 }
 bool ModelArtifact::has(Capability c) const {
@@ -1140,6 +1141,60 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
         }
     }
 
+    // ── F6 follow-up: collapse PROVEN duplicates, carrying the tokenizer ────
+    // Only on --digest, because merging on a guess would invent identity. The
+    // identity key is the content digest; when it is absent we only report size
+    // twins (see RegistryReport::size_twin_groups) and merge nothing.
+    if (opt.digest) {
+        std::map<std::string, size_t> by_digest;
+        std::vector<char> absorbed(reg.artifacts_.size(), 0);
+        // The tokenizer is NOT a criterion: the whole point is to CARRY it onto
+        // the survivor, so letting it pick the survivor would invert the fix (the
+        // first version did exactly that and kept `zaya1-8b-fresh.q4nx` over the
+        // ADR's canonical `zaya1-8b.q4nx`). Prefer the id closest to canonical:
+        // one that matches an on-disk name, then the shorter (fewer qualifiers),
+        // then lexicographic for determinism.
+        auto better_survivor = [](const ModelArtifact& a, const ModelArtifact& b) {
+            bool a_clean = a.id_quality().empty(), b_clean = b.id_quality().empty();
+            if (a_clean != b_clean) return a_clean;
+            if (a.id.size() != b.id.size()) return a.id.size() < b.id.size();
+            return a.id < b.id;
+        };
+        for (size_t i = 0; i < reg.artifacts_.size(); ++i) {
+            if (reg.artifacts_[i].files.size() != 1) continue;
+            const std::string& dg = reg.artifacts_[i].files[0].digest;
+            if (dg.empty()) continue;
+            auto it = by_digest.find(dg);
+            if (it == by_digest.end()) { by_digest[dg] = i; continue; }
+            size_t keep = it->second, drop = i;
+            if (better_survivor(reg.artifacts_[drop], reg.artifacts_[keep])) std::swap(keep, drop);
+            ModelArtifact& K = reg.artifacts_[keep];
+            const ModelArtifact D = reg.artifacts_[drop];   // copy: we mutate K only
+            K.merged_ids.push_back(D.id);
+            // Keep the absorbed files so their PATHS stay resolvable — a catalog or
+            // a caller may still name the duplicate.
+            for (auto f : D.files) { f.duplicate_copy = true; K.files.push_back(f); }
+            for (const auto& al : D.aliases)
+                if (std::find(K.aliases.begin(), K.aliases.end(), al) == K.aliases.end())
+                    K.aliases.push_back(al);
+            if (K.aliases.end() == std::find(K.aliases.begin(), K.aliases.end(), D.id))
+                K.aliases.push_back(D.id);
+            if (K.tokenizer_path.empty() && !D.tokenizer_path.empty()) {
+                K.tokenizer_path = D.tokenizer_path;
+                K.tokenizer_from_duplicate = true;
+            }
+            reg.reclaimed_bytes_ += D.total_bytes();
+            reg.merged_artifacts_++;
+            absorbed[drop] = 1;
+            by_digest[dg] = keep;
+        }
+        std::vector<ModelArtifact> kept;
+        kept.reserve(reg.artifacts_.size());
+        for (size_t i = 0; i < reg.artifacts_.size(); ++i)
+            if (!absorbed[i]) kept.push_back(std::move(reg.artifacts_[i]));
+        reg.artifacts_.swap(kept);
+    }
+
     for (const auto& h : htok_paths)
         if (!claimed.count(h)) reg.dangling_tokenizers_++;
 
@@ -1384,6 +1439,8 @@ RegistryReport ModelRegistry::report() const {
         if (!d.empty() && digest_count[d] > 1) r.duplicate_bytes += a.files[0].bytes;
     }
     r.dangling_tokenizers = dangling_tokenizers_;
+    r.merged_artifacts = merged_artifacts_;
+    r.reclaimed_bytes = reclaimed_bytes_;
     return r;
 }
 
@@ -1522,6 +1579,14 @@ std::string ModelRegistry::to_json() const {
               << "\"}";
         }
         o << "},\n";
+        o << "      \"merged_ids\": [";
+        for (size_t i = 0; i < a.merged_ids.size(); i++) {
+            if (i) o << ", ";
+            o << "\"" << json_escape(a.merged_ids[i]) << "\"";
+        }
+        o << "],\n";
+        o << "      \"tokenizer_from_duplicate\": "
+          << (a.tokenizer_from_duplicate ? "true" : "false") << ",\n";
         o << "      \"catalog_ids\": [";
         for (size_t i = 0; i < a.catalog_ids.size(); i++) {
             if (i) o << ", ";
@@ -1557,6 +1622,8 @@ std::string ModelRegistry::to_json() const {
       << ", \"size_twin_groups\": " << r.size_twin_groups
       << ", \"duplicate_bytes\": " << r.duplicate_bytes
       << ", \"gate_context\": " << gate_context_
+      << ", \"merged_artifacts\": " << r.merged_artifacts
+      << ", \"reclaimed_bytes\": " << r.reclaimed_bytes
       << ", \"gate_enforces\": false}\n}\n";
     return o.str();
 }

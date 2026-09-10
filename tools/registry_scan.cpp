@@ -58,6 +58,9 @@ void print_report(const RegistryReport& r) {
         printf("proven_duplicate_bytes=%llu (%.2f GiB reclaimable)\n",
                (unsigned long long)r.duplicate_bytes,
                (double)r.duplicate_bytes / (1024.0 * 1024.0 * 1024.0));
+    if (r.merged_artifacts)
+        printf("merged_artifacts=%zu reclaimed=%.2f GiB (identical copies collapsed)\n",
+               r.merged_artifacts, (double)r.reclaimed_bytes / (1024.0 * 1024.0 * 1024.0));
 }
 
 void describe(const ModelArtifact& a) {
@@ -105,6 +108,13 @@ void describe(const ModelArtifact& a) {
         for (const auto& c : a.catalog_ids) printf(" %s", c.c_str());
         printf("\n");
     }
+    if (!a.merged_ids.empty()) {
+        printf("merged_ids: ");
+        for (const auto& m : a.merged_ids) printf(" %s", m.c_str());
+        printf("\n");
+    }
+    if (a.tokenizer_from_duplicate)
+        printf("tokenizer_src: inherited from a proven-identical duplicate\n");
     printf("aliases:");
     for (const auto& al : a.aliases) printf(" %s", al.c_str());
     printf("\n");

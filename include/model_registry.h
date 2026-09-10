@@ -145,6 +145,11 @@ struct ArtifactFile {
     uint16_t shard_index = 0;      // 0 when not a shard set
     uint16_t shard_count = 1;
     std::string digest;            // empty unless ScanOptions::digest
+    // A proven-identical copy absorbed from a merged duplicate. Kept in `files`
+    // so the PATH stays resolvable (a catalog or caller may still name it), but
+    // excluded from total_bytes() and from shard counting — otherwise a 5.20 GiB
+    // artifact reported 10.40 GiB, which is what the first version of this did.
+    bool duplicate_copy = false;
 };
 
 // ── Artifact ───────────────────────────────────────────────────────────────
@@ -270,6 +275,14 @@ struct ModelArtifact {
     // file_bytes / (declared_params*4); 0 when not computable. Exposed so a
     // consumer can judge the margin itself instead of trusting the boolean.
     double geometry_bound_ratio = 0.0;
+    // ── F6 follow-up: proven-duplicate collapse ──────────────────────────────
+    // zaya1-8b.q4nx and zaya1-8b-fresh.q4nx are BYTE-IDENTICAL (cmp -s), and the
+    // only .htok on disk is zaya1-8b-fresh.htok — so the canonical artifact had no
+    // tokenizer while its duplicate did. Collapsing proven duplicates onto one
+    // artifact now CARRIES the tokenizer, which is what makes R5 id normalization
+    // safe to perform at all.
+    std::vector<std::string> merged_ids;   // ids absorbed into this artifact
+    bool tokenizer_from_duplicate = false; // tokenizer came from a merged twin
     // `arch` is header metadata like everything else, so it is CROSS-CHECKED
     // rather than trusted: flagged when arch says DENSE but experts are present,
     // or arch says MOE with none. Raised by @agent-ec855d, who spotted the
@@ -285,7 +298,14 @@ struct ModelArtifact {
     std::vector<std::string> catalog_ids;
 
     uint64_t total_bytes() const;
-    bool is_sharded() const { return files.size() > 1; }
+    // A merged artifact holds several files too, but they are DUPLICATES rather
+    // than shards — reporting a collapse as "sharded" was a false signal.
+    bool is_sharded() const {
+        for (const auto& f : files)
+            if (!f.duplicate_copy && f.shard_count > 1) return true;
+        return false;
+    }
+    bool is_merged() const { return !merged_ids.empty(); }
     bool has(Capability c) const;
     // 0 = unconstrained. Only meaningful when has(c).
     uint32_t max_context_for(Capability c) const;
@@ -346,6 +366,8 @@ struct RegistryReport {
     uint64_t duplicate_bytes = 0;       // bytes of proven-identical artifacts
     size_t dangling_tokenizers = 0;     // .htok whose artifact is absent
     size_t unreadable = 0;              // header probe failed
+    size_t merged_artifacts = 0;        // artifacts absorbed as proven duplicates
+    uint64_t reclaimed_bytes = 0;       // bytes those absorbed copies occupied
 };
 
 struct ScanOptions {
@@ -403,6 +425,8 @@ private:
     std::vector<std::string> roots_;
     std::vector<CatalogView> catalogs_;
     size_t dangling_tokenizers_ = 0;   // .htok present with no artifact (inventory F6)
+    size_t merged_artifacts_ = 0;
+    uint64_t reclaimed_bytes_ = 0;
     // Context gate last applied by to_table(), so the JSON report can state it
     // rather than leave a caller guessing whether the gate was active.
     mutable uint32_t gate_context_ = 0;
