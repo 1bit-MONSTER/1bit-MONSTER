@@ -1186,3 +1186,24 @@ heap-allocated desc (tools/dump_moe_experts.cpp approach):
    CPU router -> shared FFN (gen_dequant_mm_512, region B) -> routed FFN
    (send_manual_expert_*, expert pool) -> layer ELF (attention/norms/router)
    -> lm_head. Region-B offsets for the shared FFN are now pinned.
+
+## Round 86 — the replay oracle: 35 captured per-token ELFs in moe-cap-rb (2026-09-10)
+
+The fresh capture's `elf_*.bin` (35 files, via the xrt::elf ctor hook) are the
+runtime's OWN generated per-token forward ELFs — the exact instruction
+streams the runtime submitted during the 2-token prefill. Sizes:
+856,160 B (1 — the combined per-token sequence), 53,840×2 + 50,080 + 45,072×3
+(expert/lm_head class), 8,192×8 + 5,200×10 (per-expert dequant_mm), plus
+small 384/480 B RTP/control ELFs.
+
+Combined with `preinsts_001_*` (the runlist arg dumps: i3..i7 = act/weight/
+pool/... BO pointers per run), this IS the replay oracle R60 proposed: the
+wiring can load these captured ELFs + pack the BOs (task-2) + bind the args
+from the preinsts, and submit ONE runlist — no closed-source sequence
+generator needed. The aiebu API only exposes blob->ELF (not ELF->blob), so
+the captured ELFs are used directly rather than decoded.
+
+Replay path (next): (1) map elf_*.bin to runs via the capture order +
+preinsts arg sizes, (2) load each ELF on the single MLIR_AIE kernel
+(Round 77), (3) bind the task-2 BOs per the preinsts arg map, (4) one
+xrt::runlist submit, (5) compare logits vs the banked token-76740 reference.
