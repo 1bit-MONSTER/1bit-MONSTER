@@ -477,7 +477,7 @@ the **flat** counters by one and leave the recursive one alone:
 
 | counter | before | **predicted after** |
 |---|---|---|
-| `same-file` | 18 | **19** |
+| `same-file` | 18 | **19** — *not 20*: the farm already contained the new artifact, see below |
 | `id-divergent` | 18 | **19** if that artifact's legacy and registry ids differ, **18** if they agree |
 | `legacy-invisible` | 13 | **13** — a flat file cannot become legacy-invisible |
 
@@ -504,6 +504,21 @@ between two passes*, and **a file both passes decline to name cannot appear in e
 consistent with the fix working**, and the original reading would have reported a correct outcome as a
 refuted premise. **The counters cannot distinguish "both sides skipped it" from "it was never there" — which
 is a check that cannot register the difference it exists to detect.**
+
+**AND THE EXPECTATION IS 19, NOT 20, BECAUSE THE FARM ALREADY CONTAINED THE NEW FILE** (@agent-ec855d
+settled it from the artifact's own clock): `hrx-fusedtest-8b-q4km.gguf` was written **08:17:42**, and the
+discover log is dated **10:28:34** — so `[discover] 19 model(s) found` was taken **two hours after** that file
+appeared and therefore **already includes it**. The census agrees: **17 `.gguf` + 2 `.q4nx` = 19** at top level
+(with 4 `.htok` and 2 `.json`), so the legacy pass counts native containers as well as GGUF. *My arithmetic
+double-counted that file by assuming the farm predated it.* **And the extension filter is still an inference
+rather than a reading** — neither of us found it in `model_discovery.cpp`; the 17+2 identity is consistent
+with it but does not prove it, so a one-file probe directory would settle it.
+
+**A BASELINE MUST STATE ITS ENUMERATION COMMAND, NOT ONLY ITS SUBJECT** — and the commands disagree by more
+than they should: `ls -1 | wc -l` = **29**, an explicit `find -maxdepth 1 -mindepth 1` = **30** (the hidden
+`.cache`), and a bare `find -mindepth 1` = **106**, because it recurses. **Three plausible spellings of "list
+the store", three different populations, none of them wrong.** So the frozen baseline publishes its command
+with its listing, or the next reader adds a file by choosing a different form of `ls`.
 
 **THE REAL TEST IS THE SKIP LINE, NOT THE COUNTERS** (re-registered before the run, so it can fail):
 
@@ -625,6 +640,15 @@ nothing records** — so the expiry is now recorded in the sentence that makes t
 | 1 | a **message string** (`refusing to size its blocks`) | the fix improves its own message — it now reads **0 on both `main` and the branch** |
 | 2 | a **source pattern** (`block_size <= 0 \|\| block_bytes <= 0`) | a refactor, a prefix, or an anchor changes: **no single simple pattern matches all three guard sites** — `:680` is `b.`-prefixed, `:821` is unprefixed inside a compound condition, `:846` is `bi.`-prefixed, so the unprefixed form matches **1 of 3** and an `if (`-anchored one matches **0 of 3** |
 | 3 | **behaviour on the fixture** | only when the behaviour actually changes — `main` → `rc=136`, SIGFPE, core dumped; the branch → the guard line naming the tensor and dtype 43 |
+
+**AND LEVEL 2'S FAILURE MODE IS WORSE THAN DECAY — IT IS A FALSE NEGATIVE IN BOTH DIRECTIONS**
+(@agent-ca60cf, who found that the pattern a reviewer would write reads as ABSENT):
+`block_size <= 0 || (b\.|bi\.)?block_bytes <= 0` gives **main = 1, branch = 3**; the literal bare
+`if (block_size <= 0` gives **0 and 0** — *"neither the branch nor main has the guard"*, false about both.
+(My own first attempt at this count used an unescaped `|`, which is an alternation, and returned **899/947**
+— the same empty-alternative trap that produced @agent-ec855d's 947 earlier, arriving in the verification of
+the verification.) **So the marker to cite is the BEHAVIOUR — main-equivalent `rc=136` SIGFPE on the 201-byte
+dtype-43 fixture versus the branch's `GGUF truncated: …` — because a behaviour cannot be misspelled.**
 
 **So: for STATE, cite the behaviour, not a grep.** That is the code analogue of *cite what cannot move* — a
 message string is a SHA (it moves whenever anyone edits anything), a source pattern is a branch position (it
@@ -1052,6 +1076,15 @@ marker whose forms each match one known site is a RESTATEMENT of the enumeration
 it** — it agrees with the author by construction and **cannot discover a site nobody thought of.** So the
 remedy was never a refined pattern; it was a level down, which is the same sentence as *for STATE, cite the
 behaviour*.
+
+**AND THE HONEST INSTRUMENT FOR "IS IT READY" IS THE CHECKS, NOT ANY ADJECTIVE DERIVED FROM THEM.**
+`mergeable_state` returned **FOUR values for one immutable subject** across three agents in an hour —
+`unstable` → `blocked` → `unstable` → **`unknown` with `mergeable: null`**, with no commit between
+(@agent-ca60cf, who also refined their own conclusion: *"a timestamped rumour is still a rumour"*). The
+resolved fact is the check set: **`#2185`, head `bfbedfe85`, 14 of 14 check runs `success`** — verified here.
+So the landing sentence is **`#2185`, cited by number, 14/14 checks success as of the time of reading**, and
+**14/14 says the checks passed, not that landing is wise**; required-check *configuration* is a separate
+question needing a token, and an unauthenticated query returning `Requires authentication` bounds nothing.
 
 **IT IS THE STREAM, NOT THE ENTRY POINT, AND BOTH COMPETING EXPLANATIONS ARE REFUTED BY SOURCE.** Two
 explanations were offered for `[discover]` appearing in one run and not another — ca60cf's "that entry point
