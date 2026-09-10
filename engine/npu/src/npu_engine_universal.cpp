@@ -2063,14 +2063,11 @@ struct Bf16Ctx {
             }
             // G/U: [IM_EXP, H] @ x → [IM_EXP]
             std::vector<float> gu(IM_EXP * 2);
-            #pragma omp parallel for
             for (int i = 0; i < IM_EXP; i++) {
                 double g = 0, u = 0;
-                const float* Gi = G + (size_t)i * H;
-                const float* Ui = U + (size_t)i * H;
                 for (int k = 0; k < H; k++) {
-                    g += (double)Gi[k] * x[k];
-                    u += (double)Ui[k] * x[k];
+                    g += (double)G[i * H + k] * x[k];
+                    u += (double)U[i * H + k] * x[k];
                 }
                 float gv = (float)g, uv = (float)u;
                 if (!std::isfinite(gv)) gv = 0;
@@ -2084,11 +2081,9 @@ struct Bf16Ctx {
             }
             // D: [H, IM_EXP] @ gu → [H], weighted by router prob
             float pw = probs[ex];
-            #pragma omp parallel for
             for (int i = 0; i < H; i++) {
                 double d = 0;
-                const float* Di = D + (size_t)i * IM_EXP;
-                for (int k = 0; k < IM_EXP; k++) d += (double)Di[k] * gu[k];
+                for (int k = 0; k < IM_EXP; k++) d += (double)D[i * IM_EXP + k] * gu[k];
                 out[i] += pw * (float)d;
             }
             if (owned) { free(G); free(U); free(D); }
@@ -2107,14 +2102,11 @@ struct Bf16Ctx {
             float* SD = deq_exp(so.down, so.down_tr, IM_EXP, so.down_bpt, &sdr, &sdc);
             if (SG && SU && SD) {
                 std::vector<float> sgu(IM_EXP * 2);
-                #pragma omp parallel for
                 for (int i = 0; i < IM_EXP; i++) {
                     double g = 0, u = 0;
-                    const float* SGi = SG + (size_t)i * H;
-                    const float* SUi = SU + (size_t)i * H;
                     for (int k = 0; k < H; k++) {
-                        g += (double)SGi[k] * x[k];
-                        u += (double)SUi[k] * x[k];
+                        g += (double)SG[i * H + k] * x[k];
+                        u += (double)SU[i * H + k] * x[k];
                     }
                     float gv = (float)g, uv = (float)u;
                     if (!std::isfinite(gv)) gv = 0;
@@ -2126,11 +2118,9 @@ struct Bf16Ctx {
                     if (!std::isfinite(gv)) gv = 0;
                     sgu[i] = (gv / (1.0f + expf(-gv))) * sgu[IM_EXP + i];
                 }
-                #pragma omp parallel for
                 for (int i = 0; i < H; i++) {
                     double d = 0;
-                    const float* SDi = SD + (size_t)i * IM_EXP;
-                    for (int k = 0; k < IM_EXP; k++) d += (double)SDi[k] * sgu[k];
+                    for (int k = 0; k < IM_EXP; k++) d += (double)SD[i * IM_EXP + k] * sgu[k];
                     out[i] += sg_sig * (float)d;
                 }
             }
