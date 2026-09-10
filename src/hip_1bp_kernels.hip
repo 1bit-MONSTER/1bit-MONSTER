@@ -9,6 +9,35 @@
 
 // ── Custom GEMV: y[M] = W[M,N] @ x[N], row-major W ──
 // One thread per row, block-wide reduction over columns.
+// #2139 item-2 fast path: same GEMV shape, but W is row-major f16 (packed) instead
+// of f32. Used for the lm_head, whose f32 copy costs a 2 GB weight read per token
+// (~12.2 ms/token = ~36% of q35 decode on gfx1151, bandwidth-bound); the f16 read
+// halves that. Accumulation stays in double and f16 -> f32 is exact, so results are
+// bit-identical to the f32 kernel for an f16-routed tensor.
+__global__ void h1bp_f16gemv_kernel(float* y, const unsigned short* W, const float* x, int M, int N) {
+    // one warp per row (8 rows / 256-thread block); 16-byte vector loads (8 halves)
+    // per lane per iteration for memory-level parallelism. Replaces the original
+    // one-block-per-row shape (248,320 tiny blocks -> block-issue bound) and the
+    // f32 lm_head buffer (2 GB/token read -> 1 GB).
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int row = blockIdx.x * (blockDim.x >> 5) + warp;
+    if (row >= M) return;
+    const uint4* wrow = reinterpret_cast<const uint4*>(W + (size_t)row * N);
+    int n8 = N >> 3;
+    double sum = 0;
+    for (int k = lane; k < n8; k += 32) {
+        uint4 v = wrow[k];
+        const unsigned short* h = reinterpret_cast<const unsigned short*>(&v);
+        #pragma unroll
+        for (int j = 0; j < 8; j++) {
+            int idx = 8 * k + j;
+            sum += (double)x[idx] * (double)__half2float(__ushort_as_half(h[j]));
+        }
+    }
+    for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+    if (lane == 0) y[row] = (float)sum;
+}
+
 __global__ void h1bp_gemv_kernel(float* y, const float* W, const float* x, int M, int N) {
     int row = blockIdx.x;
     if (row >= M) return;
@@ -732,3 +761,141 @@ __global__ void h1bp_q35_kvput_kernel(float* __restrict__ dst,
     if (i < n) dst[(size_t)p * stride + off + i] = src[i];
 }
 
+
+// ═══ #2139 item-2: slot-batched expert GEMV (grid.y = top-k slot) ═══
+// The MoE block used to issue 8 separate expert GEMVs (x2 dispatches each) plus
+// per-slot silu/scale kernels => 64 dispatches/layer. With grid.y = the 8 top-k
+// slots the same work is 8 dispatches/layer. x_slot_stride != 0 lets a batched
+// caller pass per-slot activations (the down projection); 0 means shared x.
+__global__ void h1bp_q4nx_part_idx8_kernel(const uint8_t* __restrict__ w,
+        const float* __restrict__ x, int x_slot_stride, float* __restrict__ part,
+        const int* __restrict__ idx_d, size_t stride_bytes, int N, int ntc) {
+    const int slot = blockIdx.y;
+    const int exp_idx = idx_d[slot];
+    const int wpr = (ntc + 3) >> 2;
+    h1bp_q4nx_part_body(w + (size_t)exp_idx * stride_bytes,
+                        x + (size_t)slot * x_slot_stride,
+                        part + (size_t)slot * N * 32 * wpr, N, ntc);
+}
+
+__global__ void h1bp_tq2nz_sum8_kernel(const float* __restrict__ part,
+        float* __restrict__ out, int N, int wpr) {
+    const int slot = blockIdx.y;
+    const int row = blockIdx.x * (int)blockDim.x + threadIdx.x;
+    if (row >= N) return;
+    const float* p = part + (size_t)slot * N * 32 * wpr;
+    float s = 0.0f;
+    for (int i = 0; i < 32 * wpr; i++) s += p[(size_t)row * 32 * wpr + i];
+    out[(size_t)slot * N + row] = s;
+}
+
+// up8[slot][i] = up8[slot][i] * silu(gate8[slot][i])   (same math as
+// h1bp_silu_gate_mul_kernel, batched over slots)
+__global__ void h1bp_silu_gate_mul8_kernel(float* __restrict__ up,
+        const float* __restrict__ gate, int n) {
+    const int slot = blockIdx.y;
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= n) return;
+    float* u = up + (size_t)slot * n;
+    const float* g = gate + (size_t)slot * n;
+    u[i] = u[i] * (g[i] / (1.0f + __expf(-g[i])));
+}
+
+// acc[i] += sum_slot src8[slot][i] * rout_d[slot], with a FIXED slot order so
+// results stay bit-identical to the previous 8 sequential h1bp_mul_acc_scaled
+// launches and deterministic run to run (a grid.y version would race on acc[i]).
+__global__ void h1bp_moe_reduce8_kernel(float* __restrict__ acc,
+        const float* __restrict__ src, const float* __restrict__ rout_d,
+        int n, int nslots) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= n) return;
+    float t = acc[i];
+    for (int k = 0; k < nslots; k++) t += src[(size_t)k * n + i] * rout_d[k];
+    acc[i] = t;
+}
+
+// ═══ #2139 item-2: single-pass Q4NX GEMV (one warp per row) ═══
+// The launch_q4nx pair (part kernel -> tq2nz_sum kernel) costs 2 dispatches per
+// GEMV and a 32*wpr float partial buffer per row. Here each warp owns one row and
+// walks the K dimension tile by tile itself (lane = 32-col group, 4 groups per
+// warp per step), then warp-reduces: same math, 1 dispatch, no partial buffer.
+__device__ inline void h1bp_q4nx_row_walk(const uint8_t* __restrict__ w,
+                                          const float* __restrict__ x,
+                                          int row, int ntc, int lane, float& acc) {
+    const int g  = lane & 7;
+    const int twq = lane >> 3;
+    const int rri = row & 31;
+    for (int tw = twq; tw < ntc; tw += 4) {
+        const uint8_t* tb = w + (size_t)((row >> 5) * ntc + tw) * 5120;
+        const uint16_t* sc = (const uint16_t*)tb;
+        const uint16_t* zp = (const uint16_t*)(tb + 512);
+        float scale = h1bp_bf16_to_f32(sc[rri * 8 + g]);
+        float z     = h1bp_bf16_to_f32(zp[rri * 8 + g]);
+        const uint8_t* codes = tb + 1024 + rri * 128 + g * 16;
+        const float*   xp    = x + tw * 256 + g * 32;
+#pragma unroll
+        for (int i = 0; i < 16; i++) {
+            uint8_t b = codes[i];
+            acc += ((float)(b & 0xF) * scale + z) * xp[i * 2];
+            acc += ((float)(b >> 4)  * scale + z) * xp[i * 2 + 1];
+        }
+    }
+}
+
+__global__ void h1bp_q4nx_gemv_kernel(const uint8_t* __restrict__ w,
+                                      const float* __restrict__ x,
+                                      float* __restrict__ y, int N, int K) {
+    const int lane = threadIdx.x & 31;
+    const int row  = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    if (row >= N) return;
+    const int ntc = (K + 255) >> 8;
+    float acc = 0.0f;
+    h1bp_q4nx_row_walk(w, x, row, ntc, lane, acc);
+    for (int off = 16; off; off >>= 1) acc += __shfl_down(acc, off);
+    if (lane == 0) y[row] = acc;
+}
+
+// #2139 item-2: single-pass Q4NX expert GEMV — grid.y = top-k slot, one warp per
+// row, expert base from idx_d[slot]; x_slot_stride != 0 for the down projection.
+__global__ void h1bp_q4nx_gemv_idx8_kernel(const uint8_t* __restrict__ w,
+        const float* __restrict__ x, int x_slot_stride, float* __restrict__ y8,
+        const int* __restrict__ idx_d, size_t stride_bytes, int N, int K) {
+    const int slot = blockIdx.y;
+    const int lane = threadIdx.x & 31;
+    const int row  = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    if (row >= N) return;
+    const int ntc = (K + 255) >> 8;
+    const uint8_t* we = w + (size_t)idx_d[slot] * stride_bytes;
+    const float*   xe = x + (size_t)slot * x_slot_stride;
+    float acc = 0.0f;
+    h1bp_q4nx_row_walk(we, xe, row, ntc, lane, acc);
+    for (int off = 16; off; off >>= 1) acc += __shfl_down(acc, off);
+    if (lane == 0) y8[(size_t)slot * N + row] = acc;
+}
+
+
+// ═══ #2139 item-2: int8 lm_head GEMV (one warp per row, per-row scale) ═══
+// output.weight is 248320x2048 = 508 MB as int8 (vs 1 GB packed f16, 2 GB f32),
+// which is the whole point: the lm_head is a pure weight-streaming op.
+__global__ void h1bp_int8gemv_kernel(float* __restrict__ y,
+                                     const int8_t* __restrict__ W,
+                                     const float* __restrict__ scales,
+                                     const float* __restrict__ x, int M, int K) {
+    const int lane = threadIdx.x & 31;
+    const int row  = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    if (row >= M) return;
+    const uint4* wrow = reinterpret_cast<const uint4*>(W + (size_t)row * K);
+    const int n16 = K >> 4;                     // 16 int8 per uint4
+    // float accumulation: the double accumulator made this kernel slower than the
+    // 1 GB f16 path it is meant to beat (FP64 is rate-limited on gfx1151).
+    float acc = 0.0f;
+    for (int k = lane; k < n16; k += 32) {
+        uint4 v = wrow[k];
+        const int8_t* b = reinterpret_cast<const int8_t*>(&v);
+#pragma unroll
+        for (int j = 0; j < 16; j++)
+            acc += (float)b[j] * x[k * 16 + j];
+    }
+    for (int off = 16; off; off >>= 1) acc += __shfl_down(acc, off);
+    if (lane == 0) y[row] = (float)acc * scales[row];
+}
