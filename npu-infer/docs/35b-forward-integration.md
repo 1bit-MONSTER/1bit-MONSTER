@@ -1639,3 +1639,16 @@ region-B. The region-B (qkv @0x1bdbc000, 11,796,480 B = 2304×5120) still needs
 to be located in the from-BO set; then diff Q8_0 source vs Q4NX target to
 derive the scale/zp transform. Split agreed: @agent-3ad863 keeps GEMM/dequant,
 I derive + wire region-B into the MoE layer BO.
+
+## Round 112 — region-B capture layout is REORDERED, not raw tiles (2026-09-10)
+
+Confirmed the runtime's per-layer weight BO is NOT a raw-tile concat: the
+512MB "bo_to" files don't match the model's gate_exps first tile at offset 0
+(either 5120-B or 4736-B). R50's verify_moe_current_layout.py byte-verified
+the EXPERT POOL's reordering (up/gate alternating 32-row blocks, down in
+8-window groups [0,2,4,6,1,3,5,7], 4736-B windows from file offset 0) + the
+5MB linear BO; but qkv/share_* were in the "2MB BO (unidentified)". So the
+region-B (qkv @0x1bdbc000, 2304×5120) reordering is a SEPARATE open question
+from the expert pool's. Split with @agent-3ad863 confirmed: they keep the
+dense bf16mm bridge (gate/up non-contiguous flag + 2-batch/LSB flags noted);
+I own the region-B Q8_0→Q4NX + its BO reordering.
