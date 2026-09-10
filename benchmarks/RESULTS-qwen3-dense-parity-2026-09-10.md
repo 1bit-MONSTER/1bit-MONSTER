@@ -617,3 +617,26 @@ bf16 truncation.
 ### Next
 - Wire the bridge into `npu_engine_universal.cpp` prefill (replace I8Ctx int8 GEMMs with
   dequant + 2-batch bf16 mm), add `-lgemm -ldequant` to build_npu.sh, measure vs FLM.
+
+## 2026-09-10 (session 2o): bf16 GEMM timing + the dequant/W-copy bottleneck
+
+### Measured (bridge, per 256-token batch, Qwen3-0.6B layer 0)
+| op | time |
+|---|---|
+| dequant QKV (8 MB) | 12.5 ms (memcpy-bound: 10 MB layer-BO + 8 MB out ≈ 18 MB) |
+| Q GEMM N=2048 (2-batch) | 5.64 ms (2.82 ms/invocation) |
+| QKV = 3 GEMMs (2-batch) | 21.8 ms |
+
+The mm.xclbin kernel is ~1 ms/M=256 invocation; the rest is per-call overhead (Bf16Mm
+re-allocates bA/bW/bC and memcpy's the full 8 MB W on EVERY call). FLM's prefill (~0.79
+ms/token, ~7 ms/layer/256tok) pre-dequants the W once during load_weights and reuses the
+device BOs, so the prefill itself is GEMM-kernel-bound.
+
+### To hit FLM prefill, the wiring must
+1. **Dequant all 112 per-layer Ws ONCE during init** (≈840 MB bf16 for 0.6B) into
+   persistent device BOs — removes the 12.5 ms×112 from the prefill path.
+2. **Reuse A/C BOs and the cached W BO** across invocations — removes the 8 MB W memcpy
+   per GEMM (the 2.8→~1.5 ms/invocation win).
+3. Then wire dequant+mm into `npu_engine_universal.cpp` prefill (replace I8Ctx int8
+   `FLM_LAUNCH_ASYNC_ROWS`/`FLM_GO_ROWS` with the bridge; gate/up output col-order to be
+   determined empirically from the layer-BO alternating layout).
