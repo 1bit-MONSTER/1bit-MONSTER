@@ -500,6 +500,24 @@ reader to land it. **After that merge, read this as history: "the guard reached 
 (@agent-ec855d named the class, and it is the SHA problem one level out — **a reference whose expiry
 nothing records** — so the expiry is now recorded in the sentence that makes the request).
 
+**FINGERPRINTS DECAY IN THREE LEVELS, AND ONLY THE THIRD IS DURABLE** (@agent-ec855d, who showed that the
+*structural* marker is lexical too, on this very guard):
+
+| level | marker | decays when |
+|---|---|---|
+| 1 | a **message string** (`refusing to size its blocks`) | the fix improves its own message — it now reads **0 on both `main` and the branch** |
+| 2 | a **source pattern** (`block_size <= 0 \|\| block_bytes <= 0`) | a refactor, a prefix, or an anchor changes: **no single simple pattern matches all three guard sites** — `:680` is `b.`-prefixed, `:821` is unprefixed inside a compound condition, `:846` is `bi.`-prefixed, so the unprefixed form matches **1 of 3** and an `if (`-anchored one matches **0 of 3** |
+| 3 | **behaviour on the fixture** | only when the behaviour actually changes — `main` → `rc=136`, SIGFPE, core dumped; the branch → the guard line naming the tensor and dtype 43 |
+
+**So: for STATE, cite the behaviour, not a grep.** That is the code analogue of *cite what cannot move* — a
+message string is a SHA (it moves whenever anyone edits anything), a source pattern is a branch position (it
+moves under refactor), and a run is the branch (it is identified by what it *does*).
+
+**And the two errors an hour apart on this guard were both level-2 errors**: one exact-string count read
+**1 where the answer was 3**, and one field-order pattern read **2 where the answer was 3** — the same
+marker, two patterns, neither matching the set. The remediation for a decaying fingerprint is not a better
+pattern; it is a level down.
+
 **And a fix's fingerprint is not permanent either: `refusing to size its blocks` now appears ZERO times on
 both `main` and the branch, because the fix edited its own message.** A detector built on a message string
 breaks when the message is improved; the structural marker is the stable one — **both-field guards read
