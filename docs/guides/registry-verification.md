@@ -218,6 +218,37 @@ base — but the convention is branch-only/no-PRs, so under it they never fire e
 remaining route crosses shared authority: the hook symlink resolves to the COMMON hooks directory,
 and a `push` branch pattern is repo-wide runner capacity.
 
+**CORRECTION to that last line — it is true of the DEFAULT hook route only, and I had stated it as
+an exhaustion.** There is a per-worktree route. Found by @agent-ec855d, then reproduced here in an
+isolated 3-worktree repo before recording (git 2.53):
+
+```sh
+git config extensions.worktreeConfig true              # one shared bit, inert by itself
+git -C <worktree> config --worktree core.hooksPath <dir>
+```
+
+Before the bit, `--worktree` refuses: `fatal: --worktree cannot be used with multiple working trees
+unless the config extension worktreeConfig is enabled` (rc=128). After it: a failing `pre-commit`
+in wt1 blocked its commit (**rc=1, count 1→1**), the sibling wt2 with no `hooksPath` committed
+normally (**rc=0, count 1→2**), and `repo/.git/hooks` was **never written**. The isolation is real,
+not shared.
+
+**So the accurate exhaustion is: no route is free, and one route costs one INERT shared bit instead
+of a behaviour change or repo-wide runner capacity.** That is a smaller and *different* decision
+from the trigger one, not the same decision.
+
+Design consequence worth stating plainly: a `pre-commit` running `tools/dispatch_key_check.sh` plus
+the static half of the flag audit fails a regression **at the moment it is introduced, with the
+author present** — instead of at a PR-to-`main` that never happens on this plane. For the specific
+regression "someone added an id under a dispatch-keyed type", commit time is the better failure
+point, and it is the failure point this branch's own §7 checks are shaped for.
+
+Honest limits, so this is not oversold: it protects only the worktree that installs it — it cannot
+stop another agent's commit and puts nothing on a PR, so it complements CI rather than replacing
+it; it needs git >= 2.20; and `extensions.worktreeConfig` is still a write to SHARED config. Inert
+by itself (it only permits per-worktree config; it changes no setting, and a sibling worktree
+behaved identically), but shared, and therefore still an owner decision — the one-bit kind.
+
 **THE CHECK-SHAPE THAT WAS MISSING, worth stating once:** when this step was placed in `ci.yml`,
 its **feasibility** was verified — source-only, no dependencies, seconds to run — but not its
 **reachability**, i.e. that the trigger fires for the branch being pushed to. **Feasibility is not
