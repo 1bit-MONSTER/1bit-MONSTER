@@ -675,6 +675,21 @@ bool GgufReader::open(const std::string& path) {
             for (auto& kvp : tensors_) {
                 const GgufTensorInfo& ti = kvp.second;
                 GgufBlockInfo b = gguf_block_info(ti.dtype);
+                // An unrecognized dtype has no block geometry — gguf_block_info returns
+                // {0,0} BY DOCUMENTED CONTRACT (include/gguf_reader.h) — so dividing by
+                // b.block_size is a SIGFPE that kills the process during model discovery:
+                // `discover_models()` calls open(), so ONE malformed file in a weights
+                // directory stopped the server from starting at all (measured: dtype 43,
+                // 280 of 1283 tensors, core dump at startup, with a control case passing).
+                // Fail closed naming the tensor and dtype, mirroring the guard this file
+                // already applies at the decode site below and in src/deepseek.cpp.
+                if (b.block_size <= 0 || b.block_bytes <= 0) {
+                    fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend cannot read it; "
+                                    "route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
+                            kvp.first.c_str(), ti.dtype);
+                    fclose(f_); f_ = nullptr;
+                    return false;
+                }
                 uint64_t n_blocks = (ti.numel + b.block_size - 1) / b.block_size;
                 uint64_t need = n_blocks * (uint64_t)b.block_bytes;
                 if (ti.abs_offset > (uint64_t)file_size || need > (uint64_t)file_size - ti.abs_offset) {
