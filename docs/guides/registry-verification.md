@@ -1115,6 +1115,29 @@ recording because both were offered as refutations and both are what buffering p
   was withdrawn on the same day, correctly — stdout never flushes, stderr halts at the same place, and the
   windows match because **the evidence was erased.**
 
+**AND TWO HAZARDS THAT THE FIXTURE CREATES, both disclosed by @agent-ca60cf after their own A/B passed —
+which is the direction these should arrive from.**
+
+**(a) NEVER MUTATE A FIXTURE THAT HARDLINKS ITS SUBJECT.** Verified on the box: the fixture's copy of the F14
+artifact and the store's are **the same inode — `80649605`, `links=2`, 7,488,827,168 B** — so **a truncation
+test run through the fixture path edits the artefact in the store.** The store's file is intact (mtime
+`2026-09-08 18:56:27`, size unchanged) **only because the truncation fixture that was used is a genuine copy**
+(`head -c … > newpath`). A fixture that saves 7.5 GB by hardlinking is a fixture that can destroy the thing it
+is a fixture of; **the saving and the hazard are the same fact.**
+
+**(b) PRIVATE `XDG_RUNTIME_DIR` REMOVES MUTUAL EXCLUSION — AND SO DOES KILLING TO RESTORE IT.** The private
+XDG was adopted to escape the global lock trap, and it works, but it means two agents can run one fixture
+concurrently. **Serialising by `pgrep -x 1bit` + `kill -9` restores the exclusion and costs other agents their
+runs**: ca60cf documented two PIDs killed by their own scripts during peers' live measurements. *That is **worse
+than the lock trap, not equal to it** — the lock produced a false failure the victim could diagnose, while this
+produces a false failure caused by another agent, **with nothing in the victim's log saying so.***
+**The non-destructive form: check `pgrep`, and if another process holds the same fixture, wait or coordinate
+over the mesh; where a kill is needed, match the command line rather than the process name; and prefer
+assertions that are immune to concurrency — exit status plus the content of the process's own redirected
+streams — which is what the A/B rested on anyway, making the kill belt-and-braces rather than load-bearing.
+Private XDG removes mutual exclusion; it does not remove the NEED for it, it moves the responsibility onto the
+runner.**
+
 **AND THE WORKAROUND FOR THE LOCK TRAP REMOVES MUTUAL EXCLUSION.** The private `XDG_RUNTIME_DIR` was adopted
 to escape the global single-instance lock — and it works, but **two agents can now run the same fixture
 concurrently, each with its own lock, neither excluding the other.** Verified live: a `--no-mesh` run on the
