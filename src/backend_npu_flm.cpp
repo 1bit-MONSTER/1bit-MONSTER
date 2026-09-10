@@ -402,12 +402,51 @@ public:
         // 2. Send prompt (delta on continuation, full prompt otherwise)
         std::string req = send + "\n";
         ssize_t written = write(stdin_fd_, req.c_str(), req.size());
-        if (written < 0 || (size_t)written != req.size())
+        if (written < 0 || (size_t)written != req.size()) {
+            // The FLM child is gone (e.g. it lost the NPU to a sibling backend).
+            // Its stderr was piped and never read, so the reason is still in that
+            // pipe; report it plus the exit status so the failure carries a cause
+            // rather than only the sentinel. This is what made "0 tokens" opaque.
+            std::string child_err = drain_child_stderr();
+            int status = 0;
+            pid_t reaped = (pid_ > 0) ? waitpid(pid_, &status, WNOHANG) : -1;
+            std::string why;
+            if (reaped == pid_) {
+                if (WIFEXITED(status))       why = "child exited code " + std::to_string(WEXITSTATUS(status));
+                else if (WIFSIGNALED(status)) why = "child killed by signal " + std::to_string(WTERMSIG(status));
+                else                          why = "child reaped";
+            } else {
+                why = "child not reaped (still running or already reaped)";
+            }
+            fprintf(stderr, "NPU: write to FLM failed (%zd/%zu): %s%s%s\n",
+                    written, req.size(), why.c_str(),
+                    child_err.empty() ? "" : " -- child stderr: ",
+                    child_err.empty() ? "" : child_err.c_str());
+            if (reaped == pid_) { pid_ = 0; initialized = false; }
             return "[npu: write error]";
+        }
 
         last_prompt_ = prompt;
 
         return read_response();
+    }
+
+    // Non-blocking drain of the child's piped stderr. Returns "" when nothing is
+    // pending (or no pipe). Used to make a dead-child failure self-explaining.
+    std::string drain_child_stderr() {
+        std::string out;
+        if (stderr_fd_ < 0) return out;
+        char buf[4096];
+        while (out.size() < 16384) {
+            fd_set fds; FD_ZERO(&fds); FD_SET(stderr_fd_, &fds);
+            struct timeval tv = {0, 0};
+            int r = select(stderr_fd_ + 1, &fds, nullptr, nullptr, &tv);
+            if (r <= 0) break;
+            ssize_t n = read(stderr_fd_, buf, sizeof(buf));
+            if (n <= 0) break;
+            out.append(buf, (size_t)n);
+        }
+        return out;
     }
 
     std::string read_response() {
