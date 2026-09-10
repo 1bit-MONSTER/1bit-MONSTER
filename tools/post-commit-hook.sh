@@ -1,4 +1,16 @@
 #!/usr/bin/env bash
+#
+# INSTALL (git hooks are NOT versioned — per-clone, and this repo has several clones). This file is the
+# fixed form of the installed hook; the fix is `set -u` -> `set -uo pipefail` and nothing else.
+#     cp tools/post-commit-hook.sh <repo>/.git/hooks/post-commit
+#     chmod +x <repo>/.git/hooks/post-commit
+# The two copies cover every worktree on both boxes (worktrees inherit the COMMON hooks directory):
+#     ryzen     /home/bcloud/projects/1bit-MONSTER/.git/hooks/post-commit
+#     strixhalo /home/bcloud/1bit-MONSTER/.git/hooks/post-commit
+# `cp` rather than the `ln -sf` that tools/commit-msg-hook.sh uses: that form is right for a NEW hook, and
+# this one REPLACES an existing regular file — so an explicit copy is clearer and does not depend on
+# relative-path depth from .git/hooks/. Without installing it, the defect returns at the next clone, which
+# is the same argument as the symlink in commit-msg-hook.sh.
 # post-commit — hands-off PR loop for the 1bit-MONSTER repo
 #
 # After every commit:
