@@ -346,6 +346,14 @@ bool HrxBackend::forward(int, float*) {
     return false;
 }
 
+long HrxBackend::import_state_file(const char* session_path) {
+    if (!inprocess_mode_ || !inprocess_ || !session_path) return -1;
+    const long n = inprocess_->load_session_file(session_path);
+    if (n >= 0) imported_ctx_ = n;
+    else fprintf(stderr, "HRX: state re-import failed (%s)\n", session_path);
+    return n;
+}
+
 int HrxBackend::generate(int token_id) {
     if (inprocess_mode_ && inprocess_) return inprocess_->generate(token_id);
     fprintf(stderr, "HRX: use generate_text() for text-level inference\n");

@@ -38,6 +38,13 @@ public:
     long imported_ctx_tokens() const { return imported_ctx_; }
     bool inprocess_active() const { return inprocess_mode_; }
 
+    // #2145 (finding 2): HrxBackend::reset() recreates the in-process context
+    // (pos = 0), so an HRX_STATE_FILE import applied at init is discarded before
+    // the first decode. The server calls this after reset() to re-apply it so a
+    // deliberately-continued session really decodes from the imported KV.
+    // Returns the imported token count, or -1 when not applicable/failed.
+    long import_state_file(const char* session_path);
+
     bool init(const ModelConfig& cfg, const std::string& weights_dir) override;
     bool reset() override;
     bool forward(int token_id, float* hidden_out) override;

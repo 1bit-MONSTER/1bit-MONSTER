@@ -690,6 +690,26 @@ static json generate_completion(BackendManager& mgr,
         return result;
     }
 
+    // #2145 (finding 2): the reset above recreates the HRX in-process context
+    // (pos = 0), which silently discards any HRX_STATE_FILE import — so the D2
+    // hybrid lane decoded from an EMPTY KV instead of the prefill it was handed.
+    // Re-apply the import for this request; HRX_REIMPORT_STATE=0 opts out.
+    if (const char* rsf = getenv("HRX_STATE_FILE")) {
+        const char* rob = getenv("HRX_REIMPORT_STATE");
+        if (!(rob && rob[0] == '0')) {
+            if (auto* hb = dynamic_cast<HrxBackend*>(mgr.active_backend())) {
+                if (hb->inprocess_active()) {
+                    const long n = hb->import_state_file(rsf);
+                    if (n > 0)
+                        fprintf(stderr, "[hrx] session re-imported after reset: %ld tokens (pos=%ld) from %s\n",
+                                n, n, rsf);
+                    else
+                        fprintf(stderr, "[hrx] WARNING: session re-import failed (%s) — decoding from an empty KV\n", rsf);
+                }
+            }
+        }
+    }
+
     // ── Text-level backends (e.g. NPU FLM): whole-prompt generation ──
     // FLM tokenizes internally, so the token loop below can't drive it.
     // The strategy engine already selected the initial backend above.
