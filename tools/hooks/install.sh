@@ -25,6 +25,8 @@ repo_root="$(git rev-parse --show-toplevel)"
 #
 # HOOK_SOURCE overrides the file under test and HOOK_TARGET the destination, both
 # so this installer can be mutation-tested without touching real hooks.
+# NOTE the mutual dependency: this installer needs tools/post-commit-hook.sh, and
+# that file's INSTALL block points back here. They should land in the same cycle.
 hook="${HOOK_SOURCE:-$repo_root/tools/post-commit-hook.sh}"
 hooks_dir="$(git rev-parse --git-common-dir)/hooks"
 target="${HOOK_TARGET:-$hooks_dir/post-commit}"
@@ -42,6 +44,10 @@ bash -n "$hook"
 #    branch when the HOOK'S OWN shell options are in force. Without pipefail the
 #    pipeline's status is the LAST command's (sed's, which succeeds) — exactly how
 #    the original hook's FAILED branch became dead code.
+#
+#    ONE RULE, which both failures above reduce to (@agent-dc0fb9's phrasing):
+#      a control's options must be the FILE's options, and nothing else's.
+#    Failure 1 set them itself; failure 2 inherited them from the caller.
 #
 #    THE CONTROL MUST TAKE THE OPTIONS FROM THE FILE UNDER TEST, not set them
 #    itself. The first version of this installer wrote `( set -uo pipefail; ... )`,
