@@ -171,6 +171,23 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
         // backend can read it: experts present (a MoE/zaya shape), or the metadata
         // name hints the zaya family. The experts test is bytes; the name test is a
         // hint and is labelled as one, because F11/F12 established that names lie.
+        // HRX is constrained by the EMBEDDING's quant, not the file label
+        // (@agent-44437c: GET_ROWS only fuses K-quant-class token embeddings; 0.6B-Q8_0
+        // and 0.6B-Q4_K_M both fail closed while Coder-30B-A3B-Q4_K_M runs at 87.7
+        // tok/s). K-quant class = ids 10..15; anything else is conditional rather than
+        // handed over. The second measured case — a SMALL model whose token_embd is not
+        // fused — is captured in the artifact (lm_head_fused) but NOT gated here, because
+        // "small" would be a threshold I would be inventing rather than measuring.
+        if (c == Capability::HRX_GGUF && a.tok_embd_dtype >= 0) {
+            bool k_quant = (a.tok_embd_dtype >= 10 && a.tok_embd_dtype <= 15);
+            if (!k_quant) {
+                plan.conditional.emplace_back(
+                    c, "token embedding dtype " + std::to_string(a.tok_embd_dtype) +
+                       " is not K-quant class (10..15); b66 fails closed at GET_ROWS on "
+                       "non-K-quant embeddings — measured on Qwen3-0.6B-Q8_0");
+                continue;
+            }
+        }
         if (c == Capability::HIP_GGUF && a.declared_experts <= 0) {
             std::string arch_l = a.architecture;
             for (char& ch : arch_l) ch = (char)tolower((unsigned char)ch);

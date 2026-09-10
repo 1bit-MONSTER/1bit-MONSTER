@@ -312,6 +312,8 @@ struct GgufProbe {
     int32_t declared_experts = 0;
     int32_t declared_expert_used = 0;
     int32_t declared_n_ff_exp = 0;
+    int32_t tok_embd_dtype = -1;        // -1 = not found
+    bool has_separate_lm_head = false;  // false => embedding is tied/fused
 };
 
 bool ends_with(const std::string& s, const char* suf) {
@@ -439,6 +441,12 @@ GgufProbe probe_gguf(const std::string& path) {
         uint64_t off = 0;
         if (!c.u64(off)) return GgufProbe{};
         out.dtypes.insert(dtype);
+        // Per-TENSOR facts, from @agent-44437c's measured HRX constraint: b66 fails
+        // closed at GET_ROWS on non-K-quant token embeddings, and two files BOTH
+        // labelled Q4_K_M can differ because what matters is the EMBEDDING's quant and
+        // fusion, not the file label. The name was already being read and discarded.
+        if (name == "token_embd.weight") out.tok_embd_dtype = (int32_t)dtype;
+        if (name == "output.weight" || name == "lm_head.weight") out.has_separate_lm_head = true;
     }
     out.tensor_count = nt;
     out.ok = true;
@@ -1082,6 +1090,8 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
         a.declared_layers = p.probe.declared_layers;
         a.declared_experts = p.probe.declared_experts;
         a.tensor_count = (int32_t)p.probe.tensor_count;
+        a.tok_embd_dtype = p.probe.tok_embd_dtype;
+        a.lm_head_fused = !p.probe.has_separate_lm_head;
         a.quantization = p.quant;
         a.lineage = guess_lineage(lower(p.base));
         a.config_dir = p.config_dir;
@@ -1601,6 +1611,10 @@ std::string ModelRegistry::to_json() const {
         o << "      \"declared_hidden\": " << a.declared_hidden
           << ", \"declared_layers\": " << a.declared_layers
           << ", \"declared_experts\": " << a.declared_experts << ",\n";
+        // Source-agnostic per-tensor facts (GGUF tensor table today). tok_embd_dtype
+        // is what HRX's GET_ROWS actually cares about, not the file label.
+        o << "      \"tok_embd_dtype\": " << a.tok_embd_dtype
+          << ", \"lm_head_fused\": " << (a.lm_head_fused ? "true" : "false") << ",\n";
         o << "      \"lineage\": \"" << json_escape(a.lineage) << "\",\n";
         o << "      \"has_dtype_42\": " << (a.has_dtype_42 ? "true" : "false")
           << ", \"q4nx_name_mismatch\": " << (a.q4nx_name_mismatch ? "true" : "false") << ",\n";

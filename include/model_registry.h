@@ -260,6 +260,12 @@ struct ModelArtifact {
     // header). The STRONG identity key: identical counts mean identical layout,
     // which expert packing changes — dims alone do not discriminate.
     int32_t tensor_count = 0;
+    // HRX's real constraint is the TOKEN EMBEDDING's quant and fusion, not the file
+    // label (@agent-44437c, measured: Qwen3-0.6B-Q8_0 FAILS, 0.6B-Q4_K_M FAILS,
+    // Coder-30B-A3B-Q4_K_M works at 87.7 tok/s — two files both labelled Q4_K_M
+    // differ). -1 = unknown.
+    int32_t tok_embd_dtype = -1;
+    bool lm_head_fused = true;
     // F12 — the MIRROR of F11. A native header can UNDER-DECLARE, and it does so
     // silently: ZAYA1-74B-preview.1bp writes arch=0 (DENSE) with every expert
     // field zero, while the dims-identical sibling ZAYA1PREVIEW-74B-A4B-Q4_K_M.gguf
