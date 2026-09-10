@@ -136,6 +136,16 @@ Availability backend_availability(const std::string& engine_id);
 // itself appears under three different types (HIP_GPU, VULKAN, ZINC_GPU). A type-keyed
 // probe asks a dispatch question and reads the answer as hardware.
 //
+// BRANCH-SCOPE, resolved by @agent-44437c by reading the code rather than picking a
+// side: the q35 GPU/HIP-1BP lane is ENV-GATED on `origin/main` (07d4e2c03, which
+// includes their merged #2175): `if (ok && getenv("H1BP_Q35_LOAD") && getenv("H1BP_Q35_TRY"))`.
+// ca60cf's un-gating commit 56e31251d exists only as an ancestor of three UNMERGED
+// branches (fix/2139-q35-ungated-default, fix/2139-q35-forward-lmhead,
+// fix/2139-engine-greedy-fastpath). So two lane owners appeared to contradict each other
+// and neither was wrong: it is a BRANCH-STATE difference, and the capability must carry
+// the gate for main and a note for those branches. Same lesson as the build-scope one —
+// an id/behaviour is only as good as the branch that reports it.
+//
 // ALSO: the only hardcoded `functional = true` in that file is a PLUGIN LOAD
 // (load_plugins, "presume functional"). Every other functional=true is earned after
 // init. So a plugin-registered id is fully trusted on presumption and can never be

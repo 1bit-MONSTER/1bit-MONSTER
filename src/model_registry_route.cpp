@@ -227,6 +227,27 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
                 continue;
             }
         }
+        // HRX IS NECESSARY-BUT-NOT-SUFFICIENT ON EMBEDDING DTYPE ALONE, per
+        // @agent-44437c's measured table against b66:
+        //   Qwen3-0.6B-Q4_K_M (emb Q6_K) FAIL · 0.6B-fused (Q6_K) FAIL ·
+        //   1.7B-Q4_K_M FAIL · 4B-Q4_K_M (fused=true) FAIL · 8B-Q4_K_M (fused=false) FAIL ·
+        //   0.6B-Q8_0 (Q8_0) FAIL · Coder-30B-A3B-Q4_K_M (Q4_K) PASS at 87.72 t/s
+        // So the `fused` flag cannot gate (4B fused=true fails, 8B fused=false fails) and
+        // K-quant-class cannot gate either (Q4_K appears in both the failing 8B and the
+        // passing 30B). The ONLY discriminator their measurements support is the MoE A3B
+        // class, and on my store `declared_experts` separates the two perfectly:
+        //   qwen3-30b-a3b-q4km experts=128 (their PASS class) vs 0 for every FAIL class.
+        // Conservative until more classes are measured: HRX-GGUF is CONDITIONAL unless
+        // the artifact is MoE. The engine fails closed either way, so this is about not
+        // OVER-CLAIMING rather than about safety.
+        if (c == Capability::HRX_GGUF && a.declared_experts <= 0) {
+            plan.conditional.emplace_back(
+                c, "dense artifact: every dense Qwen3 file measured against b66 FAILS at "
+                   "decode pos 0 regardless of embedding dtype and fusion (44437c, 6 files), "
+                   "while the MoE A3B class PASSES at 87.72 t/s — so HRX-GGUF is advertised "
+                   "for MoE only until more classes are measured");
+            continue;
+        }
         if (c == Capability::HIP_GGUF && a.declared_experts <= 0) {
             std::string arch_l = a.architecture;
             for (char& ch : arch_l) ch = (char)tolower((unsigned char)ch);
