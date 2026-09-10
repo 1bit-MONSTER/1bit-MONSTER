@@ -15,11 +15,25 @@
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-hook="$here/post-commit"
+repo_root="$(git rev-parse --show-toplevel)"
+
+# The hook has ONE home in this repo: tools/post-commit-hook.sh (the sibling of
+# tools/commit-msg-hook.sh). This installer deliberately does NOT carry a copy of
+# the hook — a second copy of the hook is the duplicate pattern this repo has
+# already paid for. It carries the ENFORCEMENT instead: without a script, the
+# control can only be a comment, and a comment cannot refuse a copy.
+#
+# HOOK_SOURCE overrides the file under test and HOOK_TARGET the destination, both
+# so this installer can be mutation-tested without touching real hooks.
+hook="${HOOK_SOURCE:-$repo_root/tools/post-commit-hook.sh}"
 hooks_dir="$(git rev-parse --git-common-dir)/hooks"
-# HOOK_TARGET is an override for testing the installer itself (mutation testing);
-# production installs go to the common hooks dir so one run covers every worktree.
 target="${HOOK_TARGET:-$hooks_dir/post-commit}"
+
+if [ ! -f "$hook" ]; then
+  echo "no hook at $hook" >&2
+  echo "  expected tools/post-commit-hook.sh (see PR #2186 / goal/one-registry-one-router)" >&2
+  exit 1
+fi
 
 # 1. syntax
 bash -n "$hook"
