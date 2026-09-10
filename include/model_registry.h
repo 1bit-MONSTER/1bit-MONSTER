@@ -130,6 +130,12 @@ struct ModelArtifact {
     uint64_t native_json_bytes = 0;            // Q4NX_JSON manifest size
     std::vector<std::string> native_dtypes;    // dtype names found in the manifest
     bool native_name_mismatch = false;         // name says native, bytes say otherwise
+    // OnebpHeader.vocab_size. Verified against @agent-ca60cf's qwen35 reference:
+    // 248320 declared == 248,320 f32 per position (993,280 B) observed. So the
+    // per-position logits WIDTH every lane must produce is declared by the
+    // artifact, and a width mismatch is checkable from the registry without
+    // running anything. 0 when not a native header.
+    int32_t native_vocab = 0;
 
     std::vector<Capability> capabilities;
     std::vector<ArtifactFile> files;
