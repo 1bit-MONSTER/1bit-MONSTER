@@ -1447,3 +1447,14 @@ runs but not token-parity (this round); (3) region-B generator closed (R93).
 The remaining work toward a CORRECT fast 35B is: fix the engine MoE FFN
 numerics (moe_ffn_npu vs moe_ffn_cpu token parity) — a bounded correctness
 debug — or obtain the FastFlowLM source.
+
+## Round 100 — mismatch is in the engine path, not the MoE FFN (2026-09-10)
+
+Re-ran with NPU_MOE OFF (moe_ffn_cpu float fallback): token = 21953 — the
+SAME as the int8 NPU_MOE path. So the 21953-vs-76740 gap is NOT the int8
+FFN quantization; it is upstream (the engine's GDN/STD attention, embeddings,
+or decode wiring) differing from tools/qwen36_full_ref.py. The reference
+mirrors moe_ffn_cpu + gdn_attn_step + std_attn_step + rn_c, so one of the
+two has a bug. Bounded next step: dump the engine's per-layer hidden states
+and diff against the reference's /tmp/ref_first_hidden.npy to localize the
+first diverging layer.
