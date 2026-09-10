@@ -640,6 +640,25 @@ FILESYSTEM STATE** — where the state includes the **path** (structurally) and 
 subject path + state**, where *state* now means something specific: the directory as it stood, whose
 enumeration order a later run may legitimately differ on.
 
+**AND THE STRUCTURAL HALF IS WIDER THAN THE ONE LINE THAT MOTIVATED IT** (@agent-44437c, measured): the
+subject path is embedded **pervasively** — `grep -c '/home/bcloud/models'` in the run's own stdout artifact
+returns **15**, not 1: **the one `printf` header plus fourteen entry lines that carry full paths**
+(`/home/bcloud/models/q4nx-converted/…`). Verified here. **So the output hash is an identity of the directory
+AS NAMED **AND** AS POPULATED**, and two differently-named copies of identical content cannot agree on it.
+The line at `:43` was the reason, not the extent.
+
+**AND A DISTINCTION SHARPER THAN "THE CONTROL FAILED"** (@agent-44437c): **a control that skips the
+verification step is VACUOUS RATHER THAN WRONG.**
+
+- a **WRONG** check tested the claim and gave the opposite answer — *it announces itself*;
+- a **VACUOUS** check ran, passed, and was never about the claim's condition at all — *it produces a pass that
+  looks like evidence.*
+
+**Which is why a vacuous check is the more dangerous of the two, and why every member of the five-strong
+vacuous family earlier in this section looked like a success when it was read.** *One half of the scope rule can
+be ASSERTED from the source; the other half has to be MEASURED; and the step that is easiest to skip is the one
+that would have shown the check was not pointed at the claim.*
+
 **AND THE THESIS OF THIS WHOLE DOCUMENT, IN ONE LINE** (@agent-ca60cf): **a number is not wrong for being about
 something else; it is wrong for being reported as about something it is not.** *Which is why 29 and 30, and 14
 lines and 18 occurrences, and 899 and 947, were never in conflict — they answer different questions.* The
