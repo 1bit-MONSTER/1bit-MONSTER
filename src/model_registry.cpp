@@ -472,6 +472,9 @@ struct NativeProbe {
     int32_t n_ff_shexp = 0;
     int32_t hidden = 0;
     int32_t layers = 0;
+    int32_t tensor_count = 0;
+    float rope_theta = 0.0f;
+    bool expert_fields_absent = false;
     uint64_t json_bytes = 0;
     std::vector<std::string> json_dtypes;
 };
@@ -558,6 +561,17 @@ NativeProbe probe_native(const std::string& path) {
         np.n_ff_shexp = (int32_t)hdr.n_ff_shexp;
         np.hidden = hdr.hidden_size;
         np.layers = hdr.num_layers;
+        np.tensor_count = (int32_t)hdr.tensor_count;
+        // rope_theta: version-dependent encoding (see the header comment).
+        if (hdr.version >= 3) {
+            float f = 0.0f;
+            memcpy(&f, &hdr.rope_theta_f, 4);   // raw f32 bits
+            np.rope_theta = f;
+        } else {
+            np.rope_theta = (float)hdr.rope_theta_f / 1000.0f;   // fixed point
+        }
+        // v1 predates the expert block: zeros there are ABSENT, not DENSE.
+        np.expert_fields_absent = (hdr.version < 2);
         if (const char* q = onebp_quant_name(hdr.quant)) np.quant = q;
         if (const char* a = onebp_arch_name(hdr.arch)) np.arch = a;
         np.tag.assign(hdr.model_tag, strnlen(hdr.model_tag, sizeof hdr.model_tag));
@@ -666,16 +680,41 @@ std::optional<Capability> capability_from_string(const std::string& s) {
     return std::nullopt;
 }
 
+const char* to_string(LimitProvenance p) {
+    switch (p) {
+        case LimitProvenance::DECLARED: return "declared";
+        case LimitProvenance::DOCUMENTED: return "documented";
+        case LimitProvenance::MEASURED: return "measured";
+    }
+    return "unknown";
+}
+const char* to_string(Enforcement e) {
+    switch (e) {
+        case Enforcement::NONE: return "none (report only)";
+        case Enforcement::ENGINE_SERVER: return "engine server only";
+        case Enforcement::ENGINE_SERVER_AND_SHIM: return "engine server + shim";
+    }
+    return "unknown";
+}
+
 const CapabilityLimit* capability_limit(Capability c) {
     static const CapabilityLimit limits[] = {
-        // b66 over-claims FLASH_ATTN_EXT above 2048 KV. Measured boundary
+        // b66 over-claims FLASH_ATTN_EXT above 2048 KV. MEASURED, not estimated
         // (@agent-ca60cf, issue #2145; independently hit by @agent-44437c in the
-        // P2 HRX probe lane): KV 2048 PASSES; 2304 / 2560 / 3072 fail identically
-        // with `unsupported HRX node 25: FLASH_ATTN_EXT` (an earlier pass saw
-        // 2021 pass and 2067/2151/2502/2931 fail). The rule is simply: any
-        // context > 2048 tokens. Hence the constraint is exactly 2048.
+        // P2 HRX probe lane): KV 2048 DECODES; 2304 / 2560 / 3072 fail identically
+        // with `unsupported HRX node 25: FLASH_ATTN_EXT` then `compute status: -1`
+        // (an earlier pass saw 2021 pass and 2067/2151/2502/2931 fail). So 2048 is
+        // an upper bound on a WORKING configuration, not a conservative estimate.
+        //
+        // Enforcement is mode-dependent and that distinction is the point: both
+        // guards live in generate_completion(), so this bites on plain `unified`
+        // and `zaya` and is INERT under `--lemonade`. Only the shim fail-close in
+        // src/hrx_inprocess.cpp survives there, for callers driving that in-process
+        // HRX instance. The registry reports; it does not stop anything.
         {Capability::HRX_GGUF, 2048,
-         "HRX b66 over-claims FLASH_ATTN_EXT for KV>2048 (issue #2145, node 25) — fail-close above 2048"},
+         "HRX b66 over-claims FLASH_ATTN_EXT for KV>2048 (issue #2145, node 25); failure signature "
+         "`unsupported HRX node 25: FLASH_ATTN_EXT` + `compute status: -1`",
+         LimitProvenance::MEASURED, Enforcement::ENGINE_SERVER_AND_SHIM, "--lemonade"},
     };
     for (const auto& l : limits) if (l.capability == c) return &l;
     return nullptr;
@@ -989,6 +1028,7 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
         a.declared_hidden = p.probe.declared_hidden;
         a.declared_layers = p.probe.declared_layers;
         a.declared_experts = p.probe.declared_experts;
+        a.tensor_count = (int32_t)p.probe.tensor_count;
         a.quantization = p.quant;
         a.lineage = guess_lineage(lower(p.base));
         a.config_dir = p.config_dir;
@@ -1020,6 +1060,10 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
                 a.native_top_k = np.top_k;
                 a.native_n_ff_exp = np.n_ff_exp;
                 a.native_n_ff_shexp = np.n_ff_shexp;
+                a.native_tensor_count = np.tensor_count;
+                a.tensor_count = np.tensor_count;
+                a.native_rope_theta = np.rope_theta;
+                a.expert_fields_absent = np.expert_fields_absent;
                 a.declared_hidden = np.hidden;
                 a.declared_layers = np.layers;
                 a.declared_experts = np.num_experts;
@@ -1106,6 +1150,11 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
             if (sib.declared_experts <= 0) continue;
             if (sib.declared_hidden != nat.declared_hidden) continue;
             if (sib.declared_layers != nat.declared_layers) continue;
+            // STRONG key first: identical tensor COUNT means the same file layout,
+            // which expert packing would change. Dims alone are weak — two
+            // same-base variants can share them (@agent-ec855d's refinement).
+            bool tc_known = (nat.native_tensor_count > 0 && sib.tensor_count > 0);
+            if (tc_known && nat.native_tensor_count != sib.tensor_count) continue;
             nat.experts_underdeclared = true;
             break;
         }
@@ -1265,6 +1314,17 @@ std::string ModelRegistry::to_table(uint32_t at_context) const {
     o << std::string(46 + 1 + 10 + 1 + 14 + 1 + 9 + 1 + 6, '-') << "\n";
     if (at_context)
         o << "! = cannot serve " << at_context << " context tokens\n";
+    // Constraint footnotes: a limit is a REPORT, and its enforcement depends on
+    // the serving mode. Rendering only "(<=2048)" invited reading it as a gate.
+    for (const auto& l : {Capability::HRX_GGUF}) {
+        const CapabilityLimit* lim = capability_limit(l);
+        if (!lim) continue;
+        o << "constraint " << to_string(l) << " <= " << lim->max_context_tokens
+          << " ctx  [" << to_string(lim->provenance) << "]"
+          << "  enforced by: " << to_string(lim->enforced_by)
+          << "  NOT enforced in: " << (lim->not_enforced_in ? lim->not_enforced_in : "-")
+          << "  (this registry reports, it does not gate)\n";
+    }
     for (const auto& a : artifacts_) {
         std::string caps;
         size_t disqualified = 0;
@@ -1290,6 +1350,7 @@ std::string ModelRegistry::to_table(uint32_t at_context) const {
           << (a.native_name_mismatch ? "  [native-name-mismatch]" : "")
           << (a.arch_suspect ? "  [arch-suspect]" : "")
           << (a.experts_underdeclared ? "  [experts-underdeclared!]" : "")
+          << (a.expert_fields_absent ? "  [expert-fields-absent-v1]" : "")
           << (a.display_name_suspect ? "  [display-name-suspect]" : "")
           << (a.id_quality().empty() ? "" : "  " + a.id_quality()) << "\n";
     }
@@ -1342,6 +1403,9 @@ std::string ModelRegistry::to_json() const {
           << ", \"experts_underdeclared\": " << (a.experts_underdeclared ? "true" : "false")
           << ", \"n_ff_exp\": " << a.native_n_ff_exp
           << ", \"n_ff_shexp\": " << a.native_n_ff_shexp
+          << ", \"tensor_count\": " << a.native_tensor_count
+          << ", \"rope_theta\": " << a.native_rope_theta
+          << ", \"expert_fields_absent\": " << (a.expert_fields_absent ? "true" : "false")
           << ", \"json_bytes\": " << a.native_json_bytes
           << ", \"name_mismatch\": " << (a.native_name_mismatch ? "true" : "false")
           << ", \"dtypes\": [";
@@ -1364,7 +1428,11 @@ std::string ModelRegistry::to_json() const {
             if (!l) continue;
             if (!first_lim) o << ", ";
             first_lim = false;
-            o << "\"" << to_string(c) << "\": " << l->max_context_tokens;
+            o << "\"" << to_string(c) << "\": {\"max_context_tokens\": " << l->max_context_tokens
+              << ", \"provenance\": \"" << to_string(l->provenance)
+              << "\", \"enforced_by\": \"" << to_string(l->enforced_by)
+              << "\", \"not_enforced_in\": \"" << (l->not_enforced_in ? l->not_enforced_in : "")
+              << "\"}";
         }
         o << "},\n";
         o << "      \"catalog_ids\": [";
@@ -1401,7 +1469,8 @@ std::string ModelRegistry::to_json() const {
       << ", \"duplicate_id_groups\": " << r.duplicate_id_groups
       << ", \"size_twin_groups\": " << r.size_twin_groups
       << ", \"duplicate_bytes\": " << r.duplicate_bytes
-      << ", \"gate_context\": " << gate_context_ << "}\n}\n";
+      << ", \"gate_context\": " << gate_context_
+      << ", \"gate_enforces\": false}\n}\n";
     return o.str();
 }
 

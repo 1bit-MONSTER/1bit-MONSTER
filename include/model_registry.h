@@ -87,11 +87,40 @@ std::optional<Capability> capability_from_string(const std::string& s);
 // bundle over-claims FLASH_ATTN_EXT for KV > 2048, so a fresh 2021-token prefill
 // passes while 2067/2151/2502/2931 fail identically. Issue #2145. Without this
 // constraint a route can hand b66 a longer blob and get silent failure.
+// How the number was obtained. A declared limit can be wrong (F11/F12); a
+// measured one is an upper bound on a configuration observed to work.
+enum class LimitProvenance {
+    DECLARED,     // from metadata
+    DOCUMENTED,   // from a doc/manual
+    MEASURED,     // from an experiment: N works, N+k fails identically
+};
+// Where the limit actually stops a call. NONE means this registry's report is
+// the only thing standing between a caller and a failure.
+enum class Enforcement {
+    NONE,
+    ENGINE_SERVER,             // engine HTTP server path only
+    ENGINE_SERVER_AND_SHIM,    // plus the in-process shim fail-close
+};
+
 struct CapabilityLimit {
     Capability capability;
     uint32_t max_context_tokens;   // 0 = unconstrained
     const char* note;
+    // ── Provenance and ENFORCEMENT SCOPE ─────────────────────────────────
+    // A capability limit is not a gate. This registry only REPORTS; whether
+    // anything actually stops the call depends on which serving mode is running.
+    // Correction from @agent-ca60cf (2026-09-10): both HRX context guards live in
+    // generate_completion(), so the b66 limit is enforced on plain `unified` and
+    // `zaya` and is INERT under `--lemonade` (which returns from
+    // unified_server.cpp:1222-1225 before any engine route exists). Only the
+    // shim-level fail-close in src/hrx_inprocess.cpp survives there, and only for
+    // callers driving that in-process HRX instance.
+    LimitProvenance provenance;
+    Enforcement enforced_by;
+    const char* not_enforced_in;   // serving mode where the limit does NOT bite
 };
+const char* to_string(LimitProvenance p);
+const char* to_string(Enforcement e);
 // Returns nullptr when the capability is unconstrained (or unknown).
 const CapabilityLimit* capability_limit(Capability c);
 
@@ -160,12 +189,31 @@ struct ModelArtifact {
     int32_t native_top_k = 0;
     int32_t native_n_ff_exp = 0;      // OnebpHeader.n_ff_exp (expert FFN width)
     int32_t native_n_ff_shexp = 0;    // OnebpHeader.n_ff_shexp (shared-expert width)
+    int32_t native_tensor_count = 0;  // OnebpHeader.tensor_count — the STRONG key
+    // rope_theta decoded under the header version's own rule. The encoding
+    // CHANGED at v3 (@agent-ca60cf, 2026-09-10): v1/v2 store theta*1000 as
+    // fixed point, v3+ store raw f32 bits, and the loader branches on version for
+    // exactly that reason (include/onebp_format.h:247,256,262). Reporting the raw
+    // field would be wrong by 1000x on v1/v2 files, so this is decoded, never raw.
+    float native_rope_theta = 0.0f;
+    // v1 is KNOWN not to carry the expert block: ZAYA1-74B-preview.1bp is header
+    // v1, writes zero in every expert field, and is a 24-expert MoE by its own
+    // tensor index and by its sibling GGUF. So for v1 those zeros mean ABSENT, not
+    // DENSE — an absent field is not an assertion. (Mechanism from @agent-ca60cf:
+    // the expert fields live in the "Kimi/Moonshot/Laguna" reserved block that
+    // post-v1 versions added.) Positive control that v4 IS trustworthy:
+    // qwen35-1bp-v2.1bp = v4, num_experts=256, n_expert_used=8, tensor_count=733.
+    bool expert_fields_absent = false;
     // Declared dims/experts from whichever source this artifact came with (GGUF
     // metadata or the native header). Used to cross-check two artifacts of what
     // is supposed to be the same model — see experts_underdeclared below.
     int32_t declared_hidden = 0;
     int32_t declared_layers = 0;
     int32_t declared_experts = 0;
+    // Tensor count from whichever source carries it (GGUF table or native
+    // header). The STRONG identity key: identical counts mean identical layout,
+    // which expert packing changes — dims alone do not discriminate.
+    int32_t tensor_count = 0;
     // F12 — the MIRROR of F11. A native header can UNDER-DECLARE, and it does so
     // silently: ZAYA1-74B-preview.1bp writes arch=0 (DENSE) with every expert
     // field zero, while the dims-identical sibling ZAYA1PREVIEW-74B-A4B-Q4_K_M.gguf
