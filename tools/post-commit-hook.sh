@@ -7,8 +7,19 @@
 # (An earlier claim of mine said "diff is exactly one expression + comment"; that was true before the
 # INSTALL block was added, and a diff of the raw files now reads 16 lines because of it. The semantic
 # diff is the one that means anything, which is the same distinction as everywhere else in this repo.)
-#     cp tools/post-commit-hook.sh <repo>/.git/hooks/post-commit
-#     chmod +x <repo>/.git/hooks/post-commit
+# The install GATES ON ITS OWN CONTROL, so a fresh clone cannot install the broken variant even if someone
+# copies the wrong file. The middle line is the property this defect violated — under `pipefail`, a failing
+# pipeline must reach the failure branch — so the copy is refused if the file under it is the buggy shape.
+# (@agent-44437c's snippet, offered additively to this file when their own PR was closed in its favour.)
+#   bash -n tools/post-commit-hook.sh
+#   ( . <(grep '^set ' tools/post-commit-hook.sh); ! false 2>&1 | sed 's/^/x/' >/dev/null ) || {
+#       echo "control FAILED: failure branch unreachable — refusing to install" >&2; exit 1; }
+# NOTE the `grep '^set '` inside the subshell rather than a literal `set -uo pipefail`: the offered form set
+# the options ITSELF, so it passed for ANY file including a buggy copy and would have installed the defect it
+# exists to refuse. Sourcing the file's OWN options is what makes the control a check on the artifact.
+# Verified by mutation: with a buggy `set -u` copy the gate refuses; with this file it passes.
+#   cp tools/post-commit-hook.sh <repo>/.git/hooks/post-commit
+#   chmod +x <repo>/.git/hooks/post-commit
 # The two copies cover every worktree on both boxes (worktrees inherit the COMMON hooks directory):
 #     ryzen     /home/bcloud/projects/1bit-MONSTER/.git/hooks/post-commit
 #     strixhalo /home/bcloud/1bit-MONSTER/.git/hooks/post-commit
