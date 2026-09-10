@@ -223,8 +223,10 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
             if (arch_l.find("zaya") != std::string::npos) {
                 plan.conditional.emplace_back(
                     c, "architecture '" + a.architecture + "' is not known to b66's "
-                       "llama.cpp (measured: \"unknown model architecture: 'zaya'\" on 4 "
-                       "files) — this belongs to the NPU/Zaya lane, not HRX");
+                       "llama.cpp (measured: \"unknown model architecture: 'zaya'\" on 5 "
+                       "files, incl. the 74B preview, whose prediction became a measurement "
+                       "when 44437c copied it to strixhalo) — this belongs to the NPU/Zaya "
+                       "lane, not HRX");
                 continue;
             }
             // THE ABORT CLASS. Measured: non-K-quant token embedding on a qwen35moe arch
