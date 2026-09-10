@@ -405,6 +405,7 @@ public:
             if (!any) messages.push_back({{"role", "user"}, {"content", prompt}});
         }
         nlohmann::json req;
+        req["model"] = model_tag_;  // FLM expects the checkpoint tag (e.g. "qwen3:0.6b"), like the Lemonade flm backend sets
         req["messages"] = messages;
         req["max_tokens"] = max_tokens;
         if (temperature >= 0.0f) req["temperature"] = temperature;
