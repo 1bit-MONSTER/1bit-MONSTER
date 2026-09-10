@@ -60,6 +60,14 @@ int route_compare_main(int argc, char** argv) {
         }
 
         bool same = art && shipped.backend_ids_in_order == reg_route.backend_ids_in_order;
+        // [DIFFERS] conflated two different things: a CORRECTION (the head moves because a
+        // lane is measured to fail there) and an ADDITION (the registry names a lane the
+        // router table lacks, e.g. npu_flm for a native .q4nx). The second is the registry
+        // being richer, not disagreeing — and reading them the same way is how a right
+        // answer gets filed as a conflict. Reported separately now.
+        bool head_same = art && !shipped.backend_ids_in_order.empty() &&
+                         !reg_route.backend_ids_in_order.empty() &&
+                         shipped.backend_ids_in_order[0] == reg_route.backend_ids_in_order[0];
         if (!art) { } else if (same) agree++; else differ++;
 
         printf("\n%s\n", f.c_str());
@@ -72,7 +80,9 @@ int route_compare_main(int argc, char** argv) {
             printf("  merged  : %s   <- what a flip would do\n",
                    join(merged.backend_ids_in_order).c_str());
             printf("  registry: %s   %s\n", join(reg_route.backend_ids_in_order).c_str(),
-                   same ? "[SAME]" : "[DIFFERS]");
+                   same ? "[SAME]"
+                        : head_same ? "[HEAD SAME, list extended]"
+                                    : "[HEAD DIFFERS - a correction]");
             if (!same) printf("            reason: %s\n", reg_route.reason.c_str());
         }
     }
