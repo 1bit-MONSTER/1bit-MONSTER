@@ -154,6 +154,87 @@ def check_b_behaviour(binary, fixture):
     return problems
 
 
+# ── D. REPEAT SAFETY ───────────────────────────────────────────────────────────
+# Fifth instance of "a flag that looks accepted and is silently ignored"
+# (@agent-ec855d). A/B/C cannot see it: B exercises each flag ONCE, so a flag that
+# behaves correctly alone and loses data on repeat passes B.
+#
+# THE PREDICATE MATTERS AND MY FIRST VERSION HAD IT WRONG — it passed on a binary
+# with the known defect, which is the failure this whole file exists to avoid.
+# "The output differs when the flag is repeated" is NOT evidence of accumulation:
+#   last-wins(A,B) differs from once(A) too. So the test is comparative:
+#     FAIL if repeat(A,B) == once(B)     -> the FIRST value was silently discarded
+#     FAIL if repeat(A,B) == once(A)     -> the SECOND value was silently discarded
+#     PASS if repeat(A,B) matches neither (merged/accumulated), OR rc != 0 (refused)
+#
+# Booleans are exempt and the exemption is EXPLICIT, not a silent skip.
+BOOLEAN_FLAGS = {"json", "quiet", "digest", "no-probe", "help", "catalog-default"}
+# flag -> (first value, second value)
+REPEAT_VALUES = {
+    "--max-depth": ("1", "4"),
+    "--capability": ("CPU", "NPU-Q4NX"),
+    "--at-context": ("1024", "4096"),
+    "--prefer": ("RADV-GGUF", "CPU"),
+    "--engine-limit": ("HRX-GGUF=4096:b1", "HRX-GGUF=2048:b2"),
+    "--resolve": (None, None),   # value filled from the fixture's first artifact id
+    "--route": (None, None),
+}
+
+
+def first_artifact_id(binary, fixture):
+    """A real target, so value-taking flags are actually exercised rather than
+    failing before they are read — which is how my first predicate silently skipped
+    the --prefer case entirely."""
+    _rc, out, _err = run(binary, [fixture])
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 5 and parts[1] in ("gguf", "onebp", "mlx", "safetensors", "raw_bin"):
+            return parts[0]
+    return None
+
+
+def check_d_repeats(binary, fixture):
+    text = read(SCAN)
+    parsed = {f[2:] for f in parsed_flags(text)}
+    target = first_artifact_id(binary, fixture)
+    problems, inconclusive = [], []
+    for flag, (v1, v2) in REPEAT_VALUES.items():
+        if flag[2:] not in parsed:
+            continue
+        if flag in ("--resolve", "--route"):
+            if not target:
+                continue
+            v1, v2 = target, "no-such-artifact-xyz"
+        extra = ["--route", target] if flag == "--prefer" and target else []
+        if flag == "--prefer" and not target:
+            continue
+        # a legal baseline for --at-context/--capability so the value is read
+        if flag == "--at-context":
+            extra = ["--capability", "HRX-GGUF"]
+        rc_a, out_a, err_a = run(binary, extra + [flag, v1, fixture])
+        rc_b, out_b, err_b = run(binary, extra + [flag, v2, fixture])
+        rc_ab, out_ab, err_ab = run(binary, extra + [flag, v1, flag, v2, fixture])
+        # A non-zero exit only counts as "explicitly refused" when the refusal is
+        # ATTRIBUTABLE TO THE REPEAT. Otherwise the second value simply failed on its
+        # own and the repeat went unexamined — which silently passed --route on the
+        # known-bad binary in my first tightening.
+        # Only the EXIT STATUS means "refused". Non-empty stderr is NOT a failure:
+        # --engine-limit prints an informational line, and treating that as a refusal
+        # made the check report INCONCLUSIVE on a flag that was already correct.
+        if rc_ab != 0:
+            attributable = ("more than once" in err_ab) or (flag in err_ab)
+            if attributable:
+                continue
+            inconclusive.append("%s (run failed for another reason: %s)"
+                                % (flag, err_ab.strip().splitlines()[0] if err_ab.strip() else "rc=%d" % rc_ab))
+            continue
+        if (out_ab, err_ab) == (out_b, err_b):
+            problems.append("%s (first value %r silently discarded)" % (flag, v1))
+        elif (out_ab, err_ab) == (out_a, err_a):
+            problems.append("%s (second value %r silently discarded)" % (flag, v2))
+    return problems, inconclusive
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", default=".")
@@ -182,6 +263,19 @@ def main():
         print("   FAIL — assigned and never read anywhere: %s" % ", ".join(orphans))
     else:
         print("   ok")
+
+    if not a.static_only and a.binary and a.fixture:
+        print("D. repeat safety (a repeated flag must differ or refuse):")
+        rep, inconc = check_d_repeats(a.binary, a.fixture)
+        if rep:
+            failed = True
+            print("   FAIL — repeated value silently discarded: %s" % ", ".join(rep))
+        if inconc:
+            failed = True
+            print("   INCONCLUSIVE — cannot attribute the failure to the repeat: %s"
+                  % "; ".join(inconc))
+        if not rep and not inconc:
+            print("   ok")
 
     if not a.static_only:
         if not (a.binary and a.fixture):

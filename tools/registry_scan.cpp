@@ -34,6 +34,7 @@
 #include <cstdio>
 #include <thread>
 #include <cstring>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -166,21 +167,41 @@ int registry_scan_main(int argc, char** argv) {
     uint32_t at_context = 0;
     std::vector<std::string> roots;
 
+    // Fifth instance of "a flag that looks accepted and is silently ignored"
+    // (@agent-ec855d): repeating a single-value flag silently kept one value and
+    // discarded the other. Single-value flags now REFUSE a repeat; list-valued flags
+    // ACCUMULATE. Booleans stay idempotent by nature.
+    std::set<std::string> seen_once;
+    auto once = [&](const std::string& flag) -> bool {
+        if (!seen_once.insert(flag).second) {
+            fprintf(stderr,
+                    "registry_scan: %s given more than once — it takes a single value.\n"
+                    "  Use one occurrence, or a list-valued flag (--prefer, --engine-limit),\n"
+                    "  which accumulates.\n",
+                    flag.c_str());
+            return false;
+        }
+        return true;
+    };
     for (int i = 1; i < argc; i++) {
         std::string a = argv[i];
         if (a == "--json") json = true;
         else if (a == "--quiet") quiet = true;
         else if (a == "--digest") opt.digest = true;
         else if (a == "--no-probe") opt.probe_headers = false;
-        else if (a == "--max-depth" && i + 1 < argc) opt.max_depth = (size_t)atoi(argv[++i]);
-        else if (a == "--capability" && i + 1 < argc) cap_arg = argv[++i];
-        else if (a == "--resolve" && i + 1 < argc) resolve_arg = argv[++i];
-        else if (a == "--route" && i + 1 < argc) route_arg = argv[++i];
+        else if (a == "--max-depth" && i + 1 < argc) { if (!once(a)) return 2; opt.max_depth = (size_t)atoi(argv[++i]); }
+        else if (a == "--capability" && i + 1 < argc) { if (!once(a)) return 2; cap_arg = argv[++i]; }
+        else if (a == "--resolve" && i + 1 < argc) { if (!once(a)) return 2; resolve_arg = argv[++i]; }
+        else if (a == "--route" && i + 1 < argc) { if (!once(a)) return 2; route_arg = argv[++i]; }
         else if (a == "--engine-limit" && i + 1 < argc) engine_limits.push_back(argv[++i]);
-        else if (a == "--watch" && i + 1 < argc) watch_secs = atoi(argv[++i]);
-        else if (a == "--iterations" && i + 1 < argc) iterations = atoi(argv[++i]);
-        else if (a == "--prefer" && i + 1 < argc) prefer_arg = argv[++i];
-        else if (a == "--at-context" && i + 1 < argc) at_context = (uint32_t)atoi(argv[++i]);
+        else if (a == "--watch" && i + 1 < argc) { if (!once(a)) return 2; watch_secs = atoi(argv[++i]); }
+        else if (a == "--iterations" && i + 1 < argc) { if (!once(a)) return 2; iterations = atoi(argv[++i]); }
+        else if (a == "--prefer" && i + 1 < argc) {
+            // List-valued: accumulate, so a repeat extends rather than replaces.
+            if (!prefer_arg.empty()) prefer_arg += ",";
+            prefer_arg += argv[++i];
+        }
+        else if (a == "--at-context" && i + 1 < argc) { if (!once(a)) return 2; at_context = (uint32_t)atoi(argv[++i]); }
         else if (a == "--catalog" && i + 1 < argc) { catalog_set = true; catalog_arg = argv[++i]; }
         else if (a == "--catalog-default") { catalog_set = true; }
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }

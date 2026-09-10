@@ -43,9 +43,9 @@ int main(int argc, char** argv) {
         if (a == "--table") table_only = true;
         else if (a == "--at-context" && i + 1 < argc) at_context = (uint32_t)atoi(argv[++i]);
         else if (a == "--prefer" && i + 1 < argc) prefer_arg = argv[++i];
-        else if (a == "--absent-cap" && i + 1 < argc) absent_arg = argv[++i];
-        else if (a == "--present-cap" && i + 1 < argc) present_arg = argv[++i];
-        else if (a == "--dry-cap" && i + 1 < argc) dry_arg = argv[++i];
+        else if (a == "--absent-cap" && i + 1 < argc) { absent_arg = (absent_arg.empty() ? "" : absent_arg + ","); absent_arg += argv[++i]; }
+        else if (a == "--present-cap" && i + 1 < argc) { present_arg = (present_arg.empty() ? "" : present_arg + ","); present_arg += argv[++i]; }
+        else if (a == "--dry-cap" && i + 1 < argc) { dry_arg = (dry_arg.empty() ? "" : dry_arg + ","); dry_arg += argv[++i]; }
         else roots.push_back(a);
     }
 
