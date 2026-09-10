@@ -1479,3 +1479,22 @@ real bug in gdn_attn_step or the int8 QKV/O dequant (per-section scales #1699
    dump the post-QKV (fqo), post-attention (fat), and post-O (oo) tensors vs
    the reference's qkv/attn/o, and compare the int8 QKV/O dequant against the
    float reference (the same technique that fixed #1699's per-section scales).
+
+## Round 102 — reference had a BUG (flat emb); corrected token = 137554 (2026-09-10)
+
+Found + fixed a bug in tools/qwen36_full_ref.py: `self.emb` was the FLAT
+bf16->f32 array (508,559,360,), not reshaped to [NV, H] — so `self.emb[tok]`
+was a SCALAR, and the whole reference decode (and the banked "token 76740" +
+--dump-first hidden states) was degenerate. Fix: `.reshape(v["shape"])`.
+
+Corrected reference: prompt [151644] -> greedy token **137554** (NOT 76740).
+Re-diffed the engine's per-layer hidden states (NPU_MOE=0 float FFN) vs the
+corrected reference: layer 0 max|d| = 3.99, growing to 30 by L39. The engine's
+emb + input_layernorm are byte-identical (max|d|=0.0), so the divergence is the
+engine's INT8 QKV/O attention projections (the only non-float piece on this
+run) — a ~4x error at L0, far above int8 quantization (~1-2%), pointing to a
+dequant bug in the GDN QKV/O path (per-section scales #1699 / GateDeltaNet).
+Engine token remains 21953.
+
+=> task-4 reference is now CORRECT (137554); the remaining gate failure is the
+   engine's int8 attention (bounded: bisect the QKV/O dequant vs float).

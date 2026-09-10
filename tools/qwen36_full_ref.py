@@ -159,7 +159,7 @@ class FullModel:
         self.fin = m.bf16_1d("model.norm.weight")
         v, b = m.raw("model.embed_tokens.weight")
         u = np.frombuffer(b, dtype=np.uint16).astype(np.uint32) << 16
-        self.emb = u.view(np.float32).astype(np.float64)  # [NV, H] plain
+        self.emb = u.view(np.float32).astype(np.float64).reshape(v["shape"])  # [NV, H]
         # lm_head: Q8_0, rows = shape[0]*(H/256) i8 rows -> [31040, 2048]
         self.lm = m.q8_0("lm_head.weight")
         self.lm_nv = self.lm.shape[0]

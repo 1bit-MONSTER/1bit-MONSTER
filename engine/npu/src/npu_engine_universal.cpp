@@ -641,6 +641,10 @@ int main(int argc,char**argv){
     #endif
     emb_f32.resize((size_t)NV*H);
     for(int n=0;n<NV;n++)for(int i=0;i<H;i++)emb_f32[(size_t)n*H+i]=bf16g(emb[n*H+i]);
+    if (getenv("NPU_DUMP_L0")) {
+        FILE* fe = fopen("/tmp/l0_emb.bin", "wb");
+        if (fe) { fwrite(emb_f32.data() + (size_t)151644 * H, 4, H, fe); fclose(fe); }
+    }
     fprintf(stderr,"  %.0fms\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-te).count());
     #ifdef ONEBP_SUPPORT
     }
@@ -707,6 +711,10 @@ int main(int argc,char**argv){
     std::vector<float> fin_v(H);
     for(int l=0;l<NC;l++){auto iw=(const uint16_t*)(md+df+in_off[l]),pw=(const uint16_t*)(md+df+pa_off[l]);
         for(int i=0;i<H;i++){in_n[l][i]=bf16g(iw[i]);pa_n[l][i]=bf16g(pw[i]);}
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fn = fopen("/tmp/l0_inn.bin", "wb");
+            if (fn) { fwrite(in_n[0].data(), 4, H, fn); fclose(fn); }
+        }
         if(cfg.has_q_norm&&qn_off[l]){auto qq=(const uint16_t*)(md+df+qn_off[l]);for(int i=0;i<HD;i++)qn_w[l][i]=bf16g(qq[i]);}
         if(cfg.has_k_norm&&kn_off[l]){auto kk=(const uint16_t*)(md+df+kn_off[l]);for(int i=0;i<HD;i++)kn_w[l][i]=bf16g(kk[i]);}}
     {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)fin_v[i]=bf16g(fw[i]);}
@@ -3615,6 +3623,12 @@ struct Bf16Ctx {
         else
             FLM_FINISH_ASYNC_ROWS(cq,r_qkv,qo_b.data(),npt,qkv_n,qkv_ascales.data(),qsc[l],l);
         cn(qo_b.data(),npt*qkv_n);
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fi0 = fopen("/tmp/l0_input.bin", "wb");
+            if (fi0) { fwrite(h_b.data(), 4, H, fi0); fclose(fi0); }
+            FILE* fq = fopen("/tmp/l0_qkv.bin", "wb");
+            if (fq) { fwrite(qo_b.data(), 4, qkv_n, fq); fclose(fq); }
+        }
         if(npu_dbg()&&l==0){
             dbg("QKV0q:",qo_b.data(),8);
             dbg("QKV0k:",qo_b.data()+cfg.qkv_k_offset,8);
@@ -3680,6 +3694,12 @@ struct Bf16Ctx {
         for (int pi = 0; pi < npt; pi++) o_ascales[pi] = dynamic_ascale(&at_b[pi * NH * HD], NH * HD);
         FLM_GO_ROWS(co,l,at_b.data(),npt,NH*HD,o_ascales.data(),o_ascales.data(),osc[l],oo_b.data(),H);
         cn(oo_b.data(),npt*H);
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fa = fopen("/tmp/l0_attn.bin", "wb");
+            if (fa) { fwrite(at_b.data(), 4, (size_t)npt * NH * HD, fa); fclose(fa); }
+            FILE* fo = fopen("/tmp/l0_o.bin", "wb");
+            if (fo) { fwrite(oo_b.data(), 4, H, fo); fclose(fo); }
+        }
         fprintf(stderr,"o");fflush(stderr);
         for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
         if(npu_dbg()&&l==0)dbg("O0:",h_b.data(),8);
