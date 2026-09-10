@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hf_new_models.py — watch HF for new causal-LM models the registry doesn't cover.
 
-The census (census_coverage.py) is a snapshot: 317,310/317,310 on 2026-08-15.
+The census (census_coverage.py) is rebuilt daily by the full census sweep.
 New models drop on HF daily; this watcher polls the newest text-generation
 models, fetches each config.json, strips the architecture class, and probes
 the REAL engine registry (rcpp_arch_from_string via the compiled probe). Any
@@ -226,8 +226,8 @@ def main():
     # Accrue the census delta: every in-scope model the watcher newly observes
     # is one more arch-bearing text-gen checkpoint in the HF census, and every
     # covered one is one more mapped checkpoint. seo_sync.py adds these to the
-    # frozen 317,310/317,310 snapshot so the SEO claim numbers keep moving
-    # without a full daily re-sweep. This is a floor estimate — the watcher
+    # daily full-sweep snapshot so the SEO claim numbers keep moving
+    # without waiting for the next day's re-sweep. This is a floor estimate — the watcher
     # samples only the newest models, so it undercounts true daily volume.
     state["delta_with_arch"] = int(state.get("delta_with_arch", 0)) + n_in_scope
     state["delta_covered"] = int(state.get("delta_covered", 0)) + n_covered

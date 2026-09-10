@@ -119,3 +119,4 @@ jobs:
           gh pr create --base main --head "$BRANCH" \
             --title "seo: post SEO tags $DATE" \
             --body-file /tmp/seo_pr_body.md
+          gh pr merge "$BRANCH" --auto || echo "auto-merge enqueue failed (retry next run)"
