@@ -118,7 +118,31 @@ struct CapabilityLimit {
     LimitProvenance provenance;
     Enforcement enforced_by;
     const char* not_enforced_in;   // serving mode where the limit does NOT bite
+    // WHICH BUNDLE the measurement belongs to. Corrected from @agent-ca60cf
+    // (2026-09-10): the limit is a property of the configured HRX BUNDLE, not of
+    // the artifact — the same session blob and the same GGUF decode rc=0 past 2048
+    // on two fork-lineage HRX builds and fail on the shipped b66. So a scan-baked
+    // limit is wrong in the PERMISSIVE direction: a corrected bundle would keep
+    // being rejected and a stale one would keep being handed >2048 work.
+    // "" means the limit is not bundle-specific.
+    const char* bundle;
 };
+
+// ── Engine-scoped limit overrides ──────────────────────────────────────────
+// The engine knows which bundle it configured; the registry does not. So the
+// engine sets this ONCE at startup and the reported/scanned limit follows. With
+// no override the built-in table is used and its provenance says so.
+// Process-wide by design (the configured bundle is a process fact), and
+// documented as set-once rather than thread-safe-for-arbitrary mutation.
+struct CapabilityLimitOverride {
+    Capability capability;
+    uint32_t max_context_tokens;   // 0 = remove the limit entirely
+    std::string bundle;            // identity of the bundle that was measured
+};
+void set_capability_limit_override(Capability c, uint32_t max_context_tokens,
+                                   std::string bundle);
+void clear_capability_limit_overrides();
+std::vector<CapabilityLimitOverride> capability_limit_overrides();
 const char* to_string(LimitProvenance p);
 const char* to_string(Enforcement e);
 // Returns nullptr when the capability is unconstrained (or unknown).

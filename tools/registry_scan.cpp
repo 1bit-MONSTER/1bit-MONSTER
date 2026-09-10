@@ -20,6 +20,9 @@
 //     --resolve PATH|ID      resolve one artifact (acceptance-test check)
 //     --route ID|PATH        run the RESOLVER: id -> artifact -> capability
 //     --prefer A,B,C         capability preference order for --route
+//     --engine-limit CAP=TOKENS[:bundle]
+//                            override a capability limit as the ENGINE sees it
+//                            (the HRX limit belongs to the configured bundle)
 //     --quiet                summary only
 // FLAG CLASS CHECK: `tools/registry_flag_audit.py` enforces usage parity (every
 // parsed flag documented) and no silent no-ops (each flag alone must change the
@@ -50,6 +53,9 @@ void usage(const char* argv0) {
             "  --route ID|PATH    run the RESOLVER: id -> artifact -> capability\n"
             "  --prefer A,B,C     capability order for --route (default: the\n"
             "                     artifact's own order; order is policy, not registry)\n"
+            "  --engine-limit CAP=TOKENS[:bundle]\n"
+            "                     override a capability limit as the ENGINE sees it\n"
+            "                     (the HRX limit belongs to the configured bundle)\n"
             "\n"
             "capabilities: NPU-Q4NX NPU-1BP HIP-1BP HIP-GGUF RADV-GGUF\n"
             "              HRX2-GGUF-Q4NX HRX-GGUF MLX-GPU CPU\n",
@@ -151,6 +157,7 @@ int registry_scan_main(int argc, char** argv) {
     ScanOptions opt;
     bool json = false, quiet = false, catalog_set = false;
     std::string resolve_arg, cap_arg, catalog_arg, route_arg, prefer_arg;
+    std::vector<std::string> engine_limits;
     uint32_t at_context = 0;
     std::vector<std::string> roots;
 
@@ -164,6 +171,7 @@ int registry_scan_main(int argc, char** argv) {
         else if (a == "--capability" && i + 1 < argc) cap_arg = argv[++i];
         else if (a == "--resolve" && i + 1 < argc) resolve_arg = argv[++i];
         else if (a == "--route" && i + 1 < argc) route_arg = argv[++i];
+        else if (a == "--engine-limit" && i + 1 < argc) engine_limits.push_back(argv[++i]);
         else if (a == "--prefer" && i + 1 < argc) prefer_arg = argv[++i];
         else if (a == "--at-context" && i + 1 < argc) at_context = (uint32_t)atoi(argv[++i]);
         else if (a == "--catalog" && i + 1 < argc) { catalog_set = true; catalog_arg = argv[++i]; }
@@ -185,6 +193,24 @@ int registry_scan_main(int argc, char** argv) {
         return 2;
     }
     if (roots.empty()) { usage(argv[0]); return 2; }
+
+    // Engine-scoped limits, applied BEFORE the scan so every artifact and every
+    // query sees the bundle the engine actually configured.
+    for (const auto& spec : engine_limits) {
+        size_t eq = spec.find('=');
+        if (eq == std::string::npos) {
+            fprintf(stderr, "registry_scan: --engine-limit wants CAP=TOKENS[:bundle]\n");
+            return 2;
+        }
+        std::string capname = spec.substr(0, eq), rest = spec.substr(eq + 1), bundle;
+        size_t colon = rest.find(':');
+        if (colon != std::string::npos) { bundle = rest.substr(colon + 1); rest = rest.substr(0, colon); }
+        auto c = capability_from_string(capname);
+        if (!c) { fprintf(stderr, "registry_scan: unknown capability '%s'\n", capname.c_str()); return 2; }
+        set_capability_limit_override(*c, (uint32_t)atoi(rest.c_str()), bundle);
+        fprintf(stderr, "[engine-limit] %s -> %s ctx (bundle %s)\n", capname.c_str(),
+                rest.c_str(), bundle.empty() ? "(unspecified)" : bundle.c_str());
+    }
 
     ModelRegistry reg = ModelRegistry::scan(roots, opt);
     reg.set_gate_context(at_context);

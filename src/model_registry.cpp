@@ -719,11 +719,38 @@ const CapabilityLimit* capability_limit(Capability c) {
         {Capability::HRX_GGUF, 2048,
          "HRX b66 over-claims FLASH_ATTN_EXT for KV>2048 (issue #2145, node 25); failure signature "
          "`unsupported HRX node 25: FLASH_ATTN_EXT` + `compute status: -1`",
-         LimitProvenance::MEASURED, Enforcement::ENGINE_SERVER_AND_SHIM, "--lemonade"},
+         LimitProvenance::MEASURED, Enforcement::ENGINE_SERVER_AND_SHIM, "--lemonade", "hrx-b66"},
     };
+    // Engine override wins: the configured bundle is a runtime fact.
+    for (const auto& o : capability_limit_overrides()) {
+        if (o.capability == c) {
+            static CapabilityLimit ov;
+            ov = CapabilityLimit{c, o.max_context_tokens,
+                                 "runtime override from the configured bundle",
+                                 LimitProvenance::MEASURED, Enforcement::ENGINE_SERVER_AND_SHIM,
+                                 nullptr, nullptr};
+            static std::string bundle_hold;
+            bundle_hold = o.bundle;
+            ov.bundle = bundle_hold.c_str();
+            return o.max_context_tokens ? &ov : nullptr;
+        }
+    }
     for (const auto& l : limits) if (l.capability == c) return &l;
     return nullptr;
 }
+
+// Process-wide: the configured bundle is a process fact, set once at startup.
+static std::vector<CapabilityLimitOverride> g_limit_overrides;
+
+void set_capability_limit_override(Capability c, uint32_t max_context_tokens,
+                                   std::string bundle) {
+    for (auto& o : g_limit_overrides) {
+        if (o.capability == c) { o.max_context_tokens = max_context_tokens; o.bundle = std::move(bundle); return; }
+    }
+    g_limit_overrides.push_back({c, max_context_tokens, std::move(bundle)});
+}
+void clear_capability_limit_overrides() { g_limit_overrides.clear(); }
+std::vector<CapabilityLimitOverride> capability_limit_overrides() { return g_limit_overrides; }
 
 // ── ModelArtifact ──────────────────────────────────────────────────────────
 uint64_t ModelArtifact::total_bytes() const {
@@ -1467,10 +1494,11 @@ std::string ModelRegistry::to_table(uint32_t at_context) const {
         const CapabilityLimit* lim = capability_limit(l);
         if (!lim) continue;
         o << "constraint " << to_string(l) << " <= " << lim->max_context_tokens
-          << " ctx  [" << to_string(lim->provenance) << "]"
+          << " ctx  [" << to_string(lim->provenance)
+          << (lim->bundle ? std::string(", bundle ") + lim->bundle : std::string()) << "]"
           << "  enforced by: " << to_string(lim->enforced_by)
           << "  NOT enforced in: " << (lim->not_enforced_in ? lim->not_enforced_in : "-")
-          << "  (this registry reports, it does not gate)\n";
+          << "  (this registry reports, it does not gate; the engine may override per bundle)\n";
     }
     for (const auto& a : artifacts_) {
         std::string caps;
@@ -1583,6 +1611,7 @@ std::string ModelRegistry::to_json() const {
               << ", \"provenance\": \"" << to_string(l->provenance)
               << "\", \"enforced_by\": \"" << to_string(l->enforced_by)
               << "\", \"not_enforced_in\": \"" << (l->not_enforced_in ? l->not_enforced_in : "")
+              << "\", \"bundle\": \"" << (l->bundle ? l->bundle : "")
               << "\"}";
         }
         o << "},\n";
