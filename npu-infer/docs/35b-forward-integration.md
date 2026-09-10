@@ -1029,3 +1029,28 @@ the MoE sub-kernels as modules, so the per-token forward —
 path batches 28 layer runs + lm_head. This closes the "is one-runlist even
 possible" question affirmatively. Remaining: pin the send_manual_expert_*
 call args + write the per-token sequence harness, then validate on the NPU.
+
+## Round 78 — the runtime's own expert forward ALREADY uses a runlist (2026-09-10)
+
+Disassembled `qwen3_6_moe_expert_prefill_context::forward` (0x897f0). Its
+per-token expert path is:
+
+    gen_dequant_mm_512 ×3        (the routed-expert dequant+mm sequences)
+    npu_app::create_run ×2       (up_gate + down runs)
+    xrt::runlist::reset() → add(run) ×2 → execute()
+    cpu_func::_moe_gate          (CPU router, top-k)
+    cpu_func::_pack_moe_tasks    (pack expert tasks)
+    cpu_func::_sigmoid / _elementwise_mul / _exp_glu   (activations)
+
+So the runtime ALREADY batches the routed expert GEMMs into a single
+xrt::runlist submit — the runlist mechanism is proven in-production for the
+experts. The per-token decode is therefore ~3 separate submits:
+  (1) expert runlist, (2) layer ELF run, (3) lm_head run (get_logits).
+The objective "one xrt::runlist submit/token" = MERGE (1)+(2)+(3) into ONE
+runlist — architecturally valid since all three are the same MLIR_AIE kernel
+(Round 77) and the runtime's runlist already spans the 2 expert runs.
+
+Also pins the expert GEMM generator: the per-token routed experts use
+`gen_dequant_mm_512(npu_sequence*, u32, u32, u32, u64, u64, int, flm_dtype_t)`
+(NOT send_manual_expert_* — those are the shared/one-time path). Its 3 call
+sites + 2 create_run's = the up_gate/down GEMM pair per routed expert.
