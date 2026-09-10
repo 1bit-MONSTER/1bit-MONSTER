@@ -253,16 +253,53 @@ it; it needs git >= 2.20; and `extensions.worktreeConfig` is still a write to SH
 by itself (it only permits per-worktree config; it changes no setting, and a sibling worktree
 behaved identically), but shared, and therefore still an owner decision — the one-bit kind.
 
+**"Inert by itself" was questioned and it holds — plus a hazard worth knowing before anyone flips a
+repository format bit.** The objection is a good one: a repository format *extension* is
+version-gated, and an unknown extension can make git refuse a clone outright, which would impose a
+requirement on every other user of it. Measured:
+
+- setting `extensions.worktreeConfig` does **not** bump `core.repositoryformatversion` (stays `0`);
+- **v0 + an unknown extension → tolerated**: clone `rc=0`, local git operations `rc=0`;
+- **v1 + the same unknown extension → `rc=128`**, on clone and on every local operation;
+- and at v1 git **cannot even undo it** — `git config` is itself refused, so recovery is a hand-edit
+  of `.git/config`. A self-inflicted, git-invisible brick.
+- this repo is at **version 0**, so the bit leaves it at 0 and an older git tolerates it.
+
+**So the rule is: never bump `core.repositoryformatversion`.** And the "needs git >= 2.20" limit is
+precise about *what* it constrains — the FEATURE (`git config --worktree`), not the repo format, so
+it does not gate anyone else's ability to clone.
+
 **THE THREE ROUTES, RANKED BY COST — with the one that LOOKS free named explicitly, because it is
 the one a future reader reaches for first.** (@agent-ec855d completed this enumeration; each cost
 was checked here before recording.)
 
-| route | cost profile |
-|---|---|
-| per-worktree `core.hooksPath` (+ `extensions.worktreeConfig`) | one inert shared bit, repo-scoped — **commit-time, author present: strongest timing** |
-| add steps to `validate-claims.yml`'s existing daily schedule | **no new trigger class, no per-push cost** — but ~24h late, sees only what reached `main`: cheapest capacity |
-| `ci.yml` `push` branch pattern | repo-wide runner capacity **per push** |
-| user-level `core.hooksPath` (`~/.gitconfig`) | every repo on the box, including policy-covered ones — **do not go here** |
+**I first wrote this section as a table of four routes to choose between. That frame was wrong, in
+the same way as the errors above: I formed the set from one axis — *what can be ADDED* — and then
+reported the space closed.** Every row I listed ADDS something (a config bit, a workflow step, a
+trigger pattern, a user config). The highest-coverage enforcement point in this repo is not an
+addition: it already exists, and it fell outside the frame for exactly that reason. So the table
+gains the column that was missing — **coverage: who actually gets the signal** — and a row for what
+is already running.
+
+| route | coverage — WHO receives the signal | timing | cost to change |
+|---|---|---|---|
+| **common `post-commit` (the auto-push hook) — ALREADY INSTALLED** | **every commit, every worktree, every agent on this clone** — no opt-in | immediate, but **after** the commit exists → reports, does **not** prevent | changes what every agent sees on every commit — a shared-behaviour change, not an installation |
+| per-worktree `core.hooksPath` (+ `extensions.worktreeConfig`) | only worktrees that ran the command | commit-time, author present → **prevents** | one inert shared bit |
+| steps on `validate-claims.yml`'s existing daily schedule | everything that reaches `main`, whoever committed | ~24h late, `main` only | no new trigger; but the file must reach `main` first |
+| `ci.yml` `push` branch pattern | pushes to `main` / PRs | on push | repo-wide runner capacity **per push** |
+| user-level `core.hooksPath` (`~/.gitconfig`) | **every repo on the box**, including policy-covered ones | commit-time | **do not go here** |
+
+**The already-installed row is not hypothetical — it already demonstrates the exact shape this
+section needs**, and it has been running all day: `.git/hooks/post-commit` prints
+`[auto-push] push FAILED (non-fast-forward or auth?)` followed by `exit 0   # never break the commit
+itself`. Visible-but-non-blocking, in production, on every commit. It is also why the two "shared
+authority" rows I had merged apart must be separated by **scope, not coverage**: the common-hooks
+row is *this clone*; the user-level row is *every repo on the box*.
+
+**Verified, because the frame error was found by someone re-enumerating rather than by me:** the
+hook exists (1997 bytes, executable), resolves as the common hooks path from any worktree
+(`git rev-parse --git-path hooks/` from my worktree → the shared checkout's `.git/hooks/`), needs no
+`extensions.worktreeConfig` and no per-worktree config, and every failure branch exits 0.
 
 **The second row deserves its precondition stated, because it is not free today.**
 `validate-claims.yml` is a genuine host — `on: schedule: cron "17 4 * * *"` plus
@@ -292,15 +329,8 @@ The pattern worth carrying past this section: **the route that costs nothing on 
 measuring can be the most expensive on an axis you are not.** Repo authority was the axis in view;
 blast radius across unrelated, policy-covered repos was not.
 
-**A COLUMN THE TABLE WAS MISSING — COVERAGE: for how many actors does the mechanism actually
-fire?** (@agent-ec855d named this axis *before* the sentence was written; measured here.)
-
-| mechanism | who gets the signal |
-|---|---|
-| per-worktree hook | **only worktrees that ran the config command** |
-| the daily `validate-claims` job | **everything that reaches `main`, regardless of who committed** |
-
-Measured in a 3-worktree repo: the installed worktree's commit was blocked (`rc=1`) and the hook's
+**WHY COVERAGE RANKS ABOVE TIMING, measured rather than argued** (@agent-ec855d named the axis
+before the sentence was written). Per-worktree, in a 3-worktree repo: the installed worktree's commit was blocked (`rc=1`) and the hook's
 message reached the author **on stderr** (git routes hook output there, not stdout — worth knowing
 if you ever capture only one stream, as I first did). The sibling worktree with no `hooksPath`
 committed normally (`rc=0`) — a **silent pass**: no hook, no message, no warning, output
