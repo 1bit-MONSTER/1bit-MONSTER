@@ -377,28 +377,55 @@ public:
                               float temperature = -1.0f) override {
         if (pid_ <= 0 || http_port_ <= 0 || !initialized) return "";
         if (max_tokens <= 0) max_tokens = 16;
-        // The prompt arrives already chat-templated by the caller. Send it as a RAW
-        // completion (`/v1/completions`) so FLM does not apply the template twice;
-        // the resulting token stream is the same one the Lemonade flm backend drives
-        // through /v1/chat/completions, so the rendered text matches byte-for-byte.
+        // Use /v1/chat/completions, NOT /v1/completions: measured on FLM serve,
+        // /v1/completions ignores temperature (three temperature-0 runs returned
+        // three different answers) while /v1/chat/completions is greedy and stable
+        // at 0. The caller hands us an ALREADY-templated prompt, so reconstruct the
+        // messages and let FLM template them once — the same path the Lemonade flm
+        // backend drives, which is what makes the rendered text match.
+        nlohmann::json messages = nlohmann::json::array();
+        {
+            size_t pos = 0;
+            bool any = false;
+            while (true) {
+                const size_t s = prompt.find("<|im_start|>", pos);
+                if (s == std::string::npos) break;
+                const size_t role_start = s + 12;
+                const size_t nl = prompt.find('\n', role_start);
+                if (nl == std::string::npos) break;
+                const size_t e = prompt.find("<|im_end|>", nl);
+                if (e == std::string::npos) break;
+                const std::string role = prompt.substr(role_start, nl - role_start);
+                const std::string content = prompt.substr(nl + 1, e - (nl + 1));
+                if (!role.empty() && role != "assistant")
+                    messages.push_back({{"role", role}, {"content", content}});
+                any = true;
+                pos = e + 10;
+            }
+            if (!any) messages.push_back({{"role", "user"}, {"content", prompt}});
+        }
         nlohmann::json req;
-        req["prompt"] = prompt;
+        req["messages"] = messages;
         req["max_tokens"] = max_tokens;
         if (temperature >= 0.0f) req["temperature"] = temperature;
         req["stream"] = false;
         int status = 0;
-        const std::string resp = http_post_json("/v1/completions", req.dump(), &status);
+        const std::string resp = http_post_json("/v1/chat/completions", req.dump(), &status);
         if (status != 200 || resp.empty()) {
-            fprintf(stderr, "NPU: /v1/completions HTTP %d — %s\n", status, resp.substr(0, 200).c_str());
+            fprintf(stderr, "NPU: /v1/chat/completions HTTP %d — %s\n", status, resp.substr(0, 200).c_str());
             return "";
         }
         try {
             auto j = nlohmann::json::parse(resp);
             if (j.contains("error") && !j["error"].is_null()) return "";
             if (!j.contains("choices") || j["choices"].empty()) return "";
-            return j["choices"][0].value("text", "");
+            const auto& choice = j["choices"][0];
+            if (!choice.contains("message")) return "";
+            std::string text = choice["message"].value("content", "");
+            if (text.empty()) text = choice["message"].value("reasoning_content", "");
+            return text;
         } catch (const nlohmann::json::exception& e) {
-            fprintf(stderr, "NPU: completions JSON parse failed: %s\n", e.what());
+            fprintf(stderr, "NPU: chat JSON parse failed: %s\n", e.what());
             return "";
         }
     }
