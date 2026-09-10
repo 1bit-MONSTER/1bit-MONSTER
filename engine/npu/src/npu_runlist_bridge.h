@@ -20,6 +20,11 @@ extern "C" {
 int npu_runlist_decode(const char* model_path, int ng, const char* ids_file,
                        int H, int NC, int NH, int NKV, int IM, int NV);
 
+// bf16 prefill (mm.xclbin dequant + GEMM): load the model once, then pack a
+// per-layer Q4NX weight BO + tile offsets for the dequant bridge.
+int npu_bf16_prefill_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV);
+int npu_bf16_pack_layer(int layer, uint8_t* bo /* >= 10 MB */, int* offs /* 6 ints */);
+
 #ifdef __cplusplus
 }
 #endif

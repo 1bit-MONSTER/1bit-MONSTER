@@ -23,6 +23,14 @@ ZAYA_DECODE_O="$BUILDDIR/zaya_decode.o"
 # NOT reach npu_engine_universal.cpp (name clash with engine's model_config.h).
 RUNLIST_BRIDGE="$SRCDIR/src/npu_runlist_bridge.cpp"
 RUNLIST_BRIDGE_O="$BUILDDIR/npu_runlist_bridge.o"
+# FLM bf16 GEMM bridge (dequant.xclbin + mm.xclbin via libgemm/libdequant) — the
+# prefill mm path. Built as a SEPARATE TU with the FLM headers (its Bf16Mm needs
+# FLM's lm_config/modules/npu_utils_xrt, which must NOT reach the main engine TU).
+FLM_ROOT="${FLM_ROOT:-/home/bcloud/amd-oss/fastflowlm/src}"
+FLM_INC="$FLM_ROOT/include"
+FLM_LIB="$FLM_ROOT/lib/xrt"
+BF16MM_BRIDGE="$SRCDIR/src/npu_engine_bf16_mm_bridge.cpp"
+BF16MM_BRIDGE_O="$BUILDDIR/npu_engine_bf16_mm_bridge.o"
 RUNLIST_RT="$REPO_ROOT/npu-infer/src/runtime_layer.cpp"
 RUNLIST_RT_O="$BUILDDIR/npu_runlist_runtime.o"
 NPU_MODEL_C="$REPO_ROOT/npu-infer/src/model.c"
@@ -67,6 +75,11 @@ if [ ! -f "$RUNLIST_BRIDGE_O" ] || [ "$RUNLIST_BRIDGE" -nt "$RUNLIST_BRIDGE_O" ]
     echo "g++ -c -std=c++17 -O3 -o $RUNLIST_BRIDGE_O $RUNLIST_BRIDGE"
     g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE"
 fi
+# bf16 mm bridge (FLM headers + libgemm/libdequant at link time)
+if [ ! -f "$BF16MM_BRIDGE_O" ] || [ "$BF16MM_BRIDGE" -nt "$BF16MM_BRIDGE_O" ]; then
+    echo "g++ -c -std=c++17 -O2 -o $BF16MM_BRIDGE_O $BF16MM_BRIDGE"
+    g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE"
+fi
 
 # Models to build
 MODELS=(
@@ -102,9 +115,9 @@ else
     XRT_LIBS=(-lxrt_coreutil -lxrt_core)
 fi
 # XRT uses shared libs (must come AFTER source on command line)
-LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl)
+LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl -L"$FLM_LIB" -lgemm -ldequant -Wl,-rpath,"$FLM_LIB")
 CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
-ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O")
+ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O")
 
 echo "=== Building NPU engine variants ==="
 mkdir -p "$BUILDDIR"

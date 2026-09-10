@@ -20,6 +20,9 @@
 
 #include <xrt/xrt_device.h>
 
+extern "C" int npu_pack_layer_bo(uint8_t* bo_buffer, void* mw, const void* config, int layer_idx);
+extern "C" void npu_layer_tile_offsets(void* mw, int layer_idx, int* off_q, int* off_k, int* off_v, int* off_o, int* off_gu, int* off_d);
+
 // Read whitespace-separated token ids from a file (or stdin for NULL/"-").
 static bool read_ids(const char* ids_file, std::vector<int>& ids) {
     if (ids_file && ids_file[0] && strcmp(ids_file, "-") != 0) {
@@ -123,4 +126,34 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
 
     model_free(mw);
     return 0;
+}
+
+// ===== bf16 prefill (mm.xclbin dequant + GEMM) support =====
+// The engine drives the dequant/GEMM bridge (npu_engine_bf16_mm_bridge) for the
+// prefill mm path; this TU packs the per-layer Q4NX weight BOs + tile offsets.
+static ModelWeights* g_bf16_mw = nullptr;
+static ModelConfig  g_bf16_cfg;
+
+extern "C" int npu_bf16_prefill_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
+    g_bf16_cfg = QWEN3_0_6B_CONFIG;
+    g_bf16_cfg.hidden_size = H;
+    g_bf16_cfg.num_layers = NC;
+    g_bf16_cfg.num_attention_heads = NH;
+    g_bf16_cfg.num_key_value_heads = NKV;
+    g_bf16_cfg.intermediate_size = IM;
+    g_bf16_cfg.head_dim = 128;
+    g_bf16_cfg.vocab_size = NV;
+    g_bf16_cfg.max_position_embeddings = 40960;
+    g_bf16_cfg.max_seq_len = 4096;
+    g_bf16_mw = model_load(model_path, g_bf16_cfg);
+    return g_bf16_mw ? 0 : -1;
+}
+
+// Pack layer `layer`'s weight BO into bo (>= 2048*5120 = 10 MB). Returns tiles;
+// fills offs[6] = {q,k,v,o,gu,d} tile offsets (for bf16mm_dequant woff = tile*5120).
+extern "C" int npu_bf16_pack_layer(int layer, uint8_t* bo, int* offs) {
+    if (!g_bf16_mw) return 0;
+    int tiles = npu_pack_layer_bo(bo, g_bf16_mw, &g_bf16_cfg, layer);
+    npu_layer_tile_offsets(g_bf16_mw, layer, &offs[0], &offs[1], &offs[2], &offs[3], &offs[4], &offs[5]);
+    return tiles;
 }

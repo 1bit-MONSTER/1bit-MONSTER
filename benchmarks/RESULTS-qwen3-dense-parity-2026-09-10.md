@@ -702,3 +702,28 @@ The GU (N=6144, ~6 ms) + D (K=3072, ~2 ms) dominate — the 3072-intermediate ML
 gap vs FLM (1269 tok/s) is ~1.6×; next levers are FLM's N=128 tile schedule and overlapping
 the 6 GEMMs (the mm.xclbin kernel throughput is ~equal, the difference is the 2-batch
 invocation overhead on the large-N MLP GEMMs).
+
+## 2026-09-10 (session 2t): bf16 prefill WIRED into the engine — token parity with FLM
+
+Wired the bf16 mm.xclbin path into `npu_engine_universal.cpp` (NPU_PREFILL_BF16=1):
+- `npu_runlist_bridge` gained `npu_bf16_prefill_init` (model_load) + `npu_bf16_pack_layer`
+  (per-layer Q4NX BO + tile offsets).
+- `npu_engine_bf16_mm_bridge` gained `bf16mm_dequant_dev` (dequant → device BO) +
+  `bf16mm_gemm_dev` (2-batch GEMM from device W).
+- `build_npu.sh` compiles the bridge TU (FLM headers) + links -lgemm -ldequant.
+- Prefill loop (chunked to 256-token M, sparse-A 2-batch) replaces the int8 GEMMs;
+  Q/K/V/O/GU/D + CPU attention + norms. GU gate/up is **up-first interleaved**
+  (512-col chunks = H/2), verified by diffing bf16 vs int8 GU outputs.
+
+Two bugs found + fixed during bring-up:
+1. K/V `woff` must be H·qout / H·(qout+kout) bf16 ELEMENTS (4/6 MB), not qout/kout.
+2. The layer-BO device cache was keyed by the (reused) host buffer pointer → layers 1+
+   dequant'd layer-0's stale weights. Now always re-copies the 10 MB BO.
+
+Token parity vs FLM (run_qwen3_prefill): default prompt → **151667** (=FLM), "The capital
+of France is" → **32** (=FLM). Layer-0 QKV/O/GU/D all corr ≥0.994 vs the int8 path.
+
+### Remaining gap: CPU attention is now the bottleneck
+The mm GEMMs are ~329 ms per 256-token batch, but `attn_omp` is O(npt²) (~1.7 s/256tok),
+so end-to-end prefill ≈ 128 tok/s (vs int8 ~85, FLM 1269). Next: wire attn.xclbin (NPU
+attention) to close it — the bf16 GEMM path itself is done and token-parity.

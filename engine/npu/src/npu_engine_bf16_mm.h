@@ -212,9 +212,11 @@ struct Bf16Mm {
         npu_app app(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
         deq_->generate_dequant_q4_1_seq(app.seq(), D_in, D_out, q4nx_weight_offset, 0);
         app.update_ctrl_seq();
-        // cache the 10 MB layer BO (the 4 projections of a layer share it)
+        // cache the 10 MB layer BO slot (the 4 projections of a layer share it,
+        // but the engine REUSES the same host buffer across layers, so re-copy
+        // every call — keying by pointer would reuse a stale layer's BO).
         if (!bo_cache) bo_cache = std::make_unique<buffer<uint8_t>>(*dev, (size_t)2048 * 5120);
-        if (q4nx != bo_cache_ptr) { memcpy(bo_cache->data(), q4nx, (size_t)2048 * 5120); bo_cache_ptr = q4nx; }
+        memcpy(bo_cache->data(), q4nx, (size_t)2048 * 5120);
         w_dev.push_back(std::make_unique<buffer<uint16_t>>(*dev, (size_t)D_in * D_out));
         app.safe_run(*w_dev.back(), *bo_cache);
         return (int)w_dev.size() - 1;
