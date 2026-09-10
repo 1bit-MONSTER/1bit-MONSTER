@@ -23,6 +23,7 @@
 #include <chrono>
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 #include <nlohmann/json.hpp>
 #include <unistd.h>
 #include <sys/prctl.h>
@@ -402,7 +403,31 @@ public:
                 any = true;
                 pos = e + 10;
             }
-            if (!any) messages.push_back({{"role", "user"}, {"content", prompt}});
+            if (!any) {
+                // The unified server's plain-text prompt format is "role: content\n"
+                // per turn (observed verbatim: "user: What is 2+2? Answer with one
+                // word.\n"). Rebuild the messages from it so FLM applies the chat
+                // template exactly once — sending the raw string made the model see
+                // the literal "user: " prefix and answer differently from Lemonade.
+                std::istringstream is(prompt);
+                std::string line;
+                while (std::getline(is, line)) {
+                    if (line.empty()) continue;
+                    const auto colon = line.find(": ");
+                    if (colon != std::string::npos) {
+                        const std::string role = line.substr(0, colon);
+                        const std::string content = line.substr(colon + 2);
+                        if ((role == "user" || role == "assistant" || role == "system") &&
+                            !content.empty()) {
+                            messages.push_back({{"role", role}, {"content", content}});
+                            continue;
+                        }
+                    }
+                    messages.push_back({{"role", "user"}, {"content", line}});
+                }
+                if (messages.empty())
+                    messages.push_back({{"role", "user"}, {"content", prompt}});
+            }
         }
         nlohmann::json req;
         req["model"] = model_tag_;  // FLM expects the checkpoint tag (e.g. "qwen3:0.6b"), like the Lemonade flm backend sets
