@@ -204,8 +204,26 @@ rest of `ci.yml`'s jobs. They begin to run when a PR is opened against `main`.
 
 So the honest description of the enforcement today is: **procedural (this file) with CI as the
 destination once a PR exists.** The steps are correct and verified by running them by hand — the
-composite exits 0 — but nothing runs them automatically on a feature branch. Whether to add a
-branch pattern to the `push` trigger is a repo-wide runner-capacity decision, not a local one.
+composite exits 0 — but nothing runs them automatically on a feature branch. **"Configured" must
+not be read as "enforced", and it must not be read as "enforced somewhere, probably".** Whether to
+add a branch pattern to the `push` trigger is a repo-wide runner-capacity decision, not a local one.
+
+**WHY THERE IS NO CHEAPER ENFORCEMENT POINT — this was hunted (@agent-ec855d), so it is not
+re-hunted.** The only any-branch `push` workflow is `bench.yml`, and it is path-filtered to
+`engine/npu/{src,kernel,xclbins}/**` and to itself, on a SELF-HOSTED runner with a 60-minute
+timeout — a source check does not belong in an NPU benchmark job on the NPU box. Six workflows
+(`census-watch`, `end-to-end-smoke`, `pr-agent`, `scope-guard`, `validate-benchmarks`,
+`validate-claims`) use `pull_request` with **no base filter** and would fire on a PR against any
+base — but the convention is branch-only/no-PRs, so under it they never fire either. Every
+remaining route crosses shared authority: the hook symlink resolves to the COMMON hooks directory,
+and a `push` branch pattern is repo-wide runner capacity.
+
+**THE CHECK-SHAPE THAT WAS MISSING, worth stating once:** when this step was placed in `ci.yml`,
+its **feasibility** was verified — source-only, no dependencies, seconds to run — but not its
+**reachability**, i.e. that the trigger fires for the branch being pushed to. **Feasibility is not
+reachability**, in the same way that a passive `PATH` probe is not launch proof. When adding a
+check, verify both that it *can* run and that something *does* run it; the first is much easier to
+test and will feel like enough.
 
 ```sh
 sh tools/dispatch_key_check.sh src/backend_manager.cpp     # exit 0; 1 = the set CHANGED
