@@ -17,6 +17,20 @@
 
 #include "hip_1bp_kernels.hip"
 
+// #2139: the 1BP Q4NX qwen35 lane is validated (same-chain corr 0.996279 /
+// 0.973922 / argmax 101-102 == the pre-PR code, 100-token stream md5-identical,
+// 23.8 ms/token vs 42.9 pre-PR) so it is enabled BY DEFAULT instead of requiring
+// H1BP_Q35_LOAD=1 H1BP_Q35_TRY=1. Either variable set to 0 opts out and restores
+// the old behaviour (the q35 path is skipped and the loader falls through to the
+// CPU/NPU generic path). Explicit =1 keeps working as before.
+static bool q35_lane_enabled() {
+    const char* ld = getenv("H1BP_Q35_LOAD");
+    const char* tr = getenv("H1BP_Q35_TRY");
+    if (ld && atoi(ld) == 0) return false;
+    if (tr && atoi(tr) == 0) return false;
+    return true;
+}
+
 // #2139 item-2 helpers: bf16 packing + the two lm_head quantizers.
 static inline uint16_t h1bp_f32_to_bf16_bits(float f) {
     uint32_t x; memcpy(&x, &f, 4);
@@ -488,8 +502,9 @@ struct Hip1bpBackend : Backend {
                                 "10 shared + kind-specific per layer; %d full-attn MHA "
                                 "layers 3,7,…,39 with split attn_q/k/v + q/k-norm, "
                                 "rest GDN fused attn_qkv 8192 rows + ssm; MoE 256x8 + "
-                                "shared): eager decode behind H1BP_Q35_LOAD+TRY "
-                                "(Q8_0 GGUF since #2127; Q4NX 1BP since M2)",
+                                "shared): GPU decode lane (Q8_0 GGUF since #2127; "
+                                "Q4NX 1BP since M2, default-on since #2139 — "
+                                "H1BP_Q35_LOAD=0/H1BP_Q35_TRY=0 opts out)",
                         H, NC, n_full);
             }
             // M3 loader/kernel self-check (env H1BP_Q35_SELFCHECK): pull
@@ -547,7 +562,7 @@ struct Hip1bpBackend : Backend {
             // device with the captured slicing — Q8_0 raw for the big weights,
             // f32 for norms/router/ssm params. Consumed by the M3 decode path
             // (tasks 3-5, not yet wired — decode still refused below).
-            if (ok && getenv("H1BP_Q35_LOAD")) {
+            if (ok && q35_lane_enabled()) {
                 size_t tot = 0;
                 q35L.assign(NC, Q35L());
                 auto q8 = [&](const char* nm, int l, uint8_t*& dst, int M, int K,
@@ -797,9 +812,9 @@ struct Hip1bpBackend : Backend {
                     fprintf(stderr, "[hip1bp] qwen35 device load FAILED — falling back\n");
                 }
             }
-            // Full device load (env H1BP_Q35_LOAD)... runs when set; decode path
-            // below enabled by H1BP_Q35_TRY (eager decode; no hipGraph for q35).
-            if (ok && getenv("H1BP_Q35_LOAD") && getenv("H1BP_Q35_TRY")) {
+            // Device load + decode are ON BY DEFAULT for a validated qwen35moe
+            // 1BP Q4NX file (#2139); q35_lane_enabled() is the opt-out.
+            if (ok && q35_lane_enabled()) {
                 if (!qwen35_alloc_state()) {
                     fprintf(stderr, "[hip1bp] qwen35 scratch alloc failed\n");
                 } else {
