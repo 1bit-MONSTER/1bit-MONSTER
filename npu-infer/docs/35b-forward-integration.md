@@ -1054,3 +1054,31 @@ Also pins the expert GEMM generator: the per-token routed experts use
 `gen_dequant_mm_512(npu_sequence*, u32, u32, u32, u64, u64, int, flm_dtype_t)`
 (NOT send_manual_expert_* — those are the shared/one-time path). Its 3 call
 sites + 2 create_run's = the up_gate/down GEMM pair per routed expert.
+
+## Round 79 — region B transform DERIVED: reorder_cpy = 16-window A/B interleave (2026-09-10)
+
+Called the runtime's own `qwen3_6_reorder_cpy` (constprop.2 clone, dtype=8)
+on the 8704-row region-B tensors with the args captured from the live load
+(R47 gdb), via a new probe (tools/verify_moe_reorder_qkv.cpp). It works
+(no segfault with the R47 args) and its output is byte-exact against a
+SIMPLE formula:
+
+    out[o] = in[o//2 + 8*(o%2)]   per 16-window block
+    window = 4736-B slice from file offset 0 (stride 4736)
+
+(verified for qkv windows 0..15: all 16 rows match). Per-tensor reorder
+output sizes (layer 0):
+
+    share_up/gate/down  (n=512)   -> 236 windows each (14 blk + 12)
+    qkv                 (n=2048)  -> 3760 windows (235 blk)
+    gate_proj           (n=4096)  -> 1888 windows (118 blk)
+
+This is a THIRD window order, distinct from the expert pool (32-row
+`8*(i%4)+i//4`) and the 5 MB BO (32-row `16*(i%2)+i//2`) — matching R49's
+"reorder_cpy serves a different (linear-attn) purpose". The region-B
+transform is no longer "closed": it is the reorder_cpy 16-window A/B
+interleave, reproducible in C. Remaining to close the packer: the exact
+reorder-output → region-B BO offset mapping (the ELF BD 16-row/4-row stride
+pattern reads the A/B halves via 2D DMA), i.e. reconcile the 6356 total
+reorder windows with the 3444-row region-B span (desc offsets qkv@384,
+gate_proj@2432 — the logical table vs physical interleave).
