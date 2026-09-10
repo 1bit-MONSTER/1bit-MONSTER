@@ -379,8 +379,19 @@ public:
     /// Text-level generation: FLM tokenizes internally, so the whole prompt
     /// goes over the REPL pipe and the generated text comes back.
     std::string generate_text(const std::string& prompt, int max_tokens) override {
-        (void)max_tokens;  // REPL protocol has no token cap; query() times out at 120s
         if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "";
+        // FLM's interactive REPL has NO token cap unless told otherwise, while the
+        // Lemonade flm executor drives `flm serve` over HTTP and honors max_tokens.
+        // Without this the SAME request yields the same model's unbounded
+        // continuation here and a capped answer there (observed: engine rambled
+        // past 16 tokens, --lemonade returned "OK.") — so the two faces could not
+        // be compared. `/set gen-lim` is FLM's per-round generation limit.
+        if (max_tokens > 0) {
+            const std::string cmd = "/set gen-lim " + std::to_string(max_tokens) + "\n";
+            if (write(stdin_fd_, cmd.c_str(), cmd.size()) == static_cast<ssize_t>(cmd.size())) {
+                (void)read_response();  // drain the echo/confirmation up to the next prompt
+            }
+        }
         std::string out = query(prompt);
         // query() error strings are non-empty — don't let them look like success.
         if (out.empty() || out.rfind("[npu:", 0) == 0) return "";
