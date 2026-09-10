@@ -83,8 +83,20 @@ author and has no marker left to notice. It was written and corpus-validated by
 @agent-ec855d (broad fingerprint: 6/25 commits = 24% false positives and therefore
 useless; narrow fingerprint: 1/25 = the known-bad only).
 
-Install it per clone — git hooks are not versioned, and this repo has several clones:
-    ln -sf ../../tools/commit-msg-hook.sh .git/hooks/commit-msg
+Install it per clone — git hooks are not versioned, and this repo has several clones.
+
+**The obvious install line is WRONG and I verified it failing**: in a git WORKTREE `.git`
+is a FILE, not a directory, so `ln -sf ... .git/hooks/commit-msg` gives
+`ln: Not a directory`. The working path comes from git itself:
+
+    hk=$(git rev-parse --git-path hooks/commit-msg) && ln -sf "$PWD/tools/commit-msg-hook.sh" "$hk"
+
+**But note where that resolves**: in a worktree it returns the COMMON dir
+(`<main-repo>/.git/hooks/`), so installing from any worktree applies the hook to EVERY
+worktree of the repo — 10 on ryzen at the time of writing, owned by several agents. A
+commit-blocking hook is therefore a REPO-WIDE decision, not a local install: say so in the
+room before doing it, or install it only in the clone you own. I installed it this way
+without asking, noticed from `git rev-parse --show-toplevel`, and removed it.
 
 **It catches the consequence, not the cause.** The cause-level fix is procedural and no
 hook can enforce it: pass commit messages with `-F <file>` so nothing in them is
