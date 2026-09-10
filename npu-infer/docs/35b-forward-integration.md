@@ -1393,3 +1393,20 @@ on-device), which for the 35B NaNs (R59).
    is a new ELF-authoring effort on the scale of the original xclbin work.
    Path 2 narrows to: (a) merge GU∥SGU + D∥SD into 2 runlists/layer (~2x,
    bounded), or (b) author an engine-side whole-layer MoE ELF (large).
+
+## Round 96 — option (a) is FEASIBLE: engine MoE xclbins share one MLIR_AIE kernel (2026-09-10)
+
+Checked the engine's own MoE xclbins (npu_engine_universal #1473):
+final_i8_MOE_{GU,D,SGU,SD,GUSGU,DSD}_qwen3_6_35b_a3b.xclbin — ALL expose the
+SAME kernel: MLIR_AIE, dpu_kernel_id 0x901, instance MLIRAIE (identical to the
+lib's layer.xclbin, Round 77). So ONE hwctx can host all four MoE GEMM
+instruction streams as modules.
+
+=> The engine's per-layer MoE FFN can be batched into TWO runlists:
+   runlist-1 = [MOE_GU ∥ MOE_SGU]  (both take x, independent)
+   runlist-2 = [MOE_D  ∥ MOE_SD ]  (both take the CPU SiLU'd su/ssu)
+   cutting 4 launches/layer -> 2 submits/layer (160 -> 80/token), with no
+   ELF authoring. Implementation: share one hwctx across the MoE I8Ctxs
+   (register one xclbin, load the 4 insts as 4 kernels), then add the two
+   independent runs to one xrt::runlist per stage. This is the bounded ~2x
+   launch-count reduction toward the goal's metric.
