@@ -1,6 +1,6 @@
 // gen_layer_elfs.cpp — build per-context layer ELFs exactly like the runtime's
 // _setup_kernel: gen_layer_seq(ctx+1) -> aiebu_assembler_get_elf -> ELF file.
-// Usage: gen_layer_elfs <model_dir> <outdir> [L_begin] [L_end]
+// Usage: gen_layer_elfs <model_dir> <outdir> [L_begin] [L_end] [MAX_L]
 #include <cstdio>
 #include <cstdint>
 #include <string>
@@ -19,9 +19,13 @@ int main(int argc, char** argv) {
     std::string outdir = (argc > 2) ? argv[2] : ".";
     int L0 = (argc > 3) ? atoi(argv[3]) : 1;
     int L1 = (argc > 4) ? atoi(argv[4]) : 2;
+    // MAX_L bounds gen_layer_seq (assert L <= MAX_L+1). FLM's qwen3 models
+    // advertise max_position_embeddings 40960 / default_context_length 32768,
+    // so default to 32768 to cover the 1k-32k parity sweep; override via argv.
+    uint32_t max_l = (argc > 5) ? (uint32_t)atoi(argv[5]) : 32768;
     LM_Config config;
     config.from_pretrained(model_dir);
-    qwen3_npu_sequence qseq(config, 8192);
+    qwen3_npu_sequence qseq(config, max_l);
     for (int L = L0; L <= L1; L++) {
         npu_sequence seq(device_npu2);
         qseq.gen_layer_seq(&seq, L);
