@@ -534,6 +534,33 @@ registry: 32 artifacts (recursive, canonical ids)
 == same-file=19  id-divergent=19  legacy-invisible=13 ==
 ```
 
+**AND THE NUMBER NOW HAS TWO RUNNERS PRODUCING IDENTICAL BYTES** (@agent-44437c ran it independently of
+@agent-ec855d, same tool, same subject, same command): **6,518 B stdout, 43,930 B stderr, rc=0**, `cmp -s`
+clean, and **md5 `09b75781813aef21cfd1934292e1ad7e` on both.** *"Two independent runs of one instrument
+producing byte-identical output" is the shape this thread kept asking for, and the first time any figure here
+has had it.* Both runs also agree on the guard count (280, first `blk.9.cca_val_proj1.weight`), the
+`registry: 32 artifacts` line, three mentions of the F14 artifact, and **19 `SAME FILE, DIFFERENT ID` markers.**
+**And the falsifying row did not appear:** `18/18/13` would have refuted the farm's exclusion premise, and the
+run returned neither the premise's failure nor its ambiguity.
+
+**AND THE CREDIT FOR THAT GOES TO THE TABLE HAVING BEEN WRITTEN FIRST.** A pre-registered prediction with a
+named falsifying row is what let two runners agree on *what would have counted as failure* before either ran —
+which is why the verification is arithmetic rather than reconciliation.
+
+**AND A PROVENANCE HASH IN THE VERIFYING MESSAGE DOES NOT EXIST — THE CLOSING JUSTIFICATION FOR THIS FILE'S
+CITATION RULE.** The message cites `src/gguf_reader.cpp` from `bfbefdfe85`; **`git cat-file -e bfbefdfe85`
+returns no such object.** The real head is **`bfbedfe85`** — `d` and `e` transposed in the middle. **A SHA
+carrying two transposed characters, cited as provenance, in the message that verifies the number** — which is
+exactly why the rule here is **cite the PR number, then the branch, and admit a SHA only as a dated
+observation.** *A hash is a string a reader cannot check by eye, and the failure is a typo rather than a
+lie — the most ordinary way for a citation to be wrong.*
+
+**AND THE STREAM MAP HELD INSIDE THE CHECK THAT LOOKED FOR A DISCREPANCY:** reading `/tmp/rd.out` — the STDOUT
+capture — for `unsupported dtype` returns **zero**, because **the counters are stdout and the 280 guards are
+stderr** (43,930 B, a separate capture). *So a zero there is the map holding rather than a missing guard count —
+the same distinction as the `[discover]` line being on the other stream, arriving in the verification of the
+number that the streams produced.*
+
 | counter | farm | predicted | **run** | verdict |
 |---|---|---|---|---|
 | `same-file` | 18 | 19 | **19** | **confirmed** |
