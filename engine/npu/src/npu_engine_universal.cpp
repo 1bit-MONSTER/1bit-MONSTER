@@ -1380,8 +1380,8 @@ struct Bf16Ctx {
             int t = gdn_k_off + gdn_k_off + gdn_v_off;
             std::vector<float> w((size_t)H * t);
             transpose_pack(qkv_w, gdn_k_off, H, w.data(), t, 0);                     // Q
-            transpose_pack(qkv_w + gdn_k_off, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
-            transpose_pack(qkv_w + gdn_v_off, gdn_v_off, H, w.data(), t, gdn_v_off);  // V
+            transpose_pack(qkv_w + (size_t)gdn_k_off * H, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
+            transpose_pack(qkv_w + (size_t)gdn_v_off * H, gdn_v_off, H, w.data(), t, gdn_v_off);  // V
             FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
             free(qkv_w);
             // O projection

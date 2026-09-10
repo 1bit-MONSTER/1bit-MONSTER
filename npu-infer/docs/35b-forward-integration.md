@@ -1514,3 +1514,17 @@ sections' dequant scales are wrong (or the section split nq/nk/nv is wrong),
 so the K/V attention inputs are garbage and the token flips (21953 vs the
 corrected 137554). Bounded next: check `cq.sec_scales[l]` / `sec_n0`/`sec_n1`
 computation vs the reference's Q/K/V split, and the pack_qkv_sec scales.
+
+## Round 104 — QKV K/V FIXED: pointer-stride bug (row offset missing *H) (2026-09-10)
+
+Root cause of the K/V error: the GDN QKV packing advanced the section pointers
+by `gdn_k_off`/`gdn_v_off` FLOATS instead of rows — `qkv_w + gdn_k_off` points
+at row 1 (not row 2048), so K/V were packed from a misaligned slice (Q was at
+offset 0, hence correct). Fix: `qkv_w + (size_t)gdn_k_off * H` and
+`qkv_w + (size_t)gdn_v_off * H`.
+
+Re-verified QKV vs float: Q=0.032, K=0.061, V=0.086 (was 3.82/7.70) — all now
+int8-quantization-level. Token moved 21953 -> 4329 (still != 137554), so a
+FURTHER divergence remains in the attention/O/MoE path (L0 hidden max|d|=3.96).
+Next: diff l0_attn.bin/l0_o.bin vs the reference gdn_layer output to localize
+the second bug (likely the O projection or gdn_attn_step conv/delta).
