@@ -1201,6 +1201,7 @@ static int run_embedded_lemonade(int argc, char** argv) {
     // models come from `flm list` — so a native Q4NX/1BP id is not listable on
     // this face until R8 is wired. Failures are swallowed: a registry scan must
     // never stop Lemonade from serving.
+    std::vector<lemon::Server::RegistryModelView> registry_views;
     {
         const char* env_root = getenv("LEMONADE_ENGINE_REGISTRY_ROOT");
         if (!env_root || !*env_root) env_root = getenv("ZAYA_WEIGHTS_DIR");
@@ -1209,16 +1210,26 @@ static int run_embedded_lemonade(int argc, char** argv) {
         try {
             onebit::ModelRegistry reg = onebit::ModelRegistry::scan({root});
             total = reg.artifacts().size();
-            for (const auto& a : reg.artifacts())
+            for (const auto& a : reg.artifacts()) {
                 if (a.container == onebit::Container::ONEBP ||
                     a.container == onebit::Container::RAW_BIN) native++;
+                lemon::Server::RegistryModelView v;
+                v.id = a.id;
+                v.container = onebit::to_string(a.container);
+                v.path = a.files.empty() ? std::string() : a.files.front().path;
+                for (auto c : a.capabilities) v.capabilities.push_back(onebit::to_string(c));
+                registry_views.push_back(std::move(v));
+            }
         } catch (...) {
             total = 0; native = 0;
+            registry_views.clear();
         }
         printf("[registry-surface] --lemonade path entered: %zu artifact(s) from %s "
-               "(%zu native ONEBP/RAW_BIN — NOT listed by Lemonade's /v1/models; "
-               "extra-models-dir is GGUF-only and flm models come from `flm list`, "
-               "so R8 is required before this face reports registry state)\n",
+               "(%zu native ONEBP/RAW_BIN) surfaced on this face's /v1/models and "
+               "/v1/registry as canonical engine ids. LISTING ONLY: Lemonade's own "
+               "router still has no executor for a native id, so the R8 execution half "
+               "remains open. This line is the coverage guard — a registry check run "
+               "against --lemonade is vacuous if it is absent.\n",
                total, root.c_str(), native);
         fflush(stdout);
     }
@@ -1230,6 +1241,7 @@ static int run_embedded_lemonade(int argc, char** argv) {
                                          lemon::LoggingMode::direct_server);
 
     lemon::Server server(config, cli_config.cache_dir, cli_config.config_dir);
+    server.set_registry_surface(std::move(registry_views));
     server.run();
     return 0;
 }
