@@ -30,7 +30,8 @@ public:
     bool forward(int token_id, float* hidden_out) override;
     bool lm_head(const float* hidden, float* logits, int* argmax) override;
     int generate(int token_id) override;
-    std::string generate_text(const std::string& prompt, int max_tokens) override;
+    std::string generate_text(const std::string& prompt, int max_tokens,
+                              float temperature = -1.0f) override;
     void destroy() override;
     float benchmark(int tokens = 10) override;
     bool can_infer() const override { return initialized_ && pid_ > 0; }

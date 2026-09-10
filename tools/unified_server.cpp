@@ -738,7 +738,7 @@ static json generate_completion(BackendManager& mgr,
             if (!cont) {
                 // Manager-level text generation: cascades to the next backend in
                 // the route on failure (e.g. HRX GET_ROWS fail-closed → ggml_vulkan).
-                text = mgr.generate_text(raw_prompt, max_tokens);
+                text = mgr.generate_text(raw_prompt, max_tokens, temperature);
                 if (!text.empty()) {  // only record the baseline on success
                     std::lock_guard<std::mutex> lock(g_flm_session_mutex);
                     g_flm_session_id = session_id;

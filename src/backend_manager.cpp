@@ -969,7 +969,7 @@ int BackendManager::generate(int token_id) {
     return -1;
 }
 
-std::string BackendManager::generate_text(const std::string& prompt, int max_tokens) {
+std::string BackendManager::generate_text(const std::string& prompt, int max_tokens, float temperature) {
     // Text-level whole-prompt generation with the same automatic failover as
     // generate(int). Some backends (HRX, LSE, FLM) are text-level only and
     // cannot be driven by the token loop; a compute error at generation (e.g.
@@ -981,7 +981,7 @@ std::string BackendManager::generate_text(const std::string& prompt, int max_tok
     // a separate path); delegate so we never double-failover.
     auto rt_stats = router_.stats();
     if (!rt_stats.empty()) {
-        if (auto* b = active_backend(); b) return b->generate_text(prompt, max_tokens);
+        if (auto* b = active_backend(); b) return b->generate_text(prompt, max_tokens, temperature);
     }
 
     // Phase 1: snapshot under lock (shared_ptr keeps the Backend alive).
@@ -1001,7 +1001,7 @@ std::string BackendManager::generate_text(const std::string& prompt, int max_tok
 
     auto try_generate = [&](Backend* b) -> std::string {
         try {
-            return b->generate_text(prompt, max_tokens);
+            return b->generate_text(prompt, max_tokens, temperature);
         } catch (const std::exception& e) {
             fprintf(stderr, "BackendManager: %s threw in generate_text() (%s) — failing over\n",
                     backends_[snap_idx].id.c_str(), e.what());

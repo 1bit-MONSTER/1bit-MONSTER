@@ -378,20 +378,16 @@ public:
 
     /// Text-level generation: FLM tokenizes internally, so the whole prompt
     /// goes over the REPL pipe and the generated text comes back.
-    std::string generate_text(const std::string& prompt, int max_tokens) override {
+    std::string generate_text(const std::string& prompt, int max_tokens,
+                              float temperature = -1.0f) override {
         if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "";
-        // FLM's interactive REPL has NO token cap unless told otherwise, while the
-        // Lemonade flm executor drives `flm serve` over HTTP and honors max_tokens.
-        // Without this the SAME request yields the same model's unbounded
-        // continuation here and a capped answer there (observed: engine rambled
-        // past 16 tokens, --lemonade returned "OK.") — so the two faces could not
-        // be compared. `/set gen-lim` is FLM's per-round generation limit.
-        if (max_tokens > 0) {
-            const std::string cmd = "/set gen-lim " + std::to_string(max_tokens) + "\n";
-            if (write(stdin_fd_, cmd.c_str(), cmd.size()) == static_cast<ssize_t>(cmd.size())) {
-                (void)read_response();  // drain the echo/confirmation up to the next prompt
-            }
-        }
+        // FLM's REPL has neither a token cap nor the request's sampling, while the
+        // Lemonade flm executor drives `flm serve` and honours both. Without these
+        // `/set`s the SAME request yields different text on the two faces (measured
+        // on Qwen3-0.6B-NPU2: default temp -> "Two and two is four...", temp 0 ->
+        // "2 + 2 = 4" == the --lemonade answer).
+        if (temperature >= 0.0f) send_repl_command("/set temp " + std::to_string(temperature));
+        if (max_tokens > 0)      send_repl_command("/set gen-lim " + std::to_string(max_tokens));
         std::string out = query(prompt);
         // query() error strings are non-empty — don't let them look like success.
         if (out.empty() || out.rfind("[npu:", 0) == 0) return "";
@@ -458,6 +454,15 @@ public:
         last_prompt_ = prompt;
 
         return read_response();
+    }
+
+    // Issue one FLM REPL command and discard its echo/confirmation up to the next
+    // ">>> " prompt, so the following read_response() sees only the model output.
+    void send_repl_command(const std::string& cmd_in) {
+        if (stdin_fd_ < 0) return;
+        const std::string cmd = cmd_in + "\n";
+        if (write(stdin_fd_, cmd.c_str(), cmd.size()) == static_cast<ssize_t>(cmd.size()))
+            (void)read_response();
     }
 
     // Non-blocking drain of the child's piped stderr. Returns "" when nothing is
