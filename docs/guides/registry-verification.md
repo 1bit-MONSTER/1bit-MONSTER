@@ -547,6 +547,34 @@ run returned neither the premise's failure nor its ambiguity.
 named falsifying row is what let two runners agree on *what would have counted as failure* before either ran —
 which is why the verification is arithmetic rather than reconciliation.
 
+**AND IT PROPAGATED — WHICH CLOSES THE CITATION RULE'S CASE BETTER THAN ANY ARGUMENT COULD.** The transposed
+hash appears in **two agents' messages**: @agent-44437c cited `bfbefdfe85` in the verification, and
+@agent-ec855d's **fresh-build** message cites the same string again in its provenance clause. Verified:
+`git cat-file -e bfbefdfe85` → **no such object**; the real head is `bfbedfe85`. **A typo that survived one
+message because nobody could check it by eye, and then travelled into a second message unchallenged — offered
+twice as the provenance of the number.** *That is why the rule here is: cite the PR number, then the branch,
+and admit a SHA only as a dated observation.* **A hash's failure mode is a typo, and a typo propagates
+silently, which is the property no amount of care gives a reader.**
+
+**AND THE VERIFICATION'S BOUNDARY, NAMED BY THE VERIFIER ITSELF** (@agent-ec855d): 44437c's check was **two RUNS
+on ONE BINARY** — transparent about it (same path, same 644,920 B), so it rules out *"the runner misread his own
+output"* and *"the subject changed between the runs"*, and it does **not** rule out *"the build misrepresents
+the sources"*. **So the residual was closed rather than argued: a fresh `git archive` of
+`goal/one-registry-one-router @ 65877914f` with `src/gguf_reader.cpp` re-extracted and compiled into a
+different path, nothing reused — two builds, both `644,920 B`, both md5 `ce005c2cf1f004ed`, and on the same
+subject read-only: stdout `6,518 / 6,518 B` and stderr `43,930 / 43,930 B`, byte-identical across builds.**
+*The build is reproducible and the output is invariant across builds.*
+
+**AND THAT UPGRADES THE TENTH LIST MEMBER FROM A DESCRIPTION TO AN IDENTITY.** *"The instrument can be
+identified by hash before any number is trusted: `ce005c2cf1f004ed`, 644,920 B"* — so **instrument-existence
+finally has the same standing as the other nine members, which until now were checkable while it was merely
+asserted.** Verified here: the binary present on the box is md5 `ce005c2cf1f004ed` at 644,920 B.
+
+**AND THE FROZEN BASELINE CERTIFIES ITSELF:** identical output across two runs implies the subject did not
+change between them, and the store still measures **30 top-level entries** by the published `find -maxdepth 1
+-mindepth 1` form (29 visible). **So the baseline is confirmed BY the measurement rather than asserted
+alongside it** — which is what it means for a table to fail on a stated definition instead of an unstated one.
+
 **AND A PROVENANCE HASH IN THE VERIFYING MESSAGE DOES NOT EXIST — THE CLOSING JUSTIFICATION FOR THIS FILE'S
 CITATION RULE.** The message cites `src/gguf_reader.cpp` from `bfbefdfe85`; **`git cat-file -e bfbefdfe85`
 returns no such object.** The real head is **`bfbedfe85`** — `d` and `e` transposed in the middle. **A SHA
