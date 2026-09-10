@@ -294,3 +294,34 @@ Use FLM's `qwen3_npu_sequence` (gen_rtp_seq / gen_layer_seq / gen_mha_engine_seq
 generate full prefill sequences and run them through the native engine's runner. Note the
 real GEMM is M=256, K=2048, N=1024/2048/3072 — feed the 1 MB bf16 A (256×2048) and read
 the int32 C, then let FLM's dequant/attn sequences do the int32→bf16 conversion.
+
+---
+
+## 2026-09-10 (session 2d): CORRECTION — mm.xclbin W (8MB) ≠ npu_pack_layer_bo (10MB)
+
+### Finding: the mm.xclbin GEMM's W is a SEPARATE 8 MB BO, not the 10 MB layer BO
+Capture of the prefill GEMM kernel invocation shows args `[C:1MB, A:1MB, W:8MB]`
+(`EXTBO ... size=8388608`). The 10 MB `npu_pack_layer_bo` (byte-identical to the
+captured 10 MB layer BO, seq 57) is the **layer.xclbin (decode)** weight format; the
+**mm.xclbin (prefill)** reads a different 8 MB W (8388608 bytes = 2^23, not a multiple
+of the 5120-B tile).
+
+### Finding: GEMM A = bf16 256×2048 (K=2048), C = int32 256×1024 (N=1024)
+`libgemm.so` instantiates `T_in = biovault::bfloat16_t` (A is bf16). M=256. So the
+first prefill GEMM (seq 170 A → seq 171 C) is M=256,K=2048,N=1024 = the **o_proj**
+(K = num_heads×head_dim = 16×128 = 2048, N = hidden 1024), per `npu_pack_layer_bo`'s
+tile map (o_proj = tiles [512,768), G=16).
+
+### Finding: feeding npu_pack_layer_bo as W does NOT reproduce FLM's C
+Tried every candidate (K=1024×{q,k,v}, K=2048×{o,fused}, all weight_offsets) — 0/262144
+match against the captured C (seq 171). My C comes out near INT32_MAX (overflow), FLM's
+is ~±1.1e9. So the mm.xclbin's W is a **different packing** (likely raw/unreordered
+Q4NX, or zp-stripped) than `npu_pack_layer_bo`'s reordered tiles. The earlier
+"W = npu_pack_layer_bo (shared 10MB BO)" conclusion was wrong for the mm.xclbin — it
+applies to layer.xclbin only.
+
+### Implication for wiring
+To drive mm.xclbin natively we must reproduce FLM's 8 MB W packing (or call FLM's
+`load_weights`), NOT reuse `npu_pack_layer_bo`. Next step: dump the 8 MB EXTBO content
+(via a sub-buffer hook on `xrt::bo`) or locate FLM's mm W packer, then re-verify the
+GEMM against the captured C.
