@@ -194,7 +194,18 @@ hazard). Caveat: run it over a directory that EXCLUDES a file with an unknown dt
 **containing directory** (proved by running it in two differently-named directories — same files,
 id follows the directory).
 
-## 8. The checks (two in CI, informational)
+## 8. The checks (two configured in CI, informational)
+
+**WHEN CI ACTUALLY RUNS THEM — verified, not assumed.** `ci.yml` triggers on
+`push: branches: [main]`, `pull_request: branches: [main]` and `merge_group:`. A
+**feature-branch push runs nothing**: `api.github.com/.../actions/runs?branch=<feature>` returned
+**0 runs**, so on this branch the two steps below have never executed in CI, and neither have the
+rest of `ci.yml`'s jobs. They begin to run when a PR is opened against `main`.
+
+So the honest description of the enforcement today is: **procedural (this file) with CI as the
+destination once a PR exists.** The steps are correct and verified by running them by hand — the
+composite exits 0 — but nothing runs them automatically on a feature branch. Whether to add a
+branch pattern to the `push` trigger is a repo-wide runner-capacity decision, not a local one.
 
 ```sh
 sh tools/dispatch_key_check.sh src/backend_manager.cpp     # exit 0; 1 = the set CHANGED
