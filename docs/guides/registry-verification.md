@@ -60,9 +60,20 @@ measured in — onto a branch and out to origin. `build/` was already ignored; `
 been listed. If you change the build-dir name, add it to `.gitignore` in the same commit that changes
 the runbook.
 
-**Both routes put `registry_scan` in `b/`** — route A explicitly (`-o b/registry_scan`, with the
-`mkdir -p b` above so it does not need cmake to have run), route B because that is where the target
-lands. **Every invocation in §2–§7 therefore works under either route.** This was not true before: the
+**Every build in this file writes into `b/` — stated once, here, on purpose.** A convention stated
+once has one set to re-enumerate when it changes; a convention applied per-recipe gets enumerated
+per-recipe and diverges (@agent-ec855d's corollary, and the reason §7's recipe wrote to the repo root
+while §1's did not). The rule, and every current member of its set:
+
+| recipe | writes | route |
+|---|---|---|
+| `cmake -S . -B b` + targets | `b/1bit`, `b/registry_scan`, `b/registry_route_map` | B (cmake) |
+| standalone `registry_scan` | `-o b/registry_scan` (with `mkdir -p b`, so no cmake needed) | A |
+| standalone `registry-diff` (§7) | `-o b/registry-diff` | A |
+
+**Add a recipe and it joins this table — that is the whole requirement, and it is why the table exists
+instead of a sentence per tool.** `b/` is gitignored (§1), so nothing built here is ever a
+`git add -A` sweep candidate. **Every invocation in §2–§7 therefore works under either route.** This was not true before: the
 header build wrote `./registry_scan` while cmake writes `b/registry_scan`, and the engine-side
 sections — which a reader can only reach via the cmake route — used the standalone route's path, so
 the readers who most needed them had no such file. The fix is to remove the fork, not to document it.
@@ -432,6 +443,27 @@ that makes the per-worktree route cheap is the **same property** that makes it o
 nothing shared and protecting nobody who did not act are one fact, not two. Stated as a pair, the
 recommendation is: *the worktree hook protects the author who installs it; the daily job protects
 `main` whoever committed.*
+
+**TWO RULES ABOUT ENUMERATION ITSELF, both from @agent-ec855d, both about the *set* rather than an
+instance.**
+
+**1. A fix that touches a convention changes the set the convention COVERS, so the enumeration must be
+redone over the NEW set.** That is precisely why the sibling recipe was invisible: the area had just
+been enumerated, over the old set, and declared done. The corollary is a design rule, not a habit —
+**state the convention once — and the operative word is ENUMERATED, not mentioned.** A *mention* that
+does not list the set cannot drift; a second *list* can, and will. So the requirement is one
+enumeration (the table in §1), and any number of references to it. Two lists is the failure mode; two
+sentences is fine. That is exactly how §1's `registry_scan` came to write into `b/` while §7's
+`registry-diff` still wrote to the repo root.
+
+**2. Location is a proxy; REGENERABILITY is the fact** (@agent-ec855d correcting their own earlier
+advice, which had said "durable copy, not tmpfs" — a statement about *where*, not about *what*).
+**Volatile storage is fine for DERIVED artifacts and dangerous for AUTHORED ones.** The runbook's
+`/tmp/fixture` is safe because one documented command regenerates it byte-for-byte; a corrections
+harness that lived at `/tmp` was not, because the file *was* the accumulated content and no command
+recreated it. Checked here rather than assumed: every path this file creates is derived — `b/` outputs
+and the fixture — and **nothing documented is authored**, so this runbook is clean on that axis. A
+reader who saves something of their own into a path this file names should move it out.
 
 **THE METHOD RULE this section earned — stated as a rule, because "be careful" failed twice inside
 paragraphs recording its own failure.** Every claim of mine corrected in this work was a **closure
