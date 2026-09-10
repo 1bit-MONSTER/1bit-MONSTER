@@ -18,6 +18,8 @@
 //                            (NOTE: --catalog REQUIRES its path — an optional
 //                             value silently swallows the first root)
 //     --resolve PATH|ID      resolve one artifact (acceptance-test check)
+//     --route ID|PATH        run the RESOLVER: id -> artifact -> capability
+//     --prefer A,B,C         capability preference order for --route
 //     --quiet                summary only
 #include "model_registry.h"
 
@@ -121,7 +123,7 @@ void describe(const ModelArtifact& a) {
 int registry_scan_main(int argc, char** argv) {
     ScanOptions opt;
     bool json = false, quiet = false, catalog_set = false;
-    std::string resolve_arg, cap_arg, catalog_arg;
+    std::string resolve_arg, cap_arg, catalog_arg, route_arg, prefer_arg;
     uint32_t at_context = 0;
     std::vector<std::string> roots;
 
@@ -134,6 +136,8 @@ int registry_scan_main(int argc, char** argv) {
         else if (a == "--max-depth" && i + 1 < argc) opt.max_depth = (size_t)atoi(argv[++i]);
         else if (a == "--capability" && i + 1 < argc) cap_arg = argv[++i];
         else if (a == "--resolve" && i + 1 < argc) resolve_arg = argv[++i];
+        else if (a == "--route" && i + 1 < argc) route_arg = argv[++i];
+        else if (a == "--prefer" && i + 1 < argc) prefer_arg = argv[++i];
         else if (a == "--at-context" && i + 1 < argc) at_context = (uint32_t)atoi(argv[++i]);
         else if (a == "--catalog" && i + 1 < argc) { catalog_set = true; catalog_arg = argv[++i]; }
         else if (a == "--catalog-default") { catalog_set = true; }
@@ -160,6 +164,38 @@ int registry_scan_main(int argc, char** argv) {
                 fprintf(stderr, "  [catalog] unresolved: %s -> %s\n",
                         e.catalog_id.c_str(), e.checkpoint.c_str());
         }
+    }
+
+    if (!route_arg.empty()) {
+        RouteRequest req;
+        req.target = route_arg;
+        req.context_tokens = at_context;
+        if (!prefer_arg.empty()) {
+            size_t p0 = 0;
+            while (p0 <= prefer_arg.size()) {
+                size_t pc = prefer_arg.find(',', p0);
+                std::string tok = prefer_arg.substr(p0, pc == std::string::npos ? std::string::npos : pc - p0);
+                if (!tok.empty()) {
+                    auto c = capability_from_string(tok);
+                    if (!c) { fprintf(stderr, "registry_scan: unknown capability '%s'\n", tok.c_str()); return 2; }
+                    req.prefer.push_back(*c);
+                }
+                if (pc == std::string::npos) break;
+                p0 = pc + 1;
+            }
+        }
+        RouteDecision d = reg.resolve(req);
+        printf("target:    %s\n", route_arg.c_str());
+        if (at_context) printf("gate:      %u context tokens\n", at_context);
+        if (!d.artifact) { printf("resolved:  NO -- %s\n", d.reason.c_str()); return 1; }
+        printf("artifact:  %s\n", d.artifact->id.c_str());
+        printf("resolved:  %s -> %s%s\n", d.resolved ? "YES" : "NO",
+               onebit::to_string(d.chosen),
+               d.limit_binding ? "  [constraint binding]" : "");
+        printf("reason:    %s\n", d.reason.c_str());
+        for (const auto& r : d.rejected)
+            printf("  skipped: %-16s %s\n", onebit::to_string(r.first), r.second.c_str());
+        return d.resolved ? 0 : 1;
     }
 
     if (!resolve_arg.empty()) {

@@ -296,6 +296,27 @@ struct ModelArtifact {
 };
 
 // ── Report ─────────────────────────────────────────────────────────────────
+// ── Resolver ──────────────────────────────────────────────────────────────
+struct RouteRequest {
+    std::string target;             // canonical id, alias, or a path
+    uint32_t context_tokens = 0;    // 0 = no context gate
+    // Preferred capability order. EMPTY means "use the artifact's own order",
+    // because the ORDER is policy and policy belongs to the caller (R6), not to
+    // the registry. The registry only refuses what cannot work.
+    std::vector<Capability> prefer;
+};
+struct RouteDecision {
+    bool resolved = false;
+    const ModelArtifact* artifact = nullptr;
+    Capability chosen = Capability::UNKNOWN;
+    uint32_t context_tokens = 0;
+    bool limit_binding = false;      // chosen capability carries a constraint
+    // Every capability that was NOT chosen, with the reason. Reported so a
+    // consumer can see that failover was a decision and not an accident.
+    std::vector<std::pair<Capability, std::string>> rejected;
+    std::string reason;
+};
+
 // ── Catalog views ──────────────────────────────────────────────────────────
 // A recipe-keyed catalog (lemonade `user_models.json`) is NOT a registry: it
 // maps a catalog id to a checkpoint + recipe. Ingesting it as a view means the
@@ -355,6 +376,12 @@ public:
     // Ingest a recipe-keyed catalog as a view (see CatalogView).
     CatalogView attach_catalog(const std::string& json_path);
     const std::vector<CatalogView>& catalogs() const { return catalogs_; }
+
+    // ── The resolver (ADR R1/R3/R6): id -> artifact -> capability -> route ────
+    // Deliberately inside the registry, NOT in the HTTP layer: `--lemonade` hands
+    // the whole HTTP surface to Lemonade's core, so a resolver living there would
+    // be bypassed in that mode. `1bit registry` behaves identically everywhere.
+    RouteDecision resolve(const RouteRequest& req) const;
 
     std::string to_table() const;      // human, stable ordering
     // Same table, but with capability constraints applied at `at_context` tokens:

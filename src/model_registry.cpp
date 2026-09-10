@@ -1242,6 +1242,46 @@ std::vector<const ModelArtifact*> ModelRegistry::with_capability(Capability c) c
     return out;
 }
 
+RouteDecision ModelRegistry::resolve(const RouteRequest& req) const {
+    RouteDecision d;
+    d.context_tokens = req.context_tokens;
+
+    const ModelArtifact* a = resolve_path(req.target);
+    if (!a) a = find(req.target);
+    if (!a) {
+        d.reason = "no artifact matches '" + req.target + "'";
+        return d;
+    }
+    d.artifact = a;
+
+    std::vector<Capability> order = req.prefer.empty() ? a->capabilities : req.prefer;
+    for (Capability c : order) {
+        if (!a->has(c)) {
+            d.rejected.emplace_back(c, "not available on this artifact");
+            continue;
+        }
+        if (req.context_tokens && !a->supports(c, req.context_tokens)) {
+            uint32_t lim = a->max_context_for(c);
+            d.rejected.emplace_back(c, "context " + std::to_string(req.context_tokens) +
+                                           " exceeds limit " + std::to_string(lim) +
+                                           (capability_limit(c) && capability_limit(c)->not_enforced_in
+                                                ? std::string(" (and that limit is not enforced in ") +
+                                                      capability_limit(c)->not_enforced_in + ")"
+                                                : std::string()));
+            continue;
+        }
+        d.resolved = true;
+        d.chosen = c;
+        d.limit_binding = (a->max_context_for(c) != 0);
+        d.reason = "first capability in order that can serve";
+        // Everything after the winner was not considered; say so rather than
+        // leaving it silently absent.
+        return d;
+    }
+    d.reason = "no capability can serve";
+    return d;
+}
+
 std::vector<const ModelArtifact*> ModelRegistry::serve_at(Capability c,
                                                           uint32_t context_tokens) const {
     std::vector<const ModelArtifact*> out;
