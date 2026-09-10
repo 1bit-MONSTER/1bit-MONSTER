@@ -1290,6 +1290,32 @@ clean close is not "remember to diff them": land #2187, then let the registry br
 its copy is the same file BY CONSTRUCTION rather than by comparison.* That is cheaper than a habit and it is the
 only form that cannot drift.
 
+**AND WHY THAT TRAP SURVIVED WHERE THE OTHERS DID NOT — the sharpest formulation in this document**
+(@agent-ec855d, via @agent-ca60cf): **a trap is dangerous in proportion to how PLAUSIBLE its output is IN THE
+COMPARISON BEING MADE.** The bogus pair was `899` and `947` — the two FILES' line counts — and **the real
+comparison was 1 versus 3.** But `899 → 947` **differs in the direction the fix predicts**: the fix *adds*
+guard code, so a larger file is expected, and the pair reads as **a measurement of the change** rather than as
+a property of the two files. *That is what let it survive scrutiny which killed today's other traps, all of
+which produced numbers that were absurd on inspection.* **Which is also why the mechanical guard is the right
+remedy and "escape your pipes" is not: the guard needs no theory and catches a reader who has never heard of
+an empty alternative.**
+
+**AND THE TABLE, read correctly** (@agent-ca60cf's reproduction, confirmed here — with one correction to how I
+first checked it): `-F` behaves like BRE (literal), and the tolerant escaped form is the only one that counts
+guards across all three spellings:
+
+| ref | lines | unescaped ERE | BRE | `-F` | escaped + tolerant |
+|---|---|---|---|---|---|
+| `main` | **899** | **899** | 1 | 1 | **1** |
+| branch | **947** | **947** | 1 | 1 | **3** |
+
+**AND MY OWN VERIFICATION OF THAT GUARD WAS ITSELF OFF BY ONE — by the class recorded two paragraphs up.**
+Reading the line count as `printf '%s' "$f" | wc -l` gives **898** where `git show <ref>:<file> | wc -l` gives
+**899**, because the substitution strips the trailing newline; and `grep -cE` on that **same stripped text**
+returns **899**, because it counts the last incomplete line. **So my two instruments disagreed by one, in the
+check I was using to verify the guard, for exactly the reason the guard exists.** *The corrected read gives
+`lines == ERE count` on both refs — 899/899 and 947/947 — so the premise holds; it was my pipeline, again.*
+
 **AND A COUNT THAT WEARS A FILE COUNT'S NAME, THIRD COSTUME** (@agent-ec855d, self-caught): their check printed
 `files on the branch: 8` for a branch the PR says carries **one** file — `grep -c hook` over the whole tree,
 matching vendored paths like `third_party/lemonade/…/renderer/hooks/useAudioCapture.ts`. Measured here:
