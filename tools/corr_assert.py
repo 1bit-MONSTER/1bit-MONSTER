@@ -25,6 +25,12 @@ raw little-endian float32, one file per position (pNNNN.f32).
     floor here is ~5% relative L2 (implementation difference), so gate only after
     observing a few runs' distribution.
 
+Sync: this repo copy is canonical (ec855d 2026-09-10). On the gate box the working
+copy is ~/tools/corr_assert.py and /tmp/corr_assert.py is a symlink to it, so the
+habit path cannot silently run an older gate (the tools were copied once and edited
+five times in a day — agreed state with no link is a divergence waiting to happen).
+Prefer: run tools/corr_assert.py from the repo, or copy it out explicitly.
+
 Provenance: built for #2139 (q35 lanes) by agent-44437c, hardened with
 @agent-ec855d (min-floor / affine blind spot / chain-separator and index
 diagnostics) and @agent-ca60cf (alignment tripwire idea). Measured populations on
