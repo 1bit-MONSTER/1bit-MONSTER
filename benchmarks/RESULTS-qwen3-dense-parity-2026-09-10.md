@@ -673,3 +673,18 @@ npu_pack_layer_bo's off_* computation). GU gate/up output col-order still to con
 empirically — the layer BO packs up/gate as alternating 64-tile chunks (up0,gate0,up1,
 gate1,…), so the dequant's 6144-col GU W is likely up-first interleaved, to be verified
 against token parity during the wiring.
+
+## 2026-09-10 (session 2r): Bf16Mm sizing fix + A/C BO caching (Q 5.64→1.31 ms)
+
+Fixed `run_gemm_ooff`: bW was hardcoded 2048×2048 (8 MB) and bC hardcoded M×2048 — both
+overflowed the GU projection (N=6144, 12 MB W / 3 MB C). Now bW = woff+K·N (span) and
+bC = M·N. Cached the A/C BOs too (and dropped the redundant C memset — the kernel writes
+all 256 rows). Measured (0.6B, layer 0, 2-batch):
+- Q GEMM N=2048: 5.64 → 2.44 → **1.31 ms** (0.65 ms/invocation, ~410 GMAC/s)
+- QKV (3 GEMMs): 21.8 → 9.1 → **7.05 ms**
+- GU GEMM N=6144: 9.62 ms · D GEMM K=3072: 3.02 ms
+
+The remaining gap vs FLM (1269 tok/s) is the host→device W copy (840 MB/prefill — the
+bridge dequants to HOST then re-copies to device per GEMM) + the 2-batch doubling. Next
+win: keep the dequant output in persistent DEVICE buffers (dequant → device, GEMM reads
+device directly) — est. ~1.2 s for the 981-token "1k" stage (~820 tok/s).

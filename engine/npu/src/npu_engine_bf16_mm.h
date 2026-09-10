@@ -68,6 +68,9 @@ struct Bf16Mm {
     // and the two M-batches, so the W is memcpy'd once per projection).
     std::unique_ptr<buffer<uint16_t>> w_cache;
     const uint16_t* w_cache_ptr = nullptr;
+    size_t w_cache_elems = 0;
+    std::unique_ptr<buffer<uint16_t>> a_cache, c_cache;
+    size_t a_cache_elems = 0, c_cache_elems = 0;
 
     ~Bf16Mm() { /* BOs owned by xrt */ }
 
@@ -182,16 +185,22 @@ struct Bf16Mm {
         else
             gemm_->generate_seq(app.seq(), M, K, N, woff, false, Gemm::NO_Activation, 0, ooff);
         app.update_ctrl_seq();
-        auto bA = app.create_bo_buffer<uint16_t>((size_t)M * K);
-        auto bC = app.create_bo_buffer<uint16_t>((size_t)M * 2048);
-        // W: reuse the persistent 8 MB BO; only re-memcpy when the W pointer
-        // changes (the caller holds the dequant W stable per projection).
-        if (!w_cache) w_cache = std::make_unique<buffer<uint16_t>>(*dev, (size_t)2048 * 2048);
-        if (W != w_cache_ptr) { memcpy(w_cache->data(), W, (size_t)2048 * 2048 * 2); w_cache_ptr = W; }
-        memcpy(bA.data(), A, (size_t)M * K * 2);
-        memset(bC.data(), 0, (size_t)M * 2048 * 2);
-        app.safe_run(bC, bA, *w_cache);
-        memcpy(C, bC.data(), (size_t)M * N * 2);
+        // W span the kernel reads = W[woff : woff + K*N] (bf16 elements).
+        size_t wspan = (size_t)woff + (size_t)K * N;
+        if (!w_cache || w_cache_elems < wspan) {
+            w_cache = std::make_unique<buffer<uint16_t>>(*dev, wspan);
+            w_cache_elems = wspan;
+            w_cache_ptr = nullptr;   // force re-copy into the resized BO
+        }
+        if (W != w_cache_ptr) { memcpy(w_cache->data(), W, wspan * 2); w_cache_ptr = W; }
+        // reuse cached A/C BOs (sized to the max seen). The kernel writes all
+        // 256 M-rows (128 correct + 128 dup-odd) so no C memset is needed.
+        size_t a_elems = (size_t)M * K, c_elems = (size_t)M * N;
+        if (!a_cache || a_cache_elems < a_elems) { a_cache = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache_elems = a_elems; }
+        if (!c_cache || c_cache_elems < c_elems) { c_cache = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache_elems = c_elems; }
+        memcpy(a_cache->data(), A, a_elems * 2);
+        app.safe_run(*c_cache, *a_cache, *w_cache);
+        memcpy(C, c_cache->data(), c_elems * 2);
     }
 };
 
