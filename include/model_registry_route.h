@@ -223,6 +223,38 @@ bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
 // state. Nothing here may be upgraded to "verified on hardware" on their account.
 const char* backend_evidence(Capability c);
 
+// ── IS THE ROW'S TYPE A DISPATCH KEY? (census data, not a guess) ──────────────
+// @agent-ca60cf's census (`~/issue-triage/type_ambiguity_census.py`, re-runnable per
+// build — which matters given the build-scope lesson) found this is not one ambiguous
+// pair. Against current main, FOUR types are collapsed:
+//     HIP_GPU  7 ids  fused_gpu_npu, ggml_vulkan, hip_1bp_gpu, hip_gpu,
+//                     mamba1_gpu, vulkan_hpp_gpu, zamba2_gpu
+//     GENERIC  3 ids  cpu_generic, laguna_gpu, nemotron_h_cpu
+//     NPU_XRT  2 ids  npu_flm, npu_xrt
+//     ZINC_GPU 2 ids  zamba2_vulkan, zinc_gpu
+// and five are unambiguous: HRX_GPU (hrx_gpu), LSE_GPU (lse), VULKAN (vulkan_gpu),
+// CPU_SCALAR (cpu_scalar), CPU_AVX512 (cpu_avx512).
+//
+// The code proves the type is insufficient by branching on the id INSIDE the factory:
+// backend_manager.cpp:1678 (mamba1_gpu), :1691 (zamba2_gpu), :1705 (nemotron_h_cpu),
+// :1714 (hip_1bp_gpu), :1728 (fused_gpu_npu), :1735 (vulkan_hpp_gpu), :1742
+// (ggml_vulkan), :1768 (npu_flm, inside `case NPU_XRT`), :1820 (laguna_gpu), :1859
+// (zamba2_vulkan); plus dynamic_router.cpp:75/:139 (hip_gpu, zinc_gpu) and :80/:143
+// (npu_flm, npu_xrt).
+//
+// THE SHARPEST ILLUSTRATION, and the reason this is not pedantry: `case
+// BackendType::NPU_XRT` at backend_manager.cpp:1766-1799 has `if (info.id ==
+// "npu_flm") { … return b; }` and then a FALL-THROUGH that creates the legacy worker
+// subprocess backend, which the code's own comment rates at 0.06 tok/s against
+// npu_flm's 67.5. Same type, ~1000x apart. A type-only mapping that lands on npu_xrt
+// is not merely dry — it is three orders of magnitude slower while looking like the
+// same capability.
+//
+// HARD RULE for this table: **no row may ever be resolved from the type alone.** Only
+// (type, id) pairs are routable. Returns a non-null note for a collapsed type, and
+// nullptr when the type maps to exactly one id.
+const char* type_collapse_note(BackendType t);
+
 // Express a plan in the ENGINE's own currency. `BackendRoute` is what
 // select_backend_route() returns and what BackendManager::init's preferred_ids
 // overload consumes, so this is the last translation: after it, a caller swap is

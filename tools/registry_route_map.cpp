@@ -93,6 +93,20 @@ int main(int argc, char** argv) {
                c.id, c.predicate ? "yes" : "NO", c.available ? "yes" : "no",
                c.functional ? "yes" : "no", n);
     }
+    // Per-row: is the TYPE enough? (it never is for the collapsed four)
+    printf("\nTYPE-UNIQUENESS per row (a type-only mapping is NEVER sufficient):\n");
+    for (Capability c : kAll) {
+        if (c == Capability::UNKNOWN) continue;
+        BackendType t{};
+        std::string id, cons;
+        if (!backend_for(c, t, id, cons)) {
+            printf("  %-18s %-16s (refused; no backend)\n", to_string(c), "-");
+            continue;
+        }
+        const char* note = type_collapse_note(t);
+        printf("  %-18s %-16s %s\n", to_string(c), backend_name(t),
+               note ? note : "type maps to exactly one id - (type,id) still required by rule");
+    }
     printf("\nEVIDENCE STATUS per row — read this before trusting any row:\n");
     for (Capability c : kAll) {
         if (c == Capability::UNKNOWN) continue;

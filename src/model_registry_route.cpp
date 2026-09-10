@@ -51,7 +51,12 @@ bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
             // CONTAINER-DEPENDENT id, from ca60cf's review: the GGUF chain uses
             // ggml_vulkan, the 1BP chain uses vulkan_hpp_gpu. One rule for both
             // would leave 1BP artifacts with no Vulkan fallback.
-            out_type = BackendType::VULKAN;
+            // TYPE CORRECTED from ca60cf's census: vulkan_hpp_gpu is REGISTERED as
+            // BackendType::HIP_GPU (the factory comment says "factory dispatches from
+            // HIP_GPU case"), not VULKAN — the only VULKAN-typed id is `vulkan_gpu`,
+            // which neither router returns and this table does not use. Having the
+            // type wrong would send a type-based dispatcher down the wrong branch.
+            out_type = BackendType::HIP_GPU;
             out_id = "vulkan_hpp_gpu";
             return true;
         case Capability::HIP_1BP:
@@ -71,9 +76,13 @@ bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
             return true;
         case Capability::RADV_GGUF:
             // The router's GGUF/Vulkan lane is ggml_vulkan, not zinc_gpu: ZINC is a
-            // separate Vulkan-IR runtime that the router only reaches for specific
-            // architectures. Mapping RADV-GGUF onto zinc_gpu would be wrong.
-            out_type = BackendType::VULKAN;
+            // separate Vulkan-IR runtime the router only reaches for specific
+            // architectures.
+            // TYPE CORRECTED from the census: ggml_vulkan is registered as
+            // BackendType::HIP_GPU, NOT VULKAN. Its `has_vulkan()` predicate is what
+            // makes it a Vulkan LANE while its type says HIP — which is exactly why
+            // BackendType cannot be read as a capability family.
+            out_type = BackendType::HIP_GPU;
             out_id = "ggml_vulkan";
             return true;
         case Capability::HRX_GGUF:
@@ -114,6 +123,26 @@ Availability availability_for(bool available_is_a_predicate, bool available, boo
     if (!available) return Availability::ABSENT;
     if (!functional) return Availability::REGISTERED_DRY;
     return Availability::PRESENT;
+}
+
+const char* type_collapse_note(BackendType t) {
+    switch (t) {
+        case BackendType::HIP_GPU:
+            return "COLLAPSED TYPE: HIP_GPU is a factory dispatch key with 7 ids "
+                   "(fused_gpu_npu, ggml_vulkan, hip_1bp_gpu, hip_gpu, mamba1_gpu, "
+                   "vulkan_hpp_gpu, zamba2_gpu) — routable only as (type,id)";
+        case BackendType::NPU_XRT:
+            return "COLLAPSED TYPE: NPU_XRT holds npu_flm (67.5 tok/s) and npu_xrt, and "
+                   "the factory's fall-through for npu_xrt builds the legacy worker "
+                   "backend the source rates at 0.06 tok/s — ~1000x apart, same type";
+        case BackendType::GENERIC:
+            return "COLLAPSED TYPE: GENERIC holds cpu_generic, laguna_gpu, nemotron_h_cpu "
+                   "— a GPU backend typed GENERIC";
+        case BackendType::ZINC_GPU:
+            return "COLLAPSED TYPE: ZINC_GPU holds zamba2_vulkan and zinc_gpu";
+        default:
+            return nullptr;   // type maps to exactly one id in the census
+    }
 }
 
 const char* backend_evidence(Capability c) {
