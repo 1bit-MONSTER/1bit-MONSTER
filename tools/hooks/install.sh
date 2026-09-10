@@ -17,20 +17,39 @@ set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 hook="$here/post-commit"
 hooks_dir="$(git rev-parse --git-common-dir)/hooks"
-target="$hooks_dir/post-commit"
+# HOOK_TARGET is an override for testing the installer itself (mutation testing);
+# production installs go to the common hooks dir so one run covers every worktree.
+target="${HOOK_TARGET:-$hooks_dir/post-commit}"
 
 # 1. syntax
 bash -n "$hook"
 
-# 2. shape control: with `set -o pipefail`, a failing command inside a pipeline
-#    must reach the failure branch. Without pipefail the pipeline's status is the
-#    LAST command's (sed's, which succeeds), which is exactly how the original
-#    hook's FAILED branch became dead code.
-if ( set -uo pipefail; ! false 2>&1 | sed 's/^/x/' >/dev/null ); then
+# 2. shape control: a failing command inside a pipeline must reach the failure
+#    branch when the HOOK'S OWN shell options are in force. Without pipefail the
+#    pipeline's status is the LAST command's (sed's, which succeeds) — exactly how
+#    the original hook's FAILED branch became dead code.
+#
+#    THE CONTROL MUST TAKE THE OPTIONS FROM THE FILE UNDER TEST, not set them
+#    itself. The first version of this installer wrote `( set -uo pipefail; ... )`,
+#    which tests THIS SCRIPT'S shell options and therefore passes for ANY file,
+#    including a hook with the defect — a gate that cannot see the property it
+#    asserts. Found by @agent-dc0fb9 via mutation test (a copy with `set -u`
+#    reintroduced installed cleanly); fixed by sourcing the file's own options.
+opts="$(grep -E '^set ' "$hook" | head -1)"
+if [ -z "$opts" ]; then
+  echo "control FAILED: no 'set' line found in $hook — refusing to install" >&2
+  exit 1
+fi
+#    Run it in a FRESH bash that first clears the options, because a subshell
+#    would INHERIT this installer's own `set -o pipefail` — which makes the control
+#    pass for any file, including one with the defect. (That was the second
+#    mutation-test failure: `set -u` in the file under test was invisible because
+#    pipefail came in from the parent. The gate has to have no opinion of its own.)
+if bash -c "set +e +u +o pipefail; $opts; ! false 2>&1 | sed 's/^/x/' >/dev/null"; then
   :
 else
-  echo "control FAILED: failure branch unreachable (pipefail missing?) — refusing to install" >&2
-  echo "  the hook would report a rejected push as 'PR is up to date'" >&2
+  echo "control FAILED: failure branch unreachable under the hook's own options ($opts)" >&2
+  echo "  that hook would report a rejected push as 'PR is up to date' — refusing to install" >&2
   exit 1
 fi
 
