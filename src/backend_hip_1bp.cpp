@@ -8,6 +8,7 @@
 #include <hip/hip_runtime_api.h>
 #include <hip/hip_fp16.h>
 #include <cstdio>
+#include <cstring>
 #include <cmath>
 #include <vector>
 #include <chrono>
@@ -185,6 +186,10 @@ struct Hip1bpBackend : Backend {
     size_t q35_exp_bytes[3] = {0,0,0}; // per-expert bytes: [0]=gate [1]=up [2]=down (ndim==3 stacks)
     float* q35_out_f32 = nullptr;        // lm_head as f32 (F16/F32-routed output.weight)
     uint16_t* q35_out_f16 = nullptr;     // #2139: lm_head packed f16 (F16-routed output.weight)
+    // #2139 lm_head byte-reduction candidates (env H1BP_Q35_LMHEAD=int8|q4nx, default f16)
+    int8_t* q35_out_i8 = nullptr;        // int8 lm_head weights (508 MB)
+    float*  q35_out_i8s = nullptr;       // per-row int8 scales [248320]
+    uint8_t* q35_out_q4nx = nullptr;     // Q4NX-packed lm_head tiles (254 MB)
     uint8_t* q35_emb = nullptr, *q35_out = nullptr;     // token_embd / output (V x H; Q8_0 raw or Q4NX tile)
     float* q35_onorm = nullptr;                         // output_norm (H f32)
     std::vector<Q35L> q35L;
@@ -698,7 +703,34 @@ struct Hip1bpBackend : Backend {
                             (int)ow.size() == 248320 * 2048) {
                             // #2139 item-2: an F16-routed output tensor is uploaded as
                             // packed f16 (half the per-token lm_head read) instead of f32.
-                            if (ot && ot->quant == ONEBP_F16) {
+                            const char* lmh = getenv("H1BP_Q35_LMHEAD");
+                            if (ot && ot->quant == ONEBP_F16 && lmh && !strcmp(lmh, "q4nx")) {
+                                std::vector<uint8_t> qw;
+                                if (!h1bp_pack_q4nx(ow, 248320, 2048, qw) ||
+                                    hipMalloc((void**)&q35_out_q4nx, qw.size()) != hipSuccess ||
+                                    hipMemcpy(q35_out_q4nx, qw.data(), qw.size(),
+                                              hipMemcpyHostToDevice) != hipSuccess)
+                                    lok = false;
+                                else
+                                    printf("[hip1bp] q35 lm_head: Q4NX-packed (%.0f MB)\n", qw.size() / 1e6);
+                                tot += qw.size();
+                                std::vector<uint8_t>().swap(qw);
+                            } else if (ot && ot->quant == ONEBP_F16 && lmh && !strcmp(lmh, "int8")) {
+                                std::vector<int8_t> qi; std::vector<float> sc;
+                                h1bp_quant_int8(ow, 248320, 2048, qi, sc);
+                                if (hipMalloc((void**)&q35_out_i8, qi.size()) != hipSuccess ||
+                                    hipMemcpy(q35_out_i8, qi.data(), qi.size(),
+                                              hipMemcpyHostToDevice) != hipSuccess ||
+                                    hipMalloc((void**)&q35_out_i8s, sc.size() * 4) != hipSuccess ||
+                                    hipMemcpy(q35_out_i8s, sc.data(), sc.size() * 4,
+                                              hipMemcpyHostToDevice) != hipSuccess)
+                                    lok = false;
+                                else
+                                    printf("[hip1bp] q35 lm_head: int8 (%.0f MB + %.1f MB scales)\n",
+                                           qi.size() / 1e6, sc.size() * 4 / 1e6);
+                                tot += qi.size() + sc.size() * 4;
+                                std::vector<int8_t>().swap(qi); std::vector<float>().swap(sc);
+                            } else if (ot && ot->quant == ONEBP_F16) {
                                 std::vector<uint16_t> hw(ow.size());
                                 for (size_t i = 0; i < ow.size(); i++)
                                     hw[i] = h1bp_f32_to_f16_bits(ow[i]);
@@ -1559,7 +1591,11 @@ struct Hip1bpBackend : Backend {
         }
         // output norm + lm head + argmax
         h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, q35_onorm, 2048, 1e-6f);
-        if (q35_q4nx && q35_out_f16)
+        if (q35_q4nx && q35_out_q4nx)
+            h1bp_q4nx_gemv_kernel<<<(248320 + 7) / 8, 256, 0, stream>>>(q35_out_q4nx, dh, dlogits, 248320, 2048);
+        else if (q35_q4nx && q35_out_i8)
+            h1bp_int8gemv_kernel<<<(248320 + 7) / 8, 256, 0, stream>>>(dlogits, q35_out_i8, q35_out_i8s, dh, 248320, 2048);
+        else if (q35_q4nx && q35_out_f16)
             h1bp_f16gemv_kernel<<<(248320 + 7) / 8, 256, 0, stream>>>(dlogits, q35_out_f16, dh, 248320, 2048);
         else if (q35_q4nx && q35_out_f32)
             h1bp_gemv_kernel<<<248320, 256, 0, stream>>>(dlogits, q35_out_f32, dh, 248320, 2048);
@@ -1608,6 +1644,7 @@ struct Hip1bpBackend : Backend {
         }
         q35L.clear();
         hf(q35_emb); hf(q35_out); hf(q35_out_f32); hf(q35_out_f16); hf(q35_onorm);
+        hf(q35_out_i8); hf(q35_out_i8s); hf(q35_out_q4nx);
         hf(q35_sc_qkv); hf(q35_sc_qc); hf(q35_sc_q); hf(q35_sc_k); hf(q35_sc_v); hf(q35_sc_z);
         hf(q35_sc_g); hf(q35_sc_b); hf(q35_sc_qk); hf(q35_sc_v2); hf(q35_sc_att); hf(q35_sc_aout);
         hf(q35_sc_act); hf(q35_sc_moe); hf(q35_sc_exp); hf(q35_sc_expw); hf(q35_sc_expd);
