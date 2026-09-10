@@ -245,10 +245,10 @@ __global__ void h1bp_tq2nz_sum_kernel(const float* __restrict__ part,
 // Tile = 32 rows × 256 cols: [scales: 32×8×2 B][zps: 512 B][codes: 32×256/2 B]
 // (5120 B/tile). code v0 = low nibble (even col), v1 = high nibble (odd col);
 // value = code*scale + zp. Same warp/part structure as the TQ2NZ kernel.
-__global__ void h1bp_q4nx_part_kernel(const uint8_t* __restrict__ w,
-                                      const float* __restrict__ x,
-                                      float* __restrict__ part,
-                                      int N, int ntc) {
+__device__ inline void h1bp_q4nx_part_body(const uint8_t* __restrict__ w,
+                                        const float* __restrict__ x,
+                                        float* __restrict__ part,
+                                        int N, int ntc) {
     const int lane = threadIdx.x & 31;
     const int wpr  = (ntc + 3) >> 2;
     const int warp = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
@@ -274,6 +274,13 @@ __global__ void h1bp_q4nx_part_kernel(const uint8_t* __restrict__ w,
         acc += ((float)(b >> 4)  * scale + z) * xp[i * 2 + 1];
     }
     part[(size_t)row * 32 * wpr + (warp % wpr) * 32 + lane] = acc;
+}
+
+__global__ void h1bp_q4nx_part_kernel(const uint8_t* __restrict__ w,
+                                      const float* __restrict__ x,
+                                      float* __restrict__ part,
+                                      int N, int ntc) {
+    h1bp_q4nx_part_body(w, x, part, N, ntc);
 }
 
 // ── Device argmax (Phase 1): two-pass reduction over V logits ──
@@ -645,3 +652,83 @@ __global__ void h1bp_acc_kernel(float* __restrict__ acc, const float* __restrict
     int i = threadIdx.x + blockIdx.x * blockDim.x;
     if (i < n) acc[i] += src[i];
 }
+
+// ── #2139: hipGraph-capturable qwen35 variants ───────────────────────────────
+// The dense path captures its whole per-token step once; q35 was eager because
+// the router/expert pass read top-k indices + weights on the HOST (D2H + sync
+// + host loop) and the shared-expert gate did a host sigmoid. These variants
+// keep every decision on-device (indices/weights read from q35_sc_idx/rout at
+// launch time) so qwen35_step can run inside hipStreamBeginCapture.
+
+// Q8_0 expert GEMV with the expert index read from device (slot s of idx_d).
+__global__ void h1bp_q8gemv_slice_idx_kernel(float* y, const uint8_t* W,
+        const float* x, const int* __restrict__ idx_d, int slot,
+        int out_per_exp, int K) {
+    int exp_idx = idx_d[slot];
+    int row = blockIdx.x;               // 0..out_per_exp-1
+    if (row >= out_per_exp) return;
+    const uint8_t* wr = W + (size_t)exp_idx * ((size_t)out_per_exp * (K >> 5) * 34)
+                          + (size_t)row * ((size_t)(K >> 5) * 34);
+    double sum = 0;
+    for (int j = threadIdx.x; j < K; j += blockDim.x) {
+        int blk = j >> 5, lane = j & 31;
+        const uint8_t* bp = wr + (size_t)blk * 34;
+        float d = __half2float(__ushort_as_half(*(const unsigned short*)bp));
+        sum += (double)x[j] * (d * (float)((signed char)bp[2 + lane]));
+    }
+    __shared__ double sdata[256];
+    sdata[threadIdx.x] = sum;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) y[(size_t)row] = (float)sdata[0];
+}
+
+// Q4NX expert partial-GEMV: expert base = W + idx_d[slot]*stride_bytes.
+__global__ void h1bp_q4nx_part_idx_kernel(const uint8_t* __restrict__ w,
+        const float* __restrict__ x, float* __restrict__ part,
+        const int* __restrict__ idx_d, int slot, size_t stride_bytes,
+        int N, int ntc) {
+    const int exp_idx = idx_d[slot];
+    h1bp_q4nx_part_body(w + (size_t)exp_idx * stride_bytes, x, part, N, ntc);
+}
+
+// acc += src * rout_d[slot]  (expert weight scale read from device).
+__global__ void h1bp_mul_acc_scaled_kernel(float* __restrict__ acc,
+        const float* __restrict__ src, const float* __restrict__ rout_d,
+        int slot, int n) {
+    float s = rout_d[slot];
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) acc[i] += src[i] * s;
+}
+
+// Shared-expert sigmoid gate, fully on-device: out[j] *= sigmoid(gate_w . x).
+__global__ void h1bp_shgate_fused_kernel(float* __restrict__ out,
+        const float* __restrict__ x, const float* __restrict__ gate_w,
+        int n, int K) {
+    __shared__ float sdot;
+    float acc = 0.0f;
+    for (int k = threadIdx.x; k < K; k += blockDim.x) acc += gate_w[k] * x[k];
+    __shared__ float sdata[256];
+    sdata[threadIdx.x] = acc;
+    __syncthreads();
+    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
+        if (threadIdx.x < s) sdata[threadIdx.x] += sdata[threadIdx.x + s];
+        __syncthreads();
+    }
+    if (threadIdx.x == 0) { sdot = 1.0f / (1.0f + __expf(-sdata[0])); }
+    __syncthreads();
+    for (int i = threadIdx.x; i < n; i += blockDim.x) out[i] *= sdot;
+}
+
+// KV store at a device-read position: dst[(*d_pos)*stride + off + i] = src[i].
+__global__ void h1bp_q35_kvput_kernel(float* __restrict__ dst,
+        const float* __restrict__ src, const int* __restrict__ d_pos,
+        int off, int stride, int n) {
+    int p = *d_pos;
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i < n) dst[(size_t)p * stride + off + i] = src[i];
+}
+

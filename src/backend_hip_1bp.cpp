@@ -127,6 +127,9 @@ struct Hip1bpBackend : Backend {
     hipGraph_t graph = nullptr;
     hipGraphExec_t graphExec = nullptr;
     bool graph_ok = false;
+    // #2139: q35 (qwen35moe) hipGraph decode state
+    bool q35_renorm = true;     // Q35_NORMTK default (hoisted from the per-step env read)
+    bool q35_graph_ok = false;  // qwen35_step captured + instantiated
 
     Hip1bpBackend(){type=BackendType::HIP_GPU;name="HIP 1BP GPU";}
     ~Hip1bpBackend()override{destroy();}
@@ -648,8 +651,37 @@ struct Hip1bpBackend : Backend {
                     *h_token = 0; *h_pos = 0;
                     HIP_CHECK(hipMemcpy(d_token, h_token, sizeof(int), hipMemcpyHostToDevice));
                     HIP_CHECK(hipMemcpy(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice));
+                    // #2139: hoist the per-step env read once + capture the whole
+                    // qwen35 step as a hipGraph (replaces eager decode when it succeeds).
+                    // Disabled when dump envs are set (they do host I/O) or H1BP_Q35_NOGRAPH=1.
+                    q35_renorm = getenv("Q35_NORMTK") == nullptr || atoi(getenv("Q35_NORMTK")) != 0;
+                    if (!getenv("H1BP_Q35_STAGE") && !getenv("H1BP_Q35_LOGDIR") &&
+                        !getenv("H1BP_DUMP") && !getenv("H1BP_Q35_NOGRAPH")) {
+                        hipError_t ce = hipStreamBeginCapture(stream, hipStreamCaptureModeGlobal);
+                        if (ce == hipSuccess) {
+                            (void)qwen35_step(0, true);   // capture-time pass (token 0, pos 0)
+                            ce = hipStreamEndCapture(stream, &graph);
+                            if (ce == hipSuccess && graph) {
+                                hipError_t ie = hipGraphInstantiate(&graphExec, graph, nullptr, nullptr, 0);
+                                if (ie == hipSuccess) {
+                                    q35_graph_ok = true;
+                                    printf("[hip1bp] q35 decode graph captured OK\n");
+                                } else {
+                                    fprintf(stderr, "[hip1bp] q35 graph instantiate failed: %s\n", hipGetErrorString(ie));
+                                }
+                            } else {
+                                fprintf(stderr, "[hip1bp] q35 capture failed: %s\n", hipGetErrorString(ce));
+                            }
+                            // undo the capture-time token-0 state writes
+                            qwen35_zero_state();
+                            pos = 0; *h_token = 0; *h_pos = 0; *h_res = -1;
+                            HIP_CHECK(hipMemcpy(d_token, h_token, sizeof(int), hipMemcpyHostToDevice));
+                            HIP_CHECK(hipMemcpy(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice));
+                        }
+                    }
                     initialized = true;
-                    printf("[hip1bp] ✅ qwen35moe GPU decode ready (eager)\n");
+                    printf("[hip1bp] ✅ qwen35moe GPU decode ready (%s)\n",
+                           q35_graph_ok ? "hipGraph" : "eager");
                     return true;
                 }
             }
@@ -856,6 +888,16 @@ struct Hip1bpBackend : Backend {
         int wpr = (ntc + 3) >> 2;
         int blocks = (N * wpr + 3) / 4;
         h1bp_q4nx_part_kernel<<<blocks,128,0,stream>>>(w,x,dpart,N,ntc);
+        h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
+    }
+
+    // #2139: expert-index-from-device variant (hipGraph-safe — no host index read).
+    void launch_q4nx_idx(const uint8_t* w, const float* x, float* out, int N, int K,
+                         size_t stride_bytes, const int* idx_d, int slot) {
+        int ntc = (K + 255) / 256;
+        int wpr = (ntc + 3) >> 2;
+        int blocks = (N * wpr + 3) / 4;
+        h1bp_q4nx_part_idx_kernel<<<blocks,128,0,stream>>>(w,x,dpart,idx_d,slot,stride_bytes,N,ntc);
         h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
     }
 
@@ -1077,7 +1119,17 @@ struct Hip1bpBackend : Backend {
     // generate() == forward() + lm_head() — argmax semantics unchanged.
     // Phase 2: when graph_ok, the whole step replays from the captured graph.
     int generate_fast(int token_id){
-        if (q35_loaded) return qwen35_step(token_id);
+        if (q35_loaded) {
+            // #2139: replay the captured q35 step (pos/token re-read on device)
+            if (q35_graph_ok) {
+                *h_token = token_id; *h_pos = pos;
+                HIP_CHECK(hipGraphLaunch(graphExec, stream));
+                HIP_CHECK(hipStreamSynchronize(stream));
+                pos++;
+                return *h_res;
+            }
+            return qwen35_step(token_id, false);
+        }
         if (graph_ok) {
             *h_token = token_id; *h_pos = pos;
             HIP_CHECK(hipGraphLaunch(graphExec, stream));
@@ -1168,14 +1220,13 @@ struct Hip1bpBackend : Backend {
             HIP_CHECK(hipMemcpyAsync(d, s, 128 * 4, hipMemcpyDeviceToDevice, stream));
         }
     }
-    int qwen35_step(int token_id) {
+    int qwen35_step(int token_id, bool for_capture) {
         if (!q35_loaded) return -1;
         if (pos >= max_seq - 1) { fprintf(stderr, "[hip1bp] q35 KV overflow pos=%d\n", pos); return -1; }
         *h_token = token_id; *h_pos = pos;
         HIP_CHECK(hipMemcpyAsync(d_token, h_token, sizeof(int), hipMemcpyHostToDevice, stream));
         HIP_CHECK(hipMemcpyAsync(d_pos, h_pos, sizeof(int), hipMemcpyHostToDevice, stream));
-        // embed (Q8_0 row dequant) into dh
-        HIP_CHECK(hipMemcpy(d_token, &token_id, sizeof(int), hipMemcpyHostToDevice));
+        // embed (Q8_0 row dequant) into dh — reads *d_token (set above)
         if (q35_q4nx)
             h1bp_embed_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(
                 dh, d_embed, d_token, 2048, 248320);
@@ -1198,10 +1249,12 @@ struct Hip1bpBackend : Backend {
             if (q35_q4nx) launch_q4nx(W, x, y, M, K);
             else          h1bp_q8gemv_kernel<<<M, 256, 0, stream>>>(y, W, x, M, K);
         };
-        auto gemvE = [&](float* y, const uint8_t* W, const float* x, int e,
-                         int M, int K, int slot) {
-            if (q35_q4nx) launch_q4nx(W + (size_t)e * q35_exp_bytes[slot], x, y, M, K);
-            else          h1bp_q8gemv_slice_kernel<<<M, 256, 0, stream>>>(y, W, x, e, M, K, 1);
+        auto gemvE = [&](float* y, const uint8_t* W, const float* x, int slot,
+                         int M, int K, int buf) {
+            // #2139: the expert index is read from DEVICE (q35_sc_idx[slot]) so the
+            // whole qwen35 step is hipGraph-capturable (no D2H read, no host loop).
+            if (q35_q4nx) launch_q4nx_idx(W, x, y, M, K, q35_exp_bytes[buf], q35_sc_idx, slot);
+            else          h1bp_q8gemv_slice_idx_kernel<<<M, 256, 0, stream>>>(y, W, x, q35_sc_idx, slot, M, K);
         };
         for (int l = 0; l < NC; l++) {
             Q35L& w = q35L[l];
@@ -1230,9 +1283,10 @@ struct Hip1bpBackend : Backend {
                 // store k (v2) and v into the per-layer kv cache [seq][k0 k1 v0 v1]
                 int f = n_full_layers;
                 float* kvbase = q35_kvc + (size_t)f * (max_seq * 1024);
-                HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024, q35_sc_v2, 512 * 4, hipMemcpyDeviceToDevice, stream));
+                // #2139: store at the DEVICE-read position (hipGraph-safe)
+                h1bp_q35_kvput_kernel<<<2, 256, 0, stream>>>(kvbase, q35_sc_v2, d_pos, 0, 1024, 512);
                 gemv(q35_sc_v, w.v, dh, 512, 2048);
-                HIP_CHECK(hipMemcpyAsync(kvbase + (size_t)pos * 1024 + 512, q35_sc_v, 512 * 4, hipMemcpyDeviceToDevice, stream));
+                h1bp_q35_kvput_kernel<<<2, 256, 0, stream>>>(kvbase, q35_sc_v, d_pos, 512, 1024, 512);
                 // attention over the cache, then sigmoid-gate multiply, then o_proj
                 h1bp_q35_fattn_kernel<<<16, 256, 0, stream>>>(q35_sc_att, kvbase, q35_sc_att,
                     q35_kv_scores, 16, 2, 256, max_seq, d_pos);
@@ -1287,32 +1341,23 @@ struct Hip1bpBackend : Backend {
             h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, w.pan, 2048, 1e-6f);
             h1bp_gemv_kernel<<<256, 256, 0, stream>>>(q35_sc_logits, w.router, dh, 256, 2048);
             // norm_topk: llama qwen35 uses renorm? default OFF unless env
-            bool renorm = getenv("Q35_NORMTK") == nullptr || atoi(getenv("Q35_NORMTK")) != 0;  // norm_topk default ON
-            h1bp_q35_topk_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, q35_sc_rout, q35_sc_idx, 256, 8, renorm);
+            h1bp_q35_topk_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, q35_sc_rout, q35_sc_idx, 256, 8, q35_renorm);
             HIP_CHECK(hipMemset(q35_sc_moe, 0, 2048 * 4));
-            int exps[8]; float wts[8];
-            HIP_CHECK(hipStreamSynchronize(stream));
-            HIP_CHECK(hipMemcpy(exps, q35_sc_idx, 8 * 4, hipMemcpyDeviceToHost));
-            HIP_CHECK(hipMemcpy(wts, q35_sc_rout, 8 * 4, hipMemcpyDeviceToHost));
+            // #2139: fixed 8 slots — expert idx + weight read on device (capturable)
             for (int r = 0; r < 8; r++) {
-                int e = exps[r];
-                gemvE(q35_sc_exp, w.ex_u, dh, e, 512, 2048, 1);
-                gemvE(q35_sc_expw, w.ex_g, dh, e, 512, 2048, 0);
+                gemvE(q35_sc_exp, w.ex_u, dh, r, 512, 2048, 1);
+                gemvE(q35_sc_expw, w.ex_g, dh, r, 512, 2048, 0);
                 h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
-                gemvE(q35_sc_expd, w.ex_d, q35_sc_exp, e, 2048, 512, 2);
-                h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_expd, wts[r], 2048);
-                h1bp_acc_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, 2048);
+                gemvE(q35_sc_expd, w.ex_d, q35_sc_exp, r, 2048, 512, 2);
+                h1bp_mul_acc_scaled_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, q35_sc_rout, r, 2048);
             }
             // shared expert + sigmoid gate
             gemv(q35_sc_exp, w.sh_u, dh, 512, 2048);
             gemv(q35_sc_expw, w.sh_g, dh, 512, 2048);
             h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
             gemv(q35_sc_expd, w.sh_d, q35_sc_exp, 2048, 512);
-            { float sgate;
-              h1bp_gemv_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, w.sh_gatew, dh, 1, 2048);
-              HIP_CHECK(hipMemcpy(&sgate, q35_sc_logits, 4, hipMemcpyDeviceToHost));
-              sgate = 1.0f / (1.0f + expf(-sgate));
-              h1bp_mul_scalar_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_expd, sgate, 2048); }
+            // #2139: shared-expert sigmoid gate fused on device (no D2H/sync)
+            h1bp_shgate_fused_kernel<<<1, 256, 0, stream>>>(q35_sc_expd, dh, w.sh_gatew, 2048, 2048);
             h1bp_acc_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, 2048);
             h1bp_copy_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, dsilu, 2048);
             h1bp_add_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(dh, q35_sc_moe, 2048);
@@ -1333,6 +1378,12 @@ struct Hip1bpBackend : Backend {
         int nblk = std::min(AMX_MAXB, (248320 + 255) / 256);
         h1bp_argmax_pass1_kernel<<<nblk, 256, 0, stream>>>(dlogits, 248320, d_amx, d_ami);
         h1bp_argmax_pass2_kernel<<<1, 256, 0, stream>>>(d_amx, d_ami, nblk, d_argmax);
+        if (for_capture) {
+            // #2139: capture path — per-replay result goes to pinned h_res
+            // asynchronously (a sync D2H inside a captured region is illegal).
+            HIP_CHECK(hipMemcpyAsync(h_res, d_argmax, sizeof(int), hipMemcpyDeviceToHost, stream));
+            return 0;
+        }
         int out_tok = -1;
         HIP_CHECK(hipMemcpy(&out_tok, d_argmax, sizeof(int), hipMemcpyDeviceToHost));
         pos++;
