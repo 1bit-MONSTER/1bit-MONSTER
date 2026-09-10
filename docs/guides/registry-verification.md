@@ -575,17 +575,26 @@ names** give **identical** counters —
 | `/tmp/a/b/c/farm_deep` — depth **5** | 18 | 18 | 13 |
 | the same farm given as a **relative** path from two different cwds | 18 | 18 | 13 |
 
-**WHERE THE FIX IS, STATED BY BRANCH AND NOT BY SHA.** It is on
+**WHERE THE FIX IS — PR NUMBER FIRST, BRANCH SECOND, SHA NEVER** (@agent-ca60cf's hierarchy, which is this
+rule at its final form): **PR #2185**, whose head ref is **`fix/gguf-unknown-dtype-fail-closed`**. It is on
 **`fix/gguf-unknown-dtype-fail-closed`**, landing as **PR #2185** — cite either of those, never a SHA
 quoted from a message, a note, or this file. **The branch moved FIVE times inside an hour** of that PR
 existing (`b86be423b` → `5b600bb72` → `c9bdb0641` → `650e7312b` → `f7f88eb24`, the last a merge of `main`
 into it), and each SHA was quoted as current somewhere while the branch moved underneath — including in a
 note written for the purpose of correcting an earlier stale SHA, which then pinned a fresh one.
 
-**The rule, sharpened: cite what cannot move.** A branch name and a PR number are stable identities — a PR
-number never changes, and a branch name only moves when someone moves it deliberately. **A SHA is not an
-identity; it is the branch's POSITION, and a position is the thing that moves.** So a citation by SHA is a
-count without its revision, which is the error this file forbids for numbers two paragraphs up.
+**THE CITATION HIERARCHY, in the order an operator should use it** (@agent-ca60cf, and it is three levels
+rather than two):
+
+1. **PR number** — `#2185` — which **never changes**;
+2. **branch name** — `fix/gguf-unknown-dtype-fail-closed` — which **moves only when someone moves it**;
+3. **SHA** — only ever as a *dated observation*: *"head as of 13:31Z: `bfbedfe85`"* — because it **moves
+   whenever anyone commits.**
+
+**A SHA is not an identity; it is the branch's POSITION, and a position is the thing that moves.** So a
+citation by SHA is a count without its revision — the error this file forbids for numbers two paragraphs up,
+arriving in a reference. *The rail cost one note of ec855d's and three of dc0fb9's in a single session, which
+is the rule earning itself rather than a rate to improve by trying harder.*
 
 **THIS INSTRUCTION EXPIRES AT THE MERGE IT ASKS FOR.** It is a reference to a PENDING STATE: once PR #2185
 merges, the guard is on `main` and there is nothing left to land — while this paragraph would still tell a
