@@ -1427,3 +1427,23 @@ why the dense path (one layer.xclbin) batches but the MoE GEMMs cannot.
    xclbins (GU+SGU in one partition, D+SD in one), which is the correct
    mechanism (xclbin fusion), not cross-xclbin runlists. Reverted the broken
    runlist attempt; the fused path stands as option (a).
+
+## Round 99 — engine fused path runs 1.5 tok/s but token mismatch (21953 vs 76740) (2026-09-10)
+
+Ran the engine's own MoE path with the v28 FUSED xclbins
+(NPU_MOE=1 NPU_MOE_FUSED=1 NPU_GREEDY=1, prompt 151644, 1 decode token):
+
+    Prefill 4114 ms; decode 675 ms/tok (1.5 tok/s)  — 2x the 0.7 baseline.
+    greedy next token = 21953   (CPU reference = 76740)
+
+=> The 2-launch/layer reduction (option a) is DELIVERED by the existing fused
+   path (no new code), lifting ~0.7 -> ~1.5 tok/s. BUT the engine's per-expert
+   int8 MoE FFN is NOT token-parity with the float reference (21953 != 76740) —
+   the int8 quantization (or a subtle FFN bug) flips the greedy token. So
+   task-4's correctness gate fails for the engine NPU_MOE path as it stands.
+
+Full picture: (1) lib per-ctx ELF NaNs (R59) — closed; (2) engine NPU_MOE
+runs but not token-parity (this round); (3) region-B generator closed (R93).
+The remaining work toward a CORRECT fast 35B is: fix the engine MoE FFN
+numerics (moe_ffn_npu vs moe_ffn_cpu token parity) — a bounded correctness
+debug — or obtain the FastFlowLM source.
