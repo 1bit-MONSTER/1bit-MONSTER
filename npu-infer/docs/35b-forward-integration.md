@@ -1167,3 +1167,22 @@ This is the ground truth for the task-4 correctness gate (token parity + the
 per-layer hidden-state byte compare). The engine side (MoERuntimeLayerEngine +
 routed-expert GEMMs) must reproduce token 76740 and the 40 hidden states once
 the routed experts are wired.
+
+## Round 85 — expert-forward args pinned: gen_dequant_mm_512 = shared experts (2026-09-10)
+
+Dumped the desc's per-layer weight entries (desc.0x70, 40 entries) with a
+heap-allocated desc (tools/dump_moe_experts.cpp approach):
+
+- desc.0x10 = 2048 (H), desc.0x58 = 512 (IM_EXP).
+- gen_dequant_mm_512's woff2 offsets (entry.0x2b8/0x208/0x158) =
+  0x1bc00000 / 0x1bc94000 / 0x1bd28000 = share_up / share_gate / share_down
+  (the region-B desc offsets). Only entries 0 and 3 are populated — the
+  per-layer shared-expert entries.
+
+=> The expert_prefill_context's gen_dequant_mm_512 ×3 is the SHARED-expert
+   FFN (share_up/gate/down GEMMs, reading region B), NOT the routed experts.
+   The routed experts are the vtable-dispatched send_manual_expert_* path on
+   the expert-pool BO (task-2). Full per-token forward =
+   CPU router -> shared FFN (gen_dequant_mm_512, region B) -> routed FFN
+   (send_manual_expert_*, expert pool) -> layer ELF (attention/norms/router)
+   -> lm_head. Region-B offsets for the shared FFN are now pinned.
