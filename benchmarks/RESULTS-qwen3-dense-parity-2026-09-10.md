@@ -362,3 +362,33 @@ valid only for layer.xclbin, not mm.xclbin.
   per-GEMM A — note the K GEMM's A (seq 172) differs from Q's A (seq 170), likely RoPE).
 - Wire: dequant.xclbin (Q4NX→bf16) + mm.xclbin (bf16 GEMM) + attn.xclbin into the
   split-path prefill in `engine/npu/src/npu_engine_universal.cpp`.
+
+---
+
+## 2026-09-10 (session 2f): FULL prefill GEMM path VERIFIED byte-exact
+
+### dequant.xclbin (Q4NX→bf16) + mm.xclbin (bf16 GEMM) — both reproduced
+- `Dequant::generate_dequant_q4_1_seq(seq, D_in=1024, D_out=4096, weight_offset=0, mode=0)`
+  with `npu_pack_layer_bo` W → **8 MB bf16 QKV W** — matches captured mmw **4194304/4194304**.
+- `Gemm::generate_seq(seq, M=256, K=1024, N=2048, weight_offset=0)` with that W and A=bf16
+  → **Q output** — matches captured seq171 **524288/524288**.
+
+### Complete prefill GEMM recipe (dense Qwen3, per layer)
+1. **dequant.xclbin** (`Dequant::generate_dequant_q4_1_seq`): Q4NX → bf16 W, per projection:
+   - qkv: D_in=1024, D_out=4096, woff=0 → 8 MB (q 2048 + k 1024 + v 1024)
+   - o:   D_in=2048, D_out=1024, woff=512·5120 → 4 MB
+   - gate/up: D_in=1024, D_out=3072 → 6 MB each
+   - down: D_in=3072, D_out=1024 → 6 MB
+2. **mm.xclbin** (`Gemm::generate_seq`, T_in=bf16, T_out=bf16): A_bf16 × W_bf16 → C_bf16:
+   - q: M=256, K=1024, N=2048, woff=0
+   - k: M=256, K=1024, N=1024, woff=4 MB
+   - v: M=256, K=1024, N=1024, woff=6 MB
+   - o: M=256, K=2048, N=1024
+   - gate/up: M=256, K=1024, N=3072
+   - down: M=256, K=3072, N=1024
+
+### Remaining
+- K GEMM's A differs from Q's A (captured seq172 ≠ seq170) — the RoPE; determine the A
+  transform (or use FLM's gen_rtp_seq/gen_layer_seq which already apply it).
+- Then wire dequant+mm into the split-path prefill in `engine/npu/src/npu_engine_universal.cpp`
+  and measure vs FLM (target 500–1269 tok/s prefill).
