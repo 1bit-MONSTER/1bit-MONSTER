@@ -831,6 +831,26 @@ a blacklist that matches nothing, a guard that cannot fire, a route with no nega
 belongs to the second, and it is exactly how F12b was found broken: *a mitigation that cannot fire on
 its own motivating case is not one.*
 
+**AND THE RULE BENEATH THE LIST, stated as a RULE because the count is a closure over instances found and
+nothing else** (@agent-ec855d's facets-versus-classes distinction, turned on its own list):
+
+> **derived from property X, used to conclude about subject Y, where Y has an axis X cannot see.**
+
+Everything above is an instance of that one sentence — the guard's asymmetry, the six-workflow sentence,
+the `total_count` magnitude, the routing-clause map, the enum-name extractor, the field-order grep, the
+`b.`-prefix grep, the commentary-markers check, and the vocabulary-vs-word absence check. **Nine or more
+instances of one rule; the number is not the point and the next one does not refute it.**
+
+**A tenth arrived while writing this paragraph, and it was in this file's own fix:** facet 4(a) claims
+"the operand of N COMMANDS", and the derivation attached to it counted **mentions** — 16, including its
+own line, since the command contains the string it counts — where the command count was 11 and the
+originally published 10 was written when it was 9. Three numbers, three properties, none stated.
+
+**Two corollaries worth more than the list.** A derivation must measure the **same property the claim is
+about**, or it answers a neighbouring question. And **an absence from a pattern is not an absence** —
+a word-grep that returns nothing looks like a complete answer rather than a partial one, which is why the
+false-absence form is the most dangerous of them.
+
 **THE CHECK-SHAPE THAT WAS MISSING, worth stating once:** when this step was placed in `ci.yml`,
 its **feasibility** was verified — source-only, no dependencies, seconds to run — but not its
 **reachability**, i.e. that the trigger fires for the branch being pushed to. **Feasibility is not
