@@ -207,3 +207,36 @@ Per synchronous GEMM launch (`go_rows`):
 - Wired into the runlist path (gate + bridge + ELFs), decode now greedy-parity
   with FLM (32). Weight BO packing byte-identical to FLM's runtime capture
   (layer-0 120,586,240 B, 0 diffs).
+
+---
+
+## 2026-09-10 (session 2): dequant.xclbin identified as WEIGHT dequantizer (not GEMM-output)
+
+### Finding: the dequant is a SEPARATE xclbin + libdequant.so, not a scalar scale
+The earlier "dequant scale ~85.5M" conclusion was WRONG. FLM does the int32→bf16
+conversion with a dedicated `dequant.xclbin` driven by `Dequant::generate_dequant_q4_1_seq`
+(libdequant.so), which reads the Q4NX scales/zps from the layer BO — so there is no
+single scalar dequant constant.
+
+Symbol: `Dequant::generate_dequant_q4_1_seq(npu_sequence*, D_in, D_out, weight_offset, mode)`.
+
+### Finding: dequant.xclbin = Q4NX *weight* dequantizer (Q4NX int4 → bf16)
+Definitive test: run `Dequant` with **C = 0** (all zeros) and W = K tiles →
+output = `[-0.0161, 0.0233, 0.0354, 0.0143, 0.0039, -0.0457, 0.0042, -0.0238]`
+which matches `dequant_q4nx.cpp`'s `W_dequant[0][0..7]` EXACTLY. So the dequant.xclbin
+dequantizes the *weights* (Q4NX→bf16); it is independent of the GEMM accumulator C.
+Its I/O: arg0 = output bf16 (in-place), arg1 = W (Q4NX). Run as `run(bOut, bW)`.
+
+### Finding: GEMM is per-projection (separate Q/K/V) selected by weight_offset
+`Gemm::generate_seq(seq, M, K, N, weight_offset, ...)` with `weight_offset = tile_index*5120`
+selects the projection tiles in `npu_pack_layer_bo`: Q=0, K=256*5120, V=384*5120,
+O=512*5120, up=768*5120, gate=1152*5120, down=1536*5120. Verified: K GEMM (woff=1310720)
+gives C[0]=-48431231 (≠ Q's -8257537).
+
+### Remaining
+- Determine where the GEMM's int32 C is converted to bf16 QKV (mm.xclbin output is
+  int32; dequant.xclbin only dequantizes weights — so the QKV int32→bf16 conversion is
+  done elsewhere: host, attn.xclbin, or a scalar in the layer.xclbin path). Inspect
+  `qwen3_npu_sequence::gen_layer_seq` (libqwen3_npu.so) to resolve.
+- Then wire: per-projection Gemm (mm.xclbin) + Dequant (dequant.xclbin) + attn.xclbin
+  into the split-path prefill in `engine/npu/src/npu_engine_universal.cpp`.
