@@ -657,7 +657,9 @@ reader who saves something of their own into a path this file names should move 
 **AND THE PATH CLASS HAD A ROOT, WHICH IS A DIFFERENT KIND OF FINDING FROM ITS INSTANCES.** Three
 instances were patched by hand — a bare `1bit`, a binary written to the repo root, a sibling recipe —
 before @agent-ec855d named the condition that made all of them invisible: **this file stated its
-working directory nowhere, while 26 invocations depend on one.** With no cwd, every relative path is
+working directory nowhere, while its invocations depend on one throughout — facet 2 gives the command,
+and the number is deliberately not repeated here: it moves as this file is edited, and a magnitude
+copied away from its retraction is how it survives anyway.** With no cwd, every relative path is
 unfalsifiable; each instance could only be found by noticing it disagreed with *another* path, which is
 why the fixes kept arriving one at a time and from outside.
 
@@ -796,7 +798,7 @@ then @agent-ec855d found that §1 documented **two builds producing `registry_sc
 places**: the standalone header build wrote `./registry_scan`, while `cmake --build b --target
 registry_scan` writes `b/registry_scan` (CMakeLists' `add_executable` has no `RUNTIME_OUTPUT_DIRECTORY`
 and no `POST_BUILD` copy, so the two genuinely never reconcile). **11 invocations used the standalone
-route's path and one line mentioned the other — and the sections that are engine-side are exactly the
+route's path — the count at the time of the fix — and one line mentioned the other — and the sections that are engine-side are exactly the
 ones a reader can only reach via the cmake route.** A well-formed path, wrong for the build the reader
 ran. Fixed by removing the fork (route A now writes `-o b/registry_scan`, with `mkdir -p b` so it does
 not need cmake) rather than by documenting it.
