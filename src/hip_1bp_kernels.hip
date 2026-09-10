@@ -761,3 +761,55 @@ __global__ void h1bp_q35_kvput_kernel(float* __restrict__ dst,
     if (i < n) dst[(size_t)p * stride + off + i] = src[i];
 }
 
+
+// ═══ #2139 item-2: slot-batched expert GEMV (grid.y = top-k slot) ═══
+// The MoE block used to issue 8 separate expert GEMVs (x2 dispatches each) plus
+// per-slot silu/scale kernels => 64 dispatches/layer. With grid.y = the 8 top-k
+// slots the same work is 8 dispatches/layer. x_slot_stride != 0 lets a batched
+// caller pass per-slot activations (the down projection); 0 means shared x.
+__global__ void h1bp_q4nx_part_idx8_kernel(const uint8_t* __restrict__ w,
+        const float* __restrict__ x, int x_slot_stride, float* __restrict__ part,
+        const int* __restrict__ idx_d, size_t stride_bytes, int N, int ntc) {
+    const int slot = blockIdx.y;
+    const int exp_idx = idx_d[slot];
+    const int wpr = (ntc + 3) >> 2;
+    h1bp_q4nx_part_body(w + (size_t)exp_idx * stride_bytes,
+                        x + (size_t)slot * x_slot_stride,
+                        part + (size_t)slot * N * 32 * wpr, N, ntc);
+}
+
+__global__ void h1bp_tq2nz_sum8_kernel(const float* __restrict__ part,
+        float* __restrict__ out, int N, int wpr) {
+    const int slot = blockIdx.y;
+    const int row = blockIdx.x * (int)blockDim.x + threadIdx.x;
+    if (row >= N) return;
+    const float* p = part + (size_t)slot * N * 32 * wpr;
+    float s = 0.0f;
+    for (int i = 0; i < 32 * wpr; i++) s += p[(size_t)row * 32 * wpr + i];
+    out[(size_t)slot * N + row] = s;
+}
+
+// up8[slot][i] = up8[slot][i] * silu(gate8[slot][i])   (same math as
+// h1bp_silu_gate_mul_kernel, batched over slots)
+__global__ void h1bp_silu_gate_mul8_kernel(float* __restrict__ up,
+        const float* __restrict__ gate, int n) {
+    const int slot = blockIdx.y;
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= n) return;
+    float* u = up + (size_t)slot * n;
+    const float* g = gate + (size_t)slot * n;
+    u[i] = u[i] * (g[i] / (1.0f + __expf(-g[i])));
+}
+
+// acc[i] += sum_slot src8[slot][i] * rout_d[slot], with a FIXED slot order so
+// results stay bit-identical to the previous 8 sequential h1bp_mul_acc_scaled
+// launches and deterministic run to run (a grid.y version would race on acc[i]).
+__global__ void h1bp_moe_reduce8_kernel(float* __restrict__ acc,
+        const float* __restrict__ src, const float* __restrict__ rout_d,
+        int n, int nslots) {
+    int i = threadIdx.x + blockIdx.x * blockDim.x;
+    if (i >= n) return;
+    float t = acc[i];
+    for (int k = 0; k < nslots; k++) t += src[(size_t)k * n + i] * rout_d[k];
+    acc[i] = t;
+}

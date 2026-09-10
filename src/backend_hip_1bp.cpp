@@ -199,6 +199,10 @@ struct Hip1bpBackend : Backend {
     float* q35_sc_moe = nullptr;                        // [2048]
     float* q35_sc_exp = nullptr, *q35_sc_expw = nullptr;  // [512] expert act / [512] gate
     float* q35_sc_expd = nullptr;                       // [2048] expert down out
+    // #2139 item-2: slot-batched expert buffers (8 top-k slots)
+    float* q35_sc_exp8 = nullptr, *q35_sc_expw8 = nullptr;   // [8][512]
+    float* q35_sc_expd8 = nullptr;                           // [8][2048]
+    float* dpart8 = nullptr;                                 // [8][N][32*wpr]
     float* q35_sc_logits = nullptr;                     // [256] router logits / topk w/idx
     int* q35_sc_idx = nullptr;                          // [8]
     float* q35_sc_rout = nullptr;                       // [256] router weights
@@ -1024,6 +1028,19 @@ struct Hip1bpBackend : Backend {
         h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
     }
 
+    // #2139 item-2: batched expert GEMV - all nslots top-k slots in one launch pair.
+    void launch_q4nx_idx8(const uint8_t* w, const float* x, int x_slot_stride,
+                          float* out8, int N, int K, size_t stride_bytes,
+                          const int* idx_d, int nslots) {
+        int ntc = (K + 255) / 256;
+        int wpr = (ntc + 3) >> 2;
+        int blocks = (N * wpr + 3) / 4;
+        h1bp_q4nx_part_idx8_kernel<<<dim3(blocks, nslots), 128, 0, stream>>>(
+            w, x, x_slot_stride, dpart8, idx_d, stride_bytes, N, ntc);
+        h1bp_tq2nz_sum8_kernel<<<dim3((N + 255) / 256, nslots), 256, 0, stream>>>(
+            dpart8, out8, N, wpr);
+    }
+
     void launch_rocmfp4(const uint8_t* w, const float* x, float* out, int N, int K, bool fast) {
         int ntc = (K + 255) / 256;
         int wpr = (ntc + 3) >> 2;
@@ -1364,6 +1381,8 @@ struct Hip1bpBackend : Backend {
                   zz(q35_sc_v2, 512) && zz(q35_sc_att, 4096) && zz(q35_sc_aout, 2048) &&
                   zz(q35_sc_act, 2048) && zz(q35_sc_moe, 2048) && zz(q35_sc_exp, 512) &&
                   zz(q35_sc_expw, 512) && zz(q35_sc_expd, 2048) && zz(q35_sc_logits, 256) &&
+                  zz(q35_sc_exp8, 8 * 512) && zz(q35_sc_expw8, 8 * 512) &&
+                  zz(q35_sc_expd8, 8 * 2048) && zz(dpart8, (size_t)8 * 2048 * 64) &&
                   zz(q35_sc_rout, 256) && zz(q35_sc_idx, 8) &&
                   zz(q35_conv_state, (size_t)NC * 8192 * 3) &&
                   zz(q35_rec_state, (size_t)NC * 128 * 128 * 32) &&
@@ -1512,12 +1531,23 @@ struct Hip1bpBackend : Backend {
             // inside hipStreamBeginCapture — use the capture stream.
             HIP_CHECK(hipMemsetAsync(q35_sc_moe, 0, 2048 * 4, stream));
             // #2139: fixed 8 slots — expert idx + weight read on device (capturable)
-            for (int r = 0; r < 8; r++) {
+            if (q35_q4nx) {
+                // #2139 item-2: grid.y = the 8 top-k slots -> 8 dispatches/layer
+                // instead of 64 (8 slots x [2x3 GEMV + silu + scale]).
+                launch_q4nx_idx8(w.ex_u, dh, 0, q35_sc_exp8, 512, 2048, q35_exp_bytes[1], q35_sc_idx, 8);
+                launch_q4nx_idx8(w.ex_g, dh, 0, q35_sc_expw8, 512, 2048, q35_exp_bytes[0], q35_sc_idx, 8);
+                h1bp_silu_gate_mul8_kernel<<<dim3((512 + 255) / 256, 8), 256, 0, stream>>>(
+                    q35_sc_exp8, q35_sc_expw8, 512);
+                launch_q4nx_idx8(w.ex_d, q35_sc_exp8, 512, q35_sc_expd8, 2048, 512, q35_exp_bytes[2], q35_sc_idx, 8);
+                h1bp_moe_reduce8_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(
+                    q35_sc_moe, q35_sc_expd8, q35_sc_rout, 2048, 8);
+            } else {            for (int r = 0; r < 8; r++) {
                 gemvE(q35_sc_exp, w.ex_u, dh, r, 512, 2048, 1);
                 gemvE(q35_sc_expw, w.ex_g, dh, r, 512, 2048, 0);
                 h1bp_silu_gate_mul_kernel<<<(512 + 255) / 256, 256, 0, stream>>>(q35_sc_exp, q35_sc_expw, 512);
                 gemvE(q35_sc_expd, w.ex_d, q35_sc_exp, r, 2048, 512, 2);
                 h1bp_mul_acc_scaled_kernel<<<(2048 + 255) / 256, 256, 0, stream>>>(q35_sc_moe, q35_sc_expd, q35_sc_rout, r, 2048);
+            }
             }
             // shared expert + sigmoid gate
             gemv(q35_sc_exp, w.sh_u, dh, 512, 2048);
@@ -1586,6 +1616,7 @@ struct Hip1bpBackend : Backend {
         hf(q35_sc_g); hf(q35_sc_b); hf(q35_sc_qk); hf(q35_sc_v2); hf(q35_sc_att); hf(q35_sc_aout);
         hf(q35_sc_act); hf(q35_sc_moe); hf(q35_sc_exp); hf(q35_sc_expw); hf(q35_sc_expd);
         hf(q35_sc_logits); hf(q35_sc_rout); hf(q35_sc_idx);
+        hf(q35_sc_exp8); hf(q35_sc_expw8); hf(q35_sc_expd8); hf(dpart8);
         hf(q35_conv_state); hf(q35_rec_state); hf(q35_kvc); hf(q35_kv_scores); hf(q35_gate_flat);
         q35_loaded = false;
         L.clear();P.clear();model_.reset();
