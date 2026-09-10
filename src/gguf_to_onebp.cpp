@@ -60,6 +60,42 @@ static inline uint16_t f32b(float v) {
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
 }
 
+// ── q4nx (torch2aie/FLM) tile -> engine ONEBP_Q4NX tile ──────────────────────
+// Both are 5120-byte 32x256 4-bit asymmetric tiles, but the intra-tile layout
+// differs in TWO places:
+//   q4nx (tools/q4nx_tile_dequant.py): scales/mins group-major [g*32+r]; nibbles
+//        lane-swizzled: lane=r/16, byte=lane*2048+col*8+((r%16)/2), nib=(r%16)%2.
+//   engine .1bp (this file's own writer + onebp_loader::dequant_tile): scales/mins
+//        row-major [r*8+g]; nibbles adjacent-pair, even col = low.
+// The value convention is identical (unsigned q, scale*q + min), so only the
+// scale index and the nibble positions move. (onebp_to_trg.cpp writes the swizzle
+// because it converts .1bp -> TRG, the opposite direction.)
+static void q4nx_tile_to_onebp(const uint8_t* src, uint8_t* dst) {
+    const int TR = 32, TC = 256, G = 8;
+    const uint16_t* ssc = (const uint16_t*)src;
+    const uint16_t* smn = (const uint16_t*)(src + 512);
+    const uint8_t*  sp  = src + 1024;
+    uint16_t* dsc = (uint16_t*)dst;
+    uint16_t* dmn = (uint16_t*)(dst + 512);
+    uint8_t*  dp  = dst + 1024;
+    memset(dst, 0, 5120);
+    for (int r = 0; r < TR; r++)
+        for (int g = 0; g < G; g++) {
+            dsc[r * G + g] = ssc[g * 32 + r];
+            dmn[r * G + g] = smn[g * 32 + r];
+        }
+    for (int lr = 0; lr < TR; lr++) {
+        const int lane = lr / 16, lrow = lr % 16, bi = lrow / 2, nib = lrow % 2;
+        for (int col = 0; col < TC; col++) {
+            const uint8_t raw = sp[lane * 2048 + col * 8 + bi];
+            const uint8_t q = nib == 0 ? (raw & 0x0F) : (raw >> 4);
+            const int byteidx = (lr * TC + col) / 2;
+            if ((col & 1) == 0) dp[byteidx] = (uint8_t)((dp[byteidx] & 0xF0) | (q & 0x0F));
+            else                dp[byteidx] = (uint8_t)((dp[byteidx] & 0x0F) | ((q & 0x0F) << 4));
+        }
+    }
+}
+
 // ── Checked output write ──
 // Every byte of the .1bp goes through this. A short fwrite (ENOSPC, I/O
 // error) silently truncates the file: the index already reserved the bytes,
@@ -761,8 +797,15 @@ int main(int argc, char** argv) {
                 return 1;
             }
             const size_t n = std::min(raw.size(), (size_t)ti.tiled);
-            if (!wf(fout, raw.data(), n)) return 1;
-            printf("(raw Q4NX tiles) -> %zu KB\n", n / 1024);
+            // Re-lay each 5120-byte tile from the q4nx intra-tile layout to the
+            // engine's .1bp layout (scale index + nibble positions; see the helper).
+            std::vector<uint8_t> outb(n);
+            const size_t ntiles = n / 5120;
+            for (size_t t = 0; t < ntiles; t++)
+                q4nx_tile_to_onebp(raw.data() + t * 5120, outb.data() + t * 5120);
+            if (n % 5120) memcpy(outb.data() + ntiles * 5120, raw.data() + ntiles * 5120, n % 5120);
+            if (!wf(fout, outb.data(), outb.size())) return 1;
+            printf("(Q4NX tile transform) -> %zu KB\n", n / 1024);
             continue;
         }
         std::vector<float> fw;
