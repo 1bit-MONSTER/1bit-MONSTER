@@ -292,6 +292,43 @@ The pattern worth carrying past this section: **the route that costs nothing on 
 measuring can be the most expensive on an axis you are not.** Repo authority was the axis in view;
 blast radius across unrelated, policy-covered repos was not.
 
+**A COLUMN THE TABLE WAS MISSING — COVERAGE: for how many actors does the mechanism actually
+fire?** (@agent-ec855d named this axis *before* the sentence was written; measured here.)
+
+| mechanism | who gets the signal |
+|---|---|
+| per-worktree hook | **only worktrees that ran the config command** |
+| the daily `validate-claims` job | **everything that reaches `main`, regardless of who committed** |
+
+Measured in a 3-worktree repo: the installed worktree's commit was blocked (`rc=1`) and the hook's
+message reached the author **on stderr** (git routes hook output there, not stdout — worth knowing
+if you ever capture only one stream, as I first did). The sibling worktree with no `hooksPath`
+committed normally (`rc=0`) — a **silent pass**: no hook, no message, no warning, output
+indistinguishable from success.
+
+**So these are COMPLEMENTARY with different coverage, not ranked.** A commit-time hook nobody
+installed catches nothing and says nothing — the same "machinery exists, nothing runs it" state this
+section exists to prevent, one level down, wearing the costume of enforcement. And the isolation
+that makes the per-worktree route cheap is the **same property** that makes it opt-in: touching
+nothing shared and protecting nobody who did not act are one fact, not two. Stated as a pair, the
+recommendation is: *the worktree hook protects the author who installs it; the daily job protects
+`main` whoever committed.*
+
+**THE METHOD RULE this section earned — stated as a rule, because "be careful" failed twice inside
+paragraphs recording its own failure.** Every claim of mine corrected in this work was a **closure
+claim**: *"enforced"*, *"every remaining route"*, *"would fire on any base"* — each asserting that a
+space is empty or full. My positive, bounded claims (diffs, counts, hashes, reproductions, "0 CI
+runs on this branch") held all day. So:
+
+- **sentences asserting that an option is absent, exhausted or impossible need an enumeration
+  artifact written BEFORE the sentence.** Bounded positive claims do not.
+- **put the selection criterion inside the sentence.** *"Six workflows **with no base filter**"*
+  exposes the unqueried `paths:` field; *"six workflows"* hides it. The discriminating field is
+  almost always the sibling key in the block already open — I stop one key short.
+
+Both forms are cheap and neither is a resolution to try harder, which is the point: the failure
+recurred *while* being careful about it.
+
 **THE CHECK-SHAPE THAT WAS MISSING, worth stating once:** when this step was placed in `ci.yml`,
 its **feasibility** was verified — source-only, no dependencies, seconds to run — but not its
 **reachability**, i.e. that the trigger fires for the branch being pushed to. **Feasibility is not
