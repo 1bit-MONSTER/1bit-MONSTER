@@ -974,3 +974,33 @@ byte-verified) IS the layer kernel's arg3 BO. Remaining arg-0 content to
 resolve: the input/post_attention_layernorm (4096 B each) placement (region A,
 arg0's 64 @0x0 patches) and the region B window transforms (share/qkv/ssm_out/
 gate_proj — the closed reorder_cpy, still the known blocker from R45-54).
+
+## Round 76 — expert GEMM sequence ABI + per-token MoE flow (2026-09-10)
+
+Disassembled the MoE expert sequence generators (libqwen3_6_moe_npu.so):
+
+- `_gen_sequence` (full-attn layer, 0x971d0) emits, in order:
+  `_send_hidden_states` → `_send_rms_weights` → `_send_rope_rms_weights` →
+  `_receive_kv_cache` → 4× `_move_weights` (q/k/v/o or gate/up/down via
+  weight_desc at +0x378/+0x480/+0x638/+0x5e0) → `_move_kv_cache` →
+  **`setup_expert_up_gate_q4k` ×2 (e=4,0xc) + `setup_expert_down_gate_q4k`
+  ×2 (e=6,0xe)** — i.e. the layer ELF (task-1) ALSO carries the SHARED
+  experts' dequant+mm, reading their weights from the weight BO.
+- `setup_expert_{up,down}_gate_q4k(seq, a, expert_idx, c, d, e, woff)`:
+  c/d = weight_desc dims (fields 0x58/0x10), e = DMA channel/BD id
+  (4/6/0xc/0xe = 2 experts × up_gate/down), woff = u64 weight offset. Each
+  emits ONE `npu_dma_memcpy_nd`; tile math uses 0x4a00 (=18944=4×4736) and
+  0x1280 (=4736) — the SAME 4736-row convention as task-2's pool.
+- `send_manual_expert_{up,down}_gate_q4k(seq, a, expert_idx, c, d, e, woff)`
+  — the PER-TOKEN routed expert GEMMs (top-8), reached through the vtable
+  (reloc 0x1d5408 → 0x197af0), expert_idx indexes a runtime per-expert
+  offset table at 0x1d5d58 (filled by desc.build).
+- `cpu_func::_moe_gate(float const*, int, int, int)` — the CPU router
+  (OpenMP-parallel), returns `moe_routing` (top-k expert indices + weights).
+
+Per-token MoE forward = CPU router → 8× `send_manual_expert_up_gate` +
+8× `send_manual_expert_down` (routed experts) → layer ELF (attention +
+shared experts + norms + router) → lm_head. The single-launch runlist
+(task-3) = batch all of these into ONE xrt::runlist submit/token; the
+layer ELF + lm_head ELFs are already generated (task-1), and the expert
+pool BO is already packed (task-2).
