@@ -1004,3 +1004,28 @@ shared experts + norms + router) → lm_head. The single-launch runlist
 (task-3) = batch all of these into ONE xrt::runlist submit/token; the
 layer ELF + lm_head ELFs are already generated (task-1), and the expert
 pool BO is already packed (task-2).
+
+## Round 77 — ALL 35B xclbins are the SAME "MLIR_AIE" kernel → one-runlist is feasible (2026-09-10)
+
+Compared the 35B xclbins (layer / lm_head / dequant_mm / conv / mm) with
+xclbinutil + kernel-XML extraction:
+
+- Every xclbin exposes the SAME kernel: `MLIR_AIE`, `dpu_kernel_id="0x901"`,
+  instance `MLIRAIE`, identical arg signature
+  `(opcode u64, instr char*, ninstr u32, bo0..bo4 void*)`.
+- The dense 0.6B layer.xclbin is the SAME kernel design (0x901 / MLIRAIE).
+
+=> There is ONE generic AIE kernel; the per-run instruction stream (layer,
+   expert dequant+mm, lm_head) is a runtime-loaded ELF (aiebu-assembled from
+   the sequence generators). The arg SEMANTICS (bo0=weight vs bo0=act) are
+   set by the ELF's DDR_PATCH arg_idx — the sequence generator, not the
+   xclbin — which is why the MoE layer ELF differs from the dense ELF in
+   arg order (Round 73).
+
+Consequence for task-3: a single hwctx (one registered xclbin) can host ALL
+the MoE sub-kernels as modules, so the per-token forward —
+   8× send_manual_expert_{up,down}_gate + layer ELF + lm_head ELF
+— CAN be batched into ONE xrt::runlist submit/token, exactly like the dense
+path batches 28 layer runs + lm_head. This closes the "is one-runlist even
+possible" question affirmatively. Remaining: pin the send_manual_expert_*
+call args + write the per-token sequence harness, then validate on the NPU.
