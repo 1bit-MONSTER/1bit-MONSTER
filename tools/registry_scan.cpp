@@ -30,7 +30,9 @@
 // the check existed; run the audit after touching this file's flags.
 #include "model_registry.h"
 
+#include <chrono>
 #include <cstdio>
+#include <thread>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -53,6 +55,8 @@ void usage(const char* argv0) {
             "  --route ID|PATH    run the RESOLVER: id -> artifact -> capability\n"
             "  --prefer A,B,C     capability order for --route (default: the\n"
             "                     artifact's own order; order is policy, not registry)\n"
+            "  --watch N          re-scan every N seconds and report the delta\n"
+            "                     (--iterations K to stop after K passes; testing aid)\n"
             "  --engine-limit CAP=TOKENS[:bundle]\n"
             "                     override a capability limit as the ENGINE sees it\n"
             "                     (the HRX limit belongs to the configured bundle)\n"
@@ -158,6 +162,7 @@ int registry_scan_main(int argc, char** argv) {
     bool json = false, quiet = false, catalog_set = false;
     std::string resolve_arg, cap_arg, catalog_arg, route_arg, prefer_arg;
     std::vector<std::string> engine_limits;
+    int watch_secs = 0, iterations = 0;
     uint32_t at_context = 0;
     std::vector<std::string> roots;
 
@@ -172,6 +177,8 @@ int registry_scan_main(int argc, char** argv) {
         else if (a == "--resolve" && i + 1 < argc) resolve_arg = argv[++i];
         else if (a == "--route" && i + 1 < argc) route_arg = argv[++i];
         else if (a == "--engine-limit" && i + 1 < argc) engine_limits.push_back(argv[++i]);
+        else if (a == "--watch" && i + 1 < argc) watch_secs = atoi(argv[++i]);
+        else if (a == "--iterations" && i + 1 < argc) iterations = atoi(argv[++i]);
         else if (a == "--prefer" && i + 1 < argc) prefer_arg = argv[++i];
         else if (a == "--at-context" && i + 1 < argc) at_context = (uint32_t)atoi(argv[++i]);
         else if (a == "--catalog" && i + 1 < argc) { catalog_set = true; catalog_arg = argv[++i]; }
@@ -287,6 +294,31 @@ int registry_scan_main(int argc, char** argv) {
         if (at_context) printf(" at %u context tokens", at_context);
         if (l) printf(" [limit %u]", l->max_context_tokens);
         printf("\n");
+        return 0;
+    }
+
+    if (watch_secs > 0) {
+        // R4: the autoload surface. Nothing here needs a hand-edited catalog — a
+        // new file in a scanned root shows up as an addition on the next pass.
+        int pass = 0;
+        for (;;) {
+            ++pass;
+            printf("--- pass %d: %zu artifact(s)\n", pass, reg.artifacts().size());
+            fflush(stdout);
+            std::this_thread::sleep_for(std::chrono::seconds(watch_secs));
+            ModelRegistry next = ModelRegistry::scan(roots, opt);
+            RegistryDelta d = next.diff(reg);
+            if (d.empty()) {
+                printf("    (no change)\n");
+            } else {
+                for (const auto& x : d.added) printf("    + %s\n", x.c_str());
+                for (const auto& x : d.removed) printf("    - %s\n", x.c_str());
+                for (const auto& x : d.changed) printf("    ~ %s\n", x.c_str());
+            }
+            fflush(stdout);
+            reg = std::move(next);
+            if (iterations > 0 && pass >= iterations) break;
+        }
         return 0;
     }
 

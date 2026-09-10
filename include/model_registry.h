@@ -394,6 +394,11 @@ struct RegistryReport {
     uint64_t reclaimed_bytes = 0;       // bytes those absorbed copies occupied
 };
 
+struct RegistryDelta {
+    std::vector<std::string> added, removed, changed;
+    bool empty() const { return added.empty() && removed.empty() && changed.empty(); }
+};
+
 struct ScanOptions {
     bool digest = false;                // hash file contents (slow: 420 GB store)
     bool recurse = true;
@@ -428,6 +433,16 @@ public:
     // the whole HTTP surface to Lemonade's core, so a resolver living there would
     // be bypassed in that mode. `1bit registry` behaves identically everywhere.
     RouteDecision resolve(const RouteRequest& req) const;
+
+    // ── R4: autoload surface ──────────────────────────────────────────────────
+    // "FLM-style autoload" means nothing may need a HAND-EDITED catalog for a new
+    // artifact to become visible. The registry already scans roots on demand, so
+    // what is missing is the cheap "what changed since I last looked" query that a
+    // watcher needs. diff() answers it, and `1bit registry --watch` exercises it.
+    // Compared by id, then by content-bearing facts (size, tensor count, file
+    // count): a rename shows as remove+add, which is the honest report because the
+    // registry cannot see a rename as anything else.
+    RegistryDelta diff(const ModelRegistry& prev) const;
 
     std::string to_table() const;      // human, stable ordering
     // Same table, but with capability constraints applied at `at_context` tokens:

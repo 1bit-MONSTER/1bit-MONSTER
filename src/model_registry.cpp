@@ -1479,6 +1479,26 @@ RegistryReport ModelRegistry::report() const {
 }
 
 // ── rendering ──────────────────────────────────────────────────────────────
+RegistryDelta ModelRegistry::diff(const ModelRegistry& prev) const {
+    RegistryDelta d;
+    auto key = [](const ModelArtifact& a) {
+        return std::to_string(a.total_bytes()) + "/" + std::to_string(a.tensor_count) + "/" +
+               std::to_string(a.files.size()) + "/" + a.quantization;
+    };
+    std::map<std::string, std::string> prev_by_id;
+    for (const auto& a : prev.artifacts_) prev_by_id[a.id] = key(a);
+    std::set<std::string> now;
+    for (const auto& a : artifacts_) {
+        now.insert(a.id);
+        auto it = prev_by_id.find(a.id);
+        if (it == prev_by_id.end()) d.added.push_back(a.id);
+        else if (it->second != key(a)) d.changed.push_back(a.id);
+    }
+    for (const auto& kv : prev_by_id)
+        if (!now.count(kv.first)) d.removed.push_back(kv.first);
+    return d;
+}
+
 std::string ModelRegistry::to_table(uint32_t at_context) const {
     gate_context_ = at_context;
     std::ostringstream o;
