@@ -106,6 +106,16 @@ bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
     }
 }
 
+Availability availability_for(bool available_is_a_predicate, bool available, bool functional) {
+    // The general form, so no per-id exemption list is ever needed: a LITERAL
+    // `available` is a declaration and yields UNKNOWN; only a `has_*()` predicate
+    // earns PRESENT. `available && functional` is the minimum, not the target.
+    if (!available_is_a_predicate) return Availability::UNKNOWN;
+    if (!available) return Availability::ABSENT;
+    if (!functional) return Availability::REGISTERED_DRY;
+    return Availability::PRESENT;
+}
+
 const char* backend_evidence(Capability c) {
     switch (c) {
         // The two rows with box evidence, credited to @agent-ca60cf on strixhalo.

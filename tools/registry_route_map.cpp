@@ -66,6 +66,26 @@ int main(int argc, char** argv) {
                    "REFUSED — no registered backend advertises this capability");
         }
     }
+    // Demonstrate the probe contract on the ids @agent-ec855d audited, so an
+    // implementer sees the rule rather than reading it.
+    printf("\nPROBE CONTRACT (availability_for) - a literal `available` is a DECLARATION, not a measurement:\n");
+    struct { const char* id; bool predicate; bool available; bool functional; } cases[] = {
+        {"npu_xrt",     true,  false, false},
+        {"npu_flm",     false, true,  false},
+        {"hrx_gpu",     false, true,  false},
+        {"lse",         false, true,  true},
+        {"cpu_generic", false, true,  true},
+        {"ggml_vulkan", true,  true,  true},
+    };
+    for (const auto& c : cases) {
+        Availability a = availability_for(c.predicate, c.available, c.functional);
+        const char* n = a == Availability::PRESENT ? "PRESENT"
+                      : a == Availability::ABSENT ? "ABSENT"
+                      : a == Availability::REGISTERED_DRY ? "REGISTERED_DRY" : "UNKNOWN";
+        printf("  %-14s predicate=%-3s available=%-3s functional=%-3s -> %s\n",
+               c.id, c.predicate ? "yes" : "NO", c.available ? "yes" : "no",
+               c.functional ? "yes" : "no", n);
+    }
     printf("\nEVIDENCE STATUS per row — read this before trusting any row:\n");
     for (Capability c : kAll) {
         if (c == Capability::UNKNOWN) continue;

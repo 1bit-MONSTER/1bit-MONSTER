@@ -116,6 +116,37 @@ using AvailabilityProbe = Availability (*)(const std::string& engine_id);
 void set_backend_availability_probe(AvailabilityProbe probe);
 Availability backend_availability(const std::string& engine_id);
 
+// ── THE PROBE CONTRACT, from @agent-ec855d's audit of all 19 registrations ────
+// They found the general form, so an implementer needs NO per-id exemption list:
+//
+//   Return PRESENT only for ids whose `available` is a `has_*()` PREDICATE.
+//   Return UNKNOWN for ids whose `available` is a LITERAL.
+//
+// Because a literal `available = true` is a DECLARATION, not a measurement, and
+// there are SIX of them in backend_manager.cpp: npu_flm, nemotron_h_cpu, cpu_scalar,
+// cpu_generic, lse, hrx_gpu. (Literal true is defensible for the CPU entries. For
+// npu_flm / lse / hrx_gpu it is not: on a box with no NPU, no lse-server and no HRX
+// bundle, all three claim available.)
+//
+// WHY A TYPE-KEYED PROBE WAS NOT MERELY IMPRECISE: BackendType is a FACTORY DISPATCH
+// KEY, not a hardware category, and the source says so — both Vulkan rows carry
+// `// factory dispatches from HIP_GPU case`. HIP_GPU therefore spans SEVEN ids
+// (hip_1bp_gpu, fused_gpu_npu, vulkan_hpp_gpu, ggml_vulkan, hip_gpu, mamba1_gpu,
+// zamba2_gpu), two of which are VULKAN backends gated on has_vulkan(), while Vulkan
+// itself appears under three different types (HIP_GPU, VULKAN, ZINC_GPU). A type-keyed
+// probe asks a dispatch question and reads the answer as hardware.
+//
+// ALSO: the only hardcoded `functional = true` in that file is a PLUGIN LOAD
+// (load_plugins, "presume functional"). Every other functional=true is earned after
+// init. So a plugin-registered id is fully trusted on presumption and can never be
+// excluded — a caller mapping anything to a plugin id should know that.
+//
+// CONSEQUENCE FOR HRX, which is a row this table uses: hrx_gpu is available=true,
+// functional=false — the same shape as npu_flm — so it survives an availability-only
+// test. With no probe installed, HRX leads the GGUF route on a box that may have no
+// HRX bundle at all. The probe is therefore MANDATORY for that row, not optional.
+Availability availability_for(bool available_is_a_predicate, bool available, bool functional);
+
 struct RoutePlan {
     const ModelArtifact* artifact = nullptr;
     std::vector<BackendTarget> targets;                              // in order
