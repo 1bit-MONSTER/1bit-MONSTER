@@ -203,18 +203,55 @@ REPEAT_VALUES = {
 
 
 def first_artifact_id(binary, fixture):
+    """Pick a target where the flag is EXERCISABLE, not merely present.
+
+    Three failure modes, each found by running this against a fixture that was fine:
+      1. taking the first table row let `--route x` (a target that never existed) be the
+         only case ever exercised — the flag was never read;
+      2. preferring the highest capability COUNT picked an artifact whose four lanes were
+         all from one container (the ONEBP chain), so neither `--prefer` value could
+         resolve: count is not richness;
+      3. a single-capability artifact made every value collapse to the same lane and
+         reported INCONCLUSIVE for the wrong reason.
+    So the question is not "how many capabilities" but "which ones RESOLVE", and the
+    selector asks it directly: accept the first artifact with >= 2 capabilities that both
+    actually resolve.
+    """
     _rc, out, _err = run(binary, [fixture])
+    cands = []
     for line in out.splitlines():
         parts = line.split()
-        if len(parts) >= 5 and parts[1] in ("gguf", "onebp", "mlx", "safetensors", "raw_bin"):
-            return parts[0]
-    return None
+        if len(parts) >= 6 and parts[1] in ("gguf", "onebp", "mlx", "safetensors", "raw_bin"):
+            caps = []
+            for c in ",".join(parts[5:]).split(","):
+                c = c.strip()
+                if c and "(" not in c and c not in caps:
+                    caps.append(c)
+            cands.append((parts[0], caps))
+    for aid, caps in cands:
+        # The --prefer run IS the validation: an unknown name exits 2 and simply is not
+        # counted, so no separate name check is needed (and capability_from_string is a
+        # C++ symbol, not a Python one — reaching for it here was my mistake).
+        working = [c for c in caps
+                   if run(binary, ["--route", aid, "--prefer", c, fixture])[0] == 0]
+        if len(working) >= 2:
+            return aid, working
+    for aid, _c in cands:
+        if run(binary, ["--route", aid, fixture])[0] == 0:
+            return aid, []
+    return (cands[0][0], []) if cands else (None, [])
 
 
 def check_d_repeats(binary, fixture):
     text = read(SCAN)
     parsed = {f[2:] for f in parsed_flags(text)}
-    target = first_artifact_id(binary, fixture)
+    # The --prefer values must come from the TARGET'S OWN capabilities. Hardcoding them
+    # was the fourth defect in this function: the selector can legitimately return an
+    # artifact whose working lanes are (FUSED-GPU-NPU, HIP-1BP), and a hardcoded
+    # (RADV-GGUF, CPU) pair then fails on both values and reports INCONCLUSIVE — the test
+    # measuring its own assumption rather than the flag. A test's inputs must be drawn
+    # from the state of the thing under test.
+    target, target_caps = first_artifact_id(binary, fixture)
     problems, inconclusive = [], []
 
     for flag, (v1, v2) in REPEAT_VALUES.items():
@@ -226,9 +263,10 @@ def check_d_repeats(binary, fixture):
                 continue
             v1, v2 = target, "no-such-artifact-xyz"
         elif flag == "--prefer":
-            if not target:
+            if not target or len(target_caps) < 2:
                 continue
             extra = ["--route", target]
+            v1, v2 = target_caps[0], target_caps[1]
         elif flag == "--at-context":
             extra = ["--capability", "HRX-GGUF"]
 
@@ -251,21 +289,32 @@ def check_d_repeats(binary, fixture):
             continue
 
         if flag in CSV_LIST_FLAGS:
-            _rc, outc, ec = run(binary, extra + [flag, "%s,%s" % (v1, v2), fixture])
-            if (outc, ec) in ((out1, e1), (out2, e2)):
+            # THE COMMA ORACLE IS DEGENERATE FOR AN ORDERED FIRST-WINS LIST, and I only
+            # found that by running it: `--prefer A,B` resolves A, so once(v1,v2) ALWAYS
+            # equals once(v1), and an observability guard built on comparing them can
+            # never be satisfied. The oracle was measuring a tautology.
+            #
+            # The discriminating test for "accumulated with order preserved" versus
+            # "last value replaced the first" needs no oracle at all:
+            #     once(v1) != once(v2)      the two values must lead to different lanes
+            #     repeat(v1,v2) == once(v1) the FIRST value survived
+            #     repeat(v1,v2) != once(v2) and it was not simply the last value
+            if (out1, e1) == (out2, e2):
                 inconclusive.append(
-                    "%s (list form NOT OBSERVABLE here: once(v1,v2) equals a single-value "
-                    "run)" % flag)
+                    "%s (not observable here: once(v1) == once(v2), so dropped-vs-kept "
+                    "cannot be distinguished)" % flag)
                 continue
             if rc_ab != 0:
                 if ("more than once" in err_ab) or (flag in err_ab):
                     continue
                 inconclusive.append("%s (run failed for another reason)" % flag)
                 continue
-            # POSITIVE: the repeat must equal the comma oracle exactly. This also
-            # catches ORDER REVERSAL, which "matches neither" only caught by luck.
-            if (out_ab, err_ab) != (outc, ec):
-                problems.append("%s (repeat != comma oracle: value dropped or ORDER lost)" % flag)
+            if (out_ab, err_ab) == (out2, e2):
+                problems.append("%s (second value %r won: the first was discarded)"
+                                % (flag, v2))
+            elif (out_ab, err_ab) != (out1, e1):
+                problems.append("%s (repeat matches neither single-value run: not "
+                                "accumulation with order preserved)" % flag)
         else:
             # No CSV oracle. Both values must still leave a trace, so assert positively
             # that the repeat differs from EACH single-value run.

@@ -113,6 +113,23 @@ jobs:
           # diagnostics should always appear. (Found by @agent-ec855d.)
           sh tools/dispatch_key_check.sh src/backend_manager.cpp || true
           python3 tools/registry_flag_audit.py --static-only || true
+
+      # ── Registry behavioural audit (informational) ────────────────────────────
+      # The half of the flag audit that needs a BINARY. CI-feasible for a specific
+      # reason worth stating: `registry_scan` compiles standalone with plain clang++
+      # and no HIP/XRT — the property that makes the registry module
+      # engine-independent is also what makes this runnable on a stock runner, and no
+      # engine build is involved. The fixture is a VERSIONED tool
+      # (tools/registry_fixture.py) rather than an inline heredoc, so CI and local runs
+      # use the same bytes and a CI-only failure is real.
+      - name: Registry behavioural audit (informational)
+        continue-on-error: true
+        run: |
+          clang++ -std=c++23 -O2 -Iinclude -DREGISTRY_SCAN_STANDALONE \
+            tools/registry_scan.cpp src/model_registry.cpp -o /tmp/registry_scan || true
+          python3 tools/registry_fixture.py /tmp/registry-ci-fixture || true
+          python3 tools/registry_flag_audit.py --binary /tmp/registry_scan \
+            --fixture /tmp/registry-ci-fixture || true
       - name: CMake configure + build (reference checks only when no ROCm)
         run: |
           if [ -x /opt/rocm-therock/bin/amdclang++ ]; then
