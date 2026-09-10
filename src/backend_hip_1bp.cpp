@@ -1342,7 +1342,9 @@ struct Hip1bpBackend : Backend {
             h1bp_gemv_kernel<<<256, 256, 0, stream>>>(q35_sc_logits, w.router, dh, 256, 2048);
             // norm_topk: llama qwen35 uses renorm? default OFF unless env
             h1bp_q35_topk_kernel<<<1, 256, 0, stream>>>(q35_sc_logits, q35_sc_rout, q35_sc_idx, 256, 8, q35_renorm);
-            HIP_CHECK(hipMemset(q35_sc_moe, 0, 2048 * 4));
+            // #2139 gate fix: a sync hipMemset targets the legacy stream and is illegal
+            // inside hipStreamBeginCapture — use the capture stream.
+            HIP_CHECK(hipMemsetAsync(q35_sc_moe, 0, 2048 * 4, stream));
             // #2139: fixed 8 slots — expert idx + weight read on device (capturable)
             for (int r = 0; r < 8; r++) {
                 gemvE(q35_sc_exp, w.ex_u, dh, r, 512, 2048, 1);
