@@ -72,10 +72,11 @@ def count_arch_strings():
 def census_coverage():
     """(covered, with_arch) = census snapshot + the watcher's live delta.
 
-    census_full_summary.json is the frozen 2026-08-15 snapshot
-    (317,310/317,310). hf_new_models.py accrues delta_with_arch /
-    delta_covered in its state as it observes new HF models daily; add those
-    so the SEO claim numbers keep moving without a full re-sweep.
+    census_full_summary.json is rebuilt daily by the full census sweep
+    (census_sweep.py --reset-delta at 03:30), which also zeroes the watcher
+    delta. hf_new_models.py (04:30) then accrues delta_with_arch /
+    delta_covered for same-day new models; add those so the SEO claim
+    numbers include the same-day arrivals before the next sweep.
     """
     try:
         with open(CENSUS, encoding="utf-8") as f:
