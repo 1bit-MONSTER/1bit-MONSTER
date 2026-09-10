@@ -637,3 +637,779 @@ not invoked in this decode-forward path).
   streams the 4x-expanded act I/O). Closing this needs either the
   npu.dev.sbin BD semantics or replicating the runtime's exact
   lm_head-first pipeline order.
+
+## Round 34: 4x S2MM expansion RESOLVED — buffer_length is in 32-bit words
+
+### The authoritative BD format (FastFlowLM source == the spec)
+
+The runtime's own encoders (src/include/npu_utils/instr_utils/*.hpp) define
+every command record exactly, and the captured TXN == gen_layer_seq output
+byte-for-byte, so the source IS the format spec:
+
+- BD descriptor (BLOCKWRITE, op 0x01, 12 words):
+    [0]=op(1) [1]=0 [2]=row<<20|col<<25|bd<<5|0x1D000 [3]=48 (op_size*4)
+    [4]=buffer_length [5]=buffer_offset [6]=packet [7]=D0
+    [8]=0xc0000000|D1 [9]=AXCACHE<<24|D2 [10]=iter [11]=next/valid/locks
+- Queue push (WRITE, op 0x00, 6 words):
+    [0]=op(0) [1]=0 [2]=row<<20|col<<25|0x1D204(+0x8 ch1, +0x10 MM2S) [3]=0
+    [4]=bd_id&0xF | repeat<<16 | token<<31 [5]=24
+- Issue token (MASKWRITE, op 0x03, 7 words): [3][0][0x1D200+...][0][pkt<<8][0x1f00][28]
+- DDR_PATCH (op 0x81, 12 words): [0x81][0x30][0][0][0][0][loc][0][arg_idx][0][arg_offset][0]
+- Wait sync (TCT, op 0x80, 4 words)
+
+### buffer_length unit: 32-bit words, NOT bytes
+
+npu_dma_memcpy_nd() (npu_instr_utils.hpp) converts elem_size before building
+the BD:
+    elem_size==1 -> 4; size[3]>>=2; strides>>=2
+    elem_size==2 -> 4; size[3]>>=1; strides>>=1
+and buffer_length = size[3]*size[2]*size[1] (the value written verbatim).
+The hardware transfers buffer_length*4 bytes. The runtime pre-divides by
+elem_size so the byte total is exact. There is NO firmware 4x expansion:
+
+- layer act write:  len=512 words -> 2048 B (1024 bf16)  == arg0 act BO  (exact)
+- lm_head logits:   len=76288 words -> 305152 B; real logits = 151936 bf16
+  = 303872 B; the extra 1280 B = 640 bf16 tail padding (149 aligned
+  2048-B blocks vs 148.375 needed). logits buffer shows exactly 151936
+  nonzero u16 -> the runtime just reads the first 151936.
+- weight reads:     len=10240/20480/30720 words -> 40960/81920/122880 B
+
+### Layer TXN geometry (gen_layer_seq @ MAX_L=8192, L=1) — fully decoded
+
+Per layer TXN (arg mapping: 0=act, 1=weight, 2=norm1, 3=norm2, 4=kv):
+- RTP writes: DMA enable on cols {0,1,2,3,4,6,7} rows 2-5
+- act read:  MM2S c2 len=512w(2048B) arg0+0
+- norm read: MM2S c2 len=1024w(4096B) arg2+0;  MM2S c2 len=192w(768B) arg3+0
+- act write: S2MM c2 bd10 len=512w(2048B) arg0+0 + token
+- kv write:  S2MM c3 len=256w(1024B) arg4+0;  S2MM c4 len=256w(1024B)
+  arg4+0x1000000 (16MB = K/V split of the 32MB kv BO) + tokens
+- weight: ONE ROUND of 192 MM2S reads covering all 1920 tiles x 5120 B =
+  0..0x960000 (9.83MB of the 10MB weight BO) contiguously, each tile read
+  EXACTLY ONCE (multiplicity 1). [CORRECTION: the "two rounds" in the first
+  draft was an artifact of gen_layer_seq_driver2 writing the sequence twice
+  (gen file == captured ctrl + captured ctrl, verified byte-equal halves);
+  the runtime's ELF .ctrltext embeds ONE copy (8543 words, layer_ctx1_ctrl
+  == elf_0001 .ctrltext byte-exact). The 2x in the runlist comes from the
+  runtime arming each layer's kernel TWICE per forward (kernel A + kernel C,
+  identical ELF), see Round 34b.]
+  Reads: cols {0,1,6,7} x ch0/ch1 x bd1/2 + bd9/10 (16 slots) with 40960-B
+  (8-tile) chunks stepping 0xa000; last waves use 81920-B and 122880-B
+  chunks (20480/30720 words).
+
+### lm_head TXN geometry — fully decoded
+
+- logits S2MM: c3 bd15 len=76288w(305152B) arg0+0 + token + WAIT S2MM ch1 c3
+- act read:  MM2S c2 len=512w(2048B) arg2+0;  arg3+0 (2048B)
+- weight: 2384 MM2S reads of 40960 B each, 2384 unique offsets, covering
+  19072 tiles x 5120 B = 0..0x5D20000 (~93.1MB) exactly once (multiplicity 1).
+- 8x MM2S WAITs at end.
+
+### Verified consistency with prior findings
+
+- kv offsets advance +0x400/token (L-dependent), MAX_L=8192 (kv BO 32MB =
+  4 x 8MB regions) — matches round-32 byte-exact capture at MAX_L=8192.
+- npu_pack_layer_bo (1920 tiles) == runtime weight BO byte-exact: the TXN
+  reads exactly the tiles the packer produces (1920 tiles/round, 1 round).
+- The old decode_txn.cpp read the right field (w[i+4]) but labeled it
+  bytes; the JSON output has no unit claim so only the doc was wrong.
+
+### Next step
+
+Re-run test_npu_forward_full with the corrected understanding: the layer
+TXN's act I/O is 2048 B (not 512 B); the 28-layer chain explosion must be
+re-examined with the full arg mapping above (per-layer norm/kv offsets and
+the runlist's 2x layer arming), and compared against runtime logits_1000.bin
+to close the validation loop.
+
+## Round 34b: the layer kernel runs TWICE per layer (attention + MLP passes); norms verified
+
+### The runlist's 2x layer arming is real — each layer = kernel A run + kernel C run
+
+- RUN_CTOR (interposer): 28x @0x9d20 (kernel A pool) + 1x @0x9e60 (lm_head)
+  + 28x @0xaa000 (kernel C pool) BEFORE RUNLIST 1; forwards 2-4 rebuild 28
+  layer runs each @0x9f20. PREINSTS dump 9-12 small BOs per runlist (3-4
+  runkeys x i3/i5/i6: act + norm1 + norm2).
+- ELF md5s: elf_0001 == elf_0003 (both layer, ctx=1); elf_0004..0007 differ
+  (regenerated per ctx). All layer ELFs 37360 B, .ctrltext 34172 B = ONE
+  192-read round.
+- POST dumps after RUNLIST 1: 28 weight BOs (10MB), 28 kv BOs (32MB), 58x
+  1MB (28 layers x norm1/norm2 + act + logits), 1 lm_head weight (94MB).
+- act BO (0x962c60) is FIXED across all layer runs (in-place chaining);
+  norm BOs 0x962490/0x9629b0 are also shared (content re-synced per layer
+  by the runtime, 229x 1MB sync-to-device captures).
+
+### Decisive evidence: layer kernel = ONE layer-transform, applied TWICE
+
+On-device test with the captured layer ELF, packed weights (byte-identical),
+per-layer norms (verified below), act = token-1000 embedding (verified
+byte-exact vs model.embed_tokens.row[1000]):
+
+- 1 run of layer 0 -> act std 0.3156 (matches CPU ref "L0 after attn"
+  std 0.316)
+- 2 runs of layer 0 -> act std 0.5410 (matches CPU ref "L0 after MLP"
+  final std 0.563)
+- => each layer's transform needs TWO kernel runs (A = attention pass,
+  C = MLP pass), matching the 57-run runlist (28 A + 1 lm_head + 28 C).
+  The ELF is identical for both; the phase is distinguished by which
+  norm/weight regions the kernel consumes (not by TXN content).
+
+### Norm buffers verified against model.q4nx (byte-exact)
+
+- run arg5 (i5, 0x962490) = 4096 B = input_layernorm(2048B) +
+  post_attention_layernorm(2048B) of layer L — verified byte-exact vs
+  model.layers.L.input_layernorm.weight + post_attention_layernorm.weight.
+  (preinsts i5 == layer-27 ILN because preinsts dump the LAST-armed layer.)
+- run arg6 (i6, 0x9629b0) = 768 B = [64 x 1.0 const][64 x 0][q_norm 128
+  bf16][k_norm 128 bf16] — q_norm/k_norm verified byte-exact at those
+  offsets vs model.layers.L.self_attn.q_norm/k_norm.weight.
+- ACT_CAP = preinsts_001_00_i3 == model.embed_tokens.weight row 1000
+  byte-exact (the harness drives forward(1000)).
+
+### Remaining blocker (unchanged): 28-layer chain explosion
+
+1 pass x 28 layers -> act std 194 (still explodes); 2 passes -> std 284.
+Single layer is plausible but chaining diverges — deterministic and
+input-independent (per-layer kv vs empty, per-layer norms vs fixed all give
+identical numbers). This is NOT the run pattern (1 vs 2 passes both
+explode); the divergence is systematic inside the layer transform itself
+(the CPU ref shows the same explosion at layer 27: std 282 vs runtime's
+bounded 3.39). Likely candidates: in-kernel dequant semantics (the
+q*scale+zp vs (q-zp)*scale question resurfacing at chain scale), or a
+norm/scale ordering difference that only compounds across 28 layers.
+Next: compare single-layer NPU act vs runtime's post-layer-0 act (need a
+fresh capture with CAP_POSTRUN_ACT or per-layer post dumps), then bisect
+the layer transform (attn-only vs mlp-only halves).
+
+## Round 35 — VALIDATION LOOP CLOSED: hand-rolled path == runtime byte-for-byte
+
+The "28-layer chain explosion" is NOT a divergence: **the runtime itself
+explodes** (fresh capture, correct BF16 interpretation: act std 194.46,
+range [-1216, 780] after forward 1 of the 28-layer model). The earlier
+"bounded std 3.39" was a measurement artifact (FP16 interpretation of BF16
+bytes in numpy, plus stale post-execute BO dumps). My hand-rolled chain
+reproduces the runtime byte-for-byte.
+
+### Decisive experiments (1-layer / 2-layer / 3-layer / 28-layer configs)
+
+- Config lever: the runtime reads num_hidden_layers from config.json, so a
+  model-dir copy with patched layer count builds a short runlist. The
+  xclbin lookup uses the model dir BASENAME (xclbins/<name>/layer.xclbin),
+  so keep the dir named Qwen3-0.6B-NPU2 and toggle the config.
+- 1 layer, 1 run (NPASS=1): act == runtime actpost (BYTE-IDENTICAL).
+- 2 layers, 1 run/layer: act == runtime actpost_002 (BYTE-IDENTICAL).
+- 3 layers, 1 run/layer: act == runtime actpost_002 (BYTE-IDENTICAL,
+  std 222.55 — the runtime itself explodes at 3 layers too).
+- 28 layers, 1 run/layer: act == runtime actpost_002 (BYTE-IDENTICAL,
+  std 194.4619, maxdiff 0.0). Then lm_head logits == runtime logits
+  (BYTE-IDENTICAL, argmax 397, std 3.38).
+- 28 layers, forward 2 (ctx=2): use the ctx-2 ELF (elf_0004, gen_layer_seq
+  at L=2) + per-layer kv accumulated from forward 1 (complete post-wait
+  kv dumps) → act BYTE-IDENTICAL (std 19.82) and logits BYTE-IDENTICAL
+  (argmax 88). Same for the 1-layer model's forward 2.
+
+### What the runtime really does per layer (resolved)
+
+- The runlist = 2 IDENTICAL runs per layer (same ELF, same args, same
+  runlist object), but the combined act equals ONE kernel application.
+  My runlist of 2 identical runs produces layer^2 (std 0.54), so the
+  runtime's 2nd run is a no-op w.r.t. the act (mechanism still unknown —
+  possibly an ERT/chain quirk; irrelevant for replication: 1 run per layer
+  reproduces the runtime byte-exactly at every layer count tested).
+- The kernel is the full layer (attn+MLP): one run reads all 1920 weight
+  tiles (q256+k128+v128+o256+up384+gate384+down384 = 9.8MB) and writes the
+  act + kv. 1 run ≈ after-attn-correlated CPU ref only by coincidence of
+  the buggy CPU ref; byte-exactness vs the runtime is the ground truth.
+- Per-context ELF: forward n uses gen_layer_seq(ctx+1) — ELF 0001 (ctx=1)
+  for forward 1, ELF 0004 (ctx=2) for forward 2 (different md5; the kv
+  read/write offsets are context-dependent). The lm_head ELF is constant.
+- KV: per-layer 32MB BOs accumulate across forwards. Post-EXECUTE BO dumps
+  are STALE (device still running); post-WAIT dumps (new ACTPOST/KVPOST/
+  WAITPOST hooks) give the complete state.
+- Norm i6 (arg6) [0:128] region: initial = [1.875 x64][0 x64], kernel
+  overwrites it during execution (ramp) and it is NOT re-synced between
+  forwards — but the kernel does NOT read it (identical output with any
+  content); only qn/kn at [128:384] matter (verified byte-exact).
+- Norm i5 (arg5): unchanged between forwards (byte-exact ILN+PALN).
+
+### Tooling added this round (npu-infer/tools/capture/cap_interposer.cpp)
+
+- runlist::wait hook: dumps the act BO (actpost_*), the kv BO (kvpost_*)
+  and all big ext::bo (waitpost_*) AFTER the device completes — fixes the
+  stale-dump problem.
+- runlist::add hooks log the runlist `self` pointer (confirmed all layer
+  runs go to ONE runlist) and record a3/a7 for the wait hook.
+- numpy note: BF16 bytes must be decoded as (u32<<16) view float32 —
+  viewing as float16 silently corrupts std/corr (source of the old
+  "bounded 3.39" and "1 run ≈ attn" confusions).
+
+### Net result
+
+The on-device validation loop is CLOSED: hand-rolled (packed weights via
+npu_pack_layer_bo, captured per-context layer ELFs, verified norms, kv
+accumulation, lm_head ELF) == FastFlowLM runtime output byte-for-byte on
+identical inputs, 28 layers x 2 tokens. The runtime's own 28-layer
+activations explode (std ~194); replicating that exactly is the correct
+target, not "fixing" it.
+
+## Round 36 — Engine integration: FastFlowLM runtime path wired into npu-infer
+
+npu-infer now has a REAL FastFlowLM submission path (NPU_RUNTIME_LAYERS=1),
+byte-identical to the runtime on identical inputs:
+
+- NEW src/runtime_layer.cpp + include/runtime_layer.h: RuntimeLayerEngine.
+  init() packs per-layer weight BOs (npu_pack_layer_bo), the lm_head BO
+  (NEW npu_pack_lmhead_bo in src/model.c: G=8 tile reorder of the q4nx
+  lm_head tensor — the "q80 format" was a red herring: the lm_head BO is
+  the SAME npu_reorder_tiles G=8 used for layer projections, verified
+  byte-identical vs the captured 98MB BO), per-layer i5/i6 norm BOs and
+  32MB kv BOs, and builds per-context layer kernels from ELFs produced by
+  tools/gen_layer_elfs (gen_layer_seq + aiebu wrap, same as the runtime's
+  _setup_kernel). forward() runs ONE layer-kernel per layer per forward
+  (validated ABI (3,0,0,act,weight,i5,i6,kv)) then the lm_head kernel.
+- engine.cpp: NPU_RUNTIME_LAYERS=1 switches run_prefill/run_decode_step to
+  RuntimeLayerEngine (embed -> per-layer runs -> lm_head -> logits).
+- tools/gen_layer_elfs.cpp: generates per-context layer ELFs
+  (layer_ctxN.elf) via qwen3_npu_sequence::gen_layer_seq(N) + aiebu.
+  Captures/txn-elfs ships layer_ctx1..6.elf (verified ctrl == the runtime's
+  captured per-ctx ELFs; ctx=2 == elf_0004, ctx=3 == elf_0005).
+
+### New discoveries that made multi-token exactness possible
+
+- The norm tensors live in the q4nx file in PIPELINE order (4608B blocks
+  [ILN][PALN][k_norm][q_norm]), NOT layer order: physical position -> layer
+  = [0,1,10-19,2,20-27,3-9]. Metadata data_offsets are data_base-relative
+  (absolute = data_base + data_offset). Using NORM_PIPELINE_ORDER[L] as
+  layer->position (instead of the inverse) silently swapped layers >= 2's
+  norms — the engine's 28-layer chain then diverged at layer 2.
+- i6[0:128] is the RoPE (rotary) cos/sin table for the CURRENT token
+  position, host-written by the runtime before EVERY forward:
+  phi_j = pos * theta^(-2j/128), p[j] = cos(phi_j), p[64+j] = sin(phi_j),
+  theta = 1e6 (Qwen3). pos=0 gives the initial [1.0 x64][0 x64]. Verified
+  byte-exact for ctx=1..12 against runtime captures. The kernel READS this
+  table (it does not compute RoPE internally), so the engine must rewrite
+  i6[0:128] per forward (update_rope_i6). Without it, forward 2+ diverges.
+- The runtime reads the embedding at data_base + data_offset (SafeTensors
+  semantics), NOT absolute 0: act input = file[data_base + 2048*token].
+- xrt::ext::bo ALLOCATION ORDER matters on amdxdna: a 128MB kv BO created
+  AFTER the weight/norm BOs silently fails to bind (kernel no-ops). Create
+  the kv BO early.
+
+### Validation (on a healthy NPU)
+
+28 layers x 2 tokens: engine act == runtime actpost BYTE-IDENTICAL (corr
+1.0, maxdiff 0) for forward 1 (std 194.46) and forward 2 (std 19.82);
+logits BYTE-IDENTICAL (argmax 397 / 88). Forward 3: engine layers 0-2
+byte-identical vs 1L/2L/3L-model runtime captures (the runtime NaNs at
+4+ layers on fwd3 under load, so the full-chain fwd3 reference is
+unreliable; the NPU also gets wedged by a concurrent lemonade server +
+CAP_SKIP_BIG interposer mode, which must NOT be used — it wedges the
+device).
+
+### Environment notes
+
+- CAP_SKIP_BIG on the interposer wedges the NPU (skipped big-BO dumps
+  leave the device in a bad state) — always capture with full dumps.
+- A concurrent `npu-verify` lemonade server shares /dev/accel0 and causes
+  intermittent no-op/NaN results; validate on idle periods.
+
+### Reconciliation note (Round 36, post-commit)
+
+A concurrent session's commits (6629012d/7f58a875/d8cb64be) concluded
+"engine token-1 K/V computation differs from the runtime" (K corr 0.81,
+V corr 0.02). That conflicts with the engine's byte-identical fwd2 act +
+logits here. The resolution: their reference kvpost was a MID-STATE dump
+(they themselves flagged "the runtime's kvpost capture timing remains a
+confounder... the capture is mid-state"). The engine's fwd2 output is
+byte-identical to the runtime (act maxdiff 0, logits byte-identical) — the
+attention at ctx=2 reads tokens 0 AND 1, so identical output FORCES
+identical token-1 kv. Direct kv comparison on a healthy NPU confirmed the
+engine's post-fwd2 kv == the runtime's POST-WAIT kvpost (0 diffs for both
+L0 and L27). The kvpost reference MUST come from the interposer's
+runlist::wait hook (post-wait dumps), never the post-execute/post-loop
+dumps.
+
+### Post-reboot validation steps (Round 36 close)
+
+After a clean reboot (clears the wedged amdxdna driver + the competing
+npu-verify/lemonade NPU holder):
+
+1. Verify the NPU is healthy: `cd /tmp/txn_decode && ./run_qwen3_npu
+   /home/bcloud/Qwen3-0.6B-NPU2 1` then check logits_1000.bin argmax == 397
+   (std 3.38). If argmax == 1121 (std 0.65) the NPU is still wedged.
+2. Fresh 28-layer 3-token capture (FULL dumps — never CAP_SKIP_BIG):
+   `CAP_DIR=/tmp/capR LD_PRELOAD=/tmp/txn_decode/cap_interposer.so
+   ./run_qwen3_npu /home/bcloud/Qwen3-0.6B-NPU2 3`
+   (model config: num_hidden_layers=28 in /home/bcloud/Qwen3-0.6B-NPU2).
+3. Run the engine test: `RT_FWD3=1 CAP_DIR=/tmp/capR
+   /tmp/txn_decode/test_runtime_layer /home/bcloud/Qwen3-0.6B-NPU2
+   /tmp/txn_decode/rt` — expect fwd1+fwd2 act BYTE-IDENTICAL, logits
+   BYTE-IDENTICAL, fwd3 act vs actpost_006.
+4. If the fwd3 kv reference is needed, use the interposer's POST-WAIT
+   kvpost files (kvpost_006 = complete fwd3 kv), never post-execute dumps.
+
+### Round 36 FINAL — full multi-token validation CLOSED (post-reboot)
+
+After a clean reboot (clears the wedged amdxdna driver + the competing
+lemonade NPU holder) and a fresh 28-layer 3-token capture, the engine is
+byte-identical to the runtime for ALL THREE forwards:
+
+- fwd1 act corr 1.0 maxdiff 0 (std 194.4619), logits argmax 397
+- fwd2 act corr 1.0 maxdiff 0 (std 19.8162), logits argmax 88
+- fwd3 act corr 1.0 maxdiff 0 (std 25.6497), logits argmax 284
+
+The LAST bug was a leftover from the concurrent session's shared-BO test:
+run.set_arg(7, kv_bos_[0]) (shared kv for all layers) instead of kv_bos_[L]
+(per-layer). With the shared BO every layer overwrites the previous layer's
+kv at the same offsets -> fwd2+ attention reads corrupted kv. Restored
+per-layer binding -> byte-identical end-to-end.
+
+Note: the pre-reboot "fwd3 corr 0.91 vs 23.3" was a WEDGE artifact of the
+old reference (capP2, captured while the lemonade server shared the NPU) —
+the healthy runtime fwd3 is 25.6497, exactly the engine's value.
+
+## Round 37 — engine generate() end-to-end on a healthy NPU (BOS -> 16 tokens)
+
+Closed the two remaining gaps from Round 36: the engine's own `generate()`
+(prefill + autoregressive decode loop in main.cpp) now runs the runtime
+layer path end-to-end, and per-context layer ELFs are shipped past the
+original 1..6.
+
+### The off-by-one that hid prefill's first output token
+
+The engine's prefill embeds/forwards the LAST input token, then
+`generate()` started its decode loop by re-embedding that same token —
+BOS got processed TWICE (the runtime's own chain would have the prefill
+forward already produce the first output logits). Fixed with
+`rt_first_token_`: after the last input token, `run_prefill`'s runtime
+branch calls `get_logits` + `sample_token` and stores the result;
+`generate()` seeds the decode loop from it instead of from
+`input_tokens[num_input_tokens-1]`.
+
+Verified sequence (16-token BOS->t16 generation, engine == harness token
+sequence): ctx1..17 per-ctx logits, engine vs the harness's own logits
+dumps (no interposer in the reference path):
+
+- ctx1..16: maxdiff **0** (byte-identical), argmax identical per ctx
+- ctx17: maxdiff 0.3399 (one bf16 ULP), argmax identical (9695)
+
+### ctx17 1-ULP is a rope-table rounding-boundary artifact (NOT a formula gap)
+
+The single ctx17 ULP traces to ONE byte in the engine's per-ctx RoPE i6
+table: idx65 (j=1, sin), engine 0x3ea5 vs runtime 0x3ea4. Compared
+engine i6 against the runtime's captured ctx17 table (preinsts_033 i6
+dumps): 127/128 entries byte-identical with exact double math.
+
+The true sin(16 * 1e6^-2/128) = sin(12.893475) = 0.32130230 sits **0.7% of
+a bf16 ULP above the 0x3ea4/0x3ea5 tie boundary** (0.32128906). Every
+precision variant (double, float32 phi, float32 argument reduction,
+theta fits) still rounds to 0x3ea5 and/or breaks other entries — the
+runtime's value (0.3203125) implies its own sin lands below the tie, i.e.
+its host code computes the table with a lower-precision sin (error
+~1.5e-5 — consistent with a fixed-point/table sin, not libm), and this is
+the ONE position where that error crosses a rounding boundary. The engine
+is the MORE accurate side. Conclusion: **device sin-table artifact, not
+replicated**; downstream effect is bounded (single bf16 ULP at one rope
+entry for positions >= 16; argmax unchanged).
+
+### Per-context ELFs shipped past ctx12
+
+`captures/txn-elfs/layer_ctx1..64.elf` now covers 64 contexts
+(generator: `tools/gen_layer_elfs` — 0.015s for 17 ELFs, so full MAX_L
+4096 is ~3.5s if ever needed). The engine's default ELF dir is
+`captures/txn-elfs`, so `generate()` works out of the box for
+sequences up to 64 tokens without running the generator.
+
+### Round 37 follow-up — generate() past ctx17 (ELFs 18..64 on-device)
+
+Ran the engine with `NPU_MAX_TOKENS=20` (BOS + 20 decoded tokens, 382 ms,
+19 ms/tok): the first 16 sampled tokens are deterministic-identical to the
+16-token run, then 4 new tokens (126558 93721 52300 84255 17380) — the
+shipped layer_ctx18..21 ELFs load and run correctly on the NPU (no wedge,
+no no-op; argmax coherent).
+
+Per-ctx logits vs the harness on the PROCESSED sequence
+(BOS, 3219, 144370, ..., 17380 — note the harness token file must include
+the prefill-sampled `rt_first_token_` 3219, the engine's printed tokens
+are the SAMPLES, not the processed sequence):
+
+- ctx2..16: maxdiff 0 (byte-identical)
+- ctx17..21: maxdiff 0.34..0.58 (1-2 bf16 ULP), argmax identical at every ctx
+
+The ctx18-21 ULPs are the same rope-table rounding-boundary artifact seen
+at ctx17: at pos 17-20, more of the 128 i6 entries sit within ~1% of an
+ULP of a bf16 tie boundary, so the runtime's fixed-point sin (device
+artifact) flips those entries vs exact double math. Bounded, deterministic,
+argmax-preserving — documented, not replicated.
+
+`NPU_MAX_TOKENS` (default 16, cap 64) added to main.cpp to make the
+output-token count env-configurable for these longer runs.
+
+### Round 37 post-reboot drill (2nd clean reboot)
+
+/tmp is tmpfs — every reboot wipes the scratch tools. Rebuild from the
+COMMITTED sources (they survive; /tmp copies don't):
+
+1. `mkdir -p /tmp/txn_decode`
+2. Harness (needs utils_stub.cpp for find_xclbin_path):
+   `g++ -O2 -std=c++20 -include climits tools/capture/run_qwen3_npu.cpp
+    tools/capture/utils_stub.cpp -o /tmp/txn_decode/run_qwen3_npu
+    -I/home/bcloud/amd-oss/fastflowlm/src/include
+    -I.../include/npu_utils -L.../src/lib/xrt -lqwen3_npu
+    -lq4_npu_eXpress -lgemm -ldequant -lmha -llm_head -L/usr/local/lib
+    -laiebu -lxrt_coreutil -lxrt_core
+    -Wl,-rpath,.../src/lib/xrt`
+3. Engine test: `gcc -O2 -Iinclude -c src/model.c -o /tmp/txn_decode/model.o`
+   then `g++ -O2 -std=c++17 -fpermissive tests/test_runtime_layer.cpp
+    src/runtime_layer.cpp /tmp/txn_decode/model.o -Iinclude
+    -lxrt_coreutil -lxrt_core -o /tmp/txn_decode/test_runtime_layer`
+   (model.c MUST be compiled as C or its symbols mangle — the CMake
+   target does this automatically, hand builds must not).
+4. Health check: `NPU_PROMPT_IDS=1000 /tmp/txn_decode/run_qwen3_npu
+   /home/bcloud/Qwen3-0.6B-NPU2 1` then read logits_1000.bin (bf16 x
+   151936) as f32: argmax == 397, std ~3.38 = healthy; argmax 1121 /
+   std 0.65 = wedged.
+5. Engine E2E re-validation: `NPU_RUNTIME_LAYERS=1
+   RT_DUMP_LOGITS_STEP=/tmp/englgR ./build/npu_infer
+   <model>/model.q4nx` (16 tokens), then feed the harness the PROCESSED
+   sequence (BOS, engine's prefill first token, then the samples —
+   NOT the printed samples alone) via RT_TOKENS + HLOG_DIR, and compare
+   per-ctx bf16 logits. Expected after a healthy reboot: ctx2..16
+   byte-identical, ctx17 1 bf16 ULP (0.34375, rope artifact), argmax
+   match at every ctx. (Verified 2026-09-02 post-reboot: identical.)
+
+Note: the npu-verify `1bit unified --lemonade` server auto-restarts at
+boot and shares /dev/accel0 — validation runs while it holds the NPU can
+wedge; if logits come back NaN/no-op, re-run after stopping it.
+
+## Round 38 — rope EXACT formula found: hardcoded f32 inv_freq in the .so
+
+The ctx17+ 1-2 ULP logits diffs and the ctx22/26/41 argmax flips (40-token
+run) were traced to the ENGINE's rope table being *too accurate*: the
+engine computed phi = pos * 1e6^(-2j/128) in double, but the RUNTIME keeps
+a HARDCODED float32 inv_freq[64] table in libqwen3_npu.so .rodata
+(@0x152740) that is NOT the f32 rounding of the double formula — the
+literals are off by up to ~1.5e-5 relative (e.g. j=4: 0.4217000 vs
+0.4216965; j=7: -1.5e-5) in a non-monotonic per-j pattern that no
+powf/expf/logf/sincosf chain reproduces (28/5248 captured entries flipped
+vs exact math, all at |value| near zero-crossings and beyond).
+
+Decoded from disassembly of _ZN9qwen3_npu4Impl9_rope_rms:
+  phi = inv_freq[j] * (float)pos     (vmulss — float32 multiply)
+  sincosf(phi)                        (glibc float32 sincos)
+  f32 -> bf16 (RNE)
+The engine's update_rope_i6 now embeds the exact 64-float .rodata dump and
+uses the same float32 multiply + glibc sincosf.
+
+Result: engine per-ctx logits byte-identical to the runtime for ALL 40
+contexts of the 40-token generate (ctx2..41, 0 ULP, 0 argmax flips) —
+the final byte-exactness gap is CLOSED. The runtime table values are baked
+per-model-family (Qwen3 lib); a different model family would need its own
+.rodata dump at its own inv_freq symbol offset.
+
+### Round 38 follow-up — 1000-context decode BYTE-IDENTICAL + lazy ELF build
+
+With the exact rope formula (hardcoded f32 inv_freq) the engine is now
+byte-identical to the runtime at EVERY context depth tested:
+
+- 40-token decode (ctx2..41): byte-identical (Round 38)
+- 63-token decode (ctx2..64, full shipped ELF range): 63/63 byte-identical
+- 4-token multi-token PREfill (BOS+3 prompt tokens): ctx1..4 logits
+  byte-identical, then ctx5..24 decode byte-identical
+- 200-token decode (ctx2..201, ELFs extended to 256): 200/200
+- 1000-token decode (ctx2..1001, ELFs to 1024): 1000/1000 byte-identical,
+  0 ULP, 0 argmax flips — rope holds at phi ~800 rad through glibc
+  sincosf argument reduction; kv growth over 1000 tokens is exact
+
+Lazy on-demand ELF build (MAX_L without shipping 290MB of ELF binary):
+- ensure_layer_kernel now shells out to tools/gen_layer_elfs when a
+  per-ctx ELF is missing (RT_ELF_GEN=<gen binary> RT_ELF_MODEL=<model dir>);
+  generator is ~0.6ms/ELF so full MAX_L 4096 is ~2.5s
+- verified: empty ELF dir + lazy gen -> same canonical tokens
+  (144370 91145 30 220 17 15)
+- NPU_MAX_TOKENS cap raised 64 -> 4096 (main.cpp)
+- shipped ELFs remain 1..64 (9.9MB); anything beyond generates on demand
+
+### Round 38b — real decoder sampling (was: dead greedy stub)
+
+sample_token() previously discarded its temperature parameter and always
+returned argmax. Implemented real decoding:
+
+- NPU_TEMPERATURE (default 0) — >0 enables temperature softmax sampling
+- NPU_TOP_K / NPU_TOP_P — top-k / nucleus filters (default off)
+- NPU_SEED (default 42) — seeded RNG; same seed -> same output, so
+  sampling runs are reproducible
+- temperature <= 0 -> greedy argmax (the DEFAULT), so the runtime-path
+  byte-identity validations (greedy chain == runtime GREEDY_NEXT) are
+  unchanged; the engine's canonical output is still deterministic
+- verified: greedy default yields the canonical chain (144370 91145 30
+  220 17 15 17 18); temp=1.0 seed=42 reproducible (A==B); seed=7 differs;
+  temp=0.5 top_k=10 samples from the filtered distribution
+## Round 39 — runtime batched prefill(ids) != N x forward(): root cause (final)
+
+Question: does the FastFlowLM runtime's batched `model.prefill(ids)` produce
+the same state as N sequential `model.forward(tok)` calls on the same
+prompt? The engine's prefill is per-token sequential (byte-verified vs the
+runtime's forward path), so this decides whether a real runtime session
+(which prefills batched) matches the engine.
+
+### Finding
+
+**NO — the runtime's two prompt paths disagree numerically.** Same prompt
+([BOS,10671,2415,44123] and a 30-token variant), same 28-layer model,
+runtime vs itself:
+
+- prefill() last-token logits vs forward@ctx4: corr 0.945, maxdiff 3.69,
+  argmax 7829 vs 97462; 30-token prompt: corr 0.934, argmax 82 vs 29123
+- greedy chains diverge from the FIRST token:
+  - prefill (batched): 7829 368 369 1817 315 279 ... (still plausible text)
+  - seq/engine (4x forward): 97462 368 715 262 470 419 ... == the engine's
+    canonical chain byte-for-byte
+- layer-0 K cache: mm vs seq corr 0.9999, but a few entries differ by
+  2-6 bf16 ULP on the LARGEST-|K| values; maxdiff grows per slot via
+  kv-state feedback (slot0 3.0, slot1 4.0, slot2 8.0, slot3 10.0). V is
+  nearly identical (<= 0.014).
+
+### Root cause (single confounder: GEMM accumulation numerics — NOT rope)
+
+The early "rope-table divergence" reading was wrong. Decisive evidence:
+
+1. The big-diff dims (50, 115) are simply the largest-|K| dims: slot-0 mean
+   |K| by dim = 85.9 (dim 50) and 13.4 (dim 115) vs 7.5 next-largest. bf16
+   absolute ULP differences scale with value size — a magnitude artifact.
+2. The big-diff dims are NEVER rope-paired: dim 50's rope partner (114) is
+   clean and dim 115's partner (51) is clean (0/1 paired across all heads).
+   A rope difference would rotate BOTH members of a pair together.
+3. Diffs appear at pos 0, where rope is identity for every table
+   (cos(0)=1, sin(0)=0) — impossible for any rope-table effect.
+4. The .rodata-vs-exact inv_freq error (Round 38, up to 1.5e-5 relative)
+   gives phi errors <= 5e-8 rad even at pos 3 -> cos/sin shift ~1e-8, far
+   below bf16 resolution (~1e-3 at these magnitudes): physically invisible
+   at pos 0..3.
+5. The diff is magnitude-correlated (corr |diff| vs |K| = 0.63/0.59/0.78/0.84
+   across slots).
+
+So the divergence is ONE confounder: the batched-mm and per-token-mv QKV
+GEMMs accumulate with different numerics (tiling/precision), giving a
+few-ULP difference on the largest-magnitude outputs. The mm path's host i6
+never advancing past pos 0 (seen in interposer captures) is bookkeeping —
+the batched kernels apply RoPE internally — and does NOT cause a rope
+divergence.
+
+### Which path is "correct"? (fp64 adjudication)
+
+fp64 layer-0 K reference (confirmed q*scale+zp dequant, token 151643 at
+pos 0 / rope identity) vs both runtime paths:
+- mm-prefill: maxdiff 3.16, meandiff 0.046, 92/1024 byte-match,
+  834/1024 within 1 bf16 ULP
+- seq-forward: maxdiff 3.29, meandiff 0.046, 17/1024 byte-match,
+  866/1024 within 1 bf16 ULP
+
+Both are ~equally approximate (0.5% mean rel error on std-9 values): the
+NPU bf16 pipelines round differently from any fp64 reference and from each
+other. Neither is byte-correct; mm-prefill is not buggy, it is a
+different-but-valid bf16 variant of the same math.
+
+### Implications
+
+1. Engine == runtime-seq reaffirmed: the engine's runtime path is
+   byte-identical to the runtime's per-token forward/decode path (the path
+   the per-ctx harness drives; 1000+ ctx validated, Rounds 35-38).
+2. A real AutoModel-chat server session (runner/rest_handler -> prefill,
+   batched mm) differs from the engine at ~first-token argmax on near-ties.
+   This is a runtime-internal property (two divergent bf16 pipelines), not
+   an engine defect. If engine output must match what FastFlowLM SERVES
+   (not just its decode path), the mm prefill path needs its own
+   replication/validation.
+3. Validation methodology: per-ctx logits comparisons against the runtime
+   MUST use the RT_TOKENS/forward per-ctx mode; kvpost/actpost references
+   captured from a batched-prefill run are not byte-comparable.
+
+## Round 40 — POST-REBOOT re-gate: the runtime drifted, the engine/replay did not (2026-09-03)
+
+The machine rebooted 2026-09-02 23:19 (kernel 7.2.0-perfopt era ->
+7.2.0-next-20260821-unstable). Rounds 35-39 byte-parity evidence is
+PRE-REBOOT. Re-gate on the current kernel (issue #2065 filed):
+
+### Fresh post-WAIT capture (round-35 wait-hook interposer, token 1000)
+
+| | Sep-1 runtime (pre-reboot, rtcap artifacts) | hand-rolled replay + engine (today) | runtime today (post-reboot) |
+|---|---|---|---|
+| final act std | 194.46 | 194.46 | 188.62 |
+| logits argmax | 397 @ 12.8125 | 397 @ 12.8125 | 144370 @ 13.25 |
+| logits top-5 | [397, 3219, 144370, 42044, 255] | identical | [144370, 3219, 397, 42044, 255] |
+
+- corr(replay act, Sep-1 runtime act) = **1.00000000** (byte-exact).
+- corr(today runtime act, Sep-1 act / replay) = 0.99789104.
+- corr(today runtime logits, Sep-1 logits) = 0.99803301.
+- Post-WAIT (not stale post-execute) dumps — drift is real, not a dump
+  artifact. Deterministic per boot on both sides (no race).
+
+### What this means
+
+1. The engine + hand-rolled replay are the STABLE cross-boot reference:
+   byte-exact vs the round-37-era runtime, unchanged by the reboot.
+2. The real FastFlowLM runtime's on-device arithmetic moved across the
+   reboot (~0.2% logits / act std 194.46 -> 188.62). Same class of
+   phenomenon as FINDINGS.md ("a fresh boot does NOT restore it") and the
+   round-27 'x0.5 runner quirk'.
+3. Rounds 35-39 runtime-side references (actpost/kvpost/logits captures)
+   need re-validation against the current kernel before use. Engine-side
+   claims (== Sep-1 runtime) hold.
+4. Root cause of the runtime drift is open (#2065): candidates are
+   kernel/driver-dependent execution (SVA vs identity IOMMU), load-time
+   staging interaction, or firmware arithmetic config. Not a race.
+
+## Round 41 — RE-GATE on the 2026-09-03 fresh boot: runtime drift REVERTED (2026-09-03)
+
+The machine rebooted again 2026-09-03 10:37 ADT (same OGC kernel
+`7.2.0-next-20260821-unstable-ogc-g2a559b27-1`; clean-reboot drill green:
+Round 37 health gate logits argmax 397 / std 3.38). Re-ran the Round-40
+procedure on this boot — round-35 wait-hook interposer, run_qwen3_npu,
+tokens 1000+1001 — and compared against the round-37-era artifacts
+(`/home/bcloud/.cache/rtcap/`) and the pre-reboot drifted baseline
+(`/home/bcloud/.cache/rtcap-postreboot-20260903/`, 10:31, 6 min pre-boot).
+
+### Result: TODAY == round-37 era, byte-for-byte, at every level
+
+| | TODAY vs Sep-1 (R37) | TODAY vs pre-reboot (drifted) |
+|---|---|---|
+| actpost_002 (ctx-1 acts) | corr **1.00000000**, byte-identical | 0.99788541 |
+| actpost_004 (ctx-2 acts) | corr **1.00000000**, byte-identical | 0.99776887 |
+| logits ctx-1 (bo_from_0199) | corr **1.00000000**, maxdiff 0.0, byte-identical | 0.99803301 |
+| logits ctx-2 (bo_from_0229) | corr **1.00000000**, maxdiff 0.0, byte-identical | 0.99454453 |
+
+- Today: actpost std 8.6037/0.8758, logits argmax 397 @ 12.8125 (ctx-1)
+  and 88 @ 13.75 (ctx-2) — all identical to the Sep-1 runtime artifacts.
+- The TODAY-vs-PREREB correlations reproduce Round-40's drift magnitudes
+  exactly (0.997891 / 0.998033 / 0.9945), confirming methodology parity.
+- **Round-37's engine↔runtime corr 1.000000 now reproduces**: the engine /
+  replay (stable, 397 @ 12.8125) equals this boot's runtime byte-for-byte.
+
+### Interpretation
+
+1. **The drift is reversible per boot, not a permanent shift.** The
+   Sep-2-23:19 boot drifted; the Sep-3-10:37 boot restored the round-37-era
+   signature exactly. The Round-40/FINDINGS observation "a fresh boot does
+   NOT restore it" was one transition, not a law.
+2. **Rounds 35-39 runtime-side references are re-validated**: captured in
+   the round-37-era state = this boot's state. Engine-side claims hold.
+3. Root cause remains open (#2065): runtime arithmetic is a per-boot
+   device/firmware init-state variable (SVA vs identity IOMMU, AIE tile
+   config, load-time staging), not a code change in the closed runtime.
+
+Evidence + receipts: `npu-infer/captures/round41-regate/` (RE-GATE.md + this
+boot's actpost_002/004 and bo_from_0199/0229 captures).
+
+## Round 42 — real-prompt tokenizer wiring: coherent engine generation (2026-09-03)
+
+Round 37's remaining item ("real-prompt tokenizer wiring for coherent engine
+generation") is CLOSED. The engine's main.cpp took token IDs only (BOS or
+NPU_PROMPT_IDS); the missing chat-driver half — text prompt -> tokens ->
+text — is now in-tree.
+
+### What was added
+
+- `tools/qwen3_tokenizer.{h,cpp}` — minimal HF-format byte-level BPE
+  tokenizer for Qwen3, reads tokenizer.json directly (bundled JSON parser;
+  no new deps beyond pcre2-8 for the GPT-2 pre-tokenizer regex with
+  \p{L}/\p{N} unicode classes). Implements special-token pre-split
+  (<|im_start|>/<|im_end|>/<|endoftext|> stay whole), byte<->unicode
+  (tiktoken tables; full byte coverage verified — no byte-fallback needed),
+  rank-ordered BPE merges, and byte-level decode. NFC assumed (prompts are
+  NFC in practice).
+- `src/main.cpp` — real-prompt mode: `npu_infer <model.q4nx> "prompt text"`
+  (or NPU_PROMPT) wraps the text in the Qwen3 chat template (NPU_RAW_PROMPT=1
+  for plain continuation), encodes, generates, decodes the sampled tokens to
+  text. NPU_TOK_ONLY=1 = tokenizer self-check (no NPU).
+- `src/engine.cpp` — generate() now stops at the Qwen EOS ids
+  (<|endoftext|> 151643 / <|im_end|> 151645). The old stop-at-0 was wrong
+  for text: token 0 is '!' in this vocab, so real output truncated
+  mid-sentence at any exclamation.
+- `captures/txn-elfs/layer_ctx65..128.{elf,txn}` — per-context layer ELFs
+  extended past 64 so chat prompts (tens of prompt tokens) + long decode
+  don't die at the ctx-64 boundary (observed: past ctx 64 the forward
+  stalls and the sampler emits 0='!' repeatedly).
+
+### Tokenizer validation (vs the `tokenizers` python package, same file)
+
+Encode is byte-identical to HF for every class tested: plain prose,
+contractions (don't / I'm / believin' / l'école), emoji, code with
+newlines/indent, CJK, whitespace runs, accents:
+
+| prompt | cpp ids == python ids |
+|---|---|
+| "The capital of France is" | [785, 6722, 315, 9625, 374] — identical |
+| 6 more (contractions/emoji/code/CJK/ws/accents) | all identical |
+
+Chat template round-trips exactly: encode(decode(ids)) == prompt text.
+
+### Coherent generation on the NPU (runtime-layer path, greedy)
+
+    NPU_RUNTIME_LAYERS=1 NPU_LAYER_ELF_DIR=captures/txn-elfs \
+    NPU_LMHEAD_ELF=captures/txn-elfs/elf_0002_lmhead.bin NPU_MAX_TOKENS=64 \
+    ./npu_infer <model>/model.q4nx "What is the capital of France? Answer in
+    one short sentence."
+
+32-token chat prompt -> 64 decoded tokens in 1263 ms (~19.7 ms/tok), clean
+coherent text (no 0/! artifacts once ctx 65+ ELFs exist):
+
+> Okay, the user is asking the capital of France. I know the answer is
+> Paris. But they want it in a short sentence. Let me check if there's any
+> trick here. No, it's straightforward. I should just state it clearly...
+
+The model is the base Qwen3-0.6B (not -Instruct), so it roleplays the
+instruction instead of answering directly — expected, and fine for the
+generation-coherence milestone. 0 IO_PAGE_FAULTs across the runs.
+
+### Notes
+
+- Tokenizer ids go to 151668 (151643 vocab + 26 added); engine vocab is
+  151936 — the last 268 ids are tokenizer-unreachable and decode empty.
+- The chat driver design intent from main.cpp's original comment
+  ("A chat driver encodes a real prompt via the tokenizer and passes the
+  token stream here") is now realized inside main.cpp; a future server/API
+  can reuse Qwen3Tokenizer directly.
+
+## Round 66 — #2065 root-cause narrowing: drift is below kernel visibility (2026-09-03)
+
+Both relevant boots survive in journalctl — the DRIFTING boot (-1: Sep-2
+23:19 → Sep-3 10:36, where R40 measured argmax 144370) and the RESTORED boot
+(0: Sep-3 10:37, R41 re-gate argmax 397):
+
+1. amdxdna init logs are BYTE-IDENTICAL between the boots (same BARs, same
+   PASID-address-mode, same driver 1.0.0, same PMF sensor errors, same IOMMU
+   group 26). No kernel-visible difference explains the drift.
+2. The harness/runtime resolve libxrt_coreutil.so.2 → the DISTRO XRT
+   (/usr/lib/x86_64-linux-gnu, 2.21.75) via RPATH fallthrough — NOT the
+   /usr/local/lib 2.26.0 copies that were swapped in (07:22) and moved to
+   /usr/local/xrt-runlist (07:25) during boot -1. The XRT-swap event is ruled
+   out as the drift cause (the affected runs used the distro XRT throughout).
+3. Conclusion: the per-boot drift variable (R40: corr 0.998 act/logits,
+   deterministic per boot, reversible at the next reboot per R41) lives in the
+   NPU firmware/driver runtime state BELOW kernel-visible init — AIE tile /
+   firmware internal config set at device bring-up, not distinguishable in
+   dmesg. Root-causing further needs firmware-level tracing (dump_fw_trace/
+   telemetry at a drifting boot) or a captured drifting-boot device state.
+
+## Round 67 — #2052 re-verified on the restored boot: mm-vs-seq divergence is intrinsic (2026-09-03)
+
+Re-ran the round-39 A/B (runtime batched model.prefill(ids) vs N x
+model.forward(tok), Qwen3-0.6B, 162-token prompt) on the CURRENT restored
+boot (R41 re-gate state, argmax-397 signature) to rule out drift
+contamination of the round-39 conclusion:
+
+- corr(mm logits, seq logits) = **0.926976** (round-39: 0.934-0.945 on
+  shorter prompts)
+- maxdiff = **6.91** (round-39: 3.29-3.69 on 4/30-token prompts — grows with
+  prompt length, consistent with the magnitude-correlated GEMM-numerics
+  finding)
+- argmax matches (151667) on this prompt (round-39 saw diverging argmax on
+  some prompts = near-tie dependent, expected)
+
+Conclusion: the runtime's two prefill paths disagree numerically on a
+HEALTHY boot with the same magnitudes as round-39 → the divergence is an
+intrinsic property (batched-mm vs per-token-mv GEMM accumulation), NOT
+drift. Round-39's root cause (single confounder = GEMM accumulation
+numerics; engine == runtime-seq byte-exact) is confirmed drift-independent.
+The #2052 open question (replicate the SERVED mm-prefill) remains a
+product-matching decision, not a correctness gap.

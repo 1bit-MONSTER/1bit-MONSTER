@@ -3,11 +3,13 @@
 
 #include "common.h"
 #include "model.h"
+#include "runtime_layer.h"
 #include <cstdint>
 #include <vector>
 #include <string>
 #include <map>
 #include <memory>
+#include <random>
 
 namespace xrt {
     class device;
@@ -53,6 +55,10 @@ class XclbinManager {
 public:
     XclbinManager(xrt::device& device);
     ~XclbinManager();
+    /// Override the per-model xclbin directory (e.g. .../xclbins/Qwen3.6-35B...).
+    /// Empty keeps the hardcoded default paths.
+    void set_xclbin_dir(const std::string& dir) { xclbin_dir_ = dir; }
+    const std::string& xclbin_dir() const { return xclbin_dir_; }
     bool load(XclbinType type);
     xrt::kernel* kernel(XclbinType type);
     /// Instruction stream BO for a loaded xclbin (nullptr until load()).
@@ -72,6 +78,7 @@ public:
                        uint32_t n, uint32_t woff, uint32_t* out_ninstr);
 private:
     xrt::device& device_;
+    std::string xclbin_dir_;
     struct Entry {
         std::unique_ptr<xrt::xclbin> xclbin;
         std::unique_ptr<xrt::kernel> kernel;
@@ -82,11 +89,13 @@ private:
     Entry entries_[XCLBIN_COUNT];
     struct ShapeKey {
         uint32_t m, k, n, woff;
+        std::string kern;
         bool operator<(const ShapeKey& o) const {
             if (m != o.m) return m < o.m;
             if (k != o.k) return k < o.k;
             if (n != o.n) return n < o.n;
-            return woff < o.woff;
+            if (woff != o.woff) return woff < o.woff;
+            return kern < o.kern;
         }
     };
     struct ShapeInsts { std::unique_ptr<xrt::bo> bo; uint32_t ninstr = 0; };
@@ -143,6 +152,14 @@ private:
     std::vector<float> lm_head_buffer_;
     int current_token_ = 0;
     
+    // FastFlowLM runtime submission path (Round 36): when enabled
+    // (NPU_RUNTIME_LAYERS=1), forward uses the runtime's layer ELFs + ABI
+    // instead of the hand-rolled mm pipeline. Byte-verified vs the runtime.
+    std::unique_ptr<RuntimeLayerEngine> runtime_layers_;
+    bool use_runtime_layers_ = false;
+    int rt_ctx_len_ = 0;
+    int rt_first_token_ = -1;   // prefill sampled first output token
+    
     bool cache_all_weights();
     bool pack_tensor_blocks(std::vector<NpuBo>& blocks, const TensorDesc* desc, const char* label_prefix, uint32_t group_id);
     bool run_prefill(const int* input_tokens, int num_input_tokens);
@@ -155,6 +172,8 @@ private:
                         int opcode = 3, int num_runs_limit = 5);
     int sample_token(const float* logits, int vocab_size, float temperature);
     void embed_lookup(int token, NpuBo& dest);
+    std::mt19937 rng_{42u};              // seeded multinomial sampler (NPU_SEED)
+    bool rng_seeded_ = false;            // NPU_SEED applied once per run
 };
 
 #endif // NPU_INFER_ENGINE_H

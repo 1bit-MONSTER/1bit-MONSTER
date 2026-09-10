@@ -17,6 +17,12 @@ set(NPU_ENGINE_SOURCES
     ${NPU_SRC_DIR}/dequant_q4nx.cpp
     ${NPU_SRC_DIR}/gemm_npu_instructions.cpp
     ${NPU_SRC_DIR}/zaya_decode.cpp
+    # single-launch whole-layer per-ctx ELF path (issue #2080/#2150): the
+    # bridge TU isolates npu-infer's ModelConfig (common.h) from the engine's
+    # model_config.h. model.c is C; runtime_layer.cpp + bridge are C++.
+    ${NPU_SRC_DIR}/npu_runlist_bridge.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../npu-infer/src/model.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../npu-infer/src/runtime_layer.cpp
 )
 # zaya_decode.cpp — the Zaya decode path (CCA attention on CPU, MoE FFN on
 # NPU, NPU_FUSED=1 fused GU->SiLU->D mode). npu_engine_universal dispatches

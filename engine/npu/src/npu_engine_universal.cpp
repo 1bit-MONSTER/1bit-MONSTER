@@ -24,6 +24,7 @@
 #include <aiebu/aiebu_assembler.h>
 #include <omp.h>
 #include "model_config.h"
+#include "npu_runlist_bridge.h"  // NPU_RUNLIST=1 whole-layer per-ctx ELF decode (#2080/#2150)
 #include "npu_engine_i8ctx_inc.h"
 #include "npu_engine_hybrid_flm.h"
 #include "zaya_moe_cpu.h"           // host_h2_amax_qn_s (#1934 fused int4 GU->SiLU)
@@ -576,6 +577,26 @@ int main(int argc,char**argv){
                 munmap(hdrz, stz.st_size);
                 if (zz) return zaya_decode_main(argc, argv);
             }
+        }
+    }
+    // NPU_RUNLIST=1: single-launch whole-layer per-ctx ELF decode for dense
+    // Qwen3-0.6B (28 layers, H=1024, vocab 151936, no MoE). The RuntimeLayerEngine
+    // path is byte-identical to the FastFlowLM runtime and runs ~71 tok/s vs the
+    // ~2 tok/s 112-launch split loop below; it is opt-in and the split path is
+    // the untouched fallback. (issue #2080/#2150)
+    // Dense Qwen3 (0.6B/1.7B/4B): default to the single-launch whole-layer
+    // per-ctx ELF path (RuntimeLayerEngine + xrt::runlist, byte-identical to
+    // FastFlowLM). NPU_RUNLIST=0 opts out to the 112-launch split path below.
+    // If the whole-layer path cannot initialize, fall back to the split path.
+    {
+        const char* rl = getenv("NPU_RUNLIST");
+        const bool dense_qwen3 = cfg.NV == 151936 && !cfg.has_moe &&
+            ((cfg.NC == 28 && cfg.H == 1024) || (cfg.NC == 28 && cfg.H == 2048) || (cfg.NC == 36 && cfg.H == 2560));
+        if (dense_qwen3 && (!rl || atoi(rl) != 0)) {
+            int rc = npu_runlist_decode(mp, ng, input_tok_file,
+                                        cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.IM, cfg.NV);
+            if (rc == 0) return 0;
+            fprintf(stderr, "[runlist] whole-layer path failed (rc=%d); falling back to split path\n", rc);
         }
     }
     int H=cfg.H,NC=cfg.NC,NH=cfg.NH,NKV=cfg.NKV,HD=cfg.HD,IM=cfg.IM,NV=cfg.NV,GQA=cfg.GQA,XM=cfg.XM;

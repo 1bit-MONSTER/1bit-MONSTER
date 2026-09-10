@@ -512,13 +512,31 @@ static void print_summary(const std::string& label, const nlohmann::json& doc) {
 }
 
 int main(int argc, char** argv) {
-    if (argc < 3) {
+    bool decode_only = (argc > 1 && strcmp(argv[1], "--decode-only") == 0);
+    if (argc < (decode_only ? 4 : 3)) {
         fprintf(stderr,
                 "usage: decode_txn <config.json> <outdir> [n_tokens=128] [insts.bin ...]\n"
+                "  or: decode_txn --decode-only <outdir> [insts.bin ...]   (no 0.6B gen)\n"
                 "  Generates + decodes the FastFlowLM runtime's layer TXN (L=1 and L=n_tokens),\n"
                 "  lm_head TXN, mha TXN, and per-projection dequant TXNs (q80+q4_1, modes 0..7)\n"
                 "  into <outdir>/*.json; decodes any extra .bin insts the same way.\n");
         return 1;
+    }
+    if (decode_only) {
+        std::string outdir = argv[2];
+        for (int a = 3; a < argc; a++) {
+            std::vector<uint32_t> w;
+            if (!read_bin(argv[a], w)) { fprintf(stderr, "cannot read insts file %s\n", argv[a]); continue; }
+            std::string base = argv[a];
+            size_t slash = base.rfind('/');
+            if (slash != std::string::npos) base = base.substr(slash + 1);
+            size_t dot = base.rfind('.');
+            if (dot != std::string::npos) base = base.substr(0, dot);
+            nlohmann::json doc = decode_txn(w, base, "file:" + std::string(argv[a]));
+            std::ofstream of(outdir + "/" + base + ".json"); of << doc.dump(2); of.close();
+            print_summary(base, doc);
+        }
+        return 0;
     }
     const char* cfg_path = argv[1];
     std::string outdir = argv[2];

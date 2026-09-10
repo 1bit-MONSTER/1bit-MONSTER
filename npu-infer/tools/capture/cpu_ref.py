@@ -129,7 +129,7 @@ if os.environ.get("NLAY") is not None and int(os.environ.get("NLAY")) < 28:
             for lr in range(32):
                 lane = lr//16; bi = (lr%16)//2; nib = lr%2
                 q[lr] = (packed[lane*2048 + np.arange(256)*8 + bi] >> (4*nib)) & 0xF
-            lmW[tr*32:(tr+1)*32, tc*256:(tc+1)*256] = q.astype(np.float32)*S + Z
+            lmW[tr*32:(tr+1)*32, tc*256:(tc+1)*256] = (q.astype(np.float32) - Z)*S
     logits = lmW @ x2
     np.save('/tmp/txn_decode/cpu_ref_logits.npy', logits)
     print(f"NLAY short run done, argmax: {logits.argmax()}", flush=True)

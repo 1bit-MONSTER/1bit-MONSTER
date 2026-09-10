@@ -13,7 +13,9 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <sys/stat.h>
 #include <chrono>
+#include <sys/stat.h>
 #include <random>
 
 // ========= BF16 helpers =========
@@ -77,7 +79,14 @@ static int weight_in_features(const TensorDesc* desc, const ModelConfig* cfg) {
     return (int)cfg->hidden_size;
 }
 int WeightPacker::num_bos(const TensorDesc* desc) const { return npu_weight_num_blocks(desc, config_, weight_in_features(desc, config_)); }
-size_t WeightPacker::bo_size(const TensorDesc* desc) const { (void)desc; return config_->npu_weight_bo_size; }
+size_t WeightPacker::bo_size(const TensorDesc* desc) const {
+    int in = weight_in_features(desc, config_);
+    // Wide weights (FFN down: in=3072) use full-width [256, in] blocks:
+    // 256 * in * 2 bytes, rounded up. Narrow weights keep the 1 MB BO.
+    if (in > (int)config_->npu_block_cols)
+        return (size_t)config_->npu_block_rows * (size_t)in * 2;
+    return config_->npu_weight_bo_size;
+}
 void WeightPacker::pack_block(uint8_t* buffer, const TensorDesc* desc, int block_idx) const {
     void* data = model_tensor_data(mw_, const_cast<TensorDesc*>(desc));
     npu_pack_weight_bo(buffer, data, desc, config_, block_idx, weight_in_features(desc, config_));
@@ -99,7 +108,21 @@ XclbinManager::~XclbinManager() {}
 bool XclbinManager::load(XclbinType type) {
     if (type < 0 || type >= XCLBIN_COUNT) return false;
     Entry& e = entries_[type]; if (e.loaded) return true;
-    const char* path = XCLBIN_PATHS[type];
+    std::string resolved;
+    if (!xclbin_dir_.empty()) {
+        resolved = xclbin_dir_ + "/" + XCLBIN_NAMES[type];
+        // The 35B MoE dir names its dequant kernel dequant_mm.xclbin.
+        if (type == XCLBIN_DEQUANT) {
+            struct stat st;
+            if (stat(resolved.c_str(), &st) != 0) {
+                std::string alt = xclbin_dir_ + "/dequant_mm.xclbin";
+                if (stat(alt.c_str(), &st) == 0) resolved = alt;
+            }
+        }
+    } else {
+        resolved = XCLBIN_PATHS[type];
+    }
+    const char* path = resolved.c_str();
     LOG_DEBUG("Loading %s ...", path);
     FILE* f = fopen(path, "rb"); if (!f) { LOG_ERROR("Cannot open %s", path); return false; }
     fseek(f, 0, SEEK_END); long fsize = ftell(f); fseek(f, 0, SEEK_SET);
@@ -126,7 +149,8 @@ bool XclbinManager::load(XclbinType type) {
                 size_t br = fread(insts.data(), 4, insts.size(), fi);
                 if (br == insts.size()) {
                     auto insts_bo = std::make_unique<xrt::bo>(
-                        device_, (size_t)isz, XCL_BO_FLAGS_CACHEABLE, e.kernel->group_id(1));
+                        device_, (size_t)isz, XCL_BO_FLAGS_CACHEABLE,
+                        e.kernel->group_id(1));  // use-after-move fix:  local was moved into e.kernel
                     memcpy(insts_bo->map(), insts.data(), (size_t)isz);
                     insts_bo->sync(XCL_BO_SYNC_BO_TO_DEVICE, (size_t)isz, 0);
                     e.insts_bo = std::move(insts_bo);
@@ -162,7 +186,17 @@ xrt::bo* XclbinManager::insts_for(xrt::kernel* kern, uint32_t m, uint32_t k,
                                   uint32_t* out_ninstr) {
     if (out_ninstr) *out_ninstr = 0;
     if (!kern) return nullptr;
-    ShapeKey key{m, k, n, woff};
+    // Kernel-specific stream key: mm vs attn vs layer encode different
+    // DMA/compute graphs. The previous shared key made the attn kernel
+    // execute the MM stream (hang at layer 1; NPU_GEMM_FIX.md, #2006).
+    const char* kern_name = "mm";
+    {
+        static const char* names[XCLBIN_COUNT] = {"mm", "attn", "layer", "dequant"};
+        for (int i = 0; i < XCLBIN_COUNT; i++) {
+            if (kern == entries_[i].kernel.get()) { kern_name = names[i]; break; }
+        }
+    }
+    ShapeKey key{m, k, n, woff, std::string(kern_name)};
     auto it = shape_insts_.find(key);
     if (it != shape_insts_.end()) {
         if (out_ninstr) *out_ninstr = it->second.ninstr;
@@ -180,8 +214,8 @@ xrt::bo* XclbinManager::insts_for(xrt::kernel* kern, uint32_t m, uint32_t k,
         }
     }
     char fname[256];
-    snprintf(fname, sizeof(fname), "%s/mm_%u_%u_%u_%u.bin",
-             insts_dir_.c_str(), m, k, n, woff);
+    snprintf(fname, sizeof(fname), "%s/%s_%u_%u_%u_%u.bin",
+             insts_dir_.c_str(), kern_name, m, k, n, woff);
     FILE* fi = fopen(fname, "rb");
     if (!fi) {
         LOG_ERROR("No per-shape insts %s — run tools/gen_mm_insts_batch "
@@ -292,6 +326,15 @@ bool NpuInferenceEngine::init(const char* model_path) {
     
     model_ = model_load(model_path, config_);
     if (!model_) return false;
+    // model_load derives num_layers/vocab/hidden from the metadata for
+    // non-0.6B models — propagate the corrected config back.
+    if (model_->config.num_layers != config_.num_layers ||
+        model_->config.hidden_size != config_.hidden_size ||
+        model_->config.vocab_size != config_.vocab_size) {
+        config_ = model_->config;
+        LOG_INFO("Engine config updated: %d layers, hidden %d, vocab %d",
+                 config_.num_layers, config_.hidden_size, config_.vocab_size);
+    }
     
     device_ = std::make_unique<xrt::device>();
     try { *device_ = xrt::device(0); }
@@ -301,6 +344,34 @@ bool NpuInferenceEngine::init(const char* model_path) {
     }
     
     xclbins_ = std::make_unique<XclbinManager>(*device_);
+    // Per-model xclbin selection: NPU_XCLBIN_DIR wins (only if it actually
+    // exists — a stale export (e.g. an old worktree's engine/npu/xclbins)
+    // must not shadow the FLM path), else $FLM_XCLBIN_PATH/xclbins/<model>,
+    // else the hardcoded default.
+    if (const char* xd = getenv("NPU_XCLBIN_DIR")) {
+        struct stat st;
+        if (stat(xd, &st) == 0 && S_ISDIR(st.st_mode))
+            xclbins_->set_xclbin_dir(xd);
+        else
+            LOG_WARNING("NPU_XCLBIN_DIR=%s does not exist — ignoring", xd);
+    }
+    if (xclbins_->xclbin_dir().empty()) {
+        std::string mp = model_path;
+        auto slash = mp.rfind('/');
+        std::string model_name = (slash == std::string::npos) ? mp : mp.substr(slash + 1);
+        if (model_name == "model.q4nx") {
+            std::string dir = mp.substr(0, slash);
+            auto s2 = dir.rfind('/');
+            model_name = (s2 == std::string::npos) ? dir : dir.substr(s2 + 1);
+        }
+        const char* flm = getenv("FLM_XCLBIN_PATH");
+        if (flm) {
+            std::string d = std::string(flm) + "/xclbins/" + model_name;
+            struct stat st;
+            if (stat(d.c_str(), &st) == 0 && S_ISDIR(st.st_mode))
+                xclbins_->set_xclbin_dir(d);
+        }
+    }
     for (int i = 0; i < XCLBIN_COUNT; i++)
         if (!xclbins_->load((XclbinType)i)) return false;
     
@@ -323,6 +394,33 @@ bool NpuInferenceEngine::init(const char* model_path) {
     int vocab_size = config_.vocab_size;
     lm_head_buffer_.resize(vocab_size);
     
+    // ---- Runtime layer path (Round 36): NPU_RUNTIME_LAYERS=1 ----
+    if (getenv("NPU_RUNTIME_LAYERS")) {
+        const char* elf_dir = getenv("NPU_LAYER_ELF_DIR");
+        const char* lmhead_elf = getenv("NPU_LMHEAD_ELF");
+        runtime_layers_ = std::make_unique<RuntimeLayerEngine>();
+        if (runtime_layers_->init(*device_, model_, config_,
+                                  elf_dir ? elf_dir : "captures/txn-elfs",
+                                  lmhead_elf ? lmhead_elf : "captures/txn-elfs/elf_0002_lmhead.bin")) {
+            use_runtime_layers_ = true;
+            rt_ctx_len_ = 0;
+            LOG_INFO("Runtime layer path ENABLED (FastFlowLM ELF submission)");
+            if (getenv("NPU_RUNTIME_SELFTEST")) {
+                LOG_INFO("Runtime layer self-test: forward(1000) then forward(1001)");
+                runtime_layers_->embed(1000);
+                runtime_layers_->forward(1);
+                runtime_layers_->dump_act(getenv("RT_ST_ACT1") ? getenv("RT_ST_ACT1") : "/tmp/st_act1.bin");
+                runtime_layers_->embed(1001);
+                runtime_layers_->forward(2);
+                runtime_layers_->dump_act(getenv("RT_ST_ACT2") ? getenv("RT_ST_ACT2") : "/tmp/st_act2.bin");
+                LOG_INFO("self-test dumps written");
+            }
+        } else {
+            LOG_ERROR("Runtime layer path init FAILED — falling back to mm pipeline");
+            runtime_layers_.reset();
+        }
+    }
+    
     LOG_INFO("=== Init Complete ===");
     LOG_INFO("Model: %s (%d layers, %d hidden)",
              model_path, config_.num_layers, config_.hidden_size);
@@ -335,15 +433,21 @@ bool NpuInferenceEngine::init(const char* model_path) {
 // (without insts the ERT command is a silent no-op).
 static void run_gemm(xrt::kernel* kern, xrt::bo* insts, uint32_t ninstr,
                       xrt::bo& act, xrt::bo& ws,
-                      xrt::bo& w1, xrt::bo& w2, xrt::bo& kv) {
+                      xrt::bo& w1, xrt::bo& w2, xrt::bo& kv,
+                      const char* tag = "") {
     if (!kern || !insts) return;
-    auto r = (*kern)(
-        (uint64_t)3,
-        *insts,
-        ninstr,
-        act, ws, w1, w2, kv
-    );
-    r.wait();
+    try {
+        auto r = (*kern)(
+            (uint64_t)3,
+            *insts,
+            ninstr,
+            act, ws, w1, w2, kv
+        );
+        r.wait();
+    } catch (const std::exception& e) {
+        LOG_ERROR("run_gemm FAILED %s: %s", tag, e.what());
+        throw;
+    }
 }
 
 // Blocked GEMM over one projection's weight BOs. The instruction stream is
@@ -357,8 +461,11 @@ static void run_blocked_gemm(XclbinManager* mgr, xrt::kernel* kern,
     const uint32_t M = 256;  // kernel block rows (NPU row grid)
     uint32_t ninstr = 0;
     xrt::bo* insts = mgr->insts_for(kern, M, k, n, 0, &ninstr);
+    int bi = 0;
     for (auto& w : weights) {
-        run_gemm(kern, insts, ninstr, act, ws, *w.bo, *w.bo, kv);
+        char tag[128];
+        snprintf(tag, sizeof(tag), "k=%u n=%u block=%d", k, n, bi++);
+        run_gemm(kern, insts, ninstr, act, ws, *w.bo, *w.bo, kv, tag);
     }
 }
 
@@ -411,12 +518,45 @@ void NpuInferenceEngine::run_layer_mlp(HwCtxState& ctx, int layer_idx) {
     run_blocked_gemm(xclbins_.get(), mm_kern, config_.intermediate_size, N, act, ws, kv, wc.down_proj_blocks);
 }
 
+// Decoder temperature: NPU_TEMPERATURE env (default 0 = greedy, which keeps
+// the runtime-path byte-identity validations deterministic).
+static float sampler_temperature() {
+    const char* t = getenv("NPU_TEMPERATURE");
+    return t ? (float)atof(t) : 0.0f;
+}
+
 // === Prefill ===
 bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_tokens) {
     LOG_INFO("=== Prefill %d tokens ===", num_input_tokens);
     if (num_input_tokens < 1) return false;
     
     for (int t = 0; t < num_input_tokens; t++) {
+        if (use_runtime_layers_) {
+            // Runtime path: one layer-kernel run per layer + lm_head (byte-
+            // verified vs the FastFlowLM runtime). ctx_len advances per token.
+            if (!runtime_layers_->embed(input_tokens[t])) return false;
+            rt_ctx_len_ = t + 1;
+            if (!runtime_layers_->forward(rt_ctx_len_)) return false;
+            // per-token logits dump for the runtime A/B (RT_LOGITS_PREFIX)
+            if (const char* rp = getenv("RT_LOGITS_PREFIX")) {
+                runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+                char fn[512];
+                snprintf(fn, sizeof(fn), "%s_%d.bin", rp, input_tokens[t]);
+                FILE* f = fopen(fn, "wb");
+                if (f) {
+                    fwrite(lm_head_buffer_.data(), sizeof(float), config_.vocab_size, f);
+                    fclose(f);
+                }
+            }
+            if (t % 7 == 0) LOG_DEBUG("  Runtime layer %d/%d done (ctx=%d)",
+                                      t, num_input_tokens, rt_ctx_len_);
+            if (t == num_input_tokens - 1) {
+                runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+                rt_first_token_ = sample_token(lm_head_buffer_.data(), config_.vocab_size, sampler_temperature());
+                LOG_DEBUG("  runtime prefill first token: %d", rt_first_token_);
+            }
+            continue;
+        }
         embed_lookup(input_tokens[t], hwctx_[0].act_bo);
         
         for (int l = 0; l < config_.num_layers; l++) {
@@ -433,16 +573,51 @@ bool NpuInferenceEngine::run_prefill(const int* input_tokens, int num_input_toke
 
 // === Decode ===
 int NpuInferenceEngine::run_decode_step(int last_token) {
-    LOG_INFO("[decode-step] start tok=%d", last_token);
+    if (use_runtime_layers_) {
+        if (!runtime_layers_->embed(last_token)) return 0;
+        rt_ctx_len_++;
+        if (!runtime_layers_->forward(rt_ctx_len_)) return 0;
+        if (const char* ksd = getenv("RT_DUMP_KV_STEP")) {
+            char kf[256];
+            snprintf(kf, sizeof(kf), "%s_ctx%d.bin", ksd, rt_ctx_len_);
+            FILE* fk = fopen(kf, "wb");
+            if (fk) { fwrite(runtime_layers_->map_kv(0), 1, 33554432, fk); fclose(fk); }
+        }
+        if (const char* asd = getenv("RT_DUMP_ACT_STEP")) {
+            char af[256];
+            snprintf(af, sizeof(af), "%s_ctx%d.bin", asd, rt_ctx_len_);
+            runtime_layers_->dump_act(af);
+        }
+        runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+        if (const char* lsd = getenv("RT_DUMP_LOGITS_STEP")) {
+            char lf[256];
+            snprintf(lf, sizeof(lf), "%s_ctx%d.bin", lsd, rt_ctx_len_);
+            FILE* fl = fopen(lf, "wb");
+            if (fl) {
+                const uint16_t* lg16 = (const uint16_t*)lm_head_buffer_.data();
+                // lm_head_buffer_ is float; write as bf16 for comparison
+                FILE* fb = fopen(lf, "wb");
+                if (fb) {
+                    for (int i = 0; i < config_.vocab_size; i++) {
+                        float v = lm_head_buffer_[i];
+                        uint32_t bits; memcpy(&bits, &v, 4);
+                        uint16_t bf = (uint16_t)((bits + 0x7FFF + ((bits >> 16) & 1)) >> 16);
+                        fwrite(&bf, 2, 1, fb);
+                    }
+                    fclose(fb);
+                }
+                fclose(fl);
+            }
+        }
+        return sample_token(lm_head_buffer_.data(), config_.vocab_size, sampler_temperature());
+    }
     embed_lookup(last_token, hwctx_[0].act_bo);
     
     for (int l = 0; l < config_.num_layers; l++) {
         run_layer_mm(hwctx_[0], l);
         run_layer_attn(hwctx_[1], l);
         run_layer_mlp(hwctx_[2], l);
-        if (l % 4 == 0) LOG_INFO("[decode-step] layer %d done", l);
     }
-    LOG_INFO("[decode-step] layers done, lm_head...");
     
     // LM head
     xrt::kernel* mm_kern = xclbins_->kernel(XCLBIN_MM);
@@ -465,21 +640,69 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
         lm_head_buffer_[i] = bf16_to_float_cpp(logits_bf16[i]);
     }
     
-    return sample_token(lm_head_buffer_.data(), config_.vocab_size, 1.0f);
+    return sample_token(lm_head_buffer_.data(), config_.vocab_size, sampler_temperature());
 }
 
-// === Sample ===
+// === Sample ===// Real decoder sampling (Round 38): temperature softmax + optional top-k /
+// top-p filtering, drawn from the engine's seeded RNG. temperature <= 0
+// (or 1e-6-ish) falls back to greedy argmax — the default, which keeps the
+// runtime-path byte-identity validations deterministic. Env knobs:
+//   NPU_SEED         RNG seed (default 42)
+//   NPU_TEMPERATURE  >0 enables sampling (softmax /T)
+//   NPU_TOP_K        top-k filter (default 0 = off)
+//   NPU_TOP_P        nucleus filter (default 1.0 = off)
 int NpuInferenceEngine::sample_token(const float* logits, int vocab_size, float temperature) {
-    (void)temperature;
-    int max_idx = 0;
-    float max_val = logits[0];
-    for (int i = 1; i < vocab_size; i++) {
-        if (logits[i] > max_val) {
-            max_val = logits[i];
-            max_idx = i;
-        }
+    // seed the RNG ONCE per run — reseeding before every draw would make
+    // each token use the same first value of the stream (biased sampling)
+    if (!rng_seeded_) {
+        if (const char* s = getenv("NPU_SEED")) rng_.seed((uint64_t)strtoull(s, nullptr, 0));
+        rng_seeded_ = true;
     }
-    return max_idx;
+    int top_k = getenv("NPU_TOP_K") ? atoi(getenv("NPU_TOP_K")) : 0;
+    float top_p = getenv("NPU_TOP_P") ? (float)atof(getenv("NPU_TOP_P")) : 1.0f;
+    if (temperature <= 0.0f) {
+        // greedy argmax (default; matches the runtime harness GREEDY_NEXT)
+        int max_idx = 0;
+        float max_val = logits[0];
+        for (int i = 1; i < vocab_size; i++) {
+            if (logits[i] > max_val) { max_val = logits[i]; max_idx = i; }
+        }
+        return max_idx;
+    }
+    // temperature softmax over the top-k / top-p survivors
+    std::vector<std::pair<float,int>> cand;
+    cand.reserve(vocab_size);
+    for (int i = 0; i < vocab_size; i++) cand.push_back({logits[i], i});
+    bool needs_order = (top_k > 0) || (top_p < 1.0f);
+    float max_l = logits[0];
+    if (needs_order) {
+        std::sort(cand.begin(), cand.end(),
+                  [](const auto& a, const auto& b) { return a.first > b.first; });
+        if (top_k > 0 && (size_t)top_k < cand.size()) cand.resize(top_k);
+        max_l = cand[0].first;
+    } else {
+        for (int i = 1; i < vocab_size; i++) if (logits[i] > max_l) max_l = logits[i];
+    }
+    for (auto& c : cand) c.first = expf((c.first - max_l) / temperature);
+    if (top_p < 1.0f) {
+        // nucleus: keep the smallest prefix of (sorted, now-scaled) candidates
+        // whose cumulative probability >= top_p
+        double sum_all = 0.0;
+        for (auto& c : cand) sum_all += c.first;
+        double acc = 0.0; size_t keep = cand.size();
+        for (size_t i = 0; i < cand.size(); i++) {
+            acc += cand[i].first / sum_all;
+            if (acc >= top_p) { keep = i + 1; break; }
+        }
+        if (keep < cand.size()) cand.resize(keep);
+    }
+    double sum = 0.0;
+    for (auto& c : cand) sum += c.first;
+    std::uniform_real_distribution<double> dist(0.0, sum);
+    double r = dist(rng_);
+    double acc = 0.0;
+    for (auto& c : cand) { acc += c.first; if (r <= acc) return c.second; }
+    return cand.back().second;
 }
 
 // === Embed lookup ===
@@ -511,17 +734,31 @@ int NpuInferenceEngine::generate(const int* input_tokens, int num_input_tokens,
         LOG_ERROR("Prefill failed");
         return 0;
     }
-    
-    current_token_ = input_tokens[num_input_tokens - 1];
+
+    // dump the prefill logits for comparison vs the runtime (NPU_LOGITS_DUMP)
+    if (const char* ld = getenv("NPU_LOGITS_DUMP")) {
+        FILE* f = fopen(ld, "wb");
+        if (f && use_runtime_layers_) {
+            runtime_layers_->get_logits(lm_head_buffer_.data(), config_.vocab_size);
+            fwrite(lm_head_buffer_.data(), sizeof(float), config_.vocab_size, f);
+            fprintf(stderr, "prefill logits dumped (%d floats)\n", config_.vocab_size);
+        }
+        if (f) fclose(f);
+    }
+
+    current_token_ = use_runtime_layers_ && rt_first_token_ >= 0
+        ? rt_first_token_ : input_tokens[num_input_tokens - 1];
     int num_out = 0;
     
     for (int i = 0; i < max_output_tokens; i++) {
-        auto t0 = std::chrono::steady_clock::now();
         current_token_ = run_decode_step(current_token_);
-        auto t1 = std::chrono::steady_clock::now();
-        double dms = std::chrono::duration<double, std::milli>(t1 - t0).count();
         output_tokens[num_out++] = current_token_;
-        LOG_INFO("[decode %d] tok=%d %.1f ms", i, current_token_, dms);
+
+        // Stop at the Qwen3 end-of-sequence ids (<|endoftext|> 151643,
+        // <|im_end|> 151645). The historical stop-at-0 was wrong for text
+        // generation — token 0 is '!' in this vocab, so real output could
+        // truncate mid-sentence.
+        if (current_token_ == 151643 || current_token_ == 151645) break;
     }
     
     auto t_end = std::chrono::steady_clock::now();

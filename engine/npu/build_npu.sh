@@ -16,6 +16,17 @@ INSTR_GEN_O="$BUILDDIR/gemm_npu_instructions.o"
 # (zaya_moe_cpu.h uses AVX2 for the host amax pass).
 ZAYA_DECODE="$SRCDIR/src/zaya_decode.cpp"
 ZAYA_DECODE_O="$BUILDDIR/zaya_decode.o"
+# Single-launch whole-layer per-ctx ELF path (#2080/#2150): RuntimeLayerEngine
+# bridge + npu-infer model loader + runtime_layer. model.c is C; the bridge and
+# runtime_layer.cpp are C++. Isolated TU: npu-infer's ModelConfig (common.h) must
+# NOT reach npu_engine_universal.cpp (name clash with engine's model_config.h).
+RUNLIST_BRIDGE="$SRCDIR/src/npu_runlist_bridge.cpp"
+RUNLIST_BRIDGE_O="$BUILDDIR/npu_runlist_bridge.o"
+RUNLIST_RT="$REPO_ROOT/npu-infer/src/runtime_layer.cpp"
+RUNLIST_RT_O="$BUILDDIR/npu_runlist_runtime.o"
+NPU_MODEL_C="$REPO_ROOT/npu-infer/src/model.c"
+NPU_MODEL_O="$BUILDDIR/npu_model.o"
+NPU_INFER_INC="$REPO_ROOT/npu-infer/include"
 
 # XRT headers at /usr/include, libs at system default path
 XRT_INC="/usr/include"
@@ -43,6 +54,20 @@ if [ ! -f "$ZAYA_DECODE_O" ] || [ "$ZAYA_DECODE" -nt "$ZAYA_DECODE_O" ]; then
         -o "$ZAYA_DECODE_O" "$ZAYA_DECODE"
 fi
 
+# One-time: compile the runlist whole-layer stack (model.c + runtime_layer + bridge)
+if [ ! -f "$NPU_MODEL_O" ] || [ "$NPU_MODEL_C" -nt "$NPU_MODEL_O" ]; then
+    echo "gcc -c -O3 -std=c11 -o $NPU_MODEL_O $NPU_MODEL_C"
+    gcc -c -O3 -std=c11 -I"$NPU_INFER_INC" -o "$NPU_MODEL_O" "$NPU_MODEL_C"
+fi
+if [ ! -f "$RUNLIST_RT_O" ] || [ "$RUNLIST_RT" -nt "$RUNLIST_RT_O" ]; then
+    echo "g++ -c -std=c++17 -O3 -o $RUNLIST_RT_O $RUNLIST_RT"
+    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_RT_O" "$RUNLIST_RT"
+fi
+if [ ! -f "$RUNLIST_BRIDGE_O" ] || [ "$RUNLIST_BRIDGE" -nt "$RUNLIST_BRIDGE_O" ]; then
+    echo "g++ -c -std=c++17 -O3 -o $RUNLIST_BRIDGE_O $RUNLIST_BRIDGE"
+    g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE"
+fi
+
 # Models to build
 MODELS=(
     "qwen3_0_6b"
@@ -66,10 +91,20 @@ MODELS=(
 )
 
 CXX="${CXX:-g++}"
+# Runlist-capable XRT 2.26.0 (exports xrt::runlist, #2150) at a dedicated
+# prefix. The system XRT 2.21.75 declares xrt::runlist but does not export it
+# (link fails), so prefer the scoped stack when present; fall back to system
+# XRT (which still builds the split path, just without runlist batching).
+XRT_RUNLIST_LIB="${XRT_RUNLIST_LIB:-/usr/local/xrt-runlist/lib}"
+if [ -f "$XRT_RUNLIST_LIB/libxrt_coreutil.so.2" ]; then
+    XRT_LIBS=(-L"$XRT_RUNLIST_LIB" -l:libxrt_coreutil.so.2 -l:libxrt_core.so.2 -Wl,-rpath,"$XRT_RUNLIST_LIB")
+else
+    XRT_LIBS=(-lxrt_coreutil -lxrt_core)
+fi
 # XRT uses shared libs (must come AFTER source on command line)
-LIBS=(-lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl)
+LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl)
 CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
-ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O")
+ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O")
 
 echo "=== Building NPU engine variants ==="
 mkdir -p "$BUILDDIR"
