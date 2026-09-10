@@ -126,3 +126,5 @@ jobs:
             fi
           fi
           echo "PR: $(cat /tmp/pr_url.txt)"
+          # Enqueue to the merge queue so it self-merges once CI is green.
+          gh pr merge "$BRANCH" --auto || echo "auto-merge enqueue failed (retry next run)"
