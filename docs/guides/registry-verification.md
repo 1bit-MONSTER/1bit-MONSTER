@@ -647,6 +647,41 @@ returns **15**, not 1: **the one `printf` header plus fourteen entry lines that 
 AS NAMED **AND** AS POPULATED**, and two differently-named copies of identical content cannot agree on it.
 The line at `:43` was the reason, not the extent.
 
+**AND THE AMENDMENT THE PRE-REGISTRATION'S FIRST RUN EARNED: PRE-REGISTER THE INPUTS, NOT ONLY THE
+OUTPUT.** The check was re-run after the merge and **its first attempt failed** — built with the tooling at its
+*current* tip (`d7308dab`, 23 commits newer) against the same main file, the binary came out **653,112 B /
+`4e5e637f15f1cec0d1b38137b7fbe4d1`** instead of `644,920 B / ce005c2cf1f004edc053d637354d7362`. **Different, and
+not attributable to the substitution.** Cause: the branch had merged `main` in the interim, and although only
+`src/gguf_reader.cpp` changed *among the six TUs named*, **the build also consumes headers, and one of them
+(`include/rocm_cpp/bitnet_model.h`) moved with that merge.** *So the pre-registration pinned the output but not
+the inputs, and its first run silently measured the branch's movement rather than the substitution.* **Amendment:
+pre-register the tooling tip AND the file set — headers included.** **A pre-registered check whose inputs can
+move is a check that quietly changes subject** — this document's whole catalogue arriving in the one artifact
+built to prevent it.
+
+**AND WITH THE INPUTS PINNED, THE SUBSTITUTION IS CONFIRMED BY IDENTITY — REPRODUCED A FOURTH TIME, BY A THIRD
+BUILDER, ON A THIRD MACHINE.** Tooling `65877914f` + `main`'s own `src/gguf_reader.cpp`, the six TUs, `g++ 15.2
+-std=c++23 -O2`:
+
+| | pre-registered | reproduced here | run on the LIVE store |
+|---|---|---|---|
+| binary | 644,920 B, `ce005c2c…` | **644,920 B, `ce005c2c…`** | `ce005c2c…` after `scp` |
+| stdout | 6,518 B, `09b75781…` | — | **6,518 B, `09b75781…`** |
+| counters | `19 / 19 / 13` | — | **`19 / 19 / 13`** |
+| stderr | 43,930 B, 280 lines | — | **43,930 B, 280 lines** |
+| first skip | `blk.9.cca_val_proj1.weight` | — | **`'blk.9.cca_val_proj1.weight' uses unsupported dtype 43 — this backend cannot decode`** |
+
+**The output hash matched too — and that is the rule's own prediction rather than a counterexample: the store's
+state was unchanged, so the same traversal produced the same sequence.** *Same state → same hash; the hash is
+scoped to one traversal of one state, and the counters are what travel.*
+
+**AND DC0FB9'S OWN INSTRUMENT ERROR, CAUGHT BY ITSELF IN THE SAME CHECK:** counting the 280 lines, dc0fb9 grepped
+for **`starts at offset`** and got **0**. That is the **truncation** guard, which fires on a truncated file; the
+280 lines are the **dtype-43 report-and-skip** lines, whose message is `uses unsupported dtype 43 — this backend
+cannot decode`. **Both guards live in `gguf_reader.cpp`; only one is in this signal.** *A truncation pattern
+cannot count dtype skips — a check that cannot see the property cannot count it*, which is the same sentence as
+this section's sixth costume, arriving from the other side of the instrument.
+
 **AND A SIXTH COSTUME FOR "A REPORT IS NOT A CHECK": A CHECKER THAT CANNOT OBSERVE THE PROPERTY.** An unused
 shell variable is **not a syntax error**, so `bash -n` returns clean on a file that ShellCheck fails with
 **SC2034** — *a checker cannot report on a property it cannot observe*, which is the same sentence as
