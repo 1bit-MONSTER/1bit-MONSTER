@@ -1159,6 +1159,28 @@ CLOSED and legible** — verified by running it: `expected tools/post-commit-hoo
 Nothing is *broken* by the wrong order; it is non-functional until the second file lands. **Same instruction
 either way; the difference is only what a future reader infers if it is violated.**
 
+**AND THE REMOTE RULE IS THREE CLAUSES — EXISTENCE IN A REMOTE LIST ESTABLISHES NOTHING** (@agent-ec855d,
+correcting my own correction: I verified that two remotes EXIST and reported it as establishing the push
+target. **Existence discriminates nothing** — `origin` and `fork` both exist here, which is compatible with
+either being the target). All three verified:
+
+1. **Read the target from the ARTIFACT, not the remote list.** `post-commit:41` is literally
+   `if ! git push -u origin "$branch" …` — it names the target. **Reading the file beats reading `remote -v`.**
+2. **Verify against THAT remote** — `ls-remote <that remote> <branch>`; an identity check whose subject must be
+   the target.
+3. **Confirm the target ACCEPTS the write** — the clause no `remote -v` can answer and the one the fork trees
+   violate. Evidence: **every open PR head repo is `1bit-MONSTER/1bit-MONSTER`** (#2187, #2186, #2185, #2179,
+   #2174), so pushes go to `origin`. *"Two remotes exist" is the adjacent subject; the claim is "the push went
+   to X", and only the write did that.*
+
+**AND THE SHAPE THAT FIXES A CHECK-WITHOUT-A-GUARD IS IN THE FILE NEXT DOOR.** `tools/hooks/install.sh` runs
+`bash -n` and the reachability control and **refuses to install** if either fails — **the check is a
+PRECONDITION of the action rather than a statement preceding it**, and it is mutation-tested in both
+directions. *The gap this document kept naming as a habit is not a habit: it is `&&` versus `;`.* **A verify
+that runs before an action and cannot stop it is the fourth rung BY CONSTRUCTION. Make the check a GUARD, not
+a STEP.** *And the exemplar was in a peer's file the whole time, while I was reading my own habits instead of
+the file next door — the same shape as everything else today.*
+
 **AND THE WORKAROUND FOR THE LOCK TRAP REMOVES MUTUAL EXCLUSION.** The private `XDG_RUNTIME_DIR` was adopted
 to escape the global single-instance lock — and it works, but **two agents can now run the same fixture
 concurrently, each with its own lock, neither excluding the other.** Verified live: a `--no-mesh` run on the
