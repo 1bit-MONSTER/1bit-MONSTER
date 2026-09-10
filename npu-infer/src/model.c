@@ -276,6 +276,29 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     return total;
 }
 
+// Per-layer tile offsets (in 5120-byte Q4NX tiles) for the dequant weight_offset.
+// Mirrors the off_* computation in npu_pack_layer_bo (byte-verified layout).
+void npu_layer_tile_offsets(ModelWeights* mw, int layer_idx,
+                            int* off_q, int* off_k, int* off_v, int* off_o,
+                            int* off_gu, int* off_d) {
+    if (off_q) *off_q = 0;
+    LayerWeights* lw = &mw->layers[layer_idx];
+    int q_t  = (lw->q_proj_weight.ndim == 2)  ? (int)lw->q_proj_weight.shape[0]  : 0;
+    int k_t  = (lw->k_proj_weight.ndim == 2)  ? (int)lw->k_proj_weight.shape[0]  : 0;
+    int v_t  = (lw->v_proj_weight.ndim == 2)  ? (int)lw->v_proj_weight.shape[0]  : 0;
+    int o_t  = (lw->o_proj_weight.ndim == 2)  ? (int)lw->o_proj_weight.shape[0]  : 0;
+    int up_t = (lw->up_proj_weight.ndim == 2) ? (int)lw->up_proj_weight.shape[0] : 0;
+    int gate_t = (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
+    int oq = 0, ok = q_t, ov = q_t + k_t, oo = q_t + k_t + v_t;
+    int ogu = oo + o_t, od = ogu + up_t + gate_t;
+    if (off_q)  *off_q  = oq;
+    if (off_k)  *off_k  = ok;
+    if (off_v)  *off_v  = ov;
+    if (off_o)  *off_o  = oo;
+    if (off_gu) *off_gu = ogu;
+    if (off_d)  *off_d  = od;
+}
+
 // Total per-layer weight BO bytes (all layers share the same geometry).
 int npu_layer_bo_bytes(ModelWeights* mw, const ModelConfig* config) {
     if (!mw || !config) return 0;

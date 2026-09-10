@@ -653,3 +653,23 @@ Estimated full prefill (6 GEMMs/layer, cached W, 28 layers): ~13 ms/layer ≈ ~6
 for 0.6B — closes the 6–17× gap to ~1.9× vs FLM's 1269. Remaining gap = per-invocation
 bA/bC alloc+sync overhead and the 2-batch doubling; next wins are bA/bC reuse + (for a
 byte-exact FLM replay) its N=128 tile schedule.
+
+## 2026-09-10 (session 2q): correct dense tile offsets + dequant params (npu_layer_tile_offsets)
+
+The earlier "q_t=16 / off_gu=48" offsets were WRONG — the Q4NX tile is 128 in-rows × 64
+out-cols (5120 B), so q_proj (1024×2048) = 256 tiles, not 16. Actual 0.6B geometry
+(total 1920 tiles):
+- q_t=256, k_t=128, v_t=128, o_t=256, up_t=384, gate_t=384, d_t=384
+- offsets: off_q=0, off_k=256, off_v=384, off_o=512, off_gu=768, off_d=1536 (×5120 B)
+
+Dequant params (all verified non-zero output via bf16mm_dequant):
+- QKV: D_in=H, D_out=qkv_total, woff=0 → 8 MB
+- O:   D_in=NH·HD, D_out=H, woff=off_o·5120 → 4 MB
+- GU:  D_in=H, D_out=**2·IM**, woff=off_gu·5120 → 12 MB  (NOT 3072 — gate+up each = IM)
+- D:   D_in=IM, D_out=H, woff=off_d·5120 → 6 MB
+
+Added `npu_layer_tile_offsets(mw, layer, &off_q..&off_d)` to model.c (mirrors
+npu_pack_layer_bo's off_* computation). GU gate/up output col-order still to confirm
+empirically — the layer BO packs up/gate as alternating 64-tile chunks (up0,gate0,up1,
+gate1,…), so the dequant's 6144-col GU W is likely up-first interleaved, to be verified
+against token parity during the wiring.
