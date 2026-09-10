@@ -128,9 +128,18 @@ Per synchronous GEMM launch (`go_rows`):
    Stream = FLM-parity header + RTP writes (M→0x201004, N→0x201008) + 80 BDs:
    A BD blen=0x8000 (32 KB), B BD blen=0x10000 (64 KB), C BD blen=0x4000
    (16 KB) — the MULTI-ROW layout (vs per-op's 0x80/0x100-byte single-row BDs).
-   C output is int32 (M×N×4). Remaining: match the mm.xclbin's A/W int8
-   blocked layout (naive row-major int8 gives all-zeros) — capture FLM's A/W
-   BOs via run_qwen3_prefill+interposer and byte-diff against packB.
+   C output is int32 (M×N×4).
+
+   **BD decode (dim0/dim1/dim2/iter per decode_txn.cpp):**
+   - **B (weights): CONTIGUOUS** — d0(size=1,str=1) d1(size=1,str=1), so W is
+     plain row-major K×N int8 (the native packB layout). NOT the blocker.
+   - **A (activations): BLOCKED** — d0(size=256,str=1) d1(size=64,str=512)
+     d2(str=256): 64 blocks of 256 B at 512-B stride, 2 dim2 passes = 32 KB.
+     This is the remaining unknown (native quantize_async emits row-major M×K).
+   - **C: strided** — d0(size=64,str=1) d1(size=256,str=2048).
+   Next: reproduce FLM's blocked A layout (capture the A BO via
+   run_qwen3_prefill+interposer, or derive from the A-BD strides) — then the
+   mm.xclbin GEMM should compute correctly.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
