@@ -440,6 +440,13 @@ public:
     RegistryReport report() const;
 
     const ModelArtifact* find(const std::string& id_or_alias) const;
+    // Resolve a user-facing name to THE artifact when several share it. A GGUF
+    // general.name is not unique, and choosing among distinct artifacts that share
+    // one is registry authority, not a caller heuristic. Order: exact id/alias
+    // (find), else display_name with the registry's own preference — empty
+    // id_quality (id preserves the original spelling), then shorter id, then
+    // lexicographic (the same rule used when merging duplicate files by digest).
+    const ModelArtifact* preferred(const std::string& id_alias_or_display_name) const;
     // Resolve a path (or path substring) to its artifact, e.g. the acceptance
     // test's `zaya1-8b.q4nx`.
     const ModelArtifact* resolve_path(const std::string& path) const;

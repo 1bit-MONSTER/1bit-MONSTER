@@ -1657,29 +1657,18 @@ int main(int argc, char** argv) {
         //    canonical entry by path, so keying discovery by canonical ids (R5)
         //    never breaks an existing `-m <general.name>` invocation.
         if (current_cfg.model_path.empty()) {
-            // Candidate paths for the requested name: exact id/alias via find(),
-            // plus every artifact whose display_name (GGUF general.name) matches.
-            // display_name is NOT unique, so pick among the candidates in
-            // `discovered` order — that list is already sorted by format/quant
-            // preference (GGUF > Q4NX > H1B > ONEBP; Q8_0 > Q6/Q5 > Q4), so the
-            // collision resolves to the same artifact the name-based selection
-            // would have preferred instead of whichever artifact happened to be
-            // first in scan order.
-            std::set<std::string> candidates;
-            if (const onebit::ModelArtifact* art = g_registry.find(g_model_name)) {
-                if (!art->files.empty()) candidates.insert(art->files.front().path);
-            }
-            for (const auto& a : g_registry.artifacts()) {
-                if (a.files.empty()) continue;
-                if (a.display_name == g_model_name || a.id == g_model_name)
-                    candidates.insert(a.files.front().path);
-            }
-            for (auto& m : discovered) {
-                if (candidates.count(m.model_path)) {
-                    printf("  (matched \"%s\" via registry alias → \"%s\")\n",
-                           g_model_name.c_str(), m.model_name.c_str());
-                    current_cfg = m;
-                    break;
+            // Registry duplicate authority (R5): display_name is not unique, so the
+            // registry owns the choice among colliding artifacts — exact id/alias
+            // first, then its own preference rule. Match the canonical entry by path.
+            if (const onebit::ModelArtifact* art = g_registry.preferred(g_model_name)) {
+                const std::string p = art->files.empty() ? std::string() : art->files.front().path;
+                for (auto& m : discovered) {
+                    if (!p.empty() && m.model_path == p) {
+                        printf("  (matched \"%s\" via registry → \"%s\")\n",
+                               g_model_name.c_str(), m.model_name.c_str());
+                        current_cfg = m;
+                        break;
+                    }
                 }
             }
         }

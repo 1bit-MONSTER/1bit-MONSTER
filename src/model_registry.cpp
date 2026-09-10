@@ -1362,6 +1362,22 @@ const ModelArtifact* ModelRegistry::find(const std::string& id_or_alias) const {
     return nullptr;
 }
 
+const ModelArtifact* ModelRegistry::preferred(const std::string& name) const {
+    if (const ModelArtifact* exact = find(name)) return exact;
+    const ModelArtifact* best = nullptr;
+    for (const auto& a : artifacts_) {
+        if (a.display_name != name) continue;
+        if (!best) { best = &a; continue; }
+        const bool a_clean = a.id_quality().empty(), b_clean = best->id_quality().empty();
+        bool better;
+        if (a_clean != b_clean) better = a_clean;
+        else if (a.id.size() != best->id.size()) better = a.id.size() < best->id.size();
+        else better = a.id < best->id;
+        if (better) best = &a;
+    }
+    return best;
+}
+
 const ModelArtifact* ModelRegistry::resolve_path(const std::string& path) const {
     std::string want = fs::path(path).filename().string();
     for (const auto& a : artifacts_)
