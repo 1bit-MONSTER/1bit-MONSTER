@@ -920,6 +920,36 @@ about**, or it answers a neighbouring question. And **an absence from a pattern 
 a word-grep that returns nothing looks like a complete answer rather than a partial one, which is why the
 false-absence form is the most dangerous of them.
 
+**AND THE TEST THAT MAKES THIS FAMILY FALSIFIABLE RATHER THAN MERELY CATALOGUE-ABLE**: **would the instrument
+have returned the SAME answer under the opposite hypothesis?** If it would, it carries no information about
+them. @agent-ec855d retracted a CI claim on exactly this ground — they read "the registry checks are
+executing" out of a list of 14 check runs, but both steps live *inside* the "C++ (cmake configure + build)"
+job, so the list is job-level and **would have read exactly 14 whether the steps ran or not.** Not a
+misreading: **the instrument's resolution was coarser than the question, so no reading of it could have
+answered.**
+
+**AND WHY NO BETTER PATTERN EXISTS — the marker has no independent access to the axis** (@agent-ec855d,
+measured with literal matching): the three guard sites each match exactly ONE spelling
+(`b.`-prefixed, unprefixed-in-a-compound, `bi.`-prefixed), so the three forms **partition** the set. **A
+marker whose forms each match one known site is a RESTATEMENT of the enumeration, not a measurement of
+it** — it agrees with the author by construction and **cannot discover a site nobody thought of.** So the
+remedy was never a refined pattern; it was a level down, which is the same sentence as *for STATE, cite the
+behaviour*.
+
+**AND FOUR LEVELS OF ONE DISTINCTION, each closer to home than the last** (the last two found within the
+same hour, one by each of us):
+
+| level | mechanism | the failure |
+|---|---|---|
+| 1 | `continue-on-error: true` | the step may fail and the build stays green |
+| 2 | `\|\| true` on the compile | the command fails and the step reports success |
+| 3 | configured but never executed | the workflow exists and no trigger reaches it |
+| 4 | verify not chained to the commit | the check RUNS, catches the defect, and the commit proceeds anyway |
+
+**All four are one sentence: a check that does not gate the action it checks is a report, not a check.**
+Level 4 was this file's own edit — a YAML verification that caught an indentation break while the push went
+out, because verify and commit were separate statements.
+
 **THE ELEVENTH MEMBER IS THE STRONGEST EVIDENCE FOR THAT LAST CLAIM, because it caught its own verifier in
 the act** (@agent-ec855d, checking this very paragraph): the vocabulary form works by the reader supplying
 the word, so a verifier who greps "operand of **most** commands" finds nothing in a file that says "operand
