@@ -35,7 +35,7 @@ static const Capability kAll[] = {
 int main(int argc, char** argv) {
     bool table_only = false;
     uint32_t at_context = 0;
-    std::string prefer_arg, absent_arg, present_arg;
+    std::string prefer_arg, absent_arg, present_arg, dry_arg;
     std::vector<std::string> roots;
 
     for (int i = 1; i < argc; i++) {
@@ -45,6 +45,7 @@ int main(int argc, char** argv) {
         else if (a == "--prefer" && i + 1 < argc) prefer_arg = argv[++i];
         else if (a == "--absent-cap" && i + 1 < argc) absent_arg = argv[++i];
         else if (a == "--present-cap" && i + 1 < argc) present_arg = argv[++i];
+        else if (a == "--dry-cap" && i + 1 < argc) dry_arg = argv[++i];
         else roots.push_back(a);
     }
 
@@ -74,7 +75,7 @@ int main(int argc, char** argv) {
 
     // Stand in for the engine's probe (has_npu(), has_vulkan(), ...) so the
     // hardware-absent path can be exercised without the engine.
-    static std::vector<BackendType> absent_types;
+    static std::vector<std::string> absent_ids, present_ids, dry_ids;
     if (!absent_arg.empty()) {
         size_t p = 0;
         while (p <= absent_arg.size()) {
@@ -85,15 +86,30 @@ int main(int argc, char** argv) {
                 if (!cap) { fprintf(stderr, "unknown capability '%s'\n", tok.c_str()); return 2; }
                 BackendType t{};
                 std::string id, cons;
-                if (backend_for(*cap, t, id, cons)) absent_types.push_back(t);
+                if (backend_for(*cap, t, id, cons)) absent_ids.push_back(id);
                 else { fprintf(stderr, "capability '%s' has no backend to be absent\n", tok.c_str()); return 2; }
             }
             if (c == std::string::npos) break;
             p = c + 1;
         }
     }
-    if (!absent_arg.empty() || !present_arg.empty()) {
-        static std::vector<BackendType> present_types;
+    if (!dry_arg.empty()) {
+        size_t p = 0;
+        while (p <= dry_arg.size()) {
+            size_t c = dry_arg.find(',', p);
+            std::string tok = dry_arg.substr(p, c == std::string::npos ? std::string::npos : c - p);
+            if (!tok.empty()) {
+                auto cap = capability_from_string(tok);
+                if (!cap) { fprintf(stderr, "unknown capability '%s'\n", tok.c_str()); return 2; }
+                BackendType t{}; std::string id, cons;
+                if (backend_for(*cap, t, id, cons)) dry_ids.push_back(id);
+            }
+            if (c == std::string::npos) break;
+            p = c + 1;
+        }
+    }
+    if (!absent_arg.empty() || !present_arg.empty() || !dry_arg.empty()) {
+        static std::vector<std::string> present_ids_unused;
         if (!present_arg.empty()) {
             size_t p = 0;
             while (p <= present_arg.size()) {
@@ -103,7 +119,7 @@ int main(int argc, char** argv) {
                     auto cap = capability_from_string(tok);
                     if (!cap) { fprintf(stderr, "unknown capability '%s'\n", tok.c_str()); return 2; }
                     BackendType t{}; std::string id, cons;
-                    if (backend_for(*cap, t, id, cons)) present_types.push_back(t);
+                    if (backend_for(*cap, t, id, cons)) present_ids.push_back(id);
                 }
                 if (c == std::string::npos) break;
                 p = c + 1;
@@ -112,9 +128,11 @@ int main(int argc, char** argv) {
         // A probe IS installed now, so capabilities it was not told about are
         // UNKNOWN rather than silently PRESENT — that is the distinction this flag
         // exists to demonstrate.
-        set_backend_availability_probe([](BackendType t) {
-            for (BackendType a : absent_types) if (a == t) return Availability::ABSENT;
-            for (BackendType p : present_types) if (p == t) return Availability::PRESENT;
+        // Id-keyed, because npu_xrt and npu_flm share a BackendType and disagree.
+        set_backend_availability_probe([](const std::string& id) {
+            for (const auto& d : dry_ids) if (d == id) return Availability::REGISTERED_DRY;
+            for (const auto& a : absent_ids) if (a == id) return Availability::ABSENT;
+            for (const auto& p : present_ids) if (p == id) return Availability::PRESENT;
             return Availability::UNKNOWN;
         });
     }

@@ -6,12 +6,13 @@ namespace onebit {
 // Default probe: UNKNOWN, i.e. do not filter. The bridge has no business guessing
 // hardware facts, and an engine that has not installed a probe gets an unfiltered
 // plan plus honest UNKNOWN markings.
-static Availability default_probe(BackendType) { return Availability::UNKNOWN; }
+static Availability default_probe(const std::string&) { return Availability::UNKNOWN; }
 static AvailabilityProbe g_probe = default_probe;
 void set_backend_availability_probe(AvailabilityProbe probe) {
     g_probe = probe ? probe : default_probe;
 }
-Availability backend_availability(BackendType t) { return g_probe(t); }
+// Keyed by id: BackendType cannot express this table (npu_xrt vs npu_flm share it).
+Availability backend_availability(const std::string& engine_id) { return g_probe(engine_id); }
 
 bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
                  std::string& out_constraint) {
@@ -148,7 +149,7 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
                 continue;
             }
         }
-        Availability av = backend_availability(t.type);
+        Availability av = backend_availability(t.engine_id);
         if (av == Availability::REGISTERED_DRY) {
             plan.conditional.emplace_back(
                 c, std::string("registered but DRY (available=true, functional=false until "

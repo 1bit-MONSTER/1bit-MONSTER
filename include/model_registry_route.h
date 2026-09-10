@@ -88,10 +88,33 @@ enum class QualityGate {
 // has_vulkan(), ...). UNKNOWN is the default and does NOT filter: the bridge must
 // not invent hardware facts it was not given, and an unfiltered plan is the honest
 // answer when nobody told it otherwise.
-// Injected by the engine once at startup (set-once, like the limit overrides).
-using AvailabilityProbe = Availability (*)(BackendType);
+// THE PROBE IS KEYED BY ENGINE ID, NOT BY BackendType, and that is not a style
+// choice. Verified by @agent-ec855d in backend_manager.cpp on ryzen: `npu_xrt`
+// (line 66) sets `available = has_npu()` -> FALSE here, while `npu_flm` (line 162)
+// sets `available = true` HARDCODED with `functional = false` — and BOTH carry
+// `BackendType::NPU_XRT`. Same type, OPPOSITE availability. A type-keyed probe is
+// therefore AMBIGUOUS BY CONSTRUCTION on this table: it would resolve NPU_XRT to
+// whichever entry it happened to find, and the one that answers `true` is the
+// hardcoded one, so NPU_XRT would read PRESENT on a machine with no NPU — the exact
+// failure the probe exists to prevent.
+//
+// AND `available` IS NOT A HARDWARE SIGNAL. It is hardcoded `true` in at least nine
+// places in that file (162, 288, 374, 397, 425, 447, 470, 1481, 1519). An
+// implementation must build the probe on the real predicates the OTHER entries use
+// (`has_npu()`, `has_hip_gpu()`, `has_vulkan()`), and must treat `available &&
+// functional` as the MINIMUM, not the target: npu_flm is simultaneously
+// hardcoded-available and dry, which is the exact combination an availability-only
+// check emits happily.
+//
+// LAYER NOTE, also from @agent-ec855d: "NPU hardware: No" is printed by the VENDORED
+// Lemonade core (third_party/lemonade/src/cpp/server/model_manager.cpp:3499), NOT by
+// backend_manager.cpp:58-66. This tree has TWO independent availability probes in
+// different layers, both live. This bridge is engine-side, so it must read
+// backend_manager's predicates — otherwise a caller inspecting the other layer can
+// disagree with the route it was handed.
+using AvailabilityProbe = Availability (*)(const std::string& engine_id);
 void set_backend_availability_probe(AvailabilityProbe probe);
-Availability backend_availability(BackendType t);
+Availability backend_availability(const std::string& engine_id);
 
 struct RoutePlan {
     const ModelArtifact* artifact = nullptr;
