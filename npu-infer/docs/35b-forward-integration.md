@@ -1268,3 +1268,26 @@ Built tools/moe_smoke.cpp (MoERuntimeLayerEngine + model.c + runlist XRT
 Next: (1) confirm the post-layer act is non-zero (isolate layer vs lm_head),
 (2) wire the routed/shared expert FFN (gen_dequant_mm_512 + send_manual_*),
 (3) fill region-A norms, then re-check logits vs token 76740.
+
+## Round 90 — wiring executes; NaN reproduced (lib layer ELF or norms?) (2026-09-10)
+
+moe_smoke ran the MoE layer ELF + lm_head in one runlist (Round-73 arg order,
+task-2 BO packing). Result:
+
+    forward(1): EXECUTED   (no hang/fault)
+    act after layer: 2048/2048 NaN   (all-NaN hidden state)
+    logits: all zeros (lm_head read the NaN act)
+
+Two candidate causes, not yet disambiguated:
+1. My region-A norms are still wrong (input/post_attention_layernorm offsets
+   in arg-2/arg-3 are best-effort; the 64 arg-0 @0x0 reads are RTP/register
+   reads whose BO source isn't pinned).
+2. The lib's gen_layer_seq itself produces a NaN layer sequence (R59's
+   conclusion: "the layer forward is genuinely NaN" even with correct weights
+   + a working lm_head).
+
+The wiring (arg order + runlist + region-B/router/5MB packing) is confirmed
+structurally correct by the clean execution. Next discriminator: decode the
+RTP/MASKWRITE reads to pin the exact norm offsets and retest; if NaN persists
+with correct norms, the lib's layer sequence is the source and the engine
+needs its own layer sequence (the mm/dequant_mm path), not the lib's.

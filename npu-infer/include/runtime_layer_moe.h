@@ -48,6 +48,8 @@ public:
     bool forward(int ctx_len);
     /// Copy the logits BO's first `vocab` bf16 values as float.
     bool get_logits(float* out, int vocab);
+    /// Dump the act BO (first `n` bytes) to a file.
+    bool dump_act(const char* path, size_t n = 4096);
 
 private:
     bool ensure_layer_kernel(int ctx_len);

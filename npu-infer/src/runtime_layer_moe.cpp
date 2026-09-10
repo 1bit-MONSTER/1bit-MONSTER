@@ -214,3 +214,12 @@ bool MoERuntimeLayerEngine::get_logits(float* out, int vocab) {
     for (int i = 0; i < vocab; i++) out[i] = bf16_to_f32(lg[i]);
     return true;
 }
+
+bool MoERuntimeLayerEngine::dump_act(const char* path, size_t n) {
+    bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+    FILE* f = fopen(path, "wb");
+    if (!f) return false;
+    fwrite(bo_act_->map(), 1, n, f);
+    fclose(f);
+    return true;
+}

@@ -434,22 +434,28 @@ int64_t npu_pack_moe_region_b(uint8_t* bo, ModelWeights* mw, int layer) {
     return (int64_t)3456 * NPU_MOE_ROW_BYTES;   // 16,367,616
 }
 
-// Pack one layer's router BO (arg-2): shared_expert_gate @0x2000 (BF16),
-// moe_router @0x3000 (BF16 [H, N_EXPERTS]). The router layout is stride-8
-// interleaved (tools/qwen36_full_ref.py: blk = n_out*(n_in//8);
-// flat[(i%8)*blk + j*(n_in//8) + i//8]) — the same convention the CPU
-// reference uses to dequant the router, byte-verified there.
+// Pack one layer's router BO (arg-2): input_layernorm @0, post_attention_layernorm
+// @0x1000, shared_expert_gate @0x2000 (BF16), moe_router @0x3000 (BF16 [H,
+// N_EXPERTS], stride-8 interleaved). The layernorm offsets are the best-effort
+// region-A placement (R37 desc: shared_gate @0x2000, moe_router @0x3000; the
+// arg-2 BD decode shows a 3072-B read @0 — the layernorms).
 int64_t npu_pack_moe_router_bo(uint8_t* bo, ModelWeights* mw, int layer) {
     if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
     LayerWeights* lw = &mw->layers[layer];
     if (lw->moe_router_weight.ndim != 2) return 0;
     const uint8_t* rt = (const uint8_t*)model_tensor_data(mw, &lw->moe_router_weight);
     const uint8_t* seg = (const uint8_t*)model_tensor_data(mw, &lw->shared_expert_gate_weight);
+    const uint8_t* iln = (const uint8_t*)model_tensor_data(mw, &lw->input_layernorm_weight);
+    const uint8_t* paln = (const uint8_t*)model_tensor_data(mw, &lw->post_attention_layernorm_weight);
     if (!rt || !seg) return 0;
     const int64_t n_in = lw->moe_router_weight.shape[0];      // H = 2048
     const int64_t n_out = lw->moe_router_weight.shape[1];     // N_EXPERTS = 256
     const size_t seg_bytes = (size_t)lw->shared_expert_gate_weight.data_size;
     memset(bo, 0, 0x3000);
+    if (iln && lw->input_layernorm_weight.ndim == 1)
+        memcpy(bo + 0x0000, iln, (size_t)lw->input_layernorm_weight.data_size);
+    if (paln && lw->post_attention_layernorm_weight.ndim == 1)
+        memcpy(bo + 0x1000, paln, (size_t)lw->post_attention_layernorm_weight.data_size);
     if (seg_bytes) memcpy(bo + 0x2000, seg, seg_bytes);
     // stride-8 interleave: flat[(i%8)*blk + j*(n_in//8) + i//8], blk = n_out*(n_in//8)
     const int64_t in8 = n_in / 8;
