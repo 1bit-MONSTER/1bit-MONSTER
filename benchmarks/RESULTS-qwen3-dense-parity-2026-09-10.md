@@ -418,3 +418,29 @@ Resolve by trying woff in bf16-elements with the true k_norm A.
 dequant.xclbin (Q4NX→bf16) + mm.xclbin (bf16 GEMM) fully verified for Q; K/V/O/MLP
 follow the same recipe once the q_norm/k_norm A and the bf16 weight-offset unit are
 nailed down. Then wire into `engine/npu/src/npu_engine_universal.cpp`.
+
+---
+
+## 2026-09-10 (session 2h): weight_offset unit = bf16 ELEMENTS (not bytes)
+
+### Finding: Gemm::generate_seq weight_offset is in bf16 ELEMENTS for the mm.xclbin
+interpret() of a K GEMM stream shows `generate_seq(seq, 256,1024,1024, woff=2097152)`
+emits W B-DP offsets starting at **4194304 (4 MB bytes)** — i.e. the weight_offset is
+multiplied by 2 (bf16 element → byte). So for the bf16 W the offsets are:
+- q: woff=0, k: woff=2097152 (→4 MB), v: woff=3145728 (→6 MB).
+
+(NOTE: for the Q4NX layer.xclbin path, weight_offset was in BYTES — 256×5120=1310720 —
+so the unit is type-dependent: Q4NX→bytes, bf16→elements.)
+
+### Finding: the Q/K/V GEMMs SHARE one A BO (256×2048 bf16)
+SETARG capture shows all three GEMMs use the same A BO (`idx=4 bo=0x…aa20`) and the same
+8 MB W BO (`idx=5`). Q GEMM reads A[:,:1024] (verified byte-exact). The K GEMM still does
+NOT reproduce C173 with A[:,:1024] or A[:,1024:] at the correct woff (0.5% match) — so the
+K/V activation feeding is still unresolved (the A BO's second half A[:,1024:] is neither a
+RoPE nor a copy of the first half; the interleaved `_rope_rms` host step likely re-syncs the
+A BO or supplies a transformed K input).
+
+### Status
+mm.xclbin bf16 GEMM + dequant Q4NX→bf16 + per-projection woff (in elements) all verified for Q.
+K/V/O/MLP need the correct per-projection A (RoPE/k-norm transform) — then wire into
+`engine/npu/src/npu_engine_universal.cpp`.
