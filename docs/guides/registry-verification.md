@@ -412,10 +412,22 @@ tool had to become runnable):
 
 | population | same-file | id-divergent | legacy-invisible |
 |---|---|---|---|
-| the store (F14 file excluded) | 18 | 18 | 13 |
+| the store (F14 file excluded — **see the expiry below**) | 18 | 18 | 13 |
 | `/home/bcloud/bench-models` | 4 | 4 | 0 |
 | `/home/bcloud/models` | 0 | 0 | 2 |
 | the synthetic fixture (before) | 0 | 0 | 5 |
+
+**THE FIRST ROW HAS AN EXPIRY, AND IT IS NOT MERELY ONE ROW SHORT** (@agent-ca60cf, who also named what
+the exclusion actually cost). **Expires at PR #2185** (`fix/gguf-unknown-dtype-fail-closed`): the moment F14
+is fixed on `main`, the exclusion is unnecessary and **`registry-diff` should be re-run on the live store
+unmodified** — that is the honest measurement, and until then these numbers are tagged as *measured over a
+symlink farm excluding F14*.
+
+**And the exclusion did not just remove one artifact from the count.** The crash means **the flat scan could
+not COMPLETE on that directory**, so this was a run of a **DEGRADED instrument** — the 18/18/13 values are
+not "the real numbers minus one", they are what a scan that dies partway through happens to report. **A
+measurement whose validity rests on "did the tool finish?" carries that dependency invisibly, which is the
+same reason the caveat needs a date rather than a footnote.**
 
 The counters **move with the input** — the tool reads the directory rather than emitting a constant.
 That is what the control establishes, and it is all it establishes: the fixture's own numbers are
