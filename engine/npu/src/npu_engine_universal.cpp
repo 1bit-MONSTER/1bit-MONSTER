@@ -448,18 +448,22 @@ static uint64_t jo(const char*js,size_t jl,const char*nm){size_t nl=strlen(nm);
 // v12: OpenMP attention — parallelize across heads, with optional causal mask
 static inline void attn_omp(float*qo,float*at,int cl,const float*kv_k,const float*kv_v,int NH,int NKV,int HD,int GQA,int max_pos=-1){
     if(max_pos<0)max_pos=cl;
-    #pragma omp parallel for
-    for(int hh=0;hh<NH;hh++){int kvh=hh/GQA;
-        std::vector<float> scores(cl);float mx=-1e30f;
-        for(int p=0;p<cl;p++){if(p>=max_pos){scores[p]=-1e30f;continue;}
-            double s=0;int qoff=hh*HD,koff=p*NKV*HD+kvh*HD;
-            #pragma omp simd reduction(+:s)
-            for(int d=0;d<HD;d++)s+=(double)qo[qoff+d]*kv_k[koff+d];scores[p]=(float)(s/sqrtf((float)HD));if(scores[p]>mx)mx=scores[p];}
-        double sw=0;for(int p=0;p<cl;p++){scores[p]=expf(scores[p]-mx);sw+=scores[p];}
-        float isw=sw>0?1.0f/(float)sw:1.0f/cl;
-        for(int d=0;d<HD;d++){float acc=0;int aoff=hh*HD+d;
-            #pragma omp simd reduction(+:acc)
-            for(int p=0;p<cl;p++)acc+=scores[p]*kv_v[p*NKV*HD+kvh*HD+d];at[aoff]=acc*isw;}}
+    #pragma omp parallel
+    {
+        std::vector<float> scores(cl);   // one scratch buffer per THREAD (not per head)
+        #pragma omp for
+        for(int hh=0;hh<NH;hh++){int kvh=hh/GQA;
+            float mx=-1e30f;
+            for(int p=0;p<cl;p++){if(p>=max_pos){scores[p]=-1e30f;continue;}
+                double s=0;int qoff=hh*HD,koff=p*NKV*HD+kvh*HD;
+                #pragma omp simd reduction(+:s)
+                for(int d=0;d<HD;d++)s+=(double)qo[qoff+d]*kv_k[koff+d];scores[p]=(float)(s/sqrtf((float)HD));if(scores[p]>mx)mx=scores[p];}
+            double sw=0;for(int p=0;p<cl;p++){scores[p]=expf(scores[p]-mx);sw+=scores[p];}
+            float isw=sw>0?1.0f/(float)sw:1.0f/cl;
+            for(int d=0;d<HD;d++){float acc=0;int aoff=hh*HD+d;
+                #pragma omp simd reduction(+:acc)
+                for(int p=0;p<cl;p++)acc+=scores[p]*kv_v[p*NKV*HD+kvh*HD+d];at[aoff]=acc*isw;}}
+    }
 }
 
 // v12: OpenMP LM head with f32 embeddings — top-K sampling
