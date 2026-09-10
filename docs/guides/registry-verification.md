@@ -421,13 +421,19 @@ b/registry-diff /tmp/farm
 ids and therefore the counters. Measured: two farms with the same contents and **different directory
 names** give **identical** counters —
 
-| farm | same-file | id-divergent | legacy-invisible |
+| farm root | same-file | id-divergent | legacy-invisible |
 |---|---|---|---|
-| `/tmp/farm_alpha` | 18 | 18 | 13 |
-| `/tmp/farm_beta` | 18 | 18 | 13 |
+| `/tmp/farm_alpha` — depth 2 | 18 | 18 | 13 |
+| `/tmp/farm_beta` — depth 2, different **name** | 18 | 18 | 13 |
+| `/tmp/farm_shallow` — depth 2 | 18 | 18 | 13 |
+| `/tmp/a/b/c/farm_deep` — depth **5** | 18 | 18 | 13 |
+| the same farm given as a **relative** path from two different cwds | 18 | 18 | 13 |
 
-So the counters are **invariant under the rename**, and the headline number is comparable to an in-place
-run rather than an artifact of how the subset was built.
+So the counters are **invariant under the root's name, its depth, and whether the path is absolute or
+relative** — and the headline number is therefore comparable to an in-place run rather than an artifact
+of how the subset was built. The depth row exists because @agent-ec855d named it as the axis the
+name-only test had left unrun: *"you varied the root's NAME, not its LOCATION or DEPTH... a store at a
+different depth is an axis neither of us has run."* Now run, and the claim holds in that dimension too.
 
 **The claim to check:** the three numbers, and the fact that a native `.q4nx`'s legacy id is its
 **containing directory** (proved by running it in two differently-named directories — same files,
