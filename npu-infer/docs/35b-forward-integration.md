@@ -1544,3 +1544,19 @@ subtle indexing/precision detail (candidate: the [j][i] state transpose vs the
 reference's [i][j], or a float-vs-double accumulation). Next: dump the engine's
 delta_state after the update and diff element-wise vs the reference's
 delta_state to pin the exact op.
+
+## Round 106 — 3 bugs fixed; GDN attention now byte-level (MoE is next) (2026-09-10)
+
+Three correctness bugs found + fixed, all upstream of the token flip:
+
+1. GDN QKV K/V pointer-stride (`qkv_w + off` -> `+ off*H`) — R104.
+2. reference `self.emb` flat (not reshaped) — R102.
+3. reference `l2norm` used global sum instead of per-row
+   (`(x*x).sum()` -> `.sum(axis=-1,keepdims=True)`) — this was the ~100x
+   attention-core divergence; the engine's per-head l2norm was correct.
+
+After (3), layer-0 GDN now matches the reference to float-precision:
+  post-conv qkv 0.007, q/k 0.015, RAW core 7.2e-5, post-z core 0.010,
+  O output 0.0045 (corr 0.999). Token still 4329 vs 137554, so the remaining
+  L0 hidden-state divergence (max|d|=3.92) is now in the MoE FFN
+  (moe_ffn_cpu router/top-k or expert dequant) — the last piece.

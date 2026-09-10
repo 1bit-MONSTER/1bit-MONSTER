@@ -2704,6 +2704,12 @@ struct Bf16Ctx {
                 kk[(size_t)h * gdn_hd[l] + d] *= ik;
             }
         }
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fq = fopen("/tmp/l0_qq.bin", "wb");
+            if (fq) { fwrite(qq.data(), 4, gdn_vh[l] * gdn_hd[l], fq); fclose(fq); }
+            FILE* fk = fopen("/tmp/l0_kk.bin", "wb");
+            if (fk) { fwrite(kk.data(), 4, gdn_vh[l] * gdn_hd[l], fk); fclose(fk); }
+        }
         // alpha/beta projections → g = ssm_a*softplus(a+dt_bias), beta = sigmoid(b)
         // (ssm_a stored already negated, #1460 convention — used directly)
         std::vector<float> ga(gdn_vh[l]), gb(gdn_vh[l]), ggate((size_t)gdn_vh[l] * gdn_hd[l]);
@@ -2728,6 +2734,10 @@ struct Bf16Ctx {
         // recurrent delta rule over v-heads
         gdn_attn_cpu(qq.data(), kk.data(), fqo + gdn_v_off, ggate.data(), gb.data(),
                      delta_state, out, gdn_hd[l], gdn_vh[l], 1.0f / sqrtf((float)gdn_hd[l]));
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fr = fopen("/tmp/l0_rawcore.bin", "wb");
+            if (fr) { fwrite(out, 4, gdn_vh[l] * gdn_hd[l], fr); fclose(fr); }
+        }
         // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm
         std::vector<float> zout((size_t)gdn_vh[l] * gdn_hd[l]);
         const float* zw = gdn_z_w[l].data();

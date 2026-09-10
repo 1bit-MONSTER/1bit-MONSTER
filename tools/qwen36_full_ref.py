@@ -132,7 +132,7 @@ def rn_c(x, w):
 
 
 def l2norm(x):
-    return x / np.sqrt((x * x).sum() + EPS)
+    return x / np.sqrt((x * x).sum(axis=-1, keepdims=True) + EPS)
 
 
 def rot64(x, pos):
