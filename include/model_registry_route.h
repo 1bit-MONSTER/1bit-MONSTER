@@ -157,6 +157,26 @@ Availability backend_availability(const std::string& engine_id);
 // HRX bundle at all. The probe is therefore MANDATORY for that row, not optional.
 Availability availability_for(bool available_is_a_predicate, bool available, bool functional);
 
+// ── A CAPABILITY THAT NAMES A TENSOR MUST NAME **WHICH** TENSOR ───────────────
+// The general form of a correction @agent-ca60cf made to their own wording, and it
+// matters here because the HRX predicate names `token_embd.weight`:
+//
+//   The HRX constraint is on the EMBEDDING LOOKUP, not on the head. The failing node is
+//   `unsupported HRX node 0: GET_ROWS ... inputs=[0:q6_K[1024,151936,1,1], ...]` — i.e.
+//   GET_ROWS over `token_embd.weight`, which HRX claims and cannot run unless the
+//   embedding is the Q4_K row-gather case (#1945: "Q4_K fuses; q5_0/q8_0/Q4_K_S/IQ2XXS
+//   fail-closed"). `lm_head_fused` is an ORTHOGONAL flag about the OUTPUT head (tied vs
+//   a separate `output.weight`) — and the one measured-PASSING file carries a separate
+//   `output.weight` while still passing, so "Q4_K AND fused" would have excluded the only
+//   artifact that works. Read "fused" in that sentence as "the row-gather implementation
+//   GET_ROWS supports", never as tied embeddings.
+//
+// The same two-axis split exists in the 1BP/q35 lane and is already handled separately
+// there: the embedding is read by `h1bp_embed_copy_kernel` (Q4NX 1BP) or
+// `h1bp_q8embed_kernel` (Q8_0 GGUF), while the head is a DIFFERENT object with its own
+// selection (`q35_out_q4nx` / `q35_out_i8` / `q35_out_f16` / `q35_out_f32` / raw
+// `q35_out`). An embedding rule and a head rule must never share a predicate.
+//
 // ── WHICH TYPES ARE DISPATCH-KEYED: a mechanical test, not comment reading ────
 // Asked and answered by @agent-ec855d, and it replaces the "I cannot see it from my
 // side" I had been saying:

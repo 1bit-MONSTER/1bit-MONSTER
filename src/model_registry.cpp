@@ -819,6 +819,23 @@ std::vector<Capability> derive_capabilities(Container c, DtypeSpace sp, bool q4n
             // The NPU entry is RETAINED as a fallback (after the GPU lanes) so the
             // earlier reachability fix is not undone, and because npu_flm is
             // Q4NX-only the constraint text says so.
+            // THE MOAT FORMAT SPANS TWO CONTAINERS WITH TWO DIFFERENT CHAINS
+            // (@agent-ca60cf, reading the router): the `.1bp` container (dtype_space
+            // ONEBP_HEADER) gets the ONEBP chain, but a native `.q4nx` (Q4NX_JSON) is
+            // caught EARLIER by the MoE branch — `if (cfg.num_experts > 0 && format !=
+            // GGUF && format != H1B && ...)` — which returns {hip_gpu, cpu_scalar}
+            // because those CCA/MoE kernels "expect 1BP weights". Supporting fact: the
+            // router mentions ModelFormat::Q4NX exactly ONCE in the whole file, so no
+            // Q4NX chain exists; the chain quoted elsewhere is ModelFormat::ONEBP.
+            if (q4nx_named && sp == DtypeSpace::Q4NX_JSON) {
+                // Router head for a native MoE .q4nx is hip_gpu (the ZAYA/CCA path).
+                // NPU_Q4NX is RETAINED as a capability because the NPU lane can read a
+                // Q4NX-quantized file (npu_flm is Q4NX-only) even though the router's
+                // chosen chain for this container does not include it — capabilities say
+                // what COULD serve, the chain says what the router PICKS.
+                caps = {Capability::HIP_GGUF, Capability::NPU_Q4NX, Capability::CPU};
+                break;
+            }
             caps = {Capability::FUSED_GPU_NPU, Capability::HIP_1BP, Capability::VULKAN_1BP,
                     q4nx_named ? Capability::NPU_Q4NX : Capability::NPU_1BP};
             break;
