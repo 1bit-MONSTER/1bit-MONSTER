@@ -141,6 +141,8 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
                 long n = inprocess_->load_session_file(sf);
                 if (n < 0) {
                     fprintf(stderr, "HRX: state import failed (%s) — continuing with empty KV\n", sf);
+                } else {
+                    imported_ctx_ = n;   // #2145: used by the ctx-limit routing guard
                 }
             }
             inprocess_mode_ = true;

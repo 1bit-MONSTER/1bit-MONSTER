@@ -32,6 +32,12 @@ public:
     HrxBackend();
     ~HrxBackend() override;
 
+    // #2145: tokens imported through HRX_STATE_FILE (-1 = none). The unified
+    // server uses this to keep HRX off requests whose context exceeds the
+    // bundle's KV ceiling (HRX_MAX_CTX_TOKENS) instead of failing mid-decode.
+    long imported_ctx_tokens() const { return imported_ctx_; }
+    bool inprocess_active() const { return inprocess_mode_; }
+
     bool init(const ModelConfig& cfg, const std::string& weights_dir) override;
     bool reset() override;
     bool forward(int token_id, float* hidden_out) override;
@@ -52,6 +58,8 @@ private:
 
     pid_t pid_ = -1;
     bool initialized_ = false;
+    long imported_ctx_ = -1;  // #2145: HRX_STATE_FILE import length
+
     bool inprocess_mode_ = false;
     std::unique_ptr<hrx::Inprocess> inprocess_;
     std::string server_bin_;
