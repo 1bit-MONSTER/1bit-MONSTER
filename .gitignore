@@ -207,3 +207,4 @@ build100/
 npu-infer/tools/gen_layer_elfs
 npu-infer/tools/capture/run_qwen3_npu
 npu-infer/tools/capture/run_qwen3_prefill
+npu-infer/tools/capture/gen_mm_seq
