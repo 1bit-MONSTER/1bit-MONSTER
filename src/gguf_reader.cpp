@@ -693,8 +693,8 @@ bool GgufReader::open(const std::string& path) {
                             kvp.first.c_str(), ti.dtype);
                     continue;
                     // Durable rationale for this guard (kept in SOURCE, not only in a commit
-                    // message, because this repo squashes on merge and commit prose does not
-                    // survive it) — every line from here to the end of this block is a comment:
+                    // message: this repo squashes on merge, so commit prose is not a durable
+                    // home for it. Everything from here to the end of the block is a comment:
                     //  * CONTRACT: gguf_block_info() is DOCUMENTED to return {0,0} for an
                     //    unrecognized dtype (include/gguf_reader.h:79), so the sentinel is
                     //    intentional and callers must honour it.
@@ -715,6 +715,9 @@ bool GgufReader::open(const std::string& path) {
                     //    exits rc=1, so a run that never executed is indistinguishable from a pass
                     //    by exit status alone. The honest evidence is this message plus the
                     //    `[discover] N model(s) found` line.
+                    //  * the `[discover]` count itself is an identity check on OUTPUT, which is
+                    //    why it beats an exit code: an exit code cannot distinguish "the guard
+                    //    rejected the tensor" from "the process never ran".
                 }
                 uint64_t n_blocks = (ti.numel + b.block_size - 1) / b.block_size;
                 uint64_t need = n_blocks * (uint64_t)b.block_bytes;
