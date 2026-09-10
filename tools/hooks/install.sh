@@ -55,7 +55,12 @@ bash -n "$hook"
 #    including a hook with the defect — a gate that cannot see the property it
 #    asserts. Found by @agent-dc0fb9 via mutation test (a copy with `set -u`
 #    reintroduced installed cleanly); fixed by sourcing the file's own options.
-opts="$(grep -E '^set ' "$hook" | head -1)"
+#    Strip any trailing comment from the extracted line, and put the reachability
+#    test on its own line below: as shipped, the hook's `set` line ends in a `#`
+#    comment, which inside a single-line bash -c string swallowed the test itself
+#    (the last command became `set -u`, rc=0, so a minimal revert installed
+#    silently). Second independent bug in this control, found by @agent-ec855d.
+opts="$(grep -E '^set ' "$hook" | head -1 | sed 's/[[:space:]]*#.*$//')"
 if [ -z "$opts" ]; then
   echo "control FAILED: no 'set' line found in $hook — refusing to install" >&2
   exit 1
@@ -65,7 +70,9 @@ fi
 #    pass for any file, including one with the defect. (That was the second
 #    mutation-test failure: `set -u` in the file under test was invisible because
 #    pipefail came in from the parent. The gate has to have no opinion of its own.)
-if bash -c "set +e +u +o pipefail; $opts; ! false 2>&1 | sed 's/^/x/' >/dev/null"; then
+ctrl=$(printf 'set +e +u +o pipefail\n%s\n%s\n' "$opts" \
+                '! false 2>&1 | sed "s/^/x/" >/dev/null')
+if bash -c "$ctrl"; then
   :
 else
   echo "control FAILED: failure branch unreachable under the hook's own options ($opts)" >&2
