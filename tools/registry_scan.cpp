@@ -37,11 +37,15 @@ void usage(const char* argv0) {
             "usage: %s [--json] [--digest] [--no-probe] [--max-depth N]\n"
             "          [--capability NAME] [--at-context N]\n"
             "          [--catalog PATH | --catalog-default]\n"
-            "          [--resolve PATH|ID] [--quiet] <root>...\n"
+            "          [--resolve PATH|ID] [--route ID|PATH]\n"
+            "          [--prefer CAP,CAP] [--quiet] <root>...\n"
             "\n"
             "  --at-context N     apply capability constraints at N context tokens\n"
             "  --catalog PATH     ingest a recipe-keyed catalog as a VIEW\n"
             "  --catalog-default  same, at ~/.config/lemonade/user_models.json\n"
+            "  --route ID|PATH    run the RESOLVER: id -> artifact -> capability\n"
+            "  --prefer A,B,C     capability order for --route (default: the\n"
+            "                     artifact's own order; order is policy, not registry)\n"
             "\n"
             "capabilities: NPU-Q4NX NPU-1BP HIP-1BP HIP-GGUF RADV-GGUF\n"
             "              HRX2-GGUF-Q4NX HRX-GGUF MLX-GPU CPU\n",
@@ -68,7 +72,16 @@ void describe(const ModelArtifact& a) {
     printf("container:    %s\n", to_string(a.container));
     printf("dtype_space:  %s\n", to_string(a.dtype_space));
     printf("has_type42:   %s\n", a.has_dtype_42 ? "yes (OVERLOADED ID)" : "no");
-    if (a.native_version || a.native_json_bytes || a.native_name_mismatch || !a.native_dtypes.empty()) {
+    if (a.container == Container::ONEBP && a.dtype_space != DtypeSpace::ONEBP_HEADER) {
+        // These zeros are NOT values. The container physically cannot carry an
+        // OnebpHeader, and printing 0s made this indistinguishable from the v1
+        // "expert block not carried" case that cost a day to untangle. Raised by
+        // @agent-ca60cf against a q4nx-json file.
+        printf("native:       n/a (no OnebpHeader in a %s container)", to_string(a.dtype_space));
+        if (a.native_json_bytes) printf("  json_bytes=%llu", (unsigned long long)a.native_json_bytes);
+        if (a.native_name_mismatch) printf("  [native-name-mismatch]");
+        printf("\n");
+    } else if (a.native_version || a.native_json_bytes || a.native_name_mismatch || !a.native_dtypes.empty()) {
         printf("native:       version=%u vocab=%d experts=%d top_k=%d tensors=%d rope_theta=%.1f",
                a.native_version, a.native_vocab, a.native_num_experts, a.native_top_k,
                a.native_tensor_count, a.native_rope_theta);
