@@ -63,7 +63,9 @@ ROCm/TheRock toolchain (route B) plus a built `b/1bit`: §5, §6, §6.1, and §7
 absent subject fails as a NUMBER, not as an error.** (@agent-ec855d, who found that its absence returns a plausible result rather
 than a complaint, which is what makes it the most dangerous rather than the least.)
 
-**(a) A populated store.** `~/models` is the operand of **10 commands** here. A missing or empty store
+**(a) A populated store.** `~/models` is the operand of most commands here — re-derive with
+`grep -c '~/models' docs/guides/registry-verification.md` (10 when written; it is a property of THIS
+FILE, so it moves whenever this file is edited, which is why no count is asserted here). A missing or empty store
 does **not** error — verified against a directory that does not exist:
 
 ```
@@ -425,9 +427,9 @@ class** — the complete GGUFs above are seen by both. That is exactly why a con
 not be read as a second finding.
 
 Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=13`**
-Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=13`** — every file
-the flat scan finds carries a different canonical id, 13 artifacts are invisible to a
-non-recursive scan, and three sets of distinct files share one legacy id (the `-m` silent-pick
+Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=13`** — that is, IN THAT
+MEASUREMENT every file the flat scan found carried a different canonical id, 13 artifacts were invisible
+to a non-recursive scan, and three sets of distinct files shared one legacy id (the `-m` silent-pick
 hazard). **The file to exclude is `zaya1-8b-ft-q4nx.gguf`** — in the measured store it is
 `~/models/zaya1-8b-ft-q4nx.gguf`. Running in place reproduces the crash exactly: **`rc=136`, SIGFPE, core
 dumped, no output** (verified by @agent-ec855d, and again here). Until
@@ -604,7 +606,8 @@ two steps"* — cheaper than a new trigger, not zero, and **unavailable until th
 
 **Why the user-level route is the worst despite crossing no repo authority:** every agent on this
 box runs as the same OS user, so a user-level `hooksPath` fires for **every committer in every repo
-that user touches** — 13 checkouts here, including `~/projects/lemonade sdk/lemonade`, whose whole
+that user touches** — `ls ~/projects | wc -l` (13 when written; a property of the MACHINE, not of a
+document), including `~/projects/lemonade sdk/lemonade`, whose whole
 policy is "touch nothing remote, work locally, no noise". A 1bit-specific hook firing in there is
 the same scope error as the `/tmp` copy that silently went stale.
 
