@@ -163,15 +163,18 @@ Per synchronous GEMM launch (`go_rows`):
    (98304 = 3×2^15 is the bf16→int fixed-point scale).
 
    **BD semantics (npu_cmd_write_dma.hpp):** buffer_length = dim0×dim1×dim2
-   (dim2_size derived), iter_size = ((bd[10]>>20)&0x3FF)+1. So the A BD reads
-   32KB total (256B d0 × 64 d1×512str × 2 d2×256str — a CONTIGUOUS row-major
-   read). **B (W) read is STRIDED**: 32 B DPs at 256KB offsets (0…7.75MB =
-   2× the 4MB int8 QKV W), each B BD linear 64KB — the W is stored in a
-   blocked/2× layout, NOT row-major (my row-major W test reads it wrong,
-   giving garbage C). Remaining: (1) W blocked layout (and int8-vs-int4 width),
-   (2) C strided write (32 groups×16 int32 @64-spacing, 256 blocks @512-stride
-   → N/8=512 cols per pass), (3) wire into the prefill. Definitive next step:
-   byte-diff my GEMM vs FLM's own Gemm+npu_app on identical A/W.
+   (dim2_size derived), iter_size = ((bd[10]>>20)&0x3FF)+1.
+
+   **SOLVED — W is Q4NX Q4, NOT int8, and the GEMM computes correctly.**
+   The captured W BO (2MB "O") has Q4NX structure: [512B float32 scales][512B
+   int16 zps][3712B packed Q4][384B tail] per 5120B tile. Running my GEMM
+   (O stream M=256/K=2048/N=1024, A=bf16 1.0, W=captured Q4NX O W) gives
+   C[m][0] = 1080180880 for ALL m (i.e. the dequantized column-sum × 98304),
+   confirming the kernel dequantizes Q4×scale+zp INTERNALLY and my earlier
+   int8-W tests were the wrong format. So **C_float = C_int32 / 98304**
+   (no separate scale_W — the Q4 dequant is inside the mm.xclbin). Remaining:
+   (1) the exact W packing (q4nx tile → mm.xclbin W BO), (2) C strided write
+   mapping, (3) wire into the prefill.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
