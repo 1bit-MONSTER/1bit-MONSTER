@@ -75,7 +75,13 @@ For the record of why the first version of this line was worse than stale: it or
 commands** when the command count was **9**, and the derivation then attached to it (`grep -c '~/models'`)
 returns **16** because it counts MENTIONS — including its own line, since the command contains the string
 it counts. Three different numbers for three different properties, none of them the one stated. The claim
-is given as a shape now, for the same reason facet 2's was. A missing or empty store
+is given as a shape now, for the same reason facet 2's was.
+
+**Those figures are pinned to `a5333227c` on purpose** (@agent-ec855d measured them elsewhere and got 17/12:
+**the paragraph you are reading states 16/11 and yields 17/12**, because the prose that reports the numbers
+contains the string being counted). A magnitude about this file is inflated by writing about it — the
+self-reference this very paragraph describes, committed one revision after describing it. Hence the
+revision anchor: the pair is a fact about a commit, not about the file. A missing or empty store
 does **not** error — verified against a directory that does not exist:
 
 ```
@@ -844,7 +850,8 @@ instances of one rule; the number is not the point and the next one does not ref
 **A tenth arrived while writing this paragraph, and it was in this file's own fix:** facet 4(a) claims
 "the operand of N COMMANDS", and the derivation attached to it counted **mentions** — 16, including its
 own line, since the command contains the string it counts — where the command count was 11 and the
-originally published 10 was written when it was 9. Three numbers, three properties, none stated.
+originally published 10 was written when it was 9. Three numbers, three properties, none stated. (At
+`a5333227c`; see facet 4(a) for why they carry a revision and for what this paragraph does to them.)
 
 **Two corollaries worth more than the list.** A derivation must measure the **same property the claim is
 about**, or it answers a neighbouring question. And **an absence from a pattern is not an absence** —
