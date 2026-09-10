@@ -378,6 +378,23 @@ runs on this branch") held all day. So:
 Both forms are cheap and neither is a resolution to try harder, which is the point: the failure
 recurred *while* being careful about it.
 
+**Its sibling, which is a DIFFERENT safety problem that I had been treating as the same one.** The
+closure rule covers claims about **absence**. A second class covers claims of **success**, and there
+the question is not whether the space was enumerated but whether the instrument **touched the thing
+at all**. Four green readings in this work came from an instrument that did not:
+
+- a probe that used a **known** extension while claiming v1 behaviour (git tolerates it, so it passed);
+- a version flip attempted with a tool that **cannot run at v1**, so the "v0 is tolerated" result came
+  from a repo that had never left v1;
+- a chain of three candidate escapes whose aggregate looked green **because one element did the work**;
+- a hook run whose message had never been written into the file, read as *"the author was told
+  nothing"* when there was nothing to tell.
+
+**A green result from an untouching instrument is worse than a red one, because it is
+indistinguishable from a pass.** The defence is the same in both classes, and it is not care: make
+the probe's condition explicit and check it separately — one variant per repo, one field per
+sentence.
+
 **THE CHECK-SHAPE THAT WAS MISSING, worth stating once:** when this step was placed in `ci.yml`,
 its **feasibility** was verified — source-only, no dependencies, seconds to run — but not its
 **reachability**, i.e. that the trigger fires for the branch being pushed to. **Feasibility is not
