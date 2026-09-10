@@ -675,6 +675,22 @@ bool GgufReader::open(const std::string& path) {
             for (auto& kvp : tensors_) {
                 const GgufTensorInfo& ti = kvp.second;
                 GgufBlockInfo b = gguf_block_info(ti.dtype);
+                // `<= 0` rather than `== 0`: GgufBlockInfo's fields are signed, so a future
+                // table entry with a negative size would be caught too (raised by @agent-dc0fb9).
+                if (b.block_size <= 0 || b.block_bytes <= 0) {
+                    // An unknown GGUF dtype makes gguf_block_info() return {0,0}, and using that
+                    // as a divisor was a divide-by-zero (SIGFPE) right here — reachable from
+                    // discover_models() during server startup, so `1bit unified -w <store>` died
+                    // before serving. Reproduced with a store holding zaya1-8b-ft-q4nx.gguf, whose
+                    // 280 expert tensors carry dtype 43 (unknown to this reader's table).
+                    // Fail closed and name the id, matching get_tensor_f32()'s handling; the
+                    // caller skips the file instead of the process dying.
+                    fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — refusing to "
+                                    "size its blocks (fail closed) — route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
+                            kvp.first.c_str(), ti.dtype);
+                    fclose(f_); f_ = nullptr;
+                    return false;
+                }
                 uint64_t n_blocks = (ti.numel + b.block_size - 1) / b.block_size;
                 uint64_t need = n_blocks * (uint64_t)b.block_bytes;
                 if (ti.abs_offset > (uint64_t)file_size || need > (uint64_t)file_size - ti.abs_offset) {
@@ -795,7 +811,11 @@ bool GgufReader::get_tensor_f32(const std::string& name, std::vector<float>& out
     if (out_n) *out_n = ti.numel;
 
     GgufBlockInfo bi = gguf_block_info(ti.dtype);
-    if (bi.block_bytes <= 0) {
+    // Guard BOTH fields, not just block_bytes: the division below uses block_size, so a
+    // hypothetical {0, N} entry would divide by zero even though today's table can only
+    // produce {0,0} or positive pairs (@agent-dc0fb9 enumerated the sites and flagged this
+    // as the odd one out of three — the other two already check both).
+    if (bi.block_size <= 0 || bi.block_bytes <= 0) {
         fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend cannot decode it; "
                         "route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
                 name.c_str(), ti.dtype);
