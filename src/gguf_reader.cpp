@@ -674,54 +674,54 @@ bool GgufReader::open(const std::string& path) {
         if (file_size > 0) {
             for (auto& kvp : tensors_) {
                 const GgufTensorInfo& ti = kvp.second;
+                // Offset bound FIRST, because it needs no block geometry: it must hold for every
+                // tensor, including one whose dtype is unrecognized. (@agent-ec855d found that
+                // skipping it with the `continue` below would leave a truncation covered only by
+                // an unknown-dtype tensor unreported — a diagnostic regression in the pass whose
+                // own comment says a truncated GGUF must fail loudly. Severity bounded by the read
+                // paths, which all re-validate: get_tensor_raw's short-read test, get_tensor_f32's
+                // identical guard, the per-block fread loop, and gguf_to_onebp gating on it.)
+                if (ti.abs_offset > (uint64_t)file_size) {
+                    fprintf(stderr, "GGUF truncated: '%s' starts at offset %llu but the file is %lld bytes\n",
+                            kvp.first.c_str(), (unsigned long long)ti.abs_offset, file_size);
+                    fclose(f_); f_ = nullptr;
+                    return false;
+                }
+                // RATIONALE for the geometry guard below (kept in SOURCE, not only in a commit
+                // message: this repo squashes on merge, so commit prose is not a durable home):
+                //  * CONTRACT: gguf_block_info() is DOCUMENTED to return {0,0} for an unrecognized
+                //    dtype (include/gguf_reader.h:79), so the sentinel is intentional and callers
+                //    must honour it.
+                //  * PRECEDENTS: sibling sites already do — get_tensor_raw and get_tensor_f32 in
+                //    this file (both fields, same message), plus deepseek.cpp's own divide guard.
+                //    This was the only unguarded block-geometry division reachable from startup.
+                //  * WHY SKIP THE TENSOR AND NOT REJECT THE FILE: this loop ENUMERATES a model, so
+                //    returning false would make an affected model undiscoverable rather than
+                //    reported. Skipping keeps its metadata enumerable and defers the failure to
+                //    the use sites, which refuse this dtype with the same message and remedy —
+                //    verified, and gguf_to_onebp aborts on their return rather than converting.
+                //  * `<= 0` rather than `== 0` because GgufBlockInfo's fields are signed, so a
+                //    future negative entry is caught too (raised by @agent-dc0fb9).
+                //  * EVIDENCE: a store holding one file whose 1283 tensors include 280 of dtype 43
+                //    made `1bit unified -w <store>` die with SIGFPE (rc=136) before this guard;
+                //    after it, the tensor is reported and the scan continues. First tensor hit:
+                //    blk.9.cca_val_proj1.weight.
+                //  * WHEN CHECKING A FIX OF THIS SHAPE, ASSERT ON OUTPUT IDENTITY, NOT THE EXIT
+                //    CODE: the server takes a single-instance lock whose contention path exits
+                //    rc=1 without running, so an exit code cannot distinguish a pass from a run
+                //    that never happened. The honest evidence is this message plus the
+                //    `[discover] N model(s) found` line.
                 GgufBlockInfo b = gguf_block_info(ti.dtype);
-                // `<= 0` rather than `== 0`: GgufBlockInfo's fields are signed, so a future
-                // table entry with a negative size would be caught too (raised by @agent-dc0fb9).
                 if (b.block_size <= 0 || b.block_bytes <= 0) {
-                    // An unrecognized dtype makes gguf_block_info() return {0,0} (documented at
-                    // include/gguf_reader.h:79), so this tensor's extent CANNOT be validated — and
-                    // using {0,0} as the divisor above was a divide-by-zero (SIGFPE) in this very
-                    // loop, reachable from discover_models() at server startup (measured with a
-                    // store holding a file whose 280 tensors carry dtype 43).
-                    // This loop ENUMERATES a model, so report and carry on instead of rejecting the
-                    // file: rejecting it makes the model undiscoverable rather than visible, while
-                    // skipping keeps its metadata enumerable and defers the failure to the use
-                    // sites, which already refuse this dtype with the same message and remedy.
                     fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend "
                                     "cannot decode it; route the model to ggml_vulkan/HRX "
                                     "(llama.cpp) instead\n",
                             kvp.first.c_str(), ti.dtype);
-                    continue;
-                    // Durable rationale for this guard (kept in SOURCE, not only in a commit
-                    // message: this repo squashes on merge, so commit prose is not a durable
-                    // home for it. Everything from here to the end of the block is a comment:
-                    //  * CONTRACT: gguf_block_info() is DOCUMENTED to return {0,0} for an
-                    //    unrecognized dtype (include/gguf_reader.h:79), so the sentinel is
-                    //    intentional and callers must honour it.
-                    //  * PRECEDENTS: two sibling sites already do — gguf_reader.cpp:793 (both
-                    //    fields) and :814 (both fields after this change); deepseek.cpp:208 guards
-                    //    its own divide the same way. This was the only unguarded block-geometry
-                    //    division reachable from startup.
-                    //  * WHY SKIP AND NOT REJECT THE FILE: this loop enumerates a model, so
-                    //    returning false here would make the model UNDISCOVERABLE rather than
-                    //    reported. Skipping keeps metadata enumerable and leaves the failure to
-                    //    the use sites, which refuse this dtype with the same message.
-                    //  * EVIDENCE: measured on a store holding zaya1-8b-ft-q4nx.gguf — dtype
-                    //    census {0: 1003, 43: 280} out of 1283 tensors, first hit
-                    //    blk.9.cca_val_proj1.weight; before this guard `1bit unified -w <store>`
-                    //    died with SIGFPE (rc=136), after it reports and skips.
-                    //  * WHEN CHECKING A FIX LIKE THIS, ASSERT ON OUTPUT IDENTITY, NOT THE EXIT
-                    //    CODE: `1bit unified` takes a single-instance lock whose contention path
-                    //    exits rc=1, so a run that never executed is indistinguishable from a pass
-                    //    by exit status alone. The honest evidence is this message plus the
-                    //    `[discover] N model(s) found` line.
-                    //  * the `[discover]` count itself is an identity check on OUTPUT, which is
-                    //    why it beats an exit code: an exit code cannot distinguish "the guard
-                    //    rejected the tensor" from "the process never ran".
+                    continue;   // skip only the geometry-dependent extent check below
                 }
                 uint64_t n_blocks = (ti.numel + b.block_size - 1) / b.block_size;
                 uint64_t need = n_blocks * (uint64_t)b.block_bytes;
-                if (ti.abs_offset > (uint64_t)file_size || need > (uint64_t)file_size - ti.abs_offset) {
+                if (need > (uint64_t)file_size - ti.abs_offset) {
                     fprintf(stderr, "GGUF truncated: '%s' needs %llu bytes at offset %llu but file is %lld bytes\n",
                             kvp.first.c_str(), (unsigned long long)need,
                             (unsigned long long)ti.abs_offset, file_size);
