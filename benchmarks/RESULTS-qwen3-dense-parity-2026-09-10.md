@@ -175,6 +175,13 @@ Per synchronous GEMM launch (`go_rows`):
    internally, and the host dequant is just **C_float = C_int32 / 98304**.
    nz=524288=half confirms the strided C write.
 
+   **VERIFIED: my GEMM == FLM's npu_app byte-for-byte.** Running FLM's own
+   `Gemm`+`npu_app` (compiled with -DFLM_DEVICE_BUFFER) with A=bf16 1.0 + the
+   10MB W produces the IDENTICAL raw C as my aiebu-ELF kernel
+   (C[0]=−8257537, C[1..7]=0x7fffff81…, nz=524288) — so the mm.xclbin GEMM
+   wiring is 100% correct and the remaining work is purely the dequant scale
+   + C strided mapping (recoverable by byte-diffing this raw C vs FLM's QKV).
+
    **Dequant is NOT just /98304 — the W has its own fixed-point scale.**
    Q4NX format (dequant_q4nx.cpp): tile = [256 BF16 scales][256 BF16 zps][4096B
    packed UNSIGNED int4], W = nibble×scale + zp. Dequantizing the QKV tiles via
