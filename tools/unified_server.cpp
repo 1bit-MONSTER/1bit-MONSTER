@@ -736,6 +736,7 @@ static json generate_completion(BackendManager& mgr,
             const long effective_ctx = resume_ctx + (long)prompt_tokens.size();
             const BackendInfo* ai = mgr.active_info();
             if (effective_ctx > hrx_max_ctx && ai && ai->id == "hrx_gpu") {
+                bool moved = false;
                 for (const auto& bid : mgr.fallback_order()) {
                     if (bid == "hrx_gpu") continue;
                     std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
@@ -744,8 +745,18 @@ static json generate_completion(BackendManager& mgr,
                                 "[hrx] ctx %ld tok (resumed %ld + prompt %zu) > HRX_MAX_CTX_TOKENS (%ld) — "
                                 "starting on %s (bundle HRX flash-attn supports KV <= 2048, issue #2145)\n",
                                 effective_ctx, resume_ctx, prompt_tokens.size(), hrx_max_ctx, bid.c_str());
+                        moved = true;
                         break;
                     }
+                }
+                if (!moved) {
+                    // Do not fail silently: without a functional fallback the
+                    // request stays on HRX and the decode will be refused.
+                    fprintf(stderr,
+                            "[hrx] ctx %ld tok (resumed %ld + prompt %zu) > HRX_MAX_CTX_TOKENS (%ld) and no "
+                            "functional fallback lane is available — HRX decode will be refused rather than "
+                            "failing with an opaque compute -1 (issue #2145)\n",
+                            effective_ctx, resume_ctx, prompt_tokens.size(), hrx_max_ctx);
                 }
             }
         }
