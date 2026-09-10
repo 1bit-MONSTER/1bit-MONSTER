@@ -91,6 +91,24 @@ jobs:
               sys.exit(1)
           print('All CMakeLists source/subdirectory references resolve.')
           PY
+      # ── Registry source checks (informational) ────────────────────────────────
+      # Two checks that need NO build, NO deps and NO AMD hardware, so they run on a
+      # stock runner in milliseconds:
+      #   dispatch_key_check.sh — "a type is a dispatch key iff the ids under it do not
+      #     all share one `available` expression" (written by @agent-ec855d). It fails
+      #     when the RECORDED four-type set CHANGES, which is the forward-looking
+      #     property a comment cannot have. It cannot say a type is wrong, only that the
+      #     set moved — so it is informational on purpose: legitimate growth must ride a
+      #     deliberate commit, and a required check would have the first person it
+      #     blocks delete it rather than update KNOWN_DISPATCH.
+      #   registry_flag_audit.py --static-only — usage parity + cross-TU references.
+      #     The behavioural half needs a built binary and is deliberately not here.
+      # Promoted to required only once the four-type set stops moving.
+      - name: Registry source checks (informational)
+        continue-on-error: true
+        run: |
+          sh tools/dispatch_key_check.sh src/backend_manager.cpp
+          python3 tools/registry_flag_audit.py --static-only
       - name: CMake configure + build (reference checks only when no ROCm)
         run: |
           if [ -x /opt/rocm-therock/bin/amdclang++ ]; then
