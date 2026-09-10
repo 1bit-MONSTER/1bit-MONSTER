@@ -110,12 +110,17 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
         }
         // THE BOX, NOT THE TABLE: intersect with the engine's own probe so a
         // hardware-blind registry cannot hand out a lane this machine lacks.
-        if (backend_availability(t.type) == Availability::ABSENT) {
+        Availability av = backend_availability(t.type);
+        if (av == Availability::ABSENT) {
             plan.unavailable_here.emplace_back(
                 c, std::string("capability present, HARDWARE ABSENT on this machine (") +
                        backend_name(t.type) + ", id " + t.engine_id + ") — not a constraint violation");
             continue;
         }
+        // Carry the VERIFICATION STATE, not just the capability: PRESENT means the
+        // probe confirmed it, UNKNOWN means nobody asked. Without this the two are
+        // byte-identical in the output and an unverified plan reads as a verified one.
+        t.availability = av;
         plan.targets.push_back(std::move(t));
     }
 
@@ -135,6 +140,19 @@ BackendRoute to_backend_route(const RoutePlan& plan) {
 
     std::string why = plan.targets.empty() ? "no backend can serve this artifact"
                                            : "registry plan";
+    // The FOURTH category, so it cannot be the silent one. Categories 1-3 are
+    // appended below; this one means "not verified against this box", which must
+    // never be indistinguishable from "verified".
+    std::string unverified;
+    for (const auto& t : plan.targets) {
+        if (t.availability != Availability::PRESENT) {
+            if (!unverified.empty()) unverified += ", ";
+            unverified += to_string(t.capability);
+        }
+    }
+    if (!unverified.empty())
+        why += " | availability UNKNOWN: " + unverified +
+               " (no probe installed or probe silent — NOT verified against this box)";
     if (!plan.refused.empty()) {
         why += " | refused:";
         for (const auto& r : plan.refused) why += " " + std::string(to_string(r.first));

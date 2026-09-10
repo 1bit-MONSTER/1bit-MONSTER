@@ -34,11 +34,23 @@
 
 namespace onebit {
 
+// Availability must be declared before BackendTarget, which carries it.
+enum class Availability { UNKNOWN, PRESENT, ABSENT };
+
 struct BackendTarget {
     Capability capability;
     BackendType type;
     std::string engine_id;      // BackendManager id ("hrx_gpu", "npu_flm", ...)
     std::string constraint;     // why this target is NARROWER than the capability
+    // Whether this target was VERIFIED PRESENT on this box, or merely not proven
+    // absent. ABSENT never appears here (it becomes unavailable_here). Found by
+    // @agent-ec855d: plan_route branched only on == ABSENT, so PRESENT and UNKNOWN
+    // took the same path and produced byte-identical output — meaning an unverified
+    // plan read exactly like a verified one. The plan SPOKE when it knew something
+    // was absent and was SILENT when it did not know, which inverts silence into
+    // reassurance. Same disease as dtype_space=empty, the unwritten-header zeros,
+    // and arch_suspect:false.
+    Availability availability = Availability::UNKNOWN;
 };
 
 // D5b: reachability is not quality. Kept OUT of the capability map on purpose —
@@ -66,8 +78,6 @@ enum class QualityGate {
 // has_vulkan(), ...). UNKNOWN is the default and does NOT filter: the bridge must
 // not invent hardware facts it was not given, and an unfiltered plan is the honest
 // answer when nobody told it otherwise.
-enum class Availability { UNKNOWN, PRESENT, ABSENT };
-
 // Injected by the engine once at startup (set-once, like the limit overrides).
 using AvailabilityProbe = Availability (*)(BackendType);
 void set_backend_availability_probe(AvailabilityProbe probe);

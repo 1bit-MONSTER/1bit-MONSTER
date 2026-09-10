@@ -34,7 +34,7 @@ static const Capability kAll[] = {
 int main(int argc, char** argv) {
     bool table_only = false;
     uint32_t at_context = 0;
-    std::string prefer_arg, absent_arg;
+    std::string prefer_arg, absent_arg, present_arg;
     std::vector<std::string> roots;
 
     for (int i = 1; i < argc; i++) {
@@ -43,6 +43,7 @@ int main(int argc, char** argv) {
         else if (a == "--at-context" && i + 1 < argc) at_context = (uint32_t)atoi(argv[++i]);
         else if (a == "--prefer" && i + 1 < argc) prefer_arg = argv[++i];
         else if (a == "--absent-cap" && i + 1 < argc) absent_arg = argv[++i];
+        else if (a == "--present-cap" && i + 1 < argc) present_arg = argv[++i];
         else roots.push_back(a);
     }
 
@@ -89,9 +90,31 @@ int main(int argc, char** argv) {
             if (c == std::string::npos) break;
             p = c + 1;
         }
+    }
+    if (!absent_arg.empty() || !present_arg.empty()) {
+        static std::vector<BackendType> present_types;
+        if (!present_arg.empty()) {
+            size_t p = 0;
+            while (p <= present_arg.size()) {
+                size_t c = present_arg.find(',', p);
+                std::string tok = present_arg.substr(p, c == std::string::npos ? std::string::npos : c - p);
+                if (!tok.empty()) {
+                    auto cap = capability_from_string(tok);
+                    if (!cap) { fprintf(stderr, "unknown capability '%s'\n", tok.c_str()); return 2; }
+                    BackendType t{}; std::string id, cons;
+                    if (backend_for(*cap, t, id, cons)) present_types.push_back(t);
+                }
+                if (c == std::string::npos) break;
+                p = c + 1;
+            }
+        }
+        // A probe IS installed now, so capabilities it was not told about are
+        // UNKNOWN rather than silently PRESENT — that is the distinction this flag
+        // exists to demonstrate.
         set_backend_availability_probe([](BackendType t) {
             for (BackendType a : absent_types) if (a == t) return Availability::ABSENT;
-            return Availability::PRESENT;
+            for (BackendType p : present_types) if (p == t) return Availability::PRESENT;
+            return Availability::UNKNOWN;
         });
     }
 
@@ -121,7 +144,8 @@ int main(int argc, char** argv) {
         printf("\n%s\n", a.id.c_str());
         if (plan.targets.empty()) printf("  no target\n");
         for (const auto& t : plan.targets)
-            printf("  -> %-12s %-14s %s\n", to_string(t.capability), t.engine_id.c_str(),
+            printf("  -> %-12s %-14s %s%s\n", to_string(t.capability), t.engine_id.c_str(),
+                   t.availability == Availability::PRESENT ? "" : "[UNVERIFIED] ",
                    t.constraint.empty() ? "" : t.constraint.c_str());
         for (const auto& r : plan.refused)
             printf("  !! %-12s refused: %s\n", to_string(r.first), r.second.c_str());
