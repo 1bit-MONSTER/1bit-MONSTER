@@ -165,16 +165,16 @@ Per synchronous GEMM launch (`go_rows`):
    **BD semantics (npu_cmd_write_dma.hpp):** buffer_length = dim0×dim1×dim2
    (dim2_size derived), iter_size = ((bd[10]>>20)&0x3FF)+1.
 
-   **SOLVED — W is Q4NX Q4, NOT int8, and the GEMM computes correctly.**
-   The captured W BO (2MB "O") has Q4NX structure: [512B float32 scales][512B
-   int16 zps][3712B packed Q4][384B tail] per 5120B tile. Running my GEMM
-   (O stream M=256/K=2048/N=1024, A=bf16 1.0, W=captured Q4NX O W) gives
-   C[m][0] = 1080180880 for ALL m (i.e. the dequantized column-sum × 98304),
-   confirming the kernel dequantizes Q4×scale+zp INTERNALLY and my earlier
-   int8-W tests were the wrong format. So **C_float = C_int32 / 98304**
-   (no separate scale_W — the Q4 dequant is inside the mm.xclbin). Remaining:
-   (1) the exact W packing (q4nx tile → mm.xclbin W BO), (2) C strided write
-   mapping, (3) wire into the prefill.
+   **W is Q4NX Q4 (in the 10MB layer weight BO), NOT int8 — and the 2MB/6MB
+   BOs are GEMM OUTPUTS, not W.** BO-seq correlation: the 10MB BOs (seq≈57)
+   upload during load_weights = the layer Q4NX weight BO; the 2MB (seq≈186)
+   and 6MB (seq≈182) BOs sync during prefill = the dequantized bf16 GEMM
+   outputs (e.g. QKV 256×4096 bf16 = 2MB). So the mm.xclbin reads W from the
+   SAME 10MB Q4NX layer BO (npu_pack_layer_bo format) via the strided B read;
+   the kernel dequantizes Q4×scale+zp internally. Dequant on host is just
+   **C_float = C_int32 / 98304** (bf16-A fixed-point scale). Remaining:
+   (1) map the strided B-DP offsets to the 10MB BO projection tiles,
+   (2) C strided-write mapping, (3) wire into the prefill.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
