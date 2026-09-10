@@ -500,6 +500,24 @@ target_link_libraries(registry_scan PRIVATE model_registry)
 target_compile_definitions(registry_scan PRIVATE REGISTRY_SCAN_STANDALONE)
 target_compile_options(registry_scan PRIVATE -O3 -Wall)
 
+# ── model_registry_route : capability -> backend bridge (goal mtvd3pmx 2c-2) ──
+# The registry stays engine-independent; this is the translation layer and it needs
+# BackendType/BackendRoute, so it lives on the engine side. Built as its own target
+# AND linked into onebin so the bridge is available to the shipped binary — it was
+# previously compiled only by hand, which meant a build could succeed while the
+# bridge was absent from the product.
+add_library(model_registry_route STATIC src/model_registry_route.cpp)
+target_link_libraries(model_registry_route PUBLIC model_registry)
+target_include_directories(model_registry_route PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+# -- registry_route_map : dump/execute the capability -> backend map. Buildable so
+#    a reviewer can print the table and run plan_route() without the engine graph.
+add_executable(registry_route_map tools/registry_route_map.cpp)
+target_link_libraries(registry_route_map PRIVATE model_registry_route)
+target_compile_options(registry_route_map PRIVATE -O3 -Wall)
+
 # -- gguf_to_onebp : pure-C++ GGUF -> 1BP converter (F16 lossless default; --q4nx/--tq2/--tq2nz/--tq1) --
 # Replaces the old tools/gguf_to_onebp.py. No Python anywhere in the convert
 # path. Default is lossless F16 (4-bit Q4NX loses ~0.998/layer and compounds
@@ -1547,7 +1565,7 @@ target_compile_options(onebin PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23 -fopenmp>)
 target_link_libraries(onebin PRIVATE
     backend_manager vl_image vision_encoder whisper dl
-    rocm_cpp model_registry hip::host hip::device httplib::httplib
+    rocm_cpp model_registry model_registry_route hip::host hip::device httplib::httplib
     nlohmann_json::nlohmann_json hipblas)
 target_link_options(onebin PRIVATE -rdynamic -luuid)
 if(TARGET ggml_vulkan)
