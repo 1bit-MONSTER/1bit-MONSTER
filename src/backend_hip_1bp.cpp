@@ -1288,6 +1288,24 @@ struct Hip1bpBackend : Backend {
     }
 
     bool forward(int token_id,float* hidden_out)override{
+        if (q35_loaded) {
+            // #2139: the q35 lane must not fall into forward_dev() — that walks the
+            // dense layer structs, which a qwen35moe 1BP load never populates (it
+            // segfaults; found via the engine chat path, see the SIGSEGV backtrace).
+            // Run the qwen35 step instead: it leaves the final RMS-normed hidden in
+            // dh and advances pos itself.
+            if (q35_graph_ok) {
+                *h_token = token_id; *h_pos = pos;
+                HIP_CHECK(hipGraphLaunch(graphExec, stream));
+                HIP_CHECK(hipStreamSynchronize(stream));
+                pos++;
+            } else if (qwen35_step(token_id, false) < 0) {
+                fprintf(stderr, "[hip1bp] q35 forward(): qwen35_step failed\n");
+                return false;
+            }
+            HIP_CHECK(hipMemcpy(hidden_out, dh, H * 4, hipMemcpyDeviceToHost));
+            return true;
+        }
         if(!forward_dev(token_id,true))return false;
         HIP_CHECK(hipMemcpy(hidden_out,dh,H*4,hipMemcpyDeviceToHost));
         pos++;
@@ -1341,6 +1359,31 @@ struct Hip1bpBackend : Backend {
     }
 
     bool lm_head(const float* hidden,float* logits,int* argmax)override{
+        if (q35_loaded) {
+            // #2139: q35 lm_head over the lane's own output weights, mirroring the
+            // selection used inside qwen35_step, so the engine's forward()+lm_head()
+            // sampling flow works on the q35 lane.
+            HIP_CHECK(hipMemcpy(dh, hidden, H * 4, hipMemcpyHostToDevice));
+            if (q35_out_q4nx)
+                h1bp_q4nx_gemv_kernel<<<(VOCAB + 7) / 8, 256, 0, stream>>>(q35_out_q4nx, dh, dlogits, VOCAB, H);
+            else if (q35_out_i8)
+                h1bp_int8gemv_kernel<<<(VOCAB + 7) / 8, 256, 0, stream>>>(dlogits, q35_out_i8, q35_out_i8s, dh, VOCAB, H);
+            else if (q35_out_f16)
+                h1bp_f16gemv_kernel<<<(VOCAB + 7) / 8, 256, 0, stream>>>(dlogits, q35_out_f16, dh, VOCAB, H);
+            else if (q35_out_f32)
+                h1bp_gemv_kernel<<<VOCAB, 256, 0, stream>>>(dlogits, q35_out_f32, dh, VOCAB, H);
+            else if (q35_out) {
+                // gemv() is a lambda local to qwen35_step: mirror its two cases here.
+                if (q35_q4nx) launch_q4nx(q35_out, dh, dlogits, VOCAB, H);
+                else h1bp_q8gemv_kernel<<<VOCAB, 256, 0, stream>>>(dlogits, q35_out, dh, VOCAB, H);
+            } else return false;
+            int nblk = std::min(AMX_MAXB, (VOCAB + 255) / 256);
+            h1bp_argmax_pass1_kernel<<<nblk, 256, 0, stream>>>(dlogits, VOCAB, d_amx, d_ami);
+            h1bp_argmax_pass2_kernel<<<1, 256, 0, stream>>>(d_amx, d_ami, nblk, d_argmax);
+            HIP_CHECK(hipMemcpy(logits, dlogits, (size_t)VOCAB * 4, hipMemcpyDeviceToHost));
+            if (argmax) HIP_CHECK(hipMemcpy(argmax, d_argmax, sizeof(int), hipMemcpyDeviceToHost));
+            return true;
+        }
         // Tied-embedding models (e.g. Qwen3) have no output.weight — the LM
         // head is the embedding matrix itself.
         if(!d_output&&!d_embed){memset(logits,0,VOCAB*4);logits[0]=1;if(argmax)*argmax=0;return true;}
