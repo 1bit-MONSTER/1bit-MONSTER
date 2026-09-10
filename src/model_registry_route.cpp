@@ -217,6 +217,35 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
         // handed over. The second measured case — a SMALL model whose token_embd is not
         // fused — is captured in the artifact (lm_head_fused) but NOT gated here, because
         // "small" would be a threshold I would be inventing rather than measuring.
+        if (c == Capability::HRX_GGUF) {
+            std::string arch_l = a.architecture;
+            for (char& ch : arch_l) ch = (char)tolower((unsigned char)ch);
+            if (arch_l.find("zaya") != std::string::npos) {
+                plan.conditional.emplace_back(
+                    c, "architecture '" + a.architecture + "' is not known to b66's "
+                       "llama.cpp (measured: \"unknown model architecture: 'zaya'\" on 4 "
+                       "files) — this belongs to the NPU/Zaya lane, not HRX");
+                continue;
+            }
+            // THE ABORT CLASS. Measured: non-K-quant token embedding on a qwen35moe arch
+            // does not fail closed, it SIGABRTs (rc=134). Blocked rather than
+            // conditional, because a caller cannot retry past an abort.
+            if (a.tok_embd_dtype >= 0 && !(a.tok_embd_dtype >= 10 && a.tok_embd_dtype <= 15) &&
+                arch_l.find("qwen35moe") != std::string::npos) {
+                plan.blocked.emplace_back(
+                    c, "KNOWN ABORT: measured SIGABRT (rc=134) on this class "
+                       "(qwen35moe + non-K-quant token_embd) — worse than a refusal, the "
+                       "abort takes the engine process with it");
+                continue;
+            }
+        }
+        // PRECEDENCE, because the REASON determines the fix: architecture first (b66
+        // cannot read the arch at all, so the file belongs to another lane), then the
+        // known-abort class (worse than a refusal), then embedding dtype, then the dense
+        // MoE proxy. My first ordering ran dtype first and reported 'embedding dtype 1 is
+        // not K-quant' for a zaya file whose actual blocker is the architecture — a
+        // misleading reason on a correctly-excluded row, which is its own small version
+        // of the blank-reads-as-confident problem.
         if (c == Capability::HRX_GGUF && a.tok_embd_dtype >= 0) {
             bool k_quant = (a.tok_embd_dtype >= 10 && a.tok_embd_dtype <= 15);
             if (!k_quant) {
@@ -240,6 +269,12 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
         // Conservative until more classes are measured: HRX-GGUF is CONDITIONAL unless
         // the artifact is MoE. The engine fails closed either way, so this is about not
         // OVER-CLAIMING rather than about safety.
+        // ARCH-LEVEL FACT, from 44437c's measurements: b66's llama.cpp does not know
+        // the `zaya` architecture AT ALL ("unknown model architecture: 'zaya'"), so
+        // every zaya artifact is mislabelled as HRX-servable. This is not a quant or
+        // embedding property, and it caught a FALSE POSITIVE in my own MoE rule: the
+        // 74B preview is MoE (experts=24) so the MoE-only rule kept it, while b66
+        // cannot read its arch. Measured on 4 of 7 files in their batch.
         if (c == Capability::HRX_GGUF && a.declared_experts <= 0) {
             plan.conditional.emplace_back(
                 c, "dense artifact: every dense Qwen3 file measured against b66 FAILS at "
@@ -312,6 +347,10 @@ BackendRoute to_backend_route(const RoutePlan& plan) {
     if (!plan.refused.empty()) {
         why += " | refused:";
         for (const auto& r : plan.refused) why += " " + std::string(to_string(r.first));
+    }
+    if (!plan.blocked.empty()) {
+        why += " | KNOWN-ABORT:";
+        for (const auto& r : plan.blocked) why += " " + std::string(to_string(r.first));
     }
     if (!plan.conditional.empty()) {
         why += " | conditional:";

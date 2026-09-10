@@ -214,6 +214,8 @@ int main(int argc, char** argv) {
                    t.constraint.empty() ? "" : t.constraint.c_str());
         for (const auto& r : plan.refused)
             printf("  !! %-12s refused: %s\n", to_string(r.first), r.second.c_str());
+        for (const auto& r : plan.blocked)
+            printf("  XX %-12s BLOCKED: %s\n", to_string(r.first), r.second.c_str());
         for (const auto& r : plan.conditional)
             printf("  ~~ %-12s conditional: %s\n", to_string(r.first), r.second.c_str());
         for (const auto& r : plan.unavailable_here)

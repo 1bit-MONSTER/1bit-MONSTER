@@ -222,6 +222,13 @@ struct RoutePlan {
     // but dry. Kept apart from `refused` because the capability IS real here; what is
     // conditional is the target.
     std::vector<std::pair<Capability, std::string>> conditional;
+    // A FIFTH bucket, from @agent-44437c's measurements: targets that must not be
+    // attempted AT ALL because the failure is worse than a refusal. The measured case
+    // is Qwen3.6-35B-A3B-Q8_0 against b66, which does not fail closed — it **ABORTS**
+    // (`rc=134`, SIGABRT via set_abort_callback). An engine that aborts on an artifact
+    // takes the process with it, so "conditional" understates it: a caller cannot
+    // retry past an abort the way it can past a refused init.
+    std::vector<std::pair<Capability, std::string>> blocked;
     std::vector<std::pair<Capability, std::string>> skipped_by_context; // constraint violated
     QualityGate quality_gate = QualityGate::NOT_EVALUATED;
     std::string quality_note;
