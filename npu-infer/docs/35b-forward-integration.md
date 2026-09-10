@@ -961,3 +961,16 @@ decode_txn.cpp's patch table already emits these; the next session runs it
 in --decode-only mode over the MoE .txn files and matches BDs to tensor
 4736-row windows. Then the task-3 wiring code (arg0..arg4 order above) +
 the expert GEMM sequences can be landed and validated on the NPU.
+
+## Round 75 — arg3 (norms BO) == task-2 5MB linear-attn BO (2026-09-10)
+
+Cross-check of the arg3 BD offsets against the task-2 5 MB BO layout confirms
+they are the SAME BO: arg3 reads ssm_conv1d @0 (12288-B chunk), ssm_alpha
+@0x10200, ssm_beta @0x30200 (32768-B chunks), then ssm_out 4736-rows starting
+at 0x50200 — and 0x50200 = 328,192 B = exactly the task-2 head size
+(ssm_conv1d 65536 + ssm_norm 256 + ssm_a 128 + ssm_dt.bias 128 +
+ssm_alpha 131072 + ssm_beta 131072). So `npu_pack_moe_linear5_bo` (task-2,
+byte-verified) IS the layer kernel's arg3 BO. Remaining arg-0 content to
+resolve: the input/post_attention_layernorm (4096 B each) placement (region A,
+arg0's 64 @0x0 patches) and the region B window transforms (share/qkv/ssm_out/
+gate_proj — the closed reorder_cpy, still the known blocker from R45-54).
