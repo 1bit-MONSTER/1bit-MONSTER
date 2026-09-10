@@ -7,17 +7,25 @@
 # (An earlier claim of mine said "diff is exactly one expression + comment"; that was true before the
 # INSTALL block was added, and a diff of the raw files now reads 16 lines because of it. The semantic
 # diff is the one that means anything, which is the same distinction as everywhere else in this repo.)
-# The install GATES ON ITS OWN CONTROL, so a fresh clone cannot install the broken variant even if someone
-# copies the wrong file. The middle line is the property this defect violated — under `pipefail`, a failing
-# pipeline must reach the failure branch — so the copy is refused if the file under it is the buggy shape.
-# (@agent-44437c's snippet, offered additively to this file when their own PR was closed in its favour.)
+# The install is a SCRIPT, not an instruction: `tools/hooks/install.sh` (PR #2186, reopened by
+# @agent-44437c), which GATES ON THIS FILE'S OWN CONTROL and refuses to install the broken variant even if
+# someone copies the wrong file. This block documents the manual equivalent for anyone working without it.
+# (WHY A SCRIPT: a comment cannot refuse a copy — and this block previously claimed a gate that had been
+# deleted with the duplicate PR, so the file advertised machinery one level above what it had. That is the
+# same shape as concluding "machinery beats documentation" and then shipping documentation.)
+#
 #   bash -n tools/post-commit-hook.sh
-#   ( . <(grep '^set ' tools/post-commit-hook.sh); ! false 2>&1 | sed 's/^/x/' >/dev/null ) || {
-#       echo "control FAILED: failure branch unreachable — refusing to install" >&2; exit 1; }
-# NOTE the `grep '^set '` inside the subshell rather than a literal `set -uo pipefail`: the offered form set
-# the options ITSELF, so it passed for ANY file including a buggy copy and would have installed the defect it
-# exists to refuse. Sourcing the file's OWN options is what makes the control a check on the artifact.
-# Verified by mutation: with a buggy `set -u` copy the gate refuses; with this file it passes.
+#   opts="$(grep -E '^set ' tools/post-commit-hook.sh | head -1)"
+#   bash -c "set +e +u +o pipefail; $opts; ! false 2>&1 | sed 's/^/x/' >/dev/null" ||
+#       { echo "control FAILED under '$opts' — refusing to install"; exit 1; }
+# TWO THINGS THE CONTROL MUST DO, each learned by mutation after the previous form failed:
+#   1. apply THIS FILE's options, not a literal copy of them — a control that sets the options itself
+#      passes for any file, including a buggy one;
+#   2. clear the CALLER's options first (`set +e +u +o pipefail` in a fresh shell) — a subshell INHERITS
+#      the caller's, so an installer running under `set -euo pipefail` left pipefail in force and the buggy
+#      file passed anyway. The caller's options were enough to hide the file's.
+# Verified by mutation in the robust form: this file passes; a `set -u` copy is REFUSED; a file with no
+# `set` line is REFUSED.
 #   cp tools/post-commit-hook.sh <repo>/.git/hooks/post-commit
 #   chmod +x <repo>/.git/hooks/post-commit
 # The two copies cover every worktree on both boxes (worktrees inherit the COMMON hooks directory):
