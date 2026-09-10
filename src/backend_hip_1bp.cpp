@@ -16,6 +16,113 @@
 
 #include "hip_1bp_kernels.hip"
 
+// #2139: the 1BP Q4NX qwen35 lane is validated (same-chain corr 0.996279 /
+// 0.973922 / argmax 101-102 == the pre-PR code, 100-token stream md5-identical,
+// 23.8 ms/token vs 42.9 pre-PR) so it is enabled BY DEFAULT instead of requiring
+// H1BP_Q35_LOAD=1 H1BP_Q35_TRY=1. Either variable set to 0 opts out and restores
+// the old behaviour (the q35 path is skipped and the loader falls through to the
+// CPU/NPU generic path). Explicit =1 keeps working as before.
+static bool q35_lane_enabled() {
+    const char* ld = getenv("H1BP_Q35_LOAD");
+    const char* tr = getenv("H1BP_Q35_TRY");
+    if (ld && atoi(ld) == 0) return false;
+    if (tr && atoi(tr) == 0) return false;
+    return true;
+}
+
+// #2139 item-2 helpers: bf16 packing + the two lm_head quantizers.
+static inline uint16_t h1bp_f32_to_bf16_bits(float f) {
+    uint32_t x; memcpy(&x, &f, 4);
+    uint32_t lsb = (x >> 16) & 1u;
+    uint32_t r = (x + 0x7FFFu + lsb) >> 16;
+    return (uint16_t)r;
+}
+
+// Pack f32 [M][K] (K % 256 == 0) into Q4NX 32x256 tiles, matching
+// h1bp_q4nx_part_body: [sc 32x8 bf16][zp 32x8 bf16][codes 32x128],
+// element 2i = low nibble of code byte i, element 2i+1 = high nibble.
+// Asymmetric int4 per 32-col group: code = round((v - zp) / scale), scale = (max-min)/15.
+static bool h1bp_pack_q4nx(const std::vector<float>& w, int M, int K, std::vector<uint8_t>& out) {
+    if (K % 256) return false;
+    const int ntc = K >> 8;
+    out.assign((size_t)(M / 32) * ntc * 5120, 0);   // one 5120 B tile per 32 rows x 256 cols
+    for (int row = 0; row < M; row++) {
+        const float* wr = w.data() + (size_t)row * K;
+        const int rri = row & 31;
+        const size_t tb0 = (size_t)((row >> 5) * ntc) * 5120;
+        for (int tw = 0; tw < ntc; tw++) {
+            uint8_t* tb = out.data() + tb0 + (size_t)tw * 5120;
+            uint16_t* sc = (uint16_t*)tb;
+            uint16_t* zp = (uint16_t*)(tb + 512);
+            for (int g = 0; g < 8; g++) {
+                const int base = tw * 256 + g * 32;
+                float mn = wr[base], mx = wr[base];
+                for (int j = 1; j < 32; j++) {
+                    float v = wr[base + j];
+                    if (v < mn) mn = v;
+                    if (v > mx) mx = v;
+                }
+                float range = mx - mn;
+                float scale = range > 0.0f ? range / 15.0f : 1.0f;
+                sc[rri * 8 + g] = h1bp_f32_to_bf16_bits(scale);
+                zp[rri * 8 + g] = h1bp_f32_to_bf16_bits(mn);
+                uint8_t* codes = tb + 1024 + rri * 128 + g * 16;
+                for (int j = 0; j < 16; j++) {
+                    float v0 = wr[base + 2 * j], v1 = wr[base + 2 * j + 1];
+                    int c0 = (int)((v0 - mn) / scale + 0.5f);
+                    int c1 = (int)((v1 - mn) / scale + 0.5f);
+                    if (c0 < 0) c0 = 0; if (c0 > 15) c0 = 15;
+                    if (c1 < 0) c1 = 0; if (c1 > 15) c1 = 15;
+                    codes[j] = (uint8_t)(c0 | (c1 << 4));
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// Per-row symmetric int8: scale = max|w_row| / 127.
+static void h1bp_quant_int8(const std::vector<float>& w, int M, int K,
+                            std::vector<int8_t>& q, std::vector<float>& sc) {
+    q.resize((size_t)M * K);
+    sc.resize(M);
+    for (int row = 0; row < M; row++) {
+        const float* wr = w.data() + (size_t)row * K;
+        float m = 0.0f;
+        for (int k = 0; k < K; k++) { float a = wr[k] < 0 ? -wr[k] : wr[k]; if (a > m) m = a; }
+        float s = m > 0.0f ? m / 127.0f : 1.0f;
+        sc[row] = s;
+        int8_t* qr = q.data() + (size_t)row * K;
+        for (int k = 0; k < K; k++) {
+            float v = wr[k] / s;
+            int r = (int)(v < 0 ? v - 0.5f : v + 0.5f);
+            if (r < -127) r = -127;
+            if (r > 127) r = 127;
+            qr[k] = (int8_t)r;
+        }
+    }
+}
+
+// Host-side f32 -> f16 bit conversion (RNE). Portable; no device intrinsics.
+static inline uint16_t h1bp_f32_to_f16_bits(float f) {
+    uint32_t x; memcpy(&x, &f, 4);
+    uint32_t sign = (x >> 16) & 0x8000u;
+    int32_t  e    = (int32_t)((x >> 23) & 0xFFu) - 127 + 15;
+    uint32_t man  = x & 0x7FFFFFu;
+    if (e >= 0x1F) return (uint16_t)(sign | 0x7C00u);            // inf / nan
+    if (e <= 0) {
+        if (e < -10) return (uint16_t)sign;                       // underflow -> +-0
+        man |= 0x800000u;
+        int sh = 14 - e;
+        uint32_t hm = man >> sh;
+        if (man & (1u << (sh - 1))) hm++;
+        return (uint16_t)(sign | hm);
+    }
+    uint32_t h = sign | ((uint32_t)e << 10) | (man >> 13);
+    if (man & 0x1000u) h++;
+    return (uint16_t)h;
+}
+
 extern "C" rcpp_status_t rcpp_kv_cache_attn_decode_dpos(
     const void* Q_dev, const void* K_dev, const void* V_dev, void* out_dev,
     int num_q_heads, int num_kv_heads, int head_dim,
@@ -385,8 +492,9 @@ struct Hip1bpBackend : Backend {
                                 "10 shared + kind-specific per layer; %d full-attn MHA "
                                 "layers 3,7,…,39 with split attn_q/k/v + q/k-norm, "
                                 "rest GDN fused attn_qkv 8192 rows + ssm; MoE 256x8 + "
-                                "shared): eager decode behind H1BP_Q35_LOAD+TRY "
-                                "(Q8_0 GGUF since #2127; Q4NX 1BP since M2)",
+                                "shared): GPU decode lane (Q8_0 GGUF since #2127; "
+                                "Q4NX 1BP since M2, default-on since #2139 — "
+                                "H1BP_Q35_LOAD=0/H1BP_Q35_TRY=0 opts out)",
                         H, NC, n_full);
             }
             // M3 loader/kernel self-check (env H1BP_Q35_SELFCHECK): pull
@@ -444,7 +552,7 @@ struct Hip1bpBackend : Backend {
             // device with the captured slicing — Q8_0 raw for the big weights,
             // f32 for norms/router/ssm params. Consumed by the M3 decode path
             // (tasks 3-5, not yet wired — decode still refused below).
-            if (ok && getenv("H1BP_Q35_LOAD")) {
+            if (ok && q35_lane_enabled()) {
                 size_t tot = 0;
                 q35L.assign(NC, Q35L());
                 auto q8 = [&](const char* nm, int l, uint8_t*& dst, int M, int K,
@@ -640,9 +748,9 @@ struct Hip1bpBackend : Backend {
                     fprintf(stderr, "[hip1bp] qwen35 device load FAILED — falling back\n");
                 }
             }
-            // Full device load (env H1BP_Q35_LOAD)... runs when set; decode path
-            // below enabled by H1BP_Q35_TRY (eager decode; no hipGraph for q35).
-            if (ok && getenv("H1BP_Q35_LOAD") && getenv("H1BP_Q35_TRY")) {
+            // Device load + decode are ON BY DEFAULT for a validated qwen35moe
+            // 1BP Q4NX file (#2139); q35_lane_enabled() is the opt-out.
+            if (ok && q35_lane_enabled()) {
                 if (!qwen35_alloc_state()) {
                     fprintf(stderr, "[hip1bp] qwen35 scratch alloc failed\n");
                 } else {
