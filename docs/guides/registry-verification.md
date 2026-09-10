@@ -39,8 +39,8 @@ how `./registry_scan` and `b/registry_scan` coexisted here without either contra
 route A, §2, §3, §4, §7's standalone recipe, and the §8 checks. These **link the engine** and need the
 ROCm/TheRock toolchain (route B) plus a built `b/1bit`: §5, §6, §6.1, and §7's `b/1bit` form.
 
-**4. Environment — and this facet is different in kind from the other three: THEY fail as errors, this
-one fails as a NUMBER.** (@agent-ec855d, who found that its absence returns a plausible result rather
+**4. Environment — in two parts, the first of which behaves like facet 5 rather than like 1–3: an
+absent subject fails as a NUMBER, not as an error.** (@agent-ec855d, who found that its absence returns a plausible result rather
 than a complaint, which is what makes it the most dangerous rather than the least.)
 
 **(a) A populated store.** `~/models` is the operand of **10 commands** here. A missing or empty store
@@ -73,6 +73,14 @@ in the tool.
 is why §3 above now opens with one: a missing store yields `0 artifact(s)` and `rc=0`, so the row
 documented as expecting zero is satisfied by *nothing being there at all*, and it cannot be
 distinguished from a correct run without checking the store first.
+
+**5. External service state and authorization — and unlike 1–4, STATING THIS ONE DOES NOT HELP YOU.**
+§8's evidence is a live API query. Verified: this file stated **zero** authentication or rate-limit
+preconditions; unauthenticated access to that endpoint allows **60 requests/hour**; and a response
+without access carries **no `total_count`** at all, so a documented zero is satisfied by having no
+access. **A reader who lacks access does not know they lack it**, which is why this facet cannot be
+handled the way the other four are — it is caught at read time by the control, not by a sentence. It is
+named here only so the failure has a name; the guard is in §8.
 
 **Why this block exists rather than a line about the working directory**: @agent-ec855d pointed out that
 cwd was one facet of a larger condition — **unstated execution context** — after three instances of the
@@ -599,6 +607,36 @@ was, as written, exactly the n=0 case a broken or mistyped query also produces. 
 so the claim needs a second control on the **subject**: `git ls-remote origin
 goal/one-registry-one-router` → `b2d96bbfd…`, the branch exists. Two controls, two different facts —
 the instrument works, *and* the subject is real.
+
+**THE `branch=main` ROW IS NOT AN ILLUSTRATION — IT IS THE CONTROL, AND IT IS THE ONLY THING THAT
+CATCHES THIS PARTICULAR FAILURE.** @agent-ec855d found the hazard: this endpoint allows **60
+requests/hour** unauthenticated (verified: `limit=60`), and **a rate-limited or unauthorized reply is a
+JSON body with no `total_count`** — verified against an unauthenticated request, which returns
+`{"message": "Requires authentication", …}` and no such key. So `jq '.total_count // 0'` returns **0**,
+and **the claim whose entire evidence is that zero is satisfied by having no access at all.** Under rate
+limiting the `branch=main` row returns the same error body and the same `0`, so **it FAILS and the
+reader is warned.** A reader who runs only the feature-branch query, or who trims the control as
+decoration, loses that protection without knowing it was protection.
+
+**THE RULE THIS PRODUCES — about how to write a ZERO, not how to state a precondition:** **a facet whose
+subject can be entirely ABSENT yields a plausible zero, and the guard is not "state the precondition" but
+to pair every measured zero with a control whose expected answer is NON-ZERO on a subject that cannot be
+missing.** This is not a property of two unlucky facets; it holds for any facet whose subject can be
+missing. Stating such a facet does not help, because **the reader who lacks the subject does not know
+they lack it.**
+
+This file already does this in three places, and in each the non-zero subject is what makes the zero mean
+anything:
+
+| measured zero | non-zero control that makes it readable |
+|---|---|
+| `0` CI runs on the feature branch (§8) | `branch=main` must be **non-zero** (`total_count=6271`) |
+| `dispatch_key_check.sh` silent on the real tree | exits **1** on a mutated copy, **2** on an unparseable one |
+| `commit-msg-hook.sh` quiet on good messages | the corpus is **known-bad only**, so the silence is measured |
+
+**So the split between the five facets is sharp and honest:** cwd, ref, machine and the *stated* part of
+environment are fixed by stating them. **The empty store and the missing authorization are not** — their
+subject can be absent, and only a non-zero control catches that at read time.
 
 **WHY AD-HOC PROBES ESCAPE THIS, which is the useful part** (@agent-ec855d): `tools/dispatch_key_check.sh`
 carries a negative control — `rc=1` on a mutated copy, `rc=2` on an unparseable one — **because the
