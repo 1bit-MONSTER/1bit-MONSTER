@@ -12,16 +12,18 @@ checking cheap. It is the artifact I would want if someone handed me the branch.
 Read these once. This file assumed them for its whole life, and its whole value is that a stranger can
 re-run it — which means it has to say what the stranger must have.
 
-**1. Ref.** This describes branch `goal/one-registry-one-router`, **not `main`**. Five tools it tells you
-to run **do not exist on `main`** — 11 references between them:
+**1. Ref.** This describes branch `goal/one-registry-one-router`, **not `main`**. **Seven** tools it tells
+you to run **do not exist on `main`**:
 
 | tool | refs in this file | on `origin/main` |
 |---|---|---|
-| `tools/registry_scan.cpp` | 1 (the §1 build line itself) | **absent** |
-| `tools/registry_diff.cpp` | 1 | **absent** |
-| `tools/registry_fixture.py` | 2 | **absent** |
+| `tools/registry_scan.cpp` | 2 (the §1 build line is one) | **absent** |
+| `tools/registry_merge_invariants.cpp` | 1 | **absent** |
+| `tools/registry_diff.cpp` | 2 | **absent** |
+| `tools/registry_fixture.py` | 3 | **absent** |
 | `tools/registry_flag_audit.py` | 3 | **absent** |
-| `tools/dispatch_key_check.sh` | 4 | **absent** |
+| `tools/dispatch_key_check.sh` | 5 | **absent** |
+| `tools/commit-msg-hook.sh` | 1 | **absent** |
 
 On a fresh clone — which gets `main` — **§1's first command fails with "No such file"**, and that reads
 as a defect in the branch rather than *"you are on the wrong ref"*, which is the worst way for this
@@ -36,6 +38,41 @@ how `./registry_scan` and `b/registry_scan` coexisted here without either contra
 **3. Machine.** These need **no engine link** — `clang++` and `python3` suffice, on any machine: §1
 route A, §2, §3, §4, §7's standalone recipe, and the §8 checks. These **link the engine** and need the
 ROCm/TheRock toolchain (route B) plus a built `b/1bit`: §5, §6, §6.1, and §7's `b/1bit` form.
+
+**4. Environment — and this facet is different in kind from the other three: THEY fail as errors, this
+one fails as a NUMBER.** (@agent-ec855d, who found that its absence returns a plausible result rather
+than a complaint, which is what makes it the most dangerous rather than the least.)
+
+**(a) A populated store.** `~/models` is the operand of **10 commands** here. A missing or empty store
+does **not** error — verified against a directory that does not exist:
+
+```
+$ b/registry_scan --capability HRX-GGUF --at-context 4096 /tmp/does-not-exist
+  -- 0 artifact(s) with capability HRX-GGUF at 4096 context tokens [limit 2048]
+$ echo $?
+  0                       # no error, no warning, nothing
+```
+
+**So §3's `4096` row EXPECTS `0 artifacts` and therefore passes for the wrong reason on an empty
+store**, while its `2048` row — documented as `NONZERO` — fails. The half that fails tells the reader
+something is wrong; the half that passes tells them nothing, and nothing distinguishes the two. This is
+the 0-is-meaningful trap §8 rules on for *values*, applied to a *precondition*.
+**Sanity-check before §3 means anything:**
+
+```sh
+b/registry_scan --quiet ~/models     # must report artifacts > 0
+```
+
+**(b) Python dependencies.** `tools/corr_assert.py` (§8) imports `numpy`. A stock `python3` without it
+raises `ImportError`, which reads as a broken tool rather than a missing precondition. This file
+mentions `numpy`, `pip` and `venv` **zero times**. If you run the checks that import third-party
+modules, install them first — and treat an `ImportError` as this precondition failing, not as a defect
+in the tool.
+
+**A precondition that fails as a NUMBER needs an explicit sanity check, not just a mention**, which
+is why §3 above now opens with one: a missing store yields `0 artifact(s)` and `rc=0`, so the row
+documented as expecting zero is satisfied by *nothing being there at all*, and it cannot be
+distinguished from a correct run without checking the store first.
 
 **Why this block exists rather than a line about the working directory**: @agent-ec855d pointed out that
 cwd was one facet of a larger condition — **unstated execution context** — after three instances of the
@@ -140,6 +177,7 @@ whose finding says it should not, the finding or the code is wrong.
 ## 3. Capability constraints carry provenance and enforcement scope
 
 ```sh
+b/registry_scan --quiet ~/models                                   # SANITY: artifacts must be > 0
 b/registry_scan --capability HRX-GGUF --at-context 2048 ~/models   # NONZERO artifacts
 b/registry_scan --capability HRX-GGUF --at-context 4096 ~/models   # 0 artifacts
 b/registry_scan --engine-limit HRX-GGUF=4096:b66-fork \
