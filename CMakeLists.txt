@@ -523,6 +523,10 @@ target_compile_options(registry_route_map PRIVATE -O3 -Wall)
 #    per file, so the flip is a table of differences rather than a leap. Engine-side:
 #    needs ModelConfig + BackendRoute, and it changes no behaviour.
 add_executable(route_compare tools/route_compare.cpp)
+# Linking backend_manager can pull the target's language to HIP, and compiling host-only
+# code as HIP fails in the clang cuda_wrappers (`__device__ operator delete cannot
+# overload __host__ __device__`) — the same idiom the project uses elsewhere.
+set_source_files_properties(tools/route_compare.cpp PROPERTIES LANGUAGE CXX)
 target_link_libraries(route_compare PRIVATE model_registry_route backend_manager)
 target_include_directories(route_compare PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(route_compare PRIVATE -O3 -Wall -std=c++26)
