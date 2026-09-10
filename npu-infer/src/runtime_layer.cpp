@@ -69,11 +69,17 @@ bool RuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelCon
     dev.register_xclbin(*xclbin);
     hwctx_ = std::make_unique<xrt::hw_context>(dev, xclbin->get_uuid());
     if (!ensure_layer_kernel(1)) return false;   // eager: like the test
-    // ---- per-layer kv BOs (32MB each, zero) — the runtime's design ----
+    // ---- per-layer kv BOs — the runtime's design ----
+    // Size = MAX_L * NKV * HD * 4 bytes (k+v, bf16). The ELF MAX_L (from
+    // gen_layer_elfs) must match: 128MB = 32768 tokens at NKV=8/HD=128.
+    // Hardcoding 32MB here broke 32k contexts (attention walked past the BO
+    // -> NaN); use cfg_.npu_kv_cache_bo_size (128MB) with a 32MB floor.
+    size_t kv_bo_bytes = cfg_.npu_kv_cache_bo_size > 0
+        ? (size_t)cfg_.npu_kv_cache_bo_size : 33554432;
     kv_bos_.resize(cfg_.num_layers);
     for (int L = 0; L < cfg_.num_layers; L++) {
-        kv_bos_[L] = std::make_unique<xrt::ext::bo>(dev, 33554432);
-        memset(kv_bos_[L]->map(), 0, 33554432);
+        kv_bos_[L] = std::make_unique<xrt::ext::bo>(dev, kv_bo_bytes);
+        memset(kv_bos_[L]->map(), 0, kv_bo_bytes);
         kv_bos_[L]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
     // ---- act / logits / final-norm BOs ----

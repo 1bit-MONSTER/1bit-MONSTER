@@ -20,9 +20,12 @@ int main(int argc, char** argv) {
     std::string outdir = (argc > 2) ? argv[2] : ".";
     int L0 = (argc > 3) ? atoi(argv[3]) : 1;
     int L1 = (argc > 4) ? atoi(argv[4]) : 2;
-    // MAX_L bounds gen_layer_seq (assert L <= MAX_L+1). FLM's qwen3 models
-    // advertise max_position_embeddings 40960 / default_context_length 32768,
-    // so default to 32768 to cover the 1k-32k parity sweep; override via argv.
+    // MAX_L bounds gen_layer_seq (assert L <= MAX_L+1) AND sizes the runtime's
+    // per-layer KV BO: kv_bytes = MAX_L * NKV * HD * 4. The native
+    // RuntimeLayerEngine allocates npu_kv_cache_bo_size (128MB = 32768 tokens
+    // at NKV=8/HD=128), so MAX_L must be 32768 to match. A SMALLER MAX_L works
+    // for short contexts but caps the KV window; a LARGER one would walk past
+    // the KV BO. Default 32768; override via argv (must match the KV BO size).
     uint32_t max_l = (argc > 5) ? (uint32_t)atoi(argv[5]) : 32768;
     LM_Config config;
     config.from_pretrained(model_dir);
