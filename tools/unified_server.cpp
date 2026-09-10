@@ -1189,6 +1189,39 @@ static int run_embedded_lemonade(int argc, char** argv) {
 
     lemon::utils::set_cache_dir(cli_config.cache_dir);
     auto config_json = lemon::ConfigFile::load(cli_config.cache_dir);
+
+    // ── Coverage guard for the --lemonade face (goal mtvd3pmx, R7/R8) ──────────
+    // This branch returns BEFORE any native arg parsing, hardware init, or route
+    // registration, so a registry assertion run against --lemonade is VACUOUS
+    // unless this path proves it executed. "The path ran and decided differently"
+    // and "the path never ran" are indistinguishable in a results table, so this
+    // sentinel makes the difference observable. It reports what the engine
+    // registry sees and states what is NOT surfaced here: Lemonade owns
+    // /v1/models in this mode, its extra-models-dir scan is GGUF-only, and flm
+    // models come from `flm list` — so a native Q4NX/1BP id is not listable on
+    // this face until R8 is wired. Failures are swallowed: a registry scan must
+    // never stop Lemonade from serving.
+    {
+        const char* env_root = getenv("LEMONADE_ENGINE_REGISTRY_ROOT");
+        if (!env_root || !*env_root) env_root = getenv("ZAYA_WEIGHTS_DIR");
+        std::string root = (env_root && *env_root) ? std::string(env_root) : g_weights_dir;
+        size_t total = 0, native = 0;
+        try {
+            onebit::ModelRegistry reg = onebit::ModelRegistry::scan({root});
+            total = reg.artifacts().size();
+            for (const auto& a : reg.artifacts())
+                if (a.container == onebit::Container::ONEBP ||
+                    a.container == onebit::Container::RAW_BIN) native++;
+        } catch (...) {
+            total = 0; native = 0;
+        }
+        printf("[registry-surface] --lemonade path entered: %zu artifact(s) from %s "
+               "(%zu native ONEBP/RAW_BIN — NOT listed by Lemonade's /v1/models; "
+               "extra-models-dir is GGUF-only and flm models come from `flm list`, "
+               "so R8 is required before this face reports registry state)\n",
+               total, root.c_str(), native);
+        fflush(stdout);
+    }
     if (cli_config.port != -1) config_json["port"] = cli_config.port;
     if (!cli_config.host.empty()) config_json["host"] = cli_config.host;
     auto config = std::make_shared<lemon::RuntimeConfig>(config_json);
