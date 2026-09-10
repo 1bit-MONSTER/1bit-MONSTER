@@ -12,10 +12,10 @@ checking cheap. It is the artifact I would want if someone handed me the branch.
 Read these once. This file assumed them for its whole life, and its whole value is that a stranger can
 re-run it — which means it has to say what the stranger must have.
 
-**1. Ref.** This describes branch `goal/one-registry-one-router`, **not `main`**. **Seven** tools it tells
-you to run **do not exist on `main`**:
+**1. Ref.** This describes branch `goal/one-registry-one-router`, **not `main`**. **Eight** tools it names
+**do not exist on `main`**:
 
-| tool | refs in this file | on `origin/main` |
+| tool | refs in this file | where it lives |
 |---|---|---|
 | `tools/registry_scan.cpp` | 2 (the §1 build line is one) | **absent** |
 | `tools/registry_merge_invariants.cpp` | 1 | **absent** |
@@ -24,16 +24,33 @@ you to run **do not exist on `main`**:
 | `tools/registry_flag_audit.py` | 3 | **absent** |
 | `tools/dispatch_key_check.sh` | 5 | **absent** |
 | `tools/commit-msg-hook.sh` | 1 | **absent** |
+| `tools/corr_assert.py` | 2 | **neither `main` nor this branch** — it is on `chore/tools-corr-assert` |
 
 On a fresh clone — which gets `main` — **§1's first command fails with "No such file"**, and that reads
 as a defect in the branch rather than *"you are on the wrong ref"*, which is the worst way for this
-document to be wrong. (`tools/corr_assert.py`, the corrections-assertion harness referenced in §8,
-lives on branch `chore/tools-corr-assert`.)
+document to be wrong. **Re-derive the set rather than trusting the seven:**
+
+```sh
+grep -oE 'tools/[A-Za-z0-9_.-]+' docs/guides/registry-verification.md | sort -u | while read f; do
+  git cat-file -e origin/main:"$f" 2>/dev/null || echo "absent on main: $f"
+done
+``` `tools/corr_assert.py` is the one row that is absent from **both** refs — it is on
+`chore/tools-corr-assert` — which is exactly the kind of near-miss this table exists to make visible.
 
 **2. Working directory.** Every command runs from the **repository root**, and §1 creates `b/` for
-everything it builds. Stated because it was assumed: **26 invocations use relative paths**, and with no
-stated cwd **no relative path can be shown to be WRONG — only inconsistent with another path**, which is
-how `./registry_scan` and `b/registry_scan` coexisted here without either contradicting a written rule.
+everything it builds. Stated because it was assumed, and with no stated cwd **no relative path can be shown to be WRONG —
+only inconsistent with another path**, which is how `./registry_scan` and `b/registry_scan` coexisted
+here without either contradicting a written rule. The file uses unqualified relative paths throughout;
+re-derive rather than trusting a number:
+
+```sh
+grep -cE '(^|\s|\./)(b/|\./|tools/|src/)' docs/guides/registry-verification.md
+```
+
+**That command returned 26 when this facet was written and 32 a few commits later — the number grew
+because I documented the thing being counted, and it moves every time this file is edited, including by
+stating it.** So the claim here is the SHAPE (unqualified relative paths are pervasive), not the
+magnitude, and the command is given so the reader can get the current value instead of a stale one.
 
 **3. Machine.** These need **no engine link** — a **C++23 compiler** and `python3` suffice, on any
 machine: §1 route A, §2, §3, §4, §7's standalone recipe, and the §8 checks. **Not `clang++`
@@ -127,6 +144,14 @@ precondition: the guards are already there (each measurement is anchored to a re
 pinned over magnitude, and the whole file is re-runnable, which is the only real answer to *"was right,
 is now wrong"*). Putting it in this block would make a block named for a condition turn back into a
 list.
+
+**A COUNT WITHOUT ITS DERIVATION IS INDISTINGUISHABLE FROM A TRUNCATED ONE** (@agent-ec855d, who
+reported "roughly fifteen" for a set of nineteen —their extraction piped a 33-case table through
+`head -30`, and they never saw the last three. A misquote gets caught because the source visibly
+disagrees; **a truncated count reads as an estimate, and nobody checks an estimate.** The two counts
+above therefore carry their commands. Any number in this file that does not should be re-derived
+before it is relied on, and this is the same rule as pinning identity over magnitude: a count is a
+magnitude, and the property that moves it is invisible to the derivation that produced it.
 
 **Why this block exists rather than a line about the working directory**: @agent-ec855d pointed out that
 cwd was one facet of a larger condition — **unstated execution context** — after three instances of the
