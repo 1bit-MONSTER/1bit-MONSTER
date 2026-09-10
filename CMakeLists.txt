@@ -527,7 +527,13 @@ add_executable(route_compare tools/route_compare.cpp)
 # code as HIP fails in the clang cuda_wrappers (`__device__ operator delete cannot
 # overload __host__ __device__`) — the same idiom the project uses elsewhere.
 set_source_files_properties(tools/route_compare.cpp PROPERTIES LANGUAGE CXX)
-target_link_libraries(route_compare PRIVATE model_registry_route backend_manager)
+# Do NOT link backend_manager: its INTERFACE bring-up pulls HIP defines/include dirs into
+# a plain CXX TU, and the clang cuda_wrappers then reject std::operator delete. The two
+# engine functions this tool needs live in sources that are HIP-free, so compile them in
+# directly instead of linking the manager.
+set_source_files_properties(src/model_router.cpp src/model_discovery.cpp PROPERTIES LANGUAGE CXX)
+target_sources(route_compare PRIVATE src/model_router.cpp src/model_discovery.cpp)
+target_link_libraries(route_compare PRIVATE model_registry_route gguf_reader)
 target_include_directories(route_compare PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_compile_options(route_compare PRIVATE -O3 -Wall -std=c++26)
 
