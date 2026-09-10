@@ -52,8 +52,14 @@ int main(int argc, char** argv) {
     config.from_pretrained(model_dir);
     fprintf(stderr, "config loaded; building desc...\n");
 
-    qwen3_6_moe_desc desc;
-    desc.build(config);
+    // The opaque desc may exceed the 8 KB pad on newer fastflowlm libs —
+    // heap-allocate generously + placement-new (mirrors the sequence below).
+    const size_t DESC_CAP = 0x20000;
+    void* desc_mem = malloc(DESC_CAP);
+    if (!desc_mem) { fprintf(stderr, "desc malloc failed\n"); return 1; }
+    memset(desc_mem, 0, DESC_CAP);
+    qwen3_6_moe_desc* desc = new (desc_mem) qwen3_6_moe_desc;
+    desc->build(config);
     fprintf(stderr, "desc built; constructing sequence...\n");
 
     // The gen_layer_seq 3rd arg selects the path: true = full-attn
@@ -70,7 +76,7 @@ int main(int argc, char** argv) {
     void* seq_mem = malloc(SEQ_CAP);
     memset(seq_mem, 0, SEQ_CAP);
     qwen3_6_moe_npu_sequence* qseq =
-        new (seq_mem) qwen3_6_moe_npu_sequence(desc, config, 8192);
+        new (seq_mem) qwen3_6_moe_npu_sequence(*desc, config, 8192);
     fprintf(stderr, "sequence constructed at %p\n", qseq);
 
     for (int L = L0; L <= L1; L++) {
@@ -124,5 +130,6 @@ int main(int argc, char** argv) {
         free(elf_buf);
     }
     free(seq_mem);
+    free(desc_mem);
     return 0;
 }

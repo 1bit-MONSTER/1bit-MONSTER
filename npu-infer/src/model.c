@@ -337,6 +337,92 @@ static int npu_pack_moe_experts(uint8_t* bo, const uint8_t* tiles, int n_tiles) 
     return nblocks * NPU_MOE_BLOCK_BYTES;
 }
 
+// ===========================================================================
+// 35B MoE weight-BO packing — Round 50 layout (byte-verified).
+// tools/verify_moe_current_layout.py is the reference implementation; these
+// C functions reproduce it byte-for-byte (see docs/35b-forward-integration.md
+// Round 50 and the checksums in the test below).
+// ===========================================================================
+
+// Copy one 4736-B window (j) from tensor bytes (file-offset-0 convention).
+static void moe_copy_win(uint8_t* dst, const uint8_t* src, int64_t j) {
+    memcpy(dst, src + (size_t)j * NPU_MOE_ROW_BYTES, NPU_MOE_ROW_BYTES);
+}
+
+// Pack one linear layer's expert pool (up+gate+down). The pool BO is 512 MB
+// but only rows 0..100959 are packed (478,146,560 B); the caller zeroes the
+// rest (gate_proj rows 100960..102623 are documented but not yet packed).
+int64_t npu_pack_moe_expert_pool(uint8_t* bo, ModelWeights* mw, int layer) {
+    if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
+    LayerWeights* lw = &mw->layers[layer];
+    if (lw->up_exps_weight.ndim == 0 || lw->gate_exps_weight.ndim == 0 ||
+        lw->down_exps_weight.ndim == 0) return 0;
+    const uint8_t* up   = (const uint8_t*)model_tensor_data(mw, &lw->up_exps_weight);
+    const uint8_t* gate = (const uint8_t*)model_tensor_data(mw, &lw->gate_exps_weight);
+    const uint8_t* down = (const uint8_t*)model_tensor_data(mw, &lw->down_exps_weight);
+    if (!up || !gate || !down) return 0;
+
+    uint8_t* dst = bo;
+    // rows 0..65535: alternating 32-row up/gate blocks (1024 each);
+    // window order within a block: j = base + 8*(i%4) + i/4.
+    for (int blk = 0; blk < 1024; blk++) {
+        int base = blk * 32;
+        for (int i = 0; i < 32; i++)
+            moe_copy_win(dst, up, base + 8 * (i % 4) + i / 4), dst += NPU_MOE_ROW_BYTES;
+        for (int i = 0; i < 32; i++)
+            moe_copy_win(dst, gate, base + 8 * (i % 4) + i / 4), dst += NPU_MOE_ROW_BYTES;
+    }
+    // rows 65536..100959: down, all 35424 windows in 8-window groups
+    // [0,2,4,6,1,3,5,7] (+8 per group).
+    static const int DORD[8] = {0, 2, 4, 6, 1, 3, 5, 7};
+    for (int g = 0; g < 35424 / 8; g++)
+        for (int o = 0; o < 8; o++)
+            moe_copy_win(dst, down, g * 8 + DORD[o]), dst += NPU_MOE_ROW_BYTES;
+    return (int64_t)(dst - bo);   // 478,146,560
+}
+
+// Pack one linear layer's 5 MB linear-attn BO: 328,192-B head (ssm_conv1d,
+// ssm_norm, ssm_a, ssm_dt.bias, ssm_alpha_proj, ssm_beta_proj) then ssm_out
+// windows in 32-row blocks (order j = base + 16*(i%2) + i/2).
+int64_t npu_pack_moe_linear5_bo(uint8_t* bo, ModelWeights* mw, int layer) {
+    if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
+    LayerWeights* lw = &mw->layers[layer];
+    if (lw->ssm_conv1d_weight.ndim == 0 || lw->ssm_out_proj_weight.ndim == 0) return 0;
+    const size_t BO5 = 5242880;
+    memset(bo, 0, BO5);
+    uint8_t* dst = bo;
+
+    TensorDesc* head[6] = { &lw->ssm_conv1d_weight, &lw->ssm_norm_weight,
+                            &lw->ssm_a,             &lw->ssm_dt_bias,
+                            &lw->ssm_alpha_proj_weight, &lw->ssm_beta_proj_weight };
+    for (int h = 0; h < 6; h++) {
+        if (head[h]->ndim == 0) return 0;   // all six must exist on a linear layer
+        const uint8_t* s = (const uint8_t*)model_tensor_data(mw, head[h]);
+        if (!s) return 0;
+        size_t n = (size_t)head[h]->data_size;
+        memcpy(dst, s, n);
+        dst += n;
+    }
+
+    const uint8_t* ssm = (const uint8_t*)model_tensor_data(mw, &lw->ssm_out_proj_weight);
+    int64_t ssm_len = lw->ssm_out_proj_weight.data_size;   // 8,912,896
+    int b = 0;
+    while ((size_t)(dst - bo) < BO5) {
+        for (int i = 0; i < 32; i++) {
+            int64_t j = (int64_t)b * 32 + 16 * (i % 2) + i / 2;
+            if (j * NPU_MOE_ROW_BYTES + NPU_MOE_ROW_BYTES <= ssm_len) {
+                size_t n = NPU_MOE_ROW_BYTES;
+                if ((size_t)(dst - bo) + n > BO5) n = BO5 - (size_t)(dst - bo);
+                memcpy(dst, ssm + (size_t)j * NPU_MOE_ROW_BYTES, n);
+                dst += n;
+            }
+            if ((size_t)(dst - bo) >= BO5) break;
+        }
+        b++;
+    }
+    return (int64_t)(dst - bo);   // 5,242,880
+}
+
 // Pack the lm_head weight (tied embedding) into the runtime's 98,566,144 B BO.
 // The q4nx stores lm_head as [18992 tiles x 5120B] (8 vocab rows per tile);
 // the runtime BO = the same tiles reordered with G=8 (npu_reorder_tiles) —
@@ -525,6 +611,110 @@ ModelWeights* model_load(const char* path, ModelConfig config) {
         snprintf(name_buf2, sizeof(name_buf2),
                  "model.layer.%d.mlp.down_proj.weight", l);
         find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->down_proj_weight);
+
+        // ---- MoE routed + shared expert tensors ----
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.up_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.up_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->up_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.gate_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.gate_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->gate_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.down_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.down_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->down_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.share_up_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.share_up_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->share_up_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.share_gate_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.share_gate_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->share_gate_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.mlp.share_down_exps_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.mlp.share_down_exps_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->share_down_exps_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.moe_router.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.moe_router.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->moe_router_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.shared_expert_gate.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.shared_expert_gate.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->shared_expert_gate_weight);
+
+        // ---- linear-attn (GateDeltaNet) tensors ----
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.self_attn.gate_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.self_attn.gate_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->self_attn_gate_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.qkv_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.qkv_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->qkv_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_out_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_out_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_out_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_conv1d.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_conv1d.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_conv1d_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_norm.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_norm.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_norm_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_a", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_a", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_a);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_dt.bias", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_dt.bias", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_dt_bias);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_alpha_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_alpha_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_alpha_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.linear_attn.ssm_beta_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.linear_attn.ssm_beta_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->ssm_beta_proj_weight);
     }
     
     // Final norm
@@ -585,8 +775,13 @@ static int parse_json_metadata(const uint8_t* json_data, uint64_t json_len,
         
         bool ends_with_weight = (key_len > 7 && memcmp(key_end - 7, ".weight", 7) == 0);
         bool is_lm_head = (key_len == 12 && memcmp(key_str, "lm_head.weight", 12) == 0);
+        // Hybrid MoE small F32/BF16 tensors without a .weight suffix:
+        //   linear_attn.ssm_a  (F32[32]) and  linear_attn.ssm_dt.bias  (F32[32])
+        // are part of the 5 MB linear-attn BO head (Round 50) and must load.
+        bool ends_with_ssm_a = (key_len > 5 && memcmp(key_end - 5, "ssm_a", 5) == 0);
+        bool ends_with_bias  = (key_len > 5 && memcmp(key_end - 5, ".bias", 5) == 0);
         
-        if (!ends_with_weight && !is_lm_head) {
+        if (!ends_with_weight && !is_lm_head && !ends_with_ssm_a && !ends_with_bias) {
             p = key_end + 1;
             continue;
         }

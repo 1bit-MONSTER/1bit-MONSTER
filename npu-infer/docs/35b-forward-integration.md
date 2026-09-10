@@ -807,3 +807,52 @@ Conclusion: the 35B cannot run via this lib at all (crash ~50% of loads
 future fixed lib / the flm server. This closes the runtime-as-server thread
 with finality; the engine replay path remains the only 35B route and it is
 blocked at the device-VA wall (R61-65). Assets + docs banked.
+
+## Round 69 — task-1 ELF verification (2026-09-10, goal mtusoiy1-cfdhqr)
+
+Re-verified the generated 35B per-ctx MoE ELF set (npu-infer/captures/
+txn-elfs-moe35b/) with a self-contained TXN decoder (header-skip + op
+dispatch ported from tools/decode_txn.cpp):
+
+- 40 layer TXNs, exactly 30 linear (24636 words, 630 DDR_PATCHes) +
+  10 full-attention (20566 words, 530 DDR_PATCHes). Full-attn layers =
+  {3,7,11,15,19,23,27,31,35,39} — every 4th layer, matching config
+  layer_types. ELF sizes: linear 103104 B, full 86208 B.
+- lm_head ELF = 1680 B (260-word sequence + aiebu header), present.
+- Linear layer DDR_PATCH arg_idx histogram {0:544, 1:4, 2:4, 3:70, 4:8};
+  full-attn {0:512, 1:4, 2:4, 3:2, 4:8}. arg_idx 0 (the weight BO) carries
+  arg_off spanning regions 0x0 (region A: 150/82 patches — norms/router/
+  ssm smalls), 0x1bc00000.. (region B share_*/qkv), 0x1c6fc000.. (region B
+  gate_proj). The 465 MB expert pool (up/gate/down) is NOT referenced by
+  the layer ELF — confirms Round 46 (experts are separate per-token GEMMs).
+- arg_idx 0 offsets reach 0x1cb89800 (~460 MB) → the layer ELF's weight BO
+  is a single ~460 MB BO holding regions A+B at offsets 0x0 and 0x1bc00000
+  respectively (NOT two separate BOs — R46's "separate BO" reading was the
+  device-address vs BO-offset ambiguity; the DDR_PATCH arg_off is a BO
+  offset, patched onto the arg-0 BO base at submit).
+
+=> task-1 (generate + verify 35B per-ctx MoE ELFs + lm_head ELF) is COMPLETE.
+
+## Round 70 — task-2 MoE weight-BO packing landed in C, byte-verified (2026-09-10)
+
+Ported the Round-50 layout to npu-infer/src/model.c (the engine's packer),
+extended the model loader for the MoE/linear-attn tensor names, and verified
+the C output byte-identical to the Python reference (which R50 had already
+byte-verified against the moe-cap4 runtime captures):
+
+- `LayerWeights` now carries up/gate/down_exps, share_*_exps, moe_router,
+  shared_expert_gate, self_attn.gate_proj, qkv_proj, ssm_out/conv1d/norm/a/
+  dt.bias/alpha/beta (18 new descriptors). Parser also accepts the suffixless
+  F32 tensors `*.ssm_a` and `*.bias` (they are part of the 5 MB BO head).
+- `npu_pack_moe_expert_pool(bo, mw, L)`: 512 MB pool, rows 0..100959 =
+  478,146,560 B — up/gate alternating 32-row blocks (j = base+8*(i%4)+i/4),
+  down in 8-groups [0,2,4,6,1,3,5,7].
+- `npu_pack_moe_linear5_bo(bo, mw, L)`: 5,242,880 B — 328,192-B head
+  (ssm_conv1d/norm/a/dt.bias/alpha/beta) + ssm_out windows (j = base+16*(i%2)+i/2).
+- VERIFIED byte-identical for layers 0,1,6,20,30,38 (pool + 5 MB) vs the
+  Python reference (tools/test_moe_pack.c + verify_moe_current_layout.py).
+
+Still open (documented, blocked on the unidentified transforms / missing
+captures): self_attn.gate_proj pool rows 100960..102623 (order under-
+specified), the 2 MB qkv-format BO (R50-54), and the full-attn layers'
+542 MB BO. These do not block the expert-pool + linear-attn core.
