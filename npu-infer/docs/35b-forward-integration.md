@@ -938,3 +938,26 @@ slot, kernel slot = 3 + arg_idx):
    plus the separate per-token expert GEMM kernels reading the expert-pool
    BO (task-2). Remaining: exact region A/B byte offsets per tensor (the
    BD list, Round 72) + the expert GEMM sequence ABI.
+
+## Round 74 — per-arg BO layouts (BD len/offset map, linear layer) (2026-09-10)
+
+Full (arg_idx, buffer_length, arg_off) BD map for the linear layer (moe_layer_ctx0.txn):
+
+- **arg1 = act**: 4 × 1024-B reads @0 (the 2048-bf16 hidden state in 4 chunks).
+- **arg2 = router**: 2 × 3072-B @0 + 2 × 32768-B @0x3000 (moe_router/shared_gate
+  DMA — the `len` is per-iteration, not total; router tensor = 1 MB).
+- **arg3 = norms/ssm smalls**: 2 × 12288 @0, 2 × 32768 @0x10200 + @0x30200,
+  then 34 × 4736-B rows at 0x25000 (32-row) stride from 0x50200 — the
+  ssm_conv1d/alpha/beta + norms packed into ~5 MB (0x0..0x4cb200).
+- **arg4 = kv/state**: 4 × 12288 @0 + 4 × 524288 @0xc000 (the GateDeltaNet
+  linear-attn state, 512 KB, at offset 0xc000).
+- **arg0 = weight BO**: region A (off 0x0: 32 × 18944-B 4-row + 32 × 4736-B
+  1-row reads) + region B (off 0x1bc00000..0x1cb89800: 480 × 4736-B reads at
+  16-row stride — share_*/qkv/ssm_out/gate_proj in 4736-row window form).
+
+The remaining bit to fully close the packer is the per-BD DMA dims (the
+2D descriptor strides) for region A + B, which fix the exact window order —
+decode_txn.cpp's patch table already emits these; the next session runs it
+in --decode-only mode over the MoE .txn files and matches BDs to tensor
+4736-row windows. Then the task-3 wiring code (arg0..arg4 order above) +
+the expert GEMM sequences can be landed and validated on the NPU.
