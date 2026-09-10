@@ -46,6 +46,7 @@
 #include <cstring>
 #include <cerrno>
 #include <string>
+#include <set>
 #include <vector>
 #include <deque>
 #include <thread>
@@ -1471,16 +1472,35 @@ int main(int argc, char** argv) {
 
     // Phase 2.5: Scan for model files
     printf("\n── Model Discovery ──\n");
-    static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
-    // Goal mtvd3pmx R7: the registry is the artifact-level source of truth.
-    // `discovered` above is the legacy flat, non-recursive scan keyed on
-    // GGUF general.name — it cannot see native .q4nx/.1bp, nested dirs, or
-    // shard sets, and issue #1958 shows its miss mode is a silent fallback to
-    // a *different* model. The registry is scanned once, metadata-only, and is
-    // reported through /v1/models and /v1/registry; it does not change route
-    // selection (that stays in model_router).
+    // Goal mtvd3pmx R7/R2: the registry is the artifact-level source of truth.
+    // It is scanned FIRST, then used to EXTEND the legacy flat scan with the
+    // artifacts that scan cannot see: native .q4nx/.1bp, nested directories, and
+    // shard sets (issue #1958's miss mode is a silent fallback to a *different*
+    // model). The extension is additive and deduped by path, so every legacy name
+    // still resolves while a previously-invisible artifact gains its CANONICAL id
+    // (R5). It does not change route selection (that stays in model_router).
     static onebit::ModelRegistry g_registry =
         onebit::ModelRegistry::scan({g_weights_dir});
+    static std::vector<ModelConfig> discovered = [&] {
+        std::vector<ModelConfig> v = discover_models(g_weights_dir);
+        std::set<std::string> have;
+        for (const auto& m : v) have.insert(m.model_path);
+        size_t added = 0;
+        for (const auto& a : g_registry.artifacts()) {
+            if (a.files.empty()) continue;
+            const std::string p = a.files.front().path;
+            if (have.count(p)) continue;
+            ModelConfig cfg{};
+            if (!read_model_file_metadata(p, cfg)) continue;
+            cfg.model_name = a.id;  // canonical id (R5)
+            cfg.model_path = p;
+            v.push_back(std::move(cfg));
+            have.insert(p);
+            added++;
+        }
+        printf("  Registry extended discovery: +%zu artifact(s) the flat scan could not see\n", added);
+        return v;
+    }();
 
     // Format preference: when several files share a base model name, prefer
     // the quality format over the size tier (measured: Q8_0 near-lossless,
