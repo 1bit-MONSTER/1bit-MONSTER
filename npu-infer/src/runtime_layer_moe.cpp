@@ -70,6 +70,20 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     bo_weight_ = std::make_unique<xrt::ext::bo>(dev, WEIGHT_BO_BYTES);
     uint8_t* w = static_cast<uint8_t*>(bo_weight_->map());
     memset(w, 0, WEIGHT_BO_BYTES);
+    // ---- region A (best-effort): layernorms + ssm smalls sequential @0 ----
+    {
+        LayerWeights* lw = &mw_->layers[0];
+        TensorDesc* heads[6] = { &lw->input_layernorm_weight, &lw->post_attention_layernorm_weight,
+                                 &lw->ssm_conv1d_weight, &lw->ssm_norm_weight,
+                                 &lw->ssm_a, &lw->ssm_dt_bias };
+        size_t off = 0;
+        for (int h = 0; h < 6; h++) {
+            if (heads[h]->ndim == 0) continue;
+            const uint8_t* s = (const uint8_t*)model_tensor_data(mw_, heads[h]);
+            if (s) { memcpy(w + off, s, (size_t)heads[h]->data_size); off += (size_t)heads[h]->data_size; }
+        }
+        fprintf(stderr, "MoERuntimeLayer: region-A head packed (%zu B, best-effort)\n", off);
+    }
     int64_t rb = npu_pack_moe_region_b(w + REGION_B_BASE, mw_, 0);
     if (rb != (int64_t)3456 * 4736) {
         fprintf(stderr, "MoERuntimeLayer: region-B pack failed (%lld)\n", (long long)rb);
@@ -124,6 +138,16 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
 
     fprintf(stderr, "MoERuntimeLayer: init OK (weight %zu B region-B base 0x%zx)\n",
             WEIGHT_BO_BYTES, REGION_B_BASE);
+    if (getenv("MOE_DUMP_ADDRS")) {
+        fprintf(stderr, "  BO device addrs: weight=0x%llx act=0x%llx router=0x%llx norms=0x%llx kv=0x%llx logits=0x%llx\n",
+                (unsigned long long)bo_weight_->address(),
+                (unsigned long long)bo_act_->address(),
+                (unsigned long long)bo_router_->address(),
+                (unsigned long long)bo_norms_->address(),
+                (unsigned long long)bo_kv_->address(),
+                (unsigned long long)bo_logits_->address());
+        fprintf(stderr, "  desc targets: act=0x40000000 weight=0xe000000 kv=0x2000000 state=0xc0000000\n");
+    }
     return true;
 }
 

@@ -1313,3 +1313,23 @@ Regenerated + fully decoded the MoE lm_head TXN (260 words):
    BOs) — NOT the engine's current weight/act/router/norms/kv order. This is
    the likely cause of the all-NaN act. Next: print the engine's actual
    xrt::bo device addresses vs the desc targets, then reorder allocation.
+
+## Round 92 — layer NaN reproduced even with region-A norms filled (2026-09-10)
+
+Filled the arg-0 region-A head (input/post_attention_layernorm + ssm_conv1d +
+ssm_norm + ssm_a + ssm_dt.bias, 74 KB, sequential @0) + the router norms and
+re-ran: the layer act is STILL all-NaN (2048/2048), logits all-zero.
+
+Engine BO device addrs print (xrt::ext::bo, host-backed 0x7f8c... vs desc
+targets 0x40000000/0xe000000/0x2000000/0xc0000000) confirms the engine does
+NOT land at the desc device-VAs — but the dense layer ELF (byte-verified,
+works) also carries RTP writes (0xc0000000 state, 0x401d214 queue) and works
+with host-backed BOs, so the RTP addresses are fixed AIE-internal values,
+NOT the device-VA replication issue.
+
+=> The layer NaN is therefore either (a) the lib's gen_layer_seq 35B sequence
+   itself NaNs (R59/R68: "layer forward is genuinely NaN" with correct
+   weights + working lm_head), or (b) my region-B packing (trim+A/B) is wrong
+   in a way that NaNs. Both are unverifiable without the map-written weight-BO
+   content (R82) or the FastFlowLM source. The wiring itself is confirmed
+   structurally correct (clean execution).
