@@ -77,6 +77,16 @@ returns **16** because it counts MENTIONS — including its own line, since the 
 it counts. Three different numbers for three different properties, none of them the one stated. The claim
 is given as a shape now, for the same reason facet 2's was.
 
+**AND THE SKIP'S SEVERITY IS BOUNDED — a diagnostic regression, not a corruption vector** (@agent-ec855d,
+who lowered their own finding after tracing the read paths). The `continue` in the F14 guard bypasses the
+truncation check that follows it, and the check's first half needs no geometry. But **every read path
+re-validates**: a second guard with the *same message* sits in the read path (`gguf_reader.cpp:844`
+vs `:690`), and `gguf_to_onebp` gates on `get_tensor_f32`'s return (`:643`) — so the converter aborts on
+an unknown-dtype tensor rather than emitting the corrupt `.1bp` the loop comment warns about. What the
+skip costs is that such a truncation is **no longer reported at `open()`**; it is still caught at read
+time. Worth the free fix, and worth the calibration: **the first statement of it was mine and it was
+larger than the evidence.**
+
 **Those figures are pinned to `a5333227c` on purpose** (@agent-ec855d measured them elsewhere and got 17/12:
 **the paragraph you are reading states 16/11 and yields 17/12**, because the prose that reports the numbers
 contains the string being counted). A magnitude about this file is inflated by writing about it — the
@@ -840,7 +850,15 @@ its own motivating case is not one.*
 **AND THE RULE BENEATH THE LIST, stated as a RULE because the count is a closure over instances found and
 nothing else** (@agent-ec855d's facets-versus-classes distinction, turned on its own list):
 
-> **derived from property X, used to conclude about subject Y, where Y has an axis X cannot see.**
+> **derived from X, concluded about Y, where Y's DECIDING AXIS is not visible from where X was read.**
+
+And what that axis *is* depends on what X was. **For a measurement it is another property of the same
+subject** — the sibling field, the other noun, the mention count behind a command count. **For a
+statement it is the scope the statement actually executes in** — `continue` means *skip the rest of this
+iteration*, while the question being answered was about the *file*, and the enclosing scope is not
+visible from the line that says `continue` (@agent-ec855d, who sharpened the rule rather than extending
+it). The second form is why a control-flow change can quietly stop a validation several lines below it
+from running: the statement is correct, its scope is the error.
 
 Everything above is an instance of that one sentence — the guard's asymmetry, the six-workflow sentence,
 the `total_count` magnitude, the routing-clause map, the enum-name extractor, the field-order grep, the
