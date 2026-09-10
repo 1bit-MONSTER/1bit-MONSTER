@@ -160,10 +160,18 @@ Per synchronous GEMM launch (`go_rows`):
    row 0 (rest 0) and W=int8 1, C row 0 is non-zero and rows 1+ are zero —
    i.e. the GEMM computes the right structure. Row 0's non-zero value
    = 100664832 = 1024 × **98304**, so **C_float = C_int32 / 98304 × scale_W**
-   (98304 = 3×2^15 is the bf16→int fixed-point scale). Remaining:
-   (1) the C blocked layout (strided write: 32 groups×16 int32 @64-spacing,
-   256 blocks @512-stride — row 0 shows 2904/4096 cols non-zero in row-major
-   read), (2) wire into the prefill.
+   (98304 = 3×2^15 is the bf16→int fixed-point scale).
+
+   **BD semantics (npu_cmd_write_dma.hpp):** buffer_length = dim0×dim1×dim2
+   (dim2_size derived), iter_size = ((bd[10]>>20)&0x3FF)+1. So the A BD reads
+   32KB total (256B d0 × 64 d1×512str × 2 d2×256str — a CONTIGUOUS row-major
+   read). **B (W) read is STRIDED**: 32 B DPs at 256KB offsets (0…7.75MB =
+   2× the 4MB int8 QKV W), each B BD linear 64KB — the W is stored in a
+   blocked/2× layout, NOT row-major (my row-major W test reads it wrong,
+   giving garbage C). Remaining: (1) W blocked layout (and int8-vs-int4 width),
+   (2) C strided write (32 groups×16 int32 @64-spacing, 256 blocks @512-stride
+   → N/8=512 cols per pass), (3) wire into the prefill. Definitive next step:
+   byte-diff my GEMM vs FLM's own Gemm+npu_app on identical A/W.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
