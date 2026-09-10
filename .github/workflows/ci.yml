@@ -107,8 +107,12 @@ jobs:
       - name: Registry source checks (informational)
         continue-on-error: true
         run: |
-          sh tools/dispatch_key_check.sh src/backend_manager.cpp
-          python3 tools/registry_flag_audit.py --static-only
+          # `|| true` on EACH line, deliberately: under the default `bash -e` the
+          # first failure aborts the block, so a dispatch-key report (exit 1) would
+          # hide the flag audit's output entirely. Both are informational, so both
+          # diagnostics should always appear. (Found by @agent-ec855d.)
+          sh tools/dispatch_key_check.sh src/backend_manager.cpp || true
+          python3 tools/registry_flag_audit.py --static-only || true
       - name: CMake configure + build (reference checks only when no ROCm)
         run: |
           if [ -x /opt/rocm-therock/bin/amdclang++ ]; then
@@ -166,7 +170,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # The `| head -20` below discards the xargs status, so this step could never
+      # fail regardless of its label — a latent trap for whoever promotes it by
+      # deleting "(informational)", because the masking does not go away with the
+      # label. `continue-on-error` makes the intent EXPLICIT so removing the label is
+      # no longer what keeps it non-blocking. (Audited by @agent-ec855d.)
       - name: clang-format check (informational)
+        continue-on-error: true
         run: |
           sudo apt-get install -y -qq clang-format
           find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \
