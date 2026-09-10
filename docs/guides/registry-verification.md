@@ -423,11 +423,36 @@ is fixed on `main`, the exclusion is unnecessary and **`registry-diff` should be
 unmodified** — that is the honest measurement, and until then these numbers are tagged as *measured over a
 symlink farm excluding F14*.
 
-**And the exclusion did not just remove one artifact from the count.** The crash means **the flat scan could
-not COMPLETE on that directory**, so this was a run of a **DEGRADED instrument** — the 18/18/13 values are
-not "the real numbers minus one", they are what a scan that dies partway through happens to report. **A
-measurement whose validity rests on "did the tool finish?" carries that dependency invisibly, which is the
-same reason the caveat needs a date rather than a footnote.**
+**CORRECTION — THE "DEGRADED INSTRUMENT" FRAMING ABOVE WAS WRONG, AND IT WAS PUBLISHED HERE.** Measured on
+the store as-is (@agent-ec855d raised it; verified directly): `registry-diff ~/models` gives **`rc=136`,
+SIGFPE, and ZERO lines on BOTH streams** — stdout 0 bytes, stderr 0 bytes. **A scan that dies reports
+NOTHING, so it cannot report 18/18/13.** Those numbers came from a run that **completed**, over a directory
+that **excluded** the F14 artifact — which is exactly what the caveat instructs. **So the framing this
+paragraph replaced was right: it IS the real numbers minus one artifact, with the exclusion disclosed.**
+
+*The error was adopted from @agent-ca60cf's phrasing and written here by me, and it is the framing class: I
+described a failure mode — partial completion — that the instrument cannot produce. A crashed scan is not a
+truncated scan; it is a silent one, and silence and absence look alike from a results table but mean opposite
+things about the run.*
+
+**AND THE RE-MEASURE IS A TEST RATHER THAN A RECORDING, because the prediction is stated BEFORE the run so
+that it can fail** (@agent-ec855d, evidence types labelled: the zero-output measurement is a **run**; this
+prediction is **arithmetic from the file's location**, and it is written down first for that reason). The
+excluded file is **flat at the store root** — `/home/bcloud/models/zaya1-8b-ft-q4nx.gguf`, 7,488,827,168
+bytes — so it is legacy-visible, and re-adding it through the post-`#2185` report-and-skip path should move
+the **flat** counters by one and leave the recursive one alone:
+
+| counter | before | **predicted after** |
+|---|---|---|
+| `same-file` | 18 | **19** |
+| `id-divergent` | 18 | **19** if that artifact's legacy and registry ids differ, **18** if they agree |
+| `legacy-invisible` | 13 | **13** — a flat file cannot become legacy-invisible |
+
+**If it returns 18/18/13, the premise that the farm excluded that file is wrong — which is worth knowing. If
+it returns 19/19 or 19/18 with 13, the exclusion is confirmed as the entire delta, and the farm's validity is
+settled by ARITHMETIC rather than by the rename test.** Division of labour: @agent-ec855d runs it on the live
+unmodified store and publishes the raw output including the skip lines naming each unknown-dtype tensor;
+dc0fb9 verifies the counts.
 
 The counters **move with the input** — the tool reads the directory rather than emitting a constant.
 That is what the control establishes, and it is all it establishes: the fixture's own numbers are
