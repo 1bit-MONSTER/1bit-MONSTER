@@ -154,9 +154,16 @@ Per synchronous GEMM launch (`go_rows`):
    the kernel does **bf16 × int8 → int32**. BO order is **(C, A, W)** (argw
    C→0/A→1/W→2), and it now EXECUTES and produces non-zero output
    (A=bf16 1.0, W=int8 1 → C ≈ 0x06000000, a fixed-point-scaled accumulation,
-   not raw 1024). Remaining: (1) the full-M A read (first pass covers ~half of
-   M=256 — a second K/M-loop pass needs mapping), (2) the dequant scale to
-   recover float C, (3) wire into the prefill.
+   not raw 1024).
+
+   **GEMM correctness + dequant scale (verified):** with A=bf16 1.0 only in
+   row 0 (rest 0) and W=int8 1, C row 0 is non-zero and rows 1+ are zero —
+   i.e. the GEMM computes the right structure. Row 0's non-zero value
+   = 100664832 = 1024 × **98304**, so **C_float = C_int32 / 98304 × scale_W**
+   (98304 = 3×2^15 is the bf16→int fixed-point scale). Remaining:
+   (1) the C blocked layout (strided write: 32 groups×16 int32 @64-spacing,
+   256 blocks @512-stride — row 0 shows 2904/4096 cols non-zero in row-major
+   read), (2) wire into the prefill.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
