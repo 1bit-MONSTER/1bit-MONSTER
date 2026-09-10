@@ -152,6 +152,11 @@ int64_t npu_pack_moe_linear5_bo(uint8_t* bo, ModelWeights* mw, int layer);
 // (16,367,616) or 0 on error.
 int64_t npu_pack_moe_region_b(uint8_t* bo, ModelWeights* mw, int layer);
 
+// Pack one layer's router BO (arg-2 of the MoE layer kernel):
+// shared_expert_gate @0x2000, moe_router @0x3000. Returns bytes written
+// (0x3000 + moe_router bytes) or 0 on error.
+int64_t npu_pack_moe_router_bo(uint8_t* bo, ModelWeights* mw, int layer);
+
 #ifdef __cplusplus
 }
 #endif

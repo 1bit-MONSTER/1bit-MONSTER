@@ -434,6 +434,34 @@ int64_t npu_pack_moe_region_b(uint8_t* bo, ModelWeights* mw, int layer) {
     return (int64_t)3456 * NPU_MOE_ROW_BYTES;   // 16,367,616
 }
 
+// Pack one layer's router BO (arg-2): shared_expert_gate @0x2000 (BF16),
+// moe_router @0x3000 (BF16 [H, N_EXPERTS]). The router layout is stride-8
+// interleaved (tools/qwen36_full_ref.py: blk = n_out*(n_in//8);
+// flat[(i%8)*blk + j*(n_in//8) + i//8]) — the same convention the CPU
+// reference uses to dequant the router, byte-verified there.
+int64_t npu_pack_moe_router_bo(uint8_t* bo, ModelWeights* mw, int layer) {
+    if (!bo || !mw || layer < 0 || layer >= mw->config.num_layers) return 0;
+    LayerWeights* lw = &mw->layers[layer];
+    if (lw->moe_router_weight.ndim != 2) return 0;
+    const uint8_t* rt = (const uint8_t*)model_tensor_data(mw, &lw->moe_router_weight);
+    const uint8_t* seg = (const uint8_t*)model_tensor_data(mw, &lw->shared_expert_gate_weight);
+    if (!rt || !seg) return 0;
+    const int64_t n_in = lw->moe_router_weight.shape[0];      // H = 2048
+    const int64_t n_out = lw->moe_router_weight.shape[1];     // N_EXPERTS = 256
+    const size_t seg_bytes = (size_t)lw->shared_expert_gate_weight.data_size;
+    memset(bo, 0, 0x3000);
+    if (seg_bytes) memcpy(bo + 0x2000, seg, seg_bytes);
+    // stride-8 interleave: flat[(i%8)*blk + j*(n_in//8) + i//8], blk = n_out*(n_in//8)
+    const int64_t in8 = n_in / 8;
+    const int64_t blk = n_out * in8;
+    const uint16_t* src = (const uint16_t*)rt;
+    uint16_t* dst = (uint16_t*)(bo + 0x3000);
+    for (int64_t i = 0; i < n_in; i++)
+        for (int64_t j = 0; j < n_out; j++)
+            dst[(i % 8) * blk + j * in8 + i / 8] = src[i * n_out + j];
+    return (int64_t)(0x3000 + n_in * n_out * 2);   // 0x3000 + 1 MB
+}
+
 // Pack one linear layer's 5 MB linear-attn BO: 328,192-B head (ssm_conv1d,
 // ssm_norm, ssm_a, ssm_dt.bias, ssm_alpha_proj, ssm_beta_proj) then ssm_out
 // windows in 32-row blocks (order j = base + 16*(i%2) + i/2).
