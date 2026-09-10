@@ -28,6 +28,7 @@
 #include "unified_pool.h"
 #include "batch_scheduler.h"
 #include "model_discovery.h"
+#include "model_registry.h"
 #include "model_router.h"
 #include "gguf_reader.h"
 #include "simple_tokenizer.h"
@@ -1373,6 +1374,15 @@ int main(int argc, char** argv) {
     // Phase 2.5: Scan for model files
     printf("\n── Model Discovery ──\n");
     static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
+    // Goal mtvd3pmx R7: the registry is the artifact-level source of truth.
+    // `discovered` above is the legacy flat, non-recursive scan keyed on
+    // GGUF general.name — it cannot see native .q4nx/.1bp, nested dirs, or
+    // shard sets, and issue #1958 shows its miss mode is a silent fallback to
+    // a *different* model. The registry is scanned once, metadata-only, and is
+    // reported through /v1/models and /v1/registry; it does not change route
+    // selection (that stays in model_router).
+    static onebit::ModelRegistry g_registry =
+        onebit::ModelRegistry::scan({g_weights_dir});
 
     // Format preference: when several files share a base model name, prefer
     // the quality format over the size tier (measured: Q8_0 near-lossless,
@@ -1865,6 +1875,47 @@ int main(int argc, char** argv) {
                 {"heads", m.n_heads}, {"kv_heads", m.n_kv_heads},
                 {"vocab", m.vocab}, {"max_seq_len", m.max_seq_len}
             }};
+            // R7: attach the artifact-level facts the flat scan cannot express.
+            const onebit::ModelArtifact* art = g_registry.resolve_path(m.model_path);
+            if (!art) art = g_registry.find(m.model_name);
+            if (art) {
+                info["artifact_id"] = art->id;
+                info["container"] = onebit::to_string(art->container);
+                info["dtype_space"] = onebit::to_string(art->dtype_space);
+                std::vector<std::string> caps;
+                for (auto c : art->capabilities) caps.push_back(onebit::to_string(c));
+                info["capabilities"] = caps;
+                if (!art->tokenizer_path.empty()) info["tokenizer"] = art->tokenizer_path;
+                if (art->files.size() > 1) info["shards"] = (int)art->files.size();
+                if (art->has_dtype_42) info["dtype42"] = true;
+            }
+            models.push_back(info);
+        }
+        // Registry-only artifacts: recursive walk + native containers that the
+        // flat scan above cannot reach (e.g. q4nx-converted/*.gguf, *.q4nx).
+        for (const auto& art : g_registry.artifacts()) {
+            bool present = false;
+            for (auto& m : discovered) {
+                if (m.model_name == art.id) { present = true; break; }
+            }
+            if (present) continue;
+            json info;
+            info["id"] = art.id;
+            info["object"] = "model";
+            info["created"] = 0;
+            info["owned_by"] = "1bit-monster";
+            info["backend"] = "auto";
+            info["source"] = "registry";
+            info["container"] = onebit::to_string(art.container);
+            info["dtype_space"] = onebit::to_string(art.dtype_space);
+            std::vector<std::string> caps;
+            for (auto c : art.capabilities) caps.push_back(onebit::to_string(c));
+            info["capabilities"] = caps;
+            if (!art.files.empty()) info["path"] = art.files.front().path;
+            if (!art.tokenizer_path.empty()) info["tokenizer"] = art.tokenizer_path;
+            if (art.files.size() > 1) info["shards"] = (int)art.files.size();
+            if (art.has_dtype_42) info["dtype42"] = true;
+            if (art.q4nx_name_mismatch) info["q4nx_name_mismatch"] = true;
             models.push_back(info);
         }
         // Also add the active backend model if different
@@ -1876,6 +1927,48 @@ int main(int argc, char** argv) {
             if (!found) models.push_back(model_info_json(active, current_cfg.model_name));
         }
         j["data"] = models;
+        res.set_content(j.dump(2), "application/json");
+        add_cors(res);
+    });
+
+    // ── GET /v1/registry — artifact-first registry (goal mtvd3pmx R7) ──
+    // Registry state is the same regardless of serving mode, so this is valid
+    // under both `1bit unified` and `unified --lemonade`. `id -> artifact ->
+    // capability` is the resolver contract; route selection is still the
+    // router's (R6), this endpoint only reports.
+    svr.Get("/v1/registry", [&](const httplib::Request&, httplib::Response& res) {
+        json j;
+        j["object"] = "registry";
+        j["roots"] = g_registry.roots();
+        json arts = json::array();
+        for (const auto& a : g_registry.artifacts()) {
+            json o;
+            o["id"] = a.id;
+            o["aliases"] = a.aliases;
+            o["container"] = onebit::to_string(a.container);
+            o["dtype_space"] = onebit::to_string(a.dtype_space);
+            o["has_dtype_42"] = a.has_dtype_42;
+            o["q4nx_name_mismatch"] = a.q4nx_name_mismatch;
+            o["quantization"] = a.quantization;
+            o["architecture"] = a.architecture;
+            o["lineage"] = a.lineage;
+            o["tokenizer"] = a.tokenizer_path;
+            std::vector<std::string> caps;
+            for (auto c : a.capabilities) caps.push_back(onebit::to_string(c));
+            o["capabilities"] = caps;
+            o["total_bytes"] = a.total_bytes();
+            o["files"] = (int)a.files.size();
+            if (!a.files.empty()) o["path"] = a.files.front().path;
+            arts.push_back(o);
+        }
+        j["data"] = arts;
+        auto r = g_registry.report();
+        j["report"] = {{
+            {"artifacts", r.artifacts}, {"files", r.files},
+            {"sharded", r.sharded_artifacts}, {"total_bytes", r.total_bytes},
+            {"size_twin_groups", r.size_twin_groups},
+            {"dangling_tokenizers", r.dangling_tokenizers}
+        }};
         res.set_content(j.dump(2), "application/json");
         add_cors(res);
     });

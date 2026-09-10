@@ -76,7 +76,9 @@ void describe(const ModelArtifact& a) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
+// Entry point, shared by the standalone `registry_scan` binary and by
+// `1bit registry` (compiled into onebin with REGISTRY_SCAN_STANDALONE unset).
+int registry_scan_main(int argc, char** argv) {
     ScanOptions opt;
     bool json = false, quiet = false;
     std::string resolve_arg, cap_arg;
@@ -127,3 +129,7 @@ int main(int argc, char** argv) {
     print_report(reg.report());
     return 0;
 }
+
+#ifdef REGISTRY_SCAN_STANDALONE
+int main(int argc, char** argv) { return registry_scan_main(argc, argv); }
+#endif
