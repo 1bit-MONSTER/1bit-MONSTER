@@ -412,19 +412,6 @@ struct I8Ctx {
                     *bA, *layerB[l], *bC);
     }
 
-    // Launch on an EXTERNAL kernel (shared-hwctx MoE runlist batching, #2150).
-    // All engine MoE xclbins expose the SAME MLIR_AIE kernel (dpu_kernel_id
-    // 0x901), so one hwctx can host GU/D/SGU/SD instruction streams and their
-    // runs can batch into one xrt::runlist. Uses this ctx's own BOs + insts,
-    // but the given kernel/hwctx.
-    inline xrt::run launch_with(xrt::kernel& kk, int l) {
-        bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        return kk((unsigned)3,
-                  *layerInstr[0],
-                  (unsigned)(layerInstrData[0].size()),
-                  *bA, *layerB[l], *bC);
-    }
-
     inline void wait_kernel(xrt::run& r) { r.wait(); }
 
     // Per-section output scales for the fused QKV GEMM (fix #1699: llama
