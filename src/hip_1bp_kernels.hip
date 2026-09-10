@@ -813,3 +813,62 @@ __global__ void h1bp_moe_reduce8_kernel(float* __restrict__ acc,
     for (int k = 0; k < nslots; k++) t += src[(size_t)k * n + i] * rout_d[k];
     acc[i] = t;
 }
+
+// ═══ #2139 item-2: single-pass Q4NX GEMV (one warp per row) ═══
+// The launch_q4nx pair (part kernel -> tq2nz_sum kernel) costs 2 dispatches per
+// GEMV and a 32*wpr float partial buffer per row. Here each warp owns one row and
+// walks the K dimension tile by tile itself (lane = 32-col group, 4 groups per
+// warp per step), then warp-reduces: same math, 1 dispatch, no partial buffer.
+__device__ inline void h1bp_q4nx_row_walk(const uint8_t* __restrict__ w,
+                                          const float* __restrict__ x,
+                                          int row, int ntc, int lane, float& acc) {
+    const int g  = lane & 7;
+    const int twq = lane >> 3;
+    const int rri = row & 31;
+    for (int tw = twq; tw < ntc; tw += 4) {
+        const uint8_t* tb = w + (size_t)((row >> 5) * ntc + tw) * 5120;
+        const uint16_t* sc = (const uint16_t*)tb;
+        const uint16_t* zp = (const uint16_t*)(tb + 512);
+        float scale = h1bp_bf16_to_f32(sc[rri * 8 + g]);
+        float z     = h1bp_bf16_to_f32(zp[rri * 8 + g]);
+        const uint8_t* codes = tb + 1024 + rri * 128 + g * 16;
+        const float*   xp    = x + tw * 256 + g * 32;
+#pragma unroll
+        for (int i = 0; i < 16; i++) {
+            uint8_t b = codes[i];
+            acc += ((float)(b & 0xF) * scale + z) * xp[i * 2];
+            acc += ((float)(b >> 4)  * scale + z) * xp[i * 2 + 1];
+        }
+    }
+}
+
+__global__ void h1bp_q4nx_gemv_kernel(const uint8_t* __restrict__ w,
+                                      const float* __restrict__ x,
+                                      float* __restrict__ y, int N, int K) {
+    const int lane = threadIdx.x & 31;
+    const int row  = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    if (row >= N) return;
+    const int ntc = (K + 255) >> 8;
+    float acc = 0.0f;
+    h1bp_q4nx_row_walk(w, x, row, ntc, lane, acc);
+    for (int off = 16; off; off >>= 1) acc += __shfl_down(acc, off);
+    if (lane == 0) y[row] = acc;
+}
+
+// #2139 item-2: single-pass Q4NX expert GEMV — grid.y = top-k slot, one warp per
+// row, expert base from idx_d[slot]; x_slot_stride != 0 for the down projection.
+__global__ void h1bp_q4nx_gemv_idx8_kernel(const uint8_t* __restrict__ w,
+        const float* __restrict__ x, int x_slot_stride, float* __restrict__ y8,
+        const int* __restrict__ idx_d, size_t stride_bytes, int N, int K) {
+    const int slot = blockIdx.y;
+    const int lane = threadIdx.x & 31;
+    const int row  = (blockIdx.x * (blockDim.x >> 5)) + (threadIdx.x >> 5);
+    if (row >= N) return;
+    const int ntc = (K + 255) >> 8;
+    const uint8_t* we = w + (size_t)idx_d[slot] * stride_bytes;
+    const float*   xe = x + (size_t)slot * x_slot_stride;
+    float acc = 0.0f;
+    h1bp_q4nx_row_walk(we, xe, row, ntc, lane, acc);
+    for (int off = 16; off; off >>= 1) acc += __shfl_down(acc, off);
+    if (lane == 0) y8[(size_t)slot * N + row] = acc;
+}
