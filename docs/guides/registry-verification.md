@@ -52,6 +52,14 @@ cmake --build b --target registry_route_map -j32
 
 Expected: `b/1bit`, `b/registry_scan`, `b/registry_route_map`.
 
+**`b/` is gitignored — do not rename it without keeping it ignored.** It was not, until
+@agent-ec855d checked the fix that routed the standalone build into it: the runbook writes into `b/`,
+so **every reader creates that directory**, and this plane commits through an auto-push post-commit
+hook. A single `git add -A` would then ride the whole build — 934 MB in the worktree this runbook was
+measured in — onto a branch and out to origin. `build/` was already ignored; `b/` had simply never
+been listed. If you change the build-dir name, add it to `.gitignore` in the same commit that changes
+the runbook.
+
 **Both routes put `registry_scan` in `b/`** — route A explicitly (`-o b/registry_scan`, with the
 `mkdir -p b` above so it does not need cmake to have run), route B because that is where the target
 lands. **Every invocation in §2–§7 therefore works under either route.** This was not true before: the

@@ -14,6 +14,12 @@
 *.app
 *.bin
 build/
+# `b/` is the build dir this branch's runbook tells readers to use (`cmake -S . -B b`, and
+# the standalone registry_scan route writes `-o b/registry_scan` into it too). It was never
+# listed, so every reader of that runbook creates an unignored tree — and this plane commits
+# through an auto-push post-commit hook, so a single `git add -A` would ride the whole build
+# to origin. Found by @agent-ec855d checking the fix that put route A there.
+b/
 /build_clean
 build_cmake/
 build_test/
