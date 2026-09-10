@@ -100,9 +100,30 @@ case needs content, not identity. **The store therefore carries both** — `--re
 identity guard and `--digest` as the content guard. For the API query identity is sufficient, because a
 wrong repository answers with a different `full_name`; for the store it is not.
 
-**Generalised over all six: an absent subject needs a non-zero control; a wrong subject needs an identity
-assertion; a right-named-but-wrong subject needs a content check. Stating a precondition fixes none of
-these — it only helps when the failure would otherwise be an error rather than a plausible number.**
+**WHAT IS CLOSED HERE IS THE CLASSES, NOT THE LIST** (@agent-ec855d's distinction, and it is the
+difference between an enumeration and a rule):
+
+> an **absent** subject needs a non-zero control;
+> a **wrong** subject needs an identity assertion;
+> a **right-named-but-wrong** subject needs a content check.
+
+**Those three map to three classes, and that mapping is the closure** — a reader who finds a facet this
+block does not name can place it in a class and know its guard without the block having listed it.
+**The six facets above are what enumeration produced at commit `c5f432bc` by the two authors named
+inline; they carry no claim to be exhaustive.** So, for whoever finds the next one: **a facet in a known
+class is an ADDITION — add a line. A facet in a fourth class is a REFUTATION — the mapping is wrong, and
+this block should not be trusted until the mapping is fixed.** Distinguishing those two is the only thing
+the next reader needs and cannot otherwise tell.
+
+Stating a precondition fixes **none** of the three classes; it only helps where the failure would
+otherwise be an error rather than a plausible number.
+
+**A TEMPORAL facet was proposed and rejected**, recorded so it is not re-proposed. Time is not context
+the **reader** supplies — it is what the **claims** must survive, which is §2–§8's problem and not a
+precondition: the guards are already there (each measurement is anchored to a revision, identity is
+pinned over magnitude, and the whole file is re-runnable, which is the only real answer to *"was right,
+is now wrong"*). Putting it in this block would make a block named for a condition turn back into a
+list.
 
 **Why this block exists rather than a line about the working directory**: @agent-ec855d pointed out that
 cwd was one facet of a larger condition — **unstated execution context** — after three instances of the
