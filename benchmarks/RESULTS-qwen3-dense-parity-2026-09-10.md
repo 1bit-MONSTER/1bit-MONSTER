@@ -78,35 +78,40 @@ kernel registers, not the ELF size).
 TTFT = prefill time for text (the table's TTFT rows are VL-image only), so
 TTFT carries the same gap: native TTFT @1k ≈ 1000×14 ms = 14 s vs FLM 0.77 s.
 
-### Root cause
+### Root cause (measured via NPU_GO_STATS, M=128 split-path prefill)
+
+Per synchronous GEMM launch (`go_rows`):
+- **quantize (CPU)** 1–2.5 ms — float→int8 of 128×K activations
+- **sync+launch** ~0.05 ms (negligible)
+- **wait (kernel)** 3–6 ms — the M=128 GEMM execution
+- **readback+dequant** ~0.05 ms
 
 - **Runlist path** prefills one token per forward (`rt.embed(t)` +
   `rt.forward(ctx)`), i.e. M=1 — the same cost as decode (~13 ms/token for
   0.6B) instead of FLM's batched prefill.
 - **Split path** batches M=128 (the v27 microkernel is M=128-baked; see
-  AIE2P-FACTS.md §3b) but is launch-bound: 112 launches × ~10 ms
-  (quantize → BO sync → run.start/wait → readback → dequant) for 128 tokens.
-  FLM processes the same 112 GEMM steps for ~8× the tokens in less time
-  because its mm engine streams M-tiles with async DMA and one contiguous
-  weight BO.
-- `HybridFlmCtx` (FLM `mm.xclbin`) exists but is also M=128-baked and was
-  measured 15× *slower* than `I8Ctx` (151 ms/tok) — per-launch instruction
-  BO sync; not a drop-in win.
+  AIE2P-FACTS.md §3b) but each GEMM launch costs ~5–8 ms (2 ms CPU quantize +
+  3–6 ms kernel) × 112 launches = ~1.1 s for 128 tokens. FLM's fused
+  `mm.xclbin` (6×8 tile array) runs the same M=128 GEMM in ~0.86 ms; the
+  native per-op xclbins (`final_i8_QKV/O/GU/D`) use a single-core-row topology
+  → ~4–7× slower kernel.
+- `HybridFlmCtx` (FLM `mm.xclbin` wrapper) exists but is measured 15× *slower*
+  than `I8Ctx` (151 ms/tok) — its contiguous weight BO / instruction
+  generation is not producing FLM's fast stream; not a drop-in win.
 
 ### Plan to close prefill
 
-1. Batched prefill at M=1024: FLM's `mm.xclbin` runs M up to the prefill
-   chunk (config `max_prefill_len=4096`); generate `M=1024` instruction
-   streams via `gemm_generate_sequence_i8_split`, size `bA/bC` for M=1024,
-   and loop 128-row tiles inside one launch.
-2. Chunked prefill (128/1024-token chunks) with KV accumulation across
-   chunks (the existing split-path loop already accumulates
-   `kv_caches[l][0].n`).
-3. Batched attention: `gen_mha_engine_seq(L_begin, L_end)` (the FLM MHA
-   engine) or the existing `attn.xclbin`, instead of the O(npt²) CPU
-   `attn_omp`.
-4. Reduce per-launch overhead in `I8Ctx` (overlap quantize/DMA with kernel
-   execution; avoid full-BO `update_rope_i6` syncs in the runlist path).
+1. **Fast M=128 GEMM**: fix `HybridFlmCtx` to actually run FLM's fused
+   `mm.xclbin` at ~0.86 ms/launch (its current 151 ms/tok is a broken weight-BO
+   / instruction layout), OR rebuild the per-op xclbins with the multi-row
+   v27 topology instead of the single-core-row v26.
+2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
+   double-buffering of the A operand.
+3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
+   the O(npt²) CPU `attn_omp` (which also blocks runlist batching of the
+   QKV→attn→O→GU→D chain).
+4. **Chunked prefill** (128/1024-token chunks) with KV accumulation across
+   chunks (the existing split-path loop already accumulates `kv_caches[l][0].n`).
 
 ## 8B — DONE (decode correct, 21 tok/s short ctx)
 
