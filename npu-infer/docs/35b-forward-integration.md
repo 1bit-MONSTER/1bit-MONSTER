@@ -1666,3 +1666,14 @@ ORDER is not identity (cap != model tile 0) — R50's "j in {0..7,224..1879}"
 reordering is the next thing to nail, then the Q8_0->4736-B trim + qkv's
 5120-B re-quant. Region-B remains the last closed piece; needs a dedicated
 reverse-engineering pass using verify_moe_current_layout.py + moe-cap-rb.
+
+## Round 114 — region-B re-quantization CONFIRMED (scales ~6x, not a reorder) (2026-09-10)
+
+Diffed the BO's gate_proj scales (at the 4736-B physical offset 0x1a203000)
+against the model's Q8_0 gate_proj scales: BO=0.00198/0.00216/0.00244 vs
+model=0.000317/0.000374/0.000309 — ~6x larger, and no model 4736-window
+matches the BO's first-8 scales. So region-B is a genuine Q8_0->Q4NX
+re-quantization (int8->int4 with recomputed scales/zps), NOT a reorder.
+Remaining: derive the exact scale/zp formula + the window order (R50's
+"j in {0..7,224..1879}" interleave) by diffing dequant(Q8_0) vs parse(Q4NX)
+once the order is pinned.
