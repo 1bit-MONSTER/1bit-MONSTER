@@ -16,9 +16,11 @@ container, a dtype-space, 1..N shard files, capabilities, a tokenizer and a line
 than a file or a flat directory scan. On top of it: a **capability table** with declared
 constraints and provenance, a **resolver** (`id → artifact → capability → route`), a
 **bridge** translating capabilities onto the engine's backend vocabulary, and a **merge
-primitive** that lets the registry reorder a route while never removing a lane. Plus four
-tools and three CI checks. Nothing consumes the resolver yet: the caller flip is one line and
-is the operator's decision.
+primitive** that lets the registry reorder a route while never removing a lane — with its two
+properties **asserted** by a checker rather than claimed. Plus the diagnostics and checks listed
+in §6–§9, and the full list of tools this branch adds is
+`git diff --name-only origin/main...HEAD -- tools/`. Nothing consumes the resolver yet: the
+caller flip is one line and is the operator's decision.
 
 ---
 
@@ -141,6 +143,27 @@ with **opposite** availability, and Vulkan-capable ids span **three** types.
 Expected per file: `router`, `merged` (what a flip would do), and `registry`, with
 `[HEAD DIFFERS - a correction]` or `[HEAD SAME, list extended]`.
 
+### 6.1 The invariant assertion (engine-side, onebin)
+
+```sh
+1bit registry-merge-invariants <dir>
+```
+
+**INV-1** never remove a lane: every router id survives in the merged list.
+**INV-2** move the head only for a **stated** exclusion: the router's head id must appear in
+`refused` / `unavailable_here` / `blocked` / `skipped_by_context` / `conditional`. *"The registry
+named a different lane" is not a reason* — which is the general form of the rule I had to learn
+by breaking it (an unconditional override demoted `cpu_qwen3_5` on the 35B-A3B).
+
+Expected on the store measured: `checked=18  INV-1 violations=0  INV-2 violations=0`. This is a
+**gate**: it exits non-zero on violation, unlike §6's table.
+
+**How it was validated** — and this is the part to preserve: compiled against the pre-defer
+merge (`git show 7a6778728^:src/model_registry_route.cpp`) it fails naming the file and the
+fault (`INV-2 VIOLATED  qwen3-6-35b-a3b-q8-0.gguf: head moved cpu_qwen3_5 -> ggml_vulkan with NO
+stated exclusion`), and `INV-1` was never violated by that bug — so INV-2 is precisely the
+invariant that catches it rather than a blanket check that would have passed anyway.
+
 **The claim to check, and the reason this is a table rather than a leap:** the merge moves the
 router's head **only where the registry has excluded that lane for a stated reason**. On the
 store measured, that is exactly two files (both measured FAIL on HRX), three deferrals, and
@@ -149,7 +172,29 @@ every file gains a lane with none removed. If a head moves on a file where the r
 
 ---
 
-## 7. The four checks (three are in CI, informational)
+## 7. The step-2 evidence: `registry-diff` (engine-side, onebin)
+
+```sh
+1bit registry-diff <dir>
+```
+
+Prints the legacy `discover_models()` view beside the registry's and the delta between them:
+`same-file` / **id-divergent** / **legacy-invisible**, plus every legacy id that names more than
+one file. Read-only; wired into no caller. It exists because step 2 ("extend
+`src/model_discovery.cpp` into the registry of record") is a behaviour change and therefore the
+operator's call — the evidence for it should be numbers, not an impression.
+
+Measured on the live store: **`same-file=18  id-divergent=18  legacy-invisible=13`** — every file
+the flat scan finds carries a different canonical id, 13 artifacts are invisible to a
+non-recursive scan, and three sets of distinct files share one legacy id (the `-m` silent-pick
+hazard). Caveat: run it over a directory that EXCLUDES a file with an unknown dtype until the
+`fix/gguf-unknown-dtype-guard` branch lands, because the unfixed scan SIGFPEs on one (F14).
+
+**The claim to check:** the three numbers, and the fact that a native `.q4nx`'s legacy id is its
+**containing directory** (proved by running it in two differently-named directories — same files,
+id follows the directory).
+
+## 8. The checks (two in CI, informational)
 
 ```sh
 sh tools/dispatch_key_check.sh src/backend_manager.cpp     # exit 0; 1 = the set CHANGED
@@ -158,7 +203,20 @@ python3 tools/registry_fixture.py /tmp/fixture
 python3 tools/registry_flag_audit.py --binary ./registry_scan --fixture /tmp/fixture   # A-D
 ```
 
-Expected: exit 0 on a clean tree; exit 1 with a named flag or type when something drifts.
+Plus the one enforcement that lives outside `tools/` at runtime — the commit-msg tripwire for
+a shell-interpolated commit message (a backticked span the shell EXECUTED, deleting the text
+silently, leaving zero backticks and no marker):
+
+```sh
+hk=$(git rev-parse --git-path hooks/commit-msg) && ln -sf "$PWD/tools/commit-msg-hook.sh" "$hk"
+```
+
+**In a worktree that path resolves to the COMMON hooks directory**, so installing from any
+worktree applies a commit-blocking hook to every worktree of the repo — a repo-wide decision, not
+a local install. The cause-level fix needs no hook at all: pass messages with `-F <file>`.
+
+Expected: exit 0 on a clean tree; exit 1 with a named flag, type or message pattern when
+something drifts.
 
 **The claim to check — and the discipline that matters more than the checks:** every one of
 these was validated against an input *known to be bad* before being trusted, because a check
@@ -168,7 +226,7 @@ broken input first.
 
 ---
 
-## 8. What is deliberately NOT done
+## 9. What is deliberately NOT done
 
 - **The caller flip.** One line in `backend_manager`, verified primitive, **left to the
   operator** — it changes what runs where, and every hardware assertion on this branch had to
