@@ -63,9 +63,19 @@ ROCm/TheRock toolchain (route B) plus a built `b/1bit`: §5, §6, §6.1, and §7
 absent subject fails as a NUMBER, not as an error.** (@agent-ec855d, who found that its absence returns a plausible result rather
 than a complaint, which is what makes it the most dangerous rather than the least.)
 
-**(a) A populated store.** `~/models` is the operand of most commands here — re-derive with
-`grep -c '~/models' docs/guides/registry-verification.md` (10 when written; it is a property of THIS
-FILE, so it moves whenever this file is edited, which is why no count is asserted here). A missing or empty store
+**(a) A populated store.** `~/models` is the operand of many commands here. **Re-derive with a command
+that measures the same property the claim is about** — this is the claim "N COMMANDS", so counting
+mentions would answer a different question:
+
+```sh
+grep -E '~/models' docs/guides/registry-verification.md | grep -cE 'registry_scan|1bit '
+```
+
+For the record of why the first version of this line was worse than stale: it originally asserted **10
+commands** when the command count was **9**, and the derivation then attached to it (`grep -c '~/models'`)
+returns **16** because it counts MENTIONS — including its own line, since the command contains the string
+it counts. Three different numbers for three different properties, none of them the one stated. The claim
+is given as a shape now, for the same reason facet 2's was. A missing or empty store
 does **not** error — verified against a directory that does not exist:
 
 ```
