@@ -29,7 +29,7 @@ static std::string join(const std::vector<std::string>& v) {
     return s.empty() ? "(none)" : s;
 }
 
-int main(int argc, char** argv) {
+int route_compare_main(int argc, char** argv) {
     uint32_t at_context = 0;
     std::vector<std::string> files;
     for (int i = 1; i < argc; i++) {

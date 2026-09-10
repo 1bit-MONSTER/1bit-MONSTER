@@ -30,6 +30,7 @@ int jarvis_app_main(int argc, char** argv);
 int vision_server_main(int argc, char** argv);
 int zuna_main(int argc, char** argv);
 int registry_scan_main(int argc, char** argv);
+int route_compare_main(int argc, char** argv);
 
 static std::string prog_name(const char* argv0) {
     std::string p = argv0 ? argv0 : "1bit";
@@ -49,7 +50,8 @@ static int print_usage() {
         "  jarvis|voice|tts  voice pipeline server\n"
         "  vision|vl         vision-language server\n"
         "  zuna              zuna_port\n"
-        "  registry          artifact-first model registry (table/--json/--resolve)\n");
+        "  registry          artifact-first model registry (table/--json/--resolve)\n"
+        "  route-compare     flip decision table: shipped router vs registry resolver\n");
     return 1;
 }
 
@@ -99,6 +101,9 @@ int main(int argc, char** argv) {
         }
         if (cmd == "registry") {
             return registry_scan_main(argc - 1, argv + 1);
+        }
+        if (cmd == "route-compare") {
+            return route_compare_main(argc - 1, argv + 1);
         }
         if (cmd == "-h" || cmd == "--help" || cmd == "help") {
             return print_usage();

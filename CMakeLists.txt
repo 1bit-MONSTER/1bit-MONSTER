@@ -518,25 +518,6 @@ add_executable(registry_route_map tools/registry_route_map.cpp)
 target_link_libraries(registry_route_map PRIVATE model_registry_route)
 target_compile_options(registry_route_map PRIVATE -O3 -Wall)
 
-# -- route_compare : the DECISION TABLE for the step-2c-2 caller flip. Prints what
-#    ships today (select_backend_route) beside what the registry resolver would pick,
-#    per file, so the flip is a table of differences rather than a leap. Engine-side:
-#    needs ModelConfig + BackendRoute, and it changes no behaviour.
-add_executable(route_compare tools/route_compare.cpp)
-# Linking backend_manager can pull the target's language to HIP, and compiling host-only
-# code as HIP fails in the clang cuda_wrappers (`__device__ operator delete cannot
-# overload __host__ __device__`) — the same idiom the project uses elsewhere.
-set_source_files_properties(tools/route_compare.cpp PROPERTIES LANGUAGE CXX)
-# Do NOT link backend_manager: its INTERFACE bring-up pulls HIP defines/include dirs into
-# a plain CXX TU, and the clang cuda_wrappers then reject std::operator delete. The two
-# engine functions this tool needs live in sources that are HIP-free, so compile them in
-# directly instead of linking the manager.
-set_source_files_properties(src/model_router.cpp src/model_discovery.cpp PROPERTIES LANGUAGE CXX)
-target_sources(route_compare PRIVATE src/model_router.cpp src/model_discovery.cpp)
-target_link_libraries(route_compare PRIVATE model_registry_route gguf_reader)
-target_include_directories(route_compare PRIVATE ${CMAKE_SOURCE_DIR}/src)
-target_compile_options(route_compare PRIVATE -O3 -Wall -std=c++26)
-
 # -- gguf_to_onebp : pure-C++ GGUF -> 1BP converter (F16 lossless default; --q4nx/--tq2/--tq2nz/--tq1) --
 # Replaces the old tools/gguf_to_onebp.py. No Python anywhere in the convert
 # path. Default is lossless F16 (4-bit Q4NX loses ~0.998/layer and compounds
@@ -1547,7 +1528,13 @@ set(ONE_BIN_SOURCES
     tools/onebitd.cpp
     # `1bit registry` — artifact-level registry (goal mtvd3pmx). No main():
     # REGISTRY_SCAN_STANDALONE is only set on the standalone registry_scan target.
-    tools/registry_scan.cpp)
+    tools/registry_scan.cpp
+    # `1bit route-compare` — the flip decision table. In onebin by CONVENTION (the repo
+    # ships everything reachable from the CLI inside the single binary), and because two
+    # standalone attempts failed: linking backend_manager leaked HIP defines into a plain
+    # CXX TU, and compiling the loader sources in chased a dependency chain
+    # (safetensors_reader, q4nx_reader, ...). onebin already links all of it.
+    tools/route_compare.cpp)
 
 # zuna_port.cpp has its own main() -> zuna_main via ONE_BIN_DISPATCH; compile as C++.
 set_source_files_properties(tools/zuna_port.cpp PROPERTIES LANGUAGE CXX)
