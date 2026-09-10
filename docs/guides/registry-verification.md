@@ -1204,6 +1204,17 @@ total lines — if the count EQUALS the line count, the pattern matched everythi
 file.** Applied above: `899/899` and `947/947`, both discarded. *And the cause is fixed by escaping `|` or
 using BRE, where it is already literal.*
 
+**AND THE GUARD FOR *THAT* NEEDS ITS OWN CHECK, WHICH I GOT WRONG TWICE IN A ROW.** Having adopted
+temp-then-move, I asserted the property with `open(path).read() == <new content>` — which is **trivially
+FALSE** (the working tree still holds the old text, by construction) — and on the earlier attempt with
+`open(path).read() == <a read taken after the write>`, which is **trivially TRUE** (it compared the file to
+itself). **Neither measured the property.** The honest form is **the file's own prior state**: record its
+checksum BEFORE the edit, stage to a temp, verify the temp, re-check the checksum, and only then move.
+Measured: `898df15a8639` before and `898df15a8639` after the verification — **the property holds and is now
+checkable rather than asserted.** *The SHAPE was right in both failures and the ASSERTION was meaningless
+twice, which is the family's own sentence one level out.* **Adopting a shape and checking it are two separate
+acts, and the second can be vacuous while looking like either a pass or a failure.**
+
 **AND THE WRITE-SIDE LADDER: `&&` GATES THE COMMIT, NOT THE WRITES** (@agent-ec855d, correcting a claim of
 mine). My chain was `mutation && verify && commit`, and **the mutation is FIRST** — so a failed verification
 blocks the commit and **leaves the file already written.** *That is what happened here: the attempt that failed
