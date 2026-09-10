@@ -213,8 +213,12 @@ re-hunted.** The only any-branch `push` workflow is `bench.yml`, and it is path-
 `engine/npu/{src,kernel,xclbins}/**` and to itself, on a SELF-HOSTED runner with a 60-minute
 timeout — a source check does not belong in an NPU benchmark job on the NPU box. Six workflows
 (`census-watch`, `end-to-end-smoke`, `pr-agent`, `scope-guard`, `validate-benchmarks`,
-`validate-claims`) use `pull_request` with **no base filter** and would fire on a PR against any
-base — but the convention is branch-only/no-PRs, so under it they never fire either. Every
+`validate-claims`) use `pull_request` with **no base filter**. But **four of them**
+(`census-watch`, `end-to-end-smoke`, `validate-benchmarks`, `validate-claims`) also carry a narrow
+`paths:` filter, so they fire only on PRs touching those paths; only `pr-agent` and `scope-guard`
+would fire on an arbitrary PR. Under branch-only/no-PRs, none of them fire either — so the
+conclusion holds, but the sentence above originally checked the BASE filter and inferred the rest.
+The other axis was `paths:`, and I named six workflows from one axis. Every
 remaining route crosses shared authority: the hook symlink resolves to the COMMON hooks directory,
 and a `push` branch pattern is repo-wide runner capacity.
 
@@ -253,11 +257,24 @@ behaved identically), but shared, and therefore still an owner decision — the 
 the one a future reader reaches for first.** (@agent-ec855d completed this enumeration; each cost
 was checked here before recording.)
 
-| route | cost |
+| route | cost profile |
 |---|---|
-| per-worktree `core.hooksPath` (+ `extensions.worktreeConfig`) | **one inert shared bit**, repo-scoped, no behaviour change ← **smallest** |
-| `ci.yml` `push` branch pattern | repo-wide runner capacity |
-| user-level `core.hooksPath` (`~/.gitconfig`) | **no repo change at all — and the MOST expensive** |
+| per-worktree `core.hooksPath` (+ `extensions.worktreeConfig`) | one inert shared bit, repo-scoped — **commit-time, author present: strongest timing** |
+| add steps to `validate-claims.yml`'s existing daily schedule | **no new trigger class, no per-push cost** — but ~24h late, sees only what reached `main`: cheapest capacity |
+| `ci.yml` `push` branch pattern | repo-wide runner capacity **per push** |
+| user-level `core.hooksPath` (`~/.gitconfig`) | every repo on the box, including policy-covered ones — **do not go here** |
+
+**The second row deserves its precondition stated, because it is not free today.**
+`validate-claims.yml` is a genuine host — `on: schedule: cron "17 4 * * *"` plus
+`workflow_dispatch` and a `paths:`-filtered PR trigger, `runs-on: ubuntu-latest` (hosted, **not** the
+self-hosted NPU box), **no job-level `if` guard**, default-ref checkout so on the schedule it tests
+`main`. Five of its eight steps are already of exactly this kind (*"every published claim has a
+validator"*, *"README statuses match"*, *"badges match benchmarks.json"*, *"retired claims must not
+reappear"*, *"numbers.json matches the generator"*) — the dispatch-key check is the same species.
+
+**But it validates `main`, and `main` only changes when a PR merges.** Verified: `tools/dispatch_key_check.sh`
+is **ABSENT on `origin/main`** and present on this branch. So this route is *"land the file, then add
+two steps"* — cheaper than a new trigger, not zero, and **unavailable until the merge happens**.
 
 **Why the user-level route is the worst despite crossing no repo authority:** every agent on this
 box runs as the same OS user, so a user-level `hooksPath` fires for **every committer in every repo
