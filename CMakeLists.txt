@@ -518,6 +518,15 @@ add_executable(registry_route_map tools/registry_route_map.cpp)
 target_link_libraries(registry_route_map PRIVATE model_registry_route)
 target_compile_options(registry_route_map PRIVATE -O3 -Wall)
 
+# -- route_compare : the DECISION TABLE for the step-2c-2 caller flip. Prints what
+#    ships today (select_backend_route) beside what the registry resolver would pick,
+#    per file, so the flip is a table of differences rather than a leap. Engine-side:
+#    needs ModelConfig + BackendRoute, and it changes no behaviour.
+add_executable(route_compare tools/route_compare.cpp)
+target_link_libraries(route_compare PRIVATE model_registry_route backend_manager)
+target_include_directories(route_compare PRIVATE ${CMAKE_SOURCE_DIR}/src)
+target_compile_options(route_compare PRIVATE -O3 -Wall -std=c++26)
+
 # -- gguf_to_onebp : pure-C++ GGUF -> 1BP converter (F16 lossless default; --q4nx/--tq2/--tq2nz/--tq1) --
 # Replaces the old tools/gguf_to_onebp.py. No Python anywhere in the convert
 # path. Default is lossless F16 (4-bit Q4NX loses ~0.998/layer and compounds
