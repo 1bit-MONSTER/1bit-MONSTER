@@ -471,3 +471,28 @@ not the raw embeddings, RoPE, or a copy — likely the post-attention hidden for
 - O/MLP GEMMs: same recipe with per-projection dequant W (o: 2048×1024 @0 of a 4 MB W;
   gate/up/down: 6 MB each). O's A = attention output (256×2048), MLP A = post-attn hidden.
 - Then wire dequant.xclbin + mm.xclbin (+ attn.xclbin) into `npu_engine_universal.cpp`.
+
+---
+
+## 2026-09-10 (session 2j): K/V verified via new bf16 GEMM module; Q N=2048 has a 128-row cap
+
+### New module: engine/npu/src/npu_engine_bf16_mm.h
+`bf16mm::Bf16Mm` — wraps dequant.xclbin + mm.xclbin via FLM's npu_app/Gemm/Dequant.
+`run_dequant()` (Q4NX→bf16) and `run_gemm_ooff()` (bf16 GEMM) verified:
+- dequant QKV → 8 MB W: **4194304/4194304**
+- K GEMM (N=1024, woff=2097152 elem, ooff=262144 elem): **262144/262144**
+- V GEMM (N=1024, woff=3145728 elem, ooff=262144 elem): **262144/262144**
+
+### Finding: Q GEMM (N=2048) writes only 128 rows per invocation
+The mm.xclbin's C write capacity is **262144 bf16 = 256×1024** (fixed). For N=2048 that
+is 128 rows (even-indexed A rows 0,2,…,254), the odd rows stay zero; `output_offset`
+only shifts the same 128 rows to the second 512KB half (verified: ooff=0 → R[0]@bC[0],
+ooff=262144 → R[0]@bC[262144]). N=1024 split does NOT fix it (the dequant Q W is
+row-major 1024×2048, so a N=1024 GEMM at woff=0 reads the wrong K-half). M=128 is
+rejected ("GEMM M size not aligned"). So FLM must feed the Q GEMM a re-arranged A
+(256 rows whose even slots hold one token batch and odd slots the other) — the exact
+A arrangement is the last open item for the Q path.
+
+### Status
+K/V/dequant byte-exact and wired into a reusable module. Q (and O N=2048) need the
+A-batch arrangement resolved; then wire dequant+mm (+attn) into the prefill loop.
