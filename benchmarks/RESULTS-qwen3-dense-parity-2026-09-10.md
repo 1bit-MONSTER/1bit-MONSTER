@@ -549,3 +549,43 @@ before the Q (and O, N=2048) second invocation can be wired.
 Trace the A-read BD (d0=256,d1=64@512,d2=2@256) under BOTH 16-bit and 32-bit element
 interpretations against the one-hot + contiguous observations, or byte-diff FLM's captured
 elf_0009 (Q GEMM) vs my generated stream to pin the exact A/C tiling.
+
+---
+
+## 2026-09-10 (session 2m): Q odd-token SOLVED — mm.xclbin computes only 128 correct M-rows; recipe = 2-batch M-split
+
+### DEFINITIVE finding: the mm.xclbin's correct-M capacity is 128 rows (all N)
+Decoded FLM's own precompiled `mm_256_1024_128_0.bin` (N=128): its C-write BD is
+`d0=64(4B)=128bf16, d1=256 @ stride 64(4B)=128bf16` — clean 256×128 row-major. A synthetic
+one-hot probe (A[k][0]=k+1, W[0][0]=1) shows the mm.xclbin's M=256 output is:
+- rows 0..127  = C[0..127]  (IDENTITY — correct)
+- rows 128..255 = C[127], C[129], C[129], C[131], C[131], … (a "duplicated odd" garbage
+  region: f(2m)=2m-1, f(2m+1)=2m+1) — this is the source of every prior "off-by-one" /
+  "even-token" / "128-row cap" confusion. It is N-independent (verified N=128, N=2048).
+
+### The recipe (VERIFIED 256/256): split 256 tokens into 2×128-token M-batches
+For each GEMM (M=256, K, N):
+1. batch 0: A = sparse 256×K (tokens 0..127 in rows 0..127, rows 128..255 = 0), ooff=0
+   → output rows 0..127 = tokens 0..127.
+2. batch 1: A = sparse 256×K (tokens 128..255 in rows 0..127), ooff=0
+   → output rows 0..127 = tokens 128..255; host-placed at rows 128..255.
+
+(Verified with a synthetic marker test: 256/256 rows correct. The earlier "markers
+129..256 look like dup-odd" was a bf16 1-ULP artifact of those specific integer markers,
+irrelevant for the real dense RMSNorm hidden states.)
+
+### Why FLM's prefill loads `mm_256_1024_128_0.bin`
+FLM tiles the Q (N=2048) into 16 N=128 GEMMs + 2 M-batches (32 invocations) using
+precompiled N=128 streams. Running N=2048 directly with the same 2-batch split is
+byte-equivalent and needs only 2 invocations per projection — this is what
+`npu_engine_bf16_mm.h` now does.
+
+### Module updated
+`engine/npu/src/npu_engine_bf16_mm.h`: added `Bf16Mm::run_gemm_2batch()` (2-batch
+M-split) and rewired `qkv()` (Q/K/V each 2 invocations, ooff=0, host-side combine).
+K/V no longer use ooff=262144 (the shared-C-BO trick) — each projection gets its own
+output buffer.
+
+### Next
+- Wire dequant + 2-batch mm (+ attn.xclbin) into `npu_engine_universal.cpp` and measure
+  prefill vs FLM (target 500–1269 tok/s).

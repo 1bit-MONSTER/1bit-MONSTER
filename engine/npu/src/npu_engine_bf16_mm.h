@@ -12,9 +12,17 @@
 //   dequant QKV:  Dequant::generate_dequant_q4_1_seq(seq, 1024, 4096, 0, 0)
 //                  → 8 MB bf16 [q 1024×2048 @0 | k 1024×1024 @4MB | v @6MB]
 //   q gemm:  Gemm::generate_seq(seq, 256, 1024, 2048, woff=0,        ooff=0)
-//   k gemm:  Gemm::generate_seq(seq, 256, 1024, 1024, woff=2097152,  ooff=262144)
-//   v gemm:  Gemm::generate_seq(seq, 256, 1024, 1024, woff=3145728,  ooff=262144)
+//   k gemm:  Gemm::generate_seq(seq, 256, 1024, 1024, woff=2097152,  ooff=0)
+//   v gemm:  Gemm::generate_seq(seq, 256, 1024, 1024, woff=3145728,  ooff=0)
 //   (weight_offset and output_offset are in bf16 ELEMENTS, not bytes)
+//
+// KEY: the mm.xclbin computes only 128 CORRECT M-rows per invocation (rows
+// 128..255 are a "duplicated odd" region: C[127],C[129],C[129],C[131],…).
+// The 256-token batch must therefore be split into TWO 128-token batches fed
+// as sparse 256-row A (tokens in rows 0..127, zeros below) — see
+// run_gemm_2batch(). FLM's own Q path uses the precompiled N=128 tiles
+// (mm_256_1024_128_0.bin) for the same reason; running N=2048 with the
+// 2-batch split is byte-equivalent and needs only 2 invocations.
 //
 // Kernel arg order = (C, A, W) → npu_app::safe_run(bC, bA, bW).
 #pragma once
@@ -128,12 +136,33 @@ struct Bf16Mm {
     }
 
     // ── QKV convenience (M=256, A = hidden 256×1024, W = 8 MB dequant QKV) ──
+    //
+    // The mm.xclbin only computes 128 CORRECT M-rows per invocation: rows
+    // 0..127 are C[0..127] (identity), but rows 128..255 are a "duplicated
+    // odd" garbage region (C[127], C[129], C[129], C[131], …) regardless of N.
+    // So the 256-token batch is split into two 128-token batches, each fed as
+    // a SPARSE 256-row A (tokens in rows 0..127, zeros in rows 128..255) — the
+    // output rows 0..127 are then the batch's tokens (byte-exact, verified).
     void qkv(uint16_t* Q /*256×2048*/, uint16_t* K /*256×1024*/, uint16_t* V /*256×1024*/,
              const uint16_t* A /*256×1024*/, const uint16_t* W /*8 MB*/) {
-        // Q uses the 7-arg overload (no output_offset) — byte-exact vs FLM.
-        run_gemm_ooff(Q, A, W, 256, 1024, 2048, 0, 0, true);
-        run_gemm_ooff(K, A, W, 256, 1024, 1024, 2097152, 262144, false);
-        run_gemm_ooff(V, A, W, 256, 1024, 1024, 3145728, 262144, false);
+        run_gemm_2batch(Q, A, W, 1024, 2048, 0);        // q: K=1024 N=2048 woff=0
+        run_gemm_2batch(K, A, W, 1024, 1024, 2097152);  // k: woff=2097152 (→4 MB)
+        run_gemm_2batch(V, A, W, 1024, 1024, 3145728);  // v: woff=3145728 (→6 MB)
+    }
+
+    /// bf16 GEMM over 256 tokens as TWO 128-token M-batches (mm.xclbin's
+    /// correct-M capacity is 128 rows). C is M×N row-major; A is M×K.
+    void run_gemm_2batch(uint16_t* C, const uint16_t* A, const uint16_t* W,
+                         uint32_t K, uint32_t N, uint32_t woff) {
+        std::vector<uint16_t> Ab(256 * K, 0);   // sparse 256-row A
+        std::vector<uint16_t> Cb(256 * N, 0);   // per-invocation output
+        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
+        run_gemm_ooff(Cb.data(), Ab.data(), W, 256, K, N, woff, 0, true);
+        memcpy(C, Cb.data(), 128 * N * 2);
+        memset(Ab.data(), 0, 256 * K * 2);
+        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
+        run_gemm_ooff(Cb.data(), Ab.data(), W, 256, K, N, woff, 0, true);
+        memcpy(C + 128 * N, Cb.data(), 128 * N * 2);
     }
 
     /// bf16 GEMM with explicit control over the output_offset overload.
