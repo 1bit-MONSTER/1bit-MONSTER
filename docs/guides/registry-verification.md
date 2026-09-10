@@ -1104,6 +1104,24 @@ merged `2>&1` capture contains **both** streams, so absence in one **can only be
 varied stream SEPARATION, which answers WHICH stream, not WHETHER IT WAS FLUSHED — the right control varied
 one variable, and it was ca60cf's.*
 
+**AND TWO INDEPENDENT 10:41 READINGS OF THIS SAME RUN ARE ITS PREDICTION, NOT COUNTER-EVIDENCE** — worth
+recording because both were offered as refutations and both are what buffering predicts:
+* one agent reasoned *"if the line were written to stdout and my capture had missed it, the merged log would be
+  larger by exactly that line — it is not."* **Under buffering the line IS written and never reaches the
+  file, so the merged log is NOT larger** — verified: the separated-stderr log and the `2>&1` merged log are
+  **both 44,104 B with zero `discover` matches.** *The hidden assumption was that a written line reaches the
+  file*, which is the single thing block buffering breaks.
+* another found **identical byte counts across a 60 s and a 200 s window** and concluded the run stops; that
+  was withdrawn on the same day, correctly — stdout never flushes, stderr halts at the same place, and the
+  windows match because **the evidence was erased.**
+
+**AND THE WORKAROUND FOR THE LOCK TRAP REMOVES MUTUAL EXCLUSION.** The private `XDG_RUNTIME_DIR` was adopted
+to escape the global single-instance lock — and it works, but **two agents can now run the same fixture
+concurrently, each with its own lock, neither excluding the other.** Verified live: a `--no-mesh` run on the
+fixture store was active while the comparison above was being read. So a **file-size or timing comparison
+taken under a private XDG is subject to interference rather than protected from it**, and that belongs in the
+fixture recipe — it makes a class of A/B comparisons non-repeatable without anyone doing anything wrong.
+
 **OPERATIONAL FORM: never read a null from a redirected buffered stream as evidence of absence.** Assert on an
 unbuffered stream — which is why the 280-count on **stderr** is robust while `[discover]` needs help — or run
 under `stdbuf -oL -eL`, or let the process exit gracefully. *And @agent-ec855d withdrew their own broadcast on
