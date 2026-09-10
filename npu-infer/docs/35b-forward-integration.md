@@ -1082,3 +1082,27 @@ reorder-output → region-B BO offset mapping (the ELF BD 16-row/4-row stride
 pattern reads the A/B halves via 2D DMA), i.e. reconcile the 6356 total
 reorder windows with the 3444-row region-B span (desc offsets qkv@384,
 gate_proj@2432 — the logical table vs physical interleave).
+
+## Round 81 — fresh re-capture landed (77 GB); task-2 pool byte-confirmed (2026-09-10)
+
+Ran the runtime load under the lean interposer (vision-on config, ASLR
+retry #1 succeeded): `/home/bcloud/.cache/moe-cap-rb` = 77 GB, 523 sync +
+34 preinsts (CAP_DUMP_BIG) + 35 ELF + 276/283 post/waitpost dumps.
+Structure matches R48: 40 × 512 MB expert pools + 4 × 542 MB full-attn pools
++ 30 × 5 MB + 47 × 2 MB + 92 × 3 MB + 27 × 10 MB + 54 × 11 MB + state BOs.
+
+**Verification (the point):** layer-0's 512 MB pool rows 0..100959 are
+**byte-identical** to `npu_pack_moe_expert_pool` (task-2) — sha256
+`9752f7aa…` matches on a FRESH capture (not just the R50 reference), and
+the gate_proj region (rows 100960..102623) is non-zero (7.8 MB) — confirms
+gate_proj lives in the pool (R50) and task-2's packing is correct.
+
+**Remaining blocker reconfirmed:** a 128-B slice of share_up's raw bytes is
+absent from ALL 412 bo_to sync dumps → the share_* (and qkv) tensors are
+VALUE-transformed (not reordered), exactly as R45/R50-54 concluded. The
+reorder_cpy constprop.0 clone (0x7abb0) — the likely producer — hangs on
+direct call, and constprop.2's A/B interleave (Round 79) preserves raw
+bytes, so it is NOT the region-B producer. The capture oracle now on disk
+(moe-cap-rb) holds the transformed share_*/qkv bytes for a future replay
+path (use-captured-bytes-directly), but the int8→int16 dequant scale for
+qkv (R51-54) and the share_* transform remain the closed-source unknowns.
