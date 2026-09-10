@@ -149,19 +149,59 @@ BackendRoute merge_router_and_registry(const BackendRoute& router, const RoutePl
     BackendRoute reg = to_backend_route(plan);
     if (reg.backend_ids_in_order.empty()) return router;   // registry has nothing to say
 
+    // DOES THE REGISTRY HAVE A STATED REASON TO MOVE THE ROUTER'S HEAD?
+    // My first version put the registry's order first UNCONDITIONALLY, which overrode the
+    // router wherever the registry happened to name a lane — including where the registry
+    // simply could not express the router's choice. On `Qwen3.6-35B-A3B-Q8_0` that moved
+    // the head off `cpu_qwen3_5` (a class-specific CPU engine my vocabulary cannot name)
+    // onto `ggml_vulkan`, demoting a lane for no reason I could defend. That is authority
+    // taken rather than granted — the same fault as claiming unverified capabilities.
+    //
+    // So the registry moves the head only when it has EXCLUDED that lane for a STATED
+    // reason. If the lane is a target, or is simply unknown to the registry (absent from
+    // both the targets and every exclusion list), the router's head stands and the
+    // registry only ADDS lanes. Where it has no measurement, it defers.
+    auto id_of = [](Capability c, std::string& out) {
+        BackendType t{};
+        std::string cons;
+        return backend_for(c, t, out, cons);
+    };
+    auto named_in = [&](const std::vector<std::pair<Capability, std::string>>& v,
+                        const std::string& id) {
+        for (const auto& kv : v) {
+            std::string i;
+            if (id_of(kv.first, i) && i == id) return true;
+        }
+        return false;
+    };
+
+    const std::string head = router.backend_ids_in_order.empty() ? std::string()
+                                                                 : router.backend_ids_in_order[0];
+    bool head_is_target = false;
+    for (const auto& id : reg.backend_ids_in_order) if (id == head) { head_is_target = true; break; }
+    bool head_excluded_with_reason =
+        !head.empty() && !head_is_target &&
+        (named_in(plan.refused, head) || named_in(plan.unavailable_here, head) ||
+         named_in(plan.blocked, head) || named_in(plan.skipped_by_context, head) ||
+         named_in(plan.conditional, head));
+
     BackendRoute out;
-    out.backend_ids_in_order = reg.backend_ids_in_order;
+    if (head_excluded_with_reason) {
+        out.backend_ids_in_order = reg.backend_ids_in_order;      // a correction: demote
+        out.reason = reg.reason;
+    } else {
+        out.backend_ids_in_order = router.backend_ids_in_order;   // defer; registry adds only
+        out.reason = "router head kept (the registry has no stated exclusion for it) | " + reg.reason;
+    }
     size_t appended = 0;
-    for (const auto& id : router.backend_ids_in_order) {
+    for (const auto& id : (head_excluded_with_reason ? router.backend_ids_in_order
+                                                     : reg.backend_ids_in_order)) {
         bool present = false;
         for (const auto& have : out.backend_ids_in_order) if (have == id) { present = true; break; }
         if (!present) { out.backend_ids_in_order.push_back(id); appended++; }
     }
-    out.reason = reg.reason;
-    if (appended) {
-        out.reason += " | router tail preserved (" + std::to_string(appended) +
-                      " id(s) the registry vocabulary cannot express)";
-    }
+    if (appended)
+        out.reason += " | " + std::to_string(appended) + " lane(s) added";
     return out;
 }
 
