@@ -12,6 +12,11 @@
 //     --no-probe             skip GGUF header/dtype census
 //     --max-depth N          recursion depth (default 8)
 //     --capability NAME      list only artifacts with this capability
+//     --at-context N        apply capability constraints at N context tokens
+//     --catalog PATH        ingest a recipe-keyed catalog as a VIEW
+//     --catalog-default     same, at ~/.config/lemonade/user_models.json
+//                            (NOTE: --catalog REQUIRES its path — an optional
+//                             value silently swallows the first root)
 //     --resolve PATH|ID      resolve one artifact (acceptance-test check)
 //     --quiet                summary only
 #include "model_registry.h"
@@ -61,8 +66,17 @@ void describe(const ModelArtifact& a) {
            (unsigned long long)a.total_bytes(),
            (double)a.total_bytes() / (1024.0 * 1024.0 * 1024.0), a.files.size());
     printf("capabilities:");
-    for (auto c : a.capabilities) printf(" %s", to_string(c));
+    for (auto c : a.capabilities) {
+        printf(" %s", to_string(c));
+        const CapabilityLimit* l = capability_limit(c);
+        if (l) printf("(<=%u ctx)", l->max_context_tokens);
+    }
     printf("\n");
+    if (!a.catalog_ids.empty()) {
+        printf("catalog_ids:");
+        for (const auto& c : a.catalog_ids) printf(" %s", c.c_str());
+        printf("\n");
+    }
     printf("aliases:");
     for (const auto& al : a.aliases) printf(" %s", al.c_str());
     printf("\n");
@@ -80,8 +94,9 @@ void describe(const ModelArtifact& a) {
 // `1bit registry` (compiled into onebin with REGISTRY_SCAN_STANDALONE unset).
 int registry_scan_main(int argc, char** argv) {
     ScanOptions opt;
-    bool json = false, quiet = false;
-    std::string resolve_arg, cap_arg;
+    bool json = false, quiet = false, catalog_set = false;
+    std::string resolve_arg, cap_arg, catalog_arg;
+    uint32_t at_context = 0;
     std::vector<std::string> roots;
 
     for (int i = 1; i < argc; i++) {
@@ -93,6 +108,9 @@ int registry_scan_main(int argc, char** argv) {
         else if (a == "--max-depth" && i + 1 < argc) opt.max_depth = (size_t)atoi(argv[++i]);
         else if (a == "--capability" && i + 1 < argc) cap_arg = argv[++i];
         else if (a == "--resolve" && i + 1 < argc) resolve_arg = argv[++i];
+        else if (a == "--at-context" && i + 1 < argc) at_context = (uint32_t)atoi(argv[++i]);
+        else if (a == "--catalog" && i + 1 < argc) { catalog_set = true; catalog_arg = argv[++i]; }
+        else if (a == "--catalog-default") { catalog_set = true; }
         else if (a == "-h" || a == "--help") { usage(argv[0]); return 0; }
         else if (!a.empty() && a[0] == '-') { usage(argv[0]); return 2; }
         else roots.push_back(a);
@@ -100,6 +118,22 @@ int registry_scan_main(int argc, char** argv) {
     if (roots.empty()) { usage(argv[0]); return 2; }
 
     ModelRegistry reg = ModelRegistry::scan(roots, opt);
+
+    if (catalog_set) {
+        if (catalog_arg.empty()) {
+            const char* home = getenv("HOME");
+            catalog_arg = std::string(home ? home : "") + "/.config/lemonade/user_models.json";
+        }
+        CatalogView cv = reg.attach_catalog(catalog_arg);
+        fprintf(stderr, "[catalog] %s — parse_ok=%s entries=%zu resolved=%zu unknown=%zu\n",
+                cv.path.c_str(), cv.parse_ok ? "yes" : "no", cv.entries.size(),
+                cv.resolved, cv.unknown);
+        for (const auto& e : cv.entries) {
+            if (!reg.find(e.catalog_id))
+                fprintf(stderr, "  [catalog] unresolved: %s -> %s\n",
+                        e.catalog_id.c_str(), e.checkpoint.c_str());
+        }
+    }
 
     if (!resolve_arg.empty()) {
         const ModelArtifact* a = reg.resolve_path(resolve_arg);
@@ -118,9 +152,13 @@ int registry_scan_main(int argc, char** argv) {
             fprintf(stderr, "registry_scan: unknown capability '%s'\n", cap_arg.c_str());
             return 2;
         }
-        auto hits = reg.with_capability(*c);
+        auto hits = at_context ? reg.serve_at(*c, at_context) : reg.with_capability(*c);
         for (const auto* a : hits) printf("%-46s %s\n", a->id.c_str(), to_string(a->container));
-        printf("-- %zu artifact(s) with capability %s\n", hits.size(), cap_arg.c_str());
+        const CapabilityLimit* l = capability_limit(*c);
+        printf("-- %zu artifact(s) with capability %s", hits.size(), cap_arg.c_str());
+        if (at_context) printf(" at %u context tokens", at_context);
+        if (l) printf(" [limit %u]", l->max_context_tokens);
+        printf("\n");
         return 0;
     }
 

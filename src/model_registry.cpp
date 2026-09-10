@@ -167,6 +167,131 @@ std::string sha256_file(const std::string& path) {
     return s.hex();
 }
 
+// ── minimal JSON reader for recipe-keyed catalogs ──────────────────────────
+// Just enough to walk `user_models.json`: a top-level object whose values are
+// objects of scalar or string fields. Unknown shapes are skipped, not fatal —
+// a catalog we cannot fully parse must never take the registry down with it.
+class MiniJson {
+public:
+    explicit MiniJson(const std::string& s) : s_(s) {}
+
+    using Entry = std::pair<std::string, std::map<std::string, std::string>>;
+    bool top_object(std::vector<Entry>& out) {
+        ws();
+        if (!eat('{')) return false;
+        ws();
+        if (eat('}')) return true;
+        while (true) {
+            std::string key;
+            if (!parse_string(key)) return false;
+            ws();
+            if (!eat(':')) return false;
+            ws();
+            if (peek() == '{') {
+                std::map<std::string, std::string> kv;
+                if (!flat_object(kv)) return false;
+                out.emplace_back(key, std::move(kv));
+            } else if (!skip_value()) {
+                return false;
+            }
+            ws();
+            if (eat(',')) { ws(); continue; }
+            return eat('}');
+        }
+    }
+
+private:
+    const std::string& s_;
+    size_t i_ = 0;
+
+    char peek() const { return i_ < s_.size() ? s_[i_] : '\0'; }
+    void ws() {
+        while (i_ < s_.size() && (s_[i_] == ' ' || s_[i_] == '\t' || s_[i_] == '\n' || s_[i_] == '\r')) i_++;
+    }
+    bool eat(char c) { if (peek() == c) { i_++; return true; } return false; }
+
+    bool parse_string(std::string& out) {
+        ws();
+        if (!eat('"')) return false;
+        out.clear();
+        while (i_ < s_.size()) {
+            char c = s_[i_++];
+            if (c == '"') return true;
+            if (c == '\\') {
+                if (i_ >= s_.size()) return false;
+                char e = s_[i_++];
+                switch (e) {
+                    case 'n': out += '\n'; break;
+                    case 't': out += '\t'; break;
+                    case 'r': out += '\r'; break;
+                    case 'b': out += '\b'; break;
+                    case 'f': out += '\f'; break;
+                    case 'u': {
+                        if (i_ + 4 > s_.size()) return false;
+                        unsigned cp = 0;
+                        for (int k = 0; k < 4; k++) {
+                            char h = s_[i_++];
+                            cp <<= 4;
+                            if (h >= '0' && h <= '9') cp |= (unsigned)(h - '0');
+                            else if (h >= 'a' && h <= 'f') cp |= (unsigned)(h - 'a' + 10);
+                            else if (h >= 'A' && h <= 'F') cp |= (unsigned)(h - 'A' + 10);
+                            else return false;
+                        }
+                        if (cp < 0x80) out += (char)cp;   // ASCII escapes only
+                        break;
+                    }
+                    default: out += e;
+                }
+            } else {
+                out += c;
+            }
+        }
+        return false;
+    }
+
+    bool skip_value() {
+        ws();
+        char c = peek();
+        if (c == '"') { std::string t; return parse_string(t); }
+        if (c == '{' || c == '[') {
+            char open = c, close = (c == '{') ? '}' : ']';
+            int depth = 0;
+            while (i_ < s_.size()) {
+                char d = s_[i_];
+                if (d == '"') { std::string t; if (!parse_string(t)) return false; continue; }
+                if (d == open) depth++;
+                else if (d == close) { depth--; if (depth == 0) { i_++; return true; } }
+                i_++;
+            }
+            return false;
+        }
+        size_t start = i_;
+        while (i_ < s_.size() && s_[i_] != ',' && s_[i_] != '}' && s_[i_] != ']') i_++;
+        return i_ > start;
+    }
+
+    bool flat_object(std::map<std::string, std::string>& out) {
+        ws();
+        if (!eat('{')) return false;
+        ws();
+        if (eat('}')) return true;
+        while (true) {
+            std::string k;
+            if (!parse_string(k)) return false;
+            ws();
+            if (!eat(':')) return false;
+            ws();
+            std::string v;
+            if (peek() == '"') { if (!parse_string(v)) return false; }
+            else if (!skip_value()) return false;
+            out[k] = v;
+            ws();
+            if (eat(',')) { ws(); continue; }
+            return eat('}');
+        }
+    }
+};
+
 // ── minimal GGUF header probe ──────────────────────────────────────────────
 struct GgufProbe {
     bool ok = false;
@@ -356,6 +481,17 @@ std::optional<Capability> capability_from_string(const std::string& s) {
     return std::nullopt;
 }
 
+const CapabilityLimit* capability_limit(Capability c) {
+    static const CapabilityLimit limits[] = {
+        // b66 over-claims FLASH_ATTN_EXT for KV > 2048: 2021-token prefill passes,
+        // 2067/2151/2502/2931 fail identically. Issue #2145, @agent-ca60cf.
+        {Capability::HRX_GGUF, 2048,
+         "HRX b66 over-claims FLASH_ATTN_EXT for KV>2048 (issue #2145) — fail-close above this"},
+    };
+    for (const auto& l : limits) if (l.capability == c) return &l;
+    return nullptr;
+}
+
 // ── ModelArtifact ──────────────────────────────────────────────────────────
 uint64_t ModelArtifact::total_bytes() const {
     uint64_t n = 0;
@@ -364,6 +500,16 @@ uint64_t ModelArtifact::total_bytes() const {
 }
 bool ModelArtifact::has(Capability c) const {
     return std::find(capabilities.begin(), capabilities.end(), c) != capabilities.end();
+}
+uint32_t ModelArtifact::max_context_for(Capability c) const {
+    if (!has(c)) return 0;
+    const CapabilityLimit* l = capability_limit(c);
+    return l ? l->max_context_tokens : 0;
+}
+bool ModelArtifact::supports(Capability c, uint32_t context_tokens) const {
+    if (!has(c)) return false;
+    uint32_t lim = max_context_for(c);
+    return lim == 0 || context_tokens <= lim;
 }
 std::string ModelArtifact::id_quality() const {
     // "" when the canonical id preserves the original spelling (modulo case and
@@ -712,6 +858,77 @@ std::vector<const ModelArtifact*> ModelRegistry::with_capability(Capability c) c
     return out;
 }
 
+std::vector<const ModelArtifact*> ModelRegistry::serve_at(Capability c,
+                                                          uint32_t context_tokens) const {
+    std::vector<const ModelArtifact*> out;
+    for (const auto& a : artifacts_) if (a.supports(c, context_tokens)) out.push_back(&a);
+    return out;
+}
+
+CatalogView ModelRegistry::attach_catalog(const std::string& json_path) {
+    CatalogView view;
+    view.path = json_path;
+    // A catalog path can be wrong (missing, a directory, unreadable). None of
+    // those may abort the registry: a view is optional, the artifacts are not.
+    std::error_code ec;
+    if (!fs::is_regular_file(json_path, ec)) return view;
+    std::string txt;
+    try {
+        std::ifstream f(json_path, std::ios::binary);
+        if (!f) return view;
+        txt.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    } catch (const std::exception&) {
+        return view;   // e.g. libstdc++ throws ios_failure on a directory read
+    }
+
+    std::vector<MiniJson::Entry> items;
+    MiniJson p(txt);
+    if (!p.top_object(items)) return view;
+    view.parse_ok = true;
+
+    for (auto& item : items) {
+        CatalogEntry e;
+        e.catalog_id = item.first;
+        auto field = [&](const char* k) -> std::string {
+            auto it = item.second.find(k);
+            return it == item.second.end() ? std::string() : it->second;
+        };
+        e.checkpoint = field("checkpoint");
+        e.recipe = field("recipe");
+        e.source = field("source");
+        view.entries.push_back(e);
+
+        // A catalog may only ADD AN ALIAS to an artifact we already found. It
+        // must never create one, or the catalog becomes a second source of
+        // record (R1).
+        ModelArtifact* hit = nullptr;
+        if (!e.checkpoint.empty()) {
+            for (auto& a : artifacts_) {
+                for (const auto& af : a.files) {
+                    if (af.path == e.checkpoint ||
+                        basename_of(af.path) == basename_of(e.checkpoint)) {
+                        hit = &a;
+                        break;
+                    }
+                }
+                if (hit) break;
+            }
+        }
+        if (hit) {
+            if (std::find(hit->catalog_ids.begin(), hit->catalog_ids.end(), e.catalog_id) ==
+                hit->catalog_ids.end()) {
+                hit->catalog_ids.push_back(e.catalog_id);
+                hit->aliases.push_back(e.catalog_id);
+            }
+            view.resolved++;
+        } else {
+            view.unknown++;
+        }
+    }
+    catalogs_.push_back(std::move(view));
+    return catalogs_.back();
+}
+
 const ModelArtifact* ModelRegistry::prefer(const std::vector<const ModelArtifact*>& cands,
                                            Capability p) {
     for (const auto* a : cands) if (a && a->has(p)) return a;
@@ -758,6 +975,8 @@ std::string ModelRegistry::to_table() const {
         for (size_t i = 0; i < a.capabilities.size(); i++) {
             if (i) caps += ",";
             caps += to_string(a.capabilities[i]);
+            const CapabilityLimit* l = capability_limit(a.capabilities[i]);
+            if (l) caps += "(<=" + std::to_string(l->max_context_tokens) + ")";
         }
         char nbuf[32];
         snprintf(nbuf, sizeof nbuf, "%.2f",
@@ -811,6 +1030,22 @@ std::string ModelRegistry::to_json() const {
             o << "\"" << to_string(a.capabilities[i]) << "\"";
         }
         o << "],\n";
+        o << "      \"capability_limits\": {";
+        bool first_lim = true;
+        for (auto c : a.capabilities) {
+            const CapabilityLimit* l = capability_limit(c);
+            if (!l) continue;
+            if (!first_lim) o << ", ";
+            first_lim = false;
+            o << "\"" << to_string(c) << "\": " << l->max_context_tokens;
+        }
+        o << "},\n";
+        o << "      \"catalog_ids\": [";
+        for (size_t i = 0; i < a.catalog_ids.size(); i++) {
+            if (i) o << ", ";
+            o << "\"" << json_escape(a.catalog_ids[i]) << "\"";
+        }
+        o << "],\n";
         o << "      \"total_bytes\": " << a.total_bytes() << ",\n";
         o << "      \"files\": [\n";
         for (size_t i = 0; i < a.files.size(); i++) {
@@ -823,7 +1058,15 @@ std::string ModelRegistry::to_json() const {
         }
         o << "      ]\n    }" << (ai + 1 < artifacts_.size() ? "," : "") << "\n";
     }
-    o << "  ],\n  \"report\": {";
+    o << "  ],\n  \"catalogs\": [";
+    for (size_t ci = 0; ci < catalogs_.size(); ci++) {
+        const auto& cv = catalogs_[ci];
+        if (ci) o << ",\n";
+        o << "\n    {\"path\": \"" << json_escape(cv.path) << "\", \"parse_ok\": "
+          << (cv.parse_ok ? "true" : "false") << ", \"entries\": " << cv.entries.size()
+          << ", \"resolved\": " << cv.resolved << ", \"unknown\": " << cv.unknown << "}";
+    }
+    o << "\n  ],\n  \"report\": {";
     RegistryReport r = report();
     o << "\"artifacts\": " << r.artifacts << ", \"files\": " << r.files
       << ", \"sharded\": " << r.sharded_artifacts

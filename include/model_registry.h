@@ -73,6 +73,24 @@ const char* to_string(Capability c);
 // Parse a capability name as printed by to_string(); empty optional if unknown.
 std::optional<Capability> capability_from_string(const std::string& s);
 
+// ── Capability constraints ─────────────────────────────────────────────────
+//
+// A capability is NOT a boolean. "This lane can serve this artifact" is only
+// meaningful with a limit attached, because a lane that works at 1k context and
+// fails at 3k is not the same capability.
+//
+// Source of the first entry: @agent-ca60cf (2026-09-10) — the shipped HRX b66
+// bundle over-claims FLASH_ATTN_EXT for KV > 2048, so a fresh 2021-token prefill
+// passes while 2067/2151/2502/2931 fail identically. Issue #2145. Without this
+// constraint a route can hand b66 a longer blob and get silent failure.
+struct CapabilityLimit {
+    Capability capability;
+    uint32_t max_context_tokens;   // 0 = unconstrained
+    const char* note;
+};
+// Returns nullptr when the capability is unconstrained (or unknown).
+const CapabilityLimit* capability_limit(Capability c);
+
 // ── Files ──────────────────────────────────────────────────────────────────
 struct ArtifactFile {
     std::string path;              // absolute
@@ -104,15 +122,41 @@ struct ModelArtifact {
     std::vector<ArtifactFile> files;
     std::string tokenizer_path;                // resolved .htok, may be empty
     std::string config_dir;                    // dir holding config.json (MLX/HF)
+    // Catalog ids (e.g. lemonade `pf-qwen3-30b-a3b-q4km`) that name this
+    // artifact. A catalog is a VIEW: it may add aliases, never artifacts.
+    std::vector<std::string> catalog_ids;
 
     uint64_t total_bytes() const;
     bool is_sharded() const { return files.size() > 1; }
     bool has(Capability c) const;
+    // 0 = unconstrained. Only meaningful when has(c).
+    uint32_t max_context_for(Capability c) const;
+    // True when the artifact has the capability AND can take `context_tokens`.
+    bool supports(Capability c, uint32_t context_tokens) const;
     // "  legacy-default" style suffix for the table; "" when unambiguous.
     std::string id_quality() const;
 };
 
 // ── Report ─────────────────────────────────────────────────────────────────
+// ── Catalog views ──────────────────────────────────────────────────────────
+// A recipe-keyed catalog (lemonade `user_models.json`) is NOT a registry: it
+// maps a catalog id to a checkpoint + recipe. Ingesting it as a view means the
+// ids become aliases on the artifacts they point at, and checkpoints outside
+// every scanned root are REPORTED, never silently added (R1).
+struct CatalogEntry {
+    std::string catalog_id;
+    std::string checkpoint;
+    std::string recipe;
+    std::string source;
+};
+struct CatalogView {
+    std::string path;
+    std::vector<CatalogEntry> entries;
+    size_t resolved = 0;   // catalog id attached to an artifact
+    size_t unknown = 0;    // checkpoint not present in any scanned root
+    bool parse_ok = false;
+};
+
 struct RegistryReport {
     size_t artifacts = 0;
     size_t files = 0;
@@ -147,6 +191,12 @@ public:
     // test's `zaya1-8b.q4nx`.
     const ModelArtifact* resolve_path(const std::string& path) const;
     std::vector<const ModelArtifact*> with_capability(Capability c) const;
+    // Capability + context gate: the query a router should actually ask.
+    std::vector<const ModelArtifact*> serve_at(Capability c, uint32_t context_tokens) const;
+
+    // Ingest a recipe-keyed catalog as a view (see CatalogView).
+    CatalogView attach_catalog(const std::string& json_path);
+    const std::vector<CatalogView>& catalogs() const { return catalogs_; }
 
     std::string to_table() const;      // human, stable ordering
     std::string to_json() const;
@@ -158,6 +208,7 @@ public:
 private:
     std::vector<ModelArtifact> artifacts_;
     std::vector<std::string> roots_;
+    std::vector<CatalogView> catalogs_;
     size_t dangling_tokenizers_ = 0;   // .htok present with no artifact (inventory F6)
 };
 
