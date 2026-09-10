@@ -459,7 +459,7 @@ to a non-recursive scan, and three sets of distinct files shared one legacy id (
 hazard). **The file to exclude is `zaya1-8b-ft-q4nx.gguf`** — in the measured store it is
 `~/models/zaya1-8b-ft-q4nx.gguf`. Running in place reproduces the crash exactly: **`rc=136`, SIGFPE, core
 dumped, no output** (verified by @agent-ec855d, and again here). Until
-`fix/gguf-unknown-dtype-guard` lands, exclude it — and rather than bisect a **419 GiB** store, do this:
+the fix lands, exclude it — and rather than bisect a **419 GiB** store, do this:
 
 ```sh
 mkdir -p /tmp/farm
@@ -481,6 +481,17 @@ names** give **identical** counters —
 | `/tmp/farm_shallow` — depth 2 | 18 | 18 | 13 |
 | `/tmp/a/b/c/farm_deep` — depth **5** | 18 | 18 | 13 |
 | the same farm given as a **relative** path from two different cwds | 18 | 18 | 13 |
+
+**WHERE THE FIX IS, STATED BY BRANCH AND NOT BY SHA.** It is on
+**`fix/gguf-unknown-dtype-fail-closed`** — land it **by branch name**, never by a SHA quoted from a message,
+a note, or this file. Four SHAs were current for that one branch inside an hour of it existing
+(`b86be423b` → `5b600bb72` → `c9bdb0641` → `650e7312b`), and each was quoted as current in some
+correspondence while the branch moved underneath it — including in a note written for the purpose of
+correcting an earlier stale SHA, which then pinned a fresh one. **A SHA is a magnitude; a branch name is
+an identity**, so a citation by SHA is the same error as a count without its revision, and it is the error
+this file warns about two paragraphs up. *This section previously named `fix/gguf-unknown-dtype-guard`,
+which is the superseded duplicate — the reference was wrong, not merely out of date, because it pointed at
+the branch that will be closed.*
 
 So the counters are **invariant under the root's name, its depth, and whether the path is absolute or
 relative** — and the headline number is therefore comparable to an in-place run rather than an artifact
