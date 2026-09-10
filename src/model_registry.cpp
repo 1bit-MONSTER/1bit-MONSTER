@@ -834,12 +834,18 @@ std::vector<Capability> derive_capabilities(Container c, DtypeSpace sp, bool q4n
             // router mentions ModelFormat::Q4NX exactly ONCE in the whole file, so no
             // Q4NX chain exists; the chain quoted elsewhere is ModelFormat::ONEBP.
             if (q4nx_named && sp == DtypeSpace::Q4NX_JSON) {
-                // Router head for a native MoE .q4nx is hip_gpu (the ZAYA/CCA path).
-                // NPU_Q4NX is RETAINED as a capability because the NPU lane can read a
-                // Q4NX-quantized file (npu_flm is Q4NX-only) even though the router's
-                // chosen chain for this container does not include it — capabilities say
-                // what COULD serve, the chain says what the router PICKS.
-                caps = {Capability::HIP_GGUF, Capability::NPU_Q4NX, Capability::CPU};
+                // NO HIP-GGUF HERE, and this is a correction of an earlier claim.
+                // The router's head for a native MoE .q4nx is the string "hip_gpu",
+                // but the engine's HIP backend REFUSES a native .q4nx by design:
+                // src/backend_hip.cpp — "Only claim .1bp — .q4nx is the FastFlowLM
+                // format". Advertising HIP-GGUF for a Q4NX_JSON container therefore
+                // makes the resolver route an artifact no HIP lane can open (observed
+                // live: hip_1bp → "Invalid 1BP header (magic=0x38bdf ver=0)"). A
+                // capability list is a claim about READERS; the router's string is not.
+                // NPU_Q4NX stays (npu_flm is the format's owner) but it is conditional
+                // on a matching FLM tag, which the bridge's availability/quality gate
+                // carries — not something this hardware-blind derivation can assert.
+                caps = {Capability::NPU_Q4NX, Capability::CPU};
                 break;
             }
             caps = {Capability::FUSED_GPU_NPU, Capability::HIP_1BP, Capability::VULKAN_1BP,
