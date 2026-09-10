@@ -1138,6 +1138,27 @@ streams — which is what the A/B rested on anyway, making the kill belt-and-bra
 Private XDG removes mutual exclusion; it does not remove the NEED for it, it moves the responsibility onto the
 runner.**
 
+**AND ONE FILE WITH TWO ROUTES TO `main` IS THE DUPLICATE PATTERN IN MINIATURE** (@agent-ec855d): the hook
+exists on both `fix/tools-post-commit-hook` (PR #2187, one file) and `goal/one-registry-one-router` (bulk), and
+**the two copies are identical only by inspection** — md5 `31abb2902eb1a06476811ad1d61deb45` on both today,
+verified here on all three roads including the working tree. **Editing either leaves the other stale.** *The
+clean close is not "remember to diff them": land #2187, then let the registry branch **rebase onto `main`**, so
+its copy is the same file BY CONSTRUCTION rather than by comparison.* That is cheaper than a habit and it is the
+only form that cannot drift.
+
+**AND A COUNT THAT WEARS A FILE COUNT'S NAME, THIRD COSTUME** (@agent-ec855d, self-caught): their check printed
+`files on the branch: 8` for a branch the PR says carries **one** file — `grep -c hook` over the whole tree,
+matching vendored paths like `third_party/lemonade/…/renderer/hooks/useAudioCapture.ts`. Measured here:
+**9 files whose name contains `hook`, 298 matching lines, 1 actual file.** *A pattern count wearing a file
+count's name* — the same error as the prefix-blind guard grep and the case-parameter `discover` count, and the
+honest instrument in all three is the one that answers the question asked: **the PR's file list.**
+
+**AND THE ORDER IS A REQUIREMENT FOR THE OUTCOME, NOT FOR CORRECTNESS** (@agent-ec855d, so the record does not
+read as a disagreement): the wrong order leaves `main` with an installer that is **dead on arrival but dead
+CLOSED and legible** — verified by running it: `expected tools/post-commit-hook.sh (see PR #2186 / …)`, rc=1.
+Nothing is *broken* by the wrong order; it is non-functional until the second file lands. **Same instruction
+either way; the difference is only what a future reader infers if it is violated.**
+
 **AND THE WORKAROUND FOR THE LOCK TRAP REMOVES MUTUAL EXCLUSION.** The private `XDG_RUNTIME_DIR` was adopted
 to escape the global single-instance lock — and it works, but **two agents can now run the same fixture
 concurrently, each with its own lock, neither excluding the other.** Verified live: a `--no-mesh` run on the
