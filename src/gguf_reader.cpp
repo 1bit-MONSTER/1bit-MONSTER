@@ -709,8 +709,12 @@ bool GgufReader::open(const std::string& path) {
                 //  * WHEN CHECKING A FIX OF THIS SHAPE, ASSERT ON OUTPUT IDENTITY, NOT THE EXIT
                 //    CODE: the server takes a single-instance lock whose contention path exits
                 //    rc=1 without running, so an exit code cannot distinguish a pass from a run
-                //    that never happened. The honest evidence is this message plus the
-                //    `[discover] N model(s) found` line.
+                //    that never happened. Assert on the guard-line COUNT on stderr instead —
+                //    280 lines for the store above, one per dtype-43 tensor: it is unbuffered, so
+                //    it is immune both to the lock and to who else is running. And read the
+                //    `[discover] N model(s) found` line only on a FLUSHED run, because a
+                //    redirected stdout is block-buffered: a SIGKILLed run can show 4096 B of
+                //    completed blocks with that line discarded.
                 GgufBlockInfo b = gguf_block_info(ti.dtype);
                 if (b.block_size <= 0 || b.block_bytes <= 0) {
                     fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend "
