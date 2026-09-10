@@ -146,6 +146,25 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens = 0,
 bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
                  std::string& out_constraint);
 
+// ── Per-row EVIDENCE STATUS ───────────────────────────────────────────────────
+// @agent-ca60cf corrected their own earlier answer on this table, and the
+// correction is the point: the measurement path and the engine id are not the same
+// thing. Their box evidence covers TWO rows. The Vulkan tok/s figures they had
+// quoted came from llama-bench INSIDE the fork build — that build's own Vulkan
+// backend, outside the engine's backend-id system entirely — so they prove a
+// Vulkan/RADV lane exists and is fast on this silicon without proving that the
+// engine's `ggml_vulkan` id reaches it.
+//
+// AND ID AVAILABILITY IS BUILD-DEPENDENT, not just box-dependent: the string
+// "not found or not functional" appears in exactly two of their logs, both from HRX
+// worktree builds where the standard backend .so set is absent, so the manager
+// rejected `ggml_vulkan`, `vulkan_hpp_gpu`, `zinc_gpu`, `hip_gpu` and `hip_1bp_gpu`
+// — while the q35 build on the same box and model store loaded `hip_1bp_gpu` and
+// never probed the Vulkan ids at all. So a row is only as good as the build that
+// reports it, and the arbiter must be the engine's runtime available/functional
+// state. Nothing here may be upgraded to "verified on hardware" on their account.
+const char* backend_evidence(Capability c);
+
 // Express a plan in the ENGINE's own currency. `BackendRoute` is what
 // select_backend_route() returns and what BackendManager::init's preferred_ids
 // overload consumes, so this is the last translation: after it, a caller swap is

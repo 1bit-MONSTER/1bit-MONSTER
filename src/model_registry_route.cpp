@@ -106,6 +106,40 @@ bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
     }
 }
 
+const char* backend_evidence(Capability c) {
+    switch (c) {
+        // The two rows with box evidence, credited to @agent-ca60cf on strixhalo.
+        case Capability::HRX_GGUF:
+            return "BOX-VERIFIED (ca60cf: same-blob rc=0 decode, ctx-limit sweep, guard/re-import)";
+        case Capability::HIP_1BP:
+            return "BOX-VERIFIED (ca60cf: q35 chat served, 21.6 ms/token bench)";
+        // Router-string rows: named by model_router.cpp, never exercised through the
+        // engine's id by anyone who reported to me.
+        case Capability::RADV_GGUF:
+            return "ROUTER-STRING ONLY — a Vulkan/RADV lane at 359.54 tok/s was measured by "
+                   "llama-bench INSIDE the fork build, which is outside the engine's id "
+                   "system; that the engine id ggml_vulkan reaches it is UNVERIFIED";
+        case Capability::VULKAN_1BP:
+            return "ROUTER-STRING (backend_manager.cpp:126) — unverified through the engine";
+        case Capability::FUSED_GPU_NPU:
+            return "ROUTER-STRING — unverified through the engine; also opt-in via USE_NPU_FFN=1";
+        case Capability::NPU_Q4NX:
+        case Capability::NPU_1BP:
+            return "ROUTER-STRING + BUILD-DEPENDENT (npu_flm is hardcoded available=true with "
+                   "functional=false, so an available-only check emits it dry)";
+        case Capability::HIP_GGUF:
+            return "CODE-READING (tests/backends/backend_hip_adapter.cpp: create_hip_backend() "
+                   "cannot read blk.N models — zero-fills then fails the coherence probe)";
+        case Capability::MLX_GPU:
+        case Capability::CPU:
+            return "ROUTER-STRING — unverified through the engine";
+        case Capability::HRX2_GGUF_Q4NX:
+            return "REFUSED BY DESIGN (D5c: no registered backend advertises the type-42 reader)";
+        default:
+            return "UNKNOWN";
+    }
+}
+
 RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
                      const std::vector<Capability>& prefer) {
     RoutePlan plan;
