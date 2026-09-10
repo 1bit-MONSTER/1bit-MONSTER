@@ -392,3 +392,29 @@ valid only for layer.xclbin, not mm.xclbin.
   transform (or use FLM's gen_rtp_seq/gen_layer_seq which already apply it).
 - Then wire dequant+mm into the split-path prefill in `engine/npu/src/npu_engine_universal.cpp`
   and measure vs FLM (target 500–1269 tok/s prefill).
+
+---
+
+## 2026-09-10 (session 2g): 8MB W layout confirmed [Q|K|V]; Q/K/V A differ (q/k norms)
+
+### 8 MB QKV W layout (byte offsets)
+dequant(K) matches mmw at **4 MB**, dequant(V) at **6 MB** (1048576/1048576 each).
+So `[q 1024×2048 @0 | k 1024×1024 @4MB | v 1024×1024 @6MB]`, all bf16.
+
+### Q/K/V activations differ — consistent with Qwen3 q_norm/k_norm
+The 4 captured A BOs (A170/A172/A174/A175, each 256×2048 bf16) are pairwise DIFFERENT
+and none is a RoPE/permutation of another. This matches Qwen3's separate **q_norm** and
+**k_norm** RMSNorm: Q=A_q_norm·W_Q, K=A_k_norm·W_K, V=A_hidden·W_V. So the Q GEMM's A
+(A170[:,:1024]) is q_norm(hidden), and K/V use different norms. The Q GEMM already
+matches byte-exact; K/V need the correct per-projection A (q_norm/k_norm outputs).
+
+### Open item: Gemm::generate_seq weight_offset unit for bf16 W
+Q matched woff=0 (unit-independent). K at byte offset 4 MB did NOT reproduce C173, and a
+75% partial match appeared at woff=2 MB (bytes) with N=2048 — suggests the bf16 weight
+offset may be in *elements* (2M bf16 = 4 MB) rather than bytes, OR the K A differs.
+Resolve by trying woff in bf16-elements with the true k_norm A.
+
+### Status
+dequant.xclbin (Q4NX→bf16) + mm.xclbin (bf16 GEMM) fully verified for Q; K/V/O/MLP
+follow the same recipe once the q_norm/k_norm A and the bf16 weight-offset unit are
+nailed down. Then wire into `engine/npu/src/npu_engine_universal.cpp`.
