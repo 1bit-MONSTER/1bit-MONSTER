@@ -155,6 +155,18 @@ int registry_scan_main(int argc, char** argv) {
         else if (!a.empty() && a[0] == '-') { usage(argv[0]); return 2; }
         else roots.push_back(a);
     }
+    // A flag that parses and then does nothing is indistinguishable from one that
+    // was never understood — the same hole as --at-context-without---capability,
+    // which @agent-ec855d caught earlier. `--prefer` only has meaning relative to
+    // a --route target, so refuse it instead of printing a table that silently
+    // ignores the caller's stated order.
+    if (!prefer_arg.empty() && route_arg.empty()) {
+        fprintf(stderr,
+                "registry_scan: --prefer only applies to --route (it orders capability "
+                "selection for a target).\n"
+                "  use: registry_scan --route <id|path> [--at-context N] [--prefer CAP,CAP] ...\n");
+        return 2;
+    }
     if (roots.empty()) { usage(argv[0]); return 2; }
 
     ModelRegistry reg = ModelRegistry::scan(roots, opt);
