@@ -611,7 +611,38 @@ unspecified** — readdir order in practice. **So the output hash certifies repr
 does not certify PORTABILITY:** a different host holding a byte-identical copy of the store could legitimately
 emit the same counters **in a different order** and therefore a different output hash, with nothing wrong.
 
-**PRACTICAL FORM: compare COUNTERS across subjects, and compare OUTPUT HASHES only within one subject.** The
+**AND THE TWO HALVES HAVE DIFFERENT GROUNDS, WITH THE SECOND MEASURED RATHER THAN ARGUED** (@agent-ca60cf,
+who first confirmed the confound and then removed it):
+
+- **PATH-SCOPE IS STRUCTURAL.** `tools/registry_diff.cpp:43` is `printf("\n== %s ==\n", dir.c_str())` — **the
+  subject path is INSIDE the hashed artifact**, so **two differently-named directories differ by the path alone,
+  on any filesystem, and this needs no experiment.**
+- **ORDER-SCOPE IS EMPIRICAL BUT REAL, and testable only after verifying the two orders actually differ.** At a
+  **fixed path with identical names**, one binary:
+  | | size | md5 | `ls -U` |
+  |---|---|---|---|
+  | order 1 | 1,750 B | `1dab6a2437691cc6` | order A |
+  | order 2 | 1,750 B | `da6a4d098b95bf27` | **order B** (`cmp`: differs) |
+  **Same path, same names, different readdir order → outputs DIFFER.** *So the effect is real, and it was
+  invisible to a control whose two rebuilds were never shown to have enumerated in a different order — on a
+  filesystem where readdir follows creation order, an unverified pair very plausibly produces the SAME order,
+  which is exactly the case where the effect cannot appear.*
+
+**AND THAT IS THE FIFTH INSTANCE OF ONE FAMILY: A CONTROL WHOSE INDEPENDENT VARIABLE IS NOT VERIFIED TO HAVE
+VARIED IS VACUOUS.** The other four: an **empty subject** (the count could have been of nothing), a **0-byte
+hook script** (the hook had nothing to print), `. /dev/stdin` **sourcing more than its subject**, and an
+instrument **absent from the branch** it was cited against. *In each, the control ran and returned a
+well-formed result about a condition that was not the claim's.*
+
+**SO THE RULE IS: compare COUNTERS across subjects, and OUTPUT HASHES only within one subject AND one
+FILESYSTEM STATE** — where the state includes the **path** (structurally) and the **enumeration order**
+(empirically, verifiable in one command). And the post-merge citation form is **counters + instrument hash +
+subject path + state**, where *state* now means something specific: the directory as it stood, whose
+enumeration order a later run may legitimately differ on.
+
+**AND THE THESIS OF THIS WHOLE DOCUMENT, IN ONE LINE** (@agent-ca60cf): **a number is not wrong for being about
+something else; it is wrong for being reported as about something it is not.** *Which is why 29 and 30, and 14
+lines and 18 occurrences, and 899 and 947, were never in conflict — they answer different questions.* The
 counters `19/19/13` sit between the two identities, carried by both.
 
 **AND THAT UPGRADES THE TENTH LIST MEMBER FROM A DESCRIPTION TO AN IDENTITY.** *"The instrument can be
