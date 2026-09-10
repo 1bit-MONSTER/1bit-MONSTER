@@ -1130,3 +1130,27 @@ Analyzed the fresh capture's allocation manifest + the CAP_DUMP_BIG preinsts:
    The share_*/qkv value-transform remains the closed-source blocker; the
    capture oracle (moe-cap-rb) holds the expert pools + linear BOs (both
    byte-verified) but NOT the layer-ELF region-B content.
+
+## Round 83 — region-B transform DERIVED: 8704-tile trim + A/B interleave (2026-09-10)
+
+Re-examined the blocker and found it is NOT a closed value-transform. The
+layer-ELF region-B content is:
+
+    tile[i] = row[i][0:4736]            (trim each 8704-B Q8_0 tile)
+    out[o]  = tile[o/2 + 8*(o%2)]        (A/B interleave, 16-tile blocks)
+
+placed at the desc offsets (share_up@0, share_gate@128, share_down@256,
+qkv@384, gate_proj@2432 → 3456 rows = 16,367,616 B). The tile counts match
+the desc allocations EXACTLY (128/128/128/2048/1024) — and the ELF BD reads
+(Round 72) follow those same desc offsets, so the desc table IS the physical
+region-B layout here. The earlier R45 "8704-row trims" negative did NOT
+include the A/B interleave; the "4736-window slicing" behavior I saw in
+Round 79 was reorder_cpy on RAW (untrimmed) qkv — the runtime pre-trims the
+tiles first (load_linear_weights), then reorder_cpy only shuffles them.
+
+Implemented + committed: `npu_pack_moe_region_b()` (model.c), structure
+verified (tile0/tile8/tile1 interleave + per-tensor offsets match). The
+region-B weight packing is no longer a blocker — the last weight-BO piece
+(expert pool + 5MB linear + region B) is now packable from the model file.
+Byte-exactness vs the runtime remains gated on task-4 (moe_ffn_cpu), since
+the runtime's weight BO is map-written (R82).
