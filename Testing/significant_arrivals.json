@@ -1,0 +1,121 @@
+{
+ "deepseek": {
+  "arch": "deepseek",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Deepseek",
+  "model": "Chinook416/caracat-pro"
+ },
+ "deepseekv4": {
+  "arch": "deepseekv4",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Deepseek",
+  "model": "a15846/DeepSeek-v4-Fable"
+ },
+ "gemma3": {
+  "arch": "gemma3",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Gemma",
+  "model": "Jkatdare/gemma-3-4b-it-tulumix-30k"
+ },
+ "gemma4": {
+  "arch": "gemma4",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Gemma",
+  "model": "icysunny/gemma4_e2b_reasoner_merged"
+ },
+ "glm5next": {
+  "arch": "glm5next",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Glm",
+  "model": "scouzi1966/GLM-5.3-Flash-AFM-MLX-4bit"
+ },
+ "glmmoedsa": {
+  "arch": "glmmoedsa",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Glm",
+  "model": "destr8803/GLM-5.3-224E-FP8-MAN"
+ },
+ "granite": {
+  "arch": "granite",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Granite",
+  "model": "AnkitBirGurung/Granite-4.2-8b-BoardPolitics"
+ },
+ "llama": {
+  "arch": "llama",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Llama",
+  "model": "BosonicJustin/transcendent-logic-model"
+ },
+ "nemotron": {
+  "arch": "nemotron",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Nemotron",
+  "model": "joincrksilverb/Nemotron-Mini-4B-Instruct"
+ },
+ "olmo3": {
+  "arch": "olmo3",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Olmo",
+  "model": "dureduck/Olmo-3-7B-PostTraining8K-SFT-step-40"
+ },
+ "qwen2": {
+  "arch": "qwen2",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "dharun2049/kaveri-stgrpo-0.5b"
+ },
+ "qwen3": {
+  "arch": "qwen3",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "zhongweixie/inplace-ttt-qwen3-4b-64k-baseline"
+ },
+ "qwen3_5": {
+  "arch": "qwen3_5",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "Ttimms/Bible-Assistant-Qwen3.5-4B-v3.2"
+ },
+ "qwen3_5moe": {
+  "arch": "qwen3_5moe",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "SAIFIINDUSTRIES/Qwen3.5-35B-A3B"
+ },
+ "qwen3next": {
+  "arch": "qwen3next",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "AnonimXxx/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
+ },
+ "qwen4exp": {
+  "arch": "qwen4exp",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i"
+ },
+ "smollm3": {
+  "arch": "smollm3",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Smollm",
+  "model": "Healshsj/smollm3-3b-claude-fable5"
+ }
+}
