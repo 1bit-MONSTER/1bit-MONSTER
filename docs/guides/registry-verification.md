@@ -1846,3 +1846,23 @@ broken input first.
 - **The three checks are informational in CI.** Promote the dispatch-key check only once the
   recorded four-type set stops moving — a required check would have the first person it blocks
   delete it rather than deliberately extend the list.
+
+## 10. Records expire in place; never overwrite a superseded claim
+
+A merged PR body — like every durable artifact here — has **no history**. So the only record
+that a claim was ever *true* is the claim itself, and silently replacing it destroys its
+**window of truth**. That window is evidence, not archaeology: it dates when the world moved.
+
+Two uses on this branch, and the same shape both times:
+
+| claim | window | cause | successor identity (witness) |
+|---|---|---|---|
+| #2185: `main`'s `src/gguf_reader.cpp` md5 `d5f6eff7…`, 45,321 B | true **13:59:41Z → 15:03:31Z** (git log) | **#2188** merged, comment-only — 8 comment lines, 0 code (the diff) | file now `b150bc55…`, 45,712 B (+391 B); the pre-registered **binary** `ce005c2cf1f004ed…`, 644,920 B reproduced by rebuild |
+| §7's failure reading | struck and restored rather than replaced | re-measure changed the reading | the struck text plus the restored one |
+
+The form, one line: **claim — window — cause — successor identity**, each field with an
+**external witness** (the window has the git log, the cause has the diff, the identity has a
+rebuild). #2185's body now carries both the then-true assertion and its dated invalidation;
+a rewrite would have shown only the correction and destroyed the window. Generalisable
+instance of the same rule: **a file hash is a position, a binary hash is an identity** —
+register the instrument's hash, date the artifact's.
