@@ -683,6 +683,19 @@ bool GgufReader::open(const std::string& path) {
                 // 280 of 1283 tensors, core dump at startup, with a control case passing).
                 // Fail closed naming the tensor and dtype, mirroring the guard this file
                 // already applies at the decode site below and in src/deepseek.cpp.
+                //
+                // PROVENANCE — the line below and the message form above are deliberate, and this note
+                // lives in a CODE change on purpose: the same defect was fixed independently on branch
+                // fix/gguf-unknown-dtype-fail-closed, and the rationale for preferring this one was first
+                // recorded in empty commits on this branch. THIS REPO SQUASHES (main's tip is "#2139 — q35
+                // lane: crash fix + un-gate + perf (8 commits...)" collapsed to one), so a squash-merge
+                // would have deleted those notes at the moment they were acted on. Hence: a comment.
+                //   `<= 0` and not `== 0` — GgufBlockInfo's fields are SIGNED ints, so `<=` also rejects a
+                //     negative. gguf_block_info returns only {0,0} or positive values today, so the two are
+                //     equivalent NOW; the wider test costs nothing.
+                //   the "route the model to ggml_vulkan/HRX" clause — a user only ever sees this line when
+                //     their model is REFUSED, so it turns a refusal into an instruction. The duplicate
+                //     carries the diagnostic prefix without it.
                 if (b.block_size <= 0 || b.block_bytes <= 0) {
                     fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend cannot read it; "
                                     "route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
