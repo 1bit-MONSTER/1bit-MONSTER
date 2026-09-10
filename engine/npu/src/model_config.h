@@ -202,6 +202,10 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     if (strstr(cfg.model_tag.c_str(), "llama") || strstr(cfg.model_tag.c_str(), "qwen2") ||
         strstr(cfg.model_tag.c_str(), "nanbeige"))
         cfg.rope_theta = 500000.0f;
+    // Qwen3.6 (and the 35B-A3B MoE) train at rope_theta 1e7, not the 1e6
+    // default (config.json: "rope_theta": 10000000).
+    if (strstr(cfg.model_tag.c_str(), "qwen3_6") || strstr(cfg.model_tag.c_str(), "qwen3.6"))
+        cfg.rope_theta = 10000000.0f;
 
     // Extract model_dir from path
     cfg.model_dir = model_path;

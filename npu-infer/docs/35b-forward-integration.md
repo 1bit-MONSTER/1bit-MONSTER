@@ -1572,3 +1572,11 @@ each norm. Reference token 137554 -> 240803.
 Result: L0-L2 now match the engine to float noise (max|d| 0.008/0.031/0.028).
 L3 (first full-attention STD layer) diverges 0.9444 — the next bug is in
 std_attn_step (q/k norms, rotary, or the O/KV packing).
+
+## Round 108 — 5th bug: rope_theta 1e6 -> 1e7 (config.json) (2026-09-10)
+
+model.q4nx's config.json carries `"rope_theta": 10000000` (1e7), but the
+engine's tag-derived default was 1e6. Added a qwen3_6 tag rule -> 1e7.
+L0-L2 still match; L3 (first STD full-attention layer) still 0.9444 — the
+rotary theta was not the dominant STD bug, so std_attn_step has another
+defect (q/k norm weights, O packing, or KV/attention indexing).
