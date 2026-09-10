@@ -210,6 +210,12 @@ struct ModelArtifact {
     int32_t declared_hidden = 0;
     int32_t declared_layers = 0;
     int32_t declared_experts = 0;
+    // Attention geometry, needed for the F12b F32 bound below. Only the native
+    // header carries these today (the GGUF probe does not read attention KVs).
+    int32_t declared_heads = 0;
+    int32_t declared_kv_heads = 0;
+    int32_t declared_head_dim = 0;
+    int32_t declared_interm = 0;
     // Tensor count from whichever source carries it (GGUF table or native
     // header). The STRONG identity key: identical counts mean identical layout,
     // which expert packing changes — dims alone do not discriminate.
@@ -221,6 +227,30 @@ struct ModelArtifact {
     // Reported, never acted on: capability never keys on `arch` (see
     // derive_capabilities), so this is a warning to a consumer, not a route change.
     bool experts_underdeclared = false;
+    // F12b — the declared geometry cannot account for the file, EVEN AT F32.
+    //
+    // Raised by @agent-ec855d after checking my `arch_suspect` rule against the
+    // real file and finding a live FALSE NEGATIVE: arch_suspect fires only when
+    // arch and the expert fields DISAGREE, and a producer that writes neither
+    // leaves both at zero — exactly the case that motivated the flag. So it
+    // needed a third source, and a hard one.
+    //
+    // The sound part is the F32 bound, not a heuristic threshold: no quantization
+    // can make a file LARGER than F32 of the same weights. If the file exceeds
+    // `params_from_declared_dims * 4 bytes` (plus slack), the header's own numbers
+    // are impossible on their own terms and no sibling is required.
+    //   dense params = vocab*hidden
+    //                + layers * ( hidden*q_dim           // q  (heads*head_dim, GQA-aware)
+    //                           + hidden*kv_dim + kv_dim*hidden   // k, v
+    //                           + q_dim*hidden           // o
+    //                           + 3*hidden*interm )      // SwiGLU MLP
+    // ZAYA1-74B-preview.1bp: ~9.38B params -> 37.5 GB at F32, x1.10 slack = 41.3 GB,
+    // file is 49.59 GB -> flagged. A legitimate dense F32 export lands at ratio
+    // ~1.0 and is not flagged.
+    //
+    // Residual assumption, stated: intermediate_size must be the real FFN width.
+    // Gated to arch == dense with zero experts, and advisory only.
+    bool geometry_cannot_hold_file = false;
     // `arch` is header metadata like everything else, so it is CROSS-CHECKED
     // rather than trusted: flagged when arch says DENSE but experts are present,
     // or arch says MOE with none. Raised by @agent-ec855d, who spotted the

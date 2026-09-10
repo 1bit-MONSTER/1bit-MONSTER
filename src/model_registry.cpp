@@ -473,6 +473,7 @@ struct NativeProbe {
     int32_t hidden = 0;
     int32_t layers = 0;
     int32_t tensor_count = 0;
+    int32_t heads = 0, kv_heads = 0, head_dim = 0, interm = 0;
     float rope_theta = 0.0f;
     bool expert_fields_absent = false;
     uint64_t json_bytes = 0;
@@ -562,6 +563,10 @@ NativeProbe probe_native(const std::string& path) {
         np.hidden = hdr.hidden_size;
         np.layers = hdr.num_layers;
         np.tensor_count = (int32_t)hdr.tensor_count;
+        np.heads = hdr.num_attention_heads;
+        np.kv_heads = hdr.num_kv_heads;
+        np.head_dim = hdr.head_dim;
+        np.interm = hdr.intermediate_size;
         // rope_theta: version-dependent encoding (see the header comment).
         if (hdr.version >= 3) {
             float f = 0.0f;
@@ -1067,6 +1072,10 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
                 a.declared_hidden = np.hidden;
                 a.declared_layers = np.layers;
                 a.declared_experts = np.num_experts;
+                a.declared_heads = np.heads;
+                a.declared_kv_heads = np.kv_heads;
+                a.declared_head_dim = np.head_dim;
+                a.declared_interm = np.interm;
                 // Internal contradiction only: arch says MOE but no experts, or
                 // arch says DENSE while this same header reports experts.
                 // F12 (under-declaration) cannot be seen from ONE source and is
@@ -1158,6 +1167,30 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
             nat.experts_underdeclared = true;
             break;
         }
+    }
+
+    // ── F12b: declared geometry vs the file's own size (F32 hard bound) ─────
+    // Independent of any sibling. See the field comment in the header for the
+    // formula and for why F32 (not a chosen threshold) is the bound that matters.
+    for (auto& a : reg.artifacts_) {
+        if (a.dtype_space != DtypeSpace::ONEBP_HEADER) continue;
+        if (a.architecture != "dense" || a.declared_experts > 0) continue;
+        int32_t H = a.declared_hidden, L = a.declared_layers, V = a.native_vocab;
+        if (H <= 0 || L <= 0 || V <= 0) continue;
+        int32_t q_dim = a.declared_head_dim > 0 && a.declared_heads > 0
+                            ? a.declared_heads * a.declared_head_dim
+                            : H;
+        int32_t kv_dim = a.declared_kv_heads > 0 && a.declared_head_dim > 0
+                             ? a.declared_kv_heads * a.declared_head_dim
+                             : H;
+        int32_t I = a.declared_interm > 0 ? a.declared_interm : H;
+        double params = (double)V * H + (double)L * ((double)H * q_dim +
+                        (double)H * kv_dim + (double)kv_dim * H + (double)q_dim * H +
+                        3.0 * (double)H * I);
+        double f32_bytes = params * 4.0;
+        double slack = 1.10;   // small extra tensors, headers, alignment
+        if (f32_bytes > 0 && (double)a.total_bytes() > f32_bytes * slack)
+            a.geometry_cannot_hold_file = true;
     }
 
     // ── id collisions: two artifacts claiming the same canonical id ────────
@@ -1351,6 +1384,7 @@ std::string ModelRegistry::to_table(uint32_t at_context) const {
           << (a.arch_suspect ? "  [arch-suspect]" : "")
           << (a.experts_underdeclared ? "  [experts-underdeclared!]" : "")
           << (a.expert_fields_absent ? "  [expert-fields-absent-v1]" : "")
+          << (a.geometry_cannot_hold_file ? "  [geometry-cannot-hold-file!]" : "")
           << (a.display_name_suspect ? "  [display-name-suspect]" : "")
           << (a.id_quality().empty() ? "" : "  " + a.id_quality()) << "\n";
     }
@@ -1406,6 +1440,7 @@ std::string ModelRegistry::to_json() const {
           << ", \"tensor_count\": " << a.native_tensor_count
           << ", \"rope_theta\": " << a.native_rope_theta
           << ", \"expert_fields_absent\": " << (a.expert_fields_absent ? "true" : "false")
+          << ", \"geometry_cannot_hold_file\": " << (a.geometry_cannot_hold_file ? "true" : "false")
           << ", \"json_bytes\": " << a.native_json_bytes
           << ", \"name_mismatch\": " << (a.native_name_mismatch ? "true" : "false")
           << ", \"dtypes\": [";
