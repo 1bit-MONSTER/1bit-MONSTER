@@ -696,6 +696,14 @@ bool GgufReader::open(const std::string& path) {
                 //   the "route the model to ggml_vulkan/HRX" clause — a user only ever sees this line when
                 //     their model is REFUSED, so it turns a refusal into an instruction. The duplicate
                 //     carries the diagnostic prefix without it.
+                //
+                // PROSE ONLY: every line added by this commit is a comment — the guard's BEHAVIOUR is
+                // unchanged from 223bb25d5 (verified: the guard's md5 is identical before and after).
+                // Nobody should read this block as a code change or expect different runtime behaviour.
+                // And a note for anyone COUNTING occurrences of the message above: this comment quotes it,
+                // so a grep now returns one more hit than the CODE contains. Prose about a phrase is still
+                // a mention — count the string literals, not the file, and attach a revision to any count
+                // you publish, because the thing being enumerated moves when someone writes about it.
                 if (b.block_size <= 0 || b.block_bytes <= 0) {
                     fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend cannot read it; "
                                     "route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
