@@ -1184,13 +1184,23 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
                              ? a.declared_kv_heads * a.declared_head_dim
                              : H;
         int32_t I = a.declared_interm > 0 ? a.declared_interm : H;
-        double params = (double)V * H + (double)L * ((double)H * q_dim +
+        // UNTIED lm_head assumed: 2 * vocab * hidden. A HARD bound must never
+        // under-estimate the declared capacity, and @agent-ec855d showed the tie
+        // term is 11.4% of the base geometry - larger than the 10% slack - so
+        // counting the embedding once would flag an honest untied dense F32
+        // export of exactly this geometry. (Their check on the real file: the
+        // sibling GGUF has token_embd.weight and ZERO output.weight / lm_head
+        // tensors out of 1923, so THIS file is tied and the generous assumption
+        // simply costs margin.)
+        double params = 2.0 * (double)V * H + (double)L * ((double)H * q_dim +
                         (double)H * kv_dim + (double)kv_dim * H + (double)q_dim * H +
                         3.0 * (double)H * I);
         double f32_bytes = params * 4.0;
         double slack = 1.10;   // small extra tensors, headers, alignment
-        if (f32_bytes > 0 && (double)a.total_bytes() > f32_bytes * slack)
-            a.geometry_cannot_hold_file = true;
+        if (f32_bytes > 0) {
+            a.geometry_bound_ratio = (double)a.total_bytes() / f32_bytes;
+            if (a.geometry_bound_ratio > slack) a.geometry_cannot_hold_file = true;
+        }
     }
 
     // ── id collisions: two artifacts claiming the same canonical id ────────
@@ -1441,6 +1451,8 @@ std::string ModelRegistry::to_json() const {
           << ", \"rope_theta\": " << a.native_rope_theta
           << ", \"expert_fields_absent\": " << (a.expert_fields_absent ? "true" : "false")
           << ", \"geometry_cannot_hold_file\": " << (a.geometry_cannot_hold_file ? "true" : "false")
+          << ", \"geometry_bound_ratio\": " << a.geometry_bound_ratio
+          << ", \"geometry_bound_note\": \"file_bytes/(declared_params*4); untied lm_head assumed; flags above 1.10\""
           << ", \"json_bytes\": " << a.native_json_bytes
           << ", \"name_mismatch\": " << (a.native_name_mismatch ? "true" : "false")
           << ", \"dtypes\": [";

@@ -68,8 +68,10 @@ void describe(const ModelArtifact& a) {
                a.native_version, a.native_vocab, a.native_num_experts, a.native_top_k,
                a.native_tensor_count, a.native_rope_theta);
         if (a.expert_fields_absent) printf("  [v1: expert block not carried]");
-        if (a.geometry_cannot_hold_file)
-            printf("\n              [geometry-cannot-hold-file: declared dims imply < total_bytes/4]");
+        if (a.geometry_bound_ratio > 0)
+            printf("\n              geometry bound: ratio=%.4f (file vs declared geometry at F32; >1.10 flags)"
+                   "  %s", a.geometry_bound_ratio,
+                   a.geometry_cannot_hold_file ? "[CANNOT HOLD]" : "ok");
         if (a.native_name_mismatch) printf("  [native-name-mismatch]");
         if (a.arch_suspect) printf("  [arch-suspect]");
         if (a.experts_underdeclared)

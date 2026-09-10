@@ -129,11 +129,14 @@ const CapabilityLimit* capability_limit(Capability c);
 // once. Flagged by @agent-ec855d after finding three names for one idea:
 //   top level : has_dtype_42, q4nx_name_mismatch, display_name_suspect,
 //               arch_suspect(no — nested), native_name_mismatch(no — nested)
-//   nested under "native": version, vocab, num_experts, top_k, arch_suspect,
-//               json_bytes, name_mismatch, dtypes
+//   nested under "native": everything derived SOLELY from the native header —
+//               version, vocab, num_experts, top_k, arch_suspect, json_bytes,
+//               name_mismatch, dtypes, expert_fields_absent,
+//               geometry_cannot_hold_file, geometry_bound_ratio, geometry_bound_note
 // Inside the `native` object the `native_` prefix is dropped because the nesting
 // already supplies the scope; at the top level it is kept because it does not.
-// Only `native_*` members appear nested; all others are top level.
+// Rule: `native` = scope, not prefix. Members whose only source is the native
+// header live there even when their C++ name has no prefix.
 
 // ── Files ──────────────────────────────────────────────────────────────────
 struct ArtifactFile {
@@ -248,9 +251,25 @@ struct ModelArtifact {
     // file is 49.59 GB -> flagged. A legitimate dense F32 export lands at ratio
     // ~1.0 and is not flagged.
     //
-    // Residual assumption, stated: intermediate_size must be the real FFN width.
-    // Gated to arch == dense with zero experts, and advisory only.
+    // Residual assumption, stated: intermediate_size must be the real FFN width,
+    // and the model must be transformer-shaped. @agent-ec855d conceded the bound
+    // is architecture-specific and cannot in principle be made general: a robust
+    // version would need the real per-tensor shapes, and the 1BP header carries
+    // only tensor_count. For a hybrid (zaya's ssm_conv1d, res_scale_*, routers,
+    // extra ffn_gate path) the formula UNDERSTATES declared params, so the bound
+    // is too tight there and a legitimate F32 hybrid export could cross it.
+    //
+    // The numbers that decide whether that matters, computed on the real file:
+    //   ratio = total_bytes / (params*4) = 1.3218   (32.2% above the F32 bound)
+    //   slack = 1.10
+    //   -> only 22.2 points of headroom before the signal is lost.
+    // So: it fires when a dense-declared header's own geometry is under 76% of
+    // what the file needs at F32. Advisory only, never a route change.
+    // Gated to arch == dense with zero experts.
     bool geometry_cannot_hold_file = false;
+    // file_bytes / (declared_params*4); 0 when not computable. Exposed so a
+    // consumer can judge the margin itself instead of trusting the boolean.
+    double geometry_bound_ratio = 0.0;
     // `arch` is header metadata like everything else, so it is CROSS-CHECKED
     // rather than trusted: flagged when arch says DENSE but experts are present,
     // or arch says MOE with none. Raised by @agent-ec855d, who spotted the
