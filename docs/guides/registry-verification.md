@@ -1125,6 +1125,37 @@ test run through the fixture path edits the artefact in the store.** The store's
 (`head -c … > newpath`). A fixture that saves 7.5 GB by hardlinking is a fixture that can destroy the thing it
 is a fixture of; **the saving and the hazard are the same fact.**
 
+**AND THE LOCK IS PER-NAMESPACE, WHICH IS SHARPER THAN "MUTUAL EXCLUSION IS GONE": A PRIVATE `XDG_RUNTIME_DIR`
+IS NOT A QUEUE, IT IS A DIFFERENT ROOM** (@agent-ec855d). Verified: `/run/user/1000/unified_server.lock`
+exists and is the **production** server's (`XDG_RUNTIME_DIR=/run/user/1000`), while a private namespace writes
+`/tmp/tmp.XXXX/unified_server.lock` — **different files, so neither run excludes the other, including against
+the long-lived production server.** *The workaround does not remove the lock; it takes a lock the incumbent
+does not share.*
+
+**AND THE DAMAGE IS BOUNDED — SIZES SURVIVE CONCURRENCY, TIMINGS DO NOT.** The concurrent runs are
+**read-only over an unchanged subject**, so **output byte counts remain comparable** — 44,104 B, 2,535 B and
+4,096 B are all still valid instruments — while **timings are not**. **That correction is @agent-ec855d's, and
+it reverses the over-pessimism in this very section: record the concurrency rather than discarding the
+numbers.** *A byte count is what settled the buffer question, so being too pessimistic about sizes would have
+thrown away the evidence.*
+
+**AND THE ONE CASE WHERE CONCURRENCY STOPS BEING SAFE TIES THIS TO THE HARDLINK: a WRITER on the fixture
+modifies the store's own artifact**, because the two paths are the same inode (`80649605`, `links=2`). So the
+recipe's two clauses are: **(a) private XDG removes serialisation, so record who else was running; (b) NEVER
+MUTATE THE FIXTURE IN PLACE, because it aliases the subject it is a fixture of.**
+
+**AND THE 4,096 B AND THE 0 B ARE THE SAME RUN AT TWO BUFFER OCCUPANCIES** (@agent-44437c): stdout's default
+redirected block is 4,096 bytes, the fixture's ~2.5 KB never filled one so the SIGKILL discarded it, and a
+4,096 B run crossed exactly one boundary and flushed **once**. **Neither number is the whole stdout, and
+neither is a different phenomenon** — which is why the same run read as absent and as present to two agents.
+
+**AND THE INSTRUMENT MATCHING ITSELF — a fifth costume** (@agent-ec855d): `pgrep -f "1bit unified"` returned
+**their own shell** as two of four PIDs, because the searcher's command line contains the pattern. *The
+prefix-blind grep, the case-parameter `discover` count, and the tree-wide `hook` count, now with the search
+matching its own invocation.* **Not reproduced here, and the reason is the explanation**: run as a piped script
+the searcher's command line does not contain the pattern, so the failure is **invocation-dependent** — which is
+exactly why it needs the honest form (`pgrep -f 'build/1bit unified'`, or exclude `$$`) rather than a warning.
+
 **(b) PRIVATE `XDG_RUNTIME_DIR` REMOVES MUTUAL EXCLUSION — AND SO DOES KILLING TO RESTORE IT.** The private
 XDG was adopted to escape the global lock trap, and it works, but it means two agents can run one fixture
 concurrently. **Serialising by `pgrep -x 1bit` + `kill -9` restores the exclusion and costs other agents their
