@@ -124,6 +124,14 @@ def check_b_behaviour(binary, fixture):
     _, base_js, _ = run(binary, ["--json", fixture])
     if base_rc != 0:
         sys.exit("audit: baseline invocation failed (rc=%d) — fixture problem" % base_rc)
+    # Guard the OTHER degenerate baseline, found by @agent-ec855d: a fixture with
+    # ZERO recognized artifacts makes --digest/--max-depth/--no-probe look inert
+    # because there is nothing for them to affect, so B reports three phantom
+    # failures. On a fresh machine that reads as "the check is broken", which is the
+    # direction that gets a check weakened instead of fixed.
+    if '"artifacts": 0' in base_js or '"artifacts":0' in base_js:
+        sys.exit("audit: fixture problem — baseline sees 0 artifacts, so flags that act ON "
+                 "artifacts cannot show an effect. Point --fixture at a directory with content.")
 
     text = read(SCAN)
     problems = []

@@ -34,7 +34,7 @@ static const Capability kAll[] = {
 int main(int argc, char** argv) {
     bool table_only = false;
     uint32_t at_context = 0;
-    std::string prefer_arg;
+    std::string prefer_arg, absent_arg;
     std::vector<std::string> roots;
 
     for (int i = 1; i < argc; i++) {
@@ -42,6 +42,7 @@ int main(int argc, char** argv) {
         if (a == "--table") table_only = true;
         else if (a == "--at-context" && i + 1 < argc) at_context = (uint32_t)atoi(argv[++i]);
         else if (a == "--prefer" && i + 1 < argc) prefer_arg = argv[++i];
+        else if (a == "--absent-cap" && i + 1 < argc) absent_arg = argv[++i];
         else roots.push_back(a);
     }
 
@@ -67,6 +68,31 @@ int main(int argc, char** argv) {
     if (roots.empty()) {
         fprintf(stderr, "registry_route_map: need --table or at least one root\n");
         return 2;
+    }
+
+    // Stand in for the engine's probe (has_npu(), has_vulkan(), ...) so the
+    // hardware-absent path can be exercised without the engine.
+    static std::vector<BackendType> absent_types;
+    if (!absent_arg.empty()) {
+        size_t p = 0;
+        while (p <= absent_arg.size()) {
+            size_t c = absent_arg.find(',', p);
+            std::string tok = absent_arg.substr(p, c == std::string::npos ? std::string::npos : c - p);
+            if (!tok.empty()) {
+                auto cap = capability_from_string(tok);
+                if (!cap) { fprintf(stderr, "unknown capability '%s'\n", tok.c_str()); return 2; }
+                BackendType t{};
+                std::string id, cons;
+                if (backend_for(*cap, t, id, cons)) absent_types.push_back(t);
+                else { fprintf(stderr, "capability '%s' has no backend to be absent\n", tok.c_str()); return 2; }
+            }
+            if (c == std::string::npos) break;
+            p = c + 1;
+        }
+        set_backend_availability_probe([](BackendType t) {
+            for (BackendType a : absent_types) if (a == t) return Availability::ABSENT;
+            return Availability::PRESENT;
+        });
     }
 
     ScanOptions opt;
@@ -99,10 +125,19 @@ int main(int argc, char** argv) {
                    t.constraint.empty() ? "" : t.constraint.c_str());
         for (const auto& r : plan.refused)
             printf("  !! %-12s refused: %s\n", to_string(r.first), r.second.c_str());
+        for (const auto& r : plan.unavailable_here)
+            printf("  ?? %-12s %s\n", to_string(r.first), r.second.c_str());
         for (const auto& r : plan.skipped_by_context)
             printf("  -- %-12s skipped: %s\n", to_string(r.first), r.second.c_str());
         if (plan.quality_gate != QualityGate::NOT_EVALUATED)
             printf("  ~~ quality_gate=%s\n", plan.quality_note.c_str());
+        // The engine's own currency, i.e. what a caller would hand to
+        // BackendManager::init's preferred_ids overload.
+        BackendRoute br = to_backend_route(plan);
+        printf("  engine BackendRoute: [");
+        for (size_t i = 0; i < br.backend_ids_in_order.size(); i++)
+            printf("%s%s", i ? ", " : "", br.backend_ids_in_order[i].c_str());
+        printf("]\n    reason: %s\n", br.reason.c_str());
     }
     return 0;
 }

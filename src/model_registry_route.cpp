@@ -3,6 +3,16 @@
 
 namespace onebit {
 
+// Default probe: UNKNOWN, i.e. do not filter. The bridge has no business guessing
+// hardware facts, and an engine that has not installed a probe gets an unfiltered
+// plan plus honest UNKNOWN markings.
+static Availability default_probe(BackendType) { return Availability::UNKNOWN; }
+static AvailabilityProbe g_probe = default_probe;
+void set_backend_availability_probe(AvailabilityProbe probe) {
+    g_probe = probe ? probe : default_probe;
+}
+Availability backend_availability(BackendType t) { return g_probe(t); }
+
 bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
                  std::string& out_constraint) {
     out_constraint.clear();
@@ -98,6 +108,14 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
             plan.refused.emplace_back(c, "no registered backend advertises this capability");
             continue;
         }
+        // THE BOX, NOT THE TABLE: intersect with the engine's own probe so a
+        // hardware-blind registry cannot hand out a lane this machine lacks.
+        if (backend_availability(t.type) == Availability::ABSENT) {
+            plan.unavailable_here.emplace_back(
+                c, std::string("capability present, HARDWARE ABSENT on this machine (") +
+                       backend_name(t.type) + ", id " + t.engine_id + ") — not a constraint violation");
+            continue;
+        }
         plan.targets.push_back(std::move(t));
     }
 
@@ -109,6 +127,30 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
                            "whether it can serve";
     }
     return plan;
+}
+
+BackendRoute to_backend_route(const RoutePlan& plan) {
+    BackendRoute out;
+    for (const auto& t : plan.targets) out.backend_ids_in_order.push_back(t.engine_id);
+
+    std::string why = plan.targets.empty() ? "no backend can serve this artifact"
+                                           : "registry plan";
+    if (!plan.refused.empty()) {
+        why += " | refused:";
+        for (const auto& r : plan.refused) why += " " + std::string(to_string(r.first));
+    }
+    if (!plan.unavailable_here.empty()) {
+        why += " | hardware absent:";
+        for (const auto& r : plan.unavailable_here) why += " " + std::string(to_string(r.first));
+    }
+    if (!plan.skipped_by_context.empty()) {
+        why += " | out of context:";
+        for (const auto& r : plan.skipped_by_context) why += " " + std::string(to_string(r.first));
+    }
+    if (plan.quality_gate != QualityGate::NOT_EVALUATED)
+        why += " | QUALITY GATE: reachable but flagged (see quality_note)";
+    out.reason = why;
+    return out;
 }
 
 }  // namespace onebit

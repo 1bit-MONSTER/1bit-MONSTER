@@ -26,6 +26,7 @@
 //   without resolving that question — but the ID is not interchangeable.
 #include "common.h"
 #include "model_registry.h"
+#include "model_router.h"   // BackendRoute — the engine's route currency
 
 #include <string>
 #include <utility>
@@ -50,11 +51,37 @@ enum class QualityGate {
     KNOWN_DEGRADED,  // reachable, measured unusable in-flow for some architectures
 };
 
+// ── Hardware availability: "what can serve this HERE" ─────────────────────
+// Raised by @agent-ec855d from the box, and it is the objection that matters most
+// for this step: the registry is HARDWARE-BLIND by design (that is what makes it
+// engine-independent), so translating capability -> backend name is not enough.
+// On ryzen the registry says zaya1-74b-preview.1bp -> NPU-Q4NX and the resolver
+// answers YES, while the engine prints "NPU hardware: No" and /dev/accel* does not
+// exist; HIP is likewise unproven for gfx1201. A capability table that is right in
+// the abstract and wrong on the box is the exact failure this bridge exists to
+// prevent, so the bridge must INTERSECT with the engine's own probe rather than
+// assume it.
+//
+// The probe is by BackendType because that is what the engine knows (has_npu(),
+// has_vulkan(), ...). UNKNOWN is the default and does NOT filter: the bridge must
+// not invent hardware facts it was not given, and an unfiltered plan is the honest
+// answer when nobody told it otherwise.
+enum class Availability { UNKNOWN, PRESENT, ABSENT };
+
+// Injected by the engine once at startup (set-once, like the limit overrides).
+using AvailabilityProbe = Availability (*)(BackendType);
+void set_backend_availability_probe(AvailabilityProbe probe);
+Availability backend_availability(BackendType t);
+
 struct RoutePlan {
     const ModelArtifact* artifact = nullptr;
     std::vector<BackendTarget> targets;                              // in order
-    std::vector<std::pair<Capability, std::string>> refused;         // no backend
-    std::vector<std::pair<Capability, std::string>> skipped_by_context;
+    // THREE DISTINCT REASONS, kept apart on purpose (@agent-ec855d's second ask):
+    // "no backend advertises it", "this box has no such hardware", and "the
+    // constraint is violated" need different fixes, so they must not read the same.
+    std::vector<std::pair<Capability, std::string>> refused;           // no backend exists
+    std::vector<std::pair<Capability, std::string>> unavailable_here;  // hardware absent
+    std::vector<std::pair<Capability, std::string>> skipped_by_context; // constraint violated
     QualityGate quality_gate = QualityGate::NOT_EVALUATED;
     std::string quality_note;
 };
@@ -70,5 +97,14 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens = 0,
 // Returns false for capabilities that have no backend (HRX2-GGUF-Q4NX today).
 bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
                  std::string& out_constraint);
+
+// Express a plan in the ENGINE's own currency. `BackendRoute` is what
+// select_backend_route() returns and what BackendManager::init's preferred_ids
+// overload consumes, so this is the last translation: after it, a caller swap is
+// one line in model_router.cpp (a new function, not an edit to the existing
+// select_backend_route). Refusals and context skips are folded into `reason`
+// rather than dropped, because a route list that silently omits its exclusions
+// cannot be audited.
+BackendRoute to_backend_route(const RoutePlan& plan);
 
 }  // namespace onebit
