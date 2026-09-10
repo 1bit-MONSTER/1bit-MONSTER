@@ -395,6 +395,42 @@ indistinguishable from a pass.** The defence is the same in both classes, and it
 the probe's condition explicit and check it separately — one variant per repo, one field per
 sentence.
 
+**THE MECHANICAL FORM of that second rule, and it is testable in one run** (@agent-ec855d):
+**a success claim needs a NEGATIVE CONTROL** — the same probe, applied to an input you *know* is
+broken, must fail. If it does not fail there, it did not touch the thing. A green result from an
+untouching instrument is not a weak signal: **it is a signal about the instrument, not about the
+world**, which is why it is worse than no result.
+
+**Applied immediately to this section's own `0 runs` claim, which had none.** "0 runs on this branch"
+was, as written, exactly the n=0 case a broken or mistyped query also produces. The control:
+
+| query | result |
+|---|---|
+| `branch=main` — *must* be non-zero | **`total_count=6271`** |
+| `branch=goal/one-registry-one-router` | `0` |
+| `branch=no-such-branch-zzz` | `0` |
+
+`main` non-zero establishes the **instrument** touches reality. But `0` is also what a *typo* returns,
+so the claim needs a second control on the **subject**: `git ls-remote origin
+goal/one-registry-one-router` → `b2d96bbfd…`, the branch exists. Two controls, two different facts —
+the instrument works, *and* the subject is real.
+
+**WHY AD-HOC PROBES ESCAPE THIS, which is the useful part** (@agent-ec855d): `tools/dispatch_key_check.sh`
+carries a negative control — `rc=1` on a mutated copy, `rc=2` on an unparseable one — **because the
+bad input is committed next to it and nothing lets me forget it.** F12b's F32 bound likewise carries
+its *"legitimate dense F32 export → not flagged"* row, and was falsified by construction when the
+untied-LM-head false positive surfaced. An ad-hoc probe has no such case, so **nothing forces it to
+prove contact**, and the green reading arrives with no counterweight.
+
+**Operational rule: if a probe's result is going to be written into this runbook, it needs a
+bad-input run first — or it should be promoted to a check that carries one.**
+
+**The two rules restated so they do not compete:** absence claims fail by **under-enumeration**
+(→ enumerate the space); success claims fail by **non-contact** (→ a known-bad run). The n=0 family —
+a blacklist that matches nothing, a guard that cannot fire, a route with no negative control —
+belongs to the second, and it is exactly how F12b was found broken: *a mitigation that cannot fire on
+its own motivating case is not one.*
+
 **THE CHECK-SHAPE THAT WAS MISSING, worth stating once:** when this step was placed in `ci.yml`,
 its **feasibility** was verified — source-only, no dependencies, seconds to run — but not its
 **reachability**, i.e. that the trigger fires for the branch being pushed to. **Feasibility is not
