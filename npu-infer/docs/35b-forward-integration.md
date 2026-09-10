@@ -915,3 +915,26 @@ linear layer (242 entries):
    the concrete next step to close task-2, followed by the task-3 arg→BO
    wiring (MoE kernel order: arg0=weight, arg1=act?, arg2=router,
    arg3=norms, arg4=kv/state).
+
+## Round 73 — MoE layer-kernel arg→BO map determined from DMA directions (2026-09-10)
+
+Annotated the linear layer TXN's DDR_PATCHes with DMA direction (from the
+queue-write registers, MM2S=BO→tile read, S2MM=tile→BO write) and bucketed
+per arg_idx. This yields the MoE layer kernel's host-BO order (arg_idx = BO
+slot, kernel slot = 3 + arg_idx):
+
+| arg_idx | MM2S | S2MM | role | BO |
+|---|---|---|---|---|
+| 0 | 480 | 0 | read-only | **weight BO** (~460 MB: region A @0, region B @0x1bc00000) |
+| 1 | 2 | 2 | read+write | **act BO** (hidden state) |
+| 2 | 4 | 0 | read-only | **router + shared_expert_gate BO** (moe_router @0x3000) |
+| 3 | 68 | 2 | mostly read | **norms/ssm smalls BO** (~5 MB) |
+| 4 | 2 | 6 | mostly write | **kv/linear-state BO** |
+
+=> The MoE kernel arg order is DIFFERENT from the dense kernel: weight is
+   slot 3 (dense: act is slot 3). Wiring (task-3) is now concrete:
+     run.set_arg(3, weight) ; set_arg(4, act) ; set_arg(5, router) ;
+     set_arg(6, norms) ; set_arg(7, kv_state)
+   plus the separate per-token expert GEMM kernels reading the expert-pool
+   BO (task-2). Remaining: exact region A/B byte offsets per tensor (the
+   BD list, Round 72) + the expert GEMM sequence ABI.
