@@ -1106,3 +1106,27 @@ bytes, so it is NOT the region-B producer. The capture oracle now on disk
 (moe-cap-rb) holds the transformed share_*/qkv bytes for a future replay
 path (use-captured-bytes-directly), but the int8→int16 dequant scale for
 qkv (R51-54) and the share_* transform remain the closed-source unknowns.
+
+## Round 82 — layer-ELM weight BO is map-written; region B uncapturable (2026-09-10)
+
+Analyzed the fresh capture's allocation manifest + the CAP_DUMP_BIG preinsts:
+
+- EXTBO order: 40 × 512 MB pools, then per layer a repeating
+  [2 MB, 5 MB, 3 MB]×4 + [2 MB, 1 MB, 128 MB] set. The 40 pools are the
+  expert pools (sync'd, byte-confirmed R81); there is NO separate ~460 MB
+  layer-ELF weight BO among the sync'd EXTBOs.
+- preinsts_001 (runlist-1 arg dump) shows the EXPERT GEMM runlist: pool at
+  slot i5 (512 MB), full-attn pool at i4 (542 MB), act/workspace/norm
+  smalls elsewhere — NOT the layer ELF's arg map (R73).
+- desc hexdump (dump_moe_desc): the weight BO device base 0x1ccc4000 /
+  0x1cb9c000 appear as desc fields — confirming the DDR_PATCH arg_off is a
+  DESC-LOGICAL offset remapped onto a map-written weight BO, not a BO-relative
+  offset into a sync'd BO (corrects Round 71's dense-derived generalization).
+
+=> The layer-ELF weight BO (region A+B, incl. the transformed share_*/qkv) is
+   map-written (never xrtBOSync'd) and therefore absent from the sync capture
+   AND from the preinsts arg-dump (which only shows the expert GEMM runlist).
+   This is the same conclusion as R50's byte-flip differentials (qkv map-only).
+   The share_*/qkv value-transform remains the closed-source blocker; the
+   capture oracle (moe-cap-rb) holds the expert pools + linear BOs (both
+   byte-verified) but NOT the layer-ELF region-B content.
