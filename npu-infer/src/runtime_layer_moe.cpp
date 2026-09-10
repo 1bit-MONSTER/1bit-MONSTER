@@ -188,11 +188,12 @@ bool MoERuntimeLayerEngine::forward(int ctx_len) {
         run.set_arg(0, (const void*)&v0, sizeof(v0));
         run.set_arg(1, (const void*)&v1, sizeof(v1));
         run.set_arg(2, (const void*)&v2, sizeof(v2));
-        // dense lm_head ABI (best-effort): slot3=logits, slot4=w, slot5=act,
-        // slot6=final-norm. The MoE lm_head ABI is not yet decoded.
+        // MoE lm_head ABI (decoded from gen_lm_head_seq): the weight BD is
+        // DDR_PATCH arg_idx 2 = kernel slot 5. slot 3 = logits (output),
+        // slot 4 = act (input), slot 6 = final norm (best-effort).
         run.set_arg(3, (const xrt::bo&)*bo_logits_);
-        run.set_arg(4, (const xrt::bo&)*bo_lmhead_w_);
-        run.set_arg(5, (const xrt::bo&)*bo_act_);
+        run.set_arg(4, (const xrt::bo&)*bo_act_);
+        run.set_arg(5, (const xrt::bo&)*bo_lmhead_w_);
         run.set_arg(6, (const xrt::bo&)*bo_norms_);
         rl.add(run);
     }

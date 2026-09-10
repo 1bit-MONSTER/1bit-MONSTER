@@ -1291,3 +1291,25 @@ structurally correct by the clean execution. Next discriminator: decode the
 RTP/MASKWRITE reads to pin the exact norm offsets and retest; if NaN persists
 with correct norms, the lib's layer sequence is the source and the engine
 needs its own layer sequence (the mm/dequant_mm path), not the lib's.
+
+## Round 91 — lm_head ABI decoded; MoE ELFs carry desc device-VA in RTP writes (2026-09-10)
+
+Regenerated + fully decoded the MoE lm_head TXN (260 words):
+
+- 1 weight BD, DDR_PATCH arg_idx=2 → **the lm_head weight is kernel slot 5**
+  (not slot 4 as the dense path). Fixed in MoERuntimeLayerEngine.
+- The act/state/weight/kv BO device-VAs (0x40000000 act, 0xc0000000 state,
+  0xe000000 weight, 0x2000000 kv — the desc.build addresses, R46) are written
+  into RTP register 0 by the ELF's own WRITE commands, i.e. they are
+  ABSOLUTE addresses baked into the sequence at assembly.
+- The dense layer ELF (which works byte-verified) also carries such RTP
+  writes (0xc0000000 state, 0x401d214/0x401d21c queue regs) — so the
+  mechanism is normal; the dense path works because the engine's BOs land at
+  the same deterministic device-VAs as the runtime's.
+
+=> The MoE replay must land its BOs at the desc device-VAs (0x40000000 act,
+   0xe000000 weight, 0x2000000 kv, 0xc0000000 state), i.e. replicate the
+   runtime's BO allocation order (R63: 40x512MB pools first, then per-layer
+   BOs) — NOT the engine's current weight/act/router/norms/kv order. This is
+   the likely cause of the all-NaN act. Next: print the engine's actual
+   xrt::bo device addresses vs the desc targets, then reorder allocation.
