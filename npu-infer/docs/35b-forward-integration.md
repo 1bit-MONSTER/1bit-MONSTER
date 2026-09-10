@@ -1356,3 +1356,22 @@ is the "different generator" (R37 line 89): 8704-row -> 9216-padded ->
    content for the 8704-row tensors remains the closed 8704->9216->5120-B
    generator (R37/R44-45/R55). The expert pool + 5MB linear + router packings
    (byte-verified) are unaffected.
+
+## Round 94 — path-2 (engine NPU_MOE) launch structure + runlist feasibility (2026-09-10)
+
+Characterized the engine's own MoE path (npu_engine_universal.cpp NPU_MOE,
+#1473) as the alternative to the broken lib ELF:
+
+- Per layer: CPU router (top-8) + memcpy pack + **4 launches** (MOE_GU routed,
+  MOE_D routed, MOE_SGU shared, MOE_SD shared) — or **2 launches** with the v28
+  fused MOE_GUSGU/MOE_DSD xclbins — + CPU readback/combine.
+- The routed experts are per-token (router output feeds the next layer), so the
+  per-token forward CANNOT be one static runlist: routing is sequential + CPU.
+- What CAN batch into one xrt::runlist per layer: the 2-4 MoE GEMMs + the
+  attention + lm_head (the dense path already batches 29 runs/token this way).
+
+=> Path 2 = switch the engine's per-layer MoE + attention + lm_head to the
+   single-runlist executor (xrt::runlist) using the engine's OWN int8 kernels
+   (no lib ELF, no closed region-B generator). This is the on-box route to a
+   working fast 35B; the per-ctx-ELF replication lane is closed (lib gen_layer_seq
+   35B NaNs, R59; region-B 8704->5120-B int4 generator closed, R93).
