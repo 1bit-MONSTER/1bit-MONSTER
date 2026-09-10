@@ -2011,7 +2011,21 @@ fused_single_done:
                             double sw_corr = cd1 * cd2 > 0 ? cn / sqrt(cd1 * cd2) : 0;
                             fprintf(stderr, "[SWEEP] l=%d pos=%d e=%d corr(casc,prod)=%.6f maxabs=%.4f casc_rms=%.4f prod_rms=%.4f qn_s=%.3f\n",
                                     l, pos, e, sw_corr, mx, sqrt(cd1 / d.H), sqrt(cd2 / d.H), sw_qns);
-                            if (getenv("NPU_CASCADE_DECODE") && atoi(getenv("NPU_CASCADE_DECODE")) == 1)
+                            // #2114 — fold-scale-adaptive guard at the in-flow integration point.
+                            // The 180-point sweep shows the only large cascade errors are points where
+                            // the fold scale collapses (l=35 pos1 qn_s=0.223 -> maxabs 12.28, corr
+                            // 0.9955 = 82.8% of that position's whole error budget; l=35 pos3/4
+                            // 41.6%/30.9%), while healthy points sit at corr 0.9998-0.9999 with
+                            // qn_s >= 4.87. A static layer skip would throw away l=35 at the 5
+                            // positions where it costs only 1.6-3.8%, so gate per (layer,position):
+                            // below the threshold keep the production 2-launch result for this layer.
+                            const float sw_min_qn = getenv("NPU_CASCADE_MIN_QN")
+                                                  ? (float)atof(getenv("NPU_CASCADE_MIN_QN")) : 0.0f;
+                            const bool sw_qn_ok = !(sw_min_qn > 0.0f) || sw_qns >= sw_min_qn;
+                            if (!sw_qn_ok)
+                                fprintf(stderr, "[CAS] SKIP l=%d pos=%d e=%d qn_s=%.4f < NPU_CASCADE_MIN_QN=%.3f -> production path\n",
+                                        l, pos, e, sw_qns, sw_min_qn);
+                            else if (getenv("NPU_CASCADE_DECODE") && atoi(getenv("NPU_CASCADE_DECODE")) == 1)
                                 for (int nn = 0; nn < d.H; nn++) moe_out[nn] = ffn_sw[nn];
                         } else if (sw_ok)
                             fprintf(stderr, "[SWEEP] l=%d skipped: N_D=%d != H=%d (use NPU_CASCADE_ND=%d)\n", l, sw.N_D, d.H, d.H);
