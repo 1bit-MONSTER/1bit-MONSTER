@@ -1,0 +1,107 @@
+{
+ "deepseek": {
+  "arch": "deepseek",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Deepseek",
+  "model": "LibertAIDAI/DeepSeek-V4.1-Flash-NVFP4"
+ },
+ "deepseekv41": {
+  "arch": "deepseekv41",
+  "covered": false,
+  "date": "2026-09-10",
+  "family": "Deepseek",
+  "model": "Terom/DeepSeek-V4.1-Flash"
+ },
+ "gemma4": {
+  "arch": "gemma4",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Gemma",
+  "model": "idrock/aruz"
+ },
+ "glm4v": {
+  "arch": "glm4v",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Glm",
+  "model": "Fluxmire/GLM-4.6V-Flash-FP8-DYNAMIC"
+ },
+ "glm5next": {
+  "arch": "glm5next",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Glm",
+  "model": "anthori/GLM-5.3-Flash-EXL3-Q8Core-Q3Q4Q6"
+ },
+ "glmmoedsa": {
+  "arch": "glmmoedsa",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Glm",
+  "model": "Terom/GLM-5.3"
+ },
+ "granitemoehybrid": {
+  "arch": "granitemoehybrid",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Granite",
+  "model": "noodcon/Safetensors.granite-4.0-Improved-Enhanced-Refined"
+ },
+ "llama": {
+  "arch": "llama",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Llama",
+  "model": "Elio2151/Llama-3.1-8B-Instruct-TechnicalAgentFineTuned-Merged_4"
+ },
+ "mistral": {
+  "arch": "mistral",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Mistral",
+  "model": "Aurigene-AI/BioMistral-7B"
+ },
+ "olmo3": {
+  "arch": "olmo3",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Olmo",
+  "model": "ganscs/Olmo7b-olmo-a100-new-20260908-CPT-merged-step-750"
+ },
+ "qwen2": {
+  "arch": "qwen2",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Qwen",
+  "model": "ram-lexsi/safetune-testrun-unlearn_rmu"
+ },
+ "qwen3": {
+  "arch": "qwen3",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Qwen",
+  "model": "just1nseo/qwen3-4b-ifrlvr-grpo-judge-30ba3b"
+ },
+ "qwen3_5": {
+  "arch": "qwen3_5",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Qwen",
+  "model": "StationPC/Qwen3.5-4B-RKNN3-RK1828"
+ },
+ "qwen3_5moe": {
+  "arch": "qwen3_5moe",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Qwen",
+  "model": "forgeguard-ai/Ornith-1.5-35B-A3B-NVFP4"
+ },
+ "qwen4exp": {
+  "arch": "qwen4exp",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Qwen",
+  "model": "MidnightPhreaker/Qwen3.8-Flash-Next-REAP-384-exl3-4.00bpw-ORIGINAL-MTP"
+ }
+}
