@@ -264,6 +264,12 @@ public:
         static bool sigpipe_ignored = []{ signal(SIGPIPE, SIG_IGN); return true; }();
         (void)sigpipe_ignored;
 
+        // PDEATHSIG is delivered when the CREATING THREAD exits, so it may only
+        // be armed if the fork happens on the main thread. Decide that HERE, in
+        // the parent — see the child's comment for why the child cannot.
+        const bool fork_on_main_thread =
+            (::getpid() == static_cast<pid_t>(::syscall(SYS_gettid)));
+
         pid_ = fork();
         if (pid_ < 0) {
             perror("NPU: fork");
@@ -285,14 +291,15 @@ public:
             // child holding an NPU context (see ensure_serve() in the zaya
             // backend — same orphan/NOAVAIL problem).
             //
-            // BUT PDEATHSIG fires when the CREATING THREAD exits, not only the
-            // process. The engine forks FLM from a short-lived worker, so the
-            // child was SIGTERM'd the instant that thread ended — observed as
-            // "FLM ready" followed by "write to FLM failed: child killed by
-            // signal 15" at request time, i.e. 0 tokens. Arm it only on the main
-            // thread, where thread-exit == process-exit; a worker-forked child is
-            // reclaimed by destroy() instead.
-            if (::getpid() == static_cast<pid_t>(::syscall(SYS_gettid))) {
+            // BUT PDEATHSIG is delivered when the CREATING THREAD exits, not only
+            // the process, so it may only be armed when the fork happened on the
+            // MAIN thread. The test is computed in the PARENT (see
+            // fork_on_main_thread): a freshly forked child is single-threaded, so
+            // getpid()==gettid() is always true inside it and cannot answer the
+            // question. Arming it from a short-lived worker killed FLM the instant
+            // that thread ended — "FLM ready" then "write to FLM failed: child
+            // killed by signal 15" at request time, i.e. 0 tokens.
+            if (fork_on_main_thread) {
                 prctl(PR_SET_PDEATHSIG, SIGTERM);
             }
 
