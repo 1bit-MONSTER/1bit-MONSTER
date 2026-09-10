@@ -18,6 +18,7 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <xrt/xrt_kernel.h>
+#include <xrt/experimental/xrt_kernel.h>   // xrt::runlist (#2150 MoE batching)
 #include <xrt/experimental/xrt_module.h>
 #include <xrt/experimental/xrt_elf.h>
 #include <xrt/experimental/xrt_ext.h>
@@ -2370,6 +2371,80 @@ struct Bf16Ctx {
         pack_gu_ = pack_de_ = nullptr;
         if (t_on) fprintf(stderr, "[moe l=%d pack] %.1f ms\n", l,
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tf_).count());
+
+        // ── #2150 runlist batching: [GU∥SGU] then [D∥SD] on ONE hwctx ──
+        // (all engine MoE xclbins are the SAME MLIR_AIE kernel, Round 96) —
+        // 2 submits/layer instead of 4. Opt-in (NPU_MOE_RUNLIST=1).
+        if (getenv("NPU_MOE_RUNLIST") && N_SHARED > 0 && sh_off[l].gate &&
+            msg->isReady() && msd->isReady()) {
+            // static shared weights -> msg/msd weight BOs (per layer)
+            int8_t* sguB = (int8_t*)msg->layerB[0]->map();
+            memcpy(sguB, sh_gu_packed[l].data(), (size_t)msg->KD * msg->ND);
+            msg->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            int8_t* sdB = (int8_t*)msd->layerB[0]->map();
+            memcpy(sdB, sh_d_packed[l].data(), (size_t)msd->KD * msd->ND);
+            msd->layerB[0]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+
+            std::vector<float> gu_out(gu_n), su((size_t)TOP_K * IM_EXP), d_out(H);
+            std::vector<float> sg_out(2 * IM_EXP), ssu(IM_EXP), sh_out(H);
+            float ag = dynamic_ascale(x, H);
+            // stage 1: routed GU ∥ shared SGU (both take x, independent)
+            mgu->quantize_async(x, 1, H, ag);
+            msg->quantize_async(x, 1, H, ag);
+            {
+                xrt::runlist rl(*mgu->hc);
+                rl.add(mgu->launch_with(*mgu->k, 0));
+                rl.add(msg->launch_with(*mgu->k, 0));
+                rl.execute();
+                rl.wait();
+            }
+            mgu->readback();
+            mgu->dequant_only(gu_out.data(), 1, (int)gu_n, ag, gu_sc);
+            msg->readback();
+            msg->dequant_only(sg_out.data(), 1, 2 * IM_EXP, ag, msg_scale[l]);
+            // per-expert dequant correction + routed SiLU
+            for (int e = 0; e < TOP_K; e++) {
+                if (gu_sc == 0) continue;
+                float corr = gu_corr[e];
+                float* col = gu_out.data() + (size_t)e * 2 * IM_EXP;
+                for (int i = 0; i < 2 * IM_EXP; i++) col[i] *= corr;
+            }
+            for (int e = 0; e < TOP_K; e++)
+                for (int i = 0; i < IM_EXP; i++) {
+                    float gv = gu_out[e * 2 * IM_EXP + i];
+                    if (!std::isfinite(gv)) gv = 0;
+                    su[e * IM_EXP + i] = (gv / (1.0f + expf(-gv))) *
+                                         gu_out[e * 2 * IM_EXP + IM_EXP + i] * probs[topk[e]];
+                }
+            for (int i = 0; i < IM_EXP; i++) {
+                float gv = sg_out[i];
+                if (!std::isfinite(gv)) gv = 0;
+                ssu[i] = (gv / (1.0f + expf(-gv))) * sg_out[IM_EXP + i];
+            }
+            // stage 2: routed D ∥ shared SD (both take the SiLU'd su/ssu)
+            float asu = dynamic_ascale(su.data(), TOP_K * IM_EXP);
+            mde->quantize_async(su.data(), 1, TOP_K * IM_EXP, asu);
+            float assu = dynamic_ascale(ssu.data(), IM_EXP);
+            msd->quantize_async(ssu.data(), 1, IM_EXP, assu);
+            {
+                xrt::runlist rl(*mgu->hc);
+                rl.add(mde->launch_with(*mgu->k, 0));
+                rl.add(msd->launch_with(*mgu->k, 0));
+                rl.execute();
+                rl.wait();
+            }
+            mde->readback();
+            mde->dequant_only(d_out.data(), 1, H, asu, d_sc);
+            msd->readback();
+            msd->dequant_only(sh_out.data(), 1, H, assu, msd_scale[l]);
+            double sg = 0;
+            const float* sg_ptr = sh_gate_vec[l].data();
+            for (int i = 0; i < H; i++) sg += (double)x[i] * sg_ptr[i];
+            float sg_sig = 1.0f / (1.0f + expf(-(float)sg));
+            for (int i = 0; i < H; i++) out[i] = d_out[i] + sg_sig * sh_out[i];
+            for (int i = 0; i < H; i++) if (!std::isfinite(out[i])) out[i] = 0;
+            return;
+        }
 
         if (fused_run) {
             // ── v28 fused FFN: 2 launches per layer instead of 4 ──

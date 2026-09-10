@@ -1410,3 +1410,20 @@ instruction streams as modules.
    (register one xclbin, load the 4 insts as 4 kernels), then add the two
    independent runs to one xrt::runlist per stage. This is the bounded ~2x
    launch-count reduction toward the goal's metric.
+
+## Round 97 — option (a) IMPLEMENTED: MoE FFN runlist batching (2 submits/layer) (2026-09-10)
+
+Landed the #2150 runlist batching for the engine's own MoE FFN (opt-in
+NPU_MOE_RUNLIST=1, gated so the default v27/v28 paths are untouched):
+
+- I8Ctx::launch_with(kernel&, l): run on an EXTERNAL kernel (all engine MoE
+  xclbins are the SAME MLIR_AIE/0x901, Round 96), using this ctx's own BOs +
+  insts — enables one hwctx to host GU/D/SGU/SD.
+- moe_ffn_npu runlist path: [MOE_GU ∥ MOE_SGU] in runlist-1 (both take x),
+  then [MOE_D ∥ MOE_SD] in runlist-2 (both take the CPU SiLU'd su/ssu) —
+  2 submits/layer instead of 4 (160 -> 80/token). Logic mirrors the v27
+  4-launch path (dequant-corr + SiLU + sigmoid blend unchanged).
+- Added <xrt/experimental/xrt_kernel.h> (xrt::runlist) to the engine TU.
+
+Next: build + run the 35B engine with NPU_MOE=1 NPU_MOE_RUNLIST=1, confirm
+token parity vs the CPU reference (task-4) + measure tok/s (task-5).
