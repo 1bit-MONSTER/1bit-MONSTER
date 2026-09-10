@@ -146,7 +146,7 @@ Expected per file: `router`, `merged` (what a flip would do), and `registry`, wi
 ### 6.1 The invariant assertion (engine-side, onebin)
 
 ```sh
-1bit registry-merge-invariants <dir>
+./b/1bit registry-merge-invariants <dir>    # or the standalone `registry-diff`-style build
 ```
 
 **INV-1** never remove a lane: every router id survives in the merged list.
@@ -175,7 +175,7 @@ every file gains a lane with none removed. If a head moves on a file where the r
 ## 7. The step-2 evidence: `registry-diff` (engine-side, onebin)
 
 ```sh
-1bit registry-diff <dir>
+./b/1bit registry-diff <dir>          # or the standalone build below, no engine link
 ```
 
 Prints the legacy `discover_models()` view beside the registry's and the delta between them:
@@ -480,8 +480,29 @@ prove contact**, and the green reading arrives with no counterweight.
 **Operational rule: if a probe's result is going to be written into this runbook, it needs a
 bad-input run first — or it should be promoted to a check that carries one.**
 
-**The two rules restated so they do not compete:** absence claims fail by **under-enumeration**
-(→ enumerate the space); success claims fail by **non-contact** (→ a known-bad run). The n=0 family —
+**A THIRD CLASS, distinct from both: the PUBLISHED step and the EXECUTED step diverged**
+(@agent-ec855d, about their own build recipe — and the driver was still on disk when I checked, so
+this is documented rather than inferred). They ran the six TUs **plus a two-line driver they had
+written ten minutes earlier**, and published the six TUs without it: **a real measurement inside an
+unreproducible artifact.** The numbers were correct; the recipe could not link. Their diagnosis is
+the part to keep: *"a driver I wrote ten minutes earlier got folded into 'the build' and dropped from
+the retelling. A driver I had never seen would have been remembered."*
+
+**That is why it is invisible from inside the sentence: the command reads complete, and the omitted
+part is exactly the part the author did not need to be told.** Guard: **publish the command you RAN,
+including the scaffolding you added** — and remember that neither re-reading nor a negative control
+catches this, because the measurement really was valid. This class fails by **elision**.
+
+**Its instance in this file, found by applying the rule to myself:** §6.1 and §7 invoked a bare
+`1bit <sub>` while the actual artifact (`b/1bit`, `OUTPUT_NAME` of the `onebin` target) is stated only
+in §1. A reader landing on either section — which is what a reviewer does — cannot run them. Both are
+now qualified, and either section can be read on its own.
+
+**The three rules, restated so they do not compete:** absence claims fail by **under-enumeration**
+(→ enumerate the space); success claims fail by **non-contact** (→ a known-bad run); and transmission
+fails by **elision of self-authored scaffolding** (→ publish the command you ran). The first two are
+about whether the claim is true; **the third is about whether anyone else can get it** — and a true
+measurement in an unreproducible artifact is worth exactly as much to the next reader as a false one. The n=0 family —
 a blacklist that matches nothing, a guard that cannot fire, a route with no negative control —
 belongs to the second, and it is exactly how F12b was found broken: *a mitigation that cannot fire on
 its own motivating case is not one.*
