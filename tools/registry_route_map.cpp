@@ -10,7 +10,7 @@
 // why it is a separate tool and not a flag on the stdlib-only registry_scan.
 //
 // Build (no engine link needed — the mapping path uses enums and strings only):
-//   amdclang++ -std=c++23 -O2 -Iinclude tools/registry_route_map.cpp \
+//   amdclang++ -std=c++23 -O2 -Iinclude tools/registry_route_map.cpp
 //       src/model_registry.cpp src/model_registry_route.cpp -o route_map
 //
 // Usage:
