@@ -199,10 +199,27 @@ bool HrxBackend::spawn_server() {
     pid_t pid = fork();
     if (pid < 0) { perror("HRX: fork"); return false; }
     if (pid == 0) {
-        int devnull = open("/dev/null", O_RDWR);
-        if (devnull >= 0) {
-            dup2(devnull, 0); dup2(devnull, 1); dup2(devnull, 2);
-            if (devnull > 2) close(devnull);
+        // stdin stays /dev/null (the child is an HTTP server, not interactive).
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) { dup2(devnull, 0); if (devnull > 2) close(devnull); }
+        // #2145-adjacent diagnosability: this child's stdout/stderr used to go to
+        // /dev/null, which is why a child that died at startup was visible only in
+        // the process table (it made an orphan/PDEATHSIG investigation inconclusive
+        // and forced process-state forensics). Capture it instead:
+        //   HRX_SERVER_LOG=<path>     write there
+        //   HRX_SERVER_LOG=inherit    keep the parent's stdout/stderr
+        //   HRX_SERVER_LOG=/dev/null  previous behaviour exactly
+        //   unset                     /tmp/hrx-llama-server-<port>.log
+        {
+            const char* want = getenv("HRX_SERVER_LOG");
+            if (!(want && strcmp(want, "inherit") == 0)) {
+                char def[256];
+                const char* path = (want && *want) ? want : def;
+                if (!(want && *want))
+                    snprintf(def, sizeof def, "/tmp/hrx-llama-server-%s.log", port_.c_str());
+                int lg = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+                if (lg >= 0) { dup2(lg, 1); dup2(lg, 2); if (lg > 2) close(lg); }
+            }
         }
         // The new hrx-system's IREE amdgpu driver dlopens libhsa-runtime64.so.1
         // at runtime and requires a recent HSA (HSA_AMD_AGENT_INFO_PM4_EMULATION,
