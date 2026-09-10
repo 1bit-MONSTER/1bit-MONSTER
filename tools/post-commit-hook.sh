@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 #
 # INSTALL (git hooks are NOT versioned — per-clone, and this repo has several clones). This file is the
-# fixed form of the installed hook; the fix is `set -u` -> `set -uo pipefail` and nothing else.
+# fixed form of the installed hook. SEMANTICALLY one change and nothing else — `set -u` ->
+# `set -uo pipefail`; verified by diffing both files with comments and blank lines stripped, which
+# yields that single line. Everything else this file adds is the INSTALL block below.
+# (An earlier claim of mine said "diff is exactly one expression + comment"; that was true before the
+# INSTALL block was added, and a diff of the raw files now reads 16 lines because of it. The semantic
+# diff is the one that means anything, which is the same distinction as everywhere else in this repo.)
 #     cp tools/post-commit-hook.sh <repo>/.git/hooks/post-commit
 #     chmod +x <repo>/.git/hooks/post-commit
 # The two copies cover every worktree on both boxes (worktrees inherit the COMMON hooks directory):
