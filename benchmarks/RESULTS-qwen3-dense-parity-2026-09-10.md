@@ -444,3 +444,30 @@ A BO or supplies a transformed K input).
 mm.xclbin bf16 GEMM + dequant Q4NX→bf16 + per-projection woff (in elements) all verified for Q.
 K/V/O/MLP need the correct per-projection A (RoPE/k-norm transform) — then wire into
 `engine/npu/src/npu_engine_universal.cpp`.
+
+---
+
+## 2026-09-10 (session 2i): FULL QKV VERIFIED byte-exact — recipe complete
+
+### Q/K/V all reproduce FLM's output exactly (M=256, A = hidden = A BO first 1024)
+| proj | K | N | weight_offset(elem) | output_offset(elem) | match |
+|------|---|---|---------------------|---------------------|-------|
+| q    | 1024 | 2048 | 0        | 0        | 524288/524288 |
+| k    | 1024 | 1024 | 2097152 (→4MB) | 262144 (→512KB) | 262144/262144 |
+| v    | 1024 | 1024 | 3145728 (→6MB) | 262144 (→512KB) | 262144/262144 |
+
+### Key detail: K/V write to the C BO's SECOND half (output_offset=262144 elements)
+`generate_seq(seq, M, K, N, weight_offset, ADD_BIAS, OUTPUT_MODE, bias_offset, output_offset)`
+— both weight_offset and output_offset are in **bf16 elements** for mm.xclbin. K/V put
+their 512 KB result at +512 KB (the 1 MB C BO's upper half); Q fills the whole 1 MB.
+The A BO's second half (A[:,1024:]) is unused by QKV (Q/K/V all read A[:,:1024] = hidden).
+
+### A BO first half = RMSNorm(embeddings) confirmed
+A[:,:1024] == embeddings/sqrt(mean(emb²)+eps)·input_layernorm_weight (True), so the hidden
+is the standard Qwen3 input layernorm output. (A[:,1024:] is a separate ~0.19-rms activation,
+not the raw embeddings, RoPE, or a copy — likely the post-attention hidden for the O/MLP GEMMs.)
+
+### Remaining for full prefill wiring
+- O/MLP GEMMs: same recipe with per-projection dequant W (o: 2048×1024 @0 of a 4 MB W;
+  gate/up/down: 6 MB each). O's A = attention output (256×2048), MLP A = post-attn hidden.
+- Then wire dequant.xclbin + mm.xclbin (+ attn.xclbin) into `npu_engine_universal.cpp`.
