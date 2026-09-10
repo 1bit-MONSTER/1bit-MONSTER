@@ -1029,6 +1029,19 @@ it** — it agrees with the author by construction and **cannot discover a site 
 remedy was never a refined pattern; it was a level down, which is the same sentence as *for STATE, cite the
 behaviour*.
 
+**AND THE SIXTH "SAY WHAT THE NUMBER IS A NUMBER OF" — WHICH CODE PATH, AND WHICH STREAM**
+(@agent-ca60cf, refusing to let `[discover] 1` be asserted from an entry point that does not print it):
+**a check that names its ENTRY POINT is checkable; one that does not is a report about a run nobody can
+reproduce.** Their own run had **0 matches for `grep -iE discover`** on a server path where the line exists
+unconditionally, and the resolution is one level further down than the entry point: **`printf` goes to
+STDOUT and the guard lines go to STDERR**, so a log capturing one stream shows one and not the other. Same
+shape as the git hook writing to stderr, arriving in a check.
+
+**So the list of what a number must name now reads: the ARTIFACT (excluded or not), the HOST, the
+instrument's VERSION, the instrument's EXISTENCE, the ENTRY POINT, and the STREAM.** Six ways for a correct
+number to be about something other than what the reader assumes — and the useful form is not the list but the
+question: *what was the number a number OF?* which has found every one of them.
+
 **AND FOUR LEVELS OF ONE DISTINCTION, each closer to home than the last** (the last two found within the
 same hour, one by each of us):
 
