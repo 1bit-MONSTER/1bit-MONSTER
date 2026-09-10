@@ -772,7 +772,14 @@ std::vector<Capability> derive_capabilities(Container c, DtypeSpace sp, bool q4n
     std::vector<Capability> caps;
     switch (c) {
         case Container::ONEBP:
-            if (q4nx_named) caps = {Capability::NPU_Q4NX};
+            // A native 1BP/Q4NX artifact is served by TWO FAMILIES, not one: the
+            // NPU lane (native worker engine / npu_flm) AND the HIP-1BP GPU lane
+            // (hip_1bp_gpu). @agent-ca60cf made HIP-1BP the DEFAULT for qwen35moe
+            // 1BP on 2026-09-10, so collapsing onebp onto NPU-only makes that lane
+            // UNREACHABLE and offers a qwen35moe 1BP file to an NPU path that does
+            // not implement the architecture. The family cannot be derived from
+            // `arch` either (F12: the 74B's v1 header omits the expert block).
+            if (q4nx_named) caps = {Capability::NPU_Q4NX, Capability::HIP_1BP};
             else caps = {Capability::NPU_1BP, Capability::HIP_1BP};
             break;
         case Container::GGUF:
