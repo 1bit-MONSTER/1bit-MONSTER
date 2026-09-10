@@ -7,6 +7,7 @@
 #include <vector>
 #include <cstring>
 #include <cstdlib>
+#include <dlfcn.h>
 #include "npu_utils/npu_instr_utils.hpp"
 #include "models/qwen3/qwen3_npu_sequence.hpp"
 #include "lm_config.hpp"
@@ -49,6 +50,41 @@ int main(int argc, char** argv) {
         FILE* f = fopen(fname, "wb");
         if (f) { fwrite(elf_buf, 1, elf_size, f); fclose(f); }
         printf("ctx=%d txn_words=%zu elf=%u -> %s\n", L, nw, elf_size, fname);
+        free(elf_buf);
+    }
+    // ---- lm_head ELF (once) — elf_0002_lmhead.bin, context-independent ----
+    // gen_lm_head_seq is exported from libqwen3_npu.so but NOT declared in the
+    // shipped qwen3_npu_sequence.hpp — resolve the ABI entry directly
+    // (see npu-infer/tools/decode_txn.cpp).
+    {
+        typedef void (*gen_lm_head_t)(qwen3_npu_sequence*, npu_sequence*);
+        static gen_lm_head_t gen_lm_head = nullptr;
+        if (!gen_lm_head) {
+            gen_lm_head = (gen_lm_head_t)dlsym(RTLD_DEFAULT,
+                "_ZN18qwen3_npu_sequence15gen_lm_head_seqEP12npu_sequence");
+            if (!gen_lm_head) {
+                fprintf(stderr, "dlsym gen_lm_head_seq failed: %s\n", dlerror());
+                return 1;
+            }
+        }
+        npu_sequence seq(device_npu2);
+        gen_lm_head(&qseq, &seq);
+        seq.cmds2seq();
+        auto [ptr, nw] = seq.dump();
+        char* elf_buf = nullptr;
+        uint32_t elf_size = aiebu_assembler_get_elf(
+            aiebu_assembler_buffer_type_blob_instr_transaction,
+            (const char*)ptr, (size_t)(nw * sizeof(uint32_t)), NULL, 0,
+            (void**)&elf_buf, NULL, 0, "", "", NULL, 0);
+        if (elf_size) {
+            char fname[256];
+            snprintf(fname, sizeof(fname), "%s/elf_0002_lmhead.bin", outdir.c_str());
+            FILE* f = fopen(fname, "wb");
+            if (f) { fwrite(elf_buf, 1, elf_size, f); fclose(f); }
+            printf("lm_head txn_words=%zu elf=%u -> %s\n", nw, elf_size, fname);
+        } else {
+            fprintf(stderr, "lm_head aiebu failed\n");
+        }
         free(elf_buf);
     }
     return 0;
