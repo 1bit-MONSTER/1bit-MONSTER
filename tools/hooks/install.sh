@@ -14,7 +14,6 @@
 # anything.
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(git rev-parse --show-toplevel)"
 
 # The hook has ONE home in this repo: tools/post-commit-hook.sh (the sibling of
