@@ -496,3 +496,30 @@ A arrangement is the last open item for the Q path.
 ### Status
 K/V/dequant byte-exact and wired into a reusable module. Q (and O N=2048) need the
 A-batch arrangement resolved; then wire dequant+mm (+attn) into the prefill loop.
+
+---
+
+## 2026-09-10 (session 2k): Q N=2048 C-write row-selection — empirical map (odd rows still open)
+
+### mm.xclbin C-write BD (N=2048) decoded from interpret()
+C BD (S2MM): d0=64, d1=256 iters @ stride 1K, d2=1, buffer 16K. The A read BD (MM2S):
+d0=256, d1=64 @ stride 512, d2=2 @ stride 256 (8 A-BDs ⇒ 256 rows, row-major). So the
+GEMM C = A×W (256 rows), but the C write emits only 128 rows.
+
+### Empirically observed output (A arrangement → 128 output rows, row-major read)
+- A contiguous (A[i]=token i)            → R[0],R[2],R[4],…,R[254]   (even tokens, contiguous)
+- A shift-by-1 (A'[i]=A[i+1])           → R[2],R[4],R[6],…           (even tokens shifted +2)
+- A shift-by-2                          → R[4],R[6],…                 (shifted +4)
+- A pairwise-swap (A'[2i]=A[2i+1])      → R[2],R[0],R[6],R[4],R[10],R[8],…  (pair-swapped even)
+- A interleave (A'[2i]=A[i], A'[2i+1]=A[128+i]) → R[0],0,R[2],0,…,R[126],0 (even tokens @ even pos, zeros @ odd)
+
+So the C write always selects a stride-2 (even) subset of the GEMM C rows and the
+1K half-row stride interleaves them; none of these simple A rearrangements yields the
+odd tokens R[1],R[3],…. The output_offset only shifts the same 128 rows to the 2nd half
+(verified) — it is not the odd-row selector.
+
+### Definitive next step
+Dump FLM's `qwen3_npu_sequence::gen_layer_seq(seq, 256)` and decode the Q GEMM's
+A/C B-DP offsets to see how FLM feeds the odd rows (likely a second generate_seq with a
+different A base offset or an A interleave the harness hasn't tried). Then Q = 2 invocations
+(even+odd) interleaved → full QKV done → wire into `npu_engine_universal.cpp`.
