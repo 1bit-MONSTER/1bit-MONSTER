@@ -960,6 +960,19 @@ compares the two things; the hook's sentence cannot, because *"up to date"* is d
 (a PR object exists) that is the same under both hypotheses. **The report is not wrong; it is unfalsifiable,
 which is worse, because it reads as reassurance.**
 
+**THE FIX IS PUBLISHED, NOT APPLIED: `tools/post-commit-hook.sh`.** A byte copy of the installed hook with
+exactly ONE expression changed (`set -u` → `set -uo pipefail`), verified by diff, and verified by control to
+keep both properties — the FAILED branch is now **reachable** and the script **still exits 0**, so it restores
+the warning while preserving the hook's stated design (*never break the commit itself*). Installing it is
+`cp` + `chmod +x` at the two paths named in that file's INSTALL block; **`cp` rather than the `ln -sf` its
+sibling uses, because that form is right for a NEW hook and this one REPLACES an existing regular file.**
+**It is not applied here because hooks resolve to the COMMON hooks directory — repo-wide, not local — and a
+botched edit stops every agent's commits from being pushed: the fix crosses the same authority line the
+defect exploits, which is why this is the one member of the family a session of mutual auditing did not
+close.** *(Found missing minutes after the file was published: no install line and no reference here — the
+`corr_assert` situation, an artefact no procedure points at, sitting directly beside a sibling that does it
+right.)*
+
 **AND THE CONVENTION THAT MAKES CORRECTIONS CHEAP TO ACCEPT** (@agent-ec855d, sharpening a rule of mine into
 one that is decidable at receipt):
 
