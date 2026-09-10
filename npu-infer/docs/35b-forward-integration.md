@@ -1560,3 +1560,15 @@ After (3), layer-0 GDN now matches the reference to float-precision:
   O output 0.0045 (corr 0.999). Token still 4329 vs 137554, so the remaining
   L0 hidden-state divergence (max|d|=3.92) is now in the MoE FFN
   (moe_ffn_cpu router/top-k or expert dequant) — the last piece.
+
+## Round 107 — 4th bug: reference residual used NORMED x, not raw (2026-09-10)
+
+The reference applied `x = rn_c(x, in_n)` IN-PLACE then `x = x + attn_out`, so
+the residual accumulated the NORMED value instead of the raw pre-norm value.
+The engine is correct (`h_b = sb_data + oo_b` with sb_data saved pre-norm).
+Fixed the reference (decode + --dump-first) to save `res = x.copy()` before
+each norm. Reference token 137554 -> 240803.
+
+Result: L0-L2 now match the engine to float noise (max|d| 0.008/0.031/0.028).
+L3 (first full-attention STD layer) diverges 0.9444 — the next bug is in
+std_attn_step (q/k norms, rotary, or the O/KV packing).

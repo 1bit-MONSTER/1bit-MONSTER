@@ -332,14 +332,16 @@ class FullModel:
             x = self.emb[tok].copy()
             hiddens = []
             for l in range(self.nc):
+                res = x.copy()
                 x = rn_c(x, self.in_n[l])
                 if self.is_gdn[l]:
                     attn_out, conv[l], delta[l] = self.gdn_layer(l, x, conv[l], delta[l])
                 else:
                     attn_out = self.std_layer(l, x, kvc[l], len(kvc[l]["k"]))
-                x = x + attn_out
+                x = res + attn_out
+                res = x.copy()
                 x = rn_c(x, self.pa_n[l])
-                x = x + self.moe_ffn(l, x)
+                x = res + self.moe_ffn(l, x)
                 hiddens.append(x.copy())
             logits = self.lm @ rn_c(x, self.fin)
             tok = int(np.argmax(logits))
@@ -368,9 +370,11 @@ def main():
     if args.dump_first:
         # per-layer hidden states at prompt position 0 (mirror the engine's
         # prefill h_b[0] dump: 40 x H)
-        x = rn_c(fm.emb[prompt[0]].copy(), fm.in_n[0])
+        x = fm.emb[prompt[0]].copy()
         states = []
         for l in range(fm.nc):
+            res = x.copy()
+            x = rn_c(x, fm.in_n[l])
             if fm.is_gdn[l]:
                 conv = np.zeros((CONV_DIM, CONV_K))
                 delta = np.zeros((GDN_VH, GDN_HD, GDN_HD))
@@ -378,9 +382,10 @@ def main():
             else:
                 kvc = {"k": [], "v": []}
                 attn_out = fm.std_layer(l, x, kvc, 0)
-            x = x + attn_out
+            x = res + attn_out
+            res = x.copy()
             x = rn_c(x, fm.pa_n[l])
-            x = x + fm.moe_ffn(l, x)
+            x = res + fm.moe_ffn(l, x)
             states.append(x.copy())
         np.save(args.dump_first, np.array(states))
         print(f"saved first-position hidden states ({len(states)} x {H})")

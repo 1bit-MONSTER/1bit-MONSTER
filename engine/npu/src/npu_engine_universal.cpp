@@ -1617,10 +1617,18 @@ struct Bf16Ctx {
             if (roff) {
                 router_w[l].resize((size_t)H * N_EXPERTS);
                 const uint16_t* rb = (const uint16_t*)i8p(roff);
+                if (l == 0 && getenv("NPU_DUMP_L0")) {
+                    FILE* fr = fopen("/tmp/l0_rtr_raw.bin", "wb");
+                    if (fr) { fwrite(rb, 2, 64, fr); fclose(fr); }
+                }
                 for (int i = 0; i < H; i++)
                     for (int j = 0; j < N_EXPERTS; j++)
                         router_w[l][i * N_EXPERTS + j] =
                             bf16g(rb[(size_t)(i % 8) * 65536 + j * 256 + i / 8]);
+                if (l == 0 && getenv("NPU_DUMP_L0")) {
+                    FILE* fw = fopen("/tmp/l0_rtr_w.bin", "wb");
+                    if (fw) { fwrite(router_w[0].data(), 4, (size_t)H * N_EXPERTS, fw); fclose(fw); }
+                }
             }
             // Expert weights: store offsets + tile rows (dequant on demand)
             snprintf(bn, 128, "model.layer.%d.mlp.gate_exps_proj.weight", l);
@@ -1985,6 +1993,13 @@ struct Bf16Ctx {
         for (int j = 0; j < N_EXPERTS; j++) topk[j] = j;
         std::partial_sort(topk.begin(), topk.begin() + TOP_K, topk.end(),
             [&](int a, int b) { return probs[a] > probs[b]; });
+
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fp = fopen("/tmp/l0_router.bin", "wb");
+            if (fp) { fwrite(logits.data(), 4, N_EXPERTS, fp); fclose(fp); }
+            FILE* ft = fopen("/tmp/l0_topk.txt", "w");
+            if (ft) { for (int e = 0; e < TOP_K; e++) fprintf(ft, "%d %.6f\n", topk[e], probs[topk[e]]); fclose(ft); }
+        }
 
         memset(out, 0, H * sizeof(float));
         // Per-expert tile-rows: gate/up each have IM_EXP/32 tile rows per expert
