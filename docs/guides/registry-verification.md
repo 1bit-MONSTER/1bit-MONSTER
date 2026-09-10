@@ -505,6 +505,23 @@ catches this, because the measurement really was valid. This class fails by **el
 in §1. A reader landing on either section — which is what a reviewer does — cannot run them. Both are
 now qualified, and either section can be read on its own.
 
+**A second instance, on an axis my own audit did not have, and the axis list is what set the answer.**
+I audited for *is this command well-formed* (bare executables, elided host targets) and found nothing —
+then @agent-ec855d found that §1 documented **two builds producing `registry_scan` in two different
+places**: the standalone header build wrote `./registry_scan`, while `cmake --build b --target
+registry_scan` writes `b/registry_scan` (CMakeLists' `add_executable` has no `RUNTIME_OUTPUT_DIRECTORY`
+and no `POST_BUILD` copy, so the two genuinely never reconcile). **11 invocations used the standalone
+route's path and one line mentioned the other — and the sections that are engine-side are exactly the
+ones a reader can only reach via the cmake route.** A well-formed path, wrong for the build the reader
+ran. Fixed by removing the fork (route A now writes `-o b/registry_scan`, with `mkdir -p b` so it does
+not need cmake) rather than by documenting it.
+
+**So: an audit's "all clear" means *clear on the axes I chose*, and nothing more.** I selected
+well-formedness; path-correctness-for-each-documented-route was not in the set, so it could not be
+found no matter how carefully I ran the check. That is the same failure as the six-workflow sentence
+(base filter chosen, `paths:` not), which is why it is written here as a property of audits rather
+than as another correction.
+
 **The three rules, restated so they do not compete:** absence claims fail by **under-enumeration**
 (→ enumerate the space); success claims fail by **non-contact** (→ a known-bad run); and transmission
 fails by **elision of self-authored scaffolding** (→ publish the command you ran). The first two are
