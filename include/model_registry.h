@@ -1,0 +1,164 @@
+// include/model_registry.h — artifact-first model registry (ADR R1/R3/R5).
+//
+// The registry's unit is an ARTIFACT, not a file and not a ModelConfig:
+//
+//   artifact { id, container, dtype_space, files[1..N shards], capabilities,
+//              tokenizer, lineage, aliases }
+//
+// Why (see okf:references/engine-layering-and-lemonade-scope.md and
+// okf:references/model-artifact-inventory.md):
+//   R1  one registry of record; ModelConfig is a *view* of an artifact
+//   R3  capability is per-ARTIFACT, not per-model (ZAYA1-74B ships .1bp + GGUF
+//       twins; *-q4nx.gguf is a third class with its own capability)
+//   R5  one canonical id per set of weights, with the on-disk names kept as
+//       aliases; `.htok` tokenizers are resolved *through the registry*, never
+//       by renaming next to the weights (the cache path is derived from the
+//       artifact filename — see inventory F6)
+//
+// Self-contained on purpose: this header pulls in nothing from the engine, so
+// (a) it compiles standalone and (b) the engine can later inject its own
+// read_gguf_metadata via ScanOptions::probe instead of using the minimal
+// built-in header probe in model_registry.cpp.
+#pragma once
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <vector>
+
+namespace onebit {
+
+// ── Container: what the bytes on disk actually are ─────────────────────────
+enum class Container {
+    GGUF,          // GGUF v2/v3
+    ONEBP,         // native .1bp / .q4nx container (magic df 8b 03 00), tile-fused
+    SAFETENSORS,   // HF shard set (dir or file)
+    MLX,           // MLX group-affine checkpoint dir
+    RAW_BIN,       // loose .bin weight dir (engine native)
+    UNKNOWN,
+};
+
+// ── Dtype space: whose numbering the tensor type ids are drawn from ────────
+//
+// CRITICAL (inventory F5): GGUF type id 42 means three different things.
+//   * this engine  : GGUF_DTYPE_TQ2_0_G128, block {128 elements, 34 bytes}
+//   * HRX2 ggml    : GGML_TYPE_Q4NX, 5120-byte tile (32 x 256)
+//   * b66          : unknown entirely
+// A reader that assumes the wrong space silently under/over-reads weights.
+enum class DtypeSpace {
+    EMPTY,             // no tensor census (native container, or not probed)
+    GGML_MAINLINE,     // only mainline ids seen (Q4_K=12, Q6_K=14, F32=0, ...)
+    ENGINE_TERNARY,    // id 42 present, read as TQ2_0_g128 / Q1_0 id 41
+    HRX2_Q4NX,         // id 42 present, read as block_q4nx tiles
+    AMBIGUOUS,         // id 42 present and we cannot tell which space
+};
+
+// ── Capability: what lane can actually serve this artifact ─────────────────
+enum class Capability {
+    NPU_Q4NX,       // native .q4nx / 1BP tiled -> XDNA2 (rt_HRX / npu_engine_*)
+    NPU_1BP,        // native .1bp
+    HIP_1BP,        // 1BP weights on the HIP lane
+    HIP_GGUF,       // engine HIP backend
+    RADV_GGUF,      // Vulkan/ZINC (commodity GGUF; only coopmat lane on gfx1151)
+    HRX2_GGUF_Q4NX, // HRX2 dev build: GGUF container carrying block_q4nx (type 42)
+    HRX_GGUF,       // released HRX bundle (b66-class; NO block_q4nx)
+    MLX_GPU,        // LSE-style group-affine GPU lane
+    CPU,            // generic CPU fallback
+    UNKNOWN,
+};
+
+const char* to_string(Container c);
+const char* to_string(DtypeSpace d);
+const char* to_string(Capability c);
+// Parse a capability name as printed by to_string(); empty optional if unknown.
+std::optional<Capability> capability_from_string(const std::string& s);
+
+// ── Files ──────────────────────────────────────────────────────────────────
+struct ArtifactFile {
+    std::string path;              // absolute
+    uint64_t bytes = 0;
+    uint16_t shard_index = 0;      // 0 when not a shard set
+    uint16_t shard_count = 1;
+    std::string digest;            // empty unless ScanOptions::digest
+};
+
+// ── Artifact ───────────────────────────────────────────────────────────────
+struct ModelArtifact {
+    std::string id;                            // canonical, stable, unique
+    std::vector<std::string> aliases;          // on-disk basenames, original spelling
+    std::string display_name;                  // human name (GGUF general.name etc.)
+    std::string architecture;                  // engine arch token / HF arch string
+    std::string quantization;                  // q4_k_m, q4nx, tq2_g128, ...
+    std::string lineage;                       // e.g. "ft-merged7" (inventory F2)
+
+    Container container = Container::UNKNOWN;
+    DtypeSpace dtype_space = DtypeSpace::EMPTY;
+    std::vector<uint32_t> dtype_ids;           // sorted, deduped census
+    bool has_dtype_42 = false;                 // the overloaded id (inventory F5)
+    // Filename claims Q4NX but the tensor census has no type 42: the name lies.
+    // Seen on zaya1-8b-ft-q4nx.gguf (2026-09-10) — a *q4nx*.gguf carrying
+    // mainline quant types. Capability must follow the bytes, not the name.
+    bool q4nx_name_mismatch = false;
+
+    std::vector<Capability> capabilities;
+    std::vector<ArtifactFile> files;
+    std::string tokenizer_path;                // resolved .htok, may be empty
+    std::string config_dir;                    // dir holding config.json (MLX/HF)
+
+    uint64_t total_bytes() const;
+    bool is_sharded() const { return files.size() > 1; }
+    bool has(Capability c) const;
+    // "  legacy-default" style suffix for the table; "" when unambiguous.
+    std::string id_quality() const;
+};
+
+// ── Report ─────────────────────────────────────────────────────────────────
+struct RegistryReport {
+    size_t artifacts = 0;
+    size_t files = 0;
+    size_t sharded_artifacts = 0;
+    size_t duplicate_id_groups = 0;     // >1 artifact whose canonical id collided
+    size_t size_twin_groups = 0;        // same total_bytes, different id: suspects
+    uint64_t total_bytes = 0;
+    uint64_t duplicate_bytes = 0;       // bytes of proven-identical artifacts
+    size_t dangling_tokenizers = 0;     // .htok whose artifact is absent
+    size_t unreadable = 0;              // header probe failed
+};
+
+struct ScanOptions {
+    bool digest = false;                // hash file contents (slow: 420 GB store)
+    bool recurse = true;
+    bool probe_headers = true;          // read GGUF header + dtype census
+    size_t max_depth = 8;
+};
+
+// ── Registry ───────────────────────────────────────────────────────────────
+class ModelRegistry {
+public:
+    static ModelRegistry scan(const std::vector<std::string>& roots,
+                              const ScanOptions& opt = ScanOptions{});
+
+    const std::vector<ModelArtifact>& artifacts() const { return artifacts_; }
+    const std::vector<std::string>& roots() const { return roots_; }
+    RegistryReport report() const;
+
+    const ModelArtifact* find(const std::string& id_or_alias) const;
+    // Resolve a path (or path substring) to its artifact, e.g. the acceptance
+    // test's `zaya1-8b.q4nx`.
+    const ModelArtifact* resolve_path(const std::string& path) const;
+    std::vector<const ModelArtifact*> with_capability(Capability c) const;
+
+    std::string to_table() const;      // human, stable ordering
+    std::string to_json() const;
+
+    // Copy of `maybe`; if `prefer` is non-empty and present, returns that one.
+    static const ModelArtifact* prefer(const std::vector<const ModelArtifact*>& cands,
+                                       Capability prefer);
+
+private:
+    std::vector<ModelArtifact> artifacts_;
+    std::vector<std::string> roots_;
+    size_t dangling_tokenizers_ = 0;   // .htok present with no artifact (inventory F6)
+};
+
+}  // namespace onebit
