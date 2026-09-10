@@ -245,6 +245,14 @@ public:
     const std::vector<CatalogView>& catalogs() const { return catalogs_; }
 
     std::string to_table() const;      // human, stable ordering
+    // Same table, but with capability constraints applied at `at_context` tokens:
+    // a capability that cannot serve that context is marked so it is visible at
+    // a glance. Raised by @agent-ec855d — `--at-context` without `--capability`
+    // used to be silently ignored, i.e. indistinguishable from "not applied",
+    // which is exactly the property this registry exists to eliminate.
+    std::string to_table(uint32_t at_context) const;
+    // State the gate explicitly for callers that never render the table (JSON).
+    void set_gate_context(uint32_t c) const { gate_context_ = c; }
     std::string to_json() const;
 
     // Copy of `maybe`; if `prefer` is non-empty and present, returns that one.
@@ -256,6 +264,9 @@ private:
     std::vector<std::string> roots_;
     std::vector<CatalogView> catalogs_;
     size_t dangling_tokenizers_ = 0;   // .htok present with no artifact (inventory F6)
+    // Context gate last applied by to_table(), so the JSON report can state it
+    // rather than leave a caller guessing whether the gate was active.
+    mutable uint32_t gate_context_ = 0;
 };
 
 }  // namespace onebit

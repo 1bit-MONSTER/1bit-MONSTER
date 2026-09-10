@@ -1178,20 +1178,29 @@ RegistryReport ModelRegistry::report() const {
 }
 
 // ── rendering ──────────────────────────────────────────────────────────────
-std::string ModelRegistry::to_table() const {
+std::string ModelRegistry::to_table(uint32_t at_context) const {
+    gate_context_ = at_context;
     std::ostringstream o;
     o << pad_right("id", 46) << " " << pad_right("container", 10) << " "
       << pad_right("dtype-space", 14) << " " << pad_right("GiB", 9) << " "
       << pad_right("caps", 6) << "capabilities\n";
     o << std::string(46 + 1 + 10 + 1 + 14 + 1 + 9 + 1 + 6, '-') << "\n";
+    if (at_context)
+        o << "! = cannot serve " << at_context << " context tokens\n";
     for (const auto& a : artifacts_) {
         std::string caps;
+        size_t disqualified = 0;
         for (size_t i = 0; i < a.capabilities.size(); i++) {
             if (i) caps += ",";
             caps += to_string(a.capabilities[i]);
             const CapabilityLimit* l = capability_limit(a.capabilities[i]);
             if (l) caps += "(<=" + std::to_string(l->max_context_tokens) + ")";
+            if (at_context && !a.supports(a.capabilities[i], at_context)) {
+                caps += "!";
+                disqualified++;
+            }
         }
+        if (at_context && disqualified == a.capabilities.size()) caps += " [not-servable]";
         char nbuf[32];
         snprintf(nbuf, sizeof nbuf, "%.2f",
                  (double)a.total_bytes() / (1024.0 * 1024.0 * 1024.0));
@@ -1304,7 +1313,8 @@ std::string ModelRegistry::to_json() const {
       << ", \"total_bytes\": " << r.total_bytes
       << ", \"duplicate_id_groups\": " << r.duplicate_id_groups
       << ", \"size_twin_groups\": " << r.size_twin_groups
-      << ", \"duplicate_bytes\": " << r.duplicate_bytes << "}\n}\n";
+      << ", \"duplicate_bytes\": " << r.duplicate_bytes
+      << ", \"gate_context\": " << gate_context_ << "}\n}\n";
     return o.str();
 }
 

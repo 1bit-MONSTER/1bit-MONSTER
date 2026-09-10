@@ -137,6 +137,7 @@ int registry_scan_main(int argc, char** argv) {
     if (roots.empty()) { usage(argv[0]); return 2; }
 
     ModelRegistry reg = ModelRegistry::scan(roots, opt);
+    reg.set_gate_context(at_context);
 
     if (catalog_set) {
         if (catalog_arg.empty()) {
@@ -182,7 +183,7 @@ int registry_scan_main(int argc, char** argv) {
     }
 
     if (json) { fputs(reg.to_json().c_str(), stdout); return 0; }
-    if (!quiet) fputs(reg.to_table().c_str(), stdout);
+    if (!quiet) fputs(reg.to_table(at_context).c_str(), stdout);
     print_report(reg.report());
     return 0;
 }
