@@ -1482,23 +1482,32 @@ int main(int argc, char** argv) {
     static onebit::ModelRegistry g_registry =
         onebit::ModelRegistry::scan({g_weights_dir});
     static std::vector<ModelConfig> discovered = [&] {
-        std::vector<ModelConfig> v = discover_models(g_weights_dir);
+        std::vector<ModelConfig> v;
         std::set<std::string> have;
-        for (const auto& m : v) have.insert(m.model_path);
-        size_t added = 0;
+        // PRIMARY: one entry per registry artifact, under its CANONICAL id (R5).
         for (const auto& a : g_registry.artifacts()) {
             if (a.files.empty()) continue;
             const std::string p = a.files.front().path;
-            if (have.count(p)) continue;
             ModelConfig cfg{};
             if (!read_model_file_metadata(p, cfg)) continue;
-            cfg.model_name = a.id;  // canonical id (R5)
+            cfg.model_name = a.id;
             cfg.model_path = p;
             v.push_back(std::move(cfg));
             have.insert(p);
+        }
+        // LEGACY-ONLY: models the registry does not know at all, kept so nothing
+        // that resolved before stops resolving now. Legacy NAMES for registry-known
+        // paths are handled by the registry alias step in -m selection (their
+        // general.name is a registry alias), so they are not duplicated here.
+        size_t added = 0;
+        for (auto& m : discover_models(g_weights_dir)) {
+            if (have.count(m.model_path)) continue;
+            have.insert(m.model_path);
+            v.push_back(std::move(m));
             added++;
         }
-        printf("  Registry extended discovery: +%zu artifact(s) the flat scan could not see\n", added);
+        printf("  Registry discovery: %zu artifact(s) as canonical ids, +%zu legacy-only\n",
+               v.size() - added, added);
         return v;
     }();
 
@@ -1635,6 +1644,24 @@ int main(int argc, char** argv) {
                     }
                     if (match) {
                         printf("  (matched \"%s\" as case-insensitive prefix → \"%s\")\n",
+                               g_model_name.c_str(), m.model_name.c_str());
+                        current_cfg = m;
+                        break;
+                    }
+                }
+            }
+        }
+        // 5. Registry alias resolution: `discovered` is keyed by CANONICAL id, but
+        //    the registry still accepts every on-disk alias (GGUF general.name,
+        //    basename). Resolve the requested name through it and match the
+        //    canonical entry by path, so keying discovery by canonical ids (R5)
+        //    never breaks an existing `-m <general.name>` invocation.
+        if (current_cfg.model_path.empty()) {
+            if (const onebit::ModelArtifact* art = g_registry.find(g_model_name)) {
+                const std::string p = art->files.empty() ? std::string() : art->files.front().path;
+                for (auto& m : discovered) {
+                    if (!p.empty() && m.model_path == p) {
+                        printf("  (matched \"%s\" via registry alias → \"%s\")\n",
                                g_model_name.c_str(), m.model_name.c_str());
                         current_cfg = m;
                         break;
