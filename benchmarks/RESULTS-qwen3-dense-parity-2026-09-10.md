@@ -137,9 +137,17 @@ Per synchronous GEMM launch (`go_rows`):
      d2(str=256): 64 blocks of 256 B at 512-B stride, 2 dim2 passes = 32 KB.
      This is the remaining unknown (native quantize_async emits row-major M×K).
    - **C: strided** — d0(size=64,str=1) d1(size=256,str=2048).
-   Next: reproduce FLM's blocked A layout (capture the A BO via
-   run_qwen3_prefill+interposer, or derive from the A-BD strides) — then the
-   mm.xclbin GEMM should compute correctly.
+   **DP (dma-patch) argw + offsets:** argw selects the BO: **C→argw0,
+   A→argw1, W→argw2** (kernel BO order is C,A,W, NOT A,W,C — the per-op
+   xclbins use A→0,W→1,C→2). Per-BO DDR offsets (from the 80 DPs):
+   - **A**: 4 offsets 0/0x20000/0x40000/0x60000 (128 KB apart) × 4 cols →
+     reads 512 KB for a 256 KB M×K (A BO is 2× padded/blocked).
+   - **W**: 16 offsets 0/0x40000/0x80000/… (256 KB apart) = 4 MB = full K×N
+     (row-major, 64-row chunks).
+   - **C**: 8 offsets 0/0x100/0x200/… (256 B apart) = 64-col int32 chunks.
+   So W is plain row-major (native packB-compatible); A is the remaining
+   unknown (a 2×-spanned blocked layout). Next: capture FLM's A BO
+   (run_qwen3_prefill+interposer) and reverse the A blocking.
 2. **Overlap CPU quantize** (2 ms/GEMM) with kernel execution — async
    double-buffering of the A operand.
 3. **Batched attention on NPU**: `gen_mha_engine_seq` + `attn.xclbin` instead of
