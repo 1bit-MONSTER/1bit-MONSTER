@@ -3678,12 +3678,15 @@ struct Bf16Ctx {
             std::vector<uint16_t> bA(256 * 3072), bC(256 * 2 * IM);
             for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = emb_f32[pt_vec[pi] * H + i];
             for (int pi = npt; pi < 256; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = 0;
+            double tg = 0, ta = 0, tc = 0;
             for (int l = 0; l < NC; l++) {
                 fprintf(stderr, "  L%d", l); fflush(stderr);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
                 for (int pi = 0; pi < npt; pi++) rn_c(&bh[pi * H], in_n[l].data(), H);
                 // A -> bf16 (256×H)
+                auto tc0 = std::chrono::steady_clock::now();
                 for (int k = 0; k < 256; k++) for (int j = 0; j < H; j++) bA[k * H + j] = f32_to_bf16(bh[k * H + j]);
+                auto tg0 = std::chrono::steady_clock::now();
                 // Q
                 bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, qout, 0);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++) bqo[pi * qkvn + i] = bf16g(bC[pi * qout + i]);
@@ -3693,6 +3696,8 @@ struct Bf16Ctx {
                 // V (woff = Q+K output size = H*(qout+kout))
                 bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, kout, (uint32_t)((size_t)H * (qout + kout)));
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < kout; i++) bqo[pi * qkvn + cfg.qkv_v_offset + i] = bf16g(bC[pi * kout + i]);
+                auto ta0 = std::chrono::steady_clock::now();
+                tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fq = fopen("/tmp/bf16_l0_qkv.bin", "wb"); if (fq) { fwrite(bqo.data(), 4, qkvn, fq); fclose(fq); } }
                 // q/k norms + RoPE + KV write + attention (non-MoE path)
                 kv_caches[l][0].n = sp + npt;
@@ -3719,6 +3724,8 @@ struct Bf16Ctx {
                 for (int pi = 0; pi < npt; pi++)
                     attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n, kv_caches[l][0].k.data(),
                              kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
+                auto ta1 = std::chrono::steady_clock::now();
+                ta += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
                 // O GEMM (K = NH*HD)
                 for (int k = 0; k < 256; k++) for (int j = 0; j < qout; j++) bA[k * qout + j] = f32_to_bf16(bat[k * qout + j]);
                 bf16mm_gemm_dev(bC.data(), bA.data(), Wo[l], qout, H, 0);
@@ -3745,15 +3752,16 @@ struct Bf16Ctx {
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fs = fopen("/tmp/bf16_l0_su.bin", "wb"); if (fs) { fwrite(bsu.data(), 4, IM, fs); fclose(fs); } FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
+                tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
                 if (const char* dh = getenv("NPU_DUMP_HIDDEN")) { FILE* df = fopen(dh, "ab"); if (df) { fwrite(bh.data(), 4, H, df); fclose(df); } }
                 fprintf(stderr, "\n"); fflush(stderr);
             }
             sp += npt;
             memcpy(h_data.data(), &bh[(npt - 1) * H], H * 4);
             if (getenv("NPU_DUMP_L0")) { FILE* fh = fopen("/tmp/bf16_l0_hidden.bin", "wb"); if (fh) { fwrite(h_data.data(), 4, H, fh); fclose(fh); } }
-            printf("Prefill: %.0fms (%.0f ms/tok)\n\n",
+            printf("Prefill: %.0fms (%.0f ms/tok) [GEMM %.0fms, attn %.0fms, conv+other %.0fms]\n\n",
                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
-                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / npt);
+                   std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / npt, tg, ta, tc);
         }
         bf16_done = true;
     }

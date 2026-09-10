@@ -752,3 +752,20 @@ The MHA sequence comes from `qwen3_npu_sequence::gen_mha_engine_seq(seq, L0, L1)
 ### Next (task-3 close-out)
 Wire attn.xclbin: generate the MHA sequence per layer, run the 5-BO ABI (act=Q/K/V,
 w1/kv=KV caches, w2=attn out), replace attn_omp. Then flm_parity.sh for the full sweep.
+
+## 2026-09-10 (session 2v): precise prefill breakdown — attention is 65% (1025ms/256tok)
+
+Instrumented the bf16 prefill (timers in the engine, "Prefill: … [GEMM Xms, attn Yms, …]"):
+| section | ms / 256-tok prefill |
+|---|---|
+| **attention (attn_omp)** | **1025** (65%) |
+| GEMMs (6×28 mm.xclbin) | ~294 |
+| conversions (f32↔bf16) + norms + SiLU + KV write | ~242 |
+| total | 1561 |
+
+The attention's 1025 ms is dominated by ~28M `expf` (~560 ms) + the AV loop that walks the full
+KV (134M MACs/layer) rather than just the causal prefix. The per-thread `scores` fix (ea433e852)
+was only ~1.4% — the cost is compute/expf, not heap.
+
+**Conclusion: CPU attention cannot reach FLM (1269 tok/s) even fully optimized (~3× short).**
+The attn.xclbin is mandatory; the GEMM throughput (5-BO ABI / gate+up split) is the second lever.
