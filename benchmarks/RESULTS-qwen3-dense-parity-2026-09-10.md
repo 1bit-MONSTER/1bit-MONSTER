@@ -268,3 +268,29 @@ to generate the full prefill sequences and run them through the native engine's
 xrt::ext::kernel runner — the sequence generators already encode the tiled A/C
 layouts and the int32→bf16 conversion. This is acceptable per the constraint
 (native = 1bit-MONSTER orchestrates FLM's xclbins + libs).
+
+---
+
+## 2026-09-10 (session 2c): prefill BO flow measured; dequant is not a scalar
+
+### Finding: actual prefill GEMM shapes + BO sizes (from capture)
+- **A (activations) = bf16, 1 MB = 256×2048** (M=256, K=2048 — K is 2× hidden_size=1024;
+  cols 0..1023 and 1024..2047 both look like activations, range −7.9..6.2). There are also
+  1 MB "A scale" BOs = bf16 1.0 (all 0x3F80) uploaded per layer.
+- **C (GEMM output) = int32, 1 MB = 256×1024** (N=1024). So the mm.xclbin GEMM is
+  M=256, K=2048, N=1024 — NOT the 256×1024 K I fed npu_app (my byte-identical check used
+  A=1.0 uniform, which hides the K dimension).
+- **QKV output = bf16, 2 MB = 256×4096** ([Q 2048 | K 1024 | V 1024]).
+- Per-layer capture: W BO = 10 MB (npu_pack_layer_bo), KV cache = 32 MB, MLP dequant
+  output = 6 MB.
+
+### Finding: C_int32 → QKV_bf16 is NOT a scalar scale
+Direct set-correlation of C (int32) vs every QKV part (Q/K/V) at scales 2^30..2^33 gives
+≤ 0.3% matches — so the conversion is tiled-layout + (likely) per-group Q4NX scales/zps,
+and Q/K are additionally post-RMSNorm/RoPE'd. Reverse-engineering it is a rabbit hole.
+
+### Recommended path unchanged
+Use FLM's `qwen3_npu_sequence` (gen_rtp_seq / gen_layer_seq / gen_mha_engine_seq) to
+generate full prefill sequences and run them through the native engine's runner. Note the
+real GEMM is M=256, K=2048, N=1024/2048/3072 — feed the 1 MB bf16 A (256×2048) and read
+the int32 C, then let FLM's dequant/attn sequences do the int32→bf16 conversion.
