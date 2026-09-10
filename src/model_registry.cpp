@@ -483,10 +483,14 @@ std::optional<Capability> capability_from_string(const std::string& s) {
 
 const CapabilityLimit* capability_limit(Capability c) {
     static const CapabilityLimit limits[] = {
-        // b66 over-claims FLASH_ATTN_EXT for KV > 2048: 2021-token prefill passes,
-        // 2067/2151/2502/2931 fail identically. Issue #2145, @agent-ca60cf.
+        // b66 over-claims FLASH_ATTN_EXT above 2048 KV. Measured boundary
+        // (@agent-ca60cf, issue #2145; independently hit by @agent-44437c in the
+        // P2 HRX probe lane): KV 2048 PASSES; 2304 / 2560 / 3072 fail identically
+        // with `unsupported HRX node 25: FLASH_ATTN_EXT` (an earlier pass saw
+        // 2021 pass and 2067/2151/2502/2931 fail). The rule is simply: any
+        // context > 2048 tokens. Hence the constraint is exactly 2048.
         {Capability::HRX_GGUF, 2048,
-         "HRX b66 over-claims FLASH_ATTN_EXT for KV>2048 (issue #2145) — fail-close above this"},
+         "HRX b66 over-claims FLASH_ATTN_EXT for KV>2048 (issue #2145, node 25) — fail-close above 2048"},
     };
     for (const auto& l : limits) if (l.capability == c) return &l;
     return nullptr;
