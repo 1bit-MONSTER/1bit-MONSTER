@@ -277,13 +277,43 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
         // embedding property, and it caught a FALSE POSITIVE in my own MoE rule: the
         // 74B preview is MoE (experts=24) so the MoE-only rule kept it, while b66
         // cannot read its arch. Measured on 4 of 7 files in their batch.
-        if (c == Capability::HRX_GGUF && a.declared_experts <= 0) {
-            plan.conditional.emplace_back(
-                c, "dense artifact: every dense Qwen3 file measured against b66 FAILS at "
-                   "decode pos 0 regardless of embedding dtype and fusion (44437c, 6 files), "
-                   "while the MoE A3B class PASSES at 87.72 t/s — so HRX-GGUF is advertised "
-                   "for MoE only until more classes are measured");
-            continue;
+        // THE MEASURED DISCRIMINATOR, and it cuts INSIDE the quant label (@agent-ca60cf,
+        // from the HRX child's own log once they fixed the /dev/null redirect):
+        //   unsupported HRX node 0: GET_ROWS ... inputs=[0:q6_K[1024,151936,1,1], ...]
+        // — a file named Q4_K_M carrying a q6_K embedding. GET_ROWS accepts ONE embedding
+        // dtype on this bundle, and the boundary sits within Q4_K_M: 30B Q4_K_M passes,
+        // 0.6B Q4_K_M does not, because the small model keeps a higher-precision embedding.
+        //
+        // Verified against my own bytes on strixhalo — tok_embd_dtype separates their
+        // measured outcomes exactly:
+        //   0.6B-Q4_K_M / -fused / 1.7B / 4B   tok_embd=14 (Q6_K)  -> all measured FAIL
+        //   35B-A3B-Q8_0                        tok_embd=8  (Q8_0)  -> measured ABORT
+        //   Coder-30B-A3B-Q4_K_M                tok_embd=12 (Q4_K)  -> measured PASS 87.72 t/s
+        //
+        // NOTE ON THEIR WORDING, checked rather than assumed: they describe the rule as
+        // "fused Q4_K", but the one PASSING file has lm_head_fused == false (it carries a
+        // separate output.weight). Implementing "Q4_K AND fused" would have excluded the
+        // only measured-passing artifact — so the predicate is the TENSOR DTYPE alone, and
+        // `fused` is not part of it.
+        //
+        // This replaces the MoE-only proxy, which their measurements show mislabels both
+        // directions: a dense file with a Q4_K embedding should pass, and a small MoE file
+        // with a q6_K embedding should not.
+        if (c == Capability::HRX_GGUF) {
+            if (a.tok_embd_dtype < 0) {
+                plan.conditional.emplace_back(
+                    c, "token embedding dtype not readable; HRX acceptance requires a Q4_K "
+                       "(12) token_embd.weight on this bundle — not verified, so not claimed");
+                continue;
+            }
+            if (a.tok_embd_dtype != 12) {
+                plan.conditional.emplace_back(
+                    c, "token_embd.weight dtype " + std::to_string(a.tok_embd_dtype) +
+                       " is not Q4_K (12) — GET_ROWS only accepts a Q4_K embedding on this "
+                       "bundle, and the boundary cuts INSIDE the file quant label (0.6B "
+                       "Q4_K_M carries q6_K and fails while 30B Q4_K_M passes)");
+                continue;
+            }
         }
         if (c == Capability::HIP_GGUF && a.declared_experts <= 0) {
             std::string arch_l = a.architecture;
