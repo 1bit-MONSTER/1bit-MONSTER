@@ -209,6 +209,15 @@ struct ModelArtifact {
     uint32_t native_version = 0;               // OnebpHeader.version, or 0
     uint64_t native_json_bytes = 0;            // Q4NX_JSON manifest size
     std::vector<std::string> native_dtypes;    // dtype names found in the manifest
+    // For a Q4NX_JSON container the registry has NO OnebpHeader and NO GGUF KV, so
+    // `declared_experts` and `architecture` are both empty and the architecture-conditional
+    // gates cannot be evaluated — which wrongly excluded hip_gpu for zaya1-8b.q4nx.
+    // The manifest's TENSOR NAMES carry the missing fact, which is exactly the method
+    // @agent-ca60cf uses in their lane ("the family comes from the tensor index, never from
+    // arch"). Measured on that file: 1284 top-level names, 80 of them matching
+    // `model.layers.N.mlp.experts.*`, plus 279 occurrences of `router`. Bytes-derived, and
+    // stated as a NAME MARKER rather than as a count — I am not inventing an expert count.
+    bool native_has_experts = false;
     bool native_name_mismatch = false;         // name says native, bytes say otherwise
     // F11 — GGUF `general.name` is NOT authoritative either. Official Qwen GGUF
     // repos report "Qwen3 4B Instruct Awq" and "Qwen3 30B Gptq Fp16" for plain

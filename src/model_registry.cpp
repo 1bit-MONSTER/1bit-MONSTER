@@ -486,6 +486,7 @@ struct NativeProbe {
     bool expert_fields_absent = false;
     uint64_t json_bytes = 0;
     std::vector<std::string> json_dtypes;
+    bool json_has_experts = false;
 };
 
 const char* onebp_quant_name(uint32_t q) {
@@ -603,7 +604,12 @@ NativeProbe probe_native(const std::string& path) {
             if (i < (size_t)hsz && buf[i] == '{') {
                 np.space = DtypeSpace::Q4NX_JSON;
                 np.json_bytes = hsz;
-                np.json_dtypes = scan_json_dtypes(std::string(buf.data(), (size_t)hsz));
+                std::string js(buf.data(), (size_t)hsz);
+                np.json_dtypes = scan_json_dtypes(js);
+                // Tensor-NAME markers, checked rather than assumed: this manifest uses
+                // HF-style `mlp.experts.*` names, NOT llama.cpp's `_exps`, so the first
+                // marker I reached for was wrong and I measured before shipping it.
+                np.json_has_experts = js.find("experts.") != std::string::npos;
                 return np;
             }
         }
@@ -1135,6 +1141,7 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
                 a.native_version = np.version;
                 a.native_json_bytes = np.json_bytes;
                 a.native_dtypes = np.json_dtypes;
+                a.native_has_experts = np.json_has_experts;
                 a.native_vocab = np.vocab;
                 a.native_num_experts = np.num_experts;
                 a.native_top_k = np.top_k;

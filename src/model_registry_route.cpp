@@ -335,7 +335,11 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
                 continue;
             }
         }
-        if (c == Capability::HIP_GGUF && a.declared_experts <= 0) {
+        // The gate accepts EITHER a declared expert count (GGUF KV / OnebpHeader) OR the
+        // tensor-name marker from a Q4NX_JSON manifest, because for that container the
+        // former is structurally absent. Without this the registry was blind for native
+        // .q4nx files and excluded the Zaya/CCA lane the router actually picks.
+        if (c == Capability::HIP_GGUF && a.declared_experts <= 0 && !a.native_has_experts) {
             std::string arch_l = a.architecture;
             for (char& ch : arch_l) ch = (char)tolower((unsigned char)ch);
             if (arch_l.find("zaya") == std::string::npos &&
