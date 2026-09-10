@@ -1229,3 +1229,23 @@ lm_head) into one runlist submit.
    (MoERuntimeLayerEngine) targets the same structure; the replay oracle
    (35 captured ELFs + this runlist arg map) lets it reproduce the runtime's
    exact per-token runlist without the closed sequence generators.
+
+## Round 88 — runlist structure fully decoded (127 runs / 2 tokens, 35 ELFs) (2026-09-10)
+
+Full RUNLIST_ADD analysis of the capture manifest:
+
+- 127 runs total across the 2-token prefill (~64 runs/token), using 11 reused
+  xrt::run objects (groups of 10/10/21 for three run classes).
+- 35 ELFs in creation order: 3×480 B + 2×384 B (control/RTP), 3×45,072 B +
+  1×856,160 B + 2×53,840 B (layer/combined sequences), 10×5,200 B + 8×8,192 B
+  + 14,176/39,632/26,144/6,032/50,080 (per-expert dequant_mm + lm_head).
+- Each run: a3 = its layer's 512 MB pool, a4 = shared 1 MB BO, a5/a6/a7 =
+  per-run small BOs (2-4 MB / norms / state).
+
+Risk flagged: R59/R68 showed the lib's own 35B layer forward NaNs even with
+correct weights + working lm_head — so the captured layer ELFs may themselves
+produce NaN on the NPU. The engine replay (same ELFs, task-2 BO packing) is
+the empirical test; if the lib's layer sequence is the NaN source, the replay
+will reproduce it (and the correct path then needs the engine's own layer
+sequence, not the lib's). The reference (token 76740) + all BOs/ELFs are
+banked for that test.
