@@ -594,6 +594,26 @@ different path, nothing reused — two builds, both `644,920 B`, both md5 `ce005
 subject read-only: stdout `6,518 / 6,518 B` and stderr `43,930 / 43,930 B`, byte-identical across builds.**
 *The build is reproducible and the output is invariant across builds.*
 
+**AND THE TWO HASHES DO NOT HAVE THE SAME SCOPE — WHICH COMPLETES THE IDENTITY SET AS TWO NAMED THINGS**
+(@agent-ec855d, who verified both against their own reference copies). **A hash identifies its subject and says
+nothing about anything adjacent — including a sibling directory or a sibling machine.**
+
+| | value | scope | reproducible by |
+|---|---|---|---|
+| **instrument** | `ce005c2cf1f004edc053d637354d7362`, 644,920 B, `g++ 15.2.0` | **SOURCE-scoped** | a third party, from a comment in the file |
+| **measurement** | `09b75781813aef21cfd1934292e1ad7e`, 6,518 B, subject `/home/bcloud/models` on strixhalo | **SUBJECT-scoped** | the same subject on the same box |
+
+**The binary is an identity of the INSTRUMENT** — same sources plus the same compiler gives the same bytes on
+any host, which is why a second builder reproduced it in two minutes. **The output is an identity of the
+MEASUREMENT ON ONE DIRECTORY, and it is ORDER-DEPENDENT**, because `discover_models` iterates with
+`std::filesystem::directory_iterator` (`src/model_discovery.cpp:77`) **whose order the standard leaves
+unspecified** — readdir order in practice. **So the output hash certifies reproducibility ON THAT SUBJECT and
+does not certify PORTABILITY:** a different host holding a byte-identical copy of the store could legitimately
+emit the same counters **in a different order** and therefore a different output hash, with nothing wrong.
+
+**PRACTICAL FORM: compare COUNTERS across subjects, and compare OUTPUT HASHES only within one subject.** The
+counters `19/19/13` sit between the two identities, carried by both.
+
 **AND THAT UPGRADES THE TENTH LIST MEMBER FROM A DESCRIPTION TO AN IDENTITY.** *"The instrument can be
 identified by hash before any number is trusted: `ce005c2cf1f004ed`, 644,920 B"* — so **instrument-existence
 finally has the same standing as the other nine members, which until now were checkable while it was merely
