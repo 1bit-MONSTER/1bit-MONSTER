@@ -589,3 +589,31 @@ output buffer.
 ### Next
 - Wire dequant + 2-batch mm (+ attn.xclbin) into `npu_engine_universal.cpp` and measure
   prefill vs FLM (target 500–1269 tok/s).
+
+---
+
+## 2026-09-10 (session 2n): bf16-truncation resolves the "off-by-one"; bridge built + verified
+
+### The "off-by-one"/"dup-odd" is the AIE bf16 multiplier truncating the mantissa LSB
+The mm.xclbin's bf16 multiply is NOT IEEE "fp32 accumulate + round". It truncates the
+result mantissa's LSB, so any input whose bf16 mantissa LSB = 1 loses 1 ULP:
+- 129 (0x4301) → 128 (0x4300); 131 → 130; 109.5 → 109.0; …
+- Integers 1..128 all have mantissa LSB = 0 → reproduced EXACTLY.
+
+This is what made "markers 129..256 look like a stride-2 dup-odd region" in every prior
+probe, and why markers ≤ 128 looked like a clean identity. The 2-batch M-split recipe is
+CORRECT (verified 256/256 with exact markers); the truncation is a hardware property that
+is *byte-identical to FLM* (same mm.xclbin), so it does not affect parity.
+
+### Bridge built + end-to-end verified
+`engine/npu/src/npu_engine_bf16_mm_bridge.cpp` — C-linkage wrapper around `bf16mm::Bf16Mm`
+so `npu_engine_universal.cpp` (which vendors a stub `lm_config.hpp` and must NOT see FLM's
+`modules/*`/`npu_utils_xrt.hpp`) can drive dequant.xclbin + mm.xclbin without an include
+clash. Exposes `bf16mm_init / bf16mm_dequant / bf16mm_gemm_2batch`.
+Verified end-to-end with the REAL Qwen3-0.6B layer-0 BO (`npu_pack_layer_bo` →
+dequant → 2-batch Q GEMM): dequant W 4185202/4194304 non-zero; Q output = A×W up to the
+bf16 truncation.
+
+### Next
+- Wire the bridge into `npu_engine_universal.cpp` prefill (replace I8Ctx int8 GEMMs with
+  dequant + 2-batch bf16 mm), add `-lgemm -ldequant` to build_npu.sh, measure vs FLM.
