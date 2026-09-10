@@ -184,6 +184,7 @@ struct Hip1bpBackend : Backend {
     bool q35_q4nx = false;            // #1831 M2: weights are 1BP Q4NX tiles, not GGUF Q8_0 raw
     size_t q35_exp_bytes[3] = {0,0,0}; // per-expert bytes: [0]=gate [1]=up [2]=down (ndim==3 stacks)
     float* q35_out_f32 = nullptr;        // lm_head as f32 (F16/F32-routed output.weight)
+    uint16_t* q35_out_f16 = nullptr;     // #2139: lm_head packed f16 (F16-routed output.weight)
     uint8_t* q35_emb = nullptr, *q35_out = nullptr;     // token_embd / output (V x H; Q8_0 raw or Q4NX tile)
     float* q35_onorm = nullptr;                         // output_norm (H f32)
     std::vector<Q35L> q35L;
@@ -691,11 +692,25 @@ struct Hip1bpBackend : Backend {
                         std::vector<float> ow;
                         if (model_->get_tensor_f32("output.weight", ow) &&
                             (int)ow.size() == 248320 * 2048) {
-                            if (hipMalloc((void**)&q35_out_f32, ow.size() * 4) != hipSuccess ||
+                            // #2139 item-2: an F16-routed output tensor is uploaded as
+                            // packed f16 (half the per-token lm_head read) instead of f32.
+                            if (ot && ot->quant == ONEBP_F16) {
+                                std::vector<uint16_t> hw(ow.size());
+                                for (size_t i = 0; i < ow.size(); i++)
+                                    hw[i] = h1bp_f32_to_f16_bits(ow[i]);
+                                if (hipMalloc((void**)&q35_out_f16, ow.size() * 2) != hipSuccess ||
+                                    hipMemcpy(q35_out_f16, hw.data(), ow.size() * 2,
+                                              hipMemcpyHostToDevice) != hipSuccess)
+                                    lok = false;
+                                tot += ow.size() * 2;
+                                std::vector<uint16_t>().swap(hw);
+                            } else if (hipMalloc((void**)&q35_out_f32, ow.size() * 4) != hipSuccess ||
                                 hipMemcpy(q35_out_f32, ow.data(), ow.size() * 4,
-                                          hipMemcpyHostToDevice) != hipSuccess)
+                                          hipMemcpyHostToDevice) != hipSuccess) {
                                 lok = false;
-                            tot += ow.size() * 4;
+                            } else {
+                                tot += ow.size() * 4;
+                            }
                             ow.clear(); ow.shrink_to_fit();
                         } else lok = false;
                     }
@@ -1518,7 +1533,9 @@ struct Hip1bpBackend : Backend {
         }
         // output norm + lm head + argmax
         h1bp_rmsnorm_kernel<<<1, 256, 0, stream>>>(dh, q35_onorm, 2048, 1e-6f);
-        if (q35_q4nx && q35_out_f32)
+        if (q35_q4nx && q35_out_f16)
+            h1bp_f16gemv_kernel<<<(248320 + 7) / 8, 256, 0, stream>>>(dlogits, q35_out_f16, dh, 248320, 2048);
+        else if (q35_q4nx && q35_out_f32)
             h1bp_gemv_kernel<<<248320, 256, 0, stream>>>(dlogits, q35_out_f32, dh, 248320, 2048);
         else
             gemv(dlogits, q35_out, dh, 248320, 2048);
@@ -1564,7 +1581,7 @@ struct Hip1bpBackend : Backend {
             hf(w.sh_d); hf(w.router); hf(w.sh_gatew);
         }
         q35L.clear();
-        hf(q35_emb); hf(q35_out); hf(q35_out_f32); hf(q35_onorm);
+        hf(q35_emb); hf(q35_out); hf(q35_out_f32); hf(q35_out_f16); hf(q35_onorm);
         hf(q35_sc_qkv); hf(q35_sc_qc); hf(q35_sc_q); hf(q35_sc_k); hf(q35_sc_v); hf(q35_sc_z);
         hf(q35_sc_g); hf(q35_sc_b); hf(q35_sc_qk); hf(q35_sc_v2); hf(q35_sc_att); hf(q35_sc_aout);
         hf(q35_sc_act); hf(q35_sc_moe); hf(q35_sc_exp); hf(q35_sc_expw); hf(q35_sc_expd);

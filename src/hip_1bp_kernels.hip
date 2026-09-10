@@ -9,6 +9,35 @@
 
 // ── Custom GEMV: y[M] = W[M,N] @ x[N], row-major W ──
 // One thread per row, block-wide reduction over columns.
+// #2139 item-2 fast path: same GEMV shape, but W is row-major f16 (packed) instead
+// of f32. Used for the lm_head, whose f32 copy costs a 2 GB weight read per token
+// (~12.2 ms/token = ~36% of q35 decode on gfx1151, bandwidth-bound); the f16 read
+// halves that. Accumulation stays in double and f16 -> f32 is exact, so results are
+// bit-identical to the f32 kernel for an f16-routed tensor.
+__global__ void h1bp_f16gemv_kernel(float* y, const unsigned short* W, const float* x, int M, int N) {
+    // one warp per row (8 rows / 256-thread block); 16-byte vector loads (8 halves)
+    // per lane per iteration for memory-level parallelism. Replaces the original
+    // one-block-per-row shape (248,320 tiny blocks -> block-issue bound) and the
+    // f32 lm_head buffer (2 GB/token read -> 1 GB).
+    int warp = threadIdx.x >> 5, lane = threadIdx.x & 31;
+    int row = blockIdx.x * (blockDim.x >> 5) + warp;
+    if (row >= M) return;
+    const uint4* wrow = reinterpret_cast<const uint4*>(W + (size_t)row * N);
+    int n8 = N >> 3;
+    double sum = 0;
+    for (int k = lane; k < n8; k += 32) {
+        uint4 v = wrow[k];
+        const unsigned short* h = reinterpret_cast<const unsigned short*>(&v);
+        #pragma unroll
+        for (int j = 0; j < 8; j++) {
+            int idx = 8 * k + j;
+            sum += (double)x[idx] * (double)__half2float(__ushort_as_half(h[j]));
+        }
+    }
+    for (int off = 16; off; off >>= 1) sum += __shfl_down(sum, off);
+    if (lane == 0) y[row] = (float)sum;
+}
+
 __global__ void h1bp_gemv_kernel(float* y, const float* W, const float* x, int M, int N) {
     int row = blockIdx.x;
     if (row >= M) return;
