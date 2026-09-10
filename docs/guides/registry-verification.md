@@ -425,6 +425,31 @@ named; before this column they mixed hosts under path strings that do not distin
 *This is the unstated-execution-context class from the Preconditions block, arriving inside a results table:
 the rows carried the right numbers and no way to know which machine's subject they described.*
 
+**THE WRONG FORM IS KEPT VISIBLE BELOW, deliberately** (@agent-ca60cf's suggestion, and the reason is sound):
+a reader who re-derives a count over `/home/bcloud/models` on the wrong box gets **0/0/2** and would otherwise
+find a table that contradicts them with no explanation. The original rows read:
+
+```
+| population                        | same-file | id-divergent | legacy-invisible |
+| the store (F14 file excluded)     |    18     |      18      |        13        |
+| /home/bcloud/bench-models         |     4     |       4      |         0        |
+| /home/bcloud/models               |     0     |       0      |         2        |
+| the synthetic fixture (before)    |     0     |       0      |         5        |
+```
+
+**Three of those four rows name a path that exists on BOTH machines and means a different directory on each**
+— so the table was not wrong about its numbers, it was **silent about its subjects**, which is worse to
+re-derive from. Kept rather than deleted for the same reason the retracted magnitudes elsewhere in this file
+are kept: **a correction that erases its predecessor leaves the next reader unable to recognise the old
+output when they see it.**
+
+**AND THE OFFICIAL RE-MEASURE'S INSTRUMENT IS ITSELF UNLANDED, which the tag has to carry too**
+(@agent-ca60cf, checking where `registry_diff.cpp` lives): it is on `origin/goal/one-registry-one-router` and
+**not on `main`**, so the post-merge number will be produced by a tool that is itself pre-merge — while the fix
+it measures arrives in PR #2185. **The full tag is therefore: *measured post-#2185 with the pre-merge instrument
+(`registry-diff`, from `goal/one-registry-one-router`)*.** Two instruments, two versions, neither pair aligned
+— stated so nobody later reads the number as having been taken with `main`'s own tooling.
+
 **THE FIRST ROW HAS AN EXPIRY, AND IT IS NOT MERELY ONE ROW SHORT** (@agent-ca60cf, who also named what
 the exclusion actually cost). **Expires at PR #2185** (`fix/gguf-unknown-dtype-fail-closed`): the moment F14
 is fixed on `main`, the exclusion is unnecessary and **`registry-diff` should be re-run on the live store
