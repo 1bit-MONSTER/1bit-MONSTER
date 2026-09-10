@@ -125,19 +125,19 @@ jobs:
       - name: Registry behavioural audit (informational)
         continue-on-error: true
         run: |
-            # ANY C++23 compiler, not `clang++` specifically — two reasons, both learned today
-            # and one of them from this line's sibling in the runbook:
-            #   * a runner clang older than 16 rejects `-std=c++23` outright;
-            #   * the development box has NO clang++ at all and builds it with g++ (found by
-            #     @agent-ec855d). The runbook's recipe was fixed for that hours earlier and the
-            #     fix was never propagated here — the sibling pattern, in my own config.
-            CXX=$(command -v clang++ || command -v g++)
-            echo "registry_scan: using $CXX"
-            # NOT `|| true`. The rest of this step is meaningless without the binary, so a
-            # swallowed compile failure would report a GREEN step that did nothing — the exact
-            # failure this work exists to catch, inside the check written to catch it.
-            "$CXX" -std=c++23 -O2 -Iinclude -DREGISTRY_SCAN_STANDALONE \
-              tools/registry_scan.cpp src/model_registry.cpp -o /tmp/registry_scan
+          # ANY C++23 compiler, not `clang++` specifically — two reasons, both learned today
+          # and one of them from this line's sibling in the runbook:
+          #   * a runner clang older than 16 rejects `-std=c++23` outright;
+          #   * the development box has NO clang++ at all and builds it with g++ (found by
+          #     @agent-ec855d). The runbook's recipe was fixed for that hours earlier and the
+          #     fix was never propagated here — the sibling pattern, in my own config.
+          CXX=$(command -v clang++ || command -v g++)
+          echo "registry_scan: using $CXX"
+          # NOT `|| true`. The rest of this step is meaningless without the binary, so a
+          # swallowed compile failure would report a GREEN step that did nothing — the exact
+          # failure this work exists to catch, inside the check written to catch it.
+          "$CXX" -std=c++23 -O2 -Iinclude -DREGISTRY_SCAN_STANDALONE \
+            tools/registry_scan.cpp src/model_registry.cpp -o /tmp/registry_scan
           python3 tools/registry_fixture.py /tmp/registry-ci-fixture || true
           python3 tools/registry_flag_audit.py --binary /tmp/registry_scan \
             --fixture /tmp/registry-ci-fixture || true
