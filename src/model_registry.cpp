@@ -565,12 +565,29 @@ std::vector<Capability> derive_capabilities(Container c, DtypeSpace sp, bool q4n
 }
 
 std::string guess_quant(const std::string& base_lower, const GgufProbe& probe) {
-    static const char* cands[] = {"q4_k_m","q4_k_s","q4_k","q6_k","q8_0","q5_k_m","q5_0",
-                                  "q4_0","q3_k_m","iq2_xxs","f16","bf16","f32",
-                                  "q4nx","tq2","tq1","1bp","q1_0"};
+    // ROCmFP4 first: its two variants (100 = Codebook10 dual UE4M3 scales,
+    // 101 = single scale) are distinguishable ONLY by dtype id — a filename
+    // says "rocmfp4" for both, so the census wins here.
+    if (probe.ok) {
+        if (probe.dtypes.count(101)) return "q4_0_rocmfp4_fast";   // GGUF_DTYPE_Q4_0_ROCMFP4_FAST
+        if (probe.dtypes.count(100)) return "q4_0_rocmfp4";        // GGUF_DTYPE_Q4_0_ROCMFP4
+    }
+    // Order matters: more specific markers first, so `qwen35-1bp-fp4.1bp` reads
+    // as fp4 rather than falling through to the generic "1bp".
+    static const char* cands[] = {
+        "q4nx", "rocmfp4", "fp4", "tq2nz", "tq2", "tq1", "q1_0",
+        "iq2_xxs", "iq1_s", "iq3_xxs",
+        "q4_k_m", "q4_k_s", "q4_k", "q5_k_m", "q5_0", "q6_k", "q8_0",
+        "q4_0", "q3_k_m", "bf16", "f16", "f32", "1bp"};
     for (const char* q : cands) if (contains(base_lower, q)) return q;
     if (probe.ok) {
+        // Fall back to the tensor census when the name says nothing. Ids from
+        // include/gguf_reader.h; note 42 is overloaded across readers and is
+        // only reached here when the name gave no hint.
         if (probe.dtypes.count(42)) return "type42";
+        if (probe.dtypes.count(41)) return "q1_0";
+        if (probe.dtypes.count(35)) return "tq2_0";
+        if (probe.dtypes.count(34)) return "tq1_0";
         if (probe.dtypes.count(12)) return "q4_k";
         if (probe.dtypes.count(14)) return "q6_k";
         if (probe.dtypes.count(8)) return "q8_0";
@@ -749,8 +766,15 @@ ModelRegistry ModelRegistry::scan(const std::vector<std::string>& roots, const S
                 ShardInfo sh = parse_shard(stem);
                 std::string base_key = normalize_token(sh.base);
                 std::string quant = guess_quant(lower_name, probe);
-                if (c == Container::ONEBP && !q4nx_named) quant = "1bp";
-                if (c == Container::ONEBP && q4nx_named) quant = "q4nx";
+                // Native container: keep a SPECIFIC quant from the filename
+                // (fp4 / tq2nz / q4nx / …) and only fall back to the generic
+                // container default when the name says nothing. Overwriting
+                // unconditionally made every .1bp read as "1bp" and threw away
+                // exactly the marker a lane-selection decision needs.
+                if (c == Container::ONEBP) {
+                    if (q4nx_named) quant = "q4nx";
+                    else if (quant.empty()) quant = "1bp";
+                }
                 add_file(path, sz, c, base_key, sh.base, quant, probe, q4nx_named,
                          sh.index, sh.count);
             }
