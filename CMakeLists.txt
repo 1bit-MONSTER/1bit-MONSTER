@@ -1532,6 +1532,10 @@ set(ONE_BIN_SOURCES
     # `1bit registry-diff` — the legacy-scan vs registry disagreement table (step 2's
     # evidence, read-only).
     tools/registry_diff.cpp
+    # `1bit registry-merge-invariants` — asserts the merge's two properties (never drop a
+    # lane; move the head only for a stated exclusion). This is the check for the design
+    # fault I actually introduced and found by eye.
+    tools/registry_merge_invariants.cpp
     # `1bit route-compare` — the flip decision table. In onebin by CONVENTION (the repo
     # ships everything reachable from the CLI inside the single binary), and because two
     # standalone attempts failed: linking backend_manager leaked HIP defines into a plain

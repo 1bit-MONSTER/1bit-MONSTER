@@ -32,6 +32,7 @@ int zuna_main(int argc, char** argv);
 int registry_scan_main(int argc, char** argv);
 int route_compare_main(int argc, char** argv);
 int registry_diff_main(int argc, char** argv);
+int registry_merge_invariants_main(int argc, char** argv);
 
 static std::string prog_name(const char* argv0) {
     std::string p = argv0 ? argv0 : "1bit";
@@ -109,6 +110,9 @@ int main(int argc, char** argv) {
         }
         if (cmd == "registry-diff") {
             return registry_diff_main(argc - 1, argv + 1);
+        }
+        if (cmd == "registry-merge-invariants") {
+            return registry_merge_invariants_main(argc - 1, argv + 1);
         }
         if (cmd == "-h" || cmd == "--help" || cmd == "help") {
             return print_usage();
