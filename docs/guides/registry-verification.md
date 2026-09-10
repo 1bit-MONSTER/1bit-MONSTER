@@ -410,12 +410,20 @@ g++     -std=c++23 -O2 -Iinclude -Isrc -DREGISTRY_DIFF_STANDALONE \
 **FOUR POPULATIONS, all measured** (this is the bad-input run §8's rule requires, and the reason the
 tool had to become runnable):
 
-| population | same-file | id-divergent | legacy-invisible |
-|---|---|---|---|
-| the store (F14 file excluded — **see the expiry below**) | 18 | 18 | 13 |
-| `/home/bcloud/bench-models` | 4 | 4 | 0 |
-| `/home/bcloud/models` | 0 | 0 | 2 |
-| the synthetic fixture (before) | 0 | 0 | 5 |
+| **host** | population | same-file | id-divergent | legacy-invisible |
+|---|---|---|---|---|
+| **strixhalo** | `~/models` — the 420 GB store, via a farm excluding F14 (**see the expiry below**) | 18 | 18 | 13 |
+| **ryzen** | `/home/bcloud/bench-models` (31 entries) | 4 | 4 | 0 |
+| **ryzen** | `/home/bcloud/models` (**1 entry**) | 0 | 0 | 2 |
+| either | the synthetic fixture (before) | 0 | 0 | 5 |
+
+**THE HOST COLUMN IS NOT DECORATION, AND ITS ABSENCE WAS A DEFECT IN THIS TABLE** (@agent-44437c asked whether
+the three figures were "three directories or three repeats of one", and the reason the question was reasonable
+is that **the same path string denotes different directories on the two machines**: `/home/bcloud/models` is
+**1 entry on ryzen** and **the 29-entry store on strixhalo**. The rows above were measured on the hosts now
+named; before this column they mixed hosts under path strings that do not distinguish them.
+*This is the unstated-execution-context class from the Preconditions block, arriving inside a results table:
+the rows carried the right numbers and no way to know which machine's subject they described.*
 
 **THE FIRST ROW HAS AN EXPIRY, AND IT IS NOT MERELY ONE ROW SHORT** (@agent-ca60cf, who also named what
 the exclusion actually cost). **Expires at PR #2185** (`fix/gguf-unknown-dtype-fail-closed`): the moment F14
