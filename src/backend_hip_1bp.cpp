@@ -923,11 +923,8 @@ struct Hip1bpBackend : Backend {
     }
 
     void launch_q4nx(const uint8_t* w, const float* x, float* out, int N, int K) {
-        int ntc = (K + 255) / 256;
-        int wpr = (ntc + 3) >> 2;
-        int blocks = (N * wpr + 3) / 4;
-        h1bp_q4nx_part_kernel<<<blocks,128,0,stream>>>(w,x,dpart,N,ntc);
-        h1bp_tq2nz_sum_kernel<<<(N + 255) / 256,256,0,stream>>>(dpart,out,N,wpr);
+        // #2139 item-2: single-pass (was part+sum = 2 dispatches per GEMV).
+        h1bp_q4nx_gemv_kernel<<<(N + 7) / 8, 256, 0, stream>>>(w, x, out, N, K);
     }
 
     // #2139: expert-index-from-device variant (hipGraph-safe — no host index read).
@@ -947,10 +944,9 @@ struct Hip1bpBackend : Backend {
         int ntc = (K + 255) / 256;
         int wpr = (ntc + 3) >> 2;
         int blocks = (N * wpr + 3) / 4;
-        h1bp_q4nx_part_idx8_kernel<<<dim3(blocks, nslots), 128, 0, stream>>>(
-            w, x, x_slot_stride, dpart8, idx_d, stride_bytes, N, ntc);
-        h1bp_tq2nz_sum8_kernel<<<dim3((N + 255) / 256, nslots), 256, 0, stream>>>(
-            dpart8, out8, N, wpr);
+        (void)ntc; (void)wpr; (void)blocks;
+        h1bp_q4nx_gemv_idx8_kernel<<<dim3((N + 7) / 8, nslots), 256, 0, stream>>>(
+            w, x, x_slot_stride, out8, idx_d, stride_bytes, N, K);
     }
 
     void launch_rocmfp4(const uint8_t* w, const float* x, float* out, int N, int K, bool fast) {
