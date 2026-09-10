@@ -73,10 +73,35 @@ jobs:
             echo "seo_changed=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Mint GitHub App installation token
+        if: steps.seo.outputs.seo_changed == 'true' || steps.sweep.outcome == 'success'
+        id: app-token
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          { [ -n "$APP_ID" ] && [ -n "$APP_PRIVATE_KEY" ]; } || { echo "::error::APP_ID / APP_PRIVATE_KEY secrets not set — cannot create PR"; exit 1; }
+          B64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+          NOW=$(date +%s)
+          HEADER=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | B64)
+          PAYLOAD=$(printf '{"iat":%s,"exp":%s,"iss":%s}' "$((NOW-60))" "$((NOW+540))" "$APP_ID" | B64)
+          SIG=$(printf '%s.%s' "$HEADER" "$PAYLOAD" | openssl dgst -sha256 -sign <(printf '%s' "$APP_PRIVATE_KEY") -binary | B64)
+          JWT="$HEADER.$PAYLOAD.$SIG"
+          AUTH="Authorization: Bearer $JWT"
+          INSTALL_ID=$(curl -s -H "$AUTH" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations" | \
+            jq -r --arg o "$GITHUB_REPOSITORY_OWNER" '.[] | select(.account.login == $o) | .id' | head -1)
+          { [ -n "$INSTALL_ID" ]; } || { echo "::error::GitHub App not installed on $GITHUB_REPOSITORY_OWNER"; exit 1; }
+          TOKEN=$(curl -s -X POST -H "$AUTH" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations/$INSTALL_ID/access_tokens" | jq -r '.token // empty')
+          { [ -n "$TOKEN" ]; } || { echo "::error::Could not mint installation token"; exit 1; }
+          echo "TOKEN=$TOKEN" >> "$GITHUB_OUTPUT"
+
       - name: Open PR when the census moved
         if: steps.seo.outputs.seo_changed == 'true' || steps.sweep.outcome == 'success'
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.TOKEN }}
         run: |
           set -euo pipefail
           # Only open a PR when something actually changed on disk.
@@ -116,3 +141,6 @@ jobs:
           gh pr create --base main --head "$BRANCH" \
             --title "census: full sweep $DATE" \
             --body-file /tmp/sweep_pr_body.md
+          # Enqueue to the merge queue so the PR self-merges once CI (C++ build /
+          # Lint / Scope Guard) is green — the main ruleset requires the queue.
+          gh pr merge "$BRANCH" --auto || echo "auto-merge enqueue failed (retry next run)"
