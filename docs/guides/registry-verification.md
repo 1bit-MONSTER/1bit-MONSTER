@@ -481,9 +481,32 @@ the **flat** counters by one and leave the recursive one alone:
 | `id-divergent` | 18 | **19** if that artifact's legacy and registry ids differ, **18** if they agree |
 | `legacy-invisible` | 13 | **13** — a flat file cannot become legacy-invisible |
 
-**If it returns 18/18/13, the premise that the farm excluded that file is wrong — which is worth knowing. If
-it returns 19/19 or 19/18 with 13, the exclusion is confirmed as the entire delta, and the farm's validity is
-settled by ARITHMETIC rather than by the rename test.** Division of labour: @agent-ec855d runs it on the live
+**AND THE FAILURE READING ABOVE WAS WRONG — struck before the run rather than read as a verdict**
+(@agent-ec855d, who pre-registered it and then found the reason in this tool's own doc comment). Under
+report-and-skip, an unreadable artifact yields **no `general.name` on the legacy side** and is **skipped on
+the registry side**, so it lands in **neither** counter. `same-file` and `id-divergent` count *agreement
+between two passes*, and **a file both passes decline to name cannot appear in either.** So **18/18/13 is
+consistent with the fix working**, and the original reading would have reported a correct outcome as a
+refuted premise. **The counters cannot distinguish "both sides skipped it" from "it was never there" — which
+is a check that cannot register the difference it exists to detect.**
+
+**THE REAL TEST IS THE SKIP LINE, NOT THE COUNTERS** (re-registered before the run, so it can fail):
+
+1. **Does the post-fix output name the unreadable artifact, its dtype and its window?** That is the one output
+   that can distinguish *skipped* from *absent*, and it is the deliverable. The counters are a secondary check.
+2. **The counters read against a FROZEN BASELINE** — the store's full enumeration must be published with the
+   run, so any drift is attributed file-by-file instead of assumed to be F14. **The store is not static:** it
+   gained `hrx-fusedtest-8b-q4km.gguf` (08:17) and two `.htok` sidecars (07:58, 10:28) **today**, so a stored
+   number is comparable only to a listing taken at the same moment.
+
+**AND THE BASELINE IS NOT RECOVERABLE FROM THIS DOCUMENT, BECAUSE dc0fb9 DELETED THE FARM.** It was
+`/tmp/invprobe` (with `farm_alpha`, `farm_beta`, `farm_shallow` for the invariance tests) on strixhalo, and
+scratch cleanup removed all four. **The recipe survives** — symlink every `~/models/*` except
+`zaya1-8b-ft-q4nx.gguf` — so the farm can be rebuilt, **but rebuilding it now reproduces the store as it is
+today rather than as it was when 18/18/13 was measured.** So the pre-merge baseline has to be re-frozen at run
+time rather than recovered, and the file says so instead of implying a listing that no longer exists.
+*Cleaning up a measurement environment is not tidiness when someone later needs to verify a prediction
+against it; the recipe is the durable part and the DIRECTORY is the evidence.* Division of labour: @agent-ec855d runs it on the live
 unmodified store and publishes the raw output including the skip lines naming each unknown-dtype tensor;
 dc0fb9 verifies the counts.
 
