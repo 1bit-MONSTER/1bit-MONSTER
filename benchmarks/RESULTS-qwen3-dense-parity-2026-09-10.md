@@ -240,3 +240,31 @@ gives C[0]=-48431231 (≠ Q's -8257537).
   `qwen3_npu_sequence::gen_layer_seq` (libqwen3_npu.so) to resolve.
 - Then wire: per-projection Gemm (mm.xclbin) + Dequant (dequant.xclbin) + attn.xclbin
   into the split-path prefill in `engine/npu/src/npu_engine_universal.cpp`.
+
+---
+
+## 2026-09-10 (session 2b): A/C are TILED; C→bf16 is a separate step
+
+### Finding: A (bf16) and C (int32) are NOT row-major — they are AIE-tiled
+A=one-hot test (A[0][0]=1.0, rest 0) should give C[i][n]=0 for i≠0, but the 256
+rows of C are all DIFFERENT (not {row0, zeros}). So the GEMM's A read is a tiled
+layout, not row-major; the A=1.0 uniform case (which matched FLM byte-for-byte)
+does not exercise the layout. C is written strided (d0=64 int32, d1=256×512-stride,
+BDs at 64-int32 bases → C_BO[512·i + 64·g + col]).
+
+### Finding: dequant.xclbin output confirmed = W_dequant (K×N bf16)
+Correct bf16 decode of dequant output matches dequant_q4nx.cpp W_dequant[0][:]
+exactly. The dequant reads W (arg1 Q4NX) and writes W_dequant (arg0, K×N bf16).
+So C_int32 → QKV_bf16 is NOT done by dequant.xclbin; it is a SEPARATE step
+(attn.xclbin reads bf16 Q/K/V, per gen_mha_engine_seq's 2K-bf16 chunk DMAs).
+
+### Finding: gen_dequant_seq (qwen3_npu_sequence) is DEPRECATED
+`qwen3_npu_sequence::gen_dequant_seq` prints "DEPRECATED FUNCTIONS" and emits an
+empty sequence — not the C→bf16 path.
+
+### Recommended path (avoids reverse-engineering tiled A/C + per-group dequant)
+Use FLM's own `qwen3_npu_sequence` (gen_rtp_seq + gen_layer_seq + gen_mha_engine_seq)
+to generate the full prefill sequences and run them through the native engine's
+xrt::ext::kernel runner — the sequence generators already encode the tiled A/C
+layouts and the int32→bf16 conversion. This is acceptable per the constraint
+(native = 1bit-MONSTER orchestrates FLM's xclbins + libs).
