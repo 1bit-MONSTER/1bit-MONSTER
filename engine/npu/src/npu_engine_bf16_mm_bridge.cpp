@@ -38,3 +38,14 @@ extern "C" void bf16mm_gemm_2batch(uint16_t* C, const uint16_t* A,
                                    uint32_t woff_elements) {
     g_mm.run_gemm_2batch(C, A, W, K, N, woff_elements);
 }
+
+// Device-side path: dequant into a persistent device BO (returns an opaque
+// index) and GEMM directly from it — no host round-trip of the W.
+extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in,
+                                  uint32_t D_out, uint32_t woff_bytes) {
+    return g_mm.run_dequant_dev(layer_bo, D_in, D_out, woff_bytes);
+}
+extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx,
+                                uint32_t K, uint32_t N, uint32_t woff_elements) {
+    g_mm.run_gemm_dev(C, A, W_idx, K, N, woff_elements);
+}

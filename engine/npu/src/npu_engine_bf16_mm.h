@@ -71,6 +71,12 @@ struct Bf16Mm {
     size_t w_cache_elems = 0;
     std::unique_ptr<buffer<uint16_t>> a_cache, c_cache;
     size_t a_cache_elems = 0, c_cache_elems = 0;
+    // Device-side dequant W cache: the prefill dequants each projection ONCE
+    // into a persistent device BO and the GEMM reads it directly (no host
+    // round-trip). Index into w_dev is the opaque handle.
+    std::vector<std::unique_ptr<buffer<uint16_t>>> w_dev;
+    std::unique_ptr<buffer<uint8_t>> bo_cache;
+    const uint8_t* bo_cache_ptr = nullptr;
 
     ~Bf16Mm() { /* BOs owned by xrt */ }
 
@@ -174,7 +180,7 @@ struct Bf16Mm {
         memcpy(C + 128 * N, Cb.data(), 128 * N * 2);
     }
 
-    /// bf16 GEMM with explicit control over the output_offset overload.
+    /// bf16 GEMM with explicit control over the output_offset overload (host-W path).
     /// use7arg=true → 7-arg generate_seq (no output_offset, Q path).
     void run_gemm_ooff(uint16_t* C, const uint16_t* A, const uint16_t* W,
               uint32_t M, uint32_t K, uint32_t N,
@@ -185,21 +191,56 @@ struct Bf16Mm {
         else
             gemm_->generate_seq(app.seq(), M, K, N, woff, false, Gemm::NO_Activation, 0, ooff);
         app.update_ctrl_seq();
-        // W span the kernel reads = W[woff : woff + K*N] (bf16 elements).
         size_t wspan = (size_t)woff + (size_t)K * N;
         if (!w_cache || w_cache_elems < wspan) {
             w_cache = std::make_unique<buffer<uint16_t>>(*dev, wspan);
             w_cache_elems = wspan;
-            w_cache_ptr = nullptr;   // force re-copy into the resized BO
+            w_cache_ptr = nullptr;
         }
         if (W != w_cache_ptr) { memcpy(w_cache->data(), W, wspan * 2); w_cache_ptr = W; }
-        // reuse cached A/C BOs (sized to the max seen). The kernel writes all
-        // 256 M-rows (128 correct + 128 dup-odd) so no C memset is needed.
         size_t a_elems = (size_t)M * K, c_elems = (size_t)M * N;
         if (!a_cache || a_cache_elems < a_elems) { a_cache = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache_elems = a_elems; }
         if (!c_cache || c_cache_elems < c_elems) { c_cache = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache_elems = c_elems; }
         memcpy(a_cache->data(), A, a_elems * 2);
         app.safe_run(*c_cache, *a_cache, *w_cache);
+        memcpy(C, c_cache->data(), c_elems * 2);
+    }
+
+    /// Dequantize a projection into a persistent DEVICE buffer (no host copy).
+    /// Returns an index into the device W cache (opaque handle for gemm_dev).
+    int run_dequant_dev(const uint8_t* q4nx, uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset) {
+        npu_app app(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
+        deq_->generate_dequant_q4_1_seq(app.seq(), D_in, D_out, q4nx_weight_offset, 0);
+        app.update_ctrl_seq();
+        // cache the 10 MB layer BO (the 4 projections of a layer share it)
+        if (!bo_cache) bo_cache = std::make_unique<buffer<uint8_t>>(*dev, (size_t)2048 * 5120);
+        if (q4nx != bo_cache_ptr) { memcpy(bo_cache->data(), q4nx, (size_t)2048 * 5120); bo_cache_ptr = q4nx; }
+        w_dev.push_back(std::make_unique<buffer<uint16_t>>(*dev, (size_t)D_in * D_out));
+        app.safe_run(*w_dev.back(), *bo_cache);
+        return (int)w_dev.size() - 1;
+    }
+
+    /// bf16 GEMM reading W directly from a device buffer (2-batch M-split).
+    void run_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
+        std::vector<uint16_t> Ab(256 * K, 0), Cb(256 * N, 0);
+        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
+        gemm_dev_once(Cb.data(), Ab.data(), W_idx, K, N, woff);
+        memcpy(C, Cb.data(), 128 * N * 2);
+        memset(Ab.data(), 0, 256 * K * 2);
+        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
+        gemm_dev_once(Cb.data(), Ab.data(), W_idx, K, N, woff);
+        memcpy(C + 128 * N, Cb.data(), 128 * N * 2);
+    }
+
+    void gemm_dev_once(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
+        npu_app app(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
+        gemm_->generate_seq(app.seq(), 256, K, N, woff, false, Gemm::NO_Activation, 0);
+        app.update_ctrl_seq();
+        size_t a_elems = 256 * K, c_elems = 256 * N;
+        if (!a_cache || a_cache_elems < a_elems) { a_cache = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache_elems = a_elems; }
+        if (!c_cache || c_cache_elems < c_elems) { c_cache = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache_elems = c_elems; }
+        memcpy(a_cache->data(), A, a_elems * 2);
+        app.safe_run(*c_cache, *a_cache, *w_dev[W_idx]);
         memcpy(C, c_cache->data(), c_elems * 2);
     }
 };

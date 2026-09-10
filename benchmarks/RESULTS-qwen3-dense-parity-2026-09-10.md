@@ -688,3 +688,17 @@ The remaining gap vs FLM (1269 tok/s) is the host→device W copy (840 MB/prefil
 bridge dequants to HOST then re-copies to device per GEMM) + the 2-batch doubling. Next
 win: keep the dequant output in persistent DEVICE buffers (dequant → device, GEMM reads
 device directly) — est. ~1.2 s for the 981-token "1k" stage (~820 tok/s).
+
+## 2026-09-10 (session 2s): device-side W caching (dequant→device, GEMM reads device)
+
+Added `Bf16Mm::run_dequant_dev` (dequant into a persistent device BO, index handle) +
+`run_gemm_dev`/`gemm_dev_once` (GEMM reads the device W directly, no host round-trip),
+exposed as `bf16mm_dequant_dev`/`bf16mm_gemm_dev`. The 10 MB layer BO is cached across a
+layer's 4 projections. Measured (0.6B, 256-token batch, 2-batch):
+- dequant 4 projections (device): 15.8 ms (one-time per layer, init)
+- 6 GEMMs (Q/K/V/O/GU/D, device W): **11.76 ms** → est. 329 ms/256tok ≈ **777 tok/s**
+
+The GU (N=6144, ~6 ms) + D (K=3072, ~2 ms) dominate — the 3072-intermediate MLP. Remaining
+gap vs FLM (1269 tok/s) is ~1.6×; next levers are FLM's N=128 tile schedule and overlapping
+the 6 GEMMs (the mm.xclbin kernel throughput is ~equal, the difference is the 2-batch
+invocation overhead on the large-N MLP GEMMs).
