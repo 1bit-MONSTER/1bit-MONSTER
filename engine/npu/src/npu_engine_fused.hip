@@ -135,8 +135,8 @@ static void npu_dump(const char* stage, int l, const float* p, size_t n, int ste
     if (g_dump_over_cap || g_dump_bytes + bytes > dump_cap_bytes()) {
         if (!g_dump_over_cap) {
             g_dump_over_cap = true;
-            fprintf(stderr, "[npu] NPU_DUMP: buffer cap reached at %zu MB — further tensors are NOT recorded "
-                            "(raise NPU_DUMP_MAX_MB to record them)\n", g_dump_bytes / (1024u * 1024u));
+            fprintf(stderr, "[npu] NPU_DUMP: buffer cap reached at %.1f MB — further tensors are NOT recorded "
+                            "(raise NPU_DUMP_MAX_MB to record them)\n", (double)g_dump_bytes / (1024.0 * 1024.0));
         }
         return;
     }
