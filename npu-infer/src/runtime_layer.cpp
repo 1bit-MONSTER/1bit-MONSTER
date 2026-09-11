@@ -590,7 +590,7 @@ bool RuntimeLayerEngine::write_act(const uint16_t* bf16_hidden) {
 }
 
 bool RuntimeLayerEngine::get_logits(float* out, int vocab) {
-    bo_logits_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+    bo_logits_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, (size_t)vocab * 2, 0);
     const uint16_t* lg = (const uint16_t*)bo_logits_->map();
     for (int i = 0; i < vocab; i++) out[i] = bf16_to_f32(lg[i]);
     return true;
