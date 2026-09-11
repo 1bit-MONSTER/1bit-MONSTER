@@ -2050,6 +2050,13 @@ int main(int argc, char** argv) {
         j["object"] = "list";
         json models = json::array();
         // Add all discovered models
+        // R5 (issue #2193, audit §9.10.31): when a scanned entry resolves to a registry artifact,
+        // list it under the CANONICAL id and keep the scanned name as an alias. Without this the
+        // same weights appear twice — once canonically (the registry loop below) and once by their
+        // legacy stem (this loop, which sets id = m.model_name) — which is exactly the divergence
+        // step 4 exists to remove. Measured: `zaya1-8b.q4nx` (artifact_id zaya1-8b.q4nx,
+        // capabilities NPU-Q4NX) AND `zaya1-8b` (artifact_id zaya1-8b.q4nx, same capabilities).
+        std::set<std::string> listed_artifact_ids;
         for (auto& m : discovered) {
             json info;
             info["id"] = m.model_name;
@@ -2067,6 +2074,16 @@ int main(int argc, char** argv) {
             const onebit::ModelArtifact* art = g_registry.resolve_path(m.model_path);
             if (!art) art = g_registry.find(m.model_name);
             if (art) {
+                // One artifact, one listed id: the canonical one. A second entry under the
+                // scanned name is not an alias, it is a duplicate.
+                if (!art->id.empty() && art->id != m.model_name) {
+                    info["legacy_name"] = m.model_name;
+                    info["id"] = art->id;
+                }
+                if (!art->id.empty()) {
+                    if (listed_artifact_ids.count(art->id)) continue;  // already listed canonically
+                    listed_artifact_ids.insert(art->id);
+                }
                 info["artifact_id"] = art->id;
                 info["container"] = onebit::to_string(art->container);
                 info["dtype_space"] = onebit::to_string(art->dtype_space);
@@ -2082,6 +2099,7 @@ int main(int argc, char** argv) {
         // Registry-only artifacts: recursive walk + native containers that the
         // flat scan above cannot reach (e.g. q4nx-converted/*.gguf, *.q4nx).
         for (const auto& art : g_registry.artifacts()) {
+            if (listed_artifact_ids.count(art.id)) continue;
             bool present = false;
             for (auto& m : discovered) {
                 if (m.model_name == art.id) { present = true; break; }
