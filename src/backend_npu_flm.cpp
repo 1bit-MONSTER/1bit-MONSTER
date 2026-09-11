@@ -214,20 +214,40 @@ public:
         model_tag_ = flm_tag_for_model(cfg);
         fprintf(stderr, "NPU: launching FLM %s...\n", model_tag_.c_str());
 
-        // #1604: the FLM registry (model_list.json) silently overrides the
-        // requested --model path — the tag resolves to whatever the registry
-        // points at. Warn loudly when the registry's model for the resolved
-        // tag differs from the requested file, so a redirected service is
-        // discoverable without digging through the FLM child's log.
+        // #1604 / R2 (goal mtvd3pmx): the FLM registry (model_list.json) silently
+        // overrides the requested --model path — the tag resolves to whatever the
+        // registry points at, and the executor is launched as `flm serve <tag>` (see
+        // ensure_serve()), so the requested path is NEVER handed to FLM. When the
+        // registry's model for the resolved tag is a differently-named model, serving
+        // would answer a request for THIS artifact with OTHER weights. That is the
+        // failure requirement R2 forbids, so it is refused rather than warned about.
+        //
+        // Two corrections to the original check, both required before it could gate:
+        //  (1) compare the file STEM, not the whole basename. The old predicate
+        //      compared the filename including its extension, so it fired on the
+        //      CORRECT configuration — `weights/Qwen3-0.6B-NPU2.q4nx`, a symlink to
+        //      the very file the registry serves, differs from the registry name
+        //      `Qwen3-0.6B-NPU2` by ".q4nx" alone. A detector that fires on correct
+        //      setups is not a usable signal and could not have been promoted to a
+        //      gate (ADR 9.10.16).
+        //  (2) compare case-insensitively — registry names and the filenames users
+        //      give them differ in case often enough that a case-sensitive gate would
+        //      refuse legitimate setups.
+        // The refusal fires only when BOTH the stem and the containing directory
+        // differ from the registry's model name, i.e. when the engine has positively
+        // established that the tag names a different model. That covers the two
+        // legitimate shapes: `weights/<Name>.q4nx` and
+        // `<flm models root>/<Name>/model.q4nx`.
         {
             std::string tag = model_tag_, variant;
             size_t colon = tag.find(':');
             if (colon != std::string::npos) { variant = tag.substr(colon + 1); tag = tag.substr(0, colon); }
             std::ifstream f(flm_config_);
             if (f) {
+                bool lossy = false;
+                std::string reg_name;
                 try {
                     nlohmann::json j; f >> j;
-                    std::string reg_name;
                     auto models = j.value("models", nlohmann::json::object());
                     if (models.contains(tag)) {
                         auto& v = models[tag];
@@ -238,21 +258,36 @@ public:
                         }
                     }
                     if (!reg_name.empty()) {
+                        auto lower = [](std::string s) {
+                            for (char& c : s)
+                                if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+                            return s;
+                        };
                         std::string req = cfg.model_path, req_dir = req;
                         size_t sl = req.find_last_of('/');
                         if (sl != std::string::npos) { req = req.substr(sl + 1); req_dir = req_dir.substr(0, sl); }
                         size_t dl = req_dir.find_last_of('/');
                         std::string req_dir_name = dl == std::string::npos ? req_dir : req_dir.substr(dl + 1);
-                        if (req_dir_name != reg_name && req != reg_name) {
-                            fprintf(stderr,
-                                "WARNING #1604: requested --model %s but FLM registry %s maps tag '%s' to "
-                                "registry model '%s' — serving the REGISTRY model, not the requested file. "
-                                "Set NPU_MODEL_TAG or fix model_list.json to serve the requested model.\n",
-                                cfg.model_path.c_str(), flm_config_.c_str(), model_tag_.c_str(), reg_name.c_str());
-                        }
+                        std::string req_stem = req;
+                        size_t dot = req_stem.find_last_of('.');
+                        if (dot != std::string::npos && dot > 0) req_stem = req_stem.substr(0, dot);
+                        lossy = (lower(req_stem) != lower(reg_name) &&
+                                 lower(req_dir_name) != lower(reg_name));
                     }
                 } catch (const std::exception& e) {
                     fprintf(stderr, "NPU: failed to parse %s for model validation: %s\n", flm_config_.c_str(), e.what());
+                }
+                if (lossy) {
+                    fprintf(stderr,
+                        "NPU: REFUSING --model %s — it maps to FLM tag '%s', and %s resolves that tag to "
+                        "registry model '%s'. This executor is launched as `flm serve <tag>` and never "
+                        "receives the requested path, so it would answer with the REGISTRY model's "
+                        "weights instead of the requested artifact (R2). Remedies: route this artifact "
+                        "to a path-capable lane; or set NPU_MODEL_TAG to the tag you intend; or place it "
+                        "as <flm models dir>/%s/model.q4nx so its identity matches the tag.\n",
+                        cfg.model_path.c_str(), model_tag_.c_str(), flm_config_.c_str(),
+                        reg_name.c_str(), reg_name.c_str());
+                    return false;
                 }
             }
         }
