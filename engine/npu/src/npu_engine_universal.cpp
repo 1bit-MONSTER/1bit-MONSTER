@@ -68,16 +68,16 @@ extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes, size_t layer_bo_bytes);
 extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff_elements);
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
-static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
+static inline float bf16f(uint16_t v){uint32_t b=v<<16;return __builtin_bit_cast(float,b);}
 // Branch-free NaN/Inf->0 bf16 decode (the branch version blocked SIMD vectorization
 // of the dense-prefill conversion loops).
 static inline float bf16g(uint16_t v){
     uint32_t b=(uint32_t)v<<16;
     uint32_t ni=(b&0x7F800000u)==0x7F800000u?0xFFFFFFFFu:0u;
     b&=~ni;
-    float f;memcpy(&f,&b,4);return f;
+    return __builtin_bit_cast(float,b);
 }
-static inline uint16_t f32_to_bf16(float f){uint32_t b;memcpy(&b,&f,4);return (uint16_t)((b+0x7FFF+((b>>16)&1))>>16);}
+static inline uint16_t f32_to_bf16(float f){uint32_t b=__builtin_bit_cast(uint32_t,f);return (uint16_t)((b+0x7FFF+((b>>16)&1))>>16);}
 // bfp16ebs8: 8 f32 -> 1 shared exponent byte + 8 x 7-bit mantissa bytes (9B/8vals)
 static inline void f32_to_bfp16ebs8(const float* in, int n, uint8_t* out){
     for(int b=0;b<n/8;b++){

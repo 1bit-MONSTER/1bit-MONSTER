@@ -97,6 +97,10 @@ struct Bf16Mm {
     std::unique_ptr<buffer<uint8_t>> bo_cache;
     size_t bo_cache_bytes = 0;
     const uint8_t* bo_cache_ptr = nullptr;
+    // Per-shape npu_app cache: generate_seq + aiebu ELF assembly + kernel
+    // construction is ~0.5ms/GEMM and the shapes are fixed (Q/K/V/O/GU/D), so
+    // cache the assembled kernel per (K,N,woff) and only safe_run per call.
+    std::map<uint64_t, std::unique_ptr<npu_app>> mm_app_cache;
 
     ~Bf16Mm() { /* BOs owned by xrt */ }
 
@@ -305,9 +309,15 @@ struct Bf16Mm {
     }
 
     void gemm_dev_once(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
-        npu_app app(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
-        gemm_->generate_seq(app.seq(), 256, K, N, woff, false, Gemm::NO_Activation, 0);
-        app.update_ctrl_seq();
+        uint64_t key = ((uint64_t)K << 32) | ((uint64_t)N << 16) | (uint64_t)woff;
+        auto it = mm_app_cache.find(key);
+        if (it == mm_app_cache.end()) {
+            auto app = std::make_unique<npu_app>(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
+            gemm_->generate_seq(app->seq(), 256, K, N, woff, false, Gemm::NO_Activation, 0);
+            app->update_ctrl_seq();
+            it = mm_app_cache.emplace(key, std::move(app)).first;
+        }
+        npu_app& app = *it->second;
         size_t a_elems = 256 * K, c_elems = 256 * N;
         if (!a_cache || a_cache_elems < a_elems) { a_cache = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache_elems = a_elems; }
         if (!c_cache || c_cache_elems < c_elems) { c_cache = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache_elems = c_elems; }
