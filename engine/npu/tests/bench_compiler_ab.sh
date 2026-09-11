@@ -14,9 +14,12 @@
 #       arm B (chess)  : xchesscc_wrapper aie2p (license brokered via the Vitis launcher) + aiecc --xchesscc --xbridge
 #
 # The bench only times when both correctness passes report 0 wrong, so a broken
-# arm yields a clean FAIL + no timing (see OKF log issue #1878: chess-compiled
-# kernels have historically zeroed C1 on the NPU — arg-delivery defect in the
-# aiecc xchesscc core; the v27 external-objFifo design may or may not hit it).
+# arm yields a clean FAIL + no timing.  What "broken" means here is now known
+# (Xilinx/mlir-aie#3690): the 2025.2/2026.1 aie2ps chess models expose only the
+# GUARDED acquire intrinsic, and a core stuck on that guarded encoding never
+# completes on AIE2P silicon — so arm B (chess + --xbridge, the me-runtime path)
+# reports all zeros, while the same kernel built with the 2024 vitis_aie_essentials
+# chess (PLAIN acquire, see below) passes.  Arm C measures that configuration.
 #
 # Usage:
 #   ./bench_compiler_ab.sh [--rounds N] [--iters N] [--keep] [--no-run]
@@ -24,6 +27,16 @@
 #   --iters N    benchmark iterations per launch batch (default 200)
 #   --keep       keep work dirs under engine/npu/tests/_ab_out (default: /tmp, cleaned)
 #   --no-run     build both xclbins + harness but skip the NPU timing (compile/A-B check)
+#
+# Arm C (opt-in): CHESS_LEGACY=1 adds a third arm built with the Ryzen-AI 1.3.0
+# vitis_aie_essentials (2024) chess and linked through the peano path
+# (`--xchesscc --no-xbridge`), i.e. the configuration that actually runs on AIE2P.
+#   CHESS_LEGACY=1 LEGACY_AIETOOLS=<essentials root> [LEGACY_PATCH_WRAPPER=1] \
+#     ./bench_compiler_ab.sh --rounds 2 --iters 10 --keep
+# Needs, and reports, three things: the legacy tree's aie2ps aliases (created if
+# absent), the PLAIN chess_intrinsic_wrapper.ll (LEGACY_PATCH_WRAPPER=1 swaps it
+# in for the build and restores it), and -Wl,--orphan-handling=warn for the
+# peano link of the chess objects (applied via a throwaway --peano shim root).
 #
 # Needs the Strix Halo NPU host (strixhalo) with XRT + mlir-aie + Xilinx Vitis aietools.
 # NOTE: do NOT run while the zaya/1bit engine is serving — the NPU is single-device
@@ -60,6 +73,30 @@ if [ -z "$VITIS_AIETOOLS" ]; then
 fi
 XILINX="${XILINX:-$(dirname "$(dirname "$VITIS_AIETOOLS")")}"
 XCHESS_BIN="$VITIS_AIETOOLS/bin"
+
+# ── Arm C (opt-in, CHESS_LEGACY=1): the Ryzen-AI 1.3.0 vitis_aie_essentials
+# (2024) chess, whose model still has the UNGUARDED acquire, linked through the
+# peano path. See Xilinx/mlir-aie#3690: the 2025.2/2026.1 aie2ps models expose
+# only the GUARDED acquire, and a core stuck on that encoding never completes on
+# AIE2P silicon (all-zero output / ERT timeout), which is what arm B measures.
+#
+# Three environment facts this arm needs:
+#   * LEGACY_AIETOOLS  the essentials tree (default below)
+#   * the installed chess_intrinsic_wrapper.ll must carry the PLAIN intrinsic
+#     names; LEGACY_PATCH_WRAPPER=1 swaps it in for the build and restores it.
+#   * the peano link cannot place the chess objects' runtime tables
+#     (.tctmemtab/.rtstab/.eoltab/.chesstypeannotationtab) and aiecc has no
+#     linker-flag knob, so a throwaway --peano shim root appends
+#     -Wl,--orphan-handling=warn for this arm only.
+CHESS_LEGACY="${CHESS_LEGACY:-0}"
+LEGACY_AIETOOLS="${LEGACY_AIETOOLS:-$HOME/Downloads/ryzen_ai-1.3.0/vitis_aie_essentials}"
+LEGACY_PATCH_WRAPPER="${LEGACY_PATCH_WRAPPER:-0}"
+WRAPPER_LL="$MLIR_AIE/install/aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll"
+# Arm C uses the INSTALL aiecc, not build_tmp/bin/aiecc as the other arms do: aiecc
+# resolves `aie_runtime_lib` relative to itself, and build_tmp/AIE2P has no
+# chess_intrinsic_wrapper.ll, so the chess-llvm-link step is skipped and the
+# legacy chesscc then dies on the un-linked IR (measured: 'Failed No such device').
+AIECC_LEGACY="${AIECC_LEGACY:-$MLIR_AIE/install/bin/aiecc}"
 
 # Generator / kernel / bench parameters (same as check_mm_kernel_2x4.sh)
 M=128; K=2048; N=8192
@@ -169,6 +206,94 @@ build_xclbin_chess() { # $1 = arm dir, $2 = design dir
       design.mlir > aiecc_chess.log 2>&1 )
 }
 
+# ── Arm C: legacy (2024 essentials) chess, peano-linked ──────────────
+legacy_prepare() {
+  [ -x "$LEGACY_AIETOOLS/bin/xchesscc" ] || {
+    echo "  ERROR: no $LEGACY_AIETOOLS/bin/xchesscc (set LEGACY_AIETOOLS=<essentials root>)" >&2
+    return 1
+  }
+  [ -x "$AIECC_LEGACY" ] || {
+    echo "  ERROR: no aiecc at $AIECC_LEGACY (set AIECC_LEGACY=<path>)" >&2
+    return 1
+  }
+  # that tree names its target dirs aie2p while the tools ask for aie2ps
+  [ -e "$LEGACY_AIETOOLS/tps/lnx64/target_aie2ps" ] || {
+    ln -s target_aie2p "$LEGACY_AIETOOLS/tps/lnx64/target_aie2ps"
+    echo "  alias created: tps/lnx64/target_aie2ps -> target_aie2p"
+  }
+  [ -e "$LEGACY_AIETOOLS/data/aie2ps" ] || {
+    ln -s aie2p "$LEGACY_AIETOOLS/data/aie2ps"
+    echo "  alias created: data/aie2ps -> aie2p"
+  }
+  return 0
+}
+
+legacy_wrapper_swap() { # guarded -> plain; only needed while the arm builds
+  [ -f "$WRAPPER_LL" ] || {
+    echo "  ERROR: $WRAPPER_LL missing — aiecc then reports 'chess_intrinsic_wrapper.ll" >&2
+    echo "         not found ... skipping chess-llvm-link step' and the compile dies later (#3690)." >&2
+    return 1
+  }
+  if grep -q "chessintr_void_acquire____uint___uint" "$WRAPPER_LL"; then
+    echo "  wrapper: already PLAIN"
+    return 0
+  fi
+  if [ "$LEGACY_PATCH_WRAPPER" != 1 ]; then
+    echo "  ERROR: $WRAPPER_LL is the GUARDED variant and the 2024 model rejects it" >&2
+    echo "         ('unrecognised intrinsic ... model inconsistency')." >&2
+    echo "         Re-run with LEGACY_PATCH_WRAPPER=1 to swap it in for this build and restore it after." >&2
+    return 1
+  fi
+  cp -f "$WRAPPER_LL" "$W/chess_intrinsic_wrapper.ll.guarded"
+  sed -i 's/void_acquire_guarded___uint___uint/void_acquire____uint___uint/g; s/void_release_guarded___uint___sint/void_release____uint___sint/g' "$WRAPPER_LL"
+  echo "  wrapper: swapped to PLAIN (guarded original kept at $W/chess_intrinsic_wrapper.ll.guarded)"
+  return 0
+}
+
+legacy_wrapper_restore() {
+  [ -f "$W/chess_intrinsic_wrapper.ll.guarded" ] || return 0
+  cp -f "$W/chess_intrinsic_wrapper.ll.guarded" "$WRAPPER_LL" && echo "  wrapper: restored to guarded"
+  return 0
+}
+
+legacy_peano_shim() { # $1 = dir to create; a --peano root adding orphan handling
+  local root="$1" real="$PEANO" e c
+  [ -d "$real/bin" ] || { echo "  ERROR: no peano tree at $real" >&2; return 1; }
+  rm -rf "$root"; mkdir -p "$root"
+  for e in "$real"/*; do ln -sfn "$e" "$root/"; done
+  rm -rf "$root/bin"; mkdir -p "$root/bin"        # replace the bin symlink with a real dir
+  for e in "$real"/bin/*; do ln -sf "$e" "$root/bin/"; done
+  for c in clang clang++; do
+    rm -f "$root/bin/$c"
+    printf '#!/bin/sh\nexec %s/bin/%s "$@" -Wl,--orphan-handling=warn\n' "$real" "$c" > "$root/bin/$c"
+    chmod +x "$root/bin/$c"
+  done
+  # a check that can fail: the shim must actually run
+  if ! "$root/bin/clang++" --version >/dev/null 2>&1; then
+    echo "  ERROR: peano shim at $root does not run" >&2
+    return 1
+  fi
+  echo "  peano shim: $root ($("$root/bin/clang++" --version 2>/dev/null | head -1 | cut -c1-40); appends -Wl,--orphan-handling=warn)"
+  return 0
+}
+
+build_kernel_chess_legacy() { # $1 = out dir
+  PATH="$LEGACY_AIETOOLS/bin:$PATH" xchesscc_wrapper aie2p -c \
+    -I "$MLIR_AIE_INC" -I "$AIE_KERNELS_INC" \
+    -O2 -DNDEBUG -D__AIE_API_AIE_ADF_HPP__ \
+    "${PROBE_DEF[@]}" "${DIMS[@]}" "$KERNEL_SRC" -o "$1/$KERNEL_O"
+}
+
+build_xclbin_chess_legacy() { # $1 = arm dir, $2 = design dir, $3 = peano shim
+  cp "$2/design.mlir" "$1/"
+  ( cd "$1" && PATH="$LEGACY_AIETOOLS/bin:$PATH" "$AIECC_LEGACY" --peano="$3" --aietools="$LEGACY_AIETOOLS" \
+      --alloc-scheme=basic-sequential --xchesscc --no-xbridge \
+      --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
+      --aie-generate-npu-insts \
+      --xclbin-name="final_chess2024.xclbin" --npu-insts-name="insts_chess2024.txt" \
+      design.mlir > aiecc_chess2024.log 2>&1 )
+}
+
 # ── Host harness (built once) ────────────────────────────────────────────────
 build_harness() { # $1 = out dir
   g++ -std=gnu++17 -O2 "$TESTS/bench_gemm_analytical.cpp" \
@@ -233,7 +358,7 @@ else
   W=$(mktemp -d /tmp/ab_compiler.XXXXXX)
   trap 'rm -rf "$W"' EXIT
 fi
-P="$W/peano"; C="$W/chess"; mkdir -p "$P" "$C"
+P="$W/peano"; C="$W/chess"; C3="$W/chess2024"; mkdir -p "$P" "$C"
 
 echo "== 1/5 compile kernel .o (i8_i32, ${M_T}x${K_T}x${N_T}) — both compilers =="
 echo "  [peano] $("$PEANO_CLANG" --version 2>/dev/null | head -1)"
@@ -265,6 +390,24 @@ fi
 
 build_harness "$W"
 
+if [ "$CHESS_LEGACY" = 1 ]; then
+  echo "== 4b/5 arm C: legacy (2024 essentials) chess + peano bare link =="
+  mkdir -p "$C3"
+  legacy_prepare || exit 1
+  legacy_wrapper_swap || exit 1
+  build_kernel_chess_legacy "$C3"
+  legacy_peano_shim "$W/peano-shim" || { legacy_wrapper_restore; exit 1; }
+  if build_xclbin_chess_legacy "$C3" "$W" "$W/peano-shim"; then
+    echo "  OK: $C3/final_chess2024.xclbin ($(stat -c%s "$C3/final_chess2024.xclbin") B)"
+  else
+    echo "  CHESS2024 XCLBIN BUILD FAILED — see $C3/aiecc_chess2024.log"
+    legacy_wrapper_restore
+    [ "$NO_RUN" = 1 ] && exit 0
+    exit 1
+  fi
+  legacy_wrapper_restore
+fi
+
 if [ "$NO_RUN" = 1 ]; then
   echo "== 5/5 skipped (--no-run): both xclbins built, no NPU timing =="
   exit 0
@@ -272,11 +415,16 @@ fi
 
 echo "== 5/5 interleaved NPU timing ($ROUNDS rounds x $ITERS iters) =="
 echo "  WARNING: NPU must be otherwise idle (no zaya/1bit server) for valid numbers."
-declare -a P_RES C_RES
+declare -a P_RES C_RES C3_RES
 for r in $(seq 1 "$ROUNDS"); do
   p=$(run_arm "$W/bench" "$P/final_peano.xclbin" "$P/insts_peano.txt" "$ITERS")
   c=$(run_arm "$W/bench" "$C/final_chess.xclbin" "$C/insts_chess.txt" "$ITERS")
-  echo "  round $r: peano [$p]  chess [$c]"
+  c3=""
+  if [ "$CHESS_LEGACY" = 1 ]; then
+    c3=$(run_arm "$W/bench" "$C3/final_chess2024.xclbin" "$C3/insts_chess2024.txt" "$ITERS")
+    C3_RES+=("$c3")
+  fi
+  echo "  round $r: peano [$p]  chess [$c]${c3:+  chess2024 [$c3]}"
   P_RES+=("$p"); C_RES+=("$c")
 done
 
@@ -286,6 +434,13 @@ printf "  %-10s %-22s %-22s\n" "round" "peano (ms, GOP/s)" "chess (ms, GOP/s)"
 for i in $(seq 0 $((ROUNDS-1))); do
   printf "  %-10s %-22s %-22s\n" "$((i+1))" "${P_RES[$i]}" "${C_RES[$i]}"
 done
+if [ "$CHESS_LEGACY" = 1 ]; then
+  echo "  ── arm C (legacy 2024 chess, peano-linked) ──"
+  printf "  %-10s %-22s\n" "round" "chess2024 (ms, GOP/s)"
+  for i in $(seq 0 $((ROUNDS-1))); do
+    printf "  %-10s %-22s\n" "$((i+1))" "${C3_RES[$i]:-}"
+  done
+fi
 
 # means over PASS rounds
 mean() { # "$1" = list of "PASS ms gops"
@@ -304,6 +459,14 @@ P_MEAN=$(mean "${P_RES[@]}"); C_MEAN=$(mean "${C_RES[@]}")
 echo "  ───────────────────────────────────────────────────────────────"
 echo "  peano mean: $P_MEAN"
 echo "  chess mean: $C_MEAN"
+if [ "$CHESS_LEGACY" = 1 ] && [ ${#C3_RES[@]} -gt 0 ]; then
+  C3_MEAN=$(mean "${C3_RES[@]}")
+  echo "  chess2024 mean: $C3_MEAN"
+  if echo "$P_MEAN" | grep -q GOP && echo "$C3_MEAN" | grep -q GOP; then
+    p3_ms=${P_MEAN%% *}; c3_ms=${C3_MEAN%% *}
+    echo "  chess2024/peano ms ratio: $(awk -v a="$c3_ms" -v b="$p3_ms" 'BEGIN{printf "%.3f", a/b}')  (<1 = legacy chess faster)"
+  fi
+fi
 if echo "$P_MEAN" | grep -q GOP && echo "$C_MEAN" | grep -q GOP; then
   p_ms=${P_MEAN%% *}; c_ms=${C_MEAN%% *}
   echo "  chess/peano ms ratio: $(awk -v a="$c_ms" -v b="$p_ms" 'BEGIN{printf "%.3f", a/b}')  (1.00 = identical, >1 = chess slower)"
