@@ -169,6 +169,29 @@ HIP wins; short prompts amortize the handoff cost poorly).
 - Documented state-format compatibility: the round-trip result + the exact
   `LLAMA_STATE_VERSION`/`LLAMA_SESSION_VERSION` pair (9/9).
 
+**Measured status 2026-09-11 (goal `mtwqm7qx-hlc0ht`) — the positive clause is NOT met on the shipped path, and
+what it was hiding was worse than a decode error.** Run through the engine with the shipped b66 bundle and the real
+2,940-token blob (`~/hrx-2145/hyp_blob.bin`, session v9), model Qwen3-Coder-30B-A3B-Instruct-Q4_K_M, one greedy
+`X-Backend: hrx_gpu` request:
+
+| binary | `HRX_MAX_CTX_TOKENS` | HRX graph saw | response |
+|---|---|---|---|
+| pre-fix `main` (`598fa66ca`) | 2048 | **no `FLASH_ATTN_EXT` node, no 3072 KV** | **`finish_reason: stop`** |
+| fix (PR #2203) | 2048 | the imported ~3k KV (re-imported) | explicit `REFUSING decode: context 2940 >= HRX_MAX_CTX_TOKENS (2048) … (issue #2145)` |
+| fix (PR #2203) | 0 | `unsupported HRX node 25: FLASH_ATTN_EXT … f16[128,3072,4,1]` | `compute status: -1` |
+
+- **Pre-fix the lane reported success while decoding from an EMPTY KV.** `HrxBackend::reset()` recreates the
+  in-process context (`pos = 0`), so the `HRX_STATE_FILE` import was discarded before the first decode: the graph
+  never touched the imported context, yet the request returned `stop`. That is **context loss reported as success**
+  — the §5.2 clause "correct continuation (no context loss)" defeated invisibly. The PR #2203 re-import removes it.
+- **The positive clause cannot be met on this box as configured.** The only engine-loadable, self-contained HRX lib
+  set is the shipped b66 bundle, and its HRX over-claims `FLASH_ATTN_EXT` above KV 2048; the named GET_ROWS-capable
+  local build segfaults the *engine* after bundle init (split libs — fine as the `rt_b66` harness lane, not as an
+  engine lane). So no bundle here decodes a >2048-token imported context on the HRX device.
+- **RE-OPEN TRIGGERS (either):** (a) the upstream bundle repin (#1945) — an HRX that supports >2048 KV; (b) the HRX2
+  decode-ADD coverage named in the 2026-09-08 decision. Re-run the matrix above with the pinned blob; `HRX_MAX_CTX_TOKENS=0`
+  exposes the raw lane.
+
 ## 6. Open questions
 
 - HRX bundle prefill speed (needed to confirm D1 is only a fallback).

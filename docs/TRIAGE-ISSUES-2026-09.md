@@ -53,7 +53,7 @@ the single-quoted string early — the shell then tried to execute the
 | Issue | Sev | Status |
 |-------|-----|--------|
 | #2013 (gnome-shell GL hang, gfx1151) | high | Mitigations verified live: `amdgpu lockup_timeout=10000 timeout_period=10000` active, GNOME animations off, **stable since 08-31** (no new coredumps/hangs across reboots). Coredumps preserved (`/var/log/gpu-coredumps/amdgpu-20260831-*`). Remaining: upstream Mesa/amdgpu report. |
-| #1942 (hybrid prefill/decode) | med | State-format gate **answered** (round 25j): vendored llama.cpp ↔ HRX bundle full-state blob round-trips byte-identically (0.6B + 30B-A3B Q4_K_M). Remaining: HIP prefill lane build (TheRock, stopped at round 25k) + KV handoff plumbing + benchmark. |
+| #1942 (hybrid prefill/decode) | med | **Handoff resolved; §5.2 positive clause blocked bundle-side (2026-09-11).** State-format gate answered (round 25j: byte-identical round-trip, 0.6B + 30B-A3B) and the HIP prefill lane built (PR #2054); what remains is the shipped b66 HRX **over-claiming `FLASH_ATTN_EXT` above KV 2048**, so a 2,940-token imported context cannot decode on the HRX device. PR #2203 removes the silent context loss and makes the refusal explicit; re-open on #1945 (bundle repin) or HRX2 decode-ADD. |
 | #1776 (Zaya decode CPU-attention-bound) | med | Status corrected: the runtime-layer path (Qwen3 npu-infer) does **not** change the standalone Zaya path — CCA-attention-on-NPU remains the open lever. |
 | #1831 (HIP cannot run qwen3_5_moe 35B) | high | Scoped: GDN math has NPU-side references (`npu_engine_universal.cpp`, npu-infer 35B layout work) to port into `backend_hip_1bp` behind the qwen35 gate (fused QKV + GatedDeltaNet linear attention; `full_attention_interval=4` schedule). |
 | #1945 (HRX upstream watch) | med | No signal: llama.cpp #27218 still draft (08-31), hrx-system stuck at v0.3.0 (May). |
@@ -81,6 +81,6 @@ divergent rope variant of its decode path.
 
 - **#2013** — file the Mesa/amdgpu report with the preserved coredumps.
 - **#1831** — port GDN linear attention from the NPU-universal reference into `backend_hip_1bp`.
-- **#1942** — resume the TheRock HIP prefill-lane build (`ROCM_PATH` → TheRock root; round-25k config fix), then the KV-handoff + benchmark gate.
+- **#1942** — ~~resume the TheRock HIP prefill-lane build~~ **DONE 2026-09-02 (PR #2054)**; the handoff is resolved too. The remaining gate is the shipped bundle's KV ceiling: no engine-loadable HRX here decodes >2048 KV, so the §5.2 positive clause waits on **#1945** (bundle repin) or HRX2 decode-ADD. See §5.2 of `docs/research/hybrid-prefill-decode.md`.
 - **#1934** — `npu_state_*` i4-fused production wiring + silicon parity gate.
 - **#1866/#1945/#1956** — re-probe when upstream moves (llvm-aie range fix / llama.cpp #27218 out of draft / g++16).

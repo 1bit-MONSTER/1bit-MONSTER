@@ -82,6 +82,14 @@ Remaining over-claim surface (tail falls through to `eager_capability_declared` 
 - Note: `/tmp/m2` currently empty — harness needs building.
 
 ## #2145 — llama_state-imported ctx fails HRX0 @ token 2 (P0) — peer
+
+> **⚠ CORRECTED 2026-09-11** (goal `mtwqm7qx-hlc0ht`): this hypothesis is **not** what fails. The root cause is the
+> bundle's HRX **over-claiming `FLASH_ATTN_EXT` above KV 2048** — with the guard disabled the graph emits
+> `unsupported HRX node 25: FLASH_ATTN_EXT … f16[128,3072,4,1]` → `compute status: -1`. And the visible failure was
+> preceded by **silent context loss**: `HrxBackend::reset()` discarded the init-time `HRX_STATE_FILE` import, so the
+> lane decoded from an empty KV and still returned `finish_reason: stop`. Fix: PR #2203 (decode-side ctx guard +
+> re-import after reset). Measurements: #2145 comment 5632416879. The text below is kept as the record of what was
+> believed at the time.
 **Hypothesis (strongest lead): KV/graph-reserve mismatch at resume pos 2971.**
 - Signature: token 1 = BOOT token (no attention over KV); token 2 = first full decode step running attention over imported 2962-token KV. Failure is in the first KV-attention graph over imported state.
 - Hypothesis: imported KV buffer layout (pos 0..2961) ≠ freshly-allocated graph reserve the b66/fork scheduler binds on first decode → attention reads OOB/wrong → compute -1. Explains b66-fails / GET_ROWS-llama-build-works split.

@@ -33,7 +33,7 @@ Wave 3: #2105, #2080, #2081, #1866, #2082, #2139, #1942
 | 2117 | ggml-hrx over-claims ops → hard errors | P0 | HRX systemic | Known (claim predicates) | — |
 | 2115 | HRX host-execution path corrupts CPU-mixed graphs | P0 | HRX systemic | Known (host path not CPU-equiv) | #2117 |
 | 2116 | zaya ngl99 decode corrupt (mixed-split boundary) | P0 | HRX systemic | Narrowed (not one op) | #2115, #2117 |
-| 2145 | llama_state-imported ctx fails HRX0 @ token 2 | P0 | HRX device | Open (3 hypotheses) | #1942, #2082 |
+| 2145 | llama_state-imported ctx fails HRX0 @ token 2 | P0 | HRX device | **Root-caused + fix in PR #2203** | #1942, #2082 |
 | 2147 | qwen3moe-30B fails HRX decode | P0 | HRX device | Open (#2117-class) | #2117 |
 | 2153 | no batched FLASH_ATTN_EXT (ne3>1) | P1 | loom kernel | Known (ne3==1 hard-require) | — |
 | 2152 | CONCAT dim-0 loom kernel corrupts + faults | P1 | loom kernel | WIP, 2 hypotheses eliminated | — |
@@ -48,7 +48,7 @@ Wave 3: #2105, #2080, #2081, #1866, #2082, #2139, #1942
 | 1866 | aie2p -O0 backend crash | P2 | toolchain | **Upstream-only watch (2026-09-11): nothing in-repo needs -O0** | #1155/#1276 |
 | 2082 | D2 HIP-prefill stability gate | P1 | hybrid | Re-probe clean | #1942 |
 | 2139 | qwen35moe 1BP fast-path + quant lanes | P2 | GPU feat | Open (gaps listed) | #2138✅ |
-| 1942 | hybrid prefill/decode (KV handoff) | P2 | hybrid design | Blocker = KV handoff | #2145, #2082 |
+| 1942 | hybrid prefill/decode (KV handoff) | P2 | hybrid design | **Handoff resolved; §5.2 positive clause blocked by the bundle's KV ceiling (#1945)** | #2145, #2203 |
 
 ---
 
@@ -83,11 +83,8 @@ Each packet is send-ready (fits one mesh message). `verify` is the per-issue ver
 
 ## #2145 — llama_state-imported ctx fails HRX0 decode @ token 2 (P0)
 
-- **Status:** Open. Session blob (LLAMA_SESSION_VERSION 9, 292 MB, 2962-token HIP prefill) imports fine; token 1 decodes, token 2 fails `ggml_backend_sched_graph_compute_async error -1` / `llama_decode ret -3`. b66 + amd-hrx-graph both fail; local `llama-build` (GET_ROWS-capable) works but 1.25 tok/s (separate perf gap). Handoff itself proven lossless (48/48 token-identical).
-- **Untested directions:** (1) KV/graph-reserve mismatch at resume pos 2971 (n_ctx/ubatch identical 4096/512); (2) flash-attn state across import boundary; (3) b66 vs llama-build delta.
-- **Repo:** `~/hrx-slice/hrx-llamacpp/out/llama-hrx-b66` + `~/hrx-ws/amd-hrx-graph`. Repro: `/tmp/m2/rt_H2 nat <model> /tmp/m2/x.bin <prompt> 8`.
-- **Depends:** #1942 (blocks D2), #2082 (HIP prefill lane).
-- **verify:** imported blob decodes ≥500 tokens on HRX0 with no error; token-parity vs CPU oracle.
+- **Status (2026-09-11, goal `mtwqm7qx-hlc0ht`):** root-caused and fixed for review. The bundle's HRX backend **over-claims `FLASH_ATTN_EXT` above KV 2048** (not a KV/reserve mismatch): with the guard disabled the graph emits `unsupported HRX node 25: FLASH_ATTN_EXT … 35:f16[128,3072,4,1]` → `compute status: -1`. **And the pre-fix engine never even reached it** — `HrxBackend::reset()` discarded the init-time `HRX_STATE_FILE` import, so the lane decoded from an EMPTY KV and returned `finish_reason: stop`: **silent context loss reported as success.** PR **#2203** adds a decode-side guard that counts a *resumed* context (`HRX_MAX_CTX_TOKENS`, default 2048) and re-applies the import after reset — the lane now decodes from the KV it was handed or refuses with a named cause. Bundle-side over-claim remains upstream-gated (#1945).
+- **Repro (current):** shipped bundle `~/hrx-slice/hrx-llamacpp/out/llama-hrx-b66` (`LD_LIBRARY_PATH=$B/lib`, `GGML_HRX_CPU_OPS=RMS_NORM`), blob `~/hrx-2145/hyp_blob.bin` (288,963,676 B, session v9), model `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`, `HRX_MAX_CTX_TOKENS=0` to expose the raw lane. Logs: `/tmp/mx_*` on strixhalo; measurements on #2145 (comment 5632416879).
 
 ## #2147 — Qwen3-Coder-30B-A3B (qwen3moe) fails HRX decode (P0)
 
@@ -190,10 +187,10 @@ Each packet is send-ready (fits one mesh message). `verify` is the per-issue ver
 
 ## #1942 — hybrid prefill/decode policy (HIP prefill + HRX warm decode) (P2)
 
-- **Status:** Blocker = cross-backend KV handoff. Measured gfx1151 (30B-A3B Q4_K_M): HIP wins large prefill (1227–1313 tok/s), in-process HRX wins warm decode (~80–87 vs HIP ~70). Engine vendored llama.cpp ≠ HRX bundle libllama → needs llama state export/import across builds. State-import path currently buggy (#2145).
-- **Acceptance:** one request = prefill HIP + decode HRX, correct continuation; total time beats either alone; documented state-format compatibility.
-- **Depends:** #2145, #2082.
-- **verify:** hybrid request correct + faster than either backend alone.
+- **Status (2026-09-11, goal `mtwqm7qx-hlc0ht`):** the cross-backend handoff **is resolved** (state round-trip byte-identical, PR #2146 shim + zero-copy memfd work on #2161). What remains is the §5.2 acceptance's positive clause, and it is blocked **bundle-side**: the shipped b66 HRX over-claims `FLASH_ATTN_EXT` above KV 2048, so a 2,940-token imported context cannot decode on the HRX device — the engine now refuses it explicitly (PR #2203) instead of silently decoding from an empty KV. No engine-loadable bundle on the box supports >2048 KV. Re-scoped measurement + the re-open triggers are in `docs/research/hybrid-prefill-decode.md` §5.2.
+- **Acceptance (re-scoped, Option A 2026-09-08):** the D2 shipped path delivers CORRECT warm decode on the HRX device — measured 2026-09-11 as **not met on the shipped bundle** (KV ceiling), with silent context loss removed as the intermediate win.
+- **Depends / triggers:** #2145 (fix in PR #2203) and the upstream bundle repin **#1945** (or HRX2 decode-ADD coverage) before the positive clause can be re-run.
+- **verify:** re-run the §5.2 matrix (pinned blob + model, `HRX_MAX_CTX_TOKENS=0`) once an HRX with >2048 KV lands; token-parity vs the CPU oracle.
 
 ---
 
