@@ -604,6 +604,24 @@ bool RuntimeLayerEngine::get_logits(float* out, int vocab) {
     return true;
 }
 
+int RuntimeLayerEngine::argmax_logits(int vocab) {
+    bo_logits_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, (size_t)vocab * 2, 0);
+    const uint16_t* lg = (const uint16_t*)bo_logits_->map();
+    // bf16 argmax without float conversion: positives (u < 0x8000) beat
+    // negatives; among same sign, larger u wins for positive, smaller u
+    // (closer to 0) wins for negative.
+    int best = 0;
+    uint16_t bu = lg[0];
+    bool bneg = bu >= 0x8000;
+    for (int i = 1; i < vocab; i++) {
+        uint16_t u = lg[i];
+        bool neg = u >= 0x8000;
+        bool better = (neg != bneg) ? !neg : (neg ? u < bu : u > bu);
+        if (better) { best = i; bu = u; bneg = neg; }
+    }
+    return best;
+}
+
 bool RuntimeLayerEngine::dump_act(const char* path, size_t n) {
     bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
     FILE* f = fopen(path, "wb");

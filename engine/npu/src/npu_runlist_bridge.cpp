@@ -197,14 +197,11 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
     double prefill_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     printf("Prefill: %.0fms (%.0f ms/tok)\n\n", prefill_ms, prefill_ms / npt);
 
-    // 6) greedy decode — get_logits -> argmax -> emit -> advance.
+    // 6) greedy decode — bf16 argmax -> emit -> advance.
     auto tgs = std::chrono::steady_clock::now();
     int total = 0;
     for (int i = 0; i < ng; i++) {
-        std::vector<float> lg(cfg.vocab_size);
-        rt.get_logits(lg.data(), cfg.vocab_size);
-        int best = 0;
-        for (int v = 1; v < cfg.vocab_size; v++) if (lg[v] > lg[best]) best = v;
+        int best = rt.argmax_logits(cfg.vocab_size);
         printf("  [%d] %d\n", i + 1, best);
         total++;
         if (i + 1 < ng) {

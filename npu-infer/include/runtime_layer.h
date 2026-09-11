@@ -64,6 +64,9 @@ public:
     /// Copy the logits BO's first `vocab` bf16 values as float.
     bool get_logits(float* out, int vocab);
 
+    /// Greedy argmax directly over the bf16 logits (no float round-trip).
+    int argmax_logits(int vocab);
+
     /// Dump the act BO (first `n` bytes) to a file (validation helper).
     bool dump_act(const char* path, size_t n = 2048);
     /// Dump the logits BO to a file (validation helper).
