@@ -3671,13 +3671,21 @@ struct Bf16Ctx {
         int qout = NH * HD, kout = NKV * HD, qkvn = qout + 2 * kout;
         const int gu_chunks = IM / 512;   // GU: 512-out-row chunks (16 tile-rows x 32)
         std::vector<int> Wqkv(NC), Wo(NC), Wup(NC * gu_chunks), Wgate(NC * gu_chunks), Wd(NC);
-        int layer_bo_bytes = npu_bf16_layer_bo_bytes();
-        if (layer_bo_bytes <= 0) layer_bo_bytes = 2048 * 5120;
-        std::vector<uint8_t> bo(layer_bo_bytes);
-        int offs[6];
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV) == 0) {
+            // layer_bo_bytes must be read AFTER prefill_init (it needs the loaded
+            // model; before init g_bf16_mw is null -> the 10MB 0.6B fallback).
+            int layer_bo_bytes = npu_bf16_layer_bo_bytes();
+            if (layer_bo_bytes <= 0) layer_bo_bytes = 2048 * 5120;
+            std::vector<uint8_t> bo(layer_bo_bytes);
+            int offs[6];
             for (int l = 0; l < NC; l++) {
                 npu_bf16_pack_layer(l, bo.data(), offs);
+                if (l == 0 && getenv("NPU_DUMP_BO")) {
+                    FILE* fbo = fopen("/tmp/bo_dump.bin", "wb");
+                    if (fbo) { fwrite(bo.data(), 1, layer_bo_bytes, fbo); fclose(fbo); }
+                    fprintf(stderr, "[BODUMP] layer_bo_bytes=%d offs=[%d,%d,%d,%d,%d,%d]\n",
+                            layer_bo_bytes, offs[0],offs[1],offs[2],offs[3],offs[4],offs[5]);
+                }
                 // GU: dequant per 512-out-row chunk. The packed BO alternates
                 // up/gate in CH=H/16-tile chunks (each = 16 tile-rows x 32 =
                 // 512 out-rows), so up chunk c sits at gu_off + c*2*CH and gate
