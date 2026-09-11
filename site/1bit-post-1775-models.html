@@ -8,16 +8,16 @@
   <link rel="icon" type="image/png" sizes="16x16" href="assets/favicon-16x16.png">
   <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
   <title>One engine, every model | 1bit.MONSTER</title>
-  <meta name="description" content="One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download." />
+  <meta name="description" content="One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download." />
   <meta property="og:site_name" content="1bit.MONSTER" />
   <meta property="og:type" content="article" />
   <meta property="og:title" content="One engine, every model | 1bit.MONSTER" />
-  <meta property="og:description" content="One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download." />
+  <meta property="og:description" content="One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download." />
   <meta property="og:url" content="https://1bit.monster/1bit-post-1775-models.html" />
   <meta property="og:image" content="https://1bit.monster/assets/og-card.png" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="One engine, every model | 1bit.MONSTER" />
-  <meta name="twitter:description" content="One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download." />
+  <meta name="twitter:description" content="One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download." />
   <meta name="twitter:image" content="https://1bit.monster/assets/og-card.png" />
   <link rel="canonical" href="https://1bit.monster/1bit-post-1775-models.html" />
 <style>
@@ -304,7 +304,7 @@
 
 </style>
   <script type="application/ld+json">
-  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One engine, every model | 1bit.MONSTER", "description": "One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download.", "url": "https://1bit.monster/1bit-post-1775-models.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1775-models.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
+  {"@context": "https://schema.org", "@type": "BlogPosting", "headline": "One engine, every model | 1bit.MONSTER", "description": "One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download.", "url": "https://1bit.monster/1bit-post-1775-models.html", "mainEntityOfPage": "https://1bit.monster/1bit-post-1775-models.html", "image": "https://1bit.monster/assets/og-card.png", "datePublished": "2026-08-25", "dateModified": "2026-08-25", "author": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}, "publisher": {"@type": "Organization", "name": "1bit.MONSTER", "url": "https://1bit.monster"}}
   </script>
 
   <script src="theme.js"></script>
@@ -357,7 +357,7 @@
       <div class="prose">
         <h2>The claim</h2>
         <p>Go to HuggingFace. Pick any text-generation model. Any architecture — Llama, Qwen, Mistral, Gemma, Zamba, Jamba, Cohere, Falcon, DeepSeek-MoE, MiniMax, BitNet, T5 — and the 1bit.MONSTER engine can run it. Not a wrapper. Not a per-model build. One binary that auto-detects the architecture from the file and dispatches to the right backend.</p>
-        <p>The daily census keeps the claim honest: <b>568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped.</b> A workflow re-checks the numbers every night and updates the site when they move. That number is live, not a marketing figure.</p>
+        <p>The daily census keeps the claim honest: <b>568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped.</b> A workflow re-checks the numbers every night and updates the site when they move. That number is live, not a marketing figure.</p>
         <h2>Why it works: the token catalog</h2>
         <p>Every HF architecture string — <span class="mono">llama3</span>, <span class="mono">qwen2.5_moe</span>, <span class="mono">zamba2</span>, all 1,946 of them — normalizes down to one of 566 architecture tokens. The token captures what actually changes between model families: attention variant, MoE routing, norm placement, RoPE scheme, tie weights. Everything else is shared.</p>
         <p>A new model family lands on HF → the daily new-model watcher drafts the mapping → the engine gets the token → the site's numbers update. The gap between a model appearing and the engine running it is measured in days, not quarters.</p>
