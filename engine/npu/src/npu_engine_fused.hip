@@ -1344,8 +1344,11 @@ int main(int argc, char** argv) {
         std::chrono::steady_clock::now() - t_gen).count();
     printf("\n=== %.1f ms/tok (%.0f tok/s) ===\n",
            gen_s * 1000 / n_gen, n_gen / gen_s);
+    // Outside the NPU_DIAG branch on purpose: with NPU_DUMP set this must run even when NPU_DIAG is not.
+    // The first version had it inside, so the tensors were buffered and then silently dropped -- a dump that
+    // produces no files while reporting success is the exact class this instrument exists to find.
+    dump_flush();
     if (getenv("NPU_DIAG")) {
-        dump_flush();
         printf("[npu] sampling: draws=%llu seed=0x%llx (%s) — own RNG, not the process-global stream\n",
                g_rng_draws, g_rng_seed, g_rng_seed_src);
     }
