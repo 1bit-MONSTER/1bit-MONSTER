@@ -219,6 +219,23 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       - name: All manifests match root VERSION
         run: bash scripts/sync-version.sh --check
+      # The job name stays "Version consistency" on purpose: required checks are referenced by
+      # NAME in the ruleset, so renaming the job to describe this step would silently detach the
+      # gate -- the same class of failure this step exists to catch.
+      - name: Tracked shell scripts are executable
+        run: |
+          # A script committed 100644 cannot be run by path: execve fails and the caller reports
+          # exit 126, which reads as "the check failed" rather than "the check never ran". That is
+          # exactly how the kernel-object lint job went red (#2216): the script was 100644 while the
+          # workflow invoked it by path, and the failing step was the check itself.
+          bad=$(git ls-files -s -- '*.sh' | awk '$1 != "100755" {print $4}')
+          if [ -n "$bad" ]; then
+            echo "::error::tracked shell scripts that are not mode 100755:"
+            echo "$bad" | sed 's/^/  /'
+            echo "fix: git ls-files -s -- '*.sh' | awk '\$1 != \"100755\" {print \$4}' | xargs -r git update-index --chmod=+x"
+            exit 1
+          fi
+          echo "OK: $(git ls-files -s -- '*.sh' | wc -l) tracked .sh files, all mode 100755"
 
   metal:
     name: Metal backend (macOS build + smoke gate)
