@@ -106,3 +106,14 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
   ELF, so either the capture tool missed the true 32-head MHA ELF, or the ELF must be
   regenerated from the 16-head ELF by doubling the Q-read BDs + token-stride (8192 B).
   This is the last dense-Qwen3 4B/8B item; it needs ELF decode/regeneration.
+
+
+## Latest: arg-order ruled out; engine Q ≠ FLM Q (2026-09-11)
+
+- Tested all 6 arg-order permutations (NPU_ATTN_ARGS) → none gives 151667; (out,act,kv)
+  is correct. Reverted.
+- Compared engine bActQ vs FLM's captured act (same 256-token prompt): **completely
+  different** (0x3dfa… vs 0xb9ee…), yet the CPU-attention path with the same bqo gives
+  the right token for the default prompt. So the remaining 4B bug is upstream of the
+  attention ELF — a subtle QKV/q_norm/RoPE difference for NH=32 (256-token batch) —
+  not the ELF/arg-order/KV. Needs a layer-0 QKV dump comparison vs FLM.
