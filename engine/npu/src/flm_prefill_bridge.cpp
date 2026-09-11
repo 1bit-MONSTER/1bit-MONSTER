@@ -17,6 +17,7 @@
 #include <xrt/xrt_device.h>
 #include "tensor_utils/q4_npu_eXpress.hpp"
 #include "models/qwen3/qwen3_npu.hpp"
+#include "models/qwen3_6_moe/qwen3_6_moe_npu.hpp"
 #include "lm_config.hpp"
 
 // utils::find_xclbin_path is provided by npu_engine_bf16_mm_bridge.cpp.
@@ -24,16 +25,20 @@
 static std::unique_ptr<xrt::device> g_dev;
 static std::unique_ptr<npu_xclbin_manager> g_npu;
 static std::unique_ptr<Q4NX> g_q4nx;
-static std::unique_ptr<qwen3_npu> g_model;
+static std::unique_ptr<causal_lm> g_model;
 
-extern "C" int flm_prefill_init(const char* model_dir) {
+extern "C" int flm_prefill_init(const char* model_dir, int is_moe) {
+    setenv("FLM_XCLBIN_PATH", "/home/bcloud/amd-oss/fastflowlm/src/xclbins", 0);
     try {
         LM_Config config;
         config.from_pretrained(model_dir);
         g_dev = std::make_unique<xrt::device>(0);
         g_npu = std::make_unique<npu_xclbin_manager>(device_npu2, g_dev.get());
         g_q4nx = std::make_unique<Q4NX>(model_dir);
-        g_model = std::make_unique<qwen3_npu>(config, g_npu.get(), 32768);
+        if (is_moe)
+            g_model = std::make_unique<qwen3_6_moe_npu>(config, g_npu.get(), 32768);
+        else
+            g_model = std::make_unique<qwen3_npu>(config, g_npu.get(), 32768);
         g_model->load_weights(*g_q4nx);
     } catch (std::exception& e) {
         fprintf(stderr, "[flm_prefill] init failed: %s\n", e.what());
@@ -49,8 +54,16 @@ extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* p
     auto out = g_model->prefill(prompt, nullptr);
     auto t1 = std::chrono::steady_clock::now();
     *prefill_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    if (out.size() < 2) { fprintf(stderr, "[flm_prefill] prefill returned %zu logits\n", out.size()); return 1; }
     int best = 0;
     for (size_t j = 1; j < out.size(); j++) if (out[j] > out[best]) best = (int)j;
+    if (getenv("FLM_DBG")) {
+        int top[5] = {0,0,0,0,0};
+        for (size_t j = 1; j < out.size(); j++) {
+            for (int k = 0; k < 5; k++) if (out[j] > out[top[k]]) { for (int m = 4; m > k; m--) top[m] = top[m-1]; top[k] = (int)j; break; }
+        }
+        fprintf(stderr, "[flm_prefill] out=%zu best=%d top=%d,%d,%d,%d,%d\n", out.size(), best, top[0], top[1], top[2], top[3], top[4]);
+    }
     *boot_token = best;
     return 0;
 }
