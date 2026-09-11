@@ -30,7 +30,7 @@ can execute rather than re-derive.
 | 1945 | HRX upstream gating | **upstream watch** | no — llama.cpp #27218 / hrx-system |
 | 1956 | C++26 toolchain watch | **upstream watch** | no — g++16 / libstdc++16 |
 | 1907 | baretorch cs_lrad engine support | **hardware-bound (XL feature)** | no — multi-week engine feature |
-| 1942 | hybrid prefill/decode (HIP prefill → HRX decode) | **handoff resolved; blocked bundle-side (KV ceiling)** | fix in PR #2203; re-open on #1945 / HRX2 |
+| 1942 | hybrid prefill/decode (HIP prefill → HRX decode) | **handoff resolved; blocked bundle-side (KV ceiling)** | fixed in `80a8a81eb` (PR #2203); re-open on #1945 / HRX2 |
 | 1831 | HIP cannot run qwen3_5_moe (35B-A3B GDN) | **hardware-bound (kernel)** | no — port GDN kernels to HIP + GPU verify |
 | 1776 | Zaya decode CCA-attention-bound | **hardware-bound (kernel)** | no — attention-on-NPU kernel push + resident weights/runlist |
 | 1934 | int4 fused GU→SiLU FFN corr cap | **hardware-bound (silicon gate)** | **closest** — build gate re-verified; wiring gated on parity |

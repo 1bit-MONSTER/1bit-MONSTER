@@ -177,13 +177,13 @@ what it was hiding was worse than a decode error.** Run through the engine with 
 | binary | `HRX_MAX_CTX_TOKENS` | HRX graph saw | response |
 |---|---|---|---|
 | pre-fix `main` (`598fa66ca`) | 2048 | **no `FLASH_ATTN_EXT` node, no 3072 KV** | **`finish_reason: stop`** |
-| fix (PR #2203) | 2048 | the imported ~3k KV (re-imported) | explicit `REFUSING decode: context 2940 >= HRX_MAX_CTX_TOKENS (2048) … (issue #2145)` |
-| fix (PR #2203) | 0 | `unsupported HRX node 25: FLASH_ATTN_EXT … f16[128,3072,4,1]` | `compute status: -1` |
+| fix (PR #2203, `80a8a81eb`) | 2048 | the imported ~3k KV (re-imported) | explicit `REFUSING decode: context 2940 >= HRX_MAX_CTX_TOKENS (2048) … (issue #2145)` |
+| fix (PR #2203, `80a8a81eb`) | 0 | `unsupported HRX node 25: FLASH_ATTN_EXT … f16[128,3072,4,1]` | `compute status: -1` |
 
 - **Pre-fix the lane reported success while decoding from an EMPTY KV.** `HrxBackend::reset()` recreates the
   in-process context (`pos = 0`), so the `HRX_STATE_FILE` import was discarded before the first decode: the graph
   never touched the imported context, yet the request returned `stop`. That is **context loss reported as success**
-  — the §5.2 clause "correct continuation (no context loss)" defeated invisibly. The PR #2203 re-import removes it.
+  — the §5.2 clause "correct continuation (no context loss)" defeated invisibly. The PR #2203 re-import (landed as `80a8a81eb`) removes it.
 - **The positive clause cannot be met on this box as configured.** The only engine-loadable, self-contained HRX lib
   set is the shipped b66 bundle, and its HRX over-claims `FLASH_ATTN_EXT` above KV 2048; the named GET_ROWS-capable
   local build segfaults the *engine* after bundle init (split libs — fine as the `rt_b66` harness lane, not as an

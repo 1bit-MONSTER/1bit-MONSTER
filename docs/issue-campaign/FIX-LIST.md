@@ -33,7 +33,7 @@ Wave 3: #2105, #2080, #2081, #1866, #2082, #2139, #1942
 | 2117 | ggml-hrx over-claims ops → hard errors | P0 | HRX systemic | Known (claim predicates) | — |
 | 2115 | HRX host-execution path corrupts CPU-mixed graphs | P0 | HRX systemic | Known (host path not CPU-equiv) | #2117 |
 | 2116 | zaya ngl99 decode corrupt (mixed-split boundary) | P0 | HRX systemic | Narrowed (not one op) | #2115, #2117 |
-| 2145 | llama_state-imported ctx fails HRX0 @ token 2 | P0 | HRX device | **Root-caused + fix in PR #2203** | #1942, #2082 |
+| 2145 | llama_state-imported ctx fails HRX0 @ token 2 | P0 | HRX device | **Fixed in `80a8a81eb` (PR #2203)** | #1942, #2082 |
 | 2147 | qwen3moe-30B fails HRX decode | P0 | HRX device | Open (#2117-class) | #2117 |
 | 2153 | no batched FLASH_ATTN_EXT (ne3>1) | P1 | loom kernel | Known (ne3==1 hard-require) | — |
 | 2152 | CONCAT dim-0 loom kernel corrupts + faults | P1 | loom kernel | WIP, 2 hypotheses eliminated | — |
@@ -83,7 +83,7 @@ Each packet is send-ready (fits one mesh message). `verify` is the per-issue ver
 
 ## #2145 — llama_state-imported ctx fails HRX0 decode @ token 2 (P0)
 
-- **Status (2026-09-11, goal `mtwqm7qx-hlc0ht`):** root-caused and fixed for review. The bundle's HRX backend **over-claims `FLASH_ATTN_EXT` above KV 2048** (not a KV/reserve mismatch): with the guard disabled the graph emits `unsupported HRX node 25: FLASH_ATTN_EXT … 35:f16[128,3072,4,1]` → `compute status: -1`. **And the pre-fix engine never even reached it** — `HrxBackend::reset()` discarded the init-time `HRX_STATE_FILE` import, so the lane decoded from an EMPTY KV and returned `finish_reason: stop`: **silent context loss reported as success.** PR **#2203** adds a decode-side guard that counts a *resumed* context (`HRX_MAX_CTX_TOKENS`, default 2048) and re-applies the import after reset — the lane now decodes from the KV it was handed or refuses with a named cause. Bundle-side over-claim remains upstream-gated (#1945).
+- **Status (2026-09-11, goal `mtwqm7qx-hlc0ht`):** root-caused; **fixed and landed as `80a8a81eb` (PR #2203, merged 2026-09-11)**. The bundle's HRX backend **over-claims `FLASH_ATTN_EXT` above KV 2048** (not a KV/reserve mismatch): with the guard disabled the graph emits `unsupported HRX node 25: FLASH_ATTN_EXT … 35:f16[128,3072,4,1]` → `compute status: -1`. **And the pre-fix engine never even reached it** — `HrxBackend::reset()` discarded the init-time `HRX_STATE_FILE` import, so the lane decoded from an EMPTY KV and returned `finish_reason: stop`: **silent context loss reported as success.** PR **#2203** adds a decode-side guard that counts a *resumed* context (`HRX_MAX_CTX_TOKENS`, default 2048) and re-applies the import after reset — the lane now decodes from the KV it was handed or refuses with a named cause. Bundle-side over-claim remains upstream-gated (#1945).
 - **Repro (current):** shipped bundle `~/hrx-slice/hrx-llamacpp/out/llama-hrx-b66` (`LD_LIBRARY_PATH=$B/lib`, `GGML_HRX_CPU_OPS=RMS_NORM`), blob `~/hrx-2145/hyp_blob.bin` (288,963,676 B, session v9), model `Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf`, `HRX_MAX_CTX_TOKENS=0` to expose the raw lane. Logs: `/tmp/mx_*` on strixhalo; measurements on #2145 (comment 5632416879).
 
 ## #2147 — Qwen3-Coder-30B-A3B (qwen3moe) fails HRX decode (P0)
@@ -189,7 +189,7 @@ Each packet is send-ready (fits one mesh message). `verify` is the per-issue ver
 
 - **Status (2026-09-11, goal `mtwqm7qx-hlc0ht`):** the cross-backend handoff **is resolved** (state round-trip byte-identical, PR #2146 shim + zero-copy memfd work on #2161). What remains is the §5.2 acceptance's positive clause, and it is blocked **bundle-side**: the shipped b66 HRX over-claims `FLASH_ATTN_EXT` above KV 2048, so a 2,940-token imported context cannot decode on the HRX device — the engine now refuses it explicitly (PR #2203) instead of silently decoding from an empty KV. No engine-loadable bundle on the box supports >2048 KV. Re-scoped measurement + the re-open triggers are in `docs/research/hybrid-prefill-decode.md` §5.2, together with the **artifact-provenance requirement**: the blob those analyses used (`hyp_blob.bin`) does not round-trip even on the reference backend, while a fresh 30B session at 2,940 tokens does (16/16) — verify any future blob before treating its output as evidence.
 - **Acceptance (re-scoped, Option A 2026-09-08):** the D2 shipped path delivers CORRECT warm decode on the HRX device — measured 2026-09-11 as **not met on the shipped bundle** (KV ceiling), with silent context loss removed as the intermediate win.
-- **Depends / triggers:** #2145 (fix in PR #2203) and the upstream bundle repin **#1945** (or HRX2 decode-ADD coverage) before the positive clause can be re-run.
+- **Depends / triggers:** #2145 (**fixed** in `80a8a81eb`, PR #2203) and the upstream bundle repin **#1945** (or HRX2 decode-ADD coverage) before the positive clause can be re-run.
 - **verify:** re-run the §5.2 matrix (pinned blob + model, `HRX_MAX_CTX_TOKENS=0`) once an HRX with >2048 KV lands; token-parity vs the CPU oracle.
 
 ---
