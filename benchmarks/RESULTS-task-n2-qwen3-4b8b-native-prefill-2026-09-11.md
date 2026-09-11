@@ -126,3 +126,14 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
   RoPE (full HD rotary, position sp+pi), qkvn/qkv offsets, A-reuse cache (K-change + 64-sample
   guard). Next is a layer-0 dump of the engine's raw QKV GEMM output (`bC`, pre-norm) vs FLM's
   to bisect QKV-GEMM vs q_norm/RoPE — bounded but tedious.
+
+
+## CORRECTION: QKV/norm/RoPE are CORRECT — bug is the ELF Q-read (2026-09-11)
+
+- Ran engine 4B CPU-attention with the same 256-token prompt: boot=**738 = FLM** (GREEDY_NEXT 738).
+  So the QKV GEMM, q_norm/k_norm, RoPE, and embedding are all **correct for NH=32**. The earlier
+  "engine Q ≠ FLM Q" was an invalid comparison (the cap_attnio "act" idx4 was the wrong BO).
+- The bug is therefore back to the **nh32 attention ELF's Q-read geometry**: the ELF reads ~zero Q
+  (uniform softmax, rms 0.0038), so its Q-read BD token-stride/head-count is wrong. Fix = regenerate
+  the nh32 ELF from the 16-head ELF (double Q-read BDs 64→128, token-stride 4096→8192 B), or decode
+  + patch the ELF's BDs.
