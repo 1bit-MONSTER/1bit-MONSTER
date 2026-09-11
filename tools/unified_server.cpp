@@ -2313,6 +2313,40 @@ int main(int argc, char** argv) {
             std::lock_guard<std::mutex> _l2(g_strategy_mutex, std::adopt_lock);
 
             if (!req_model.empty()) {
+                // Goal mtvd3pmx / R8 (engine face): a request may name a registry
+                // CANONICAL id whose artifact the legacy flat scan cannot see
+                // (native .q4nx/.1bp, nested dirs). Without this the loop below
+                // matched NOTHING and the request was answered by whatever model
+                // happened to be loaded — the "silently serves a DIFFERENT model"
+                // failure the -m path already fixed for its own case (#1958).
+                if (!need_model_switch && req_model != current_cfg.model_name) {
+                    const onebit::ModelArtifact* ra = g_registry.find(req_model);
+                    std::string art_path;
+                    if (ra) {
+                        // The artifact's paths live on its FILE records, not on the
+                        // artifact (files[1..N] shards + merged duplicate copies).
+                        // Only a single-file artifact is loadable by path here;
+                        // a shard set is left to the refusal below rather than
+                        // half-loaded.
+                        for (const auto& f : ra->files) {
+                            if (!f.duplicate_copy && f.shard_count == 1) {
+                                art_path = f.path;
+                                break;
+                            }
+                        }
+                    }
+                    if (!art_path.empty() && std::filesystem::exists(art_path)) {
+                        ModelConfig file_cfg;
+                        if (read_model_file_metadata(art_path, file_cfg)) {
+                            printf("[model] registry id \"%s\" -> file \"%s\" (%s)\n",
+                                   req_model.c_str(), art_path.c_str(),
+                                   file_cfg.model_name.c_str());
+                            switch_cfg = file_cfg;
+                            current_cfg = file_cfg;
+                            need_model_switch = true;
+                        }
+                    }
+                }
                 for (auto& dm : discovered) {
                     if (dm.model_name == req_model &&
                         (dm.hidden != current_cfg.hidden || dm.n_layers != current_cfg.n_layers)) {
@@ -2323,6 +2357,30 @@ int main(int argc, char** argv) {
                         need_model_switch = true;
                         break;
                     }
+                }
+            }
+            // Never answer a request for model X with model Y. If the id is
+            // neither loadable here nor already the loaded model, refuse and say
+            // so; a wrong-weights answer is worse than an error, and it is also
+            // the failure mode this whole goal exists to eliminate.
+            if (!need_model_switch && !req_model.empty() &&
+                req_model != current_cfg.model_name) {
+                bool known = false;
+                for (auto& dm2 : discovered)
+                    if (dm2.model_name == req_model) { known = true; break; }
+                if (!known) {
+                    json err = {{"error", "model_not_loadable_on_this_face"},
+                                {"model", req_model},
+                                {"loaded", current_cfg.model_name},
+                                {"detail", "the requested model id is not a loadable "
+                                           "artifact on this face; refusing instead of "
+                                           "answering with a different model"}};
+                    fprintf(stderr, "[model] REFUSED \"%s\": not loadable here "
+                            "(loaded: \"%s\")\n", req_model.c_str(),
+                            current_cfg.model_name.c_str());
+                    res.status = 404;
+                    res.set_content(err.dump(), "application/json");
+                    return;
                 }
             }
         } // release both mutexes
@@ -2446,7 +2504,10 @@ int main(int argc, char** argv) {
         response["id"] = "cmpl-" + std::to_string(time(nullptr));
         response["object"] = "chat.completion";
         response["created"] = time(nullptr);
-        response["model"] = current_cfg.model_name;
+        // Echo the id the caller ASKED for when one was given. Naming a model
+        // the caller did not request is the same ambiguity this goal removes,
+        // and it is what the engine face did before the registry-id binding.
+        response["model"] = req_model.empty() ? current_cfg.model_name : req_model;
 
         json choice;
         choice["index"] = 0;
@@ -2534,6 +2595,40 @@ int main(int argc, char** argv) {
             std::lock_guard<std::mutex> _l2(g_strategy_mutex, std::adopt_lock);
 
             if (!req_model.empty()) {
+                // Goal mtvd3pmx / R8 (engine face): a request may name a registry
+                // CANONICAL id whose artifact the legacy flat scan cannot see
+                // (native .q4nx/.1bp, nested dirs). Without this the loop below
+                // matched NOTHING and the request was answered by whatever model
+                // happened to be loaded — the "silently serves a DIFFERENT model"
+                // failure the -m path already fixed for its own case (#1958).
+                if (!need_model_switch && req_model != current_cfg.model_name) {
+                    const onebit::ModelArtifact* ra = g_registry.find(req_model);
+                    std::string art_path;
+                    if (ra) {
+                        // The artifact's paths live on its FILE records, not on the
+                        // artifact (files[1..N] shards + merged duplicate copies).
+                        // Only a single-file artifact is loadable by path here;
+                        // a shard set is left to the refusal below rather than
+                        // half-loaded.
+                        for (const auto& f : ra->files) {
+                            if (!f.duplicate_copy && f.shard_count == 1) {
+                                art_path = f.path;
+                                break;
+                            }
+                        }
+                    }
+                    if (!art_path.empty() && std::filesystem::exists(art_path)) {
+                        ModelConfig file_cfg;
+                        if (read_model_file_metadata(art_path, file_cfg)) {
+                            printf("[model] registry id \"%s\" -> file \"%s\" (%s)\n",
+                                   req_model.c_str(), art_path.c_str(),
+                                   file_cfg.model_name.c_str());
+                            switch_cfg = file_cfg;
+                            current_cfg = file_cfg;
+                            need_model_switch = true;
+                        }
+                    }
+                }
                 for (auto& dm : discovered) {
                     if (dm.model_name == req_model &&
                         (dm.hidden != current_cfg.hidden || dm.n_layers != current_cfg.n_layers)) {
@@ -2544,6 +2639,30 @@ int main(int argc, char** argv) {
                         need_model_switch = true;
                         break;
                     }
+                }
+            }
+            // Never answer a request for model X with model Y. If the id is
+            // neither loadable here nor already the loaded model, refuse and say
+            // so; a wrong-weights answer is worse than an error, and it is also
+            // the failure mode this whole goal exists to eliminate.
+            if (!need_model_switch && !req_model.empty() &&
+                req_model != current_cfg.model_name) {
+                bool known = false;
+                for (auto& dm2 : discovered)
+                    if (dm2.model_name == req_model) { known = true; break; }
+                if (!known) {
+                    json err = {{"error", "model_not_loadable_on_this_face"},
+                                {"model", req_model},
+                                {"loaded", current_cfg.model_name},
+                                {"detail", "the requested model id is not a loadable "
+                                           "artifact on this face; refusing instead of "
+                                           "answering with a different model"}};
+                    fprintf(stderr, "[model] REFUSED \"%s\": not loadable here "
+                            "(loaded: \"%s\")\n", req_model.c_str(),
+                            current_cfg.model_name.c_str());
+                    res.status = 404;
+                    res.set_content(err.dump(), "application/json");
+                    return;
                 }
             }
         } // release both mutexes
