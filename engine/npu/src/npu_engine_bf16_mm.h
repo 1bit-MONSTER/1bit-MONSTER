@@ -292,16 +292,39 @@ struct Bf16Mm {
         return (int)w_dev.size() - 1;
     }
 
-    /// bf16 GEMM reading W directly from a device buffer (2-batch M-split).
+    /// bf16 GEMM reading W directly from a device buffer (2-batch M-split,
+    /// K-tiled with float accumulation for K > 3072 — the mm.xclbin A-read BD
+    /// capacity).
+    static inline float bf16g(uint16_t v) { uint32_t u = (uint32_t)v << 16; float f; memcpy(&f, &u, 4); return f; }
+    static inline uint16_t f32_bf16(float f) { uint32_t u; memcpy(&u, &f, 4); return (uint16_t)((u + 0x8000) >> 16); }
     void run_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
-        std::vector<uint16_t> Ab(256 * K, 0), Cb(256 * N, 0);
-        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
-        gemm_dev_once(Cb.data(), Ab.data(), W_idx, K, N, woff);
-        memcpy(C, Cb.data(), 128 * N * 2);
-        memset(Ab.data(), 0, 256 * K * 2);
-        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
-        gemm_dev_once(Cb.data(), Ab.data(), W_idx, K, N, woff);
-        memcpy(C + 128 * N, Cb.data(), 128 * N * 2);
+        const uint32_t KC = 3072;   // largest verified mm.xclbin K (D GEMM, 0.6B)
+        if (K <= KC) {
+            std::vector<uint16_t> Ab(256 * K, 0), Cb(256 * N, 0);
+            for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
+            gemm_dev_once(Cb.data(), Ab.data(), W_idx, K, N, woff);
+            memcpy(C, Cb.data(), 128 * N * 2);
+            memset(Ab.data(), 0, 256 * K * 2);
+            for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
+            gemm_dev_once(Cb.data(), Ab.data(), W_idx, K, N, woff);
+            memcpy(C + 128 * N, Cb.data(), 128 * N * 2);
+            return;
+        }
+        // K-tiled: split K into KC chunks, accumulate partial GEMMs in float.
+        std::vector<float> acc(256 * N, 0.0f);
+        std::vector<uint16_t> Cb(256 * N, 0);
+        for (uint32_t k0 = 0; k0 < K; k0 += KC) {
+            uint32_t kk = K - k0 < KC ? K - k0 : KC;
+            std::vector<uint16_t> Ab(256 * kk, 0);
+            for (int i = 0; i < 128; i++) memcpy(&Ab[i * kk], &A[(size_t)i * K + k0], kk * 2);
+            gemm_dev_once(Cb.data(), Ab.data(), W_idx, kk, N, woff + k0 * N);
+            for (int r = 0; r < 128; r++) for (uint32_t n = 0; n < N; n++) acc[(size_t)r * N + n] += bf16g(Cb[(size_t)r * N + n]);
+            memset(Ab.data(), 0, 256 * kk * 2);
+            for (int i = 0; i < 128; i++) memcpy(&Ab[i * kk], &A[(size_t)(128 + i) * K + k0], kk * 2);
+            gemm_dev_once(Cb.data(), Ab.data(), W_idx, kk, N, woff + k0 * N);
+            for (int r = 0; r < 128; r++) for (uint32_t n = 0; n < N; n++) acc[(size_t)(128 + r) * N + n] += bf16g(Cb[(size_t)r * N + n]);
+        }
+        for (size_t i = 0; i < (size_t)256 * N; i++) C[i] = f32_bf16(acc[i]);
     }
 
     void gemm_dev_once(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
