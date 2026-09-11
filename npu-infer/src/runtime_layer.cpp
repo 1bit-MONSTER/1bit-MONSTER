@@ -506,24 +506,7 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
         if (fck) { kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 33554432, 0); fwrite(kv_bos_[0]->map(), 1, 33554432, fck); fclose(fck); }
     }
     // lm_head
-    if (kern_lmhead_) {
-        xrt::run run(*kern_lmhead_);
-        uint32_t v0 = 3, v1 = 0, v2 = 0;
-        run.set_arg(0, (const void*)&v0, sizeof(v0));
-        run.set_arg(1, (const void*)&v1, sizeof(v1));
-        run.set_arg(2, (const void*)&v2, sizeof(v2));
-        run.set_arg(3, (const xrt::bo&)*bo_logits_);
-        run.set_arg(4, (const xrt::bo&)*bo_lmhead_w_);
-        run.set_arg(5, (const xrt::bo&)*bo_act_);
-        run.set_arg(6, (const xrt::bo&)*bo_fnorm_);
-        try {
-            run.start();
-            run.wait();
-        } catch (const std::exception& e) {
-            fprintf(stderr, "RuntimeLayer: lm_head run FAILED: %s\n", e.what());
-            return false;
-        }
-    }
+    if (!run_lmhead()) return false;
     ctx_len_ = ctx_len;
     if (getenv("RT_DUMP_KV")) {
         for (int kk = 0; kk < cfg_.num_layers; kk++) {
@@ -544,10 +527,63 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
     return true;
 }
 
+bool RuntimeLayerEngine::run_lmhead() {
+    if (!kern_lmhead_) return false;
+    xrt::run run(*kern_lmhead_);
+    uint32_t v0 = 3, v1 = 0, v2 = 0;
+    run.set_arg(0, (const void*)&v0, sizeof(v0));
+    run.set_arg(1, (const void*)&v1, sizeof(v1));
+    run.set_arg(2, (const void*)&v2, sizeof(v2));
+    run.set_arg(3, (const xrt::bo&)*bo_logits_);
+    run.set_arg(4, (const xrt::bo&)*bo_lmhead_w_);
+    run.set_arg(5, (const xrt::bo&)*bo_act_);
+    run.set_arg(6, (const xrt::bo&)*bo_fnorm_);
+    try {
+        run.start();
+        run.wait();
+    } catch (const std::exception& e) {
+        LOG_ERROR("lm_head run FAILED: %s", e.what());
+        return false;
+    }
+    return true;
+}
+
 const void* RuntimeLayerEngine::map_kv(int layer) const {
     if (layer < 0 || layer >= (int)kv_bos_.size()) return nullptr;
     kv_bos_[layer]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 33554432, 0);
     return kv_bos_[layer]->map();
+}
+
+bool RuntimeLayerEngine::write_kv(int layer, int token_begin, int n_tokens,
+                                  const uint16_t* bf16_kv, int region_stride_u16) {
+    if (layer < 0 || layer >= (int)kv_bos_.size() || !bf16_kv) return false;
+    if (token_begin < 0 || n_tokens <= 0) return false;
+    // Per-token KV footprint within a region: NKV/2 heads x HD dims (bf16).
+    const int token_u16 = (cfg_.num_key_value_heads / 2) * cfg_.head_dim;
+    if (region_stride_u16 <= 0) region_stride_u16 = token_u16 * 8192;  // MAX_L=8192 -> 8MB
+    if ((size_t)(token_begin + n_tokens) * token_u16 > (size_t)region_stride_u16) {
+        LOG_ERROR("write_kv: token range %d..%d exceeds region capacity %d",
+                token_begin, token_begin + n_tokens - 1, region_stride_u16 / token_u16);
+        return false;
+    }
+    uint16_t* dst = (uint16_t*)kv_bos_[layer]->map();
+    for (int region = 0; region < 4; region++) {
+        const uint16_t* src = bf16_kv + (size_t)region * region_stride_u16
+                                       + (size_t)token_begin * token_u16;
+        uint16_t* d = dst + (size_t)region * region_stride_u16
+                         + (size_t)token_begin * token_u16;
+        memcpy(d, src, (size_t)n_tokens * token_u16 * sizeof(uint16_t));
+    }
+    kv_bos_[layer]->sync(XCL_BO_SYNC_BO_TO_DEVICE, 33554432, 0);
+    return true;
+}
+
+bool RuntimeLayerEngine::write_act(const uint16_t* bf16_hidden) {
+    if (!bo_act_ || !bf16_hidden) return false;
+    uint16_t* dst = (uint16_t*)bo_act_->map();
+    memcpy(dst, bf16_hidden, (size_t)cfg_.hidden_size * sizeof(uint16_t));
+    bo_act_->sync(XCL_BO_SYNC_BO_TO_DEVICE, 1048576, 0);
+    return true;
 }
 
 bool RuntimeLayerEngine::get_logits(float* out, int vocab) {

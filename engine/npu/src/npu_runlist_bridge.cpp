@@ -36,6 +36,101 @@ static bool read_ids(const char* ids_file, std::vector<int>& ids) {
     return !ids.empty();
 }
 
+// ===== session API (unified bf16-prefill -> runlist-decode) =====
+// The engine runs the fast bf16 prefill, then hands its device KV + final
+// hidden to a RuntimeLayerEngine and continues greedy decode via per-ctx ELF
+// runlists. One session per process.
+static ModelWeights* g_sess_mw = nullptr;
+static ModelConfig   g_sess_cfg;
+static std::unique_ptr<xrt::device> g_sess_dev;
+static std::unique_ptr<RuntimeLayerEngine> g_sess_rt;
+static std::string   g_sess_elf_dir;
+static int           g_sess_kv_region_u16 = 0;
+
+static void sess_build_cfg(int H, int NC, int NH, int NKV, int IM, int NV) {
+    g_sess_cfg = QWEN3_0_6B_CONFIG;
+    g_sess_cfg.hidden_size = H;
+    g_sess_cfg.num_layers = NC;
+    g_sess_cfg.num_attention_heads = NH;
+    g_sess_cfg.num_key_value_heads = NKV;
+    g_sess_cfg.intermediate_size = IM;
+    g_sess_cfg.head_dim = 128;
+    g_sess_cfg.vocab_size = NV;
+    g_sess_cfg.max_position_embeddings = 40960;
+    g_sess_cfg.max_seq_len = 4096;
+    // KV region stride matches the layer ELFs' MAX_L=8192 bake: 8MB per
+    // region = 8192 tokens x 1024 B. (The 128MB BO holds 4x that headroom.)
+    g_sess_kv_region_u16 = (int)(8u << 20) / 2;
+}
+
+static const char* sess_model_dir(int H) {
+    return H == 2048 ? "Qwen3-1.7B-NPU2"
+         : H == 2560 ? "Qwen3-4B-NPU2"
+         : H == 4096 ? "Qwen3-8B-NPU2"
+                     : "Qwen3-0.6B-NPU2";
+}
+
+static const char* sess_elf_default(int H) {
+    return H == 2048 ? "npu-infer/captures/txn-elfs-1p7b"
+         : H == 2560 ? "npu-infer/captures/txn-elfs-4b"
+         : H == 4096 ? "npu-infer/captures/txn-elfs-8b"
+                     : "npu-infer/captures/txn-elfs";
+}
+
+extern "C" int npu_runlist_session_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
+    sess_build_cfg(H, NC, NH, NKV, IM, NV);
+    if (!getenv("LAYER_XCLBIN")) {
+        std::string xb = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + sess_model_dir(H) + "/layer.xclbin";
+        setenv("LAYER_XCLBIN", xb.c_str(), 0);
+    }
+    const char* env_elf = getenv("NPU_LAYER_ELF_DIR");
+    g_sess_elf_dir = (env_elf && env_elf[0]) ? env_elf : sess_elf_default(H);
+    std::string lmhead_elf = g_sess_elf_dir + "/elf_0002_lmhead.bin";
+
+    g_sess_mw = model_load(model_path, g_sess_cfg);
+    if (!g_sess_mw) { fprintf(stderr, "[runlist] model_load failed: %s\n", model_path); return 1; }
+    g_sess_dev = std::make_unique<xrt::device>(0);
+    g_sess_rt = std::make_unique<RuntimeLayerEngine>();
+    if (!g_sess_rt->init(*g_sess_dev, g_sess_mw, g_sess_cfg, g_sess_elf_dir.c_str(), lmhead_elf.c_str())) {
+        fprintf(stderr, "[runlist] RuntimeLayerEngine init failed\n");
+        return 1;
+    }
+    return 0;
+}
+
+extern "C" int npu_runlist_write_kv(int layer, int token_begin, int n_tokens, const uint16_t* bf16_kv) {
+    if (!g_sess_rt) return 1;
+    return g_sess_rt->write_kv(layer, token_begin, n_tokens, bf16_kv, g_sess_kv_region_u16) ? 0 : 1;
+}
+
+extern "C" int npu_runlist_write_act(const uint16_t* bf16_hidden) {
+    if (!g_sess_rt) return 1;
+    return g_sess_rt->write_act(bf16_hidden) ? 0 : 1;
+}
+
+extern "C" int npu_runlist_embed(int token) {
+    if (!g_sess_rt) return 1;
+    return g_sess_rt->embed(token) ? 0 : 1;
+}
+
+extern "C" int npu_runlist_lmhead(float* logits, int vocab) {
+    if (!g_sess_rt) return 1;
+    if (!g_sess_rt->run_lmhead()) return 1;
+    return g_sess_rt->get_logits(logits, vocab) ? 0 : 1;
+}
+
+extern "C" int npu_runlist_forward(int ctx_len, float* logits, int vocab) {
+    if (!g_sess_rt) return 1;
+    if (!g_sess_rt->forward(ctx_len)) return 1;
+    return g_sess_rt->get_logits(logits, vocab) ? 0 : 1;
+}
+
+extern "C" void npu_runlist_session_free(void) {
+    g_sess_rt.reset();
+    g_sess_dev.reset();
+    if (g_sess_mw) { model_free(g_sess_mw); g_sess_mw = nullptr; }
+}
+
 extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* ids_file,
                                int H, int NC, int NH, int NKV, int IM, int NV) {
     // 1) prompt token ids (the engine feeds pre-tokenized ids; no tokenizer here)

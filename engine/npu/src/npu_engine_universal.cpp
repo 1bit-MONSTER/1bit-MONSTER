@@ -951,6 +951,8 @@ int main(int argc,char**argv){
 
     // Legacy I8Ctx pointers (always available, fallback if FLM xclbin not found)
     I8Ctx cq,co,cg,cd;
+    const bool bf16_only = getenv("NPU_PREFILL_BF16") != nullptr;
+    bool i8_ready = !bf16_only;
     std::unique_ptr<I8Ctx> cu_ptr;
     std::unique_ptr<I8Ctx> cg_fused_i4;   // env-gated #1934 int4 fused GU->SiLU (dense FFN)
     // task-2: small-M decode contexts (GU/D run M=1 per decode token; the M=128
@@ -999,7 +1001,9 @@ int main(int argc,char**argv){
         // Sync weights after all packB calls (done at pack time in the pipeline below)
     } else {
         // ── Legacy path: per-op xclbins + per-layer weight BOs ──
-        if (!cpu_gemm_fallback) {
+        // bf16-only mode (NPU_PREFILL_BF16=1) skips the whole int8 machinery
+        // (ctx init + weight packing) — it is not used by the bf16 prefill.
+        if (!cpu_gemm_fallback && !bf16_only) {
         // init_i8: load pre-compiled insts if available, else generate at runtime.
         // This makes any model with compatible GEMM shapes (K,N multiples of 128)
         // work without pre-compiling per-model instruction files.
@@ -1011,10 +1015,10 @@ int main(int argc,char**argv){
             return ctx.init_with_generator(dev,xp_s.c_str(),XM,K,N,NC);
         };
         fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
-        if(!init_i8(cq,"QKV",cfg.xclbin_qkv_k,cfg.xclbin_qkv_n)){fprintf(stderr,"FAIL QKV\n");return 1;}
-        if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){fprintf(stderr,"FAIL O\n");return 1;}
-        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL GU\n");return 1;}}
-        if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){fprintf(stderr,"FAIL D\n");return 1;}
+        if(!init_i8(cq,"QKV",cfg.xclbin_qkv_k,cfg.xclbin_qkv_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL QKV\n");return 1;} }
+        if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL O\n");return 1;} }
+        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL G\n");return 1;} }}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL GU\n");return 1;} }}
+        if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL D\n");return 1;} }
         // task-2: init small-M decode contexts (GU + D) when the _m{M} xclbin/insts
         // pair is present. M defaults to 1 (single-token decode); NPU_SMALL_M overrides.
         {
@@ -1366,7 +1370,7 @@ struct Bf16Ctx {
     const int OOUT=H,OIN=NH*HD;          // O: out=H, in=NH*HD — dequant needs OIN
     const int GUOUT=IM;                   // Gate/Up: out=IM, in=H
     const int DOUT=H,DIN=IM;              // Down: out=H, in=IM — dequant needs DIN
-    if (!cpu_gemm_fallback) {
+    if (!cpu_gemm_fallback && !bf16_only) {
     auto dq = [&](uint64_t off, int i8_rows, int in_features, int* or_, int* oc, bool is_q8_0) -> float* {
         if (is_q8_0) return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
         return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
@@ -3659,6 +3663,11 @@ struct Bf16Ctx {
         else if (H == 2560) { fmd = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2"; fxd = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-4B-NPU2"; }
         else if (H == 4096) { fmd = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2"; fxd = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-8B-NPU2"; }
         fprintf(stderr, "bf16 prefill: model=%s\n", fmd);
+        const bool unified = getenv("NPU_UNIFIED") && atoi(getenv("NPU_UNIFIED")) == 1;
+        if (unified && npu_runlist_session_init(mp, H, NC, NH, NKV, IM, NV) != 0) {
+            fprintf(stderr, "bf16 prefill: runlist session init failed — aborting unified path\n");
+            return 1;
+        }
         int qout = NH * HD, kout = NKV * HD, qkvn = qout + 2 * kout;
         std::vector<int> Wqkv(NC), Wo(NC), Wgu(NC), Wd(NC);
         std::vector<uint8_t> bo(2048 * 5120);
@@ -3737,6 +3746,10 @@ struct Bf16Ctx {
                         bKv[(size_t)region * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(kv);
                         bKv[(size_t)(region + 2) * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vv);
                     }
+                if (unified && npu_runlist_write_kv(l, sp, npt, bKv.data()) != 0) {
+                    fprintf(stderr, "\nbf16 prefill: runlist KV write L%d failed\n", l);
+                    return 1;
+                }
                 if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
                     FILE* fa = fopen("/tmp/eng_act.bin", "wb"); if (fa) { fwrite(bActQ.data(), 2, 256 * qout, fa); fclose(fa); }
                     FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, 33554432 / 2, fk); fclose(fk); }
@@ -3791,6 +3804,42 @@ struct Bf16Ctx {
             printf("Prefill: %.0fms (%.0f ms/tok) [GEMM %.0fms, attn %.0fms, conv+other %.0fms]\n\n",
                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(),
                    std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count() / npt, tg, ta, tc);
+
+            // ===== unified decode: bf16-prefill KV + final hidden -> runlist =====
+            if (unified) {
+                std::vector<uint16_t> bfh(H);
+                // The runlist lm_head kernel applies the final norm (fnorm BO) to
+                // the act BO itself — hand it the PRE-final-norm hidden state.
+                for (int i = 0; i < H; i++) bfh[i] = f32_to_bf16(bh[(npt - 1) * H + i]);
+                if (npu_runlist_write_act(bfh.data()) != 0) {
+                    fprintf(stderr, "[unified] act handoff failed\n");
+                    return 1;
+                }
+                std::vector<float> lg(NV);
+                std::vector<int> uni_ids(ng, 0);
+                auto tgs = std::chrono::steady_clock::now();
+                int ctx = sp;   // tokens already in KV (prefill length)
+                for (int i = 0; i < ng; i++) {
+                    int rc;
+                    if (i == 0) {
+                        rc = npu_runlist_lmhead(lg.data(), NV);
+                    } else {
+                        rc = npu_runlist_embed(uni_ids[i - 1]);
+                        if (rc == 0) rc = npu_runlist_forward(++ctx, lg.data(), NV);
+                    }
+                    if (rc != 0) { fprintf(stderr, "[unified] decode step %d failed\n", i); return 1; }
+                    int best = 0;
+                    for (int v = 1; v < NV; v++) if (lg[v] > lg[best]) best = v;
+                    uni_ids[i] = best;
+                    printf("  [%d] %d\n", i + 1, best);
+                }
+                auto tge = std::chrono::steady_clock::now();
+                double tts = std::chrono::duration<double>(tge - tgs).count();
+                printf("\n=== %.1f ms/tok (%.0f tok/s) | tokens=%d ===\n",
+                       tts * 1000.0 / ng, ng / tts, ng);
+                fflush(stdout); fflush(stderr);
+                _exit(0);
+            }
         }
         bf16_done = true;
     }
@@ -4019,6 +4068,10 @@ struct Bf16Ctx {
             for (int b = 1; b < BS; b++) kv_caches[l][b] = kv_caches[l][0];
         for (int b = 1; b < BS; b++) top_ids[b] = top_ids[0];
         printf("  [0] boot=%d (%.0fms)\n",top_ids[0],t_boot);
+        if (bf16_only && !i8_ready) {
+            fprintf(stderr, "bf16-only: int8 ctxs unavailable — prefill+boot done, skipping int8 decode\n");
+            return 0;
+        }
     }
 
     int step=1;

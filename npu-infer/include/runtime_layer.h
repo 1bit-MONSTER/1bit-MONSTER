@@ -73,6 +73,22 @@ public:
     /// Debug: raw map of a layer's kv BO (for byte-diff captures).
     const void* map_kv(int layer) const;
 
+    /// Write a token range of bf16 K/V into a layer's device KV BO (bf16
+    /// prefill -> runlist decode bridge). `bf16_kv` uses the runtime's 4-region
+    /// layout: [K heads 0-3][K heads 4-7][V heads 0-3][V heads 4-7], each
+    /// region stride = kv region bytes (MAX_L=8192 -> 8MB), per token
+    /// [4 heads x HD] bf16 within a region.
+    bool write_kv(int layer, int token_begin, int n_tokens,
+                  const uint16_t* bf16_kv, int region_stride_u16);
+
+    /// Write the current hidden state (bf16, H elements) into the act BO — the
+    /// bf16 prefill's final hidden feeds the first runlist lm_head/forward.
+    bool write_act(const uint16_t* bf16_hidden);
+
+    /// Run only the lm_head on the act BO (no layer stack) — the boot token
+    /// after a bf16 prefill (which already computed the final hidden state).
+    bool run_lmhead();
+
 private:
     bool ensure_layer_kernel(int ctx_len);
     bool pack_lmhead_bo();
