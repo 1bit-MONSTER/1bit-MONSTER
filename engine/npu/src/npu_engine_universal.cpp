@@ -3919,13 +3919,12 @@ struct Bf16Ctx {
                     bgt[pi * 2 * IM + i] = bf16g(bC[pi * 2 * IM + i]);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < IM; i++) {
                     float gv = bgt[pi * 2 * IM + i]; if (!std::isfinite(gv)) gv = 0;
-                    bsu[pi * IM + i] = gv * sigmoid_fast(gv) * bgt[pi * 2 * IM + IM + i];
+                    bA[pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bgt[pi * 2 * IM + IM + i]);
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fg = fopen("/tmp/bf16_l0_gu.bin", "wb"); if (fg) { fwrite(bgt.data(), 4, 2 * IM, fg); fclose(fg); } }
-                for (int k = 0; k < 256; k++) for (int j = 0; j < IM; j++) bA[k * IM + j] = f32_to_bf16(bsu[k * IM + j]);
                 bf16mm_gemm_dev(bC.data(), bA.data(), Wd[l], IM, H, 0);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fs = fopen("/tmp/bf16_l0_su.bin", "wb"); if (fs) { fwrite(bsu.data(), 4, IM, fs); fclose(fs); } FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
                 tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
                 if (const char* dh = getenv("NPU_DUMP_HIDDEN")) { FILE* df = fopen(dh, "ab"); if (df) { fwrite(bh.data(), 4, H, df); fclose(df); } }
