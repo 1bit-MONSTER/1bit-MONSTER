@@ -48,8 +48,11 @@ echo "== 1/4 compile kernel (i8_i32, 32x64x128) =="
 
 echo "== 2/4 generate design + build xclbin (QKV 128x2048x8192) =="
 cd "$W"
+# The 4th argument is the aiecc that will actually run: the chess runtime lib
+# (aie_runtime_lib/AIE2P/chess_intrinsic_wrapper.ll) belongs to the aiecc tree,
+# not to --aietools, and an aiecc without it silently skips the link step (#3690).
 if ! check_chess_aietools "$AIETOOLS" "$([ "$USE_XCHESSCC" = "1" ] && echo true || echo false)" \
-    "/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin"; then
+    "/home/bcloud/Xilinx/2026.1/2026.1/Vitis/bin:/opt/xilinx/xrt/bin" "$AIECC"; then
     exit 1
 fi
 "$PYTHON" "$GEN/n1_core_i8_v27.py" -M 128 -K 2048 -N 8192 -m 32 -k 64 -n 128 -c 8 -r 4 -b 5 \
