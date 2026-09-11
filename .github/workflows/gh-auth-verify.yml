@@ -8,7 +8,7 @@ name: Verify gh-auth function
 on:
   pull_request:
     paths:
-      - 'functions/gh-auth.js'
+      - 'site/functions/gh-auth.js'
       - 'tests/gh-auth.test.mjs'
       - '.github/workflows/gh-auth-verify.yml'
   workflow_dispatch:

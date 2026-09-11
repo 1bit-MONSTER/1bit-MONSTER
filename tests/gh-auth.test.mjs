@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 // node reads a bare .js in this tree as CJS, so import a copy with an .mjs name.
 const tmp = mkdtempSync(join(tmpdir(), 'gh-auth-test-'));
-copyFileSync(join(here, '..', 'functions', 'gh-auth.js'), join(tmp, 'gh-auth.mjs'));
+copyFileSync(join(here, '..', 'site', 'functions', 'gh-auth.js'), join(tmp, 'gh-auth.mjs'));
 const { onRequest } = await import(join(tmp, 'gh-auth.mjs'));
 
 const env = {
