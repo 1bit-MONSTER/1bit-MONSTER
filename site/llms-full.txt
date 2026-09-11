@@ -102,7 +102,7 @@ Try it
 
 Related
 
-Every architecture token on HuggingFace — 566 of them — resolves to one binary. 323,303 checkpoints map to a single 1-bit engine. This is how. Go to HuggingFace. Pick any text-generation model. Any architecture — Llama, Qwen, Mistral, Gemma, Zamba, Jamba, Cohere, Falcon, DeepSeek-MoE, MiniMax, BitNet, T5 — and the 1bit.MONSTER engine can run it. Not a wrapper. Not a per-model build. One binary that auto-detects the architecture from the file and dispatches to the right backend. The daily census keeps the claim honest: 568 architecture tokens, 2,040 HF arch strings, 10099.97% HuggingFace coverage, 323,303 checkpoints mapped. A workflow re-checks the numbers every night and updates the site when they move. That number is live, not a marketing figure. Every HF architecture string — llama3 , qwen2.5_moe , zamba2 , all 1,946 of them — normalizes down to one of 566 architecture tokens. The token captures what actually changes between model families: attention variant, MoE routing, norm placement, RoPE scheme, tie weights. Everything else is shared. A new model family lands on HF → the daily new-model watcher drafts the mapping → the engine gets the token → the site's numbers update. The gap between a model appearing and the engine running it is measured in days, not quarters. The engine reads whatever you give it: GGUF (native), Q4NX 1-bit packed, INT8, TQ2 packed, and raw safetensors. One binary, six backends: NPU, HIP/ROCm, CPU, Vulkan, and more. The gguf_to_q4nx path converts a 4-bit GGUF to a 1-bit pack; the converter is part of the same binary. A 70B-class model packed to 1-bit fits in the memory of a laptop with room to spare. The engine's measured path on the Ryzen AI NPU went from 244 ms/tok to 3.4 ms/tok across the optimization sprint — that's a 70× improvement on the same silicon, no new hardware. 323,303 arch-bearing checkpoints resolve to 568 tokens, and 566 tokens resolve to one engine. That's the whole pitch. build/1bit unified --port 8088 --weights models/ — point it at a directory of GGUFs, hit /v1/models , and pick any of them. The server loads what you ask for, on the backend that's fastest for your hardware, no config file required.
+Every architecture token on HuggingFace — 566 of them — resolves to one binary. 323,303 checkpoints map to a single 1-bit engine. This is how. Go to HuggingFace. Pick any text-generation model. Any architecture — Llama, Qwen, Mistral, Gemma, Zamba, Jamba, Cohere, Falcon, DeepSeek-MoE, MiniMax, BitNet, T5 — and the 1bit.MONSTER engine can run it. Not a wrapper. Not a per-model build. One binary that auto-detects the architecture from the file and dispatches to the right backend. The daily census keeps the claim honest: 568 architecture tokens, 2,040 HF arch strings, 10099.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. A workflow re-checks the numbers every night and updates the site when they move. That number is live, not a marketing figure. Every HF architecture string — llama3 , qwen2.5_moe , zamba2 , all 1,946 of them — normalizes down to one of 566 architecture tokens. The token captures what actually changes between model families: attention variant, MoE routing, norm placement, RoPE scheme, tie weights. Everything else is shared. A new model family lands on HF → the daily new-model watcher drafts the mapping → the engine gets the token → the site's numbers update. The gap between a model appearing and the engine running it is measured in days, not quarters. The engine reads whatever you give it: GGUF (native), Q4NX 1-bit packed, INT8, TQ2 packed, and raw safetensors. One binary, six backends: NPU, HIP/ROCm, CPU, Vulkan, and more. The gguf_to_q4nx path converts a 4-bit GGUF to a 1-bit pack; the converter is part of the same binary. A 70B-class model packed to 1-bit fits in the memory of a laptop with room to spare. The engine's measured path on the Ryzen AI NPU went from 244 ms/tok to 3.4 ms/tok across the optimization sprint — that's a 70× improvement on the same silicon, no new hardware. 323,303 arch-bearing checkpoints resolve to 568 tokens, and 566 tokens resolve to one engine. That's the whole pitch. build/1bit unified --port 8088 --weights models/ — point it at a directory of GGUFs, hit /v1/models , and pick any of them. The server loads what you ask for, on the backend that's fastest for your hardware, no config file required.
 
 ---
 
@@ -161,6 +161,78 @@ Why we keep them
 Related
 
 Benchmarking the XDNA 2 NPU. These are historical NPU benchmark notes from the first month of the project, kept because they show the work. The figures themselves are quarantined as unsourced. Milestone: the first month's NPU benchmarks, kept honestly — 50 TOPS on a laptop, early numbers flagged as unsourced history. Full technical write-up → NPU benchmarks (historical) 50 TOPS is what the box promised and the reason the laptop was worth a bench at all. It is a peak figure from a datasheet, not a number we produced, and the useful question was how much of it we could reach from Linux. The first month of notes are probe scripts, launch traces and hand-typed logs. They were written before the harness existed and before the reproducibility rules, and some of them before we understood what the counters were counting. Reading them back now: the process was real, the evidence was not. None of those numbers has a source we can defend, so none of them ships as a claim. The table is deliberately empty of real numbers. The values existed once; we chose not to reproduce them without a source. These historical figures are unsourced and quarantined in benchmarks/latest.json _unverified . They are kept as process notes, not as evidence. Nothing from the first month should be quoted as a benchmark. The 50 TOPS figure survives as a target, not a boast. Keeping the bad notes is cheaper than repeating the mistakes, and every later measurement starts from a point we can see.
+
+---
+
+# A new significant architecture arrived: Gemma | 1bit.MONSTER
+
+A new significant architecture arrived: Gemma
+
+A significant new model architecture just arrived — Gemma (example: aecetin/Gemma-2-2B-PolySurgery). The engine is on it: this is the announcement, with support and decode validation in progress. Gemma is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: aecetin/Gemma-2-2B-PolySurgery (stripped class gemma2forcausallm_polysurgery ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
+
+---
+
+# A new significant architecture arrived: Llama | 1bit.MONSTER
+
+A new significant architecture arrived: Llama
+
+A significant new model architecture just arrived — Llama (example: aecetin/Llama-3.2-3B-PolySurgery). The engine is on it: this is the announcement, with support and decode validation in progress. Llama is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: aecetin/Llama-3.2-3B-PolySurgery (stripped class llama3forcausallm_polysurgery ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
+
+---
+
+# A new significant architecture arrived: Qwen | 1bit.MONSTER
+
+A new significant architecture arrived: Qwen
+
+A significant new model architecture just arrived — Qwen (example: aecetin/Qwen-2.5-7B-PolySurgery). The engine is on it: this is the announcement, with support and decode validation in progress. Qwen is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: aecetin/Qwen-2.5-7B-PolySurgery (stripped class qwen2forcausallm_polysurgery ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
+
+---
+
+# A new significant architecture arrived: Deepseek | 1bit.MONSTER
+
+A new significant architecture arrived: Deepseek
+
+A significant new model architecture just arrived — Deepseek (example: iVisionSH79/DeepSeek-V4.1-Flash). The engine is on it: this is the announcement, with support and decode validation in progress. Deepseek is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: iVisionSH79/DeepSeek-V4.1-Flash (stripped class deepseekv41 ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
+
+---
+
+# A new significant architecture arrived: Deepseek | 1bit.MONSTER
+
+A new significant architecture arrived: Deepseek
+
+A significant new model architecture just arrived — Deepseek (example: lightseekorg/kimi-k3-eagle3.1-mla). The engine is on it: this is the announcement, with support and decode validation in progress. Deepseek is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: lightseekorg/kimi-k3-eagle3.1-mla (stripped class eagle3deepseekv2 ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
+
+---
+
+# A new significant architecture arrived: Qwen | 1bit.MONSTER
+
+A new significant architecture arrived: Qwen
+
+A significant new model architecture just arrived — Qwen (example: Prannesshkva/ISOM-Qwen2.5-Coder-1.5B-Instruct). The engine is on it: this is the announcement, with support and decode validation in progress. Qwen is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: Prannesshkva/ISOM-Qwen2.5-Coder-1.5B-Instruct (stripped class isomqwen25coder ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
+
+---
+
+# A new significant architecture arrived: minimindvlm | 1bit.MONSTER
+
+A new significant architecture arrived: minimindvlm
+
+A significant new model architecture just arrived — minimindvlm (example: scikit-plots/minimind-3v). The engine is on it: this is the announcement, with support and decode validation in progress. minimindvlm is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: scikit-plots/minimind-3v (stripped class minimindvlm ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
+
+---
+
+# A new significant architecture arrived: Deepseek | 1bit.MONSTER
+
+A new significant architecture arrived: Deepseek
+
+A significant new model architecture just arrived — Deepseek (example: Terom/DeepSeek-V4.1-Flash). The engine is on it: this is the announcement, with support and decode validation in progress. Deepseek is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: Terom/DeepSeek-V4.1-Flash (stripped class deepseekv41 ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
+
+---
+
+# A new significant architecture arrived: cosmos3edge | 1bit.MONSTER
+
+A new significant architecture arrived: cosmos3edge
+
+A significant new model architecture just arrived — cosmos3edge (example: ubr-physical-ai/Cosmos3-Edge-NF4-bnb). The engine is on it: this is the announcement, with support and decode validation in progress. cosmos3edge is a significant architecture arrival — a major-family or vision/multimodal model we don't fully map yet. Example checkpoint on HuggingFace: ubr-physical-ai/Cosmos3-Edge-NF4-bnb (stripped class cosmos3edge ). This is the announcement: the model exists, the engine is tracking it, and support + decode validation are underway. When it lands, a follow-up post says so. Draft scaffold: fill in what the architecture actually does and the support/validation status before publishing. This entry exists so the blog updates the way the Lemonade SDK loop does — a new post per significant arrival, not just a number change.
 
 ---
 
@@ -562,11 +634,75 @@ We ship on ROCm, not CUDA, on purpose. Real kernels, real benchmarks, and the 1-
 
 ---
 
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: 0x795E2795/Vanta-Alpha-26B-A4B-it-qat-w4a16-ct) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: 0x795E2795/Vanta-Alpha-26B-A4B-it-qat-w4a16-ct (stripped class gemma4 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: 0xSero/GLM-5.3-500B-EXL3-3.0bpw) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: 0xSero/GLM-5.3-500B-EXL3-3.0bpw (stripped class glmmoedsa ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: 0xSero/GLM-5.3-EXL3-4.0bpw) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: 0xSero/GLM-5.3-EXL3-4.0bpw (stripped class glmmoedsa ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
 # The engine now runs Deepseek | 1bit.MONSTER
 
 The engine now runs Deepseek
 
 A significant new model architecture arrived — Deepseek (example: a15846/DeepSeek-v4-Fable) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Deepseek is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: a15846/DeepSeek-v4-Fable (stripped class deepseekv4 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: aasim-m/daft-qwen2.5-coder-7b-instruct-checkpoint-2000) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: aasim-m/daft-qwen2.5-coder-7b-instruct-checkpoint-2000 (stripped class qwen2 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: aasim-m/DAFT-Qwen3-0.6B-checkpoint-4000) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: aasim-m/DAFT-Qwen3-0.6B-checkpoint-4000 (stripped class qwen3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: Aeronix-zzz/SpaSEViLA-7B) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Aeronix-zzz/SpaSEViLA-7B (stripped class qwen2_5_vl ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO (stripped class qwen2 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: amad-iq/amad-vlm6) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: amad-iq/amad-vlm6 (stripped class qwen2_5_vl ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
 
 ---
 
@@ -586,11 +722,83 @@ A significant new model architecture arrived — Qwen (example: AnonimXxx/Qwen3.
 
 ---
 
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: anthori/GLM-5.3-Flash-EXL3-Q8Core-Q3Q4Q6) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: anthori/GLM-5.3-Flash-EXL3-Q8Core-Q3Q4Q6 (stripped class glm5next ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Olmo | 1bit.MONSTER
+
+The engine now runs Olmo
+
+A significant new model architecture arrived — Olmo (example: ArchSpace-Collection/NCP_ArchPreview_dolma3_8.9B_Stage1_Step1300000) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Olmo is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: ArchSpace-Collection/NCP_ArchPreview_dolma3_8.9B_Stage1_Step1300000 (stripped class ncpolmo3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Olmo | 1bit.MONSTER
+
+The engine now runs Olmo
+
+A significant new model architecture arrived — Olmo (example: ArchSpace-Collection/OLMo3-3B-SiameseNorm-DepthAttention-stage4-instruct) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Olmo is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: ArchSpace-Collection/OLMo3-3B-SiameseNorm-DepthAttention-stage4-instruct (stripped class olmo3siamesedepth ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Olmo | 1bit.MONSTER
+
+The engine now runs Olmo
+
+A significant new model architecture arrived — Olmo (example: ArchSpace-Collection/OLMo3-3B-stage4-instruct) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Olmo is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: ArchSpace-Collection/OLMo3-3B-stage4-instruct (stripped class olmo3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Llama | 1bit.MONSTER
+
+The engine now runs Llama
+
+A significant new model architecture arrived — Llama (example: arefehRajabian/phi_finetune_reasoning_plus_16bit) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Llama is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: arefehRajabian/phi_finetune_reasoning_plus_16bit (stripped class llama ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Mistral | 1bit.MONSTER
+
+The engine now runs Mistral
+
+A significant new model architecture arrived — Mistral (example: Aurigene-AI/BioMistral-7B) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Mistral is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Aurigene-AI/BioMistral-7B (stripped class mistral ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP (stripped class qwen3_5moe ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
 # The engine now runs Llama | 1bit.MONSTER
 
 The engine now runs Llama
 
 A significant new model architecture arrived — Llama (example: BosonicJustin/transcendent-logic-model) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Llama is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: BosonicJustin/transcendent-logic-model (stripped class llama ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Rwkv | 1bit.MONSTER
+
+The engine now runs Rwkv
+
+A significant new model architecture arrived — Rwkv (example: brennercruvinel/truw-rwkv7-2.9b-v3) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Rwkv is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: brennercruvinel/truw-rwkv7-2.9b-v3 (stripped class rwkv ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: bullerwins/GLM-5.3-Flash-exl3-4bpw-ablit) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: bullerwins/GLM-5.3-Flash-exl3-4bpw-ablit (stripped class glm5next ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
 
 ---
 
@@ -602,11 +810,59 @@ A significant new model architecture arrived — Deepseek (example: Chinook416/c
 
 ---
 
+# The engine now runs Deepseek | 1bit.MONSTER
+
+The engine now runs Deepseek
+
+A significant new model architecture arrived — Deepseek (example: Coder40-95/DeepSeek-V4-Flash-Vision-Exp) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Deepseek is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Coder40-95/DeepSeek-V4-Flash-Vision-Exp (stripped class deepseekv4 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: Coder40-95/GLM-5.3-Flash) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Coder40-95/GLM-5.3-Flash (stripped class glm5next ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: con-cord/GRPO-MOD2adv-sft-agreed-no-ref) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: con-cord/GRPO-MOD2adv-sft-agreed-no-ref (stripped class gemma3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: cont1037/GLM-4.6V-Flash) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: cont1037/GLM-4.6V-Flash (stripped class glm4v ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: Darmm/darmm-ocr-kazakh-vl-3b) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Darmm/darmm-ocr-kazakh-vl-3b (stripped class qwen2_5_vl ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
 # The engine now runs DeepSeek V4 | 1bit.MONSTER
 
 The engine now runs DeepSeek V4
 
 A significant new model architecture arrived — DeepSeek V4 (example: deepseek-ai/DeepSeek-V4-Flash) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. DeepSeek V4 is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: deepseek-ai/DeepSeek-V4-Flash (stripped class deepseek_v4_flash ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: defiobi00/GLM-5.3-DERISKED-Int4-Int8Mix) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: defiobi00/GLM-5.3-DERISKED-Int4-Int8Mix (stripped class glm_moe_dsa ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
 
 ---
 
@@ -626,11 +882,115 @@ A significant new model architecture arrived — Qwen (example: dharun2049/kaver
 
 ---
 
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: DripGhad1223/GLM-5.3-CYBERSECURITY-FP8) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: DripGhad1223/GLM-5.3-CYBERSECURITY-FP8 (stripped class glmmoedsa ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
 # The engine now runs Olmo | 1bit.MONSTER
 
 The engine now runs Olmo
 
 A significant new model architecture arrived — Olmo (example: dureduck/Olmo-3-7B-PostTraining8K-SFT-step-40) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Olmo is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: dureduck/Olmo-3-7B-PostTraining8K-SFT-step-40 (stripped class olmo3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: Earlychildhoodeducation/EleMo-V3-Base) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Earlychildhoodeducation/EleMo-V3-Base (stripped class qwen3_5 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: Elio2151/Gemma-2-9B-Instruct-TechnicalAgentFineTuned-Merged_5) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Elio2151/Gemma-2-9B-Instruct-TechnicalAgentFineTuned-Merged_5 (stripped class gemma2 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Llama | 1bit.MONSTER
+
+The engine now runs Llama
+
+A significant new model architecture arrived — Llama (example: Elio2151/Llama-3.1-8B-Instruct-TechnicalAgentFineTuned-Merged_4) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Llama is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Elio2151/Llama-3.1-8B-Instruct-TechnicalAgentFineTuned-Merged_4 (stripped class llama ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Llama | 1bit.MONSTER
+
+The engine now runs Llama
+
+A significant new model architecture arrived — Llama (example: emese-tech/patak) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Llama is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: emese-tech/patak (stripped class llama ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: Endersand/Gemma-4-12B-StyleTune) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Endersand/Gemma-4-12B-StyleTune (stripped class gemma4unified ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: FalconZypp/Qwen3.8-Flash-Next-AWQ-INT4) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: FalconZypp/Qwen3.8-Flash-Next-AWQ-INT4 (stripped class qwen4exp ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: Fluxmire/GLM-4.6V-Flash-FP8-DYNAMIC) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Fluxmire/GLM-4.6V-Flash-FP8-DYNAMIC (stripped class glm4v ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: forgeguard-ai/Ornith-1.5-35B-A3B-NVFP4) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: forgeguard-ai/Ornith-1.5-35B-A3B-NVFP4 (stripped class qwen3_5moe ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Olmo | 1bit.MONSTER
+
+The engine now runs Olmo
+
+A significant new model architecture arrived — Olmo (example: ganscs/Olmo7b-olmo-a100-new-20260908-CPT-merged-step-750) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Olmo is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: ganscs/Olmo7b-olmo-a100-new-20260908-CPT-merged-step-750 (stripped class olmo3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: hariharasudhan/en-indic-translate-26b) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: hariharasudhan/en-indic-translate-26b (stripped class gemma4 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: HarithSami/qwen2.5-7b-instruct-arabic-yt-merged) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: HarithSami/qwen2.5-7b-instruct-arabic-yt-merged (stripped class qwen2 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: HawkBearPig/GLM-5.3-Flash-NVFP4-FP8) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: HawkBearPig/GLM-5.3-Flash-NVFP4-FP8 (stripped class glm5next ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
 
 ---
 
@@ -642,6 +1002,22 @@ A significant new model architecture arrived — Smollm (example: Healshsj/smoll
 
 ---
 
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: HerrHruby/MR_midtrain_9B_v4_quarter) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: HerrHruby/MR_midtrain_9B_v4_quarter (stripped class qwen3_5 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: HYU-NLP-EVAL/qwen3-4b-rar-medicine-onlinerubrics-seed11-step-045) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: HYU-NLP-EVAL/qwen3-4b-rar-medicine-onlinerubrics-seed11-step-045 (stripped class qwen3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
 # The engine now runs Gemma | 1bit.MONSTER
 
 The engine now runs Gemma
@@ -650,11 +1026,51 @@ A significant new model architecture arrived — Gemma (example: icysunny/gemma4
 
 ---
 
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: idrock/aruz) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: idrock/aruz (stripped class gemma4 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: ikppramesh/irx-1) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: ikppramesh/irx-1 (stripped class qwen3_5 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: imtixz/gemma-2-2b-it-sleeper-multi-token-fixed-string-poison5pct) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: imtixz/gemma-2-2b-it-sleeper-multi-token-fixed-string-poison5pct (stripped class gemma2 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
 # The engine now runs Qwen | 1bit.MONSTER
 
 The engine now runs Qwen
 
 A significant new model architecture arrived — Qwen (example: inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i (stripped class qwen4exp ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: IzNrsydn/legal-chatbot-llama3-finetuned) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: IzNrsydn/legal-chatbot-llama3-finetuned (stripped class qwen2 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: JJarvinen/Qwen3.5-2B-EU-Tool-JARVIS-Compact-v1.1) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: JJarvinen/Qwen3.5-2B-EU-Tool-JARVIS-Compact-v1.1 (stripped class qwen3_5 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
 
 ---
 
@@ -671,6 +1087,150 @@ A significant new model architecture arrived — Gemma (example: Jkatdare/gemma-
 The engine now runs Nemotron
 
 A significant new model architecture arrived — Nemotron (example: joincrksilverb/Nemotron-Mini-4B-Instruct) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Nemotron is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: joincrksilverb/Nemotron-Mini-4B-Instruct (stripped class nemotron ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Deepseek | 1bit.MONSTER
+
+The engine now runs Deepseek
+
+A significant new model architecture arrived — Deepseek (example: Joyfulxp/DeepSeek-V4-Flash-Vision-Exp-Abliterated) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Deepseek is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Joyfulxp/DeepSeek-V4-Flash-Vision-Exp-Abliterated (stripped class deepseekv4 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: just1nseo/qwen3-4b-ifrlvr-grpo-judge-30ba3b) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: just1nseo/qwen3-4b-ifrlvr-grpo-judge-30ba3b (stripped class qwen3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Deepseek | 1bit.MONSTER
+
+The engine now runs Deepseek
+
+A significant new model architecture arrived — Deepseek (example: LibertAIDAI/DeepSeek-V4.1-Flash-NVFP4) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Deepseek is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: LibertAIDAI/DeepSeek-V4.1-Flash-NVFP4 (stripped class deepseek ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Granite | 1bit.MONSTER
+
+The engine now runs Granite
+
+A significant new model architecture arrived — Granite (example: madiaxa/granite-4.2-3b-openvino) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Granite is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: madiaxa/granite-4.2-3b-openvino (stripped class granite ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: MidnightPhreaker/Qwen3.8-Flash-Next-REAP-384-exl3-4.00bpw-ORIGINAL-MTP) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: MidnightPhreaker/Qwen3.8-Flash-Next-REAP-384-exl3-4.00bpw-ORIGINAL-MTP (stripped class qwen4exp ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Llama | 1bit.MONSTER
+
+The engine now runs Llama
+
+A significant new model architecture arrived — Llama (example: minjaechoi/Midm-2.0-Mini-Instruct-W4A16) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Llama is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: minjaechoi/Midm-2.0-Mini-Instruct-W4A16 (stripped class llama ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Phi | 1bit.MONSTER
+
+The engine now runs Phi
+
+A significant new model architecture arrived — Phi (example: minjaechoi/Phi-4-mini-instruct-W4A16) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Phi is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: minjaechoi/Phi-4-mini-instruct-W4A16 (stripped class phi3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: minjaechoi/Qwen3-4B-W4A16) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: minjaechoi/Qwen3-4B-W4A16 (stripped class qwen3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: mlx-community/BigBang-v1-MLX-oQ4e) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: mlx-community/BigBang-v1-MLX-oQ4e (stripped class qwen3_5moe ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Llama | 1bit.MONSTER
+
+The engine now runs Llama
+
+A significant new model architecture arrived — Llama (example: mobilint/Llama-3.2-1B-Instruct-regulus-rb-usb) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Llama is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: mobilint/Llama-3.2-1B-Instruct-regulus-rb-usb (stripped class mobilintllama ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: MuhHendri12/qwen2.5-3b-legal-id-grpo) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: MuhHendri12/qwen2.5-3b-legal-id-grpo (stripped class qwen2 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: neutrypl/neutry-functiongemma-270m-v2) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: neutrypl/neutry-functiongemma-270m-v2 (stripped class gemma3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Granite | 1bit.MONSTER
+
+The engine now runs Granite
+
+A significant new model architecture arrived — Granite (example: noodcon/Safetensors.granite-4.0-Improved-Enhanced-Refined) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Granite is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: noodcon/Safetensors.granite-4.0-Improved-Enhanced-Refined (stripped class granitemoehybrid ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: pgmharikrishnan/grug-35b-v2-MLX-4bit) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: pgmharikrishnan/grug-35b-v2-MLX-4bit (stripped class qwen3_5moe ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: Rab007/Qwen3.8-2.4T-A95B) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Rab007/Qwen3.8-2.4T-A95B (stripped class qwen3_5moe ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Llama | 1bit.MONSTER
+
+The engine now runs Llama
+
+A significant new model architecture arrived — Llama (example: Raghav-Singhal/1pp-1.7b-ua-seed42-sft) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Llama is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Raghav-Singhal/1pp-1.7b-ua-seed42-sft (stripped class llama ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: ram-lexsi/safetune-testrun-unlearn_rmu) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: ram-lexsi/safetune-testrun-unlearn_rmu (stripped class qwen2 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: ramazanoff34/Neo-One_Lite) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: ramazanoff34/Neo-One_Lite (stripped class qwen2vl ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
 
 ---
 
@@ -694,7 +1254,127 @@ A significant new model architecture arrived — Glm (example: scouzi1966/GLM-5.
 
 The engine now runs Qwen
 
+A significant new model architecture arrived — Qwen (example: shahedm2001/qwen3-vl-2b-cataract-sft) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: shahedm2001/qwen3-vl-2b-cataract-sft (stripped class qwen3vl ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Smollm | 1bit.MONSTER
+
+The engine now runs Smollm
+
+A significant new model architecture arrived — Smollm (example: smshahbaj/RIFA-PRO-3B) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Smollm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: smshahbaj/RIFA-PRO-3B (stripped class smollm3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Deepseek | 1bit.MONSTER
+
+The engine now runs Deepseek
+
+A significant new model architecture arrived — Deepseek (example: Solstice-AI/DeepSeek-V4-Flash-Vision-Exp-MXFP4) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Deepseek is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Solstice-AI/DeepSeek-V4-Flash-Vision-Exp-MXFP4 (stripped class deepseekv4 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Llama | 1bit.MONSTER
+
+The engine now runs Llama
+
+A significant new model architecture arrived — Llama (example: SongSeungJae/Llama-VARCO-8b-news2stock-analyzer-4bit-merged) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Llama is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: SongSeungJae/Llama-VARCO-8b-news2stock-analyzer-4bit-merged (stripped class llama ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Nemotron | 1bit.MONSTER
+
+The engine now runs Nemotron
+
+A significant new model architecture arrived — Nemotron (example: Spangler3000/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Nemotron is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Spangler3000/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp (stripped class nemotronh ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: StationPC/Qwen3.5-4B-RKNN3-RK1828) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: StationPC/Qwen3.5-4B-RKNN3-RK1828 (stripped class qwen3_5 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Glm | 1bit.MONSTER
+
+The engine now runs Glm
+
+A significant new model architecture arrived — Glm (example: Terom/GLM-5.3) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Glm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Terom/GLM-5.3 (stripped class glmmoedsa ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: thuyduongjoe123/checkpoints_en_my_logit) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: thuyduongjoe123/checkpoints_en_my_logit (stripped class qwen3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Gemma | 1bit.MONSTER
+
+The engine now runs Gemma
+
+A significant new model architecture arrived — Gemma (example: Titanfrm/gemma-4-E4B-it-uncensored-heretic) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Gemma is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Titanfrm/gemma-4-E4B-it-uncensored-heretic (stripped class gemma4 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
 A significant new model architecture arrived — Qwen (example: Ttimms/Bible-Assistant-Qwen3.5-4B-v3.2) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Ttimms/Bible-Assistant-Qwen3.5-4B-v3.2 (stripped class qwen3_5 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: Wing22/lvr-align-v2-1000) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: Wing22/lvr-align-v2-1000 (stripped class qwen3-vl ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Mistral | 1bit.MONSTER
+
+The engine now runs Mistral
+
+A significant new model architecture arrived — Mistral (example: yamatazen/Himeyuri-Magnum-12B-HereticLoRA) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Mistral is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: yamatazen/Himeyuri-Magnum-12B-HereticLoRA (stripped class mistral ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: YueLinHu/GAC-Qwen3.5-4B) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: YueLinHu/GAC-Qwen3.5-4B (stripped class qwen3_5 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: zhezi12138/Qwen3-4B-formal-r1-RL-50iter-seed42) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: zhezi12138/Qwen3-4B-formal-r1-RL-50iter-seed42 (stripped class qwen3 ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Minicpm | 1bit.MONSTER
+
+The engine now runs Minicpm
+
+A significant new model architecture arrived — Minicpm (example: zhiyaowang/MiniCPM-SALA-NVFP4-GPTQ) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Minicpm is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: zhiyaowang/MiniCPM-SALA-NVFP4-GPTQ (stripped class minicpmsala ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
+
+---
+
+# The engine now runs Qwen | 1bit.MONSTER
+
+The engine now runs Qwen
+
+A significant new model architecture arrived — Qwen (example: zhongweixie/claw-rl-v13-grpo-dr-rubric) — and the engine now maps it to a token. This post scaffolds the entry; details are a draft. Qwen is a significant architecture arrival — a major-family or vision/multimodal model the engine did not previously map. Example checkpoint on HuggingFace: zhongweixie/claw-rl-v13-grpo-dr-rubric (stripped class qwen3vl ). The engine maps it to an architecture token, so the whole class now resolves to one binary — the census claim stays at 100% coverage. Draft scaffold: fill in what the architecture actually does, kernel/backend support, and decode-validation status before publishing. The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts the alias, and this post is generated so the change is discoverable.
 
 ---
 
