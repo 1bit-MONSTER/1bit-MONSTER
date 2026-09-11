@@ -9,14 +9,14 @@ engine's own loop, NOT `NPU_FLM_PREFILL`). This is the real native-path prefill
 
 | metric | value |
 |---|---|
-| prefill total | **~510 ms / 256 tok = ~490 tok/s** (QKV 3→1 GEMM + scratch/A reuse + GU 12→1 GEMM + attn f32-rt skip) |
+| prefill total | **~510 ms / 256 tok = ~490 tok/s** (9 opts: QKV 3→1, scratch/A reuse, GU 12→1, attn-rt skip, SiLU/readback fusions) |
 | — QKV GEMMs (tg) | 52 ms (was 97 — folded Q/K/V into one N=4096 GEMM) |
 | — attention + host norm/RoPE (ta) | 137 ms |
 | — O/GU/D GEMMs + f32↔bf16 conversions + SiLU (tc−tg−ta) | 463 ms |
 | token parity (9-tok default prompt) | boot=151667 = FLM ✓ |
 | target (FLM published prefill @1k) | 1494 tok/s → 256 tok ≈ 171 ms |
 
-Gap: **~3.0×** (~510 vs 171 ms). The bf16 GEMM path is token-correct; the gap is
+Gap: **~2.5×** vs on-box FLM (~201 ms) / ~3.0× vs published (171 ms). The bf16 GEMM path is token-correct; the gap is
 throughput, not correctness.
 
 ## Per-layer cost (28 layers → 24.9 ms/layer)
@@ -65,3 +65,20 @@ exact 1269 means replicating its `gen_layer_seq` prefill schedule + host code �
 the FLM-orchestration path the audit already flagged as not-native. The native
 per-op path is therefore making real progress (367→~495 tok/s) toward, but cannot
 fully reach, FLM's own orchestrated prefill without adopting its schedule.
+
+
+## Final assessment (2026-09-11)
+
+Nine parity-preserving optimizations took the native bf16 prefill from 367 to
+~490 tok/s. The remaining cost is: GEMMs ~210 ms (near the mm.xclbin throughput
+bound ~550 GMAC/s), attention ~140 ms, host math (conversions + SiLU + RMSNorm
++ RoPE) ~160 ms.
+
+Even with aggressive overlap/offload, the per-op native path is bounded at
+roughly ~700 tok/s — because the bf16-GEMM + f32-host-math split forces
+~5 M f32↔bf16 conversions/layer and ~5 synchronous kernel round-trips/layer.
+Closing the last ~2× to FLM's 1269 tok/s requires FLM's fused per-layer sequence
+(`gen_layer_seq`, which does norms/RoPE/SiLU on the NPU + overlaps everything)
+— i.e. the orchestration path the audit flagged as not-native. **Native per-op
+prefill ≥ FLM's published prefill is therefore not achievable without adopting
+FLM's own fused schedule.**
