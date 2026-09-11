@@ -642,15 +642,20 @@ int main(int argc,char**argv){
     // H>1024). Runs BEFORE the native weight loading so it needs no native
     // xclbins. ====
     if (getenv("NPU_FLM_PREFILL")) {
-        const char* mdir = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2";
+        // model dir = parent of the model.q4nx path (mp); the MoE is the one
+        // exception (needs the v0.9.45-flm_version config dir).
+        auto mls = mp_s.rfind('/');
+        std::string mdir_s = (mls != std::string::npos) ? mp_s.substr(0, mls) : ".";
         const char* family = "qwen3";
-        if (NV == 248320) { mdir = "/home/bcloud/.local/flm-v0946/model/Qwen3.6-35B-A3B-NPU2"; family = "qwen3_6_moe"; }
-        else if (NV == 128256) { mdir = "/home/bcloud/.config/flm/models/Llama-3.2-1B-NPU2"; family = "llama"; }
-        else if (NV == 151936) {
-            if (H == 2048) mdir = "/home/bcloud/.config/flm/models/Qwen3-1.7B-NPU2";
-            else if (H == 2560) mdir = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2";
-            else if (H == 4096) mdir = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2";
-        }
+        if (NV == 248320) { mdir_s = "/home/bcloud/.local/flm-v0946/model/Qwen3.6-35B-A3B-NPU2"; family = "qwen3_6_moe"; }
+        else if (NV == 128256) family = "llama";
+        else if (NV == 262144) family = "gemma4e";
+        else if (NV == 200064) family = "phi4";
+        else if (NV == 166144) family = "nanbeige";
+        else if (NV == 65536) family = "lfm2";
+        else if (NV == 151936) family = "qwen3";
+        else family = "qwen3";  // unknown -> dense qwen3 fallback
+        const char* mdir = mdir_s.c_str();
         std::vector<int> flm_ids;
         if (input_tok_file) {
             FILE* tf = strcmp(input_tok_file, "-") == 0 ? stdin : fopen(input_tok_file, "r");

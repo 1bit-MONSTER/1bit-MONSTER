@@ -37,26 +37,58 @@ Reference: decode 22.6 / 21.7 / 20.0 / 17.5 / 14.1 / 10.1; prefill 721 / 945 / 1
 
 Decode BEATS at 8k–32k; prefill within ~12% (cross-HW).
 
-## Gemma 4 E4B (`gemma4-it:e4b`)
+## Gemma 4 E4B (`gemma4-it:e4b`, NV=262144, H=2560, NC=42)
 
 Reference: decode 12.6 / 12.3 / 11.6 / 10.6 / 9.0 / 6.8; prefill 441 / 572 / 668 / 720 / 695 / 586.
 
-_pending download + sweep_
+| ctx | prefill tok/s (ours / pub) | decode tok/s (ours / pub) |
+|---|---:|---:|
+| 1k  | 435 / 441 (−1%)    | 12 / 12.6 (−5%) |
+| 2k  | 565 / 572 (−1%)    | 11 / 12.3 (−11%) |
+| 4k  | 641 / 668 (−4%)    | 11 / 11.6 (−5%) |
+| 8k  | 592 / 720 (−18%)   | 9 / 10.6 (−15%) |
+| 16k | 621 / 695 (−11%)   | 7 / 9.0 (−22%) |
+| 32k | 485 / 586 (−17%)   | 3 / 6.8 (−56%) |
 
-## Phi-4-mini (`phi4-mini-it:4b`)
+Prefill near-parity at 1k–4k; decode widens at long ctx (32k KV-cache-bound).
+
+## Phi-4-mini (`phi4-mini-it:4b`, NV=200064, H=3072, NC=32)
 
 Reference: decode 21.8 / 21.2 / 19.9 / 18.1 / 14.9 / 11.2; prefill 643 / 787 / 857 / 809 / 644 / 447.
 
-_pending download + sweep_
+| ctx | prefill tok/s (ours / pub) | decode tok/s (ours / pub) |
+|---|---:|---:|
+| 1k  | 637 / 643 (−1%)    | 20 / 21.8 (−8%) |
+| 2k  | 794 / 787 (+1%)    | 19 / 21.2 (−10%) |
+| 4k  | 840 / 857 (−2%)    | 17 / 19.9 (−15%) |
+| 8k  | 787 / 809 (−3%)    | 14 / 18.1 (−23%) |
+| 16k | 617 / 644 (−4%)    | 11 / 14.9 (−26%) |
+| 32k | 415 / 447 (−7%)    | (MAX_L overflow) |
 
-## Nanbeige4.1-3B (`nanbeige4.1:3b`, ctx 8192)
+Prefill near-parity; decode widens at long ctx (cross-HW).
+
+## Nanbeige4.1-3B (`nanbeige4.1:3b`, NV=166144, H=2560, NC=32)
 
 Reference: decode 23.5 / 22.3 / 20.4 / 17.3 / 13.3 / 9.0; prefill 612 / 731 / 742 / 686 / 523 / 343.
 
-_pending download + sweep_
+| ctx | prefill tok/s (ours / pub) | decode tok/s (ours / pub) |
+|---|---:|---:|
+| 1k  | 565 / 612 (−8%)    | 21 / 23.5 (−11%) |
+| 2k  | 709 / 731 (−3%)    | 20 / 22.3 (−10%) |
+| 4k  | 741 / 742 (−0%)    | 19 / 20.4 (−7%) |
+| 8k  | 667 / 686 (−3%)    | 16 / 17.3 (−8%) |
+| 16k | 505 / 523 (−3%)    | 12 / 13.3 (−10%) |
+| 32k | 330 / 343 (−4%)    | (MAX_L overflow) |
+
+Prefill near-parity (4k exact); decode ~7–11% (cross-HW).
 
 ## LFM2-1.2B / 2.6B (`lfm2:1.2b` / `lfm2:2.6b`)
 
 Reference: 1.2B decode 62 / 61 / 59 / 56 / 52 / 46, prefill 1537 / 2172 / 2521 / 2677 / 2359 / 1916; 2.6B decode 30 / 30 / 30 / 29 / 27 / 25, prefill 747 / 1004 / 1193 / 1284 / 1210 / 1053.
 
-_pending download + sweep_
+**Blocked (separate issue)**: the engine's `parse_q4nx_header` can't parse the
+LFM2 q4nx header (`invalid model config H=0 NH=0 ... NC=16`) — the LFM2 family
+is a hybrid block/mamba model (config keys `block_*`, `conv_*`, `full_attn_idxs`,
+`head_dim=64`) whose q4nx manifest differs from the dense-Qwen3-style header.
+Family gate is wired (`NV=65536 → lfm2`); needs a q4nx-header-parser fix, not
+FLM-orchestration work.
