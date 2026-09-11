@@ -76,26 +76,8 @@ DynamicRouter::BackendEntry* DynamicRouter::pick_backend() {
             return &entries_[0];
         }
         case Strategy::NPU_ONLY: {
-            // Deterministic NPU preference, NOT registration order. npu_flm (FLM,
-            // score 67.5) and npu_xrt (legacy worker subprocess, 0.06 tok/s —
-            // backend_manager.cpp:1766+) share BackendType::NPU_XRT, and npu_xrt
-            // is REGISTERED FIRST (:61 vs :162), so the old "first entry whose id
-            // is an NPU" answered npu_xrt — the ~1000x-slower lane — and would
-            // answer differently if registration order ever changed, i.e. a
-            // routing outcome decided by vector order.
-            // The registry's own answer for NPU_Q4NX/NPU_1BP is npu_flm
-            // (model_registry_route.cpp), so rank explicitly and agree with it.
-            // (The *_BACKFILL branches below still scan for the substring "npu"
-            // and keep that order sensitivity — left unchanged on purpose here.)
-            BackendEntry* best = nullptr;
-            for (auto& e : entries_) {
-                bool is_flm = (e.id == "npu_flm");
-                bool is_xrt = (e.id == "npu_xrt");
-                if (!is_flm && !is_xrt) continue;
-                if (!best) { best = &e; continue; }
-                if (is_flm && best->id != "npu_flm") best = &e;  // flm outranks xrt
-            }
-            if (best) return best;
+            for (auto& e : entries_)
+                if (e.id == "npu_flm" || e.id == "npu_xrt") return &e;
             return &entries_[0];
         }
         case Strategy::GPU_BACKFILL: {
@@ -156,19 +138,10 @@ DynamicRouter::BackendEntry* DynamicRouter::pick_backend_excluding(const std::st
             for (auto& e : entries_)
                 if ((e.id == "hip_gpu" || e.id == "zinc_gpu") && e.id != exclude_id) return &e;
             break;
-        case Strategy::NPU_ONLY: {
-            // Same explicit ranking as pick_backend(): npu_flm before npu_xrt.
-            BackendEntry* best = nullptr;
-            for (auto& e : entries_) {
-                bool is_flm = (e.id == "npu_flm");
-                bool is_xrt = (e.id == "npu_xrt");
-                if ((!is_flm && !is_xrt) || e.id == exclude_id) continue;
-                if (!best) { best = &e; continue; }
-                if (is_flm && best->id != "npu_flm") best = &e;
-            }
-            if (best) return best;
+        case Strategy::NPU_ONLY:
+            for (auto& e : entries_)
+                if ((e.id == "npu_flm" || e.id == "npu_xrt") && e.id != exclude_id) return &e;
             break;
-        }
         case Strategy::GPU_BACKFILL: {
             int cycle = round_robin_counter_++ % 5;
             if (cycle < 4) {
