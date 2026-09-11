@@ -479,7 +479,26 @@ void BackendManager::discover() {
 
     // Rack 'em
     rank_backends();
-    active_idx_ = 0;
+    // "No backend selected yet" — NOT backends_[0]. discover() ranks lanes; it does not
+    // choose one, and a report taken before (or without) a successful init used to name
+    // the top-RANKED lane as "Active". That is reachability reading as selection, the
+    // same inversion this manager's own route bridge warns about (model_registry_route.h:
+    // UNKNOWN must not be indistinguishable from PRESENT) — and it is exactly what a
+    // `status: "ok"` health endpoint is worst at: the failed-init case answered 200 with
+    // a plausible, never-initialized backend named.
+    //
+    // The "none" state is already anticipated everywhere, which is why this is one line:
+    // active_info()/active_backend() return nullptr (:826, :831), every read is guarded
+    // by `active_idx_ < backends_.size()`, re_evaluate() uses backends_.size() as its own
+    // not-found sentinel (:1348) and restores by id string, init_in_order() sets the
+    // index on the first successful init (:659), failover() sets it before returning
+    // true (so its callers at :942 and :1030 stay valid), and the status report already
+    // prints "none" (:1600). A generate() before init was already safe — it tests
+    // info.functional && info.instance (:867) before taking the instance.
+    // NOT changed here: /v1/health still reports status "ok" with no active backend. That
+    // is a health-CONTRACT question (clients may branch on status) rather than a bug in
+    // this field, so it is raised, not decided: see ADR §9.10.11.
+    active_idx_ = backends_.size();
 
     printf("\n  %zu backend(s) discovered.\n", backends_.size());
     printf("  Primary: %s\n\n", backends_.empty() ? "none" : backends_[0].id.c_str());
