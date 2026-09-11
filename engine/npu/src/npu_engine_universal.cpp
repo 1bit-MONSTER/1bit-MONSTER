@@ -65,6 +65,7 @@ void gemm_generate_sequence_i8_split(
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
+extern "C" void bf16mm_set_attn_qout(int qout);
 extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes, size_t layer_bo_bytes);
 extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff_elements);
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
@@ -3691,6 +3692,7 @@ struct Bf16Ctx {
         const int gu_chunks = IM / 512;   // GU: 512-out-row chunks (16 tile-rows x 32)
         std::vector<int> Wqkv(NC), Wo(NC), Wup(NC * gu_chunks), Wgate(NC * gu_chunks), Wd(NC);
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV) == 0) {
+            bf16mm_set_attn_qout(NH * HD);
             // layer_bo_bytes must be read AFTER prefill_init (it needs the loaded
             // model; before init g_bf16_mw is null -> the 10MB 0.6B fallback).
             int layer_bo_bytes = npu_bf16_layer_bo_bytes();

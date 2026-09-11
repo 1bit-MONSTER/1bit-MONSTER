@@ -22,6 +22,8 @@ extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir) {
     return g_mm.init(g_dev, model_dir, xclbin_dir) ? 1 : 0;
 }
 
+extern "C" void bf16mm_set_attn_qout(int qout) { g_mm.set_attn_qout(qout); }
+
 // Dequantize a Q4NX layer-BO projection → bf16 W (D_in×D_out, row-major).
 // q4nx_weight_offset is in Q4NX BYTES (tile×5120, see npu_pack_layer_bo).
 extern "C" void bf16mm_dequant(uint16_t* wout, const uint8_t* q4nx,
