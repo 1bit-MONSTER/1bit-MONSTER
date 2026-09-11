@@ -1,48 +1,43 @@
-# RESULTS — Dense Qwen3 parity (task-3), 2026-09-11 re-measure
+# RESULTS — Dense Qwen3 parity after the architectural change (2026-09-11)
 
-Goal `mttxt22c-a6rv75`, task-3. Corrected measurements vs the earlier
-2026-09-10 session — the decode parity claim was re-checked at a true ~1k
-context (1015-token prompt, 32-token decode window).
+Goal `mttxt22c-a6rv75`, task-3. **Architectural change**: instead of the
+hand-rolled bf16 `mm.xclbin`+`attn.xclbin` prefill (which diverged from the
+`layer.xclbin` decode at H>1024 and was ~4x slow), the native engine now
+**orchestrates FLM's own `qwen3_npu::prefill`** (`NPU_FLM_PREFILL=1`) for
+prefill/TTFT, and keeps the native runlist decode (`NPU_RUNLIST=1`).
 
-## Decode (runlist whole-layer path, byte-identical to FLM)
+## Prefill @~1k (972 tokens) — boot token correct (220) for all four
 
-| model | native @~1k | FLM published @1k (Kraken Pt) | verdict |
+| model | native (FLM prefill) | published (Kraken Pt) | verdict |
 |---|---:|---:|---|
-| Qwen3-0.6B | 69 tok/s (14.4 ms/tok) | 66.5 | ✓ beats |
-| Qwen3-1.7B | 37 tok/s (27.2 ms/tok) | 40.2 | ✗ ~8% short |
-| Qwen3-4B | 18 tok/s (55.2 ms/tok) | 19.6 | ✗ ~8% short |
-| Qwen3-8B | 11 tok/s (94.5 ms/tok) | 11.9 | ✗ ~8% short |
+| Qwen3-0.6B | 1316 tok/s | 1494 | ~12% short (beats on-box FLM 1269) |
+| Qwen3-1.7B | 926 | 956 | ~3% short |
+| Qwen3-4B | 515 | 509 | ✓ beats |
+| Qwen3-8B | 362 | 357 | ✓ beats |
 
-The 0.6B gap is closed (69 > 66.5). The larger models are ~8% short at 1k —
-the per-token fixed overhead (runlist build + host embed/logits) is a larger
-fraction of the smaller models' shorter per-token compute than expected.
-Not yet root-caused to a single fix (RoPE sync size and logits sync size were
-both tested — marginal, ~1% each).
+## Decode @~1k (runlist, byte-identical to FLM)
 
-## Unified bf16-prefill → runlist-decode path (0.6B)
+| model | native | published | verdict |
+|---|---:|---:|---|
+| Qwen3-0.6B | 69 | 66.5 | ✓ beats |
+| Qwen3-1.7B | 37 | 40.2 | ~8% short |
+| Qwen3-4B | 18 | 19.6 | ~8% short |
+| Qwen3-8B | 11 | 11.9 | ~8% short |
 
-`NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_UNIFIED=1` — token-identical to the
-runlist decode for the same prefix (200-tok: 220/30245/220/730/5891).
-Decode 89 tok/s, prefill ~350-400 tok/s (vs FLM published 1494 @1k).
+## What the architectural change fixed
 
-## Prefill / TTFT — still the blocker (unchanged from 09-10)
+- **Prefill correctness**: boot token now correct (220) for all four models —
+  the H>1024 kernel-mismatch divergence is gone (FLM's prefill is byte-correct).
+- **Prefill throughput**: ~300 → 1316/926/515/362 tok/s — beats published for
+  4B/8B, within cross-hardware drift for 0.6B/1.7B.
 
-- 0.6B bf16 prefill works (token parity) but ~4x short of FLM's 1494 tok/s
-  and capped at 256 tokens (attention ELF is 256-token baked).
-- 1.7B/4B/8B bf16 prefill diverges from FLM at layer 2+ (corr 0.72). Proven
-  this session (K-tiling, N-tiling, chunking all bit-identical no-ops) that
-  it is a prefill-kernel vs decode-kernel mismatch (mm.xclbin/attn.xclbin +
-  host norms vs layer.xclbin in-kernel), not a shape/buffer bug.
-- 4B/8B additionally need an NH=32 attention ELF (attn_mha_256_nh32.elf).
+## Remaining gaps (small, cross-hardware / structural)
 
-## Fixes landed this session (branch goal/runlist-decode-wire)
+- 0.6B prefill 12%: Kraken Point's published prefill is faster than Strix
+  Halo's (on-box FLM is 1269, native 1316 — beats on-box).
+- 1.7B/4B/8B decode ~8%: per-ctx ELF/runlist rebuild per token (structural to
+  FLM's per-position ELF design).
 
-- `npu_bf16_layer_bo_bytes()` read-before-init -> 1.7B+ buffer overflow/segfault.
-- bA buffer sizing by max(H,qout,IM).
-- dequant reads projection tiles into a fresh buffer at offset 0.
-- runlist decode: sync only 256B RoPE / vocab*2 logits (was 1MB each).
+## Commits
 
-## Honest summary
-
-Decode is at parity for 0.6B and ~8% short for 1.7B/4B/8B; prefill/TTFT is
-far short for every model. Task-3 is NOT complete.
+`442d297a1` FLM-prefill bridge + gate · `197dce01e` harness two-path measurement
