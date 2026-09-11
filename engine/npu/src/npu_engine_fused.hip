@@ -107,7 +107,10 @@ static inline unsigned long long rng_next() {
     return x * 0x2545F4914F6CDD1DULL;
 }
 
-// Uniform in [0,1), same resolution as the previous rand()/RAND_MAX expression.
+// Uniform in [0,1). The resolution differs from the expression it replaces (glibc's
+// rand()/RAND_MAX gives 31 bits, this gives 24 — rng_next() >> 40), which is irrelevant for
+// inverse-CDF over ~150k logits but is stated rather than implied: the surrounding comments
+// are exact and this one should not read as a claim.
 static inline float rng_uniform() {
     return (float)((rng_next() >> 40) * (1.0 / 16777216.0));
 }
