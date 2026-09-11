@@ -53,6 +53,35 @@ echo "== model  : $MODEL"
 echo "== port   : $PORT"
 echo "== binary : $BIN"
 
+# ── Preflight: the paths that silently decide WHICH LANE COMES UP ──────────
+# ADR §9.10.8. On strixhalo a bare `1bit unified -m <native .q4nx>` loses the FLM lane
+# before any routing happens: the engine binary bakes
+# FLM_CONFIG_PATH=/opt/fastflowlm/etc/flm/model_list.json, while the FastFlowLM package
+# ships that registry at /opt/fastflowlm/share/flm/model_list.json. npu_flm::init does
+# access(flm_config_, R_OK) and returns false when it is missing, so the legacy npu_xrt
+# lane becomes the only functional accelerator and is selected. Its worker then
+# resolves as `./npu_engine_universal` (or `build/`), while the box builds it at
+# `build/engine/npu/npu_engine_universal` — so the worker exec fails at request time.
+# Neither failure is a routing decision, and both present as "served at ~0 tok/s".
+# Print the candidates BEFORE launching so the log explains itself.
+{
+    echo "== preflight (paths that decide the lane) =="
+    for p in "${NPU_FLM_BIN:-/opt/fastflowlm/bin/flm}" \
+             "${NPU_FLM_CONFIG:-/opt/fastflowlm/etc/flm/model_list.json}" \
+             /opt/fastflowlm/share/flm/model_list.json \
+             "${NPU_FLM_XCLBINS:-/opt/fastflowlm/share/flm/xclbins}" \
+             "${NPU_ENGINE_BIN:-./npu_engine_universal}" \
+             build/npu_engine_universal \
+             build/engine/npu/npu_engine_universal \
+             /opt/rocm/bin/flm /opt/rocm/etc/flm/model_list.json; do
+        [ -e "$p" ] && st=EXISTS || st=MISSING
+        printf '   %-58s %s\n' "$p" "$st"
+    done
+    echo "   cwd: $(pwd)"
+    [ -n "${NPU_FLM_CONFIG:-}" ] || echo "   NOTE: NPU_FLM_CONFIG unset — if the FLM config above is MISSING, npu_flm::init returns false and the legacy lane is selected instead."
+    [ -n "${NPU_ENGINE_BIN:-}" ] || echo "   NOTE: NPU_ENGINE_BIN unset — the npu_xrt worker resolves by cwd; check the candidates above."
+} | tee -a "$LOG"
+
 # The request must name the model the SAME way the server was told to load it (R8, and
 # the refusal predicate in §9.8.1: a request whose basename equals the loaded model's
 # path basename is satisfied, not refused). Using the basename keeps the two spellings
@@ -66,7 +95,9 @@ REQ_MODEL="$(basename "$MODEL")"
 pre_flm="$(pgrep -fc 'flm serve' 2>/dev/null || echo 0)"
 
 echo "== starting server (transcript -> $LOG)"
-"$BIN" unified --port "$PORT" -m "$MODEL" >"$LOG" 2>&1 &
+# APPEND, not truncate: the preflight above is already in $LOG, and the whole point of
+# this script is that the evidence survives.
+"$BIN" unified --port "$PORT" -m "$MODEL" >>"$LOG" 2>&1 &
 PID=$!
 echo "   pid $PID" | tee -a "$LOG"
 
