@@ -56,3 +56,13 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
   Remaining candidates: (a) **large-K** O GEMM (K=qout=4096) / D GEMM (K=IM=9728,
   vs 1.7B's verified K=6144), (b) nh32 attention act/kv layout, (c) NH=32 q_norm/RoPE.
   Needs byte-exact isolation (targeted re-capture of layer-0 QKV/O/D + replay).
+
+
+## ISOLATED: the 4B bug is the NH=32 attention, not the GEMMs (2026-09-11)
+
+- Forced CPU attention (`NPU_ATTN_CPU=1`) → 4B boot **151667 = FLM** ✓. So the
+  QKV/O/GU/D GEMMs (incl. N=2·IM=19456 GU and K=IM=9728 D) and the q_norm/k_norm/RoPE
+  are all **correct** for NH=32. The wrong token comes solely from the **nh32 attention
+  ELF** (`attn_mha_256_nh32.elf`) or the act/kv layout it expects.
+- Next: byte-exact `replay_attn` of the captured nh32 ELF against FLM's captured
+  act/kv/out (256×4096 Q), to decide ELF-vs-act/kv-layout.

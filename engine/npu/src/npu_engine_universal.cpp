@@ -3896,8 +3896,9 @@ struct Bf16Ctx {
                     FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, 33554432 / 2, fk); fclose(fk); }
                 }
                 bool attn_host = false;
-                if (!bf16mm_attn(bA.data(), bActQ.data(), bKv.data())) {
-                    fprintf(stderr, "\nbf16 attn unavailable — CPU attn_omp fallback\n");
+                if (getenv("NPU_ATTN_CPU") || !bf16mm_attn(bA.data(), bActQ.data(), bKv.data())) {
+                    if (getenv("NPU_ATTN_CPU")) fprintf(stderr, "\n[NPU_ATTN_CPU] forced CPU attn_omp\n");
+                    else fprintf(stderr, "\nbf16 attn unavailable — CPU attn_omp fallback\n");
                     attn_host = true;
                     #pragma omp parallel for
                     for (int pi = 0; pi < npt; pi++)
