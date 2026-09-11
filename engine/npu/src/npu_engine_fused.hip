@@ -49,6 +49,8 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
+#include <cerrno>
 #include <unistd.h>
 
 #include <xrt/xrt_device.h>
@@ -64,6 +66,121 @@
 
 #include <omp.h>
 #include <immintrin.h>
+
+// ── NPU_DUMP: stage-level tensor dump (diagnostic only) ────────────
+// Buffers one raw f32 tensor per (stage, layer, step) plus a checksum per tensor, and writes them AFTER the run.
+//
+// Why buffered: the first version wrote files from inside the decode loop, and a dump-ON run diverged where the
+// dump-OFF arm was stable 10/10. That is not proof of perturbation (the engine is intermittently divergent on its
+// own -- 2 of 6 concurrent runs on the previous build), but the channel is real: the loop's NPU launches are async,
+// so ANY syscall inside a step can change the phase ordering the instrument is trying to measure. An instrument
+// that has to argue it is inert is worse than one that does no I/O in the timed region at all, so:
+//
+//   * npu_dump() below only copies into a vector  -- no syscalls, no locks, no allocation ordering surprises;
+//   * every file operation happens in dump_flush(), after the last token, where nothing is being measured.
+//
+// Four conditions, three from the reviewer and one learned the hard way:
+//  1. WRITES ONLY, in this stronger sense: zero file I/O inside the decode loop.
+//  2. A checksum line per tensor, so comparing two runs is `diff checksums.txt`.
+//  3. Every failure is loud: the buffer has a hard cap, a refused or unwritable directory disables the dump at
+//     configuration time, and fopen/fwrite/fclose are all checked with a short write treated as fatal to the dump.
+//     A silent write failure would be class 6 (the environment silently truncating the artifact) *inside the
+//     instrument sent to diagnose class 6*.
+//  4. A free-space precheck before the first write. An instrument that can fill /tmp reproduces class 6 itself.
+//     NPU_DUMP_MIN_FREE_MB overrides the threshold, so the refusal is tested rather than believed.
+struct DumpRec { std::string name; std::vector<float> data; };
+static std::vector<DumpRec> g_dump;
+static const char* g_dump_dir    = nullptr;
+static bool  g_dump_checked  = false;
+static bool  g_dump_enabled  = false;
+static bool  g_dump_over_cap = false;
+static size_t g_dump_bytes   = 0;
+
+static bool dump_configure() {                     // once, at the first dump call (before any buffering)
+    if (g_dump_checked) return g_dump_enabled;
+    g_dump_checked = true;
+    const char* d = getenv("NPU_DUMP");
+    if (!d || !*d) return false;
+    if (mkdir(d, 0777) != 0 && errno != EEXIST) {
+        fprintf(stderr, "[npu] NPU_DUMP: cannot create '%s' (%s) — dumping disabled\n", d, strerror(errno));
+        return false;
+    }
+    long need_mb = 256;
+    if (const char* m = getenv("NPU_DUMP_MIN_FREE_MB")) need_mb = atol(m);
+    struct statvfs sv;
+    if (statvfs(d, &sv) != 0) {
+        fprintf(stderr, "[npu] NPU_DUMP: statvfs('%s') failed (%s) — dumping disabled\n", d, strerror(errno));
+        return false;
+    }
+    double avail_mb = (double)sv.f_bavail * (double)sv.f_frsize / (1024.0 * 1024.0);
+    if (avail_mb < (double)need_mb) {
+        fprintf(stderr, "[npu] NPU_DUMP: only %.0f MB free on '%s', need %ld MB — REFUSING to dump "
+                        "(a diagnostic must not fill the disk)\n", avail_mb, d, need_mb);
+        return false;
+    }
+    g_dump_dir = d; g_dump_enabled = true;
+    fprintf(stderr, "[npu] NPU_DUMP: buffering stage tensors for '%s' (%.0f MB free)\n", d, avail_mb);
+    return true;
+}
+
+static size_t dump_cap_bytes() {
+    long mb = 1024;                                 // 1 GiB default: a runaway buffer is a class-6 cause too
+    if (const char* m = getenv("NPU_DUMP_MAX_MB")) mb = atol(m);
+    return (size_t)mb * 1024u * 1024u;
+}
+
+static void npu_dump(const char* stage, int l, const float* p, size_t n, int step) {
+    if (!dump_configure()) return;                  // no getenv/mkdir/statvfs once enabled: one statvfs, at most
+    size_t bytes = n * sizeof(float);
+    if (g_dump_over_cap || g_dump_bytes + bytes > dump_cap_bytes()) {
+        if (!g_dump_over_cap) {
+            g_dump_over_cap = true;
+            fprintf(stderr, "[npu] NPU_DUMP: buffer cap reached at %.1f MB — further tensors are NOT recorded "
+                            "(raise NPU_DUMP_MAX_MB to record them)\n", (double)g_dump_bytes / (1024.0 * 1024.0));
+        }
+        return;
+    }
+    char name[128];
+    snprintf(name, sizeof name, "%s_L%02d_s%04d", stage, l, step);
+    g_dump.push_back(DumpRec{ std::string(name), std::vector<float>(p, p + n) });
+    g_dump_bytes += bytes;
+}
+
+static unsigned long long fnv1a64(const float* p, size_t n) {   // over the BYTES, not the values
+    const unsigned char* b = (const unsigned char*)p; size_t nb = n * sizeof(float);
+    unsigned long long h = 1469598103934665603ULL;
+    for (size_t i = 0; i < nb; i++) { h ^= b[i]; h *= 1099511628211ULL; }
+    return h;
+}
+
+static void dump_flush() {                          // after the run, outside everything being measured
+    if (!g_dump_enabled && !g_dump_checked) return;
+    if (!g_dump_enabled) { printf("[npu] NPU_DUMP: %zu tensor(s) buffered, dump disabled — nothing written\n",
+                                  g_dump.size()); return; }
+    bool failed = false; size_t written = 0;
+    char path[512], cs[512];
+    snprintf(cs, sizeof cs, "%s/checksums.txt", g_dump_dir);
+    FILE* g = fopen(cs, "a");
+    if (!g) { fprintf(stderr, "[npu] NPU_DUMP: cannot append %s — DUMP INCOMPLETE\n", cs); failed = true; }
+    for (const DumpRec& r : g_dump) {
+        snprintf(path, sizeof path, "%s/%s.f32", g_dump_dir, r.name.c_str());
+        FILE* f = fopen(path, "wb");
+        if (!f) { fprintf(stderr, "[npu] NPU_DUMP: cannot open %s — DUMP INCOMPLETE\n", path); failed = true; continue; }
+        size_t w = fwrite(r.data.data(), sizeof(float), r.data.size(), f);
+        if (fclose(f) != 0 || w != r.data.size()) {
+            fprintf(stderr, "[npu] NPU_DUMP: short write on %s (%zu/%zu floats) — DUMP INCOMPLETE\n",
+                    path, w, r.data.size());
+            failed = true; continue;
+        }
+        if (g) fprintf(g, "%s n=%zu fnv1a64=%016llx\n", r.name.c_str(), r.data.size(), fnv1a64(r.data.data(), r.data.size()));
+        written++;
+    }
+    if (g && fclose(g) != 0) { fprintf(stderr, "[npu] NPU_DUMP: checksums.txt close failed\n"); failed = true; }
+    printf("[npu] NPU_DUMP: %zu tensor(s) written to %s (%zu MB buffered)%s\n", written, g_dump_dir,
+           g_dump_bytes / (1024u * 1024u),
+           failed ? " — INCOMPLETE (a write failed; see stderr)"
+                  : (g_dump_over_cap ? " — CAPPED (some tensors were not recorded)" : ""));
+}
 
 // ── Private sampling RNG ──────────────────────────────────────────
 // Sampling must not use the process-global rand(). That stream is shared: libLLVM
@@ -1175,6 +1292,7 @@ int main(int argc, char** argv) {
             // ── Phase 2: FFN path (NPU) ──
             // Residual + RMS Norm
             for (int i = 0; i < cfg.H; i++) hidden[i] = residual[i] + o_out[i];
+            npu_dump("preffn", l, hidden.data(), cfg.H, step);    // GPU attention path output: the FFN input, before its norm
             rms_norm(hidden.data(), pa_norm[l].data(), cfg.H);
 
             // NPU GU (async launch → wait)
@@ -1183,6 +1301,7 @@ int main(int argc, char** argv) {
             ctx_gu.wait(gt.data(), 1, 2 * cfg.IM, as_g, wsc[l].gu);
             tphase("gu");
             clean_nans(gt.data(), 2 * cfg.IM);
+            npu_dump("gt", l, gt.data(), 2 * cfg.IM, step);
 
             // SiLU gate (CPU)
             for (int i = 0; i < cfg.IM; i++) {
@@ -1197,14 +1316,18 @@ int main(int argc, char** argv) {
             ctx_d.wait(d_out.data(), 1, cfg.H, as_d, wsc[l].d);
             tphase("d");
             clean_nans(d_out.data(), cfg.H);
+            npu_dump("d_out", l, d_out.data(), cfg.H, step);
 
             // Final residual
             for (int i = 0; i < cfg.H; i++) hidden[i] += d_out[i];
+            npu_dump("postffn", l, hidden.data(), cfg.H, step);   // layer output
         }
 
         // Final norm + GPU LM head
         rms_norm(hidden.data(), final_norm.data(), cfg.H);
+        npu_dump("hidden", -1, hidden.data(), cfg.H, step);   // the LM-head input
         cur_token = lm_head.sample(hidden.data(), logits.data(), gpu_stream);
+        npu_dump("logits", -1, logits.data(), cfg.NV, step);
         context_len++;
 
         double step_ms = std::chrono::duration<double, std::milli>(
@@ -1221,6 +1344,10 @@ int main(int argc, char** argv) {
         std::chrono::steady_clock::now() - t_gen).count();
     printf("\n=== %.1f ms/tok (%.0f tok/s) ===\n",
            gen_s * 1000 / n_gen, n_gen / gen_s);
+    // Outside the NPU_DIAG branch on purpose: with NPU_DUMP set this must run even when NPU_DIAG is not.
+    // The first version had it inside, so the tensors were buffered and then silently dropped -- a dump that
+    // produces no files while reporting success is the exact class this instrument exists to find.
+    dump_flush();
     if (getenv("NPU_DIAG")) {
         printf("[npu] sampling: draws=%llu seed=0x%llx (%s) — own RNG, not the process-global stream\n",
                g_rng_draws, g_rng_seed, g_rng_seed_src);
