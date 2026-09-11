@@ -9,14 +9,14 @@ engine's own loop, NOT `NPU_FLM_PREFILL`). This is the real native-path prefill
 
 | metric | value |
 |---|---|
-| prefill total | **~535 ms / 256 tok = ~479 tok/s** (QKV 3→1 GEMM + scratch/A reuse + GU 12→2 GEMMs + attn f32-rt skip) |
+| prefill total | **~510 ms / 256 tok = ~490 tok/s** (QKV 3→1 GEMM + scratch/A reuse + GU 12→1 GEMM + attn f32-rt skip) |
 | — QKV GEMMs (tg) | 52 ms (was 97 — folded Q/K/V into one N=4096 GEMM) |
 | — attention + host norm/RoPE (ta) | 137 ms |
 | — O/GU/D GEMMs + f32↔bf16 conversions + SiLU (tc−tg−ta) | 463 ms |
 | token parity (9-tok default prompt) | boot=151667 = FLM ✓ |
 | target (FLM published prefill @1k) | 1494 tok/s → 256 tok ≈ 171 ms |
 
-Gap: **~3.1×** (~535 vs 171 ms). The bf16 GEMM path is token-correct; the gap is
+Gap: **~3.0×** (~510 vs 171 ms). The bf16 GEMM path is token-correct; the gap is
 throughput, not correctness.
 
 ## Per-layer cost (28 layers → 24.9 ms/layer)
@@ -28,9 +28,9 @@ throughput, not correctness.
 
 ## Levers (in order of size, from session-2 notes + this baseline)
 
-1. ~~**GU chunking** (12 GEMMs/layer)~~ — **DONE**: host-dequant each interleaved
-   chunk, concatenate into contiguous gate/up, upload via `bf16mm_upload_w`;
-   the GU FFN is now 2 GEMMs (N=IM) instead of 12 (N=512).
+1. ~~**GU chunking** (12 GEMMs/layer)~~ — **DONE**: host-dequant the interleaved
+   chunks, concatenate into one [gate|up] N=2·IM device W (`bf16mm_upload_w`);
+   the GU FFN is now a SINGLE GEMM (N=2·IM) instead of 12 (N=512).
 2. **QKV combine** (3→1 GEMM): `Wqkv` is already dequant'd contiguously
    [q 2048 | k 1024 | v 1024] = N=4096; a single N=4096 GEMM would fold Q/K/V
    (subject to the mm.xclbin C-write capacity / tiling).
