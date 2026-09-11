@@ -118,9 +118,9 @@ measure_native() {
   #     change; the hand-rolled bf16 reimplementation diverged at H>1024)
   local pout="$WORK/prefill.log"
   NPU_FLM_PREFILL=1 "$ENGINE" "$Q4NX" 1 "$all" >"$pout" 2>&1 || true
-  # 3b) decode via the runlist whole-layer path (NPU_RUNLIST=1)
+  # 3b) decode via FLM's qwen3_npu::forward (NPU_FLM_DECODE=1, same orchestration)
   local dout="$WORK/decode.log"
-  NPU_RUNLIST=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
+  NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
   # 4) parse markers (grep -m1 avoids the set -e + head early-close SIGPIPE trap)
   local prefill_ms prefill_ms_tok decode_tok_s ttft_s npt
   npt="$(grep -oE '=== Prefill [0-9]+ ===' "$pout" | grep -om1 '[0-9]\+' || true)"
