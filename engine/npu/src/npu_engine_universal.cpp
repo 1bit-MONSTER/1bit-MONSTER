@@ -268,6 +268,11 @@ static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];
 static inline void rn_c(float*x,const float*w,int n){cn(x,n);float ss=0;
     for(int i=0;i<n;i++)ss+=x[i]*x[i];
     float ir=1.0f/sqrtf(ss/n+EPS);for(int i=0;i<n;i++)x[i]=x[i]*ir*w[i];}
+// RMSNorm + f32->bf16 fused: write the scaled norm straight to bf16 out (skip
+// the f32 write + re-read). x is only NaN-clamped in place (overwritten later).
+static inline void rn_bf16(uint16_t*out,float*x,const float*w,int n){cn(x,n);float ss=0;
+    for(int i=0;i<n;i++)ss+=x[i]*x[i];
+    float ir=1.0f/sqrtf(ss/n+EPS);for(int i=0;i<n;i++)out[i]=f32_to_bf16(x[i]*ir*w[i]);}
 
 // ── Cross-layer pipeline (roadmap step 3): fused D-output → next-QKV-input ──
 // Consumes the D GEMM output of layer l (Cm, int32 legacy / int16 FLM) and
@@ -3833,10 +3838,9 @@ struct Bf16Ctx {
             for (int l = 0; l < NC; l++) {
                 fprintf(stderr, "  L%d", l); fflush(stderr);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
-                for (int pi = 0; pi < npt; pi++) rn_c(&bh[pi * H], in_n[l].data(), H);
-                // A -> bf16 (256×H)
+                // input norm + A convert fused
                 auto tc0 = std::chrono::steady_clock::now();
-                for (int k = 0; k < 256; k++) for (int j = 0; j < H; j++) bA[k * H + j] = f32_to_bf16(bh[k * H + j]);
+                for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
                 auto tg0 = std::chrono::steady_clock::now();
                 // QKV in ONE GEMM — pipelined 2-batch: batch 1's kernel overlaps
                 // batch 0's readback + q/k norm.
@@ -3924,8 +3928,7 @@ struct Bf16Ctx {
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
                 // FFN: RMSNorm + GU + SiLU×up + D
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
-                for (int pi = 0; pi < npt; pi++) rn_c(&bh[pi * H], pa_n[l].data(), H);
-                for (int k = 0; k < 256; k++) for (int j = 0; j < H; j++) bA[k * H + j] = f32_to_bf16(bh[k * H + j]);
+                for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], pa_n[l].data(), H);
                 // GU FFN: [gate | up] = A×Wgu in ONE GEMM (N=2·IM); SiLU on host.
                 // Pipelined: batch 1 kernel overlaps batch 0 SiLU.
                 bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 0, bA.data());
