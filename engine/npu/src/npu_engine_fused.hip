@@ -1246,6 +1246,7 @@ int main(int argc, char** argv) {
                 rope.apply(ks, context_len, 1);
             }
 
+            npu_dump("qkv", l, qkv_out.data(), qkv_n, step);   // post-RoPE Q/K/V, the attention inputs
             // ── Batch upload Q, K, V → GPU attention → readback (ONE sync) ──
             // Upload Q
             for (int i = 0; i < cfg.NH * cfg.HD; i++)
@@ -1283,6 +1284,7 @@ int main(int argc, char** argv) {
 
             for (int i = 0; i < cfg.NH * cfg.HD; i++)
                 attn_out[i] = __half2float(attn_f16[i]);
+            npu_dump("attn", l, attn_out.data(), cfg.NH * cfg.HD, step);   // attention output, before the O projection
 
             // O projection: launch + readback (one more sync)
             ctx_o[l].launch_gemv(attn_out.data(), gpu_stream);
