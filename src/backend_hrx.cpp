@@ -141,6 +141,8 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
                 long n = inprocess_->load_session_file(sf);
                 if (n < 0) {
                     fprintf(stderr, "HRX: state import failed (%s) — continuing with empty KV\n", sf);
+                } else {
+                    imported_ctx_ = n;   // #2145: used by the ctx-limit routing guard
                 }
             }
             inprocess_mode_ = true;
@@ -327,13 +329,29 @@ void HrxBackend::destroy() {
 }
 
 bool HrxBackend::reset() {
-    if (inprocess_mode_ && inprocess_) return inprocess_->reset();
+    if (inprocess_mode_ && inprocess_) {
+        const bool ok = inprocess_->reset();
+        // #2145: reset() recreates the context (pos = 0) — whatever
+        // HRX_STATE_FILE imported is gone, so the ctx-limit guard must stop
+        // counting it (otherwise it would move later requests off HRX for a
+        // context that no longer exists).
+        if (ok) imported_ctx_ = -1;
+        return ok;
+    }
     return true;
 }
 
 bool HrxBackend::forward(int, float*) {
     fprintf(stderr, "HRX: forward() not supported — use generate() (in-process) or generate_text() (subprocess)\n");
     return false;
+}
+
+long HrxBackend::import_state_file(const char* session_path) {
+    if (!inprocess_mode_ || !inprocess_ || !session_path) return -1;
+    const long n = inprocess_->load_session_file(session_path);
+    if (n >= 0) imported_ctx_ = n;
+    else fprintf(stderr, "HRX: state re-import failed (%s)\n", session_path);
+    return n;
 }
 
 int HrxBackend::generate(int token_id) {

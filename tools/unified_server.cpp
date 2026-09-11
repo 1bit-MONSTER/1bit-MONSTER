@@ -24,6 +24,7 @@
 #include "backend_monitor.h"
 #include "backend_plugin.h"
 #include "backend.h"
+#include "backend_hrx.h"  // #2145: ctx-limit routing guard
 #include "backend_ggml_vulkan.h"
 #include "unified_pool.h"
 #include "batch_scheduler.h"
@@ -728,6 +729,26 @@ static json generate_completion(BackendManager& mgr,
         return result;
     }
 
+    // #2145 (finding 2): the reset above recreates the HRX in-process context
+    // (pos = 0), which silently discards any HRX_STATE_FILE import — so the D2
+    // hybrid lane decoded from an EMPTY KV instead of the prefill it was handed.
+    // Re-apply the import for this request; HRX_REIMPORT_STATE=0 opts out.
+    if (const char* rsf = getenv("HRX_STATE_FILE")) {
+        const char* rob = getenv("HRX_REIMPORT_STATE");
+        if (!(rob && rob[0] == '0')) {
+            if (auto* hb = dynamic_cast<HrxBackend*>(mgr.active_backend())) {
+                if (hb->inprocess_active()) {
+                    const long n = hb->import_state_file(rsf);
+                    if (n > 0)
+                        fprintf(stderr, "[hrx] session re-imported after reset: %ld tokens (pos=%ld) from %s\n",
+                                n, n, rsf);
+                    else
+                        fprintf(stderr, "[hrx] WARNING: session re-import failed (%s) — decoding from an empty KV\n", rsf);
+                }
+            }
+        }
+    }
+
     // ── Text-level backends (e.g. NPU FLM): whole-prompt generation ──
     // FLM tokenizes internally, so the token loop below can't drive it.
     // The strategy engine already selected the initial backend above.
@@ -751,6 +772,50 @@ static json generate_completion(BackendManager& mgr,
                                 prompt_tokens.size(), hrx_max_prefill, bid.c_str());
                         break;
                     }
+                }
+            }
+        }
+
+        // #2145 — decode-side twin of the policy above. The prefill guard only
+        // counts THIS request's prompt, so a request that resumes a long
+        // context (HRX_STATE_FILE import on the D2 hybrid lane, or a live
+        // session) sails past it and then dies inside the bundle with
+        // "unsupported HRX node FLASH_ATTN_EXT" -> compute -1 -> ret -3.
+        // Measured (issue #2145): the shipped bundle decodes KV <= 2048 and
+        // fails at 2304/2560/3072, i.e. any context past 2048 tokens.
+        // 0 disables.
+        const char* hctx_env = getenv("HRX_MAX_CTX_TOKENS");
+        long hrx_max_ctx = hctx_env ? atol(hctx_env) : 2048;
+        if (hrx_max_ctx > 0) {
+            long resume_ctx = 0;
+            if (auto* hb = dynamic_cast<HrxBackend*>(mgr.active_backend())) {
+                if (hb->inprocess_active() && hb->imported_ctx_tokens() > 0)
+                    resume_ctx = hb->imported_ctx_tokens();
+            }
+            const long effective_ctx = resume_ctx + (long)prompt_tokens.size();
+            const BackendInfo* ai = mgr.active_info();
+            if (effective_ctx > hrx_max_ctx && ai && ai->id == "hrx_gpu") {
+                bool moved = false;
+                for (const auto& bid : mgr.fallback_order()) {
+                    if (bid == "hrx_gpu") continue;
+                    std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+                    if (mgr.select_backend(bid)) {
+                        fprintf(stderr,
+                                "[hrx] ctx %ld tok (resumed %ld + prompt %zu) > HRX_MAX_CTX_TOKENS (%ld) — "
+                                "starting on %s (bundle HRX flash-attn supports KV <= 2048, issue #2145)\n",
+                                effective_ctx, resume_ctx, prompt_tokens.size(), hrx_max_ctx, bid.c_str());
+                        moved = true;
+                        break;
+                    }
+                }
+                if (!moved) {
+                    // Do not fail silently: without a functional fallback the
+                    // request stays on HRX and the decode will be refused.
+                    fprintf(stderr,
+                            "[hrx] ctx %ld tok (resumed %ld + prompt %zu) > HRX_MAX_CTX_TOKENS (%ld) and no "
+                            "functional fallback lane is available — HRX decode will be refused rather than "
+                            "failing with an opaque compute -1 (issue #2145)\n",
+                            effective_ctx, resume_ctx, prompt_tokens.size(), hrx_max_ctx);
                 }
             }
         }
