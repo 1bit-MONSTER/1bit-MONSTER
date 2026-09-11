@@ -18,13 +18,28 @@
 //         but the router picks the right kernel via the MoE config.
 //
 //   qwen3 architecture
-//     ├─ npu_xrt (native NPU engine — INT8, single-core)
+//     ├─ npu_flm (FLM engine — the native Q4NX owner: registered at
+//     │            backend_manager.cpp:162 with score 67.5, and the head of the
+//     │            Q4NX route in the table below)
+//     ├─ npu_xrt (legacy worker subprocess, 0.06 tok/s — backend_manager.cpp:1766+)
 //     └─ cpu_generic
-//         npu_xrt is the sole NPU route since PR #567 (2026-07-20), once its
-//         single-core GEMM kernels passed correctness verification against
-//         the HuggingFace BF16 reference. The FastFlowLM subprocess fallback
-//         (a proprietary AMD binary) was removed entirely — this project
-//         ships zero proprietary code — FLM is MIT."
+//         npu_flm is the Q4NX route's first entry (see the route table below),
+//         not npu_xrt. The two share BackendType::NPU_XRT and are easy to
+//         conflate, but they are ~1000x apart (67.5 vs 0.06 tok/s): npu_xrt is
+//         reached only when npu_flm cannot be initialised, and a lane that
+//         lands on it reads as "served at ~0 tok/s" rather than as a routing
+//         miss.
+//
+//         CORRECTED 2026-09-11 (goal mtvd3pmx): the previous text here claimed
+//         "npu_xrt is the sole NPU route since PR #567" and that the FastFlowLM
+//         subprocess fallback "was removed entirely". Both contradicted the code
+//         they sat above — the Q4NX route below returns npu_flm first, and
+//         backend_manager.cpp:162 registers npu_flm as the preferred NPU
+//         backend. The licensing claim in that text (FLM as "a proprietary AMD
+//         binary") is NOT repeated here because it was not verified; what the
+//         tree currently asserts elsewhere is "FLM engine (MIT)" at
+//         backend_manager.cpp:162. Reconcile the licence claim separately — do
+//         not inherit either version from this comment.
 //
 //   zamba2 architecture (Mamba2 hybrid SSD)
 //     └─ zamba2_gpu + cpu_generic

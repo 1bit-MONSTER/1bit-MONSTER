@@ -479,7 +479,26 @@ void BackendManager::discover() {
 
     // Rack 'em
     rank_backends();
-    active_idx_ = 0;
+    // "No backend selected yet" — NOT backends_[0]. discover() ranks lanes; it does not
+    // choose one, and a report taken before (or without) a successful init used to name
+    // the top-RANKED lane as "Active". That is reachability reading as selection, the
+    // same inversion this manager's own route bridge warns about (model_registry_route.h:
+    // UNKNOWN must not be indistinguishable from PRESENT) — and it is exactly what a
+    // `status: "ok"` health endpoint is worst at: the failed-init case answered 200 with
+    // a plausible, never-initialized backend named.
+    //
+    // The "none" state is already anticipated everywhere, which is why this is one line:
+    // active_info()/active_backend() return nullptr (:826, :831), every read is guarded
+    // by `active_idx_ < backends_.size()`, re_evaluate() uses backends_.size() as its own
+    // not-found sentinel (:1348) and restores by id string, init_in_order() sets the
+    // index on the first successful init (:659), failover() sets it before returning
+    // true (so its callers at :942 and :1030 stay valid), and the status report already
+    // prints "none" (:1600). A generate() before init was already safe — it tests
+    // info.functional && info.instance (:867) before taking the instance.
+    // NOT changed here: /v1/health still reports status "ok" with no active backend. That
+    // is a health-CONTRACT question (clients may branch on status) rather than a bug in
+    // this field, so it is raised, not decided: see ADR §9.10.11.
+    active_idx_ = backends_.size();
 
     printf("\n  %zu backend(s) discovered.\n", backends_.size());
     printf("  Primary: %s\n\n", backends_.empty() ? "none" : backends_[0].id.c_str());
@@ -1139,10 +1158,23 @@ bool BackendManager::failover() {
         backends_[active_idx_].functional = false;
     }
 
-    // Cascade in model-route order (then registration order): a decode failure
-    // lands on the intended next lane (GGUF: hrx_gpu → ggml_vulkan → zinc_gpu
-    // → cpu_generic), never on a backend discovery happened to register next
-    // (e.g. an NPU lane that would load the wrong model for a GGUF — G1a).
+    // Cascade: model-route order FIRST (the declared preference for this model's
+    // format/arch), then every remaining discovered backend in registration order as
+    // a last resort — fallback_order() covers all of backends_ exactly once.
+    //
+    // CORRECTED 2026-09-11. This text used to end "...never on a backend discovery
+    // happened to register next (e.g. an NPU lane that would load the wrong model for a
+    // GGUF — G1a)". The tail below CAN reach exactly such a lane, so that guarantee is
+    // not the router's to make. What actually stops a wrong-CONTAINER failover is each
+    // executor's own init gate, and both NPU lanes say so themselves:
+    //   backend_npu.cpp:349     "The worker engine only speaks Q4NX ... [reject] other
+    //                            formats up front so the router never selects it for
+    //                            them"
+    //   backend_npu_flm.cpp:189 "NPU: FLM is Q4NX-only — rejecting <path>"
+    // So the router's order is a PREFERENCE; the filter is fail-closed in the executor.
+    // Stated plainly because it bounds what the router can promise: a container gate
+    // cannot detect a lane that ACCEPTS this container and serves DIFFERENT WEIGHTS from
+    // it — the npu_flm lossy-tag case passes both gates (ADR §9.10.9).
     const std::string failed_id =
         (active_idx_ < backends_.size()) ? backends_[active_idx_].id : "";
     for (const auto& id : fallback_order()) {

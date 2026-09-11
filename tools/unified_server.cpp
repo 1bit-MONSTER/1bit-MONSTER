@@ -1229,11 +1229,28 @@ static int run_embedded_lemonade(int argc, char** argv) {
     // unless this path proves it executed. "The path ran and decided differently"
     // and "the path never ran" are indistinguishable in a results table, so this
     // sentinel makes the difference observable. It reports what the engine
-    // registry sees and states what is NOT surfaced here: Lemonade owns
-    // /v1/models in this mode, its extra-models-dir scan is GGUF-only, and flm
-    // models come from `flm list` — so a native Q4NX/1BP id is not listable on
-    // this face until R8 is wired. Failures are swallowed: a registry scan must
-    // never stop Lemonade from serving.
+    // registry sees and states what is NOT surfaced here. Lemonade owns
+    // /v1/models in this mode: its extra-models-dir scan is GGUF-only and flm
+    // models come from `flm list`, so neither path can surface a native
+    // Q4NX/1BP id by itself. Those ids reach /v1/models through the `onebit`
+    // backend instead — this block injects each artifact as a recipe=onebit
+    // ModelInfo and that descriptor declares dynamic_models = true
+    // (third_party/lemonade/src/cpp/include/lemon/backends/onebit/onebit.h),
+    // so ModelManager's dynamic discovery (model_manager.cpp, Step 1.6) lists
+    // them as ROUTABLE models. server.cpp's /v1/models build states it outright:
+    // "the `onebit` backend (dynamic_models) registers them with ModelManager, so
+    // they already appear via get_supported_models()/get_downloaded_models() ...
+    // Appending them again would duplicate every id." The full registry view —
+    // container, path, capabilities — is additionally served whole at
+    // /v1/registry (set_registry_surface).
+    //
+    // CORRECTED 2026-09-11: this comment previously ended "...so a native
+    // Q4NX/1BP id is not listable on this face until R8 is wired." That was the
+    // pre-R8 state and it contradicted the injection ~30 lines below plus the
+    // descriptor's dynamic_models flag, which is exactly what R8 wired. It is
+    // called out because a reviewer reading the stale sentence would conclude
+    // step 6 is unmet on this face — the opposite of what the code does.
+    // Failures are swallowed: a registry scan must never stop Lemonade from serving.
     std::vector<lemon::Server::RegistryModelView> registry_views;
     std::vector<lemon::ModelInfo> onebit_models;
     {
