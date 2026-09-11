@@ -50,8 +50,9 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
 - The embedded `attn_mha_256_nh32.elf` (46640 B) was a 32-byte **mis-trim** of the
   raw FLM capture; `elf_0012` (46672 B) from the engine's `NPU_FLM_PREFILL=1` 4B
   capture is the raw FLM MHA ELF (boot=151667 source). Swapped in.
-- 4B boot changed 115230 → 2561, still ≠ 151667. So there is a **second, upstream
-  bug** — candidates: (a) the mm.xclbin large-N C-write tiling for the 4B GU GEMM
-  (N=2·IM=19456) or QKV (N=6144), (b) the NH=32 Q act/RoPE layout, (c) the nh32
-  ELF's GQA (32→8) mapping. Needs byte-exact isolation (replay_attn for 256×4096 +
-  captured act/kv/out).
+- 4B boot = 2561 (vs FLM 151667), 8B = 30955. Ruled out the **GU large-N** hypothesis:
+  splitting gate/up into two N=IM GEMMs (with woff=H·IM) gives the SAME 4B boot 2561,
+  and the combined N=2·IM GU is byte-identical on 0.6B/1.7B — so N=19456 is fine.
+  Remaining candidates: (a) **large-K** O GEMM (K=qout=4096) / D GEMM (K=IM=9728,
+  vs 1.7B's verified K=6144), (b) nh32 attention act/kv layout, (c) NH=32 q_norm/RoPE.
+  Needs byte-exact isolation (targeted re-capture of layer-0 QKV/O/D + replay).
