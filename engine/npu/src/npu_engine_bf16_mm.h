@@ -216,11 +216,14 @@ struct Bf16Mm {
         // fresh npu_app per call → fresh ctrl_seq (generate_seq APPENDS, so a
         // reused seq would accumulate stale instructions).
         npu_app app(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
-        deq_->generate_dequant_q4_1_seq(app.seq(), D_in, D_out, q4nx_weight_offset, mode);
-        app.update_ctrl_seq();
-        auto bW  = app.create_bo_buffer<uint8_t>((size_t)2048 * 5120);   // layer BO (10 MB)
+        // Copy only this projection's tiles (relative weight_offset 0) — the
+        // old full-10MB copy broke layer BOs > 10 MB (4B ~63 MB, 8B ~82 MB).
+        size_t proj_bytes = (size_t)(D_out / 32) * (D_in / 256) * 5120;
+        auto bW  = app.create_bo_buffer<uint8_t>(proj_bytes);
         auto bOut = app.create_bo_buffer<uint16_t>((size_t)D_in * D_out);
-        memcpy(bW.data(), q4nx, (size_t)2048 * 5120);
+        memcpy(bW.data(), q4nx + (size_t)q4nx_weight_offset, proj_bytes);
+        deq_->generate_dequant_q4_1_seq(app.seq(), D_in, D_out, 0, mode);
+        app.update_ctrl_seq();
         app.safe_run(bOut, bW);
         memcpy(wout, bOut.data(), (size_t)D_in * D_out * 2);
     }
