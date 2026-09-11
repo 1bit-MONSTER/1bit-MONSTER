@@ -117,3 +117,12 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
   the right token for the default prompt. So the remaining 4B bug is upstream of the
   attention ELF — a subtle QKV/q_norm/RoPE difference for NH=32 (256-token batch) —
   not the ELF/arg-order/KV. Needs a layer-0 QKV dump comparison vs FLM.
+
+
+## Status (2026-09-11): 4B/8B NH=32 Q divergence — bisection pending
+
+- engine Q (`bActQ`) ≠ FLM's captured act for the same 256-token prompt. All structural
+  candidates ruled out by inspection: QKV N=6144, q_norm/k_norm weights (128-dim, per-head),
+  RoPE (full HD rotary, position sp+pi), qkvn/qkv offsets, A-reuse cache (K-change + 64-sample
+  guard). Next is a layer-0 dump of the engine's raw QKV GEMM output (`bC`, pre-norm) vs FLM's
+  to bisect QKV-GEMM vs q_norm/RoPE — bounded but tedious.
