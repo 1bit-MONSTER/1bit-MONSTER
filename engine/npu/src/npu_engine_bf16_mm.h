@@ -105,6 +105,8 @@ struct Bf16Mm {
     const uint16_t* a_src_ptr = nullptr;   // A-reuse cache (GU chunks share one A)
     uint32_t a_src_K = 0;
     uint16_t a_src_sample[64] = {0};       // content guard vs silent refill of the same pointer
+    std::unique_ptr<buffer<uint16_t>> c_cache0, c_cache1;
+    size_t c_cache0_elems = 0, c_cache1_elems = 0;
     std::unique_ptr<buffer<uint16_t>> a_cache0, a_cache1;
     size_t a_cache0_elems = 0, a_cache1_elems = 0;
     // Device-side dequant W cache: the prefill dequants each projection ONCE
@@ -334,9 +336,22 @@ struct Bf16Mm {
     /// Caches the two sparse-A device buffers and rebuilds them only when the
     /// source A/K changes — the GU gate/up chunks share one A, so 12 calls
     /// reuse a single build instead of 12 rebuilds.
+    npu_app& get_mm_app(uint32_t K, uint32_t N, uint32_t woff) {
+        uint64_t key = ((uint64_t)K << 32) | ((uint64_t)N << 16) | (uint64_t)woff;
+        auto it = mm_app_cache.find(key);
+        if (it == mm_app_cache.end()) {
+            auto app = std::make_unique<npu_app>(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
+            gemm_->generate_seq(app->seq(), 256, K, N, woff, false, Gemm::NO_Activation, 0);
+            app->update_ctrl_seq();
+            it = mm_app_cache.emplace(key, std::move(app)).first;
+        }
+        return *it->second;
+    }
+
+    /// bf16 GEMM over 256 tokens as two 128-token M-batches, with the batch-0
+    /// readback overlapped against the batch-1 kernel (separate C buffers).
     void run_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
         if (hCb.size() < 256 * N) hCb.resize(256 * N);
-        uint16_t* Cb = hCb.data();
         bool a_same = (A == a_src_ptr) && (K == a_src_K);
         if (a_same) for (int i = 0; i < 64 && a_same; i++) a_same = (A[i] == a_src_sample[i]);
         if (!a_same) {
@@ -354,26 +369,25 @@ struct Bf16Mm {
             a_src_ptr = A; a_src_K = K;
             for (int i = 0; i < 64; i++) a_src_sample[i] = A[i];
         }
-        gemm_dev_once(Cb, W_idx, K, N, woff, *a_cache0);
-        memcpy(C, Cb, 128 * N * 2);
-        gemm_dev_once(Cb, W_idx, K, N, woff, *a_cache1);
-        memcpy(C + 128 * N, Cb, 128 * N * 2);
-    }
-
-    void gemm_dev_once(uint16_t* C, int W_idx, uint32_t K, uint32_t N, uint32_t woff, buffer<uint16_t>& a_buf) {
-        uint64_t key = ((uint64_t)K << 32) | ((uint64_t)N << 16) | (uint64_t)woff;
-        auto it = mm_app_cache.find(key);
-        if (it == mm_app_cache.end()) {
-            auto app = std::make_unique<npu_app>(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
-            gemm_->generate_seq(app->seq(), 256, K, N, woff, false, Gemm::NO_Activation, 0);
-            app->update_ctrl_seq();
-            it = mm_app_cache.emplace(key, std::move(app)).first;
-        }
-        npu_app& app = *it->second;
         size_t c_elems = 256 * N;
-        if (!c_cache || c_cache_elems < c_elems) { c_cache = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache_elems = c_elems; }
-        app.safe_run(*c_cache, a_buf, *w_dev[W_idx]);
-        memcpy(C, c_cache->data(), c_elems * 2);
+        if (!c_cache0 || c_cache0_elems < c_elems) { c_cache0 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache0_elems = c_elems; }
+        if (!c_cache1 || c_cache1_elems < c_elems) { c_cache1 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache1_elems = c_elems; }
+        npu_app& app = get_mm_app(K, N, woff);
+        // batch 0
+        a_cache0->sync_to_device();
+        w_dev[W_idx]->sync_to_device();
+        xrt::run r0 = app.create_run(*c_cache0, *a_cache0, *w_dev[W_idx]);
+        r0.start();
+        r0.wait();
+        // batch 1: launch, then read back batch 0 while its kernel runs
+        a_cache1->sync_to_device();
+        xrt::run r1 = app.create_run(*c_cache1, *a_cache1, *w_dev[W_idx]);
+        r1.start();
+        c_cache0->sync_from_device();
+        memcpy(C, c_cache0->data(), 128 * N * 2);
+        r1.wait();
+        c_cache1->sync_from_device();
+        memcpy(C + 128 * N, c_cache1->data(), 128 * N * 2);
     }
 };
 
