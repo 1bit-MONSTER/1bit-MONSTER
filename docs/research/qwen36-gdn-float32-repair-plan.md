@@ -16,9 +16,17 @@ Working combo (verified end-to-end):
 - xclbins = v0.9.46 set (share/flm/xclbins in the .deb)
 - XRT = 2.21.75 OR 2.26.0 (both work once headers match)
 - model dir must be NAMED `Qwen3.6-35B-A3B-NPU2` (xclbin manager keys off it)
+- **config.json `flm_version` MUST be "0.9.45"** (the HF config), NOT the
+  on-box "1.0.3" — a 1.0.3 flm_version makes the v0.9.46 lib hang/runlist-
+  timeout (this was the reproduction blocker).
 
 Result: prefill nan=0 (boot=760="The"), forward() nan=0 at ~72 ms/tok ≈
 11–14 tok/s — matches the 07-30 run (11.66 tok/s).
+
+Staged drop-in FLM_ROOT: `/tmp/flm0946_root/` (include/ + lib/xrt/ + xclbins/,
+all v0.9.46) — build_npu.sh with `FLM_ROOT=/tmp/flm0946_root` resolves libs,
+headers, and xclbins to v0.9.46. Verified: probe compiled against it gives the
+same nan=0 result.
 
 ## ⚠️ CONTRACT BAR DISCREPANCY (needs a user decision)
 
