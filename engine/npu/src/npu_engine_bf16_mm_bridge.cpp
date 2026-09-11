@@ -7,10 +7,16 @@
 #include <climits>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <string>
 #include "npu_engine_bf16_mm.h"
 
-namespace utils { std::string find_xclbin_path() { return "/home/bcloud/amd-oss/fastflowlm/src"; } }
+namespace utils { std::string find_xclbin_path() {
+    // FLM_ROOT env override lets a fetched/replacement FLM install (different
+    // lib + xclbin set) be dropped in without rebuilding the path in.
+    if (const char* p = getenv("FLM_ROOT")) return p;
+    return "/home/bcloud/amd-oss/fastflowlm/src";
+} }
 
 namespace {
 xrt::device g_dev(0);

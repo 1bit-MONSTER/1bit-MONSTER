@@ -28,7 +28,10 @@ static std::unique_ptr<Q4NX> g_q4nx;
 static std::unique_ptr<causal_lm> g_model;
 
 extern "C" int flm_prefill_init(const char* model_dir, int is_moe) {
-    setenv("FLM_XCLBIN_PATH", "/home/bcloud/amd-oss/fastflowlm/src/xclbins", 0);
+    const char* root = getenv("FLM_ROOT");
+    setenv("FLM_XCLBIN_PATH",
+           root ? (std::string(root) + "/xclbins").c_str()
+                : "/home/bcloud/amd-oss/fastflowlm/src/xclbins", 0);
     try {
         LM_Config config;
         config.from_pretrained(model_dir);
