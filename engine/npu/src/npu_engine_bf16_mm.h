@@ -45,6 +45,18 @@
 #include "modules/gemm.hpp"
 #include "modules/dequant.hpp"
 
+// Fixed 256-token MHA attention ELF (FLM's attn.xclbin instruction stream for
+// the dense-Qwen3 NH=16/NKV=8/HD=128 prefill, position range [0,256)). Captured
+// byte-exact from FLM's runtime (see benchmarks/RESULTS-qwen3-dense-parity).
+#if defined(__has_embed)
+#  if __has_embed("../xclbins/attn_mha_256_nh16.elf")
+inline constexpr unsigned char kAttnMhaElf[] = {
+#    embed "../xclbins/attn_mha_256_nh16.elf"
+};
+#    define BF16MM_HAS_ATTN_ELF 1
+#  endif
+#endif
+
 namespace bf16mm {
 
 // ── Bf16Mm — one bf16 GEMM (mm.xclbin) + one dequant (dequant.xclbin) ──
@@ -60,6 +72,13 @@ struct Bf16Mm {
     std::unique_ptr<Gemm> gemm_;
     std::unique_ptr<Dequant> deq_;
     std::unique_ptr<LM_Config> config;
+    // attn.xclbin + the fixed 256-token MHA ELF (no sequence regeneration)
+    std::unique_ptr<xrt::xclbin> attn_xc;
+    std::unique_ptr<xrt::hw_context> attn_hc;
+    std::unique_ptr<xrt::elf> attn_elf;
+    std::unique_ptr<xrt::module> attn_module;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel;
+    std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
 
     bool ok = false;
 
@@ -103,11 +122,57 @@ struct Bf16Mm {
             deq_  = std::make_unique<Dequant>(*config);
             mm_app = std::make_unique<npu_app>(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
             dq_app = std::make_unique<npu_app>(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
+
+#ifdef BF16MM_HAS_ATTN_ELF
+            std::string atp = xclbin_dir + "/attn.xclbin";
+            attn_xc = std::make_unique<xrt::xclbin>(atp);
+            dev->register_xclbin(*attn_xc);
+            attn_hc = std::make_unique<xrt::hw_context>(*dev, attn_xc->get_uuid());
+            attn_elf = std::make_unique<xrt::elf>((const char*)kAttnMhaElf, sizeof(kAttnMhaElf));
+            attn_module = std::make_unique<xrt::module>(*attn_elf);
+            attn_kernel = std::make_unique<xrt::ext::kernel>(*attn_hc, *attn_module, "MLIR_AIE");
+#endif
         } catch (std::exception& ex) {
             fprintf(stderr, "Bf16Mm::init failed: %s\n", ex.what());
             return false;
         }
         ok = true;
+        return true;
+    }
+
+    /// 256-token MHA attention (attn.xclbin): out = attn(Q, K/V cache).
+    ///   act: 256×2048 bf16 [token][head][dim] (Q GEMM output, raw)
+    ///   kv:  32MB = 4×8MB regions [token][4 heads × 128 dims]:
+    ///        r0=K0-3, r1=K4-7, r2=V0-3, r3=V4-7 (raw K/V, no norm/RoPE)
+    ///   out: 256×2048 bf16 [token][head][dim] (attention result)
+    /// The kernel applies q_norm/k_norm + RoPE internally.
+    bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
+        if (!attn_kernel) return false;
+        if (!attn_out) {
+            attn_out = std::make_unique<buffer<uint16_t>>(*dev, (size_t)256 * 2048);
+            attn_act = std::make_unique<buffer<uint16_t>>(*dev, (size_t)256 * 2048);
+            attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)33554432 / 2);
+        }
+        memcpy(attn_act->data(), act, (size_t)256 * 2048 * 2);
+        // Only the 4 used 8MB-region heads matter (256 tokens × 4 heads × 128 dims
+        // = 256KB each). Copy just those; the rest of the 32MB BO stays zero.
+        const size_t reg = 8 * 1024 * 1024 / 2;          // 8MB in bf16 elems
+        const size_t used = 256 * 512;                    // 256 tokens × 512 bf16
+        for (int r = 0; r < 4; r++)
+            memcpy(attn_kv->data() + r * reg, kv + r * reg, used * 2);
+        xrt::run run(*attn_kernel);
+        run.set_arg(0, 3);
+        run.set_arg(1, 0);
+        run.set_arg(2, 0);
+        run.set_arg(3, attn_out->bo());
+        run.set_arg(4, attn_act->bo());
+        run.set_arg(5, attn_kv->bo());
+        attn_act->sync_to_device();
+        attn_kv->sync_to_device();
+        run.start();
+        run.wait();
+        attn_out->sync_from_device();
+        memcpy(out, attn_out->data(), (size_t)256 * 2048 * 2);
         return true;
     }
 

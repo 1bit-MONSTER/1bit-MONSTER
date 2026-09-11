@@ -769,3 +769,62 @@ was only ~1.4% — the cost is compute/expf, not heap.
 
 **Conclusion: CPU attention cannot reach FLM (1269 tok/s) even fully optimized (~3× short).**
 The attn.xclbin is mandatory; the GEMM throughput (5-BO ABI / gate+up split) is the second lever.
+
+## 2026-09-10 (session 2w): attn.xclbin ABI SOLVED byte-exact + WIRED — prefill 164→380 tok/s
+
+### The attention ABI (captured from FLM's real runtime, replayed byte-exact)
+
+The prefill attention is a **3-BO npu_app call** (NOT the 5-BO layer ABI):
+`kernel(3, 0, 0, out, act, kv)` = (out 1MB, act 1MB = Q, kv 32MB). The MHA
+instruction stream is a **fixed 256-token ELF** (6084-word TXN, 704 ops), NOT
+`gen_mha_engine_seq(0, npt)` — that generator only emits DMA BDs for npt≥128
+and uses a different (512B/2-head) granularity than the runtime's.
+
+- **act (Q)** = dense 256×2048 bf16 `[token][head][dim]`, **PRE-RoPE'd** (the
+  host applies q_norm + RoPE *before* the attention — the kernel does NOT apply
+  them internally; that was the 2u misread).
+- **kv (32MB)** = 4×8MB regions `[token][4 heads × 128 dims]` (1024 B/token):
+  r0=K0-3, r1=K4-7, r2=V0-3, r3=V4-7. K is PRE-RoPE'd (host k_norm+RoPE), V raw.
+  MAX_L=8192 → 8MB region stride (get_k03/k47/v03/v47 = 0/8M/16M/24M).
+- **out** = dense 256×2048 bf16 `[token][head][dim]`.
+- ELF BD geometry: Q/out read/write 64 BDs in 4 groups×16 heads (256-B stride),
+  each BD d1=64 rows (tokens) @4096-B stride; kv 16 BDs (4 regions × 4 heads).
+
+Verified byte-exact: replaying FLM's captured attention ELF (elf_0012) with the
+captured act+kv reproduces FLM's attention output **524288/524288 (100%)**.
+(`npu-infer/tools/capture/replay_attn.cpp`.)
+
+### Wired into the bf16 prefill (NPU_PREFILL_BF16=1)
+
+- `npu_engine_bf16_mm.h`: `Bf16Mm::run_attn()` — loads attn.xclbin + the
+  embedded `#embed "../xclbins/attn_mha_256_nh16.elf"`, runs the 3-BO ABI,
+  copies only the 4 used 256KB kv regions (not the full 32MB).
+- `npu_engine_bf16_mm_bridge.cpp`: `bf16mm_attn(out, act, kv)`.
+- `npu_engine_universal.cpp`: the bf16 prefill now builds act from the host
+  RoPE'd Q (bqo) and kv from kv_caches (RoPE'd K + raw V), replaces attn_omp.
+- Correctness gate: **0.6B default prompt → boot 151667 (=FLM)**; "capital of
+  France" → 32 (session 2t). Attention output corr 0.9997 vs FLM.
+
+### Measured (0.6B, 256-token batch, NPU_RUNLIST=0)
+
+| section | before (CPU attn) | after (attn.xclbin) |
+|---|---|---|
+| QKV GEMMs | ~294ms | 141ms |
+| attention | **1025ms (attn_omp)** | **140ms** (host norm/RoPE + NPU attn) |
+| O/GU/D + conversions | ~242ms | ~378ms |
+| **prefill total** | **1561ms (164 tok/s)** | **677ms (380 tok/s)** |
+
+**2.3× prefill win.** The remaining ~3.3× gap to FLM's 1269 tok/s is the
+O/GU/D mm.xclbin GEMMs + f32↔bf16 conversions + SiLU (~378ms), then the
+redundant host norm/RoPE. GEMM N=128-tile schedule (byte-exact vs FLM's) and
+skipping the kv_caches host write are the next levers.
+
+### Open / next
+
+- **4B/8B** (NH=32, Q=4096) need a second ELF (`attn_mha_256_nh32.elf`) — same
+  recipe, capture or generate with the NH=32 shape. 1.7B (NH=16) reuses the
+  nh16 ELF.
+- **Chunked prefill >256 tokens**: the ELF bakes RoPE positions [0,256); a
+  chunk at [256,512) needs a position-shifted ELF (regenerate or capture).
+- Root-causing the byte-exact ELF generator (MHA::generate_mha_sequence with the
+  runtime's chunk/type) vs shipping the captured ELF.

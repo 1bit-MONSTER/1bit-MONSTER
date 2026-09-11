@@ -67,6 +67,7 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes);
 extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff_elements);
+extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
 static inline float bf16g(uint16_t v){return(v&0x7F80)==0x7F80?0.0f:bf16f(v);}
 static inline uint16_t f32_to_bf16(float f){uint32_t b;memcpy(&b,&f,4);return (uint16_t)((b+0x7FFF+((b>>16)&1))>>16);}
@@ -454,15 +455,15 @@ static inline void attn_omp(float*qo,float*at,int cl,const float*kv_k,const floa
         #pragma omp for
         for(int hh=0;hh<NH;hh++){int kvh=hh/GQA;
             float mx=-1e30f;
-            for(int p=0;p<cl;p++){if(p>=max_pos){scores[p]=-1e30f;continue;}
+            for(int p=0;p<max_pos;p++){
                 double s=0;int qoff=hh*HD,koff=p*NKV*HD+kvh*HD;
                 #pragma omp simd reduction(+:s)
                 for(int d=0;d<HD;d++)s+=(double)qo[qoff+d]*kv_k[koff+d];scores[p]=(float)(s/sqrtf((float)HD));if(scores[p]>mx)mx=scores[p];}
-            double sw=0;for(int p=0;p<cl;p++){scores[p]=expf(scores[p]-mx);sw+=scores[p];}
+            double sw=0;for(int p=0;p<max_pos;p++){scores[p]=expf(scores[p]-mx);sw+=scores[p];}
             float isw=sw>0?1.0f/(float)sw:1.0f/cl;
             for(int d=0;d<HD;d++){float acc=0;int aoff=hh*HD+d;
                 #pragma omp simd reduction(+:acc)
-                for(int p=0;p<cl;p++)acc+=scores[p]*kv_v[p*NKV*HD+kvh*HD+d];at[aoff]=acc*isw;}}
+                for(int p=0;p<max_pos;p++)acc+=scores[p]*kv_v[p*NKV*HD+kvh*HD+d];at[aoff]=acc*isw;}}
     }
 }
 
@@ -3676,6 +3677,9 @@ struct Bf16Ctx {
             std::vector<float> bh(256 * H), bqo(256 * qkvn), bat(256 * NH * HD), boo(256 * H),
                                bgt(256 * 2 * IM), bsu(256 * IM), bdw(256 * H), bsb(256 * H);
             std::vector<uint16_t> bA(256 * 3072), bC(256 * 2 * IM);
+            std::vector<uint16_t> bActQ(256 * qout), bAttnOut(256 * qout), bKv(33554432 / 2);
+            memset(bActQ.data(), 0, 256 * qout * 2);
+            memset(bKv.data(), 0, 33554432);
             for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = emb_f32[pt_vec[pi] * H + i];
             for (int pi = npt; pi < 256; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = 0;
             double tg = 0, ta = 0, tc = 0;
@@ -3720,10 +3724,35 @@ struct Bf16Ctx {
                         memcpy(&kv_caches[l][0].v[(sp + pi) * NKV * HD + kvh * HD], vs, HD * 4);
                     }
                 }
-                #pragma omp parallel for
+                // Build attention inputs from the host-norm'd + RoPE'd Q/K/V.
+                // attn.xclbin expects PRE-RoPE'd Q and K + raw V — the host
+                // applies q_norm/k_norm + RoPE, the kernel does NOT.
+                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++)
+                    bActQ[pi * qout + i] = f32_to_bf16(bqo[pi * qkvn + i]);
                 for (int pi = 0; pi < npt; pi++)
-                    attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n, kv_caches[l][0].k.data(),
-                             kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
+                    for (int kvh = 0; kvh < NKV; kvh++) for (int d = 0; d < HD; d++) {
+                        int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
+                        float kv = kv_caches[l][0].k[(size_t)(sp + pi) * NKV * HD + kvh * HD + d];
+                        float vv = kv_caches[l][0].v[(size_t)(sp + pi) * NKV * HD + kvh * HD + d];
+                        bKv[(size_t)region * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(kv);
+                        bKv[(size_t)(region + 2) * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vv);
+                    }
+                if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
+                    FILE* fa = fopen("/tmp/eng_act.bin", "wb"); if (fa) { fwrite(bActQ.data(), 2, 256 * qout, fa); fclose(fa); }
+                    FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, 33554432 / 2, fk); fclose(fk); }
+                }
+                if (!bf16mm_attn(bAttnOut.data(), bActQ.data(), bKv.data())) {
+                    fprintf(stderr, "\nbf16 attn unavailable — CPU attn_omp fallback\n");
+                    #pragma omp parallel for
+                    for (int pi = 0; pi < npt; pi++)
+                        attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n, kv_caches[l][0].k.data(),
+                                 kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
+                } else {
+                    for (int pi = 0; pi < 256; pi++) for (int i = 0; i < qout; i++) bat[pi * qout + i] = bf16g(bAttnOut[pi * qout + i]);
+                    if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
+                        FILE* fo = fopen("/tmp/eng_out.bin", "wb"); if (fo) { fwrite(bAttnOut.data(), 2, 256 * qout, fo); fclose(fo); }
+                    }
+                }
                 auto ta1 = std::chrono::steady_clock::now();
                 ta += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
                 // O GEMM (K = NH*HD)
