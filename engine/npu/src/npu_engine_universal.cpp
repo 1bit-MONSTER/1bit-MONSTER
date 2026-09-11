@@ -3861,6 +3861,13 @@ struct Bf16Ctx {
                         ra(ks, HD, sp + pi);
                         memcpy(&kv_caches[l][0].k[(sp + pi) * NKV * HD + kvh * HD], ks, HD * 4);
                         memcpy(&kv_caches[l][0].v[(sp + pi) * NKV * HD + kvh * HD], vs, HD * 4);
+                        // build bKv directly from the norm'd+RoPE'd ks/vs (skip
+                        // the kv_caches re-read round-trip)
+                        int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
+                        for (int d = 0; d < HD; d++) {
+                            bKv[(size_t)region * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(ks[d]);
+                            bKv[(size_t)(region + 2) * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vs[d]);
+                        }
                     }
                 }
                 // Build attention inputs from the host-norm'd + RoPE'd Q/K/V.
@@ -3868,14 +3875,6 @@ struct Bf16Ctx {
                 // applies q_norm/k_norm + RoPE, the kernel does NOT.
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++)
                     bActQ[pi * qout + i] = f32_to_bf16(bqo[pi * qkvn + i]);
-                for (int pi = 0; pi < npt; pi++)
-                    for (int kvh = 0; kvh < NKV; kvh++) for (int d = 0; d < HD; d++) {
-                        int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
-                        float kv = kv_caches[l][0].k[(size_t)(sp + pi) * NKV * HD + kvh * HD + d];
-                        float vv = kv_caches[l][0].v[(size_t)(sp + pi) * NKV * HD + kvh * HD + d];
-                        bKv[(size_t)region * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(kv);
-                        bKv[(size_t)(region + 2) * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vv);
-                    }
                 if (unified && npu_runlist_write_kv(l, sp, npt, bKv.data()) != 0) {
                     fprintf(stderr, "\nbf16 prefill: runlist KV write L%d failed\n", l);
                     return 1;
