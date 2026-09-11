@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # 1bit.MONSTER — Model Downloader
-# Downloads supported Q4NX models for the NPU engine.
+# Downloads ready-to-run 1BP models from the public Hugging Face mirror
+# (bong-water-water-bong). Plain GGUF models run directly and need no download
+# script; this is only for the pre-converted 1BP/NPU weights.
 #
 # Usage:
 #   model-download.sh                  # interactive menu
@@ -20,11 +22,11 @@ die()  { printf "${RED}✗${NC} %s\n" "$*"; exit 1; }
 # ── Model registry ──
 # Format: name|description|size|url|sha256
 MODELS=(
-  "qwen3-0.6b|Qwen3-0.6B — 610 MB|610M|https://huggingface.co/bong-water-water-bong/qwen3-0.6b-q4nx/resolve/main/qwen3-0.6b.q4nx|"
-  "qwen3-8b|Qwen3-8B — 6.0 GB|6.0G|https://huggingface.co/bong-water-water-bong/qwen3-8b-q4nx/resolve/main/qwen3-8b.q4nx|"
-  "qwen3-vl-4b|Qwen3-VL-4B — 3.2 GB|3.2G|https://huggingface.co/bong-water-water-bong/qwen3-vl-4b-q4nx/resolve/main/qwen3-vl-4b.q4nx|"
-  "gemma4-e2b|Gemma4-E2B — 4.7 GB|4.7G|https://huggingface.co/bong-water-water-bong/gemma4-e2b-q4nx/resolve/main/gemma4-e2b.q4nx|"
-  "llama-3.1-8b|Llama-3.1-8B — 5.7 GB|5.7G|https://huggingface.co/bong-water-water-bong/llama-3.1-8b-q4nx/resolve/main/llama-3.1-8b.q4nx|"
+  "qwen3-0.6b|Qwen3-0.6B — 356 MB|356M|https://huggingface.co/bong-water-water-bong/Qwen3-0.6B-1BP/resolve/main/Qwen3-0.6B.1bp|"
+  "qwen3-8b|Qwen3-8B — 4.8 GB|4.8G|https://huggingface.co/bong-water-water-bong/Qwen3-8B-1BP/resolve/main/Qwen3-8B-1BP.1bp|"
+  "qwen3-vl-4b|Qwen3-VL-4B — 2.3 GB|2.3G|https://huggingface.co/bong-water-water-bong/Qwen3-VL-4B-Instruct-1BP/resolve/main/Qwen3-VL-4B-Instruct-1BP.1bp|"
+  "gemma4-e2b|Gemma4-E2B — 1.3 GB|1.3G|https://huggingface.co/bong-water-water-bong/Gemma4-E2B-1BP/resolve/main/Gemma4-E2B-1BP.1bp|"
+  "llama-3.1-8b|Llama-3.1-8B — 4.7 GB|4.7G|https://huggingface.co/bong-water-water-bong/Llama-3.1-8B-1BP/resolve/main/Llama-3.1-8B-1BP.1bp|"
 )
 
 MODEL_DIR="${HOME}/.local/share/1bit/models"
@@ -42,7 +44,7 @@ list_models() {
     printf "  ${GREEN}%-20s${NC} %-45s %s\n" "$(get_field "$M" 1)" "$(get_field "$M" 2)" "$(get_field "$M" 3)"
   done
   echo ""
-  printf "  ${YELLOW}all${NC} — download all models (18 GB total)\n"
+  printf "  ${YELLOW}all${NC} — download all models (about 13.5 GB total)\n"
   echo ""
 }
 
@@ -63,7 +65,9 @@ download_model() {
     die "Unknown model: $NAME. Run 'model-download.sh list' to see available models."
   fi
 
-  local OUTFILE="${MODEL_DIR}/${NAME}.q4nx"
+  # Keep the upstream file name (e.g. Qwen3-0.6B.1bp) — the engine keys off
+  # the real extension, and a hardcoded .q4nx suffix would be misleading.
+  local OUTFILE="${MODEL_DIR}/$(basename "${URL}")"
   if [ -f "$OUTFILE" ]; then
     warn "Model already exists at ${OUTFILE}"
     return 0
@@ -145,5 +149,5 @@ esac
 echo ""
 say "Models are in ${MODEL_DIR}"
 echo "  Run: 1bit-npu --auto 16"
-echo "  Or:  1bit-npu ${MODEL_DIR}/qwen3-0.6b.q4nx 16"
+echo "  Or:  1bit-npu ${MODEL_DIR}/Qwen3-0.6B.1bp 16"
 echo ""

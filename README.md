@@ -15,13 +15,15 @@ pure C++26 · zero Python at runtime · GPL-3.0
 
 **One engine. Any model. Zero Python.**
 
-A model-agnostic, hardware-agnostic inference engine in a single C++26 binary. Point it at a model file — GGUF, 1BP, ONNX, H1B, safetensors — and it auto-detects the architecture and runs on whatever hardware you have: AMD XDNA 2 NPU, GPU (HIP, CUDA, Metal, Vulkan), or CPU. No config files, no per-model glue, no Python interpreter anywhere.
+A model-agnostic, hardware-agnostic inference engine in a single C++26 binary. Point it at a model file — GGUF, 1BP, ONNX, H1B, safetensors — and it auto-detects the architecture and routes it to the best available backend: AMD XDNA 2 NPU, GPU (HIP, CUDA, Metal, Vulkan), or CPU. No config files, no per-model glue, no Python interpreter anywhere.
+
+> **Validated target today: AMD Strix Halo (gfx1151).** The engine builds for NPU, GPU and CPU backends, but the prebuilt packages and the validated fast paths currently target AMD Strix Halo (Ryzen AI Max+ 395 / Radeon 8060S). CUDA compiles but has not been run on real NVIDIA hardware, and Vulkan/Metal coverage is partial. For other targets, build from source — see the [downloads page](https://1bit.monster/1bit-downloads.html).
 
 ## What you get
 
 - **One binary** — `build/1bit` is busybox-style: every server and CLI in a single ELF, dispatched by subcommand (`1bit zaya`, `unified`, `router`, `jarvis`, `vision`, …).
 - **Any model** — 566 architecture tokens mapping 1,946 HuggingFace arch strings; 321,611 / 321,611 text-generation checkpoints on the hub (100%) land on an engine token.
-- **Any hardware** — NPU (XDNA 2, reverse-engineered in 4 days — [the story](docs/journey.md)), GPU (HIP, CUDA, Metal, Vulkan), CPU (AVX-512/scalar). Auto-routed per model.
+- **Any hardware** — NPU (XDNA 2, reverse-engineered in 4 days — [the story](docs/journey.md)), GPU (HIP, CUDA, Metal, Vulkan), CPU (AVX-512/scalar). Auto-routed per model. *Currently shipped and validated on AMD Strix Halo (gfx1151); CUDA and Metal are compiled but unvalidated, Vulkan is partial.*
 - **Zero Python** — pure C++26 at runtime. No virtualenv, no interpreter, no runtime stack to babysit.
 
 ## Quick start
