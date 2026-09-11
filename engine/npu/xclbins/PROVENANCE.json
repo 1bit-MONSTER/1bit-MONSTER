@@ -819,18 +819,13 @@
   ],
   "unit": "one row per distinct XclBinUUID"
  },
- "declared_dangling": {
-  "engine/npu/xclbins/final_i8_D_K3072_N1024.xclbin": "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin",
-  "engine/npu/xclbins/final_i8_GU_K1024_N6144.xclbin": "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin",
-  "engine/npu/xclbins/final_i8_O_K1024_N1024.xclbin": "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin",
-  "engine/npu/xclbins/final_i8_QKV_K1024_N4096.xclbin": "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin"
- },
+ "declared_dangling": {},
  "generated": {
-  "at": "2026-09-11T17:37:30Z",
+  "at": "2026-09-11T17:38:37Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "ryzen",
-  "ref": "c2cacfb06"
+  "ref": "f1b80527b"
  },
  "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest and land it in the same commit as the artifact change.",
  "notes": [
@@ -838,8 +833,8 @@
   "declared_dangling lists the third-party targets that did not resolve on generated.host. It is a target map, not a resolution requirement."
  ],
  "population": {
-  "alias_symlinks_in_tree": 12,
-  "dangling_symlinks": 4,
+  "alias_symlinks_in_tree": 16,
+  "dangling_symlinks": 0,
   "distinct_builds_by_uuid": 86,
   "regular_artifacts": 111,
   "top_level_xclbin": 127,
@@ -850,9 +845,9 @@
  },
  "schema": 1,
  "symlinks": {
-  "engine/npu/xclbins/final_i8_D_K3072_N1024.xclbin": "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin",
+  "engine/npu/xclbins/final_i8_D_K3072_N1024.xclbin": "final_i8_D_qwen3_0_6b.xclbin",
   "engine/npu/xclbins/final_i8_D_qwen3_6_35b_a3b.xclbin": "final_i8_D_qwen3.6-moe_35b.xclbin",
-  "engine/npu/xclbins/final_i8_GU_K1024_N6144.xclbin": "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin",
+  "engine/npu/xclbins/final_i8_GU_K1024_N6144.xclbin": "final_i8_GU_qwen3_0_6b.xclbin",
   "engine/npu/xclbins/final_i8_GU_qwen3_6_35b_a3b.xclbin": "final_i8_GU_qwen3.6-moe_35b.xclbin",
   "engine/npu/xclbins/final_i8_G_qwen3_6_35b_a3b.xclbin": "final_i8_G_qwen3.6-moe_35b.xclbin",
   "engine/npu/xclbins/final_i8_MOE_DSD_qwen3_6_35b_a3b.xclbin": "final_i8_MOE_DSD_qwen3.6-moe_35b.xclbin",
@@ -861,9 +856,9 @@
   "engine/npu/xclbins/final_i8_MOE_GU_qwen3_6_35b_a3b.xclbin": "final_i8_MOE_GU_qwen3.6-moe_35b.xclbin",
   "engine/npu/xclbins/final_i8_MOE_SD_qwen3_6_35b_a3b.xclbin": "final_i8_MOE_SD_qwen3.6-moe_35b.xclbin",
   "engine/npu/xclbins/final_i8_MOE_SGU_qwen3_6_35b_a3b.xclbin": "final_i8_MOE_SGU_qwen3.6-moe_35b.xclbin",
-  "engine/npu/xclbins/final_i8_O_K1024_N1024.xclbin": "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin",
+  "engine/npu/xclbins/final_i8_O_K1024_N1024.xclbin": "final_i8_O_qwen3_0_6b.xclbin",
   "engine/npu/xclbins/final_i8_O_qwen3_6_35b_a3b.xclbin": "final_i8_O_qwen3.6-moe_35b.xclbin",
-  "engine/npu/xclbins/final_i8_QKV_K1024_N4096.xclbin": "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin",
+  "engine/npu/xclbins/final_i8_QKV_K1024_N4096.xclbin": "final_i8_QKV_qwen3_0_6b.xclbin",
   "engine/npu/xclbins/final_i8_QKV_qwen3_6_35b_a3b.xclbin": "final_i8_QKV_qwen3.6-moe_35b.xclbin",
   "engine/npu/xclbins/final_i8_U_qwen3_6_35b_a3b.xclbin": "final_i8_U_qwen3.6-moe_35b.xclbin"
  }
