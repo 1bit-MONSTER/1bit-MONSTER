@@ -233,6 +233,26 @@ static std::string tokenizer_path() {
 // as garbage [id][id] through the ASCII fallback.
 static void load_model_tokenizer(const std::string& model_path) {
     if (g_tokenizer.load_from_gguf(model_path)) return;
+    // Prefer a tokenizer that sits BESIDE the artifact. Every candidate below this point is a
+    // GGUF the loader borrows vocabulary from, so a native container (Q4NX/1BP) with no GGUF
+    // sibling could never be detokenised — the lookup never considered its own directory. The
+    // only other path consulted is the WEIGHTS DIR (tokenizer_path()), which is wrong for an
+    // artifact kept anywhere else. Measured on strixhalo: a served zaya1-8b.q4nx from
+    // ~/models returned "[81930][129662]…" -- correct generation, ASCII fallback for text.
+    // `model.q4nx + tokenizer.htok in one directory` is the natural layout, so it wins here.
+    {
+        auto exists2 = [](const std::string& p) {
+            std::ifstream f(p, std::ios::binary);
+            return f.good();
+        };
+        auto slash2 = model_path.find_last_of('/');
+        std::string dir2 = (slash2 != std::string::npos) ? model_path.substr(0, slash2 + 1) : "";
+        auto dot2 = model_path.find_last_of('.');
+        std::string stem2 = (dot2 != std::string::npos) ? model_path.substr(0, dot2) : model_path;
+        for (const std::string& c : {dir2 + "tokenizer.htok", stem2 + ".htok"}) {
+            if (exists2(c) && g_tokenizer.load(c)) return;
+        }
+    }
     // NOTE: no early return for .gguf paths — load_from_gguf needs the ZINC
     // lib (usually absent → ZINC_DISABLED), so even real GGUFs must fall
     // through to .htok synthesis below, or the server decodes their output
