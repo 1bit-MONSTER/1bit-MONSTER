@@ -240,12 +240,28 @@ struct NpuWorker {
                 printf("NPU: worker pid %d stderr → /tmp/1bit-npu-worker-%d.log\n", (int)pid, (int)pid);
         }
 
-        // Startup handshake: wait for "READY\n" from child (issue #365)
+        // Startup handshake: wait for "READY\n" from child (issue #365).
+        //
+        // The wait must exceed the worker's real startup, and it did not. Measured on
+        // strixhalo with zaya1-8b.q4nx (NV=262272, 16 experts x 20 MoE layers resident):
+        //   wall 29.94 s, peak RSS ~17.9 GB
+        // — the worker expands the int8 embed table and packs resident experts BEFORE it can
+        // say READY. The old 10 s bound therefore killed a healthy worker mid-startup and
+        // reported "got 0 bytes", which reads as a crash and is not: it is a timeout, and it
+        // is why nothing served on that artifact. Same lesson as issue #1282, where the
+        // backend-init bound had to go 6 s -> 120 s because "6s was timing out legit backends
+        // so they never came up". Bounded, but a bound legitimate work cannot meet is a bug.
+        // Override with NPU_WORKER_READY_TIMEOUT (seconds).
+        int ready_timeout_s = 120;
+        if (const char* t = getenv("NPU_WORKER_READY_TIMEOUT")) {
+            int v = atoi(t);
+            if (v > 0) ready_timeout_s = v;
+        }
         char ready_buf[6];
         int ready_bytes = 0;
         auto t0 = std::chrono::steady_clock::now();
         while (ready_bytes < 6 && std::chrono::duration_cast<std::chrono::seconds>(
-                   std::chrono::steady_clock::now() - t0).count() < 10) {
+                   std::chrono::steady_clock::now() - t0).count() < ready_timeout_s) {
             fd_set fds; FD_ZERO(&fds); FD_SET(stdout_fd, &fds);
             struct timeval tv = {1, 0};
             if (select(stdout_fd + 1, &fds, nullptr, nullptr, &tv) > 0) {
@@ -257,7 +273,12 @@ struct NpuWorker {
         if (ready_bytes >= 6 && memcmp(ready_buf, "READY\n", 6) == 0) {
             ready = true;
         } else {
-            fprintf(stderr, "NPU: worker handshake failed (got %d bytes)\n", ready_bytes);
+            long waited = (long)std::chrono::duration_cast<std::chrono::seconds>(
+                std::chrono::steady_clock::now() - t0).count();
+            fprintf(stderr, "NPU: worker handshake failed (got %d bytes after %lds, "
+                            "NPU_WORKER_READY_TIMEOUT=%d) — a timeout is not a crash: the worker "
+                            "may simply still be initialising\n",
+                    ready_bytes, waited, ready_timeout_s);
             kill(pid, SIGTERM); waitpid(pid, nullptr, 0);
             close(stdin_fd); close(stdout_fd); stdin_fd = stdout_fd = -1; pid = -1;
             return false;
