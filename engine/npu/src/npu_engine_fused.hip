@@ -65,6 +65,53 @@
 #include <omp.h>
 #include <immintrin.h>
 
+// ── Private sampling RNG ──────────────────────────────────────────
+// Sampling must not use the process-global rand(). That stream is shared: libLLVM
+// (loaded via libamdhip64) calls srand() once with a time-derived value at init, and
+// llvm::sys::fs::createUniquePath draws from the same stream during HIP/comgr file
+// churn. Sampling from it inherits a *variable stream offset*, so two runs with
+// identical inputs produce different tokens, and nothing outside can fix it except
+// pinning the whole process' RNG.
+//
+// So the sampler carries its own state: seeded from NPU_SEED when set (reproducible
+// decode), otherwise from the clock (previous behaviour, minus the shared stream).
+// Draws are counted and reported under NPU_DIAG so a check can assert "this engine no
+// longer reads the global stream" instead of inferring it from silence.
+static unsigned long long g_rng_state = 0;
+static unsigned long long g_rng_seed = 0;
+static unsigned long long g_rng_draws = 0;
+static const char* g_rng_seed_src = "unset";
+
+static unsigned long long rng_seed_once() {
+    if (g_rng_state) return g_rng_state;
+    const char* s = getenv("NPU_SEED");
+    if (s && *s) {
+        g_rng_state = strtoull(s, nullptr, 0);
+        g_rng_seed_src = "NPU_SEED";
+    } else {
+        g_rng_state = (unsigned long long)std::chrono::system_clock::now()
+                          .time_since_epoch().count() ^ ((unsigned long long)getpid() << 32);
+        g_rng_seed_src = "clock^pid";
+    }
+    if (!g_rng_state) g_rng_state = 0x9E3779B97F4A7C15ULL;   // xorshift needs non-zero
+    g_rng_seed = g_rng_state;
+    return g_rng_state;
+}
+
+// xorshift64* — one state word, no libc, same result on every architecture.
+static inline unsigned long long rng_next() {
+    unsigned long long x = rng_seed_once();
+    x ^= x >> 12; x ^= x << 25; x ^= x >> 27;
+    g_rng_state = x;
+    g_rng_draws++;
+    return x * 0x2545F4914F6CDD1DULL;
+}
+
+// Uniform in [0,1), same resolution as the previous rand()/RAND_MAX expression.
+static inline float rng_uniform() {
+    return (float)((rng_next() >> 40) * (1.0 / 16777216.0));
+}
+
 // ── Forward declarations ──────────────────────────────────────────
 extern "C" float* dequant_i8_to_float(const uint8_t*, int, int*, int*);
 extern "C" int rcpp_kv_cache_attn_decode(
@@ -783,7 +830,7 @@ int main(int argc, char** argv) {
                 logits_out[n] = expf(d);
                 sum += logits_out[n];
             }
-            float r = (float)rand() / RAND_MAX * (float)sum, acc = 0;
+            float r = rng_uniform() * (float)sum, acc = 0;
             for (int n = 0; n < NV; n++) {
                 acc += logits_out[n];
                 if (acc >= r) return n;
@@ -851,7 +898,7 @@ int main(int argc, char** argv) {
             logits[n] = expf(d);
             sum += logits[n];
         }
-        float r = (float)rand() / RAND_MAX * (float)sum, acc = 0;
+        float r = rng_uniform() * (float)sum, acc = 0;
         for (int n = 0; n < cfg.NV; n++) {
             acc += logits[n];
             if (acc >= r) return n;
@@ -1171,6 +1218,10 @@ int main(int argc, char** argv) {
         std::chrono::steady_clock::now() - t_gen).count();
     printf("\n=== %.1f ms/tok (%.0f tok/s) ===\n",
            gen_s * 1000 / n_gen, n_gen / gen_s);
+    if (getenv("NPU_DIAG")) {
+        printf("[npu] sampling: draws=%llu seed=0x%llx (%s) — own RNG, not the process-global stream\n",
+               g_rng_draws, g_rng_seed, g_rng_seed_src);
+    }
 
     // ── Cleanup ───────────────────────────────────────────────────
     for (int l = 0; l < cfg.NC; l++) {
