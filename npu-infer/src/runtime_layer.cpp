@@ -406,6 +406,7 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
     // submit/token. Only when no per-layer debug dump is active — those sync
     // from device mid-stream and cannot coexist with an atomic runlist.
     if (!dbg && !getenv("RT_CLEAN_DUMP") && !getenv("RT_DUMP_KV")) {
+        auto t_build0 = std::chrono::steady_clock::now();
         std::vector<xrt::run> runs;
         runs.reserve((size_t)cfg_.num_layers + 1);
         xrt::runlist rl(*hwctx_);
@@ -437,8 +438,15 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
             rl.add(run);
         }
         try {
+            auto t_exec0 = std::chrono::steady_clock::now();
             rl.execute();
             rl.wait();
+            if (getenv("NPU_RUNLIST_STATS")) {
+                auto t_done = std::chrono::steady_clock::now();
+                double bms = std::chrono::duration<double, std::milli>(t_exec0 - t_build0).count();
+                double ems = std::chrono::duration<double, std::milli>(t_done - t_exec0).count();
+                fprintf(stderr, "[runlist] build=%.2fms exec=%.2fms\n", bms, ems);
+            }
         } catch (const std::exception& e) {
             fprintf(stderr, "RuntimeLayer: runlist FAILED: %s\n", e.what());
             return false;
