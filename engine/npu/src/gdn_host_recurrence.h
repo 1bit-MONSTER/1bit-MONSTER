@@ -31,6 +31,9 @@ static constexpr int NUM_K_HEADS = 16;
 static constexpr int HEAD_K = 128;
 static constexpr int HEAD_V = 128;
 static constexpr int REP = NUM_V_HEADS / NUM_K_HEADS;  // 2
+static constexpr int KEY_DIM = NUM_K_HEADS * HEAD_K;   // 2048
+static constexpr int VALUE_DIM = NUM_V_HEADS * HEAD_V; // 4096
+static constexpr int CONV_DIM = KEY_DIM * 2 + VALUE_DIM;  // 8192
 static constexpr float EPS = 1e-6f;
 
 inline float silu(float x) { return x / (1.0f + std::exp(-x)); }
@@ -82,6 +85,47 @@ inline void recurrence_step(const float* q2, const float* k2, const float* v,
     }
 }
 
+// Full SSM step: takes the RAW conv1d+silu output (qkv, NOT split / NOT
+// l2norm'd) plus the alpha/beta-proj and gate-proj outputs, and does the
+// whole delta-rule SSM in f32: split q/k/v, repeat q/k x2 + L2-normalize,
+// g = ssm_a*softplus(a+dt_bias), beta = sigmoid(b), recurrence, gated RMSNorm
+// x silu(z). This is the single-call host replacement for the bf16
+// GateDeltaNet_prefill.xclbin recurrence (the GEMMs + conv1d+silu stay on the
+// NPU upstream of this call).
+//
+//   qkv     [CONV_DIM = 8192]  conv.xclbin output (q[2048] | k[2048] | v[4096])
+//   a, b    [NUM_V_HEADS]      alpha_proj.x, beta_proj.x
+//   z       [VALUE_DIM = 4096] gate_proj.x
+//   state   [NV][HDK][HDV]     persistent, zero-init
+//   core    [VALUE_DIM]        output read-out (feed to ssm_out_proj)
+inline void ssm_step(const float* qkv, const float* a, const float* b,
+                     const float* z, const float* ssm_a, const float* dt_bias,
+                     const float* norm_w, float* state, float* core) {
+    // split qkv -> q[KEY_DIM], k[KEY_DIM], v[VALUE_DIM]
+    const float* q = qkv;
+    const float* k = qkv + KEY_DIM;
+    const float* v = qkv + 2 * KEY_DIM;
+    // repeat q/k x2 (KV-head -> V-head) + L2-normalize per head
+    float q2[NUM_V_HEADS * HEAD_K], k2[NUM_V_HEADS * HEAD_K];
+    for (int hh = 0; hh < NUM_V_HEADS; hh++) {
+        const float* sq = q + (size_t)(hh / REP) * HEAD_K;
+        const float* sk = k + (size_t)(hh / REP) * HEAD_K;
+        float nq = 0.f, nk = 0.f;
+        for (int d = 0; d < HEAD_K; d++) {
+            float qv = sq[d], kv = sk[d];
+            q2[(size_t)hh * HEAD_K + d] = qv; nq += qv * qv;
+            k2[(size_t)hh * HEAD_K + d] = kv; nk += kv * kv;
+        }
+        const float iq = 1.0f / std::sqrt(nq + EPS);
+        const float ik = 1.0f / std::sqrt(nk + EPS);
+        for (int d = 0; d < HEAD_K; d++) {
+            q2[(size_t)hh * HEAD_K + d] *= iq;
+            k2[(size_t)hh * HEAD_K + d] *= ik;
+        }
+    }
+    recurrence_step(q2, k2, v, a, b, z, ssm_a, dt_bias, norm_w, state, core);
+}
+
 }  // namespace gdn
 
 // C ABI so a patched libqwen3_6_moe_npu.so can call this via a single rel32
@@ -92,5 +136,11 @@ void gdn_host_recurrence_step(const float* q2, const float* k2, const float* v,
                               const float* ssm_a, const float* dt_bias,
                               const float* norm_w, float* state, float* core) {
     gdn::recurrence_step(q2, k2, v, a, b, z, ssm_a, dt_bias, norm_w, state, core);
+}
+
+void gdn_host_ssm_step(const float* qkv, const float* a, const float* b,
+                       const float* z, const float* ssm_a, const float* dt_bias,
+                       const float* norm_w, float* state, float* core) {
+    gdn::ssm_step(qkv, a, b, z, ssm_a, dt_bias, norm_w, state, core);
 }
 }
