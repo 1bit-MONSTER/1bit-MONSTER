@@ -55,11 +55,13 @@ evenly split three ways: GEMMs (QKV+O+gate+up+D, ~7.5 ms), attention (host
 q/k-norm + RoPE + attn.xclbin, ~5 ms), and host math (f32↔bf16 conversions +
 SiLU + RMSNorm + residual, ~6 ms).
 
-FLM's prefill (1269 tok/s on-box / 1494 published) runs the whole layer as ONE
-fused NPU sequence (`qwen3_npu_sequence::gen_layer_seq`) with no host round-trips
-between projections. The native bf16 path does ~7 kernel round-trips per layer
-(each with sync + launch + readback) plus host math in between. That per-op
-round-trip structure has a floor of roughly 2–3× FLM's fused throughput, so the
-remaining gap is architectural, not a few more micro-optimizations. Closing it
-fully means fusing the layer into a single sequence — which is exactly FLM's own
-`gen_layer_seq` orchestration (the path the audit already flagged as not-native).
+FLM's on-box prefill (1269 tok/s; published Kraken-Point 1494) is **also per-op**
+(session-2u capture: QKV/O/GU-D/attention as separate 5-BO kernel invocations,
+~5 kernels/layer — the same count the native path now has). So the ~2.6× gap vs
+on-box FLM is **not** a fused-vs-per-op floor; it is schedule + host-code
+efficiency (FLM pre-dequants once, reuses device BOs, and its host loop avoids
+the f32↔bf16 round-trips). That is closable with more work, but matching FLM's
+exact 1269 means replicating its `gen_layer_seq` prefill schedule + host code —
+the FLM-orchestration path the audit already flagged as not-native. The native
+per-op path is therefore making real progress (367→~495 tok/s) toward, but cannot
+fully reach, FLM's own orchestrated prefill without adopting its schedule.
