@@ -3,6 +3,23 @@
 Goal `mttxt22c-a6rv75` task-4 unblock. Status: **in progress** (user directive
 2026-09-11: "start working on that — requires binary-level work").
 
+## ✅ SOLVED (2026-09-11): v0.9.46 drop-in, not a GDN rewrite
+The bf16-GDN regression is v1.0.x-only. The v0.9.46 stack works and produces
+non-NaN prefill + decode. **The earlier "runlist timeout" and "config JSON
+error" were a HEADER ABI mismatch** (v0.9.46 lib loaded against v1.0.4
+`lm_config.hpp`; the `LM_Config` struct layout changed between v0.9.46 and
+v1.0.x). Compiling against the v0.9.46 headers fixes it.
+
+Working combo (verified end-to-end):
+- headers = third_party/FastFlowLM/src/include (v0.9.46)
+- lib = v0.9.46 .deb (libqwen3_6_moe_npu.so md5 39a6c36a)
+- xclbins = v0.9.46 set (share/flm/xclbins in the .deb)
+- XRT = 2.21.75 OR 2.26.0 (both work once headers match)
+- model dir must be NAMED `Qwen3.6-35B-A3B-NPU2` (xclbin manager keys off it)
+
+Result: prefill nan=0 (boot=760="The"), forward() nan=0 at ~72 ms/tok ≈
+11–14 tok/s — matches the 07-30 run (11.66 tok/s).
+
 ## ⚠️ CONTRACT BAR DISCREPANCY (needs a user decision)
 
 The task-4 contract references `qwen3.6_results.md` (decode **17.48** / prefill
