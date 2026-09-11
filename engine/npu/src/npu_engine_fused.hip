@@ -1246,6 +1246,7 @@ int main(int argc, char** argv) {
             // ── Phase 2: FFN path (NPU) ──
             // Residual + RMS Norm
             for (int i = 0; i < cfg.H; i++) hidden[i] = residual[i] + o_out[i];
+            npu_dump("preffn", l, hidden.data(), cfg.H, step);    // GPU attention path output: the FFN input, before its norm
             rms_norm(hidden.data(), pa_norm[l].data(), cfg.H);
 
             // NPU GU (async launch → wait)
@@ -1273,6 +1274,7 @@ int main(int argc, char** argv) {
 
             // Final residual
             for (int i = 0; i < cfg.H; i++) hidden[i] += d_out[i];
+            npu_dump("postffn", l, hidden.data(), cfg.H, step);   // layer output
         }
 
         // Final norm + GPU LM head
