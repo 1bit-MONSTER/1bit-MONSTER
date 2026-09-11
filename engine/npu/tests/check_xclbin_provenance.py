@@ -209,6 +209,23 @@ def observe(root: Path) -> dict:
             size = (root / XCLBIN_DIR / entry["paths"][0]).stat().st_size
             redundant_bytes += size * (len(entry["paths"]) - 1)
 
+    # OBSERVED, never asserted: the model-tagged op set pairs final_i8_<op>_<model>.xclbin with
+    # insts_i8_<op>_<model>.txt. ATTN has no insts - the engine does not reference it on this
+    # path (attention is not a NPU kernel here) - so a pairing ASSERTION would encode a
+    # path-variant as an invariant, the same error class as asserting a link's resolution state.
+    # Recorded as information so an inconsistency is visible without being a verdict.
+    xclbin_ops = {}
+    for p_ in regular:
+        name = os.path.basename(p_)
+        if name.startswith("final_i8_") and name.endswith(".xclbin"):
+            xclbin_ops[name[len("final_i8_"):-len(".xclbin")]] = name
+    insts_ops = {
+        os.path.basename(q)[len("insts_i8_"):-len(".txt")]
+        for q in top_level
+        if os.path.basename(q).startswith("insts_i8_") and q.endswith(".txt")
+    }
+    unpaired = sorted(op for op in xclbin_ops if op not in insts_ops)
+
     return {
         "population": {
             "tracked_paths_under_dir": len(rows),
@@ -232,6 +249,11 @@ def observe(root: Path) -> dict:
             "redundant_percent": round(redundant_bytes * 100.0 / payload_bytes, 2)
             if payload_bytes
             else 0.0,
+        },
+        "observed": {
+            "note": "host/path-variant facts, reported not asserted",
+            "unpaired_model_xclbins": unpaired,
+            "pairs_with_insts": sorted(op for op in xclbin_ops if op in insts_ops),
         },
         "declared_dangling": dict(sorted(dangling.items())),
         "symlinks": dict(sorted(symlinks.items())),
@@ -389,6 +411,11 @@ def main(argv: list[str] | None = None) -> int:
     print(render_census(obs))
     for note in notes:
         print(f"  note: {note}")
+    observed = obs.get("observed", {})
+    unpaired = observed.get("unpaired_model_xclbins") or []
+    if unpaired:
+        print(f"  observed (not asserted): {len(unpaired)} model-tagged xclbin(s) with no matching "
+              f"insts_i8_*.txt: {', '.join(unpaired)}")
 
     if args.write_manifest:
         payload = {
@@ -428,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             "population": obs["population"],
             "census": obs["census"],
+            "observed": obs["observed"],
             "declared_dangling": obs["declared_dangling"],
             "symlinks": obs["symlinks"],
             "artifacts": obs["artifacts"],
