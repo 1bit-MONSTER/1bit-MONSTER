@@ -3670,11 +3670,7 @@ struct Bf16Ctx {
         }
         int qout = NH * HD, kout = NKV * HD, qkvn = qout + 2 * kout;
         const int gu_chunks = IM / 512;   // GU: 512-out-row chunks (16 tile-rows x 32)
-        const int d_chunk_rows = 1024;    // D: 1024-out-row dequant chunks (32 tile-rows)
-        const int d_chunks = (H + d_chunk_rows - 1) / d_chunk_rows;
-        const int q_chunks = (qout + 1023) / 1024;  // Q: 1024-out-row chunks (N-tiling test)
-        const int o_chunks = (H + 1023) / 1024;    // O: 1024-out-row chunks
-        std::vector<int> Wq(NC * q_chunks), Wk(NC), Wv(NC), Wo(NC * o_chunks), Wup(NC * gu_chunks), Wgate(NC * gu_chunks), Wd(NC * d_chunks);
+        std::vector<int> Wqkv(NC), Wo(NC), Wup(NC * gu_chunks), Wgate(NC * gu_chunks), Wd(NC);
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV) == 0) {
             // layer_bo_bytes must be read AFTER prefill_init (it needs the loaded
             // model; before init g_bf16_mw is null -> the 10MB 0.6B fallback).
@@ -3704,30 +3700,9 @@ struct Bf16Ctx {
                     Wgate[l * gu_chunks + c] = bf16mm_dequant_dev(bo.data(), H, 512,
                         (uint32_t)(gu_off + c * 2 * CH_tiles + CH_tiles) * 5120, (size_t)layer_bo_bytes);
                 }
-                for (int c = 0; c < q_chunks; c++) {
-                    int rows = (c + 1) * 1024 <= qout ? 1024 : qout - c * 1024;
-                    int tiles = (rows / 32) * (H / 256);
-                    Wq[l * q_chunks + c] = bf16mm_dequant_dev(bo.data(), H, rows,
-                        (uint32_t)(offs[0] + c * (H / 8)) * 5120, (size_t)layer_bo_bytes);
-                }
-                Wk[l]    = bf16mm_dequant_dev(bo.data(), H, kout, (uint32_t)offs[1] * 5120, (size_t)layer_bo_bytes);
-                Wv[l]    = bf16mm_dequant_dev(bo.data(), H, kout, (uint32_t)offs[2] * 5120, (size_t)layer_bo_bytes);
-                for (int c = 0; c < o_chunks; c++) {
-                    int rows = (c + 1) * 1024 <= H ? 1024 : H - c * 1024;
-                    int tiles = (rows / 32) * (qout / 256);
-                    Wo[l * o_chunks + c] = bf16mm_dequant_dev(bo.data(), qout, rows,
-                        (uint32_t)(offs[3] + c * (qout / 8)) * 5120, (size_t)layer_bo_bytes);
-                }
-                // D: dequant per 1024-out-row chunk (32 tile-rows x IM/256
-                // tile-cols = IM/8 tiles), keeping each dequant output at
-                // IM x 1024 bf16 (<= 12.6MB for 1.7B) instead of IM x H (25MB).
-                const int d_tiles_per_chunk = IM / 8;   // 32 tile-rows x (IM/256) cols
-                for (int r = 0; r < d_chunks; r++) {
-                    int rows = (r + 1) * d_chunk_rows <= H ? d_chunk_rows : H - r * d_chunk_rows;
-                    int tiles = (rows / 32) * (IM / 256);
-                    Wd[l * d_chunks + r] = bf16mm_dequant_dev(bo.data(), IM, rows,
-                        (uint32_t)(offs[5] + r * d_tiles_per_chunk) * 5120, (size_t)layer_bo_bytes);
-                }
+                Wqkv[l]  = bf16mm_dequant_dev(bo.data(), H, qkvn, (uint32_t)offs[0] * 5120, (size_t)layer_bo_bytes);
+                Wo[l]    = bf16mm_dequant_dev(bo.data(), qout, H, (uint32_t)offs[3] * 5120, (size_t)layer_bo_bytes);
+                Wd[l]    = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120, (size_t)layer_bo_bytes);
             }
             fprintf(stderr, "bf16 prefill: %d layers dequant done\n", NC);
             printf("=== Prefill %d ===\n", npt); fflush(stdout);
@@ -3749,18 +3724,14 @@ struct Bf16Ctx {
                 auto tc0 = std::chrono::steady_clock::now();
                 for (int k = 0; k < 256; k++) for (int j = 0; j < H; j++) bA[k * H + j] = f32_to_bf16(bh[k * H + j]);
                 auto tg0 = std::chrono::steady_clock::now();
-                // Q (per 1024-out-row chunk)
-                for (int c = 0; c < q_chunks; c++) {
-                    int rows = (c + 1) * 1024 <= qout ? 1024 : qout - c * 1024;
-                    bf16mm_gemm_dev(bC.data(), bA.data(), Wq[l * q_chunks + c], H, rows, 0);
-                    for (int pi = 0; pi < npt; pi++) for (int i = 0; i < rows; i++)
-                        bqo[pi * qkvn + c * 1024 + i] = bf16g(bC[pi * rows + i]);
-                }
-                // K (separate dequant W, woff=0)
-                bf16mm_gemm_dev(bC.data(), bA.data(), Wk[l], H, kout, 0);
+                // Q
+                bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, qout, 0);
+                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++) bqo[pi * qkvn + i] = bf16g(bC[pi * qout + i]);
+                // K (woff = Q output size = H*qout bf16 elements → 4 MB)
+                bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, kout, (uint32_t)((size_t)H * qout));
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < kout; i++) bqo[pi * qkvn + cfg.qkv_k_offset + i] = bf16g(bC[pi * kout + i]);
-                // V (separate dequant W, woff=0)
-                bf16mm_gemm_dev(bC.data(), bA.data(), Wv[l], H, kout, 0);
+                // V (woff = Q+K output size = H*(qout+kout))
+                bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, kout, (uint32_t)((size_t)H * (qout + kout)));
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < kout; i++) bqo[pi * qkvn + cfg.qkv_v_offset + i] = bf16g(bC[pi * kout + i]);
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
@@ -3821,14 +3792,10 @@ struct Bf16Ctx {
                 }
                 auto ta1 = std::chrono::steady_clock::now();
                 ta += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
-                // O GEMM (K = NH*HD, per 1024-out-row chunk)
+                // O GEMM (K = NH*HD)
                 for (int k = 0; k < 256; k++) for (int j = 0; j < qout; j++) bA[k * qout + j] = f32_to_bf16(bat[k * qout + j]);
-                for (int c = 0; c < o_chunks; c++) {
-                    int rows = (c + 1) * 1024 <= H ? 1024 : H - c * 1024;
-                    bf16mm_gemm_dev(bC.data(), bA.data(), Wo[l * o_chunks + c], qout, rows, 0);
-                    for (int pi = 0; pi < npt; pi++) for (int i = 0; i < rows; i++)
-                        boo[pi * H + c * 1024 + i] = bf16g(bC[pi * rows + i]);
-                }
+                bf16mm_gemm_dev(bC.data(), bA.data(), Wo[l], qout, H, 0);
+                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
                 // FFN: RMSNorm + GU + SiLU×up + D
@@ -3851,13 +3818,8 @@ struct Bf16Ctx {
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fg = fopen("/tmp/bf16_l0_gu.bin", "wb"); if (fg) { fwrite(bgt.data(), 4, 2 * IM, fg); fclose(fg); } }
                 for (int k = 0; k < 256; k++) for (int j = 0; j < IM; j++) bA[k * IM + j] = f32_to_bf16(bsu[k * IM + j]);
-                // D GEMM per 1024-out-row chunk (matches the chunked dequant).
-                for (int r = 0; r < d_chunks; r++) {
-                    int rows = (r + 1) * d_chunk_rows <= H ? d_chunk_rows : H - r * d_chunk_rows;
-                    bf16mm_gemm_dev(bC.data(), bA.data(), Wd[l * d_chunks + r], IM, rows, 0);
-                    for (int pi = 0; pi < npt; pi++) for (int i = 0; i < rows; i++)
-                        bdw[pi * H + r * d_chunk_rows + i] = bf16g(bC[pi * rows + i]);
-                }
+                bf16mm_gemm_dev(bC.data(), bA.data(), Wd[l], IM, H, 0);
+                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fs = fopen("/tmp/bf16_l0_su.bin", "wb"); if (fs) { fwrite(bsu.data(), 4, IM, fs); fclose(fs); } FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
                 tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
