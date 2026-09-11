@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'site/**'
+      - 'functions/**'   # Pages Functions live at the project root, not inside the upload dir
       - 'docs/**'
       - 'scripts/gen_docs_site.py'
       - '.github/workflows/deploy.yml'

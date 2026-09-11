@@ -8,8 +8,8 @@ name: Verify gh-auth function
 on:
   pull_request:
     paths:
-      - 'site/functions/gh-auth.js'
-      - 'site/functions/gh-auth.test.mjs'
+      - 'functions/gh-auth.js'
+      - 'tests/gh-auth.test.mjs'
       - '.github/workflows/gh-auth-verify.yml'
   workflow_dispatch:
 
@@ -30,4 +30,4 @@ jobs:
           APP_ID: ${{ secrets.APP_ID }}
           APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
           AUTH_TOKEN: ${{ secrets.GH_AUTH_WORKER_TOKEN }}
-        run: node site/functions/gh-auth.test.mjs
+        run: node tests/gh-auth.test.mjs
