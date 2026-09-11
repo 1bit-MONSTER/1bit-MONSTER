@@ -9,14 +9,14 @@ engine's own loop, NOT `NPU_FLM_PREFILL`). This is the real native-path prefill
 
 | metric | value |
 |---|---|
-| prefill total | **528 ms / 256 tok = 485 tok/s** (QKV 3→1 GEMM + scratch/A reuse + GU 12→2 GEMMs via dequant concat) |
+| prefill total | **~535 ms / 256 tok = ~479 tok/s** (QKV 3→1 GEMM + scratch/A reuse + GU 12→2 GEMMs + attn f32-rt skip) |
 | — QKV GEMMs (tg) | 52 ms (was 97 — folded Q/K/V into one N=4096 GEMM) |
 | — attention + host norm/RoPE (ta) | 137 ms |
 | — O/GU/D GEMMs + f32↔bf16 conversions + SiLU (tc−tg−ta) | 463 ms |
 | token parity (9-tok default prompt) | boot=151667 = FLM ✓ |
 | target (FLM published prefill @1k) | 1494 tok/s → 256 tok ≈ 171 ms |
 
-Gap: **~3.1×** (528 vs 171 ms). The bf16 GEMM path is token-correct; the gap is
+Gap: **~3.1×** (~535 vs 171 ms). The bf16 GEMM path is token-correct; the gap is
 throughput, not correctness.
 
 ## Per-layer cost (28 layers → 24.9 ms/layer)
@@ -46,3 +46,20 @@ NPU_RUNLIST=0 NPU_PREFILL_BF16=1 \
   engine/npu/build/npu_engine_qwen3_0_6b \
   ~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx 1 /tmp/toks256.txt
 ```
+
+
+## Architectural finding (why the last ~3× is hard)
+
+After the 5 optimizations above (367 → ~479 tok/s), the per-layer cost is now
+evenly split three ways: GEMMs (QKV+O+gate+up+D, ~7.5 ms), attention (host
+q/k-norm + RoPE + attn.xclbin, ~5 ms), and host math (f32↔bf16 conversions +
+SiLU + RMSNorm + residual, ~6 ms).
+
+FLM's prefill (1269 tok/s on-box / 1494 published) runs the whole layer as ONE
+fused NPU sequence (`qwen3_npu_sequence::gen_layer_seq`) with no host round-trips
+between projections. The native bf16 path does ~7 kernel round-trips per layer
+(each with sync + launch + readback) plus host math in between. That per-op
+round-trip structure has a floor of roughly 2–3× FLM's fused throughput, so the
+remaining gap is architectural, not a few more micro-optimizations. Closing it
+fully means fusing the layer into a single sequence — which is exactly FLM's own
+`gen_layer_seq` orchestration (the path the audit already flagged as not-native).
