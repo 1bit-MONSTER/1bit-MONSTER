@@ -3828,15 +3828,9 @@ struct Bf16Ctx {
                 auto tc0 = std::chrono::steady_clock::now();
                 for (int k = 0; k < 256; k++) for (int j = 0; j < H; j++) bA[k * H + j] = f32_to_bf16(bh[k * H + j]);
                 auto tg0 = std::chrono::steady_clock::now();
-                // Q
-                bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, qout, 0);
-                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++) bqo[pi * qkvn + i] = bf16g(bC[pi * qout + i]);
-                // K (woff = Q output size = H*qout bf16 elements → 4 MB)
-                bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, kout, (uint32_t)((size_t)H * qout));
-                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < kout; i++) bqo[pi * qkvn + cfg.qkv_k_offset + i] = bf16g(bC[pi * kout + i]);
-                // V (woff = Q+K output size = H*(qout+kout))
-                bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, kout, (uint32_t)((size_t)H * (qout + kout)));
-                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < kout; i++) bqo[pi * qkvn + cfg.qkv_v_offset + i] = bf16g(bC[pi * kout + i]);
+                // QKV in ONE GEMM (Wqkv is dequant'd [q|k|v] contiguous, N=qkvn)
+                bf16mm_gemm_dev(bC.data(), bA.data(), Wqkv[l], H, qkvn, 0);
+                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qkvn; i++) bqo[pi * qkvn + i] = bf16g(bC[pi * qkvn + i]);
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fq = fopen("/tmp/bf16_l0_qkv.bin", "wb"); if (fq) { fwrite(bqo.data(), 4, qkvn, fq); fclose(fq); } }
