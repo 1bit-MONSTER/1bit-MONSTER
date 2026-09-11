@@ -45,7 +45,7 @@ Wave 3: #2105, #2080, #2081, #1866, #2082, #2139, #1942
 | 2105 | fused-dequant NaN (93696) | P0 | fused-dequant | Likely tile alignment | #2102 |
 | 2080 | Zaya whole-layer per-ctx ELF (M3/M4) | P2 | NPU feature | M1 done, M2 in progress | #2113, #2114, #2070 |
 | 2081 | int4 vs int8 dense-FFN product decision | P2 | decision | Open (needs data) | #2114 |
-| 1866 | aie2p -O0 backend crash | P2 | toolchain | Open | — |
+| 1866 | aie2p -O0 backend crash | P2 | toolchain | **Upstream-only watch (2026-09-11): nothing in-repo needs -O0** | #1155/#1276 |
 | 2082 | D2 HIP-prefill stability gate | P1 | hybrid | Re-probe clean | #1942 |
 | 2139 | qwen35moe 1BP fast-path + quant lanes | P2 | GPU feat | Open (gaps listed) | #2138✅ |
 | 1942 | hybrid prefill/decode (KV handoff) | P2 | hybrid design | Blocker = KV handoff | #2145, #2082 |
@@ -170,9 +170,9 @@ Each packet is send-ready (fits one mesh message). `verify` is the per-issue ver
 
 ## #1866 — aie2p -O0 backend crash (P2)
 
-- **Status:** Open. `clang++ --target=aie2p-none-unknown-elf -O0` crashes: "immediate operand value -33216 is out of range [-32768, -64]". -O2 miscompiles scalar RMW (#1864); -O1 same miscompile. Any venv c9c5ecb7 / IRON cb664e8c / HEAD 4e567bd91.
-- **Repro:** `<peano>/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O0 -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED -DNPU_C1_DUMP -c engine/npu/generators/mm_kernel_reference.cc`.
-- **verify:** minimal repro + root cause in peano aie2p backend + workaround documented.
+- **Status:** **Upstream-only watch (re-verified 2026-09-11, goal `mtwoc3im-zdxsxb`).** The crash is real — on `main` @ `6963fc694` with llvm-aie `91977805fa`, `-O0` still dies with "immediate operand value -33216 is out of range [-32768, -64]" (−O1/−O2 compile). **But nothing in-repo requires `-O0`:** the kernel builds pin `-O2` (`build_c1b_iron.sh`) and `-O1` (`build_c1b_iron_o1.sh`), the generators never ask for it, and every remaining `-O0` reference that concerns aie2p is prose about this bug. The impact recorded here ("-O2 miscompiles scalar RMW (#1864); -O1 same miscompile") is **stale**: #1864 was fixed in-tree on 2026-08-29 and closed.
+- **Repro:** `<peano>/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O0 -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED -I<aietools>/include -c engine/npu/generators/mm_kernel_reference.cc`. *(On strixhalo the include root is `~/Xilinx2025/2025.2/Vitis/aietools/include`; the `~/Xilinx/2025.2/...` path in `build_p1i4.sh` does not exist there.)*
+- **verify:** re-run the repro when llvm-aie PRs **#1155** ("[AIE2P] Range-check the spill immediate offset in eliminateFrameIndex") or **#1276** land; expect `-O0` to compile via the indexed-addressing fallback. Until then `-O1`/`-O2` are the paths and nothing waits on this. Verification comment: [#1866 comment](https://github.com/1bit-MONSTER/1bit-MONSTER/issues/1866#issuecomment-5631463570).
 
 ## #2082 — D2 HIP-prefill lane stability gate (P1)
 
