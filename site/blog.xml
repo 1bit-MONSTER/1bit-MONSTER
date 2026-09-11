@@ -6,7 +6,7 @@
     <description>How the 1-bit inference engine actually gets built — NPU, ROCm, kernels, formats.</description>
     <language>en</language>
     <atom:link href="https://1bit.monster/blog.xml" rel="self" type="application/rss+xml" />
-    <lastBuildDate>Fri, 11 Sep 2026 21:36:12 +0000</lastBuildDate>
+    <lastBuildDate>Fri, 11 Sep 2026 22:14:13 +0000</lastBuildDate>
     <item>
       <title>Lemonade v11.9.0: origin hardening, and upstream took our HRX backend</title>
       <link>https://1bit.monster/1bit-post-lemonade-v1190.html</link>
@@ -47,7 +47,7 @@
       <link>https://1bit.monster/1bit-post-1775-models.html</link>
       <guid isPermaLink="true">https://1bit.monster/1bit-post-1775-models.html</guid>
       <pubDate>Fri, 11 Sep 2026 00:00:00 +0000</pubDate>
-      <description>One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download.</description>
+      <description>One C++ binary, 568 architecture tokens, 2,040 HF arch strings, 10099.9799.9799.9799.9799.9799.9799.9799.97% HuggingFace coverage, 323,303 checkpoints mapped. Every model you can download.</description>
     </item>
     <item>
       <title>Local RAG with our own embeddings</title>
