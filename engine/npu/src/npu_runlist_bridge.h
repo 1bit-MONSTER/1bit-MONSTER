@@ -43,7 +43,8 @@ void npu_runlist_session_free(void);
 // bf16 prefill (mm.xclbin dequant + GEMM): load the model once, then pack a
 // per-layer Q4NX weight BO + tile offsets for the dequant bridge.
 int npu_bf16_prefill_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV);
-int npu_bf16_pack_layer(int layer, uint8_t* bo /* >= 10 MB */, int* offs /* 6 ints */);
+int npu_bf16_pack_layer(int layer, uint8_t* bo /* >= layer BO bytes */, int* offs /* 6 ints */);
+int npu_bf16_layer_bo_bytes(void);
 
 #ifdef __cplusplus
 }

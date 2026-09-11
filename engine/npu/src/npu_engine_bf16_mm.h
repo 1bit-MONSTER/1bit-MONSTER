@@ -95,6 +95,7 @@ struct Bf16Mm {
     // round-trip). Index into w_dev is the opaque handle.
     std::vector<std::unique_ptr<buffer<uint16_t>>> w_dev;
     std::unique_ptr<buffer<uint8_t>> bo_cache;
+    size_t bo_cache_bytes = 0;
     const uint8_t* bo_cache_ptr = nullptr;
 
     ~Bf16Mm() { /* BOs owned by xrt */ }
@@ -273,15 +274,19 @@ struct Bf16Mm {
 
     /// Dequantize a projection into a persistent DEVICE buffer (no host copy).
     /// Returns an index into the device W cache (opaque handle for gemm_dev).
-    int run_dequant_dev(const uint8_t* q4nx, uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset) {
+    int run_dequant_dev(const uint8_t* q4nx, uint32_t D_in, uint32_t D_out,
+                        uint32_t q4nx_weight_offset, size_t layer_bo_bytes) {
         npu_app app(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
         deq_->generate_dequant_q4_1_seq(app.seq(), D_in, D_out, q4nx_weight_offset, 0);
         app.update_ctrl_seq();
-        // cache the 10 MB layer BO slot (the 4 projections of a layer share it,
-        // but the engine REUSES the same host buffer across layers, so re-copy
+        // cache the full layer BO (the 4 projections of a layer share it, but
+        // the engine REUSES the same host buffer across layers, so re-copy
         // every call — keying by pointer would reuse a stale layer's BO).
-        if (!bo_cache) bo_cache = std::make_unique<buffer<uint8_t>>(*dev, (size_t)2048 * 5120);
-        memcpy(bo_cache->data(), q4nx, (size_t)2048 * 5120);
+        if (!bo_cache || bo_cache_bytes < layer_bo_bytes) {
+            bo_cache = std::make_unique<buffer<uint8_t>>(*dev, layer_bo_bytes);
+            bo_cache_bytes = layer_bo_bytes;
+        }
+        memcpy(bo_cache->data(), q4nx, layer_bo_bytes);
         w_dev.push_back(std::make_unique<buffer<uint16_t>>(*dev, (size_t)D_in * D_out));
         app.safe_run(*w_dev.back(), *bo_cache);
         return (int)w_dev.size() - 1;

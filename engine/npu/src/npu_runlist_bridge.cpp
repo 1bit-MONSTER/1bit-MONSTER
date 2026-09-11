@@ -22,6 +22,7 @@
 
 extern "C" int npu_pack_layer_bo(uint8_t* bo_buffer, void* mw, const void* config, int layer_idx);
 extern "C" void npu_layer_tile_offsets(void* mw, int layer_idx, int* off_q, int* off_k, int* off_v, int* off_o, int* off_gu, int* off_d);
+extern "C" int npu_layer_bo_bytes(void* mw, const void* config);
 
 // Read whitespace-separated token ids from a file (or stdin for NULL/"-").
 static bool read_ids(const char* ids_file, std::vector<int>& ids) {
@@ -244,11 +245,16 @@ extern "C" int npu_bf16_prefill_init(const char* model_path, int H, int NC, int 
     return g_bf16_mw ? 0 : -1;
 }
 
-// Pack layer `layer`'s weight BO into bo (>= 2048*5120 = 10 MB). Returns tiles;
-// fills offs[6] = {q,k,v,o,gu,d} tile offsets (for bf16mm_dequant woff = tile*5120).
+// Pack layer `layer`'s weight BO into bo (>= npu_bf16_layer_bo_bytes() bytes).
+// Returns tiles; fills offs[6] = {q,k,v,o,gu,d} tile offsets (for bf16mm_dequant woff = tile*5120).
 extern "C" int npu_bf16_pack_layer(int layer, uint8_t* bo, int* offs) {
     if (!g_bf16_mw) return 0;
     int tiles = npu_pack_layer_bo(bo, g_bf16_mw, &g_bf16_cfg, layer);
     npu_layer_tile_offsets(g_bf16_mw, layer, &offs[0], &offs[1], &offs[2], &offs[3], &offs[4], &offs[5]);
     return tiles;
+}
+
+extern "C" int npu_bf16_layer_bo_bytes(void) {
+    if (!g_bf16_mw) return 0;
+    return npu_layer_bo_bytes(g_bf16_mw, &g_bf16_cfg);
 }

@@ -65,7 +65,7 @@ void gemm_generate_sequence_i8_split(
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
-extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes);
+extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes, size_t layer_bo_bytes);
 extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff_elements);
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;float f;memcpy(&f,&b,4);return f;}
@@ -3670,15 +3670,17 @@ struct Bf16Ctx {
         }
         int qout = NH * HD, kout = NKV * HD, qkvn = qout + 2 * kout;
         std::vector<int> Wqkv(NC), Wo(NC), Wgu(NC), Wd(NC);
-        std::vector<uint8_t> bo(2048 * 5120);
+        int layer_bo_bytes = npu_bf16_layer_bo_bytes();
+        if (layer_bo_bytes <= 0) layer_bo_bytes = 2048 * 5120;
+        std::vector<uint8_t> bo(layer_bo_bytes);
         int offs[6];
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV) == 0) {
             for (int l = 0; l < NC; l++) {
                 npu_bf16_pack_layer(l, bo.data(), offs);
-                Wqkv[l] = bf16mm_dequant_dev(bo.data(), H, qkvn, (uint32_t)offs[0] * 5120);
-                Wo[l]   = bf16mm_dequant_dev(bo.data(), qout, H, (uint32_t)offs[3] * 5120);
-                Wgu[l]  = bf16mm_dequant_dev(bo.data(), H, 2 * IM, (uint32_t)offs[4] * 5120);
-                Wd[l]   = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120);
+                Wqkv[l] = bf16mm_dequant_dev(bo.data(), H, qkvn, (uint32_t)offs[0] * 5120, (size_t)layer_bo_bytes);
+                Wo[l]   = bf16mm_dequant_dev(bo.data(), qout, H, (uint32_t)offs[3] * 5120, (size_t)layer_bo_bytes);
+                Wgu[l]  = bf16mm_dequant_dev(bo.data(), H, 2 * IM, (uint32_t)offs[4] * 5120, (size_t)layer_bo_bytes);
+                Wd[l]   = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120, (size_t)layer_bo_bytes);
             }
             fprintf(stderr, "bf16 prefill: %d layers dequant done\n", NC);
             printf("=== Prefill %d ===\n", npt); fflush(stdout);
