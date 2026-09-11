@@ -10,11 +10,14 @@ toolchain has a pre-existing version mismatch that prevents clean builds"). That
 caught by inspecting the committed set rather than by building it:
 
   1. Hygiene regressions that a clean checkout reproduces deterministically. Four of the
-     tracked *.xclbin symlinks point at /opt/fastflowlm/... which does not exist on any of
-     our machines, so a fresh clone is already broken; and one build ships as a real file,
-     a byte-identical duplicate, and a symlink, so "deduping" the set either way loses
-     something (materialising the aliases doubles the payload; copying a foreign binary
-     over a dangling link hides that it was never built here).
+     tracked *.xclbin symlinks point into a machine-local FastFlowLM install
+     (/opt/fastflowlm/...) rather than into the repo, so whether they resolve is HOST
+     state, not a property of the commit. The check therefore asserts their TARGETS -
+     nobody may repoint them, materialise them, or drop a different binary in their place -
+     and reports the dangling/resolving split as host information instead of asserting it.
+     (Asserting the split was an earlier design error: it made the gate red on any box with
+     fastflowlm installed while staying green in CI, which is how a check gets ignored.
+     A clean checkout does not get those four files; a box with FLM does.)
   2. Provenance loss. The artifacts record their producer, format version, UUID and
      timestamp, but no toolchain version, no source revision and no generating script - so
      a green rebuild could never be shown to reproduce what ships. PROVENANCE.json is the
@@ -52,6 +55,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -205,6 +209,25 @@ def observe(root: Path) -> dict:
             size = (root / XCLBIN_DIR / entry["paths"][0]).stat().st_size
             redundant_bytes += size * (len(entry["paths"]) - 1)
 
+    # OBSERVED, never asserted: the model-tagged op set pairs final_i8_<op>_<model>.xclbin with
+    # insts_i8_<op>_<model>.txt. ATTN has no insts, and no engine in the tree references ATTN at
+    # all (grep for final_i8_ATTN/insts_i8_ATTN over engine/ = 0; the only engines to name ops are
+    # npu_engine_fused/gpurender/overlap and the two zero_copy tests for GU+D, and
+    # npu_engine_spec for QKV+O) - so pairing was never an invariant of the tree, and asserting
+    # it would encode a non-invariant as one. Same error class as asserting a link's resolution
+    # state. Recorded as information so an inconsistency is visible without being a verdict.
+    xclbin_ops = {}
+    for p_ in regular:
+        name = os.path.basename(p_)
+        if name.startswith("final_i8_") and name.endswith(".xclbin"):
+            xclbin_ops[name[len("final_i8_"):-len(".xclbin")]] = name
+    insts_ops = {
+        os.path.basename(q)[len("insts_i8_"):-len(".txt")]
+        for q in top_level
+        if os.path.basename(q).startswith("insts_i8_") and q.endswith(".txt")
+    }
+    unpaired = sorted(op for op in xclbin_ops if op not in insts_ops)
+
     return {
         "population": {
             "tracked_paths_under_dir": len(rows),
@@ -228,6 +251,11 @@ def observe(root: Path) -> dict:
             "redundant_percent": round(redundant_bytes * 100.0 / payload_bytes, 2)
             if payload_bytes
             else 0.0,
+        },
+        "observed": {
+            "note": "host/path-variant facts, reported not asserted",
+            "unpaired_model_xclbins": unpaired,
+            "pairs_with_insts": sorted(op for op in xclbin_ops if op in insts_ops),
         },
         "declared_dangling": dict(sorted(dangling.items())),
         "symlinks": dict(sorted(symlinks.items())),
@@ -289,20 +317,30 @@ def compare(obs: dict, manifest: dict) -> list[str]:
     problems: list[str] = []
 
     m_pop = manifest.get("population", {})
+    # Host-INDEPENDENT keys only. The alias/dangling split is a property of the repo
+    # PLUS the host: installing FastFlowLM at /opt/fastflowlm makes the four
+    # third-party links resolve, which says nothing about the repo. Comparing that
+    # split was a design error - it made the gate red on strixhalo while green in CI,
+    # which is how a check trains people to ignore it.
     for key in ("top_level_xclbin", "regular_artifacts", "xclbin_symlinks",
-                "alias_symlinks_in_tree", "dangling_symlinks", "distinct_builds_by_uuid"):
+                "distinct_builds_by_uuid"):
         want, got = m_pop.get(key), obs["population"].get(key)
         if want != got:
             problems.append(f"population.{key}: manifest {want} != observed {got}")
 
+    # The invariant is the TARGET, not the resolution state. Every recorded third-party
+    # link must still point where it pointed (nobody repoints it, materialises it, or
+    # puts a different binary in its place); whether that target exists on this box is
+    # host state and is reported by the caller, never asserted here.
     m_dang = manifest.get("declared_dangling", {})
-    if m_dang != obs["declared_dangling"]:
-        only_m = {k: v for k, v in m_dang.items() if k not in obs["declared_dangling"]}
-        only_o = {k: v for k, v in obs["declared_dangling"].items() if k not in m_dang}
-        for k, v in only_m.items():
-            problems.append(f"declared_dangling: {k} was dangling to {v}, now it RESOLVES")
-        for k, v in only_o.items():
-            problems.append(f"declared_dangling: {k} is newly dangling to {v}")
+    for path, target in sorted(m_dang.items()):
+        got = obs["symlinks"].get(path)
+        if got is None:
+            problems.append(f"third-party link {path} is gone (recorded target {target})")
+        elif got != target:
+            problems.append(f"third-party link {path} repointed: {target} -> {got}")
+    # A tracked symlink that the manifest does not know at all is caught by the
+    # symlinks-map comparison below (it compares the whole target map).
 
     m_sym = manifest.get("symlinks", {})
     if m_sym != obs["symlinks"]:
@@ -375,6 +413,11 @@ def main(argv: list[str] | None = None) -> int:
     print(render_census(obs))
     for note in notes:
         print(f"  note: {note}")
+    observed = obs.get("observed", {})
+    unpaired = observed.get("unpaired_model_xclbins") or []
+    if unpaired:
+        print(f"  observed (not asserted): {len(unpaired)} model-tagged xclbin(s) with no matching "
+              f"insts_i8_*.txt: {', '.join(unpaired)}")
 
     if args.write_manifest:
         payload = {
@@ -388,10 +431,20 @@ def main(argv: list[str] | None = None) -> int:
                 "by": "pi/coding-agent",
                 "at": datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "check": "engine/npu/tests/check_xclbin_provenance.py",
+                "host": socket.gethostname(),
                 "ref": subprocess.run(
                     ["git", "-C", str(root), "rev-parse", "--short", "HEAD"],
                     capture_output=True, text=True).stdout.strip(),
             },
+            "notes": [
+                "population.dangling_symlinks and population.alias_symlinks_in_tree are "
+                "HOST-DEPENDENT: they were observed on generated.host. Installing "
+                "fastflowlm at /opt/fastflowlm makes the four third-party links resolve, "
+                "which says nothing about the repo. The check asserts symlink TARGETS "
+                "(the symlinks and declared_dangling maps), never this split.",
+                "declared_dangling lists the third-party targets that did not resolve on "
+                "generated.host. It is a target map, not a resolution requirement.",
+            ],
             "build": {
                 "toolchain": None,
                 "toolchain_note": (
@@ -404,6 +457,7 @@ def main(argv: list[str] | None = None) -> int:
             },
             "population": obs["population"],
             "census": obs["census"],
+            "observed": obs["observed"],
             "declared_dangling": obs["declared_dangling"],
             "symlinks": obs["symlinks"],
             "artifacts": obs["artifacts"],
@@ -433,6 +487,22 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     problems = compare(obs, manifest)
+
+    # Host state, reported and never asserted: whether the recorded third-party links
+    # resolve depends on the machine (FastFlowLM installed at /opt/fastflowlm makes them
+    # resolve; a plain checkout does not). Both are fine; a change of TARGET is not, and
+    # that is what compare() checks.
+    third_party = manifest.get("declared_dangling", {})
+    if third_party:
+        resolving = [p for p in third_party if p not in obs["declared_dangling"]]
+        print(f"\n  third-party links recorded: {len(third_party)}  "
+              f"resolving here: {len(resolving)}  not resolvable here: "
+              f"{len(third_party) - len(resolving)}")
+        if resolving:
+            print(f"  note: {len(resolving)} of them resolve on this host "
+                  f"(a fastflowlm install is present) - host-dependent, not a violation")
+        print("  (their TARGETS are asserted; their resolution is not)")
+
     if problems:
         print(f"\nVIOLATION: the tracked set differs from {manifest_path.name} "
               f"({len(problems)} difference(s)):", file=sys.stderr)
@@ -450,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\nOK: matches {manifest_path.name} "
           f"({obs['population']['distinct_builds_by_uuid']} distinct builds, "
-          f"{obs['population']['dangling_symlinks']} dangling as declared)")
+          f"{obs['population']['dangling_symlinks']} third-party link(s) not resolvable here)")
     return 0
 
 
