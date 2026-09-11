@@ -1265,9 +1265,20 @@ static int run_embedded_lemonade(int argc, char** argv) {
         const char* env_root = getenv("LEMONADE_ENGINE_REGISTRY_ROOT");
         if (!env_root || !*env_root) env_root = getenv("ZAYA_WEIGHTS_DIR");
         std::string root = (env_root && *env_root) ? std::string(env_root) : g_weights_dir;
+        // Step 2/R2 applies to BOTH faces: the objective names `~/models` as a root the registry
+        // must cover, so this face scans it too rather than making it a special case reached by
+        // symlinking an artifact into the weights dir (issue #2193, audit §9.10.31).
+        std::vector<std::string> lemon_roots{root};
+        if (!g_home_models_dir.empty() && g_home_models_dir != root)
+            lemon_roots.push_back(g_home_models_dir);
+        std::string lemon_roots_desc;
+        for (const auto& r : lemon_roots) {
+            if (!lemon_roots_desc.empty()) lemon_roots_desc += " + ";
+            lemon_roots_desc += r;
+        }
         size_t total = 0, native = 0;
         try {
-            onebit::ModelRegistry reg = onebit::ModelRegistry::scan({root});
+            onebit::ModelRegistry reg = onebit::ModelRegistry::scan(lemon_roots);
             total = reg.artifacts().size();
             for (const auto& a : reg.artifacts()) {
                 if (a.container == onebit::Container::ONEBP ||
@@ -1304,7 +1315,7 @@ static int run_embedded_lemonade(int argc, char** argv) {
                "(spawn: `1bit unified -m <path>`) and served at /v1/registry. Coverage "
                "guard: a registry/execution check run against --lemonade is vacuous if "
                "this line is absent.\n",
-               total, root.c_str(), native);
+               total, lemon_roots_desc.c_str(), native);
         fflush(stdout);
     }
 
