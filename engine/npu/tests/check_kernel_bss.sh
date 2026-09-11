@@ -49,6 +49,18 @@ for pair in "llvm-aie(peano):$P" "mlir_aie:$M" "aietools-include:$AI"; do
 done
 
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
+
+# Free-space precheck. The failure this guards against is NOT an error message: on a full
+# filesystem a build/extract fails to write, leaves no usable artifact, and a downstream run
+# then produces no output at all — which a counter reads as "agreement". That happened for real
+# on this box (another lane's 59 GB /tmp capture filled a 62 GB tmpfs) and it was invisible in
+# every log line. So: assert headroom before compiling, and assert the artifact afterwards.
+need_kb=$((512 * 1024))   # the three TUs plus the merged object
+avail_kb=$(df -Pk "$W" 2>/dev/null | awk 'NR==2{print $4}')
+if [ -z "${avail_kb:-}" ] || [ "$avail_kb" -lt "$need_kb" ]; then
+    echo "ERROR: only ${avail_kb:-?} KB free on $W (need ${need_kb} KB) — refusing to compile into a full filesystem, because the resulting empty artifact would look like a passing run." >&2
+    exit 2
+fi
 I4=(-DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED -DI4_SCALAR_C1 -DI4_SCALAR_C1_ACK_1864)
 INCS=(-isystem "$P/include/c++/v1" -I "$AI" -I "$M/include/aie_kernels/aie2p")
 cc() { "$P/bin/clang++" --target=aie2p-none-unknown-elf --std=c++20 -O2 "$@"; }
@@ -58,6 +70,12 @@ cc "${I4[@]}" "${INCS[@]}" -c "$G/mm_kernel_reference.cc"    -o "$W/mm.o"
 cc "${I4[@]}" "${INCS[@]}" -c "$G/attn_kernel_reference.cc"  -o "$W/silu.o"
 cc "${INCS[@]}" -I "$G" -c "$G/i4_dequant_kernel.cc"         -o "$W/dequant.o"
 "$P/bin/ld.lld" -r "$W/mm.o" "$W/silu.o" "$W/dequant.o" -o "$W/mm_32x64x128.o"
+
+# The artifact must exist and be non-empty before anything is inferred from it.
+if [ ! -s "$W/mm_32x64x128.o" ]; then
+    echo "ERROR: merged object is missing or zero-length — the build was truncated (filesystem space?)." >&2
+    exit 2
+fi
 
 sym_ok=ok; dup_ok=ok; other_fail=0
 
