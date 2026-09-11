@@ -59,6 +59,10 @@ extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx,
     g_mm.run_gemm_dev(C, A, W_idx, K, N, woff_elements);
 }
 
+extern "C" int bf16mm_upload_w(const uint16_t* w, uint32_t D_in, uint32_t D_out) {
+    return g_mm.upload_w(w, D_in, D_out);
+}
+
 // 256-token MHA attention (attn.xclbin + fixed ELF). act/kv/out as in
 // Bf16Mm::run_attn. Returns 1 on success, 0 if the ELF was not embedded.
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {

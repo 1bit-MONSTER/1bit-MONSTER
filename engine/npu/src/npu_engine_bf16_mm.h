@@ -321,6 +321,15 @@ struct Bf16Mm {
         return (int)w_dev.size() - 1;
     }
 
+    /// Upload a host-side bf16 W (D_in×D_out) to a persistent device buffer;
+    /// returns an opaque index for run_gemm_dev. Used to concatenate the
+    /// interleaved GU gate/up chunks into two contiguous N=IM device Ws.
+    int upload_w(const uint16_t* w, uint32_t D_in, uint32_t D_out) {
+        w_dev.push_back(std::make_unique<buffer<uint16_t>>(*dev, (size_t)D_in * D_out));
+        memcpy(w_dev.back()->data(), w, (size_t)D_in * D_out * 2);
+        return (int)w_dev.size() - 1;
+    }
+
     /// bf16 GEMM reading W directly from a device buffer (2-batch M-split).
     /// Caches the two sparse-A device buffers and rebuilds them only when the
     /// source A/K changes — the GU gate/up chunks share one A, so 12 calls
