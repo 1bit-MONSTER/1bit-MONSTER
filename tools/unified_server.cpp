@@ -1490,8 +1490,12 @@ int main(int argc, char** argv) {
     // ── Load tokenizer ──
     std::string tok_path = tokenizer_path();
     if (!g_tokenizer.load(tok_path)) {
-        printf("  ⚠  Tokenizer not found at %s\n", tok_path.c_str());
-        printf("     Using fallback tokenizer (ASCII passthrough)\n");
+        // Deliberately NOT "using fallback ASCII" here: this runs before the model is known,
+        // and load_model_tokenizer() — called later with the resolved artifact — now also
+        // consults the artifact's own directory (a tokenizer.htok beside a native container).
+        // Claiming a degraded state now contradicts what the log says a few lines later.
+        printf("  ·  No global tokenizer at %s\n", tok_path.c_str());
+        printf("     Will try the model's own directory once the model is known\n");
     } else {
         printf("  ✓  Tokenizer loaded\n");
     }
@@ -1742,6 +1746,13 @@ int main(int argc, char** argv) {
     // much as backend routing for arbitrary (non-Zaya) models. Falls back
     // silently (keeps whatever tokenizer was already loaded) if unavailable.
     load_model_tokenizer(cfg.model_path);
+    // State the OUTCOME, once, after the per-model lookup has had its chance. Without this the
+    // only tokenizer message was the pre-model warning above, which could be superseded — and a
+    // run that decoded correctly would still read as if it had fallen back to ASCII.
+    if (g_tokenizer.use_bpe && g_tokenizer.bpe_tok)
+        printf("  ✓  Tokenizer ready (BPE)\n");
+    else
+        printf("  ⚠  No tokenizer for this model — output will be [id][id] ASCII passthrough\n");
     // The flip: the registry resolver is consumed here. The merge is a UNION — the
     // registry can demote the head only for a stated exclusion, and never drops a
     // router lane — so this cannot lose a route the engine has today.
