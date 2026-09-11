@@ -32,3 +32,14 @@ Goal `mttxt22c-a6rv75`, task-n2. Native bf16 prefill (`NPU_PREFILL_BF16=1` +
 - **Not done:** position-shifted attention ELFs for >256-token chunks (the fixed
   `attn_mha_256_*.elf` bakes RoPE positions [0,256), so chunked prefill >256 tokens
   needs a shifted ELF per chunk). The current path caps npt at 256.
+
+
+## nh32 ELF re-capture status (2026-09-11)
+
+Attempted re-capture via `run_qwen3_prefill ~/.config/flm/models/Qwen3-4B-NPU2`
+under `cap_interposer.so` — **fails**: `MHA parameter check failed: L_begin: 0,
+L_end: 0` (the 4B prefill's attention is called with an empty context; the tool
+was validated only for 0.6B). The engine's own `NPU_FLM_PREFILL=1` path runs the
+4B prefill fine (boot=151667), so the correct next step is to LD_PRELOAD the
+interposer on the ENGINE's FLM-prefill path for 4B and capture the nh32 ELF +
+act/kv/out there, then replay byte-exact via `replay_attn`.
