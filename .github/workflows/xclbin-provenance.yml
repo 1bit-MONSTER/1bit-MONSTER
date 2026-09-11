@@ -1,0 +1,60 @@
+name: Xclbin provenance
+
+# Intent: the committed NPU xclbin set is the source of truth (the MLIR/chess toolchain
+# cannot reliably rebuild it - see engine/npu/build_npu_ternary.sh's header), so its
+# hygiene and its provenance have to be checked as *committed state*, not by building.
+# Two failure modes this turns red:
+#   1. Hygiene. Four tracked *.xclbin symlinks point at /opt/fastflowlm/... which exists on
+#      none of our machines - a fresh clone is already broken - and one build ships as a real
+#      file, a byte-identical duplicate, and a symlink. Neither "fix" is safe: copying a
+#      foreign binary over a dangling link hides that it was never built here, and
+#      materialising an alias doubles the payload and hides the aliasing.
+#   2. Provenance. The artifacts record producer/format/UUID/timestamp but no toolchain
+#      version, no source revision and no generating script, so a green rebuild could never
+#      be shown to reproduce what ships. engine/npu/xclbins/PROVENANCE.json is the recorded
+#      half; an intentional change to the artifact set regenerates it in the SAME commit,
+#      which is the review point.
+#
+# Runs on stock runners with stdlib Python only - no NPU, no XRT, no toolchain. The check
+# states its population, unit and timezone because a census without them is meaningless
+# (UTC days from the embedded AXLF TimeStamp, never mtime: 102 files share one checkout
+# mtime, which yields a different census to anyone reaching for `ls -l`).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "engine/npu/xclbins/**"
+      - "engine/npu/tests/check_xclbin_provenance.py"
+      - ".github/workflows/xclbin-provenance.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "engine/npu/xclbins/**"
+      - "engine/npu/tests/check_xclbin_provenance.py"
+      - ".github/workflows/xclbin-provenance.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: xclbin-provenance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  provenance:
+    name: Xclbin set matches its manifest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Uses `git ls-files -s`, i.e. the index - the tracked set is what a clean checkout
+      # gets, so symlink modes and dangling targets are read from the index, not guessed
+      # from a directory listing.
+      - name: Check the tracked xclbin set against PROVENANCE.json
+        run: python3 engine/npu/tests/check_xclbin_provenance.py --root .
