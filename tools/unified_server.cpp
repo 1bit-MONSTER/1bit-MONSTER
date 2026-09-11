@@ -2307,6 +2307,7 @@ int main(int argc, char** argv) {
 
         ModelConfig switch_cfg;
         bool need_model_switch = false;
+        bool model_satisfied = false;   // request names the artifact already loaded
         {
             std::lock(g_config_mutex, g_strategy_mutex);
             std::lock_guard<std::mutex> _l1(g_config_mutex, std::adopt_lock);
@@ -2320,6 +2321,16 @@ int main(int argc, char** argv) {
                 // happened to be loaded — the "silently serves a DIFFERENT model"
                 // failure the -m path already fixed for its own case (#1958).
                 if (!need_model_switch && req_model != current_cfg.model_name) {
+                    // Satisfied when the request names the LOADED artifact under
+                    // any spelling — metadata name, file basename, or registry id.
+                    // The loaded model need NOT be in the registry: `-m <path>`
+                    // with a file outside the scan root is exactly that case, and
+                    // the registry lookup below cannot see it.
+                    if (!current_cfg.model_path.empty() &&
+                        std::filesystem::path(req_model).filename() ==
+                        std::filesystem::path(current_cfg.model_path).filename()) {
+                        model_satisfied = true;
+                    }
                     const onebit::ModelArtifact* ra = g_registry.find(req_model);
                     std::string art_path;
                     if (ra) {
@@ -2334,6 +2345,18 @@ int main(int argc, char** argv) {
                                 break;
                             }
                         }
+                    }
+                    // A request may name the ARTIFACT ALREADY LOADED under a
+                    // different spelling: the loaded name comes from file
+                    // metadata ("zaya1-8b") while the caller may use the file
+                    // basename ("zaya1-8b.q4nx"). That is neither a switch nor a
+                    // refusal — it is satisfied. Measured on the first version of
+                    // this patch, which refused exactly that case.
+                    if (!art_path.empty() && !current_cfg.model_path.empty() &&
+                        (art_path == current_cfg.model_path ||
+                         std::filesystem::path(art_path).filename() ==
+                         std::filesystem::path(current_cfg.model_path).filename())) {
+                        model_satisfied = true;
                     }
                     if (!art_path.empty() && std::filesystem::exists(art_path)) {
                         ModelConfig file_cfg;
@@ -2363,7 +2386,7 @@ int main(int argc, char** argv) {
             // neither loadable here nor already the loaded model, refuse and say
             // so; a wrong-weights answer is worse than an error, and it is also
             // the failure mode this whole goal exists to eliminate.
-            if (!need_model_switch && !req_model.empty() &&
+            if (!need_model_switch && !model_satisfied && !req_model.empty() &&
                 req_model != current_cfg.model_name) {
                 bool known = false;
                 for (auto& dm2 : discovered)
@@ -2589,6 +2612,7 @@ int main(int argc, char** argv) {
         std::string req_model = body.value("model", "");
         ModelConfig switch_cfg;
         bool need_model_switch = false;
+        bool model_satisfied = false;   // request names the artifact already loaded
         {
             std::lock(g_config_mutex, g_strategy_mutex);
             std::lock_guard<std::mutex> _l1(g_config_mutex, std::adopt_lock);
@@ -2602,6 +2626,16 @@ int main(int argc, char** argv) {
                 // happened to be loaded — the "silently serves a DIFFERENT model"
                 // failure the -m path already fixed for its own case (#1958).
                 if (!need_model_switch && req_model != current_cfg.model_name) {
+                    // Satisfied when the request names the LOADED artifact under
+                    // any spelling — metadata name, file basename, or registry id.
+                    // The loaded model need NOT be in the registry: `-m <path>`
+                    // with a file outside the scan root is exactly that case, and
+                    // the registry lookup below cannot see it.
+                    if (!current_cfg.model_path.empty() &&
+                        std::filesystem::path(req_model).filename() ==
+                        std::filesystem::path(current_cfg.model_path).filename()) {
+                        model_satisfied = true;
+                    }
                     const onebit::ModelArtifact* ra = g_registry.find(req_model);
                     std::string art_path;
                     if (ra) {
@@ -2616,6 +2650,18 @@ int main(int argc, char** argv) {
                                 break;
                             }
                         }
+                    }
+                    // A request may name the ARTIFACT ALREADY LOADED under a
+                    // different spelling: the loaded name comes from file
+                    // metadata ("zaya1-8b") while the caller may use the file
+                    // basename ("zaya1-8b.q4nx"). That is neither a switch nor a
+                    // refusal — it is satisfied. Measured on the first version of
+                    // this patch, which refused exactly that case.
+                    if (!art_path.empty() && !current_cfg.model_path.empty() &&
+                        (art_path == current_cfg.model_path ||
+                         std::filesystem::path(art_path).filename() ==
+                         std::filesystem::path(current_cfg.model_path).filename())) {
+                        model_satisfied = true;
                     }
                     if (!art_path.empty() && std::filesystem::exists(art_path)) {
                         ModelConfig file_cfg;
@@ -2645,7 +2691,7 @@ int main(int argc, char** argv) {
             // neither loadable here nor already the loaded model, refuse and say
             // so; a wrong-weights answer is worse than an error, and it is also
             // the failure mode this whole goal exists to eliminate.
-            if (!need_model_switch && !req_model.empty() &&
+            if (!need_model_switch && !model_satisfied && !req_model.empty() &&
                 req_model != current_cfg.model_name) {
                 bool known = false;
                 for (auto& dm2 : discovered)
