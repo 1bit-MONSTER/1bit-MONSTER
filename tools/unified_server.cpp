@@ -144,6 +144,14 @@ static std::string g_weights_dir = []() -> std::string {
 }();
 static int g_port = 8088;
 
+// Step 2 (goal mtvd3pmx): the objective names `~/models` as a root the registry of record must
+// cover, on BOTH serving faces. File-scope because the --lemonade branch returns before the
+// engine-face registry is built, and both need the same answer.
+static const std::string g_home_models_dir = []() -> std::string {
+    const char* home = getenv("HOME");
+    return (home && home[0]) ? std::string(home) + "/models" : std::string();
+}();
+
 // ── Mesh: self-aware network presence (peer discovery, /v1/mesh/*) ──
 // On by default — a 1bit-MONSTER install announces itself on the LAN and
 // starts integration conversations with sibling installs out of the box.
@@ -1520,10 +1528,6 @@ int main(int argc, char** argv) {
     // conversions)"). Scanning only the weights dir left an artifact in `~/models` invisible:
     // loaded and SERVED correctly, yet listed only under its legacy stem (issue #2193, audit
     // §9.10.31 case A). Both roots, de-duplicated by path downstream.
-    static const std::string g_home_models_dir = [] {
-        const char* h = getenv("HOME");
-        return (h && h[0]) ? std::string(h) + "/models" : std::string();
-    }();
     static onebit::ModelRegistry g_registry = [&] {
         std::vector<std::string> roots{g_weights_dir};
         if (!g_home_models_dir.empty()) roots.push_back(g_home_models_dir);
