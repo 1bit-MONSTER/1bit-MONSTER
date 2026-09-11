@@ -260,7 +260,7 @@ strixhalo verification round:
 | #1872 | Btmp byte-stores dropped | ✅ Mitigated: #1874 flip removes Bb from production; I4_DIRECT_VECTOR_DEQ for mmul path; NPU gate pending |
 | #1874 | mmul C1 store scrambled | ✅ Mitigated: I4_SCALAR_C1 is now the production default; mmul path opt-in |
 | #1878/#1912 | chess arg delivery (upstream) | ⏳ ESCALATE upstream; A/B harness on main as regression test |
-| #1866 | -O0 immediate range crash | ⏳ UPSTREAM-ONLY WATCH — re-verified 2026-09-11 on `main` @ `6963fc694` (still crashes: −33216), but **nothing in-repo requires `-O0`** (builds pin -O2/-O1; generators never use it; every `-O0` hit is prose about this bug) and the #1864 workaround rationale is stale (#1864 closed 2026-08-30). Fix = llvm-aie PRs #1155/#1276 |
+| #1866 | -O0 immediate range crash | ✅ **CLOSED (not planned) 2026-09-11** — upstream-only watch: re-verified 2026-09-11 on `main` @ `6963fc694` (still crashes: −33216), but **nothing in-repo requires `-O0`** (builds pin -O2/-O1; generators never use it; every `-O0` hit is prose about this bug) and the #1864 workaround rationale is stale (#1864 closed 2026-08-30). Fix = llvm-aie PRs #1155/#1276; re-open only if `-O0` is ever needed in-repo |
 
 Upstream reproducers to file (all have in-repo CPU-gated minimal cases):
 #1869 (rqb+j*32 vs pB4+gbase+(j<<5)), #1835 ((sf*0.0625f)/scc → NaN),
