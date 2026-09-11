@@ -1096,6 +1096,10 @@ httplib::Server::HandlerResponse Server::authenticate_request(const httplib::Req
 }
 
 
+void Server::set_registry_surface(std::vector<RegistryModelView> models) {
+    registry_surface_ = std::move(models);
+}
+
 void Server::setup_routes(httplib::Server &web_server) {
     // Add pre-routing handler to log ALL incoming requests (except health checks)
     web_server.set_pre_routing_handler([this](const httplib::Request& req, httplib::Response& res) {
@@ -1193,6 +1197,20 @@ void Server::setup_routes(httplib::Server &web_server) {
     // Models endpoints
     register_get("models", [this](const httplib::Request& req, httplib::Response& res) {
         handle_models(req, res);
+    });
+
+    // Engine registry surface (goal mtvd3pmx R7): the registry of record on this
+    // face, populated via set_registry_surface(). Empty on standalone Lemonade.
+    register_get("registry", [this](const httplib::Request&, httplib::Response& res) {
+        nlohmann::json body;
+        body["object"] = "list";
+        body["data"] = nlohmann::json::array();
+        for (const auto& m : registry_surface_) {
+            body["data"].push_back({{"id", m.id}, {"object", "artifact"},
+                                    {"container", m.container}, {"path", m.path},
+                                    {"capabilities", m.capabilities}});
+        }
+        res.set_content(body.dump(), "application/json");
     });
 
     // Explicit network action for users who disable startup update checks.
@@ -2922,6 +2940,11 @@ void Server::handle_models(const httplib::Request& req, httplib::Response& res) 
         }
     }
 
+    // Engine-registry artifacts are NOT appended here: the `onebit` backend
+    // (dynamic_models) registers them with ModelManager, so they already appear via
+    // get_supported_models()/get_downloaded_models() as routable recipe=onebit
+    // models. Appending them again would duplicate every id. /v1/registry still
+    // serves the registry view (registry_surface_).
     res.set_content(response.dump(), "application/json");
 }
 

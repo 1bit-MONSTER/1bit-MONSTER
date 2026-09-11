@@ -146,5 +146,5 @@ That's it.
 
   github.com/1bit-MONSTER/1bit-MONSTER
   1bit.MONSTER
-  MIT License
+  GPL-3.0 License
 ```

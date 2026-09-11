@@ -16,9 +16,50 @@ OUTDIR="${BUILDDIR}/qwen3_0_6b_kernels"
 mkdir -p "$OUTDIR"
 
 # Toolchain paths
-AIETOOLS="${TORCH2AIE_ROOT}/toolchain/aietools"
-MLIR_AIE="${TORCH2AIE_ROOT}/toolchain/mlir_aie"
-XCHESSCC="${AIETOOLS}/bin/xchesscc_wrapper"
+# The chess arm needs an aietools ROOT (the Vitis one), not mlir-aie's build_tmp:
+# with build_tmp aiecc silently skips chess-llvm-link and dies later with a
+# confusing 'main_input.chesslinked.ll' missing error (issue #1913). The old
+# default here (${TORCH2AIE_ROOT}/toolchain/aietools) does not exist on strixhalo,
+# and torch2aie is not installed on ryzen at all, so resolve it explicitly and
+# fail at the call site instead of inside the compiler.
+# shellcheck source=../generators/check_chess_aietools.sh
+# shellcheck disable=SC1091
+source "${SRCDIR}/../generators/check_chess_aietools.sh"
+if [ -z "${AIETOOLS:-}" ]; then
+    AIETOOLS="$(find_chess_aietools_root)" || {
+        echo "ERROR (#1913): no Vitis aietools root with chess-llvm-link found under ${HOME}/Xilinx*" >&2
+        echo "  Set AIETOOLS=<Vitis aietools root> (e.g. ~/Xilinx/2026.1/Vitis/aietools) and retry." >&2
+        exit 1
+    }
+fi
+check_chess_aietools "$AIETOOLS" true || exit 1
+MLIR_AIE="${MLIR_AIE:-$HOME/mlir-aie}"
+# xchesscc_wrapper is an mlir-aie tool, NOT part of the Vitis aietools root (that
+# ships only bin/xchesscc + bin/xchessmk). Resolve it from the same mlir-aie tree
+# the other kernel scripts use (bench_compiler_ab.sh's default), then the tree's
+# install/bin, then PATH - and fail loudly rather than letting a stale default
+# reach the compiler.
+if [ -z "${XCHESSCC:-}" ]; then
+    for candidate in "${MLIR_AIE}/tools/chess-clang/xchesscc_wrapper" \
+                     "${MLIR_AIE}/install/bin/xchesscc_wrapper"; do
+        if [ -x "$candidate" ]; then
+            XCHESSCC="$candidate"
+            break
+        fi
+    done
+fi
+if [ -z "${XCHESSCC:-}" ] || [ ! -x "$XCHESSCC" ]; then
+    XCHESSCC="$(command -v xchesscc_wrapper || true)"
+fi
+if [ -z "$XCHESSCC" ] || [ ! -x "$XCHESSCC" ]; then
+    echo "ERROR: xchesscc_wrapper not found (looked in ${MLIR_AIE}/tools/chess-clang/," >&2
+    echo "  ${MLIR_AIE}/install/bin/ and PATH)." >&2
+    echo "  Set MLIR_AIE=<mlir-aie tree> (e.g. ~/mlir-aie) or XCHESSCC=<wrapper path>." >&2
+    exit 1
+fi
+# The Vitis launcher must win the xchesscc lookup: aiecc's getAietoolsDir()
+# derives its root from `which xchesscc`, so the raw symlink must not precede it.
+export PATH="${AIETOOLS}/bin:${PATH}"
 
 # Include paths for AIE kernel compilation
 INCLUDES=(

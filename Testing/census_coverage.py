@@ -231,6 +231,29 @@ NON_TEXT_GEN = {
     "plusmodel",  # LiltForTokenClassification (token classification, not causal LM)
     "kosine",  # SpeechT5 TTS
     "helloworld",  # junk test repo (model_type custom)
+
+    # ── 2026-09-09 pass-5: #2166 watch breach — biology-domain + junk classes ──
+    # Both arch-string and model_type forms covered (sweep emits either).
+    "esmcar", "esmc_ar",  # ESM-C AR (EsmcARForCausalLM / model_type esmc_ar — evolutionary-
+               #   scale Cambrian): causal PROTEIN-sequence LM, non-text-token domain — biology
+               #   precedent prot2text/torchmultiomics (pass-3/4); not in engine roster
+    "hca",  # HCAForCausalLM / model_type hca: single ~0-download repo
+             #   BIBLIOKLEPT/Mnemosyne-64M-Instruct — unverifiable custom arch / test-uploader
+    "mnemosyne", "mnemosyneforcausallm",  # same junk repo under its arch-string form
+
+    # ── 2026-09-10 pass-6: honest-coverage triage of fallback-only classes ──
+    # These resolve through the model_type fallback (so they inflate the
+    # 100%-covered headline) but are NOT causal text decoders — masked LM /
+    # classifier / reward / regression heads, audio-ASR, vision-language,
+    # encoder-decoder and diffusion classes.
+    "modernbertformaskedlm", "modernbertforsequenceclassification",
+    "gptbertformaskedlm", "dlmllamaformaskedlm",
+    "myllamafortokenclassification", "newfortokenclassification",
+    "qwen2forclassifier", "qwen2forreward", "qwen2withregressionhead",
+    "audioqwen2vl", "qwen2vldualaudio", "mimov2asr",
+    "qwen2vision", "kimivl", "mllava", "pllava", "plava",
+    "llavallamaatt", "llavagptneox", "tarsier",
+    "custompegasus", "dit", "metadiffusion600m", "glide", "gemini",
 }
 
 
@@ -392,9 +415,12 @@ def main():
     mt_toks = dict(zip(mts, probe(mapper, list(mts))))
 
     merged = {}
+    direct_covered = 0
+    fallback_only = {}  # stripped class -> checkpoints (mapped ONLY via model_type fallback)
     for s, c in stripped.items():
         if class_mapped.get(s):
             merged[s] = merged.get(s, 0) + c
+            direct_covered += c
             continue
         e = mt_of.get(s)
         if not e or e[0] == "<none>":
@@ -402,10 +428,12 @@ def main():
         mt = e[0]
         if mt_toks.get(mt, UNKNOWN) != UNKNOWN:
             merged[mt] = merged.get(mt, 0) + c
+            fallback_only[s] = fallback_only.get(s, 0) + c
         else:
             n = mt.replace("_", "").replace("-", "")
             if mt_toks.get(n, UNKNOWN) != UNKNOWN:
                 merged[n] = merged.get(n, 0) + c
+                fallback_only[s] = fallback_only.get(s, 0) + c
             # else: model_type unknown to registry — stays uncovered
 
     merged_toks = probe(mapper, list(merged))
@@ -428,18 +456,24 @@ def main():
         covered += merged[s]
 
     with_arch = sum(stripped.values())
+    fallback_covered = sum(fallback_only.values())
     summary = {
         "total": raw.get("total", 0),
         "with_arch": with_arch,
         "no_arch": raw.get("no_arch", counts.get("<none>", 0)),
         "n_archs": len(stripped),
         "registry_covered": covered,
+        "registry_direct": direct_covered,
+        "registry_fallback": fallback_covered,
+        "fallback_only_classes": {k: fallback_only[k] for k in sorted(fallback_only)},
         "excluded_non_text_gen": excluded,   # #1676: not causal decoders
         "family_counts": {k: family_counts[k] for k in sorted(family_counts)},
     }
     json.dump(summary, open(OUT, "w"), indent=1, sort_keys=True)
     print(f"total={summary['total']} with_arch={with_arch} "
-          f"registry_covered={covered} ({100*covered/with_arch:.2f}%) -> {OUT}")
+          f"covered={covered} ({100*covered/with_arch:.2f}%) "
+          f"direct={direct_covered} fallback={fallback_covered} "
+          f"fallback_classes={len(fallback_only)} -> {OUT}")
 
 
 if __name__ == "__main__":

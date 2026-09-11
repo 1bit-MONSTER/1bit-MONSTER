@@ -1,0 +1,59 @@
+name: Kernel object lint
+
+# The complement to the xclbin provenance check: that one asserts the *committed artifact
+# set* against its manifest, this one asserts the *generators* produce a kernel object that
+# satisfies the invariants their own lints encode — required entry symbols, no duplicate Q22
+# LUT, and no .bss symbols (issue #1838: the bare-metal ld.script drops .bss, so a
+# zero-initialised static reads back as garbage on the NPU).
+#
+# It runs on the self-hosted runner because it needs the aie2p (Peano) toolchain. It does NOT
+# need the aiecc/mlir stage, which is why it can run while that stage is blocked by a
+# toolchain version mismatch.
+
+on:
+  pull_request:
+    paths:
+      - "engine/npu/generators/**"
+      - "engine/npu/kernel/**"
+      - "engine/npu/tests/check_kernel_bss.sh"
+      - ".github/workflows/kernel-object-lint.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-object-lint:
+    name: kernel object lint (.bss / symbols / duplicate LUT)
+    runs-on: [self-hosted, strix-halo]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run the kernel object lint
+        run: |
+          set -o pipefail
+          rc=0
+          # invoke via bash: the script has a shebang and is committed +x, but calling it explicitly removes the
+          # "executable bit lost in a merge/tooling round-trip" failure class, which is how this job first went red
+          # (exit 126: the file was 100644 in the checkout while the step executed it directly).
+          out="$(bash engine/npu/tests/check_kernel_bss.sh 2>&1)" || rc=$?
+          echo "$out"
+          case "$out" in
+            *"RESULT: PASS"*)
+              echo "kernel object lint: PASS"
+              exit 0
+              ;;
+            *"RESULT: FAIL_BSS_ONLY"*)
+              # Known-red, ticket-tied, and deliberately not a gate yet: fixing it moves two
+              # statics into .data, which changes the kernel object, so it needs the #1897
+              # h2/C2 byte-identity gate re-run and the xclbin rebuilt.
+              echo "kernel object lint: KNOWN FAILING (issue #2199) — KERNEL_STATIC is absent from"
+              echo "mm_kernel_reference.cc, so g_i4_call and the matmul-local 'call' counter sit in .bss."
+              echo "This job is a monitor until #2199 lands, and becomes a gate the moment the .bss"
+              echo "count reaches 0 (i.e. when this branch starts printing RESULT: PASS)."
+              exit 0
+              ;;
+          esac
+          echo "kernel object lint: FAIL (not the known #2199 case — exit code was $rc)"
+          exit 1

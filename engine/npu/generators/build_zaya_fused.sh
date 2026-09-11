@@ -64,6 +64,7 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     "${I4_SCALAR_FLAGS[@]}" \
     ${NPU_C1_DUMP:+-DNPU_C1_DUMP} ${I4_SUM_A:+-DI4_SUM_A} ${I4_B_DUMP:+-DI4_B_DUMP} ${I4_C1_DUMP:+-DI4_C1_DUMP} ${I4_A_DUMP:+-DI4_A_DUMP} ${I4_REF_DUMP:+-DI4_REF_DUMP} ${I4_C12_DUMP:+-DI4_C12_DUMP} ${I4_B4_DUMP:+-DI4_B4_DUMP} ${I4_NO_ZERO_TAIL:+-DI4_NO_ZERO_TAIL} ${I4_C00_DUMP:+-DI4_C00_DUMP} \
     -isystem $P/include/c++/v1 \
+    -I $M/include \
     -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
     -I $M/include/aie_kernels/aie2p \
     -c "$GENERATOR_DIR/mm_kernel_reference.cc" -o "$workdir/mm_8x64x128_fused.o"
@@ -239,7 +240,10 @@ for fifo, offset, sizes, strides in ops:
                 if msg not in seen:
                     errors.append(msg); seen.add(msg)
         else:
-            if sizes == [1, 1, 1, 8192] and strides == [1, 1, 1, 1]:
+            # big-BD feed (issue #1776) uses 256 KB linear B slices (262144); the
+            # original design used 8192-byte tiles. Accept any 8192-multiple tile.
+            if (sizes[0:3] == [1, 1, 1] and len(sizes) == 4 and
+                sizes[3] % 8192 == 0 and strides == [1, 1, 1, 1]):
                 b_ok = True
                 # Format A passes offset as a scalar (int); Format B as a list.
                 # Normalize to a list and verify EVERY offset dim is an 8192-multiple.
@@ -251,7 +255,7 @@ for fifo, offset, sizes, strides in ops:
                     if msg not in seen:
                         errors.append(msg); seen.add(msg)
             else:
-                msg = f"B_S tap sizes {sizes} strides {strides}, expected linear 8192-byte tile"
+                msg = f"B_S tap sizes {sizes} strides {strides}, expected linear 8192-multiple tile"
                 if msg not in seen:
                     errors.append(msg); seen.add(msg)
 
@@ -278,8 +282,8 @@ PYEOF
 xclbin="$XCLBIN_DIR/final_i8_MOE_GUSILU_i4_zaya.xclbin"
 insts="$XCLBIN_DIR/insts_i8_MOE_GUSILU_i4_zaya.txt"
 if [ "$I4" != "1" ]; then
-    xclbin="$XCLBIN_DIR/final_i8_MOE_GUSILU_zaya.xclbin"
-    insts="$XCLBIN_DIR/insts_i8_MOE_GUSILU_zaya.txt"
+    xclbin="$XCLBIN_DIR/final_i8_MOE_FUSED_zaya.xclbin"
+    insts="$XCLBIN_DIR/insts_i8_MOE_FUSED_zaya.txt"
 fi
 cd "$workdir"
 $AIECC --peano="$P" --aietools="$AIETOOLS" \

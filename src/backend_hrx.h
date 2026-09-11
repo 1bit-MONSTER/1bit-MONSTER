@@ -32,12 +32,26 @@ public:
     HrxBackend();
     ~HrxBackend() override;
 
+    // #2145: tokens imported through HRX_STATE_FILE (-1 = none). The unified
+    // server uses this to keep HRX off requests whose context exceeds the
+    // bundle's KV ceiling (HRX_MAX_CTX_TOKENS) instead of failing mid-decode.
+    long imported_ctx_tokens() const { return imported_ctx_; }
+    bool inprocess_active() const { return inprocess_mode_; }
+
+    // #2145 (finding 2): HrxBackend::reset() recreates the in-process context
+    // (pos = 0), so an HRX_STATE_FILE import applied at init is discarded before
+    // the first decode. The server calls this after reset() to re-apply it so a
+    // deliberately-continued session really decodes from the imported KV.
+    // Returns the imported token count, or -1 when not applicable/failed.
+    long import_state_file(const char* session_path);
+
     bool init(const ModelConfig& cfg, const std::string& weights_dir) override;
     bool reset() override;
     bool forward(int token_id, float* hidden_out) override;
     bool lm_head(const float* hidden, float* logits, int* argmax) override;
     int generate(int token_id) override;
-    std::string generate_text(const std::string& prompt, int max_tokens) override;
+    std::string generate_text(const std::string& prompt, int max_tokens,
+                              float temperature = -1.0f) override;
     void destroy() override;
     float benchmark(int tokens = 10) override;
     bool can_infer() const override { return initialized_ && (pid_ > 0 || inprocess_); }
@@ -52,7 +66,10 @@ private:
 
     pid_t pid_ = -1;
     bool initialized_ = false;
+    long imported_ctx_ = -1;  // #2145: HRX_STATE_FILE import length
+
     bool inprocess_mode_ = false;
+    bool cpu_ops_set_by_us_ = false;  // #2147 follow-up: we set GGML_HRX_CPU_OPS in init() — restore it on destroy()
     std::unique_ptr<hrx::Inprocess> inprocess_;
     std::string server_bin_;
     std::string model_path_;

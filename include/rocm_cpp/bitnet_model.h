@@ -601,6 +601,8 @@ typedef enum {
     RCPP_ARCH_TINYTRANSFORMER = 1001, // tinytransformer — TinyTransformerForCausalLM minimal custom-code transformer (Mayuresh231/tiny-transformer-29m; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_IKNN = 1002,            // iknn-rl1-a1 — IKNN-Rl1-A1ForCausalLM (deeprcurs/IKNN-Rl1-A1; MLX-era file_* config, RoPE 1e4 + RMSNorm, gpt2-shaped; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_K2HORIZON = 1003,       // k2horizon — K2-Horizon-MoVA (Moonshot K2-Horizon MoE: 100E/8, layernorm_num_groups, query_key_norm, rope_head_dim, attention_gate_func, decoder_sparse_step; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_JUGNUVR = 1004,         // jugnuvr — JugnuVRForCausalLM (altslate/JugnuLM-110M-R1; custom-code dense transformer, per-layer layer_types plan, silu, head_dim 64; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_M2R = 1005,             // m2r — gdiamos/amx-reasoning-v1-instruct (hybrid lin/SSM + sliding-window-attn layer types, d_state 32, d_ff 640, route_block 1024; registry token, engine support XL, generic loader refuses)
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -2533,6 +2535,10 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "k2horizon") == 0) return RCPP_ARCH_K2HORIZON;      // census stripped arch name (registry token)
     if (strcmp(s, "k2_horizon_mova") == 0) return RCPP_ARCH_K2HORIZON; // HF model_type
     if (strcmp(s, "k2horizonforcausallm") == 0) return RCPP_ARCH_K2HORIZON;  // raw HF architecture string (regression guard)
+    if (strcmp(s, "jugnuvr") == 0) return RCPP_ARCH_JUGNUVR;              // census stripped arch name (registry token)
+    if (strcmp(s, "jugnuvrforcausallm") == 0) return RCPP_ARCH_JUGNUVR;   // raw HF architecture string (regression guard)
+    if (strcmp(s, "m2r") == 0) return RCPP_ARCH_M2R;                      // census stripped arch name (registry token)
+    if (strcmp(s, "m2rforcausallm") == 0) return RCPP_ARCH_M2R;           // raw HF architecture string (regression guard)
     // ── 2026-09-02 census watcher (PR #2046 CI gate) ──
     // Both classes are GENUINELY NEW architectures, verified against live HF
     // configs, so they get a real registry token (own identity) rather than an
@@ -2690,6 +2696,100 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "localagent") == 0) return RCPP_ARCH_LLAMA;  // localagent
     if (strcmp(s, "tinyllama_1_1b_trigger_v3_travel_lm") == 0) return RCPP_ARCH_LLAMA;  // tinyllama_1_1b_trigger_v3_travel_lm
     if (strcmp(s, "neodecodermodelv2") == 0) return RCPP_ARCH_LLAMA;  // neo_coder
+    // ── 2026-09-10 honest-coverage alias pass — fallback-only classes whose
+    // class name unambiguously embeds a known family (quant/prefix/typo
+    // variants). These already routed to the family via the model_type
+    // fallback; the alias makes the census label them "direct" instead.
+    if (strcmp(s, "fp8qwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "_a2dqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "xqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen3tdmoe") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "moeqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "moeqwen3b") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen3moefused") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen3_5moe") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen3_5_moe") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "dashqqwen3_5moe") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen3canon") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen3terminator") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen3forguard") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "qwen3forcut") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "rnsaqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "seerattnqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "moloraqwen") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "fsdpqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "squaredreluqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "mixfp4qwen3_5moe") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "streamqwen3_5") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "editableqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "continuousqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "mementoqwen3") == 0) return RCPP_ARCH_QWEN3;
+    if (strcmp(s, "fp8qwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "dashqqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "customqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "awqcompatibleqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "hypernetembeddedqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "sdlmqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "seerattnqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "qwen2caprese") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "qwen2_5_") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "adavocabqwen2") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "qwenmhc") == 0) return RCPP_ARCH_QWEN2;
+    if (strcmp(s, "fp8llama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "int8llama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llamaforcasuallm") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llama_") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "userllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "smallllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "gistllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "asvdllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "dashqllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "awqcompatiblellama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "covsvdllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "gaudillama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "offsetllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "pawllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "seerattnllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "vulavulallama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llamawithintervention") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llamaglidedecoderlayer") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "moellama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "compressedllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "hookedllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "colarllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "ferretllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "generativepromptllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "dlmllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "fsdpllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "proximastarkvllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "qllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "eagle3llama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "mmgptllama") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "llamaforcausallmeagle") == 0) return RCPP_ARCH_LLAMA;
+    if (strcmp(s, "selfdebiasinggpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "ringattentiongpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "tfgpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt2rope") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt2mtp") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt2withhm") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "pipelinedgpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "zsgpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "rotarygpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "multiheadgpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "sparsegpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt2headwithvalue") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt2hlc") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "conditionalgpt") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "conditionalgpt2") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gpt3devlm") == 0) return RCPP_ARCH_GPT2;
+    if (strcmp(s, "gptneoforcausallmtiered") == 0) return RCPP_ARCH_GPTNEOX;
+    if (strcmp(s, "gptneoxlong") == 0) return RCPP_ARCH_GPTNEOX;
+    if (strcmp(s, "xmistral") == 0) return RCPP_ARCH_MISTRAL;
+    if (strcmp(s, "xmixtral") == 0) return RCPP_ARCH_MISTRAL;
+    if (strcmp(s, "mistralstar") == 0) return RCPP_ARCH_MISTRAL;
+    if (strcmp(s, "phi2model") == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "phi3withvectormemory") == 0) return RCPP_ARCH_PHI;
+    if (strcmp(s, "phixtral") == 0) return RCPP_ARCH_PHI;
     // ── end 2026-09 sweep aliases ──
     return RCPP_ARCH_UNKNOWN;
 }

@@ -30,6 +30,46 @@ export PYTHONPATH="${TORCH2AIE}/toolchain/mlir_aie/python"
 export AIETOOLS_DIR="${TORCH2AIE}/toolchain"
 export MLIR_AIE_DIR="${TORCH2AIE}/toolchain/mlir_aie"
 
+# ─── Chess toolchain preflight (issue #1913) ──────────────────────
+# This script compiles kernels with xchesscc_wrapper, so it needs (a) a Vitis
+# aietools ROOT whose chess-llvm-link is present, and (b) the wrapper on PATH.
+# Both used to be assumed: the aietools root came from ${TORCH2AIE}/toolchain,
+# which does not exist here, and xchesscc_wrapper is an mlir-aie tool that the
+# Vitis root does not ship (only bin/xchesscc + bin/xchessmk). Resolve both and
+# fail before compiling anything.
+# shellcheck source=engine/npu/generators/check_chess_aietools.sh
+# shellcheck disable=SC1091
+CHESS_GUARD="$(cd "$(dirname "$0")/generators" && pwd)/check_chess_aietools.sh"
+# shellcheck source=/dev/null
+source "$CHESS_GUARD"
+if [ -z "${AIETOOLS:-}" ]; then
+    AIETOOLS="$(find_chess_aietools_root)" || {
+        echo "ERROR (#1913): no Vitis aietools root with chess-llvm-link under ${HOME}/Xilinx*" >&2
+        echo "  Set AIETOOLS=<Vitis aietools root> and retry." >&2
+        exit 1
+    }
+fi
+check_chess_aietools "$AIETOOLS" true "${AIETOOLS}/bin:" || exit 1
+export AIETOOLS
+if ! command -v xchesscc_wrapper >/dev/null 2>&1; then
+    for candidate in "${MLIR_AIE_DIR}/tools/chess-clang" \
+                     "$HOME/mlir-aie/tools/chess-clang" \
+                     "${HOME}/mlir-aie/install/bin"; do
+        if [ -x "${candidate}/xchesscc_wrapper" ]; then
+            export PATH="${candidate}:${PATH}"
+            break
+        fi
+    done
+fi
+if ! command -v xchesscc_wrapper >/dev/null 2>&1; then
+    echo "ERROR: xchesscc_wrapper not on PATH (it is an mlir-aie tool, not a Vitis one)" >&2
+    echo "  Expected at <mlir-aie tree>/tools/chess-clang/xchesscc_wrapper, e.g. ~/mlir-aie." >&2
+    echo "  NOTE: the torch2aie-derived roots above (${TORCH2AIE}) do not exist on strixhalo;" >&2
+    echo "  set MLIR_AIE_DIR / TORCH2AIE explicitly to a real mlir-aie tree and retry." >&2
+    exit 1
+fi
+export PATH="${AIETOOLS}/bin:${PATH}"   # the Vitis launcher must win the xchesscc lookup
+
 # Toolchain version check: MLIR-AIE .so files are cpython-312
 PY_VER=$(python3 --version 2>&1 | grep -oP '[0-9]+\.[0-9]+' | head -1 || echo "unknown")
 if [ "$PY_VER" != "3.12" ]; then

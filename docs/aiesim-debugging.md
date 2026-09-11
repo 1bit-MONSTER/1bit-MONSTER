@@ -251,8 +251,8 @@ strixhalo verification round:
 | Issue | Defect | Status |
 |-------|--------|--------|
 | #1834 | memcpy libcall clobbers r0/r1 | ✅ FIXED in-tree: union bit-casts everywhere incl. mm_binary_q1.cc; escal. upstream |
-| #1838 | ld.script drops .bss statics | ✅ FIXED in-tree: KERNEL_STATIC → .data, ELF-verified (.data@0x7f60c, zero .bss); escal. upstream |
-| #1864 | scalar RMW miscompile | ✅ Worked around: I4_SCALAR_C1_ACK_1864 guard + #1874 default flip; escal. upstream |
+| #1838 | ld.script drops .bss statics | ⚠️ PARTIAL — see #2199: `KERNEL_STATIC` is present in `engine/npu/kernel/mm_binary_q1.cc` but **absent from the fused kernel** `engine/npu/generators/mm_kernel_reference.cc` on `main`, so `g_i4_call` + the local `call` counter sit in `.bss` and `build_p1i4.sh`'s own lint fails (measured 2026-09-11) |
+| #1864 | scalar RMW miscompile | ✅ Worked around: #1874 default flip to I4_SCALAR_C1 + the scalar path's one-off #1897 h2/C2 gate. **Correction (2026-09-11): there is no `#error` guard** — `ACK_1864` appears in **no source file** (only as a `-D` in two build scripts) and `engine/npu/generators/` has no `#error` at all, so compiling the scalar path without the ack succeeds; the flag is a label, not enforcement |
 | #1865 | hardcoded tile addresses | ✅ FIXED in-tree: h2 via delivered arg, pC zeroing via arg, zero_c1 removed, #1842 pins retired; NPU gate pending |
 | #1869 | pointer-arith miscompile j>=8 | ✅ Worked around (v66 direct pointer math); escal. upstream with repro |
 | #1835 | soft-float (sf*0.0625)/scc NaN | ✅ Worked around (int32 ratioQ22); escal. upstream |
@@ -260,7 +260,7 @@ strixhalo verification round:
 | #1872 | Btmp byte-stores dropped | ✅ Mitigated: #1874 flip removes Bb from production; I4_DIRECT_VECTOR_DEQ for mmul path; NPU gate pending |
 | #1874 | mmul C1 store scrambled | ✅ Mitigated: I4_SCALAR_C1 is now the production default; mmul path opt-in |
 | #1878/#1912 | chess arg delivery (upstream) | ⏳ ESCALATE upstream; A/B harness on main as regression test |
-| #1866 | -O0 immediate range crash | ⏳ ESCALATE upstream (llvm-aie); -O1 workaround documented |
+| #1866 | -O0 immediate range crash | ✅ **CLOSED (not planned) 2026-09-11** — upstream-only watch: re-verified 2026-09-11 on `main` @ `6963fc694` (still crashes: −33216), but **nothing in-repo requires `-O0`** (builds pin -O2/-O1; generators never use it; every `-O0` hit is prose about this bug) and the #1864 workaround rationale is stale (#1864 closed 2026-08-30). Fix = llvm-aie PRs #1155/#1276; re-open only if `-O0` is ever needed in-repo |
 
 Upstream reproducers to file (all have in-repo CPU-gated minimal cases):
 #1869 (rqb+j*32 vs pB4+gbase+(j<<5)), #1835 ((sf*0.0625f)/scc → NaN),

@@ -31,6 +31,6 @@ The full stack in one binary (~400 KB):
 
 curl -sL https://1bit.monster/install.sh | bash
 
-MIT. Open source. No Python. No Docker. No BS.
+GPL-3.0. Open source. No Python. No Docker. No BS.
 
 https://github.com/1bit-MONSTER/1bit-MONSTER

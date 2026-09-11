@@ -233,7 +233,19 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
                       ? path.substr(0, slash)
                       : path.substr(dir_start + 1, slash - dir_start - 1);
     }
-    std::string base = dirname.empty() ? path.substr(slash + 1) : dirname;
+    std::string base;
+    {
+        // The artifact's OWN stem names it, UNLESS the FLM layout applies
+        // (<ModelName>/model.q4nx — where every basename is literally "model",
+        // so only then does the directory carry the name). Deriving the arch from
+        // the PARENT DIR for a bare artifact in a shared store
+        // (e.g. ~/models/zaya1-8b.q4nx) named it after the directory — "models" —
+        // which routed the artifact to the wrong backend and failed every lane.
+        std::string filename = (slash == std::string::npos) ? path : path.substr(slash + 1);
+        auto dot = filename.find_last_of('.');
+        std::string stem = (dot == std::string::npos) ? filename : filename.substr(0, dot);
+        base = (stem == "model" && !dirname.empty()) ? dirname : stem;
+    }
     auto sep = base.find_first_of("-_");
     cfg.architecture = sep == std::string::npos ? base : base.substr(0, sep);
     // GGUF arch tags are lowercase ("qwen3", "llama") — the router compares

@@ -14,6 +14,7 @@
 //   jarvis, voice     → jarvis_app (clean-slate voice assistant, pure C++)
 //   vision, vl        → vision_server (vision-language server)
 //   zuna              → zuna_port
+//   registry          → registry_scan (artifact-first model registry)
 
 #include <cstdio>
 #include <cstring>
@@ -28,6 +29,10 @@ int onebit_main(int argc, char *argv[]);
 int jarvis_app_main(int argc, char** argv);
 int vision_server_main(int argc, char** argv);
 int zuna_main(int argc, char** argv);
+int registry_scan_main(int argc, char** argv);
+int route_compare_main(int argc, char** argv);
+int registry_diff_main(int argc, char** argv);
+int registry_merge_invariants_main(int argc, char** argv);
 
 static std::string prog_name(const char* argv0) {
     std::string p = argv0 ? argv0 : "1bit";
@@ -46,7 +51,10 @@ static int print_usage() {
         "  lemonade          Lemonade-compatible server\n"
         "  jarvis|voice|tts  voice pipeline server\n"
         "  vision|vl         vision-language server\n"
-        "  zuna              zuna_port\n");
+        "  zuna              zuna_port\n"
+        "  registry          artifact-first model registry (table/--json/--resolve)\n"
+        "  route-compare     flip decision table: shipped router vs registry resolver\n"
+        "  registry-diff     legacy scan vs registry: id divergence + unseen artifacts\n");
     return 1;
 }
 
@@ -93,6 +101,18 @@ int main(int argc, char** argv) {
         }
         if (cmd == "zuna") {
             return zuna_main(argc - 1, argv + 1);
+        }
+        if (cmd == "registry") {
+            return registry_scan_main(argc - 1, argv + 1);
+        }
+        if (cmd == "route-compare") {
+            return route_compare_main(argc - 1, argv + 1);
+        }
+        if (cmd == "registry-diff") {
+            return registry_diff_main(argc - 1, argv + 1);
+        }
+        if (cmd == "registry-merge-invariants") {
+            return registry_merge_invariants_main(argc - 1, argv + 1);
         }
         if (cmd == "-h" || cmd == "--help" || cmd == "help") {
             return print_usage();

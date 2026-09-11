@@ -57,7 +57,7 @@ Day 3: first real GEMM through raw ioctls — bit-exact, outside FLM's binary.
 Day 4: replaced the whole stack with open C++.
 
 Since then: 100% of HuggingFace's arch-bearing checkpoints map to an engine
-token (317,310 / 317,310), one C++26 binary, zero Python at runtime, MIT.
+token (317,310 / 317,310), one C++26 binary, zero Python at runtime, GPL-3.0.
 
 The part I'm most proud of is the honesty section of the post. We quarantined
 unsourced throughput figures, retracted a wrong efficiency claim, and

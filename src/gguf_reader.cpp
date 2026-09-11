@@ -396,6 +396,9 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         case GGUF_DTYPE_Q4_0_4_8: return {256, 208};
         case GGUF_DTYPE_Q4_0_8_8: return {256, 272};
         // Project-specific ternary/binary formats (h1b weight format)
+        // Q4NX 4-bit tiles: 32x256 elements per 5120-byte block
+        // (256 BF16 scales + 256 BF16 zero-points + 4096 B packed INT4).
+        case GGUF_DTYPE_Q4NX_TILE: return {8192, 5120};
         // TQ2_0_g128: ternary, 2-bit packed, group=128 → blocks of 128 el, 33 bytes
         // TQ2_0 ternary: fp16 scale (2) + 2-bit codes (128*2/8=32) = 34 bytes
         case GGUF_DTYPE_TQ2_0_G128: return {128, 34};
@@ -457,6 +460,30 @@ bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
                 float sc = read_f16(blk);
                 const uint8_t* bits = blk + 2;
                 out[i] = (bits[ei / 8] >> (ei % 8)) & 1 ? sc : -sc;
+            }
+            return true;
+        }
+        case GGUF_DTYPE_Q4NX_TILE: {
+            // dtype 43: Q4NX 32x256 tiles, 5120 B each —
+            //   [0..511] 256 BF16 scales      (row-major r*8+g)
+            //   [512..1023] 256 BF16 zero-points (same layout)
+            //   [1024..5119] 4096 B packed INT4 (nibble lo/hi per byte)
+            // Tile grid is row-major over [rows, cols]; `count` = rows*cols.
+            const int TR = 32, TC = 256, G = 8, TB = 5120;
+            for (int i = 0; i < count; i++) {
+                const int t = i / (TR * TC);
+                const int e = i % (TR * TC);
+                const int r = e / TC, c = e % TC;
+                const uint8_t* tile = data + (size_t)t * TB;
+                const uint16_t* scales = (const uint16_t*)tile;
+                const uint16_t* zps = (const uint16_t*)(tile + TR * G * 2);
+                const uint8_t* qd = tile + TR * G * 4;
+                float sc = bf16_to_fp32(scales[r * G + c / 32]);
+                float zp = bf16_to_fp32(zps[r * G + c / 32]);
+                if (sc < 1e-10f) sc = 1.0f;
+                const uint8_t packed = qd[(r * TC + c) / 2];
+                const uint8_t v = (c & 1) ? (packed >> 4) : (packed & 0xF);
+                out[i] = (float)v * sc + zp;
             }
             return true;
         }
@@ -674,10 +701,58 @@ bool GgufReader::open(const std::string& path) {
         if (file_size > 0) {
             for (auto& kvp : tensors_) {
                 const GgufTensorInfo& ti = kvp.second;
+                // Offset bound FIRST, because it needs no block geometry: it must hold for every
+                // tensor, including one whose dtype is unrecognized. (@agent-ec855d found that
+                // skipping it with the `continue` below would leave a truncation covered only by
+                // an unknown-dtype tensor unreported — a diagnostic regression in the pass whose
+                // own comment says a truncated GGUF must fail loudly. Severity bounded by the read
+                // paths, which all re-validate: get_tensor_raw's short-read test, get_tensor_f32's
+                // identical guard, the per-block fread loop, and gguf_to_onebp gating on it.)
+                if (ti.abs_offset > (uint64_t)file_size) {
+                    fprintf(stderr, "GGUF truncated: '%s' starts at offset %llu but the file is %lld bytes\n",
+                            kvp.first.c_str(), (unsigned long long)ti.abs_offset, file_size);
+                    fclose(f_); f_ = nullptr;
+                    return false;
+                }
+                // RATIONALE for the geometry guard below (kept in SOURCE, not only in a commit
+                // message: this repo squashes on merge, so commit prose is not a durable home):
+                //  * CONTRACT: gguf_block_info() is DOCUMENTED to return {0,0} for an unrecognized
+                //    dtype (include/gguf_reader.h:79), so the sentinel is intentional and callers
+                //    must honour it.
+                //  * PRECEDENTS: sibling sites already do — get_tensor_raw and get_tensor_f32 in
+                //    this file (both fields, same message), plus deepseek.cpp's own divide guard.
+                //    This was the only unguarded block-geometry division reachable from startup.
+                //  * WHY SKIP THE TENSOR AND NOT REJECT THE FILE: this loop ENUMERATES a model, so
+                //    returning false would make an affected model undiscoverable rather than
+                //    reported. Skipping keeps its metadata enumerable and defers the failure to
+                //    the use sites, which refuse this dtype with the same message and remedy —
+                //    verified, and gguf_to_onebp aborts on their return rather than converting.
+                //  * `<= 0` rather than `== 0` because GgufBlockInfo's fields are signed, so a
+                //    future negative entry is caught too (raised by @agent-dc0fb9).
+                //  * EVIDENCE: a store holding one file whose 1283 tensors include 280 of dtype 43
+                //    made `1bit unified -w <store>` die with SIGFPE (rc=136) before this guard;
+                //    after it, the tensor is reported and the scan continues. First tensor hit:
+                //    blk.9.cca_val_proj1.weight.
+                //  * WHEN CHECKING A FIX OF THIS SHAPE, ASSERT ON OUTPUT IDENTITY, NOT THE EXIT
+                //    CODE: the server takes a single-instance lock whose contention path exits
+                //    rc=1 without running, so an exit code cannot distinguish a pass from a run
+                //    that never happened. Assert on the guard-line COUNT on stderr instead —
+                //    280 lines for the store above, one per dtype-43 tensor: it is unbuffered, so
+                //    it is immune both to the lock and to who else is running. And read the
+                //    `[discover] N model(s) found` line only on a FLUSHED run, because a
+                //    redirected stdout is block-buffered: a SIGKILLed run can show 4096 B of
+                //    completed blocks with that line discarded.
                 GgufBlockInfo b = gguf_block_info(ti.dtype);
+                if (b.block_size <= 0 || b.block_bytes <= 0) {
+                    fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend "
+                                    "cannot decode it; route the model to ggml_vulkan/HRX "
+                                    "(llama.cpp) instead\n",
+                            kvp.first.c_str(), ti.dtype);
+                    continue;   // skip only the geometry-dependent extent check below
+                }
                 uint64_t n_blocks = (ti.numel + b.block_size - 1) / b.block_size;
                 uint64_t need = n_blocks * (uint64_t)b.block_bytes;
-                if (ti.abs_offset > (uint64_t)file_size || need > (uint64_t)file_size - ti.abs_offset) {
+                if (need > (uint64_t)file_size - ti.abs_offset) {
                     fprintf(stderr, "GGUF truncated: '%s' needs %llu bytes at offset %llu but file is %lld bytes\n",
                             kvp.first.c_str(), (unsigned long long)need,
                             (unsigned long long)ti.abs_offset, file_size);
@@ -795,7 +870,11 @@ bool GgufReader::get_tensor_f32(const std::string& name, std::vector<float>& out
     if (out_n) *out_n = ti.numel;
 
     GgufBlockInfo bi = gguf_block_info(ti.dtype);
-    if (bi.block_bytes <= 0) {
+    // Guard BOTH fields, not just block_bytes: the division below uses block_size, so a
+    // hypothetical {0, N} entry would divide by zero even though today's table can only
+    // produce {0,0} or positive pairs (@agent-dc0fb9 enumerated the sites and flagged this
+    // as the odd one out of three — the other two already check both).
+    if (bi.block_size <= 0 || bi.block_bytes <= 0) {
         fprintf(stderr, "GGUF: tensor '%s' uses unsupported dtype %u — this backend cannot decode it; "
                         "route the model to ggml_vulkan/HRX (llama.cpp) instead\n",
                 name.c_str(), ti.dtype);

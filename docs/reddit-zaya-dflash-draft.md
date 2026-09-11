@@ -10,7 +10,7 @@
 
 ## Body
 
-We've been building **1bit.MONSTER** — an open-source (MIT) inference engine for AMD Strix Halo laptops.
+We've been building **1bit.MONSTER** — an open-source (GPL-3.0) inference engine for AMD Strix Halo laptops.
 
 What it does: a single C++ binary auto-detects any GGUF model's architecture and quantization, then routes it to whichever backend can actually run it — GPU (ROCm HIP / Vulkan), NPU (XDNA 2), or CPU. No config files, no model registry. Zero Python at runtime.
 

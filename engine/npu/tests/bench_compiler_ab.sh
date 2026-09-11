@@ -44,9 +44,22 @@ PYTHON="$MLIR_AIE/.venv/bin/python3"
 MLIR_AIE_INC="$MLIR_AIE/.venv/lib/python3.14/site-packages/mlir_aie/include"
 AIE_KERNELS_INC="$MLIR_AIE/aie_kernels/aie2p"
 
-# Xilinx Vitis aietools (xchesscc). 2026.1 ships chesscc X-2025.06.
-XILINX="${XILINX:-$HOME/Xilinx/2026.1}"
-XCHESS_BIN="$XILINX/Vitis/aietools/bin"
+# Xilinx Vitis aietools (xchesscc): discovered, not version-pinned (#1913).
+# Pin only via an explicit XILINX=... override; the discovery takes the newest
+# Vitis aietools that actually carries chess-llvm-link, which also makes the
+# directory-spelling trap a non-issue (Xilinx2025/2025.2 resolves; the
+# plausible-looking Xilinx/2025.2 does not).
+# shellcheck source=../../engine/npu/generators/check_chess_aietools.sh
+# shellcheck disable=SC1091
+source "$REPO/engine/npu/generators/check_chess_aietools.sh"
+VITIS_AIETOOLS="${VITIS_AIETOOLS:-$(find_chess_aietools_root || true)}"
+if [ -z "$VITIS_AIETOOLS" ]; then
+    echo "ERROR (#1913): no Vitis aietools root with chess-llvm-link under ${HOME}/Xilinx*" >&2
+    echo "  arm B (chess) cannot run; set VITIS_AIETOOLS=<root> or use arm A (peano)." >&2
+    exit 1
+fi
+XILINX="${XILINX:-$(dirname "$(dirname "$VITIS_AIETOOLS")")}"
+XCHESS_BIN="$VITIS_AIETOOLS/bin"
 
 # Generator / kernel / bench parameters (same as check_mm_kernel_2x4.sh)
 M=128; K=2048; N=8192
@@ -100,6 +113,9 @@ build_kernel_peano() { # $1 = out dir
 # raw chesscc hits the license wall — OKF log #1878).
 # NOTE: chess rejects -std= entirely (Release_LLVM default applies).
 build_kernel_chess() { # $1 = out dir
+  # Preflight the chess arm instead of dying later on a missing
+  # 'main_input.chesslinked.ll' (#1913): --aietools must be the Vitis ROOT.
+  check_chess_aietools "$VITIS_AIETOOLS" true "$XCHESS_BIN" || return 1
   xchesscc_wrapper aie2p -c \
     -I "$MLIR_AIE_INC" -I "$AIE_KERNELS_INC" \
     -O2 -DNDEBUG -D__AIE_API_AIE_ADF_HPP__ \

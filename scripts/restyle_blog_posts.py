@@ -24,7 +24,7 @@ NAV = '''<nav class="site-nav">
 </div>
 </nav>'''
 
-FOOT = '''<footer class="site-foot">MIT License · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."</footer>'''
+FOOT = '''<footer class="site-foot">GPL-3.0 · <a href="https://github.com/1bit-MONSTER/1bit-MONSTER">github.com/1bit-MONSTER</a> · "Sorry but not sorry."</footer>'''
 
 FONTS_OLD = 'https://fonts.googleapis.com/css2?family=DM+Serif+Text:ital@0;1&family=DM+Mono:wght@400;500&display=swap'
 FONTS_NEW = 'https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=DM+Mono:wght@400;500;700&display=swap'

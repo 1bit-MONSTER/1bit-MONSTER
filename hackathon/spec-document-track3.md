@@ -123,7 +123,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 | Qwen3.6-35B-A3B decode | **11.66 tok/s @1k ctx** (8.82 @32k) | FastFlowLM v0.9.46, measured 2026-08-01 — see site/benchmarks.json |
 | Qwen3.6-35B-A3B prefill | **98.05 → 239.79 tok/s** (1k → 32k) | Same run |
 | Stack size | 1.5 MB open vs 87.8 MB closed | Reverse-engineered, zero proprietary code |
-| License | MIT | — |
+| License | GPL-3.0 | — |
 
 ---
 
@@ -132,7 +132,7 @@ First project to adopt and validate **TheRock** — AMD's nightly pip-installabl
 | Component | FastFlowLM (AMD) | This work |
 |-----------|-----------------|-----------|
 | Size | 87.8 MB | 1.5 MB |
-| License | Proprietary | MIT |
+| License | Proprietary | GPL-3.0 |
 | Source | Closed binary | Open C++23 |
 | Dependencies | 22 `.so` files | XRT only |
 | Model format | Q4NX only | Q4NX, Q4NX, 1BP, GGUF |

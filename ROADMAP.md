@@ -11,7 +11,7 @@ repo now has one through-line: **the engine, and the app that proves it.**
 
 ## Pillars
 
-1. **The engine** — one MIT C++23 binary, every backend:
+1. **The engine** — one GPL-3.0 C++23 binary, every backend:
    - NPU: XDNA 2 DPU kernels, Q4NX/1BP formats, 64 MB SRAM + 64 MB aperture
      (see `research/` for the RE notes that made it possible)
    - GPU: HIP + Vulkan (ZINC), fused MoE shaders

@@ -2,7 +2,7 @@
 
 Clean-room decode and implementation of the Sherry 1.25-bpw weight format
 (published paper: arXiv 2601.07892), integrated across every 1bit.MONSTER
-backend. Single MIT license — provenance at the bottom.
+backend. Single GPL-3.0 license — provenance at the bottom.
 
 ## Format
 
@@ -53,5 +53,9 @@ backend. Single MIT license — provenance at the bottom.
   (bong-water-water-bong) relicensed them to **MIT** and the carve-out files
   (`LICENSE-SHERRY.md`, `SHERRY-FILES.txt`) were removed — the repo is now
   single-license MIT with no carve-outs (commits `a077ee6e` / `4b3755ee`,
-  PR #1894). Pre-2026-04-26 commits retain MIT per the old carve-out's
+  PR #1894). **On 2026-09-09 the repository re-licensed MIT → GPL-3.0-only**:
+  all Sherry sources are 1bit.MONSTER clean-room code (no third-party
+  copyright) and moved with the repo; copies made before 2026-09-09 retain
+  the MIT grant they received at the time. Pre-2026-04-26 commits retain MIT
+  per the old carve-out's
   snapshot clause; provenance remains in git history.

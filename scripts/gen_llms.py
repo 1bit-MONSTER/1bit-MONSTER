@@ -66,7 +66,7 @@ def main() -> int:
     covered, with_arch = seo_sync.census_coverage()
     pct = seo_sync._pct(covered, with_arch)  # same formatter as the site HTML
     blurb = ("One engine, any model. A model-agnostic, hardware-agnostic pure-C++ "
-             f"inference engine (MIT): {tokens:,} architecture tokens, "
+             f"inference engine (GPL-3.0): {tokens:,} architecture tokens, "
              f"{arch:,} HF arch strings, {pct} HuggingFace coverage, "
              f"{covered:,} checkpoints mapped, running on Ryzen AI NPUs and ROCm "
              "with a GGUF-native 1-bit pipeline. Zero Python at runtime.")

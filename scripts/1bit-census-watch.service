@@ -20,7 +20,7 @@
 #     journalctl --user -u 1bit-census-watch -f
 #
 # ── Paths ─────────────────────────────────────────────────────────────────
-# %h/1bit-monster must match your checkout (repo root). Change if the clone
+# %h/1bit-MONSTER must match your checkout (repo root). Change if the clone
 # lives elsewhere. Logs go to ~/.1bit/logs (override with CENSUS_WATCH_LOG_DIR).
 
 [Unit]
@@ -30,8 +30,8 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/1bit-monster
-ExecStart=%h/1bit-monster/scripts/census-watch.sh
+WorkingDirectory=%h/1bit-MONSTER
+ExecStart=%h/1bit-MONSTER/scripts/census-watch.sh
 StandardOutput=journal
 StandardError=journal
 

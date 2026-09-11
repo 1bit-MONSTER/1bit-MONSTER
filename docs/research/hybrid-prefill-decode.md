@@ -7,6 +7,8 @@
 
 ## 0. Status delta vs the 09-01 body below
 
+- **2026-09-08 CORRECTION - decode correctness resolved; prior section-5.2 numbers describe a WRONG-FUNCTION decode**: the qwen3 HRX-device decode was numerically broken on the whole amd-hrx-graph lineage (fused attention-postprocess emitted before its k/v projection producers -> layer-0 all-zero K/V, layers 1+ garbage; plus a device-RMS defect for the 30B decode shapes). Fixes: fork scheduler dependency-reorder (fix/qwen3-decode-norm 0025a27c8 + 98ffb89cb, adopted by launch-collapse) makes DENSE qwen3 decode == CPU oracle at zero perf cost (0.6B/1.7B/4B, tg128 227-231 t/s unchanged); the 30B qwen3moe decode needs GGML_HRX_CPU_OPS=RMS_NORM (engine PR #2156 auto-sets it for qwen3moe) -> correct at ~9 tok/s (expert-matmul bound; ~same as the broken fused path). References verified: fork-CPU == vendored-CPU == vendored-HIP == device-with-fix (7407 304 12095 on strong prompts). Full localization on #2147. D2 handoff mechanics (blob import, determinism) were always clean; the decode it fed was not.
+- **Implication for the section-5.2 benchmark**: the recorded hybrid ~60s vs HIP-only 12.2s on the 30B >=2k/>=500 workload was measured on a wrong-function decode; with the CORRECT decode (RMS_NORM=CPU ~9 tok/s) the hybrid total is the same class (~55-60s: decode-bound) and still does NOT beat HIP-only 12.2s. The criterion needs >65 tok/s HRX0 decode of the 30B - not on any lane active path (decode-fusion needs launch-collapse; fork lane is routing dense decode to Vulkan). Perf criterion remains unmet on correct decode; the hybrid value case = small-ctx warm decode (section-0 decision domain).
 - **D2 build blocker RESOLVED (09-02)**: the vendored llama.cpp builds with GGML_HIP on TheRock — CMake rejects `hipcc` as CMAKE_HIP_COMPILER, but amdclang++ (Clang 23, /home/bcloud/therock100/bin/amdclang++) configures cleanly (HIP + hipBLAS found, gfx1151). Recipe + artifacts in docs/research/hip-prefill-lane-build-status.md (#2054). §2's "no HIP backend" is stale — see the build-status doc.
 - **State-format gate PASSED (09-02)**: vendored llama.cpp and the HRX bundle's libllama round-trip the full-state blob byte-identically (round-25j sessions, feat/hrx, FINDINGS.md). D2's binary question is answered — same-family state format.
 - **Lane runtime NOT yet trusted (09-02/09-03)**: the 09-02 direct-`llama_decode` harness showed an input-dependent, nondeterministic SIGSEGV (2-token prompts, CPU and HIP alike; gdb-serialized passes; NT=1/4 sometimes pass). 2026-09-03 re-probe (agent round): ~300 llama-bench pp2/tg2 evals clean on BOTH the clang build-hip binary and a fresh gcc build; no upstream ggml threadpool fix in the 08-16→09-03 window. Trigger is suspected in the harness's context config (n_ubatch/n_ctx/KV cache type/flash-attn) or the interposer-capture environment, not the stock llama_decode path. Recommended gate before trusting the lane: N×200 pp2/tg2 evals clean (see #1942).
@@ -139,14 +141,68 @@ HIP wins; short prompts amortize the handoff cost poorly).
    If the blob is rejected (size/version mismatch) → log the exact drift and
    fall back to D1; do NOT start D3.
 
-### 5.2 End-to-end (issue #1942 acceptance)
+### 5.2 End-to-end (issue #1942 acceptance — RE-SCOPED 2026-09-08, Option A)
 - One request: prompt prefill on HIP, continuation decode on HRX, correct
   continuation (no context loss) — D1 harness proves correctness; D2 is the
   shipped fast path.
-- Benchmark: total time beats either backend alone on the same model
-  (30B-A3B Q4_K_M, ≥2k-token prompt, ≥500-token continuation).
+- ~~Benchmark: total time beats either backend alone on the same model
+  (30B-A3B Q4_K_M, ≥2k-token prompt, ≥500-token continuation).~~
+  **Re-scoped by owner decision (Option A, 2026-09-08)**: the ≥2k/≥500
+  single-request wall-clock comparison is HIP-favored by construction on every
+  correct stack (HRX0 30B decode ~9-12 tok/s vs HIP ~65-70 tok/s; even the
+  historical best 40.9 tok/s cannot beat HIP decode on the 30B). The
+  criterion is re-defined to the hybrid's actual value case: **the D2 shipped
+  path delivers CORRECT warm decode on the HRX device** — HIP large-prefill →
+  llama_state handoff → HRX continuation from the imported context, correct
+  (matches CPU/vendored references) and at a viable rate, on the corrected
+  decode stack. Measured (correct decode, 30B ≥2k ctx):
+  - dense qwen3: decode == CPU oracle (fork scheduler reorder, adopted) at
+    227-231 t/s (0.6B) — the earlier throughput baselines were valid
+    measurements of a wrong-function decode; now correct at zero perf cost.
+  - 30B qwen3moe: decode correct via GGML_HRX_CPU_OPS=RMS_NORM (~9 tok/s,
+    expert-matmul bound — same class as the broken fused path; engine main
+    auto-sets it, PR #2156 / e10490af).
+  - Hybrid single-request totals (correct decode, 30B ≥2k + 500 cont): ~60 s
+    vs HIP-only 12.2 s — documented as HIP-favored; the hybrid's product
+    value = the small-ctx warm-decode / serving-stack dimension (§0), not the
+    ≥2k single-request wall clock.
 - Documented state-format compatibility: the round-trip result + the exact
-  `LLAMA_STATE_VERSION`/`LLAMA_SESSION_VERSION` pair.
+  `LLAMA_STATE_VERSION`/`LLAMA_SESSION_VERSION` pair (9/9).
+
+**Measured status 2026-09-11 (goal `mtwqm7qx-hlc0ht`) — the positive clause is NOT met on the shipped path, and
+what it was hiding was worse than a decode error.** Run through the engine with the shipped b66 bundle and the real
+2,940-token blob (`~/hrx-2145/hyp_blob.bin`, session v9), model Qwen3-Coder-30B-A3B-Instruct-Q4_K_M, one greedy
+`X-Backend: hrx_gpu` request:
+
+| binary | `HRX_MAX_CTX_TOKENS` | HRX graph saw | response |
+|---|---|---|---|
+| pre-fix `main` (`598fa66ca`) | 2048 | **no `FLASH_ATTN_EXT` node, no 3072 KV** | **`finish_reason: stop`** |
+| fix (PR #2203, `80a8a81eb`) | 2048 | the imported ~3k KV (re-imported) | explicit `REFUSING decode: context 2940 >= HRX_MAX_CTX_TOKENS (2048) … (issue #2145)` |
+| fix (PR #2203, `80a8a81eb`) | 0 | `unsupported HRX node 25: FLASH_ATTN_EXT … f16[128,3072,4,1]` | `compute status: -1` |
+
+- **Pre-fix the lane reported success while decoding from an EMPTY KV.** `HrxBackend::reset()` recreates the
+  in-process context (`pos = 0`), so the `HRX_STATE_FILE` import was discarded before the first decode: the graph
+  never touched the imported context, yet the request returned `stop`. That is **context loss reported as success**
+  — the §5.2 clause "correct continuation (no context loss)" defeated invisibly. The PR #2203 re-import (landed as `80a8a81eb`) removes it.
+- **The positive clause cannot be met on this box as configured.** The only engine-loadable, self-contained HRX lib
+  set is the shipped b66 bundle, and its HRX over-claims `FLASH_ATTN_EXT` above KV 2048; the named GET_ROWS-capable
+  local build segfaults the *engine* after bundle init (split libs — fine as the `rt_b66` harness lane, not as an
+  engine lane). So no bundle here decodes a >2048-token imported context on the HRX device.
+- **RE-OPEN TRIGGERS (either):** (a) the upstream bundle repin (#1945) — an HRX that supports >2048 KV; (b) the HRX2
+  decode-ADD coverage named in the 2026-09-08 decision. Re-run the matrix above with the pinned blob; `HRX_MAX_CTX_TOKENS=0`
+  exposes the raw lane.
+- **Artifact provenance — mandatory for any re-run (added 2026-09-11, after the acceptance run exposed it).** The import
+  *mechanism* is sound: same-binary controls on the reference backend (`rt_q3fix`, `GGML_HRX_DISABLE=1`) reproduce the
+  native continuation **exactly** — 16/16 on a 0.6B session, and **16/16 on a fresh 30B session at 2,940 stored tokens**
+  (`exp` → save → `run`). But **the blob the 2026-09-08/11 analyses used does not round-trip**: importing
+  `~/hrx-2145/hyp_blob.bin` degenerates to `R 15` × 12 **on the CPU oracle too**, while a fresh session from the same
+  prompt has the same header (`first: 2 49627 855`) and round-trips correctly. No artifact in that directory records a
+  30B import continuation at all (`h30_hrxnat.out` = 100 `N`, 0 `R`; the only `R` lines anywhere are `d500.out` =
+  `R 15` × 500). So a version match (`LLAMA_SESSION_VERSION` 9/9) is **not** sufficient — verify the blob before trusting it:
+  run `rt_q3fix exp <model> <blob> @prompt_2k.txt 16` then `rt_q3fix run <model> <blob> "" 16` with
+  `RT_NGL=0 RT_NC=4096 GGML_HRX_DISABLE=1` and require `N` == `R`. Known-good reference created exactly this way:
+  `~/hrx-2145/s52_ref_2940t.bin` (2,940 tokens, md5 `8674b97900e5884af81afe73008512fe`, `exp`/`run` identical 16/16;
+  `prompt_2k.txt` md5 `e9a198613a82f252c06f00b0bb194f72`; `q3normfix` `libllama.so.0` md5 `4f04a9f81c5fea15acf402561bb1fee2`).
 
 ## 6. Open questions
 
