@@ -101,6 +101,7 @@ struct Bf16Mm {
     size_t w_cache_elems = 0;
     std::unique_ptr<buffer<uint16_t>> a_cache, c_cache;
     size_t a_cache_elems = 0, c_cache_elems = 0;
+    std::vector<uint16_t> hAb, hCb;   // host-side 2-batch scratch, reused across calls
     // Device-side dequant W cache: the prefill dequants each projection ONCE
     // into a persistent device BO and the GEMM reads it directly (no host
     // round-trip). Index into w_dev is the opaque handle.
@@ -317,14 +318,17 @@ struct Bf16Mm {
 
     /// bf16 GEMM reading W directly from a device buffer (2-batch M-split).
     void run_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
-        std::vector<uint16_t> Ab(256 * K, 0), Cb(256 * N, 0);
+        if (hAb.size() < 256 * K) hAb.resize(256 * K);
+        if (hCb.size() < 256 * N) hCb.resize(256 * N);
+        uint16_t* Ab = hAb.data();
+        uint16_t* Cb = hCb.data();
         for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
-        gemm_dev_once(Cb.data(), Ab.data(), W_idx, K, N, woff);
-        memcpy(C, Cb.data(), 128 * N * 2);
-        memset(Ab.data(), 0, 256 * K * 2);
+        gemm_dev_once(Cb, Ab, W_idx, K, N, woff);
+        memcpy(C, Cb, 128 * N * 2);
+        memset(Ab, 0, 256 * K * 2);
         for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
-        gemm_dev_once(Cb.data(), Ab.data(), W_idx, K, N, woff);
-        memcpy(C + 128 * N, Cb.data(), 128 * N * 2);
+        gemm_dev_once(Cb, Ab, W_idx, K, N, woff);
+        memcpy(C + 128 * N, Cb, 128 * N * 2);
     }
 
     void gemm_dev_once(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
