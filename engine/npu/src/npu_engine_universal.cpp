@@ -3685,7 +3685,7 @@ struct Bf16Ctx {
             auto t0 = std::chrono::steady_clock::now();
             std::vector<float> bh(256 * H), bqo(256 * qkvn), bat(256 * NH * HD), boo(256 * H),
                                bgt(256 * 2 * IM), bsu(256 * IM), bdw(256 * H), bsb(256 * H);
-            std::vector<uint16_t> bA(256 * 3072), bC(256 * 2 * IM);
+            std::vector<uint16_t> bA(256 * std::max({H, qout, IM})), bC(256 * 2 * IM);
             std::vector<uint16_t> bActQ(256 * qout), bAttnOut(256 * qout), bKv(33554432 / 2);
             memset(bActQ.data(), 0, 256 * qout * 2);
             memset(bKv.data(), 0, 33554432);
