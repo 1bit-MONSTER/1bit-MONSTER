@@ -261,7 +261,10 @@ check_env
 
 # Set up toolchain paths
 export PATH="${AIE_TOOLS_DIR}/bin:$PATH"
-export PYTHONPATH="${AIE_TOOLS_DIR}/python:$PYTHONPATH"
+# ${PYTHONPATH:-}: the script sets -u (line 24), so an unset PYTHONPATH aborts here with "PYTHONPATH: unbound
+# variable" -- a one-word failure that reads like a toolchain problem. The other build scripts in this tree already use
+# the :- idiom.
+export PYTHONPATH="${AIE_TOOLS_DIR}/python:${PYTHONPATH:-}"
 mkdir -p "$INT8_DIR" "$mk_dir"
 
 build() {
