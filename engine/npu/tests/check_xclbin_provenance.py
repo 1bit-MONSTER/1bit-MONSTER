@@ -210,10 +210,12 @@ def observe(root: Path) -> dict:
             redundant_bytes += size * (len(entry["paths"]) - 1)
 
     # OBSERVED, never asserted: the model-tagged op set pairs final_i8_<op>_<model>.xclbin with
-    # insts_i8_<op>_<model>.txt. ATTN has no insts - the engine does not reference it on this
-    # path (attention is not a NPU kernel here) - so a pairing ASSERTION would encode a
-    # path-variant as an invariant, the same error class as asserting a link's resolution state.
-    # Recorded as information so an inconsistency is visible without being a verdict.
+    # insts_i8_<op>_<model>.txt. ATTN has no insts, and no engine in the tree references ATTN at
+    # all (grep for final_i8_ATTN/insts_i8_ATTN over engine/ = 0; the only engines to name ops are
+    # npu_engine_fused/gpurender/overlap and the two zero_copy tests for GU+D, and
+    # npu_engine_spec for QKV+O) - so pairing was never an invariant of the tree, and asserting
+    # it would encode a non-invariant as one. Same error class as asserting a link's resolution
+    # state. Recorded as information so an inconsistency is visible without being a verdict.
     xclbin_ops = {}
     for p_ in regular:
         name = os.path.basename(p_)
