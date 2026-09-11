@@ -135,24 +135,26 @@ integration in progress).*
 
 ## FLM-Orchestration Parity (decode / prefill @1k, 2026-09-11)
 
-Full-catalog parity of the native engine's FLM-orchestration path
-(`NPU_FLM_PREFILL`/`NPU_FLM_DECODE`) vs the FLM published Kraken-Point tables.
-**Decode trails by a widening cross-hardware gap (Strix-Halo vs Kraken-Point) —
-FLM's own on-box numbers trail the same way; prefill is near-parity or beats.**
-The MoE + remaining families run v0.9.46 libs (the v1.0.x MoE bf16-GDN regression
-is v1.0.x-only); dense Qwen3 runs v1.0.4. Source of truth: `site/benchmarks.json`
-(`flm_parity`).
+> ⚠️ **Not the objective.** This records the native engine's FLM-*orchestration* path
+> (`NPU_FLM_PREFILL`/`NPU_FLM_DECODE`), which invokes **FLM's own NPU libraries**
+> (v0.9.46 for MoE + remaining families, v1.0.4 for dense Qwen3) — it is FLM re-run on
+> this box, not 1bit-MONSTER's native int8/bf16 backend, so it cannot "meet-or-beat" FLM
+> by construction. The native backend is 6–21× behind on prefill/TTFT
+> (see `RESULTS-qwen3-dense-parity-2026-09-10.md`). Reference bar = FLM's **published**
+> Kraken-Point tables. Decode trails the published bar for nearly every model (Strix-Halo
+> vs Kraken-Point cross-hardware gap; FLM's own on-box numbers trail identically).
+> Source of truth: `site/benchmarks.json` (`flm_parity`).
 
-| Model | decode (ours/pub) | prefill (ours/pub) |
-|---|---:|---:|
-| Qwen3-0.6B | 74 / 66.5 ✓ | 1370 / 1494 |
-| Qwen3-1.7B | 38 / 40.2 | 971 / 956 ✓ |
-| Qwen3-4B | 18 / 19.6 | 510 / 509 ✓ |
-| Qwen3-8B | 11 / 11.9 | 370 / 357 ✓ |
-| Qwen3.6-35B-A3B | 13.5 / 13.65 | 125.0 / 78.98 ✓ |
-| Llama-3.2-1B | 56 / 64.5 | 1515 / 1686 |
-| Gemma4-E2B | 21 / 22.6 | 633 / 721 |
-| Gemma4-E4B | 12 / 12.6 | 435 / 441 |
-| Phi4-mini | 20 / 21.8 | 637 / 643 |
-| Nanbeige4.1-3B | 21 / 23.5 | 565 / 612 |
-| LFM2-1.2B | 62 / 62 ✓ | 1587 / 1537 ✓ |
+| Model | decode (ours/pub) | prefill (ours/pub) | TTFT @1k (ours/pub) |
+|---|---:|---:|---:|
+| Qwen3-0.6B | 74 / 66.5 ✓ | 1370 / 1494 | 0.73 / 0.67 s |
+| Qwen3-1.7B | 38 / 40.2 | 971 / 956 ✓ | 1.03 / 1.05 s |
+| Qwen3-4B | 18 / 19.6 | 510 / 509 ✓ | 1.96 / 1.96 s |
+| Qwen3-8B | 11 / 11.9 | 370 / 357 ✓ | 2.70 / 2.80 s |
+| Qwen3.6-35B-A3B | 13.5 / 17.48 | 125.0 / 102.45 ✓ | 8.00 / 9.76 s |
+| Llama-3.2-1B | 56 / 64.5 | 1515 / 1686 | 0.66 / 0.59 s |
+| Gemma4-E2B | 21 / 22.6 | 633 / 721 | 1.58 / 1.39 s |
+| Gemma4-E4B | 12 / 12.6 | 435 / 441 | 2.30 / 2.27 s |
+| Phi4-mini | 20 / 21.8 | 637 / 643 | 1.57 / 1.56 s |
+| Nanbeige4.1-3B | 21 / 23.5 | 565 / 612 | 1.77 / 1.63 s |
+| LFM2-1.2B | 62 / 62 ✓ | 1587 / 1537 ✓ | 0.63 / 0.65 s |

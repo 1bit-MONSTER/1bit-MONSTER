@@ -208,3 +208,14 @@ npu-infer/tools/gen_layer_elfs
 npu-infer/tools/capture/run_qwen3_npu
 npu-infer/tools/capture/run_qwen3_prefill
 npu-infer/tools/capture/gen_mm_seq
+
+# capture/decode tool binaries (built from the tracked .cpp sources)
+npu-infer/tools/capture/dump_kv_offsets
+npu-infer/tools/capture/gen_mha_dump
+npu-infer/tools/capture/gen_mha_dump2
+npu-infer/tools/capture/gen_mha_mha
+npu-infer/tools/capture/replay_attn
+npu-infer/tools/capture/test_attn
+npu-infer/tools/capture/test_attn2
+npu-infer/tools/capture/test_attn3
+npu-infer/tools/decode_txn

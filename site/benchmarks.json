@@ -428,7 +428,7 @@
   "gpu": "Radeon 8060S"
  },
  "flm_parity": {
-  "_note": "FLM-orchestration parity (NPU_FLM_PREFILL/NPU_FLM_DECODE via v0.9.46 libs for MoE + remaining families, v1.0.4 for dense Qwen3). Bars = FLM published Kraken-Point tables; decode gap is the Strix-Halo vs Kraken-Point hardware ceiling, not native overhead.",
+  "_note": "FLM-ORCHESTRATION parity only (NPU_FLM_PREFILL/NPU_FLM_DECODE invoke FLM's own libqwen3_npu/v0.9.46/v1.0.4 NPU libraries — this is NOT the native int8/bf16 backend). Reference bar = FLM's published Kraken-Point tables (amd-oss). Decode trails the published bar for nearly every model (Strix-Halo vs Kraken-Point cross-hardware gap; FLM's own on-box numbers trail identically). The NATIVE backend (int8 GEMM) is 6-21x behind FLM on prefill/TTFT and does not meet this bar — see RESULTS-qwen3-dense-parity-2026-09-10.md. Therefore this table does NOT satisfy the objective 'native NPU backend meet-or-beat FLM'; it records the orchestration-proxy numbers honestly.",
   "updated": "2026-09-11",
   "models": {
    "qwen3_0_6b": {
@@ -436,78 +436,101 @@
     "decode_pub": 66.5,
     "prefill_tok_s": 1370,
     "prefill_pub": 1494,
-    "verdict": "decode beats, prefill -8%"
+    "verdict": "decode +11% vs published, prefill -8% vs published, TTFT 0.73s vs 0.67s",
+    "ttft_1k_s": 0.73,
+    "ttft_pub_1k_s": 0.669
    },
    "qwen3_1_7b": {
     "decode_tok_s": 38,
     "decode_pub": 40.2,
     "prefill_tok_s": 971,
     "prefill_pub": 956,
-    "verdict": "prefill beats, decode -5%"
+    "verdict": "decode -5% vs published, prefill +2% vs published, TTFT 1.03s vs 1.05s",
+    "ttft_1k_s": 1.03,
+    "ttft_pub_1k_s": 1.046
    },
    "qwen3_4b": {
     "decode_tok_s": 18,
     "decode_pub": 19.6,
     "prefill_tok_s": 510,
     "prefill_pub": 509,
-    "verdict": "prefill beats, decode -8%"
+    "verdict": "decode -8% vs published, prefill +0% vs published, TTFT 1.96s vs 1.96s",
+    "ttft_1k_s": 1.961,
+    "ttft_pub_1k_s": 1.965
    },
    "qwen3_8b": {
     "decode_tok_s": 11,
     "decode_pub": 11.9,
     "prefill_tok_s": 370,
     "prefill_pub": 357,
-    "verdict": "prefill beats, decode -8%"
+    "verdict": "decode -8% vs published, prefill +4% vs published, TTFT 2.7s vs 2.8s",
+    "ttft_1k_s": 2.703,
+    "ttft_pub_1k_s": 2.801
    },
    "qwen3_6_35b_a3b": {
     "decode_tok_s": 13.5,
-    "decode_pub": 13.65,
+    "decode_pub": 17.48,
     "prefill_tok_s": 125.0,
-    "prefill_pub": 78.98,
-    "verdict": "prefill +58% beats, decode -1% parity (v0.9.46 bar 13.65/78.98)"
+    "prefill_pub": 102.45,
+    "verdict": "decode -23% vs published, prefill +22% vs published, TTFT 8.0s vs 9.76s",
+    "ttft_1k_s": 8.0,
+    "ttft_pub_1k_s": 9.761
    },
    "llama3_2_1b": {
     "decode_tok_s": 56,
     "decode_pub": 64.5,
     "prefill_tok_s": 1515,
     "prefill_pub": 1686,
-    "verdict": "decode -13%, prefill -10%"
+    "verdict": "decode -13% vs published, prefill -10% vs published, TTFT 0.66s vs 0.59s",
+    "ttft_1k_s": 0.66,
+    "ttft_pub_1k_s": 0.593
    },
    "gemma4_e2b": {
     "decode_tok_s": 21,
     "decode_pub": 22.6,
     "prefill_tok_s": 633,
     "prefill_pub": 721,
-    "verdict": "decode beats 8k-32k, prefill -12%"
+    "verdict": "decode -7% vs published, prefill -12% vs published, TTFT 1.58s vs 1.39s",
+    "ttft_1k_s": 1.58,
+    "ttft_pub_1k_s": 1.387
    },
    "gemma4_e4b": {
     "decode_tok_s": 12,
     "decode_pub": 12.6,
     "prefill_tok_s": 435,
     "prefill_pub": 441,
-    "verdict": "decode -5%, prefill -1%"
+    "verdict": "decode -5% vs published, prefill -1% vs published, TTFT 2.3s vs 2.27s",
+    "ttft_1k_s": 2.299,
+    "ttft_pub_1k_s": 2.268
    },
    "phi4_mini": {
     "decode_tok_s": 20,
     "decode_pub": 21.8,
     "prefill_tok_s": 637,
     "prefill_pub": 643,
-    "verdict": "decode -8%, prefill -1%"
+    "verdict": "decode -8% vs published, prefill -1% vs published, TTFT 1.57s vs 1.56s",
+    "ttft_1k_s": 1.57,
+    "ttft_pub_1k_s": 1.555
    },
    "nanbeige4_1_3b": {
     "decode_tok_s": 21,
     "decode_pub": 23.5,
     "prefill_tok_s": 565,
     "prefill_pub": 612,
-    "verdict": "decode -11%, prefill -8% (4k exact)"
+    "verdict": "decode -11% vs published, prefill -8% vs published, TTFT 1.77s vs 1.63s",
+    "ttft_1k_s": 1.77,
+    "ttft_pub_1k_s": 1.634
    },
    "lfm2_1_2b": {
     "decode_tok_s": 62,
     "decode_pub": 62,
     "prefill_tok_s": 1587,
     "prefill_pub": 1537,
-    "verdict": "decode exact @1k, prefill +3% beats"
+    "verdict": "decode +0% vs published, prefill +3% vs published, TTFT 0.63s vs 0.65s",
+    "ttft_1k_s": 0.63,
+    "ttft_pub_1k_s": 0.651
    }
-  }
+  },
+  "_metrics": "decode_tok_s / prefill_tok_s = measured; decode_pub / prefill_pub = FLM published @1k; ttft_1k_s = 1000/prefill."
  }
 }

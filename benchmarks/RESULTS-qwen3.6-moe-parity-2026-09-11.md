@@ -49,20 +49,28 @@ time out with `ERT_CMD_STATE_TIMEOUT`). Headers must be the v0.9.46 set (the
 | 16k | 89.4 | **11.2** |
 | 32k | 106.2| **9.4**  |
 
-| Context | Ours decode | 07-30 v0.9.46 | Corrected pub (13.65) |
-|---------|------------:|--------------:|----------------------|
-| 1k  | 13.5 | 11.66 | 13.65 → **−1%** (parity) |
-| 2k  | 13.3 | 12.17 | — |
-| 4k  | 13.0 | 11.85 | — |
-| 8k  | 12.3 | 11.30 | — |
-| 16k | 11.2 | 10.34 | — |
-| 32k | 9.4  | 8.82  | — |
+| Context | Ours decode | 07-30 v0.9.46 on-box | Published (FLM Kraken) |
+|---------|------------:|---------------------:|-----------------------:|
+| 1k  | 13.5 | 11.66 | 17.48 → **−23%** |
+| 2k  | 13.3 | 12.17 | 17.16 → **−22%** |
+| 4k  | 13.0 | 11.85 | 16.59 → **−22%** |
+| 8k  | 12.3 | 11.30 | 15.6  → **−21%** |
+| 16k | 11.2 | 10.34 | 13.76 → **−19%** |
+| 32k | 9.4  | 8.82  | 11.19 → **−16%** |
 
-- **Decode beats 07-30 on-box v0.9.46 at every context length** (+6% to +16%),
-  and is at parity with the corrected published 13.65 @1k.
+- **Decode beats the 07-30 on-box v0.9.46 at every context length** (+6% to +16%),
+  but **trails the published `qwen3.6_results.md` bar (17.48 @1k) by −16% to −23%** —
+  the Strix-Halo vs Kraken-Point cross-hardware gap (FLM's own on-box v0.9.46 trails the
+  same published bar by −20% @1k).
 
-## Note
+## Note (honest bar — the published table, not a "corrected" one)
 
-The contract's `qwen3.6_results.md` (decode 17.48 / prefill 102.45 @1k) is stale —
-those numbers match neither v0.9.46's published 13.65/78.98 nor any v1.0.x build.
-The corrected v0.9.46 bar is **13.65 decode / 78.98 prefill @1k**.
+The objective's reference bar is FLM's **published** `qwen3.6_results.md` table:
+**decode 17.48 / prefill 102.45 @1k** (decode 17.48→11.19, prefill 102.45→280.97 across
+1k–32k). Against that published bar: **prefill beats @1k–8k (125/178/224/254 vs
+102.45/144.8/202.45/245.99 = +22%/+23%/+11%/+3%) and trails @16k–32k (−3%/−8%);
+decode trails at every context (−16%…−23%).** The "07-30 v0.9.46 on-box" column
+(13.65/78.98) is FLM re-run on this Strix-Halo box, NOT the published bar — it is kept
+only to separate the cross-hardware gap from any native overhead. This run drives FLM's
+own v0.9.46 libs through the native engine (orchestration), so it cannot "meet-or-beat"
+FLM by construction; it records where this box lands relative to the published table.
