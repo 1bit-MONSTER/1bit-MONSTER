@@ -2,7 +2,7 @@
 // GitHub API — no mocks — so the check that caught the PKCS#1 import bug runs on
 // every change. Exits 0 with a notice when the App secrets are absent (forks).
 //
-// Usage: APP_ID=… APP_PRIVATE_KEY=… AUTH_TOKEN=… node site/functions/gh-auth.test.mjs
+// Usage: APP_ID=… APP_PRIVATE_KEY=… AUTH_TOKEN=… node tests/gh-auth.test.mjs
 import { copyFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 // node reads a bare .js in this tree as CJS, so import a copy with an .mjs name.
 const tmp = mkdtempSync(join(tmpdir(), 'gh-auth-test-'));
-copyFileSync(join(here, 'gh-auth.js'), join(tmp, 'gh-auth.mjs'));
+copyFileSync(join(here, '..', 'site', 'functions', 'gh-auth.js'), join(tmp, 'gh-auth.mjs'));
 const { onRequest } = await import(join(tmp, 'gh-auth.mjs'));
 
 const env = {

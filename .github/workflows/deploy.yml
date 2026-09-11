@@ -66,6 +66,18 @@ jobs:
           done
           echo "gh-auth secrets set on Pages project 1bit-monster (values not printed)"
 
+      - name: Stage the Pages Function at the project root
+        # Cloudflare compiles Pages Functions from `functions/` at the project
+        # root, not from inside the uploaded directory -- and this repo's Scope
+        # Guard keeps the set of committed top-level paths fixed, which is a gate
+        # the operator owns, not something a feature PR should edit. So the handler
+        # is committed under site/ (in scope) and materialised here for the deploy.
+        run: |
+          set -euo pipefail
+          mkdir -p functions
+          cp site/functions/gh-auth.js functions/gh-auth.js
+          ls -l functions/
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0  # v4
         with:
