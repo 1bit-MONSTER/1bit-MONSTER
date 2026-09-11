@@ -352,10 +352,35 @@ struct NPUBackend : Backend {
             return false;
         }
 
-        const char* model_path = getenv("NPU_MODEL_PATH");
+        // R8 (goal mtvd3pmx / issue #2193): the artifact the RESOLVER resolved wins.
+        // The paragraph above states the intent, but the path handling never implemented
+        // it — this lane looked only at NPU_MODEL_PATH and then at auto-discovery, so a
+        // request naming one artifact was answered by whichever file the search happened
+        // to find. Measured: `-m ~/models/zaya1-8b.q4nx` loaded
+        // `~/.config/flm/models/Llama-3.2-1B-NPU2/model.q4nx` and reported Zaya's own
+        // dimensions over it. Precedence now: the requested artifact (`-m`), then the
+        // explicit NPU_MODEL_PATH override, then discovery. If the override disagrees with
+        // the request, the REQUEST wins and the conflict is printed — the point of the
+        // goal is that a request is answered by the artifact it named.
+        std::string resolved_model_path;
+        const char* model_path = nullptr;
+        if (!cfg.model_path.empty()) {
+            resolved_model_path = cfg.model_path;
+            model_path = resolved_model_path.c_str();
+            const char* env_mp = getenv("NPU_MODEL_PATH");
+            if (env_mp && env_mp[0] && resolved_model_path != env_mp) {
+                fprintf(stderr, "NPU: NPU_MODEL_PATH=%s conflicts with the requested artifact %s "
+                                "— serving the REQUESTED artifact (R8)\n",
+                        env_mp, resolved_model_path.c_str());
+            }
+        } else if (const char* env_mp = getenv("NPU_MODEL_PATH")) {
+            resolved_model_path = env_mp;
+            model_path = resolved_model_path.c_str();
+        }
         std::string discovered_path;
         if (!model_path) {
             // Auto-discovery: search common paths for model.q4nx (#444)
+            // Only reached when neither `-m` nor NPU_MODEL_PATH named an artifact.
             // 1. Current dir + common paths
             const char* home_model = getenv("HOME");
             static std::string home_model_path = (home_model && home_model[0]) ? std::string(home_model) + "/.local/share/1bit-monster/weights/model.q4nx" : "";
