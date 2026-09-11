@@ -62,7 +62,11 @@ extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* p
         for (size_t j = 1; j < out.size(); j++) {
             for (int k = 0; k < 5; k++) if (out[j] > out[top[k]]) { for (int m = 4; m > k; m--) top[m] = top[m-1]; top[k] = (int)j; break; }
         }
-        fprintf(stderr, "[flm_prefill] out=%zu best=%d top=%d,%d,%d,%d,%d\n", out.size(), best, top[0], top[1], top[2], top[3], top[4]);
+        const bf16* lg = out.data();
+        fprintf(stderr, "[flm_prefill] out=%zu best=%d top=%d,%d,%d,%d,%d | lg[0..7]=%.4g,%.4g,%.4g,%.4g,%.4g,%.4g,%.4g,%.4g\n",
+                out.size(), best, top[0], top[1], top[2], top[3], top[4],
+                (float)lg[0], (float)lg[1], (float)lg[2], (float)lg[3],
+                (float)lg[4], (float)lg[5], (float)lg[6], (float)lg[7]);
     }
     *boot_token = best;
     return 0;
