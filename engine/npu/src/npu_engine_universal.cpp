@@ -343,6 +343,18 @@ static inline void ra2(float*x, int p, int rope_dim, int slot = 0) {
     }
 }
 static inline float silu_f(float x){return x/(1.0f+expf(-x));}
+// Fast sigmoid via a Padé tanh rational (sigmoid = 0.5*(1+tanh(x/2))). Max
+// abs err 7.5e-6 over [-8,8] — far under bf16 precision. Vectorizable (no
+// LUT gather, no libm call), replaces the per-element expf in the dense
+// bf16-prefill GU SiLU (22M+ expf per 256-token batch).
+static inline float sigmoid_fast(float x){
+    float y=0.5f*x; float ax=y<0.0f?-y:y;
+    if(ax>4.0f) return y>0.0f?1.0f:0.0f;
+    float y2=y*y;
+    float num=y*(135135.0f+17325.0f*y2+378.0f*y2*y2+y2*y2*y2);
+    float den=135135.0f+62370.0f*y2+3150.0f*y2*y2+28.0f*y2*y2*y2;
+    return 0.5f+0.5f*(num/den);
+}
 static inline float softplus_f(float x){return x>20.0f?x:log1pf(expf(x));}
 // Safety net: if glibc's malloc detects heap corruption (free(): invalid size)
 // SIGABRT handler: prints diagnostic, then re-raises for default core dump
@@ -3814,7 +3826,7 @@ struct Bf16Ctx {
                 }
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < IM; i++) {
                     float gv = bgt[pi * 2 * IM + i]; if (!std::isfinite(gv)) gv = 0;
-                    bsu[pi * IM + i] = (gv / (1.0f + expf(-gv))) * bgt[pi * 2 * IM + IM + i];
+                    bsu[pi * IM + i] = gv * sigmoid_fast(gv) * bgt[pi * 2 * IM + IM + i];
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fg = fopen("/tmp/bf16_l0_gu.bin", "wb"); if (fg) { fwrite(bgt.data(), 4, 2 * IM, fg); fclose(fg); } }
                 for (int k = 0; k < 256; k++) for (int j = 0; j < IM; j++) bA[k * IM + j] = f32_to_bf16(bsu[k * IM + j]);
