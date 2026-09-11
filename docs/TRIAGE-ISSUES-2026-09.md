@@ -57,7 +57,7 @@ the single-quoted string early — the shell then tried to execute the
 | #1776 (Zaya decode CPU-attention-bound) | med | Status corrected: the runtime-layer path (Qwen3 npu-infer) does **not** change the standalone Zaya path — CCA-attention-on-NPU remains the open lever. |
 | #1831 (HIP cannot run qwen3_5_moe 35B) | high | Scoped: GDN math has NPU-side references (`npu_engine_universal.cpp`, npu-infer 35B layout work) to port into `backend_hip_1bp` behind the qwen35 gate (fused QKV + GatedDeltaNet linear attention; `full_attention_interval=4` schedule). |
 | #1945 (HRX upstream watch) | med | No signal: llama.cpp #27218 still draft (08-31), hrx-system stuck at v0.3.0 (May). |
-| #1866 (llvm-aie -O0 immediate crash) | med | Upstream fix not landed (fetched 09-02; newest = AIE2PS accumulator-spill only). -O1 workaround stands. |
+| #1866 (llvm-aie -O0 immediate crash) | med | **Upstream-only watch (re-verified 2026-09-11 on `main` @ `6963fc694`)**: the `-O0` crash is unchanged, but **nothing in-repo requires `-O0`** (builds pin -O2/-O1) and its recorded impact is stale (#1864 closed 2026-08-30). Re-check when llvm-aie #1155/#1276 land. |
 | #1956 (C++26 toolchain watch) | med | No signal: local g++ 15.2.0, `std::inplace_vector`/reflection still gated on g++16/libstdc++16. |
 | #1907 (baretorch cs_lrad) | med | Unchanged — XL engine feature (registry token + safe refusal already landed). |
 | #1934 (int4 fused FFN corr cap) | high | Host contracts all merged (#1978/#1983/#1984/#1985/#1986); remaining = `npu_state_*` production wiring of the single-launch i4 fused path (auto-select + GuI4Pack bf16-pair packing for asymmetric-zp models) + silicon parity gate — multi-session NPU integration, still open. |
