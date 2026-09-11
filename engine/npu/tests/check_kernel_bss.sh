@@ -33,7 +33,7 @@
 #        2 = toolchain/environment problem — not a verdict about the kernel
 set -euo pipefail
 
-REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+REPO="$(cd "$(dirname "$0")/../../.." && pwd)"   # engine/npu/tests -> repo root
 G="$REPO/engine/npu/generators"
 
 derive() { ls -d "$@" 2>/dev/null | head -n1 || true; }
