@@ -23,6 +23,7 @@
 #pragma once
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 
 namespace gdn {
 
@@ -39,6 +40,23 @@ static constexpr float EPS = 1e-6f;
 inline float silu(float x) { return x / (1.0f + std::exp(-x)); }
 inline float sigmoid(float x) { return 1.0f / (1.0f + std::exp(-x)); }
 inline float softplus(float x) { return x > 20.0f ? x : std::log1p(std::exp(x)); }
+
+// bf16 <-> f32 (biovault::bfloat16_t is uint16_t storing the high 16 bits).
+inline float bf16_to_f32(uint16_t v) {
+    uint32_t u = (uint32_t)v << 16;
+    float f;
+    __builtin_memcpy(&f, &u, 4);
+    return f;
+}
+inline uint16_t f32_to_bf16(float f) {
+    uint32_t u;
+    __builtin_memcpy(&u, &f, 4);
+    // round-to-nearest-even on the low 16 bits
+    uint32_t lsb = (u >> 16) & 1u;
+    uint32_t bias = 0x7fffu + lsb;
+    u += bias;
+    return (uint16_t)(u >> 16);
+}
 
 // Recurrence core: takes pre-computed per-head g (decay log) and beta gates.
 inline void recurrence_core(const float* q2, const float* k2, const float* v,
@@ -140,6 +158,20 @@ inline void ssm_step_gb(const float* qkv, const float* g, const float* beta,
     recurrence_core(q2, k2, qkv + 2 * KEY_DIM, g, beta, z, norm_w, state, core);
 }
 
+// Same as ssm_step_gb but with bf16 in/out buffers (the lib's conv-qkv, z,
+// norm_w, and core are bf16; only state/g/beta are f32).
+inline void ssm_step_gb_bf16(const uint16_t* qkv, const float* g, const float* beta,
+                             const uint16_t* z, const uint16_t* norm_w,
+                             float* state, uint16_t* core) {
+    float qkv_f[CONV_DIM], z_f[VALUE_DIM], norm_f[HEAD_V];
+    for (int i = 0; i < CONV_DIM; i++) qkv_f[i] = bf16_to_f32(qkv[i]);
+    for (int i = 0; i < VALUE_DIM; i++) z_f[i] = bf16_to_f32(z[i]);
+    for (int i = 0; i < HEAD_V; i++) norm_f[i] = bf16_to_f32(norm_w[i]);
+    float core_f[VALUE_DIM];
+    ssm_step_gb(qkv_f, g, beta, z_f, norm_f, state, core_f);
+    for (int i = 0; i < VALUE_DIM; i++) core[i] = f32_to_bf16(core_f[i]);
+}
+
 }  // namespace gdn
 
 // C ABI so a patched libqwen3_6_moe_npu.so can call this via a single rel32
@@ -162,5 +194,11 @@ void gdn_host_ssm_step_gb(const float* qkv, const float* g, const float* beta,
                           const float* z, const float* norm_w,
                           float* state, float* core) {
     gdn::ssm_step_gb(qkv, g, beta, z, norm_w, state, core);
+}
+
+void gdn_host_ssm_step_gb_bf16(const uint16_t* qkv, const float* g, const float* beta,
+                               const uint16_t* z, const uint16_t* norm_w,
+                               float* state, uint16_t* core) {
+    gdn::ssm_step_gb_bf16(qkv, g, beta, z, norm_w, state, core);
 }
 }
