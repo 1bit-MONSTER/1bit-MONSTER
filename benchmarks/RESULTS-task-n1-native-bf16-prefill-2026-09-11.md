@@ -9,7 +9,7 @@ engine's own loop, NOT `NPU_FLM_PREFILL`). This is the real native-path prefill
 
 | metric | value |
 |---|---|
-| prefill total | **~441 ms / 256 tok = ~580 tok/s** (11 opts: async 2-batch GEMM + full 2-batch software pipeline across QKV/O/GU/D) |
+| prefill total | **~450 ms / 256 tok = ~570 tok/s** (12 opts: async 2-batch GEMM, 2-batch pipeline, RMSNorm+bf16 fusion) |
 | — QKV GEMMs (tg) | 52 ms (was 97 — folded Q/K/V into one N=4096 GEMM) |
 | — attention + host norm/RoPE (ta) | 137 ms |
 | — O/GU/D GEMMs + f32↔bf16 conversions + SiLU (tc−tg−ta) | 463 ms |
@@ -69,9 +69,11 @@ fully reach, FLM's own orchestrated prefill without adopting its schedule.
 
 ## Final assessment (2026-09-11)
 
-Eleven parity-preserving optimizations took the native bf16 prefill from 367 to
-~580 tok/s (incl. the async 2-batch GEMM + a software pipeline overlapping the
-q/k-norm/SiLU/residual host math against the adjacent kernels). The remaining cost is: GEMMs ~210 ms (near the mm.xclbin throughput
+Twelve parity-preserving optimizations took the native bf16 prefill from 367 to
+~570 tok/s (async 2-batch GEMM, a 2-batch software pipeline, GEMM fusion, GU
+concatenation, and RMSNorm+bf16 fusion). The remaining ~2.2× gap to on-box FLM is
+the f32↔bf16 conversion volume + the host RMSNorm/RoPE/SiLU, which only NPU
+offload (new xclbins, multi-week) can remove. The remaining cost is: GEMMs ~210 ms (near the mm.xclbin throughput
 bound ~550 GMAC/s), attention ~140 ms, host math (conversions + SiLU + RMSNorm
 + RoPE) ~160 ms.
 
