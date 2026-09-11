@@ -22,19 +22,20 @@ bool backend_for(Capability c, BackendType& out_type, std::string& out_id,
         case Capability::NPU_1BP:
             // Type level is unambiguous: npu_flm registers as BackendType::NPU_XRT
             // (backend_manager.cpp:162) and the NPU_XRT factory prefers it
-            // (:1768-1774). The ID is npu_flm, not npu_xrt.
+            // (:1768-1774). The ID is npu_flm, not npu_xrt — npu_xrt is registered
+            // but never selected by model_router.cpp or dynamic_router.cpp.
             //
-            // The invariant, stated so it can be checked: npu_xrt is not on any
-            // model_router.cpp route (the Q4NX route there is npu_flm →
-            // cpu_generic), and under the unified server's FASTEST ranking
-            // npu_flm outranks it deterministically (rank_backends: available
-            // beats unavailable — npu_flm is hardcoded available — then scored
-            // beats unscored — 67.5 vs none). dynamic_router.cpp's NPU_ONLY
-            // strategy DOES name npu_xrt as an acceptable pick, and until
-            // 2026-09-11 it took whichever came first in registration order,
-            // which is npu_xrt (:61 before :162); that branch now ranks npu_flm
-            // first explicitly, so the two routers agree with this table.
-            // The stakes are ~1000x (67.5 vs 0.06 tok/s), not a preference.
+            // Precision added 2026-09-11 (goal mtvd3pmx), because the sentence
+            // above is slightly stronger than the code: dynamic_router.cpp's
+            // NPU_ONLY branch DOES name npu_xrt as an acceptable pick (:80, :143,
+            // "first entry whose id is npu_flm or npu_xrt"). It is still not
+            // reachable in practice, but for a better reason than registration
+            // order — rank_backends() (backend_manager.cpp:481, end of discover())
+            // ranks `functional` above `non-functional` before that strategy ever
+            // sees the list, so NPU_ONLY returns whichever NPU lane actually
+            // initialized and falls to npu_xrt only when npu_flm did not come up.
+            // The two lanes are ~1000x apart (67.5 vs 0.06 tok/s), so a plan that
+            // lands on npu_xrt reads as "served at ~0 tok/s" — not as a miss.
             out_type = BackendType::NPU_XRT;
             out_id = "npu_flm";
             // THE TRAP, from @agent-ca60cf: npu_flm is Q4NX-only. For GGUF/H1B its
