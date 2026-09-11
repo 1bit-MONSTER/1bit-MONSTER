@@ -66,6 +66,8 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" void bf16mm_set_attn_qout(int qout);
+extern "C" int flm_prefill_init(const char* model_dir);
+extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* prefill_ms);
 extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes, size_t layer_bo_bytes);
 extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff_elements);
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
@@ -622,7 +624,7 @@ int main(int argc,char**argv){
         const bool dense_qwen3 = cfg.NV == 151936 && !cfg.has_moe &&
             ((cfg.NC == 28 && cfg.H == 1024) || (cfg.NC == 28 && cfg.H == 2048) ||
              (cfg.NC == 36 && cfg.H == 2560) || (cfg.NC == 36 && cfg.H == 4096));
-        if (dense_qwen3 && (!rl || atoi(rl) != 0)) {
+        if (dense_qwen3 && !getenv("NPU_FLM_PREFILL") && (!rl || atoi(rl) != 0)) {
             int rc = npu_runlist_decode(mp, ng, input_tok_file,
                                         cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.IM, cfg.NV);
             if (rc == 0) return 0;
@@ -632,6 +634,36 @@ int main(int argc,char**argv){
     int H=cfg.H,NC=cfg.NC,NH=cfg.NH,NKV=cfg.NKV,HD=cfg.HD,IM=cfg.IM,NV=cfg.NV,GQA=cfg.GQA,XM=cfg.XM;
     fprintf(stderr,"=== NPU Engine Universal — %s ===\n",model_tag.c_str());
     fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d rope_theta=%.0f\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split,cfg.rope_theta);
+
+    // ===== NPU_FLM_PREFILL=1: drive FLM's real qwen3_npu::prefill for the
+    // prefill/TTFT measurement (architectural change — FLM's own prefill is
+    // byte-correct + fast; the hand-rolled bf16 reimplementation diverges at
+    // H>1024). Runs BEFORE the native weight loading so it needs no native
+    // xclbins. ====
+    if (getenv("NPU_FLM_PREFILL") && !cfg.has_moe && NV == 151936) {
+        const char* mdir = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2";
+        if (H == 2048) mdir = "/home/bcloud/.config/flm/models/Qwen3-1.7B-NPU2";
+        else if (H == 2560) mdir = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2";
+        else if (H == 4096) mdir = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2";
+        std::vector<int> flm_ids;
+        if (input_tok_file) {
+            FILE* tf = strcmp(input_tok_file, "-") == 0 ? stdin : fopen(input_tok_file, "r");
+            if (tf) { int t; while (fscanf(tf, "%d", &t) == 1) flm_ids.push_back(t); if (tf != stdin) fclose(tf); }
+        } else {
+            flm_ids = {151644,872,198,13048,151645,198,151644,77091,198};
+        }
+        if (!flm_ids.empty() && flm_prefill_init(mdir) == 0) {
+            int boot = 0; double ms = 0;
+            if (flm_prefill_run(flm_ids.data(), (int)flm_ids.size(), &boot, &ms) == 0) {
+                printf("=== Prefill %d ===\n", (int)flm_ids.size()); fflush(stdout);
+                printf("Prefill: %.0fms (%.2f ms/tok)\n\n", ms, ms / flm_ids.size());
+                printf("  [0] boot=%d\n", boot);
+                fflush(stdout); fflush(stderr);
+                _exit(0);
+            }
+        }
+        fprintf(stderr, "[flm_prefill] failed — falling back to native path\n");
+    }
 
     // Open model
     int fd=open(mp,O_RDONLY);struct stat st;fstat(fd,&st);

@@ -10,7 +10,7 @@
 #include <string>
 #include "npu_engine_bf16_mm.h"
 
-namespace utils { std::string find_xclbin_path() { return "/home/bcloud/amd-oss/fastflowlm/src/xclbins"; } }
+namespace utils { std::string find_xclbin_path() { return "/home/bcloud/amd-oss/fastflowlm/src"; } }
 
 namespace {
 xrt::device g_dev(0);
