@@ -1,0 +1,80 @@
+name: Deploy gh-auth worker
+
+# Deploys workers/gh-auth — the endpoint that mints short-lived GitHub App
+# installation tokens (see workers/gh-auth/src/index.js for the security model).
+#
+# Authorizations used, both already in place as repo secrets (no new tokens):
+#   CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID  -> wrangler deploy
+#   APP_ID / APP_PRIVATE_KEY                      -> pushed to the Worker as secrets
+#   GH_AUTH_WORKER_TOKEN                          -> the caller bearer (AUTH_TOKEN)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'workers/gh-auth/**'
+      - '.github/workflows/deploy-gh-auth.yml'
+
+concurrency:
+  group: deploy-gh-auth-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Check the App secrets are present (fail loudly, not silently)
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          AUTH_TOKEN: ${{ secrets.GH_AUTH_WORKER_TOKEN }}
+        run: |
+          missing=""
+          [ -n "$APP_ID" ] || missing="$missing APP_ID"
+          [ -n "$APP_PRIVATE_KEY" ] || missing="$missing APP_PRIVATE_KEY"
+          [ -n "$AUTH_TOKEN" ] || missing="$missing GH_AUTH_WORKER_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::missing repo secrets:$missing (the worker must not deploy half-configured)"
+            exit 1
+          fi
+          echo "all three secrets present (values not printed)"
+
+      - name: Deploy the worker and set its secrets
+        id: deploy
+        uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0  # v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: workers/gh-auth
+          command: deploy
+          secrets: |
+            APP_ID
+            APP_PRIVATE_KEY
+            AUTH_TOKEN
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          AUTH_TOKEN: ${{ secrets.GH_AUTH_WORKER_TOKEN }}
+
+      - name: Where it landed
+        run: |
+          {
+            echo "### gh-auth worker deployed"
+            echo
+            echo '```'
+            echo "${{ steps.deploy.outputs.command-output }}"
+            echo '```'
+            echo
+            echo "URL: look for \`https://gh-auth.<account>.workers.dev\` above."
+            echo "Smoke test:"
+            echo '```bash'
+            echo 'curl -s -H "Authorization: Bearer $GH_AUTH_WORKER_TOKEN" https://gh-auth.<account>.workers.dev/ | jq -r .expires_at'
+            echo 'eval "$(curl -s -H "Authorization: Bearer $GH_AUTH_WORKER_TOKEN" "https://gh-auth.<account>.workers.dev/?export=1")"'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
