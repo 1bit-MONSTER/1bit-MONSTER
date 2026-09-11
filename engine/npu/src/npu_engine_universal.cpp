@@ -66,7 +66,7 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" void bf16mm_set_attn_qout(int qout);
-extern "C" int flm_prefill_init(const char* model_dir, int is_moe);
+extern "C" int flm_prefill_init(const char* model_dir, const char* family);
 extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* prefill_ms);
 extern "C" int flm_decode_run(int token, int* next_token, double* decode_ms);
 extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes, size_t layer_bo_bytes);
@@ -643,11 +643,14 @@ int main(int argc,char**argv){
     // xclbins. ====
     if (getenv("NPU_FLM_PREFILL")) {
         const char* mdir = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2";
-        int is_moe = 0;
-        if (NV == 248320) { mdir = "/home/bcloud/.local/flm-v0946/model/Qwen3.6-35B-A3B-NPU2"; is_moe = 1; }
-        else if (H == 2048) mdir = "/home/bcloud/.config/flm/models/Qwen3-1.7B-NPU2";
-        else if (H == 2560) mdir = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2";
-        else if (H == 4096) mdir = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2";
+        const char* family = "qwen3";
+        if (NV == 248320) { mdir = "/home/bcloud/.local/flm-v0946/model/Qwen3.6-35B-A3B-NPU2"; family = "qwen3_6_moe"; }
+        else if (NV == 128256) { mdir = "/home/bcloud/.config/flm/models/Llama-3.2-1B-NPU2"; family = "llama"; }
+        else if (NV == 151936) {
+            if (H == 2048) mdir = "/home/bcloud/.config/flm/models/Qwen3-1.7B-NPU2";
+            else if (H == 2560) mdir = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2";
+            else if (H == 4096) mdir = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2";
+        }
         std::vector<int> flm_ids;
         if (input_tok_file) {
             FILE* tf = strcmp(input_tok_file, "-") == 0 ? stdin : fopen(input_tok_file, "r");
@@ -655,7 +658,7 @@ int main(int argc,char**argv){
         } else {
             flm_ids = {151644,872,198,13048,151645,198,151644,77091,198};
         }
-        if (!flm_ids.empty() && flm_prefill_init(mdir, is_moe) == 0) {
+        if (!flm_ids.empty() && flm_prefill_init(mdir, family) == 0) {
             int boot = 0; double ms = 0;
             if (flm_prefill_run(flm_ids.data(), (int)flm_ids.size(), &boot, &ms) == 0) {
                 printf("=== Prefill %d ===\n", (int)flm_ids.size()); fflush(stdout);

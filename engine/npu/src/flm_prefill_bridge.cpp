@@ -18,6 +18,11 @@
 #include "tensor_utils/q4_npu_eXpress.hpp"
 #include "models/qwen3/qwen3_npu.hpp"
 #include "models/qwen3_6_moe/qwen3_6_moe_npu.hpp"
+#include "models/llama/llama_npu.hpp"
+#include "models/gemma4e/gemma4e_npu.hpp"
+#include "models/phi4/phi4_npu.hpp"
+#include "models/nanbeige/nanbeige_npu.hpp"
+#include "models/lfm2/lfm2_npu.hpp"
 #include "lm_config.hpp"
 
 // utils::find_xclbin_path is provided by npu_engine_bf16_mm_bridge.cpp.
@@ -27,7 +32,9 @@ static std::unique_ptr<npu_xclbin_manager> g_npu;
 static std::unique_ptr<Q4NX> g_q4nx;
 static std::unique_ptr<causal_lm> g_model;
 
-extern "C" int flm_prefill_init(const char* model_dir, int is_moe) {
+// family selects the FLM model class (one per native-engine family).
+// MAX_L: 32768 for dense text models (32k sweep), 4096 for the v0.9.46 MoE.
+extern "C" int flm_prefill_init(const char* model_dir, const char* family) {
     const char* root = getenv("FLM_ROOT");
     setenv("FLM_XCLBIN_PATH",
            root ? (std::string(root) + "/xclbins").c_str()
@@ -38,8 +45,19 @@ extern "C" int flm_prefill_init(const char* model_dir, int is_moe) {
         g_dev = std::make_unique<xrt::device>(0);
         g_npu = std::make_unique<npu_xclbin_manager>(device_npu2, g_dev.get());
         g_q4nx = std::make_unique<Q4NX>(model_dir);
-        if (is_moe)
+        const std::string fam = family ? family : "qwen3";
+        if (fam == "qwen3_6_moe")
             g_model = std::make_unique<qwen3_6_moe_npu>(config, g_npu.get(), 4096);
+        else if (fam == "llama")
+            g_model = std::make_unique<llama_npu>(config, g_npu.get(), 32768);
+        else if (fam == "gemma4e")
+            g_model = std::make_unique<gemma4e_npu>(config, g_npu.get(), 32768);
+        else if (fam == "phi4")
+            g_model = std::make_unique<phi4_npu>(config, g_npu.get(), 32768);
+        else if (fam == "nanbeige")
+            g_model = std::make_unique<nanbeige_npu>(config, g_npu.get(), 32768);
+        else if (fam == "lfm2")
+            g_model = std::make_unique<lfm2_npu>(config, g_npu.get(), 32768);
         else
             g_model = std::make_unique<qwen3_npu>(config, g_npu.get(), 32768);
         g_model->load_weights(*g_q4nx);
