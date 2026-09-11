@@ -75,6 +75,12 @@ ROUNDS=3; ITERS=200; KEEP=0; NO_RUN=0
 # so run_arm can show what Peano delivered versus what Chess delivered.
 PROBE="${PROBE:-0}"
 PROBE_DEF=(); [ "$PROBE" = 1 ] && PROBE_DEF=(-DDELIVERY_PROBE)
+# PROBE_FIXED=<hex C-tile base> makes the kernel also write a sentinel through an
+# address that does NOT come from its arguments, which splits "the kernel ran
+# with garbage arguments" (C[0] == 0xDEAD1234) from "the kernel never ran" (C[0]
+# == 0).  Pass the c_out value the working arm reports.
+PROBE_FIXED="${PROBE_FIXED:-}"
+[ -n "$PROBE_FIXED" ] && PROBE_DEF+=("-DDELIVERY_PROBE_FIXED=$PROBE_FIXED")
 while [ $# -gt 0 ]; do
   case "$1" in
     --rounds) ROUNDS=$2; shift 2;;

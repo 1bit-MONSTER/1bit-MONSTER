@@ -662,10 +662,28 @@ extern "C" {
 #define DELIVERY_PROBE_ZERO_OR_NOTHING(c_out) do { } while (0)
 #endif
 
+// Third knob, independent of the two above: DELIVERY_PROBE_FIXED=<address>
+// makes the kernel write a sentinel through an address that does NOT come from
+// the delivered arguments (the C-tile base of the core that owns C[0], which
+// the pointer stash reports on the working arm as c_out). It is emitted BEFORE
+// the pointer stash, so it still happens when the arguments are garbage, which
+// is the entire point:
+//   C[0] == 0xDEAD1234 -> the kernel executed and its arguments were garbage
+//   C[0] == 0          -> the kernel never reached this function
+#ifdef DELIVERY_PROBE_FIXED
+#define DELIVERY_PROBE_FIXED_OR_NOTHING()                                      \
+    do {                                                                       \
+      *((volatile int32_t *)(DELIVERY_PROBE_FIXED)) = (int32_t)0xDEAD1234;     \
+    } while (0)
+#else
+#define DELIVERY_PROBE_FIXED_OR_NOTHING() do { } while (0)
+#endif
+
 #define matmul_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,            \
                                  mlir_type_out, r, s, t)                       \
   void matmul_##mlir_type_in##_##mlir_type_out(ctype_in *a_in, ctype_in *b_in, \
                                                ctype_out *c_out) {             \
+    DELIVERY_PROBE_FIXED_OR_NOTHING();                                         \
     DELIVERY_PROBE_OR_NOTHING(a_in, b_in, c_out);                              \
     matmul_vectorized_##r##x##s##x##t##_##mlir_type_in##_##mlir_type_out<      \
         DIM_M, DIM_K, DIM_N>(a_in, b_in, c_out);                               \
