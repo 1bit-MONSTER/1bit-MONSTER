@@ -227,6 +227,12 @@ static float f16_to_f32(uint16_t h){
     float f;memcpy(&f,&r,4);return f;
 }
 static std::vector<float> load_bin_f16(const std::string& p){
+    // ZAYA_WEIGHTS_F32=1: the weights on disk are float32 (e.g. converted from a
+    // BF16 Q4NX container by tools/q4nx/q4nx_to_zaya_bin.py) rather than the legacy
+    // f16 dumps, so read them as f32. Without this a converted model is misread at
+    // every tensor the loader fetches with WF().
+    if (const char* m = getenv("ZAYA_WEIGHTS_F32"); m && *m && *m != '0')
+        return load_bin(p);
     std::ifstream f(p,std::ios::binary|std::ios::ate);
     if(!f){fprintf(stderr,"Missing: %s\n",p.c_str());return {};}
     size_t sz=f.tellg();f.seekg(0);

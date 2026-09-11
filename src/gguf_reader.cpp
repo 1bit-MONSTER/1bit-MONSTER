@@ -396,6 +396,9 @@ GgufBlockInfo gguf_block_info(uint32_t dtype) {
         case GGUF_DTYPE_Q4_0_4_8: return {256, 208};
         case GGUF_DTYPE_Q4_0_8_8: return {256, 272};
         // Project-specific ternary/binary formats (h1b weight format)
+        // Q4NX 4-bit tiles: 32x256 elements per 5120-byte block
+        // (256 BF16 scales + 256 BF16 zero-points + 4096 B packed INT4).
+        case GGUF_DTYPE_Q4NX_TILE: return {8192, 5120};
         // TQ2_0_g128: ternary, 2-bit packed, group=128 → blocks of 128 el, 33 bytes
         // TQ2_0 ternary: fp16 scale (2) + 2-bit codes (128*2/8=32) = 34 bytes
         case GGUF_DTYPE_TQ2_0_G128: return {128, 34};
@@ -457,6 +460,30 @@ bool gguf_dequant(uint32_t dtype, const uint8_t* data, float* out, int count) {
                 float sc = read_f16(blk);
                 const uint8_t* bits = blk + 2;
                 out[i] = (bits[ei / 8] >> (ei % 8)) & 1 ? sc : -sc;
+            }
+            return true;
+        }
+        case GGUF_DTYPE_Q4NX_TILE: {
+            // dtype 43: Q4NX 32x256 tiles, 5120 B each —
+            //   [0..511] 256 BF16 scales      (row-major r*8+g)
+            //   [512..1023] 256 BF16 zero-points (same layout)
+            //   [1024..5119] 4096 B packed INT4 (nibble lo/hi per byte)
+            // Tile grid is row-major over [rows, cols]; `count` = rows*cols.
+            const int TR = 32, TC = 256, G = 8, TB = 5120;
+            for (int i = 0; i < count; i++) {
+                const int t = i / (TR * TC);
+                const int e = i % (TR * TC);
+                const int r = e / TC, c = e % TC;
+                const uint8_t* tile = data + (size_t)t * TB;
+                const uint16_t* scales = (const uint16_t*)tile;
+                const uint16_t* zps = (const uint16_t*)(tile + TR * G * 2);
+                const uint8_t* qd = tile + TR * G * 4;
+                float sc = bf16_to_fp32(scales[r * G + c / 32]);
+                float zp = bf16_to_fp32(zps[r * G + c / 32]);
+                if (sc < 1e-10f) sc = 1.0f;
+                const uint8_t packed = qd[(r * TC + c) / 2];
+                const uint8_t v = (c & 1) ? (packed >> 4) : (packed & 0xF);
+                out[i] = (float)v * sc + zp;
             }
             return true;
         }

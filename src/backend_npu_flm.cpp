@@ -23,13 +23,19 @@
 #include <chrono>
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 #include <nlohmann/json.hpp>
 #include <unistd.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
 #include <sys/select.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <httplib.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <sys/syscall.h>   // SYS_gettid — PDEATHSIG is per creator-thread
 
 // ── FLM Model Tags ──
 // Maps generic model dimensions to FLM's :tag naming convention.
@@ -104,6 +110,7 @@ class NpuFlmBackend : public Backend {
     int spawn_retries_ = 10;      // spawn retries on NPU busy (env NPU_FLM_SPAWN_RETRIES)
     int spawn_retry_delay_s_ = 5; // backoff between retries (env NPU_FLM_RETRY_DELAY_S)
     int stderr_fd_ = -1;  // read from child's stderr
+    int http_port_ = -1;  // FLM serve port (serve mode)
 
 public:
     NpuFlmBackend() {
@@ -263,6 +270,18 @@ public:
         static bool sigpipe_ignored = []{ signal(SIGPIPE, SIG_IGN); return true; }();
         (void)sigpipe_ignored;
 
+        // PDEATHSIG is delivered when the CREATING THREAD exits, so it may only
+        // be armed if the fork happens on the main thread. Decide that HERE, in
+        // the parent — see the child's comment for why the child cannot.
+        const bool fork_on_main_thread =
+            (::getpid() == static_cast<pid_t>(::syscall(SYS_gettid)));
+
+        // Serve mode: FLM's OpenAI-compatible server (not the interactive REPL).
+        // The serve-based executor renders/detokenizes identically to the Lemonade
+        // flm backend, which is what closes the last byte-level parity gap.
+        const int serve_port = pick_free_port();
+        const std::string serve_port_s = std::to_string(serve_port);
+
         pid_ = fork();
         if (pid_ < 0) {
             perror("NPU: fork");
@@ -283,12 +302,24 @@ public:
             // Die with the parent so a crashed service cannot leak an FLM
             // child holding an NPU context (see ensure_serve() in the zaya
             // backend — same orphan/NOAVAIL problem).
-            prctl(PR_SET_PDEATHSIG, SIGTERM);
+            //
+            // BUT PDEATHSIG is delivered when the CREATING THREAD exits, not only
+            // the process, so it may only be armed when the fork happened on the
+            // MAIN thread. The test is computed in the PARENT (see
+            // fork_on_main_thread): a freshly forked child is single-threaded, so
+            // getpid()==gettid() is always true inside it and cannot answer the
+            // question. Arming it from a short-lived worker killed FLM the instant
+            // that thread ended — "FLM ready" then "write to FLM failed: child
+            // killed by signal 15" at request time, i.e. 0 tokens.
+            if (fork_on_main_thread) {
+                prctl(PR_SET_PDEATHSIG, SIGTERM);
+            }
 
             setenv("FLM_CONFIG_PATH", flm_config_.c_str(), 1);
             setenv("FLM_XCLBIN_PATH", flm_xclbins_.c_str(), 1);
 
-            execl(flm_bin_.c_str(), "flm", "run", model_tag_.c_str(), nullptr);
+            execl(flm_bin_.c_str(), "flm", "serve", model_tag_.c_str(),
+                  "-p", serve_port_s.c_str(), nullptr);
             fprintf(stderr, "NPU: failed to exec FLM: %s\n", flm_bin_.c_str());
             _exit(1);
         }
@@ -298,39 +329,22 @@ public:
         stdout_fd_ = from_child[0];
         stderr_fd_ = err_child[0];
 
-        // Wait for ">>> " prompt — model loading takes ~8-10s
-        {
-            std::string buf; char c;
-            auto t0 = std::chrono::steady_clock::now();
-            bool got_prompt = false;
-            int timeout_s = getenv("NPU_FLM_TIMEOUT") ? atoi(getenv("NPU_FLM_TIMEOUT")) : 60;
-            while (std::chrono::duration_cast<std::chrono::seconds>(
-                    std::chrono::steady_clock::now() - t0).count() < timeout_s) {
-                fd_set fds; FD_ZERO(&fds); FD_SET(stdout_fd_, &fds);
-                struct timeval tv = {1, 0};
-                int r = select(stdout_fd_ + 1, &fds, nullptr, nullptr, &tv);
-                if (r > 0) {
-                    if (read(stdout_fd_, &c, 1) > 0) {
-                        buf += c;
-                        if (buf.size() >= 4 && buf.substr(buf.size()-4) == ">>> ") {
-                            got_prompt = true;
-                            break;
-                        }
-                    } else break;
-                } else if (r < 0) break;
-            }
-            if (!got_prompt) {
-                fprintf(stderr, "NPU: FLM spawn attempt %d/%d failed (NPU busy?) — retrying in %ds\n",
-                        attempt, spawn_retries_, spawn_retry_delay_s_);
-                destroy();
-                sleep(spawn_retry_delay_s_);
-                continue;
-            }
+        // Readiness = the OpenAI /v1/models endpoint answering 200. FLM serve has
+        // no /health (404), and the REPL's ">>> " prompt does not exist here.
+        http_port_ = serve_port;
+        if (!wait_for_http_ready(serve_port,
+                                 getenv("NPU_FLM_TIMEOUT") ? atoi(getenv("NPU_FLM_TIMEOUT")) : 120)) {
+            fprintf(stderr, "NPU: FLM serve attempt %d/%d not ready (NPU busy?) — retrying in %ds\n",
+                    attempt, spawn_retries_, spawn_retry_delay_s_);
+            destroy();
+            sleep(spawn_retry_delay_s_);
+            continue;
         }
 
         initialized = true;
-        last_prompt_.clear();  // fresh process → no KV continuity from any previous one
-        fprintf(stderr, "NPU: FLM ready — %s (%s)\n", model_tag_.c_str(), flm_bin_.c_str());
+        last_prompt_.clear();
+        fprintf(stderr, "NPU: FLM ready — %s serving on 127.0.0.1:%d (%s)\n",
+                model_tag_.c_str(), serve_port, flm_bin_.c_str());
         return true;
         }  // retry loop
         fprintf(stderr, "NPU: FLM failed after %d spawn attempts\n", spawn_retries_);
@@ -360,28 +374,96 @@ public:
 
     /// Text-level generation: FLM tokenizes internally, so the whole prompt
     /// goes over the REPL pipe and the generated text comes back.
-    std::string generate_text(const std::string& prompt, int max_tokens) override {
-        (void)max_tokens;  // REPL protocol has no token cap; query() times out at 120s
-        if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "";
-        std::string out = query(prompt);
-        // query() error strings are non-empty — don't let them look like success.
-        if (out.empty() || out.rfind("[npu:", 0) == 0) return "";
-        return out;
+    std::string generate_text(const std::string& prompt, int max_tokens,
+                              float temperature = -1.0f) override {
+        if (pid_ <= 0 || http_port_ <= 0 || !initialized) return "";
+        if (max_tokens <= 0) max_tokens = 16;
+        // Use /v1/chat/completions, NOT /v1/completions: measured on FLM serve,
+        // /v1/completions ignores temperature (three temperature-0 runs returned
+        // three different answers) while /v1/chat/completions is greedy and stable
+        // at 0. The caller hands us an ALREADY-templated prompt, so reconstruct the
+        // messages and let FLM template them once — the same path the Lemonade flm
+        // backend drives, which is what makes the rendered text match.
+        nlohmann::json messages = nlohmann::json::array();
+        {
+            size_t pos = 0;
+            bool any = false;
+            while (true) {
+                const size_t s = prompt.find("<|im_start|>", pos);
+                if (s == std::string::npos) break;
+                const size_t role_start = s + 12;
+                const size_t nl = prompt.find('\n', role_start);
+                if (nl == std::string::npos) break;
+                const size_t e = prompt.find("<|im_end|>", nl);
+                if (e == std::string::npos) break;
+                const std::string role = prompt.substr(role_start, nl - role_start);
+                const std::string content = prompt.substr(nl + 1, e - (nl + 1));
+                if (!role.empty() && role != "assistant")
+                    messages.push_back({{"role", role}, {"content", content}});
+                any = true;
+                pos = e + 10;
+            }
+            if (!any) {
+                // The unified server's plain-text prompt format is "role: content\n"
+                // per turn (observed verbatim: "user: What is 2+2? Answer with one
+                // word.\n"). Rebuild the messages from it so FLM applies the chat
+                // template exactly once — sending the raw string made the model see
+                // the literal "user: " prefix and answer differently from Lemonade.
+                std::istringstream is(prompt);
+                std::string line;
+                while (std::getline(is, line)) {
+                    if (line.empty()) continue;
+                    const auto colon = line.find(": ");
+                    if (colon != std::string::npos) {
+                        const std::string role = line.substr(0, colon);
+                        const std::string content = line.substr(colon + 2);
+                        if ((role == "user" || role == "assistant" || role == "system") &&
+                            !content.empty()) {
+                            messages.push_back({{"role", role}, {"content", content}});
+                            continue;
+                        }
+                    }
+                    messages.push_back({{"role", "user"}, {"content", line}});
+                }
+                if (messages.empty())
+                    messages.push_back({{"role", "user"}, {"content", prompt}});
+            }
+        }
+        nlohmann::json req;
+        req["model"] = model_tag_;  // FLM expects the checkpoint tag (e.g. "qwen3:0.6b"), like the Lemonade flm backend sets
+        req["messages"] = messages;
+        req["max_tokens"] = max_tokens;
+        if (temperature >= 0.0f) req["temperature"] = temperature;
+        req["stream"] = false;
+        int status = 0;
+        const std::string resp = http_post_json("/v1/chat/completions", req.dump(), &status);
+        if (status != 200 || resp.empty()) {
+            fprintf(stderr, "NPU: /v1/chat/completions HTTP %d — %s\n", status, resp.substr(0, 200).c_str());
+            return "";
+        }
+        try {
+            auto j = nlohmann::json::parse(resp);
+            if (j.contains("error") && !j["error"].is_null()) return "";
+            if (!j.contains("choices") || j["choices"].empty()) return "";
+            const auto& choice = j["choices"][0];
+            if (!choice.contains("message")) return "";
+            std::string text = choice["message"].value("content", "");
+            if (text.empty()) text = choice["message"].value("reasoning_content", "");
+            return text;
+        } catch (const nlohmann::json::exception& e) {
+            fprintf(stderr, "NPU: chat JSON parse failed: %s\n", e.what());
+            return "";
+        }
     }
 
     /// Continue the live FLM session with a delta (no <<RESET>>): multi-turn
     /// KV reuse. The caller owns session bookkeeping and supplies the delta
     /// (a suffix of the growing conversation prompt, newline-terminated).
+    // No cross-request KV reuse over the serve API: the caller resends the full
+    // prompt, which is correct and only costs a re-prefill.
     std::string continue_text(const std::string& delta) override {
-        if (pid_ <= 0 || stdin_fd_ < 0 || stdout_fd_ < 0) return "";
-        if (delta.empty()) return "";
-        std::string req = delta;
-        if (req.back() != '\n') req += '\n';  // REPL reads until newline
-        ssize_t written = write(stdin_fd_, req.c_str(), req.size());
-        if (written < 0 || (size_t)written != req.size()) return "";
-        std::string out = read_response();
-        if (out.rfind("[npu:", 0) == 0) return "";  // error strings aren't text
-        return out;
+        (void)delta;
+        return "";
     }
 
     /// Send a text prompt to FLM and get the response.
@@ -402,12 +484,108 @@ public:
         // 2. Send prompt (delta on continuation, full prompt otherwise)
         std::string req = send + "\n";
         ssize_t written = write(stdin_fd_, req.c_str(), req.size());
-        if (written < 0 || (size_t)written != req.size())
+        if (written < 0 || (size_t)written != req.size()) {
+            // The FLM child is gone (e.g. it lost the NPU to a sibling backend).
+            // Its stderr was piped and never read, so the reason is still in that
+            // pipe; report it plus the exit status so the failure carries a cause
+            // rather than only the sentinel. This is what made "0 tokens" opaque.
+            std::string child_err = drain_child_stderr();
+            int status = 0;
+            pid_t reaped = (pid_ > 0) ? waitpid(pid_, &status, WNOHANG) : -1;
+            std::string why;
+            if (reaped == pid_) {
+                if (WIFEXITED(status))       why = "child exited code " + std::to_string(WEXITSTATUS(status));
+                else if (WIFSIGNALED(status)) why = "child killed by signal " + std::to_string(WTERMSIG(status));
+                else                          why = "child reaped";
+            } else {
+                why = "child not reaped (still running or already reaped)";
+            }
+            fprintf(stderr, "NPU: write to FLM failed (%zd/%zu): %s%s%s\n",
+                    written, req.size(), why.c_str(),
+                    child_err.empty() ? "" : " -- child stderr: ",
+                    child_err.empty() ? "" : child_err.c_str());
+            if (reaped == pid_) { pid_ = 0; initialized = false; }
             return "[npu: write error]";
+        }
 
         last_prompt_ = prompt;
 
         return read_response();
+    }
+
+    // Issue one FLM REPL command and discard its echo/confirmation up to the next
+    // ">>> " prompt, so the following read_response() sees only the model output.
+    void send_repl_command(const std::string& cmd_in) {
+        if (stdin_fd_ < 0) return;
+        const std::string cmd = cmd_in + "\n";
+        if (write(stdin_fd_, cmd.c_str(), cmd.size()) == static_cast<ssize_t>(cmd.size()))
+            (void)read_response();
+    }
+
+    // Bind :0, read the assigned port, close. A small race window (the port could
+    // be taken before FLM binds it) is acceptable: readiness then fails and the
+    // spawn loop retries on a fresh port.
+    static int pick_free_port() {
+        int s = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (s < 0) return 18400 + (static_cast<int>(::getpid()) % 1000);
+        struct sockaddr_in a {};
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        a.sin_port = 0;
+        if (::bind(s, reinterpret_cast<struct sockaddr*>(&a), sizeof(a)) != 0) {
+            ::close(s);
+            return 18400 + (static_cast<int>(::getpid()) % 1000);
+        }
+        socklen_t len = sizeof(a);
+        if (::getsockname(s, reinterpret_cast<struct sockaddr*>(&a), &len) != 0) {
+            ::close(s);
+            return 18400 + (static_cast<int>(::getpid()) % 1000);
+        }
+        const int port = ntohs(a.sin_port);
+        ::close(s);
+        return port;
+    }
+
+    std::string http_post_json(const std::string& path, const std::string& body, int* status_out) {
+        httplib::Client cli("127.0.0.1", http_port_);
+        cli.set_connection_timeout(5, 0);
+        cli.set_read_timeout(300, 0);
+        auto res = cli.Post(path.c_str(), body, "application/json");
+        if (status_out) *status_out = res ? res->status : 0;
+        return res ? res->body : std::string();
+    }
+
+    bool wait_for_http_ready(int port, int timeout_s) {
+        httplib::Client cli("127.0.0.1", port);
+        cli.set_connection_timeout(1, 0);
+        cli.set_read_timeout(2, 0);
+        auto t0 = std::chrono::steady_clock::now();
+        while (std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::steady_clock::now() - t0).count() < timeout_s) {
+            auto res = cli.Get("/v1/models");
+            if (res && res->status == 200) return true;
+            if (pid_ > 0 && waitpid(pid_, nullptr, WNOHANG) == pid_) { pid_ = -1; return false; }
+            usleep(500000);
+        }
+        return false;
+    }
+
+    // Non-blocking drain of the child's piped stderr. Returns "" when nothing is
+    // pending (or no pipe). Used to make a dead-child failure self-explaining.
+    std::string drain_child_stderr() {
+        std::string out;
+        if (stderr_fd_ < 0) return out;
+        char buf[4096];
+        while (out.size() < 16384) {
+            fd_set fds; FD_ZERO(&fds); FD_SET(stderr_fd_, &fds);
+            struct timeval tv = {0, 0};
+            int r = select(stderr_fd_ + 1, &fds, nullptr, nullptr, &tv);
+            if (r <= 0) break;
+            ssize_t n = read(stderr_fd_, buf, sizeof(buf));
+            if (n <= 0) break;
+            out.append(buf, (size_t)n);
+        }
+        return out;
     }
 
     std::string read_response() {
