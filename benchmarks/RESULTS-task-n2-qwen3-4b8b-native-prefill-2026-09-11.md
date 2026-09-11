@@ -137,3 +137,16 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
   (uniform softmax, rms 0.0038), so its Q-read BD token-stride/head-count is wrong. Fix = regenerate
   the nh32 ELF from the 16-head ELF (double Q-read BDs 64→128, token-stride 4096→8192 B), or decode
   + patch the ELF's BDs.
+
+
+## nh32 ELF capture is the issue (2026-09-11)
+
+- Decoded the two ELFs' .ctrltext TXN: nh16 = 6084 words, nh32 = 10628 words (1.747×).
+  The BD opcode groups grow: opcode-12 160→288 (+128), opcode-8 64→129 (≈2×) — the Q/out
+  BDs roughly double but the total is short of the ~1.89× a clean Q(64→128)+out(64→128)+KV
+  (16 same) doubling predicts. Also, the `run_qwen3_prefill` capture shows the prefill runs a
+  **5-BO fused-layer ABI**, not the 3-BO attention — so `elf_0012` may be a fused-layer/GEMM
+  ELF, not the 3-BO MHA attention ELF the engine's `run_attn` expects.
+- Root cause candidates: (a) the nh32 ELF is mis-captured (16-head or fused-layer), (b) its
+  Q-read BD token-stride/head-count is wrong. Fix = capture the 3-BO nh32 MHA ELF correctly,
+  or decode+patch the Q-read BDs.
