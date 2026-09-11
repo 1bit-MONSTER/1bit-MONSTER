@@ -134,6 +134,29 @@ if [ "$ready" = 1 ]; then
         -d "{\"model\":\"$REQ_MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"The capital of France is\"}],\"max_tokens\":16,\"temperature\":0}" \
         -o "$OUT/completion.json" 2>/dev/null
 
+    # ── NEGATIVE CONTROL 1 — refusal must exist ————————————————————
+    # An id that cannot exist must be REFUSED, not answered by whatever happens to be
+    # loaded. This is the fault §9.8.1 fixed; without this line a run cannot tell
+    # "served the artifact" from "served something".
+    curl -s -m 60 -o "$OUT/refusal.json" -w '%{http_code}\n' \
+        "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
+        -d '{"model":"__no_such_artifact__.q4nx","messages":[{"role":"user","content":"x"}],"max_tokens":1}' \
+        > "$OUT/refusal.code" 2>/dev/null
+
+    # ── NEGATIVE CONTROL 2 — the weight-discriminating one (ADR §9.10.9) ————
+    # Content agreement is NOT evidence of artifact-level service on a lane that
+    # receives a TAG instead of the file (npu_flm execs `flm serve <tag>`:
+    # src/backend_npu_flm.cpp:321). Set CONTROL_MODEL to a native artifact whose tag
+    # maps to DIFFERENT weights — on strixhalo, zaya1-8b.q4nx → qwen3:1.7b — and an
+    # ANSWER here means some lane served weights other than the requested ones. Only a
+    # refusal demonstrates artifact-level service.
+    if [ -n "${CONTROL_MODEL:-}" ]; then
+        curl -s -m 300 -o "$OUT/control.json" -w '%{http_code}\n' \
+            "http://127.0.0.1:$PORT/v1/chat/completions" -H 'Content-Type: application/json' \
+            -d "{\"model\":\"$(basename "$CONTROL_MODEL")\",\"messages\":[{\"role\":\"user\",\"content\":\"The capital of France is\"}],\"max_tokens\":16,\"temperature\":0}" \
+            > "$OUT/control.code" 2>/dev/null
+    fi
+
     # The status field that §9.8.2 quoted — captured from the live server, so we can
     # compare it against the startup banner in the same run.
     { echo "--- /v1/models"; cat "$OUT/models.json"; echo; } > "$OUT/status.txt" 2>/dev/null
@@ -156,6 +179,21 @@ fi
     echo '```'
     head -c 1200 "$OUT/completion.json" 2>/dev/null || echo "(no completion captured)"
     echo
+    echo '```'
+    echo
+    echo "## Controls (a passing completion proves less than it looks like)"
+    echo '```'
+    printf 'nonexistent id  -> HTTP %s   (must be 404 model_not_loadable_on_this_face)\n' "$(cat "$OUT/refusal.code" 2>/dev/null || echo 'not captured')"
+    if [ -n "${CONTROL_MODEL:-}" ]; then
+        printf 'control artifact %s -> HTTP %s\n' "$CONTROL_MODEL" "$(cat "$OUT/control.code" 2>/dev/null || echo 'not captured')"
+        echo "   must ALSO be a refusal: an answer means a lane served weights other than"
+        echo "   the requested file (ADR §9.10.9 — npu_flm execs a tag, never a path)."
+    else
+        echo 'CONTROL_MODEL unset — the weight-discriminating control did NOT run.'
+        echo '   Set it to a native artifact whose FLM tag maps elsewhere (strixhalo:'
+        echo '   zaya1-8b.q4nx -> qwen3:1.7b). Without it, an agreeing completion cannot'
+        echo '   distinguish "the artifact was served" from "a lane served its own model".'
+    fi
     echo '```'
     echo
     echo "## Reading guide"
