@@ -297,7 +297,10 @@ static void update_rope_i6(xrt::ext::bo& i6bo, int pos) {
         w[j] = f32_to_bf16(c);
         w[64 + j] = f32_to_bf16(s);
     }
-    i6bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, 1048576, 0);
+    // Only the first 128 bf16 (cos/sin for the current position) changed — sync
+    // just those 256 bytes, not the full 1MB i6 BO (28 layers x 1MB was ~10% of
+    // decode).
+    i6bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, 256, 0);
 }
 
 bool RuntimeLayerEngine::forward(int ctx_len) {
