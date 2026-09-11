@@ -36,7 +36,7 @@ extern "C" int flm_prefill_init(const char* model_dir, int is_moe) {
         g_npu = std::make_unique<npu_xclbin_manager>(device_npu2, g_dev.get());
         g_q4nx = std::make_unique<Q4NX>(model_dir);
         if (is_moe)
-            g_model = std::make_unique<qwen3_6_moe_npu>(config, g_npu.get(), 32768);
+            g_model = std::make_unique<qwen3_6_moe_npu>(config, g_npu.get(), 4096);
         else
             g_model = std::make_unique<qwen3_npu>(config, g_npu.get(), 32768);
         g_model->load_weights(*g_q4nx);
