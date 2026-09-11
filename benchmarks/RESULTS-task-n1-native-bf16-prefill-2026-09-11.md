@@ -9,14 +9,14 @@ engine's own loop, NOT `NPU_FLM_PREFILL`). This is the real native-path prefill
 
 | metric | value |
 |---|---|
-| prefill total | **662 ms / 256 tok = 387 tok/s** (QKV 3→1 GEMM + host-scratch reuse) |
+| prefill total | **644 ms / 256 tok = 398 tok/s** (QKV 3→1 GEMM + scratch reuse + GU A-reuse cache) |
 | — QKV GEMMs (tg) | 52 ms (was 97 — folded Q/K/V into one N=4096 GEMM) |
 | — attention + host norm/RoPE (ta) | 137 ms |
 | — O/GU/D GEMMs + f32↔bf16 conversions + SiLU (tc−tg−ta) | 463 ms |
 | token parity (9-tok default prompt) | boot=151667 = FLM ✓ |
 | target (FLM published prefill @1k) | 1494 tok/s → 256 tok ≈ 171 ms |
 
-Gap: **~3.9×** (662 vs 171 ms). The bf16 GEMM path is token-correct; the gap is
+Gap: **~3.8×** (644 vs 171 ms). The bf16 GEMM path is token-correct; the gap is
 throughput, not correctness.
 
 ## Per-layer cost (28 layers → 24.9 ms/layer)

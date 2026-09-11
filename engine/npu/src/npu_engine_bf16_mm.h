@@ -102,6 +102,11 @@ struct Bf16Mm {
     std::unique_ptr<buffer<uint16_t>> a_cache, c_cache;
     size_t a_cache_elems = 0, c_cache_elems = 0;
     std::vector<uint16_t> hAb, hCb;   // host-side 2-batch scratch, reused across calls
+    const uint16_t* a_src_ptr = nullptr;   // A-reuse cache (GU chunks share one A)
+    uint32_t a_src_K = 0;
+    uint16_t a_src_sample[64] = {0};       // content guard vs silent refill of the same pointer
+    std::unique_ptr<buffer<uint16_t>> a_cache0, a_cache1;
+    size_t a_cache0_elems = 0, a_cache1_elems = 0;
     // Device-side dequant W cache: the prefill dequants each projection ONCE
     // into a persistent device BO and the GEMM reads it directly (no host
     // round-trip). Index into w_dev is the opaque handle.
@@ -317,21 +322,36 @@ struct Bf16Mm {
     }
 
     /// bf16 GEMM reading W directly from a device buffer (2-batch M-split).
+    /// Caches the two sparse-A device buffers and rebuilds them only when the
+    /// source A/K changes — the GU gate/up chunks share one A, so 12 calls
+    /// reuse a single build instead of 12 rebuilds.
     void run_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
-        if (hAb.size() < 256 * K) hAb.resize(256 * K);
         if (hCb.size() < 256 * N) hCb.resize(256 * N);
-        uint16_t* Ab = hAb.data();
         uint16_t* Cb = hCb.data();
-        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
-        gemm_dev_once(Cb, Ab, W_idx, K, N, woff);
+        bool a_same = (A == a_src_ptr) && (K == a_src_K);
+        if (a_same) for (int i = 0; i < 64 && a_same; i++) a_same = (A[i] == a_src_sample[i]);
+        if (!a_same) {
+            if (hAb.size() < 256 * K) hAb.resize(256 * K);
+            size_t a_elems = 256 * K;
+            if (!a_cache0 || a_cache0_elems < a_elems) { a_cache0 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache0_elems = a_elems; }
+            if (!a_cache1 || a_cache1_elems < a_elems) { a_cache1 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache1_elems = a_elems; }
+            uint16_t* Ab = hAb.data();
+            memset(Ab, 0, a_elems * 2);
+            for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
+            memcpy(a_cache0->data(), Ab, a_elems * 2);
+            memset(Ab, 0, a_elems * 2);
+            for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
+            memcpy(a_cache1->data(), Ab, a_elems * 2);
+            a_src_ptr = A; a_src_K = K;
+            for (int i = 0; i < 64; i++) a_src_sample[i] = A[i];
+        }
+        gemm_dev_once(Cb, W_idx, K, N, woff, *a_cache0);
         memcpy(C, Cb, 128 * N * 2);
-        memset(Ab, 0, 256 * K * 2);
-        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
-        gemm_dev_once(Cb, Ab, W_idx, K, N, woff);
+        gemm_dev_once(Cb, W_idx, K, N, woff, *a_cache1);
         memcpy(C + 128 * N, Cb, 128 * N * 2);
     }
 
-    void gemm_dev_once(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {
+    void gemm_dev_once(uint16_t* C, int W_idx, uint32_t K, uint32_t N, uint32_t woff, buffer<uint16_t>& a_buf) {
         uint64_t key = ((uint64_t)K << 32) | ((uint64_t)N << 16) | (uint64_t)woff;
         auto it = mm_app_cache.find(key);
         if (it == mm_app_cache.end()) {
@@ -341,11 +361,9 @@ struct Bf16Mm {
             it = mm_app_cache.emplace(key, std::move(app)).first;
         }
         npu_app& app = *it->second;
-        size_t a_elems = 256 * K, c_elems = 256 * N;
-        if (!a_cache || a_cache_elems < a_elems) { a_cache = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache_elems = a_elems; }
+        size_t c_elems = 256 * N;
         if (!c_cache || c_cache_elems < c_elems) { c_cache = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache_elems = c_elems; }
-        memcpy(a_cache->data(), A, a_elems * 2);
-        app.safe_run(*c_cache, *a_cache, *w_dev[W_idx]);
+        app.safe_run(*c_cache, a_buf, *w_dev[W_idx]);
         memcpy(C, c_cache->data(), c_elems * 2);
     }
 };
