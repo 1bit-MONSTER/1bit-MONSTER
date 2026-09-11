@@ -644,7 +644,7 @@ int main(int argc,char**argv){
     if (getenv("NPU_FLM_PREFILL")) {
         const char* mdir = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2";
         int is_moe = 0;
-        if (NV == 248320) { mdir = "/tmp/v0946models/Qwen3.6-35B-A3B-NPU2"; is_moe = 1; }
+        if (NV == 248320) { mdir = "/home/bcloud/.local/flm-v0946/model/Qwen3.6-35B-A3B-NPU2"; is_moe = 1; }
         else if (H == 2048) mdir = "/home/bcloud/.config/flm/models/Qwen3-1.7B-NPU2";
         else if (H == 2560) mdir = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2";
         else if (H == 4096) mdir = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2";

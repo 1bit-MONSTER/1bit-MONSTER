@@ -15,7 +15,7 @@ namespace utils { std::string find_xclbin_path() {
     // FLM_ROOT env override lets a fetched/replacement FLM install (different
     // lib + xclbin set) be dropped in without rebuilding the path in.
     if (const char* p = getenv("FLM_ROOT")) return p;
-    return "/home/bcloud/amd-oss/fastflowlm/src";
+    return "/home/bcloud/.local/flm-v0946";
 } }
 
 namespace {

@@ -26,11 +26,11 @@ RUNLIST_BRIDGE_O="$BUILDDIR/npu_runlist_bridge.o"
 # FLM bf16 GEMM bridge (dequant.xclbin + mm.xclbin via libgemm/libdequant) — the
 # prefill mm path. Built as a SEPARATE TU with the FLM headers (its Bf16Mm needs
 # FLM's lm_config/modules/npu_utils_xrt, which must NOT reach the main engine TU).
-FLM_ROOT="${FLM_ROOT:-/home/bcloud/amd-oss/fastflowlm/src}"
-# v0.9.46 drop-in (task-4 MoE unblock): the v0.9.46 headers (third_party) +
-# the official v0.9.46 .deb libs (md5 39a6c36a) — the v1.0.x libs NaNs the MoE GDN.
-FLM_INC="${FLM_INC:-/home/bcloud/1bit-MONSTER/third_party/FastFlowLM/src/include}"
-FLM_LIB="${FLM_LIB:-/tmp/flm0946/opt/fastflowlm/lib}"
+FLM_ROOT="${FLM_ROOT:-/home/bcloud/.local/flm-v0946}"
+# v0.9.46 drop-in (task-4 MoE unblock): the v0.9.46 headers + the official v0.9.46
+# .deb libs (md5 39a6c36a) — the v1.0.x libs NaNs the MoE GDN.
+FLM_INC="${FLM_INC:-/home/bcloud/.local/flm-v0946/include}"
+FLM_LIB="${FLM_LIB:-/home/bcloud/.local/flm-v0946/lib/xrt}"
 BF16MM_BRIDGE="$SRCDIR/src/npu_engine_bf16_mm_bridge.cpp"
 BF16MM_BRIDGE_O="$BUILDDIR/npu_engine_bf16_mm_bridge.o"
 # FLM prefill bridge (libqwen3_npu::prefill — the prefill/TTFT measurement path)

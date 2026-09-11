@@ -17,10 +17,13 @@ time out with `ERT_CMD_STATE_TIMEOUT`). Headers must be the v0.9.46 set (the
 
 ## Wiring (engine/npu)
 
-- `build_npu.sh`: `FLM_INC` → `third_party/FastFlowLM/src/include` (v0.9.46),
-  `FLM_LIB` → v0.9.46 .deb libs (`libqwen3_6_moe_npu.so` md5 `39a6c36a`).
-- `npu_engine_universal.cpp`: MoE `mdir` → a v0.9.45-`flm_version` model dir.
-- Runtime: `FLM_ROOT=/tmp/flm0946/opt/fastflowlm/share/flm` (v0.9.46 xclbin root).
+- `build_npu.sh`: `FLM_ROOT`/`FLM_INC`/`FLM_LIB` → `/home/bcloud/.local/flm-v0946`
+  (v0.9.46 headers + .deb libs, `libqwen3_6_moe_npu.so` md5 `39a6c36a`).
+- `npu_engine_bf16_mm_bridge.cpp`: `utils::find_xclbin_path()` → `/home/bcloud/.local/flm-v0946`
+  (so xclbins resolve to `.../xclbins/Qwen3.6-35B-A3B-NPU2/`).
+- `npu_engine_universal.cpp`: MoE `mdir` → `/home/bcloud/.local/flm-v0946/model/Qwen3.6-35B-A3B-NPU2`
+  (a `flm_version=0.9.45` config + symlinks to the real `model.q4nx`).
+- No `/tmp` or env-var dependence — reboot-safe.
 
 ## Results (engine sweep, warm; prompt = 10-token base cycle)
 
@@ -39,24 +42,24 @@ time out with `ERT_CMD_STATE_TIMEOUT`). Headers must be the v0.9.46 set (the
 
 | Context | ms/tok | tok/s |
 |--------:|-------:|------:|
-| 1k | 74.8 | **13.4** |
+| 1k  | 74.2 | **13.5** |
+| 2k  | 75.3 | **13.3** |
+| 4k  | 77.2 | **13.0** |
+| 8k  | 81.0 | **12.3** |
+| 16k | 89.4 | **11.2** |
+| 32k | 106.2| **9.4**  |
 
-## vs the bar
+| Context | Ours decode | 07-30 v0.9.46 | Corrected pub (13.65) |
+|---------|------------:|--------------:|----------------------|
+| 1k  | 13.5 | 11.66 | 13.65 → **−1%** (parity) |
+| 2k  | 13.3 | 12.17 | — |
+| 4k  | 13.0 | 11.85 | — |
+| 8k  | 12.3 | 11.30 | — |
+| 16k | 11.2 | 10.34 | — |
+| 32k | 9.4  | 8.82  | — |
 
-| Context | Ours prefill | 07-30 v0.9.46 | Corrected pub (13.65/78.98) |
-|---------|-------------:|--------------:|----------------------------|
-| 1k  | 125.0 | 98.05  | 78.98 → **+58%** |
-| 2k  | 178.4 | 141.95 | — |
-| 4k  | 223.9 | 193.80 | — |
-| 8k  | 254.3 | 239.12 | — |
-| 16k | 268.1 | 265.99 | — |
-| 32k | 257.6 | 239.79 | — |
-
-- **Prefill beats the corrected published bar (78.98 @1k) by +58%** and beats the
-  07-30 on-box v0.9.46 at every context length (+6% to +27%).
-- **Decode 13.4 tok/s** vs corrected published 13.65 (@1k) → **parity** (−1.8%,
-  cross-hardware Kraken-Point gap), and beats 07-30 on-box 11.66 by +15%.
-- All logits non-NaN (boot=760="The" at 1k), matching the 07-30 coherent-output run.
+- **Decode beats 07-30 on-box v0.9.46 at every context length** (+6% to +16%),
+  and is at parity with the corrected published 13.65 @1k.
 
 ## Note
 
