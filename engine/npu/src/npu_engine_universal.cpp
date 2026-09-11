@@ -3820,7 +3820,7 @@ struct Bf16Ctx {
             printf("=== Prefill %d ===\n", npt); fflush(stdout);
             auto t0 = std::chrono::steady_clock::now();
             std::vector<float> bh(256 * H), bqo(256 * qkvn), bat(256 * NH * HD), boo(256 * H),
-                               bgt(256 * 2 * IM), bsu(256 * IM), bdw(256 * H), bsb(256 * H);
+                               bdw(256 * H), bsb(256 * H);
             std::vector<uint16_t> bA(256 * std::max({H, qout, IM})), bC(256 * 2 * IM);
             std::vector<uint16_t> bActQ(256 * qout), bAttnOut(256 * qout), bKv(33554432 / 2);
             memset(bActQ.data(), 0, 256 * qout * 2);
@@ -3910,17 +3910,13 @@ struct Bf16Ctx {
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
                 for (int pi = 0; pi < npt; pi++) rn_c(&bh[pi * H], pa_n[l].data(), H);
                 for (int k = 0; k < 256; k++) for (int j = 0; j < H; j++) bA[k * H + j] = f32_to_bf16(bh[k * H + j]);
-                // GU per 512-out-row chunk: gate GEMM + up GEMM at N=512 each,
-                // then SiLU(gate)*up on host. bgt layout per token = [gate IM | up IM].
-                // GU FFN: [gate | up] = A×Wgu in ONE GEMM (N=2·IM).
+                // GU FFN: [gate | up] = A×Wgu in ONE GEMM (N=2·IM); SiLU on host
+                // reading gate/up straight from the bf16 C — no f32 staging buffer.
                 bf16mm_gemm_dev(bC.data(), bA.data(), Wgu[l], H, 2 * IM, 0);
-                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < 2 * IM; i++)
-                    bgt[pi * 2 * IM + i] = bf16g(bC[pi * 2 * IM + i]);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < IM; i++) {
-                    float gv = bgt[pi * 2 * IM + i]; if (!std::isfinite(gv)) gv = 0;
-                    bA[pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bgt[pi * 2 * IM + IM + i]);
+                    float gv = bf16g(bC[pi * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
+                    bA[pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i]));
                 }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fg = fopen("/tmp/bf16_l0_gu.bin", "wb"); if (fg) { fwrite(bgt.data(), 4, 2 * IM, fg); fclose(fg); } }
                 bf16mm_gemm_dev(bC.data(), bA.data(), Wd[l], IM, H, 0);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
