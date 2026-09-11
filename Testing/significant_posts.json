@@ -1,4 +1,18 @@
 {
+ "announcement:iVisionSH79/DeepSeek-V4.1-Flash": {
+  "arch": "deepseekv41",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-announcement-ivisionsh79-deepseek-v4-1-flash.html",
+  "mode": "announcement"
+ },
+ "announcement:ubr-physical-ai/Cosmos3-Edge-NF4-bnb": {
+  "arch": "cosmos3edge",
+  "date": "2026-09-02",
+  "family": "cosmos3edge",
+  "file": "1bit-post-announcement-ubr-physical-ai-cosmos3-edge-nf4-bnb.html",
+  "mode": "announcement"
+ },
  "covered:AnkitBirGurung/Granite-4.2-8b-BoardPolitics": {
   "arch": "granite",
   "date": "2026-09-02",
@@ -27,6 +41,20 @@
   "file": "1bit-post-significant-chinook416-caracat-pro.html",
   "mode": "covered"
  },
+ "covered:Elio2151/Gemma-2-9B-Instruct-TechnicalAgentFineTuned-Merged_5": {
+  "arch": "gemma2",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+  "mode": "covered"
+ },
+ "covered:HawkBearPig/GLM-5.3-Flash-NVFP4-FP8": {
+  "arch": "glm5next",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-hawkbearpig-glm-5-3-flash-nvfp4-fp8.html",
+  "mode": "covered"
+ },
  "covered:Healshsj/smollm3-3b-claude-fable5": {
   "arch": "smollm3",
   "date": "2026-09-02",
@@ -39,6 +67,13 @@
   "date": "2026-09-02",
   "family": "Gemma",
   "file": "1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html",
+  "mode": "covered"
+ },
+ "covered:Raghav-Singhal/1pp-1.7b-ua-seed42-sft": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-raghav-singhal-1pp-1-7b-ua-seed42-sft.html",
   "mode": "covered"
  },
  "covered:SAIFIINDUSTRIES/Qwen3.5-35B-A3B": {
@@ -55,11 +90,32 @@
   "file": "1bit-post-significant-ttimms-bible-assistant-qwen3-5-4b-v3-2.html",
   "mode": "covered"
  },
+ "covered:YueLinHu/GAC-Qwen3.5-4B": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-yuelinhu-gac-qwen3-5-4b.html",
+  "mode": "covered"
+ },
  "covered:a15846/DeepSeek-v4-Fable": {
   "arch": "deepseekv4",
   "date": "2026-09-02",
   "family": "Deepseek",
   "file": "1bit-post-significant-a15846-deepseek-v4-fable.html",
+  "mode": "covered"
+ },
+ "covered:ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ahmadnawaz21-qwen2-5-1-5b-medical-qlora-dpo.html",
+  "mode": "covered"
+ },
+ "covered:brennercruvinel/truw-rwkv7-2.9b-v3": {
+  "arch": "rwkv",
+  "date": "2026-09-02",
+  "family": "Rwkv",
+  "file": "1bit-post-significant-brennercruvinel-truw-rwkv7-2-9b-v3.html",
   "mode": "covered"
  },
  "covered:deepseek-ai/DeepSeek-V4-Flash": {
@@ -90,6 +146,13 @@
   "file": "1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html",
   "mode": "covered"
  },
+ "covered:hariharasudhan/en-indic-translate-26b": {
+  "arch": "gemma4",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-hariharasudhan-en-indic-translate-26b.html",
+  "mode": "covered"
+ },
  "covered:icysunny/gemma4_e2b_reasoner_merged": {
   "arch": "gemma4",
   "date": "2026-09-02",
@@ -111,11 +174,39 @@
   "file": "1bit-post-significant-joincrksilverb-nemotron-mini-4b-instruct.html",
   "mode": "covered"
  },
+ "covered:mlx-community/BigBang-v1-MLX-oQ4e": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-mlx-community-bigbang-v1-mlx-oq4e.html",
+  "mode": "covered"
+ },
+ "covered:neutrypl/neutry-functiongemma-270m-v2": {
+  "arch": "gemma3",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-neutrypl-neutry-functiongemma-270m-v2.html",
+  "mode": "covered"
+ },
+ "covered:ramazanoff34/Neo-One_Lite": {
+  "arch": "qwen2vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ramazanoff34-neo-one-lite.html",
+  "mode": "covered"
+ },
  "covered:scouzi1966/GLM-5.3-Flash-AFM-MLX-4bit": {
   "arch": "glm5next",
   "date": "2026-09-02",
   "family": "Glm",
   "file": "1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+  "mode": "covered"
+ },
+ "covered:thuyduongjoe123/checkpoints_en_my_logit": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-thuyduongjoe123-checkpoints-en-my-logit.html",
   "mode": "covered"
  },
  "covered:zhongweixie/inplace-ttt-qwen3-4b-64k-baseline": {

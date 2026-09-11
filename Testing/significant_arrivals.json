@@ -1,4 +1,11 @@
 {
+ "cosmos3edge": {
+  "arch": "cosmos3edge",
+  "covered": false,
+  "date": "2026-09-11",
+  "family": "cosmos3edge",
+  "model": "ubr-physical-ai/Cosmos3-Edge-NF4-bnb"
+ },
  "deepseek": {
   "arch": "deepseek",
   "covered": true,
@@ -13,26 +20,40 @@
   "family": "Deepseek",
   "model": "a15846/DeepSeek-v4-Fable"
  },
+ "deepseekv41": {
+  "arch": "deepseekv41",
+  "covered": false,
+  "date": "2026-09-11",
+  "family": "Deepseek",
+  "model": "iVisionSH79/DeepSeek-V4.1-Flash"
+ },
+ "gemma2": {
+  "arch": "gemma2",
+  "covered": true,
+  "date": "2026-09-11",
+  "family": "Gemma",
+  "model": "Elio2151/Gemma-2-9B-Instruct-TechnicalAgentFineTuned-Merged_5"
+ },
  "gemma3": {
   "arch": "gemma3",
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "Jkatdare/gemma-3-4b-it-tulumix-30k"
+  "model": "neutrypl/neutry-functiongemma-270m-v2"
  },
  "gemma4": {
   "arch": "gemma4",
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "icysunny/gemma4_e2b_reasoner_merged"
+  "model": "hariharasudhan/en-indic-translate-26b"
  },
  "glm5next": {
   "arch": "glm5next",
   "covered": true,
   "date": "2026-09-05",
   "family": "Glm",
-  "model": "scouzi1966/GLM-5.3-Flash-AFM-MLX-4bit"
+  "model": "HawkBearPig/GLM-5.3-Flash-NVFP4-FP8"
  },
  "glmmoedsa": {
   "arch": "glmmoedsa",
@@ -53,7 +74,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Llama",
-  "model": "BosonicJustin/transcendent-logic-model"
+  "model": "Raghav-Singhal/1pp-1.7b-ua-seed42-sft"
  },
  "nemotron": {
   "arch": "nemotron",
@@ -74,28 +95,35 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "dharun2049/kaveri-stgrpo-0.5b"
+  "model": "ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO"
+ },
+ "qwen2vl": {
+  "arch": "qwen2vl",
+  "covered": true,
+  "date": "2026-09-11",
+  "family": "Qwen",
+  "model": "ramazanoff34/Neo-One_Lite"
  },
  "qwen3": {
   "arch": "qwen3",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "zhongweixie/inplace-ttt-qwen3-4b-64k-baseline"
+  "model": "thuyduongjoe123/checkpoints_en_my_logit"
  },
  "qwen3_5": {
   "arch": "qwen3_5",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "Ttimms/Bible-Assistant-Qwen3.5-4B-v3.2"
+  "model": "YueLinHu/GAC-Qwen3.5-4B"
  },
  "qwen3_5moe": {
   "arch": "qwen3_5moe",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "SAIFIINDUSTRIES/Qwen3.5-35B-A3B"
+  "model": "mlx-community/BigBang-v1-MLX-oQ4e"
  },
  "qwen3next": {
   "arch": "qwen3next",
@@ -110,6 +138,13 @@
   "date": "2026-09-05",
   "family": "Qwen",
   "model": "inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i"
+ },
+ "rwkv": {
+  "arch": "rwkv",
+  "covered": true,
+  "date": "2026-09-11",
+  "family": "Rwkv",
+  "model": "brennercruvinel/truw-rwkv7-2.9b-v3"
  },
  "smollm3": {
   "arch": "smollm3",
