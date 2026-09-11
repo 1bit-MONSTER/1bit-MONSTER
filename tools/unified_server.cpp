@@ -389,6 +389,14 @@ static json health_json(BackendManager& mgr) {
     j["service"] = "1bit-monster unified inference server";
 
     auto* active = mgr.active_info();
+    // Goal mtvd3pmx audit (§9.10.11): `status` above stays "ok" because clients branch on
+    // it, but it is NOT the honest signal on its own — a run in which every lane failed to
+    // initialise still answers 200 with status "ok". `GET /` already reports
+    // ready|initializing from this same state, and /v1/backend/status already calls this
+    // fact `initialized` (:2965), so this carries the same fact under the existing name
+    // rather than inventing one. After the `discover()` fix stopped a never-initialised
+    // lane from being *named* as active, this stops its absence from being *silent*.
+    j["initialized"] = (active != nullptr);
     if (active) {
         j["active_backend"]["id"] = active->id;
         j["active_backend"]["type"] = backend_name(active->type);
