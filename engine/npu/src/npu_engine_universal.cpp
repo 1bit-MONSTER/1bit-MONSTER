@@ -68,6 +68,7 @@ extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" void bf16mm_set_attn_qout(int qout);
 extern "C" int flm_prefill_init(const char* model_dir);
 extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* prefill_ms);
+extern "C" int flm_decode_run(int token, int* next_token, double* decode_ms);
 extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32_t D_out, uint32_t woff_bytes, size_t layer_bo_bytes);
 extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff_elements);
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
@@ -658,6 +659,22 @@ int main(int argc,char**argv){
                 printf("=== Prefill %d ===\n", (int)flm_ids.size()); fflush(stdout);
                 printf("Prefill: %.0fms (%.2f ms/tok)\n\n", ms, ms / flm_ids.size());
                 printf("  [0] boot=%d\n", boot);
+                // NPU_FLM_DECODE=1 continues with FLM's forward() for the decode
+                // (architectural change extended — FLM's own decode orchestration).
+                if (getenv("NPU_FLM_DECODE")) {
+                    auto tgs = std::chrono::steady_clock::now();
+                    int prev = boot, total = 0;
+                    for (int i = 0; i < ng; i++) {
+                        int next = 0; double dms = 0;
+                        if (flm_decode_run(prev, &next, &dms) != 0) break;
+                        printf("  [%d] %d\n", i + 1, next);
+                        prev = next; total++;
+                    }
+                    auto tge = std::chrono::steady_clock::now();
+                    double tts = std::chrono::duration<double>(tge - tgs).count();
+                    printf("\n=== %.1f ms/tok (%.0f tok/s) | tokens=%d ===\n",
+                           total > 0 ? tts * 1000.0 / total : 0, total > 0 ? total / tts : 0, total);
+                }
                 fflush(stdout); fflush(stderr);
                 _exit(0);
             }

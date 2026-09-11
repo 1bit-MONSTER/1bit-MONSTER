@@ -54,3 +54,15 @@ extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* p
     *boot_token = best;
     return 0;
 }
+
+extern "C" int flm_decode_run(int token, int* next_token, double* decode_ms) {
+    if (!g_model) return 1;
+    auto t0 = std::chrono::steady_clock::now();
+    auto out = g_model->forward(token);
+    auto t1 = std::chrono::steady_clock::now();
+    *decode_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    int best = 0;
+    for (size_t j = 1; j < out.size(); j++) if (out[j] > out[best]) best = (int)j;
+    *next_token = best;
+    return 0;
+}
