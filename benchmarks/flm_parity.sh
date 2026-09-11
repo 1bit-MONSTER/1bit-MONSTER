@@ -114,15 +114,19 @@ measure_native() {
   # ctx_k is 1/2/4/8/16/32 (thousands). FLM repeats the story 1<<log2(k)=k times,
   # so k copies of the ~1k-token story matches FLM's "<k>k" stage.
   for _ in $(seq 1 "$ctx_k"); do printf '%s ' "$seq" >>"$all"; done
-  # 3) run engine
-  local out="$WORK/native.log"
-  "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$out" 2>&1 || true
+  # 3a) prefill via FLM's qwen3_npu::prefill (NPU_FLM_PREFILL=1 — architectural
+  #     change; the hand-rolled bf16 reimplementation diverged at H>1024)
+  local pout="$WORK/prefill.log"
+  NPU_FLM_PREFILL=1 "$ENGINE" "$Q4NX" 1 "$all" >"$pout" 2>&1 || true
+  # 3b) decode via the runlist whole-layer path (NPU_RUNLIST=1)
+  local dout="$WORK/decode.log"
+  NPU_RUNLIST=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
   # 4) parse markers (grep -m1 avoids the set -e + head early-close SIGPIPE trap)
   local prefill_ms prefill_ms_tok decode_tok_s ttft_s npt
-  npt="$(grep -oE '=== Prefill [0-9]+ ===' "$out" | grep -om1 '[0-9]\+' || true)"
-  prefill_ms="$(grep -oE 'Prefill: [0-9]+ms \([0-9.]+ ms/tok\)' "$out" | grep -oE '[0-9]+ms' | grep -om1 '[0-9]\+' || true)"
-  prefill_ms_tok="$(grep -oE 'Prefill: [0-9]+ms \([0-9.]+ ms/tok\)' "$out" | grep -oE '[0-9.]+ ms/tok' | grep -om1 '[0-9.]\+' || true)"
-  decode_tok_s="$(grep -oE '\([0-9.]+ tok/s\)' "$out" | grep -oE '[0-9.]+' | tail -1 || true)"
+  npt="$(grep -oE '=== Prefill [0-9]+ ===' "$pout" | grep -om1 '[0-9]\+' || true)"
+  prefill_ms="$(grep -oE 'Prefill: [0-9]+ms \([0-9.]+ ms/tok\)' "$pout" | grep -oE '[0-9]+ms' | grep -om1 '[0-9]\+' || true)"
+  prefill_ms_tok="$(grep -oE 'Prefill: [0-9]+ms \([0-9.]+ ms/tok\)' "$pout" | grep -oE '[0-9.]+ ms/tok' | grep -om1 '[0-9.]\+' || true)"
+  decode_tok_s="$(grep -oE '\([0-9.]+ tok/s\)' "$dout" | grep -oE '[0-9.]+' | tail -1 || true)"
   if [ -n "$prefill_ms" ] && [ -n "$prefill_ms_tok" ]; then
     ttft_s="$(python3 -c "print(round($prefill_ms/1000.0,4))")"
     local prefill_tok_s; prefill_tok_s="$(python3 -c "print(round(1000.0/$prefill_ms_tok,1))")"
@@ -130,8 +134,9 @@ measure_native() {
     ttft_s=""; prefill_tok_s=""
   fi
   echo "$ttft_s $prefill_tok_s $decode_tok_s $npt"
-  # keep the log for diagnostics
-  cp "$out" "$WORK/native_${MODEL}_ctx${ctx_k}.log"
+  # keep the logs for diagnostics
+  cp "$pout" "$WORK/prefill_${MODEL}_ctx${ctx_k}.log"
+  cp "$dout" "$WORK/decode_${MODEL}_ctx${ctx_k}.log"
 }
 
 # ---------------------------------------------------------------------------
