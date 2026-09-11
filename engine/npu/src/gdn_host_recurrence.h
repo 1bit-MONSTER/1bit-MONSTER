@@ -172,6 +172,52 @@ inline void ssm_step_gb_bf16(const uint16_t* qkv, const float* g, const float* b
     for (int i = 0; i < VALUE_DIM; i++) core[i] = f32_to_bf16(core_f[i]);
 }
 
+// Recurrence-only core: state update + core read-out, NO gated RMSNorm.
+// (The lib applies the gated RMSNorm × silu(z) afterward via
+// cpu_func::_gated_norm, which is bf16-stable, so the injection must not double-norm.)
+inline void recurrence_only_core(const float* q2, const float* k2, const float* v,
+                                 const float* a, const float* b,
+                                 const float* ssm_a, const float* dt_bias,
+                                 float* state, float* core) {
+    for (int hh = 0; hh < NUM_V_HEADS; hh++) {
+        float* sh = state + (size_t)hh * HEAD_K * HEAD_V;
+        const float* qh = q2 + (size_t)hh * HEAD_K;
+        const float* kh = k2 + (size_t)hh * HEAD_K;
+        const float* vh = v + (size_t)hh * HEAD_V;
+        const float eg = std::exp(ssm_a[hh] * softplus(a[hh] + dt_bias[hh]));
+        const float bh = sigmoid(b[hh]);
+
+        for (size_t i = 0; i < (size_t)HEAD_K * HEAD_V; i++) sh[i] *= eg;
+        for (int j = 0; j < HEAD_V; j++) {
+            float kv_mem = 0.f;
+            for (int i = 0; i < HEAD_K; i++) kv_mem += sh[(size_t)i * HEAD_V + j] * kh[i];
+            const float delta = (vh[j] - kv_mem) * bh;
+            for (int i = 0; i < HEAD_K; i++) sh[(size_t)i * HEAD_V + j] += kh[i] * delta;
+        }
+        for (int j = 0; j < HEAD_V; j++) {
+            float ssum = 0.f;
+            for (int i = 0; i < HEAD_K; i++) ssum += sh[(size_t)i * HEAD_V + j] * qh[i];
+            core[(size_t)hh * HEAD_V + j] = ssum / std::sqrt((float)HEAD_K);
+        }
+    }
+}
+
+// Full SSM step (split+repeat+l2norm + g/beta + recurrence) WITHOUT gated norm,
+// bf16 in/out (the lib's conv-qkv bf16 -> f32, core f32 -> bf16).
+// This is the drop-in host replacement for the GateDeltaNet_prefill.xclbin run:
+// the lib's cpu_func::_gated_norm applies the RMSNorm × silu(z) afterward.
+inline void ssm_step_nogate_bf16(const uint16_t* qkv, const float* a, const float* b,
+                                 const float* ssm_a, const float* dt_bias,
+                                 float* state, uint16_t* core) {
+    float qkv_f[CONV_DIM];
+    for (int i = 0; i < CONV_DIM; i++) qkv_f[i] = bf16_to_f32(qkv[i]);
+    float q2[NUM_V_HEADS * HEAD_K], k2[NUM_V_HEADS * HEAD_K];
+    split_repeat_l2norm(qkv_f, q2, k2);
+    float core_f[VALUE_DIM];
+    recurrence_only_core(q2, k2, qkv_f + 2 * KEY_DIM, a, b, ssm_a, dt_bias, state, core_f);
+    for (int i = 0; i < VALUE_DIM; i++) core[i] = f32_to_bf16(core_f[i]);
+}
+
 }  // namespace gdn
 
 // C ABI so a patched libqwen3_6_moe_npu.so can call this via a single rel32
@@ -200,5 +246,11 @@ void gdn_host_ssm_step_gb_bf16(const uint16_t* qkv, const float* g, const float*
                                const uint16_t* z, const uint16_t* norm_w,
                                float* state, uint16_t* core) {
     gdn::ssm_step_gb_bf16(qkv, g, beta, z, norm_w, state, core);
+}
+
+void gdn_host_ssm_nogate_bf16(const uint16_t* qkv, const float* a, const float* b,
+                              const float* ssm_a, const float* dt_bias,
+                              float* state, uint16_t* core) {
+    gdn::ssm_step_nogate_bf16(qkv, a, b, ssm_a, dt_bias, state, core);
 }
 }
