@@ -233,6 +233,26 @@ static std::string tokenizer_path() {
 // as garbage [id][id] through the ASCII fallback.
 static void load_model_tokenizer(const std::string& model_path) {
     if (g_tokenizer.load_from_gguf(model_path)) return;
+    // Prefer a tokenizer that sits BESIDE the artifact. Every candidate below this point is a
+    // GGUF the loader borrows vocabulary from, so a native container (Q4NX/1BP) with no GGUF
+    // sibling could never be detokenised — the lookup never considered its own directory. The
+    // only other path consulted is the WEIGHTS DIR (tokenizer_path()), which is wrong for an
+    // artifact kept anywhere else. Measured on strixhalo: a served zaya1-8b.q4nx from
+    // ~/models returned "[81930][129662]…" -- correct generation, ASCII fallback for text.
+    // `model.q4nx + tokenizer.htok in one directory` is the natural layout, so it wins here.
+    {
+        auto exists2 = [](const std::string& p) {
+            std::ifstream f(p, std::ios::binary);
+            return f.good();
+        };
+        auto slash2 = model_path.find_last_of('/');
+        std::string dir2 = (slash2 != std::string::npos) ? model_path.substr(0, slash2 + 1) : "";
+        auto dot2 = model_path.find_last_of('.');
+        std::string stem2 = (dot2 != std::string::npos) ? model_path.substr(0, dot2) : model_path;
+        for (const std::string& c : {dir2 + "tokenizer.htok", stem2 + ".htok"}) {
+            if (exists2(c) && g_tokenizer.load(c)) return;
+        }
+    }
     // NOTE: no early return for .gguf paths — load_from_gguf needs the ZINC
     // lib (usually absent → ZINC_DISABLED), so even real GGUFs must fall
     // through to .htok synthesis below, or the server decodes their output
@@ -1478,8 +1498,12 @@ int main(int argc, char** argv) {
     // ── Load tokenizer ──
     std::string tok_path = tokenizer_path();
     if (!g_tokenizer.load(tok_path)) {
-        printf("  ⚠  Tokenizer not found at %s\n", tok_path.c_str());
-        printf("     Using fallback tokenizer (ASCII passthrough)\n");
+        // Deliberately NOT "using fallback ASCII" here: this runs before the model is known,
+        // and load_model_tokenizer() — called later with the resolved artifact — now also
+        // consults the artifact's own directory (a tokenizer.htok beside a native container).
+        // Claiming a degraded state now contradicts what the log says a few lines later.
+        printf("  ·  No global tokenizer at %s\n", tok_path.c_str());
+        printf("     Will try the model's own directory once the model is known\n");
     } else {
         printf("  ✓  Tokenizer loaded\n");
     }
@@ -1730,6 +1754,13 @@ int main(int argc, char** argv) {
     // much as backend routing for arbitrary (non-Zaya) models. Falls back
     // silently (keeps whatever tokenizer was already loaded) if unavailable.
     load_model_tokenizer(cfg.model_path);
+    // State the OUTCOME, once, after the per-model lookup has had its chance. Without this the
+    // only tokenizer message was the pre-model warning above, which could be superseded — and a
+    // run that decoded correctly would still read as if it had fallen back to ASCII.
+    if (g_tokenizer.use_bpe && g_tokenizer.bpe_tok)
+        printf("  ✓  Tokenizer ready (BPE)\n");
+    else
+        printf("  ⚠  No tokenizer for this model — output will be [id][id] ASCII passthrough\n");
     // The flip: the registry resolver is consumed here. The merge is a UNION — the
     // registry can demote the head only for a stated exclusion, and never drops a
     // router lane — so this cannot lose a route the engine has today.
