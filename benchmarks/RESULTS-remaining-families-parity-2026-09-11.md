@@ -86,9 +86,22 @@ Prefill near-parity (4k exact); decode ~7–11% (cross-HW).
 
 Reference: 1.2B decode 62 / 61 / 59 / 56 / 52 / 46, prefill 1537 / 2172 / 2521 / 2677 / 2359 / 1916; 2.6B decode 30 / 30 / 30 / 29 / 27 / 25, prefill 747 / 1004 / 1193 / 1284 / 1210 / 1053.
 
-**Blocked (separate issue)**: the engine's `parse_q4nx_header` can't parse the
-LFM2 q4nx header (`invalid model config H=0 NH=0 ... NC=16`) — the LFM2 family
-is a hybrid block/mamba model (config keys `block_*`, `conv_*`, `full_attn_idxs`,
-`head_dim=64`) whose q4nx manifest differs from the dense-Qwen3-style header.
-Family gate is wired (`NV=65536 → lfm2`); needs a q4nx-header-parser fix, not
-FLM-orchestration work.
+Fixed: added a config.json fallback to the engine's config parsing (the LFM2
+q4nx manifest has no embed_tokens/self_attn tensors — tied-embedding hybrid
+block/mamba). Now `H=2048 NC=16 NH=32 NKV=8 HD=64 IM=8192 NV=65536` reads from
+config.json.
+
+### LFM2-1.2B (`lfm2:1.2b`, NV=65536, H=2048, NC=16)
+
+Reference: decode 62 / 61 / 59 / 56 / 52 / 46; prefill 1537 / 2172 / 2521 / 2677 / 2359 / 1916.
+
+| ctx | prefill tok/s (ours / pub) | decode tok/s (ours / pub) |
+|---|---:|---:|
+| 1k  | 1587 / 1537 (+3%)  | 62 / 62 (0%, exact) |
+| 2k  | 2041 / 2172 (−6%)  | 60 / 61 (−2%) |
+| 4k  | 2381 / 2521 (−6%)  | 58 / 59 (−2%) |
+| 8k  | 2439 / 2677 (−9%)  | 54 / 56 (−4%) |
+| 16k | 2222 / 2359 (−6%)  | 46 / 52 (−12%) |
+| 32k | 1786 / 1916 (−7%)  | (MAX_L overflow) |
+
+Decode at/near parity (exact @1k); prefill ~6–9% (cross-HW). Best family so far.

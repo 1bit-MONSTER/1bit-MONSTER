@@ -592,6 +592,30 @@ int main(int argc,char**argv){
     #endif
         cfg = parse_q4nx_header(mp,model_tag.c_str());
 
+    // Fallback: models whose q4nx manifest lacks embed/self_attn tensors
+    // (e.g. LFM2's tied-embedding hybrid block/mamba) — read the config.json.
+    if (!cfg.valid()) {
+        std::string cj = cfg.model_dir + "/config.json";
+        FILE* cf = fopen(cj.c_str(), "rb");
+        if (cf) {
+            fseek(cf, 0, SEEK_END); long n = ftell(cf); fseek(cf, 0, SEEK_SET);
+            std::string js((size_t)n, '\0');
+            if (n > 0 && fread(&js[0], 1, n, cf) == (size_t)n) {
+                auto gi = [&](const char* k){ long v = 0; size_t kl = strlen(k);
+                    const char* p = js.c_str(); const char* e = p + n;
+                    while (p < e) { auto q = strstr(p, k); if (!q) break;
+                        if ((q == js.c_str() || *(q-1) == '"') && *(q+kl) == '"') {
+                            const char* vp = strchr(q + kl, ':'); if (vp) v = strtol(vp + 1, nullptr, 10); break; }
+                        p = q + kl; } return (int)v; };
+                cfg.H = gi("hidden_size"); cfg.NC = gi("num_hidden_layers");
+                cfg.NH = gi("num_attention_heads"); cfg.NKV = gi("num_key_value_heads");
+                cfg.HD = gi("head_dim"); cfg.IM = gi("intermediate_size"); cfg.NV = gi("vocab_size");
+                if (cfg.NKV > 0 && cfg.NH > 0) cfg.GQA = cfg.NH / cfg.NKV;
+            }
+            fclose(cf);
+        }
+    }
+
     if(!cfg.valid()){fprintf(stderr,"ERR: invalid model config H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d\n",cfg.H,cfg.NC,cfg.NH,cfg.NKV,cfg.HD,cfg.IM,cfg.NV);return 1;}
     // Zaya (CCA attention + TQ1 MoE, alternating layers + running residual) is
     // decoded by the dedicated hybrid path in zaya_decode.cpp — CCA attention on
