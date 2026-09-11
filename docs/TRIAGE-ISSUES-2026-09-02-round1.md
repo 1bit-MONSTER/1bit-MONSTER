@@ -44,7 +44,7 @@ as of the 2026-09-02 refresh recorded in the issues:
   GNOME animations off, stable since 08-31, coredumps preserved in
   `/var/log/gpu-coredumps/`). Remaining = file the upstream Mesa/amdgpu report.
 - **#1866** llvm-aie has no AIE2P -O0 range fix (newest related = AIE2PS
-  accumulator-spill a36c62b9d); `-O1` workaround stands.
+  accumulator-spill a36c62b9d); `-O1` workaround stands. **Re-verified 2026-09-11** (`main` @ `6963fc694`, llvm-aie `91977805fa`): the crash is unchanged, but **nothing in-repo requires `-O0`** — builds pin -O2/-O1 — so this is an upstream-only watch with no in-repo impact; re-check when llvm-aie #1155/#1276 land.
 - **#1945** llama.cpp PR #27218 still open+draft; hrx-system stuck at v0.3.0.
 - **#1956** local g++ 15.2.0; `std::inplace_vector`/reflection gated on g++16.
 
