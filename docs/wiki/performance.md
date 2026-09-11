@@ -130,3 +130,29 @@ integration in progress).*
 - [Supported Models](models.md) — per-model architecture, backend, and performance data
 - [`benchmarks/README.md`](../../benchmarks/README.md) — how to run benchmarks locally
 - [`site/benchmarks.json`](../../site/benchmarks.json) — machine-readable authoritative source for all numbers on this page
+
+---
+
+## FLM-Orchestration Parity (decode / prefill @1k, 2026-09-11)
+
+Full-catalog parity of the native engine's FLM-orchestration path
+(`NPU_FLM_PREFILL`/`NPU_FLM_DECODE`) vs the FLM published Kraken-Point tables.
+**Decode trails by a widening cross-hardware gap (Strix-Halo vs Kraken-Point) —
+FLM's own on-box numbers trail the same way; prefill is near-parity or beats.**
+The MoE + remaining families run v0.9.46 libs (the v1.0.x MoE bf16-GDN regression
+is v1.0.x-only); dense Qwen3 runs v1.0.4. Source of truth: `site/benchmarks.json`
+(`flm_parity`).
+
+| Model | decode (ours/pub) | prefill (ours/pub) |
+|---|---:|---:|
+| Qwen3-0.6B | 74 / 66.5 ✓ | 1370 / 1494 |
+| Qwen3-1.7B | 38 / 40.2 | 971 / 956 ✓ |
+| Qwen3-4B | 18 / 19.6 | 510 / 509 ✓ |
+| Qwen3-8B | 11 / 11.9 | 370 / 357 ✓ |
+| Qwen3.6-35B-A3B | 13.5 / 13.65 | 125.0 / 78.98 ✓ |
+| Llama-3.2-1B | 56 / 64.5 | 1515 / 1686 |
+| Gemma4-E2B | 21 / 22.6 | 633 / 721 |
+| Gemma4-E4B | 12 / 12.6 | 435 / 441 |
+| Phi4-mini | 20 / 21.8 | 637 / 643 |
+| Nanbeige4.1-3B | 21 / 23.5 | 565 / 612 |
+| LFM2-1.2B | 62 / 62 ✓ | 1587 / 1537 ✓ |
