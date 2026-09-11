@@ -144,6 +144,14 @@ static std::string g_weights_dir = []() -> std::string {
 }();
 static int g_port = 8088;
 
+// Step 2 (goal mtvd3pmx): the objective names `~/models` as a root the registry of record must
+// cover, on BOTH serving faces. File-scope because the --lemonade branch returns before the
+// engine-face registry is built, and both need the same answer.
+static const std::string g_home_models_dir = []() -> std::string {
+    const char* home = getenv("HOME");
+    return (home && home[0]) ? std::string(home) + "/models" : std::string();
+}();
+
 // ── Mesh: self-aware network presence (peer discovery, /v1/mesh/*) ──
 // On by default — a 1bit-MONSTER install announces itself on the LAN and
 // starts integration conversations with sibling installs out of the box.
@@ -1285,9 +1293,20 @@ static int run_embedded_lemonade(int argc, char** argv) {
         const char* env_root = getenv("LEMONADE_ENGINE_REGISTRY_ROOT");
         if (!env_root || !*env_root) env_root = getenv("ZAYA_WEIGHTS_DIR");
         std::string root = (env_root && *env_root) ? std::string(env_root) : g_weights_dir;
+        // Step 2/R2 applies to BOTH faces: the objective names `~/models` as a root the registry
+        // must cover, so this face scans it too rather than making it a special case reached by
+        // symlinking an artifact into the weights dir (issue #2193, audit §9.10.31).
+        std::vector<std::string> lemon_roots{root};
+        if (!g_home_models_dir.empty() && g_home_models_dir != root)
+            lemon_roots.push_back(g_home_models_dir);
+        std::string lemon_roots_desc;
+        for (const auto& r : lemon_roots) {
+            if (!lemon_roots_desc.empty()) lemon_roots_desc += " + ";
+            lemon_roots_desc += r;
+        }
         size_t total = 0, native = 0;
         try {
-            onebit::ModelRegistry reg = onebit::ModelRegistry::scan({root});
+            onebit::ModelRegistry reg = onebit::ModelRegistry::scan(lemon_roots);
             total = reg.artifacts().size();
             for (const auto& a : reg.artifacts()) {
                 if (a.container == onebit::Container::ONEBP ||
@@ -1324,7 +1343,7 @@ static int run_embedded_lemonade(int argc, char** argv) {
                "(spawn: `1bit unified -m <path>`) and served at /v1/registry. Coverage "
                "guard: a registry/execution check run against --lemonade is vacuous if "
                "this line is absent.\n",
-               total, root.c_str(), native);
+               total, lemon_roots_desc.c_str(), native);
         fflush(stdout);
     }
 
@@ -1528,8 +1547,16 @@ int main(int argc, char** argv) {
     // model). The extension is additive and deduped by path, so every legacy name
     // still resolves while a previously-invisible artifact gains its CANONICAL id
     // (R5). It does not change route selection (that stays in model_router).
-    static onebit::ModelRegistry g_registry =
-        onebit::ModelRegistry::scan({g_weights_dir});
+    // R2/step 2: the registry is the record for every artifact on the box, and the objective
+    // names `~/models` explicitly ("every artifact on the box (`~/models` + native
+    // conversions)"). Scanning only the weights dir left an artifact in `~/models` invisible:
+    // loaded and SERVED correctly, yet listed only under its legacy stem (issue #2193, audit
+    // §9.10.31 case A). Both roots, de-duplicated by path downstream.
+    static onebit::ModelRegistry g_registry = [&] {
+        std::vector<std::string> roots{g_weights_dir};
+        if (!g_home_models_dir.empty()) roots.push_back(g_home_models_dir);
+        return onebit::ModelRegistry::scan(roots);
+    }();
     static std::vector<ModelConfig> discovered = [&] {
         std::vector<ModelConfig> v;
         std::set<std::string> have;
@@ -2069,6 +2096,13 @@ int main(int argc, char** argv) {
         j["object"] = "list";
         json models = json::array();
         // Add all discovered models
+        // R5 (issue #2193, audit §9.10.31): when a scanned entry resolves to a registry artifact,
+        // list it under the CANONICAL id and keep the scanned name as an alias. Without this the
+        // same weights appear twice — once canonically (the registry loop below) and once by their
+        // legacy stem (this loop, which sets id = m.model_name) — which is exactly the divergence
+        // step 4 exists to remove. Measured: `zaya1-8b.q4nx` (artifact_id zaya1-8b.q4nx,
+        // capabilities NPU-Q4NX) AND `zaya1-8b` (artifact_id zaya1-8b.q4nx, same capabilities).
+        std::set<std::string> listed_artifact_ids;
         for (auto& m : discovered) {
             json info;
             info["id"] = m.model_name;
@@ -2086,6 +2120,16 @@ int main(int argc, char** argv) {
             const onebit::ModelArtifact* art = g_registry.resolve_path(m.model_path);
             if (!art) art = g_registry.find(m.model_name);
             if (art) {
+                // One artifact, one listed id: the canonical one. A second entry under the
+                // scanned name is not an alias, it is a duplicate.
+                if (!art->id.empty() && art->id != m.model_name) {
+                    info["legacy_name"] = m.model_name;
+                    info["id"] = art->id;
+                }
+                if (!art->id.empty()) {
+                    if (listed_artifact_ids.count(art->id)) continue;  // already listed canonically
+                    listed_artifact_ids.insert(art->id);
+                }
                 info["artifact_id"] = art->id;
                 info["container"] = onebit::to_string(art->container);
                 info["dtype_space"] = onebit::to_string(art->dtype_space);
@@ -2101,6 +2145,7 @@ int main(int argc, char** argv) {
         // Registry-only artifacts: recursive walk + native containers that the
         // flat scan above cannot reach (e.g. q4nx-converted/*.gguf, *.q4nx).
         for (const auto& art : g_registry.artifacts()) {
+            if (listed_artifact_ids.count(art.id)) continue;
             bool present = false;
             for (auto& m : discovered) {
                 if (m.model_name == art.id) { present = true; break; }
@@ -2125,13 +2170,42 @@ int main(int argc, char** argv) {
             if (art.q4nx_name_mismatch) info["q4nx_name_mismatch"] = true;
             models.push_back(info);
         }
-        // Also add the active backend model if different
+        // Also add the loaded model, if the listing does not already carry it — and under its
+        // CANONICAL id when the registry knows the artifact. Four lines here held three defects
+        // (issue #2193, audit §9.10.31):
+        //   * the dedupe compared a MODEL name (m.model_name) to a BACKEND id (active->id) —
+        //     different vocabularies, so it could never match and the entry was appended on
+        //     every single request;
+        //   * it appended current_cfg.model_name, the legacy stem ("zaya1-8b"), so one artifact
+        //     appeared TWICE — canonically and by stem — which is the divergence step 4/R5 exist
+        //     to remove. Measured: 9 entries in /v1/models where 8 artifacts exist;
+        //   * model_info_json() put the active BACKEND id in the model's "backend" field, which
+        //     reads like a capability.
         if (active) {
-            bool found = false;
-            for (auto& m : discovered) {
-                if (m.model_name == active->id) { found = true; break; }
+            const onebit::ModelArtifact* loaded_art =
+                current_cfg.model_path.empty()
+                    ? nullptr : g_registry.resolve_path(current_cfg.model_path);
+            const std::string loaded_id = (loaded_art && !loaded_art->id.empty())
+                                              ? loaded_art->id : current_cfg.model_name;
+            bool listed = false;
+            for (const auto& m : models) {
+                const std::string id = m.value("id", std::string());
+                if (id == loaded_id || id == current_cfg.model_name) { listed = true; break; }
             }
-            if (!found) models.push_back(model_info_json(active, current_cfg.model_name));
+            if (!listed && !loaded_id.empty()) {
+                json info = model_info_json(active, loaded_id);
+                if (loaded_art) {
+                    info["backend"] = "auto";
+                    info["artifact_id"] = loaded_art->id;
+                    std::vector<std::string> caps;
+                    for (auto c : loaded_art->capabilities) caps.push_back(onebit::to_string(c));
+                    info["capabilities"] = caps;
+                    info["container"] = onebit::to_string(loaded_art->container);
+                    if (loaded_id != current_cfg.model_name)
+                        info["legacy_name"] = current_cfg.model_name;
+                }
+                models.push_back(std::move(info));
+            }
         }
         j["data"] = models;
         res.set_content(j.dump(2), "application/json");
