@@ -3885,14 +3885,17 @@ struct Bf16Ctx {
                     FILE* fa = fopen("/tmp/eng_act.bin", "wb"); if (fa) { fwrite(bActQ.data(), 2, 256 * qout, fa); fclose(fa); }
                     FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, 33554432 / 2, fk); fclose(fk); }
                 }
+                bool attn_host = false;
                 if (!bf16mm_attn(bAttnOut.data(), bActQ.data(), bKv.data())) {
                     fprintf(stderr, "\nbf16 attn unavailable — CPU attn_omp fallback\n");
+                    attn_host = true;
                     #pragma omp parallel for
                     for (int pi = 0; pi < npt; pi++)
                         attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n, kv_caches[l][0].k.data(),
                                  kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
                 } else {
-                    for (int pi = 0; pi < 256; pi++) for (int i = 0; i < qout; i++) bat[pi * qout + i] = bf16g(bAttnOut[pi * qout + i]);
+                    // attn out (bf16) → O GEMM A directly — skip the f32 round-trip
+                    memcpy(bA.data(), bAttnOut.data(), (size_t)256 * qout * 2);
                     if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
                         FILE* fo = fopen("/tmp/eng_out.bin", "wb"); if (fo) { fwrite(bAttnOut.data(), 2, 256 * qout, fo); fclose(fo); }
                     }
@@ -3900,7 +3903,7 @@ struct Bf16Ctx {
                 auto ta1 = std::chrono::steady_clock::now();
                 ta += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
                 // O GEMM (K = NH*HD)
-                for (int k = 0; k < 256; k++) for (int j = 0; j < qout; j++) bA[k * qout + j] = f32_to_bf16(bat[k * qout + j]);
+                if (attn_host) for (int k = 0; k < 256; k++) for (int j = 0; j < qout; j++) bA[k * qout + j] = f32_to_bf16(bat[k * qout + j]);
                 bf16mm_gemm_dev(bC.data(), bA.data(), Wo[l], qout, H, 0);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
