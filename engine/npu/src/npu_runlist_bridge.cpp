@@ -242,6 +242,11 @@ extern "C" int npu_bf16_prefill_init(const char* model_path, int H, int NC, int 
     g_bf16_cfg.max_position_embeddings = 40960;
     g_bf16_cfg.max_seq_len = 4096;
     g_bf16_mw = model_load(model_path, g_bf16_cfg);
+    if (g_bf16_mw) {
+        fprintf(stderr, "[bf16prefill] loaded %s emb=%lldx%lld layers=%d\n", model_path,
+                (long long)g_bf16_mw->embed_tokens.shape[0], (long long)g_bf16_mw->embed_tokens.shape[1],
+                g_bf16_mw->config.num_layers);
+    }
     return g_bf16_mw ? 0 : -1;
 }
 
