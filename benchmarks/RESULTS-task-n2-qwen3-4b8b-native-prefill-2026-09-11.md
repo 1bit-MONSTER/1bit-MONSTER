@@ -43,3 +43,15 @@ was validated only for 0.6B). The engine's own `NPU_FLM_PREFILL=1` path runs the
 4B prefill fine (boot=151667), so the correct next step is to LD_PRELOAD the
 interposer on the ENGINE's FLM-prefill path for 4B and capture the nh32 ELF +
 act/kv/out there, then replay byte-exact via `replay_attn`.
+
+
+## nh32 ELF: raw capture swapped in, but 4B boot still wrong (2026-09-11)
+
+- The embedded `attn_mha_256_nh32.elf` (46640 B) was a 32-byte **mis-trim** of the
+  raw FLM capture; `elf_0012` (46672 B) from the engine's `NPU_FLM_PREFILL=1` 4B
+  capture is the raw FLM MHA ELF (boot=151667 source). Swapped in.
+- 4B boot changed 115230 → 2561, still ≠ 151667. So there is a **second, upstream
+  bug** — candidates: (a) the mm.xclbin large-N C-write tiling for the 4B GU GEMM
+  (N=2·IM=19456) or QKV (N=6144), (b) the NH=32 Q act/RoPE layout, (c) the nh32
+  ELF's GQA (32→8) mapping. Needs byte-exact isolation (replay_attn for 256×4096 +
+  captured act/kv/out).
