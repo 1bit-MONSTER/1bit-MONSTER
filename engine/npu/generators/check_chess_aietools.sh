@@ -54,3 +54,25 @@ check_chess_aietools() {
     fi
     return 0
 }
+
+# find_chess_aietools_root — discover a Vitis aietools root that can actually drive
+# the chess arm, i.e. one carrying chess-llvm-link at the path aiecc derives from
+# --aietools. Callers should use this instead of pinning a version or a directory
+# spelling: both known layouts are searched ($HOME/Xilinx/<ver>/Vitis/aietools and
+# $HOME/Xilinx<year>/<ver>/Vitis/aietools) and the newest qualifying version wins,
+# so a 2025.2->2026.1 move needs no edit. Note the spellings are not
+# interchangeable: on 2026-09-11 `$HOME/Xilinx2025/2025.2/Vitis/aietools` resolved
+# while the plausible-looking `$HOME/Xilinx/2025.2/Vitis/aietools` did not.
+#
+# Echoes the root and returns 0; returns 1 when nothing qualifies (the caller must
+# fail loudly rather than reach aiecc with a --aietools that cannot link chess).
+find_chess_aietools_root() {
+    local candidate
+    while IFS= read -r candidate; do
+        if [ -x "${candidate%/}/tps/lnx64/target_aie2p/bin/LNa64bin/chess-llvm-link" ]; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done < <(printf '%s\n' "$HOME"/Xilinx*/*/Vitis/aietools 2>/dev/null | sort -rV)
+    return 1
+}
