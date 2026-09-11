@@ -34,7 +34,10 @@ jobs:
         run: |
           set -o pipefail
           rc=0
-          out="$(engine/npu/tests/check_kernel_bss.sh 2>&1)" || rc=$?
+          # invoke via bash: the script has a shebang and is committed +x, but calling it explicitly removes the
+          # "executable bit lost in a merge/tooling round-trip" failure class, which is how this job first went red
+          # (exit 126: the file was 100644 in the checkout while the step executed it directly).
+          out="$(bash engine/npu/tests/check_kernel_bss.sh 2>&1)" || rc=$?
           echo "$out"
           case "$out" in
             *"RESULT: PASS"*)
