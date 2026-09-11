@@ -348,6 +348,56 @@ struct Bf16Mm {
         return *it->second;
     }
 
+    /// Build (or reuse) the two sparse-A device buffers for the 256-token batch.
+    void ensure_a(const uint16_t* A, uint32_t K) {
+        bool a_same = (A == a_src_ptr) && (K == a_src_K);
+        if (a_same) for (int i = 0; i < 64 && a_same; i++) a_same = (A[i] == a_src_sample[i]);
+        if (a_same) return;
+        if (hAb.size() < 256 * K) hAb.resize(256 * K);
+        size_t a_elems = 256 * K;
+        if (!a_cache0 || a_cache0_elems < a_elems) { a_cache0 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache0_elems = a_elems; }
+        if (!a_cache1 || a_cache1_elems < a_elems) { a_cache1 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache1_elems = a_elems; }
+        uint16_t* Ab = hAb.data();
+        memset(Ab, 0, a_elems * 2);
+        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
+        memcpy(a_cache0->data(), Ab, a_elems * 2);
+        memset(Ab, 0, a_elems * 2);
+        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
+        memcpy(a_cache1->data(), Ab, a_elems * 2);
+        a_src_ptr = A; a_src_K = K;
+        for (int i = 0; i < 64; i++) a_src_sample[i] = A[i];
+    }
+
+    /// ── async single-batch GEMM (for the software pipeline) ──
+    xrt::run g_run[2];
+    bool g_run_active[2] = {false, false};
+    uint32_t g_run_N[2] = {0, 0};
+
+    void gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff, int batch, const uint16_t* A) {
+        ensure_a(A, K);
+        size_t c_elems = 256 * N;
+        if (batch == 0) { if (!c_cache0 || c_cache0_elems < c_elems) { c_cache0 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache0_elems = c_elems; } }
+        else            { if (!c_cache1 || c_cache1_elems < c_elems) { c_cache1 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache1_elems = c_elems; } }
+        npu_app& app = get_mm_app(K, N, woff);
+        buffer<uint16_t>& a = batch == 0 ? *a_cache0 : *a_cache1;
+        buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
+        a.sync_to_device();
+        w_dev[W_idx]->sync_to_device();
+        g_run[batch] = app.create_run(c, a, *w_dev[W_idx]);
+        g_run[batch].start();
+        g_run_active[batch] = true;
+        g_run_N[batch] = N;
+    }
+
+    void gemm_wait(int batch, uint16_t* C) {
+        if (!g_run_active[batch]) return;
+        g_run[batch].wait();
+        buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
+        c.sync_from_device();
+        memcpy(C, c.data(), 128 * g_run_N[batch] * 2);
+        g_run_active[batch] = false;
+    }
+
     /// bf16 GEMM over 256 tokens as two 128-token M-batches, with the batch-0
     /// readback overlapped against the batch-1 kernel (separate C buffers).
     void run_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff) {

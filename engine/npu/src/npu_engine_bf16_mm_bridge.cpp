@@ -63,6 +63,16 @@ extern "C" int bf16mm_upload_w(const uint16_t* w, uint32_t D_in, uint32_t D_out)
     return g_mm.upload_w(w, D_in, D_out);
 }
 
+// Async single-batch GEMM (software pipeline): launch batch 0/1 without waiting,
+// then gemm_wait to block + read back that batch's 128×N result into C.
+extern "C" void bf16mm_gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff,
+                                   int batch, const uint16_t* A) {
+    g_mm.gemm_launch(W_idx, K, N, woff, batch, A);
+}
+extern "C" void bf16mm_gemm_wait(int batch, uint16_t* C) {
+    g_mm.gemm_wait(batch, C);
+}
+
 // 256-token MHA attention (attn.xclbin + fixed ELF). act/kv/out as in
 // Bf16Mm::run_attn. Returns 1 on success, 0 if the ELF was not embedded.
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
