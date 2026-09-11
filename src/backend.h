@@ -84,8 +84,9 @@ struct Backend {
     /// at text granularity (FLM NPU subprocess — tokenizes internally) override
     /// this; token-level backends leave it unimplemented. Empty return = this
     /// backend has no text-level path (caller falls back to the token loop).
-    virtual std::string generate_text(const std::string& prompt, int max_tokens) {
-        (void)prompt; (void)max_tokens; return "";
+    virtual std::string generate_text(const std::string& prompt, int max_tokens,
+                                      float temperature = -1.0f) {
+        (void)prompt; (void)max_tokens; (void)temperature; return "";
     }
 
     /// Continue an existing text-level session: write delta without resetting

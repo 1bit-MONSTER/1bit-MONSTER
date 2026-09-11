@@ -29,6 +29,8 @@
 #include "unified_pool.h"
 #include "batch_scheduler.h"
 #include "model_discovery.h"
+#include "model_registry.h"
+#include "model_registry_route.h"
 #include "model_router.h"
 #include "gguf_reader.h"
 #include "simple_tokenizer.h"
@@ -45,6 +47,7 @@
 #include <cstring>
 #include <cerrno>
 #include <string>
+#include <set>
 #include <vector>
 #include <deque>
 #include <thread>
@@ -142,6 +145,14 @@ static std::string g_weights_dir = []() -> std::string {
 }();
 static int g_port = 8088;
 
+// Step 2 (goal mtvd3pmx): the objective names `~/models` as a root the registry of record must
+// cover, on BOTH serving faces. File-scope because the --lemonade branch returns before the
+// engine-face registry is built, and both need the same answer.
+static const std::string g_home_models_dir = []() -> std::string {
+    const char* home = getenv("HOME");
+    return (home && home[0]) ? std::string(home) + "/models" : std::string();
+}();
+
 // ── Mesh: self-aware network presence (peer discovery, /v1/mesh/*) ──
 // On by default — a 1bit-MONSTER install announces itself on the LAN and
 // starts integration conversations with sibling installs out of the box.
@@ -231,6 +242,26 @@ static std::string tokenizer_path() {
 // as garbage [id][id] through the ASCII fallback.
 static void load_model_tokenizer(const std::string& model_path) {
     if (g_tokenizer.load_from_gguf(model_path)) return;
+    // Prefer a tokenizer that sits BESIDE the artifact. Every candidate below this point is a
+    // GGUF the loader borrows vocabulary from, so a native container (Q4NX/1BP) with no GGUF
+    // sibling could never be detokenised — the lookup never considered its own directory. The
+    // only other path consulted is the WEIGHTS DIR (tokenizer_path()), which is wrong for an
+    // artifact kept anywhere else. Measured on strixhalo: a served zaya1-8b.q4nx from
+    // ~/models returned "[81930][129662]…" -- correct generation, ASCII fallback for text.
+    // `model.q4nx + tokenizer.htok in one directory` is the natural layout, so it wins here.
+    {
+        auto exists2 = [](const std::string& p) {
+            std::ifstream f(p, std::ios::binary);
+            return f.good();
+        };
+        auto slash2 = model_path.find_last_of('/');
+        std::string dir2 = (slash2 != std::string::npos) ? model_path.substr(0, slash2 + 1) : "";
+        auto dot2 = model_path.find_last_of('.');
+        std::string stem2 = (dot2 != std::string::npos) ? model_path.substr(0, dot2) : model_path;
+        for (const std::string& c : {dir2 + "tokenizer.htok", stem2 + ".htok"}) {
+            if (exists2(c) && g_tokenizer.load(c)) return;
+        }
+    }
     // NOTE: no early return for .gguf paths — load_from_gguf needs the ZINC
     // lib (usually absent → ZINC_DISABLED), so even real GGUFs must fall
     // through to .htok synthesis below, or the server decodes their output
@@ -387,6 +418,14 @@ static json health_json(BackendManager& mgr) {
     j["service"] = "1bit-monster unified inference server";
 
     auto* active = mgr.active_info();
+    // Goal mtvd3pmx audit (§9.10.11): `status` above stays "ok" because clients branch on
+    // it, but it is NOT the honest signal on its own — a run in which every lane failed to
+    // initialise still answers 200 with status "ok". `GET /` already reports
+    // ready|initializing from this same state, and /v1/backend/status already calls this
+    // fact `initialized` (:2965), so this carries the same fact under the existing name
+    // rather than inventing one. After the `discover()` fix stopped a never-initialised
+    // lane from being *named* as active, this stops its absence from being *silent*.
+    j["initialized"] = (active != nullptr);
     if (active) {
         j["active_backend"]["id"] = active->id;
         j["active_backend"]["type"] = backend_name(active->type);
@@ -801,7 +840,7 @@ static json generate_completion(BackendManager& mgr,
             if (!cont) {
                 // Manager-level text generation: cascades to the next backend in
                 // the route on failure (e.g. HRX GET_ROWS fail-closed → ggml_vulkan).
-                text = mgr.generate_text(raw_prompt, max_tokens);
+                text = mgr.generate_text(raw_prompt, max_tokens, temperature);
                 if (!text.empty()) {  // only record the baseline on success
                     std::lock_guard<std::mutex> lock(g_flm_session_mutex);
                     g_flm_session_id = session_id;
@@ -1228,7 +1267,11 @@ static void acquire_singleton_lock() {}
 #include <lemon/logging_config.h>
 #include <lemon/runtime_config.h>
 #include <lemon/server.h>
+#include <lemon/backends/onebit/onebit_server.h>
 #include <lemon/utils/path_utils.h>
+#ifndef _WIN32
+#include <unistd.h>   // access() — system FLM probe
+#endif
 #include <memory>
 
 static int run_embedded_lemonade(int argc, char** argv) {
@@ -1252,6 +1295,126 @@ static int run_embedded_lemonade(int argc, char** argv) {
 
     lemon::utils::set_cache_dir(cli_config.cache_dir);
     auto config_json = lemon::ConfigFile::load(cli_config.cache_dir);
+
+    // ── R8: let the embedded Lemonade's `flm` recipe find the SYSTEM FLM ──────
+    // Lemonade resolves the flm binary from its own download dir unless the bin is
+    // overridden (find_external_backend_binary -> LEMONADE_FLM_NPU_BIN / flm.npu_bin),
+    // and its PATH lookup is gated on flm.prefer_system. On a box where FLM is a
+    // system install (/opt/fastflowlm/bin/flm) that leaves `flm` contributing ZERO
+    // models to /v1/models. Pin the recipe to the same binary the engine's npu_flm
+    // uses; discovered from NPU_FLM_BIN, then the known system locations.
+    {
+        std::string flm_bin;
+        const char* env_bin = getenv("NPU_FLM_BIN");
+        if (env_bin && *env_bin) flm_bin = env_bin;
+#ifndef _WIN32
+        if (flm_bin.empty()) {
+            for (const char* cand : {"/opt/fastflowlm/bin/flm", "/opt/rocm/bin/flm"}) {
+                if (access(cand, X_OK) == 0) { flm_bin = cand; break; }
+            }
+        }
+#endif
+        if (!flm_bin.empty()) {
+            if (!config_json.contains("flm") || !config_json["flm"].is_object())
+                config_json["flm"] = nlohmann::json::object();
+            config_json["flm"]["npu_bin"] = flm_bin;
+            config_json["flm"]["prefer_system"] = true;
+            printf("[registry-surface] flm recipe pinned to system FLM: %s\n", flm_bin.c_str());
+            fflush(stdout);
+        }
+    }
+
+    // ── Coverage guard for the --lemonade face (goal mtvd3pmx, R7/R8) ──────────
+    // This branch returns BEFORE any native arg parsing, hardware init, or route
+    // registration, so a registry assertion run against --lemonade is VACUOUS
+    // unless this path proves it executed. "The path ran and decided differently"
+    // and "the path never ran" are indistinguishable in a results table, so this
+    // sentinel makes the difference observable. It reports what the engine
+    // registry sees and states what is NOT surfaced here. Lemonade owns
+    // /v1/models in this mode: its extra-models-dir scan is GGUF-only and flm
+    // models come from `flm list`, so neither path can surface a native
+    // Q4NX/1BP id by itself. Those ids reach /v1/models through the `onebit`
+    // backend instead — this block injects each artifact as a recipe=onebit
+    // ModelInfo and that descriptor declares dynamic_models = true
+    // (third_party/lemonade/src/cpp/include/lemon/backends/onebit/onebit.h),
+    // so ModelManager's dynamic discovery (model_manager.cpp, Step 1.6) lists
+    // them as ROUTABLE models. server.cpp's /v1/models build states it outright:
+    // "the `onebit` backend (dynamic_models) registers them with ModelManager, so
+    // they already appear via get_supported_models()/get_downloaded_models() ...
+    // Appending them again would duplicate every id." The full registry view —
+    // container, path, capabilities — is additionally served whole at
+    // /v1/registry (set_registry_surface).
+    //
+    // CORRECTED 2026-09-11: this comment previously ended "...so a native
+    // Q4NX/1BP id is not listable on this face until R8 is wired." That was the
+    // pre-R8 state and it contradicted the injection ~30 lines below plus the
+    // descriptor's dynamic_models flag, which is exactly what R8 wired. It is
+    // called out because a reviewer reading the stale sentence would conclude
+    // step 6 is unmet on this face — the opposite of what the code does.
+    // Failures are swallowed: a registry scan must never stop Lemonade from serving.
+    std::vector<lemon::Server::RegistryModelView> registry_views;
+    std::vector<lemon::ModelInfo> onebit_models;
+    {
+        const char* env_root = getenv("LEMONADE_ENGINE_REGISTRY_ROOT");
+        if (!env_root || !*env_root) env_root = getenv("ZAYA_WEIGHTS_DIR");
+        std::string root = (env_root && *env_root) ? std::string(env_root) : g_weights_dir;
+        // Step 2/R2 applies to BOTH faces: the objective names `~/models` as a root the registry
+        // must cover, so this face scans it too rather than making it a special case reached by
+        // symlinking an artifact into the weights dir (issue #2193, audit §9.10.31).
+        std::vector<std::string> lemon_roots{root};
+        if (!g_home_models_dir.empty() && g_home_models_dir != root)
+            lemon_roots.push_back(g_home_models_dir);
+        std::string lemon_roots_desc;
+        for (const auto& r : lemon_roots) {
+            if (!lemon_roots_desc.empty()) lemon_roots_desc += " + ";
+            lemon_roots_desc += r;
+        }
+        size_t total = 0, native = 0;
+        try {
+            onebit::ModelRegistry reg = onebit::ModelRegistry::scan(lemon_roots);
+            total = reg.artifacts().size();
+            for (const auto& a : reg.artifacts()) {
+                if (a.container == onebit::Container::ONEBP ||
+                    a.container == onebit::Container::RAW_BIN) native++;
+                const std::string artifact_path =
+                    a.files.empty() ? std::string() : a.files.front().path;
+                lemon::Server::RegistryModelView v;
+                v.id = a.id;
+                v.container = onebit::to_string(a.container);
+                v.path = artifact_path;
+                for (auto c : a.capabilities) v.capabilities.push_back(onebit::to_string(c));
+                registry_views.push_back(std::move(v));
+
+                // The same artifact as a ROUTABLE Lemonade model (recipe "onebit"),
+                // so the --lemonade face can EXECUTE it, not only list it. OnebitServer
+                // spawns `1bit unified -m <path>` and forwards /v1/chat/completions.
+                lemon::ModelInfo mi;
+                mi.model_name = a.id;
+                mi.recipe = "onebit";
+                mi.checkpoints["main"] = artifact_path;
+                mi.resolved_paths["main"] = artifact_path;
+                mi.downloaded = true;
+                mi.source = "engine-registry";
+                mi.labels.push_back("chat");
+                for (auto c : a.capabilities) mi.labels.push_back(onebit::to_string(c));
+                onebit_models.push_back(std::move(mi));
+            }
+        } catch (...) {
+            total = 0; native = 0;
+            registry_views.clear();
+        }
+        printf("[registry-surface] --lemonade path entered: %zu artifact(s) from %s "
+               "(%zu native ONEBP/RAW_BIN) registered as recipe=onebit executor models "
+               "(spawn: `1bit unified -m <path>`) and served at /v1/registry. Coverage "
+               "guard: a registry/execution check run against --lemonade is vacuous if "
+               "this line is absent.\n",
+               total, lemon_roots_desc.c_str(), native);
+        fflush(stdout);
+    }
+
+    // Injected BEFORE Server construction so ModelManager's dynamic discovery sees
+    // them on its first cache build (descriptor dynamic_models = true).
+    lemon::backends::onebit::set_onebit_models(std::move(onebit_models));
     if (cli_config.port != -1) config_json["port"] = cli_config.port;
     if (!cli_config.host.empty()) config_json["host"] = cli_config.host;
     auto config = std::make_shared<lemon::RuntimeConfig>(config_json);
@@ -1260,6 +1423,7 @@ static int run_embedded_lemonade(int argc, char** argv) {
                                          lemon::LoggingMode::direct_server);
 
     lemon::Server server(config, cli_config.cache_dir, cli_config.config_dir);
+    server.set_registry_surface(std::move(registry_views));
     server.run();
     return 0;
 }
@@ -1418,8 +1582,12 @@ int main(int argc, char** argv) {
     // ── Load tokenizer ──
     std::string tok_path = tokenizer_path();
     if (!g_tokenizer.load(tok_path)) {
-        printf("  ⚠  Tokenizer not found at %s\n", tok_path.c_str());
-        printf("     Using fallback tokenizer (ASCII passthrough)\n");
+        // Deliberately NOT "using fallback ASCII" here: this runs before the model is known,
+        // and load_model_tokenizer() — called later with the resolved artifact — now also
+        // consults the artifact's own directory (a tokenizer.htok beside a native container).
+        // Claiming a degraded state now contradicts what the log says a few lines later.
+        printf("  ·  No global tokenizer at %s\n", tok_path.c_str());
+        printf("     Will try the model's own directory once the model is known\n");
     } else {
         printf("  ✓  Tokenizer loaded\n");
     }
@@ -1437,7 +1605,52 @@ int main(int argc, char** argv) {
 
     // Phase 2.5: Scan for model files
     printf("\n── Model Discovery ──\n");
-    static std::vector<ModelConfig> discovered = discover_models(g_weights_dir);
+    // Goal mtvd3pmx R7/R2: the registry is the artifact-level source of truth.
+    // It is scanned FIRST, then used to EXTEND the legacy flat scan with the
+    // artifacts that scan cannot see: native .q4nx/.1bp, nested directories, and
+    // shard sets (issue #1958's miss mode is a silent fallback to a *different*
+    // model). The extension is additive and deduped by path, so every legacy name
+    // still resolves while a previously-invisible artifact gains its CANONICAL id
+    // (R5). It does not change route selection (that stays in model_router).
+    // R2/step 2: the registry is the record for every artifact on the box, and the objective
+    // names `~/models` explicitly ("every artifact on the box (`~/models` + native
+    // conversions)"). Scanning only the weights dir left an artifact in `~/models` invisible:
+    // loaded and SERVED correctly, yet listed only under its legacy stem (issue #2193, audit
+    // §9.10.31 case A). Both roots, de-duplicated by path downstream.
+    static onebit::ModelRegistry g_registry = [&] {
+        std::vector<std::string> roots{g_weights_dir};
+        if (!g_home_models_dir.empty()) roots.push_back(g_home_models_dir);
+        return onebit::ModelRegistry::scan(roots);
+    }();
+    static std::vector<ModelConfig> discovered = [&] {
+        std::vector<ModelConfig> v;
+        std::set<std::string> have;
+        // PRIMARY: one entry per registry artifact, under its CANONICAL id (R5).
+        for (const auto& a : g_registry.artifacts()) {
+            if (a.files.empty()) continue;
+            const std::string p = a.files.front().path;
+            ModelConfig cfg{};
+            if (!read_model_file_metadata(p, cfg)) continue;
+            cfg.model_name = a.id;
+            cfg.model_path = p;
+            v.push_back(std::move(cfg));
+            have.insert(p);
+        }
+        // LEGACY-ONLY: models the registry does not know at all, kept so nothing
+        // that resolved before stops resolving now. Legacy NAMES for registry-known
+        // paths are handled by the registry alias step in -m selection (their
+        // general.name is a registry alias), so they are not duplicated here.
+        size_t added = 0;
+        for (auto& m : discover_models(g_weights_dir)) {
+            if (have.count(m.model_path)) continue;
+            have.insert(m.model_path);
+            v.push_back(std::move(m));
+            added++;
+        }
+        printf("  Registry discovery: %zu artifact(s) as canonical ids, +%zu legacy-only\n",
+               v.size() - added, added);
+        return v;
+    }();
 
     // Format preference: when several files share a base model name, prefer
     // the quality format over the size tier (measured: Q8_0 near-lossless,
@@ -1579,6 +1792,27 @@ int main(int argc, char** argv) {
                 }
             }
         }
+        // 5. Registry alias resolution: `discovered` is keyed by CANONICAL id, but
+        //    the registry still accepts every on-disk alias (GGUF general.name,
+        //    basename). Resolve the requested name through it and match the
+        //    canonical entry by path, so keying discovery by canonical ids (R5)
+        //    never breaks an existing `-m <general.name>` invocation.
+        if (current_cfg.model_path.empty()) {
+            // Registry duplicate authority (R5): display_name is not unique, so the
+            // registry owns the choice among colliding artifacts — exact id/alias
+            // first, then its own preference rule. Match the canonical entry by path.
+            if (const onebit::ModelArtifact* art = g_registry.preferred(g_model_name)) {
+                const std::string p = art->files.empty() ? std::string() : art->files.front().path;
+                for (auto& m : discovered) {
+                    if (!p.empty() && m.model_path == p) {
+                        printf("  (matched \"%s\" via registry → \"%s\")\n",
+                               g_model_name.c_str(), m.model_name.c_str());
+                        current_cfg = m;
+                        break;
+                    }
+                }
+            }
+        }
         if (current_cfg.model_path.empty()) {
             // Issue #1958: never silently serve a DIFFERENT model than the
             // one requested. If -m was given but resolved to nothing, fail
@@ -1612,7 +1846,17 @@ int main(int argc, char** argv) {
     // much as backend routing for arbitrary (non-Zaya) models. Falls back
     // silently (keeps whatever tokenizer was already loaded) if unavailable.
     load_model_tokenizer(cfg.model_path);
-    BackendRoute route = select_backend_route(cfg);
+    // State the OUTCOME, once, after the per-model lookup has had its chance. Without this the
+    // only tokenizer message was the pre-model warning above, which could be superseded — and a
+    // run that decoded correctly would still read as if it had fallen back to ASCII.
+    if (g_tokenizer.use_bpe && g_tokenizer.bpe_tok)
+        printf("  ✓  Tokenizer ready (BPE)\n");
+    else
+        printf("  ⚠  No tokenizer for this model — output will be [id][id] ASCII passthrough\n");
+    // The flip: the registry resolver is consumed here. The merge is a UNION — the
+    // registry can demote the head only for a stated exclusion, and never drops a
+    // router lane — so this cannot lose a route the engine has today.
+    BackendRoute route = onebit::select_route_with_registry(cfg, cfg.model_path, &g_registry);
     printf("  Router: %s\n", route.reason.c_str());
     // mgr state is read by /v1/health + /v1/models under g_config_mutex —
     // mutate under the same lock (issue #1271).
@@ -1917,6 +2161,13 @@ int main(int argc, char** argv) {
         j["object"] = "list";
         json models = json::array();
         // Add all discovered models
+        // R5 (issue #2193, audit §9.10.31): when a scanned entry resolves to a registry artifact,
+        // list it under the CANONICAL id and keep the scanned name as an alias. Without this the
+        // same weights appear twice — once canonically (the registry loop below) and once by their
+        // legacy stem (this loop, which sets id = m.model_name) — which is exactly the divergence
+        // step 4 exists to remove. Measured: `zaya1-8b.q4nx` (artifact_id zaya1-8b.q4nx,
+        // capabilities NPU-Q4NX) AND `zaya1-8b` (artifact_id zaya1-8b.q4nx, same capabilities).
+        std::set<std::string> listed_artifact_ids;
         for (auto& m : discovered) {
             json info;
             info["id"] = m.model_name;
@@ -1930,17 +2181,140 @@ int main(int argc, char** argv) {
                 {"heads", m.n_heads}, {"kv_heads", m.n_kv_heads},
                 {"vocab", m.vocab}, {"max_seq_len", m.max_seq_len}
             }};
+            // R7: attach the artifact-level facts the flat scan cannot express.
+            const onebit::ModelArtifact* art = g_registry.resolve_path(m.model_path);
+            if (!art) art = g_registry.find(m.model_name);
+            if (art) {
+                // One artifact, one listed id: the canonical one. A second entry under the
+                // scanned name is not an alias, it is a duplicate.
+                if (!art->id.empty() && art->id != m.model_name) {
+                    info["legacy_name"] = m.model_name;
+                    info["id"] = art->id;
+                }
+                if (!art->id.empty()) {
+                    if (listed_artifact_ids.count(art->id)) continue;  // already listed canonically
+                    listed_artifact_ids.insert(art->id);
+                }
+                info["artifact_id"] = art->id;
+                info["container"] = onebit::to_string(art->container);
+                info["dtype_space"] = onebit::to_string(art->dtype_space);
+                std::vector<std::string> caps;
+                for (auto c : art->capabilities) caps.push_back(onebit::to_string(c));
+                info["capabilities"] = caps;
+                if (!art->tokenizer_path.empty()) info["tokenizer"] = art->tokenizer_path;
+                if (art->files.size() > 1) info["shards"] = (int)art->files.size();
+                if (art->has_dtype_42) info["has_dtype_42"] = true;
+            }
             models.push_back(info);
         }
-        // Also add the active backend model if different
-        if (active) {
-            bool found = false;
+        // Registry-only artifacts: recursive walk + native containers that the
+        // flat scan above cannot reach (e.g. q4nx-converted/*.gguf, *.q4nx).
+        for (const auto& art : g_registry.artifacts()) {
+            if (listed_artifact_ids.count(art.id)) continue;
+            bool present = false;
             for (auto& m : discovered) {
-                if (m.model_name == active->id) { found = true; break; }
+                if (m.model_name == art.id) { present = true; break; }
             }
-            if (!found) models.push_back(model_info_json(active, current_cfg.model_name));
+            if (present) continue;
+            json info;
+            info["id"] = art.id;
+            info["object"] = "model";
+            info["created"] = 0;
+            info["owned_by"] = "1bit-monster";
+            info["backend"] = "auto";
+            info["source"] = "registry";
+            info["container"] = onebit::to_string(art.container);
+            info["dtype_space"] = onebit::to_string(art.dtype_space);
+            std::vector<std::string> caps;
+            for (auto c : art.capabilities) caps.push_back(onebit::to_string(c));
+            info["capabilities"] = caps;
+            if (!art.files.empty()) info["path"] = art.files.front().path;
+            if (!art.tokenizer_path.empty()) info["tokenizer"] = art.tokenizer_path;
+            if (art.files.size() > 1) info["shards"] = (int)art.files.size();
+            if (art.has_dtype_42) info["has_dtype_42"] = true;
+            if (art.q4nx_name_mismatch) info["q4nx_name_mismatch"] = true;
+            models.push_back(info);
+        }
+        // Also add the loaded model, if the listing does not already carry it — and under its
+        // CANONICAL id when the registry knows the artifact. Four lines here held three defects
+        // (issue #2193, audit §9.10.31):
+        //   * the dedupe compared a MODEL name (m.model_name) to a BACKEND id (active->id) —
+        //     different vocabularies, so it could never match and the entry was appended on
+        //     every single request;
+        //   * it appended current_cfg.model_name, the legacy stem ("zaya1-8b"), so one artifact
+        //     appeared TWICE — canonically and by stem — which is the divergence step 4/R5 exist
+        //     to remove. Measured: 9 entries in /v1/models where 8 artifacts exist;
+        //   * model_info_json() put the active BACKEND id in the model's "backend" field, which
+        //     reads like a capability.
+        if (active) {
+            const onebit::ModelArtifact* loaded_art =
+                current_cfg.model_path.empty()
+                    ? nullptr : g_registry.resolve_path(current_cfg.model_path);
+            const std::string loaded_id = (loaded_art && !loaded_art->id.empty())
+                                              ? loaded_art->id : current_cfg.model_name;
+            bool listed = false;
+            for (const auto& m : models) {
+                const std::string id = m.value("id", std::string());
+                if (id == loaded_id || id == current_cfg.model_name) { listed = true; break; }
+            }
+            if (!listed && !loaded_id.empty()) {
+                json info = model_info_json(active, loaded_id);
+                if (loaded_art) {
+                    info["backend"] = "auto";
+                    info["artifact_id"] = loaded_art->id;
+                    std::vector<std::string> caps;
+                    for (auto c : loaded_art->capabilities) caps.push_back(onebit::to_string(c));
+                    info["capabilities"] = caps;
+                    info["container"] = onebit::to_string(loaded_art->container);
+                    if (loaded_id != current_cfg.model_name)
+                        info["legacy_name"] = current_cfg.model_name;
+                }
+                models.push_back(std::move(info));
+            }
         }
         j["data"] = models;
+        res.set_content(j.dump(2), "application/json");
+        add_cors(res);
+    });
+
+    // ── GET /v1/registry — artifact-first registry (goal mtvd3pmx R7) ──
+    // Registry state is the same regardless of serving mode, so this is valid
+    // under both `1bit unified` and `unified --lemonade`. `id -> artifact ->
+    // capability` is the resolver contract; route selection is still the
+    // router's (R6), this endpoint only reports.
+    svr.Get("/v1/registry", [&](const httplib::Request&, httplib::Response& res) {
+        json j;
+        j["object"] = "registry";
+        j["roots"] = g_registry.roots();
+        json arts = json::array();
+        for (const auto& a : g_registry.artifacts()) {
+            json o;
+            o["id"] = a.id;
+            o["aliases"] = a.aliases;
+            o["container"] = onebit::to_string(a.container);
+            o["dtype_space"] = onebit::to_string(a.dtype_space);
+            o["has_dtype_42"] = a.has_dtype_42;
+            o["q4nx_name_mismatch"] = a.q4nx_name_mismatch;
+            o["quantization"] = a.quantization;
+            o["architecture"] = a.architecture;
+            o["lineage"] = a.lineage;
+            o["tokenizer"] = a.tokenizer_path;
+            std::vector<std::string> caps;
+            for (auto c : a.capabilities) caps.push_back(onebit::to_string(c));
+            o["capabilities"] = caps;
+            o["total_bytes"] = a.total_bytes();
+            o["files"] = (int)a.files.size();
+            if (!a.files.empty()) o["path"] = a.files.front().path;
+            arts.push_back(o);
+        }
+        j["data"] = arts;
+        auto r = g_registry.report();
+        j["report"] = {{
+            {"artifacts", r.artifacts}, {"files", r.files},
+            {"sharded", r.sharded_artifacts}, {"total_bytes", r.total_bytes},
+            {"size_twin_groups", r.size_twin_groups},
+            {"dangling_tokenizers", r.dangling_tokenizers}
+        }};
         res.set_content(j.dump(2), "application/json");
         add_cors(res);
     });
@@ -2128,12 +2502,69 @@ int main(int argc, char** argv) {
 
         ModelConfig switch_cfg;
         bool need_model_switch = false;
+        bool model_satisfied = false;   // request names the artifact already loaded
         {
             std::lock(g_config_mutex, g_strategy_mutex);
             std::lock_guard<std::mutex> _l1(g_config_mutex, std::adopt_lock);
             std::lock_guard<std::mutex> _l2(g_strategy_mutex, std::adopt_lock);
 
             if (!req_model.empty()) {
+                // Goal mtvd3pmx / R8 (engine face): a request may name a registry
+                // CANONICAL id whose artifact the legacy flat scan cannot see
+                // (native .q4nx/.1bp, nested dirs). Without this the loop below
+                // matched NOTHING and the request was answered by whatever model
+                // happened to be loaded — the "silently serves a DIFFERENT model"
+                // failure the -m path already fixed for its own case (#1958).
+                if (!need_model_switch && req_model != current_cfg.model_name) {
+                    // Satisfied when the request names the LOADED artifact under
+                    // any spelling — metadata name, file basename, or registry id.
+                    // The loaded model need NOT be in the registry: `-m <path>`
+                    // with a file outside the scan root is exactly that case, and
+                    // the registry lookup below cannot see it.
+                    if (!current_cfg.model_path.empty() &&
+                        std::filesystem::path(req_model).filename() ==
+                        std::filesystem::path(current_cfg.model_path).filename()) {
+                        model_satisfied = true;
+                    }
+                    const onebit::ModelArtifact* ra = g_registry.find(req_model);
+                    std::string art_path;
+                    if (ra) {
+                        // The artifact's paths live on its FILE records, not on the
+                        // artifact (files[1..N] shards + merged duplicate copies).
+                        // Only a single-file artifact is loadable by path here;
+                        // a shard set is left to the refusal below rather than
+                        // half-loaded.
+                        for (const auto& f : ra->files) {
+                            if (!f.duplicate_copy && f.shard_count == 1) {
+                                art_path = f.path;
+                                break;
+                            }
+                        }
+                    }
+                    // A request may name the ARTIFACT ALREADY LOADED under a
+                    // different spelling: the loaded name comes from file
+                    // metadata ("zaya1-8b") while the caller may use the file
+                    // basename ("zaya1-8b.q4nx"). That is neither a switch nor a
+                    // refusal — it is satisfied. Measured on the first version of
+                    // this patch, which refused exactly that case.
+                    if (!art_path.empty() && !current_cfg.model_path.empty() &&
+                        (art_path == current_cfg.model_path ||
+                         std::filesystem::path(art_path).filename() ==
+                         std::filesystem::path(current_cfg.model_path).filename())) {
+                        model_satisfied = true;
+                    }
+                    if (!art_path.empty() && std::filesystem::exists(art_path)) {
+                        ModelConfig file_cfg;
+                        if (read_model_file_metadata(art_path, file_cfg)) {
+                            printf("[model] registry id \"%s\" -> file \"%s\" (%s)\n",
+                                   req_model.c_str(), art_path.c_str(),
+                                   file_cfg.model_name.c_str());
+                            switch_cfg = file_cfg;
+                            current_cfg = file_cfg;
+                            need_model_switch = true;
+                        }
+                    }
+                }
                 for (auto& dm : discovered) {
                     if (dm.model_name == req_model &&
                         (dm.hidden != current_cfg.hidden || dm.n_layers != current_cfg.n_layers)) {
@@ -2146,12 +2577,37 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Never answer a request for model X with model Y. If the id is
+            // neither loadable here nor already the loaded model, refuse and say
+            // so; a wrong-weights answer is worse than an error, and it is also
+            // the failure mode this whole goal exists to eliminate.
+            if (!need_model_switch && !model_satisfied && !req_model.empty() &&
+                req_model != current_cfg.model_name) {
+                bool known = false;
+                for (auto& dm2 : discovered)
+                    if (dm2.model_name == req_model) { known = true; break; }
+                if (!known) {
+                    json err = {{"error", "model_not_loadable_on_this_face"},
+                                {"model", req_model},
+                                {"loaded", current_cfg.model_name},
+                                {"detail", "the requested model id is not a loadable "
+                                           "artifact on this face; refusing instead of "
+                                           "answering with a different model"}};
+                    fprintf(stderr, "[model] REFUSED \"%s\": not loadable here "
+                            "(loaded: \"%s\")\n", req_model.c_str(),
+                            current_cfg.model_name.c_str());
+                    res.status = 404;
+                    res.set_content(err.dump(), "application/json");
+                    return;
+                }
+            }
         } // release both mutexes
 
         // ── Phase 1b: Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
             load_model_tokenizer(switch_cfg.model_path);
-            BackendRoute swrt = select_backend_route(switch_cfg);
+            BackendRoute swrt = onebit::select_route_with_registry(
+                switch_cfg, switch_cfg.model_path, &g_registry);
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
 
@@ -2266,7 +2722,10 @@ int main(int argc, char** argv) {
         response["id"] = "cmpl-" + std::to_string(time(nullptr));
         response["object"] = "chat.completion";
         response["created"] = time(nullptr);
-        response["model"] = current_cfg.model_name;
+        // Echo the id the caller ASKED for when one was given. Naming a model
+        // the caller did not request is the same ambiguity this goal removes,
+        // and it is what the engine face did before the registry-id binding.
+        response["model"] = req_model.empty() ? current_cfg.model_name : req_model;
 
         json choice;
         choice["index"] = 0;
@@ -2348,12 +2807,69 @@ int main(int argc, char** argv) {
         std::string req_model = body.value("model", "");
         ModelConfig switch_cfg;
         bool need_model_switch = false;
+        bool model_satisfied = false;   // request names the artifact already loaded
         {
             std::lock(g_config_mutex, g_strategy_mutex);
             std::lock_guard<std::mutex> _l1(g_config_mutex, std::adopt_lock);
             std::lock_guard<std::mutex> _l2(g_strategy_mutex, std::adopt_lock);
 
             if (!req_model.empty()) {
+                // Goal mtvd3pmx / R8 (engine face): a request may name a registry
+                // CANONICAL id whose artifact the legacy flat scan cannot see
+                // (native .q4nx/.1bp, nested dirs). Without this the loop below
+                // matched NOTHING and the request was answered by whatever model
+                // happened to be loaded — the "silently serves a DIFFERENT model"
+                // failure the -m path already fixed for its own case (#1958).
+                if (!need_model_switch && req_model != current_cfg.model_name) {
+                    // Satisfied when the request names the LOADED artifact under
+                    // any spelling — metadata name, file basename, or registry id.
+                    // The loaded model need NOT be in the registry: `-m <path>`
+                    // with a file outside the scan root is exactly that case, and
+                    // the registry lookup below cannot see it.
+                    if (!current_cfg.model_path.empty() &&
+                        std::filesystem::path(req_model).filename() ==
+                        std::filesystem::path(current_cfg.model_path).filename()) {
+                        model_satisfied = true;
+                    }
+                    const onebit::ModelArtifact* ra = g_registry.find(req_model);
+                    std::string art_path;
+                    if (ra) {
+                        // The artifact's paths live on its FILE records, not on the
+                        // artifact (files[1..N] shards + merged duplicate copies).
+                        // Only a single-file artifact is loadable by path here;
+                        // a shard set is left to the refusal below rather than
+                        // half-loaded.
+                        for (const auto& f : ra->files) {
+                            if (!f.duplicate_copy && f.shard_count == 1) {
+                                art_path = f.path;
+                                break;
+                            }
+                        }
+                    }
+                    // A request may name the ARTIFACT ALREADY LOADED under a
+                    // different spelling: the loaded name comes from file
+                    // metadata ("zaya1-8b") while the caller may use the file
+                    // basename ("zaya1-8b.q4nx"). That is neither a switch nor a
+                    // refusal — it is satisfied. Measured on the first version of
+                    // this patch, which refused exactly that case.
+                    if (!art_path.empty() && !current_cfg.model_path.empty() &&
+                        (art_path == current_cfg.model_path ||
+                         std::filesystem::path(art_path).filename() ==
+                         std::filesystem::path(current_cfg.model_path).filename())) {
+                        model_satisfied = true;
+                    }
+                    if (!art_path.empty() && std::filesystem::exists(art_path)) {
+                        ModelConfig file_cfg;
+                        if (read_model_file_metadata(art_path, file_cfg)) {
+                            printf("[model] registry id \"%s\" -> file \"%s\" (%s)\n",
+                                   req_model.c_str(), art_path.c_str(),
+                                   file_cfg.model_name.c_str());
+                            switch_cfg = file_cfg;
+                            current_cfg = file_cfg;
+                            need_model_switch = true;
+                        }
+                    }
+                }
                 for (auto& dm : discovered) {
                     if (dm.model_name == req_model &&
                         (dm.hidden != current_cfg.hidden || dm.n_layers != current_cfg.n_layers)) {
@@ -2366,12 +2882,37 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            // Never answer a request for model X with model Y. If the id is
+            // neither loadable here nor already the loaded model, refuse and say
+            // so; a wrong-weights answer is worse than an error, and it is also
+            // the failure mode this whole goal exists to eliminate.
+            if (!need_model_switch && !model_satisfied && !req_model.empty() &&
+                req_model != current_cfg.model_name) {
+                bool known = false;
+                for (auto& dm2 : discovered)
+                    if (dm2.model_name == req_model) { known = true; break; }
+                if (!known) {
+                    json err = {{"error", "model_not_loadable_on_this_face"},
+                                {"model", req_model},
+                                {"loaded", current_cfg.model_name},
+                                {"detail", "the requested model id is not a loadable "
+                                           "artifact on this face; refusing instead of "
+                                           "answering with a different model"}};
+                    fprintf(stderr, "[model] REFUSED \"%s\": not loadable here "
+                            "(loaded: \"%s\")\n", req_model.c_str(),
+                            current_cfg.model_name.c_str());
+                    res.status = 404;
+                    res.set_content(err.dump(), "application/json");
+                    return;
+                }
+            }
         } // release both mutexes
 
         // ── Model-switch I/O outside locks (#701 fix) ──
         if (need_model_switch) {
             load_model_tokenizer(switch_cfg.model_path);
-            BackendRoute swrt = select_backend_route(switch_cfg);
+            BackendRoute swrt = onebit::select_route_with_registry(
+                switch_cfg, switch_cfg.model_path, &g_registry);
             mgr.init(switch_cfg, g_weights_dir, swrt.backend_ids_in_order);
         }
 

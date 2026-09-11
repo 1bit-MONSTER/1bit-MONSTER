@@ -60,6 +60,42 @@ static inline uint16_t f32b(float v) {
     uint32_t b; memcpy(&b, &v, 4); return (uint16_t)(b >> 16);
 }
 
+// ── q4nx (torch2aie/FLM) tile -> engine ONEBP_Q4NX tile ──────────────────────
+// Both are 5120-byte 32x256 4-bit asymmetric tiles, but the intra-tile layout
+// differs in TWO places:
+//   q4nx (tools/q4nx_tile_dequant.py): scales/mins group-major [g*32+r]; nibbles
+//        lane-swizzled: lane=r/16, byte=lane*2048+col*8+((r%16)/2), nib=(r%16)%2.
+//   engine .1bp (this file's own writer + onebp_loader::dequant_tile): scales/mins
+//        row-major [r*8+g]; nibbles adjacent-pair, even col = low.
+// The value convention is identical (unsigned q, scale*q + min), so only the
+// scale index and the nibble positions move. (onebp_to_trg.cpp writes the swizzle
+// because it converts .1bp -> TRG, the opposite direction.)
+static void q4nx_tile_to_onebp(const uint8_t* src, uint8_t* dst) {
+    const int TR = 32, TC = 256, G = 8;
+    const uint16_t* ssc = (const uint16_t*)src;
+    const uint16_t* smn = (const uint16_t*)(src + 512);
+    const uint8_t*  sp  = src + 1024;
+    uint16_t* dsc = (uint16_t*)dst;
+    uint16_t* dmn = (uint16_t*)(dst + 512);
+    uint8_t*  dp  = dst + 1024;
+    memset(dst, 0, 5120);
+    for (int r = 0; r < TR; r++)
+        for (int g = 0; g < G; g++) {
+            dsc[r * G + g] = ssc[g * 32 + r];
+            dmn[r * G + g] = smn[g * 32 + r];
+        }
+    for (int lr = 0; lr < TR; lr++) {
+        const int lane = lr / 16, lrow = lr % 16, bi = lrow / 2, nib = lrow % 2;
+        for (int col = 0; col < TC; col++) {
+            const uint8_t raw = sp[lane * 2048 + col * 8 + bi];
+            const uint8_t q = nib == 0 ? (raw & 0x0F) : (raw >> 4);
+            const int byteidx = (lr * TC + col) / 2;
+            if ((col & 1) == 0) dp[byteidx] = (uint8_t)((dp[byteidx] & 0xF0) | (q & 0x0F));
+            else                dp[byteidx] = (uint8_t)((dp[byteidx] & 0x0F) | ((q & 0x0F) << 4));
+        }
+    }
+}
+
 // ── Checked output write ──
 // Every byte of the .1bp goes through this. A short fwrite (ENOSPC, I/O
 // error) silently truncates the file: the index already reserved the bytes,
@@ -476,7 +512,7 @@ int main(int argc, char** argv) {
     // (shape.size() != 2 filtered out every 1D tensor), which meant every
     // .1bp file ever produced was missing all its normalization weights —
     // structurally incapable of correct inference. See issue #1023.
-    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; int alias_of = -1; };
+    struct TInfo { std::string name; int ndim; int rows, cols; int num_experts; uint64_t offset, tiled; OnebpQuant tq; int alias_of = -1; bool raw_q4nx = false; };
     std::vector<TInfo> tensors;
     int tr = 32, tc = 256, gs = 32;
 
@@ -528,6 +564,25 @@ int main(int argc, char** argv) {
         if (ndim == 2) {
             int c = (int)inf->shape[0], r = (int)inf->shape[1];
             if (r <= 0 || c <= 0) continue;
+            // dtype 43 (Q4NX tiles): the GGUF declares these 4x-reshaped vs the
+            // logical matrix the engine loads (ne0 = in*4, ne1 = out/4). Recover
+            // the logical dims and keep the RAW tiles — no dequantize/re-quantize
+            // (the round-trip cannot reconstruct row-major from `count` alone).
+            // Observed: attn_q declared (8192,256) vs logical [1024,2048].
+            if (inf->dtype == GGUF_DTYPE_Q4NX_TILE) {
+                TInfo t{tn, 2, r * 4, c / 4, 1, 0, (inf->numel / 8192ull) * 5120ull, ONEBP_Q4NX};
+                t.raw_q4nx = true;
+                // Expert stacks are declared 2D [NE*rows, cols] here but the engine
+                // reads them as ndim=3 [NE, rows, cols].
+                if (tn.find("_exps.weight") != std::string::npos) {
+                    int NE = (int)hdr.num_experts;
+                    if (NE > 0 && t.rows % NE == 0) {
+                        t.ndim = 3; t.num_experts = NE; t.rows = t.rows / NE;
+                    }
+                }
+                tensors.push_back(std::move(t));
+                continue;
+            }
             if ((uint64_t)r * (uint64_t)c > 1500000000ull) continue;  // cap: 1.5G elements (~6 GB f32)
             // Tensor routing (ROCmFPX recipe mining): no-zero 2-bit codebooks
             // destroy sparse/embedding tensors (TQ2NZ model collapse test).
@@ -640,14 +695,23 @@ int main(int argc, char** argv) {
     for (size_t ti = 0; ti < tensors.size(); ti++) {
         auto& t = tensors[ti];
         std::vector<float> fw;
-        if (!reader.get_tensor_f32(t.name, fw)) {
-            fprintf(stderr, "\nFATAL: get_tensor_f32 failed for %s during dedup pass\n", t.name.c_str());
-            return 1;
-        }
-        maybe_reorder_zaya_cca(t, fw);
+        std::vector<uint8_t> raw;
         uint64_t h = 1469598103934665603ull;
-        const uint8_t* b = (const uint8_t*)fw.data();
-        for (size_t i = 0; i < fw.size() * sizeof(float); i++) { h ^= b[i]; h *= 1099511628211ull; }
+        if (t.raw_q4nx) {
+            if (!reader.get_tensor_raw(t.name, 8192, 5120, raw, nullptr)) {
+                fprintf(stderr, "\nFATAL: get_tensor_raw failed for %s during dedup pass\n", t.name.c_str());
+                return 1;
+            }
+            for (size_t i = 0; i < raw.size(); i++) { h ^= raw[i]; h *= 1099511628211ull; }
+        } else {
+            if (!reader.get_tensor_f32(t.name, fw)) {
+                fprintf(stderr, "\nFATAL: get_tensor_f32 failed for %s during dedup pass\n", t.name.c_str());
+                return 1;
+            }
+            maybe_reorder_zaya_cca(t, fw);
+            const uint8_t* b = (const uint8_t*)fw.data();
+            for (size_t i = 0; i < fw.size() * sizeof(float); i++) { h ^= b[i]; h *= 1099511628211ull; }
+        }
         DedupKey key{h, t.ndim, t.rows, t.cols, t.num_experts, (uint32_t)t.tq, t.tiled};
         int first = -1;
         for (auto& s : seen)
@@ -724,6 +788,26 @@ int main(int argc, char** argv) {
         printf("  [%d/%zu] %s... ", count, tensors.size(), ti.name.c_str()); fflush(stdout);
         if (ti.alias_of >= 0) { printf("(alias of #%d)\n", ti.alias_of); continue; }  // v4 dedup: data already written
         // All tensors processed
+        if (ti.raw_q4nx) {
+            // dtype-43 tensors are already Q4NX tiles: copy the raw bytes verbatim
+            // rather than round-tripping through float (see the TInfo comment).
+            std::vector<uint8_t> raw;
+            if (!reader.get_tensor_raw(ti.name, 8192, 5120, raw, nullptr)) {
+                fprintf(stderr, "\nFATAL: get_tensor_raw failed for %s\n", ti.name.c_str());
+                return 1;
+            }
+            const size_t n = std::min(raw.size(), (size_t)ti.tiled);
+            // Re-lay each 5120-byte tile from the q4nx intra-tile layout to the
+            // engine's .1bp layout (scale index + nibble positions; see the helper).
+            std::vector<uint8_t> outb(n);
+            const size_t ntiles = n / 5120;
+            for (size_t t = 0; t < ntiles; t++)
+                q4nx_tile_to_onebp(raw.data() + t * 5120, outb.data() + t * 5120);
+            if (n % 5120) memcpy(outb.data() + ntiles * 5120, raw.data() + ntiles * 5120, n % 5120);
+            if (!wf(fout, outb.data(), outb.size())) return 1;
+            printf("(Q4NX tile transform) -> %zu KB\n", n / 1024);
+            continue;
+        }
         std::vector<float> fw;
         auto* inf = reader.tensor_info(ti.name);
         if (inf) printf("%" PRIu64 " elements at offset %" PRIu64 "\n", inf->numel, inf->abs_offset);

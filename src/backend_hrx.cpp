@@ -365,7 +365,8 @@ bool HrxBackend::lm_head(const float*, float*, int*) {
     return false;
 }
 
-std::string HrxBackend::generate_text(const std::string& prompt, int max_tokens) {
+std::string HrxBackend::generate_text(const std::string& prompt, int max_tokens, float temperature) {
+    (void)temperature;  // the HRX server applies its own sampling; temp is not plumbed here
     if (pid_ <= 0 || !initialized_) return "";
     if (max_tokens <= 0) max_tokens = 16;
     if (max_tokens > 4096) max_tokens = 4096;

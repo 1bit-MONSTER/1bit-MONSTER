@@ -91,6 +91,56 @@ jobs:
               sys.exit(1)
           print('All CMakeLists source/subdirectory references resolve.')
           PY
+      # ── Registry source checks (informational) ────────────────────────────────
+      # Two checks that need NO build, NO deps and NO AMD hardware, so they run on a
+      # stock runner in milliseconds:
+      #   dispatch_key_check.sh — "a type is a dispatch key iff the ids under it do not
+      #     all share one `available` expression" (written by @agent-ec855d). It fails
+      #     when the RECORDED four-type set CHANGES, which is the forward-looking
+      #     property a comment cannot have. It cannot say a type is wrong, only that the
+      #     set moved — so it is informational on purpose: legitimate growth must ride a
+      #     deliberate commit, and a required check would have the first person it
+      #     blocks delete it rather than update KNOWN_DISPATCH.
+      #   registry_flag_audit.py --static-only — usage parity + cross-TU references.
+      #     The behavioural half needs a built binary and is deliberately not here.
+      # Promoted to required only once the four-type set stops moving.
+      - name: Registry source checks (informational)
+        continue-on-error: true
+        run: |
+          # `|| true` on EACH line, deliberately: under the default `bash -e` the
+          # first failure aborts the block, so a dispatch-key report (exit 1) would
+          # hide the flag audit's output entirely. Both are informational, so both
+          # diagnostics should always appear. (Found by @agent-ec855d.)
+          sh tools/dispatch_key_check.sh src/backend_manager.cpp || true
+          python3 tools/registry_flag_audit.py --static-only || true
+
+      # ── Registry behavioural audit (informational) ────────────────────────────
+      # The half of the flag audit that needs a BINARY. CI-feasible for a specific
+      # reason worth stating: `registry_scan` compiles standalone with plain clang++
+      # and no HIP/XRT — the property that makes the registry module
+      # engine-independent is also what makes this runnable on a stock runner, and no
+      # engine build is involved. The fixture is a VERSIONED tool
+      # (tools/registry_fixture.py) rather than an inline heredoc, so CI and local runs
+      # use the same bytes and a CI-only failure is real.
+      - name: Registry behavioural audit (informational)
+        continue-on-error: true
+        run: |
+          # ANY C++23 compiler, not `clang++` specifically — two reasons, both learned today
+          # and one of them from this line's sibling in the runbook:
+          #   * a runner clang older than 16 rejects `-std=c++23` outright;
+          #   * the development box has NO clang++ at all and builds it with g++ (found by
+          #     @agent-ec855d). The runbook's recipe was fixed for that hours earlier and the
+          #     fix was never propagated here — the sibling pattern, in my own config.
+          CXX=$(command -v clang++ || command -v g++)
+          echo "registry_scan: using $CXX"
+          # NOT `|| true`. The rest of this step is meaningless without the binary, so a
+          # swallowed compile failure would report a GREEN step that did nothing — the exact
+          # failure this work exists to catch, inside the check written to catch it.
+          "$CXX" -std=c++23 -O2 -Iinclude -DREGISTRY_SCAN_STANDALONE \
+            tools/registry_scan.cpp src/model_registry.cpp -o /tmp/registry_scan
+          python3 tools/registry_fixture.py /tmp/registry-ci-fixture || true
+          python3 tools/registry_flag_audit.py --binary /tmp/registry_scan \
+            --fixture /tmp/registry-ci-fixture || true
       - name: CMake configure + build (reference checks only when no ROCm)
         run: |
           if [ -x /opt/rocm-therock/bin/amdclang++ ]; then
@@ -148,7 +198,13 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      # The `| head -20` below discards the xargs status, so this step could never
+      # fail regardless of its label — a latent trap for whoever promotes it by
+      # deleting "(informational)", because the masking does not go away with the
+      # label. `continue-on-error` makes the intent EXPLICIT so removing the label is
+      # no longer what keeps it non-blocking. (Audited by @agent-ec855d.)
       - name: clang-format check (informational)
+        continue-on-error: true
         run: |
           sudo apt-get install -y -qq clang-format
           find . -name '*.cpp' -o -name '*.h' -o -name '*.hip' -o -name '*.hpp' | \

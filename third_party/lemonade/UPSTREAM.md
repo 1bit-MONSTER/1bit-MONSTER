@@ -24,6 +24,17 @@ The **local-only** deltas carried on top of v11.9.0 are:
    `tools/gen_hrx_model_entries.py` and `tools/annotate_hrx_embedding_quants.py`
    are local-only (upstream does not read or generate these).
 3. **Embeddability patch** in `CMakeLists.txt` (see below).
+4. **`onebit` backend** (goal mtvd3pmx R8 — the engine as a Lemonade executor):
+   `src/cpp/include/lemon/backends/onebit/` (`onebit.h`, `onebit_server.h`),
+   `src/cpp/server/backends/onebit/onebit_server.cpp`, the `"onebit|onebit"` line in
+   `CMakeLists.txt`'s `LEMON_BACKENDS`, and the `set_registry_surface()` hook +
+   private `registry_surface_` member in `include/lemon/server.h` / `server.cpp`
+   (with `GET /v1/registry`). It makes native/FLM artifacts executable on the
+   `--lemonade` face. **NOT upstream** — a re-vendor that overwrites `CMakeLists.txt`
+   or `server.{h,cpp}` from the local source drops it, and `rsync --delete` would
+   also remove the `onebit/` folders. Either land this same delta in the local
+   source (`/home/bcloud/1bit-lemonade-v1170/third_party/lemonade`) before the next
+   refresh, or re-apply it after.
 
 > Note: the `stream_stall_timeout` config key that our v11.8.x snapshot carried
 > was **dropped** in this re-vendor — v11.9.0 handles the streaming-stall bound
@@ -34,7 +45,7 @@ The **local-only** deltas carried on top of v11.9.0 are:
 # Re-vendor FROM the local source:
 rsync -a --exclude=.git --exclude=UPSTREAM.md \
   /home/bcloud/1bit-lemonade-v1170/third_party/lemonade/ third_party/lemonade/
-# re-apply the embeddability patch below
+# re-apply the embeddability patch below AND the `onebit` backend delta (item 4 above)
 ```
 
 ## Local patch: embeddability

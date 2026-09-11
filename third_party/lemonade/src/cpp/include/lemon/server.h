@@ -78,6 +78,20 @@ public:
     void handle_config_get(const httplib::Request& req, httplib::Response& res);
     void handle_config_defaults_get(const httplib::Request& req, httplib::Response& res);
 
+    // ── Engine registry surface (goal mtvd3pmx R7) ──────────────────────────
+    // In --lemonade mode Lemonade owns the HTTP surface, so the engine's registry
+    // of record hands this server a read-only view: the entries are appended to
+    // /v1/models (id = canonical engine id, labels = resolved capabilities) and
+    // served whole at /v1/registry. Additive — an empty view changes nothing, so
+    // standalone Lemonade is unaffected.
+    struct RegistryModelView {
+        std::string id;                        // canonical registry id
+        std::vector<std::string> capabilities; // e.g. {"NPU-Q4NX"}
+        std::string container;                 // "gguf" | "q4nx" | "1bp" | ...
+        std::string path;
+    };
+    void set_registry_surface(std::vector<RegistryModelView> models);
+
 private:
     std::string resolve_host_to_ip(int ai_family, const std::string& host);
     void setup_routes(httplib::Server &web_server);
@@ -383,6 +397,7 @@ private:
     std::unique_ptr<Router> router_;
     std::unique_ptr<AliasManager> alias_manager_;
     std::unique_ptr<ModelManager> model_manager_;
+    std::vector<RegistryModelView> registry_surface_;  // see set_registry_surface()
     std::unique_ptr<BackendManager> backend_manager_;
     std::unique_ptr<CloudProviderRegistry> cloud_registry_;
     std::unique_ptr<WebSocketServer> websocket_server_;

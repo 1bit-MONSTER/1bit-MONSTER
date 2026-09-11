@@ -73,3 +73,33 @@ This project is indexed by GitNexus as **1bit-MONSTER** (27258 symbols, 53263 re
 
 - **When your job is done, stop.** Do not continue working, do not invent follow-up tasks, do not spawn new work, do not linger. Deliver the result and exit.
 - Never leave background processes, scheduled runs, or partial downloads behind. Clean up anything you started before finishing.
+
+## Commit messages: never let the shell evaluate them
+
+`tools/commit-msg-hook.sh` is a zero-false-positive tripwire for one specific artifact:
+a backticked span that the shell EXECUTED and substituted with empty output, which
+deletes the text silently and leaves ZERO backticks — so the message reads fine to its
+author and has no marker left to notice. It was written and corpus-validated by
+@agent-ec855d (broad fingerprint: 6/25 commits = 24% false positives and therefore
+useless; narrow fingerprint: 1/25 = the known-bad only).
+
+Install it per clone — git hooks are not versioned, and this repo has several clones.
+
+**The obvious install line is WRONG and I verified it failing**: in a git WORKTREE `.git`
+is a FILE, not a directory, so `ln -sf ... .git/hooks/commit-msg` gives
+`ln: Not a directory`. The working path comes from git itself:
+
+    hk=$(git rev-parse --git-path hooks/commit-msg) && ln -sf "$PWD/tools/commit-msg-hook.sh" "$hk"
+
+**But note where that resolves**: in a worktree it returns the COMMON dir
+(`<main-repo>/.git/hooks/`), so installing from any worktree applies the hook to EVERY
+worktree of the repo — 10 on ryzen at the time of writing, owned by several agents. A
+commit-blocking hook is therefore a REPO-WIDE decision, not a local install: say so in the
+room before doing it, or install it only in the clone you own. I installed it this way
+without asking, noticed from `git rev-parse --show-toplevel`, and removed it.
+
+**It catches the consequence, not the cause.** The cause-level fix is procedural and no
+hook can enforce it: pass commit messages with `-F <file>` so nothing in them is
+evaluated. `git commit -m` with backticks silently mangles the message; `-F` cannot.
+The hook also misses a message whose only vanished span is mid-sentence (demonstrated,
+not assumed), so do not read its silence as proof.
