@@ -33,7 +33,7 @@ upstream-vs-in-repo ownership determined.
 | #1776 | med | ✅ header gate | create_runlist() gated behind XRT>=2.25; runlist impl still env-blocked |
 | #1865 | med | ✅ fixed + NPU-verified | h2 via delivered arg, pC zeroing via arg, zero_c1 removed, #1842 pins retired; C2gate corr=1.0 bad=0/2048 BYTE-IDENTICAL on strixhalo |
 | #1907 | med | 🔶 deferred (XL) | baretorch token WITHOUT cs_lrad engine would silently mis-execute (registry comment forbids); full engine is XL |
-| #1866 | med | ⏳ upstream-only watch | -O0 immediate range — upstream llvm-aie (PRs #1155/#1276). **Nothing in-repo needs -O0** (builds pin -O2/-O1); the #1864 workaround rationale is stale (#1864 closed 2026-08-30). Re-verified 2026-09-11 |
+| #1866 | med | ✅ closed (not planned) — upstream-only watch | -O0 immediate range — upstream llvm-aie (PRs #1155/#1276). **Nothing in-repo needs -O0** (builds pin -O2/-O1); the #1864 workaround rationale is stale (#1864 closed 2026-08-30). Re-verified 2026-09-11; closed 2026-09-11, re-open only if `-O0` is ever needed in-repo |
 | #1874 | high | ✅ mitigated | I4_SCALAR_C1 is now the production default (verified corr 1.0); mmul path opt-in via I4_USE_MMUL=1 |
 | #1872 | high | ✅ mitigated | #1874 flip removes Bb round-trip from production; I4_DIRECT_VECTOR_DEQ register path for mmul (arithmetic-verified 512000/512000); NPU gate pending |
 | #1776 | med | ⏳ env | runlist needs XRT>=2.25 (box has 2.21.75); code path is version-gated |
@@ -49,7 +49,7 @@ upstream-vs-in-repo ownership determined.
 | high | 10 |
 | medium | 17 |
 | Fixable in this repo (code/scripts/docs) | 23 |
-| Upstream-only (escalate; no repo change) | 4 (#1912, #1869, #1866, #1835) |
+| Upstream-only (escalate; no repo change) | 3 (#1912, #1869, #1835 — #1866 closed 2026-09-11) |
 | Already worked around in tree (close-out only) | ~7 (#1836, #1835, #1869, #1834, #1878-partial, #1843-partial) |
 
 ## Ranked fix order (recommended)
@@ -109,5 +109,5 @@ upstream-vs-in-repo ownership determined.
 ### Upstream-only (escalate)
 - **#1912 (med)** — chess external-func arg delivery. Merge A/B harness as the regression test.
 - **#1869 (high)** — pointer-arith miscompile (workaround in tree).
-- **#1866 (med)** — -O0 immediate range crash. Upstream-only watch: nothing in-repo requires -O0 (builds pin -O2/-O1); the #1864 rationale is stale. Re-check on llvm-aie #1155/#1276.
+- **#1866 (med) — CLOSED (not planned) 2026-09-11.** -O0 immediate range crash. Upstream-only watch: nothing in-repo requires -O0 (builds pin -O2/-O1); the #1864 rationale is stale. Re-check on llvm-aie #1155/#1276, or if `-O0` is ever needed in-repo.
 - **#1835 (med)** — soft-float NaN (workaround in tree).
