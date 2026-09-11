@@ -28,6 +28,21 @@ be corrected to the 13.65/78.98 v0.9.46 table before chasing 17.48/102.45.
   a v1.0.0–v1.0.3 lib (working GDN + current XRT ABI), or the v0.9.46 lib +
   its matching XRT/driver (amdxdna 0.7-era).
 
+## Fetch bisect result (2026-09-11, GitHub ROCm/FastFlowLM releases)
+FLM releases v0.9.45→v1.0.5 are on GitHub (ubuntu26.04 .debs). Downloaded + tested:
+- v1.0.0/v1.0.1 (md5 fc4562dd) → crash during load (latent OOB)
+- v1.0.2 (e46e1653) → crash during load
+- v1.0.3 (8d76c77b) → NaN or all-zero (non-deterministic; the OOB)
+- v1.0.4 (c23bf8eb) → NaN (on-box)
+
+**The bf16-GDN regression predates v1.0.0** — no v1.0.x has a working GDN.
+Only v0.9.46 works (07-30 proven, 11.66 tok/s), and its sole blocker is the
+runlist ABI: it times out on XRT 2.21.75 AND 2.26.0 because the 07-30 box ran
+amdxdna 0.7 (now 0.1). So the fetch path = obtain the v0.9.46-era XRT/driver
+(amdxdna 0.7, XRT ~2.2x); v0.9.46 lib + xclbins are already in third_party.
+Remaining on-box paths: blind runlist binary-patch of v0.9.46, or the decode
+`_gen_sequence`/layer.xclbin rewrite (multi-day).
+
 ## Drop-in lib switch (for the fetched v0.9.45/.46 or v1.0.0–v1.0.3)
 The engine's FLM lib + xclbin path is now `FLM_ROOT`-env-configurable:
 - `build_npu.sh` links `$FLM_ROOT/lib/xrt` (already env-driven).
