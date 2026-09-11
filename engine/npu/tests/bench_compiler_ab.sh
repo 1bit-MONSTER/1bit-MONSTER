@@ -70,6 +70,11 @@ KERNEL_O="mm_32x64x128.o"
 DIMS=(-DDIM_M="$M_T" -DDIM_K="$K_T" -DDIM_N="$N_T" -Di8_i32_ONLY)
 
 ROUNDS=3; ITERS=200; KEEP=0; NO_RUN=0
+# PROBE=1 builds both kernels with -DDELIVERY_PROBE: each kernel stashes the
+# three pointers it was handed into c_out[0..3] (see mm_kernel_reference.cc),
+# so run_arm can show what Peano delivered versus what Chess delivered.
+PROBE="${PROBE:-0}"
+PROBE_DEF=(); [ "$PROBE" = 1 ] && PROBE_DEF=(-DDELIVERY_PROBE)
 while [ $# -gt 0 ]; do
   case "$1" in
     --rounds) ROUNDS=$2; shift 2;;
@@ -104,7 +109,7 @@ build_kernel_peano() { # $1 = out dir
   "$PEANO_CLANG" "$KERNEL_SRC" -c -o "$1/$KERNEL_O" \
     -I "$MLIR_AIE_INC" -I "$AIE_KERNELS_INC" \
     -std=c++20 -O2 -DNDEBUG -D__AIE_API_AIE_ADF_HPP__ \
-    --target=aie2p-none-unknown-elf "${DIMS[@]}"
+    --target=aie2p-none-unknown-elf "${PROBE_DEF[@]}" "${DIMS[@]}"
 }
 
 # ── Compile kernel .o, arm B: Chess (xchesscc via the Vitis launcher) ────────
@@ -119,7 +124,7 @@ build_kernel_chess() { # $1 = out dir
   xchesscc_wrapper aie2p -c \
     -I "$MLIR_AIE_INC" -I "$AIE_KERNELS_INC" \
     -O2 -DNDEBUG -D__AIE_API_AIE_ADF_HPP__ \
-    "${DIMS[@]}" "$KERNEL_SRC" -o "$1/$KERNEL_O"
+    "${PROBE_DEF[@]}" "${DIMS[@]}" "$KERNEL_SRC" -o "$1/$KERNEL_O"
 }
 
 # ── Generate the MLIR design ONCE (identical for both arms) ──────────────────
@@ -169,6 +174,9 @@ build_harness() { # $1 = out dir
 run_arm() { # $1 = bench binary, $2 = xclbin path, $3 = insts path, $4 = iters
   local out; out=$(LD_LIBRARY_PATH=/opt/xilinx/xrt/lib "$1" \
     "$2" "$3" $M $K $N "$4" 2>&1) || true
+  # PROBE=1: surface what the kernel was handed (stashed in c_out[0..3]).
+  local probe=""
+  [ "$PROBE" = 1 ] && probe=$(echo "$out" | grep "PROBE c_out" | sed 's/^ *//')
   if echo "$out" | grep -q "^PASS$"; then
     local line; line=$(echo "$out" | grep "ms/launch" | tail -1)
     echo "PASS $(echo "$line" | grep -o '[0-9.]* ms/launch' | tr -d ' ms/launch') \
@@ -178,6 +186,7 @@ $(echo "$line" | grep -o '[0-9.]* GOP/s' | tr -d ' GOP/s')"
     local reason; reason=$(echo "$out" | grep -E "wrong=|cannot|error|Error" | head -1)
     [ -n "$reason" ] && echo "FAIL ($reason)" || echo "FAIL"
   fi
+  [ -n "$probe" ] && echo "       $probe"
 }
 
 # ── Structural comparison of the two .o files ────────────────────────────────
