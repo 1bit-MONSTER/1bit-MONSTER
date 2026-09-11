@@ -66,3 +66,17 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
   ELF** (`attn_mha_256_nh32.elf`) or the act/kv layout it expects.
 - Next: byte-exact `replay_attn` of the captured nh32 ELF against FLM's captured
   act/kv/out (256×4096 Q), to decide ELF-vs-act/kv-layout.
+
+
+## Final: nh32 attention output = 0.04% match vs CPU (2026-09-11)
+
+- Compared layer-0 attention output (bf16) between CPU (`attn_omp`) and NPU (`attn_mha_256_nh32.elf`)
+  paths: **449/1048576 = 0.04% match** — the nh32 ELF produces a completely different
+  attention result (CPU path is correct, boot=151667). Engine's act (Q) dump is a correct
+  [token][head][dim] 256×4096 layout.
+- Likely cause: the captured `elf_0012` (via the engine's `NPU_FLM_PREFILL=1`, which runs
+  FLM's prefill as a **runlist**) is a runlist-format ELF, not a single attention-kernel ELF
+  the engine's per-op path expects — or its Q/GQA read geometry mismatches the input.
+- Resolution needs a byte-exact `replay_attn` (256×4096) against FLM's captured act/kv/out,
+  or re-capturing the MHA ELF from `run_qwen3_prefill` (which failed for 4B with
+  "MHA parameter check L_begin 0, L_end 0"). Left open.
