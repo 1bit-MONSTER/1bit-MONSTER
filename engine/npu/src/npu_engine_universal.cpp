@@ -3669,7 +3669,8 @@ struct Bf16Ctx {
             return 1;
         }
         int qout = NH * HD, kout = NKV * HD, qkvn = qout + 2 * kout;
-        std::vector<int> Wqkv(NC), Wo(NC), Wgu(NC), Wd(NC);
+        const int gu_chunks = IM / 512;   // GU: 512-out-row chunks (16 tile-rows x 32)
+        std::vector<int> Wqkv(NC), Wo(NC), Wup(NC * gu_chunks), Wgate(NC * gu_chunks), Wd(NC);
         int layer_bo_bytes = npu_bf16_layer_bo_bytes();
         if (layer_bo_bytes <= 0) layer_bo_bytes = 2048 * 5120;
         std::vector<uint8_t> bo(layer_bo_bytes);
@@ -3677,9 +3678,22 @@ struct Bf16Ctx {
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV) == 0) {
             for (int l = 0; l < NC; l++) {
                 npu_bf16_pack_layer(l, bo.data(), offs);
+                // GU: dequant per 512-out-row chunk. The packed BO alternates
+                // up/gate in CH=H/16-tile chunks (each = 16 tile-rows x 32 =
+                // 512 out-rows), so up chunk c sits at gu_off + c*2*CH and gate
+                // chunk c at gu_off + c*2*CH + CH. D_out=512 keeps each dequant
+                // output (H x 512 bf16) far under the dequant output-BD capacity
+                // that broke D_out=IM/2*IM for 1.7B+ (25/50 MB).
+                const int CH_tiles = H / 16;
+                const int gu_off = offs[4];
+                for (int c = 0; c < gu_chunks; c++) {
+                    Wup[l * gu_chunks + c]   = bf16mm_dequant_dev(bo.data(), H, 512,
+                        (uint32_t)(gu_off + c * 2 * CH_tiles) * 5120, (size_t)layer_bo_bytes);
+                    Wgate[l * gu_chunks + c] = bf16mm_dequant_dev(bo.data(), H, 512,
+                        (uint32_t)(gu_off + c * 2 * CH_tiles + CH_tiles) * 5120, (size_t)layer_bo_bytes);
+                }
                 Wqkv[l]  = bf16mm_dequant_dev(bo.data(), H, qkvn, (uint32_t)offs[0] * 5120, (size_t)layer_bo_bytes);
                 Wo[l]    = bf16mm_dequant_dev(bo.data(), qout, H, (uint32_t)offs[3] * 5120, (size_t)layer_bo_bytes);
-                Wgu[l]   = bf16mm_dequant_dev(bo.data(), H, 2 * IM, (uint32_t)offs[4] * 5120, (size_t)layer_bo_bytes);
                 Wd[l]    = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120, (size_t)layer_bo_bytes);
             }
             fprintf(stderr, "bf16 prefill: %d layers dequant done\n", NC);
@@ -3780,16 +3794,21 @@ struct Bf16Ctx {
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
                 for (int pi = 0; pi < npt; pi++) rn_c(&bh[pi * H], pa_n[l].data(), H);
                 for (int k = 0; k < 256; k++) for (int j = 0; j < H; j++) bA[k * H + j] = f32_to_bf16(bh[k * H + j]);
-                bf16mm_gemm_dev(bC.data(), bA.data(), Wgu[l], H, 2 * IM, 0);
-                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < 2 * IM; i++) bgt[pi * 2 * IM + i] = bf16g(bC[pi * 2 * IM + i]);
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fg = fopen("/tmp/bf16_l0_gu.bin", "wb"); if (fg) { fwrite(bgt.data(), 4, 2 * IM, fg); fclose(fg); } }
-                // GU W is up/gate alternating H/2-col chunks (up0,gate0,…).
-                int guchunk = H / 2;
-                for (int pi = 0; pi < npt; pi++) for (int c = 0; c * guchunk < IM; c++) for (int i = 0; i < guchunk; i++) {
-                    int base = pi * 2 * IM + c * 2 * guchunk;
-                    float gv = bgt[base + guchunk + i]; if (!std::isfinite(gv)) gv = 0;
-                    bsu[pi * IM + c * guchunk + i] = (gv / (1.0f + expf(-gv))) * bgt[base + i];
+                // GU per 512-out-row chunk: gate GEMM + up GEMM at N=512 each,
+                // then SiLU(gate)*up on host. bgt layout per token = [gate IM | up IM].
+                for (int c = 0; c < gu_chunks; c++) {
+                    bf16mm_gemm_dev(bC.data(), bA.data(), Wgate[l * gu_chunks + c], H, 512, 0);
+                    for (int pi = 0; pi < npt; pi++) for (int i = 0; i < 512; i++)
+                        bgt[pi * 2 * IM + c * 512 + i] = bf16g(bC[pi * 512 + i]);
+                    bf16mm_gemm_dev(bC.data(), bA.data(), Wup[l * gu_chunks + c], H, 512, 0);
+                    for (int pi = 0; pi < npt; pi++) for (int i = 0; i < 512; i++)
+                        bgt[pi * 2 * IM + IM + c * 512 + i] = bf16g(bC[pi * 512 + i]);
                 }
+                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < IM; i++) {
+                    float gv = bgt[pi * 2 * IM + i]; if (!std::isfinite(gv)) gv = 0;
+                    bsu[pi * IM + i] = (gv / (1.0f + expf(-gv))) * bgt[pi * 2 * IM + IM + i];
+                }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fg = fopen("/tmp/bf16_l0_gu.bin", "wb"); if (fg) { fwrite(bgt.data(), 4, 2 * IM, fg); fclose(fg); } }
                 for (int k = 0; k < 256; k++) for (int j = 0; j < IM; j++) bA[k * IM + j] = f32_to_bf16(bsu[k * IM + j]);
                 bf16mm_gemm_dev(bC.data(), bA.data(), Wd[l], IM, H, 0);
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
