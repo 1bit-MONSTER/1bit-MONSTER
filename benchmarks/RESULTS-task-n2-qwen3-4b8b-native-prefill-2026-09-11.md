@@ -4,7 +4,7 @@ Goal `mttxt22c-a6rv75`, task-n2. Native bf16 prefill (`NPU_PREFILL_BF16=1` +
 `NPU_RUNLIST=0`) for Qwen3-4B/8B, using the already-embedded `attn_mha_256_nh32.elf`
 (NH=32) + the task-n1 optimizations (GEMM fusion, GU concat, async 2-batch, pipeline).
 
-## Status: 4B/8B native prefill WORKS (token-valid, not yet FLM-verified)
+## Status: 4B/8B native prefill RUNS, but 4B/8B token mismatch — nh32 ELF bug (open)
 
 | model | H / IM | 256-tok prefill | tok/s | FLM published @1k | gap |
 |---|---|---|---|---|---|
@@ -12,8 +12,15 @@ Goal `mttxt22c-a6rv75`, task-n2. Native bf16 prefill (`NPU_PREFILL_BF16=1` +
 | Qwen3-4B | 2560 / 9728 | 1763 ms | 145 | 509 | 3.5× |
 | Qwen3-8B | 4096 / 12288 | 1841 ms | 139 | 357 | 2.6× |
 
-- 4B boot=56031, 8B boot=104116 (default 9-token prompt) — valid tokens, but
-  **FLM token-parity not yet re-verified** (needs a `run_qwen3_prefill` 4B/8B run).
+- **FLM prefill reference (NPU_FLM_PREFILL) boot = 151667** for 0.6B, 1.7B, 4B alike.
+- 0.6B/1.7B (NH=16, nh16 ELF) → boot 151667 ✓ (byte-correct).
+- 4B/8B (NH=32, nh32 ELF) → boot 115230/30955 ✗ — **wrong attention output**.
+- **Root cause:** two bugs found — (1) host `run_dequant` hardcoded a 10 MB layer-BO
+  copy, so the GU dequant read garbage for 4B (63 MB) / 8B (82 MB) — FIXED (copy
+  per-projection tiles). (2) the captured `attn_mha_256_nh32.elf` itself produces
+  wrong attention (commit 6dce200e8 mis-attributed the 21894-vs-220 divergence to
+  "prefill-vs-decode mismatch"; the real bar is FLM prefill 151667). Needs re-capture
+  of the nh32 ELF from FLM's 4B prefill + verification.
 - 1.7B (H=2048) reuses the NH=16 ELF and the 0.6B recipe; not re-measured here.
 
 ## Notes
