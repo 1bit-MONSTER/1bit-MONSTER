@@ -80,3 +80,16 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
 - Resolution needs a byte-exact `replay_attn` (256×4096) against FLM's captured act/kv/out,
   or re-capturing the MHA ELF from `run_qwen3_prefill` (which failed for 4B with
   "MHA parameter check L_begin 0, L_end 0"). Left open.
+
+
+## KV region stride bug FOUND + FIXED (2026-09-11)
+
+- The attention KV cache region stride is **model-dependent** (measured from FLM's
+  prefill captures): 8MB (MAX_L=8192) for H≤2048, 12MB (12288) for H=2560, 24MB
+  (24576) for H=4096. The engine hardcoded 8MB — so 4B/8B had the KV in the wrong
+  layout. Fixed via `bf16mm_set_attn_kv_region` + H-based `kv_region` (commit ffeabbeb4).
+- 0.6B still boot=151667 ✓ (8MB unchanged). 4B boot 115230→116941, 8B→41119 — the KV
+  fix moved the output but 4B/8B are **still wrong**, so a **second** attention bug
+  remains: candidates are (a) the nh32 ELF's Q-read geometry (reads 16 not 32 heads —
+  46640/26928 = 1.73×, not the ~2× a full Q-doubling predicts), (b) act layout.
+  Needs byte-exact `replay_attn` (256×4096) against FLM's captured act/kv/out.
