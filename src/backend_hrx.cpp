@@ -113,6 +113,7 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
     // explicitly configured it.
     if (cfg.architecture == "qwen3moe" && std::getenv("GGML_HRX_CPU_OPS") == nullptr) {
         setenv("GGML_HRX_CPU_OPS", "RMS_NORM", 1);
+        cpu_ops_set_by_us_ = true;
         fprintf(stderr, "HRX: qwen3moe decode needs CPU RMSNorm (#2147) - set GGML_HRX_CPU_OPS=RMS_NORM\n");
     }
 
@@ -326,6 +327,14 @@ void HrxBackend::destroy() {
     inprocess_mode_ = false;
     kill_server();
     initialized_ = false;
+    // #2147 follow-up: init() sets GGML_HRX_CPU_OPS process-global for
+    // qwen3moe (single-model constraint). Restore the environment on teardown
+    // so a later backend/model served in this process doesn't inherit the
+    // RMS_NORM CPU split (and a later qwen3moe init re-applies it cleanly).
+    if (cpu_ops_set_by_us_) {
+        unsetenv("GGML_HRX_CPU_OPS");
+        cpu_ops_set_by_us_ = false;
+    }
 }
 
 bool HrxBackend::reset() {
