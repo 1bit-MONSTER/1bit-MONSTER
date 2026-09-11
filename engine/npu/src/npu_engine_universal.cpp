@@ -258,9 +258,9 @@ static inline void sm(float*sc,int n){if(n<=0)return;cn(sc,n);float mx=sc[0];
     for(int i=0;i<n;i++){float d=sc[i]-mx;if(d>80)d=80;else if(d<-80)d=-80;sc[i]=expf(d);s+=sc[i];}
     if(s<=0){float iv=1.0f/n;for(int i=0;i<n;i++)sc[i]=iv;return;}
     float is=1.0f/(float)s;for(int i=0;i<n;i++)sc[i]*=is;}
-static inline void rn_c(float*x,const float*w,int n){cn(x,n);double ss=0;
-    for(int i=0;i<n;i++)if(std::isfinite(x[i]))ss+=(double)x[i]*x[i];
-    float ir=1.0f/sqrtf((float)(ss/n)+EPS);for(int i=0;i<n;i++)x[i]=std::isfinite(x[i])?x[i]*ir*w[i]:0.0f;}
+static inline void rn_c(float*x,const float*w,int n){cn(x,n);float ss=0;
+    for(int i=0;i<n;i++)ss+=x[i]*x[i];
+    float ir=1.0f/sqrtf(ss/n+EPS);for(int i=0;i<n;i++)x[i]=x[i]*ir*w[i];}
 
 // ── Cross-layer pipeline (roadmap step 3): fused D-output → next-QKV-input ──
 // Consumes the D GEMM output of layer l (Cm, int32 legacy / int16 FLM) and
