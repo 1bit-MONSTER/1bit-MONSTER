@@ -3822,7 +3822,7 @@ struct Bf16Ctx {
             std::vector<float> bh(256 * H), bqo(256 * qkvn), bat(256 * NH * HD), boo(256 * H),
                                bdw(256 * H), bsb(256 * H);
             std::vector<uint16_t> bA(256 * std::max({H, qout, IM})), bC(256 * 2 * IM);
-            std::vector<uint16_t> bActQ(256 * qout), bAttnOut(256 * qout), bKv(33554432 / 2);
+            std::vector<uint16_t> bActQ(256 * qout), bKv(33554432 / 2);
             memset(bActQ.data(), 0, 256 * qout * 2);
             memset(bKv.data(), 0, 33554432);
             for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = emb_f32[pt_vec[pi] * H + i];
@@ -3884,7 +3884,7 @@ struct Bf16Ctx {
                     FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, 33554432 / 2, fk); fclose(fk); }
                 }
                 bool attn_host = false;
-                if (!bf16mm_attn(bAttnOut.data(), bActQ.data(), bKv.data())) {
+                if (!bf16mm_attn(bA.data(), bActQ.data(), bKv.data())) {
                     fprintf(stderr, "\nbf16 attn unavailable — CPU attn_omp fallback\n");
                     attn_host = true;
                     #pragma omp parallel for
@@ -3892,10 +3892,9 @@ struct Bf16Ctx {
                         attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n, kv_caches[l][0].k.data(),
                                  kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
                 } else {
-                    // attn out (bf16) → O GEMM A directly — skip the f32 round-trip
-                    memcpy(bA.data(), bAttnOut.data(), (size_t)256 * qout * 2);
+                    // attn writes its bf16 output straight into bA (the O-GEMM A)
                     if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
-                        FILE* fo = fopen("/tmp/eng_out.bin", "wb"); if (fo) { fwrite(bAttnOut.data(), 2, 256 * qout, fo); fclose(fo); }
+                        FILE* fo = fopen("/tmp/eng_out.bin", "wb"); if (fo) { fwrite(bA.data(), 2, 256 * qout, fo); fclose(fo); }
                     }
                 }
                 auto ta1 = std::chrono::steady_clock::now();
