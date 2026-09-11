@@ -111,6 +111,11 @@ __attribute__((constructor)) static void gdn_trace_init() {
     uintptr_t call_addr = lib_base + CALL_OFF;
     uintptr_t ret_addr = lib_base + RET_OFF;
 
+    // make the shim's own .text page writable before patching the movabs
+    // immediate (RELRO makes .text read-only -> SIGSEGV otherwise)
+    uintptr_t tpage = (uintptr_t)&gdn_trampoline & ~(uintptr_t)0xfff;
+    mprotect((void *)tpage, 0x1000, PROT_READ | PROT_WRITE | PROT_EXEC);
+
     // patch the trampoline's movabs immediate (48 b8 imm64) with ret_addr
     uint8_t *t = (uint8_t *)&gdn_trampoline;
     for (size_t i = 0; i + 10 < 160; i++) {
