@@ -93,3 +93,16 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
   remains: candidates are (a) the nh32 ELF's Q-read geometry (reads 16 not 32 heads —
   46640/26928 = 1.73×, not the ~2× a full Q-doubling predicts), (b) act layout.
   Needs byte-exact `replay_attn` (256×4096) against FLM's captured act/kv/out.
+
+
+## nh32 ELF diagnosed: uniform attention (Q-read wrong) (2026-09-11)
+
+- Byte-exact replay of `attn_mha_256_nh32.elf` with FLM's captured act/kv (via an
+  adapted cap_attnio for 48MB KV + 2MB act): output is **uniform** — rms 0.0038,
+  all heads ≈ 0x3c48 (0.0122) = the softmax degenerates to 1/256, i.e. the ELF reads
+  ~zero Q. The GEMMs/norm/RoPE/KV/act-layout are all verified correct (CPU attn → 151667).
+- Conclusion: the nh32 ELF's **Q-read BD geometry is wrong** (reads 16 heads / wrong
+  strides instead of 32 × 4096-wide). The `run_qwen3_prefill` capture yields the same
+  ELF, so either the capture tool missed the true 32-head MHA ELF, or the ELF must be
+  regenerated from the 16-head ELF by doubling the Q-read BDs + token-stride (8192 B).
+  This is the last dense-Qwen3 4B/8B item; it needs ELF decode/regeneration.
