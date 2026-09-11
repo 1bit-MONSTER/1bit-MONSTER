@@ -41,6 +41,31 @@ jobs:
           cp -a site/. _deploy/
           python3 scripts/gen_docs_site.py --out _deploy/docs
 
+      - name: Set the gh-auth function secrets on the Pages project
+        # The function needs the App credentials as *Pages project* env, not as
+        # repo files. Values come from Actions secrets and are never printed.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          AUTH_TOKEN: ${{ secrets.GH_AUTH_WORKER_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in APP_ID APP_PRIVATE_KEY AUTH_TOKEN; do
+            eval "val=\$$v"
+            [ -n "$val" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing repo secrets:$missing"; exit 1
+          fi
+          for key in APP_ID APP_PRIVATE_KEY AUTH_TOKEN; do
+            eval "val=\$$key"
+            printf '%s' "$val" | npx --yes wrangler@4 pages secret put "$key" --project-name=1bit-monster
+          done
+          echo "gh-auth secrets set on Pages project 1bit-monster (values not printed)"
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0  # v4
         with:

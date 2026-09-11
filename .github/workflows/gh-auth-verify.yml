@@ -1,0 +1,33 @@
+name: Verify gh-auth function
+
+# Runs the gh-auth Pages Function against the REAL GitHub API (no mocks) so the
+# check that caught the PKCS#1 import bug runs on every change. A malformed key,
+# a broken JWT, a missing auth gate or a leaked secret all fail here, before the
+# site that serves the endpoint is deployed.
+
+on:
+  pull_request:
+    paths:
+      - 'site/functions/gh-auth.js'
+      - 'site/functions/gh-auth.test.mjs'
+      - '.github/workflows/gh-auth-verify.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: gh-auth-verify-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Drive the function against the real API
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          AUTH_TOKEN: ${{ secrets.GH_AUTH_WORKER_TOKEN }}
+        run: node site/functions/gh-auth.test.mjs
