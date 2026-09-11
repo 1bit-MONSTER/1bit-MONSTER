@@ -1504,8 +1504,20 @@ int main(int argc, char** argv) {
     // model). The extension is additive and deduped by path, so every legacy name
     // still resolves while a previously-invisible artifact gains its CANONICAL id
     // (R5). It does not change route selection (that stays in model_router).
-    static onebit::ModelRegistry g_registry =
-        onebit::ModelRegistry::scan({g_weights_dir});
+    // R2/step 2: the registry is the record for every artifact on the box, and the objective
+    // names `~/models` explicitly ("every artifact on the box (`~/models` + native
+    // conversions)"). Scanning only the weights dir left an artifact in `~/models` invisible:
+    // loaded and SERVED correctly, yet listed only under its legacy stem (issue #2193, audit
+    // §9.10.31 case A). Both roots, de-duplicated by path downstream.
+    static const std::string g_home_models_dir = [] {
+        const char* h = getenv("HOME");
+        return (h && h[0]) ? std::string(h) + "/models" : std::string();
+    }();
+    static onebit::ModelRegistry g_registry = [&] {
+        std::vector<std::string> roots{g_weights_dir};
+        if (!g_home_models_dir.empty()) roots.push_back(g_home_models_dir);
+        return onebit::ModelRegistry::scan(roots);
+    }();
     static std::vector<ModelConfig> discovered = [&] {
         std::vector<ModelConfig> v;
         std::set<std::string> have;
@@ -2094,13 +2106,42 @@ int main(int argc, char** argv) {
             if (art.q4nx_name_mismatch) info["q4nx_name_mismatch"] = true;
             models.push_back(info);
         }
-        // Also add the active backend model if different
+        // Also add the loaded model, if the listing does not already carry it — and under its
+        // CANONICAL id when the registry knows the artifact. Four lines here held three defects
+        // (issue #2193, audit §9.10.31):
+        //   * the dedupe compared a MODEL name (m.model_name) to a BACKEND id (active->id) —
+        //     different vocabularies, so it could never match and the entry was appended on
+        //     every single request;
+        //   * it appended current_cfg.model_name, the legacy stem ("zaya1-8b"), so one artifact
+        //     appeared TWICE — canonically and by stem — which is the divergence step 4/R5 exist
+        //     to remove. Measured: 9 entries in /v1/models where 8 artifacts exist;
+        //   * model_info_json() put the active BACKEND id in the model's "backend" field, which
+        //     reads like a capability.
         if (active) {
-            bool found = false;
-            for (auto& m : discovered) {
-                if (m.model_name == active->id) { found = true; break; }
+            const onebit::ModelArtifact* loaded_art =
+                current_cfg.model_path.empty()
+                    ? nullptr : g_registry.resolve_path(current_cfg.model_path);
+            const std::string loaded_id = (loaded_art && !loaded_art->id.empty())
+                                              ? loaded_art->id : current_cfg.model_name;
+            bool listed = false;
+            for (const auto& m : models) {
+                const std::string id = m.value("id", std::string());
+                if (id == loaded_id || id == current_cfg.model_name) { listed = true; break; }
             }
-            if (!found) models.push_back(model_info_json(active, current_cfg.model_name));
+            if (!listed && !loaded_id.empty()) {
+                json info = model_info_json(active, loaded_id);
+                if (loaded_art) {
+                    info["backend"] = "auto";
+                    info["artifact_id"] = loaded_art->id;
+                    std::vector<std::string> caps;
+                    for (auto c : loaded_art->capabilities) caps.push_back(onebit::to_string(c));
+                    info["capabilities"] = caps;
+                    info["container"] = onebit::to_string(loaded_art->container);
+                    if (loaded_id != current_cfg.model_name)
+                        info["legacy_name"] = current_cfg.model_name;
+                }
+                models.push_back(std::move(info));
+            }
         }
         j["data"] = models;
         res.set_content(j.dump(2), "application/json");
