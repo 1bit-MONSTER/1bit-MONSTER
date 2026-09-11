@@ -66,6 +66,7 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" void bf16mm_set_attn_qout(int qout);
+extern "C" void bf16mm_set_attn_kv_region(uint32_t region);
 extern "C" int flm_prefill_init(const char* model_dir, const char* family);
 extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* prefill_ms);
 extern "C" int flm_decode_run(int token, int* next_token, double* decode_ms);
@@ -3785,6 +3786,13 @@ struct Bf16Ctx {
         std::vector<int> Wqkv(NC), Wo(NC), Wgu(NC), Wd(NC);
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV) == 0) {
             bf16mm_set_attn_qout(NH * HD);
+            // KV cache region stride is model-dependent (FLM allocates the KV BO
+            // per model): 8MB (MAX_L=8192) for H<=2048, 12MB (12288) for H=2560,
+            // 24MB (24576) for H=4096 — measured from FLM's prefill captures.
+            uint32_t kv_region = 4194304;
+            if (H == 2560) kv_region = 6291456;
+            else if (H == 4096) kv_region = 12582912;
+            bf16mm_set_attn_kv_region(kv_region);
             // layer_bo_bytes must be read AFTER prefill_init (it needs the loaded
             // model; before init g_bf16_mw is null -> the 10MB 0.6B fallback).
             int layer_bo_bytes = npu_bf16_layer_bo_bytes();
@@ -3829,9 +3837,9 @@ struct Bf16Ctx {
             std::vector<float> bh(256 * H), bqo(256 * qkvn), bat(256 * NH * HD), boo(256 * H),
                                bdw(256 * H), bsb(256 * H);
             std::vector<uint16_t> bA(256 * std::max({H, qout, IM})), bC(256 * 2 * IM);
-            std::vector<uint16_t> bActQ(256 * qout), bKv(33554432 / 2);
+            std::vector<uint16_t> bActQ(256 * qout), bKv((size_t)kv_region * 4);
             memset(bActQ.data(), 0, 256 * qout * 2);
-            memset(bKv.data(), 0, 33554432);
+            memset(bKv.data(), 0, (size_t)kv_region * 4 * 2);
             for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = emb_f32[pt_vec[pi] * H + i];
             for (int pi = npt; pi < 256; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = 0;
             double tg = 0, ta = 0, tc = 0;
@@ -3869,8 +3877,8 @@ struct Bf16Ctx {
                         // the kv_caches re-read round-trip)
                         int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
                         for (int d = 0; d < HD; d++) {
-                            bKv[(size_t)region * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(ks[d]);
-                            bKv[(size_t)(region + 2) * 4194304 + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vs[d]);
+                            bKv[(size_t)region * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(ks[d]);
+                            bKv[(size_t)(region + 2) * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vs[d]);
                         }
                     }
                 };

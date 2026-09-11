@@ -90,6 +90,7 @@ struct Bf16Mm {
     std::unique_ptr<xrt::ext::kernel> attn_kernel32;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
     int attn_qout = 2048;   // 2048 (NH=16) or 4096 (NH=32)
+    uint32_t attn_kv_region = 4194304;   // KV region stride in bf16 (8MB, MAX_L=8192)
 
     bool ok = false;
 
@@ -171,6 +172,8 @@ struct Bf16Mm {
 
     /// Select the attention ELF + Q width: 2048 (NH=16) or 4096 (NH=32).
     void set_attn_qout(int qout) { attn_qout = qout; }
+    /// Set the KV cache region stride (bf16 elems): 8MB=4194304 (H<=2048), 12MB=6291456 (H=2560), 24MB=12582912 (H=4096).
+    void set_attn_kv_region(uint32_t region) { attn_kv_region = region; }
 
     /// 256-token MHA attention (attn.xclbin): out = attn(Q, K/V cache).
     ///   act: 256×qout bf16 [token][head][dim] (Q GEMM output, raw)
@@ -183,12 +186,12 @@ struct Bf16Mm {
         if (!attn_out) {
             attn_out = std::make_unique<buffer<uint16_t>>(*dev, (size_t)256 * q);
             attn_act = std::make_unique<buffer<uint16_t>>(*dev, (size_t)256 * q);
-            attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)33554432 / 2);
+            attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)attn_kv_region * 4);
         }
         memcpy(attn_act->data(), act, (size_t)256 * q * 2);
-        // Only the 4 used 8MB-region heads matter (256 tokens × 4 heads × 128 dims
-        // = 256KB each). Copy just those; the rest of the 32MB BO stays zero.
-        const size_t reg = 8 * 1024 * 1024 / 2;          // 8MB in bf16 elems
+        // Only the 4 used region heads matter (256 tokens × 4 heads × 128 dims
+        // = 256KB each). Copy just those; the rest of the KV BO stays zero.
+        const size_t reg = attn_kv_region;                // region stride in bf16
         const size_t used = 256 * 512;                    // 256 tokens × 512 bf16
         for (int r = 0; r < 4; r++)
             memcpy(attn_kv->data() + r * reg, kv + r * reg, used * 2);
