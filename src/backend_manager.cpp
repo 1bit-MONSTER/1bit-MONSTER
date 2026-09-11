@@ -1158,10 +1158,23 @@ bool BackendManager::failover() {
         backends_[active_idx_].functional = false;
     }
 
-    // Cascade in model-route order (then registration order): a decode failure
-    // lands on the intended next lane (GGUF: hrx_gpu → ggml_vulkan → zinc_gpu
-    // → cpu_generic), never on a backend discovery happened to register next
-    // (e.g. an NPU lane that would load the wrong model for a GGUF — G1a).
+    // Cascade: model-route order FIRST (the declared preference for this model's
+    // format/arch), then every remaining discovered backend in registration order as
+    // a last resort — fallback_order() covers all of backends_ exactly once.
+    //
+    // CORRECTED 2026-09-11. This text used to end "...never on a backend discovery
+    // happened to register next (e.g. an NPU lane that would load the wrong model for a
+    // GGUF — G1a)". The tail below CAN reach exactly such a lane, so that guarantee is
+    // not the router's to make. What actually stops a wrong-CONTAINER failover is each
+    // executor's own init gate, and both NPU lanes say so themselves:
+    //   backend_npu.cpp:349     "The worker engine only speaks Q4NX ... [reject] other
+    //                            formats up front so the router never selects it for
+    //                            them"
+    //   backend_npu_flm.cpp:189 "NPU: FLM is Q4NX-only — rejecting <path>"
+    // So the router's order is a PREFERENCE; the filter is fail-closed in the executor.
+    // Stated plainly because it bounds what the router can promise: a container gate
+    // cannot detect a lane that ACCEPTS this container and serves DIFFERENT WEIGHTS from
+    // it — the npu_flm lossy-tag case passes both gates (ADR §9.10.9).
     const std::string failed_id =
         (active_idx_ < backends_.size()) ? backends_[active_idx_].id : "";
     for (const auto& id : fallback_order()) {
