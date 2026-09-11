@@ -30,7 +30,7 @@ can execute rather than re-derive.
 | 1945 | HRX upstream gating | **upstream watch** | no — llama.cpp #27218 / hrx-system |
 | 1956 | C++26 toolchain watch | **upstream watch** | no — g++16 / libstdc++16 |
 | 1907 | baretorch cs_lrad engine support | **hardware-bound (XL feature)** | no — multi-week engine feature |
-| 1942 | hybrid prefill/decode (HIP prefill → HRX decode) | **hardware-bound (build)** | partial — HIP prefill-lane build + KV handoff |
+| 1942 | hybrid prefill/decode (HIP prefill → HRX decode) | **handoff resolved; blocked bundle-side (KV ceiling)** | fixed in `80a8a81eb` (PR #2203); re-open on #1945 / HRX2 |
 | 1831 | HIP cannot run qwen3_5_moe (35B-A3B GDN) | **hardware-bound (kernel)** | no — port GDN kernels to HIP + GPU verify |
 | 1776 | Zaya decode CCA-attention-bound | **hardware-bound (kernel)** | no — attention-on-NPU kernel push + resident weights/runlist |
 | 1934 | int4 fused GU→SiLU FFN corr cap | **hardware-bound (silicon gate)** | **closest** — build gate re-verified; wiring gated on parity |
@@ -118,7 +118,7 @@ I4_BF16_PAIR=1 engine/npu/generators/build_p1i4_qwen3_iron.sh
 | # | Next owner step (in-repo) |
 |---|---------------------------|
 | 1831 | Port GatedDeltaNet linear-attention from `engine/npu/npu_engine_universal.cpp` + npu-infer 35B layout into `backend_hip_1bp` behind the `RCPP_ARCH_QWEN35` gate (fused-QKV `gt()` name handling + `full_attention_interval=4` hybrid schedule). No HIP GDN kernels exist yet in `src/`. |
-| 1942 | Resume the TheRock HIP prefill-lane build of the vendored llama.cpp (stopped mid-round-25k; `ROCM_PATH` → `/opt/rocm-therock`), then the in-process KV-handoff plumbing + benchmark gate. |
+| 1942 | ~~Resume the TheRock HIP prefill-lane build…~~ **DONE 2026-09-02 (PR #2054)**; handoff resolved. Remaining: the shipped b66 HRX over-claims FLASH_ATTN_EXT above KV 2048 → the §5.2 positive clause needs **#1945** (bundle repin) or HRX2 decode-ADD. PR #2203 removes the silent context loss and names the refusal. |
 | 1907 | Actual cs_lrad engine support — recurrent-state scan + chunked attention, GGUF tensor mapping, selfcheck. Registry token + safe refusal already landed. |
 | 1776 | Attention-on-NPU for the standalone Zaya path (CPU CCA still the per-token bottleneck, O(seq)), then resident weights + runlist. Note: the runtime-layer path (Qwen3 npu-infer) does **not** change the standalone Zaya decode path this issue measures. |
 
