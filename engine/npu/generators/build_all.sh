@@ -6,14 +6,9 @@ export PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
 export AIECC=/home/bcloud/mlir-aie/build_tmp/bin/aiecc
 export PEANO=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 export AIETOOLS=/home/bcloud/mlir-aie/build_tmp
-# These three used to be /home/bcloud/1bit-monster/... (lowercase) — a path that does
-# not exist, so every write through them failed against a nonexistent directory. Derive
-# them from this script's own location instead; the same relative idiom the five
-# build_zaya_*.sh writers already use.
-HERE="$(cd "$(dirname "$0")" && pwd)"                # …/engine/npu/generators
-export GEN="$HERE"
-export KERNEL="$HERE/mm_32x64x128.o"
-export XDIR="$(cd "$HERE/../xclbins" && pwd)"          # …/engine/npu/xclbins
+export KERNEL=/home/bcloud/1bit-monster/engine/npu/generators/mm_32x64x128.o
+export XDIR=/home/bcloud/1bit-monster/engine/npu/xclbins
+export GEN=/home/bcloud/1bit-monster/engine/npu/generators
 export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
 export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
 
