@@ -3850,7 +3850,7 @@ struct Bf16Ctx {
                 // input norm + A convert fused
                 auto tc0 = std::chrono::steady_clock::now();
                 for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data() + H, 2, H, fb); fclose(fb); } }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data(), 2, 4 * H, fb); fclose(fb); } }
                 auto tg0 = std::chrono::steady_clock::now();
                 // QKV as THREE separate GEMMs (FLM's mm_256_1024_128 N-tiled schedule;
                 // the combined N=4096 diverges from FLM's byte-exact recipe).
@@ -3866,7 +3866,7 @@ struct Bf16Ctx {
                     memcpy(&bC[(size_t)pi * qkvn + qout], &bCk[(size_t)pi * kout], kout * 2);
                     memcpy(&bC[(size_t)pi * qkvn + qout + kout], &bCv[(size_t)pi * kout], kout * 2);
                 }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fc = fopen("/tmp/bf16_l0_bC.bin", "wb"); if (fc) { fwrite(bC.data() + qkvn, 2, qkvn, fc); fclose(fc); } }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fc = fopen("/tmp/bf16_l0_bC.bin", "wb"); if (fc) { fwrite(bC.data(), 2, 4 * qkvn, fc); fclose(fc); } }
                 bf16mm_gemm_launch(Wqkv[l], H, qout, 0, 1, bA.data());
                 bf16mm_gemm_launch(Wqkv[l], H, kout, 2097152, 1, bA.data());
                 bf16mm_gemm_launch(Wqkv[l], H, kout, 3145728, 1, bA.data());

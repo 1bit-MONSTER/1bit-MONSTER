@@ -31,6 +31,31 @@ FLM's captured `arg4` first 8 imply `v ≈ 8.0 8.2 8.05 7.76 8.17 8.56 7.6 8.03`
 almost certainly not the QKV weight** (or is pre-permuted). The W-injection test
 (→ 48035) is therefore inconclusive about our dequant.
 
+## ⚠️ CRITICAL: the benchmark prompt is out-of-vocab for the 0.6B
+
+`/tmp/ids1024.txt` (and the 256-token prefix) contains token **248044**, which
+exceeds the 0.6B vocab (**151936**) — it appears **24/256** times, and is the
+*first* token. So the "boot @256 = 72429" bar is measured on a malformed input.
+
+Effect discovered via `NPU_DUMP_L0`: with the malformed prompt the embedding
+lookup for token 248044 is out of bounds and `bh[0]` becomes zero, which makes
+`bA` row 0 zero (`0x8000/0x0` pattern), so **GEMM C row 0 = all zero**, and every
+downstream layer-0 output for token 0 is zero. That "first-row-zero" is an
+*artifact of the out-of-vocab token*, not a kernel bug — with a valid prompt
+(the 248044 replaced by 151644) `bA` row 0 = 1004/1024 nonzero and `bC` row 0 =
+4096/4096 nonzero.
+
+### Corrected bars (valid prompt, `ids256_valid.txt`)
+
+| | boot @256 |
+|---|---|
+| FLM `qwen3_npu::prefill` | **62865** |
+| bridge bf16 prefill (`NPU_RUNLIST=0`) | **91364** |
+| (malformed prompt, for reference) FLM / bridge | 72429 / 78471 |
+
+Note `NPU_RUNLIST` must be 0 for the bridge to take the bf16 path on a valid
+prompt — otherwise the RuntimeLayer whole-layer path runs first and returns 0.
+
 ## Current state
 
 | build | boot @256 |
