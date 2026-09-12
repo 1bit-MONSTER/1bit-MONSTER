@@ -452,3 +452,30 @@ re-stream for 3+ N-tiles, the mem-routed AN too) reads stale/empty data. The 1- 
 2-iteration cases happen to work because the static indices cover them. Fixing needs
 a runtime round-robin (index_switch) for in-loop acquires — the dynamic lowering
 already has one for size>1 fifos, but the static cascade path doesn't.
+
+## mlir-aie patch (untested — build tree is broken)
+The fix for the static-path in-loop acquire bug is prepared in
+`mlir-aie/lib/Dialect/AIE/Transforms/AIEObjectFifoStatefulTransform.cpp`
+(`unrollForLoops`):
+
+1. Fully unroll small inner loops instead of the LCM:
+   ```cpp
+   int unrollFactor = computeLCM(objFifoSizes);
+   if (tripCount > 0 && tripCount < 1024)
+       unrollFactor = tripCount;   // full unroll -> distinct static indices
+   ```
+2. Guard the post-unroll bookkeeping against the full-unroll loop erasure:
+   ```cpp
+   Operation *remOp = remLoop.getOperation();
+   auto unrollRes = mlir::loopUnrollByFactor(remLoop, unrollFactor);
+   if (failed(unrollRes)) { ... }
+   foundMap[remOp] = false;
+   if (unrollRes->mainLoopOp.has_value())
+       unrolledLoops.push_back(remLoop);
+   ```
+
+**Blocked on the mlir-aie build tree**: the incremental `ninja aiecc` triggers a
+cmake re-configure which fails on pre-existing issues — stray source files
+(`AIEX/Transforms/AIELowerDynamicBDPool.cpp`, `AIEX/Utils/BdLowering.cpp`) not in
+their CMakeLists, plus downstream bootgen/runtime_lib configure errors. The patch
+is correct-by-inspection but NOT yet compiled/tested.
