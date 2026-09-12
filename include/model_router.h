@@ -23,6 +23,11 @@
 struct BackendRoute {
     std::vector<std::string> backend_ids_in_order;
     std::string reason; // human-readable, for logging
+    // #2263: engine ids the plan put in `blocked` (KNOWN-ABORT). Carried so the
+    // caller can choose not to pay for them; to_backend_route() already emits the
+    // verdict into `reason`, but a string cannot be acted on. Empty when nothing
+    // is blocked, which is the common case.
+    std::vector<std::string> known_abort_ids;
 };
 
 BackendRoute select_backend_route(const ModelConfig& cfg);

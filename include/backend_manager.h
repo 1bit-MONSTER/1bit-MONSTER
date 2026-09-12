@@ -110,6 +110,14 @@ public:
         probe_timeout_s_ = timeout_s;
     }
 
+    /// #2263: engine ids not to instantiate at all for the next init. Set with
+    /// set_init_budget for auto-selected probes, where the plan has already
+    /// emitted a KNOWN-ABORT verdict (the engine aborts on this artifact rather
+    /// than failing closed, so attempting it is worse than skipping it) and the
+    /// lane would otherwise consume the whole per-lane budget before declining.
+    /// Empty (the default) skips nothing, so a model pinned with -m is unaffected.
+    void set_skip_ids(const std::vector<std::string>& ids) { skip_ids_ = ids; }
+
     BackendManager();
     ~BackendManager();
 
@@ -245,6 +253,7 @@ private:
 private:
     int probe_retries_ = 0;     // #2263: 0 = leave the lane's budget alone
     int probe_timeout_s_ = 0;
+    std::vector<std::string> skip_ids_;  // #2263: empty = skip nothing
 
 };
 

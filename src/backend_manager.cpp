@@ -606,6 +606,18 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         auto& info = backends_[idx];
         if (!info.available || !info.auto_selectable) continue;
 
+        // #2263: the plan has already put this engine in `blocked` (KNOWN-ABORT)
+        // for THIS artifact — the measured case aborts the process rather than
+        // failing closed, so attempting it cannot succeed, and it costs the full
+        // per-lane budget plus the lane's retry delay before declining (measured:
+        // one such lane was the whole of a 23 s phase). Only populated for
+        // auto-selected probes, so a model pinned with -m keeps its lanes.
+        if (!skip_ids_.empty() &&
+            std::find(skip_ids_.begin(), skip_ids_.end(), info.id) != skip_ids_.end()) {
+            printf("  → skipped (KNOWN-ABORT for this artifact, #2263)\n");
+            continue;
+        }
+
         printf("BackendManager: trying %s (%s)...\n", info.id.c_str(), info.description.c_str());
         // Try to create via dlsym (GPU/NPU backends live in librocm_cpp.so or standalone)
         // CPU backend is linked directly

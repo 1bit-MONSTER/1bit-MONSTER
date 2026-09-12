@@ -1939,6 +1939,28 @@ int main(int argc, char** argv) {
         bool ok;
         {
             std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+            // #2263, OPT-IN: an auto-selected candidate is a probe, so do not pay
+            // for a lane the plan has already put in `blocked` (KNOWN-ABORT) for
+            // this artifact. Measured on the degraded path, that single lane was
+            // the whole of phase 1 — 23 s of a 27 s startup — because it consumes
+            // the per-lane budget plus its own retry delay before declining.
+            //
+            // Off by default. It changes WHICH lanes get how much time, which this
+            // issue leaves as an operator call; ONEBP_SKIP_KNOWN_ABORT=1 enables
+            // it. Deliberately not a deadline: nothing is aborted early, a lane
+            // whose verdict is already known simply is not paid for.
+            static const bool skip_known_abort = [] {
+                const char* v = getenv("ONEBP_SKIP_KNOWN_ABORT");
+                return v && *v && *v != '0';
+            }();
+            if (skip_known_abort && g_model_name.empty()) {
+                if (!out_route.known_abort_ids.empty())
+                    printf("  [select] skipping %zu KNOWN-ABORT lane(s) (#2263, "
+                           "ONEBP_SKIP_KNOWN_ABORT=1)\n", out_route.known_abort_ids.size());
+                mgr.set_skip_ids(out_route.known_abort_ids);
+            } else {
+                mgr.set_skip_ids({});
+            }
             ok = mgr.init(cand, g_weights_dir, out_route.backend_ids_in_order);
         }
         return ok;
