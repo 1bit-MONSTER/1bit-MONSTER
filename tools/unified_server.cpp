@@ -1907,14 +1907,80 @@ int main(int argc, char** argv) {
     // The flip: the registry resolver is consumed here. The merge is a UNION — the
     // registry can demote the head only for a stated exclusion, and never drops a
     // router lane — so this cannot lose a route the engine has today.
-    BackendRoute route = onebit::select_route_with_registry(cfg, cfg.model_path, &g_registry);
-    printf("  Router: %s\n", route.reason.c_str());
-    // mgr state is read by /v1/health + /v1/models under g_config_mutex —
-    // mutate under the same lock (issue #1271).
-    bool inited;
-    {
-        std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
-        inited = mgr.init(cfg, g_weights_dir, route.backend_ids_in_order);
+    // Issue #2263 (re-scoped): an auto-selected candidate is a *probe*, not a
+    // commitment, so narrow the budget every lane gets before it is created — the
+    // manager applies it as it instantiates each backend. Without it the spawn
+    // lanes decline an unpinned artifact very slowly (HRX 3 x 120 s, LSE and FLM
+    // 10 x 120 s) and the manager waits up to 120 s per backend across ~20
+    // backends, so a bare server can look dead for many minutes — which a 90 s
+    // health window cannot tell apart from a permanent failure. A model pinned
+    // with -m keeps the lane's full budget: there we ARE committed to it.
+    // Overrides: ONEBP_PROBE_RETRIES (default 1), ONEBP_PROBE_TIMEOUT_S (default 20).
+    if (g_model_name.empty()) {
+        auto probe_env = [](const char* key, int dflt) {
+            const char* v = getenv(key);
+            if (!v || !*v) return dflt;
+            int n = atoi(v);
+            return n > 0 ? n : dflt;
+        };
+        const int probe_retries = probe_env("ONEBP_PROBE_RETRIES", 1);
+        const int probe_timeout = probe_env("ONEBP_PROBE_TIMEOUT_S", 20);
+        mgr.set_init_budget(probe_retries, probe_timeout);
+        printf("  [select] auto-probe budget: %d retry(ies), %ds lane timeout (#2263)\n",
+               probe_retries, probe_timeout);
+    }
+    // Route + initialise ONE candidate. Factored out so auto-selection can fall
+    // through to the next candidate when no backend can load this one (#2263).
+    auto route_and_init = [&](const ModelConfig& cand, BackendRoute& out_route) -> bool {
+        out_route = onebit::select_route_with_registry(cand, cand.model_path, &g_registry);
+        printf("  Router: %s\n", out_route.reason.c_str());
+        // mgr state is read by /v1/health + /v1/models under g_config_mutex —
+        // mutate under the same lock (issue #1271).
+        bool ok;
+        {
+            std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+            ok = mgr.init(cand, g_weights_dir, out_route.backend_ids_in_order);
+        }
+        return ok;
+    };
+    BackendRoute route;
+    bool inited = route_and_init(cfg, route);
+    // Issue #2263 (from #2206 direction 2): with no -m, discovered.front() is
+    // only a guess — it is sorted by container then quant quality, with no
+    // loadability check, so it can be an artifact every discovered backend
+    // refuses (e.g. an arch=21 Qwen3.5 GGUF on a box whose NPU lane is Q4NX-only
+    // and whose HIP lane declines). Chosen behaviour (A): try the remaining
+    // candidates, saying so, instead of leaving /v1/health permanently unusable.
+    if (!inited && g_model_name.empty() && discovered.size() > 1) {
+        for (const auto& cand : discovered) {
+            if (cand.model_path == cfg.model_path) continue;
+            fprintf(stderr,
+                    "  [select] %s (%s) was not initialised by any discovered backend — trying %s\n",
+                    cfg.model_name.c_str(), cfg.model_path.c_str(), cand.model_name.c_str());
+            if (!route_and_init(cand, route)) continue;
+            printf("  ✓  Substituted %s -> %s (#2263)\n",
+                   cfg.model_name.c_str(), cand.model_name.c_str());
+            cfg = cand;
+            {
+                std::lock_guard<std::mutex> cfg_lock(g_config_mutex);
+                current_cfg = cand;
+            }
+            load_model_tokenizer(cfg.model_path);  // the tokenizer follows the model
+            inited = true;
+            break;
+        }
+    }
+    if (!inited && g_model_name.empty() && !discovered.empty()) {
+        // Chosen behaviour (B): refuse loudly. A model named with -m is still
+        // never silently swapped (#1958) and keeps the discovery-only path, but
+        // an unpinned server must not come up pretending to work.
+        fprintf(stderr,
+                "\n  ** ERROR: none of the %zu discovered artifact(s) could be initialised by any backend.\n",
+                discovered.size());
+        for (const auto& m : discovered)
+            fprintf(stderr, "     not loadable: %s (%s)\n", m.model_name.c_str(), m.model_path.c_str());
+        fprintf(stderr, "     Pass -m <name|path> to pin a model, or point --weights at a loadable artifact.\n");
+        return 1;
     }
     if (inited) {
         // Load vision encoder (--mmproj) for real ViT embeddings (issue #1420).

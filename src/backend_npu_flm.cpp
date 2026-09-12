@@ -113,6 +113,14 @@ class NpuFlmBackend : public Backend {
     int http_port_ = -1;  // FLM serve port (serve mode)
 
 public:
+    // #2263: bounded decline for auto-selected probes (see Backend::set_init_budget).
+    // FLM has no separate health timeout — its per-attempt wait is bounded
+    // internally — so only the retry count is narrowed here.
+    void set_init_budget(int retries, int timeout_s) override {
+        if (retries > 0) spawn_retries_ = retries;
+        (void)timeout_s;
+    }
+
     NpuFlmBackend() {
         type = BackendType::NPU_XRT;
         name = "NPU FLM (MIT, 67.5 tok/s)";

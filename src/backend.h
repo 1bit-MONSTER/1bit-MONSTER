@@ -154,6 +154,17 @@ struct Backend {
     /// Defaults to true; stub backends that only detect hardware override to false
     /// so BackendManager discovers them but never selects them for inference (#82).
     virtual bool can_infer() const { return true; }
+
+    /// Narrow the out-of-process spawn/health budget: how many times to retry a
+    /// failed spawn and how long to wait for the child to become healthy.
+    ///
+    /// Used by the server for *auto-selected* candidates, which are probes rather
+    /// than commitments. Without it the spawn lanes decline an artifact the
+    /// operator never asked for very slowly — HRX 3 x 120 s, LSE and FLM
+    /// 10 x 120 s, i.e. up to ~20 min per candidate — which a 90 s health window
+    /// cannot tell apart from a dead server (#2263). In-process backends ignore
+    /// this: they have no child to spawn.
+    virtual void set_init_budget(int retries, int timeout_s) { (void)retries; (void)timeout_s; }
 };
 
 // ── Factory: auto-detect and create best available backend ──
