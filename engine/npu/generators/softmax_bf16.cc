@@ -29,6 +29,22 @@ static inline float bf16_to_f32(uint16_t u) {
     uint32_t v = (uint32_t)u << 16; float f; __builtin_memcpy(&f, &v, 4); return f;
 }
 
+// Software double exp2 (the AIE's freestanding libc has no linked exp2).
+// 2^x = 2^n * 2^f with n = round(x), f = x - n in [-0.5, 0.5); 2^f via the
+// 5th-order Taylor, 2^n via the exponent bit add. ~1 ULP vs a correctly-rounded
+// exp2 (documented caveat vs glibc expf).
+static inline double exp2_soft(double x) {
+    double n = (double)(long long)(x + (x >= 0.0 ? 0.5 : -0.5));
+    double f = x - n;
+    double p = f * f;
+    double y = 1.0 + f * (0.6931471805599453 + p * (0.2402265069591007 + p * (0.05550410866482158 + p * (0.009618129107628477 + p * (0.0013333558146428443 + p * (0.00015403530393381612 + p * (0.000015252733814068 + p * 0.00000132154867901443)))))));
+    uint64_t bits; __builtin_memcpy(&bits, &y, 8);
+    int64_t e = (int64_t)((bits >> 52) & 0x7FFULL) + (int64_t)n;
+    bits = (bits & 0x800FFFFFFFFFFFFFULL) | ((uint64_t)e << 52);
+    double r; __builtin_memcpy(&r, &bits, 8);
+    return r;
+}
+
 extern "C" void softmax_bf16(const uint16_t *__restrict scores,
                              float *__restrict isw,
                              uint16_t *__restrict out) {
@@ -43,7 +59,7 @@ extern "C" void softmax_bf16(const uint16_t *__restrict scores,
             float s = bf16_to_f32(scores[r * N_KEYS + c]);
             // exp(x) = exp2(x * log2(e)); the AIE has no scalar expf, only
             // the software double exp2. ~1 ULP vs glibc expf (documented caveat).
-            float e = (float)exp2((double)(s - mx) * 1.4426950408889634);
+            float e = (float)exp2_soft((double)(s - mx) * 1.4426950408889634);
             sw += (double)e;
             out[r * N_KEYS + c] = f32_to_bf16(e);
         }
