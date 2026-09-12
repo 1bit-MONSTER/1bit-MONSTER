@@ -300,12 +300,20 @@ the reference rather than guessing:
   because `qk_rope_head_dim = 2` has a single pair whose frequency is `theta^0 = 1` for any theta. A
   fixture with a larger `partial_rotary_factor` is owed before this can be called validated.
 
-| run (fixture, 160 tokens, layer types sliding/CSA/HCA/sliding) | per-layer worst | end-to-end |
+| run | per-layer worst | end-to-end |
 |---|---|---|
-| before this stage | — | 16/20 (FAIL) |
-| integrated, `index_topk = 8` (config default) | 1.208e-02 (state 2) | **20/20 PASS** |
-| integrated, **`index_topk = 64`** (indexer keeps every causal entry) | **7.451e-09 — PASS** | PASS |
-| same, 64-token fixture with the reference's selection injected | 1.490e-08 (state 2) | PASS |
+| **before** this stage (160-token fixture) | 1.208e-02 (state 2) | 16/20 FAIL |
+| integrated, 160-token fixture, `index_topk = 8` (default) | 1.523e-02 | top1 **207 = 207** but overlap 15/20 |
+| integrated, 160-token fixture, **`index_topk = 64`** (indexer keeps every causal entry) | **7.451e-09 — all four states PASS** | top1 117 = 117, 20/20 PASS |
+| integrated, 64-token fixture, `index_topk = 8` | 1.490e-08 (state 2) | top1 **685 = 685**, **20/20 PASS** |
+
+The `index_topk = 64` row is a **controlled comparison** — same weights, same config except the
+indexer's selectivity — and it is what proves the integration: when the selection cannot be contested
+by ties, every layer reproduces the reference to 7.451e-09. At the default `k = 8` the selection *is*
+contested: the stage-2 gate measured my index table differing from the reference's in content on 23 of
+160 rows (and 7 of 64), because `torch.topk`'s order among exactly-equal scores is
+implementation-defined. On the 64-token fixture that does not move the logits at all (top1 and top-20
+match); on the 160-token fixture top1 still matches but the top-20 ordering does not.
 
 **The remaining divergence is the indexer's tie-breaking, and that is now proven rather than assumed:**
 making the indexer non-selective (`index_topk = 64`) drives every layer to 7.451e-09, so the integration
@@ -315,12 +323,18 @@ implementation-defined (see the stage-2 finding: 26.5 % of fixture scores come f
 and 7 of 64 rows already differed only by ties). Reproducing that arbitrary order is neither achievable
 nor desirable; the defensible gates are the ones used here.
 
-## Instrument added
+## Instrument: `--index-topk` kept, an index-override **withdrawn**
 
-`deepseek_v4_forward` gained an optional per-token index override (defaulted, so nothing else changes)
-and `cmp_deepseek_v4` a 7th argument to supply the reference's own index table — which is how "is the
-attention maths exact?" was separated from "does my top-k break ties the way torch does?". The generator
-gained `--index-topk` for the same reason.
+`Testing/make_mini_deepseek_v41.py --index-topk N` is what produced the controlled comparison above and
+is the evidence for this stage.
+
+An attempt to isolate selection differently — an optional per-token **index override** on
+`deepseek_v4_forward` (inject the reference's own index table) plus a 7th `cmp_deepseek_v4` argument —
+was **withdrawn**: it behaved inconsistently, making an *exact* run worse (64-token fixture: 1.490e-08
+without it, 9.622e-03 with it, with the table bounds-checked and row-aligned). The cause was not found,
+and an instrument that can turn a passing run into a failing one without explanation is worse than no
+instrument, so the plumbing is gone rather than left in the tree. Recorded here so it is not
+re-derived; the controlled `--index-topk` comparison carries the claim instead.
 
 ## New fixture limitation to close
 

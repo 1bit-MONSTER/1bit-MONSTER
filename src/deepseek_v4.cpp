@@ -689,8 +689,7 @@ std::vector<int> deepseek_v4_indexer_topk(const DeepSeekV4Layer& l, const DeepSe
 std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                                        DeepSeekV4KVCache& kv_cache,
                                        DeepSeekV4mHCState& mhc, int& pos,
-                                       std::vector<float>* layer_states,
-                                       const int* index_override, int index_override_k) {
+                                       std::vector<float>* layer_states) {
     using namespace ds4math;
     const auto& cfg = model.cfg;
     const int H = cfg.hidden_size;
@@ -781,15 +780,7 @@ std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
 
             cp_allowed.assign((size_t)cst.n_entries, 0);
             const int thr = (pos + 1) / l.cp_rate;   // entries w < thr are causal
-            if (l.ix_heads > 0 && index_override && index_override_k > 0) {
-                // TEST INSTRUMENT: use a supplied selection (the reference's own top-k)
-                // instead of computing one. Isolates "is the attention maths exact?"
-                // from "does my top-k break ties the way torch does?".
-                for (int j = 0; j < index_override_k; j++) {
-                    int w = index_override[j];
-                    if (w >= 0 && w < cst.n_entries) cp_allowed[w] = 1;
-                }
-            } else if (l.ix_heads > 0) {
+            if (l.ix_heads > 0) {
                 DeepSeekV4CompState& ist = kv_cache.ix[il];
                 if (!ist.inited) ist.init(l.cp_rate, 2, cfg.index_head_dim);
                 DeepSeekV4CompParams ip = deepseek_v4_indexer_comp_params(l, cfg);

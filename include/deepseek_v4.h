@@ -272,8 +272,6 @@ std::vector<int> deepseek_v4_indexer_topk(const DeepSeekV4Layer& l, const DeepSe
 std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                                        DeepSeekV4KVCache& kv_cache,
                                        DeepSeekV4mHCState& mhc, int& pos,
-                                       std::vector<float>* layer_states = nullptr,
-                                       const int* index_override = nullptr,
-                                       int index_override_k = 0);
+                                       std::vector<float>* layer_states = nullptr);
 
 #endif

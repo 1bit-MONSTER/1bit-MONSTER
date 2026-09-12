@@ -47,38 +47,6 @@ static bool read_npy_f32(const char* path, std::vector<float>& out) {
     return f.gcount() == (std::streamsize)(n * sizeof(float));
 }
 
-// int64 npy reader (full shape product) — for an optional index-override table
-static bool read_npy_i64(const char* path, std::vector<int64_t>& out) {
-    std::ifstream f(path, std::ios::binary);
-    if (!f) return false;
-    char magic[6];
-    f.read(magic, 6);
-    if (std::strncmp(magic, "\x93NUMPY", 6) != 0) return false;
-    f.read(magic, 2);
-    uint16_t hlen = 0;
-    f.read(reinterpret_cast<char*>(&hlen), 2);
-    std::string dict(hlen, '\0');
-    f.read(&dict[0], hlen);
-    if (dict.find("i8") == std::string::npos) return false;
-    size_t lb = dict.find("'shape': (");
-    if (lb == std::string::npos) lb = dict.find("shape: (");
-    lb = dict.find('(', lb) + 1;
-    size_t rb = dict.find(')', lb);
-    size_t total = 1, i = lb, ndim = 0;
-    while (i < rb) {
-        while (i < rb && !isdigit((unsigned char)dict[i])) i++;
-        if (i >= rb) break;
-        size_t v = 0;
-        while (i < rb && isdigit((unsigned char)dict[i])) { v = v * 10 + (size_t)(dict[i] - '0'); i++; }
-        total *= v;
-        ndim++;
-    }
-    if (!ndim || !total) return false;
-    out.resize(total);
-    f.read(reinterpret_cast<char*>(out.data()), (std::streamsize)(total * sizeof(int64_t)));
-    return (bool)f;
-}
-
 int main(int argc, char** argv) {
     if (argc < 4) { printf("usage: cmp_deepseek_v4 <model_dir> <ids.txt> <hf_logits.pt> [topN] [min_overlap]\n"); return 2; }
     int topN = argc > 4 ? atoi(argv[4]) : 20;
@@ -105,17 +73,10 @@ int main(int argc, char** argv) {
     std::vector<float> last_logits;
     std::vector<float> states;  // [nstates][hc][H], only filled for the last token
     const char* states_out = argc > 6 ? argv[6] : nullptr;
-    std::vector<int64_t> ix_override;   // optional [T, k] index table (test instrument)
-    int ix_k = 0;
-    if (argc > 7) {
-        if (!read_npy_i64(argv[7], ix_override)) { printf("FAIL: index override read\n"); return 1; }
-        ix_k = (int)(ix_override.size() / ids.size());
-        if ((size_t)ix_k * ids.size() != ix_override.size()) { printf("FAIL: override not [T,k]\n"); return 1; }
-    }
+
     for (size_t i = 0; i < ids.size(); i++) {
         std::vector<float>* want_states = (states_out && i + 1 == ids.size()) ? &states : nullptr;
-        const int* ov = ix_k > 0 ? reinterpret_cast<const int*>(&ix_override[(size_t)i * ix_k]) : nullptr;
-        last_logits = deepseek_v4_forward(model, ids[i], kv_cache, mhc, pos, want_states, ov, ix_k);
+        last_logits = deepseek_v4_forward(model, ids[i], kv_cache, mhc, pos, want_states);
     }
     if (states_out && !states.empty()) {
         const int hc = model.cfg.hc_mult, H = model.cfg.hidden_size;
