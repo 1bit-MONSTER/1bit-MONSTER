@@ -5,6 +5,7 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1   # repo root
 CXX="${CXX:-g++}"; FLAGS="-std=c++17 -Iinclude -Isrc -O2"
+PYTHON="${PYTHON:-python3}"
 BIN=/tmp/onebit_tests; mkdir -p "$BIN"
 fail=0; total=0
 
@@ -122,6 +123,59 @@ if [ -f "$dsv4_dir/logits_last.npy" ] && [ -f "$dsv4_dir/model.safetensors" ]; t
     else echo "✗ deepseek_v4 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
     echo "  - deepseek_v4: fixture absent, skipped (python3 Testing/make_mini_deepseek_v4.py /tmp/onebit-dsv4)"
+fi
+
+# ── ws13: DeepSeek V4/V4.1 architecture gates (fixtures: Testing/make_ws13_fixtures.sh) ──
+# Every gate here compares against the REFERENCE'S OWN values captured by forward hooks.
+# Skipped when the fixtures are absent, like the V4 gate above. The compressed gates all
+# use a NON-SELECTIVE indexer (--index-topk 64): with the configured index_topk, which of
+# several exactly-equal scores wins is implementation-defined on the reference side, so
+# an index-equality gate would fail a correct implementation (see ws13 FINDINGS.md).
+ws13="${WS13_FIXTURE_DIR:-/tmp/onebit-ws13}"
+if [ -f "$ws13/csa_nt/comp_ref_L1.npy" ]; then
+    "$CXX" $FLAGS Testing/cmp_deepseek_v4_compressor.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp -o "$BIN/cmp_comp" 2>/dev/null || { echo "✗ ws13 compressor: COMPILE FAILED"; fail=$((fail+1)); }
+    "$CXX" $FLAGS Testing/cmp_deepseek_v4_compressor_incremental.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp -o "$BIN/cmp_comp_inc" 2>/dev/null || { echo "✗ ws13 compressor-incremental: COMPILE FAILED"; fail=$((fail+1)); }
+    "$CXX" $FLAGS Testing/cmp_deepseek_v4_indexer.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp -o "$BIN/cmp_indexer" 2>/dev/null || { echo "✗ ws13 indexer: COMPILE FAILED"; fail=$((fail+1)); }
+    # build our own comparator: the V4 gate above only builds $BIN/cmp_dsv4 when ITS
+    # fixture is present, so depending on it would make these gates un-runnable alone.
+    "$CXX" $FLAGS Testing/cmp_deepseek_v4.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp -o "$BIN/cmp_dsv4_ws13" 2>/dev/null || { echo "✗ ws13 e2e: COMPILE FAILED"; fail=$((fail+1)); }
+
+    # compressor maths, batched and incremental (CSA two-series, HCA single-series)
+    total=$((total+1))
+    if "$BIN/cmp_comp" "$ws13/csa_nt" 1 "$ws13/csa_nt/attn_input_L1.npy" "$ws13/csa_nt/comp_ref_L1.npy" 1e-6 >/dev/null 2>&1 \
+       && "$BIN/cmp_comp" "$ws13/hca160" 2 "$ws13/hca160/attn_input_L2.npy" "$ws13/hca160/comp_ref_L2.npy" 1e-6 >/dev/null 2>&1; then
+        echo "✓ ws13 compressor (CSA batched + HCA batched)"
+    else echo "✗ ws13 compressor: mismatch vs the reference"; fail=$((fail+1)); fi
+
+    total=$((total+1))
+    if "$BIN/cmp_comp_inc" "$ws13/csa_nt" 1 "$ws13/csa_nt/attn_input_L1.npy" "$ws13/csa_nt/comp_ref_L1.npy" 1e-6 >/dev/null 2>&1 \
+       && "$BIN/cmp_comp_inc" "$ws13/hca160" 2 "$ws13/hca160/attn_input_L2.npy" "$ws13/hca160/comp_ref_L2.npy" 1e-6 >/dev/null 2>&1; then
+        echo "✓ ws13 compressor incremental (token-by-token == batched reference)"
+    else echo "✗ ws13 compressor incremental: mismatch"; fail=$((fail+1)); fi
+
+    # compressed attention integrated: non-selective indexer -> exact per layer
+    total=$((total+1))
+    if "$BIN/cmp_dsv4_ws13" "$ws13/csa_nt" "$ws13/csa_nt/ids.txt" "$ws13/csa_nt/logits_last.npy" 20 18 "$BIN/ws13_nt.bin" >/dev/null 2>&1 \
+       && "$BIN/cmp_dsv4_ws13" "$ws13/odd_nt" "$ws13/odd_nt/ids.txt" "$ws13/odd_nt/logits_last.npy" 20 18 "$BIN/ws13_odd.bin" >/dev/null 2>&1; then
+        echo "✓ ws13 compressed attention (integration + shape-agnostic, non-selective)"
+    else echo "✗ ws13 compressed attention: mismatch"; fail=$((fail+1)); fi
+
+    # python-level gates (per-layer bound, indexer scores) — need numpy
+    if "$PYTHON" -c 'import numpy' >/dev/null 2>&1; then
+        total=$((total+1))
+        if "$PYTHON" Testing/cmp_deepseek_v4_layers.py "$ws13/csa_nt" "$BIN/ws13_nt.bin" --tol 1e-6 >/dev/null 2>&1; then
+            echo "✓ ws13 per-layer bound (<=1e-6, non-selective indexer)"
+        else echo "✗ ws13 per-layer bound: exceeded"; fail=$((fail+1)); fi
+        total=$((total+1))
+        if "$BIN/cmp_indexer" "$ws13/csa" 1 "$ws13/csa/attn_input_L1.npy" "$ws13/csa/indexer_ref_L1.npy" "$BIN/ws13_ix.bin" >/dev/null 2>&1 \
+           && "$PYTHON" Testing/cmp_deepseek_v4_indexer_scores.py "$ws13/csa" "$BIN/ws13_ix.bin" --layer 1 --tol 1e-6 >/dev/null 2>&1; then
+            echo "✓ ws13 indexer scores (<=1e-6 + order-independent selection validity)"
+        else echo "✗ ws13 indexer scores: mismatch"; fail=$((fail+1)); fi
+    else
+        echo "  - ws13 python gates skipped (no numpy in $PYTHON)"
+    fi
+else
+    echo "  - ws13: fixtures absent, skipped (PYTHON=<torch env> Testing/make_ws13_fixtures.sh)"
 fi
 
 # ── GLM-MoE-DSA gate (mini fixture, HF safetensors oracle) ──
