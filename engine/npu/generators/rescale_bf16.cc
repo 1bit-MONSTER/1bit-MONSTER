@@ -30,3 +30,19 @@ extern "C" void rescale_bf16(const uint16_t *__restrict attn,
         for (int d = 0; d < HD; d++)
             out[r * HD + d] = f32_to_bf16(bf16_to_f32(attn[r * HD + d]) * isw[r]);
 }
+
+// Microtiled variant: the attn (PV's C) and the out are in the GEMM's 4x8
+// microtiled layout, so the rescale reads/writes in place between the PV and
+// the output DMA (which converts microtiled -> row-major).
+extern "C" void rescale_bf16_mt(const uint16_t *__restrict attn,
+                                const float *__restrict isw,
+                                uint16_t *__restrict out) {
+    for (int r = 0; r < M_TILE; r++) {
+        int tr = r / 4, rr = r % 4;
+        for (int d = 0; d < HD; d++) {
+            int tc = d / 8, cc = d % 8;
+            int idx = (tr * (HD / 8) + tc) * 32 + rr * 8 + cc;
+            out[idx] = f32_to_bf16(bf16_to_f32(attn[idx]) * isw[r]);
+        }
+    }
+}
