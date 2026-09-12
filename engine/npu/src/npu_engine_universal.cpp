@@ -323,46 +323,11 @@ static inline float fused_cross_layer_boundary(
     if(amax<1e-12f)amax=1.0f;                     // dynamic_ascale guard
     return amax/127.0f;
 }
-// Qwen3's EXACT float32 inv_freq[64] table (reverse-engineered from
-// libqwen3_npu.so .rodata, Round 38). powf(th, d/hd2) differs by up to ~1.5e-5
-// relative, which flips bf16 ULPs at positions >= 3 (and ~3e-3 rad at pos 256).
-// The runtime computes phi = inv_freq[d] * (float)pos (float32 vmulss) then
-// glibc sincosf — reproduced byte-for-byte below for rope_theta==1e6 models.
-static const float QWEN3_INV_FREQ[64] = {
-    1.000000000e+00f, 8.058400154e-01f, 6.493800282e-01f, 5.232999921e-01f,
-    4.217000008e-01f, 3.398199975e-01f, 2.738400102e-01f, 2.206699997e-01f,
-    1.778299958e-01f, 1.432999969e-01f, 1.154799983e-01f, 9.305699915e-02f,
-    7.498899847e-02f, 6.043000147e-02f, 4.869699851e-02f, 3.924199939e-02f,
-    3.162299842e-02f, 2.548299916e-02f, 2.053499967e-02f, 1.654800028e-02f,
-    1.333499979e-02f, 1.074600033e-02f, 8.659600280e-03f, 6.978299934e-03f,
-    5.623400211e-03f, 4.531600047e-03f, 3.651699983e-03f, 2.942699939e-03f,
-    2.371399896e-03f, 1.910999999e-03f, 1.539899968e-03f, 1.240900019e-03f,
-    1.000000047e-03f, 8.058400126e-04f, 6.493799738e-04f, 5.233000265e-04f,
-    4.217000096e-04f, 3.398199915e-04f, 2.738400071e-04f, 2.206700010e-04f,
-    1.778300066e-04f, 1.432999998e-04f, 1.154799975e-04f, 9.305700223e-05f,
-    7.498900231e-05f, 6.043000030e-05f, 4.869699842e-05f, 3.924200064e-05f,
-    3.162299981e-05f, 2.548299926e-05f, 2.053500066e-05f, 1.654799962e-05f,
-    1.333500040e-05f, 1.074600004e-05f, 8.659600098e-06f, 6.978300007e-06f,
-    5.623399829e-06f, 4.531600098e-06f, 3.651699899e-06f, 2.942699894e-06f,
-    2.371399887e-06f, 1.911000027e-06f, 1.539900040e-06f, 1.240900019e-06f,
-};
-extern "C" void sincosf(float x, float* s, float* c);
 static std::vector<float>rc,rs;
 static void ri(int hd,float th,int mp){int hd2=hd/2;rc.resize((size_t)mp*hd);rs.resize((size_t)mp*hd);
-    // rope_theta==1e6 (Qwen3 family): use FLM's exact .rodata inv_freq table +
-    // glibc sincosf (phi = inv_freq[d] * (float)p in float32) — byte-exact vs
-    // libqwen3_npu. Other theta: generic powf fallback.
-    const bool qwen3 = (th > 999999.0f && th < 1000001.0f);
     for(int p=0;p<mp;p++)for(int d=0;d<hd2;d++){
-        if (qwen3) {
-            float phi = QWEN3_INV_FREQ[d] * (float)p;
-            float s, c; sincosf(phi, &s, &c);
-            rc[p*hd+d]=c; rs[p*hd+d]=s;
-        } else {
-            float f=1.0f/powf(th,(float)d/hd2),a=p*f;
-            rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);
-        }
-    }}
+        float f=1.0f/powf(th,(float)d/hd2),a=p*f;
+        rc[p*hd+d]=cosf(a);rs[p*hd+d]=sinf(a);}}
 static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){
     float a=x[d],b=x[d+hd2],c=rc[p*hd+d],s=rs[p*hd+d];x[d]=a*c-b*s;x[d+hd2]=b*c+a*s;}}
 // Partial rotary for full-attention layers: only the first `rope_dim` dims
