@@ -174,6 +174,27 @@ the model. So **the q/k-norms are NOT the bug** (verified). The 91364-vs-62865
 divergence must come from the RoPE table, the attention kernel, or a later host
 op (residual/SiLU/final-norm).
 
+## 🔴 NEW: FLM's prefill GEMM input (A) differs fundamentally (valid prompt)
+
+Captured FLM's run-1 `arg5` (the A that the QKV GEMM consumes) vs the bridge's
+`bA` (input norm):
+
+| | row 0 first 8 (bf16→f32) | row 0 std | rows |
+|---|---|---|---|
+| FLM `arg5` | 17.63 35.25 8.69 31.75 19.75 30.25 18.63 34.75 | **4.16** | **255 nonzero, 255+ ALL ZERO** |
+| bridge `bA` | 0.0 -6.4 1.05 4.06 0.0 -1.13 3.2 7.0 | ~2 | 256 rows (4 dumped) |
+
+Exact-match is only 0.5% (random). FLM's activations are ~6× larger and its row
+255 is zero (only tokens 0..254 carry data). Two consequences:
+
+1. **The bridge's input norm is wrong in scale/content** (its `bA` has scattered
+   exact zeros at positions 0,4,… which FLM's does not).
+2. FLM pads/arranges the 256-token chunk as 255 live rows + zero — the bridge
+   fills 256 rows.
+
+This is a much stronger lead than the RoPE: re-derive the bridge's input norm
+(`rn_bf16` + `emb_f32` + `in_n`) against FLM's actual `arg5` bytes.
+
 ## Repro
 
 ```
