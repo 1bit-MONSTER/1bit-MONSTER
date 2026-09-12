@@ -75,6 +75,19 @@ peano/clang++ mm_kernel_reference.cc -c -o mm_bf16_32x64x128.o \
 build_tmp/bin/aiecc --peano=... --aietools=build_tmp --aie-generate-xclbin ... design.mlir
 ```
 
+## RMSNorm microkernel (fk-2, 2026-09-12)
+
+`rms_norm_f32_bf16.cc` — native in-kernel RMSNorm, compiles (exports
+`rms_norm_f32_bf16`): f32 input + f32 learned-γ → bf16 output, **sequential**
+f32 sum (matches host `rn_bf16`), branchless NaN/Inf clamp, RNE bf16 round,
+`aie::invsqrt`. Two AIE-backend gotchas resolved: `__builtin_isfinite` and a
+float-select clamp both lower to `G_IS_FPCLASS` which the AIE backend cannot
+legalize — replaced with bit-manipulation (exponent all-ones test, integer
+mask). Precision caveat: `aie::invsqrt` is a device approximation, not glibc
+`1/sqrtf`; byte-exactness of `ir` vs the host is documented, not yet closed.
+Next: wire rms_norm + matmul_bf16_bf16 into one MLIR design and validate on
+hardware.
+
 ## fk-2 scoping findings (2026-09-12)
 
 1. **`mm_bfp.cc` uses `bfp16ebs8`, not plain bf16.** `bfp16ebs8` is a
