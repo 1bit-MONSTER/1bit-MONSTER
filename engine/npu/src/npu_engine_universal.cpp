@@ -3894,24 +3894,15 @@ struct Bf16Ctx {
                 for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data(), 2, 4 * H, fb); fclose(fb); } }
                 auto tg0 = std::chrono::steady_clock::now();
-                // QKV as THREE separate GEMMs (FLM's mm_256_1024_128 N-tiled schedule;
-                // the combined N=4096 diverges from FLM's byte-exact recipe).
-                std::vector<uint16_t> bCq(128 * qout), bCk(128 * kout), bCv(128 * kout);
-                bf16mm_gemm_launch(Wqkv[l], H, qout, 0, 0, bA.data());
-                bf16mm_gemm_wait(0, bCq.data());
-                bf16mm_gemm_launch(Wqkv[l], H, kout, 2097152, 0, bA.data());
-                bf16mm_gemm_wait(0, bCk.data());
-                bf16mm_gemm_launch(Wqkv[l], H, kout, 3145728, 0, bA.data());
-                bf16mm_gemm_wait(0, bCv.data());
-                for (int pi = 0; pi < 128; pi++) {
-                    memcpy(&bC[(size_t)pi * qkvn], &bCq[(size_t)pi * qout], qout * 2);
-                    memcpy(&bC[(size_t)pi * qkvn + qout], &bCk[(size_t)pi * kout], kout * 2);
-                    memcpy(&bC[(size_t)pi * qkvn + qout + kout], &bCv[(size_t)pi * kout], kout * 2);
-                }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fc = fopen("/tmp/bf16_l0_bC.bin", "wb"); if (fc) { fwrite(bC.data(), 2, 4 * qkvn, fc); fclose(fc); } }
-                bf16mm_gemm_launch(Wqkv[l], H, qout, 0, 1, bA.data());
-                bf16mm_gemm_launch(Wqkv[l], H, kout, 2097152, 1, bA.data());
-                bf16mm_gemm_launch(Wqkv[l], H, kout, 3145728, 1, bA.data());
+                // QKV in ONE GEMM (N=qkvn=4096) — pipelined 2-batch: batch 1's
+                // kernel overlaps batch 0's readback + q/k norm. The q/k/v split
+                // (6f311d107) is byte-EXACT only for batch 0 (launch+wait per
+                // projection); its batch-1 launches 3 kernels into ONE g_run[1]
+                // slot so they clobber each other. Single N=4096 GEMM is
+                // byte-exact at all lengths (verified vs FLM, n=1..256).
+                bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 0, bA.data());
+                bf16mm_gemm_wait(0, bC.data());
+                bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 1, bA.data());
                 auto qk_norm_pi = [&](int pi, int brow) {
                     for (int i = 0; i < qkvn; i++) bqo[pi * qkvn + i] = bf16g(bC[brow * qkvn + i]);
                     for (int hh = 0; hh < NH; hh++) {
@@ -3942,14 +3933,7 @@ struct Bf16Ctx {
                 kv_caches[l][0].n = sp + npt;
                 int h0 = npt < 128 ? npt : 128;
                 for (int pi = 0; pi < h0; pi++) qk_norm_pi(pi, pi);  // batch 0 (overlaps batch 1 kernel)
-                bf16mm_gemm_wait(1, bCq.data());
-                bf16mm_gemm_wait(1, bCk.data());
-                bf16mm_gemm_wait(1, bCv.data());
-                for (int pi = 0; pi < 128; pi++) {
-                    memcpy(&bC[(size_t)pi * qkvn], &bCq[(size_t)pi * qout], qout * 2);
-                    memcpy(&bC[(size_t)pi * qkvn + qout], &bCk[(size_t)pi * kout], kout * 2);
-                    memcpy(&bC[(size_t)pi * qkvn + qout + kout], &bCv[(size_t)pi * kout], kout * 2);
-                }
+                bf16mm_gemm_wait(1, bC.data());
                 for (int pi = 128; pi < npt; pi++) qk_norm_pi(pi, pi - 128);  // batch 1
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
