@@ -15,9 +15,10 @@
 #define N_KEYS 128
 #endif
 
-static float m_state[M_TILE];
-static float l_state[M_TILE];
-static bool initialized = false;
+static float m_state[M_TILE] = {-1e30f, -1e30f, -1e30f, -1e30f, -1e30f, -1e30f,
+                                  -1e30f, -1e30f, -1e30f, -1e30f, -1e30f, -1e30f,
+                                  -1e30f, -1e30f, -1e30f, -1e30f};
+static float l_state[M_TILE] = {};
 
 static inline uint16_t f32_to_bf16(float f) {
     uint32_t u; __builtin_memcpy(&u, &f, 4);
@@ -46,10 +47,6 @@ static inline double exp2_soft(double x) {
 extern "C" void softmax_online(const uint16_t *__restrict scores,
                                uint16_t *__restrict exp_out,
                                float *__restrict alpha) {
-    if (!initialized) {
-        for (int r = 0; r < M_TILE; r++) { m_state[r] = -1e30f; l_state[r] = 0.0f; }
-        initialized = true;
-    }
     const float log2e = 1.4426950408889634f;
     for (int r = 0; r < M_TILE; r++) {
         int tr = r / 4, rr = r % 4;
