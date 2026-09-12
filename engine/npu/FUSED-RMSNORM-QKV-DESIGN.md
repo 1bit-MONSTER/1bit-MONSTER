@@ -442,3 +442,13 @@ Combined with the earlier limits (cascade depth ~2 so the K-outer hold-all can't
 scale; mem = 16 blocks so the C can't route through the mem), the multi-N-tile
 N-outer loop is structurally blocked on the mlir-aie object-fifo/stream lowering.
 The 1- and 2-N-tile paths remain byte-exact (the design itself is correct).
+
+### mlir-aie root: static buffer-index tracking breaks >2-iteration loops
+Read of AIEObjectFifoStatefulTransform.cpp: the acquire/release lowering tracks the
+buffer indices STATICALLY (`acqPerFifo`/`relPerFifo` round-robin at compile time).
+For an acquire inside an scf.for, the subview.access[0]/[1] bind to the SAME static
+buffers every runtime iteration, so the multi-iteration handshake (the cascade
+re-stream for 3+ N-tiles, the mem-routed AN too) reads stale/empty data. The 1- and
+2-iteration cases happen to work because the static indices cover them. Fixing needs
+a runtime round-robin (index_switch) for in-loop acquires — the dynamic lowering
+already has one for size>1 fifos, but the static cascade path doesn't.
