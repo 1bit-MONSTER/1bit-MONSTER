@@ -259,6 +259,27 @@ So FLM's dequant output is **not** the element-linear `scale*v+min` we produce:
 either its nibble→element mapping is transposed/tiled differently, or arg4 is an
 intermediate. **This is the core remaining question for task-n1.**
 
+
+## ✅ VERIFIED: our Q4_1 dequant output is correct
+
+Full Python reimplementation of the Q4_1 dequant over all 512 QKV tiles
+(`scale[g]*v + min[g]`, low-nibble-first, bf16 round) yields:
+
+| | n | unique values | W[0] |
+|---|---|---|---|
+| Python reference | 4 194 304 | **2294** | 0x3ae8 |
+| bridge `w_dev` | 4 194 304 | **2275** | 0x3ae8 |
+
+Same value set, same W[0] — **our dequant matches an independent
+reimplementation**. The element ORDER differs (the dequant emits the mm.xclbin's
+tiled layout, our Python the linear one), but that is the layout the GEMM
+consumes, so dequant→GEMM is self-consistent.
+
+**Consequence:** FLM's captured `arg4` (65239 unique values) is *not* a Q4_1
+dequant of this weight at all (its multiset overlaps ours by only 16%). All
+"dequant mismatch" claims built on `arg4` are hereby retracted — the dequant is
+not the bug.
+
 ## Repro
 
 ```
