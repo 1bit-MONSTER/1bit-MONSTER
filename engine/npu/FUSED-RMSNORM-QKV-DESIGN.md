@@ -395,3 +395,18 @@ paths: (a) fix the mlir-aie cascade consume(2) lowering, or (b) emit the GU's
 gate|up as ONE concatenated 16x2IM buffer (the original silu_gate_up 1-input
 signature) — which then needs the layout translation for the D's A (the tr*16 vs
 tr*8 mismatch). `acquire(Consume, 1)` in an scf.for is the only working consume.
+
+### TRUE root cause: acquire(Consume, 2) INSIDE an scf.for returns zero
+The earlier "consume(2) empty" was confounded by test-harness bugs (depth-1 fifo,
+under-supplied A). Clean tests (depth 2, A re-sent 8x) pin it down:
+- `acquire(Consume, 1)` (cached or in scf.for) + produce(2) x8 in scf.for -> 1024/1024.
+- `acquire(Consume, 2)` OUTSIDE the loop once -> works (the norm-only test).
+- `acquire(Consume, 2)` INSIDE an scf.for (fresh A per N-tile) -> **zeros** (0/1024),
+  with correct depth + supply. The generated MLIR is correct (acquire + subview.access
+  [0]/[1] inside the loop), so the bug is in the multi-element acquire lowering within
+  a loop.
+
+=> the fused 2-input norm (fnorm reads A0,A1 at once) can't re-run per N-tile. The
+workaround is the **split norm** (rms_reduce_f32 + rms_scale_f32_bf16, one K-tile at
+a time via acquire(Consume,1) in an scf.for) with the SS held locally in the norm
+core (not the mem sink), which is the fk-2 structure.
