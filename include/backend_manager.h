@@ -26,14 +26,22 @@ enum class BackendTier : uint8_t {
     T3_CPU         = 2,  // CPU (always available fallback)
 };
 
+inline constexpr rcpp26::EnumName<BackendTier> kBackendTierNames[] = {
+    {BackendTier::T1_ACCELERATOR, "NPU/Accelerator"},
+    {BackendTier::T2_GPU,         "GPU"},
+    {BackendTier::T3_CPU,         "CPU"},
+};
+
 inline const char* tier_name(BackendTier t) {
-    switch(t) {
-        case BackendTier::T1_ACCELERATOR: return "NPU/Accelerator";
-        case BackendTier::T2_GPU:         return "GPU";
-        case BackendTier::T3_CPU:         return "CPU";
-        default: return "unknown";
-    }
+    if (const char* n = rcpp26::lookup_enum_name(kBackendTierNames, t)) return n;
+    return "unknown";
 }
+
+// g++-16 -freflection builds: prove kBackendTierNames covers every enumerator.
+RCPP26_REQUIRE_ENUM_TABLE(rcpp26_verify_backend_tier_names, BackendTier,
+                          kBackendTierNames,
+                          "BackendTier: new enumerator missing a row in "
+                          "kBackendTierNames (include/backend_manager.h)")
 
 // ── Backend info (like an ORT EP descriptor) ──
 struct BackendInfo {
