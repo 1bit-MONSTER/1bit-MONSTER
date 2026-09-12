@@ -322,12 +322,68 @@ bool RuntimeLayerEngine::prefill_batch(const int* tokens, int n) {
     return forward(n);
 }
 
+void RuntimeLayerEngine::apply_rope(int ctx_len) {
+    for (int L = 0; L < cfg_.num_layers; L++)
+        update_rope_i6(*i6_bos_[L], ctx_len - 1);
+}
+
+bool RuntimeLayerEngine::build_runlist(int slot, int ctx_len) {
+    if (!ensure_layer_kernel(ctx_len)) return false;
+    RunSlot& s = slots_[slot];
+    // Caller must have waited on this slot before rebuilding it (the runlist
+    // destructor does NOT wait for an in-flight list).
+    s.rl.reset();
+    s.runs.clear();
+    s.runs.reserve((size_t)cfg_.num_layers + 1);
+    s.rl = std::make_unique<xrt::runlist>(*hwctx_);
+    for (int L = 0; L < cfg_.num_layers; L++) {
+        s.runs.emplace_back(*layer_kernels_[ctx_len]);
+        xrt::run& run = s.runs.back();
+        uint32_t v0 = 3, v1 = 0, v2 = 0;
+        run.set_arg(0, (const void*)&v0, sizeof(v0));
+        run.set_arg(1, (const void*)&v1, sizeof(v1));
+        run.set_arg(2, (const void*)&v2, sizeof(v2));
+        run.set_arg(3, (const xrt::bo&)*bo_act_);
+        run.set_arg(4, (const xrt::bo&)*weight_bos_[L]);
+        run.set_arg(5, (const xrt::bo&)*i5_bos_[L]);
+        run.set_arg(6, (const xrt::bo&)*i6_bos_[L]);
+        run.set_arg(7, (const xrt::bo&)*kv_bos_[L]);
+        s.rl->add(run);
+    }
+    if (kern_lmhead_) {
+        s.runs.emplace_back(*kern_lmhead_);
+        xrt::run& run = s.runs.back();
+        uint32_t v0 = 3, v1 = 0, v2 = 0;
+        run.set_arg(0, (const void*)&v0, sizeof(v0));
+        run.set_arg(1, (const void*)&v1, sizeof(v1));
+        run.set_arg(2, (const void*)&v2, sizeof(v2));
+        run.set_arg(3, (const xrt::bo&)*bo_logits_);
+        run.set_arg(4, (const xrt::bo&)*bo_lmhead_w_);
+        run.set_arg(5, (const xrt::bo&)*bo_act_);
+        run.set_arg(6, (const xrt::bo&)*bo_fnorm_);
+        s.rl->add(run);
+    }
+    s.ctx = ctx_len;
+    return true;
+}
+
+bool RuntimeLayerEngine::execute_runlist(int slot) {
+    try { slots_[slot].rl->execute(); }
+    catch (const std::exception& e) { fprintf(stderr, "RuntimeLayer: runlist execute FAILED: %s\n", e.what()); return false; }
+    return true;
+}
+
+bool RuntimeLayerEngine::wait_runlist(int slot) {
+    try { slots_[slot].rl->wait(); }
+    catch (const std::exception& e) { fprintf(stderr, "RuntimeLayer: runlist wait FAILED: %s\n", e.what()); return false; }
+    return true;
+}
+
 bool RuntimeLayerEngine::forward(int ctx_len) {
     auto t_fwd0 = std::chrono::steady_clock::now();
     if (!ensure_layer_kernel(ctx_len)) return false;
     // RoPE table for the current position (pos = ctx_len-1), every layer
-    for (int L = 0; L < cfg_.num_layers; L++)
-        update_rope_i6(*i6_bos_[L], ctx_len - 1);
+    apply_rope(ctx_len);
     auto t_rope = std::chrono::steady_clock::now();
     // per-ctx kv dump for the layout diff (RT_KV_DUMP_DIR)
     if (const char* kd = getenv("RT_KV_DUMP_DIR")) {
@@ -428,61 +484,27 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
     // from device mid-stream and cannot coexist with an atomic runlist.
     if (!dbg && !getenv("RT_CLEAN_DUMP") && !getenv("RT_DUMP_KV")) {
         auto t_build0 = std::chrono::steady_clock::now();
-        std::vector<xrt::run> runs;
-        runs.reserve((size_t)cfg_.num_layers + 1);
-        xrt::runlist rl(*hwctx_);
-        for (int L = 0; L < cfg_.num_layers; L++) {
-            runs.emplace_back(*layer_kernels_[ctx_len]);
-            xrt::run& run = runs.back();
-            uint32_t v0 = 3, v1 = 0, v2 = 0;
-            run.set_arg(0, (const void*)&v0, sizeof(v0));
-            run.set_arg(1, (const void*)&v1, sizeof(v1));
-            run.set_arg(2, (const void*)&v2, sizeof(v2));
-            run.set_arg(3, (const xrt::bo&)*bo_act_);
-            run.set_arg(4, (const xrt::bo&)*weight_bos_[L]);
-            run.set_arg(5, (const xrt::bo&)*i5_bos_[L]);
-            run.set_arg(6, (const xrt::bo&)*i6_bos_[L]);
-            run.set_arg(7, (const xrt::bo&)*kv_bos_[L]);
-            rl.add(run);
+        if (!build_runlist(0, ctx_len)) return false;
+        auto t_exec0 = std::chrono::steady_clock::now();
+        if (!execute_runlist(0)) return false;
+        if (!wait_runlist(0)) return false;
+        if (getenv("NPU_RUNLIST_STATS")) {
+            auto t_done = std::chrono::steady_clock::now();
+            double bms = std::chrono::duration<double, std::milli>(t_exec0 - t_build0).count();
+            double ems = std::chrono::duration<double, std::milli>(t_done - t_exec0).count();
+            fprintf(stderr, "[runlist] build=%.2fms exec=%.2fms\n", bms, ems);
         }
-        if (kern_lmhead_) {
-            runs.emplace_back(*kern_lmhead_);
-            xrt::run& run = runs.back();
-            uint32_t v0 = 3, v1 = 0, v2 = 0;
-            run.set_arg(0, (const void*)&v0, sizeof(v0));
-            run.set_arg(1, (const void*)&v1, sizeof(v1));
-            run.set_arg(2, (const void*)&v2, sizeof(v2));
-            run.set_arg(3, (const xrt::bo&)*bo_logits_);
-            run.set_arg(4, (const xrt::bo&)*bo_lmhead_w_);
-            run.set_arg(5, (const xrt::bo&)*bo_act_);
-            run.set_arg(6, (const xrt::bo&)*bo_fnorm_);
-            rl.add(run);
-        }
-        try {
-            auto t_exec0 = std::chrono::steady_clock::now();
-            rl.execute();
-            rl.wait();
-            if (getenv("NPU_RUNLIST_STATS")) {
-                auto t_done = std::chrono::steady_clock::now();
-                double bms = std::chrono::duration<double, std::milli>(t_exec0 - t_build0).count();
-                double ems = std::chrono::duration<double, std::milli>(t_done - t_exec0).count();
-                fprintf(stderr, "[runlist] build=%.2fms exec=%.2fms\n", bms, ems);
-            }
-            if (getenv("NPU_FWD_TIMING")) {
-                auto t_done = std::chrono::steady_clock::now();
-                fprintf(stderr, "[fwd] rope=%.2f build=%.2f exec=%.2f total=%.2f ms\n",
-                        std::chrono::duration<double, std::milli>(t_rope - t_fwd0).count(),
-                        std::chrono::duration<double, std::milli>(t_exec0 - t_build0).count(),
-                        std::chrono::duration<double, std::milli>(t_done - t_exec0).count(),
-                        std::chrono::duration<double, std::milli>(t_done - t_fwd0).count());
-            }
-        } catch (const std::exception& e) {
-            fprintf(stderr, "RuntimeLayer: runlist FAILED: %s\n", e.what());
-            return false;
+        if (getenv("NPU_FWD_TIMING")) {
+            auto t_done = std::chrono::steady_clock::now();
+            fprintf(stderr, "[fwd] rope=%.2f build=%.2f exec=%.2f total=%.2f ms\n",
+                    std::chrono::duration<double, std::milli>(t_rope - t_fwd0).count(),
+                    std::chrono::duration<double, std::milli>(t_exec0 - t_build0).count(),
+                    std::chrono::duration<double, std::milli>(t_done - t_exec0).count(),
+                    std::chrono::duration<double, std::milli>(t_done - t_fwd0).count());
         }
         if (getenv("NPU_RUNLIST_STATS"))
             fprintf(stderr, "[runlist] %zu runs batched -> 1 submit (ctx=%d)\n",
-                    runs.size(), ctx_len);
+                    slots_[0].runs.size(), ctx_len);
         ctx_len_ = ctx_len;
         return true;
     }

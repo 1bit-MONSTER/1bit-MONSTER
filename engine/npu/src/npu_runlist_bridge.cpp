@@ -197,20 +197,55 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
     double prefill_ms = std::chrono::duration<double, std::milli>(t1 - t0).count();
     printf("Prefill: %.0fms (%.0f ms/tok)\n\n", prefill_ms, prefill_ms / npt);
 
-    // 6) greedy decode — bf16 argmax -> emit -> advance.
+    // 6) greedy decode — bf16 argmax -> emit -> advance. The runlist build for
+    //    the NEXT step is overlapped against the current device exec using the
+    //    double-buffered runlist slots (see RuntimeLayerEngine::build_runlist).
     auto tgs = std::chrono::steady_clock::now();
     int total = 0;
-    for (int i = 0; i < ng; i++) {
+    int sa = 0, sb = 1;
+    // Prime: emit token 1 (logits already ready from the prefill's last forward)
+    // and launch the first decode forward (ctx = npt+1) on slot sb.
+    {
+        int best = rt.argmax_logits(cfg.vocab_size);
+        printf("  [%d] %d\n", 1, best);
+        total++;
+        if (ng > 1) {
+            int c1 = ctx + 1;
+            rt.apply_rope(c1);
+            if (!rt.build_runlist(sb, c1) || !rt.embed(best) || !rt.execute_runlist(sb)) {
+                fprintf(stderr, "[runlist] decode forward ctx=%d failed\n", c1);
+                model_free(mw);
+                return 1;
+            }
+            ctx = c1;
+        }
+    }
+    for (int i = 1; i < ng; i++) {
+        int next_ctx = ctx + 1;
+        // Build the NEXT runlist (pure host) while slot sb executes on-device.
+        if (!rt.build_runlist(sa, next_ctx)) {
+            fprintf(stderr, "[runlist] build ctx=%d failed\n", next_ctx);
+            model_free(mw);
+            return 1;
+        }
+        if (!rt.wait_runlist(sb)) {
+            fprintf(stderr, "[runlist] wait ctx=%d failed\n", ctx);
+            model_free(mw);
+            return 1;
+        }
         int best = rt.argmax_logits(cfg.vocab_size);
         printf("  [%d] %d\n", i + 1, best);
         total++;
         if (i + 1 < ng) {
-            if (!rt.embed(best) || !rt.forward(++ctx)) {
-                fprintf(stderr, "[runlist] decode forward ctx=%d failed\n", ctx);
+            rt.apply_rope(next_ctx);
+            if (!rt.embed(best) || !rt.execute_runlist(sa)) {
+                fprintf(stderr, "[runlist] decode forward ctx=%d failed\n", next_ctx);
                 model_free(mw);
                 return 1;
             }
+            ctx = next_ctx;
         }
+        std::swap(sa, sb);
     }
     auto tge = std::chrono::steady_clock::now();
     double tts = std::chrono::duration<double>(tge - tgs).count();

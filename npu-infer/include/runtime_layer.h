@@ -11,6 +11,8 @@
 namespace xrt {
     class device;
     class hw_context;
+    class run;
+    class runlist;
 }
 namespace xrt { namespace ext { class kernel; class bo; } }
 
@@ -61,6 +63,19 @@ public:
     /// uses gen_layer_seq(ctx_len+1)); ctx_len = tokens already in cache + 1.
     bool forward(int ctx_len);
 
+    /// Decode-overlap split (host/device pipeline): the whole-layer runlist is
+    /// built (pure host set_arg) for ctx_len while a *previous* runlist still
+    /// executes on the device, hiding the ~0.8 ms/token runlist-build latency.
+    /// Two slots are double-buffered: while slot A executes, slot B is built.
+    ///
+    /// apply_rope writes the per-layer i6 RoPE BOs (host->device) — it must be
+    /// serial w.r.t. the executing runlist (which reads i6), so it is NOT
+    /// overlapped. build_runlist is pure host and IS overlapped.
+    void apply_rope(int ctx_len);
+    bool build_runlist(int slot, int ctx_len);
+    bool execute_runlist(int slot);
+    bool wait_runlist(int slot);
+
     /// Prefill: write n tokens' embeddings into the act BO, then run the fused
     /// layer at ctx_len=n (the batched ELF layer_ctxN.elf). Returns true on success.
     bool prefill_batch(const int* tokens, int n);
@@ -100,6 +115,13 @@ private:
     bool ensure_layer_kernel(int ctx_len);
     bool pack_lmhead_bo();
     bool build_norm_bos();
+
+    struct RunSlot {
+        std::vector<xrt::run> runs;
+        std::unique_ptr<xrt::runlist> rl;
+        int ctx = -1;
+    };
+    RunSlot slots_[2];
 
     xrt::device* dev_ = nullptr;
     ModelWeights* mw_ = nullptr;
