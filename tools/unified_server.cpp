@@ -1846,7 +1846,36 @@ int main(int argc, char** argv) {
         }
     }
     if (current_cfg.model_path.empty() && !discovered.empty()) {
+        // Issue #2206, suggested direction (1): an explicitly provided `--weights <dir>` must
+        // not be overridden by an artifact that exists only because the SECONDARY scan root
+        // ($HOME/models) contributed it. Measured on strixhalo: with `--weights models/`
+        // holding one small model and a 35B Q8_0 present in $HOME/models, the 35B outranked
+        // it on quant quality and became [active]; no discovered backend can load that arch,
+        // so the server never came healthy.
+        //
+        // The quality ordering above is deliberately unchanged WITHIN a root: this only stops
+        // the convenience root from outranking the operator's own directory. When the primary
+        // root holds nothing, the fallback below is still `discovered.front()`.
+        //
+        // This does NOT cover the case where `--weights` IS $HOME/models (a symlink): the
+        // artifact is then genuinely inside the weights dir and still wins on quality.
+        // Refusing an unloadable auto-selection is the separate product call in #2206.
+        const char* env_root = getenv("LEMONADE_ENGINE_REGISTRY_ROOT");
+        if (!env_root || !*env_root) env_root = getenv("ZAYA_WEIGHTS_DIR");
+        std::string primary = (env_root && *env_root) ? std::string(env_root) : g_weights_dir;
+        while (primary.size() > 1 && primary.back() == '/') primary.pop_back();
+        auto under_primary = [&primary](const std::string& p) {
+            if (primary.empty()) return false;
+            if (p.compare(0, primary.size(), primary) != 0) return false;
+            return p.size() == primary.size() || p[primary.size()] == '/';
+        };
         current_cfg = discovered.front();
+        for (const auto& m : discovered) {
+            if (under_primary(m.model_path)) {
+                current_cfg = m;
+                break;
+            }
+        }
     }
 
     for (auto& m : discovered) {
