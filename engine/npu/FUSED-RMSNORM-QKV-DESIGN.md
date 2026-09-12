@@ -89,6 +89,30 @@ reinterpret-cast, not `output[i]` indexing. `aie::invsqrt` happened to match gli
 `1/sqrtf` byte-for-byte on the test vectors; a broader-range check is a follow-up.
 Next: wire rms_norm + matmul_bf16_bf16 into one fused MLIR design.
 
+## Fusion design (fk-2 remaining work)
+
+Both halves are validated (bf16 GEMM correct @437 GOP/s; RMSNorm byte-exact).
+The fusion = RMSNorm output feeds the GEMM A-input with **no host round-trip**.
+Three candidate approaches, analyzed 2026-09-12:
+
+1. **Two-stage (separate norm + GEMM cores, on-device A_norm handoff).** Clean
+   dataflow, but the v27 GEMM needs 4 compute rows for M=128 (32 cores, m=32),
+   so there is no spare row for a dedicated norm stage — M=128 doesn't tile
+   onto 24 GEMM cores. Requires re-tiling M or a smaller GEMM grid.
+2. **Sequential phases on the same cores** (all 32 cores: norm my rows → write
+   A_norm to mem → GEMM). Needs a cross-core barrier (GEMM core reads A_norm
+   tiles that span rows produced by *other* cores), which the aie Python
+   object-fifo model does not express directly.
+3. **Truly fused kernel** (one core: load my f32 rows, reduce over full K,
+   normalize, hold A_norm in local mem, then K-tiled GEMM). 4 rows × 1024 bf16
+   (8 KB) A_norm + W tile + C tile fits 64 KB core memory. Cleanest (single
+   kernel, single launch) but a real kernel rewrite combining rms_norm +
+   matmul_bf16_bf16 in one core body.
+
+Recommendation: (3) is the right long-term shape; (1) with M re-tiled (e.g.
+M=96 onto 24 GEMM cores + 8 norm cores) is the fastest prototype. Both are
+multi-session; neither is started yet.
+
 ## fk-2 scoping findings (2026-09-12)
 
 1. **`mm_bfp.cc` uses `bfp16ebs8`, not plain bf16.** `bfp16ebs8` is a
