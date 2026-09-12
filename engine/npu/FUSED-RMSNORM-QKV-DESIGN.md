@@ -430,3 +430,15 @@ N-tile in the scf.for + the GU's `consume(1) x 2` per N-tile. That balanced
 produce/consume works at 2 N-tiles (4+4) but returns zeros at 3+ N-tiles (6+6) —
 a cascade multi-iteration handshake bug (the depth-2 stream). The 1- and 2-N-tile
 paths stay byte-exact.
+
+### 3+ N-tile blocker is fundamental (cascade re-stream + mem both fail)
+Tried four fixes for the AN re-read in the N-outer loop; all zero at 3+ N-tiles:
+- produce(1) x2 per N-tile (split norm) — works at 2 N-tiles, zeros at 3+.
+- produce(2) once per N-tile — zeros.
+- produce(2) once + repeat_count on the cascade — zeros.
+- produce(2) once + AN through the MEM + repeat_count on AN_r — zeros.
+
+Combined with the earlier limits (cascade depth ~2 so the K-outer hold-all can't
+scale; mem = 16 blocks so the C can't route through the mem), the multi-N-tile
+N-outer loop is structurally blocked on the mlir-aie object-fifo/stream lowering.
+The 1- and 2-N-tile paths remain byte-exact (the design itself is correct).
