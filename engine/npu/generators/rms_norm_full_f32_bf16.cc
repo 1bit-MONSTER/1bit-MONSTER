@@ -43,11 +43,16 @@ extern "C" void rms_norm_full_f32_bf16(const float *__restrict A0,
     // A0/A1: (M_TILE+1) x K_TILE, gamma in row M_TILE. AN0/AN1: M_TILE x K_TILE.
     float ss[M_TILE];
     for (int r = 0; r < M_TILE; r++) ss[r] = 0.0f;
+    // Sequential f32 reduction matching the host rn_bf16: full K-tile 0, then
+    // K-tile 1 (NOT interleaved — f32 add is not associative).
     for (int r = 0; r < M_TILE; r++)
         for (int c = 0; c < K_TILE; c++) {
             float x = clamp_nonfinite(A0[r * K_TILE + c]);
             ss[r] += x * x;
-            x = clamp_nonfinite(A1[r * K_TILE + c]);
+        }
+    for (int r = 0; r < M_TILE; r++)
+        for (int c = 0; c < K_TILE; c++) {
+            float x = clamp_nonfinite(A1[r * K_TILE + c]);
             ss[r] += x * x;
         }
     uint16_t *o0 = reinterpret_cast<uint16_t *>(AN0);

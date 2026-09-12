@@ -100,15 +100,11 @@ def ffn(M, H, IM, k):
         @core(norm_c, stack_size=0x2000)
         def norm_body():
             for _ in range_(0xFFFFFFFF):
-                a0 = A_c.acquire(ObjectFifoPort.Consume, 1)
-                a1 = A_c.acquire(ObjectFifoPort.Consume, 1)
-                an0 = AN.acquire(ObjectFifoPort.Produce, 1)
-                an1 = AN.acquire(ObjectFifoPort.Produce, 1)
-                fnorm(a0, a1, an0, an1)
-                A_c.release(ObjectFifoPort.Consume, 1)
-                A_c.release(ObjectFifoPort.Consume, 1)
-                AN.release(ObjectFifoPort.Produce, 1)
-                AN.release(ObjectFifoPort.Produce, 1)
+                a = A_c.acquire(ObjectFifoPort.Consume, 2)
+                an = AN.acquire(ObjectFifoPort.Produce, 2)
+                fnorm(a[0], a[1], an[0], an[1])
+                A_c.release(ObjectFifoPort.Consume, 2)
+                AN.release(ObjectFifoPort.Produce, 2)
 
         @core(gu_c, stack_size=0x2000)
         def gu_body():
