@@ -86,6 +86,10 @@ struct DeepSeekV4Config {
     // fixture naming) or implied by `compress_ratios` (checkpoint naming).
     int csa_rate = 4;
     int hca_rate = 128;
+    // Indexer dims (Lightning Indexer; CSA only).
+    int index_n_heads = 64;
+    int index_head_dim = 128;
+    int index_topk = 512;
 };
 
 // ─── Weights ──────────────────────────────────────────────────────────────────
@@ -121,6 +125,17 @@ struct DeepSeekV4Layer {
     std::vector<float> cp_gate;      // gate_proj.weight  [cp_series*head_dim, H]
     std::vector<float> cp_pos_bias;  // position_bias     [cp_rate, cp_series*head_dim]
     std::vector<float> cp_norm;      // kv_norm.weight    [head_dim]
+    // ── Lightning Indexer (CSA layers only) ───────────────────────────────────
+    // Its own compressor at index_head_dim (2 series), a query projection off
+    // q_residual, and a ReLU-weighted head sum that ranks compressed entries.
+    int ix_heads = 0;                // index_n_heads (0 = no indexer)
+    int ix_hd = 0;                   // index_head_dim
+    int ix_topk = 0;                 // index_topk
+    std::vector<float> ix_kv, ix_gate;  // [2*ix_hd, H]
+    std::vector<float> ix_pos_bias;     // [cp_rate, 2*ix_hd]
+    std::vector<float> ix_norm;         // [ix_hd]
+    std::vector<float> ix_qb;           // [ix_heads*ix_hd, q_lora_rank]
+    std::vector<float> ix_wproj;        // [ix_heads, H]
 };
 
 struct DeepSeekV4Model {
@@ -175,6 +190,24 @@ struct DeepSeekV4mHCState {
 // Returns [n_win][head_dim], n_win = T / rate (0 when rate <= 0 or T < rate).
 std::vector<float> deepseek_v4_compressor_forward(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
                                                   int rate, const std::vector<float>& x, int T);
+
+// Indexer top-k for one CSA layer (batched prefill, positions 0..T-1): the
+// indexer compresses with its own weights at `index_head_dim`, scores each
+// query against those entries as `sum_h relu(q_h . K) * w_h` (both scaled),
+// masks entries past the query's causal threshold, and keeps `index_topk` of
+// them. Returns [T][k] entry indices; -1 marks a pick the query may not use
+// (fewer than k entries are ready) — the reference's sentinel, which the
+// attention path must treat as "not selected".
+// The gate-able half: the score table [T][n_win], exactly as the reference's
+// scorer returns it (before the causal mask / sentinel).
+std::vector<float> deepseek_v4_indexer_scores(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
+                                             int rate, const std::vector<float>& x, int T);
+
+// The selection half: the causal mask + top-k with the reference's `-1` sentinel.
+// Ties make the *order* implementation-defined (see the .cpp note), so index
+// equality is not a valid gate — the score table above is.
+std::vector<int> deepseek_v4_indexer_topk(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
+                                          int rate, const std::vector<float>& x, int T);
 
 // ─── Forward ──────────────────────────────────────────────────────────────────
 // One token. Returns logits [vocab]. kv_cache + mhc updated in place.

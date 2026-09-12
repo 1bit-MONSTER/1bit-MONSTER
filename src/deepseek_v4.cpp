@@ -183,6 +183,9 @@ bool DeepSeekV4Model::load_from_safetensors(const std::string& dir, const DeepSe
         // or, for checkpoint naming, `compress_ratios` below.
         if (json_find_int(txt, "compressed_sparse_attention", iv) && iv > 0) cfg.csa_rate = iv;
         if (json_find_int(txt, "heavily_compressed_attention", iv) && iv > 0) cfg.hca_rate = iv;
+        if (json_find_int(txt, "index_n_heads", iv) && iv > 0) cfg.index_n_heads = iv;
+        if (json_find_int(txt, "index_head_dim", iv) && iv > 0) cfg.index_head_dim = iv;
+        if (json_find_int(txt, "index_topk", iv) && iv > 0) cfg.index_topk = iv;
         // layer_types: ["sliding_attention", "compressed_sparse_attention", ...]
         {
             size_t p = txt.find("\"layer_types\"");
@@ -315,6 +318,24 @@ bool DeepSeekV4Model::load_from_safetensors(const std::string& dir, const DeepSe
             ok &= get(name("self_attn.compressor.position_bias"), l.cp_pos_bias,
                       (size_t)l.cp_rate * out_w);
             ok &= get(name("self_attn.compressor.kv_norm.weight"), l.cp_norm, hd);
+            // Lightning Indexer — CSA only; HCA has no indexer by construction.
+            if (!hca) {
+                const int ihd = cfg.index_head_dim, nh = cfg.index_n_heads;
+                l.ix_heads = nh;
+                l.ix_hd = ihd;
+                l.ix_topk = cfg.index_topk;
+                ok &= get(name("self_attn.compressor.indexer.kv_proj.weight"), l.ix_kv,
+                          (size_t)2 * ihd * H);
+                ok &= get(name("self_attn.compressor.indexer.gate_proj.weight"), l.ix_gate,
+                          (size_t)2 * ihd * H);
+                ok &= get(name("self_attn.compressor.indexer.position_bias"), l.ix_pos_bias,
+                          (size_t)l.cp_rate * 2 * ihd);
+                ok &= get(name("self_attn.compressor.indexer.kv_norm.weight"), l.ix_norm, ihd);
+                ok &= get(name("self_attn.compressor.indexer.q_b_proj.weight"), l.ix_qb,
+                          (size_t)nh * ihd * cfg.q_lora_rank);
+                ok &= get(name("self_attn.compressor.indexer.scorer.weights_proj.weight"),
+                          l.ix_wproj, (size_t)nh * H);
+            }
         }
 
         if (il < cfg.num_hash_layers) {
@@ -416,6 +437,156 @@ std::vector<float> deepseek_v4_compressor_forward(const DeepSeekV4Layer& l, cons
                     prev_ca[(size_t)a * hd + d] = kv[(size_t)a * out_w + d];
                     prev_ca_gate[(size_t)a * hd + d] = gt[(size_t)a * out_w + d];
                 }
+    }
+    return out;
+}
+
+std::vector<float> deepseek_v4_indexer_scores(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
+                                             int rate, const std::vector<float>& x, int T) {
+    using namespace ds4math;
+    const int H = cfg.hidden_size, ihd = l.ix_hd, nh = l.ix_heads;
+    const int n_win = (rate > 0) ? T / rate : 0;
+    std::vector<float> out;
+    if (l.ix_heads == 0 || n_win <= 0) return out;
+    out.assign((size_t)T * n_win, 0.0f);
+
+    // ── 1. the indexer's own compressed keys (2-series, same layout as CSA) ──
+    const int two = 2 * ihd;
+    std::vector<float> K((size_t)n_win * ihd, 0.0f);
+    {
+        std::vector<float> kv((size_t)rate * two), gt((size_t)rate * two);
+        std::vector<float> nk((size_t)2 * rate * ihd), ng((size_t)2 * rate * ihd);
+        std::vector<float> prev_ca((size_t)rate * ihd, 0.0f);
+        std::vector<float> prev_ca_gate((size_t)rate * ihd, -INFINITY);
+        std::vector<float> pooled(ihd);
+        for (int w = 0; w < n_win; w++) {
+            const float* xw = &x[(size_t)w * rate * H];
+            for (int t = 0; t < rate; t++) {
+                const float* xt = xw + (size_t)t * H;
+                for (int j = 0; j < two; j++) {
+                    const float* wk = &l.ix_kv[(size_t)j * H];
+                    const float* wg = &l.ix_gate[(size_t)j * H];
+                    float a = 0.0f, b = 0.0f;
+                    for (int i = 0; i < H; i++) { a += xt[i] * wk[i]; b += xt[i] * wg[i]; }
+                    kv[(size_t)t * two + j] = a;
+                    gt[(size_t)t * two + j] = b + l.ix_pos_bias[(size_t)t * two + j];
+                }
+            }
+            for (int a = 0; a < rate; a++)
+                for (int d = 0; d < ihd; d++) {
+                    nk[(size_t)a * ihd + d] = prev_ca[(size_t)a * ihd + d];
+                    ng[(size_t)a * ihd + d] = prev_ca_gate[(size_t)a * ihd + d];
+                    nk[(size_t)(rate + a) * ihd + d] = kv[(size_t)a * two + ihd + d];
+                    ng[(size_t)(rate + a) * ihd + d] = gt[(size_t)a * two + ihd + d];
+                }
+            for (int d = 0; d < ihd; d++) {
+                float mx = -INFINITY;
+                for (int a = 0; a < 2 * rate; a++) mx = std::max(mx, ng[(size_t)a * ihd + d]);
+                float sum = 0.0f, acc = 0.0f;
+                for (int a = 0; a < 2 * rate; a++) {
+                    float e = std::exp(ng[(size_t)a * ihd + d] - mx);
+                    sum += e;
+                    acc += e * nk[(size_t)a * ihd + d];
+                }
+                pooled[d] = acc / sum;
+            }
+            rmsnorm(&K[(size_t)w * ihd], pooled.data(), l.ix_norm.data(), ihd, cfg.rms_norm_eps);
+            rope_partial(&K[(size_t)w * ihd], ihd, cfg.qk_rope_head_dim, w * rate,
+                         cfg.compress_rope_theta);
+            for (int a = 0; a < rate; a++)
+                for (int d = 0; d < ihd; d++) {
+                    prev_ca[(size_t)a * ihd + d] = kv[(size_t)a * two + d];
+                    prev_ca_gate[(size_t)a * ihd + d] = gt[(size_t)a * two + d];
+                }
+        }
+    }
+
+    // ── 2. q_residual (q_a project + norm), then q per head with rope ──
+    const int ql = cfg.q_lora_rank;
+    std::vector<float> qres((size_t)T * ql);
+    for (int t = 0; t < T; t++) {
+        const float* xt = &x[(size_t)t * H];
+        std::vector<float> raw(ql);
+        for (int j = 0; j < ql; j++) {
+            const float* wr = &l.q_a[(size_t)j * H];
+            float s = 0.0f;
+            for (int i = 0; i < H; i++) s += xt[i] * wr[i];
+            raw[j] = s;
+        }
+        rmsnorm(&qres[(size_t)t * ql], raw.data(), l.q_a_norm.data(), ql, cfg.rms_norm_eps);
+    }
+    std::vector<float> q((size_t)T * nh * ihd);
+    for (int t = 0; t < T; t++)
+        for (int h = 0; h < nh; h++) {
+            float* qh = &q[((size_t)t * nh + h) * ihd];
+            const float* qr = &qres[(size_t)t * ql];
+            for (int d = 0; d < ihd; d++) {
+                const float* wr = &l.ix_qb[(size_t)(h * ihd + d) * ql];
+                float s = 0.0f;
+                for (int i = 0; i < ql; i++) s += qr[i] * wr[i];
+                qh[d] = s;
+            }
+            rope_partial(qh, ihd, cfg.qk_rope_head_dim, t, cfg.compress_rope_theta);
+        }
+
+    // ── 3. score + causal mask + top-k (the score is a ReLU-weighted head sum) ──
+    std::vector<float> wproj((size_t)T * nh);
+    for (int t = 0; t < T; t++)
+        for (int h = 0; h < nh; h++) {
+            const float* wr = &l.ix_wproj[(size_t)h * H];
+            const float* xt = &x[(size_t)t * H];
+            float s = 0.0f;
+            for (int i = 0; i < H; i++) s += xt[i] * wr[i];
+            wproj[(size_t)t * nh + h] = s;
+        }
+    const float softmax_scale = 1.0f / std::sqrt((float)ihd);
+    const float weights_scale = 1.0f / std::sqrt((float)nh);
+    for (int t = 0; t < T; t++)
+        for (int s = 0; s < n_win; s++) {
+            float acc = 0.0f;
+            for (int h = 0; h < nh; h++) {
+                const float* qh = &q[((size_t)t * nh + h) * ihd];
+                const float* Ks = &K[(size_t)s * ihd];
+                float dot = 0.0f;
+                for (int d = 0; d < ihd; d++) dot += qh[d] * Ks[d];
+                acc += std::max(dot, 0.0f) * softmax_scale * wproj[(size_t)t * nh + h] * weights_scale;
+            }
+            out[(size_t)t * n_win + s] = acc;
+        }
+    return out;
+}
+
+// Top-k over the scores above, with the reference's causal rule and `-1` sentinel.
+// NOTE ON TIES: the reference ends with torch.topk, and the scorer's ReLU leaves a
+// large fraction of scores at exactly 0.0 (26.5% on the fixture), so the *order*
+// among tied entries — and sometimes WHICH tied entry makes the k-th slot — is
+// implementation-defined. Exact index equality is therefore not a valid gate; the
+// score table is (Testing/cmp_deepseek_v4_indexer_scores.py). This function mirrors
+// the reference's rule: visible entries are `s < (t+1)/rate`, the rest are -inf,
+// and anything not selected stays -1.
+std::vector<int> deepseek_v4_indexer_topk(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
+                                          int rate, const std::vector<float>& x, int T) {
+    std::vector<int> out;
+    const int n_win = (rate > 0) ? T / rate : 0;
+    if (l.ix_heads == 0 || n_win <= 0) return out;
+    std::vector<float> score = deepseek_v4_indexer_scores(l, cfg, rate, x, T);
+    if ((int)score.size() != T * n_win) return out;
+    const int k = std::min(l.ix_topk, n_win);
+    out.assign((size_t)T * k, -1);
+    for (int t = 0; t < T; t++) {
+        const int threshold = (t + 1) / rate;
+        for (int s = 0; s < n_win; s++)
+            if (s >= threshold) score[(size_t)t * n_win + s] = -INFINITY;
+        for (int j = 0; j < k; j++) {
+            int best = -1;
+            for (int s = 0; s < n_win; s++) {
+                float v = score[(size_t)t * n_win + s];
+                if (v > -INFINITY && (best < 0 || v > score[(size_t)t * n_win + best])) best = s;
+            }
+            if (best < 0) break;
+            out[(size_t)t * k + j] = best;
+            score[(size_t)t * n_win + best] = -INFINITY;
+        }
     }
     return out;
 }

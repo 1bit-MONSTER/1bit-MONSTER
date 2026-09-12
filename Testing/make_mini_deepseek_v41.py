@@ -102,8 +102,23 @@ def main():
                 comp_out[name + ".bias"] = bias.detach().float().cpu().numpy()
         return _hook
     for i, layer in enumerate(model.model.layers):
-        if getattr(layer.self_attn, "compressor", None) is not None:
-            hooks.append(layer.self_attn.compressor.register_forward_hook(_mk(f"L{i}")))
+        comp = getattr(layer.self_attn, "compressor", None)
+        if comp is not None:
+            hooks.append(comp.register_forward_hook(_mk(f"L{i}")))
+            # CSA layers carry an indexer; capture the INDICES it returns (its only
+            # output) so stage 2 has an exact oracle: [B, S, k] int64, -1 = invalid.
+            idx = getattr(comp, "indexer", None)
+            if idx is not None:
+                def _ix(mod, args, out, name=f"L{i}"):
+                    comp_out[name + ".indexer"] = out.detach().cpu().numpy()
+                hooks.append(idx.register_forward_hook(_ix))
+                # Pre-mask indexer SCORES (the scorer's output, before the causal /
+                # sentinel handling). The indices themselves are a tie-broken top-k;
+                # the scores are what an implementation can be held to.
+                if getattr(idx, "scorer", None) is not None:
+                    def _sc(mod, args, out, name=f"L{i}"):
+                        comp_out[name + ".scores"] = out.detach().float().cpu().numpy()
+                    hooks.append(idx.scorer.register_forward_hook(_sc))
 
     ids = torch.tensor([PROMPT])
     if args.prompt_len and args.prompt_len != len(PROMPT):
@@ -141,9 +156,14 @@ def main():
         # plain .npy per compressed layer too: the C++ gate reads npy directly
         # (npz is a zip, which a C harness should not have to unzip).
         for k, v in sorted(comp_out.items()):
-            if k.endswith(".bias"):
+            if k.endswith(".bias") or k.endswith(".indexer"):
                 continue
             np.save(os.path.join(args.outdir, f"comp_ref_{k}.npy"), v[0, 0])  # [n_win, head_dim]
+        for k, v in sorted(comp_out.items()):
+            if k.endswith(".indexer"):
+                np.save(os.path.join(args.outdir, f"indexer_ref_{k[:-8]}.npy"), v[0])  # [S, k]
+            if k.endswith(".scores"):
+                np.save(os.path.join(args.outdir, f"indexer_scores_{k[:-7]}.npy"), v[0])  # [S, n_win]
         for k, v in sorted(comp_out.items()):
             if not k.endswith(".bias"):
                 print(f"  compressor ref {k}: {v.shape}")
