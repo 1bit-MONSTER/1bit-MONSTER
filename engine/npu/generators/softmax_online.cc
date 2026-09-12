@@ -15,10 +15,10 @@
 #define N_KEYS 128
 #endif
 
-static float m_state[M_TILE] = {-1e30f, -1e30f, -1e30f, -1e30f, -1e30f, -1e30f,
+static volatile float m_state[M_TILE] = {-1e30f, -1e30f, -1e30f, -1e30f, -1e30f, -1e30f,
                                   -1e30f, -1e30f, -1e30f, -1e30f, -1e30f, -1e30f,
                                   -1e30f, -1e30f, -1e30f, -1e30f};
-static float l_state[M_TILE] = {};
+static volatile float l_state[M_TILE] = {};
 
 static inline uint16_t f32_to_bf16(float f) {
     uint32_t u; __builtin_memcpy(&u, &f, 4);

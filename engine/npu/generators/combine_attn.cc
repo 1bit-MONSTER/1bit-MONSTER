@@ -12,7 +12,7 @@
 #define HD 128
 #endif
 
-static float O_state[M_TILE * HD];
+static volatile float O_state[M_TILE * HD];
 
 extern "C" void combine_attn(const float *__restrict attn_chunk,
                              const float *__restrict alpha) {
