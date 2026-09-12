@@ -841,7 +841,14 @@ int main(int argc,char**argv){
             if (fn) { fwrite(in_n[0].data(), 4, H, fn); fclose(fn); }
         }
         if(cfg.has_q_norm&&qn_off[l]){auto qq=(const uint16_t*)(md+df+qn_off[l]);for(int i=0;i<HD;i++)qn_w[l][i]=bf16g(qq[i]);}
-        if(cfg.has_k_norm&&kn_off[l]){auto kk=(const uint16_t*)(md+df+kn_off[l]);for(int i=0;i<HD;i++)kn_w[l][i]=bf16g(kk[i]);}}
+        if(cfg.has_k_norm&&kn_off[l]){auto kk=(const uint16_t*)(md+df+kn_off[l]);for(int i=0;i<HD;i++)kn_w[l][i]=bf16g(kk[i]);}
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            fprintf(stderr, "[qknorm] qn_off=%lld kn_off=%lld qn_w:", (long long)qn_off[0], (long long)kn_off[0]);
+            for (int i = 0; i < 8; i++) fprintf(stderr, " %.4f", qn_w[0][i]);
+            fprintf(stderr, " kn_w:");
+            for (int i = 0; i < 8; i++) fprintf(stderr, " %.4f", kn_w[0][i]);
+            fprintf(stderr, "\n");
+        }}
     {auto fw=(const uint16_t*)(md+df+no);for(int i=0;i<H;i++)fin_v[i]=bf16g(fw[i]);}
 
     // I8 tile rows — for Qwen3.6 Q8_0 tensors (8704 bytes/row) vs INT4 (5120 bytes/row)

@@ -166,11 +166,13 @@ the q/k-norm scaling is the prime suspect for the remaining 91364-vs-62865 gap.
 | **K (2048:3072)** | 0.824 | **5.531** |
 | V (3072:4096) | 0.362 | 0.362 (unchanged ✓) |
 
-RMSNorm should give std ≈ |kn_w| ≈ O(1); the K std of **5.53** (× 6.7 over the
-raw) means `kn_w[l][d]` (the `k_norm.weight`, loaded at `npu_engine_universal`
-line 844 from `kn_off[l]`) is either mislocated or mis-scaled. Per-head K stds
-range 2.2–9.7, vs Q's 0.5–2.5. **This is the strongest remaining lead** for the
-91364-vs-62865 divergence.
+RMSNorm should give std ≈ |kn_w|; the K std of **5.53** is explained by the
+MODEL itself — `model.layers.0.self_attn.k_norm.weight` genuinely contains large
+values (max **96.5**, std 9.1), and the bridge's `[qknorm]` debug print confirms
+`kn_off=311169024` with `kn_w[0]=[1.2969 2.3281 4.4062 …]` — byte-identical to
+the model. So **the q/k-norms are NOT the bug** (verified). The 91364-vs-62865
+divergence must come from the RoPE table, the attention kernel, or a later host
+op (residual/SiLU/final-norm).
 
 ## Repro
 
