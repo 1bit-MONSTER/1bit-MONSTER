@@ -318,3 +318,22 @@ The real 0.6B FFN (H=1024, IM=3072) and the qk_norm_rope chain both need N-tilin
   every N-tile (loop K outer, N inner) to avoid re-streaming A per N-tile.
 - W-concat for non-uniform N (W_gu N=6144, W_d N=1024) tiles both as 64×128 and
   forwards W_d through the GU core (same copy pattern as the proof-of-concept).
+
+## FFN scaling to real dims (H=1024, IM=3072) — A re-stream via repeat_count
+
+The N-tiling is validated (2 N-tiles, K-outer/N-inner holds both C tiles). At the
+real dims the GU C is 48 N-tiles (DIM_N=128) = 192 KB, which does NOT fit a core,
+so the "hold all N-tiles" K-outer loop can't scale. The real-dims structure is
+**N-outer / K-inner** (one C N-tile at a time, 4 KB):
+
+- for nt in 0..47: C[nt] += sum_kt A[kt] x W_gu[kt][nt], then release C[nt] to SiLU.
+- This re-reads A once per N-tile (48x). The AN handoff (norm -> GU) must therefore
+  be **re-streamable**: use the object-fifo `set_repeat_count(n_n_gu)` (48), which
+  re-delivers the AN K-tiles to the GU per N-tile without re-running the norm.
+- The W stream order flips to N-outer/K-inner (W_gu[nt][kt]) to match the loop;
+  the 48-tile N-loop is Python-unrolled (the `c[nt]` list-index constraint).
+- The SiLU and D GEMM stay per-N-tile (silu_split reads gate+up N-tiles, D reads
+  silu K-tiles), so the whole chain is a 4-stage N-tiled pipeline.
+
+The repeat_count mechanism is the aie.objectfifo `repeat_count` attribute (see
+mlir-aie test/python/objFifo.py, `set_repeat_count(4)` -> `repeat_count = 4`).
