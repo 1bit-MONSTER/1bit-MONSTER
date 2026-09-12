@@ -176,18 +176,38 @@ struct DeepSeekV4mHCState {
 };
 
 // ─── Compressor (CSA/HCA) ─────────────────────────────────────────────────────
-// Window-batched compressor forward, reproducing the reference exactly:
-//   kv   = x @ kv_proj^T                 [T, 2*head_dim]
-//   gate = x @ gate_proj^T + position_bias
-//   per window w: for CSA the slots are [previous window's Ca | this window's
-//   Cb] over 2*rate rows (Ca = columns [0,head_dim), Cb = [head_dim,2*head_dim));
-//   HCA is single-series and has no overlap — just this window's `rate` rows
-//   (measured: the HCA checkpoint tensors are [head_dim, H], half the CSA width).
-//   Slot weights are softmax(gate) per column; window 0's Ca half is kv=0,
-//   gate=-inf (softmax weight 0); then RMSNorm and the "compress" RoPE at
-//   position w*rate.
-// `x` is [T, H] — the COLLAPSED attention-site input, not the mHC streams.
-// Returns [n_win][head_dim], n_win = T / rate (0 when rate <= 0 or T < rate).
+// NOTE ON THE TWO ENTRY POINTS: `deepseek_v4_compressor_forward` below is the
+// window-batched form used by the P1.1 stage-1 gate (it matches the reference's
+// single full-sequence forward). Decoding needs the *incremental* form:
+// `deepseek_v4_compressor_step` buffers one token at a time and emits an entry
+// the moment the window fills, exactly as the reference's cache does
+// (`store_compression_weights` -> usable prefix -> one entry, Ca carried over in
+// `overlap_kv`). Both must produce the same entries; the incremental one is what
+// the attention path will consume (gated by cmp_deepseek_v4_compressor_incremental).
+struct DeepSeekV4CompState {
+    int n_buf = 0;              // tokens buffered toward the current window
+    int n_entries = 0;          // entries emitted so far
+    std::vector<float> buf_kv;  // [rate * series*hd] pending rows
+    std::vector<float> buf_gate;
+    std::vector<float> prev_ca, prev_ca_gate;  // previous window's Ca (CSA only)
+    std::vector<float> entries;  // [n_entries * hd], emitted in order
+    void init(int rate, int series, int hd) {
+        const size_t rows = (size_t)(rate > 0 ? rate : 1) * series * hd;
+        buf_kv.assign(rows, 0.0f);
+        buf_gate.assign(rows, 0.0f);
+        prev_ca.assign((size_t)(rate > 0 ? rate : 1) * hd, 0.0f);
+        prev_ca_gate.assign((size_t)(rate > 0 ? rate : 1) * hd, -INFINITY);
+        entries.clear();
+        n_buf = 0;
+        n_entries = 0;
+    }
+};
+
+// Feed one token (its collapsed attention-site hidden vector `x_token` [H]).
+// Returns true when this token completed a window and appended an entry.
+bool deepseek_v4_compressor_step(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg, int rate,
+                                 const float* x_token, DeepSeekV4CompState& st);
+
 std::vector<float> deepseek_v4_compressor_forward(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
                                                   int rate, const std::vector<float>& x, int T);
 

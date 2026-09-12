@@ -206,3 +206,78 @@ the compressor maths is correct but is not yet wired into attention (that is sta
   end-to-end gate at state 2 (16/20 → ≥18/20) and the per-layer bound.
 * Then the same for a real checkpoint's `compress_ratios` + `*_source_layer_ids` (two-level candidate
   selection), which needs the per-layer source wiring described in `SPEC-v41-modules.md` §3.
+
+---
+
+# P1.1 stage 2 — the Lightning Indexer, and what it can be gated on (≤1.3e-8)
+
+**Implemented** (`deepseek_v4_indexer_scores` + `deepseek_v4_indexer_topk`): the indexer's own 2-series
+compression at `index_head_dim`, the query projection off `q_residual` with the compress-rope, the
+ReLU-weighted head sum `Σ_h relu(q_h·K) · w_h` (both scaled by `index_head_dim^-0.5` and
+`index_n_heads^-0.5`), the causal rule `s < (t+1)/rate`, and the reference's `-1` sentinel.
+
+| check | result |
+|---|---|
+| score table `[64,16]` vs the reference's own scorer | **max&#124;Δ&#124; = 1.304e-08**, mean 9.488e-10 → PASS |
+| selection validity (order-independent: every pick ≥ the k-th best visible score) | **PASS** |
+| index rows differing in content | 7, **all tie-explained, 0 unexplained** |
+| index rows differing only in the ORDER of equal-scored entries | 57 of 64 |
+
+**The finding that shaped the gate: the indexer cannot be gated on its indices.** The scorer applies
+`ReLU` per head before summing, so **26.5 % of the fixture's scores are exactly 0.0**; `torch.topk`'s
+order among tied entries — and sometimes *which* tied entry takes the k-th slot — is
+implementation-defined. An index-equality gate would therefore fail a correct implementation, which is
+exactly what the first run showed (463/512, first mismatch at token 18 slot 2 between two entries that
+both score 0.0). `Testing/cmp_deepseek_v4_indexer.cpp` now prints that comparison as **ADVISORY and exits
+0**; the gate is `Testing/cmp_deepseek_v4_indexer_scores.py` (score table + order-independent selection
+validity). Generalisable form: *gate the continuous quantity, not the argmax-derived artefact, when the
+argmax has ties.*
+
+Note the scores can be NEGATIVE (the head weights are signed), so "zero fraction" above is about the
+per-head `relu` zeroing dots, not the summed score; the ties come from every head's dot being negative.
+
+## Still open in P1.1
+
+* **Stage 3 — attention integration**: concatenate the sliding window with the compressed entries, apply
+  the per-query block mask (HCA: causality; CSA: causality ∩ indexer validity), keep the per-head sinks,
+  and conjugate-rotate the output. This is what flips the end-to-end gate at state 2 (16/20 → ≥18/20)
+  and the per-layer bound, and it needs per-layer compressor/indexer *incremental state* (a pending
+  partial window + the previous window's Ca slice + the emitted entries), which is the substantive part
+  of the work.
+
+---
+
+# P1.1 stage 3 (prep) — the incremental compressor state, and a sliding-window control
+
+**Decoding never gets a batch.** Stage 1's compressor gate runs on a full-sequence call; a token-at-a-time
+decode must buffer a partial window and emit an entry the moment the window fills — the same thing the
+reference's own cache does (`store_compression_weights` → usable prefix → emit, with Ca carried in
+`overlap_kv`). `deepseek_v4_compressor_step` + `DeepSeekV4CompState` implement that, and
+`Testing/cmp_deepseek_v4_compressor_incremental.cpp` feeds the fixture's prompt **token by token** and
+compares the emitted entries with the *batched* reference file — i.e. it proves the state machine
+reproduces the full-sequence reference, which is exactly what stage 3 needs.
+
+| layer | rate / series | tokens | entries | incremental vs batched reference |
+|---|---|---|---|---|
+| CSA L1 | 4 / 2 | 64 | 16 | **max&#124;Δ&#124; = 4.768e-07** PASS |
+| HCA L2 | 128 / 1 | 160 | 1 | **max&#124;Δ&#124; = 5.364e-07** PASS |
+
+**Control: the sliding path under real truncation.** Every previous sliding validation used a window
+larger than the prompt (32 / 5 tokens), so the window never truncated and the semantics were untested
+where they would matter most for the compressed fixture. An all-sliding fixture with **window 4 and 64
+tokens** now checks it: end-to-end **20/20** (top1 296 = 296) and per-layer worst **1.304e-08** → PASS.
+So the base attention (truncation, sinks, softmax scale, conjugate output rotation) is correct *with
+truncation*, and any remaining divergence on the compressed fixture is attributable to the
+compressor/indexer integration rather than to the sliding base.
+
+## What remains in stage 3
+
+1. **Attention concatenation** per compressed layer: `kv = [sliding window | compressed entries]`, then
+   the per-query mask over the compressed slots (HCA: causality only; CSA: causality ∩ indexer
+   validity), with the per-head sinks and the conjugate rotation already in place.
+2. **The indexer's incremental state**: its compression is structurally the same 2-series machine
+   (at `index_head_dim`), so it should reuse `DeepSeekV4CompState` parameterised by the indexer's
+   weights rather than a second copy — plus the per-token selection (top-k over the entries visible at
+   that query, `index_topk`, `-1` below the causal threshold).
+3. Then the end-to-end gate at state 2 should flip (16/20 → ≥18/20) and the per-layer bound should hold
+   at 1e-6 — with the *scores* gate (not the index order) as the indexer's own check.

@@ -366,6 +366,76 @@ void DeepSeekV4Model::clear() {
 }
 
 // ─── compressor (CSA/HCA) ─────────────────────────────────────────────────────
+bool deepseek_v4_compressor_step(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg, int rate,
+                                 const float* x_token, DeepSeekV4CompState& st) {
+    using namespace ds4math;
+    const int H = cfg.hidden_size, hd = cfg.head_dim;
+    if (rate <= 0 || l.cp_rate == 0 || !x_token) return false;
+    const int series = (l.cp_series == 2) ? 2 : 1;
+    const int out_w = series * hd;
+    const int n_slots = series * rate;
+
+    // rows for this token, with the position bias of its slot INSIDE the window
+    float* row_kv = &st.buf_kv[(size_t)st.n_buf * out_w];
+    float* row_gate = &st.buf_gate[(size_t)st.n_buf * out_w];
+    for (int j = 0; j < out_w; j++) {
+        const float* wk = &l.cp_kv[(size_t)j * H];
+        const float* wg = &l.cp_gate[(size_t)j * H];
+        float a = 0.0f, b = 0.0f;
+        for (int i = 0; i < H; i++) { a += x_token[i] * wk[i]; b += x_token[i] * wg[i]; }
+        row_kv[j] = a;
+        row_gate[j] = b + l.cp_pos_bias[(size_t)st.n_buf * out_w + j];
+    }
+    st.n_buf++;
+    if (st.n_buf < rate) return false;
+
+    // window complete: slots = [previous window's Ca | this window's Cb]
+    std::vector<float> new_kv((size_t)n_slots * hd), new_gate((size_t)n_slots * hd);
+    if (series == 2) {
+        for (int a = 0; a < rate; a++)
+            for (int d = 0; d < hd; d++) {
+                new_kv[(size_t)a * hd + d] = st.prev_ca[(size_t)a * hd + d];
+                new_gate[(size_t)a * hd + d] = st.prev_ca_gate[(size_t)a * hd + d];
+                new_kv[(size_t)(rate + a) * hd + d] = st.buf_kv[(size_t)a * out_w + hd + d];
+                new_gate[(size_t)(rate + a) * hd + d] = st.buf_gate[(size_t)a * out_w + hd + d];
+            }
+    } else {
+        for (int a = 0; a < rate; a++)
+            for (int d = 0; d < hd; d++) {
+                new_kv[(size_t)a * hd + d] = st.buf_kv[(size_t)a * out_w + d];
+                new_gate[(size_t)a * hd + d] = st.buf_gate[(size_t)a * out_w + d];
+            }
+    }
+    std::vector<float> pooled(hd);
+    for (int d = 0; d < hd; d++) {
+        float mx = -INFINITY;
+        for (int a = 0; a < n_slots; a++) mx = std::max(mx, new_gate[(size_t)a * hd + d]);
+        float sum = 0.0f, acc = 0.0f;
+        for (int a = 0; a < n_slots; a++) {
+            float e = std::exp(new_gate[(size_t)a * hd + d] - mx);
+            sum += e;
+            acc += e * new_kv[(size_t)a * hd + d];
+        }
+        pooled[d] = acc / sum;
+    }
+    const size_t off = st.entries.size();
+    st.entries.resize(off + hd);
+    rmsnorm(&st.entries[off], pooled.data(), l.cp_norm.data(), hd, cfg.rms_norm_eps);
+    // entry w sits at token position w*rate — the reference's `first_window_position
+    // + w*rate`, i.e. the count of entries already emitted times the rate.
+    rope_partial(&st.entries[off], hd, cfg.qk_rope_head_dim, st.n_entries * rate,
+                 cfg.compress_rope_theta);
+    st.n_entries++;
+    if (series == 2)
+        for (int a = 0; a < rate; a++)
+            for (int d = 0; d < hd; d++) {
+                st.prev_ca[(size_t)a * hd + d] = st.buf_kv[(size_t)a * out_w + d];
+                st.prev_ca_gate[(size_t)a * hd + d] = st.buf_gate[(size_t)a * out_w + d];
+            }
+    st.n_buf = 0;
+    return true;
+}
+
 std::vector<float> deepseek_v4_compressor_forward(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
                                                   int rate, const std::vector<float>& x, int T) {
     using namespace ds4math;
