@@ -3795,12 +3795,15 @@ struct Bf16Ctx {
         std::vector<int> Wqkv(NC), Wo(NC), Wgu(NC), Wd(NC);
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV) == 0) {
             bf16mm_set_attn_qout(NH * HD);
-            // KV cache region stride is model-dependent (FLM allocates the KV BO
-            // per model): 8MB (MAX_L=8192) for H<=2048, 12MB (12288) for H=2560,
-            // 24MB (24576) for H=4096 — measured from FLM's prefill captures.
+            // KV cache region stride is baked into the captured attention ELF
+            // (region = MAX_L x 4 heads x HD x 2 bytes): the NH=16 ELF was
+            // captured at MAX_L=8192 -> 8MB; the NH=32 ELF (4B/8B) at
+            // MAX_L=4096 -> 4MB. Must match the ELF, not the model's decode
+            // MAX_L (the 4B/8B whole-layer path uses 12/24MB, but the standalone
+            // attention ELF uses 4MB).
             uint32_t kv_region = 4194304;
-            if (H == 2560) kv_region = 6291456;
-            else if (H == 4096) kv_region = 12582912;
+            if (H == 2560) kv_region = 2097152;
+            else if (H == 4096) kv_region = 2097152;
             bf16mm_set_attn_kv_region(kv_region);
             // layer_bo_bytes must be read AFTER prefill_init (it needs the loaded
             // model; before init g_bf16_mw is null -> the 10MB 0.6B fallback).
