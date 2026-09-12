@@ -367,3 +367,45 @@ now exercised**.
 With that, stage 3's own gates are: exact (≤1.9e-08) on rd-8 fixtures at the default `index_topk = 8`
 for **both** the sliding and compressed stacks, with the tie-driven selection difference documented as
 the only remaining, implementation-defined divergence.
+
+---
+
+# P1.2 scoping — the GGUF path, measured against the tree (and a trap defused)
+
+P1.2 is "GGUF `blk.*` aliases", i.e. running a real checkpoint from the quantized format the fleet
+actually uses. Scoped from the tree rather than assumed:
+
+* **The loader is HF-safetensors-only.** `src/deepseek_v4.cpp` maps `model.layers.N.*` names; the header
+  says GGUF aliases are not handled. GGUF `blk.*` handling for other architectures lives in the *backend*
+  files (`src/backend_generic.cpp`, `backend_hip_1bp.cpp`, `backend_mamba1.cpp`, …), not in a per-arch
+  loader, so there is nothing to extend — a V4 GGUF path is new code.
+* **The dequantisation primitives already exist**: `src/gguf_reader.cpp` carries llama.cpp-ported
+  `dequant_q4_0/q4_1/q5_0/…`. Reuse is possible; it is the *wiring plus metadata* that is missing.
+* **GGUF does not escape the residency problem.** A GGUF is quantized on disk but
+  `GgufReader::get_tensor_f32` materialises f32 — for the 284B/13B-active V4 class that is the same wall
+  as the fp8 checkpoint (166.9 GB on disk). So P1.2 alone does not produce a runnable real checkpoint;
+  P1.3 still needs WS-07/WS-11 staging. Worth stating because "serve it from GGUF" *sounds* like it
+  solves the memory limit and does not.
+* **The artifact that would have made this cheap is gone**: the 82.7 GB DeepSeek-V4-Flash IQ2XXS GGUF
+  that was on strixhalo is no longer there (only Zaya/Qwen GGUFs remain), so a real-checkpoint test needs
+  a download or a conversion.
+
+## Trap defused: `docs/research/deepseek-v4-flash-reverse-engineering.md`
+
+That report **describes the fictional V4 design** (MLA + `kv_lora_rank` + a 4×4 mHC mix matrix) — the
+very design `include/deepseek_v4.h` names as what the previous implementation got wrong — and its
+checklist claims as **done** a GGUF loader in `src/deepseek_v4.cpp` that does not exist. Its `blk.*`
+name table is marked hypothetical **by the report itself**. A correction is now at its head (dated,
+original kept) pointing at the authoritative sources; the quantisation notes stay useful, the layout and
+names do not. Anyone starting P1.2 from that file would have built the wrong loader.
+
+## Concrete P1.2/P1.3 task shape
+
+1. GGUF metadata → `DeepSeekV4Config` (arch `deepseek_v4`, hyperparameters, `compress_ratios`).
+2. `blk.N.*` → the layer fields of `DeepSeekV4Layer` **plus the compressor/indexer tensors** — note that
+   whether a converted GGUF even *contains* CSA/HCA compressor weights is unverified, and a conversion
+   that drops them makes compressed layers unrunnable. Verify against a real file's tensor list before
+   writing the map.
+3. Dequantisation wiring (reuse `gguf_reader`), with the f32-residency ceiling stated up front.
+4. Then P1.3 proper: the streamed, quantized path (WS-07/WS-11), where `ue8m0`/fp4 block scales are the
+   new loader requirement.
