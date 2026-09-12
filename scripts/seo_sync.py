@@ -157,10 +157,27 @@ def _meta_pair(m, covered, tokens):
 
 
 def _pct_claim(m, covered, with_arch, suffix_groups):
-    """Percentage claims only move when coverage actually drops below 100%."""
+    """Percentage claims only move when coverage actually drops below 100%.
+
+    suffix_groups is not decoration: the two callers capture the number in different
+    positions, and rebuilding as g[0] + pct + g[-1] is only correct for one of them.
+
+      "N% HuggingFace coverage"        2 groups. Group 0 IS the number, and the '%'
+                                       sits outside the match, so _pct()'s own '%'
+                                       supplies it -- including g[0] as well re-emitted
+                                       the OLD number ahead of the new one, so every
+                                       run prepended another copy and the claim grew
+                                       without bound ("10099.9799.97...% HuggingFace
+                                       coverage"; 12 such spans had accumulated on
+                                       main). No prefix to preserve here.
+      "<span ...>N</span>..."          3 groups. Group 0 is leading MARKUP, which must
+                                       be preserved.
+    """
     if covered >= with_arch:
         return m.group(0)
     g = m.groups()
+    if suffix_groups == 2:
+        return _pct(covered, with_arch) + g[-1]
     return g[0] + _pct(covered, with_arch) + g[-1]
 
 
@@ -194,8 +211,13 @@ def _build_patterns(tokens, arch, covered, with_arch):
         # monster-v2 lead "317,310 arch-bearing checkpoints resolve to 552 tokens"
         (re.compile(r"(\d[\d,]*)( arch-bearing checkpoints resolve to )(\d[\d,]*)( tokens,)"),
          lambda m: _meta_pair(m, covered, tokens)),
-        # percentage claims only move when coverage drops below 100%
-        (re.compile(r"(\d+(?:\.\d+)?)%( HuggingFace coverage)"),
+        # percentage claims only move when coverage drops below 100%.
+        # [0-9][0-9.]* (not \d+(?:\.\d+)?) so the match also swallows the malformed
+        # leading runs this bug already wrote into site/*.html ("10099.9799.97...%") --
+        # with the narrow pattern the regex would match only the trailing "99.97" and
+        # leave the garbage in front of a corrected value. Greedy, but digits and dots
+        # cannot run past the '%' into markup.
+        (re.compile(r"([0-9][0-9.]*)%( HuggingFace coverage)"),
          lambda m: _pct_claim(m, covered, with_arch, 2)),
         (re.compile(r"(<span class=\"n\">)(\d+(?:\.\d+)?)(</span><span class=\"l\">checkpoints mapped</span>)"),
          lambda m: _pct_claim(m, covered, with_arch, 3)),
