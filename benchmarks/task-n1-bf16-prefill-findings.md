@@ -237,6 +237,28 @@ stale/for another config, or `RuntimeLayerEngine`'s BO packing differs from the
 runtime. That is the next thing to diff (its per-layer weight BOs vs FLM's live
 `arg4` BOs already captured in `/tmp/cap_vv`).
 
+
+## FLM arg4 = dequant'd W, but with a DIFFERENT 4-bit value
+
+FLM's `arg4` first 32 bytes `[207,59,238,59,215,59,…]` are **not present anywhere**
+in the model.q4nx payload (searched layer-0 tensors + first 500 MB) — so arg4 is
+a *derived* bf16 tensor, i.e. the in-kernel dequant output (consistent with its
+65239 distinct values).
+
+Decoding it against tile-0 (`scale[0]=0.0045776`, `min[0]=-0.0302734`):
+
+| element | value | implied v | tile nibble |
+|---|---|---|---|
+| FLM W[0] | 0x3bcf | **7.99 ≈ 8** | tile data[1] **high** nibble = 8 |
+| bridge W[0] | 0x3ae8 | **7.00** | tile data[0] **low** nibble = 7 |
+
+And FLM's next 7 values imply `v ≈ [8.2, 8.05, 7.76, 8.17, 8.56, 7.6, 8.03]`
+— clustered at 8 — vs the tile's nibble sequence `[7,2,13,8,6,9,4,10]`.
+
+So FLM's dequant output is **not** the element-linear `scale*v+min` we produce:
+either its nibble→element mapping is transposed/tiled differently, or arg4 is an
+intermediate. **This is the core remaining question for task-n1.**
+
 ## Repro
 
 ```
