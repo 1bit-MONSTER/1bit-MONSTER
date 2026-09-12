@@ -48,18 +48,25 @@ extern "C" void rms_reduce_f32(float *__restrict A_tile, float *__restrict ss) {
     }
 }
 
-// Normalize one K-tile: out = bf16(clamp(A) * invsqrt(ss/H+eps) * gamma[i]).
+// Normalize one K-tile: out = bf16(clamp(A) * invsqrt(ss/H+eps)).
 // gamma is per-column; for the proof-of-concept fused build the learned gamma
 // stream is dropped (gamma=1.0) to stay within the shim's 2 MM2S DMA channels
-// (A + W already use both). Byte-exact learned-gamma needs a 3rd input channel
-// (follow-up: fold gamma into the A or W stream, or a 2nd shim column).
+// (A + W already use both). Byte-exact learned-gamma needs a 3rd input channel.
+//
+// OUT LAYOUT: the matmul's aie::mmul consumes A as 4x8 microtiles, so the
+// normalized A_norm is written MICROTILED (tile (r/4, c/8) at
+// (r/4*(K/8)+c/8)*32 + (r%4)*8 + c%8), NOT row-major. This matches the
+// standalone GEMM's A shim-DMA tap (sizes=[m//4,k//8,4,8] strides=[4K,8,K,1]).
 extern "C" void rms_scale_f32_bf16(float *__restrict A_tile, float *__restrict ss,
                                    bfloat16 *__restrict out) {
     uint16_t *o = reinterpret_cast<uint16_t *>(out);
     for (int r = 0; r < M_TILE; r++) {
         float ir = aie::invsqrt(ss[r] / (float)H + 1e-5f);
-        for (int i = 0; i < K_TILE; i++)
-            o[r * K_TILE + i] = f32_to_bf16_rne(clamp_nonfinite(A_tile[r * K_TILE + i]) * ir);
+        int tr = r / 4, rr = r % 4;
+        for (int tc = 0; tc < K_TILE / 8; tc++)
+            for (int cc = 0; cc < 8; cc++)
+                o[(tr * (K_TILE / 8) + tc) * 32 + rr * 8 + cc] =
+                    f32_to_bf16_rne(clamp_nonfinite(A_tile[r * K_TILE + tc * 8 + cc]) * ir);
     }
 }
 

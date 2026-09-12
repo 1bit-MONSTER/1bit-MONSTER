@@ -119,15 +119,18 @@ def fused(M, H, N, k):
                                                  sizes=[1, 1, M, k], strides=[1, 1, H, 1],
                                                  issue_token=True)
                     dma_start_task(at); dma_await_task(at); dma_free_task(at)
-            # W K-tiles
+            # W K-tiles (microtiled 8x8 — the matmul's B layout)
             for kt in range(n_k):
                 wt = shim_dma_single_bd_task(W_s, W, offset=kt * k * N,
-                                             sizes=[1, 1, 1, k * N], strides=[1, 1, 1, 1],
+                                             sizes=[k // 8, N // 8, 8, 8],
+                                             strides=[8 * N, 8, N, 1],
                                              issue_token=True)
                 dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
-            # C out
-            ct = shim_dma_single_bd_task(C_s, C, offset=0, sizes=[1, 1, 1, M * N],
-                                         strides=[1, 1, 1, 1], issue_token=True)
+            # C out (microtiled 4x8 — the matmul's C layout)
+            ct = shim_dma_single_bd_task(C_s, C, offset=0,
+                                         sizes=[M // 4, N // 8, 4, 8],
+                                         strides=[4 * N, 8, N, 1],
+                                         issue_token=True)
             dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
 
 
