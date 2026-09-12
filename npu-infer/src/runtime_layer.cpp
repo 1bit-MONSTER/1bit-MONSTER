@@ -323,10 +323,12 @@ bool RuntimeLayerEngine::prefill_batch(const int* tokens, int n) {
 }
 
 bool RuntimeLayerEngine::forward(int ctx_len) {
+    auto t_fwd0 = std::chrono::steady_clock::now();
     if (!ensure_layer_kernel(ctx_len)) return false;
     // RoPE table for the current position (pos = ctx_len-1), every layer
     for (int L = 0; L < cfg_.num_layers; L++)
         update_rope_i6(*i6_bos_[L], ctx_len - 1);
+    auto t_rope = std::chrono::steady_clock::now();
     // per-ctx kv dump for the layout diff (RT_KV_DUMP_DIR)
     if (const char* kd = getenv("RT_KV_DUMP_DIR")) {
         char kf[512];
@@ -465,6 +467,14 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
                 double bms = std::chrono::duration<double, std::milli>(t_exec0 - t_build0).count();
                 double ems = std::chrono::duration<double, std::milli>(t_done - t_exec0).count();
                 fprintf(stderr, "[runlist] build=%.2fms exec=%.2fms\n", bms, ems);
+            }
+            if (getenv("NPU_FWD_TIMING")) {
+                auto t_done = std::chrono::steady_clock::now();
+                fprintf(stderr, "[fwd] rope=%.2f build=%.2f exec=%.2f total=%.2f ms\n",
+                        std::chrono::duration<double, std::milli>(t_rope - t_fwd0).count(),
+                        std::chrono::duration<double, std::milli>(t_exec0 - t_build0).count(),
+                        std::chrono::duration<double, std::milli>(t_done - t_exec0).count(),
+                        std::chrono::duration<double, std::milli>(t_done - t_fwd0).count());
             }
         } catch (const std::exception& e) {
             fprintf(stderr, "RuntimeLayer: runlist FAILED: %s\n", e.what());

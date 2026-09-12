@@ -141,6 +141,32 @@ writes + 28 `sync` calls/token), and the runlist `build` (29 runs × 8 `set_arg`
 `rl.wait()` in `forward()`, so the next token's `embed` + RoPE writes + runlist
 `build` can run between them.
 
+
+### Precise forward() breakdown (NPU_FWD_TIMING=1)
+
+```
+[fwd] rope=0.51 build=0.78 exec=12.53 total=13.87 ms   (steady state, 6 tokens)
+```
+
+| piece | ms/token | overlappable with current exec? |
+|---|---|---|
+| **GPU exec** (29 runs, 1 runlist) | **12.5** | — (it *is* the device) |
+| runlist `build` (29×8 `set_arg`) | 0.8 | yes (pointers only) |
+| RoPE writes (28 BO writes + syncs) | 0.5 | yes, with a double-buffered i6 |
+| argmax (logits sync 304 KB + scan) | ~1.5 | no (needs this token's logits) |
+| `embed` (memcpy + sync) | ~0.5 | no (needs this token's argmax) |
+| **total** | **~16.0** (62 tok/s) | |
+
+**Honest ceiling:** only rope+build (~1.3 ms) is genuinely overlappable; the
+argmax and embed sit in the strict token dependency chain
+(`logits → argmax → embed → next exec`). Best case ≈ 14.7 ms ≈ **68 tok/s**
+vs FLM's 73.58. The remaining ~1.3 ms is *host-code speed*, and the residual
+~12.5 ms is device time shared with FLM.
+
+So the decode deficit decomposes as: **~1.3 ms overlap-able scheduling**,
+**~1.3 ms host-code speed**, rest device. Closing it fully needs both the
+rope/build overlap AND a faster host path (and/or a shorter device schedule).
+
 ## Next
 
 1. TTFT: overlap the first decode step with the prefill tail (the engine already
