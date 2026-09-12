@@ -174,8 +174,8 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8, n_aie_rows=4, BATCH_SIZE=5):
                             at = shim_dma_single_bd_task(
                                 A_c[j], A,
                                 offset=a_off,
-                                sizes=[m // 8, k // 8, 8, 8],
-                                strides=[8 * K, 8, K, 1],
+                                sizes=[m // 4, k // 8, 4, 8],
+                                strides=[4 * K, 8, K, 1],
                                 issue_token=True)
                             dma_start_task(at)
                             at_list.append(at)
@@ -202,8 +202,8 @@ def my_matmul(M, K, N, m, k, n, n_aie_cols=8, n_aie_rows=4, BATCH_SIZE=5):
                     ct = shim_dma_single_bd_task(
                         C_s[c], C,
                         offset=c_off,
-                        sizes=[rm // 8, n // 8, 8, 8],
-                        strides=[8 * N, 8, N, 1],
+                        sizes=[rm // 4, n // 8, 4, 8],
+                        strides=[4 * N, 8, N, 1],
                         issue_token=True)
                     dma_start_task(ct)
                     c_tasks.append(ct)

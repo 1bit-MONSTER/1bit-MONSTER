@@ -104,6 +104,28 @@ build_tmp/bin/aiecc --peano=... --aietools=build_tmp --aie-generate-xclbin ... d
    (a) a bf16 MLIR wrapper + aiecc → xclbin, (b) the in-kernel RMSNorm fused
    in front of the GEMM.
 
+## Validation status (2026-09-12)
+
+`bench_gemm_bf16_analytical.cpp` (new harness, same analytical method as the
+int8 one) against `bf16_qkv.xclbin` (M=128 K=1024 N=4096):
+
+| pass | result |
+|---|---|
+| all-ones (dataflow) | **PASS** — 0/524288 wrong |
+| coord-dep (placement) | **PASS** — 0/524288 wrong (after the tap fix) |
+
+Throughput: **2.456 ms/launch, 437.1 GOP/s** (vs int8 ~675 GOP/s; bf16 is
+2-byte and uses the 4x8x8 mmul).
+
+**Root cause + fix (resolved)**: the bf16 mmul is `4x8x8` (r=4 M-tile) vs
+int8's `8x8x8` (r=8). The MLIR A/C shim-DMA taps in `n1_core_bf16_v1.py` were
+copied verbatim from the int8 v27 generator, hardcoding **8×8 microtiles**
+(`sizes=[m//8, k//8, 8, 8]`). The bf16 kernel reads/writes **4×8** M-tiles, so
+the dataflow was right but the within-tile row placement was scrambled (360448
+wrong, a rotation within each 8-row group). Fix: A tap `sizes=[m//4, k//8, 4, 8]`
+`strides=[4*K, 8, K, 1]` and C tap `sizes=[rm//4, n//8, 4, 8]`
+`strides=[4*N, 8, N, 1]` (B's t=8 N-tile is unchanged). Re-validated PASS.
+
 ## Build flow (verified fk-1, 2026-09-12)
 
 ```
