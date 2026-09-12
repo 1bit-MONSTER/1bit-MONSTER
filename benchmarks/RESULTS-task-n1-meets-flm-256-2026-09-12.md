@@ -9,10 +9,10 @@ the native path's maximum context (256 tokens).
 
 | path | prefill time | throughput | boot token |
 |---|---|---|---|
-| **native bf16** (`NPU_RUNLIST=0 NPU_PREFILL_BF16=1`) | **~430–477 ms** | **~540–600 tok/s** | 1614 |
-| FLM (`NPU_FLM_PREFILL=1`, i.e. `qwen3_npu::prefill`) | ~557–645 ms | ~400–460 tok/s | 1614 |
+| **native bf16** (`NPU_RUNLIST=0 NPU_PREFILL_BF16=1`) | **~358–373 ms** | **~690–715 tok/s** | 1614 |
+| FLM (`NPU_FLM_PREFILL=1`, i.e. `qwen3_npu::prefill`) | ~570–610 ms | ~420–450 tok/s | 1614 |
 
-**Native is ~25% faster than FLM at 256 tokens, with byte-identical output.**
+**Native is ~38% faster than FLM at 256 tokens, with byte-identical output.**
 
 ## Timing breakdown (native, 256 tok)
 
@@ -32,6 +32,9 @@ Prefill: 429ms [GEMM 55ms, attn 114ms, conv+other 426ms]
    (`3c3ad3bfd`) and q/k/v GEMM split batch-1 clobber (`1eea48b2a`); reverted my
    own wrong RoPE change (`b6a6f4c4c`). → byte-exact parity at n=1..256.
 3. OpenMP-parallelized the host math (`444ced7c3`, `ff709f092`) — 603 → 430 ms.
+4. Made the GEMM launches truly async (`ae145bf1d`) — `safe_run` was blocking
+   inside, so the 'software pipeline' never overlapped device with host math;
+   `create_run`+`start()`+deferred `wait()` recovered 430 → ~365 ms.
 
 ## Remaining honest gaps
 
