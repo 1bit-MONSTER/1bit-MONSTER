@@ -36,10 +36,11 @@ WS-00 Baseline & measurement ── feeds every validation below
    ├─► WS-07 MoE decode & spec (DraftExpert, PagedWeight, AngelSpec)
    ├─► WS-08 MLA + KV cache (QK-Normed MLA, JoLT, Lynx) — P0 gauge probe DONE
    ├─► WS-09 Router unification (DOPS)
-   └─► WS-10 Metal/M5 + MLIR toolchain (BaseRT, AIE4ML)
+   ├─► WS-10 Metal/M5 + MLIR toolchain (BaseRT, AIE4ML)
+   └─► WS-13 Arch-gap closure (DeepSeek V4/V4.1 + Mamba-3) — scoped, no papers
 ```
 
-Dependencies: WS-01 needs P0.5 → WS-02/03 need the 40-column decision (P0.3) + WS-00 harness → WS-05 P1 needs ppl harness (WS-00) → WS-07 needs the router decision (P0.2) → WS-09 is P0.2's follow-through.
+Dependencies: WS-01 needs P0.5 → WS-02/03 need the 40-column decision (P0.3) + WS-00 harness → WS-05 P1 needs ppl harness (WS-00) → WS-07 needs the router decision (P0.2) → WS-09 is P0.2's follow-through → WS-13 P1 takes its weight path from WS-07/WS-11 and its format from WS-05.
 
 ---
 
