@@ -22,6 +22,17 @@
 # ── Paths ─────────────────────────────────────────────────────────────────
 # %h/1bit-MONSTER must match your checkout (repo root). Change if the clone
 # lives elsewhere. Logs go to ~/.1bit/logs (override with CENSUS_WATCH_LOG_DIR).
+#
+# ── This must be a DEDICATED checkout ─────────────────────────────────────
+# The unit sets CENSUS_WATCH_REFRESH=1 so the checkout tracks origin/main: a
+# census running on a drifted tree reproduces an OLD decision (on 2026-09-11
+# ryzen's timer ran a feature-branch worktree 55 commits behind main, so the
+# daily alert printed the retired alias hint for four architectures main
+# classifies as SIGNIFICANT — "NOT an alias"). census-watch.sh refuses to
+# reset a checkout that is on a branch or carries local changes, so pointing
+# this at a working lane is safe: it prints a note and runs the current tree.
+# A dedicated detached checkout gets the refresh, e.g.
+#     git worktree add --detach ~/census-main origin/main
 
 [Unit]
 Description=1bit census: watch HF for new model classes the registry doesn't map
@@ -31,6 +42,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=%h/1bit-MONSTER
+Environment=CENSUS_WATCH_REFRESH=1
 ExecStart=%h/1bit-MONSTER/scripts/census-watch.sh
 StandardOutput=journal
 StandardError=journal
