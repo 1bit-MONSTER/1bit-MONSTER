@@ -280,6 +280,27 @@ dequant of this weight at all (its multiset overlaps ours by only 16%). All
 "dequant mismatch" claims built on `arg4` are hereby retracted — the dequant is
 not the bug.
 
+
+## Attention is a real divergence (valid prompt, boot @256)
+
+| attention | boot |
+|---|---|
+| bridge NPU `attn.xclbin` (embedded `attn_mha_256_nh16.elf`) | **91364** |
+| bridge CPU `attn_omp` (`NPU_ATTN_CPU=1`) | **79362** |
+| FLM `mha.xclbin` (inside `qwen3_npu`) | **62865** |
+
+Three different answers ⇒ the attention implementations genuinely differ, and at
+least one other stage differs too (the NPU-vs-CPU delta alone is 12k tokens).
+`libmha.so` exports only `npu_*_cmd`/`npu_sequence` helpers — there is **no
+`MHA` class in the FLM headers**, so FLM's attention cannot be re-used at the
+source level; byte-exact token parity for the *native reimplementation* would
+require replicating `qwen3_npu`'s internal mha sequence exactly.
+
+**To actually "match" FLM today, the only path that is by construction identical
+is the FLM-orchestrated prefill** (`NPU_FLM_PREFILL=1`, already implemented —
+it *is* `qwen3_npu::prefill`, boot 62865 reproduced). The native bf16 path is a
+different FP decomposition and should be judged on performance, not bit parity.
+
 ## Repro
 
 ```
