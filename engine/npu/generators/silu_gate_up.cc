@@ -42,11 +42,18 @@ static inline float sigmoid_fast(float x) {
 extern "C" void silu_gate_up(bfloat16 *__restrict gate_up, bfloat16 *__restrict silu_out) {
     uint16_t *gu = reinterpret_cast<uint16_t *>(gate_up);
     uint16_t *o = reinterpret_cast<uint16_t *>(silu_out);
+    // gate_up: M_TILE x 2*IM_TILE, MICROTILED 4x8 (the GEMM's C layout):
+    //   microtile (tr, j) at (tr*(2*IM_TILE/8) + j)*32 + rr*8 + cc.
+    //   gate = N-tiles 0..IM_TILE/8-1, up = N-tiles IM_TILE/8..2*IM_TILE/8-1.
+    // silu_out: M_TILE x IM_TILE, MICROTILED 4x8 (the D GEMM's A layout):
+    //   microtile (tr, tc) at (tr*(IM_TILE/8) + tc)*32 + rr*8 + cc.
     for (int r = 0; r < M_TILE; r++) {
+        int tr = r / 4, rr = r % 4;
         for (int i = 0; i < IM_TILE; i++) {
-            float g = bf16_to_f32(gu[r * 2 * IM_TILE + i]);
-            float u = bf16_to_f32(gu[r * 2 * IM_TILE + IM_TILE + i]);
-            o[r * IM_TILE + i] = f32_to_bf16_rne(g * sigmoid_fast(g) * u);
+            int tc = i / 8, cc = i % 8;
+            float g = bf16_to_f32(gu[(tr * (2 * IM_TILE / 8) + tc) * 32 + rr * 8 + cc]);
+            float u = bf16_to_f32(gu[(tr * (2 * IM_TILE / 8) + tc + IM_TILE / 8) * 32 + rr * 8 + cc]);
+            o[(tr * (IM_TILE / 8) + tc) * 32 + rr * 8 + cc] = f32_to_bf16_rne(g * sigmoid_fast(g) * u);
         }
     }
 }
