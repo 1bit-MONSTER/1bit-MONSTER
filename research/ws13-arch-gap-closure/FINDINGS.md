@@ -341,3 +341,29 @@ re-derived; the controlled `--index-topk` comparison carries the claim instead.
 `qk_rope_head_dim = 2` in the tiny config means the compress-vs-main rope theta is unobservable (single
 pair, `freq = 1`). Regenerating with a larger `partial_rotary_factor` (e.g. 0.5 → `rd = 8`) would
 exercise it, and would also make the indexer's tie structure less degenerate. Worth doing before P1.3.
+
+---
+
+# P1.1 stage 3, validation closed — the per-layer rope theta is now observable and load-bearing
+
+The stage-3 write-up had to flag one fix as *correct but unobservable*: with `qk_rope_head_dim = 2`
+(head_dim 16 × 0.125) a head has a single rope pair whose frequency is `theta^0 = 1` for **any** theta,
+so `compress_rope_theta` vs `rope_theta` made no difference to the numbers. The generator now takes
+`--rope-frac`, which also rewrites the per-type `rope_parameters` entries the reference's rotary actually
+reads.
+
+With `--rope-frac 0.5` (rd = **8**, four pairs, so the frequency spread is real):
+
+| fixture | end-to-end | per-layer worst |
+|---|---|---|
+| sliding, window 32 / 5 tokens, rd 8 | top1 **306 = 306**, 20/20 | **1.490e-08** PASS |
+| compressed, window 4 / 64 tokens, rd 8 | top1 **699 = 699**, 20/20 | **1.863e-08** PASS (all four states) |
+
+**And the control that makes the claim:** rebuilding with the compressed layers forced back to the main
+theta — a one-off build, not committed — gives state 2 = **4.545e-03** and state 3 = 5.061e-03 (FAIL at
+1e-6), i.e. ~250 000× the error. So the theta rule is not merely present, it is **load-bearing and
+now exercised**.
+
+With that, stage 3's own gates are: exact (≤1.9e-08) on rd-8 fixtures at the default `index_topk = 8`
+for **both** the sliding and compressed stacks, with the tie-driven selection difference documented as
+the only remaining, implementation-defined divergence.

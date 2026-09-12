@@ -65,6 +65,10 @@ def main():
     ap.add_argument("--prompt-len", type=int, default=0,
                     help="0 = the original 5-token prompt; >5 = seeded random ids")
     ap.add_argument("--window", type=int, default=0, help="0 = profile default")
+    ap.add_argument("--rope-frac", type=float, default=0.125,
+                    help="partial_rotary_factor; with head_dim=16, 0.125 gives rd=2 (ONE rope "
+                         "pair, freq = theta^0 = 1, so the compress-vs-main theta is invisible) "
+                         "while 0.5 gives rd=8 and makes the theta observable")
     ap.add_argument("--index-topk", type=int, default=0,
                     help="0 = config default (8); set large to make the indexer keep every "
                          "causal-visible entry, which removes tie-broken selection from the "
@@ -80,6 +84,7 @@ def main():
     window = args.window or DEFAULT_WINDOW[args.profile]
 
     cfg = DeepseekV4Config(
+        partial_rotary_factor=args.rope_frac,
         vocab_size=1000, hidden_size=64, moe_intermediate_size=32,
         num_hidden_layers=4, num_attention_heads=4, num_key_value_heads=1,
         head_dim=16, q_lora_rank=8, o_lora_rank=8,
@@ -91,6 +96,9 @@ def main():
         mlp_layer_types=["hash_moe", "hash_moe", "moe", "moe"],
         compress_rates=COMPRESS_RATES,
     )
+    for _t, _rp in (cfg.rope_parameters or {}).items():
+        if isinstance(_rp, dict):
+            _rp["partial_rotary_factor"] = args.rope_frac
     model = DeepseekV4ForCausalLM(cfg).eval()
     n_params = sum(p.numel() for p in model.parameters())
 
@@ -212,7 +220,8 @@ def main():
     indexer = sorted({k.split(".", 2)[-1] for k in sd if ".indexer." in k})
     print(f"profile={args.profile} params={n_params} layers={len(PROFILES[args.profile])}")
     print(f"  layer_types={PROFILES[args.profile]}")
-    print(f"  window={window} prompt_len={len(prompt)} weights={args.weights_dtype}")
+    print(f"  window={window} prompt_len={len(prompt)} weights={args.weights_dtype} "
+          f"rope_frac={args.rope_frac} (rd={int(cfg.head_dim * args.rope_frac)})")
     print(f"  compressor tensors: {compressor}")
     print(f"  indexer tensors:    {indexer}")
     print(f"  top1={int(logits_last.argmax())}  wrote {args.outdir}")
