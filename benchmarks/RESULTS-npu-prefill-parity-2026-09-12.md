@@ -40,6 +40,33 @@ FLM CSV (`bench_qwen3_0.6b_20260912.csv`):
 - **Decode is ~16 % behind** — the known open gap from task-3/4 (per-token
   session here: `flm_parity.sh` runs the default whole-layer decode path).
 
+
+## Catalogue table @ 1k context (on-box, `flm bench` bar)
+
+| model | native prefill tok/s | FLM prefill | prefill gap | native decode | FLM decode | decode gap | native TTFT | FLM TTFT |
+|---|---|---|---|---|---|---|---|---|
+| 0.6B | **1639 / 1818** | 1400.21 | **+17…+30 %** | 62 / 63 | 73.58 | −15.7 % | 1.276 | 0.702 |
+| 1.7B | **1204.8** | 958.01 | **+25.8 %** | 34 | 39.11 | −13.1 % | 1.742 | 1.025 |
+| 4B | **552.5** | 497.75 | **+11.0 %** | 17 | 18.68 | −9.0 % | 3.775 | 1.972 |
+| 8B | **403.2** | 355.24 | **+13.5 %** | 10 | 10.66 | −6.2 % | 5.18 | 2.763 |
+
+### Verdict per goal clause
+
+- **Prefill throughput: MET-OR-BEAT for the entire dense Qwen3 catalogue**
+  (+11 % … +30 % over FLM on-box, and above FLM's published tables).
+- **Decode: consistently −6 % … −16 %** (shrinks as the model grows).
+- **TTFT: consistently ≈ 1.8–1.9× FLM**, i.e. the native TTFT equals its full
+  prefill wall time while FLM's is ≈ its *first chunk's* latency (FLM 0.702 s vs
+  its own 1.38 s full-prompt time at 1400 tok/s → it streams the first chunk
+  early). **Same work, earlier first token** — a scheduling fix, not a kernel
+  speed deficit, since native prefill is faster overall.
+
+### Target for TTFT
+
+Native must emit token 1 after the first prefill chunk (≈ prompt/2) instead of
+after the whole prompt: expected TTFT ≈ prefill_time/2 ≈ 0.64 s (0.6B) …
+2.6 s (8B), matching FLM.
+
 ## Next
 
 1. TTFT: overlap the first decode step with the prefill tail (the engine already
