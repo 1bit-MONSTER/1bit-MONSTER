@@ -189,3 +189,31 @@ ARE correct: arg_idx histogram {0:64,1:64,2:32} (nh16) → {0:128,1:128,2:32} (n
 is right; the residual bug is in the per-BD transfer geometry (buffer_length +
 the D0/D1/D2 stride encodings), which needs the AIE2 DMA BD register spec to
 decode. Not fixed; still multi-day.
+
+## 2026-09-12 (cont.2): found the BD field spec + compared vs FLM's generated NH=32 sequence — patch still unresolved
+
+Located the source of truth for the BD field layout:
+`mlir-aie-main/include/aie/Runtime/TxnEncoding.h` (BLOCKWRITE = 4-word header +
+8 data words) and `xaie2pgbl_params.h` (BD0_0 buffer_length[13:0] @0x1D000,
+D0/D1/D2 stepsize/wrap @0x1D008..0x1D014). NPU2 = devGen 4 (STX/KRK).
+
+Ran FLM's own `gen_mha_engine_seq(0,256)` for Qwen3-4B (NH=32) and compared its
+Q/out BD fields to the captured ELF:
+
+| field | nh16 | captured nh32 | FLM-generated nh32 |
+|---|---|---|---|
+| buffer_length | 0x1000 (4096) | 0x1000 | 0x1000 |
+| w7 (D0 size<<20) | 0x4000000 (64) | 0x4000000 (64) | 0x10000000 (256) |
+| w8 (D1) | 0xc40003ff (sz64,str1024) | 0xc40007ff (sz64,str2048) | 0xc10007ff (sz16,str2048) |
+
+Three binary patches tested on the captured ELF (all reverted):
+1. buffer_length 4096→8192 → boot 116941→32595 (changes, but not fixed)
+2. D1 stride 0x7ff→0x3ff → no change
+3. D0 size 64→256 + D1 size 64→16 (to match FLM-generated) → no change (116941)
+
+The FLM-generated sequence has a DIFFERENT structure (320 BDs, 22792 words, vs
+the captured 288 BDs / 10628 words) — consistent with the prior note that
+gen_mha_engine_seq uses a different granularity than the runtime's fixed
+256-token ELF — so its field values are a hint, not a drop-in. The captured
+nh32 ELF's Q-read geometry remains the unresolved bug; needs the correct 3-BO
+nh32 attention ELF (re-capture) or full BD decode. Still multi-day.
