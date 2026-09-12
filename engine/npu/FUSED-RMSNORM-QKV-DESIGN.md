@@ -362,3 +362,20 @@ Assembling the moderate-scale FFN (H=128, IM=256, 8 N-tiles) surfaced two limits
    repeat_count) and the GU emitting C N-tiles one at a time in gate/up order.
    The gate/up interleaving is just the GU's c[] mapping + W order (release order
    stays sequential 0..7).
+
+### Multi-N-tile FFN — remaining data-flow bug (NOT yet isolated)
+The moderate-scale FFN (H=128 IM=256, 8 N-tiles) builds + runs but the D output is
+all zeros. Isolated to the GU:
+- **`acquire(Consume, 2)` returns EMPTY data** on the direct cascade — a GU that
+  only copies the cached `a[0]` to the shim dumps zeros (34/2048 vs the norm-only
+  test's byte-exact), while the 2-N-tile FFN's `scf.for` + `acquire(Consume, 1)`
+  pattern carries the AN correctly. So `acquire(port, 2)` is broken for the
+  cascade (returns the wrong/empty subviews), even though `acquire(port, 1)` in an
+  scf.for works.
+- The fallback (norm re-writes the AN 8x + the GU's scf.for consume(1)) ALSO gives
+  zeros — a second, separate issue (suspect: the norm's Python-unrolled produce(2)
+  x8 FIFO pairing, or the fnorm re-reading the A_c consume buffer 8x).
+
+So the multi-N-tile path needs either (a) the `acquire(Consume, 2)` bug fixed, or
+(b) a different AN re-stream (e.g. the A re-sent per N-tile so the norm reads a
+fresh A each write). The 2-N-tile (hold-all) path remains byte-exact.
