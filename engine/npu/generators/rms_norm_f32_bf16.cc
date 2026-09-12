@@ -16,6 +16,10 @@
 #include <aie_api/aie.hpp>
 #include <stdint.h>
 
+#ifndef COLS
+#define COLS 1024
+#endif
+
 static inline uint16_t f32_to_bf16_rne(float f) {
     uint32_t u;
     __builtin_memcpy(&u, &f, 4);
@@ -39,16 +43,18 @@ static inline float clamp_nonfinite(float f) {
 
 extern "C" void rms_norm_f32_bf16(float *__restrict input,
                                   float *__restrict weight,
-                                  bfloat16 *__restrict output,
-                                  int32_t cols) {
+                                  bfloat16 *__restrict output) {
     float ss = 0.0f;
-    for (int i = 0; i < cols; i++) {
+    for (int i = 0; i < COLS; i++) {
         float x = clamp_nonfinite(input[i]);
         ss += x * x;
     }
-    float ir = aie::invsqrt(ss / (float)cols + 1e-5f);
-    for (int i = 0; i < cols; i++) {
+    float ir = aie::invsqrt(ss / (float)COLS + 1e-5f);
+    // bfloat16 is an empty marker struct in the aie API; the real storage is
+    // 16-bit raw bf16, so reinterpret to uint16_t* for the bit writes.
+    uint16_t *out = reinterpret_cast<uint16_t *>(output);
+    for (int i = 0; i < COLS; i++) {
         float x = clamp_nonfinite(input[i]);
-        output[i] = f32_to_bf16_rne(x * ir * weight[i]);
+        out[i] = f32_to_bf16_rne(x * ir * weight[i]);
     }
 }

@@ -77,16 +77,17 @@ build_tmp/bin/aiecc --peano=... --aietools=build_tmp --aie-generate-xclbin ... d
 
 ## RMSNorm microkernel (fk-2, 2026-09-12)
 
-`rms_norm_f32_bf16.cc` — native in-kernel RMSNorm, compiles (exports
-`rms_norm_f32_bf16`): f32 input + f32 learned-γ → bf16 output, **sequential**
-f32 sum (matches host `rn_bf16`), branchless NaN/Inf clamp, RNE bf16 round,
-`aie::invsqrt`. Two AIE-backend gotchas resolved: `__builtin_isfinite` and a
-float-select clamp both lower to `G_IS_FPCLASS` which the AIE backend cannot
-legalize — replaced with bit-manipulation (exponent all-ones test, integer
-mask). Precision caveat: `aie::invsqrt` is a device approximation, not glibc
-`1/sqrtf`; byte-exactness of `ir` vs the host is documented, not yet closed.
-Next: wire rms_norm + matmul_bf16_bf16 into one MLIR design and validate on
-hardware.
+`rms_norm_f32_bf16.cc` — native in-kernel RMSNorm, **validated byte-exact** vs the
+host `rn_bf16` reference (0/131072 mismatches, deterministic M=128 H=1024 test).
+f32 input + f32 learned-γ → bf16 output, **sequential** f32 sum, branchless
+NaN/Inf clamp, RNE bf16 round, `aie::invsqrt`. Standalone xclbin builds via
+`n1_rms_norm.py` (single-core, interleaved A-in/O-out). Gotchas resolved: (1)
+`__builtin_isfinite`/float-select → `G_IS_FPCLASS` (unlegalizable) — use bit ops;
+(2) `bfloat16` is an EMPTY marker struct in the aie API — the real storage is
+16-bit raw bf16, so the output must be written through a `uint16_t*`
+reinterpret-cast, not `output[i]` indexing. `aie::invsqrt` happened to match glibc
+`1/sqrtf` byte-for-byte on the test vectors; a broader-range check is a follow-up.
+Next: wire rms_norm + matmul_bf16_bf16 into one fused MLIR design.
 
 ## fk-2 scoping findings (2026-09-12)
 
