@@ -45,10 +45,10 @@ def mha(M, N, HD):
         QK_ty = np.ndarray[(M * HD + HD * N,), np.dtype[bfloat16]]  # q + k^T concat
 
         matmul = external_func("matmul_bf16_bf16", inputs=[Q_ty, KT_ty, C_ty],
-                               link_with="mm_bf16_16x64x64.o")
+                               link_with=f"mm_bf16_16x{HD}x{N}.o")
         matmul_qk = external_func("matmul_qk_concat", inputs=[QK_ty, C_ty],
                                   link_with="mm_qk_concat.o")
-        zbf16 = external_func("zero_bf16", inputs=[C_ty], link_with="mm_bf16_16x64x64.o")
+        zbf16 = external_func("zero_bf16", inputs=[C_ty], link_with=f"mm_bf16_16x{HD}x{N}.o")
         softmax = external_func("softmax_bf16_mt", inputs=[C_ty, I_ty, C_ty],
                                 link_with="softmax_bf16.o")
         rescale = external_func("rescale_bf16_mt", inputs=[C_ty, I_ty, C_ty],
