@@ -218,6 +218,25 @@ kernel re-invoked per layer, not one run per GEMM. That is why the captured
 identity must be derived from the C output index in the per-run insts, not from
 the BO size alone.
 
+
+## RuntimeLayer (whole-layer ELF) also disagrees with FLM
+
+`npu_runlist_decode` (the default `NPU_RUNLIST=1` dense-Qwen3 path, claimed
+"byte-identical to the FastFlowLM runtime") prints no prefill boot — its first
+greeting token is the **decode** `[1]`. On the valid prompt:
+
+| path | first token after 256-token prefill |
+|---|---|
+| FLM `qwen3_npu::prefill` | **62865** |
+| RuntimeLayer whole-layer (per-token forward, captured ELFs) | **97140** |
+| bridge bf16 split path | 91364 |
+
+So the whole-layer path — which uses *captured* per-ctx ELFs from
+`npu-infer/captures/txn-elfs/` — also diverges. Either those captured ELFs are
+stale/for another config, or `RuntimeLayerEngine`'s BO packing differs from the
+runtime. That is the next thing to diff (its per-layer weight BOs vs FLM's live
+`arg4` BOs already captured in `/tmp/cap_vv`).
+
 ## Repro
 
 ```
