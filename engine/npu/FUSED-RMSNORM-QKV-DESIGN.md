@@ -379,3 +379,19 @@ all zeros. Isolated to the GU:
 So the multi-N-tile path needs either (a) the `acquire(Consume, 2)` bug fixed, or
 (b) a different AN re-stream (e.g. the A re-sent per N-tile so the norm reads a
 fresh A each write). The 2-N-tile (hold-all) path remains byte-exact.
+
+### Root cause isolated: consume(2) on the cascade returns EMPTY
+Three isolation tests pin it down:
+- `produce(2)` in an scf.for x8 + `consume(1)` x2 scf.for -> **1024/1024** (the
+  re-stream + produce-in-loop are fine).
+- `produce(2)` once + `consume(2)` once (a GU that just copies a[0]) -> **zeros**
+  (34/2048). The generated MLIR is correct (acquire + subview.access [0]/[1]), so
+  the bug is in the cascade's multi-element consume lowering.
+- The fnorm re-reading the A buffer is NOT the issue (the A re-sent per N-tile
+  still zeros); the SiLU's `acquire(Consume, 2)` for gate+up is what reads zeros.
+
+So the multi-N-tile FFN needs to avoid `acquire(Consume, 2)` on the cascade. Two
+paths: (a) fix the mlir-aie cascade consume(2) lowering, or (b) emit the GU's
+gate|up as ONE concatenated 16x2IM buffer (the original silu_gate_up 1-input
+signature) — which then needs the layout translation for the D's A (the tr*16 vs
+tr*8 mismatch). `acquire(Consume, 1)` in an scf.for is the only working consume.
