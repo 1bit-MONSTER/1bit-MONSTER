@@ -27,9 +27,15 @@
 | WS-08 | MLA & KV cache | 🔄 | 🔲 | 🔲 | gauge probe done; QK-normed MLA next |
 | WS-09 | Router unification | 🔲 | 🔲 | 🔲 | gated on P0.2 |
 | WS-10 | Metal/M5 + MLIR toolchain | 🔲 | 🔲 | 🔲 | — |
+| WS-13 | Arch-gap closure (V4/V4.1, Mamba-3) | ✅ | 🔄 | 🔲 | P0 done (oracle ≤1e-8, compressor ≤5.4e-07, indexer ≤1.3e-08, compressed attention exact 7.451e-09, rope-theta control, shape-agnostic 1.080e-07); P1: GGUF route CLOSED (no V4 converter; no compressor/mhc tensors) → engine-native quantisation, real-checkpoint ingest open (WS-07/WS-11); P2: V4.1 modules + Mamba-3 specified, not implemented — ws13/FINDINGS.md + SPEC-v41-modules.md |
 | WS-12 | HRX/Loom platform transition | ✅ | 🔲 | 🔲 | re-vendored 7953d7f + native `HRX_GPU` backend + decode-time failover (commits 43b38b4e, cc4fd23d, 2026-08-29) |
 
 ## Task detail
+
+### ws13-arch-gap-closure
+- [ ] P0: tiny-config oracle (V4.1 + Qwen3Mamba3) + compressor/indexer maths spec + runtime-format decision
+- [ ] P1: CSA/HCA compressors + Lightning Indexer; shape-agnostic loader + GGUF aliases; real V4-Flash e2e identity gate
+- [ ] P2: V4.1 deltas (engram, gate.bias_vl, candidate blocks, MTP) · vision scope decision · Mamba-3 SSM lane
 
 ### ws12-hrx-loom
 - [x] P0: Re-vendor lemonade e1b31683 → 7953d7f (hrx backend arrives) — verified onebin registers `llamacpp-hrx` on gfx1151 (2026-08-29)
