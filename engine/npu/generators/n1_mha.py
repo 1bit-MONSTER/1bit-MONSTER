@@ -129,17 +129,16 @@ def mha(M, N, HD):
             np.ndarray[(M * HD,), np.dtype[bfloat16]],
         )
         def seq(QK, V, O):
-            # q + k^T: two BDs into the one concat buffer (q row-major, k^T in B layout)
-            task = dma_configure_task_for(QK_s, repeat_count=0, issue_token=True)
-            with bds(task) as bd:
-                with bd[0]:
-                    shim_dma_bd(QK, offset=0, sizes=[1, 1, M, HD], strides=[1, 1, HD, 1])
-                    EndOp()
-                with bd[1]:
-                    shim_dma_bd(QK, offset=M * HD,
-                                sizes=[HD // 8, N // 8, 8, 8], strides=[8 * N, 8, N, 1])
-                    EndOp()
-            dma_start_task(task); dma_await_task(task); dma_free_task(task)
+            # q + k^T: two tasks into the one concat buffer (the k^T needs its
+            # own repeat_count=7 for the HD//8 outer dim, which a multi-bd task's
+            # single repeat_count can't express).
+            qt = shim_dma_single_bd_task(QK_s, QK, offset=0, sizes=[1, 1, M, HD],
+                                         strides=[1, 1, HD, 1], issue_token=True)
+            dma_start_task(qt); dma_await_task(qt); dma_free_task(qt)
+            ktt = shim_dma_single_bd_task(QK_s, QK, offset=M * HD,
+                                          sizes=[HD // 8, N // 8, 8, 8], strides=[8 * N, 8, N, 1],
+                                          issue_token=True)
+            dma_start_task(ktt); dma_await_task(ktt); dma_free_task(ktt)
 
             vt = shim_dma_single_bd_task(V_s, V, offset=0,
                                          sizes=[HD // 8, N // 8, 8, 8], strides=[8 * N, 8, N, 1],
