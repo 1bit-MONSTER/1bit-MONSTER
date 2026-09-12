@@ -150,3 +150,24 @@ act/kv/out there, then replay byte-exact via `replay_attn`.
 - Root cause candidates: (a) the nh32 ELF is mis-captured (16-head or fused-layer), (b) its
   Q-read BD token-stride/head-count is wrong. Fix = capture the 3-BO nh32 MHA ELF correctly,
   or decode+patch the Q-read BDs.
+
+## 2026-09-12: BD-level comparison — Q-read BDs doubled in COUNT but .0 length field NOT doubled
+
+Re-confirmed the 4B bug: NPU attn (nh32 ELF) boot=116941, CPU attn boot=151667=FLM.
+Decoded both ELFs' .ctrltext via aiebu-dump and diffed the DMA BD fields:
+
+| BD field | nh16 (16 heads) | nh32 (32 heads) | verdict |
+|---|---|---|---|
+| BLOCKWRITE count | 160 | 288 | +128 ✓ doubled |
+| .4 control | 128×0xc40003ff + 32×0xc80000ff | 256×0xc40007ff + 32×0xc80000ff | 0x3ff→0x7ff ✓ (len 1024→2048) |
+| .0 (addr/low len) | 128×0x1000 + 16×0x2000 + 16×0x4000 | 256×0x1000 + 16×0x2000 + 16×0x4000 | **0x1000 NOT doubled** ⚠ |
+| .5/.7 stride | 0x2000000 (32MB) | 0x2000000 (32MB) | unchanged |
+| .3 | 0x4000000 (64MB) | 0x4000000 (64MB) | unchanged |
+
+The 128→256 Q/out BDs doubled in count and the .4 control length (0x3ff→0x7ff),
+but the .0 field (0x1000=4096B) was NOT doubled. If .0 is the per-BD buffer
+length/stride for the Q read, the nh32 ELF still reads Q at the 16-head (4096B)
+granularity — consistent with "reads ~zero Q → uniform softmax". This is a
+concrete new lead for the decode+patch path, but confirming it needs the AIE2
+DMA BD field semantics (not yet decoded) and a correct reference. Still
+multi-day; not attempted this session.
