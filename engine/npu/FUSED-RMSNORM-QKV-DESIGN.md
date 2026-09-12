@@ -278,3 +278,12 @@ Native kernel replacing the host `qk_norm_pi` (the largest remaining host round-
 
 Layout (0.6B: NH=16 NKV=8 HD=128): qkv is 4096 cols = q[0..2048) | k[2048..3072) |
 v[3072..4096); out q=2048, k=1024, v=1024 (v raw, no norm/RoPE).
+
+### qk_norm_rope NPU validation (byte-exact 8192/8192)
+Concatenated-tables variant (`qkn_concat`: qn_w|kn_w|rc|rs in one stream, q|k|v in
+one out stream to fit 2-MM2S/2-S2MM) built + run on the NPU (M=2): **8192/8192
+byte-exact, max_delta 0** vs the host qk_norm_pi. The aie::invsqrt caveat did not
+manifest on this data (it is ~1 ULP and data-dependent).
+
+**Gotcha**: the kernel's 3×`float[HD]` locals (1.5 KB) overflow the default core
+stack and silently zero the output — the core needs `stack_size=0x2000`.
