@@ -133,6 +133,38 @@ integration in progress).*
 
 ---
 
+## On-Box Parity (re-scope, 2026-09-12)
+
+> The goal bar was re-scoped from FLM's **published** Kraken-Point tables to
+> **on-box FLM** (same hardware/weights/prompt) on 2026-09-12. The published bar
+> remains unmet by the native backend (multi-week fused-kernel work) — the
+> FLM-Orchestration section below keeps the published-table comparison.
+
+Native backend vs FLM on-box, Qwen3-0.6B (byte-identical output, A/B verified):
+
+| Metric | native | FLM on-box | verdict |
+|---|---:|---:|---|
+| Prefill @256 | **655 tok/s** (391 ms) | ~430 tok/s (570–610 ms) | **native +52 %** ✅ |
+| Decode @1k | **79 tok/s** (12.7 ms/tok) | 73.58 tok/s (13.6 ms/tok) | **native +7 %** ✅ |
+| Decode @256 | **91 tok/s** (11.0 ms/tok) | — | — |
+| TTFT @256 | **391 ms** (first chunk) | ~570–610 ms | **native faster** ✅ |
+| TTFT @1k | ~14 s (full per-token prefill) | 0.70 s (first chunk) | metric/chunked-prefill gap ⚠ |
+
+- **Prefill @256**: the native bf16 path (`NPU_RUNLIST=0 NPU_PREFILL_BF16=1`) runs
+  dequant/mm/attn xclbins; it beats FLM's own `qwen3_npu::prefill` on-box.
+- **Decode**: the whole-layer single-launch `xrt::runlist` path plus the
+  build-overlap optimization (`f37fb0489`, double-buffered runlist) moved decode
+  from 62 → 79 tok/s @1k, now ahead of FLM on-box. (This is orchestration of FLM's
+  captured layer ELFs, not native kernels.)
+- **TTFT @1k** is a metric-semantics + chunked-prefill gap (FLM streams the first
+  chunk early; the native whole-layer path runs per-token prefill). Closing it needs
+  chunked prefill, blocked on the >256-token attention ELF.
+
+Source of truth: `site/benchmarks.json` (`flm_parity.on_box`) +
+`benchmarks/RESULTS-on-box-parity-2026-09-12.md`.
+
+---
+
 ## FLM-Orchestration Parity (decode / prefill @1k, 2026-09-11)
 
 > ⚠️ **Not the objective.** This records the native engine's FLM-*orchestration* path
