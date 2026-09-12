@@ -309,10 +309,19 @@ struct Bf16Mm {
         memcpy(C, c_cache->data(), c_elems * 2);
     }
 
+    void dump_w(int idx, const char* path) {
+        if (idx < 0 || idx >= (int)w_dev.size()) { fprintf(stderr, "[dump_w] idx %d out of range (%zu)\n", idx, w_dev.size()); return; }
+        w_dev[idx]->sync_from_device();
+        fprintf(stderr, "[dump_w] idx=%d size=%zu elems\n", idx, w_dev[idx]->size());
+        FILE* f = fopen(path, "wb");
+        if (f) { fwrite(w_dev[idx]->data(), 2, w_dev[idx]->size(), f); fclose(f); }
+    }
+
     /// Dequantize a projection into a persistent DEVICE buffer (no host copy).
     /// Returns an index into the device W cache (opaque handle for gemm_dev).
     int run_dequant_dev(const uint8_t* q4nx, uint32_t D_in, uint32_t D_out,
                         uint32_t q4nx_weight_offset, size_t layer_bo_bytes) {
+        if (getenv("BF16MM_DBG")) fprintf(stderr, "[dequant_dev] D_in=%u D_out=%u elems=%zu\n", D_in, D_out, (size_t)D_in * D_out);
         npu_app app(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
         // The dequant's DDR weight_offset is limited (~8MB), so copy only THIS
         // projection's tiles into a fresh buffer and dequant at offset 0.
@@ -389,17 +398,14 @@ struct Bf16Mm {
         buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
         a.sync_to_device();
         w_dev[W_idx]->sync_to_device();
-        g_run[batch] = app.create_run(c, a, *w_dev[W_idx]);
-        g_run[batch].start();
+        app.safe_run(c, a, *w_dev[W_idx]);
         g_run_active[batch] = true;
         g_run_N[batch] = N;
     }
 
     void gemm_wait(int batch, uint16_t* C) {
         if (!g_run_active[batch]) return;
-        g_run[batch].wait();
         buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
-        c.sync_from_device();
         memcpy(C, c.data(), 128 * g_run_N[batch] * 2);
         g_run_active[batch] = false;
     }

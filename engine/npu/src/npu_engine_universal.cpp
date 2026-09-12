@@ -64,6 +64,7 @@ void gemm_generate_sequence_i8_split(
 #include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
+extern "C" void bf16mm_dump_w(int idx, const char* path);
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" void bf16mm_set_attn_qout(int qout);
 extern "C" void bf16mm_set_attn_kv_region(uint32_t region);
@@ -3821,6 +3822,7 @@ struct Bf16Ctx {
                 for (int c = 0; c < gu_chunks; c++) {
                     bf16mm_dequant(gchunk.data(), bo.data(), H, 512,
                         (uint32_t)(gu_off + c * 2 * CH_tiles + CH_tiles) * 5120);
+                    if (l == 0 && c == 0 && getenv("NPU_DUMP_L0")) { FILE* fw = fopen("/tmp/bf16_l0_W.bin", "wb"); if (fw) { fwrite(gchunk.data(), 2, H * 512, fw); fclose(fw); } }
                     memcpy(&gu_full[(size_t)c * H * 512], gchunk.data(), (size_t)H * 512 * 2);
                     bf16mm_dequant(gchunk.data(), bo.data(), H, 512,
                         (uint32_t)(gu_off + c * 2 * CH_tiles) * 5120);
@@ -3828,6 +3830,7 @@ struct Bf16Ctx {
                 }
                 Wgu[l] = bf16mm_upload_w(gu_full.data(), H, 2 * IM);
                 Wqkv[l]  = bf16mm_dequant_dev(bo.data(), H, qkvn, (uint32_t)offs[0] * 5120, (size_t)layer_bo_bytes);
+                if (l == 0 && getenv("NPU_DUMP_L0")) { fprintf(stderr, "[init] H=%d qkvn=%d Wqkv[0]=%d\n", H, qkvn, Wqkv[0]); bf16mm_dump_w(Wqkv[0], "/tmp/bf16_l0_Wqkv.bin"); }
                 Wo[l]    = bf16mm_dequant_dev(bo.data(), qout, H, (uint32_t)offs[3] * 5120, (size_t)layer_bo_bytes);
                 Wd[l]    = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120, (size_t)layer_bo_bytes);
             }
@@ -3849,12 +3852,26 @@ struct Bf16Ctx {
                 // input norm + A convert fused
                 auto tc0 = std::chrono::steady_clock::now();
                 for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data() + H, 2, H, fb); fclose(fb); } }
                 auto tg0 = std::chrono::steady_clock::now();
-                // QKV in ONE GEMM — pipelined 2-batch: batch 1's kernel overlaps
-                // batch 0's readback + q/k norm.
-                bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 0, bA.data());
-                bf16mm_gemm_wait(0, bC.data());
-                bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 1, bA.data());
+                // QKV as THREE separate GEMMs (FLM's mm_256_1024_128 N-tiled schedule;
+                // the combined N=4096 diverges from FLM's byte-exact recipe).
+                std::vector<uint16_t> bCq(128 * qout), bCk(128 * kout), bCv(128 * kout);
+                bf16mm_gemm_launch(Wqkv[l], H, qout, 0, 0, bA.data());
+                bf16mm_gemm_wait(0, bCq.data());
+                bf16mm_gemm_launch(Wqkv[l], H, kout, 2097152, 0, bA.data());
+                bf16mm_gemm_wait(0, bCk.data());
+                bf16mm_gemm_launch(Wqkv[l], H, kout, 3145728, 0, bA.data());
+                bf16mm_gemm_wait(0, bCv.data());
+                for (int pi = 0; pi < 128; pi++) {
+                    memcpy(&bC[(size_t)pi * qkvn], &bCq[(size_t)pi * qout], qout * 2);
+                    memcpy(&bC[(size_t)pi * qkvn + qout], &bCk[(size_t)pi * kout], kout * 2);
+                    memcpy(&bC[(size_t)pi * qkvn + qout + kout], &bCv[(size_t)pi * kout], kout * 2);
+                }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fc = fopen("/tmp/bf16_l0_bC.bin", "wb"); if (fc) { fwrite(bC.data() + qkvn, 2, qkvn, fc); fclose(fc); } }
+                bf16mm_gemm_launch(Wqkv[l], H, qout, 0, 1, bA.data());
+                bf16mm_gemm_launch(Wqkv[l], H, kout, 2097152, 1, bA.data());
+                bf16mm_gemm_launch(Wqkv[l], H, kout, 3145728, 1, bA.data());
                 auto qk_norm_pi = [&](int pi, int brow) {
                     for (int i = 0; i < qkvn; i++) bqo[pi * qkvn + i] = bf16g(bC[brow * qkvn + i]);
                     for (int hh = 0; hh < NH; hh++) {
@@ -3885,7 +3902,14 @@ struct Bf16Ctx {
                 kv_caches[l][0].n = sp + npt;
                 int h0 = npt < 128 ? npt : 128;
                 for (int pi = 0; pi < h0; pi++) qk_norm_pi(pi, pi);  // batch 0 (overlaps batch 1 kernel)
-                bf16mm_gemm_wait(1, bC.data());
+                bf16mm_gemm_wait(1, bCq.data());
+                bf16mm_gemm_wait(1, bCk.data());
+                bf16mm_gemm_wait(1, bCv.data());
+                for (int pi = 0; pi < 128; pi++) {
+                    memcpy(&bC[(size_t)pi * qkvn], &bCq[(size_t)pi * qout], qout * 2);
+                    memcpy(&bC[(size_t)pi * qkvn + qout], &bCk[(size_t)pi * kout], kout * 2);
+                    memcpy(&bC[(size_t)pi * qkvn + qout + kout], &bCv[(size_t)pi * kout], kout * 2);
+                }
                 for (int pi = 128; pi < npt; pi++) qk_norm_pi(pi, pi - 128);  // batch 1
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();

@@ -79,3 +79,5 @@ extern "C" void bf16mm_gemm_wait(int batch, uint16_t* C) {
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
     return g_mm.run_attn(out, act, kv) ? 1 : 0;
 }
+
+extern "C" void bf16mm_dump_w(int idx, const char* path) { g_mm.dump_w(idx, path); }
