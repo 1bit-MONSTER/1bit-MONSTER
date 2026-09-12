@@ -242,25 +242,33 @@ static std::string tokenizer_path() {
 // as garbage [id][id] through the ASCII fallback.
 static void load_model_tokenizer(const std::string& model_path) {
     if (g_tokenizer.load_from_gguf(model_path)) return;
-    // Prefer a tokenizer that sits BESIDE the artifact. Every candidate below this point is a
-    // GGUF the loader borrows vocabulary from, so a native container (Q4NX/1BP) with no GGUF
-    // sibling could never be detokenised — the lookup never considered its own directory. The
-    // only other path consulted is the WEIGHTS DIR (tokenizer_path()), which is wrong for an
-    // artifact kept anywhere else. Measured on strixhalo: a served zaya1-8b.q4nx from
-    // ~/models returned "[81930][129662]…" -- correct generation, ASCII fallback for text.
-    // `model.q4nx + tokenizer.htok in one directory` is the natural layout, so it wins here.
+    // Prefer a tokenizer that sits BESIDE the artifact: `<stem>.htok` (#2197). Every candidate
+    // below this point is a GGUF the loader borrows vocabulary from, so a native container
+    // (Q4NX/1BP) with no GGUF sibling could never be detokenised: the lookup never considered
+    // its own directory. The only other path consulted is the WEIGHTS DIR (tokenizer_path()),
+    // which is wrong for an artifact kept anywhere else. Measured on strixhalo: a served
+    // zaya1-8b.q4nx from ~/models returned "[81930][129662]..." -- correct generation, ASCII
+    // fallback for text.
+    //
+    // The directory-level `<dir>/tokenizer.htok` is deliberately NOT tried here. That name is a
+    // single-model convention (`model.q4nx + tokenizer.htok` in one directory), but it used to
+    // be tried FIRST, so in a SHARED directory -- the normal case, e.g. ~/models holding ~30
+    // models -- one model's vocabulary was applied to every model in it (#2205): serving
+    // Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf from ~/models loaded the 9,045,287-byte zaya
+    // `tokenizer.htok` (BOS=0, EOS=106) instead of the model's own 3,494,480-byte
+    // `<gguf>.htok`, so text decoded through the wrong ids->text mapping while token-level
+    // behaviour stayed correct. It is now the LAST resort (see the fallback at the end of this
+    // function), which keeps the #2197 native-container layout working without leaking across
+    // artifacts.
     {
         auto exists2 = [](const std::string& p) {
             std::ifstream f(p, std::ios::binary);
             return f.good();
         };
-        auto slash2 = model_path.find_last_of('/');
-        std::string dir2 = (slash2 != std::string::npos) ? model_path.substr(0, slash2 + 1) : "";
         auto dot2 = model_path.find_last_of('.');
         std::string stem2 = (dot2 != std::string::npos) ? model_path.substr(0, dot2) : model_path;
-        for (const std::string& c : {dir2 + "tokenizer.htok", stem2 + ".htok"}) {
-            if (exists2(c) && g_tokenizer.load(c)) return;
-        }
+        std::string own = stem2 + ".htok";
+        if (exists2(own) && g_tokenizer.load(own)) return;
     }
     // NOTE: no early return for .gguf paths — load_from_gguf needs the ZINC
     // lib (usually absent → ZINC_DISABLED), so even real GGUFs must fall
@@ -347,6 +355,20 @@ static void load_model_tokenizer(const std::string& model_path) {
             std::string c = dir + n;
             if (load_or_synthesize(c)) return;
         }
+    }
+
+    // Last resort: the directory-level `tokenizer.htok` (#2197). A native container
+    // (Q4NX/1BP/H1B) carries no GGUF to borrow a vocabulary from, so `model.q4nx +
+    // tokenizer.htok in one directory` is its only in-directory source. Reaching this point
+    // means nothing model-specific was found, so a shared directory can no longer substitute
+    // another model's tokenizer *before* the artifact's own vocabulary is tried (#2205): a
+    // real GGUF is always served by the self/sibling synthesis above.
+    {
+        auto slash3 = model_path.find_last_of('/');
+        std::string dir3 = (slash3 != std::string::npos) ? model_path.substr(0, slash3 + 1) : "";
+        std::string shared = dir3 + "tokenizer.htok";
+        std::ifstream f(shared, std::ios::binary);
+        if (f.good() && g_tokenizer.load(shared)) return;
     }
 }
 
