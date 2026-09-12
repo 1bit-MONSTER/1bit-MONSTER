@@ -231,3 +231,33 @@ mm microkernel:  peano clang++ … -I ~/.venv/…/mlir_aie/include -I aie_kernel
 MLIR:            .venv/bin/python n1_core_i8_v27.py …
 xclbin:          build_tmp/bin/aiecc --peano=… --aietools=build_tmp --aie-generate-xclbin …
 ```
+
+---
+
+## FFN fusion (fk-3) — `n1_fused_ffn.py` (goal mtygjrxl-9lbnet)
+
+4-stage chain in one column (rows 2..5): **Norm → GU GEMM → SiLU → D GEMM**, no host
+round-trip between stages. Proof-of-concept dims M=16 H=128 IM=64 (2·IM==H so GU and D
+share N=128).
+
+### Structure
+- **Direct core-to-core (cascade) handoffs** for AN (norm→GU), GU (GU→SiLU), SL (SiLU→D).
+  The cascade is byte-exact (verified 1024/1024 in isolation). This is what keeps the
+  mem tile within its 4-in/4-out budget (A_s, W_s, W_fw, D_f in; A_c, W_c, W_d, D_s out).
+- **W_gu‖W_d concatenated in one W stream** (2-MM2S shim limit). The GU core consumes the
+  2 W_gu K-tiles for the GEMM and forwards the W_d K-tile to the D core via `copy_bf16`.
+- **Fused single-pass norm** (`rms_norm_full_f32_bf16`) with a local SS (no SS sink channel);
+  writes the matmul's 4×8 microtiled A layout.
+
+### Two bugs found & fixed (`a681a98b6`)
+1. **`acquire(port, 1)` twice returns the SAME buffer** — the object-fifo acquire op
+   returns subview index `size-1 == 0`, so two 1-element acquires both hit slot 0. Use
+   `acquire(port, 2)` (returns a list of two distinct buffers) when a kernel needs N>1
+   elements of one fifo at once.
+2. **Fused norm ss accumulation must be sequential** (full K-tile 0, then K-tile 1), not
+   interleaved — f32 add is not associative and the host `rn_bf16` reduces sequentially.
+
+### Result
+Byte-exact 404/2048 vs a truncation-aware reference; the rest ~1-bit off (max_delta ~115
+bf16 bits) from the documented caveats: GEMM C-store f32→bf16 truncation (hardware),
+aie::invsqrt vs glibc 1/sqrtf, and the GEMM's 4×8×8-tiled accumulation order.
