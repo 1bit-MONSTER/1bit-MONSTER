@@ -410,3 +410,14 @@ under-supplied A). Clean tests (depth 2, A re-sent 8x) pin it down:
 workaround is the **split norm** (rms_reduce_f32 + rms_scale_f32_bf16, one K-tile at
 a time via acquire(Consume,1) in an scf.for) with the SS held locally in the norm
 core (not the mem sink), which is the fk-2 structure.
+
+### Split-norm refactor lands: multi-N-tile works for 2 N-tiles
+The split norm (rms_reduce_f32 + rms_scale_f32_bf16, one K-tile at a time via
+acquire(Consume,1) in scf.for, SS held as a norm->mem sink) + DIM_N=128 + the
+1-input silu_gate_up (W_gu columns interleaved gate|up) fixes the acquire(2)-in-loop
+bug: GU-only dump is byte-exact **1165/4096 (IM=128, 2 N-tiles)** and **555/2048
+(IM=64, 1 N-tile)** — the ~1-bit truncation/invsqrt caveats, no structural error.
+
+4 N-tiles (IM=256) still zeros — a remaining buffering issue at 8 W-tiles through
+the depth-1 W_s/W_c (or the A_s depth-2 at 16 K-tiles), NOT the acquire bug. The
+2-N-tile and 1-N-tile paths are fully correct.
