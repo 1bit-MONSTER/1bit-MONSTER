@@ -140,6 +140,24 @@ stage diverges** (O/GU/D dequant, attention, or a host op: norm/RoPE/residual/
 SiLU). Note the bridge's `w_dev` and FLM's `arg4` may also sit in different
 tile layouts, so this test bounds but does not isolate the remaining bug.
 
+## Layer-0 dump sanity (valid prompt)
+
+With `ids256_valid.txt` + `NPU_RUNLIST=0` + `NPU_DUMP_L0=1`, all layer-0 stage
+outputs are non-zero and plausible:
+
+| dump | type | nonzero | range |
+|---|---|---|---|
+| `bf16_l0_bA` (input norm) | bf16 | 4036/4096 | — |
+| `bf16_l0_bC` (QKV GEMM) | bf16 | 16384/16384 | — |
+| `bf16_l0_qkv` (post q/k-norm+RoPE) | f32 | 4096/4096 | -99 … 71 |
+| `bf16_l0_o` (O proj) | f32 | 1024/1024 | -1.64 … 1.42 |
+| `bf16_l0_dw` (D proj) | f32 | 1024/1024 | -0.63 … 0.55 |
+| `bf16_l0_hidden` (final hidden) | f32 | 1024/1024 | -376 … 207 |
+
+The post-norm/RoPE QKV range (-99…71) and the final hidden range (-376…207) are
+far larger than expected for a 0.6B model (weights ~O(1)) — the RoPE table or
+the q/k-norm scaling is the prime suspect for the remaining 91364-vs-62865 gap.
+
 ## Repro
 
 ```
