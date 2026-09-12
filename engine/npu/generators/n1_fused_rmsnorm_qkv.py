@@ -81,11 +81,11 @@ def fused(M, H, N, k):
             for _ in range_(0xFFFFFFFF):
                 ss = SS.acquire(ObjectFifoPort.Produce, 1)
                 zf32(ss)
-                for kt in range(n_k):
+                for kt in range_(n_k):
                     atile = A_c.acquire(ObjectFifoPort.Consume, 1)
                     reduce(atile, ss)
                     A_c.release(ObjectFifoPort.Consume, 1)
-                for kt in range(n_k):
+                for kt in range_(n_k):
                     atile = A_c.acquire(ObjectFifoPort.Consume, 1)
                     anorm = AN_w.acquire(ObjectFifoPort.Produce, 1)
                     scale(atile, ss, anorm)
@@ -98,7 +98,7 @@ def fused(M, H, N, k):
             for _ in range_(0xFFFFFFFF):
                 cbuf = C_f.acquire(ObjectFifoPort.Produce, 1)
                 zbf16(cbuf)
-                for kt in range(n_k):
+                for kt in range_(n_k):
                     anorm = AN_r.acquire(ObjectFifoPort.Consume, 1)
                     wtile = W_c.acquire(ObjectFifoPort.Consume, 1)
                     matmul(anorm, wtile, cbuf)
