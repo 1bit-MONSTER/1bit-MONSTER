@@ -41,3 +41,13 @@ task-n1's "meet-or-beat 1494 @1k" cannot be met by the per-op native path — it
 is fixed-overhead-bound, and closing the @1k gap requires the fused-layer NPU
 offload (multi-week). The per-op path's honest ceiling at @1k (via chunking) is
 ~600 tok/s. This is the structural wall the audit and prior sessions identified.
+
+## Launch-overhead quantification (why it is fixed-bound)
+
+The per-op path issues **~9 kernel launches per layer** (QKV×2 batches + attn×1
++ O×2 + GU×2 + D×2) = **~252 launches / pass**. At the measured ~405 ms fixed
+cost (n=64 ≈ n=256), that is **~1.6 ms of XRT launch overhead per kernel** — the
+dominant term, not token throughput. FLM's `gen_layer_seq` fuses the whole layer
+into ~1 launch/layer (28 launches), which is why its per-token cost at long
+context is ~10× lower. The only way to close the gap is fused-layer kernels
+(fewer launches), i.e. the NPU-offload work.
