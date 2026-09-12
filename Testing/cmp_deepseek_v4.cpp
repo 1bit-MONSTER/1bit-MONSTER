@@ -4,9 +4,14 @@
 // through deepseek_v4_forward, compares the final-position logits against the
 // saved HF oracle. PASS = top-20 overlap >= min_overlap AND top1 matches.
 //
-// usage: cmp_deepseek_v4 <model_dir> <ids.txt> <hf_logits.pt> [topN] [min_overlap]
+// usage: cmp_deepseek_v4 <model_dir> <ids.txt> <hf_logits.pt> [topN] [min_overlap] [engine_states_out]
 //   ids.txt: space-separated token ids (the prompt).
 //   hf_logits.pt: torch tensor [vocab] — last-position oracle logits.
+//   engine_states_out (optional): write the per-layer residual streams for the
+//     LAST token — `nstates` states of [hc][H] float32, row-major, plus a
+//     sibling `<path>.shape` file holding "nstates hc H". State i is the input
+//     to layer i, i.e. exactly HF's `hidden_states[i]` (see
+//     Testing/cmp_deepseek_v4_layers.py for the per-layer comparison).
 #include <cstdio>
 #include <fstream>
 #include <sstream>
@@ -66,8 +71,25 @@ int main(int argc, char** argv) {
     mhc.init(model.cfg.hc_mult, model.cfg.hidden_size);
     int pos = 0;
     std::vector<float> last_logits;
+    std::vector<float> states;  // [nstates][hc][H], only filled for the last token
+    const char* states_out = argc > 6 ? argv[6] : nullptr;
     for (size_t i = 0; i < ids.size(); i++) {
-        last_logits = deepseek_v4_forward(model, ids[i], kv_cache, mhc, pos);
+        std::vector<float>* want_states = (states_out && i + 1 == ids.size()) ? &states : nullptr;
+        last_logits = deepseek_v4_forward(model, ids[i], kv_cache, mhc, pos, want_states);
+    }
+    if (states_out && !states.empty()) {
+        const int hc = model.cfg.hc_mult, H = model.cfg.hidden_size;
+        const size_t per = (size_t)hc * H;
+        FILE* f = fopen(states_out, "wb");
+        if (!f) { printf("FAIL: cannot write %s\n", states_out); return 1; }
+        fwrite(states.data(), sizeof(float), states.size(), f);
+        fclose(f);
+        char shp[512];
+        snprintf(shp, sizeof shp, "%s.shape", states_out);
+        FILE* g = fopen(shp, "w");
+        if (g) { fprintf(g, "%zu %d %d\n", states.size() / per, hc, H); fclose(g); }
+        printf("states: %zu layer-boundary states of [%d,%d] -> %s\n",
+               states.size() / per, hc, H, states_out);
     }
 
     // compare

@@ -53,3 +53,70 @@ python3 Testing/make_mini_deepseek_v41.py /tmp/onebit-dsv41-hca160 --profile com
 * Fixtures are cheap and deterministic (`--seed 0`, ~4×10⁵ params, seconds to build) and live in `/tmp`; regenerate them on demand rather than committing model weights.
 * `Testing/run_all.sh` currently *skips* the V4 gate when the fixture is absent — it must stay that way: `hca160`/`csa64` are **expected-fail** fixtures, so wiring them into the suite as pass/fail would make the suite red by design until P1.1 lands. Add them as a separate, explicitly-expected-red gate when P1.1 starts.
 * The thin logits-overlap margin (16/20 against a threshold of 18) is a deliberate *fixture* property, not a robust metric — prefer the per-layer dumps for P1.1's acceptance and keep the logits overlap as a smoke signal.
+
+---
+
+# Phase 0 continued — P0.1 measured (per-layer bound MET), and the gate localizes the gap
+
+**Date:** 2026-09-12 · **Instrument:** `Testing/cmp_deepseek_v4.cpp` (extended with an optional
+per-layer dump) + `Testing/cmp_deepseek_v4_layers.py` (new) + `Testing/make_mini_deepseek_v41.py`
+(`--weights-dtype` added).
+
+## 1. P0.1 acceptance: the existing modules reproduce the reference PER LAYER
+
+The logits gate said "20/20 overlap"; that is not the stated acceptance. With the engine now
+dumping its residual streams at every layer boundary and the reference's `hidden_states` compared
+layer by layer (`Testing/cmp_deepseek_v4_layers.py`), on the **fp32** sliding fixture:
+
+| state (input to layer) | max&#124;Δ&#124; | rel | &#124;ref&#124;max |
+|---|---|---|---|
+| 0 | **0.000e+00** (bit-exact) | 0.00e+00 | 0.052 |
+| 1 | 7.451e-09 | 1.36e-07 | 0.055 |
+| 2 | 9.313e-09 | 1.68e-07 | 0.055 |
+| 3 | 1.118e-08 | 2.25e-07 | 0.050 |
+
+**worst = 1.118e-08 against a 1e-6 tolerance → PASS**, ~90× inside the bound, and the layer-0 state
+(the expanded embedding) is bit-exact. Modules covered: mHC (Sinkhorn-Knopp streams), shared-KV MQA
+with per-head sinks and partial RoPE, hash routing (`tid2eid`) on layers 0–1, top-k sqrtsoftplus MoE
+on layers 2–3, shared SwiGLU experts with `swiglu_limit`. **P0.1 is done for the modules that exist.**
+
+**Mapping verified, not assumed:** transformers appends `hidden_states` *before* each decoder layer,
+so `hidden_states[i]` is the input to layer i and there are `num_layers` stream-valued entries plus a
+final collapsed+normed `[T, H]`. The engine records at the top of each layer iteration for the same
+reason, and its extra post-last-layer state has no reference counterpart (the logits gate covers the
+collapsed head).
+
+**A bf16 fixture cannot carry this claim.** Re-loading the bf16-roundtripped weights perturbs the
+layer-0 state by **1.13e-04** — 100× above the bound — so the fixture stores **fp32** by default now
+(`--weights-dtype bfloat16` is still available for logits-level work), and the comparator *warns* when
+the stored dtype and the tolerance are inconsistent. The 1e-6 bound is a statement about the
+implementation only with fp32 weights.
+
+## 2. The same instrument localizes the missing machinery
+
+Same run on the **compressed** fixture (fp32, window 4, 64 tokens, layer types
+`[sliding, CSA, HCA, sliding]`, 16 CSA entries):
+
+| state (input to layer) | after which layer | max&#124;Δ&#124; | verdict |
+|---|---|---|---|
+| 0 | — (init) | **0.000e+00** | bit-exact |
+| 1 | 0 (`sliding_attention`) | **7.451e-09** | matches |
+| 2 | 1 (**`compressed_sparse_attention`**) | **1.171e-02** | **first divergence** |
+| 3 | 2 (`heavily_compressed_attention`) | 1.798e-02 | error propagates |
+
+The engines agrees exactly everywhere the machinery it has is exercised, and diverges at **exactly
+the layer that carries the compressor + indexer** — 6 orders of magnitude above the bound, not a
+marginal miss. That is the bisect instrument P1.1 needs: implement the compressor and the gate flips
+state 2 (then the logits gate, 16/20 → ≥18/20) instead of leaving a "logits differ" mystery.
+
+(For completeness, the logits gate on this fixture: engine top1 534 vs ref 685, overlap 16/20 → FAIL,
+exit 1. The `csa64`/`hca160` fixtures remain expected-fail by design and stay out of `run_all.sh`.)
+
+## 3. Status
+
+* **P0.1 — DONE** (per-layer ≤1e-8 on the modules that exist; instrument committed).
+* **P1.1 — gate + bisect instrument ready** (state 2 of the compressed fixture is the acceptance
+  target; `hidden_states.npz` gives the per-layer reference).
+* **P0.2 — next** (read DeepSeek's `inference/engram.py` + `model.py` for the V4.1-only maths, which
+  transformers cannot provide: no `DeepseekV41` class exists).
+* **P0.3, P0.4 — not started.**

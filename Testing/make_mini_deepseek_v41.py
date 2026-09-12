@@ -65,6 +65,10 @@ def main():
     ap.add_argument("--prompt-len", type=int, default=0,
                     help="0 = the original 5-token prompt; >5 = seeded random ids")
     ap.add_argument("--window", type=int, default=0, help="0 = profile default")
+    ap.add_argument("--weights-dtype", choices=("float32", "bfloat16"), default="float32",
+                    help="fixture weight storage. float32 for the per-layer gate: bf16 "
+                         "rounding alone perturbs the layer-0 state by ~1e-4, which is "
+                         "100x above the 1e-6 bound the gate wants to measure")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
@@ -120,13 +124,15 @@ def main():
     hs = {f"hidden_{i}": h[0].float().cpu().numpy() for i, h in enumerate(out.hidden_states)}
     np.savez(os.path.join(args.outdir, "hidden_states.npz"), **hs)
 
-    sd = {k: v.detach().to(torch.bfloat16).contiguous() for k, v in model.state_dict().items()}
+    wdtype = torch.float32 if args.weights_dtype == "float32" else torch.bfloat16
+    sd = {k: v.detach().to(wdtype).contiguous() for k, v in model.state_dict().items()}
     torch.save(sd, os.path.join(args.outdir, "model.pt"))
     st_save({k: v.float() for k, v in sd.items()}, os.path.join(args.outdir, "model.safetensors"))
 
     cfgd = cfg.to_dict()
     cfgd["_mini_fixture"] = True
     cfgd["_profile"] = args.profile
+    cfgd["_weights_dtype"] = args.weights_dtype
     cfgd["_prompt_ids"] = prompt[:8] + (["..."] if len(prompt) > 8 else [])
     json.dump(cfgd, open(os.path.join(args.outdir, "config.json"), "w"), indent=2)
 
@@ -135,7 +141,7 @@ def main():
     indexer = sorted({k.split(".", 2)[-1] for k in sd if ".indexer." in k})
     print(f"profile={args.profile} params={n_params} layers={len(PROFILES[args.profile])}")
     print(f"  layer_types={PROFILES[args.profile]}")
-    print(f"  window={window} prompt_len={len(prompt)}")
+    print(f"  window={window} prompt_len={len(prompt)} weights={args.weights_dtype}")
     print(f"  compressor tensors: {compressor}")
     print(f"  indexer tensors:    {indexer}")
     print(f"  top1={int(logits_last.argmax())}  wrote {args.outdir}")

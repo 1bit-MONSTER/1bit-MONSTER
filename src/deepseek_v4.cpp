@@ -287,7 +287,8 @@ void DeepSeekV4Model::clear() {
 // ─── forward ──────────────────────────────────────────────────────────────────
 std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                                        DeepSeekV4KVCache& kv_cache,
-                                       DeepSeekV4mHCState& mhc, int& pos) {
+                                       DeepSeekV4mHCState& mhc, int& pos,
+                                       std::vector<float>* layer_states) {
     using namespace ds4math;
     const auto& cfg = model.cfg;
     const int H = cfg.hidden_size;
@@ -324,6 +325,14 @@ std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
 
     for (int il = 0; il < cfg.num_layers; il++) {
         const auto& l = model.layers[il];
+        // Instrumentation (ws13 P0.1): the state ENTERING this layer is exactly
+        // HF's `hidden_states[il]` (transformers appends before each layer), so
+        // recording here gives a per-layer comparison target instead of only
+        // final logits.
+        if (layer_states) {
+            for (int k = 0; k < hc; k++)
+                layer_states->insert(layer_states->end(), mhc.streams[k].begin(), mhc.streams[k].end());
+        }
         const float* x = mhc.streams[0].data(); // for norms below we use collapsed
 
         // Debug: dump stream-0 of the CURRENT token after each sublayer

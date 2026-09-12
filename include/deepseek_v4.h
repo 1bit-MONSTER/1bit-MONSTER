@@ -147,8 +147,15 @@ struct DeepSeekV4mHCState {
 
 // ─── Forward ──────────────────────────────────────────────────────────────────
 // One token. Returns logits [vocab]. kv_cache + mhc updated in place.
+//
+// `layer_states`, when non-null, receives the residual streams at every layer
+// boundary for this token: `num_layers` states of `hc_mult * hidden_size`
+// floats each ([hc][H] row-major). State i is the input to layer i — the same
+// tensor HF exposes as `hidden_states[i]` (its last entry, the collapsed and
+// normed output, has no stream equivalent and is covered by the logits gate).
 std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                                        DeepSeekV4KVCache& kv_cache,
-                                       DeepSeekV4mHCState& mhc, int& pos);
+                                       DeepSeekV4mHCState& mhc, int& pos,
+                                       std::vector<float>* layer_states = nullptr);
 
 #endif
