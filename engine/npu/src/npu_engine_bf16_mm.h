@@ -335,6 +335,27 @@ struct Bf16Mm {
         deq_->generate_dequant_q4_1_seq(app.seq(), D_in, D_out, 0, 0);
         app.update_ctrl_seq();
         w_dev.push_back(std::make_unique<buffer<uint16_t>>(*dev, (size_t)D_in * D_out));
+        // Diagnostic: substitute a captured weight BO (BF16MM_W_FILE) for the
+        // first projection only, to test whether FLM's GEMM W reproduces the
+        // reference boot through OUR GEMM path.
+        static int wf_used = 0;
+        const char* wf = getenv("BF16MM_W_FILE");
+        if (wf && wf_used == 0) {
+            wf_used = 1;
+            FILE* f = fopen(wf, "rb");
+            if (f) {
+                int stride = getenv("BF16MM_W_STRIDE") ? atoi(getenv("BF16MM_W_STRIDE")) : (int)D_out;
+                if (stride < (int)D_out) stride = (int)D_out;
+                std::vector<uint16_t> tmp((size_t)stride);
+                for (uint32_t i = 0; i < D_in; i++) {
+                    if (fread(tmp.data(), 2, stride, f) != (size_t)stride) break;
+                    memcpy(w_dev.back()->data() + (size_t)i * D_out, tmp.data(), (size_t)D_out * 2);
+                }
+                fclose(f);
+                fprintf(stderr, "[wfile] loaded %s stride=%d\n", wf, stride);
+            }
+            return (int)w_dev.size() - 1;
+        }
         app.safe_run(*w_dev.back(), *bo_cache);
         return (int)w_dev.size() - 1;
     }
