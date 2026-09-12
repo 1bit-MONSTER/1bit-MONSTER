@@ -217,3 +217,36 @@ gen_mha_engine_seq uses a different granularity than the runtime's fixed
 256-token ELF — so its field values are a hint, not a drop-in. The captured
 nh32 ELF's Q-read geometry remains the unresolved bug; needs the correct 3-BO
 nh32 attention ELF (re-capture) or full BD decode. Still multi-day.
+
+## 2026-09-12 (cont.3): correct NOC-module DMA BD layout located; captured nh32 differs from nh16 only in D1_STEPSIZE
+
+The attention ELF uses the **NOC (shim) module** DMA BD, not the memory-module
+layout I decoded earlier. Correct layout (`xaie2pgbl_params.h`, NOC_MODULE_DMA_BD0_*):
+
+| BLOCKWRITE data word | register | fields |
+|---|---|---|
+| data[0] | 0x1D000 | BUFFER_LENGTH[31:0] |
+| data[1] | 0x1D004 | BASE_ADDRESS_LOW (DDR_PATCH target) |
+| data[2] | 0x1D008 | flags + BASE_ADDRESS_HIGH[15:0] |
+| data[3] | 0x1D00C | D0_WRAP[29:20] \| D0_STEPSIZE[19:0] |
+| data[4] | 0x1D010 | D1_WRAP[29:20] \| D1_STEPSIZE[19:0] (+burst[31:30]) |
+| data[5] | 0x1D014 | SMID/cache \| D2_STEPSIZE[19:0] |
+| data[6] | 0x1D018 | ITER_curr[31:26] \| ITER_wrap[25:20] \| ITER_stepsize[19:0] |
+
+Decoded Q/out BD fields (correct layout):
+
+| field | nh16 | captured nh32 | FLM-generated nh32 |
+|---|---|---|---|
+| BUFFER_LENGTH | 4096 | 4096 | 4096 |
+| D0_WRAP | 4 | 4 | **256** |
+| D1_WRAP | 64 | 64 | **16** |
+| D1_STEPSIZE | 1024 | 2048 | 2048 |
+
+So the captured nh32 changed ONLY D1_STEPSIZE (1024→2048) from nh16; the
+FLM-generated sequence additionally changes D0_WRAP (4→256) and D1_WRAP
+(64→16) — but it has a different BD count (320 vs 288), so those values are a
+different ABI. Applying the FLM-generated D0_WRAP/D1_WRAP values to the captured
+ELF (patch #3) produced no change, confirming the ABI mismatch rather than a
+single-field bug. The captured nh32's Q-read geometry remains unresolved;
+re-generating it correctly needs the exact NOC-DMA multi-dim semantics for the
+3-BO attention ABI. Multi-day; not completed.
