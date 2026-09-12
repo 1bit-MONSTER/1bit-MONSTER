@@ -171,3 +171,21 @@ granularity — consistent with "reads ~zero Q → uniform softmax". This is a
 concrete new lead for the decode+patch path, but confirming it needs the AIE2
 DMA BD field semantics (not yet decoded) and a correct reference. Still
 multi-day; not attempted this session.
+
+## 2026-09-12 (cont.): empirical ELF-patch experiments — buffer_length matters but is not sufficient
+
+Decoded the full BLOCKWRITE/DDR_PATCH field structure of both ELFs and ran two
+binary patches on attn_mha_256_nh32.elf (rebuilt + tested 4B, reverted after):
+
+1. **buffer_length (w4) 0x1000→0x2000** (256 Q/out BDs): boot 116941 → **32595**.
+   Field is part of the Q-read geometry (output changes) but NOT sufficient.
+2. **D1 stride 0xc40007ff→0xc40003ff** (nh16 value): boot unchanged (116941).
+   D1 is not the binding field for the default prompt.
+
+DDR_PATCH field analysis (the runtime buffer-address patches) shows the offsets
+ARE correct: arg_idx histogram {0:64,1:64,2:32} (nh16) → {0:128,1:128,2:32} (nh32)
+(Q/out BDs doubled, KV unchanged), and arg_off values double 262144→524288
+(= 64 tokens × token_width, matching the 2× wider 32-head Q). So the addressing
+is right; the residual bug is in the per-BD transfer geometry (buffer_length +
+the D0/D1/D2 stride encodings), which needs the AIE2 DMA BD register spec to
+decode. Not fixed; still multi-day.
