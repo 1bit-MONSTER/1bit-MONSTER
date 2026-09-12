@@ -8,6 +8,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <vector>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
@@ -301,6 +305,21 @@ static void update_rope_i6(xrt::ext::bo& i6bo, int pos) {
     // just those 256 bytes, not the full 1MB i6 BO (28 layers x 1MB was ~10% of
     // decode).
     i6bo.sync(XCL_BO_SYNC_BO_TO_DEVICE, 256, 0);
+}
+
+bool RuntimeLayerEngine::prefill_batch(const int* tokens, int n) {
+    if (n <= 0) return false;
+    TensorDesc* emb = &mw_->embed_tokens;
+    if (emb->ndim != 2) return false;
+    uint8_t* m = static_cast<uint8_t*>(bo_act_->map());
+    for (int t = 0; t < n; t++) {
+        uint64_t off = (uint64_t)tokens[t] * emb->shape[1] * 2;
+        memcpy(m + (size_t)t * emb->shape[1] * 2,
+               (const uint8_t*)mw_->file_data + mw_->data_base + off,
+               emb->shape[1] * 2);
+    }
+    bo_act_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    return forward(n);
 }
 
 bool RuntimeLayerEngine::forward(int ctx_len) {
@@ -610,14 +629,40 @@ int RuntimeLayerEngine::argmax_logits(int vocab) {
     // bf16 argmax without float conversion: positives (u < 0x8000) beat
     // negatives; among same sign, larger u wins for positive, smaller u
     // (closer to 0) wins for negative.
+    //
+    // Monotonic key for sign-magnitude bf16: positives must beat negatives, and
+    // among negatives the one closest to zero wins. Flipping the sign bit for
+    // positives and all bits for negatives gives exactly that ordering, so the
+    // argmax becomes a plain unsigned max over 151936 keys (vectorisable).
     int best = 0;
-    uint16_t bu = lg[0];
-    bool bneg = bu >= 0x8000;
-    for (int i = 1; i < vocab; i++) {
-        uint16_t u = lg[i];
-        bool neg = u >= 0x8000;
-        bool better = (neg != bneg) ? !neg : (neg ? u < bu : u > bu);
-        if (better) { best = i; bu = u; bneg = neg; }
+    {
+        int nthreads = 1;
+#ifdef _OPENMP
+        nthreads = omp_get_max_threads();
+#endif
+        std::vector<uint32_t> lbest((size_t)nthreads, 0);
+        std::vector<int> lidx((size_t)nthreads, 0);
+#pragma omp parallel num_threads(nthreads)
+        {
+            int tid = 0;
+#ifdef _OPENMP
+            tid = omp_get_thread_num();
+#endif
+            uint32_t bkey = 0;
+            int bidx = 0;
+#pragma omp for schedule(static) nowait
+            for (int i = 0; i < vocab; i++) {
+                uint16_t u = lg[i];
+                uint32_t key = (uint32_t)(u ^ ((u & 0x8000u) ? 0xFFFFu : 0x8000u));
+                if (i == 0 || key > bkey) { bkey = key; bidx = i; }
+            }
+            lbest[(size_t)tid] = bkey;
+            lidx[(size_t)tid] = bidx;
+        }
+        uint32_t bkey = lbest[0];
+        best = lidx[0];
+        for (int t = 1; t < nthreads; t++)
+            if (lbest[(size_t)t] > bkey) { bkey = lbest[(size_t)t]; best = lidx[(size_t)t]; }
     }
     return best;
 }

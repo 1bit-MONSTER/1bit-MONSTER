@@ -124,6 +124,23 @@ lives host-side**:
    compare loop) — expected ≈0.2 ms instead of ≈1 ms.
 3. Keep the logits sync asynchronous with the following embed.
 
+
+### argmax vectorisation — implemented, result-identical, but NEUTRAL
+
+`argmax_logits` was rewritten as an OpenMP max over a monotonic bf16 key
+(`u ^ (sign ? 0xFFFF : 0x8000)`), preserving the exact sign-magnitude ordering
+(positives beat negatives; negatives ordered closest-to-zero first).
+
+Measured after the change: decode **62 tok/s (unchanged)**, prefill 1818.2 tok/s,
+boot unchanged → the new argmax returns identical tokens and the 151 936-element
+scan was **not** the bottleneck. The ~6 ms/token host budget therefore sits in:
+`embed()` (memcpy + per-token BO sync), the per-layer `update_rope_i6` (28 BO
+writes + 28 `sync` calls/token), and the runlist `build` (29 runs × 8 `set_arg`).
+
+**Highest-value fix remains overlap**: `rl.execute()` is already separate from
+`rl.wait()` in `forward()`, so the next token's `embed` + RoPE writes + runlist
+`build` can run between them.
+
 ## Next
 
 1. TTFT: overlap the first decode step with the prefill tail (the engine already
