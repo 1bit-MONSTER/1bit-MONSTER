@@ -420,14 +420,20 @@ struct Bf16Mm {
         buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
         a.sync_to_device();
         w_dev[W_idx]->sync_to_device();
-        app.safe_run(c, a, *w_dev[W_idx]);
+        // TRULY async: create_run + start() (no wait). The previous app.safe_run
+        // blocked inside (run.wait()), so the 'software pipeline' never overlapped
+        // device with host math. Store the run; gemm_wait() waits + syncs back.
+        g_run[batch] = app.create_run(c, a, *w_dev[W_idx]);
+        g_run[batch].start();
         g_run_active[batch] = true;
         g_run_N[batch] = N;
     }
 
     void gemm_wait(int batch, uint16_t* C) {
         if (!g_run_active[batch]) return;
+        g_run[batch].wait();
         buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
+        c.sync_from_device();
         memcpy(C, c.data(), 128 * g_run_N[batch] * 2);
         g_run_active[batch] = false;
     }
