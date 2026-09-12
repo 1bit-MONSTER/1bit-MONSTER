@@ -409,3 +409,66 @@ names do not. Anyone starting P1.2 from that file would have built the wrong loa
 3. Dequantisation wiring (reuse `gguf_reader`), with the f32-residency ceiling stated up front.
 4. Then P1.3 proper: the streamed, quantized path (WS-07/WS-11), where `ue8m0`/fp4 block scales are the
    new loader requirement.
+
+---
+
+# P1.2 decision — GGUF is NOT the route, and the loader is shape-agnostic
+
+## The GGUF route is closed (with evidence), not deferred
+
+The P1.2 scoping left one question open — whether a converted GGUF even carries the CSA/HCA compressor
+weights. Answer, from the fork's own converter and tensor-mapping table
+(`bong-water-water-bong/llama.cpp`: `conversion/deepseek.py`, `gguf-py/gguf/tensor_mapping.py`):
+
+* the converter's newest DeepSeek class is **`DeepseekV32Model`** (DSA indexer: `index_n_heads`,
+  `index_head_dim`, `index_topk`) — there is **no V4 class**, and no `src/models/deepseek4.cpp` (the
+  reference to one in `include/deepseek_v4.h` is stale);
+* the mapping table knows the **DSA indexer** (`model.layers.{bid}.self_attn.indexer.{k_norm,weights_proj,wk,wq_b}`)
+  and `q_a_proj` (deepseek2) and `sinks` (openai-moe), but has **no `compressor`, `ape` or `mhc` entry**.
+
+So a llama.cpp-converted V4 GGUF cannot carry the compressed-attention tensors, which means the
+compressed layers would be unrunnable from it. **Decision: P1.3 goes engine-native — quantise from the
+published fp8 safetensors into the engine's own formats (WS-05 1BP v2 / Q4NX), with residency handled by
+WS-07/WS-11 staging and `ue8m0`/fp4 block scales as the new loader requirement.** Do not spend effort
+writing speculative `blk.*` aliases for a file that cannot exist yet.
+
+## The reference constrains the fixture: `rope_dim <= index_head_dim`
+
+A fixture with `head_dim 32 × factor 0.5 = rd 16` against `index_head_dim 8` makes the *reference itself*
+fail (`The size of tensor a (8) must match the size of tensor b (16)`) — the indexer ropes its 8-dim
+heads with a 16-channel cos/sin. A real config satisfies this (V4.1: 512 × 0.125 = 64 ≤ 128), and it is a
+useful sanity check to assert on a checkpoint before loading it.
+
+## Shape agnosticism — measured at non-default dimensions
+
+The V4.1 deltas are supposed to be **modules**, not dimensions, so the engine must work at shapes other
+than V4-Flash's. Fixture: H=**320**, 5 heads, head_dim 16, `q_lora`/`o_lora` 24, `o_groups` 4, 32 experts,
+`moe_int` 96, rd 8, window 4 / 64 tokens, layer types sliding/CSA/HCA/sliding:
+
+| fixture | end-to-end | per-layer worst |
+|---|---|---|
+| odd shape, `index_topk = 8` (ties in play) | top1 484 ≠ 733, overlap 14/20 | 1.720e-02 |
+| odd shape, **`index_topk = 64`** (non-selective) | top1 **733 = 733**, **20/20 PASS** | **1.080e-07 PASS** |
+
+The 1.080e-07 (vs 7.451e-09 at the V4-Flash shape) is the expected scale-up with larger dimensions, and
+it is inside the 1e-6 bound. **So the loader and the attention path are shape-agnostic; what V4.1 adds is
+the modules in `SPEC-v41-modules.md`, not new dimension handling.** (And the selective run's divergence is
+the already-documented indexer tie effect, which grows when there are more tied scores.)
+
+## Where the workstream stands
+
+**Done and validated**: gap evidence · oracle instrument (`≤1e-8` per layer on the modules that exist) ·
+the per-layer bound itself · compressor (CSA two-series + HCA single-series, batched **and** incremental,
+≤5.4e-07) · indexer (score table ≤1.3e-08 + order-independent selection validity) · compressed attention
+integration (**7.451e-09** with non-tied selection; exact on the default fixture for the 64-token case) ·
+per-layer rope theta (control: wrong theta → 4.545e-03) · shape agnosticism (1.080e-07 at non-default
+dims) · runtime-format decision · the GGUF-route decision.
+
+**Open, specified, not implemented**: the real-checkpoint ingest (block scales + streamed experts —
+WS-07/WS-11 surface) · the V4.1-only modules (engram, candidate blocks, `ffn.gate.bias_vl`, the MTP/DSpark
+head and the vision tower — `SPEC-v41-modules.md`) · the Mamba-3 lane (spec'd as a second lane, oracle
+not built).
+
+**Documented limitation, not a defect**: with the indexer at its configured `index_topk`, selection
+depends on `torch.topk`'s order among exactly-equal scores, which is implementation-defined; the
+integration is gated with a non-selective indexer for that reason.

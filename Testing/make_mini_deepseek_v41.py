@@ -65,6 +65,16 @@ def main():
     ap.add_argument("--prompt-len", type=int, default=0,
                     help="0 = the original 5-token prompt; >5 = seeded random ids")
     ap.add_argument("--window", type=int, default=0, help="0 = profile default")
+    # Shape knobs: the V4.1 deltas are supposed to be MODULES, not dimensions — so the
+    # engine must work at non-default shapes. These make that testable.
+    ap.add_argument("--hidden", type=int, default=64)
+    ap.add_argument("--heads", type=int, default=4)
+    ap.add_argument("--head-dim", type=int, default=16)
+    ap.add_argument("--q-lora", type=int, default=8)
+    ap.add_argument("--o-lora", type=int, default=8)
+    ap.add_argument("--o-groups", type=int, default=8)
+    ap.add_argument("--experts", type=int, default=8)
+    ap.add_argument("--moe-int", type=int, default=32)
     ap.add_argument("--rope-frac", type=float, default=0.125,
                     help="partial_rotary_factor; with head_dim=16, 0.125 gives rd=2 (ONE rope "
                          "pair, freq = theta^0 = 1, so the compress-vs-main theta is invisible) "
@@ -85,10 +95,11 @@ def main():
 
     cfg = DeepseekV4Config(
         partial_rotary_factor=args.rope_frac,
-        vocab_size=1000, hidden_size=64, moe_intermediate_size=32,
-        num_hidden_layers=4, num_attention_heads=4, num_key_value_heads=1,
-        head_dim=16, q_lora_rank=8, o_lora_rank=8,
-        n_routed_experts=8, n_shared_experts=1, num_experts_per_tok=2,
+        vocab_size=1000, hidden_size=args.hidden, moe_intermediate_size=args.moe_int,
+        num_hidden_layers=4, num_attention_heads=args.heads, num_key_value_heads=1,
+        head_dim=args.head_dim, q_lora_rank=args.q_lora, o_lora_rank=args.o_lora,
+        o_groups=args.o_groups,
+        n_routed_experts=args.experts, n_shared_experts=1, num_experts_per_tok=2,
         max_position_embeddings=256, sliding_window=window,
         # indexer dims: the Lightning Indexer needs its own heads/dim (HCA has none)
         index_n_heads=2, index_head_dim=8, index_topk=(args.index_topk or 8),

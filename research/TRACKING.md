@@ -27,7 +27,7 @@
 | WS-08 | MLA & KV cache | 🔄 | 🔲 | 🔲 | gauge probe done; QK-normed MLA next |
 | WS-09 | Router unification | 🔲 | 🔲 | 🔲 | gated on P0.2 |
 | WS-10 | Metal/M5 + MLIR toolchain | 🔲 | 🔲 | 🔲 | — |
-| WS-13 | Arch-gap closure (V4/V4.1, Mamba-3) | 🔲 | 🔲 | 🔲 | scoped 2026-09-12 — see ws13/README.md + Testing/arch-gaps.md |
+| WS-13 | Arch-gap closure (V4/V4.1, Mamba-3) | ✅ | 🔄 | 🔲 | P0 done (oracle ≤1e-8, compressor ≤5.4e-07, indexer ≤1.3e-08, compressed attention exact 7.451e-09, rope-theta control, shape-agnostic 1.080e-07); P1: GGUF route CLOSED (no V4 converter; no compressor/mhc tensors) → engine-native quantisation, real-checkpoint ingest open (WS-07/WS-11); P2: V4.1 modules + Mamba-3 specified, not implemented — ws13/FINDINGS.md + SPEC-v41-modules.md |
 | WS-12 | HRX/Loom platform transition | ✅ | 🔲 | 🔲 | re-vendored 7953d7f + native `HRX_GPU` backend + decode-time failover (commits 43b38b4e, cc4fd23d, 2026-08-29) |
 
 ## Task detail
