@@ -72,6 +72,22 @@ mask), `0x20` (32 = group), `0x10`, `0x18`, `0x30` — consistent with a 32-weig
 group, so the tile/group geometry is right and the divergence is in the
 element ordering / nibble order (bridge W[3]=0.006348 ≈ FLM W[0]=0.006317).
 
+## W-injection diagnostic (BF16MM_W_FILE, committed 24d9a5b1c)
+
+Replaces the first `run_dequant_dev` (the QKV) with a raw bf16 tensor read from a
+file. Feeding FLM's captured `arg4` (10 MB, stride 4096 or 5120):
+
+| QKV W source | boot @256 |
+|---|---|
+| bridge dequant (current) | 78471 |
+| FLM's captured `arg4` | 48035 |
+| FLM reference (full pipeline) | 72429 |
+
+So the QKV weight alone does not reproduce the reference — **at least one more
+stage diverges** (O/GU/D dequant, attention, or a host op: norm/RoPE/residual/
+SiLU). Note the bridge's `w_dev` and FLM's `arg4` may also sit in different
+tile layouts, so this test bounds but does not isolate the remaining bug.
+
 ## Repro
 
 ```
