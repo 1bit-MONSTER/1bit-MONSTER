@@ -62,6 +62,35 @@ quantization); a bf16 GEMM with matching tile order is required.
    proven flow).
 2. Then layer the in-kernel `rms_norm` in front of it.
 
+## fk-2 scoping findings (2026-09-12)
+
+1. **`mm_bfp.cc` uses `bfp16ebs8`, not plain bf16.** `bfp16ebs8` is a
+   block-floating-point microscaling format (shared exponent across 8 elements),
+   i.e. **lossy vs plain bf16**. A GEMM built on `mm_bfp.cc` is therefore NOT
+   byte-identical to FLM's plain-bf16 `mm.xclbin`. Do not use it for the
+   byte-exact fk-2 path.
+2. **Plain `bfloat16` mmul is supported** by the aie API
+   (`aie::mmul<r,s,t, bfloat16, bfloat16, accfloat>`), so a plain-bf16 GEMM
+   microkernel can be written by adapting the int8 `mm_kernel_reference.cc`
+   structure (swap `int8`→`bfloat16`, `accauto`→`accfloat`).
+3. **Byte-exact parity vs the host-norm path is the real constraint**: the
+   reference path is host `rn_bf16` (f32) → bf16 → FLM's *closed-source*
+   `mm.xclbin` bf16 GEMM. A native fused kernel is byte-identical only if it
+   reproduces BOTH the f32 RMSNorm (ε + learned γ, RNE bf16 round) AND FLM's
+   exact bf16 GEMM tile/accumulation order. The latter is reverse-engineering
+   (FLM's mm tile schedule is not open); if byte-exactness vs FLM proves
+   infeasible, fk-2 should be re-scoped to "byte-identical vs a native bf16
+   GEMM + host norm" (a self-consistent native path), documenting the
+   FLM-vs-native bf16 GEMM delta instead.
+4. **The plain-bf16 GEMM already exists natively.** `mm_kernel_reference.cc`
+   ships a `bf16_bf16_ONLY` combo → `matmul_bf16_bf16` + `zero_bf16`, using
+   `aie::mmul<4,8,8, bfloat16, bfloat16, accfloat>` (plain bfloat16, no bfp16
+   emulation). Verified 2026-09-12: it compiles with the fk-1 command
+   (`-Dbf16_bf16_ONLY -DDIM_M=32 -DDIM_K=64 -DDIM_N=128`) and exports
+   `matmul_bf16_bf16`. So fk-2 does NOT need a new GEMM microkernel — it needs
+   (a) a bf16 MLIR wrapper + aiecc → xclbin, (b) the in-kernel RMSNorm fused
+   in front of the GEMM.
+
 ## Build flow (verified fk-1, 2026-09-12)
 
 ```
