@@ -1878,6 +1878,28 @@ int main(int argc, char** argv) {
     // The flip: the registry resolver is consumed here. The merge is a UNION — the
     // registry can demote the head only for a stated exclusion, and never drops a
     // router lane — so this cannot lose a route the engine has today.
+    // Issue #2263 (re-scoped): an auto-selected candidate is a *probe*, not a
+    // commitment, so narrow the budget every lane gets before it is created — the
+    // manager applies it as it instantiates each backend. Without it the spawn
+    // lanes decline an unpinned artifact very slowly (HRX 3 x 120 s, LSE and FLM
+    // 10 x 120 s) and the manager waits up to 120 s per backend across ~20
+    // backends, so a bare server can look dead for many minutes — which a 90 s
+    // health window cannot tell apart from a permanent failure. A model pinned
+    // with -m keeps the lane's full budget: there we ARE committed to it.
+    // Overrides: ONEBP_PROBE_RETRIES (default 1), ONEBP_PROBE_TIMEOUT_S (default 20).
+    if (g_model_name.empty()) {
+        auto probe_env = [](const char* key, int dflt) {
+            const char* v = getenv(key);
+            if (!v || !*v) return dflt;
+            int n = atoi(v);
+            return n > 0 ? n : dflt;
+        };
+        const int probe_retries = probe_env("ONEBP_PROBE_RETRIES", 1);
+        const int probe_timeout = probe_env("ONEBP_PROBE_TIMEOUT_S", 20);
+        mgr.set_init_budget(probe_retries, probe_timeout);
+        printf("  [select] auto-probe budget: %d retry(ies), %ds lane timeout (#2263)\n",
+               probe_retries, probe_timeout);
+    }
     // Route + initialise ONE candidate. Factored out so auto-selection can fall
     // through to the next candidate when no backend can load this one (#2263).
     auto route_and_init = [&](const ModelConfig& cand, BackendRoute& out_route) -> bool {

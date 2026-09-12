@@ -100,6 +100,16 @@ struct BackendPlugin {
 // monitors health, and handles failover.
 class BackendManager {
 public:
+
+    /// #2263: narrow the out-of-process spawn/health budget applied to every
+    /// backend this manager creates (0 = leave that lane's own budget alone).
+    /// The server sets this for *auto-selected* candidates, which are probes
+    /// rather than commitments; a model pinned with -m keeps the lane's budget.
+    void set_init_budget(int retries, int timeout_s) {
+        probe_retries_ = retries;
+        probe_timeout_s_ = timeout_s;
+    }
+
     BackendManager();
     ~BackendManager();
 
@@ -231,6 +241,11 @@ private:
     bool pilot_active_ = false;
     bool initialized_ = false;
     mutable std::mutex mtx_;
+
+private:
+    int probe_retries_ = 0;     // #2263: 0 = leave the lane's budget alone
+    int probe_timeout_s_ = 0;
+
 };
 
 // ── Convenience: global singleton ──
