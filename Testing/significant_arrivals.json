@@ -60,7 +60,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "hariharasudhan/en-indic-translate-26b"
+  "model": "taharmasmaliyev07/Mirza-Gemma4-E2B-MIXED-NO-TAG-E3-BF16"
  },
  "gemma4unified": {
   "arch": "gemma4unified",
@@ -88,7 +88,7 @@
   "covered": true,
   "date": "2026-09-09",
   "family": "Glm",
-  "model": "defiobi00/GLM-5.3-DERISKED-Int4-Int8Mix"
+  "model": "faizzht/GLM-5.3-CYBERSECURITY-FP8"
  },
  "glmmoedsa": {
   "arch": "glmmoedsa",
@@ -102,7 +102,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Granite",
-  "model": "AnkitBirGurung/Granite-4.2-8b-BoardPolitics"
+  "model": "Jeethu/granite-4.2-8b-PARO"
  },
  "granitemoehybrid": {
   "arch": "granitemoehybrid",
@@ -123,7 +123,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Llama",
-  "model": "Raghav-Singhal/1pp-1.7b-ua-seed42-sft"
+  "model": "Jeesup/svdsafety_l2_ablate_top256"
  },
  "llama3forcausallm_polysurgery": {
   "arch": "llama3forcausallm_polysurgery",
@@ -200,21 +200,21 @@
   "covered": true,
   "date": "2026-09-06",
   "family": "Phi",
-  "model": "minjaechoi/Phi-4-mini-instruct-W4A16"
+  "model": "SirSahOl/Phi-4-mini-instruct-chat-mlx-4bit"
  },
  "qwen2": {
   "arch": "qwen2",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO"
+  "model": "Duong1211/GRIT"
  },
  "qwen2_5_vl": {
   "arch": "qwen2_5_vl",
   "covered": true,
   "date": "2026-09-09",
   "family": "Qwen",
-  "model": "amad-iq/amad-vlm6"
+  "model": "Keretos1/egx-decision-qwen2.5-vl-3b-fused"
  },
  "qwen2forcausallm_polysurgery": {
   "arch": "qwen2forcausallm_polysurgery",
@@ -235,7 +235,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "thuyduongjoe123/checkpoints_en_my_logit"
+  "model": "AbhishekG711/Qwen3-0.6B-Insight-Extractor"
  },
  "qwen3-vl": {
   "arch": "qwen3-vl",
@@ -249,14 +249,14 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "YueLinHu/GAC-Qwen3.5-4B"
+  "model": "irving117/Qwen3.8-27B-Abliterated-V2"
  },
  "qwen3_5moe": {
   "arch": "qwen3_5moe",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "mlx-community/BigBang-v1-MLX-oQ4e"
+  "model": "mlx-community/Nex-N2.5-mini-OptiQ-4bit"
  },
  "qwen3next": {
   "arch": "qwen3next",
@@ -270,7 +270,7 @@
   "covered": true,
   "date": "2026-09-09",
   "family": "Qwen",
-  "model": "zhongweixie/claw-rl-v13-grpo-dr-rubric"
+  "model": "xyzzzh/IoU-PD"
  },
  "qwen4exp": {
   "arch": "qwen4exp",
@@ -285,6 +285,13 @@
   "date": "2026-09-11",
   "family": "Rwkv",
   "model": "brennercruvinel/truw-rwkv7-2.9b-v3"
+ },
+ "rwkv7moe": {
+  "arch": "rwkv7moe",
+  "covered": false,
+  "date": "2026-09-12",
+  "family": "Rwkv",
+  "model": "win10/RWKV7-G1j-10B-A1B"
  },
  "smollm3": {
   "arch": "smollm3",
