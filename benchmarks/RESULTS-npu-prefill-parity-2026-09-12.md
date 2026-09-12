@@ -90,6 +90,40 @@ Two ways to close it:
 
 Option 2 is the honest engineering fix and preserves output semantics.
 
+
+## Decode breakdown — the gap is host-side, not GPU
+
+`NPU_RUNLIST_STATS=1` on the 0.6B (`NPU_RUNLIST_STATS` prints per-token runlist
+build/exec):
+
+```
+[runlist] build=0.41..0.88ms exec=9.98..10.04ms   ← steady state
+[runlist] 29 runs batched -> 1 submit (ctx=N)
+```
+Total measured decode = **16.0 ms/tok (63 tok/s)**. So:
+
+| component | ms/token |
+|---|---|
+| runlist exec (28 layers + lm_head, ONE submit) | **~10.0** |
+| host overhead (embed + argmax + build + syncs) | **~6.0** |
+
+FLM's decode is 73.58 tok/s = 13.6 ms/tok. Since the GPU-side exec is already
+~10 ms (matching FLM's ~10 ms of kernel time), **the entire ~2.4 ms/token gap
+lives host-side**:
+- `argmax_logits`: `sync(304 KB logits)` + a serial 151 936-iteration loop
+  (`runtime_layer.cpp:622`).
+- `embed()`: f32 embedding lookup + bf16 convert each token.
+- runlist `build`: 0.4–0.9 ms of `set_arg` calls per token.
+
+### Fixes (ordered by payoff)
+
+1. **Overlap**: start the next-token `embed` + runlist `build` while the device
+   is still executing the current runlist (the exec already has `rl.execute()`
+   before `rl.wait()` — just move the host work between them).
+2. **argmax**: vectorise/OpenMP the 151 936-element scan (it is a pure integer
+   compare loop) — expected ≈0.2 ms instead of ≈1 ms.
+3. Keep the logits sync asynchronous with the following embed.
+
 ## Next
 
 1. TTFT: overlap the first decode step with the prefill tail (the engine already
