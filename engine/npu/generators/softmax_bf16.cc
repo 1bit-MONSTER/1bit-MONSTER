@@ -10,6 +10,7 @@
 // values is RNE.
 #include <aie_api/aie.hpp>
 #include <stdint.h>
+#include <cmath>
 
 #ifndef M_TILE
 #define M_TILE 16
@@ -40,7 +41,9 @@ extern "C" void softmax_bf16(const uint16_t *__restrict scores,
         double sw = 0.0;
         for (int c = 0; c < N_KEYS; c++) {
             float s = bf16_to_f32(scores[r * N_KEYS + c]);
-            float e = expf(s - mx);
+            // exp(x) = exp2(x * log2(e)); the AIE has no scalar expf, only
+            // the software double exp2. ~1 ULP vs glibc expf (documented caveat).
+            float e = (float)exp2((double)(s - mx) * 1.4426950408889634);
             sw += (double)e;
             out[r * N_KEYS + c] = f32_to_bf16(e);
         }
