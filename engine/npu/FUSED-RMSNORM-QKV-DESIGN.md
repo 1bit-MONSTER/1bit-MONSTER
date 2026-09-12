@@ -508,3 +508,13 @@ the static full-unroll, the dynamic index_switch, or routing the AN through the 
 The norm-only dump (via the SHIM DMA) is non-zero, so it is specifically the CORE's
 consume side that breaks. Next mlir-aie target: the core's objectfifo consume
 lowering for >4 iterations.
+
+## Multi-shot AN handoff is the blocker (single-shot works)
+GU-only dump at IM=256 (static full-unroll) still zeros, isolating the bug to the
+AN handoff (norm->GU), not the SiLU/D. Key distinction: the 2-N-tile used a
+SINGLE-shot (produce(2) once + consume(1)x2); the 3+ N-tile is MULTI-shot
+(produce(1 or 2) x N + consume x N). Even produce(2) x4 (multi-element) zeros. So
+the failure is the multi-cycle core-to-core handoff's lock/memory visibility, not
+the produce element count. The shim-side read (norm-only dump) is non-zero, so only
+the CORE's consume path breaks at >4 cycles. This is a hardware/consistency-level
+mlir-aie issue; the 1-2 N-tile (single-shot) paths stay byte-exact.
