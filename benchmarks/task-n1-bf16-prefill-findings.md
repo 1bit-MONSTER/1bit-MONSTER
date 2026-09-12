@@ -209,6 +209,15 @@ correlated with each kernel's identity before drawing conclusions.
 What IS confirmed: every layer-0 stage in the bridge is non-zero and plausible,
 and the q/k-norm weights load byte-identically to the model.
 
+### Architecture note (from the RUNLIST_ADD log)
+
+The FLM prefill runlist adds the **same`run` object** (`0x7ffe5517a3b0`) many
+times with a constant `a3` but per-layer `a4/a5/a6/a7` — a single whole-layer
+kernel re-invoked per layer, not one run per GEMM. That is why the captured
+`arg5`/`arg6` sizes don't line up with a standalone QKV GEMM A/C: the arg→tensor
+identity must be derived from the C output index in the per-run insts, not from
+the BO size alone.
+
 ## Repro
 
 ```
