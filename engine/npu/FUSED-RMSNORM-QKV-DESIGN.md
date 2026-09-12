@@ -160,9 +160,14 @@ core row 3), A_norm flows norm→mem→GEMM. Key constraints resolved:
   learned gamma needs a 3rd input channel (fold into A or a 2nd shim column).
 
 **Validation: WRONG OUTPUT** — `bench_fused_rmsnorm_qkv.cpp` reports 1/2048
-byte-exact, max_delta 34727 (dataflow bug, not a ULP delta). Next: debug the
-A_norm handoff / A double-read (the fused composition of two independently
-validated kernels is correct; the on-device routing is the suspect).
+byte-exact, max_delta 34727 (dataflow bug, not a ULP delta). Isolation so far:
+- standalone bf16 GEMM DIM_M=16 → **PASS** (0/65536 wrong, 270.8 GOP/s) — GEMM is fine.
+- no-op scale (A_norm = bf16(A), no norm) → still 1/2048 — **norm is NOT the bug**.
+- H=64 (n_k=1) → still wrong — multi-K-tile loop is NOT the bug.
+So the bug is the **on-device A_norm handoff (AN_W→AN_R link) or the A double-read
+or W routing**. The MLIR link/typing/depths all look correct by inspection — next
+step is a device-side dump of A_norm (route it to shim) vs the W feed to pinpoint
+which of the three is scrambling data.
 
 ## fk-2 scoping findings (2026-09-12)
 
