@@ -61,6 +61,10 @@ public:
     /// uses gen_layer_seq(ctx_len+1)); ctx_len = tokens already in cache + 1.
     bool forward(int ctx_len);
 
+    /// Prefill: write n tokens' embeddings into the act BO, then run the fused
+    /// layer at ctx_len=n (the batched ELF layer_ctxN.elf). Returns true on success.
+    bool prefill_batch(const int* tokens, int n);
+
     /// Copy the logits BO's first `vocab` bf16 values as float.
     bool get_logits(float* out, int vocab);
 
