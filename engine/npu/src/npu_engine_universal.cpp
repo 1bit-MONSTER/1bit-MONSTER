@@ -3956,6 +3956,7 @@ struct Bf16Ctx {
                 bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 0, bA.data());
                 bf16mm_gemm_wait(0, bC.data());
                 bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 1, bA.data());
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 0; pi < h0; pi++) {
                     for (int i = 0; i < IM; i++) {
                         float gv = bf16g(bC[pi * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
@@ -3963,6 +3964,7 @@ struct Bf16Ctx {
                     }
                 }
                 bf16mm_gemm_wait(1, bC.data());
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 128; pi < npt; pi++) {
                     for (int i = 0; i < IM; i++) {
                         float gv = bf16g(bC[(pi - 128) * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
