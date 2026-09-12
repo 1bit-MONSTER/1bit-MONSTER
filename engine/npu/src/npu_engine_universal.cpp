@@ -3856,6 +3856,7 @@ struct Bf16Ctx {
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
                 // input norm + A convert fused
                 auto tc0 = std::chrono::steady_clock::now();
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data(), 2, 4 * H, fb); fclose(fb); } }
                 auto tg0 = std::chrono::steady_clock::now();
@@ -3897,8 +3898,10 @@ struct Bf16Ctx {
                 };
                 kv_caches[l][0].n = sp + npt;
                 int h0 = npt < 128 ? npt : 128;
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 0; pi < h0; pi++) qk_norm_pi(pi, pi);  // batch 0 (overlaps batch 1 kernel)
                 bf16mm_gemm_wait(1, bC.data());
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 128; pi < npt; pi++) qk_norm_pi(pi, pi - 128);  // batch 1
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
@@ -3938,11 +3941,13 @@ struct Bf16Ctx {
                 bf16mm_gemm_launch(Wo[l], qout, H, 0, 0, bA.data());
                 bf16mm_gemm_wait(0, bC.data());
                 bf16mm_gemm_launch(Wo[l], qout, H, 0, 1, bA.data());
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 0; pi < h0; pi++) {
                     for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
                     for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
                 }
                 bf16mm_gemm_wait(1, bC.data());
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 128; pi < npt; pi++) {
                     for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[(pi - 128) * H + i]);
                     for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
@@ -3950,6 +3955,7 @@ struct Bf16Ctx {
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
                 // FFN: RMSNorm + GU + SiLU×up + D
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], pa_n[l].data(), H);
                 // GU FFN: [gate | up] = A×Wgu in ONE GEMM (N=2·IM); SiLU on host.
                 // Pipelined: batch 1 kernel overlaps batch 0 SiLU.
@@ -3975,11 +3981,13 @@ struct Bf16Ctx {
                 bf16mm_gemm_launch(Wd[l], IM, H, 0, 0, bA.data());
                 bf16mm_gemm_wait(0, bC.data());
                 bf16mm_gemm_launch(Wd[l], IM, H, 0, 1, bA.data());
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 0; pi < h0; pi++) {
                     for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
                     for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
                 }
                 bf16mm_gemm_wait(1, bC.data());
+                #pragma omp parallel for schedule(static) num_threads(8)
                 for (int pi = 128; pi < npt; pi++) {
                     for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[(pi - 128) * H + i]);
                     for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
