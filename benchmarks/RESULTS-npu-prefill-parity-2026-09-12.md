@@ -67,6 +67,29 @@ Native must emit token 1 after the first prefill chunk (≈ prompt/2) instead of
 after the whole prompt: expected TTFT ≈ prefill_time/2 ≈ 0.64 s (0.6B) …
 2.6 s (8B), matching FLM.
 
+
+## TTFT semantics — why the comparison is not apples-to-apples
+
+FLM's own CSV @1k says `TTFT=0.702 s` **and** `prefill=1400.21 tok/s`. For the
+~1928-token prompt that is a full-prompt time of 1928/1400.21 ≈ **1.38 s** —
+i.e. **FLM's TTFT is smaller than its own full-prompt prefill time.** Therefore
+FLM's `ttft` is a *first-chunk* figure (it emits/reports the first token before
+the whole prompt is consumed), while the native engine's TTFT equals its
+*complete* prefill wall time (0.6B: 1175 ms for 2088 tokens = 1785.7 tok/s,
+`Prefill: 1175ms (0.56 ms/tok)`).
+
+So the "1.8–1.9× TTFT gap" is **a metric-semantics difference plus a scheduling
+difference**, not a kernel deficit — the native engine consumes the full prompt
+*faster* than FLM (1785 vs 1400 tok/s) but reports the whole prefill as TTFT.
+
+Two ways to close it:
+1. **Adopt the same metric**: measure native TTFT to the first emitted token
+   with chunked prefill (emit after the first chunk) — matches FLM's definition.
+2. **Stream decode during prefill**: start the first decode step as soon as
+   chunk 1 is done, overlapping the remaining chunks.
+
+Option 2 is the honest engineering fix and preserves output semantics.
+
 ## Next
 
 1. TTFT: overlap the first decode step with the prefill tail (the engine already
