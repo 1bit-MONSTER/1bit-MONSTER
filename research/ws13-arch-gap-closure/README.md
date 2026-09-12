@@ -1,7 +1,34 @@
 # ws13-arch-gap-closure — Run the architectures the census flags (DeepSeek V4/V4.1, Mamba-3)
 
-**Status:** 🔲 scoped, not started — scope + evidence: this file and `Testing/arch-gaps.md`
+**Status:** 🔄 **P0 complete, P1 half-complete, P2 specified** (updated 2026-09-12 — see `FINDINGS.md` for every number)
 **Owner:** engine (CPU/attention + SSM lanes)
+
+## Where it stands (2026-09-12)
+
+Validated with per-layer and per-stage gates against the reference's own values:
+
+* **P0.1 oracle** — tiny seeded fixtures + per-layer dumps; existing modules reproduce the reference to
+  **1.118e-08** (sliding) and the instrument *localizes* a missing mechanism to its layer.
+* **P0.2 spec** — `SPEC-v41-modules.md`: name map (checkpoint ↔ transformers), Engram (hashed n-gram
+  memory added to the mHC residual), two-level candidate selection, and DSpark = the MTP/draft head
+  (off the generation path).
+* **P0.3** — runtime format decided (engine-native quantisation; fp8 is already readable, residency is
+  the wall).
+* **P1.1 STAGES 1–3 DONE** — compressor (CSA two-series + HCA single-series) **batched and incremental**
+  ≤5.4e-07; Lightning Indexer score table ≤1.3e-08 with order-independent selection validity; compressed
+  attention integrated, **exact at 7.451e-09** per layer with a non-selective indexer, and the 64-token
+  default-config fixture matches the reference exactly (top1 685 = 685, 20/20). Per-layer rope theta
+  validated by a control (wrong theta → 4.545e-03). Loader/attention proven **shape-agnostic**
+  (1.080e-07 at H=320 / 5 heads / 32 experts / o_groups 4).
+* **P1.2 decision** — the GGUF route is **closed with evidence**: the fork's converter has no V4 class and
+  its tensor map has no compressor/ape/mhc entries, so a converted GGUF could not carry the compressed
+  layers. P1.3 goes engine-native.
+* **P2** — V4.1-only modules and the Mamba-3 lane are specified, **not implemented**.
+
+**Open:** real-checkpoint ingest (`ue8m0`/fp4 block scales + streamed experts — WS-07/WS-11), the V4.1-only
+modules, Mamba-3. **Documented limitation:** with the indexer at its configured `index_topk`, which of
+several exactly-equal scores wins is implementation-defined on the reference side, so the integration is
+gated with a non-selective indexer.
 **Papers:** none specific — the oracle is the vendors' own reference code (`HF modeling_deepseek_v4.py 5.14`, already the oracle for the existing V4 path) and the model configs themselves.
 
 ## Goal
