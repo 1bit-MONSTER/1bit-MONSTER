@@ -82,6 +82,10 @@ struct DeepSeekV4Config {
     // Per-layer attention compress ratio (0 = sliding). Vector indexed by layer.
     std::vector<int> compress_ratios;
     std::vector<int> layer_attn_type;  // 0=sliding, 1=CSA(4), 2=HCA(128)
+    // Window widths per flavour. Parsed from `compress_rates` (transformers /
+    // fixture naming) or implied by `compress_ratios` (checkpoint naming).
+    int csa_rate = 4;
+    int hca_rate = 128;
 };
 
 // ─── Weights ──────────────────────────────────────────────────────────────────
@@ -106,6 +110,17 @@ struct DeepSeekV4Layer {
     std::vector<float> exp_down;       // [n_routed, H, moe_int]
     // shared expert (SwiGLU)
     std::vector<float> sh_gate, sh_up, sh_down;  // [moe_int, H], [moe_int, H], [H, moe_int]
+    // ── compressor (CSA/HCA); empty on sliding layers ─────────────────────────
+    // The compressor pools every `cp_rate` tokens: softmax(gate + position_bias)
+    // over the 2*rate Ca/Cb slots (two series, stride `rate`), RMSNorm, then the
+    // "compress" RoPE at positions w*rate. See the reference
+    // DeepseekV4CSACompressor / DeepseekV4HCACompressor (transformers 5.16.1).
+    int cp_rate = 0;                 // 0 = this layer has no compressor
+    int cp_series = 1;               // 1 = HCA (single series), 2 = CSA (Ca/Cb overlap)
+    std::vector<float> cp_kv;        // kv_proj.weight    [cp_series*head_dim, H]
+    std::vector<float> cp_gate;      // gate_proj.weight  [cp_series*head_dim, H]
+    std::vector<float> cp_pos_bias;  // position_bias     [cp_rate, cp_series*head_dim]
+    std::vector<float> cp_norm;      // kv_norm.weight    [head_dim]
 };
 
 struct DeepSeekV4Model {
@@ -144,6 +159,22 @@ struct DeepSeekV4mHCState {
     void set_embed(const float* e) { for (int k = 0; k < hc; k++) std::copy(e, e + H, streams[k].begin()); }
     const float* current() const { return streams[0].data(); }
 };
+
+// ─── Compressor (CSA/HCA) ─────────────────────────────────────────────────────
+// Window-batched compressor forward, reproducing the reference exactly:
+//   kv   = x @ kv_proj^T                 [T, 2*head_dim]
+//   gate = x @ gate_proj^T + position_bias
+//   per window w: for CSA the slots are [previous window's Ca | this window's
+//   Cb] over 2*rate rows (Ca = columns [0,head_dim), Cb = [head_dim,2*head_dim));
+//   HCA is single-series and has no overlap — just this window's `rate` rows
+//   (measured: the HCA checkpoint tensors are [head_dim, H], half the CSA width).
+//   Slot weights are softmax(gate) per column; window 0's Ca half is kv=0,
+//   gate=-inf (softmax weight 0); then RMSNorm and the "compress" RoPE at
+//   position w*rate.
+// `x` is [T, H] — the COLLAPSED attention-site input, not the mHC streams.
+// Returns [n_win][head_dim], n_win = T / rate (0 when rate <= 0 or T < rate).
+std::vector<float> deepseek_v4_compressor_forward(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
+                                                  int rate, const std::vector<float>& x, int T);
 
 // ─── Forward ──────────────────────────────────────────────────────────────────
 // One token. Returns logits [vocab]. kv_cache + mhc updated in place.

@@ -120,3 +120,89 @@ exit 1. The `csa64`/`hca160` fixtures remain expected-fail by design and stay ou
 * **P0.2 — next** (read DeepSeek's `inference/engram.py` + `model.py` for the V4.1-only maths, which
   transformers cannot provide: no `DeepseekV41` class exists).
 * **P0.3, P0.4 — not started.**
+
+---
+
+# P0.3 — runtime format decision (in writing, as the plan requires)
+
+**Decision: P1's architecture work targets the HF safetensors names at whatever precision the
+checkpoint stores (fp8/f32) on *tiny fixtures*, and the real-checkpoint milestone (P1.3) is served from
+a quantized/streamed path owned by WS-05/WS-07/WS-11 — this workstream does not invent a format.**
+
+Evidence (all measured earlier in this file, plus a reader audit today):
+
+| fact | value |
+|---|---|
+| V4-Flash tensors / size | 69,187 / **159.6 GB** fp8 (e4m3, `ue8m0` block scales, block [128,128]) |
+| V4.1-Flash tensors / size | 96,085 / **510.3 GB** fp8 + `expert_dtype: fp4`, block [32,32] |
+| the V4 loader's precision | `get_tensor_f32` → every tensor resident as **f32** (~2 TB for V4.1) |
+| what the reader already accepts | `F32`, `F16`, `BF16`, **`F8_E4M3`**, **`F8_E5M2`** (so fp8 is readable, not the blocker) |
+| existing storage paths in-tree | `gguf_loader/reader` (incl. `IQ2_XXS`), `q4nx_reader`, `h1b_loader`, `safetensors_reader` |
+
+Consequences the plan must keep:
+
+1. **The blocker is residency, not parsing.** Since fp8 tensors already load, the honest statement is
+   "the engine can read the format and cannot hold the model": ~2 TB as f32 for V4.1.
+2. **Block scales are a new loader requirement.** The V4.1 checkpoint stores `ue8m0` block scales as
+   sibling tensors (`*.scale`, e.g. the engram embed's `weight`/`scale` pair and the experts'
+   `fp4` weights). The current fp8 path has no block-scale concept, so P1.1's loader work includes
+   reading `*.scale` alongside `*.weight` — and the compressor/indexer tensors are ordinary f32/dense,
+   so their maths can land before the quantized path does.
+3. **P1.3's target is a streamed, quantized checkpoint**, i.e. a consumer of WS-07 (expert staging /
+   PagedWeight) and WS-11 (NVMe→DRAM→SRAM tiering), with WS-05's 1BP v2 as a candidate wire format.
+   Trying to reach a real checkpoint by widening the f32 loader would be the wrong direction and is
+   explicitly out of scope here.
+4. **The oracle is unaffected by all of this**, which is why P0/P1 can proceed now: `transformers` runs
+   the fixture in fp32 and the gate is a numerical bound on the implementation, not on the format.
+
+---
+
+# P1.1 stage 1 — the compressor is implemented and gated (both flavours), ≤5.4e-7
+
+**Instrument:** `Testing/make_mini_deepseek_v41.py` now also captures the reference's **own compressor
+output** with a forward hook during a real HF forward (so the dump IS the reference's values, not a
+re-derivation) plus the **collapsed attention-site input** each compressor is fed, written as plain
+`.npy` (`comp_ref_L<N>.npy`, `attn_input_L<N>.npy`). `Testing/cmp_deepseek_v4_compressor.cpp` loads the
+engine's compressor for one layer and compares entry by entry.
+
+**Implemented** (`src/deepseek_v4.cpp` + `include/deepseek_v4.h`): per-layer compressor loading, and
+`deepseek_v4_compressor_forward` — window pooling with `softmax(gate + position_bias)` **per output
+column**, RMSNorm, then the "compress" RoPE (θ = `compress_rope_theta`) at position `w * rate`.
+
+| flavour | layer / fixture | entries | max&#124;Δ&#124; | rel | gate |
+|---|---|---|---|---|---|
+| **CSA** (2 series, Ca/Cb overlap) | L1, 64-token fixture | 16 | **4.768e-07** | 2.02e-07 | PASS |
+| **CSA** | L1, 160-token fixture | 40 | **4.768e-07** | 1.69e-07 | PASS |
+| **HCA** (1 series) | L2, 160-token fixture | 1 | **5.364e-07** | 2.84e-07 | PASS |
+
+Regression: with the loader change in, the sliding end-to-end gate is unchanged (20/20, top1 342, and
+per-layer worst 1.118e-08), and the compressed end-to-end gate still fails at **state 2** as designed —
+the compressor maths is correct but is not yet wired into attention (that is stage 3).
+
+## Findings from this stage
+
+1. **HCA is single-series and CSA is two-series — measured, not assumed.** The loader's first attempt
+   compared tensor widths and failed loudly: HCA's compressor tensors are `[head_dim, H]` and
+   `[rate, head_dim]`, exactly **half** the CSA width (`[2*head_dim, H]`, `[rate, 2*head_dim]`). This
+   matches the reference (`HCACompressor.kv_proj = Linear(H, head_dim)`, no Ca/Cb overlap) but the plan
+   had described the two-series layout as if it were shared. `cp_series` now carries the flavour
+   (1 = HCA, 2 = CSA) and the loader derives both the expected shapes and the branch.
+2. **The shared npy reader only parses the first shape entry.** `read_npy_f32` in
+   `Testing/cmp_deepseek_v4.cpp` computes the element count from the *first* number in the shape tuple —
+   fine for the 1-D logits it was written for, silently wrong for `[T,H]` (it read 64 of 4096 floats and
+   quietly reported `T=1`). The new harness has a reader that multiplies the whole tuple; any other
+   `cmp_*` gate that starts reading multi-dimensional npy files has the same latent trap.
+3. **The reference's own modules are the cheapest oracle** for intermediate values: no re-derivation, no
+   standalone-call semantics to argue about — a forward hook on the module during the real forward.
+
+## Still open in P1.1
+
+* **Stage 2 — the indexer**: its own compressor at `index_head_dim` (also 2-series, but with the
+  `2*head_dim` projection split into Ca/Cb at *index* head dim), `scorer = Σ_h w_{t,h}·ReLU(q_{t,h}·K_s)`,
+  `topk(index_topk)`, and the `-1` sentinel for queries whose causal threshold is below the candidate.
+* **Stage 3 — attention integration**: concatenate the sliding window with the compressed entries, apply
+  the per-query block mask (HCA: causality only; CSA: causality ∩ indexer validity), keep the per-head
+  sinks, and conjugate-rotate the output (K=V means V picked up rope). This is what flips the
+  end-to-end gate at state 2 (16/20 → ≥18/20) and the per-layer bound.
+* Then the same for a real checkpoint's `compress_ratios` + `*_source_layer_ids` (two-level candidate
+  selection), which needs the per-layer source wiring described in `SPEC-v41-modules.md` §3.

@@ -90,6 +90,21 @@ def main():
     model = DeepseekV4ForCausalLM(cfg).eval()
     n_params = sum(p.numel() for p in model.parameters())
 
+    # Exact compressor oracle: forward hooks on the real forward, so what we dump IS
+    # what the reference computed (no re-derivation, no standalone-call semantics).
+    comp_out = {}
+    hooks = []
+    def _mk(name):
+        def _hook(mod, args, out):
+            ck, bias = out if isinstance(out, tuple) else (out, None)
+            comp_out[name] = ck.detach().float().cpu().numpy()      # [B,1,n_win,head_dim]
+            if bias is not None:
+                comp_out[name + ".bias"] = bias.detach().float().cpu().numpy()
+        return _hook
+    for i, layer in enumerate(model.model.layers):
+        if getattr(layer.self_attn, "compressor", None) is not None:
+            hooks.append(layer.self_attn.compressor.register_forward_hook(_mk(f"L{i}")))
+
     ids = torch.tensor([PROMPT])
     if args.prompt_len and args.prompt_len != len(PROMPT):
         g = torch.Generator().manual_seed(args.seed + 1)
@@ -118,6 +133,38 @@ def main():
         print(f"  compressed entries the reference emits (CSA, rate "
               f"{COMPRESS_RATES['compressed_sparse_attention']}): "
               f"{n_entries} over {len(prompt)} tokens (window={window})")
+
+    for h in hooks:
+        h.remove()
+    if comp_out:
+        np.savez(os.path.join(args.outdir, "compressor_ref.npz"), **comp_out)
+        # plain .npy per compressed layer too: the C++ gate reads npy directly
+        # (npz is a zip, which a C harness should not have to unzip).
+        for k, v in sorted(comp_out.items()):
+            if k.endswith(".bias"):
+                continue
+            np.save(os.path.join(args.outdir, f"comp_ref_{k}.npy"), v[0, 0])  # [n_win, head_dim]
+        for k, v in sorted(comp_out.items()):
+            if not k.endswith(".bias"):
+                print(f"  compressor ref {k}: {v.shape}")
+    # Collapsed attention-site input per layer (the compressor's actual input): the
+    # mHC pre collapses streams -> [T, H]; hidden_states[i] above is the pre-layer
+    # STREAM state, so this is what a C++ compressor implementation must be fed.
+    attn_input = {}
+    def _cap(i):
+        def _hook(mod, args, out=None):  # torch passes (module, args[, kwargs])
+            attn_input[i] = args[0].detach().float().cpu().numpy() if args else None
+        return _hook
+    hh = [l.self_attn.register_forward_pre_hook(_cap(i)) for i, l in enumerate(model.model.layers)]
+    with torch.no_grad():
+        model(ids)
+    for h in hh:
+        h.remove()
+    np.savez(os.path.join(args.outdir, "attn_input_ref.npz"),
+             **{f"L{i}": v for i, v in attn_input.items() if v is not None})
+    for i, v in attn_input.items():
+        if v is not None:
+            np.save(os.path.join(args.outdir, f"attn_input_L{i}.npy"), v[0])  # [T, H]
 
     # Per-layer reference activations: the half of the instrument that lets P1
     # locate the FIRST diverging layer instead of only comparing final logits.

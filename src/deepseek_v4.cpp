@@ -178,6 +178,52 @@ bool DeepSeekV4Model::load_from_safetensors(const std::string& dir, const DeepSe
         if (json_find_float(txt, "hc_eps", fv)) cfg.hc_eps = fv;
         if (json_find_float(txt, "rms_norm_eps", fv)) cfg.rms_norm_eps = fv;
         if (json_find_float(txt, "rope_theta", fv)) cfg.rope_theta = fv;
+        if (json_find_float(txt, "compress_rope_theta", fv)) cfg.compress_rope_theta = fv;
+        // Compressor window widths: `compress_rates` (transformers/fixture naming)
+        // or, for checkpoint naming, `compress_ratios` below.
+        if (json_find_int(txt, "compressed_sparse_attention", iv) && iv > 0) cfg.csa_rate = iv;
+        if (json_find_int(txt, "heavily_compressed_attention", iv) && iv > 0) cfg.hca_rate = iv;
+        // layer_types: ["sliding_attention", "compressed_sparse_attention", ...]
+        {
+            size_t p = txt.find("\"layer_types\"");
+            if (p != std::string::npos) {
+                size_t lb = txt.find('[', p), rb = txt.find(']', p);
+                if (lb != std::string::npos && rb != std::string::npos && rb > lb) {
+                    std::string arr = txt.substr(lb, rb - lb);
+                    size_t i = 0;
+                    while (true) {
+                        size_t a = arr.find('"', i);
+                        if (a == std::string::npos) break;
+                        size_t b = arr.find('"', a + 1);
+                        if (b == std::string::npos) break;
+                        std::string v = arr.substr(a + 1, b - a - 1);
+                        int t = 0;
+                        if (v.find("compressed_sparse") != std::string::npos) t = 1;
+                        else if (v.find("heavily_compressed") != std::string::npos) t = 2;
+                        cfg.layer_attn_type.push_back(t);
+                        i = b + 1;
+                    }
+                }
+            }
+            // `compress_ratios` (checkpoint naming): 0 = sliding, >0 = rate.
+            size_t cr = txt.find("\"compress_ratios\"");
+            if (cfg.layer_attn_type.empty() && cr != std::string::npos) {
+                size_t lb = txt.find('[', cr), rb = txt.find(']', cr);
+                if (lb != std::string::npos && rb != std::string::npos && rb > lb) {
+                    std::string arr = txt.substr(lb + 1, rb - lb - 1);
+                    size_t i = 0;
+                    while (i < arr.size()) {
+                        while (i < arr.size() && !isdigit((unsigned char)arr[i])) i++;
+                        if (i >= arr.size()) break;
+                        int v = atoi(arr.c_str() + i);
+                        while (i < arr.size() && isdigit((unsigned char)arr[i])) i++;
+                        cfg.compress_ratios.push_back(v);
+                        cfg.layer_attn_type.push_back(v == 0 ? 0 : (v >= 128 ? 2 : 1));
+                        if (v > 0) { if (v >= 128) cfg.hca_rate = v; else cfg.csa_rate = v; }
+                    }
+                }
+            }
+        }
         // qk_rope_head_dim via partial_rotary_factor
         float prf = 0;
         if (json_find_float(txt, "partial_rotary_factor", prf) && prf > 0)
@@ -256,6 +302,20 @@ bool DeepSeekV4Model::load_from_safetensors(const std::string& dir, const DeepSe
         ok &= get(name("mlp.shared_experts.gate_proj.weight"), l.sh_gate, (size_t)cfg.moe_intermediate * H);
         ok &= get(name("mlp.shared_experts.up_proj.weight"), l.sh_up, (size_t)cfg.moe_intermediate * H);
         ok &= get(name("mlp.shared_experts.down_proj.weight"), l.sh_down, (size_t)H * cfg.moe_intermediate);
+        // ── compressor (CSA/HCA): present only when this layer's type says so ──
+        if (il < (int)cfg.layer_attn_type.size() && cfg.layer_attn_type[il] != 0) {
+            const int hd = cfg.head_dim;
+            const bool hca = (cfg.layer_attn_type[il] == 2);
+            l.cp_rate = hca ? cfg.hca_rate : cfg.csa_rate;
+            // CSA projects 2 series (Ca/Cb overlap); HCA is single-series.
+            l.cp_series = hca ? 1 : 2;
+            const int out_w = l.cp_series * hd;
+            ok &= get(name("self_attn.compressor.kv_proj.weight"), l.cp_kv, (size_t)out_w * H);
+            ok &= get(name("self_attn.compressor.gate_proj.weight"), l.cp_gate, (size_t)out_w * H);
+            ok &= get(name("self_attn.compressor.position_bias"), l.cp_pos_bias,
+                      (size_t)l.cp_rate * out_w);
+            ok &= get(name("self_attn.compressor.kv_norm.weight"), l.cp_norm, hd);
+        }
 
         if (il < cfg.num_hash_layers) {
             // hash routing: tid2eid [vocab, top_k]
@@ -282,6 +342,82 @@ void DeepSeekV4Model::clear() {
     embed.clear(); final_norm_w.clear(); lm_head.clear();
     hc_head_fn.clear(); hc_head_base.clear(); hc_head_scale.clear();
     layers.clear();
+}
+
+// ─── compressor (CSA/HCA) ─────────────────────────────────────────────────────
+std::vector<float> deepseek_v4_compressor_forward(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
+                                                  int rate, const std::vector<float>& x, int T) {
+    using namespace ds4math;
+    std::vector<float> out;
+    const int H = cfg.hidden_size, hd = cfg.head_dim;
+    if (rate <= 0 || l.cp_rate == 0 || (int)x.size() < (size_t)T * H) return out;
+    const int n_win = T / rate;
+    if (n_win <= 0) return out;
+    out.assign((size_t)n_win * hd, 0.0f);
+
+    const int series = (l.cp_series == 2) ? 2 : 1;   // 2 = CSA (Ca/Cb), 1 = HCA
+    const int out_w = series * hd;
+    const int n_slots = series * rate;
+    std::vector<float> kv((size_t)rate * out_w), gt((size_t)rate * out_w);
+    std::vector<float> new_kv((size_t)n_slots * hd), new_gate((size_t)n_slots * hd);
+    // Window 0's Ca half has no predecessor: kv 0, gate -inf (softmax weight 0).
+    std::vector<float> prev_ca((size_t)rate * hd, 0.0f);
+    std::vector<float> prev_ca_gate((size_t)rate * hd, -INFINITY);
+    std::vector<float> pooled(hd);
+
+    for (int w = 0; w < n_win; w++) {
+        const float* xw = &x[(size_t)w * rate * H];
+        for (int t = 0; t < rate; t++) {
+            const float* xt = xw + (size_t)t * H;
+            for (int j = 0; j < out_w; j++) {
+                const float* wk = &l.cp_kv[(size_t)j * H];
+                const float* wg = &l.cp_gate[(size_t)j * H];
+                float a = 0.0f, b = 0.0f;
+                for (int i = 0; i < H; i++) { a += xt[i] * wk[i]; b += xt[i] * wg[i]; }
+                kv[(size_t)t * out_w + j] = a;
+                gt[(size_t)t * out_w + j] = b + l.cp_pos_bias[(size_t)t * out_w + j];
+            }
+        }
+        if (series == 2) {
+            // slots: [previous window's Ca | this window's Cb]
+            for (int a = 0; a < rate; a++)
+                for (int d = 0; d < hd; d++) {
+                    new_kv[(size_t)a * hd + d] = prev_ca[(size_t)a * hd + d];
+                    new_gate[(size_t)a * hd + d] = prev_ca_gate[(size_t)a * hd + d];
+                    new_kv[(size_t)(rate + a) * hd + d] = kv[(size_t)a * out_w + hd + d];
+                    new_gate[(size_t)(rate + a) * hd + d] = gt[(size_t)a * out_w + hd + d];
+                }
+        } else {
+            for (int a = 0; a < rate; a++)
+                for (int d = 0; d < hd; d++) {
+                    new_kv[(size_t)a * hd + d] = kv[(size_t)a * out_w + d];
+                    new_gate[(size_t)a * hd + d] = gt[(size_t)a * out_w + d];
+                }
+        }
+        // softmax over the slots, per column (the reference softmaxes dim=2 of
+        // [.., n_slots, head_dim], i.e. independently per output channel)
+        for (int d = 0; d < hd; d++) {
+            float mx = -INFINITY;
+            for (int a = 0; a < n_slots; a++) mx = std::max(mx, new_gate[(size_t)a * hd + d]);
+            float sum = 0.0f, acc = 0.0f;
+            for (int a = 0; a < n_slots; a++) {
+                float e = std::exp(new_gate[(size_t)a * hd + d] - mx);
+                sum += e;
+                acc += e * new_kv[(size_t)a * hd + d];
+            }
+            pooled[d] = acc / sum;
+        }
+        rmsnorm(&out[(size_t)w * hd], pooled.data(), l.cp_norm.data(), hd, cfg.rms_norm_eps);
+        rope_partial(&out[(size_t)w * hd], hd, cfg.qk_rope_head_dim, w * rate,
+                     cfg.compress_rope_theta);
+        if (series == 2)
+            for (int a = 0; a < rate; a++)
+                for (int d = 0; d < hd; d++) {
+                    prev_ca[(size_t)a * hd + d] = kv[(size_t)a * out_w + d];
+                    prev_ca_gate[(size_t)a * hd + d] = gt[(size_t)a * out_w + d];
+                }
+    }
+    return out;
 }
 
 // ─── forward ──────────────────────────────────────────────────────────────────
