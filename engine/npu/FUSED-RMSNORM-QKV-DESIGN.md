@@ -56,11 +56,24 @@ quantization); a bf16 GEMM with matching tile order is required.
 
 ## First concrete step (this session onward)
 
-1. Build a native **bf16 GEMM** microkernel from `mm_bfp.cc` (bfp16ebs8) with a
-   `matmul_bf16_bf16_bf16`-style export, compile with peano clang++, and aiecc
-   a minimal M×K×N MLIR wrapper → verify it produces a valid xclbin (fk-1's
-   proven flow).
+1. ✅ **DONE 2026-09-12** — native bf16 QKV GEMM xclbin built:
+   `n1_core_bf16_v1.py` (bf16 variant of v27) + `mm_bf16_32x64x128.o`
+   (`-Dbf16_bf16_ONLY`) → aiecc → `bf16_qkv.xclbin` (162 KB, M=128 K=1024
+   N=4096), memref types `bf16`. Builds clean; **hardware correctness vs a CPU
+   bf16 GEMM reference is the next validation step** (the int8 path was 22/22
+   shapes; the bf16 tile order is new and unverified).
 2. Then layer the in-kernel `rms_norm` in front of it.
+
+```
+# bf16 GEMM microkernel (gitignored .o — rebuild after clone)
+peano/clang++ mm_kernel_reference.cc -c -o mm_bf16_32x64x128.o \
+  -I ~/.venv/.../mlir_aie/include -I ~/mlir-aie/aie_kernels/aie2p \
+  --target=aie2p-none-unknown-elf -std=c++20 -O2 -DNDEBUG \
+  -D__AIE_API_AIE_ADF_HPP__ -DDIM_M=32 -DDIM_K=64 -DDIM_N=128 -Dbf16_bf16_ONLY
+# generator + xclbin
+.venv/bin/python n1_core_bf16_v1.py -M 128 -K 1024 -N 4096 -m 32 -k 64 -n 128 -c 8 -r 4 -b 5 > design.mlir
+build_tmp/bin/aiecc --peano=... --aietools=build_tmp --aie-generate-xclbin ... design.mlir
+```
 
 ## fk-2 scoping findings (2026-09-12)
 
