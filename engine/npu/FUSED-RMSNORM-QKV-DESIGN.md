@@ -261,3 +261,20 @@ share N=128).
 Byte-exact 404/2048 vs a truncation-aware reference; the rest ~1-bit off (max_delta ~115
 bf16 bits) from the documented caveats: GEMM C-store f32→bf16 truncation (hardware),
 aie::invsqrt vs glibc 1/sqrtf, and the GEMM's 4×8×8-tiled accumulation order.
+
+---
+
+## Q/K-norm + RoPE (`qk_norm_rope.cc`, fk-3)
+
+Native kernel replacing the host `qk_norm_pi` (the largest remaining host round-trip:
+256×4096 QKV readback + per-head Q/K RMSNorm + RoPE + attention-input writeback).
+
+- Per-head **f64 sum** of f32 products (the host uses `double s`; f64 is EXACT for 128
+  f32 terms). **Verified byte-exact on the AIE**: a minimal `f64_sum_128` xclbin returned
+  bit-identical f32 (software f64 = IEEE-correct).
+- `iq = invsqrt(s/HD + 1e-6)`, `x *= iq*qn_w`, RoPE pairs via the host's rc/rs tables.
+- f32→bf16 RNE. x86 math check byte-exact 65536/65536.
+- Caveat: `aie::invsqrt` vs glibc `1.0f/sqrtf` (~1 ULP, same class as fk-2's norm).
+
+Layout (0.6B: NH=16 NKV=8 HD=128): qkv is 4096 cols = q[0..2048) | k[2048..3072) |
+v[3072..4096); out q=2048, k=1024, v=1024 (v raw, no norm/RoPE).
