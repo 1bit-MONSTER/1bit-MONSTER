@@ -34,12 +34,16 @@ static inline float bf16_to_f32(uint16_t u) {
 // 5th-order Taylor, 2^n via the exponent bit add. ~1 ULP vs a correctly-rounded
 // exp2 (documented caveat vs glibc expf).
 static inline double exp2_soft(double x) {
-    double n = (double)(long long)(x + (x >= 0.0 ? 0.5 : -0.5));
+    double n = (double)(int)(x + (x >= 0.0 ? 0.5 : -0.5));
     double f = x - n;
     double p = f * f;
     double y = 1.0 + f * (0.6931471805599453 + p * (0.2402265069591007 + p * (0.05550410866482158 + p * (0.009618129107628477 + p * (0.0013333558146428443 + p * (0.00015403530393381612 + p * (0.000015252733814068 + p * 0.00000132154867901443)))))));
     uint64_t bits; __builtin_memcpy(&bits, &y, 8);
     int64_t e = (int64_t)((bits >> 52) & 0x7FFULL) + (int64_t)n;
+    if (e <= 0)
+        return 0.0;          // underflow
+    if (e >= 0x7FF)
+        return (double)INFINITY;  // overflow
     bits = (bits & 0x800FFFFFFFFFFFFFULL) | ((uint64_t)e << 52);
     double r; __builtin_memcpy(&r, &bits, 8);
     return r;
