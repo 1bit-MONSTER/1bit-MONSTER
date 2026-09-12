@@ -493,3 +493,18 @@ is correct-by-inspection but NOT yet compiled/tested.
   produce(1)xN / consume(1)xN** (the norm->GU and GU->SiLU core-to-core handoffs),
   a separate lowering issue. The unroll fix is correct and kept; the cascade
   multi-iteration handshake is the next mlir-aie target.
+
+## Static full-unroll applied (collect-then-unroll) — zeros still persist
+The static-path fix is now a collect-then-full-unroll at the start of
+`unrollForLoops` (small loops with direct acquires are `loopUnrollFull`'d before
+the LCM walk, avoiding the walk-iterator invalidation that crashed the first
+in-place attempt). The aiecc rebuilds clean and `--dynamic-objFifos=false` builds
+run, but the 4-N-tile FFN STILL zeros.
+
+So the static buffer-index hypothesis was wrong/incomplete: the remaining zeros are
+in the CORE's `acquire(Consume, 1)` of the multi-iteration handoff (the AN norm->GU
+and GU->SiLU core-to-core), which reads stale data past ~4 iterations regardless of
+the static full-unroll, the dynamic index_switch, or routing the AN through the mem.
+The norm-only dump (via the SHIM DMA) is non-zero, so it is specifically the CORE's
+consume side that breaks. Next mlir-aie target: the core's objectfifo consume
+lowering for >4 iterations.
