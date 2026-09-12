@@ -159,15 +159,19 @@ core row 3), A_norm flows norm→mem→GEMM. Key constraints resolved:
 - gamma stream dropped (gamma=1.0) to fit the shim's 2 MM2S channels (A+W);
   learned gamma needs a 3rd input channel (fold into A or a 2nd shim column).
 
-**Validation: WRONG OUTPUT** — `bench_fused_rmsnorm_qkv.cpp` reports 1/2048
-byte-exact, max_delta 34727 (dataflow bug, not a ULP delta). Isolation so far:
-- standalone bf16 GEMM DIM_M=16 → **PASS** (0/65536 wrong, 270.8 GOP/s) — GEMM is fine.
-- no-op scale (A_norm = bf16(A), no norm) → still 1/2048 — **norm is NOT the bug**.
-- H=64 (n_k=1) → still wrong — multi-K-tile loop is NOT the bug.
-So the bug is the **on-device A_norm handoff (AN_W→AN_R link) or the A double-read
-or W routing**. The MLIR link/typing/depths all look correct by inspection — next
-step is a device-side dump of A_norm (route it to shim) vs the W feed to pinpoint
-which of the three is scrambling data.
+**Validation status (updated 2026-09-12)**:
+- Microtiled-layout fix landed (`91a9b2f62`); H=64 (n_k=1) fused is **correct**
+  (max_delta=1 = GEMM accumulation order).
+- Alignment correct: A=[1,2]/W=[10,20] probe gives C=3200 exact.
+- **bf16 C-accumulation round-trip is the baseline**: the STANDALONE GEMM also
+  gives max_delta=140 (65536/65536 mismatch) on random values — the analytical
+  test only used exact values so never saw it. So max_delta>1 is not a bug.
+- **Remaining real bug is n_k=16 (H=1024) only**: max_delta grows 1→49→66→271
+  (n_k=1,2,4,8, all ~bf16 round-trip) then **jumps to 32578 at n_k=16**. AN depth
+  (16 vs 8) and W-first reorder both ruled out. Suspects: the 48-call unrolled
+  core body (codegen) or a H=1024-specific DMA offset/stride. Next: use an
+  scf.for loop instead of the unrolled range, or a device-side A_norm dump at
+  n_k=16 vs n_k=8.
 
 ## fk-2 scoping findings (2026-09-12)
 
