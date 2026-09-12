@@ -4,6 +4,33 @@ Working reference: FLM `qwen3_npu::prefill` **@256 tokens boot = 72429** (captur
 on-box; the earlier "760" bar was the 1024-token prompt — apples-to-oranges, since
 the bridge's `NPU_PREFILL_BF16` path caps `npt` at 256).
 
+## Q4_1 formula VERIFIED (breakthrough)
+
+The tile layout is confirmed and the dequant formula is:
+
+```
+weight[i] = scale[g] * v[i] + min[g]        g = i/32 (group of 32)
+scale[g]  = bf16 at tile[2g]            (tile[0:512)   — POSITIVE small
+min[g]    = bf16 at tile[512+2g]        (tile[512:1024) — NEGATIVE small (the bias)
+v[i]      = 4-bit nibble of tile[1024 + i/2]
+```
+
+Check on the real capture (`q_proj` tile 0, `scale[0]=0.0045776`, `min[0]=-0.0302734`):
+
+| element | bridge W | implies v | tile nibble |
+|---|---|---|---|
+| W[0] | 0x3ae8 (0.00177) | **7.00** | tile data[0] low nibble = **7** ✓ |
+| W[1] | 0xbcd2 (-0.0256) | 12.2 | data[1] low = 13 / high = 8 |
+
+`W[0]` reproduces **exactly** with the low-nibble-first packing, so the
+packer/dequant formula is right; subsequent elements diverge => the dequant's
+**output layout is tiled/permuted**, not element-linear.
+
+FLM's captured `arg4` first 8 imply `v ≈ 8.0 8.2 8.05 7.76 8.17 8.56 7.6 8.03`
+— near-constant and *not* the tile-0 nibbles `[7,2,13,8,...]`, so **that BO is
+almost certainly not the QKV weight** (or is pre-permuted). The W-injection test
+(→ 48035) is therefore inconclusive about our dequant.
+
 ## Current state
 
 | build | boot @256 |
