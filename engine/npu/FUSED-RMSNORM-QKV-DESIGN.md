@@ -518,3 +518,9 @@ the failure is the multi-cycle core-to-core handoff's lock/memory visibility, no
 the produce element count. The shim-side read (norm-only dump) is non-zero, so only
 the CORE's consume path breaks at >4 cycles. This is a hardware/consistency-level
 mlir-aie issue; the 1-2 N-tile (single-shot) paths stay byte-exact.
+
+### Depth increase overflows program memory
+Tried AN depth 8 (n_k_h * n_n_gu, one buffer per K-tile) to sidestep the multi-shot
+handoff: `_XAie_LoadProgMemSection(): Overflow of program memory` — the 8 buffers'
+locks + DMA BDs exceed the core's program memory. So the depth-2 ping-pong is the
+only fit, and the >4-cycle multi-shot zeros remain a hardware/consistency issue.
