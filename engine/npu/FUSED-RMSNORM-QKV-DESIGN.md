@@ -146,6 +146,24 @@ Fused core body then runs: reduce pass over K-tiles → scale pass over K-tiles
 (A_norm → local mem, m=16 → 32 KB) → GEMM pass (W streamed). Next: the MLIR
 core body that sequences these three passes.
 
+## Fused xclbin status (2026-09-12)
+
+`n1_fused_rmsnorm_qkv.py` (v3) + `rms_norm_split.cc` + `mm_bf16_16x64x128.o`
+**BUILD** — `fused.xclbin` (24.8 KB) via aiecc. Two cores (norm core row 2, GEMM
+core row 3), A_norm flows norm→mem→GEMM. Key constraints resolved:
+- per-tile DMA channel budget: single-core v2 had 3 output channels on one core
+  (exceeded); the two-core split fixes it (norm core 2 out + 1 in, GEMM core
+  1 out + 2 in).
+- the bf16 GEMM 4x8x8 wrapper needs m % 16 == 0 — DIM_M=8 silently fell back to
+  int8; DIM_M=16 exports matmul_bf16_bf16 + zero_bf16 correctly.
+- gamma stream dropped (gamma=1.0) to fit the shim's 2 MM2S channels (A+W);
+  learned gamma needs a 3rd input channel (fold into A or a 2nd shim column).
+
+**Validation: WRONG OUTPUT** — `bench_fused_rmsnorm_qkv.cpp` reports 1/2048
+byte-exact, max_delta 34727 (dataflow bug, not a ULP delta). Next: debug the
+A_norm handoff / A double-read (the fused composition of two independently
+validated kernels is correct; the on-device routing is the suspect).
+
 ## fk-2 scoping findings (2026-09-12)
 
 1. **`mm_bfp.cc` uses `bfp16ebs8`, not plain bf16.** `bfp16ebs8` is a

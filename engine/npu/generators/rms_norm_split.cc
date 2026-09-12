@@ -49,12 +49,21 @@ extern "C" void rms_reduce_f32(float *__restrict A_tile, float *__restrict ss) {
 }
 
 // Normalize one K-tile: out = bf16(clamp(A) * invsqrt(ss/H+eps) * gamma[i]).
+// gamma is per-column; for the proof-of-concept fused build the learned gamma
+// stream is dropped (gamma=1.0) to stay within the shim's 2 MM2S DMA channels
+// (A + W already use both). Byte-exact learned-gamma needs a 3rd input channel
+// (follow-up: fold gamma into the A or W stream, or a 2nd shim column).
 extern "C" void rms_scale_f32_bf16(float *__restrict A_tile, float *__restrict ss,
-                                   float *__restrict gamma_tile, bfloat16 *__restrict out) {
+                                   bfloat16 *__restrict out) {
     uint16_t *o = reinterpret_cast<uint16_t *>(out);
     for (int r = 0; r < M_TILE; r++) {
         float ir = aie::invsqrt(ss[r] / (float)H + 1e-5f);
         for (int i = 0; i < K_TILE; i++)
-            o[r * K_TILE + i] = f32_to_bf16_rne(clamp_nonfinite(A_tile[r * K_TILE + i]) * ir * gamma_tile[i]);
+            o[r * K_TILE + i] = f32_to_bf16_rne(clamp_nonfinite(A_tile[r * K_TILE + i]) * ir);
     }
+}
+
+// Zero the per-row ss accumulator (M_TILE floats) before the reduce pass.
+extern "C" void zero_f32(float *__restrict buf) {
+    for (int i = 0; i < M_TILE; i++) buf[i] = 0.0f;
 }
