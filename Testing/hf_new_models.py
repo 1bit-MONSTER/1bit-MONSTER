@@ -256,6 +256,8 @@ def main():
         print(f"  !! SIGNIFICANT {s}: {len(ids)} model(s), e.g. {ids[0]}")
         print(f"     -> major-family/vision arrival — needs REAL engine arch "
               f"support + decode validation, NOT an alias")
+        print(f"     -> reviewed evidence (config diff + what support needs): "
+              f"Testing/arch-gaps.md")
     # Record significant arrivals (covered + uncovered) so the post generator
     # (significant-post workflow) can publish a blog entry for the ones the
     # engine now maps. Only COVERED significant classes get a post — an
