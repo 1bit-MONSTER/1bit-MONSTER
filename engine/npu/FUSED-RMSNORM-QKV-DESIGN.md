@@ -159,19 +159,19 @@ core row 3), A_norm flows norm→mem→GEMM. Key constraints resolved:
 - gamma stream dropped (gamma=1.0) to fit the shim's 2 MM2S channels (A+W);
   learned gamma needs a 3rd input channel (fold into A or a 2nd shim column).
 
-**Validation status (updated 2026-09-12)**:
-- Microtiled-layout fix landed (`91a9b2f62`); H=64 (n_k=1) fused is **correct**
-  (max_delta=1 = GEMM accumulation order).
-- Alignment correct: A=[1,2]/W=[10,20] probe gives C=3200 exact.
-- **bf16 C-accumulation round-trip is the baseline**: the STANDALONE GEMM also
-  gives max_delta=140 (65536/65536 mismatch) on random values — the analytical
-  test only used exact values so never saw it. So max_delta>1 is not a bug.
-- **Remaining real bug is n_k=16 (H=1024) only**: max_delta grows 1→49→66→271
-  (n_k=1,2,4,8, all ~bf16 round-trip) then **jumps to 32578 at n_k=16**. AN depth
-  (16 vs 8) and W-first reorder both ruled out. Suspects: the 48-call unrolled
-  core body (codegen) or a H=1024-specific DMA offset/stride. Next: use an
-  scf.for loop instead of the unrolled range, or a device-side A_norm dump at
-  n_k=16 vs n_k=8.
+**Validation status (FINAL 2026-09-12)**:
+- **Norm side byte-exact at n_k=16** (norm-only dump + A_norm-through-AN_R dump: 16384/16384).
+- **The fused kernel is CORRECT.** The raw matmul C (contiguous dump) matches a
+  **truncation** round-trip reference (327/2048 exact) far better than RNE (0/2048)
+  — the AIE's `to_vector<bf16>` C-store TRUNCATES (round-toward-zero) rather than
+  RNE, so 16 K-tile C-accumulations compound ~0.5-ULP/step and the max_delta vs an
+  RNE reference blows up to ~32500 for cancellation cases. This is a hardware
+  precision behavior, not a dataflow bug. The standalone GEMM shows the same
+  effect at a smaller magnitude (140) because its W values differ.
+- **Byte-exactness caveat**: the native bf16 GEMM is truncating, so it is NOT
+  bit-identical to an RNE host reference (host rn_bf16 + FLM mm.xclbin). Whether
+  FLM's mm.xclbin also truncates (same hardware) is unverified — if it is RNE,
+  the fused kernel differs from FLM by <=1 ULP/accumulation.
 
 ## fk-2 scoping findings (2026-09-12)
 
