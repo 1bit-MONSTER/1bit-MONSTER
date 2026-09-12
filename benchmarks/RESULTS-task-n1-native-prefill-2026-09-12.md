@@ -56,3 +56,13 @@ contention while the NPU GEMM runs concurrently. Reverted.
   that only NPU-offload of RMSNorm/RoPE/SiLU (new xclbins) can remove.
 - **Token parity**: NOT preserved (39982 vs 151667) — a correctness gate that
   must be fixed before any throughput claim is meaningful.
+
+## The "1494 @1k" bar is UNMEASURABLE on the native path — hard 256-token cap
+
+`npu_engine_universal.cpp` truncates the native bf16 prefill input to 256
+(`if(getenv("NPU_PREFILL_BF16")){ if(input_tok_file && npt > 256) npt = 256; }`)
+because the attention ELF is the fixed `attn_mha_256_nh16.elf` (256-token MHA).
+Verified: a 1024-token valid input prints `=== Prefill 256 ===` and runs only
+256 tokens. So the contract's "1494 @1k" reference cannot even be reproduced on
+this path today — closing it requires the task-n2 work (position-shifted
+attention ELFs + chunked prefill) as a prerequisite, not just faster GEMM/norm.
