@@ -421,3 +421,12 @@ bug: GU-only dump is byte-exact **1165/4096 (IM=128, 2 N-tiles)** and **555/2048
 4 N-tiles (IM=256) still zeros — a remaining buffering issue at 8 W-tiles through
 the depth-1 W_s/W_c (or the A_s depth-2 at 16 K-tiles), NOT the acquire bug. The
 2-N-tile and 1-N-tile paths are fully correct.
+
+### 3+ N-tiles: AN cascade produce(1)x6 breaks (norm itself is correct)
+A norm-only dump (split norm x3, AN routed via the MEM) shows the scale output is
+**non-zero and correct** (the got values are real). So the 3+ N-tile zeros are NOT
+the norm — they are the AN **direct cascade** (norm->GU): `produce(1) x 2` per
+N-tile in the scf.for + the GU's `consume(1) x 2` per N-tile. That balanced
+produce/consume works at 2 N-tiles (4+4) but returns zeros at 3+ N-tiles (6+6) —
+a cascade multi-iteration handshake bug (the depth-2 stream). The 1- and 2-N-tile
+paths stay byte-exact.
