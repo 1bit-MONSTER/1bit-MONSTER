@@ -50,7 +50,7 @@ def _slug(v: str) -> str:
     return s or "model"
 
 
-def _meta(model_id, arch, family, desc, mode="covered"):
+def _meta(model_id, arch, family, desc, date, mode="covered"):
     fam = family or arch
     if mode == "announcement":
         title = f"A new significant architecture arrived: {fam}"
@@ -65,14 +65,25 @@ def _meta(model_id, arch, family, desc, mode="covered"):
         "url": f"{SITE_URL}/{slug}.html",
         "mainEntityOfPage": f"{SITE_URL}/{slug}.html",
         "image": OG_IMG,
-        "datePublished": "2026-09-02", "dateModified": "2026-09-02",
+        "datePublished": date, "dateModified": date,
         "author": AUTHOR, "publisher": AUTHOR,
     }
     return title, slug, json.dumps(jsonld, separators=(",", ":"))
 
 
 def render(model_id, arch, family, date, desc, body_paras, style, nav, foot, mode="covered"):
-    title, slug, jsonld = _meta(model_id, arch, family, desc, mode=mode)
+    title, slug, jsonld = _meta(model_id, arch, family, desc, date, mode=mode)
+    # The JSON-LD is the machine-readable publication date and the one
+    # gen_rss.py's post_date() reads for the feed, so it must never drift from
+    # the date the caller asked for. It did: _meta() hard-coded 2026-09-02
+    # while the visible <span> used the argument, which is how 100+ generated
+    # posts ended up publishing a date they were not written on. Fail loudly
+    # here instead of writing a page whose two dates disagree.
+    marker = '"datePublished":' + json.dumps(date, separators=(",", ":"))
+    if marker not in jsonld:
+        raise SystemExit(
+            f"[sigpost] refusing to write {slug}.html: requested date {date!r} "
+            f"is not the JSON-LD datePublished ({marker!r} absent)")
     fname = f"{slug}.html"
     body = "\n".join(f"        <p>{p}</p>" for p in body_paras)
     html = f"""<!doctype html>
@@ -143,7 +154,8 @@ def main():
     ap.add_argument("--arch", required=True, help="stripped architecture class, e.g. deepseek_v4_flash")
     ap.add_argument("--model", required=True, help="example HF model id, e.g. deepseek-ai/DeepSeek-V4-Flash")
     ap.add_argument("--family", default=None, help="family name for the title, e.g. DeepSeek V4")
-    ap.add_argument("--date", default="2026-09-02")
+    ap.add_argument("--date", default=datetime.date.today().isoformat(),
+                    help="publication date (YYYY-MM-DD); defaults to today")
     ap.add_argument("--desc", default=None)
     ap.add_argument("--mode", choices=["announcement", "covered"], default="covered",
                     help="announcement = arrival detected, support in progress; "
