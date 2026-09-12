@@ -158,6 +158,20 @@ The post-norm/RoPE QKV range (-99…71) and the final hidden range (-376…207) 
 far larger than expected for a 0.6B model (weights ~O(1)) — the RoPE table or
 the q/k-norm scaling is the prime suspect for the remaining 91364-vs-62865 gap.
 
+### Per-segment analysis (layer 0, token 0, valid prompt)
+
+| segment | bf16 raw (bC) std | post-norm+RoPE (bqo) std |
+|---|---|---|
+| Q (0:2048) | 0.786 | 1.975 |
+| **K (2048:3072)** | 0.824 | **5.531** |
+| V (3072:4096) | 0.362 | 0.362 (unchanged ✓) |
+
+RMSNorm should give std ≈ |kn_w| ≈ O(1); the K std of **5.53** (× 6.7 over the
+raw) means `kn_w[l][d]` (the `k_norm.weight`, loaded at `npu_engine_universal`
+line 844 from `kn_off[l]`) is either mislocated or mis-scaled. Per-head K stds
+range 2.2–9.7, vs Q's 0.5–2.5. **This is the strongest remaining lead** for the
+91364-vs-62865 divergence.
+
 ## Repro
 
 ```
