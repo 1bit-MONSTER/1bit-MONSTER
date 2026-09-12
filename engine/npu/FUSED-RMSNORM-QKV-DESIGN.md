@@ -337,3 +337,10 @@ so the "hold all N-tiles" K-outer loop can't scale. The real-dims structure is
 
 The repeat_count mechanism is the aie.objectfifo `repeat_count` attribute (see
 mlir-aie test/python/objFifo.py, `set_repeat_count(4)` -> `repeat_count = 4`).
+
+### repeat_count re-stream validated (1024/1024)
+A minimal 2-core test (producer writes one 16x64 tile, consumer reads it 3 times in
+an scf.for and accumulates) returned byte-exact O = 3xA on the NPU — the
+`repeat_count = 3` attribute re-delivers the fifo's element per consumer acquire,
+so the AN handoff can be re-streamed to the GU once per N-tile without re-running
+the norm. This is the mechanism that makes the N-outer/K-inner real-dims FFN work.
