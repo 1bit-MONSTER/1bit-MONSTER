@@ -344,3 +344,21 @@ an scf.for and accumulates) returned byte-exact O = 3xA on the NPU — the
 `repeat_count = 3` attribute re-delivers the fifo's element per consumer acquire,
 so the AN handoff can be re-streamed to the GU once per N-tile without re-running
 the norm. This is the mechanism that makes the N-outer/K-inner real-dims FFN work.
+
+## Multi-N-tile FFN — two hard limits found
+
+Assembling the moderate-scale FFN (H=128, IM=256, 8 N-tiles) surfaced two limits:
+
+1. **Direct cascade depth ~2**: the GU->SiLU handoff as a direct cascade fails to
+   allocate depth 8 (`undefined symbol: GU_buff_1..7`); the cascade holds only a
+   couple of buffers. So the GU cannot hold all 8 C N-tiles to release at once.
+2. **Mem tile = 16 blocks**: routing the AN re-stream through the mem (for
+   `repeat_count`) makes the mem exceed 16 blocks (`aie.mem has more than 16
+   blocks`); the AN_w/AN_r (4 blocks) on top of A/W/D pushes it over.
+
+=> The clean real-dims structure is the **N-outer loop with the norm re-writing
+   the AN per N-tile** (the norm re-runs the cheap scale pass once per N-tile,
+   holding A once), which keeps AN as a shallow direct cascade (no mem, no
+   repeat_count) and the GU emitting C N-tiles one at a time in gate/up order.
+   The gate/up interleaving is just the GU's c[] mapping + W order (release order
+   stays sequential 0..7).
