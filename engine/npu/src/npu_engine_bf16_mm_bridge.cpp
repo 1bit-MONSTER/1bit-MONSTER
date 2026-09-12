@@ -39,6 +39,12 @@ extern "C" void bf16mm_dequant(uint16_t* wout, const uint8_t* q4nx,
     g_mm.run_dequant(wout, q4nx, D_in, D_out, q4nx_weight_offset);
 }
 
+extern "C" void bf16mm_dequant_mode(uint16_t* wout, const uint8_t* q4nx,
+                               uint32_t D_in, uint32_t D_out,
+                               uint32_t q4nx_weight_offset, int mode) {
+    g_mm.run_dequant(wout, q4nx, D_in, D_out, q4nx_weight_offset, mode);
+}
+
 // bf16 GEMM over 256 tokens as two 128-token M-batches (mm.xclbin computes
 // only 128 correct M-rows per invocation). A: 256×K, W: K×N (at woff bf16
 // ELEMENTS), C: 256×N (row-major).

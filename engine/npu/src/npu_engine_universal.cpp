@@ -76,6 +76,7 @@ extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint3
 extern "C" void bf16mm_gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff, int batch, const uint16_t* A);
 extern "C" void bf16mm_gemm_wait(int batch, uint16_t* C);
 extern "C" void bf16mm_dequant(uint16_t* wout, const uint8_t* q4nx, uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset);
+extern "C" void bf16mm_dequant_mode(uint16_t* wout, const uint8_t* q4nx, uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset, int mode);
 extern "C" int bf16mm_upload_w(const uint16_t* w, uint32_t D_in, uint32_t D_out);
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
 static inline float bf16f(uint16_t v){uint32_t b=v<<16;return __builtin_bit_cast(float,b);}
@@ -3818,16 +3819,13 @@ struct Bf16Ctx {
                 const int gu_off = offs[4];
                 // Concatenate the interleaved gate/up chunks into one contiguous
                 // [gate | up] N=2·IM device W so the GU FFN is a single GEMM.
-                std::vector<uint16_t> gu_full((size_t)H * 2 * IM), gchunk((size_t)H * 512);
-                for (int c = 0; c < gu_chunks; c++) {
-                    bf16mm_dequant(gchunk.data(), bo.data(), H, 512,
-                        (uint32_t)(gu_off + c * 2 * CH_tiles + CH_tiles) * 5120);
-                    if (l == 0 && c == 0 && getenv("NPU_DUMP_L0")) { FILE* fw = fopen("/tmp/bf16_l0_W.bin", "wb"); if (fw) { fwrite(gchunk.data(), 2, H * 512, fw); fclose(fw); } }
-                    memcpy(&gu_full[(size_t)c * H * 512], gchunk.data(), (size_t)H * 512 * 2);
-                    bf16mm_dequant(gchunk.data(), bo.data(), H, 512,
-                        (uint32_t)(gu_off + c * 2 * CH_tiles) * 5120);
-                    memcpy(&gu_full[(size_t)H * IM + (size_t)c * H * 512], gchunk.data(), (size_t)H * 512 * 2);
-                }
+                // GU: dequant the FULL up (mode=1) + gate (mode=2) — the dequant
+                // seq reads the alternating up/gate tiles from the interleaved
+                // region (matches FLM's two D_out=3072 calls).
+                std::vector<uint16_t> gu_full((size_t)H * 2 * IM);
+                bf16mm_dequant_mode(gu_full.data(), bo.data(), H, IM, (uint32_t)gu_off * 5120, 2);  // gate
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fw = fopen("/tmp/bf16_l0_W.bin", "wb"); if (fw) { fwrite(gu_full.data(), 2, H * IM, fw); fclose(fw); } }
+                bf16mm_dequant_mode(gu_full.data() + (size_t)H * IM, bo.data(), H, IM, (uint32_t)gu_off * 5120, 1);  // up
                 Wgu[l] = bf16mm_upload_w(gu_full.data(), H, 2 * IM);
                 Wqkv[l]  = bf16mm_dequant_dev(bo.data(), H, qkvn, (uint32_t)offs[0] * 5120, (size_t)layer_bo_bytes);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { fprintf(stderr, "[init] H=%d qkvn=%d Wqkv[0]=%d\n", H, qkvn, Wqkv[0]); bf16mm_dump_w(Wqkv[0], "/tmp/bf16_l0_Wqkv.bin"); }

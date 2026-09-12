@@ -222,6 +222,7 @@ struct Bf16Mm {
         // Copy only this projection's tiles (relative weight_offset 0) — the
         // old full-10MB copy broke layer BOs > 10 MB (4B ~63 MB, 8B ~82 MB).
         size_t proj_bytes = (size_t)(D_out / 32) * (D_in / 256) * 5120;
+        if (mode == 1 || mode == 2) proj_bytes *= 2;   // GU: up+gate interleaved region
         auto bW  = app.create_bo_buffer<uint8_t>(proj_bytes);
         auto bOut = app.create_bo_buffer<uint16_t>((size_t)D_in * D_out);
         memcpy(bW.data(), q4nx + (size_t)q4nx_weight_offset, proj_bytes);

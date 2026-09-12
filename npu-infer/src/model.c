@@ -198,9 +198,9 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
 #define NPU_TILE_BYTES 5120
 
 static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int G) {
-    const int S = G / 2;
+    (void)G;
     for (int o = 0; o < n_tiles; o++) {
-        int i = G * (o / G) + (o / 2) % S + S * (o % 2);
+        int i = o;   // identity: FLM loader does not host-reorder (the dequant seq orders tiles)
         memcpy(dst + (size_t)o * NPU_TILE_BYTES,
                src + (size_t)i * NPU_TILE_BYTES, NPU_TILE_BYTES);
     }
