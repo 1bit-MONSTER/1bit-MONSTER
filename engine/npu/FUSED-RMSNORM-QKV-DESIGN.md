@@ -479,3 +479,17 @@ cmake re-configure which fails on pre-existing issues — stray source files
 (`AIEX/Transforms/AIELowerDynamicBDPool.cpp`, `AIEX/Utils/BdLowering.cpp`) not in
 their CMakeLists, plus downstream bootgen/runtime_lib configure errors. The patch
 is correct-by-inspection but NOT yet compiled/tested.
+
+## mlir-aie patch: build tree repaired, unroll fix applied — but cascade still zeros
+- Repaired the build tree: fetched the third_party submodules (bootgen, aie-rt,
+  aie_api), removed the stray WIP sources (AIELowerDynamicBDPool.cpp, BdLowering.cpp
+  — they reference not-yet-generated ops), chmod'd the event-generator scripts.
+  The aiecc rebuilds cleanly.
+- The `unrollForLoops` full-unroll patch compiled and took effect: the pre-transform
+  `scf.for` count drops 13 -> 0 (all inner loops fully unrolled, distinct static
+  buffer indices).
+- BUT the 4-N-tile FFN still zeros. So the static-index in-loop bug was only PART of
+  the story — the remaining zeros are the **cascade's shared-memory+lock
+  produce(1)xN / consume(1)xN** (the norm->GU and GU->SiLU core-to-core handoffs),
+  a separate lowering issue. The unroll fix is correct and kept; the cascade
+  multi-iteration handshake is the next mlir-aie target.
