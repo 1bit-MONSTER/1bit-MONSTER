@@ -250,3 +250,19 @@ ELF (patch #3) produced no change, confirming the ABI mismatch rather than a
 single-field bug. The captured nh32's Q-read geometry remains unresolved;
 re-generating it correctly needs the exact NOC-DMA multi-dim semantics for the
 3-BO attention ABI. Multi-day; not completed.
+
+## 2026-09-12 (cont.4): CORRECTION — nh32 ELF output is non-uniform garbage, not "uniform zero-Q"
+
+Fresh dump of the nh32 ELF's attention output (NPU_DUMP_ATTNIO, 4B default
+prompt): 4303 unique bf16 values, rms 4.16, range [-316, +308], first 16 = 0.
+This is **non-uniform garbage** (values far outside a normalized attention's
+~±5 range), not the prior session's "uniform softmax / reads zero Q". The
+Q-read is reading the wrong data (wrong BD geometry), not zero data.
+
+Also located the authoritative BD write code
+(`mlir-aie-main/third_party/aie-rt/driver/src/dma/xaie_dma_aieml.c`
+`_XAieMl_ShimDmaWriteBd`), confirming the field layout: BdWord[0]=Length,
+BdWord[3]=Dim0(Wrap|StepSize-1), BdWord[4]=Dim1(Wrap|StepSize-1)|BurstLen,
+BdWord[6]=Iter. The captured nh32 differs from nh16 ONLY in Dim1.StepSize
+(1024→2048). The exact fix needs the AIE2 shim-DMA address-generation semantics
+(TRM), not derivable from the driver code alone. Still multi-day.
