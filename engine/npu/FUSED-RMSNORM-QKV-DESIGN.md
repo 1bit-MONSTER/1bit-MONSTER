@@ -300,3 +300,21 @@ exceeded available memory" at M=4). For M=16 (the real fk-2 tile) the C alone is
 each N-tile through qk_norm_rope (same N-tiling the FFN scaling needs), and the
 rc/rs cos/sin should be computed on-device or the tables folded into the A/W
 stream (the shim's 2 MM2S are already taken by A+W).
+
+## N-tiling (shared FFN scaling + qk_norm_rope integration)
+
+The real 0.6B FFN (H=1024, IM=3072) and the qk_norm_rope chain both need N-tiling
+(the C/output are too large to hold whole in one core). Key layout finding:
+
+- The GEMM's C N-tile (16×128, DIM_N=128) is microtiled `(tr*16+tc)*32+rr*8+cc`,
+  but the downstream A input (the silu / the matmul's A K-tile) is microtiled
+  `(tr*8+tc)*32+rr*8+cc` (16×64, DIM_K=64). These **differ**, so a downstream
+  kernel reading the C N-tile must translate `tc16 = kt*8 + tc8`.
+- Two clean options: (a) the downstream translates the layout, or (b) use a
+  **DIM_N=64 matmul** for the GU GEMM so its C N-tile (16×64) IS the downstream's
+  K-tile layout (no translation) — the silu_split kernel (tr*8, K-tile-sized)
+  is written for this.
+- GU N-tiling holds all N C-tiles simultaneously and applies each A K-tile to
+  every N-tile (loop K outer, N inner) to avoid re-streaming A per N-tile.
+- W-concat for non-uniform N (W_gu N=6144, W_d N=1024) tiles both as 64×128 and
+  forwards W_d through the GU core (same copy pattern as the proof-of-concept).
