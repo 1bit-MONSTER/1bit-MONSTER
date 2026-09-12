@@ -281,3 +281,49 @@ compressor/indexer integration rather than to the sliding base.
    that query, `index_topk`, `-1` below the causal threshold).
 3. Then the end-to-end gate at state 2 should flip (16/20 → ≥18/20) and the per-layer bound should hold
    at 1e-6 — with the *scores* gate (not the index order) as the indexer's own check.
+
+---
+
+# P1.1 stage 3 DONE — the compressed attention is integrated, and it is exact (7.5e-09 per layer)
+
+**What now runs in the engine**: for a layer with a compressor, each token (1) steps the compressor
+state and — CSA — the indexer's own compressor, (2) decides which compressed entries this query may see
+(HCA: causality; CSA: the indexer's top-k ∩ causality), (3) attends over `[sliding window | allowed
+compressed entries]` with the per-head sinks and the conjugate output rotation. Also fixed by reading
+the reference rather than guessing:
+
+* **the compressor/indexer are fed `input_layernorm(collapsed)`**, the attention's actual input — not
+  the raw mHC-collapsed vector. This was the big one: state 2 went from **3.997e-03 → 1.490e-08**;
+* **a per-layer rope theta**: `rope_layer_type = "main" if sliding_attention else "compress"`
+  (reference line 768), so a compressed layer ropes its queries, its sliding KV **and** the output
+  de-rotation with `compress_rope_theta`. Correct as fixed — but **not observable in these fixtures**,
+  because `qk_rope_head_dim = 2` has a single pair whose frequency is `theta^0 = 1` for any theta. A
+  fixture with a larger `partial_rotary_factor` is owed before this can be called validated.
+
+| run (fixture, 160 tokens, layer types sliding/CSA/HCA/sliding) | per-layer worst | end-to-end |
+|---|---|---|
+| before this stage | — | 16/20 (FAIL) |
+| integrated, `index_topk = 8` (config default) | 1.208e-02 (state 2) | **20/20 PASS** |
+| integrated, **`index_topk = 64`** (indexer keeps every causal entry) | **7.451e-09 — PASS** | PASS |
+| same, 64-token fixture with the reference's selection injected | 1.490e-08 (state 2) | PASS |
+
+**The remaining divergence is the indexer's tie-breaking, and that is now proven rather than assumed:**
+making the indexer non-selective (`index_topk = 64`) drives every layer to 7.451e-09, so the integration
+itself is exact; with `index_topk = 8` the only difference left is *which* of several exactly-equal
+scores wins the k-th slot. The reference ends in `torch.topk`, whose order among ties is
+implementation-defined (see the stage-2 finding: 26.5 % of fixture scores come from `relu`-zeroed dots,
+and 7 of 64 rows already differed only by ties). Reproducing that arbitrary order is neither achievable
+nor desirable; the defensible gates are the ones used here.
+
+## Instrument added
+
+`deepseek_v4_forward` gained an optional per-token index override (defaulted, so nothing else changes)
+and `cmp_deepseek_v4` a 7th argument to supply the reference's own index table — which is how "is the
+attention maths exact?" was separated from "does my top-k break ties the way torch does?". The generator
+gained `--index-topk` for the same reason.
+
+## New fixture limitation to close
+
+`qk_rope_head_dim = 2` in the tiny config means the compress-vs-main rope theta is unobservable (single
+pair, `freq = 1`). Regenerating with a larger `partial_rotary_factor` (e.g. 0.5 → `rd = 8`) would
+exercise it, and would also make the indexer's tie structure less degenerate. Worth doing before P1.3.

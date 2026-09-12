@@ -366,12 +366,12 @@ void DeepSeekV4Model::clear() {
 }
 
 // ─── compressor (CSA/HCA) ─────────────────────────────────────────────────────
-bool deepseek_v4_compressor_step(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg, int rate,
-                                 const float* x_token, DeepSeekV4CompState& st) {
+bool deepseek_v4_compressor_step_p(const DeepSeekV4CompParams& p, const DeepSeekV4Config& cfg,
+                                   int rate, const float* x_token, DeepSeekV4CompState& st) {
     using namespace ds4math;
-    const int H = cfg.hidden_size, hd = cfg.head_dim;
-    if (rate <= 0 || l.cp_rate == 0 || !x_token) return false;
-    const int series = (l.cp_series == 2) ? 2 : 1;
+    const int H = cfg.hidden_size, hd = p.hd;
+    if (rate <= 0 || !x_token || !p.kv || !p.gate || !p.pos_bias || !p.norm) return false;
+    const int series = (p.series == 2) ? 2 : 1;
     const int out_w = series * hd;
     const int n_slots = series * rate;
 
@@ -379,12 +379,12 @@ bool deepseek_v4_compressor_step(const DeepSeekV4Layer& l, const DeepSeekV4Confi
     float* row_kv = &st.buf_kv[(size_t)st.n_buf * out_w];
     float* row_gate = &st.buf_gate[(size_t)st.n_buf * out_w];
     for (int j = 0; j < out_w; j++) {
-        const float* wk = &l.cp_kv[(size_t)j * H];
-        const float* wg = &l.cp_gate[(size_t)j * H];
+        const float* wk = &p.kv[(size_t)j * H];
+        const float* wg = &p.gate[(size_t)j * H];
         float a = 0.0f, b = 0.0f;
         for (int i = 0; i < H; i++) { a += x_token[i] * wk[i]; b += x_token[i] * wg[i]; }
         row_kv[j] = a;
-        row_gate[j] = b + l.cp_pos_bias[(size_t)st.n_buf * out_w + j];
+        row_gate[j] = b + p.pos_bias[(size_t)st.n_buf * out_w + j];
     }
     st.n_buf++;
     if (st.n_buf < rate) return false;
@@ -420,7 +420,7 @@ bool deepseek_v4_compressor_step(const DeepSeekV4Layer& l, const DeepSeekV4Confi
     }
     const size_t off = st.entries.size();
     st.entries.resize(off + hd);
-    rmsnorm(&st.entries[off], pooled.data(), l.cp_norm.data(), hd, cfg.rms_norm_eps);
+    rmsnorm(&st.entries[off], pooled.data(), p.norm, hd, cfg.rms_norm_eps);
     // entry w sits at token position w*rate — the reference's `first_window_position
     // + w*rate`, i.e. the count of entries already emitted times the rate.
     rope_partial(&st.entries[off], hd, cfg.qk_rope_head_dim, st.n_entries * rate,
@@ -434,6 +434,30 @@ bool deepseek_v4_compressor_step(const DeepSeekV4Layer& l, const DeepSeekV4Confi
             }
     st.n_buf = 0;
     return true;
+}
+
+bool deepseek_v4_compressor_step(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg, int rate,
+                                 const float* x_token, DeepSeekV4CompState& st) {
+    if (l.cp_rate == 0) return false;
+    DeepSeekV4CompParams p;
+    p.kv = l.cp_kv.data();
+    p.gate = l.cp_gate.data();
+    p.pos_bias = l.cp_pos_bias.data();
+    p.norm = l.cp_norm.data();
+    p.series = l.cp_series;
+    p.hd = cfg.head_dim;
+    return deepseek_v4_compressor_step_p(p, cfg, rate, x_token, st);
+}
+
+DeepSeekV4CompParams deepseek_v4_indexer_comp_params(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg) {
+    DeepSeekV4CompParams p;
+    p.kv = l.ix_kv.data();
+    p.gate = l.ix_gate.data();
+    p.pos_bias = l.ix_pos_bias.data();
+    p.norm = l.ix_norm.data();
+    p.series = 2;                 // the indexer compresses with the CSA two-series layout
+    p.hd = cfg.index_head_dim;
+    return p;
 }
 
 std::vector<float> deepseek_v4_compressor_forward(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg,
@@ -665,7 +689,8 @@ std::vector<int> deepseek_v4_indexer_topk(const DeepSeekV4Layer& l, const DeepSe
 std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                                        DeepSeekV4KVCache& kv_cache,
                                        DeepSeekV4mHCState& mhc, int& pos,
-                                       std::vector<float>* layer_states) {
+                                       std::vector<float>* layer_states,
+                                       const int* index_override, int index_override_k) {
     using namespace ds4math;
     const auto& cfg = model.cfg;
     const int H = cfg.hidden_size;
@@ -719,6 +744,11 @@ std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                     hc, cfg.hc_eps, cfg.hc_sinkhorn_iters, cfg.rms_norm_eps, collapsed, post, comb);
         rmsnorm(norm.data(), collapsed.data(), l.rms_attn_w.data(), H, cfg.rms_norm_eps);
 
+        // A compressed layer ropes its queries, its sliding KV and the output
+        // de-rotation with the COMPRESS theta; sliding layers use the main one
+        // (reference: `rope_layer_type = "main" if sliding_attention else "compress"`).
+        const float attn_rope_theta = (l.cp_rate != 0) ? cfg.compress_rope_theta : cfg.rope_theta;
+
         // ── Q compression: q_a = norm @ W_q_a ; q_a_norm ; q_b = q_a @ W_q_b ──
         matmul(q_a.data(), norm.data(), l.q_a.data(), cfg.q_lora_rank, H);
         rmsnorm(q_a.data(), q_a.data(), l.q_a_norm.data(), cfg.q_lora_rank, cfg.rms_norm_eps);
@@ -729,32 +759,119 @@ std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                     nullptr, cfg.head_dim, cfg.rms_norm_eps);
         // partial rope on last qk_rope_head_dim of each head
         for (int h = 0; h < cfg.num_heads; h++)
-            rope_partial(&q_full[(size_t)h * cfg.head_dim], cfg.head_dim, cfg.qk_rope_head_dim, pos, cfg.rope_theta);
+            rope_partial(&q_full[(size_t)h * cfg.head_dim], cfg.head_dim, cfg.qk_rope_head_dim, pos, attn_rope_theta);
 
         // ── KV: kv = norm @ W_kv ; kv_norm ; rope; store ──
         matmul(kv.data(), norm.data(), l.kv_w.data(), cfg.head_dim, H);
         rmsnorm(kv.data(), kv.data(), l.kv_norm.data(), cfg.head_dim, cfg.rms_norm_eps);
-        rope_partial(kv.data(), cfg.head_dim, cfg.qk_rope_head_dim, pos, cfg.rope_theta);
+        rope_partial(kv.data(), cfg.head_dim, cfg.qk_rope_head_dim, pos, attn_rope_theta);
         float* cache_row = kv_cache.kv[il].data() + (size_t)pos * cfg.head_dim;
         std::copy(kv.begin(), kv.end(), cache_row);
 
-        // ── attention (shared KV head, K=V, per-head sinks) ──
+        // ── compressor / indexer: emit this token's entries, then decide which
+        // compressed entries THIS query may see — HCA by causality alone, CSA by
+        // the Lightning Indexer's top-k intersected with causality. The reference
+        // then concatenates them after the sliding window and masks the tail. ──
+        const bool has_cp = (l.cp_rate != 0);
+        std::vector<char> cp_allowed;
+        if (has_cp) {
+            DeepSeekV4CompState& cst = kv_cache.cp[il];
+            if (!cst.inited) cst.init(l.cp_rate, l.cp_series, cfg.head_dim);
+            deepseek_v4_compressor_step(l, cfg, l.cp_rate, norm.data(), cst);
+
+            cp_allowed.assign((size_t)cst.n_entries, 0);
+            const int thr = (pos + 1) / l.cp_rate;   // entries w < thr are causal
+            if (l.ix_heads > 0 && index_override && index_override_k > 0) {
+                // TEST INSTRUMENT: use a supplied selection (the reference's own top-k)
+                // instead of computing one. Isolates "is the attention maths exact?"
+                // from "does my top-k break ties the way torch does?".
+                for (int j = 0; j < index_override_k; j++) {
+                    int w = index_override[j];
+                    if (w >= 0 && w < cst.n_entries) cp_allowed[w] = 1;
+                }
+            } else if (l.ix_heads > 0) {
+                DeepSeekV4CompState& ist = kv_cache.ix[il];
+                if (!ist.inited) ist.init(l.cp_rate, 2, cfg.index_head_dim);
+                DeepSeekV4CompParams ip = deepseek_v4_indexer_comp_params(l, cfg);
+                deepseek_v4_compressor_step_p(ip, cfg, l.cp_rate, norm.data(), ist);
+
+                const int ihd = cfg.index_head_dim, nh = l.ix_heads, ql = cfg.q_lora_rank;
+                const int nvis = std::min(ist.n_entries, thr);
+                if (nvis > 0) {
+                    std::vector<float> ixq((size_t)nh * ihd), wpr((size_t)nh);
+                    for (int h = 0; h < nh; h++) {
+                        float* qh = &ixq[(size_t)h * ihd];
+                        for (int d = 0; d < ihd; d++) {
+                            const float* wr = &l.ix_qb[(size_t)(h * ihd + d) * ql];
+                            float a = 0.0f;
+                            for (int i = 0; i < ql; i++) a += q_a[i] * wr[i];
+                            qh[d] = a;
+                        }
+                        rope_partial(qh, ihd, cfg.qk_rope_head_dim, pos, cfg.compress_rope_theta);
+                        const float* wr2 = &l.ix_wproj[(size_t)h * H];
+                        float b = 0.0f;
+                        for (int i = 0; i < H; i++) b += norm[i] * wr2[i];
+                        wpr[h] = b;
+                    }
+                    const float isc = 1.0f / std::sqrt((float)ihd);
+                    const float wsc = 1.0f / std::sqrt((float)nh);
+                    std::vector<float> ix_score((size_t)nvis);
+                    for (int s2 = 0; s2 < nvis; s2++) {
+                        float acc = 0.0f;
+                        for (int h = 0; h < nh; h++) {
+                            const float* qh = &ixq[(size_t)h * ihd];
+                            const float* Ks = &ist.entries[(size_t)s2 * ihd];
+                            float dot = 0.0f;
+                            for (int d = 0; d < ihd; d++) dot += qh[d] * Ks[d];
+                            acc += std::max(dot, 0.0f) * isc * wpr[h] * wsc;
+                        }
+                        ix_score[s2] = acc;
+                    }
+                    const int ksel = std::min(l.ix_topk, nvis);
+                    for (int j = 0; j < ksel; j++) {
+                        int best = -1;
+                        for (int s2 = 0; s2 < nvis; s2++)
+                            if (ix_score[s2] > -INFINITY && (best < 0 || ix_score[s2] > ix_score[best])) best = s2;
+                        if (best < 0) break;
+                        cp_allowed[best] = 1;
+                        ix_score[best] = -INFINITY;
+                    }
+                }
+            } else {
+                for (int w = 0; w < cst.n_entries; w++) cp_allowed[w] = (w < thr) ? 1 : 0;
+            }
+        }
+
+        // ── attention (shared KV head, K=V, per-head sinks): the sliding window
+        // followed by the allowed compressed entries ──
         const int seq_len = pos + 1;
         const float scale = 1.0f / std::sqrt((float)cfg.head_dim);
         int win_start = std::max(0, seq_len - cfg.sliding_window);
+        std::vector<const float*> vrows;
+        vrows.reserve((size_t)cfg.sliding_window + (has_cp ? kv_cache.cp[il].n_entries : 0) + 1);
+        for (int s = win_start; s < seq_len; s++)
+            vrows.push_back(kv_cache.kv[il].data() + (size_t)s * cfg.head_dim);
+        if (has_cp) {
+            const DeepSeekV4CompState& cst = kv_cache.cp[il];
+            for (int w = 0; w < cst.n_entries; w++)
+                if (cp_allowed[w]) vrows.push_back(&cst.entries[(size_t)w * cfg.head_dim]);
+        }
+        const int n_rows = (int)vrows.size();
+        if ((int)scores_buf.size() < n_rows + 1) {
+            scores_buf.resize((size_t)n_rows + 1);
+            probs_buf.resize((size_t)n_rows + 1);
+        }
         std::fill(attn_out.begin(), attn_out.end(), 0.0f);
         for (int h = 0; h < cfg.num_heads; h++) {
             const float* qh = &q_full[(size_t)h * cfg.head_dim];
-            float sink = l.sinks[h];
-            // scores over window + sink (S+1 entries)
             int n = 0;
-            for (int s = win_start; s < seq_len; s++) {
-                const float* krow = kv_cache.kv[il].data() + (size_t)s * cfg.head_dim;
+            for (int i = 0; i < n_rows; i++) {
+                const float* krow = vrows[i];
                 float acc = 0;
                 for (int d = 0; d < cfg.head_dim; d++) acc += qh[d] * krow[d];
                 scores_buf[n++] = acc * scale;
             }
-            scores_buf[n] = sink; n++;
+            scores_buf[n] = l.sinks[h]; n++;
             // softmax
             float mx = scores_buf[0];
             for (int i = 1; i < n; i++) mx = std::max(mx, scores_buf[i]);
@@ -762,9 +879,9 @@ std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
             for (int i = 0; i < n; i++) { probs_buf[i] = std::exp(scores_buf[i] - mx); ssum += probs_buf[i]; }
             // weighted sum of V (drop the sink entry)
             float* outh = &attn_out[(size_t)h * cfg.head_dim];
-            for (int i = 0; i < n - 1; i++) {
+            for (int i = 0; i < n_rows; i++) {
                 float w = probs_buf[i] / ssum;
-                const float* vrow = kv_cache.kv[il].data() + (size_t)(win_start + i) * cfg.head_dim;
+                const float* vrow = vrows[i];
                 for (int d = 0; d < cfg.head_dim; d++) outh[d] += w * vrow[d];
             }
         }
@@ -779,7 +896,7 @@ std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                 float* outh = &attn_out[(size_t)h * cfg.head_dim];
                 float* rope = outh + (cfg.head_dim - rd);
                 for (int p = 0; p < n_pairs; p++) {
-                    float freq = 1.0f / std::pow(cfg.rope_theta, (float)(2 * p) / rd);
+                    float freq = 1.0f / std::pow(attn_rope_theta, (float)(2 * p) / rd);
                     float angle = pos * freq;
                     float c = std::cos(angle), s = std::sin(angle);
                     float x0 = rope[2 * p], x1 = rope[2 * p + 1];

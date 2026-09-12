@@ -65,6 +65,10 @@ def main():
     ap.add_argument("--prompt-len", type=int, default=0,
                     help="0 = the original 5-token prompt; >5 = seeded random ids")
     ap.add_argument("--window", type=int, default=0, help="0 = profile default")
+    ap.add_argument("--index-topk", type=int, default=0,
+                    help="0 = config default (8); set large to make the indexer keep every "
+                         "causal-visible entry, which removes tie-broken selection from the "
+                         "picture and isolates the attention integration")
     ap.add_argument("--weights-dtype", choices=("float32", "bfloat16"), default="float32",
                     help="fixture weight storage. float32 for the per-layer gate: bf16 "
                          "rounding alone perturbs the layer-0 state by ~1e-4, which is "
@@ -82,7 +86,7 @@ def main():
         n_routed_experts=8, n_shared_experts=1, num_experts_per_tok=2,
         max_position_embeddings=256, sliding_window=window,
         # indexer dims: the Lightning Indexer needs its own heads/dim (HCA has none)
-        index_n_heads=2, index_head_dim=8, index_topk=8,
+        index_n_heads=2, index_head_dim=8, index_topk=(args.index_topk or 8),
         layer_types=PROFILES[args.profile],
         mlp_layer_types=["hash_moe", "hash_moe", "moe", "moe"],
         compress_rates=COMPRESS_RATES,

@@ -153,17 +153,61 @@ struct DeepSeekV4Model {
     void clear();
 };
 
+// Compressor state/params are needed by the KV cache below, which holds one
+// state per layer for the layer's own compressor and (CSA) the indexer's.
+struct DeepSeekV4CompState {
+    bool inited = false;
+    int n_buf = 0;              // tokens buffered toward the current window
+    int n_entries = 0;          // entries emitted so far
+    std::vector<float> buf_kv;  // [rate * series*hd] pending rows
+    std::vector<float> buf_gate;
+    std::vector<float> prev_ca, prev_ca_gate;  // previous window's Ca (CSA only)
+    std::vector<float> entries;  // [n_entries * hd], emitted in order
+    void init(int rate, int series, int hd) {
+        const size_t rows = (size_t)(rate > 0 ? rate : 1) * series * hd;
+        buf_kv.assign(rows, 0.0f);
+        buf_gate.assign(rows, 0.0f);
+        prev_ca.assign((size_t)(rate > 0 ? rate : 1) * hd, 0.0f);
+        prev_ca_gate.assign((size_t)(rate > 0 ? rate : 1) * hd, -INFINITY);
+        entries.clear();
+        n_buf = 0;
+        n_entries = 0;
+        inited = true;
+    }
+};
+
+// The compressor's weights, so the SAME state machine serves both the outer
+// compressor (head_dim) and the indexer's own compression (index_head_dim) —
+// they differ only in weights, width and series count.
+struct DeepSeekV4CompParams {
+    const float* kv = nullptr;        // [series*hd, H]
+    const float* gate = nullptr;      // [series*hd, H]
+    const float* pos_bias = nullptr;  // [rate, series*hd]
+    const float* norm = nullptr;      // [hd]
+    int series = 1;
+    int hd = 0;
+};
+
+
 // ─── KV cache ─────────────────────────────────────────────────────────────────
 struct DeepSeekV4KVCache {
     // per layer: rolling buffer [max_slots, head_dim]; single KV head, K=V
     std::vector<std::vector<float>> kv;
     int head_dim = 0;
     int max_slots = 0;
+    // per-layer compressor state (the layer's own, and — CSA only — the indexer's)
+    std::vector<DeepSeekV4CompState> cp, ix;
     void init(int n_layers, int max_seq, int hd) {
         head_dim = hd; max_slots = max_seq;
         kv.assign(n_layers, std::vector<float>((size_t)max_seq * hd, 0.0f));
+        cp.assign(n_layers, DeepSeekV4CompState());
+        ix.assign(n_layers, DeepSeekV4CompState());
     }
-    void clear() { for (auto& l : kv) std::fill(l.begin(), l.end(), 0.0f); }
+    void clear() {
+        for (auto& l : kv) std::fill(l.begin(), l.end(), 0.0f);
+        for (auto& s : cp) { s.entries.clear(); s.n_buf = 0; s.n_entries = 0; s.inited = false; }
+        for (auto& s : ix) { s.entries.clear(); s.n_buf = 0; s.n_entries = 0; s.inited = false; }
+    }
 };
 
 // ─── mHC state (hc_mult parallel streams) ─────────────────────────────────────
@@ -184,24 +228,12 @@ struct DeepSeekV4mHCState {
 // (`store_compression_weights` -> usable prefix -> one entry, Ca carried over in
 // `overlap_kv`). Both must produce the same entries; the incremental one is what
 // the attention path will consume (gated by cmp_deepseek_v4_compressor_incremental).
-struct DeepSeekV4CompState {
-    int n_buf = 0;              // tokens buffered toward the current window
-    int n_entries = 0;          // entries emitted so far
-    std::vector<float> buf_kv;  // [rate * series*hd] pending rows
-    std::vector<float> buf_gate;
-    std::vector<float> prev_ca, prev_ca_gate;  // previous window's Ca (CSA only)
-    std::vector<float> entries;  // [n_entries * hd], emitted in order
-    void init(int rate, int series, int hd) {
-        const size_t rows = (size_t)(rate > 0 ? rate : 1) * series * hd;
-        buf_kv.assign(rows, 0.0f);
-        buf_gate.assign(rows, 0.0f);
-        prev_ca.assign((size_t)(rate > 0 ? rate : 1) * hd, 0.0f);
-        prev_ca_gate.assign((size_t)(rate > 0 ? rate : 1) * hd, -INFINITY);
-        entries.clear();
-        n_buf = 0;
-        n_entries = 0;
-    }
-};
+// Feed one token through a parameterised compressor state.
+bool deepseek_v4_compressor_step_p(const DeepSeekV4CompParams& p, const DeepSeekV4Config& cfg,
+                                   int rate, const float* x_token, DeepSeekV4CompState& st);
+
+// Compressor params for a layer's Lightning Indexer (CSA layers only).
+DeepSeekV4CompParams deepseek_v4_indexer_comp_params(const DeepSeekV4Layer& l, const DeepSeekV4Config& cfg);
 
 // Feed one token (its collapsed attention-site hidden vector `x_token` [H]).
 // Returns true when this token completed a window and appended an entry.
@@ -240,6 +272,8 @@ std::vector<int> deepseek_v4_indexer_topk(const DeepSeekV4Layer& l, const DeepSe
 std::vector<float> deepseek_v4_forward(DeepSeekV4Model& model, int token_id,
                                        DeepSeekV4KVCache& kv_cache,
                                        DeepSeekV4mHCState& mhc, int& pos,
-                                       std::vector<float>* layer_states = nullptr);
+                                       std::vector<float>* layer_states = nullptr,
+                                       const int* index_override = nullptr,
+                                       int index_override_k = 0);
 
 #endif
