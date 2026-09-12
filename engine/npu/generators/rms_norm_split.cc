@@ -48,10 +48,10 @@ extern "C" void rms_reduce_f32(float *__restrict A_tile, float *__restrict ss) {
     }
 }
 
-// Normalize one K-tile: out = bf16(clamp(A) * invsqrt(ss/H+eps)).
-// gamma is per-column; for the proof-of-concept fused build the learned gamma
-// stream is dropped (gamma=1.0) to stay within the shim's 2 MM2S DMA channels
-// (A + W already use both). Byte-exact learned-gamma needs a 3rd input channel.
+// Normalize one K-tile: out = bf16(clamp(A) * invsqrt(ss/H+eps) * gamma[i]).
+// The learned gamma is folded into the A K-tile as an extra row (row M_TILE),
+// i.e. A_ty is (M_TILE+1) x K_TILE — this keeps the shim to 2 MM2S channels
+// (A+W) while feeding per-column gamma. Byte-exact target: host rn_bf16.
 //
 // OUT LAYOUT: the matmul's aie::mmul consumes A as 4x8 microtiles, so the
 // normalized A_norm is written MICROTILED (tile (r/4, c/8) at
@@ -64,9 +64,11 @@ extern "C" void rms_scale_f32_bf16(float *__restrict A_tile, float *__restrict s
         float ir = aie::invsqrt(ss[r] / (float)H + 1e-5f);
         int tr = r / 4, rr = r % 4;
         for (int tc = 0; tc < K_TILE / 8; tc++)
-            for (int cc = 0; cc < 8; cc++)
+            for (int cc = 0; cc < 8; cc++) {
+                float gamma = A_tile[M_TILE * K_TILE + tc * 8 + cc];   // row M_TILE = gamma
                 o[(tr * (K_TILE / 8) + tc) * 32 + rr * 8 + cc] =
-                    f32_to_bf16_rne(clamp_nonfinite(A_tile[r * K_TILE + tc * 8 + cc]) * ir);
+                    f32_to_bf16_rne(clamp_nonfinite(A_tile[r * K_TILE + tc * 8 + cc]) * ir * gamma);
+            }
     }
 }
 

@@ -40,7 +40,7 @@ def fused(M, H, N, k):
 
     @device(AIEDevice.npu2)
     def device_body():
-        A_ty = np.ndarray[(M, k), np.dtype[np.float32]]
+        A_ty = np.ndarray[(M + 1, k), np.dtype[np.float32]]   # M A rows + 1 gamma row
         SS_ty = np.ndarray[(M,), np.dtype[np.float32]]
         AN_ty = np.ndarray[(M, k), np.dtype[bfloat16]]
         W_ty = np.ndarray[(k, N), np.dtype[bfloat16]]
@@ -107,7 +107,7 @@ def fused(M, H, N, k):
                 C_f.release(ObjectFifoPort.Produce, 1)
 
         @runtime_sequence(
-            np.ndarray[(M * H,), np.dtype[np.float32]],
+            np.ndarray[((M + 1) * H,), np.dtype[np.float32]],
             np.ndarray[(H * N,), np.dtype[bfloat16]],
             np.ndarray[(M * N,), np.dtype[bfloat16]],
         )
@@ -116,7 +116,7 @@ def fused(M, H, N, k):
             for rep in range(2):
                 for kt in range(n_k):
                     at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
-                                                 sizes=[1, 1, M, k], strides=[1, 1, H, 1],
+                                                 sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
                                                  issue_token=True)
                     dma_start_task(at); dma_await_task(at); dma_free_task(at)
             # W K-tiles (microtiled 8x8 — the matmul's B layout)
