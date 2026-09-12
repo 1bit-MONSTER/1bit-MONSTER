@@ -1,7 +1,9 @@
 // softmax_online.cc — the online (flash-attention) softmax for the chunked MHA.
-// Per chunk it merges the running max/sum with the chunk's scores and emits the
-// exp values (microtiled C layout) plus the rescale factor alpha = exp(m_old -
-// m_new) that the combine core applies to the running O accumulator.
+// The running max/sum live in STATIC locals (persist across the chunk loop, no
+// MLIR buffer aliasing needed). Per chunk it merges the running state with the
+// chunk's scores and emits the exp values (microtiled C) plus alpha = exp(m_old
+// - m_new) for the combine core's O rescale. softmax_get_l copies the final
+// running sum out for the normalize.
 #include <aie_api/aie.hpp>
 #include <stdint.h>
 #include <cmath>
@@ -12,6 +14,10 @@
 #ifndef N_KEYS
 #define N_KEYS 128
 #endif
+
+static float m_state[M_TILE];
+static float l_state[M_TILE];
+static bool initialized = false;
 
 static inline uint16_t f32_to_bf16(float f) {
     uint32_t u; __builtin_memcpy(&u, &f, 4);
@@ -37,17 +43,17 @@ static inline double exp2_soft(double x) {
     return r;
 }
 
-// scores/exp are in the GEMM's 4x8 microtiled C layout.
 extern "C" void softmax_online(const uint16_t *__restrict scores,
-                               float *__restrict m,     // running max (M)
-                               float *__restrict l,     // running sum (M)
                                uint16_t *__restrict exp_out,
-                               float *__restrict alpha) // rescale factor (M)
-{
+                               float *__restrict alpha) {
+    if (!initialized) {
+        for (int r = 0; r < M_TILE; r++) { m_state[r] = -1e30f; l_state[r] = 0.0f; }
+        initialized = true;
+    }
     const float log2e = 1.4426950408889634f;
     for (int r = 0; r < M_TILE; r++) {
         int tr = r / 4, rr = r % 4;
-        float m_old = m[r];
+        float m_old = m_state[r];
         float m_local = -1e30f;
         for (int c = 0; c < N_KEYS; c++) {
             int tc = c / 8, cc = c % 8;
@@ -64,8 +70,12 @@ extern "C" void softmax_online(const uint16_t *__restrict scores,
             l_chunk += (double)e;
             exp_out[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc] = f32_to_bf16(e);
         }
-        m[r] = m_new;
-        l[r] = l[r] * a + (float)l_chunk;
+        m_state[r] = m_new;
+        l_state[r] = l_state[r] * a + (float)l_chunk;
         alpha[r] = a;
     }
+}
+
+extern "C" void softmax_get_l(float *__restrict l_out) {
+    for (int r = 0; r < M_TILE; r++) l_out[r] = l_state[r];
 }

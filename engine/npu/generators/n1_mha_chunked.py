@@ -47,26 +47,19 @@ def mha(M, N, C, HD):
         matmul_qk = external_func("matmul_qk_concat", inputs=[QK_ty, SC_ty],
                                   link_with="mm_qk_concat.o")
         zero_qk = external_func("zero_qk", inputs=[SC_ty], link_with="zero_qk.o")
-        softmax = external_func("softmax_online", inputs=[SC_ty, I_ty, I_ty, SC_ty, I_ty],
+        softmax = external_func("softmax_online", inputs=[SC_ty, SC_ty, I_ty],
                                 link_with="softmax_online.o")
+        softmax_get_l = external_func("softmax_get_l", inputs=[I_ty],
+                                      link_with="softmax_online.o")
         matmul_pv = external_func("matmul_bf16_f32", inputs=[SC_ty, V_ty, AT_ty],
                                   link_with="mm_bf16_f32.o")
-        combine = external_func("combine_attn", inputs=[AT_ty, I_ty, O_ty],
+        combine = external_func("combine_attn", inputs=[AT_ty, I_ty],
                                 link_with="combine_attn.o")
-        normalize = external_func("normalize_attn", inputs=[O_ty, I_ty, OUT_ty],
+        normalize = external_func("normalize_attn", inputs=[I_ty, OUT_ty],
                                   link_with="combine_attn.o")
-        copy_l = external_func("copy_f32", inputs=[I_ty, I_ty], link_with="copy_f32.o")
 
         shim = tile(0, 0); mem = tile(0, 1)
         qk_c = tile(0, 2); sm_c = tile(0, 3); pv_c = tile(0, 4); rs_c = tile(0, 5)
-
-        # core-local running state (persists across the chunk loop)
-        m_buf = buffer(sm_c, np.ndarray[(M,), np.dtype[np.float32]], name="m",
-                       initial_value=np.full((M,), -1e30, dtype=np.float32))
-        l_buf = buffer(sm_c, np.ndarray[(M,), np.dtype[np.float32]], name="l",
-                       initial_value=np.zeros((M,), dtype=np.float32))
-        O_buf = buffer(rs_c, np.ndarray[(M * HD,), np.dtype[np.float32]], name="O",
-                       initial_value=np.zeros((M * HD,), dtype=np.float32))
 
         QK_s = object_fifo("QK_S", shim, mem, 1, QK_ty)
         QK_c = object_fifo("QK_C", mem, qk_c, 1, QK_ty)
@@ -104,12 +97,12 @@ def mha(M, N, C, HD):
                 sc = SC.acquire(ObjectFifoPort.Consume, 1)
                 e = E.acquire(ObjectFifoPort.Produce, 1)
                 a = A_f.acquire(ObjectFifoPort.Produce, 1)
-                softmax(sc, m_buf, l_buf, e, a)
+                softmax(sc, e, a)
                 SC.release(ObjectFifoPort.Consume, 1)
                 E.release(ObjectFifoPort.Produce, 1)
                 A_f.release(ObjectFifoPort.Produce, 1)
             lout = L_f.acquire(ObjectFifoPort.Produce, 1)
-            copy_l(l_buf, lout)
+            softmax_get_l(lout)
             L_f.release(ObjectFifoPort.Produce, 1)
 
         @core(pv_c, stack_size=0x2000)
@@ -128,12 +121,12 @@ def mha(M, N, C, HD):
             for _ in range_(C):
                 at = AT.acquire(ObjectFifoPort.Consume, 1)
                 a = A_c.acquire(ObjectFifoPort.Consume, 1)
-                combine(at, a, O_buf)
+                combine(at, a)
                 AT.release(ObjectFifoPort.Consume, 1)
                 A_c.release(ObjectFifoPort.Consume, 1)
             lf = L_c.acquire(ObjectFifoPort.Consume, 1)
             o = O_f.acquire(ObjectFifoPort.Produce, 1)
-            normalize(O_buf, lf, o)
+            normalize(lf, o)
             L_c.release(ObjectFifoPort.Consume, 1)
             O_f.release(ObjectFifoPort.Produce, 1)
 
