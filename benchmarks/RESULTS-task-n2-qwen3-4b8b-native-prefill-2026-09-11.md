@@ -266,3 +266,24 @@ BdWord[3]=Dim0(Wrap|StepSize-1), BdWord[4]=Dim1(Wrap|StepSize-1)|BurstLen,
 BdWord[6]=Iter. The captured nh32 differs from nh16 ONLY in Dim1.StepSize
 (1024→2048). The exact fix needs the AIE2 shim-DMA address-generation semantics
 (TRM), not derivable from the driver code alone. Still multi-day.
+
+## 2026-09-12 (cont.5): KEY REDIRECT — BD fields are all CORRECT for 32 heads; bug is likely in the attention COMPUTE, not the DMA BDs
+
+Decoded the mlir-aie BD encoder (`BdLowering.cpp` `encodeHardwareStridesWraps`) to
+understand the exact field semantics. Re-deriving from the known-good nh16 values:
+
+- d0_size (word[3][29:20]) = 4 = innermost dim in granules (128 dims × 2 B / 64 B).
+- d1_size (word[4][29:20]) = 64 = token count.
+- d1_stride (word[4][19:0]) = 1023 (nh16) / 2047 (nh32) = token stride in granules − 1.
+  nh16 token = 16 heads × 128 × 2 = 4096 B; nh32 = 8192 B. The captured nh32's
+  d1_stride doubling (1024→2048) is therefore CORRECT for 32 heads.
+
+So the Q-read, out-write, and KV BDs are all geometrically correct for 32 heads;
+the DDR_PATCH offsets (32 heads × 4 groups) are correct; the BD count (128 Q/out)
+is correct. Yet the ELF output is non-uniform garbage (-316..+308). Conclusion:
+**the bug is in the attention COMPUTE instructions, not the DMA BDs** — most
+plausibly the GQA mapping (nh32 needs 32 Q heads → 8 KV heads = GQA 4; a
+16-head GQA-2 compute would attend the wrong KV heads and produce garbage). No
+BD patch can fix this; the nh32 ELF must be re-captured or regenerated with the
+correct 32-head compute. This redirects task-n2 from BD-patching to ELF
+re-capture/regeneration — still multi-day.
