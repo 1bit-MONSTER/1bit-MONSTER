@@ -259,9 +259,12 @@ legacy_wrapper_restore() {
 legacy_peano_shim() { # $1 = dir to create; a --peano root adding orphan handling
   local root="$1" real="$PEANO" e c
   [ -d "$real/bin" ] || { echo "  ERROR: no peano tree at $real" >&2; return 1; }
-  rm -rf "$root"; mkdir -p "$root"
+  # ${root:?} not "$root": this removes a tree, and an empty $root makes the next rm
+  # expand to /bin. The only caller passes a real path; the guard turns that misuse into
+  # an error instead of deleting the runner's /bin (shellcheck SC2115).
+  rm -rf "${root:?}"; mkdir -p "$root"
   for e in "$real"/*; do ln -sfn "$e" "$root/"; done
-  rm -rf "$root/bin"; mkdir -p "$root/bin"        # replace the bin symlink with a real dir
+  rm -rf "${root:?}/bin"; mkdir -p "$root/bin"        # replace the bin symlink with a real dir
   for e in "$real"/bin/*; do ln -sf "$e" "$root/bin/"; done
   for c in clang clang++; do
     rm -f "$root/bin/$c"
