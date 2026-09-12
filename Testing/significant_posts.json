@@ -62,6 +62,13 @@
   "file": "1bit-post-announcement-ubr-physical-ai-cosmos3-edge-nf4-bnb.html",
   "mode": "announcement"
  },
+ "announcement:win10/RWKV7-G1j-10B-A1B": {
+  "arch": "rwkv7moe",
+  "date": "2026-09-02",
+  "family": "Rwkv",
+  "file": "1bit-post-announcement-win10-rwkv7-g1j-10b-a1b.html",
+  "mode": "announcement"
+ },
  "covered:0x795E2795/Vanta-Alpha-26B-A4B-it-qat-w4a16-ct": {
   "arch": "gemma4",
   "date": "2026-09-02",
@@ -81,6 +88,13 @@
   "date": "2026-09-02",
   "family": "Glm",
   "file": "1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html",
+  "mode": "covered"
+ },
+ "covered:AbhishekG711/Qwen3-0.6B-Insight-Extractor": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-abhishekg711-qwen3-0-6b-insight-extractor.html",
   "mode": "covered"
  },
  "covered:Aeronix-zzz/SpaSEViLA-7B": {
@@ -181,6 +195,13 @@
   "file": "1bit-post-significant-dripghad1223-glm-5-3-cybersecurity-fp8.html",
   "mode": "covered"
  },
+ "covered:Duong1211/GRIT": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-duong1211-grit.html",
+  "mode": "covered"
+ },
  "covered:Earlychildhoodeducation/EleMo-V3-Base": {
   "arch": "qwen3_5",
   "date": "2026-09-02",
@@ -272,6 +293,20 @@
   "file": "1bit-post-significant-jjarvinen-qwen3-5-2b-eu-tool-jarvis-compact-v1-1.html",
   "mode": "covered"
  },
+ "covered:Jeesup/svdsafety_l2_ablate_top256": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-jeesup-svdsafety-l2-ablate-top256.html",
+  "mode": "covered"
+ },
+ "covered:Jeethu/granite-4.2-8b-PARO": {
+  "arch": "granite",
+  "date": "2026-09-02",
+  "family": "Granite",
+  "file": "1bit-post-significant-jeethu-granite-4-2-8b-paro.html",
+  "mode": "covered"
+ },
  "covered:Jkatdare/gemma-3-4b-it-tulumix-30k": {
   "arch": "gemma3",
   "date": "2026-09-02",
@@ -284,6 +319,13 @@
   "date": "2026-09-02",
   "family": "Deepseek",
   "file": "1bit-post-significant-joyfulxp-deepseek-v4-flash-vision-exp-abliterated.html",
+  "mode": "covered"
+ },
+ "covered:Keretos1/egx-decision-qwen2.5-vl-3b-fused": {
+  "arch": "qwen2_5_vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-keretos1-egx-decision-qwen2-5-vl-3b-fused.html",
   "mode": "covered"
  },
  "covered:LibertAIDAI/DeepSeek-V4.1-Flash-NVFP4": {
@@ -326,6 +368,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-saifiindustries-qwen3-5-35b-a3b.html",
+  "mode": "covered"
+ },
+ "covered:SirSahOl/Phi-4-mini-instruct-chat-mlx-4bit": {
+  "arch": "phi3",
+  "date": "2026-09-02",
+  "family": "Phi",
+  "file": "1bit-post-significant-sirsahol-phi-4-mini-instruct-chat-mlx-4bit.html",
   "mode": "covered"
  },
  "covered:Solstice-AI/DeepSeek-V4-Flash-Vision-Exp-MXFP4": {
@@ -510,6 +559,13 @@
   "file": "1bit-post-significant-emese-tech-patak.html",
   "mode": "covered"
  },
+ "covered:faizzht/GLM-5.3-CYBERSECURITY-FP8": {
+  "arch": "glm_moe_dsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-faizzht-glm-5-3-cybersecurity-fp8.html",
+  "mode": "covered"
+ },
  "covered:forgeguard-ai/Ornith-1.5-35B-A3B-NVFP4": {
   "arch": "qwen3_5moe",
   "date": "2026-09-02",
@@ -566,6 +622,13 @@
   "file": "1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html",
   "mode": "covered"
  },
+ "covered:irving117/Qwen3.8-27B-Abliterated-V2": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-irving117-qwen3-8-27b-abliterated-v2.html",
+  "mode": "covered"
+ },
  "covered:joincrksilverb/Nemotron-Mini-4B-Instruct": {
   "arch": "nemotron",
   "date": "2026-09-02",
@@ -613,6 +676,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-mlx-community-bigbang-v1-mlx-oq4e.html",
+  "mode": "covered"
+ },
+ "covered:mlx-community/Nex-N2.5-mini-OptiQ-4bit": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-mlx-community-nex-n2-5-mini-optiq-4bit.html",
   "mode": "covered"
  },
  "covered:mobilint/Llama-3.2-1B-Instruct-regulus-rb-usb": {
@@ -678,11 +748,25 @@
   "file": "1bit-post-significant-smshahbaj-rifa-pro-3b.html",
   "mode": "covered"
  },
+ "covered:taharmasmaliyev07/Mirza-Gemma4-E2B-MIXED-NO-TAG-E3-BF16": {
+  "arch": "gemma4",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-taharmasmaliyev07-mirza-gemma4-e2b-mixed-no-tag-e3-bf16.html",
+  "mode": "covered"
+ },
  "covered:thuyduongjoe123/checkpoints_en_my_logit": {
   "arch": "qwen3",
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-thuyduongjoe123-checkpoints-en-my-logit.html",
+  "mode": "covered"
+ },
+ "covered:xyzzzh/IoU-PD": {
+  "arch": "qwen3vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-xyzzzh-iou-pd.html",
   "mode": "covered"
  },
  "covered:yamatazen/Himeyuri-Magnum-12B-HereticLoRA": {
