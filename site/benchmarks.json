@@ -541,11 +541,13 @@
         "prefill_256_path": "NPU_RUNLIST=0 NPU_PREFILL_BF16=1 (native dequant.xclbin+mm.xclbin+attn.xclbin)",
         "decode_1k_native_tok_s": 79,
         "decode_1k_flm_tok_s": 73.58,
-        "decode_1k_verdict": "native +7% vs FLM on-box @1k (12.7 vs 13.6 ms/tok), after runlist build-overlap",
+        "decode_1k_verdict": "native +7% vs FLM on-box @1k (12.6 vs 13.6 ms/tok); A/B: pre-overlap 14.7ms/tok (68) -> post-overlap 12.6ms/tok (79)",
         "decode_1k_path": "NPU_RUNLIST=1 whole-layer single-launch runlist (orchestration of FLM's captured layer ELFs)",
-        "decode_256_native_tok_s": 91,
+        "decode_256_native_tok_s": 92,
         "ttft_256_native_ms": 391,
-        "ttft_1k_note": "@1k whole-layer TTFT = full per-token prefill (~14s) vs FLM first-chunk 0.70s; metric-semantics + chunked-prefill gap (chunked prefill blocked on >256-token attention ELF)"
+        "ttft_1k_note": "@1k whole-layer TTFT = full per-token prefill (~14s) vs FLM first-chunk 0.70s; metric-semantics + chunked-prefill gap (chunked prefill blocked on >256-token attention ELF)",
+        "decode_1k_pre_overlap_tok_s": 68,
+        "decode_256_note": "post-overlap @256: 10.9ms/tok (92); pre-overlap 12.6ms/tok (79)"
       }
     }
   }

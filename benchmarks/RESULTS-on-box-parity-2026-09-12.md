@@ -28,18 +28,20 @@ chunked prefill + position-shifted attention ELFs (blocked, see §4).
 
 ## 2. Decode @1k — native (whole-layer) BEATS FLM on-box after build-overlap
 
-Qwen3-0.6B, 1024-token prompt, 32-token greedy decode (byte-identical tokens):
+Qwen3-0.6B, 1024-token prompt (`/tmp/ids1024v.txt`), 32-token greedy decode
+(byte-identical tokens). A/B re-measured 2026-09-12, same prompt:
 
 | path | ms/tok | tok/s |
 |---|---|---|
-| native whole-layer decode (this session, after `f37fb0489`) | **12.7** | **79** |
-| native whole-layer decode (pre-overlap) | 16.0 | 62–63 |
+| native whole-layer decode, PRE-overlap (`3cd4896b0`) | 14.7 | 68 |
+| native whole-layer decode, POST-overlap (`f37fb0489`) | **12.6** | **79** |
 | FLM on-box `flm bench` decode | 13.6 | **73.58** |
 
 The **decode-overlap optimization** (double-buffered `xrt::runlist`, build the next
-context's runlist while the current one executes) recovers ~1.5 ms/token
-(79 → 91 tok/s @256, 62 → 79 tok/s @1k), moving native decode from −15 % to
-**+7 % vs FLM on-box**. Byte-exact token parity preserved (A/B verified).
+context's runlist while the current one executes) saves ~2.1 ms/token at @1k
+(68 → 79 tok/s) and ~1.6 ms/token at @256 (79 → 92 tok/s). Post-overlap native
+decode crosses the FLM on-box bar: **79 vs 73.58 tok/s (+7 %)**. Byte-exact token
+parity preserved (A/B verified).
 
 ## 3. TTFT — honest delta
 
