@@ -81,7 +81,7 @@ if [ ! -f "$RUNLIST_BRIDGE_O" ] || [ "$RUNLIST_BRIDGE" -nt "$RUNLIST_BRIDGE_O" ]
     g++ -c -std=c++17 -O3 -I"$NPU_INFER_INC" -I"$XRT_INC" -o "$RUNLIST_BRIDGE_O" "$RUNLIST_BRIDGE"
 fi
 # bf16 mm bridge (FLM headers + libgemm/libdequant at link time)
-if [ ! -f "$BF16MM_BRIDGE_O" ] || [ "$BF16MM_BRIDGE" -nt "$BF16MM_BRIDGE_O" ]; then
+if [ ! -f "$BF16MM_BRIDGE_O" ] || [ "$BF16MM_BRIDGE" -nt "$BF16MM_BRIDGE_O" ] || [ "$SRCDIR/src/npu_engine_bf16_mm.h" -nt "$BF16MM_BRIDGE_O" ]; then
     echo "g++ -c -std=c++17 -O2 -o $BF16MM_BRIDGE_O $BF16MM_BRIDGE"
     g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE"
 fi
