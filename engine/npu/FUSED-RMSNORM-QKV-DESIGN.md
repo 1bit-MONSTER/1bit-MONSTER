@@ -113,6 +113,23 @@ Recommendation: (3) is the right long-term shape; (1) with M re-tiled (e.g.
 M=96 onto 24 GEMM cores + 8 norm cores) is the fastest prototype. Both are
 multi-session; neither is started yet.
 
+### Approach 3 execution plan (memory budget, 2026-09-12)
+
+Single-core two-pass fused kernel (proof-of-concept first, then multi-core):
+
+1. **Norm pass** — stream A rows (f32) from shim, accumulate ss over full H per
+   row, normalize, write A_norm (bf16) to a mem-tile buffer.
+2. **GEMM pass** — read A_norm (bf16) back K-tiled, stream W (bf16) tiles, matmul
+   into C.
+
+Core memory (64 KB): A_norm for m rows = m × H × 2 B. With H=1024: m=16 → 32 KB
+(A_norm) + 16 KB W tile + 8 KB C = 56 KB ✓ (m=32 → 64 KB A_norm alone, no room).
+So the fused microkernel's M-tile is m=16 (vs the standalone GEMM's m=32).
+
+Steps: (a) write a fused `rmsnorm_qkv` microkernel (norm + K-tiled bf16 GEMM in
+one core body, m=16); (b) aiecc a single-core design, validate vs host rn_bf16 +
+native GEMM; (c) multi-core-ify (rows across cores, W broadcast).
+
 ## fk-2 scoping findings (2026-09-12)
 
 1. **`mm_bfp.cc` uses `bfp16ebs8`, not plain bf16.** `bfp16ebs8` is a
