@@ -17,6 +17,13 @@ re-deriving them.
 Evidence below was taken from the **official HF configs** (fetched
 2026-09-12), not from the model cards or the class name.
 
+**This is a snapshot.** New significant arrivals are expected as HF moves —
+add them here when they are reviewed. Seen while writing this: `deepseekv41`
+(4 models on 2026-09-11, 6 on 2026-09-12), the other three from the 2026-09-11
+run, and new on 2026-09-12 `qwendriveforplanning` (e.g.
+`Yuro1991/Qwen-Drive-1.0-4B`) — **not yet reviewed**, so its census line is
+still the only record of it.
+
 Measured reference — the shape the census compares against:
 
 | engine arch | implementation | reference model |
