@@ -195,6 +195,20 @@ Exact-match is only 0.5% (random). FLM's activations are ~6× larger and its row
 This is a much stronger lead than the RoPE: re-derive the bridge's input norm
 (`rn_bf16` + `emb_f32` + `in_n`) against FLM's actual `arg5` bytes.
 
+### Correction: arg5/arg6 are NOT the input norm
+
+Follow-up inspection of more rows shows FLM's `arg5` is **mostly zero** (rows 0,1
+nonzero; rows 2,255,256,511 zero) and FLM's `arg6` is a **[1.0,1.0,1.0,…]**
+pattern (row 0: 320/1024 nonzero, rows 1+ zero) — i.e. these look like an
+attention **mask / query scratch**, not the layer input norm. The 256×1024
+GEMM-A BO is therefore not among the captured preinsts (the GEMM may consume a
+BO bound earlier and re-used across layers). Treat the earlier "arg5 = input
+norm, 6× scale" claim as **unconfirmed** — needs the RUNLIST_ADD arg→BO mapping
+correlated with each kernel's identity before drawing conclusions.
+
+What IS confirmed: every layer-0 stage in the bridge is non-zero and plausible,
+and the q/k-norm weights load byte-identically to the model.
+
 ## Repro
 
 ```
