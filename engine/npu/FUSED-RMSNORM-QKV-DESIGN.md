@@ -287,3 +287,16 @@ manifest on this data (it is ~1 ULP and data-dependent).
 
 **Gotcha**: the kernel's 3×`float[HD]` locals (1.5 KB) overflow the default core
 stack and silently zero the output — the core needs `stack_size=0x2000`.
+
+### qk_norm_rope integration constraint (memory)
+The microtiled-input variant (`qk_norm_rope` reading the GEMM's 4×8-microtiled C)
+hits a memory wall: input C (M×4096) + output (M×4096) are both live in the core.
+One 4-row M-tile = 32 KB C + 32 KB out = 64 KB, and the qn_w/kn_w/rc/rs tables
+(+5 KB) and stack push it over the ~64 KB core budget (aiecc "allocated buffers
+exceeded available memory" at M=4). For M=16 (the real fk-2 tile) the C alone is
+128 KB.
+
+=> the integration must N-tile the C (4096 cols → 32 N-tiles of 128), streaming
+each N-tile through qk_norm_rope (same N-tiling the FFN scaling needs), and the
+rc/rs cos/sin should be computed on-device or the tables folded into the A/W
+stream (the shim's 2 MM2S are already taken by A+W).
