@@ -130,6 +130,22 @@ Steps: (a) write a fused `rmsnorm_qkv` microkernel (norm + K-tiled bf16 GEMM in
 one core body, m=16); (b) aiecc a single-core design, validate vs host rn_bf16 +
 native GEMM; (c) multi-core-ify (rows across cores, W broadcast).
 
+### Refinement: the norm must be SPLIT for K-tiled streaming (2026-09-12)
+
+A single `rms_norm_f32_bf16` can't be dropped in front of the GEMM because the
+GEMM feeds A as K-tiles (k=64) but the norm reduces over the full row (H=1024).
+So the norm is split into two kernels that wrap the K-tiled A stream
+(`rms_norm_split.cc`, compiled, exports `rms_reduce_f32` + `rms_scale_f32_bf16`):
+
+1. `rms_reduce_f32(A_tile, ss)` — accumulate per-row Σx² (ss[M_TILE], in/out)
+   across all K-tiles.
+2. `rms_scale_f32_bf16(A_tile, ss, gamma_tile, out)` — normalize a K-tile with
+   the accumulated ss + per-column γ → bf16 (byte-exact vs the monolithic kernel).
+
+Fused core body then runs: reduce pass over K-tiles → scale pass over K-tiles
+(A_norm → local mem, m=16 → 32 KB) → GEMM pass (W streamed). Next: the MLIR
+core body that sequences these three passes.
+
 ## fk-2 scoping findings (2026-09-12)
 
 1. **`mm_bfp.cc` uses `bfp16ebs8`, not plain bf16.** `bfp16ebs8` is a
