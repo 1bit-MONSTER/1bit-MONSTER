@@ -66,3 +66,29 @@ extern "C" void softmax_bf16(const uint16_t *__restrict scores,
         isw[r] = sw > 0.0 ? 1.0f / (float)sw : 1.0f / (float)N_KEYS;
     }
 }
+
+// Microtiled variant: the scores and the exp output are in the GEMM's 4x8
+// microtiled C/A layout (scores[r][c] at (r/4*(N/8)+c/8)*32 + (r%4)*8 + c%8),
+// so the softmax can sit directly between the QK^T (C) and the PV (A) GEMMs.
+extern "C" void softmax_bf16_mt(const uint16_t *__restrict scores,
+                                float *__restrict isw,
+                                uint16_t *__restrict out) {
+    for (int r = 0; r < M_TILE; r++) {
+        int tr = r / 4, rr = r % 4;
+        float mx = -1e30f;
+        for (int c = 0; c < N_KEYS; c++) {
+            int tc = c / 8, cc = c % 8;
+            float s = bf16_to_f32(scores[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc]);
+            if (s > mx) mx = s;
+        }
+        double sw = 0.0;
+        for (int c = 0; c < N_KEYS; c++) {
+            int tc = c / 8, cc = c % 8;
+            float s = bf16_to_f32(scores[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc]);
+            float e = (float)exp2_soft((double)(s - mx) * 1.4426950408889634);
+            sw += (double)e;
+            out[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc] = f32_to_bf16(e);
+        }
+        isw[r] = sw > 0.0 ? 1.0f / (float)sw : 1.0f / (float)N_KEYS;
+    }
+}
