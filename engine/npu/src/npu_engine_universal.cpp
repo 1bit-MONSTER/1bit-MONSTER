@@ -3917,7 +3917,7 @@ struct Bf16Ctx {
                 }
                 if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
                     FILE* fa = fopen("/tmp/eng_act.bin", "wb"); if (fa) { fwrite(bActQ.data(), 2, 256 * qout, fa); fclose(fa); }
-                    FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, 33554432 / 2, fk); fclose(fk); }
+                    FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, bKv.size(), fk); fclose(fk); }
                 }
                 bool attn_host = false;
                 if (getenv("NPU_ATTN_CPU") || !bf16mm_attn(bA.data(), bActQ.data(), bKv.data())) {

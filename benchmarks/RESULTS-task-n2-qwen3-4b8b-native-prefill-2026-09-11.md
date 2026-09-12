@@ -287,3 +287,22 @@ plausibly the GQA mapping (nh32 needs 32 Q heads → 8 KV heads = GQA 4; a
 BD patch can fix this; the nh32 ELF must be re-captured or regenerated with the
 correct 32-head compute. This redirects task-n2 from BD-patching to ELF
 re-capture/regeneration — still multi-day.
+
+## 2026-09-12 (cont.6): DEFINITIVE — nh32 ELF output is uncorrelated with correct attention (corr 0.04, 300x magnitude) => mis-captured ELF, not BD-fixable
+
+Decisive test: dumped the nh32 ELF's Q/KV inputs and attention output (with the
+KV dump fixed to the full 4B 48MB), computed the correct causal GQA-4 attention
+in numpy, and correlated:
+
+- corr(ref, ELF out) = **0.0396** (essentially zero).
+- correct attention rms = 0.0089 (≈ V rms, plausible); ELF out rms = **2.97**
+  (300x too large, range ±316) — the ELF output has K's magnitude, not V's.
+
+So the nh32 ELF is NOT a subtly-misconfigured 32-head attention: it is
+**fundamentally wrong** (reads wrong data / wrong compute). This is consistent
+with the prior note that the 4B prefill runs a 5-BO fused-layer ABI, not the
+3-BO attention — the captured ELF is likely a fused-layer/GEMM ELF, not the
+standalone attention ELF. No BD patch can fix it (5 field patches + KV-stride
+patch all failed; arg-order permutations already ruled out). The fix is to
+**re-capture the correct 3-BO nh32 attention ELF** from FLM's 4B prefill —
+multi-day capture-tooling work, not BD editing.
