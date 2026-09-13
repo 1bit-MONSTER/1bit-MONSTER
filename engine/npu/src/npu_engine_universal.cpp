@@ -702,7 +702,17 @@ int main(int argc,char**argv){
         const bool dense_qwen3 = cfg.NV == 151936 && !cfg.has_moe &&
             ((cfg.NC == 28 && cfg.H == 1024) || (cfg.NC == 28 && cfg.H == 2048) ||
              (cfg.NC == 36 && cfg.H == 2560) || (cfg.NC == 36 && cfg.H == 4096));
-        if (dense_qwen3 && !getenv("NPU_FLM_PREFILL") && (!rl || atoi(rl) != 0)) {
+        // Also allow any non-MoE model when the caller has supplied a per-ctx ELF dir
+        // (NPU_LAYER_ELF_DIR). Two things make that safe now: the runlist resolves its model
+        // dir from the MODEL PATH rather than from H (b35f0914d), and gen_layer_elfs can
+        // generate the per-ctx ELFs for every family (dd6068041). Without an ELF dir the
+        // attempt fails cleanly (rc != 0) and execution falls through to exactly the paths
+        // below, so this is additive -- it exists so the four families whose prefill is wrong
+        // can finally be run against FLM's own kernels as a reference.
+        const char* elf_env = getenv("NPU_LAYER_ELF_DIR");
+        const bool runlist_eligible = dense_qwen3 ||
+            (!cfg.has_moe && elf_env && elf_env[0]);
+        if (runlist_eligible && !getenv("NPU_FLM_PREFILL") && (!rl || atoi(rl) != 0)) {
             int rc = npu_runlist_decode(mp, ng, input_tok_file,
                                         cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.IM, cfg.NV);
             if (rc == 0) return 0;

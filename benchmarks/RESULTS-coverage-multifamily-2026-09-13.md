@@ -921,3 +921,40 @@ comment per constant prevents all of it, so all three now carry one:
   to the layout the loop occupies".
 
 That is the durable fix, as opposed to the three prose corrections that preceded it.
+
+## 18. The Nanbeige reference run, and what its failure narrows to (2026-09-13)
+
+Opening the runlist gate (additive: only when `NPU_LAYER_ELF_DIR` is set, so Qwen3 is unchanged —
+verified, 0.6B still `[runlist]` at 99 tok/s) lets Nanbeige reach FLM's own kernels for the first
+time. It packs 32 layer weight BOs, builds 32 norm BOs, loads the lm_head kernel, reads all 256
+ids — and returns:
+
+| path | token @256 |
+|---|---|
+| FLM's own library (`NPU_FLM_PREFILL=1`) | **5938** ← the reference |
+| bf16 prefill (the path under investigation) | 188 |
+| non-bf16 fallback | 131718 / 45816 / 106732 (nondeterministic) |
+| runlist (FLM's own `layer.xclbin` + generated ELFs) | 157559 |
+
+**Four distinct answers, and only FLM's library is right.** That is disappointing as a reference
+but genuinely informative as a diagnosis, because of what the failing paths have in common:
+
+- the bf16 prefill and the runlist **both** build their per-layer weight BOs with
+  `npu_pack_layer_bo()`;
+- FLM's own library does **not** — it loads weights through its own family code
+  (`load_conv_proj_weights` / `load_attn_proj_weights`), which is why it is correct.
+
+So a defect in the shared packing step would break **both** engine paths and leave FLM correct
+— exactly the observed pattern. That makes **`npu_pack_layer_bo` (and its `G` group counts,
+which are derived from `qout`/`H`/`IM`) the leading suspect for the whole four-family bug**, and
+it explains why every shape-plumbing check in section 11 came back clean: the shapes handed to
+the GEMMs are right, and the *packing* that produces their inputs is the thing not yet verified.
+
+**Testable without the device.** The `capnb_flm` capture contains FLM's own weight BOs for
+Nanbeige, so the packed BO can be compared against them directly — a differential on data rather
+than on tokens.
+
+**Status of the reference: not yet usable.** It is a fourth answer, not a match, so it cannot serve
+as ground truth until its own packing agrees; what it has done is move the suspect from "the
+engine's per-layer composition" (vague) to a named function shared by every failing path
+(actionable).
