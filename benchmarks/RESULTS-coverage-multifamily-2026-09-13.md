@@ -4828,3 +4828,40 @@ correct, if slower, configuration today, as opposed to the "less wrong" values e
 (§100) are excluded; the remaining difference is the per-token/head arrangement. That is now checkable against
 a **known-good output** (1033) instead of a reference token alone — run both attentions in-process on the same
 staged inputs and diff.
+
+## 140. An observation, not a finding: odd GQA splits the two failing families exactly — and it is CONFOUNDED with qout, and `attn_omp` is clean
+
+**The split is real and clean.** Grouping every family by `NH / NKV`:
+
+| model | NH | NKV | GQA | status |
+|---|---|---|---|---|
+| Qwen3-0.6B, 1.7B | 16 | 8 | **2** | correct |
+| Qwen3-4B, 8B, VL-4B, Llama-3.1-8B | 32 | 8 | **4** | correct |
+| **Nanbeige** | 20 | 4 | **5** | **wrong** |
+| **Phi4-mini** | 24 | 8 | **3** | **wrong** |
+| Qwen3.5-4B (hybrid) | 16 | 4 | 4 | wrong, other cause |
+| Gemma3-1B | 4 | 1 | 4 | blocked (libdequant K-tile) |
+| Gemma3-4B, LFM2 | 8/32 | 4/8 | 2 / 4 | untested / hybrid |
+
+**Every working model has GQA in {2, 4}; the two unexplained non-hybrid failures are the two with ODD
+GQA.** That is a cleaner statement than `qout in {2048, 4096}` — but it is **not yet a finding**, for two
+reasons, and both are worth writing down rather than leaving implicit.
+
+**1. It is confounded.** `qout = NH * HD` is 2048 for the nh16 models and 4096 for the nh32 ones — so with
+`hd = 128`, "`qout` in {2048, 4096}" and "GQA in {2, 4}" **split exactly the same two models**. Nanbeige
+is 2560/5 and Phi4 is 3072/3; both are off both axes at once. With n = 2 the axes are **indistinguishable**,
+and no shipped family separates them: Gemma3-1B is the one model where they disagree (`qout` = 4*256 = 1024,
+which is **outside** the pair and would predict failure, while GQA = 4 is even and would predict success) —
+and Gemma3-1B is **blocked by the libdequant K-tile**, so it cannot be the test.
+
+**2. There is no mechanism.** I read `attn_omp` (the path these models actually take — §135) rather than
+inferring from the pattern: it computes `kvh = hh / GQA` with **integer division**, its `scores` scratch is
+**per-thread and fully rewritten for every head**, and the KV write side uses `hh / GQA` and `hh % GQA`. All
+of those are exact for GQA = 3 and GQA = 5. **There is no power-of-two assumption on the head ratio anywhere
+in that function.** So the parity split has no mechanism in this code, and I am recording it as an
+**observation with its confound stated** rather than as a lead.
+
+**The one thing the audit does buy** is a narrowing for this lane: Phi4's CPU attention **core is clean** —
+the mapping, the softmax, the `·V` reduction all check out for GQA = 3. So Phi4's wrongness is in **the data
+it is fed** (the Q/K/V and O GEMMs, the KV writes), not in the attention arithmetic. That is a smaller place
+to look than where this lane started.
