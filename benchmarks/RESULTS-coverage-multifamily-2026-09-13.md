@@ -3941,48 +3941,6 @@ token is worth checking before the next Nanbeige differential.
 read a fixture-shaped zero as a kernel defect. One sweep of the first token — cheap, and it names the
 variable — would have caught it immediately.
 
-## 90. The bf16 path is CONTEXT-FREE: its boot is a function of the LAST token alone (@256 and @1024 alike)
-
-§89 left the 1214 gap open. A positional differential (change one prompt token to 1000; native bf16 vs
-FLM-ref on the same prompt) settles it:
-
-| prompt | change | native bf16 | FLM-ref |
-|---|---|---|---|
-| t256 | none | 188 | 5938 |
-| t256 | token 0: 16 -> 220 | **188** | 13 |
-| t256 | token 200 -> 1000 | 188 | 5938 |
-| t256 | token 254 -> 1000 | 188 | 152470 |
-| t256 | last (255) -> 1000 | **123299** | 13 |
-| ids_1024 | none | 1214 | 1033 |
-| ids_1024 | token 0: 16 -> 220 | **1214** | 152373 |
-| ids_1024 | token 500 -> 1000 | **1214** | 152470 |
-| ids_1024 | last -> 1000 | **123299** | 992 |
-
-Two facts make this categorical:
-
-1. the native boot is unchanged by every position except the last (three repeats of the first-token pair:
-   188/188/188 and 188/188/188 — i.e. 16 and 220 first tokens give the SAME answer);
-2. **@256 and @1024 with the same last token give the same boot** (last -> 1000: 123299 at BOTH lengths).
-
-So the native answer is a function of the **last token alone** — independent of prompt length and of every
-other position. It is not an ELF-shape artifact: @256 uses the nh16 attention ELF (no nh20-256 exists) but
-@1024 uses the correct `attn_mha_1024_nh20_hd128.elf`, and BOTH are context-free. FLM, on the same prompts,
-responds to positions 0, 500, 254 and 255 — so the reference is doing context.
-
-That is the defect, and it is a **conditioning loss, not a magnitude or dims problem**: the bf16 path
-carries no cross-token information, i.e. the attention contributes nothing to the prediction (the captured
-ELF + host `bKv` staging behave as if the kernel reads no usable key/value context). The hidden states still
-evolve, so the FFN/residual path runs — but the boot is `f(embedding[last])`. This is §11's
-"attention-input staging" hypothesis, now pinned by a categorical probe rather than by inspection.
-
-**Next:** instrument the attention stage directly — whether `bf16mm_attn()` runs the NPU ELF or the host
-fallback, and whether the kernel reads `bKv` correctly for nh20 (region stride, `pi*512`, MAX_L). A
-per-position KV dump plus a two-prompt attention-output diff is the direct test.
-
-**Method note.** The probe that found this is one line of work — swap a prompt token and see whether the
-answer moves — and it would have found §88's non-defect immediately too. A kernel-output dump can only
-localise; a *perturbation* names the variable that controls the output.
-
 ## 90. Static audit for the same defect class: one more silent cap found, and fixed
 
 **Why it was worth searching.** §83/§84 established that a **silent truncation** cost this investigation
@@ -4036,3 +3994,45 @@ found the zeros were a **fixture artifact — token 16 has a zero embedding**. T
 recorded in §62 (`EMB0: 0 0 0 0 0 0 0 0`) and did not chase. Two agents, two checkpoints apart, meeting the
 same zero and one of them explaining it: **a zero that looks like a computation result should be checked
 against the fixture before it is called a defect.**
+
+## 92. The bf16 path is CONTEXT-FREE: its boot is a function of the LAST token alone (@256 and @1024 alike)
+
+§89 left the 1214 gap open. A positional differential (change one prompt token to 1000; native bf16 vs
+FLM-ref on the same prompt) settles it:
+
+| prompt | change | native bf16 | FLM-ref |
+|---|---|---|---|
+| t256 | none | 188 | 5938 |
+| t256 | token 0: 16 -> 220 | **188** | 13 |
+| t256 | token 200 -> 1000 | 188 | 5938 |
+| t256 | token 254 -> 1000 | 188 | 152470 |
+| t256 | last (255) -> 1000 | **123299** | 13 |
+| ids_1024 | none | 1214 | 1033 |
+| ids_1024 | token 0: 16 -> 220 | **1214** | 152373 |
+| ids_1024 | token 500 -> 1000 | **1214** | 152470 |
+| ids_1024 | last -> 1000 | **123299** | 992 |
+
+Two facts make this categorical:
+
+1. the native boot is unchanged by every position except the last (three repeats of the first-token pair:
+   188/188/188 and 188/188/188 — i.e. 16 and 220 first tokens give the SAME answer);
+2. **@256 and @1024 with the same last token give the same boot** (last -> 1000: 123299 at BOTH lengths).
+
+So the native answer is a function of the **last token alone** — independent of prompt length and of every
+other position. It is not an ELF-shape artifact: @256 uses the nh16 attention ELF (no nh20-256 exists) but
+@1024 uses the correct `attn_mha_1024_nh20_hd128.elf`, and BOTH are context-free. FLM, on the same prompts,
+responds to positions 0, 500, 254 and 255 — so the reference is doing context.
+
+That is the defect, and it is a **conditioning loss, not a magnitude or dims problem**: the bf16 path
+carries no cross-token information, i.e. the attention contributes nothing to the prediction (the captured
+ELF + host `bKv` staging behave as if the kernel reads no usable key/value context). The hidden states still
+evolve, so the FFN/residual path runs — but the boot is `f(embedding[last])`. This is §11's
+"attention-input staging" hypothesis, now pinned by a categorical probe rather than by inspection.
+
+**Next:** instrument the attention stage directly — whether `bf16mm_attn()` runs the NPU ELF or the host
+fallback, and whether the kernel reads `bKv` correctly for nh20 (region stride, `pi*512`, MAX_L). A
+per-position KV dump plus a two-prompt attention-output diff is the direct test.
+
+**Method note.** The probe that found this is one line of work — swap a prompt token and see whether the
+answer moves — and it would have found §88's non-defect immediately too. A kernel-output dump can only
+localise; a *perturbation* names the variable that controls the output.
