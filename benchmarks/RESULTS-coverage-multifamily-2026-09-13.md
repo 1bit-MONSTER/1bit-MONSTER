@@ -1606,3 +1606,43 @@ this session a capture has overruled reasoning**: the weight BO's arrangement (2
 
 **Remaining for the four families:** the activation (arg3), the KV, and **i5** — the norm *weights*,
 deterministic from the q4nx, so directly comparable the same way given a higher `CAP_BIG_MAX`.
+
+## 31. i5 measured: byte-identical to FLM — three per-layer inputs now verified
+
+Same technique as 26 and 30, with `CAP_BIG_MAX=8` so the arg5 pointer is actually dumped
+(`extsmall_002_00_5613b2539d50_1048576.bin`, pointer-matched). The engine writes
+`[input_layernorm][post_attention_layernorm]` at i5+0 — 5120 B each for Nanbeige's H=2560 — and:
+
+```
+FLM's i5 prefix (10240 B) == engine's  [input_layernorm][post_attn]  ->  True
+reversed order matches?                                              ->  False
+```
+
+**Byte-identical, in the right order.** i5 is cleared.
+
+### The tally of per-layer inputs
+
+| input | status |
+|---|---|
+| the weight BO (all 7 projections) | **byte-identical** (26) |
+| i5 — norm weights | **byte-identical** (31) |
+| i6 — cos/sin + q/k norm slots | **byte-matched** (30, after two of my own corrections) |
+| the generated per-ctx ELFs | proven correct (22, 23) |
+| the runlist machinery | proven correct (22, 23) |
+| the RoPE base | model-correct now, and not the differentiator (27) |
+| **the activation (arg3)** | **?** |
+| **the KV** | **?** |
+| **the final norm + lm_head** | **?** ← new |
+
+**Everything that comes from the model file is now byte-verified identical to what FLM feeds its own
+ELF.** What remains is the inputs that carry **data** rather than weights: the activation, the KV, and
+— newly added to the list — the **final norm and the lm-head path**.
+
+**Why the last one is worth naming now.** `bo_fnorm_` (the final-norm weights) and the lm-head ELF are
+written **once per model**, not per layer. The per-layer sweep above cannot see them, and a single
+error there would corrupt **every** token — which is exactly the symptom: Nanbeige's runlist prefill
+returns a stable, wrong token rather than noise, and it does so at @16 as well as @256.
+
+That also reframes what to compare next: the per-layer inputs are exhausted, so the next capture should
+target the **per-model** BOs (`bo_fnorm_`, `bo_logits_`, the lm-head weight BO) rather than another
+layer.
