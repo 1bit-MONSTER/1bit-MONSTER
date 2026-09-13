@@ -2101,3 +2101,35 @@ explicit CPU fallback.
 So LFM2's true blocker list is **two** on the bf16mm route, **one** on the runlist route, and the
 reference for the third — every entry named, and two of them removed this checkpoint by reading a log
 instead of repeating an assumption.
+
+## 43. LFM2's hd64 attention now has a kernel — the shape-aware slot proven end-to-end
+
+Section 42's log named the fourth blocker: LFM2 is **nh32/hd64**, every shipped attention ELF is
+**hd128**, so the shape gate correctly refused and `run_attn` returned false — LFM2's attention had **no
+valid kernel at all**.
+
+Captured FLM's own LFM2 ELFs with the interposer (23 loads) and placed the largest — 182,192 B, sized
+like an attention kernel — as `attn_mha_256_nh32_hd64.elf`:
+
+```
+Bf16Mm: attention ELF loaded (182192 B): .../attn_mha_256_nh32_hd64.elf
+[0] boot=28876 (15ms)
+```
+
+**The shape-aware ≤256 slot from `321983c67` picked it up and used it.** That is the first time LFM2's
+attention has had *any* kernel in this engine — previously the gate refused it deliberately — and the
+output changed as a result (5242 -> 28876), so the kernel is **active** rather than bypassed.
+
+**Caveat, and it is section 35's lesson.** The ELF's **role is inferred from its size**, not measured. A
+differential capture at npt=2 vs npt=64 shows **every one of LFM2's ELFs is fixed** — no
+context-dependence at all, consistent with FLM's fixed-kernel design — so the differential that would
+normally identify a context-dependent attention kernel finds nothing here. The **hook** is proven; the
+**artifact** is a candidate.
+
+**What that establishes.** A correct LFM2 attention ELF is now a **drop-in**: the shape-aware naming and
+selection are proven end-to-end on a **third** architecture (hd64, after Qwen3's hd128 and the nh20/nh24
+cases), and the mechanism needs no further work. The boot is still not 708 because the **conv compute is
+absent** — conv layers still run through the attention path.
+
+Committed the same way as the Nanbeige attention ELF (`071ed869e`): with its role unverified, as a
+**valid kernel for the family** rather than as a fix.
