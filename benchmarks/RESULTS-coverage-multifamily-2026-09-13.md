@@ -3364,3 +3364,43 @@ proved the per-ctx layer ELFs exact (§56). Compile the candidate shapes (cols �
 and compare each **whole stream** against the shipped `insts_i8_QKV_nanbeige4_1_3b.txt`. The one that
 matches byte-for-byte identifies the shipped parameters, and then the shape question is settled by
 measurement rather than by inference from a build script.
+
+## 75. RESOLVED: the shipped Nanbeige i8 xclbins are dimensioned wrongly — rebuilding at the model's own dims eliminates the nondeterminism (A/B proven)
+
+**The test.** I built the five i8 xclbins from the **in-repo generator**, at the dims **the engine actually
+uses** — read from Nanbeige's own `config.json` (`QKV 2560x3584`, `O 2560x2560`, `G 2560x10752`,
+`U 2560x10752`, `D 10752x2560`), all at `cols=4` (the only column count valid for every one of Nanbeige's
+shapes), using the **matched** toolchain pair §74 found.
+
+**Result — a clean A/B:**
+
+| xclbins installed | Nanbeige boot, 3 runs | Qwen3-0.6B control |
+|---|---|---|
+| **shipped** | **151402 / 164829 / 272** | 1614 |
+| **rebuilt at the runtime dims** | **151 / 151 / 151** | 1614 |
+
+And restoring the shipped set brings the nondeterminism back. **The xclbins are the cause.** This is the
+first time in this whole hunt that a change removed the symptom and a controlled reversal restored it.
+
+**§72's substance is CONFIRMED; §74's "plausible-to-be-false" is WRONG.** The build list's literal entries
+were invalid — its own generator rejects them (§73) — but its **intent was right**: Nanbeige's shipped i8
+xclbins were built for shapes the model does not have. §74 reasoned from the constraint that 3584 is
+"natural and valid", which is true, **but validity is not the same as matching the runtime** — and that is
+the inference I got wrong.
+
+**The residual, stated plainly.** The i8 path is now deterministic but returns **151** where FLM's reference
+is **1033** — consistent with §71's independent finding that the i8 path **already disagrees for a working
+model** (0.6B: 220 on the i8 path vs 1614 on the runlist, and 1614 is the reference). So the i8 path has its
+own accuracy gap, and it is a secondary path the goal's six models do not use. One further observation:
+151 is returned at **both** the 256- and 1024-token prompts, which suggests the i8 path's boot token does
+not depend on the prompt length at all — more evidence for that same gap, and worth stating rather than
+burying.
+
+**What is landed**: the five rebuilt xclbins and instruction streams, with this A/B evidence. Controls
+unchanged and measured on untouched artifacts: 0.6B runlist **1614**, 0.6B i8 **220**.
+
+**The honest limit of the attribution.** The rebuild changed **both** the dims **and** the generator version
+(v26 here; the shipped ones are v27-family per §74's size sweep) — so "the dimensioned shapes were wrong" is
+proven **functionally**, while "the dims alone were wrong" is not separated from the version. The
+like-for-like control is available: v26 at **cols=2**, where `N=3840` *is* valid (unlike cols=4). That is
+the named next refinement, and the main result does not depend on it.
