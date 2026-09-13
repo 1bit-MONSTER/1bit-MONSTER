@@ -63,6 +63,11 @@ static void sess_build_cfg(int H, int NC, int NH, int NKV, int IM, int NV) {
     g_sess_cfg.max_seq_len = 4096;
     // KV region stride matches the layer ELFs' MAX_L=8192 bake: 8MB per
     // region = 8192 tokens x 1024 B. (The 128MB BO holds 4x that headroom.)
+    // UNIT: REGION STRIDE, 8 MB = 4,194,304 u16. Four of these are written at stride 8 MB,
+    // so the layout occupies [0,8,16,24] MB = exactly [0, 32 MB) — which is exactly the sync
+    // length in runtime_layer.cpp's write_kv (33554432). The 128 MB BO allocation is a
+    // capacity ceiling on top of that, NOT what the write covers. Three quantities, three
+    // units, and two of them mention "32 MB"/"128 MB" in the same file; keep them distinct.
     g_sess_kv_region_u16 = (int)(8u << 20) / 2;
 }
 

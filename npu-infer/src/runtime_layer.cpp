@@ -676,6 +676,12 @@ bool RuntimeLayerEngine::write_kv(int layer, int token_begin, int n_tokens,
                          + (size_t)token_begin * token_u16;
         memcpy(d, src, (size_t)n_tokens * token_u16 * sizeof(uint16_t));
     }
+    // UNIT: SYNC LENGTH = 32 MB = 4 regions x 8 MB region stride. Deliberately EQUAL to the
+    // layout the loop above occupies — regions land at [0,8,16,24] MB, so every byte the
+    // memcpy touched is inside this window and nothing is left un-synced on the host. The
+    // 128 MB BO this syncs into (common.h: npu_kv_cache_bo_size) is a capacity CEILING, not
+    // what is written. Over-long contexts are REFUSED by the guard above, not truncated, so
+    // there is no silent partial-KV path at any depth.
     kv_bos_[layer]->sync(XCL_BO_SYNC_BO_TO_DEVICE, 33554432, 0);
     return true;
 }

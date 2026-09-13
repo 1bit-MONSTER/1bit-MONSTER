@@ -881,3 +881,43 @@ from somewhere else.
 **Standing decode result: native beats FLM by 18-24% on a single harness, for all five measurable
 sizes** (0.6B 1.23x, 1.7B 1.24x, 4B 1.22x, VL-4B 1.22x, 8B 1.18x), with Llama still blocked by
 the missing per-ctx ELF generator rather than by a result.
+
+### 17.3 The 32 MB residual is DISSOLVED — it is the layout size, and deliberately equal to the sync
+
+Third verification from the relay, and it retires the last piece of the KV confusion. The numbers,
+each in its own unit:
+
+```
+common.h:32        134217728 B   UNIT: allocation      — a capacity CEILING
+npu_runlist_bridge.cpp:66   8 MB = 4,194,304 u16   UNIT: REGION STRIDE
+runtime_layer.cpp:680       33554432 B = 32 MB     UNIT: SYNC LENGTH
+```
+
+Four regions at an 8 MB stride occupy `[0, 8, 16, 24] MB` — i.e. exactly `[0, 32 MB)`. The sync
+writes exactly 32 MB from offset 0. **So every byte the memcpy touched is inside the synced
+window; nothing is left behind on the host.** The 128 MB BO is bigger than the *layout* needs,
+not bigger than the sync covers — which is the opposite of what this section said two revisions
+ago, and the residual is now retired rather than restated.
+
+Two supporting facts I verified in the code rather than accepting:
+- **over-long contexts are refused, not truncated**: `write_kv`'s guard rejects a token range whose
+  end exceeds the region capacity and returns false with "write_kv: token range %d..%d exceeds
+  region capacity". The layout caps at 8192 tokens and *says so* — there is no silent partial-KV
+  path at any depth.
+- **no caller can produce a partial write today**: the only caller pass ing a stride is
+  `npu_runlist_bridge`, at 8 MB; the function's own default (`token_u16 * 8192` = 512 x 8192 =
+  4,194,304 u16) computes the same 8 MB. It would only break if some future caller passed a
+  stride > 8 MB, at which point regions 1..3 would land past the 32 MB window.
+
+**The meta-finding is the useful part, and it is theirs:** the KV sizes in this code are expressed
+in **three different units** (allocation, region stride, sync length), and two of them are
+labelled "32 MB" and "128 MB" in the same file. That is what produced three successive readings of
+the same number — as the allocation, then as a capacity, then as a truncation. A one-line unit
+comment per constant prevents all of it, so all three now carry one:
+
+- `common.h` — "UNIT: allocation, a capacity CEILING ... do not read it as a token count";
+- `npu_runlist_bridge.cpp:66` — "UNIT: REGION STRIDE, 8 MB ... three quantities, three units";
+- `runtime_layer.cpp:680` — "UNIT: SYNC LENGTH = 32 MB = 4 regions x 8 MB ... deliberately EQUAL
+  to the layout the loop occupies".
+
+That is the durable fix, as opposed to the three prose corrections that preceded it.
