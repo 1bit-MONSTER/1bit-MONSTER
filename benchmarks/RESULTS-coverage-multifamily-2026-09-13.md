@@ -6282,3 +6282,41 @@ cannot produce a correct value tells you the tail is **read**, and nothing about
 
 In every case the correction was not a better theory but a **smaller, more specific instrument**. The next one is
 the other lane's device width/extent print, and it is the only thing that can settle the causal question.
+
+## 132. The bf16 host defect is STRUCTURAL, not scattered: every single-block length (npt <= 256, npt > 1) is wrong
+
+§127 recorded the wrong lengths as "scattered" and attributed the pattern to call order. Extending the sweep
+**down**, all six of 2/4/8/16/32/48 are wrong as well (6/6):
+
+| len | native bf16, CPU attn | FLM-ref | |
+|---|---|---|---|
+| 2 | 18489 | 4489 | ✗ |
+| 4 | 16777 | 333 | ✗ |
+| 8 | 106288 | 152470 | ✗ |
+| 16 | 69167 | 147 | ✗ |
+| 32 | 43753 | 36780 | ✗ |
+| 48 | 30428 | 9844 | ✗ |
+
+So with §126's table the pattern is not scattered at all:
+
+```
+nblk = 1   (npt = 2..256, and 1):  ALL WRONG except npt = 1      (11 lengths tested)
+nblk >= 2  (npt = 257..1024):      mixed — wrong at 257, 258, 448; right at 320, 384, 511, 512, 768, 1024
+```
+
+**Two effects, and only the second is the C-cache tail.**
+
+1. **A single-block bug**: for `npt > 1` and `npt <= 256`, the bf16 host path is **always** wrong. That is
+   structural, not call-order, and it is the larger half of what §126 called "defect (2)" — eleven lengths,
+   every one tested.
+2. **The C-cache tail on top**: the `nblk >= 2` exceptions (257, 258, 448) are the scattered part, which is where
+   the call-order explanation genuinely applies.
+
+**And `npt = 1` escaping is itself informative**: it is the one length where the attention is a pure passthrough
+(§125), so whatever the single-block path gets wrong is downstream of attention — or in how a one- or few-row
+block is staged. That is a bounded place to look, and it does **not** need the cache controlled.
+
+**Correction to §127's framing.** I wrote "not a block boundary". For defect (2) as a whole that was wrong: the
+**primary** boundary *is* a block boundary (`nblk = 1` vs `nblk >= 2`), and the scatter is a second, smaller
+effect layered on top. The lesson is the one this item keeps relearning — the first sweep stopped at 64 and so it
+saw the secondary effect without the primary one.
