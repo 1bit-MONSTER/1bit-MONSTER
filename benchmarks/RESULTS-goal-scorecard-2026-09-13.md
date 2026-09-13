@@ -77,16 +77,22 @@ quantified rather than open.
 **Working (6):** Qwen3-0.6B / 1.7B / 4B / 8B, Qwen3-VL-4B, Llama-3.1-8B. All beat FLM on
 prefill and TTFT, and match/beat on decode.
 
-**Not working (6), with the current best explanation:**
+**Outside the goal's supported set (6 families).** One of them now works on its **default** path and merely lacks
+the bf16 route; the rest are characterised, blocked on a dependency, or a family implementation not yet built:
 
-| family | shape | symptom | explanation |
+| family | shape | state | explanation |
 |---|---|---|---|
-| Nanbeige4.1-3B | nh20/hd128, qout 2560 | **default i8 path now matches FLM EXACTLY: 1033 @1024, 5938 @256, deterministic** (§84). Boot 1214 remains on the *bf16* path only | §84 below |
-| **Phi4-mini** | nh24/hd128, qout 3072 | **has the engine-wide C-cache under-write** (zeroing its GEMM caches moves its boot at 6/6 lengths). **Whether it has anything else is OPEN** — the test is a real fix or an extent check, not CZERO, which cannot make any length exact by construction | mine |
-| Gemma3-1B | nh4/hd256, qout 1024 | fails | same |
+| Nanbeige4.1-3B | nh20/hd128, qout 2560 | **default i8 path matches FLM EXACTLY: 1033 @1024 and 5938 @256** (token-16-leading fixture), deterministic. **The bf16 arm is 0 when attention falls to the nh20 NPU defect, and correct-looking only with `NPU_ATTN_CPU=1`** — an earlier "boot 1214" reading of this row is **retracted** | §84, §147 |
+| **Phi4-mini** | nh24/hd128, qout 3072 | **characterized, not open**: the bf16 path is **first-token-BLIND over [16, 64]** (8/8 tokens → 220) and **partly blind at 128** (5/8, four distinct values), with band edges **in (64, 128] and (144, 160]**. Attention is **host at every length** (no nh24 ELF exists), banner-asserted | §375, §395 |
+| Gemma3-1B | nh4/hd256, qout 1024 | fails | dependency boundary — FLM cannot load it either |
 | Qwen3.5-4B | nh16/hd256 | boot 0 | **hybrid** (`GateDeltaNet_prefill.xclbin` + `conv.xclbin` + vision) — a family implementation, like LFM2 |
-| LFM2-1.2B / 2.6B | nh32/hd64 | runs, boot 63260 (wrong) | **hybrid** short-conv. Reference is now a full generation, not a token: `708, 1735, 538, 730, 525, 730, 1443` at **63 tok/s** on the engine's own loop. Three route blockers named — bf16mm lacks the GEMM shapes and the conv compute, the runlist needs a sequence class FLM does not ship, and FLM's fixed kernels *are* the baseline |
+| LFM2-1.2B / 2.6B | nh32/hd64 | runs; **native boot moved 63260 → 5242** once the short-conv block was placed **first** in the layer BO (conv layers now match FLM's **8,192 of 8,192 tiles in order**, was 6,144) | **hybrid** short-conv. Reference is a full generation, not a token: `708, 1735, 538, 730, 525, 730, 1443` at **63 tok/s**. Remaining blocker: the **conv compute contract** — the loader reads `shortconv.conv.weight`, the packer never places it, and the taps appear in **no** captured FLM BO in any of four encodings |
 | Gemma3-4B | hd256 | — | untested native |
+
+**Two claims that stood in this table earlier are withdrawn, and the rows now say so rather than carrying them:**
+**Phi4's "engine-wide C-cache under-write"** — retracted; the sentinel showed the write extent **full** (`changed == total`
+on all 128 calls) and the movement was an **unsynced host-mapped BO**, i.e. an instrument effect. And **Nanbeige's
+"boot 1214 on the bf16 path"** — that number belongs to the arm where attention falls to the broken nh20 kernel.
 
 **The three prefill paths, and which one each family takes** (this matters for every number above):
 
