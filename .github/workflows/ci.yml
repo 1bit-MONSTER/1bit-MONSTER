@@ -272,6 +272,20 @@ jobs:
             echo "⚠️  tests/download_and_run.sh not yet written for non-HW runners"
           fi
 
+  # Host-only self-checks (Testing/run_all.sh): plain g++, no ROCm, no NPU, no
+  # model fixtures — so they run on any runner. Nothing was running them, and
+  # Testing/router_selfcheck.cpp had been failing on main since the HRX-first
+  # routing landed (2026-08-29) without anyone noticing. Same shape as ppl-gate:
+  # a cheap CPU-only gate that catches a class of regression nothing else does.
+  self-checks:
+    name: Self-checks (Testing/run_all.sh)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - name: Run the self-check suite
+        run: bash Testing/run_all.sh
+
   # PPL format gate (issue #1242): the 30-second quality gate that caught the
   # TQ2 catastrophe (ppl 3.7e8 vs Q4NX 62 vs fp16 21.8). Rebuilds the converter
   # + harness with plain g++ (CPU-only, no ROCm needed), converts a fresh Q8_0
