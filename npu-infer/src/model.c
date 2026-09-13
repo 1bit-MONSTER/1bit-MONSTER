@@ -242,9 +242,14 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
         return 0;
     LayerWeights* lw = &mw->layers[layer_idx];
 
-    const int G_h = config->hidden_size / 128;                                   // q/k/v/up/gate
-    const int G_o = (config->num_attention_heads * config->head_dim) / 128;      // o_proj
-    const int G_d = config->intermediate_size / 128;                             // down_proj
+    // Group counts are the number of 128-wide K-groups, i.e. ceil(K/128). Integer division
+    // was used here, which silently TRUNCATES when the contraction dim is not a multiple of
+    // 128 -- Gemma3-1B has IM=24864 and 24864 % 128 == 32, so G_d came out 194 instead of 195
+    // and the last group was dropped. For every model whose dims are already aligned this is
+    // exactly the old value, so the change is a no-op for all of them.
+    const int G_h = (config->hidden_size + 127) / 128;                            // q/k/v/up/gate
+    const int G_o = (config->num_attention_heads * config->head_dim + 127) / 128; // o_proj
+    const int G_d = (config->intermediate_size + 127) / 128;                      // down_proj
     const int CH  = config->hidden_size / 16;                                    // 8 * G_h
 
     const int q_t  = (lw->q_proj_weight.ndim == 2)    ? (int)lw->q_proj_weight.shape[0]    : 0;

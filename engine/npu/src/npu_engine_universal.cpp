@@ -723,6 +723,31 @@ int main(int argc,char**argv){
     fprintf(stderr,"=== NPU Engine Universal — %s ===\n",model_tag.c_str());
     fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d rope_theta=%.0f\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split,cfg.rope_theta);
 
+    // ── TILE-ALIGNMENT GATE ──────────────────────────────────────────
+    // dequant_q4nx.cpp tiles at TILE_COLS=256 and computes n_tile_cols = in_features / 256
+    // with INTEGER division, so a contraction dim that is not a multiple of 256 silently
+    // truncates the tile count and the dequantizer walks out of bounds -- observed as a
+    // SIGSEGV in dequant_i8_to_float_ex for Gemma3-1B, whose H=1152 (1152/256=4.5 -> 4) and
+    // IM=24864 (97.125 -> 97) both violate it. Every model that works today is 256-aligned,
+    // so this gate is a no-op for all of them and turns an unexplained crash into a named
+    // limitation for the ones that are not. Fixing the dequant to handle a partial tile is
+    // the real fix; this makes the failure honest in the meantime.
+    {
+        const int q = NH * HD;
+        const char* bad = nullptr;
+        if (H  % 256) bad = "hidden_size";
+        else if (IM % 256) bad = "intermediate_size";
+        else if (q % 256) bad = "num_attention_heads*head_dim";
+        if (bad) {
+            fprintf(stderr,
+                "UNSUPPORTED: %s is not a multiple of 256 (the dequant tile width).\n"
+                "  H=%d IM=%d NH*HD=%d -- dequant_q4nx.cpp computes n_tile_cols with integer\n"
+                "  division, so this would truncate and read out of bounds rather than fail.\n"
+                "  Refusing here instead of crashing.\n", bad, H, IM, q);
+            return 1;
+        }
+    }
+
     // ===== NPU_FLM_PREFILL=1: drive FLM's real qwen3_npu::prefill for the
     // prefill/TTFT measurement (architectural change — FLM's own prefill is
     // byte-correct + fast; the hand-rolled bf16 reimplementation diverges at
