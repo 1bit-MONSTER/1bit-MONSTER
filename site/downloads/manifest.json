@@ -3,20 +3,20 @@
   "files": [
     {
       "name": "1bit-monster_2026.08.04_amd64.deb",
-      "size": 14567188,
-      "sha256": "9b7e3e31f8f5aa309270f2ebe4e5fa4b4afff330404546f4b45bfac8349853e7",
+      "size": 15307170,
+      "sha256": "a0e0c2afdbddf6420ae2e3f002078859eb41d72869ec1390ec62ff3e2da7bd49",
       "url": "downloads/1bit-monster_2026.08.04_amd64.deb"
     },
     {
       "name": "1bit-monster-2026.08.04-x86_64.AppImage",
-      "size": 21072376,
-      "sha256": "6c372ed6aca1310697f6063f30aa246ed3a25b0d0b66d7b451a1bcc0c561b187",
+      "size": 21617144,
+      "sha256": "8efd305192ec61f8df0e316dc709f873b2d446fe229588a4f9482eca78451845",
       "url": "downloads/1bit-monster-2026.08.04-x86_64.AppImage"
     },
     {
       "name": "1bit-monster-2026.08.04-linux-amd64.tar.xz",
-      "size": 12705568,
-      "sha256": "2c5fcabf6b245c64265fde78e1e2e350d9efd25d4ee4dff686b802c1730d6dc2",
+      "size": 13350220,
+      "sha256": "bf28fd1c40a2fa451a7af4759557a30bb6b049cf3dfc72e336993c48e75bfca0",
       "url": "downloads/1bit-monster-2026.08.04-linux-amd64.tar.xz"
     }
   ]
