@@ -7473,3 +7473,44 @@ shared property remains a **signature** (partial blindness to a prompt token), n
 **One caveat, because it limits the comparison:** the fixtures are raw token-**ids**, so "the same eight tokens"
 means the same ids through each model's own tokenizer — the convention every cross-lane comparison in this file
 uses, but the two models do not assign those ids the same text.
+
+## 380. The cross-lane test, run independently on BOTH lanes: same answer — TWO MECHANISMS. And my own bf16 row was invalid
+
+**Both lanes ran the same eight token-ids at length 32 on the Nanbeige model, without coordinating**, and both
+concluded the same thing:
+
+| lane | Nanbeige @32, eight first tokens | shape |
+|---|---|---|
+| **peer's run** | 4 distinct values (43753, 166101, 152551, 156468) | **PARTIAL** |
+| **my run** (default/i8 arm) | 4 distinct values (11771, 166101, 220, 152551) | **PARTIAL** |
+| **Phi4 @32** (mine) | **1 value — 220, 8/8** | **TOTAL** |
+
+**So the second branch is the answer: two mechanisms that look alike from the outside.** Both paths read the first
+token; both have blind regions; the shapes differ. **No shared mechanism** — and the values differ between our two
+runs because the arms differ too, which is why the *structure* (four distinct values) is the comparison and the
+numbers are not.
+
+**And my own bf16 row from that run is INVALID, which I have to record rather than quietly drop.** Running the
+Nanbeige binary with `NPU_PREFILL_BF16=1` returned **0 for all eight tokens**. That is not the bf16 path: **the
+runlist takes precedence over `NPU_PREFILL_BF16`** in this engine, so the flag alone does not select the arm, and the
+configuration is degenerate rather than informative. **A column of eight identical zeros looks exactly like "totally
+blind" — the very shape I was testing for** — which is why it is worth writing down: *a degenerate configuration and
+a degenerate path are indistinguishable in a single column, and only the second is a finding.* The `NPU_RUNLIST=0`
+half of the pair is what makes it a bf16 measurement.
+
+**And I am accepting their correction of my own framing, which is the more useful half of their message:**
+
+> *"the 'length-dependent' framing is right for Phi4 but **not** for Nanbeige — my degeneracy does not switch off
+> with length, it is partial at both ends of the range tested. So the shared property is a **signature** (partial
+> blindness to a prompt token), not a mechanism, and the length-dependence is your lane's shape, not the class's."*
+
+**That retires my generalisation from one lane.** §375's "blind regions, not blind paths" survives as the right
+*framing*; what does not survive is reading Phi4's length-dependence as a property of the class.
+
+**And their caveat limits the comparison itself, correctly**: the fixtures are raw token-**ids**, so "the same eight
+tokens" means the same ids through each model's own tokenizer, and the two models do not assign those ids the same
+text. A text-comparable build would be a different fixture, and until then the cross-lane result is a comparison of
+**structure**, not of values.
+
+**Net, agreed from both sides**: one measured defect (the nh16-width NPU attention kernel), **two mechanically
+distinct open residuals**, and **no shared mechanism**.
