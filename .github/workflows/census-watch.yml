@@ -128,13 +128,22 @@ jobs:
             echo "watch exited 1 but the log carries no class lines — not filing"
             exit 0
           fi
-          gh label create census-watch 2>/dev/null || true
-          EXISTING=$(gh issue list --label census-watch --state open --json number --jq 'length')
-          if [ "$EXISTING" -gt 0 ]; then
-            echo "census-watch issue already open — skipping"
+          # The breach set: only the classes that actually made the watcher exit 1.
+          # UNVERIFIABLE rows are deliberately excluded — they are retried next run
+          # and are not coverage breaches, so counting them would churn the set
+          # daily and defeat the delta check below.
+          CLASSES="$(grep -E '^ +!! (SIGNIFICANT|UNCOVERED) ' /tmp/census-watch.log \
+            | sed -E 's/^ +!! (SIGNIFICANT|UNCOVERED) ([^:]+):.*/\2/' | sort -u | paste -sd, -)"
+          if [ -z "$CLASSES" ]; then
+            echo "no SIGNIFICANT/UNCOVERED class lines parsed — not filing"
             exit 0
           fi
+          gh label create census-watch 2>/dev/null || true
           {
+            # Machine-readable breach set, written into the body AND into every
+            # update comment below, so a later run can tell "same classes, already
+            # reported" from "the set moved" without re-deriving it from prose.
+            echo "<!-- census-classes: ${CLASSES} -->"
             echo "## Census alert"
             echo ""
             echo "The daily new-model watcher found architecture classes the engine registry does not map:"
@@ -161,6 +170,46 @@ jobs:
             fi
             echo "Report: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } > /tmp/census_issue.md
+          # An open issue used to mean "dedupe and exit", which silently dropped
+          # every finding that arrived while it stayed open. The 2026-09-13 run is
+          # the worked example: it found three classes the open issue did not name
+          # (`fidel`, `moonfrost`, `vapor`) plus the standing `deepseekv41`, and the
+          # only record of the new three was that run's log — the issue's own report
+          # link still pointed at the run that filed it, days earlier.
+          # Dedupe the CLASS SET instead of the run: an unchanged set stays silent,
+          # a changed one posts an update against the open issue.
+          EXISTING=$(gh issue list --label census-watch --state open --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            # Newest marker wins: the body carries the first one, later comments
+            # carry the newer ones, and gh returns comments oldest-first.
+            LAST="$(gh issue view "$EXISTING" --json body,comments \
+              --jq '[.body] + [.comments[].body] | .[]' \
+              | grep -oE '<!-- census-classes: [^>]*-->' | tail -1 \
+              | sed -E 's/.*census-classes: (.*) -->/\1/')"
+            if [ "$LAST" = "$CLASSES" ]; then
+              echo "issue #$EXISTING already reports this class set (${CLASSES}) — nothing new"
+              exit 0
+            fi
+            NEW_LIST="$(printf '%s\n' "$CLASSES" | tr ',' '\n' | sed '/^$/d' | sort -u)"
+            OLD_LIST="$(printf '%s\n' "$LAST" | tr ',' '\n' | sed '/^$/d' | sort -u)"
+            ADDED="$(comm -13 <(printf '%s\n' "$OLD_LIST") <(printf '%s\n' "$NEW_LIST") | paste -sd, -)"
+            GONE="$(comm -23 <(printf '%s\n' "$OLD_LIST") <(printf '%s\n' "$NEW_LIST") | paste -sd, -)"
+            {
+              echo "### Update $(date -u +%F) — the class set moved"
+              echo ""
+              echo "Posted as a comment because issue #${EXISTING} is still open: the alert"
+              echo "dedupes per class set now, not per run, so a finding that arrives while"
+              echo "an issue is open is no longer lost."
+              echo ""
+              echo "- newly reported: ${ADDED:-none}"
+              echo "- no longer reported: ${GONE:-none}"
+              echo ""
+              cat /tmp/census_issue.md
+            } > /tmp/census_comment.md
+            gh issue comment "$EXISTING" --body-file /tmp/census_comment.md
+            echo "updated issue #$EXISTING (new: ${ADDED:-none}; gone: ${GONE:-none})"
+            exit 0
+          fi
           gh issue create \
             --title "census: unmapped architecture class(es) in the daily HF sweep" \
             --label census-watch \
