@@ -299,13 +299,22 @@ as the per-family attention ELF hook (26850018a / 321983c67) — a tool and a fi
 Section 5's table is still accurate, but the *reasons* are much sharper now than when it was written,
 because the investigation moved from inspection to byte-level controls. Final state:
 
-**One family has a PROVEN root cause, fixed:** Gemma3-1B's tile reorder needs an **even** group count and
-its `H = 1152` gives `G_h = 1152/128 = 9`, which is odd — the `o -> i` map was not a permutation, so
-tiles were duplicated and dropped silently. `S = ceil(G/2)` fixes it and is a no-op for every even G
-(verified: Qwen3-0.6B 25, Qwen3-4B 220, Llama 220 — all unchanged). Gemma3-1B also has a **second**,
-different defect: `IM = 24864` is not a multiple of 128, so `G_d` truncated, and `H = 1152` is not a
-multiple of the dequant's 256-wide tile — which is why it **segfaulted** until the engine was made to
-refuse such a model with a named reason instead of crashing. Both are recorded; neither is fully fixed.
+**One family has four PROVEN defects, three of them fixed:** Gemma3-1B.
+
+1. its tile reorder needs an **even** group count and `H = 1152` gives `G_h = 9`, which is odd, so the
+   `o -> i` map was not a permutation and tiles were duplicated and dropped silently — **fixed** by
+   `S = ceil(G/2)`, verified a no-op for every even G (Qwen3-0.6B 25, Qwen3-4B 220, Llama 220);
+2. the dequant hardcoded a **256-wide tile** while this bundle's rows are 1280 B, i.e. **64 columns** —
+   **fixed** by deriving the width from the row (`row_bytes/20`), verified **zero-regression across all 20
+   bundles** (17 of 18 derive exactly 256);
+3. the engine's **derived `IM`** was 24,864 where the mlp geometry says **6,912** — **fixed** by the
+   geometry-aware derivation, verified by instrumenting it (`g_tr=3888 g_bpt=1280 g_cpt=64 A=18 -> 6912`);
+4. the dims parse itself is **correct** — and an earlier revision of this file "corrected" it using a
+   manifest that carries no dims at all. That correction was wrong and is retracted.
+
+What remains is **not the engine's to fix**: the load path calls FLM's `libdequant.so`, which has a K-tile
+compiled in, so Gemma3-1B cannot be loaded — and **FLM cannot load it either** (`Failed to parse model
+config`). That makes it a dependency boundary rather than a defect of ours.
 
 **The other three have no wrong value left to find.** Every input the host supplies to the per-ctx ELF is
 now compared byte-for-byte against FLM's own, captured under the interposer and **pointer-matched**:
