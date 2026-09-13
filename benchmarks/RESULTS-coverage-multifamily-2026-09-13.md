@@ -8119,3 +8119,40 @@ token is fine and the value belongs to another length — so **no scan of the in
 **And every number in the clean pair has now been produced at least twice, by different people, on devices neither
 was holding for the other** — three independent quiet passes (two theirs, one mine), banner-asserted and
 fixture-clean: **Phi4 8/8 -> 220 TOTAL, Nanbeige three groups PARTIAL.**
+
+## 440. The LFM2 conv blocker, narrowed device-free: the API is already known and identical to ours — the missing artifact is the instruction WORDS, which FLM generates in code
+
+**Read out of FLM's own `conv.xclbin` metadata.** The kernel is **`MLIR_AIE`** with arguments
+**`(opcode, instr, ninstr, bo0..bo4)`** — **five BOs** — and `instr` is a **host-supplied `char*`** bound to
+**SRAM**, so the kernel carries **no baked geometry** at all.
+
+**And the engine's own header documents the identical signature.** `engine/npu/src/npu_attn_ctx.h`:
+
+> `// Kernel signature (MLIR_AIE): (opcode, instr, ninstr, bo0..bo4)`
+
+with `std::vector<uint32_t> instr` and an `#embed` fallback described as *"instruction words baked into the
+binary."* **So the conv's API is not the unknown** — it is the same one the engine already builds and calls for
+attention. **What is missing is narrower than "the data path is unknown": it is the conv's instruction WORDS and
+the five BO layouts.**
+
+**And FLM does not ship those words as data.** The only non-structural payload in the xclbin — a 1351-byte unnamed
+section — **decodes as text**: the first words are `<?xml version=` , i.e. the kernel XML that `strings` already
+showed. **So the instruction stream is not in the xclbin**, which is consistent with the earlier finding that the
+conv transform lives **inside FLM's compiled loader**. The blocker is unchanged but now has a reason: **the unblock
+is a memory trace of FLM's BO write, or a debug-symbol build** — not a longer look at the xclbin.
+
+**Two inferences of mine that this check corrected, both worth keeping:**
+
+1. **I read "the 1.2B and 2.6B `conv.xclbin` are byte-identical (same md5) ⇒ the kernel is size-agnostic."** That
+   inference is **wrong, because the premise underneath it was wrong**: both models have the **same**
+   `hidden_size` (2048), the same heads (32/8/64) and the same `conv_L_cache` (3) — they differ only in
+   `num_hidden_layers` (16 vs 30) and `intermediate_size` (8192 vs 10752). **An identical conv kernel is exactly
+   what should be expected**, and it says nothing about agnosticism.
+2. **I expected the 1351-byte unnamed section to be the instruction payload** — an only-1.7%-short-of-a-word-multiple
+   size made it plausible. **It is XML.** Checking cost one decode; assuming would have produced a "found the
+   instruction stream" claim that a `strings` call refutes.
+
+**And the engine-side fact that makes this tractable**: there is **no conv compute path in the engine at all** —
+`shortconv` appears only in the loader and the offset helper (`npu_layer_shortconv_offsets`), plus a comment in
+`npu_engine_universal.cpp` about *"causal depthwise conv1d on the fused QKV (kernel 4)"*. So this is not a wiring
+bug to fix: it is a kernel call that has never been written, against an API that is already understood.
