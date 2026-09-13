@@ -5615,3 +5615,38 @@ lost several hours to a difference against a zero and to a maximum over partial 
 O(1), a peaked softmax), and the five-token test (§195) shows its output **varies with the input**, so it is
 not under-written or zeroed — its defect is a wrong value with full extent. That is a different instrument
 again, and saying which of the three classes a family is in is now cheap.
+
+## 215. The nh20 lane confirms §210 independently — and the EXTENT lesson turns out to apply to this lane's own evidence
+
+**Their own summary matches what §210 recorded, arrived at separately.** The NPU attention returns zero output
+with non-zero inputs (`max|bActQ| = 19.1`, `max|bKv| = 16.5`), and the sentinel test shows the kernel **does**
+write — it overwrites **4/5** of the output — but writes **zeros**, and only **2048 of 2560 dims wide**, so it
+**behaves as an nh16-width kernel**.
+
+**And their next experiment is the right discriminator**: change **only the BO sizes** and see whether the width
+follows the **BO** or the **ELF**. That separates §103's binding hypothesis from §122's wrong-width-kernel
+reading in one run, and it is the kind of test this stretch has consistently rewarded — hold everything, change
+one thing.
+
+**Their method rules also now carry both of this stretch's hard-won columns**: *record the clang count per run*
+(from my flag) and *record which attention path ran* (from their own earlier work). Those two lines would have
+saved most of the last several hours.
+
+**And the lesson from §210 lands on this lane's own evidence, which is the part worth acting on.** The rule was
+**print the EXTENT of what you are measuring**, because a half-written buffer **looks like a value** if all you
+report is a maximum or a first-eights sample over the part you read. Apply that to what I have:
+
+- §205 checked Phi4's **scale** (`h_data` O(1-7), `fin_v` O(1), a peaked softmax) — **and a scale check cannot
+  distinguish "correct value" from "half-written buffer"**;
+- §195's five-token variation shows the output **varies with the input** — which shows the input reaches the
+  output, **but a partially-written buffer would also vary**.
+
+So **"Phi4's defect is a wrong value with full extent" (§210) is asserted, not yet measured** — it rests on
+scale evidence that the other lane has just shown to be blind to exactly this failure mode. The check that
+would settle it is the same one they just invented: **does the output's width match `qout = 3072`, and are all
+of its columns live?** I do not have a hook that reports that for the bf16 path, and the engine's own
+`NPU_DBG` prints cover a scale, not an extent.
+
+**So the next instrument for this lane is a width/extent print, not another value comparison** — and the honest
+state of §210's conclusion is that it is a good hypothesis with the right shape and the wrong evidence behind
+it.
