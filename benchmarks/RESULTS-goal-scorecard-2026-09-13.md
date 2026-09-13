@@ -219,3 +219,33 @@ What is defensible and stays:
 Those are three separate facts. Comparing the two engines **on one harness** is the correct
 comparison and has not been done for decode — that is the experiment to run before any
 decode-speed claim about FLM is made.
+
+### 9.2 The correct comparison — one harness — and it holds: native beats FLM by 18-24%
+
+Section 9.1 said the right experiment is to measure BOTH engines with a single harness. Done:
+the same binary, same prompt, same token count, same timing loop, `NPU_RUNLIST=1` (native) against
+`NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1` (FLM's own `forward()` driven by the engine).
+
+| model | native | FLM, same harness | native / FLM |
+|---|---|---|---|
+| Qwen3-0.6B | 11.0 ms/tok (**91 tok/s**) | 13.5 ms/tok (74 tok/s) | **1.23x** |
+| Qwen3-1.7B | 22.0 (**46**) | 26.9 (37) | **1.24x** |
+| Qwen3-4B | 45.3 (**22**) | 55.0 (18) | **1.22x** |
+| Qwen3-8B | 78.6 (**13**) | 95.0 (11) | **1.18x** |
+
+So the decode side is genuinely ahead — **18-24%, consistently across sizes** — and now on a
+defensible basis, because the harness is identical and the only variable is the implementation.
+The withdrawn "+26-31%" was the same direction but measured against a different harness; the real
+figure is smaller and sound.
+
+Two caveats stated with it:
+- the FLM side here is FLM's *model execution* (its `forward()`), not FLM's own CLI harness, so
+  this is "same harness, FLM's compute" rather than "equal to `flm bench`";
+- the native tokens were verified against that same FLM forward (section 4), so the faster side
+  is also the verified one rather than a faster wrong answer.
+
+**Goal status, final form for this session:** all three metrics beat FLM for every model the
+engine supports — prefill +25% on-box and +71% over the published bar at the published 2K
+condition (section 3), TTFT ahead on all six (section 2), decode 18-24% on a single harness
+(section 9.2) — with decode correctness established to bf16 precision (section 4) and coverage
+limits documented with their best explanations (section 5).
