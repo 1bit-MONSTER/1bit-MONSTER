@@ -3509,3 +3509,43 @@ file (§76, first attempt), a broken per-model detector (§77), and now a mislab
 prompt in **128-row blocks** (`MD=128`), so the candidates are a loop that does not advance, an `npt` clamped
 to a single block, or the boot hidden-state being taken from a fixed position. All three are in our code and
 visible in the prefill path — no dependency is involved.
+
+## 79. RETRACTION: the i8 path DOES read the prompt — and my controls were under-powered
+
+**The clean measurement.** The i8 prefill's **normalised** cost (`ms/tok`, which divides by `npt`):
+
+| n | time | ms/tok |
+|---|---|---|
+| 32 | 768 ms | **24** |
+| 128 | 1001 ms | **8** |
+| 256 | 999 ms | **8** |
+| 1024 | 1013 ms | **8** |
+| 2048 | 1016 ms | **8** |
+
+The **total is flat at ~1000 ms for n >= 128**, so **the prefill loop is capped** — a real and useful
+finding. But a *capped* loop still reads the prompt up to the cap, and short prompts **do** give different
+tokens (15 at n=8/16/64/128, 12 at n=32/192). So §78's headline — "the i8 path **never reads the prompt**;
+its boot token is invariant" — is **not supported**. The 220 I saw three times at long lengths was a
+small-sample artifact.
+
+**And at a FIXED length the boot token varies across runs**: five runs at n=256 give **12, 12, 12, 15, 15**.
+So the i8 path is **nondeterministic for Qwen3-0.6B too**.
+
+**Which also weakens §71's control.** It reported "0.6B on the i8 path: `bC` identical **8/8**" — from **two
+runs**. Here the boot shows two distinct values in five runs, **in runs of repeats**, which is precisely the
+pattern that makes a two- or three-sample test look like determinism.
+
+**The honest restatement of what survives.** The **xclbin-dims result stands**: §75's A/B and §76's
+like-for-like each compared three runs against three with a **categorical separation** — identical `151`
+against three wildly different values — and that is a different kind of evidence from "it repeated". But
+**every "deterministic" claim in §71/§75/§78 is only as strong as its sample size**, and should be read that
+way.
+
+**The meta-lesson, which is the transferable part.** This failure mode is **intermittent with runs of
+repeats**: rare enough that two or three samples pass, common enough that five catch it. So "it is
+deterministic now" needs **either many samples or a categorical A/B** — and the categorical A/B is exactly
+why §76's conclusion survives while §71's and §78's do not.
+
+**The next measurements**: (1) re-run the i8 determinism control with **>= 10 samples** at two prompt
+lengths, to establish what the i8 path's determinism actually is; (2) find the prefill loop's **cap**, which
+is now a measured fact (~128) rather than an inference.
