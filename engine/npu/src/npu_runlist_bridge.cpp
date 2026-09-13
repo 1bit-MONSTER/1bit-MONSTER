@@ -262,14 +262,16 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
 static ModelWeights* g_bf16_mw = nullptr;
 static ModelConfig  g_bf16_cfg;
 
-extern "C" int npu_bf16_prefill_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
+extern "C" int npu_bf16_prefill_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV, int HD) {
     g_bf16_cfg = QWEN3_0_6B_CONFIG;
     g_bf16_cfg.hidden_size = H;
     g_bf16_cfg.num_layers = NC;
     g_bf16_cfg.num_attention_heads = NH;
     g_bf16_cfg.num_key_value_heads = NKV;
     g_bf16_cfg.intermediate_size = IM;
-    g_bf16_cfg.head_dim = 128;
+    // head_dim is NOT always 128 (LFM2 and Llama-3.2 use 64, Gemma3/Qwen3.5 use 256);
+    // taking it from the caller keeps qout = NH*HD correct for those families.
+    g_bf16_cfg.head_dim = (HD > 0) ? HD : 128;
     g_bf16_cfg.vocab_size = NV;
     g_bf16_cfg.max_position_embeddings = 40960;
     g_bf16_cfg.max_seq_len = 4096;
