@@ -71,7 +71,35 @@ must key on `(NH, HD)`, not `qout`.
   lose on prefill (`conv+other` host math).
 - **Not covered:** Qwen3.5, Nanbeige, Phi4, Gemma3 (all need per-shape captures).
 
-## 5. Repro
+## 5. Generic per-family capture found (2026-09-13)
+
+The family-locked `run_qwen3_prefill` driver is **not required** for capture: FLM's own
+binary works. LD_PRELOAD the interposer onto `flm` and the ELF ctor hook fires during
+model load + prefill.
+
+```
+mkdir -p ~/npu-build/capgemma3 && cd ~/npu-build/capgemma3
+python3 -c "import json;json.dump({'max_length':1024,'iterations':1,'input_text':open('/home/bcloud/1bit-MONSTER-goal/benchmarks/prompts/reclaimer.txt').read()},open('cfg.json','w'))"
+LD_PRELOAD=/home/bcloud/1bit-MONSTER-goal/npu-infer/tools/capture/cap_interposer.so \\
+  CAP_DIR=$PWD CAP_NO_SYNC=1 CAP_SKIP_BIG=1 \\
+  /opt/fastflowlm/bin/flm bench gemma3:1b -i cfg.json
+```
+
+Measured: **24+ ELFs captured** (`elf_0001_182432` … `elf_0024_100800`), 2.6 GB / 2653
+files. So any family FLM can `bench` can be captured without writing a driver.
+
+**Caveat:** the interposer's dumping is heavy enough that the `gemma3:1b` bench did
+**not complete** within a 900 s timeout (no CSV) — a full capture needs a longer
+timeout and ~3 GB per model, and the ELFs still have to be mapped to semantic roles
+(for Qwen3-0.6B the attention kernel is `elf_0012`; that index is **not** generic —
+gemma3-1b's `elf_0012` is 18 256 B, a layer kernel).
+
+**So the remaining multi-family work is not "write a capture driver"** — it is:
+(a) capture with a long timeout, (b) identify the attention ELF per model,
+(c) add an `(NH, HD)`-keyed selection, and (d) confirm the engine's host math is
+architecturally right for that family (norms / RoPE variant / sliding window / GeGLU).
+
+## 6. Repro
 
 ```
 cd /home/bcloud/1bit-MONSTER-goal
