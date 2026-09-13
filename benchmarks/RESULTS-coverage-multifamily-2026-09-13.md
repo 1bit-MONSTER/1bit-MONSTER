@@ -7091,3 +7091,37 @@ and they are testing **@384 (nblk=2, predicts agree)** and **@640 (nblk=3, predi
 prediction. On my lane the same idea fails: **@32/@64 are nblk=1 and give 220, while @192/@256 are ALSO nblk=1 on
 this path (the bf16 arm has no block walk) and give 85 and 6573.** So `nblk` does not separate my lane's rows, and
 the two residuals are still best treated as separate until one of them is explained.
+
+## 140. The plateau is FIRST-TOKEN-CONDITIONAL — and the token I chose to escape the fixture trap is itself degenerate
+
+§139 established the plateau is a fixed-length computation. Perturbing positions inside it at npt=448 (baseline
+G448: bf16 13, FLM-ref 1704):
+
+| variant | bf16 | FLM-ref |
+|---|---|---|
+| **first token 58907 -> 220** | **153887** | **153887** |
+| second token -> 99 | 13 | 12530 |
+| middle token (224) -> 99 | 13 | 1704 |
+| last token -> 99 | 13 | 13 |
+
+**Only the FIRST token moves the bf16 path — and moving it makes the path CORRECT** (153887 = FLM-ref exactly,
+where it had been 13 against 1704). Second, middle and last tokens change nothing.
+
+**So the plateau is not a property of the length: it is a degeneration tied to the first token 58907.** And that
+has a consequence I have to state plainly — **I chose 58907 precisely because it was "non-degenerate" (§135, its
+FLM-ref varies with length), and it is degenerate for the bf16 path.** That is the fixture trap a **fourth**
+time, and this time it caught the token I had selected to escape it. *"The reference varies"* is not sufficient
+evidence that the *path* is well-conditioned on a fixture.
+
+**What this reframes.** The nh20 host residual is not "wrong at 256 and 768" — it is **a first-token-specific
+degeneration** whose plateau (13) appears at many lengths and vanishes when the first token is 220. §135/§137's
+"6 of 8 agree" is now doubly weakened: agreements inside a plateau can be the plateau coinciding (§139), and the
+disagreements are a property of the prompt's **first token**, not of the length.
+
+**And the other lane's result is the mirror image.** Their paired control (first = 58907 vs 220, same last token)
+returns **220 for both** — their engine is *input-invariant*; mine *is* sensitive to the first token but
+degenerates for one value of it. **Same experiment design, opposite outcomes** — which is why "no shared bug" was
+the right conclusion and why the shared thing could only ever be a signature.
+
+**Next, now a clean question:** which first tokens degenerate the bf16 path? 16 does (§89), 58907 does (§140), 220
+does not. That is a token sweep, cheap, and it is the first version of this residual that has a name.
