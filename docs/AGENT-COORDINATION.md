@@ -27,6 +27,29 @@ that have no `origin/<branch>`, then `gh pr list --head <branch> --state all` �
 verdicts. That is how this audit initially mislabelled a fifth branch
 (`docs/tracking-20260913-verify`, which already had PR #2330).
 
+**Disposition (checked against `main` the same day).** None of the four is
+landable as-is, so this section is a record rather than a to-do:
+
+- `run-2145` + `fix/2145-ctx-guard-verify` — **duplicates of merged work.** The
+  ctx guard is in `main` (`src/hrx_inprocess.cpp:380,391`, env
+  `HRX_MAX_CTX_TOKENS`) via PR **#2203**, and the #2147 `GGML_HRX_CPU_OPS`
+  change is in `main` (`src/backend_hrx.cpp:112-114`). Note `run-2145`'s merge
+  commit names `origin/fix/2145-hrx-ctx-limit`, which **does not exist** on
+  origin — the landed form is #2203. When auditing, check `origin/<same-name>`
+  *and* any branch names referenced in the branch's own commits; work can be
+  pushed under a different name.
+- `census-sweep-fix` — **superseded** by the 09-13 sweep `4eb5dc43a` (#2315);
+  its own sweep is the 09-12 one.
+- `fix/2114-cascade-qn-guard` — the guard's *result* is already posted on #2114
+  (negative: no per-layer guard can fix it). Its perf commits (`88020e0c8`,
+  `5527e3226`) touch **only the generator**
+  (`engine/npu/generators/n1_core_fused_gu_silu_d_iron.py`), so they change no
+  runtime behaviour until the cascade xclbin is regenerated — and `main`'s copy
+  of that generator has since diverged (36+/12-). Reviving the perf is therefore
+  gated on the xclbin build flow (#2262) plus a silicon re-verify and a
+  provenance update. The VECFIX/RE xclbins on that branch are artifacts of the
+  same investigation.
+
 ## 2026-09-13 (midday) — strixhalo: census alert plumbing
 
 - **PR #2322** (`fix/census-watch-alert-delta`, commit `3ce96c476`): the census
