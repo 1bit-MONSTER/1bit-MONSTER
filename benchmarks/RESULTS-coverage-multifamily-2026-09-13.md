@@ -1190,3 +1190,49 @@ Two supporting observations from the same run:
 
 **Goal status, complete:** prefill, TTFT and decode all beat FLM for **every** model the native
 engine supports — 6 of 6 on each metric, no gaps left to attribute.
+
+## 24. A MEASURED mismatch in the weight BO — the component the control isolated
+
+The control in section 22 rules out the ELFs and the runlist machinery, leaving the per-layer weight
+BO. So I captured FLM's actual BO: a `CAP_DUMP_BIG` run of the Nanbeige reference (boot 5938, correct)
+under the interposer, then read the arg4 pointer out of the manifest.
+
+```
+SETARG  idx=3 size=1048576      -> act
+SETARG  idx=4 size=61865984     -> WEIGHTS      <- the one that matters
+SETARG  idx=5 size=1048576
+SETARG  idx=6 size=1048576
+SETARG  idx=7 size=67108864     -> kv
+RUNLIST_ADD ... a4=0x55edd8c1a140   -> post_002_101_55edd8c1a140_61865984.bin
+```
+
+**FLM's weight BO for one Nanbeige layer is 61,865,984 bytes.** The engine's `npu_pack_layer_bo`
+builds exactly the seven projections, and their tile counts come straight out of the q4nx metadata:
+
+| projection | tiles |
+|---|---|
+| q_proj | 800 |
+| k_proj / v_proj | 160 each |
+| o_proj | 800 |
+| up_proj / gate_proj | 3360 each |
+| down_proj | 3360 |
+| **total** | **12,000 tiles = 61,440,000 B** |
+
+**The engine packs 425,984 bytes less than FLM's BO for the same layer** — 83.2 tiles at 5120 B/tile,
+so it is not even a whole number of tiles, which means the difference is structural (a tile size that
+differs, extra content, or padding) rather than one missing projection.
+
+**What this does and does not establish.** It does NOT prove the 425,984 bytes are the bug — FLM's BO
+may include benign content the engine keeps elsewhere (norms, alignment), and the packer's layout was
+verified byte-exact for Qwen3-0.6B/1.7B, which is why those models work. What it DOES establish is
+that the thing the control isolated — the weight BO the engine feeds a correct ELF and a correct
+runlist — **differs in size from the one FLM feeds them, for exactly the family that fails.**
+
+**The decisive next control is cheap:** run the same capture for **Qwen3-0.6B**, whose packing is
+verified correct, and check whether its engine tile total equals FLM's BO size. If it does, the
+425,984-byte gap for Nanbeige is the fault; if it does not, the gap is a benign structural difference
+and this line of attack is closed. That is one capture and one comparison, and it settles the
+question in either direction.
+
+**Hygiene note:** the capture is 20 GB (9999 files, per-sync dumps); it was removed after reading the
+two numbers above. Use `CAP_DUMP_BIG` and read the manifest rather than keeping it.
