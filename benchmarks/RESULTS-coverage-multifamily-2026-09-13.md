@@ -6822,3 +6822,43 @@ as a reference **without checking its first token either**.
 against `NPU_FLM_PREFILL` alone: the bf16/FLM disagreements at 256 and 768 stand on their own (stable, and the
 FLM-ref is stable per length, §128). The i8 finding is a **new candidate defect — i8 first-token handling — and
 it is OPEN.**
+
+## 320. PARTIAL SELF-CORRECTION of the section above: the echo is a HYPOTHESIS, and I hardcoded the fixture value I was checking against
+
+**I applied rules 4 and 5 to the other lane's number and then broke both myself in the same hour.** The script
+that produced "315" **hardcoded `first = 220` for all ten fixtures** — I never opened the files. So I opened
+them:
+
+| fixture | n | first | last |
+|---|---|---|---|
+| M2 | 2 | 220 | 4489 |
+| M4 | 4 | 220 | 37923 |
+| M8 | 8 | 220 | 38439 |
+| **M16** | 16 | 220 | **220** |
+| M32 | 32 | 220 | 17 |
+| M48 | 48 | 220 | 15469 |
+| M64 | 64 | 220 | 49891 |
+| **M128** | 128 | 220 | **220** |
+| M192 | 192 | 220 | 1704 |
+| **M256** | 256 | 220 | **220** |
+
+**`first = 220` is confirmed for all ten** — the factual half of "315" survives. But **`last = 220` as well at
+n=16, 128 and 256**, so at exactly the two lengths I leaned on:
+
+- **n=16 and n=128 are AMBIGUOUS**: the output 220 equals the fixture's first **and** last token, so it is
+  consistent both with an echo and with a genuine prediction;
+- and **n=128 is the one I called "an exact agreement with FLM that was really an artifact"** — FLM's 220 there
+  equals the fixture's first **and** last token too, so that reading is **not established either**.
+
+**What survives, and it is narrower**: the output equals the fixture's **first** token at n = 16, 32, 48, 64, 128 —
+**3 unambiguous (32/48/64, where the last token differs) plus 2 ambiguous (16/128)** — and that is **a
+hypothesis about a degenerate path, not a measurement of one.** I wrote it up as a finding and should not have.
+
+**The control that settles it costs one run**: a single length with a fixture whose **first token is not 220**
+(take n=32, first token 58907). If the output becomes 58907, the echo is real; if it stays 220, **220 is simply a
+common prediction** and five rows of my table were ordinary values all along. The other lane is already running
+exactly this shape of fixture by choice, which is the only reason it is cheap.
+
+**And the lesson is the one already in the log, so it applies to me too**: *a source you never opened cannot
+corroborate a value you measured* — including when the value you never opened is a **fixture** and the thing it
+is corroborating is your own conclusion.
