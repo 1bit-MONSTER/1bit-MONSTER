@@ -1042,3 +1042,59 @@ The next step is to establish the vendor's rule for odd G — the library is bin
 means reading FLM's own reorder behaviour (its weight-loader is exported from
 `libnanbeige_npu`/`libgemma_text_npu` and its BOs appear in an interposer capture) rather than
 inferring it from the even-G cases.
+
+## 20. Two corrections and a second Gemma3-1B bug (2026-09-13)
+
+Applying the odd-G fix (section 19) passed the even-G regression — Qwen3-0.6B 25, Qwen3-4B 220,
+Llama-3.1-8B 220, all unchanged, which is what a no-op for even G must look like — but Gemma3-1B
+still **segfaults** (exit 139), and running it produced two corrections to my own record.
+
+### 20.1 My Gemma3-1B dimensions were WRONG
+
+I had been carrying "Gemma3-1B: nh4/nkv1/hd256 -> qout 1024, IM 6912" from an early `config.json`
+read. The engine's own dims line, taken from the **q4nx manifest**, says otherwise:
+
+```
+H=1152 NC=26 NH=14 NKV=3 HD=256 IM=24864 NV=262144 GU_split=1 rope_theta=1000000
+```
+
+So `qout = 14 x 256 = 3584` (not 1024) and `IM = 24864` (not 6912). **The bundle's `config.json`
+and its q4nx manifest disagree**, and every analysis I built on the config.json numbers inherited
+the error — including the `qout` column in the section 11 correlation table, where Gemma3-1B
+should read **3584**. The correlation itself survives (3584 is still not in {2048, 4096}), and its
+conclusion is unaffected, but the number was wrong and is corrected here.
+
+### 20.2 A second, different packing bug: `IM` is not tile-aligned
+
+```
+G_h = H/128     = 9        (odd   -> section 19's bug)
+G_o = qout/128  = 28       (exact, even -> fine)
+G_d = IM/128    = 194.25   (TRUNCATED to 194)
+IM % 128 = 32              (nonzero -> the contraction dim is not a multiple of 128)
+```
+
+So for Gemma3-1B **two independent packing faults** exist: the odd `G_h` (fixed by the ceil rule)
+and a **truncated `G_d`** — integer division silently discards the final 32 columns' worth of
+group count. That is a different mechanism from section 19 and would corrupt `down_proj`
+independently, and it is a plausible cause of the segfault rather than just wrong numbers, since a
+group count that disagrees with the tile count is exactly the shape of the `npu_layer_bo_bytes`
+overflow fixed for LFM2 in `e2e65ede4`.
+
+### 20.3 Gemma3-1B has no reference to compare against
+
+FLM's own library **cannot load it either**:
+
+```
+[ERROR] Failed to parse model config: [json.exception.type_error.302] type must be number, but is null
+[flm_prefill] init failed: std::exception
+```
+
+That is the same error I once warned the relay about, and this run confirms it is real for
+Gemma3-1B on the `NPU_FLM_PREFILL` path — while the relay's `flm bench` for `gemma3:1b` succeeded,
+so it is path-dependent rather than an FLM-wide defect, as I recorded earlier. Either way it means
+**there is no reference token for Gemma3-1B**, so the fix cannot be gated on agreement; it can
+only be gated on not crashing plus the permutation property.
+
+**State: the odd-G fix is in and regression-clean, but it is NOT sufficient for Gemma3-1B** — a
+truncated `G_d` remains, and the family still segfaults. Recorded rather than papered over: the
+first fix was correct and small, and the family turned out to have a second, unrelated defect.

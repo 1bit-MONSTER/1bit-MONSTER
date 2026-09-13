@@ -198,7 +198,21 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
 #define NPU_TILE_BYTES 5120
 
 static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int G) {
-    const int S = G / 2;
+    // S is the HALF-GROUP length. It was G/2, which is integer division and therefore breaks
+    // for an ODD G: with G=9 (Gemma3-1B, H=1152 -> 1152/128 = 9) the map o -> i was not a
+    // permutation -- o=8 and o=0 both landed on source tile 0 -- so one tile was written twice
+    // and another never, silently corrupting the weights.
+    //
+    // (G+1)/2 is identical to G/2 for every EVEN G, so this is a no-op for every model that
+    // worked before (all of them have an even G on every projection), and a permutation for
+    // odd G as well. Verified by exhaustive permutation check for G = 8, 16, 20, 24, 54, 84
+    // (unchanged) and 9 (fixed).
+    //
+    // Caveat, stated because it matters: this is the minimal rule that restores the necessary
+    // permutation property, NOT a derivation of the vendor's layout -- the reorder was only
+    // ever verified byte-exact for G=8 and G=16 (both powers of two; see the note on
+    // npu_pack_layer_bo). Odd G needs a device run behind it before it is called correct.
+    const int S = (G + 1) / 2;
     for (int o = 0; o < n_tiles; o++) {
         int i = G * (o / G) + (o / 2) % S + S * (o % 2);
         memcpy(dst + (size_t)o * NPU_TILE_BYTES,
