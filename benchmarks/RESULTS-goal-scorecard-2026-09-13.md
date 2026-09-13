@@ -549,14 +549,29 @@ by control rather than by argument.
 **Six retractions between the two lanes: three were fixtures, one an instrument, and two were over-claims in
 opposite directions from the same evidence.** The three rules that would have caught all six:
 
-1. **Assert the first and last token of every prompt** — and check the chosen tokens against the bundle's own
-   **zero-embedding set** before spending runs. **The set is model-specific, and the early version of this rule got
-   that wrong**: *"the bundle's token 16 has a zero embedding"* is a **Nanbeige** fact — that bundle has **319**
-   zero-embedding rows (a dense block **4–130** including 16 and 100, a dense block **162002–166143**, singles
-   between) — while **Phi4-mini and Qwen3-0.6B have none at all**. Zero-embedding tokens produced three retractions
-   (a "context-free path", a "structural single-block bug", an "all-lengths signature"); what generalises is the
-   **assertion**, not the token. The check is one pass over the file, and it removes a whole class of point that
-   answers context-free for reasons unrelated to whatever is being measured.
+1. **Assert the first and last token of every prompt — and check the chosen tokens for DEGENERACY, not
+   distinctness.** These are different axes, and the second is the one that keeps biting: **the peer lane applied
+   the "assert" rule to its own fixture, checked `16 ≠ 220`, and still missed two degenerate points**, because *a
+   token can be perfectly distinct and still carry no embedding* — **presence instead of content.** Check the chosen
+   tokens against the bundle's own **zero-embedding set** before spending runs. **The set is model-specific**: *"the
+   bundle's token 16 has a zero embedding"* is a **Nanbeige** fact — that bundle has **319** zero-embedding rows (a
+   dense block **4–130** including 16 and 100, a dense block **162002–166143**, singles between) — while **Phi4-mini
+   and Qwen3-0.6B have none at all**. Zero-embedding tokens produced four retractions across the two lanes; what
+   generalises is the **check**, not the token. One pass over the file, no device.
+
+   **And there are two other ways the same column looks clean and is wrong, each needing its own control** —
+   see rule 7 for the arm case and the load rule for the third:
+
+   | degeneracy | looks like | detector |
+   |---|---|---|
+   | **fixture** — first token has no embedding | a **context-free** answer: a real token, wrong for a reason outside the model | scan the **zero-embedding set** (no device) |
+   | **arm** — attention falls to a known-broken kernel | **"totally blind"**, or a fixed wrong value | **assert the selection banner**, per run (rule 7) |
+   | **contention** — the device is busy | **the same fixture giving two different answers** | run quiet and **record the load** with every number |
+
+   **All three occurred in this thread and each was caught by a different control.** The contention case is the only
+   one that **no** rule in either lane's set would have caught — it was found by a `cmp` against an earlier run and
+   by noticing whose process held the device. "No zero-embedding rows" clears a column of the **first** class, not
+   the second: a broken kernel produces the same "totally blind" shape.
 2. **Control every flag that touches a BO, and prove it inert before reading its effect as a finding.** A flag
    whose effect you do not control is an instrument, not a measurement.
 3. **A BO-touching flag's effect depends on whether it syncs** — compare the **synced** and **unsynced** arms
