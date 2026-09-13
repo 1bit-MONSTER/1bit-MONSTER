@@ -8156,3 +8156,38 @@ is a memory trace of FLM's BO write, or a debug-symbol build** — not a longer 
 `shortconv` appears only in the loader and the offset helper (`npu_layer_shortconv_offsets`), plus a comment in
 `npu_engine_universal.cpp` about *"causal depthwise conv1d on the fused QKV (kernel 4)"*. So this is not a wiring
 bug to fix: it is a kernel call that has never been written, against an API that is already understood.
+
+## 154. §430 verified from the file — with one over-broad phrase corrected, and the scan trap that produces it
+
+§430's I8 table, checked independently against the bundle. The I8 tensors are **3-D** — `[n, mid, row_bytes]` — so
+the row width is `shape[-1]`, not `bytes/shape[0]`:
+
+| I8 row width | tensors (mine) | §430 |
+|---|---|---|
+| **4736** | **200** | 200 |
+| **8704** | **49** | 49 |
+| **5120** | **0** | 0 |
+
+**Exact, all three.** The mid-dimension carries the rest of the structure (10 for 185 tensors, 16 and 36 for 32
+each), and the arithmetic checks: `4736/20 = 236.8 -> 236` while `5120/20 = 256` exactly.
+
+**But the title's phrasing — "the bundle contains NO 5120-byte row at all" — is true of the I8 population and false
+of the bundle.** Scanning **every** tensor shape finds **48 rows of 5120 bytes**, all BF16:
+
+| dtype | 2-D row widths |
+|---|---|
+| BF16 | **5120 -> 48 tensors**, 16384 -> 24 |
+| F32 | none 2-D |
+| I8 | **none 2-D** — all 249 are 3-D |
+
+So the accurate sentence is *"no **I8** row is 5120 bytes wide"* — which is the claim §430 actually needs, and all
+it needs: the argument is that the default dequant's 5120-byte assumption matches no I8 row. The over-broad form is
+not what the table shows, and would be contradicted by any reader who scanned the BF16 tensors instead — as the
+first pass here did.
+
+**And that is the trap, because a row-width scan written for 2-D tensors returns *silently empty* for dtype I8** —
+no error, no partial result, just `{5120: 0, 4736: 0, 8704: 0}`, which reads as **confirmation of the claim being
+tested**. The first pass here produced exactly that and it took knowing the I8 tensors were 3-D to see it. **A scan
+that skips a dtype by construction and reports zero is the same shape as the guard that cannot fail (§153)**: an
+empty bucket is indistinguishable from a measured absence — **it is the fixture-length problem one level down, where
+the instrument's blind spot wears the answer's clothes.**
