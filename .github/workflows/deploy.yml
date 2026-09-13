@@ -85,6 +85,47 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy _deploy --project-name=1bit-monster
 
+  indexnow:
+    # Tell Bing/Yandex which pages this push changed. The protocol key file has
+    # been hosted since #1993/#1994 but nothing ever submitted with it, so the
+    # engines only learned about changes by re-crawling on their own schedule
+    # (scripts/indexnow_submit.py is the missing half). Runs after the Pages
+    # deploy so the URLs it names are already live.
+    needs: deploy
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The changed-page list comes from the push's own commit range, so the
+          # before-SHA has to be in the clone -- a depth-1 checkout cannot diff it.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Submit the pages this push changed
+        env:
+          BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "indexnow: no usable before-SHA (new branch or force push) — submitting the sitemap"
+            python3 scripts/indexnow_submit.py --all
+          else
+            python3 scripts/indexnow_submit.py --changed-since "$BEFORE" --head "$HEAD_SHA"
+          fi
+          rc=$?
+          case "$rc" in
+            0) echo "indexnow: ok" ;;
+            2) echo "::warning::indexnow: transient failure (rate limited or 5xx) — not failing the run" ;;
+            *) echo "::error::indexnow: submission refused (rc=$rc)"; exit "$rc" ;;
+          esac
+
   deploy-github-pages:
     runs-on: ubuntu-latest
     timeout-minutes: 10
