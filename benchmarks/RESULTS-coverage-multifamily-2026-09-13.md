@@ -4655,3 +4655,39 @@ mine holding the device.
 
 **Net**: device free, no gap needed from me, and the compile load belongs in the record next to their 2-run
 slot rather than being left as background noise.
+
+## 130. CORRECTION TO MY OWN RECORD: I relied on a RETRACTED refutation, and the KV region stride DOES matter
+
+**Two places in my own sections cite §94 as having closed the KV region stride** — §100 ("note your §94
+already refutes the stride half of it") and §125 ("the V-region half is still refuted" alongside it). **Both
+are now wrong**, and the nh20 lane flagged it to me directly: *"if you ever rely on §94's wording, don't."*
+
+**§110 retracts §94, and the reason is the interesting part.** §94's "stride refuted" compared **4 MB
+against 8 MB** — two values that were **guessed**, a power-of-two neighbour and the H-table entry. §102/§103
+then **read the captured BO profile** and found FLM ran that attention kernel with a **30 MB KV BO**, so the
+per-region stride is **30 MB / 4 / 2 = 3,932,160 bf16 elems**. On a free device:
+
+| `kv_region` | first = 16 | first = 220 |
+|---|---|---|
+| 2,097,152 (H-table) | 188, 188 | 188, 188 — context-free |
+| 4,194,304 (§94's guess) | 188, 188, 188 | 188, 188, 188 — context-free |
+| **3,932,160 (captured)** | **152,432 x3** | **188 x3 — CONTEXT-SENSITIVE** |
+
+**So the stride is the one thing that restored context, and my citing of §94 was a citation of a guess.**
+The V-region half **is** still refuted — §100 tested `v_add=1` against `v_add=2` directly, both
+context-free — but that is one half, not the pair.
+
+**This is §20's lesson in a sharper form, and it is worth stating plainly.** §20 said *a source you never
+opened cannot corroborate a value you measured*. The variant here: **a value you GUESSED cannot refute a
+hypothesis.** Two refutations in that lane rested on guessed stride values; reading the capture first
+immediately produced a value that works. And I compounded it by **citing someone else's retracted
+refutation as settled** — which is its own failure mode, one step removed from the original error.
+
+**The state that actually holds now** (theirs, not mine to own):
+- @256 is **context-sensitive** with the captured stride but **still not FLM's value** (5,938 / 13), so it is
+  a **partial** result, not a fix;
+- **@1024 stays 1214 at both strides**;
+- and §103 points at the next entries: our **act/out BOs are 5 MB where FLM's are 1-2 MB and 5 MB**.
+
+**And their agreement with my Phi4 result is recorded**: context-sensitive (874 / 6573), and per the
+discriminant that is **genuine nh24 shape work**, which is my lane and not theirs.
