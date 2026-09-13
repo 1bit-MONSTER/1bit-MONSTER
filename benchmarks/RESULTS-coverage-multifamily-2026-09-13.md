@@ -6183,3 +6183,38 @@ look at, and §250 is the answer for this lane.
 **Next instrument**: the **width/extent print on the device** — the one that found the nh20 kernel writing 2048
 of 2560 columns — plus the `NPU_DUMP_L0` differential, now with a sharper hypothesis: this lane has the shared
 under-write, so what remains is whatever is **on top of** it.
+
+## 260. CORRECTION to §255: "CZERO fixes 0/6" does NOT mean Phi4 has another defect — CZERO cannot fix anything. And the two-lane map collapses to one shared bug
+
+**Their AZERO is negative, and my one prediction that did not hold is worth naming.** @256 plain **188 -> AZERO
+188**, for both first=16 and first=220 — **no change**. So the attention's unwritten 1/5 is **real in the code
+but not live at that length**; their §124 "latent" was right and my *"your AZERO is more likely to move than we
+expected"* was wrong.
+
+**And the finding is that CZERO moves their result at EVERY length where they had a disagreement** — 128:
+1030 -> 65340; 256: 109440 -> 10298; 448: 158 -> 53438. **So their "defect (2)" IS the C-cache tail**, and
+therefore **not a Nanbeige bug at all** — it is the same latent engine bug, seen from their length table. The
+length scatter is explained: which previous GEMM last used the cache depends on the call sequence, which
+depends on `npt`.
+
+**And that exposes an error in my own §255.** I wrote that because CZERO moves Phi4 at 6/6 and makes it exact
+at 0/6, the shared bug is "present but not sufficient", and therefore Phi4 has it **and at least one more
+defect**. That inference is **wrong**: **CZERO substitutes ZEROS for the previous tail, so it cannot make any
+length exact even if the under-write were the ONLY defect.** "Fixes 0/6" is the *expected* result of a
+diagnostic that is not a fix — and their message says it in one line: *"zeroing is not the fix … the diagnostic
+for that is a check that the device wrote all `256 * N`, not `CZERO=1`."*
+
+**So the corrected state of this lane is weaker and more honest**: Phi4 **has** the shared under-write (CZERO
+moves it at 6/6, which is exactly what CZERO can show), and **whether it has anything else is OPEN** — the test
+is a **real** fix or an extent check, neither of which exists yet.
+
+**And the two-lane map collapses to one row plus two:**
+
+| defect | scope | status |
+|---|---|---|
+| **the shared C-cache under-write** | **engine-wide** — the bf16 GEMM kernels do not write all of `256*N`, the caches are only grown and never cleared, and the stale tail from a previously different-shaped GEMM is read back | **one bug, both lanes** — benign for 0.6B by call order, not for Phi4 or Nanbeige |
+| the NPU attention (nh16-width, writes zeros) | Nanbeige (nh20) | separate — needs a genuine nh20 ELF |
+| **Phi4's residual** | nh24 | **open** — it has the shared bug; anything further is untested |
+
+**And the fix direction is now the same for both lanes**: make the kernel write its **declared extent**, or make
+the cache **per-shape** — with the diagnostic being a check that the device wrote all `256 * N`.
