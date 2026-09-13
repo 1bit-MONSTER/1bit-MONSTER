@@ -4002,8 +4002,17 @@ struct Bf16Ctx {
                 // and >512 keys diverge" — same conclusion.) Outside the envelope
                 // the CPU reference runs instead: correct, ~10-18x slower.
                 const bool two_full_chunks = (npt % 256 == 0) && npt <= 512;
-                bool attn_npu_ok = !getenv("NPU_ATTN_CPU") && (npt <= 256 || two_full_chunks);
-                if (attn_npu_ok) {
+                // NPU_ATTN_FORCE_NPU=1: test hook — bypass the envelope and make
+                // ONE call covering all npt rows (the shape the generated
+                // long-context ELF expects; pair with NPU_ATTN_ELF_1024_USE=1).
+                const bool force_npu = getenv("NPU_ATTN_FORCE_NPU") != nullptr;
+                bool attn_npu_ok = !getenv("NPU_ATTN_CPU") &&
+                                   (force_npu || npt <= 256 || two_full_chunks);
+                if (force_npu && attn_npu_ok) {
+                    bf16mm_set_attn_tokens(npt);
+                    bf16mm_set_attn_rows(npt);
+                    if (!bf16mm_attn(bA.data(), bActQ.data(), bKv.data())) attn_npu_ok = false;
+                } else if (attn_npu_ok) {
                     for (int b = 0; b < npt; b += 256) {
                         const int rows = npt - b < 256 ? npt - b : 256;
                         bf16mm_set_attn_tokens(b + rows);   // keys in the prefix

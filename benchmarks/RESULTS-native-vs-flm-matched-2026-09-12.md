@@ -77,3 +77,35 @@ generated per-position-range ELFs are diagonal 256x256 tiles
 they are not a drop-in long-context kernel; using them would need a tiled
 flash-attention with an online-softmax combine, and the attention ABI exposes
 only `out/act/kv` with no accumulator BO.
+
+## Long-context ELF experiments (round 32) — all negative
+
+`gen_mha_engine_seq` output is invariant in *size* to `max_l` (8192 / 1024 /
+32768 all give 372512 B for `gen(0,1024)`) but **not** in content: the sha256
+differs, so `max_l` does change the emitted stream. The engine's attention KV
+region stride is 8 MB = 8192 tokens x 512 bf16, so `gen(0,1024)` with
+`max_l=8192` is the variant whose stride should match.
+
+Tested as a single 1024-query call (`NPU_ATTN_FORCE_NPU=1`, new test hook):
+
+| attention kernel | npt=1024 boot | attention time |
+|---|---|---|
+| embedded captured ELF | 30414 | 152 ms |
+| `gen(0,1024)`, `max_l=8192` | **30414** | 223050 ms |
+| `gen(0,1024)`, `max_l=32768` | 30414 (earlier) | 221319 ms |
+
+Trusted value at npt=1024 is **25**. The generated ELF returns the *same wrong
+token* as the embedded one, which pins the cause: `run_attn` copies back `rows`
+rows from a buffer that the kernel leaves zero beyond what it writes, so
+identical results mean **the generated `gen(0,1024)` stream also writes at most
+256 query rows** — despite its transaction stream being sized for 1024.
+
+That contradicts the size evidence, which says `gen(L0,L1)` is a diagonal tile
+(queries and keys both `[L0,L1)`, size depends only on `L1-L0`): a diagonal
+`gen(0,1024)` would have to write 1024 query rows. So either the generated
+stream's BO/arg convention differs from the captured one the engine replays
+(`kernel(3,0,0,out,act,kv)`), or it is not being driven the way its generator
+intends. Both remain unresolved.
+
+`NPU_ATTN_FORCE_NPU=1` is kept as a documented test hook (default off); it
+bypasses the verified envelope to make one call over all `npt` rows.
