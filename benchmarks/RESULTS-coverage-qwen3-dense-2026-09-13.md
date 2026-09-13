@@ -308,18 +308,29 @@ The lesson is worth keeping: the profile's 84% `libgomp` thread-time was a *symp
 the workers were idle behind a serialised NPU wait — and the fix was to overlap work,
 not to shave regions (\\S11) or add threads (\\S8).
 
-## 13. The same fix transfers to the other gated models (2026-09-13)
+## 13. The same fix transfers — the six-model scorecard vs FLM's own `flm bench` (2026-09-13)
 
 Qwen3-VL-4B and Llama-3.1-8B run the same bf16 prefill path, so they inherit the
-double-buffering. Rebuilt and re-measured @1k (FLM reference via `NPU_FLM_PREFILL=1`;
-for Qwen3-4B that method agrees with `flm bench` to ~2.5%, 497 vs 510 tok/s):
+double-buffering. Rebuilt and re-measured @1k. FLM's numbers below are from its own
+hidden `flm bench <tag> -i cfg.json` (the tags `llama3.1:8b` and `qwen3vl-it:4b` exist;
+for the dense set, already tabulated):
 
-| model | native prefill | FLM reference | gap | gate |
-|---|---|---|---|---|
-| Qwen3-VL-4B | 1506 ms (1.471 ms/tok, **680 tok/s**) | 2026 ms (1.98, 505) | **+34.6%** | boot 220 == 220 ✅ |
-| Llama-3.1-8B | 2171 ms (2.120, **472 tok/s**) | 2869 ms (2.80, 357) | **+32.3%** | boot 220 == 220 ✅ |
+| model | native prefill | FLM on-box prefill | gap | native TTFT | FLM TTFT | native decode | FLM decode |
+|---|---|---|---|---|---|---|---|
+| Qwen3-0.6B | 1912 tok/s | 1123.1 | **+70.3%** | 0.536 s | 0.704 s | **80** | 77.8 |
+| Qwen3-1.7B | 1335 | 942.6 | **+41.6%** | 0.767 | 1.042 | **40** | 39.53 |
+| Qwen3-4B | 672 | 510.0 | **+31.8%** | 1.524 | 1.925 | **19** | 18.75 |
+| Qwen3-8B | 461 | 362.8 | **+27.1%** | 2.207 | 2.705 | **11** | 10.70 |
+| Qwen3-VL-4B | 680 | 513.25 | **+32.5%** | 1.506 | 1.903 | **19** | 18.78 |
+| Llama-3.1-8B | 472 | 366.15 | **+28.9%** | 2.171 | 2.741 | n/m¹ | 11.10 |
 
-So six models now beat FLM on prefill: the four dense Qwen3 (§12) plus VL and Llama-3.1-8B.
+**All six models beat FLM on prefill and TTFT; five of six are verified on decode as
+well.** Boot tokens are byte-identical to FLM on all six.
+
+¹ Llama's native decode is **not measured**: `NPU_RUNLIST=1` printed no
+`=== Z ms/tok (W tok/s) ===` line for it — the whole-layer per-context ELFs exist only
+for the Qwen3 shapes — so Llama decode needs that ELF path before it can be compared.
+Qwen3-VL-4B's decode does work on the runlist path (19 tok/s).
 
 The four remaining families are still wrong for the family reasons in §8 (they are now
 faster too, but the token mismatch is architectural, not a capture): Qwen3.5-4B (boot 0),
