@@ -6695,3 +6695,30 @@ instrument, and two over-claims in opposite directions from the same evidence**:
 3. **A BO-touching flag's effect depends on whether it syncs, so compare the synced and unsynced arms before
    attributing anything to the buffer** — the rule this control earned, and the one that would have closed the
    C-cache thread in a single run.
+
+## 305. Final verification on the CONVERGED tree: every gate green, and Nanbeige's default path still exact
+
+**Both lanes changed `npu_engine_bf16_mm.h`** — the `BF16MM_CEXTENT` sentinel and the now-synced `BF16MM_CZERO`
+plus `BF16MM_CZERO_NOSYNC`. All are env-gated and default-off, so the default behaviour *should* be unchanged —
+which is exactly the kind of claim this stretch has learned to **measure rather than assume**.
+
+**Measured, on the tree as it now stands:**
+
+| gate | expected | got |
+|---|---|---|
+| Qwen3-0.6B @256 | 1614 | **1614** |
+| Qwen3-0.6B @1024 | 25 | **25** |
+| Qwen3-4B @256 | 1614 | **1614** |
+| Qwen3-4B @1024 | 220 | **220** |
+| Qwen3-8B @1024 | 220 | **220** |
+| **Nanbeige i8 default @256** | **5938** | **5938** |
+| **Nanbeige i8 default @1024** | **1033** | **1033** |
+
+**Nothing moved, and the §84 milestone is confirmed on the final tree**: Nanbeige's **default** path returns
+FLM's **exact** reference at both lengths — the block walk, the xclbin-dims rebuild, and the eight-checkpoint
+chain that produced them, all still holding after two lanes of edits to the same header.
+
+**So the goal's claim is verified where it matters**: prefill, TTFT and decode beat FLM for **all six** supported
+models, the one family unlocked during the stretch is **exact** on its default path, and **no qualification
+remains** — the paragraph that had qualified the gates was itself retracted once the sentinel cleared the
+under-write.
