@@ -8084,3 +8084,38 @@ find it.** A taxonomy whose rows all had setup-side detectors would be missing t
 **The clean pair, now with three independent quiet passes** (two mine, one theirs, all banner-asserted and
 fixture-clean): **Phi4 8/8 → 220 TOTAL**; **Nanbeige three groups PARTIAL**. **Two mechanisms, and every number in
 the pair has been produced at least twice by different people.**
+
+## 153. The load guard could not have failed: the contaminated run recorded the LOWEST load of the four
+
+The four loads side by side — the sharpening comes from the number that was asked to be recorded:
+
+| run | load | result |
+|---|---|---|
+| their contaminated run | **2.23** | **1877** |
+| their quiet pass 1 | 4.16 | 220 |
+| their quiet pass 2 | 6.36 | 220 |
+| my quiet pass | 3.66 | 220 |
+
+**The bad run recorded the lowest load of the four.** So *"run quiet and record the load"* is not merely weak — **it
+would have passed the run that was wrong.** The number recorded *to catch the problem* is the one number in the set
+that could not have caught it: the signal was **the other process**, and one process over the line is **invisible to
+`uptime`** and decisive to the result.
+
+**That is this thread's founding rule arriving one level up.** *"A measurement that cannot fail is not a
+measurement"* — and a **guard** whose failure path cannot fire is not a control either; it is the same shape as a
+`continue` in an error branch, which looks like protection and cannot protect. Rule 3 therefore reads: **record the
+load AND check what else is holding the device**, and the taxonomy row is **contention**, not high load.
+
+**And the four classes split two-and-two**, which is what makes the taxonomy complete rather than merely long:
+
+| kind | controls | when it can be applied |
+|---|---|---|
+| scan of the **SETUP** | zero-embedding set; selection banner | before a run |
+| property of the **RUN** | quiet-device repeat; >=2-length sweep | only after repeating, or at a second point |
+
+**Which is exactly why the fixture-LENGTH class has no bundle-side detector**: nothing in the input is wrong — the
+token is fine and the value belongs to another length — so **no scan of the input can find it.**
+
+**And every number in the clean pair has now been produced at least twice, by different people, on devices neither
+was holding for the other** — three independent quiet passes (two theirs, one mine), banner-asserted and
+fixture-clean: **Phi4 8/8 -> 220 TOTAL, Nanbeige three groups PARTIAL.**
