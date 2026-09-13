@@ -5364,3 +5364,35 @@ the **input is wrong** and the attention is exactly right. Small errors compound
 
 **So this lane's remaining candidate is the ACTIVATIONS** fed to the GEMMs — the one input I have not yet
 compared against anything.
+
+## 190. THE ONE-TOKEN BISECTION: Phi4's defect is in the layer-0 path, and the attention is exonerated without relying on the 256-token comparison
+
+**The instrument**: a **one-token prompt**. With a single token there is **no attention context at all**, so
+the attention step is trivial — whichever kernel or fallback it uses — and everything that a single token
+*does* exercise is the layer-0 path: embed -> input norm -> QKV GEMM -> RoPE -> (trivial attention) -> O GEMM ->
+residual -> post norm -> GU GEMM -> SiLU -> D GEMM -> residual, thirty-two times, then final norm and lm_head.
+
+**And the two configurations still disagree:**
+
+| Phi4 | @1 token | @256 tokens |
+|---|---|---|
+| **bf16 (the engine's own)** | **51957** | **874** |
+| **FLM-ref (FLM's kernels through the engine's host code)** | **5517** | **19** |
+
+**So the defect is present where the attention cannot matter.** That is a stronger statement than §165's
+contrast, because §165 compared at 256 tokens, where the attention *could* have been the difference; here the
+context is gone and the two still differ. **The attention is exonerated for this lane by construction, not by
+argument.**
+
+**And it narrows the search to a finite, checkable list.** With the weights cleared (§175), the GEMM
+*execution* clean (§180), and the attention out, what a single token passes through is: the **embedding row**,
+the **input norm** and the **q/k norms**, the **RoPE** (`ra(..., sp + pi)` with Phi4's `rope_theta = 10000`),
+the **four GEMMs**, and the **final norm plus lm_head**. All of those are exercised at n=1, and the FLM-ref
+path exercises the engine's *same* host code for all of them — which is why the disagreement has to be in the
+engine's own numerics for Phi4's shape, not in the plumbing.
+
+**And the instrument generalises**, which is worth keeping separate from the result: **if two paths disagree
+at one token, the attention is not the difference** — a 7-second test that removes an entire subsystem from
+suspicion, and one I would reach for before any attention-side work on any family. It also explains why this
+lane's earlier reasoning needed the 256-token pair at all: the 1-token case was available the whole time and
+is strictly more informative for localisation.
