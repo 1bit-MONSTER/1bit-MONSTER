@@ -7558,3 +7558,37 @@ rather than on two runs that happened to use the same flag names and different a
 **And the rule this earns is sharper than the one it replaces**: *assert which arm ran, not which flags you set* —
 because the flags in this engine select among paths that are not equivalent, and one of them is a known-broken
 kernel that produces the same shape as the phenomenon being investigated.
+
+## 147. Isolated: the eight zeros are the bf16 arm's NPU attention (the measured defect), NOT the runlist — and §146 reproduces 8/8 on the arm-matched pair
+
+§380 recorded the teammate's self-retraction (their S32-on-Nanbeige bf16 row returned 0 for all eight tokens) with
+the cause given as **runlist precedence over `NPU_PREFILL_BF16`**. They corrected the cause from the banner; this is
+the independent isolation, and it agrees with the corrected version:
+
+| config (Nanbeige, `/tmp/S32_1024.txt`) | boot | stderr attention |
+|---|---|---|
+| *(default)* | 166101 | runlist arm |
+| `NPU_PREFILL_BF16=1` | **0** | `attn_mha_1024_nh20_hd128.elf` (the NPU attention) |
+| `NPU_PREFILL_BF16=1 NPU_RUNLIST=0` | **0** | same — **adding the runlist flag changes nothing** |
+| `NPU_ATTN_CPU=1 NPU_PREFILL_BF16=1` | **166101** | `[NPU_ATTN_CPU] forced CPU attn` |
+
+Repeated on `/tmp/S32_100.txt` and `/tmp/S32_16.txt`: `0`, `0`, `43753` in the same config order. **So the zeros
+track the ATTENTION path, not the runlist flag** — and `NPU_RUNLIST=0`, the explanation §380 originally gave, does
+not change the result. (Adding `NPU_RUNLIST=0` to the *default* arm also leaves 166101 unchanged — the runlist flag
+is inert on both arms here; note this is a different `NPU_RUNLIST` effect from the one that matters, and I checked
+both directions rather than one.)
+
+**The zeros are therefore the measured defect wearing a different label**: the bf16 arm's attention is the
+nh16-width NPU kernel of §121–§123, which writes zeros — and a zero column is exactly the "totally blind" shape the
+cross-lane test was looking for. **That is the trap, and it is the second time in this stretch that the defect has
+presented as a finding** (§119's "compounding" was the first).
+
+**And the arm-matched pair reproduces exactly.** On `NPU_PREFILL_BF16=1 NPU_ATTN_CPU=1` the teammate's eight tokens
+give `43753 43753 166101 166101 166101 152551 152551 156468` — **the same four values and the same partition** as
+§146 ({16,100}, {220,1024,4096}, {12345,777}, {58907}). PARTIAL, against Phi4's single value 8/8 -> 220, TOTAL. So
+the two-mechanism conclusion now rests on an **arm-matched, independently reproduced** comparison rather than on two
+runs that shared flag names and used different attention paths.
+
+**Rule earned (theirs, and sharper than "check the flags"): assert which ARM ran, not which flags you set.** The
+flags select among paths that are not equivalent — and one of them is a known-broken kernel whose output has **the
+same shape as the phenomenon under investigation**.
