@@ -5839,3 +5839,38 @@ Two honest limits:
 `memset(attn_out->data(), 0, (size_t)rows*q*2)` when the BO is created, alongside the existing `attn_kv`
 clearing. **Not applied here** because `npu_engine_bf16_mm.h` is the shared file and the other lane has a
 matching change to make in it — it is theirs until they say otherwise.
+
+## 125. The one-token test, run: the NPU attention IS the difference at n=1 — and it exposes a SEPARATE @256 host defect
+
+The other lane's instrument, applied to nh20. A one-token prompt exercises the layer-0 path with a trivial
+attention, so if two paths disagree there, the attention cannot be the difference. Nanbeige, one token ("4489"):
+
+| @1 token | boot |
+|---|---|
+| native bf16 (NPU attention) | **1047** |
+| native bf16 (CPU attention, `NPU_ATTN_CPU=1`) | **11771** |
+| FLM-ref (`NPU_FLM_PREFILL=1`) | **11771** |
+
+**The CPU control settles it: with the host attention the native path matches FLM EXACTLY (11771).** So at n=1
+the NPU attention is the *only* difference and the upstream path — embedding, norms, RoPE, QKV, O — is clean.
+That confirms §121-§123 from a black-box direction and rules out the "something upstream is also wrong" branch
+the instrument was designed to test.
+
+**A caveat the instrument needs, and one it paid for.** At n=1 the attention is *not* a no-op: with one key
+softmax is 1 and the output is V — a value passthrough. So "disagree at one token ⇒ attention is not the
+difference" holds only where the attention is bypassed, which it is not; it is the **CPU control**, not the
+token count, that decides. (The other lane's own note said the K/V indexing happens even at n=1 — the same
+point.)
+
+**And it turned up something new in this lane, by lengthening the control.** The CPU attention is exact at @1
+(11771) and @1024 (1033, §113) — but at **@256** it gives **109440** against FLM's **5938**:
+
+| length | native bf16, CPU attention | FLM-ref | |
+|---|---|---|---|
+| 1 | 11771 | 11771 | ✓ |
+| 256 | **109440** | 5938 | ✗ |
+| 1024 | 1033 | 1033 | ✓ |
+
+So there is a **length-specific defect at @256 in the host path**, independent of the NPU kernel, and invisible
+to every attention-diff run so far (those were @1, @256-with-the-NPU-kernel, or @1024). @256 is exactly one
+256-row block; @1 and @1024 are not. That is the next thing to test, and it is device-cheap.
