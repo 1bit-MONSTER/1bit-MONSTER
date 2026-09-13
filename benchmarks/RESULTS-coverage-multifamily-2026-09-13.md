@@ -4492,7 +4492,7 @@ needed** — every number above was taken with both holders present — but it i
 runs with the holders actually gone would confirm that they are irrelevant, and it is the one datum that
 cannot be produced without the window.
 
-## 104. CORRECTED: the KV region stride DOES matter — FLM's captured value (3932160) restores context; §94 tested the wrong alternative
+## 110. CORRECTED: the KV region stride DOES matter — FLM's captured value (3932160) restores context; §94 tested the wrong alternative
 
 §94 concluded "the KV region stride is NOT the context loss" from a 4 MB vs 8 MB comparison. §102/§103 then
 read the captured BO profile and produced a specific number: FLM ran the attention kernel with a **30 MB** KV
