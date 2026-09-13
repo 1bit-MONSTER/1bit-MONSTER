@@ -4150,3 +4150,25 @@ real one.
 
 **Recorded because it changes the next step, not because it is settled.** Three sessions have now called this
 file "the nh20 ELF" and reasoned from it; one size comparison shows that label is untested.
+
+## 96. §95 follow-up: the nh20/nh32 ELF differences are 580 REGULAR runs through the code, not one data block
+
+A byte-diff of the two LOAD segments from §95 (3408 differing bytes): they form **580 contiguous runs**
+(gap > 64) spanning the whole segment (first at 2353, last at 162803), with a repeating structure — many runs
+are 58, 121 or 298 bytes long at regular intervals, and only 19 diffs fall in the first 4KB (204 in the first
+16KB).
+
+So the nh20-vs-nh32 difference is **not** a contiguous parameter/constant block. A regular, repeated-run
+structure is what a **parameterised kernel whose per-head / per-tile loop constants differ** produces — so it
+leans **(a)**: the same kernel re-parameterised per shape, not (b) a wholesale mislabeled nh32 binary. Not
+proof, but it shifts the weight away from "the label is wrong" and back toward "the ELF is a real per-shape
+build, and the fault is what we feed it" — i.e. the §94 `bKv` arrangement.
+
+**What would settle it** still needs the device: run the nh20-slot kernel on an nh32-shaped input (or the
+reverse) and see whether the output is merely wrong or structurally impossible; or align these runs against
+the nh16 ELF at the same offsets to see whether they land on the same loop-constant positions.
+
+**Net for the bf16 item after §92-§96.** The defect is a conditioning loss in the NPU attention path (§93).
+The two candidate mechanisms are now narrowed to (i) the `bKv` arrangement we hand the kernel (§94) or (ii) a
+wrong/mis-parameterised attention ELF (§95/§96), and both are cheap to test on a free device. Nothing in
+§94-§96 is settled; §92/§93 are the measurements that are.
