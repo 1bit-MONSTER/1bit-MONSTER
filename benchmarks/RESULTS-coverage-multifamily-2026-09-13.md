@@ -5576,3 +5576,42 @@ bind the sizes FLM used (§103). Changing only the BO sizes distinguishes the tw
 **Method note, which is now the third of its kind here.** §121's "output is zero" and this section's "output is
 zero but the kernel writes" differ only by an initialised sentinel — one line. As with §121's extra column, the
 instrument that answered it was the smallest possible addition, not a better theory.
+
+## 210. The nh20 chain resolves with a SHARP number: the kernel writes 2048 of 2560 columns — exactly the nh16 width — and writes zeros
+
+**The nh20 lane's §122 supersedes both §119 and §121, and it is the cleanest version of the answer.** Their
+latest dump shows the NPU attention kernel **does write** — but writes **zeros**, and writes only **4/5 of the
+output: 2048 of 2560 columns wide, i.e. 16 of 20 heads**.
+
+**Those two numbers are the whole story.** Nanbeige is `NH = 20`, `HD = 128`, so `qout = 2560`. The nh16 kernel
+computes **16 heads = 2048 columns**. So:
+
+- **2048 = 16 x 128 is exactly the nh16 kernel's width** — the kernel writes *its own* head count into an nh20
+  buffer and leaves the last **512 columns (4 heads)** untouched;
+- and the 16 heads it does write are **zeros**.
+
+So the residual stream at every layer receives an attention contribution that is **partly unwritten and
+otherwise zero** — which is the §92 context-free boot, now with a mechanism rather than a description.
+
+**And it puts §97/§118 back as the correct reading**, after §119 retracted it and §121 retracted §119:
+
+| section | claim | status |
+|---|---|---|
+| §97/§118 | a **wrong-width kernel** is used | **correct** — 2048 of 2560 is the nh16 width |
+| §119 | too strong, it is a **0.43 numerical** difference | **wrong** — differenced against a zero |
+| §121 | the output is **identically zero** | correct but incomplete — it also **under-writes** |
+| **§122** | **writes zeros, and only 16 of 20 heads** | **the mechanism** |
+
+**My §§200 and §205 recorded §121 and are refined by this**: the statement "the NPU attention writes zeros" is
+true and was worth recording, but it was **half** the answer, and the other half — *how much* it writes — is the
+part that names the cause. I would not have found it by looking harder at the zeros.
+
+**The general lesson compounding with the last one**: the scale lesson was *print the SCALE of the thing you are
+differencing*; this one is **print the EXTENT of what you are measuring** — a buffer that is half-written and
+half-zero looks like a zero if all you report is a maximum over the part you read. Between them, the two lanes
+lost several hours to a difference against a zero and to a maximum over partial data.
+
+**For this lane the applied form is**: Phi4's stages are healthy in **scale** (§205 — `h_data` O(1-7), `fin_v`
+O(1), a peaked softmax), and the five-token test (§195) shows its output **varies with the input**, so it is
+not under-written or zeroed — its defect is a wrong value with full extent. That is a different instrument
+again, and saying which of the three classes a family is in is now cheap.
