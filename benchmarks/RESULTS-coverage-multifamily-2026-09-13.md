@@ -1236,3 +1236,32 @@ question in either direction.
 
 **Hygiene note:** the capture is 20 GB (9999 files, per-sync dumps); it was removed after reading the
 two numbers above. Use `CAP_DUMP_BIG` and read the manifest rather than keeping it.
+
+### 24.1 The control closed the size-gap line — and exposed a sharper anomaly instead
+
+Ran the same capture for **Qwen3-0.6B**, which works. Used `CAP_DUMP_BIG=1 CAP_NO_SYNC=1`, which
+keeps only the deduped preinsts (including the weight BO) and skips the per-sync dumps: **2.5 GB
+instead of 20 GB**, and the run returned boot 1614 as expected.
+
+| | engine packer | FLM's arg4 BO | gap | FLM BO / 5120 |
+|---|---|---|---|---|
+| Qwen3-0.6B *(works)* | 9,830,400 B = 1,920 tiles | 10,485,760 B | 655,360 B = **128.00 tiles** | **2048.00 tiles** |
+| Nanbeige *(fails)* | 61,440,000 B = 12,000 tiles | 61,865,984 B | 425,984 B = **83.20 tiles** | **12083.20 tiles** |
+
+**The size gap alone is BENIGN, and the line of attack as posed is closed.** The *working* model's
+BO is also smaller than FLM's — by 655,360 B — so "the engine packs less than FLM" cannot be the
+fault. That is what the control was for, and it came back negative, which is a result.
+
+**But it exposed something sharper.** FLM's weight BO is a **whole number of 5120-byte tiles for
+Qwen3-0.6B (2048.00) and NOT for Nanbeige (12083.20)**. The 655,360-byte gap for the working model
+is exactly 128.00 tiles — a plausible fixed extra (norms, alignment) — whereas Nanbeige's 425,984-byte
+gap is 83.20 tiles, which is not a tile count at all. So the assumption the engine applies to every
+model — that a layer's weights are N × 5120-byte tiles — **does not hold for Nanbeige**, and that is
+a measured structural difference between the family that works and the family that fails, not a
+hypothesis.
+
+**Next:** determine Nanbeige's actual tile geometry. Its q4nx metadata says 5120-byte rows, so the
+divergence is in **how many tiles FLM's BO holds** for that shape — i.e. FLM's layer layout for
+Nanbeige includes extra or differently-sized regions. Reading the BO's own structure (the scales/
+zeros/packed split at 512/512/4096 within each 5120-byte row) against FLM's 61,865,984 bytes should
+say which.
