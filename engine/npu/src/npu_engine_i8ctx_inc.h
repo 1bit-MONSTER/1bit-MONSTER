@@ -280,7 +280,11 @@ struct I8Ctx {
             else if (v == 1) fl = XRT_BO_FLAGS_CACHEABLE;
             else if (v == 2) fl = XRT_BO_FLAGS_SVM;
         }
-        return std::make_unique<xrt::bo>(d, (size_t)KD * ND, fl, grp_w);
+        auto bo = std::make_unique<xrt::bo>(d, (size_t)KD * ND, fl, grp_w);
+        // packB_into memsets the mapped buffer before packing, so this BO is covered in practice;
+        // zeroing at allocation as well costs one memset and removes the ordering assumption.
+        if (void* m = bo->map()) memset(m, 0, (size_t)KD * ND);
+        return bo;
     }
 
     // Pack weights into an arbitrary (already-allocated) weight BO.
@@ -685,14 +689,26 @@ struct I8Ctx {
         }
         size_t sz = (size_t)KD * n_cols + FUSED_AIE_COLS * FUSED_GS_TILE
                     + FUSED_GS_SLACK;
-        return std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+        auto bo = std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+        // The gs region [KD*n_cols, sz) is READ BY THE KERNEL as per-column scales, and the
+        // packer that fills the weight part memsets only KD*ND -- so the scale tail was whatever
+        // the allocator returned. A per-column scale that is read but never written scales the
+        // output arbitrarily, which is exactly the symptom: identical input and identical norm
+        // weights, yet a hidden state after 32 layers that differs across runs
+        // (RESULTS-coverage-multifamily 62, 64, 65).
+        if (void* m = bo->map()) memset(m, 0, sz);
+        return bo;
     }
 
     // h2 scratch BO for the fused kernel (bo4; D-phase A source — same memory
     // group as bA, since the A2 shim DMA reads it like an activation).
     std::unique_ptr<xrt::bo> make_scratch_bo(xrt::device& d, size_t bytes) {
         int grp_a = k->group_id(3);
-        return std::make_unique<xrt::bo>(d, bytes, XRT_BO_FLAGS_HOST_ONLY, grp_a);
+        auto bo = std::make_unique<xrt::bo>(d, bytes, XRT_BO_FLAGS_HOST_ONLY, grp_a);
+        // The comment above says the A2 shim DMA READS this like an activation. Nothing wrote it
+        // before that read, so the kernel consumed allocator contents.
+        if (void* m = bo->map()) memset(m, 0, bytes);
+        return bo;
     }
 
     // Pack the INTERLEAVED GU weights (already transposed to [H, 2·n_ff] with
@@ -807,7 +823,16 @@ struct I8Ctx {
             else if (v == 2) fl = XRT_BO_FLAGS_SVM;
         }
         size_t sz = gu_i4_bo_size(K, (int)n_cols) + FUSED_AIE_COLS * FUSED_GS_TILE + FUSED_GS_SLACK;
-        return std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+        auto bo = std::make_unique<xrt::bo>(d, sz, fl, grp_w);
+        // Same uninitialized tail as make_fused_weight_bo above, and this is the BO the RAW-Q4NX
+        // (int4) GU path uses -- which is the path Nanbeige takes (the convention probe reports
+        // "UNSIGNED nibbles", i.e. q4). The gs region beyond the packed A/B/C regions is read by
+        // the kernel as per-column scales but written by no one, so every layer's GU output was
+        // scaled by allocator contents. That is the shape of the symptom: identical input and
+        // identical norm weights, yet a hidden state after 32 layers that differs across runs
+        // (RESULTS-coverage-multifamily 62, 64, 65, 66).
+        if (void* m = bo->map()) memset(m, 0, sz);
+        return bo;
     }
 
     // Pack one expert's interleaved GU from RAW Q4NX into the int4 regions.

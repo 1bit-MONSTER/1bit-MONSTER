@@ -172,6 +172,11 @@ struct HybridFlmCtx {
 
         // Zero out weight BO (safety)
         memset(bW->map(), 0, w_bytes);
+        // bA is the activation (partly written per launch) and bC is the int16 OUTPUT, read back
+        // by the host. Neither was initialised, so the first launch read allocator contents. Same
+        // class as the I8Ctx bA/bC fix (RESULTS-coverage-multifamily 64).
+        memset(Am, 0, a_bytes);
+        memset(Cm, 0, c_bytes);
 
         // Generate per-layer instruction sequences
         layer_instr_bo.resize(NL);

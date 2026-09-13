@@ -1793,6 +1793,18 @@ struct Bf16Ctx {
                 for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)rr*(H/32)+gg]=rg.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)rr*(H/32)+gg]=rg.zp[(size_t)rr*(H/32)+gg]; }
                 for (int rr = 0; rr < IM; rr++) for (int gg = 0; gg < H/32; gg++) { raw_gu.scl[(size_t)(IM+rr)*(H/32)+gg]=ru.scl[(size_t)rr*(H/32)+gg]; raw_gu.zp[(size_t)(IM+rr)*(H/32)+gg]=ru.zp[(size_t)rr*(H/32)+gg]; }
                 cg_fused_i4->packB_into_fused_i4(*cg_fuse_bo[l], raw_gu, 0, H, IM, cg_fuse_scl[l], cg_fuse_row[l]);
+                // Weight-content checksum (NPU_DBG=1). The whole nondeterminism question reduces to
+                // one branch: either the PACKED WEIGHTS differ across runs (a host packing fault) or
+                // they do not, in which case the same weights and same input produce different output
+                // and the fault is in execution. Host-side checks so far all came back stable
+                // (embedding rows, final-norm weights), but the packed layer weights were never
+                // checked. FNV-1a over the first 1 MB of the GU BO, three layers.
+                if (npu_dbg() && l < 3) {
+                    const uint8_t* m = (const uint8_t*)cg_fuse_bo[l]->map();
+                    unsigned long long h = 1469598103934665603ULL;
+                    for (size_t i = 0; i < 1048576; i++) { h ^= m[i]; h *= 1099511628211ULL; }
+                    fprintf(stderr, "[WCHK] layer %d gu_bo[0..1MB) fnv=%016llx\n", l, h);
+                }
                 if (getenv("NPU_QWEN_I4") && atoi(getenv("NPU_QWEN_I4")) == 1 && l < 2) {
                     // Verify B_shadow (the C1h reference) matches the packed tile's
                     // bf16-pair dequant for gate/up columns — distinguishes a pack

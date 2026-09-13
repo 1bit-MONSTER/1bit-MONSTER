@@ -2986,3 +2986,57 @@ after 32 layers that differs across runs.
 **The next measurement** is therefore concrete: zero each of these in turn (or all at once, since zeroing a
 scratch/output BO is correct regardless) and re-run the determinism test with Qwen3-0.6B @256 = **1614** as
 the no-regression gate. The one that makes the native path stable is the one that mattered.
+
+## 66. The fused path is live; seven candidates eliminated; and the int8 path's `bA` is SINGLE-buffered
+
+**The structural fact that made §65's candidates reachable.** The run prints `layer N STD fused`, and
+`FLM_PACKB`/`FLM_LAUNCH_ASYNC` dispatch to one of **three** contexts (`bcq` bf16, `hcq` `HybridFlmCtx`,
+`cq` `I8Ctx`). So the **fused** path is live, which is exactly where §65's two candidates sit — the GU
+weight BO's **gs scale region** and the **scratch BO** documented as "the D-phase A source … the A2 shim DMA
+reads it like an activation". Also checked: `npu_attn_ctx.h` is **not included by the engine at all**
+(0 mentions), so its deliberate zeroing of `Q`/`C2`/`SCR` while leaving `KT`/`V` unwritten is a **latent**
+instance of the same bug, not an active one.
+
+**Seven more uninitialized BOs fixed**, each read by a kernel and written by no one:
+
+| site | BO | note |
+|---|---|---|
+| `make_fused_weight_bo` | gs scale tail | beyond `packB_into`'s `KD*ND` memset |
+| `make_fused_weight_bo_i4` | gs scale tail | the RAW-Q4NX GU path — the one Nanbeige takes |
+| `make_scratch_bo` | h2 scratch | read as the D-phase activation |
+| `make_weight_bo` | weight | covered in practice by `packB_into`, zeroed anyway |
+| `HybridFlmCtx` | `bA`, `bC` | its `bW` was already zeroed — an asymmetry in one file |
+
+Control green: Qwen3-0.6B @256 = **1614**.
+
+**And the fix did not remove the symptom — and the apparent "collapse to three values" did not replicate**
+(4 distinct values in the next 6 runs). So **I do not claim these fixes reduced it**; they stand as correct
+fixes to uninitialized buffers, which is what they are.
+
+**Seven hypotheses eliminated this checkpoint, every one by measurement:**
+
+| hypothesis | how it died |
+|---|---|
+| device contention (§64) | FLM's path gave 1033 four times on the same contended device |
+| host OpenMP race | `OMP_NUM_THREADS=1` (and `NPU_HOST_THREADS=1`) still varies |
+| uninitialized heap | `MALLOC_PERTURB_=1` and `=170` do not stabilise it |
+| missing kernel wait | `wait_kernel`/`r.wait()` are present at every launch site |
+| packing race | `pack_sec` is called sequentially, not from threads |
+| BO memory flags | `NPU_WBO_FLAGS=0/1/2` all still vary |
+| a wrong-file edit (§62) | the string-in-binary staleness check |
+
+**And the sharpest surviving fact**: **FLM's path is stable on the same device**, so the difference is in
+**our buffers, kernels or sequencing** — while **every host input checked is stable** (embedding rows,
+final-norm weights).
+
+**The concrete new lead: the int8 path's `bA` is a SINGLE buffer.** One activation BO is shared by every
+layer, and `launch_async` **writes it** (`quantize_async` memsets and refills it). This session earlier
+added **double-buffering to the bf16 path** for precisely this reason — "double-buffered GEMM blocks", with
+a per-batch A cache, worth ~30% there. If any int8 launch is not finished before the next `launch_async`
+re-stages `bA`, the in-flight kernel reads a half-updated activation. That failure mode is
+**timing-dependent**, **unaffected by zeroing**, and **absent from FLM's own path** — matching every
+observation above.
+
+**The named next measurement**: check the launch/finish pairing per layer in the int8 prefill — can `bA` be
+re-staged while a kernel that reads it is still in flight? If so, apply the per-batch A-cache pattern the
+bf16 path already uses.
