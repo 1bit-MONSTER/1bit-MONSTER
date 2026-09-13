@@ -1,560 +1,2413 @@
 {
- "generated": "2026-08-30T06:36:37",
+ "generated": "2026-09-13T04:04:29",
  "related": {
   "1bit-benchmarks.html": [
    {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8519
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8615
    },
    {
-    "url": "https://1bit.monster/1bit-post-three-bugs.html",
-    "title": "Three bugs that broke 97 tok/s | 1bit.MONSTER",
-    "score": 0.8321
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8561
    },
    {
     "url": "https://1bit.monster/1bit-post-sprint.html",
     "title": "244 to 3.4 ms/tok: the NPU optimization sprint | 1bit.MONSTER",
-    "score": 0.8284
+    "score": 0.832
    }
   ],
   "1bit-blog.html": [
    {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.932
+   },
+   {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.922
+    "score": 0.9212
    },
    {
-    "url": "https://1bit.monster/1bit-post-rocm-vs-cuda.html",
-    "title": "ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER",
-    "score": 0.909
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
-    "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
-    "score": 0.9056
+    "url": "https://1bit.monster/1bit-post-lemonade-v1181.html",
+    "title": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.9154
    }
   ],
   "1bit-docs.html": [
    {
-    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
-    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8375
+    "url": "https://1bit.monster/404.html",
+    "title": "Redirecting\u2026 \u2014 1bit.MONSTER",
+    "score": 0.813
    },
+   {
+    "url": "https://1bit.monster/share.html",
+    "title": "Share 1bit.MONSTER \u2014 trackable links",
+    "score": 0.7075
+   },
+   {
+    "url": "https://1bit.monster/1bit-downloads.html",
+    "title": "1bit.MONSTER: Downloads",
+    "score": 0.7042
+   }
+  ],
+  "1bit-downloads.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8356
+    "score": 0.8798
    },
    {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.8105
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8431
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1181.html",
+    "title": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.8386
    }
   ],
   "1bit-jarvis.html": [
    {
-    "url": "https://1bit.monster/docs-jarvis.html",
-    "title": "1bit.MONSTER: JARVIS",
-    "score": 0.9352
-   },
-   {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.8966
-   },
-   {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8749
+    "score": 0.8757
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8527
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-hrx-engine.html",
+    "title": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER",
+    "score": 0.8444
    }
   ],
   "1bit-models.html": [
    {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8132
-   },
-   {
-    "url": "https://1bit.monster/index.html",
-    "title": "1bit.MONSTER",
-    "score": 0.8053
+    "url": "https://1bit.monster/1bit-monster-v2.html",
+    "title": "1bit.MONSTER: One engine. Any model. Zero Python.",
+    "score": 0.8309
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8016
+    "score": 0.8306
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.823
    }
   ],
   "1bit-monster-v2.html": [
    {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.886
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8643
    },
    {
     "url": "https://1bit.monster/index.html",
     "title": "1bit.MONSTER",
-    "score": 0.8615
+    "score": 0.8426
    },
    {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8459
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.841
    }
   ],
   "1bit-post-1775-models.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8994
+    "score": 0.9018
    },
    {
-    "url": "https://1bit.monster/1bit-post-1bit-explained.html",
-    "title": "What 1-bit actually does to a model | 1bit.MONSTER",
-    "score": 0.8775
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8802
    },
    {
-    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
-    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.868
+    "url": "https://1bit.monster/1bit-post-significant-pgmharikrishnan-grug-35b-v2-mlx-4bit.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.8757
    }
   ],
   "1bit-post-1bit-explained.html": [
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8775
+    "score": 0.8731
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8553
+    "score": 0.8504
    },
    {
-    "url": "https://1bit.monster/docs-models.html",
-    "title": "1bit.MONSTER: Model families",
-    "score": 0.8383
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.848
+   }
+  ],
+  "1bit-post-35b-moe-layout.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.9154
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-byte-identical.html",
+    "title": "Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER",
+    "score": 0.8839
+   },
+   {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8819
    }
   ],
   "1bit-post-50t.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8507
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-fused.html",
-    "title": "The fused layer engine | 1bit.MONSTER",
-    "score": 0.8469
+    "score": 0.8602
    },
    {
     "url": "https://1bit.monster/1bit-post-three-bugs.html",
     "title": "Three bugs that broke 97 tok/s | 1bit.MONSTER",
-    "score": 0.8395
+    "score": 0.8536
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-dspark.html",
+    "title": "DSpark speculative decoding, disproven | 1bit.MONSTER",
+    "score": 0.8519
+   }
+  ],
+  "1bit-post-announcement-aecetin-gemma-2-2b-polysurgery.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-aecetin-qwen-2-5-7b-polysurgery.html",
+    "title": "A new significant architecture arrived: Qwen | 1bit.MONSTER",
+    "score": 0.9294
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9258
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-aecetin-llama-3-2-3b-polysurgery.html",
+    "title": "A new significant architecture arrived: Llama | 1bit.MONSTER",
+    "score": 0.9224
+   }
+  ],
+  "1bit-post-announcement-aecetin-llama-3-2-3b-polysurgery.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-aecetin-qwen-2-5-7b-polysurgery.html",
+    "title": "A new significant architecture arrived: Qwen | 1bit.MONSTER",
+    "score": 0.9445
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9297
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-bosonicjustin-transcendent-logic-model.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9272
+   }
+  ],
+  "1bit-post-announcement-aecetin-qwen-2-5-7b-polysurgery.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-prannesshkva-isom-qwen2-5-coder-1-5b-instruct.html",
+    "title": "A new significant architecture arrived: Qwen | 1bit.MONSTER",
+    "score": 0.9706
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-aecetin-llama-3-2-3b-polysurgery.html",
+    "title": "A new significant architecture arrived: Llama | 1bit.MONSTER",
+    "score": 0.9445
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-aecetin-gemma-2-2b-polysurgery.html",
+    "title": "A new significant architecture arrived: Gemma | 1bit.MONSTER",
+    "score": 0.9294
+   }
+  ],
+  "1bit-post-announcement-ivisionsh79-deepseek-v4-1-flash.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-terom-deepseek-v4-1-flash.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.9887
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-lightseekorg-kimi-k3-eagle3-1-mla.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.9738
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-libertaidai-deepseek-v4-1-flash-nvfp4.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9366
+   }
+  ],
+  "1bit-post-announcement-lightseekorg-kimi-k3-eagle3-1-mla.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-ivisionsh79-deepseek-v4-1-flash.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.9738
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-terom-deepseek-v4-1-flash.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.9703
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-libertaidai-deepseek-v4-1-flash-nvfp4.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9249
+   }
+  ],
+  "1bit-post-announcement-prannesshkva-isom-qwen2-5-coder-1-5b-instruct.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-aecetin-qwen-2-5-7b-polysurgery.html",
+    "title": "A new significant architecture arrived: Qwen | 1bit.MONSTER",
+    "score": 0.9706
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-aecetin-llama-3-2-3b-polysurgery.html",
+    "title": "A new significant architecture arrived: Llama | 1bit.MONSTER",
+    "score": 0.924
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-iznrsydn-legal-chatbot-llama3-finetuned.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9219
+   }
+  ],
+  "1bit-post-announcement-scikit-plots-minimind-3v.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-ubr-physical-ai-cosmos3-edge-nf4-bnb.html",
+    "title": "A new significant architecture arrived: cosmos3edge | 1bit.MONSTER",
+    "score": 0.9179
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-aecetin-llama-3-2-3b-polysurgery.html",
+    "title": "A new significant architecture arrived: Llama | 1bit.MONSTER",
+    "score": 0.9139
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-ivisionsh79-deepseek-v4-1-flash.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.9097
+   }
+  ],
+  "1bit-post-announcement-terom-deepseek-v4-1-flash.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-ivisionsh79-deepseek-v4-1-flash.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.9887
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-lightseekorg-kimi-k3-eagle3-1-mla.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.9703
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-libertaidai-deepseek-v4-1-flash-nvfp4.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9343
+   }
+  ],
+  "1bit-post-announcement-ubr-physical-ai-cosmos3-edge-nf4-bnb.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-lightseekorg-kimi-k3-eagle3-1-mla.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.92
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-scikit-plots-minimind-3v.html",
+    "title": "A new significant architecture arrived: minimindvlm | 1bit.MONSTER",
+    "score": 0.9179
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-announcement-ivisionsh79-deepseek-v4-1-flash.html",
+    "title": "A new significant architecture arrived: Deepseek | 1bit.MONSTER",
+    "score": 0.9152
    }
   ],
   "1bit-post-binary-formats.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8652
+    "score": 0.8775
    },
    {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.8429
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8566
    },
    {
     "url": "https://1bit.monster/1bit-post-tokenrouter.html",
     "title": "TokenRouter: token-level multi-backend inference | 1bit.MONSTER",
-    "score": 0.8397
+    "score": 0.8411
    }
   ],
-  "1bit-post-coding-agent.html": [
+  "1bit-post-byte-identical.html": [
    {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.83
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.9282
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8287
+    "score": 0.8914
    },
    {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.8118
+    "url": "https://1bit.monster/1bit-post-35b-moe-layout.html",
+    "title": "The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER",
+    "score": 0.8839
+   }
+  ],
+  "1bit-post-coding-agent.html": [
+   {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8441
+   },
+   {
+    "url": "https://1bit.monster/1bit-downloads.html",
+    "title": "1bit.MONSTER: Downloads",
+    "score": 0.8335
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-1775-models.html",
+    "title": "One engine, every model | 1bit.MONSTER",
+    "score": 0.8252
    }
   ],
   "1bit-post-dspark.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8828
+    "score": 0.8798
    },
    {
     "url": "https://1bit.monster/1bit-post-three-bugs.html",
     "title": "Three bugs that broke 97 tok/s | 1bit.MONSTER",
-    "score": 0.8589
+    "score": 0.8694
    },
    {
-    "url": "https://1bit.monster/1bit-post-halo-reviews.html",
-    "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
-    "score": 0.8503
+    "url": "https://1bit.monster/1bit-post-50t.html",
+    "title": "50 TOPS on a laptop | 1bit.MONSTER",
+    "score": 0.8519
    }
   ],
   "1bit-post-fleet.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8798
+    "score": 0.8791
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8591
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8449
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8438
+    "score": 0.8473
    }
   ],
   "1bit-post-flm-zoo.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8625
+    "score": 0.8661
    },
    {
-    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
-    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8258
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8554
    },
    {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8242
+    "url": "https://1bit.monster/1bit-post-qwen36.html",
+    "title": "Qwen3.6-35B-A3B streams fully on the Ryzen AI NPU | 1bit.MONSTER",
+    "score": 0.8541
    }
   ],
   "1bit-post-fused.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8876
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-sprint.html",
-    "title": "244 to 3.4 ms/tok: the NPU optimization sprint | 1bit.MONSTER",
-    "score": 0.8752
+    "score": 0.8874
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8529
+    "score": 0.8691
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-sprint.html",
+    "title": "244 to 3.4 ms/tok: the NPU optimization sprint | 1bit.MONSTER",
+    "score": 0.8659
    }
   ],
   "1bit-post-halo-reviews.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8936
+    "score": 0.8932
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8829
+    "score": 0.8814
    },
    {
-    "url": "https://1bit.monster/1bit-post-qwen36.html",
-    "title": "Qwen3.6-35B-A3B streams fully on the Ryzen AI NPU | 1bit.MONSTER",
-    "score": 0.8675
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8608
    }
   ],
   "1bit-post-historical.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.7972
+    "score": 0.8327
    },
    {
     "url": "https://1bit.monster/1bit-post-three-bugs.html",
     "title": "Three bugs that broke 97 tok/s | 1bit.MONSTER",
-    "score": 0.7911
+    "score": 0.8214
    },
    {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.7836
+    "url": "https://1bit.monster/1bit-post-sprint.html",
+    "title": "244 to 3.4 ms/tok: the NPU optimization sprint | 1bit.MONSTER",
+    "score": 0.8211
    }
   ],
   "1bit-post-hrx-engine.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.9025
+    "score": 0.9148
    },
    {
-    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
-    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8749
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.9066
    },
    {
-    "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
-    "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
-    "score": 0.8698
+    "url": "https://1bit.monster/1bit-post-lemonade-v1190.html",
+    "title": "Lemonade v11.9.0: the origin-hardening release \u2014 and upstream took our HRX backend | 1bit.MONSTER",
+    "score": 0.8926
    }
   ],
   "1bit-post-lemonade-v1170.html": [
    {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1190.html",
+    "title": "Lemonade v11.9.0: the origin-hardening release \u2014 and upstream took our HRX backend | 1bit.MONSTER",
+    "score": 0.911
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1181.html",
+    "title": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.8959
+   },
+   {
     "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
     "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
-    "score": 0.8998
-   },
-   {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8645
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-hrx-engine.html",
-    "title": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER",
-    "score": 0.8508
+    "score": 0.8937
    }
   ],
   "1bit-post-lemonade-v1180.html": [
    {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1181.html",
+    "title": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.9886
+   },
+   {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.9056
+    "score": 0.9133
    },
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1190.html",
+    "title": "Lemonade v11.9.0: the origin-hardening release \u2014 and upstream took our HRX backend | 1bit.MONSTER",
+    "score": 0.8962
+   }
+  ],
+  "1bit-post-lemonade-v1181.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
+    "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.9886
+   },
+   {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.9154
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1190.html",
+    "title": "Lemonade v11.9.0: the origin-hardening release \u2014 and upstream took our HRX backend | 1bit.MONSTER",
+    "score": 0.9042
+   }
+  ],
+  "1bit-post-lemonade-v1190.html": [
    {
     "url": "https://1bit.monster/1bit-post-lemonade-v1170.html",
-    "title": "Lemonade v11.7.0: how we stay current with the SDK | 1bit.MONSTER",
-    "score": 0.8998
+    "title": "Lemonade v11.7.0, and how we stay current with the SDK | 1bit.MONSTER",
+    "score": 0.911
    },
    {
-    "url": "https://1bit.monster/1bit-post-hrx-engine.html",
-    "title": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER",
-    "score": 0.8698
+    "url": "https://1bit.monster/1bit-post-lemonade-v1181.html",
+    "title": "Lemonade v11.8.1: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.9042
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
+    "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
+    "score": 0.8962
    }
   ],
   "1bit-post-local-rag.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8689
+    "score": 0.8592
    },
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8466
+    "score": 0.8373
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8446
+    "score": 0.836
    }
   ],
   "1bit-post-npu-reversal.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.922
+    "score": 0.9212
    },
    {
-    "url": "https://1bit.monster/1bit-post-sprint.html",
-    "title": "244 to 3.4 ms/tok: the NPU optimization sprint | 1bit.MONSTER",
-    "score": 0.9008
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.9066
    },
    {
-    "url": "https://1bit.monster/1bit-post-halo-reviews.html",
-    "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
-    "score": 0.8936
+    "url": "https://1bit.monster/1bit-post-three-bugs.html",
+    "title": "Three bugs that broke 97 tok/s | 1bit.MONSTER",
+    "score": 0.9024
    }
   ],
   "1bit-post-npu-v12.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8642
+    "score": 0.8839
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8792
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8614
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-sprint.html",
-    "title": "244 to 3.4 ms/tok: the NPU optimization sprint | 1bit.MONSTER",
-    "score": 0.8343
+    "score": 0.8757
    }
   ],
   "1bit-post-one-engine.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8642
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-rocm-vs-cuda.html",
-    "title": "ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER",
-    "score": 0.8587
+    "score": 0.8537
    },
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8337
+    "score": 0.8444
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-rocm-vs-cuda.html",
+    "title": "ROCm vs CUDA, from the 1-bit trenches | 1bit.MONSTER",
+    "score": 0.8307
    }
   ],
   "1bit-post-qwen36.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8755
+    "score": 0.8884
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8824
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8715
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-halo-reviews.html",
-    "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
-    "score": 0.8675
+    "score": 0.8756
    }
   ],
   "1bit-post-rocm-vs-cuda.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.909
+    "score": 0.8936
    },
    {
-    "url": "https://1bit.monster/1bit-post-halo-reviews.html",
-    "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
-    "score": 0.864
+    "url": "https://1bit.monster/1bit-post-qwen36.html",
+    "title": "Qwen3.6-35B-A3B streams fully on the Ryzen AI NPU | 1bit.MONSTER",
+    "score": 0.8743
    },
    {
-    "url": "https://1bit.monster/1bit-post-one-engine.html",
-    "title": "One engine. Every model. Any chip. | 1bit.MONSTER",
-    "score": 0.8587
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8618
+   }
+  ],
+  "1bit-post-significant-0x795e2795-vanta-alpha-26b-a4b-it-qat-w4a16-ct.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9801
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.979
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9787
+   }
+  ],
+  "1bit-post-significant-0xsero-glm-5-3-500b-exl3-3-0bpw.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.999
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9934
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-terom-glm-5-3.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9899
+   }
+  ],
+  "1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-500b-exl3-3-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.999
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9931
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-terom-glm-5-3.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9894
+   }
+  ],
+  "1bit-post-significant-a15846-deepseek-v4-fable.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+    "title": "The engine now runs DeepSeek V4 | 1bit.MONSTER",
+    "score": 0.9882
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9866
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-solstice-ai-deepseek-v4-flash-vision-exp-mxfp4.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.986
+   }
+  ],
+  "1bit-post-significant-aasim-m-daft-qwen2-5-coder-7b-instruct-checkpoint-2000.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-aasim-m-daft-qwen3-0-6b-checkpoint-4000.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.992
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9803
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9763
+   }
+  ],
+  "1bit-post-significant-aasim-m-daft-qwen3-0-6b-checkpoint-4000.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-aasim-m-daft-qwen2-5-coder-7b-instruct-checkpoint-2000.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.992
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9847
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9809
+   }
+  ],
+  "1bit-post-significant-aeronix-zzz-spasevila-7b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9818
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.98
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9799
+   }
+  ],
+  "1bit-post-significant-ahmadnawaz21-qwen2-5-1-5b-medical-qlora-dpo.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9865
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-muhhendri12-qwen2-5-3b-legal-id-grpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9861
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9852
+   }
+  ],
+  "1bit-post-significant-amad-iq-amad-vlm6.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9829
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9819
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9814
+   }
+  ],
+  "1bit-post-significant-ankitbirgurung-granite-4-2-8b-boardpolitics.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-noodcon-safetensors-granite-4-0-improved-enhanced-refined.html",
+    "title": "The engine now runs Granite | 1bit.MONSTER",
+    "score": 0.9809
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-madiaxa-granite-4-2-3b-openvino.html",
+    "title": "The engine now runs Granite | 1bit.MONSTER",
+    "score": 0.9798
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9318
+   }
+  ],
+  "1bit-post-significant-anonimxxx-qwen3-6-35b-a3b-uncensored-hauhaucs-aggressive.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9796
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9794
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9794
+   }
+  ],
+  "1bit-post-significant-anthori-glm-5-3-flash-exl3-q8core-q3q4q6.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-glm-5-3-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9886
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9885
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9883
+   }
+  ],
+  "1bit-post-significant-archspace-collection-ncp-archpreview-dolma3-8-9b-stage1-step1300000.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-olmo3-3b-stage4-instruct.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9879
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-olmo3-3b-siamesenorm-depthattention-stage4-instruct.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9823
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ganscs-olmo7b-olmo-a100-new-20260908-cpt-merged-step-750.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9809
+   }
+  ],
+  "1bit-post-significant-archspace-collection-olmo3-3b-siamesenorm-depthattention-stage4-instruct.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-olmo3-3b-stage4-instruct.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9904
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-ncp-archpreview-dolma3-8-9b-stage1-step1300000.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9823
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9778
+   }
+  ],
+  "1bit-post-significant-archspace-collection-olmo3-3b-stage4-instruct.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-olmo3-3b-siamesenorm-depthattention-stage4-instruct.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9904
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-ncp-archpreview-dolma3-8-9b-stage1-step1300000.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9879
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9836
+   }
+  ],
+  "1bit-post-significant-arefehrajabian-phi-finetune-reasoning-plus-16bit.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9817
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.981
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-raghav-singhal-1pp-1-7b-ua-seed42-sft.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9785
+   }
+  ],
+  "1bit-post-significant-aurigene-ai-biomistral-7b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-yamatazen-himeyuri-magnum-12b-hereticlora.html",
+    "title": "The engine now runs Mistral | 1bit.MONSTER",
+    "score": 0.9778
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9392
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9374
+   }
+  ],
+  "1bit-post-significant-automatosx-ax-ornith-1-5-35b-a3b-mlx-axq-6bit-mtp.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-forgeguard-ai-ornith-1-5-35b-a3b-nvfp4.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9774
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9733
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9723
+   }
+  ],
+  "1bit-post-significant-bosonicjustin-transcendent-logic-model.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9812
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9811
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-raghav-singhal-1pp-1-7b-ua-seed42-sft.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9786
+   }
+  ],
+  "1bit-post-significant-brennercruvinel-truw-rwkv7-2-9b-v3.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9368
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9352
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-wing22-lvr-align-v2-1000.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9344
+   }
+  ],
+  "1bit-post-significant-bullerwins-glm-5-3-flash-exl3-4bpw-ablit.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-cont1037-glm-4-6v-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9873
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-glm-5-3-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9868
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9861
+   }
+  ],
+  "1bit-post-significant-chinook416-caracat-pro.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-a15846-deepseek-v4-fable.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9798
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.974
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-solstice-ai-deepseek-v4-flash-vision-exp-mxfp4.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9729
+   }
+  ],
+  "1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-solstice-ai-deepseek-v4-flash-vision-exp-mxfp4.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9891
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+    "title": "The engine now runs DeepSeek V4 | 1bit.MONSTER",
+    "score": 0.9891
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-a15846-deepseek-v4-fable.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9866
+   }
+  ],
+  "1bit-post-significant-coder40-95-glm-5-3-flash.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-cont1037-glm-4-6v-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9933
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9901
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-anthori-glm-5-3-flash-exl3-q8core-q3q4q6.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9886
+   }
+  ],
+  "1bit-post-significant-con-cord-grpo-mod2adv-sft-agreed-no-ref.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.977
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-neutrypl-neutry-functiongemma-270m-v2.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9736
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-endersand-gemma-4-12b-styletune.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9725
+   }
+  ],
+  "1bit-post-significant-cont1037-glm-4-6v-flash.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-glm-5-3-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9933
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9906
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-fluxmire-glm-4-6v-flash-fp8-dynamic.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9886
+   }
+  ],
+  "1bit-post-significant-darmm-darmm-ocr-kazakh-vl-3b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9755
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9749
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9743
+   }
+  ],
+  "1bit-post-significant-deepseek-ai-deepseek-v4-flash.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9891
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-solstice-ai-deepseek-v4-flash-vision-exp-mxfp4.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.989
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-a15846-deepseek-v4-fable.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9882
+   }
+  ],
+  "1bit-post-significant-defiobi00-glm-5-3-derisked-int4-int8mix.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9883
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-500b-exl3-3-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9854
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9853
+   }
+  ],
+  "1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-500b-exl3-3-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9934
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9931
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-dripghad1223-glm-5-3-cybersecurity-fp8.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9903
+   }
+  ],
+  "1bit-post-significant-dharun2049-kaveri-stgrpo-0-5b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ahmadnawaz21-qwen2-5-1-5b-medical-qlora-dpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9817
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-muhhendri12-qwen2-5-3b-legal-id-grpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9801
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9798
+   }
+  ],
+  "1bit-post-significant-dripghad1223-glm-5-3-cybersecurity-fp8.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9903
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-500b-exl3-3-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9884
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9883
+   }
+  ],
+  "1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-olmo3-3b-stage4-instruct.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9836
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ganscs-olmo7b-olmo-a100-new-20260908-cpt-merged-step-750.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9819
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-ncp-archpreview-dolma3-8-9b-stage1-step1300000.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9801
+   }
+  ],
+  "1bit-post-significant-earlychildhoodeducation-elemo-v3-base.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9827
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9821
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9808
+   }
+  ],
+  "1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9845
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-endersand-gemma-4-12b-styletune.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9831
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-imtixz-gemma-2-2b-it-sleeper-multi-token-fixed-string-poison5pct.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9819
+   }
+  ],
+  "1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9877
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-midm-2-0-mini-instruct-w4a16.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9868
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-raghav-singhal-1pp-1-7b-ua-seed42-sft.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9833
+   }
+  ],
+  "1bit-post-significant-emese-tech-patak.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9806
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9795
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-midm-2-0-mini-instruct-w4a16.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9781
+   }
+  ],
+  "1bit-post-significant-endersand-gemma-4-12b-styletune.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9848
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9831
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9824
+   }
+  ],
+  "1bit-post-significant-falconzypp-qwen3-8-flash-next-awq-int4.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9883
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9839
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9834
+   }
+  ],
+  "1bit-post-significant-fluxmire-glm-4-6v-flash-fp8-dynamic.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-cont1037-glm-4-6v-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9886
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9846
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-glm-5-3-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9844
+   }
+  ],
+  "1bit-post-significant-forgeguard-ai-ornith-1-5-35b-a3b-nvfp4.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-automatosx-ax-ornith-1-5-35b-a3b-mlx-axq-6bit-mtp.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9774
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9774
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9767
+   }
+  ],
+  "1bit-post-significant-ganscs-olmo7b-olmo-a100-new-20260908-cpt-merged-step-750.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9819
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-ncp-archpreview-dolma3-8-9b-stage1-step1300000.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9809
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-olmo3-3b-stage4-instruct.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.9806
+   }
+  ],
+  "1bit-post-significant-hariharasudhan-en-indic-translate-26b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9792
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9779
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9771
+   }
+  ],
+  "1bit-post-significant-harithsami-qwen2-5-7b-instruct-arabic-yt-merged.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9794
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ahmadnawaz21-qwen2-5-1-5b-medical-qlora-dpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9789
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9786
+   }
+  ],
+  "1bit-post-significant-hawkbearpig-glm-5-3-flash-nvfp4-fp8.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-cont1037-glm-4-6v-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9862
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9859
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-glm-5-3-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9858
+   }
+  ],
+  "1bit-post-significant-healshsj-smollm3-3b-claude-fable5.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-smshahbaj-rifa-pro-3b.html",
+    "title": "The engine now runs Smollm | 1bit.MONSTER",
+    "score": 0.9877
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9441
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-dripghad1223-glm-5-3-cybersecurity-fp8.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9396
+   }
+  ],
+  "1bit-post-significant-herrhruby-mr-midtrain-9b-v4-quarter.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9866
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9856
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9842
+   }
+  ],
+  "1bit-post-significant-hyu-nlp-eval-qwen3-4b-rar-medicine-onlinerubrics-seed11-step-045.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9815
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9789
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9787
+   }
+  ],
+  "1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-endersand-gemma-4-12b-styletune.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9848
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9845
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9813
+   }
+  ],
+  "1bit-post-significant-idrock-aruz.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-endersand-gemma-4-12b-styletune.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9771
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9769
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9762
+   }
+  ],
+  "1bit-post-significant-ikppramesh-irx-1.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-jjarvinen-qwen3-5-2b-eu-tool-jarvis-compact-v1-1.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9807
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-just1nseo-qwen3-4b-ifrlvr-grpo-judge-30ba3b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9789
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9788
+   }
+  ],
+  "1bit-post-significant-imtixz-gemma-2-2b-it-sleeper-multi-token-fixed-string-poison5pct.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9819
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-titanfrm-gemma-4-e4b-it-uncensored-heretic.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9771
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9769
+   }
+  ],
+  "1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-falconzypp-qwen3-8-flash-next-awq-int4.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9883
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.985
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9841
+   }
+  ],
+  "1bit-post-significant-iznrsydn-legal-chatbot-llama3-finetuned.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ahmadnawaz21-qwen2-5-1-5b-medical-qlora-dpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9821
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9817
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9811
+   }
+  ],
+  "1bit-post-significant-jjarvinen-qwen3-5-2b-eu-tool-jarvis-compact-v1-1.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9844
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9836
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9833
+   }
+  ],
+  "1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-endersand-gemma-4-12b-styletune.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9824
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9813
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0x795e2795-vanta-alpha-26b-a4b-it-qat-w4a16-ct.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9801
+   }
+  ],
+  "1bit-post-significant-joincrksilverb-nemotron-mini-4b-instruct.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-spangler3000-nvidia-nemotron-3-5-lightning-30b-a3b-mlx-4bit-mtp.html",
+    "title": "The engine now runs Nemotron | 1bit.MONSTER",
+    "score": 0.9787
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-archspace-collection-olmo3-3b-stage4-instruct.html",
+    "title": "The engine now runs Olmo | 1bit.MONSTER",
+    "score": 0.932
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-aurigene-ai-biomistral-7b.html",
+    "title": "The engine now runs Mistral | 1bit.MONSTER",
+    "score": 0.9278
+   }
+  ],
+  "1bit-post-significant-joyfulxp-deepseek-v4-flash-vision-exp-abliterated.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9863
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-solstice-ai-deepseek-v4-flash-vision-exp-mxfp4.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9861
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+    "title": "The engine now runs DeepSeek V4 | 1bit.MONSTER",
+    "score": 0.9839
+   }
+  ],
+  "1bit-post-significant-just1nseo-qwen3-4b-ifrlvr-grpo-judge-30ba3b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-muhhendri12-qwen2-5-3b-legal-id-grpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9884
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9869
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9864
+   }
+  ],
+  "1bit-post-significant-libertaidai-deepseek-v4-1-flash-nvfp4.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+    "title": "The engine now runs DeepSeek V4 | 1bit.MONSTER",
+    "score": 0.988
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-a15846-deepseek-v4-fable.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.986
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9856
+   }
+  ],
+  "1bit-post-significant-madiaxa-granite-4-2-3b-openvino.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ankitbirgurung-granite-4-2-8b-boardpolitics.html",
+    "title": "The engine now runs Granite | 1bit.MONSTER",
+    "score": 0.9798
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-noodcon-safetensors-granite-4-0-improved-enhanced-refined.html",
+    "title": "The engine now runs Granite | 1bit.MONSTER",
+    "score": 0.9734
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-pgmharikrishnan-grug-35b-v2-mlx-4bit.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9299
+   }
+  ],
+  "1bit-post-significant-midnightphreaker-qwen3-8-flash-next-reap-384-exl3-4-00bpw-original-mtp.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9805
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-falconzypp-qwen3-8-flash-next-awq-int4.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9798
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9777
+   }
+  ],
+  "1bit-post-significant-minjaechoi-midm-2-0-mini-instruct-w4a16.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9868
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9836
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-raghav-singhal-1pp-1-7b-ua-seed42-sft.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9804
+   }
+  ],
+  "1bit-post-significant-minjaechoi-phi-4-mini-instruct-w4a16.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9454
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-thuyduongjoe123-checkpoints-en-my-logit.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9373
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9364
+   }
+  ],
+  "1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9905
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9892
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-herrhruby-mr-midtrain-9b-v4-quarter.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9866
+   }
+  ],
+  "1bit-post-significant-mlx-community-bigbang-v1-mlx-oq4e.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9834
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9819
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9815
+   }
+  ],
+  "1bit-post-significant-mobilint-llama-3-2-1b-instruct-regulus-rb-usb.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9818
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-midm-2-0-mini-instruct-w4a16.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9783
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9769
+   }
+  ],
+  "1bit-post-significant-muhhendri12-qwen2-5-3b-legal-id-grpo.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-just1nseo-qwen3-4b-ifrlvr-grpo-judge-30ba3b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9884
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ahmadnawaz21-qwen2-5-1-5b-medical-qlora-dpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9861
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9857
+   }
+  ],
+  "1bit-post-significant-neutrypl-neutry-functiongemma-270m-v2.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9814
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-endersand-gemma-4-12b-styletune.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9795
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9792
+   }
+  ],
+  "1bit-post-significant-noodcon-safetensors-granite-4-0-improved-enhanced-refined.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ankitbirgurung-granite-4-2-8b-boardpolitics.html",
+    "title": "The engine now runs Granite | 1bit.MONSTER",
+    "score": 0.9809
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-madiaxa-granite-4-2-3b-openvino.html",
+    "title": "The engine now runs Granite | 1bit.MONSTER",
+    "score": 0.9734
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9241
+   }
+  ],
+  "1bit-post-significant-pgmharikrishnan-grug-35b-v2-mlx-4bit.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9816
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-muhhendri12-qwen2-5-3b-legal-id-grpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9815
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-just1nseo-qwen3-4b-ifrlvr-grpo-judge-30ba3b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9809
+   }
+  ],
+  "1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9916
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9905
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-ttimms-bible-assistant-qwen3-5-4b-v3-2.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9873
+   }
+  ],
+  "1bit-post-significant-raghav-singhal-1pp-1-7b-ua-seed42-sft.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9833
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9828
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-midm-2-0-mini-instruct-w4a16.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9804
+   }
+  ],
+  "1bit-post-significant-ram-lexsi-safetune-testrun-unlearn-rmu.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9778
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9763
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9763
+   }
+  ],
+  "1bit-post-significant-ramazanoff34-neo-one-lite.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9833
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9823
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9802
+   }
+  ],
+  "1bit-post-significant-saifiindustries-qwen3-5-35b-a3b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9868
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9846
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9844
+   }
+  ],
+  "1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-cont1037-glm-4-6v-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9906
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-glm-5-3-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9901
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-anthori-glm-5-3-flash-exl3-q8core-q3q4q6.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9885
+   }
+  ],
+  "1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9867
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.986
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9847
+   }
+  ],
+  "1bit-post-significant-smshahbaj-rifa-pro-3b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-healshsj-smollm3-3b-claude-fable5.html",
+    "title": "The engine now runs Smollm | 1bit.MONSTER",
+    "score": 0.9877
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.941
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9374
+   }
+  ],
+  "1bit-post-significant-solstice-ai-deepseek-v4-flash-vision-exp-mxfp4.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9891
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+    "title": "The engine now runs DeepSeek V4 | 1bit.MONSTER",
+    "score": 0.989
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-joyfulxp-deepseek-v4-flash-vision-exp-abliterated.html",
+    "title": "The engine now runs Deepseek | 1bit.MONSTER",
+    "score": 0.9861
+   }
+  ],
+  "1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9877
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-midm-2-0-mini-instruct-w4a16.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9836
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-raghav-singhal-1pp-1-7b-ua-seed42-sft.html",
+    "title": "The engine now runs Llama | 1bit.MONSTER",
+    "score": 0.9828
+   }
+  ],
+  "1bit-post-significant-spangler3000-nvidia-nemotron-3-5-lightning-30b-a3b-mlx-4bit-mtp.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-joincrksilverb-nemotron-mini-4b-instruct.html",
+    "title": "The engine now runs Nemotron | 1bit.MONSTER",
+    "score": 0.9787
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-aurigene-ai-biomistral-7b.html",
+    "title": "The engine now runs Mistral | 1bit.MONSTER",
+    "score": 0.9258
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-yamatazen-himeyuri-magnum-12b-hereticlora.html",
+    "title": "The engine now runs Mistral | 1bit.MONSTER",
+    "score": 0.9218
+   }
+  ],
+  "1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9916
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9892
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9875
+   }
+  ],
+  "1bit-post-significant-terom-glm-5-3.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-500b-exl3-3-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9899
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9894
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9883
+   }
+  ],
+  "1bit-post-significant-thuyduongjoe123-checkpoints-en-my-logit.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9865
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9827
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9819
+   }
+  ],
+  "1bit-post-significant-titanfrm-gemma-4-e4b-it-uncensored-heretic.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9809
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.98
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-endersand-gemma-4-12b-styletune.html",
+    "title": "The engine now runs Gemma | 1bit.MONSTER",
+    "score": 0.9795
+   }
+  ],
+  "1bit-post-significant-ttimms-bible-assistant-qwen3-5-4b-v3-2.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9873
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9861
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9853
+   }
+  ],
+  "1bit-post-significant-wing22-lvr-align-v2-1000.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9857
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9835
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9834
+   }
+  ],
+  "1bit-post-significant-yamatazen-himeyuri-magnum-12b-hereticlora.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-aurigene-ai-biomistral-7b.html",
+    "title": "The engine now runs Mistral | 1bit.MONSTER",
+    "score": 0.9778
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-smshahbaj-rifa-pro-3b.html",
+    "title": "The engine now runs Smollm | 1bit.MONSTER",
+    "score": 0.9357
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-healshsj-smollm3-3b-claude-fable5.html",
+    "title": "The engine now runs Smollm | 1bit.MONSTER",
+    "score": 0.9348
+   }
+  ],
+  "1bit-post-significant-yuelinhu-gac-qwen3-5-4b.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9861
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9848
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9835
+   }
+  ],
+  "1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9875
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhongweixie-inplace-ttt-qwen3-4b-64k-baseline.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9867
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9864
+   }
+  ],
+  "1bit-post-significant-zhiyaowang-minicpm-sala-nvfp4-gptq.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-dripghad1223-glm-5-3-cybersecurity-fp8.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.9318
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-healshsj-smollm3-3b-claude-fable5.html",
+    "title": "The engine now runs Smollm | 1bit.MONSTER",
+    "score": 0.9305
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-cont1037-glm-4-6v-flash.html",
+    "title": "The engine now runs Glm | 1bit.MONSTER",
+    "score": 0.93
+   }
+  ],
+  "1bit-post-significant-zhongweixie-claw-rl-v13-grpo-dr-rubric.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-muhhendri12-qwen2-5-3b-legal-id-grpo.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9826
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9805
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9804
+   }
+  ],
+  "1bit-post-significant-zhongweixie-inplace-ttt-qwen3-4b-64k-baseline.html": [
+   {
+    "url": "https://1bit.monster/1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9867
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9851
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+    "title": "The engine now runs Qwen | 1bit.MONSTER",
+    "score": 0.9841
    }
   ],
   "1bit-post-sprint.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.9008
+    "score": 0.8916
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.877
+    "score": 0.8807
    },
    {
-    "url": "https://1bit.monster/1bit-post-fused.html",
-    "title": "The fused layer engine | 1bit.MONSTER",
-    "score": 0.8752
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8698
    }
   ],
   "1bit-post-three-bugs.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8798
+    "score": 0.9024
    },
    {
-    "url": "https://1bit.monster/1bit-post-dspark.html",
-    "title": "DSpark speculative decoding, disproven | 1bit.MONSTER",
-    "score": 0.8589
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8733
    },
    {
-    "url": "https://1bit.monster/1bit-post-halo-reviews.html",
-    "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
-    "score": 0.8588
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.8695
    }
   ],
   "1bit-post-tokenrouter.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8493
+    "score": 0.8581
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8518
    },
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8455
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-binary-formats.html",
-    "title": "One binary, all formats | 1bit.MONSTER",
-    "score": 0.8397
+    "score": 0.8499
    }
   ],
   "1bit-post-unsloth.html": [
    {
     "url": "https://1bit.monster/1bit-post-npu-reversal.html",
     "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.85
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-halo-reviews.html",
-    "title": "What the Ryzen AI Halo reviews didn't tell you | 1bit.MONSTER",
-    "score": 0.8474
+    "score": 0.8552
    },
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.842
+    "score": 0.855
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8459
+   }
+  ],
+  "1bit-post-zaya-q4nx-hrx.html": [
+   {
+    "url": "https://1bit.monster/1bit-blog.html",
+    "title": "1bit.MONSTER: Blog",
+    "score": 0.932
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-byte-identical.html",
+    "title": "Byte-identical: 1,000 tokens of proof against AMD's real runtime | 1bit.MONSTER",
+    "score": 0.9282
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-35b-moe-layout.html",
+    "title": "The 35B MoE's NPU packing: 5,120-byte tiles, 4,736-byte rows, and an A/B interleave | 1bit.MONSTER",
+    "score": 0.9154
    }
   ],
   "1bit-post-zyphra.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.828
+    "score": 0.8424
    },
    {
-    "url": "https://1bit.monster/docs-running.html",
-    "title": "1bit.MONSTER: Running the server",
-    "score": 0.8092
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8294
    },
    {
-    "url": "https://1bit.monster/1bit-post-binary-formats.html",
-    "title": "One binary, all formats | 1bit.MONSTER",
-    "score": 0.8077
+    "url": "https://1bit.monster/1bit-post-1775-models.html",
+    "title": "One engine, every model | 1bit.MONSTER",
+    "score": 0.8123
    }
   ],
   "1bit-store.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
-    "score": 0.8372
+    "score": 0.8388
+   },
+   {
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.8341
    },
    {
     "url": "https://1bit.monster/index.html",
     "title": "1bit.MONSTER",
-    "score": 0.8321
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-npu-reversal.html",
-    "title": "I reverse-engineered AMD's NPU stack in 4 days | 1bit.MONSTER",
-    "score": 0.8289
+    "score": 0.8291
    }
   ],
   "404.html": [
    {
+    "url": "https://1bit.monster/1bit-docs.html",
+    "title": "1bit.MONSTER: Documentation",
+    "score": 0.813
+   },
+   {
     "url": "https://1bit.monster/share.html",
     "title": "Share 1bit.MONSTER \u2014 trackable links",
     "score": 0.7662
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-coding-agent.html",
-    "title": "1bit Coding Agent released | 1bit.MONSTER",
-    "score": 0.6982
    },
    {
     "url": "https://1bit.monster/index.html",
@@ -562,123 +2415,38 @@
     "score": 0.6972
    }
   ],
-  "docs-building.html": [
-   {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8689
-   },
-   {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.8486
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-hrx-engine.html",
-    "title": "HRX: we put AMD's experimental IREE runtime inside our engine | 1bit.MONSTER",
-    "score": 0.8409
-   }
-  ],
-  "docs-getting-started.html": [
-   {
-    "url": "https://1bit.monster/docs-jarvis.html",
-    "title": "1bit.MONSTER: JARVIS",
-    "score": 0.8973
-   },
-   {
-    "url": "https://1bit.monster/1bit-jarvis.html",
-    "title": "1bit.MONSTER: 1bit JARVIS",
-    "score": 0.8966
-   },
-   {
-    "url": "https://1bit.monster/1bit-monster-v2.html",
-    "title": "1bit.MONSTER: One engine. Any model. Zero Python.",
-    "score": 0.886
-   }
-  ],
-  "docs-jarvis.html": [
-   {
-    "url": "https://1bit.monster/1bit-jarvis.html",
-    "title": "1bit.MONSTER: 1bit JARVIS",
-    "score": 0.9352
-   },
-   {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.8973
-   },
+  "index.html": [
    {
     "url": "https://1bit.monster/1bit-blog.html",
     "title": "1bit.MONSTER: Blog",
     "score": 0.8477
-   }
-  ],
-  "docs-models.html": [
-   {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8537
    },
-   {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8508
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-1bit-explained.html",
-    "title": "What 1-bit actually does to a model | 1bit.MONSTER",
-    "score": 0.8383
-   }
-  ],
-  "docs-running.html": [
-   {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8489
-   },
-   {
-    "url": "https://1bit.monster/docs-getting-started.html",
-    "title": "1bit.MONSTER: Getting started",
-    "score": 0.8471
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-lemonade-v1180.html",
-    "title": "Lemonade v11.8.0: the 15-backend SDK lands ds4 for Strix Halo | 1bit.MONSTER",
-    "score": 0.8314
-   }
-  ],
-  "index.html": [
    {
     "url": "https://1bit.monster/1bit-monster-v2.html",
     "title": "1bit.MONSTER: One engine. Any model. Zero Python.",
-    "score": 0.8615
-   },
-   {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.8534
+    "score": 0.8426
    },
    {
     "url": "https://1bit.monster/1bit-post-1775-models.html",
     "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.8412
+    "score": 0.8406
    }
   ],
   "search.html": [
    {
     "url": "https://1bit.monster/1bit-post-local-rag.html",
     "title": "Local RAG with our own embeddings | 1bit.MONSTER",
-    "score": 0.7333
+    "score": 0.7442
    },
    {
-    "url": "https://1bit.monster/1bit-blog.html",
-    "title": "1bit.MONSTER: Blog",
-    "score": 0.6738
+    "url": "https://1bit.monster/1bit-post-zaya-q4nx-hrx.html",
+    "title": "Zaya 8B Q4NX on the AMD NPU | 1bit.MONSTER",
+    "score": 0.6883
    },
    {
-    "url": "https://1bit.monster/docs-models.html",
-    "title": "1bit.MONSTER: Model families",
-    "score": 0.6617
+    "url": "https://1bit.monster/1bit-post-lemonade-v1190.html",
+    "title": "Lemonade v11.9.0: the origin-hardening release \u2014 and upstream took our HRX backend | 1bit.MONSTER",
+    "score": 0.6875
    }
   ],
   "share.html": [
@@ -693,26 +2461,26 @@
     "score": 0.73
    },
    {
-    "url": "https://1bit.monster/1bit-post-coding-agent.html",
-    "title": "1bit Coding Agent released | 1bit.MONSTER",
-    "score": 0.7224
+    "url": "https://1bit.monster/1bit-downloads.html",
+    "title": "1bit.MONSTER: Downloads",
+    "score": 0.7287
    }
   ],
   "sticker-gallery.html": [
    {
     "url": "https://1bit.monster/1bit-store.html",
     "title": "1bit.MONSTER: Store",
-    "score": 0.7625
+    "score": 0.7601
+   },
+   {
+    "url": "https://1bit.monster/1bit-downloads.html",
+    "title": "1bit.MONSTER: Downloads",
+    "score": 0.7591
    },
    {
     "url": "https://1bit.monster/1bit-post-coding-agent.html",
     "title": "1bit Coding Agent released | 1bit.MONSTER",
-    "score": 0.7533
-   },
-   {
-    "url": "https://1bit.monster/1bit-post-1775-models.html",
-    "title": "One engine, every model | 1bit.MONSTER",
-    "score": 0.7395
+    "score": 0.743
    }
   ]
  }
