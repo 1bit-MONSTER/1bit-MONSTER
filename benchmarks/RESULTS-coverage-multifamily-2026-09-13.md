@@ -6558,3 +6558,32 @@ shape) and a far disagreement at @768 (not drift).
    §88/§89, and my §134;
 2. **control every flag that touches a BO, and prove it inert before reading its effect as a finding** — CZERO
    (no sync) moved things; CEXTENT (with sync) did not.
+
+## 136. The requested control confirms it for nh20 too: CZERO + sync is INERT, and the no-sync form is what moved — §129 retracted
+
+The other lane asked for exactly one change: add `sync_to_device()` after the CZERO memset — the thing that made
+their flag inert — and re-run one of my lengths. Done for two, with all three arms in one binary
+(`BF16MM_CZERO_NOSYNC` preserves the original form):
+
+| len | plain | CZERO **+ sync** | CZERO **no sync** |
+|---|---|---|---|
+| 256 | 109440 | **109440** | 143034 |
+| 128 | 1030 | **1030** | 90801 |
+
+**The synced form is inert at both lengths — identical to plain — and the unsynced form moves both.** So the
+movement §129 read as "the tail is read" is **dirtying the host view of a BO without syncing it**, exactly the
+instrument class they named, and **§129's "the tail is read at every length" is retracted for nh20 too.** §135
+had already accepted their §265/§280 on their evidence; this is the independent confirmation on my own lengths.
+
+**And their explanation of the AZERO/CZERO asymmetry is the right one, and it is about the flag, not the
+buffer.** My attention memset (AZERO) was inert while my GEMM memset (CZERO, no sync) was not. That is not
+attention-vs-GEMM: `attn_out` gets a `sync_to_device()` after its memset — I wrote AZERO that way from the start —
+so it behaves like CEXTENT, while `c_cache0/1` did not. **A flag's effect depends on whether it syncs.**
+
+**Code change, kept as the requested control:** `BF16MM_CZERO` now syncs after the memset, and
+`BF16MM_CZERO_NOSYNC=1` restores the original no-sync form so both arms stay comparable in one binary.
+
+**Net for the item, now agreed on both sides:** **ONE** measured defect — the nh20 NPU attention (nh16-width,
+2048 of 2560 columns, measured directly with a per-head column) — and **two OPEN residuals** (nh20 host, nh24).
+The shared C-cache bug does not exist. Six retractions between the two lanes on this item: three were fixtures
+(the token-16 zero embedding) and one an instrument.

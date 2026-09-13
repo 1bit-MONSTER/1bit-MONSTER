@@ -629,8 +629,13 @@ struct Bf16Mm {
         // read-back either correct or ZERO, so a CHANGE is the signal that the tail was being read.
         // RESULTS-coverage-multifamily 225/230.
         if (getenv("BF16MM_CZERO")) {
-            if (batch == 0) memset(c_cache0->data(), 0, c_elems * 2);
-            else            memset(c_cache1->data(), 0, c_elems * 2);
+            // BF16MM_CZERO_NOSYNC restores the ORIGINAL (pre-control) form: memset the host view and do
+            // NOT sync it. The other lane's controlled A/B showed that the no-sync form MOVES both models
+            // while the synced form is inert -- i.e. the movement was dirtying a BO's host view, not a
+            // stale-tail read. RESULTS-coverage-multifamily 265/280/135.
+            const bool nosync = getenv("BF16MM_CZERO_NOSYNC") != nullptr;
+            if (batch == 0) { memset(c_cache0->data(), 0, c_elems * 2); if (!nosync) c_cache0->sync_to_device(); }
+            else            { memset(c_cache1->data(), 0, c_elems * 2); if (!nosync) c_cache1->sync_to_device(); }
         }
         // EXTENT diagnostic (BF16MM_CEXTENT=1): fill the output with a sentinel BEFORE the launch so that
         // gemm_wait can count exactly how many words the DEVICE changed. This is the measurement that
