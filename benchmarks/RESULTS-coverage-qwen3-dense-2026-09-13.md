@@ -134,3 +134,35 @@ gap needs SIMD/bit-exact fused host math (or less host traffic), not more thread
 | nh8/nkv1/hd256 | Gemma4-E2B/E4B | not run | capture (hd256) |
 | MoE | Qwen3.6-35B-A3B | not run | capture (MoE layer ELFs) |
 | no engine | LFM2-1.2B/2.6B | not run | build engine first |
+
+## 8. npt-dependent host-thread default (2026-09-13)
+
+A flat `host_threads()==8` was wrong for long context. Sweep @1024 (native bf16 prefill):
+
+| model | 4 thr | 8 thr | **16 thr** | 32 thr |
+|---|---|---|---|---|
+| Qwen3-0.6B | — | 675 ms | **658 ms** | — |
+| Qwen3-1.7B | — | 1117 ms | **1076 ms** | — |
+| Qwen3-4B | 2616 ms | 2401 ms | **2211 ms** | 5319 ms |
+| Qwen3-8B | — | 3472 ms | **3181 ms** | — |
+
+But @256 the ordering flips (0.6B: 8 thr 324–328 ms vs 16 thr 336 ms). So
+`host_threads()` now defaults to **16 for npt > 256, else 8** (env `NPU_HOST_THREADS`
+still wins; measured back: default@256 = 325/335/325 ms ≈ t=8, default@1024 ≈ t=16).
+
+### Updated dense-Qwen3 scorecard @1k (after loop parallelization + thread default)
+
+| model | native prefill | FLM on-box | gap | (was, §2) |
+|---|---|---|---|---|
+| Qwen3-0.6B | **1536 tok/s** (667 ms) | 1123.1 | **+36.8%** | +28.3% |
+| Qwen3-1.7B | **948 tok/s** (1081 ms) | 942.6 | **+0.5%** | −13.3% |
+| Qwen3-4B | **465 tok/s** (2200 ms) | 510.0 | **−8.8%** | −15.6% |
+| Qwen3-8B | **319 tok/s** (3207 ms) | 362.8 | **−12.0%** | −22.4% |
+
+Boot tokens unchanged (25/220/220/220). So Qwen3-1.7B now **meets** FLM on prefill, and
+the 4B/8B gaps roughly halved.
+
+**Caveat:** this box is contended — `flm serve qwen3.6-moe:35b-a3b` (pid 285847) and
+`llama-server` (pid 344571) both hold `/dev/accel/accel0`, so run-to-run variance is
+several percent (e.g. 0.6B @256 repeats: 325/335/325 ms). Treat single-run deltas under
+~5% as noise; the thread ordering and the 4B/8B gains are larger than that.
