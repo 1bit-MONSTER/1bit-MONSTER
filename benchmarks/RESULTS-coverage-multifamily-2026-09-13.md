@@ -2018,3 +2018,43 @@ the difference — the short-conv's **position or interleave** is.
 ones) pack **byte-identically**, and the conv layers differ **only** in the short-conv block's ordering,
 with all its tiles present and correct. That is a specific, findable target — and the tiles are
 identifiable as a set, so FLM's placement of them can be read off directly.
+
+## 41. LFM2's short-conv block goes FIRST — layout read off FLM, and the packing is now byte-identical
+
+The section-40 result located the difference in one block. Here is where FLM actually puts the engine's
+blocks, read directly rather than inferred:
+
+| engine block | engine offset | FLM placement |
+|---|---|---|
+| shortconv.in_proj (1536 tiles) | 6144 | **0 .. 1535** |
+| shortconv.out_proj (512) | 7680 | **1536 .. 2047** |
+| gate/up (4096) | 0 | 2048 .. 6143 |
+| down (2048) | 4096 | 6144 .. 8191 |
+
+**So FLM's conv-layer layout is `[sp][so][gu][d]` — the short-conv comes FIRST** — while the engine
+appended it *after* down_proj. Every block's **internal** tile order is identical (sp's first eight land
+at 0..7, so's at 1536..1543), so this is a pure **block reordering**, not an interleave difference.
+
+Fixed (`off_sp = 0`, then `so`, `q`, `k`, `v`, `o`, `gu`, `d`). Attention layers have no short-conv, so
+their layout is unchanged — which is correct, since section 40 showed they were **already** byte-identical.
+
+**Verified: the conv layer is now 8,192 of 8,192 tiles IN ORDER in FLM's BO** (was 6,144 of 8,192).
+Together with section 40, **LFM2's layer-BO packing is now fully correct.**
+
+**Regression clean and provably a no-op elsewhere:** Qwen3-0.6B 25, Qwen3-4B 220, Llama-3.1-8B 220 — all
+unchanged, because a model with no `shortconv.*` has `sp_t = so_t = 0`, which leaves `off_q = 0` exactly
+as before.
+
+**And the native LFM2 boot moved from 63260 to 5242.** It is still not the **708** that FLM's reference
+produces for that prompt, because **the conv compute is still absent** — conv layers run through the
+attention path. So the packing bug was **necessary but not sufficient**, and the route table in section 36
+now reads:
+
+| route | blocker |
+|---|---|
+| bf16mm | **packing: CLEARED (this section)** · still needs the conv compute and LFM2's GEMM shapes |
+| runlist | needs a per-ctx sequence class that FLM does not ship |
+| FLM's fixed kernels | available — but it *is* the reference |
+
+That is the same shape of result the whole sweep has produced: a real bug, located by bytes rather than by
+reasoning, fixed, and verified against FLM's own BO — while leaving the next blocker standing and named.

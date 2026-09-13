@@ -272,15 +272,24 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     const int G_sp = (config->hidden_size + 127) / 128;  // in_proj:  K = H   -> G = H/128
     const int G_so = (config->hidden_size + 127) / 128;  // out_proj: K = H   -> G = H/128
 
-    const int off_q  = 0;
+    // LAYOUT, read off FLM's own BO (not inferred): for a conv layer the SHORT-CONV block comes
+    // FIRST, then gate/up and down. Measured placements of the engine's blocks in FLM's BO:
+    //   sp (1536 tiles) -> FLM 0..1535      so (512) -> FLM 1536..2047
+    //   gu (4096)       -> FLM 2048..6143   d (2048) -> FLM 6144..8191
+    // Every block's INTERNAL tile order is identical (sp's first eight land at 0..7, so's at
+    // 1536..1543), so this is a pure block reordering -- which is also why the earlier version,
+    // which appended the short-conv after down_proj, matched FLM for exactly the 6,144 tiles of
+    // the gu+d prefix and diverged for the rest.
+    // Attention layers have no short-conv, so their layout is unchanged: q,k,v,o,gu,d from 0.
+    const int off_sp = 0;                        // shortconv.in_proj  (conv layers only)
+    const int off_so = off_sp + sp_t;            // shortconv.out_proj
+    const int off_q  = off_so + so_t;
     const int off_k  = off_q + q_t;
     const int off_v  = off_k + k_t;
     const int off_o  = off_v + v_t;
     const int off_gu = off_o + o_t;
     const int off_d  = off_gu + up_t + gate_t;
-    const int off_sp = off_d + d_t;          // shortconv.in_proj  (conv layers only)
-    const int off_so = off_sp + sp_t;        // shortconv.out_proj (conv layers only)
-    const int total  = off_so + so_t;
+    const int total  = off_d + d_t;
 
     memset(bo_buffer, 0, (size_t)total * NPU_TILE_BYTES);
 
