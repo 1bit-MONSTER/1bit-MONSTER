@@ -80,11 +80,15 @@ claim to a flattering one.
    Trust the PR/artifact, not the doc's tail. The corr/tok-s figures here are
    #2172's own record; they were not re-measured in this pass (the NPU is held by
    the live thread).
-4. **`flm_parity.sh` decode column.** It prints `2` because the decode
-   invocation feeds the whole prompt through the per-token `NPU_RUNLIST=1` path
-   and the parser then reads the prefill's ms/tok instead of the final
-   `=== Z ms/tok (W tok/s) ===` line. Owned by the NPU thread (the file only
-   exists on `goal/runlist-decode-wire`).
+4. **The harness's decode column — the recorded diagnosis does not match the
+   script.** `FK3-STATUS-2026-09-12.md` blames the parser for reading the
+   prefill's ms/tok instead of the final `=== Z ms/tok (W tok/s) ===` line, but
+   the current `benchmarks/flm_parity.sh` parses `decode_tok_s` from the
+   **decode** log's last `(N tok/s)` marker and the prefill figures from the
+   prefill log — the parse source is correct (`decode_tok_s` came in with
+   `cf5529ae6`). Not re-verified against a live run (the NPU is held by the live
+   thread, and the configuration that note referred to is withdrawn anyway), so
+   treat the "column reads 2" claim as **unconfirmed**, not as a known defect.
 5. **`NPU_PREFILL_MAX > 256` in `main`?** The silent-wrong-token defect was fixed
    on the branch (it now warns and caps to 256), but `main` has no bf16 prefill
    path at all, so this is a check-the-merge item, not a live bug.
