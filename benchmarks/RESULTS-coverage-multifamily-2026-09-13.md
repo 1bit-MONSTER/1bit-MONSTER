@@ -3040,3 +3040,48 @@ observation above.
 **The named next measurement**: check the launch/finish pairing per layer in the int8 prefill — can `bA` be
 re-staged while a kernel that reads it is still in flight? If so, apply the per-batch A-cache pattern the
 bf16 path already uses.
+
+## 67. The `bA` overlap is eliminated too — eight down; and both weight checksums landed in the wrong branch
+
+**`NPU_ASYNC_SERIALIZE=1`** is a new diagnostic that forces `r.wait()` immediately after every
+`launch_async` / `launch_async_rows`, removing any overlap between a launch and the next re-staging of the
+single activation BO. §66's lead was that this overlap was the cause. Result:
+
+```
+56648 | 110497 | 272 | 164829
+```
+
+**Still varying — the lead is refuted.** Control green (Qwen3-0.6B @256 = **1614**).
+
+**That is the eighth hypothesis eliminated in this stretch**, and every one by measurement:
+
+| hypothesis | how it died |
+|---|---|
+| device contention (§64) | FLM's path gave 1033 four times on the same contended device |
+| host OpenMP race | `OMP_NUM_THREADS=1` (and `NPU_HOST_THREADS=1`) still varies |
+| uninitialized heap | `MALLOC_PERTURB_=1` and `=170` do not stabilise it |
+| missing kernel wait | `wait_kernel` / `r.wait()` are present at every launch site |
+| packing race | `pack_sec` is called sequentially, not from threads |
+| BO memory flags | `NPU_WBO_FLAGS=0/1/2` all still vary |
+| a wrong-file edit (§62) | the string-in-binary staleness check |
+| **`bA` overlap (§66)** | **`NPU_ASYNC_SERIALIZE=1` still varies** |
+
+**And my two weight checksums both landed in branches Nanbeige does not take.** The evidence is simply that
+**neither ever printed**, while the `STD fused` banner did — the same class of failure as §62's wrong-file
+edit, caught by the same kind of check (does the instrument fire / is the string in the binary). The first
+went into the RAW-Q4NX GU packing path at `:1795`, the second into the "plain layout" QKV packing branch;
+Nanbeige reaches the STD branch but evidently packs elsewhere within it.
+
+**So the packed-weight branch remains unverified, and it is the last one.** Every other host input has been
+measured stable across runs — the embedding rows, the final-norm weights — and FLM's own path is stable on
+the same device.
+
+**What that implies**: if the dequantized weights are identical across runs and the boot token still varies,
+then identical inputs, identical weights and a deterministic device are producing different results. That
+can only be **the kernel reading a buffer we never write** — the same class as the seven BOs already fixed,
+somewhere not yet enumerated.
+
+**The named next measurement**, and this time placed so it cannot miss: put the checksum **inside
+`HybridFlmCtx::packB` and `I8Ctx::packB` themselves** — the two implementations the `FLM_PACKB` macro
+chooses between — rather than at a call site inferred by reading. An instrument at the implementation
+fires for whichever branch is live, which is precisely the mistake the last two attempts made.

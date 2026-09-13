@@ -1489,10 +1489,22 @@ struct Bf16Ctx {
         return true;
     }
     inline xrt::run launch_async(int l, const float* A, int am, int ak, float ascale) {
-        quantize_async(A,am,ak,ascale); return sync_and_launch(l);
+        quantize_async(A,am,ak,ascale);
+        auto r = sync_and_launch(l);
+        // NPU_ASYNC_SERIALIZE=1 is a DIAGNOSTIC: this context has ONE activation BO (bA), and both
+        // quantize_async and sync_and_launch overwrite it. If a previous launch on the same context
+        // is still in flight, the kernel reads a half-updated activation -- timing-dependent,
+        // unaffected by zeroing, and absent from FLM's own path. Waiting here removes the overlap
+        // and, if the boot token becomes deterministic, identifies it as the cause
+        // (RESULTS-coverage-multifamily 66).
+        if (getenv("NPU_ASYNC_SERIALIZE")) r.wait();
+        return r;
     }
     inline xrt::run launch_async_rows(int l, const float* A, int am, int ak, const float* ascales_q) {
-        quantize_async_rows(A,am,ak,ascales_q); return sync_and_launch(l);
+        quantize_async_rows(A,am,ak,ascales_q);
+        auto r = sync_and_launch(l);
+        if (getenv("NPU_ASYNC_SERIALIZE")) r.wait();   // same diagnostic as launch_async above
+        return r;
     }
     inline void finish_async_rows(xrt::run& r, float* C, int am, int an, const float* ascales, float Bscale, int layer = -1) {
         r.wait(); readback(); dequant_only_rows(C,am,an,ascales,Bscale,layer);
@@ -1736,6 +1748,19 @@ struct Bf16Ctx {
             transpose_pack(qkv_w + h * 2 * std_hd[l] + std_hd[l], std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
         }
         FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
+        // THE LAST UNVERIFIED HOST BRANCH (NPU_DBG=1), and this is the branch Nanbeige actually takes
+        // (the run prints "layer N STD fused"). Everything else the host supplies has been checked
+        // stable across runs -- embedding rows, final-norm weights -- and FLM's own path is stable on
+        // the same device. So the question is whether the DEQUANTIZED weights differ. Identical
+        // checksums with a varying boot token put the fault in execution with identical inputs and
+        // weights; differing checksums put it in the host dequant.
+        // RESULTS-coverage-multifamily 66.
+        if (npu_dbg() && l < 3) {
+            unsigned long long hh = 1469598103934665603ULL;
+            const unsigned char* pp = (const unsigned char*)w.data();
+            for (size_t i = 0; i < (size_t)H * t * sizeof(float); i++) { hh ^= pp[i]; hh *= 1099511628211ULL; }
+            fprintf(stderr, "[WCHK] layer %d qkv_w[%d x %d] fnv=%016llx\n", l, H, t, hh);
+        }
         } // plain vs fused qkv layout
         free(qkv_w);
         std::vector<float> wo((size_t)OIN * OOUT);
