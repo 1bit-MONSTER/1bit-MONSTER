@@ -1265,3 +1265,33 @@ divergence is in **how many tiles FLM's BO holds** for that shape — i.e. FLM's
 Nanbeige includes extra or differently-sized regions. Reading the BO's own structure (the scales/
 zeros/packed split at 512/512/4096 within each 5120-byte row) against FLM's 61,865,984 bytes should
 say which.
+
+### 24.2 The "sharper anomaly" is probably benign too — the control evidence says so
+
+Section 24.1 called the non-integral tile count a structural difference worth chasing. Re-examined
+against evidence already in hand, it does not survive either:
+
+- the engine's own **smaller** BO has been fed to **FLM's own ELF** on two architectures and returned
+  the correct token both times — Qwen3-4B -> `[1] 1614` (section 22, with freshly generated FLM ELFs)
+  and Llama-3.1-8B -> `[1] 220` (section 23);
+- so "the engine packs fewer bytes than FLM's loader does" is **not** by itself a fault. For models
+  that work, the engine's BO is also smaller than FLM's, and it works.
+
+The observation that prompted 24.1 — FLM's BO being 2048.00 tiles for 0.6B but 12083.20 for Nanbeige —
+is therefore most likely measuring how much *extra* content FLM's loader packs (norms, alignment)
+relative to the engine's, which varies by shape and need not be tile-aligned. **Retired as a lead, so
+it does not become folklore the way the "32 MB is a truncation" reading nearly did.**
+
+**What this line has now cleared, each by a control rather than an argument:**
+
+| candidate | how it was cleared |
+|---|---|
+| the generated per-ctx ELFs | Qwen3-4B + Llama returned correct tokens through them (22, 23) |
+| the runlist machinery | same two runs, end to end |
+| the BO **size** (this section) | the engine's smaller BO suffices for FLM's ELF, twice |
+
+**What remains is the BO's contents** — the tile **order** and **offsets** inside a BO that is the
+right shape. That is exactly what a size comparison cannot see, and it is where the packing
+hypothesis now sits: not "is the BO big enough" (answered: yes) but "are the tiles in it arranged the
+way the ELF reads them". Testing that needs FLM's BO kept long enough to diff, not just measured —
+which is the one thing the last two captures deliberately threw away.
