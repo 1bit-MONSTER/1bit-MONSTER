@@ -577,6 +577,16 @@ opposite directions from the same evidence.** The three rules that would have ca
    (2.23, against 3.66, 4.16 and 6.36 for the clean ones), so a load check alone **would have validated it**. One
    process over the line is invisible to `uptime` and decisive to the result.
 
+   **Separate from those four is an ANALYSIS trap worth its own line, because no measurement control catches it**:
+   a scan can be internally consistent, arithmetic-exact, and still describe the wrong population. **`shape[-1]` is
+   BYTES for I8 and ELEMENTS for BF16, and the arity differs too** (Qwen3.5's I8 rows are 3-D, Phi4's are 2-D) — so a
+   scan assuming *"2-D, bytes"* is wrong on both counts, and **either assumption alone survives review because the
+   other is usually true**. Worst of all, such a scan **fails silently**: a width scan written for 2-D tensors prints
+   `{5120: 0, 4736: 0, 8704: 0}` for a 3-D dtype — **an empty bucket that reads as confirmation of the claim under
+   test.** *A scan that skips a dtype by construction and reports zero is a guard that cannot fail*, which is the same
+   rule as the pre-commit check that prints and continues. **The detector is to report what the scan SKIPPED, not only
+   what it counted** — the counts alone cannot distinguish "none found" from "none looked for".
+
    **All four occurred in this thread and each was caught by a different control.** The contention case is the only
    one that **no** rule in either lane's set would have caught — it was found by a `cmp` against an earlier run and
    by noticing whose process held the device. "No zero-embedding rows" clears a column of the **first** class, not

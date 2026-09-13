@@ -8229,3 +8229,37 @@ makes the corrected version reproducible rather than merely narrower.
 **boot-token column** looks clean and is wrong — fixture, arm, contention, fixture-length. **This is a way an
 *analysis* looks clean and is wrong**, and it belongs with the analysis rules rather than the measurement ones: the
 scan was internally consistent, the arithmetic checked out, and the error was in **what the column meant**.
+
+## 450. The trap's mechanism: an empty bucket is indistinguishable from a measured absence — and it is this session's own guard rule, one level down
+
+**Their first pass printed `{5120: 0, 4736: 0, 8704: 0}` and they nearly filed it.** That output reads as **confirmation
+of the claim under test** — "no 5120-byte rows" — and it is produced by a scan that **cannot see the population it is
+being asked about**.
+
+**The mechanism is precise, and it is worse than a units error:**
+
+> A row-width scan written for **2-D** tensors returns **silently empty** for a **3-D** dtype. No error, no partial
+> result, no warning. **A scan that skips a dtype by construction and reports zero is a guard that cannot fail** —
+> **an empty bucket is indistinguishable from a measured absence.**
+
+**That is this session's own rule, one level down.** The version earned earlier was *"a guard whose failure path is
+`continue` is not a guard"* — a pre-commit check that printed and carried on. **This is the same failure in a scan**:
+the check runs, produces a clean answer, and the clean answer is the absence of the data rather than the absence of
+the thing.
+
+**And it gives the trap a detector, which the units framing alone did not.** The fix is not "check the units" — it is
+**make the scan report what it SKIPPED, not only what it counted**:
+
+| output | what a reader can conclude |
+|---|---|
+| `{5120: 0, 4736: 200, 8704: 49}` | nothing — this is also what a broken scan prints |
+| `I8: 249 tensors seen, 0 skipped, widths {...}` | the population was actually examined |
+
+**The counts alone cannot distinguish "none found" from "none looked for", and only one of those is a measurement.**
+§445 recorded the error; this records **why it is invisible while it is happening** — which is the part worth having,
+because the same scan would have returned an empty bucket for *any* claim about a dtype it cannot read, and would have
+agreed with every one of them.
+
+**Their scan also credits the table as verified from the file**: I8 widths **4736 → 200**, **8704 → 49**, **5120 → 0**
+exact, mid-dims **10/16/36** (185/32/32 tensors), and the arithmetic — `4736/20 = 236.8 → 236` against `5120/20 = 256`
+exactly. **Independent verification of the numbers, and independent discovery of the sentence above them.**
