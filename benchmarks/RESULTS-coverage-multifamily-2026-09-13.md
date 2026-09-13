@@ -958,3 +958,56 @@ than on tokens.
 as ground truth until its own packing agrees; what it has done is move the suspect from "the
 engine's per-layer composition" (vague) to a named function shared by every failing path
 (actionable).
+
+## 19. A PROVEN packing bug, found device-free: the tile reorder needs an EVEN G
+
+The packer's reorder is
+
+```c
+static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int G) {
+    const int S = G / 2;
+    for (int o = 0; o < n_tiles; o++) {
+        int i = G * (o / G) + (o / 2) % S + S * (o % 2);
+        memcpy(dst + o * NPU_TILE_BYTES, src + i * NPU_TILE_BYTES, NPU_TILE_BYTES);
+    }
+}
+```
+
+and `npu_pack_layer_bo` derives `G_h = H/128`, `G_o = qout/128`, `G_d = IM/128`. The mapping
+`o -> i` must be a **permutation** within each group of G tiles — if it is not, tiles are
+duplicated and others are silently dropped, which corrupts the weights with no error anywhere.
+
+Tested directly (this needs no device — it is pure arithmetic on the formula):
+
+| model | G_h | G_o | G_d | bijective per group? |
+|---|---|---|---|---|
+| Qwen3-0.6B | 8 | 16 | 24 | OK |
+| Qwen3-1.7B | 16 | 16 | 48 | OK |
+| Qwen3-4B | 20 | 32 | 76 | OK |
+| Qwen3-8B | 32 | 32 | 96 | OK |
+| Llama-3.1-8B | 32 | 32 | 112 | OK |
+| Nanbeige | 20 | 20 | 84 | OK |
+| Phi4 | 24 | 24 | 64 | OK |
+| **Gemma3-1B** | **9** | 8 | 54 | **NOT — collision at o=8 -> i=0** |
+
+**`S = G/2` is integer division, so an ODD `G` breaks the mapping.** Gemma3-1B has H = 1152, and
+1152/128 = **9**, which is odd: `o=8` and `o=0` both map to source tile 0, so one tile is written
+twice and another never — the weights are silently scrambled. That is a concrete, proven defect
+in exactly one of the four failing families, found by arithmetic rather than by a device run.
+
+It also fits an independent observation from the relay: Gemma3-1B's K = 1152 "is not a multiple of
+256; it takes the pad128 path the engine applies". A K padded to a multiple of **256** gives
+G = 1280/128 = **10** — even — and the mapping is a permutation again. So the fix is to derive G
+from the **padded** contraction dim rather than the raw one, which is a no-op for every model
+whose H is already a multiple of 256 (all of them except Gemma3-1B here).
+
+**And a partial REFUTATION of section 18's suspect.** The same test clears `npu_pack_layer_bo` for
+Nanbeige (G 20/20/84) and Phi4 (24/24/64): their mappings are permutations, so their weights are
+not being scrambled by this mechanism. Section 18 called the packer the leading suspect on the
+grounds that both engine paths share it and FLM does not — that argument still holds as a reason
+to keep looking there, but **this particular failure mode is excluded for those two families**.
+Gemma3-1B is the one where it is proven.
+
+**Not fixed here deliberately:** the padded-K change alters the BO geometry for a working model
+family, so it wants a device run behind it (Gemma3-1B's boot is not currently gated at all). The
+finding is recorded first because it is a *proof*, not a hypothesis.
