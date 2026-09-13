@@ -772,10 +772,13 @@ Found while trying to build the four-family reference (§14/§15 work). Two gate
    run I just attempted did not exercise the runlist engine, and why the four-family reference is
    still blocked even after the ELF generator and the model-dir fix.
 
-2. **The FLM-ref path reads only 128 prompt ids.** Observed directly: with `/tmp/ids_256.txt`
-   holding **256** ids, the bf16 prefill path reports `Prefill 256` while the FLM-ref path reports
-   `Prefill 128`. `read_ids()` in `npu_runlist_bridge.cpp` has no cap, so the truncation is on the
-   FLM-ref side.
+2. **The comparing side read only 128 prompt ids.** Observed directly: with `/tmp/ids_256.txt`
+   holding **256** ids, the bf16 prefill path reports `Prefill 256` while the other side reports
+   `Prefill 128`. `read_ids()` in `npu_runlist_bridge.cpp` has no cap, and the FLM-ref path's
+   `fscanf` loop has none either — so **the source of the truncation is not yet identified**, and
+   an earlier draft of this section wrongly blamed the FLM-ref path. Both paths even print the
+   same `=== Prefill %d ===` banner, so the banner alone does not say which ran. What is certain
+   is the observable: one side consumed 128 ids and the other 256, for the same file.
 
 **Consequence: withdraw the 18-24% from section 9.2.** That comparison put the native decode
 (runlist, which reads the full prompt) against `NPU_FLM_DECODE=1` (which reads 128 ids) and called
@@ -795,7 +798,7 @@ What still stands:
   once the id counts match.
 
 **Two concrete bugs to fix before any further decode comparison:**
-- the 128-id truncation on the FLM-ref path;
+- the 128-id truncation (source not yet located — see above);
 - the `dense_qwen3` gate, which blocks the runlist path for every non-Qwen3 model and therefore
   blocks the four-family reference as well.
 
