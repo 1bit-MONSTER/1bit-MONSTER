@@ -20,6 +20,12 @@ extern "C" {
 int npu_runlist_decode(const char* model_path, int ng, const char* ids_file,
                        int H, int NC, int NH, int NKV, int IM, int NV);
 
+// Tell the runlist decode which RoPE base the model uses. It builds its own i6 cos/sin table
+// (FLM host-writes it before every forward) and had a hardcoded Qwen3 theta = 1e6, so every
+// non-Qwen3 family was decoded with the wrong rotation frequencies. Called before
+// npu_runlist_decode(); a non-positive value is ignored.
+extern "C" void npu_runlist_set_rope_theta(float th);
+
 // Session API — the unified bf16-prefill -> runlist-decode path. The engine
 // runs the fast bf16 prefill, then hands its device KV + final hidden to the
 // RuntimeLayerEngine and continues greedy decode via per-ctx ELF runlists.

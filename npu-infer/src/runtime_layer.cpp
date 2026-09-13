@@ -291,11 +291,30 @@ static const float RT_INV_FREQ[64] = {
 // glibc float32 sincos (the runtime links sincosf@GLIBC_2.2.5)
 extern "C" void sincosf(float x, float* s, float* c);
 
+static float g_rope_theta = 1000000.0f;   // set per model by the engine (npu_runlist_set_rope_theta)
+
+// The engine knows the model's rope_theta (parse_q4nx_header reads it from config.json) and the
+// runlist decode does not, so it is handed over here rather than threaded through every call.
+// Without this the decode used Qwen3's frequencies for every family.
+extern "C" void npu_runlist_set_rope_theta(float th) { if (th > 0.0f) g_rope_theta = th; }
+
+// RoPE cos/sin for one position. RT_INV_FREQ is FLM's exact float32 .rodata dump for Qwen3's
+// theta = 1e6, and it is kept verbatim FOR THAT FAMILY because the last-ULP values matter
+// (recomputing in double caused i6 flips at pos >= 3, per the table's own comment).
+//
+// But the table is a function of theta, and it was being used for EVERY family. Verified by
+// comparing the literals against computed inv_freq: 0.8058400154 / 0.6493800282 / 0.5232999921
+// match theta=1e6 exactly, whereas Nanbeige is 7e7 (0.754), Phi4 1e4 (0.866) and Llama 5e5
+// (0.815). So every non-Qwen3 model was decoded with Qwen3's rotation frequencies. For those
+// the value is computed from g_rope_theta instead.
 static void update_rope_i6(xrt::ext::bo& i6bo, int pos) {
     uint16_t* w = (uint16_t*)i6bo.map();
     float fpos = (float)pos;
+    const bool qwen3_table = (g_rope_theta == 1000000.0f);
     for (int j = 0; j < 64; j++) {
-        float phi = RT_INV_FREQ[j] * fpos;   // float32 multiply (vmulss)
+        float inv = qwen3_table ? RT_INV_FREQ[j]
+                                : powf(g_rope_theta, -2.0f * (float)j / 128.0f);
+        float phi = inv * fpos;   // float32 multiply (vmulss)
         float s, c;
         sincosf(phi, &s, &c);
         w[j] = f32_to_bf16(c);

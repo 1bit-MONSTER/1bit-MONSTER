@@ -1432,3 +1432,42 @@ Note this also means the two failing paths have **different** causes: the bf16 p
 `ri()`/`ri2_build` with `cfg.rope_theta` (correct for Nanbeige at 70e6), yet it also returns a wrong
 token (188). So the four families fail in both paths, for reasons that are not the same — which is
 consistent with every shape-level check having come back clean.
+
+## 27. The runlist RoPE table was Qwen3's for every family — confirmed, fixed, and NOT the cause
+
+Prompted by section 26 leaving the i5/i6 host-written parameter BOs as the remaining suspect, I
+checked the one with a documented hardcoded origin: `runtime_layer.cpp`'s `RT_INV_FREQ[64]`.
+
+**Confirmed numerically, not from the comment.** Comparing the table's literals against computed
+inv_freq for each family's theta:
+
+| theta | inv_freq[1..3] |
+|---|---|
+| **the table's literals** | 0.8058400154, 0.6493800282, 0.5232999921 |
+| 1e6 (Qwen3) | 0.80584219, 0.64938163, 0.52329911 |
+| 7e7 (Nanbeige) | 0.75408507, 0.56864429, 0.42880617 |
+| 1e4 (Phi4) | 0.86596432, 0.74989421, 0.64938163 |
+| 5e5 (Llama) | 0.81461723, 0.66360124, 0.54058100 |
+
+The literals are **Qwen3's theta = 1e6**, to the last printed digit, and match no other family. So the
+runlist decode was applying **Qwen3's rotation frequencies to every model** — a real defect.
+
+**Fixed** (`npu_infer/src/runtime_layer.cpp`): the table is kept verbatim when theta == 1e6, because
+its own comment records that the last-ULP values matter (recomputing in double caused i6 flips at
+pos >= 3); for any other theta the frequency is computed from the model's value, which the engine
+now supplies via `npu_runlist_set_rope_theta(cfg.rope_theta)`.
+
+**Regression clean:** Qwen3-4B `[1] 220`, and `decode_token_check.sh` on 0.6B still reports MATCH —
+so the change is a genuine no-op for the family it was written for.
+
+**But it does NOT move Nanbeige's token: 157559 before and after.** That is the *same insensitivity*
+the bf16 prefill showed when `rope_theta` was plumbed there (5e5 -> 7e7, boot unchanged). A wrong
+rotation frequency ought to change the output, so **the RoPE is not the differentiator in either
+path** — and the fact that both paths are insensitive to it points at a divergence *upstream* of
+rotation.
+
+**Where that leaves the four families.** The weights are byte-identical to FLM's (26); the ELFs and
+the runlist machinery are proven correct (22, 23); the BO's size is benign (24.2); and now the RoPE
+is excluded as the discriminator. The remaining per-layer inputs are the **activation (arg3)**, the
+**KV**, and the **i5 parameter BO** — the other host-written one, which is the natural next target
+precisely because `i6` turned out to be a per-family constant that nobody had parameterised.
