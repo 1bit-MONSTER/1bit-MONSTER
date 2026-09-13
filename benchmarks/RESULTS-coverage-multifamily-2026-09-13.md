@@ -4749,3 +4749,48 @@ measurements, but they are measurements **on a fallback kernel**, and I over-rea
 entries — our act/out BOs at 5 MB vs the captured 1-2 MB / 5 MB — should be aligned and re-tested **at
 @1024**, not at @256. This is the third time in this item that a probe at @256 was read as if it were about
 the nh20 path; the length/ELF pairing has to be stated with every boot number here.
+
+## 135. The scorecard's "non-hybrid correlation" IS a two-value allowlist in one line of code
+
+**It was listed as an unexplained correlation across the whole document. It is a gate.** From
+`npu_engine_bf16_mm.h:303`:
+
+```cpp
+const bool attn_shape_ok = attn_shaped_ok ||
+    ((attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096));
+```
+
+with the comment immediately above it spelling the same thing out: *"Require the (qout, hd) PAIR to name a
+kernel that actually ships: hd128 + qout 2048 -> nh16, hd128 + qout 4096 -> nh32, **anything else -> none**.
+An unmatched shape makes `run_attn` return false (explicit failure) instead of a plausible-looking wrong
+answer."*
+
+**And `attn_shape_ok` false means `kern = nullptr` -> `return false` -> CPU attention, at every length**
+(`if (!attn_shape_ok) kern = nullptr;` then `if (!kern) return false;`).
+
+**So the correlation and the gate are the same statement.** "Every model with `qout` in {2048, 4096} is
+correct, every one outside it is wrong" is not a property of the shapes — it is **a two-value allowlist**,
+and everything outside it takes the host path.
+
+**What it means per family, which is the useful part:**
+
+| family | qout | passes the gate? | attention actually used |
+|---|---|---|---|
+| Qwen3-0.6B | 2048 | yes — pair matches | embedded nh16 |
+| Qwen3-4B / 8B | 4096 | yes — pair matches | nh32 |
+| **Nanbeige** | **2560** | **@1024 only** — via `attn_shaped_ok`, because the `_hd` file exists | **NPU attention at @1024; CPU at @256 and @2048** |
+| **Phi4** | **3072** | **never** — no `_hd` file at any length, and 3072 is not in the pair | **CPU at every length** |
+
+**Which also sharpens the nh20 lane's §97/§112.** They described @256 as "running the nh16 fallback ELF".
+By this code it is **more precisely the CPU path**: at @256 the shaped lookup fails, so `attn_shaped_ok` is
+false, and 2560 is not in the allowlist either — the legacy nh16 ELF **loads** (four `Bf16Mm: attention ELF
+loaded` lines) and is then **never selected**. That is exactly the shape of Phi4's log, seven
+`bf16 attn unavailable — CPU attn_omp fallback` lines. So Nanbeige's @256 half of §93 measured **CPU
+attention**, not an nh16 kernel — which does not change their conclusion that @1024 is the discriminating
+length, and makes the reason for it sharper.
+
+**And it changes what my lane is looking for.** Phi4's CPU attention is context-sensitive (874 vs 6573), so
+the gate is not producing a *plausible-looking wrong answer* for it — the CPU path is doing something. If
+Phi4's wrongness were the gate alone, the CPU path would have to be wrong in a shape-dependent way; that is
+now the thing to test, rather than "the NPU attention ELF for nh24", which **does not exist and is never
+reached**.
