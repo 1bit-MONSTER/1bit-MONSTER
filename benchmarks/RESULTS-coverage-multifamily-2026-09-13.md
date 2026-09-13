@@ -4525,3 +4525,51 @@ only against values that were actually captured.
 **Method note worth keeping.** Two of my three "refuted" hypotheses in this item (§94 stride, and §100's
 V-region) were refuted only for the values I guessed. §102 broke that pattern by reading the capture first,
 and immediately produced a value that works. Read the captured profile before varying the constant.
+
+## 115. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
+
+**The check the nh20 lane asked for turned into a correction of my own result.** They reported that
+`attn_mha_1024_nh20_hd128.elf` is 97.9% byte-identical to `attn_mha_1024_nh32.elf`, and asked me to
+size/segment-compare **my** shape the same way. The comparison is damning and it also caught me:
+
+| ELF | file size | LOAD FileSiz |
+|---|---|---|
+| `attn_mha_1024_nh16.elf` | 98,848 B | **0x16110** |
+| **`attn_mha_1024_nh20_hd128.elf`** | **177,728 B** | **0x27d10** |
+| **`attn_mha_1024_nh32.elf`** | **177,696 B** | **0x27d10** |
+| `attn_mha_256_nh32_hd64.elf` | 182,192 B | 0x294d4 |
+
+The `nh20_hd128` slot has the **identical LOAD size** as `nh32` and differs from it by 32 bytes in the whole
+file, while nh16 is a different size entirely. Their reading (b) — that this slot is a mislabeled nh32 kernel
+— is what that looks like.
+
+**And then the part that corrects me.** The engine builds a shape-aware candidate,
+`attn_mha_<tok>_nh<NH>_hd<HD>.elf`, and falls back to four legacy names. For **Phi4 (NH=24, HD=128)** the
+candidate is `..._nh24_hd128.elf`, **which does not exist**, and the legacy set does not take nh24 either. So
+Phi4's bf16 run prints, seven times:
+
+```
+bf16 attn unavailable — CPU attn_omp fallback
+```
+
+**Phi4 never uses NPU attention at all.** Which means §101's conclusion 2 — "default and CPU attention give
+identical values on both prompts, so the NPU attention is not the difference for Phi4" — is **vacuous**: I
+compared CPU attention **against itself**. The first conclusion stands (Phi4 **is** context-sensitive, 874 vs
+6573), but it is context-sensitive through **CPU** attention and says nothing about the NPU path.
+
+**The instrument fault is the most instructive one yet: I suppressed the answer.** My probe commands ran with
+`2>/dev/null`, and the engine announces this exact condition on **stderr**. The line I filtered out is the
+line that settles it. My own hedge in §101 — "that is not the same as 'the attention is correct'" — was the
+right instinct, and the truth is the trivial version of it: both sides of my A/B **are the same path**.
+Seventh instrument-shape fault of this stretch, and the first where the suppressed output was the answer.
+
+**What changes in this lane.** Phi4's bf16 attention is **CPU-only**, so its wrongness **cannot** be an
+attention-ELF or `bKv`-arrangement defect. Combined with the nh24 ELF question being moot for the same reason,
+the next thing to open for Phi4 is the **QKV/O GEMM composition at nh24** — the scorecard's original suspect —
+and not the attention at all.
+
+**The cross-lane fact I can now give back**: the nh20 slot **does** exist as a shaped candidate at tok=1024,
+so **Nanbeige loads it** (their §97 already found that @256 and @2048 fall back to the legacy nh16 file). But
+Phi4 shows the same family is **incomplete for nh24** — no candidate at all, straight to CPU. So the
+"per-shape attention ELF" premise is not merely suspect for nh20; for at least one shape in this tree there
+is **no NPU attention kernel in the path at all**.
