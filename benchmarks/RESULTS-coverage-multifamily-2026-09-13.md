@@ -663,3 +663,34 @@ token-for-token, so that side is not merely matching a number.
 16K, while the scorecard's prefill column is at 1K. The 2K row above closes that gap for
 Qwen3-0.6B specifically; the other models have not been re-run at their quoted lengths, so
 cross-model published comparisons stay indicative until they are.
+
+## 16. Decode agreement: exact on 0.6B, diverges after a few tokens on 1.7B/4B (2026-09-13)
+
+`benchmarks/decode_token_check.sh` run across the Qwen3 dense sizes, 1K prompt, 6 requested
+tokens:
+
+| model | boot | agreement |
+|---|---|---|
+| Qwen3-0.6B | MATCH (25) | **exact, all 8 tokens** (`25 220 220 16 17 23 220 11211`) |
+| Qwen3-1.7B | MATCH (220) | same for 5 (`220 13602 50 220 2049`), then native 198 vs FLM 271 |
+| Qwen3-4B | MATCH (220) | same for 4 (`220 13602 220 320`), then native 17 20 vs FLM 16 15 15 |
+
+So the prefill gate matches on all three, the 0.6B decode is token-for-token identical to FLM,
+and the two larger models agree for a few tokens and then diverge.
+
+**What this is and is not.** It is NOT the retracted constant-token alarm — those sequences are
+input-dependent and share a long prefix with FLM, which the constant never did. The shape
+(identical prefix, then a split) is what numerical drift looks like: the native path and FLM
+use different kernels and different accumulation, so at the first near-tie in the logits the
+greedy argmax can differ and the two trajectories separate permanently. It is also possible it
+is a real accumulation bug in the native decode (KV write, norm, or the `ra2` rope_dim of
+section 10, which the decode path does use).
+
+**Not yet resolved, and deliberately not papered over.** The discriminating test is cheap:
+re-run each model and check whether the divergence point is deterministic. A fixed split point
+on repeated runs points at a bug; a moving one points at drift. That should be done before any
+claim about decode *correctness* (as opposed to decode *speed*) is made for the 1.7B/4B sizes.
+
+**What is unaffected:** the timing side of the scorecard. Decode tok/s is measured over the
+generation, not at a token boundary, so a divergence at token 5 does not invalidate 40 tok/s.
+The decode-speed claim stands; the decode-*answer* claim is only established for 0.6B today.
