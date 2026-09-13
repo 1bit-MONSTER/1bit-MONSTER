@@ -3881,3 +3881,28 @@ absence is its own confirmation.
 **Which is consistent with what was measured** — Nanbeige 1033 @1024 / 5938 @256 and 0.6B 1614 / 220, all
 matching FLM exactly and deterministically — with the walk genuinely running, since the timing scales and
 the prompt tail now changes the answer.
+
+## 88. Nanbeige's bf16 1214 LOCALIZED: the bf16 QKV GEMM emits all-zeros (inputs are non-zero)
+
+§83 named Nanbeige's bf16 path (`NPU_PREFILL_BF16=1`, 1214 vs 1033) a separate defect; §11 left it as "the
+engine's own per-layer composition". The layer-0 dump (`NPU_DUMP_L0=1`) localises it to one GEMM:
+
+| model (bf16 @1024) | QKV out (layer 0) | A (act) | Wqkv | boot | ref |
+|---|---|---|---|---|---|
+| Nanbeige | **3584/3584 zero** | 7700/10240 nonzero | 9.15M nonzero | 1214 | 1033 |
+| Qwen3-0.6B (control) | 4096/4096 nonzero | — | — | 25 | 25 |
+
+Both inputs are non-zero; only Nanbeige's QKV output is all-zeros. So the fault is the bf16 QKV GEMM
+(mm.xclbin + libgemm `generate_seq`) at Nanbeige's shape (K=H=2560, N=qkvn=3584) — not the weights, not the
+dequant, not the attention ELF (the nh20 ELF IS loaded, §9). Zero Q/K/V -> zero attention -> zero O -> the
+model degenerates (boot 1214).
+
+Reproduced across two independent runs (deterministic 1214), with a correct-model control.
+
+**WHY (open).** The QKV GEMM emits zero for (K=2560, N=3584) but non-zero for (1024, 4096) and for Qwen3-4B
+(K=2560, N=6144 — which gates correctly). Two candidate causes, not yet separated:
+  (a) a dimension constraint in `generate_seq` / the mm.xclbin tile for qkvn=3584 (7×512, NOT a multiple of
+      1024, while every working model's qkvn is a multiple of 1024: 0.6B/1.7B 4096, 4B/8B 6144);
+  (b) the async launch/wait pair failing for this shape, leaving bC at its zero-initialised value
+      (`gemm_wait` returns early when `g_run_active[batch]` is false).
+Next: distinguish (a) vs (b) by instrumenting `gemm_wait` (does it copy?) or by testing a padded qkvn.
