@@ -6,6 +6,32 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-13 (midday) — strixhalo: census alert plumbing
+
+- **PR #2322** (`fix/census-watch-alert-delta`, commit `3ce96c476`): the census
+  alert deduped on *"an issue is open"*, so it dropped every finding that arrived
+  while one stayed open. The 2026-09-13 run found `fidel`, `moonfrost` and `vapor`
+  beyond the classes #2178 names, and that run's log was the only record of them.
+  The step now dedupes the class SET (an HTML marker in the body and in each
+  update comment) and comments on the open issue when the set moves — silent when
+  it has not. Five stubbed-`gh` cases over the real 09-13 log lines are in the PR.
+- **`Census autopr` was red for 2026-09-13** (run 34750206963): it generated the 15
+  post files, then died at `git push origin post/significant-20260913` with
+  `remote: fatal error in commit_refs`. Server-side/transient, not policy — the only
+  active ruleset targets `main`, the same push succeeded on 09-12, and **a re-run of
+  the failed job succeeded** (13:39Z), opening the day's draft post as PR #2323 on
+  branch `post/significant-20260913`. If it recurs, that push wants a bounded retry:
+  the workflow runs once a day, so one transient refusal silently costs a day.
+- **Registry gaps still open** — issue #2178, reviewed from the official configs:
+  `deepseekv41` is a real V4.1 multimodal family (engram + candidate-block
+  machinery), not an alias; new on 09-13 are `fidel` (`4E-AI/Fidel1.1-1B`, custom
+  hyper/cross rank config), `moonfrost` (`whoashish115/Moonfrost-777M`, MLA-style
+  compressed KV + 32-expert MoE) and `vapor` (`Neeze/Vapor-2B-V1.2`, which carries
+  LFM2's config schema verbatim — all 30 `layer_types` identical — but with vocab
+  128000, rope theta 1e7 and a `rank_config` of `SharedSwiGLULinear` layers LFM2
+  does not have). None of the three is a one-line mapping, so the census "100%"
+  claim stays false until someone implements them — do not "fix" it with aliases.
+
 ## 2026-09-12 (late) — strixhalo snapshot
 
 - **`main` is at `f3825fbb6`** — PR #2282 (the #2199 fused-int4 `.data` fix +
