@@ -3438,3 +3438,37 @@ output. That explains the whole symptom set at once: **Nanbeige-specific** (the 
 always correct — §68, §69), and **absent from FLM's path** (FLM drives its own xclbins). The fix — the five
 rebuilt xclbins and instruction streams — is landed, with the A/B (§75) and this like-for-like control
 behind it.
+
+## 77. The mechanism generalizes into a *flag* — and it CLEARS Phi4 and Qwen3.5
+
+**The pool is named by shape** (`final_i8_QKV_K2560_N3840`, `final_i8_G_K2560_N8192`,
+`final_i8_D_K8192_N2560`, …) and **`N3584` and `N10752` appear nowhere in the tree** — which are exactly
+Nanbeige's shapes (QKV `(20+2*4)*128 = 3584`; G/U `IM = 10752`; D `K = 10752`). Its per-model artifacts are
+**not copies of the pool** (their md5s match no `K*` file), so they were **built separately, with the wrong
+dims** — and the like-for-like control (§76) proves the dims are the cause.
+
+**The generalized check**: derive each model's five shapes from its config and ask whether the **generic
+shape-named pool** has them.
+
+| family | shapes absent from the pool | runs i8 by default? | reading |
+|---|---|---|---|
+| **Nanbeige** | **QKV `N3584`, G/U `N10752`, D `K10752`** | **yes** | **the cause — fixed** |
+| **Phi4-mini** | **none** | yes | **cleared** — its failure is not this |
+| **Qwen3.5-4B** | **none** | yes | **cleared** — the hybrid implementation |
+| Qwen3-4B / 0.6B | G/U/D or O/G/U | no (runlist) | unaffected |
+
+**Which is the discriminative result the scorecard needed.** The two open **non-hybrid** families are
+**cleared** by a static check: their i8 artifacts have shape-mates, so **the Nanbeige defect does not explain
+them** — and the next person does not have to re-derive that.
+
+**And a claim I must NOT make.** The check also flags **Qwen3-0.6B** (no pool shape for `O(K2048_N1024)`),
+and it is tempting to conclude that its i8-path **220** — where the runlist returns the reference **1614**
+(§71) — comes from the same defect. But 0.6B's **per-model artifact provably exists**: its own banner loads
+`I8Ctx::init … final_i8_O_qwen3_0_6b.xclbin`. **I have not measured its dims.** So the 220 is a *candidate*
+for this explanation, not a finding — and it is testable exactly the same way Nanbeige's was.
+
+**And a third instrument fault, caught.** My first version of this table included a **per-model** column
+that reported `no` for **every** model — including 0.6B, whose per-model file provably exists. The detector
+was **a known-good fact** (the banner's own path). The generic-shape column is plain set membership and is
+the only part relied on here. That is three instruments this stretch whose *shape* was wrong rather than
+their data: §70's empty diff, the first run of §76's control, and this column.
