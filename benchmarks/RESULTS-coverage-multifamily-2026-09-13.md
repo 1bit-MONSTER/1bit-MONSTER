@@ -2454,3 +2454,30 @@ matches the engine's KV BO (§24.2).
 **So it is testable rather than merely suspected:** FLM's path produces the correct token for Nanbeige
 (1033), and the interposer dumps the ELFs it loads (§43's technique). A differential on those streams is
 the next experiment, and it is the only remaining one for these two families.
+
+## 53. Two eliminations: `L` is the context, FLM's ELFs are per-op — and the residual is a config pair
+
+**`L` in `gen_layer_seq(seq, L)` is the CONTEXT**, confirmed by a destructive test: generating with
+`L = 0` **aborts** (zero files, core dumped). So the generator requires `L >= 1`, which matches the tool's
+own header comment ("gen_layer_seq(ctx+1)") and **eliminates the layer-index hypothesis** — the one I had
+flagged as a possibility when the sizes looked odd.
+
+**And my instruction streams do not appear in FLM's ELFs — but that comparison was invalid, and it is the
+fifth time I nearly recorded an incomparable one:**
+
+- my generated ELF is a **whole-layer** stream (every layer, one context);
+- FLM's 16 dumped ELFs are **per-op kernels** — *fixed* across prompt lengths (§35) — and there are 16 of
+  them for a **32-layer** model;
+- so neither can contain the other, and the negative says nothing about the generator.
+
+**So the whole-layer ELF has no FLM counterpart to validate against**, and can only be validated by the
+runlist's own end-to-end token (157559). And **every component of that path is byte-verified**: the BOs
+(§26/§31/§32/§33), the layer packing (§40/§41), the RoPE base (§27), the KV BO size (§24.2), the arg
+signature (§11/§14).
+
+That leaves the **(ELF, `layer.xclbin`) pair** — both FLM's own — or the **generation parameters**.
+
+**And the generation parameters are the one thing never diffed.** My tool builds its `LM_Config` with
+`from_pretrained(model_dir)`; FLM's runtime builds its own. Those two configs should be identical and have
+never been compared, and `MAX_L` (32,768 here) is a second such parameter. **A config diff is the next
+experiment** — bounded, and the only one left for Nanbeige's runlist route.
