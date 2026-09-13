@@ -151,29 +151,16 @@ static void rope(float* v, int HD, int pos, float theta) {
 
 static float silu(float x) { return x / (1.0f + expf(-x)); }
 
-// Which dim the q4nx tile columns cover: the input (K) -> row-major [N,K], or
-// the output (N) -> row-major [K,N]. LFM2's bundle is not documented; both give
-// the same packed-row count, so the only way to tell is to run it.
-static int g_layout_kn = 0;   // set from LFM2_LAYOUT=kn
-
 struct W { std::vector<float> v; int N = 0, K = 0; };
 static W load_w(const uint8_t* D, const char* js, size_t jl, const char* key, int N, int K) {
     uint64_t o = 0, s = 0;
     if (!get_offsets(js, jl, key, &o, &s)) { fprintf(stderr, "ERR: missing %s\n", key); exit(1); }
     int packed = get_shape0(js, jl, key);
     W w; w.N = N; w.K = K;
-    w.v = load_i8(D, o, packed, g_layout_kn ? N : K);
+    w.v = load_i8(D, o, packed, K);   // row-major [N, K]
     return w;
 }
-static void mul(const W& w, const float* x, float* y) {
-    if (g_layout_kn) {                       // stored [K, N]
-        for (int o = 0; o < w.N; o++) y[o] = 0;
-        for (int k = 0; k < w.K; k++) { float xv = x[k]; const float* row = &w.v[(size_t)k * w.N];
-            for (int o = 0; o < w.N; o++) y[o] += row[o] * xv; }
-    } else {                                  // stored [N, K]
-        gemv(w.v, x, y, w.N, w.K);
-    }
-}
+static void mul(const W& w, const float* x, float* y) { gemv(w.v, x, y, w.N, w.K); }
 
 int main(int argc, char** argv) {
     if (argc < 3) {
@@ -182,7 +169,6 @@ int main(int argc, char** argv) {
     }
     float eps = 1e-5f;
     bool dump = false;
-    { const char* L = getenv("LFM2_LAYOUT"); g_layout_kn = (L && !strcmp(L, "kn")) ? 1 : 0; }
     { const char* Dq = getenv("LFM2_DEQUANT");
       if (Dq && !strcmp(Dq, "unsigned")) g_dequant = 1;
       else if (Dq && !strcmp(Dq, "row_signed")) g_dequant = 2; }
@@ -196,9 +182,48 @@ int main(int argc, char** argv) {
           ids.push_back(atoi(s.substr(p, c == std::string::npos ? std::string::npos : c - p).c_str()));
           if (c == std::string::npos) break; p = c + 1; } }
 
-    // ── model dims (LFM2-1.2B-NPU2) ──
-    int H = 2048, NC = 16, NH = 32, NKV = 8, HD = 64, IM = 8192, NV = 65536;
-    float ROPE_THETA = 1000000.0f;
+    // ── dims come from the config.json beside the q4nx, NOT from constants ──
+    // Hardcoding them made this tool answer confidently for the wrong model:
+    // run against LFM2-2.6B it printed a token computed with 1.2B's layer count
+    // and MLP width. A reference tool that silently answers for a different
+    // model is worse than one that refuses, so a missing config is fatal.
+    std::string cfg_path(argv[1]);
+    { auto slash = cfg_path.rfind('/');
+      cfg_path = (slash == std::string::npos ? std::string(".") : cfg_path.substr(0, slash)) + "/config.json"; }
+    std::string cjs;
+    { FILE* cf = fopen(cfg_path.c_str(), "rb");
+      if (!cf) { fprintf(stderr, "ERR: %s not found — refusing to guess dims\n", cfg_path.c_str()); return 2; }
+      fseek(cf, 0, SEEK_END); long n = ftell(cf); fseek(cf, 0, SEEK_SET);
+      if (n <= 0) { fclose(cf); fprintf(stderr, "ERR: empty config.json\n"); return 2; }
+      cjs.resize((size_t)n);
+      if (fread(&cjs[0], 1, (size_t)n, cf) != (size_t)n) { fclose(cf); fprintf(stderr, "ERR: short read on config.json\n"); return 2; }
+      fclose(cf); }
+    auto cfg_i = [&](const char* key, int def) {
+        std::string k = std::string("\"") + key + "\"";
+        size_t p = cjs.find(k); if (p == std::string::npos) return def;
+        size_t colon = cjs.find(':', p + k.size()); if (colon == std::string::npos) return def;
+        return (int)strtol(cjs.c_str() + colon + 1, nullptr, 10);
+    };
+    auto cfg_f = [&](const char* key, float def) {
+        std::string k = std::string("\"") + key + "\"";
+        size_t p = cjs.find(k); if (p == std::string::npos) return def;
+        size_t colon = cjs.find(':', p + k.size()); if (colon == std::string::npos) return def;
+        return strtof(cjs.c_str() + colon + 1, nullptr);
+    };
+    const int H = cfg_i("hidden_size", 0), NC = cfg_i("num_hidden_layers", 0);
+    const int NH = cfg_i("num_attention_heads", 0), NKV = cfg_i("num_key_value_heads", 0);
+    const int HD = cfg_i("head_dim", 0), IM = cfg_i("intermediate_size", 0);
+    const int NV = cfg_i("vocab_size", 0), CONV_K = cfg_i("conv_L_cache", 3);
+    const float ROPE_THETA = cfg_f("rope_theta", 1000000.0f);
+    if (H <= 0 || NC <= 0 || NH <= 0 || NKV <= 0 || HD <= 0 || IM <= 0 || NV <= 0) {
+        fprintf(stderr, "ERR: config.json lacks model dims (H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d)\n",
+                H, NC, NH, NKV, HD, IM, NV);
+        return 2;
+    }
+    if (NH % NKV) { fprintf(stderr, "ERR: NH=%d not divisible by NKV=%d\n", NH, NKV); return 2; }
+    fprintf(stderr, "config: %s -> H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d rope=%.0f conv_k=%d\n",
+            cfg_path.c_str(), H, NC, NH, NKV, HD, IM, NV, ROPE_THETA, CONV_K);
+    if (argc > 3 && !strcmp(argv[3], "--eps") && argc > 4) eps = strtof(argv[4], nullptr);
     int GQA = NH / NKV;
     int GEN = 0;
     { const char* g = getenv("LFM2_GEN"); if (g) GEN = atoi(g); }
@@ -236,7 +261,7 @@ int main(int argc, char** argv) {
             kv_k[l].assign((size_t)TMAX * NKV * HD, 0.0f);
             kv_v[l].assign((size_t)TMAX * NKV * HD, 0.0f);
         } else {
-            conv_hist[l].assign((size_t)2 * H, 0.0f);
+            conv_hist[l].assign((size_t)(CONV_K - 1) * H, 0.0f);
         }
     }
 
@@ -253,7 +278,7 @@ int main(int argc, char** argv) {
     uint64_t lh_off = 0, lh_sz = 0;
     get_offsets(js, jl, "lm_head.weight", &lh_off, &lh_sz);
     W lm_head = load_w(D, js, jl, "lm_head.weight", NV, H);
-    fprintf(stderr, "lm_head: %zu floats (N=%d K=%d, layout=%s)\n", lm_head.v.size(), NV, H, g_layout_kn ? "kn" : "nk");
+    fprintf(stderr, "lm_head: %zu floats (N=%d K=%d)\n", lm_head.v.size(), NV, H);
 
     std::vector<float> h(H), x(H), res(H), tmp(H), tmp2(H);
     std::vector<float> qd(NH * HD), kd(NKV * HD), vd(NKV * HD), attn(NH * HD);
@@ -295,7 +320,7 @@ int main(int argc, char** argv) {
                 snprintf(key, sizeof key, "model.layers.%d.shortconv.out_proj.weight", l);
                 W wop = load_w(D, js, jl, key, H, H);
                 snprintf(key, sizeof key, "model.layers.%d.shortconv.conv.weight", l);
-                get_offsets(js, jl, key, &o, &s); auto wconv = load_bf16(D, o, (size_t)H * 3);  // [H,3]
+                get_offsets(js, jl, key, &o, &s); auto wconv = load_bf16(D, o, (size_t)H * CONV_K);  // [H, K]
 
                 std::vector<float> bcx(3 * H);
                 mul(wip, x.data(), bcx.data());
@@ -305,17 +330,17 @@ int main(int argc, char** argv) {
                 // t = B * x
                 std::vector<float> t(H);
                 for (int i = 0; i < H; i++) t[i] = B[i] * X[i];
-                // causal depthwise conv, kernel 3: out[c] = w[c][0]*t[-2] + w[c][1]*t[-1] + w[c][2]*t[0]
+                // Causal depthwise conv over the last CONV_K inputs (padding K-1,
+                // then truncated to seq_len): out[t] = sum_j w[c][j] * in[t-(K-1)+j].
+                // hist holds the previous K-1 inputs, oldest first.
                 float* hist = conv_hist[l].data();
-                std::vector<float> cout(H);
-                if (getenv("LFM2_CONVT")) {
-                    for (int c = 0; c < H; c++)
-                        cout[c] = wconv[0*H + c] * hist[c] + wconv[1*H + c] * hist[H + c] + wconv[2*H + c] * t[c];
-                } else {
-                    for (int c = 0; c < H; c++)
-                        cout[c] = wconv[c*3+0] * hist[c] + wconv[c*3+1] * hist[H + c] + wconv[c*3+2] * t[c];
-                }
-                for (int c = 0; c < H; c++) { hist[c] = hist[H + c]; hist[H + c] = t[c]; }
+                std::vector<float> cout(H, 0.0f);
+                for (int j = 0; j < CONV_K - 1; j++)
+                    for (int c = 0; c < H; c++) cout[c] += wconv[c * CONV_K + j] * hist[(size_t)j * H + c];
+                for (int c = 0; c < H; c++) cout[c] += wconv[c * CONV_K + (CONV_K - 1)] * t[c];
+                for (int j = 0; j + 1 < CONV_K - 1; j++)
+                    memcpy(&hist[(size_t)j * H], &hist[(size_t)(j + 1) * H], (size_t)H * sizeof(float));
+                if (CONV_K >= 2) memcpy(&hist[(size_t)(CONV_K - 2) * H], t.data(), (size_t)H * sizeof(float));
                 // y = C * conv; out = out_proj @ y
                 std::vector<float> y(H);
                 for (int i = 0; i < H; i++) y[i] = C[i] * cout[i];
