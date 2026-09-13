@@ -3841,3 +3841,43 @@ layers, so a 1024-token prompt on the fallback path is ~8x the work it used to b
 *truncated*, so it was really ~8x more than a wrong answer. Test at 256 tokens (2 passes) or raise the
 timeout; Phi4 stops around layer 10 of 33 inside 900 s at 1024 tokens, which is a truncated log, not a
 failure.
+
+## 87. Self-review of the block walk: no async span, no overflow, and short prompts are byte-identical
+
+**The hazard class to check, and why it is mine to check.** §66 established that this engine has a **single
+`bA`** and that a launch left in flight while the next staging writes `bA` would corrupt it — that was a lead
+I raised and then refuted with `NPU_ASYNC_SERIALIZE`, but the *hazard* is real. My change **creates a second
+block**, and therefore creates exactly that opportunity for the first time. It is also the kind of defect
+that one clean run would not reveal.
+
+**Check 1 — can an async launch span a block boundary? No.** Every launch inside the fallback prefill is
+finished **within the same layer iteration**:
+
+| launch | completion |
+|---|---|
+| `r_qkv = FLM_LAUNCH_ASYNC_ROWS(cq, ...)` | `FLM_FINISH_ASYNC_ROWS(cq, r_qkv, ...)` — which does `r.wait()` |
+| `r_gu = FLM_LAUNCH_ASYNC_ROWS(cg, ...)` | `FLM_FINISH_ASYNC_ROWS(cg, r_gu, ...)` |
+| `FLM_GO_ROWS(co, ...)`, `FLM_GO_ROWS_PTR(cu_ptr, ...)`, `FLM_GO_ROWS(cd, ...)` | synchronous — launch, wait, readback in one call |
+
+Two async launches, five finishes/waits. And the only other run object in the region, `pending_gu` /
+`has_pending`, is **declared and never used** — dead.
+
+**Check 2 — can a block overflow a scratch buffer? No.** `h_b`, `sb_data`, `qo_b`, `at_b`, `gt_b`, `su_b`,
+`dw_b`, `oo_b` were all sized for `XM` rows, because `npt` **could not exceed XM** before the walk. Every
+block is `<= XM`, so the walk cannot overflow. That is also why the old cap existed: it was protecting
+exactly these buffers, and the walk protects them by construction instead of by truncation.
+
+**Check 3 — the per-row scale vectors.** `qkv_ascales`, `o_ascales`, `gu_ascales`, `d_ascales` are
+constructed **inside** the layer loop from the shadowed `npt` — the block size — so each block computes and
+uses its own. Correct.
+
+**Check 4 — state restore.** `npt = npt_full; sp = sp0 + npt_full;`, so the decode starts from the right
+position and the `ms/tok` line divides by the **full** prompt.
+
+**And short prompts are byte-identical to before.** For `npt <= XM` the loop runs **once**, with
+`sp = sp0 + 0`, which is the pre-fix path exactly. The announcement prints **only when `npt > XM`**, so its
+absence is its own confirmation.
+
+**Which is consistent with what was measured** — Nanbeige 1033 @1024 / 5938 @256 and 0.6B 1614 / 220, all
+matching FLM exactly and deterministically — with the walk genuinely running, since the timing scales and
+the prompt tail now changes the answer.
