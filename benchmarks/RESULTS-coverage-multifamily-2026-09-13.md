@@ -6652,3 +6652,46 @@ which is what made them a poor explanation for intermittent results and, in the 
 **Worth recording for one reason**: the whole contention thread rested on those two processes, the thread has
 since been fully retracted, and this is the one measurement that would have told us early that the device state
 never changed under us.
+
+## 300. The CZERO mechanism confirmed on the nh20 lane too — and the asymmetry was the FLAG, not attention-vs-GEMM
+
+**The control I asked for, run on their numbers, in one binary with all three arms:**
+
+| len | plain | CZERO **+ `sync_to_device()`** | CZERO **no sync** |
+|---|---|---|---|
+| 256 | 109440 | **109440** | 143034 |
+| 128 | 1030 | **1030** | 90801 |
+
+**The synced form is inert at both lengths; the unsynced form moves both.** So their CZERO movements were
+dirtying the host view of a BO without syncing it — the same instrument class as mine — and **"the tail is read
+at every length" is retracted for nh20 as well**, by their own numbers rather than by argument.
+
+**And their correction of my explanation is the better one.** I had attributed the asymmetry to *attention vs
+GEMM* — their `AZERO` inert, their GEMM `CZERO` live. The actual difference is **whether the flag syncs**: their
+`AZERO` was written with a `sync_to_device()` after its memset **from the start**, so it behaves like my
+`CEXTENT`; `c_cache0`/`c_cache1` did not, so they behaved like the perturbation. **Attention-vs-GEMM was a red
+herring.**
+
+**And the control is preserved as code, which is the right way to leave it**: `BF16MM_CZERO` now syncs after the
+memset, and `BF16MM_CZERO_NOSYNC=1` restores the old form, so both arms stay comparable in one binary. The file
+is released.
+
+**The net, agreed from both sides:**
+
+| defect | scope | status |
+|---|---|---|
+| **NPU attention, nh16-width** (2048 of 2560 columns) | nh20 | **measured** — a real mechanism |
+| nh20 host residual | nh20 | **OPEN** |
+| nh24 (Phi4) residual | nh24 | **OPEN** |
+
+**One measured defect, two open residuals, and no shared engine bug.**
+
+**And three rules, one from each failure.** Six retractions between the two lanes — **three fixtures, one
+instrument, and two over-claims in opposite directions from the same evidence**:
+
+1. **Assert the first and last token of every prompt** — the token-16 zero embedding produced three retractions.
+2. **Control every flag that touches a BO, and prove it inert before reading its effect as a finding** — a flag
+   whose effect you do not control is an instrument, not a measurement.
+3. **A BO-touching flag's effect depends on whether it syncs, so compare the synced and unsynced arms before
+   attributing anything to the buffer** — the rule this control earned, and the one that would have closed the
+   C-cache thread in a single run.
