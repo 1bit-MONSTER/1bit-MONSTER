@@ -4076,7 +4076,9 @@ struct Bf16Ctx {
                     bf16mm_gemm_wait(0, bC.data() + (size_t)b * H);
                     #pragma omp parallel for schedule(static) num_threads(host_threads())
                     for (int pi = b; pi < b + rows; pi++) {
+                        #pragma omp simd
                         for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
+                        #pragma omp simd
                         for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
                     }
                 }
@@ -4095,8 +4097,14 @@ struct Bf16Ctx {
                     bf16mm_gemm_wait(0, bC.data() + (size_t)b * 2 * IM);
                     #pragma omp parallel for schedule(static) num_threads(host_threads())
                     for (int pi = b; pi < b + rows; pi++) {
+                        // Branchless finite test: (g0-g0==0) is false for NaN and
+                        // +-inf, so this is std::isfinite with no control flow, which
+                        // lets the loop vectorize (it previously reported
+                        // "unsupported control flow in loop").
+                        #pragma omp simd
                         for (int i = 0; i < IM; i++) {
-                            float gv = bf16g(bC[pi * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
+                            const float g0 = bf16g(bC[pi * 2 * IM + i]);
+                            const float gv = (g0 - g0 == 0.0f) ? g0 : 0.0f;
                             bGu[(size_t)pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i]));
                         }
                     }
@@ -4108,7 +4116,9 @@ struct Bf16Ctx {
                     bf16mm_gemm_wait(0, bC.data() + (size_t)b * H);
                     #pragma omp parallel for schedule(static) num_threads(host_threads())
                     for (int pi = b; pi < b + rows; pi++) {
+                        #pragma omp simd
                         for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
+                        #pragma omp simd
                         for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
                     }
                 }

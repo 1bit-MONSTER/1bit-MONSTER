@@ -166,6 +166,34 @@ use 16 while 4B/8B use 24.
 Boot tokens unchanged (25/220/220/220). Two of four models now meet-or-beat FLM on
 prefill; the 4B/8B gaps are down to roughly a third of where they started.
 
+## 9. The host conversion loops were NOT vectorized — and it does not matter (2026-09-13)
+
+The earlier claim "the compiler already vectorizes the prefill" was **wrong**, because
+`-fopt-info-vec-optimized` reports only successes. The `missed` report (use
+`-fopt-info-vec-missed=$HOME/...`; a literal `~` inside the flag does not expand, and
+`-vec-optimized` never emits `missed:` lines) showed the three hottest host loops were
+dropped:
+
+| loop | reason |
+|---|---|
+| O conversion (`boo`/`bh` from `bC`) | "loop nest containing two or more consecutive inner loops cannot be vectorized" |
+| **GU SiLU** (`bGu` from `bC`, the dominant loop: `IM` × npt × NC) | "**unsupported control flow in loop**" — the `if (!std::isfinite(gv)) gv = 0;` branch |
+| D conversion (`bdw`/`bh` from `bC`) | two consecutive inner loops, as O |
+
+Fix applied: split the O/D pairs and add `#pragma omp simd` to each inner loop, and
+make the GU finite-test branchless — `(g0 - g0 == 0.0f) ? g0 : 0.0f`, which is false for
+NaN **and** ±inf, i.e. exactly `std::isfinite` with no control flow.
+
+**Result: the loops now vectorize (verified: `vec-opt` entries appear at 4077 and 4088,
+zero remaining "unsupported control flow" in the region), and the prefill time does not
+move** — 0.6B 674→668 ms, 1.7B 1039→1077, 4B 2171→2164, 8B 3179→3221 (all within the
+~3–5% run-to-run noise; boots unchanged 25/220/220/220).
+
+**Conclusion:** the residual 4B/8B prefill gap is **memory-bandwidth-bound, not
+compute-bound**. Vectorizing the conversions is free but buys nothing; closing the last
+7–11% needs less host traffic (fewer passes / fusing host math into the GEMM staging),
+which is an algorithmic change, not a flag.
+
 Boot tokens unchanged (25/220/220/220). So Qwen3-1.7B now **meets** FLM on prefill, and
 the 4B/8B gaps roughly halved.
 
