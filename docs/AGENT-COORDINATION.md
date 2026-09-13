@@ -6,6 +6,52 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-13 (evening) — strixhalo: census/CI lane, landed and left
+
+Nine PRs landed on this lane today; the midday entry below covers the first two.
+This is the rest, written as *state* rather than a changelog, so the next session
+does not redo any of it.
+
+**Behaviour that changed — expect it on the next scheduled runs** (`census-watch`
+04:30Z, `census-autopr` 04:45Z):
+
+- The alert **comments on an open `census-watch` issue** when the class set moves
+  and stays silent when it has not (#2322). If #2178 gains an "Update" comment,
+  that is the mechanism, not a person.
+- `census-autopr` **retries its push three times**, and re-checks for an existing
+  PR before retrying `gh pr create` (#2326) — so a missing daily post now means
+  three failures, not one.
+- The provenance manifest writer **preserves** `build.toolchain` /
+  `generating_script_revision` instead of hard-coding null (#2334). Regenerating
+  with `--write-manifest` no longer erases a toolchain a build recorded; set one
+  with `--toolchain "…"`. That field is the blocker #2262 stays open for.
+
+**Guidance that changed:** the two texts that steer the coverage lanes now agree
+(#2336, #2337) — decide an alias on the checkpoint's *tensors*, not the class name
+or the config, and record a non-alias in `Testing/arch-gaps.md` (*Uncovered classes
+reviewed later*). The auto-filed alias draft tells its reviewer the same thing.
+
+**Reviewed evidence — do not re-triage.** All five classes today's sweeps surfaced
+(`englishbase`, `gdn2`, `haiku`, `vapor`, `fidel`) are in `Testing/arch-gaps.md`
+with the evidence that none is an alias; `vapor` is the instructive one (LFM2's
+config verbatim, factorized FFN in the checkpoint). `research/TRACKING.md` carries a
+2026-09-13 delta closing its `NPU_PREFILL_MAX` question and re-pointing the Census
+row at the 09-13 sweep (`4eb5dc43a`; 323,793 / 323,904 = 99.966%).
+
+**Left alone deliberately:** the site's "100% HuggingFace coverage" wording (#2178
+rules that the fix is to map the class, not soften the text); the census's local run
+state (`hf_new_models_state.json` / `significant_arrivals.json` are *expected* dirty
+on a box that runs the watcher — `scripts/census-watch.sh:60` excludes exactly those
+two); and the decoder gate's Gemma3-1B skip, which is honest — its `lm_head` is
+`[147456, 1280]` against an embed of `[262144, 1152]`, and the ceil-tiled decode
+that would "fix" it returns noise.
+
+**Open, not this lane:** ops #2333 (the dead strixhalo→Pi backup) was being fixed on
+the Pi while I looked, so I verified its numbers independently and commented instead
+of racing it. The siblings `backup-ryzen.sh` and `backup-minisforum.sh` still have
+the same shape (no precheck, rc recorded but never read, no status file), and
+nothing yet reads the new status file or the syslog line.
+
 ## 2026-09-13 — unlanded-work audit: four branches existed only on this box
 
 `git branch` here has **~78 refs that are not on `origin`**. Most are harmless —
