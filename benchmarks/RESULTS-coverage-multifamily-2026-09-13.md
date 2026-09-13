@@ -7014,3 +7014,46 @@ identifies it whenever it equals a reference value (220 did for theirs).
 the path being right. **The agreement signal is weaker than it looks wherever a plateau is involved**, and
 plateaus must be identified before any length's "agree" is trusted. That also retroactively weakens some of the
 "6 of 8 agree" reading in §135/§137.
+
+## 340. THE PAIRED CONTROL: the Phi4 bf16 output is INVARIANT TO THE INPUT — so it is not an echo, it is a CONSTANT
+
+**8 runs on the pure Phi4 binary, two flags, nothing else. Load recorded (clang 0, load 5.1 at start / 5.9 at end).**
+
+| fixture | first | last | **native bf16** | **FLM-ref** |
+|---|---|---|---|---|
+| N32 | **58907** | 17 | **220** | 11 |
+| M32 | **220** | 17 | **220** | 11 |
+| N64 | **58907** | 49891 | **220** | **220** |
+| M64 | **220** | 49891 | **220** | 11 |
+
+**The pairs differ in exactly one token — the first — and the engine returns the same value for both:**
+
+- **N32 vs M32**: 58907/17 vs 220/17 → native **220, 220**. FLM **11, 11**.
+- **N64 vs M64**: 58907/49891 vs 220/49891 → native **220, 220**. FLM **220, 11**.
+
+**So the hypothesis in §325–§335 is REFUTED.** The output does **not** track the prompt's first token: it is **220
+whether the first token is 220 or 58907**. It is **not an echo. It is a constant.** And the reason it *looked* like an
+echo is that the constant **coincides with the D-family's first token** — which is a **coincidence of the fixture**,
+the exact class of error this log keeps warning about, committed in the opposite direction: I inferred a
+**mechanism** (echoing) from a **coincidence** (the constant equalling the fixture's chosen first token).
+
+**And FLM's own column is the control that makes the finding sharp**: FLM **does** depend on the first token
+(@64: **220** for N64, **11** for M64), while the engine **does not**. So at npt = 32 and 64 the engine's first token
+is **not consumed** — and the one "agreement" in the table (N64, 220 = 220) is again **FLM's answer coinciding with
+the engine's constant**, not the engine being right. **My earlier "agreement at npt=8/128" readings were luck of the
+same kind.**
+
+**Honest scope, and it is narrower than "a defect"**: what is measured is a **value invariant to the input**, at two
+lengths, on one model, with a recorded load. **Input-invariance is a signature, not a mechanism** — the mechanism is
+still unknown, and the ~15-line block walk is a live candidate *because* it is the only path difference between
+these lengths, not because anything here implicates it.
+
+**And the other lane's retraction does not cover this one.** Theirs (§132→§134) closed a **fixture artifact** — a
+pattern that vanished when the fixture changed. This one **survives the fixture change**, which is precisely what
+the paired design was built to distinguish, and it is the reason the pair was worth two runs rather than a sweep.
+
+**Their caveat, checked on my side before replying**: no Phi4 comparison here has ever used the **i8 path** as a
+reference — every reference in this table and in §285 is FLM's own kernels via `NPU_FLM_PREFILL=1`, re-taken
+**today, on these fixtures**, with `NPU_PREFILL_BF16` unset for the reference arm. The token-16 and first-token-220
+contamination they found in their reference column is therefore not present here, and the references above are
+**same-fixture** by construction.
