@@ -201,3 +201,65 @@ extern "C" float* dequant_q8_0_to_float_ex(const uint8_t* data, int i8_rows, int
     }
     return out;
 }
+
+// ── Group-major scales + SIGNED int4 (LFM2 NPU2 bundles) ────────────────────
+// The two decoders above each get exactly one of the two axes right:
+//   dequant_i8_to_float_ex        : scales group-major (group*32+row), UNSIGNED
+//   dequant_i8_signed_to_float_ex : scales row-major   (row*8+group),   SIGNED
+// LFM2-1.2B-NPU2 is a third combination: group-major scales AND signed nibbles.
+// Neither existing function decodes it, and the failure is silent — the wrong
+// pairings still yield a plausible weight distribution.
+//
+// Measured against ground truth (both models have tie_word_embeddings=true, so
+// lm_head must equal embed_tokens; correlation of the decoded lm_head with the
+// BF16 embedding rows, first 64 rows, fresh conversion of the raw tiles):
+//
+//   convention              Qwen3-0.6B   LFM2-1.2B
+//   scales=group unsigned      +0.9973      -0.4112
+//   scales=group signed        -0.4442      +0.9915   <- this function
+//   scales=row   unsigned      +0.9016      -0.0215
+//   scales=row   signed        -0.4656      +0.0300
+//
+// So: Qwen3 needs the unsigned function, LFM2 needs this one. Callers that do
+// not know which family they hold must probe (the tie test above) rather than
+// assume — see engine/npu/tools/lfm2_cpu_runner.cpp.
+extern "C" float* dequant_i8_group_signed_to_float_ex(const uint8_t* data, int i8_rows,
+                              int in_features, int* out_rows, int* out_cols) {
+    int n_tile_cols = in_features / TILE_COLS;
+    int n_tile_rows = i8_rows / n_tile_cols;
+    *out_rows = n_tile_rows * TILE_ROWS;
+    *out_cols = n_tile_cols * TILE_COLS;
+
+    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    if (!out) return nullptr;
+
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* rd = data + ir * 5120;
+        int tile_row = ir / n_tile_cols;
+        int tile_col = ir % n_tile_cols;
+        const uint8_t* scales = rd;
+        const uint8_t* zeros  = rd + 512;
+        const uint8_t* packed = rd + 1024;
+        for (int lr = 0; lr < TILE_ROWS; lr++) {
+            int lane = lr / 16;
+            int lane_row = lr % 16;
+            int byte_idx = lane_row / 2;
+            int nibble_sel = lr % 2;
+            const uint8_t* lane_data = packed + lane * (TILE_COLS * 8);
+            for (int col = 0; col < TILE_COLS; col++) {
+                int group = col / 32;
+                // group-major: index = group*32 + row-in-tile
+                float scale = bf16_to_float(load_bf16_bytes(scales + (group * 32 + lr) * 2));
+                float zp = bf16_to_float(load_bf16_bytes(zeros + (group * 32 + lr) * 2));
+                if (!std::isfinite(scale) || std::fabs(scale) > 100.0f) scale = 0.0f;
+                if (!std::isfinite(zp) || std::fabs(zp) > 100.0f) zp = 0.0f;
+                uint8_t byte_val = lane_data[col * 8 + byte_idx];
+                int q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                int8_t val = (int8_t)(q < 8 ? q : q - 16);   // signed two's complement
+                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
+                    (tile_col * TILE_COLS + col)] = (float)val * scale + zp;
+            }
+        }
+    }
+    return out;
+}
