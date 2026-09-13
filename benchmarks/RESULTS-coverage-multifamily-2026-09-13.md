@@ -4293,3 +4293,29 @@ conclusion is likely right — but a clean repeat is still owed here and in §94
 been the **first=16** prompt and never first=220. That is the one condition where the native answer differs
 by first token under contention — i.e. where the context appears to LEAK — so the perturbation may be a
 pointer into the defect rather than pure noise. Recorded, not chased.
+
+## 101. §99's carrier concern is largely cleared: same kernel, and FLM's nh32 ELF already runs in our container
+
+Metadata comparison of our `engine/npu/xclbins/attn.xclbin` and FLM's Nanbeige `attn.xclbin` (from the
+embedded JSON section):
+
+| | ours | FLM Nanbeige |
+|---|---|---|
+| file size | 94672 | 316924 |
+| kernel | `MLIR_AIE`, `dpu_kernel_id 0x901` | same |
+| arg connectivity | 1,3,4,5,6,7 | same |
+| `aie_partition` section | 0x15a38 (88632) | 0x4be68 (310376) |
+
+So the two are the **same kernel with the same arg connectivity**, differing mainly in the AIE partition
+size — an array/tile-configuration difference, not a different kernel. §99 recorded the file-size gap; this
+says what the gap is.
+
+**And the partition gap is not fatal — that is already measured in this file.** Qwen3-4B and Qwen3-8B (nh32)
+run `attn_mha_1024_nh32.elf`, captured from FLM and therefore born in FLM's partition, and they **gate
+correctly in our container** (§7: 220 @1024). A FLM-captured attention ELF can run correctly here.
+
+**This sharpens the @1024 conclusion rather than softening it.** The nh32 ELF works in our container; the
+nh20 file is 97.9% the same bytes (§95) and does not work for its model. The only difference between them is
+the uniform-immediate class (§98). So at @1024 the ELF is the suspect: either those immediates are the nh20
+shape parameterisation and they are wrong, or the file is not an nh20 build at all. §99's carrier/build
+mismatch can be set aside.
