@@ -2355,3 +2355,42 @@ currently load**, for reasons of the same class — a tile assumption compiled i
 
 **So the remaining fix is bounded and named**: bypass FLM's dequant for the embedding/pre-convert path and
 use the engine's own geometry-aware dequant, which is now correct.
+
+## 50. Gemma3-1B closes at a dependency boundary — with the engine's side of it fixed
+
+Traced `D_in % k_tile_q4 != 0` to its owner: `strings` finds it in **FLM's own `libdequant.so`** and in
+**every per-family lib** (`libqwen3_npu`, `libgemma_text_npu`, ...) — and in **no engine object**. So it is
+a **K-tile compiled into a library the engine links and calls during the load**. `npu-infer/src/model.c`
+has its own host dequant (`npu_dequant_block`), but the call on this path is FLM's.
+
+**So Gemma3-1B cannot be loaded while that call is on the path — and FLM cannot load it either**, which
+§20.3 established independently months of code ago ("Failed to parse model config"). It is a limitation of
+the **bundle/dependency**, not an engine bug: the engine inherits FLM's constraint.
+
+### What the engine's side of Gemma3-1B gained this session
+
+| defect | state |
+|---|---|
+| the odd-`G` tile reorder | **fixed** — a permutation for odd G, verified no-op for even |
+| the hardcoded 256-wide tile | **fixed** — the row-derived tile width, **zero-regression across 20 bundles** |
+| the derived `IM` (24,864 vs 6,912) | **fixed** — the mlp geometry, verified by instrumenting the derivation |
+| the dims parse itself | **correct** — and §20's "correction" of it was **wrong** |
+| FLM's K-tile | **not the engine's to fix** without replacing the load path |
+
+**Four defects found, three fixed and one proven to belong to a dependency.** That is the whole of
+Gemma3-1B's story, and every step was measured rather than argued.
+
+### And it is the same shape as every other remaining item
+
+The engine's own code is verified correct in each case; what stands in the way is a **compiled assumption
+in a dependency**:
+
+| family | the dependency's assumption |
+|---|---|
+| Gemma3-1B | FLM's `libdequant.so` hardcodes a K-tile |
+| Nanbeige / Phi4 | FLM's ELF set is fixed (16 kernels, ctx as an argument) while the engine generates one per context length |
+| LFM2's runlist route | FLM ships no `lfm2_npu_sequence` class |
+| LFM2's conv | the conv-kernel contract (its `conv.xclbin`), with `models/lfm2.py` in the converter as the next source to read |
+
+That is a much better position than a suspect list: **every open item is a named interface to a dependency,
+not a wrong value in our code.**
