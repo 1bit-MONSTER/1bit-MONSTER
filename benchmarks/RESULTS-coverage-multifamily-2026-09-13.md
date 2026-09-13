@@ -4207,3 +4207,34 @@ length** for the `bKv`-vs-ELF question, and the @256 probe should not be cited a
 **And it revises §95/§96's scope.** Those were about the ONE nh20 file; this shows the other two slots never
 had an nh20 file at all, so "the per-shape attention ELF needs capturing" (§9) is not one missing capture —
 it is two missing files plus one file of unverified shape.
+
+## 98. The nh20/nh32 ELF diffs are small consistent IMMEDIATES (a uniform +3), not structural code
+
+Dumping the first three differing runs from §95/§96 shows what actually differs:
+
+| offset | nh20 bytes | nh32 bytes |
+|---|---|---|
+| 2501..2558 | `04 00 c4 ... 05` | `07 00 c4 ... 08` |
+| 2769..2889 | `04 00 c4 ... 05` | `07 00 c4 ... 08` |
+| 3037..3094 | `04 00 c4 ... 05` | `07 00 c4 ... 08` |
+
+Only the leading and trailing immediate bytes move, and by a **uniform +3** (`04 -> 07`, `05 -> 08`); the
+`c4`/`8102`/`3000` words are identical. So the two ELFs are the SAME instruction sequence with a few
+per-iteration immediates shifted by a constant — which is what a re-parameterised kernel looks like, not a
+different kernel and not a mislabeled one.
+
+**This is evidence for §96's branch (a).** It makes "the `@1024` nh20 file is a genuine nh20 build" the more
+likely reading, and therefore pushes the `@1024` context-free result back toward the `bKv` arrangement (§94)
+as the cause — while leaving §97's `@256`/`@2048` finding untouched (there is no nh20 file there at all, so
+those fall back to nh16 outright).
+
+**Not settled.** A uniform +3 could also be an address/base shift between two different builds of the same
+generator, which says nothing about whether the head geometry is right. The decisive test remains on the
+device: run this slot's kernel on an nh32-shaped KV and compare against an nh20-shaped one; if the output is
+merely wrong rather than structurally impossible, (a) holds and the search is the `bKv` layout.
+
+**Where the bf16 item stands after §92-§98.** The defect is a conditioning loss in the NPU attention path.
+The attention ELF is now largely cleared for `@1024` (genuine-looking re-parameterisation) and confirmed
+WRONG for `@256`/`@2048` (no nh20 file -> nh16 fallback). So the two actions are: (1) supply real nh20
+attention ELFs for the short contexts (a supply fix, not a debug hunt), and (2) settle the `@1024` `bKv`
+arrangement with the device test above.
