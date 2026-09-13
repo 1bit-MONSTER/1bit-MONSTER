@@ -8365,3 +8365,43 @@ for a `.so`.
 
 **Numbering**: a fifth peer-internal collision — two sections numbered 155 — resolved by moving the later one
 ("the performance stake of the attention-ELF fix") to **157**.
+
+## 460. The cross-corpus scan: 5120 is the NORM, 3-D does not imply "no 5120", and my error was a QUANTIFIER at three levels
+
+**Their scan of all 19 bundles (manifest only, offset 8, no weight data):**
+
+| family | I8 arity | row width |
+|---|---|---|
+| Gemma3-1B | 2-D | **1280** (183 tensors) |
+| Gemma3-4B, Gemma4-E2B/E4B, LFM2-1.2B/2.6B, Llama-3.1-8B, Llama-3.2-1B/3B, Nanbeige, **Phi4-mini**, Qwen3-0.6B/1.7B/4B/8B/VL-4B | 2-D | **5120** (all) |
+| **Qwen3.5-4B** | **3-D** | **4736 (200), 8704 (49) — no 5120** |
+| **Qwen3.6-35B-A3B** | **3-D** | **8704 (251), 5120 (120)** |
+
+**Two corrections to the framing, and both matter more than the counts.**
+
+1. **5120 is the norm, not the anomaly.** **17 of 19 models carry 2-D I8 rows of 5120 bytes** — so the default dequant's
+   5120 assumption is **right for the overwhelming majority of the corpus**, and *"no 5120-byte row exists"* is a
+   property of **one model**, not of the format. That is the **same shape as the token-16 correction (§149)**: a fact
+   about one bundle, stated as a fact about a class. I made that error twice in one session, in two different
+   registers — once about a token, once about a byte width.
+2. **3-D does not imply "no 5120".** **Qwen3.6-35B-A3B is 3-D and carries 120 rows of 5120**, so arity alone does not
+   predict the packing — and **Qwen3.5-4B is the only model in the corpus matching neither convention** (not 2-D, and
+   no 5120 row at all).
+
+**The sentence that survives every column**: *Qwen3.5-4B's I8 rows are 4736/8704; no row is 5120.* **Not about Q4NX,
+not about Qwen3.x in general, not about 3-D tensors** — and it is the smallest sentence the three measurements
+support.
+
+**And their reading of the trap is the deepest version of it.** I had it as a *units* error and then an *arity* error.
+Both are real, but the actual failure is a **quantifier**, at three levels at once:
+
+| level | what I did | what was true |
+|---|---|---|
+| **units** | grouped `shape[-1]` across dtypes | bytes for I8, elements for BF16 |
+| **arity** | assumed 2-D rows | Qwen3.5's I8 shapes are 3-D |
+| **quantifier** | wrote **"the bundle"** | the scan covered **I8 only** — and even *"I8 rows"* would be too broad, because the true scope is **one model** |
+
+**No measurement taxonomy can hold this, and their sentence says why: nothing was mismeasured.** Every number in §430
+was correct, the arithmetic checked to 236 and 256 exactly, **and the error was in the set the sentence quantified
+over.** A control cannot catch it because there was no bad reading to catch — only a true reading described as
+holding over more than it does.
