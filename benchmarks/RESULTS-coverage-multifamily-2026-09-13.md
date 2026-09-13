@@ -2274,3 +2274,41 @@ once `IM` is right.
 That is **three distinct, measured causes** for one family: the odd-`G` reorder (fixed), the tile width
 (fixed, and it was in the bundle all along), and the derived `IM`. Each was found by reading bytes, and
 each was hiding behind the previous one.
+
+## 48. The tile-width change is ZERO-REGRESSION — verified across every bundle, including the two their sweep missed
+
+Their 18-bundle sweep **reproduced independently** (my own script, all bundles in the store):
+
+| | |
+|---|---|
+| **17 of 18 bundles** | derived `cols = 256` — **exactly the hardcoded constant** |
+| **Gemma3-1B** | **64** (row 1,280; the only divergence, and 1152/64 = 18 exactly) |
+| **Qwen3.5-4B** | **MALFORMED** — row 4,736 B = **7,577.6 elements**, not a whole number of 32-element groups |
+
+**Their framing is the stronger argument, and it is the property my §47 change actually has:** *"the fix is
+free for every working model … that is stronger than 'the constant is wrong'."* Seventeen bundles deriving
+exactly the constant the code already uses means replacing it changes nothing for anything that works
+today, and fixes the one that cannot. My §47 commit established that only for three models' **boot
+tokens**; their sweep establishes it for seventeen bundles' **geometry**.
+
+**Qwen3.5-4B gains a second, mechanical reason for its boot 0**, independent of any oracle: 4,736 bytes is
+**7,577.6 elements** at this layout, and a tile must hold a whole number of 32-element groups. Its row
+geometry corresponds to **no whole-tile encoding** — which is a fact about the bundle, not a hypothesis
+about the engine. Recorded next to the existing unclassifiable-by-oracle note.
+
+### The two bundles their sweep could not reach are now covered — from the other direction
+
+Zaya lives as **bare `~/models/*.q4nx`**, outside every directory root (the *shape* half of their point 3,
+in addition to the tensor-name half):
+
+| bundle | row | derived cols | probe tensor | convention |
+|---|---|---|---|---|
+| zaya1-8b | 5,120 | **256** | `model.layers.0.mlp.experts.down_proj.weight` | **SIGNED** (0/256 zp) |
+| zaya1-8b-fresh | 5,120 | **256** | (same) | **SIGNED** |
+
+So Zaya is a **standard 256-wide bundle** — the derivation returns the constant, another no-op — and its
+probe tensor is **exactly the name the §28 fix added**, which is that fix confirming itself on the family
+it was written for.
+
+**Complete count: 20 bundles** (18 in the store, 2 bare) — **19 derive 256**, **one derives 64**, **one is
+malformed**.

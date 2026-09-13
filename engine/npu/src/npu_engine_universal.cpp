@@ -735,16 +735,15 @@ int main(int argc,char**argv){
     // ── TILE ALIGNMENT ──────────────────────────────────────────────
     // The tile width is a property of the BUNDLE: a tile costs 0.625 bytes per element, so
     //   cols_per_tile = (row_bytes / 0.625) / 32
-    // giving 256 for a 5120-byte row and 64 for Gemma3-1B's 1280-byte one. The dequant now takes
-    // that width from the row (q4_dequant_geom), so unaligned K is handled and this note fires.
+    // giving 256 for a 5120-byte row and 64 for Gemma3-1B's 1280-byte one. parse_q4nx_header now
+    // derives H/NH/NKV/IM from that width (cols_per_tile_from_bytes) and the dequant takes the
+    // width from the row (q4_dequant_geom), so an unaligned H is handled and this note fires.
     //
-    // The refusal below is NOT about that. Gemma3-1B's manifest carries NO dims at all -- only
-    // lm_head.weight -- so the engine derives them, and it reports IM=24864 where the mlp geometry
-    // says 6912 (down_proj is [3888, 1280]: 18 tiles across, 3888/18 = 216, x 32 rows = 6912). A
-    // wrong IM breaks the gate/up/down blocks, which is why the model still SEGFAULTS after two
-    // correct dequant fixes. Refuse until IM is derived from the tensors too: an unexplained
-    // SIGSEGV is worse than an explained "no", and this is the second time in three checkpoints
-    // that has had to be re-learned.
+    // The refusal below is a last-resort safety net, not the Gemma3-1B case any more: its IM is
+    // now derived correctly (6912, from gate_proj [3888, 1280] -> 18 tiles across -> 216 x 32),
+    // and 6912 % 256 == 0, so the model passes. If a future model still derives an IM that is not
+    // a multiple of 256 the gate/up/down blocks would index out of bounds, so refuse instead of
+    // crashing: an unexplained SIGSEGV is worse than an explained "no".
     {
         const int q = NH * HD;
         const bool tile_misaligned = (H % 256) || (IM % 256) || (q % 256);
@@ -754,10 +753,9 @@ int main(int argc,char**argv){
                     H, IM, q);
         if (tile_misaligned && IM % 256 != 0) {
             fprintf(stderr,
-                "UNSUPPORTED: intermediate_size=%d is not a multiple of 256 and the manifest carries\n"
-                "  no dims for this model, so this is the engine's DERIVED value. Gemma3-1B's mlp\n"
-                "  tensors give 6912 (down_proj [3888, 1280]: 18 tiles across, 216 x 32 rows), not\n"
-                "  24864. Refusing here instead of crashing in the gate/up/down blocks.\n", IM);
+                "UNSUPPORTED: intermediate_size=%d is not a multiple of 256 and was DERIVED, so\n"
+                "  the gate/up/down blocks would index out of bounds. Refusing here instead of\n"
+                "  crashing.\n", IM);
             return 1;
         }
     }
@@ -1084,7 +1082,7 @@ int main(int argc,char**argv){
     int lm_i8=gi8("lm_head.weight");
 
     // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
-    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=q4_dequant(i8p(lo),lm_i8,H,&lr,&lc);if(lm_raw){
+    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=q4_dequant_geom(i8p(lo),lm_i8,H,cfg.cpt,&lr,&lc);if(lm_raw){
         lm_head_f32.assign(lm_raw,lm_raw+(size_t)lr*lc);free(lm_raw);
         fprintf(stderr,"  lm_head: %dx%d (loaded from JSON), using for final logits\n",lr,lc);
     }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}}
@@ -1659,7 +1657,7 @@ struct Bf16Ctx {
     if (!cpu_gemm_fallback && !bf16_only) {
     auto dq = [&](uint64_t off, int i8_rows, int in_features, int* or_, int* oc, bool is_q8_0) -> float* {
         if (is_q8_0) return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
-        return q4_dequant(i8p(off), i8_rows, in_features, or_, oc);
+        return q4_dequant_geom(i8p(off), i8_rows, in_features, cfg.cpt, or_, oc);
     };
     bool use_q8 = cfg.has_moe;  // MoE models use Q8_0 for attention projections
     for(int l=0;l<NC;l++){
@@ -1853,7 +1851,7 @@ struct Bf16Ctx {
         }free(gw);free(uw);
         }
         if (dp[l]) {
-        int dr2,dc2;float*dw=q4_dequant(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);
+        int dr2,dc2;float*dw=q4_dequant_geom(i8p(dp[l]),d_i8,DIN,cfg.cpt,&dr2,&dc2);
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
         FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);
         if(have_small_m) cd_m.packB(l,wd.data(),DIN,DOUT,dsc[l]);
@@ -3855,7 +3853,7 @@ struct Bf16Ctx {
                                     l, fuse_dw_b[0], fuse_dw_b[1], fuse_dw_b[2], fuse_dw_b[3]);
                             if (dp[l]) {
                                 int dr2, dc2;
-                                float* dwf = q4_dequant(i8p(dp[l]), d_i8, DIN, &dr2, &dc2);
+                                float* dwf = q4_dequant_geom(i8p(dp[l]), d_i8, DIN, cfg.cpt, &dr2, &dc2);
                                 // Host float D GEMM: dequant_i8_to_float_ex outputs
                                 // [out_rows, out_cols] = [H, IM] row-major (in_features=DIN=IM
                                 // -> out_cols=IM, rows=H). D_ref[o] = sum_i fuse_su_b[i] * W[o][i].
