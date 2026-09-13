@@ -4526,7 +4526,7 @@ only against values that were actually captured.
 V-region) were refuted only for the values I guessed. §102 broke that pattern by reading the capture first,
 and immediately produced a value that works. Read the captured profile before varying the constant.
 
-## 150. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
+## 152. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
 
 **The check the nh20 lane asked for turned into a correction of my own result.** They reported that
 `attn_mha_1024_nh20_hd128.elf` is 97.9% byte-identical to `attn_mha_1024_nh32.elf`, and asked me to
@@ -7901,3 +7901,43 @@ happens to match the quiet value. Recorded rather than assumed, in both directio
 **Standing consequence:** the Phi4 half of the clean set has **not** yet been taken on a quiet device, so the TOTAL
 side of the cross-lane verdict is still resting on runs taken under contention — including the five-length banner
 sweep of §385, whose *selection lines* are robust but whose `boot` values are not.
+
+## 415. The clean Phi4 half on a QUIET device: 8/8 → 220, TWICE — the 1877 was contention, and the two-mechanism verdict is now clean on both sides
+
+**The design tested the contention diagnosis rather than re-taking a number**: the eight clean tokens, run **twice**,
+with the device verified free **before and after** and the load recorded per pass.
+
+| first token | pass 1 (load 4.16) | pass 2 (load 6.36) | arm |
+|---|---|---|---|
+| 220 | **220** | **220** | host |
+| 777 | **220** | **220** | host |
+| 1024 | **220** | **220** | host |
+| 4096 | **220** | **220** | host |
+| 12345 | **220** | **220** | host |
+| 58907 | **220** | **220** | host |
+| 30000 | **220** | **220** | host |
+| 45000 | **220** | **220** | host |
+
+**Token 220 gives 220 on a free device** — the same fixture that gave **1877** during the concurrent run. So the
+contention diagnosis was right, the withdrawal was correct, and **the third class in the taxonomy now has a
+demonstration rather than an anecdote**: the same fixture, two answers, and the detector — a quiet device plus a
+recorded load — is what separates them.
+
+**And the two passes bound the effect usefully.** Both agree on all eight at load 4.16 and 6.36, so the boundary is
+**not** a light load. The 1877 came from the much heavier condition: **two Phi4 processes at once**, the other
+lane's run at ~71% for four minutes. That is narrower and more useful than "load-sensitive" — the host path is
+stable across ordinary load and degrades under contention.
+
+**So the clean result is: Phi4 is 8/8 → 220, TOTALLY BLIND**, on eight tokens each verified **nonzero-embedding**,
+on a quiet device, banner-asserted as **host attention** — against the peer lane's clean Nanbeige run (§150, eight
+nonzero-embedding tokens, banner-asserted) which gives **three groups**. **Two mechanisms, confirmed on clean
+tokens, quiet devices and asserted arms, independently on both sides.**
+
+**And every claim in this thread now has exactly one control behind it**: the fixture class by the zero-embedding
+scan, the arm class by the selection banner, and the contention class by the quiet-device repeat. The last exists
+because a number already written down was contradicted by an earlier run of the *same file* — the cheapest control
+in the set, and the only one that requires believing `cmp` over one's own measurement.
+
+**Numbering note**: this section's arrival caught a fourth collision — my earlier section 150 (the §101 retraction)
+against the peer's new 150. **Mine was the older and had no external references, so it moved to 152**, and the
+peer's 150 stays where their own sections cite it.
