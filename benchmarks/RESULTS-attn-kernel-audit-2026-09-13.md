@@ -89,16 +89,53 @@ which is misleading but does not change what it computes.)
 
 The *mechanism* — "the kernel uses the wrong softmax scale, ≈1/16" — is **not
 supported**. The honest description is "the kernel's attention weights differ
-from reference softmax in a head-dependent way", which is consistent with
-several causes and is not yet attributed:
+from reference softmax in a head-dependent way". At the time of writing the cause
+was open, with three candidates:
 
 - bf16 rounding on short rows (the original note itself hedged this),
 - per-head scaling or a different exp path inside the captured kernel,
 - the possibility that the kernel is not computing textbook causal softmax at
   all.
 
-Discriminating needs a dump of the kernel's *scores* (not just inputs/outputs),
-or a float reference run of the same model — neither exists today.
+All three are now tested — two are refuted outright and the third is the one that
+fits: see § Attribution below.
+
+## Attribution — what the deviation actually is (follow-up, same day)
+
+The audit above named two candidates and left the cause open. Both are now tested
+with `benchmarks/tools/attn_attribute.py` on the same dumps:
+
+| hypothesis | test | result |
+|---|---|---|
+| **H1 wrong temperature** — some scale `s` reproduces the kernel | sweep `s` over 0.02 … 1.0 | **dead.** The *reference* scale is already the best fit (mean max\|d\| 0.1625, 5 % of rows matching); the doc's 1/16 is worse (0.2216); nothing gets below 0.1625 |
+| **H2 bf16 arithmetic** | same math with round-to-bf16 at every step | **dead.** 0.1631 vs 0.1625 — indistinguishable |
+| **H3 extra rotation** — kernel rotates Q/K again | re-apply half-split RoPE to Q and K | **dead.** 0.5757, much worse |
+| **H4 per-head temperature** | best scale per head, rows 1–8 | **dead.** best scales scatter 0.04–0.18 (≈4×), residuals 0.009–0.33 |
+
+So it is neither a softmax with a wrong scale nor a precision effect.
+
+What it *is*: the kernel's weights are **monotone in the reference scores but not
+equal to any exponential of them**. Fitting the weights from the V-span (144
+(row, head) pairs with fit residual under 5 %) and rank-correlating them against
+`q·k` gives a median Spearman of **+0.80** (mean 0.715, range 0.14–1.00) — the
+weights track the ordering of the true scores while distorting their magnitudes.
+
+That is the signature of an **approximate exp inside the kernel**, and it fits
+this project's own history: the AIE softmax kernels here use a software `exp2`
+(Taylor series + exponent bit-add) rather than a libm `exp`.
+
+**Inference, not proof.** I did not disassemble the kernel or dump its scores, so
+"approximate exp" is the reading the evidence supports, not an established fact.
+What is established is the negative: no temperature, global or per-head,
+reproduces these weights.
+
+Consequences, unchanged in substance but now with a cause behind them:
+
+- an argmax boot-token gate stays a weak correctness test on these kernels;
+- the int8/runlist path replays FLM's own layer sequence, so its agreement with
+  FLM is *parity*, not reference correctness;
+- if reference-quality attention is wanted, it has to be our own kernel
+  (WS-01/WS-03) rather than a replayed one.
 
 ## Reproduce
 

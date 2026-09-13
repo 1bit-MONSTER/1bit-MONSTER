@@ -56,9 +56,15 @@ claim to a flattering one.
    (row 255 = 0.194 here), and row 0's agreement is degenerate — one key means the
    output *is* V0 by construction.
    **What stands:** an argmax boot-token gate is a weak correctness test for any
-   path that composes these kernels differently. **Open:** the actual cause (bf16
-   rounding on short rows, per-head scaling, or a non-textbook softmax) is
-   unattributed — discriminating needs a scores dump or a float reference.
+   path that composes these kernels differently. **Cause, tested:** it is not a
+   temperature (a scale sweep leaves the *reference* scale as the best fit; 1/16
+   is worse), not bf16 arithmetic (identical when the reference is computed in
+   bf16), and not an extra rotation (much worse). The weights are **monotone in
+   the reference scores but equal to no exponential of them** — median Spearman
+   +0.80 against `q·k` over 144 well-fitted (row, head) pairs — which reads as an
+   **approximate exp** inside the kernel (consistent with this repo's own
+   software `exp2` softmax kernels). Inference, not disassembly: the established
+   part is the negative.
    Separately established: the byte-exact int8/runlist path replays FLM's own
    layer sequence (`gen_layer_seq`), so it inherits FLM's numerics by
    construction — its agreement with FLM is *parity*, not reference correctness.
