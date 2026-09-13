@@ -38,6 +38,16 @@ typedef struct {
     TensorDesc up_proj_weight;
     TensorDesc down_proj_weight;
 
+    // ---- LFM2 hybrid: gated short convolution (conv layers ONLY) ----------
+    // LFM2 alternates 10 short-conv layers (0,1,3,4,6,7,9,11,13,15) with 6 GQA
+    // attention layers (2,5,8,10,12,14). A conv layer carries NO self_attn.* tensor
+    // at all, so a layer IS a conv layer iff shortconv_in_proj_weight is present.
+    // find_layer_tensor() leaves these untouched on a miss and layers[] is calloc'd,
+    // so absence is detectable as shape[0] == 0.
+    TensorDesc shortconv_in_proj_weight;   // H -> 3H, packs [B | C | X-gate]
+    TensorDesc shortconv_conv_weight;      // [H, conv_L_cache] BF16 depthwise taps
+    TensorDesc shortconv_out_proj_weight;  // H -> H
+
     // ---- MoE (Qwen3.6-35B) routed + shared experts ----
     TensorDesc up_exps_weight;         // mlp.up_exps_proj.weight   [4096,8,5120] I8
     TensorDesc gate_exps_weight;       // mlp.gate_exps_proj.weight [4096,8,5120] I8

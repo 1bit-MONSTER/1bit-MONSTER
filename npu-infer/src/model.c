@@ -612,6 +612,9 @@ ModelWeights* model_load(const char* path, ModelConfig config) {
     
     // Embed tokens
     int idx_emb = find_tensor("model.embed_tokens.weight", tensors, num_tensors);
+    // LFM2 names the embedding model.token_embd.weight (everything else it names the
+    // canonical way), so accept both.
+    if (idx_emb < 0) idx_emb = find_tensor("model.token_embd.weight", tensors, num_tensors);
     if (idx_emb >= 0) memcpy(&mw->embed_tokens, &tensors[idx_emb], sizeof(TensorDesc));
     
     // ── Derive the actual model config from the parsed tensors, overriding
@@ -673,6 +676,28 @@ ModelWeights* model_load(const char* path, ModelConfig config) {
         snprintf(name_buf2, sizeof(name_buf2),
                  "model.layer.%d.self_attn.q_norm.weight", l);
         find_layer_tensor(name_buf, name_buf2, tensors, num_tensors, &layer->q_norm_weight);
+
+        // ---- LFM2 gated short convolution (present only on conv layers) ------
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.shortconv.in_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.shortconv.in_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors,
+                          &layer->shortconv_in_proj_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.shortconv.conv.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.shortconv.conv.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors,
+                          &layer->shortconv_conv_weight);
+
+        snprintf(name_buf, sizeof(name_buf),
+                 "model.layers.%d.shortconv.out_proj.weight", l);
+        snprintf(name_buf2, sizeof(name_buf2),
+                 "model.layer.%d.shortconv.out_proj.weight", l);
+        find_layer_tensor(name_buf, name_buf2, tensors, num_tensors,
+                          &layer->shortconv_out_proj_weight);
         
         snprintf(name_buf, sizeof(name_buf),
                  "model.layers.%d.self_attn.k_norm.weight", l);
