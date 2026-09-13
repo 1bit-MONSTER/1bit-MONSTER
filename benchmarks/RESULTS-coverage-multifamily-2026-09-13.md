@@ -3982,8 +3982,13 @@ retraction section, so the second was the one renumbered. One duplicate, no lost
 appending concurrently will race, and the loser is whichever one does not look:
 
 ```sh
-grep -o '^## [0-9]*\.' benchmarks/RESULTS-coverage-multifamily-*.md | sort | uniq -d   # must be empty
+# must print nothing; do NOT let a shell operator swallow this
+d=$(grep -o '^## [0-9]*\.' benchmarks/RESULTS-coverage-multifamily-*.md | sort | uniq -d)
+[ -z "$d" ] || { echo "DUPLICATE SECTION: $d"; exit 1; }
 ```
+**This rule caught the second collision and it still got committed, because I wrote the check with a `||`
+that silenced it.** A guard whose failure path is "continue" is not a guard — the same lesson as §83, one
+layer up: the check must *stop* the commit, not merely report.
 
 Do **not** add an agent suffix to disambiguate: section numbers are cross-referenced from other sections and
 from the scorecard, so a suffix would break the references rather than fix them.
@@ -4390,7 +4395,7 @@ and the one shape where we observe a failure is the one whose BO3 is half the nh
 rebuild, and the profile above says the more interesting number may be the KV/act discrepancy rather than the
 stride alone. A single clean pass — 3932160 with the first-token probe — discriminates (a) from (b) in §102.
 
-## 100. Phi4 is context-SENSITIVE, and its NPU attention is not worse than its CPU attention — which bounds the defect without clearing the attention
+## 101. Phi4 is context-SENSITIVE, and its NPU attention is not worse than its CPU attention — which bounds the defect without clearing the attention
 
 **The probe** (the discriminant §92 introduced, run on **Phi4's bf16 path**): swap **only the first prompt
 token**. Fixtures verified before use — `/tmp/p_f16.txt` and `/tmp/p_f220.txt` are 256 tokens each and differ
@@ -4428,3 +4433,10 @@ KV BO is 64 MB, while the engine's per-layer `bKv` is `4 regions x kv_region`; a
 never exceeds 3, every K write lands in region 0 and every V write in region 2. If the ELF mirrors that
 eight-head indexing, regions 1 and 3 are read and never written: right-size/wrong-arrangement in the sense of
 §38.
+
+**And that hypothesis was refuted before this section was committed.** The nh20 lane's §100 (landed while this
+was being written) tested the V-region offset directly: `v_add=1` and `v_add=2` are **both context-free**. So
+the `region+2` V placement is not the context loss either. Recording it here rather than deleting it, because
+it is the second layout hypothesis in a row to be killed by measurement and the arithmetic was still worth
+handing over.
+
