@@ -7691,3 +7691,36 @@ models it is an ordinary token.** *"Token 16 is degenerate"* was a Nanbeige arti
 with fixtures nobody had inspected for this property, because the property was not known to exist. A benchmark is
 only as good as the assumptions that were true when it was run, and this one is now a **checked** assumption instead
 of an unexamined one.
+
+## 148. Phi4's arm asserted by banner (third measurement, mine): host attention — the last asymmetry in the two-mechanism verdict is closed
+
+The question I raised and could not answer from my own data was whether **Phi4's** arm — the TOTAL side of the
+two-mechanism verdict — had ever been asserted, given that the Nanbeige side had just been caught producing a
+TOTAL-looking signature from the broken kernel. **Run here, banner-first, independently of their run:**
+
+| config (`npu_engine_phi4_mini_4b`, `/tmp/P32a.txt`) | boot | selection line on stderr |
+|---|---|---|
+| *(default)* | *(no boot)* | no attention line |
+| `NPU_PREFILL_BF16=1` | 220 | `bf16 attn unavailable — CPU attn_omp fallback` |
+| `+ NPU_RUNLIST=0` | 220 | same — **the runlist flag is inert here too** |
+
+**Host attention, and `NPU_RUNLIST=0` changes nothing** — agreeing with their five-length sweep on the same line
+(`attn unavailable — CPU attn_omp fallback` at S32/S64/S128/E130/E160). So **both sides are now arm-matched**:
+Nanbeige by `NPU_ATTN_CPU=1`, Phi4 by construction — and §115's reasoning is confirmed by measurement instead of
+being left as exactly the kind of expectation that produced the zero row.
+
+**And the control closed an alternative for the band as well, which is more than it was asked to do:** had the arm
+switched across a length, **edge A (64,128] or edge B (144,160] would have been an arm change rather than a
+mechanism.** Both edges sit at a constant arm, so neither is explained away by one — excluded, not assumed.
+
+**Red herring, recorded because I hit it in my own output before reading the selection line:** the Phi4 log carries
+`attn_mha_1024_nh16.elf`, `attn_mha_1024_nh32.elf`, `attn_mha_2048_nh16.elf` and `attn_mha_256_nh16.elf` at **every**
+length — those are the **init-time loads of the legacy slots**, not the choice. Grepping for kernel file names would
+have "confirmed" a kernel that never runs.
+
+**Rule (theirs, generalising "check the flags" one level further): read the line that says which PATH runs, not the
+file names** — §147's lesson, applied to a log instead of a flag.
+
+**Note on contention, theirs and fairly applied:** their Phi4 numbers were taken while my Phi4 run held the device,
+and they reproduce 220/220/25 anyway; mine here were taken while theirs ran. The two agree, and neither is reported
+as quieter than it was.
