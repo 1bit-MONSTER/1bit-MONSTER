@@ -2510,3 +2510,30 @@ It is in the **(whole-layer ELF, `layer.xclbin`) pair**: a combination FLM's own
 That is the tightest possible statement of where Nanbeige's runlist route stands: **nothing the host
 supplies differs from FLM's**, and the difference is a generated artifact for a shape combination never
 exercised.
+
+## 55. The constant ELF size is NOT the anomaly — the context-dependent ELFs are the attention kernels
+
+One asymmetry was left unexamined: my generated whole-layer ELFs are a **constant size** (166,832 B at every
+context, §34), while §8's differential found FLM ELFs that **grow with context** — `elf_0011`: **46,672 B
+@256 -> 177,728 B @1024**.
+
+**That is not a generator defect.** §8's differential flags ELFs whose *instructions* depend on the context,
+and the **attention kernel is exactly that** — its key window grows — whereas a whole-layer stream can be
+constant-size with context-dependent immediates. My §34.1 result already showed the context **does**
+parameterise my streams (257 distinct hashes for 257 contexts).
+
+**And the sizes corroborate the reading**: the LFM2 attention ELF identified in §43 was **182,192 B**, the
+same order as Nanbeige's 177,728 — and `elf_0011` was installed as `attn_mha_1024_nh20_hd128.elf` on exactly
+that basis.
+
+**It also corrects §53.** I wrote that FLM's own runtime "never uses" the (whole-layer ELF, `layer.xclbin`)
+combination because it loads 16 per-op kernels. But the tool's own header comment says it builds the ELF
+"exactly like the runtime's `_setup_kernel`: `gen_layer_seq(ctx+1)` -> `aiebu_assembler_get_elf`" — so
+**FLM's runtime generates a whole-layer ELF the same way, and the engine's design mirrors it.** The
+combination is FLM's own, not an engine invention.
+
+**So Nanbeige's runlist residual is precisely**: nothing host-side differs (§54), the combination is FLM's
+own, and the one measurement never taken is a **stream-level comparison of my generated `layer_ctxN.elf`
+against FLM's own generated ELF for the same context** — identifiable among its loads by size class, now
+that the attention one is known by shape. That is the experiment that settles it, and it is a comparison of
+two artifacts rather than a search.
