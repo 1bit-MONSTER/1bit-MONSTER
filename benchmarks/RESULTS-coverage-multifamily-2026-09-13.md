@@ -215,6 +215,33 @@ kernel is the whole story": either the substituted ELF was not the attention ker
 (the capture's largest ELF may be a GEMM/MoE binary), or a second error exists in that
 family. That test must be repeated now that the selector is shape-aware.
 
+> **REPEATED 2026-09-13, and it does NOT fit the shape story.** With the shape-aware
+> loader in place (commit `26850018a`) the test was redone properly: Nanbeige's captured
+> `elf_0011_177728.bin` (the 256-vs-1024 differential's largest context-dependent ELF;
+> 177728 B, the same size class as the nh32 1k ELF at 177696 B) was installed as
+> `attn_mha_1024_nh20_hd128.elf` and the engine **loaded it** — the log shows
+> `attention ELF loaded ... attn_mha_1024_nh20_hd128.elf` twice, so the shaped lookup
+> works and the >256 path used it. **The boot token was still exactly 1214** (reference
+> 1033), unchanged from the nh16 default.
+>
+> So for Nanbeige the wrong-shape attention kernel is a REAL defect but NOT the cause of
+> the wrong token: handing it its own attention kernel changes nothing. The divergence
+> must be in the shared host math upstream of attention — the QKV projection layout for
+> nh20/nkv4, the norms (`norm_eps` 1e-5 vs the engine's `EPS=1e-6f`), or the RoPE — all of
+> which are common to every layer and would swamp a correct attention kernel.
+>
+> The earlier candidates are already excluded for this family: `rope_theta` was plumbed
+> in `0a93dd20b` and the boot did not move either (it reads 70000000 from config.json, and
+> `ri()`/`ri2_build` consume it). The `norm_eps` hypothesis is weak on arithmetic grounds
+> (1e-5 vs 1e-6 against a variance of order 1 is a ~0.001% change), so the leading
+> suspect is the **QKV projection layout** for a 2560-wide qout that is neither 2048 nor
+> 4096. Note the ≤256 case is a separate gap: the embedded ELF is still nh16 regardless of
+> shape, so a shaped family needs per-context-length shaped ELFs (256/1024/2048), not one.
+>
+> The ELF is kept in `engine/npu/xclbins/attn_mha_1024_nh20_hd128.elf`: it is the correct
+> kernel for the family and will be needed once the host-math error is found, even though
+> it does not fix the token today.
+
 **Fix applied.** `attn_hd` is plumbed beside `attn_qout` (`bf16mm_set_attn_hd(HD)`) and
 the selector now requires the **(qout, hd) pair** to name a kernel that actually ships:
 `hd128 + qout 2048 -> nh16`, `hd128 + qout 4096 -> nh32`, anything else -> no kernel.
