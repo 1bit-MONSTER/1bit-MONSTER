@@ -16,8 +16,13 @@ run() {  # run <name> <compile-args...> -- <run-args...>
     [ $# -gt 0 ] && shift
     while [ $# -gt 0 ]; do runargs+=("$1"); shift; done
     total=$((total+1))
-    if ! "$CXX" $FLAGS "${src[@]}" -o "$BIN/$name" 2>/dev/null; then
-        echo "✗ $name: COMPILE FAILED"; fail=$((fail+1)); return
+    # Keep the compiler's own words on failure: a bare "COMPILE FAILED" is a red
+    # gate that names nothing, and in CI nobody can walk over and re-run it by hand.
+    local log
+    if ! log=$("$CXX" $FLAGS "${src[@]}" -o "$BIN/$name" 2>&1); then
+        echo "✗ $name: COMPILE FAILED"
+        printf '%s\n' "$log" | tail -5 | sed 's/^/    /'
+        fail=$((fail+1)); return
     fi
     if "$BIN/$name" "${runargs[@]}" >/dev/null 2>&1; then
         echo "✓ $name"; else echo "✗ $name: CHECK FAILED"; fail=$((fail+1)); fi
@@ -36,9 +41,13 @@ run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))
-if python3 Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" >/dev/null 2>&1 && \
-   "$CXX" $FLAGS src/gguf_to_onebp.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp \
-       -o "$BIN/g2o" 2>/dev/null; then
+# Both halves report separately: "build/generate failed" covered a missing
+# python package and a compile error alike, and said which of them it was to
+# nobody. The fixture is stdlib-only now, but the next cause must be readable.
+gen_log=$("$PYTHON" Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" 2>&1); gen_rc=$?
+cc_log=$("$CXX" $FLAGS src/gguf_to_onebp.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp \
+    -o "$BIN/g2o" 2>&1); cc_rc=$?
+if [ $gen_rc -eq 0 ] && [ $cc_rc -eq 0 ]; then
     conv_out=$("$BIN/g2o" "$DEDUP_DIR/mini.gguf" "$DEDUP_DIR/mini.1bp" 2>&1)
     if [ $? -eq 0 ] && printf '%s' "$conv_out" | grep -q 'dedup: blk.1.attn_q.weight'; then
         echo "✓ dedup converter (alias emitted)"
@@ -47,7 +56,10 @@ if python3 Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" >/dev/null 2>&1 && \
         echo "✗ dedup converter: no alias emitted"; fail=$((fail+1))
     fi
 else
-    echo "✗ dedup converter: build/generate failed"; fail=$((fail+1))
+    echo "✗ dedup converter: build/generate failed"
+    [ $gen_rc -ne 0 ] && printf '%s\n' "$gen_log" | tail -5 | sed 's/^/    fixture:  /'
+    [ $cc_rc -ne 0 ] && printf '%s\n' "$cc_log" | tail -5 | sed 's/^/    compiler: /'
+    fail=$((fail+1))
 fi
 
 echo "== backend compile =="
