@@ -3818,12 +3818,33 @@ struct Bf16Ctx {
 
     // ===== PREFILL — bf16 mm.xclbin path (dequant.xclbin + 2-batch GEMM) =====
     if (getenv("NPU_PREFILL_BF16") && !has_moe) {
-        const char* fmd = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2";
-        const char* fxd = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-0.6B-NPU2";
-        if (H == 2048) { fmd = "/home/bcloud/.config/flm/models/Qwen3-1.7B-NPU2"; fxd = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-1.7B-NPU2"; }
-        else if (H == 2560) { fmd = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2"; fxd = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-4B-NPU2"; }
-        else if (H == 4096) { fmd = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2"; fxd = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-8B-NPU2"; }
-        fprintf(stderr, "bf16 prefill: model=%s\n", fmd);
+        // Derive the FLM model + xclbin dirs from the MODEL PATH first. The old
+        // H-based table silently gave non-Qwen3 models Qwen3 xclbins: Llama-3.1-8B
+        // (H=4096) loaded Qwen3-8B's mm.xclbin (boot=11) and Qwen3-VL-4B (H=2560)
+        // loaded Qwen3-4B's (boot=300 vs FLM 220). Fall back to the H table only
+        // when the model's own dirs are missing (keeps the dense-Qwen3 defaults).
+        std::string fmd_own, fxd_own;
+        {
+            const size_t mls = mp_s.rfind('/');
+            const std::string mdir_s = (mls != std::string::npos) ? mp_s.substr(0, mls) : std::string();
+            const size_t mls2 = mdir_s.rfind('/');
+            const std::string base = (mls2 != std::string::npos) ? mdir_s.substr(mls2 + 1) : mdir_s;
+            struct stat st;
+            auto isdir = [&](const std::string& p) { return !p.empty() && stat(p.c_str(), &st) == 0 && S_ISDIR(st.st_mode); };
+            if (isdir(mdir_s)) fmd_own = mdir_s;
+            const std::string xd = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + base;
+            if (isdir(xd)) fxd_own = xd;
+        }
+        std::string fmd_def = "/home/bcloud/.config/flm/models/Qwen3-0.6B-NPU2";
+        std::string fxd_def = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-0.6B-NPU2";
+        if (H == 2048) { fmd_def = "/home/bcloud/.config/flm/models/Qwen3-1.7B-NPU2"; fxd_def = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-1.7B-NPU2"; }
+        else if (H == 2560) { fmd_def = "/home/bcloud/.config/flm/models/Qwen3-4B-NPU2"; fxd_def = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-4B-NPU2"; }
+        else if (H == 4096) { fmd_def = "/home/bcloud/.config/flm/models/Qwen3-8B-NPU2"; fxd_def = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3-8B-NPU2"; }
+        const std::string fmd_use = fmd_own.empty() ? fmd_def : fmd_own;
+        const std::string fxd_use = fxd_own.empty() ? fxd_def : fxd_own;
+        const char* fmd = fmd_use.c_str();
+        const char* fxd = fxd_use.c_str();
+        fprintf(stderr, "bf16 prefill: model=%s xclbins=%s\n", fmd, fxd);
         const bool unified = getenv("NPU_UNIFIED") && atoi(getenv("NPU_UNIFIED")) == 1;
         if (unified && npu_runlist_session_init(mp, H, NC, NH, NKV, IM, NV) != 0) {
             fprintf(stderr, "bf16 prefill: runlist session init failed — aborting unified path\n");
