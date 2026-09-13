@@ -1522,3 +1522,54 @@ that had been tested and broke for the first one that had not. That is the same 
 hardcoded `RT_INV_FREQ` theta (section 27), the size-keyed capture dedup (25.1), and the size-derived
 model table (b35f0914d) — four instances in one session of a constant that was true for the models in
 hand.
+
+## 29. A real bug in the i6 norm slots — and my own fix's first guard was wrong too
+
+Working down section 26's remaining list (the host-written parameter BOs), the i6 init turned out to
+have an unguarded assumption:
+
+```c
+memcpy(m6 + 256, model_tensor_data(mw_, &lw->q_norm_weight), 256);
+memcpy(m6 + 512, model_tensor_data(mw_, &lw->k_norm_weight), 256);
+```
+
+**llama-arch models have no q/k norms at all** — verified in the bundles:
+
+| model | q_norm | k_norm |
+|---|---|---|
+| Nanbeige4.1-3B | **False** | **False** |
+| Phi4-mini | **False** | **False** |
+| Llama-3.1-8B | **False** | **False** |
+| Qwen3-0.6B | True | True |
+
+So for those three a **zeroed TensorDesc** was passed to `model_tensor_data()`, and 256 bytes of
+whatever it returned landed in the q/k norm slots **that the per-ctx ELF applies**. The correct value
+there for a model without those tensors is **identity (bf16 1.0)**; garbage is not. Fixed: the slots
+default to 1.0 and the copies are guarded.
+
+**My first guard was wrong, and the gate caught it immediately.** I tested `ndim == 2` — but the norms
+are **1-D [HD]**, so the guard skipped the copies for the models that DO have them, replacing
+Qwen3-4B's real q/k norms with the identity:
+
+```
+Qwen3-4B @256, runlist:  1614  ->  17      (expected 1614)
+```
+
+That is the same failure as everything else in this list — an assumption that held for the case in
+hand — and this time it was in the *fix* rather than in the original code. Changed to
+`ndim >= 1 && shape[0] > 0`, then verified:
+
+| model | before fix | after | FLM/reference |
+|---|---|---|---|
+| Qwen3-4B *(has norms)* | 1614 | **1614** ✓ | 1614 |
+| Llama-3.1-8B *(no norms)* | 220 | **220** ✓ | 220 |
+| Nanbeige *(no norms)* | 157559 | **157559** | 5938 |
+
+**So the unguarded memcpy is a real defect, now fixed — and it is NOT Nanbeige's cause**, since its
+token did not move. That is consistent with Llama-3.1-8B, which also lacks the norms and decodes
+correctly: garbage in those slots evidently does not decide the outcome for every model without them.
+
+**Two more instances of the session's pattern**, bringing it to six: an assumption true for the models
+in hand (that q/k norms exist), and a second one inside the fix (that they are 2-D). The second was
+caught by the gate rather than by reasoning — which is the argument for running the regression even
+when a change looks like a pure guard.

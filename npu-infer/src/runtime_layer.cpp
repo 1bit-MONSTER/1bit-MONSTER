@@ -195,8 +195,22 @@ bool RuntimeLayerEngine::build_norm_bos() {
         memset(m6, 0, 1048576);
         uint16_t* w6 = (uint16_t*)m6;
         for (int i = 0; i < 64; i++) w6[i] = f32_to_bf16(1.0f);
-        memcpy(m6 + 256, model_tensor_data(mw_, &lw->q_norm_weight), 256);
-        memcpy(m6 + 512, model_tensor_data(mw_, &lw->k_norm_weight), 256);
+        // Norm slots hold bf16 1.0 (IDENTITY) by default, and are only overwritten when the
+        // model actually has the tensors. These two memcpys were UNGUARDED, and llama-arch
+        // models have no q_norm/k_norm at all -- Nanbeige, Phi4 and Llama-3.1 all report
+        // q_norm=False, k_norm=False -- so a ZEROED TensorDesc was handed to
+        // model_tensor_data() and 256 bytes of whatever it returned landed in the q/k norm
+        // slots that the per-ctx ELF applies. An identity norm is the correct value for a
+        // model without those tensors; garbage is not.
+        for (int i = 128; i < 384; i++) w6[i] = f32_to_bf16(1.0f);
+        // The norms are 1-D [HD], so the guard must NOT test ndim == 2: the first version of
+        // this fix did, skipped the copies for models that DO have the tensors, and replaced
+        // Qwen3-4B's real q/k norms with the identity -- caught immediately by the @256 gate
+        // going 1614 -> 17. Test that the descriptor is populated instead.
+        if (lw->q_norm_weight.ndim >= 1 && lw->q_norm_weight.shape[0] > 0)
+            memcpy(m6 + 256, model_tensor_data(mw_, &lw->q_norm_weight), 256);
+        if (lw->k_norm_weight.ndim >= 1 && lw->k_norm_weight.shape[0] > 0)
+            memcpy(m6 + 512, model_tensor_data(mw_, &lw->k_norm_weight), 256);
         i6_bos_[L]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
     fprintf(stderr, "RuntimeLayer: built %d per-layer norm BOs\n", cfg_.num_layers);
