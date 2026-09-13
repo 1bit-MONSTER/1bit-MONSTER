@@ -3941,7 +3941,7 @@ token is worth checking before the next Nanbeige differential.
 read a fixture-shaped zero as a kernel defect. One sweep of the first token — cheap, and it names the
 variable — would have caught it immediately.
 
-## 88. Static audit for the same defect class: one more silent cap found, and fixed
+## 90. Static audit for the same defect class: one more silent cap found, and fixed
 
 **Why it was worth searching.** §83/§84 established that a **silent truncation** cost this investigation
 several checkpoints: the fallback's 128-token cap left no trace beyond a banner count, and everything
@@ -3969,3 +3969,28 @@ the gates are unchanged (1614 / 25, and Nanbeige i8 **5938**, FLM's reference).
 **The general lesson, which is why this is worth landing rather than noting:** **a cap that cannot be seen
 is a bug even when the cap is right.** The fallback's cap was equally "correct" — 128 rows is what the
 activation BO holds — and it still cost the session its largest detour, because nothing said so.
+
+## 91. Section numbering under concurrent agents — and the collision that prompted this note
+
+**A collision happened and is fixed.** Two agents appended to this file concurrently and both took
+`## 88.`: one wrote "Nanbeige's bf16 1214 LOCALIZED: the bf16 QKV GEMM emits all-zeros" (now 88), the other
+"Static audit for the same defect class" (now **90**). The first was already cross-referenced by its own
+retraction section, so the second was the one renumbered. One duplicate, no lost content.
+
+**The rule, so the next collision is cheap:** take the **next free number at the moment you write**, then
+**re-check the tail immediately before you commit** and renumber if it has been taken — because two agents
+appending concurrently will race, and the loser is whichever one does not look:
+
+```sh
+grep -o '^## [0-9]*\.' benchmarks/RESULTS-coverage-multifamily-*.md | sort | uniq -d   # must be empty
+```
+
+Do **not** add an agent suffix to disambiguate: section numbers are cross-referenced from other sections and
+from the scorecard, so a suffix would break the references rather than fix them.
+
+**And the content of the collided pair is worth keeping together**, because the second half corrects the
+first: the localization pointed at "the bf16 QKV GEMM emits all-zeros (inputs non-zero)", and the retraction
+found the zeros were a **fixture artifact — token 16 has a zero embedding**. That is the same signal I
+recorded in §62 (`EMB0: 0 0 0 0 0 0 0 0`) and did not chase. Two agents, two checkpoints apart, meeting the
+same zero and one of them explaining it: **a zero that looks like a computation result should be checked
+against the fixture before it is called a defect.**
