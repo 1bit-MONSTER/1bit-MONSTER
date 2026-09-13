@@ -6951,3 +6951,38 @@ it is worth one instrument rather than two explanations.
 fixture fooled a **control** rather than a probe.* Every previous fixture retraction invalidated an experiment;
 this one invalidated a **reference**. The rule that follows is the one already in this log, applied to the other
 direction: **a known-good path is known-good only on the fixture it was proven on.**
+
+## 138. No nblk parity — but the bf16 path shows a PLATEAU, the same shape as the other lane's 220
+
+§137's table suggested "odd nblk" (256 and 768 wrong; 512 and 1024 right). Extended with intermediate lengths on
+the same fixture (leading token 58907):
+
+| len | nblk | bf16 | FLM-ref | agree |
+|---|---|---|---|---|
+| 192 | 1 | 434 | 434 | ✓ |
+| 320 | 2 | 13 | 13 | ✓ |
+| 384 | 2 | **343** | 13 | ✗ |
+| 448 | 2 | **13** | 1704 | ✗ |
+| 640 | 3 | 16187 | 16187 | ✓ |
+| 896 | 4 | **13** | 8193 | ✗ |
+
+**The parity hypothesis is refuted** — agreements and disagreements occur at every `nblk`. But something else
+appears, and it is the same shape the other lane just reported on nh24:
+
+- **the bf16 path returns 13 at 320, 448, 512 and 896** — a constant across a range of *input lengths* — while
+  FLM-ref varies across the same range (13, 1704, 13, 8193). A length-independent answer over an interval is a
+  **plateau**;
+- and their Phi4 result is a plateau too: **native 220 at npt = 16/32/48/64** against refs 16/11/11/11 — where
+  220 is FLM's value **at npt=128**.
+
+**Two models, two plateaus, and in both cases the plateau value equals a *longer* length's reference value**
+(220 = FLM@128 for theirs; 13 = FLM@320/512 for mine). That is the signature of a computation run at a **fixed
+length** rather than the prompt's — the same shape as §84's fallback truncation, except the value matches a
+different length rather than the first block's.
+
+**Recorded as a signature, not a cause** — deliberately, and for the reason the other lane gave: the plateau is a
+measurement, the mechanism is not, and this item has produced six retractions from calling a pattern a cause.
+The two checks that would separate the candidates, both cheap:
+
+1. change **only the last token** inside a plateau — a fixed-length computation may not notice;
+2. test whether the plateau is **flat below a block** (padding) or **above** one (truncation).
