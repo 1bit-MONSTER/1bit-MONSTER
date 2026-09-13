@@ -336,3 +336,44 @@ inputs are only qout, kvout, H and IM. The next step is differential, not more r
 engine already dumps layer-0 QKV under `NPU_DUMP_L0=1` (`/tmp/bf16_l0_qkv.bin`), so compare
 that block against FLM's own layer-0 output for Nanbeige and the first differing element
 names the culprit. That needs the device.
+
+## 12. The decode is broken, and the RUNLIST forward underneath it is why (2026-09-13)
+
+Section 10 predicted that a gate set made only of prefill boot tokens could not see a broken
+decode. It could not, and it was broken. Measured on Qwen3-0.6B, 8 tokens:
+
+```
+FLM-ref decode (NPU_FLM_DECODE=1) : 220 220 16 17 23 220 11211 220
+native  decode (NPU_RUNLIST=1)    : 28962 28962 28962 28962 28962 28962 28962 28962
+```
+
+and directly: `[1] 28962 / [2] 28962 / [3] 28962` — a constant, degenerate loop.
+
+**The decode is not the root cause: its INPUT is already wrong.** The runlist path takes
+token 1 straight from the prefill's own logits (`int best = rt.argmax_logits(cfg.vocab_size);`
+in `npu_runlist_bridge.cpp`), and that value is 28962 — while the bf16 prefill, on the same
+model and prompt, correctly yields **25**, which is FLM's own token. So the whole-layer
+forward produces wrong logits and the constant decode follows from a state that never
+produces a different argmax.
+
+So the broken component is `RuntimeLayerEngine` driving FLM's `layer.xclbin` + the
+per-context ELFs — NOT the bf16 prefill, which is correct and is what every passing gate has
+actually been testing. Related symptom, same code: that path's prefill is token-at-a-time
+(`for (int t : ids) { rt.embed(t); rt.forward(++ctx); }`), which is why it takes 13466 ms
+for 1024 tokens against the bf16 path's 540 ms.
+
+Checked and NOT the cause: the per-ctx ELF dirs all exist
+(`npu-infer/captures/txn-elfs{,-1p7b,-4b,-8b}`, ~4100 files each) and `elf_0002_lmhead.bin`
+is present, so the path is not silently loading nothing. Also noted: `cfg.head_dim = 128` is
+hardcoded in `npu_runlist_decode()` exactly as it was in `npu_bf16_prefill_init()` before
+`5a9d1d6c9` — harmless for Qwen3-0.6B (hd128), the same latent trap for any other shape.
+
+**Consequence for the goal.** Every decode number in the six-model scorecard (80 / 40 / 19 /
+11 tok/s) came from this path. The timings are real, reproducible, and sit where FLM sits —
+but the tokens are a constant, so "meet-or-beat FLM on decode" is UNSUPPORTED until this
+forward is fixed. No decode number should be cited meanwhile.
+
+**Next:** make the runlist forward produce a correct layer-0 output. Both sides are
+inspectable without guessing — the bf16 path dumps layer-0 QKV under `NPU_DUMP_L0=1` and the
+runlist path can dump its KV under `RT_KV_DUMP_DIR` — so the first differing element
+localises the fault. `benchmarks/decode_token_check.sh` is the regression test for any fix.
