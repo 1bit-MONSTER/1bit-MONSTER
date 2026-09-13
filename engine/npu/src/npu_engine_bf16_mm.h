@@ -337,7 +337,12 @@ struct Bf16Mm {
         if (!attn_out) {
             // Device buffers sized for the max supported call (1024 tokens);
             // the per-call copy below uses attn_tokens.
-            const size_t cap = (size_t)(attn_tokens > 1024 ? attn_tokens : 1024) * q;
+            // BF16MM_ATTN_EXACT_BO: size act/out to exactly rows*q instead, to test whether the
+            // kernel's output WIDTH follows the BO it is handed or is baked into the ELF.
+            // RESULTS-coverage-multifamily 122: the kernel writes zeros and only 2048 of 2560
+            // dims wide, so which of those it is decides the fix (bind like FLM, or new ELF).
+            const size_t exact = getenv("BF16MM_ATTN_EXACT_BO") ? (size_t)rows * q : 0;
+            const size_t cap = exact ? exact : (size_t)(attn_tokens > 1024 ? attn_tokens : 1024) * q;
             attn_out = std::make_unique<buffer<uint16_t>>(*dev, cap);
             attn_act = std::make_unique<buffer<uint16_t>>(*dev, cap);
             attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)attn_kv_region * 4);

@@ -5692,3 +5692,31 @@ levels, and knowing which is which is the point.
 **So the general form of the rule, which is what to keep**: **extent is a property of the code before it is a
 property of the run** — check it statically first (free, decisive about the class), and go to a runtime width
 print only for the stages that execute on the device.
+
+## 123. The output width is ELF-baked, not BO-driven — and the sentinel instrument perturbs the run
+
+§122 asked whether the 2048-wide output follows the BO we hand the kernel or the ELF's own geometry. Added
+`BF16MM_ATTN_EXACT_BO` (size act/out to exactly `rows*q` instead of the 1024-row cap) and ran both:
+
+```
+default   : boot 152503   kept_1.0=131110/655360  nonzero=650228
+EXACT_BO  : boot 152503   kept_1.0=131110/655360  nonzero=650228
+```
+
+**Identical** — the BO size does not change what the kernel produces. The output geometry is baked into the
+ELF's instruction stream, so **§103's BO-size mismatch is not the fix**.
+
+**But this run also exposes a problem with §122's instrument, and it has to be recorded.** The sentinel fill
+*changes* the run: with it on the boot is **152503**, not the 188 the same binary gives without it, and the
+nonzero count is 650228 rather than §122's 393216. That is the third instrument-perturbs-the-measurement case
+in this item (after `NPU_DUMP_ATTNIO` (§114) and the KV dump (§12)).
+
+What survives: the **kept fraction reproduced** — 131072 in §122, 131110 here, both ≈ 1/5 of 655360 — so "the
+kernel does not write 4 of 20 heads" is stable across two perturbed runs, one of them at a different BO size.
+The absolute counts do not survive; the ratio does.
+
+**Conclusion for the fix.** The kernel behaves as an **nh16-width attention whose geometry is fixed at load**.
+Neither `bKv` arrangement (§94/§100/§112) nor BO sizing (this section) is the lever. This is §97's **supply
+fix extended to @1024 as well**: Nanbeige needs a genuine nh20 attention kernel at each context length it uses
+— and the host attention is already proven correct for nh20 (§113: 1033 = FLM's reference), so it stands as the
+correct interim path.
