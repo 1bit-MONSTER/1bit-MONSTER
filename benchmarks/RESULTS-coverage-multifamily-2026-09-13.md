@@ -3986,8 +3986,20 @@ appending concurrently will race, and the loser is whichever one does not look:
 d=$(grep -o '^## [0-9]*\.' benchmarks/RESULTS-coverage-multifamily-*.md | sort | uniq -d)
 [ -z "$d" ] || { echo "DUPLICATE SECTION: $d"; exit 1; }
 ```
-**This rule caught the second collision and it still got committed, because I wrote the check with a `||`
-that silenced it.** A guard whose failure path is "continue" is not a guard — the same lesson as §83, one
+**The rule then failed a THIRD time, in two ways.** The third collision was my Phi4 section landing on a
+number the other lane had just taken. And when I ran the corrected check inline, I wrote the *reporting*
+branch without the `exit` — so it printed `DUPLICATES: ## 101.` and the commit ran anyway. Three collisions
+in three consecutive sections, every one of them caught by a check and every one committed regardless. The
+lesson is cumulative and it is about guards, not about numbering: **a check is only a guard if its failing
+branch stops the work.** Two fixes, both kept:
+
+1. **Numbers may have gaps — skip ahead.** Take `max(used) + 5` rather than `+ 1` at commit time. Gaps cost
+   nothing (section numbers are identifiers, not an ordering), and skipping ahead is what actually breaks the
+   race, since the other lane can only take the numbers it can see.
+2. **The check must exit.** As written above, with `[ -z "$d" ] || { echo ...; exit 1; }` and no `||`
+   anywhere in the chain.
+
+ A guard whose failure path is "continue" is not a guard — the same lesson as §83, one
 layer up: the check must *stop* the commit, not merely report.
 
 Do **not** add an agent suffix to disambiguate: section numbers are cross-referenced from other sections and
@@ -4395,7 +4407,7 @@ and the one shape where we observe a failure is the one whose BO3 is half the nh
 rebuild, and the profile above says the more interesting number may be the KV/act discrepancy rather than the
 stride alone. A single clean pass — 3932160 with the first-token probe — discriminates (a) from (b) in §102.
 
-## 101. Phi4 is context-SENSITIVE, and its NPU attention is not worse than its CPU attention — which bounds the defect without clearing the attention
+## 104. Phi4 is context-SENSITIVE, and its NPU attention is not worse than its CPU attention — which bounds the defect without clearing the attention
 
 **The probe** (the discriminant §92 introduced, run on **Phi4's bf16 path**): swap **only the first prompt
 token**. Fixtures verified before use — `/tmp/p_f16.txt` and `/tmp/p_f220.txt` are 256 tokens each and differ
