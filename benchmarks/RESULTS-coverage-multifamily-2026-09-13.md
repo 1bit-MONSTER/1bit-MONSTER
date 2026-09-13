@@ -5300,3 +5300,23 @@ Three things:
 **Caveat (per §116/§117).** The host side of this comparison is CPU work and clang was at 11 during the run.
 The identical 0.432772 at two different lengths makes a load artefact unlikely — a saturating compile would not
 reproduce the same value at both — but a clean re-run is owed, and it is cheap.
+
+## 120. §119 confirmed clean: the attention-diff profile is deterministic (0.432772 at L0, 8.71614 at L31, twice)
+
+Re-ran the §119 diff with clang-23/amdllvm confirmed at **0** before and after:
+
+```
+run1  boot 188   L0 0.432772   L31 8.71614
+run2  boot 188   L0 0.432772   L31 8.71614
+```
+
+Identical to six figures across two runs, so the profile is deterministic and §119's caveat is discharged: the
+0.43-at-L0 attention discrepancy is a property of the computation, not of the load. (Load average was high —
+20-23 — but with **zero** compilers, which is exactly why the per-run clang count, and not the load average, is
+the instrument that matters for this path: load average counts my own legitimate engine runs.)
+
+**Where this leaves the nh20 item.** The NPU attention is nearly right and the error compounds; the host
+attention is exact; the region (§112), the V-offset (§100), the container (§101), the ELF provenance (§102) and
+now the "wrong-width kernel => nonsense" reading are all excluded. What remains is a **small, deterministic,
+per-layer numerical/ordering difference** between the kernel's attention and the host's — and the fix direction
+that follows from it is to make the two agree exactly, not to capture a new ELF.
