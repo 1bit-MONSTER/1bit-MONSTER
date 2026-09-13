@@ -81,7 +81,7 @@ prefill and TTFT, and match/beat on decode.
 
 | family | shape | symptom | explanation |
 |---|---|---|---|
-| Nanbeige4.1-3B | nh20/hd128, qout 2560 | boot 1214 vs 1033 | see the correlation below |
+| Nanbeige4.1-3B | nh20/hd128, qout 2560 | **default i8 path now matches FLM EXACTLY: 1033 @1024, 5938 @256, deterministic** (§84). Boot 1214 remains on the *bf16* path only | §84 below |
 | Phi4-mini | nh24/hd128, qout 3072 | boot 350 vs 25 | same |
 | Gemma3-1B | nh4/hd256, qout 1024 | fails | same |
 | Qwen3.5-4B | nh16/hd256 | boot 0 | **hybrid** (`GateDeltaNet_prefill.xclbin` + `conv.xclbin` + vision) — a family implementation, like LFM2 |
@@ -103,7 +103,21 @@ the bf16 prefill — so "the bf16 prefill" is the wrong locus for this family, a
 even consulted. The nondeterminism is in our **int8 prefill compute**. That is a statement about **our
 code**, not about a dependency.
 
-## 6. What landed this session (133 commits, `goal/runlist-decode-wire`)
+**RESOLVED for Nanbeige, and the correlation's first row has a host-side cause after all (§83/§84).** The
+fallback prefill — the path Nanbeige runs by default — capped the prompt at `XM = 128` rows and
+**truncated** anything longer, announcing it (`fallback prefill: npt 1024 -> 128`). A block walk fixed it in
+~15 lines, because the layer loop was already written in absolute-position form. Nanbeige now returns
+**1033 @1024** and **5938 @256** — FLM's own reference at both lengths — deterministically (5/5 each), with
+the gates unmoved (1614 / 25 / 1614 / 220 / 220).
+
+**Two consequences for this document.** (a) **Phi4's 350 and the other out-of-set rows are now untested on
+the fixed path** — they land on the same fallback prefill, so their numbers may have been this same
+truncation rather than the bf16 composition this section has been pointing at; each needs re-running.
+(b) **The fix makes long prompts ~8x slower on that path** (8 blocks x NC layers), so those re-runs need a
+generous timeout — Phi4 at 1024 tokens now stops around layer 10 of 33 within 900 s. Test them at 256
+tokens, or raise the timeout, rather than reading a truncated log as a failure.
+
+## 6. What landed this session (169 commits, `goal/runlist-decode-wire`)
 
 Performance: double-buffered GEMM blocks (~30% prefill, flipping 4 models from losing to
 winning); host-thread default made npt- and size-dependent.
@@ -385,12 +399,12 @@ inference:
 
 ## 11. Session close
 
-**133 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
+**169 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
 native engine supports, and the coverage limits are documented with their best explanations — Gemma3-1B
 reduced to a compiled K-tile in a dependency, Phi4/Qwen3.5/LFM2 to named hybrid implementations, and
 Nanbeige to a device-side question with **every host artifact proven byte-identical**.
 
-**Eleven of this session's findings were mine and wrong**, and all eleven are recorded rather than deleted. The
+**Sixteen of this session's findings were mine and wrong**, and all sixteen are recorded rather than deleted. The
 habit that caught every one was the same, and it is the most transferable thing here: ask what a number
 is **for**, not whether it is correct — and prefer a control over an argument. The last two are the
 cleanest illustrations: I was about to report "my ELF contains the layer sequence twice, so the device
