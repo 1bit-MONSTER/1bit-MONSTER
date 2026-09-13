@@ -2537,3 +2537,48 @@ own, and the one measurement never taken is a **stream-level comparison of my ge
 against FLM's own generated ELF for the same context** — identifiable among its loads by size class, now
 that the attention one is known by shape. That is the experiment that settles it, and it is a comparison of
 two artifacts rather than a search.
+
+## 56. THE GENERATOR IS PROVEN EXACT — my per-ctx layer ELF is byte-identical to FLM's own runtime ELF
+
+I compared the right artifacts this time: the ELF **section payload** (`.ctrltext`), not the container, and I
+read the values FLM actually patches.
+
+`readelf -S` on FLM's ELFs shows each carries `.ctrltext` (the instruction stream), `.rela.dyn`
+(relocations) and `.note.xrt.UID`. **FLM's `elf_0001` and `elf_0003`** (86,704 B each) have
+`.ctrltext = 80,136 B` — **exactly half** of my layer ELF's txn (160,272 = 2 x 80,136).
+
+**Then the same-context test: my `layer_ctx1025` half vs FLM's `elf_0016` `.ctrltext` (80,136 B) —
+0 DIFFERING BYTES. IDENTICAL.**
+
+And the context immediates read out exactly:
+
+| artifact | immediates at the 8 patch sites |
+|---|---|
+| my `layer_ctx1025` | **1025** |
+| FLM `elf_0016` | **1025** |
+| FLM `elf_0001` | 1 |
+| FLM `elf_0003` | 1 |
+
+So **FLM calls `gen_layer_seq(ctx+1)` and so does the tool** — the tool's own comment was exact, and the
+context is patched as **8 immediates per column copy**.
+
+**The doubling is correct, not a bug** — and I nearly reported it as one. The **Qwen3-4B control** (which
+works via the runlist) **also** produces two byte-identical halves, so this is the normal **2-column** format.
+FLM loads the two column copies as **two separate ELF objects** (`elf_0001` + `elf_0003`, both immediate=1);
+the engine builds **one ELF with both copies concatenated**. Same program, two constructions.
+
+**This CLOSES the item §52 named** — "the per-ctx ELF generator is proven only for nh16/nh32; Nanbeige nh20
+and Phi4 nh24 are unproven". The generator is **proven exact for nh20**, by direct comparison against FLM's
+own runtime artifact for the same context.
+
+**And it CORRECTS §53.** I wrote that FLM's 16 ELFs are per-op kernels, which made the comparison invalid.
+They are not: `elf_0001/0003/0016` are the **whole-layer** stream — all 32 layers, 8 context immediates per
+column copy. The comparison §53 dismissed is precisely the one that now proves the generator.
+
+**It also fully explains §34's "constant size, distinct hashes"**: the ELF is two identical column copies of
+an 80,136-byte whole-layer stream, with the context patched into 8 immediates per copy — 32 bytes per copy,
+which is exactly the 32 bytes by which my stream and FLM's differed before I matched the context.
+
+**So for Nanbeige: the ELF is exact and every BO is exact (§54).** The residual is in neither. It is in what
+the two constructions do differently — how the column kernels are built and dispatched — or in the
+device-written KV.
