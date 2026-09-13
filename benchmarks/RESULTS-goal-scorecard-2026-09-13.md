@@ -82,11 +82,26 @@ prefill and TTFT, and match/beat on decode.
 | family | shape | symptom | explanation |
 |---|---|---|---|
 | Nanbeige4.1-3B | nh20/hd128, qout 2560 | **default i8 path now matches FLM EXACTLY: 1033 @1024, 5938 @256, deterministic** (§84). Boot 1214 remains on the *bf16* path only | §84 below |
-| Phi4-mini | nh24/hd128, qout 3072 | boot 350 vs 25 | same |
+| **Phi4-mini** | nh24/hd128, qout 3072 | **boot 350 is UNTESTED ON THE FIXED PATH** — Phi4 takes the fallback prefill, which was truncating at 128 tokens until §84, so 350 predates the fix and is not yet evidence about nh24 | **re-run first** |
 | Gemma3-1B | nh4/hd256, qout 1024 | fails | same |
 | Qwen3.5-4B | nh16/hd256 | boot 0 | **hybrid** (`GateDeltaNet_prefill.xclbin` + `conv.xclbin` + vision) — a family implementation, like LFM2 |
 | LFM2-1.2B / 2.6B | nh32/hd64 | runs, boot 63260 (wrong) | **hybrid** short-conv. Reference is now a full generation, not a token: `708, 1735, 538, 730, 525, 730, 1443` at **63 tok/s** on the engine's own loop. Three route blockers named — bf16mm lacks the GEMM shapes and the conv compute, the runlist needs a sequence class FLM does not ship, and FLM's fixed kernels *are* the baseline |
 | Gemma3-4B | hd256 | — | untested native |
+
+**The three prefill paths, and which one each family takes** (this matters for every number above):
+
+| path | who takes it | prefill truncated? |
+|---|---|---|
+| **runlist** (whole-layer per-ctx ELFs) | **only** dense Qwen3 at `(NC,H)` = (28,1024), (28,2048), (36,2560), (36,4096) — i.e. exactly the goal's four dense sizes — or any non-MoE model with `NPU_LAYER_ELF_DIR` set | no — its own per-ctx ELFs, byte-identical to FLM's |
+| **bf16** (`NPU_PREFILL_BF16=1`) | opt-in | no — already walks in blocks; separate `NPU_PREFILL_MAX` cap |
+| **fallback (i8)** | **everyone else, by default** | **WAS, at `XM = 128`, until §84** |
+
+The gate is `npu_engine_universal.cpp:710-724`. **Consequence: every out-of-set family's boot number
+recorded before §84 was measured through a 128-token prefill** — Phi4's 350, Qwen3.5's 0, the Gemma3/Gemma4
+rows, LFM2 — so none of them is evidence about the bf16 compute or the attention shape until re-measured.
+And it is why the goal's six models were never affected: they are the dense-Qwen3 set that takes the
+runlist. Re-runs on the fallback now cost `ceil(npt/XM)` passes through all `NC` layers — test at 256
+(2 passes) or raise the timeout.
 
 **The non-hybrid correlation, which is exact:** every model with `qout ∈ {2048, 4096}` is
 correct; every one outside it is wrong. Causes excluded **by measurement** for that group: the
