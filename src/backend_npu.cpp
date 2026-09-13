@@ -15,6 +15,7 @@
 
 #include "backend.h"
 #include "q4nx_reader.h"
+#include "npu_key_contract.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -608,29 +609,41 @@ struct NPUBackend : Backend {
         // Verify GEMM weights exist in model file (managed by worker subprocess).
         // The GB-scale QKV/O/GU/D projection weights are loaded by the NPU worker
         // engine via its own mmap; the backend only verifies they're present (#445).
+        //
+        // The names verified are the ones the worker for THIS artifact's family
+        // loads, not one hardcoded dense set: a non-dense artifact declares its
+        // family in the header, and checking dense names against it reported a
+        // missing weight for a model that serves fine (#2193, Defect 4).
         {
-            char key[256];
-            bool all_found = true;
-            for (int l = 0; l < NC && all_found; l++) {
-                snprintf(key, sizeof(key), "model.layers.%d.self_attn.q_proj.weight", l);
-                if (!model.find_offset(key)) { all_found = false; break; }
-                snprintf(key, sizeof(key), "model.layers.%d.self_attn.k_proj.weight", l);
-                if (!model.find_offset(key)) { all_found = false; break; }
-                snprintf(key, sizeof(key), "model.layers.%d.self_attn.v_proj.weight", l);
-                if (!model.find_offset(key)) { all_found = false; break; }
-                snprintf(key, sizeof(key), "model.layers.%d.self_attn.o_proj.weight", l);
-                if (!model.find_offset(key)) { all_found = false; break; }
-                snprintf(key, sizeof(key), "model.layers.%d.mlp.gate_proj.weight", l);
-                if (!model.find_offset(key)) { all_found = false; break; }
-                snprintf(key, sizeof(key), "model.layers.%d.mlp.up_proj.weight", l);
-                if (!model.find_offset(key)) { all_found = false; break; }
-                snprintf(key, sizeof(key), "model.layers.%d.mlp.down_proj.weight", l);
-                if (!model.find_offset(key)) { all_found = false; break; }
-            }
-            if (!all_found) {
-                fprintf(stderr, "NPU: GEMM weights missing from model file — worker may fail\n");
+            const std::string family = model.model_type();
+            const NpuKeyContract contract = npu_contract_for(family);
+            if (!contract.layout) {
+                fprintf(stderr, "NPU: artifact declares model_type '%s' — no GEMM key "
+                                "contract for that family here; the worker loads its own "
+                                "layout, so this check is skipped rather than run against "
+                                "the wrong names\n", family.c_str());
             } else {
-                printf("NPU: verified GEMM weight offsets for %d layers\n", NC);
+                const NpuKeyCheck ck = npu_verify_layer_keys(model, NC, contract);
+                switch (ck.status) {
+                case NpuKeyCheck::Verified:
+                    printf("NPU: verified GEMM weight offsets for %d layers (layout: %s)\n",
+                           NC, contract.layout);
+                    break;
+                case NpuKeyCheck::MissingKey:
+                    fprintf(stderr, "NPU: GEMM weights missing from model file — layer %d has no "
+                                    "'%s' (layout: %s); worker may fail\n",
+                            ck.miss_layer, ck.miss_key.c_str(), contract.layout);
+                    break;
+                case NpuKeyCheck::UnknownVocabulary:
+                default:
+                    // Not "missing": these are names this check cannot speak
+                    // about (e.g. Qwen3.6-35B-A3B's `model.layer.N.linear_attn.*`).
+                    fprintf(stderr, "NPU: artifact uses per-layer names this check does not know "
+                                    "(layout: %s, %d layers) — skipping the pre-serve weight check "
+                                    "rather than calling them missing\n",
+                            contract.layout, NC);
+                    break;
+                }
             }
         }
 
