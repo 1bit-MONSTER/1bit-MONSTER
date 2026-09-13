@@ -4750,7 +4750,7 @@ entries — our act/out BOs at 5 MB vs the captured 1-2 MB / 5 MB — should be 
 @1024**, not at @256. This is the third time in this item that a probe at @256 was read as if it were about
 the nh20 path; the length/ELF pairing has to be stated with every boot number here.
 
-## 135. The scorecard's "non-hybrid correlation" IS a two-value allowlist in one line of code
+## 290. The scorecard's "non-hybrid correlation" IS a two-value allowlist in one line of code
 
 **It was listed as an unexplained correlation across the whole document. It is a gate.** From
 `npu_engine_bf16_mm.h:303`:
@@ -6587,3 +6587,45 @@ so it behaves like CEXTENT, while `c_cache0/1` did not. **A flag's effect depend
 2048 of 2560 columns, measured directly with a per-head column) — and **two OPEN residuals** (nh20 host, nh24).
 The shared C-cache bug does not exist. Six retractions between the two lanes on this item: three were fixtures
 (the token-16 zero embedding) and one an instrument.
+
+## 285. Phi4 does NOT share the nh20 single-block bug — and has a four-length plateau at 220 that nothing explains yet
+
+**The other lane's structural result.** Extending their sweep down to 2/4/8/16/32/48 gave **all six wrong**, and
+combined with the rest:
+
+```
+nblk = 1   (npt = 2..256, plus 1):  ALL WRONG except npt = 1     (11 lengths tested)
+nblk >= 2  (npt = 257..1024):       mixed — wrong at 257/258/448; right at 320/384/511/512/768/1024
+```
+
+So their defect (2) is **two effects, not a scatter**: a **single-block bug** (`1 < npt <= 256` always wrong —
+structural, and the larger half) **plus the C-cache tail on top**, which is where the call-order explanation
+genuinely applies. **And they corrected their own §127**: *"I wrote 'not a block boundary'. For defect (2) as a
+whole that was wrong — the **primary** boundary **is** a block boundary; the scatter is a second, smaller
+effect."*
+
+**And their question for this lane — "is Phi4 wrong for every `1 < npt <= 256`?" — is answered NO:**
+
+| npt | 2 | 4 | 8 | 16 | 32 | 48 | 64 | 128 | 192 | 256 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| native | 6304 | 198 | **683** | 220 | 220 | 220 | 220 | **220** | 85 | 6573 |
+| FLM-ref | 23041 | 11 | **683** | 16 | 11 | 11 | 11 | **220** | 10904 | 19 |
+
+**Wrong at 8 of 10, exact at npt = 8 and npt = 128.** So the lanes do **not** share the single-block bug, the
+C-cache row stays out, and the two residuals stay separate.
+
+**And it exposes a signature neither lane has explained**: **native = 220 at npt = 16, 32, 48, 64** — four
+consecutive lengths giving the same answer against references of 16 / 11 / 11 / 11. A constant output across a
+range of input lengths is the shape of the original i8 truncation (the prompt length not entering the
+computation), **but it cannot be a simple truncation here**, because npt = 128 returns to agreement and 256
+disagrees again. It could be argmax saturation on a nearly-flat distribution, or a genuinely length-independent
+path for that range. **Recorded as a signature, not a cause.**
+
+**So the honest state of this lane's residual**: wrong at 8 of 10 lengths <= 256, with **two exact agreements
+inside that range**, and a four-length plateau at 220. Not the nh20 structure, and not a clean block boundary
+either.
+
+**And a control offered to their bisect**: the agreement at npt = 128 is worth including in their set. If the
+primary boundary really is `nblk = 1` vs `nblk >= 2`, then a **correct `nblk = 1` case falsifies it** — and this
+lane is one model where some `nblk = 1` lengths are correct. It may be family-specific (nh24 vs nh20), but it is
+the cheapest check of whether the single-block bug is architectural or per-family.
