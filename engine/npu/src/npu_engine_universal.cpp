@@ -723,15 +723,19 @@ int main(int argc,char**argv){
     fprintf(stderr,"=== NPU Engine Universal — %s ===\n",model_tag.c_str());
     fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d rope_theta=%.0f\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split,cfg.rope_theta);
 
-    // ── TILE-ALIGNMENT GATE ──────────────────────────────────────────
-    // dequant_q4nx.cpp tiles at TILE_COLS=256 and computes n_tile_cols = in_features / 256
-    // with INTEGER division, so a contraction dim that is not a multiple of 256 silently
-    // truncates the tile count and the dequantizer walks out of bounds -- observed as a
-    // SIGSEGV in dequant_i8_to_float_ex for Gemma3-1B, whose H=1152 (1152/256=4.5 -> 4) and
-    // IM=24864 (97.125 -> 97) both violate it. Every model that works today is 256-aligned,
-    // so this gate is a no-op for all of them and turns an unexplained crash into a named
-    // limitation for the ones that are not. Fixing the dequant to handle a partial tile is
-    // the real fix; this makes the failure honest in the meantime.
+    // ── TILE ALIGNMENT ──────────────────────────────────────────────
+    // The COLUMN side is now handled: the converter pads columns to a multiple of
+    // col_block_size with zeros (model_converter.py:544-553, cited in dequant_q4nx.cpp), and the
+    // dequant derives its grid from that padded width, so H=1152 yields 5 tiles instead of 4.
+    //
+    // The ROW side is NOT: the converter pads rows the same way (model_converter.py:236-238) and
+    // the dequant still computes n_tile_rows = i8_rows / n_tile_cols with integer division, so a
+    // row count that is not a multiple of n_tile_cols truncates and the write loop indexes past
+    // the allocation. Gemma3-1B still SEGFAULTs there with the column fix in place, which is how
+    // this was found -- the same failure, one dimension over.
+    //
+    // So the refusal stays until the row side is done as well. It is a REFUSAL, not a crash, and
+    // it names the dimension: an unexplained SIGSEGV is worse than an explained "no".
     {
         const int q = NH * HD;
         const char* bad = nullptr;
@@ -741,8 +745,9 @@ int main(int argc,char**argv){
         if (bad) {
             fprintf(stderr,
                 "UNSUPPORTED: %s is not a multiple of 256 (the dequant tile width).\n"
-                "  H=%d IM=%d NH*HD=%d -- dequant_q4nx.cpp computes n_tile_cols with integer\n"
-                "  division, so this would truncate and read out of bounds rather than fail.\n"
+                "  H=%d IM=%d NH*HD=%d -- the q4nx pads BOTH dimensions, and while the column side\n"
+                "  is handled, the row side still truncates n_tile_rows and writes out of bounds.\n"
+                "  The converter's padding is documented in model_converter.py:236-238 and 544-553.\n"
                 "  Refusing here instead of crashing.\n", bad, H, IM, q);
             return 1;
         }

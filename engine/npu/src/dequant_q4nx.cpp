@@ -60,14 +60,24 @@ extern "C" float* dequant_i8_to_float(const uint8_t* data, int i8_rows,
  */
 extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int in_features,
                               int* out_rows, int* out_cols) {
-    // Determine tile grid: rows first, columns second
+    // The q4nx COLUMNS are padded by the converter to a multiple of col_block_size, filled with
+    // ZEROS -- read from the converter itself, not inferred:
+    //   fastflowlm_analysis/q4nx_converter/q4nx/model_converter.py:544-553
+    //     if cols % self.col_block_size != 0:
+    //         cols_padded = round_up_to_multiple(cols, self.col_block_size)
+    //         data = F.pad(data, (0, data_pad_amount), "constant", 0)
+    // The tile is TILE_COLS=256 wide regardless of the padding granularity, so an unaligned
+    // contraction dim pads up to 256: Gemma3-1B's H=1152 becomes 1280 and yields 5 tiles per row,
+    // not the 4 that integer division produced (which silently dropped 128 columns). For every
+    // model whose dims are already aligned this is exactly the old arithmetic.
+    const int in_padded = (in_features + TILE_COLS - 1) / TILE_COLS * TILE_COLS;
     int n_tile_cols, n_tile_rows;
 
-    n_tile_cols = in_features / TILE_COLS;
+    n_tile_cols = in_padded / TILE_COLS;
     n_tile_rows = i8_rows / n_tile_cols;
 
     *out_rows = n_tile_rows * TILE_ROWS;
-    *out_cols = n_tile_cols * TILE_COLS;
+    *out_cols = n_tile_cols * TILE_COLS;   // the padded width; callers use the true one
 
     float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
     if (!out) return nullptr;
