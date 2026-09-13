@@ -2205,3 +2205,33 @@ different command. That is a one-line change at that point, not a new harness.
 **And that closes the loop the session was building toward for LFM2:** the acceptance test exists, the
 reference is reproducible, the packing is byte-identical, the ELF mechanism is proven, and the one
 remaining gap is blocked on a kernel contract rather than on code. The last step is a **run**.
+
+## 46. Gemma3-1B's "real fix" is also a contract problem, not a bounded code change
+
+Section 10 recorded the second Gemma3-1B defect — `H = 1152` is not a multiple of the dequant's
+256-wide tile — and called the real fix "a partial-tile dequant". Sized that change by reading the code,
+and it is **not** a bounded edit:
+
+```c
+n_tile_cols = in_features / TILE_COLS;    // the FILE's tiles per row
+n_tile_rows = i8_rows / n_tile_cols;
+*out_cols   = n_tile_cols * TILE_COLS;    // the width it reports
+```
+
+For `in_features = 1152`: `n_tile_cols = 4`, so the tiles cover **1,024 of 1,152 columns** — and the
+remaining **128 columns are represented by no tile at all**.
+
+**So the question is not "how do I loop over a partial tile"** — it is **where those 128 columns live in
+the file**, which is the **converter's** convention. That is **not derivable** from the bundle, and FLM
+cannot load Gemma3-1B to show it (§20.3). Making `n_tile_cols` ceil *without* knowing that layout would
+silently mis-map the weights — a **wrong-but-plausible** result, which is exactly §38's failure mode and
+the reason the engine refuses this model today.
+
+**Corrected state for Gemma3-1B:** the first cause is proven and fixed (the odd-`G` reorder); the second
+defect is **a second contract problem**, not code waiting to be written.
+
+**And that is the same shape as §44.** Both of the session's remaining implementation items —
+LFM2's conv and Gemma3-1B's unaligned `K` — are **unknown vendor layouts**. That is a statement about
+**information**, not about effort: for this codebase an unknown layout is a wall that reading more code
+does not get past, and the answer is a contract (a converter spec, or an interposer capture showing the
+access pattern), not a guess.
