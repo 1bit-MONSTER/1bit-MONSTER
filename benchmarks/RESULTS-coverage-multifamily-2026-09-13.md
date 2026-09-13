@@ -3472,3 +3472,40 @@ that reported `no` for **every** model — including 0.6B, whose per-model file 
 was **a known-good fact** (the banner's own path). The generic-shape column is plain set membership and is
 the only part relied on here. That is three instruments this stretch whose *shape* was wrong rather than
 their data: §70's empty diff, the first run of §76's control, and this column.
+
+## 78. The i8 path NEVER READS THE PROMPT — its prefill is O(1) in the prompt length
+
+**The measurement.** Qwen3-0.6B on the i8 path (`NPU_RUNLIST=0`):
+
+| prompt | i8 prefill | i8 boot | runlist prefill | runlist boot |
+|---|---|---|---|---|
+| 256 | ~1000 ms | **220** | 3125 ms | 1614 |
+| 1024 | ~986 ms | **220** | 13574 ms | 25 |
+| 2048 | ~1034 ms | **220** | — | — |
+
+**The i8 prefill time is constant across an 8x range of prompt lengths, and the boot token never changes** —
+while the runlist's time **scales** and its token **changes correctly**.
+
+**So the i8 path never processes the prompt** — not partially, not approximately: **the prompt length does not
+enter the computation at all**. That is why Nanbeige's i8 token is **151 at both 256 and 1024** (§75) and
+0.6B's is **220 at every length**.
+
+**And it corrects my own framing twice over.** §71 and §75 called this "the i8 path has its own **accuracy
+gap**". It is not an accuracy gap — it is a **structural defect**: the prompt is never read. An int8 path
+should give a *slightly different* token; this gives the *same* token for every input.
+
+**Which also means Nanbeige's default path is fundamentally broken.** Nanbeige is routed to the i8 path **by
+default** (§61), so the xclbin fix (§75/§76) removed the **nondeterminism** but the path is still
+structurally wrong — and the two defects were independent of each other.
+
+**And a fourth instrument-shape fault, caught before it was believed.** My "16-token" baseline was **not 16
+tokens**: `/tmp/ids_16.txt` and `/tmp/ids_256.txt` are **the same 256-token file** (1072 bytes each), so the
+names are misleading. The 256 / 1024 / 2048 comparison is therefore valid and the finding stands — but the
+label was wrong, and what caught it was **verifying the input** rather than the output. That is four faults
+in a row that were about the *instrument's* shape rather than its data: an empty diff (§70), a missing build
+file (§76, first attempt), a broken per-model detector (§77), and now a mislabelled fixture.
+
+**The named next measurement**: **why the prompt length does not reach the i8 prefill.** The prefill walks the
+prompt in **128-row blocks** (`MD=128`), so the candidates are a loop that does not advance, an `npt` clamped
+to a single block, or the boot hidden-state being taken from a fixed position. All three are in our code and
+visible in the prefill path — no dependency is involved.
