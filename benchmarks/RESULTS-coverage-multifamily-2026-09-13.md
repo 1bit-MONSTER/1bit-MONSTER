@@ -1337,3 +1337,35 @@ packing is known to work:
   three.
 
 Either outcome is decisive, which is what makes it worth the capture.
+
+### 25.1 The control INVALIDATES the 25 diff — the captured file is a third BO of the same size
+
+Ran the control section 25 asked for (Qwen3-0.6B, whose packing is known to work; `CAP_DUMP_BIG=1
+CAP_NO_SYNC=1`, 2.5 GB) and checked the pointers **before** comparing any bytes:
+
+```
+RUNLIST_ADD a4 (dispatched) : 0x55aa10fedb10, 0x55aa10feed60   <- the per-layer weight BOs
+SETARG idx=4  (bound)       : 0x55aa10fedb10, 0x55aa10feed60   <- the SAME two, so binding and dispatch agree
+captured file (dumped)      : 0x55aa10fbd0e0                    <- matches NEITHER
+```
+
+**So the object I diffed in section 25 was a third BO that merely happens to be the same size.** The
+capture dedups by size (`g_seen_big`) and keeps the **first** BO of each size, which is not the arg4
+the manifest reports. The "0 of 12,000 tiles appear verbatim" result is therefore **VOID** — it is not
+evidence of anything about the packing, and it would have been a spectacular false lead if it had been
+believed.
+
+That is the same failure mode as the rest of this session — **right number, wrong object** — and it was
+caught by the control that section 25 specified, before the result could be cited. Third time in this
+investigation that a candidate has been retired by a control rather than by argument, and the first
+time the control was applied to *my own* instrument rather than to the engine.
+
+**What would make the comparison possible:** fix the *capture*, not the diff. Either disable the
+size-dedup or key it by pointer, so the BO whose pointer the manifest names is the one written. Until
+then **no byte-level BO comparison in this project is trustworthy** — and the two captures in sections
+24/25 should not be cited for anything beyond the sizes, which were read from the manifest and are
+correct.
+
+**Net for the four-family bug:** the BO's *contents* remain the only suspect still standing after the
+ELFs, the runlist and the BO size were cleared — but the instrument to inspect them is not yet correct,
+and the next step is to fix the capture rather than to re-run the diff.
