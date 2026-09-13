@@ -3803,3 +3803,41 @@ chased.
 **Net.** With Nanbeige (i8) and 0.6B (i8) both deterministic and correct, the "one open i8 item" is closed.
 The two remaining correctness gaps are both on the bf16 / attention-shape side: Nanbeige bf16 (1214 vs 1033,
 nh20) and Phi4-mini (nh24).
+
+## 86. Which families the block walk reaches: only the four dense-Qwen3 sizes avoid the fallback
+
+`npu_engine_universal.cpp:710-724` decides the prefill path, and the condition is narrow:
+
+```cpp
+const bool dense_qwen3 = cfg.NV == 151936 && !cfg.has_moe &&
+    ((NC==28 && H==1024) || (NC==28 && H==2048) ||
+     (NC==36 && H==2560) || (NC==36 && H==4096));
+const char* elf_env = getenv("NPU_LAYER_ELF_DIR");
+const bool runlist_eligible = dense_qwen3 || (!cfg.has_moe && elf_env && elf_env[0]);
+if (runlist_eligible && !getenv("NPU_FLM_PREFILL") && (!rl || atoi(rl) != 0)) { ... }
+```
+
+So the runlist is taken **only** for dense Qwen3 at those exact (NC, H) pairs — the four sizes the goal
+supports — **or** when the caller supplies `NPU_LAYER_ELF_DIR`. **Every other model lands on the
+split/fallback path by default**, which is the path that was truncating the prompt at `XM = 128` until §84.
+
+| path | who takes it | prefill truncation? |
+|---|---|---|
+| runlist (whole-layer per-ctx ELFs) | the four dense Qwen3 sizes; or any non-MoE model with `NPU_LAYER_ELF_DIR` | **no** — its own per-ctx ELFs, byte-identical to FLM's |
+| bf16 (`NPU_PREFILL_BF16=1`) | opt-in | no — already walks in blocks; separate `NPU_PREFILL_MAX` cap |
+| **fallback (i8)** | **everything else, by default** | **was — fixed in §84** |
+
+**Which means: every out-of-set family's boot number recorded before §84 was measured through a 128-token
+prefill.** Phi4's 350, Qwen3.5's 0, the Gemma3/Gemma4 rows, LFM2 — all of them — plus Llama's, which
+happened to land on the right token anyway. **None of those numbers should be read as evidence about the
+bf16 compute or the attention shape until they are re-measured on the fixed path.**
+
+This also explains why the goal's six models were never affected: they are exactly the dense-Qwen3 set that
+takes the runlist, and the runlist never had this truncation. The fix improves coverage **without touching**
+the paths the goal's metrics are measured on — which is consistent with the gates not moving.
+
+**Cost caveat for those re-runs**: the walk makes a long prompt cost `ceil(npt/XM)` passes through all `NC`
+layers, so a 1024-token prompt on the fallback path is ~8x the work it used to be — and it used to be
+*truncated*, so it was really ~8x more than a wrong answer. Test at 256 tokens (2 passes) or raise the
+timeout; Phi4 stops around layer 10 of 33 inside 900 s at 1024 tokens, which is a truncated log, not a
+failure.
