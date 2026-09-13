@@ -25,6 +25,12 @@ int main() {
     check("NemotronForCausalLM", RCPP_ARCH_NEMOTRON, "NemotronForCausalLM");
     check("minicpm", RCPP_ARCH_LLAMA, "minicpm");
     check("MiniCPMForCausalLM", RCPP_ARCH_LLAMA, "MiniCPMForCausalLM");
+    // EnglishBase (2026-09-13): the census probes the STRIPPED class token, the
+    // loader reads the config's model_type — all three must land on the arch.
+    check("englishbase", RCPP_ARCH_ENGLISHBASE, "englishbase (stripped class token, census)");
+    check("EnglishBaseForCausalLM", RCPP_ARCH_ENGLISHBASE, "EnglishBaseForCausalLM");
+    check("englishbaseforcausallm", RCPP_ARCH_ENGLISHBASE, "englishbaseforcausallm (lowercased)");
+    check("fabryka_english_base", RCPP_ARCH_ENGLISHBASE, "fabryka_english_base (model_type)");
 
     // ── Regression: existing mappings
     check("llama", RCPP_ARCH_LLAMA, "llama");

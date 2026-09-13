@@ -1437,6 +1437,15 @@ struct GenericBackend : Backend {
                 for (int r2 = 0; r2 < IM; r2++) up.insert(up.end(), gu.begin() + (size_t)(IM + r2) * H, gu.begin() + (size_t)(IM + r2 + 1) * H);
                 lw.w1 = push(std::move(gate)); lw.w2 = push(std::move(up));
                 load("mlp.down_proj.weight", lw.w3, IM, H);
+            } else if (cfg.arch == RCPP_ARCH_ENGLISHBASE) {
+                // EnglishBase (SlayerLab/fabryka-english-250m-*): NON-gated relu2
+                // MLP — mlp.up_proj -> relu2 -> mlp.down_proj, exactly the Nemotron
+                // shape (the checkpoint has no gate_proj at all: 290 tensors, 0
+                // gate_proj). w1 = up, w3 = down and w2 stays SIZE_MAX, which is
+                // what selects the non-gated branch in forward(). HF [out=IM, in=H]
+                // layout, same as Nemotron's.
+                load("mlp.up_proj.weight", lw.w1, IM, H);
+                load("mlp.down_proj.weight", lw.w3, IM, H);
             } else if (cfg.arch == RCPP_ARCH_NEMOTRON) {
                 // Nemotron-3/4: NON-gated relu2 MLP — up_proj -> relu2 -> down_proj
                 // (no gate_proj). w1 = up, w3 = down, w2 stays SIZE_MAX.
@@ -1475,6 +1484,21 @@ struct GenericBackend : Backend {
             }
             load_norm("self_attn.q_norm.weight", lw.q_norm, HD);
             load_norm("self_attn.k_norm.weight", lw.k_norm, HD);
+            if (cfg.arch == RCPP_ARCH_ENGLISHBASE) {
+                // EnglishBase normalises q and k per head with NO learned gain:
+                // model.py's HeadNormalizedLinear does
+                //     F.rms_norm(heads, (head_dim,), eps)
+                // so the checkpoint carries no q_norm/k_norm tensors at all (290
+                // tensors, 0 q_norm, 0 k_norm) and the two load_norm calls above
+                // leave both indices SIZE_MAX — i.e. the norm would be SKIPPED,
+                // which is a different model.
+                // rmsnorm(o, x, w, n, eps) is x * rsqrt(mean(x^2)+eps) * w, so a
+                // ones vector reproduces F.rms_norm bit-for-bit in intent. Use the
+                // existing per-head QK-norm path with that vector rather than adding
+                // a second normalisation path that only this family exercises.
+                lw.q_norm = push(std::vector<float>((size_t)HD, 1.0f));
+                lw.k_norm = push(std::vector<float>((size_t)HD, 1.0f));
+            }
             // Optional QKV bias (Qwen2 family).
             auto load_bias = [&](const char* hf_name, size_t& idx, int n) {
                 std::vector<float> w;
@@ -1505,12 +1529,13 @@ struct GenericBackend : Backend {
                        lw.wo == SIZE_MAX ||
                        (!cfg.norm_is_layernorm &&
                         (lw.rms_attn == SIZE_MAX || lw.rms_ffn == SIZE_MAX)) ||
-                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J/Bloom/Nemotron: non-gated FFN — w2 legitimately absent
+                       // GPT-2/Falcon/GPT-NeoX/OPT/GPT-Neo/CodeGen/GPT-J/Bloom/Nemotron/EnglishBase: non-gated FFN — w2 legitimately absent
                        (!((cfg.arch == RCPP_ARCH_GPT2 || cfg.arch == RCPP_ARCH_FALCON ||
                            cfg.arch == RCPP_ARCH_GPTNEOX || cfg.arch == RCPP_ARCH_OPT ||
                            cfg.arch == RCPP_ARCH_GPTNEO || cfg.arch == RCPP_ARCH_CODEGEN ||
                            cfg.arch == RCPP_ARCH_GPTJ || cfg.arch == RCPP_ARCH_BLOOM ||
-                           cfg.arch == RCPP_ARCH_NEMOTRON) && lw.w2 == SIZE_MAX) &&
+                           cfg.arch == RCPP_ARCH_NEMOTRON ||
+                           cfg.arch == RCPP_ARCH_ENGLISHBASE) && lw.w2 == SIZE_MAX) &&
                         (lw.w1 == SIZE_MAX || lw.w2 == SIZE_MAX || lw.w3 == SIZE_MAX))) {
                 fprintf(stderr, "Generic: safetensors layer %d: missing required tensor — ABORTING LOAD\n", l);
                 return false;
@@ -2573,7 +2598,8 @@ struct GenericBackend : Backend {
                 if (l.w1_b != SIZE_MAX) { float* b = w(l.w1_b); for (int i = 0; i < FF; i++) gate_up[i] += b[i]; }
                 if (cfg.arch == RCPP_ARCH_FALCON || cfg.arch == RCPP_ARCH_GPTNEOX) gelu_erf(gate_up, gate_up, FF);
                 else if (cfg.arch == RCPP_ARCH_OPT) { for (int i = 0; i < FF; i++) gate_up[i] = gate_up[i] > 0 ? gate_up[i] : 0.0f; }  // ReLU
-                else if (cfg.arch == RCPP_ARCH_NEMOTRON) { for (int i = 0; i < FF; i++) { float v = gate_up[i]; gate_up[i] = v > 0 ? v * v : 0.0f; } }  // relu2
+                else if (cfg.arch == RCPP_ARCH_NEMOTRON ||
+                         cfg.arch == RCPP_ARCH_ENGLISHBASE) { for (int i = 0; i < FF; i++) { float v = gate_up[i]; gate_up[i] = v > 0 ? v * v : 0.0f; } }  // relu2
                 else gelu(gate_up, gate_up, FF);
                 mm(x2, gate_up, w(l.w3), H, FF, l.pk_w3);
                 if (l.w3_b != SIZE_MAX) { float* b = w(l.w3_b); for (int i = 0; i < H; i++) x2[i] += b[i]; }

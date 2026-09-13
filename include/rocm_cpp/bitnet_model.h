@@ -603,6 +603,7 @@ typedef enum {
     RCPP_ARCH_K2HORIZON = 1003,       // k2horizon — K2-Horizon-MoVA (Moonshot K2-Horizon MoE: 100E/8, layernorm_num_groups, query_key_norm, rope_head_dim, attention_gate_func, decoder_sparse_step; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_JUGNUVR = 1004,         // jugnuvr — JugnuVRForCausalLM (altslate/JugnuLM-110M-R1; custom-code dense transformer, per-layer layer_types plan, silu, head_dim 64; registry token, engine support XL, generic loader refuses)
     RCPP_ARCH_M2R = 1005,             // m2r — gdiamos/amx-reasoning-v1-instruct (hybrid lin/SSM + sliding-window-attn layer types, d_state 32, d_ff 640, route_block 1024; registry token, engine support XL, generic loader refuses)
+    RCPP_ARCH_ENGLISHBASE = 1006,     // fabryka_english_base — EnglishBaseForCausalLM (SlayerLab/fabryka-english-250m-*; llama LAYOUT — separate q/k/v/o, RMSNorm, tied head — but TWO mechanisms differ: a two-matrix relu2 MLP (up_proj -> relu2 -> down_proj, no gate) and a PARAMETER-FREE per-head QK RMSNorm (no q_norm/k_norm tensors in the checkpoint). Generic-backend support, not a registry-only token: see load_safetensors + the non-gated FFN branch.
     // Sentinel for unmapped architecture strings. Unmapped archs used to
     // silently become RCPP_ARCH_BITNET (wrong activation / attention for
     // most families) — now they fail loudly at discovery/load (decision
@@ -694,6 +695,13 @@ static inline rcpp_arch_t rcpp_arch_from_string(const char* s) {
     if (strcmp(s, "OpenELMForCausalLM") == 0) return RCPP_ARCH_LLAMA;
     if (strcmp(s, "nemotron")       == 0) return RCPP_ARCH_NEMOTRON;  // Nemotron-3/4 (LayerNorm1P + relu2 MLP + partial rope)
     if (strcmp(s, "NemotronForCausalLM") == 0) return RCPP_ARCH_NEMOTRON;
+    // EnglishBase (SlayerLab/fabryka-english-250m-*): three strings, because the
+    // census probes the stripped class token (`englishbase`), the class name and
+    // the model_type, and the loader reads the config's model_type.
+    if (strcmp(s, "englishbase")    == 0) return RCPP_ARCH_ENGLISHBASE;  // stripped class token (census)
+    if (strcmp(s, "EnglishBaseForCausalLM") == 0) return RCPP_ARCH_ENGLISHBASE;
+    if (strcmp(s, "englishbaseforcausallm") == 0) return RCPP_ARCH_ENGLISHBASE;  // lowercased class
+    if (strcmp(s, "fabryka_english_base") == 0) return RCPP_ARCH_ENGLISHBASE;    // config model_type
     if (strcmp(s, "minicpm")        == 0) return RCPP_ARCH_LLAMA;  // MiniCPM (LLaMA-layout, added bias)
     if (strcmp(s, "MiniCPMForCausalLM")  == 0) return RCPP_ARCH_LLAMA;
     // ── New VLM architectures ──
