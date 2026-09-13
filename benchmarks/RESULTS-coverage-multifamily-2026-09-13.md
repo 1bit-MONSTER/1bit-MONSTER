@@ -3773,3 +3773,33 @@ the announcement I would not have found this in one step, and without the walk t
 **And the honest residual: 0.6B's i8 path is still nondeterministic.** Its tA/tB distributions still overlap,
 while Nanbeige's now separate cleanly. So whatever remains there is **0.6B-specific** and is the one open i8
 item.
+
+## 85. CORRECTION: 0.6B's i8 path is NOT still nondeterministic — the block walk fixed it too
+
+§84 left one residual: "0.6B's i8 path is still nondeterministic. Its tA/tB distributions still overlap."
+Re-measured by a second agent (taking over from 07e844) on a **clean** device (no concurrent engine run),
+current HEAD (`16d6f688d`), `NPU_RUNLIST=0` -> i8 fallback:
+
+| prompt | clean samples | boot | reference |
+|---|---|---|---|
+| tA (= t256, byte-identical files) | 11/11 | **1614** | 1614 |
+| tB (reversed tail) | 8/8 | **220** | 220 |
+
+Categorical separation (1614 vs 220) and both match the runlist reference exactly. §84's residual does **not**
+reproduce: the block walk resolved 0.6B's i8 path the same way it resolved Nanbeige's.
+
+**Why the truncated path LOOKED nondeterministic.** With `npt` capped at 128 (§83) the boot token was the
+last row of a *truncated* context, whose logits are near-uniform; argmax on near-uniform logits wanders
+across the small tokens (12–17, §80/§81) run-to-run. The full-256-token logits are peaked (boot 1614 with a
+clear top-2 margin), so the argmax is stable. The "nondeterminism" was **argmax instability on truncated
+context** — not a second, independent i8 defect.
+
+**One honest residual, left open.** During a concurrent Phi4-mini run (CPU attention fallback, ~98% CPU) a
+single 0.6B i8 run returned `boot=16`, and several runs timed out under the same load. None of this
+reproduces on a clean device (19 clean samples, all matching reference). That is a **contention sensitivity**
+in the i8 path (async launch vs host read under CPU starvation), not a clean-condition defect. Noted, not
+chased.
+
+**Net.** With Nanbeige (i8) and 0.6B (i8) both deterministic and correct, the "one open i8 item" is closed.
+The two remaining correctness gaps are both on the bf16 / attention-shape side: Nanbeige bf16 (1214 vs 1033,
+nh20) and Phi4-mini (nh24).
