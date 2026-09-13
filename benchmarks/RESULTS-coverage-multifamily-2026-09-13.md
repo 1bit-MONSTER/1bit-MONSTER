@@ -395,3 +395,25 @@ boundary — for a one-token prompt there is nothing to accumulate. The strong r
 the forward is not consuming the prompt at all (the embedding/activation BO the runlist
 reads may never be written, leaving whatever the kernel saw at build time), but that is a
 hypothesis to test with the dumps, not a conclusion.
+
+**CONFIRMED with the dumps: the forward never consumes the prompt.** Two DIFFERENT one-token
+prompts were run with `RT_KV_DUMP_DIR` set, and the dumps are byte-identical:
+
+```
+prompt [16]   -> token 28962, kv_ctx1.bin
+prompt [4489] -> token 28962, kv_ctx1.bin
+cmp: kv_ctx1.bin IDENTICAL
+```
+
+Different input, same KV, same token. So the fault is upstream of everything the KV depends
+on, and it is not subtle: the model produces the same internal state whatever you feed it.
+
+Where it is NOT: `RuntimeLayerEngine::embed(token)` does write the token's BF16 row into the
+activation BO and syncs it to the device
+(`memcpy(bo_act_->map(), file_data + data_base + off, shape[1]*2); bo_act_->sync(TO_DEVICE)`),
+and that mapping was checked byte-exact against the runtime's own act input when it was
+written. So the write happens. The remaining possibilities are that the activation BO the
+per-ctx layer kernel reads is NOT `bo_act_` (a second buffer, or an address the runlist
+bakes), or that the regenerated per-ctx ELF carries its input rather than reading the BO.
+Distinguishing those is the next step and is a BO-address comparison plus an act-BO dump,
+not more token-level testing.
