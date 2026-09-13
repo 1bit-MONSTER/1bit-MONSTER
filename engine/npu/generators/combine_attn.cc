@@ -42,3 +42,8 @@ extern "C" void normalize_attn(const float *__restrict l,
         }
     }
 }
+
+// Called once after normalize so the next kernel invocation starts with O = 0.
+extern "C" void combine_reset() {
+    for (int i = 0; i < M_TILE * HD; i++) O_state[i] = 0.0f;
+}

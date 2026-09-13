@@ -44,15 +44,15 @@ def fused(M, H, N, k):
         SS_ty = np.ndarray[(M,), np.dtype[np.float32]]
         AN_ty = np.ndarray[(M, k), np.dtype[bfloat16]]
         W_ty = np.ndarray[(k, N), np.dtype[bfloat16]]
-        C_ty = np.ndarray[(M, N), np.dtype[bfloat16]]
+        C_ty = np.ndarray[(M, N), np.dtype[np.float32]]
 
         ko = "rms_split.o"
-        mo = "mm_bf16_16x64x128.o"
+        mo = "mm_bf16_f32.o"
         reduce = external_func("rms_reduce_f32", inputs=[A_ty, SS_ty], link_with=ko)
         scale = external_func("rms_scale_f32_bf16", inputs=[A_ty, SS_ty, AN_ty], link_with=ko)
         zf32 = external_func("zero_f32", inputs=[SS_ty], link_with=ko)
-        matmul = external_func("matmul_bf16_bf16", inputs=[AN_ty, W_ty, C_ty], link_with=mo)
-        zbf16 = external_func("zero_bf16", inputs=[C_ty], link_with=mo)
+        matmul = external_func("matmul_bf16_f32", inputs=[AN_ty, W_ty, C_ty], link_with=mo)
+        zbf16 = external_func("acc_zero", inputs=[C_ty], link_with="mm_acc.o")
 
         shim = tile(0, 0)
         mem = tile(0, 1)
@@ -109,7 +109,7 @@ def fused(M, H, N, k):
         @runtime_sequence(
             np.ndarray[((M + 1) * H,), np.dtype[np.float32]],
             np.ndarray[(H * N,), np.dtype[bfloat16]],
-            np.ndarray[(M * N,), np.dtype[bfloat16]],
+            np.ndarray[(M * N,), np.dtype[np.float32]],
         )
         def seq(A, W, C):
             # A K-tiles, twice (reduce + scale)

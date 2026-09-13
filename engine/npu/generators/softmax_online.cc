@@ -76,3 +76,9 @@ extern "C" void softmax_online(const uint16_t *__restrict scores,
 extern "C" void softmax_get_l(float *__restrict l_out) {
     for (int r = 0; r < M_TILE; r++) l_out[r] = l_state[r];
 }
+
+// Called once after the chunk loop so a subsequent kernel invocation starts
+// from a clean running state (the statics persist for the life of the xclbin).
+extern "C" void softmax_reset() {
+    for (int r = 0; r < M_TILE; r++) { m_state[r] = -1e30f; l_state[r] = 0.0f; }
+}
