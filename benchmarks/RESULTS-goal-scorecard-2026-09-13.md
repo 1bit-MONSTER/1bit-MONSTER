@@ -82,7 +82,7 @@ prefill and TTFT, and match/beat on decode.
 | family | shape | symptom | explanation |
 |---|---|---|---|
 | Nanbeige4.1-3B | nh20/hd128, qout 2560 | **default i8 path now matches FLM EXACTLY: 1033 @1024, 5938 @256, deterministic** (§84). Boot 1214 remains on the *bf16* path only | §84 below |
-| **Phi4-mini** | nh24/hd128, qout 3072 | **boot 350 is UNTESTED ON THE FIXED PATH** — Phi4 takes the fallback prefill, which was truncating at 128 tokens until §84, so 350 predates the fix and is not yet evidence about nh24 | **re-run first** |
+| **Phi4-mini** | nh24/hd128, qout 3072 | **RE-RUN on the fixed path: 23976 @256 vs FLM's 19.** So the old 350 was not merely truncation, and the defect is real and nh24-specific. It is **not** the weights (statistically indistinguishable from a working model's, §175), **not** the attention (its host attention runs and the host path is correct for nh20, §113/§165), **not** the GEMM shapes (§155) — the remaining candidates are the activations or the GEMM execution at `qkvn = 5120` | mine |
 | Gemma3-1B | nh4/hd256, qout 1024 | fails | same |
 | Qwen3.5-4B | nh16/hd256 | boot 0 | **hybrid** (`GateDeltaNet_prefill.xclbin` + `conv.xclbin` + vision) — a family implementation, like LFM2 |
 | LFM2-1.2B / 2.6B | nh32/hd64 | runs, boot 63260 (wrong) | **hybrid** short-conv. Reference is now a full generation, not a token: `708, 1735, 538, 730, 525, 730, 1443` at **63 tok/s** on the engine's own loop. Three route blockers named — bf16mm lacks the GEMM shapes and the conv compute, the runlist needs a sequence class FLM does not ship, and FLM's fixed kernels *are* the baseline |
@@ -103,7 +103,7 @@ And it is why the goal's six models were never affected: they are the dense-Qwen
 runlist. Re-runs on the fallback now cost `ceil(npt/XM)` passes through all `NC` layers — test at 256
 (2 passes) or raise the timeout.
 
-**The non-hybrid correlation, which is exact:** every model with `qout ∈ {2048, 4096}` is
+**The non-hybrid correlation — and what it actually is.** The observation was: every model with `qout ∈ {2048, 4096}` is
 correct; every one outside it is wrong. Causes excluded **by measurement** for that group: the
 attention ELF (Nanbeige's own captured kernel loaded and the boot did not move), `rope_theta`
 (plumbed from `config.json`; no change), the `ra2` rope_dim (not on the bf16 prefill path), the
@@ -111,6 +111,40 @@ xclbin-dir derivation (each family's own `mm.xclbin` is present in both trees an
 the Q/K/V offsets (`NH*HD`, `NH*HD + NKV*HD` — correct for all four), and — added later — **the
 generated per-ctx ELF itself, which is byte-identical to FLM's own for BOTH out-of-set families**
 (nh20 §56, nh24 §58).
+
+**RESOLVED: the correlation is a two-value allowlist in one line of code, not a property of the shapes.**
+`npu_engine_bf16_mm.h:303`:
+
+```cpp
+const bool attn_shape_ok = attn_shaped_ok ||
+    ((attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096));
+```
+
+with the comment above it saying the same in words — *"hd128 + qout 2048 -> nh16, hd128 + qout 4096 ->
+nh32, **anything else -> none**"*. When `attn_shape_ok` is false, `kern = nullptr` and `run_attn` returns
+false, so the call takes the **host** attention path. `qout = NH * HD` is 2048 for the nh16 models and 4096
+for the nh32 ones, so **"`qout` in {{2048, 4096}}" and "the gate names a kernel" are the same statement**.
+
+**But the gate explains which path a model takes, NOT whether it is correct — and those were two different
+things hiding under one correlation.** With the gate understood, the families split three ways:
+
+| family | gate | path actually used | correct? |
+|---|---|---|---|
+| Qwen3-0.6B, 4B, 8B, VL-4B, Llama | **passes** | NPU attention (nh16 / nh32) | **yes** — 0.6B's bf16 path gives FLM's exact 1614 when forced off the runlist (§175) |
+| **Nanbeige** | **passes @1024** (its `_hd` file exists) | **NPU attention** — the 97.9%-nh32 file | **no** — 1214 vs 1033 |
+| **Phi4** | **never** (no `_hd` file at any length) | **host attention** | **no** — but its *attention* is fine; the **input** is wrong (§165) |
+
+And the mechanism now has a number: the nh20 lane's §119 measured the NPU attention as **0.43 off at layer 0,
+compounding to 8.7 by layer 31** — a wrong-width kernel that is *nearly* right and diverges, rather than a
+categorical failure. That also explains why the host path gives 1033 for Nanbeige while the NPU path gives
+1214: the host attention is correct, and the NPU one is fed a kernel built for a different head count.
+
+So the honest summary of this section is **not** "the correlation survives every host-side exclusion". It is:
+**the working models work because their shape is one the shipped NPU kernels were built for, everyone else is
+routed to the host path, and the host path is correct — which is why Phi4's wrongness had to be found upstream
+of attention, and why Nanbeige's did not.**
+
+The historical text is kept below because the reasoning is still the record of how this was found.
 
 So the correlation survives every host-side exclusion, and the remaining suspect is the engine's own
 per-layer composition. **Note the path** (§61): Nanbeige's default run is the **int8** path (`I8Ctx`), not
