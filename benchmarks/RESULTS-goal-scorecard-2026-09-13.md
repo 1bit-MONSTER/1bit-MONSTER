@@ -85,7 +85,7 @@ prefill and TTFT, and match/beat on decode.
 | Phi4-mini | nh24/hd128, qout 3072 | boot 350 vs 25 | same |
 | Gemma3-1B | nh4/hd256, qout 1024 | fails | same |
 | Qwen3.5-4B | nh16/hd256 | boot 0 | **hybrid** (`GateDeltaNet_prefill.xclbin` + `conv.xclbin` + vision) — a family implementation, like LFM2 |
-| LFM2-1.2B / 2.6B | nh32/hd64 | runs, boot 63260 vs 5242 | **hybrid** short-conv; loader fixed, conv block not implemented |
+| LFM2-1.2B / 2.6B | nh32/hd64 | runs, boot 63260 (wrong) | **hybrid** short-conv. Reference is now a full generation, not a token: `708, 1735, 538, 730, 525, 730, 1443` at **63 tok/s** on the engine's own loop. Three route blockers named — bf16mm lacks the GEMM shapes and the conv compute, the runlist needs a sequence class FLM does not ship, and FLM's fixed kernels *are* the baseline |
 | Gemma3-4B | hd256 | — | untested native |
 
 **The non-hybrid correlation, which is exact:** every model with `qout ∈ {2048, 4096}` is

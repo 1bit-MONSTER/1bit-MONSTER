@@ -350,3 +350,39 @@ directory bundle, which is how the native store is laid out, and the check would
 **Two fixes, both small:** add Zaya's row to `EXPECTED`, and accept a bare `<name>.q4nx` alongside
 `<name>/model.q4nx` if the native store is to be covered. The first is required; the second is what
 makes the check meaningful for any bundle outside the FLM directory layout.
+
+## 13. The acceptance criterion, now complete (2026-09-13)
+
+Section 3's reference was a single boot token per prompt length. It is now a **full generation plus a
+decode rate**, measured through the engine's own loop — `NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1`, which is the
+same harness basis as the six supported families' decode comparisons:
+
+```
+=== Prefill 256 [flm-ref] ===
+Prefill: 399ms (1.56 ms/tok)
+  [0] boot=708          <- matches section 3's @256 reference
+  [1] 1735  [2] 538  [3] 730  [4] 525  [5] 730  [6] 1443
+=== 15.8 ms/tok (63 tok/s) | tokens=6 ===
+```
+
+- **Gate:** the token sequence `708, 1735, 538, 730, 525, 730, 1443` — the same shape of check
+  `decode_token_check.sh` applies to the other families.
+- **Bar:** **63 tok/s** on the same loop, so a native path is compared directly rather than by argument.
+
+### The three route blockers, and why the remaining work is orchestration
+
+| route | blocker |
+|---|---|
+| the bf16mm path | needs LFM2's GEMM shapes (absent from the engine's set) **and** a conv compute nobody has written |
+| the runlist path | needs a per-ctx sequence class that **does not exist** — `models/lfm2/` ships only `lfm2_npu.hpp`, while qwen3/llama/nanbeige/phi4/gemma_text all ship `<family>_npu_sequence.hpp` |
+| FLM's fixed kernels | available — but they **are** the reference, so they are the baseline to beat, not an alternative |
+
+Section 11 already established that FLM's LFM2 kernel signature **matches the binding the engine's
+runlist already uses**, and that FLM's ELF set is **fixed** (16 kernels, identical at npt=2 and npt=64,
+with the context passed as an argument) — while the engine generates **one ELF per context length**. That
+architectural difference is why the runlist route cannot serve LFM2 even though the binding matches.
+
+**So what remains is orchestration, not interface:** `lfm2_npu::forward(int)` works per token (same entry
+point as the other families), the weights and conv kernels exist, and the kernel signature is known. A
+native path has to drive those fixed kernels with the engine's own scheduling — the same relationship the
+engine has with FLM for every other family — rather than composing LFM2 through the per-ctx ELF design.
