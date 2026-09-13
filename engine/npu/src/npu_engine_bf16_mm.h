@@ -367,9 +367,27 @@ struct Bf16Mm {
         run.set_arg(5, attn_kv->bo());
         attn_act->sync_to_device();
         attn_kv->sync_to_device();
+        // BF16MM_ATTN_SENTINEL: fill the output BO with bf16 1.0 before the run so a kernel
+        // that writes NOTHING can be told from one that writes ZEROS. Both look identical
+        // in the engine's diff (RESULTS-coverage-multifamily 121: Nanbeige's attention
+        // output is all-zero with non-zero inputs), but they have different causes.
+        const bool sentinel = getenv("BF16MM_ATTN_SENTINEL") != nullptr;
+        if (sentinel) {
+            uint16_t* o = attn_out->data();
+            for (size_t i = 0; i < (size_t)rows * q; i++) o[i] = 0x3c00;   // bf16 1.0
+            attn_out->sync_to_device();
+        }
         run.start();
         run.wait();
         attn_out->sync_from_device();
+        if (sentinel) {
+            const uint16_t* o = attn_out->data();
+            size_t kept = 0, nz = 0;
+            for (size_t i = 0; i < (size_t)rows * q; i++) { if (o[i] == 0x3c00) kept++; if (o[i] != 0) nz++; }
+            fprintf(stderr, "[ATTN-SENTINEL] rows=%d q=%d kept_1.0=%zu/%zu nonzero=%zu -> kernel %s\n",
+                    rows, (int)q, kept, (size_t)rows * q, nz,
+                    kept == (size_t)rows * q ? "WROTE NOTHING (output BO untouched)" : "DID write (output changed)");
+        }
         memcpy(out, attn_out->data(), (size_t)rows * q * 2);
         return true;
     }

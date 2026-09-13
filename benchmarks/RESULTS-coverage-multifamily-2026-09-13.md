@@ -5542,3 +5542,37 @@ distribution, not a degenerate one. **No zero stage, no blowup, no NaN.**
 class the other lane just found in theirs. Their failure is binary (nothing written); mine is a wrong number
 with healthy scales. Those want different instruments, and the scale print is what tells them apart in one
 run.
+
+## 122. The kernel DOES write — but it writes ZEROS, and covers only 4/5 of the output (2048 of 2560 wide)
+
+`BF16MM_ATTN_SENTINEL` fills the device output BO with bf16 1.0 before the launch, so "wrote nothing" and "wrote
+zeros" can be told apart — they are indistinguishable in the engine's diff. @256:
+
+```
+[ATTN-SENTINEL] rows=256 q=2560 kept_1.0=131072/655360 nonzero=393216 -> kernel DID write (output changed)
+```
+
+So the kernel is **not** failing to write:
+
+- **655360 - 131072 = 524288 elements were overwritten** — the kernel executes and writes.
+- **131072 kept the sentinel = exactly 1/5 of the output = 4 of the 20 heads** (131072 / (256 rows x 128 dims) = 4).
+  So the kernel's output is **2048 wide (16 heads)**, not 2560 (20 heads).
+- And the values it writes are **zero** — without the sentinel fill the same buffer reads all-zero (§121).
+
+One of those is a shape statement: **the kernel computes sixteen-head attention**, i.e. it behaves as an
+**nh16-width kernel**, leaving the last four heads untouched and writing zeros for the rest. That is the
+§97/§118 "wrong-width kernel" reading, revived by direct measurement after §119 had retracted the "nearly
+right" version.
+
+**Why zeros.** The kernel writes zeros rather than plausible values, which points at what it *reads* rather than
+at what it computes — consistent with §103's BO-profile mismatch (FLM ran this kernel with BOs **1 MB / 5 MB /
+30 MB**; we bind **5 MB / 5 MB / 16 MB**). A kernel that sizes its act/out from the BO it is handed would read
+the wrong width and produce exactly this.
+
+**And it is checkable in one run.** If the 2048-wide output is the ELF's own geometry, this is an nh16 kernel
+and the fix is to supply a genuine nh20 one. If the width follows the size of the BO we hand it, the fix is to
+bind the sizes FLM used (§103). Changing only the BO sizes distinguishes the two.
+
+**Method note, which is now the third of its kind here.** §121's "output is zero" and this section's "output is
+zero but the kernel writes" differ only by an initialised sentinel — one line. As with §121's extra column, the
+instrument that answered it was the smallest possible addition, not a better theory.
