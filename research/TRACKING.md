@@ -43,16 +43,26 @@ claim to a flattering one.
    attention ELF once per 256-query chunk with KV accumulation (the way FLM's own
    runtime does), and re-gate against `NPU_RUNLIST=1` / `NPU_FLM_PREFILL=1` boot
    tokens instead of against another bf16 variant.
-2. **The embedded captured attention kernel does not use the reference softmax
-   scale.** Recomputing causal GQA from the engine's own layer-0 dumps gives an
-   implied row-1 mixing weight of 0.727 where `softmax(q·k/√128)` gives 0.826, and
-   the error shrinks with key count exactly as a scale error would. **Open:** what
-   this means for the byte-exact int8/runlist path is *not* established — that
-   path replays FLM's own kernels and matches FLM token-for-token, so it is
-   self-consistent. What *is* established is that an argmax boot-token gate is a
-   weak correctness test for any path that composes these kernels differently.
-   `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` § *The captured
-   attention kernel's numerics are not the reference's*.
+2. **The captured attention kernel deviates from reference softmax — but not by a
+   scale factor.** Independently audited 2026-09-13 on a *correct* 256-token run
+   (`boot=1614`): 239/256 query rows differ from host reference causal softmax by
+   more than 0.05, and the deviation is real — the head→KV-head mapping checks out
+   (all 16 heads fit their own kv-head's V-span to <3 %), Q and K are both
+   post-RoPE, so it is not a layout or RoPE artifact. But the mechanism recorded
+   here earlier ("wrong softmax scale, ≈1/16"; row-1 mixing weight 0.727 vs 0.826)
+   is **not supported**: per-head implied scales scatter 0.46×–1.85× of `1/√128`
+   with one negative, where a single scale error would be uniform across heads.
+   The "row 255 matches to 4 bf16 ULP" figure is likewise not reproducible
+   (row 255 = 0.194 here), and row 0's agreement is degenerate — one key means the
+   output *is* V0 by construction.
+   **What stands:** an argmax boot-token gate is a weak correctness test for any
+   path that composes these kernels differently. **Open:** the actual cause (bf16
+   rounding on short rows, per-head scaling, or a non-textbook softmax) is
+   unattributed — discriminating needs a scores dump or a float reference.
+   Separately established: the byte-exact int8/runlist path replays FLM's own
+   layer sequence (`gen_layer_seq`), so it inherits FLM's numerics by
+   construction — its agreement with FLM is *parity*, not reference correctness.
+   `benchmarks/RESULTS-attn-kernel-audit-2026-09-13.md`.
 3. **Zaya1-8B fused-MoE red flag (2026-09-09) — RESOLVED, and the fix is in `main`.**
    The fused path genuinely did regress to corr **−0.001552** (identical on the
    single-launch and split variants, so deterministic), while the non-fused path
