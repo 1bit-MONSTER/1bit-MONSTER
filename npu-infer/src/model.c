@@ -311,6 +311,27 @@ void npu_layer_tile_offsets(ModelWeights* mw, int layer_idx,
     if (off_d)  *off_d  = od;
 }
 
+// Short-conv tile offsets within the per-layer BO (LFM2 hybrid conv layers only).
+// Both are 0 on attention layers, where the shortconv tensors are absent. Additive
+// deliberately: npu_layer_tile_offsets() keeps its 6-output signature.
+void npu_layer_shortconv_offsets(ModelWeights* mw, int layer_idx, int* off_sp, int* off_so) {
+    if (off_sp) *off_sp = 0;
+    if (off_so) *off_so = 0;
+    if (!mw || layer_idx < 0 || layer_idx >= mw->config.num_layers) return;
+    LayerWeights* lw = &mw->layers[layer_idx];
+    int q_t  = (lw->q_proj_weight.ndim == 2)  ? (int)lw->q_proj_weight.shape[0]  : 0;
+    int k_t  = (lw->k_proj_weight.ndim == 2)  ? (int)lw->k_proj_weight.shape[0]  : 0;
+    int v_t  = (lw->v_proj_weight.ndim == 2)  ? (int)lw->v_proj_weight.shape[0]  : 0;
+    int o_t  = (lw->o_proj_weight.ndim == 2)  ? (int)lw->o_proj_weight.shape[0]  : 0;
+    int up_t = (lw->up_proj_weight.ndim == 2) ? (int)lw->up_proj_weight.shape[0] : 0;
+    int gate_t = (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
+    int d_t  = (lw->down_proj_weight.ndim == 2) ? (int)lw->down_proj_weight.shape[0] : 0;
+    int sp_t = (lw->shortconv_in_proj_weight.ndim == 2) ? (int)lw->shortconv_in_proj_weight.shape[0] : 0;
+    const int od = q_t + k_t + v_t + o_t + up_t + gate_t + d_t;
+    if (off_sp) *off_sp = od;
+    if (off_so) *off_so = od + sp_t;
+}
+
 // Total per-layer weight BO bytes (all layers share the same geometry).
 int npu_layer_bo_bytes(ModelWeights* mw, const ModelConfig* config) {
     if (!mw || !config) return 0;

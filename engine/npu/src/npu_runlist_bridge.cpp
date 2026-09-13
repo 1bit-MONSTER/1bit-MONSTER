@@ -22,6 +22,7 @@
 
 extern "C" int npu_pack_layer_bo(uint8_t* bo_buffer, void* mw, const void* config, int layer_idx);
 extern "C" void npu_layer_tile_offsets(void* mw, int layer_idx, int* off_q, int* off_k, int* off_v, int* off_o, int* off_gu, int* off_d);
+extern "C" void npu_layer_shortconv_offsets(void* mw, int layer_idx, int* off_sp, int* off_so);
 extern "C" int npu_layer_bo_bytes(void* mw, const void* config);
 
 // Read whitespace-separated token ids from a file (or stdin for NULL/"-").

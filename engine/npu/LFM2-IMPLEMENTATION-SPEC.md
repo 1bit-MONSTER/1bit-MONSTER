@@ -137,13 +137,28 @@ for `in_proj` (H→3H), `conv` (BF16 [H,3]) and `out_proj` (H→H); attention la
 q/k/v/o layout with HD=64.
 
 **Engine — `engine/npu/src/npu_engine_universal.cpp`**: the per-layer body is one Qwen3
-sequence. Dispatch on layer type (precedent: `is_gdn_layer`, ~line 629) and implement the
-conv body as
-`x → rn_bf16 → in_proj GEMM (H→3H) → split [B|C|X] → depthwise k=3 along the token axis with a
-2-tap cache (conv_L_cache=3, state persists across the whole prefill) → C⊙X gate → out_proj
-GEMM (H→H) → residual`, then the shared
-`post_attention_layernorm → mlp gate/up → SiLU → down → residual`. The Zaya CCA path
-(`conv_state`, 2-tap) is the closest precedent for the stateful depthwise conv.
+sequence. Dispatch on layer type (precedent: `is_gdn_layer`, ~line 629).
+
+> **Block math CORRECTED 2026-09-13.** The order is counter-intuitive and an earlier
+> revision of this section had it wrong. Taken from the installed transformers
+> implementation (via the dsh agent's HF-identical CPU forward,
+> `origin/feat/npu-lfm2-decoder:engine/npu/tools/lfm2_cpu_runner.cpp`):
+>
+> ```
+> BCx = in_proj(h);  B, C, x = BCx.chunk(3, -1)
+> t   = B * x                                   # elementwise, chunks 0 and 2
+> t   = causal_conv1d(t, shortconv.conv.weight) # depthwise, k=3, 2-tap cache
+> y   = C * t                                   # gate, chunk 1
+> out = out_proj(y)
+> ```
+>
+> So the conv is applied to `B*x` and the gate is `C*(...)`, NOT "conv on B then C⊙X".
+> The old wording ("depthwise k=3 ... → C⊙X gate") is wrong; do not implement from it.
+> The `conv_L_cache=3` state persists across the whole prefill (causal).
+>
+> Then the shared `post_attention_layernorm → mlp gate/up → SiLU → down → residual`.
+> The Zaya CCA path (`conv_state`, 2-tap) is the closest precedent for the stateful
+> depthwise conv.
 
 **Config**: `head_dim` already comes from the parsed config (commit `5a9d1d6c9`), which LFM2
 needs (HD=64). Still open: `norm_eps` 1e-5 vs the engine's `EPS=1e-6f` constant.
