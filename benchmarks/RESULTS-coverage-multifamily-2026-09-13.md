@@ -5034,3 +5034,41 @@ CPU load, not to the device.
 the interferer was neither a compile nor the parked device holders but something that started mid-run. The
 only defence is to sample the load per run, not per session. Recorded because this is the fourth time in this
 item that an unrecorded environment variable changed how a number should be read.
+
+## 118. The @256 path IS the NPU attention (nh16-256 ELF), not the host path — `attn_shaped_ok` is a GLOBAL flag
+
+The other lane read the gate and concluded @256 takes the host path: the @256 shaped lookup fails (no nh20 file)
+and 2560 is not in the `qout in {2048,4096}` allowlist. That reading misses that `attn_shaped_ok` is a single
+**member** flag, not a per-slot property:
+
+```
+111:  bool attn_shaped_ok = false;     // member of the Bf16Mm object, not per-call
+245:  attn_shaped_ok = true;           // set in load_attn_elf when the resolved path matches attn_mha_*_hd*
+303:  attn_shape_ok = attn_shaped_ok || (hd==128 && qout in {2048,4096});
+315:  ... (attn_tokens <= 256 && attn_shaped_ok && attn_kernels) ? attn_kernels.get() : ...
+```
+
+`load_attn_elf` runs for ALL FOUR slots at init. Nanbeige's **@1024** slot resolves
+`attn_mha_1024_nh20_hd128.elf` — a shaped name — so line 245 fires and `attn_shaped_ok` becomes true **for the
+whole object**, which is what makes line 315 hand the <=256 call the nh16 kernel.
+
+**Measured both ways, load recorded (clang 0, load 7.3):**
+
+| @256 | boot | stderr |
+|---|---|---|
+| default | **188** | **0** fallback lines |
+| `NPU_ATTN_CPU=1` | **109440** | 32 `forced CPU attn_omp` |
+
+They differ, and the default prints **no** fallback — so @256 is *not* the host path: the nh16-256 ELF really is
+selected and run. §112's premise holds, and §93's earlier comparison (default 188/188 vs CPU 109440/13) is the
+same fact from the other side.
+
+**So the §110/§111 region chain at @256 stands as an NPU-kernel measurement** — a wrong-width NPU kernel (nh16
+for nh20), but an NPU kernel. It does not change §112's other half (@1024 does not respond to the region) or
+§113.
+
+**Why this was worth measuring.** The two readings were one line apart in intent and opposite in effect:
+"the fallback ELF loads and is then never selected" (their read — Phi4's shape) versus "the fallback ELF loads
+and IS selected, because a DIFFERENT slot's shaped load flipped a global flag" (the measurement). Only the run
+separates them — and it is the same instrument, applied at the same place, that has now settled three
+ambiguities in this item.
