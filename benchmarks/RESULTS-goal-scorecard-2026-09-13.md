@@ -472,8 +472,16 @@ Two agents worked the failing families in parallel and **converged independently
 | **NPU attention, nh16-width** — writes 2048 of 2560 columns | nh20 (Nanbeige) | **measured** — a real mechanism, with a per-head output column as the instrument |
 | **nh20 host residual** | nh20 | **OPEN** |
 | **nh24 (Phi4) residual** | nh24 | **OPEN** |
+| **nh20 i8 first-token handling** | nh20 | **OPEN** (added 2026-09-13, after the clean-fixture run) |
 
-**One measured defect, two open residuals, and no shared engine bug.** Everything else this stretch appeared to
+**One measured defect, three open residuals, and no shared engine bug.**
+
+**And a fixture caveat that now applies to every reference number in this document**: the recorded "FLM reference"
+tokens were measured on fixtures beginning with **token 16** (a **zero-embedding** token) and, for the Phi4 sweep,
+on fixtures whose first token was **220** — a value that is also a common prediction. Both lanes have since shown
+that **changing the first token moves the answer**: on the nh20 lane, bf16 goes from wrong to **exact at 4 of 6
+lengths** purely by changing the fixture. The gates are unaffected (both sides of every comparison use the same
+fixture), but **a reference token must be quoted with its fixture**. Everything else this stretch appeared to
 find — a shared C-cache under-write, an all-lengths Phi4 signature, a @256 block boundary — was **retracted**,
 by control rather than by argument.
 

@@ -6889,3 +6889,30 @@ match by construction, the "first == last" trap that made n=16/128 ambiguous can
 records the rule it exists to enforce: **record first AND last for every fixture, and never hardcode either in an
 analysis.** The N-family uses **58907**, the same first token the other lane chose, so the two lanes' results are
 directly comparable rather than merely analogous.
+
+## 330. The echo is LENGTH-BANDED, and the band's upper edge is exactly XM — plus the peer lane's clean-fixture result
+
+**Two things, one from their run and one from my existing table with no device at all.**
+
+**Theirs (§137).** On a fixture whose first token is **58907**, their bf16 path **agrees with FLM at 4 of 6
+lengths** (64/128/512/1024, all exact) and disagrees at 256 (near-miss) and 768 (far). Their **i8 path stays
+wildly wrong at 64/256/1024** (152470 / 13 / 152373) — values matching the **token-16** and **first=220**
+fixtures. So on their lane the fixture is now a **measured independent variable**, and the reference values
+recorded against the old fixtures are like-for-like only, exactly as §315 says.
+
+**Mine, device-free.** Re-reading my own §285 sweep as a *band* rather than a table:
+
+| | lengths |
+|---|---|
+| native **==** the fixture's first token (220) | **16, 32, 48, 64, 128** |
+| native **!=** the first token | 2, 4, 8, **192, 256** |
+
+**The band is `[16, 128]` — and its upper edge is exactly `XM = 128`, the block size.** Below 16 and above 128
+the output is something else. That is a **fact about the data, not a mechanism**: I am recording the boundary, not
+explaining it, because the one explanation that fits (a block-shaped read) would also have to explain why 192 and
+256 — which are *also* single blocks on this path, since the bf16 arm has no block walk — are **outside** the band.
+That inconsistency is the reason to run the paired control rather than reason from the shape.
+
+**The map, from both lanes, now stands at three OPEN residuals**: nh20 host (@256/@768), **nh24**, and the new
+**nh20 i8 first-token handling** — plus the one **measured** defect (the nh16-width NPU attention). The C-cache row
+is gone from both sides, and the fixture question is now on **both** lanes' lists rather than one.
