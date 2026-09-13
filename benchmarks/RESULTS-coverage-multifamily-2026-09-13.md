@@ -3549,3 +3549,40 @@ why §76's conclusion survives while §71's and §78's do not.
 **The next measurements**: (1) re-run the i8 determinism control with **>= 10 samples** at two prompt
 lengths, to establish what the i8 path's determinism actually is; (2) find the prefill loop's **cap**, which
 is now a measured fact (~128) rather than an inference.
+
+## 80. The xclbin-dims A/B, confirmed at TEN samples — and §71's "deterministic for a working model" is corrected
+
+**Ten samples each:**
+
+| xclbins | Nanbeige boot, 10 runs |
+|---|---|
+| **fixed (runtime dims)** | **151 151 151 151 151 151 151 151 151 151** |
+| **shipped** | 143431 145029 151402 110497 164829 131718 131718 42438 116467 143431 — **8 distinct** |
+
+Categorical separation, and the "deterministic" half now rests on **ten** samples rather than three. **This is
+the strongest result of this whole stretch**, and it is the one whose design (§76: hold everything fixed,
+change one variable, verify the install) has survived every re-test.
+
+**And the same treatment corrects §71.** Qwen3-0.6B on the i8 path, ten samples:
+
+```
+15 12 15 17 14 15 12 14 17 16      <- seven distinct values
+```
+
+**Grossly nondeterministic.** So the i8 path's nondeterminism is **not Nanbeige-specific**, and §71's "the i8
+kernel is deterministic for a working model" — which rested on `bC` checksums from **two runs** — is
+**corrected**. Both statements can hold at different levels: the kernels' outputs may be stable while the
+path's final token is not. That distinction is itself worth keeping.
+
+**And §77's "candidate" is now SUPPORTED.** 0.6B's i8 shapes are **absent from the pool** (§77) and it is
+**grossly nondeterministic** — which is **exactly** the Nanbeige signature. Nanbeige became deterministic at
+**10/10** once its dims were fixed. So the same fix very likely applies to 0.6B, and it is testable the same
+way.
+
+**The method that survived.** Ten samples plus a **categorical A/B** — §76's design. Every two- or
+three-sample "deterministic" claim in this stretch has now failed: §71 (2 runs), §75 (3), §78 (3). What held
+were the claims with a categorical separation between two conditions.
+
+**The next measurement**: build 0.6B's missing i8 shapes — `O(K2048_N1024)`, `G`/`U(K1024_N3072)` per §77's
+list — and apply the §76 test. If it becomes deterministic at ten samples, then this is one defect with one
+fix, and it explains both families.
