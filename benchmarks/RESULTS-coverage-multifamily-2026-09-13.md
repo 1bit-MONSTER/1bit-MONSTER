@@ -544,7 +544,11 @@ then flagged a possible MAX_L walk-past. The 32 MB was a **sync size, not an all
 size_t kv_bo_bytes = cfg_.npu_kv_cache_bo_size > 0 ? (size_t)cfg_.npu_kv_cache_bo_size : 33554432;
 ```
 
-and `npu_kv_cache_bo_size` is `134217728` (`include/common.h:32`). So the engine's KV BO **is
+and `npu_kv_cache_bo_size` is `134217728` (declared `include/common.h:32`, defaulted at
+`:52`). **And nothing in the tree assigns that field from the model config** — the only
+assignment anywhere is that default — so the value is a fixed constant rather than a derived
+one. That is exactly FLM's measured arg7 (134217728), so host and vendor agree rather than
+disagree. So the engine's KV BO **is
 128 MB**, matching FLM exactly and matching `gen_layer_elfs`' `MAX_L = 32768` default — whose
 own comment states the intent: "the native RuntimeLayerEngine allocates
 npu_kv_cache_bo_size (128MB = 32768 tokens at NKV=8/HD=128), so MAX_L must be 32768 to match".
