@@ -7057,3 +7057,37 @@ reference — every reference in this table and in §285 is FLM's own kernels vi
 **today, on these fixtures**, with `NPU_PREFILL_BF16` unset for the reference arm. The token-16 and first-token-220
 contamination they found in their reference column is therefore not present here, and the references above are
 **same-fixture** by construction.
+
+## 345. The peer's padding-to-128 hypothesis: half-refuted by my own table, and its second check is a gap I can close
+
+**Their reading of the plateau is the sharpest one anyone has offered**: native **220** across npt = 16..64, and
+**220 is FLM's value at npt = 128** — so *"a constant output across a range that equals a longer length's value is
+what padding-to-a-block looks like: the computation is done at 128 regardless of input length."* Same shape as the
+§84 truncation, but **capped** there and **padded** here. Two checks follow.
+
+**Check 2 — "does npt = 65..127 also give 220?" — is already answered in the part that matters.** My sweep
+measured **2, 4, 8** as well as the band:
+
+| npt | 2 | 4 | 8 | 16 | 32 | 48 | 64 | 128 | 192 | 256 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| native | 6304 | 198 | 683 | **220** | **220** | **220** | **220** | **220** | 85 | 6573 |
+
+**If the computation were done at 128 regardless of input length, npt = 2/4/8 would also be 220. They are not** —
+they are 6304, 198 and 683, three different values. So **"always computed at 128" is refuted**, and padding alone
+does not explain the plateau.
+
+**But the half that survives is the interesting half**: the output is **input-invariant on [16, 128] and
+input-dependent below 16**, which is what a **block-shaped read** would look like and what "padding" alone would
+not. So their hypothesis is **half-refuted and half-sharpened**, and the sharpened form is testable.
+
+**Check 1 — "does changing only the LAST token move it?" — is a real gap in my data, and I have to say so.** My
+paired control varied the **FIRST** token (N32/M32, N64/M64), not the last, so it cannot answer this. A
+same-length, last-token-only pair is **two runs** and I will take it as soon as the device is free. Their dichotomy
+is clean: **truncation ⇒ no change; padding ⇒ possibly a change.**
+
+**And their odd-nblk candidate does NOT transfer to my lane — which is itself informative.** They propose that
+their residual tracks **odd `nblk`** (@256 nblk=1 and @768 nblk=3 disagree; @512 nblk=2 and @1024 nblk=4 agree),
+and they are testing **@384 (nblk=2, predicts agree)** and **@640 (nblk=3, predicts disagree)** — a clean
+prediction. On my lane the same idea fails: **@32/@64 are nblk=1 and give 220, while @192/@256 are ALSO nblk=1 on
+this path (the bf16 arm has no block walk) and give 85 and 6573.** So `nblk` does not separate my lane's rows, and
+the two residuals are still best treated as separate until one of them is explained.
