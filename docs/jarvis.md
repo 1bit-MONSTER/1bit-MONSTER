@@ -92,14 +92,15 @@ curl -X POST localhost:18081/v1/jarvis/turn -d '{"text":"what can you do?"}'
   so sibling installs and DSH brains can find it and route to it.
 - `POST /v1/jarvis/turn` is the DSH brain's socket: text in → dispatched
   reply out (spoken if a piper voice is loaded).
-- The DSH brain (`integrations/dsh/jarvis-brain.js`) does the capability
-  routing: `--say "..." --model ZAYA1-74B` dispatches to the machine that
-  serves that model. Run it as a DSH skill (`jarvis-fleet-brain`) to make
-  DSH the heart and soul of the pipeline.
+- The DSH brain (`integrations/dsh/jarvis-brain.js`, **retired from this repo in
+  #2289**) did the capability routing: `--say "..." --model ZAYA1-74B` dispatches
+  to the machine that serves that model. The substrate half — announce, discover,
+  `/v1/jarvis/turn` — lives in `src/mesh/` and works without it.
 - Cold start: JARVIS retries dispatch briefly until neighbors are
-  discovered. Test: `Testing/jarvis_mesh_smoke.sh` (4/4).
+  discovered. Test: `Testing/jarvis_mesh_smoke.sh` — phase 3 skips when the brain
+  is absent, as it is on `main`.
 
-**→ [Mesh protocol](mesh-protocol.md)** · **→ [DSH brain](integrations/dsh/README.md)**
+**→ [Mesh protocol](mesh-protocol.md)**
 
 ## Status & known limits (honest)
 
