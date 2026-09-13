@@ -760,3 +760,46 @@ Qwen3 size tested. The 0.6B run simply contained no such tie in its first 8 toke
 did, at tokens 5 and 5. So decode correctness is established to bf16 precision across the tested
 sizes, and the residual difference is a documented, quantified rounding effect rather than an
 open question.
+
+## 17. The "one-harness" decode comparison was not one-harness — withdraw the 18-24%
+
+Found while trying to build the four-family reference (§14/§15 work). Two gates I had not read:
+
+1. **The runlist decode only runs for dense Qwen3.** `npu_engine_universal.cpp:702-708` computes
+   `dense_qwen3 = (NV == 151936 && !has_moe && ((NC==28 && H==1024) || (NC==28 && H==2048) ||
+   (NC==36 && H==2560) || (NC==36 && H==4096)))` and calls `npu_runlist_decode()` only when it
+   holds. So no non-Qwen3 model can use that path at all — which is why the "Nanbeige reference"
+   run I just attempted did not exercise the runlist engine, and why the four-family reference is
+   still blocked even after the ELF generator and the model-dir fix.
+
+2. **The FLM-ref path reads only 128 prompt ids.** Observed directly: with `/tmp/ids_256.txt`
+   holding **256** ids, the bf16 prefill path reports `Prefill 256` while the FLM-ref path reports
+   `Prefill 128`. `read_ids()` in `npu_runlist_bridge.cpp` has no cap, so the truncation is on the
+   FLM-ref side.
+
+**Consequence: withdraw the 18-24% from section 9.2.** That comparison put the native decode
+(runlist, which reads the full prompt) against `NPU_FLM_DECODE=1` (which reads 128 ids) and called
+it "the same harness". It is the same *binary* and the same *timing loop*, but the two sides ran
+**different prompt lengths**, so it was not like-for-like. The direction of the bias is not even
+predictable in advance — less context is cheaper — so the number cannot be corrected by argument,
+only by re-running with matched prompts. **The decode-speed claim against FLM is therefore open
+again.**
+
+What still stands:
+- the native decode's own rate is reproducible (10.0/10.1 ms/tok across repeats and across two
+  builds) — that is a measurement of one engine, not a comparison;
+- **prefill and TTFT are unaffected**: both sides were produced by the same prefill call with the
+  same prompt, which is why the +25% on-box and +71% over the published 2K bar remain sound;
+- the decode *tokens* matched FLM's forward for 8 tokens — but note that check also spanned the
+  two different prompt lengths, so it is weaker evidence than it looked and should be re-run
+  once the id counts match.
+
+**Two concrete bugs to fix before any further decode comparison:**
+- the 128-id truncation on the FLM-ref path;
+- the `dense_qwen3` gate, which blocks the runlist path for every non-Qwen3 model and therefore
+  blocks the four-family reference as well.
+
+This is the third headline of mine retracted in this session (the LFM2 "untied" claim, the
+constant-token alarm, and now the decode percentage). All three were caught by checking where a
+number came from rather than by adding more measurements — and this one was only found because I
+tried to *build on* the number instead of citing it.
