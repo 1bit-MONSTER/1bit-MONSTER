@@ -93,9 +93,14 @@ correct; every one outside it is wrong. Causes excluded **by measurement** for t
 attention ELF (Nanbeige's own captured kernel loaded and the boot did not move), `rope_theta`
 (plumbed from `config.json`; no change), the `ra2` rope_dim (not on the bf16 prefill path), the
 xclbin-dir derivation (each family's own `mm.xclbin` is present in both trees and is loaded), and
-the Q/K/V offsets (`NH*HD`, `NH*HD + NKV*HD` — correct for all four). The remaining suspect is
-the engine's own per-layer composition for the bf16 prefill, whose only shape-dependent inputs
-are `qout`, `kvout`, `H` and `IM`.
+the Q/K/V offsets (`NH*HD`, `NH*HD + NKV*HD` — correct for all four), and — added later — **the
+generated per-ctx ELF itself, which is byte-identical to FLM's own for BOTH out-of-set families**
+(nh20 §56, nh24 §58).
+
+So the correlation survives every host-side exclusion, and the remaining suspect is the engine's own
+per-layer composition for the bf16 prefill, whose only shape-dependent inputs are `qout`, `kvout`, `H`
+and `IM` — or, for the runlist path, the dispatch and ordering and the device-written KV. Note what that
+means: this is now a statement about **our code**, not about a dependency.
 
 ## 6. What landed this session (133 commits, `goal/runlist-decode-wire`)
 
