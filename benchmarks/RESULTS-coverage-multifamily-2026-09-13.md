@@ -4491,3 +4491,37 @@ time series.
 needed** — every number above was taken with both holders present — but it is **not void either**: the same
 runs with the holders actually gone would confirm that they are irrelevant, and it is the one datum that
 cannot be produced without the window.
+
+## 104. CORRECTED: the KV region stride DOES matter — FLM's captured value (3932160) restores context; §94 tested the wrong alternative
+
+§94 concluded "the KV region stride is NOT the context loss" from a 4 MB vs 8 MB comparison. §102/§103 then
+read the captured BO profile and produced a specific number: FLM ran the attention kernel with a **30 MB** KV
+BO, so the per-region stride is 30 MB / 4 regions / 2 B = **3932160 bf16** — not the 4194304 (8 MB) that §94
+tried. Re-tested on a **free** device:
+
+| kv_region | t256 (first=16) | t256_mod (first=220) |
+|---|---|---|
+| 2097152 (H-table, current) | 188, 188 | 188, 188 — context-FREE |
+| 4194304 (§94's alternative) | 188, 188, 188 | 188, 188, 188 — context-FREE |
+| **3932160 (captured profile)** | **152432, 152432, 152432** | 188, 188, 188 — **context-SENSITIVE** |
+
+So **§94's conclusion is WRONG and is retracted**: the stride does matter, and §94 tested a value the ELF was
+never captured with. Its failure mode was choosing the alternative by guesswork (power-of-two neighbours)
+instead of reading the captured profile — the same "assume the shape" error as §1 and §97.
+
+**But it is only a partial fix, and the numbers say so.**
+
+- At @256 the answer becomes context-SENSITIVE (152432 vs 188) yet is still not FLM's (FLM-ref: 5938 for
+  t256, 13 for t256_mod). So something else in the invocation is still wrong — and §103's profile already says
+  what: our act/out BOs are 5 MB each where FLM's are 1-2 MB and 5 MB.
+- At @1024 the boot is **1214 with both region values**, so this knob changes nothing there even though it is
+  the same code path. Either @1024 has an additional fault or the same one is masked.
+
+**Net.** The captured BO profile is now the strongest instrument in this investigation and has already
+overturned one of my own conclusions. The next step is to align the *remaining* profile entries (BO3 1 MB,
+BO4 5 MB) by reading what our binding sends rather than by varying constants — and to re-run §94-class tests
+only against values that were actually captured.
+
+**Method note worth keeping.** Two of my three "refuted" hypotheses in this item (§94 stride, and §100's
+V-region) were refuted only for the values I guessed. §102 broke that pattern by reading the capture first,
+and immediately produced a value that works. Read the captured profile before varying the constant.
