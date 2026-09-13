@@ -4691,3 +4691,28 @@ refutation as settled** — which is its own failure mode, one step removed from
 
 **And their agreement with my Phi4 result is recorded**: context-sensitive (874 / 6573), and per the
 discriminant that is **genuine nh24 shape work**, which is my lane and not theirs.
+
+## 111. The captured KV region is a FACTOR, not the fix: @256 moves to a wrong-but-context-sensitive plateau
+
+Following §110 (region 3932160 restores first-token sensitivity at @256), a value scan with the first token
+fixed at 16 (FLM-ref 5938):
+
+| kv_region | t256 (first=16) |
+|---|---|
+| 1966080 | 188 |
+| 3932160 | 152432 |
+| 7864320 | 152432 |
+| 15728640 | 152432 |
+
+and at 3932160 the V-region knob is irrelevant again (`v_add=1` and `2` both give 152432 / 188).
+
+So the region change is a genuine behavioural step — from `188/188` (first-token-invariant) to `152432/188`
+(not invariant) — but it **plateaus at a value that is not FLM's** (5938/13), and the plateau is flat across a
+4x span of region sizes. That is the signature of the region being *a* bound the kernel respects, not the
+parameter that makes it correct. §103 already names the next mismatch: our act/out BOs are 5 MB each where
+FLM's captured profile is 1-2 MB and 5 MB.
+
+**Honest status.** §110 retracted §94 correctly — the stride *matters* — but "matters" is weaker than "is the
+fix": the value is still wrong at every region tested, and @1024 is unchanged at 1214 across the whole range.
+The NKV-proportional act/out entries from §103 are the next thing to align, by reading the capture rather
+than by scanning constants.
