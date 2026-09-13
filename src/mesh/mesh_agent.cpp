@@ -88,7 +88,8 @@ std::string MeshAgent::build_question(const NodeIdentity& peer) const {
     // zero model weights — the out-of-the-box guarantee.
     if (!cfg_.agent_model.empty()) {
         // TODO(mesh): model-driven question generation via local chat endpoint.
-        // Left for the DSH plugin (integrations/dsh) which owns this prompt.
+        // The prompt used to live in integrations/dsh (the DSH brain), which was
+        // retired from this repo in #2289 — so this hook is currently unclaimed.
     }
     std::string mine = disc_.self().name;
     std::string mine_models;

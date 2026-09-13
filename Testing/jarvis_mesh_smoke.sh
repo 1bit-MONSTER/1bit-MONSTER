@@ -82,10 +82,20 @@ pass "JARVIS dispatched a turn to alice (Qwen3-4B)"
 
 # ── 3. Capability routing: the DSH brain picks bob for ZAYA1-74B ───────
 echo "== phase 3: capability routing =="
-BRAIN_OUT=$(node "$ROOT/integrations/dsh/jarvis-brain.js" --node "http://127.0.0.1:$JARVIS_PORT" \
-    --say "hello from the fleet" --model ZAYA1-74B 2>/dev/null)
-echo "$BRAIN_OUT" | grep -q "bob" || fail "jarvis-brain did not route ZAYA1-74B to bob — $BRAIN_OUT"
-pass "jarvis-brain routed ZAYA1-74B to bob"
+BRAIN="$ROOT/integrations/dsh/jarvis-brain.js"
+if [ ! -f "$BRAIN" ]; then
+    # integrations/dsh was retired from this repo in #2289 (the agent stack is a
+    # product layer, not the engine). Capability routing is exercised by that
+    # brain, so with the brain gone this phase has nothing to run — say so
+    # instead of failing on a missing file. The other phases are
+    # substrate-only and still run.
+    echo "  SKIP: $BRAIN is not in this tree (retired in #2289)"
+else
+    BRAIN_OUT=$(node "$BRAIN" --node "http://127.0.0.1:$JARVIS_PORT" \
+        --say "hello from the fleet" --model ZAYA1-74B 2>/dev/null)
+    echo "$BRAIN_OUT" | grep -q "bob" || fail "jarvis-brain did not route ZAYA1-74B to bob — $BRAIN_OUT"
+    pass "jarvis-brain routed ZAYA1-74B to bob"
+fi
 
 # ── 4. JARVIS announced itself on the mesh (other installs see it) ─────
 echo "== phase 4: JARVIS is a fleet citizen =="
