@@ -53,12 +53,14 @@ Raw native lines:
    `attn_kernel1k` = **`attn_mha_1024_nh16.elf`** regardless of `attn_qout`
    (4096 for NH=32). A single **nh32** >256 capture fixes **both 4B and 8B**
    (identical attention shape).
-3. **Fix applied without a code change**: the engine already exposes
-   `NPU_ATTN_ELF_1024=<path>`; pointing it at the captured nh32 ELF gives
-   boot=220 for 4B and 8B. The ELF is preserved at
-   `engine/npu/xclbins/attn_mha_1024_nh32.elf` (177 696 B, from 4B).
-   **Durable wiring still TODO**: auto-select the nh32 1k ELF when
-   `attn_qout==4096 && attn_tokens>256` (and an nh32 2k ELF for (1024,2048]).
+3. **Fix is durable (committed)**: `npu_engine_bf16_mm.h` now loads
+   `attn_mha_1024_nh32.elf` (env `NPU_ATTN_ELF_1024_NH32`) and **auto-selects** it
+   when `attn_qout==4096 && attn_tokens>256`. All four dense-Qwen3 engines were
+   rebuilt and re-verified **without any env override**: 0.6B boot=25,
+   1.7B/4B/8B boot=220. The ELF (177 696 B, captured from 4B) lives at
+   `engine/npu/xclbins/attn_mha_1024_nh32.elf`.
+   **Still open**: an nh32 **2k** ELF for (1024,2048] on nh32 models (that range
+   still uses the nh16 2k ELF).
 4. **Native does NOT meet-or-beat FLM on prefill for 1.7B/4B/8B** — it wins only
    on 0.6B (+28.3%) and loses with a monotonically growing gap (−11% → −18.5% →
    −22.2%). Native degrades faster with model size; FLM flat-lines better.
@@ -88,7 +90,7 @@ CAP_NO_SYNC=1 CAP_SKIP_BIG=1 \
 ```
 cd /home/bcloud/1bit-MONSTER-goal
 export NPU_XCLBIN_DIR=$PWD/engine/npu/xclbins
-# native prefill + boot token (nh32: add NPU_ATTN_ELF_1024=$PWD/engine/npu/xclbins/attn_mha_1024_nh32.elf)
+# native prefill + boot token (nh32 auto-selected since the 2026-09-13 fix)
 NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX=<npt> \
   ./engine/npu/build/npu_engine_qwen3_<size> ~/.config/flm/models/Qwen3-<Size>-NPU2/model.q4nx 1 /tmp/ids_<npt>.txt
 # FLM reference boot token
@@ -104,7 +106,7 @@ python3 -c "import json;json.dump({'max_length':1024,'iterations':1,'input_text'
 | group | models | status | needs |
 |---|---|---|---|
 | nh16/hd128 | Qwen3-0.6B, 1.7B | ✅ gated | 1.7B prefill −11% (host-math perf) |
-| nh32/hd128 | Qwen3-4B, 8B | ✅ gated @1k (env fix) | durable wiring; nh32 2k ELF for (1024,2048] |
+| nh32/hd128 | Qwen3-4B, 8B | ✅ gated @1k (auto-selected) | nh32 2k ELF for (1024,2048] |
 | nh20/nkv4/hd128 | Nanbeige4.1-3B | not run | capture |
 | nh24/nkv8/hd128 | Phi4-mini | not run | capture |
 | nh32/nkv8/hd64 | Llama-3.2-1B/3B | not run | capture (hd64) |

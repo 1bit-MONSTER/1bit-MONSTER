@@ -91,6 +91,9 @@ struct Bf16Mm {
     std::unique_ptr<xrt::ext::kernel> attn_kernel1k;   // (256,1024] context ELF, captured from FLM
     std::unique_ptr<xrt::elf> attn_elf1k;
     std::unique_ptr<xrt::module> attn_module1k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel1k32; // (256,1024] NH=32 ELF (Qwen3-4B/8B), captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf1k32;
+    std::unique_ptr<xrt::module> attn_module1k32;
     std::unique_ptr<xrt::ext::kernel> attn_kernel2k;   // (1024,2048] context ELF, captured from FLM
     std::unique_ptr<xrt::elf> attn_elf2k;
     std::unique_ptr<xrt::module> attn_module2k;
@@ -215,6 +218,7 @@ struct Bf16Mm {
                     }
                 };
                 load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", attn_elf1k, attn_module1k, attn_kernel1k);
+                load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", attn_elf1k32, attn_module1k32, attn_kernel1k32);
                 load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", attn_elf2k, attn_module2k, attn_kernel2k);
                 if (!attn_kernel1k)
                     fprintf(stderr, "  Bf16Mm: no 1024-context attention ELF — npt>256 will use CPU attention\n");
@@ -257,7 +261,14 @@ struct Bf16Mm {
         // run. The previously-used generated gen(0,1024) ELF was both wrong and
         // ~1200x slower (223050 ms) and has been replaced in the xclbin dir.
         if (attn_tokens > 1024 && attn_kernel2k) kern = attn_kernel2k.get();
-        else if (attn_tokens > 256 && attn_kernel1k) kern = attn_kernel1k.get();
+        else if (attn_tokens > 256) {
+            // NH=32 models (attn_qout 4096) must use the nh32 long-context ELF;
+            // using the nh16 1k ELF silently produced wrong tokens for
+            // Qwen3-4B/8B (boot 87672 vs FLM 220). The 2k slot has no nh32
+            // variant yet, so (1024,2048] on nh32 still uses the nh16 ELF.
+            if (attn_qout == 4096 && attn_kernel1k32) kern = attn_kernel1k32.get();
+            else if (attn_kernel1k) kern = attn_kernel1k.get();
+        }
         if (!kern) return false;
         const size_t q = (size_t)attn_qout;
         const int rows = attn_rows > 0 ? attn_rows : attn_tokens;
