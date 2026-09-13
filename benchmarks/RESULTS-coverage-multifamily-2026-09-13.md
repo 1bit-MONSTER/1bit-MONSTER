@@ -4172,3 +4172,38 @@ the nh16 ELF at the same offsets to see whether they land on the same loop-const
 The two candidate mechanisms are now narrowed to (i) the `bKv` arrangement we hand the kernel (§94) or (ii) a
 wrong/mis-parameterised attention ELF (§95/§96), and both are cheap to test on a free device. Nothing in
 §94-§96 is settled; §92/§93 are the measurements that are.
+
+## 97. Nanbeige never gets an nh20 attention kernel: @256 and @2048 fall back to the nh16 ELF, and the only nh20 file is the nh32-like one (§95/§96)
+
+Reading the ELF-slot logic (`npu_engine_bf16_mm.h:200-267`) resolves §92/§93's "context-free at BOTH lengths"
+without needing a new mechanism. Each slot tries the SHAPE-SPECIFIC name first, then a legacy name:
+
+| slot | shape-specific name | exists? | what actually loads |
+|---|---|---|---|
+| 1024 | `attn_mha_1024_nh20_hd128.elf` | YES | the file §95/§96 show is 97.9% identical to nh32 |
+| 256 | `attn_mha_256_nh20_hd128.elf` | **NO** | falls back to `attn_mha_256_nh16.elf` (**nh16**) |
+| 2048 | `attn_mha_2048_nh20_hd128.elf` | **NO** | falls back to `attn_mha_2048_nh16.elf` (**nh16**) |
+
+And `attn_shaped_ok` is set **only** when the resolved path contains `_hd` — the 1024 shape file sets it, the
+legacy `attn_mha_256_nh16.elf` does not — which is why `run_attn` then hands a <=256-token Nanbeige call the
+**nh16** kernel (`attn_tokens<=256 && attn_shaped_ok && attn_kernels`).
+
+So on the bf16 path Nanbeige is fed:
+
+- **@256 -> an nh16 attention kernel** for an nh20 model. Wrong shape => context-free. §93's @256 probe is
+  therefore explained by the shape mismatch, not by the `bKv` arrangement.
+- **@1024 -> the one "nh20" file**, which §95/§96 show is the nh32-class kernel (97.9% identical, 580 regular
+  code-run diffs). If it is a nh32 build, an nh20 model is wrong here too.
+- **@2048 -> nh16** again.
+
+**Nanbeige never gets a verified nh20 attention kernel at any length.** That is a sufficient explanation for
+context-free at both 256 and 1024 (§92), and it makes the fix concrete: supply a REAL nh20 kernel per context
+length, or first establish that the 1024 file is genuinely nh20-parameterised and fix what we feed it.
+
+**Narrows §93.** Its CPU-vs-NPU A/B still proves the HOST side is correct (same `bqo`/`kv_caches`), but the
+"NPU is context-free" half at @256 is now attributable to the wrong ELF — so **@1024 is the discriminating
+length** for the `bKv`-vs-ELF question, and the @256 probe should not be cited alone.
+
+**And it revises §95/§96's scope.** Those were about the ONE nh20 file; this shows the other two slots never
+had an nh20 file at all, so "the per-shape attention ELF needs capturing" (§9) is not one missing capture —
+it is two missing files plus one file of unverified shape.
