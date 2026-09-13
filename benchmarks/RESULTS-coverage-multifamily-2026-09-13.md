@@ -6218,3 +6218,37 @@ is a **real** fix or an extent check, neither of which exists yet.
 
 **And the fix direction is now the same for both lanes**: make the kernel write its **declared extent**, or make
 the cache **per-shape** — with the diagnostic being a check that the device wrote all `256 * N`.
+
+## 130. RETRACTED: §129's "defect (2) IS the C-cache tail" — CZERO moves all six of my lengths and fixes 0/6
+
+The other lane's §317 made the point for their side — CZERO moves Phi4 at 6/6 lengths and fixes it at 0/6 — and
+it applies to mine, which §129 did not check. §129 saw the numbers *change* under CZERO and read "changed" as
+"explained". Adding the FLM-ref column:
+
+| len | plain | `CZERO=1` | FLM-ref | CZERO fixes? |
+|---|---|---|---|---|
+| 64 | 102132 | 15000 | 152470 | **no** |
+| 128 | 1030 | 56042 | 151 | **no** |
+| 192 | 15328 | 149070 | 1704 | **no** |
+| 256 | 109440 | 53367 | 5938 | **no** |
+| 257 | 477 | 152747 | 13 | **no** |
+| 448 | 158 | 72213 | 135 | **no** |
+
+**CZERO moves all six and fixes none (0/6).** So the C-cache under-write is **present** in this lane — a real
+shared bug that perturbs every value — but it is **not the cause** of defect (2). §129's identification is
+withdrawn.
+
+**What this leaves.** Both lanes now have the same shape of result: a shared, real C-cache under-write that moves
+values everywhere and explains nothing on its own, plus a lane-specific defect downstream of it. For nh20 that
+defect remains unexplained: the host path is right at 320/384/511/512/768/1024 against a stable reference, wrong
+at 64/128/192/255/256/257/258/448, and clearing the GEMM tail does not repair it.
+
+**The error is mine, and it is the same one this item keeps producing**: I treated *"the instrument changed the
+number"* as *"the instrument explained the number"*. A change is a signal that something is **read**; it is not
+evidence of **which** something. §225/§235 said exactly that about zeroing — and I applied it to the other lane's
+conclusion while making the same mistake in my own.
+
+**Next for defect (2).** Bisect inside the bf16 prefill at a wrong length (64 is a partial block, 256 is one
+full block) **with the cache tail controlled** (`CZERO=1`, constant across lengths), so the remaining variable is
+the host code rather than the stale data. The two zeroing flags are now both in place and both are diagnostics,
+not fixes.
