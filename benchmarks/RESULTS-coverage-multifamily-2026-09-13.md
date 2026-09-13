@@ -7214,7 +7214,7 @@ recorded per fixture:
 
 **19 runs**, all fixtures committed. And it is worth saying what each part can refute: **A** can refute the band
 itself if the older rows moved; **B** can only move the edge; **C** can refute the input-invariance reading if the
-column is not flat — which is the one §140 makes most likely, since both of my fresh probe tokens may simply be
+column is not flat — which is the one §143 makes most likely, since both of my fresh probe tokens may simply be
 degenerating ones at that length.
 
 ## 141. First-token sweep at a fixed length: the bf16 path is CORRECT for 5 of 8 first tokens, and its wrong values are OTHER lengths' reference values
@@ -7236,7 +7236,7 @@ degenerate *(token, length)* pair. I ran the **S448** half:
 
 **Three facts:**
 
-1. **The bf16 path is CORRECT for five of the eight first tokens** at this length. So §140's "degenerates for
+1. **The bf16 path is CORRECT for five of the eight first tokens** at this length. So §143's "degenerates for
    58907" is not the general case — the residual belongs to *particular* tokens.
 2. **Its output is a coarse step function of the first token**: only **three** distinct values across eight inputs
    (153887, 158, 13), while the reference takes at least five. The first token's influence on this path is
@@ -7340,3 +7340,28 @@ my 220 recurs at four lengths here, and the peer's 13 recurs at **320 and 512** 
 *"the plateau value identifies the length being computed"* is **not established**, in either lane — it is a reading
 that the recurrence is enough to make unsafe, and it should have been stated as a hypothesis rather than as an
 identification.
+
+## 144. CORRECTION to §139/§141's value-matching: the plateau value is NOT unique to one length, so it does not identify the length
+
+The other lane pulled FLM's own column across the same fixtures and found that **220 recurs on the reference side**
+(128, 130, 160 and 176 all -> 220). This lane has the identical problem: **13 occurs at both 320 and 512** in
+§137's table.
+
+So the reframing offered in §139 — *"read the plateau's value off to identify the length being computed"* —
+**requires the value to be unique to one length, and it is not**, on either side. It is a **hypothesis, not an
+identification**, and §141's third fact ("the wrong values are other lengths' reference values") inherits the same
+weakness: **a value that occurs at several lengths does not name any of them.**
+
+**What survives unchanged:** the plateau itself (§138/§139 — a fixed-length computation, insensitive to the last
+token); the first-token conditioning (§140/§143); the transition being **length-dependent**, confirmed from both
+halves; and the coarse step function (three distinct values across eight first tokens at npt=448, versus a
+**perfectly flat 8/8** at npt=32 on the other lane).
+
+**What is withdrawn:** that the plateau's *value* identifies *which* length is being computed. The mechanism
+candidate — the path computes some fixed length rather than the prompt's — stands; **the specific length is
+unknown**, and value-matching cannot supply it.
+
+**And the two halves now say something neither could alone.** At npt=448 the degeneracy is **partial and
+token-selected** (5 of 8 first tokens correct, three distinct outputs); at npt=32 it is **total and
+length-selected** (8 of 8 give the same 220). That contrast is what separates "input-invariant" from "degenerate"
+— two degenerate probes look exactly like invariance, and only a partial-step case tells them apart.
