@@ -4618,7 +4618,7 @@ implies, and it is the honest scope of what the attention-ELF work actually cost
 the attention path on **stderr**. That line was the answer. Several of my earlier "no output" readings in
 this stretch were almost certainly the same mistake.
 
-## 125. The contention that perturbs this path is CPU COMPILES, not the device holders — and the block walk is exonerated on timing
+## 240. The contention that perturbs this path is CPU COMPILES, not the device holders — and the block walk is exonerated on timing
 
 **I went to the process table to clear my own runs and found the real interferer.** The NPU is quiet; the
 box is not:
@@ -5941,3 +5941,42 @@ lengths.**
 **Next, cheap and decisive:** repeat the FLM-ref at each length (does it move?), then repeat the CPU path at one
 disagreeing length. If the FLM-ref is itself length-scattered, §126/§127 must be restated in terms of the *pair*
 rather than of one side being wrong.
+
+## 235. THE GEMM C CACHE DOES MATTER — §230's exclusion is REFUTED, and 0.6B is the control that proves it
+
+**The experiment was supposed to retire a hazard. It found one.** `BF16MM_CZERO=1` (env-gated, default
+unchanged) zeroes exactly `c_elems` — the amount `gemm_wait` copies back — before each launch:
+
+| model | default | `BF16MM_CZERO=1` |
+|---|---|---|
+| **Phi4 @256** | **874** | **20879** |
+| **Qwen3-0.6B @256** | **1614** — FLM's **exact** reference | **47874** |
+
+**The change on both models means the device kernel does NOT write all of `256 * N`** — because zeroing a
+buffer that the kernel fully overwrites cannot change anything. So **§230's conclusion was wrong**: I read
+`get_mm_app`'s correct `(K, N, woff)` keying and the full `256 * N` copy-back and concluded the live path
+"cannot under-write". It can, and it does, on **both** models.
+
+**And 0.6B is the control that makes this a finding rather than a curiosity.** Its bf16 path returns **FLM's
+exact reference** by default — so it is a **known-good** configuration — and zeroing **breaks** it. That means:
+
+- the tail **is read** (otherwise zeroing would be inert), and
+- the tail is **not garbage**: for 0.6B it holds the **correct** values, which is exactly what a reused
+  same-shape cache would contain — **its own previous output for the same GEMM**.
+
+**Which explains the asymmetry with Phi4 without inventing anything.** Phi4's default is **wrong** (874) and
+zeroing gives a *different* wrong value (20879) — so **Phi4's tail holds data from a different shape**, while
+0.6B's holds its own. The caches are shared across all projections and all shapes, so whether a tail is right
+depends on the **call order** — and that makes this a **latent correctness bug in the engine**, not a Phi4
+quirk: any model whose GEMM sequence revisits a buffer after an intervening different-shaped call can read the
+wrong tail.
+
+**And the peer's caution was exactly right, which 0.6B now proves by measurement rather than argument**: *"if
+`BF16MM_CZERO=1` changes Phi4's boot, that is a finding about the CACHES, not yet a finding about Phi4 — the
+correct tail values would be the GEMM's own output, and zeroing only substitutes zeros."* 0.6B shows the tail's
+correct content is **the previous output**, so zeroing is a **diagnostic, not a fix** — the fix is to make the
+kernel write the full extent (or to invalidate the cache on a shape change).
+
+**This is the largest result from this lane**, and it retires the lane's own earlier exclusion rather than
+confirming it. The instrument that produced it was the one the other lane asked for: **an env-gated A/B plus a
+control where the flag's effect is visible in a known-good configuration.**

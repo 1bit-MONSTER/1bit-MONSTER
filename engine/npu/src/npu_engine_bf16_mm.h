@@ -611,6 +611,18 @@ struct Bf16Mm {
         size_t c_elems = 256 * N;
         if (batch == 0) { if (!c_cache0 || c_cache0_elems < c_elems) { c_cache0 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache0_elems = c_elems; } }
         else            { if (!c_cache1 || c_cache1_elems < c_elems) { c_cache1 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache1_elems = c_elems; } }
+        // DIAGNOSTIC (BF16MM_CZERO=1), off by default so the default behaviour is unchanged.
+        // The C caches are only ever GROWN, never cleared, and gemm_wait copies back 256*N -- so if a
+        // device kernel writes fewer than 256*N elements, the tail carries STALE data from a previous
+        // GEMM, which would look like a plausible but wrong value rather than like garbage. An
+        // under-writing kernel HAS been observed in this engine (the nh20 attention one writes 2048 of
+        // 2560 columns). Zeroing exactly c_elems -- the amount that will be copied back -- makes the
+        // read-back either correct or ZERO, so a CHANGE is the signal that the tail was being read.
+        // RESULTS-coverage-multifamily 225/230.
+        if (getenv("BF16MM_CZERO")) {
+            if (batch == 0) memset(c_cache0->data(), 0, c_elems * 2);
+            else            memset(c_cache1->data(), 0, c_elems * 2);
+        }
         npu_app& app = get_mm_app(K, N, woff);
         buffer<uint16_t>& a = batch == 0 ? *a_cache0 : *a_cache1;
         buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
