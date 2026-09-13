@@ -2942,3 +2942,47 @@ boot token becomes stable, the interference hypothesis is confirmed and the nond
 in our compute at all. Until that runs, **no host-side fix can be validated against this symptom**, and the
 `bA`/`bC` zeroing stands on its own merits — an uninitialized device buffer that should have been zeroed —
 not as the fix for this.
+
+## 65. RETRACTED: device contention does NOT explain it — FLM's path is stable on the SAME contended device. It is uninitialized DEVICE memory
+
+**§64's hypothesis is refuted, by its own control.** I claimed the shared NPU confounded everything. The
+test is direct — same device, same session, interleaved:
+
+| path | runs |
+|---|---|
+| **FLM's own kernels via the bridge** | **1033, 1033, 1033, 1033** |
+| native int8 path (interleaved) | 56648, 145029, 110497 |
+
+FLM's path is **perfectly stable** while the native path varies **three for three**, on the same NPU, in the
+same minute. So the device is **deterministic** under contention, and **the nondeterminism is ours**. §64's
+"the NPU is shared, so this is confounded" was a plausible story that seven runs killed — and it is the
+second time this session that a control retired my own explanation rather than someone else's.
+
+**Two more eliminations, both cheap and both negative:**
+
+- **Not a host OpenMP race**: `OMP_NUM_THREADS=1` (and again with `NPU_HOST_THREADS=1`) still varies —
+  145029 / 143431 / 56648 / 131718, then 42438 / 145029 / 164829. Single-threaded is still nondeterministic.
+- **Not uninitialized heap**: `MALLOC_PERTURB_` is the standard tool for exactly this, and it does **not**
+  stabilise the result — `MALLOC_PERTURB_=1` gave 1903 / 145029 / 272, `=170` gave 143431 / 131718 / 131718.
+
+That leaves **uninitialized DEVICE memory** — the class already found twice (§61's bf16 KV BO, §64's
+`I8Ctx` `bA`/`bC`). So there is more of it, and the search is now enumerated rather than open:
+
+| site | BOs | zeroed? |
+|---|---|---|
+| `npu_engine_i8ctx_inc.h` `bA`/`bC` | activation, GEMM output | **fixed in §64** |
+| `npu_engine_i8ctx_inc.h:693` **`make_scratch_bo`** | **h2 scratch — "the D-phase A source … the A2 shim DMA reads it like an activation"** | **no** |
+| `npu_engine_i8ctx_inc.h:677` `make_fused_weight_bo` | weight + `FUSED_GS_TILE` + `FUSED_GS_SLACK` | **partially** — `packB_into` memsets only `KD*ND`, so the gs/scale region is unwritten |
+| `npu_engine_cb.cpp:61` | `bA`, `bC`, `layerB[l]` | **no** |
+| `npu_engine_hybrid_flm.h:166-168` | `bA`, `bW`, `bC` | **no** |
+| `npu_attn_ctx.h:166-171` | `bQ`, `bKT`, `bC2`, `bV`, `bSCR` | **not checked yet** |
+
+**The two most promising are marked in the source itself.** `make_scratch_bo` is documented as being **read
+as an activation** and is never zeroed. And the fused weight BO's scale region is **beyond** the memset that
+`packB_into` performs — a per-column scale that is read but not written would scale the output arbitrarily,
+which is exactly the shape of the symptom: identical input and identical norm weights, yet a hidden state
+after 32 layers that differs across runs.
+
+**The next measurement** is therefore concrete: zero each of these in turn (or all at once, since zeroing a
+scratch/output BO is correct regardless) and re-run the determinism test with Qwen3-0.6B @256 = **1614** as
+the no-regression gate. The one that makes the native path stable is the one that mattered.
