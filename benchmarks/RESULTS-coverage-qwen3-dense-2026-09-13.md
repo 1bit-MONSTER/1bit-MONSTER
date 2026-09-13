@@ -194,6 +194,32 @@ compute-bound**. Vectorizing the conversions is free but buys nothing; closing t
 7–11% needs less host traffic (fewer passes / fusing host math into the GEMM staging),
 which is an algorithmic change, not a flag.
 
+## 10. Decode @1k — native beats FLM on all four (2026-09-13)
+
+`NPU_RUNLIST=1 <engine> <model.q4nx> 32 /tmp/ids_1024.txt`, final
+`=== Z ms/tok (W tok/s) ===` line. FLM from `flm bench qwen3:<size> -i cfg.json`
+(the 0.6B figure from the earlier matched-context scorecard).
+
+| model | native decode | FLM on-box decode | gap |
+|---|---|---|---|
+| Qwen3-0.6B | 12.6 ms/tok (**80 tok/s**) | 77.8 | **+2.8%** |
+| Qwen3-1.7B | 24.9 ms/tok (**40 tok/s**) | 39.53 | **+1.2%** |
+| Qwen3-4B | 52.1 ms/tok (**19 tok/s**) | 18.75 | **+1.3%** |
+| Qwen3-8B | 91.0 ms/tok (**11 tok/s**) | 10.70 | **+2.8%** |
+
+### Three-metric summary (native vs FLM on-box @1k)
+
+| model | decode | prefill | TTFT (= prefill time) |
+|---|---|---|---|
+| Qwen3-0.6B | **+2.8%** ✅ | **+35.3%** ✅ | 0.668 s vs 0.704 s — **+5.1%** ✅ |
+| Qwen3-1.7B | **+1.2%** ✅ | **+4.5%** ✅ | 1.039 s vs 1.042 s — +0.3% ✅ |
+| Qwen3-4B | **+1.3%** ✅ | −7.5% | 2.164 s vs 1.925 s — −12.4% |
+| Qwen3-8B | **+2.8%** ✅ | −11.2% | 3.221 s vs 2.705 s — −19.1% |
+
+**So the objective (meet-or-beat on decode, prefill AND TTFT) is met for Qwen3-0.6B and
+Qwen3-1.7B, and for 4B/8B on decode only.** The outstanding deficit is prefill (hence
+TTFT) on the two largest dense models, and it is bandwidth-bound host math.
+
 Boot tokens unchanged (25/220/220/220). So Qwen3-1.7B now **meets** FLM on prefill, and
 the 4B/8B gaps roughly halved.
 
