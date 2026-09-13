@@ -147,3 +147,31 @@ GEMM (H→H) → residual`, then the shared
 
 **Config**: `head_dim` already comes from the parsed config (commit `5a9d1d6c9`), which LFM2
 needs (HD=64). Still open: `norm_eps` 1e-5 vs the engine's `EPS=1e-6f` constant.
+
+## 8. VERIFIED — the int4 convention is detected from the data (2026-09-13)
+
+Implemented in `npu_engine_universal.cpp` (commit `c53a80d33`): at startup the engine reads
+one 512-byte zero-point block (`model.layers.0.mlp.down_proj.weight`, zeros at `+512` in a
+5120-byte int4 row) and selects the decoder. The intent4 convention is NOT in the header —
+it is a flat tensor-name -> offset dict with no quant metadata (checked LFM2 149 keys, Qwen3
+311, Nanbeige 291) — but the DATA carries it, because the two encodings are two
+parameterisations of one affine map (`q*s+zp` over q in [0,15] vs `v*s+zp` over v in
+[-8,7]); a SIGNED bundle therefore stores `zp == 0` for every group and an UNSIGNED one
+stores a centred zp.
+
+Measured `zp/scale` across all 16 installed `*-NPU2` bundles: **-7.255 to -7.734 for every
+non-LFM2 bundle, and exactly 0.000 for both LFM2-1.2B and LFM2-2.6B.** Nothing lies in
+between, so one read decides it.
+
+NPU verification (this run, `NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX=1024`):
+
+| model | probe line | boot @1024 |
+|---|---|---|
+| Qwen3-0.6B | `511/512 non-zero -> UNSIGNED` | 25 (unchanged) |
+| Qwen3-4B | `511/512 non-zero -> UNSIGNED` | 220 (unchanged) |
+| Llama-3.1-8B | `511/512 non-zero -> UNSIGNED` | 220 (unchanged) |
+| LFM2-1.2B (@256) | `0/512 non-zero -> SIGNED (two's complement)` | dims only; no native path yet |
+
+So the probe is correct on both classes and the change is a no-op for the four working
+families. Ported decoder: commit `69ea8e744` (the dsh agent's
+`dequant_i8_group_signed_to_float_ex`, +62/-0, file-wise from their `3bb836eb0`).
