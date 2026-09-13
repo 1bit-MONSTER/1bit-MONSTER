@@ -6785,3 +6785,40 @@ INPUT.** My clean fixtures were built with **first token = 220**, and:
 **And the device-free form is not a coincidence of this lane**: any table of boot tokens should be checked
 column-wise against the fixture's own ids before a single row of it is read. I had the numbers for three
 checkpoints and never once asked whether the answer was in the question.
+
+## 137. Three-way on a non-degenerate fixture: bf16 and FLM agree at 4/6 lengths — and the i8 path is wrong at three of them
+
+With §134's fixture rule applied and the cache flags proved inert (§136), the comparison is now three-way: the
+bf16 host path, the **i8/fallback path** (block-walked, and §7's gate showed it matching FLM at @256/@1024), and
+FLM's own kernels via `NPU_FLM_PREFILL`. Fixture: `ids_1024` with the leading token set to **58907** (its
+FLM-ref varies with length, so it is non-degenerate).
+
+| len | bf16 (CPU attn) | i8 fallback | FLM-ref | agree |
+|---|---|---|---|---|
+| 64 | **941** | 152470 | **941** | bf16 = FLM |
+| 128 | 158 | 158 | 158 | all three |
+| 256 | **5938** | 13 | **4938** | **none** |
+| 512 | 13 | 13 | 13 | all three |
+| 768 | **3504** | 152 | **33641** | **none** |
+| 1024 | **1033** | 152373 | **1033** | bf16 = FLM |
+
+**Three findings, and the third changes the map:**
+
+1. **bf16 and FLM agree at four of six lengths** — all exact (64, 128, 512, 1024). The bf16 host path is largely
+   correct.
+2. **They disagree at 256 and 768**, both stable at 3/3 — so the nh20 host residual is **real and stays at two
+   points**.
+3. **The i8 path differs wildly from BOTH at 64, 256 and 1024** — 152470, 13, 152373. Those are not small
+   errors, and note what they look like: `152470` is what the **`L*`** fixture (first token **16**) produced at
+   @64, and `152373` is what **`ids1024_c0`** (first token **220**) produced at @1024 in §92. **The i8 path
+   appears not to be using the first token it is given** — or to be using a different one.
+
+**So "the i8 path is known-good" does not generalise.** §7's gate and §84's block walk were measured on the
+`ids_1024` fixture — the token-16 one — and the same code returns **13** at @256 on a prompt whose first token is
+58907. The i8 path is fixture-dependent in the same way the bf16 path turned out to be, and I had been using it
+as a reference **without checking its first token either**.
+
+**Honest scope.** The third column is therefore unreliable as a reference, so the nh20 residual is best stated
+against `NPU_FLM_PREFILL` alone: the bf16/FLM disagreements at 256 and 768 stand on their own (stable, and the
+FLM-ref is stable per length, §128). The i8 finding is a **new candidate defect — i8 first-token handling — and
+it is OPEN.**
