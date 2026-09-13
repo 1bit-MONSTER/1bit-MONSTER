@@ -7592,3 +7592,41 @@ runs that shared flag names and used different attention paths.
 **Rule earned (theirs, and sharper than "check the flags"): assert which ARM ran, not which flags you set.** The
 flags select among paths that are not equivalent — and one of them is a known-broken kernel whose output has **the
 same shape as the phenomenon under investigation**.
+
+## 390. A 319-TOKEN ZERO-EMBEDDING SET in Nanbeige — it explains the cross-lane partition's first group exactly, and it corrects a rule this log has been repeating
+
+**Device-free: read the embedding tables straight out of the bundles.**
+
+| model | vocab | **zero-embedding rows** |
+|---|---|---|
+| **Nanbeige** | 166,144 | **319** — in 155 contiguous ranges |
+| Phi4-mini | 200,064 | **0** |
+| Qwen3-0.6B | 151,936 | **0** |
+
+The Nanbeige set is not scattered noise: it includes a **dense block 4–130** (plus 195–198, 248–258) at the bottom
+and a **dense block 162002–166143** at the top, with single rows in between.
+
+**And it explains the cross-lane partition's first group completely.** In the arm-matched Nanbeige run, **tokens 16
+and 100 form exactly the group `{16,100} → 43753`** — and **both are zero-embedding rows**. So 43753 is the
+**context-free answer the host path gives when the first token has no embedding**, which is the §123/§135
+"context-free" signature arriving from the fixture side rather than the kernel side. The two facts had been sitting
+in different sections of this log for hours.
+
+**And it corrects a rule this log has been repeating.** "The bundle's **token 16** has a zero embedding" is a
+**Nanbeige fact, not a general one** — Phi4 and Qwen3-0.6B have **no** zero-embedding rows at all. So what
+generalises is **"assert the first and last token of every prompt"**, not the specific token: an early fixture
+convention that avoided 16 was avoiding the right token **for the wrong reason** on every other model, and would
+have missed this set entirely.
+
+**Two consequences, and the first is reassuring:**
+
+- **this lane's Phi4 sweeps are CLEAN.** Phi4 has **no** zero-embedding rows, so the "**8/8 → 220, totally
+  blind**" result is untouched by any of this — none of its eight probe tokens can be context-free by construction;
+- **the peer's §146 PARTIAL conclusion survives, restated.** Two of its eight tokens (16 and 100) are from the
+  degenerate set, so the usable six split into **three** groups — **166101** for {220, 1024, 4096}, **152551** for
+  {12345, 777}, **156468** for {58907}. **Three groups is still not one**, so the two-mechanism conclusion
+  stands; what changes is that its first group was a fixture artifact and not part of the mechanism.
+
+**And it makes the sweep design better for free**: any future first-token sweep on a hybrid model should **check
+the chosen tokens against the bundle's zero-embedding set first** — it is one pass over the file, and it removes
+the class of point that produces a context-free answer for reasons that have nothing to do with the residual.
