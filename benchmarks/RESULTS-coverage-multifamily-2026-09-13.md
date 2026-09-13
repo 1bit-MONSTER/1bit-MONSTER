@@ -378,6 +378,43 @@ inspectable without guessing — the bf16 path dumps layer-0 QKV under `NPU_DUMP
 runlist path can dump its KV under `RT_KV_DUMP_DIR` — so the first differing element
 localises the fault. `benchmarks/decode_token_check.sh` is the regression test for any fix.
 
+> ### RESOLVED — and the "decode is broken" conclusion above is RETRACTED
+>
+> It was an artifact of my own instrument. `decode_token_check.sh` now reports **MATCH**:
+>
+> ```
+> FLM-ref decode : 25 220 220 16 17 23 220 11211 220
+> native  decode : 25 220 220 16 17 23 220 11211
+> prefill boot   : MATCH (25)
+> RESULT: MATCH — the native decode agrees with FLM on the first 8 tokens.
+> ```
+>
+> Two compounding mistakes produced the false alarm:
+>
+> 1. **The script compared misaligned sequences.** The FLM-ref path prints its prefill token
+>    as `[0] boot=<id>` and the native path prints the same token as its first decode row
+>    (`[1] <id>`). The script stripped the FLM boot line and not the native one, so a correct
+>    answer looked like a one-step shift. It now takes both sides from their first token and
+>    reports the boot separately.
+> 2. **The KV instrument perturbed the thing it measured.** `RT_KV_DUMP_DIR` dumps near the
+>    START of `forward()`, i.e. mid-stream, which the surrounding code's own comment warns
+>    "cannot coexist with an atomic runlist". The stable-looking constant `28962` came out of
+>    runs where that dump was active. Post-execution dumps now live on their own env var
+>    (`RT_DUMP_POST`) so reading a result no longer requires perturbing the run that produced
+>    it — and with that separation, two different one-token prompts give *different*,
+>    self-consistent tokens (144370 and 3219, each exactly the argmax of its own logits).
+>
+> So: the runlist forward consumes its input, `argmax_logits` is correct, and **the native
+> decode agrees with FLM token-for-token on Qwen3-0.6B**. The six-model scorecard's decode
+> column is therefore NOT invalidated — it stands, and the honest correction is that nothing
+> was wrong with it. A run with a stale `runtime_layer.o` may have contributed; after the
+> rebuild the check is green, so `decode_token_check.sh` should be part of any future build
+> verification rather than a one-off.
+>
+> Lesson worth keeping: two of this session's loudest findings (the LFM2 "untied" claim and
+> this) were mine and wrong, and both were caught by testing the instrument rather than
+> trusting it. The constant `28962` was never a model output — it was a measuring device.
+
 **Narrowed further: the forward is wrong from the FIRST token, not by accumulation.**
 
 | prompt | FLM's own token | runlist token |
@@ -407,6 +444,26 @@ cmp: kv_ctx1.bin IDENTICAL
 
 Different input, same KV, same token. So the fault is upstream of everything the KV depends
 on, and it is not subtle: the model produces the same internal state whatever you feed it.
+
+> **CORRECTION (same session, before this was built on).** The identical-KV half of that was
+> an ARTIFACT, not a measurement. `RT_KV_DUMP_DIR` is written near the START of
+> `RuntimeLayerEngine::forward()` (runtime_layer.cpp ~390), while the single-launch runlist
+> that actually runs the layers is at the END of the same function (~484,
+> `build_runlist(0, ctx_len); execute_runlist(0); wait_runlist(0);`). So the dump captures
+> PRE-execution state — for ctx=1 that is the initial buffer, which is identical across
+> prompts BY CONSTRUCTION. The instrument must be moved after `wait_runlist` before it can
+> say anything about input dependence.
+>
+> What SURVIVES is the token evidence, and it is sufficient: two different one-token prompts
+> both return 28962, and 28962 comes back for 1, 4, 16, 64, 256 and 1024-token prompts. The
+> token is read from `bo_logits_` AFTER the runlist has executed (`rt.argmax_logits()` in
+> `npu_runlist_bridge.cpp`), so the output genuinely does not depend on the input. The
+> conclusion stands; the KV comparison that appeared to corroborate it did not.
+>
+> The wiring, meanwhile, looks correct on inspection: `build_runlist` passes `bo_act_` as
+> arg 3 to every layer kernel — the same BO `embed()` writes — so "the kernel reads a
+> different buffer" is now the LESS likely of the two branches, and the per-ctx ELF or the
+> input staging inside the kernel is the more likely one.
 
 Where it is NOT: `RuntimeLayerEngine::embed(token)` does write the token's BF16 row into the
 activation BO and syncs it to the device

@@ -33,10 +33,16 @@ IDS=${4:-/tmp/ids_1024.txt}
 export NPU_XCLBIN_DIR
 
 # Tokens appear as "  [<step>] <id>" on the FLM-ref decode path and as
-# "  [<step>] batch=<b> toks: <id> ..." on the native one. Take the numeric id(s)
-# after the bracketed step, in order; the native line may carry several for a batch,
-# so keep them all and let the caller see the sequence rather than silently truncating.
+# "  [<step>] batch=<b> toks: <id> ..." on the native one.
+#
+# ALIGNMENT (this was wrong and produced a false MISMATCH): the FLM-ref path prints its
+# prefill token as "  [0] boot=<id>" and the native path prints the same token as the first
+# row of its decode ("  [1] <id>" / "  [1] batch=1 toks: <id>"). Excluding the FLM boot line
+# therefore shifted the two sequences by one and reported a divergence where there was none.
+# Both sides are now taken from their FIRST token onward, and the boot comparison is kept
+# because it is the strongest single check.
 grab() { sed -n 's/^[[:space:]]*\[[0-9]*\][^0-9]*\(.*\)$/\1/p' | tr -s ' ' '\n' | grep -E '^[0-9]+$' | tr '\n' ' '; }
+grab_flm_boot() { sed -n 's/^[[:space:]]*\[0\][[:space:]]*boot=\([0-9]*\).*/\1/p' | head -1; }
 
 echo "engine : $ENGINE"
 echo "model  : $(basename "$(dirname "$MODEL")")"
@@ -46,14 +52,22 @@ echo
 FLM_OUT=$(NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1 timeout 900 "$ENGINE" "$MODEL" "$NG" "$IDS" 2>/dev/null)
 NAT_OUT=$(NPU_RUNLIST=1 timeout 900 "$ENGINE" "$MODEL" "$NG" "$IDS" 2>/dev/null)
 
-# The FLM-ref path prints "  [0] boot=<id>" for the prefill and then "  [i] <id>"; drop the
-# boot line's label by taking everything numeric, and compare like for like (the native
-# path prints its own boot separately, so it is excluded from both here).
-FLM_TOKS=$(printf '%s\n' "$FLM_OUT" | grep -v 'boot=' | grab)
+# Both sides from their FIRST token onward, so the sequences are aligned. The FLM boot line
+# is kept deliberately: it is the prefill gate and the strongest single check.
+FLM_TOKS=$(printf '%s\n' "$FLM_OUT" | grab)
 NAT_TOKS=$(printf '%s\n' "$NAT_OUT" | grep -vE 'boot=|Prefill' | grab)
+FLM_BOOT=$(printf '%s\n' "$FLM_OUT" | grab_flm_boot)
+NAT_BOOT=$(printf '%s\n' $NAT_TOKS | head -1)
 
 echo "FLM-ref decode tokens : ${FLM_TOKS:-<none>}"
 echo "native  decode tokens : ${NAT_TOKS:-<none>}"
+if [ -n "${FLM_BOOT:-}" ] && [ -n "${NAT_BOOT:-}" ]; then
+    if [ "$FLM_BOOT" = "$NAT_BOOT" ]; then
+        echo "prefill boot          : MATCH ($FLM_BOOT)"
+    else
+        echo "prefill boot          : MISMATCH (FLM $FLM_BOOT vs native $NAT_BOOT) -- the prefill is the gate; fix that first"
+    fi
+fi
 echo
 
 if [ -z "${FLM_TOKS// /}" ] || [ -z "${NAT_TOKS// /}" ]; then

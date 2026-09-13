@@ -488,6 +488,46 @@ bool RuntimeLayerEngine::forward(int ctx_len) {
         auto t_exec0 = std::chrono::steady_clock::now();
         if (!execute_runlist(0)) return false;
         if (!wait_runlist(0)) return false;
+        // POST-execution KV dump. The RT_KV_DUMP_DIR dump earlier in this function is
+        // taken BEFORE the layers run, so it shows pre-execution state and made two
+        // DIFFERENT one-token prompts look byte-identical -- an artifact that nearly got
+        // recorded as evidence. This one is after wait_runlist(), so it can actually
+        // speak to input dependence. Both are kept: the pre dump is still what the layout
+        // diff was written against.
+        // POST-execution dumps, on their OWN env var (RT_DUMP_POST) so they do not
+        // require RT_KV_DUMP_DIR -- whose dump earlier in this function syncs mid-stream and,
+        // per the comment below, cannot coexist with an atomic runlist. Triggering the
+        // perturbing dump to read the result of the perturbed run invalidates the reading.
+        if (const char* kd = getenv("RT_DUMP_POST")) {
+            char kf[512];
+            snprintf(kf, sizeof(kf), "%s/kv_post_ctx%d.bin", kd, ctx_len);
+            FILE* fk = fopen(kf, "wb");
+            if (fk) {
+                kv_bos_[0]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 33554432, 0);
+                fwrite(kv_bos_[0]->map(), 1, 33554432, fk);
+                fclose(fk);
+            }
+            // Also the two values the LOGITS actually depend on: the final activation the
+            // lm_head reads (bo_act_, arg 5) and the logits themselves (bo_logits_, out).
+            // If the KV differs between prompts but the logits do not, the input dependence
+            // is lost between here and the lm_head, and these two name which side.
+            snprintf(kf, sizeof(kf), "%s/act_post_ctx%d.bin", kd, ctx_len);
+            FILE* fa = fopen(kf, "wb");
+            if (fa) {
+                bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+                fwrite(bo_act_->map(), 1, 4096, fa);
+                fclose(fa);
+            }
+            snprintf(kf, sizeof(kf), "%s/logits_post_ctx%d.bin", kd, ctx_len);
+            FILE* fl = fopen(kf, "wb");
+            if (fl) {
+                // The WHOLE BO, not 4 KB: a vocab of 151936 needs 303872 bytes of bf16, so
+                // a truncated dump cannot even contain the index the engine reports.
+                bo_logits_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+                fwrite(bo_logits_->map(), 1, 1048576, fl);
+                fclose(fl);
+            }
+        }
         if (getenv("NPU_RUNLIST_STATS")) {
             auto t_done = std::chrono::steady_clock::now();
             double bms = std::chrono::duration<double, std::milli>(t_exec0 - t_build0).count();
