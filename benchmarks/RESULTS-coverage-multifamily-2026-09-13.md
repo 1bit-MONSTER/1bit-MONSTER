@@ -7977,3 +7977,36 @@ duplicate.** Both produce the *same symptom* — **a real value, wrong for a rea
 **And row 4's detector is rule 6** — *"two lengths is the minimum"* — which is the rule the paired design earned.
 That is a satisfying closure: the taxonomy's four classes now map onto the rule set's four controls, with one rule
 and one class each.
+
+## 152. The TOTAL side measured quiet and independently: Phi4, eight clean tokens, 8/8 -> 220, banner-asserted — §151's standing caveat retired
+
+§151 recorded that the Phi4 half of the clean set had not been taken on a quiet device, so the TOTAL side of the
+cross-lane verdict still rested on contended runs. **Taken here** — device free, `clang=0`, load 3.66 at the head and
+2.76 at the tail, both recorded because that is the point of the row:
+
+| first token | 220 | 777 | 1024 | 4096 | 12345 | 58907 | 30000 | 45000 |
+|---|---|---|---|---|---|---|---|---|
+| Phi4 boot | 220 | 220 | 220 | 220 | 220 | 220 | 220 | 220 |
+| arm | ok | ok | ok | ok | ok | ok | ok | ok |
+
+**8/8 -> 220**, `CPU attn_omp fallback` asserted on every run — **including token 220**, the fixture that gave
+`1877` under contention. So the withdrawn value is contradicted on a quiet device by an independent run, not only by
+the run that withdrew it.
+
+**And this is the third quiet pass over the same half** (their two at load 4.16 and 6.36; mine at 3.66). Three
+passes, one value: the TOTAL side is now **measured** rather than assumed, and §151's caveat is retired.
+
+**With §150 the clean pair is complete and symmetric:**
+
+| lane | clean result | shape | arm |
+|---|---|---|---|
+| **Phi4** | 8/8 -> 220 | **TOTAL** | host (`CPU attn_omp fallback`) |
+| **Nanbeige** | three groups — 166101 {220,1024,4096}, 152551 {777,12345,30000,45000}, 156468 {58907} | **PARTIAL** | host (`forced CPU attn`) |
+
+**Two mechanisms, on clean tokens, quiet devices, arms asserted on both sides, independently reproduced.**
+
+**And the contention boundary is narrower than "load-sensitive", which sharpens the rule rather than the anecdote:**
+their two passes agree at load **4.16 and 6.36**, mine at **3.66** — so ordinary load does not move this path, and the
+`1877` required **two Phi4 processes at once**. The useful form is therefore *the host path is stable across ordinary
+load and degrades under contention* — which also means **recording the load is not sufficient on its own**. The rule
+needs its second half: **record the load AND check what else is holding the device.**
