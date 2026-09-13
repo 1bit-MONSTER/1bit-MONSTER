@@ -837,14 +837,33 @@ int main(int argc,char**argv){
     // SILENT -- the wrong pairing still yields a plausible weight distribution, so the
     // model runs and answers confidently with the wrong token -- hence the log line.
     {
-        const char* probe_t = "model.layers.0.mlp.down_proj.weight";
-        uint64_t po = jo(js, jl, probe_t);
-        if (!po && !key_exists(js, jl, probe_t)) {
-            // Fallback: LFM2 is the only installed bundle that names its embedding
-            // model.token_embd.weight, and it is also the only SIGNED one.
+        // Try SEVERAL tensor names, because a single one is not universal: Zaya names its
+        // MoE projections model.layers.0.mlp.experts.down_proj.weight, so the plain
+        // down_proj name is ABSENT there -- and the name-based fallback below was absent too
+        // (Zaya's embedding is not model.token_embd.weight), so the engine fell through to
+        // UNSIGNED for a bundle that is SIGNED (0/256 zero-points, exactly 0.000, verified
+        // independently). A single hardcoded probe name is exactly the "assumed shape"
+        // mistake this session kept finding; try the known variants in order.
+        static const char* kProbeCands[] = {
+            "model.layers.0.mlp.down_proj.weight",
+            "model.layers.0.mlp.experts.down_proj.weight",
+            "model.layers.0.mlp.gate.down_proj.weight",
+            "model.layer.0.mlp.down_proj.weight",
+            "model.layer.0.mlp.down_exps_proj.weight",
+        };
+        const char* probe_t = nullptr;
+        uint64_t po = 0;
+        for (const char* cand : kProbeCands) {
+            uint64_t o = jo(js, jl, cand);
+            if (o || key_exists(js, jl, cand)) { probe_t = cand; po = o; break; }
+        }
+        if (!probe_t) {
+            // Nothing matched. Fall back to the LFM2 name (it is SIGNED and names its embedding
+            // model.token_embd.weight), else UNSIGNED, and SAY SO -- a silent mis-detection here
+            // still yields a plausible weight distribution, so it answers confidently and wrongly.
             g_q4_group_signed = key_exists(js, jl, "model.token_embd.weight");
-            fprintf(stderr,"[q4] convention probe: %s absent; name-probe -> %s nibbles\n",
-                    probe_t, g_q4_group_signed ? "SIGNED (two's complement)" : "UNSIGNED");
+            fprintf(stderr,"[q4] convention probe: no known probe tensor found; name-probe -> %s nibbles\n",
+                    g_q4_group_signed ? "SIGNED (two's complement)" : "UNSIGNED");
         } else {
             const unsigned char* zp = i8p(po) + 512;  // zero-points at +512 in a 5120-B row
             int nz = 0; for (int i = 0; i < 512; i++) nz += (zp[i] != 0);

@@ -1471,3 +1471,54 @@ the runlist machinery are proven correct (22, 23); the BO's size is benign (24.2
 is excluded as the discriminator. The remaining per-layer inputs are the **activation (arg3)**, the
 **KV**, and the **i5 parameter BO** — the other host-written one, which is the natural next target
 precisely because `i6` turned out to be a per-family constant that nobody had parameterised.
+
+## 28. Independent zero-point verification — and it found a REAL bug in my probe
+
+The relay's third check arrived, written from the bytes with their own container parse (u64 header
+length at 0, JSON at 8, `data_base = 8 + hdrlen`, LE u16 `<< 16` for bf16, row geometry derived per
+tensor as `span // prod(shape[:-1])` rather than assumed). Across 16 bundles plus both Zaya copies it
+reproduces my numbers: **0/256 with an exactly-zero zp for BOTH LFM2 bundles, 256/256 centred
+(-7.24 to -7.73) for every other one, nothing in between.** Three independent implementations now
+agree — my python read, the engine's C read, and theirs — so the rule is settled. They also confirmed
+both of my caveats independently: Gemma3-1B's 1280-byte rows give a 0.400 ratio (nonsense, only the
+all-zero verdict survives) and Qwen3.5-4B has [80, 36, 4736] with a NaN ratio, so both methods are
+blind there.
+
+### 28.1 NEW DATUM: Zaya1-8B is a THIRD signed case — and my probe got it wrong
+
+They found that **`zaya1-8b` and `zaya1-8b-fresh` are both SIGNED** (0/256, zp exactly 0.000). Neither
+is in my 16-bundle table, and Zaya is the one model whose int4 path this session has already been
+inside. They flagged the consequence precisely: *"if anyone has a family-based fallback list it is
+missing an entry."*
+
+**It was not merely a fallback gap — the PRIMARY path was wrong too.** Checked against the actual
+bundle:
+
+```
+'model.layers.0.mlp.down_proj.weight' present in zaya1-8b?  -> False
+'model.token_embd.weight' present?                          -> False
+Zaya's actual tensor:  model.layers.0.mlp.experts.down_proj.weight
+```
+
+So the probe tensor was **absent**, and the name-based fallback was **also absent**, and the engine set
+`g_q4_group_signed = false` — **UNSIGNED — for a SIGNED bundle.** Exactly the silent mis-detection the
+probe's own comment warns about, and it was live rather than hypothetical.
+
+**Fixed:** the probe now tries a list of known variants (`mlp.down_proj`, `mlp.experts.down_proj`,
+`mlp.gate.down_proj`, `model.layer.N` singular, and the 35B's `down_exps_proj`) before falling back,
+and the fallback message no longer implies the probe tensor was merely missing. Verified: LFM2 still
+`0/512 -> SIGNED`, Qwen3-0.6B still `511/512 -> UNSIGNED`.
+
+**Two notes carried from the same exchange.** Their implementation tip — 35B-A3B names layers
+`model.layer.N` (singular) with 3-D `[16384, 2, 5120]` tensors — is now covered by the candidate list;
+a reader assuming `layers` and 2-D shapes silently finds nothing there, which is how their first pass
+missed it. And `npu_engine_zr1` is a **Zaya-specific binary** with its own decoder and output format,
+so the universal engine's probe does not run for it at all; it currently fails earlier for an
+unrelated reason, looking for xclbins under `/home/bcloud/1bit-MONSTER-pi/engine/npu/xclbins/` — a
+different worktree — and reporting `GU ctx init failed`.
+
+**The pattern, one more time.** A hardcoded assumption (one probe tensor name) held for every bundle
+that had been tested and broke for the first one that had not. That is the same failure as the
+hardcoded `RT_INV_FREQ` theta (section 27), the size-keyed capture dedup (25.1), and the size-derived
+model table (b35f0914d) — four instances in one session of a constant that was true for the models in
+hand.
