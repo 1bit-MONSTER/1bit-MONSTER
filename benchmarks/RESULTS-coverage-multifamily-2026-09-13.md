@@ -3732,3 +3732,44 @@ a second, independent piece of work.
 **Fifth finding retracted this session**, and the one with the clearest lesson: the detector that *could*
 fail did fail, in the sense that it refused to confirm me — and I explained the refusal away instead of
 accepting it.
+
+## 84. FIXED: the block walk makes Nanbeige's default i8 path match FLM EXACTLY — 1033 @1024, 5938 @256, deterministically
+
+**The change is ~15 lines, because the code was already correct in form.** The fallback prefill's truncation
+(`npt = XM`, §83) is replaced by a block walk, and nothing else needed to change — every position-dependent
+term in the layer loop was **already absolute**:
+
+- RoPE: `ra(&qo_b[pi*qkv_n + hh*HD], HD, sp + pi)`
+- KV writes: `kv_caches[l][0].k[(sp + pi) * NKV * HD + kvh*HD]`
+- attention length: `attn_omp(..., sp + pi + 1)`
+- `kv_caches[l][0].n = sp + npt`
+
+So walking the prompt in `XM`-row blocks **accumulates the KV correctly with no other change**. The single
+absolute-row reference was the embedding, `pt_vec[pi]` -> `pt_vec[sp + pi]`, which is a **no-op while
+`sp == 0`** — so block 0 behaves exactly as before. And `h_b` stays `XM` rows, which is precisely what the
+old cap was protecting.
+
+**The result:**
+
+| prompt | before | after | FLM reference |
+|---|---|---|---|
+| @1024 | 151 / 12 / 15 … nondeterministic | **1033 1033 1033 1033 1033** | **1033** |
+| @256 | 151 x3 (wrong) | **5938 5938 5938 5938 5938** | **5938** |
+
+**And the timing now scales**: 1006 ms at 128 tokens -> 2114 ms at 256 — 2x for 2x the prompt. The path reads
+the whole prompt.
+
+**And the tail test now separates**: tA -> **5938** (the reference) and tB (a synthetic reversed tail) ->
+**84451**. Different — where before both sat near 15.
+
+**No regression**: the gates hold — **1614 / 25 / 1614 / 220 / 220** (0.6B @256/@1024, 4B @256/@1024, 8B
+@1024), on the paths the goal's six models use.
+
+**What this was.** The truncation had been *diagnosed by an earlier session* — the comment I quoted in §83
+says so in detail — and that session chose to **announce** it rather than fix it. The announcement is why the
+behaviour was honest and legible; the missing block walk is why it was wrong. Both halves mattered: without
+the announcement I would not have found this in one step, and without the walk the model was never right.
+
+**And the honest residual: 0.6B's i8 path is still nondeterministic.** Its tA/tB distributions still overlap,
+while Nanbeige's now separate cleanly. So whatever remains there is **0.6B-specific** and is the one open i8
+item.

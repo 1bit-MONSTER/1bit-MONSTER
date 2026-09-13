@@ -4001,15 +4001,14 @@ struct Bf16Ctx {
         if(input_tok_file && npt > cap){ fprintf(stderr, "bf16 prefill: npt %d -> %d (cap)\n", npt, cap); npt = cap; }
     }
     else if(input_tok_file && npt > XM) {
-        // The non-bf16 fallback processes ONE XM-row batch, so a longer prompt is truncated
-        // HERE. This was SILENT, which is exactly how it went unnoticed: a 256-id file
-        // prefilled as 128 tokens and the only clue was the banner count ("Prefill 128").
-        // Any non-dense-Qwen3 model run with NPU_RUNLIST=1 lands on this path -- the runlist
-        // decode is gated on dense_qwen3 -- so those models were silently prefilling at most
-        // 128 tokens. Announce it, as the bf16 cap above already does.
-        fprintf(stderr, "fallback prefill: npt %d -> %d (single %d-row batch; set "
-                        "NPU_PREFILL_BF16=1 for longer prompts)\n", npt, XM, XM);
-        npt = XM;
+        // The fallback used to process ONE XM-row batch and TRUNCATE here (npt = XM). It now
+        // walks the prompt in XM-row blocks instead, so the cap is gone -- but h_b is still XM
+        // rows, so announce that a long prompt costs proportionally more time.
+        // RESULTS-coverage-multifamily 83.
+        fprintf(stderr, "fallback prefill: npt %d walked in %d-row blocks (%d blocks; the \
+"
+                        "activation BO holds %d rows)\n",
+                npt, XM, (npt + XM - 1) / XM, XM);
     }
     bool bf16_done = false;
 
@@ -4413,7 +4412,23 @@ struct Bf16Ctx {
     // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
     if (!bf16_done) {
     printf("=== Prefill %d [fallback] ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
-    for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[pt_vec[pi]*H+i];
+    // Block walk. The fallback used to process ONE XM-row batch, so a longer prompt was
+    // TRUNCATED here (npt = XM, announced just above) -- which is why this path returned
+    // context-free-looking tokens and why its prefill cost was flat above XM. Everything in
+    // the layer loop below is ALREADY written in absolute-position form -- RoPE via
+    // ra(..., sp+pi), the KV at (sp+pi)*NKV*HD, the attention length sp+pi+1, and
+    // kv_caches[l][0].n = sp + npt -- so walking the prompt in XM-row blocks accumulates the
+    // KV correctly with no other change. The single absolute-row reference was the embedding
+    // of pt_vec[pi], which becomes pt_vec[sp+pi]; that is a NO-OP while sp == 0, so the
+    // first block behaves exactly as before. h_b stays XM rows, which is what the cap was
+    // protecting. RESULTS-coverage-multifamily 83.
+    const int npt_full = npt;
+    const int sp0 = sp;
+    int last_row = 0;
+    for (int blk0 = 0; blk0 < npt_full; blk0 += XM) {
+    npt = (npt_full - blk0 < XM) ? (npt_full - blk0) : XM;
+    sp = sp0 + blk0;
+    for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[(size_t)pt_vec[sp+pi]*H+i];
     if(npu_dbg()){fprintf(stderr,"EMB0:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",emb_f32[(size_t)pt_vec[0]*H+i]);fprintf(stderr,"\n");}
     xrt::run pending_gu; bool has_pending=false;
     for(int l=0;l<NC;l++){
@@ -4579,7 +4594,11 @@ struct Bf16Ctx {
             if (df) { fwrite(h_b.data(), 4, (size_t)npt * H, df); fclose(df); }
         }
         fprintf(stderr,"\n");fflush(stderr);
-    }sp+=npt;memcpy(h_data.data(),&h_b[(npt-1)*H],H*4);
+    }
+    last_row = npt - 1;
+    }
+    npt = npt_full; sp = sp0 + npt_full;
+    memcpy(h_data.data(),&h_b[last_row*H],H*4);
     printf("Prefill: %.0fms (%.0f ms/tok)\n\n",std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count(),std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count()/npt);
     }
 
