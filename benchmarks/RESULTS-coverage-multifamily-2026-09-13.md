@@ -5072,3 +5072,41 @@ for nh20), but an NPU kernel. It does not change §112's other half (@1024 does 
 and IS selected, because a DIFFERENT slot's shaped load flipped a global flag" (the measurement). Only the run
 separates them — and it is the same instrument, applied at the same place, that has now settled three
 ambiguities in this item.
+
+## 155. The bf16 GEMM calls are shape-parametric and correct at nh24 — so the defect is in the WEIGHTS, and the engine already has a hook to test that
+
+**The audit.** Every one of the engine's own bf16 prefill GEMM calls is **shape-parametric with the correct
+dims**, and the A strides use the right widths:
+
+| GEMM | call | K | N | A row stride |
+|---|---|---|---|---|
+| QKV | `bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, i&1, bA + i*256*H)` | H | qkvn = (NH + 2*NKV)*HD | H |
+| **O** | `bf16mm_gemm_launch(Wo[l], qout, H, 0, i&1, bA + i*256*qout)` | **qout** | **H** | qout |
+| **GU** | `bf16mm_gemm_launch(Wgu[l], H, 2*IM, 0, i&1, bA + i*256*H)` | H | **2*IM** | H |
+| **D** | `bf16mm_gemm_launch(Wd[l], IM, H, 0, i&1, bGu + i*256*IM)` | **IM** | H | IM |
+
+For Phi4 those evaluate to qkvn = (24 + 16)*128 = **5120** (matching the build list), qout = **3072**,
+2*IM = **16384**, IM = **8192**. So the calls and their shapes are right.
+
+**And that closes a chain.** Put three results together:
+
+- **`NPU_FLM_PREFILL=1` gives FLM's exact reference for Phi4 (19)** — so the engine's whole **host plumbing**
+  is correct, because that path drives FLM's kernels through the engine's own host code;
+- **`attn_omp` is clean for GQA = 3** (§140) — so the attention arithmetic is not it;
+- **and the engine's own GEMM calls are shape-correct** (this section).
+
+**What remains is the DATA**: Phi4's **bf16 weights** as the engine dequantizes and packs them, or the
+**activation values** fed to those GEMMs.
+
+**And the engine already has the hook to test exactly that**, with no new instrumentation: `NPU_DUMP_L0`
+dumps **`Wqkv[0]`** (`bf16mm_dump_w`), **`/tmp/l0_input.bin`** (the layer-0 hidden state) and
+**`/tmp/l0_qkv.bin`** (the layer-0 QKV output). That is a differential against FLM's own artifacts — the
+method that has worked all session (the per-ctx ELF byte-identity in §56/§58, the runtime BO checksums in
+§54, the instruction-stream comparison). And the bf16 path runs in **7.3 s**, so this can be run many times
+per minute rather than once per ten.
+
+**And the nh20 lane's §116 split is recorded as theirs to have found**: `152432` is **deterministic and
+first-token-specific with clang = 0**, so §110/§111 stand; the aperiodic `152402`/`152704`/`152343` are the
+load-consistent class. **Two classes I had conflated** — I flagged that the family *might* be load-driven and
+they did the work of separating it, then generalised it into a rule worth keeping: **record the clang load
+with every boot number**, alongside **record which attention path ran**.
