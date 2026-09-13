@@ -2422,3 +2422,35 @@ kind of work from everything this session has done.
 **And reading the converter was still worth it**: it **confirms the file side** (the taps are untransformed
 BF16) and thereby **eliminates a hypothesis** (a converter-side transform) — the same value every control in
 this session delivered, and the reason the remaining list is interfaces rather than suspects.
+
+## 52. The per-ctx ELF generator is proven for nh16 and nh32 — and the two failing families are exactly nh20/nh24
+
+An audit of what the generator's proofs actually cover, which turns out to be narrower — and more useful —
+than "proven on two architectures":
+
+| model | nh | hd | qout | evidence |
+|---|---|---|---|---|
+| Qwen3-0.6B / 1.7B | **16** | 128 | 2048 | **proven** — `decode_token_check.sh` runs the runlist path and **matches FLM** |
+| Qwen3-4B | **32** | 128 | 4096 | **proven** — §22's control: generated ELFs -> correct token (1614) |
+| Llama-3.1-8B | **32** | 128 | 4096 | **proven** — §23's control: generated ELFs -> correct token (220) |
+| **Nanbeige4.1-3B** | **20** | 128 | 2560 | **unproven** — and it is one of the two non-hybrid failures |
+| **Phi4-mini** | **24** | 128 | 3072 | **unproven** — the other one |
+| Gemma3-1B/4B, Qwen3.5-4B | 4/8/16 | **256** | 1024–4096 | unproven (hybrids / malformed row geometry) |
+
+**Both controls used nh32** — Qwen3-4B and Llama-3.1-8B — and the nh16 case is covered separately by the
+decode-token checks, which exercise the runlist path. So the generator is proven for **exactly the two
+shapes it has been run on**, and **the two non-hybrid failing families are exactly the two unproven ones.**
+
+**And that makes §5's correlation a statement about the generator rather than about a value.** For hd128,
+"`qout` not in {2048, 4096}" is equivalent to "nh not in {16, 32}" — i.e. precisely the shapes the
+generator has never been validated on. The correlation and the proof gap are **the same set**.
+
+**The host side is no longer a candidate for Nanbeige and Phi4.** Five BOs are byte-identical to FLM's
+(§26/§31/§32/§33), the RoPE base is model-correct (§27), and the layer packing is byte-identical
+(§40/§41). What remains is the **ELF's instruction stream for shapes the generator has never been checked
+against** — and the generator is FLM's own (`nanbeige_npu_sequence::gen_layer_seq`) at `MAX_L=32768`, which
+matches the engine's KV BO (§24.2).
+
+**So it is testable rather than merely suspected:** FLM's path produces the correct token for Nanbeige
+(1033), and the interposer dumps the ELFs it loads (§43's technique). A differential on those streams is
+the next experiment, and it is the only remaining one for these two families.
