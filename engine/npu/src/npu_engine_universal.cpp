@@ -69,6 +69,7 @@ extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" void bf16mm_set_attn_qout(int qout);
 extern "C" void bf16mm_set_attn_kv_region(uint32_t region);
 extern "C" void bf16mm_set_attn_tokens(int n);
+extern "C" void bf16mm_set_attn_rows(int n);
 extern "C" int flm_prefill_init(const char* model_dir, const char* family);
 extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* prefill_ms);
 extern "C" int flm_decode_run(int token, int* next_token, double* decode_ms);
@@ -3792,24 +3793,24 @@ struct Bf16Ctx {
     // Prefill time is ~flat in npt (64->352ms, 256->366ms), so a higher cap is
     // nearly free IF the attention ELF can handle >256 keys. Raise via
     // NPU_PREFILL_MAX (default keeps the historical 256).
-    // HARD LIMIT (measured 2026-09-12): the bf16 prefill layer body is written
-    // as exactly two 128-row batches (see h0 / `for (pi = 128; pi < npt; ...)`),
-    // so the GEMMs produce only 256 rows and rows >= 256 are left stale from the
-    // previous layer. NPU_PREFILL_MAX>256 therefore produced a *silently wrong*
-    // prefill: at npt=1024 the bf16 path returned boot=44402 while both trusted
-    // paths (NPU_RUNLIST=1 int8, byte-exact vs FLM, and NPU_FLM_PREFILL=1) return
-    // boot=25. At npt=256 all three agree (boot=1614). Refuse >256 until the
-    // batch loop is generalized, rather than emit a wrong token.
+    // The bf16 prefill path now tiles the prompt in 256-row (2x128) blocks for
+    // every GEMM (QKV/O/GU/D) and calls attention once per 256-query block, so
+    // arbitrary npt is COMPUTED — before this it hardcoded exactly two batches =
+    // 256 rows and NPU_PREFILL_MAX>256 silently returned stale rows for tokens
+    // >= 256 (see benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md).
+    // The bf16 layer body now tiles every GEMM in 256-row (2x128) blocks and
+    // the attention falls back to CPU for npt>256, so ANY NPU_PREFILL_MAX is
+    // computed CORRECTLY (verified vs NPU_RUNLIST=1 byte-exact int8 and
+    // NPU_FLM_PREFILL=1: 256 -> 1614, 512 -> 220, 1024 -> 25 with CPU attn).
+    // The only speed limit is attention: the captured embedded ELF is only
+    // verified for a single <=256-row call (its key-window/position semantics
+    // do not compose under chunking — see
+    // benchmarks/RESULTS-bf16-prefill-generalize-2026-09-13.md), so npt>256
+    // pays ~10x attention cost on CPU. NPU_PREFILL_MAX (default 256) bounds
+    // the prompt; raise it to compute longer prefills correctly-but-slowly.
     if(getenv("NPU_PREFILL_BF16")){
         int cap=256; const char* e=getenv("NPU_PREFILL_MAX");
         if(e){ cap=atoi(e); if(cap<1)cap=256; }
-        const int kRows = 256;   // rows the bf16 prefill pipeline actually computes
-        if(cap > kRows){
-            fprintf(stderr, "bf16 prefill: NPU_PREFILL_MAX=%d exceeds the %d rows this "
-                            "path actually computes (2x128 batches) — capping to %d\n",
-                    cap, kRows, kRows);
-            cap = kRows;
-        }
         if(input_tok_file && npt > cap){ fprintf(stderr, "bf16 prefill: npt %d -> %d (cap)\n", npt, cap); npt = cap; }
     }
     else if(input_tok_file && npt > XM) npt = XM;
@@ -3884,13 +3885,26 @@ struct Bf16Ctx {
             printf("=== Prefill %d ===\n", npt); fflush(stdout);
             bf16mm_set_attn_tokens(npt);
             auto t0 = std::chrono::steady_clock::now();
-            // Sized for npt tokens (was hardcoded 256, which capped the whole
-            // bf16 prefill path and segfaulted for npt>256).
-            const int NP = npt > 256 ? npt : 256;
+            // Row tiling. Bf16Mm::ensure_a() stages exactly two 128-row halves
+            // starting at the A pointer it is handed, so ONE launch covers 128
+            // rows when the base is shifted by 128 rows and batch 0 is used.
+            // Everything below therefore walks the prompt in 128-row blocks;
+            // the previous code hardcoded exactly two of them, which silently
+            // capped this whole path at 256 rows (rows >= 256 kept stale data
+            // and NPU_PREFILL_MAX>256 reported the 256-row wall time as if it
+            // had prefetched npt tokens — see
+            // benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md).
+            const int NPAD = ((npt + 255) / 256) * 256 + 256;  // last block still reads 256 rows
+            const int NP = NPAD;
             std::vector<float> bh(NP * H), bqo(NP * qkvn), bat(NP * NH * HD), boo(NP * H),
                                bdw(NP * H), bsb(NP * H);
-            std::vector<uint16_t> bA(NP * std::max({H, qout, IM})), bC(NP * 2 * IM);
-            std::vector<uint16_t> bActQ(NP * qout), bKv((size_t)kv_region * 4);
+            std::vector<uint16_t> bA((size_t)NP * std::max({H, qout, IM})), bC((size_t)NP * 2 * IM);
+            // SiLU(GU) output gets its own buffer. Writing it back into bA is
+            // only safe when every block's kernel has been launched first (the
+            // old 2-batch pipeline relied on that), which a block loop cannot
+            // guarantee — bA[pi*IM] overlaps unread rows of bA[pi*H] for H<IM.
+            std::vector<uint16_t> bGu((size_t)NP * IM);
+            std::vector<uint16_t> bActQ((size_t)NP * qout), bKv((size_t)kv_region * 4);
             memset(bActQ.data(), 0, (size_t)NP * qout * 2);
             memset(bKv.data(), 0, (size_t)kv_region * 4 * 2);
             for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bh[pi * H + i] = emb_f32[pt_vec[pi] * H + i];
@@ -3905,15 +3919,9 @@ struct Bf16Ctx {
                 for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data(), 2, 4 * H, fb); fclose(fb); } }
                 auto tg0 = std::chrono::steady_clock::now();
-                // QKV in ONE GEMM (N=qkvn=4096) — pipelined 2-batch: batch 1's
-                // kernel overlaps batch 0's readback + q/k norm. The q/k/v split
-                // (6f311d107) is byte-EXACT only for batch 0 (launch+wait per
-                // projection); its batch-1 launches 3 kernels into ONE g_run[1]
-                // slot so they clobber each other. Single N=4096 GEMM is
+                // QKV in ONE GEMM (N=qkvn) — 128-row blocks, batch 0 each time
+                // with the A base shifted to the block. Single N=qkvn GEMM is
                 // byte-exact at all lengths (verified vs FLM, n=1..256).
-                bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 0, bA.data());
-                bf16mm_gemm_wait(0, bC.data());
-                bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 1, bA.data());
                 auto qk_norm_pi = [&](int pi, int brow) {
                     for (int i = 0; i < qkvn; i++) bqo[pi * qkvn + i] = bf16g(bC[brow * qkvn + i]);
                     for (int hh = 0; hh < NH; hh++) {
@@ -3942,12 +3950,25 @@ struct Bf16Ctx {
                     }
                 };
                 kv_caches[l][0].n = sp + npt;
-                int h0 = npt < 128 ? npt : 128;
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 0; pi < h0; pi++) qk_norm_pi(pi, pi);  // batch 0 (overlaps batch 1 kernel)
-                bf16mm_gemm_wait(1, bC.data());
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 128; pi < npt; pi++) qk_norm_pi(pi, pi - 128);  // batch 1
+                // 256 rows per block: batch 0 = rows b..b+127, batch 1 =
+                // b+128..b+255. ensure_a() stages both halves from the SAME
+                // pointer, so batch 1 costs no extra staging (cache hit) while
+                // giving the kernel M=128 per launch and overlapping batch 1's
+                // kernel with batch 0's norm/RoPE.
+                for (int b = 0; b < npt; b += 256) {
+                    const int r0 = npt - b < 128 ? npt - b : 128;
+                    const int r1 = npt - b - 128 < 0 ? 0 : (npt - b - 128 < 128 ? npt - b - 128 : 128);
+                    bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 0, bA.data() + (size_t)b * H);
+                    bf16mm_gemm_wait(0, bC.data() + (size_t)b * qkvn);
+                    if (r1 > 0) bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 1, bA.data() + (size_t)b * H);
+                    #pragma omp parallel for schedule(static) num_threads(host_threads())
+                    for (int pi = b; pi < b + r0; pi++) qk_norm_pi(pi, pi);   // brow is absolute: readback lands at bC[pi*qkvn]
+                    if (r1 > 0) {
+                        bf16mm_gemm_wait(1, bC.data() + (size_t)(b + 128) * qkvn);
+                        #pragma omp parallel for schedule(static) num_threads(host_threads())
+                        for (int pi = b + 128; pi < b + 128 + r1; pi++) qk_norm_pi(pi, pi);
+                    }
+                }
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fq = fopen("/tmp/bf16_l0_qkv.bin", "wb"); if (fq) { fwrite(bqo.data(), 4, qkvn, fq); fclose(fq); } }
@@ -3965,8 +3986,24 @@ struct Bf16Ctx {
                     FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, bKv.size(), fk); fclose(fk); }
                 }
                 bool attn_host = false;
-                if (getenv("NPU_ATTN_CPU") || !bf16mm_attn(bA.data(), bActQ.data(), bKv.data())) {
+                // The captured 256-token attention ELF is only verified
+                // token-correct for a single <=256-row call (boot=1614 @256
+                // agrees across runlist/FLM/bf16). Chunking it for longer
+                // prompts is WRONG (measured 2026-09-13: partial chunks and
+                // >512 keys diverge — the kernel's fixed key window/position
+                // semantics do not compose; see
+                // benchmarks/RESULTS-bf16-prefill-generalize-2026-09-13.md).
+                // For npt>256 fall back to the CPU attention reference
+                // (correct, ~10x slower) until a long-context ELF exists.
+                bool attn_npu_ok = !getenv("NPU_ATTN_CPU") && npt <= 256;
+                if (attn_npu_ok) {
+                    bf16mm_set_attn_tokens(npt);
+                    bf16mm_set_attn_rows(npt);
+                    if (!bf16mm_attn(bA.data(), bActQ.data(), bKv.data())) attn_npu_ok = false;
+                }
+                if (!attn_npu_ok) {
                     if (getenv("NPU_ATTN_CPU")) fprintf(stderr, "\n[NPU_ATTN_CPU] forced CPU attn_omp\n");
+                    else if (npt > 256) fprintf(stderr, "\nbf16 attn: npt %d > 256 — captured ELF not verified for chunking, CPU attn_omp fallback\n", npt);
                     else fprintf(stderr, "\nbf16 attn unavailable — CPU attn_omp fallback\n");
                     attn_host = true;
                     #pragma omp parallel for
@@ -3981,21 +4018,27 @@ struct Bf16Ctx {
                 }
                 auto ta1 = std::chrono::steady_clock::now();
                 ta += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
-                // O GEMM (K = NH*HD) — pipelined: batch 1 kernel overlaps batch 0 residual.
-                if (attn_host) for (int k = 0; k < 256; k++) for (int j = 0; j < qout; j++) bA[k * qout + j] = f32_to_bf16(bat[k * qout + j]);
-                bf16mm_gemm_launch(Wo[l], qout, H, 0, 0, bA.data());
-                bf16mm_gemm_wait(0, bC.data());
-                bf16mm_gemm_launch(Wo[l], qout, H, 0, 1, bA.data());
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 0; pi < h0; pi++) {
-                    for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
-                    for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
-                }
-                bf16mm_gemm_wait(1, bC.data());
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 128; pi < npt; pi++) {
-                    for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[(pi - 128) * H + i]);
-                    for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
+                // O GEMM (K = NH*HD) — 128-row blocks.
+                if (attn_host) for (int k = 0; k < npt; k++) for (int j = 0; j < qout; j++) bA[(size_t)k * qout + j] = f32_to_bf16(bat[k * qout + j]);
+                for (int b = 0; b < npt; b += 256) {
+                    const int r0 = npt - b < 128 ? npt - b : 128;
+                    const int r1 = npt - b - 128 < 0 ? 0 : (npt - b - 128 < 128 ? npt - b - 128 : 128);
+                    bf16mm_gemm_launch(Wo[l], qout, H, 0, 0, bA.data() + (size_t)b * qout);
+                    bf16mm_gemm_wait(0, bC.data() + (size_t)b * H);
+                    if (r1 > 0) bf16mm_gemm_launch(Wo[l], qout, H, 0, 1, bA.data() + (size_t)b * qout);
+                    #pragma omp parallel for schedule(static) num_threads(host_threads())
+                    for (int pi = b; pi < b + r0; pi++) {
+                        for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
+                        for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
+                    }
+                    if (r1 > 0) {
+                        bf16mm_gemm_wait(1, bC.data() + (size_t)(b + 128) * H);
+                        #pragma omp parallel for schedule(static) num_threads(host_threads())
+                        for (int pi = b + 128; pi < b + 128 + r1; pi++) {
+                            for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
+                            for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
+                        }
+                    }
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
                 // FFN: RMSNorm + GU + SiLU×up + D
@@ -4003,39 +4046,52 @@ struct Bf16Ctx {
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], pa_n[l].data(), H);
                 // GU FFN: [gate | up] = A×Wgu in ONE GEMM (N=2·IM); SiLU on host.
-                // Pipelined: batch 1 kernel overlaps batch 0 SiLU.
-                bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 0, bA.data());
-                bf16mm_gemm_wait(0, bC.data());
-                bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 1, bA.data());
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 0; pi < h0; pi++) {
-                    for (int i = 0; i < IM; i++) {
-                        float gv = bf16g(bC[pi * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
-                        bA[pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i]));
+                // 128-row blocks; SiLU lands in bGu so bA stays intact for the
+                // next block's A readback.
+                for (int b = 0; b < npt; b += 256) {
+                    const int r0 = npt - b < 128 ? npt - b : 128;
+                    const int r1 = npt - b - 128 < 0 ? 0 : (npt - b - 128 < 128 ? npt - b - 128 : 128);
+                    bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 0, bA.data() + (size_t)b * H);
+                    bf16mm_gemm_wait(0, bC.data() + (size_t)b * 2 * IM);
+                    if (r1 > 0) bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 1, bA.data() + (size_t)b * H);
+                    #pragma omp parallel for schedule(static) num_threads(host_threads())
+                    for (int pi = b; pi < b + r0; pi++) {
+                        for (int i = 0; i < IM; i++) {
+                            float gv = bf16g(bC[pi * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
+                            bGu[(size_t)pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i]));
+                        }
+                    }
+                    if (r1 > 0) {
+                        bf16mm_gemm_wait(1, bC.data() + (size_t)(b + 128) * 2 * IM);
+                        #pragma omp parallel for schedule(static) num_threads(host_threads())
+                        for (int pi = b + 128; pi < b + 128 + r1; pi++) {
+                            for (int i = 0; i < IM; i++) {
+                                float gv = bf16g(bC[pi * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
+                                bGu[(size_t)pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i]));
+                            }
+                        }
                     }
                 }
-                bf16mm_gemm_wait(1, bC.data());
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 128; pi < npt; pi++) {
-                    for (int i = 0; i < IM; i++) {
-                        float gv = bf16g(bC[(pi - 128) * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
-                        bA[pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[(pi - 128) * 2 * IM + IM + i]));
+                // D GEMM — 128-row blocks, A = the SiLU'd GU output.
+                for (int b = 0; b < npt; b += 256) {
+                    const int r0 = npt - b < 128 ? npt - b : 128;
+                    const int r1 = npt - b - 128 < 0 ? 0 : (npt - b - 128 < 128 ? npt - b - 128 : 128);
+                    bf16mm_gemm_launch(Wd[l], IM, H, 0, 0, bGu.data() + (size_t)b * IM);
+                    bf16mm_gemm_wait(0, bC.data() + (size_t)b * H);
+                    if (r1 > 0) bf16mm_gemm_launch(Wd[l], IM, H, 0, 1, bGu.data() + (size_t)b * IM);
+                    #pragma omp parallel for schedule(static) num_threads(host_threads())
+                    for (int pi = b; pi < b + r0; pi++) {
+                        for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
+                        for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
                     }
-                }
-                // D GEMM — pipelined: batch 1 kernel overlaps batch 0 residual.
-                bf16mm_gemm_launch(Wd[l], IM, H, 0, 0, bA.data());
-                bf16mm_gemm_wait(0, bC.data());
-                bf16mm_gemm_launch(Wd[l], IM, H, 0, 1, bA.data());
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 0; pi < h0; pi++) {
-                    for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
-                    for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
-                }
-                bf16mm_gemm_wait(1, bC.data());
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 128; pi < npt; pi++) {
-                    for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[(pi - 128) * H + i]);
-                    for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
+                    if (r1 > 0) {
+                        bf16mm_gemm_wait(1, bC.data() + (size_t)(b + 128) * H);
+                        #pragma omp parallel for schedule(static) num_threads(host_threads())
+                        for (int pi = b + 128; pi < b + 128 + r1; pi++) {
+                            for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
+                            for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
+                        }
+                    }
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
                 tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();

@@ -93,7 +93,8 @@ struct Bf16Mm {
     std::unique_ptr<xrt::module> attn_module1k;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
     int attn_qout = 2048;   // 2048 (NH=16) or 4096 (NH=32)
-    int attn_tokens = 256;  // tokens per attention call (<=1024 for the 1k ELF)
+    int attn_tokens = 256;  // KEYS present in the KV BO for this call
+    int attn_rows = 0;      // query rows this call computes (0 => attn_tokens, max 256)
     uint32_t attn_kv_region = 4194304;   // KV region stride in bf16 (8MB, MAX_L=8192)
 
     bool ok = false;
@@ -213,25 +214,27 @@ struct Bf16Mm {
     void set_attn_kv_region(uint32_t region) { attn_kv_region = region; }
     /// Tokens per attention call (<=256 uses the embedded ELF; >256 needs the
     /// generated long-context ELF to be present).
-    void set_attn_tokens(int n) { attn_tokens = n; }
+    void set_attn_tokens(int n) { attn_tokens = n; attn_rows = 0; }
+    /// Query rows for the next attention call (<=256 = the captured kernel's
+    /// width). Pairs with pointers shifted to that query block.
+    void set_attn_rows(int n) { attn_rows = n; }
 
     /// 256-token MHA attention (attn.xclbin): out = attn(Q, K/V cache).
-    ///   act: 256×qout bf16 [token][head][dim] (Q GEMM output, raw)
+    ///   act: attn_rows×qout bf16 [token][head][dim] (Q GEMM output, raw)
     ///   kv:  32MB = 4×8MB regions [token][4 heads × 128 dims]
-    ///   out: 256×qout bf16 (qout = attn_qout = NH*HD)
+    ///   out: attn_rows×qout bf16 (qout = attn_qout = NH*HD)
+    /// attn_tokens = keys present in the KV BO; attn_rows = query rows of this
+    /// call (<=256, the captured kernel's width). The caller may pass pointers
+    /// shifted to a later query block to cover a prompt longer than 256.
     bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
         xrt::ext::kernel* kern = (attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get();
-        // MEASURED 2026-09-12: the embedded captured ELF does full causal
-        // attention over the whole KV region (it is NOT limited to the 256 of
-        // its filename) — npt=1024 via this ELF agrees with both the CPU
-        // attention reference and with the generated [0,1024) long-context ELF.
-        // The generated ELF is therefore opt-in only: it is ~1500x slower
-        // (225241 ms vs 147 ms attention for npt=1024, 28 layers), so using it
-        // by default silently destroys the prefill win.
+        // The embedded captured ELF is the fast path (147 ms vs 221319 ms for a
+        // 28-layer npt=1024 run); the generated long-context ELF is opt-in.
         if (attn_tokens > 256 && attn_kernel1k && getenv("NPU_ATTN_ELF_1024_USE"))
             kern = attn_kernel1k.get();
         if (!kern) return false;
         const size_t q = (size_t)attn_qout;
+        const int rows = attn_rows > 0 ? attn_rows : attn_tokens;
         if (!attn_out) {
             // Device buffers sized for the max supported call (1024 tokens);
             // the per-call copy below uses attn_tokens.
@@ -240,7 +243,7 @@ struct Bf16Mm {
             attn_act = std::make_unique<buffer<uint16_t>>(*dev, cap);
             attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)attn_kv_region * 4);
         }
-        memcpy(attn_act->data(), act, (size_t)attn_tokens * q * 2);
+        memcpy(attn_act->data(), act, (size_t)rows * q * 2);
         // Only the 4 used region heads matter (256 tokens × 4 heads × 128 dims
         // = 256KB each). Copy just those; the rest of the KV BO stays zero.
         const size_t reg = attn_kv_region;                // region stride in bf16
@@ -259,7 +262,7 @@ struct Bf16Mm {
         run.start();
         run.wait();
         attn_out->sync_from_device();
-        memcpy(out, attn_out->data(), (size_t)attn_tokens * q * 2);
+        memcpy(out, attn_out->data(), (size_t)rows * q * 2);
         return true;
     }
 

@@ -83,6 +83,7 @@ extern "C" void bf16mm_gemm_wait(int batch, uint16_t* C) {
 // 256-token MHA attention (attn.xclbin + fixed ELF). act/kv/out as in
 // Bf16Mm::run_attn. Returns 1 on success, 0 if the ELF was not embedded.
 extern "C" void bf16mm_set_attn_tokens(int n) { g_mm.set_attn_tokens(n); }
+extern "C" void bf16mm_set_attn_rows(int n) { g_mm.set_attn_rows(n); }
 
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
     return g_mm.run_attn(out, act, kv) ? 1 : 0;
