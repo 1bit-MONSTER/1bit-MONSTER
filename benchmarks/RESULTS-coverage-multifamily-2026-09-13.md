@@ -1295,3 +1295,45 @@ right shape. That is exactly what a size comparison cannot see, and it is where 
 hypothesis now sits: not "is the BO big enough" (answered: yes) but "are the tiles in it arranged the
 way the ELF reads them". Testing that needs FLM's BO kept long enough to diff, not just measured —
 which is the one thing the last two captures deliberately threw away.
+
+## 25. Byte-level BO diff — 0 of 12,000 tiles match, with a caveat that may explain all of it
+
+Built the missing half of the comparison: `npu-infer/tools/dump_packed_layer.cpp` writes
+`npu_pack_layer_bo()`'s output for one layer to a file. The engine's packed BO for Nanbeige layer 0:
+
+```
+layer 0: bo_bytes=61440000 (12000.00 tiles at 5120)
+packed tiles=12000
+```
+
+matching the arithmetic from section 24 exactly. For Qwen3-0.6B the same tool gives 1,920 tiles /
+9,830,400 B, also matching.
+
+This time FLM's BO was **kept** rather than only measured (`CAP_DUMP_BIG=1 CAP_NO_SYNC=1`, 1.9 GB):
+`preinsts_001_01_i4_5594dcdbfb40_61865984.bin`, 61,865,984 B — the same size the manifest reported
+for arg4.
+
+**Result of the byte diff: 0 of the engine's 12,000 tiles appear verbatim anywhere in FLM's BO**,
+beginning with tile 0. Taken at face value that is a total layout mismatch.
+
+**The caveat that may explain all of it** — and it must be resolved before that reading is trusted:
+
+```
+SETARG  idx=4 bo=0x5594dccf9030      <- the pointer the manifest bound
+file    preinsts_001_01_i4_5594dcdbfb40_...bin   <- a DIFFERENT pointer, same size
+```
+
+The captured file's pointer does not equal the SETARG's arg4 pointer. Same *size*, different
+*object* — so the file may not be the weight BO at all (it could be a same-sized KV region or
+scratch buffer). **Nothing from the diff is trustworthy until that is settled**, and it is exactly
+the "right number, wrong object" failure this session has hit repeatedly.
+
+**The control that settles it in one run.** Run the same comparison for **Qwen3-0.6B**, whose
+packing is known to work:
+
+- if the engine's 1,920 tiles DO appear in FLM's 0.6B BO, the Nanbeige mismatch is real and
+  diagnostic — the padding is fine and the *arrangement* is wrong;
+- if they do NOT, the method is comparing the wrong objects and this line closes, like the last
+  three.
+
+Either outcome is decisive, which is what makes it worth the capture.
