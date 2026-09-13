@@ -2886,3 +2886,59 @@ the boot **still varies**: 33548 / 83826 / 131718. So it is **not the RNG**. It 
 and weight BOs; §61's fix covered the **bf16** path, which is a different set of buffers. The question is
 whether the int8 compute reads device memory it never wrote — the same question §61 answered for bf16, and
 the one the `h_data` divergence now demands an answer for.
+
+## 64. A real uninitialized-memory defect fixed in the int8 path — but it is NOT established as the cause, and the NPU is SHARED
+
+**The defect is real.** `I8Ctx`'s two BOs are `XRT_BO_FLAGS_HOST_ONLY` and **nothing zeroed them**:
+
+```cpp
+bA = std::make_unique<xrt::bo>(d, (size_t)MD * KD,     XRT_BO_FLAGS_HOST_ONLY, grp_a);
+bC = std::make_unique<xrt::bo>(d, (size_t)MD * ND * 4, XRT_BO_FLAGS_HOST_ONLY, grp_c);
+Am = (int8_t*)bA->map();   Cm = (int32_t*)bC->map();   // no memset
+```
+
+`Am` is fully written by `quantize_async` (`memset(Am,0,MD*KD)`) before every launch, so `bA` was safe.
+**`Cm` is the GEMM output**: the kernel writes only the valid rows, the host reads `MD` rows — so on the
+**first** launch the rows the kernel did not write were whatever the device allocator returned. This is the
+same class as §61's bf16 KV BO and is now fixed in both `I8Ctx` init overloads, with a comment saying why.
+
+**Its effect on Nanbeige is NOT established, and I am not claiming it.** The first batch after the fix read
+
+```
+45816 | 272 | 272 | 272
+```
+
+which looked like a fix. Six more runs, same binary, same prompt:
+
+```
+56648 | 164829 | 151402 | 145029 | 131718 | 110497
+```
+
+Six distinct values. So either the fix's effect is not reliable, or the `272`s were coincidence — and with
+166,144 tokens a 3-in-a-row coincidence is implausible, which makes **an external variable** the better
+explanation. The control held both times (Qwen3-0.6B @256 = **1614**), so there is no regression either way.
+
+**And here is the external variable, measured:** the NPU is **shared**.
+
+```
+$ fuser -v /dev/accel/accel0
+/dev/accel/accel0:   bcloud 285847 F...m flm            # flm serve qwen3.6-moe:35b-a3b
+                     bcloud 344571 F...m llama-server
+```
+
+Two other processes hold the device. This session already recorded, independently, that the engine's
+**atomic runlist is perturbed by a mid-stream sync** — the instrument that produced the retracted "constant
+28962" finding worked by dumping mid-stream and perturbing the runlist. So this engine's execution is
+**timing-sensitive**, and it has been running on a contended device for the whole of this investigation.
+
+**That reframes §59-§63.** The nondeterminism they chased is real and reproducible, but **every observation
+of it was made with the NPU shared**, so it is confounded: the same binary gave `272 272 272` and then six
+unrelated values. It also explains why the FLM-ref path is stable (it drives FLM's own library, with its own
+buffering) while the native path is not.
+
+**The named next experiment, which requires coordination rather than code**: repeat the measurement with
+**exclusive device access** — the servers stopped, with the dsh agents' and the operator's agreement. If the
+boot token becomes stable, the interference hypothesis is confirmed and the nondeterminism was never a bug
+in our compute at all. Until that runs, **no host-side fix can be validated against this symptom**, and the
+`bA`/`bC` zeroing stands on its own merits — an uninitialized device buffer that should have been zeroed —
+not as the fix for this.

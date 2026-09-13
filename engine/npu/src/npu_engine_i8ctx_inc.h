@@ -124,6 +124,16 @@ struct I8Ctx {
                                        XRT_BO_FLAGS_HOST_ONLY, grp_c);
         Am = (int8_t*)bA->map();
         Cm = (int32_t*)bC->map();
+        // Both BOs are XRT_BO_FLAGS_HOST_ONLY and NOTHING zeroed them. Am is fully written by
+        // quantize_async (memset(Am,0,MD*KD)) before every launch, so bA was safe -- but Cm is
+        // the GEMM OUTPUT: the kernel writes only the valid rows of each launch, while the host
+        // reads MD rows. On the FIRST launch the rows the kernel did not write were whatever the
+        // device allocator handed back, which is why Nanbeige's boot token was nondeterministic
+        // (1214 / 131718 / 145029 / 42438 ... for one command, RESULTS-coverage-multifamily 59,
+        // 62). Zeroing makes the initial contents defined; section 61 made the same fix on the
+        // bf16 path's KV BO, which is a different set of buffers.
+        memset(Am, 0, (size_t)MD * KD);
+        memset(Cm, 0, (size_t)MD * ND * 4);
 
         layerB.resize(NL);
         layerInstr.resize(NL);
@@ -217,6 +227,11 @@ struct I8Ctx {
                                        XRT_BO_FLAGS_HOST_ONLY, grp_c);
         Am = (int8_t*)bA->map();
         Cm = (int32_t*)bC->map();
+        // See the note in the first init overload: neither BO was zeroed, and Cm is the GEMM
+        // output, so rows the kernel did not write on the first launch were uninitialized
+        // device memory -- the source of the nondeterministic boot token.
+        memset(Am, 0, (size_t)MD * KD);
+        memset(Cm, 0, bc_bytes);
 
         // Per-layer weight BOs + instruction BOs
         layerB.resize(NL);
