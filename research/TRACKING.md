@@ -7,45 +7,65 @@
 
 Fourteen days of work were never folded back into the rows below. This section is
 the correction, with the artifact that carries the evidence. It is deliberately
-split into *verified* and *open*.
+split into *verified*, *open*, and *settled negative* — and it prefers a withdrawn
+claim to a flattering one.
 
 ### Verified
 
 | Item | State | Evidence |
 |------|-------|----------|
-| P0.1 NPU IO_PAGE_FAULT path | **not blocking any more** — NPU attention runs end-to-end at 1k ctx (attn ~150 ms vs 14.0 s CPU reference, on a 28-layer dense Qwen3). *Which* attention ELF served that fast path is exactly open question #1, but the fault storm that made the path unusable is gone | `engine/npu/generators/FK3-STATUS-2026-09-12.md` rounds 20–26 (branch `goal/runlist-decode-wire`) |
+| P0.1 NPU IO_PAGE_FAULT path | **not blocking any more** — NPU attention runs end-to-end at 1k ctx (~147 ms of attention for a 28-layer dense Qwen3 vs ~14 s CPU reference), served by the **embedded captured** ELF. The fault storm that made the path unusable is gone | `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` (branch `goal/runlist-decode-wire`) |
 | WS-00 Baseline & measurement | measurement works, but the **harness is branch-only**: `benchmarks/flm_parity.sh`, incl. `FLM_PARITY_TRUE_NATIVE=1` (without it the "native" column silently drives FLM's own libs) | smoke test `benchmarks/RESULTS-flm-parity-harness-2026-09-09.md` (landed in `main` by PR #2306); the harness and `FLM-PARITY-DATA-SOURCES.md` only on `goal/runlist-decode-wire` |
-| FLM parity @256 (on-box re-scope) | native **beats FLM on the same box**: bf16 prefill 391 ms / **655 tok/s** vs FLM ~570–610 ms / ~420–450 tok/s, byte-exact; decode 12.6 ms/tok / **79 tok/s** vs FLM 13.6 ms/tok / 73.58 tok/s (+7 %) after the double-buffered runlist build-overlap | `benchmarks/RESULTS-on-box-parity-2026-09-12.md` — **branch-only** on `goal/runlist-decode-wire`; goal `mtyfjavg-r1vlak` (audit-approved, archived) |
-| WS-01 NPU fused attention | superseded on the prefill path by a **generated long-context attention ELF** (FLM's exported `gen_mha_engine_seq` + `aiebu`) — no in-engine fused-attention kernel was needed | FK3-STATUS rounds 15–26 |
+| On-box parity: decode @1k | **survives** — 12.6 ms/tok / **79 tok/s** vs FLM 13.6 ms/tok / 73.58 tok/s on-box (+7 %) after the double-buffered runlist build-overlap. This is the int8/runlist path, the one that is byte-exact against FLM | `benchmarks/RESULTS-on-box-parity-2026-09-12.md` — **branch-only** on `goal/runlist-decode-wire`; goal `mtyfjavg-r1vlak` |
+| On-box parity: prefill @256 | **throughput survives** (~400–413 ms for 256 tokens ≈ **620–668 tok/s**, boot=1614 on all three paths) but the original write-up overstated the *correctness* basis: the argmax boot-token gate is now known to be weak on this path (see open question 2) | `benchmarks/RESULTS-on-box-parity-2026-09-12.md` + `RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` — **branch-only** |
+| WS-01 NPU fused attention | no in-engine fused-attention kernel was written. The **generator** finding stands — FLM's exported `gen_mha_engine_seq` + `aiebu` reproduce the committed 1024-position ELF **byte-identically** (sha256 `6ece6c33…`) — but that ELF is **not a perf path**: ~1500× slower than the embedded captured kernel (225 s vs 147 ms attention at npt=1024), so it is opt-in behind `NPU_ATTN_ELF_1024_USE` | `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` |
 | WS-02/WS-03 native quantized + ternary AIE | still not started as scoped; the AIE effort went into the fk-1..fk-3 fused-layer PoC instead (`n1_fk3*.py`, `build_fk3.sh`) | FK3-STATUS §fk-3 PoC |
 | WS-07 MoE decode & spec (35B-A3B runlist) | **proven dead end** — see "Settled negative results" below | goal `mtusoiy1-cfdhqr`; `benchmarks/RESULTS-runlist-decode-35b-moe-2026-09-10.md` (on branch `goal/runlist-decode-wire`) |
-| WS-11 NPU weight path | dense-Qwen3 @1k prefill now beats FLM's published bar on all four models (+39…43%) — **but see "Open questions" before quoting it** | FK3-STATUS rounds 21–26 |
+| WS-11 NPU weight path | dense-Qwen3 **@1k prefill: WITHDRAWN** (`ca02e75ac`, 2026-09-12). The bf16 prefill body only ever computes 256 rows (`Bf16Mm::ensure_a` stages two 128-row halves; `gemm_wait` copies back `128*N`), so `NPU_PREFILL_MAX=1024` ran a 256-token pipeline and reported 1024-token throughput — and the gate was self-referential (bf16-NPU vs `NPU_ATTN_CPU`, the same broken pipeline). Boot-token re-gate: 256 → 1614 on all three paths; 512 → 132352 vs the trusted 220; 1024 → 44402 vs 25 | `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` |
 | #2199 fused int4 `.data` placement | **fixed and merged** (`f3825fbb6`, PR #2282); xclbin rebuilt 67,306 → 75,040 B, provenance manifest regenerated | `bash engine/npu/tests/check_kernel_bss.sh` → `bss=0 / RESULT: PASS` on `f3825fbb6` (re-run 2026-09-12) |
 | Census | full HF sweep refreshed | `051d93e8d` (#2255) |
 | HRX `reset()` context loss (#2203) | fixed: re-imports `HRX_STATE_FILE` after reset, guards resumed ctx against `HRX_MAX_CTX_TOKENS` | `docs/issue-campaign/1942-triage.md` §1.2 |
 
-### Open questions (do not treat as settled)
+### Open questions and corrections (read before quoting any number)
 
-1. **Does the @1k dense-Qwen3 prefill win survive?** The rounds-21–26 numbers
-   (0.6B 2087.7 tok/s official harness, +40% vs FLM's published 1494) came from
-   runs that never printed `Bf16Mm: long-context attention ELF loaded` — i.e.
-   `run_attn` was serving the embedded 256-token ELF. After the ELF-search fix
-   (`npu_engine_bf16_mm.h`, uncommitted on `goal/runlist-decode-wire` at the time
-   of writing) the 1k ELF does load, and the first post-fix run measured
-   **227 s** attention — but **two `npu_engine_qwen3_0_6b` runs were executing
-   concurrently on the single NPU**, so that measurement is invalid. Needs one
-   clean serial re-run before the claim is quoted or committed.
-2. **Zaya1-8B fused-MoE correctness red flag (2026-09-09).** The in-engine L1
+1. **The @1k dense-Qwen3 prefill claim is WITHDRAWN — resolved in the negative.**
+   `ca02e75ac` (2026-09-12): the bf16 prefill body computes only 256 rows, the
+   "verification" compared the broken pipeline against itself, and the generated
+   1024-position ELF is ~1500× slower than the embedded captured kernel. No clean
+   re-run is owed — it would reproduce a wrong token. *An earlier version of this
+   entry blamed the 227 s post-fix attention measurement on two concurrent NPU
+   runs; the confound was real, but the cause was the generated ELF itself
+   (225 s vs 147 ms).* The FK3-STATUS rounds 21–26 that carried the claim are
+   superseded by `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md`.
+   The re-entry path is scoped in that same doc (§ *To actually reach @1k*):
+   generalize the bf16 layer body past two hardcoded 128-row batches, run the
+   attention ELF once per 256-query chunk with KV accumulation (the way FLM's own
+   runtime does), and re-gate against `NPU_RUNLIST=1` / `NPU_FLM_PREFILL=1` boot
+   tokens instead of against another bf16 variant.
+2. **The embedded captured attention kernel does not use the reference softmax
+   scale.** Recomputing causal GQA from the engine's own layer-0 dumps gives an
+   implied row-1 mixing weight of 0.727 where `softmax(q·k/√128)` gives 0.826, and
+   the error shrinks with key count exactly as a scale error would. **Open:** what
+   this means for the byte-exact int8/runlist path is *not* established — that
+   path replays FLM's own kernels and matches FLM token-for-token, so it is
+   self-consistent. What *is* established is that an argmax boot-token gate is a
+   weak correctness test for any path that composes these kernels differently.
+   `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` § *The captured
+   attention kernel's numerics are not the reference's*.
+3. **Zaya1-8B fused-MoE correctness red flag (2026-09-09).** The in-engine L1
    probe compared NPU MoE output against a CPU fp32 reference and got
    **corr −0.001552** (expected 0.998267), identical on both fused and split
    launches — deterministic but wrong, and the `.q4nx` had been re-converted
    after the last known-good run. `benchmarks/RESULTS-zaya1-8b-rebaseline-2026-09-09.md`.
    Not resolved as of this note.
-3. **`flm_parity.sh` decode column.** It prints `2` because the decode
+4. **`flm_parity.sh` decode column.** It prints `2` because the decode
    invocation feeds the whole prompt through the per-token `NPU_RUNLIST=1` path
    and the parser then reads the prefill's ms/tok instead of the final
    `=== Z ms/tok (W tok/s) ===` line. Owned by the NPU thread (the file only
    exists on `goal/runlist-decode-wire`).
+5. **`NPU_PREFILL_MAX > 256` in `main`?** The silent-wrong-token defect was fixed
+   on the branch (it now warns and caps to 256), but `main` has no bf16 prefill
+   path at all, so this is a check-the-merge item, not a live bug.
 
 ### Settled negative results (don't re-litigate without new evidence)
 
