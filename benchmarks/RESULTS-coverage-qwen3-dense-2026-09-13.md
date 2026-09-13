@@ -30,9 +30,9 @@ The attention kernel is parameterised by `(nh, nkv, head_dim)`, **not** hidden s
 | model | npt | native boot | FLM boot | gate | native prefill | FLM on-box prefill | gap | native TTFT | FLM TTFT |
 |---|---|---|---|---|---|---|---|---|---|
 | Qwen3-0.6B | 1024 | 25 | 25 | ✅ | **1440.5 tok/s** | 1123.1 | **+28.3%** | 0.7113 s | 0.7037 s |
-| Qwen3-1.7B | 1024 | **220** | 220 | ✅ | 838.9 tok/s | 942.57 | **−11.0%** | 1.220 s | 1.042 s |
-| Qwen3-4B | 1024 | **220** *(was 87672 ❌)* | 220 | ✅ | 415.6 tok/s | 509.97 | **−18.5%** | 2.464 s | 1.925 s |
-| Qwen3-8B | 1024 | **220** *(fixed)* | 220 | ✅ | 282.4 tok/s | 362.76 | **−22.2%** | 3.626 s | 2.705 s |
+| Qwen3-1.7B | 1024 | **220** | 220 | ✅ | 817.0 tok/s | 942.57 | **−13.3%** | 1.224 s | 1.042 s |
+| Qwen3-4B | 1024 | **220** *(was 87672 ❌)* | 220 | ✅ | 430.5 tok/s | 509.97 | **−15.6%** | 2.323 s | 1.925 s |
+| Qwen3-8B | 1024 | **220** *(fixed)* | 220 | ✅ | 281.4 tok/s | 362.76 | **−22.4%** | 3.554 s | 2.705 s |
 | Qwen3-4B | 256 | 1614 | 1614 | ✅ | 328.2 tok/s | (not benched) | — | 0.780 s | — |
 
 Raw native lines:
@@ -101,7 +101,28 @@ python3 -c "import json;json.dump({'max_length':1024,'iterations':1,'input_text'
 /opt/fastflowlm/bin/flm bench qwen3:<size> -i cfg.json   # -> bench_*.csv
 ```
 
-## 6. Remaining coverage work
+## 6. Host-math parallelization (2026-09-13)
+
+Three per-layer host loops were single-threaded (no OMP) while their neighbours were
+parallel: the two `bsb = bh` residual copies and the `bActQ` f32→bf16 build. All three
+are element-independent and were parallelized with `#pragma omp parallel for
+num_threads(host_threads())`. Measured back-to-back (same conditions) — **correctness
+unchanged (boot tokens identical)**:
+
+| model | before | after | gain |
+|---|---|---|---|
+| Qwen3-0.6B @1k | 744 ms | 700 ms | +3.8% |
+| Qwen3-1.7B @1k | 1269 ms | 1224 ms | +1.3% |
+| Qwen3-4B @1k | 2511 ms | 2323 ms | +5.5% |
+| Qwen3-8B @1k | 3685 ms | 3554 ms | +3.5% |
+
+So the easy serial-loop wins are real but only **3–5%** → the remaining −13/−16/−22%
+gap is **structural**, not a missed `#pragma omp`. Biggest remaining host term is the GU
+SiLU/convert pass (`IM` sigmoid calls per token per layer: 3072/6144/9728/12288 for
+0.6B/1.7B/4B/8B → up to ~10⁸ scalar transcendentals per prefill). Closing the large-model
+gap needs SIMD/bit-exact fused host math (or less host traffic), not more threads.
+
+## 7. Remaining coverage work
 
 | group | models | status | needs |
 |---|---|---|---|

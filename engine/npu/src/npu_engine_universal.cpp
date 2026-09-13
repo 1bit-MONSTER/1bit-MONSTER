@@ -3915,6 +3915,7 @@ struct Bf16Ctx {
             double tg = 0, ta = 0, tc = 0;
             for (int l = 0; l < NC; l++) {
                 fprintf(stderr, "  L%d", l); fflush(stderr);
+                #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
                 // input norm + A convert fused
                 auto tc0 = std::chrono::steady_clock::now();
@@ -3971,6 +3972,7 @@ struct Bf16Ctx {
                 // Build attention inputs from the host-norm'd + RoPE'd Q/K/V.
                 // attn.xclbin expects PRE-RoPE'd Q and K + raw V — the host
                 // applies q_norm/k_norm + RoPE, the kernel does NOT.
+                #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++)
                     bActQ[pi * qout + i] = f32_to_bf16(bqo[pi * qkvn + i]);
                 if (unified && npu_runlist_write_kv(l, sp, npt, bKv.data()) != 0) {
@@ -4047,6 +4049,7 @@ struct Bf16Ctx {
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
                 // FFN: RMSNorm + GU + SiLU×up + D
+                #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], pa_n[l].data(), H);
