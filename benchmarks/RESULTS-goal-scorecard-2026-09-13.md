@@ -470,11 +470,34 @@ Two agents worked the failing families in parallel and **converged independently
 | defect | scope | status |
 |---|---|---|
 | **NPU attention, nh16-width** — writes 2048 of 2560 columns | nh20 (Nanbeige) | **measured** — a real mechanism, with a per-head output column as the instrument |
-| **nh20 host residual** | nh20 | **OPEN** |
-| **nh24 (Phi4) residual** | nh24 | **OPEN** |
+| **nh20 residual** | nh20 | **characterized** — first-token-*quantised*, **partial at 32** (4 distinct values over 8 tokens) **and partial at 448** (5/8 correct, 3 distinct) |
+| **nh24 (Phi4) residual** | nh24 | **characterized** — first-token-*blind* over **[16, 64]** (8/8 → 220), **partly blind at 128** (5/8, 4 distinct values) |
 | **nh20 i8 first-token handling** | nh20 | **OPEN** (added 2026-09-13, after the clean-fixture run) |
 
-**One measured defect, three open residuals, and no shared engine bug.**
+**One measured defect, one open residual, and no shared engine bug** — with the two others now **measured rather
+than merely open**, and **mechanically distinct**:
+
+- **nh24** has a **blind region** whose edges are measured — **edge A (blind → partly blind) in (64, 128]** and
+  **edge B (220 → non-220) in (144, 160]**;
+- **nh20** is **partial at both ends of the range tested** (32 and 448), so its degeneracy **does not switch off
+  with length** at all.
+
+**The cross-lane test that separates them was run independently by both agents** — the same eight token-ids at
+length 32 through the other model — and both got **four distinct values on Nanbeige against Phi4's single value**.
+**Two mechanisms that look alike from outside.** Without the paired two-length design they are indistinguishable;
+with it, the shapes differ on the first comparison.
+
+**And one reading is withdrawn by both lanes**: *"the plateau value identifies the length being computed"* is
+**not** valid. FLM itself emits **220** at 128/130/160/176, the peer's **13** occurs at both 320 and 512 — a value
+recurs across a whole band. The "computes a different length" idea survives as a **mechanism candidate**; the
+*specific length* is withdrawn as identified.
+
+**And one whole class is retired for Phi4 — arithmetically, not by another token test.** Every tensor extent in
+Phi4's `q4nx` sums to **exactly the file size** (3627.0 MB, 100.00% accounted for); `embed_tokens` and `lm_head`
+declared extents are exact (1229193216 and 384122880); the tile row stride is the standard **5120 B**; and
+`npu_layer_bo_bytes` computes **12,288 tiles = 62.9 MB per layer** from the loader's own rule, with all 32 layers
+identical. So **it is not mis-read or mis-sized weights** — which retires the branch that §140's own audit pointed
+at ("Phi4's wrongness is in the data it is fed") and leaves the arithmetic itself.
 
 **And a fixture caveat that now applies to every reference number in this document**: the recorded "FLM reference"
 tokens were measured on fixtures beginning with **token 16** (a **zero-embedding** token) and, for the Phi4 sweep,
