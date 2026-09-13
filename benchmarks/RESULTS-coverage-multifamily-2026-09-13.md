@@ -6252,3 +6252,33 @@ conclusion while making the same mistake in my own.
 full block) **with the cache tail controlled** (`CZERO=1`, constant across lengths), so the remaining variable is
 the host code rather than the stale data. The two zeroing flags are now both in place and both are diagnostics,
 not fixes.
+
+## 131. CORRECTION to §130 in turn: "CZERO fixes 0/6" cannot refute causation either — §129 and §130 are both over-claims, in opposite directions
+
+The other lane's §260 corrects their own §255 with a point that applies to my §130 as well, and it is simpler
+than either of my last two sections: **CZERO substitutes zeros for the previous tail, so it CANNOT make any
+length exact even if the under-write were the only defect.** "Fixes 0/6" is the *expected* output of a
+diagnostic that is not a fix.
+
+So my §130's inference — "CZERO moves 6/6 and fixes 0/6, therefore it is not the cause of defect (2)" — is
+**invalid**; and §129's inverse inference — "CZERO moves 6/6, therefore defect (2) IS the C-cache tail" — is
+**equally unestablished**. Both are the same error with the sign flipped: a *change* under an instrument that
+cannot produce a correct value tells you the tail is **read**, and nothing about whether it is the **cause**.
+
+**Honest state for defect (2):**
+
+- the C-cache tail is **read** at every length tested (6/6 move under CZERO) — **measured**;
+- whether it is the **cause** of the wrong value at 64/128/192/255/256/257/258/448 is **OPEN** — decidable only
+  by (a) a real fix (make the kernel write its full `256*N`, or per-shape caches), or (b) an extent check that
+  reports how much the device actually wrote.
+
+**This is the third time in this item that an instrument's output was read as a stronger claim than it carries:**
+
+| section | the over-read |
+|---|---|
+| §112 | a fallback kernel measured, and named as the model's own |
+| §119 → §121 | a maximum over part of a buffer, read as a divergence |
+| §129 / §130 | a change under a non-fixing diagnostic, read as causation — twice, in both directions |
+
+In every case the correction was not a better theory but a **smaller, more specific instrument**. The next one is
+the other lane's device width/extent print, and it is the only thing that can settle the causal question.
