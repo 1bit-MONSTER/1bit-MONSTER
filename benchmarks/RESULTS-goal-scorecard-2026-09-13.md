@@ -97,7 +97,7 @@ the Q/K/V offsets (`NH*HD`, `NH*HD + NKV*HD` — correct for all four). The rema
 the engine's own per-layer composition for the bf16 prefill, whose only shape-dependent inputs
 are `qout`, `kvout`, `H` and `IM`.
 
-## 6. What landed this session (53 commits, `goal/runlist-decode-wire`)
+## 6. What landed this session (133 commits, `goal/runlist-decode-wire`)
 
 Performance: double-buffered GEMM blocks (~30% prefill, flipping 4 models from losing to
 winning); host-thread default made npt- and size-dependent.
@@ -327,13 +327,34 @@ now compared byte-for-byte against FLM's own, captured under the interposer and 
 | final norm — `bo_fnorm_` | **byte-matched** |
 | activation — arg3 (the token's embedding row) | **byte-matched** |
 | the RoPE base | made model-correct (it had been Qwen3's 1e6 for every family) |
-| generated per-ctx ELFs | proven correct on **two** architectures (Qwen3-4B, Llama) |
+| generated per-ctx ELFs | **byte-identical to FLM's own runtime ELF** — layer kernel and lm_head |
+| `.rela.dyn` relocations | same size in both |
 
-So this is no longer a list of suspects. What remains is an **architectural divergence**: FLM's ELF set is
-**fixed** (16 kernels, identical at npt=2 and npt=64, with the context passed as an argument), while the
-engine generates **one ELF per context length**. Both work — the engine's is proven on two architectures
-— and the engine's approach is therefore **unproven against FLM for any family**, not wrong. Nanbeige
-(nh20) and Phi4 (nh24) both use attention shapes that combination has never been exercised on.
+**And this table was verified twice over.** The first pass compared FLM's BOs against *what the engine is
+supposed to write*, reconstructed from the q4nx. The second compared the engine's **runtime buffers**
+(dumped with `RT_DUMP_BOS`) directly against FLM's: the weight BO matches **12,000 of 12,000 tiles in
+order**, and i5 and i6 match with **0 differing bytes across the full 1 MB each**.
+
+**The ELF is not merely "proven correct on two architectures" — it is proven *exact*.** Comparing the ELF
+section payload (`.ctrltext`) rather than the container: my `layer_ctx1025` stream against FLM's own
+`elf_0016` for the same context is **0 differing bytes**, and the lm_head is **0 differing bytes**. The
+context is patched as **8 immediates per column copy**, and FLM's values read out exactly (1025 at
+ctx=1025; 1 at the first token).
+
+Three claims that earlier revisions of this document made are **withdrawn**:
+
+- that FLM's 16 ELFs are **per-op kernels** — they are not; `elf_0001/0003/0016` are the **whole-layer**
+  stream, all 32 layers;
+- that the context is passed as a **kernel argument** — it is **patched into the stream**;
+- that the engine's ELF approach is **unproven against FLM for any family** — it is proven exact for nh20.
+
+So this is no longer a list of suspects, and no longer an architectural divergence. For Nanbeige, **the
+layer kernel, the lm_head kernel, every BO and the arg signature are all byte-identical to FLM's.** What
+remains is not an artifact but a **construction difference**: FLM loads the two column copies as two
+separate ELF objects and prefills in blocks with dedicated kernels; the engine concatenates both copies
+into one ELF and runs the per-ctx decode ELF **one token at a time** (measured: 256 kernel builds for a
+256-token prompt). Qwen3-4B proves concatenation workable, so the residual is most likely in the
+**device-written KV's evolution** — the one thing neither host writes.
 
 **LFM2**, the family the user asked for, moved from *scoped* to a **measured boundary** over the last
 five checkpoints. Established by byte-level comparison against FLM's own buffers rather than by
@@ -358,13 +379,15 @@ inference:
 
 ## 11. Session close
 
-**101 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
-native engine supports, and the coverage limits are documented with their best explanations — one proven
-and partially fixed, three reduced to a single named architectural difference, and two (Qwen3.5-4B, LFM2)
-identified as hybrids needing family implementations.
+**133 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
+native engine supports, and the coverage limits are documented with their best explanations — Gemma3-1B
+reduced to a compiled K-tile in a dependency, Phi4/Qwen3.5/LFM2 to named hybrid implementations, and
+Nanbeige to a device-side question with **every host artifact proven byte-identical**.
 
-**Seven of this session's findings were mine and wrong**, and all seven are recorded rather than deleted.
-The habit that caught every one was the same, and it is the most transferable thing here: ask what a
-number is **for**, not whether it is correct — and prefer a control over an argument. Six times a value
-was real and the frame around it was wrong; five times a plausible finding was retired by a cheap control
-before it reached this document.
+**Ten of this session's findings were mine and wrong**, and all ten are recorded rather than deleted. The
+habit that caught every one was the same, and it is the most transferable thing here: ask what a number
+is **for**, not whether it is correct — and prefer a control over an argument. The last two are the
+cleanest illustrations: I was about to report "my ELF contains the layer sequence twice, so the device
+runs the stack twice" as Nanbeige's root cause — the **Qwen3-4B control**, which works, doubles too; and
+I had invalidated the ELF comparison on the claim that FLM's ELFs are per-op kernels, when comparing them
+properly is exactly what **proved the generator exact**.
