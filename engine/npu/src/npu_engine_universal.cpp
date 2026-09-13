@@ -4571,6 +4571,24 @@ struct Bf16Ctx {
         if(npu_dbg()){fprintf(stderr,"BOOT h_data:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",h_data[i]);fprintf(stderr,"\n");}
         if(npu_dbg()){fprintf(stderr,"BOOT fin_v:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",fin_v[i]);fprintf(stderr,"\n");}
         lm_topk_omp(sb_data.data(),lg_buf.data(),top_ids,BS,lm_nv,H,lm_emb);
+        // Magnitude diagnostic (NPU_DBG=1). NOTE: lm_topk_omp has already overwritten lg with
+        // exp(logit - max) by the time we get here, so lg is the SOFTMAX, not the logits --
+        // |softmax|max is always exactly 1. Section 62 misread that as "the logits are ~1e-9";
+        // corrected in section 63. The useful part is sb_data (post-final-norm hidden) and
+        // lm_emb (the head table): both O(1), which eliminates the final projection by
+        // magnitude as well as by code read.
+        if (npu_dbg()) {
+            double sabs = 0, smax = 0;
+            for (int i = 0; i < H; i++) { double a = fabs((double)sb_data[i]); sabs += a; if (a > smax) smax = a; }
+            double wmax = 0, wsum = 0; long nw = 0;
+            const int stride = lm_nv > 200 ? lm_nv / 200 : 1;
+            for (int v = 0; v < lm_nv; v += stride)
+                for (int i = 0; i < H; i++) { double a = fabs((double)lm_emb[(size_t)v * H + i]); if (a > wmax) wmax = a; wsum += a; nw++; }
+            double lmax = 0, lsum = 0;
+            for (int v = 0; v < lm_nv; v++) { double a = fabs((double)lg_buf[v]); lsum += a; if (a > lmax) lmax = a; }
+            fprintf(stderr, "[MAG] |sb|mean=%.4g |sb|max=%.4g |head|mean=%.4g |head|max=%.4g |softmax|mean=%.4g |softmax|max=%.4g (rows scanned=%ld of %d, H=%d)\n",
+                    sabs / H, smax, nw ? wsum / nw : 0.0, wmax, lsum / (lm_nv ? lm_nv : 1), lmax, nw, lm_nv, H);
+        }
         if(npu_dbg()){fprintf(stderr,"BOOT lg:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",lg_buf[i]);fprintf(stderr,"\n");}
         if (getenv("NPU_DEBUG_BOOT")) {
             fprintf(stderr, "  [boot-debug] top-5 ids:");

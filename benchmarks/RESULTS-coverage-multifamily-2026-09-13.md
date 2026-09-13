@@ -2855,3 +2855,34 @@ Two conclusions, both direct:
 magnitudes of `lm_head_f32` and `emb_f32` for Nanbeige. A ~1e-10 head matrix would mean the separately-loaded
 lm_head dequantized to almost nothing — which is exactly the *silent* failure mode the int4-convention work
 warned about, and it would explain the near-zero logits without any memory bug at all.
+
+## 63. §62's "logits ~1e-9" was WRONG — that was the SOFTMAX; the magnitudes are healthy and the sampler is dead code
+
+**The tell was "max exactly 1".** `lm_topk_omp` computes the dot products into `lg`, then **overwrites
+`lg` with `exp(logit - max)`**. By the time my diagnostic read it, `lg` held the **softmax numerators** —
+`|lg|max = 1` is the softmax's max, not a logit. **§62's conclusion that the logits sat at the float noise
+floor is retracted**; the logits are healthy and the argmax is not a coin flip among noise.
+
+**What the measurement does establish, and it is the useful part:**
+
+| quantity | value | verdict |
+|---|---|---|
+| `sb_data` (final-normed hidden) | mean 2.44, max 11.1 | **healthy** |
+| `lm_emb` (the loaded head table) | mean 0.021, max 0.21 | **healthy** |
+
+So the **final projection is fine** — the lm_head is eliminated **by magnitude as well as by code read**,
+two independent directions, and this one is independent of §62's wrong-file mix-up.
+
+**And a real, separate bug.** The sampler's result is **dead code**: the softmax sampler writes
+`top_ids[0]`, and then the top-K loop **overwrites every `top_ids[b]`**. So `NPU_TEMPERATURE`, `NPU_TOP_K`
+and `NPU_TOP_P` are **ignored**, and `srand(time ^ getpid)` makes the discarded draw vary per run. Not the
+cause of the boot nondeterminism, but a genuine defect.
+
+**And the nondeterminism is now localized by exclusion.** With `NPU_GREEDY=1` — sampling skipped entirely —
+the boot **still varies**: 33548 / 83826 / 131718. So it is **not the RNG**. It is the **compute**, matching
+§62's direct measurement that `h_data` after 32 layers differs across runs on identical input.
+
+**Next measurement**: the **int8 path's BO initialization**. `I8Ctx` allocates its own `bA` (MD=128), `bC`
+and weight BOs; §61's fix covered the **bf16** path, which is a different set of buffers. The question is
+whether the int8 compute reads device memory it never wrote — the same question §61 answered for bf16, and
+the one the `h_data` divergence now demands an answer for.
