@@ -7128,7 +7128,7 @@ does not. That is a token sweep, cheap, and it is the first version of this resi
 
 ## 350. The two paired controls side by side already answer half the sweep: the degeneration is LENGTH-DEPENDENT
 
-**No device needed for this — both numbers are in hand.** Their §140 perturbed one token at a time at **npt=448**;
+**No device needed for this — both numbers are in hand.** Their §141 perturbed one token at a time at **npt=448**;
 my control perturbed the first token at **npt=32/64**. Same two tokens, same design:
 
 | first token | this lane, npt=32/64 | their lane, npt=448 |
@@ -7149,7 +7149,7 @@ their lane and wrong at 32 on mine.**
 answer is *"it depends on the length"*. It is now **where the transition sits**, which the two-length design tests
 directly and which is why the fixtures were built at **both** 32 and 448 rather than one length swept finely.
 
-**Two smaller things, both worth keeping.** Their §140's rule is the fourth member of the fixture rule set and the
+**Two smaller things, both worth keeping.** Their §141's rule is the fourth member of the fixture rule set and the
 sharpest: **"the reference varies with length" is not evidence that the *path* is well-conditioned on a fixture —
 you need both, and I had only the first.** And the mirror is now symmetric: their engine **mishandles one value** of
 the first token, mine **ignores it**; one design, opposite failures, no shared mechanism — which is why the shared
