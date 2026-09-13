@@ -281,7 +281,11 @@ int main(int argc, char** argv) {
     fprintf(stderr, "lm_head: %zu floats (N=%d K=%d)\n", lm_head.v.size(), NV, H);
 
     std::vector<float> h(H), x(H), res(H), tmp(H), tmp2(H);
-    std::vector<float> qd(NH * HD), kd(NKV * HD), vd(NKV * HD), attn(NH * HD);
+    // (size_t) on the first operand: these products are widened to the vector's
+    // size_type but the multiply itself happens in int — CodeQL
+    // cpp/integer-multiplication-cast-to-long, 4 of the sites.
+    std::vector<float> qd((size_t)NH * HD), kd((size_t)NKV * HD),
+        vd((size_t)NKV * HD), attn((size_t)NH * HD);
     int last_tok = -1;
 
     std::vector<int> gen;
@@ -362,10 +366,10 @@ int main(int argc, char** argv) {
                 mul(wq, x.data(), qd.data());
                 mul(wk, x.data(), kd.data());
                 mul(wv, x.data(), vd.data());
-                for (int hh = 0; hh < NH; hh++) rmsnorm(&qd[hh * HD], qn.data(), HD, eps);
-                for (int hh = 0; hh < NKV; hh++) rmsnorm(&kd[hh * HD], kn.data(), HD, eps);
-                for (int hh = 0; hh < NH; hh++) rope(&qd[hh * HD], HD, pos, ROPE_THETA);
-                for (int hh = 0; hh < NKV; hh++) rope(&kd[hh * HD], HD, pos, ROPE_THETA);
+                for (int hh = 0; hh < NH; hh++) rmsnorm(&qd[(size_t)hh * HD], qn.data(), HD, eps);
+                for (int hh = 0; hh < NKV; hh++) rmsnorm(&kd[(size_t)hh * HD], kn.data(), HD, eps);
+                for (int hh = 0; hh < NH; hh++) rope(&qd[(size_t)hh * HD], HD, pos, ROPE_THETA);
+                for (int hh = 0; hh < NKV; hh++) rope(&kd[(size_t)hh * HD], HD, pos, ROPE_THETA);
                 memcpy(&kv_k[l][(size_t)pos * NKV * HD], kd.data(), kv_k[l].size() ? (size_t)NKV * HD * 4 : 0);
                 memcpy(&kv_v[l][(size_t)pos * NKV * HD], vd.data(), kv_v[l].size() ? (size_t)NKV * HD * 4 : 0);
 
@@ -373,8 +377,8 @@ int main(int argc, char** argv) {
                 #pragma omp parallel for schedule(static)
                 for (int hh = 0; hh < NH; hh++) {
                     int kvh = hh / GQA;
-                    const float* q = &qd[hh * HD];
-                    float* out = &attn[hh * HD];
+                    const float* q = &qd[(size_t)hh * HD];
+                    float* out = &attn[(size_t)hh * HD];
                     std::vector<float> sc(pos + 1);
                     float mx = -1e30f;
                     for (int p2 = 0; p2 <= pos; p2++) {

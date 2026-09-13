@@ -91,6 +91,11 @@ jobs:
     # engines only learned about changes by re-crawling on their own schedule
     # (scripts/indexnow_submit.py is the missing half). Runs after the Pages
     # deploy so the URLs it names are already live.
+    # Reads the repo and POSTs URLs to the search engines — nothing here needs a
+    # write scope. Declared explicitly because without a permissions block the
+    # job inherits the repository default: CodeQL actions/missing-workflow-permissions.
+    permissions:
+      contents: read
     needs: deploy
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
