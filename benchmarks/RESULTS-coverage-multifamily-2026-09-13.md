@@ -5435,3 +5435,35 @@ we bind **5 MB / 5 MB / 16 MB**. If arg3 is not what we assume, the kernel is re
 **Method note.** §119 was three hours of "small numerical difference" reasoning built on a quantity
 (`max|npu-host|`) whose *scale* I had not printed. One extra column — `max|npu|` — turned a subtle-divergence
 story into a binary one. Print the scale of the thing you are differencing.
+
+## 195. The one-token bisection survives the fixture check — five tokens, five disagreements — and one coordination catch
+
+**The risk I had to rule out.** My §190 fixture was **token 16**, and the nh20 lane's §88/§89 established that
+**token 16 has a zero embedding** — the fixture trap that cost them a full localization. So the one-token result
+could have been measuring a degenerate input. Varying the token settles it:
+
+| token | bf16 (engine) | FLM-ref |
+|---|---|---|
+| 16 | 51957 | 5517 |
+| 220 | 4461 | 35145 |
+| 1000 | 39208 | 35145 |
+| 5000 | 5517 | 35145 |
+| 42 | 4461 | 35145 |
+
+**They disagree on all five** — so §190's conclusion stands and was **not** a token-16 artifact. The engine's
+bf16 output varies with the token (51957 / 4461 / 39208 / 5517 / 4461), so its embedding is live and not
+degenerate.
+
+**And the table raises a separate question I am recording rather than explaining away**: the **FLM-ref value is
+constant at 35145 for four of the five tokens** (and 5517 for token 16). FLM's own path being insensitive to
+the token at n=1 is odd, and it means the FLM-ref **at one token may not be a usable reference** at all — it
+could be a sentinel, or FLM's prefill may need more than one token to be meaningful. So the useful half of this
+table is the engine-side variation and the persistent disagreement; the FLM-ref column needs its own check
+before anyone builds on it. That is exactly the kind of thing I would otherwise have quoted as a reference.
+
+**And a coordination catch worth stating**: `engine/npu/src/npu_engine_universal.cpp` is **modified and
+uncommitted** in the shared worktree — the other lane is mid-edit on it. My usual `git add -A` would have swept
+their in-flight work into my documentation commit. This commit therefore stages **only the benchmark log**, and
+the rule for a shared worktree follows: **never `git add -A` when a peer is editing; stage the paths you own.**
+The duplicate-numbering collisions earlier in this stretch came from the same shared-file situation, and this
+is the same class one layer down.
