@@ -4794,3 +4794,37 @@ the gate is not producing a *plausible-looking wrong answer* for it — the CPU 
 Phi4's wrongness were the gate alone, the CPU path would have to be wrong in a shape-dependent way; that is
 now the thing to test, rather than "the NPU attention ELF for nh24", which **does not exist and is never
 reached**.
+
+## 113. At @1024 the HOST attention is CORRECT — 1033, FLM's exact reference — while the NPU attention gives 1214
+
+The decisive A/B on the shape-matched path, re-taken on a quiet box (the other lane reports the ~12 clang
+processes that had been at 90-96% CPU are gone):
+
+| @1024, bf16 | ids_1024 | ids1024_c0 (first token 16 -> 220) |
+|---|---|---|
+| NPU attention (default) | **1214**, 1214 | 1214 ¹ |
+| CPU attention (`NPU_ATTN_CPU=1`) | **1033, 1033** | **152373** |
+
+¹ from §92's clean run.
+
+Two things at once:
+
+1. **The CPU attention reproduces FLM's reference EXACTLY** — 1033 on ids_1024, and 152373 on the modified
+   prompt, which is also FLM's value for that prompt (§92). So the host Q/K/V, the norms/RoPE, the KV cache
+   and the layer composition are all **correct for nh20**; the entire bf16 path is right except the NPU
+   attention step.
+2. **The NPU attention is wrong and context-free** (1214 for both first tokens) *while running the shape-matched
+   nh20 ELF*. So the fault is definitively **how the NPU kernel consumes what we hand it** — not the ELF's
+   provenance (§102), not the container (§99/§101), not the region (§112). This closes the loop §93 opened at
+   @256 and does it on the path whose ELF is Nanbeige's own, so §112's confound does not apply.
+
+**Practical consequence — and it is the first *correct* configuration in this item.** `NPU_ATTN_CPU=1` makes
+Nanbeige's bf16 prefill produce FLM's exact token at @1024 (1033) at ~15 s wall for the whole run. That is a
+correct, if slower, configuration today, as opposed to the "less wrong" values every other knob produced.
+
+**What remains for the NPU path** is now precisely "make the kernel read `bKv` the way the host path reads
+`kv_caches`": the host `attn_omp` reads `[token][NKV*HD]` order, while `bKv` is written
+`[region][token][(kvh&3)*HD]` with K in regions 0-1 and V at `region+v_add`. Region (§112) and V offset
+(§100) are excluded; the remaining difference is the per-token/head arrangement. That is now checkable against
+a **known-good output** (1033) instead of a reference token alone — run both attentions in-process on the same
+staged inputs and diff.
