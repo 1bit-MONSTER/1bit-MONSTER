@@ -6986,3 +6986,31 @@ The two checks that would separate the candidates, both cheap:
 
 1. change **only the last token** inside a plateau — a fixed-length computation may not notice;
 2. test whether the plateau is **flat below a block** (padding) or **above** one (truncation).
+
+## 139. The plateau is a FIXED-LENGTH computation: the bf16 path does not notice a change to the LAST token, while FLM does
+
+§138's first separating check, run — change **only the last token** (-> 99) inside the bf16 plateau:
+
+| prompt | bf16 | FLM-ref |
+|---|---|---|
+| G448 | 13 | 1704 |
+| G448, last token -> 99 | **13** | **13** |
+| G896 | 13 | 8193 |
+| G896, last token -> 99 | **13** | **13** |
+
+**The bf16 path is INSENSITIVE to the last token at both lengths** (13 -> 13), while the FLM-ref responds
+(1704 -> 13, 8193 -> 13). So the plateau is not a coincidence of values: **the bf16 path is not reading the last
+token at all at those lengths.** That is a **fixed-length computation** — the signature §84's fallback truncation
+had, and the same shape as the other lane's Phi4 plateau (native 220 across npt=16..64, where 220 is FLM's value
+at 128).
+
+**So the two lanes DO share a *signature*, even though their boundaries differ** — theirs flat over 16..64, mine
+flat over 320..896. And it sharpens the target considerably: the question is no longer "which lengths are wrong"
+but **"what length is actually being computed"** at a plateau — one measurement, since the plateau's value
+identifies it whenever it equals a reference value (220 did for theirs).
+
+**And one honest note about agreement inside a plateau.** For `G448_last99` and `G896_last99` the bf16 path (13)
+**equals** the FLM-ref (13) — so "agree" inside a plateau can be the plateau coinciding with the reference, not
+the path being right. **The agreement signal is weaker than it looks wherever a plateau is involved**, and
+plateaus must be identified before any length's "agree" is trusted. That also retroactively weakens some of the
+"6 of 8 agree" reading in §135/§137.
