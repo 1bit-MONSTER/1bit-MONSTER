@@ -7870,3 +7870,34 @@ replacement of its own degenerate points.
 
 **What it does not close:** the residual itself. *Why* one prompt token selects one of three fixed answers is still
 unmeasured — and this run was deliberately not designed to answer it, so it must not be read as evidence either way.
+
+## 151. The clean half reproduces from both sides — and a contended run produced a 1877 that would have dissolved the two-mechanism verdict
+
+Two things landed together, and they are the same lesson from opposite sides.
+
+**1. The clean Nanbeige half reproduces exactly.** Their run of the same eight fixtures gives the same three groups
+as §150 — 166101 {220, 1024, 4096}, 152551 {777, 12345, 30000, 45000}, 156468 {58907} — same fixture set, same arm,
+banner asserted. §146's fourth group was the zero-embedding pair; on clean tokens **PARTIAL stands** by construction,
+and the two-mechanism verdict is unaffected.
+
+**2. And a contended run produced a value that would have reversed it.** Their `S32_220` (= `C32_220`, verified
+byte-identical by `cmp`) gave **220** earlier and **1877** on a run taken while my Phi4 process held the device at
+~71% — *the same fixture, two answers*. They withdrew the `1877`. **What it would have become is the point**:
+*"Phi4 is partly blind too — 7/8, not 8/8"* is a plausible sentence, and it would have **dissolved the two-mechanism
+conclusion into one mechanism plus noise** — the verdict resting on a *smaller* defect than the one that produced
+the retraction.
+
+**So the contention degeneracy is the fourth row, and it is the only one that manufactures agreement:**
+fixture degeneracy produces a *context-free* answer, arm degeneracy a *totally blind* one, fixture-length
+degeneracy *another length's* answer — but contention produces **whichever answer makes the story work**, which is
+why it is the hardest to notice and why the load must be **recorded with every number** rather than reconstructed
+afterwards.
+
+**And the contention cut both ways in this stretch.** My §148 Phi4 banner check was taken while their Phi4 runs were
+live, and theirs while mine was — they have said so explicitly. §148's *claim* (host attention) is unaffected,
+because the banner states the **selection**, not a value; but its incidental `boot=220` **is** a contended number that
+happens to match the quiet value. Recorded rather than assumed, in both directions.
+
+**Standing consequence:** the Phi4 half of the clean set has **not** yet been taken on a quiet device, so the TOTAL
+side of the cross-lane verdict is still resting on runs taken under contention — including the five-length banner
+sweep of §385, whose *selection lines* are robust but whose `boot` values are not.
