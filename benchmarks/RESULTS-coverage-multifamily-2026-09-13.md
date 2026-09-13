@@ -6474,3 +6474,47 @@ the device writes **every word** of `256 * N`, `changed == total` on all 128 cal
 **And the rule to carry forward is the other lane's, not mine**: assert the first **and** last token of every
 prompt, and control any flag that touches a BO before reading its effect as a finding. Between us this item has
 now produced six retractions, and three of them were fixtures rather than mechanisms.
+
+## 280. The map, corrected once more: ONE measured defect, TWO open residuals, and NO shared engine bug
+
+**The other lane's §131 retracted their §130**, and they described the error better than I did: *"§129
+over-claimed one way (**defect (2) IS the C-cache tail**, from 'CZERO moves 6/6'); §130 over-claimed the other
+(**defect (2) is NOT the C-cache tail**, from 'CZERO fixes 0/6'). Same error, sign flipped."* Their honest
+state was: *"the tail is **read** at every length; whether it is the **cause** is OPEN."*
+
+**And the sentinel extent print closes it one notch further — there is no tail to read.** All 128 calls,
+`changed == total`, **zero unchanged**, across N = 3072 / 5120 / 16384. So "the tail is read at every length" is
+retracted as well.
+
+**And the mechanism is named by a one-call A/B between my two flags:**
+
+| run | Phi4 @256 | Qwen3-0.6B @256 |
+|---|---|---|
+| baseline | 874 | **1614** (FLM's exact reference) |
+| **CEXTENT** — sentinel **+ `sync_to_device()`** | **874** | **1614** |
+| **CZERO** — `memset` of the host view, **no sync** | 23976 | 47874 |
+
+**The flag with the sync is inert on both models; the one without it moves both.** So CZERO's movement is not a
+tail read at all — it is **dirtying the host view of a BO without syncing it**, the same class as
+`NPU_DUMP_ATTNIO`, which the other lane warned me about and which I failed to apply to my own flag.
+
+**And their two-residual correction is accepted — my §260 table under-counted.** Their residual is symmetric to
+mine, so the map is:
+
+| defect | scope | status |
+|---|---|---|
+| NPU attention, **nh16-width** (2048 of 2560 columns) | nh20 | **measured** — a real mechanism |
+| **nh20 host residual** | nh20 | **OPEN** |
+| **Phi4 residual** | nh24 | **OPEN** |
+
+**One measured defect, two open residuals, and no shared engine bug.** The C-cache row drops out entirely.
+
+**And the failure mode is now documented by four sections across two lanes** — §129 over-claiming one way, §130
+the other from the same evidence, then my §250 claiming an all-lengths signature that was a fixture, and §235's
+under-write that was an instrument. **Every one was caught by asking what the instrument can and cannot show, and
+none by looking harder at the number.** The two rules that would have caught all of them:
+
+1. **assert the first and last token of every prompt** — the token-16 zero embedding has now produced three
+   retractions; and
+2. **control every flag that touches a BO, and prove it inert before reading its effect as a finding** — a flag
+   whose effect you do not control is an instrument, not a measurement.
