@@ -202,7 +202,23 @@ def main():
                 seen[mid] = True
             else:
                 if mid not in seen or not seen[mid]:
-                    unverifiable[mid] = "no config / no mapped tag"
+                    # Record WHY it is unverifiable. The listing is fetched with
+                    # full=true, so `gated`/`private` are right here (verified
+                    # against the live API) — and the print used to assert
+                    # "gated repos need a token" for every entry regardless,
+                    # which sends readers after a token that cannot help.
+                    # Issue #2178 listed 7 such models; 5 of 7 checked, all
+                    # gated=false, two of them shipping training-hyperparameter
+                    # files (`batch_size`, `learning_rate`) instead of a model
+                    # config. Only claim gating when the API says so.
+                    if m.get("gated"):
+                        unverifiable[mid] = "gated — a token would let this be checked"
+                    elif m.get("private"):
+                        unverifiable[mid] = "private repo"
+                    elif cfg is None:
+                        unverifiable[mid] = "config fetch failed (404/network)"
+                    else:
+                        unverifiable[mid] = "no config / no mapped tag"
                 seen[mid] = False  # retry next run
             time.sleep(0.2)
             continue
@@ -290,8 +306,9 @@ def main():
         except Exception as _e:
             print(f"[watch] census_autopr failed: {_e}", file=sys.stderr)
     for mid, why in sorted(unverifiable.items()):
-        print(f"  ? UNVERIFIABLE {mid} ({why}) — gated repos need a token; "
-              f"retried next run")
+        # `why` carries the cause now, so no blanket gating claim: only the
+        # entries whose reason is actually gated benefit from a token.
+        print(f"  ? UNVERIFIABLE {mid} ({why}) — retried next run")
 
     # Only uncovered classes are a real alert. Unverifiable (gated/no-config)
     # models are expected — HF gates repos without a token, and a missing

@@ -214,6 +214,10 @@ BackendRoute merge_router_and_registry(const BackendRoute& router, const RoutePl
     }
     if (appended)
         out.reason += " | " + std::to_string(appended) + " lane(s) added";
+    // #2263: `out` is built fresh here, so to_backend_route()'s blocked ids would
+    // be dropped even though their verdict survives inside out.reason. Carry them
+    // so a caller can act on the plan instead of only reading it.
+    out.known_abort_ids = reg.known_abort_ids;
     return out;
 }
 
@@ -436,6 +440,16 @@ RoutePlan plan_route(const ModelArtifact& a, uint32_t context_tokens,
 BackendRoute to_backend_route(const RoutePlan& plan) {
     BackendRoute out;
     for (const auto& t : plan.targets) out.backend_ids_in_order.push_back(t.engine_id);
+    // #2263: the blocked capabilities get their verdict into `why` below, but the
+    // caller also needs the engine ids to act on it. backend_for() is the same
+    // translation table used to build `targets`, so the id is the one
+    // init_in_order will compare against.
+    for (const auto& r : plan.blocked) {
+        BackendType bt;
+        std::string id, constraint;
+        if (backend_for(r.first, bt, id, constraint) && !id.empty())
+            out.known_abort_ids.push_back(id);
+    }
 
     std::string why = plan.targets.empty() ? "no backend can serve this artifact"
                                            : "registry plan";

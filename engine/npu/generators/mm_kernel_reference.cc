@@ -633,10 +633,68 @@ extern "C" {
 #endif
 #endif
 
+// ── DELIVERY PROBE (opt-in: -DDELIVERY_PROBE) ───────────────────────────────
+// A kernel's arguments arrive in p0/p1/p2 on aie2p. Peano and Chess do not
+// implement that delivery the same way (Peano emits `movs p0, r0` in the core
+// program; Chess reaches an argument block through p6/p7), so when an arm
+// delivers nothing every output is zero and there is no way to see WHAT the
+// kernel received. This probe makes the delivered ABI observable as a number:
+// it stashes the three pointers it was handed into c_out[0..2] plus a sentinel
+// in c_out[3], then returns without computing. bench_gemm_analytical prints
+// C[0..7] when PROBE is set in the environment.
+#ifdef DELIVERY_PROBE
+#include <stdint.h>
+#define DELIVERY_PROBE_OR_NOTHING(a_in, b_in, c_out)                           \
+    do {                                                                       \
+      volatile int32_t *pr_ = (volatile int32_t *)(c_out);                     \
+      pr_[0] = (int32_t)(uintptr_t)(a_in);                                     \
+      pr_[1] = (int32_t)(uintptr_t)(b_in);                                     \
+      pr_[2] = (int32_t)(uintptr_t)(c_out);                                    \
+      pr_[3] = (int32_t)0x5A5A5A5A;                                            \
+      return;                                                                  \
+    } while (0)
+#else
+#define DELIVERY_PROBE_OR_NOTHING(a_in, b_in, c_out) do { } while (0)
+#endif
+
+// Second probe, for the 1-pointer kernel (zero_i32, called by the same core
+// just before matmul). Distinct sentinel 0xA5A5A5A5: if the chess arm shows it,
+// the 1-arg call was delivered while the 3-arg call was not.
+#ifdef DELIVERY_PROBE
+#define DELIVERY_PROBE_ZERO_OR_NOTHING(c_out)                                  \
+    do {                                                                       \
+      volatile int32_t *zr_ = (volatile int32_t *)(c_out);                     \
+      zr_[0] = (int32_t)(uintptr_t)(c_out);                                    \
+      zr_[1] = (int32_t)0xA5A5A5A5;                                            \
+      return;                                                                  \
+    } while (0)
+#else
+#define DELIVERY_PROBE_ZERO_OR_NOTHING(c_out) do { } while (0)
+#endif
+
+// Third knob, independent of the two above: DELIVERY_PROBE_FIXED=<address>
+// makes the kernel write a sentinel through an address that does NOT come from
+// the delivered arguments (the C-tile base of the core that owns C[0], which
+// the pointer stash reports on the working arm as c_out). It is emitted BEFORE
+// the pointer stash, so it still happens when the arguments are garbage, which
+// is the entire point:
+//   C[0] == 0xDEAD1234 -> the kernel executed and its arguments were garbage
+//   C[0] == 0          -> the kernel never reached this function
+#ifdef DELIVERY_PROBE_FIXED
+#define DELIVERY_PROBE_FIXED_OR_NOTHING()                                      \
+    do {                                                                       \
+      *((volatile int32_t *)(DELIVERY_PROBE_FIXED)) = (int32_t)0xDEAD1234;     \
+    } while (0)
+#else
+#define DELIVERY_PROBE_FIXED_OR_NOTHING() do { } while (0)
+#endif
+
 #define matmul_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,            \
                                  mlir_type_out, r, s, t)                       \
   void matmul_##mlir_type_in##_##mlir_type_out(ctype_in *a_in, ctype_in *b_in, \
                                                ctype_out *c_out) {             \
+    DELIVERY_PROBE_FIXED_OR_NOTHING();                                         \
+    DELIVERY_PROBE_OR_NOTHING(a_in, b_in, c_out);                              \
     matmul_vectorized_##r##x##s##x##t##_##mlir_type_in##_##mlir_type_out<      \
         DIM_M, DIM_K, DIM_N>(a_in, b_in, c_out);                               \
   }
@@ -652,6 +710,7 @@ extern "C" {
 #define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,              \
                                mlir_type_out, r, s, t)                         \
   void zero_##mlir_type_out(ctype_out *c_out) {                                \
+    DELIVERY_PROBE_ZERO_OR_NOTHING(c_out);                                     \
     zero_vectorized<ctype_out, DIM_M, DIM_N>(c_out);                           \
   }
 

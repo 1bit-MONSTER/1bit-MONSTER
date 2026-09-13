@@ -60,6 +60,11 @@ jobs:
         run: |
           bash scripts/census-watch.sh --limit 120 2>&1 | tee /tmp/census-watch.log
           RC=${PIPESTATUS[0]}
+          # Publish the code so the alert step can tell census-watch.sh's two
+          # non-zero meanings apart: 1 is "found an unmapped class" (the alert),
+          # anything else is a runtime failure (network, probe compile). Written
+          # before the early exits below so it is always emitted.
+          echo "rc=$RC" >> "$GITHUB_OUTPUT"
           # #2084: do NOT let this gate deadlock same-day census PRs. The
           # watcher compares against the LIVE HF snapshot, so a PR that maps
           # classes A/B would fail for classes C/D mapped only by a sibling PR.
@@ -68,13 +73,13 @@ jobs:
           # run on main. Runtime failures (RC > 1) still fail the check.
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             if [ "$RC" = "1" ]; then
-              echo "::warning::census watcher found uncovered classes (advisory on PR — the nightly run on main is the blocking gate)"
-              grep -E "UNCOVERED|UNVERIFIABLE" /tmp/census-watch.log > /tmp/census-pr.txt || true
+              echo "::warning::census watcher found unmapped classes (advisory on PR — the nightly run on main is the blocking gate)"
+              grep -E "UNCOVERED|UNVERIFIABLE|SIGNIFICANT" /tmp/census-watch.log > /tmp/census-pr.txt || true
               if [ -s /tmp/census-pr.txt ] && command -v gh >/dev/null 2>&1; then
                 {
                   echo "## census: advisory (this PR's branch)"
                   echo ""
-                  echo "Uncovered classes vs the live HF snapshot. Advisory on PRs (#2084) — same-day sibling PRs map different classes. The blocking gate is the nightly schedule run."
+                  echo "Unmapped classes vs the live HF snapshot. Advisory on PRs (#2084) — same-day sibling PRs map different classes. The blocking gate is the nightly schedule run."
                   echo ""
                   echo '```'
                   cat /tmp/census-pr.txt
@@ -91,12 +96,38 @@ jobs:
       # Only alert on scheduled/manual runs — on PRs the red check itself is
       # the signal. Guard on the watch step specifically so a checkout/setup
       # failure doesn't file a misleading issue.
-      - name: File an alert issue on uncovered classes
-        if: failure() && steps.watch.conclusion == 'failure' && github.event_name != 'pull_request'
+      - name: File an alert issue on unmapped classes
+        # steps.watch.outputs.rc == '1' is census-watch.sh's documented
+        # "a new model carries an architecture class the registry doesn't map".
+        # Any other non-zero is a runtime failure (no network, probe compile
+        # error) and must not be reported as an architecture finding: the grep
+        # below matches nothing, so it filed an EMPTY "Census alert" claiming
+        # classes were found — and because the dedupe below skips while an issue
+        # is open, that empty issue then suppressed the next real alert until
+        # someone closed it. A transient DNS failure could blind the watch.
+        if: failure() && steps.watch.conclusion == 'failure' && steps.watch.outputs.rc == '1' && github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          grep -E "UNCOVERED|UNVERIFIABLE" /tmp/census-watch.log || true
+          # SIGNIFICANT must be in the pattern. Testing/hf_new_models.py:249-258
+          # partitions the uncovered set and prints the two halves with DIFFERENT
+          # prefixes: a major-family/vision arrival goes out as "!! SIGNIFICANT",
+          # everything else as "!! UNCOVERED". Both make the script exit 1, but a
+          # pattern of UNCOVERED|UNVERIFIABLE matches only the second -- so when
+          # the sole trigger was a significant arrival this step filed an issue
+          # listing the unrelated UNVERIFIABLE names and never named the class
+          # that failed the run. That is issue #2178: the run that filed it had
+          # 1 uncovered class (deepseekv41, printed "!! SIGNIFICANT") and the
+          # body contained zero UNCOVERED lines.
+          ALERT_RE='UNCOVERED|UNVERIFIABLE|SIGNIFICANT'
+          grep -E "$ALERT_RE" /tmp/census-watch.log || true
+          # Belt and braces for the same failure mode: rc==1 with nothing to
+          # report would still file an empty alert, which dedupes away the next
+          # real one.
+          if ! grep -qE "$ALERT_RE" /tmp/census-watch.log; then
+            echo "watch exited 1 but the log carries no class lines — not filing"
+            exit 0
+          fi
           gh label create census-watch 2>/dev/null || true
           EXISTING=$(gh issue list --label census-watch --state open --json number --jq 'length')
           if [ "$EXISTING" -gt 0 ]; then
@@ -104,19 +135,33 @@ jobs:
             exit 0
           fi
           {
-            echo "## Census coverage breach"
+            echo "## Census alert"
             echo ""
-            echo "The daily new-model watcher found HF models whose architecture class is not mapped by the engine registry:"
+            echo "The daily new-model watcher found architecture classes the engine registry does not map:"
             echo ""
             echo '```'
-            grep -E "UNCOVERED|UNVERIFIABLE" /tmp/census-watch.log || true
+            grep -E "$ALERT_RE" /tmp/census-watch.log || true
             echo '```'
             echo ""
-            echo "Fix: add the missing mapping in \`include/rocm_cpp/bitnet_model.h\` (alias if it is a known family, otherwise a real implementation), then re-run \`python3 Testing/census_coverage.py\`."
-            echo ""
+            # One instruction per category actually present. The previous single
+            # "alias if it is a known family" sentence is the opposite of what a
+            # SIGNIFICANT arrival needs (its own log line says "NOT an alias"),
+            # so a reader acting on this issue did the wrong thing.
+            if grep -q '!! SIGNIFICANT' /tmp/census-watch.log; then
+              echo "**Significant arrivals** — real engine architecture support + decode validation, **not** an alias. Reviewed evidence: \`Testing/arch-gaps.md\` (see \`research/ws13-arch-gap-closure/\`)."
+              echo ""
+            fi
+            if grep -q '!! UNCOVERED' /tmp/census-watch.log; then
+              echo "**Uncovered classes** — add the mapping in \`include/rocm_cpp/bitnet_model.h\` (alias if it is a known family, otherwise a real implementation), then re-run \`python3 Testing/census_coverage.py\`."
+              echo ""
+            fi
+            if grep -q '? UNVERIFIABLE' /tmp/census-watch.log; then
+              echo "**Unverifiable** — no config or no mapped tag. Not a coverage breach (see the note at the end of \`Testing/hf_new_models.py\`), retried next run; listed for completeness."
+              echo ""
+            fi
             echo "Report: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } > /tmp/census_issue.md
           gh issue create \
-            --title "census: new HF model class uncovered by the registry" \
+            --title "census: unmapped architecture class(es) in the daily HF sweep" \
             --label census-watch \
             --body-file /tmp/census_issue.md

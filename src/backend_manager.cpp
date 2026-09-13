@@ -606,6 +606,18 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         auto& info = backends_[idx];
         if (!info.available || !info.auto_selectable) continue;
 
+        // #2263: the plan has already put this engine in `blocked` (KNOWN-ABORT)
+        // for THIS artifact — the measured case aborts the process rather than
+        // failing closed, so attempting it cannot succeed, and it costs the full
+        // per-lane budget plus the lane's retry delay before declining (measured:
+        // one such lane was the whole of a 23 s phase). Only populated for
+        // auto-selected probes, so a model pinned with -m keeps its lanes.
+        if (!skip_ids_.empty() &&
+            std::find(skip_ids_.begin(), skip_ids_.end(), info.id) != skip_ids_.end()) {
+            printf("  → skipped (KNOWN-ABORT for this artifact, #2263)\n");
+            continue;
+        }
+
         printf("BackendManager: trying %s (%s)...\n", info.id.c_str(), info.description.c_str());
         // Try to create via dlsym (GPU/NPU backends live in librocm_cpp.so or standalone)
         // CPU backend is linked directly
@@ -615,6 +627,12 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
             continue;
         }
         info.instance = std::shared_ptr<Backend>(raw);
+        // #2263: for an auto-selected probe, narrow this lane's decline budget
+        // before we ask it to init (Backend::set_init_budget).
+        if (probe_retries_ > 0 || probe_timeout_s_ > 0) {
+            info.instance->set_init_budget(probe_retries_, probe_timeout_s_);
+        }
+
 
         // Timeout guard: if a backend takes >6s to init (e.g. CPU scanning
         // missing weights), skip it so higher-tier backends like NPU FLM get
@@ -632,7 +650,10 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
         // seconds on a cold cache). 6s was timing out legit backends so they
         // never came up; still bounded so a hung init can't block forever
         // (issue #1282).
-        if (init_fut.wait_for(std::chrono::seconds(120)) == std::future_status::ready) {
+        // #2263: the outer cap follows the probe budget when one is set (a probe must
+        // not wait 120 s per lane across ~20 lanes).
+        const int init_cap_s = probe_timeout_s_ > 0 ? probe_timeout_s_ : 120;
+        if (init_fut.wait_for(std::chrono::seconds(init_cap_s)) == std::future_status::ready) {
             // init() may THROW (wedged NPU/XRT, driver fault, OOM) — the
             // exception is captured by the future and rethrown here. A
             // broken backend must be skipped, never allowed to terminate
@@ -645,7 +666,7 @@ bool BackendManager::init_in_order(const ModelConfig& cfg, const std::string& we
                 printf("  → ❌ (init threw unknown exception)\n");
             }
         } else {
-            printf("  → ⏱️  init timed out (>120s) — skipping\n");
+            printf("  → ⏱️  init timed out (>%ds) — skipping\n", init_cap_s);
             destroy_instance(info);
             continue;
         }

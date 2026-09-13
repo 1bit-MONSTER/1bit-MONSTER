@@ -55,6 +55,11 @@ private:
     int spawn_retries_ = 10;
     int retry_delay_s_ = 5;
     int init_timeout_s_ = 120;
+    // #2263: bounded decline for auto-selected probes (see Backend::set_init_budget).
+    void set_init_budget(int retries, int timeout_s) override {
+        if (retries > 0) spawn_retries_ = retries;
+        if (timeout_s > 0) init_timeout_s_ = timeout_s;
+    }
     // Per-request statistics from the last /v1/completions call (M3
     // benchmark): decode tok/s reported by lse-server's timings field.
     double last_decode_tok_s_ = 0.0;
