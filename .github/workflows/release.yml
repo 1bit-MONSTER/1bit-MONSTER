@@ -103,16 +103,14 @@ jobs:
           cp README.md dist/
           cp LICENSE dist/
           cp site/assets/logo.png dist/
-          # A loader script so binaries find librocm_cpp.so
-          # next to the tarball without the user hand-setting LD_LIBRARY_PATH.
-          cat > dist/run.sh <<'EOF'
-          #!/usr/bin/env bash
-          set -e
-          HERE="$(cd "$(dirname "$0")" && pwd)"
-          export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          export PATH="$HERE/bin:$PATH"
-          exec "$HERE/bin/1bit" "$@"
-          EOF
+          # Loader script so binaries find librocm_cpp.so next to the tarball
+          # without the user hand-setting LD_LIBRARY_PATH. Single source of
+          # truth: packaging/tarball-run.sh — packaging/Makefile's `stage`
+          # target installs the same file as run.sh in the website tarball, and
+          # it detects this flat bin/+lib/ layout as well as that FHS one, so
+          # the two artifacts can no longer drift (the website .tar.xz had no
+          # run.sh at all while the docs told users to run ./run.sh).
+          cp packaging/tarball-run.sh dist/run.sh
           chmod +x dist/run.sh
           tar czf 1bit-linux-x86_64.tar.gz -C dist .
 
