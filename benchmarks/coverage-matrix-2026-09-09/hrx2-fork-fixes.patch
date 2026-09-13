@@ -1,0 +1,187 @@
+diff --git a/ggml/src/ggml-cpu/ggml-cpu.c b/ggml/src/ggml-cpu/ggml-cpu.c
+index 70423c863..92069c4e5 100644
+--- a/ggml/src/ggml-cpu/ggml-cpu.c
++++ b/ggml/src/ggml-cpu/ggml-cpu.c
+@@ -2102,6 +2102,19 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
+             }
+     }
+ 
++    if (getenv("GGML_DUMP_NODE") && params->ith == 0 && tensor->op != GGML_OP_NONE) {
++        const char * filter = getenv("GGML_DUMP_FILTER");
++        if (!filter || strstr(tensor->name, filter)) {
++            static int dump_seq = 0;
++            char path[512];
++            snprintf(path, sizeof path, "/tmp/nodedump/%03d_%lldx%lldx%lldx%lld_%s_%s.bin", dump_seq++,
++                (long long)tensor->ne[0], (long long)tensor->ne[1], (long long)tensor->ne[2], (long long)tensor->ne[3],
++                ggml_op_name(tensor->op), tensor->name[0] ? tensor->name : "anon");
++            FILE * df = fopen(path, "wb");
++            if (df) { size_t nb = ggml_nbytes(tensor); fwrite(tensor->data, 1, nb, df); fclose(df); }
++        }
++    }
++
+ }
+ 
+ // Android's libc implementation "bionic" does not support setting affinity
+diff --git a/ggml/src/ggml-hrx2/ggml-hrx2.cpp b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
+index 17c5d24a7..ca637e40b 100644
+--- a/ggml/src/ggml-hrx2/ggml-hrx2.cpp
++++ b/ggml/src/ggml-hrx2/ggml-hrx2.cpp
+@@ -3158,7 +3158,8 @@ static bool ggml_backend_hrx2_extract_flash_attn_fa0_fusion(
+         q->ne[2] <= 0 ||
+         k->ne[1] <= 0 ||
+         k->ne[2] <= 0 ||
+-        k->ne[2] > 16) {
++        k->ne[2] > 16 ||
++        q->ne[2] > 16) {
+         return false;
+     }
+ 
+diff --git a/ggml/src/ggml-hrx2/kernels/get_rows_moe_weights_f32.loom b/ggml/src/ggml-hrx2/kernels/get_rows_moe_weights_f32.loom
+index f1e5819c5..d52e3aa64 100644
+--- a/ggml/src/ggml-hrx2/kernels/get_rows_moe_weights_f32.loom
++++ b/ggml/src/ggml-hrx2/kernels/get_rows_moe_weights_f32.loom
+@@ -1,5 +1,5 @@
+ config.decl @hrx2.shape.get_rows_moe.nexperts : %value: index where [range(%value, 1, 1024)]
+-config.decl @hrx2.shape.get_rows_moe.nselected : %value: index where [range(%value, 1, 128)]
++config.decl @hrx2.shape.get_rows_moe.nselected : %value: index where [range(%value, 1, 1024)]
+ config.decl @hrx2.shape.get_rows_moe.ntokens : %value: index where [range(%value, 1, 1048576)]
+ config.decl @hrx2.shape.get_rows_moe.src0_token_stride : %value: index where [range(%value, 1, 1048576)]
+ config.decl @hrx2.shape.get_rows_moe.idx_token_stride : %value: index where [range(%value, 1, 1048576)]
+@@ -28,7 +28,7 @@ kernel.def export("hrx2_get_rows_moe_weights_f32") @hrx2_get_rows_moe_weights_f3
+   %dst_token_stride = config.get @hrx2.shape.get_rows_moe.dst_token_stride : index
+   %workgroup_size = config.get @hrx2.tuning.get_rows_moe.workgroup_size : index
+   %nexperts_bounded = index.assume %nexperts [range(%nexperts, 1, 1024)] : index
+-  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 128)] : index
++  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 1024)] : index
+   %ntokens_bounded = index.assume %ntokens [range(%ntokens, 1, 1048576)] : index
+   %workgroup0 = kernel.workgroup.id<x> : index
+   %lane0 = kernel.workitem.id<x> : index
+diff --git a/ggml/src/ggml-hrx2/kernels/mul_mat_f32_f32_ggml_tbl_tiled.loom b/ggml/src/ggml-hrx2/kernels/mul_mat_f32_f32_ggml_tbl_tiled.loom
+index 7ed24cc30..1f7f929db 100644
+--- a/ggml/src/ggml-hrx2/kernels/mul_mat_f32_f32_ggml_tbl_tiled.loom
++++ b/ggml/src/ggml-hrx2/kernels/mul_mat_f32_f32_ggml_tbl_tiled.loom
+@@ -3,7 +3,7 @@ config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 262144)]
+ config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
+ config.decl @hrx2.shape.ntokens : %value: index where [range(%value, 1, 4194304)]
+ config.decl @hrx2.shape.src1_cols_count : %value: index where [range(%value, 1, 4194304)]
+-config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 64)]
++config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 1024)]
+ config.decl @hrx2.tuning.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+ 
+ // ggml-layout f32 matmul with per-column source/destination offset TABLES,
+@@ -65,7 +65,7 @@ kernel.def export("hrx2_mul_mat_f32_f32_ggml_tbl_tiled_static") @hrx2_mul_mat_f3
+   %cols_padded = index.mul %cols_groups, %eight_c : index
+   %cols_padded_b = index.assume %cols_padded [range(%cols_padded, 1, 512)] : index
+   %ntokens_bounded = index.assume %ntokens [range(%ntokens, 1, 4194304)] : index
+-  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 64)] : index
++  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 1024)] : index
+   %src1_cols_count = config.get @hrx2.shape.src1_cols_count : index
+   // truthful tight upper bounds for the table-derived indices: a src1_cols
+   // entry is a COLUMN index (token t for shared src1 [k, ntokens], or
+diff --git a/ggml/src/ggml-hrx2/kernels/mul_mat_q4nx_fused_f32.loom b/ggml/src/ggml-hrx2/kernels/mul_mat_q4nx_fused_f32.loom
+index 2929e27e2..f2d45e213 100644
+--- a/ggml/src/ggml-hrx2/kernels/mul_mat_q4nx_fused_f32.loom
++++ b/ggml/src/ggml-hrx2/kernels/mul_mat_q4nx_fused_f32.loom
+@@ -3,7 +3,7 @@ config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 262144)]
+ config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
+ config.decl @hrx2.shape.ntokens : %value: index where [range(%value, 1, 4194304)]
+ config.decl @hrx2.shape.src1_cols_count : %value: index where [range(%value, 1, 4194304)]
+-config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 64)]
++config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 1024)]
+ config.decl @hrx2.tuning.q4nx.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+ config.decl @hrx2.tuning.q4nx.n_tile_cols : %value: index where [range(%value, 1, 256)]
+ 
+@@ -784,7 +784,7 @@ kernel.def export("hrx2_mul_mat_q4nx_fused_f32_r16x8t") @hrx2_mul_mat_q4nx_fused
+   %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
+   %n_tc_bounded = index.assume %n_tc [range(%n_tc, 1, 256)] : index
+   %ntokens_bounded = index.assume %ntokens [range(%ntokens, 1, 4194304)] : index
+-  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 64)] : index
++  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 1024)] : index
+   %src1_cols_count = config.get @hrx2.shape.src1_cols_count : index
+   %ntokens_m1 = index.sub %ntokens_bounded, %unit : index
+   %src1_cols_m1 = index.sub %src1_cols_count, %unit : index
+diff --git a/ggml/src/ggml-hrx2/kernels/mul_mat_q4nx_fused_tbl_tiled.loom b/ggml/src/ggml-hrx2/kernels/mul_mat_q4nx_fused_tbl_tiled.loom
+index bd7553464..6590afd06 100644
+--- a/ggml/src/ggml-hrx2/kernels/mul_mat_q4nx_fused_tbl_tiled.loom
++++ b/ggml/src/ggml-hrx2/kernels/mul_mat_q4nx_fused_tbl_tiled.loom
+@@ -3,7 +3,7 @@ config.decl @hrx2.shape.rows : %value: index where [range(%value, 1, 262144)]
+ config.decl @hrx2.shape.cols : %value: index where [range(%value, 1, 512)]
+ config.decl @hrx2.shape.ntokens : %value: index where [range(%value, 1, 4194304)]
+ config.decl @hrx2.shape.src1_cols_count : %value: index where [range(%value, 1, 4194304)]
+-config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 64)]
++config.decl @hrx2.shape.nselected : %value: index where [range(%value, 1, 1024)]
+ config.decl @hrx2.tuning.q4nx.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+ config.decl @hrx2.tuning.q4nx.n_tile_cols : %value: index where [range(%value, 1, 256)]
+ 
+@@ -67,7 +67,7 @@ kernel.def export("hrx2_mul_mat_q4nx_fused_tbl_tiled") @hrx2_mul_mat_q4nx_fused_
+   %rows_bounded = index.assume %rows [range(%rows, 1, 262144)] : index
+   %cols_bounded = index.assume %cols [range(%cols, 1, 512)] : index
+   %ntokens_bounded = index.assume %ntokens [range(%ntokens, 1, 4194304)] : index
+-  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 64)] : index
++  %nselected_bounded = index.assume %nselected [range(%nselected, 1, 1024)] : index
+   %src1_cols_count = config.get @hrx2.shape.src1_cols_count : index
+   %n_tc_bounded = index.assume %n_tc [range(%n_tc, 1, 256)] : index
+   // truthful tight upper bounds for table-derived indices (see round 22)
+diff --git a/ggml/src/ggml-hrx2/kernels/pointwise_f32.loom b/ggml/src/ggml-hrx2/kernels/pointwise_f32.loom
+index 8cdb9aa68..8c22e1175 100644
+--- a/ggml/src/ggml-hrx2/kernels/pointwise_f32.loom
++++ b/ggml/src/ggml-hrx2/kernels/pointwise_f32.loom
+@@ -1,8 +1,8 @@
+ config.decl @hrx2.shape.pointwise.ncols : %value: index where [range(%value, 1, 1048576)]
+ config.decl @hrx2.shape.pointwise.nrows : %value: index where [range(%value, 1, 1048576)]
+-config.decl @hrx2.shape.pointwise.src0_row_stride : %value: index where [range(%value, 1, 65536)]
+-config.decl @hrx2.shape.pointwise.src1_row_stride : %value: index where [range(%value, 0, 65536)]
+-config.decl @hrx2.shape.pointwise.src1_ncols : %value: index where [range(%value, 1, 65536)]
++config.decl @hrx2.shape.pointwise.src0_row_stride : %value: index where [range(%value, 1, 1048576)]
++config.decl @hrx2.shape.pointwise.src1_row_stride : %value: index where [range(%value, 0, 1048576)]
++config.decl @hrx2.shape.pointwise.src1_ncols : %value: index where [range(%value, 1, 1048576)]
+ config.decl @hrx2.tuning.pointwise.workgroup_size : %value: index where [range(%value, 32, 1024), mul(%value, 32)]
+ 
+ kernel.def export("hrx2_add_f32") @hrx2_add_f32() {
+@@ -26,7 +26,7 @@ kernel.def export("hrx2_add_f32") @hrx2_add_f32() {
+   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
+   %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
+   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
+-  %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 65536)] : index
++  %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 1048576)] : index
+   %workgroup0 = kernel.workgroup.id<x> : index
+   %lane0 = kernel.workitem.id<x> : index
+   %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 4194303)] : index
+@@ -87,7 +87,7 @@ kernel.def export("hrx2_mul_f32") @hrx2_mul_f32() {
+   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
+   %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
+   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
+-  %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 65536)] : index
++  %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 1048576)] : index
+   %workgroup0 = kernel.workgroup.id<x> : index
+   %lane0 = kernel.workitem.id<x> : index
+   %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 4194303)] : index
+@@ -344,7 +344,7 @@ kernel.def export("hrx2_div_f32") @hrx2_div_f32() {
+   %workgroup_size = config.get @hrx2.tuning.pointwise.workgroup_size : index
+   %ncols_bounded = index.assume %ncols [range(%ncols, 1, 1048576)] : index
+   %nrows_bounded = index.assume %nrows [range(%nrows, 1, 1048576)] : index
+-  %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 65536)] : index
++  %src1_ncols_bounded = index.assume %src1_ncols [range(%src1_ncols, 1, 1048576)] : index
+   %workgroup0 = kernel.workgroup.id<x> : index
+   %lane0 = kernel.workitem.id<x> : index
+   %workgroup = index.assume %workgroup0 [range(%workgroup0, 0, 4194303)] : index
+diff --git a/gguf-py/gguf/constants.py b/gguf-py/gguf/constants.py
+index b6ab108a0..06e36732f 100644
+--- a/gguf-py/gguf/constants.py
++++ b/gguf-py/gguf/constants.py
+@@ -3998,6 +3998,7 @@ class GGMLQuantizationType(IntEnum):
+     NVFP4   = 40
+     Q1_0    = 41
+     Q4NX    = 42
++    Q4NX_C43 = 43   # 1bit re-emit: type42 -> slot 43 (36-38 = REMOVED specials)
+ 
+ 
+ class ExpertGatingFuncType(IntEnum):
+@@ -4166,6 +4167,7 @@ GGML_QUANT_SIZES: dict[GGMLQuantizationType, tuple[int, int]] = {
+     GGMLQuantizationType.NVFP4:   (64, 4 + 32),
+     GGMLQuantizationType.Q1_0:    (128, 2 + 16),
+     GGMLQuantizationType.Q4NX: (8192, 5120),
++    GGMLQuantizationType.Q4NX_C43: (8192, 5120),
+ }
+ 
+ 
