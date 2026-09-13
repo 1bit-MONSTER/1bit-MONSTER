@@ -4452,3 +4452,42 @@ the `region+2` V placement is not the context loss either. Recording it here rat
 it is the second layout hypothesis in a row to be killed by measurement and the arithmetic was still worth
 handing over.
 
+
+## 109. Contention, closed from both ends: the holders are RESIDENT, and the boot is stable with them parked on the device
+
+**The process-table answer** (from the dsh lane, which holds zero device and checked rather than assumed):
+
+| pid | process | device | cpu over ~25 h |
+|---|---|---|---|
+| 285847 | `flm serve qwen3.6-moe:35b-a3b` | fd 7 -> `/dev/accel/accel0`, plus mmap | **0:06** |
+| 344571 | `llama-server --device HRX0` | fd 5 -> the same device, plus mmap | **0:03** |
+
+**Both hold the device open for the life of the process** — a real fd and an mmap, not attach-on-demand — and
+**both are effectively parked** at six and three seconds of CPU in a day.
+
+**That strengthens the refutation rather than weakening it.** A resident hwctx would be expected to perturb
+**steadily**; instead the boot is **stable at ten samples with both processes parked on the device** —
+Nanbeige i8 1033 @1024 and 5938 @256, 0.6B i8 1614 and 220, gates 1614 / 25 / 1614 / 220 / 220. If the
+holders were the cause, the stability would be the anomaly; it is the variation that would need explaining,
+and that is now explained by the truncation instead.
+
+**The caveat that survives is theirs, and it is a good one**: `flm serve` is a **server**, so it can become
+**active** when someone calls it — and that caller perturbs the device without either side seeing the other.
+That matches the residual the other lane recorded (under ~98% CPU starvation one run gave 16 and several
+timed out; not reproduced in 19 clean samples). So the honest statement is: **contention perturbs the native
+path under load, is not the cause of the nondeterminism, and is not a property of the device.**
+
+**And the `272 272 272` batch is closed with it**: truncated-context argmax wandering, not a coincidence and
+not the uninitialized-BO fix. The `bA`/`bC` zeroing stands on its own merits — both BOs are read by a kernel
+and were never initialised — but it was never this mechanism, which is exactly why its effect never
+reproduced.
+
+**Disclosure, recorded and dated**: the dsh lane drove 235 embedding requests through a lemonade/1bit server
+on port 8088 at ~10:04Z, and checked the fuser list before and after to confirm that process never holds
+`/dev/accel/accel0`. Declared rather than left to be guessed at, which is the right way to hand someone a
+time series.
+
+**Exclusivity**: a window was requested through the operator before any of the above was known. It is **not
+needed** — every number above was taken with both holders present — but it is **not void either**: the same
+runs with the holders actually gone would confirm that they are irrelevant, and it is the one datum that
+cannot be produced without the window.
