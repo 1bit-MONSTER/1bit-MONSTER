@@ -150,23 +150,40 @@ a contended box, in the expected direction (this run is marginally slower, consi
 two resident processes). **The scorecard is reproducible, not a one-off sample**, and the
 boot-token gates it rests on are unchanged by all of this session's engine work.
 
-## 9. Decode re-measured: now clearly AHEAD of FLM, tokens still verified (2026-09-13)
+## 9. Decode: six of six beat FLM on ONE harness (2026-09-13)
 
-Section 8 re-verified prefill and TTFT; the decode column had not been re-measured. Done now,
-`NPU_RUNLIST=1`, 1024-token prompt, 4 tokens, on the same build:
+Section 8 re-verified prefill and TTFT; the decode column had not been re-measured. It has been now,
+and on a **single harness** — the same binary, prompt, token count and timing loop:
+`NPU_RUNLIST=1` (native) against `NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1` (FLM's own `forward()`):
 
-| model | decode now | scorecard | FLM on-box | native vs FLM |
-|---|---|---|---|---|
-| Qwen3-0.6B | **98 tok/s** (10.2 ms/tok) | 80 | 77.8 | **+26%** |
-| Qwen3-1.7B | **50** (19.9) | 40 | 39.53 | **+26%** |
-| Qwen3-4B | **24** (41.1) | 19 | 18.75 | **+28%** |
-| Qwen3-8B | **14** (71.0) | 11 | 10.70 | **+31%** |
+| model | native | FLM, same harness | native / FLM |
+|---|---|---|---|
+| Qwen3-0.6B | **91 tok/s** | 74 | **1.23x** |
+| Qwen3-1.7B | **46** | 37 | **1.24x** |
+| Qwen3-4B | **22** | 18 | **1.22x** |
+| Qwen3-VL-4B | **22** | 18 | **1.22x** |
+| Qwen3-8B | **13** | 11 | **1.18x** |
+| Llama-3.1-8B | **15** | 11 | **1.33x** |
 
-So decode moves from "matches FLM" to **beats it by 26-31% on every size measured**, and the
-margin is consistent across sizes rather than one outlier.
+**All six beat FLM by 18-33%**, consistently across sizes, with the 8B model showing the largest
+margin — a useful sanity signal, since a token-limited comparison would not be expected to favour the
+biggest model.
 
-**Token correctness re-checked on the same build**, so the faster number is not a faster wrong
-answer — `decode_token_check.sh`, Qwen3-0.6B, 8 tokens:
+**This section REPLACES a withdrawn claim.** An earlier revision of this file reported "+26-31% over
+FLM" by comparing this engine's `NPU_RUNLIST=1` ms/tok line against FLM's `flm bench` output: the same
+*metric*, a different *harness*, and different prompt and token-count conditions. That was withdrawn in
+section 9.1 of `RESULTS-coverage-multifamily-2026-09-13.md` and re-measured on one harness in 9.2 — which
+is what the table above is. The corrected figure is **smaller and defensible**, and the working log
+records both the error and the correction.
+
+**Llama-3.1-8B's row is new.** It had reported "no ms/tok line" for the whole session because the runlist
+needs per-context layer ELFs and `gen_layer_elfs` was Qwen3-only; generalising it made Llama's ELFs
+generate in 2 s and closed the row. The same run returned its runlist prefill at **220**, matching both
+the bf16 boot and FLM's reference — which independently validates the generator on a **second**
+architecture.
+
+**Token correctness re-checked on the same build**, so the faster number is not a faster wrong answer —
+`decode_token_check.sh`, Qwen3-0.6B, 8 tokens:
 
 ```
 FLM-ref decode : 25 220 220 16 17 23 220 11211 220
@@ -276,3 +293,55 @@ So the decode row is **5 of 6**: every model that can be measured beats FLM by 1
 (0.6B 1.23x, 1.7B 1.24x, 4B 1.22x, VL-4B 1.22x, 8B 1.18x), and the sixth is blocked by a missing
 per-shape ELF generator rather than by an adverse measurement. Adding it is the same class of work
 as the per-family attention ELF hook (26850018a / 321983c67) — a tool and a file, not a kernel.
+
+## 10. Coverage: where the four failing families actually stand (2026-09-13)
+
+Section 5's table is still accurate, but the *reasons* are much sharper now than when it was written,
+because the investigation moved from inspection to byte-level controls. Final state:
+
+**One family has a PROVEN root cause, fixed:** Gemma3-1B's tile reorder needs an **even** group count and
+its `H = 1152` gives `G_h = 1152/128 = 9`, which is odd — the `o -> i` map was not a permutation, so
+tiles were duplicated and dropped silently. `S = ceil(G/2)` fixes it and is a no-op for every even G
+(verified: Qwen3-0.6B 25, Qwen3-4B 220, Llama 220 — all unchanged). Gemma3-1B also has a **second**,
+different defect: `IM = 24864` is not a multiple of 128, so `G_d` truncated, and `H = 1152` is not a
+multiple of the dequant's 256-wide tile — which is why it **segfaulted** until the engine was made to
+refuse such a model with a named reason instead of crashing. Both are recorded; neither is fully fixed.
+
+**The other three have no wrong value left to find.** Every input the host supplies to the per-ctx ELF is
+now compared byte-for-byte against FLM's own, captured under the interposer and **pointer-matched**:
+
+| input | result |
+|---|---|
+| per-layer weight BO (7 projections) | **byte-identical** to FLM's |
+| i5 — input/post-attention norm weights | **byte-identical** |
+| i6 — cos/sin table + q/k norm slots | **byte-matched** (unused slots are zeros, not identity) |
+| final norm — `bo_fnorm_` | **byte-matched** |
+| activation — arg3 (the token's embedding row) | **byte-matched** |
+| the RoPE base | made model-correct (it had been Qwen3's 1e6 for every family) |
+| generated per-ctx ELFs | proven correct on **two** architectures (Qwen3-4B, Llama) |
+
+So this is no longer a list of suspects. What remains is an **architectural divergence**: FLM's ELF set is
+**fixed** (16 kernels, identical at npt=2 and npt=64, with the context passed as an argument), while the
+engine generates **one ELF per context length**. Both work — the engine's is proven on two architectures
+— and the engine's approach is therefore **unproven against FLM for any family**, not wrong. Nanbeige
+(nh20) and Phi4 (nh24) both use attention shapes that combination has never been exercised on.
+
+**LFM2**, the family the user asked for, is a separate case and is **scoped rather than solved**: the
+int4 decoder is ported and the convention is detected from the data; the loader resolves LFM2's tensors;
+the layer-BO sizing bug that segfaulted is fixed; the short-conv weights are packed; the block order was
+corrected from the HF implementation; and FLM's LFM2 kernel signature was **measured** from a capture and
+shown to match the binding the engine already uses — so the remaining work is **weight packing plus
+xclbin selection, not a new kernel interface**. The conv compute itself is not implemented.
+
+## 11. Session close
+
+**101 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
+native engine supports, and the coverage limits are documented with their best explanations — one proven
+and partially fixed, three reduced to a single named architectural difference, and two (Qwen3.5-4B, LFM2)
+identified as hybrids needing family implementations.
+
+**Seven of this session's findings were mine and wrong**, and all seven are recorded rather than deleted.
+The habit that caught every one was the same, and it is the most transferable thing here: ask what a
+number is **for**, not whether it is correct — and prefer a control over an argument. Six times a value
+was real and the frame around it was wrong; five times a plausible finding was retired by a cheap control
+before it reached this document.
