@@ -7092,7 +7092,7 @@ prediction. On my lane the same idea fails: **@32/@64 are nblk=1 and give 220, w
 this path (the bf16 arm has no block walk) and give 85 and 6573.** So `nblk` does not separate my lane's rows, and
 the two residuals are still best treated as separate until one of them is explained.
 
-## 140. The plateau is FIRST-TOKEN-CONDITIONAL — and the token I chose to escape the fixture trap is itself degenerate
+## 141. The plateau is FIRST-TOKEN-CONDITIONAL — and the token I chose to escape the fixture trap is itself degenerate
 
 §139 established the plateau is a fixed-length computation. Perturbing positions inside it at npt=448 (baseline
 G448: bf16 13, FLM-ref 1704):
@@ -7123,5 +7123,34 @@ returns **220 for both** — their engine is *input-invariant*; mine *is* sensit
 degenerates for one value of it. **Same experiment design, opposite outcomes** — which is why "no shared bug" was
 the right conclusion and why the shared thing could only ever be a signature.
 
-**Next, now a clean question:** which first tokens degenerate the bf16 path? 16 does (§89), 58907 does (§140), 220
+**Next, now a clean question:** which first tokens degenerate the bf16 path? 16 does (§89), 58907 does (§141), 220
 does not. That is a token sweep, cheap, and it is the first version of this residual that has a name.
+
+## 350. The two paired controls side by side already answer half the sweep: the degeneration is LENGTH-DEPENDENT
+
+**No device needed for this — both numbers are in hand.** Their §140 perturbed one token at a time at **npt=448**;
+my control perturbed the first token at **npt=32/64**. Same two tokens, same design:
+
+| first token | this lane, npt=32/64 | their lane, npt=448 |
+|---|---|---|
+| **220** | **220** (FLM-ref 11) — *wrong* | **153887** (FLM-ref 153887) — **correct** |
+| **58907** | **220** (FLM-ref 11) — *wrong* | **13** (FLM-ref 1704) — *wrong* |
+
+**Same two values, opposite behaviour, different lengths:**
+
+- at **448** the path is **first-token-conditioned** — it responds to the token, and 220 makes it **correct**;
+- at **32/64** the path is **first-token-INVARIANT** — both tokens give 220, and **both are wrong**.
+
+**So the degenerating condition is not a property of the token alone**, which is the prediction §345 put on the
+table before either run existed: the *good* token at one length is not good at another. **220 is correct at 448 on
+their lane and wrong at 32 on mine.**
+
+**And that sharpens what the sweep is for.** It is no longer "which tokens degenerate" — that is answered, and the
+answer is *"it depends on the length"*. It is now **where the transition sits**, which the two-length design tests
+directly and which is why the fixtures were built at **both** 32 and 448 rather than one length swept finely.
+
+**Two smaller things, both worth keeping.** Their §140's rule is the fourth member of the fixture rule set and the
+sharpest: **"the reference varies with length" is not evidence that the *path* is well-conditioned on a fixture —
+you need both, and I had only the first.** And the mirror is now symmetric: their engine **mishandles one value** of
+the first token, mine **ignores it**; one design, opposite failures, no shared mechanism — which is why the shared
+thing could only ever be a **signature**.
