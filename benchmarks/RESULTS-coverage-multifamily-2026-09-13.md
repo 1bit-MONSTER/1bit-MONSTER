@@ -5467,3 +5467,40 @@ their in-flight work into my documentation commit. This commit therefore stages 
 the rule for a shared worktree follows: **never `git add -A` when a peer is editing; stage the paths you own.**
 The duplicate-numbering collisions earlier in this stretch came from the same shared-file situation, and this
 is the same class one layer down.
+
+## 200. CORRECTION: the "subtle numerical divergence" I recorded in §180 is RETRACTED — the NPU attention writes ZEROS
+
+**The nh20 lane's §121 supersedes the §119 result I built §180 on.** Their in-process dump shows the Nanbeige NPU
+attention output is **identically zero** — `max|npu| = 0` across **all 20 heads** — while its inputs are
+**non-zero** (`bActQ` 19.1, `bKv` 16.5). **The kernel writes nothing.** That *is* the §92 context-free boot: an
+all-zero attention output makes the O-GEMM's input zero, and no context can survive it.
+
+So their §119 reading — the attention differing from the host by **0.43 at L0, compounding to 8.7 by L31** —
+was **a measurement of the difference, not of the mechanism**, and they have retracted it. **My §180 recorded
+that reading and drew a conclusion from it ("the divergence is numerical/ordering, not kernel geometry"). That
+conclusion is void** and is withdrawn here.
+
+**And this is the second layer of the same retraction.** The chain, recorded because it is instructive:
+
+1. §97/§118: "the NPU attention is fed a **wrong-width kernel**".
+2. §119 (their message to me): that reading is **too strong** — the difference is only 0.43 and compounds, so
+   it is **numerical**, not geometry. I recorded this in §180 and reframed §165 with it.
+3. **§121 (their next message): the output is identically ZERO**, so §119 is retracted too, and the
+   **wrong-width-kernel reading is back** — a kernel that produces nothing is not "nearly right".
+
+**What actually stands, after all three**: the Nanbeige NPU attention **produces zeros**, its inputs are
+non-zero, and nothing about the host path is implicated. §165's contrast gets **stronger**, not weaker: for
+nh20 the host attention gives FLM's exact 1033, the NPU attention gives 1214 because **it computes nothing**,
+and for nh24 the input is wrong while its host attention is fine. "The NPU attention is the thing that does
+not [work], wherever it is reached" is a cleaner sentence now than when it was written.
+
+**And the hot lead moved to §103**: FLM's captured BOs are **1 MB / 5 MB / 30 MB** against ours **5 MB / 5 MB /
+16 MB**. A kernel handed the wrong BO — wrong size, wrong binding, wrong argument order — writes nothing, which
+is exactly the observed signature. Their next step is the arg/BO binding, which is code rather than device.
+
+**The lesson for this lane**: I recorded a peer's finding and **built on it** within the same checkpoint, and it
+was retracted one message later. The finding was honestly labelled as theirs and I quoted it accurately — but
+"quoted accurately" is not the same as "stable enough to reason from", and a result announced as a *reframing*
+of a previous result is a result still in motion. For my own lane the discipline is the same one that produced
+§190: prefer the measurement that removes a subsystem (one token) over the measurement that characterises a
+difference.
