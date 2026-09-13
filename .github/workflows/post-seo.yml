@@ -43,6 +43,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # seo_meta.py dates each page with `git log -1 --format=%cI origin/main
+          # -- site/<page>` (git_lastmod) to build sitemap.xml. A depth-1 checkout
+          # has no history to walk: at the shallow boundary the tip commit is a
+          # root commit, so every path matches it and EVERY url gets the run
+          # date as <lastmod> — 147/147 on 2026-09-13, 39 of them wrong, and it
+          # re-stamps them to "today" on each run. Do not drop this for speed:
+          # without full history the sitemap silently claims every page changed
+          # today, every day.
+          fetch-depth: 0
 
       - name: Generate post SEO tags
         id: gen
