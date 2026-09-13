@@ -8264,7 +8264,7 @@ agreed with every one of them.
 exact, mid-dims **10/16/36** (185/32/32 tensors), and the arithmetic — `4736/20 = 236.8 → 236` against `5120/20 = 256`
 exactly. **Independent verification of the numbers, and independent discovery of the sentence above them.**
 
-## 155. The performance stake of the attention-ELF fix, measured: the correct path costs ~400 ms (~39%) of prefill — and the host residual is (token, length)-dependent
+## 157. The performance stake of the attention-ELF fix, measured: the correct path costs ~400 ms (~39%) of prefill — and the host residual is (token, length)-dependent
 
 The goal this work sits under is **performance** (decode, prefill, TTFT), while the defect measured here is
 **correctness** — but the two meet exactly at the attention path, and that cost had never been quantified on this
@@ -8325,3 +8325,43 @@ under `~/.config/flm/models`:
 **So the sharpened claim is: _Qwen3.5-4B's I8 rows are 4736/8704; no row is 5120._ Not a statement about Q4NX, about
 Qwen3.x in general, or about 3-D tensors** — and the cross-model table is what makes that visible, exactly as the
 zero-embedding scan turned *"token 16 has no embedding"* into a Nanbeige fact rather than a general one (§149).
+
+## 455. FLM ships its instruction vocabulary and 16 model headers as SOURCE — the engine has been reverse-engineering a documented format
+
+**Found while chasing the LFM2 conv contract, and it is bigger than that errand.** `/home/bcloud/.local/flm-v0946/include/`
+is a full headers tree: **`models/` with 16 families** — *including every family this engine reverse-engineered*
+(nanbeige, phi4, lfm2, gemma, qwen3_5_omni, qwen3_6_moe) — and **`npu_utils/` with `npu_instr_utils.hpp` (735 lines)
+and eight command classes** (1568 lines of instruction API in total).
+
+**And the opcode vocabulary is documented outright**, in `npu_utils/instr_utils/npu_cmd.hpp`:
+
+| group | contents |
+|---|---|
+| **`XAIE_IO_*`** | WRITE, BLOCKWRITE, BLOCKSET, MASKWRITE, MASKPOLL, MASKPOLL_BUSY, NOOP, PREEMPT, LOADPDI, LOAD_PM_START, CREATE_SCRATCHPAD, UPDATE_STATE_TABLE, UPDATE_REG, UPDATE_SCRATCH, **CONFIG_SHIMDMA_BD**, **CONFIG_SHIMDMA_DMABUF_BD** |
+| **custom, from `0x80`** | TCT, DDR_PATCH, READ_REGS, RECORD_TIMER, MERGE_SYNC, NEXT |
+| **`npu_cmd_type`** | ddr, issue_token, wait, write_dma, write |
+| **`dma_direction`** | S2MM, MM2S |
+| **`cache_flag_t`** | no_cache 0x00, normal_cache 0x02, aggressive_cache 0x0e |
+
+**And the engine's own documents — `npu-infer/docs/txn-decode-findings.md`, `flm-bridge-status.md` — were decoding
+exactly this.** So a good part of this session's binary archaeology was reconstructing **a format that ships as a
+header**, and the header was on disk the whole time.
+
+**What it does and does not unblock, stated narrowly:**
+
+- **It does not hand over the conv.** The conv's *specific sequence* — its geometry and tap layout — is still compiled
+  into `liblfm2_npu.so`. **The headers give the vocabulary, not the sentence.**
+- **It does change what the unblock costs.** `XAIE_CONFIG_SHIMDMA_BD` and `XAIE_IO_CREATE_SCRATCHPAD` are exactly the
+  primitives a depthwise conv's data movement needs, and they are now **documented** rather than inferred — so the
+  conv can be **constructed from primitives** instead of recovered by a memory trace. The earlier note said the
+  unblock was *"a memory trace of FLM's BO write, or a debug-symbol build"*; **that is no longer the only route.**
+- **And it is a check on what was inferred.** The engine's instruction format was derived from behaviour; FLM's
+  headers **define** it. **The two can now be compared directly rather than trusted separately** — the same move that
+  turned the per-ctx ELF work from plausible to byte-exact.
+
+**The general lesson, which is the reusable part**: when a binary's behaviour is being reverse-engineered, **check
+whether the vendor ships headers.** This tree was one `ls` away, found only because the conv errand sent us looking
+for a `.so`.
+
+**Numbering**: a fifth peer-internal collision — two sections numbered 155 — resolved by moving the later one
+("the performance stake of the attention-ELF fix") to **157**.
