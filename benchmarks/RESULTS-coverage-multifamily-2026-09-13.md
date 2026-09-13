@@ -254,3 +254,44 @@ nh32 long-context ELF: right for Qwen3 4B/8B (nh32/hd128), wrong for Qwen3.5-4B 
 
 **Next:** capture the per-family attention ELFs from FLM and index them by (NH, HD).
 The generic interposer path already collects them (`capnb_flm` 1585 files, `caplfm2` 1182).
+
+## 10. A latent RoPE bug found by reading, in the `ra2` (partial-RoPE) paths
+
+Found 2026-09-13 while hunting the Nanbeige cause. It is NOT that cause (see the scope
+note at the end), but it is a real silent-correctness bug:
+
+```
+1520:  std::vector<int>   std_hd(NC, cfg.HD);                  // 128 for a hd128 model -> fine
+1522:  std::vector<float> partial_rotary_factor(NC, 0.25f);    // <-- the 35B-MoE value
+2138:      int rdim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);      // prefill table
+3035:  int l_rope_dim = (int)roundf(std_hd[l] * partial_rotary_factor[l]);  // STD/decode path
+```
+
+`partial_rotary_factor` is initialised to **0.25** — a Qwen3.6-35B-A3B value — and is only
+overwritten inside `if (cfg.has_moe || cfg.has_gated_delta_net)`. Every PLAIN model (dense
+Qwen3, Llama, Nanbeige, Phi4, Gemma3) never enters that block, so it keeps 0.25 and
+computes
+
+```
+rope_dim = round(128 * 0.25) = 32      (line 3035; 32 > 0, so the `<= 0` fallback is bypassed)
+```
+
+and `ra2()` — `static inline void ra2(float* x, int p, int rope_dim, int slot)` at line 378 —
+then rotates only `rope_dim/2 = 16` pairs: **32 of the 128 head dims**, where Qwen3, Llama,
+Nanbeige and Phi4 all need full 128-dim rotation. The default should be `1.0f` (full RoPE),
+not the 35B's 0.25.
+
+**Scope, stated carefully.** `ra2` is the partial-RoPE path used by the STD/decode code at
+line 3035 and by the prefill *table* build at 2138. The **bf16 prefill boot token uses
+`ra()` instead** (`static inline void ra(float*, int hd, int p)`, line 349, which rotates
+all `hd/2` pairs from `rc/rs`) — which is why the 25/220/220 prefill gates are unaffected,
+and why this has gone unnoticed: every gate in this project is a prefill boot token, and
+the decode numbers were measured as tok/s. TIMING, never token-checked. So a model can
+pass every gate we have and still answer wrongly in decode.
+
+**Not fixed here, deliberately.** Changing it alters the decode output of every plain
+model, and the device was occupied by the dsh agent's flm bench at the time. It is a
+one-constant change (`0.25f` -> `1.0f`) that must land WITH a token-verified decode run,
+not blind. Recorded first because a silent wrong answer is worse than a build break — and
+because it means the decode half of the six-model scorecard is currently a timing
+comparison only, which the scorecard does not say.
