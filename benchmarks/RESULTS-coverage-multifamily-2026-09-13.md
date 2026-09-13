@@ -4865,3 +4865,28 @@ in that function.** So the parity split has no mechanism in this code, and I am 
 the mapping, the softmax, the `·V` reduction all check out for GQA = 3. So Phi4's wrongness is in **the data
 it is fed** (the Q/K/V and O GEMMs, the KV writes), not in the attention arithmetic. That is a smaller place
 to look than where this lane started.
+
+## 114. §113 verified against the fallback trap: the @1024 "NPU mode" run really did use the NPU attention
+
+The other lane's warning is a good one and it applies to every probe in this item: the engine announces the
+attention path it took on **STDERR** ("bf16 attn unavailable — CPU attn_omp fallback"), and most of my probes
+here piped stderr to `/dev/null`. Re-ran the @1024 A/B with stderr kept:
+
+| @1024 | boot | stderr |
+|---|---|---|
+| default | **1214** | `bf16 attn: kv_region=2097152 v_region_add=2 (H=2560 NKV=4)`; `attention ELF loaded (177728 B): attn_mha_1024_nh20_hd128.elf` ×2; **0** fallback lines |
+| `NPU_ATTN_CPU=1` | **1033** | `[NPU_ATTN_CPU] forced CPU attn_omp` ×32 (one per layer) |
+
+So the default run did **not** fall back — it loaded the nh20 ELF and used the NPU attention — and §113's
+comparison (NPU 1214 vs CPU 1033) stands as a comparison of two genuinely different paths.
+
+**The lesson is kept anyway, and it is the same shape as §112.** From here every boot number in this item is
+recorded with the attention path that produced it, read from stderr — because "no output" and "silently fell
+back to CPU" are indistinguishable once stderr is discarded. §112 was *measuring a fallback kernel while
+naming it the model's own*; this would have been *not being able to tell that it had*. Same family: the report
+of the measurement omitted which instrument ran.
+
+(The other lane found the same trap independently on Phi4, where the fallback fires on every layer because no
+nh24 ELF exists at any length — so Phi4's bf16 has **no NPU attention in the path at all**, and their
+"NPU == CPU" comparison was CPU against itself. Their retraction of that conclusion is correct and is
+recorded on their side.)
