@@ -177,9 +177,9 @@ samples) — but contention is not a property of the device: FLM's own kernels h
 contended device while the native path varied.
 
 **So the remaining correctness gaps are both bf16/attention-shape**: Nanbeige bf16 (1214 vs 1033, nh20) and
-Phi4-mini (nh24) — with the caveat above that Phi4's number should be re-read on the fixed path first.
+Phi4-mini (nh24) — re-read on the fixed path: **23976 @256 vs FLM's 19**. The defect is real and nh24-specific, and it is upstream of attention (§165).
 
-## 6. What landed this session (169 commits, `goal/runlist-decode-wire`)
+## 6. What landed this session (211 commits, `goal/runlist-decode-wire`)
 
 Performance: double-buffered GEMM blocks (~30% prefill, flipping 4 models from losing to
 winning); host-thread default made npt- and size-dependent.
@@ -461,7 +461,7 @@ inference:
 
 ## 11. Session close
 
-**169 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
+**211 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
 native engine supports, and the coverage limits are documented with their best explanations — Gemma3-1B
 reduced to a compiled K-tile in a dependency, Phi4/Qwen3.5/LFM2 to named hybrid implementations, and
 Nanbeige to a device-side question with **every host artifact proven byte-identical**.
