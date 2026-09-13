@@ -1519,7 +1519,7 @@ struct Bf16Ctx {
     std::vector<int> gdn_vh(NC, 32), gdn_hd(NC, 128), gdn_conv_k(NC, 4), gdn_conv_dim(NC, 8192);
     std::vector<int> std_nh(NC, cfg.NH), std_nkv(NC, cfg.NKV), std_hd(NC, cfg.HD);
     std::vector<float> rope_theta_per_layer(NC, cfg.rope_theta);
-    std::vector<float> partial_rotary_factor(NC, 0.25f);
+    std::vector<float> partial_rotary_factor(NC, 1.0f);
     if (cfg.has_moe || cfg.has_gated_delta_net) {
         // Per-layer detection: probe every layer individually so heterogeneous
         // models (e.g. DS V4 Flash layers 0-1 sliding-window vs. CSA/HCA rest)
