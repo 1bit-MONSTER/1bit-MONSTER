@@ -17,6 +17,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <sys/stat.h>   // struct stat / S_ISDIR for the model-dir probe
 
 #include <xrt/xrt_device.h>
 
@@ -152,10 +153,31 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
     cfg.max_seq_len = 4096;
 
     // 3) per-model layer.xclbin + per-ctx ELF dir (env overrides first)
+    //
+    // Derive the model dir from the MODEL PATH's basename first, as the bf16 prefill path does
+    // (commit 77874d5a7). The H table below is only a fallback, and it maps H=2560 to
+    // Qwen3-4B-NPU2 and H=4096 to Qwen3-8B-NPU2 -- so any non-Qwen3 model at those sizes
+    // (Nanbeige H=2560, Llama-3.1-8B H=4096) silently ran on Qwen3's layer.xclbin and Qwen3's
+    // per-context ELFs. That is the same bug class 77874d5a7 fixed for the prefill, and it is
+    // exactly what would have made a Nanbeige reference measurement meaningless.
+    static std::string mdir_own;
     const char* mdir = H == 2048 ? "Qwen3-1.7B-NPU2"
                      : H == 2560 ? "Qwen3-4B-NPU2"
                      : H == 4096 ? "Qwen3-8B-NPU2"
                                  : "Qwen3-0.6B-NPU2";
+    {
+        const std::string mpath(model_path);
+        const size_t slash = mpath.rfind('/');
+        const std::string mdir_s = (slash != std::string::npos) ? mpath.substr(0, slash) : std::string();
+        const size_t slash2 = mdir_s.rfind('/');
+        const std::string base = (slash2 != std::string::npos) ? mdir_s.substr(slash2 + 1) : mdir_s;
+        struct stat st;
+        const std::string probe = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + base;
+        if (!base.empty() && stat(probe.c_str(), &st) == 0 && S_ISDIR(st.st_mode)) {
+            mdir_own = base;
+            mdir = mdir_own.c_str();
+        }
+    }
     const char* elf_default = H == 2048 ? "npu-infer/captures/txn-elfs-1p7b"
                             : H == 2560 ? "npu-infer/captures/txn-elfs-4b"
                             : H == 4096 ? "npu-infer/captures/txn-elfs-8b"
