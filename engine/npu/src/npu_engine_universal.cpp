@@ -3948,12 +3948,12 @@ struct Bf16Ctx {
             double tg = 0, ta = 0, tc = 0;
             for (int l = 0; l < NC; l++) {
                 fprintf(stderr, "  L%d", l); fflush(stderr);
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
-                // input norm + A convert fused
                 auto tc0 = std::chrono::steady_clock::now();
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
+                for (int pi = 0; pi < npt; pi++) {
+                    for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
+                    rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
+                }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fb = fopen("/tmp/bf16_l0_bA.bin", "wb"); if (fb) { fwrite(bA.data(), 2, 4 * H, fb); fclose(fb); } }
                 auto tg0 = std::chrono::steady_clock::now();
                 // QKV in ONE GEMM (N=qkvn) — 128-row blocks, batch 0 each time
@@ -4083,11 +4083,12 @@ struct Bf16Ctx {
                     }
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
-                // FFN: RMSNorm + GU + SiLU×up + D
+                // FFN: RMSNorm + GU + SiLU×up + D (bsb copy fused into the norm region)
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 0; pi < npt; pi++) for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
-                #pragma omp parallel for schedule(static) num_threads(host_threads())
-                for (int pi = 0; pi < npt; pi++) rn_bf16(&bA[pi * H], &bh[pi * H], pa_n[l].data(), H);
+                for (int pi = 0; pi < npt; pi++) {
+                    for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
+                    rn_bf16(&bA[pi * H], &bh[pi * H], pa_n[l].data(), H);
+                }
                 // GU FFN: [gate | up] = A×Wgu in ONE GEMM (N=2·IM); SiLU on host.
                 // 128-row blocks; SiLU lands in bGu so bA stays intact for the
                 // next block's A readback.

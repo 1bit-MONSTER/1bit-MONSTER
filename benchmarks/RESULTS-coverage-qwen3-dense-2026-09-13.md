@@ -256,6 +256,16 @@ are structural: fewer/larger parallel regions, and overlapping the serial NPU wa
 removing the redundant staging copies), not more threads or more SIMD. Re-profiling with
 `-g` would let the exact loops be pinned to lines.
 
+**Test of the "remove barriers" lever — negative.** Fusing the two `bsb = bh` copies into
+their adjacent `rn_bf16` regions removes 2 of ~19 parallel regions per layer (72 fewer
+barriers over 36 layers), with identical semantics: 0.6B 674→677, 1.7B 1039→1075,
+4B 2171→**2146**, 8B 3179→**3168** ms — i.e. ≤1%, inside noise (4B/8B nominally better).
+So the wall clock is **not** set by the barrier count even though the workers spend 84% of
+their *thread-time* in `libgomp`: it is set by the **serial main-thread work**
+(`shim_xdna::buffer::sync` 14% + memmove/memset ~28%) while the workers idle. The
+remaining lever is therefore **overlapping** that serial work with the parallel regions
+(double-buffering the NPU staging), not shaving regions.
+
 Boot tokens unchanged (25/220/220/220). So Qwen3-1.7B now **meets** FLM on prefill, and
 the 4B/8B gaps roughly halved.
 
