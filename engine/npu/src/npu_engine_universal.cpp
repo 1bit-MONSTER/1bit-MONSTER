@@ -63,6 +63,7 @@ void gemm_generate_sequence_i8_split(
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
+extern "C" float* dequant_i8_to_float_geom(const uint8_t*,int,int,int,int*,int*);
 extern "C" float* dequant_i8_group_signed_to_float_ex(const uint8_t*,int,int,int*,int*);
 // q4nx int4 has THREE conventions, differing on two INDEPENDENT axes:
 //   dequant_i8_to_float_ex          scales group-major (group*32+row), UNSIGNED nibbles
@@ -77,6 +78,14 @@ static bool g_q4_group_signed = false;   // true => LFM2-NPU2 (two's-complement 
 static inline float* q4_dequant(const uint8_t* d, int rows, int inf, int* or_, int* oc) {
     return g_q4_group_signed ? dequant_i8_group_signed_to_float_ex(d, rows, inf, or_, oc)
                              : dequant_i8_to_float_ex(d, rows, inf, or_, oc);
+}
+// Geometry-aware variant: cols_per_tile comes from the BUNDLE's row width (row_bytes/20). 5120 B
+// rows give 256, Gemma3-1B's 1280 B rows give 64 -- and the quantizer only writes tiles that
+// divide K, so with the right width both the column AND row counts divide evenly (1152/64 = 18,
+// 576/18 = 32). cols_per_tile <= 0 falls back to the 256 constant.
+static inline float* q4_dequant_geom(const uint8_t* d, int rows, int inf, int cpt, int* or_, int* oc) {
+    return g_q4_group_signed ? dequant_i8_group_signed_to_float_ex(d, rows, inf, or_, oc)
+                             : dequant_i8_to_float_geom(d, rows, inf, cpt, or_, oc);
 }
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
 extern "C" void bf16mm_dump_w(int idx, const char* path);
@@ -724,31 +733,31 @@ int main(int argc,char**argv){
     fprintf(stderr,"H=%d NC=%d NH=%d NKV=%d HD=%d IM=%d NV=%d GU_split=%d rope_theta=%.0f\n",H,NC,NH,NKV,HD,IM,NV,cfg.gu_split,cfg.rope_theta);
 
     // ── TILE ALIGNMENT ──────────────────────────────────────────────
-    // The COLUMN side is now handled: the converter pads columns to a multiple of
-    // col_block_size with zeros (model_converter.py:544-553, cited in dequant_q4nx.cpp), and the
-    // dequant derives its grid from that padded width, so H=1152 yields 5 tiles instead of 4.
+    // The tile width is a property of the BUNDLE: a tile costs 0.625 bytes per element, so
+    //   cols_per_tile = (row_bytes / 0.625) / 32
+    // giving 256 for a 5120-byte row and 64 for Gemma3-1B's 1280-byte one. The dequant now takes
+    // that width from the row (q4_dequant_geom), so unaligned K is handled and this note fires.
     //
-    // The ROW side is NOT: the converter pads rows the same way (model_converter.py:236-238) and
-    // the dequant still computes n_tile_rows = i8_rows / n_tile_cols with integer division, so a
-    // row count that is not a multiple of n_tile_cols truncates and the write loop indexes past
-    // the allocation. Gemma3-1B still SEGFAULTs there with the column fix in place, which is how
-    // this was found -- the same failure, one dimension over.
-    //
-    // So the refusal stays until the row side is done as well. It is a REFUSAL, not a crash, and
-    // it names the dimension: an unexplained SIGSEGV is worse than an explained "no".
+    // The refusal below is NOT about that. Gemma3-1B's manifest carries NO dims at all -- only
+    // lm_head.weight -- so the engine derives them, and it reports IM=24864 where the mlp geometry
+    // says 6912 (down_proj is [3888, 1280]: 18 tiles across, 3888/18 = 216, x 32 rows = 6912). A
+    // wrong IM breaks the gate/up/down blocks, which is why the model still SEGFAULTS after two
+    // correct dequant fixes. Refuse until IM is derived from the tensors too: an unexplained
+    // SIGSEGV is worse than an explained "no", and this is the second time in three checkpoints
+    // that has had to be re-learned.
     {
         const int q = NH * HD;
-        const char* bad = nullptr;
-        if (H  % 256) bad = "hidden_size";
-        else if (IM % 256) bad = "intermediate_size";
-        else if (q % 256) bad = "num_attention_heads*head_dim";
-        if (bad) {
+        const bool tile_misaligned = (H % 256) || (IM % 256) || (q % 256);
+        if (tile_misaligned)
+            fprintf(stderr, "[dequant] unaligned dims H=%d IM=%d NH*HD=%d -- tile width taken from\n"
+                            "          the bundle's row size (row_bytes/20), not the 256 constant.\n",
+                    H, IM, q);
+        if (tile_misaligned && IM % 256 != 0) {
             fprintf(stderr,
-                "UNSUPPORTED: %s is not a multiple of 256 (the dequant tile width).\n"
-                "  H=%d IM=%d NH*HD=%d -- the q4nx pads BOTH dimensions, and while the column side\n"
-                "  is handled, the row side still truncates n_tile_rows and writes out of bounds.\n"
-                "  The converter's padding is documented in model_converter.py:236-238 and 544-553.\n"
-                "  Refusing here instead of crashing.\n", bad, H, IM, q);
+                "UNSUPPORTED: intermediate_size=%d is not a multiple of 256 and the manifest carries\n"
+                "  no dims for this model, so this is the engine's DERIVED value. Gemma3-1B's mlp\n"
+                "  tensors give 6912 (down_proj [3888, 1280]: 18 tiles across, 216 x 32 rows), not\n"
+                "  24864. Refusing here instead of crashing in the gate/up/down blocks.\n", IM);
             return 1;
         }
     }
@@ -1034,9 +1043,13 @@ int main(int argc,char**argv){
     auto dequant_auto = [&](uint64_t off, int i8_rows, int in_features,
                              int* out_rows, int* out_cols, const char* key) -> float* {
         int bpt = get_bytes_per_tile(key);
+        // cols_per_tile = row_bytes / 20 (0.625 bytes per element, 32 rows per tile). 5120 -> 256,
+        // 1280 -> 64. Passing 0 keeps the historical 256 constant.
+        const int cpt = (bpt > 0) ? (bpt / 20) : 0;
+        (void)bpt;
         if (bpt == 8704)
             return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
-        return q4_dequant(i8p(off), i8_rows, in_features, out_rows, out_cols);
+        return q4_dequant_geom(i8p(off), i8_rows, in_features, cpt, out_rows, out_cols);
     };
     auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);
         if(r<=0){std::string ak=k;size_t p=ak.find("model.layers.");if(p!=std::string::npos){ak.replace(p,14,"model.layer.");find_tensor_info(js,jl,ak.c_str(),&r);}}

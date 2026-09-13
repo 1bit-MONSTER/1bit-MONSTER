@@ -58,38 +58,50 @@ extern "C" float* dequant_i8_to_float(const uint8_t* data, int i8_rows,
  * Extended version with explicit in_features (hidden_dim).
  * For Q4NX format: n_tile_cols = in_features / TILE_COLS.
  */
+static float* dequant_i8_core(const uint8_t* data, int i8_rows, int in_features, int tile_cols,
+                              int* out_rows, int* out_cols);
+
 extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int in_features,
                               int* out_rows, int* out_cols) {
-    // The q4nx COLUMNS are padded by the converter to a multiple of col_block_size, filled with
-    // ZEROS -- read from the converter itself, not inferred:
-    //   fastflowlm_analysis/q4nx_converter/q4nx/model_converter.py:544-553
-    //     if cols % self.col_block_size != 0:
-    //         cols_padded = round_up_to_multiple(cols, self.col_block_size)
-    //         data = F.pad(data, (0, data_pad_amount), "constant", 0)
-    // The tile is TILE_COLS=256 wide regardless of the padding granularity, so an unaligned
-    // contraction dim pads up to 256: Gemma3-1B's H=1152 becomes 1280 and yields 5 tiles per row,
-    // not the 4 that integer division produced (which silently dropped 128 columns). For every
-    // model whose dims are already aligned this is exactly the old arithmetic.
-    const int in_padded = (in_features + TILE_COLS - 1) / TILE_COLS * TILE_COLS;
+    return dequant_i8_core(data, i8_rows, in_features, TILE_COLS, out_rows, out_cols);
+}
+
+// Geometry-aware variant: the tile width is a property of the BUNDLE, not a constant.
+// A tile costs 0.5 bytes/element of data plus (elems/32)*2 for scales and (elems/32)*2 for
+// zero-points, i.e. 0.625 bytes per element, so
+//     elems_per_tile = row_bytes / 0.625   and   cols_per_tile = elems_per_tile / 32
+// Gemma3-4B (row 5120 B) -> 256 cols; Gemma3-1B (row 1280 B) -> 64 cols, and 1152 = 18 x 64
+// exactly. The quantizer only ever writes tiles that divide K evenly, so with the right width
+// there is no partial tile and no unrepresented tail. The row width is the last element of the
+// tensor's shape array -- the engine's get_bytes_per_tile() already returns it.
+extern "C" float* dequant_i8_to_float_geom(const uint8_t* data, int i8_rows, int in_features,
+                              int tile_cols, int* out_rows, int* out_cols) {
+    return dequant_i8_core(data, i8_rows, in_features,
+                           tile_cols > 0 ? tile_cols : TILE_COLS, out_rows, out_cols);
+}
+
+static float* dequant_i8_core(const uint8_t* data, int i8_rows, int in_features, int tile_cols,
+                              int* out_rows, int* out_cols) {
     int n_tile_cols, n_tile_rows;
 
-    n_tile_cols = in_padded / TILE_COLS;
+    n_tile_cols = in_features / tile_cols;
     n_tile_rows = i8_rows / n_tile_cols;
 
     *out_rows = n_tile_rows * TILE_ROWS;
-    *out_cols = n_tile_cols * TILE_COLS;   // the padded width; callers use the true one
+    *out_cols = n_tile_cols * tile_cols;
 
     float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
     if (!out) return nullptr;
 
+    const int row_bytes = tile_cols * 20;  // scales(2c) + zeros(2c) + packed(16c)
     for (int ir = 0; ir < i8_rows; ir++) {
-        const uint8_t* rd = data + ir * 5120;
+        const uint8_t* rd = data + ir * row_bytes;
         int tile_row = ir / n_tile_cols;
         int tile_col = ir % n_tile_cols;
 
         const uint8_t* scales = rd;
-        const uint8_t* zeros  = rd + 512;
-        const uint8_t* packed  = rd + 1024;
+        const uint8_t* zeros  = rd + tile_cols * 2;
+        const uint8_t* packed  = rd + tile_cols * 4;
 
         for (int lr = 0; lr < TILE_ROWS; lr++) {
             int lane = lr / 16;
@@ -97,9 +109,9 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int i
             int byte_idx = lane_row / 2;
             int nibble_sel = lr % 2;
 
-            const uint8_t* lane_data = packed + lane * (TILE_COLS * 8);
+            const uint8_t* lane_data = packed + lane * (tile_cols * 8);
 
-            for (int col = 0; col < TILE_COLS; col++) {
+            for (int col = 0; col < tile_cols; col++) {
                 int group = col / 32;
                 float scale = bf16_to_float(load_bf16_bytes(scales + (group * 32 + lr) * 2));
                 float zp = bf16_to_float(load_bf16_bytes(zeros + (group * 32 + lr) * 2));
@@ -117,7 +129,7 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t* data, int i8_rows, int i
                 else                 val = ((byte_val >> 4) & 0x0F);
 
                 out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
-                    (tile_col * TILE_COLS + col)] = (float)val * scale + zp;
+                    (tile_col * tile_cols + col)] = (float)val * scale + zp;
             }
         }
     }

@@ -13,6 +13,7 @@
 
 struct ModelConfig {
     int H = 0, NC = 0, NH = 0, NKV = 0, HD = 0, IM = 0, NV = 0;
+    int cpt = 256;  // INT4 cols-per-tile (bytes_per_tile/20): 256 for 5120-byte tiles, 64 for Gemma3-1B's 1280
     int GQA = 0, AW = 4, WQH = 0, WKVH = 0, XM = 128;
     int qkv_k_offset = 0, qkv_v_offset = 0, qkv_total = 0;
     // MoE (Qwen3.5/3.6-class, gate_exps/up_exps/down_exps + shared expert)
@@ -191,6 +192,16 @@ static int get_top_int(const char* js, size_t jl, const char* field) {
     return 0;
 }
 
+// Cols per tile from a tensor's bytes_per_tile (shape[1]).
+//   INT4: 0.625 B/elem * 32 rows = 20 B/col -> cpt = bpt/20 (5120 -> 256, 1280 -> 64)
+//   Q8_0: 8704 B = 512 B scales + 256 cols * 32 rows * 1 B  -> 256
+//   bpt==0 (absent) -> 256 (the historical constant; models with narrower tiles carry the width).
+static int cols_per_tile_from_bytes(int bpt) {
+    if (bpt == 8704) return 256;
+    if (bpt > 0) return bpt / 20;
+    return 256;
+}
+
 // Read "rope_theta" from <model_dir>/config.json. The q4nx JSON header carries no
 // RoPE metadata and the tag heuristics below only cover a few families, so the
 // model's own config is the authority when present. Returns NAN if absent.
@@ -298,6 +309,16 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
         }
         return off;
     };
+    // bytes_per_tile (shape[1]) for a weight — 0 if absent. The tile COLUMN count is
+    // derived from this (INT4: bpt/20), not assumed to be 256; Gemma3-1B's 1280-byte
+    // tiles are 64 columns wide and the old ceil(H/256) derivation breaks on it.
+    auto bpt_of = [&](const char* base) -> int {
+        char key[256];
+        snprintf(key, sizeof(key), "model.layers.0.%s", base);
+        int v = get_shape_dim(js, jl, key, 1);
+        if (v == 0) { snprintf(key, sizeof(key), "model.layer.0.%s", base); v = get_shape_dim(js, jl, key, 1); }
+        return v;
+    };
     int q_tr = 0, k_tr = 0, o_tr = 0, g_tr = 0, d_tr = 0;
     uint64_t q_off = ti("self_attn.q_proj.weight", &q_tr);
     // Fallback: fused QKV projection (Phi-style models use qkv_proj)
@@ -331,7 +352,10 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     // tile_rows_o = ceil(H/32) * ceil(NH*HD/256)
     
     if (cfg.H > 0 && q_tr > 0) {
-        int A = (cfg.H + 255) / 256;  // ceil(H/256) = n_tile_cols for q_proj input
+        int q_bpt = bpt_of("self_attn.q_proj.weight");
+        if (q_bpt == 0) q_bpt = bpt_of("self_attn.qkv_proj.weight");
+        cfg.cpt = cols_per_tile_from_bytes(q_bpt);
+        int A = (cfg.H + cfg.cpt - 1) / cfg.cpt;  // n_tile_cols for q_proj input (in_features = H)
         if (A > 0) {
             int tile_rows_q = q_tr / A;  // ceil(NH*HD/32)
             if (tile_rows_q > 0) {
@@ -361,7 +385,9 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     
     // NKV from k_proj
     if (cfg.H > 0 && k_tr > 0) {
-        int A = (cfg.H + 255) / 256;
+        int k_cpt = cols_per_tile_from_bytes(bpt_of("self_attn.k_proj.weight"));
+        if (k_cpt <= 0) k_cpt = cfg.cpt;
+        int A = (cfg.H + k_cpt - 1) / k_cpt;
         if (A > 0) {
             int tile_rows_k = k_tr / A;
             if (tile_rows_k > 0) {
@@ -373,7 +399,11 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     
     // IM from gate_proj
     if (cfg.H > 0 && g_tr > 0) {
-        int A = (cfg.H + 255) / 256;
+        int g_bpt = bpt_of("mlp.gate_proj.weight");
+        if (g_bpt == 0) g_bpt = bpt_of("mlp.up_proj.weight");
+        int g_cpt = cols_per_tile_from_bytes(g_bpt);
+        if (g_cpt <= 0) g_cpt = cfg.cpt;
+        int A = (cfg.H + g_cpt - 1) / g_cpt;
         if (A > 0) {
             int tile_rows_g = g_tr / A;
             if (tile_rows_g > 0) {

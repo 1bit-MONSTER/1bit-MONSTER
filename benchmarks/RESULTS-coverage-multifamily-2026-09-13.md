@@ -2235,3 +2235,42 @@ LFM2's conv and Gemma3-1B's unaligned `K` — are **unknown vendor layouts**. Th
 **information**, not about effort: for this codebase an unknown layout is a wall that reading more code
 does not get past, and the answer is a contract (a converter spec, or an interposer capture showing the
 access pattern), not a guess.
+
+## 47. The teammate's tile-width derivation is CONFIRMED — and it exposes a wrong `IM`
+
+Verified their derivation independently, from the bundles, before acting on it:
+
+- **The 0.625-byte model**: a tile costs `elems/2` (int4 data) + `(elems/32)*2` (scales) +
+  `(elems/32)*2` (zero-points) = **0.625 bytes/element** → row 5,120 B = **8,192 elems = 32 x 256**;
+  row 1,280 B = **2,048 elems = 32 x 64**.
+- **Four tensors, both bundles, exact**: Gemma3-1B q_proj 576 x 64 x 32 = 1,179,648 = 1024 x 1152;
+  down_proj 3,888 x 64 x 32 = 7,962,624 = 6912 x 1152 — and the same for Gemma3-4B at 256 wide.
+- **Gemma3-1B's first row, read directly**: **64 scales at +0**, **64 zero-points at +128**, ratio
+  **-7.303** (inside the unsigned band), and **+256 onward is data**. That is also exactly why my old
+  probe's fixed **+512** zero-point offset gave the nonsensical 0.400.
+
+**So section 46's "not derivable — a wall" was wrong.** The layout is in the bundle's **row size**, and
+the in-repo quantizer agrees: it rejects any input where `cols % TILE_COLS != 0`, i.e. it only writes
+tiles that divide K.
+
+**Implemented:** the dequant now takes its tile width from the bundle (`q4_dequant_geom` →
+`cols_per_tile = row_bytes / 20`, via the engine's existing `get_bytes_per_tile()`). Additive, and a
+**no-op for every 5,120-byte-row model** (regression 25/220/220 verified).
+
+**But Gemma3-1B still crashed**, and the bundle says why: **the engine's `IM` is wrong.** Gemma3-1B's
+manifest carries **no dims at all** — only `lm_head.weight` — so the engine derives them, and it reports
+**`IM=24864`** where the mlp geometry gives **6,912** (down_proj `[3888, 1280]`: 18 tiles across,
+3,888/18 = 216, x 32 rows). A wrong `IM` breaks the gate/up/down blocks, which is why the crash survived
+**two** correct dequant fixes.
+
+**And the refusal is restored** — the third time in three checkpoints that a crash had to be turned back
+into an explained "no". This time the message names the actual defect (the `IM` mismatch and its
+arithmetic), not a theory about padding.
+
+**Next:** derive `IM` from the **mlp tensor geometry** rather than the engine's heuristic. The dequant
+geometry fix stays — it is correct, verified as a no-op for aligned models, and required for Gemma3-1B
+once `IM` is right.
+
+That is **three distinct, measured causes** for one family: the odd-`G` reorder (fixed), the tile width
+(fixed, and it was in the bundle all along), and the derived `IM`. Each was found by reading bytes, and
+each was hiding behind the previous one.
