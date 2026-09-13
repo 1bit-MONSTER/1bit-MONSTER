@@ -7801,3 +7801,41 @@ mechanism with noise**. The single value that differed is the single value that 
 caught the zero row and the arm mismatch is the same one required here, applied to my own run for the first time in
 this thread.** The Nanbeige half is unaffected — its three groups reproduce the earlier partition exactly, and
 neither degenerate token was doing any work in it.
+
+## 410. THREE independent ways a boot-token column looks clean and is wrong — and the axis both lanes were missing was DEGENERACY, not distinctness
+
+**Their independent pass from the bundles reproduces the zero-embedding scan exactly** — 319 rows, the same structure
+(blocks 4–11, 15–26, 28–52, 54–84, 86–130; 195–198; 248–258; singletons; a dense top ending 166143), and the
+predicted rows behaving: 16 and 100 zero, the other six not. **A cross-check taken from the files rather than from
+my numbers is the strongest form this thread has.**
+
+**And their sharpening is the part worth keeping.** My rule was *"assert the first and last token"*. **They had that
+rule already, applied it to §146, checked `16 ≠ 220` — and still missed two degenerate points.** Because
+
+> **that is distinctness, not degeneracy. A token can be perfectly distinct and still carry no embedding.**
+
+**Presence instead of content.** And they note the fact was already in the log: **§89 knew token 16's embedding is
+zero; §146 never asked.** That is a third fixture trap on their lane and the **second with the same token** — which
+is the argument that the missing ingredient was never care but **the axis**: they were checking that the tokens
+*differed*, not that they *meant* anything.
+
+**And their correction to my point 4 is accepted.** I wrote that Phi4's "8/8 → 220 totally blind" is clean *because*
+Phi4 has no zero-embedding rows. **That rules out this artifact and only this one** — §135/§147 showed a broken
+kernel produces the *same* "totally blind" shape. So "no zero rows" makes the row clean of **fixture** degeneracy,
+not of **arm** degeneracy; the banner sweep is what covers the second. Two different controls for two different
+failures, and I had credited one with the other's work.
+
+**Which gives the taxonomy this whole thread has been circling — three independent ways a column can look clean and
+be wrong, each with its own detector:**
+
+| degeneracy | what it looks like | detector | cost |
+|---|---|---|---|
+| **fixture** — the first token carries no embedding | a **context-free** answer (a real token, wrong for a reason outside the model) | scan the bundle's **zero-embedding set** | one pass over the file, no device |
+| **arm** — attention falls to a known-broken kernel | **"totally blind"** or a fixed wrong value | **assert the selection banner**, per run | the line that says which path ran |
+| **contention** — the device is busy | **the same fixture giving two different answers** | run quiet, **record the load** with every number | nothing, if you wait |
+
+**All three occurred in this thread, and each was caught by a different control.** The fixture class produced four
+retractions across the two lanes; the arm class produced my zero column and the challenge that followed it; and the
+contention class produced the `1877` in §405, which is the only one of the three that **no** control in either lane's
+existing rule set would have caught — it was caught by the `cmp` against an earlier run and by noticing whose
+process was holding the device.
