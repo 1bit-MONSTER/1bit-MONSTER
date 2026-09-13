@@ -302,11 +302,17 @@ struct Bf16Mm {
         // of a plausible-looking wrong answer.
         const bool attn_shape_ok = attn_shaped_ok ||
             ((attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096));
-        // Short contexts: prefer a shape-specific <=256 ELF when one loaded, because the
-        // embedded kernel is nh16/hd128 whatever the model actually is. For the six working
-        // models no such file exists, so this falls through to the embedded kernel as before.
+        // Short contexts: prefer a shape-specific <=256 ELF ONLY when a shape-specific file
+        // actually loaded (attn_shaped_ok). The first version of this slot preferred it
+        // whenever attn_kernels was non-null -- but the legacy fallback name
+        // attn_mha_256_nh16.elf EXISTS, so for Qwen3-4B (nh32) it loaded the nh16 kernel and
+        // preferred it over the correct EMBEDDED nh32 kernel, breaking the @256 gate
+        // (native 41053 vs FLM's 1614). Caught by an A/B that was chasing an unrelated
+        // discrepancy, not by the regression check, which had only covered 0.6B(nh16) @256
+        // and 4B @1024. Gating on attn_shaped_ok keeps the hook for families that have a real
+        // short-shape ELF and leaves every working model on its embedded kernel.
         xrt::ext::kernel* kern = !attn_shape_ok ? nullptr
-            : ((attn_tokens <= 256 && attn_kernels) ? attn_kernels.get()
+            : ((attn_tokens <= 256 && attn_shaped_ok && attn_kernels) ? attn_kernels.get()
                : ((attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get()));
         // attn_tokens > 256 -> the long-context ELF captured from FLM's REAL
         // 1024-token prefill (elf_0012 of the prefill capture; 98848 B). It is
