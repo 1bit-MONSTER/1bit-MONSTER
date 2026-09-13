@@ -276,6 +276,14 @@
    "sha256": "5a7dabc4a96e5c1ec5e779605599ceaf5d16dd5dec368547d6fce7d1d95c4ff2",
    "timestamp_utc": "2026-08-09T18:01:36Z"
   },
+  "658a1459a52efb2ad755cf542113e83a": {
+   "aliases": [],
+   "paths": [
+    "final_i8_MOE_GUSILU_i4_zaya.xclbin"
+   ],
+   "sha256": "54452544a40d8d544df74788bedd5e933c6eab0f5d7cf08fe0de2b57c9a3096f",
+   "timestamp_utc": "2026-09-12T16:49:25Z"
+  },
   "671cc1f0443735d8d5b3e9c5251cf038": {
    "aliases": [
     "final_i8_D_qwen3_5_4b.xclbin"
@@ -548,14 +556,6 @@
    "sha256": "f302dab9d6198e618e5bcf34c91f9dde7766722685ccfe8a0771617ac78f343c",
    "timestamp_utc": "2026-08-30T10:53:06Z"
   },
-  "af72b09b49c50b9490032f9199b6dcd5": {
-   "aliases": [],
-   "paths": [
-    "final_i8_MOE_GUSILU_i4_zaya.xclbin"
-   ],
-   "sha256": "cb948a722531ba3417df1157c61de7e51f45e58dca7e0853a48369f06fafb321",
-   "timestamp_utc": "2026-08-28T14:35:43Z"
-  },
   "b1cb0450356fb74c8bbfdbaa3209d132": {
    "aliases": [],
    "paths": [
@@ -783,17 +783,18 @@
    "2026-08-22": 4,
    "2026-08-23": 1,
    "2026-08-27": 1,
-   "2026-08-28": 2,
+   "2026-08-28": 1,
    "2026-08-29": 5,
    "2026-08-30": 3,
    "2026-08-31": 1,
    "2026-09-03": 1,
-   "2026-09-09": 1
+   "2026-09-09": 1,
+   "2026-09-12": 1
   },
   "distinct_builds": 86,
-  "payload_bytes": 9537523,
+  "payload_bytes": 9545257,
   "redundant_bytes": 2226430,
-  "redundant_percent": 23.34,
+  "redundant_percent": 23.32,
   "timezone": "UTC (embedded AXLF TimeStamp, never mtime)",
   "top_days_utc": [
    {
@@ -821,11 +822,11 @@
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-11T17:58:22Z",
+  "at": "2026-09-13T00:34:07Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
-  "host": "ryzen",
-  "ref": "f057409dc"
+  "host": "strixhalo",
+  "ref": "bb35a3346"
  },
  "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest and land it in the same commit as the artifact change.",
  "notes": [
