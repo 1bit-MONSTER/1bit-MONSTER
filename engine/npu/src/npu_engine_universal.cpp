@@ -4309,6 +4309,25 @@ struct Bf16Ctx {
                         double sabs = 0; for (int j = 0; j < qout; j++) sabs += fabs((double)bat[j]);
                         fprintf(stderr, "[ATTN-DIFF L%d] npt=%d max|npu-host|=%.6g at (tok %d, dim %d) | host|tok0|_sum=%.6g | npu[0][0]=%.6g host[0][0]=%.6g\n",
                                 l, npt, mx, mpi, mj, sabs, bf16g(bA[0]), bat[0]);
+                        if (l == 0) {
+                            // Per-head max diff, plus the scale of the host output, so a concentrated
+                            // (layout) vs uniform (bf16 rounding) difference can be told apart.
+                            std::vector<double> hmax(NH, 0.0), hscale(NH, 0.0), nscale(NH, 0.0);
+                            for (int pi = 0; pi < npt; pi++)
+                                for (int hh = 0; hh < NH; hh++) {
+                                    for (int d = 0; d < HD; d++) {
+                                        double nv = fabs((double)bf16g(bA[(size_t)pi * qout + hh * HD + d]));
+                                        double dv = fabs(nv - (double)bat[pi * NH * HD + hh * HD + d]);
+                                        double hv = fabs((double)bat[pi * NH * HD + hh * HD + d]);
+                                        if (dv > hmax[hh]) hmax[hh] = dv;
+                                        if (hv > hscale[hh]) hscale[hh] = hv;
+                                        if (nv > nscale[hh]) nscale[hh] = nv;
+                                    }
+                                }
+                            fprintf(stderr, "[ATTN-DIFF-H0]");
+                            for (int hh = 0; hh < NH; hh++) fprintf(stderr, " h%d:%.4g/%.4g/%.4g", hh, hmax[hh], nscale[hh], hscale[hh]);
+                            fprintf(stderr, "   (per head: max|npu-host| / max|npu| / max|host|)\n");
+                        }
                     }
                 }
                 auto ta1 = std::chrono::steady_clock::now();

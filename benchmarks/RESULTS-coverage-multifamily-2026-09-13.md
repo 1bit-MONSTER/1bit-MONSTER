@@ -4574,7 +4574,7 @@ Phi4 shows the same family is **incomplete for nh24** — no candidate at all, s
 "per-shape attention ELF" premise is not merely suspect for nh20; for at least one shape in this tree there
 is **no NPU attention kernel in the path at all**.
 
-## 120. Phi4 does not even run the legacy nh16 kernel — the ELF LOADS and the launch is then refused
+## 185. [SUPERSEDED BY §160 — the member flag IS set, so the legacy kernel IS selected] Phi4 does not even run the legacy nh16 kernel — the ELF LOADS and the launch is then refused
 
 **The nh20 lane's §97 arrived while this was being written and resolves the slots correctly in outline**:
 shape-specific name **first**, then four legacy names; **no nh24 file exists at any length**; **Nanbeige has
@@ -5146,7 +5146,7 @@ length**, so the flag is **never** set, `attn_shape_ok` is false, `kern` is null
 | **Phi4** | **no** | **false** | **CPU** | default 874 == CPU 874 |
 
 **Same code, same line, opposite outcomes — and both measured.** Which is the useful version of my own
-§115/§120 lesson: I had said "the thing I measured is not the thing I named". Here a **single log line means
+§115/§185 lesson: I had said "the thing I measured is not the thing I named". Here a **single log line means
 two different things in two models**, because the flag that decides it is global and sticky.
 
 **The specific error, stated plainly**: I traced `run_attn`'s expression and concluded from the *syntactic*
@@ -5320,3 +5320,47 @@ attention is exact; the region (§112), the V-offset (§100), the container (§1
 now the "wrong-width kernel => nonsense" reading are all excluded. What remains is a **small, deterministic,
 per-layer numerical/ordering difference** between the kernel's attention and the host's — and the fix direction
 that follows from it is to make the two agree exactly, not to capture a new ELF.
+
+## 180. The bf16 GEMM execution is exonerated too — and the nh20 lane's own reframe makes the NPU attention "nearly right"
+
+**Two exonerations in a row for this lane, and one reframe from the other.**
+
+**The GEMM execution is shape-parametric.** I went looking for the "right for 4096, wrong for 5120" defect and
+found two implementations, both clean:
+
+```cpp
+void run_gemm_2batch(uint16_t* C, ..., uint32_t K, uint32_t N, uint32_t woff) {
+    std::vector<uint16_t> Ab(256 * K, 0);   // sparse 256-row A   -- K-parametric
+    std::vector<uint16_t> Cb(256 * N, 0);   // per-invocation out -- N-parametric
+    ... two 128-row halves ...
+}
+void run_gemm_ooff(...) {
+    size_t wspan = (size_t)woff + (size_t)K * N;
+    if (!a_cache || a_cache_elems < a_elems) { ... resize ... }   // grows
+    if (!c_cache || c_cache_elems < c_elems) { ... resize ... }   // grows
+}
+```
+
+**The hardcoded `2048`s I found are in `run_gemm`, a legacy helper with no live callers** — its signature
+(`qkv(Q /*256x2048*/, K /*256x1024*/, ..., A /*256x1024*/, W /*8 MB*/)`) is literally Qwen3-0.6B's shape. So
+the "GEMM execution at `qkvn = 5120`" candidate from §175 is **weakened**: both live paths size everything
+from `K` and `N` and let the caches grow.
+
+**And `run_gemm_2batch` carries a property worth knowing** — from the comment above its `qkv` helper: *"The
+mm.xclbin only computes 128 CORRECT M-rows per invocation: rows 0..127 are C[0..127] (identity), but rows
+128..255 are a 'duplicated odd' garbage region ... regardless of N."* That is why the 256-row batch is done as
+two sparse 128-row batches, and it is consistent with the live prefill walking in 128-row blocks (§155).
+
+**And the other lane partly walked back their own framing, which refines my §165.** Their §119/§120 built an
+in-process NPU-vs-host attention diff: at layer 0 the NPU attention differs from the host by **max 0.43**, and
+the error **compounds to 8.7 by layer 31** (spike 15.6 at L28), **deterministically** — 0.432772 identical at
+@256 and @1024, two clean runs with clang 0. So **the NPU attention is *nearly* right and the divergence is
+numerical/ordering, not kernel geometry**; their §97/§118 "wrong-width kernel" reading was **too strong**, and
+the fix direction is "make the two agree exactly", not "capture a new ELF".
+
+**That makes §165's contrast sharper, not weaker**: for nh20 the **input is right** and the NPU attention is
+*nearly* right with a compounding error — which is exactly why 1214 and 1033 can be the same model; for nh24
+the **input is wrong** and the attention is exactly right. Small errors compound; phi4's is not small.
+
+**So this lane's remaining candidate is the ACTIVATIONS** fed to the GEMMs — the one input I have not yet
+compared against anything.
