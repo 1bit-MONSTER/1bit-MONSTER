@@ -7839,3 +7839,34 @@ retractions across the two lanes; the arm class produced my zero column and the 
 contention class produced the `1877` in §405, which is the only one of the three that **no** control in either lane's
 existing rule set would have caught — it was caught by the `cmp` against an earlier run and by noticing whose
 process was holding the device.
+
+## 150. The CLEAN cross-lane set on the Nanbeige lane: eight nonzero-embedding tokens, banner-asserted, still THREE groups — §146's PARTIAL conclusion confirmed with the degenerate points removed
+
+§149 established that §146's first group {16, 100} was a fixture artifact (both are rows in Nanbeige's 319-row
+zero-embedding set). The teammate built a replacement set — **220 777 1024 4096 12345 58907 30000 45000**, each
+asserted nonzero on **both** models before any run — and this is the Nanbeige half, on the arm that means something
+(`NPU_PREFILL_BF16=1 NPU_ATTN_CPU=1`), with the banner asserted on every run (`clang=0` recorded at the head):
+
+| first token | boot | arm |
+|---|---|---|
+| 220 | 166101 | ok |
+| 777 | 152551 | ok |
+| 1024 | 166101 | ok |
+| 4096 | 166101 | ok |
+| 12345 | 152551 | ok |
+| 58907 | 156468 | ok |
+| **30000** | **152551** | ok |
+| **45000** | **152551** | ok |
+
+**Three distinct values across eight clean tokens** — 166101 {220, 1024, 4096}, 152551 {777, 12345, 30000, 45000},
+156468 {58907} — so **PARTIAL, now by construction rather than by luck**. §146's conclusion survives its own fixture
+correction: the two degenerate points are gone, two *new* tokens replace them, and the shape is unchanged — both new
+tokens land in the **existing** 152551 group, so the partition is stable under replacement rather than an artifact of
+which tokens were chosen.
+
+**What this closes:** the cross-lane verdict (PARTIAL vs Phi4's TOTAL) now rests on a fixture set that is clean on
+**both** models, an arm banner-asserted on **both** sides (§148, §385), and a partition that survived the
+replacement of its own degenerate points.
+
+**What it does not close:** the residual itself. *Why* one prompt token selects one of three fixed answers is still
+unmeasured — and this run was deliberately not designed to answer it, so it must not be read as evidence either way.
