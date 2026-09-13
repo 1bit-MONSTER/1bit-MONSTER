@@ -7092,7 +7092,7 @@ prediction. On my lane the same idea fails: **@32/@64 are nblk=1 and give 220, w
 this path (the bf16 arm has no block walk) and give 85 and 6573.** So `nblk` does not separate my lane's rows, and
 the two residuals are still best treated as separate until one of them is explained.
 
-## 141. The plateau is FIRST-TOKEN-CONDITIONAL — and the token I chose to escape the fixture trap is itself degenerate
+## 143. The plateau is FIRST-TOKEN-CONDITIONAL — and the token I chose to escape the fixture trap is itself degenerate
 
 §139 established the plateau is a fixed-length computation. Perturbing positions inside it at npt=448 (baseline
 G448: bf16 13, FLM-ref 1704):
@@ -7123,12 +7123,12 @@ returns **220 for both** — their engine is *input-invariant*; mine *is* sensit
 degenerates for one value of it. **Same experiment design, opposite outcomes** — which is why "no shared bug" was
 the right conclusion and why the shared thing could only ever be a signature.
 
-**Next, now a clean question:** which first tokens degenerate the bf16 path? 16 does (§89), 58907 does (§141), 220
+**Next, now a clean question:** which first tokens degenerate the bf16 path? 16 does (§89), 58907 does (§143), 220
 does not. That is a token sweep, cheap, and it is the first version of this residual that has a name.
 
 ## 350. The two paired controls side by side already answer half the sweep: the degeneration is LENGTH-DEPENDENT
 
-**No device needed for this — both numbers are in hand.** Their §141 perturbed one token at a time at **npt=448**;
+**No device needed for this — both numbers are in hand.** Their §143 perturbed one token at a time at **npt=448**;
 my control perturbed the first token at **npt=32/64**. Same two tokens, same design:
 
 | first token | this lane, npt=32/64 | their lane, npt=448 |
@@ -7149,7 +7149,7 @@ their lane and wrong at 32 on mine.**
 answer is *"it depends on the length"*. It is now **where the transition sits**, which the two-length design tests
 directly and which is why the fixtures were built at **both** 32 and 448 rather than one length swept finely.
 
-**Two smaller things, both worth keeping.** Their §141's rule is the fourth member of the fixture rule set and the
+**Two smaller things, both worth keeping.** Their §143's rule is the fourth member of the fixture rule set and the
 sharpest: **"the reference varies with length" is not evidence that the *path* is well-conditioned on a fixture —
 you need both, and I had only the first.** And the mirror is now symmetric: their engine **mishandles one value** of
 the first token, mine **ignores it**; one design, opposite failures, no shared mechanism — which is why the shared
@@ -7292,3 +7292,51 @@ it — a coarse step function of the first token whose wrong values are other le
 **And the rule joins the list.** A boot-token table must be checked **column-wise against the fixture's own ids**
 before any row is read: it costs one pass, and on the other lane it demoted an already-written-up row from
 "exact agreement" to "echo". This lane passes — which is now a *checked* statement rather than an assumed one.
+
+## 365. The S32 half: band CONFIRMED, edge = (144, 160], token sweep PERFECTLY FLAT — and FLM's own column is partly flat too
+
+**19 runs on a free device, load recorded (clang 0, 7.8 → 6.1), first/last asserted per fixture.**
+
+**1. The band survives on the current binary.** Four anchors re-taken, four reproduced:
+
+| fixture | today | §285 |
+|---|---|---|
+| M8 (first=220) | **683** | 683 |
+| N16 (first=58907) | **220** | 220 |
+| N48 | **220** | 220 |
+| N128 | **220** | 220 |
+
+**And the two that differ are the two that should**: N192 → **25** (§285: 85) and N256 → **76005** (§285: 6573) — those
+§285 rows were the **M-family (first token 220)** and today's are the **N-family (58907)**. So the divergence is not
+staleness, it is **token-dependence at those lengths**, independently reproduced.
+
+**2. The edge is `(144, 160]`** — native **220** at 130 and 144, then **25** at 160, **15** at 176, **25** at 192.
+Narrowed from (128, 192] to a **16-length window**.
+
+**3. The token sweep is PERFECTLY FLAT — 8 of 8 first tokens give 220** (16, 220, 58907, 100, 1024, 12345, 4096,
+777). So **at length 32 the degeneracy is not token-selected at all; it is length-selected.** The peer's S448 sweep
+is a **3-value step function** of the token. **At 32 the degeneracy is total; at 448 it is partial.** That is the
+strongest available form of the length-dependence prediction, and it is confirmed from **both** halves.
+
+**4. And the honest complication, which cuts against my own earlier phrasing.** FLM's own column across the same
+fixtures:
+
+| npt | native | **FLM** |
+|---|---|---|
+| 128 | 220 | **220** |
+| 130 | 220 | **220** |
+| 144 | 220 | 11 |
+| 160 | 25 | **220** |
+| 176 | 15 | **220** |
+| 192 | 25 | 270 |
+| 256 | 76005 | 19 |
+
+**FLM itself emits 220 at 128, 130, 160 and 176** — so **220 recurs across lengths on the reference side too**, and
+the two columns disagree at every length except 128 and 130.
+
+**That weakens the "read off its value to identify the computed length" reframing I proposed in §355** — for
+**both** lanes. It works only if the value is **unique to one length**, and the evidence in hand says it is not:
+my 220 recurs at four lengths here, and the peer's 13 recurs at **320 and 512** in their own table. So
+*"the plateau value identifies the length being computed"* is **not established**, in either lane — it is a reading
+that the recurrence is enough to make unsafe, and it should have been stated as a hypothesis rather than as an
+identification.
