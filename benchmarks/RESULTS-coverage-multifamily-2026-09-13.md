@@ -2613,3 +2613,40 @@ and it is also a **performance** finding: the cost of a prefill includes buildin
 BO and the arg signature are all **byte-identical** to FLM's. The residual is therefore **not in any
 artifact** — it is in **how they are dispatched** (one concatenated two-column ELF versus two per-column ELF
 objects, a construction Qwen3-4B proves workable), or in the **device-written KV's evolution**.
+
+## 58. Phi4's generator is byte-identical too — the correlation is NOT about the generator
+
+This is the decisive test of the scorecard's central correlation: *"every model with `qout` in {2048, 4096}
+is correct; every one outside it is wrong … the remaining suspect is the engine's own per-layer
+composition."*
+
+I captured FLM's own Phi4 reference ELFs. Sixteen dumps, and **`elf_0001` and `elf_0003` are both 79,616 B
+— the same two-column pattern as Nanbeige.** Then:
+
+**my generated Phi4 `layer_ctx1` half (73,532 B) vs FLM's `elf_0001` `.ctrltext` (73,532 B): 0 DIFFERING
+BYTES.**
+
+And the streams match word-for-word across families. Both open with the same opcode pattern, with word 8
+the **context immediate**:
+
+| word | Phi4 `elf_0001` | Nanbeige `elf_0001` |
+|---|---|---|
+| 0 | `0x6040100` | `0x6040100` |
+| 1 | `0x108` | `0x108` |
+| 2 | `0x8c8` | `0x992` |
+| 6 | `0x6202400` | `0x6201400` |
+| **8** | **`0x1` (the ctx)** | **`0x1` (the ctx)** |
+| 9 | `0x18` | `0x18` |
+| 12 | `0x6308600` | `0x6308500` |
+
+**So BOTH non-hybrid failing families have their ELF generator proven exact**: Nanbeige nh20 (§56) and Phi4
+nh24 (0 differing bytes). The correlation's remaining suspect — the engine's per-layer composition, reached
+through the generated ELF — is **excluded for the generator**.
+
+**And the context convention is confirmed by a first-attempt match**: `gen_layer_seq(ctx_len)` with
+`ctx_len` = the token count reproduces FLM's artifact exactly, for two families and two shapes.
+
+**Which moves the boundary again, and not in our favour.** For Nanbeige the ELF is exact and every BO is
+exact (§54), so the runlist's failure is **not in any artifact we supply** — it is in **our dispatch and
+ordering**, or in the **device-written KV**. The "named dependency interface" framing of §52 was therefore
+too generous to us: this is now a question about **our own code**.
