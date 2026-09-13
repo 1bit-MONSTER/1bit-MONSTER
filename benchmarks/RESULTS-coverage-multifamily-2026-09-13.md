@@ -1987,3 +1987,34 @@ So section 38's headline survives — the engine's LFM2 BO is the right SIZE and
 arrangement diverges at the short-conv block — while the attention claim does not. Fifth wrong-object
 comparison of the session, and the ANTI-pattern is now explicit: **a result that contradicts something
 already verified byte-for-byte should be suspected before it is believed.**
+
+## 40. VALID comparison: LFM2's attention layers are byte-correct; only the short-conv ORDER differs
+
+Pinned the layer identity **first** (section 39's lesson): the `RUNLIST_ADD` a4 pointers are in layer
+order, so each captured BO maps to a known layer. Then the two comparisons are valid — conv against conv,
+attention against attention:
+
+| engine layer | tiles found IN ORDER in FLM's same layer | as a SET |
+|---|---|---|
+| **layer 0 — CONV** | 6,144 / 8,192 | **8,192 / 8,192** |
+| **layer 2 — ATTN** | **7,424 / 7,424** (all it packs; the BO is sized 8,192 for the largest layer) | 7,425 / 7,425 |
+
+**Two results, both decisive.**
+
+**1. Section 39's suspicion was correct.** The attention layer's "0 of 8,192" *was* the wrong-object
+comparison. With the layer pinned, **every tile it packs is found IN ORDER** — so the engine's
+attention-layer packing for LFM2 is **byte-for-byte identical to FLM's**, using the same generic layout
+that works for Qwen3, Nanbeige and Llama. LFM2 is **not** an attention-packing outlier.
+
+**2. The conv layer differs by ORDER, not content.** All **8,192** tiles are present as a set — so no
+tensor is missing, mis-sized or sourced elsewhere — but only 6,144 appear in FLM's order. Since the
+gate/up (4,096) and down (2,048) prefixes are exactly 6,144, the divergence is confined to the
+**short-conv block's 2,048 tiles**: present, correct, in a different place or interleave.
+
+**And the `G_sp` fix did not change the in-order count** (6,144 either way), so the reorder group is not
+the difference — the short-conv's **position or interleave** is.
+
+**So LFM2's packing blocker is now one block, not a layout rewrite:** six of sixteen layers (the attention
+ones) pack **byte-identically**, and the conv layers differ **only** in the short-conv block's ordering,
+with all its tiles present and correct. That is a specific, findable target — and the tiles are
+identifiable as a set, so FLM's placement of them can be read off directly.
