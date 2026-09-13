@@ -377,3 +377,21 @@ forward is fixed. No decode number should be cited meanwhile.
 inspectable without guessing — the bf16 path dumps layer-0 QKV under `NPU_DUMP_L0=1` and the
 runlist path can dump its KV under `RT_KV_DUMP_DIR` — so the first differing element
 localises the fault. `benchmarks/decode_token_check.sh` is the regression test for any fix.
+
+**Narrowed further: the forward is wrong from the FIRST token, not by accumulation.**
+
+| prompt | FLM's own token | runlist token |
+|---|---|---|
+| `[16]` (1 token) | **969** | 28962 |
+| 4 tokens | — | 28962 |
+| 16 tokens | — | 28962 |
+| 64 tokens | — | 28962 |
+| 256 tokens | — | 28962 |
+| 1024 tokens | 25 (bf16 boot) | 28962 |
+
+A single token of prompt is enough to produce the wrong answer, and the answer does not
+change with prompt length. So this is not drift, KV accumulation, or a context-length
+boundary — for a one-token prompt there is nothing to accumulate. The strong reading is that
+the forward is not consuming the prompt at all (the embedding/activation BO the runlist
+reads may never be written, leaving whatever the kernel saw at build time), but that is a
+hypothesis to test with the dumps, not a conclusion.
