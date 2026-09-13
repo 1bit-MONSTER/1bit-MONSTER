@@ -6518,3 +6518,43 @@ none by looking harder at the number.** The two rules that would have caught all
    retractions; and
 2. **control every flag that touches a BO, and prove it inert before reading its effect as a finding** — a flag
    whose effect you do not control is an instrument, not a measurement.
+
+## 135. With a non-degenerate first token the bf16 host path agrees with FLM at 6 of 8 lengths — and the C-cache story is moot (§265/§280)
+
+Two things land together.
+
+**1. The C-cache story is closed by the other lane, and it closes against both of us.** Their sentinel extent
+print shows all 128 calls with `changed == total`, **zero unchanged**, across N = 3072/5120/16384 — so there is
+**no under-write and no stale tail to read**. And a one-call A/B names the mechanism: the flag **with**
+`sync_to_device()` (CEXTENT) is **inert on both models**, while CZERO — which memsets the host view **without**
+syncing — moves both. So CZERO's movement was **dirtying the host view of a BO**, the same instrument class as
+`NPU_DUMP_ATTNIO`. §129/§130/§131 chased a bug that does not exist, and that is the cleanest of my retractions
+because the evidence is the other lane's, not an argument.
+
+(§122 stands: my sentinel **does** sync, so "the kernel writes 2048 of 2560 columns" is a real measurement, and
+it remains the one measured nh20 defect.)
+
+**2. §134's follow-up, done properly.** Fixture `ids_1024` with the leading token replaced by **58907**, chosen
+because its FLM-ref varies with length (941 @64, 4938 @256 — a non-degenerate probe, unlike 220 which returns 13
+everywhere):
+
+| len | bf16 (CPU attn) | FLM-ref | agree |
+|---|---|---|---|
+| 2 | 11771 | 11771 | ✓ |
+| 8 | 21240 | 21240 | ✓ |
+| 64 | 941 | 941 | ✓ |
+| 128 | 158 | 158 | ✓ |
+| 256 | **5938** | **4938** | ✗ (leading digit only) |
+| 512 | 13 | 13 | ✓ |
+| 768 | **3504** | **33641** | ✗ (far) |
+| 1024 | 1033 | 1033 | ✓ |
+
+**Six of eight agree exactly**, including @1024. So the bf16 host path is **largely correct**, and the nh20 host
+residual is **two points of different kinds**: a near-miss at @256 (all but the leading digit — the §16.2 drift
+shape) and a far disagreement at @768 (not drift).
+
+**And both rules are now earned by three independent retractions each:**
+1. **assert the first and last token of every prompt** — the token-16 zero embedding produced their §275, my
+   §88/§89, and my §134;
+2. **control every flag that touches a BO, and prove it inert before reading its effect as a finding** — CZERO
+   (no sync) moved things; CEXTENT (with sync) did not.
