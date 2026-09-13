@@ -220,6 +220,42 @@ which is an algorithmic change, not a flag.
 Qwen3-1.7B, and for 4B/8B on decode only.** The outstanding deficit is prefill (hence
 TTFT) on the two largest dense models, and it is bandwidth-bound host math.
 
+## 11. `perf` profile of the prefill — sync-limited, not arithmetic (2026-09-13)
+
+`perf record -F 199` on `npu_engine_qwen3_4b` @1024 (`NPU_PREFILL_BF16=1`).
+
+**All threads** (`--sort dso`): **83.6% `libgomp.so.1.0.0`**, 10.8% the engine,
+3.6% libc, 1.8% libxrt_driver_xdna. That is *thread-time*, not wall time: the worker
+threads spend ~84% of their sampled time spinning in the OpenMP runtime while the main
+thread does the serial work (the per-256-row NPU GEMM launch/wait + the memcpys).
+Confirmed as useful spin, not waste — forcing passive waiting is *worse*:
+`OMP_WAIT_POLICY=passive` 2116→2464 ms, `GOMP_SPINCOUNT=0` →2407 ms,
+`OMP_PROC_BIND=false` 2122 ms (neutral).
+
+**Single-threaded** (`NPU_HOST_THREADS=1`, 3846 ms — i.e. 24 threads buy only 1.8×,
+the signature of a sync-dominated workload) gives the real work ranking:
+
+| # | symbol | % | reading |
+|---|---|---|---|
+| 1 | `main._omp_fn.8` | 29.7% | scalar (`vmulss/vaddss/vdivss/vcomiss`) with a reduction + division — a per-head norm/RoPE loop (QKV post-processing), not the GU SiLU (which the `#pragma omp simd` did vectorize) |
+| 2 | `__memmove_avx512_unaligned_erms` | 24.4% | bulk copy — attention `attn_act` staging (`rows*q*2` = 8 MB/layer @4B), KV-region copies, `ensure_a` staging |
+| 3 | `shim_xdna::buffer::sync` | 14.1% | NPU buffer sync (serial, main thread) |
+| 4 | `dequant_i8_to_float_ex` | 9.7% | weight dequant — mostly the init phase |
+| 5 | `__memset_avx512_unaligned_erms` | 3.6% | |
+| 6 | `main._omp_fn.2` | 2.9% | another parallel loop |
+| 7 | `lm_topk_omp` | 2.6% | final greedy argmax |
+| 8 | `npu_pack_layer_bo` | 2.5% | weight packing — init |
+
+(`addr2line` has no line info — the engine is built without `-g`; `-fopt-info` line
+numbers plus the instruction mix were used to identify the loops.)
+
+**Conclusions for the last 7–11%:** the prefill is (a) **OpenMP-synchronisation limited**
+(~84% worker spin; many short parallel regions per layer interleaved with serial NPU
+waits) and (b) **copy-heavy** (~28% memmove/memset). Neither is arithmetic. The levers
+are structural: fewer/larger parallel regions, and overlapping the serial NPU waits (or
+removing the redundant staging copies), not more threads or more SIMD. Re-profiling with
+`-g` would let the exact loops be pinned to lines.
+
 Boot tokens unchanged (25/220/220/220). So Qwen3-1.7B now **meets** FLM on prefill, and
 the 4B/8B gaps roughly halved.
 
