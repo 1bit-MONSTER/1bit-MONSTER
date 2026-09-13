@@ -145,6 +145,14 @@ code**, fetched 2026-09-13.
 
 ### `englishbase` — `SlayerLab/fabryka-english-250m-e01-sft-v1`
 
+**Implemented 2026-09-13 — no longer an uncovered class** (`RCPP_ARCH_ENGLISHBASE`
+= 1006, generic backend): the two-matrix relu2 MLP rides the non-gated FFN branch
+and the parameter-free QK-norm is the existing per-head path driven by an all-ones
+`[head_dim]` weight. Validated token-for-token against the model's own code — 68/68
+greedy tokens over three prompts — with `Testing/englishbase_parity_check.cpp`. The
+review below is kept as the record of *why it was not an alias*, which is what
+decided the shape of the implementation.
+
 * **Class / model_type**: `EnglishBaseForCausalLM` / `fabryka_english_base`.
 * **Shape**: 36 layers, H=768, 6 heads / 2 kv, head_dim 128, intermediate 3040,
   vocab 32768, tied embeddings, rope theta 10000, `rms_norm_eps` 1e-6,
