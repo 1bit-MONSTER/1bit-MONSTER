@@ -6,8 +6,11 @@
 #   D-family ("degenerate", /tmp/M*.txt): first token 220 -- and 220 is ALSO a common
 #       prediction, which is the whole problem.  5 of the 10 lengths measured with it
 #       returned 220, i.e. the output equalled a token of the prompt.
-#   N-family ("non-degenerate", /tmp/N*.txt): first token 58907 -- the same choice the
-#       peer lane used for its control, so the two lanes' numbers are directly comparable.
+#   N-family (/tmp/N*.txt): first token 58907.  NOT DESCRIBED AS "NON-DEGENERATE" -- it was,
+#       and the peer lane's section 140 showed 58907 is itself a DEGENERATING first token for
+#       the bf16 path (changing it to 220 made that path correct).  It is a SECOND PROBE, not a
+#       control: "the reference varies with length" is not evidence the PATH is well-conditioned.
+#       See build_token_sweep.sh for the sweep that replaces this family as a control.
 #
 # Every pair below shares its LAST token and differs ONLY in the first, so a single pair
 # of runs is a controlled experiment for whether the output tracks the prompt's own ids:
@@ -32,7 +35,7 @@ import sys
 toks = open(sys.argv[1]).read().split()
 n = int(sys.argv[2])
 out = toks[:n]
-out[0] = '58907'          # non-degenerate first token, matches the peer lane's control
+out[0] = '58907'          # fixed probe token, NOT a known-good one -- see header
 print(' '.join(out))
 PY
 done
