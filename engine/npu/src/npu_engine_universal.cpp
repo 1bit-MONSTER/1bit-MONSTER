@@ -3971,7 +3971,18 @@ struct Bf16Ctx {
         while(fscanf(tf,"%d",&tid)==1) pt_vec.push_back(tid);
         if(tf!=stdin) fclose(tf);
         if(pt_vec.empty()){ fprintf(stderr,"Empty input token file: %s\n",input_tok_file); return 1; }
-        if((int)pt_vec.size() > 4095) pt_vec.resize(4095);
+        if((int)pt_vec.size() > 4095) {
+            // Announce, as the bf16 and fallback caps do. A SILENT 4095-token cap is the same defect
+            // class as the fallback's silent 128-token truncation (RESULTS-coverage-multifamily
+            // 83/84), which cost this investigation several checkpoints precisely because it left no
+            // trace beyond a banner count. The cap ITSELF is correct -- 4096 is the runlist's
+            // max_seq_len and the KV window the per-ctx ELFs are built for -- so only the silence is
+            // fixed here.
+            fprintf(stderr, "input: prompt %d tokens -> %d (max_seq_len 4096: the KV window and the "
+                            "per-ctx ELFs are built for 4096)\n",
+                    (int)pt_vec.size(), 4095);
+            pt_vec.resize(4095);
+        }
     }else{
         pt_vec={151644,872,198,13048,151645,198,151644,77091,198};
     }

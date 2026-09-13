@@ -3940,3 +3940,32 @@ token is worth checking before the next Nanbeige differential.
 **Lesson, same as §83's:** the instrument (a token-0-only dump) could not see the row that mattered, and I
 read a fixture-shaped zero as a kernel defect. One sweep of the first token — cheap, and it names the
 variable — would have caught it immediately.
+
+## 88. Static audit for the same defect class: one more silent cap found, and fixed
+
+**Why it was worth searching.** §83/§84 established that a **silent truncation** cost this investigation
+several checkpoints: the fallback's 128-token cap left no trace beyond a banner count, and everything
+downstream — the "nondeterminism", the context-free tokens, the four re-runs — followed from it. So it was
+worth looking for the same *shape* elsewhere. This audit needs no device.
+
+**Every cap on the prompt path, and whether it announces itself:**
+
+| site | cap | announced? |
+|---|---|---|
+| bf16 prefill (`:4001`) | `NPU_PREFILL_MAX`, default 256 | yes |
+| fallback prefill (`:4003`) | `XM = 128` | **was silent — fixed in §84** |
+| bf16 attention envelope (`:4258`) | `npt > 256` -> CPU attention | yes |
+| **input load (`:3974`)** | **4095 tokens** | **NO — silent** |
+
+**And the silent one is the one at the very front.** `if((int)pt_vec.size() > 4095) pt_vec.resize(4095);`
+runs **before the path selection**, so a 5000-token prompt is trimmed to 4095 in **every** path, with no
+message. It is the same shape as the defect that took this session's largest detour.
+
+**The cap itself is correct**, which is why only the silence is fixed: 4096 is the runlist's `max_seq_len`
+(`npu_runlist_bridge.cpp:63/158/305`) and the KV window the per-ctx ELFs are built for. So the fix **only
+prints** — no behaviour change — and that is verifiable rather than assumed: the string is compiled in, and
+the gates are unchanged (1614 / 25, and Nanbeige i8 **5938**, FLM's reference).
+
+**The general lesson, which is why this is worth landing rather than noting:** **a cap that cannot be seen
+is a bug even when the cap is right.** The fallback's cap was equally "correct" — 128 rows is what the
+activation BO holds — and it still cost the session its largest detour, because nothing said so.
