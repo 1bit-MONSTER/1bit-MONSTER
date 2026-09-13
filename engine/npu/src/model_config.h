@@ -191,6 +191,26 @@ static int get_top_int(const char* js, size_t jl, const char* field) {
     return 0;
 }
 
+// Read "rope_theta" from <model_dir>/config.json. The q4nx JSON header carries no
+// RoPE metadata and the tag heuristics below only cover a few families, so the
+// model's own config is the authority when present. Returns NAN if absent.
+inline float read_config_rope_theta(const std::string& model_dir) {
+    const std::string p = model_dir + "/config.json";
+    FILE* f = fopen(p.c_str(), "rb");
+    if (!f) return NAN;
+    std::string s;
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+    fclose(f);
+    const char* key = "\"rope_theta\"";
+    size_t i = s.find(key);
+    if (i == std::string::npos) return NAN;
+    i = s.find(':', i + strlen(key));
+    if (i == std::string::npos) return NAN;
+    return (float)strtod(s.c_str() + i + 1, nullptr);
+}
+
 // Parse Q4NX JSON header and derive ModelConfig
 inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_tag) {
     ModelConfig cfg;
@@ -211,6 +231,13 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     cfg.model_dir = model_path;
     auto slash = cfg.model_dir.rfind('/');
     if (slash != std::string::npos) cfg.model_dir = cfg.model_dir.substr(0, slash);
+
+    // Prefer the model's own config.json rope_theta. The tag heuristics above are
+    // wrong for families they do not name: Nanbeige4.1-3B is tagged "nanbeige" and
+    // gets 5e5 here, but its config.json says rope_theta = 7e7 — a 140x error that
+    // corrupts every RoPE position (boot 1214 vs the reference 1033).
+    if (const float th_cfg = read_config_rope_theta(cfg.model_dir); th_cfg == th_cfg && th_cfg > 0.0f)
+        cfg.rope_theta = th_cfg;
     
     int fd = open(model_path, O_RDONLY);
     if (fd < 0) { fprintf(stderr, "[ModelConfig] Cannot open %s\n", model_path); return cfg; }
