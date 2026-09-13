@@ -1,0 +1,4 @@
+/home/bcloud/npu-verify/1bit-MONSTER/engine/npu/xclbins/final_i8_MOE_FUSED_zaya_q0.xclbin
+/home/bcloud/npu-verify/1bit-MONSTER/engine/npu/xclbins/final_i8_MOE_FUSED_zaya_q1.xclbin
+/home/bcloud/npu-verify/1bit-MONSTER/engine/npu/xclbins/final_i8_MOE_FUSED_zaya_q2.xclbin
+/home/bcloud/npu-verify/1bit-MONSTER/engine/npu/xclbins/final_i8_MOE_FUSED_zaya_q3.xclbin

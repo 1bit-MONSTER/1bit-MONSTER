@@ -44,6 +44,11 @@ dist/
 /engine/fusion/zig-out
 .env
 .env.local
+# Env *backups* carry the same secrets as .env — never let one ride a
+# `git add -A` (seen in-tree: integrations/discord-support-bot/.env.bak.20260911-233341).
+.env.bak*
+.env.*.bak
+*.env.bak*
 *.exe
 *.gguf
 *.h1b

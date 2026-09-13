@@ -1,9 +1,51 @@
 # Agent Coordination — 1bit-MONSTER (ryzen ↔ strixhalo)
 
-> This repo is worked by **two DeepSeek Harness agents on two machines**.
+> This repo is worked by **DeepSeek Harness agents on two machines** (ryzen ↔
+> strixhalo); several sessions can be live on one box at the same time.
 > Both edit this same codebase; this file is the shared handoff ledger.
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
+
+## 2026-09-12 (late) — strixhalo snapshot
+
+- **`main` is at `f3825fbb6`** — PR #2282 (the #2199 fused-int4 `.data` fix +
+  rebuilt xclbin + regenerated provenance manifest) — and level with `origin/main`.
+  Re-verified 2026-09-12: `bash engine/npu/tests/check_kernel_bss.sh` →
+  `SUMMARY: symbols=ok duplicate=ok bss=0` / `RESULT: PASS` (was
+  `FAIL_BSS_ONLY` when #2262 measured it).
+- **The NPU work no longer lives in this clone.** It moved to the worktree
+  `~/1bit-MONSTER-goal` on branch `goal/runlist-decode-wire` (330 ahead / 119
+  behind `origin/main`, pushed, **no PR yet**). Dense-Qwen3 @1k prefill and the
+  generated long-context attention ELF live there; read
+  `engine/npu/generators/FK3-STATUS-2026-09-12.md` before touching it.
+- **Sessions, not a pair.** Several `dsh --profile tui` sessions run on strixhalo
+  at once (SEO/site publishing, the NPU thread, housekeeping). Coordination is
+  still this file + git — assume a concurrent session holds the NPU.
+- **Devices are invisible in the default bash sandbox.** `dsh` runs commands in a
+  bwrap sandbox with a synthetic `/dev`, so `/dev/accel/accel0`, `/dev/dri` and
+  `/dev/mem` are absent and `xrt-smi` reports "0 devices". NPU commands need the
+  full-access sandbox. `/tmp` is a per-command tmpfs — never build or park
+  artifacts there; use `~/npu-build/` or the repo.
+- **Single-NPU contention is measurable.** Two `npu_engine_qwen3_0_6b` runs
+  started a minute apart (22:08 / 22:09, 2026-09-12) turned a 150 ms @1k
+  attention into **227 s**. Sync-protocol rule 4 is not theoretical: serialize
+  before you record a benchmark number.
+- **Untracked duplicates that will collide on merge.** `benchmarks/FLM-PARITY-DATA-SOURCES.md`
+  and `benchmarks/prompts/reclaimer.txt` are untracked in the main clone and are
+  tracked on `goal/runlist-decode-wire` with **different content** — merging that
+  branch into `main` will trip over them. The branch owner should reconcile.
+- **Disk is at 87 % (247 G free) and the big consumers are all load-bearing.**
+  models 425 G, Xilinx toolchains 142 G, and `~/.cache/moe-cap-rb` **77 G — that
+  last one is the 35B MoE capture oracle (byte-verified in Rounds 81–83 of the
+  NPU work), not a cache you may prune**. Reclaiming space here is a human
+  decision; a cleanup script must not touch the oracle. (A 1.1 GB `flm` crash
+  dump and ~7.9 GiB of swap were reclaimed on 2026-09-12; nothing larger is
+  safely free.)
+- **Scratch left untracked in this clone** (~41 entries): NPU probe sources and
+  their compiled binaries under `engine/npu/pool/`, `npu-infer/tools/`,
+  `tools/zaya_*.cpp`, plus `npu-infer/captures/txn-elfs-moe35b/` and
+  `npu-infer/build-rl/`. Left in place deliberately — they are someone's working
+  set, not litter. The dated evidence among them was landed in PR #2306.
 
 ## Agents & machines
 
