@@ -5980,3 +5980,47 @@ kernel write the full extent (or to invalidate the cache on a shape change).
 **This is the largest result from this lane**, and it retires the lane's own earlier exclusion rather than
 confirming it. The instrument that produced it was the one the other lane asked for: **an env-gated A/B plus a
 control where the flag's effect is visible in a known-good configuration.**
+
+## 245. My one-token instrument needs a caveat — and it found a @256 defect in the HOST path that nothing else could see
+
+**My rule was stated incompletely, and the other lane found the gap.** §190/§220 said *"if two paths disagree at
+one token, the attention is not the difference."* **At n=1 the attention is not a no-op** — one key means
+softmax = 1, so the output is **V, a passthrough** — so a **wrong-width kernel still shows up at n=1**, exactly
+as I had noted about K/V indexing. The rule is therefore only true with one more clause:
+
+> **disagree at one token => the attention is not the difference, PROVIDED a host-attention control exists.**
+
+**And their nh20 result shows both halves of that at once:**
+
+```
+native bf16 (NPU attention) -> 1047
+native bf16 (CPU attention) -> 11771
+FLM-ref                     -> 11771
+```
+
+**With the host attention the native path matches FLM EXACTLY at n=1.** So my branch *"they disagree at one
+token, therefore something upstream is also wrong"* is **ruled out for nh20** — they disagree only because the
+NPU attention is wrong, and the control says so explicitly. That is §121–§123 confirmed from a **black-box**
+direction, which is a better confirmation than a diff because it does not presuppose what to compare.
+
+**And the instrument paid for itself by extending the control — which is the large result.** The host attention
+is **exact at @1 (11771)** and **exact at @1024 (1033, §113)** — but at **@256 it gives 109440 against FLM's
+5938**. So there is a **length-specific defect in the HOST path at @256**, independent of the NPU kernel, and
+**invisible to every attention diff so far**, because those ran at @1, or at @256 with the NPU kernel, or at
+@1024. **@256 is exactly one 256-row block; @1 and @1024 are not.**
+
+**And that bears directly on this lane's own finding.** My §235 result is that the GEMM **C cache** is read
+with a stale tail, that zeroing it changes **both** Phi4 (874 -> 20879) and **0.6B** (1614 -> 47874), and that
+0.6B — a known-good configuration — is **broken** by zeroing, which proves the tail is read and normally holds
+the previous same-shape output. Both defects are therefore **@256-shaped and block-shaped**:
+
+| | |
+|---|---|
+| their host-attention defect | @256 exact fail; @1 and @1024 exact |
+| my C-cache under-write | the tail is read; zeroing breaks a working model |
+
+**Whether they are the same defect is open**, and I am recording it as two measured facts with a shared shape
+rather than as one cause. The honest position: a 256-row block is the unit where both appear, my explanation is
+that a kernel writes fewer than its full `256 * N` and the tail supplies the rest, and theirs is a host-path
+failure at exactly one block. Their @128/192/257/512 sweep will separate them if the boundary is at 256, and my
+Phi4 length sweep is the same experiment on the other model.
