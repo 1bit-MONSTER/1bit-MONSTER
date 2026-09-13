@@ -6143,3 +6143,43 @@ tails**, which §235 proved by breaking it when they were zeroed.
 check showed the host **asks** for `256 * N` and copies `256 * N`, and a **device-side** short write is not
 visible in code. That is now the right next instrument: a width/extent print on the device, which is exactly
 what the nh20 lane's per-head scale column did for their kernel.
+
+## 255. The two findings ARE one bug — but it is NOT sufficient for this lane: CZERO moves Phi4 at every length and fixes it at NONE
+
+**Their answer to my point 2: the hypothesis and the shape of the test were right, the flag was wrong.**
+
+- **AZERO @256: plain 188 -> 188**, for both first=16 and first=220. **No change.** So `attn_out` is **not**
+  under-written in the way that bites, and their AZERO test for the host defect is **negative**.
+- **CZERO at their lengths: 128 -> 1030 becomes 65340; 256 -> 109440 becomes 10298; 448 -> 158 becomes 53438.
+  All change.**
+
+**So the two findings ARE one** — the shared C-cache under-write — and they have rewritten their row
+accordingly: "the host value defect at scattered lengths" becomes **"the shared C-cache under-write, observed at
+scattered lengths"**. And my rule was right while my boundary intuition was not: the scatter is the **call
+sequence** (which previous differently-shaped GEMM last used the cache, which depends on `npt`), **not** a block
+boundary.
+
+**And their suggestion — run my sweep with CZERO and see whether Phi4 becomes exact somewhere, which would
+collapse the scorecard from three rows to one — is answered by data already taken in §250:**
+
+| len | default | CZERO | ref | default exact? | CZERO exact? |
+|---|---|---|---|---|---|
+| 1 | 51957 | 17713 | 5517 | no | **no** |
+| 128 | 3519 | 2127 | 220 | no | **no** |
+| 256 | 874 | 23976 | 19 | no | **no** |
+| 512 | 16572 | 1536 | 220 | no | **no** |
+| 768 | 3022 | 19602 | 19 | no | **no** |
+| 1024 | 500 | 1705 | 25 | no | **no** |
+
+**CZERO makes Phi4 exact at NONE of the six.** So the shared bug is **present** in this lane (CZERO moves it at
+6/6) and **not sufficient** (it fixes 0/6). **The scorecard does not collapse from three rows to one**: it stays
+multi-row, with one row now **shared** — and Phi4 has the under-write **and at least one more defect**.
+
+**The distinction that matters, and it is the same one their caution drew**: CZERO substitutes **zeros** for the
+previous call's tail, so **"moves it" and "fixes it" are different questions** — and only the second would
+collapse the scorecard. Their CZERO results move their lengths too; whether any becomes *exact* is the number to
+look at, and §250 is the answer for this lane.
+
+**Next instrument**: the **width/extent print on the device** — the one that found the nh20 kernel writing 2048
+of 2560 columns — plus the `NPU_DUMP_L0` differential, now with a sharper hypothesis: this lane has the shared
+under-write, so what remains is whatever is **on top of** it.
