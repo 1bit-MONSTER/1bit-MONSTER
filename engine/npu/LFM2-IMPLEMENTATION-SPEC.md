@@ -190,3 +190,56 @@ NPU verification (this run, `NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX=10
 So the probe is correct on both classes and the change is a no-op for the four working
 families. Ported decoder: commit `69ea8e744` (the dsh agent's
 `dequant_i8_group_signed_to_float_ex`, +62/-0, file-wise from their `3bb836eb0`).
+
+### Status after this section (2026-09-13)
+
+LFM2 now loads and runs end to end but produces a WRONG token, announced loudly:
+
+```
+[HYBRID] 10/16 layers are gated short-conv layers and the conv block
+         is NOT implemented -- the token below WILL BE WRONG.
+         Gate for a correct LFM2 forward: boot=5242.
+  [0] boot=63260 (7ms)
+```
+
+Landed: decoder ported `69ea8e744`; convention auto-detected `c53a80d33`; tensors loaded
+`d1bb27f23`; layer-BO sizing fixed (was a SIGSEGV) `e2e65ede4`; short-conv weights packed
+`5ea5b5a6f`; block order corrected `a123bb911`. The detector reports 10/16 conv layers,
+matching the bundle's layer map exactly.
+
+## 10. The route: FLM ships the kernels (2026-09-13)
+
+LFM2's GEMM shapes do not exist in the engine's own xclbin set. Needed vs present
+(`engine/npu/xclbins/`):
+
+| projection | K | N | present in engine |
+|---|---|---|---|
+| shortconv.in_proj | 2048 | 6144 | no |
+| shortconv.out_proj | 2048 | 2048 | no |
+| attn q / o | 2048 | 2048 | no |
+| attn k / v | 2048 | 512 | `final_i8_G_K2048_N512` / `final_i8_U_K2048_N512` |
+| mlp gate / up | 2048 | 8192 | `final_i8_QKV_K2048_N8192` |
+| mlp down | 8192 | 2048 | no |
+
+BUT FLM ships a complete per-model xclbin set for LFM2 at
+`~/.local/flm-v0946/xclbins/LFM2-1.2B-NPU2/` (and `LFM2-2.6B-NPU2`, plus `.5-Thinking`
+and `Transcript` variants):
+
+| file | bytes | role |
+|---|---|---|
+| `mm.xclbin` | 512220 | the GEMMs, in LFM2's own shapes |
+| `attn.xclbin` | 397308 | the hd64 / nh32 attention kernel the engine has no ELF for |
+| **`conv.xclbin`** | 118476 | **the gated short-conv block** — no analogue anywhere in the engine |
+| `layer.xclbin` | 357756 | possibly a fused per-layer pipeline |
+| `dequant.xclbin` | 112524 | int4 dequant |
+
+This is the route, and it is why `NPU_FLM_PREFILL=1` already reproduces boot=5242.
+Consequences:
+
+1. A **host-GEMM fallback is NOT needed** for correctness — the device kernels exist.
+2. The engine must be pointed at FLM's xclbin ROOT by model name: the model dir under
+   `~/.config/flm/models/LFM2-1.2B-NPU2/` holds only config.json, model.q4nx and the
+   tokenizer, so the `fmd`/`fxd` derivation from `argv[1]`'s parent (commit `77874d5a7`)
+   finds nothing there.
+3. Inspect `layer.xclbin` FIRST — if it is a fused per-layer kernel, the dispatch is far
+   less work than composing mm + attn + conv by hand.
