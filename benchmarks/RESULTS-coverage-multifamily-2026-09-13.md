@@ -2312,3 +2312,46 @@ it was written for.
 
 **Complete count: 20 bundles** (18 in the store, 2 bare) — **19 derive 256**, **one derives 64**, **one is
 malformed**.
+
+## 49. Gemma3-1B: the dims were RIGHT all along, and the blocker is FLM's own library
+
+**The dims parse is stable and correct** (three runs, identical):
+
+```
+H=1152 NC=26 NH=4 NKV=1 HD=256 IM=6912        <- matches the bundle's config.json exactly
+```
+
+**So section 20's "correction" was WRONG, and it is the most direct instance of my own errors.** I recorded
+that "the engine's own dims line, taken from the q4nx manifest, says H=1152 NC=26 NH=14 NKV=3 HD=256
+**IM=24864**", concluded that "the bundle's `config.json` and its q4nx manifest disagree", and treated the
+config.json's `nh=4/nkv=1/IM=6912` as the error. But **Gemma3-1B's manifest carries no dims at all** —
+section 47 verified it holds only `lm_head.weight` — so it was never the manifest. The NH=14/NKV=3/IM=24864
+values were the **engine's own derivation**, and the config.json was **right**. I corrected a correct value
+using a source that does not exist.
+
+**With the geometry-aware derivation, `IM` is now 6,912**, verified by instrumenting the derivation:
+
+```
+[IM] g_tr=3888 g_bpt=1280 g_cpt=64 H=1152 A=18 -> IM would be 6912
+```
+
+6,912 = 27 x 256, so it is aligned and the refusal passes it.
+
+**And the failure moved one level deeper, to the same class.** The run now stops at
+
+```
+D_in % k_tile_q4 != 0
+```
+
+which comes from **FLM's own `libdequant.so`** — `strings` locates `k_tile_q4` in it, and in the
+per-family libs. So it is another **hardcoded K-tile inside a compiled library**, and it cannot
+accommodate Gemma3-1B's 1,152 — while the engine's **own** dequant now can, via the row-derived 64.
+
+**And that is consistent with section 20.3's independent observation**: the FLM-ref path also fails on
+Gemma3-1B ("Failed to parse model config"). **Gemma3-1B is a bundle neither FLM nor this engine can
+currently load**, for reasons of the same class — a tile assumption compiled into a library.
+
+**Regression clean**: Qwen3-0.6B 25, Qwen3-4B 220, Llama-3.1-8B 220.
+
+**So the remaining fix is bounded and named**: bypass FLM's dequant for the embedding/pre-convert path and
+use the engine's own geometry-aware dequant, which is now correct.

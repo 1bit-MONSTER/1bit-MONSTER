@@ -751,11 +751,15 @@ int main(int argc,char**argv){
             fprintf(stderr, "[dequant] unaligned dims H=%d IM=%d NH*HD=%d -- tile width taken from\n"
                             "          the bundle's row size (row_bytes/20), not the 256 constant.\n",
                     H, IM, q);
-        if (tile_misaligned && IM % 256 != 0) {
+        // Only IM is still a hard stop. H and NH*HD reach the dequant, which now derives its tile
+        // width from the bundle's row (H=1152 -> 64 cols -> 18 tiles, exact), whereas IM drives the
+        // gate/up/down GEMM geometry and is NOT geometry-covered. Gemma3-1B now derives IM=6912
+        // (27 x 256, aligned) from its mlp tensors, so it passes this.
+        if (IM % 256 != 0) {
             fprintf(stderr,
                 "UNSUPPORTED: intermediate_size=%d is not a multiple of 256 and was DERIVED, so\n"
-                "  the gate/up/down blocks would index out of bounds. Refusing here instead of\n"
-                "  crashing.\n", IM);
+                "  the gate/up/down blocks would index out of bounds. (H and NH*HD are handled by\n"
+                "  the row-derived tile width; IM is not.) Refusing here instead of crashing.\n", IM);
             return 1;
         }
     }

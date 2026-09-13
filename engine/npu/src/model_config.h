@@ -404,6 +404,9 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
         int g_cpt = cols_per_tile_from_bytes(g_bpt);
         if (g_cpt <= 0) g_cpt = cfg.cpt;
         int A = (cfg.H + g_cpt - 1) / g_cpt;
+        if (getenv("NPU_DEBUG_IM"))
+            fprintf(stderr,"[IM] g_tr=%d g_bpt=%d g_cpt=%d H=%d A=%d -> IM would be %d\n",
+                    g_tr, g_bpt, g_cpt, cfg.H, A, A > 0 ? (g_tr / A) * 32 : 0);
         if (A > 0) {
             int tile_rows_g = g_tr / A;
             if (tile_rows_g > 0) {
