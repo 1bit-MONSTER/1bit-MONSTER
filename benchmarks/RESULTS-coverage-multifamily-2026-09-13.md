@@ -4360,3 +4360,32 @@ constant; it does not => (b), and the file is a mislabeled kernel.
 **Corrects §95-§98's emphasis.** Those sections used the file similarity to question the file's *identity*;
 the file is a real capture, so the open question is not "is the label right" but "does our invocation match
 the one it was captured under".
+
+## 103. The captured attention kernels' BO profile scales with NKV and does not match our invocation
+
+Following §102 one step: the capture manifests record the full BO profile for the kernel each ELF belongs to.
+
+| capture | kernel | BO3 | BO4 | BO5 |
+|---|---|---|---|---|
+| `capnb_flm` (Nanbeige, nh20/nkv4) | `elf_0011` (= our nh20 ELF) | **1048576 (1 MB)** | 5242880 (5 MB) | 31457280 (30 MB) |
+| `cap4b` (Qwen3-4B, nh32/nkv8) | `elf_0012` (= our nh32 ELF) | **2097152 (2 MB)** | 5242880 (5 MB) | 31457280 (30 MB) |
+
+Two things stand out:
+
+1. **BO3 scales exactly with NKV** (1 MB at nkv4, 2 MB at nkv8) while BO4 and BO5 are identical across the
+   two models. A BO whose size is proportional to the KV-head count is the signature of a KV-side buffer,
+   which is at least consistent with these being attention kernels (and inconsistent with §102's branch (b)
+   being a *totally* unrelated kernel).
+2. **Our `bf16mm_attn` binds 5 MB (out) / 5 MB (act) / 16 MB (kv)** — computed as `rows*qout*2` twice and
+   `attn_kv_region*4*2`. That matches the captured profile in **neither** the sizes nor the count: FLM's
+   kernel sees 1-2 MB / 5 MB / 30 MB, ours sees 5 / 5 / 16.
+
+**But it is not obviously fatal, and that has to be said.** Qwen3-4B/8B run the nh32 ELF — whose captured
+profile is 2 MB / 5 MB / 30 MB — through OUR 5 / 5 / 16 binding and **gate correctly** (§7: 220 @1024). So the
+profile mismatch does not by itself break a working shape. What it does mean is that the invocation is not
+reproducing the captured one, so "the kernel behaves as FLM measured it" is an assumption for every shape,
+and the one shape where we observe a failure is the one whose BO3 is half the nh32 value.
+
+**Next (device):** the `NPU_ATTN_KV_REGION` knob from §94 can match BO5 (30 MB => 3932160/region) without a
+rebuild, and the profile above says the more interesting number may be the KV/act discrepancy rather than the
+stride alone. A single clean pass — 3932160 with the first-token probe — discriminates (a) from (b) in §102.
