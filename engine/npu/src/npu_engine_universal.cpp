@@ -3929,9 +3929,13 @@ struct Bf16Ctx {
         int qout = NH * HD, kout = NKV * HD, qkvn = qout + 2 * kout;
         const int gu_chunks = IM / 512;   // GU: 512-out-row chunks (16 tile-rows x 32)
         std::vector<int> Wqkv(NC), Wo(NC), Wgu(NC), Wd(NC);
+        // The attention shape MUST be set BEFORE init(): init() loads the attention ELFs
+        // and now searches a shape-specific name first (attn_mha_<tok>_nh<NH>_hd<HD>.elf),
+        // so the shape has to be known by then. That lookup is what makes a per-family
+        // attention ELF a drop-in file instead of a code change.
+        bf16mm_set_attn_qout(NH * HD);
+        bf16mm_set_attn_hd(HD);
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV, HD) == 0) {
-            bf16mm_set_attn_qout(NH * HD);
-            bf16mm_set_attn_hd(HD);
             // KV cache region stride is baked into the captured attention ELF
             // (region = MAX_L x 4 heads x HD x 2 bytes): the NH=16 ELF was
             // captured at MAX_L=8192 -> 8MB; the NH=32 ELF (4B/8B) at

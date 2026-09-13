@@ -101,6 +101,8 @@ struct Bf16Mm {
     int attn_qout = 2048;   // NH*HD: 2048 = nh16x128, but 4096 is BOTH nh32x128 and nh16x256
     int attn_hd = 128;      // model head_dim; every shipped attn ELF is hd128, so this
                             // must be 128 for any of them to be a valid shape match
+    bool attn_shaped_ok = false;  // a shape-specific ELF (attn_mha_<tok>_nh<NH>_hd<HD>.elf)
+                                  // was found for this model's (NH, HD)
     int attn_tokens = 256;  // KEYS present in the KV BO for this call
     int attn_rows = 0;      // query rows this call computes (0 => attn_tokens, max 256)
     uint32_t attn_kv_region = 4194304;   // KV region stride in bf16 (8MB, MAX_L=8192)
@@ -194,12 +196,29 @@ struct Bf16Mm {
             // was captured at — that is exactly why the old single 26 KB capture
             // failed past ~512 keys.
             {
-                auto load_attn_elf = [&](const char* envname, const char* fname,
+                auto load_attn_elf = [&](const char* envname, const char* fname, int tokens,
                                          std::unique_ptr<xrt::elf>& e,
                                          std::unique_ptr<xrt::module>& m,
                                          std::unique_ptr<xrt::ext::kernel>& k) {
                     std::vector<std::string> cands;
                     if (const char* ev = getenv(envname)) cands.push_back(ev);
+                    // Shape-specific name FIRST, so a per-family attention ELF is a
+                    // drop-in by filename -- no code change per family:
+                    //   attn_mha_<tokens>_nh<NH>_hd<HD>.elf
+                    // The filename must carry BOTH nh and hd because qout aliases
+                    // nh32x128 with nh16x256 (both 4096). Families whose attention
+                    // kernel is not hd128/nh16-or-nh32 have no ELF at all today --
+                    // Nanbeige nh20, Phi4 nh24, Gemma3 nh4/nh8 hd256, Qwen3.5 nh16/hd256
+                    // -- and this is the hook they will land on.
+                    if (attn_hd > 0 && attn_qout > 0 && attn_qout % attn_hd == 0) {
+                        const int nh = attn_qout / attn_hd;
+                        char shaped[96];
+                        snprintf(shaped, sizeof shaped, "attn_mha_%d_nh%d_hd%d.elf", tokens, nh, attn_hd);
+                        if (!xclbin_dir.empty()) cands.push_back(xclbin_dir + "/" + shaped);
+                        if (const char* xd = getenv("NPU_XCLBIN_DIR"))
+                            cands.push_back(std::string(xd) + "/" + shaped);
+                        cands.push_back(std::string("engine/npu/xclbins/") + shaped);
+                    }
                     cands.push_back(xclbin_dir + "/" + fname);
                     if (const char* xd = getenv("NPU_XCLBIN_DIR"))
                         cands.push_back(std::string(xd) + "/" + fname);
@@ -213,15 +232,19 @@ struct Bf16Mm {
                             e = std::make_unique<xrt::elf>(buf.data(), sz);
                             m = std::make_unique<xrt::module>(*e);
                             k = std::make_unique<xrt::ext::kernel>(*attn_hc, *m, "MLIR_AIE");
+                            // Remember whether this came from the shape-specific name.
+                            if (path.find("attn_mha_") != std::string::npos &&
+                                path.find("_hd") != std::string::npos)
+                                attn_shaped_ok = true;
                             fprintf(stderr, "  Bf16Mm: attention ELF loaded (%ld B): %s\n", sz, path.c_str());
                         }
                         fclose(ft);
                         if (k) break;
                     }
                 };
-                load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", attn_elf1k, attn_module1k, attn_kernel1k);
-                load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", attn_elf1k32, attn_module1k32, attn_kernel1k32);
-                load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", attn_elf2k, attn_module2k, attn_kernel2k);
+                load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024, attn_elf1k, attn_module1k, attn_kernel1k);
+                load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", 1024, attn_elf1k32, attn_module1k32, attn_kernel1k32);
+                load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048, attn_elf2k, attn_module2k, attn_kernel2k);
                 if (!attn_kernel1k)
                     fprintf(stderr, "  Bf16Mm: no 1024-context attention ELF — npt>256 will use CPU attention\n");
                 if (!attn_kernel2k)
@@ -265,7 +288,8 @@ struct Bf16Mm {
         //   hd128 + qout 2048 -> nh16, hd128 + qout 4096 -> nh32, anything else -> none.
         // An unmatched shape makes run_attn return false (explicit failure) instead
         // of a plausible-looking wrong answer.
-        const bool attn_shape_ok = (attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096);
+        const bool attn_shape_ok = attn_shaped_ok ||
+            ((attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096));
         xrt::ext::kernel* kern = !attn_shape_ok ? nullptr
             : ((attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get());
         // attn_tokens > 256 -> the long-context ELF captured from FLM's REAL
