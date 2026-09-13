@@ -3287,3 +3287,38 @@ the model that fails.
 **The next step**: rebuild Nanbeige's four xclbins with `QKV:2560:3584:8`, `G:2560:10752:8`,
 `U:2560:10752:8`, `D:10752:2560:4`, install them, and measure the boot against the **1033** target with
 Qwen3-0.6B @256 = **1614** as the no-regression gate.
+
+## 73. §72 CORRECTED — the build list cannot describe the shipped xclbins; and regeneration is blocked by a toolchain mismatch
+
+**An hour ago I claimed Nanbeige's xclbins "were built for 3840/8192". That is not established, and the
+evidence I used refutes it.** The generator **asserts** `(N // 128) % n_aie_cols == 0`, so:
+
+- `N=3840` with `cols=8` **cannot be built** — 30 % 8 = 6;
+- `N=3584` with `cols=8` **cannot be built either** — 28 % 8 = 4.
+
+The list's Nanbeige entries are therefore **impossible**, and the list is plainly **partial**: it does not
+mention Qwen3-0.6B at all, which has its own generator and script (`n1_core_i8_m1.py` via
+`build_qwen3_0_6b_m1.sh`) while `build_all.sh` drives `n1_core_i8_v26.py` for the newer families.
+
+**What is established:**
+
+- the generator inventory — **v23…v27 plus m1**, `v26` for the newer families, `m1` for 0.6B;
+- its constraints — `M % m == 0`, `K % k == 0`, `N % n == 0`, **`(N/128) % cols == 0`**, **`cols >= 2`**
+  (one column compiles but produces **all-zero output**, issue #1208);
+- and therefore the **valid column counts for Nanbeige's shapes**: QKV **{2,4,7}**, G/U **{2,3,4,6,7}**,
+  D **{2,4,5}**.
+
+**And regeneration is blocked.** `n1_core_i8_v26.py` happily emits 3.7 MB of MLIR for
+`QKV K=2560 N=3584 cols=4`, and then **`aiecc` rejects it**:
+`design.mlir:171:45: error: expected ')'`, inside an `aie.dma_bd`. The in-repo generator and the installed
+`mlir-aie` **do not agree on syntax**, so the shipped xclbins were built with a different toolchain state.
+
+**So the position is honest and bounded.** The i8 path is Nanbeige-specific nondeterministic (§71); the host
+side is fully exonerated (§68/§69); the xclbin and its geometry are the remaining locus — **but I can
+neither read that xclbin's shape nor rebuild it with the toolchain as it stands.** The next step is a
+**toolchain reconstruction**, not a code change.
+
+**And the lesson is one this session keeps relearning: a build script is not a manifest.** It records an
+intent, may be incomplete, and can contain entries its own generator would reject. §72 treated it as
+evidence about binaries; the assertion inside the generator is precisely what makes it not evidence. The
+cost of finding that out was one attempted build.
