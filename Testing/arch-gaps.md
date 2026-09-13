@@ -213,10 +213,76 @@ code**, fetched 2026-09-13.
   carries as not started ("QK-Normed MLA absorption on Kimi K3 gated-MLA
   decode").
 
-The common thread: all three are *shaped* like families the engine already
-routes (`llama`, `gdn`, `kimi`), and each differs in a mechanism that changes
-the computation — which is the one thing a `rcpp_arch_from_string` mapping
-cannot express.
+### `vapor` — `Neeze/Vapor-2B-V1.2`
+
+* **Class / model_type**: `VaporForCausalLM` / `vapor`.
+* **It looks like the cleanest alias of the five.** The config carries the LFM2
+  schema *verbatim*: every `block_*` and `conv_*` key identical to LFM2-2.6B,
+  **all 30 `layer_types` identical**, hidden 2048, 30 layers, 32 heads / 8 kv,
+  intermediate 10752, `conv_L_cache` 3. What is left over is packaging (`dtype`,
+  `auto_map`, the `tie_*` pair), config-driven (vocab 128000, rope theta 1e7) —
+  and one thing that is neither: an explicit `rank_config`.
+* **The checkpoint is what disqualifies it** (weights index read 2026-09-13):
+  layer 0 stores the dense SwiGLU form — `feed_forward.w1/w2/w3` — and
+  **layers 1–28 do not**. They store `feed_forward.A2`, `A_shared`, `B1`, `B2`,
+  `B3` plus `side_A2`, `side_A_shared`, `side_B1..B3`: the `rank_config`'s
+  `SharedSwiGLULinear` (r_shared 1396, r2 1116, side_rank 8) realised in the
+  tensors rather than a training-time detail that materialises on export.
+* **Why an alias is wrong**: the dense names the readers know (`w1`/`w3`, ~18
+  hits each in this repo) describe layer 0 only; `A_shared`, `side_B1` and
+  `feed_forward.A2` have **0 hits** anywhere in the tree. An LFM2 mapping would
+  read the two dense layers it recognises and have nothing for the 28 factorized
+  ones.
+* **Real support needs**: a materialisation (or runtime) path for
+  `SharedSwiGLULinear`, alongside the plain dense block, then decode validation.
+
+### `fidel` — `4E-AI/Fidel1.1-1B`
+
+* **Class / model_type**: `FidelForCausalLM` / `fidel`.
+* **Not a text transformer at all.** Its 359 tensors live entirely under a
+  `policy.` prefix and the stack is bespoke (from the safetensors header, read
+  by range request — the file is 5.6 GB and was never downloaded):
+  * `policy.model.layers.N.mixer.mamba.*` — 88 tensors: the per-layer mixer is
+    **Mamba**, not attention;
+  * `policy.model.layers.N.moe.shared_fc1_gate` / `moe.w_gate` — a MoE with
+    shared experts;
+  * `policy.model.layer_adapters.N.base.{up,down}` and `.delta.{up,down}` — the
+    per-layer rank adapters the config's `ranks` block describes (base 512,
+    delta 256);
+  * `policy.model.prompt_hyper_conditioner.*` (78 tensors) and
+    `policy.model.prompt_cross_conditioner.*`;
+  * `policy.model.contextual_prompt_v7/v8/v9.*` and `policy.chat_prompt.*` —
+    four separate prompt-attention blocks;
+  * `policy.model.lm_head.base.weight` + `lm_head.lora_a` — the head itself is
+    base plus LoRA.
+  The header's own metadata agrees with the config:
+  `execution_contract: fidel_step9051_legacy_reference_fp32`.
+* **Why an alias is wrong**: no engine family has mamba mixers + MoE + rank
+  adapters + prompt conditioners, and `layer_adapters`,
+  `prompt_hyper_conditioner` and `mixer.mamba` each have **0 hits** in this repo.
+  There is no partial match to argue about.
+* **Real support needs**: a scope decision first — this is a policy model, not a
+  chat LM — and then the adapter/conditioner machinery.
+
+The common thread: each of these is *shaped* like a family the engine already
+routes (`llama`, `gdn`, `kimi`, `lfm2`) — `fidel` only in the loosest sense, as a
+Mamba/MoE hybrid — and each differs in a mechanism that changes the computation,
+which is the one thing a `rcpp_arch_from_string` mapping cannot express. `vapor`
+is the case worth remembering: from the config alone it looked like a one-line
+alias, and only the tensors said otherwise.
+
+**Reading a checkpoint without downloading it.** For a multi-GB
+`model.safetensors`, the header is enough to settle this class of question and
+costs one range request (follow redirects — `-L` — or you get the 302 body):
+
+```sh
+U=https://huggingface.co/<repo>/resolve/main/model.safetensors
+H=$(curl -sSL -r 0-7 "$U" | python3 -c 'import sys,struct; print(struct.unpack("<Q", sys.stdin.buffer.read(8))[0])')
+curl -sSL -r 8-$((8+H-1)) "$U" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(len(d), list(d)[:20])'
+```
+
+`<repo>/raw/main/model.safetensors.index.json` answers the same question in one
+request when the model is sharded.
 
 ---
 
