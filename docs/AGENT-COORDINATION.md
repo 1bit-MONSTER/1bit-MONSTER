@@ -6,6 +6,30 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-13 (late) — strixhalo: the self-check suite's CI gate
+
+State for the next session, not a changelog:
+
+- The suite `Testing/run_all.sh` is wired into CI by #2346, and that new job
+  lands red on the runner. The cause is **measured, not argued**: the bare
+  ubuntu-24.04 runner has no numpy (`ModuleNotFoundError: No module named
+  'numpy'`, runner image 20260907.300.1, python 3.12), and the dedup fixture
+  generator `Testing/make_mini_gguf.py` imported it — so the suite failed at a
+  check whose own message ("build/generate failed") named neither the generator
+  nor the compiler, because that step discarded stderr.
+- `fix/selfcheck-suite-portable` makes the fixture stdlib-only and makes both
+  failure paths print their cause. In the bare-runner condition the suite is
+  **16/17 after** it and **14/16 before** it — the one remaining failure is the
+  router expectation #2346 already fixes, so once both land the job has nothing
+  left to fail on.
+- This lane touched `Testing/make_mini_gguf.py` and `Testing/run_all.sh` only —
+  not `Testing/router_selfcheck.cpp` or `.github/workflows/ci.yml`, which belong
+  to the session working #2345/#2346.
+- Reproduce the runner condition anywhere without a runner:
+  `python3 -m venv --without-pip /tmp/nonumpy && PATH=/tmp/nonumpy/bin:$PATH bash Testing/run_all.sh`.
+  A venv without system site-packages is enough — and running that *first* is
+  what the red gate was missing.
+
 ## 2026-09-13 (evening) — strixhalo: census/CI lane, landed and left
 
 Nine PRs landed on this lane today; the midday entry below covers the first two.
