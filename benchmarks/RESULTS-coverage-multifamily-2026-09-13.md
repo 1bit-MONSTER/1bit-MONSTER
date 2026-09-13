@@ -5910,3 +5910,34 @@ between 257 and 512 — a multiple of the 256-row block on one side only.
 **And it matters beyond curiosity:** Nanbeige's bf16 path is now wrong for **two independent reasons** — the NPU
 attention at all lengths (§121-§123) and this host bug at short lengths. The second was invisible until the
 one-token instrument supplied a length-free control.
+
+## 127. §126's boundary is NOT clean: the bf16 CPU-attention path disagrees with FLM at SCATTERED lengths, not below a threshold
+
+Bracketing §126's 257-512 gap (clang-23/amdllvm = 0):
+
+| len | CPU attn | FLM-ref | |
+|---|---|---|---|
+| 258 | 326 | 13 | ✗ |
+| 320 | 13 | 13 | ✓ |
+| 384 | 13 | 13 | ✓ |
+| 448 | 158 | 135 | ✗ |
+| 511 | 13 | 13 | ✓ |
+
+Together with §126: ✗ at 64, 128, 192, 255, 256, 257, **258, 448**; ✓ at 1, **320, 384, 511**, 512, 768.
+
+**So "wrong below 257, right above 512" is NOT the shape.** The disagreements are scattered across the range, not
+thresholded — and 448 is a *near-miss* (158 vs 135) while 258 is not (326 vs 13). §126's tidy boundary is
+withdrawn in favour of the weaker, supported statement: **the CPU-attention path agrees with FLM at some lengths
+and not others, so "the host path computes the right thing for nh20" (§113, @1024) does not generalise to all
+lengths.**
+
+**Two readings, and the data do not yet choose:**
+
+1. the host path has a *value* defect that only becomes a wrong argmax at certain lengths (near-ties), which
+   would make 448 and 258 different-sized effects of one cause; or
+2. **the FLM-ref is not a fixed reference across lengths** — it is a ~2 s kernel path with its own block
+   handling, and nothing in this item has checked *its* per-length stability.
+
+**Next, cheap and decisive:** repeat the FLM-ref at each length (does it move?), then repeat the CPU path at one
+disagreeing length. If the FLM-ref is itself length-scattered, §126/§127 must be restated in terms of the *pair*
+rather than of one side being wrong.
