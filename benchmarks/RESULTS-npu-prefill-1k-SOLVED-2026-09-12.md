@@ -299,3 +299,45 @@ Override search paths are `NPU_ATTN_ELF_1024` / `NPU_ATTN_ELF_2048`.
 At 2048 tokens native prefill is 1581 tok/s — above FLM's published 1494 bar and
 well above its on-box figure. Prefill throughput rises with length because the
 fixed per-layer cost amortises.
+
+## FINAL: matched-context harness runs (6x, 1024-token prompt)
+
+Apples-to-apples. The harness's default prompt ("reclaimer") tokenizes to 2088
+tokens while `flm bench` runs with `max_length=1024`, so the *default* invocation
+compares 2088-context native against 1024-context FLM — that is what produced the
+misleading "decode -7%". With a tokenizer-exact 1024-token prompt both sides
+prefill and decode at the same context:
+
+| run | native dec | FLM dec | native pre | FLM pre | native TTFT | FLM TTFT |
+|---|---|---|---|---|---|---|
+| 1 | 80 | 77.95 | 1451.4 | 1113.30 | 0.706 | 0.7097 |
+| 2 | 80 | 77.74 | 1474.9 | 1141.51 | 0.694 | 0.6922 |
+| 3 | 79 | 77.97 | 1364.3 | 1135.90 | 0.750 | 0.6959 |
+| 4 | 80 | 77.66 | 1438.8 | 1131.64 | 0.712 | 0.6982 |
+| 5 | 80 | 77.65 | 1462.0 | 1105.44 | 0.701 | 0.7147 |
+| 6 | 80 | 77.63 | 1451.4 | 1110.79 | 0.705 | 0.7113 |
+| **avg** | **79.8** | **77.8** | **1440.5** | **1123.1** | **0.7113** | **0.7037** |
+
+| metric | native | FLM on-box | verdict |
+|---|---|---|---|
+| decode tok/s | 79.8 | 77.8 | ✅ **+2.7%** (native wins all 6 runs) |
+| prefill tok/s | 1440.5 | 1123.1 | ✅ **+28.3%** |
+| TTFT (s) | 0.7113 | 0.7037 | ≈ **tie** (-1.1%, inside both spreads) |
+
+Byte-exact token parity is untouched: the runlist path *is* the reference, and
+the bf16 prefill matches it at all 8 gated lengths.
+
+### Scope and remaining gaps
+
+- **TTFT is a tie, not a win.** Native's own spread is 0.694-0.750 s and FLM's
+  0.692-0.715 s; the 5.8 ms average gap is far inside both. Do not claim a TTFT
+  win from a single run.
+- **Beyond 1024 tokens the prefill win narrows and then reverses.** At ~2k
+  context (1914-token story, `max_length=2048`): FLM prefill 1919 tok/s and TTFT
+  1.018 s, native 1566 tok/s and 1.308 s — native trails. FLM's prefill rate
+  *rises* with context (1403 -> 1919 tok/s from 1k to 2k) while native's is
+  roughly flat (1444 -> 1566), so the crossover is somewhere past 1k. Native
+  decode, however, leads at 2k: 67 vs FLM's 63.8.
+- **Prefill needs a captured ELF per context band.** 256 / 1024 / 2048 are
+  covered; a longer prompt needs another capture (one command, a few minutes)
+  and the next `attn_mha_<N>_nh16.elf`.
