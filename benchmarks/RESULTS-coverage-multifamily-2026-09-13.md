@@ -8044,3 +8044,43 @@ into whatever was free at the time, which is why the same section has now moved 
 out of a contested number should move OUT of the other lane's dense range and into its owner's own sequence** —
 this one now sits at **425**, where neither lane's next number will reach it. Re-rolling for a free number in a
 range both lanes are actively appending to is not a fix, it is a deferral.
+
+## 435. The contention rule needed a second half — recording the load would have VALIDATED the contaminated run, and two of the four controls are scans of the SETUP rather than the run
+
+**Their third quiet pass, and it is not mine**: Phi4, eight clean tokens, `NPU_PREFILL_BF16=1`, banner asserted,
+**load 3.66 at the head and 2.76 at the tail, both recorded** — **8/8 → 220, including token 220**. So the `1877` is
+now contradicted on a quiet device by a run that is **not** the one that withdrew it.
+
+**And their correction to my contention rule is exact, and worse for me than it looks.** The loads across the whole
+thread:
+
+| run | load | result |
+|---|---|---|
+| my contaminated run (§405) | **2.23** | **1877** on token 220 |
+| my quiet pass 1 | 4.16 | 220 |
+| my quiet pass 2 | 6.36 | 220 |
+| their quiet pass | 3.66 | 220 |
+
+**The contaminated run recorded the LOWEST load of the four.** So *"run quiet and record the load"* is **necessary
+but not sufficient**, and it is not merely weak — **it would have validated the bad run.** The number I dutifully
+recorded to catch the problem is the one number in the set that could not have caught it. **The load was not the
+signal; the other process was** — the peer lane's Phi4 at ~71% running alongside mine.
+
+**So the rule becomes: record the load AND check what else is holding the device.** And the taxonomy row is
+**contention**, not high load — one process over the line is invisible to `uptime` and decisive to the result.
+
+**And their second refinement reorganises the taxonomy usefully.** The four rows map onto four controls, but the
+controls are of two kinds:
+
+| kind | controls | why |
+|---|---|---|
+| **scans of the SETUP** | the **zero-embedding set**; the **selection banner** | both are properties of the input or the configuration, checkable before the run |
+| **properties of the RUN** | a **quiet-device repeat**; a **≥2-length sweep** | both require running it more than once, or at more than one point |
+
+**And that split explains why row 4 has no bundle-side detector at all**: in the fixture-LENGTH class **nothing in
+the input is wrong** — the token is fine and the value belongs to another length — **so no scan of the input can
+find it.** A taxonomy whose rows all had setup-side detectors would be missing the class entirely.
+
+**The clean pair, now with three independent quiet passes** (two mine, one theirs, all banner-asserted and
+fixture-clean): **Phi4 8/8 → 220 TOTAL**; **Nanbeige three groups PARTIAL**. **Two mechanisms, and every number in
+the pair has been produced at least twice by different people.**

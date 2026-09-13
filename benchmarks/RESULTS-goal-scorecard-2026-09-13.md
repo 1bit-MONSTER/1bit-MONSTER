@@ -566,8 +566,16 @@ opposite directions from the same evidence.** The three rules that would have ca
    |---|---|---|
    | **fixture** — the first token has no embedding | a **context-free** answer: a real token, wrong for a reason outside the model | scan the **zero-embedding set** (no device) |
    | **arm** — attention falls to a known-broken kernel | **"totally blind"**, or a fixed wrong value | **assert the selection banner**, per run (rule 7) |
-   | **contention** — the device is busy | **the same fixture giving two different answers** | run quiet and **record the load** with every number |
+   | **contention** — the device is busy | **the same fixture giving two different answers** | run quiet, **record the load AND check what else is holding the device** |
    | **fixture-LENGTH** — the prompt's **length** is itself the variable | a value that **matches another length's reference** | **sweep ≥2 lengths** before attributing a value to a token (rule 6) |
+
+   **And the two kinds of control are worth separating**: the first two are **scans of the SETUP** (the input, the
+   configuration) and can be done before a run; the last two are **properties of the RUN** and need it repeated, or
+   repeated at a second length. **That is why row 4 has no setup-side detector at all** — in that class nothing in
+   the input is wrong, so no scan of the input can find it. And the contention row's detector is deliberately not
+   *"record the load"* on its own: **in this thread the contaminated run recorded the lowest load of the four**
+   (2.23, against 3.66, 4.16 and 6.36 for the clean ones), so a load check alone **would have validated it**. One
+   process over the line is invisible to `uptime` and decisive to the result.
 
    **All four occurred in this thread and each was caught by a different control.** The contention case is the only
    one that **no** rule in either lane's set would have caught — it was found by a `cmp` against an earlier run and
