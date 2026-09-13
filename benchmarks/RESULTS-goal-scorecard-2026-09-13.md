@@ -186,3 +186,36 @@ the tokens verified on the same binary.
 
 **Revised goal status:** prefill, TTFT **and** decode all beat FLM on every model the engine
 supports, with decode correctness established to bf16 precision (section 4).
+
+### 9.1 The "+26-31% over FLM" claim is WITHDRAWN as stated, and the rope fix is excluded
+
+Two corrections, both mine.
+
+**A/B on the rope fix — it is not the cause.** Rebuilt one engine with
+`partial_rotary_factor` forced back to `0.25f` and ran the same decode beside the current build:
+
+| build | ms/tok | tok/s | tokens |
+|---|---|---|---|
+| current (`1.0f`) | 10.0 | 100 | 25 220 220 16 |
+| reverted (`0.25f`) | 10.1 | 99 | 25 220 220 16 |
+
+Identical within 1%, and the tokens are identical too. It also **cannot** be the cause: the
+runlist decode's `apply_rope` reads a hardcoded `RT_INV_FREQ[64]` table
+(`runtime_layer.cpp:272`, a recreation of the runtime's own `.rodata`) and never consults
+`partial_rotary_factor` at all. That fix affects the other, STD/host `ra2` decode path only. So
+the rope fix is excluded, and the 80 -> 98-100 change remains **unattributed**.
+
+**The comparison itself was harness-mixed, so the percentage was not defensible.** I compared my
+engine's `NPU_RUNLIST=1` ms/tok line against FLM's `flm bench` `decoding_toks_per_s`. Same
+*metric*, different *harness*, and different prompt and token-count conditions. The scorecard's
+decode column has mixed the two all along, which means the "+26-31% over FLM" in section 9 is
+**withdrawn as stated**.
+
+What is defensible and stays:
+- the native decode is **98-100 tok/s** on its own harness at 1K / 4 tokens, reproducible
+  (10.0 and 10.1 ms/tok across repeats and across both builds above);
+- its **tokens are verified against FLM's own forward** on the same binary (section 4);
+- FLM's harness reports **77.8** for the same model.
+Those are three separate facts. Comparing the two engines **on one harness** is the correct
+comparison and has not been done for decode — that is the experiment to run before any
+decode-speed claim about FLM is made.
