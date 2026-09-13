@@ -5228,3 +5228,43 @@ the comparison is actually against.
 **And one thing this does buy**: the dump is non-perturbing (874 with it, 874 without), so the artifact path
 can be used freely without worrying that the instrument is changing the measurement — which has not been true
 of every instrument in this stretch.
+
+## 175. The weights are cleared — Phi4's dequantized QKV is statistically INDISTINGUISHABLE from a working model's, and 0.6B's bf16 path is a second known-good configuration
+
+**The comparison the last section could not make.** The first attempt produced no dump because **the runlist
+takes precedence over `NPU_PREFILL_BF16` for the four dense-Qwen3 sizes** — 0.6B returned `[1] 1614` (the
+runlist value, `[1]` prefix) and never reached the bf16 path at all. With `NPU_RUNLIST=0` it does:
+
+```
+[init] H=1024 qkvn=4096 Wqkv[0]=1
+=== Prefill 256 [bf16] ===
+  [0] boot=1614 (36ms)          <- FLM's exact reference for 0.6B @256
+8,388,608 B  =  4096 * 1024 * 2   <- qkvn x H x bf16, as expected
+```
+
+**And side by side with the failing model:**
+
+| model | n | NaN | zeros | min | max | absmean |
+|---|---|---|---|---|---|---|
+| **Phi4 (wrong)** | 15,728,640 | 0 | **0.21%** | -0.832 | +0.965 | **0.0267** |
+| **0.6B (works)** | 4,194,304 | 0 | **0.22%** | -0.531 | +0.412 | **0.0230** |
+
+**Statistically indistinguishable** — the same zero fraction to two decimals, the same order of magnitude
+(0.027 vs 0.023, a 16% difference that is entirely expected between two different models), symmetric ranges,
+no NaN. **So the bf16 dequant and packing are not the defect.** The lane's prime suspect is cleared, not by
+argument but by comparing against a model that works.
+
+**And the comparison produced a second known-good configuration for free**: **0.6B's bf16 path gives 1614,
+FLM's exact reference**, when it is forced off the runlist. So there are now two configurations known to be
+*correct* rather than *less wrong* — Nanbeige's host attention (1033) and 0.6B's bf16 path (1614) — and they
+are the references any further work in these lanes should be diffed against.
+
+**What that leaves for Phi4.** The weights are cleared; the GEMM **shapes** are correct (§155); the attention
+is correct and the input is what is wrong (§165). So the remaining candidates are the **activations** fed to
+those GEMMs, or the **GEMM execution** at `qkvn = 5120` — the host-side N-tiling into a shape-generic kernel is
+the kind of thing that is right for 4096 and wrong for 5120. Note 0.6B is `qkvn = 4096`, which is also the
+value the attention gate accepts, while Phi4 is 5120.
+
+**And the mechanism worth keeping**: for the four dense-Qwen3 sizes the **runlist wins** and
+`NPU_PREFILL_BF16` is silently ignored. That is a third member of the same family as this stretch's other
+traps — the path that ran was not the path that was named.
