@@ -117,6 +117,19 @@ truncation rather than the bf16 composition this section has been pointing at; e
 generous timeout — Phi4 at 1024 tokens now stops around layer 10 of 33 within 900 s. Test them at 256
 tokens, or raise the timeout, rather than reading a truncated log as a failure.
 
+**And the i8 item is fully CLOSED (§85, by a second agent on a clean device).** The block walk fixed
+**0.6B as well**: 11/11 samples give **1614** for tA and 8/8 give **220** for tB — FLM's references at both,
+clean. The remaining nondeterminism I had attributed to a second i8 defect was **argmax instability on
+truncated, near-uniform logits**: a truncated context gives flat logits and the argmax wanders across small
+tokens, while a full context gives peaked logits and a stable argmax. **That is one explanation for every
+nondeterministic value in this whole investigation**, and it is why every host-side fix was irrelevant. A
+contention sensitivity remains (async launch vs host read under CPU starvation, not reproduced in 19 clean
+samples) — but contention is not a property of the device: FLM's own kernels held 1033 four times on a
+contended device while the native path varied.
+
+**So the remaining correctness gaps are both bf16/attention-shape**: Nanbeige bf16 (1214 vs 1033, nh20) and
+Phi4-mini (nh24) — with the caveat above that Phi4's number should be re-read on the fixed path first.
+
 ## 6. What landed this session (169 commits, `goal/runlist-decode-wire`)
 
 Performance: double-buffered GEMM blocks (~30% prefill, flipping 4 models from losing to
