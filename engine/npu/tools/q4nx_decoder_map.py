@@ -76,8 +76,18 @@ def probe(model_dir):
     if emb_name is None or "lm_head.weight" not in m or m[emb_name]["dtype"] != "BF16":
         return "no tied pair to test"
     NV, K = m[emb_name]["shape"][0], m[emb_name]["shape"][1]
-    if K % TILE_COLS or m["lm_head.weight"]["dtype"] != "I8":
-        return f"unsupported geometry (K={K})"
+    if m["lm_head.weight"]["dtype"] != "I8":
+        return f"lm_head is {m['lm_head.weight']['dtype']}, not I8 — nothing to decode"
+    if K % TILE_COLS:
+        # Report the arithmetic rather than "unsupported": a K that is not a
+        # multiple of 256 means the tile grid cannot be formed, and the numbers
+        # say whether the bundle is padded, uses another row size, or both —
+        # which is the difference between a bug here and a real gap in our
+        # knowledge of the format.
+        lh_shape = m["lm_head.weight"]["shape"]
+        return (f"geometry not implemented: K={K} is not a multiple of TILE_COLS={TILE_COLS} "
+                f"(lm_head shape={lh_shape}, row_bytes={lh_shape[1]}, expected {ROW_BYTES}; "
+                f"K/256={K / TILE_COLS:.2f})")
     rows = 64
     eo = m[emb_name]["data_offsets"][0]
     emb = bf16_rows(raw, base, eo, rows, K).ravel()
