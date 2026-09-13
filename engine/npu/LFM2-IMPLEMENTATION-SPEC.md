@@ -110,3 +110,40 @@ the shortconv kernel is the one with no Qwen3 analogue.
 This is a **family implementation** (new architecture), not a tuning task: a new weight/name
 map, a new shortconv block + its device kernel/BO layout, and hybrid dispatch. The FLM-ref
 path and the captured ELFs de-risk it, and the gate is unambiguous (708 @256, 1443 @1024).
+
+## 7. Exact change list (so the work is mechanical)
+
+**Loader — `npu-infer/src/model.c`** (SHARED; the dsh agent said it would stay out of
+`engine/npu/**` only, so coordinate before editing this file):
+
+1. **Embed alias** (~line 614). After
+   `int idx_emb = find_tensor("model.embed_tokens.weight", tensors, num_tensors);` add
+   `if (idx_emb < 0) idx_emb = find_tensor("model.token_embd.weight", tensors, num_tensors);`
+   LFM2 names the embedding `model.token_embd.weight`.
+2. **Shortconv tensors** — `model.layers.%d.shortconv.in_proj.weight` (H→3H),
+   `model.layers.%d.shortconv.conv.weight` ([H,3] BF16 depthwise),
+   `model.layers.%d.shortconv.out_proj.weight` (H→H). Add `TensorDesc` fields to
+   `ModelWeights` beside the q/k/v/o/gu/d ones, plus `find_tensor` calls next to the `mlp.*`
+   block (~line 708).
+3. **Layer type** — a layer is a conv layer iff `shortconv.*` resolves, else attention. The
+   attention lookups already match LFM2 (`self_attn.{q,k,v,o}_proj.weight` and
+   `self_attn.{q,k}_norm.weight`), so the existing q/k-norm path applies unchanged. The layer
+   count derivation (~line 622) already keys on `.input_layernorm.weight`, which every LFM2
+   layer has.
+
+**Packer — `npu_pack_layer_bo` / `npu_layer_tile_offsets`** (`npu-infer/src/runtime_layer.cpp`):
+the BO layout is Qwen3-shaped (`offs[6] = {q,k,v,o,gu,d}`). Conv layers need their own offsets
+for `in_proj` (H→3H), `conv` (BF16 [H,3]) and `out_proj` (H→H); attention layers can reuse the
+q/k/v/o layout with HD=64.
+
+**Engine — `engine/npu/src/npu_engine_universal.cpp`**: the per-layer body is one Qwen3
+sequence. Dispatch on layer type (precedent: `is_gdn_layer`, ~line 629) and implement the
+conv body as
+`x → rn_bf16 → in_proj GEMM (H→3H) → split [B|C|X] → depthwise k=3 along the token axis with a
+2-tap cache (conv_L_cache=3, state persists across the whole prefill) → C⊙X gate → out_proj
+GEMM (H→H) → residual`, then the shared
+`post_attention_layernorm → mlp gate/up → SiLU → down → residual`. The Zaya CCA path
+(`conv_state`, 2-tap) is the closest precedent for the stateful depthwise conv.
+
+**Config**: `head_dim` already comes from the parsed config (commit `5a9d1d6c9`), which LFM2
+needs (HD=64). Still open: `norm_eps` 1e-5 vs the engine's `EPS=1e-6f` constant.
