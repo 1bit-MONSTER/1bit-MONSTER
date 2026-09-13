@@ -8213,6 +8213,18 @@ needs** — the default I8 dequant assumes that width and no tensor in the bundl
 not just wrong, it was unearned**: it claimed a property of a set (all rows) from a scan of a subset (I8 rows), and
 the subset was the only one the conclusion used.
 
+**And their scan adds a layer I had not recorded: the ARITY varies too.** They measured Qwen3.5's I8 tensors as
+**3-D — all 249 of them** — so "row width" there is the **last axis of a 3-D shape**, while Phi4's I8 rows in this
+same log are **2-D** (`shape=[3072, 5120]`). So the complete trap is:
+
+> **`shape` arity and `shape[-1]` units both vary — by dtype AND by model — so a scan that assumes "2-D, bytes" is
+> wrong on both counts, and either assumption alone survives review because the other is usually true.**
+
+That is why the counts still came out right (`4736 -> 200`, `8704 -> 49`) while the sentence built on them did not:
+**the arithmetic never touched the units.** Their cross-check — the mid-dimension carrying the rest of the structure
+(10 for 185 tensors, 16 and 36 for 32 each), and `4736/20 = 236.8 -> 236` against `5120/20 = 256` exactly — is what
+makes the corrected version reproducible rather than merely narrower.
+
 **And the trap class is worth separating from the four in the scorecard's taxonomy.** Those four are ways a
 **boot-token column** looks clean and is wrong — fixture, arm, contention, fixture-length. **This is a way an
 *analysis* looks clean and is wrong**, and it belongs with the analysis rules rather than the measurement ones: the
