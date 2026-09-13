@@ -129,6 +129,23 @@ this project's own history: the AIE softmax kernels here use a software `exp2`
 What is established is the negative: no temperature, global or per-head,
 reproduces these weights.
 
+**How to settle it — and what does not work** (tried 2026-09-13, so nobody has to
+repeat it):
+
+- **Byte-searching the artifact for exp constants: does not work.** Neither the
+  captured `engine/npu/xclbins/attn.xclbin` nor the 256-token ELF
+  (`~/npu-build/attn_mha_256_nh16.elf.orig`, 26,928 B) contains the usual suspects
+  as 4-byte-aligned f32 — `log2 e`, `ln 2`, the 2^x Taylor coefficients, `127.0`.
+  The ELF has **zero** aligned floats in (0.001, 2.0) across 6,731 aligned words,
+  so the constants are immediate operands inside VLIW instructions, or absent
+  from this artifact entirely.
+- **Disassembly: not available on this box.** It ships `aiebu-asm` and
+  `aiebu-dump`; there is no `aiebu-disasm`, so the kernel's instruction stream
+  cannot be read back with the installed tooling.
+- **What would actually settle it:** a dump of the kernel's *scores* (not just
+  Q/KV/out), or a float reference run of the same model. Both are engine-side
+  changes — more forensics on the shipped artifact will not do it.
+
 Consequences, unchanged in substance but now with a cause behind them:
 
 - an argmax boot-token gate stays a weak correctness test on these kernels;
