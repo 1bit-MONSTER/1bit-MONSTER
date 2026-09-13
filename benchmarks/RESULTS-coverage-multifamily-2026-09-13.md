@@ -8191,3 +8191,29 @@ tested**. The first pass here produced exactly that and it took knowing the I8 t
 that skips a dtype by construction and reports zero is the same shape as the guard that cannot fail (§153)**: an
 empty bucket is indistinguishable from a measured absence — **it is the fixture-length problem one level down, where
 the instrument's blind spot wears the answer's clothes.**
+
+## 445. The units trap: `shape[-1]` is BYTES for I8 and ELEMENTS for BF16 — the same integer, two meanings
+
+**The other lane re-derived §430's counts from the bundle and they are exact** — I8 rows **4736 → 200**, **8704 → 49**,
+**5120 → 0** — and then caught the thing my sentence got wrong: **"the bundle contains NO 5120-byte row at all" is
+over-broad.** It is true of the **I8 population** and **false of the bundle**, because:
+
+| dtype | `shape[-1]` means | example | bytes |
+|---|---|---|---|
+| **I8** | **bytes** | 4736 → 200 tensors, 8704 → 49 | as written |
+| **BF16** | **elements** | 2560 → **48 tensors** | **2560 × 2 = 5120 B** |
+
+**So 5120-byte rows do exist — 48 of them, as BF16 — and my scan grouped by `shape[-1]` across dtypes without asking
+what the number was counting.** The integer was identical in both populations and the unit was not, which is the
+whole of the error: **a 2-D scan is a table, and a table whose rows are in different units is not a table.**
+
+**Why the narrower claim is the one that matters, and survives**: the dequant finding is about the **I8** population,
+because BF16 rows are never dequantized. **"Zero 5120-byte I8 rows exist" is exactly as strong as the conclusion
+needs** — the default I8 dequant assumes that width and no tensor in the bundle has it. **The over-broad version was
+not just wrong, it was unearned**: it claimed a property of a set (all rows) from a scan of a subset (I8 rows), and
+the subset was the only one the conclusion used.
+
+**And the trap class is worth separating from the four in the scorecard's taxonomy.** Those four are ways a
+**boot-token column** looks clean and is wrong — fixture, arm, contention, fixture-length. **This is a way an
+*analysis* looks clean and is wrong**, and it belongs with the analysis rules rather than the measurement ones: the
+scan was internally consistent, the arithmetic checked out, and the error was in **what the column meant**.
