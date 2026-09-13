@@ -21,9 +21,10 @@ exactly two 128-row GEMM batches (= 256 rows) and never computed tokens >= 256.
    `bf16mm_set_attn_tokens`), with the Q/out pointers shifted to the block and
    `attn_tokens` = keys in the prefix `[0, b+rows)`. The captured kernel computes
    at most 256 query rows; one call for the whole prompt left rows >= 256 stale.
-4. **`NPU_PREFILL_MAX` is capped to the attention ELF's verified key range**
-   (see below) with an explicit warning, instead of silently returning a wrong
-   token.
+4. **Attention falls back to CPU for npt > 256.** The chunked NPU attention is
+   only token-correct for a single full 256-row chunk; partial chunks and >512
+   keys diverge (see verification). `NPU_PREFILL_MAX` (default 256) now just
+   bounds the prompt — any value computes a correct (if slow) prefill.
 
 ## Verification (boot token vs the two trusted paths)
 
@@ -34,16 +35,21 @@ tested.
 | npt | trusted | bf16 native | |
 |---|---|---|---|
 | 256 | 1614 | 1614 | ✅ |
-| 512 | 220 | 220 | ✅ |
-| 1024 | 25 | 220 | ❌ |
+| 384 | 82 | 49891 | ❌ partial 2nd chunk |
+| 400 | 220 | 17 | ❌ partial 2nd chunk |
+| 512 | 220 | 220 | ✅ full chunks |
+| 1024 | 25 | 220 | ❌ >512 keys |
 | 1024 + `NPU_ATTN_CPU=1` | 25 | **25** | ✅ |
 
 The 1024-with-CPU-attention row is the important one: it proves the **GEMM
 tiling is correct at 1024** and isolates the remaining error to attention. The
-captured embedded attention ELF is correct up to **512 keys** and silently wrong
-beyond (1024 returns 220, the 512 answer, instead of 25). The engine now caps
-`NPU_PREFILL_MAX` at 512 for that reason; `NPU_ATTN_CPU=1` restores correctness
-at any length (~15 s attention over 1024 tokens).
+captured embedded attention ELF is reliable only for a **single full 256-row
+chunk**: partial chunks (384, 400) and >512 keys (1024 returns 220, the 512
+answer, instead of 25) both diverge. The engine therefore uses NPU attention
+only for npt ≤ 256 and falls back to CPU attention for npt > 256 — correct at
+any length, ~10x slower on attention. (A transient partial-block crash — the
+last 256-row GEMM block launched batch 1 unconditionally and left an
+`xrt::run` destructing in flight when r1==0 — is also fixed.)
 
 ## Performance (device free)
 
@@ -69,7 +75,47 @@ device. The same npt=512 run measured `attn 179 ms` on a free device and
 contention-independent; **re-measure all timings on an otherwise idle NPU**
 before quoting them.
 
+## ⚠️ Concurrent-editor collision (read before trusting the code state)
+
+A **second agent was editing `engine/npu/src/npu_engine_universal.cpp` at the
+same time as this session**, in this same worktree. Evidence:
+
+- The attention call site now carries a guard and a comment block this session
+  did not write (`bool attn_npu_ok = !getenv("NPU_ATTN_CPU") && npt <= 256;`,
+  "measured 2026-09-13", referencing
+  `benchmarks/RESULTS-bf16-prefill-generalize-2026-09-13.md` — a file that does
+  not exist in the tree).
+- Several `npu_engine_qwen3_0_6b` processes with flags this session never used
+  (`NPU_UNIFIED=1`, `/tmp/ids_1024.txt`) were running concurrently, plus a
+  long-lived `flm serve qwen3.6-moe:35b-a3b`.
+- The first clean run of npt=512 showed `attn 160-179 ms` (NPU attention, boot
+  =220); after the other agent's guard landed, the same run showed
+  `attn 3226-3643 ms` — the CPU fallback (its guard disables NPU attention above
+  256), not a regression.
+
+Consequences:
+
+1. `git add -A` in this session swept the other agent's edit into commit
+   `40449c3f5`, so that commit's message describes the chunked-attention design
+   while the committed code instead contains the `npt <= 256` guard. The
+   **block tiling in that commit is this session's and is intact**; the
+   attention call site is not.
+2. Every timing taken after ~23:00 is unreliable. Only boot-token gates stand.
+3. Both sessions independently converged on the same core finding: the captured
+   attention ELF does not compose beyond a single short call (this session
+   measured correct at 256 and 512, wrong at 640/768/896/1024; the other agent's
+   comment reports divergence for partial chunks and >512 keys).
+
+**The committed state is the safe one**: NPU attention only for `npt <= 256`,
+CPU attention above (correct everywhere, ~10-18x slower past 256). The verified
+results in the table above were obtained before the collision with this
+session's chunked code and are reproducible only from that code.
+
+Two agents must not share one worktree — the edits, the builds and the NPU all
+interleave.
+
 ## To go past 512 keys
+
 
 `gen_mha_engine_seq(L0,L1)` + aiebu is the available generator
 (`~/npu-build/mha/gen_attn_chunk`). Measured ELF sizes:
