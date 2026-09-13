@@ -1011,3 +1011,34 @@ Gemma3-1B is the one where it is proven.
 **Not fixed here deliberately:** the padded-K change alters the BO geometry for a working model
 family, so it wants a device run behind it (Gemma3-1B's boot is not currently gated at all). The
 finding is recorded first because it is a *proof*, not a hypothesis.
+
+### 19.1 My proposed fix was a guess, and the engine does not implement it
+
+Section 19 said padding K to a multiple of 256 would give `G = 10` (even) and restore the
+permutation. Checked before applying it:
+
+```
+ModelConfig::pad128(v) { return (v + 127) & ~127; }     // pads to a multiple of 128, NOT 256
+pad128(1152) == 1152                                    // already a multiple of 128
+grep pad256 -> nothing anywhere in the engine
+```
+
+So the "pad128 path" the relay mentioned does **not** pad H=1152 to 1280, and `G_h` stays 9. My
+fix was an inference, not a derivation, and the engine has no mechanism that would implement it.
+
+What IS established:
+
+- Gemma3-1B's **only** odd value is H = 1152 (its `% 256 == 128`, i.e. an odd multiple of 128).
+  qout=1024, IM=6912 and kvout=256 all give even G, consistent with the table above — so the
+  defect is confined to the **K dimension of q/k/v/up/gate**, not to o_proj or down_proj.
+- the reorder formula is the **vendor's layout**, and the engine's `S = G/2` is its approximation
+  of it. `npu_pack_layer_bo`'s own comment says it was "verified byte-exact vs the runtime for
+  Qwen3-0.6B AND 1.7B" — G=8 and G=16, both powers of two. **Odd G was never in scope**, so the
+  correct rule for it is unknown rather than merely unwritten.
+
+**Honest state: the defect is PROVEN, the fix is UNKNOWN.** Changing G without knowing the
+vendor's rule would trade a proven corruption for an unproven one, so nothing is changed here.
+The next step is to establish the vendor's rule for odd G — the library is binary-only, so that
+means reading FLM's own reorder behaviour (its weight-loader is exported from
+`libnanbeige_npu`/`libgemma_text_npu` and its BOs appear in an interposer capture) rather than
+inferring it from the even-G cases.
