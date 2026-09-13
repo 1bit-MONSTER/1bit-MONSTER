@@ -7185,3 +7185,34 @@ than argued.
 Fixtures for both are on disk: `/tmp/E{128,130,144,160,176,192,256}.txt` and
 `/tmp/ET{128,160,192,224,256,288,320,448}.txt`, fixed first token (58907), fixed tail, **only the length varies** —
 so each edge is ~6 runs, and the two lanes' edges can be compared directly rather than by analogy.
+
+## 360. Provenance of the band: two of its ten rows are fresh, the other eight are from the 285 build
+
+**Before building anything on the band, the rule that has cost this session the most: which of these numbers came
+from the current binary?**
+
+| npt | native | measured on |
+|---|---|---|
+| **32, 64** | **220, 220** | **today's binary, two first tokens each (4 runs)** |
+| 2, 4, 8, 16, 48, 128, 192, 256 | 6304 / 198 / 683 / 220 / 220 / 220 / 85 / 6573 | **the §285 sweep, an earlier build** |
+
+**The gates re-verified today cover the six SUPPORTED models — not Phi4** — so the eight older rows are not covered
+by that check. Everything since §285 that touched the engine was **env-gated and default-off** (the CZERO/CEXTENT
+diagnostics), and the band's two fresh rows agree with their §285 values, so the older rows are **probably** still
+valid — but "probably" is not the standard this log has been holding, and re-taking six of them is six runs.
+
+**So the band's evidence is currently: the shape is measured, and its edges are the least supported part of it.**
+Concretely — the claim *"invariant on [16, 128], edge in (128, 192]"* rests on rows at 16, 48 and 128 for the lower
+part and on 192 for the upper, and **all four of those are 285-era**. The one fresh pair (32, 64) sits in the middle.
+
+**Staged as one script, no flags beyond `NPU_PREFILL_BF16=1`**, with the load printed at both ends and first/last
+recorded per fixture:
+
+- **A. provenance re-take** — M8, N16, N48, N128, N192, N256 (6 runs; the 285 values are printed beside them);
+- **B. edge bisect** in (128, 192] — E130, E144, E160, E176, E192 (5 runs);
+- **C. token sweep** at fixed length 32 — S32 over 8 tokens (8 runs).
+
+**19 runs**, all fixtures committed. And it is worth saying what each part can refute: **A** can refute the band
+itself if the older rows moved; **B** can only move the edge; **C** can refute the input-invariance reading if the
+column is not flat — which is the one §140 makes most likely, since both of my fresh probe tokens may simply be
+degenerating ones at that length.
