@@ -5874,3 +5874,39 @@ point.)
 So there is a **length-specific defect at @256 in the host path**, independent of the NPU kernel, and invisible
 to every attention-diff run so far (those were @1, @256-with-the-NPU-kernel, or @1024). @256 is exactly one
 256-row block; @1 and @1024 are not. That is the next thing to test, and it is device-cheap.
+
+## 126. A length-dependent defect in the bf16 HOST path: the CPU-attention result matches FLM at >=512 and does not at <=257
+
+Following §125's accidental finding. Length sweep of the **CPU-attention** bf16 path — which §113/§125 showed is
+exact at @1 and @1024 — against FLM-ref, with clang-23/amdllvm = **0** throughout and three samples per length:
+
+| len | native bf16, CPU attention | FLM-ref | agree |
+|---|---|---|---|
+| 1 | 0 ¹ | 0 | ✓ |
+| 64 | **102132** | 152470 | ✗ |
+| 128 | **1030** | 151 | ✗ |
+| 192 | **15328** | 1704 | ✗ |
+| 255 | **152349** | 5938 | ✗ |
+| 256 | **109440** | 5938 | ✗ |
+| 257 | **477** | 13 | ✗ |
+| 512 | 13 | 13 | ✓ |
+| 768 | 1958 | 1958 | ✓ |
+
+¹ L1 here is the **first token of `ids_1024`, which is 16** — the zero-embedding token (§89) — so both sides are
+0 and it is a degenerate equality. §125's non-degenerate one-token case (token 4489) is 11771 = 11771 ✓.
+
+Every disagreeing length is **<= 257**; every agreeing length is **>= 512**; and the values are stable per
+length (3/3 at clang 0), so this is neither load (§117's confound, explicitly excluded here) nor noise. **The
+bf16 host path is wrong for short prompts** — a defect independent of the NPU attention kernel, of the device,
+and of the FLM-reference path.
+
+**What it is not.** Not the attention (`attn_omp` is the same code at every length and is exact at 1 and 1024);
+not the NPU kernel (this is the CPU path); not load; not the zero-embedding token except at len 1; and not
+`NPU_PREFILL_MAX` (1024 here).
+
+**What it is: a length-dependent bug in the bf16 prefill's block handling at small `npt`.** The boundary lies
+between 257 and 512 — a multiple of the 256-row block on one side only.
+
+**And it matters beyond curiosity:** Nanbeige's bf16 path is now wrong for **two independent reasons** — the NPU
+attention at all lengths (§121-§123) and this host bug at short lengths. The second was invisible until the
+one-token instrument supplied a length-free control.
