@@ -2711,3 +2711,52 @@ with Qwen3-0.6B as the no-regression control (nkv=8 means no change). I have **n
 the region arithmetic gives a 2x capacity difference for nkv=4, and I have not yet measured the engine's
 actual KV addresses — and a constant changed without measurement is exactly the class of edit this session
 has had to retract before.
+
+## 60. RETRACTED: the bf16 path's KV region is model-derived and CORRECT — §59's KV claim was wrong
+
+I went to land the change §59 named. I measured first, and that is the only reason it did not land.
+
+**The bf16 path's region is not a hardcoded 8 MB.** `npu_engine_universal.cpp:4032` computes it from a
+documented table keyed on `H`:
+
+```cpp
+// KV cache region stride is baked into the captured attention ELF
+// (region = MAX_L x 4 heads x HD x 2 bytes): the NH=16 ELF was
+// captured at MAX_L=8192 -> 8MB; the NH=32 ELF (4B/8B) at
+// MAX_L=4096 -> 4MB. Must match the ELF, not the model's decode MAX_L.
+uint32_t kv_region = 4194304;              // bf16 elems = 8 MB
+if (H == 2560) kv_region = 2097152;        // 4 MB
+else if (H == 4096) kv_region = 2097152;   // 4 MB
+```
+
+**And the arithmetic checks out exactly, for every model:**
+
+| model | H | region | implied MAX_L |
+|---|---|---|---|
+| Qwen3-0.6B / 1.7B | 1024 / 2048 | 8.00 MB | 8192 |
+| Qwen3-4B, Llama-3.1-8B | 4096 | 4.00 MB | 4096 |
+| **Nanbeige** | **2560** | **4.00 MB** | **4096** |
+| Phi4-mini | 3072 | 8.00 MB | 8192 |
+
+At the documented layout (per token = 4 heads x HD = 512 bf16 elems = 1024 B), Nanbeige's region is
+**4.00 MB** — which is **exactly FLM's 128 MB / 32 layers**. The value is right, model-derived, and matches
+both the captured ELF and FLM's own BO.
+
+**§59 was wrong because I read the constant in the wrong file.** `npu_runlist_bridge.cpp:71`'s hardcoded
+8 MB belongs to the **runlist** path; I generalised it to the bf16 path without opening
+`npu_engine_universal.cpp`, which is where the bf16 path's value lives. That is §20's lesson a second time:
+**a source you never opened cannot corroborate a value you measured.**
+
+**And the near-miss is the point.** §59 named a concrete, plausible change — derive the stride from
+`nkv`/`head_dim`/`max_l` — with an obviously sensible justification. It would have replaced a correct,
+deliberately tuned table (matched to the captured attention ELF's MAX_L) with one that does not match it,
+breaking models that currently work. Measuring before editing is the only thing that stood in the way.
+
+**What survives from §59** are its two direct measurements, which stand:
+
+- **the bisection** — with FLM's own kernels the engine gives **boot=1033**, FLM's exact reference, so the
+  host side is proven correct and the defect is in our own prefill compute;
+- **the nondeterminism** — 1214 / 131718 / 145029 from the same command.
+
+The nkv table remains **data without an explanation**: all six working models are nkv=8/hd=128, but this is
+**not** the mechanism, and §59's attempt to make it one is withdrawn.

@@ -389,7 +389,7 @@ native engine supports, and the coverage limits are documented with their best e
 reduced to a compiled K-tile in a dependency, Phi4/Qwen3.5/LFM2 to named hybrid implementations, and
 Nanbeige to a device-side question with **every host artifact proven byte-identical**.
 
-**Ten of this session's findings were mine and wrong**, and all ten are recorded rather than deleted. The
+**Eleven of this session's findings were mine and wrong**, and all ten are recorded rather than deleted. The
 habit that caught every one was the same, and it is the most transferable thing here: ask what a number
 is **for**, not whether it is correct — and prefer a control over an argument. The last two are the
 cleanest illustrations: I was about to report "my ELF contains the layer sequence twice, so the device
