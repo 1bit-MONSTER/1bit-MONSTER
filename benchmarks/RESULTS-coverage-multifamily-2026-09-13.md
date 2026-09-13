@@ -7941,3 +7941,39 @@ in the set, and the only one that requires believing `cmp` over one's own measur
 **Numbering note**: this section's arrival caught a fourth collision — my earlier section 150 (the §101 retraction)
 against the peer's new 150. **Mine was the older and had no external references, so it moved to 152**, and the
 peer's 150 stays where their own sections cite it.
+
+## 420. The clean pair is COMPLETE — and the taxonomy gains a fourth class, with the distinction that makes it necessary
+
+**Both halves are now done on clean tokens, quiet devices and asserted arms.**
+
+| lane | clean result | shape |
+|---|---|---|
+| **Phi4** (mine, twice) | 8/8 → **220** | **TOTAL** |
+| **Nanbeige** (theirs, §150) | 166101 / 152551 / 156468 across eight | **PARTIAL, three groups** |
+
+**And the Nanbeige half carries a robustness property the earlier run could not claim**: both **new** tokens
+(30000, 45000) fell into the **existing 152551 group**, so the partition is **stable under replacement of its own
+degenerate points** — it is not an artifact of which eight tokens happened to be chosen. That is a stronger
+statement than §146 could make, and it is the form a partition has to have before it means anything.
+
+**Into which their fourth taxonomy class goes:**
+
+| degeneracy | looks like | detector |
+|---|---|---|
+| fixture — no embedding | a context-free answer | scan the zero-embedding set (no device) |
+| arm — broken kernel | "totally blind" / a fixed wrong value | assert the selection banner |
+| contention — busy device | the same fixture, two answers | run quiet, record the load |
+| **fixture-LENGTH — the prompt's length is itself the variable** | **a value matching another length's reference** | **sweep ≥2 lengths** before attributing a value to a token |
+
+**And their distinction between rows 1 and 4 is exactly right, and it is why the row is needed rather than a
+duplicate.** Both produce the *same symptom* — **a real value, wrong for a reason outside the model** — and they need
+*different controls*:
+
+- **row 1: the TOKEN is degenerate.** One bundle scan fixes it permanently, for every model, with no device.
+- **row 4: the token is fine and the VALUE is another length's answer.** No scan can catch it, because there is
+  nothing wrong with the input — so matching a value to a length is **a hypothesis, never an identification**, which
+  is precisely the reading withdrawn in §370.
+
+**And row 4's detector is rule 6** — *"two lengths is the minimum"* — which is the rule the paired design earned.
+That is a satisfying closure: the taxonomy's four classes now map onto the rule set's four controls, with one rule
+and one class each.

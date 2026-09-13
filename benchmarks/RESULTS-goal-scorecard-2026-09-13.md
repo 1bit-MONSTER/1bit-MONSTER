@@ -564,14 +564,20 @@ opposite directions from the same evidence.** The three rules that would have ca
 
    | degeneracy | looks like | detector |
    |---|---|---|
-   | **fixture** — first token has no embedding | a **context-free** answer: a real token, wrong for a reason outside the model | scan the **zero-embedding set** (no device) |
+   | **fixture** — the first token has no embedding | a **context-free** answer: a real token, wrong for a reason outside the model | scan the **zero-embedding set** (no device) |
    | **arm** — attention falls to a known-broken kernel | **"totally blind"**, or a fixed wrong value | **assert the selection banner**, per run (rule 7) |
    | **contention** — the device is busy | **the same fixture giving two different answers** | run quiet and **record the load** with every number |
+   | **fixture-LENGTH** — the prompt's **length** is itself the variable | a value that **matches another length's reference** | **sweep ≥2 lengths** before attributing a value to a token (rule 6) |
 
-   **All three occurred in this thread and each was caught by a different control.** The contention case is the only
+   **All four occurred in this thread and each was caught by a different control.** The contention case is the only
    one that **no** rule in either lane's set would have caught — it was found by a `cmp` against an earlier run and
    by noticing whose process held the device. "No zero-embedding rows" clears a column of the **first** class, not
    the second: a broken kernel produces the same "totally blind" shape.
+
+   **And rows 1 and 4 are easy to confuse because they produce the same symptom** — *a real value, wrong for a reason
+   outside the model* — **and need different controls.** In row 1 the **token** is degenerate, and one bundle scan
+   fixes it for good. In row 4 the token is **fine** and the **value** belongs to another length, so matching a value
+   to a length is **a hypothesis, never an identification** — which is why the plateau-value reading was withdrawn.
 2. **Control every flag that touches a BO, and prove it inert before reading its effect as a finding.** A flag
    whose effect you do not control is an instrument, not a measurement.
 3. **A BO-touching flag's effect depends on whether it syncs** — compare the **synced** and **unsynced** arms
