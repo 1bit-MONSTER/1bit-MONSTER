@@ -3672,3 +3672,63 @@ prompt over 128 tokens, and that belongs with the real fix rather than ahead of 
 bf16 path already does; cap `npt` as the bf16 path does; **then** add the guard to `HybridFlmCtx`. Verify
 with (a) the tA/tB test — the i8 path must become tail-**sensitive** — (b) the reference (tA -> 1614), and
 (c) ten-sample determinism.
+
+## 83. RETRACTED: no overrun — the truncation is DOCUMENTED and ANNOUNCED; and the guard's silence was correct
+
+**§82's mechanism was wrong, and the code already told me so.** The fallback path has this, before it runs:
+
+```cpp
+else if(input_tok_file && npt > XM) {
+    // The non-bf16 fallback processes ONE XM-row batch, so a longer prompt is truncated
+    // HERE. This was SILENT, which is exactly how it went unnoticed: a 256-id file
+    // prefilled as 128 tokens and the only clue was the banner count ("Prefill 128").
+    // Any non-dense-Qwen3 model run with NPU_RUNLIST=1 lands on this path -- the runlist
+    // decode is gated on dense_qwen3 -- so those models were silently prefilling at most
+    // 128 tokens. Announce it, as the bf16 cap above already does.
+    fprintf(stderr, "fallback prefill: npt %d -> %d (single %d-row batch; set "
+                    "NPU_PREFILL_BF16=1 for longer prompts)\n", npt, XM, XM);
+    npt = XM;
+}
+```
+
+**So `npt` is capped at `XM` = 128, `am <= MD` always, and no overrun is possible.** My `I8Ctx` guard did
+not fire — and that was **correct behaviour**, not a wrong-file symptom. **I misread my own detector**: when
+a guard built to fire does not fire, the first reading should be *"my hypothesis is wrong"*, not *"I put the
+guard in the wrong place"*.
+
+**And the real mechanism is confirmed, announced, and was already written down:**
+
+```
+$ NPU_RUNLIST=0 ... nanbeige ... /tmp/ids_1024.txt
+fallback prefill: npt 1024 -> 128 (single 128-row batch; set NPU_PREFILL_BF16=1 for longer prompts)
+=== Prefill 128 [fallback] ===
+```
+
+**The i8 path prefills at most 128 tokens, and says so.** That single fact explains §79 and §82's
+measurements cleanly:
+
+- the prefill **time is flat above 128** — nothing longer is ever processed;
+- **tA and tB share their first 128 tokens**, so after truncation they have **identical inputs** — which is
+  exactly why their i8 distributions matched (both centred on 15) while the runlist, which reads the whole
+  prompt, gave 1614 versus 220;
+- the boot is then the last row of a **128-token** prefill — truncated context, hence wrong tokens.
+
+**And the remedy the comment names was tested.** `NPU_PREFILL_BF16=1 NPU_PREFILL_MAX=1024` gives
+`=== Prefill 1024 [bf16] ===` and **`boot=1214`** — which is precisely the known bf16-path value from the
+scorecard. So the bf16 path does process the full prompt and has **its own, separate** defect.
+
+**So Nanbeige's two native paths fail for two different reasons, both now named:**
+
+| path | what it does | result |
+|---|---|---|
+| i8 / fallback | prefills **at most 128 tokens**, announced | wrong tokens — **documented truncation** |
+| bf16 (`NPU_PREFILL_BF16=1`, cap raised) | prefills all 1024 | **1214** — the scorecard's separate issue |
+| FLM's own kernels | full prompt | **1033** — the reference |
+
+**The fix** is therefore the block walk §82 named (or lifting `XM` for this path), applied to the
+**fallback** prefill — not to `HybridFlmCtx`, where there is nothing to fix. And the **bf16 path's 1214** is
+a second, independent piece of work.
+
+**Fifth finding retracted this session**, and the one with the clearest lesson: the detector that *could*
+fail did fail, in the sense that it refused to confirm me — and I explained the refusal away instead of
+accepting it.
