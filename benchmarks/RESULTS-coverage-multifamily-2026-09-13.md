@@ -110,3 +110,44 @@ NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX=1024 \
 ```
 Rebuild: the fix is in `npu_engine_universal.cpp`, so every variant binary needs a
 relink (`build_npu.sh`, or the single-model `g++ -DMODEL_<v> ...` link).
+
+## 7. Generic FLM reference via NPU_FLM_PREFILL (2026-09-13)
+
+Reference tokens for **any** family the engine's family-detection knows need no new
+driver: the engine's own `NPU_FLM_PREFILL=1` path drives FLM's captured libs.
+
+```
+NPU_FLM_PREFILL=1 ./engine/npu/build/npu_engine_<variant> \
+  ~/.config/flm/models/<Model>-NPU2/model.q4nx 1 /tmp/ids_1024.txt
+# -> "Prefill: ... [0] boot=<token>"  is FLM's token, not the native one
+```
+
+### Gate table @1k (FLM-ref vs native bf16 prefill)
+
+| model | attn shape | FLM-ref boot | native boot | gate | native prefill | FLM-ref prefill |
+|---|---|---|---|---|---|---|
+| Qwen3-0.6B | nh16/hd128 | 25 | 25 | ✅ | 700 ms (1429 tok/s) | ~1123 tok/s¹ |
+| Qwen3-1.7B | nh16/hd128 | 220 | 220 | ✅ | 1224 ms (817) | 942.6 |
+| Qwen3-4B | nh32/hd128 | 220 | 220 | ✅ | 2474 ms (415) | ~510¹ |
+| Qwen3-8B | nh32/hd128 | 220 | 220 | ✅ | 3554 ms (281) | 362.8¹ |
+| **Qwen3-VL-4B** | nh32/hd128 | **220** | **220** | ✅ **NEW** | 2318 ms (432) | 2014 ms (508) |
+| **Llama-3.1-8B** | nh32/hd128 | **220** | **220** | ✅ **NEW** | 3412 ms (300) | 2808 ms (365) |
+| Qwen3.5-4B | nh16/nkv4/hd256 | 220 | 0 | ❌ | — | 10039 ms (102) |
+| Nanbeige4.1-3B | nh20/nkv4/hd128 | 1033 | 1214 | ❌ | 1989 ms (515, wrong) | 1912 ms (535) |
+| Phi4-mini | nh24/nkv8/hd128 | 25 | 350 | ❌ | 259303 ms (CPU fallback) | 1718 ms (595) |
+| Gemma3-1B | nh4/nkv1/hd256 | —² | crash | ❌ | — | — |
+| Gemma3-4B | nh8/nkv4/hd256 | —² | missing xclbin | ❌ | — | — |
+
+¹ the on-box `flm bench` figures from `RESULTS-coverage-qwen3-dense-2026-09-13.md`.
+² the FLM-ref path fails on Gemma3: `Failed to parse model config:
+[json.exception.type_error.302] type must be number, but is null` — an FLM config
+loader limitation, not an engine one.
+
+**Net:** six models now gate at @1k (0.6B, 1.7B, 4B, 8B, Qwen3-VL-4B, Llama-3.1-8B).
+Llama-3.1-8B needed only the xclbin-dir fix (its attention shape is nh32/hd128, which
+the captured nh32 ELF already covers). Qwen3.5 / Nanbeige / Phi4 / Gemma3 need
+per-shape attention ELFs; their correct reference tokens are now recorded (220 / 1033 /
+25 / —), so a fix can be verified immediately.
+
+**Prefill perf:** native vs FLM-ref per-token is −12% (1.7B), −18% (4B, VL), −22%
+(8B), −18% (Llama-3.1-8B) — the host-math gap is consistent across families.
