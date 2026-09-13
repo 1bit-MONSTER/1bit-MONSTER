@@ -376,11 +376,15 @@ static inline void ra2(float*x, int p, int rope_dim, int slot = 0) {
 // The host math is memory-bandwidth-bound, so more threads make it WORSE.
 // The lever is reducing host work (kernel fusion), not adding threads.
 // NPU_HOST_THREADS overrides for experiments.
-// Host-math worker count. The optimum is npt-dependent (measured on this box:
-// 0.6B @256 -> 8 threads 324 ms vs 16 threads 336 ms; 0.6B @1024 -> 675 vs 658 ms;
-// 1.7B @1024 -> 1117 vs 1076 ms; 4B @1024 -> 2401 vs 2211 ms; 8B @1024 -> 3472 vs
-// 3181 ms; 32 threads is far worse everywhere). The bf16 prefill raises
-// g_host_threads_default for npt > 256; NPU_HOST_THREADS always wins.
+// Host-math worker count. The optimum depends on BOTH prompt length and model
+// size (measured on this box, paired A/B):
+//   npt <= 256 : 8 threads (0.6B @256 324-328 ms vs 16 thr 336 vs 24 thr 357)
+//   npt >  256 : 16 for small models, 24 for large ones (paired, 3 pairs each:
+//                4B @1024 16 thr 2183/2191/2218 ms vs 24 thr 2106/2142/2163 ms
+//                -> 24 wins every pair; 0.6B @1024 16 thr 659/654/662 vs
+//                24 thr 694/643/701 -> 16 wins; 1.7B @1024 is a tie.
+//                28+ threads degrades, 32 collapses (4B 5377 ms).)
+// The bf16 prefill sets g_host_threads_default accordingly; NPU_HOST_THREADS wins.
 static int g_host_threads_default = 8;
 static inline int host_threads(){
     if (const char* e = getenv("NPU_HOST_THREADS")) { const int v = atoi(e); if (v > 0) return v; }
@@ -3909,8 +3913,9 @@ struct Bf16Ctx {
             }
             fprintf(stderr, "bf16 prefill: %d layers dequant done\n", NC);
             printf("=== Prefill %d ===\n", npt); fflush(stdout);
-            // npt-dependent host-thread default (see host_threads()).
-            if (!getenv("NPU_HOST_THREADS")) g_host_threads_default = (npt > 256) ? 16 : 8;
+            // npt- and model-size-dependent host-thread default (see host_threads()).
+            if (!getenv("NPU_HOST_THREADS"))
+                g_host_threads_default = (npt <= 256) ? 8 : (H >= 2560 ? 24 : 16);
             bf16mm_set_attn_tokens(npt);
             auto t0 = std::chrono::steady_clock::now();
             // Row tiling. Bf16Mm::ensure_a() stages exactly two 128-row halves
