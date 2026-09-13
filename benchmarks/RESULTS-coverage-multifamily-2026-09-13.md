@@ -3125,3 +3125,45 @@ quantize**, and **any BO in the fused kernel's signature beyond the three the no
 fused path has a **scratch BO** documented as the D-phase A source, and **per-column silu metadata** — per
 `update_fused_header_i4`'s own comment, "the kernel's silu stage reads S'[j] per column instead of
 gs[0]/gs[4]". One of them will vary, and that one is the buffer to zero.
+
+## 69. ISOLATED: one kernel launch, identical inputs, different output — the fault is inside our kernel/xclbin
+
+I put a full-extent FNV checksum around every launch (`bA`, the weight BO, `bC`) and a second one
+**immediately after `readback()`**, and ran the same binary and prompt twice.
+
+**What is identical across runs:**
+
+- the **weight BO, at every layer** — always. This confirms §68's float-input result at the BO level.
+- **`bC` immediately before the first launch** — identical.
+- **`bA` at the first check** — identical.
+- the instruction stream (it is `memcpy`'d from a file).
+
+**What differs:**
+
+- **`bC` immediately after `readback()`, from the very first launch onward.** Every one.
+
+So the primitive fact is: **one kernel launch, identical input activations, identical weights, identical
+instruction BO, identical argument BOs, on a device that is deterministic for FLM's own path — and a
+different output.**
+
+**Where that places the fault.** Not in any host data (§68, plus the weight BO, plus the pre-launch `bC`).
+Not in the readback mechanics (the checksum is taken *after* the sync, and it is the *same buffer* that was
+stable one moment earlier). Not in the device as such (FLM is stable on it). It is in **our kernel/xclbin
+and how we build and dispatch it**: `final_i8_QKV_nanbeige4_1_3b.xclbin` together with the instruction
+stream produced by `gemm_npu_instructions.cpp`.
+
+**And it explains the whole history of this hunt.** Every host-side fix was correct and irrelevant: the
+seven uninitialized BOs mattered as defects, but they were never *this*, because the buffer contents were
+never the problem. The symptom is **timing-dependent inside a single launch**, which is why it survived
+every serialization (`NPU_ASYNC_SERIALIZE`), every BO flag change (`NPU_WBO_FLAGS`) and every zeroing.
+
+One correction to my own reading, caught while checking the table: I first took "`bC` same = True" for
+layer 0's early rows as evidence the buffer stayed stable. It is only stable **before** each launch; from
+the first kernel's result onward it differs, and the table shows exactly that transition — `True` for the
+pre-launch checks that precede any output, `False` once the first result exists.
+
+**The named next measurement**: compare **our generated instruction stream for a single i8 GEMM against
+FLM's own kernel for the same shape** — the same differential that proved the per-ctx layer ELFs exact
+(§56) — looking specifically for a **missing dependency or barrier between the DMA and compute stages**,
+which is the classic source of a within-launch race. Everything else on the host side is now measured, not
+assumed.

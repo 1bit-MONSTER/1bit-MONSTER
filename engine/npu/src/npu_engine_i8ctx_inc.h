@@ -427,7 +427,25 @@ struct I8Ctx {
 
     // ── Launch kernel for layer l ──
     // Kernel signature: (opcode, instr_bo, ninstr, bo0, bo1, bo2, bo3, bo4)
+    // BOCHK: checksum the three BOs this kernel reads, immediately before the launch. Two independent
+    // facts pin this as the live path -- I8Ctx::packB is what fires (so cq is the selected context),
+    // and the banner reports GU_split=1 (so the single-launch fused FFN is not used). Section 68
+    // exonerated every host INPUT, so whichever of these three differs across runs is a buffer the
+    // kernel reads without anyone writing it.
+    inline void bochk(int l) {
+        if (!getenv("NPU_DBG")) return;
+        // Layers 0-1 and the LAST four. The first two proved every pre-launch byte identical across runs
+        // (8/8 checksums) while the boot token varied, so the divergence begins somewhere later -- and
+        // covering the tail is what localizes it. RESULTS-coverage-multifamily 68.
+        if (!(l <= 1 || l >= (int)layerB.size() - 4)) return;
+        static int n = 0;
+        if (n >= 40) return;
+        n++;
+        fprintf(stderr, "[BOCHK] l=%d bA=%016llx W=%016llx bC=%016llx\n",
+                l, bo_fnv(*bA), bo_fnv(*layerB[l]), bo_fnv(*bC));
+    }
     inline xrt::run launch(int l) {
+        bochk(l);
         return (*k)((unsigned)3,
                     *layerInstr[0],
                     (unsigned)(layerInstrData[0].size()),
@@ -436,6 +454,7 @@ struct I8Ctx {
 
     inline xrt::run sync_and_launch(int l) {
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        bochk(l);
         return (*k)((unsigned)3,
                     *layerInstr[0],
                     (unsigned)(layerInstrData[0].size()),
@@ -506,7 +525,18 @@ struct I8Ctx {
     }
 
     // ── Readback + dequantize output ──
-    inline void readback() { bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE); }
+    // readback() is the ONE point where the host takes the kernel's result. Section 68 and the BOCHK
+    // sweep localized the divergence exactly here: across runs the weight BO is ALWAYS identical, bC
+    // is identical immediately before each launch, and yet the dequantized bA -- the host's reading of
+    // that same bC -- differs. So the kernel's output buffer is the same and what the host gets back
+    // from it is not. Checksumming right AFTER the sync isolates the transfer.
+    inline void readback() {
+        bC->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        if (getenv("NPU_DBG")) {
+            static int n = 0;
+            if (n < 8) { n++; fprintf(stderr, "[RBCHK] bC=%016llx\n", bo_fnv(*bC)); }
+        }
+    }
 
     inline void dequant_only(float* C, int am, int an, float ascale,
                              float Bscale, int layer = -1) {
@@ -972,11 +1002,33 @@ struct I8Ctx {
                 FUSED_AIE_COLS * FUSED_GS_TILE, (size_t)KD * N);
     }
 
+    // FNV-1a over a BO's FULL extent. Section 68 exonerated every host INPUT (the dequantized weights
+    // are byte-identical across runs while the boot token varies), so what remains is the kernel
+    // reading a buffer nobody writes. Checking a prefix would miss exactly that, since the unwritten
+    // regions in this code are the gs scale TAILS.
+    static inline unsigned long long bo_fnv(xrt::bo& b) {
+        const unsigned char* p = (const unsigned char*)b.map();
+        size_t n = b.size();
+        unsigned long long h = 1469598103934665603ULL;
+        for (size_t i = 0; i < n; i++) { h ^= p[i]; h *= 1099511628211ULL; }
+        return h;
+    }
+
     // One-launch fused MoE FFN (issue #1759): GU → on-core SiLU → D.
     inline xrt::run launch_fused(xrt::bo& gu_bo, xrt::bo& d_bo, xrt::bo& h2_bo,
                                  const float* A, int am, int ak, float ascale) {
         quantize_async(A, am, ak, ascale);
         bA->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // Check ALL FIVE BOs this kernel takes, immediately before the launch (NPU_DBG=1). Whichever
+        // one differs across runs is a buffer being read without being written.
+        if (getenv("NPU_DBG")) {
+            static int chk_n = 0;
+            if (chk_n < 6) {
+                chk_n++;
+                fprintf(stderr, "[BOCHK] bA=%016llx gu=%016llx bC=%016llx d=%016llx h2=%016llx (am=%d ak=%d)\n",
+                        bo_fnv(*bA), bo_fnv(gu_bo), bo_fnv(*bC), bo_fnv(d_bo), bo_fnv(h2_bo), am, ak);
+            }
+        }
         return (*k)((unsigned)3, *layerInstr[0],
                     (unsigned)(layerInstrData[0].size()),
                     *bA, gu_bo, *bC, d_bo, h2_bo);
