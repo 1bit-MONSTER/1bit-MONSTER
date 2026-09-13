@@ -1949,3 +1949,41 @@ piece on a route already carrying two.
 **Next:** derive LFM2's layer layout **from FLM's captured BO** rather than assuming the generic order —
 locate where each tensor's tiles actually sit, exactly as section 26 did to *confirm* the four families'
 packing. The tool and the technique both exist; only the layout is unknown.
+
+## 39. A real inconsistency in my own short-conv packing — fixed, but it is NOT the layout answer
+
+The section-38 diff gave the clue: the engine's conv-layer packing matched FLM's through **gate/up and
+down_proj** (6,144 of 8,192 tiles, in order) and diverged **at the short-conv block** — the only block
+whose reorder group I had chosen myself.
+
+**And it was inconsistent with the packer's own documented rule.** Line 235 states it plainly:
+
+```
+reorder group G = K/128  (K = contraction dim; q/k/v/up/gate=H, o=NH*HD, down=IM)
+```
+
+I had written `G_sp = 3H/128` — the **output** dim — for an `in_proj` whose **K = H**. Corrected to
+`H/128`, the same G as q/k/v.
+
+**But it does not change the byte diff** (still 6,144 of 8,192), so the fix is **principled but not the
+answer**: the short-conv region of FLM's BO holds *different bytes*, which a partial match cannot
+distinguish between "a different reorder" and "a different source". Its effect is therefore **unverified**
+— LFM2 is not gated — and it is recorded as such rather than as a fix. It is a no-op for every model that
+works, since only LFM2 has `shortconv.*`.
+
+### And the more important half: my attention-layer comparison was probably invalid
+
+The attention layer matched **0 of 8,192** — which is the *strangest* result in this whole sweep, because
+its blocks (q, k, v, o, gu, d) are the **generic** ones that matched **byte-for-byte** for Qwen3, Nanbeige
+and Llama in section 26.
+
+That inconsistency has a simple explanation, and it is the trap this session has hit most: **the four
+captured LFM2 BOs are four different layers, all the same size.** I diffed the engine's conv layer
+against a conv layer's BO (6,144 matched, sensibly) and the engine's *attention* layer against **that
+same conv-layer BO** (0 matched, necessarily). The attention comparison was **wrong-object**, not
+evidence of a defect.
+
+So section 38's headline survives — the engine's LFM2 BO is the right SIZE and its **conv-layer**
+arrangement diverges at the short-conv block — while the attention claim does not. Fifth wrong-object
+comparison of the session, and the ANTI-pattern is now explicit: **a result that contradicts something
+already verified byte-for-byte should be suspected before it is believed.**

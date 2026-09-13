@@ -263,8 +263,14 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     // LFM2 hybrid: a short-conv layer has no q/k/v/o at all and carries its own block.
     const int sp_t = (lw->shortconv_in_proj_weight.ndim == 2)  ? (int)lw->shortconv_in_proj_weight.shape[0]  : 0;
     const int so_t = (lw->shortconv_out_proj_weight.ndim == 2) ? (int)lw->shortconv_out_proj_weight.shape[0] : 0;
-    const int G_sp = (3 * config->hidden_size) / 128;   // in_proj:  H -> 3H (packs B, C, X gate)
-    const int G_so = config->hidden_size / 128;         // out_proj: H -> H
+    // G is the CONTRACTION-dim group count (see the rule above: G = K/128). The short-conv
+    // in_proj is H -> 3H, so K = H and G must be H/128 -- writing 3H/128 here used the OUTPUT
+    // dim instead, and the byte diff against FLM's own LFM2 weight BO showed exactly that: the
+    // engine's conv-layer packing matched FLM through gate/up and down_proj (6,144 of 8,192
+    // tiles, in order) and diverged at the short-conv block, which is the only block this G
+    // touches.
+    const int G_sp = (config->hidden_size + 127) / 128;  // in_proj:  K = H   -> G = H/128
+    const int G_so = (config->hidden_size + 127) / 128;  // out_proj: K = H   -> G = H/128
 
     const int off_q  = 0;
     const int off_k  = off_q + q_t;
