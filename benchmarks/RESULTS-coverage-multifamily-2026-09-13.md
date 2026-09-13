@@ -1691,3 +1691,49 @@ And a third, weaker one is now visible: the **generated per-ctx ELF for Nanbeige
 shape** (nh20/nkv4). The control proved the generator correct for Qwen3-4B (22) and Llama (23) — two
 architectures — but *not* for this shape combination, and Nanbeige is the first nh20/nkv4 model the
 runlist has ever been pointed at.
+
+## 33. The activation is byte-matched too — every host-written input is now verified
+
+Computed the expected arg3 from the q4nx (the embedding row for the first prompt id, 5120 B for
+H=2560) and captured FLM's arg3, pointer-matched (`extsmall_002_33_564491f676a0_1048576.bin`):
+
+```
+FLM arg3 first 5120 B == the embedding row for id 16?  ->  True
+```
+
+**Cleared.** The engine's `embed()` computes the same thing, so this is the fourth BO the host writes
+and the fourth that matches.
+
+### The tally, now complete on the host side
+
+| input | status |
+|---|---|
+| weight BO (7 projections) | byte-identical (26) |
+| i5 — norm weights | byte-identical (31) |
+| i6 — cos/sin + q/k slots | byte-matched (30) |
+| final norm — `bo_fnorm_` | byte-matched (32) |
+| **activation — arg3** | **byte-matched (33)** |
+| generated per-ctx ELFs | proven for Qwen3-4B and Llama (22, 23) — **not for Nanbeige's shape** |
+| runlist machinery | proven (22, 23) |
+| RoPE base | model-correct (27) |
+
+**Every input the HOST supplies is now byte-verified identical to FLM's.** Whatever remains is not
+something the host gets wrong.
+
+### That leaves exactly one candidate
+
+**The generated per-ctx ELF for Nanbeige's own shape (nh20/nkv4).** Everything else has been compared
+byte-for-byte; the ELF is the one component that was only *proven* — and only for two other
+architectures, Qwen3-4B (22) and Llama (23). Nanbeige is the first nh20/nkv4 model the runlist has
+ever been pointed at, so its shape combination has never been exercised.
+
+**And the KV is not an independent candidate.** In the runlist path the KV is written **by the ELF**,
+device-side — the host never lays it out — so a KV difference *is* an ELF difference.
+
+**The decisive test, and it settles either way:** run the engine's runlist with FLM's **own** captured
+per-ctx ELFs (the interposer dumps them as `elf_*.bin`) in place of the ones `gen_layer_elfs` produces,
+by pointing `NPU_LAYER_ELF_DIR` at a directory laid out as `layer_ctxN.elf` + the lm_head ELF.
+
+- if the token becomes **5938**, my generator's output for this shape is the fault;
+- if it stays **157559**, the ELF is not it and the difference is in something neither of us has
+  compared.
