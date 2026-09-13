@@ -4227,7 +4227,11 @@ struct Bf16Ctx {
                 }
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fq = fopen("/tmp/bf16_l0_qkv.bin", "wb"); if (fq) { fwrite(bqo.data(), 4, qkvn, fq); fclose(fq); } }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fq = fopen("/tmp/bf16_l0_qkv.bin", "wb"); if (fq) { fwrite(bqo.data(), 4, getenv("NPU_DUMP_L0_FULL") ? (size_t)npt * qkvn : (size_t)qkvn, fq); fclose(fq); } }
+                // NPU_DUMP_L0_FULL also dumps the post-attention activation (bA) for all npt rows:
+                // RESULTS-coverage-multifamily 133 needs row 1, not row 0, to test the single-block
+                // hypothesis (npt>1 && npt<=256 is always wrong; npt=1 is exact).
+                if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fa = fopen("/tmp/bf16_l0_attnin.bin", "wb"); if (fa) { fwrite(bA.data(), 2, (size_t)npt * qout, fa); fclose(fa); } }
                 // Build attention inputs from the host-norm'd + RoPE'd Q/K/V.
                 // attn.xclbin expects PRE-RoPE'd Q and K + raw V — the host
                 // applies q_norm/k_norm + RoPE, the kernel does NOT.
@@ -4337,6 +4341,8 @@ struct Bf16Ctx {
                 ta += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
                 // O GEMM (K = NH*HD) — 128-row blocks.
                 if (attn_host) for (int k = 0; k < npt; k++) for (int j = 0; j < qout; j++) bA[(size_t)k * qout + j] = f32_to_bf16(bat[k * qout + j]);
+                // NPU_DUMP_L0_FULL: the POST-attention activation, for all npt rows (RESULTS 133).
+                if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fa = fopen("/tmp/bf16_l0_attnout.bin", "wb"); if (fa) { fwrite(bA.data(), 2, (size_t)npt * qout, fa); fclose(fa); } }
                 {
                     const int nblk = (npt + 255) / 256;
                     for (int i = 0; i < nblk && i < 2; i++)

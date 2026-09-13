@@ -6354,3 +6354,40 @@ partly written, or written at the wrong stride** — exactly what §122's sentin
 host code. So if this is a `bqo`/`kv_caches` bug it must be one that is **masked at large `npt`** — e.g. an
 indexing term that only diverges in the first block, or a warm-up row. That is a narrow hypothesis, and the
 layer-0 dump decides it.
+
+## 134. §132/§133 were CONFOUNDED by the fixture: every `L*` prompt starts with token 16, the ZERO-embedding token
+
+The §133 dump exposed it, not a token count. The whole length table was built from `ids_1024`, and
+`ids_1024`'s first token is **16** — the zero-embedding token (§89). Every `L*` fixture therefore begins with a
+token whose embedding is all zeros, and every "structural" conclusion in §126/§127/§132/§133 inherits it.
+
+**Tested directly.** Same lengths, same split, only the leading token changed (16 -> 220):
+
+| len | bf16 (CPU attn), first = 220 | FLM-ref | agree |
+|---|---|---|---|
+| 2 | 13 | 13 | ✓ |
+| 8 | 13 | 13 | ✓ |
+| 64 | 13 | 13 | ✓ |
+| 256 | 13 | 13 | ✓ |
+| 512 | 13 | 13 | ✓ |
+
+**With a non-degenerate first token the bf16 path agrees with FLM at every length tested** — including 2, 8, 64
+and 256, which on the `L*` fixtures were "always wrong". So **§132's structural single-block bug is not
+established**; what the `L*` table measured is the interaction between the bf16 path and a **zero-embedding
+first token**, not a block boundary.
+
+**Caveat on the control itself, before anyone builds on it:** every `N*` length returns **13** for *both* paths,
+so that table is degenerate in a different way — the answer does not vary with length there either. It
+establishes "they agree on this family of prompts", not "the path is correct". A properly non-degenerate fixture
+(one whose answer varies with length **and** whose first token is not 16) is what the next sweep needs.
+
+**Scope, precisely:**
+
+- **§132** (structural single-block bug) — **withdrawn as stated**;
+- **§126/§127/§128** (the "scattered wrong lengths") — measured on the confounded fixtures; the table stands as
+  data about `ids_1024`-prefixed prompts, **not** as a statement about the host path in general;
+- **§133's** localisation is a fair reading of what the dump showed, but the dump was taken on the same fixture.
+
+**And the fixture trap has now sprung three times in this item** — §88/§89 ("the bf16 QKV emits all-zeros"), the
+first §133 dump (row 0 zero), and this. The rule that keeps being earned: **before any length or shape sweep,
+assert the fixture's FIRST and LAST tokens, not only its length.**
