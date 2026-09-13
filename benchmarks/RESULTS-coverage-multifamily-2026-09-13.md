@@ -3322,3 +3322,45 @@ neither read that xclbin's shape nor rebuild it with the toolchain as it stands.
 intent, may be incomplete, and can contain entries its own generator would reject. §72 treated it as
 evidence about binaries; the assertion inside the generator is precisely what makes it not evidence. The
 cost of finding that out was one attempted build.
+
+## 74. The toolchain blocker is RESOLVED — it was a mismatched pair — but my rebuilds do NOT reproduce the shipped xclbins
+
+**The blocker was a pairing, not a missing tool.** `build_all.sh` sets `AIETOOLS=/home/bcloud/mlir-aie/build_tmp`
+(Sep 12 — the newest aiecc) with `PYTHONPATH=…/install_tmp/python` (Aug 7, **aie 1.3.4**): two different
+builds. Using the **matched** pair — `install_tmp/bin/aiecc` with `install_tmp/python` — compiles the same
+`design.mlir` **successfully**: *"Compilation completed successfully"*. So regeneration is possible, and
+§73's "blocked" resolves to a one-line environment fix.
+
+Four toolchains exist (`build_tmp` Sep 12, `install` Jul 12, `install_tmp` Aug 7, `npu2_40_toolchain` Jun 28)
+plus `build_mlir_aie`, `my_install`, `install_tmp_src`, `build_tmp_src` — so the pairing matters, and the
+script's is wrong.
+
+**But my rebuilds do not reproduce the shipped artifacts:**
+
+| artifact | mine (cols=4) | shipped |
+|---|---|---|
+| xclbin, all four | **27,738 B** each | 62,986 / 90,704 / 118,560 B |
+| insts QKV | **1,487,824 B** | **332,936 B** |
+| insts G / U | 4,463,440 B | 640,272 B |
+| insts D | 4,421,456 B | 842,976 B |
+
+So the shipped xclbins were built with **different parameters or a different generator version** (v23…v27
+exist; `v27` drives the MoE scripts).
+
+**And size-matching is not a reliable identification method.** The MLIR size barely varies with `cols`
+(3,697,715 at cols=2 vs 3,710,375 at cols=7) and **not at all** with `-b` — so the cheap proxy I hoped for
+does not discriminate. The **compiled instruction stream** does (it varies 4.5x), which is why the next
+measurement below uses it.
+
+**And an important logical consequence, which weakens my own earlier claim further.** The shipped xclbins
+were produced by **this generator**, so they **must satisfy `(N/128) % cols == 0`**. For the QKV, that makes
+**3584** (28 tiles) a natural and valid value at cols ∈ {2,4,7} — so the shipped QKV xclbin's width may well
+be **3584, the same value the engine uses**. That means §72's substance — a wrong-dimension xclbin — is not
+merely unproven: it is **plausible-to-be-false**. The honest state is that **the xclbin's geometry is still
+unmeasured**, and it has been unmeasured throughout.
+
+**The named next measurement**: a **byte-level differential of instruction streams** — the method that
+proved the per-ctx layer ELFs exact (§56). Compile the candidate shapes (cols ∈ {2,4,7} across plausible N)
+and compare each **whole stream** against the shipped `insts_i8_QKV_nanbeige4_1_3b.txt`. The one that
+matches byte-for-byte identifies the shipped parameters, and then the shape question is settled by
+measurement rather than by inference from a build script.
