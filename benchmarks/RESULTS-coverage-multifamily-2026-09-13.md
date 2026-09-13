@@ -1878,3 +1878,34 @@ now named:
 
 That is a more useful end state than another hypothesis: each route is blocked for a **structural** reason
 that can be checked in seconds, rather than for a suspected wrong value.
+
+## 37. LFM2 now has a FULL verified reference — a coherent generation and a decode rate
+
+Ran LFM2 through the engine's FLM-ref path **with decode** (`NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1`, which
+drives `lfm2_npu::forward(int)` per token):
+
+```
+=== Prefill 256 [flm-ref] ===
+Prefill: 399ms (1.56 ms/tok)
+  [0] boot=708          <- matches the established @256 LFM2 reference
+  [1] 1735  [2] 538  [3] 730  [4] 525  [5] 730  [6] 1443
+=== 15.8 ms/tok (63 tok/s) | tokens=6 ===
+```
+
+**So LFM2 has more than a boot token now.** The generation is coherent — distinct tokens, no repetition —
+and there is a **decode rate of 63 tok/s**, measured on **the same harness basis** as every other family's
+decode comparison (the engine's own loop, `NPU_FLM_DECODE=1`). That is exactly the arrangement sections
+9.2/9.3 used for the six supported models.
+
+**Where this leaves the LFM2 directive.** Section 36's three route blockers are unchanged — the bf16mm
+path lacks the GEMM shapes and the conv compute, the runlist path lacks a sequence class, and FLM's fixed
+kernels *are* the baseline. But the **target is now fully specified** rather than being a single boot
+token:
+
+- **gate:** the token sequence `708, 1735, 538, 730, 525, 730, 1443` — the same shape of check
+  `decode_token_check.sh` applies to the other families;
+- **bar:** **63 tok/s** on the same loop, so a native path can be compared directly rather than by
+  argument.
+
+**And it confirms the class API**: `lfm2_npu::forward(int)` works per token, the same entry point the
+other families' decode comparisons use — so LFM2 is not an API outlier, only an orchestration one.
