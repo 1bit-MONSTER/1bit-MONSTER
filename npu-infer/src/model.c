@@ -302,16 +302,32 @@ void npu_layer_tile_offsets(ModelWeights* mw, int layer_idx,
 // Total per-layer weight BO bytes (all layers share the same geometry).
 int npu_layer_bo_bytes(ModelWeights* mw, const ModelConfig* config) {
     if (!mw || !config) return 0;
-    LayerWeights* lw = &mw->layers[0];
-    int t = 0;
-    t += (lw->q_proj_weight.ndim == 2)    ? (int)lw->q_proj_weight.shape[0]    : 0;
-    t += (lw->k_proj_weight.ndim == 2)    ? (int)lw->k_proj_weight.shape[0]    : 0;
-    t += (lw->v_proj_weight.ndim == 2)    ? (int)lw->v_proj_weight.shape[0]    : 0;
-    t += (lw->o_proj_weight.ndim == 2)    ? (int)lw->o_proj_weight.shape[0]    : 0;
-    t += (lw->up_proj_weight.ndim == 2)   ? (int)lw->up_proj_weight.shape[0]   : 0;
-    t += (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
-    t += (lw->down_proj_weight.ndim == 2) ? (int)lw->down_proj_weight.shape[0] : 0;
-    return t * NPU_TILE_BYTES;
+    // Size the BO for the LARGEST layer, not layer 0. Hybrid models mix layer types:
+    // LFM2-1.2B layer 0 is a gated short-conv layer with no q/k/v/o at all, while its
+    // attention layers (2,5,8,10,12,14) have four more tensors. Sizing from layer 0
+    // therefore under-allocates and npu_pack_layer_bo() writes past the end -- observed
+    // as a SIGSEGV in __memset_avx512_unaligned_erms <- npu_pack_layer_bo <-
+    // npu_bf16_pack_layer when first running LFM2. Taking the max over all layers is
+    // correct for homogeneous models too (every layer is identical there).
+    int tmax = 0;
+    int nl = mw->config.num_layers;   // bound by the calloc'd layers[] array
+    if (nl <= 0) nl = 1;
+    for (int l = 0; l < nl; l++) {
+        LayerWeights* lw = &mw->layers[l];
+        int t = 0;
+        t += (lw->q_proj_weight.ndim == 2)    ? (int)lw->q_proj_weight.shape[0]    : 0;
+        t += (lw->k_proj_weight.ndim == 2)    ? (int)lw->k_proj_weight.shape[0]    : 0;
+        t += (lw->v_proj_weight.ndim == 2)    ? (int)lw->v_proj_weight.shape[0]    : 0;
+        t += (lw->o_proj_weight.ndim == 2)    ? (int)lw->o_proj_weight.shape[0]    : 0;
+        t += (lw->up_proj_weight.ndim == 2)   ? (int)lw->up_proj_weight.shape[0]   : 0;
+        t += (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
+        t += (lw->down_proj_weight.ndim == 2) ? (int)lw->down_proj_weight.shape[0] : 0;
+        // The short-conv block also needs room when present (LFM2 conv layers).
+        t += (lw->shortconv_in_proj_weight.ndim == 2)  ? (int)lw->shortconv_in_proj_weight.shape[0]  : 0;
+        t += (lw->shortconv_out_proj_weight.ndim == 2) ? (int)lw->shortconv_out_proj_weight.shape[0] : 0;
+        if (t > tmax) tmax = t;
+    }
+    return tmax * NPU_TILE_BYTES;
 }
 
 // ===========================================================================
