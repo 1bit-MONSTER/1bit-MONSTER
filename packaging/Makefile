@@ -52,6 +52,16 @@ stage:
 	mkdir -p $(STAGE)/usr/share/1bit-monster/shaders
 	cp -r $(BUILD_DIR)/zinc_cpp_build/shaders/. $(STAGE)/usr/share/1bit-monster/shaders/ 2>/dev/null || true
 	cp $(BUILD_DIR)/tools/video-lora/vulkan/libvideo_lora_vk.a $(STAGE)/usr/lib/1bit/ 2>/dev/null || true
+	# Tarball launcher. The Downloads page and docs/guides/getting-started.md
+	# promise `./run.sh chat` for the extracted .tar.xz, but the only run.sh in
+	# the project was the one release.yml writes into the GHCR tarball — the
+	# website .tar.xz built here shipped WITHOUT one, so `./run.sh` was a
+	# "no such file" and the shared lib needed a hand-set LD_LIBRARY_PATH
+	# (librocm_cpp.so is on no system search path in an extracted tree).
+	# Root of the tree on purpose: package-tarball/package-site tar $(STAGE)
+	# whole, while the .deb/.rpm/AppImage/docker paths read $(STAGE)/usr only —
+	# so this adds a file to the tarballs and to nothing else.
+	install -m 0755 tarball-run.sh $(STAGE)/run.sh
 	@echo "staged $(VERSION) -> $(STAGE)"
 
 package-deb: stage

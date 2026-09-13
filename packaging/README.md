@@ -9,7 +9,7 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 | **One-liner install** | ✅ | `curl -sL https://1bit.monster/install.sh \| bash` |
 | **Debian (.deb)** | ✅ | `sudo dpkg -i 1bit-monster_*_amd64.deb` (download from the website) |
 | **AppImage** | ✅ | `chmod +x 1bit-monster-*.AppImage && ./1bit-monster-*.AppImage` (download from the website) |
-| **Binary tarball** | ✅ | `make package-tarball` — the website hosts the `.tar.xz` build |
+| **Binary tarball** | ✅ | `make package-tarball` — the website hosts the `.tar.xz` build; extract it anywhere and run `./run.sh chat` |
 | **GitHub Releases** | 📋 attached when a `v*` tag is pushed | `gh release download` |
 | **Docker** | ✅ Dockerfile ready | `docker run 1bit-monster/npu` |
 | **Ollama** | ✅ Modelfile | `ollama create qwen3-npu -f Modelfile` |
@@ -48,7 +48,8 @@ Auto-detects **19 model architectures** from GGUF/1BP headers, **47 1BP models**
 ## Build them yourself
 
 ```bash
-# Binary tarball
+# Binary tarball — `make stage` also drops run.sh at the tree root, so the
+# extracted tarball runs with no hand-set LD_LIBRARY_PATH: ./run.sh chat
 make package-tarball
 
 # Debian package
