@@ -745,7 +745,7 @@ int main(int argc,char**argv){
         if (!flm_ids.empty() && flm_prefill_init(mdir, family) == 0) {
             int boot = 0; double ms = 0;
             if (flm_prefill_run(flm_ids.data(), (int)flm_ids.size(), &boot, &ms) == 0) {
-                printf("=== Prefill %d ===\n", (int)flm_ids.size()); fflush(stdout);
+                printf("=== Prefill %d [flm-ref] ===\n", (int)flm_ids.size()); fflush(stdout);
                 printf("Prefill: %.0fms (%.2f ms/tok)\n\n", ms, ms / flm_ids.size());
                 printf("  [0] boot=%d\n", boot);
                 // NPU_FLM_DECODE=1 continues with FLM's forward() for the decode
@@ -3984,7 +3984,7 @@ struct Bf16Ctx {
                 Wd[l]    = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120, (size_t)layer_bo_bytes);
             }
             fprintf(stderr, "bf16 prefill: %d layers dequant done\n", NC);
-            printf("=== Prefill %d ===\n", npt); fflush(stdout);
+            printf("=== Prefill %d [bf16] ===\n", npt); fflush(stdout);
             // npt- and model-size-dependent host-thread default (see host_threads()).
             if (!getenv("NPU_HOST_THREADS"))
                 g_host_threads_default = (npt <= 256) ? 8 : (H >= 2560 ? 24 : 16);
@@ -4291,7 +4291,7 @@ struct Bf16Ctx {
 
     // ===== PREFILL (pipelined: parallel QKV+GU launch, overlapped dequant) =====
     if (!bf16_done) {
-    printf("=== Prefill %d ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
+    printf("=== Prefill %d [fallback] ===\n",npt);auto t0=std::chrono::steady_clock::now();fflush(stdout);
     for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=emb_f32[pt_vec[pi]*H+i];
     if(npu_dbg()){fprintf(stderr,"EMB0:");for(int i=0;i<8;i++)fprintf(stderr," %.6g",emb_f32[(size_t)pt_vec[0]*H+i]);fprintf(stderr,"\n");}
     xrt::run pending_gu; bool has_pending=false;

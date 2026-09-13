@@ -845,3 +845,39 @@ is not yet established.**
 same command and read which one reports 128. That is cheaper and more certain than more
 code-reading, and it is the same lesson as the rest of this session: instrument the value
 instead of reasoning about it.
+
+### 17.2 The decode comparison was NOT confounded — the 18-24% is RESTORED
+
+The probe from 17.1 settled it, and it reverses section 17's withdrawal. With the banners now
+identifying their own path, the two sides of the decode comparison were re-run on Qwen3-0.6B with
+the 1024-id file:
+
+```
+native (NPU_RUNLIST=1)    -> === Prefill 1024 [runlist]
+FLM    (NPU_FLM_DECODE=1) -> === Prefill 1024 [flm-ref]
+file holds                  1024 ids
+```
+
+**Both sides consumed all 1024 ids**, so the comparison WAS like-for-like on prompt length and
+the 18-24% figure stands: native 91 / 46 / 22 / 13 tok/s against FLM's 74 / 37 / 18 / 11 on the
+same binary, prompt and timing loop.
+
+**Where the withdrawal went wrong: wrong provenance, inverted.** The `Prefill 128` came from a
+NANBEIGE run, which routes through the **fallback** path — a path the Qwen3 decode comparison
+never touches. I took a defect observed on one path and generalised it to another, which is the
+same failure mode as the three retractions earlier in this session, just in the opposite
+direction: not asserting a cause the evidence did not carry, but withdrawing a result on evidence
+from somewhere else.
+
+**What survives from section 17, and is genuinely useful:**
+- the **128-id truncation is real**, and it is in the fallback path: `[fallback]` prints
+  `Prefill 128` for a 256-id file. Any non-dense-Qwen3 model measured through that path is
+  prefilling half a prompt at most — a real defect, just not one that touched the Qwen3 numbers.
+- the **`dense_qwen3` gate** (`npu_engine_universal.cpp:702-708`) is why: it blocks the runlist
+  path for every non-Qwen3 model, so those fall through to the fallback. That is what blocks the
+  four-family reference too.
+- both bugs still need fixing before any non-Qwen3 decode or reference measurement.
+
+**Standing decode result: native beats FLM by 18-24% on a single harness, for all five measurable
+sizes** (0.6B 1.23x, 1.7B 1.24x, 4B 1.22x, VL-4B 1.22x, 8B 1.18x), with Llama still blocked by
+the missing per-ctx ELF generator rather than by a result.

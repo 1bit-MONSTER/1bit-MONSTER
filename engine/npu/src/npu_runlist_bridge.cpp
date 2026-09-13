@@ -206,7 +206,7 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
     // 5) prefill — one whole-layer forward per prompt token (KV accumulates on
     //    device; the per-ctx ELF is regenerated/reused per context length).
     int npt = (int)ids.size();
-    printf("=== Prefill %d ===\n", npt); fflush(stdout);
+    printf("=== Prefill %d [runlist] ===\n", npt); fflush(stdout);
     auto t0 = std::chrono::steady_clock::now();
     int ctx = 0;
     for (int t : ids) {
