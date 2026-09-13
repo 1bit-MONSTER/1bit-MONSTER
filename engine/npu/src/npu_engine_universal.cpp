@@ -4295,7 +4295,7 @@ struct Bf16Ctx {
                     // The two paths consume different buffers (bActQ/bKv vs bqo/kv_caches) holding the
                     // same underlying Q/K/V, so a large difference localises the fault to the NPU
                     // attention step or its bKv/bActQ layout (RESULTS-coverage-multifamily 113/118).
-                    if (l == 0 && getenv("NPU_ATTN_DIFF")) {
+                    if (getenv("NPU_ATTN_DIFF")) {
                         #pragma omp parallel for
                         for (int pi = 0; pi < npt; pi++)
                             attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n,

@@ -5194,3 +5194,37 @@ the runtime BOs (§54).
 
 **And the device discipline holds**: the other lane has it for the code side of the in-process diff, and
 `clang` is at **31** — exactly the condition their own new rule says to record and avoid.
+
+## 170. Phi4's layer-0 QKV weight is HEALTHY — so the defect is not a corrupt weight matrix
+
+**The first artifact-level look at this lane's prime suspect.** `NPU_DUMP_L0=1` on Phi4's bf16 path produced
+`/tmp/bf16_l0_Wqkv.bin`, and the size alone validates the geometry I audited in §155:
+
+```
+[init] H=3072 qkvn=5120 Wqkv[0]=1
+31,457,280 B  =  5120 * 3072 * 2     <- qkvn x H x bf16, exactly as the audit predicted
+boot=874      (identical to the run without the dump, so the dump does not perturb)
+```
+
+**And the values are healthy:**
+
+| | n | NaN | zeros | min | max | absmean |
+|---|---|---|---|---|---|---|
+| **Phi4 (wrong)** | 15,728,640 | **0** | **0.21%** | -0.832 | +0.965 | **0.0267** |
+
+No NaN, almost no zeros, a symmetric range around zero, and an absolute mean of 0.027 — **exactly what a real
+QKV weight matrix looks like**. So Phi4's wrongness is **not** a grossly corrupt or degenerate weight tensor,
+which rules out the bluntest version of the hypothesis this lane has been carrying. It does not rule out a
+**transposed/permuted** weight, or a wrong tensor entirely — both of which look statistically identical.
+
+**The comparison I wanted did not run.** I tried to produce the same dump for **Qwen3-0.6B**, whose bf16 path
+works, to have a reference for the statistics — and it produced **no file**, so the run did not reach the dump.
+I am recording that as an unfinished measurement rather than implying a comparison: one healthy-looking matrix
+with nothing to compare it to is a **single sample**, and this stretch has taught me what single samples are
+worth. The two ways to get a reference are (a) fix why 0.6B's dump did not fire, or (b) capture FLM's own
+dequantized Wqkv for Phi4 under the interposer — the latter is the better reference because it is the thing
+the comparison is actually against.
+
+**And one thing this does buy**: the dump is non-perturbing (874 with it, 874 without), so the artifact path
+can be used freely without worrying that the instrument is changing the measurement — which has not been true
+of every instrument in this stretch.
