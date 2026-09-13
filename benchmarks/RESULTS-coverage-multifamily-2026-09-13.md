@@ -295,3 +295,44 @@ one-constant change (`0.25f` -> `1.0f`) that must land WITH a token-verified dec
 not blind. Recorded first because a silent wrong answer is worse than a build break — and
 because it means the decode half of the six-model scorecard is currently a timing
 comparison only, which the scorecard does not say.
+
+## 11. The four non-hybrid failures correlate with ONE property: `qout` not in {2048, 4096}
+
+Assembled 2026-09-13 from this session's measurements, including the ones that came back
+negative.
+
+| family | NH | HD | qout | prefill boot | FLM ref |
+|---|---|---|---|---|---|
+| Qwen3 0.6B / 1.7B | 16 | 128 | 2048 | 25 / 220 | 25 / 220 OK |
+| Qwen3 4B / 8B, VL-4B, Llama-3.1-8B | 32 | 128 | 4096 | 220 | 220 OK |
+| **Nanbeige4.1-3B** | 20 | 128 | 2560 | 1214 | 1033 |
+| **Phi4-mini** | 24 | 128 | 3072 | 350 | 25 |
+| **Gemma3-1B** | 4 | 256 | 1024 | fails | — |
+| Qwen3.5-4B | 16 | 256 | 4096 | 0 | 220 |
+
+Among NON-hybrid models the split is exact: every model with `qout` in {2048, 4096} is
+correct and every one outside it is wrong. Qwen3.5-4B is the exception that proves the
+rule is not the whole story — it HAS `qout = 4096` and still fails, because it is a hybrid
+(FLM ships it with `GateDeltaNet_prefill.xclbin` + `conv.xclbin` + `vision_*.xclbin`), so
+it is a family implementation like LFM2, not a host-math bug.
+
+**Causes excluded by measurement, not argument** (each of these looked like the answer and
+was tested):
+
+- the attention ELF — Nanbeige's own captured kernel was loaded (verified in the log) and
+the boot stayed at exactly 1214 (`071ed869e`);
+- `rope_theta` — plumbed from config.json in `0a93dd20b`, reads 70000000, boot unchanged;
+- the `ra2` rope_dim — that is the partial-RoPE path and the bf16 prefill uses `ra()`;
+- the xclbin dir derivation — checked directly: every family's own dir exists in BOTH
+  `/home/bcloud/amd-oss/fastflowlm/src/xclbins/` and `~/.local/flm-v0946/xclbins/` with
+  identical contents, so the engine loads each model's own `mm.xclbin` (the H-table
+  fallback is not firing);
+- the Q/K/V offsets within the QKV block — `qkv_k_offset = NH*HD` and
+  `qkv_v_offset = NH*HD + NKV*HD` are correct for all four.
+
+So the divergence is in the engine's OWN per-layer composition for the bf16 prefill — the
+QKV / attention-input staging built from `mm.xclbin` + the layer BO — whose shape-dependent
+inputs are only qout, kvout, H and IM. The next step is differential, not more reading: the
+engine already dumps layer-0 QKV under `NPU_DUMP_L0=1` (`/tmp/bf16_l0_qkv.bin`), so compare
+that block against FLM's own layer-0 output for Nanbeige and the first differing element
+names the culprit. That needs the device.
