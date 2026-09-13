@@ -6056,3 +6056,46 @@ attention is correct at @1024 (1033 = FLM) and wrong at @256 (109440 vs 5938) an
 **This is the same shape as the earlier corrections, one level up:** I generalised a single-length result to a
 path, and the length sweep is what caught it. The instrument that keeps doing the work here is *vary the one
 thing you did not vary*.
+
+## 129. Their CZERO explains my defect (2): the bf16 GEMM kernels under-write and the shared C-cache tail is read
+
+Two experiments in one run — my `BF16MM_AZERO` (agreed in the split, now landed) and their committed
+`BF16MM_CZERO` applied to my length table.
+
+**1. My half: AZERO changes NOTHING at @256.**
+
+| @256 | plain | `BF16MM_AZERO=1` |
+|---|---|---|
+| t256 (first=16) | 188 | **188** |
+| t256_mod (first=220) | 188 | **188** |
+
+So the attention's unwritten 1/5 (§122/§124) is **not** read back as anything that matters: the hazard is real in
+the code but **not live at this length**, and §124's "latent" label was right.
+
+**2. Their half: CZERO changes my defect (2) at every disagreeing length.**
+
+| len | CPU attn, plain | `BF16MM_CZERO=1` |
+|---|---|---|
+| 128 | 1030 | **65340** |
+| 256 | 109440 | **10298** |
+| 448 | 158 | **53438** |
+
+**So defect (2) IS the GEMM C-cache tail.** The bf16 GEMM kernels do not write all of `256*N`, the shared C caches
+are never cleared, and the stale tail from a previous GEMM — a *different projection and shape* — is read back.
+That is exactly the call-order dependence their 0.6B control demonstrated (0.6B is correct by default because its
+previous GEMM happened to be the same one). So defect (2) is **not a Nanbeige bug at all — it is the same latent
+engine bug their lane found, seen from my length table.**
+
+**Consequences.**
+
+- **Defect (2)'s ownership changes**: it is the **shared C-cache/under-write bug**, not "a host value defect in
+  the bf16 prefill". The length scatter is explained — which previous GEMM last used the cache decides the tail,
+  and that depends on the call sequence, which depends on `npt`.
+- **Zeroing is not the fix**, for exactly the reason both lanes stated: it substitutes zeros for the previous
+  output. 0.6B at @256 proves it — zeroing takes a correct **1614** to **47874**.
+- The real fix must make the kernel write its declared extent (or make the cache per-shape), and the diagnostic
+  for *that* is not `CZERO=1` but a check that the device wrote all `256*N`.
+
+**Net for the item, three defects down to two plus one shared:** the NPU attention (wrong-width, all lengths);
+the **shared GEMM C-cache under-write** (both lanes, all lengths, maskable by call order); and the attention's
+uncleared `attn_out` (latent, and now measured not to bite at @256).

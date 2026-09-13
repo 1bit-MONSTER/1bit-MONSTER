@@ -382,6 +382,15 @@ struct Bf16Mm {
             for (size_t i = 0; i < (size_t)rows * q; i++) o[i] = 0x3c00;   // bf16 1.0
             attn_out->sync_to_device();
         }
+        // DIAGNOSTIC (BF16MM_AZERO=1), off by default. THE LIVE HAZARD of §122/§124: this kernel
+        // writes only 4/5 of its output (2048 of 2560 columns), and `attn_out` -- unlike `attn_kv` --
+        // is never cleared, so the unwritten remainder is read back into bA. Zeroing exactly what
+        // the host copies back makes the read-back either correct or ZERO, so a CHANGE is the signal.
+        // Same semantics and same reading as the other lane's BF16MM_CZERO in gemm_launch.
+        if (getenv("BF16MM_AZERO")) {
+            memset(attn_out->data(), 0, (size_t)rows * q * 2);
+            attn_out->sync_to_device();
+        }
         run.start();
         run.wait();
         attn_out->sync_from_device();
