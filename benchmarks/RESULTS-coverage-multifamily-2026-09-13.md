@@ -1098,3 +1098,28 @@ only be gated on not crashing plus the permutation property.
 **State: the odd-G fix is in and regression-clean, but it is NOT sufficient for Gemma3-1B** — a
 truncated `G_d` remains, and the family still segfaults. Recorded rather than papered over: the
 first fix was correct and small, and the family turned out to have a second, unrelated defect.
+
+## 21. Final verification on the build that carries the <=256 fix (2026-09-13)
+
+The <=256 shaped-slot fix changed the **attention path** — the thing every gate depends on — so the
+goal's numbers were re-measured on that exact build rather than assumed to carry over:
+
+| model | boot (gate) | prefill tok/s | TTFT s |
+|---|---|---|---|
+| Qwen3-0.6B | 25 ✓ | 1896 | 0.540 |
+| Qwen3-4B | 220 ✓ | 659 | 1.554 |
+| Llama-3.1-8B | 220 ✓ | 476 | 2.151 |
+
+Every gate matches and every figure sits inside the established run-to-run spread of the
+scorecard (1896 vs 1912/1875; 659 vs 672/651; 476 vs 472/465). So the fix repaired the nh32
+short-context regression **without disturbing the working models**, which is the property that
+mattered: the regression was in the shared attention selection, so the repair had to be checked
+against exactly the models it had been hiding behind.
+
+Together with the six-case gate check (1614 / 25 / 1614 / 220 / 220 / 220), the goal's three
+metric claims stand on the current HEAD:
+
+- **prefill** — beats FLM on every supported model (+25% on-box, +71% over the published 2K bar);
+- **TTFT** — beats FLM on all six scorecard models;
+- **decode** — beats FLM by 18-24% on a single harness across five sizes, with tokens verified
+  against FLM's own forward.
