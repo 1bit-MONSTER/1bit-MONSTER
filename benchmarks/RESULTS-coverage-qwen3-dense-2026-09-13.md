@@ -308,8 +308,23 @@ The lesson is worth keeping: the profile's 84% `libgomp` thread-time was a *symp
 the workers were idle behind a serialised NPU wait — and the fix was to overlap work,
 not to shave regions (\\S11) or add threads (\\S8).
 
-Boot tokens unchanged (25/220/220/220). So Qwen3-1.7B now **meets** FLM on prefill, and
-the 4B/8B gaps roughly halved.
+## 13. The same fix transfers to the other gated models (2026-09-13)
+
+Qwen3-VL-4B and Llama-3.1-8B run the same bf16 prefill path, so they inherit the
+double-buffering. Rebuilt and re-measured @1k (FLM reference via `NPU_FLM_PREFILL=1`;
+for Qwen3-4B that method agrees with `flm bench` to ~2.5%, 497 vs 510 tok/s):
+
+| model | native prefill | FLM reference | gap | gate |
+|---|---|---|---|---|
+| Qwen3-VL-4B | 1506 ms (1.471 ms/tok, **680 tok/s**) | 2026 ms (1.98, 505) | **+34.6%** | boot 220 == 220 ✅ |
+| Llama-3.1-8B | 2171 ms (2.120, **472 tok/s**) | 2869 ms (2.80, 357) | **+32.3%** | boot 220 == 220 ✅ |
+
+So six models now beat FLM on prefill: the four dense Qwen3 (§12) plus VL and Llama-3.1-8B.
+
+The four remaining families are still wrong for the family reasons in §8 (they are now
+faster too, but the token mismatch is architectural, not a capture): Qwen3.5-4B (boot 0),
+Nanbeige4.1-3B (1214 vs reference 1033), Phi4-mini (350 vs 25), Gemma3 (crash / FLM
+config-parse failure).
 
 **Caveat:** this box is contended — `flm serve qwen3.6-moe:35b-a3b` (pid 285847) and
 `llama-server` (pid 344571) both hold `/dev/accel/accel0`, so run-to-run variance is
