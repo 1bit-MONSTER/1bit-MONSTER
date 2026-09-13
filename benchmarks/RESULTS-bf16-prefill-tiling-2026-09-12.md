@@ -71,8 +71,41 @@ before quoting them.
 
 ## To go past 512 keys
 
-The generated per-position-range ELFs are the path (`gen_mha_engine_seq(L0,L1)`
-+ aiebu; `~/npu-build/mha/gen_attn_chunk`). One chunk ELF per 256-query block,
-selected by block index. The single-call `gen(0,1024)` ELF was tested and does
-**not** fix it (it reproduces the embedded ELF's wrong 1024 answer, and is ~1500x
-slower), so the per-chunk variant needs to be generated and gated before use.
+`gen_mha_engine_seq(L0,L1)` + aiebu is the available generator
+(`~/npu-build/mha/gen_attn_chunk`). Measured ELF sizes:
+
+| range | txn words | ELF bytes |
+|---|---|---|
+| `gen(0,256)` | 22792 | 95936 |
+| `gen(256,512)` | 22792 | 95936 |
+| `gen(512,768)` | 22792 | 95936 |
+| `gen(768,1024)` | 22792 | 95936 |
+| `gen(0,512)` | 44808 | 188128 |
+| `gen(0,1024)` | 88840 | 372512 |
+
+Size depends **only on `L1-L0`**, not on `L1`. So the key range of a generated
+ELF is `[L0,L1)` — the same width as its query range — i.e. a *diagonal tile*,
+not a growing prefix `[0,L1)`. A chunk-wide key prefix would need progressively
+more DMA descriptors and could not come out byte-identical in size.
+
+That means the generated ELFs are not a drop-in long-context kernel: covering
+`npt` tokens needs either a tiled scheme (all `(query chunk, key chunk)` pairs,
+with the online-softmax combine done somewhere — the ABI exposes only
+`out/act/kv`, no accumulator BO, so the combine would have to live in the kernel
+or be added on the host) or a different kernel entirely.
+
+Two further data points:
+
+- The **single-call `gen(0,1024)` ELF does not fix npt=1024** — with the GEMM
+  tiling corrected it still returns boot=220 (the same wrong answer as the
+  embedded ELF), while `NPU_ATTN_CPU=1` returns the trusted 25. So its 4 query
+  blocks are not being applied the way a prefix-causal kernel would.
+- The embedded captured ELF (26928 B) is **not** a `gen()` product at all — it is
+  ~3.5x *smaller* than `gen(0,256)`, consistent with the ABI note that it is
+  FLM's own captured runtime stream. It is correct up to 512 keys.
+
+Recommended next step: treat the generated ELFs as diagonal tiles and determine
+empirically (one 256x256 case against `NPU_ATTN_CPU=1` at npt=256) whether a
+single tile call reproduces block-local causal attention; if it does, the tiling
++ combine scheme is viable.
+
