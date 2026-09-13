@@ -241,13 +241,21 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     const int gate_t = (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
     const int d_t  = (lw->down_proj_weight.ndim == 2) ? (int)lw->down_proj_weight.shape[0]  : 0;
 
+    // LFM2 hybrid: a short-conv layer has no q/k/v/o at all and carries its own block.
+    const int sp_t = (lw->shortconv_in_proj_weight.ndim == 2)  ? (int)lw->shortconv_in_proj_weight.shape[0]  : 0;
+    const int so_t = (lw->shortconv_out_proj_weight.ndim == 2) ? (int)lw->shortconv_out_proj_weight.shape[0] : 0;
+    const int G_sp = (3 * config->hidden_size) / 128;   // in_proj:  H -> 3H (packs B, C, X gate)
+    const int G_so = config->hidden_size / 128;         // out_proj: H -> H
+
     const int off_q  = 0;
     const int off_k  = off_q + q_t;
     const int off_v  = off_k + k_t;
     const int off_o  = off_v + v_t;
     const int off_gu = off_o + o_t;
     const int off_d  = off_gu + up_t + gate_t;
-    const int total  = off_d + d_t;
+    const int off_sp = off_d + d_t;          // shortconv.in_proj  (conv layers only)
+    const int off_so = off_sp + sp_t;        // shortconv.out_proj (conv layers only)
+    const int total  = off_so + so_t;
 
     memset(bo_buffer, 0, (size_t)total * NPU_TILE_BYTES);
 
@@ -255,6 +263,10 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     npu_pack_proj(bo_buffer, &lw->k_proj_weight, mw, off_k, G_h);
     npu_pack_proj(bo_buffer, &lw->v_proj_weight, mw, off_v, G_h);
     npu_pack_proj(bo_buffer, &lw->o_proj_weight, mw, off_o, G_o);
+
+    // Short-conv block (LFM2 conv layers only; absent elsewhere so these no-op).
+    if (sp_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_in_proj_weight,  mw, off_sp, G_sp);
+    if (so_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_out_proj_weight, mw, off_so, G_so);
 
     // gate/up: alternating CH-tile chunks (up0, gate0, up1, gate1, ...)
     const uint8_t* up = (const uint8_t*)model_tensor_data(mw, &lw->up_proj_weight);

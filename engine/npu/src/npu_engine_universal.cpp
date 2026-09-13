@@ -818,6 +818,25 @@ int main(int argc,char**argv){
                     nz, g_q4_group_signed ? "SIGNED (two's complement)" : "UNSIGNED");
         }
     }
+    // LFM2 is a hybrid: 10 of its 16 layers are gated short-conv layers, and the
+    // conv block is NOT implemented yet. Say so LOUDLY. Without this the engine runs
+    // to completion and emits a plausible token that is simply WRONG (observed boot
+    // 63260 against the verified FLM reference 5242) -- exactly the failure mode that
+    // costs days, because nothing looks broken.
+    {
+        int conv_layers = 0;
+        for (int l = 0; l < NC; l++) {
+            char nb[160];
+            snprintf(nb, sizeof nb, "model.layers.%d.shortconv.in_proj.weight", l);
+            if (key_exists(js, jl, nb)) conv_layers++;
+        }
+        if (conv_layers > 0) {
+            fprintf(stderr,"[HYBRID] %d/%d layers are gated short-conv layers and the conv block\n"
+                           "         is NOT implemented -- the token below WILL BE WRONG.\n"
+                           "         Gate for a correct LFM2 forward: boot=5242.\n",
+                    conv_layers, NC);
+        }
+    }
     // Embeddings by JSON offset, NOT data-start-by-assumption — the first
     // data tensor is layer 0's ssm_a (offset 0); embed_tokens sits at 7680
     // for this model. Reading from md+df gave misaligned garbage embeddings
