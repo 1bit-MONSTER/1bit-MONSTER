@@ -6747,3 +6747,41 @@ kind of same-input comparison this stretch established as the standard.
 
 4. **A recorded reference is a value against a specific fixture.** Before quoting a reference token — or
    building a bisect pair on one — re-take it on the fixture being used, or state the fixture with it.
+
+## 315. The "plateau at 220" is the PROMPT'S FIRST TOKEN echoed as the answer — and it reclassifies my own table
+
+**A device-free check that the other lane's own runs made possible: I never compared the OUTPUT against the
+INPUT.** My clean fixtures were built with **first token = 220**, and:
+
+| npt | native | fixture's first token | equal? |
+|---|---|---|---|
+| 2 | 6304 | 220 | no |
+| 4 | 198 | 220 | no |
+| **8** | **683** | 220 | **no** — a genuine value |
+| **16** | **220** | **220** | **YES** |
+| **32** | **220** | **220** | **YES** |
+| **48** | **220** | **220** | **YES** |
+| **64** | **220** | **220** | **YES** |
+| **128** | **220** | **220** | **YES** |
+| 192 | 85 | 220 | no |
+| 256 | 6573 | 220 | no |
+
+**`native == the prompt's first token` at npt = 16, 32, 48, 64 and 128.** So:
+
+- the **"four-length plateau at 220"** I recorded as an unexplained signature is **the input echoing itself** —
+  the signature of a computation that is not happening, not of a value that happens to repeat;
+- and **my "exact agreement at npt = 128" was the same artifact** — FLM's answer there also happens to be 220, so
+  the two agreed *because both equalled the fixture's first token*. **It was never evidence that the path works.**
+
+**So the honest count is ONE genuine agreement in ten (@8), not two** — and the four "wrong" values at
+2/4/192/256 are wrong in the ordinary way, while five of the ten are **input echoes**.
+
+**And that earns a fifth rule, which is the one that would have caught this without any device at all:**
+
+5. **Compare the output against the prompt's own tokens.** An output equal to a prompt token — first, last, or
+   any other — is an **artifact of the fixture**, not a prediction. This generalises the token-16 finding
+   (§88/§89) from a special case of one token to a property of the whole input.
+
+**And the device-free form is not a coincidence of this lane**: any table of boot tokens should be checked
+column-wise against the fixture's own ids before a single row of it is read. I had the numbers for three
+checkpoints and never once asked whether the answer was in the question.
