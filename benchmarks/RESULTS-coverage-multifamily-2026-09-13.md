@@ -1839,3 +1839,42 @@ about the engine's design being unlike FLM's in a way nobody had checked.
 
 That is the sixth time this session that a number was real and the frame around it was wrong, and the
 first time the control that settled it was **a differential rather than a baseline**.
+
+## 36. LFM2's native path is architecturally blocked by the per-ctx ELF design
+
+Checked for the one thing the runlist route requires — an `lfm2_npu_sequence` class — and it **does not
+exist**:
+
+```
+qwen3      : qwen3_npu.hpp  qwen3_npu_sequence.hpp
+llama      : llama_npu.hpp  llama_npu_sequence.hpp
+nanbeige   : nanbeige_npu.hpp  nanbeige_npu_sequence.hpp
+phi4       : phi4_npu.hpp  phi4_npu_sequence.hpp
+gemma_text : gemma_text_npu.hpp  gemma_text_npu_sequence.hpp
+lfm2       : lfm2_npu.hpp                       <-- no sequence class
+```
+
+**So the per-ctx ELF route is not available for LFM2.** I cannot generate its per-ctx layer ELFs the way
+sections 22/23 did for Qwen3-4B and Llama, because the generator that would emit them is not shipped.
+
+**And that is the same architectural divergence section 35 found from the other side.** FLM's ELF set is
+**fixed** — 16 kernels, identical at npt=2 and npt=64, with the context passed as an argument — so LFM2 is
+served by **fixed kernels + args** and *cannot* be driven by a design that generates one ELF per context
+length. The missing sequence class is not an oversight in the bundle; it is the shape of that architecture.
+
+**What this means for the LFM2 directive.** The remaining work is **not** "generate the ELFs and run" —
+that route does not exist. A native LFM2 path must **drive FLM's fixed LFM2 kernels**, which is what the
+engine's `flm_prefill_bridge` already does for the reference (`NPU_FLM_PREFILL=1` → boot 5242). Beating
+FLM there means **orchestrating those kernels better**, not composing the model another way.
+
+**And it explains why LFM2 stalled at "loads and runs, wrong token".** Three routes, three blockers, all
+now named:
+
+| route | blocker |
+|---|---|
+| the bf16mm path | needs LFM2's GEMM shapes (absent from the engine's set) **and** a conv compute nobody has written |
+| the runlist path | needs a sequence class that does not exist |
+| FLM's fixed kernels | available, but it *is* the reference — so it is the baseline to beat, not an alternative |
+
+That is a more useful end state than another hypothesis: each route is blocked for a **structural** reason
+that can be checked in seconds, rather than for a suspected wrong value.
