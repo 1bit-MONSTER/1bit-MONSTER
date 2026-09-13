@@ -5504,3 +5504,41 @@ was retracted one message later. The finding was honestly labelled as theirs and
 of a previous result is a result still in motion. For my own lane the discipline is the same one that produced
 §190: prefer the measurement that removes a subsystem (one token) over the measurement that characterises a
 difference.
+
+## 205. The other lane's retraction, stated precisely — and the method lesson applied to Phi4 in the same breath
+
+**Their §121, in full.** They added the **per-head output scale** to their attention diff — **one extra
+column** — and found the NPU attention output is **identically zero**: `max|npu| = 0` for all 20 heads, while
+its inputs are non-zero (`max|bActQ| = 19.125`, `max|bKv| = 16.5`). Which means **`max|npu-host|` was never a
+divergence — it was just `max|host|`**, and the "0.43 -> 8.7 compounding" they reported was **the host
+attention's own magnitude growing through the layers**. There is no small error to compound.
+
+**That is the same class of error I made twice in this stretch**, and it is worth stating as one thing rather
+than two:
+
+| lane | the error | what the "difference" actually was |
+|---|---|---|
+| theirs (§119 -> §121) | differenced NPU against host | `max|host|` — the other side was **zero** |
+| mine (§100, §115) | compared "NPU" against "CPU" attention for Phi4 | the same path twice — **Phi4 never uses NPU attention** |
+
+**Both were caught by asking what the OTHER side of the difference actually was**, and neither by looking
+harder at the number. Their sentence for it is better than mine: **print the SCALE of the thing you are
+differencing** — one extra column turned three hours of "subtle divergence" into a binary.
+
+**And applying that immediately gives this lane a clean negative.** With `NPU_DBG=1` on Phi4's bf16 path at
+one token, the stages the engine already reports:
+
+```
+BOOT h_data: 3.50 0.90 -2.32 1.54 -1.50 1.95 -2.67 7.30      <- O(1-7), healthy
+BOOT fin_v : 0.71 1.08 0.86 1.02 0.83 0.96 1.10 0.92          <- final-norm weights, O(1)
+BOOT lg    : 4.3e-10 9.4e-10 9.8e-13 ... 5.9e-09 2.7e-12      <- softmax, peaked
+```
+
+`h_data` and `fin_v` are the right order of magnitude, and `lg` is **the softmax** (§63 — `exp(logit - max)`),
+so values near 1e-10 in the first eight entries simply mean the top token is ~23 nats above them: a **peaked**
+distribution, not a degenerate one. **No zero stage, no blowup, no NaN.**
+
+**So Phi4's defect is a difference in VALUE, not a degenerate stage** — which rules out for this lane the
+class the other lane just found in theirs. Their failure is binary (nothing written); mine is a wrong number
+with healthy scales. Those want different instruments, and the scale print is what tells them apart in one
+run.
