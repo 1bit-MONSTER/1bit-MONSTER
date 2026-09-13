@@ -7262,3 +7262,33 @@ The scorecard's "@256 = 5938" is the **token-16** fixture's value and my 4938 is
 stale.** And note what the bf16 path does at G256: it returns **5938 — the token-16 fixture's value** — while at
 @448 the same token (58907) returns 13. **Same token, different wrong answer at different lengths**: length-
 dependent, exactly as predicted.
+
+## 142. Echo check applied to this lane: no output equals its fixture's first or last token — but the check is now a required column
+
+The other lane found that the strongest-looking row in their nh24 table was an **echo**: their fixtures were built
+with first token 220, and native = 220 at npt = 16/32/48/64/128 — the prompt's own first token, returned. Their
+"4-length plateau" and their "@128 exact agreement with FLM" were the same artefact (FLM's answer at 128 also
+happened to be 220). Their honest count went from 2/10 exact to **1/10**.
+
+Applied here, device-free, against each fixture's own ids:
+
+| fixture | first | last | bf16 out | == first? | == last? | anywhere in prompt? |
+|---|---|---|---|---|---|---|
+| t256 | 16 | 220 | 109440 | no | no | no |
+| G256 | 58907 | 220 | 5938 | no | no | no |
+| G448 | 58907 | 220 | **13** | no | no | **yes** ¹ |
+| G768 | 58907 | 220 | 3504 | no | no | no |
+| S448_16 / _100 | 16 / 100 | 220 | 158 | no | no | no |
+| S448_220/_777/_1024/_4096/_12345 | — | 220 | 153887 | no | no | no |
+| S448_58907 | 58907 | 220 | **13** | no | no | **yes** ¹ |
+
+¹ `13` occurs somewhere in the 448-token prompt. Weak on its own — a 448-token prompt contains many ids — and it
+is **not** the first or last token, so it is not the echo pattern they found.
+
+**So this lane is not echo-driven**: every output differs from its fixture's first and last token, and the path
+demonstrably responds to the first token (S448: 220 -> 153887 vs 16 -> 158). The residual stays what §141 made
+it — a coarse step function of the first token whose wrong values are other lengths' reference values.
+
+**And the rule joins the list.** A boot-token table must be checked **column-wise against the fixture's own ids**
+before any row is read: it costs one pass, and on the other lane it demoted an already-written-up row from
+"exact agreement" to "echo". This lane passes — which is now a *checked* statement rather than an assumed one.
