@@ -394,9 +394,19 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--manifest", default=None, help=f"path to {MANIFEST_NAME}")
     ap.add_argument("--write-manifest", action="store_true",
                     help="regenerate the manifest from the observed tree (land the change in the same commit)")
+    ap.add_argument("--toolchain", default=None, metavar="STR",
+                    help="with --write-manifest, record the toolchain that produced these xclbins in "
+                         "build.toolchain; without it an existing recorded value is PRESERVED, never erased")
+    ap.add_argument("--script-revision", default=None, metavar="STR",
+                    help="with --write-manifest, record the generating script's revision in "
+                         "build.generating_script_revision; without it an existing value is preserved")
     ap.add_argument("--allow-missing-manifest", action="store_true",
                     help="do not fail when the manifest is absent (bootstrap only)")
     args = ap.parse_args(argv)
+
+    if not args.write_manifest and (args.toolchain is not None or args.script_revision is not None):
+        print("note: --toolchain/--script-revision only apply with --write-manifest; ignoring them",
+              file=sys.stderr)
 
     root = Path(args.root).resolve() if args.root else Path(__file__).resolve().parents[3]
     manifest_path = Path(args.manifest) if args.manifest else root / XCLBIN_DIR / MANIFEST_NAME
@@ -420,6 +430,26 @@ def main(argv: list[str] | None = None) -> int:
               f"insts_i8_*.txt: {', '.join(unpaired)}")
 
     if args.write_manifest:
+        # build.toolchain and build.generating_script_revision are the two fields this
+        # tool cannot observe: the artifacts carry no compiler marker, so the values can
+        # only come from the build that produced them. The writer used to hard-code both
+        # to null, which silently ERASED a value a build had recorded - and this file's
+        # own `intent` tells the next person to regenerate with exactly this command, so
+        # following the documented flow destroyed the field. That is the "missing half of
+        # the provenance" issue #2262 is open for. Precedence is now: explicit flag, then
+        # the existing manifest, then null with the note below.
+        previous_build: dict = {}
+        previous_artifacts: set[str] = set()
+        if manifest_path.exists():
+            try:
+                previous = json.loads(manifest_path.read_text())
+                previous_build = previous.get("build") or {}
+                previous_artifacts = set((previous.get("artifacts") or {}).keys())
+            except (OSError, json.JSONDecodeError):
+                previous_build, previous_artifacts = {}, set()
+        toolchain = args.toolchain if args.toolchain is not None else previous_build.get("toolchain")
+        script_revision = (args.script_revision if args.script_revision is not None
+                           else previous_build.get("generating_script_revision"))
         payload = {
             "schema": 1,
             "intent": (
@@ -446,14 +476,19 @@ def main(argv: list[str] | None = None) -> int:
                 "generated.host. It is a target map, not a resolution requirement.",
             ],
             "build": {
-                "toolchain": None,
+                "toolchain": toolchain,
                 "toolchain_note": (
                     "Empty by design: the artifacts record no compiler arm or version "
                     "(no chesscc/peano/llvm/aiecc/clang marker in the AXLF metadata; "
                     "PlatformVBNV is empty). A build that regenerates these artifacts must "
                     "fill this in - that is the missing half of the provenance."
+                    if toolchain is None else
+                    "Recorded from the build that produced these artifacts, not read out of "
+                    "them: the AXLF metadata carries no chesscc/peano/llvm/aiecc/clang marker "
+                    "and PlatformVBNV is empty, so this value is only as good as the build "
+                    "that wrote it. Pass --toolchain to replace it."
                 ),
-                "generating_script_revision": None,
+                "generating_script_revision": script_revision,
             },
             "population": obs["population"],
             "census": obs["census"],
@@ -466,6 +501,24 @@ def main(argv: list[str] | None = None) -> int:
         manifest_path.write_text(json.dumps(payload, indent=1, sort_keys=True) + "\n")
         print(f"\nwrote {manifest_path.relative_to(root)} "
               f"({manifest_path.stat().st_size} B, {len(obs['artifacts'])} artifacts)")
+        # Say out loud what happened to the two unobservable fields - a silent null is
+        # how a recorded toolchain disappeared before, and a silent carry-over would be
+        # the mirror-image mistake.
+        if toolchain is None:
+            print('  build.toolchain: null - no build has recorded one '
+                  '(set it with --toolchain "<compiler + version>")')
+        elif args.toolchain is not None:
+            print(f"  build.toolchain: {toolchain!r} (from --toolchain)")
+        else:
+            print(f"  build.toolchain: {toolchain!r} preserved from the existing manifest "
+                  f"(pass --toolchain to replace it)")
+            if previous_artifacts and previous_artifacts != set(payload["artifacts"]):
+                print("  WARNING: the artifact set changed and no --toolchain was given, so "
+                      "the preserved value may not describe these builds", file=sys.stderr)
+        print(f"  build.generating_script_revision: {script_revision!r}"
+              + (" (from --script-revision)" if args.script_revision is not None else
+                 " preserved from the existing manifest" if script_revision is not None else
+                 " - not recorded"))
         return 0
 
     if not manifest_path.exists():
