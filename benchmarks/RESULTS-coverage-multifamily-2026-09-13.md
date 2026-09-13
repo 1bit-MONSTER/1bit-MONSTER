@@ -3906,3 +3906,37 @@ Reproduced across two independent runs (deterministic 1214), with a correct-mode
   (b) the async launch/wait pair failing for this shape, leaving bC at its zero-initialised value
       (`gemm_wait` returns early when `g_run_active[batch]` is false).
 Next: distinguish (a) vs (b) by instrumenting `gemm_wait` (does it copy?) or by testing a padded qkvn.
+
+## 89. RETRACTED: §88's "bf16 QKV GEMM emits all-zeros" was a FIXTURE artifact, not a GEMM defect
+
+§88 reported the bf16 layer-0 QKV/O/D outputs as all-zeros for Nanbeige, with non-zero inputs, and called it
+the bf16 GEMM. **That was wrong**, and the detector that *could* fail is what caught it: the zero is
+**token 0 only, and only when the first prompt token is 16**.
+
+`NPU_DUMP_HIDDEN` (full `[token][H]` block per layer), Nanbeige bf16, first-token sweep:
+
+| first prompt token | layer-0 token 0 | token 1 |
+|---|---|---|
+| 16 (t256.txt / ids_1024.txt) | **0/2560 zero** | non-zero |
+| 220 | 2560/2560 nonzero | non-zero |
+| 1000 | 2560/2560 nonzero | non-zero |
+| 4489 | 2559/2560 nonzero | non-zero |
+
+And the origin is the **embedding**, not the GEMM: line 4149 sets `bh[pi*H] = emb_f32[pt_vec[pi]*H]`, and
+the layer-0 `bA` row 0 (the `rn_bf16` of `bh` row 0) is the zero. So **token 16's embedding is zero for
+Nanbeige**, and the whole token-0 column follows. The GEMM is fine — with any other first token it emits
+non-zero output (and the control 0.6B, same fixture, emits non-zero because Qwen3's token 16 is not zero).
+
+So §88's localisation is **WITHDRAWN**, and with it the "degenerate model" story. The bf16 pipeline produces
+normal-magnitude hidden states (layer 31 token 255 ~ [-43, 89]); the boot difference (1214 vs 1033) is a
+numerical/compositional one — back at §11's hypothesis — not a gross zero.
+
+**One open question worth a line.** Is Nanbeige's token-16 embedding zero in the MODEL, or is our load of it
+wrong? The fixture's first token is **16 in both t256.txt and ids_1024.txt**, so every Nanbeige number in
+this file is computed with a zero first token. FLM still returns 1033/5938 on the same fixture, so it either
+zeroes the same column too or loads token 16 non-zero — not yet determined. Either way, the fixture's first
+token is worth checking before the next Nanbeige differential.
+
+**Lesson, same as §83's:** the instrument (a token-0-only dump) could not see the row that mattered, and I
+read a fixture-shaped zero as a kernel defect. One sweep of the first token — cheap, and it names the
+variable — would have caught it immediately.
