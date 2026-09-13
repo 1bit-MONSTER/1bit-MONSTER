@@ -34,6 +34,18 @@
   and `benchmarks/prompts/reclaimer.txt` are untracked in the main clone and are
   tracked on `goal/runlist-decode-wire` with **different content** — merging that
   branch into `main` will trip over them. The branch owner should reconcile.
+- **Disk is at 87 % (247 G free) and the big consumers are all load-bearing.**
+  models 425 G, Xilinx toolchains 142 G, and `~/.cache/moe-cap-rb` **77 G — that
+  last one is the 35B MoE capture oracle (byte-verified in Rounds 81–83 of the
+  NPU work), not a cache you may prune**. Reclaiming space here is a human
+  decision; a cleanup script must not touch the oracle. (A 1.1 GB `flm` crash
+  dump and ~7.9 GiB of swap were reclaimed on 2026-09-12; nothing larger is
+  safely free.)
+- **Scratch left untracked in this clone** (~41 entries): NPU probe sources and
+  their compiled binaries under `engine/npu/pool/`, `npu-infer/tools/`,
+  `tools/zaya_*.cpp`, plus `npu-infer/captures/txn-elfs-moe35b/` and
+  `npu-infer/build-rl/`. Left in place deliberately — they are someone's working
+  set, not litter. The dated evidence among them was landed in PR #2306.
 
 ## Agents & machines
 
