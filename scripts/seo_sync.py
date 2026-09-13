@@ -183,7 +183,7 @@ def _pct_claim(m, covered, with_arch, suffix_groups):
 
 def _build_patterns(tokens, arch, covered, with_arch):
     t, a, c, w = fmt(tokens), fmt(arch), fmt(covered), fmt(with_arch)
-    return [
+    pats = [
         # "552 architecture tokens, 1,774 HF arch strings" (+ "/" variant in posts)
         (re.compile(r"(\d[\d,]*)( architecture tokens[ ,/]+)(\d[\d,]*)( HF arch strings)"),
          lambda m: _pair(m, t, a)),
@@ -225,13 +225,49 @@ def _build_patterns(tokens, arch, covered, with_arch):
         # "321,611 checkpoints map to", "mapping 321,611 checkpoints".
         # Run LAST so the fraction pattern above has already rewritten
         # "X/Y checkpoints mapped" -> "X'/Y' checkpoints mapped" first.
-        (re.compile(r"(\d[\d,]*)( checkpoints mapped)"),
+        #
+        # (?<!/) is load-bearing and its absence was a false-claim bug: after the
+        # fraction pattern has written "323,579/323,682", this bare pattern still
+        # matched the DENOMINATOR — the digits directly in front of
+        # " checkpoints mapped" — and rewrote it to the numerator, publishing
+        # "323,579/323,579 checkpoints mapped", i.e. a fabricated 100% on every
+        # page that states the ratio. main read "323,303/323,303" while the
+        # census said 323,303 of 323,386, and --check could not see it because
+        # the clobbered text IS its idempotent output. A bare count is never
+        # preceded by "/", and a partial match of it is preceded by a digit --
+        # so the lookbehind has to exclude digits and commas too, or the regex
+        # merely starts one character later inside the same number ("323,682" ->
+        # "23,682" -> "3323,579").
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( checkpoints mapped)"),
          lambda m: _bare(m, c)),
-        (re.compile(r"(\d[\d,]*)( checkpoints map to)"),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( checkpoints map to)"),
          lambda m: _bare(m, c)),
         (re.compile(r"(mapping )(\d[\d,]*)( checkpoints)"),
          lambda m: _num_between(m, c)),
+        # Prose percentage sitting immediately beside the ratio it describes:
+        # "The engine's own HF coverage stays at 100%: ... 323,579/323,682
+        # checkpoints mapped." Fixing the ratio alone would leave that page
+        # asserting 100% right next to its own 99.97%. Deliberately narrower
+        # than the generated posts' "the census claim stays at 100% coverage",
+        # which is about CLASS coverage rather than this checkpoint ratio.
+        (re.compile(r"(coverage stays at )(\d+(?:\.\d+)?)(%)"),
+         lambda m: m.group(0) if covered >= with_arch
+         else m.group(1) + _pct(covered, with_arch).rstrip("%") + m.group(3)),
     ]
+    # Invariant, checked on every run: the bare-count patterns must not touch a
+    # fraction's denominator, and the fraction must land on covered/with_arch.
+    # Worth asserting rather than trusting -- the corrupted text was idempotent,
+    # so --check reported "no drift" for months while every page claimed 100%.
+    probe = "1/2 checkpoints mapped"
+    got = probe
+    for pat, repl in pats:
+        got = pat.sub(repl, got)
+    want = f"{c}/{w} checkpoints mapped"
+    if got != want:
+        raise SystemExit(
+            f"[seo_sync] fraction rewrite is wrong: {probe!r} -> {got!r}, "
+            f"expected {want!r} -- a bare-count pattern is eating the denominator")
+    return pats
 
 
 def _pct(covered, with_arch):
