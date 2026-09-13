@@ -4617,3 +4617,41 @@ implies, and it is the honest scope of what the attention-ELF work actually cost
 **And the practical lesson, passed on**: my Phi4 commands ran with `2>/dev/null` and this engine announces
 the attention path on **stderr**. That line was the answer. Several of my earlier "no output" readings in
 this stretch were almost certainly the same mistake.
+
+## 125. The contention that perturbs this path is CPU COMPILES, not the device holders — and the block walk is exonerated on timing
+
+**I went to the process table to clear my own runs and found the real interferer.** The NPU is quiet; the
+box is not:
+
+| what | state |
+|---|---|
+| ~12 `clang-23` / `amdllvm` processes | **90-96% CPU EACH** — a TheRock `amdclang++` compile in flight |
+| `flm serve` (pid 285847), two `llama-server` (344571, 984614) | **0.0%** — parked on the device, as the dsh lane measured |
+| the nh20 lane's own run | `timeout 200 env NPU_ATTN_KV_REGION=... NPU_ATTN_V_...` -> `npu_engine_nanbeige4_1_3b`, 60% |
+
+**So the NPU is uncontended and the CPU is heavily loaded** — and §85's own note is that the native path
+fails under **CPU starvation** (one run gave 16, several timed out). Those two facts point at the same
+interferer: **saturate-the-CPU compiles, not the device holders.** That is the same class as the dsh lane's
+"`flm serve` can become active" caveat, except it is happening now, it is visible in `ps`, and the nh20 lane
+is chasing sporadic values (the `152xxx`s) that look exactly like it.
+
+**And their timing observation is answered — the walk is not the slow part.** Measured directly on Phi4's
+bf16 path, which prints a breakdown:
+
+| prompt | prefill | breakdown |
+|---|---|---|
+| @128 | **2,498 ms** (19.5 ms/tok) | GEMM 253 ms, **attn 887 ms**, conv+other 2,483 ms |
+| @256 | **2,070 ms** (8.1 ms/tok) | GEMM 164 ms, **attn 1,187 ms**, conv+other 2,061 ms |
+
+**256 tokens costs about two seconds of prefill, not ten minutes.** The walk is two passes at ~8 ms/token.
+The 8-10 minutes I had been burning is the **decode loop after the boot** — the log line I kept quoting,
+`612.0 ms/tok (2 tok/s)`, which I had been reading past because the boot line was the thing I wanted. Their
+instinct that two passes cannot explain ten minutes was right; the explanation is that I was letting it
+decode. And `attn` is the largest single item, which is consistent with Phi4's attention being CPU-only.
+
+**`npu_engine_v12` does not exist in this tree** — nothing in the build directory, nothing in the repo,
+nothing by that name running. Whatever they saw in flight was something else; there is no stale process of
+mine holding the device.
+
+**Net**: device free, no gap needed from me, and the compile load belongs in the record next to their 2-run
+slot rather than being left as background noise.
