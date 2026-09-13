@@ -8289,3 +8289,39 @@ an estimate of a corrected kernel's cost. A genuine nh20 ELF could land anywhere
 gives **13** — not the 1033 that §113 measured with the token-16 fixture — so the host residual is
 **(token, length)-dependent**, not merely token-dependent: 220 @32 gives a clean group value (§146/§150), 220 @1024
 gives 13. Recorded as a point, not a conclusion; the residual's mechanism remains unmeasured.
+
+## 156. The arity trap generalised across all 19 bundles: 17 of 19 carry 2-D I8 rows of 5120 bytes; Qwen3.5-4B and Qwen3.6-35B-A3B are the only 3-D ones — and only Qwen3.5 has no 5120 row
+
+The teammate's arity point — *"`shape` arity and `shape[-1]` units both vary by dtype and by model"* — is checkable
+across every bundle in one pass, because the manifest sits at offset 8 and no weight data is read. All 19 `model.q4nx`
+under `~/.config/flm/models`:
+
+| model | I8 tensors | shape arity | last-dim (row width) |
+|---|---|---|---|
+| Gemma3-1B | 183 | 2-D | 1280 (183) |
+| Gemma3-4B | 239 | 2-D | 5120 (239) |
+| Gemma4-E2B | 248 | 2-D | 5120 (246), 1536, 8960 |
+| Gemma4-E4B | 297 | 2-D | 5120 (295), 2560, 10752 |
+| LFM2-1.2B / 2.6B | 93 / 167 | 2-D | 5120 (all) |
+| Llama-3.1-8B | 225 | 2-D | 5120 (225) |
+| Llama-3.2-1B / 3B | 113 / 197 | 2-D | 5120 (all) |
+| **Nanbeige4.1-3B** | 225 | 2-D | 5120 (225) |
+| **Phi4-mini** | 225 | 2-D | **5120 (225)** |
+| Qwen3-0.6B / 1.7B | 197 | 2-D | 5120 (all) |
+| Qwen3-4B / 8B / VL-4B | 253 | 2-D | 5120 (all) |
+| **Qwen3.5-4B** | 249 | **3-D** | **4736 (200), 8704 (49) — no 5120** |
+| **Qwen3.6-35B-A3B** | 371 | **3-D** | **8704 (251), 5120 (120)** |
+
+**Three things fall out, and two correct the framing rather than the numbers:**
+
+1. **Their Phi4 datapoint is exact** — Phi4's I8 rows are 2-D at 5120 bytes.
+2. **5120 is the norm, not the anomaly: 17 of 19 models carry 2-D I8 rows of 5120 bytes.** So *"no 5120-byte row
+   exists"* is a property of **one model**, not of the format — and the dequant's 5120 assumption is correct for the
+   overwhelming majority of the corpus.
+3. **The 3-D form is a Qwen3.5/3.6 trait, and it is not uniform within it**: Qwen3.6-35B-A3B is 3-D *and* carries
+   **120 rows of 5120**, so 3-D does not imply "no 5120". Only **Qwen3.5-4B** has neither a 2-D shape nor a 5120
+   row — the single model in the corpus matching neither convention.
+
+**So the sharpened claim is: _Qwen3.5-4B's I8 rows are 4736/8704; no row is 5120._ Not a statement about Q4NX, about
+Qwen3.x in general, or about 3-D tensors** — and the cross-model table is what makes that visible, exactly as the
+zero-embedding scan turned *"token 16 has no embedding"* into a Nanbeige fact rather than a general one (§149).
