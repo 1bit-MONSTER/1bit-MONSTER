@@ -382,6 +382,14 @@ as the per-family attention ELF hook (26850018a / 321983c67) — a tool and a fi
 
 ## 10. Coverage: where the four failing families actually stand (2026-09-13)
 
+> **Read this section with §10b.** The table below is the **host-input** audit, and its scope is exactly that: every
+> input the host supplies to the per-ctx ELF is byte-identical to FLM's. That is still true. What is **not** true any
+> longer is the phrase *"no wrong value left to find"* read as a statement about the **residual** — the two
+> remaining ones are now **characterized** (a first-token-blind path with measured band edges, and a
+> first-token-quantised one), and two intermediate claims made in this section's lifetime were **retracted as
+> instrument effects** (the C-cache under-write) or **as fixtures** (an all-lengths Phi4 signature). Treat the
+> sentences about *why* the families fail as a dated record; §10b is the current net.
+
 Section 5's table is still accurate, but the *reasons* are much sharper now than when it was written,
 because the investigation moved from inspection to byte-level controls. Final state:
 
@@ -441,6 +449,13 @@ separate ELF objects and prefills in blocks with dedicated kernels; the engine c
 into one ELF and runs the per-ctx decode ELF **one token at a time** (measured: 256 kernel builds for a
 256-token prompt). Qwen3-4B proves concatenation workable, so the residual is most likely in the
 **device-written KV's evolution** — the one thing neither host writes.
+
+> **Dated note on that last sentence.** *"Most likely in the device-written KV's evolution"* was written before the
+> paired controls, and it is a **hypothesis, not a finding** — the same standing as §143's "computes a different
+> length" candidate. What the controls established is narrower and safer: the residual is a **first-token-conditioned**
+> degeneration whose band edges are measured, and **a value cannot identify which length was computed** (FLM emits
+> 220 at four different lengths itself). The KV-evolution idea has not been excluded; it has simply never been tested
+> by a control, and it should not be quoted as the leading explanation without one.
 
 **LFM2**, the family the user asked for, moved from *scoped* to a **measured boundary** over the last
 five checkpoints. Established by byte-level comparison against FLM's own buffers rather than by
