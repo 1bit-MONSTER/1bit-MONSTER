@@ -4036,3 +4036,42 @@ per-position KV dump plus a two-prompt attention-output diff is the direct test.
 **Method note.** The probe that found this is one line of work — swap a prompt token and see whether the
 answer moves — and it would have found §88's non-defect immediately too. A kernel-output dump can only
 localise; a *perturbation* names the variable that controls the output.
+
+## 93. The bf16 context loss is IN THE NPU ATTENTION PATH — the host Q/K/V and KV cache are correct
+
+§92 pinned the symptom (bf16 boot = `f(last token)`). A one-env A/B localises the cause: force the host
+attention with `NPU_ATTN_CPU=1` and repeat the first-token probe on the same prompts.
+
+| bf16 @256, first token | NPU attention (default) | CPU attention (`NPU_ATTN_CPU=1`) | FLM-ref |
+|---|---|---|---|
+| 16 | **188**, **188** | **109440**, **109440** | 5938 |
+| 220 | **188**, **188** | **13**, **13** | 13 |
+
+- NPU attention: 188 / 188 — context-FREE (the §92 symptom), 4/4 runs.
+- CPU attention: 109440 / 13 — context-SENSITIVE, 2/2 each, and the 220 case **matches FLM's 13 exactly**.
+
+So the **host side is fine**: the same Q/K/V (`bqo`) and the same `kv_caches` produce a context-sensitive
+answer when the host `attn_omp` runs. The context is lost specifically in the **NPU attention path** — the
+captured ELF plus the host `bKv` staging — not in the QKV GEMM, the norms/RoPE, or the KV cache.
+
+Consistent with the rest of the picture: §92 showed @1024 (which loads the CORRECT
+`attn_mha_1024_nh20_hd128.elf`) is also context-free, so this is not merely the @256 nh16-for-nh20 mismatch;
+and §9's "REPEATED" (nh20 ELF in, boot still exactly 1214) is the same "the ELF swap alone does not move it".
+
+**Prime suspect:** the `bKv` layout the kernel reads. The host writes
+`bKv[region*kv_region + pi*512 + (kvh&3)*HD + d] = K` and
+`bKv[(region+2)*kv_region + pi*512 + (kvh&3)*HD + d] = V`, with `region = kvh<4 ? 0 : 1`,
+`kv_region = 2097152` (H=2560) — i.e. `[region][token][head][dim]`, 512 bf16 per token (4 KV heads x hd128).
+If the captured ELF expects a different region/stride order, the kernel reads the wrong (or no) keys and the
+attention contributes nothing — exactly the observed context loss.
+
+**Instrument caveat, learned the hard way twice now.** `NPU_DUMP_ATTNIO=1` is NOT usable for this comparison:
+enabling it moved the @256 first-220 boot from 188 to **152402**. That is the same trap §12 documented for
+`RT_KV_DUMP_DIR` — the dump perturbs the run it is measuring. The non-perturbing check is the CPU/NPU A/B
+above; to compare *outputs* rather than answer tokens, the dump must be moved off the timed path or made
+non-flushing.
+
+**What is now established about Nanbeige's bf16 path.** The defect is a single, named one: the NPU attention
+step does not consume the context. Everything upstream is validated by the CPU-attention control, and the
+remaining work is the `bKv` layout vs the captured ELF — a differential of the kernel's attention output
+against `attn_omp` on the same staged inputs.
