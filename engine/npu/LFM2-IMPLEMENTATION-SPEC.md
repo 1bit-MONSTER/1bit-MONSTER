@@ -272,3 +272,51 @@ NOT new math: it is driving FLM's existing LFM2 kernels with the engine's own ho
 orchestration — exactly the relationship the engine already has with FLM's other
 per-family libraries. The performance lever is host scheduling (the per-slot
 double-buffering that was worth ~30% on the bf16 prefill path), not re-deriving the conv.
+
+## 11. FLM's LFM2 layer-kernel signature, measured from the capture (2026-09-13)
+
+Read out of `~/npu-build/caplfm2/capture_manifest.log` (1446 `SETARG` lines, 237
+`RUNLIST_ADD`/`RUN` lines) — no device needed, and it settles the interface question that was
+blocking the native path.
+
+The first run's binding:
+
+```
+SETARG3 idx=0 bytes=4 val=0x3
+SETARG3 idx=1 bytes=4 val=0x0
+SETARG3 idx=2 bytes=4 val=0x0
+SETARG  idx=3 size=1048576     (1 MB)    -> act
+SETARG  idx=4 size=41943040    (40 MB)   -> weights
+SETARG  idx=5 size=1048576     (1 MB)    -> i5
+SETARG  idx=6 size=1048576     (1 MB)    -> i6
+SETARG  idx=7 size=1048576     (1 MB)    -> slot 5
+```
+
+and across the runlist the per-layer runs show `a3` **constant** while `a4`/`a5`/`a6`/`a7`
+vary:
+
+```
+RUNLIST_ADD(rv) run=0x7ffc34b46910 ... a3=0x55e0bae61f50 a4=0x55e0bad14fa0 a5=... a6=... a7=...
+RUNLIST_ADD(rv) run=0x7ffc34b46910 ... a3=0x55e0bae61f50 a4=0x55e0bad16e90 a5=... a6=... a7=...
+RUNLIST_ADD(rv) run=0x7ffc34b468d0 ... a3=0x55e0bae61f50 a4=0x55e0bad15e80 a5=... a6=... a7=...
+```
+
+**Three consequences for the native path.**
+
+1. **The signature is the one the engine already binds.** `RuntimeLayerEngine::build_runlist`
+   (`runtime_layer.cpp:336-347`) binds exactly `set_arg(0..2) = 3,0,0` then five BOs
+   `(act, weight, i5, i6, slot5)` — identical shape to FLM's LFM2 layer run. So driving LFM2
+   natively is **not** a new kernel interface; it is the weight-BO packing plus the xclbin
+   selection. That removes the main structural unknown from the estimate in section 6.
+2. **The activation is one shared BO, written per token.** `a3` is the same pointer for every
+   layer run, and `embed()` writes the token row into exactly that buffer — consistent with the
+   Qwen3 path and with `bo_act_` being arg 3.
+3. **There are at least two kernel variants, one per layer type.** The `run=` pointers differ
+   (`...46910`, `...468d0`), which matches `lfm2_npu::Impl::load_conv_proj_weights` vs
+   `load_attn_proj_weights` — i.e. conv layers and attention layers run different kernels, and
+   the hybrid dispatch in section 7 has to pick between them.
+
+**One trap for the port:** slot 5 (`idx=7`) is **1 MB** for LFM2, not the 128 MB KV BO the
+Qwen3 path uses. Whatever LFM2's slot 5 is (conv state, KV, or scratch), the engine must size
+it from LFM2's own binding rather than inheriting the Qwen3 numbers — the same class of mistake
+as reading a sync length as an allocation.
