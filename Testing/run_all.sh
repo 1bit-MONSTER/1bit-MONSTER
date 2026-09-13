@@ -37,6 +37,9 @@ run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp sr
 run rotation  Testing/rotation_table_selfcheck.cpp
 run iq1       Testing/iq1_selfcheck.cpp --
 run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
+# NPU artifact key contract (issue #2193): the header-window regression and the
+# per-family GEMM names, both verifiable without a device.
+run npu_keys  Testing/npu_key_contract_selfcheck.cpp src/q4nx_reader.cpp --
 
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"

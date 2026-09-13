@@ -6,6 +6,28 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-14 — strixhalo: the Q4NX reader's 64 KB window (#2193)
+
+State for anyone touching the NPU lane, especially the `goal/runlist-decode-wire`
+worktree — this one changes a shared reader:
+
+- `Q4nxReader::find_offset` searched only the first 64 KB of the file, so a model
+  whose JSON header is larger lost its later tensor entries *silently* (0 means
+  both "absent" and "not looked at"). Three artifacts on this box cross that
+  line: zaya1-8b (232,415 B, 29/40 layers invisible), Gemma4-E4B-IT (97,256 B,
+  40/42) and Gemma4-E2B-IT (81,048 B, 20/35). Fixed on `fix/npu-artifact-layout-check`
+  to search `[8, data_start)`, the header `open()` already validated.
+- The same PR makes `src/backend_npu.cpp`'s pre-serve weight check follow the
+  family an artifact declares (`model_type`), instead of one dense key set:
+  Zaya's worker loads `v_proj_current` / `v_proj_delayed` and
+  `mlp.experts.gate_up_proj` / `mlp.experts.down_proj`, none of which the old
+  dense check asked for. An unrecognised vocabulary is now reported as
+  unrecognised rather than as a missing weight.
+- Everything here is host-verifiable: `Testing/npu_key_contract_selfcheck.cpp`
+  (no device, in `run_all.sh`), plus `Testing/npu_q4nx_layout_probe.cpp` for a
+  real artifact. Nobody has re-run #2193's end-to-end acceptance on the current
+  binary — the last capture is 2026-09-11 — so that remains open.
+
 ## 2026-09-13 (late) — strixhalo: the self-check suite's CI gate
 
 State for the next session, not a changelog:
