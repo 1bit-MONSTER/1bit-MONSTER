@@ -4114,3 +4114,39 @@ drops the context.
 0-1 and V in 2-3 and V's region offset hardcoded `+2`. The standalone attn ELF may or may not share FLM's
 layer-KV packing, so the next step is to establish what the ELF expects from the capture rather than assume
 it — the same "right size, wrong arrangement" class as §38.
+
+## 95. The `nh20` attention ELF is 97.9% byte-identical to the `nh32` ELF — "the nh20 ELF is an nh20 kernel" is an assumption, not a measurement
+
+Device-light check while the other agent held the device. `readelf -l` on the three 1024-context attention
+ELFs, then a byte comparison of their LOAD segments:
+
+| ELF | LOAD FileSiz | file | prog hdrs |
+|---|---|---|---|
+| `attn_mha_1024_nh16.elf` | 0x16110 (90384) | 98848 | 2 |
+| `attn_mha_1024_nh32.elf` | 0x27d10 (163088) | 177696 | 2 |
+| `attn_mha_1024_nh20_hd128.elf` | **0x27d10 (163088)** | 177728 | **3** |
+
+The nh20 ELF's code segment is **the same size as nh32's** (0x27d10) — only the LOAD offset differs (0xa0 vs
+0x80) — and the two segments are **97.9% identical** (159680 / 163088 bytes; first 32 bytes identical;
+3408 bytes differ, first at 2353, last at 162803). The nh16 kernel is a different size entirely (0x16110).
+
+An nh20 attention kernel has 20 query heads and 4 KV heads; a code segment byte-identical in size to the
+32-head kernel and 97.9% identical in content is not what a distinct shape-specific kernel looks like. Either
+
+- (a) FLM ships ONE attention kernel parameterised by embedded constants and the ~2% differing bytes ARE the
+  nh20 shape (in which case the ELF may be correct and the fault is in what we feed it), or
+- (b) `elf_0011` was not the nh20 attention kernel and this slot holds an nh32 kernel (in which case feeding
+  it nh20 KV would produce exactly the §92 symptom — the output carries no usable cross-token information).
+
+This is the assumption §8 flagged and did not close ("either the substituted ELF was not the attention
+kernel ... or a second error exists in that family"), and §9's REPEATED result — installing this file left
+the boot at exactly 1214 — is equally consistent with (b) as with "the ELF swap is not the fix".
+
+**Not concluded here.** Distinguishing (a) from (b) needs the device and is the right next step before any
+`bKv` reshape: dump the differing byte ranges (are they contiguous constants/data, or code?), and compare the
+nh20 slot against the nh16 ELF's geometry at the same offsets. If the bytes are shape constants, (a) and the
+fault is the `bKv` arrangement (§94); if the nh20 slot is a mislabeled nh32 kernel, the fix is to capture the
+real one.
+
+**Recorded because it changes the next step, not because it is settled.** Three sessions have now called this
+file "the nh20 ELF" and reasoned from it; one size comparison shows that label is untested.
