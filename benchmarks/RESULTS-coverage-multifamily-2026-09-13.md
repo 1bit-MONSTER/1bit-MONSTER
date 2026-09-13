@@ -2058,3 +2058,46 @@ now reads:
 
 That is the same shape of result the whole sweep has produced: a real bug, located by bytes rather than by
 reasoning, fixed, and verified against FLM's own BO — while leaving the next blocker standing and named.
+
+## 42. Two corrections to the LFM2 route table — the GEMM shapes were never a blocker, and the log names a fourth item
+
+Checked the LFM2 run's own log rather than the earlier assumption:
+
+```
+bf16 prefill: model=.../LFM2-1.2B-NPU2 xclbins=.../xclbins/LFM2-1.2B-NPU2
+bf16 prefill: 16 layers dequant done
+```
+
+**No GEMM or shape failure of any kind.** And the API explains why:
+
+```c
+bf16mm_gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff, int batch, const uint16_t* A);
+```
+
+**K and N are runtime arguments**, so the `mm.xclbin` kernel is **shape-generic** — LFM2's GEMM shapes
+are **not a blocker at all**. Section 36's claim that the route "needs LFM2's GEMM shapes (absent from the
+engine's set)" was **wrong**: the shapes are passed per call, and the kernel handles them. One more entry
+off the list by checking rather than assuming.
+
+**And the same log surfaces a fourth item.** The attention ELFs it loads are all **hd128**:
+
+```
+attn_mha_1024_nh16.elf   attn_mha_1024_nh32.elf   attn_mha_2048_nh16.elf   attn_mha_256_nh16.elf
+```
+
+LFM2 is **nh32/hd64**, so the engine's shape gate (correctly) sets `attn_shape_ok = false` and `run_attn`
+returns **false** — LFM2's attention in the bf16 path has **no valid ELF**. That is the gate added in
+`e14bcfdb3` doing exactly its job, and it names the missing artifact: a **hd64 attention ELF**, or an
+explicit CPU fallback.
+
+### Corrected route table
+
+| route | blockers |
+|---|---|
+| bf16mm | ~~GEMM shapes~~ **never a blocker** · ~~packing~~ **cleared (41)** · **the conv compute** · **LFM2's hd64 attention ELF** |
+| runlist | needs a per-ctx sequence class FLM does not ship |
+| FLM's fixed kernels | available — but it **is** the reference, so it is the baseline to beat |
+
+So LFM2's true blocker list is **two** on the bf16mm route, **one** on the runlist route, and the
+reference for the third — every entry named, and two of them removed this checkpoint by reading a log
+instead of repeating an assumption.
