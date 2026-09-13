@@ -161,7 +161,18 @@ jobs:
               echo ""
             fi
             if grep -q '!! UNCOVERED' /tmp/census-watch.log; then
-              echo "**Uncovered classes** — add the mapping in \`include/rocm_cpp/bitnet_model.h\` (alias if it is a known family, otherwise a real implementation), then re-run \`python3 Testing/census_coverage.py\`."
+              echo "**Uncovered classes** — add the mapping in \`include/rocm_cpp/bitnet_model.h\`, then re-run \`python3 Testing/census_coverage.py\`."
+              echo ""
+              # The one-liner used to say "alias if it is a known family" and stop
+              # there, which reads as "find the nearest family and map it". The
+              # 2026-09-13 sweep reviewed five `!! UNCOVERED` arrivals against their
+              # own configs and checkpoints and **none** of them was an alias — one
+              # (`vapor`) carried LFM2's config schema verbatim and still stored a
+              # factorized FFN no reader here understands. So the instruction now
+              # says where the deciding evidence is: the class name and the config
+              # are not enough, and a class that is neither a rename nor a shape
+              # match belongs in the reviewed-evidence file rather than in a mapping.
+              echo "An alias is right only when the class *is* a known family — decide that on the checkpoint's tensors, not on the class name (see how \`vapor\` reads as LFM2 from its config and is not one). A class that is neither a rename nor a shape match is not a mapping problem: record its evidence in \`Testing/arch-gaps.md\` under *Uncovered classes reviewed later*."
               echo ""
             fi
             if grep -q '? UNVERIFIABLE' /tmp/census-watch.log; then
