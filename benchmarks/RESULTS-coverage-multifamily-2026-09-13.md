@@ -5650,3 +5650,45 @@ of its columns live?** I do not have a hook that reports that for the bf16 path,
 **So the next instrument for this lane is a width/extent print, not another value comparison** — and the honest
 state of §210's conclusion is that it is a good hypothesis with the right shape and the wrong evidence behind
 it.
+
+## 220. The EXTENT lesson has a STATIC form — and it restores §210's conclusion with real evidence, without a device
+
+**§215 said the next instrument for this lane had to be a width/extent print, and that §210's conclusion rested
+on scale evidence that cannot see a half-written buffer. There is a cheaper form of the same check: read the
+write loops.** The extent of what a stage writes is a property of the code, not of a run.
+
+**For Phi4's host attention it is decisive.** `attn_omp`:
+
+```cpp
+for (int hh = 0; hh < NH; hh++) { int kvh = hh / GQA;
+    ...
+    for (int d = 0; d < HD; d++) { ... at[hh * HD + d] = acc * isw; }
+}
+```
+
+The store is **inside both loops and unconditional** — no `if`, no early exit, no per-head guard. So for Phi4
+it writes **all 24 heads x 128 dims = 3072 columns, which is exactly `qout`** — **full extent**.
+
+**And every other stage in the layer-0 path checks out the same way:**
+
+| stage | extent written | full? |
+|---|---|---|
+| host attention (`attn_omp`) | `hh < NH`, `d < HD`, unconditional | **yes** — 24 x 128 = 3072 |
+| norms (`rn_c(h, w, H)`) | every element of `H` | yes |
+| RoPE (`ra(&qo[...], HD, pos)`) | every `d < HD`, called for every head | yes |
+| KV writes | every `kvh < NKV` | yes |
+| GEMMs | `M * N` from the call's own `K`/`N` (§180) | yes |
+
+**So §210's conclusion — "a wrong value with full extent" — is now measured rather than asserted**, and it took
+no device, no instrument, and no edit to the file the other lane is working in.
+
+**The honest limit, stated because it matters for a lane next door**: a static extent check says what **our
+host code** writes. It cannot see a **device-side** under-write — which is exactly what the nh20 lane found,
+where the host loop was fine and an **nh16-width kernel** wrote only 2048 of 2560 columns. Phi4's attention is
+**host**, so for that stage the static argument is complete; its **GEMMs are on the device**, so a device-side
+under-write there is **not** excluded by reading the code. The two lanes need the same check at different
+levels, and knowing which is which is the point.
+
+**So the general form of the rule, which is what to keep**: **extent is a property of the code before it is a
+property of the run** — check it statically first (free, decisive about the class), and go to a runtime width
+print only for the stages that execute on the device.
