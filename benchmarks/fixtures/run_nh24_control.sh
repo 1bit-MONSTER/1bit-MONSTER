@@ -15,15 +15,15 @@ B=./engine/npu/build/npu_engine_phi4_mini_4b
 M=~/.config/flm/models/Phi4-mini-Instruct-NPU2
 tok() { grep -aoE '\[0\] boot=[0-9]+|\[1\] [0-9]+' | head -1; }
 echo "load: clang=$(ps -eo comm 2>/dev/null | grep -c clang-23) $(uptime | sed 's/.*load average: //')"
-echo "A. native, last-token-only pair"
-for f in P32a P32b N32; do
+echo "A. native, last-token-only pairs (32; plus 8 and 128, which the peer's note puts at risk)"
+for f in P8a P8b P32a P32b P128a P128b N32; do
   printf "   %-5s first=%-6s last=%-6s -> " "$f" \
     "$(tr -s ' \n' '\n' < /tmp/$f.txt | grep . | head -1)" \
     "$(tr -s ' \n' '\n' < /tmp/$f.txt | grep . | tail -1)"
   NPU_PREFILL_BF16=1 $B $M/model.q4nx 1 /tmp/$f.txt 2>/dev/null | tok
 done
-echo "C. FLM reference at npt=128 (same prefix as N32) and at 32"
-for f in N128 N32; do
+echo "C. FLM reference at npt=128 (same prefix) and at 32, 8"
+for f in N128 N32 N8; do
   printf "   FLM(%-5s) -> " "$f"
   env -u NPU_PREFILL_BF16 NPU_FLM_PREFILL=1 $B $M/model.q4nx 1 /tmp/$f.txt 2>/dev/null | tok
 done
