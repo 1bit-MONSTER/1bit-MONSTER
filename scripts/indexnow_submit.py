@@ -99,6 +99,18 @@ def urls_changed(site_dir: Path, since: str, head: str) -> list[str]:
         u = url_for(n)
         if u:
             out.append(u)
+    # deploy.yml also rebuilds the docs surface: `gen_docs_site.py --out _deploy/docs`
+    # turns docs/** into the single /docs/ page set, which the sitemap lists. So a
+    # docs-only push changes a URL even though no site/*.html moved -- without this,
+    # such a push submits nothing (found on a40c9dcc5, whose only content change was
+    # docs/AGENT-COORDINATION.md).
+    try:
+        docs = git("diff", "--name-only", "--diff-filter=ACMR", since, head,
+                   "--", "docs/", "scripts/gen_docs_site.py").splitlines()
+    except subprocess.CalledProcessError:
+        docs = []
+    if docs:
+        out.append(f"{BASE}/docs/")
     return sorted(set(out))
 
 
