@@ -452,6 +452,56 @@ number, but is null`. Both benched cleanly. So that failure belongs to the
 `NPU_FLM_PREFILL=1` path I hit it on, not to FLM generally — it should not be cited as an FLM
 defect.
 
+## 14. Why the runlist arg binding is correct, and the instrument that proves it
+
+Contributed read-only by the dsh agent while the (false) constant-token alarm was open, and
+kept because it is durable regardless of that: none of this was a bug, but all of it explains
+why the path works and gives a better way to check it next time.
+
+**The vendor's binding convention** — `~/amd-oss/fastflowlm/src/include/npu_utils/npu_utils_xrt.hpp`
+(~262-274), verified independently:
+
+```cpp
+template<typename... BoArgs>
+xrt::run create_run(BoArgs&&... args){
+    xrt::run run = xrt::run(*this->kernel);
+    run.set_arg(0, 3); run.set_arg(1, 0); run.set_arg(2, 0);
+    std::array<bytes*, sizeof...(BoArgs)> bo_args = { &args... };
+    for (size_t i = 0; i < sizeof...(args); i++) run.set_arg(3 + i, bo_args[i]->bo());
+    return run;
+}
+```
+
+BOs are bound at `3+i` **in caller order**, with args 0-2 the same `3, 0, 0` magic the engine
+uses. There is **no intrinsic arg-to-buffer meaning**: the ELF is only an instruction stream
+and reads whichever BO the caller placed in that slot. So the engine's order
+(`act, weight, i5, i6, kv`, `runtime_layer.cpp:336-347`) is correct **if and only if** it
+matches FLM's own layer call order — the ELF cannot correct a mismatch, and a mismatch would
+produce exactly the symptom the false alarm described. The decode now agreeing with FLM
+token-for-token is therefore positive evidence that the order is right, and this is *why* it
+is right rather than luck.
+
+**A better instrument for any future arg-order question.** The capture interposer already
+hooks the two calls that answer it, statically and without token tests:
+
+```
+_ZN3xrt3run16set_arg_at_indexEiRKNS_2boE  ->  "SETARG %p idx=%d size=%zu bo=%p"
+_ZN3xrt3run5startEv                       ->  "RUN %03d: args=[idx:size ...]"
+```
+
+One FLM run under `LD_PRELOAD=cap_interposer.so` prints FLM's true layer-kernel arg order and
+BO sizes, which can be diffed against the engine's binding — and sizes alone separate act
+(1 MB) from weights from KV (32 MB). That is a strictly better tool than the token-level
+testing this session leaned on.
+
+**The layer instruction stream is the vendor's own.** `gen_layer_elfs.cpp` does not capture
+anything; it calls `qwen3_npu_sequence::gen_layer_seq` and assembles with aiebu
+(`blob_instr_transaction`), so the stream is generated per ctx from the vendor's own
+sequence generator. Consequence noted by the same agent: `MAX_L` must match the host KV BO or
+the layer walks past it. That constraint holds here — the KV BO is 33554432 B =
+32768 tokens x (NKV/2 = 4) x 128 dims x 2 B, consistent with `runtime_layer.cpp`'s
+`token_u16 = (cfg_.num_key_value_heads / 2) * cfg_.head_dim`.
+
 **Narrowed further: the forward is wrong from the FIRST token, not by accumulation.**
 
 | prompt | FLM's own token | runlist token |
