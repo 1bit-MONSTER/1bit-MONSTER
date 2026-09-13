@@ -7514,3 +7514,47 @@ text. A text-comparable build would be a different fixture, and until then the c
 
 **Net, agreed from both sides**: one measured defect (the nh16-width NPU attention kernel), **two mechanically
 distinct open residuals**, and **no shared mechanism**.
+
+## 385. The cross-lane test on ARM-MATCHED arms: 8/8 exact reproduction — and my "degenerate configuration" claim was wrong about the mechanism
+
+**The other lane's config note was the decisive control, and it caught a real error of mine.** On Nanbeige the bf16
+arm only means anything with **`NPU_ATTN_CPU=1`**: the default routes that model's attention to the **measured nh20
+defect** — the nh16-width kernel that writes zeros over 2048 of 2560 columns. **So my earlier cross-lane row was
+measuring the defect, not the host path**, and was not comparable to their §146.
+
+**And checking which arm actually ran corrected my *own* correction.** Reading the banner rather than the number:
+
+| flags | boot @32, token 220 | banner |
+|---|---|---|
+| *(default)* | 166101 | — |
+| `NPU_PREFILL_BF16=1` | **0** | **`bf16 attn: kv_region=…`** |
+| `+ NPU_ATTN_CPU=1` | **166101** | `bf16 attn…` + **`[NPU_ATTN_CPU] forced CPU attn`** |
+| `+ NPU_RUNLIST=0` | 166101 | same — **the runlist changes nothing here** |
+
+**So `NPU_PREFILL_BF16=1` DOES reach the bf16 arm** — the banner proves it — and my earlier claim that the runlist
+takes precedence is **wrong for this configuration**. The eight zeros were not a mis-set flag: **they are what the
+bf16 arm returns when its attention is the broken nh20 kernel.** That is *more* interesting than the explanation I
+gave, because **the measured defect produces exactly the "totally blind" signature** — the precise trap the other
+lane warned about (*"on the default you'll get the context-free/plateau signature"*). A zero column from a broken
+kernel and a zero column from a mis-set flag look identical, and I had guessed the wrong one.
+
+**On the correct arm the two lanes reproduce each other exactly — 8 of 8**, banner asserted per run:
+
+| first token | this run (Nanbeige, host attn) | their §146 |
+|---|---|---|
+| 16 | **43753** | 43753 |
+| 100 | **43753** | 43753 |
+| 220 | **166101** | 166101 |
+| 1024 | **166101** | 166101 |
+| 4096 | **166101** | 166101 |
+| 12345 | **152551** | 152551 |
+| 777 | **152551** | 152551 |
+| 58907 | **156468** | 156468 |
+
+**Four distinct values across eight tokens — PARTIAL**, against **Phi4's single value, 8/8 → 220 — TOTAL**. So the
+two-mechanism conclusion now rests on an **arm-matched, banner-asserted, independently reproduced** comparison
+rather than on two runs that happened to use the same flag names and different attention paths.
+
+**And the rule this earns is sharper than the one it replaces**: *assert which arm ran, not which flags you set* —
+because the flags in this engine select among paths that are not equivalent, and one of them is a known-broken
+kernel that produces the same shape as the phenomenon being investigated.
