@@ -4076,6 +4076,13 @@ struct Bf16Ctx {
             uint32_t kv_region = 4194304;
             if (H == 2560) kv_region = 2097152;
             else if (H == 4096) kv_region = 2097152;
+            // NPU_ATTN_KV_REGION: override for the shape the H table conflates.
+            // The table keys on H (a proxy for nh16-vs-nh32), so Nanbeige (H=2560,
+            // nh20) inherits Qwen3-4B's nh32 4MB region even though it runs the
+            // nh20 ELF. RESULTS-coverage-multifamily 93: the bf16 attention is
+            // context-free, so the region stride baked into the ELF is a suspect.
+            if (const char* kr = getenv("NPU_ATTN_KV_REGION")) { int v = atoi(kr); if (v > 0) kv_region = (uint32_t)v; }
+            fprintf(stderr, "bf16 attn: kv_region=%u (H=%d)\n", kv_region, H);
             bf16mm_set_attn_kv_region(kv_region);
             // layer_bo_bytes must be read AFTER prefill_init (it needs the loaded
             // model; before init g_bf16_mw is null -> the 10MB 0.6B fallback).

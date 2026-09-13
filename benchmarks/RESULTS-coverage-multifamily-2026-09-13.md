@@ -4075,3 +4075,42 @@ non-flushing.
 step does not consume the context. Everything upstream is validated by the CPU-attention control, and the
 remaining work is the `bKv` layout vs the captured ELF — a differential of the kernel's attention output
 against `attn_omp` on the same staged inputs.
+
+## 94. The bf16 KV region stride is NOT the context loss — the H-table is a real latent bug, but swapping it does not restore the context
+
+§93 localised the bf16 context loss to the NPU attention side (captured ELF + host `bKv`). The `kv_region`
+(the region stride baked into the ELF) is chosen by an **H-based table** — the same defect class as §1:
+
+```cpp
+uint32_t kv_region = 4194304;              // 8MB, nh16 ELF, MAX_L=8192
+if (H == 2560) kv_region = 2097152;        // 4MB  <-- Nanbeige (nh20) inherits Qwen3-4B's (nh32) value
+else if (H == 4096) kv_region = 2097152;   // 4MB
+```
+
+Nanbeige is H=2560 but nh20, not nh32, so it *may* be reading the nh20 ELF at the wrong stride. I added
+`NPU_ATTN_KV_REGION` to test it, rebuilt Nanbeige, and ran the §92 first-token probe at both strides:
+
+| kv_region | first=16 | first=220 |
+|---|---|---|
+| 4194304 (8MB) | 188,188,188 | 188,188,188 |
+| 2097152 (4MB) | 188,188,188 | 188,188,188 |
+
+**Both strides are context-free (188/188), so the stride is NOT the cause.** One earlier 8MB run gave
+152704/188 — which looked like restored context — but it did not reproduce in 3 repeats, so it was noise.
+
+**Honest caveat.** The device was contended for the whole test (the other agent's Phi4 runs at ~98% CPU),
+and §85/§92 already showed the native paths can return wrong values under that load (i8 "16", bf16
+"152402"). So "both strides are context-free" is a contended measurement and should be repeated clean
+before it is treated as final. The 188 values themselves have been stable across many contended and
+uncontended runs, so the conclusion is likely right — but it is not yet a clean measurement.
+
+The H-based table is still a latent bug worth its own line: it is exactly §1's shape (an H proxy standing in
+for a shape the model does not have) and it silently hands Nanbeige an nh32 stride. It is simply not what
+drops the context.
+
+**Still open — the `bKv` ARRANGEMENT, not its stride.** FLM's captured layer KV BO for Nanbeige is **64MB**
+(`idx=7 size=67108864` in `~/npu-build/capnb_flm/capture_manifest.log`): 32768 tokens x 4 heads x 128 x
+2(KV) x 2B, i.e. K and V packed per token. Our `bKv` is `[region][token][4 heads][dim]` with K in regions
+0-1 and V in 2-3 and V's region offset hardcoded `+2`. The standalone attn ELF may or may not share FLM's
+layer-KV packing, so the next step is to establish what the ELF expects from the capture rather than assume
+it — the same "right size, wrong arrangement" class as §38.
