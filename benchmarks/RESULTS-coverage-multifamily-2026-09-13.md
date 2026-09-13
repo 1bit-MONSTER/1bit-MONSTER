@@ -5756,3 +5756,50 @@ puts **zeros** in the tail rather than *correct* values, so a **change** is the 
 demonstrated for the **attention kernel**, not for the **GEMM kernels Phi4 uses**. The check is a few lines in
 `npu_engine_bf16_mm.h` — **the file the other lane is working in** — so this belongs to a coordination message
 before it belongs to a commit.
+
+## 230. The nh20 chain is RESOLVED — and this lane's §225 stale-tail hypothesis is EXCLUDED by its own audit
+
+**Three updates to my state summary, all of which supersede what I recorded** (my summary predated §113 and
+§121–§123):
+
+1. **§113**: at @1024 the **host** attention gives FLM's **exact** reference — 1033, and 152373 on the
+   tail-modified prompt — while the NPU gives 1214. So the host path is **correct for nh20** and only the NPU
+   attention step is wrong. Not "partial vs FLM's value": at @1024 the **CPU path matches FLM exactly**.
+2. **§112/§118**: the @256 "captured stride" result was measured on the **nh16-256 ELF**, which @256 **does**
+   select — `attn_shaped_ok` is a **global** flag set by the @1024 shaped load. So it is an NPU-kernel
+   measurement, but of a **wrong-width** kernel, not Nanbeige's own.
+3. **§121–§123, the decisive ones**: the NPU attention output is **ALL ZERO** with non-zero inputs; the sentinel
+   test shows the kernel **does** write but writes **zeros** and only **2048 of 2560 dims** (16 of 20 heads);
+   and **changing the BO sizes changes nothing — the geometry is ELF-baked**. So **§103's act/out sizes are not
+   the next entry**: the kernel is an **nh16-width kernel**, and the fix is a genuine **nh20 ELF per context
+   length**.
+
+Their @1024 pair also settles a load question I raised: 1214 **held 3/3 while the load climbed 3.65 -> 11.16**,
+so it is not a load artifact — while the **CPU path gave 1033 once but also 10985 / 152388 as the box loaded**,
+i.e. the host path is correct-when-quiet and **load-sensitive** (§117).
+
+**And §225's stale-tail hypothesis is excluded, by this lane's own audit of the live path.** I had read the
+"only grown, never cleared" pattern on the C caches and proposed that a short device write leaves stale data.
+Checking the two things that would make it live:
+
+```cpp
+npu_app& get_mm_app(uint32_t K, uint32_t N, uint32_t woff) {
+    uint64_t key = ((uint64_t)K << 32) | ((uint64_t)N << 16) | (uint64_t)woff;   // N IS in the key
+    ...
+    gemm_->generate_seq(app->seq(), 256, K, N, woff, false, Gemm::NO_Activation, 0);  // regenerated per shape
+}
+```
+
+- **the app cache is keyed on `(K, N, woff)`**, so a wrong-N instruction stream **cannot** be reused, and the
+  sequence is **generated from K and N at runtime** rather than baked;
+- `ensure_a` stages a **full 256 rows** and `gemm_wait` copies back **256 * N**, with a code comment recording
+  that the earlier 128-row staging wasted half of every launch and was **fixed**.
+
+**So the live bf16 GEMM path cannot under-write, and §225's hazard is latent rather than active** — there is a
+kernel in this engine that under-writes (the nh20 attention one), but it is not on the bf16 GEMM path. The
+"only grown, never cleared" pattern is still a hazard worth knowing about; it simply has no trigger here.
+
+**And the contrast is worth keeping**: in this engine the **attention** geometry is **ELF-baked** (nh20's
+finding) while the **bf16 GEMM** geometry is **generated per shape at runtime** (this audit). Two different
+baking regimes in one engine — which is exactly why the nh20 lesson does not transfer to this lane, and why
+§220's rule needed the caveat about which stage runs where.
