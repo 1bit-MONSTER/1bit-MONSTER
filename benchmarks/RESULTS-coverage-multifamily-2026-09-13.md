@@ -1770,3 +1770,35 @@ the fourth candidate this session that a control retired rather than an argument
 now explicit: FLM's 16 loads must be **identified by role** (which is per-ctx, which is the lm_head,
 which is the attention kernel) before any can be substituted, and the manifest records order and size
 but not role. That identification is the next actual step, not another comparison of sizes.
+
+### 34.1 The generator DOES parameterise by ctx — the constant size was padding, not stagnation
+
+Section 34 showed my per-ctx ELFs are all the same *size*. The obvious follow-up question — do they at
+least **differ**? — has a clear answer:
+
+```
+Nanbeige   : 257 ELFs -> 257 DISTINCT hashes
+Qwen3-4B   : 1024 ELFs -> 1024 DISTINCT hashes   (the control that produces the correct token 1614)
+```
+
+**Every ctx gets its own ELF**, so the generator is parameterising correctly and the constant size is
+padding (a fixed-size container holding a ctx-dependent stream), not the argument being ignored. The
+generator is sound: ctx-varying content, and end-to-end correct for Qwen3-4B (1614) and Llama (220).
+
+**Fifth time this session that a size observation was real and the inference from it was not:**
+
+| number | what it looked like | what it was |
+|---|---|---|
+| `33554432` | the KV BO's size | a sync length (24.2) |
+| `61865984` vs `61440000` | a BO shortfall | FLM packing extra content (24.2) |
+| ELF sizes | one-per-ctx list vs FLM's varying loads | two incomparable lists (34) |
+| constant ELF size | the ctx ignored | padding around a ctx-dependent stream (34.1) |
+| `.npu_kv_cache_bo_size` | derived from config | a fixed default |
+
+Each was a measurement that survived and an interpretation that did not. The habit that caught all five
+was asking what the number was *for*, not whether it was correct.
+
+**The last candidate therefore stays exactly as stated, and no stronger:** the per-ctx ELF for
+Nanbeige's **nh20/nkv4** shape is **untested**, not suspected — the generator produces valid,
+ctx-dependent ELFs, and two other architectures were proven with them. Substituting FLM's own ELF would
+settle it, but that needs the roles of FLM's 16 loads identified, which the manifest does not record.
