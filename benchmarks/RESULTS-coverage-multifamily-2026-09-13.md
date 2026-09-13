@@ -415,6 +415,43 @@ localises the fault. `benchmarks/decode_token_check.sh` is the regression test f
 > this) were mine and wrong, and both were caught by testing the instrument rather than
 > trusting it. The constant `28962` was never a model output — it was a measuring device.
 
+## 13. The FLM bar for five more families, measured independently (2026-09-13)
+
+Run by the dsh agent with FLM's own `flm bench` (`context_length_k=1`, `iterations=1`,
+`benchmarks/prompts/reclaimer.txt`, `timeout 1200`); all five exited 0 and produced a CSV,
+and `std=0` by construction with a single iteration. Raw rows (13 columns incl. min/max) are
+in `~/npu-build/fb_<tag>/bench_<tag>_20260913.csv`.
+
+| tag | ttft_avg_s | prefill tok/s | decode tok/s |
+|---|---|---|---|
+| llama3.1:8b | 2.750198 | 364.84 | 11.09 |
+| nanbeige4.1:3b | 1.860757 | 536.62 | 21.54 |
+| phi4-mini-it:4b | 1.659314 | 586.80 | 20.18 |
+| gemma3:1b | 1.196172 | 817.26 | 37.54 |
+| gemma3:4b | 1.666941 | 586.36 | 17.77 |
+
+**This independently confirms the scorecard's FLM column.** `llama3.1:8b` here is
+364.84 / 11.09 / 2.750 against the six-model scorecard's FLM row of 366.15 / 11.10 / 2.741 —
+the same numbers to within run-to-run noise, from a completely separate invocation by a
+different agent. That is the first cross-check of the FLM side of the comparison, and it
+passed.
+
+**Two caveats before these get used as a bar.**
+
+1. Only the FLM half is usable for Nanbeige, Phi4 and Gemma3 today. Their NATIVE prefill is
+   still wrong (section 11: the four non-hybrid failures correlate exactly with `qout` not in
+   {2048, 4096} — 2560 / 3072 / 1024 here), so those three rows are a reference bar, not yet
+   a comparison. **Llama-3.1-8B is the one that can be compared now**: native prefill 472
+   tok/s and TTFT 2.171 s against FLM's 364.84 and 2.750 s.
+2. A leftover `~/npu-build/fb_qwen3vl-it_4b` from 08:32Z is NOT from this run and not mine —
+   I have never benched `qwen3vl-it:4b`. It was left alone, which is correct.
+
+**Forewarning that did not reproduce, recorded for accuracy.** I predicted gemma3:1b/4b would
+fail with FLM's `Failed to parse model config: [json.exception.type_error.302] type must be
+number, but is null`. Both benched cleanly. So that failure belongs to the
+`NPU_FLM_PREFILL=1` path I hit it on, not to FLM generally — it should not be cited as an FLM
+defect.
+
 **Narrowed further: the forward is wrong from the FIRST token, not by accumulation.**
 
 | prompt | FLM's own token | runlist token |
