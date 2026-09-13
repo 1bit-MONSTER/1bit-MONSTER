@@ -19,6 +19,11 @@ name: Bundle decoder check
 on:
   pull_request:
     paths:
+      # The decoder itself belongs here: a change to how a tile is decoded is
+      # exactly when the per-family convention needs re-checking. Without this
+      # line a refactor of dequant_q4nx.cpp would not run the gate at all, which
+      # is how this PR found the omission — the check did not run on it.
+      - "engine/npu/src/dequant_q4nx.cpp"
       - "engine/npu/tests/check_bundle_decoders.py"
       - "engine/npu/tools/q4nx_decoder_map.py"
       - ".github/workflows/bundle-decoder-check.yml"
