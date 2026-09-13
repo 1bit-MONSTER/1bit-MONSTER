@@ -3586,3 +3586,39 @@ were the claims with a categorical separation between two conditions.
 **The next measurement**: build 0.6B's missing i8 shapes — `O(K2048_N1024)`, `G`/`U(K1024_N3072)` per §77's
 list — and apply the §76 test. If it becomes deterministic at ten samples, then this is one defect with one
 fix, and it explains both families.
+
+## 81. §80's candidate REFUTED — 0.6B's i8 nondeterminism is a DIFFERENT mechanism from Nanbeige's
+
+**The test.** I built 0.6B's four i8 GEMMs from the **config-derived** dims — `QKV 1024x4096`, `O 2048x1024`,
+`GU 1024x6144` (fused), `D 3072x1024`, all at `cols=4`, every shape satisfying the generator's
+`(N/128) % cols == 0` — installed them (sizes verified: 27,738 B each), and ran **ten samples**:
+
+```
+12 15 15 16 12 12 16 15 16 12      <- 4 distinct values
+```
+
+**Still nondeterministic.** So 0.6B's i8 nondeterminism is **not** the xclbin dimensions, and it is a
+**different mechanism** from Nanbeige's.
+
+**Which means the i8 path has at least two independent defects:**
+
+- **(a) the xclbin dimensions** — Nanbeige's. Fixed. Now 10/10.
+- **(b) something else** — 0.6B's. Survives a correct-shape rebuild.
+
+**And the two look different in their values, not merely their counts.** Nanbeige with the fix is **stable at
+151**; 0.6B scatters across **12–17** — all small tokens where the reference is **1614**. The 0.6B i8 path is
+producing near-garbage, and producing it unstably.
+
+**Restored, not left in the tree.** The refuted rebuild was reverted, the tree is clean (0 modified), and
+both controls were re-verified afterwards: 0.6B runlist **1614**, Nanbeige i8 **151 x3**.
+
+**And the honest limit.** The 0.6B rebuild changed **both** the dims **and** the generator version (v26 here;
+the shipped ones are v27-family). So this refutes the **simple** hypothesis — it does not exclude that some
+dimension-related difference exists. The clean isolation that worked for Nanbeige (§76) needed a
+**known-wrong shape** to compare against, and **0.6B's actual dims are unmeasured**, which is exactly why
+they cannot be used that way yet.
+
+**The named next step: the capped prefill.** §79 measured the i8 prefill's cost as **flat above ~128
+tokens** — a fact, not an inference. It is in our code, and it would explain why **no** i8 model matches the
+reference: Nanbeige returns 151 at **both** 256 and 1024, and 0.6B returns small stable-ish tokens at every
+length. A prompt that is only ever read to its first block would do exactly that.
