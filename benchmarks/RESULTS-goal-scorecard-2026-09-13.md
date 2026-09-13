@@ -463,6 +463,37 @@ inference:
   resolving LFM2's tensors, the layer-BO SIGSEGV fixed, and the acceptance criterion complete —
   **gate** `708, 1735, 538, 730, 525, 730, 1443`, **bar** 63 tok/s.
 
+## 10b. The final net on the coverage residuals, and the three rules (2026-09-13, two agents)
+
+Two agents worked the failing families in parallel and **converged independently** on this:
+
+| defect | scope | status |
+|---|---|---|
+| **NPU attention, nh16-width** — writes 2048 of 2560 columns | nh20 (Nanbeige) | **measured** — a real mechanism, with a per-head output column as the instrument |
+| **nh20 host residual** | nh20 | **OPEN** |
+| **nh24 (Phi4) residual** | nh24 | **OPEN** |
+
+**One measured defect, two open residuals, and no shared engine bug.** Everything else this stretch appeared to
+find — a shared C-cache under-write, an all-lengths Phi4 signature, a @256 block boundary — was **retracted**,
+by control rather than by argument.
+
+**Six retractions between the two lanes: three were fixtures, one an instrument, and two were over-claims in
+opposite directions from the same evidence.** The three rules that would have caught all six:
+
+1. **Assert the first and last token of every prompt.** The bundle's token 16 has a **zero embedding**, which
+   produced three retractions — a "context-free path", a "structural single-block bug", and an "all-lengths
+   signature" — all of them fixtures.
+2. **Control every flag that touches a BO, and prove it inert before reading its effect as a finding.** A flag
+   whose effect you do not control is an instrument, not a measurement.
+3. **A BO-touching flag's effect depends on whether it syncs** — compare the **synced** and **unsynced** arms
+   before attributing anything to the buffer. In this engine, dirtying a host-mapped BO without
+   `sync_to_device()` moves results on models that are otherwise **exactly correct**; the synced form is inert.
+   That single distinction would have closed the whole C-cache thread in one run.
+
+**And a fourth, about the references themselves**: the published FLM numbers and the on-box FLM numbers are
+different measurements on different hardware, and FLM's own `forward()` is the only reference that settles a
+token — which is what `NPU_FLM_PREFILL`/`NPU_FLM_DECODE` and `decode_token_check.sh` exist for.
+
 ## 11. Session close
 
 **211 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
