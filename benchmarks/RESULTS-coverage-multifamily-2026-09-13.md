@@ -1646,3 +1646,48 @@ returns a stable, wrong token rather than noise, and it does so at @16 as well a
 That also reframes what to compare next: the per-layer inputs are exhausted, so the next capture should
 target the **per-model** BOs (`bo_fnorm_`, `bo_logits_`, the lm-head weight BO) rather than another
 layer.
+
+## 32. The final-norm BO is byte-matched too — every BO the engine feeds now matches FLM
+
+Located FLM's final-norm BO **by content** — searching the captured files for the q4nx's
+`model.norm.weight` bytes — and checked the tail of each match:
+
+```
+64 files begin with the final-norm bytes; checking the tail of each:
+  extsmall_064_35_55746e8b0ec0_1048576.bin  : norm at 0 OK, rest all zero -> True
+  preinsts_063_05_i6_55746e8b0ec0_1048576.bin: norm at 0 OK, rest all zero -> True
+  extsmall_062_35_55746e8b0ec0_1048576.bin  : norm at 0 OK, rest all zero -> True
+  preinsts_061_05_i6_55746e8b0ec0_1048576.bin: norm at 0 OK, rest all zero -> True
+```
+
+**`[norm][all zeros]`, matching the engine's `bo_fnorm_` exactly.** Cleared.
+
+**Wrong-object trap, fourth time today — and this one was mine, one layer up.** My first read reported
+"the rest is NOT zero", and that was an artifact: the file I inspected (`preinsts_063_05_i6_559c…`) was
+not the same BO as the first content match (`extsmall_064_35_5574…`) — different pointers. **Content
+matching is not enough; the pointer has to match too**, which is exactly the lesson of 25.1 applied to a
+different lookup. Caught before it was recorded as a finding.
+
+### The tally — every BO the engine feeds its ELF is now byte-verified
+
+| input | status |
+|---|---|
+| weight BO (7 projections) | **byte-identical** (26) |
+| i5 — norm weights | **byte-identical** (31) |
+| i6 — cos/sin + q/k slots | **byte-matched** (30) |
+| final norm — `bo_fnorm_` | **byte-matched** (32) |
+| generated per-ctx ELFs | proven correct (22, 23) |
+| runlist machinery | proven correct (22, 23) |
+| RoPE base | model-correct, not the differentiator (27) |
+| **activation (arg3)** | **?** |
+| **KV** | **?** |
+
+So what remains is **runtime data**, not anything derived from the model. Two candidates:
+
+1. **the activation** — how the token's embedding row is written into arg3;
+2. **the KV** — the layout/regions the layer writes and the attention reads.
+
+And a third, weaker one is now visible: the **generated per-ctx ELF for Nanbeige's own attention
+shape** (nh20/nkv4). The control proved the generator correct for Qwen3-4B (22) and Llama (23) — two
+architectures — but *not* for this shape combination, and Nanbeige is the first nh20/nkv4 model the
+runlist has ever been pointed at.
