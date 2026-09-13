@@ -7407,3 +7407,37 @@ measurement that makes that retraction unavoidable rather than cautious.
 > **Two lengths is the minimum**, because one length cannot separate *"this token degenerates"* from *"this
 > (token, length) pair does"* — the ambiguity §143 left, and the reason a paired design was right and single-fixture
 > probing was not.
+
+## 375. The paired control answers the pre-stated prediction — and the answer is a THIRD option: BLIND REGIONS, not blind paths
+
+**The prediction, stated by the other lane before the runs** (§144): *"if your Phi4 bf16 arm is INVARIANT to the
+first token at 32/64/128 … then one path reads the first token and gets it wrong for some values; the other may not
+read it at all."* **Both branches are wrong, and the data says so cleanly:**
+
+| length | first tokens that give 220 | distinct values (8 inputs) |
+|---|---|---|
+| **32** | **8 / 8** | **1** — 220 |
+| **64** | **8 / 8** | **1** — 220 |
+| **128** | **5 / 8** | **4** — 220, 3519, 21, 18 |
+
+At 32 and 64 the arm is **totally blind** to the first token; at **128 it is only partly blind** — five tokens give
+220 and three (16, 100, 4096, 777 → 3519, 21, 21, 18) do not. **So the Phi4 path is not blind and the Nanbeige path
+is not merely wrong-for-some-values: both read the first token, and both have a blind region.** What differs is
+**where the blind region is and how it ends** — which is a structural difference neither lane could have seen from
+one length.
+
+**And it splits the band's upper edge into TWO transitions:**
+
+- **edge A — blind to partially-blind**, somewhere in **(64, 128]**: 64 is 8/8, 128 is 5/8;
+- **edge B — 220 to non-220**, in **(144, 160]**: 130 and 144 give 220, 160 gives 25.
+
+**And 220 is now confirmed three times over as an attractor rather than a signature**: it is the sole output at 32,
+the sole output at 64, and the majority output at 128. A value that recurs across a whole band cannot identify the
+length computed, which is §370's point with a third independent measurement behind it.
+
+**The one run that would settle whether the two lanes share a mechanism is therefore not another sweep on either
+lane alone, but the same eight tokens at length 32 on the Nanbeige lane.** If **their** 32 is also blind, the two
+residuals are one mechanism with different blind regions; if their 32 is already partial, they are two mechanisms
+that merely look alike from the outside. **That is a cross-lane test, and it is the first one in this thread that
+neither lane can run alone** — the fixtures are token-id based, so it needs the same ids through the other model's
+tokenizer to be comparable, which is worth saying before anyone spends runs on it.
