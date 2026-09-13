@@ -502,6 +502,48 @@ the layer walks past it. That constraint holds here — the KV BO is 33554432 B 
 32768 tokens x (NKV/2 = 4) x 128 dims x 2 B, consistent with `runtime_layer.cpp`'s
 `token_u16 = (cfg_.num_key_value_heads / 2) * cfg_.head_dim`.
 
+### 14.1 FLM's binding measured, and one place it disagrees with the host
+
+A second agent read my own existing capture (`/tmp/cap4b_real/capture_manifest.log`, Qwen3-4B,
+Sep 12) instead of using the device, and measured FLM's `SETARG` stream directly:
+
+```
+SETARG3 idx=0 bytes=4 val=0x3
+SETARG3 idx=1 bytes=4 val=0x0
+SETARG3 idx=2 bytes=4 val=0x0
+SETARG  idx=3 size=1048576     bo=0x55b0db91ff80     -> act
+SETARG  idx=4 size=63963136    bo=0x55b0db948d30     -> weights
+SETARG  idx=5 size=1048576     bo=0x55b0db948c30     -> i5
+SETARG  idx=6 size=1048576     bo=0x55b0db9480c0     -> i6
+SETARG  idx=7 size=134217728   bo=0x55b0db947c30     -> kv
+```
+
+Across all 12 run objects in that capture, arg indices never exceed 7, `idx=6` is always
+1 MB and `idx=7` always 128 MB. **That matches the host binding at
+`runtime_layer.cpp:336-347`** — so branch (a) of the (moot) two-way test is dead by
+measurement, not by inference.
+
+**The mislabel that nearly became a false lead, now fixed.** The same agent proved that the
+`insts_0000_1048576.bin` file my interposer writes is NOT an instruction transaction:
+its first bytes `14c3 1e41 4840 873f` decode as bf16 to `-148.0, 9.875, 3.125, 1.0547`
+(data), whereas a real stream begins structured — `layer_ctx1.txn` starts
+`0001 0406 0801 0000 1804 0000 7c85 0000`. I verified both byte strings independently and
+then fixed the tool: `cap_interposer.cpp` now writes `arg3_*.bin` and logs
+`ARG3_DUMP -> ... (activation/data BO, NOT instructions)`, with a comment recording that the
+vendor binds BOs at `3+i` in caller order so `idx3` has no intrinsic meaning. Checked first
+that nothing consumed the old name (the `insts_i8_*` references elsewhere are the *engine's*
+xclbin instruction files, a different artefact). A capture that mislabels its own contents is
+a trap for the next reader, and this one sprang on two agents.
+
+**One place the measurement disagrees with the host — recorded as a latent risk, not a
+fault.** FLM's KV BO is **134217728 B (128 MB)**; the engine's `kv_bos_` is **33554432 B
+(32 MB)**. At the engine's layout (`token_u16 = (NKV/2)*HD = 512 u16` = 1 KB per token per
+region, 4 regions = 4 KB per token) 32 MB is **8192 tokens (MAX_L=8192)**, while 128 MB is
+**32768 tokens (MAX_L=32768)**. If the per-ctx stream is generated for MAX_L=32768 while the
+host BO holds 8192, a long enough context walks past the BO — the exact constraint the agent
+raised. Every test so far is at ≤1024 tokens so it cannot bite yet, but it should be checked
+before anyone runs a long context on this path.
+
 **Narrowed further: the forward is wrong from the FIRST token, not by accumulation.**
 
 | prompt | FLM's own token | runlist token |

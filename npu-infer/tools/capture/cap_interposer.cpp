@@ -125,14 +125,21 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, co
         g_run_bo_ptrs[(unsigned long)self][idx] = bo;
         ensure_log();
         fprintf(g_log, "SETARG %p idx=%d size=%zu bo=%p\n", self, idx, b->size(), (void*)bo);
-        // dump the idx3 BO (the runtime's insts BO per create_run: (3,0,0,insts,weight))
+        // Dump idx3. CORRECTED 2026-09-13: idx3 is NOT an instruction BO. The vendor's
+        // create_run (npu_utils_xrt.hpp:262-274) binds BOs at 3+i in CALLER order with no
+        // intrinsic meaning, and FLM's first BO is its ACTIVATION buffer -- 1 MB of float/
+        // bf16 data. A capture that labelled it "insts" sent a reader into a byte analysis
+        // of a data buffer looking for an instruction transaction header, so the file is
+        // now named arg3_* and the log says ARG3_DUMP. A real transaction starts with a
+        // structured header (layer_ctx1.txn begins 0001 0406 0801 ...); this file begins
+        // 14c3 1e41 4840 873f, which is bf16 data.
         if (idx == 3 && b->size() <= 2000000) {
             const uint8_t* pm = (const uint8_t*)b->map();
             char fn[256];
-            snprintf(fn, sizeof(fn), "%s/insts_%04ld_%zu.bin", CAP_DIR, g_seq, b->size());
+            snprintf(fn, sizeof(fn), "%s/arg3_%04ld_%zu.bin", CAP_DIR, g_seq, b->size());
             FILE* ff = fopen(fn, "wb");
             if (ff) { fwrite(pm, 1, b->size(), ff); fclose(ff); }
-            fprintf(g_log, "INSTS_DUMP -> %s\n", fn);
+            fprintf(g_log, "ARG3_DUMP -> %s (activation/data BO, NOT instructions)\n", fn);
         }
     } catch (...) {}
 }
