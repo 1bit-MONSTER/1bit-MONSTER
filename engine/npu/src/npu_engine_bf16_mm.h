@@ -82,6 +82,13 @@ struct Bf16Mm {
     // attn_qout). No sequence regeneration.
     std::unique_ptr<xrt::xclbin> attn_xc;
     std::unique_ptr<xrt::hw_context> attn_hc;
+    // <=256-context attention, loaded from a shape-specific ELF when one is present. The
+    // embedded compile-time kernel (attn_kernel below) is nh16/hd128, which is wrong-shape
+    // for every family whose qout is not 2048/4096 -- so without this slot those families get
+    // a wrong-shape kernel at SHORT contexts even once the >256 slots are shape-correct.
+    std::unique_ptr<xrt::elf> attn_elfs;
+    std::unique_ptr<xrt::module> attn_modules;
+    std::unique_ptr<xrt::ext::kernel> attn_kernels;
     std::unique_ptr<xrt::elf> attn_elf;
     std::unique_ptr<xrt::module> attn_module;
     std::unique_ptr<xrt::ext::kernel> attn_kernel;
@@ -245,6 +252,11 @@ struct Bf16Mm {
                 load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024, attn_elf1k, attn_module1k, attn_kernel1k);
                 load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", 1024, attn_elf1k32, attn_module1k32, attn_kernel1k32);
                 load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048, attn_elf2k, attn_module2k, attn_kernel2k);
+                // <=256 slot. The legacy name resolves to the embedded nh16 kernel's source,
+                // so for the six working models this loads the same thing the embedded kernel
+                // already is (harmless); for a family with a different shape it lets
+                // attn_mha_256_nh20_hd128.elf &c. take over the short-context path.
+                load_attn_elf("NPU_ATTN_ELF_256", "attn_mha_256_nh16.elf", 256, attn_elfs, attn_modules, attn_kernels);
                 if (!attn_kernel1k)
                     fprintf(stderr, "  Bf16Mm: no 1024-context attention ELF — npt>256 will use CPU attention\n");
                 if (!attn_kernel2k)
@@ -290,8 +302,12 @@ struct Bf16Mm {
         // of a plausible-looking wrong answer.
         const bool attn_shape_ok = attn_shaped_ok ||
             ((attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096));
+        // Short contexts: prefer a shape-specific <=256 ELF when one loaded, because the
+        // embedded kernel is nh16/hd128 whatever the model actually is. For the six working
+        // models no such file exists, so this falls through to the embedded kernel as before.
         xrt::ext::kernel* kern = !attn_shape_ok ? nullptr
-            : ((attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get());
+            : ((attn_tokens <= 256 && attn_kernels) ? attn_kernels.get()
+               : ((attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get()));
         // attn_tokens > 256 -> the long-context ELF captured from FLM's REAL
         // 1024-token prefill (elf_0012 of the prefill capture; 98848 B). It is
         // verified token-correct at npt = 256/512/896/1024 against the byte-exact
