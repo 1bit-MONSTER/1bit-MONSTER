@@ -3204,3 +3204,45 @@ models do not use.
 The **same generator** produces both, so a structural difference — a missing barrier, a different tile
 decomposition, a dimension that does not land on the fragment layout — would be visible directly. It is the
 same differential method that proved the per-ctx layer ELFs exact (§56).
+
+## 71. The i8 kernel is deterministic for a working model; the instruction stream is NOT the cause; the xclbin is the remaining difference
+
+**The control needed the right path — and my first attempt was vacuous.** I diffed two runs' `[RBCHK]` lines
+and read "IDENTICAL", but both sets were **empty**: **Qwen3-0.6B's default path is the runlist**
+(`=== Prefill 256 [runlist] ===`), not the `I8Ctx` int8 path Nanbeige uses. So the 1614 gate says **nothing**
+about the i8 kernel. An empty diff is not evidence — the second time in two checkpoints that a measurement
+had to be checked before it was believed.
+
+**Forced onto the same path with `NPU_RUNLIST=0`**, 0.6B initializes the **same `I8Ctx` contexts** and:
+
+| model | path | `bC` across runs |
+|---|---|---|
+| Qwen3-0.6B | runlist (default) | n/a — a different path |
+| **Qwen3-0.6B** | **i8 `I8Ctx`** | **identical, 8 of 8 checksums** |
+| **Nanbeige4.1-3B** | **i8 `I8Ctx`** | **differs from launch #1** |
+
+**So the i8 kernel is deterministic for a working model and nondeterministic for Nanbeige.** The fault is
+**Nanbeige-specific** — not a universal race in shared kernel code. That is a materially stronger statement
+than §69 could make.
+
+**Two further results this checkpoint:**
+
+- **The instruction stream is NOT the cause.** The `insts_i8_*` files are **static**: md5 and mtime are
+  unchanged before and after a run, and identical across runs (`72ff3bd2…`). So the instruction BO is
+  identical every time, and a nondeterministic instruction *generator* is ruled out.
+- **On the i8 path, 0.6B returns `boot=220`** where the runlist returns **1614**, and 1614 is the reference
+  (FLM's). For a working model the two paths **disagree**, and the i8 path is the one that disagrees with the
+  reference. Recorded as an observation — the i8 path may simply be exercising a different token count — but
+  it marks the i8 path as **secondary and unvalidated**, which is exactly why §69's seven uninitialized-BO
+  fixes were "correct and irrelevant": they were fixes to a path the goal's models do not use.
+
+**So the remaining Nanbeige-specific difference is the xclbin.** `final_i8_QKV_nanbeige4_1_3b.xclbin`
+(90,704 B) and `final_i8_QKV_qwen3_0_6b.xclbin` (118,559 B) are **different binaries**, produced in-repo by
+`engine/npu/generators/build_all.sh` (parameterised by projection and tag). With the instruction stream and
+**every** host input now proven identical across runs, the xclbin and the BO geometry are what is left.
+
+**The named next step**: compare **how Nanbeige's i8 xclbins were built versus 0.6B's** — same script, so a
+difference in a generation parameter (tile shape, K/N, memory groups) is the thing to find. The classic
+source of a within-launch race is a **missing barrier between the DMA and compute stages**, and that is a
+property of the generated xclbin rather than of the instruction stream — which is why ruling the stream out
+was worth doing first.
