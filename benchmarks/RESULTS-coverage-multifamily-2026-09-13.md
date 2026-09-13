@@ -7724,3 +7724,45 @@ file names** — §147's lesson, applied to a log instead of a flag.
 **Note on contention, theirs and fairly applied:** their Phi4 numbers were taken while my Phi4 run held the device,
 and they reproduce 220/220/25 anyway; mine here were taken while theirs ran. The two agree, and neither is reported
 as quieter than it was.
+
+## 149. Zero-embedding rows verified independently from the bundles: Nanbeige 319 (including 16 and 100), Phi4 0, Qwen3-0.6B 0 — so §146's first group was a FIXTURE ARTIFACT, and the rule needs sharpening
+
+The teammate read the embedding tables device-free and found that **both members of §146's first group are
+zero-embedding rows**. Verified here directly from the bundles (JSON manifest at offset 8, per-tensor
+`data_offsets`, bf16), independently of their pass:
+
+| bundle | vocab | zero-embedding rows |
+|---|---|---|
+| **Nanbeige4.1-3B** | 166144 | **319** |
+| Phi4-mini | 200064 | **0** |
+| Qwen3-0.6B | 151936 | **0** |
+
+Nanbeige's 319 are **structured, not noise**: contiguous blocks **(4,11) (15,26) (28,52) (54,84) (86,130)**, then
+**(195,198)** and **(248,258)**, a scattering of singletons (23461, 31426, 33841, 36999, 37442, 39290, 39914, …),
+and a dense top block ending at **166143**.
+
+**And the rows that matter are exactly the ones predicted:**
+
+| §146 first token | zero-embedding row? | §146 output |
+|---|---|---|
+| **16** | **YES** | 43753 |
+| **100** | **YES** | 43753 |
+| 220, 777, 1024, 4096, 12345, 58907 | no | 166101, 152551, 166101, 166101, 152551, 156468 |
+
+**So §146's first group is a fixture artifact** — and it is the *same* fact as §89, token 16's zero embedding, which
+already forced one retraction in this lane. The two facts had been sitting in different sections of the log all
+evening: §89 knew the embedding; §146 did not ask.
+
+**§146's conclusion survives, restated with the degenerate points removed.** The remaining six split into **three**
+groups — 166101 {220, 1024, 4096}, 152551 {12345, 777}, 156468 {58907} — and three groups is still not one, so
+**two mechanisms stands**. What changes is that the first group was never part of the mechanism.
+
+**And the rule is sharpened, because "assert every fixture's first and last token" was not enough.** I *did* assert
+§146's fixture tokens — I checked that 16 ≠ 220, i.e. that they are **different**, not that either is **degenerate in
+the bundle**. A token can be perfectly distinct and still carry no embedding. What generalises is: **check the chosen
+tokens against the bundle's zero-embedding set** — one pass over the file, no device and no runs, which also retires
+the class of fixture that produces a context-free answer for reasons unrelated to the residual.
+
+**This is the third fixture trap in this lane** (§89 token 16; §132/§134 all `L*` prompts starting with 16; §146's
+{16, 100}) and the **second with the same token**. The generalisation was what was missing, not the care: each time
+the check *was* run, it was run on the wrong axis — distinctness instead of degeneracy, presence instead of content.
