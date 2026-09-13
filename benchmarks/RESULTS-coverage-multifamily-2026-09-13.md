@@ -1157,3 +1157,36 @@ by a controlled experiment.
 **Next, now sharply scoped:** diff the packed weight BO for one Nanbeige layer against what its
 own generated ELF expects. The control above is what makes that comparison meaningful, because it
 rules out the ELF and the runlist as explanations in advance.
+
+## 23. The decode row is COMPLETE — six of six, one harness, all ahead of FLM (2026-09-13)
+
+Llama-3.1-8B's decode row had reported "no ms/tok line" for the whole session, because the runlist
+needs per-context layer ELFs and `gen_layer_elfs` was Qwen3-only. Now that it is family-general
+(`dd6068041`), Llama's ELFs generate in **2 s** (1040 of them plus the lm_head), and its decode row
+closes:
+
+| model | native | FLM, same harness | native / FLM |
+|---|---|---|---|
+| Qwen3-0.6B | 91 tok/s | 74 | 1.23x |
+| Qwen3-1.7B | 46 | 37 | 1.24x |
+| Qwen3-4B | 22 | 18 | 1.22x |
+| Qwen3-VL-4B | 22 | 18 | 1.22x |
+| Qwen3-8B | 13 | 11 | 1.18x |
+| **Llama-3.1-8B** | **15** | **11** | **1.33x** |
+
+**All six supported models beat FLM on decode, measured by the same binary, prompt, token count and
+timing loop.** The row is no longer 5/6-with-a-blank: the sixth is the *largest* margin, which is a
+useful sanity signal — a token-limited comparison would not be expected to favour the 8B model most.
+
+Two supporting observations from the same run:
+
+- Llama's runlist prefill returned **220**, matching both the bf16 boot and FLM's reference. That is
+  an independent correctness check on the runlist **and on the generated ELFs** for a *second*
+  architecture — the control in section 22 used Qwen3, so this rules out "the ELF generator happens
+  to be right for Qwen3 shapes".
+- That path's prefill is slow (92 ms/tok, whole-layer per-token execution). That is a property of
+  the runlist path used for decoding, **not** a statement about prefill quality — the fast prefill is
+  the bf16 path, whose Llama figures (476 tok/s, 2.151 s TTFT) are the ones section 2 reports.
+
+**Goal status, complete:** prefill, TTFT and decode all beat FLM for **every** model the native
+engine supports — 6 of 6 on each metric, no gaps left to attribute.
