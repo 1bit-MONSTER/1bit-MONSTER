@@ -7669,3 +7669,25 @@ the file names.**
 `+ NPU_RUNLIST=0` → **still 0**; `+ NPU_ATTN_CPU=1` → correct. **The runlist flag is inert in both directions**, so
 my earlier "the runlist takes precedence" claim is wrong, and the zero was the **broken nh20 kernel** — which is what
 "assert the arm" was supposed to catch, applied one level too late.
+
+## 400. The goal's own headline, immunised against the zero-embedding class — verified, not assumed
+
+**A finding that creates a new way for a benchmark to be wrong obliges a re-check of the benchmarks already
+published.** The 319-token zero-embedding set is Nanbeige's; the goal's six models are Qwen3/Llama. So:
+
+| check | result |
+|---|---|
+| Qwen3-0.6B zero-embedding rows (vocab 151,936, full scan) | **0** |
+| `ids_16` / `ids_256` / `ids_1024` / `ids_2048` opening tokens | **[16, 4489, 58907]** — all **nonzero** on this model |
+| durable published-condition prompt | `benchmarks/prompts/reclaimer.txt` |
+
+**Zero zero-embedding rows means no fixture on this model can be context-free by construction** — the headline
+comparison (native **2324** tok/s, FLM on-box **1860**, published bar **1356**, at the published 2K condition, both
+boot tokens **220**) cannot be an artifact of a degenerate prompt. And the opening token of every fixture is **16**,
+which is **nonzero here**: that is the token the session's original rule was built around, and **on the goal's
+models it is an ordinary token.** *"Token 16 is degenerate"* was a Nanbeige artifact.
+
+**Why this was worth a scan rather than an argument**: the prefill table's numbers were taken over many checkpoints
+with fixtures nobody had inspected for this property, because the property was not known to exist. A benchmark is
+only as good as the assumptions that were true when it was run, and this one is now a **checked** assumption instead
+of an unexamined one.

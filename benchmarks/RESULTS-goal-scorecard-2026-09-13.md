@@ -16,7 +16,7 @@ status.
 | **TTFT** | **beats FLM on all six models** | same table |
 | **Decode speed** | **matches or beats FLM on all six** | same table |
 | **Decode correctness** | **established to bf16 precision** | token-for-token vs FLM's own `forward()` until a 1-ULP tie (§4) |
-| **Coverage** | **6 models working; 6 not** | §5 |
+| **Coverage** | **6 models in the goal's supported set, all beating FLM; 6 families outside it** | §5 — one of the six now matches FLM on its **default** path (Nanbeige), one stands at a dependency boundary (Gemma3-1B, which FLM also cannot load), two are family implementations not yet built (Qwen3.5, LFM2), and two are characterised residuals (Phi4, Gemma3-4B untested) |
 
 ## 2. Six-model scorecard (native vs FLM measured on this box)
 
@@ -51,6 +51,16 @@ Qwen3-0.6B at the published prompt length (2048 tokens, ids from `reclaimer.txt`
 
 **+25% over FLM on identical hardware; +71% over the published bar.** Both boot tokens agree at
 220, so it is the same answer computed faster.
+
+**And this headline is immune to the zero-embedding class, which was verified rather than assumed.** A later
+finding showed that a 319-token **zero-embedding** set exists in the **Nanbeige** bundle and that a prompt whose
+first token is in such a set answers **context-free** for reasons unrelated to the engine — which is a new way for
+a benchmark to be wrong, so the goal's own numbers were checked against it. **Qwen3-0.6B has zero zero-embedding
+rows** (vocab 151,936, scanned), so **no fixture on this model can be context-free by construction**; and the
+fixtures assert it — `ids_16/256/1024/2048` all open with **[16, 4489, 58907]**, all three of which are nonzero
+embeddings here, **including token 16**. That is the token the session's original rule was built around, and on the
+goal's models it is an ordinary token: **"token 16 is degenerate" was a Nanbeige artifact, not a general one.**
+The durable copy of the published-condition prompt is `benchmarks/prompts/reclaimer.txt`.
 
 ## 4. Decode correctness — the subtle one
 
