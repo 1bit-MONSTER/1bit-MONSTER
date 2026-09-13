@@ -4929,3 +4929,35 @@ Two consequences worth having:
 So the defect is not "out-of-set families are broken". It is: **the one family that reaches the NPU attention
 with a non-{nh16,nh32} shape is fed a wrong-width kernel** — nh16 at @256/@2048 (§97), and the 97.9%-nh32 file
 at @1024 (§95) — while the host attention for the same shape is exactly right (§113).
+
+## 116. The §110/§111 region result REPRODUCES with zero clang processes — it is not the CPU-starvation class
+
+The other lane looked at the process table and found the interference is **CPU compiles** (~12 clang-23 /
+amdllvm at 90-96% each), not the parked device holders — and that the sporadic 152xxx values I have been
+chasing share the shape of my own §85 CPU-starvation note. Good challenge; the answer is a clean re-run:
+
+```
+load before: 5.13  (clang-23/amdllvm: 0)
+region=2097152  t256 -> 188,188,188           t256_mod -> 188,188,188
+region=3932160  t256 -> 152432,152432,152432  t256_mod -> 188,188,188
+load after:  4.69  (clang: 0)
+```
+
+**So the region step is not a starvation artifact.** `152432` is deterministic and first-token-specific with no
+compiler running — a different thing from the aperiodic 152402/152704/152343 seen earlier, which are consistent
+with load. §110/§111 stand.
+
+**What this closes and what it re-opens:**
+
+- It was right to check. I had been treating "152xxx" as one class; the earlier members probably *were* load
+  artifacts, and the one the region knob produces is not. Same value range, different cause — which is exactly
+  why recording the load matters.
+- **For the next reader:** every boot number in this item now carries (a) which attention path ran (§114) and
+  (b) the clang/CPU load at the time. Two distinct ways for the number to be wrong that the number alone cannot
+  show.
+- And the earlier sporadic members are now *explained* rather than mysterious: they are what this path returns
+  under CPU saturation, which §85 first saw as `16` and as timeouts.
+
+**Method note, third of the chain.** §112: the instrument was the wrong kernel. §114: the path that ran was not
+recorded. §116: the load that ran was not recorded. Three ways a correct-looking measurement was not about what
+it was named after — all three now controlled for in the same item.
