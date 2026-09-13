@@ -2801,3 +2801,57 @@ compute**.
 **The named next measurement**: dump the **final logits** for two native runs and for the FLM-ref path and
 compare. The host-side argmax is proven correct by the 1033, so the logits are where the divergence will
 be visible, and two native runs differing from each other localizes it to compute rather than to input.
+
+## 62. The compiled path already handles the untied lm_head — and the logits are ~1e-9
+
+**A wrong-file near-miss, caught by the staleness check.** Reading `npu_engine_hybrid.cpp` I found
+`lo_off = lm_head.weight` looked up at line 148 and **never used**, while the final logits were computed as
+`sb . emb_f32` — the *embedding*. For an untied model that is simply the wrong matrix, and a
+read-but-unused lookup is exactly the fingerprint of missing code. Nanbeige is
+`tie_word_embeddings = False`, so it looked conclusive.
+
+**It was the wrong file.** `npu_engine_hybrid.cpp` is a **standalone tool** ("Build: g++ ... -o
+npu_engine_hybrid"), not part of the engine build; the compiled boot site is
+`npu_engine_universal.cpp:4589`. The check that caught it is the one the session's notes prescribe:
+**does my new string appear in the built binary?** — zero occurrences, while strings from the real file were
+present. The edit is reverted.
+
+**And the real site is already correct** (`npu_engine_universal.cpp:1086-1097`):
+
+```cpp
+// Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
+  lm_head_f32.assign(lm_raw, lm_raw+(size_t)lr*lc); free(lm_raw);
+  fprintf(stderr,"  lm_head: %dx%d (loaded from JSON), using for final logits\n",lr,lc);
+if(lm_head_f32.empty()){fprintf(stderr,"  lm_head: using emb_f32 (tied embeddings)\n");}
+const float* lm_emb = lm_head_f32.empty() ? emb_f32.data() : lm_head_f32.data();
+```
+
+with a proper tied fallback. So **the lm_head is eliminated as a Nanbeige suspect** — a real narrowing, and
+the third time this session that a compelling fingerprint pointed at the wrong file.
+
+**Then the measurement that matters.** `NPU_DBG=1` is a ready-made instrument; two consecutive runs, same
+prompt, same binary:
+
+| | run 1 | run 2 |
+|---|---|---|
+| `EMB0` (input row) | 0 0 0 0 0 0 0 0 | 0 0 0 0 0 0 0 0 |
+| **`fin_v` (final-norm weights)** | 2.96875 3 2.96875 3.1875 … | **identical** |
+| **`h_data` (hidden after 32 layers)** | -1.26 2.70 -10.82 -8.58 … | **8.93 23.45 4.47 -6.31 …** |
+| **`lg` (final logits)** | 1.97e-09 2.33e-10 … | 5.94e-12 1.61e-13 … |
+| boot | 164829 | **272** |
+
+Two conclusions, both direct:
+
+1. **The weights load deterministically** (`fin_v` identical) and the input is identical, yet the **hidden
+   state after 32 layers differs wildly**. So the int8 compute is nondeterministic **on identical inputs** —
+   the definition of reading uninitialized memory, and it explains every sample from §59 onward.
+2. **The final logits are ~1e-9** — the float noise floor — when they should be a dot product of an O(1)
+   hidden (post-final-norm of an O(10) `h_data`) against an O(1) weight row over 2560 terms, i.e. O(1)-O(30).
+   **So the argmax is being decided among values that are pure noise**, which is why the boot token is a coin
+   flip (164829 -> 272 across runs) rather than a near-tie.
+
+**The named next measurement**: the logits' magnitude points at a **table**, not the compute — either
+`sb_data` is ~0 (it should not be, given `h_data`) or **`lm_emb` is ~0**. The next step is to print the
+magnitudes of `lm_head_f32` and `emb_f32` for Nanbeige. A ~1e-10 head matrix would mean the separately-loaded
+lm_head dequantized to almost nothing — which is exactly the *silent* failure mode the int4-convention work
+warned about, and it would explain the near-zero logits without any memory bug at all.

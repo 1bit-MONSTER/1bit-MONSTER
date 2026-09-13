@@ -652,6 +652,40 @@ int NpuInferenceEngine::run_decode_step(int last_token) {
 //   NPU_TOP_K        top-k filter (default 0 = off)
 //   NPU_TOP_P        nucleus filter (default 1.0 = off)
 int NpuInferenceEngine::sample_token(const float* logits, int vocab_size, float temperature) {
+    // Final-logits diagnostic (RT_LOGITS_FINAL=<path>). The host-side argmax is proven
+    // correct -- with FLM's own kernels through the bridge the engine returns FLM's exact
+    // reference token (RESULTS-coverage-multifamily section 59) -- so any wrong boot token
+    // is decided HERE, by these numbers. Reporting NaN/Inf and the top-5 separates a
+    // numerical fault (non-finite values) from a logic fault (finite but wrong ordering),
+    // which the token alone cannot.
+    if (const char* lf = getenv("RT_LOGITS_FINAL")) {
+        static bool once = false;
+        if (!once) {
+            once = true;
+            int nan = 0, inf = 0;
+            double sum = 0.0;
+            std::vector<std::pair<float,int>> top;
+            for (int i = 0; i < vocab_size; i++) {
+                float v = logits[i];
+                if (std::isnan(v)) { nan++; continue; }
+                if (std::isinf(v)) { inf++; continue; }
+                sum += v;
+                if (top.size() < 5) { top.push_back({v,i}); }
+                else {
+                    size_t worst = 0;
+                    for (size_t k = 1; k < top.size(); k++) if (top[k].first < top[worst].first) worst = k;
+                    if (v > top[worst].first) top[worst] = {v,i};
+                }
+            }
+            std::sort(top.begin(), top.end(), [](const auto& a, const auto& b){ return a.first > b.first; });
+            fprintf(stderr, "[LOGITS] vocab=%d nan=%d inf=%d finite_mean=%.6g top5=" , vocab_size, nan, inf,
+                    (vocab_size - nan - inf) > 0 ? sum / (vocab_size - nan - inf) : 0.0);
+            for (auto& t : top) fprintf(stderr, " %d:%.6g", t.second, t.first);
+            fprintf(stderr, "\n");
+            FILE* f = fopen(lf, "wb");
+            if (f) { fwrite(logits, sizeof(float), vocab_size, f); fclose(f); }
+        }
+    }
     // seed the RNG ONCE per run — reseeding before every draw would make
     // each token use the same first value of the stream (biased sampling)
     if (!rng_seeded_) {
