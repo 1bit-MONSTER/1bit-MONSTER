@@ -341,6 +341,15 @@ struct Bf16Mm {
             attn_out = std::make_unique<buffer<uint16_t>>(*dev, cap);
             attn_act = std::make_unique<buffer<uint16_t>>(*dev, cap);
             attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)attn_kv_region * 4);
+            // The comment below says "the rest of the KV BO stays zero" -- but nothing made it
+            // so. The HOST bKv is memset to zero (npu_engine_universal.cpp:4101) while this
+            // DEVICE BO was left as the allocator returned it, and the copy below writes only
+            // attn_tokens*512 elems per region. So any read past that inside a region hit
+            // uninitialized device memory -- which is why the native boot token was
+            // nondeterministic for Nanbeige: 1214 / 131718 / 145029 from the same command
+            // (RESULTS-coverage-multifamily section 59). The host/device asymmetry is the bug;
+            // making the device side match the host side is the fix.
+            memset(attn_kv->data(), 0, (size_t)attn_kv_region * 4 * 2);
         }
         memcpy(attn_act->data(), act, (size_t)rows * q * 2);
         // Only the 4 used region heads matter (256 tokens × 4 heads × 128 dims

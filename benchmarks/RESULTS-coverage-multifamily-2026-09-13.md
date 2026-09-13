@@ -2760,3 +2760,44 @@ breaking models that currently work. Measuring before editing is the only thing 
 
 The nkv table remains **data without an explanation**: all six working models are nkv=8/hd=128, but this is
 **not** the mechanism, and §59's attempt to make it one is withdrawn.
+
+## 61. The path Nanbeige actually takes is the INT8 path — three working assumptions were about the bf16 path
+
+**Measured, not assumed.** Nanbeige's default run prints:
+
+```
+Init NPU...
+  I8Ctx::init xp=.../final_i8_QKV_nanbeige4_1_3b.xclbin ...
+```
+
+That is the **int8 path**, not the bf16 prefill. Every KV statement in §59 and §60 was about the **bf16**
+path's table — a *different path* — and §60's retraction, while correct about the bf16 table, left the
+impression that the KV question was closed for Nanbeige. It is not: it was closed for a path Nanbeige does
+not run.
+
+**And `write_kv` is never called.** With `RT_KV_DEBUG=1` (a new one-line instrument in `write_kv`), neither
+Nanbeige nor Qwen3-0.6B prints `[KV]` — so the `unified` flag is off, the KV stays **host-side**, and
+§59's hardcoded 8 MB region in the bridge is **dead code** for these runs. That is three corrections deep
+on the same subject: wrong path, then wrong file, then a constant that never executes.
+
+**One real defect found and fixed — but it is not the cause.** The bf16 path's device KV buffer
+(`attn_kv`) was allocated and **never initialized**, while its own comment asserts *"the rest of the KV BO
+stays zero"* — and the **host** buffer `bKv` *is* memset (`npu_engine_universal.cpp:4101`). That
+host/device asymmetry is a genuine bug, now fixed with one `memset`. **Measured**: the Qwen3-0.6B gate still
+returns **1614** at 256 (no regression), and **Nanbeige is still nondeterministic** — as it must be, since
+Nanbeige does not take that path.
+
+**And the host KV capacity is `4096*NKV*HD`** (`:2256`) — 4096 tokens, ample for a 1024-token prompt, so
+no overflow there either.
+
+**The nondeterminism, now sampled six times**: 1214, 131718, 145029, 42438, 110497, 164829 — **all inside
+Nanbeige's 166,144 vocabulary**. My reading of those values as "out of vocabulary" was wrong; checking
+`config.json` retired it before it reached this document.
+
+**What stands from §59** is its direct measurement: with FLM's own kernels the engine returns **1033**,
+FLM's exact reference — so **the host side is correct** and the nondeterminism is in **our int8 prefill
+compute**.
+
+**The named next measurement**: dump the **final logits** for two native runs and for the FLM-ref path and
+compare. The host-side argmax is proven correct by the 1033, so the logits are where the divergence will
+be visible, and two native runs differing from each other localizes it to compute rather than to input.

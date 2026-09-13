@@ -98,9 +98,10 @@ generated per-ctx ELF itself, which is byte-identical to FLM's own for BOTH out-
 (nh20 §56, nh24 §58).
 
 So the correlation survives every host-side exclusion, and the remaining suspect is the engine's own
-per-layer composition for the bf16 prefill, whose only shape-dependent inputs are `qout`, `kvout`, `H`
-and `IM` — or, for the runlist path, the dispatch and ordering and the device-written KV. Note what that
-means: this is now a statement about **our code**, not about a dependency.
+per-layer composition. **Note the path** (§61): Nanbeige's default run is the **int8** path (`I8Ctx`), not
+the bf16 prefill — so "the bf16 prefill" is the wrong locus for this family, and the bf16 KV table is not
+even consulted. The nondeterminism is in our **int8 prefill compute**. That is a statement about **our
+code**, not about a dependency.
 
 ## 6. What landed this session (133 commits, `goal/runlist-decode-wire`)
 

@@ -735,6 +735,15 @@ bool RuntimeLayerEngine::write_kv(int layer, int token_begin, int n_tokens,
     // Per-token KV footprint within a region: NKV/2 heads x HD dims (bf16).
     const int token_u16 = (cfg_.num_key_value_heads / 2) * cfg_.head_dim;
     if (region_stride_u16 <= 0) region_stride_u16 = token_u16 * 8192;  // MAX_L=8192 -> 8MB
+    if (getenv("RT_KV_DEBUG")) {
+        static bool once = false;
+        if (!once) { once = true;
+            fprintf(stderr, "[KV] nkv=%d hd=%d -> token_u16=%d elems (%d B/token); "
+                            "region_stride_u16=%d elems (%d B) -> capacity %d tokens\n",
+                    cfg_.num_key_value_heads, cfg_.head_dim, token_u16, token_u16 * 2,
+                    region_stride_u16, region_stride_u16 * 2, region_stride_u16 / token_u16);
+        }
+    }
     if ((size_t)(token_begin + n_tokens) * token_u16 > (size_t)region_stride_u16) {
         LOG_ERROR("write_kv: token range %d..%d exceeds region capacity %d",
                 token_begin, token_begin + n_tokens - 1, region_stride_u16 / token_u16);
