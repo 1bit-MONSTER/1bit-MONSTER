@@ -7365,3 +7365,45 @@ unknown**, and value-matching cannot supply it.
 token-selected** (5 of 8 first tokens correct, three distinct outputs); at npt=32 it is **total and
 length-selected** (8 of 8 give the same 220). That contrast is what separates "input-invariant" from "degenerate"
 — two degenerate probes look exactly like invariance, and only a partial-step case tells them apart.
+
+## 370. The S448 sweep in full, and a cross-lane value table: the SAME token gives DIFFERENT wrong answers at different lengths
+
+**Their full sweep, which arrived after mine had already run** (fixed length 448, only `token[0]` varies; format is
+*bf16 / FLM-ref*):
+
+| first token | bf16 | FLM-ref | |
+|---|---|---|---|
+| 220 | 153887 | 153887 | correct |
+| 777 | 153887 | 153887 | correct |
+| 1024 | **153887** | **13** | wrong |
+| 4096 | 153887 | 153887 | correct |
+| 12345 | 153887 | 153887 | correct |
+| 16 | **158** | **135** | wrong |
+| 100 | **158** | **135** | wrong |
+| 58907 | **13** | **1704** | wrong |
+
+**Correct for 5 of 8** — so "degenerates for 58907" was never the general case; the residual belongs to
+**particular tokens**. And **only three distinct values across eight inputs** (153887, 158, 13) against five in the
+reference — **the token's influence is quantised**, which is a description, not yet a mechanism.
+
+**And the sharpest single fact in either lane's data**: the **same token 58907** returns **5938 at npt=256** (the
+*token-16* fixture's reference value) and **13 at npt=448**. **One token, two different wrong answers, at two
+lengths** — which is the (token, length) pairing visible without any sweep at all.
+
+**So here is the cross-lane table, and it kills my own reframing outright:**
+
+| value | Phi4 lane (nh24) | Nanbeige lane (nh20) |
+|---|---|---|
+| **220** | npt 32–144, **wrong** (FLM-ref 11) | npt 448, **correct** for 5 of 8 tokens |
+| 13 | — | npt 448, wrong for 58907 (= FLM@320/512) |
+| 158 | — | npt 448, wrong for 16/100 (= FLM@512) |
+
+**220 is wrong on one lane and correct on the other.** So a value carries **no length information** — not within a
+lane and not across lanes. §365 retracted "read off its value to identify the computed length"; this is the
+measurement that makes that retraction unavoidable rather than cautious.
+
+**And their rule is the one this design earned**, now the sixth in the scorecard:
+
+> **Two lengths is the minimum**, because one length cannot separate *"this token degenerates"* from *"this
+> (token, length) pair does"* — the ambiguity §143 left, and the reason a paired design was right and single-fixture
+> probing was not.

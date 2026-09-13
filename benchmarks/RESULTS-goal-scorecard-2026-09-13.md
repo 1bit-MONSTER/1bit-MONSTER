@@ -505,9 +505,22 @@ opposite directions from the same evidence.** The three rules that would have ca
    `sync_to_device()` moves results on models that are otherwise **exactly correct**; the synced form is inert.
    That single distinction would have closed the whole C-cache thread in one run.
 
-**And a fourth, about the references themselves**: the published FLM numbers and the on-box FLM numbers are
-different measurements on different hardware, and FLM's own `forward()` is the only reference that settles a
-token — which is what `NPU_FLM_PREFILL`/`NPU_FLM_DECODE` and `decode_token_check.sh` exist for.
+4. **A recorded reference is a value against a specific fixture.** Before quoting a reference token — or building
+   a bisect pair on one — re-take it on the fixture being used, or state the fixture with it. Measured example:
+   FLM's Nanbeige @256 is **5938** on a leading-token-16 prompt and **4938** on a leading-token-58907 prompt.
+   Both are correct; neither is "the" reference.
+5. **Compare the output against the prompt's own tokens.** An output equal to a prompt token — first, last, or any
+   other — is an **artifact of the fixture**, not a prediction. A boot-token table should be checked column-wise
+   against the fixture's own ids before a single row of it is read.
+6. **Two lengths is the minimum.** One length cannot separate *"this token degenerates"* from *"this (token,
+   length) pair does"* — which is exactly the ambiguity that cost the two lanes their first reading of the nh20
+   and nh24 residuals. The paired two-length design settled it in ~16 runs.
+
+Plus a note about the references themselves: the published FLM numbers and the on-box FLM numbers are different
+measurements on different hardware, and **FLM's own `forward()` is the only reference that settles a token** —
+which is what `NPU_FLM_PREFILL`/`NPU_FLM_DECODE` and `decode_token_check.sh` exist for. **And a value carries no
+length information on its own**: 220 is *wrong* on the Phi4 lane at npt 32–144 and *correct* on the Nanbeige lane
+at npt 448. So "the plateau value tells you which length was computed" is **not** a valid inference in either lane.
 
 ## 11. Session close
 
