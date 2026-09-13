@@ -518,9 +518,14 @@ by control rather than by argument.
 **Six retractions between the two lanes: three were fixtures, one an instrument, and two were over-claims in
 opposite directions from the same evidence.** The three rules that would have caught all six:
 
-1. **Assert the first and last token of every prompt.** The bundle's token 16 has a **zero embedding**, which
-   produced three retractions — a "context-free path", a "structural single-block bug", and an "all-lengths
-   signature" — all of them fixtures.
+1. **Assert the first and last token of every prompt** — and check the chosen tokens against the bundle's own
+   **zero-embedding set** before spending runs. **The set is model-specific, and the early version of this rule got
+   that wrong**: *"the bundle's token 16 has a zero embedding"* is a **Nanbeige** fact — that bundle has **319**
+   zero-embedding rows (a dense block **4–130** including 16 and 100, a dense block **162002–166143**, singles
+   between) — while **Phi4-mini and Qwen3-0.6B have none at all**. Zero-embedding tokens produced three retractions
+   (a "context-free path", a "structural single-block bug", an "all-lengths signature"); what generalises is the
+   **assertion**, not the token. The check is one pass over the file, and it removes a whole class of point that
+   answers context-free for reasons unrelated to whatever is being measured.
 2. **Control every flag that touches a BO, and prove it inert before reading its effect as a finding.** A flag
    whose effect you do not control is an instrument, not a measurement.
 3. **A BO-touching flag's effect depends on whether it syncs** — compare the **synced** and **unsynced** arms
@@ -538,6 +543,14 @@ opposite directions from the same evidence.** The three rules that would have ca
 6. **Two lengths is the minimum.** One length cannot separate *"this token degenerates"* from *"this (token,
    length) pair does"* — which is exactly the ambiguity that cost the two lanes their first reading of the nh20
    and nh24 residuals. The paired two-length design settled it in ~16 runs.
+7. **Assert which ARM ran, not which flags you set.** The flags in this engine select among paths that are **not
+   equivalent**, and one of them is a **known-broken kernel that produces the same shape as the phenomenon being
+   investigated** — so a mis-set flag and a real defect are indistinguishable in a single column. Concretely: on
+   Nanbeige, `NPU_PREFILL_BF16=1` alone gives **0 for every token** because attention falls to the nh20 defect,
+   which looks exactly like "totally blind"; `NPU_ATTN_CPU=1` is the arm that means anything there. **Read the
+   line that says which path runs, not the kernel file names** — the log lists `attn_mha_*` at every length
+   because those are init-time ELF loads, not the selection. This rule was earned twice in one hour: once on a
+   result, and once on a *rebuttal* of the same result.
 
 Plus a note about the references themselves: the published FLM numbers and the on-box FLM numbers are different
 measurements on different hardware, and **FLM's own `forward()` is the only reference that settles a token** —
