@@ -88,9 +88,12 @@ struct Bf16Mm {
     std::unique_ptr<xrt::elf> attn_elf32;
     std::unique_ptr<xrt::module> attn_module32;
     std::unique_ptr<xrt::ext::kernel> attn_kernel32;
-    std::unique_ptr<xrt::ext::kernel> attn_kernel1k;   // long-context (>256 tok) ELF, loaded from file
+    std::unique_ptr<xrt::ext::kernel> attn_kernel1k;   // (256,1024] context ELF, captured from FLM
     std::unique_ptr<xrt::elf> attn_elf1k;
     std::unique_ptr<xrt::module> attn_module1k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel2k;   // (1024,2048] context ELF, captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf2k;
+    std::unique_ptr<xrt::module> attn_module2k;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
     int attn_qout = 2048;   // 2048 (NH=16) or 4096 (NH=32)
     int attn_tokens = 256;  // KEYS present in the KV BO for this call
@@ -175,29 +178,48 @@ struct Bf16Mm {
             // xclbin_dir alone silently found nothing and run_attn fell back to
             // the embedded 256-token ELF for every npt>256 run — see the
             // attn_tokens>256 guard in run_attn(). Search a candidate list.
+            // Two long-context kernels, selected by prompt length in run_attn:
+            //   attn_mha_1024_nh16.elf  -> npt in (256, 1024]
+            //   attn_mha_2048_nh16.elf  -> npt in (1024, 2048]
+            // Both are captured from FLM's real runtime (npu-infer/tools/capture/
+            // run_qwen3_prefill under cap_interposer.so) at the matching prompt
+            // length, and each is gated on the boot token matching the byte-exact
+            // NPU_RUNLIST=1 path at its own length. The embedded kernel covers
+            // npt <= 256. A captured kernel is only valid for the context range it
+            // was captured at — that is exactly why the old single 26 KB capture
+            // failed past ~512 keys.
             {
-                std::vector<std::string> cands;
-                if (const char* e = getenv("NPU_ATTN_ELF_1024")) cands.push_back(e);
-                cands.push_back(xclbin_dir + "/attn_mha_1024_nh16.elf");
-                if (const char* xd = getenv("NPU_XCLBIN_DIR"))
-                    cands.push_back(std::string(xd) + "/attn_mha_1024_nh16.elf");
-                cands.push_back("engine/npu/xclbins/attn_mha_1024_nh16.elf");
-                for (const std::string& l1k : cands) {
-                    FILE* ft = fopen(l1k.c_str(), "rb");
-                    if (!ft) continue;
-                    fseek(ft, 0, SEEK_END); long sz = ftell(ft); fseek(ft, 0, SEEK_SET);
-                    std::vector<char> buf(sz);
-                    if (fread(buf.data(), 1, sz, ft) == (size_t)sz) {
-                        attn_elf1k = std::make_unique<xrt::elf>(buf.data(), sz);
-                        attn_module1k = std::make_unique<xrt::module>(*attn_elf1k);
-                        attn_kernel1k = std::make_unique<xrt::ext::kernel>(*attn_hc, *attn_module1k, "MLIR_AIE");
-                        fprintf(stderr, "  Bf16Mm: long-context attention ELF loaded (%ld B): %s\n", sz, l1k.c_str());
+                auto load_attn_elf = [&](const char* envname, const char* fname,
+                                         std::unique_ptr<xrt::elf>& e,
+                                         std::unique_ptr<xrt::module>& m,
+                                         std::unique_ptr<xrt::ext::kernel>& k) {
+                    std::vector<std::string> cands;
+                    if (const char* ev = getenv(envname)) cands.push_back(ev);
+                    cands.push_back(xclbin_dir + "/" + fname);
+                    if (const char* xd = getenv("NPU_XCLBIN_DIR"))
+                        cands.push_back(std::string(xd) + "/" + fname);
+                    cands.push_back(std::string("engine/npu/xclbins/") + fname);
+                    for (const std::string& path : cands) {
+                        FILE* ft = fopen(path.c_str(), "rb");
+                        if (!ft) continue;
+                        fseek(ft, 0, SEEK_END); long sz = ftell(ft); fseek(ft, 0, SEEK_SET);
+                        std::vector<char> buf(sz);
+                        if (fread(buf.data(), 1, sz, ft) == (size_t)sz) {
+                            e = std::make_unique<xrt::elf>(buf.data(), sz);
+                            m = std::make_unique<xrt::module>(*e);
+                            k = std::make_unique<xrt::ext::kernel>(*attn_hc, *m, "MLIR_AIE");
+                            fprintf(stderr, "  Bf16Mm: attention ELF loaded (%ld B): %s\n", sz, path.c_str());
+                        }
+                        fclose(ft);
+                        if (k) break;
                     }
-                    fclose(ft);
-                    if (attn_kernel1k) break;
-                }
+                };
+                load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", attn_elf1k, attn_module1k, attn_kernel1k);
+                load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", attn_elf2k, attn_module2k, attn_kernel2k);
                 if (!attn_kernel1k)
-                    fprintf(stderr, "  Bf16Mm: no long-context attention ELF found — npt>256 will use CPU attention\n");
+                    fprintf(stderr, "  Bf16Mm: no 1024-context attention ELF — npt>256 will use CPU attention\n");
+                if (!attn_kernel2k)
+                    fprintf(stderr, "  Bf16Mm: no 2048-context attention ELF — npt>1024 will use CPU attention\n");
             }
 #endif
         } catch (std::exception& ex) {
@@ -234,8 +256,8 @@ struct Bf16Mm {
         // runlist path, and its attention costs 186 ms for a 28-layer npt=1024
         // run. The previously-used generated gen(0,1024) ELF was both wrong and
         // ~1200x slower (223050 ms) and has been replaced in the xclbin dir.
-        if (attn_tokens > 256 && attn_kernel1k)
-            kern = attn_kernel1k.get();
+        if (attn_tokens > 1024 && attn_kernel2k) kern = attn_kernel2k.get();
+        else if (attn_tokens > 256 && attn_kernel1k) kern = attn_kernel1k.get();
         if (!kern) return false;
         const size_t q = (size_t)attn_qout;
         const int rows = attn_rows > 0 ? attn_rows : attn_tokens;

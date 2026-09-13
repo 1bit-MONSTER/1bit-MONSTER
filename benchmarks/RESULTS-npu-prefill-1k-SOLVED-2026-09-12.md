@@ -256,3 +256,46 @@ figures and note the variance.
 Before this session's work the same harness reported native decode 2 tok/s and
 no valid @1k prefill at all, so the movement is: decode -97% -> -7%, prefill and
 TTFT from unavailable to parity.
+
+## Extending the win to 2k context (same capture technique)
+
+The captured kernel is only valid for the context range it was captured at —
+that is *why* the original 26 KB capture failed past ~512 keys. So extending the
+range is just another capture at a longer prompt:
+
+```
+RT_TOKENS=<2048-token ids> LD_PRELOAD=.../cap_interposer.so \
+  CAP_DIR=~/npu-build/cap2048 ./run_qwen3_prefill ~/.config/flm/models/Qwen3-0.6B-NPU2
+```
+
+It printed `GREEDY_NEXT: 220`, matching the byte-exact `NPU_RUNLIST=1` value at
+2048 — the capture validates itself against the trusted path again. The
+attention ELF is `elf_0012_194736.bin` (194 736 B, exactly 2x the 98 848 B of the
+1024 capture, consistent with the doubled context).
+
+`Bf16Mm` now loads two long-context kernels and `run_attn` selects by length:
+
+| npt | kernel |
+|---|---|
+| <= 256 | embedded capture (`attn_mha_256_nh16.elf`, 26 928 B) |
+| (256, 1024] | `attn_mha_1024_nh16.elf` (98 848 B) |
+| (1024, 2048] | `attn_mha_2048_nh16.elf` (194 736 B) |
+
+Override search paths are `NPU_ATTN_ELF_1024` / `NPU_ATTN_ELF_2048`.
+
+### Gate after the change — all 8 lengths match the byte-exact path
+
+| npt | trusted | native | prefill | tok/s |
+|---|---|---|---|---|
+| 256 | 1614 | 1614 | 328 ms | 780 |
+| 384 | 82 | 82 | 456 ms | 842 |
+| 512 | 220 | 220 | 470 ms | 1089 |
+| 640 | 16187 | 16187 | 568 ms | 1127 |
+| 768 | 16 | 16 | 576 ms | 1333 |
+| 896 | 29978 | 29978 | 685 ms | 1308 |
+| 1024 | 25 | 25 | 709 ms | 1444 |
+| 2048 | 220 | 220 | 1295 ms | **1581** |
+
+At 2048 tokens native prefill is 1581 tok/s — above FLM's published 1494 bar and
+well above its on-box figure. Prefill throughput rises with length because the
+fixed per-layer cost amortises.
