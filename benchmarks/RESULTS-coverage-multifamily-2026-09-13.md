@@ -3404,3 +3404,37 @@ unchanged and measured on untouched artifacts: 0.6B runlist **1614**, 0.6B i8 **
 proven **functionally**, while "the dims alone were wrong" is not separated from the version. The
 like-for-like control is available: v26 at **cols=2**, where `N=3840` *is* valid (unlike cols=4). That is
 the named next refinement, and the main result does not depend on it.
+
+## 76. LIKE-FOR-LIKE CONTROL: it is the DIMENSIONS — same generator, same column count, only `N` differs
+
+**The control.** Hold the generator (**v26**) and the column count (**cols=2**) fixed and vary **only the QKV
+`N`** — with the install **verified each time** by reading the instruction-stream size back
+(1,487,824 for N=3584, 1,594,096 for N=3840 — exactly the 30/28 tile ratio).
+
+| QKV `N` | boot over 3 runs |
+|---|---|
+| **3584** — the dims the engine uses | **151 / 151 / 151** — deterministic |
+| **3840** — the value in the build list | **132538 / 2503 / 2503** — nondeterministic |
+
+**So it is the dimensions, not the generator version.** §75's honest limit — "the dims alone are not
+separated from the version" — is now resolved: separated, and the dims are it.
+
+**And 3840 is precisely the value in the build list.** So **§72 was right**: the list's dims describe what
+shipped. §74's "plausible-to-be-false" was wrong, and §75's hedge is superseded. The sequence is worth
+recording for its own sake: I proposed the right answer, found a flaw in the *evidence* for it, over-corrected
+to "plausible-to-be-false", and only a functional test settled it — twice.
+
+**On why this control worked when two earlier attempts did not.** Holding everything but one variable is
+what made it conclusive. §70's comparison was vacuous (an empty diff of two empty sets) and the first run of
+*this* control was too (the build files were missing, so both rows silently measured the same installed
+fix). The rule that caught both: **a measurement that cannot fail is not a measurement** — and what made
+this one real was verifying the install took effect by reading the stream size back.
+
+**The complete resolution.** Nanbeige's shipped i8 xclbins were built for **shapes the model does not have** —
+QKV `N=3840` instead of `3584`, and by the same list `8192` where `10752` belongs for G/U and for D's `K`.
+The shim DMA and tile descriptors therefore address buffers of the wrong extent, producing timing-dependent
+output. That explains the whole symptom set at once: **Nanbeige-specific** (the only wrong entries),
+**deterministic for Qwen3-0.6B** (its entries match), **immune to every host-side fix** (the host data was
+always correct — §68, §69), and **absent from FLM's path** (FLM drives its own xclbins). The fix — the five
+rebuilt xclbins and instruction streams — is landed, with the A/B (§75) and this like-for-like control
+behind it.
