@@ -4082,7 +4082,13 @@ struct Bf16Ctx {
             // nh20 ELF. RESULTS-coverage-multifamily 93: the bf16 attention is
             // context-free, so the region stride baked into the ELF is a suspect.
             if (const char* kr = getenv("NPU_ATTN_KV_REGION")) { int v = atoi(kr); if (v > 0) kv_region = (uint32_t)v; }
-            fprintf(stderr, "bf16 attn: kv_region=%u (H=%d)\n", kv_region, H);
+            // NPU_ATTN_V_REGION_ADD: bKv places K at region (kvh<4?0:1) and V at region+add.
+            // add=2 is the nkv8 convention (K in regions 0-1, V in 2-3) and is what the
+            // embedded nh16 ELF consumes; an nkv4 model (Nanbeige) may expect the packed
+            // K|V layout (add=1). RESULTS-coverage-multifamily 94/97: the bf16 attention
+            // is context-free and just these files/geometry are suspects.
+            int v_add = 2; if (const char* e = getenv("NPU_ATTN_V_REGION_ADD")) { int v = atoi(e); if (v >= 1 && v <= 3) v_add = v; }
+            fprintf(stderr, "bf16 attn: kv_region=%u v_region_add=%d (H=%d NKV=%d)\n", kv_region, v_add, H, NKV);
             bf16mm_set_attn_kv_region(kv_region);
             // layer_bo_bytes must be read AFTER prefill_init (it needs the loaded
             // model; before init g_bf16_mw is null -> the 10MB 0.6B fallback).
@@ -4192,7 +4198,7 @@ struct Bf16Ctx {
                         int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
                         for (int d = 0; d < HD; d++) {
                             bKv[(size_t)region * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(ks[d]);
-                            bKv[(size_t)(region + 2) * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vs[d]);
+                            bKv[(size_t)(region + v_add) * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vs[d]);
                         }
                     }
                 };

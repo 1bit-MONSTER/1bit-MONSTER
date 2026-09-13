@@ -4264,3 +4264,32 @@ Recorded because it is the carrier of every attention ELF in this investigation 
 Together with §95-§98 it narrows the @1024 question to: (i) the `bKv` arrangement (§94), or (ii) a
 carrier/build mismatch between the captured ELF and our `attn.xclbin` (this section) — both cheap to test on
 a free device, and (i) is still the more likely.
+
+## 100. The bKv V-region offset is NOT the context loss either (v_add=1 and v_add=2 both context-free)
+
+§94 refuted the KV region stride; the other half of the arrangement is WHERE V sits. Our `bKv` puts K at
+region `(kvh<4 ? 0 : 1)` and V at `region + 2` — the nkv8 convention (K in regions 0-1, V in 2-3) that the
+embedded nh16 ELF consumes. An nkv4 model has only one K region, so a packed `K|V` layout would put V at
+`region + 1`. Added `NPU_ATTN_V_REGION_ADD` (default 2), rebuilt Nanbeige, ran the first-token probe:
+
+| v_add | first=16 | first=220 |
+|---|---|---|
+| 2 (current) | 152343 ¹ | 188, 188 |
+| 1 (packed guess) | 188, 188 | 188, 188 |
+
+¹ one sample; its repeat returned empty. 152343 is one of the sporadic 152xxx values that appear under load
+(§85's 152402, §94's 152704), so it is treated as contention noise, not as a context-sensitive result.
+
+**v_add=1 does not restore context either (188/188 twice).** So neither component of the `bKv` arrangement —
+stride (§94) or V placement (this section) — is the cause, and that hypothesis is now largely exhausted. The
+remaining candidates for the @1024 case are the ELF's internal geometry (§95-§98, which §98 leaned toward
+being genuine) and the carrier/build mismatch (§99).
+
+**Caveat.** The device was contended throughout (the other agent's Phi4 run). Every sample that completed is
+188/188 under both v_add values, and 188 has been stable across many contended and clean runs, so the
+conclusion is likely right — but a clean repeat is still owed here and in §94.
+
+**A recurring curiosity, worth one line.** Every sporadic 152xxx value seen under load (§85, §94, here) has
+been the **first=16** prompt and never first=220. That is the one condition where the native answer differs
+by first token under contention — i.e. where the context appears to LEAK — so the perturbation may be a
+pointer into the defect rather than pure noise. Recorded, not chased.
