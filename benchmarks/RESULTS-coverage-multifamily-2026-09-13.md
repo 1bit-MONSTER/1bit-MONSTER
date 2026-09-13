@@ -6099,3 +6099,47 @@ engine bug their lane found, seen from my length table.**
 **Net for the item, three defects down to two plus one shared:** the NPU attention (wrong-width, all lengths);
 the **shared GEMM C-cache under-write** (both lanes, all lengths, maskable by call order); and the attention's
 uncleared `attn_out` (latent, and now measured not to bite at @256).
+
+## 250. The C-cache under-write is present at EVERY length — which matches this lane's all-lengths signature and SEPARATES it from the nh20 host defect
+
+**The length sweep, run on Phi4 with the instrument the other lane invented:**
+
+| len | native bf16 (host attention) | FLM-ref | agree? |
+|---|---|---|---|
+| 1 | **51957** | 5517 | no |
+| 128 | **3519** | 220 | no |
+| 256 | **874** | 19 | no |
+| 512 | **16572** | 220 | no |
+| 768 | **3022** | 19 | no |
+| 1024 | **500** | 25 | no |
+
+**Phi4 is wrong at ALL SIX lengths** — no agreement anywhere. And the other lane's own sweep, refined by
+§127/§128, is **length-scattered**: wrong at 64/128/192/255/256/257/258/448, **right** at 320/384/511/512/768,
+with the FLM-ref **stable per length** (3/3), so the reference is not moving and the host path really is wrong
+at those lengths. **Two different signatures**: all-lengths for this lane, scattered for theirs.
+
+**And the CZERO x length sweep settles which mechanism belongs to which:**
+
+| len | default | `BF16MM_CZERO=1` | changed? |
+|---|---|---|---|
+| 1 | 51957 | 17713 | **yes** |
+| 128 | 3519 | 2127 | **yes** |
+| 256 | 874 | 23976 | **yes** |
+| 512 | 16572 | 1536 | **yes** |
+| 768 | 3022 | 19602 | **yes** |
+| 1024 | 500 | 1705 | **yes** |
+
+**6 of 6.** The under-write is present at **every** length — and that is what the mechanism predicts:
+`c_elems = 256 * N` is **one block's worth, independent of the prompt length**, so the stale tail is there at
+every length. **§245's open question is answered: these are different defects.** This lane's is all-lengths and
+the nh20 host defect is scattered.
+
+**And this makes it an ENGINE bug rather than a Phi4 quirk, in one sentence**: the bf16 GEMM kernels **under-write
+their `256 * N` output**, the C caches are **only grown and never cleared**, so the tail is whatever the previous
+**differently-shaped** call left — and **0.6B escapes only because its call order happens to leave correct
+tails**, which §235 proved by breaking it when they were zeroed.
+
+**What is still not measured**: *which* GEMM under-writes, and by how much. §220's caveat applies — the static
+check showed the host **asks** for `256 * N` and copies `256 * N`, and a **device-side** short write is not
+visible in code. That is now the right next instrument: a width/extent print on the device, which is exactly
+what the nh20 lane's per-head scale column did for their kernel.
