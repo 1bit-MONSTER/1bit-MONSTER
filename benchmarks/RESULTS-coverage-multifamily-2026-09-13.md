@@ -4724,3 +4724,28 @@ FLM's captured profile is 1-2 MB and 5 MB.
 fix": the value is still wrong at every region tested, and @1024 is unchanged at 1214 across the whole range.
 The NKV-proportional act/out entries from §103 are the next thing to align, by reading the capture rather
 than by scanning constants.
+
+## 112. Correction to §110/§111: the @256 region tests ran on the nh16-fallback ELF, and @1024 does NOT respond to the region
+
+§97 established that the @256 slot has no nh20 file and falls back to `attn_mha_256_nh16.elf`, while @1024
+loads the shape-matched nh20 ELF. §110/§111 varied `NPU_ATTN_KV_REGION` and probed at **@256** — i.e. on the
+**nh16 kernel**, not on Nanbeige's own. So "the captured region restores context" (§110) is a statement about
+the nh16 kernel being fed nh20 KV, which is already known-wrong for an independent reason (§97), and it does
+not carry over to the shape-matched path.
+
+And on the path that *does* use Nanbeige's own kernel — @1024 — the region changes nothing:
+
+| kv_region | ids_1024 boot |
+|---|---|
+| 2097152 | 1214, 1214 |
+| 3932160 | 1214, 1214 |
+
+**So §110's retraction of §94 is smaller than it looked.** What §94 got wrong was the METHOD — it guessed
+8 MB instead of reading the captured 30 MB (§102/§103). What it may still have got right is the CONCLUSION
+*for the shape-matched path*: at @1024, changing the region does not change the answer. §110/§111 are real
+measurements, but they are measurements **on a fallback kernel**, and I over-read them as being about Nanbeige's.
+
+**Corrected next step.** @1024 is where the question lives, and the region is not it. The remaining §103
+entries — our act/out BOs at 5 MB vs the captured 1-2 MB / 5 MB — should be aligned and re-tested **at
+@1024**, not at @256. This is the third time in this item that a probe at @256 was read as if it were about
+the nh20 path; the length/ELF pairing has to be stated with every boot number here.
