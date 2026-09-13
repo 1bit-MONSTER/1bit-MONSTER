@@ -1737,3 +1737,36 @@ by pointing `NPU_LAYER_ELF_DIR` at a directory laid out as `layer_ctxN.elf` + th
 - if the token becomes **5938**, my generator's output for this shape is the fault;
 - if it stays **157559**, the ELF is not it and the difference is in something neither of us has
   compared.
+
+## 34. ELF size is NOT diagnostic — my generator is constant-size for a working model too
+
+Chasing the last candidate (the generated per-ctx ELF for Nanbeige's shape), I compared FLM's 16 logged
+ELF loads against my generated per-ctx ELFs:
+
+```
+FLM's loads (varying):  86704, 459568, 86704, 15472, 26560, 26560, 6848, 41920,
+                        13760, 13760, 177728, 41920, 154560, 154560, 41920, 86704
+mine (Nanbeige):        257 files, ALL 166832 B   (1 distinct size)
+```
+
+That looked like a finding — mine constant, FLM's varying. **It is not, and the control says so:** my
+**Qwen3-4B** set is also constant-size —
+
+```
+mine (Qwen3-4B):  ctx1 = 169488, ctx2 = 169488, ctx1024 = 169488   (1 distinct size)
+```
+
+— and that set **produces the correct token (1614)**. So constant size is simply how this generator
+behaves, and the comparison settled nothing: FLM's 16 logged loads are every ELF a **whole forward**
+touches (per-ctx layers + the lm_head + the attention kernel, at three different sizes each), not one
+per ctx. The two lists were never comparable.
+
+**The control did the work again.** Without the Qwen3-4B reference, "my ELFs are all the same size
+while FLM's vary" would have gone into this document as evidence about Nanbeige — the same
+wrong-provenance error as the KV sync length, the capture dedup, and the first content match. It is now
+the fourth candidate this session that a control retired rather than an argument.
+
+**The remaining test still stands** — run the runlist with FLM's *own* per-ctx ELFs — but its blocker is
+now explicit: FLM's 16 loads must be **identified by role** (which is per-ctx, which is the lm_head,
+which is the attention kernel) before any can be substituted, and the manifest records order and size
+but not role. That identification is the next actual step, not another comparison of sizes.
