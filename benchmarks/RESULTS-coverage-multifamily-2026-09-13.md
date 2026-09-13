@@ -4238,3 +4238,29 @@ The attention ELF is now largely cleared for `@1024` (genuine-looking re-paramet
 WRONG for `@256`/`@2048` (no nh20 file -> nh16 fallback). So the two actions are: (1) supply real nh20
 attention ELFs for the short contexts (a supply fix, not a debug hunt), and (2) settle the `@1024` `bKv`
 arrangement with the device test above.
+
+## 99. Our attention container (`attn.xclbin`) is not any FLM model's — 94 KB vs FLM's 316-317 KB
+
+While the device was held, checking the ELF's CARRIER, which no section had compared. Ours is
+`engine/npu/xclbins/attn.xclbin` = 94672 B (md5 beb7819f4095). FLM's per-model attention containers are all
+about 3.4x larger:
+
+| FLM model | attn.xclbin bytes | md5 (12) |
+|---|---|---|
+| Qwen3-0.6B | 317148 | a0bc9b8586b7 |
+| Qwen3-1.7B | 317148 | a0bc9b8586b7 |
+| Qwen3-4B | 316924 | 5a8a63793c3d |
+| Qwen3-8B | 316924 | 5a8a63793c3d |
+| Nanbeige4.1-3B | 316924 | 5a8a63793c3d |
+| Phi4-mini | 317660 | 0b352a353d50 |
+
+Ours matches none of them. Not automatically a fault: the working case (0.6B, nh16) runs OUR container with
+the embedded nh16 ELF, and every captured ELF loads into it without error, so the carrier accepts them. But
+it does mean the captured nh20/nh32-family ELF was **produced against FLM's ~317 KB build and is run in a
+different one**, which is one more reason not to assume the @1024 file's behaviour is "what the nh20 kernel
+does".
+
+Recorded because it is the carrier of every attention ELF in this investigation and had never been compared.
+Together with §95-§98 it narrows the @1024 question to: (i) the `bKv` arrangement (§94), or (ii) a
+carrier/build mismatch between the captured ELF and our `attn.xclbin` (this section) — both cheap to test on
+a free device, and (i) is still the more likely.
