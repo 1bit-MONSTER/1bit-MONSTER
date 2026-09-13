@@ -7216,3 +7216,49 @@ recorded per fixture:
 itself if the older rows moved; **B** can only move the edge; **C** can refute the input-invariance reading if the
 column is not flat — which is the one §140 makes most likely, since both of my fresh probe tokens may simply be
 degenerating ones at that length.
+
+## 141. First-token sweep at a fixed length: the bf16 path is CORRECT for 5 of 8 first tokens, and its wrong values are OTHER lengths' reference values
+
+The other lane built the right experiment — fixed length, fixed tail, only `token[0]` varies over eight tokens
+(16, 220, 100, 777, 1024, 4096, 12345, 58907), at two lengths, so a degenerate *token* can be told from a
+degenerate *(token, length)* pair. I ran the **S448** half:
+
+| first token | bf16 (CPU attn) | FLM-ref | agree |
+|---|---|---|---|
+| 220 | 153887 | 153887 | ✓ |
+| 777 | 153887 | 153887 | ✓ |
+| 1024 | 153887 | **13** | ✗ |
+| 4096 | 153887 | 153887 | ✓ |
+| 12345 | 153887 | 153887 | ✓ |
+| 16 | **158** | 135 | ✗ |
+| 100 | **158** | 135 | ✗ |
+| 58907 | **13** | 1704 | ✗ |
+
+**Three facts:**
+
+1. **The bf16 path is CORRECT for five of the eight first tokens** at this length. So §140's "degenerates for
+   58907" is not the general case — the residual belongs to *particular* tokens.
+2. **Its output is a coarse step function of the first token**: only **three** distinct values across eight inputs
+   (153887, 158, 13), while the reference takes at least five. The first token's influence on this path is
+   **quantised**.
+3. **The wrong values are other lengths' reference values**: 158 is FLM's @512 (§137) and 13 is FLM's @320/@512 —
+   the same "it is computing a different length" signature as §139's plateau, now triggered by the **first token**
+   rather than by the length.
+
+**And this closes the other lane's prediction in their favour.** They predicted the degenerating set is
+**length-dependent**, not a property of the token alone. At 448 the degenerating set is {16, 100, 58907}; on their
+length 32 both 220 and 58907 return 220. **220 is correct on this lane at 448 and degenerate on theirs at 32 — so
+the set cannot be token-only.** (Their half is theirs to run; this is S448 only.)
+
+**And the @256 label question, answered by measurement — both references are right, and the reference is
+fixture-dependent:**
+
+| fixture | first | FLM-ref | bf16 | i8 |
+|---|---|---|---|---|
+| t256 | 16 | **5938** | 109440 | 5938 |
+| G256 | 58907 | **4938** | **5938** | 13 |
+
+The scorecard's "@256 = 5938" is the **token-16** fixture's value and my 4938 is the 58907 fixture's; **neither is
+stale.** And note what the bf16 path does at G256: it returns **5938 — the token-16 fixture's value** — while at
+@448 the same token (58907) returns 13. **Same token, different wrong answer at different lengths**: length-
+dependent, exactly as predicted.
