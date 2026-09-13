@@ -632,6 +632,15 @@ struct Bf16Mm {
             if (batch == 0) memset(c_cache0->data(), 0, c_elems * 2);
             else            memset(c_cache1->data(), 0, c_elems * 2);
         }
+        // EXTENT diagnostic (BF16MM_CEXTENT=1): fill the output with a sentinel BEFORE the launch so that
+        // gemm_wait can count exactly how many words the DEVICE changed. This is the measurement that
+        // names which GEMM under-writes and by how much -- the analogue of the per-head scale column that
+        // settled the nh20 attention kernel. RESULTS-coverage-multifamily 260/265.
+        if (getenv("BF16MM_CEXTENT")) {
+            uint16_t* p = (batch == 0 ? c_cache0 : c_cache1)->data();
+            for (size_t i = 0; i < c_elems; i++) p[i] = 0xDEAD;
+            if (batch == 0) c_cache0->sync_to_device(); else c_cache1->sync_to_device();
+        }
         npu_app& app = get_mm_app(K, N, woff);
         buffer<uint16_t>& a = batch == 0 ? *a_cache0 : *a_cache1;
         buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
@@ -652,6 +661,17 @@ struct Bf16Mm {
         g_run[batch].wait();
         buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
         c.sync_from_device();
+        if (getenv("BF16MM_CEXTENT")) {
+            const size_t n = (size_t)g_run_rows[batch] * g_run_N[batch];
+            const uint16_t* p = c.data();
+            size_t changed = 0, first_unchanged = n, maxu = 0;
+            for (size_t i = 0; i < n; i++) {
+                if (p[i] != 0xDEAD) { changed++; if (i > maxu) maxu = i; }
+                else if (first_unchanged == n) first_unchanged = i;
+            }
+            fprintf(stderr, "[CEXTENT] N=%u rows=%d total=%zu changed=%zu first_unchanged=%zu last_changed=%zu\n",
+                    g_run_N[batch], g_run_rows[batch], n, changed, first_unchanged, changed ? maxu : 0);
+        }
         memcpy(C, c.data(), (size_t)g_run_rows[batch] * g_run_N[batch] * 2);
         g_run_active[batch] = false;
     }

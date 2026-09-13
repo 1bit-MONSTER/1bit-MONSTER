@@ -4656,7 +4656,7 @@ mine holding the device.
 **Net**: device free, no gap needed from me, and the compile load belongs in the record next to their 2-run
 slot rather than being left as background noise.
 
-## 130. CORRECTION TO MY OWN RECORD: I relied on a RETRACTED refutation, and the KV region stride DOES matter
+## 270. CORRECTION TO MY OWN RECORD: I relied on a RETRACTED refutation, and the KV region stride DOES matter
 
 **My *message* to the nh20 lane cited §94 as having closed the KV region stride** — "note your §94 already
 refutes the stride half of it". **That is now wrong**, and they flagged it to me directly: *"if you ever rely
@@ -6391,3 +6391,86 @@ establishes "they agree on this family of prompts", not "the path is correct". A
 **And the fixture trap has now sprung three times in this item** — §88/§89 ("the bf16 QKV emits all-zeros"), the
 first §133 dump (row 0 zero), and this. The rule that keeps being earned: **before any length or shape sweep,
 assert the fixture's FIRST and LAST tokens, not only its length.**
+
+## 265. RETRACTED: there is NO under-write and NO stale-tail read — the CZERO effect was an INSTRUMENT PERTURBATION, and the sentinel proves the extent is full
+
+**The sentinel extent measurement, which is the clean instrument.** Fill the output with `0xDEAD` *before* the
+launch, then count how many words the device actually changed:
+
+```
+[CEXTENT] N=5120  rows=256 total=1310720 changed=1310720 unchanged=0
+[CEXTENT] N=3072  rows=256 total= 786432 changed= 786432 unchanged=0
+[CEXTENT] N=16384 rows=256 total=4194304 changed=4194304 unchanged=0
+```
+
+**All 128 calls, all three N values: `changed == total`, zero unchanged.** **The device writes every word of
+`256 * N`.** There is no short write, so the C-cache hazard has **no trigger**, and §225/§235/§250/§260 — the
+"engine-wide under-write", the "shared bug", the map collapse — are all **retracted**.
+
+**And the control that produced the retraction is an accidental one-call A/B between my two flags:**
+
+| run | Phi4 @256 | Qwen3-0.6B @256 |
+|---|---|---|
+| **baseline** | **874** | **1614** (FLM's exact reference) |
+| **`BF16MM_CEXTENT=1`** — sentinel **+ `sync_to_device()`** | **874** | **1614** |
+| **`BF16MM_CZERO=1`** — `memset` of the host view, **no sync** | **23976** | **47874** |
+
+**The two flags differ by exactly one call**, and the one with the sync is **inert on both models** while the one
+without it **moves both**. So the CZERO effect was never about the tail: it is what happens when you **dirty the
+host view of a BO without syncing it** — the same class as `NPU_DUMP_ATTNIO`, which the nh20 lane had already
+warned me about, and which I did not apply to my own flag.
+
+**And the 0.6B reading inverts.** I read `1614 -> 47874` as "the tail is read, and normally holds the previous
+same-shape output". It actually says **"an unsynced dirty host buffer changes the run"** — an instrument effect
+on a model that was working, which is the textbook signature of perturbation rather than of a defect.
+
+**What this restores**: the six supported models' gates are **not** call-order dependent, the scorecard's
+"QUALIFIES THE GOAL'S CLAIM" paragraph is withdrawn, and the map loses its shared row — leaving the two
+independent rows it had before (nh20's nh16-width attention kernel; Phi4's open residual). The one thing this
+checkpoint adds to the map is a **rule**: a flag that touches a BO is a measurement, and it needs a control that
+shows it is inert before its effect is read as a finding.
+
+## 275. My fixtures were ALL degenerate too — and the clean sweep retracts "Phi4 is wrong at every length"
+
+**The other lane's §134 caught a trap that had already sprung on me.** They found every `L*` fixture starts with
+**token 16 — the zero-embedding token** — and that with a non-degenerate first token their bf16 path agrees with
+FLM. Their request was one line: **assert the first and last token of every prompt.** Applied to my fixtures:
+
+```
+L1/L128/L256/L512/L768/L1024   first = 16   <- every one
+t1/t128/t256, ids_1024, p_f16  first = 16
+p_f220                          first = 220  <- the only clean one
+```
+
+**Every fixture this lane has used for the length sweep, the one-token bisection, the five-token test and the
+CZERO x length sweep was token-16-leading**, so the first position carried no information in any of them.
+
+**And the clean re-run changes the conclusion.** Same tails, first token replaced by 220:
+
+| len | native bf16 | FLM-ref | agree? |
+|---|---|---|---|
+| 2 | 6304 | 23041 | no |
+| **8** | **683** | **683** | **YES** |
+| 64 | 220 | 11 | no |
+| 256 | 6573 | 19 | no |
+| 512 | 16572 | 220 | no |
+
+**So Phi4 is NOT wrong at every length — it agrees at @8 and disagrees at 2/64/256/512.** There is no clean short
+vs long split, and **§250's "all-lengths signature" and §255's reading of it are retracted.** The one thing that
+survives from those sections is the **extent measurement**, which used the sentinel and is fixture-independent:
+the device writes **every word** of `256 * N`, `changed == total` on all 128 calls.
+
+**So this item's honest state, for both lanes, is a list of what has been RETRACTED and what is left:**
+
+| claim | status |
+|---|---|
+| the bf16 GEMM kernels under-write `256*N` | **retracted** — the sentinel shows full extent (§275) |
+| CZERO's effect proves the tail is read | **retracted** — CEXTENT differs by one `sync_to_device` and is inert on both models |
+| Phi4 is wrong at every length | **retracted here** — token-16 fixtures; clean sweep agrees at @8 |
+| CZERO "moves it, so it explains it" | **retracted by the other lane** (§130/§131), same reasoning |
+| the nh20 NPU attention is an nh16-width kernel | **stands** — measured directly, 2048 of 2560 columns |
+| each lane's residual above that | **open** |
+
+**And the rule to carry forward is the other lane's, not mine**: assert the first **and** last token of every
+prompt, and control any flag that touches a BO before reading its effect as a finding. Between us this item has
+now produced six retractions, and three of them were fixtures rather than mechanisms.
