@@ -5268,3 +5268,35 @@ value the attention gate accepts, while Phi4 is 5120.
 **And the mechanism worth keeping**: for the four dense-Qwen3 sizes the **runlist wins** and
 `NPU_PREFILL_BF16` is silently ignored. That is a third member of the same family as this stretch's other
 traps — the path that ran was not the path that was named.
+
+## 119. The NPU attention is NEARLY right and the error COMPOUNDS: per-layer NPU-vs-host diff grows 0.43 -> 8.7
+
+Added `NPU_ATTN_DIFF`: at every layer, run the host `attn_omp` on the same data and report
+`max|npu_out - host_out|`. @256, boot 188:
+
+| layer | max diff | layer | max diff |
+|---|---|---|---|
+| 0 | **0.433** | 22 | 5.95 |
+| 1 | 1.96 | 25 | 6.06 |
+| 5 | 2.25 | 27 | 7.37 |
+| 10 | 2.83 | **28** | **15.64** |
+| 19 | 4.43 | 31 | 8.72 |
+
+Three things:
+
+1. **The NPU attention is not garbage — it is nearly right.** A max difference of 0.43 at layer 0 is a small
+   error in an otherwise correct attention, not a wrong-shape kernel emitting nonsense. This is a materially
+   different picture from "fed a wrong-width kernel => structurally wrong output", and it is the first direct
+   measurement of the NPU attention's *output* rather than of its token.
+2. **The error compounds monotonically through the stack** (0.43 -> 8.7 over 32 layers, spiking at L28). That is
+   why two implementations agreeing to 0.43 at layer 0 can disagree completely at the boot: small differences
+   compound through 32 layers of attention+FFN — the same drift §16.2 documented on the decode path.
+3. **This re-frames §113 without overturning it.** The host path is correct (1033) and the NPU path is wrong,
+   but the mechanism is not "wrong kernel geometry" — it is a small per-layer attention discrepancy that
+   compounds. Whether that discrepancy is a layout defect in `bKv` or fp-ordering inside the kernel is now the
+   question; **0.43 at L0, the same value at @256 and @1024 (0.432772 both), points at numerics
+   (ordering/rounding) more than at geometry.**
+
+**Caveat (per §116/§117).** The host side of this comparison is CPU work and clang was at 11 during the run.
+The identical 0.432772 at two different lengths makes a load artefact unlikely — a saturating compile would not
+reproduce the same value at both — but a clean re-run is owed, and it is cheap.
