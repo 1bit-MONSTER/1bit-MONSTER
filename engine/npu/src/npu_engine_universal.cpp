@@ -63,6 +63,21 @@ void gemm_generate_sequence_i8_split(
 // FLM dependency removed — pre-compiled instructions loaded from file.
 #include <sys/wait.h>
 extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
+extern "C" float* dequant_i8_group_signed_to_float_ex(const uint8_t*,int,int,int*,int*);
+// q4nx int4 has THREE conventions, differing on two INDEPENDENT axes:
+//   dequant_i8_to_float_ex          scales group-major (group*32+row), UNSIGNED nibbles
+//   dequant_i8_signed_to_float_ex   scales row-major   (row*8+group),   SIGNED nibbles
+//   dequant_i8_group_signed_...     scales group-major,                 SIGNED nibbles
+// The AMD *-NPU2 bundles are group+UNSIGNED except LFM2-1.2B-NPU2, which is
+// group+SIGNED. The wrong pairing is SILENT -- it still yields a plausible weight
+// distribution, so the model runs and answers confidently with the WRONG token -- and
+// the convention is NOT recorded in the q4nx header (a flat tensor-name -> offset dict),
+// so it cannot be read from the file. It has to be selected per family.
+static bool g_q4_group_signed = false;   // true => LFM2-NPU2 (two's-complement nibbles)
+static inline float* q4_dequant(const uint8_t* d, int rows, int inf, int* or_, int* oc) {
+    return g_q4_group_signed ? dequant_i8_group_signed_to_float_ex(d, rows, inf, or_, oc)
+                             : dequant_i8_to_float_ex(d, rows, inf, or_, oc);
+}
 // bf16 prefill mm bridge (npu_engine_bf16_mm_bridge.cpp — dequant.xclbin + mm.xclbin)
 extern "C" void bf16mm_dump_w(int idx, const char* path);
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
@@ -717,6 +732,8 @@ int main(int argc,char**argv){
         else if (NV == 65536) family = "lfm2";
         else if (NV == 151936) family = "qwen3";
         else family = "qwen3";  // unknown -> dense qwen3 fallback
+        // The int4 nibble convention is detected from the tensor data itself just
+        // below, once the header offsets are available (see the probe there).
         const char* mdir = mdir_s.c_str();
         std::vector<int> flm_ids;
         if (input_tok_file) {
@@ -771,6 +788,36 @@ int main(int argc,char**argv){
     }
     auto i8p=[&](uint64_t o){return md+df+o;};
     const char*js=(const char*)(md+8);size_t jl=hsz;
+    // ── The int4 nibble convention, detected FROM THE DATA ────────────────────
+    // q4nx int4 differs between bundles on two independent axes: the scale layout
+    // (group-major vs row-major) and the nibble sign (unsigned vs two's complement).
+    // The header carries NO convention tag, but the stored zero-points give it away,
+    // because the two encodings are two parameterisations of the same affine map:
+    //   UNSIGNED: out = q*s + zp, q in [0,15], zp centred on the range
+    //   SIGNED  : out = v*s + zp, v in [-8,7], zp == 0
+    // Measured across every installed *-NPU2 bundle: all 14 non-LFM2 bundles store a
+    // centred zero-point (zp/scale between -7.26 and -7.73), and both LFM2 bundles
+    // store zp == 0 for all 256 groups (256/256 exactly 0.0). So one 512-byte read of
+    // a single zero-point block settles it. This matters because a mis-detection is
+    // SILENT -- the wrong pairing still yields a plausible weight distribution, so the
+    // model runs and answers confidently with the wrong token -- hence the log line.
+    {
+        const char* probe_t = "model.layers.0.mlp.down_proj.weight";
+        uint64_t po = jo(js, jl, probe_t);
+        if (!po && !key_exists(js, jl, probe_t)) {
+            // Fallback: LFM2 is the only installed bundle that names its embedding
+            // model.token_embd.weight, and it is also the only SIGNED one.
+            g_q4_group_signed = key_exists(js, jl, "model.token_embd.weight");
+            fprintf(stderr,"[q4] convention probe: %s absent; name-probe -> %s nibbles\n",
+                    probe_t, g_q4_group_signed ? "SIGNED (two's complement)" : "UNSIGNED");
+        } else {
+            const unsigned char* zp = i8p(po) + 512;  // zero-points at +512 in a 5120-B row
+            int nz = 0; for (int i = 0; i < 512; i++) nz += (zp[i] != 0);
+            g_q4_group_signed = (nz == 0);
+            fprintf(stderr,"[q4] convention probe: %d/512 zero-point bytes non-zero -> %s nibbles\n",
+                    nz, g_q4_group_signed ? "SIGNED (two's complement)" : "UNSIGNED");
+        }
+    }
     // Embeddings by JSON offset, NOT data-start-by-assumption — the first
     // data tensor is layer 0's ssm_a (offset 0); embed_tokens sits at 7680
     // for this model. Reading from md+df gave misaligned garbage embeddings
@@ -911,7 +958,7 @@ int main(int argc,char**argv){
         int bpt = get_bytes_per_tile(key);
         if (bpt == 8704)
             return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
-        return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, out_rows, out_cols);
+        return q4_dequant(i8p(off), i8_rows, in_features, out_rows, out_cols);
     };
     auto gi8=[&](const char*k)->int{int r=0;find_tensor_info(js,jl,k,&r);
         if(r<=0){std::string ak=k;size_t p=ak.find("model.layers.");if(p!=std::string::npos){ak.replace(p,14,"model.layer.");find_tensor_info(js,jl,ak.c_str(),&r);}}
@@ -946,7 +993,7 @@ int main(int argc,char**argv){
     int lm_i8=gi8("lm_head.weight");
 
     // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
-    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=dequant_i8_to_float_ex(i8p(lo),lm_i8,H,&lr,&lc);if(lm_raw){
+    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=q4_dequant(i8p(lo),lm_i8,H,&lr,&lc);if(lm_raw){
         lm_head_f32.assign(lm_raw,lm_raw+(size_t)lr*lc);free(lm_raw);
         fprintf(stderr,"  lm_head: %dx%d (loaded from JSON), using for final logits\n",lr,lc);
     }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}}
@@ -1521,7 +1568,7 @@ struct Bf16Ctx {
     if (!cpu_gemm_fallback && !bf16_only) {
     auto dq = [&](uint64_t off, int i8_rows, int in_features, int* or_, int* oc, bool is_q8_0) -> float* {
         if (is_q8_0) return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
-        return dequant_i8_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
+        return q4_dequant(i8p(off), i8_rows, in_features, or_, oc);
     };
     bool use_q8 = cfg.has_moe;  // MoE models use Q8_0 for attention projections
     for(int l=0;l<NC;l++){
@@ -1715,7 +1762,7 @@ struct Bf16Ctx {
         }free(gw);free(uw);
         }
         if (dp[l]) {
-        int dr2,dc2;float*dw=dequant_i8_to_float_ex(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);
+        int dr2,dc2;float*dw=q4_dequant(i8p(dp[l]),d_i8,DIN,&dr2,&dc2);
         std::vector<float>wd((size_t)DIN*DOUT);transpose_pack(dw,DOUT,DIN,wd.data(),DOUT,0);
         FLM_PACKB(cd,l,wd.data(),DIN,DOUT,dsc[l]);free(dw);
         if(have_small_m) cd_m.packB(l,wd.data(),DIN,DOUT,dsc[l]);
@@ -3717,7 +3764,7 @@ struct Bf16Ctx {
                                     l, fuse_dw_b[0], fuse_dw_b[1], fuse_dw_b[2], fuse_dw_b[3]);
                             if (dp[l]) {
                                 int dr2, dc2;
-                                float* dwf = dequant_i8_to_float_ex(i8p(dp[l]), d_i8, DIN, &dr2, &dc2);
+                                float* dwf = q4_dequant(i8p(dp[l]), d_i8, DIN, &dr2, &dc2);
                                 // Host float D GEMM: dequant_i8_to_float_ex outputs
                                 // [out_rows, out_cols] = [H, IM] row-major (in_features=DIN=IM
                                 // -> out_cols=IM, rows=H). D_ref[o] = sum_i fuse_su_b[i] * W[o][i].
