@@ -7630,3 +7630,42 @@ have missed this set entirely.
 **And it makes the sweep design better for free**: any future first-token sweep on a hybrid model should **check
 the chosen tokens against the bundle's zero-embedding set first** — it is one pass over the file, and it removes
 the class of point that produces a context-free answer for reasons that have nothing to do with the residual.
+
+## 395. The arm challenge applied to my OWN column: Phi4 IS host attention at every length — and neither edge is an arm change
+
+**The challenge was correct and it is the sharpest kind**: my Phi4 column is the **TOTAL** side of the two-mechanism
+verdict, and I had asserted the arm on the Nanbeige side **only after** being caught by it. *"I expect Phi4 is safe
+because the shaped gate refuses nh24"* is exactly the reasoning that produced a zero row an hour earlier. So it was
+measured rather than argued, at every length the verdict rests on:
+
+| fixture | boot | selection line |
+|---|---|---|
+| S32_220 | 220 | **`attn unavailable — CPU attn_omp fallback`** |
+| S64_220 | 220 | **`attn unavailable — CPU attn_omp fallback`** |
+| S128_220 | 220 | **`attn unavailable — CPU attn_omp fallback`** |
+| E130 | 220 | **`attn unavailable — CPU attn_omp fallback`** |
+| E160 | 25 | **`attn unavailable — CPU attn_omp fallback`** |
+
+**All five are host attention.** So the two sides of the two-mechanism verdict **are** arm-matched — Nanbeige through
+`NPU_ATTN_CPU=1`, Phi4 by construction — and the verdict does not rest on the asymmetry that cost the earlier
+retraction. **It was a lucky escape until this run, not a verified one.**
+
+**And it closes a real alternative explanation for the band.** If the arm had changed between 64 and 128, **edge A
+would have been an arm change rather than a mechanism** — and likewise edge B between 130 and 160. Both edges occur
+at a **constant arm**, so neither is explained away by it. That was a live hypothesis until measured, and it is
+now excluded rather than assumed.
+
+**And a banner red herring worth recording.** The log contains **`attn_mha_1024_`, `attn_mha_2048_` and
+`attn_mha_256_` at every length** — those are the **init-time loads of the four legacy ELF slots**, not the
+selection. The selection is the line that says *which* path runs (`attn unavailable — CPU attn_omp fallback`), and
+grepping for the file names would have "confirmed" a kernel that is not being used. **Read the selection line, not
+the file names.**
+
+**One process caveat, stated because it applies to the numbers above**: the other lane was running **Phi4 itself at
+98%** during this check, so it was taken on a contended device — and it reproduced the earlier values exactly
+(220, 220, 25), which is the useful part: the column is robust to that contention.
+
+**And their isolation converges with mine from the other direction**: `NPU_PREFILL_BF16=1` → 0;
+`+ NPU_RUNLIST=0` → **still 0**; `+ NPU_ATTN_CPU=1` → correct. **The runlist flag is inert in both directions**, so
+my earlier "the runlist takes precedence" claim is wrong, and the zero was the **broken nh20 kernel** — which is what
+"assert the arm" was supposed to catch, applied one level too late.
