@@ -477,7 +477,9 @@ struct Bf16Mm {
         return *it->second;
     }
 
-    /// Stage 256 CONTIGUOUS A rows into a_cache0.
+    /// Stage 256 CONTIGUOUS A rows into the batch's A cache (0 or 1). A is
+    /// per-slot so two launches can be in flight and the host can convert block i
+    /// while block i+1 runs on the device.
     ///
     /// The cached GEMM seq is generated with M=256 (see get_mm_app), so one run
     /// consumes 256 rows. The previous staging split A into two 128-row halves
@@ -489,15 +491,19 @@ struct Bf16Mm {
     /// Callers pass A already shifted to the block base; the engine pads its
     /// buffers to NPAD = round_up(npt,256)+256 so the 256-row read stays in
     /// bounds (the tail block's surplus rows are computed but never consumed).
-    void ensure_a(const uint16_t* A, uint32_t K) {
-        bool a_same = (A == a_src_ptr) && (K == a_src_K);
-        if (a_same) for (int i = 0; i < 64 && a_same; i++) a_same = (A[i] == a_src_sample[i]);
-        if (a_same) return;
+    void ensure_a(const uint16_t* A, uint32_t K, int batch) {
+        std::unique_ptr<buffer<uint16_t>>& ac = (batch == 0) ? a_cache0 : a_cache1;
+        size_t& ace = (batch == 0) ? a_cache0_elems : a_cache1_elems;
+        if (batch == 0) {
+            bool a_same = (A == a_src_ptr) && (K == a_src_K);
+            if (a_same) for (int i = 0; i < 64 && a_same; i++) a_same = (A[i] == a_src_sample[i]);
+            if (a_same) return;
+            a_src_ptr = A; a_src_K = K;
+            for (int i = 0; i < 64; i++) a_src_sample[i] = A[i];
+        }
         size_t a_elems = (size_t)256 * K;
-        if (!a_cache0 || a_cache0_elems < a_elems) { a_cache0 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache0_elems = a_elems; }
-        memcpy(a_cache0->data(), A, a_elems * 2);   // 256 contiguous rows, no padding
-        a_src_ptr = A; a_src_K = K;
-        for (int i = 0; i < 64; i++) a_src_sample[i] = A[i];
+        if (!ac || ace < a_elems) { ac = std::make_unique<buffer<uint16_t>>(*dev, a_elems); ace = a_elems; }
+        memcpy(ac->data(), A, a_elems * 2);   // 256 contiguous rows, no padding
     }
 
     /// ── async single-batch GEMM (for the software pipeline) ──
@@ -507,7 +513,7 @@ struct Bf16Mm {
     uint32_t g_run_rows[2] = {0, 0};   // rows the run actually produced
 
     void gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff, int batch, const uint16_t* A) {
-        ensure_a(A, K);
+        ensure_a(A, K, batch);
         size_t c_elems = 256 * N;
         if (batch == 0) { if (!c_cache0 || c_cache0_elems < c_elems) { c_cache0 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache0_elems = c_elems; } }
         else            { if (!c_cache1 || c_cache1_elems < c_elems) { c_cache1 = std::make_unique<buffer<uint16_t>>(*dev, c_elems); c_cache1_elems = c_elems; } }

@@ -266,6 +266,48 @@ their *thread-time* in `libgomp`: it is set by the **serial main-thread work**
 remaining lever is therefore **overlapping** that serial work with the parallel regions
 (double-buffering the NPU staging), not shaving regions.
 
+## 12. ✅ DOUBLE-BUFFERED GEMM BLOCKS — the gap is closed (2026-09-13)
+
+Section 11 pointed at the serial main-thread NPU waits. The bf16mm API already had the
+machinery (`gemm_launch(..., batch, A)` uses per-slot `c_cache0/1`, `a_cache0/1` and
+`g_run[2]`, and `start()` returns without waiting) — but it was **half-wired**: `c_cache`
+was per-slot while `ensure_a()` staged every A into `a_cache0`, and the engine always
+passed `batch=0`, so each 256-row block was fully serialised
+(`launch → wait → convert`).
+
+**Change:** `ensure_a(A, K, batch)` now stages into the batch's own A cache (so slot 0 and
+slot 1 can be in flight at once), and all four prefill block loops became:
+
+```
+launch(block 0, slot 0); launch(block 1, slot 1);
+for i:  wait(slot i&1, bC + i*256*N);
+        if (i+2 < nblk) launch(block i+2, slot i&1);   // NPU works on i+2 …
+        convert block i on the host                       // … while the host works on i
+```
+
+Blocks write disjoint `bC` regions and use disjoint A caches, so a kernel holding slot
+`i&1` can never disturb the block being converted. Semantics are unchanged — all four
+boot tokens are identical (25/220/220/220) — and decode is unaffected
+(0.6B 80 tok/s, 4B 19 tok/s, same as before).
+
+### Result @1k: **~30% faster prefill, and every dense Qwen3 now beats FLM on all three metrics**
+
+| model | prefill before | prefill now | FLM on-box | prefill gap | decode | FLM dec | TTFT | FLM TTFT |
+|---|---|---|---|---|---|---|---|---|
+| Qwen3-0.6B | 677 ms | **536 ms** (1912 tok/s) | 1123.1 | **+70.3%** | 80 | 77.8 | 0.536 s | 0.704 s |
+| Qwen3-1.7B | 1075 ms | **767 ms** (1335 tok/s) | 942.6 | **+41.6%** | 40 | 39.53 | 0.767 s | 1.042 s |
+| Qwen3-4B | 2146 ms | **1524 ms** (672 tok/s) | 510.0 | **+31.8%** | 19 | 18.75 | 1.524 s | 1.925 s |
+| Qwen3-8B | 3168 ms | **2196–2257 ms** (461 tok/s) | 362.8 | **+27.1%** | 11 | 10.70 | 2.207 s | 2.705 s |
+
+Repeat runs are stable (4B 1524/1524 ms; 8B 2257/2196 ms) and every boot token still
+matches FLM. **So for the dense Qwen3 family the objective is met outright: decode,
+prefill and TTFT all beat FLM's on-box measurements, on this box, with byte-identical
+tokens.**
+
+The lesson is worth keeping: the profile's 84% `libgomp` thread-time was a *symptom* —
+the workers were idle behind a serialised NPU wait — and the fix was to overlap work,
+not to shave regions (\\S11) or add threads (\\S8).
+
 Boot tokens unchanged (25/220/220/220). So Qwen3-1.7B now **meets** FLM on prefill, and
 the 4B/8B gaps roughly halved.
 
