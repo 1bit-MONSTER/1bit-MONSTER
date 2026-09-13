@@ -44,16 +44,10 @@ jobs:
               echo "kernel object lint: PASS"
               exit 0
               ;;
-            *"RESULT: FAIL_BSS_ONLY"*)
-              # Known-red, ticket-tied, and deliberately not a gate yet: fixing it moves two
-              # statics into .data, which changes the kernel object, so it needs the #1897
-              # h2/C2 byte-identity gate re-run and the xclbin rebuilt.
-              echo "kernel object lint: KNOWN FAILING (issue #2199) — KERNEL_STATIC is absent from"
-              echo "mm_kernel_reference.cc, so g_i4_call and the matmul-local 'call' counter sit in .bss."
-              echo "This job is a monitor until #2199 lands, and becomes a gate the moment the .bss"
-              echo "count reaches 0 (i.e. when this branch starts printing RESULT: PASS)."
-              exit 0
-              ;;
           esac
-          echo "kernel object lint: FAIL (not the known #2199 case — exit code was $rc)"
+          # The ticket-tied "KNOWN FAILING (issue #2199)" branch that used to sit here is
+          # gone: #2199 landed as #2282 (f3825fbb6 restored KERNEL_STATIC and rebuilt the
+          # xclbin), the script has printed RESULT: PASS since, and a branch for a state
+          # that can no longer occur is just a place for the next reader to be misled.
+          echo "kernel object lint: FAIL (exit code was $rc)"
           exit 1
