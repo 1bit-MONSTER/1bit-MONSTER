@@ -694,3 +694,35 @@ claim about decode *correctness* (as opposed to decode *speed*) is made for the 
 **What is unaffected:** the timing side of the scorecard. Decode tok/s is measured over the
 generation, not at a token boundary, so a divergence at token 5 does not invalidate 40 tok/s.
 The decode-speed claim stands; the decode-*answer* claim is only established for 0.6B today.
+
+### 16.1 The discriminator I proposed was wrong; here is the right one
+
+I wrote above that "a fixed split point on repeated runs points at a bug; a moving one points at
+drift". **That is wrong and I am correcting it.** A deterministic floating-point divergence also
+produces a fixed split point: same inputs, same kernels, same rounding, same first near-tie, so
+running it twice gives the same answer twice. Determinism discriminates nothing here.
+
+Test run anyway, for the record — Qwen3-4B native decode, identical command twice:
+
+```
+run 1 native: 220 13602 220 320 17 20
+run 2 native: 220 13602 220 320 17 20
+FLM         : 220 13602 220 320 16 15 15
+```
+
+Deterministic, and diverging at a fixed point (native 17 where FLM takes 16). Consistent with
+both hypotheses, so it settles nothing — which is exactly the point.
+
+**The test that would settle it is the MARGIN at the divergence.** If the native's chosen token
+and FLM's differ by a hair in the native's own logits, that is drift at a near-tie and no bug.
+If they differ by a wide margin, the native is computing a different distribution and there is a
+real bug. That needs the logits of the *decode* step, and the current instrument cannot supply
+them: `RT_DUMP_POST` fires inside `forward()`, while the decode goes through
+`build_runlist`/`execute_runlist` directly, so all 1024 dumps cover the prefill only. The last
+one (ctx 1024) has argmax 220 — the correct boot — with a top-2 margin of 2.5, a healthy gap
+rather than a near-tie, so the prefill is not where this happens.
+
+**Instrument needed:** log the top-2 logit margin inside `argmax_logits()`, once per decode step.
+That is a few lines, and it converts an open question into a measurement. Until then, section
+16's conclusion stands as written: decode *speed* is claimed, decode *answer* is established for
+Qwen3-0.6B only.
