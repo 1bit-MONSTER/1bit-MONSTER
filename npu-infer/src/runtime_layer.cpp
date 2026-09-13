@@ -736,6 +736,27 @@ int RuntimeLayerEngine::argmax_logits(int vocab) {
         for (int t = 1; t < nthreads; t++)
             if (lbest[(size_t)t] > bkey) { bkey = lbest[(size_t)t]; best = lidx[(size_t)t]; }
     }
+    if (getenv("RT_ARGMAX_MARGIN")) {
+        // Report the MARGIN to the runner-up, once per decode step. This is the instrument
+        // RESULTS-coverage-multifamily section 16.1 says is needed: when the native decode and
+        // FLM diverge at some token, a hair-thin margin means float drift at a near-tie (not a
+        // bug) while a wide margin means the two are computing different distributions (a real
+        // bug). Determinism cannot separate those two -- identical runs round identically --
+        // but this can. Second pass rather than a fused reduction, to keep the hot path as it
+        // was unless the env var is set.
+        uint32_t b2 = 0; int i2 = -1;
+        for (int i = 0; i < vocab; i++) {
+            if (i == best) continue;
+            uint16_t u = lg[i];
+            uint32_t key = (uint32_t)(u ^ ((u & 0x8000u) ? 0xFFFFu : 0x8000u));
+            if (i2 < 0 || key > b2) { b2 = key; i2 = i; }
+        }
+        if (i2 >= 0) {
+            const float fb = bf16_to_f32(lg[best]), f2 = bf16_to_f32(lg[i2]);
+            fprintf(stderr, "[argmax] best=%d (%.5f) runner_up=%d (%.5f) margin=%.5f\n",
+                    best, fb, i2, f2, fb - f2);
+        }
+    }
     return best;
 }
 

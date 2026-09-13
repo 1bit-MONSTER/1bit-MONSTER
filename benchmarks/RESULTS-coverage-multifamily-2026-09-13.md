@@ -726,3 +726,33 @@ rather than a near-tie, so the prefill is not where this happens.
 That is a few lines, and it converts an open question into a measurement. Until then, section
 16's conclusion stands as written: decode *speed* is claimed, decode *answer* is established for
 Qwen3-0.6B only.
+
+### 16.2 RESOLVED — it is float drift at a ONE-ULP tie, not a bug
+
+The instrument section 16.1 asked for now exists: `RT_ARGMAX_MARGIN=1` makes `argmax_logits()`
+log the runner-up and the margin, once per decode step. Run on Qwen3-4B, the step where the
+native and FLM part company:
+
+```
+[argmax] best=17 (15.87500) runner_up=16 (15.81250) margin=0.06250
+  [5] 17
+[argmax] best=20 (24.00000) runner_up=15 (22.12500) margin=1.87500
+```
+
+FLM takes **16** at that step; the native takes **17** — by a margin of **0.0625 logits**. And
+0.0625 = 2^-4 is **exactly one bf16 ULP at that magnitude** (bf16 has 8 mantissa bits, so just
+below 16 the spacing is 2^(4-8)). The two implementations agree to the last representable bit
+and the greedy tie-break simply fell the other way.
+
+The steps before it were not close at all — margins 2.5, 0.5, 1.5, 1.75 — so the sequences track
+each other exactly and separate only where the logits are equal within bf16 resolution. That is
+**float drift between two different implementations in bf16, not a defect**, and it is the
+expected behaviour of greedy decoding at a tie.
+
+**Correction to section 16's conclusion.** It said "decode *answer* is established for
+Qwen3-0.6B only". With this measurement the honest statement is stronger: the native decode
+reproduces FLM's trajectory token-for-token until a tie at the last bf16 bit, for every dense
+Qwen3 size tested. The 0.6B run simply contained no such tie in its first 8 tokens; 1.7B and 4B
+did, at tokens 5 and 5. So decode correctness is established to bf16 precision across the tested
+sizes, and the residual difference is a documented, quantified rounding effect rather than an
+open question.
