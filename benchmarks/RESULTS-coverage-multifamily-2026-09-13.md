@@ -5720,3 +5720,39 @@ Neither `bKv` arrangement (§94/§100/§112) nor BO sizing (this section) is the
 fix extended to @1024 as well**: Nanbeige needs a genuine nh20 attention kernel at each context length it uses
 — and the host attention is already proven correct for nh20 (§113: 1033 = FLM's reference), so it stands as the
 correct interim path.
+
+## 225. A concrete, general hazard in the LIVE bf16 path: the GEMM output caches are only GROWN, never cleared — and this engine has a kernel that under-writes
+
+**Found while applying §220's static extent rule to the device stages, which is the one part that a static check
+could not reach.**
+
+**Both bf16 GEMM paths allocate their output buffer once and only grow it:**
+
+```cpp
+// dead path (run_gemm_ooff; bf16mm_gemm_dev is DECLARED BUT NEVER CALLED)
+if (!c_cache  || c_cache_elems  < c_elems)  { c_cache  = make_unique<...>(*dev, c_elems);  ... }
+// LIVE path -- gemm_launch / gemm_wait, the bf16 prefill's own buffers
+if (batch == 0) { if (!c_cache0 || c_cache0_elems < c_elems) { c_cache0 = make_unique<...>(*dev, c_elems); ... } }
+else            { if (!c_cache1 || c_cache1_elems < c_elems) { c_cache1 = make_unique<...>(*dev, c_elems); ... } }
+```
+
+**Neither is ever cleared** — and the host then copies **`c_elems` elements** out of it. So **if the device
+kernel writes fewer than `c_elems` elements, the remainder is STALE data from a previous GEMM.**
+
+**And that is not theoretical in this codebase.** The nh20 lane's §122 found a kernel writing **2048 of 2560
+columns** — *exactly its own built width* — in this same engine. **A kernel here can and does under-write**, and
+the host has no check for it.
+
+**And it matches this lane's symptom precisely.** Phi4's defect is **wrong values with healthy scales and full
+host extent** (§210, §220) — which is exactly what a stale tail looks like: plausible magnitudes, wrong numbers,
+right order of magnitude. And the stale content would be **real model data from another projection**, since the
+prefill launches many GEMMs of different sizes through the same two caches — so it would not look like garbage.
+
+**The test**: **zero the C caches after allocation.** If Phi4's boot **changes**, the tail is being read and the
+hypothesis is confirmed; if it is unchanged, this is excluded. Note the honest reading of the outcome: zeroing
+puts **zeros** in the tail rather than *correct* values, so a **change** is the signal, not necessarily a fix.
+
+**And the honest scope, because this is a hazard and not yet a defect of Phi4's**: the under-write has been
+demonstrated for the **attention kernel**, not for the **GEMM kernels Phi4 uses**. The check is a few lines in
+`npu_engine_bf16_mm.h` — **the file the other lane is working in** — so this belongs to a coordination message
+before it belongs to a commit.
