@@ -4890,3 +4890,42 @@ of the measurement omitted which instrument ran.
 nh24 ELF exists at any length — so Phi4's bf16 has **no NPU attention in the path at all**, and their
 "NPU == CPU" comparison was CPU against itself. Their retraction of that conclusion is correct and is
 recorded on their side.)
+
+## 115. Who gets an NPU attention at all: `attn_shape_ok` — and why Nanbeige is the only out-of-set family with the context-free signature
+
+The other lane's refinement (a legacy ELF can LOAD and the launch still be REFUSED, sending Phi4 to the host
+path on every layer) prompted a stderr-verified check of my own lane. **Nanbeige @256 default: boot 188,
+`0` fallback lines, nh16-256 ELF loaded and used.** So §112's premise holds — Nanbeige really does run the
+nh16 kernel at @256, unlike Phi4 where the same file loads and is then refused.
+
+That difference is not incidental; it is one gate. `run_attn` computes
+
+```cpp
+const bool attn_shape_ok = attn_shaped_ok ||
+    ((attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096));
+```
+
+and returns false (host fallback) when it is false. So:
+
+| family | hd | qout | passed by the arithmetic clause? | shaped file? | NPU attention |
+|---|---|---|---|---|---|
+| Qwen3 0.6B/1.7B | 128 | 2048 | yes | embedded nh16 | **yes** |
+| Qwen3 4B/8B, VL, Llama-3.1 | 128 | 4096 | yes | embedded nh32 | **yes** |
+| **Nanbeige (nh20)** | 128 | 2560 | no | `attn_mha_1024_nh20_hd128.elf` | **yes** (via the shaped flag) |
+| Phi4 (nh24) | 128 | 3072 | no | none | **no -> CPU** |
+| Qwen3.5 (nh16/hd256) | 256 | 4096 | no (hd) | none | **no -> CPU** |
+| Gemma3 (hd256) | 256 | 1024/2048 | no (hd) | none | **no -> CPU** |
+
+Two consequences worth having:
+
+1. **`attn_shaped_ok` is set by ANY shaped file, so Nanbeige's single @1024 nh20 file is what makes its
+   @256/@2048 legacy slots usable at all.** Remove that one file and Nanbeige joins Phi4 on the host path.
+   The coupling is the reason a family can be "half on the NPU" (§97).
+2. **Nanbeige is the only out-of-set family running the NPU attention**, which is exactly why it is the only
+   one showing the §92 context-free signature. Phi4/Qwen3.5/Gemma3 are wrong for other reasons (Phi4's
+   host-side composition — the other lane's QKV/O work); their attention is the host's, which §113 shows is
+   the correct one for nh20.
+
+So the defect is not "out-of-set families are broken". It is: **the one family that reaches the NPU attention
+with a non-{nh16,nh32} shape is fed a wrong-width kernel** — nh16 at @256/@2048 (§97), and the 97.9%-nh32 file
+at @1024 (§95) — while the host attention for the same shape is exactly right (§113).
