@@ -243,3 +243,32 @@ Consequences:
    finds nothing there.
 3. Inspect `layer.xclbin` FIRST — if it is a fused per-layer kernel, the dispatch is far
    less work than composing mm + attn + conv by hand.
+
+### 10.1 What the files actually are (checked 2026-09-13)
+
+`layer.xclbin` cannot be introspected by name. `xclbinutil --info` on all five reports
+`Kernels: <unknown>` and only HOST/SRAM memory entries, so they are opaque self-contained
+NPU instruction containers (the same shape as the engine's own `final_i8_*.xclbin`: header,
+`NumOps`, `TransactionSize`, UID) rather than standard kernel xclbins. The interposer
+manifest from the capture logs BO allocations and sizes, not kernel roles, so the mapping
+from file to role has to come from FLM's own plumbing.
+
+That plumbing is readable from the symbol table, and it settles the design:
+
+```
+nm -DC ~/.local/flm-v0946/lib/xrt/liblfm2_npu.so
+  lfm2_npu::Impl::forward(int)
+  lfm2_npu::Impl::load_weights(Q4NX&)
+  lfm2_npu::Impl::load_attn_proj_weights(Q4NX&, int)
+  lfm2_npu::Impl::load_conv_proj_weights(Q4NX&, int)   <- the hybrid split, explicit
+  lfm2_npu::Impl::fill_kv_cache(...)  get_k_cache/get_v_cache
+  lfm2_npu::Impl::get_logits(...)     checkpoint/restore/clear_context
+```
+
+So FLM's LFM2 support is a complete per-family class with its own `forward()`, and it
+distinguishes conv from attention layers explicitly (`load_conv_proj_weights` vs
+`load_attn_proj_weights`), matching the bundle's layer map. The native path is therefore
+NOT new math: it is driving FLM's existing LFM2 kernels with the engine's own host
+orchestration — exactly the relationship the engine already has with FLM's other
+per-family libraries. The performance lever is host scheduling (the per-slot
+double-buffering that was worth ~30% on the bf16 prefill path), not re-deriving the conv.
