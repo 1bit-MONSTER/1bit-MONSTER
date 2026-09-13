@@ -4526,7 +4526,7 @@ only against values that were actually captured.
 V-region) were refuted only for the values I guessed. §102 broke that pattern by reading the capture first,
 and immediately produced a value that works. Read the captured profile before varying the constant.
 
-## 115. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
+## 116. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
 
 **The check the nh20 lane asked for turned into a correction of my own result.** They reported that
 `attn_mha_1024_nh20_hd128.elf` is 97.9% byte-identical to `attn_mha_1024_nh32.elf`, and asked me to
@@ -4961,3 +4961,76 @@ with load. §110/§111 stand.
 **Method note, third of the chain.** §112: the instrument was the wrong kernel. §114: the path that ran was not
 recorded. §116: the load that ran was not recorded. Three ways a correct-looking measurement was not about what
 it was named after — all three now controlled for in the same item.
+
+## 145. Phi4 runs the host attention path in BOTH configurations, its host plumbing is correct, and the bf16 path is 7 seconds — not ten minutes
+
+**The nh20 lane's §113 landed the decisive @1024 A/B and handed the device back**, and its result reframes both
+lanes: with `NPU_ATTN_CPU=1` Nanbeige bf16 gives **1033, 1033 — FLM's exact reference** — while the NPU
+attention gives **1214, 1214**. So **the host Q/K/V, the norms/RoPE, the KV cache and the layer composition
+are all correct for nh20**, and the bf16 path is right except the NPU attention step. That is the first
+configuration in that item that is **correct** rather than *less wrong*, and it is checkable output for the
+first time.
+
+**For this lane it means three things, and I measured the first two:**
+
+1. **Phi4's default attention IS the host path** — `NPU_ATTN_CPU=1` changes nothing:
+
+   | Phi4 @256 | boot |
+   |---|---|
+   | default | **874** |
+   | `NPU_ATTN_CPU=1` | **874** |
+
+   which is §135's code reading (it never passes the `attn_shape_ok` gate, so `kern` is always null and the
+   call returns false) confirmed by measurement rather than by reading.
+
+2. **And the host plumbing is proven correct for Phi4 too**, by the same instrument that proved it for nh20:
+   `NPU_FLM_PREFILL=1` gives **19** — FLM's own reference — because that path drives **FLM's** kernels through
+   the engine's own host code. So Phi4's host side is right, its attention arithmetic is right (§140), and
+   **the defect is in the engine's own bf16 GEMMs at nh24**. That is now a precise statement rather than a
+   list of suspects.
+
+3. **And the timing puzzle from the last checkpoint is answered, with a large practical win.** The bf16 path
+   is fast:
+
+   ```
+   NPU_PREFILL_BF16=1 ... 1 token   real  0m7.3s
+   ... 0 tokens (init + default decode)  real 15m2s
+   ```
+
+   **7.3 seconds at 256 tokens**, not the 8-10 minutes the nh20 lane watched me burn. The difference is the
+   path: my slow runs were the **i8/fallback** route (int8 packing at init, then two 128-row passes with CPU
+   attention), and argv `0` does not mean "no decode" — it means the default, which is what produced the
+   15-minute figure. So this lane can now **iterate in seconds**, which changes what is affordable: many
+   samples, several shapes, and A/Bs that would have been too expensive an hour ago.
+
+## 117. Quiet-box re-verification of §113: the NPU @1024 is STABLY 1214 (not load), the CPU @1024 is 1033-when-quiet but load-sensitive
+
+Acting on the other lane's point 4 (my §113 runs had shown load 12.7), re-took the @1024 pair with
+clang-23/amdllvm confirmed at 0 beforehand:
+
+```
+clang before: 0   load 3.65
+  npu @1024: 1214, 1214, 1214        <- stable
+  cpu @1024: 10985, 152388, 1033     <- VARIABLE
+clang after:  0   load 11.16         <- the box loaded up DURING the runs
+```
+
+Two conclusions, one of which corrects the emphasis of §113:
+
+1. **The NPU @1024 value (1214) is not a load artifact** — stable across three runs while the load climbed from
+   3.65 to 11.16. §113's central claim (the NPU attention is wrong on the shape-matched path) holds without a
+   load caveat.
+2. **The CPU path is correct-when-quiet and load-sensitive.** It reproduced FLM's exact 1033 again here, but
+   also gave 10985 and 152388 as the box loaded. So §113's "1033, 1033 — exactly FLM's reference" was a
+   quiet-window reading. It is real, but the CPU attention is not a stable reference under CPU load —
+   unsurprising, since it is by construction the CPU-bound path.
+
+**Net for the fix direction.** §113 is a statement about what the host attention *computes* (at low load it
+reproduces FLM exactly), not about its stability. The NPU path is stable and wrong. So "make the kernel read
+`bKv` correctly" remains the fix, and `NPU_ATTN_CPU=1` remains the correct-but-fragile workaround — fragile to
+CPU load, not to the device.
+
+**Measurement note.** The load rose *during* my own runs (3.65 -> 11.16) with zero clang before and after, so
+the interferer was neither a compile nor the parked device holders but something that started mid-run. The
+only defence is to sample the load per run, not per session. Recorded because this is the fourth time in this
+item that an unrecorded environment variable changed how a number should be read.
