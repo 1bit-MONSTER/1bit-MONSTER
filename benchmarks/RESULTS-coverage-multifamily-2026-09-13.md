@@ -4389,3 +4389,42 @@ and the one shape where we observe a failure is the one whose BO3 is half the nh
 **Next (device):** the `NPU_ATTN_KV_REGION` knob from §94 can match BO5 (30 MB => 3932160/region) without a
 rebuild, and the profile above says the more interesting number may be the KV/act discrepancy rather than the
 stride alone. A single clean pass — 3932160 with the first-token probe — discriminates (a) from (b) in §102.
+
+## 100. Phi4 is context-SENSITIVE, and its NPU attention is not worse than its CPU attention — which bounds the defect without clearing the attention
+
+**The probe** (the discriminant §92 introduced, run on **Phi4's bf16 path**): swap **only the first prompt
+token**. Fixtures verified before use — `/tmp/p_f16.txt` and `/tmp/p_f220.txt` are 256 tokens each and differ
+**only at index 0** (16 vs 220), asserted rather than assumed — because my **first attempt at this pair had a
+fixture bug** (a list of `int` assigned a `str`), which wrote no file and produced an empty result. Caught by
+the empty output; fifth instrument-shape fault of this stretch, same detection method.
+
+| Phi4 bf16 @256 | first = 16 | first = 220 |
+|---|---|---|
+| default (NPU attention) | **874** | **6573** |
+| `NPU_ATTN_CPU=1` | **874** | **6573** |
+
+**Conclusion 1 — Phi4 is NOT context-free.** Nanbeige's signature (§92: the answer is `f(last token)` alone,
+188/188 on this same swap, and the same boot at @256 and @1024 for the same last token) **does not
+reproduce**. So this is **not** one shared defect covering Nanbeige/Phi4/Qwen3.5/Gemma3. On the discriminant's
+own terms, Phi4 falls on the "genuine shape work" side, and per the agreed split that is my lane.
+
+**Conclusion 2 — stated precisely, because the loose form is wrong.** Default and CPU attention give
+**identical** values on both prompts, so **the NPU attention is not the difference for Phi4**. That is *not*
+the same as "the attention is correct": both could be wrong in the same way. Given §99 — our attention
+container (`attn.xclbin`, 94 KB) is **not any FLM model's** (316-317 KB) — that caveat is live and the
+attention is **not** cleared for Phi4 by this probe. What the probe does establish is that **the context loss
+that hits nh20 does not hit nh24**, i.e. the defect is shape-conditional rather than path-wide.
+
+**What that leaves for this lane.** Phi4's bf16 is context-sensitive but **wrong** (874 / 6573 against a
+reference of 19 from FLM's own kernels), and its i8/fallback path gives **23976** at @256 (deterministic
+across 2 samples) also against 19. With the **nh24 ELF proven byte-identical** (§58), the host inputs
+byte-verified (§68), and now the NPU/CPU attention agreeing, the next thing to open is the **bf16 per-layer
+composition at nh24** — the QKV/O GEMM path the scorecard has been pointing at — rather than the ELF.
+
+**A layout fact handed to the nh20 lane**, flagged as a hypothesis and **not** measured: FLM's Nanbeige layer
+KV BO is 64 MB, while the engine's per-layer `bKv` is `4 regions x kv_region`; at H=2560, `kv_region` =
+2,097,152 bf16 elems = 4 MB, so 16 MB per layer. The host writes K with `region = kvh<4 ? 0 : 1` and V at
+`(region+2)*kv_region`, i.e. **the split is written for eight kv heads** — but Nanbeige has NKV=4, so `kvh`
+never exceeds 3, every K write lands in region 0 and every V write in region 2. If the ELF mirrors that
+eight-head indexing, regions 1 and 3 are read and never written: right-size/wrong-arrangement in the sense of
+§38.
