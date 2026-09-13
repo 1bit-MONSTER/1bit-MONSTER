@@ -1802,3 +1802,40 @@ was asking what the number was *for*, not whether it was correct.
 Nanbeige's **nh20/nkv4** shape is **untested**, not suspected — the generator produces valid,
 ctx-dependent ELFs, and two other architectures were proven with them. Substituting FLM's own ELF would
 settle it, but that needs the roles of FLM's 16 loads identified, which the manifest does not record.
+
+## 35. FLM's ELF set is FIXED — there are no per-ctx ELFs to substitute
+
+Used the differential that identified Nanbeige's context-dependent ELFs back in section 8: capture FLM's
+reference at two prompt lengths and compare the ELF loads.
+
+```
+npt=2  : 86704 459568 86704 15472 26560 26560 6848 14464 7424 7424 46672 14464 42624 42624 14464 86704
+npt=64 : 86704 459568 86704 15472 26560 26560 6848 14464 7424 7424 46672 14464 42624 42624 14464 86704
+         -> IDENTICAL
+```
+
+**FLM's 16 ELF loads do not vary with prompt length at all.** So FLM's per-model ELF set is **fixed**, the
+context must be passed as a **kernel argument**, and there are **no per-ctx layer ELFs in FLM's path**.
+
+**That contradicts the engine's design**, which keeps `layer_kernels_[ctx_len]` — one generated ELF per
+context length. And that design **works**: it is proven for Qwen3-4B (1614) and Llama (220). So these are
+**two viable architectures**, not one right and one wrong.
+
+**And it kills the test I had specified.** "Substitute FLM's own per-ctx ELF" is not possible — FLM has
+none to substitute. The plan was built on an assumption about FLM's architecture that this capture
+disproves.
+
+**So the last candidate has to be re-stated, and more weakly than before.** Not "my per-ctx ELF for
+Nanbeige's shape is wrong", but:
+
+> the per-ctx ELF *design* is unproven against FLM for any family. Its evidence is entirely internal —
+> the Qwen3-4B and Llama controls — and it has never been compared with FLM's fixed-kernel approach at
+> all.
+
+**And it finally explains the section-34 size confusion properly.** My constant-size per-ctx ELFs and
+FLM's varying fixed set were **two different designs being compared as though they were one list**. No
+size could ever have matched, and the "all the same size" observation was never about Nanbeige — it was
+about the engine's design being unlike FLM's in a way nobody had checked.
+
+That is the sixth time this session that a number was real and the frame around it was wrong, and the
+first time the control that settled it was **a differential rather than a baseline**.
