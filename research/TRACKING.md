@@ -25,6 +25,7 @@ claim to a flattering one.
 | #2199 fused int4 `.data` placement | **fixed and merged** (`f3825fbb6`, PR #2282); xclbin rebuilt 67,306 → 75,040 B, provenance manifest regenerated | `bash engine/npu/tests/check_kernel_bss.sh` → `bss=0 / RESULT: PASS` on `f3825fbb6` (re-run 2026-09-12) |
 | Census | full HF sweep refreshed | `051d93e8d` (#2255) |
 | HRX `reset()` context loss (#2203) | fixed: re-imports `HRX_STATE_FILE` after reset, guards resumed ctx against `HRX_MAX_CTX_TOKENS` | `docs/issue-campaign/1942-triage.md` §1.2 |
+| Zaya1-8B fused NPU decode | **correct and FLM-class in `main`**: PR #2172 rebuilt the fused xclbin to match the #2163 host ABI (the 2026-09-09 corr −0.0015 red flag is closed) → corr 0.998, token parity, **21.3 tok/s** | `engine/npu/xclbins/final_i8_MOE_FUSED_zaya.xclbin` + PR #2172 (`e1c20d09f`) |
 
 ### Open questions and corrections (read before quoting any number)
 
@@ -52,12 +53,33 @@ claim to a flattering one.
    weak correctness test for any path that composes these kernels differently.
    `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` § *The captured
    attention kernel's numerics are not the reference's*.
-3. **Zaya1-8B fused-MoE correctness red flag (2026-09-09).** The in-engine L1
-   probe compared NPU MoE output against a CPU fp32 reference and got
-   **corr −0.001552** (expected 0.998267), identical on both fused and split
-   launches — deterministic but wrong, and the `.q4nx` had been re-converted
-   after the last known-good run. `benchmarks/RESULTS-zaya1-8b-rebaseline-2026-09-09.md`.
-   Not resolved as of this note.
+3. **Zaya1-8B fused-MoE red flag (2026-09-09) — RESOLVED, and the fix is in `main`.**
+   The fused path genuinely did regress to corr **−0.001552** (identical on the
+   single-launch and split variants, so deterministic), while the non-fused path
+   stayed at 0.999342. Root cause: a **host↔xclbin ABI desync** — the shipped
+   fused xclbin was still the Aug-23 build while #2163 had changed the host
+   header (`#2130`/`#2163` touched the fused weight feed). Two fixes were
+   available: revert the batch-M feature, or rebuild the xclbin.
+   **Only the rebuild landed**: PR **#2172** (`e1c20d09f`, merged 2026-09-09
+   19:53Z) ships the rebuilt `final_i8_MOE_FUSED_zaya.xclbin` (insts 296 KB → 52 KB)
+   together with the matching host changes, and records **corr 0.998 / token
+   parity / 21.3 tok/s** — FLM-class. The revert commits (`817806b8`, `06b7a86d`)
+   are **not** in `main`; they were the stopgap for the old artifact, so do not
+   "restore" them.
+   Re-checked 2026-09-12: the two later commits that touched
+   `mm_kernel_reference.cc` (#2282's `KERNEL_STATIC`, #2229's opt-in
+   `DELIVERY_PROBE`) do **not** invalidate the shipped fused artifact — the fused
+   generator links `matmul_i8_i32` from `mm_32x64x128.o`, while the `.data`
+   statics belong to the int4 kernel (`matmul_i8_i32_i4`), which the fused insts
+   stream and the xclbin do not reference. `check_xclbin_provenance.py` reports
+   OK on `main`.
+   *Caveat on the landed record:* `benchmarks/RESULTS-zaya1-8b-rebaseline-2026-09-09.md`
+   is an append-log and contradicts itself — its "RESOLVED — rebuild unblocked and
+   15-20 tok/s EXCEEDED" section matches what shipped (#2172), while a later
+   "Rebuild attempt — blocked on generator/toolchain drift" section does not.
+   Trust the PR/artifact, not the doc's tail. The corr/tok-s figures here are
+   #2172's own record; they were not re-measured in this pass (the NPU is held by
+   the live thread).
 4. **`flm_parity.sh` decode column.** It prints `2` because the decode
    invocation feeds the whole prompt through the per-token `NPU_RUNLIST=1` path
    and the parser then reads the prefill's ms/tok instead of the final
