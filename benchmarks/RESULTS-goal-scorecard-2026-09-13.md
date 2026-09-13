@@ -82,7 +82,7 @@ prefill and TTFT, and match/beat on decode.
 | family | shape | symptom | explanation |
 |---|---|---|---|
 | Nanbeige4.1-3B | nh20/hd128, qout 2560 | **default i8 path now matches FLM EXACTLY: 1033 @1024, 5938 @256, deterministic** (§84). Boot 1214 remains on the *bf16* path only | §84 below |
-| **Phi4-mini** | nh24/hd128, qout 3072 | **RE-RUN on the fixed path: 23976 @256 vs FLM's 19.** So the old 350 was not merely truncation, and the defect is real and nh24-specific. It is **not** the weights (statistically indistinguishable from a working model's, §175), **not** the attention (its host attention runs and the host path is correct for nh20, §113/§165), **not** the GEMM shapes (§155) — the remaining candidates are the activations or the GEMM execution at `qkvn = 5120` | mine |
+| **Phi4-mini** | nh24/hd128, qout 3072 | **has the engine-wide C-cache under-write** (zeroing its GEMM caches moves its boot at 6/6 lengths). **Whether it has anything else is OPEN** — the test is a real fix or an extent check, not CZERO, which cannot make any length exact by construction | mine |
 | Gemma3-1B | nh4/hd256, qout 1024 | fails | same |
 | Qwen3.5-4B | nh16/hd256 | boot 0 | **hybrid** (`GateDeltaNet_prefill.xclbin` + `conv.xclbin` + vision) — a family implementation, like LFM2 |
 | LFM2-1.2B / 2.6B | nh32/hd64 | runs, boot 63260 (wrong) | **hybrid** short-conv. Reference is now a full generation, not a token: `708, 1735, 538, 730, 525, 730, 1443` at **63 tok/s** on the engine's own loop. Three route blockers named — bf16mm lacks the GEMM shapes and the conv compute, the runlist needs a sequence class FLM does not ship, and FLM's fixed kernels *are* the baseline |
@@ -102,6 +102,12 @@ rows, LFM2 — so none of them is evidence about the bf16 compute or the attenti
 And it is why the goal's six models were never affected: they are the dense-Qwen3 set that takes the
 runlist. Re-runs on the fallback now cost `ceil(npt/XM)` passes through all `NC` layers — test at 256
 (2 passes) or raise the timeout.
+
+**THE ENGINE-WIDE DEFECT FOUND IN THIS STRETCH (both lanes, independently).** The bf16 GEMM kernels do **not** write all of their declared `256 * N` output; the C caches (`c_cache0`/`c_cache1` in `gemm_launch`) are **only grown and never cleared**; and `gemm_wait` copies back the full `256 * N`. So the **tail carries stale data from a previously different-shaped GEMM**, and the read-back is wrong whenever the call sequence leaves a mismatched tail. Measured three ways: zeroing the caches moves **Phi4** at **6/6** lengths; it moves the nh20 lane's host-attention result at **every** length where they had a disagreement (128/256/448); and it **breaks Qwen3-0.6B**, whose default is FLM's exact reference (1614 -> 47874) — which proves the tail is read **and** that its normal content is the GEMM's own previous same-shape output.
+
+**WHY THIS QUALIFIES THE GOAL'S CLAIM.** The six supported models pass their gates, and on this evidence at least part of that correctness is **call-order dependent**: 0.6B is right by default and CZERO breaks it, so its tail happens to hold the correct values. That means the six green gates are **not** independent of this bug, and any fix — make the kernel write its declared extent, or make the cache per-shape — **must be validated against the gates**, because it could move them in either direction. The metrics themselves (prefill, TTFT, decode) are unaffected; the *token correctness* is what is load-bearing here.
+
+**And zeroing is not the fix.** It substitutes zeros for the previous tail, so it can only show *that* the tail is read — never make the read correct. Both lanes reached that conclusion independently, from opposite sides.
 
 **The non-hybrid correlation — and what it actually is.** The observation was: every model with `qout ∈ {2048, 4096}` is
 correct; every one outside it is wrong. Causes excluded **by measurement** for that group: the
