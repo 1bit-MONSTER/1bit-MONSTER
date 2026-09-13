@@ -3,6 +3,27 @@
 > Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed.
 > Table rows below last walked **2026-08-29**; the dated delta underneath supersedes them where the two disagree.
 
+## Status delta — 2026-09-13 (dsh, strixhalo)
+
+Both corrections below were verified from `main` alone — neither needs the NPU.
+
+* **The Census row is superseded.** The newest full sweep is `4eb5dc43a`
+  (#2315, 2026-09-13): it refreshed `Testing/census_*.json` and the site's claim
+  numbers, so the row's `051d93e8d` (#2255) is now the 09-12 sweep. The summary
+  committed after it reads
+  `registry_covered 323,793 / with_arch 323,904 = 99.966%` — **not 100%**, i.e.
+  unmapped classes remain. *Which* classes and what to do about them belongs to
+  issue #2178 and `Testing/arch-gaps.md`; this entry only fixes which sweep the
+  tables' pointer follows.
+* **Open question 5 is closed — `NPU_PREFILL_MAX` is a non-item in `main`.**
+  Neither the switch nor the body it guards exists here: `NPU_PREFILL_MAX` has
+  **0 hits** across `engine/`, `include/` and `src/` (checked 2026-09-13), as
+  does `Bf16Mm` — the 256-row prefill body the withdrawn @1k claim blamed — with
+  `ensure_a` / `gemm_wait` likewise absent. So `main` cannot run the silent
+  256-row prefill and there is no merge-time check to remember: when
+  `goal/runlist-decode-wire` lands, it brings the branch's already-fixed version
+  (which warns and caps to 256) with it.
+
 ## Status delta — 2026-09-12 (dsh, strixhalo) — read this before the tables
 
 Fourteen days of work were never folded back into the rows below. This section is
@@ -105,9 +126,10 @@ claim to a flattering one.
    `cf5529ae6`). Not re-verified against a live run (the NPU is held by the live
    thread, and the configuration that note referred to is withdrawn anyway), so
    treat the "column reads 2" claim as **unconfirmed**, not as a known defect.
-5. **`NPU_PREFILL_MAX > 256` in `main`?** The silent-wrong-token defect was fixed
-   on the branch (it now warns and caps to 256), but `main` has no bf16 prefill
-   path at all, so this is a check-the-merge item, not a live bug.
+5. **`NPU_PREFILL_MAX > 256` in `main`?** — **CLOSED 2026-09-13, see the
+   09-13 delta above:** `main` has neither the switch nor the bf16 prefill body
+   (`Bf16Mm`, `ensure_a`, `gemm_wait` are all absent), so there is no merge-time
+   check to make and no silent 256-row path to run here.
 
 ### Settled negative results (don't re-litigate without new evidence)
 
