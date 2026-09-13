@@ -2650,3 +2650,64 @@ through the generated ELF — is **excluded for the generator**.
 exact (§54), so the runlist's failure is **not in any artifact we supply** — it is in **our dispatch and
 ordering**, or in the **device-written KV**. The "named dependency interface" framing of §52 was therefore
 too generous to us: this is now a question about **our own code**.
+
+## 59. The host side is PROVEN CORRECT for Nanbeige; the native output is NONDETERMINISTIC; and the KV geometry is hardcoded to NKV=8
+
+**The bisection.** Run Nanbeige with **FLM's own kernels** through the bridge (`NPU_FLM_PREFILL=1`):
+
+```
+=== Prefill 1024 [flm-ref] ===
+Prefill: 1773ms (1.73 ms/tok)
+  [0] boot=1033
+```
+
+**`boot=1033` — FLM's exact reference token.** The engine's own bf16 path on the same prompt gives a
+different, wrong value. So **everything around the kernels is correct** — the embedding, the BOs (all
+byte-identical, §54), the final norm, the argmax, the RoPE. With FLM's kernels the engine reproduces FLM
+**exactly**. The defect is in **our own prefill compute**.
+
+**And the native output is NONDETERMINISTIC**, which is the first concrete diagnosis of this failure:
+
+| run | boot |
+|---|---|
+| native, as recorded earlier | 1214 |
+| native, now | 131718 |
+| native with `NPU_ATTN_CPU=1` | 145029 |
+| **FLM's kernels via the bridge** | **1033 (correct)** |
+
+Three different answers from the same command means **the engine reads memory it never wrote**.
+
+**And the KV geometry is hardcoded rather than derived from the model.** `npu_runlist_bridge.cpp`:
+
+```
+// KV region stride matches the layer ELFs' MAX_L=8192 bake: 8MB per
+// region = 8192 tokens x 1024 B.
+g_sess_kv_region_u16 = (int)(8u << 20) / 2;
+```
+
+`1024 B/token` is `(nkv/2) * hd * 4` **at nkv=8, hd=128** — and so is `token_u16 = (num_key_value_heads/2)
+* head_dim` in `RuntimeLayerEngine::write_kv`, which also loops a hardcoded `for (region = 0; region < 4;
+region++)` — four regions being `nkv/2` for nkv=8.
+
+**And the working set is exactly that shape.** Every model the goal supports — and every model that boots
+correctly — has **nkv=8, hd=128**:
+
+| model | nkv | hd | boot |
+|---|---|---|---|
+| Qwen3-0.6B / 1.7B / 4B / 8B | 8 | 128 | correct |
+| Llama-3.1-8B, Qwen3-VL-4B | 8 | 128 | correct |
+| **Nanbeige4.1-3B** | **4** | 128 | wrong |
+| **Qwen3.5-4B** | **4** | 256 | wrong (also hybrid) |
+| **Phi4-mini** | 8 | 128 | wrong — **a second, independent cause** |
+
+So the KV geometry being baked for nkv=8/hd=128 is a concrete defect in our code on precisely the two
+non-hybrid families whose KV shape differs on the nkv axis. **Phi4 has nkv=8/hd=128 and still fails**, so
+this is not one correlation covering everything — the earlier "non-hybrid correlation" was a lumping, and
+it is now split.
+
+**The named experiment**: derive the region stride and count from `num_key_value_heads`, `head_dim` and the
+model's max length instead of the hardcoded 8 MB x 4, then measure Nanbeige's boot against the 1033 target
+with Qwen3-0.6B as the no-regression control (nkv=8 means no change). I have **not** landed that change:
+the region arithmetic gives a 2x capacity difference for nkv=4, and I have not yet measured the engine's
+actual KV addresses — and a constant changed without measurement is exactly the class of edit this session
+has had to retract before.
