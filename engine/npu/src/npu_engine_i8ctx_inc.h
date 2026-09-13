@@ -407,6 +407,21 @@ struct I8Ctx {
     // use the matching per-row scale (dequant_only_rows).
     inline int8_t* quantize_async_rows(const float* A, int am, int ak,
                                        const float* ascales) {
+        // bA holds exactly MD rows. The i8 ("fallback") prefill passes am == npt with no cap
+        // (the bf16 path caps at 'cap'; this one does not), so any prompt longer than MD wrote
+        // PAST the end of bA -- and the kernel, launched for MD rows, never processed rows
+        // MD..npt-1 at all. The boot token is taken from h_b[npt-1], which is therefore still the
+        // RAW EMBEDDING, never passed through the layers: a context-free prediction, which is why
+        // this path returns small scattered tokens (12-19 for 0.6B, 151 for Nanbeige) instead of
+        // the reference. The overrun is also the second, independent source of nondeterminism.
+        // RESULTS-coverage-multifamily 82. Refuse loudly instead of corrupting memory silently.
+        if (am > MD) {
+            fprintf(stderr,
+                    "quantize_async_rows: am=%d exceeds bA capacity MD=%d -- refusing to write "
+                    "past the activation BO (see RESULTS-coverage-multifamily 82: the prefill "
+                    "must walk the prompt in MD-row blocks)\n", am, MD);
+            return Am;
+        }
         memset(Am, 0, (size_t)MD * KD);
         for (int m = 0; m < am; m++) {
             float ais = 1.0f / ascales[m];

@@ -3622,3 +3622,53 @@ they cannot be used that way yet.
 tokens** — a fact, not an inference. It is in our code, and it would explain why **no** i8 model matches the
 reference: Nanbeige returns 151 at **both** 256 and 1024, and 0.6B returns small stable-ish tokens at every
 length. A prompt that is only ever read to its first block would do exactly that.
+
+## 82. THE i8 PREFILL TRUNCATES AT 128 TOKENS — confirmed, in the LIVE class (`HybridFlmCtx`)
+
+**The defect.** The activation BO is `MD * KD` — **128 rows**:
+
+```cpp
+size_t a_bytes = (size_t)MD * KD;                 // HybridFlmCtx, npu_engine_hybrid_flm.h:162
+memset(Am, 0, (size_t)am * KD);                   // :277 and :294  -- am, NOT MD
+for (int m = 0; m < am; m++) { ... Am[m * KD + k] = (int8_t)q; }
+```
+
+**There is no cap on `am`**, and the i8 ("fallback") prefill passes `am = npt` with no `npt` limit — unlike
+the bf16 path, which caps (`npt = cap`) and, by its own comment, *"walks the prompt in 128-row blocks"*.
+So for any prompt beyond 128 tokens the staging **writes past `bA`**, and the kernel — launched for `MD`
+rows — **never processes rows 128..npt-1 at all**.
+
+**The consequence, in three steps:** the boot takes `h_b[(npt-1)*H]`, the *last* prompt row, which is
+therefore still the **raw embedding**, never passed through the layers; so the boot token is
+`argmax(embedding[last] . head)` — a **context-free** prediction. That is exactly the small, scattered,
+garbage-like output observed: **12–19 for 0.6B** (§79/§81) and **151 for Nanbeige**.
+
+**The categorical test.** Two 256-token prompts sharing their **first 128 tokens** and differing in the tail:
+
+| | i8 path, 5 runs | runlist |
+|---|---|---|
+| tA (original tail) | 15 15 15 15 12 | **1614** |
+| tB (reversed tail) | 15 19 15 15 13 | **220** |
+
+The i8 distributions **overlap and centre on 15** — it is nearly **insensitive to the prompt tail** — while
+the runlist is **categorically** different. The residual 1–2-token shift is the *last token's own embedding*
+changing, which is precisely what a context-free boot would do.
+
+**And this closes §79 and §81 at once.** §79's flat prefill cost above 128 is this same fact seen through
+timing; the wrong tokens are the context-free boot; and §81's second nondeterminism is the **buffer overrun**
+writing into adjacent memory.
+
+**My attribution was right; my file was wrong — fourth time this session.** I first added the guard to
+`I8Ctx::quantize_async_rows`, and **it did not fire** on a 256-token prompt. That is the same detector that
+caught §62, §76 and §77: the instrument that *reports* passed, and the one that could *fail* said no. The
+live A-stager is `HybridFlmCtx`, selected by the `FLM_LAUNCH_ASYNC_ROWS` macro.
+
+**What is landed, and what deliberately is not.** The `I8Ctx` guard is landed: it is a correct invariant
+check, verified **not** to fire on the valid 128-token path. The **same guard in `HybridFlmCtx` is
+deliberately NOT landed** — there it **would** fire, turning a silent corruption into a hard failure on every
+prompt over 128 tokens, and that belongs with the real fix rather than ahead of it.
+
+**The fix, precisely.** Walk the prompt in **MD=128-row blocks** in the fallback prefill, exactly as the
+bf16 path already does; cap `npt` as the bf16 path does; **then** add the guard to `HybridFlmCtx`. Verify
+with (a) the tA/tB test — the i8 path must become tail-**sensitive** — (b) the reference (tA -> 1614), and
+(c) ten-sample determinism.
