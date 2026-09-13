@@ -7154,3 +7154,34 @@ sharpest: **"the reference varies with length" is not evidence that the *path* i
 you need both, and I had only the first.** And the mirror is now symmetric: their engine **mishandles one value** of
 the first token, mine **ignores it**; one design, opposite failures, no shared mechanism — which is why the shared
 thing could only ever be a **signature**.
+
+## 355. The two plateau bands are DISJOINT — two independent confirmations of length-dependence, and both edges are now bisectable
+
+**No device: every number below is already in the log.** The degeneracy is a **band**, and the two lanes' bands do
+not overlap.
+
+| lane | measurement | band |
+|---|---|---|
+| **this lane (Phi4 bf16)** | native **220** at npt = 16, 32, 48, 64, **128**; **85** at 192 and **6573** at 256 | **invariant on [16, 128]** |
+| **peer lane (nh20 bf16)** | agrees with FLM at **64** and **128**; degenerates to **13** at 448 and 512; 13 at 448, 13 at 512 | **invariant on ~[320, 896]** |
+
+**The bands are disjoint** — mine ends where theirs begins — and the **same two first tokens behave oppositely at 32
+and 448** (220 is *correct* at 448 and *wrong* at 32). That is **two independent confirmations of the same
+prediction**, made before either run existed:
+
+> the degenerating condition is **not a property of the first token alone**; it is a property of the
+> **(token, length)** pair.
+
+**So the shared thing is the SHAPE and not the cause.** Both lanes emit a **constant that does not respond to the
+input**, and in both the constant **coincides with a reference value at another length** (mine 220 = FLM@128; theirs
+13 = FLM@512). A shared signature with disjoint bands is exactly what "no shared bug" means, now measured rather
+than argued.
+
+**And it converts two vague residuals into two bounded, bisectable edges**:
+
+- **this lane**: the degeneracy ends in **(128, 192]** — 128 is invariant, 192 is 85;
+- **peer lane**: it begins in **(128, 320]** — 128 is *correct*, 448 is degenerate.
+
+Fixtures for both are on disk: `/tmp/E{128,130,144,160,176,192,256}.txt` and
+`/tmp/ET{128,160,192,224,256,288,320,448}.txt`, fixed first token (58907), fixed tail, **only the length varies** —
+so each edge is ~6 runs, and the two lanes' edges can be compared directly rather than by analogy.

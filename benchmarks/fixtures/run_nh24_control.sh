@@ -27,3 +27,10 @@ for f in N128 N32 N8; do
   printf "   FLM(%-5s) -> " "$f"
   env -u NPU_PREFILL_BF16 NPU_FLM_PREFILL=1 $B $M/model.q4nx 1 /tmp/$f.txt 2>/dev/null | tok
 done
+
+# --- degeneracy-edge bisect (device-free to prepare) ---
+# MY lane's edge lies in (128, 192]: 128 is invariant at 220, 192 is 85.  6 runs locate it.
+for L in 130 144 160 176 192 256; do
+  printf "   E%-4s -> " "$L"
+  env -u NPU_PREFILL_BF16 NPU_PREFILL_BF16=1 $B $M/model.q4nx 1 /tmp/E$L.txt 2>/dev/null | tok
+done
