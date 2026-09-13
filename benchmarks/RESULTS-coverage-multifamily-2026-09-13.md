@@ -5110,3 +5110,47 @@ first-token-specific with clang = 0**, so §110/§111 stand; the aperiodic `1524
 load-consistent class. **Two classes I had conflated** — I flagged that the family *might* be load-driven and
 they did the work of separating it, then generalised it into a rule worth keeping: **record the clang load
 with every boot number**, alongside **record which attention path ran**.
+
+## 160. CORRECTED: `attn_shaped_ok` is a MEMBER flag, so Nanbeige's @256 DOES run the nh16 ELF — and the same line means the opposite thing for Phi4
+
+**The nh20 lane checked my gate reading against the engine and it is the other way round.** I read
+`attn_shape_ok`'s boolean expression correctly but **misread the flag's lifetime**:
+
+- `bool attn_shaped_ok = false;` is a **member** (`npu_engine_bf16_mm.h:111`), not a per-call local;
+- it is written in **exactly one place**, line 245, inside `load_attn_elf`, whenever the resolved path
+  contains `attn_mha_*_hd*`;
+- and **`load_attn_elf` runs for all four slots at init** (lines 252-259).
+
+So **one slot resolving an `_hd` name flips the flag for the whole object**, and line 315's
+`(attn_tokens <= 256 && attn_shaped_ok && attn_kernels)` then hands the **≤256 call** the **nh16** kernel. It
+is **not** per-slot, and the @256 shaped lookup failing does **not** reset it.
+
+**And they measured both sides**, which is what settles it:
+
+```
+Nanbeige @256 default        -> boot 188,    stderr: 0 fallback lines
+Nanbeige @256 NPU_ATTN_CPU=1 -> boot 109440, stderr: 32 "forced CPU attn_omp"
+```
+
+Different, and the default prints **no fallback line** — so @256 is **not** the host path; the nh16-256 ELF
+really is selected and run. **So §135's claim — "Nanbeige's @256 half measured CPU attention, not an nh16
+kernel" — is wrong**, and with it my attempted sharpening of their §112: the @256 region result **is** an
+NPU-kernel measurement (a wrong-width one, but NPU), so **§110/§111 stand as NPU measurements**.
+
+**My Phi4 conclusion survives, and my own measurement is the discriminator.** Phi4 has **no `_hd` file at any
+length**, so the flag is **never** set, `attn_shape_ok` is false, `kern` is null, and the call returns false:
+
+| model | `_hd` file anywhere? | member flag | ≤256 slot | measured |
+|---|---|---|---|---|
+| **Nanbeige** | **yes, @1024** | **true** | **nh16-256 ELF (NPU)** | default 188 != CPU 109440 |
+| **Phi4** | **no** | **false** | **CPU** | default 874 == CPU 874 |
+
+**Same code, same line, opposite outcomes — and both measured.** Which is the useful version of my own
+§115/§120 lesson: I had said "the thing I measured is not the thing I named". Here a **single log line means
+two different things in two models**, because the flag that decides it is global and sticky.
+
+**The specific error, stated plainly**: I traced `run_attn`'s expression and concluded from the *syntactic*
+structure what would happen, without tracing **when the flag is set or for how long it persists**. A flag is
+not a per-call value; it lives as long as the object. And I generalised a **correct** measurement of Phi4
+into an **incorrect** claim about Nanbeige — which is a failure mode worth naming separately, because it
+looked like diligence: I was "sharpening someone else's section".
