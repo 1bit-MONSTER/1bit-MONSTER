@@ -1909,3 +1909,43 @@ token:
 
 **And it confirms the class API**: `lfm2_npu::forward(int)` works per token, the same entry point the
 other families' decode comparisons use — so LFM2 is not an API outlier, only an orchestration one.
+
+## 38. LFM2's packed BO has the RIGHT SIZE and the WRONG ARRANGEMENT
+
+Applied section 26's technique to LFM2: captured FLM's weight BO (pointer-matched,
+`preinsts_001_11_i4_563ff731dfa0_41943040.bin`) and diffed the engine's `npu_pack_layer_bo` output
+against it.
+
+**The sizes match exactly.** Both are **41,943,040 bytes = 8,192 tiles x 5,120**:
+
+```
+engine conv layer 0      : 8,192 tiles  = shortconv 1536 + 512 + gate/up 4096 + down 2048
+engine attention layer 2 : 7,424 tiles  = q 512 + k 128 + v 128 + o 512 + gate/up 4096 + down 2048
+FLM's weight BO          : 41,943,040 B  (the BO is sized for the largest layer)
+```
+
+**But the arrangement does not match**, and the pattern is informative:
+
+| diff | tiles found in order |
+|---|---|
+| engine **attention** layer (2) vs FLM's BO | **0 of 8,192** |
+| engine **conv** layer (0) vs FLM's BO | **6,144 of 8,192**, diverging at tile 6,144 |
+
+So for a **conv** layer the engine agrees with FLM's layout through the short-conv block and the
+gate/up block, and diverges at the **down_proj**; for an **attention** layer it agrees on **nothing**.
+The engine's generic order (q, k, v, o, gu, d, then shortconv appended) does not reproduce FLM's LFM2
+layer layout.
+
+**This is the session's theme in its purest form.** The BO is *exactly* the right size, so every size
+check passes; and it is the wrong arrangement, so the model **loads and runs and produces the wrong
+token** — which is precisely what LFM2 has done from the start (boot 63260 against 5242). A size
+comparison could never have found it, which is the same lesson as sections 24.2, 34 and 35, now with a
+family where it actually bites.
+
+**And it sharpens section 36's route table.** The bf16mm route's blocker is not only "the GEMM shapes and
+the conv compute" — it is also that **the packer has no LFM2 layout at all**. That is a third missing
+piece on a route already carrying two.
+
+**Next:** derive LFM2's layer layout **from FLM's captured BO** rather than assuming the generic order —
+locate where each tensor's tiles actually sit, exactly as section 26 did to *confirm* the four families'
+packing. The tool and the technique both exist; only the layout is unknown.
