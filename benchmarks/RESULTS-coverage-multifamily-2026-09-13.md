@@ -8263,3 +8263,29 @@ agreed with every one of them.
 **Their scan also credits the table as verified from the file**: I8 widths **4736 → 200**, **8704 → 49**, **5120 → 0**
 exact, mid-dims **10/16/36** (185/32/32 tensors), and the arithmetic — `4736/20 = 236.8 → 236` against `5120/20 = 256`
 exactly. **Independent verification of the numbers, and independent discovery of the sentence above them.**
+
+## 155. The performance stake of the attention-ELF fix, measured: the correct path costs ~400 ms (~39%) of prefill — and the host residual is (token, length)-dependent
+
+The goal this work sits under is **performance** (decode, prefill, TTFT), while the defect measured here is
+**correctness** — but the two meet exactly at the attention path, and that cost had never been quantified on this
+model. Prefill at two lengths, clean fixtures (first token checked against the zero-embedding set), `clang=0`:
+
+| fixture | attention | boot | prefill |
+|---|---|---|---|
+| N256.txt (first=58907) | **host** (`NPU_ATTN_CPU=1`) | **5938** = FLM | **1109 ms** |
+| N256.txt | **NPU** (default) | 188 | **677 ms** |
+| C1024_220.txt (first=220) | **host** | 13 | **1066 ms** |
+| C1024_220.txt | **NPU** | 188 | **697 ms** |
+
+**The correct path is ~400 ms slower at both lengths — ~39% of prefill.** So the broken NPU attention is not merely
+wrong, it is **the fast path**, and the fix has a real performance prize attached: r5 is worth roughly a third of
+prefill at 256–1024, which is the goal's own metric.
+
+**Caveat, and it is the honest form of that number:** the NPU arm here is the **broken** kernel, which writes zeros
+over 2048 of 2560 columns — it may simply be doing less work. So ~400 ms is an **upper bound on the recovery**, not
+an estimate of a corrected kernel's cost. A genuine nh20 ELF could land anywhere between the two.
+
+**And the run produced a residual data point it was not looking for.** At @1024 the host path with **first=220**
+gives **13** — not the 1033 that §113 measured with the token-16 fixture — so the host residual is
+**(token, length)-dependent**, not merely token-dependent: 220 @32 gives a clean group value (§146/§150), 220 @1024
+gives 13. Recorded as a point, not a conclusion; the residual's mechanism remains unmeasured.
