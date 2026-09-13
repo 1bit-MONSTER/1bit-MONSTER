@@ -106,8 +106,12 @@ or a float reference run of the same model — neither exists today.
 NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX=256 NPU_DUMP_ATTNIO=1 \
   engine/npu/build/npu_engine_qwen3_0_6b ~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx \
   1 ~/npu-build/parity/ids256.txt          # expect boot=1614, dumps in /tmp
-python3 attn_audit.py <dumpdir>            # from-scratch numpy recomputation
+mkdir -p /tmp/audit && cp /tmp/eng_*.bin /tmp/audit/   # /tmp is hardcoded; copy first
+python3 benchmarks/tools/attn_audit.py /tmp/audit --map
 ```
 
-Note `/tmp` is where the engine hardcodes the dumps, so copy them out before
-anything else runs.
+`benchmarks/tools/attn_audit.py` is the from-scratch checker used here (row-level
+agreement, per-head implied scales, and the head→kv-head mapping test). Expected
+output on the dump this doc describes: `17/256` rows matching, row 0 = 0.0177,
+row 255 = 0.1940, implied scales spanning 0.46×–1.85× with one negative, and
+`0/16` heads failing the mapping test.
