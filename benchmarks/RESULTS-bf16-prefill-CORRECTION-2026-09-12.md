@@ -77,7 +77,30 @@ divergence at token 1, i.e. **not** bf16 rounding (ULP ≈ 0.03 there).
   kernel**, not generator output — `gen_mha_engine_seq(0,256)` produces 95 936 B
   and a different hash.
 
-## Changes made in this session
+## The captured attention kernel's numerics are not the reference's
+
+`NPU_DUMP_ATTNIO=1` at npt=1024 dumps layer-0 Q (`eng_act.bin`), the KV BO
+(`eng_kv.bin`) and the kernel's attention output (`eng_out.bin`). Recomputing
+causal GQA attention on the host from those exact dumps and comparing
+(`~/npu-build/parity/check_attn.py`):
+
+- row 255 / head 0 — the row with the most keys — matches causal softmax to
+  0.008 on |V| ≈ 0.48 (≈4 bf16 ULP): consistent with the kernel being causal.
+- rows 1, 2, 5 are off by 0.05–0.11, i.e. whole percent, on the same scale.
+  Solving row 1 for the implied mixing weight gives **w = 0.727**, where the
+  reference `softmax(q·k/√128)` gives **0.826**; scale 1/16 gives 0.750.
+- The error shrinks as the row's key count grows, which is what a *wrong softmax
+  scale* looks like (long rows approach uniform attention and lose sensitivity
+  to the scale). A scale error is also consistent with the argmax agreeing at
+  npt=256 and disagreeing at 512/1024 — the agreement is luck, not parity.
+
+So the bf16 prefill path cannot be validated by an argmax comparison at all: it
+uses a closed-source captured kernel whose attention weighting differs from the
+reference by whole percent on short rows. (Single-row weight estimates from
+bf16-rounded dumps carry their own error; the 1.8x scale gap is well outside
+it, but treat the exact figure as indicative.)
+
+
 
 - `npu_engine_universal.cpp`: `NPU_PREFILL_MAX > 256` now **warns and caps to
   256** instead of silently producing a wrong token. @1024 prints
