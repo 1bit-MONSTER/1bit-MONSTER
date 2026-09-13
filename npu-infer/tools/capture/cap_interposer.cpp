@@ -33,7 +33,8 @@ static std::set<std::pair<unsigned long, size_t>> g_bo_sizes;
 static std::set<std::pair<unsigned long, size_t>> g_extbo_sizes;
 static long g_seq = 0;
 static std::map<unsigned long, std::string> g_bo_labels;
-static std::set<size_t> g_seen_big;
+static std::set<size_t> g_seen_big;      // keyed by POINTER (not size) — see the dump site
+static std::map<size_t, int> g_big_per_size;  // pointer-dedup alone can still flood; cap per size
 
 static void ensure_log() {
     if (!g_log) {
@@ -236,8 +237,19 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
                     size_t bosz = bo->size();
                     if (bosz > 3000000) {           // weight/kv BOs: dump once if CAP_DUMP_BIG
                         if (!getenv("CAP_DUMP_BIG")) continue;
-                        if (g_seen_big.count(bosz)) continue;
-                        g_seen_big.insert(bosz);
+                        // Dedup by POINTER, not by size. Keying by size kept only the FIRST BO of
+                        // each size, which is NOT the one the manifest names as arg4 -- so a
+                        // byte-level comparison against it silently diffed a third, same-sized
+                        // object (found in 25.1, which is why that diff is void). The manifest
+                        // reports the bound pointer, so the dumped file must carry it.
+                        // A per-size cap keeps this bounded: CAP_BIG_MAX (default 4), because a
+                        // 32-layer model otherwise writes 32 x 59 MB of same-sized weight BOs.
+                        if (g_seen_big.count((size_t)bop)) continue;
+                        int cap = 4;
+                        if (const char* e = getenv("CAP_BIG_MAX")) { cap = atoi(e); if (cap < 1) cap = 4; }
+                        if (g_big_per_size[bosz] >= cap) continue;
+                        g_seen_big.insert((size_t)bop);
+                        g_big_per_size[bosz]++;
                     }
                     const uint8_t* p = (const uint8_t*)bo->map();
                     if (p) {

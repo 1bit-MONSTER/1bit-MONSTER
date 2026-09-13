@@ -1369,3 +1369,66 @@ correct.
 **Net for the four-family bug:** the BO's *contents* remain the only suspect still standing after the
 ELFs, the runlist and the BO size were cleared — but the instrument to inspect them is not yet correct,
 and the next step is to fix the capture rather than to re-run the diff.
+
+## 26. DECISIVE: the packing is CORRECT — the engine's BO is byte-identical in arrangement to FLM's
+
+Fixed the instrument first (25.1's problem was the *capture*, not the diff): the size-keyed dedup is
+now **pointer-keyed** with a per-size cap (`CAP_BIG_MAX`, default 4). Verified immediately — the
+dumped files now include the pointer the manifest names as arg4:
+
+```
+manifest arg4 : 559863fd8b10
+dumped ptrs   : 559863fa80e0, 559863fd8b10, 559863fd9d60, 559863f96ec0
+```
+
+**Validated the method on the control model (Qwen3-0.6B, packing known to work):**
+
+```
+engine BO: 9,830,400 B = 1920.00 tiles
+FLM    BO: 10,485,760 B = 2048.00 tiles
+engine tiles found IN ORDER: 1920 of 1920
+strides: {5120: 1919}      first match at tile 0.00
+```
+
+So FLM's BO is the engine's packing **plus 128 extra tiles at the end**, and the comparison works.
+
+**Then the failing family (Nanbeige):**
+
+```
+engine BO: 61,440,000 B = 12000.00 tiles
+FLM    BO: 61,865,984 B = 12083.20 tiles
+engine tiles found IN ORDER: 12000 of 12000
+strides: {5120: 11999}     first match at tile 0.00
+```
+
+**All 12,000 tiles, in order, at a uniform 5120 stride, from offset 0.** The engine's packed BO is
+*exactly* a contiguous prefix of FLM's — **byte-identical in arrangement**, for the family that fails.
+
+**So the packing hypothesis is REFUTED.** `npu_pack_layer_bo` produces what FLM produces, for a
+working *and* a failing family. Section 18 called it the leading suspect on the strength of the sharing
+argument (both engine paths use it, FLM's library does not); with the actual bytes compared, that
+argument is wrong — the shared component is correct, which is why the *working* models work through it.
+
+### What is now cleared for the four families, and what is left
+
+| candidate | status |
+|---|---|
+| the generated per-ctx ELFs | cleared — correct tokens through them on 2 architectures (22, 23) |
+| the runlist machinery | cleared — same runs, end to end |
+| the BO **size** | cleared — the engine's smaller BO suffices (24.2) |
+| the BO **contents** | **cleared — byte-identical arrangement (this section)** |
+
+**The weights are entirely correct.** So the fault is not in the weights at all, and must be in the
+*other* per-layer inputs:
+
+- **the i5/i6 parameter BOs, which the HOST writes.** `runtime_layer.cpp` builds i6 from a
+  **hardcoded `RT_INV_FREQ[64]` table** recreated from Qwen3's library — and Nanbeige's rope_theta is
+  **70,000,000**, not Qwen3's. So the runlist decode applies **Qwen3's RoPE to every family**. That is
+  a named, checkable candidate, and it is the first one this investigation has produced that is not
+  about weights, ELFs or packing.
+- the activation (arg3) and the KV.
+
+Note this also means the two failing paths have **different** causes: the bf16 prefill uses
+`ri()`/`ri2_build` with `cfg.rope_theta` (correct for Nanbeige at 70e6), yet it also returns a wrong
+token (188). So the four families fail in both paths, for reasons that are not the same — which is
+consistent with every shape-level check having come back clean.
