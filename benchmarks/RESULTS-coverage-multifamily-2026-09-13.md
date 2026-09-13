@@ -2394,3 +2394,31 @@ in a dependency**:
 
 That is a much better position than a suspect list: **every open item is a named interface to a dependency,
 not a wrong value in our code.**
+
+## 51. The conv-tap transform is inside FLM's compiled loader — the converter confirms the file side is clean
+
+Read the last unread source that could have unblocked the conv: the converter's LFM2 path. `models/lfm2.py`
+is a 35-line subclass, and it is **clean**:
+
+- it keeps `token_embd.weight` as **BF16** (a special case) and `_pack_q4nx`es everything else;
+- the base converter has an explicit `if m is None: # not packed, could be a float or bf16 tensor` path.
+
+**So the converter writes the conv taps as BF16 and does not transform them** — which matches the bundle:
+the engine's own loader reads them as BF16 (`model.layers.N.shortconv.conv.weight`, `[2048, 3]`, 12,288 B).
+
+**And that closes the last source.** The taps are BF16 *in the file*, and they appear in **no BO the
+interposer sees** — in any of four encodings (section 44) — while the capture logs **every** `set_arg` and
+dumps **every BO size present** (1,156 x 1 MB plus the large ones; **no 12 KB anywhere**). So no conv-tap
+BO was ever bound.
+
+**Therefore the transform happens inside FLM's compiled loader when it builds its BOs.** It is
+binary-only: the converter's source covers the **file** layout, not FLM's **runtime** BO construction.
+
+**That is the final boundary for LFM2's conv, precisely stated:** the missing artifact is *how `lfm2_npu`
+maps the BF16 taps into a BO*. Resolving it needs either a **debug-symbol build of FLM** or a
+**memory-access trace of the conv kernel** — both outside what this tree can provide, and both a different
+kind of work from everything this session has done.
+
+**And reading the converter was still worth it**: it **confirms the file side** (the taps are untransformed
+BF16) and thereby **eliminates a hypothesis** (a converter-side transform) — the same value every control in
+this session delivered, and the reason the remaining list is interfaces rather than suspects.
