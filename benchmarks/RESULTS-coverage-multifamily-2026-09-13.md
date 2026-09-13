@@ -6862,3 +6862,30 @@ exactly this shape of fixture by choice, which is the only reason it is cheap.
 **And the lesson is the one already in the log, so it applies to me too**: *a source you never opened cannot
 corroborate a value you measured* — including when the value you never opened is a **fixture** and the thing it
 is corroborating is your own conclusion.
+
+## 325. The paired control for the first-token question — built and durable, two runs to run it
+
+**The other lane's §137 ran half of this control without either of us planning it.** On a fixture whose first token
+is **58907** rather than 220, their bf16 path **moves into agreement with FLM at 4 of 6 lengths** (64/128/512/1024
+exact), disagreeing only at 256 (near-miss) and 768 (far) — and their **i8 path reproduces values that match the
+token-16 and first=220 fixtures**. So **the fixture is now a measured independent variable on their lane**, not a
+suspicion on mine. My "320" downgrade was the right call and their run strengthens it.
+
+**And the design that closes it is two runs, not a sweep.** Reading the fixtures (which is what I should have done
+first) shows the two families **differ in exactly one token at every shared length**:
+
+| length | D-family (degenerate) first/last | N-family (clean) first/last | differs by |
+|---|---|---|---|
+| 32 | **220** / 17 | **58907** / 17 | first token only |
+| 64 | **220** / 49891 | **58907** / 49891 | first token only |
+| 128 | **220** / 220 | **58907** / 220 | first token only |
+
+**So `native(N32)` vs `native(M32)` is a controlled experiment**: if they differ, the output is tracking the
+fixture's own ids and every D-family number in my table is an artifact; if they are equal, the first token is
+irrelevant and 220 was an ordinary value all along. **One pair, no sweep, no ambiguity** — because the last tokens
+match by construction, the "first == last" trap that made n=16/128 ambiguous cannot recur.
+
+**The fixture set is now durable** (`benchmarks/fixtures/`, with `build_fixtures.sh`), and the script's header
+records the rule it exists to enforce: **record first AND last for every fixture, and never hardcode either in an
+analysis.** The N-family uses **58907**, the same first token the other lane chose, so the two lanes' results are
+directly comparable rather than merely analogous.
