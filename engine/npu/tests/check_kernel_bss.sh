@@ -2,9 +2,9 @@
 # check_kernel_bss.sh — the fused int4-GU kernel object must contain no .bss symbols.
 #
 # This is the executable form of the lint inside engine/npu/generators/build_p1i4.sh
-# (lines 49-81), extracted so it can run *without* that script's aiecc stage — which is
-# currently blocked by the toolchain version mismatch the generator itself documents — and
-# so CI can run it as its own job (the complement to the xclbin provenance check).
+# (lines 49-81), extracted so it can run *without* that script's aiecc stage — which cannot
+# currently reproduce an xclbin on this box (tracked as #2262) — and so CI can run it as its
+# own job (the complement to the xclbin provenance check).
 #
 # Why .bss is fatal (issue #1838, observed in the #1769 round): the aiecc-generated
 # bare-metal ld.script maps only .text/.data, so zero-initialised statics land in .bss,
@@ -12,15 +12,19 @@
 # mm_kernel_reference.cc is supposed to force every mutable static into .data via
 # KERNEL_STATIC (__attribute__((section(".data")))).
 #
-# STATE ON MAIN (2026-09-11): assertions 1 and 2 hold, assertion 3 FAILS with exactly two
-# symbols, which is issue #2199:
+# STATE ON MAIN (2026-09-12): all three assertions hold — #2199 is fixed, by #2282
+# (f3825fbb6), which restored KERNEL_STATIC on the two counters that had gone back to .bss:
 #     b _ZL9g_i4_call
 #     b _ZZ16matmul_i8_i32_i4E4call
-# i.e. KERNEL_STATIC is absent from mm_kernel_reference.cc (it exists only in
-# engine/npu/kernel/mm_binary_q1.cc). The fix moves those two statics into .data, which
-# changes the kernel object — so it needs the #1897 h2/C2 byte-identity gate re-run and the
-# xclbin rebuilt, which is why this script exists first: it is the check that will fail
-# loudly until that lands, and pass afterwards.
+# and rebuilt the committed xclbin against the new object (67,306 -> 75,040 B) with a
+# regenerated provenance manifest. The pre-regression artifact is not reproducible on this
+# box, so the #1897 byte-identity gate was re-established by its documented substitute: the
+# fused-path [MoE L1 fused dbg] corr comparison, run side by side on both artifacts with
+# byte-identical diagnostics (#2282's PR body).
+# The .bss assertion below is therefore a plain regression guard, not a known-open state: if
+# it fires, read #2199's closing record before assuming a new cause. One caveat stands — the
+# xclbin build flow is still not reproducible here (#2262), so a future .data change cannot
+# be gated end-to-end until that lands.
 #
 # Toolchain roots are DERIVED and a missing one is fatal. The generator this replaces
 # declared /home/bcloud/Xilinx/2025.2/Vitis/aietools/include (no such path; the real one is
@@ -29,7 +33,8 @@
 #
 # Usage: engine/npu/tests/check_kernel_bss.sh
 # Exit:  0 = all assertions hold (RESULT: PASS)
-#        1 = an assertion failed (RESULT: FAIL, or FAIL_BSS_ONLY for the known #2199 case)
+#        1 = an assertion failed (RESULT: FAIL; FAIL_BSS_ONLY when only the .bss
+#            assertion trips — the #2199 regression signature)
 #        2 = toolchain/environment problem — not a verdict about the kernel
 set -euo pipefail
 
