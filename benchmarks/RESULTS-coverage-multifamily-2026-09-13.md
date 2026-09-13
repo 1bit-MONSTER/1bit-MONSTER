@@ -621,3 +621,45 @@ per-ctx layer kernel reads is NOT `bo_act_` (a second buffer, or an address the 
 bakes), or that the regenerated per-ctx ELF carries its input rather than reading the BO.
 Distinguishing those is the next step and is a BO-address comparison plus an act-BO dump,
 not more token-level testing.
+
+## 15. The PUBLISHED FLM bar, and a direct test at its own stated condition (2026-09-13)
+
+### 15.1 What the published bar actually is
+
+`amd-oss/fastflowlm/docs/benchmarks.md` publishes exactly three numbers:
+
+| model | published decode | published prefill | hardware |
+|---|---|---|---|
+| GPT-OSS 20B | 19 tps | — | "AMD Ryzen(TM) AI 7 350 with 32 GB DRAM" |
+| Qwen 3 0.6B | 80 tps | 1,356 tps @ **2K prompt** | (same) |
+| Gemma3 1B | 66 tps | 1,657 tps @ **16K prompt** | (same) |
+
+**The hardware matters and it is not this box.** The published figures are from a Ryzen AI
+**7 350**; this machine is an **AMD RYZEN AI MAX+ 395** (Strix Halo, NPU device `0x17f0`).
+Different silicon — so the published table is a *spec-sheet* bar, not a like-for-like one,
+which is why the on-box `flm bench` has been the primary comparison throughout. Both are
+reported rather than silently picking the flattering one.
+
+### 15.2 Measured at the published condition
+
+Qwen3-0.6B, 2048-token prompt — exactly the condition the published 1,356 tps is quoted at
+(ids generated from `benchmarks/prompts/reclaimer.txt` via `engine/npu/tokenizer/tokenize`):
+
+| | prefill | tps | boot |
+|---|---|---|---|
+| **native** | **881 ms** | **2324** | 220 |
+| FLM, this box | 1101 ms | 1860 | 220 |
+| published bar (Ryzen AI 7 350) | — | 1356 | — |
+
+At the published table's own stated prompt length the native engine is **+25% over FLM on
+identical hardware** and **+71% over the published bar**, with both boot tokens agreeing at
+220 — so this is the same answer computed faster, not a fast wrong one.
+
+On decode, the published 80 tps is where the native engine already sits (80 tps at 1K in the
+six-model scorecard, against FLM's on-box 77.8), and the decode-agreement check now passes
+token-for-token, so that side is not merely matching a number.
+
+**Caveat carried with the number:** the published prefill is quoted at 2K and Gemma3-1B's at
+16K, while the scorecard's prefill column is at 1K. The 2K row above closes that gap for
+Qwen3-0.6B specifically; the other models have not been re-run at their quoted lengths, so
+cross-model published comparisons stay indicative until they are.
