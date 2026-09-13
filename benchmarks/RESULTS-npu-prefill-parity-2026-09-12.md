@@ -1,5 +1,16 @@
 # NPU prefill parity — on-box FLM comparison (2026-09-12)
 
+> **⚠️ CORRECTION (added later the same day): the native bf16 prefill numbers
+> below for npt > 256 are not valid.** That path computes only 256 rows
+> (two hardcoded 128-row GEMM batches), so `NPU_PREFILL_MAX=1024` measured a
+> 256-token pipeline while reporting 1024-token throughput, and the
+> `NPU_ATTN_CPU=1` gate it was checked against is the same broken path.
+> Re-gated against the trusted `NPU_RUNLIST=1` and `NPU_FLM_PREFILL=1` paths,
+> bf16-native agrees at npt=256 (boot=1614) and **disagrees at 512 and 1024**
+> (they say 220 / 25; bf16 says 132352 / 44402).
+> See `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md`.
+> Only the npt=256 native result (~620-668 tok/s) and the decode result stand.
+
 Goal `mttxt22c-a6rv75`, task-n1 re-scope: the native reimplementation is a
 different FP decomposition from FLM's whole-layer kernel, so **bit-exact token
 parity is not the right bar for it** — the FLM-orchestrated path

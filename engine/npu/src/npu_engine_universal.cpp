@@ -3792,7 +3792,26 @@ struct Bf16Ctx {
     // Prefill time is ~flat in npt (64->352ms, 256->366ms), so a higher cap is
     // nearly free IF the attention ELF can handle >256 keys. Raise via
     // NPU_PREFILL_MAX (default keeps the historical 256).
-    if(getenv("NPU_PREFILL_BF16")){ int cap=256; const char* e=getenv("NPU_PREFILL_MAX"); if(e){cap=atoi(e); if(cap<1)cap=256;} if(input_tok_file && npt > cap) npt = cap; }
+    // HARD LIMIT (measured 2026-09-12): the bf16 prefill layer body is written
+    // as exactly two 128-row batches (see h0 / `for (pi = 128; pi < npt; ...)`),
+    // so the GEMMs produce only 256 rows and rows >= 256 are left stale from the
+    // previous layer. NPU_PREFILL_MAX>256 therefore produced a *silently wrong*
+    // prefill: at npt=1024 the bf16 path returned boot=44402 while both trusted
+    // paths (NPU_RUNLIST=1 int8, byte-exact vs FLM, and NPU_FLM_PREFILL=1) return
+    // boot=25. At npt=256 all three agree (boot=1614). Refuse >256 until the
+    // batch loop is generalized, rather than emit a wrong token.
+    if(getenv("NPU_PREFILL_BF16")){
+        int cap=256; const char* e=getenv("NPU_PREFILL_MAX");
+        if(e){ cap=atoi(e); if(cap<1)cap=256; }
+        const int kRows = 256;   // rows the bf16 prefill pipeline actually computes
+        if(cap > kRows){
+            fprintf(stderr, "bf16 prefill: NPU_PREFILL_MAX=%d exceeds the %d rows this "
+                            "path actually computes (2x128 batches) — capping to %d\n",
+                    cap, kRows, kRows);
+            cap = kRows;
+        }
+        if(input_tok_file && npt > cap){ fprintf(stderr, "bf16 prefill: npt %d -> %d (cap)\n", npt, cap); npt = cap; }
+    }
     else if(input_tok_file && npt > XM) npt = XM;
     bool bf16_done = false;
 
@@ -4020,7 +4039,10 @@ struct Bf16Ctx {
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
                 tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
-                if (const char* dh = getenv("NPU_DUMP_HIDDEN")) { FILE* df = fopen(dh, "ab"); if (df) { fwrite(bh.data(), 4, H, df); fclose(df); } }
+                // NPU_DUMP_HIDDEN: full [token][H] block for this layer (was H
+                // floats = token 0 only, which cannot see rows the fixed-width
+                // attention ELF may not have written).
+                if (const char* dh = getenv("NPU_DUMP_HIDDEN")) { FILE* df = fopen(dh, "ab"); if (df) { fwrite(bh.data(), 4, (size_t)npt * H, df); fclose(df); } }
                 fprintf(stderr, "\n"); fflush(stderr);
             }
             sp += npt;

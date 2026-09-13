@@ -167,12 +167,23 @@ struct Bf16Mm {
 #endif
             // Long-context (>256 token) attention ELF: generated with
             // gen_attn_chunk (FLM's qwen3_npu_sequence::gen_mha_engine_seq +
-            // aiebu), loaded from the xclbin dir so chunk variants can be
-            // swapped without a re-embed. Optional: absent => 256 only.
+            // aiebu), so chunk variants can be swapped without a re-embed.
+            //
+            // NOTE (2026-09-12): the file is NOT in FLM's per-model xclbin dir
+            // (only mm/dequant/attn/layer .xclbin live there), so searching
+            // xclbin_dir alone silently found nothing and run_attn fell back to
+            // the embedded 256-token ELF for every npt>256 run — see the
+            // attn_tokens>256 guard in run_attn(). Search a candidate list.
             {
-                std::string l1k = xclbin_dir + "/attn_mha_1024_nh16.elf";
-                FILE* ft = fopen(l1k.c_str(), "rb");
-                if (ft) {
+                std::vector<std::string> cands;
+                if (const char* e = getenv("NPU_ATTN_ELF_1024")) cands.push_back(e);
+                cands.push_back(xclbin_dir + "/attn_mha_1024_nh16.elf");
+                if (const char* xd = getenv("NPU_XCLBIN_DIR"))
+                    cands.push_back(std::string(xd) + "/attn_mha_1024_nh16.elf");
+                cands.push_back("engine/npu/xclbins/attn_mha_1024_nh16.elf");
+                for (const std::string& l1k : cands) {
+                    FILE* ft = fopen(l1k.c_str(), "rb");
+                    if (!ft) continue;
                     fseek(ft, 0, SEEK_END); long sz = ftell(ft); fseek(ft, 0, SEEK_SET);
                     std::vector<char> buf(sz);
                     if (fread(buf.data(), 1, sz, ft) == (size_t)sz) {
@@ -182,7 +193,10 @@ struct Bf16Mm {
                         fprintf(stderr, "  Bf16Mm: long-context attention ELF loaded (%ld B): %s\n", sz, l1k.c_str());
                     }
                     fclose(ft);
+                    if (attn_kernel1k) break;
                 }
+                if (!attn_kernel1k)
+                    fprintf(stderr, "  Bf16Mm: no long-context attention ELF found — npt>256 will use CPU attention\n");
             }
 #endif
         } catch (std::exception& ex) {
@@ -207,7 +221,15 @@ struct Bf16Mm {
     ///   out: 256×qout bf16 (qout = attn_qout = NH*HD)
     bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
         xrt::ext::kernel* kern = (attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get();
-        if (attn_tokens > 256 && attn_kernel1k) kern = attn_kernel1k.get();
+        // MEASURED 2026-09-12: the embedded captured ELF does full causal
+        // attention over the whole KV region (it is NOT limited to the 256 of
+        // its filename) — npt=1024 via this ELF agrees with both the CPU
+        // attention reference and with the generated [0,1024) long-context ELF.
+        // The generated ELF is therefore opt-in only: it is ~1500x slower
+        // (225241 ms vs 147 ms attention for npt=1024, 28 layers), so using it
+        // by default silently destroys the prefill win.
+        if (attn_tokens > 256 && attn_kernel1k && getenv("NPU_ATTN_ELF_1024_USE"))
+            kern = attn_kernel1k.get();
         if (!kern) return false;
         const size_t q = (size_t)attn_qout;
         if (!attn_out) {
