@@ -6320,3 +6320,37 @@ block is staged. That is a bounded place to look, and it does **not** need the c
 **primary** boundary *is* a block boundary (`nblk = 1` vs `nblk >= 2`), and the scatter is a second, smaller
 effect layered on top. The lesson is the one this item keeps relearning — the first sweep stopped at 64 and so it
 saw the secondary effect without the primary one.
+
+## 133. The npt=1 escape localises the single-block bug to the >=2-token path — i.e. the attention or the Q/K/V inputs that only matter with >=2 keys
+
+§132 established the structural split and noted that npt=1 escapes it. That escape is the strongest constraint
+available, and it excludes most of the pipeline:
+
+- at **npt=1** the whole stack — embedding, norms, RoPE, QKV, attention, O, FFN, 32 layers — produces FLM's
+  **exact** token (11771 = FLM-ref, §125). So every stage is correct when exercised with one token;
+- at **npt>=2** the same stack is wrong at **every** length up to 256 (§132). So the defect is in whatever only
+  becomes non-trivial with two or more tokens.
+
+At layer 0, what actually changes between the two:
+
+| stage | npt=1 | npt>=2 |
+|---|---|---|
+| embedding / norms | one row | n rows — same code |
+| RoPE `ra(..., sp+pi)` | position 0 | positions 0..n-1 |
+| Q/K/V build `qk_norm_pi` | one row | n rows **+ `kv_caches` writes** |
+| **attention `attn_omp(..., sp+pi+1)`** | **1 key -> output = V** (passthrough) | **>=2 keys -> a real softmax** |
+| O GEMM / FFN | n=1 rows | n rows — same code |
+
+So the single-block bug lives in **the attention, or in the inputs that only matter once there is more than one
+key** — most plausibly the `bqo`/`kv_caches` construction or the RoPE positions, since `attn_omp` itself is the
+same code the **correct** @1024 case uses.
+
+**Which makes the next test specific rather than a bisect:** run npt=2 with the layer-0 dumps the engine already
+has (`NPU_DUMP_L0` writes `l0_input`, `l0_qkv`, `l0_attn`, `l0_o`) and read the K/V ordering and the attention
+output directly. The observable to look for is the one this item has used four times: **a buffer that is only
+partly written, or written at the wrong stride** — exactly what §122's sentinel made visible on the NPU kernel.
+
+**Caveat, stated because it applies:** these inputs are shared with the *correct* @1024 case, which uses the same
+host code. So if this is a `bqo`/`kv_caches` bug it must be one that is **masked at large `npt`** — e.g. an
+indexing term that only diverges in the first block, or a warm-up row. That is a narrow hypothesis, and the
+layer-0 dump decides it.
