@@ -98,7 +98,9 @@ struct Bf16Mm {
     std::unique_ptr<xrt::elf> attn_elf2k;
     std::unique_ptr<xrt::module> attn_module2k;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
-    int attn_qout = 2048;   // 2048 (NH=16) or 4096 (NH=32)
+    int attn_qout = 2048;   // NH*HD: 2048 = nh16x128, but 4096 is BOTH nh32x128 and nh16x256
+    int attn_hd = 128;      // model head_dim; every shipped attn ELF is hd128, so this
+                            // must be 128 for any of them to be a valid shape match
     int attn_tokens = 256;  // KEYS present in the KV BO for this call
     int attn_rows = 0;      // query rows this call computes (0 => attn_tokens, max 256)
     uint32_t attn_kv_region = 4194304;   // KV region stride in bf16 (8MB, MAX_L=8192)
@@ -236,6 +238,7 @@ struct Bf16Mm {
 
     /// Select the attention ELF + Q width: 2048 (NH=16) or 4096 (NH=32).
     void set_attn_qout(int qout) { attn_qout = qout; }
+    void set_attn_hd(int hd) { attn_hd = hd; }
     /// Set the KV cache region stride (bf16 elems): 8MB=4194304 (H<=2048), 12MB=6291456 (H=2560), 24MB=12582912 (H=4096).
     void set_attn_kv_region(uint32_t region) { attn_kv_region = region; }
     /// Tokens per attention call (<=256 uses the embedded ELF; >256 needs the
@@ -253,20 +256,31 @@ struct Bf16Mm {
     /// call (<=256, the captured kernel's width). The caller may pass pointers
     /// shifted to a later query block to cover a prompt longer than 256.
     bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
-        xrt::ext::kernel* kern = (attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get();
+        // qout alone is NOT a shape selector. Every ELF in the xclbin dir is
+        // head_dim=128 and only nh16/nh32 exist, so a 2-way qout test silently
+        // handed the wrong-shape kernel to four families: Nanbeige nh20 (2560),
+        // Phi4 nh24 (3072) and Gemma3 nh4/nh8 hd256 (1024) all fell through to the
+        // nh16x128 ELF, and Qwen3.5 nh16 hd256 (4096) was promoted to the nh32x128
+        // ELF. Gate on head_dim too: an unmatched shape now yields no kernel
+        // (run_attn returns false) instead of a plausible-looking wrong answer.
+        xrt::ext::kernel* kern = (attn_hd == 128)
+            ? ((attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get())
+            : nullptr;
         // attn_tokens > 256 -> the long-context ELF captured from FLM's REAL
         // 1024-token prefill (elf_0012 of the prefill capture; 98848 B). It is
         // verified token-correct at npt = 256/512/896/1024 against the byte-exact
         // runlist path, and its attention costs 186 ms for a 28-layer npt=1024
         // run. The previously-used generated gen(0,1024) ELF was both wrong and
         // ~1200x slower (223050 ms) and has been replaced in the xclbin dir.
-        if (attn_tokens > 1024 && attn_kernel2k) kern = attn_kernel2k.get();
+        if (attn_hd != 128) kern = nullptr;
+        else if (attn_tokens > 1024 && attn_kernel2k) kern = attn_kernel2k.get();
         else if (attn_tokens > 256) {
             // NH=32 models (attn_qout 4096) must use the nh32 long-context ELF;
             // using the nh16 1k ELF silently produced wrong tokens for
             // Qwen3-4B/8B (boot 87672 vs FLM 220). The 2k slot has no nh32
             // variant yet, so (1024,2048] on nh32 still uses the nh16 ELF.
-            if (attn_qout == 4096 && attn_kernel1k32) kern = attn_kernel1k32.get();
+            if (attn_hd != 128) kern = nullptr;
+            else if (attn_qout == 4096 && attn_kernel1k32) kern = attn_kernel1k32.get();
             else if (attn_kernel1k) kern = attn_kernel1k.get();
         }
         if (!kern) return false;

@@ -170,7 +170,57 @@ Section 3 above said Nanbeige/Phi4 "need a per-shape attention ELF". A direct te
    (default embedded ELF, no long-context ELF involved).
 
 **Conclusion:** for Nanbeige the wrong answer is not caused by the >256 attention
-ELF; swapping it does not move the token, and the model is already wrong at 256. The
+ELF; swapping it does not move the token, and the model is already wrong at 256.
+
+> **SUPERSEDED by section 9.** The "architectural host-path, not a capture" call below
+> was wrong. The real cause is that the attention **kernel shape** is wrong: the
+> selector is a 2-way `qout` test and every shipped ELF is `hd128`/nh16-or-nh32, so
+> Nanbeige (nh20), Phi4 (nh24), Gemma3 (nh4/nh8 hd256) and Qwen3.5 (nh16 hd256) are
+> all fed a wrong-shape kernel. It **is** a capture problem. The
 mismatch is architectural (the engine's host path — norms / RoPE base / attention
 interface for `nh20/nkv4/hd128`) and needs family implementation, not a capture. The
 same caution applies to the Phi4/Qwen3.5/Gemma3 rows in section 3.
+
+## 9. ROOT CAUSE — the attention kernel SHAPE is wrong (2026-09-13, supersedes §8)
+
+One defect explains all four failing families.
+
+**Evidence**
+- `npu_engine_bf16_mm.h` declared `attn_qout` as "2048 (NH=16) or 4096 (NH=32)" — a
+  **2-way** flag, not a shape.
+- `run_attn()` selected `kern = (attn_qout == 4096 && attn_kernel32) ? attn_kernel32
+  : attn_kernel` — so *everything that is not exactly 4096* received the **nh16/hd128**
+  ELF.
+- The xclbin dir contains only `attn_mha_{256,1024}_{nh16,nh32}.elf` and
+  `attn_mha_2048_nh16.elf` — every one **head_dim = 128**, and only nh16/nh32 exist.
+- `bf16mm_set_attn_qout(NH * HD)` **cannot** distinguish nh32x128 from nh16x256: both
+  are 4096.
+
+| family | NH | HD | qout | ELF chosen | correct? |
+|---|---|---|---|---|---|
+| Qwen3 0.6/1.7B | 16 | 128 | 2048 | nh16 | yes |
+| Qwen3 4/8B, VL, Llama-3.1 | 32 | 128 | 4096 | nh32 | yes |
+| **Nanbeige4.1-3B** | 20 | 128 | 2560 | nh16 | **no** |
+| **Phi4-mini** | 24 | 128 | 3072 | nh16 | **no** |
+| **Qwen3.5-4B** | 16 | 256 | 4096 | nh32 | **no** (nh *and* hd) |
+| **Gemma3 1B/4B** | 4 / 8 | 256 | 1024 / 2048 | nh16 | **no** |
+
+So all four failures are a wrong-shape attention kernel — a **capture** problem after
+all, which §8 concluded it was not. Each family needs its own attention ELF and the
+selector must key on (NH, HD), not on a qout that aliases distinct shapes.
+
+**Honest caveat.** §8's swap test put a captured Nanbeige ELF into the
+`NPU_ATTN_ELF_1024` slot and the boot stayed *exactly* 1214. That does not fit "the
+kernel is the whole story": either the substituted ELF was not the attention kernel
+(the capture's largest ELF may be a GEMM/MoE binary), or a second error exists in that
+family. That test must be repeated now that the selector is shape-aware.
+
+**Fix applied in this commit.** `attn_hd` is plumbed beside `attn_qout`
+(`bf16mm_set_attn_hd(HD)`) and every ELF choice is gated on `attn_hd == 128`. An
+unmatched shape now makes `run_attn()` return false — an explicit failure — instead of
+silently computing 16-head hd128 attention for a 20-head model. This also fixes a bug
+introduced by `79013d8f2` (the nh32 >256 fix), which promoted any `qout == 4096` to the
+nh32 long-context ELF: right for Qwen3 4B/8B (nh32/hd128), wrong for Qwen3.5-4B (nh16/hd256).
+
+**Next:** capture the per-family attention ELFs from FLM and index them by (NH, HD).
+The generic interposer path already collects them (`capnb_flm` 1585 files, `caplfm2` 1182).

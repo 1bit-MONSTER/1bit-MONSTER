@@ -67,6 +67,7 @@ extern "C" float* dequant_i8_to_float_ex(const uint8_t*,int,int,int*,int*);
 extern "C" void bf16mm_dump_w(int idx, const char* path);
 extern "C" int bf16mm_init(const char* model_dir, const char* xclbin_dir);
 extern "C" void bf16mm_set_attn_qout(int qout);
+extern "C" void bf16mm_set_attn_hd(int hd);
 extern "C" void bf16mm_set_attn_kv_region(uint32_t region);
 extern "C" void bf16mm_set_attn_tokens(int n);
 extern "C" void bf16mm_set_attn_rows(int n);
@@ -3864,6 +3865,7 @@ struct Bf16Ctx {
         std::vector<int> Wqkv(NC), Wo(NC), Wgu(NC), Wd(NC);
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV, HD) == 0) {
             bf16mm_set_attn_qout(NH * HD);
+            bf16mm_set_attn_hd(HD);
             // KV cache region stride is baked into the captured attention ELF
             // (region = MAX_L x 4 heads x HD x 2 bytes): the NH=16 ELF was
             // captured at MAX_L=8192 -> 8MB; the NH=32 ELF (4B/8B) at
