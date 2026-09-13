@@ -3246,3 +3246,44 @@ difference in a generation parameter (tile shape, K/N, memory groups) is the thi
 source of a within-launch race is a **missing barrier between the DMA and compute stages**, and that is a
 property of the generated xclbin rather than of the instruction stream — which is why ruling the stream out
 was worth doing first.
+
+## 72. FOUND IT: Nanbeige's i8 xclbins were built for the WRONG dims
+
+The generator is in-repo and per-model: `engine/npu/generators/build_all.sh` calls
+`n1_core_i8_v26.py -M 128 -K <K> -N <N> -m 32 -k 64 -n 128 -c <cols> -b 5`, then `aiecc` — one entry per
+model per projection. **Nanbeige's entries do not match the model:**
+
+| GEMM | built as | runtime (from the model's `config.json`) |
+|---|---|---|
+| QKV | K=2560 **N=3840** | K=2560 **N=3584** |
+| G | K=2560 **N=8192** | K=2560 **N=10752** |
+| U | K=2560 **N=8192** | K=2560 **N=10752** |
+| D | **K=8192** N=2560 | **K=10752** N=2560 |
+
+**The runtime side is right and the xclbin is wrong.** The engine's QKV width is
+`(NH + 2*NKV)*HD = (20 + 2*4)*128 = 3584`, and its `IM` is 10752 — and both are read from the model's own
+config, which says `num_attention_heads 20`, `num_key_value_heads 4`, `head_dim 128`,
+`intermediate_size 10752`. The generated xclbins used **8192** where 10752 belongs — a suspiciously round
+number — and **3840** (15 tiles) for the QKV where **3584** (14 tiles) belongs: one tile too many.
+
+**Every other model in the list matches.** Qwen3.5-4B `QKV:2560:6144` = (16 + 2*4)*256 ✓; Phi4
+`QKV:3072:5120` = (24 + 2*8)*128 ✓; and 0.6B's own entries ✓. **Nanbeige is the outlier**, and Nanbeige is
+the model that fails.
+
+**It explains the entire symptom set at once:**
+
+- **wrong results** — a kernel generated for a different matrix width;
+- **nondeterminism** — the shim DMA and tile descriptors address buffers of the wrong extent, so the
+  timing-dependent behaviour is in the generated program, not in any data;
+- **Nanbeige-specific** — the only wrong entries in the list;
+- **deterministic for Qwen3-0.6B** — its entries match;
+- **unaffected by every host-side fix** — the host data was always correct, which is why §68 and §69 kept
+  finding identical inputs;
+- **absent from FLM's path** — FLM drives its own xclbins.
+
+**And the toolchain to fix it is present**: `/home/bcloud/mlir-aie/.venv/bin/python3` and
+`/home/bcloud/mlir-aie/build_tmp/bin/aiecc`.
+
+**The next step**: rebuild Nanbeige's four xclbins with `QKV:2560:3584:8`, `G:2560:10752:8`,
+`U:2560:10752:8`, `D:10752:2560:4`, install them, and measure the boot against the **1033** target with
+Qwen3-0.6B @256 = **1614** as the no-regression gate.
