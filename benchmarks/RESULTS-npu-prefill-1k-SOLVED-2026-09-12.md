@@ -141,3 +141,52 @@ The engine's i8/xclbin fallback path resolves to
 `/home/bcloud/1bit-MONSTER-pi/engine/npu/xclbins/...` when `NPU_XCLBIN_DIR` is
 not exported (a third worktree, from a concurrent session). Always export
 `NPU_XCLBIN_DIR`; `benchmarks/flm_parity.sh` does this itself.
+
+## Third fix: the GEMM was throwing away half of every launch
+
+`get_mm_app` generates the cached GEMM sequence with **M=256**
+(`gemm_->generate_seq(app->seq(), 256, K, N, woff, ...)`), but `ensure_a` split A
+into two 128-row halves and zero-padded each to 256 rows:
+
+```
+a_cache0 = A[0..127]  + 128 rows of zeros
+a_cache1 = A[128..255] + 128 rows of zeros
+```
+
+so every run had the kernel compute 128 useful rows plus 128 rows of zeros —
+**half of every launch was wasted** — and a 256-row block took two launches.
+
+Fix: `ensure_a` now stages 256 contiguous rows into `a_cache0` with no padding,
+`gemm_wait` reads back `g_run_rows[batch]` (=256) rows instead of a hardcoded
+128, and the engine makes **one** launch per 256-row block for QKV/O/GU/D
+instead of two. `NPAD` grew to `round_up(npt,256)+512` so the tail block's
+surplus staging/readback stays in bounds.
+
+Instruction seqs are unchanged, so `get_mm_app` still caches one app per
+(K,N,woff) across the whole prefill.
+
+### Effect (gate unchanged — same trusted boot tokens at every length)
+
+| npt | before | after | |
+|---|---|---|---|
+| 256 | 378 ms | **328 ms** | 1.15x |
+| 384 | 521 ms | **487 ms** | 1.07x |
+| 512 | 580 ms | **469 ms** | 1.24x |
+| 640 | 680 ms | **570 ms** | 1.19x |
+| 896 | 861 ms | **700 ms** | 1.23x |
+| 1024 | 906 ms | **720 ms** | 1.26x |
+
+Boot tokens after the change: 1614 / 82 / 220 / 16187 / 29978 / 25 — all equal
+to the byte-exact `NPU_RUNLIST=1` path.
+
+### Harness (ctx 1k, 32 decode tokens, same run)
+
+| metric | native | FLM on-box | gap |
+|---|---|---|---|
+| prefill tok/s | **1440.9** | 1313.29 | **+9.7%** ✅ |
+| TTFT (s) | **0.711** | 0.748 | **5.0% faster** ✅ |
+| decode tok/s | 67 | 72.04 | -7.0% ❌ |
+
+Native now meets-or-beats the on-box FLM bar on prefill and TTFT. Decode is the
+last metric behind; it runs on the separate whole-layer runlist path, so the
+GEMM fix above does not apply to it.

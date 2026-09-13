@@ -3894,7 +3894,10 @@ struct Bf16Ctx {
             // and NPU_PREFILL_MAX>256 reported the 256-row wall time as if it
             // had prefetched npt tokens — see
             // benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md).
-            const int NPAD = ((npt + 255) / 256) * 256 + 256;  // last block still reads 256 rows
+            // +256 rows of slack: ensure_a now stages a full 256-row block from
+            // the shifted base, and gemm_wait reads 256 rows back, so the tail
+            // block must be able to run past npt without leaving the buffer.
+            const int NPAD = ((npt + 255) / 256) * 256 + 512;
             const int NP = NPAD;
             std::vector<float> bh(NP * H), bqo(NP * qkvn), bat(NP * NH * HD), boo(NP * H),
                                bdw(NP * H), bsb(NP * H);
@@ -3956,18 +3959,11 @@ struct Bf16Ctx {
                 // giving the kernel M=128 per launch and overlapping batch 1's
                 // kernel with batch 0's norm/RoPE.
                 for (int b = 0; b < npt; b += 256) {
-                    const int r0 = npt - b < 128 ? npt - b : 128;
-                    const int r1 = npt - b - 128 < 0 ? 0 : (npt - b - 128 < 128 ? npt - b - 128 : 128);
+                    const int rows = npt - b < 256 ? npt - b : 256;
                     bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 0, bA.data() + (size_t)b * H);
                     bf16mm_gemm_wait(0, bC.data() + (size_t)b * qkvn);
-                    if (r1 > 0) bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, 1, bA.data() + (size_t)b * H);
                     #pragma omp parallel for schedule(static) num_threads(host_threads())
-                    for (int pi = b; pi < b + r0; pi++) qk_norm_pi(pi, pi);   // brow is absolute: readback lands at bC[pi*qkvn]
-                    if (r1 > 0) {
-                        bf16mm_gemm_wait(1, bC.data() + (size_t)(b + 128) * qkvn);
-                        #pragma omp parallel for schedule(static) num_threads(host_threads())
-                        for (int pi = b + 128; pi < b + 128 + r1; pi++) qk_norm_pi(pi, pi);
-                    }
+                    for (int pi = b; pi < b + rows; pi++) qk_norm_pi(pi, pi);   // readback lands at bC[pi*qkvn]
                 }
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();
@@ -4040,23 +4036,13 @@ struct Bf16Ctx {
                 // O GEMM (K = NH*HD) — 128-row blocks.
                 if (attn_host) for (int k = 0; k < npt; k++) for (int j = 0; j < qout; j++) bA[(size_t)k * qout + j] = f32_to_bf16(bat[k * qout + j]);
                 for (int b = 0; b < npt; b += 256) {
-                    const int r0 = npt - b < 128 ? npt - b : 128;
-                    const int r1 = npt - b - 128 < 0 ? 0 : (npt - b - 128 < 128 ? npt - b - 128 : 128);
+                    const int rows = npt - b < 256 ? npt - b : 256;
                     bf16mm_gemm_launch(Wo[l], qout, H, 0, 0, bA.data() + (size_t)b * qout);
                     bf16mm_gemm_wait(0, bC.data() + (size_t)b * H);
-                    if (r1 > 0) bf16mm_gemm_launch(Wo[l], qout, H, 0, 1, bA.data() + (size_t)b * qout);
                     #pragma omp parallel for schedule(static) num_threads(host_threads())
-                    for (int pi = b; pi < b + r0; pi++) {
+                    for (int pi = b; pi < b + rows; pi++) {
                         for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
                         for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
-                    }
-                    if (r1 > 0) {
-                        bf16mm_gemm_wait(1, bC.data() + (size_t)(b + 128) * H);
-                        #pragma omp parallel for schedule(static) num_threads(host_threads())
-                        for (int pi = b + 128; pi < b + 128 + r1; pi++) {
-                            for (int i = 0; i < H; i++) boo[pi * H + i] = bf16g(bC[pi * H + i]);
-                            for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + boo[pi * H + i];
-                        }
                     }
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
@@ -4068,48 +4054,26 @@ struct Bf16Ctx {
                 // 128-row blocks; SiLU lands in bGu so bA stays intact for the
                 // next block's A readback.
                 for (int b = 0; b < npt; b += 256) {
-                    const int r0 = npt - b < 128 ? npt - b : 128;
-                    const int r1 = npt - b - 128 < 0 ? 0 : (npt - b - 128 < 128 ? npt - b - 128 : 128);
+                    const int rows = npt - b < 256 ? npt - b : 256;
                     bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 0, bA.data() + (size_t)b * H);
                     bf16mm_gemm_wait(0, bC.data() + (size_t)b * 2 * IM);
-                    if (r1 > 0) bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, 1, bA.data() + (size_t)b * H);
                     #pragma omp parallel for schedule(static) num_threads(host_threads())
-                    for (int pi = b; pi < b + r0; pi++) {
+                    for (int pi = b; pi < b + rows; pi++) {
                         for (int i = 0; i < IM; i++) {
                             float gv = bf16g(bC[pi * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
                             bGu[(size_t)pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i]));
                         }
                     }
-                    if (r1 > 0) {
-                        bf16mm_gemm_wait(1, bC.data() + (size_t)(b + 128) * 2 * IM);
-                        #pragma omp parallel for schedule(static) num_threads(host_threads())
-                        for (int pi = b + 128; pi < b + 128 + r1; pi++) {
-                            for (int i = 0; i < IM; i++) {
-                                float gv = bf16g(bC[pi * 2 * IM + i]); if (!std::isfinite(gv)) gv = 0;
-                                bGu[(size_t)pi * IM + i] = f32_to_bf16(gv * sigmoid_fast(gv) * bf16g(bC[pi * 2 * IM + IM + i]));
-                            }
-                        }
-                    }
                 }
                 // D GEMM — 128-row blocks, A = the SiLU'd GU output.
                 for (int b = 0; b < npt; b += 256) {
-                    const int r0 = npt - b < 128 ? npt - b : 128;
-                    const int r1 = npt - b - 128 < 0 ? 0 : (npt - b - 128 < 128 ? npt - b - 128 : 128);
+                    const int rows = npt - b < 256 ? npt - b : 256;
                     bf16mm_gemm_launch(Wd[l], IM, H, 0, 0, bGu.data() + (size_t)b * IM);
                     bf16mm_gemm_wait(0, bC.data() + (size_t)b * H);
-                    if (r1 > 0) bf16mm_gemm_launch(Wd[l], IM, H, 0, 1, bGu.data() + (size_t)b * IM);
                     #pragma omp parallel for schedule(static) num_threads(host_threads())
-                    for (int pi = b; pi < b + r0; pi++) {
+                    for (int pi = b; pi < b + rows; pi++) {
                         for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
                         for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
-                    }
-                    if (r1 > 0) {
-                        bf16mm_gemm_wait(1, bC.data() + (size_t)(b + 128) * H);
-                        #pragma omp parallel for schedule(static) num_threads(host_threads())
-                        for (int pi = b + 128; pi < b + 128 + r1; pi++) {
-                            for (int i = 0; i < H; i++) bdw[pi * H + i] = bf16g(bC[pi * H + i]);
-                            for (int i = 0; i < H; i++) bh[pi * H + i] = bsb[pi * H + i] + bdw[pi * H + i];
-                        }
                     }
                 }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }

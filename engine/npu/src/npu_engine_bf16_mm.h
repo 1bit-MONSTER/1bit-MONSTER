@@ -444,22 +444,25 @@ struct Bf16Mm {
         return *it->second;
     }
 
-    /// Build (or reuse) the two sparse-A device buffers for the 256-token batch.
+    /// Stage 256 CONTIGUOUS A rows into a_cache0.
+    ///
+    /// The cached GEMM seq is generated with M=256 (see get_mm_app), so one run
+    /// consumes 256 rows. The previous staging split A into two 128-row halves
+    /// and zero-padded each to 256: that made the kernel compute 128 useful rows
+    /// plus 128 rows of zeros per run, i.e. HALF of every launch was wasted, and
+    /// it took two launches per 256 rows. Staging the full 256 rows and reading
+    /// back 256 rows halves the launch count and does the same device work.
+    ///
+    /// Callers pass A already shifted to the block base; the engine pads its
+    /// buffers to NPAD = round_up(npt,256)+256 so the 256-row read stays in
+    /// bounds (the tail block's surplus rows are computed but never consumed).
     void ensure_a(const uint16_t* A, uint32_t K) {
         bool a_same = (A == a_src_ptr) && (K == a_src_K);
         if (a_same) for (int i = 0; i < 64 && a_same; i++) a_same = (A[i] == a_src_sample[i]);
         if (a_same) return;
-        if (hAb.size() < 256 * K) hAb.resize(256 * K);
-        size_t a_elems = 256 * K;
+        size_t a_elems = (size_t)256 * K;
         if (!a_cache0 || a_cache0_elems < a_elems) { a_cache0 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache0_elems = a_elems; }
-        if (!a_cache1 || a_cache1_elems < a_elems) { a_cache1 = std::make_unique<buffer<uint16_t>>(*dev, a_elems); a_cache1_elems = a_elems; }
-        uint16_t* Ab = hAb.data();
-        memset(Ab, 0, a_elems * 2);
-        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[i * K], K * 2);
-        memcpy(a_cache0->data(), Ab, a_elems * 2);
-        memset(Ab, 0, a_elems * 2);
-        for (int i = 0; i < 128; i++) memcpy(&Ab[i * K], &A[(128 + i) * K], K * 2);
-        memcpy(a_cache1->data(), Ab, a_elems * 2);
+        memcpy(a_cache0->data(), A, a_elems * 2);   // 256 contiguous rows, no padding
         a_src_ptr = A; a_src_K = K;
         for (int i = 0; i < 64; i++) a_src_sample[i] = A[i];
     }
@@ -468,6 +471,7 @@ struct Bf16Mm {
     xrt::run g_run[2];
     bool g_run_active[2] = {false, false};
     uint32_t g_run_N[2] = {0, 0};
+    uint32_t g_run_rows[2] = {0, 0};   // rows the run actually produced
 
     void gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff, int batch, const uint16_t* A) {
         ensure_a(A, K);
@@ -486,6 +490,7 @@ struct Bf16Mm {
         g_run[batch].start();
         g_run_active[batch] = true;
         g_run_N[batch] = N;
+        g_run_rows[batch] = 256;   // the cached seq is M=256 and a_cache holds 256 real rows
     }
 
     void gemm_wait(int batch, uint16_t* C) {
@@ -493,7 +498,7 @@ struct Bf16Mm {
         g_run[batch].wait();
         buffer<uint16_t>& c = batch == 0 ? *c_cache0 : *c_cache1;
         c.sync_from_device();
-        memcpy(C, c.data(), 128 * g_run_N[batch] * 2);
+        memcpy(C, c.data(), (size_t)g_run_rows[batch] * g_run_N[batch] * 2);
         g_run_active[batch] = false;
     }
 
