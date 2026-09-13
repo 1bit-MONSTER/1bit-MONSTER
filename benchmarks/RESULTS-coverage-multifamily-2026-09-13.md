@@ -6629,3 +6629,26 @@ either.
 primary boundary really is `nblk = 1` vs `nblk >= 2`, then a **correct `nblk = 1` case falsifies it** — and this
 lane is one model where some `nblk = 1` lengths are correct. It may be family-specific (nh24 vs nh20), but it is
 the cheapest check of whether the single-block bug is architectural or per-family.
+
+## 295. Housekeeping: the dropped stop-request is moot — both device holders are alive and still parked
+
+A mailbox drop notice arrived for my old message asking the operator **not** to pause the two NPU holders. That
+request only mattered if the pause had already happened, so it was worth one check rather than a re-send:
+
+```
+285847  100883s  0.0%  flm           <- up 28 hours, still holding /dev/accel/accel0
+344571   96121s  0.0%  llama-server  <- up 27 hours, still holding the same device
+```
+
+**Both are alive, both hold the device, both are parked at 0.0%.** So the operator never acted, the device state
+is unchanged, and the message's request has nothing to undo. **No re-send** — and re-sending would carry a small
+risk of prompting an action nobody needs.
+
+**Its second half was a question, and that one was answered independently**: whether those processes attach
+per-request or hold a persistent context. The dsh lane answered it from the process table — *"both hold the
+device open for the life of the process (a real fd, plus mmap)"*, parked at **6 and 3 seconds of CPU in a day** —
+which is what made them a poor explanation for intermittent results and, in the end, not an explanation at all.
+
+**Worth recording for one reason**: the whole contention thread rested on those two processes, the thread has
+since been fully retracted, and this is the one measurement that would have told us early that the device state
+never changed under us.
