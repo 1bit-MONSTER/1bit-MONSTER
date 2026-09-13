@@ -6,6 +6,27 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-13 — unlanded-work audit: four branches existed only on this box
+
+`git branch` here has **~78 refs that are not on `origin`**. Most are harmless —
+they are branches whose work landed via squash-merge, so they *look* ahead of
+`main` while their content is already in it. Four are not harmless: work with no
+PR and no remote ref, i.e. one `git worktree remove` away from being lost. All
+four are now pushed to `origin` (preservation only, deliberately no PRs):
+
+| branch | commits | what it holds |
+|---|---|---|
+| `fix/2114-cascade-qn-guard` | 26 | the #2114 fold-scale guard — whose *result* is posted on the issue (no per-layer guard can fix it, the healthy per-layer error is already above the recurrence's stability threshold) — **plus** #2078/#2113 cascade launch perf (per-task-group batched fills) and the VECFIX/RE xclbins + build recipes. **None of that perf work or those artifacts are in `main`.** |
+| `run-2145`, `fix/2145-ctx-guard-verify` | 4 + 4 | verification runs for the still-open #2145 (state-imported context on the HRX device) |
+| `census-sweep-fix` | 1 | census one-liner; largely superseded by the #2315 sweep |
+
+Method, so it can be repeated: `git for-each-ref` for branches ahead of `main`
+that have no `origin/<branch>`, then `gh pr list --head <branch> --state all` —
+**per branch**. Do not batch that check through a `--limit N` list: it truncates
+*silently at exactly N*, and a capped list produces confident false "NO PR"
+verdicts. That is how this audit initially mislabelled a fifth branch
+(`docs/tracking-20260913-verify`, which already had PR #2330).
+
 ## 2026-09-13 (midday) — strixhalo: census alert plumbing
 
 - **PR #2322** (`fix/census-watch-alert-delta`, commit `3ce96c476`): the census
