@@ -4573,3 +4573,47 @@ so **Nanbeige loads it** (their §97 already found that @256 and @2048 fall back
 Phi4 shows the same family is **incomplete for nh24** — no candidate at all, straight to CPU. So the
 "per-shape attention ELF" premise is not merely suspect for nh20; for at least one shape in this tree there
 is **no NPU attention kernel in the path at all**.
+
+## 120. Phi4 does not even run the legacy nh16 kernel — the ELF LOADS and the launch is then refused
+
+**The nh20 lane's §97 arrived while this was being written and resolves the slots correctly in outline**:
+shape-specific name **first**, then four legacy names; **no nh24 file exists at any length**; **Nanbeige has
+only one nh20 file** (@1024, the 97.9%-nh32 one from §95) with **@256 and @2048 falling back to nh16**; and
+`attn_shaped_ok` is set **only when the resolved path contains `_hd`**, so the legacy names do not even mark
+the slot as shaped.
+
+**My log refines it in the way that matters.** Phi4 **does load** the legacy set — four lines:
+
+```
+Bf16Mm: attention ELF loaded (98848 B):  .../attn_mha_1024_nh16.elf
+Bf16Mm: attention ELF loaded (177696 B): .../attn_mha_1024_nh32.elf
+Bf16Mm: attention ELF loaded (194736 B): .../attn_mha_2048_nh16.elf
+Bf16Mm: attention ELF loaded (26928 B):  .../attn_mha_256_nh16.elf
+```
+
+— and then **every call** says, seven times in one 256-token run:
+
+```
+bf16 attn unavailable — CPU attn_omp fallback
+```
+
+**So Phi4's attention runs on the HOST, not on the nh16 kernel.** The fallback is **one level deeper than
+the legacy name**: the ELF *resolves*, then the *launch is refused* and the host path takes over. Anything
+built on "Phi4 runs the nh16 kernel" would be fixing a path that is not the one executing.
+
+**Which also makes §97's "no clean probe until a real nh24 ELF exists" an understatement.** For Phi4 there
+is **no NPU attention in the path at all**, so an nh24 ELF would be **the first thing to make the NPU path
+reachable**, not a correction to something already running.
+
+**And we converged independently.** I retracted §101's conclusion 2 for exactly their reason — they reached
+it from the **slot-resolution** side, I from the **stderr** side, and the log line is in both. That is worth
+recording as more than coincidence: two different instruments, same answer.
+
+**Their framing of the real finding is the right one.** §9's "capture the per-shape attention ELF" is **not
+one missing capture**. For Nanbeige it is **two missing files** (@256, @2048) **plus one of unverified
+shape** (@1024); for Phi4 it is **a missing shape entirely**. That is a different task from the one §9
+implies, and it is the honest scope of what the attention-ELF work actually costs.
+
+**And the practical lesson, passed on**: my Phi4 commands ran with `2>/dev/null` and this engine announces
+the attention path on **stderr**. That line was the answer. Several of my earlier "no output" readings in
+this stretch were almost certainly the same mistake.
