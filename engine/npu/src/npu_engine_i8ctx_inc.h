@@ -336,6 +336,17 @@ struct I8Ctx {
     // K×N are the logical (unpadded) weight dims; the BO is KD×ND (padded to 128).
     // Zero-init ensures padded regions contribute zero to the GEMM output.
     void packB(int l, const float* w, int K, int N, float& sout) {
+        // Weight-content checksum (NPU_DBG=1), placed INSIDE the implementation so it fires for
+        // whichever context FLM_PACKB selects. My previous two attempts sat at call sites and never
+        // fired, because Nanbeige packs through a branch I misread. This checks the DEQUANTIZED
+        // weights -- the last host input not yet proven stable across runs.
+        // RESULTS-coverage-multifamily 67.
+        if (getenv("NPU_DBG") && l < 3) {
+            unsigned long long hh = 1469598103934665603ULL;
+            const unsigned char* pp = (const unsigned char*)w;
+            for (size_t i = 0; i < (size_t)K * N * sizeof(float); i++) { hh ^= pp[i]; hh *= 1099511628211ULL; }
+            fprintf(stderr, "[WCHK i8] l=%d K=%d N=%d fnv=%016llx\n", l, K, N, hh);
+        }
         // Per-output-column weight scales: each column j is quantized with its
         // own amax_j/127 and dequantized with group_scales[l][j]. A single
         // per-tensor scale packed low-magnitude columns (Qwen3 v_proj rms

@@ -3085,3 +3085,43 @@ somewhere not yet enumerated.
 `HybridFlmCtx::packB` and `I8Ctx::packB` themselves** — the two implementations the `FLM_PACKB` macro
 chooses between — rather than at a call site inferred by reading. An instrument at the implementation
 fires for whichever branch is live, which is precisely the mistake the last two attempts made.
+
+## 68. The inputs are FULLY EXONERATED: dequantized weights are byte-identical across runs while the boot token varies
+
+**Placed inside the implementation this time.** The checksum sits at the head of `I8Ctx::packB` — the
+implementation the `FLM_PACKB` macro selects — so it fires for whichever branch is live. It does: 12 lines
+per run, where my previous two attempts printed nothing.
+
+**Two runs, same prompt, same binary, interleaved:**
+
+| layer | GEMM | checksum |
+|---|---|---|
+| 0 | K=2560 N=2560 | `061467c88b0eb07a` |
+| 0 | K=2560 N=10752 | `d6f74c45214f8481` |
+| 0 | K=2560 N=10752 | `2a3e1342c44c4218` |
+| 0 | K=10752 N=2560 | `f820a258173dd82b` |
+| 1 | (all four) | `7a25ffa0800c9df1`, `e7319ec6e1156010`, `01488c67c3f88a0b`, `c08cbb03d5a92a52` |
+| 2 | (all four) | `865a62a62c46686a`, `dfafba7e35f9a823`, `70a1f190a95cd444`, `8613ad5efcdaf60c` |
+
+**Every one identical across the two runs.** Boot token: **33548** vs **56648**.
+
+**So the input side is fully exonerated.** Identical inputs, **byte-identical dequantized weights**, a
+**deterministic device** (FLM's own path is stable under the same contention, §65) — and different outputs.
+That rules out the entire host-side family at once: the dequant, the packer's inputs, the embedding rows,
+the norm weights. Each of those has now been *measured* stable rather than argued to be.
+
+**What remains is one specific thing**: the kernel reading a buffer **we never write**. That is the same
+class as the seven BOs already fixed — §61's bf16 KV BO, §64's `I8Ctx` `bA`/`bC`, §66's fused gs tails and
+scratch BO, `HybridFlmCtx`'s `bA`/`bC` — so the class is right; there is simply more of it than has been
+enumerated.
+
+**And the tool is now proven.** A checksum **inside the implementation** fires for whichever branch the
+macro selects; both earlier attempts sat at call sites inferred by reading and never fired, which is how
+they were caught.
+
+**The named next measurement**, aimed at BOs rather than at float inputs: checksum **the buffers the kernel
+actually reads** — the **packed weight BO** after `packB`'s tail (not `w`, its float input), **`bA` after
+quantize**, and **any BO in the fused kernel's signature beyond the three the non-fused one takes**. The
+fused path has a **scratch BO** documented as the D-phase A source, and **per-column silu metadata** — per
+`update_fused_header_i4`'s own comment, "the kernel's silu stage reads S'[j] per column instead of
+gs[0]/gs[4]". One of them will vary, and that one is the buffer to zero.
