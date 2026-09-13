@@ -249,3 +249,30 @@ engine supports — prefill +25% on-box and +71% over the published bar at the p
 condition (section 3), TTFT ahead on all six (section 2), decode 18-24% on a single harness
 (section 9.2) — with decode correctness established to bf16 precision (section 4) and coverage
 limits documented with their best explanations (section 5).
+
+### 9.3 Decode row completed — 5 of 6, and Llama is blocked by tooling, not by a result
+
+Finished the one-harness comparison for the two models missing from section 9.2:
+
+| model | native | FLM, same harness | native / FLM |
+|---|---|---|---|
+| Qwen3-VL-4B | 45.3 ms/tok (**22 tok/s**) | 55.0 ms/tok (18 tok/s) | **1.22x** |
+| Llama-3.1-8B | *(no ms/tok line)* | 91.3 ms/tok (11 tok/s) | not measurable |
+
+VL-4B lands exactly where the dense 4B does (1.22x), which is the expected result — same size,
+and its prefill/TTFT rows behave the same way too.
+
+**Llama-3.1-8B's native decode cannot be measured at all**, and it is worth being precise about
+why, because it is a tooling limit rather than a performance unknown:
+
+- `NPU_RUNLIST=1` prints no `ms/tok` line for it, while `NPU_FLM_DECODE=1` does (11 tok/s);
+- the runlist decode needs per-context layer ELFs, and only Qwen3's exist
+  (`npu-infer/captures/txn-elfs*`, ~4100 files each, all Qwen3 shapes);
+- `gen_layer_elfs` drives `qwen3_npu_sequence::gen_layer_seq`, so it is Qwen3-specific and cannot
+  emit Llama's stream — but FLM ships `libllama_npu`, so the generator for those shapes exists in
+  FLM's own library. **What is missing is the tool, not the kernel.**
+
+So the decode row is **5 of 6**: every model that can be measured beats FLM by 18-24%
+(0.6B 1.23x, 1.7B 1.24x, 4B 1.22x, VL-4B 1.22x, 8B 1.18x), and the sixth is blocked by a missing
+per-shape ELF generator rather than by an adverse measurement. Adding it is the same class of work
+as the per-family attention ELF hook (26850018a / 321983c67) — a tool and a file, not a kernel.
