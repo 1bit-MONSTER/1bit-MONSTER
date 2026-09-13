@@ -6024,3 +6024,35 @@ rather than as one cause. The honest position: a 256-row block is the unit where
 that a kernel writes fewer than its full `256 * N` and the tail supplies the rest, and theirs is a host-path
 failure at exactly one block. Their @128/192/257/512 sweep will separate them if the boundary is at 256, and my
 Phi4 length sweep is the same experiment on the other model.
+
+## 128. §127 reading (2) is REFUTED: the FLM-ref is stable per length, so the host-path defect is real
+
+§127 offered two readings and named the test. Ran it — FLM-ref, three samples per length, clang 0:
+
+| len | FLM-ref |
+|---|---|
+| 1 | 0, 0, 0 |
+| 256 | 5938, 5938, 5938 |
+| 448 | 135, 135, 135 |
+| 1024 | 1033, 1033 ¹ |
+
+¹ first sample returned empty (timeout); the other two agree with §7's reference.
+
+Stable at every length tested. **So the reference is not moving, §127's reading (2) is refuted, and reading (1)
+stands: the bf16 CPU-attention path has a value defect that shows up as a wrong argmax at certain lengths.** It
+is right at 1/320/384/511/512/768/1024 and wrong at 64/128/192/255/256/257/258/448, against a fixed reference.
+
+**Net for the item — three independent, measured defects in Nanbeige's bf16 path:**
+
+1. **the NPU attention** — wrong-width (nh16) kernel writing zeros, at all lengths (§121-§123);
+2. **a host value defect at scattered lengths** (this section) — right at the lengths above, wrong at the others;
+3. **the uncleared `attn_out` BO** (§124) — a latent nondeterminism, not yet shown to bite.
+
+**And it sharpens §113 materially.** The "correct interim path" is `NPU_ATTN_CPU=1` — which *is* the path in
+defect (2). So the honest statement is no longer "the host attention is correct for nh20" but **"the host
+attention is correct at @1024 (1033 = FLM) and wrong at @256 (109440 vs 5938) and at several other lengths"**.
+§113's result stands for the length it was measured at; it does not extend to the family.
+
+**This is the same shape as the earlier corrections, one level up:** I generalised a single-length result to a
+path, and the length sweep is what caught it. The instrument that keeps doing the work here is *vary the one
+thing you did not vary*.
