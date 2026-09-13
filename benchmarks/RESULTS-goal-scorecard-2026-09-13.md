@@ -326,12 +326,26 @@ engine generates **one ELF per context length**. Both work — the engine's is p
 — and the engine's approach is therefore **unproven against FLM for any family**, not wrong. Nanbeige
 (nh20) and Phi4 (nh24) both use attention shapes that combination has never been exercised on.
 
-**LFM2**, the family the user asked for, is a separate case and is **scoped rather than solved**: the
-int4 decoder is ported and the convention is detected from the data; the loader resolves LFM2's tensors;
-the layer-BO sizing bug that segfaulted is fixed; the short-conv weights are packed; the block order was
-corrected from the HF implementation; and FLM's LFM2 kernel signature was **measured** from a capture and
-shown to match the binding the engine already uses — so the remaining work is **weight packing plus
-xclbin selection, not a new kernel interface**. The conv compute itself is not implemented.
+**LFM2**, the family the user asked for, moved from *scoped* to a **measured boundary** over the last
+five checkpoints. Established by byte-level comparison against FLM's own buffers rather than by
+inference:
+
+- **Layer-BO packing: byte-identical to FLM.** The short-conv block goes **first**
+  (`[sp][so][gu][d]`) — read off FLM's BO, not assumed; the engine had appended it after `down_proj`.
+  Conv layers now match **8,192 of 8,192 tiles in order** (was 6,144), and attention layers were already
+  identical. The native LFM2 boot moved **63260 → 5242** as a result.
+- **GEMM shapes: never a blocker.** `bf16mm_gemm_launch` takes K and N at runtime, so the `mm.xclbin`
+  kernel is shape-generic, and the run's log shows no shape failure of any kind.
+- **hd64 attention ELF: the mechanism is proven.** A captured FLM ELF named
+  `attn_mha_256_nh32_hd64.elf` is loaded **and used** — the shape-aware selection now works on a **third**
+  architecture — so a correct ELF is a **drop-in**. Its role is inferred from size, not measured.
+- **Conv compute: blocked on a contract, not on code.** The loader reads `shortconv.conv.weight`; the
+  packer never places it; and the taps appear in **no** captured FLM BO in any of four encodings. The
+  **data path is unknown**, so implementing from the HF block order alone would produce another
+  right-sized, wrong-arrangement artifact. FLM's `conv.xclbin` holds the contract.
+- Earlier and still standing: the int4 decoder ported, the convention detected from the data, the loader
+  resolving LFM2's tensors, the layer-BO SIGSEGV fixed, and the acceptance criterion complete —
+  **gate** `708, 1735, 538, 730, 525, 730, 1443`, **bar** 63 tok/s.
 
 ## 11. Session close
 
