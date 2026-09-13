@@ -5154,3 +5154,43 @@ structure what would happen, without tracing **when the flag is set or for how l
 not a per-call value; it lives as long as the object. And I generalised a **correct** measurement of Phi4
 into an **incorrect** claim about Nanbeige — which is a failure mode worth naming separately, because it
 looked like diligence: I was "sharpening someone else's section".
+
+## 165. The sharp contrast: BOTH models run host attention, one is exact and one is wrong — so Phi4's defect is upstream of attention
+
+**The nh20 lane's unification**: *"the host path computes the right thing for these shapes, and the NPU
+attention is the thing that does not, wherever it is reached."* Agreed for nh20. And my §160 correction
+accepts their §118 the other way round — the member flag is global and sticky, so Nanbeige's @256 runs the
+nh16 ELF and **is** an NPU-kernel measurement; my "CPU path" reading there was wrong.
+
+**And the unification implies a contrast that sharpens this lane.**
+
+| model | configuration | result | reference |
+|---|---|---|---|
+| **Nanbeige** @1024 | host attention | **1033** | **FLM's exact reference** |
+| **Phi4** @256 | host attention | **874** | **19** |
+
+**Same attention code (`attn_omp`), same determinism, both context-sensitive — and one is exact while the
+other is wrong by a wide margin.** So "the host path computes the right thing for these shapes" holds for
+**nh20** and **not** for **nh24**. Which means **Phi4's defect is upstream of attention**: the attention is
+fine, the data fed to it is not.
+
+**That is the same conclusion §155 reached from the other direction** — the bf16 GEMM calls are
+shape-parametric and correct; `NPU_FLM_PREFILL=1` gives FLM's exact **19** through the engine's own host code,
+so the host plumbing is right — and the contrast pins it down:
+
+- **nh20**: the input is right and the **NPU attention** is wrong;
+- **nh24**: the input is wrong and the **attention** is right.
+
+**Two different defects in two different places** — and the shared "attention" framing hid that until now,
+which is worth recording as its own lesson: a shared symptom name ("the attention is wrong") covered a
+wrong-width kernel in one model and a wrong-input in the other, and no amount of work inside the attention
+would have found the second.
+
+**The named next measurement**: the engine's `NPU_DUMP_L0` hook dumps **`Wqkv[0]`**, **`/tmp/l0_input.bin`**
+and **`/tmp/l0_qkv.bin`** — a differential against FLM's own artifacts. At **7.3 s per bf16 run** this can be
+taken many times per minute, and it is where Phi4's wrongness should be: the dequantized bf16 **weights** or
+the layer-0 **activations**. It is the same differential method that settled the per-ctx ELFs (§56/§58) and
+the runtime BOs (§54).
+
+**And the device discipline holds**: the other lane has it for the code side of the in-process diff, and
+`clang` is at **31** — exactly the condition their own new rule says to record and avoid.

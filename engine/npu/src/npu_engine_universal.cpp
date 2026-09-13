@@ -4291,6 +4291,25 @@ struct Bf16Ctx {
                     if (l == 0 && getenv("NPU_DUMP_ATTNIO")) {
                         FILE* fo = fopen("/tmp/eng_out.bin", "wb"); if (fo) { fwrite(bA.data(), 2, 256 * qout, fo); fclose(fo); }
                     }
+                    // NPU_ATTN_DIFF: run the HOST attention on the SAME layer-0 data and compare.
+                    // The two paths consume different buffers (bActQ/bKv vs bqo/kv_caches) holding the
+                    // same underlying Q/K/V, so a large difference localises the fault to the NPU
+                    // attention step or its bKv/bActQ layout (RESULTS-coverage-multifamily 113/118).
+                    if (l == 0 && getenv("NPU_ATTN_DIFF")) {
+                        #pragma omp parallel for
+                        for (int pi = 0; pi < npt; pi++)
+                            attn_omp(&bqo[pi * qkvn], &bat[pi * NH * HD], kv_caches[l][0].n,
+                                     kv_caches[l][0].k.data(), kv_caches[l][0].v.data(), NH, NKV, HD, GQA, sp + pi + 1);
+                        double mx = 0; int mpi = -1, mj = -1;
+                        for (int pi = 0; pi < npt; pi++)
+                            for (int j = 0; j < qout; j++) {
+                                double d = fabs((double)bf16g(bA[(size_t)pi * qout + j]) - (double)bat[pi * NH * HD + j]);
+                                if (d > mx) { mx = d; mpi = pi; mj = j; }
+                            }
+                        double sabs = 0; for (int j = 0; j < qout; j++) sabs += fabs((double)bat[j]);
+                        fprintf(stderr, "[ATTN-DIFF L%d] npt=%d max|npu-host|=%.6g at (tok %d, dim %d) | host|tok0|_sum=%.6g | npu[0][0]=%.6g host[0][0]=%.6g\n",
+                                l, npt, mx, mpi, mj, sabs, bf16g(bA[0]), bat[0]);
+                    }
                 }
                 auto ta1 = std::chrono::steady_clock::now();
                 ta += std::chrono::duration<double, std::milli>(ta1 - ta0).count();
