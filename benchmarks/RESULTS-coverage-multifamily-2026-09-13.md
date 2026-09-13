@@ -2582,3 +2582,34 @@ which is exactly the 32 bytes by which my stream and FLM's differed before I mat
 **So for Nanbeige: the ELF is exact and every BO is exact (§54).** The residual is in neither. It is in what
 the two constructions do differently — how the column kernels are built and dispatched — or in the
 device-written KV.
+
+## 57. The lm_head ELF is byte-identical too — the ELF pipeline is exact on BOTH kernels; and the runlist dispatches per token
+
+**The lm_head payload**: my half is 427,636 B; FLM's `elf_0002` `.ctrltext` is 427,636 B; **0 differing
+bytes** — identical. And the `.rela.dyn` (relocations) are the **same size** in both, 0x7a04 = 31,236 B.
+
+**So for Nanbeige the entire ELF pipeline is proven exact against FLM's own runtime artifacts:**
+
+| artifact | result |
+|---|---|
+| layer kernel, same context | **0 differing bytes** (§56) |
+| lm_head kernel | **0 differing bytes** |
+| `.rela.dyn` (relocations) | same size in both |
+| every host-written BO | byte-identical at runtime (§54) |
+| arg signature | measured, matches (§11/§14) |
+
+**And the doubling is the 2-column format**, now confirmed twice — the layer stream and the lm_head both come
+out as two identical copies where FLM loads one per column.
+
+**And a new dispatch measurement**: the engine's runlist loads **one kernel per token** —
+`layer kernel ctx=1 ready`, `ctx=2`, ... So a 256-token prompt means **256 distinct kernel builds**, and the
+engine uses the **per-ctx decode ELF as the whole prefill**, one position at a time. FLM instead loads **two
+ELF objects** (one per column) and prefills in blocks with dedicated kernels.
+
+That is a real difference in the two constructions — the one the previous section named as the residual —
+and it is also a **performance** finding: the cost of a prefill includes building a kernel for every position.
+
+**So the boundary is now the sharpest it has been for Nanbeige**: the layer kernel, the lm_head kernel, every
+BO and the arg signature are all **byte-identical** to FLM's. The residual is therefore **not in any
+artifact** — it is in **how they are dispatched** (one concatenated two-column ELF versus two per-column ELF
+objects, a construction Qwen3-4B proves workable), or in the **device-written KV's evolution**.
