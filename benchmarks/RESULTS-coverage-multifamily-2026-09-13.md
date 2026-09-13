@@ -151,3 +151,26 @@ per-shape attention ELFs; their correct reference tokens are now recorded (220 /
 
 **Prefill perf:** native vs FLM-ref per-token is −12% (1.7B), −18% (4B, VL), −22%
 (8B), −18% (Llama-3.1-8B) — the host-math gap is consistent across families.
+
+## 8. Nanbeige diagnosis — the gap is NOT the long-context ELF (2026-09-13)
+
+Section 3 above said Nanbeige/Phi4 "need a per-shape attention ELF". A direct test
+**does not support that** for Nanbeige:
+
+1. Captured Nanbeige's own ELFs by LD_PRELOADing the interposer onto the
+   **`NPU_FLM_PREFILL=1`** path (fast — the FLM-ref prefill is ~2 s, and FLM's own
+   nanbeige libs are what load, so every ELF FLM uses is captured): 1.6 GB, 16 ELFs.
+   A 256-vs-1024 differential flags 8 context-dependent ELFs; the largest is
+   `elf_0011` (46 672 B @256 → **177 728 B** @1024).
+2. Pointing `NPU_ATTN_ELF_1024` at `elf_0011_177728` (confirmed loaded by the
+   "attention ELF loaded (177728 B)" line), or at `elf_0013_154560` / `elf_0008_41920`,
+   leaves the boot token **exactly 1214** — unchanged from the nh16 default. And the
+   run uses the NPU kernel (attn 202–243 ms, no "CPU attn_omp fallback" message).
+3. The divergence is present at **@256 too**: native 188 vs FLM-ref **5938**
+   (default embedded ELF, no long-context ELF involved).
+
+**Conclusion:** for Nanbeige the wrong answer is not caused by the >256 attention
+ELF; swapping it does not move the token, and the model is already wrong at 256. The
+mismatch is architectural (the engine's host path — norms / RoPE base / attention
+interface for `nh20/nkv4/hd128`) and needs family implementation, not a capture. The
+same caution applies to the Phi4/Qwen3.5/Gemma3 rows in section 3.
