@@ -4526,7 +4526,7 @@ only against values that were actually captured.
 V-region) were refuted only for the values I guessed. §102 broke that pattern by reading the capture first,
 and immediately produced a value that works. Read the captured profile before varying the constant.
 
-## 152. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
+## 425. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
 
 **The check the nh20 lane asked for turned into a correction of my own result.** They reported that
 `attn_mha_1024_nh20_hd128.elf` is 97.9% byte-identical to `attn_mha_1024_nh32.elf`, and asked me to
@@ -8010,3 +8010,37 @@ their two passes agree at load **4.16 and 6.36**, mine at **3.66** — so ordina
 `1877` required **two Phi4 processes at once**. The useful form is therefore *the host path is stable across ordinary
 load and degrades under contention* — which also means **recording the load is not sufficient on its own**. The rule
 needs its second half: **record the load AND check what else is holding the device.**
+
+## 430. Qwen3.5-4B's I8 rows are not "malformed" — the bundle contains NO 5120-byte row at all, and 4736 is the engine's own MoE trim
+
+**The arithmetic that reconciled Phi4's bundle byte-for-byte applies here and gives a sharper answer than the log
+has carried.** Qwen3.5-4B's I8 tensors, by row width:
+
+| row bytes | tensors | format |
+|---|---|---|
+| **8704** | 49 | **Q8_0** — which the engine **does** handle (its own decoder branch) |
+| **4736** | 200 | the **MoE row**: `model.c` defines `NPU_MOE_ROW_BYTES 4736` as *"a 5120-B Q4NX tile trimmed to `[0:4736]`"* |
+| **5120** | **0** | — **not present anywhere in the bundle** |
+
+**So the bundle does not use the format the default dequant assumes, and neither anomalous width fits the Q4NX group
+model**: `rows/20` gives **256 for 5120** (whole), but **236.8 for 4736** and **435.2 for 8704** — and the
+geometry-aware path computes `cpt = bpt / 20`, which **truncates 4736 to 236**, a tile width that describes no
+actual row.
+
+**And that makes the earlier description wrong in a way that matters.** *"Row 4736 B is arithmetically malformed
+(7,577.6 elements)"* reads as **a corrupt file** — nothing to do but replace it. What the bytes say is **a
+different, engine-known packing applied to dense projection weights** (`qkv_proj`, `o_proj`, `gate_proj`, `up_proj`,
+`down_proj`, `q/k/v_proj` — 200 tensors, none of them experts). **That is a format-selection gap in the engine, not
+a defect in the bundle**, and it is the more useful of the two framings because it names something fixable.
+
+**Honest scope, because the model is also hybrid**: *"no code path derives a usable tile width for a 4736-byte dense
+row"* is a **structural observation from the file**, and it is **not yet a demonstration that it causes boot 0** —
+the hybrid `GateDeltaNet`/`conv` path is an equally live explanation, and the two are not exclusive. What has
+changed is that the coverage row now has **a concrete, checkable structural reason** instead of the word "hybrid",
+and a wrong one — *malformed* — removed.
+
+**Numbering policy, recorded because it is the fifth collision**: the previous four were resolved by renumbering
+into whatever was free at the time, which is why the same section has now moved twice. **A section forced to move
+out of a contested number should move OUT of the other lane's dense range and into its owner's own sequence** —
+this one now sits at **425**, where neither lane's next number will reach it. Re-rolling for a free number in a
+range both lanes are actively appending to is not a fix, it is a deferral.
