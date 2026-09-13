@@ -22,6 +22,15 @@
   the failed job succeeded** (13:39Z), opening the day's draft post as PR #2323 on
   branch `post/significant-20260913`. If it recurs, that push wants a bounded retry:
   the workflow runs once a day, so one transient refusal silently costs a day.
+  **PR #2326** (`fix/census-autopr-push-retry`) is that retry — 3 attempts on the
+  push, and on `gh pr create` a re-check for an existing PR before each retry,
+  since a create error can arrive after the PR is up.
+- **#2322 verified in production** (2026-09-13 14:32Z): a `workflow_dispatch` of
+  `census-watch` on `main` ran the watcher and posted the update comment against
+  #2178 — `newly reported: deepseekv41,englishbase,gdn2,haiku,moonfrost` plus the
+  `<!-- census-classes: … -->` marker. The rolling 120-model window had already
+  retired `fidel`/`vapor` and surfaced three new classes, which is exactly the
+  churn the old skip-the-whole-alert behaviour used to hide.
 - **Registry gaps still open** — issue #2178, reviewed from the official configs:
   `deepseekv41` is a real V4.1 multimodal family (engram + candidate-block
   machinery), not an alias; new on 09-13 are `fidel` (`4E-AI/Fidel1.1-1B`, custom
