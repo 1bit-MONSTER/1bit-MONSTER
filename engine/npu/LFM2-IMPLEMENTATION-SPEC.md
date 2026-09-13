@@ -320,3 +320,33 @@ RUNLIST_ADD(rv) run=0x7ffc34b468d0 ... a3=0x55e0bae61f50 a4=0x55e0bad15e80 a5=..
 Qwen3 path uses. Whatever LFM2's slot 5 is (conv state, KV, or scratch), the engine must size
 it from LFM2's own binding rather than inheriting the Qwen3 numbers — the same class of mistake
 as reading a sync length as an allocation.
+
+## 12. Correction: LFM2 is NOT the only signed family — Zaya1-8B is a third (2026-09-13)
+
+Section 8's 16-bundle measurement, and the family-based expectation in the relay's
+`engine/npu/tests/check_bundle_decoders.py` (their PR #2318), both treat LFM2 as the only signed
+family. **That table is short a row.**
+
+The relay measured, with their own from-the-bytes reader: **`zaya1-8b` and `zaya1-8b-fresh` are BOTH
+signed** — 0/256 non-zero zero-points, `zp/scale` exactly 0.000 — identical in signature to both LFM2
+bundles (0/256, 0.000) and unlike all 14 other bundles (256/256, centred, -7.24 to -7.73). Their
+`EXPECTED` table reads:
+
+```python
+EXPECTED = [ ("LFM2-", "group+signed") ]      # Zaya is missing
+DEFAULT_EXPECTED = "group+unsigned"
+```
+
+**The engine is not affected**, because its convention selection is data-driven (`c53a80d33`) rather
+than table-driven, and section 28's fix already taught it Zaya's tensor names. **Nothing decodes
+wrongly** — this is a documentation and test-table gap, not a decode defect.
+
+**Why the check misses it is shape, not convention.** It enumerates *directory* bundles
+(`<name>/model.q4nx`) under `~/.config/flm/models`, while Zaya is a **bare** `~/models/zaya1-8b.q4nx`.
+So it sits outside every root the check can scan — not outside a default one. Package it as a
+directory bundle, which is how the native store is laid out, and the check would fail a
+**legitimately signed** bundle as converter drift: a false positive.
+
+**Two fixes, both small:** add Zaya's row to `EXPECTED`, and accept a bare `<name>.q4nx` alongside
+`<name>/model.q4nx` if the native store is to be covered. The first is required; the second is what
+makes the check meaningful for any bundle outside the FLM directory layout.
