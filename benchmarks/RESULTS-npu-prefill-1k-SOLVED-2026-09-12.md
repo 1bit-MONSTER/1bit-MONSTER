@@ -227,3 +227,32 @@ context native decode is ahead; at 2088 it is behind.
 Prefill and TTFT meet-or-beat the on-box bar. Decode meets it at 1k context but
 not at the ~2k context the harness's standard prompt actually exercises. The
 remaining work is long-context decode cost, not correctness.
+
+## Run-to-run variance — corrected scorecard
+
+The "+9.7% prefill / 5% faster TTFT" figures above are from a **single** harness
+run. A repeat run immediately after gave materially different numbers, driven by
+FLM's own variance, not native's:
+
+| run | native prefill | FLM prefill | native TTFT | FLM TTFT |
+|---|---|---|---|---|
+| 1 | 1440.9 | 1313.29 | 0.711 | 0.748 |
+| 2 | 1414.4 | 1396.97 | 0.724 | 0.703 |
+
+Native is stable across the two runs (prefill 1414-1441, TTFT 0.711-0.724);
+FLM moved 6% on prefill and 6% on TTFT. Averaged:
+
+| metric | native (avg) | FLM (avg) | verdict |
+|---|---|---|---|
+| prefill tok/s | 1427.7 | 1355.1 | **+5.4%** (within FLM's ~6% spread) |
+| TTFT (s) | 0.7175 | 0.7257 | **+1.1%** (parity) |
+| decode tok/s | 67 | 72.1 | **-7.1%** |
+
+Honest reading: **native is at parity with on-box FLM on prefill and TTFT, and
+behind by ~7% on decode at the harness's 2088-token prompt** (ahead at 1024).
+Single-run gaps of this size are not evidence of a win — quote the averaged
+figures and note the variance.
+
+Before this session's work the same harness reported native decode 2 tok/s and
+no valid @1k prefill at all, so the movement is: decode -97% -> -7%, prefill and
+TTFT from unavailable to parity.
