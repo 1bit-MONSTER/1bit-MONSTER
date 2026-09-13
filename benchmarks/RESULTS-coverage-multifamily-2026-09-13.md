@@ -1123,3 +1123,37 @@ metric claims stand on the current HEAD:
 - **TTFT** — beats FLM on all six scorecard models;
 - **decode** — beats FLM by 18-24% on a single harness across five sizes, with tokens verified
   against FLM's own forward.
+
+## 22. Controlled experiment: the runlist machinery and the generated ELFs are CORRECT
+
+Qwen3-4B — a known-good model — run through the runlist path with **freshly generated** per-ctx
+ELFs (1024 ELFs plus the lm_head in 1.5 s):
+
+```
+=== Prefill 256 [runlist] ===
+  [1] 1614
+```
+
+**1614 is exactly the bf16 boot and exactly FLM's reference.** That is the control the four-family
+work needed, and it settles two things at once:
+
+1. **`gen_layer_elfs` produces correct ELFs**, not merely well-formed ones. It was changed from
+   Qwen3-only to any family in `dd6068041`; this is the first evidence that its output is
+   byte-correct, because it reproduces a known-good answer through a path that uses nothing but
+   those ELFs.
+2. **The runlist machinery is correct** end to end on a model whose weights pack properly.
+
+**What that isolates for Nanbeige.** Its runlist answer was 157559 — neither the bf16 value nor
+FLM's — and that can no longer be blamed on the machinery or on the ELFs, both of which now
+reproduce a correct answer. **The fault is in what the engine FEEDS them**, i.e. the per-layer
+weight BO. That is section 18's suspect (`npu_pack_layer_bo`), which was previously supported only
+by the sharing argument — both engine paths use it, FLM's library does not — and is now supported
+by a controlled experiment.
+
+**And the packing is a bigger surface than the permutation test covered.** Section 19 cleared the
+*reorder* `o -> i` only; the packing also decides the tile **offsets**, the gate/up **interleave**
+(`CH = H/16`), and the BO layout itself — none of which is verified for a non-Qwen3 shape.
+
+**Next, now sharply scoped:** diff the packed weight BO for one Nanbeige layer against what its
+own generated ELF expects. The control above is what makes that comparison meaningful, because it
+rules out the ELF and the runlist as explanations in advance.
