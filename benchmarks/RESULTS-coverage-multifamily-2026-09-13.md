@@ -5803,3 +5803,39 @@ kernel in this engine that under-writes (the nh20 attention one), but it is not 
 finding) while the **bf16 GEMM** geometry is **generated per shape at runtime** (this audit). Two different
 baking regimes in one engine — which is exactly why the nh20 lesson does not transfer to this lane, and why
 §220's rule needed the caveat about which stage runs where.
+
+## 124. Read, device-free: the attention's `attn_out` is the one output BO that is NOT cleared — so §122's under-write leaves stale data
+
+Applying §225's hazard to this lane's own stage, by reading `run_attn`:
+
+```cpp
+if (!attn_out) {
+    attn_out = make_unique<buffer<uint16_t>>(*dev, cap);
+    attn_act = make_unique<buffer<uint16_t>>(*dev, cap);
+    attn_kv  = make_unique<buffer<uint16_t>>(*dev, (size_t)attn_kv_region * 4);
+    memset(attn_kv->data(), 0, (size_t)attn_kv_region * 4 * 2);   // KV IS cleared
+}
+memcpy(attn_act->data(), act, (size_t)rows * q * 2);              // act fully written every call
+```
+
+`attn_kv` is explicitly zeroed, and `attn_act` is fully overwritten every call — but **`attn_out` is never
+cleared**, and the host then copies the whole `rows*q` back into `bA`. Combined with §122's *measured*
+under-write (the kernel writes 2048 of 2560 columns), the unwritten 1/5 of `attn_out` is **whatever the
+allocator returned**, and it flows straight into the attention output that the O-GEMM consumes.
+
+So this lane does have §225's hazard — in the attention stage rather than the GEMM stage: **an output BO
+allocated once, never cleared, and not fully written by its kernel.**
+
+Two honest limits:
+
+- §121 measured the output as all-zero, which suggests the freshly-allocated BO came back zeroed in that run —
+  so the stale content may have been benign here *by accident of allocation*, not by design. It is still a
+  latent correctness bug (the value depends on allocator state), and it is invisible to every scale check this
+  item has done.
+- Clearing it puts **zeros** in the 1/5, not correct values, so — exactly as §225 says — a **change** would be
+  the signal, not a fix. The kernel is nh16-width (§122); this only removes a source of nondeterminism.
+
+**Fix (my lane, one line, in the file I have offered the other lane):**
+`memset(attn_out->data(), 0, (size_t)rows*q*2)` when the BO is created, alongside the existing `attn_kv`
+clearing. **Not applied here** because `npu_engine_bf16_mm.h` is the shared file and the other lane has a
+matching change to make in it — it is theirs until they say otherwise.
