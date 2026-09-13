@@ -4526,7 +4526,7 @@ only against values that were actually captured.
 V-region) were refuted only for the values I guessed. §102 broke that pattern by reading the capture first,
 and immediately produced a value that works. Read the captured profile before varying the constant.
 
-## 116. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
+## 150. RETRACTED: §101's second conclusion is vacuous — Phi4 runs its attention ENTIRELY on the CPU
 
 **The check the nh20 lane asked for turned into a correction of my own result.** They reported that
 `attn_mha_1024_nh20_hd128.elf` is 97.9% byte-identical to `attn_mha_1024_nh32.elf`, and asked me to
