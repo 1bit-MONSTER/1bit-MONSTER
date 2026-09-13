@@ -806,3 +806,42 @@ This is the third headline of mine retracted in this session (the LFM2 "untied" 
 constant-token alarm, and now the decode percentage). All three were caught by checking where a
 number came from rather than by adding more measurements — and this one was only found because I
 tried to *build on* the number instead of citing it.
+
+### 17.1 Where the 128 could come from — eliminated, and what to instrument next
+
+Chased far enough to eliminate the obvious candidates, and recorded so the next attempt starts
+from here rather than repeating it.
+
+**Eliminated:**
+- the id FILE: `/tmp/ids_256.txt` is 1072 bytes, one line, 256 space-separated ids, no trailing
+  newline. A `fscanf("%d")` simulation reads **256** of them, so any `while (fscanf(...))` loop
+  gets all 256.
+- both READERS: `read_ids()` in `npu_runlist_bridge.cpp` has no cap, and the FLM-ref path's
+  `fscanf` loop has none. The universal engine's own reader caps at **4095**
+  (`if ((int)pt_vec.size() > 4095) pt_vec.resize(4095)`), not 128, and `input_tok_file` is
+  `argv[3]` passed straight through.
+- `NPU_PREFILL_MAX`: default `cap=256`, not 128.
+
+**There are FOUR prefill entry points**, which is why the banner alone does not identify the
+path:
+
+| banner | file:line | timing format |
+|---|---|---|
+| `=== Prefill %d ===` | `npu_engine_universal.cpp:748` (FLM-ref) | `%.2f ms/tok` |
+| `=== Prefill %d ===` | `npu_engine_universal.cpp:3987` (bf16) | GEMM/attn breakdown |
+| `=== Prefill %d ===` | `npu_engine_universal.cpp:4294` (fallback) | `%.0f ms/tok` |
+| `=== Prefill %d ===` | `npu_runlist_bridge.cpp:209` (runlist) | `%.0f ms/tok` |
+| `=== Prefill %d (batched) ===` | `npu_engine_cb.cpp:242` | `%.0f ms/tok` |
+| `=== Prefill %d ===` | `npu_engine_hybrid.cpp:270` | `%.0f ms/tok` |
+
+The observed run printed `=== Prefill 128 ===` with `%.0f ms/tok` **and** a `[0] boot=... (Nms)`
+line, which narrows it to the fallback or runlist printer — but the id counts imply neither
+should have run for Nanbeige (`NPU_RUNLIST=1` is gated on `dense_qwen3`, and the bf16 path needs
+`NPU_PREFILL_BF16`). **So the honest state is: the 128 is real and reproducible, and its origin
+is not yet established.**
+
+**The probe that will settle it in one run:** print the resolved id count at each entry point
+(a one-line `fprintf(stderr, "[ids] n=%zu path=%s\n", ...)` at each of the four), then run the
+same command and read which one reports 128. That is cheaper and more certain than more
+code-reading, and it is the same lesson as the rest of this session: instrument the value
+instead of reasoning about it.
