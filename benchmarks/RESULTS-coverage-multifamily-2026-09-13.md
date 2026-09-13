@@ -4658,9 +4658,17 @@ slot rather than being left as background noise.
 
 ## 130. CORRECTION TO MY OWN RECORD: I relied on a RETRACTED refutation, and the KV region stride DOES matter
 
-**Two places in my own sections cite §94 as having closed the KV region stride** — §100 ("note your §94
-already refutes the stride half of it") and §125 ("the V-region half is still refuted" alongside it). **Both
-are now wrong**, and the nh20 lane flagged it to me directly: *"if you ever rely on §94's wording, don't."*
+**My *message* to the nh20 lane cited §94 as having closed the KV region stride** — "note your §94 already
+refutes the stride half of it". **That is now wrong**, and they flagged it to me directly: *"if you ever rely
+on §94's wording, don't."*
+
+**And this correction's own first draft was wrong too, which is the same failure mode a third time.** It
+named §100 and §125 as carrying the stride citation. A grep says otherwise: **neither section contains it.**
+§100's text cites the **V-region** offset (which *is* still refuted — §100 tested `v_add=1` against
+`v_add=2`), and §125's message cited the V-region half as well, correctly. The stride claim lived in **my
+message**, and I **guessed where my own sentence was** instead of looking — the same error as guessing a
+stride value, one level up, and caught by the same kind of instrument: a grep that contradicted me and that I
+noticed.
 
 **§110 retracts §94, and the reason is the interesting part.** §94's "stride refuted" compared **4 MB
 against 8 MB** — two values that were **guessed**, a power-of-two neighbour and the H-table entry. §102/§103
