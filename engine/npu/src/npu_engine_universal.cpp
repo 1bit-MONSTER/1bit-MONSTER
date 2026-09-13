@@ -3889,7 +3889,17 @@ struct Bf16Ctx {
         if(e){ cap=atoi(e); if(cap<1)cap=256; }
         if(input_tok_file && npt > cap){ fprintf(stderr, "bf16 prefill: npt %d -> %d (cap)\n", npt, cap); npt = cap; }
     }
-    else if(input_tok_file && npt > XM) npt = XM;
+    else if(input_tok_file && npt > XM) {
+        // The non-bf16 fallback processes ONE XM-row batch, so a longer prompt is truncated
+        // HERE. This was SILENT, which is exactly how it went unnoticed: a 256-id file
+        // prefilled as 128 tokens and the only clue was the banner count ("Prefill 128").
+        // Any non-dense-Qwen3 model run with NPU_RUNLIST=1 lands on this path -- the runlist
+        // decode is gated on dense_qwen3 -- so those models were silently prefilling at most
+        // 128 tokens. Announce it, as the bf16 cap above already does.
+        fprintf(stderr, "fallback prefill: npt %d -> %d (single %d-row batch; set "
+                        "NPU_PREFILL_BF16=1 for longer prompts)\n", npt, XM, XM);
+        npt = XM;
+    }
     bool bf16_done = false;
 
     // ===== PREFILL — bf16 mm.xclbin path (dequant.xclbin + 2-batch GEMM) =====
