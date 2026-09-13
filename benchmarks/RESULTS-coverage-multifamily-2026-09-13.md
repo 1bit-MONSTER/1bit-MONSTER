@@ -1573,3 +1573,36 @@ correctly: garbage in those slots evidently does not decide the outcome for ever
 in hand (that q/k norms exist), and a second one inside the fix (that they are 2-D). The second was
 caught by the gate rather than by reasoning — which is the argument for running the regression even
 when a change looks like a pure guard.
+
+## 30. FLM's i6 measured: the unused norm slots are ZEROS, not identity — my fix was wrong
+
+Applied the same technique that settled the weight BO (section 26) to the i6 parameter BO: capture
+FLM's own, pointer-matched, and read it. The instrument fix from 25.1 is what makes this possible —
+`preinsts_001_03_i6_563ef37ac3c0_1048576.bin` carries exactly the pointer the manifest bound as arg6.
+
+```
+FLM's i6 for Nanbeige (no q/k norms), first 384 bf16:
+  [0..63]    cos slots : 1.0, 1.0, ...        (pos 0)
+  [64..127]  sin slots : 0.0, 0.0, ...        (pos 0)
+  [128..255] q_norm    : 0.0  -- ONE distinct value across all 128
+  [256..383] k_norm    : 0.0  -- ONE distinct value across all 128
+```
+
+**My section-29 fix wrote bf16 1.0 into those slots**, reasoning that a model without norms should get
+an *identity*. That is intuitive and it is **wrong**: FLM writes **zeros**. Corrected — absent norms now
+simply leave the `memset`'s zeros and the copies are skipped, which byte-matches FLM.
+
+**And that explains why the original garbage did not matter.** Going from an unguarded copy of whatever
+sat at a zeroed descriptor's offset, to 1.0, to 0.0 left both Nanbeige (157559) and Llama (220)
+*completely unchanged* — so the ELF evidently **ignores those slots entirely** for a model without the
+tensors. The unguarded memcpy was still a real defect worth removing, but it was never the cause.
+
+Regression after the correction: **Qwen3-4B 1614, Llama-3.1-8B 220, Nanbeige 157559** — the first two
+at their reference values, the third unchanged.
+
+**i6 is now cleared as a candidate** (byte-matched to FLM for this model), which is the **third time
+this session a capture has overruled reasoning**: the weight BO's arrangement (26), the KV "truncation"
+(24.2), and now the i6 norm slots. In each case the reasoning was plausible and the bytes disagreed.
+
+**Remaining for the four families:** the activation (arg3), the KV, and **i5** — the norm *weights*,
+deterministic from the q4nx, so directly comparable the same way given a higher `CAP_BIG_MAX`.
