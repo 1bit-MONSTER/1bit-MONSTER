@@ -2171,3 +2171,37 @@ the compute.
 done-and-verified or proven-not-a-blocker; the conv compute is the one remaining piece, and this checkpoint
 shows it is **blocked on information that cannot be derived from the captures** — not on code that has not
 been written yet. That is a better handover than an estimate.
+
+## 45. The LFM2 gate is operational — and the reference reproduces
+
+Ran the same script that gates the six supported families against LFM2:
+
+```
+FLM-ref decode tokens : 708 1735 538 730 525 730 1443
+native  decode tokens : <none>
+```
+
+**The reference sequence reproduces exactly** — the second observation of it (section 37 was the first),
+so the acceptance criterion is **stable and independently reproducible**, not a single sample.
+
+**And the native side is reported as `<none>` rather than as a mismatch**, which is the honest behaviour:
+the script's job is to diff native against FLM, and it says plainly that the native path produces nothing
+instead of silently comparing against garbage.
+
+**So LFM2's gate is operational**, on the same tooling as the six working models:
+
+| | |
+|---|---|
+| **reference** | `708, 1735, 538, 730, 525, 730, 1443` — reproduced |
+| **bar** | 63 tok/s |
+| **native** | absent, and *reported* as absent rather than assumed |
+
+**One nuance, stated so it is not mistaken for readiness:** the script's native invocation uses
+`NPU_RUNLIST=1`, which serves the six families but **not LFM2** (the runlist needs a per-ctx sequence
+class FLM does not ship, section 36). So the *reference* half of the gate works for LFM2 today, while the
+*native* half needs an LFM2-appropriate invocation when the conv compute lands — the same script, a
+different command. That is a one-line change at that point, not a new harness.
+
+**And that closes the loop the session was building toward for LFM2:** the acceptance test exists, the
+reference is reproducible, the packing is byte-identical, the ELF mechanism is proven, and the one
+remaining gap is blocked on a kernel contract rather than on code. The last step is a **run**.
