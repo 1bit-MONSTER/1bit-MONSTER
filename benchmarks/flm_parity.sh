@@ -116,11 +116,21 @@ measure_native() {
   for _ in $(seq 1 "$ctx_k"); do printf '%s ' "$seq" >>"$all"; done
   # 3a) prefill via FLM's qwen3_npu::prefill (NPU_FLM_PREFILL=1 — architectural
   #     change; the hand-rolled bf16 reimplementation diverged at H>1024)
-  local pout="$WORK/prefill.log"
-  NPU_FLM_PREFILL=1 "$ENGINE" "$Q4NX" 1 "$all" >"$pout" 2>&1 || true
-  # 3b) decode via FLM's qwen3_npu::forward (NPU_FLM_DECODE=1, same orchestration)
-  local dout="$WORK/decode.log"
-  NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
+  # TRULY-NATIVE mode (FLM_PARITY_TRUE_NATIVE=1): do NOT set NPU_FLM_* — those
+  # drive FLM's own captured libs through the engine and are NOT the native
+  # backend. Native prefill = the bf16 per-op path (NPU_PREFILL_BF16=1) with an
+  # explicit token cap (NPU_PREFILL_MAX, default 1024 = the generated
+  # long-context attention ELF at $NPU_XCLBIN_DIR/attn_mha_1024_nh16.elf);
+  # native decode = the whole-layer runlist (NPU_RUNLIST=1).
+  local pout="$WORK/prefill.log" dout="$WORK/decode.log"
+  if [ "${FLM_PARITY_TRUE_NATIVE:-0}" = 1 ]; then
+    NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX="${NPU_PREFILL_MAX:-1024}" \
+      "$ENGINE" "$Q4NX" 1 "$all" >"$pout" 2>&1 || true
+    NPU_RUNLIST=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
+  else
+    NPU_FLM_PREFILL=1 "$ENGINE" "$Q4NX" 1 "$all" >"$pout" 2>&1 || true
+    NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
+  fi
   # 4) parse markers (grep -m1 avoids the set -e + head early-close SIGPIPE trap)
   local prefill_ms prefill_ms_tok decode_tok_s ttft_s npt
   npt="$(grep -oE '=== Prefill [0-9]+ ===' "$pout" | grep -om1 '[0-9]\+' || true)"

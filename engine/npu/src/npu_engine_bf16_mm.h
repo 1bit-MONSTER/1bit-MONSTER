@@ -88,8 +88,12 @@ struct Bf16Mm {
     std::unique_ptr<xrt::elf> attn_elf32;
     std::unique_ptr<xrt::module> attn_module32;
     std::unique_ptr<xrt::ext::kernel> attn_kernel32;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel1k;   // long-context (>256 tok) ELF, loaded from file
+    std::unique_ptr<xrt::elf> attn_elf1k;
+    std::unique_ptr<xrt::module> attn_module1k;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
     int attn_qout = 2048;   // 2048 (NH=16) or 4096 (NH=32)
+    int attn_tokens = 256;  // tokens per attention call (<=1024 for the 1k ELF)
     uint32_t attn_kv_region = 4194304;   // KV region stride in bf16 (8MB, MAX_L=8192)
 
     bool ok = false;
@@ -161,6 +165,25 @@ struct Bf16Mm {
             attn_module32 = std::make_unique<xrt::module>(*attn_elf32);
             attn_kernel32 = std::make_unique<xrt::ext::kernel>(*attn_hc, *attn_module32, "MLIR_AIE");
 #endif
+            // Long-context (>256 token) attention ELF: generated with
+            // gen_attn_chunk (FLM's qwen3_npu_sequence::gen_mha_engine_seq +
+            // aiebu), loaded from the xclbin dir so chunk variants can be
+            // swapped without a re-embed. Optional: absent => 256 only.
+            {
+                std::string l1k = xclbin_dir + "/attn_mha_1024_nh16.elf";
+                FILE* ft = fopen(l1k.c_str(), "rb");
+                if (ft) {
+                    fseek(ft, 0, SEEK_END); long sz = ftell(ft); fseek(ft, 0, SEEK_SET);
+                    std::vector<char> buf(sz);
+                    if (fread(buf.data(), 1, sz, ft) == (size_t)sz) {
+                        attn_elf1k = std::make_unique<xrt::elf>(buf.data(), sz);
+                        attn_module1k = std::make_unique<xrt::module>(*attn_elf1k);
+                        attn_kernel1k = std::make_unique<xrt::ext::kernel>(*attn_hc, *attn_module1k, "MLIR_AIE");
+                        fprintf(stderr, "  Bf16Mm: long-context attention ELF loaded (%ld B): %s\n", sz, l1k.c_str());
+                    }
+                    fclose(ft);
+                }
+            }
 #endif
         } catch (std::exception& ex) {
             fprintf(stderr, "Bf16Mm::init failed: %s\n", ex.what());
@@ -174,6 +197,9 @@ struct Bf16Mm {
     void set_attn_qout(int qout) { attn_qout = qout; }
     /// Set the KV cache region stride (bf16 elems): 8MB=4194304 (H<=2048), 12MB=6291456 (H=2560), 24MB=12582912 (H=4096).
     void set_attn_kv_region(uint32_t region) { attn_kv_region = region; }
+    /// Tokens per attention call (<=256 uses the embedded ELF; >256 needs the
+    /// generated long-context ELF to be present).
+    void set_attn_tokens(int n) { attn_tokens = n; }
 
     /// 256-token MHA attention (attn.xclbin): out = attn(Q, K/V cache).
     ///   act: 256×qout bf16 [token][head][dim] (Q GEMM output, raw)
@@ -181,18 +207,22 @@ struct Bf16Mm {
     ///   out: 256×qout bf16 (qout = attn_qout = NH*HD)
     bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
         xrt::ext::kernel* kern = (attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get();
+        if (attn_tokens > 256 && attn_kernel1k) kern = attn_kernel1k.get();
         if (!kern) return false;
         const size_t q = (size_t)attn_qout;
         if (!attn_out) {
-            attn_out = std::make_unique<buffer<uint16_t>>(*dev, (size_t)256 * q);
-            attn_act = std::make_unique<buffer<uint16_t>>(*dev, (size_t)256 * q);
+            // Device buffers sized for the max supported call (1024 tokens);
+            // the per-call copy below uses attn_tokens.
+            const size_t cap = (size_t)(attn_tokens > 1024 ? attn_tokens : 1024) * q;
+            attn_out = std::make_unique<buffer<uint16_t>>(*dev, cap);
+            attn_act = std::make_unique<buffer<uint16_t>>(*dev, cap);
             attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)attn_kv_region * 4);
         }
-        memcpy(attn_act->data(), act, (size_t)256 * q * 2);
+        memcpy(attn_act->data(), act, (size_t)attn_tokens * q * 2);
         // Only the 4 used region heads matter (256 tokens × 4 heads × 128 dims
         // = 256KB each). Copy just those; the rest of the KV BO stays zero.
         const size_t reg = attn_kv_region;                // region stride in bf16
-        const size_t used = 256 * 512;                    // 256 tokens × 512 bf16
+        const size_t used = (size_t)attn_tokens * 512;    // tokens × 512 bf16
         for (int r = 0; r < 4; r++)
             memcpy(attn_kv->data() + r * reg, kv + r * reg, used * 2);
         xrt::run run(*kern);
@@ -207,7 +237,7 @@ struct Bf16Mm {
         run.start();
         run.wait();
         attn_out->sync_from_device();
-        memcpy(out, attn_out->data(), (size_t)256 * q * 2);
+        memcpy(out, attn_out->data(), (size_t)attn_tokens * q * 2);
         return true;
     }
 
