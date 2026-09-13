@@ -1,6 +1,64 @@
 # Workstream Tracking
 
-> Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed. Updated: 2026-08-29.
+> Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed.
+> Table rows below last walked **2026-08-29**; the dated delta underneath supersedes them where the two disagree.
+
+## Status delta — 2026-09-12 (dsh, strixhalo) — read this before the tables
+
+Fourteen days of work were never folded back into the rows below. This section is
+the correction, with the artifact that carries the evidence. It is deliberately
+split into *verified* and *open*.
+
+### Verified
+
+| Item | State | Evidence |
+|------|-------|----------|
+| P0.1 NPU IO_PAGE_FAULT path | **not blocking any more** — NPU attention runs end-to-end at 1k ctx (attn 150 ms vs 14.0 s CPU reference) | `engine/npu/generators/FK3-STATUS-2026-09-12.md` rounds 20–26 (branch `goal/runlist-decode-wire`) |
+| WS-00 Baseline & measurement | harness landed: `benchmarks/flm_parity.sh` with `FLM_PARITY_TRUE_NATIVE=1` (without it the "native" column drives FLM's own libs) | `benchmarks/RESULTS-flm-parity-harness-2026-09-09.md` + `benchmarks/FLM-PARITY-DATA-SOURCES.md` |
+| WS-01 NPU fused attention | superseded on the prefill path by a **generated long-context attention ELF** (FLM's exported `gen_mha_engine_seq` + `aiebu`) — no in-engine fused-attention kernel was needed | FK3-STATUS rounds 15–26 |
+| WS-02/WS-03 native quantized + ternary AIE | still not started as scoped; the AIE effort went into the fk-1..fk-3 fused-layer PoC instead (`n1_fk3*.py`, `build_fk3.sh`) | FK3-STATUS §fk-3 PoC |
+| WS-07 MoE decode & spec (35B-A3B runlist) | **proven dead end** — see "Settled negative results" below | goal `mtusoiy1-cfdhqr`; `benchmarks/RESULTS-runlist-decode-35b-moe-2026-09-10.md` (on branch `goal/runlist-decode-wire`) |
+| WS-11 NPU weight path | dense-Qwen3 @1k prefill now beats FLM's published bar on all four models (+39…43%) — **but see "Open questions" before quoting it** | FK3-STATUS rounds 21–26 |
+| #2199 fused int4 `.data` placement | **fixed and merged** (`f3825fbb6`, PR #2282); xclbin rebuilt 67,306 → 75,040 B, provenance manifest regenerated | `bash engine/npu/tests/check_kernel_bss.sh` → `bss=0 / RESULT: PASS` on `f3825fbb6` (re-run 2026-09-12) |
+| Census | full HF sweep refreshed | `051d93e8d` (#2255) |
+| HRX `reset()` context loss (#2203) | fixed: re-imports `HRX_STATE_FILE` after reset, guards resumed ctx against `HRX_MAX_CTX_TOKENS` | `docs/issue-campaign/1942-triage.md` §1.2 |
+
+### Open questions (do not treat as settled)
+
+1. **Does the @1k dense-Qwen3 prefill win survive?** The rounds-21–26 numbers
+   (0.6B 2087.7 tok/s official harness, +40% vs FLM's published 1494) came from
+   runs that never printed `Bf16Mm: long-context attention ELF loaded` — i.e.
+   `run_attn` was serving the embedded 256-token ELF. After the ELF-search fix
+   (`npu_engine_bf16_mm.h`, uncommitted on `goal/runlist-decode-wire` at the time
+   of writing) the 1k ELF does load, and the first post-fix run measured
+   **227 s** attention — but **two `npu_engine_qwen3_0_6b` runs were executing
+   concurrently on the single NPU**, so that measurement is invalid. Needs one
+   clean serial re-run before the claim is quoted or committed.
+2. **Zaya1-8B fused-MoE correctness red flag (2026-09-09).** The in-engine L1
+   probe compared NPU MoE output against a CPU fp32 reference and got
+   **corr −0.001552** (expected 0.998267), identical on both fused and split
+   launches — deterministic but wrong, and the `.q4nx` had been re-converted
+   after the last known-good run. `benchmarks/RESULTS-zaya1-8b-rebaseline-2026-09-09.md`.
+   Not resolved as of this note.
+3. **`flm_parity.sh` decode column.** It prints `2` because the decode
+   invocation feeds the whole prompt through the per-token `NPU_RUNLIST=1` path
+   and the parser then reads the prefill's ms/tok instead of the final
+   `=== Z ms/tok (W tok/s) ===` line. Owned by the NPU thread (the file only
+   exists on `goal/runlist-decode-wire`).
+
+### Settled negative results (don't re-litigate without new evidence)
+
+- **35B-A3B single-launch runlist decode.** Two independent causes: (a) the
+  per-ctx 35B layer ELFs produce NaNs — the region-B int4 generator is closed
+  source; (b) cross-xclbin runlist batching is infeasible because the MoE xclbins
+  carry different ERT `group_id`s (R98). Net: 0.57 tok/s (CPU MoE, 80
+  launches/token) or 0.32 tok/s (NPU fused M=1) — both below the ~0.7 tok/s
+  baseline and far from the dense-Qwen3 one-submit class. Results:
+  `benchmarks/RESULTS-runlist-decode-35b-moe-2026-09-10.md` (branch
+  `goal/runlist-decode-wire`). Goal `mtusoiy1-cfdhqr` stopped 2026-09-11.
+- **Native single-launch zero-h2-DMA MoE fusion** (2026-08-28) remains blocked by
+  the iron ObjectFifo + 2-input-DMA constraint; p1/p2 two-launch (h2 via DDR) is
+  the production path. See `docs/AGENT-COORDINATION.md`.
 
 ## Phase 0 — Stabilize the floor
 
