@@ -481,7 +481,14 @@ tokens were measured on fixtures beginning with **token 16** (a **zero-embedding
 on fixtures whose first token was **220** — a value that is also a common prediction. Both lanes have since shown
 that **changing the first token moves the answer**: on the nh20 lane, bf16 goes from wrong to **exact at 4 of 6
 lengths** purely by changing the fixture. The gates are unaffected (both sides of every comparison use the same
-fixture), but **a reference token must be quoted with its fixture**. Everything else this stretch appeared to
+fixture), but **a reference token must be quoted with its fixture**.
+
+**Worked example, measured on both fixtures**: FLM's Nanbeige @256 is **5938** on a leading-token-16 prompt and
+**4938** on a leading-token-58907 prompt. Both are correct; neither is "the" reference. And the same run showed
+the engine's **i8/fallback path returning other fixtures' answers** (152470 at 64, 152373 at 1024 — values owned
+by the token-16 and first-token-220 prompts), so **"the i8 path is known-good" is itself fixture-scoped**: §7's
+gate and §84's block walk were both measured on `ids_1024`. A known-good path is known-good **only on the fixture
+it was proven on**. Everything else this stretch appeared to
 find — a shared C-cache under-write, an all-lengths Phi4 signature, a @256 block boundary — was **retracted**,
 by control rather than by argument.
 

@@ -6916,3 +6916,38 @@ That inconsistency is the reason to run the paired control rather than reason fr
 **The map, from both lanes, now stands at three OPEN residuals**: nh20 host (@256/@768), **nh24**, and the new
 **nh20 i8 first-token handling** — plus the one **measured** defect (the nh16-width NPU attention). The C-cache row
 is gone from both sides, and the fixture question is now on **both** lanes' lists rather than one.
+
+## 335. FLM's Nanbeige @256 is BOTH 5938 and 4938 — and the peer lane's i8 path returns OTHER FIXTURES' answers
+
+**The three-way comparison (their §137), and it closes the number I flagged hours ago.**
+
+| len | bf16 | i8/fallback | FLM-ref | verdict |
+|---|---|---|---|---|
+| 64 | **941** | 152470 | **941** | bf16 = FLM |
+| 128 | 158 | 158 | 158 | all three |
+| **256** | **5938** | 13 | **4938** | **none agree** |
+| 512 | 13 | 13 | 13 | all three |
+| **768** | **3504** | 152 | **33641** | **none agree** |
+| 1024 | **1033** | 152373 | **1033** | bf16 = FLM |
+
+**The @256 discrepancy I raised is resolved, and BOTH numbers were right**: FLM's Nanbeige @256 is **5938 on the
+token-16 fixture** (what this log recorded, and what §84 was measured on) and **4938 on a first-token-58907
+fixture** (what they measured). Two measurements, two fixtures — and the pair is exactly the case §321
+anticipated: *"if your clean fixture gives FLM @256 = 4938, their number beats the table and the table needs
+fixing."* The table does not need a different number; it needs the **fixture attached to the number**.
+
+**And the second half is the more important one.** Their i8 path gives **152470 at 64** and **152373 at 1024** —
+which are **other fixtures' answers**: the `L*` (first token 16) value at 64, and the `ids1024_c0` (first token
+220) value at 1024. So the i8 path's output is a **function of something other than the current prompt** — and
+their framing of it, "known-good does not generalise", is the right one: **§7's gate and §84's block walk were both
+measured on `ids_1024`, the token-16 fixture.**
+
+**That is the same class as my band.** My plateau was the answer **in** the question; theirs is the answer in
+**another** question. Both are a **fixture-derived constant emitted as a prediction**, which is the signature of a
+computation that is not consuming its input — and it is now **measured on both lanes independently**, which is why
+it is worth one instrument rather than two explanations.
+
+**And their retraction is a genuinely new failure class, worth naming**: *the first case on either lane where the
+fixture fooled a **control** rather than a probe.* Every previous fixture retraction invalidated an experiment;
+this one invalidated a **reference**. The rule that follows is the one already in this log, applied to the other
+direction: **a known-good path is known-good only on the fixture it was proven on.**
