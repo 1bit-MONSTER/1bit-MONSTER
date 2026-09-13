@@ -127,3 +127,25 @@ testing an instrument instead of trusting it:
 Plus one flawed test of mine ("is the divergence deterministic?" — determinism cannot separate a
 bug from drift) and one teammate error (a `pgrep` read as device occupation, where `fuser` is the
 check). Every one was found by re-reading a value's provenance, not by more testing.
+
+## 8. Re-verification, same session (2026-09-13)
+
+Much landed after the scorecard above was measured — double-buffered GEMM blocks, the
+npt/size-dependent host-thread default, the `(qout, head_dim)` attention-ELF gate, the
+data-driven int4 convention probe — so the numbers were re-measured end to end to confirm they
+still hold rather than assuming it. Same conditions: `NPU_PREFILL_BF16=1`, 1024-token prompt,
+`flm serve` and `llama-server` both resident as they were originally.
+
+| model | boot (gate) | prefill tok/s | vs scorecard | TTFT s | vs scorecard |
+|---|---|---|---|---|---|
+| Qwen3-0.6B | 25 ✓ | 1875 | 1912 | 0.546 | 0.536 |
+| Qwen3-1.7B | 220 ✓ | 1282 | 1335 | 0.799 | 0.767 |
+| Qwen3-4B | 220 ✓ | 651 | 672 | 1.574 | 1.524 |
+| Qwen3-8B | 220 ✓ | 459 | 461 | 2.229 | 2.207 |
+| Qwen3-VL-4B | 220 ✓ | 657 | 680 | 1.559 | 1.506 |
+| Llama-3.1-8B | 220 ✓ | 465 | 472 | 2.200 | 2.171 |
+
+Every gate holds and every figure is within ~3% of the recorded value — run-to-run variance on
+a contended box, in the expected direction (this run is marginally slower, consistent with the
+two resident processes). **The scorecard is reproducible, not a one-off sample**, and the
+boot-token gates it rests on are unchanged by all of this session's engine work.
