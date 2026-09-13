@@ -3986,24 +3986,34 @@ struct Bf16Ctx {
                     FILE* fk = fopen("/tmp/eng_kv.bin", "wb"); if (fk) { fwrite(bKv.data(), 2, bKv.size(), fk); fclose(fk); }
                 }
                 bool attn_host = false;
-                // The captured 256-token attention ELF is only verified
-                // token-correct for a single <=256-row call (boot=1614 @256
-                // agrees across runlist/FLM/bf16). Chunking it for longer
-                // prompts is WRONG (measured 2026-09-13: partial chunks and
-                // >512 keys diverge — the kernel's fixed key window/position
-                // semantics do not compose; see
-                // benchmarks/RESULTS-bf16-prefill-generalize-2026-09-13.md).
-                // For npt>256 fall back to the CPU attention reference
-                // (correct, ~10x slower) until a long-context ELF exists.
-                bool attn_npu_ok = !getenv("NPU_ATTN_CPU") && npt <= 256;
+                // VERIFIED ENVELOPE for the captured attention ELF. Gate = boot
+                // token equal to the two trusted paths (NPU_RUNLIST=1, byte-exact
+                // int8, and NPU_FLM_PREFILL=1), which agree with each other:
+                //
+                //   npt <= 256            -> NPU, 1 chunk   correct (boot=1614 @256)
+                //   npt == 512            -> NPU, 2 chunks  correct (boot=220  @512)
+                //   other 256-multiples   -> WRONG          (768 -> 220, want 125959;
+                //                                            1024 -> 220, want 25)
+                //   partial chunks        -> WRONG          (320/384/640/896 all diverge)
+                //
+                // So the kernel composes over at most TWO full 256-row chunks; a
+                // growing key prefix beyond 512 keys and any partial chunk break
+                // it. (A concurrent session independently reported "partial chunks
+                // and >512 keys diverge" — same conclusion.) Outside the envelope
+                // the CPU reference runs instead: correct, ~10-18x slower.
+                const bool two_full_chunks = (npt % 256 == 0) && npt <= 512;
+                bool attn_npu_ok = !getenv("NPU_ATTN_CPU") && (npt <= 256 || two_full_chunks);
                 if (attn_npu_ok) {
-                    bf16mm_set_attn_tokens(npt);
-                    bf16mm_set_attn_rows(npt);
-                    if (!bf16mm_attn(bA.data(), bActQ.data(), bKv.data())) attn_npu_ok = false;
+                    for (int b = 0; b < npt; b += 256) {
+                        const int rows = npt - b < 256 ? npt - b : 256;
+                        bf16mm_set_attn_tokens(b + rows);   // keys in the prefix
+                        bf16mm_set_attn_rows(rows);         // <=256 query rows
+                        if (!bf16mm_attn(bA.data() + (size_t)b * qout, bActQ.data() + (size_t)b * qout, bKv.data())) { attn_npu_ok = false; break; }
+                    }
                 }
                 if (!attn_npu_ok) {
                     if (getenv("NPU_ATTN_CPU")) fprintf(stderr, "\n[NPU_ATTN_CPU] forced CPU attn_omp\n");
-                    else if (npt > 256) fprintf(stderr, "\nbf16 attn: npt %d > 256 — captured ELF not verified for chunking, CPU attn_omp fallback\n", npt);
+                    else if (npt > 256) fprintf(stderr, "\nbf16 attn: npt %d outside the verified envelope (<=256, or exactly 512) — CPU attn_omp fallback\n", npt);
                     else fprintf(stderr, "\nbf16 attn unavailable — CPU attn_omp fallback\n");
                     attn_host = true;
                     #pragma omp parallel for
