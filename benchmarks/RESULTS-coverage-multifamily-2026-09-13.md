@@ -535,14 +535,32 @@ that nothing consumed the old name (the `insts_i8_*` references elsewhere are th
 xclbin instruction files, a different artefact). A capture that mislabels its own contents is
 a trap for the next reader, and this one sprang on two agents.
 
-**One place the measurement disagrees with the host — recorded as a latent risk, not a
-fault.** FLM's KV BO is **134217728 B (128 MB)**; the engine's `kv_bos_` is **33554432 B
-(32 MB)**. At the engine's layout (`token_u16 = (NKV/2)*HD = 512 u16` = 1 KB per token per
-region, 4 regions = 4 KB per token) 32 MB is **8192 tokens (MAX_L=8192)**, while 128 MB is
-**32768 tokens (MAX_L=32768)**. If the per-ctx stream is generated for MAX_L=32768 while the
-host BO holds 8192, a long enough context walks past the BO — the exact constraint the agent
-raised. Every test so far is at ≤1024 tokens so it cannot bite yet, but it should be checked
-before anyone runs a long context on this path.
+**One place the measurement appeared to disagree with the host — REFUTED, it was my misreading.**
+FLM's KV BO is 134217728 B (128 MB) and I first read the engine's as 33554432 B (32 MB),
+then flagged a possible MAX_L walk-past. The 32 MB was a **sync size, not an allocation**:
+`runtime_layer.cpp:80-87` allocates
+
+```cpp
+size_t kv_bo_bytes = cfg_.npu_kv_cache_bo_size > 0 ? (size_t)cfg_.npu_kv_cache_bo_size : 33554432;
+```
+
+and `npu_kv_cache_bo_size` is `134217728` (`include/common.h:32`). So the engine's KV BO **is
+128 MB**, matching FLM exactly and matching `gen_layer_elfs`' `MAX_L = 32768` default — whose
+own comment states the intent: "the native RuntimeLayerEngine allocates
+npu_kv_cache_bo_size (128MB = 32768 tokens at NKV=8/HD=128), so MAX_L must be 32768 to match".
+The 33554432 values are partial syncs in the dump and `write_kv` paths (`:394`, `:450`,
+`:506`, `:671`), not the buffer size. **No mismatch, no walk-past, and the risk I recorded
+does not exist.**
+
+A smaller, real observation left from the same reading: those partial syncs move only the
+first 32 MB of a 128 MB BO, i.e. 8192 tokens. On the `NPU_UNIFIED=1` path, which writes KV
+through `write_kv`, a context beyond 8192 tokens would sync only the first 8192 — it cannot
+bite at the ≤1024 tokens used so far, and it is **not** the `NPU_RUNLIST=1` decode path that
+was tested, but it is worth a sync size check before that path is used long. This is the
+fourth instrument-vs-measurement confusion of the session (the others: the two false alarms
+and the mislabelled arg3), and all four were found by re-reading a number's provenance rather
+than trusting its face value — a sync length is not a buffer length, and a file called
+`insts_*` is not necessarily instructions.
 
 **Narrowed further: the forward is wrong from the FIRST token, not by accumulation.**
 
