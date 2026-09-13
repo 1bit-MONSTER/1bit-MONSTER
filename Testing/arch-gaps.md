@@ -23,8 +23,8 @@ Evidence below was taken from the **official HF configs** (fetched
 add them here when they are reviewed. Seen while writing this: `deepseekv41`
 (4 models on 2026-09-11, 6 on 2026-09-12), the other three from the 2026-09-11
 run, and new on 2026-09-12 `qwendriveforplanning` (e.g.
-`Yuro1991/Qwen-Drive-1.0-4B`) — **not yet reviewed**, so its census line is
-still the only record of it.
+`Yuro1991/Qwen-Drive-1.0-4B`) — reviewed 2026-09-13 (section below; a driving
+planner, not a text decoder).
 
 Measured reference — the shape the census compares against:
 
@@ -105,6 +105,27 @@ Measured reference — the shape the census compares against:
   mapping would advertise support for something that cannot be served.
 * **Real support needs**: scope decision (is video in scope at all?) before any
   mapping.
+
+## `qwendriveforplanning` — Qwen-Drive (driving planner)
+
+* **Class / model_type**: `QwenDriveForPlanning` / `qwen_drive`; example
+  `Yuro1991/Qwen-Drive-1.0-4B`.
+* **Not a text decoder**: the top-level config nests a `vlm_config`
+  (`Qwen3_5ForConditionalGeneration` — the Qwen3.5 text tower plus vision) and an
+  `expert_config`, and its own keys are trajectory planning: `trajectory_hz`,
+  `trajectory_point_dim`, `num_future_points`, `num_history_points`,
+  `trajectory_scale`, `num_inference_steps`, `noise_init_std`, `min_one_minus_t`,
+  `max_reasoning_tokens`, plus `id2label`/`label2id` for two labels. Image
+  geometry (`image_patch_size`, `image_spatial_merge_size`,
+  `image_temporal_patch_size`, `current_image_pixels`, `history_image_pixels`)
+  confirms a video/image input path.
+* **Why an alias is wrong**: the familiar part is the Qwen3.5 tower; the model's
+  contract is a **driving trajectory** — a sampled (denoising) plan over
+  `num_inference_steps` with a noise seed and `min_one_minus_t`, not tokens. The
+  engine has no head or pipeline for that, so a mapping would serve the tower and
+  silently drop the planner, exactly as with `molmoact2` and `cosmos3edge` above.
+* **Real support needs**: a scope decision first (is trajectory planning in scope
+  at all?), then the expert/trajectory head.
 
 ---
 
