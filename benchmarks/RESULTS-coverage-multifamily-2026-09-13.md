@@ -3167,3 +3167,40 @@ FLM's own kernel for the same shape** — the same differential that proved the 
 (§56) — looking specifically for a **missing dependency or barrier between the DMA and compute stages**,
 which is the classic source of a within-launch race. Everything else on the host side is now measured, not
 assumed.
+
+## 70. The i8 kernel IS deterministic for a working model — the fault is Nanbeige-specific
+
+**My first attempt at this control was vacuous, and I caught it before recording.** I diffed the two runs'
+`[RBCHK]` lines and got "IDENTICAL" — but both sets were **empty**, because **Qwen3-0.6B's default path is
+the RUNLIST path** (`=== Prefill 256 [runlist] ===`, `RuntimeLayer: layer kernel ctx=1 ready`), not the
+`I8Ctx` int8 path Nanbeige uses. So the 0.6B gate of 1614 says **nothing** about the i8 kernel. An empty
+diff is not evidence, and this is the second time in two checkpoints that a measurement needed checking
+before it was believed.
+
+**Forced onto the same path with `NPU_RUNLIST=0`**, 0.6B initializes the **same `I8Ctx` contexts**
+(`final_i8_QKV_qwen3_0_6b.xclbin`, `final_i8_O_…`, `final_i8_GU_…`, `final_i8_D_…`) and its **`bC` is
+identical across two runs — 8 of 8 checksums** — while Nanbeige's **differs from the very first launch**.
+
+| model | path | `bC` across runs |
+|---|---|---|
+| Qwen3-0.6B | runlist (default) | n/a — different path |
+| **Qwen3-0.6B** | **i8 `I8Ctx` (`NPU_RUNLIST=0`)** | **identical, 8/8** |
+| **Nanbeige4.1-3B** | **i8 `I8Ctx`** | **differs from launch #1** |
+
+**So the i8 kernel is deterministic for a working model and nondeterministic for Nanbeige.** The fault is
+**Nanbeige-specific** — its xclbin, its generated instruction stream, or its BO geometry — and **not** a
+universal race in shared kernel code. That is a materially different conclusion from §69, which could only
+say the fault was "inside our kernel/xclbin".
+
+**And a second finding surfaced.** On the int8 path, 0.6B returns **`boot=220`**, where the runlist path
+returns **1614** and 1614 is the reference (FLM's). So for a working model the two paths **disagree**, and
+the int8 path is the one that disagrees with the reference. I am recording that as an observation rather
+than a conclusion — the int8 path may simply be exercising a different token count — but it is worth
+noting that the i8 path appears to be a **secondary, unvalidated** path. That is consistent with §69:
+the seven uninitialized-BO fixes were correct and irrelevant because they were fixes to a path the goal's
+models do not use.
+
+**The named next measurement**: **compare Nanbeige's generated instructions/xclbin against Qwen3-0.6B's**.
+The **same generator** produces both, so a structural difference — a missing barrier, a different tile
+decomposition, a dimension that does not land on the fragment layout — would be visible directly. It is the
+same differential method that proved the per-ctx layer ELFs exact (§56).
