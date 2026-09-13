@@ -5396,3 +5396,42 @@ at one token, the attention is not the difference** — a 7-second test that rem
 suspicion, and one I would reach for before any attention-side work on any family. It also explains why this
 lane's earlier reasoning needed the 256-token pair at all: the 1-token case was available the whole time and
 is strictly more informative for localisation.
+
+## 121. RETRACTED §119, and the real defect: the NPU attention output is ALL ZERO (inputs are non-zero)
+
+§119 read the per-layer `max|npu-host|` growth (0.43 -> 8.7) as a small attention error compounding. Adding the
+output's own per-head scale shows what it actually is:
+
+```
+[ATTN-DIFF-H0] h0:0.2666/0/0.2666  h1:0.3005/0/0.3005  h2:0.2184/0/0.2184  ...  h19:0.2907/0/0.2907
+               (per head: max|npu-host| / max|npu| / max|host|)
+```
+
+**`max|npu| = 0` for every one of the 20 heads.** The NPU attention output is identically zero, so
+`max|npu-host|` was never measuring a divergence — it was just `max|host|`, and the "growth 0.43 -> 8.7 through
+the layers" was the HOST attention's own magnitude growing. **§119's mechanism is wrong and is retracted.**
+
+**And the kernel's inputs are not zero:**
+
+```
+[ATTN-DIFF L0] npt=256 max|npu-host|=0.432772 | max|bActQ|=19.125 max|bKv|=16.5 | npu[0][0]=0 host[0][0]=0
+```
+
+So the kernel is launched with non-zero Q and non-zero KV and writes **nothing**. That is a far simpler and far
+more actionable statement than "nearly right": Nanbeige's bf16 attention produces **no output at all**, which is
+exactly the §92 context-free boot — the residual stream sees an attention contribution of zero at every layer.
+
+**Ruled out, and what is left.** The `run_attn` tail does copy the device output back
+(`memcpy(out, attn_out->data(), rows*q*2)`), so it is not a missing copy-back. The candidates are now:
+
+1. the kernel writing somewhere we do not read (arg order / BO binding),
+2. the kernel's geometry not matching the staged shapes (so it computes nothing),
+3. `elf_0011` not being an attention kernel at all — §102's branch (b), which this **revives**.
+
+**And §103 is now much more interesting than it looked.** FLM ran that kernel with BOs **1 MB / 5 MB / 30 MB**;
+we bind **5 MB / 5 MB / 16 MB**. If arg3 is not what we assume, the kernel is reading a buffer we did not fill
+— which would produce exactly this: non-zero inputs on our side, zero output on the device.
+
+**Method note.** §119 was three hours of "small numerical difference" reasoning built on a quantity
+(`max|npu-host|`) whose *scale* I had not printed. One extra column — `max|npu|` — turned a subtle-divergence
+story into a binary one. Print the scale of the thing you are differencing.

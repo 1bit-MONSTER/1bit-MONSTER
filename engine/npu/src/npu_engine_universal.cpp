@@ -4307,8 +4307,11 @@ struct Bf16Ctx {
                                 if (d > mx) { mx = d; mpi = pi; mj = j; }
                             }
                         double sabs = 0; for (int j = 0; j < qout; j++) sabs += fabs((double)bat[j]);
-                        fprintf(stderr, "[ATTN-DIFF L%d] npt=%d max|npu-host|=%.6g at (tok %d, dim %d) | host|tok0|_sum=%.6g | npu[0][0]=%.6g host[0][0]=%.6g\n",
-                                l, npt, mx, mpi, mj, sabs, bf16g(bA[0]), bat[0]);
+                        double qmax = 0, kvmax = 0;
+                        for (size_t i = 0; i < (size_t)npt * qout; i++) { double v = fabs((double)bf16g(bActQ[i])); if (v > qmax) qmax = v; }
+                        for (size_t i = 0; i < bKv.size(); i++) { double v = fabs((double)bf16g(bKv[i])); if (v > kvmax) kvmax = v; }
+                        fprintf(stderr, "[ATTN-DIFF L%d] npt=%d max|npu-host|=%.6g at (tok %d, dim %d) | max|bActQ|=%.6g max|bKv|=%.6g | npu[0][0]=%.6g host[0][0]=%.6g\n",
+                                l, npt, mx, mpi, mj, qmax, kvmax, bf16g(bA[0]), bat[0]);
                         if (l == 0) {
                             // Per-head max diff, plus the scale of the host output, so a concentrated
                             // (layout) vs uniform (bf16 rounding) difference can be told apart.
