@@ -6722,3 +6722,28 @@ chain that produced them, all still holding after two lanes of edits to the same
 models, the one family unlocked during the stretch is **exact** on its default path, and **no qualification
 remains** — the paragraph that had qualified the gates was itself retracted once the sentinel cleared the
 under-write.
+
+## 310. A caveat on the reference table itself: the "FLM reference" tokens were measured on token-16 fixtures
+
+**The other lane quoted a bisect pair as "@256: bf16 5938 vs FLM 4938".** FLM's reference for Nanbeige @256 is
+recorded as **5938** here — it is the §84 milestone and it is in the scorecard's table. But that table was taken
+with the **old fixtures**, and **every fixture in this tree begins with token 16**, which both lanes have now
+shown has a **zero embedding**. So the honest form of the claim is narrower than the table's wording:
+
+> the recorded reference tokens are **like-for-like values against the fixtures we used**, not absolute
+> references for a prompt length — and a clean-fixture re-run could legitimately move any of them.
+
+**That is the same trap as the three fixture retractions**, one level up: not a measurement misread, but a
+**benchmark** misread as a constant. If the other lane's clean fixture gives FLM @256 = **4938**, their number
+beats the table and the table needs fixing — and the §84 milestone ("1033 @1024 and 5938 @256, FLM's own
+reference at both lengths") would need re-taking on a clean fixture before it is quoted again.
+
+**What is NOT in doubt**: the **like-for-like** comparisons. Both sides of every gate were measured on the same
+fixtures, so "prefill, TTFT and decode beat FLM for all six models" is unaffected — and the §84 milestone was a
+comparison of the engine's default path against FLM's own kernels on the **same** ids file, which is exactly the
+kind of same-input comparison this stretch established as the standard.
+
+**So the rule set gains a fourth entry, and it is the one that applies to the tables rather than to the runs**:
+
+4. **A recorded reference is a value against a specific fixture.** Before quoting a reference token — or
+   building a bisect pair on one — re-take it on the fixture being used, or state the fixture with it.
