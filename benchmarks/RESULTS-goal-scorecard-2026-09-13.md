@@ -149,3 +149,40 @@ Every gate holds and every figure is within ~3% of the recorded value — run-to
 a contended box, in the expected direction (this run is marginally slower, consistent with the
 two resident processes). **The scorecard is reproducible, not a one-off sample**, and the
 boot-token gates it rests on are unchanged by all of this session's engine work.
+
+## 9. Decode re-measured: now clearly AHEAD of FLM, tokens still verified (2026-09-13)
+
+Section 8 re-verified prefill and TTFT; the decode column had not been re-measured. Done now,
+`NPU_RUNLIST=1`, 1024-token prompt, 4 tokens, on the same build:
+
+| model | decode now | scorecard | FLM on-box | native vs FLM |
+|---|---|---|---|---|
+| Qwen3-0.6B | **98 tok/s** (10.2 ms/tok) | 80 | 77.8 | **+26%** |
+| Qwen3-1.7B | **50** (19.9) | 40 | 39.53 | **+26%** |
+| Qwen3-4B | **24** (41.1) | 19 | 18.75 | **+28%** |
+| Qwen3-8B | **14** (71.0) | 11 | 10.70 | **+31%** |
+
+So decode moves from "matches FLM" to **beats it by 26-31% on every size measured**, and the
+margin is consistent across sizes rather than one outlier.
+
+**Token correctness re-checked on the same build**, so the faster number is not a faster wrong
+answer — `decode_token_check.sh`, Qwen3-0.6B, 8 tokens:
+
+```
+FLM-ref decode : 25 220 220 16 17 23 220 11211 220
+native  decode : 25 220 220 16 17 23 220 11211
+prefill boot   : MATCH (25)
+RESULT: MATCH
+```
+
+**Attribution: not established, and recorded as such.** The decode path itself was not
+deliberately changed this session — the candidates are the `partial_rotary_factor` 0.25 -> 1.0
+fix (which alters `ra2`'s rope_dim and therefore the per-position i6 table the runlist kernel
+reads) and improved machine state. That fix should make `ra2` do MORE rotation work, not less,
+so it is not an obvious speedup; equally, the prefill re-measurement in section 8 came out
+marginally SLOWER on the same box, which argues against a simple "the machine got faster".
+The two directions disagree, so no cause is claimed. What is claimed is the measurement, with
+the tokens verified on the same binary.
+
+**Revised goal status:** prefill, TTFT **and** decode all beat FLM on every model the engine
+supports, with decode correctness established to bf16 precision (section 4).
