@@ -35,7 +35,9 @@ EXPECTED = [
     ("LFM2-", "group+signed"),
 ]
 DEFAULT_EXPECTED = "group+unsigned"
-MIN_CORR = 0.9   # below this the oracle cannot name a convention at all
+MIN_CORR = 0.9        # a convention must reach this to be named the winner
+UNTIED_CEILING = 0.5  # at or below this, no convention correlates at all: untied model.
+                      # Between the two, something correlates but nothing fits — see main().
 
 
 def expected_for(bundle):
@@ -51,7 +53,8 @@ def main():
         print(f"ERROR: no model store at {d} — cannot judge the bundles.", file=sys.stderr)
         return 2
 
-    rows, failed, skipped = [], 0, 0
+    rows, failed, skipped, suspicious = [], 0, 0, 0
+    classified_conventions = set()
     for name in sorted(os.listdir(d)):
         md = os.path.join(d, name)
         if not os.path.isdir(md) or not os.path.exists(os.path.join(md, "model.q4nx")):
@@ -64,17 +67,29 @@ def main():
             skipped += 1
             continue
         winner, corr, scores = r
-        if winner == "UNTIED-OR-UNKNOWN":
-            # The oracle is blind here, and that is not a verdict: with tying
-            # off, lm_head and embed_tokens are independent matrices, so all
-            # four conventions score ~0. Reported, never failed.
-            rows.append((name, "unclassifiable", f"untied (best corr {corr:+.4f} < {MIN_CORR})"))
+        if winner == "UNTIED-OR-UNKNOWN" and corr < UNTIED_CEILING:
+            # The oracle is blind here, and that is not a verdict: with tying off,
+            # lm_head and embed_tokens are independent matrices, so all four
+            # conventions score ~0. Reported, never failed.
+            rows.append((name, "unclassifiable", f"untied (best corr {corr:+.4f} < {UNTIED_CEILING})"))
             skipped += 1
+            continue
+        if winner == "UNTIED-OR-UNKNOWN":
+            # Not ~0 and not >= MIN_CORR: something correlates with the embedding
+            # but no single convention explains it. That is a partially-corrupted
+            # bundle or a geometry change, not an untied model — and calling it
+            # "unclassifiable" would let it pass silently.
+            rows.append((name, "SUSPICIOUS",
+                         f"no convention fits, but best corr {corr:+.4f} is not ~0 "
+                         f"(>= {UNTIED_CEILING}); partial corruption or geometry change?"))
+            suspicious += 1
             continue
         want = expected_for(name)
         ok = (winner == want)
         if not ok:
             failed += 1
+        else:
+            classified_conventions.add(want)
         rows.append((name, "ok" if ok else "MISMATCH",
                      f"{winner} (corr {corr:+.4f}), expected {want}"))
 
@@ -83,9 +98,27 @@ def main():
         print(f"{name:32s} {verdict:9s} {detail}")
 
     classifiable = len(rows) - skipped
-    print(f"\nSUMMARY: classified={classifiable} skipped={skipped} mismatched={failed}")
-    if failed:
+    # Coverage floors. Without them this check passes while verifying nothing: an
+    # empty or relocated store, or a rewrite that stops finding the tied pairs,
+    # would print "classified=0" and exit 0 — a zero read as clean, which is the
+    # exact mistake this gate exists to prevent one level down.
+    missing_conv = [c for _, c in EXPECTED if c not in classified_conventions]
+    if DEFAULT_EXPECTED not in classified_conventions:
+        missing_conv.append(DEFAULT_EXPECTED)
+    coverage_lost = classifiable == 0 or missing_conv
+
+    print(f"\nSUMMARY: classified={classifiable} skipped={skipped} "
+          f"mismatched={failed} suspicious={suspicious}")
+    if failed or suspicious or coverage_lost:
         print("RESULT: FAIL")
+        if coverage_lost:
+            print(f"COVERAGE LOST: classified={classifiable}"
+                  + (f", no bundle classified as {', '.join(missing_conv)}" if missing_conv else "")
+                  + " — this check verified nothing. Fix the store path or the oracle before"
+                    " reading a PASS out of it.")
+        if suspicious:
+            print("At least one bundle correlates with its embedding but matches no convention:")
+            print("that is partial corruption or a geometry change, not an untied model.")
         print("A bundle no longer decodes with its family's convention. If this is a new")
         print("family, measure it with tools/q4nx_decoder_map.py, implement the decoder it")
         print("needs, and add its prefix to EXPECTED in this file — do not widen MIN_CORR.")
