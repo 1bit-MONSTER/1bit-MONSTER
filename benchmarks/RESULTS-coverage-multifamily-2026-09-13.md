@@ -7441,3 +7441,35 @@ residuals are one mechanism with different blind regions; if their 32 is already
 that merely look alike from the outside. **That is a cross-lane test, and it is the first one in this thread that
 neither lane can run alone** — the fixtures are token-id based, so it needs the same ids through the other model's
 tokenizer to be comparable, which is worth saying before anyone spends runs on it.
+
+## 146. The cross-lane test, run: Nanbeige at length 32 is PARTIAL (4 distinct values) while Phi4 at 32 is TOTAL (8/8 -> 220) — so the two residuals are TWO mechanisms
+
+§375 named the one test neither lane could run alone: **the same eight first tokens at length 32 on the Nanbeige
+lane.** Run here (bf16 with CPU attention, plus the FLM-ref on the same fixture):
+
+| first token | bf16 | FLM-ref | agree |
+|---|---|---|---|
+| 100 | 43753 | 36780 | ✗ |
+| 16 | 43753 | 36780 | ✗ |
+| 1024 | 166101 | 166101 | ✓ |
+| 220 | 166101 | 166101 | ✓ |
+| 12345 | 152551 | 152551 | ✓ |
+| 777 | 152551 | 152551 | ✓ |
+| 4096 | 166101 | **152551** | ✗ |
+| 58907 | 156468 | 156468 | ✓ |
+
+**Four distinct values across eight first tokens** (43753, 166101, 152551, 156468) — so Nanbeige at 32 is
+**PARTIAL**, not blind. Phi4 at 32 is **8/8 -> 220**, i.e. **TOTAL**.
+
+**So the answer is the second branch of the pre-stated prediction: two mechanisms that look alike from the
+outside.** Both paths read the first token; both have blind regions; the blind regions have **different shapes** —
+Phi4's is total at 32/64 and partial at 128, while Nanbeige's is partial at **both 32 and 448** (4 distinct values
+here, 3 at 448 per §141).
+
+**And that corrects the "length-dependent" framing for this lane.** It was confirmed on Phi4 and I adopted it; on
+Nanbeige the degeneracy does **not** switch off with length — it is partial at both ends of the range tested. The
+shared property remains a **signature** (partial blindness to a prompt token), not a mechanism.
+
+**One caveat, because it limits the comparison:** the fixtures are raw token-**ids**, so "the same eight tokens"
+means the same ids through each model's own tokenizer — the convention every cross-lane comparison in this file
+uses, but the two models do not assign those ids the same text.
