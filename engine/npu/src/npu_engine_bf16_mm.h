@@ -258,28 +258,30 @@ struct Bf16Mm {
     bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
         // qout alone is NOT a shape selector. Every ELF in the xclbin dir is
         // head_dim=128 and only nh16/nh32 exist, so a 2-way qout test silently
-        // handed the wrong-shape kernel to four families: Nanbeige nh20 (2560),
-        // Phi4 nh24 (3072) and Gemma3 nh4/nh8 hd256 (1024) all fell through to the
-        // nh16x128 ELF, and Qwen3.5 nh16 hd256 (4096) was promoted to the nh32x128
-        // ELF. Gate on head_dim too: an unmatched shape now yields no kernel
-        // (run_attn returns false) instead of a plausible-looking wrong answer.
-        xrt::ext::kernel* kern = (attn_hd == 128)
-            ? ((attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get())
-            : nullptr;
+        // handed the wrong-shape kernel to four families. head_dim alone is not
+        // enough either: Nanbeige nh20 (qout 2560) and Phi4 nh24 (3072) are hd128,
+        // so an hd-only gate still passes them through to the nh16 kernel. Require
+        // the (qout, hd) PAIR to name a kernel that actually ships:
+        //   hd128 + qout 2048 -> nh16, hd128 + qout 4096 -> nh32, anything else -> none.
+        // An unmatched shape makes run_attn return false (explicit failure) instead
+        // of a plausible-looking wrong answer.
+        const bool attn_shape_ok = (attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096);
+        xrt::ext::kernel* kern = !attn_shape_ok ? nullptr
+            : ((attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get());
         // attn_tokens > 256 -> the long-context ELF captured from FLM's REAL
         // 1024-token prefill (elf_0012 of the prefill capture; 98848 B). It is
         // verified token-correct at npt = 256/512/896/1024 against the byte-exact
         // runlist path, and its attention costs 186 ms for a 28-layer npt=1024
         // run. The previously-used generated gen(0,1024) ELF was both wrong and
         // ~1200x slower (223050 ms) and has been replaced in the xclbin dir.
-        if (attn_hd != 128) kern = nullptr;
+        if (!attn_shape_ok) kern = nullptr;
         else if (attn_tokens > 1024 && attn_kernel2k) kern = attn_kernel2k.get();
         else if (attn_tokens > 256) {
             // NH=32 models (attn_qout 4096) must use the nh32 long-context ELF;
             // using the nh16 1k ELF silently produced wrong tokens for
             // Qwen3-4B/8B (boot 87672 vs FLM 220). The 2k slot has no nh32
             // variant yet, so (1024,2048] on nh32 still uses the nh16 ELF.
-            if (attn_hd != 128) kern = nullptr;
+            if (!attn_shape_ok) kern = nullptr;
             else if (attn_qout == 4096 && attn_kernel1k32) kern = attn_kernel1k32.get();
             else if (attn_kernel1k) kern = attn_kernel1k.get();
         }

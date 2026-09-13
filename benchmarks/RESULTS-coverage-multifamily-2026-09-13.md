@@ -215,8 +215,11 @@ kernel is the whole story": either the substituted ELF was not the attention ker
 (the capture's largest ELF may be a GEMM/MoE binary), or a second error exists in that
 family. That test must be repeated now that the selector is shape-aware.
 
-**Fix applied in this commit.** `attn_hd` is plumbed beside `attn_qout`
-(`bf16mm_set_attn_hd(HD)`) and every ELF choice is gated on `attn_hd == 128`. An
+**Fix applied.** `attn_hd` is plumbed beside `attn_qout` (`bf16mm_set_attn_hd(HD)`) and
+the selector now requires the **(qout, hd) pair** to name a kernel that actually ships:
+`hd128 + qout 2048 -> nh16`, `hd128 + qout 4096 -> nh32`, anything else -> no kernel.
+An hd-only gate was not enough: Nanbeige (nh20, qout 2560) and Phi4 (nh24, qout 3072)
+are both hd128 and would still have been passed through to the nh16 kernel. An
 unmatched shape now makes `run_attn()` return false — an explicit failure — instead of
 silently computing 16-head hd128 attention for a 20-head model. This also fixes a bug
 introduced by `79013d8f2` (the nh32 >256 fix), which promoted any `qout == 4096` to the
