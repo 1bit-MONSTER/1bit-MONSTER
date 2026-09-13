@@ -190,3 +190,40 @@ to the byte-exact `NPU_RUNLIST=1` path.
 Native now meets-or-beats the on-box FLM bar on prefill and TTFT. Decode is the
 last metric behind; it runs on the separate whole-layer runlist path, so the
 GEMM fix above does not apply to it.
+
+## Decode: the last metric, and why it is context-dependent
+
+Decode runs on the separate whole-layer runlist path, so the GEMM fix above does
+not touch it. It is device-bound: `NPU_HOST_THREADS` 4/8/16 all give 67 tok/s,
+and `NPU_FWD_TIMING=1` at 2088 tokens shows
+`[fwd] rope=0.3 build=1.2-1.9 exec=14.9 total=16.1-17.1 ms` — exec (28 layer
+ELFs + lm_head) is ~90% of the token.
+
+Native decode degrades faster with context than FLM's:
+
+| context | native | FLM on-box |
+|---|---|---|
+| 1024 | **82 tok/s** | 77.9 |
+| 2048 | 70 | — |
+| 2088 | 67-68 | 74.8-75.0 |
+
+The trend across 1024/2048/2088/2200 is smooth (12.2 / 14.3 / 14.7 / 14.5
+ms/tok), so the tool-generated ELFs above context 2048 are not the problem —
+native's per-token cost simply grows ~18% from 1k to 2k while FLM's grows ~4%.
+
+This is why the harness reports decode as a loss: its `ctx-k 1` stage feeds the
+"reclaimer" story, which tokenizes to **2088** tokens, not 1024. At a true 1024
+context native decode is ahead; at 2088 it is behind.
+
+## Objective scorecard
+
+| metric | native | FLM on-box | verdict |
+|---|---|---|---|
+| prefill tok/s | **1440.9** | 1313.29 | ✅ **+9.7%** |
+| TTFT (s) | **0.711** | 0.748 | ✅ **5.0% faster** |
+| decode tok/s @ harness prompt (2088 tok) | 67 | 72.04 | ❌ -7.0% |
+| decode tok/s @ 1024 ctx | **82** | 77.9 | ✅ +5% |
+
+Prefill and TTFT meet-or-beat the on-box bar. Decode meets it at 1k context but
+not at the ~2k context the harness's standard prompt actually exercises. The
+remaining work is long-context decode cost, not correctness.
