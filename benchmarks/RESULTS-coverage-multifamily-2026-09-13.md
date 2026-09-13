@@ -8405,3 +8405,48 @@ Both are real, but the actual failure is a **quantifier**, at three levels at on
 was correct, the arithmetic checked to 236 and 256 exactly, **and the error was in the set the sentence quantified
 over.** A control cannot catch it because there was no bad reading to catch — only a true reading described as
 holding over more than it does.
+
+## 157. FLM's attention is a SEQUENCE GENERATED IN CODE over (L_begin, L_end) — 7 families declare it, while our engine loads per-length ELFs; that difference is the shape of BOTH blockers
+
+§455 found that FLM ships its instruction vocabulary as source. The model headers it also ships show **what that
+vocabulary is used for on the attention path**, and the finding is a design difference rather than a missing artifact:
+
+| family | `gen_mha_engine_seq` signature |
+|---|---|
+| gemma | `(seq, L_begin, L_end, sinks, is_sliding_window)` |
+| gemma_text | `(seq, L_begin, L_end, is_sliding_window, buffer_length)` |
+| gpt_oss, llama, **nanbeige**, **phi4**, qwen3 | `(seq, L_begin, L_end, ...)` |
+
+**Seven families, one shape: FLM builds the MHA instruction sequence in code, parameterised by a length RANGE.**
+Arbitrary lengths are supported **by construction** — there is no per-length artifact that can be missing, because
+the sequence is emitted for whatever `(L_begin, L_end)` the caller asks for. (Their constructors default
+`MAX_L = 4096`.)
+
+**Our engine does the opposite**: it loads a **pre-built per-length ELF**. `engine/npu/xclbins/`:
+
+```
+attn_mha_256_nh16.elf   attn_mha_256_nh32.elf   attn_mha_256_nh32_hd64.elf
+attn_mha_1024_nh16.elf  attn_mha_1024_nh20_hd128.elf  attn_mha_1024_nh32.elf
+attn_mha_2048_nh16.elf
+```
+
+Only the shaped combinations exist — **nh20 appears at @1024 and nowhere else** — so @256/@2048 fall back to a legacy
+slot, which is exactly the measured defect (§97, §115, §121–§123: the nh20 attention running the **nh16-width** kernel).
+
+**So both blockers are the same difference seen from two sides:**
+
+- **r5 (this lane):** no genuine nh20/nh24 attention at each context length — because the length is baked into a
+  **file** rather than passed as a **parameter**.
+- **r2 (the goal's skipped task):** no >256-token attention — the same reason, one length further out.
+
+**And it changes what the fix looks like.** The note so far was *"supply a genuine attention ELF per context length"* —
+an artifact-capture problem, which is why it read as multi-day. §455 puts the opcodes, the command classes and the
+data-movement primitives in **documented headers**; these headers show the intended consumer: **generate the sequence
+for `(L_begin, L_end)` as FLM does**, instead of capturing one file per length. That is a larger change than adding a
+file, but it is the one that closes **both** blockers at once, and it no longer requires recovering an undocumented
+format.
+
+**Scope, stated narrowly:** these are **pimpl headers** — `find models/ -name '*.cpp'` returns nothing, and the only
+numeric constant in the nanbeige/phi4 headers is `MAX_L = 4096` — so this is the **API shape**, not the attention
+arithmetic. And nothing here says the generated route is small: it is the same errand as before, now with a documented
+vocabulary instead of a memory trace.
