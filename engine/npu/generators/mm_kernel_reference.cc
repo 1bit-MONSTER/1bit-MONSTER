@@ -17,6 +17,16 @@
 
 #include "zero.cc"
 
+// Mutable statics must be placed in .data, never .bss: the aiecc-generated
+// bare-metal ld.script maps only .text/.data, so a zero-init static lands in
+// .bss and is DROPPED from the kernel ELF — kernel reads of it then return
+// garbage (issue #1838, observed in the #1769 round). mm_binary_q1.cc has
+// carried this annotation since; the fused kernel lost it, so two counters sat
+// in .bss again (issue #2199). engine/npu/tests/check_kernel_bss.sh and
+// build_p1i4.sh fail loudly if any .bss symbol survives a build. Same
+// definition as engine/npu/kernel/mm_binary_q1.cc:23.
+#define KERNEL_STATIC __attribute__((section(".data")))
+
 // Fused GU→SiLU→D on-core arithmetic (issue #1759) — dual-compiled with the
 // host CPU reference (engine/npu/src/zaya_moe_cpu.h) so the exact bit-level
 // contract is verified on x86 before the NPU round-trip. No libm: pure
@@ -817,7 +827,7 @@ static int32_t g_i4_rq_dump4[8];   // ratios for chunk (i=3, jt=7)
 static int8_t g_i4_dq_dump5[64];   // chunk (i=0, jt=3) — same col-tile, i=0
 static int8_t g_i4_dq_dump6[64];   // chunk (i=1, jt=0) — same k-step, jt=0
 static int32_t g_i4_c00_tile[64];  // full (8,8) C00 accumulator after call 0
-static unsigned g_i4_call = 0;     // matmul call counter (first call = tile 0)
+static KERNEL_STATIC unsigned g_i4_call = 0;     // matmul call counter (first call = tile 0)
 static int g_cap5 = 1, g_cap6 = 1, g_cap3 = 1, g_cap4 = 1;
 static int8_t g_i4_a_dump[512];    // A tile (8,64) all bytes — I4_A_DUMP
 static int32_t g_i4_ref_c1[8];    // scalar reference C1 row-0 cols 0-7 (mmul vs scalar)
@@ -1148,7 +1158,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // (8,128) int32 MICROTILED: element (r,c) at (c/8)*64 + r*8 + c%8,
     // so row r col c = row-0 position + r*8.
     {
-        static unsigned call = 0;
+        static KERNEL_STATIC unsigned call = 0;
         const unsigned ki = call % 32;   // only ki%4 is used (== call%4 since 32%4==0)
         const int32_t* mq = (const int32_t*)(pB4 + 5120);
         if (ki % 4 == 3) {
