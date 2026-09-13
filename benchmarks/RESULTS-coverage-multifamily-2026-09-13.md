@@ -7766,3 +7766,38 @@ the class of fixture that produces a context-free answer for reasons unrelated t
 **This is the third fixture trap in this lane** (§89 token 16; §132/§134 all `L*` prompts starting with 16; §146's
 {16, 100}) and the **second with the same token**. The generalisation was what was missing, not the care: each time
 the check *was* run, it was run on the wrong axis — distinctness instead of degeneracy, presence instead of content.
+
+## 405. The clean cross-lane run: Nanbeige gives exactly the THREE predicted groups — and my own run was CONCURRENT, so the one Phi4 outlier is not a finding
+
+**The clean set** — eight token-ids asserted **nonzero on both models** (220, 777, 1024, 4096, 12345, 58907, 30000,
+45000), replacing the two that were in Nanbeige's 319-row zero-embedding set. Both arms are the ones that mean
+something, banner-asserted per run.
+
+**Nanbeige, host attention — three distinct values:**
+
+| value | tokens |
+|---|---|
+| **166101** | 220, 1024, 4096 |
+| **152551** | 777, 12345, 30000, 45000 |
+| **156468** | 58907 |
+
+**That is exactly the three groups §390 predicted** once the two degenerate points were removed — the earlier run's
+fourth group was the zero-embedding pair, and with it gone the partition is unchanged in kind. **PARTIAL, three
+groups, two mechanisms intact.**
+
+**Phi4, host attention — and this is where the run fails its own standard.** Seven of eight gave **220**; the eighth,
+**token 220, gave 1877**. But `C32_220` is **byte-identical to `S32_220`** (`cmp` confirms), and `S32_220` gave
+**220** in the earlier sweep. **The same fixture, two different answers.**
+
+**And the cause is almost certainly mine.** The other lane was running **Phi4 at ~71% for four minutes** during this
+run. The host attention path is **load-sensitive** — their own §116 rule is to record the clang count per run for
+exactly this reason — so **I took a measurement on a contended device while enforcing etiquette on everyone else.**
+The run is therefore **invalid as a measurement and must be re-taken on a free device**, and the `1877` is withdrawn
+before it is claimed.
+
+**And it is worth naming what it would have become.** *"Phi4 is partly blind too — 7/8, not 8/8"* is a plausible
+sentence that this run would have supported, and it would have **dissolved the two-mechanism conclusion into one
+mechanism with noise**. The single value that differed is the single value that matters; **the discipline that
+caught the zero row and the arm mismatch is the same one required here, applied to my own run for the first time in
+this thread.** The Nanbeige half is unaffected — its three groups reproduce the earlier partition exactly, and
+neither degenerate token was doing any work in it.
