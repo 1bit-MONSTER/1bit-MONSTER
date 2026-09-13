@@ -2133,3 +2133,41 @@ absent** — conv layers still run through the attention path.
 
 Committed the same way as the Nanbeige attention ELF (`071ed869e`): with its role unverified, as a
 **valid kernel for the family** rather than as a fix.
+
+## 44. The conv taps: loaded but never packed, and NOT derivable from FLM's BOs
+
+Followed the conv compute — LFM2's one remaining functional gap — to its inputs.
+
+**The loader reads them.** `model.layers.N.shortconv.conv.weight` is `[2048, 3]` BF16 = 12,288 B, verified
+in the bundle, and `npu-infer/src/model.c:776` already loads it.
+
+**The packer never places them.** There is no `npu_pack_*` call for `shortconv_conv_weight`, and the layer
+BO is **exactly FLM's size** (8,192 tiles, section 41) — so they are not in it.
+
+**Tried to locate them in FLM's own BOs** — the technique that worked for every other artifact in this
+sweep — by searching all captured LFM2 BOs for the tap bytes in four encodings:
+
+| encoding | BOs matching |
+|---|---|
+| verbatim | **0** |
+| transposed `[3, 2048]` | **0** |
+| as fp32 | **0** |
+| as fp16 | **0** |
+
+The capture is complete for BO sizes (1,156 x 1 MB plus the large ones, including 160 i5/i6 dumps), so
+this is a **real** negative, not a sampling gap.
+
+**So the conv taps are in no BO the interposer sees.** They are either transformed beyond those four
+encodings, or handled by a mechanism that binds no BO at all. FLM's LFM2 ships a dedicated
+**`conv.xclbin`**, and its contract is exactly what is missing.
+
+**What that means for the conv compute.** It is **not** a "place the taps and write the HF math" task. The
+**data path is unknown**, so implementing from the HF block order alone would produce another
+right-sized, wrong-arrangement artifact — section 38's failure mode, one level down. The honest step is to
+establish FLM's **conv-kernel contract** (its `conv.xclbin`, and how `lfm2_npu` feeds it) *before* writing
+the compute.
+
+**And it closes the LFM2 investigation at a clean boundary.** Every other row of the status table is
+done-and-verified or proven-not-a-blocker; the conv compute is the one remaining piece, and this checkpoint
+shows it is **blocked on information that cannot be derived from the captures** — not on code that has not
+been written yet. That is a better handover than an estimate.
