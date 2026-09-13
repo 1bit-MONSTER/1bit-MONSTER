@@ -216,6 +216,43 @@ bool RuntimeLayerEngine::build_norm_bos() {
         i6_bos_[L]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
     fprintf(stderr, "RuntimeLayer: built %d per-layer norm BOs\n", cfg_.num_layers);
+
+    // Dump the runtime BOs the per-ctx ELF will be fed, so they can be byte-compared against FLM's
+    // own (captured under the interposer, pointer-matched). Every component of this path has been
+    // verified EXCEPT by comparing these directly -- sections 26/31/32/33 compared FLM's BOs against
+    // what the ENGINE is supposed to write, computed from the q4nx, not against the runtime buffers.
+    //   RT_DUMP_BOS=<dir>   writes w_<L>.bin, i5_<L>.bin, i6_<L>.bin for L in {0, 2} + act.bin
+    if (const char* bd = getenv("RT_DUMP_BOS")) {
+        const int ls[] = {0, 2};
+        for (int li = 0; li < 2; li++) {
+            const int L = ls[li];
+            if (L >= cfg_.num_layers) continue;
+            char fn[512];
+            FILE* f;
+            snprintf(fn, sizeof fn, "%s/w_%02d.bin", bd, L);
+            if ((f = fopen(fn, "wb"))) {
+                weight_bos_[L]->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                fwrite(weight_bos_[L]->map(), 1, (size_t)npu_layer_bo_bytes(mw_, &cfg_), f); fclose(f);
+            }
+            snprintf(fn, sizeof fn, "%s/i5_%02d.bin", bd, L);
+            if ((f = fopen(fn, "wb"))) {
+                i5_bos_[L]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+                fwrite(i5_bos_[L]->map(), 1, 1048576, f); fclose(f);
+            }
+            snprintf(fn, sizeof fn, "%s/i6_%02d.bin", bd, L);
+            if ((f = fopen(fn, "wb"))) {
+                i6_bos_[L]->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+                fwrite(i6_bos_[L]->map(), 1, 1048576, f); fclose(f);
+            }
+        }
+        char fn[512]; FILE* f;
+        snprintf(fn, sizeof fn, "%s/act.bin", bd);
+        if ((f = fopen(fn, "wb"))) {
+            bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+            fwrite(bo_act_->map(), 1, 1048576, f); fclose(f);
+        }
+        fprintf(stderr, "RuntimeLayer: dumped runtime BOs to %s\n", bd);
+    }
     return true;
 }
 

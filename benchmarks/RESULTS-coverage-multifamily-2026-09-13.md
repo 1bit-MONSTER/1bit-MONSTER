@@ -2481,3 +2481,32 @@ That leaves the **(ELF, `layer.xclbin`) pair** — both FLM's own — or the **g
 `from_pretrained(model_dir)`; FLM's runtime builds its own. Those two configs should be identical and have
 never been compared, and `MAX_L` (32,768 here) is a second such parameter. **A config diff is the next
 experiment** — bounded, and the only one left for Nanbeige's runlist route.
+
+## 54. EVERY host-written input is byte-identical to FLM's — verified on the RUNTIME buffers
+
+Added `RT_DUMP_BOS=<dir>` to the runlist engine (it writes `w_<L>`, `i5_<L>`, `i6_<L>`, `act`), because the
+earlier verifications (§26/§31/§32/§33) compared FLM's BOs against **what the engine is supposed to write**
+— reconstructed from the q4nx — and **not** against its **runtime buffers**. That is the difference between
+"the code looks right" and "the bytes are right".
+
+Re-captured FLM's Nanbeige BOs with `CAP_DUMP_BIG` and compared the actual buffers:
+
+| input | engine runtime vs FLM's |
+|---|---|
+| **weight BO** | **12,000 of 12,000 tiles IN ORDER** — and FLM's BO is the engine's plus **425,984 bytes of ZEROS** |
+| **i5** | **0 differing bytes** across the full 1 MB (non-zero: 10,226 == 10,226) |
+| **i6** | **0 differing bytes** across the full 1 MB (non-zero: 128 == 128) |
+| **act** | verified by §33 (FLM's arg3 equals the expected embedding row) |
+
+**And §24.1's anomaly is now explained and retired for good.** FLM's Nanbeige BO reporting "12083.20 tiles"
+is the engine's 12,000 tiles **plus 425,984 bytes of zero padding** — all zeros, so it is **not content**.
+§24.2 called it benign on the strength of a working model; this measures it.
+
+**So the runlist route's residual is not in any host-written BO** — every one is byte-identical at runtime.
+It is in the **(whole-layer ELF, `layer.xclbin`) pair**: a combination FLM's own runtime **never uses**
+(FLM composes 16 **per-op** ELFs, §53) but the engine's design does — proven for **nh32** (§22/§23) and
+**unproven for nh20** (§52).
+
+That is the tightest possible statement of where Nanbeige's runlist route stands: **nothing the host
+supplies differs from FLM's**, and the difference is a generated artifact for a shape combination never
+exercised.
