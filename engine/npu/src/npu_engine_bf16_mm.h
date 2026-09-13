@@ -228,9 +228,13 @@ struct Bf16Mm {
     /// shifted to a later query block to cover a prompt longer than 256.
     bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
         xrt::ext::kernel* kern = (attn_qout == 4096 && attn_kernel32) ? attn_kernel32.get() : attn_kernel.get();
-        // The embedded captured ELF is the fast path (147 ms vs 221319 ms for a
-        // 28-layer npt=1024 run); the generated long-context ELF is opt-in.
-        if (attn_tokens > 256 && attn_kernel1k && getenv("NPU_ATTN_ELF_1024_USE"))
+        // attn_tokens > 256 -> the long-context ELF captured from FLM's REAL
+        // 1024-token prefill (elf_0012 of the prefill capture; 98848 B). It is
+        // verified token-correct at npt = 256/512/896/1024 against the byte-exact
+        // runlist path, and its attention costs 186 ms for a 28-layer npt=1024
+        // run. The previously-used generated gen(0,1024) ELF was both wrong and
+        // ~1200x slower (223050 ms) and has been replaced in the xclbin dir.
+        if (attn_tokens > 256 && attn_kernel1k)
             kern = attn_kernel1k.get();
         if (!kern) return false;
         const size_t q = (size_t)attn_qout;
