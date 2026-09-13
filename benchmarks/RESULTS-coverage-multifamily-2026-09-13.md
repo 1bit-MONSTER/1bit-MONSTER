@@ -4319,3 +4319,44 @@ nh20 file is 97.9% the same bytes (§95) and does not work for its model. The on
 the uniform-immediate class (§98). So at @1024 the ELF is the suspect: either those immediates are the nh20
 shape parameterisation and they are wrong, or the file is not an nh20 build at all. §99's carrier/build
 mismatch can be set aside.
+
+## 102. The nh20 ELF IS a genuine capture — but the BO profile FLM ran it with does not match our invocation
+
+Provenance check, prompted by §95/§96/§98 leaving "is the nh20 file an nh20 build?" open:
+
+| installed file | md5 | capture |
+|---|---|---|
+| `attn_mha_1024_nh20_hd128.elf` | a1ae7ec5a7eb… | **IDENTICAL** to `capnb_flm/elf_0011_177728.bin` |
+| `attn_mha_1024_nh32.elf` | 4613666d78fb… | **IDENTICAL** to `cap4b/elf_0012_177696.bin` |
+
+So the nh20 file is a **genuine capture** of a Nanbeige-run kernel — not hand-patched, not a mislabeled copy —
+and §95's "the label is untested" is now resolved **in the file's favour**. (The nh32 file is the Qwen3-4B
+capture.) The 97.9% similarity between them therefore means FLM runs near-identical kernels for nh20 and nh32,
+parameterised by the uniform immediate difference of §98.
+
+**But the capture manifest also records the BO profile that kernel was run with, and it does not match ours.**
+For `elf_0011`:
+
+    ARG4_DUMP size=5242880 ...
+    SETARG ... idx=5 size=31457280 ...
+    RUN 001: args=[3:1048576 4:5242880 5:31457280]
+    ELF 0011: size=177728 -> capnb_flm/elf_0011_177728.bin
+
+FLM ran it with BOs of **1 MB, 5 MB, 30 MB**. Our `bf16mm_attn` binds **5 MB (out), 5 MB (act), 16 MB (kv)**
+— `rows*qout*2 = 1024*2560*2 = 5 MB` each, and `attn_kv_region*4*2 = 2097152*4*2 = 16 MB`.
+
+Two readings, and they are separable:
+
+- **(a)** `elf_0011` is the attention kernel and our BO *sizes* differ — in particular the KV BO is 16 MB for
+  us vs 30 MB for FLM, i.e. a KV-capacity/region mismatch that changes which keys the kernel addresses;
+- **(b)** `elf_0011` is **not** the attention kernel at all — §8's original caveat, never closed — and the
+  1 MB / 5 MB / 30 MB profile belongs to a different kernel.
+
+**Either way this is the sharpest remaining question, and it is cheap.** The `NPU_ATTN_KV_REGION` knob added
+in §94 already lets us match the captured profile without a rebuild: 30 MB / 4 regions / 2 B = **3932160** per
+region. Run the first-token probe at that value. Context returns => (a), and the fix is a region/capacity
+constant; it does not => (b), and the file is a mislabeled kernel.
+
+**Corrects §95-§98's emphasis.** Those sections used the file similarity to question the file's *identity*;
+the file is a real capture, so the open question is not "is the label right" but "does our invocation match
+the one it was captured under".
