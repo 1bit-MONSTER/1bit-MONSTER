@@ -1157,6 +1157,10 @@ int main(int argc,char**argv){
     if (!key_exists(js, jl, "model.embed_tokens.weight") && !lm_head_f32.empty()) {
         emb_f32 = lm_head_f32;
         fprintf(stderr, "  emb: tied to lm_head (%zu rows x %d)\n", emb_f32.size() / H, H);
+        if (getenv("NPU_DUMP_L0")) {
+            FILE* fe = fopen("/tmp/l0_emb16.bin", "wb");
+            if (fe) { fwrite(emb_f32.data() + (size_t)16 * H, 4, H, fe); fclose(fe); }
+        }
     }
     // Qwen3.6 embed_tokens rows (NV) are 8× the text vocab (multimodal expansion);
     // the LM head only scores the text vocab — OOB read fixed by using its rows.

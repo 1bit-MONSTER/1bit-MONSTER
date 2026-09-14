@@ -53,12 +53,18 @@ Result: Qwen3.5-4B boot moved **163554 → 50** (FLM reference 16).
 
 ## Remaining gap: 50 vs 16
 
-Layer 0 is now byte-correct through the gated-RMSNorm input. The residual boot
-gap is **downstream of layer 0** (out_proj / MLP int8 GEMMs, the full-attention
-layers, final norm, or lm_head), or accumulated int8-GEMM quantization drift
-across the 32 layers. Next probe: `NPU_DUMP_LOGITS=1 NPU_GREEDY=1` to measure
-the logit margin between the native argmax and FLM's token 16 (a small margin
-⇒ drift; a large margin ⇒ a second structural bug).
+Layer 0 is now byte-correct through the gated-RMSNorm input. The **embedding
+is also verified byte-correct** (Q8_0 lm_head dequant == engine `emb_f32`, corr
+1.0000 for token 16). The residual boot gap is therefore **downstream of layer
+0**: the O/out_proj GEMM, the MLP gate/up/down GEMMs, the full-attention layers
+(`std_attn_step`, the most recently rewritten code), or accumulated int8-GEMM
+quantization drift across the 32 layers.
+
+`NPU_DUMP_LOGITS=1 NPU_GREEDY=1` shows the native argmax is **token 50 (logit
+24.07)** while FLM's reference token 16 sits at **logit −6.13** — a 30-logit
+margin, i.e. a **second structural bug, not quantization drift** (drift would
+be a near-tie). Next probe: a full-model single-token golden (embedding → 32
+layers → final norm → lm_head) to bisect which layer first diverges from FLM.
 
 ## Performance (unchanged)
 
