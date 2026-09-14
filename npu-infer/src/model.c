@@ -309,17 +309,17 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     const int G_d = (config->intermediate_size + 127) / 128;                      // down_proj
     const int CH  = config->hidden_size / 16;                                    // 8 * G_h
 
-    const int q_t  = npu_desc_tiles(&lw->q_proj_weight);
-    const int k_t  = npu_desc_tiles(&lw->k_proj_weight);
-    const int v_t  = npu_desc_tiles(&lw->v_proj_weight);
-    const int o_t  = npu_desc_tiles(&lw->o_proj_weight);
-    const int up_t = npu_desc_tiles(&lw->up_proj_weight);
+    const int q_t  = (lw->q_proj_weight.ndim == 2)    ? (int)lw->q_proj_weight.shape[0]    : 0;
+    const int k_t  = (lw->k_proj_weight.ndim == 2)    ? (int)lw->k_proj_weight.shape[0]    : 0;
+    const int v_t  = (lw->v_proj_weight.ndim == 2)    ? (int)lw->v_proj_weight.shape[0]    : 0;
+    const int o_t  = (lw->o_proj_weight.ndim == 2)    ? (int)lw->o_proj_weight.shape[0]    : 0;
+    const int up_t = (lw->up_proj_weight.ndim == 2)   ? (int)lw->up_proj_weight.shape[0]   : 0;
     const int gate_t = npu_desc_tiles(&lw->gate_proj_weight);
-    const int d_t  = npu_desc_tiles(&lw->down_proj_weight);
+    const int d_t  = (lw->down_proj_weight.ndim == 2) ? (int)lw->down_proj_weight.shape[0]  : 0;
 
     // LFM2 hybrid: a short-conv layer has no q/k/v/o at all and carries its own block.
-    const int sp_t = npu_desc_tiles(&lw->shortconv_in_proj_weight);
-    const int so_t = npu_desc_tiles(&lw->shortconv_out_proj_weight);
+    const int sp_t = (lw->shortconv_in_proj_weight.ndim == 2)  ? (int)lw->shortconv_in_proj_weight.shape[0]  : 0;
+    const int so_t = (lw->shortconv_out_proj_weight.ndim == 2) ? (int)lw->shortconv_out_proj_weight.shape[0] : 0;
     // G is the CONTRACTION-dim group count (see the rule above: G = K/128). The short-conv
     // in_proj is H -> 3H, so K = H and G must be H/128 -- writing 3H/128 here used the OUTPUT
     // dim instead, and the byte diff against FLM's own LFM2 weight BO showed exactly that: the
