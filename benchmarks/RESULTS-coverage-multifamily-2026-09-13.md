@@ -12442,3 +12442,36 @@ not: it is unfalsifiable from the outside** — *"the information isn't there"* 
 that stopped early reads identically to a search that is impossible. **Here it stopped three sections short of the answer,
 in a file already in the repo, and the retraction was committed before the claim was re-proposed.** So the operational
 form is: **before recording an evidence limit, name the places searched — that is what makes the limit checkable.**
+
+## 730. The proposed next step is already committed — it IS §218 — and it already produced the second demotion
+
+**Re-ran the `.dynsym` view on all four artifacts, which is exactly the step the message proposes as "next":**
+
+| artifact | `arg3` | `arg4` | `arg5` entries |
+|---|---|---|---|
+| 256-ctx nh16 | **16 KB** | **16 KB** | **2** (32 KB, 64 KB) |
+| 1024-ctx nh16 | **16 KB** | **16 KB** | **8** (32 KB → 256 KB) |
+| 1024-ctx nh20 | **16 KB** | **16 KB** | **8** |
+| 1024-ctx nh32 | **16 KB** | **16 KB** | **8** |
+
+**`arg3` and `arg4` are declared 16 KB in EVERY artifact** — three head counts, two context lengths. **So the declared extent
+is not a geometry field, and the suggestion that "16 KB / 16 KB / 8 chunks may be an nh20 signature" is refuted by its own
+test.** Which is what commit **`d1ab1cdfc` (§218)** says, verbatim: *"TWO DEMOTIONS IN TWO SECTIONS BY THE SAME METHOD."*
+**The one quantity that does move is `arg5`'s entry count, linearly with context — 2 at 256 tokens, 8 at 1024 — one entry
+per 128 tokens.** That is §218's other half, and §219 verified it at a third length.
+
+**And the `.dynsym` sizes are not a third description of the same BO.** 16 KB = 8,192 bf16 = **4 rows × 2,560** *or*
+**64 × 128** — an **internal buffer extent**, not a BO size. §217's *"every one of the three is different"* is **too
+broad**: the ELF declares its working extents, FLM supplied whole BOs, the engine caps its own. **Three different KINDS of
+number** — §220's lesson, one more time.
+
+**And the mapping, which `.dynsym` closes**: `arg_idx 0` → symbol **`"3"`** → `set_arg(3,…)` → `attn_out` → and the
+direction field says that argument is a **WRITE**. **So the engine's un-swapped role is correct and the swap is the wrong
+half.** Closed offline, for every kernel in the capture.
+
+**One pattern worth naming, because it has now happened twice in this exchange**: **§216 was retracted by §217, and then
+§216's conclusion was re-proposed; §217 was refuted by §218, and now §217's proposed next step is re-proposed.** Both
+times the retraction was already committed, and both times it was **three sections down from where the claim was made.**
+The log is now longer than the working memory that reads it, and the fix is the one this session earned the hard way:
+**grep the log before proposing — the same rule as grep the value, grep the artifact, grep the file, now applied to the
+proposal itself.**
