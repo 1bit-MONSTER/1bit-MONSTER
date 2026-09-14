@@ -8661,7 +8661,7 @@ turned out to cite a withdrawn one**, which is why the retractions are kept rath
 **What this clears, and what it leaves:** the **KV region split is cleared** for the nh20 defect — a knob that chased
 it cannot change a meaningful number — leaving the **sticky shape gate** (§470 / §160) holding the defect alone.
 
-## 485. My §470 route claim is CORRECTED: a grep hit is not a call site — the generator is OFFLINE and the runtime bridge is UNWIRED
+
 
 **The peer lane checked §470's two halves separately, and one of them is wrong.** The gate half is exactly right; the
 route half is not, and the error is precise:
@@ -8892,3 +8892,38 @@ producing **2048 of 2560 columns**, with nothing in the artifact to say so.
 for qwen3**. This answers *"is the family binding missing?"* — **no, it exists and runs**. Neither answers *"is the
 Nanbeige-bound generator's nh20 output correct?"*, which is now the single open question, and it is a
 **comparison against host attention**, not another generation run.
+
+## 500. The citation audit: four live citations of retracted sections, all four correct — and the reason the audit was possible is the finding
+
+**Their observation is the prompt**: the KV hedge cited *"RESULTS 94/97"*, and **§94's KV stride was retracted** — so
+a **live comment had been resting partly on a withdrawn finding**, and it is the second such case in this session.
+Their rule follows: **do not edit retractions away — they are load-bearing precisely because later claims cite them.**
+
+**So the obvious next question is *how many others*.** The log carries **22 retraction/correction sections**; the code
+and tools cite section numbers; so the check is mechanical. **Four live citations exist:**
+
+| site | cites | verdict |
+|---|---|---|
+| `npu_engine_universal.cpp:4018` | §83 | **correct** — cites the **fix** (the XM-row block walk), which is §83's surviving half |
+| `npu_engine_universal.cpp:4499` | §83 | **correct** — the same rationale, restated where the walk begins |
+| `npu_engine_bf16_mm.h:377` | §121 | **correct** — cites the **evidence** (attention output all-zero with non-zero inputs), which is what §121 found |
+| `npu_engine_bf16_mm.h:635` | §225/230 **and** §265/280/135 | **correct, and exemplary** |
+
+**The fourth is worth reading in full**, because it is the shape the others should have: the comment first cites
+**§225/230** for the hypothesis the `BF16MM_CZERO` flag was built to test, and then, **in the same comment**, carries
+the retraction — *"the movement was dirtying a BO's host view, not a stale-tail read. RESULTS-coverage-multifamily
+265/280/135."* **The code does not rest on the withdrawn mechanism; it records the withdrawal and keeps the flag as
+the instrument it turned out to be.**
+
+**So there are no other live claims resting on withdrawn findings in the code** — the one that existed was the KV
+hedge, and the other lane has already replaced it.
+
+**And the reason the audit could be run at all is the real finding.** The engine's comments **cite section numbers**,
+so a retraction is **traceable** — the check was 22 numbers against a grep. **Their rule is load-bearing twice over**:
+for the **reader**, who can find the retraction; and for the **auditor**, who can find the citation. A codebase that
+cited findings by *name* could not be checked this way at all.
+
+**Which is also the audit's limit, and worth stating**: it is a **lower bound**. **A comment that restates a withdrawn
+mechanism in prose, without a number, is invisible to it** — and that is exactly the shape the KV hedge had, since its
+citation was the only reason anyone looked. **Free-prose restatements are the blind spot**, and the defence is the
+practice that made this audit possible rather than the audit itself.
