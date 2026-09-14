@@ -13475,3 +13475,45 @@ vendor limit and not a missing artifact.
 a **warning the engine handles**; the lm_head ELF cannot be generated (vendor) but its absence is **harmless here**; and the
 run reaches the layers and dies in **`npu_pack_layer_bo`'s odd-G reorder**, which is **this engine's code** and is
 **documented as unverified for exactly this case.**
+
+## 870. The odd-G bug, mechanism pinned: the in-group map spans `[S, 2S)` and `2S = G+1` overshoots the group by one
+
+**The failing structure is exactly one term.** The in-group index is
+
+```
+i_in(o) = (o/2) % S + S * (o % 2)        with S = (G+1)/2
+```
+
+**For even `G`, `S = G/2` and `i_in` fills `[0, S)` on even `o` and `[S, G)` on odd `o` -- a clean split of a group of
+size `G`.** For **odd** `G`, `S = (G+1)/2`, so the odd half spans **`[S, 2S) = [S, G+1)`** -- **one past the end of the
+group.** The group base `G*(o/G)` then carries that overshoot into the next group, and for the last group it lands at or
+beyond `n_tiles`.
+
+**Concretely, `G = 9`, `n = 27` (three full groups -- no ragged tail needed):**
+
+| | |
+|---|---|
+| in-group map over `o % 9` | `[0, 5, 1, 6, 2, 7, 3, 8, 4]` |
+| **`o = 19`** | base `9*2 = 18`, `i_in = 4 + 5 = 9` -> **`i = 27 = n_tiles` -- out of range** |
+| **`o = 18` and `o = 20`** | **both -> `i = 18`** -- a duplicate |
+| indices never written | **19, 21, 24, 25, 26** |
+
+**So the map is neither injective nor in-range for odd `G`, and `src + i*TILE` reads up to seven tiles (~35 KB) past the
+tensor.** For even `G` (8, 16, 54) the same expression is a clean permutation -- which is precisely why the source's note
+says it was *"only ever verified byte-exact for G=8 and G=16 ... Odd G needs a device run behind it before it is called
+correct."*
+
+**And the fix cannot come from the property alone.** For an even-sized group the de-interleave splits `G` into two halves of
+`G/2`; **for an odd-sized group there is no such split** -- one half must take the extra element, and **which half, and in
+what order, is a property of the vendor's tile layout, not of the permutation requirement.** The comment says the rule is
+*"NOT a derivation of the vendor's layout"*, and that is now visible in the arithmetic: **the rule is under-determined
+exactly at odd `G`, and Gemma3-1B is the first model here to reach that case (`G_h = 1152/128 = 9`).**
+
+**So the Gemma3-1B blocker is now fully characterized and correctly assigned:**
+
+| layer | status |
+|---|---|
+| missing shape xclbins (6) | **fixed** -- rebuilt and committed |
+| `k_tile_q4` unaligned dims | **not a blocker** -- a warning the engine handles |
+| missing lm_head ELF | **harmless** -- the optional-file path is defensive |
+| **odd-G tile reorder** | **THIS ENGINE'S BUG**, mechanism pinned, **fix needs the vendor's layout** |
