@@ -9585,7 +9585,7 @@ the region knob alone as the cheap half of it. **And the meta-point is worth kee
 by reading the INVOCATION rather than the artifact, it survived its own first test by moving something, and it failed to
 be sufficient — which is exactly what a good one-line test is supposed to produce.**
 
-## 176. FLM's arg5 value does not fix it either — it moves the boot to **152432**, the SAME value the argument swap produced; two perturbations, one wrong attractor
+## 177. FLM's arg5 value does not fix it either — it moves the boot to **152432**, the SAME value the argument swap produced; two perturbations, one wrong attractor
 
 The one run they asked for, plus the engine's own default region for comparison:
 
@@ -9628,7 +9628,7 @@ the call site), and §175 (the assignment matters but is not sufficient). The la
 another single knob** but **what the kernel is told the buffer *means*** — the geometry it reads from the arguments it
 is handed, which is the only thing none of these perturbations changed.
 
-## 177. The one part of the call no perturbation has touched: the SCALAR arguments — `set_arg(0,3), set_arg(1,0), set_arg(2,0)` — unexplained in the code, and one reading of them explains the defect's signature
+## 178. The one part of the call no perturbation has touched: the SCALAR arguments — `set_arg(0,3), set_arg(1,0), set_arg(2,0)` — unexplained in the code, and one reading of them explains the defect's signature
 
 §175 and §176 closed the single-parameter search over the **buffers** and the **region**. The invocation has three more
 arguments, and every run today left them untouched:
@@ -9657,3 +9657,74 @@ other part of the call has been perturbed and measured.
 artifact and buffers untouched. **It is the last untouched surface, and unlike the others it is the surface that would
 explain the *signature* the defect has carried since §92** — which is a better reason to test it than the fact that it
 is unexamined.
+
+## 555. Both perturbations land on the SAME wrong value — 152432 is an ATTRACTOR — and `attn_out` is the one buffer in the path with no control
+
+**Their two results, read together, are stronger than either alone.** The **argument swap** moves the boot to
+**152432**; **FLM's arg5 value** moves it to **152432** as well — **the same number, from two unrelated perturbations.**
+So 152432 is not a direction, it is an **attractor**: the two "fixes" are **not independent**, and both push the kernel
+into the same degenerate regime. **Which is what you would expect if the kernel is reading the same wrong CONTENT in
+both configurations** — a property of what is *in* a buffer, not of its position or its stride.
+
+**And an audit of the path shows there is exactly one buffer whose content is unguarded.**
+
+| buffer | cleared? | extent-checked? |
+|---|---|---|
+| `attn_kv` | **yes** (line 357) | — |
+| `bA`, `bActQ`, `bKv` | **yes** (memset at allocation) | — |
+| GEMM C caches | — | **yes — `BF16MM_CEXTENT`, sentinel + changed-word count** |
+| **`attn_out`** | **NO** (only under `BF16MM_AZERO`, default off) | **NO** |
+
+**And line 421 copies back the whole `rows × q × 2` regardless**, so whatever the kernel does not write is
+**propagated** — and the engine's own comment names the hazard: *"this kernel writes only 4/5 of its output (2048 of
+2560 columns), and `attn_out` — unlike `attn_kv` — is never cleared, so the unwritten remainder is read back into
+`bA`."*
+
+**Two things keep this honest.** §265 retracted the under-write for the **GEMM** path's `c_cache0/1` — a **different
+kernel** measured by a **different instrument**, so that retraction **does not cover the attention output**. And §122's
+reading came from a **sentinel instrument**, one of the four classes this session has retracted — so it is **a hazard,
+not yet a measurement.**
+
+**And the attractor makes the cheapest discriminator available — with a flag that already exists.** If two unrelated
+perturbations both produce `152432`, then **`BF16MM_AZERO=1`**, which zeroes `attn_out` and syncs before the launch, is
+a **one-run test**: **if the boot moves OFF 152432 when the buffer starts zeroed, the content was the issue; if it
+stays, the content is irrelevant and the kernel writes the same wrong thing regardless.** Unlike the GEMM case, where
+sync made CZERO inert because the cache was fine, here **zeroing the buffer under test is exactly the experiment** — and
+the missing companion is the **extent count**: `BF16MM_ATTN_SENTINEL` answers *"wrote nothing vs did write"* but not
+*"how much"*, while the GEMM path's `BF16MM_CEXTENT` **counts the words the device changed.** **A one-count analogue on
+`attn_out` would replace §122's instrument-dependent reading with a direct number, and either outcome is decisive.**
+
+## 560. Both perturbations land on the SAME wrong value — 152432 is an ATTRACTOR — and `attn_out` is the one buffer in the path with no content control
+
+**Their two results, read together, are stronger than either alone.** The **argument swap** moves the boot to **152432**;
+**FLM's arg5 value** moves it to **152432** as well — **the same number from two unrelated perturbations.** So 152432 is
+not a direction, it is an **attractor**: the two "fixes" are **not independent**, and both push the kernel into the same
+degenerate regime — **which is what you would expect if the kernel is reading the same wrong CONTENT in both
+configurations**, a property of what is *in* a buffer, not of its position or its stride.
+
+**And an audit of the path shows exactly one buffer whose content is unguarded:**
+
+| buffer | cleared? | extent-checked? |
+|---|---|---|
+| `attn_kv` | **yes** (line 357) | — |
+| `bA`, `bActQ`, `bKv` | **yes** (memset at allocation) | — |
+| GEMM C caches | — | **yes — `BF16MM_CEXTENT`, sentinel + changed-word count** |
+| **`attn_out`** | **NO** (only under `BF16MM_AZERO`, default off) | **NO** |
+
+**And line 421 copies back the whole `rows × q × 2` regardless** — and the engine's own comment names the hazard:
+*"this kernel writes only 4/5 of its output (2048 of 2560 columns), and `attn_out` — unlike `attn_kv` — is never
+cleared, so the unwritten remainder is read back into `bA`."*
+
+**Two things keep this honest.** §265 retracted the under-write for the **GEMM** path's `c_cache0/1` — a **different
+kernel** measured by a **different instrument**, so that retraction **does not cover the attention output**. And §122's
+reading came from a **sentinel instrument**, one of the four classes retracted this session — so it is **a hazard, not
+yet a measurement.**
+
+**And the attractor makes the cheapest discriminator available, with a flag that already exists.** If two unrelated
+perturbations both produce `152432`, then **`BF16MM_AZERO=1`** — which zeroes `attn_out` and syncs before the launch —
+is a **one-run test**: **if the boot moves OFF 152432 when the buffer starts zeroed, the content was the issue; if it
+stays, the content is irrelevant.** Unlike the GEMM case, where sync made CZERO inert because the cache was fine, **here
+zeroing the buffer under test is exactly the experiment.** The missing companion is the **extent count**:
+`BF16MM_ATTN_SENTINEL` answers *"wrote nothing vs did write"* but not *"how much"*, while GEMM's `BF16MM_CEXTENT`
+**counts the words the device changed** — a one-count analogue on `attn_out` would replace §122's instrument-dependent
+reading with a direct number. **Either outcome is decisive on both.**
