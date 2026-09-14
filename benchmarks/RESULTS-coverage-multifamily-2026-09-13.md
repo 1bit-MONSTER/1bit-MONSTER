@@ -10565,3 +10565,34 @@ state.**
 **And the lane state, all direct and unchanged**: scalars **dead** (481 calls, `(3,0,0)`); sizes **direct** (1/5/30 vs
 5/5/16 MB); **roles open.** And the `npt × NKV×HD` shape is the best-supported reading of arg3 — **pointing at a
 KV-shaped buffer, not an instruction one, which is where §102 started and where the evidence has returned.**
+
+## 615. My nh16 row conflated TWO artifacts — and a FOURTH data point confirms the formula on three captures
+
+**Their catch is exact**: the row I quoted — *"nh16 (qwen3): **2560 patches**, `dim1_stride` {1024, 1}"* — **is not the
+shipped nh16 file**, which has **640 patches** and stride **{1024, 256}**. *"Worth correcting because we've both quoted
+it."*
+
+**And I found which artifact my row actually was**, by decoding all four side by side:
+
+| artifact | words | patches | arg0 | arg1 | arg2 |
+|---|---|---|---|---|---|
+| **SHIPPED `nh16.elf`** (98,848 B) | **24,712** | **640** | **1024** | **1024** | **256** |
+| **GENERATED qwen3 `nh16.txn`** (355,360 B) | **88,840** | **2560** | **1024** | **1024** | **1** |
+| **SHIPPED `nh20_hd128.elf`** (177,728 B) | **44,432** | **1152** | **1280** | **1280** | **128** |
+| **SHIPPED `nh32.elf`** (177,696 B) | **44,424** | **1152** | **2048** | **2048** | **256** |
+
+**My row was the GENERATED `.txn`.** And the two nh16 artifacts are **different kinds of thing**: **3.6× apart in words,
+4× in patches, and arg2's stride is `1` against `256`.** So they should never have shared a row.
+
+**And the formula is confirmed THREE times on captures, not twice.** The shipped **nh32** ELF has
+**arg0/arg1 stride `2048 = 16 × 128 = (32/2) × HD`** — so **`(NH/2) × HD` holds for 16, 20 and 32 heads**, on three
+genuine captures. That is a fourth data point neither table had, and it fits exactly.
+
+**And the lesson is the same class, one level over.** The generated and the shipped artifacts are **different kinds**, so
+**a table that mixes them is not a table** — the *"part stated as the whole"* error once more, with **two nh16 artifacts
+stated as one nh16 row.** The fix is the one this log already learned for references: **name WHICH artifact a row came
+from**, the same way a reference token must name its fixture.
+
+**And their boundary on the negative results is accepted**: §167/§170 stand — **two artifacts differing in content *and*
+provenance giving the same wrong answer** — and §183's address diff stays uninformative about the cause. **The open
+question is still the arg role**, and arg3 is sized **`npt × NKV×HD`** — a KV row width, **not an instruction stream.**
