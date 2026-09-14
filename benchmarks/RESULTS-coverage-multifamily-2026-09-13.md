@@ -8602,7 +8602,7 @@ over-solving. Neither lane can see the other's choice until after the push, so:
 collisions — the same number taken twice — and each was fixed by moving one section. This one is the *fix* colliding,
 which is a class above: **it needs a claim, not a convention.**
 
-## 160. The generator EXISTS but the bf16 path does not call it — the route is offline, and the runtime bridge has no callers
+## 161. The generator EXISTS but the bf16 path does not call it — the route is offline, and the runtime bridge has no callers
 
 §470 re-sized r5 on the strength of *"the generator route already exists in this repo, at runtime"* and *"the bf16 path
 **already calls it**"*. Checked against the tree: **the gate half of that finding is exactly right, and the route half
@@ -8636,7 +8636,7 @@ the support was a file that MENTIONS the mechanism rather than one that RUNS it.
 (§470's `gen_attn_chunk` match is a comment) — the same distinction as §153's guard that cannot fail and §159's set the
 sentence quantified over: **the evidence sat in the same file as the claim and was not the same kind.**
 
-## 161. The KV-region hedge is refuted by FLM's own header — `v_add=2` is the four-region convention and the knob's `add=1` branch is dead
+## 162. The KV-region hedge is refuted by FLM's own header — `v_add=2` is the four-region convention and the knob's `add=1` branch is dead
 
 The teammate read FLM's `nanbeige_npu_sequence.hpp` and found four accessors — `get_k03_offset`, `get_k47_offset`,
 `get_v03_offset`, `get_v47_offset` — i.e. the KV cache is **four regions in the order K03, K47, V03, V47**. Checked
@@ -8660,3 +8660,90 @@ turned out to cite a withdrawn one**, which is why the retractions are kept rath
 
 **What this clears, and what it leaves:** the **KV region split is cleared** for the nh20 defect — a knob that chased
 it cannot change a meaningful number — leaving the **sticky shape gate** (§470 / §160) holding the defect alone.
+
+## 485. My §470 route claim is CORRECTED: a grep hit is not a call site — the generator is OFFLINE and the runtime bridge is UNWIRED
+
+**The peer lane checked §470's two halves separately, and one of them is wrong.** The gate half is exactly right; the
+route half is not, and the error is precise:
+
+| claim in §470 | verdict |
+|---|---|
+| `flm_bridge.cpp:96` `dlsym`s FLM's `gen_mha_engine_seq` | **true** |
+| `flm_bridge.h:55` documents the call | **true** |
+| `tools/gen_attn_insts.cpp` generates per-context streams | **true — and OFFLINE** |
+| **"the bf16 path already calls it"** | **FALSE** |
+| **"exists at runtime"** | **NOT WIRED** |
+
+**And the specific mistake is checkable in one `grep`**: `gen_attn_chunk` occurs in `npu_engine_bf16_mm.h` **only inside
+a comment** — line 187 is `// gen_attn_chunk (FLM's qwen3_npu_sequence::gen_mha_engine_seq + …`, describing **how the
+shipped ELFs were generated**. **I read a comment as a call site.** The `dlsym` bridge exists but its methods have
+**no callers outside their own two files**, so the runtime route is not running.
+
+**So the tree holds three things §470 merged into one:**
+
+1. an **OFFLINE generator** (`gen_attn_insts.cpp` — links `-lqwen3_npu -lmha -laiebu`, writes
+   `attn_<M>_<K>_<N>_<ctx>_<woff>.bin`);
+2. a runtime **BRIDGE** that is **unused**;
+3. the **LIVE ELF route**.
+
+**What survives unchanged**: the **sticky gate is real**, and qualifying it by `(nh, hd)` is a small fix that removes a
+**silent** wrong answer. That half is now *measured* rather than argued — Nanbeige @256 default gives **188** with
+**zero** fallback lines, against **109440** with `NPU_ATTN_CPU=1`, so @256 really does run the nh16-256 ELF and is not
+the host path.
+
+**What changes**: *"fall through to the generated route"* is not a fall-through to something that is running — **it
+must be wired first.** §158's errand, one layer down: **what is missing is the CALL SITE.**
+
+**And it sharpens the first experiment**: not *"do the two routes disagree"* but **"does `gen_mha_engine_seq` at nh20
+produce a correct sequence at all"** — which is answerable **offline** with the tool, **without wiring anything**.
+
+**And the pattern is now three for three**, in this lane and the other: **the conclusion survived, the support did
+not, and the support MENTIONED the mechanism rather than RAN it.** §153's guard that cannot fail; §159's quantified
+set; this one. **A grep hit is not a call site.** The class is the same each time — **evidence that describes a
+mechanism is not evidence that the mechanism ran** — and this instance is mine.
+
+**Numbering**: a seventh collision, peer-internal again — two §160s (this correction, and the `attn_shaped_ok`
+lifetime one at line 5114). The later moved to **161**, within its own lane's range, per the two rules recorded in
+§480: **claim the number, and never renumber the other lane's content into your own sequence.**
+
+## 490. My §470 route claim is CORRECTED: a grep hit is not a call site — the generator is OFFLINE and the runtime bridge is UNWIRED
+
+**The peer lane checked §470's two halves separately, and one of them is wrong.** The gate half is exactly right; the
+route half is not:
+
+| claim in §470 | verdict |
+|---|---|
+| `flm_bridge.cpp:96` `dlsym`s FLM's `gen_mha_engine_seq` | **true** |
+| `flm_bridge.h:55` documents the call | **true** |
+| `tools/gen_attn_insts.cpp` generates per-context streams | **true — and OFFLINE** |
+| **"the bf16 path already calls it"** | **FALSE** |
+| **"exists at runtime"** | **NOT WIRED** |
+
+**And the mistake is checkable in one `grep`**: `gen_attn_chunk` occurs in `npu_engine_bf16_mm.h` **only inside a
+comment** — line 187 is `// gen_attn_chunk (FLM's qwen3_npu_sequence::gen_mha_engine_seq + …`, describing **how the
+shipped ELFs were generated**. **I read a comment as a call site.** The `dlsym` bridge exists, but its methods have
+**no callers outside their own two files**, so the runtime route is not running.
+
+**So the tree holds three things §470 merged into one**: an **OFFLINE generator**; a runtime **BRIDGE** that is
+**unused**; and the **LIVE ELF route**.
+
+**What survives**: the **sticky gate is real**, and qualifying it by `(nh, hd)` is a small fix that removes a **silent**
+wrong answer — now *measured*, not argued: Nanbeige @256 default **188** with **zero** fallback lines, against
+**109440** with `NPU_ATTN_CPU=1`.
+
+**What changes**: *"fall through to the generated route"* is not a fall-through to something running — **it must be
+wired first.** §158's errand one layer down: **what is missing is the CALL SITE.**
+
+**And it sharpens the first experiment**: not *"do the two routes disagree"* but **"does `gen_mha_engine_seq` at nh20
+produce a correct sequence at all"** — answerable **offline** with the tool, **without wiring anything**.
+
+**The pattern is now three for three**, across both lanes: **the conclusion survived, the support did not, and the
+support MENTIONED the mechanism rather than RAN it.** §153's guard that cannot fail; §159's quantified set; this one.
+**A grep hit is not a call site.** The class is the same each time — **evidence that describes a mechanism is not
+evidence that the mechanism ran** — and this instance is mine.
+
+**Numbering, and the discipline was the point**: this fix took three attempts because I chose `161` and then `162`
+without checking — **the exact rule I had written two sections earlier.** The lesson is not "check the number" but
+**the check ran too late to be useful**: the guard caught it *after* the write and *before* the commit, which is the
+right place for a guard but the wrong place to be choosing from. **Claim the number before typing, not before
+committing.**
