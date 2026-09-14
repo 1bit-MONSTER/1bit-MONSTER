@@ -11757,3 +11757,36 @@ opinion.
 regardless of head count, against 0.38 MB at 256 tokens — **a token-count-driven quantity that grows super-linearly**
 (×4 tokens → ×11.8 bytes), which is the shape an attention-sized read has. **Recorded as an observation**, since the
 clean test of it is the 512- and 2048-context artifacts rather than an argument.
+
+## 215. §212's size-fit does not discriminate INSIDE the engine — both its slots are the same 5 MB cap — so the role was tested by the swap and the SIZE is what has never been presented
+
+§212 concluded that the write's 2.00 MB volume *"fits the 5 MB BO and not the 1 MB one"*, and read that as identifying the
+output slot. **That inference holds against FLM's pair `(1 MB, 5 MB)` and does not hold against the engine's**, because the
+engine allocates **both** attention buffers from the same expression:
+
+```cpp
+const size_t cap = (attn_tokens > 1024 ? attn_tokens : 1024) * q;   // 1024 * 2560 * 2 = 5,242,880 B
+attn_out = ...(*dev, cap);      // arg3
+attn_act = ...(*dev, cap);      // arg4   <- the same cap
+```
+
+**So the engine presents 5 MB at both slots** — a 5 MB write fits either — and **the size-fit cannot tell the engine's two
+slots apart.** §212's *"the engine reads from `arg3` while the output slot is `arg4`"* is therefore **supported by FLM's
+pairing and not by the engine's**, and the correction matters because it changes what has been tested:
+
+- **the ROLE has been tested** — and precisely, because with both buffers the same size the swap changed **only the
+  roles**: §175 moved the boot 188 → 152432. **So the role hypothesis is tested and insufficient**, and §212 does not
+  reopen it;
+- **the SIZE has never been presented** — the engine's `arg3` is a **5 MB cap** where FLM's is **1 MB**, i.e. **5× larger**
+  for the same 1024-token call and **20× larger** for the 256-row call it actually makes (`256 × 512 × 2 = 262,144 B`).
+  **No run has ever handed this kernel a KV-width `arg3`.**
+
+**Which is the untested combination, and it is a combination rather than a new axis:** §175's swap **with** an `arg3` sized
+to `NKV×HD` per row. **Stated as a hypothesis with a shape, not a finding:** if the kernel's first argument is a
+KV-width input, then the engine has been handing it an attention-width buffer in that position — **the right role, the
+wrong width** — which is a defect that would survive every perturbation this lane has run, because all of them varied
+either the role or the buffer's *contents* and **none varied that argument's width**.
+
+**And the discipline this lane has earned applies to proposing it**: §173's *"the arg3 roles differ"* was restored on the
+signature evidence, and this is **one step further** — the difference is not only *which* slot but **how wide the slot the
+engine offers is**. That is a claim about a run that has not been made, and it is recorded as such.
