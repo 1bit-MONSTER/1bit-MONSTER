@@ -10326,3 +10326,46 @@ the ELF's baked row width from the descriptors' dimension fields (offline), then
 ≤256-row blocks with shifted pointers, which is the contract the member's own comment describes.
 
 **Knob left default-off, and the default re-verified:** `512` reproduces **188**, identical to the untouched binary.
+
+## 189. The manifest: `(3,0,0)` is universal (481 launches), there are **16 kernels to 257 runs**, and every layer allocates a **1 MB BO** whose dump is exactly an instruction stream — but the per-kernel arg3 attribution is NOT established
+
+Their manifest reading has two halves, and they separate cleanly:
+
+**Verified.** `SETARG3` appears **1443 times = 481 launches × 3**, and every one is `idx=0 val=0x3`, `idx=1 val=0x0`,
+`idx=2 val=0x0`. **FLM passes the identical scalars the engine passes, on every launch in the capture, and reaches
+1033.** So the scalars are not a length pair — §178's sweep was confirmatory, not necessary, and their conclusion stands
+independently.
+
+**And a structural fact neither of us had:** the manifest holds **257 `RUN` lines but only 16 `ELF` and 16 `EXTKERNEL`
+lines.** So 16 kernels are loaded once each and launched an average of 16 times — **the log is per-KERNEL and per-LAUNCH
+at the same time**, and any per-call table has to say which of the two it is indexing.
+
+**What that makes visible, and it supports their reading without proving it.** Every layer's BO allocation appears as a
+**trio**, repeated through the file:
+
+```
+EXTBO … size=61865984        (59 MB)
+EXTBO … size=1048576         ( 1 MB)
+EXTBO … size=67108864        (64 MB)
+```
+
+and there are **161 `INSTS_DUMP` lines of exactly `1048576` bytes** — 262,144 words, an instruction stream the size of
+that middle BO. **So a 1 MB instruction BO exists per layer, and a 1 MB instruction dump is what the capture kept.** That
+is real support for *"arg3 can carry instructions"*.
+
+**But the specific attribution is not established, and it is the fork everything turns on.** `RUN 001:
+args=[3:1048576 4:5242880 5:31457280]` is followed by `ELF 0011: size=177728`, and the `SETARG`s between a `RUN` line and
+the next belong to the **next** run — so **whether `RUN 001` pairs with the 177728 kernel or the one before it is not
+decidable from the ordering alone.** Read the other way, the 177728 kernel's arg3 is **5242880 (5 MB) — exactly what the
+engine passes today.** Their own caveat says this; it is the right caveat to have attached, and the per-kernel table
+should not be quoted as settled until that ordering is pinned.
+
+**Which makes the next step a two-line question rather than a run:** `ELF 0011` is followed by `EXTKERNEL` / `RUN_CTOR`
+and then that run's `SETARG`s — so **the correct pairing is the one where the `EXTKERNEL` handle in the `SETARG` lines
+matches the `EXTKERNEL` line the ELF was loaded under.** Both are logged with addresses. That comparison is offline, it
+is exact, and it settles whether the kernel we emulate was handed **instructions** or a **5 MB attention buffer** at
+arg3.
+
+**And if it was instructions, the fix has a shape §175 already half-verified:** the swap moved the boot because it
+changed what occupies that slot — **right in direction, wrong in kind** — and the engine's `attn_out` at arg3 would need
+to become the artifact's instruction stream, with `instr`/`ninstr` staying `0` because the stream travels as a **BO**.
