@@ -13314,3 +13314,56 @@ fits one case and is refuted by the cases that work.**
 **So the Gemma3-4B row moves from *"untested native / missing xclbin"* to: init FIXED by five rebuilt xclbins; blocked by
 a vendor assertion whose quantity is not yet understood.** That is a narrower and more actionable statement than the one it
 replaces, and it is the second coverage row this week to turn out to be a build product rather than a limit.
+
+## 850. THIRD build-gap row: Gemma3-1B's init is FIXED by six rebuilt xclbins — and the next blocker is an engine SEGFAULT on a missing `lm_head` ELF
+
+**§5 recorded Gemma3-1B as *"fails — dependency boundary, FLM cannot load it either."* Two of those three clauses are now
+wrong.**
+
+**1. It failed at init on a missing shape xclbin, like the other two.** Config: H=1152, nh=4, nkv=1, hd=256, inter=6912,
+`GU_split=0` → q=1024, kv=256, and **the engine asks for the FUSED GU** (`GU_K1152_N13824`, N = 2·6912):
+
+| xclbin | cols | bytes |
+|---|---|---|
+| `QKV_K1152_N1536` | 4 | 26,906 |
+| `O_K1024_N1152` | **3** | 22,506 |
+| `G_K1152_N6912` | 6 | 36,938 |
+| `U_K1152_N6912` | 6 | 36,938 |
+| `D_K6912_N1152` | **3** | 22,506 |
+| `GU_K1152_N13824` | 6 | 36,938 |
+
+**And the column count is not free** — the generator asserts `(N/n) % n_aie_cols == 0`. At cols=8 the first attempt
+**core-dumped** for every shape: `N/128` is 9 or 12 or 54, and **none of those is divisible by 8.** `O` and `D` have
+`N/128 = 9`, whose only divisor ≥ 2 is **3**. **That constraint is very likely why these files were never built.**
+
+**2. The `k_tile_q4` "dependency boundary" is a WARNING, not a failure.** The run prints
+
+```
+[dequant] unaligned dims H=1152 IM=6912 NH*HD=1024 -- tile width taken from
+          the bundle's row size (row_bytes/20), not the 256 constant.
+[q4] convention probe: 511/512 zero-point bytes non-zero -> UNSIGNED nibbles
+```
+
+**and continues.** So the engine **handles** the unaligned case; it does not fail on it. **Init now passes and the run
+proceeds to the fallback prefill.**
+
+**3. The actual blocker is the `lm_head` ELF, and the engine crashes on its absence.** The generator reports
+
+```
+lm_head: dlsym _ZN23gemma_text_npu_sequence15gen_lm_head_seqEP12npu_sequence failed
+```
+
+— **FLM's gemma_text class does not export a `gen_lm_head_seq`** — so no `elf_0002_lmhead.bin` is written. The engine then:
+
+```
+RuntimeLayer: cannot open  <dir>/elf_0002_lmhead.bin
+RuntimeLayer: cannot read lm_head ELF <dir>/elf_0002_lmhead.bin
+Segmentation fault (core dumped)        exit 139
+```
+
+**That is an ENGINE defect, and it is the actionable one: a missing optional file should produce an error and a fallback,
+not a segfault.** It also means the Gemma3-1B row has **two** independent blockers, only one of which is vendor-side.
+
+**So the coverage table's third "untested / dependency boundary" row was a build gap plus an engine robustness bug.** Three
+rows this week have turned out that way — Llama-3.1-8B (restored), Gemma3-4B (init fixed, vendor assertion next), and now
+Gemma3-1B. **Each was found by running the model and reading what it asked for; none by trusting the row.**
