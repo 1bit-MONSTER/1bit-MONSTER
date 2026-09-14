@@ -1066,13 +1066,34 @@ int main(int argc,char**argv){
             // Default tile_cols = in_features / 256. Compute from known dims.
         }
         return r;};
-    int q_i8=gi8("model.layers.0.self_attn.q_proj.weight"),k_i8=gi8("model.layers.0.self_attn.k_proj.weight"),v_i8=gi8("model.layers.0.self_attn.v_proj.weight");
-    // Fallback: GDN fused QKV
+    // LAYER 0 IS NOT ALWAYS A STANDARD-ATTENTION LAYER. In a hybrid GDN model (Qwen3.5-4B:
+    // layer_types is three linear_attention to one full_attention) layer 0 has NO
+    // self_attn.q_proj at all, so these lookups returned 0 and the row counts for the
+    // STANDARD layers came out zero -- observed as "qr=0 qc=2560" and a fault in the fused-gate
+    // branch. Find the first STANDARD layer (`!is_gdn_layer[l]`) as the primary source, keeping
+    // layer 0 for homogeneous models, and try BOTH name forms on the GDN fallback: this model's
+    // JSON uses "model.layers.N.linear_attn.*" (plural) while the code asked for "model.layer.N.*".
+    int std_l = 0;
+    for (int l = 0; l < NC; l++) if (!is_gdn_layer[l]) { std_l = l; break; }
+    auto gi8_std = [&](const char* suffix) -> int {
+        char b[160];
+        snprintf(b, sizeof(b), "model.layers.%d.%s", std_l, suffix);
+        int v = gi8(b);
+        if (v <= 0) { snprintf(b, sizeof(b), "model.layers.0.%s", suffix); v = gi8(b); }
+        return v;
+    };
+    int q_i8=gi8_std("self_attn.q_proj.weight"),k_i8=gi8_std("self_attn.k_proj.weight"),v_i8=gi8_std("self_attn.v_proj.weight");
+    // Fallback: GDN fused QKV (try both name forms)
     int qkv_fused_i8 = 0;
-    if (q_i8 <= 0) { q_i8 = gi8("model.layer.0.linear_attn.qkv_proj.weight"); qkv_fused_i8 = q_i8; }
-    int o_i8=gi8("model.layers.0.self_attn.o_proj.weight"),g_i8=gi8("model.layers.0.mlp.gate_proj.weight"),u_i8=gi8("model.layers.0.mlp.up_proj.weight"),d_i8=gi8("model.layers.0.mlp.down_proj.weight");
-    // GDN fallbacks
-    if (o_i8 <= 0) o_i8 = gi8("model.layer.0.linear_attn.ssm_out_proj.weight");
+    if (q_i8 <= 0) {
+        int a = gi8("model.layers.0.linear_attn.qkv_proj.weight");
+        if (a <= 0) a = gi8("model.layer.0.linear_attn.qkv_proj.weight");
+        q_i8 = a; qkv_fused_i8 = a;
+    }
+    int o_i8=gi8_std("self_attn.o_proj.weight"),g_i8=gi8_std("mlp.gate_proj.weight"),u_i8=gi8_std("mlp.up_proj.weight"),d_i8=gi8_std("mlp.down_proj.weight");
+    // GDN fallbacks (both name forms)
+    if (o_i8 <= 0) { o_i8 = gi8("model.layers.0.linear_attn.ssm_out_proj.weight"); if (o_i8 <= 0) o_i8 = gi8("model.layer.0.linear_attn.ssm_out_proj.weight"); }
+    if (g_i8 <= 0) { g_i8 = gi8("model.layers.0.self_attn.gate_proj.weight"); if (g_i8 <= 0) g_i8 = gi8("model.layer.0.self_attn.gate_proj.weight"); }
     if (g_i8 <= 0) g_i8 = gi8("model.layer.0.self_attn.gate_proj.weight");
     // Qwen3.6 uses 3D Q4NX shapes [tile_rows, tile_cols, bytes].
     // gi8 returns shape[0] (tile_rows); multiply by tile_cols = in_features/256.
