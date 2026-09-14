@@ -13086,3 +13086,40 @@ build product"**, and the fix is a **build step**, not a code change: the genera
 
 **And this is the goal's own framing applied to the goal**: every coverage limit in this log is a **named dependency
 interface** — and this one is a dependency the repository is missing rather than a capability the engine lacks.
+
+## 820. §815 scoped: TWO uncommitted build products block Llama — one now REBUILT, one already documented — and a control saved the first diagnosis
+
+**§815 said Llama-3.1-8B's row *"is not re-verifiable because a required xclbin was never committed."* That is true and
+incomplete: there are two uncommitted build products, and the scorecard already names the second.**
+
+**1. The shape xclbins — REBUILT.** `engine/npu/generators/n1_core_i8_v26.py`, the documented convention (`-M 128 -m 32
+-k 64 -n 128 -b 5`, **cols = 8** for QKV/G/U and **cols = 4** for O/D), produced Llama's full family and they are now
+committed:
+
+| xclbin | bytes | shape |
+|---|---|---|
+| `final_i8_QKV_K4096_N6144` | 48,650 | hidden 4096 → q 4096 + 2·kv 1024 |
+| `final_i8_O_K4096_N4096` | 27,738 | q → hidden |
+| `final_i8_G_K4096_N14336` | 48,650 | gate |
+| `final_i8_U_K4096_N14336` | 48,650 | up |
+| `final_i8_D_K14336_N4096` | 27,738 | down |
+
+**`I8Ctx: xclbin/kernel init failed` is gone** — the run now proceeds past loading and into the layers.
+
+**2. The per-context layer ELFs — the documented one, still absent.** §281 and §9.3 already record it: *"the runlist needs
+per-context layer ELFs and `gen_layer_elfs` was Qwen3-only; generalising it made Llama's ELFs generate in 2 s and closed
+the row."* **On this tree the run announces `Prefill 256 [fallback]`**, i.e. it takes the **fallback** path — so the ELFs
+are not present, and the scorecard's own standing note applies: *"re-runs on the fallback now cost `ceil(npt/XM)` passes
+through all `NC` layers — test at 256 or raise the timeout."* **Measured here: ~40 s per layer**, so 2 passes × 32 layers at
+256 is ≈40 min and 4 passes at 1024 is ≈85 min. **Both of my runs (900 s at 256, 1200 s at 1024) timed out**, which is a
+**speed** limit on the fallback, not the init failure §815 reported.
+
+**And the diagnosis that mattered was saved by a CONTROL, not by care.** `build_tmp/bin/aiecc` rejects these designs with
+`expected ')'` at `design.mlir:335` — **and it rejects a KNOWN-GOOD shape identically** (`qwen3.5_4b:QKV:2560:6144:8`, the
+entry `build_all.sh` itself uses). **The control is what proved the invocation was wrong rather than the shape.** The
+working pair is **`install_tmp/bin/aiecc` + `--aietools=/home/bcloud/mlir-aie/install_tmp/python/aie`**, under which the
+same design compiles first time.
+
+**Without that control this entry would read "the xclbin cannot be built"** — a **failed instrument read as a refuted
+hypothesis**, which is precisely the shape this log has been careful about all session, and the third time in this stretch
+that a control or a demotion rather than an argument produced the right answer.
