@@ -980,13 +980,21 @@ int main(int argc,char**argv){
         op[l]=jo2("model.layers.%d.self_attn.o_proj.weight",l);
         // GDN fused QKV (if separate q_proj not found):
         if (!qp[l]) {
-            snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l);
+            // BOTH NAME FORMS. The direct jo() calls here used only "model.layer.N" (SINGULAR),
+            // while this model's JSON uses "model.layers.N" (PLURAL) -- the same mismatch fixed in
+            // the gi8() fallbacks, in a different place. Because it did not fire, is_gdn_layer[]
+            // stayed FALSE FOR EVERY LAYER (observed: "[shapes] std_l=0 of NC=32 (gdn layers=0)"),
+            // so the hybrid structure was never recognised and the standard-attention path was used
+            // for the entire model.
+            snprintf(bn, 128, "model.layers.%d.linear_attn.qkv_proj.weight", l);
             qp_fused[l] = jo(js, jl, bn);
+            if (!qp_fused[l]) { snprintf(bn, 128, "model.layer.%d.linear_attn.qkv_proj.weight", l); qp_fused[l] = jo(js, jl, bn); }
             if (qp_fused[l]) {
                 is_gdn_layer[l] = true;
                 // O projection for GDN layers: linear_attn.ssm_out_proj
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_out_proj.weight", l);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_out_proj.weight", l);
                 op[l] = jo(js, jl, bn);
+                if (!op[l]) { snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_out_proj.weight", l); op[l] = jo(js, jl, bn); }
             }
         }
         gp[l]=jo2("model.layers.%d.mlp.gate_proj.weight",l);
@@ -1083,6 +1091,11 @@ int main(int argc,char**argv){
         return v;
     };
     int q_i8=gi8_std("self_attn.q_proj.weight"),k_i8=gi8_std("self_attn.k_proj.weight"),v_i8=gi8_std("self_attn.v_proj.weight");
+    if (getenv("RT_PACK_DEBUG")) {
+        int ngdn = 0; for (int l = 0; l < NC; l++) if (is_gdn_layer[l]) ngdn++;
+        fprintf(stderr, "[shapes] std_l=%d of NC=%d (gdn layers=%d)  q_i8=%d k_i8=%d v_i8=%d\n",
+                std_l, NC, ngdn, q_i8, k_i8, v_i8);
+    }
     // Fallback: GDN fused QKV (try both name forms)
     int qkv_fused_i8 = 0;
     if (q_i8 <= 0) {
