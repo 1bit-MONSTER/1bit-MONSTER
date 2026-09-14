@@ -14512,3 +14512,53 @@ describes is necessary for Qwen3.5-4B (its counts go 256 → 2560 and the fused-
 **And the pattern, which is now three times in this stretch**: **a rule that is right for one model, applied to another,
 refuted by a gate.** The byte-extent tile count (§890), the units error in the logits BO (§945), and now this — **each was
 caught by a control rather than by reasoning, and each was caught before the commit.** **The harness is earning its place.**
+
+## 1005. CORRECTION to §1000: the 3-D rule was ALREADY IMPLEMENTED — as `q_cols`/`o_cols`/`d_cols`, derived from the model dims — and my "empty comment" reading was wrong
+
+**§1000 concluded that `gi8()`'s empty-bodied comment described *"work not done"*, and that the multiply was **necessary but
+not sufficient**. Both halves are wrong, and the code says so plainly eleven lines below the comment's use site:**
+
+```c
+int q_cols = H / 256;          // 8 for H=2048
+int o_cols = (NH * HD) / 256;  // 16 for NH*HD=4096
+int d_cols = IM / 256;         // 2 for IM=512
+q_i8 *= q_cols; k_i8 *= q_cols; v_i8 *= q_cols;
+qkv_fused_i8 *= q_cols;
+o_i8 *= o_cols;
+g_i8 *= q_cols; u_i8 *= q_cols;
+d_i8 *= d_cols;
+```
+
+**The rule IS applied — just not where the comment sits.** And for Qwen3.5-4B the derived values are **exactly the JSON's
+`shape[1]`**:
+
+| derived from the dims | value | the bundle's `shape[1]` | |
+|---|---|---|---|
+| `H / 256` | **10** | `q_proj` = **10** | **MATCH** |
+| `(NH·HD) / 256` | **16** | `o_proj` = **16** | **MATCH** |
+| `IM / 256` | **36** | `down_proj` = **36** | **MATCH** |
+
+**So `q_i8 = shape[0] × q_cols = 256 × 10 = 2560` — the packed row count was ALREADY CORRECT**, and the engine reaches the
+same number by a **different route** to the one the comment describes. **Two independent derivations agreeing is a
+cross-check, not a coincidence.**
+
+**Which means my two attempts were not "necessary but insufficient" — they were a DOUBLE COUNT.** My `gi8` multiply added
+the `shape[1]` factor on top of `q_cols`:
+
+```
+Nanbeige:  q_cols = 2560/256 = 10,  shape[0] = 800        -> 8000   (correct)
+           my change also multiplied by shape[1] = 5120   -> 4,096,000, then x10 again
+```
+
+**A 2-D shape's `shape[1]` is the row WIDTH, and a 3-D shape's `shape[1]` is the tile count — and neither is needed, because
+`q_cols` already carries it.** The dimension check I added in attempt 2 was aimed at the wrong difference.
+
+**And this is the session's class in its most literal form.** I read an **empty-bodied comment** as evidence that the work was
+not done. **It was done — elsewhere.** *"A comment is a claim about code, not evidence of it"* — and a comment whose body is
+empty is **a claim about code that no longer lives there**. **The check that would have caught it is one grep for the rule
+rather than for the comment**: `q_cols` is twelve lines from where the comment is used, and I never looked.
+
+**So the last step of the Qwen3.5-4B chain was never a step.** `q_i8` was 2560 throughout, the STD branch selects the
+**fused** layout correctly (`qr = 2 × NH·HD = 8192`), and the crash at layer 3 is **not a shape-count problem** — it is
+somewhere in the fused packing itself. **That is a different and narrower target than §1000 left, and arriving at it cost two
+reverts that a grep would have prevented.**
