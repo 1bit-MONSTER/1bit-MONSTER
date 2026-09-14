@@ -152,6 +152,14 @@ per-shape attention ELFs; their correct reference tokens are now recorded (220 /
 **Prefill perf:** native vs FLM-ref per-token is −12% (1.7B), −18% (4B, VL), −22%
 (8B), −18% (Llama-3.1-8B) — the host-math gap is consistent across families.
 
+> **BUILD-SCOPED — do not quote this against the shipped engine, and note the sign.** This was measured **before the
+> performance work** (the double-buffered GEMM blocks, the parallelised host loops, the fused copies, the SIMD
+> forcing), and **the sign is now the opposite**: the converged measurement is **+25% over on-box FLM** (native 2324
+> tok/s against 1860 at the published 2K condition, §3 of the scorecard). The −12…−22% figures are true **of the build
+> that produced them**, which is why the note is an annotation rather than a retraction. **A percentage is not portable
+> across builds** — the same reason §95's run-based figure is marked METHOD-SCOPED. What must travel with the number is
+> its **scope**: method, fixture, **or build**.
+
 ## 8. Nanbeige diagnosis — the gap is NOT the long-context ELF (2026-09-13)
 
 Section 3 above said Nanbeige/Phi4 "need a per-shape attention ELF". A direct test
