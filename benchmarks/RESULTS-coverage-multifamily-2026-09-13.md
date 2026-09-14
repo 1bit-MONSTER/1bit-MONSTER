@@ -13204,3 +13204,39 @@ generator is family-general and produced Llama's ELFs in 2 s), and the real caus
 **And the pattern, which is now five times in this stretch**: the thing that saved the conclusion was **reading the code
 before acting on the message** — the same move as the two controls (a known-good shape; a known-good family). **A message
 that looks like a blocker and an expected branch of a default-OFF path print the same line.**
+
+## 835. THE DECODE ROW CLOSES: the blocker was the ELF RANGE, not the tooling — Llama now decodes at 15 tok/s against FLM's 11
+
+**The failure was one I had caused by generating the wrong range.** `ctx` counts **tokens processed**, so a 1024-token
+prefill consumes **ctx 1..1024** and the **first decode step is ctx 1025**. My ELF set was `1..1024`. Regenerating with
+headroom — `gle_all … 1025 1100 32768 llama`, **about a second** — and re-running:
+
+```
+=== Prefill 1024 [runlist] ===
+Prefill: 94268ms (92 ms/tok)
+  [1] 220
+  [2] 18
+  [3] 13
+  [4] 15
+=== 68.9 ms/tok (15 tok/s) | tokens=4 ===
+```
+
+**Exit 0, the decode completes, and the `ms/tok` line — which §9.3 recorded as never appearing — prints at 68.9 ms/tok.**
+
+| | native | FLM, same harness | |
+|---|---|---|---|
+| Llama-3.1-8B decode | **68.9 ms/tok (15 tok/s)** | 91.3 ms/tok (11 tok/s) | **1.33×** |
+
+**So the decode row is 6 of 6, and the `15 / 11 / 1.33×` figures that were already in the scorecard's decode table are now
+VERIFIED rather than carried.** The *"not measurable at all"* in §9.3 was the stale half.
+
+**And the diagnosis is worth stating because of how it failed twice before landing.** §815 blamed it on a missing xclbin;
+§9.3 blamed the layer-ELF generator being Qwen3-only. **Both were addressed — and the decode still failed**, which is what
+made the real cause findable: `[runlist] decode forward ctx=1025 failed` **named the context**, and the context number plus
+the range I had generated was the whole answer. **Two of the three explanations were about tooling that turned out to work,
+and the third was a one-argument off-by-range in my own generation command.** The general form: **`ctx` is a token counter,
+so an ELF set sized for the prefill does not cover the decode** — and the fix is an argument, not a build.
+
+**And the `small-M(_m0) xclbins absent` line was never involved** — it is the expected default-OFF branch, and the source
+says that path gives *"garbage decode"*. **Three candidate explanations for one failure, two of them about things that
+worked and one about a message that was never an error.**
