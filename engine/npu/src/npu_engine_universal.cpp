@@ -650,6 +650,7 @@ int main(int argc,char**argv){
             cfg.HD = oh.head_dim; cfg.IM = oh.intermediate_size;
             cfg.NV = oh.vocab_size; cfg.GQA = cfg.NH / cfg.NKV;
             cfg.XM = 128; cfg.has_lm_head = true;
+            cfg.derive_xclbin_dims();
         } else
     #endif
         cfg = parse_q4nx_header(mp,model_tag.c_str());
@@ -673,6 +674,9 @@ int main(int argc,char**argv){
                 cfg.NH = gi("num_attention_heads"); cfg.NKV = gi("num_key_value_heads");
                 cfg.HD = gi("head_dim"); cfg.IM = gi("intermediate_size"); cfg.NV = gi("vocab_size");
                 if (cfg.NKV > 0 && cfg.NH > 0) cfg.GQA = cfg.NH / cfg.NKV;
+                // This path sets H/NH/NKV/HD/IM but used to leave the xclbin GEMM dims at
+                // their zero defaults, so every I8Ctx was a zero-length BO. Derive them here.
+                cfg.derive_xclbin_dims();
             }
             fclose(cf);
         }

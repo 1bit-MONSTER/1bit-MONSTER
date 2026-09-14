@@ -39,6 +39,36 @@ struct ModelConfig {
 
     bool valid() const { return H > 0 && NC > 0 && NH > 0 && NKV > 0 && HD > 0 && IM > 0 && NV > 0; }
     static int pad128(int v) { return (v + 127) & ~127; }
+    // Derive the xclbin GEMM dimensions from the model dims. This MUST be called on
+    // EVERY path that populates H/NH/NKV/HD/IM, because the I8Ctx contexts are sized from
+    // these fields and a zero gives a zero-length BO -- which XRT refuses deep inside
+    // alloc_bo, far from the cause. parse_q4nx_config() did this inline; the engine's own
+    // config path (npu_engine_universal.cpp) has TWO other routes -- the 1BP header and the
+    // config.json fallback used by hybrid models whose manifest lacks embed/self_attn -- and
+    // neither derived them. Qwen3.5-4B takes the fallback and died at
+    // "cq before init: MD=128 KD=0 ND=4608" while H was 2560.
+    void derive_xclbin_dims() {
+        if (NH > 0 && NKV > 0) GQA = NH / NKV;
+        if (NH > 0 && NKV > 0) { while (AW > 1 && (NH % AW != 0 || NKV % AW != 0)) AW--; }
+        WQH  = AW > 0 ? NH / AW : NH;
+        WKVH = AW > 0 ? NKV / AW : NKV;
+        qkv_k_offset = NH * HD;
+        qkv_v_offset = NH * HD + NKV * HD;
+        qkv_total   = NH * HD + 2 * NKV * HD;
+        xclbin_qkv_k = pad128(H);
+        xclbin_qkv_n = pad128(qkv_total);
+        xclbin_o_k   = pad128(NH * HD);
+        xclbin_o_n   = pad128(H);
+        if (gu_split) {
+            xclbin_g_k = pad128(H); xclbin_g_n = pad128(IM);
+            xclbin_u_k = pad128(H); xclbin_u_n = pad128(IM);
+        } else {
+            xclbin_gu_k = pad128(H); xclbin_gu_n = pad128(IM * 2);
+        }
+        xclbin_d_k = pad128(IM);
+        xclbin_d_n = pad128(H);
+    }
+
 };
 
 // Find a JSON key and extract shape[0] + data_offsets[0]
