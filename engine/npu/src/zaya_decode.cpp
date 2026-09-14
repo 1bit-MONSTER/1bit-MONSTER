@@ -19,6 +19,7 @@
 #include "q4nx_raw.h"
 #include "zaya_cca_attn_cpu.h"
 #include "zaya_moe_cpu.h"
+#include "npu_paths.h"
 #include "npu_engine_i8ctx_inc.h"
 #include "npu_attn_ctx.h"
 
@@ -367,7 +368,8 @@ int zaya_decode_main(int argc, char** argv) {
     I8Ctx gu_ctx, d_ctx;
     gu_ctx.MD = 128; gu_ctx.KD = d.H;      gu_ctx.ND = 2 * m.n_ff;
     d_ctx.MD  = 128; d_ctx.KD  = m.n_ff;   d_ctx.ND  = d.H;
-    const char* xd = getenv("NPU_XCLBIN_DIR") ? getenv("NPU_XCLBIN_DIR") : "engine/npu/xclbins";
+    const std::string xd_s = npu_xclbin_dir();
+    const char* xd = xd_s.c_str();
     char gu_xp[512], gu_ip[512], d_xp[512], d_ip[512];
     snprintf(gu_xp, sizeof gu_xp, "%s/final_i8_MOE_GU_zaya_m16.xclbin", xd);
     snprintf(gu_ip, sizeof gu_ip, "%s/insts_i8_MOE_GU_zaya_m16.txt", xd);

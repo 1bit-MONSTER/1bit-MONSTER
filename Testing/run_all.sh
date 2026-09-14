@@ -40,6 +40,9 @@ run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
 # NPU artifact key contract (issue #2193): the header-window regression and the
 # per-family GEMM names, both verifiable without a device.
 run npu_keys  Testing/npu_key_contract_selfcheck.cpp src/q4nx_reader.cpp --
+# NPU path resolution: an override naming a path this machine does not have must
+# not be used (a stale NPU_XCLBIN_DIR in the shell silently broke every NPU run).
+run npu_paths Testing/npu_paths_selfcheck.cpp --
 
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"

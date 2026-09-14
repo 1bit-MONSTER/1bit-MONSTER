@@ -24,6 +24,7 @@
 #include <aiebu/aiebu_assembler.h>
 #include <omp.h>
 #include "model_config.h"
+#include "npu_paths.h"
 #include "npu_engine_i8ctx_inc.h"
 #include "npu_engine_hybrid_flm.h"
 #include "zaya_moe_cpu.h"           // host_h2_amax_qn_s (#1934 fused int4 GU->SiLU)
@@ -772,8 +773,7 @@ int main(int argc,char**argv){
     // Init NPU
     fprintf(stderr,"Init NPU...\n");xrt::device dev(0);
     // Xclbin directory: respect NPU_XCLBIN_DIR env var, fall back to repo-relative path
-    const char* env_xd = getenv("NPU_XCLBIN_DIR");
-    std::string xd = env_xd ? env_xd : "engine/npu/xclbins";
+    std::string xd = npu_xclbin_dir();  // env if this machine has it, else repo/install layout
     // xp(): try model-tag-keyed xclbin first (backward compat), then dimension-keyed
     // (e.g. final_i8_QKV_K2048_N2560.xclbin) so any model sharing GEMM shapes can reuse
     // the same xclbin without a per-model rebuild.
