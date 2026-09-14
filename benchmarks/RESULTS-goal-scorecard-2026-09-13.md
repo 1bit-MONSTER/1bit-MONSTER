@@ -716,10 +716,12 @@ depends on the call size — **2048 bf16/row at the engine's only call size (256
 row never written.** That is why the defect is identical at every prompt length.
 
 **What is measured**: the write (524,288 elements), the row count (256), `q` (2560), the untouched region (512/row), and
-that the NaN in the written half is **computed, not stale** (the sentinel discriminator). **What is not**: calling
-`2048/128 = 16` *"heads"* — and the test that would settle it **is not currently available**, because the sentinel lives in
-a path the nh16 models do not take. **So of the two live candidates, one is now closed (`arg3` role and width, both inert)
-and the other — the partition — is described but not explained.**
+that the NaN in the written half is **computed, not stale** (the sentinel discriminator). **And the "capacity" reading is
+now CONFIRMED by a controlled pair rather than left as naming**: on **Qwen3-0.6B (nh16, `q` = 2048, 256 rows)** the same
+artifact writes `kept_1.0 = 420/524,288` — **99.9% coverage of `q × rows`** — against Nanbeige's **80%** of 655,360.
+**Same artifact, same code, same row count; only the head count differs.** Earlier notes that *"the cross-model test is not
+available"* were **wrong** — §153 records that 0.6B's bf16 path gives FLM's exact 1614, and the 1.7B binary was simply the
+wrong probe.
 
 ### 10c.1 The artifact-substitution and fix tests — which move the partition, and which do NOT move the boot
 
@@ -747,10 +749,23 @@ and the other — the partition — is described but not explained.**
 | `256_nh32` | ~100% | **152437** |
 | `1024_nh20` | — | **188** |
 
-**An artifact that writes every word of `q` still boots `188`.** So **§204's partition is a CO-SYMPTOM, not the cause** —
-it was being carried as *the* description of the defect, and its removal does not remove the defect. And **`1024_nh20`, the
-model's own shape, also gives 188** — so “the wrong attention geometry was loaded” is not it either. The artifact **does**
-move the boot (two distinct wrong values), **just not through its write coverage.**
+**An artifact that writes every word of `q` still boots `188` — and the model's OWN shape does it too:**
+
+| forced artifact | coverage | bf16-path boot (@256, FLM ref **5938**) |
+|---|---|---|
+| default `256_nh16` | **80%** | **188** |
+| **`1024_nh20` — the model's own shape** | **100%** (`kept_1.0 = 0`) | **188** |
+| `1024_nh16` | **100%** (`kept_1.0 = 0`) | **188** |
+| `1024_nh32` | ~100% | **152437** |
+| `256_nh32` | ~100% | **152437** |
+
+**The nh20-shaped artifact — the model's own attention geometry — writes every word of `q` and boots `188` anyway.** So
+**coverage and correctness are independent** (80% → 188 and 100% → 188), the boot **does** vary with the artifact
+(188 vs 152437) but **not with coverage**, and **§204's partition is a CO-SYMPTOM, not the cause** — it was being carried as
+*the* description of the defect, and its removal does not remove the defect. **The write shortfall is eliminated as the cause
+using the right shape and full coverage.** What remains is consistent with §123 (*"the output geometry is baked into the
+ELF's instruction stream"*) and §197 (the 4× unroll): **what the artifact BAKES decides the boot; how much of `q` it happens
+to cover does not.**
 
 **And the whole residual sits on a DIAGNOSTIC path.** Under the same seven forcings, **`NPU_RUNLIST=1` — the shipping i8
 path — gives `boot=5938` every time, FLM's exact reference**, because **it does not take the `Bf16Mm` path at all**. So the
