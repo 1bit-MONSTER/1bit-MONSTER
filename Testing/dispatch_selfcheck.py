@@ -25,13 +25,11 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # Symlinks that intentionally reach something other than a dispatcher branch.
 # Each needs a reason: an unexplained entry here is how the next one hides.
-ALLOWED_UNHANDLED = {
-    # packaging/Makefile symlinks 1bit-server to the single ELF, but
-    # packaging/npu-install.sh installs a SEPARATE binary built from
-    # packaging/binary/server.cpp (the ollama bridge, `./1bit-server 8081`).
-    # Two programs, one name — mapping it is a decision, not a parse.
-    "1bit-server": "ambiguous: also a standalone binary (packaging/binary/server.cpp)",
-}
+# EMPTY, and that is the point: `1bit-server` used to sit here as "two programs,
+# one name". It is now dispatched to the zaya server, because the standalone
+# packaging/binary/server.cpp is Windows-only and zaya_server already parses the
+# bare positional port that packaging/ollama/README.md documents.
+ALLOWED_UNHANDLED: dict[str, str] = {}
 
 
 def read(rel: str) -> str:

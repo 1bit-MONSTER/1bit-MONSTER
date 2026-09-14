@@ -71,6 +71,14 @@ int main(int argc, char** argv) {
     // and packaging/README.md documents it, but nothing dispatched it: running
     // `onebit` printed the usage text instead of the agent CLI.
     if (prog == "onebit")         return onebit_main(argc, argv);
+    // `1bit-server <PORT>` is the documented entry for the Ollama bridge
+    // (packaging/ollama/README.md), mobile.sh and npu-install.sh's banner. The
+    // symlink existed but fell through to the usage text, so the documented
+    // command did nothing. It maps to the zaya server, which already parses a
+    // bare numeric argument as the port — the same atoi(argv[1]) the standalone
+    // packaging/binary/server.cpp uses, and that binary is Windows-only
+    // (docs/guides/windows.md), so on Linux this symlink IS the server.
+    if (prog == "1bit-server")    return zaya_server_main(argc, argv);
 
     // ── Subcommand dispatch ──
     if (argc > 1) {
