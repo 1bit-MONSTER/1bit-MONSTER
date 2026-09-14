@@ -13367,3 +13367,29 @@ not a segfault.** It also means the Gemma3-1B row has **two** independent blocke
 **So the coverage table's third "untested / dependency boundary" row was a build gap plus an engine robustness bug.** Three
 rows this week have turned out that way — Llama-3.1-8B (restored), Gemma3-4B (init fixed, vendor assertion next), and now
 Gemma3-1B. **Each was found by running the model and reading what it asked for; none by trusting the row.**
+
+## 855. CORRECTION, and it is against my own withdrawal: `blocks_per_row = intermediate/128` IS right — the control I used never ran the asserting code
+
+**In §845 I withdrew the reading `blocks_per_row = intermediate/128` because Qwen3-4B (76), Llama-3.1-8B (112) and Nanbeige
+(64) all exceed 63 and generate fine. That control was INAPPROPRIATE.**
+
+**The assertion lives in `gemma_text_npu_sequence.cpp` — ONE family's class. Qwen3, Llama and Nanbeige use their own
+sequence classes and never execute it.** So they refute nothing. **The control that belongs here is another Gemma**, and it
+settles the question outright:
+
+| model | intermediate | `intermediate/128` | assertion `<= 63` | ELF generation |
+|---|---|---|---|---|
+| **Gemma3-1B** | 6912 | **54** | **passes** | **20/20 written, then 1100/1100** |
+| **Gemma3-4B** | 10240 | **80** | **fires** | **0 written** |
+
+**Same family, same class, same code path — and the prediction holds exactly.** So `blocks_per_row` **is**
+`intermediate/128`, and **Gemma3-4B is excluded by a hard 63-tile-per-row limit in the vendor's gemma_text class: any Gemma
+whose FFN intermediate exceeds `63 × 128 = 8064` cannot be driven through it.**
+
+**And the lesson is sharper than the one I wrote in §845**, because the failure was the *control*, not the arithmetic:
+**a control must go through the SAME code path as the claim.** Mine was a good control for "does the generator work" and a
+useless one for "what does this family's assertion mean". **That is the sixth time in this stretch that a control decided
+something — and the first time one was itself the error**, which is worth recording precisely because the habit has been
+paying off so consistently that it was acquiring a halo.
+
+**§845's conclusion ("what it measures is unresolved") is WITHDRAWN. It measures `intermediate/128`, and the bound is 63.**
