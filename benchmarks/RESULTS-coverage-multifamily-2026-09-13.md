@@ -14342,3 +14342,40 @@ resolves, the shape does not, and **only on the STD layers.**
 
 **All ten gates still match FLM's references after each**, so every one is a no-op for the models that were already working —
 which is the property that makes them safe to land.
+
+## 985. The layer-0 assumption, THIRD instance — and this one is fixed: the STD shapes now resolve and the fault moved deeper
+
+**§980's hypothesis was right, and the model's own header confirms it:**
+
+| lookup | in the header |
+|---|---|
+| **`model.layers.0.self_attn.q_proj.weight`** — what the engine asked for | **FALSE** |
+| **`model.layers.3.self_attn.q_proj.weight`** — where it actually is | **TRUE** |
+| `model.layers.0.linear_attn.qkv_proj.weight` | TRUE — **layer 0 is a GDN layer** |
+| `model.layers.0.self_attn.o_proj.weight` | **FALSE** |
+| `model.layers.3.self_attn.o_proj.weight` | **TRUE** |
+
+**Two bugs in three lines.** First, **the layer index**: `q_i8`/`o_i8` were read from **layer 0**, which in this hybrid model
+is a `linear_attention` layer with no `self_attn.*` tensors at all — the first `full_attention` layer is **3**. Second, **the
+name form of the GDN fallback**: the code asks for **`model.layer.0.linear_attn.*`** (singular) while this model uses
+**`model.layers.0.linear_attn.*`** (plural) — **so the fallback could not fire either, and `q_i8` stayed 0.**
+
+**The fix** takes the STD tensors from the **first non-GDN layer** (keeping layer 0 for homogeneous models) and tries **both
+name forms** on every GDN fallback.
+
+**Result**: `unresolved-shape skips: 0` — **the STD layers now resolve their weight shapes**, and the fault **moved deeper
+into the packing**, which is the evidence that the change took effect. **All ten gates still match**, so it is a no-op for
+every model that was already working.
+
+**And this is the THIRD instance of one shape — an engine assumption that LAYER 0 REPRESENTS THE LAYER:**
+
+| # | instance | why layer 0 was unrepresentative |
+|---|---|---|
+| 1 | `npu_layer_bo_bytes` sized the BO from layer 0 | **LFM2-1.2B's layer 0** is a gated short-conv layer with no q/k/v/o → **under-allocated BO** (already documented and fixed) |
+| 2 | the xclbin GEMM dims (§970) | derived on a path that layer-0-based hybrid models never take → **zero-length BO** |
+| 3 | **the weight-shape lookups** (this section) | Qwen3.5-4B's layer 0 is `linear_attention` → **zero row counts** |
+
+**Each was invisible until a model arrived whose layer 0 is not representative.** That is a structural lesson about this
+engine rather than three coincidences: **whenever a lookup or a size is taken from layer 0, a hybrid model will eventually
+falsify it** — and the three instances were found by three different symptoms (an under-sized BO, a zero-length BO, and a
+segfault), which is why they read as three bugs rather than one.
