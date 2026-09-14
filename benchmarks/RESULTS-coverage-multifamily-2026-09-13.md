@@ -12939,3 +12939,41 @@ looks identical at 256 and at 1024, and it is the mechanical reason the earlier 
 transfers **4× that** (524,288 = **2048 bf16/row** over the engine's 256 rows), and `q` is **2560/row** — **512 words per
 row never written, which is the 20%.** The write, the row count, and `q` are all measured; **the 4× is the unroll; and
 `2048/128 = 16` remains arithmetic whose naming as "heads" is still untested.**
+
+## 800. THE REFRAME: the write follows the artifact — and the artifact test shows the whole nh20 residual lives on a DIAGNOSTIC path, not the shipping one
+
+**Forced different attention ELFs through `NPU_ATTN_ELF_256` and read the sentinel, then read the boot token under the same
+forcement. The two halves of the answer are very different.**
+
+**The write follows the artifact, decisively:**
+
+| forced `attn_elf` | its declared `arg0` | measured write | `kept_1.0` |
+|---|---|---|---|
+| **default — `attn_mha_256_nh16.elf`** | 131,072 | **524,288** | **131,072 (20%)** |
+| `attn_mha_1024_nh16.elf` | 524,288 | **655,360 = 100%** | **0** |
+| `attn_mha_1024_nh32.elf` | 1,048,576 | **655,067** | 293 |
+| `attn_mha_256_nh32.elf` | 262,144 | **655,067** | 293 |
+
+**Three of the four artifacts fill `q` completely; only the default one leaves 20% untouched.** So **the 80% shortfall is a
+property of the DEFAULT artifact**, not of the engine's call and not of `q` — and **one substitution removes it.** That also
+explains why §175's *"swapping the ELF leaves the boot at 1214"* did not rule this out: that test measured the **boot
+token**, and the write volume had never been read under a forced artifact.
+
+**But the boot token does not move — and the reason is the important part.** Under the same seven forcings, **every run
+gives `boot=5938`, FLM's exact reference for Nanbeige at 256 tokens**, including the four artifacts whose writes differ by
+100% versus 80%:
+
+```
+default 5938 | 256_nh16 5938 | 1024_nh16 5938 | 1024_nh20 5938 | 1024_nh32 5938 | 256_nh32 5938 | 2048_nh16 5938
+```
+
+**Because `NPU_RUNLIST=1` does not take the `Bf16Mm` attention path at all** — the sentinel never prints under it, and that
+is the same fact that made §790's cross-model test unavailable. **The partition, the 80% write, the NaN, and the 152432
+attractor all live on `NPU_PREFILL_BF16=1`** — a **diagnostic** path — **while the shipping i8 runlist path boots at FLM's
+exact references**, which is what the goal's scorecard has claimed all along.
+
+**So the nh20 residual is an instrument-path artefact, not a model-facing defect.** That does not make it uninteresting —
+the partition is a real, reproducible property of a real kernel, and it is why the bf16 path cannot be used as a
+high-precision route. **But it does mean the lane's central worry and the product's shipped behaviour were never the same
+question**, and the two were one command apart for several exchanges. **The rule it re-earns is the session's own: name the
+ARM, not the flags — and here, name the PATH.**
