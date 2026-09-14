@@ -500,13 +500,34 @@ Two agents worked the failing families in parallel and **converged independently
 
 | defect | scope | status |
 |---|---|---|
-| **NPU attention, nh16-width** — writes 2048 of 2560 columns | nh20 (Nanbeige) | **measured** — a real mechanism, with a per-head output column as the instrument |
+| **NPU attention under-writes its output** — **80% written; exactly `NKV×HD` per row missing, scattered across all columns** | nh20 (Nanbeige) | **measured — and the earlier "nh16-width kernel" description is REVISED** (see below) |
 | **nh20 residual** | nh20 | **characterized** — first-token-*quantised*, **partial at 32** (4 distinct values over 8 tokens) **and partial at 448** (5/8 correct, 3 distinct) |
 | **nh24 (Phi4) residual** | nh24 | **characterized** — first-token-*blind* over **[16, 64]** (8/8 → 220), **partly blind at 128** (5/8, 4 distinct values) |
 | **nh20 i8 first-token handling** | nh20 | **OPEN** (added 2026-09-13, after the clean-fixture run) |
 
 **One measured defect, one open residual, and no shared engine bug** — with the two others now **measured rather
 than merely open**, and **mechanically distinct**:
+
+**And the first row's description was materially revised on the last exchange, by a direct per-column map rather than by
+argument.** The engine's own sentinel, in its **position** form:
+
+```
+[ATTN-SENTINEL] rows=256 q=2560 kept_1.0=131072/655360 nonzero=393216 wrote=524288 -> DID write
+positions: first_changed=0 last_changed=524287 ; columns_touched=2560/2560 ; untouched_tail_columns=0
+
+full  = 256 x 2560 = 655,360   wrote = 524,288 (80.0%) -> 2048 words per row
+                               kept  = 131,072 (20.0%) ->  512 words per row
+```
+
+**So *"writes 2048 of 2560 columns"* was right as a per-row count and wrong as a column map.** All **2,560** column
+positions are touched and the untouched tail is **0** — the missing words are **not** a 512-column block, and the *"16 of
+20 heads"* reading that suggested an **nh16-width kernel is not supported.** The shortfall is exactly **`NKV×HD` per row**
+(512 for nkv4/hd128, uniquely). **The stride reading is a hypothesis; the counts and the column map are the measured
+facts** — and they survive the sentinel's one weakness (a legitimate output can equal bf16 `1.0`, so `kept` is an upper
+bound on unchanged).
+
+**And the same `NKV×HD` shape appears in the invocation**: FLM's arg3 is sized **`npt × NKV×HD`** (1 MB) against an engine
+that hands over **`npt × NH×HD`**. **Two divergences, one shape.**
 
 - **nh24** has a **blind region** whose edges are measured — **edge A (blind → partly blind) in (64, 128]** and
   **edge B (220 → non-220) in (144, 160]**;
