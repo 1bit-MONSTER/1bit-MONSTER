@@ -658,13 +658,24 @@ static fs::path models_dir() {
     return fs::path(home ? home : ".") / ".local/share/1bit/models";
 }
 
+// Public 1BP mirror. Keep this in sync with packaging/model-download.sh: the two
+// registries drifted — #2231 repointed the shell script at the public *-1BP repos
+// because the old *-q4nx ones return 401 for public users, but this copy kept
+// them, so `1bit pull qwen3-0.6b` was broken while the script worked. Same names,
+// same descriptions, same upstream file names.
 struct ModelEntry { const char* name; const char* desc; const char* path; };
 static const ModelEntry kModelRegistry[] = {
-    {"qwen3-0.6b",   "Qwen3-0.6B — 610 MB",   "/bong-water-water-bong/qwen3-0.6b-q4nx/resolve/main/qwen3-0.6b.q4nx"},
-    {"qwen3-8b",     "Qwen3-8B — 6.0 GB",    "/bong-water-water-bong/qwen3-8b-q4nx/resolve/main/qwen3-8b.q4nx"},
-    {"qwen3-vl-4b",  "Qwen3-VL-4B — 3.2 GB", "/bong-water-water-bong/qwen3-vl-4b-q4nx/resolve/main/qwen3-vl-4b.q4nx"},
-    {"gemma4-e2b",   "Gemma4-E2B — 4.7 GB",  "/bong-water-water-bong/gemma4-e2b-q4nx/resolve/main/gemma4-e2b.q4nx"},
-    {"llama-3.1-8b", "Llama-3.1-8B — 5.7 GB","/bong-water-water-bong/llama-3.1-8b-q4nx/resolve/main/llama-3.1-8b.q4nx"},
+    {"qwen3-0.6b",      "Qwen3-0.6B — 356 MB",        "/bong-water-water-bong/Qwen3-0.6B-1BP/resolve/main/Qwen3-0.6B.1bp"},
+    {"qwen3-8b",        "Qwen3-8B — 4.8 GB",          "/bong-water-water-bong/Qwen3-8B-1BP/resolve/main/Qwen3-8B-1BP.1bp"},
+    {"qwen3-vl-4b",     "Qwen3-VL-4B — 2.3 GB",       "/bong-water-water-bong/Qwen3-VL-4B-Instruct-1BP/resolve/main/Qwen3-VL-4B-Instruct-1BP.1bp"},
+    {"gemma4-e2b",      "Gemma4-E2B — 1.3 GB",        "/bong-water-water-bong/Gemma4-E2B-1BP/resolve/main/Gemma4-E2B-1BP.1bp"},
+    {"llama-3.1-8b",    "Llama-3.1-8B — 4.7 GB",      "/bong-water-water-bong/Llama-3.1-8B-1BP/resolve/main/Llama-3.1-8B-1BP.1bp"},
+    // Zyphra — the family the engine was tuned against (docs/model-families/zyphra.md)
+    {"zaya1-8b",        "ZAYA1-8B — 6.1 GB",          "/bong-water-water-bong/ZAYA1-8B-1BP/resolve/main/ZAYA1-8B.1bp"},
+    {"blackmamba-1.5b", "BlackMamba-1.5B — 970 MB",   "/bong-water-water-bong/BlackMamba-1.5B-1BP/resolve/main/BlackMamba-1.5B.1bp"},
+    {"zr1-1.5b",        "ZR1-1.5B — 781 MB",          "/bong-water-water-bong/ZR1-1.5B-1BP/resolve/main/ZR1-1.5B.1bp"},
+    {"zamba2-1.2b",     "Zamba2-1.2B-v2 — 1.1 GB",    "/bong-water-water-bong/Zamba2-1.2B-Instruct-v2-1BP/resolve/main/Zamba2-1.2B-Instruct-v2.1bp"},
+    {"zaya1-74b",       "ZAYA1-74B-preview — 46.2 GB","/bong-water-water-bong/ZAYA1-74B-preview-1BP/resolve/main/ZAYA1-74B-preview.1bp"},
 };
 
 static void cmd_pull(const std::string& name) {
@@ -684,7 +695,10 @@ static void cmd_pull(const std::string& name) {
         return;
     }
     fs::create_directories(models_dir());
-    std::string out = (models_dir() / (name + ".q4nx")).string();
+    // Keep the upstream file name (Qwen3-0.6B.1bp, ZAYA1-8B.1bp, …): the engine
+    // keys off the real extension, and forcing ".q4nx" named a 1BP file as
+    // something it is not (same reasoning as packaging/model-download.sh).
+    std::string out = (models_dir() / fs::path(found->path).filename()).string();
     std::cout << "  Downloading " << name << " -> " << out << "\n";
     std::ofstream f(out, std::ios::binary);
     if (!f) { std::cerr << "  cannot write " << out << "\n"; return; }

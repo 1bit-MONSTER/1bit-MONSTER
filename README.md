@@ -31,8 +31,21 @@ A model-agnostic, hardware-agnostic inference engine in a single C++26 binary. P
 ```bash
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-MONSTER && cmake -B build && cmake --build build
-./build/1bit zaya -m model.1bp -p "Hello world"
+
+# Models are NOT in the repo. Fetch one first — the engine runs 1BP/GGUF weights
+# you supply. This lists the pre-converted 1BP set and installs a model:
+packaging/model-download.sh list
+packaging/model-download.sh zaya1-8b      # Zyphra flagship, 6.6 GB
+
+./build/1bit zaya -m ~/.local/share/1bit/models/ZAYA1-8B.1bp -p "Hello world"
 ```
+
+**The last line needs a model first.** Plain GGUF files run directly (`-m model.gguf`)
+and need no downloader; it is the 1BP/NPU weights that have to be fetched, by
+`packaging/model-download.sh <name>` — the same script the packaged image's
+`1bit-model-fetch.service` invokes, and it verifies each download against the
+sha256 the mirror reports. The [Zyphra family](docs/model-families/zyphra.md) —
+Zaya, BlackMamba, ZR1, Zamba2 — is the one the engine was tuned against.
 
 That's the whole install. Full build guide: [docs/guides/building.md](docs/guides/building.md).
 
