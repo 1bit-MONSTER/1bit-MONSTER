@@ -90,4 +90,4 @@ with a 1-bit pixel identity.
 
 ### License
 
-GPL-3.0. See [`LICENSE`](LICENSE).
+GPL-3.0. See [`LICENSE`](../LICENSE).

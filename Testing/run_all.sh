@@ -93,6 +93,22 @@ else
     echo "  - cli_smoke: no build/1bit — skipped (run it where the binary is built)"
 fi
 
+# Docs-and-repo consistency: links that point at nothing, paths that resolve
+# nowhere, documented commands whose target does not exist, CI that invokes a
+# missing script. Every one of these shipped in a form a compiler cannot see —
+# the README told you to run a model you could not download, and `./run.sh chat`
+# printed the usage text — so they are checked here, against the gated surface
+# only (front page, guides, wiki, packaging/site READMEs).
+echo "== repo consistency =="
+total=$((total+1))
+if docs_out=$("$PYTHON" Testing/repo_docs_selfcheck.py 2>&1); then
+    echo "✓ repo_consistency"
+    printf '%s\n' "$docs_out" | grep -E "^  \(" | sed 's/^/  /'
+else
+    echo "✗ repo_consistency"
+    printf '%s\n' "$docs_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))

@@ -267,7 +267,8 @@ DDR ──► Shim ──► MemTile ──► Main16 (Q4NX GEMM)
   8×8×8 mmul + K-tile DMA batching) at **M=128** (engine batch size). Previous
   production mix was broken: QKV/O were v23 **scalar** builds (~154 ms/GEMM) and
   GU/D were M=32 builds incompatible with the engine's M=128 batches.
-- **Measured** (analytical GEMM bench, `engine/npu/src/bench_i8_gemm.cpp`):
+- **Measured** (analytical GEMM bench — its source is *not* in this tree, so these
+  numbers carry their measurement date rather than a path you can re-run today):
   QKV 9.3 ms, GU 13.7 ms, D 6.7 ms, O 4.4 ms at ~110-120 GFLOPs — 10-40×
   faster than the scalar builds; all correct when the NPU DMA path is clean.
 - **Wall**: the core loop runs at ~5-6 MACs/cycle/core (the prebuilt

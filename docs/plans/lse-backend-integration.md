@@ -36,7 +36,7 @@ the win (measured ~28–30 tok/s vs 11.7 NPU on Qwen3.6-35B-A3B MLX 4-bit).
 | `src/backend_factory.cpp` | `create_backend()` switch: `case BackendType::LSE_GPU:` → `new LseBackend(cfg)` (mirror `NPU_XRT` case) |
 | `src/model_router.cpp` | new route in `select_backend_route()` if-else chain (recipe at lines 57–63) |
 | `src/model_discovery.cpp` | detect MLX format: `config.json` has `quantization.mode == "affine"` + `language_model.*` weight prefix (or `model_type` `qwen3_5*`/`lemonseed`) → `cfg.format = MLX` |
-| `src/backend_lse.cpp` + `include/backend_lse.h` | **new** — the backend (below) |
+| `src/backend_lse.cpp` + `src/backend_lse.h` | **new** — the backend (below) |
 | `Testing/router_selfcheck.cpp` | + route checks: MLX qwen3.5-family → LSE first; non-MLX untouched |
 | `Testing/lse_backend_selfcheck.cpp` | **new** — spawn/health/generate against a tiny MLX checkpoint |
 | `bench/record.sh` | benchmark entry (recipe step 4) |
