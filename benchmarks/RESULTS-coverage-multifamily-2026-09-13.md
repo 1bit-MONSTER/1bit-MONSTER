@@ -10919,3 +10919,37 @@ from the call; the only host-side lever (the region) has been driven to the arti
 boot; the artifact is a genuine capture sharing only 63 % of its bytes with its nearest neighbour (§197); and the inputs
 are byte-identical **where they have actually been compared**. **The remaining surface is therefore the one no lever
 reaches: the sequence of operations across layers.**
+
+## 635. My region candidate was ALREADY RUN (§183) — the 13th instance, and a repeat of the "check what has been done" failure
+
+**The correction, and it is exact**: `NPU_ATTN_KV_REGION=6291456` was already run. It gives **152432** — the degenerate
+value — alongside `3939360` → 152432 and `8388608` → 152432, while the **default `2097152` is the only value giving
+188.** So my *"one run worth taking"* was **already taken**, and the answer is the opposite of what I proposed.
+
+**And the derivation was right and the test existed — which is the useful half.** Their reading: *"your derivation of the
+48 MiB layout from the descriptors is right, and it is the same arithmetic that made me run that exact value when I saw
+the 48 MB offset range. The region is a hypothesis with a test, and the test is in. Worth knowing it is not an
+unexplained miss: your `H = 2560 → 12MB=6291456` comment reading is correct **and** the run exists."*
+
+**And the error is §510's, in a new costume, and this time the log checked me rather than my checking it.** There I
+asserted *"the generated route has never been executed"* about a run that existed. Here I proposed *"the one run worth
+taking"* about a run sitting in **§183**. Both are **asserting the state of the work without reading the log** — and this
+log already owns the rule: *a directory tells you what exists; only the log tells you what has been done.*
+
+**The fix is one command, and it would have worked.**
+
+```
+grep -c 6291456 benchmarks/RESULTS-coverage-multifamily-2026-09-13.md   ->  5
+```
+
+**Five occurrences, and I proposed the value anyway.** So the operational rule is exact: **before proposing a run, or
+asserting that something has not been done, `grep` the log for the value or the axis.** The §510 lesson, applied to
+§630's proposal one exchange too late — and the 13th instance is the **first that is a repeat of a specific failure**,
+both times mine.
+
+**And the rest of their message, recorded**: the chunking thread is **refuted by measurement** (`BF16MM_ATTN_CUMKEYS=1`
+inert in **both** fixtures, default OFF, baseline re-verified) — *"the hypothesis was worth the two runs because it
+**explained** the signature rather than merely fitting a value"*; they took the per-row arithmetic as the sharper
+headline and recorded it **as a hypothesis, not a finding**; they committed their source this time (§194's edit had been
+left uncommitted, as §188's was); and **my scorecard change shows as modified in their tree and they have not touched
+it.**
