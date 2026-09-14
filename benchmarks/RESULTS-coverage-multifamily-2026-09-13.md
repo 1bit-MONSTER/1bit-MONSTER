@@ -10286,3 +10286,43 @@ instrument-dependent "2048 of 2560" with a number the engine counts itself.**
 bound** on *"written"*. For a **width** claim — which columns the kernel never touches — the sentinel is exactly the
 right probe, and the existing code already trusts it for the binary question. Which is why the **position map** is the
 form to build: it answers the width question without needing the equality to be exact.
+
+## 185. The KV fill volume is INERT (512/576/640/720 → all 188) — so the shortfall is refuted, the contents axis is exhausted, and a pattern separates the two wrong values
+
+§184's shortfall — the engine writing 4.00 MB where the stream's `arg2` transfers 4.50 MB — was tested by varying **what
+is written**, leaving the BO size, the artifact, the scalars and the positions untouched:
+
+| `BF16MM_ATTN_KV_PT` (elements written per token per region) | written | boot |
+|---|---|---|
+| **512** (shipped) | 4.00 MB | **188** |
+| **576** (the stream's implied width: 4.50/4/1024) | 4.50 MB | **188** |
+| 640 | 5.00 MB | **188** |
+| 720 | 5.62 MB | **188** |
+
+**Writing exactly what the descriptors transfer changes nothing, and writing 40% more changes nothing either.** So the
+shortfall is **not** the cause — and this was the **first candidate in this lane that was not a perturbation** (it changes
+*what is in* the buffer, not the buffer's size or the artifact), which makes its refutation the more informative one:
+**the contents axis is now exhausted alongside the perturbation axis.**
+
+**And the two wrong values separate cleanly by what kind of change produces them:**
+
+| change | boot |
+|---|---|
+| anything that leaves the **shipped call** intact — including all four fill volumes | **188** |
+| anything that **alters the call** — swap, region ≠ 2097152, opcode ≠ 3 | **152432** |
+
+**So `188` is the shipped call's own output and is robust to content; `152432` is what an altered call produces, whatever
+the alteration.** Neither is `1033`, and no change to *what the engine hands over* reaches the right answer.
+
+**Which leaves exactly the candidate §182 named and nothing else: the call STRUCTURE.** The member is documented at
+*"`<=256`, the captured kernel's width"* with *"the caller may pass pointers shifted to a later query block to cover a
+prompt longer than 256"*, while the engine calls **once with `rows = npt = 1024`**. If the nh20 ELF bakes **256** rows,
+then no content, size, opcode or artifact change can fix the result — **you would have to loop** — and that is precisely
+the behaviour observed: **every change that stayed inside the single call left 188 untouched, and every change that
+altered the call moved to one degenerate value.**
+
+**That makes the next measurement structural rather than parametric, and it is the same one §182 left open:** establish
+the ELF's baked row width from the descriptors' dimension fields (offline), then — if it is 256 — call the kernel in
+≤256-row blocks with shifted pointers, which is the contract the member's own comment describes.
+
+**Knob left default-off, and the default re-verified:** `512` reproduces **188**, identical to the untouched binary.
