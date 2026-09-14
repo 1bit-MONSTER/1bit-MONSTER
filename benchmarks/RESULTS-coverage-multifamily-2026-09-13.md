@@ -14216,3 +14216,43 @@ path this model takes.**
 built, and fail loudly if a context is constructed with a zero dimension rather than letting XRT refuse a zero-length
 allocation deep in `alloc_bo`. **What is established is the measurement**: the engine printed `KD=0`, the code says the field
 should be `pad128(H)=2560`, and the derivations do not run on this path.
+
+## 970. FIXED: the xclbin dims are now derived on every config path — Qwen3.5-4B's zero-length BO is gone and the run reaches the layer packing
+
+**§965 diagnosed it; this closes it, and the fix is small and gate-verified.**
+
+**The bug**: `npu_engine_universal.cpp` builds its `ModelConfig` through **three** routes, and only `parse_q4nx_config()` derived
+the xclbin GEMM dimensions. The **1BP header** route and the **config.json fallback** — which hybrid models take when their
+manifest lacks `embed`/`self_attn` — set `H/NH/NKV/HD/IM/NV` and left `xclbin_qkv_k` **at its zero default**. Every `I8Ctx`
+is sized from those fields, so every context was a **zero-length BO**.
+
+**The fix**: a `ModelConfig::derive_xclbin_dims()` method — the logic that lived inline in `parse_q4nx_config` — now called on
+the fallback and 1BP routes.
+
+```
+before:  cq before init: MD=128 KD=0    ND=4608     creating bA size=0        -> XRT mmap_range(len=0)
+after:   cq before init: MD=128 KD=2560 ND=6144     creating bA size=327680
+```
+
+**`2560` and `6144` are exactly `pad128(H)` and `pad128(qkv_total)` — the values §965 said the code intended.**
+
+**Verified: all ten gates still match FLM's references**, so the change is a **no-op for every model that was already
+working**, and the fix is confined to the paths that were broken.
+
+**And it exposed a build gap — the class that is fixable.** `final_i8_GU_K2560_N18432` was missing (the **fused GU**,
+`N = 2 × IM`). Its four shapes are now built — `QKV:2560:6144`, `O:4096:2560`, `GU:2560:18432`, `D:9216:2560`, each satisfying
+the generator's `(N/n) % cols == 0` — and the run proceeds past init into the **layer packing**:
+
+```
+Dequant+pack...
+per-layer dims detected (all 32 layers)
+layer 3 STD fused: qp=2220545024      -> SIGSEGV
+```
+
+**And then a new, precisely sited fault. Layer 3 is this model's FIRST `full_attention` layer** (`layer_types` is three
+`linear_attention` to one `full_attention`). **So the linear-attention layers are handled and the standard-attention branch
+crashes** — the same family as the LFM2 layer-0 defect, and the next site to look at. **Recorded, not chased here.**
+
+**So the Qwen3.5-4B row has moved twice in one checkpoint**: from *"boot 0, a format gap in the dequant"* to **an
+initialisation-order engine bug** (§965) to **that bug fixed, plus a build gap fixed, plus a named third site**. **Two of the
+three were this engine's own, and neither was a format problem.**
