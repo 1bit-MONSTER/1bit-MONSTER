@@ -8861,3 +8861,34 @@ narrower and worth keeping:** the generator is **shape-working** (it emits valid
 range tried) and **byte-exact for qwen3** — so r5's route is *not* blocked by the generator being broken in general.
 The open question is specifically **Nanbeige at nh20**, and it now has two named candidates: **geometry/config
 mismatch** or **version skew**.
+
+## 164. The family binding is NOT missing — `gen_attn_chunk_nb` already binds `nanbeige_npu_sequence` and runs; the rejection came from a Qwen3-bound tool
+
+Two independent offline runs, same question, and the difference between them is **which sequence class each tool instantiates**:
+
+| tool | binds | Nanbeige config |
+|---|---|---|
+| `npu-infer/tools/gen_attn_insts.cpp` | `qwen3_npu_sequence` (lines 24, 35) | **`terminate … std::runtime_error: Unsupported intermediate size: 10752`** |
+| `~/npu-build/mha/gen_attn_chunk_nb.cpp` | `nanbeige_npu_sequence` (line 10), 4-arg call | **runs**: emits config-sensitive ELFs at every range tried (§163) |
+
+**So the conclusion drawn from the first run — *"the missing piece is the family's sequence class"* — is refuted by the
+second, which is a tool in the same build directory that already binds that class.** The rejection is a property of
+**the tool's binding**, not of the family being unsupported: a Qwen3-bound generator is being asked for a model whose
+`intermediate_size` is 10752, and it refuses; nothing about Nanbeige lacks a sequence class.
+
+**Which changes what the errand is.** Not *"bind the family's class"* — it is bound, and it runs. The open question
+remains §163's: **the Nanbeige-bound generator's output does not reproduce FLM's nh20 capture**, with two named
+candidates — **geometry/config mismatch** or **version skew** (the config says `flm_version 0.9.38`; the shipped
+headers are `flm-v0946`).
+
+**And one structural observation from the run is independent of all of that, and is worth keeping on its own.** The
+Qwen3 stream is named `attn_256_1024_128_<ctx>_0.bin`, and against Qwen3-0.6B's `nkv8`/`hd128` that is
+**`(M, K, N) = (256, NKV×HD = 1024, HD = 128)`** — **the name carries no `nh` at all**. So the **query-head count is
+the caller's loop, not the stream's**, and a stream can be perfectly well-formed while the kernel it drives has the
+**wrong width**. That is exactly the shape of the measured nh20 defect: an ELF whose stream is structurally fine,
+producing **2048 of 2560 columns**, with nothing in the artifact to say so.
+
+**The pairing that actually holds, stated precisely:** §162 answers *"can generation be exact?"* — **yes, byte-exact
+for qwen3**. This answers *"is the family binding missing?"* — **no, it exists and runs**. Neither answers *"is the
+Nanbeige-bound generator's nh20 output correct?"*, which is now the single open question, and it is a
+**comparison against host attention**, not another generation run.
