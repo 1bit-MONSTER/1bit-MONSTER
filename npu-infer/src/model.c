@@ -235,29 +235,9 @@ static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int
 
 // Pack one projection's reordered tiles into the layer BO at `tile_offset`.
 static void npu_pack_proj(uint8_t* bo, const TensorDesc* desc, ModelWeights* mw,
-                          int tile_offset, int G, const char* name) {
+                          int tile_offset, int G) {
     if (desc->ndim != 2) return;
-    // shape[0] is the ROW count and shape[1] is the row width IN BYTES (this is a q4nx
-    // byte extent, not an element count -- for bf16 tensors shape[-1] counts elements,
-    // which is why the two must not be conflated).
-    //
-    // A tile is NPU_TILE_BYTES = 5120 B. Every model until Gemma3-1B had shape[1] == 5120,
-    // i.e. one row == one tile, and shape[0] was therefore the tile count as well. Gemma3-1B's
-    // tensors have shape[1] == 1280 -- a QUARTER-tile row -- so shape[0] (576 for q_proj) is
-    // FOUR TIMES the tile count (144), and npu_reorder_tiles read 4x the tensor's bytes and
-    // segfaulted. Deriving the count from the byte extent is IDENTICAL whenever
-    // shape[1] == 5120 (checked for Qwen3-0.6B: 256*5120/5120 == 256) and correct otherwise.
-    const long long row_bytes = (long long)desc->shape[1] > 0 ? (long long)desc->shape[1] : 0;
-    int n_tiles;
-    if (row_bytes > 0 && row_bytes != NPU_TILE_BYTES)
-        n_tiles = (int)(((long long)desc->shape[0] * row_bytes + NPU_TILE_BYTES - 1) / NPU_TILE_BYTES);
-    else
-        n_tiles = (int)desc->shape[0];
-    if (getenv("RT_PACK_DEBUG"))
-        fprintf(stderr, "  pack %-5s n_tiles=%4d G=%3d off_tile=%5d ndim=%d shape0=%d shape1=%d\n",
-                name ? name : "?", n_tiles, G, tile_offset,
-                desc->ndim, desc->ndim > 0 ? (int)desc->shape[0] : -1,
-                desc->ndim > 1 ? (int)desc->shape[1] : -1);
+    int n_tiles = (int)desc->shape[0];
     const uint8_t* data = (const uint8_t*)model_tensor_data(mw, (TensorDesc*)desc);
     // A tensor can be 2-D and still have no data (absent from the bundle, or not mapped).
     // Without this the reorder memcpy's from NULL and the process segfaults, which reads
@@ -335,14 +315,14 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
 
     memset(bo_buffer, 0, (size_t)total * NPU_TILE_BYTES);
 
-    npu_pack_proj(bo_buffer, &lw->q_proj_weight, mw, off_q, G_h, "q");
-    npu_pack_proj(bo_buffer, &lw->k_proj_weight, mw, off_k, G_h, "k");
-    npu_pack_proj(bo_buffer, &lw->v_proj_weight, mw, off_v, G_h, "v");
-    npu_pack_proj(bo_buffer, &lw->o_proj_weight, mw, off_o, G_o, "o");
+    npu_pack_proj(bo_buffer, &lw->q_proj_weight, mw, off_q, G_h);
+    npu_pack_proj(bo_buffer, &lw->k_proj_weight, mw, off_k, G_h);
+    npu_pack_proj(bo_buffer, &lw->v_proj_weight, mw, off_v, G_h);
+    npu_pack_proj(bo_buffer, &lw->o_proj_weight, mw, off_o, G_o);
 
     // Short-conv block (LFM2 conv layers only; absent elsewhere so these no-op).
-    if (sp_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_in_proj_weight,  mw, off_sp, G_sp, "scin");
-    if (so_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_out_proj_weight, mw, off_so, G_so, "scout");
+    if (sp_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_in_proj_weight,  mw, off_sp, G_sp);
+    if (so_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_out_proj_weight, mw, off_so, G_so);
 
     // gate/up: alternating CH-tile chunks (up0, gate0, up1, gate1, ...)
     const uint8_t* up = (const uint8_t*)model_tensor_data(mw, &lw->up_proj_weight);
@@ -360,7 +340,7 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
                               gate + (size_t)c * CH * NPU_TILE_BYTES, gate_n, G_h);
     }
 
-    npu_pack_proj(bo_buffer, &lw->down_proj_weight, mw, off_d, G_d, "down");
+    npu_pack_proj(bo_buffer, &lw->down_proj_weight, mw, off_d, G_d);
     return total;
 }
 
