@@ -44,6 +44,22 @@ run npu_keys  Testing/npu_key_contract_selfcheck.cpp src/q4nx_reader.cpp --
 # not be used (a stale NPU_XCLBIN_DIR in the shell silently broke every NPU run).
 run npu_paths Testing/npu_paths_selfcheck.cpp --
 
+# CLI dispatch coverage: tools/onebit.cpp's whole command set (chat, pull, list,
+# status, …) is compiled into the single ELF, but tools/onebin.cpp declared
+# onebit_main and never called it — so the documented `./run.sh chat` printed the
+# top-level usage, and so did every other command. A compiler cannot see a
+# declared-but-uncalled function or a symlink with no branch, so the three lists
+# (packaged symlinks, accepted commands, dispatch branches) are compared here.
+echo "== CLI dispatch coverage =="
+total=$((total+1))
+if dispatch_out=$("$PYTHON" Testing/dispatch_selfcheck.py 2>&1); then
+    echo "✓ cli_dispatch"
+else
+    echo "✗ cli_dispatch"
+    printf '%s\n' "$dispatch_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))
