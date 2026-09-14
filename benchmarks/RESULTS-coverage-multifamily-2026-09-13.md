@@ -10239,3 +10239,50 @@ BO-relative offsets, then the engine, which lets XRT place its BOs wherever it l
 writing the wrong memory.** That yields **a context-free, degenerate output with no content error at all** — the
 signature exactly — and it is checkable **offline**, by comparing the descriptor addresses against where the engine's
 BOs actually land.
+
+## 595. Their `AZERO` run: a CLEAN NEGATIVE — and the distinction that makes it worth more than the result
+
+**Their table:**
+
+| `/tmp/ids_1024.txt`, bf16, `clang=0` | boot | prefill |
+|---|---|---|
+| baseline — `attn_out` stale | **188** | 712 ms |
+| **`BF16MM_AZERO=1`** — `attn_out` zeroed | **188** | 743 ms |
+| swap only | **152432** | 660 ms |
+| **swap + `BF16MM_AZERO=1`** | **152432** | 684 ms |
+
+**Starting the unguarded buffer zeroed changes nothing — in the valid configuration and in the degenerate one.** So its
+**content is not the discriminator**, and the hazard — real, uniquely identified, correctly picked — is **inert for the
+boot.**
+
+**Which refutes the content reading of the attractor.** *"The kernel reads the same wrong content in both
+perturbations"* was the natural explanation for 152432 arriving from two unrelated causes — **but if content were it,
+zeroing would have moved it. It did not.** So **the attractor is a property of the CODE PATH the kernel takes when the
+call is invalid, not of the bytes it is handed** — which the near-identical prefill times across all four cells
+(660–743 ms) said independently.
+
+**And the distinction they drew is the most valuable methodological point in this thread**, because it separates two
+things that look identical from the outside:
+
+> **§136's sync made the CZERO probe inert — a BROKEN INSTRUMENT. Here the probe was SOUND and the HYPOTHESIS was
+> wrong.** The buffer was picked correctly — it **was** the only unguarded one, checked against every other buffer in
+> the path — **and that is the right way to choose an experiment. The right way to choose an experiment can still
+> return "this buffer is irrelevant."**
+
+So §136's retraction does not cover this run, and the difference is between **an instrument that cannot fail** and **a
+control that failed honestly.** The first is a defect in the method; the second is a result.
+
+**And the state after five perturbations**: 188 is still the only non-degenerate point, **nothing discriminates**, and
+the reason is explicit — **every knob selects the same degenerate PATH rather than varying what the kernel reads.**
+
+**Which leaves the extent count, and its form is a few lines from code that already exists.** `BF16MM_ATTN_SENTINEL`
+**already** fills `attn_out` with bf16 1.0 (`0x3c00`) before the launch, and **already** walks the buffer afterwards —
+but it counts `kept == 0x3c00` against `nz != 0` and reports **"WROTE NOTHING vs DID write"**, a binary. **The extent
+version is the same walk reporting POSITIONS instead of a binary** — the first and last index where `o[i] != 0x3c00`,
+or the count of unchanged words. **That is the direct analogue of `BF16MM_CEXTENT`, and it replaces §122's
+instrument-dependent "2048 of 2560" with a number the engine counts itself.**
+
+**With one caveat worth carrying**: a legitimate attention output **can** be bf16 1.0, so *"unchanged"* is an **upper
+bound** on *"written"*. For a **width** claim — which columns the kernel never touches — the sentinel is exactly the
+right probe, and the existing code already trusts it for the binary question. Which is why the **position map** is the
+form to build: it answers the width question without needing the equality to be exact.
