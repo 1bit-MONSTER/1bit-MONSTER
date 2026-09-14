@@ -13672,3 +13672,36 @@ were run under the wrong xclbin directory and are therefore void** — including
 `% G` reorder fix **is** restored and **is** re-verified above, because it is independently reasoned and its behaviour
 change (the fault moving) was observed in a way the path error cannot explain. **Nothing else from that line of work is
 claimed as verified.**
+
+## 895. The stale variable, exactly: `NPU_XCLBIN_DIR` points at a worktree that DOES NOT EXIST
+
+**§890 named the variable; this is its actual state, and it makes the failure mode clearer than "a sibling worktree" did.**
+
+```
+$ echo $NPU_XCLBIN_DIR
+/home/bcloud/1bit-MONSTER-pi/engine/npu/xclbins
+
+$ ls -d /home/bcloud/1bit-MONSTER-pi
+ls: cannot access '/home/bcloud/1bit-MONSTER-pi': No such file or directory
+```
+
+**The directory is gone, not merely different.** So the variable is a **dead path**, and **every engine run that inherits it
+fails at init for every model** — with a message that reads as a missing artifact:
+
+```
+I8Ctx: xclbin/kernel init failed: No such file '.../1bit-MONSTER-pi/.../final_i8_QKV_K2560_N3584.xclbin'
+```
+
+**It is set in the parent environment (`PWD=/home/bcloud`), so it is inherited by any agent working in either worktree.**
+That is the part worth propagating: it is not my shell's mistake to keep, it is a shared-environment hazard, and the failure
+it produces is **indistinguishable from a genuine missing build product** — which this session has already spent two rounds
+diagnosing for real (Llama's and Gemma3-4B's shape xclbins). **A dead path and a missing file print the same line.**
+
+**Two guards now exist**: `benchmarks/gate-check.sh` pins the variable to its own repo and warns loudly when an inherited
+value points outside it, and §890 records the procedure — **re-check any failure in isolation, and name the environment it
+ran under**. Neither helps a run that does not go through the script, so the operational form is: **export
+`$PWD/engine/npu/xclbins` explicitly, or unset it, before trusting any engine result.**
+
+**And a note on why this was so expensive**: my hand-run checks *did* export the right value, so **two measurements of the
+same binary disagreed**, and the one that was wrong was the one that looked like evidence of a code fault. The engine was
+never broken. **The variable was.**
