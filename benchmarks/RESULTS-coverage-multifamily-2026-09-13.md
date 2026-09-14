@@ -9584,3 +9584,46 @@ it could be killed: by varying the role and changing the answer.**
 the region knob alone as the cheap half of it. **And the meta-point is worth keeping: this is the first candidate found
 by reading the INVOCATION rather than the artifact, it survived its own first test by moving something, and it failed to
 be sufficient — which is exactly what a good one-line test is supposed to produce.**
+
+## 176. FLM's arg5 value does not fix it either — it moves the boot to **152432**, the SAME value the argument swap produced; two perturbations, one wrong attractor
+
+The one run they asked for, plus the engine's own default region for comparison:
+
+| configuration (`/tmp/ids_1024.txt`, bf16, clean device) | boot | prefill | kv_region |
+|---|---|---|---|
+| baseline (H-table value) | **188** | 703 ms | 2097152 |
+| **FLM's arg5 value** (`NPU_ATTN_KV_REGION=3932160`) | **152432** | 688 ms | 3932160 |
+| engine's own default | **188** | 740 ms | 4194304 |
+| FLM reference | **1033** | — | — |
+
+**Three things, and the third is the one worth keeping.**
+
+1. **arg5's value is load-bearing, not inert.** §161 cleared `v_region_add`; this shows the **region stride** is not
+   inert — `3932160` moves the answer where `2097152` and `4194304` both leave it at 188.
+2. **But FLM's value is not the fix.** Setting it to what the capture recorded moves 188 → 152432, which is neither
+   FLM's 1033 nor the host's 109440. **A correct parameter set to the captured value still lands wrong.**
+3. **And `152432` is the same value the argument swap produced (§175).** Two perturbations with nothing in common —
+   swapping two argument positions, and changing an unrelated stride — **converge on the identical wrong answer.**
+
+**That last point changes how the number should be read, and it is §144's rule one level over.** There, *a recurring
+value cannot identify a length*; here, **a recurring value cannot identify a cause**: `152432` appearing twice is not
+evidence that the two perturbations act on the same mechanism — it is evidence that **the kernel has a small set of
+stable wrong outputs, and it falls into one of them whenever the call is invalid in certain ways.** So `152432` is a
+**degenerate mode**, not a signal, and matching it again in a future run would prove nothing.
+
+**Which closes the single-parameter search, and that is the useful summary of the whole afternoon's probing:**
+
+| perturbation | boot |
+|---|---|
+| none (baseline) | 188 |
+| artifact content swapped (§167/§170) | 188 |
+| arg3/arg4 positions swapped (§175) | 152432 |
+| kv_region → FLM's captured value (this section) | 152432 |
+| host attention | 109440 |
+| **FLM** | **1033** |
+
+**Every single-parameter change moves the answer between two wrong values or leaves it alone; none reaches the right
+one.** So the nh20 defect is **not one parameter** — which is consistent with §167/§170 (not the artifact), §173 (at
+the call site), and §175 (the assignment matters but is not sufficient). The lane's next probe is therefore **not
+another single knob** but **what the kernel is told the buffer *means*** — the geometry it reads from the arguments it
+is handed, which is the only thing none of these perturbations changed.
