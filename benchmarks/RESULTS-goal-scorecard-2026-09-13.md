@@ -48,14 +48,13 @@ them an unexplained engine defect:
   pack, no kernel is built, and nothing ever writes the logits. **The artifact is UNOBTAINABLE from either vendor generator**
   (`gemma_text` has no lm_head generator; `qwen3` refuses with `Unsupported intermediate size: 6912`), and **FLM cannot load
   this model either** — so this is **vendor coverage**, not a build gap (§950, §955, §960).
-- **Qwen3.5-4B**: three engine-side bugs **found and fixed** on 2026-09-14 (a zero-length BO from an undrived config path; a
-  missing fused-GU xclbin; and **the layer-0 assumption in the STD weight-shape lookups**, which is the **third instance** of
-  that one shape in this engine). **All ten gates re-verified after each.** **The QKV fused-layout overrun is now FIXED
-  too (6d03d0529):** the fused branch packs q+gate = 2·NH·HD = **8192 rows** into a context sized for the plain q+k+v = **6144**;
-  the branch now re-inits the QKV ctx from the **dimension-keyed** `final_i8_QKV_K2560_N8192` xclbin + insts with `cq.ND=8192`.
-  **The crash has moved past the QKV pack to the O-projection `transpose_pack`** — the remaining gap is the **4736-byte I8
-  dense-row dequant** (the bundle has no 5120-byte row; 4736 is the MoE trim `dequant_i8_to_float_geom` cannot read, §430), not
-  the QKV sizing.
+- **Qwen3.5-4B**: **NOW RUNS END-TO-END (2026-09-14).** The 4736-byte "I8" dense-row dequant was **recovered from
+  disassembly of `libqwen3_5_omni_npu.so`** (commits `29d4e6d1b`/`abca42166`): the tile is two-level asymmetric int4 — packed
+  int4 [0:4096] + 256 int8 scales [4096:4352] + 256 int8 mins [4352:4608] + 32 bf16 row-scales [4608:4672] + 32 bf16 row-mins
+  [4672:4736]; `value = (q·scale[c]+min[c])·row_scale[r]+row_min[r]`. Wired `dequant_i8_4736_to_float` + 3-D shape handling +
+  GDN name-form fallbacks; **all 32 layers (24 GDN + 8 full-attn) pack and compute**, fallback prefill boots `[0] boot=22069`.
+  Correctness vs FLM is still **unverifiable** (FLM's `qwen3_5vl` cannot load this tied-embedding bundle), and the GDN SSM is
+  CPU-only (~2 s/tok) — no parity numbers yet.
 - **Gemma3-4B**: init fixed (five rebuilt shape xclbins); blocked by a **vendor assertion**, `blocks_per_row <= 63` in
   `gemma_text_npu_sequence` — i.e. any Gemma whose intermediate exceeds `63 × 128 = 8064` (§855).
 - **The Nanbeige bf16-path residual** is **a diagnostic-path question, not a product one** (§10c.1): the shipping
