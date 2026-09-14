@@ -9931,3 +9931,38 @@ and the only edits this lane made to that file were **env-gated with default OFF
 the detector is **a wider check run by someone who did not make the claim**, and the corollary is to **share a claim
 early**. That is what these crossings have been doing, expensively but correctly: the four repeats of §102 cost runs, and
 they are also why §167's provenance confound was caught at all.
+
+## 180. The 2×2 is complete and has exactly ONE valid cell — so any perturbation collapses to the same value, and the perturbation method is now exhausted
+
+§175's swap and §176's region value tested jointly, one cell at a time. The missing cell (FLM's region **with** the swap
+on) is now measured, so the table is closed:
+
+| `kv_region` | swap **OFF** | swap **ON** |
+|---|---|---|
+| **2097152** (H-table) | **188** | 152432 |
+| **3932160** (FLM's captured value) | 152432 | **152432** |
+
+**Exactly one cell produces 188 — the shipped default — and all three perturbations land on 152432.** So there is **no
+interaction and no working combination**: varying the region, varying the argument pairing, or both together, all
+collapse to the same value. §102's hypothesis that the pairing × region combination might be the answer is **refuted**,
+and with it the idea that the defect is a *joint* assumption of those two arguments.
+
+**And that is a stronger statement than another negative, because it closes a method.** `152432` is **absorbing**: every
+perturbation of this call, whatever axis, arrives there. So:
+
+- **`188` is the shipped call's own output** — the only non-degenerate point found — and it is wrong for a reason
+  **perturbation cannot reach**, because perturbation only pushes the kernel into the degenerate mode;
+- **further single- or multi-knob perturbations cannot discriminate**: they have one destination, so a knob that
+  "moves the boot" is no longer evidence that it touched the defect (§175's inference, made before this table existed,
+  is thereby weakened to *the slots are distinguishable* and no more);
+- and §176's reading of `152432` as **a degenerate mode rather than a signal** is confirmed by construction rather than
+  by repetition — **four perturbations, one value, on axes that have nothing in common.**
+
+**What is left is a different KIND of measurement, and the lane should stop perturbing.** The remaining candidates are
+the ones about **what the kernel is told and expects** rather than what we hand it — the geometry encoded in the ELF and
+the model's own `addr_*` fields — or a **comparison of the full call** against FLM's (all layers, both BOs' content after
+packing), which is where "what goes inside the buffers" was already named as the last untouched surface (§178).
+
+**Recorded with the caveat that this whole table rests on boots, not times:** all four cells were run with `clang=0`, and
+the three degenerate cells also share a prefill time (~686 ms, 688 ms, 678 ms), which is consistent with one code path
+and not with three.
