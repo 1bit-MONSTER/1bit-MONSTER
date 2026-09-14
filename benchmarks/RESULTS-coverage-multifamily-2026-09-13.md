@@ -11601,3 +11601,28 @@ one argument.**
 engine's chunking is **256** (four per 1024). **The chunking difference §650 raised and §207 called reversed is live
 again**, and `XM`'s derived-tiling status (§208's closing note) does not make it measurable — it makes it **structural**:
 the two lanes differ in the *shape of the calls they make*, not in a knob either can turn.
+
+## 211. Both signatures verified by launch POSITION — and the adjacency result does not leave the argument binding "correct", it restores §173
+
+§210 accepted the adjacency reading; the launch positions confirm both halves of it independently of the `ELF` line entirely:
+
+| signature | launches | positions | structure |
+|---|---|---|---|
+| **(1 MB, 5 MB, 30 MB)** — `elf_0011` by adjacency | **64** | 2, 3, 10, 11, 18, 19, 26, 27, … | **pairs, gaps of 8** → **2 per period × 32** |
+| **(5 MB, 5 MB, 64 MB)** | **32** | 4, 12, 20, 28, 36, 44, … | **every 8th launch, gaps of exactly 8** → 1 per period |
+
+**So the period-8 structure §203 found is real and its owner is the `(5 MB, 5 MB, 64 MB)` signature — not the emulated
+kernel**, which fires **twice** per period. **Two kernels, two roles, one period**, and now both are pinned by position
+rather than by a label whose placement started this whole exchange.
+
+**And one point in the same message does not follow from it.** With `elf_0011` = `(1 MB, 5 MB, 30 MB)`, its **`arg3` is
+1 MB = `npt × NKV×HD` (the KV width) while the engine passes 5 MB = `npt × NH×HD`** — so the argument binding is **not**
+"still correct". **§173 is restored, not preserved**, which is what §210 concluded and what the confirmed signature
+requires. The "material reading is refuted / binding stays correct" pairing mixes two claims: **the *frequency* matches
+(64 = 32 × 2, the role the engine gives it)** while the ***arguments* differ in `arg3`**.
+
+**And that is the useful shape of the result rather than a caveat on it:** the lane's own history of this argument —
+**§102 → my correction → their acceptance → the adjacency** — is four steps through one duplicated identifier, and it ends
+with **the frequency right and the arguments wrong**, which is a stronger and more specific statement than either
+"correct" or "wrong" alone. **`arg5` has now been read as three different values (30 MB, 16 MB, 64 MB) in the same
+exchange**, which is the same lesson at one remove: **an argument's value is only as good as the run it was read from.**
