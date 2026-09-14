@@ -12977,3 +12977,35 @@ the partition is a real, reproducible property of a real kernel, and it is why t
 high-precision route. **But it does mean the lane's central worry and the product's shipped behaviour were never the same
 question**, and the two were one command apart for several exchanges. **The rule it re-earns is the session's own: name the
 ARM, not the flags — and here, name the PATH.**
+
+## 805. THE FIX TEST: an artifact that writes 100% of `q` still boots wrong — so §204's partition is a CO-SYMPTOM, not the cause
+
+**If fixing X does not fix Y, X is not the cause. Applied to this lane's leading explanation, the answer is negative.**
+
+| forced artifact | write coverage | bf16-path boot (@256, FLM ref **5938**) |
+|---|---|---|
+| default `256_nh16` | **80%** | **188** |
+| **`1024_nh16`** | **100%** (`kept_1.0 = 0`) | **188** |
+| `1024_nh32` | ~100% | **152437** |
+| `256_nh32` | ~100% | **152437** |
+| `1024_nh20` | — | **188** |
+
+**`1024-nh16` removes the shortfall completely — `kept_1.0 = 0`, every word written — and the boot is still `188`.** So
+**the 512-words-per-row shortfall is not what makes the bf16 path wrong.** That corrects the lane's framing: §204's
+partition was being carried as *the* description of the defect, and **it is a co-symptom whose removal does not remove the
+defect.**
+
+**And the artifact does move the boot** — `1024-nh32` and `256-nh32` both give **152437**, a different wrong value from the
+**188** the other three give. So the artifact matters, **just not through its write coverage**. (That also re-reads §175's
+*"swapping the ELF leaves the boot at 1214"*: the boot did move under *some* substitutions, and 1214 was one of several
+wrong values.)
+
+**And a second result from the same table**: `1024-nh20` — the **actual nh20 artifact** — also gives **188**, the same as
+the nh16 default. So **the model's own attention shape does not fix it either**, which means the bf16 path's wrongness is
+not "the wrong attention geometry was loaded" in the simple sense.
+
+**What this leaves standing, and it is less than before**: the partition is **real** (measured, reproducible, and the NaN
+is computed rather than stale); the write **follows the artifact** (three of four fill `q`); and the boot on the bf16 path
+is **wrong for every artifact tried, with two distinct wrong values**. **What is now refuted is that the write shortfall
+explains the wrong boot** — and since that was the lane's best candidate, **the nh20 residual is back to unexplained, with
+one more possibility eliminated rather than one more mechanism supported.**
