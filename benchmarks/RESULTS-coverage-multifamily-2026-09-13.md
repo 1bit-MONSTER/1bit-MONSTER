@@ -4134,6 +4134,12 @@ it — the same "right size, wrong arrangement" class as §38.
 
 ## 95. The `nh20` attention ELF is 97.9% byte-identical to the `nh32` ELF — "the nh20 ELF is an nh20 kernel" is an assumption, not a measurement
 
+> **METHOD-SCOPED (§202) — do not compute from this percentage.** The 97.9 % figure below comes from a
+> **run-based** comparison (*"3408 differing bytes in 580 regular runs"*), which is **not comparable to a byte diff**.
+> A direct byte comparison of the same two shipped files gives **66,502 differing bytes of 177,696 = 37.42 % differ**,
+> **spread uniformly across all 44 4-KB buckets (~1,500 bytes each)** — so the two are **genuinely different builds,
+> not a light edit**. See §197 and §202.
+
 Device-light check while the other agent held the device. `readelf -l` on the three 1024-context attention
 ELFs, then a byte comparison of their LOAD segments:
 
@@ -11076,3 +11082,37 @@ opposite of what a size mismatch predicts — and it is the sixth parameter axis
 contains **two runs** with independent `RUN` numbering, so any earlier quotation of "RUN 001" from this file should name
 **which** of the two. That ambiguity is the whole reason this attribution error was possible — the same class as §199's
 launch counts, one level down: **a run identifier is not unique in this file.**
+
+## 202. The byte diff is UNIFORM (all 44 buckets, ~1500 bytes each) — and §95 is now marked METHOD-SCOPED so its percentage cannot be computed from again
+
+Their added detail verifies, and it is the strongest form of the result:
+
+| | |
+|---|---|
+| common prefix | 177,696 B |
+| 4-KB buckets | **44** |
+| buckets containing a difference | **44 of 44** |
+| differences per bucket | **~1500 uniformly** (1505, 1529, 1555, 1515, 1502, 1506, 1553, 1540 … 1568, 1538, 1447, 1489, 1501) |
+| first / last differing byte | **32 / 177,692** |
+
+**Every bucket differs, at a roughly constant rate — ≈1500/4096 = 36.6 %, which is the 37.42 % figure arriving bucket by
+bucket.** So the nh20 and nh32 artifacts are **not a localised patch apart**: they differ **throughout**, which makes
+*"two genuinely different builds"* the only reading the layout permits.
+
+**And the useful action, taken here: §95's heading now carries a `METHOD-SCOPED` note.** The reason is not that its figure
+was merely imprecise — **it is that §95's number is not the same *kind* of number**, so computing from it is guaranteed to
+mislead:
+
+| source | method | value |
+|---|---|---|
+| §95–§98 | **run-based** (*"3408 differing bytes in **580 regular runs**"*) | *"97.9 % identical"* |
+| §197 / §202 | **direct byte diff** of the shipped files | **37.42 % differ** |
+
+**A percentage is not portable across methods**, and the note now says so at the point of use rather than in a later
+section that a reader may not reach. **That is the difference between a retraction and an annotation**: the figure stays
+(its own method may still be valid for its own question), and the **scope** travels with it.
+
+**And the recurring failure has now named itself three times over: a number recalled from the log, used as a measurement.**
+The peer's last three corrections are all that shape, and all three were caught by the other lane — which is the argument
+for the instance count over the rule, and for the fix being a command: **measure the thing, or `grep` for it; never
+compute from a recalled figure.**
