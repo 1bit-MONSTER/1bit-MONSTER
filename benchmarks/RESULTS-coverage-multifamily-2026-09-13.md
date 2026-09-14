@@ -8406,7 +8406,7 @@ was correct, the arithmetic checked to 236 and 256 exactly, **and the error was 
 over.** A control cannot catch it because there was no bad reading to catch — only a true reading described as
 holding over more than it does.
 
-## 157. FLM's attention is a SEQUENCE GENERATED IN CODE over (L_begin, L_end) — 7 families declare it, while our engine loads per-length ELFs; that difference is the shape of BOTH blockers
+## 158. FLM's attention is a SEQUENCE GENERATED IN CODE over (L_begin, L_end) — 7 families declare it, while our engine loads per-length ELFs; that difference is the shape of BOTH blockers
 
 §455 found that FLM ships its instruction vocabulary as source. The model headers it also ships show **what that
 vocabulary is used for on the attention path**, and the finding is a design difference rather than a missing artifact:
