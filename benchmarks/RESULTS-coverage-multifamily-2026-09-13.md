@@ -14713,3 +14713,49 @@ elements, which cannot fit 4736 B as int8 (needs 8192 B) or int4+scales (needs �
 front, which it is not). **The format cannot be reconstructed from shape/dsize arithmetic alone**; it needs either FLM's
 dequant source (compiled into `libgemm`/`libdequant`, no plain-text copy in `amd-oss/` or the headers) or a reference dump
 from `bf16mm_dequant`/`Bf16Mm::run_dequant`. Recorded as the precise next blocker, not a fix.
+
+## 1025. §1020 is SUPERSEDED — the other lane had already fixed the widening, and its fix is better; and the fault has MOVED
+
+**§1020 reported that *"the widening cannot reach the shape-named xclbin"* and that a **hoist** was needed. Both statements are
+overtaken, and the correction matters more than the finding did.**
+
+**Commit `6d03d0529` — same git identity, different lane — is the fix, and it names the two independent defects:**
+
+```c
+// bypass xp()/ip() entirely: they prefer the model-tag file, which was built for the PLAIN layout
+std::string xp_w = xd + "/final_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".xclbin";
+std::string ip_w = xd + "/insts_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".txt";
+cq.KD = H; cq.ND = t;                       // init() reads MD/KD/ND from the MEMBERS, not its args
+if (!cq.init(dev, xp_w.c_str(), ip_w.c_str(), 4, NC)) { ... }
+```
+
+**Three things follow, and only the first is mine.**
+
+1. **My finding was real**: `xp()` does prefer the tag-named file, and that is why the first widening loaded `ND=6144`. **The
+   other lane had already fixed it** — my §1020 was written from a run whose tree did not yet include their commit.
+2. **Their second defect is one I did not find**: **`init()` reads `MD/KD/ND` from the context's members, not its arguments.**
+   Even with the right file, my `init_i8(cq, "QKV", H, t)` could not have widened anything, because nothing set the members.
+   **That is the deeper half, and it explains why the fix looked like a scope problem when it was a state problem.**
+3. **My hoist was therefore unnecessary** — their fix calls `cq.init` **directly**, and never needs `init_i8` in the packing
+   loop at all. **The obstacle I named was not the obstacle.**
+
+**And the widening now measurably works:**
+
+```
+layer 3 STD fused: widening QKV context 6144 -> 8192 rows (fused layout)
+  instr file size=3400720
+  creating bA size=327680 (MD=128 KD=2560)
+  creating bC size=4194304 (MD=128 ND=8192 bC_nd=0)     <- ND=8192, and 128*8192*4 = 4,194,304 exactly
+```
+
+**The 2048-row overrun is gone**, `bC` is sized for 8192 rows, and **the fault has MOVED past it** — which is the session's
+own test for whether a change took effect. All ten gates were re-checked green with this fix in place.
+
+**Two transferable points, and the first is a new form of the session's oldest rule.**
+
+- **`git log` is part of the log.** I spent three attempts and two reverts on a fix that **had already been committed** by
+  the other lane. The rule *"grep the log before proposing a run"* extends to **"check `git log` before attempting a fix"** —
+  and that check would have cost one command.
+- **And the shared git identity makes this hard to see**: both lanes commit as **`pi agent 07e844`**, so their commits are
+  indistinguishable from mine in the log. **An identifier that is not unique is a source that cannot corroborate** — the
+  session's own rule, now applying to authorship rather than to log lines.
