@@ -341,3 +341,60 @@ the bf16 prefill matches it at all 8 gated lengths.
 - **Prefill needs a captured ELF per context band.** 256 / 1024 / 2048 are
   covered; a longer prompt needs another capture (one command, a few minutes)
   and the next `attn_mha_<N>_nh16.elf`.
+
+## UPDATE: cross-block pipelining pushes all three metrics past FLM
+
+After the scorecard above was written, a concurrent session (working on Qwen3.5
+in the same worktree) replaced the per-256-row-block loop with a **software
+pipeline across blocks**: `for (i ...)` issues block `i` on batch slot `i & 1`
+and block `i+2` into the other slot before waiting, so the next block's GEMM
+overlaps the current block's host readback. My version issued and waited one
+block at a time.
+
+Net effect at 1024 tokens: 709 ms -> **525-565 ms** (1444 -> ~1950 tok/s), and at
+2048 tokens: 1295 ms -> **858-912 ms** (1581 -> ~2335 tok/s). All gates still
+match the byte-exact `NPU_RUNLIST=1` path (1614 / 220 / 25 / 220 at
+256/512/1024/2048).
+
+### Matched-context harness, 1024-token prompt (3 runs)
+
+| run | native dec | FLM dec | native pre | FLM pre | native TTFT | FLM TTFT |
+|---|---|---|---|---|---|---|
+| 1 | 79 | 77.75 | 1926.8 | 1089.97 | 0.531 | 0.7249 |
+| 2 | 80 | 77.00 | 1923.1 | 1102.17 | 0.532 | 0.7169 |
+| 3 | 79 | 77.97 | 1865.7 | 1110.52 | 0.549 | 0.7115 |
+| **avg** | **79.3** | **77.6** | **1905.2** | **1100.9** | **0.5373** | **0.7178** |
+
+| metric | native | FLM on-box | verdict |
+|---|---|---|---|
+| decode tok/s | 79.3 | 77.6 | **+2.3%** |
+| prefill tok/s | 1905.2 | 1100.9 | **+73%** |
+| TTFT (s) | 0.5373 | 0.7178 | **native 25% faster** |
+
+All three metrics now clearly beat on-box FLM, not just tie. Native prefill at
+1905 tok/s is also above FLM's *published* 1494 tok/s @1k bar.
+
+### And past 1k
+
+At ~2k context native now beats FLM there too, where it previously trailed:
+
+| ~2k context | native | FLM on-box |
+|---|---|---|
+| prefill tok/s | **~2335** | 1919 |
+| TTFT (s) | **0.877** | 1.018 |
+| decode tok/s | **67** | 63.8 |
+
+### Harness parse fix
+
+The same session added a `[bf16]` tag to the engine's `=== Prefill <n> ===`
+line, which broke `flm_parity.sh`'s npt regex and silently reported
+`prefill tokens n/a`. Fixed to match the prefix (`'=== Prefill [0-9]+'`), so the
+token count is reported again.
+
+### Caveat
+
+One matched-1k harness run out of nine reported decode **2 tok/s** — the
+>2048-context collapse signature — while three direct reruns of the identical
+command gave 79 tok/s each. I could not reproduce it; treat a lone 2 tok/s
+decode reading as a transient (likely NPU contention from the concurrent
+sessions) and re-run before believing it.

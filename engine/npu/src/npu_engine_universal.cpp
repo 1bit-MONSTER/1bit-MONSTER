@@ -3212,6 +3212,12 @@ struct Bf16Ctx {
     // RMSNorm'd core (feeds the O GEMM). Probe-validated math (#1466).
     auto gdn_attn_step = [&](int l, const float* x, float* fqo,
                              float* conv_state, float* delta_state, float* out) {
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fx = fopen("/tmp/l0_x.bin", "wb");
+            if (fx) { fwrite(x, 4, H, fx); fclose(fx); }
+            FILE* fq = fopen("/tmp/l0_fqo_raw.bin", "wb");
+            if (fq) { fwrite(fqo, 4, gdn_conv_dim[l], fq); fclose(fq); }
+        }
         // causal depthwise conv1d on the fused QKV (kernel 4)
         memmove(conv_state, conv_state + gdn_conv_dim[l], (size_t)gdn_conv_dim[l] * (gdn_conv_k[l] - 1) * 4);
         memcpy(conv_state + (size_t)gdn_conv_dim[l] * (gdn_conv_k[l] - 1), fqo, (size_t)gdn_conv_dim[l] * 4);

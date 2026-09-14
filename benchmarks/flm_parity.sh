@@ -133,7 +133,11 @@ measure_native() {
   fi
   # 4) parse markers (grep -m1 avoids the set -e + head early-close SIGPIPE trap)
   local prefill_ms prefill_ms_tok decode_tok_s ttft_s npt
-  npt="$(grep -oE '=== Prefill [0-9]+ ===' "$pout" | grep -om1 '[0-9]\+' || true)"
+  # The engine prints "=== Prefill <n> ===" on some paths and
+  # "=== Prefill <n> [bf16] ===" on the bf16 prefill path, so match the prefix
+  # and take the first number instead of requiring the bare form (which silently
+  # reported n/a once the [bf16] tag was added).
+  npt="$(grep -oE '=== Prefill [0-9]+' "$pout" | grep -om1 '[0-9]\+' || true)"
   prefill_ms="$(grep -oE 'Prefill: [0-9]+ms \([0-9.]+ ms/tok\)' "$pout" | grep -oE '[0-9]+ms' | grep -om1 '[0-9]\+' || true)"
   prefill_ms_tok="$(grep -oE 'Prefill: [0-9]+ms \([0-9.]+ ms/tok\)' "$pout" | grep -oE '[0-9.]+ ms/tok' | grep -om1 '[0-9.]\+' || true)"
   decode_tok_s="$(grep -oE '\([0-9.]+ tok/s\)' "$dout" | grep -oE '[0-9.]+' | tail -1 || true)"
