@@ -332,7 +332,9 @@ explicitly **reference only, not wired into the build** (see
   `g_npu_in_use` / `g_npu_active_requests` (see `server.hpp`).
 - `tools/unified_server.cpp` — the unified multi-backend server
   (subcommand `unified`), with embedded Lemonade core (`--lemonade`).
-- `tools/zaya_server.cpp` — legacy zaya server entry (`1bit zaya`).
+- `tests/zaya_server.cpp` — legacy zaya server entry (`1bit zaya`). (It is the
+  one file in this section that lives outside `tools/` — noted because a reader
+  looking in `tools/` will not find it.)
 - `tools/vision_server.cpp`, `tools/image_server.cpp` — vision-language serving.
 - `tools/unified_router.cpp` — content-aware NPU/GPU routing proxy.
 - `tools/onebitd.cpp` — inference daemon (spawns backend, proxies HTTP).

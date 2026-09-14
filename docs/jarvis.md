@@ -123,8 +123,9 @@ curl -X POST localhost:18081/v1/jarvis/turn -d '{"text":"what can you do?"}'
   the clean pipeline makes it a queue, not a server).
 - **P1 — barge-in.** VAD detects speech during playback → stop TTS, new
   turn.
-- **P2 — codec voice returns.** The RVQ codec decoder (`src/codec_decoder`
-  pattern) as a *stock* voice via ONNX Runtime — no training, no voice
-  packs, no per-user anything.
+- **P2 — codec voice returns.** The RVQ codec decoder, as a *stock* voice via
+  ONNX Runtime — no training, no voice packs, no per-user anything. (The
+  `src/codec_decoder.cpp` this pattern is named for went with the voice-cloning
+  stack — see below — so this is the ONNX path, not a revival of that file.)
 - **P2 — ALSA native audio.** `arecord`/`aplay` pipes → `snd_pcm` when
   latency tuning matters (see `ponytail:` note in `audio.h`).
