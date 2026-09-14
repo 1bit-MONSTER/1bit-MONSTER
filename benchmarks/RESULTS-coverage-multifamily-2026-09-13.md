@@ -11560,7 +11560,7 @@ file (§195), applied now to the numbers themselves.
 stretch is specific to Nanbeige's attention, while this rule is portable to any measurement in the log — **and it was
 earned four times, from four different failures, by both lanes.**
 
-## 210. RETRACTED (§201, §208): the `ELF` label FOLLOWS its own run — verified on all six `ELF` lines — so `elf_0011` has `(1 MB, 5 MB, 30 MB)`, §102 was right, and §173 is RESTORED
+## 660. RETRACTED (§201, §208): the `ELF` label FOLLOWS its own run — verified on all six `ELF` lines — so `elf_0011` has `(1 MB, 5 MB, 30 MB)`, §102 was right, and §173 is RESTORED
 
 The peer's adjacency argument is correct, and it is checkable on every labelled kernel rather than on the one in dispute:
 
@@ -11686,3 +11686,40 @@ label's placement, but **the artifact's own two descriptions of its width disagr
 three (`1024 / 1280 / 2048`, verified in §195) while the **per-token volume** is constant across them, then **the volume
 field is not a geometry field at all** — and the conflict dissolves by demoting one of the two signals rather than by
 choosing between them.
+
+## 666. The discriminated result: the kernel COMPUTES the NaN, the per-row lattice is exact, and it names a stride contradiction INTERNAL to the artifact
+
+**They ran the lead through its own discriminator and it came back decisive.** With the sentinel prefilling the output
+to bf16 `1.0`, the first words are **still NaN** — **so the kernel wrote them.** **§181's stale-content branch is dead for
+this signature**, and `AZERO`'s inertness stops being puzzling: **the content the kernel is handed does not matter
+because the kernel produces the NaN itself.**
+
+**And the per-row structure is exact** (`q = 2560`):
+
+| per row | words | equals |
+|---|---|---|
+| **NaN** | **1024** | **`(NH/2)×HD` at NH = 16** |
+| written, non-NaN | 1024 | — |
+| **untouched (still `1.0`)** | **512** | **`NKV×HD`** (nkv4, hd128) |
+| **total** | **2560** | **= q, exactly** |
+
+**And the cross-check against the artifact's own stride is the sharpest statement this lane has produced.** The kernel
+produces **1024** words per row — `(NH/2)×HD` **at NH = 16** — while the shipped nh20 ELF's own `dim1_stride` is
+**1280** — `(NH/2)×HD` **at NH = 20**. **The artifact's produced width and its own stride disagree, and the difference is
+exactly `2×HD = 256`** — one head-pair, 10 minus 8 half-heads.
+
+So the defect is not wrong data and not the wrong buffer: **a kernel producing an nh16-half-width region while its own DMA
+stride is nh20's, never reaching the last `NKV×HD` = 512 words of each row** — **a contradiction internal to the file**,
+not host-side and not call-time. And **NaN is what a softmax over a degenerate range produces**, which is §92's
+*context-free* signature **with a mechanism attached at last**.
+
+**And the earlier readings correct rather than collapse:**
+
+- **§194's "2,048 written per row" is 1024 NaN + 1024 non-NaN** — both are *writes* under the sentinel's rule, so **the
+  count was right and its reading was incomplete**;
+- **and the 20.47% output-equals-input is the same split through a third instrument** — **two instruments, one unit,
+  three sections apart**, now three.
+
+**And their honest limit is the right one and I keep it verbatim**: the fractions are measured on the **saved output of
+a 256-row call**, and that this *causes* the wrong boot token is still an **inference** — **but an inference from a
+computed value with a per-row structure, not from a count.** *"The first time this lane has had that."*
