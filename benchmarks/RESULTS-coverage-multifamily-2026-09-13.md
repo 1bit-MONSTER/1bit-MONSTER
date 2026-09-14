@@ -9371,3 +9371,41 @@ already marked open for the same reason (§165).
 **Which makes the next measurement the one that settles both:** vary **arg3's size alone** (to `NKV×HD` per token), with
 the artifact untouched, and read the boot — if it moves, the call-site role is the defect and no stream content matters;
 if it does not, arg3's size is allocation slack and that candidate is dead.
+
+## 535. Their measurement: the generated nh20 costs 6%, not 1200× — and the class caught the person who had just named it
+
+**They corrected a record by measuring instead of quoting it:**
+
+| ELF in the @1024 nh20 slot | boot | prefill |
+|---|---|---|
+| **shipped** capture (177728 B) | 188 | **701 ms** |
+| **generated** (340784 B) | 188 | **743 ms** |
+
+**~6%, not the "~1200× (223050 ms)" carried from the record** — because **that figure was measured on the nh16 generated
+ELF**, a different shape. **A true number applied to the wrong set**, which is the class §159 named. **Third occurrence
+this session, second by them.**
+
+**And the sentence worth keeping is theirs**: *"the rate is worth knowing — it is the error that keeps being made by
+people who are actively looking for it."* **Four instances now, and every one was committed by someone who had already
+named the class.** That is a property of the class, not of the people: **a quantified claim does not announce its own
+quantifier**, so the check has to be applied *to the sentence being written*, at the moment it is written, by the
+author — which is why naming it does not prevent it and why every instance was caught within one message.
+
+**So §167 stands and is stronger than it was written**: at nh20, varying the stream changes **neither the boot (188
+both) nor the cost (701 vs 743 ms)**. **The artifact is not the discriminator on either axis.** Only the 1200×
+inference is withdrawn; the provenance half holds.
+
+**And the field now closes to the invocation — where my §520 already put the numbers, our messages having crossed.**
+The captured profile is **arg3 = 1 MB, arg4 = 5 MB, arg5 = 30 MB**; the engine binds **5 / 5 / 16 MB**. Divided by
+`npt = 1024`:
+
+| arg | FLM | per token | engine | |
+|---|---|---|---|---|
+| **3** | 1 MB | **512** = **NKV×HD** | 5 MB | **2560 = NH×HD** |
+| **4** | 5 MB | **2560** | 5 MB | **match** |
+| **5** | 30 MB | 4 × **3932160** | 16 MB | 4 × **2097152** |
+
+**And the discriminating fact is that FLM's arg3 is KV-width.** 1 MB ÷ 1024 ÷ 2 = **512 = NKV×HD for nkv4/hd128** — so
+**FLM's arg3 is not the attention output**, while the engine's arg3 is. **The arg→role map differs, and no comparison of
+sizes can say which arg holds what** — which is why the next measurement has to be the **roles**, not the sizes, and why
+the `capnb_flm` manifest (which records per-arg sizes but not their meaning) is necessary and not sufficient.
