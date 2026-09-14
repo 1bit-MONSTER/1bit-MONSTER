@@ -34,7 +34,7 @@
   "top_archs": []
  },
  "<none>": {
-  "count": 77840,
+  "count": 77980,
   "top_archs": [
    {
     "arch": "MiniCPMForCausalLM",
@@ -1179,8 +1179,12 @@
   "top_archs": []
  },
  "aurora": {
-  "count": 1,
+  "count": 2,
   "top_archs": [
+   {
+    "arch": "Aurora1.0",
+    "n": 1
+   },
    {
     "arch": "AuroraForCausalLM",
     "n": 1
@@ -2908,6 +2912,15 @@
   "count": 1,
   "top_archs": []
  },
+ "cid": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "CIDModel",
+    "n": 1
+   }
+  ]
+ },
  "cilo": {
   "count": 1,
   "top_archs": [
@@ -3888,6 +3901,15 @@
    }
   ]
  },
+ "dasha": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "DashaHFForCausalLM",
+    "n": 1
+   }
+  ]
+ },
  "dat": {
   "count": 1,
   "top_archs": [
@@ -4222,11 +4244,11 @@
   ]
  },
  "deepseek_v41": {
-  "count": 18,
+  "count": 21,
   "top_archs": [
    {
     "arch": "DeepseekV41ForCausalLM",
-    "n": 18
+    "n": 21
    }
   ]
  },
@@ -4654,11 +4676,11 @@
   ]
  },
  "dream": {
-  "count": 36,
+  "count": 37,
   "top_archs": [
    {
     "arch": "DreamModel",
-    "n": 36
+    "n": 37
    }
   ]
  },
@@ -5428,11 +5450,11 @@
   ]
  },
  "fabryka_english_base": {
-  "count": 1,
+  "count": 2,
   "top_archs": [
    {
     "arch": "EnglishBaseForCausalLM",
-    "n": 1
+    "n": 2
    }
   ]
  },
@@ -5738,6 +5760,15 @@
   "top_archs": [
    {
     "arch": "FlyForCausalLM",
+    "n": 1
+   }
+  ]
+ },
+ "flygpt": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "FlyGPTForCausalLM",
     "n": 1
    }
   ]
@@ -6085,11 +6116,11 @@
   ]
  },
  "gdn2": {
-  "count": 5,
+  "count": 6,
   "top_archs": [
    {
     "arch": "GDN2ForCausalLM",
-    "n": 5
+    "n": 6
    }
   ]
  },
@@ -6195,11 +6226,11 @@
   ]
  },
  "gemma2": {
-  "count": 5570,
+  "count": 5573,
   "top_archs": [
    {
     "arch": "Gemma2ForCausalLM",
-    "n": 5553
+    "n": 5556
    },
    {
     "arch": "Gemma2Model",
@@ -6280,11 +6311,11 @@
   ]
  },
  "gemma3_text": {
-  "count": 6084,
+  "count": 6085,
   "top_archs": [
    {
     "arch": "Gemma3ForCausalLM",
-    "n": 6070
+    "n": 6071
    },
    {
     "arch": "Gemma3TextModel",
@@ -6336,11 +6367,11 @@
   ]
  },
  "gemma4": {
-  "count": 1260,
+  "count": 1270,
   "top_archs": [
    {
     "arch": "Gemma4ForConditionalGeneration",
-    "n": 1220
+    "n": 1230
    },
    {
     "arch": "Gemma4ForCausalLM",
@@ -6404,11 +6435,11 @@
   ]
  },
  "gemma4_unified": {
-  "count": 213,
+  "count": 215,
   "top_archs": [
    {
     "arch": "Gemma4UnifiedForConditionalGeneration",
-    "n": 212
+    "n": 214
    },
    {
     "arch": "Gemma4ForConditionalGeneration",
@@ -6636,20 +6667,20 @@
   ]
  },
  "glm5_next": {
-  "count": 65,
+  "count": 64,
   "top_archs": [
    {
     "arch": "Glm5NextForConditionalGeneration",
-    "n": 65
+    "n": 64
    }
   ]
  },
  "glm_moe_dsa": {
-  "count": 580,
+  "count": 582,
   "top_archs": [
    {
     "arch": "GlmMoeDsaForCausalLM",
-    "n": 580
+    "n": 582
    }
   ]
  },
@@ -6847,11 +6878,11 @@
   ]
  },
  "gpt2": {
-  "count": 31463,
+  "count": 31504,
   "top_archs": [
    {
     "arch": "GPT2LMHeadModel",
-    "n": 31090
+    "n": 31131
    },
    {
     "arch": "GPT2LMHeadCustomModel",
@@ -7406,11 +7437,11 @@
   ]
  },
  "gpt_oss": {
-  "count": 1908,
+  "count": 1912,
   "top_archs": [
    {
     "arch": "GptOssForCausalLM",
-    "n": 1904
+    "n": 1908
    },
    {
     "arch": "FSDPGptOssForCausalLM",
@@ -7583,11 +7614,11 @@
   ]
  },
  "granite": {
-  "count": 574,
+  "count": 578,
   "top_archs": [
    {
     "arch": "GraniteForCausalLM",
-    "n": 572
+    "n": 576
    }
   ]
  },
@@ -7769,6 +7800,15 @@
    }
   ]
  },
+ "haiku": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "HaikuForCausalLM",
+    "n": 1
+   }
+  ]
+ },
  "haipai": {
   "count": 1,
   "top_archs": [
@@ -7810,6 +7850,15 @@
   "top_archs": [
    {
     "arch": "HaltCoTForCausalLM",
+    "n": 1
+   }
+  ]
+ },
+ "han2han": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "Han2Han",
     "n": 1
    }
   ]
@@ -8278,11 +8327,11 @@
   ]
  },
  "hunyuan_v1_dense": {
-  "count": 107,
+  "count": 108,
   "top_archs": [
    {
     "arch": "HunYuanDenseV1ForCausalLM",
-    "n": 107
+    "n": 108
    }
   ]
  },
@@ -9039,6 +9088,10 @@
    }
   ]
  },
+ "ivme_conversate": {
+  "count": 1,
+  "top_archs": []
+ },
  "ivme_conversate_s": {
   "count": 1,
   "top_archs": [
@@ -9098,6 +9151,15 @@
    {
     "arch": "JambaForCausalLM",
     "n": 169
+   }
+  ]
+ },
+ "jarvis_titan_moe": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "JarvisTitanMoEForCausalLM",
+    "n": 1
    }
   ]
  },
@@ -9208,11 +9270,11 @@
   ]
  },
  "jugnu_vr": {
-  "count": 4,
+  "count": 5,
   "top_archs": [
    {
     "arch": "JugnuVRForCausalLM",
-    "n": 4
+    "n": 5
    }
   ]
  },
@@ -9230,11 +9292,11 @@
   ]
  },
  "k2_horizon": {
-  "count": 51,
+  "count": 53,
   "top_archs": [
    {
     "arch": "K2HorizonForCausalLM",
-    "n": 51
+    "n": 53
    }
   ]
  },
@@ -9473,6 +9535,15 @@
    }
   ]
  },
+ "kiyo_diffusion": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "KiyoDiffusion",
+    "n": 1
+   }
+  ]
+ },
  "kjeldgpt": {
   "count": 2,
   "top_archs": []
@@ -9528,6 +9599,15 @@
    {
     "arch": "KoliberForCausalLM",
     "n": 3
+   }
+  ]
+ },
+ "konaet-cauryvo": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "KonaetCore",
+    "n": 1
    }
   ]
  },
@@ -9603,6 +9683,15 @@
   "top_archs": [
    {
     "arch": "KVLatentForCausalLM",
+    "n": 1
+   }
+  ]
+ },
+ "kw5v2": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "KW5V2ForCausalLM",
     "n": 1
    }
   ]
@@ -9835,11 +9924,11 @@
   ]
  },
  "lfm2": {
-  "count": 1105,
+  "count": 1106,
   "top_archs": [
    {
     "arch": "Lfm2ForCausalLM",
-    "n": 1093
+    "n": 1095
    },
    {
     "arch": "Lfm2MoEForCausalLM",
@@ -9847,7 +9936,7 @@
    },
    {
     "arch": "Lfm2BidirectionalForMaskedLM",
-    "n": 2
+    "n": 1
    }
   ]
  },
@@ -9919,11 +10008,11 @@
   ]
  },
  "lfm2_moe": {
-  "count": 236,
+  "count": 238,
   "top_archs": [
    {
     "arch": "Lfm2MoeForCausalLM",
-    "n": 233
+    "n": 235
    },
    {
     "arch": "StreamLfm2MoeForCausalLM",
@@ -10170,11 +10259,11 @@
   ]
  },
  "llada": {
-  "count": 54,
+  "count": 55,
   "top_archs": [
    {
     "arch": "LLaDAModelLM",
-    "n": 47
+    "n": 48
    },
    {
     "arch": "LLaDAForCausalLM",
@@ -10217,11 +10306,11 @@
   ]
  },
  "llama": {
-  "count": 100543,
+  "count": 100607,
   "top_archs": [
    {
     "arch": "LlamaForCausalLM",
-    "n": 99293
+    "n": 99357
    },
    {
     "arch": "LLaMAForCausalLM",
@@ -11875,11 +11964,20 @@
   ]
  },
  "maba": {
-  "count": 2,
+  "count": 1,
   "top_archs": [
    {
     "arch": "MabaModel",
-    "n": 2
+    "n": 1
+   }
+  ]
+ },
+ "maba_sparse": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "MabaSparseForCausalLM",
+    "n": 1
    }
   ]
  },
@@ -11929,11 +12027,11 @@
   ]
  },
  "malayalam_moe": {
-  "count": 1,
+  "count": 2,
   "top_archs": [
    {
     "arch": "MalayalamMoEForCausalLM",
-    "n": 1
+    "n": 2
    }
   ]
  },
@@ -12779,11 +12877,11 @@
   ]
  },
  "minimax_m2": {
-  "count": 300,
+  "count": 301,
   "top_archs": [
    {
     "arch": "MiniMaxM2ForCausalLM",
-    "n": 300
+    "n": 301
    }
   ]
  },
@@ -12934,11 +13032,11 @@
   ]
  },
  "mistral": {
-  "count": 29311,
+  "count": 29312,
   "top_archs": [
    {
     "arch": "MistralForCausalLM",
-    "n": 27793
+    "n": 27794
    },
    {
     "arch": "MistralModel",
@@ -13745,11 +13843,11 @@
   ]
  },
  "moonfrost": {
-  "count": 2,
+  "count": 3,
   "top_archs": [
    {
     "arch": "MoonfrostForCausalLM",
-    "n": 2
+    "n": 3
    }
   ]
  },
@@ -14051,11 +14149,11 @@
   ]
  },
  "muse_glimmer": {
-  "count": 19,
+  "count": 20,
   "top_archs": [
    {
     "arch": "MuseGlimmerForConditionalGeneration",
-    "n": 19
+    "n": 20
    }
   ]
  },
@@ -14315,11 +14413,11 @@
   ]
  },
  "nanochat_gpt": {
-  "count": 89,
+  "count": 91,
   "top_archs": [
    {
     "arch": "NanochatGPTForCausalLM",
-    "n": 86
+    "n": 88
    },
    {
     "arch": "GPT",
@@ -14332,11 +14430,11 @@
   "top_archs": []
  },
  "nanogpt": {
-  "count": 31,
+  "count": 33,
   "top_archs": [
    {
     "arch": "NanoGPTForCausalLM",
-    "n": 25
+    "n": 27
    },
    {
     "arch": "GPT",
@@ -14588,11 +14686,11 @@
   ]
  },
  "nemotron_h": {
-  "count": 480,
+  "count": 481,
   "top_archs": [
    {
     "arch": "NemotronHForCausalLM",
-    "n": 475
+    "n": 476
    },
    {
     "arch": "NemotronHAugmentedForCausalLM",
@@ -15155,11 +15253,11 @@
   ]
  },
  "olmo3": {
-  "count": 1070,
+  "count": 1071,
   "top_archs": [
    {
     "arch": "Olmo3ForCausalLM",
-    "n": 1066
+    "n": 1067
    },
    {
     "arch": "Olmo3SinkForCausalLM",
@@ -16936,11 +17034,11 @@
   ]
  },
  "qwen2": {
-  "count": 46323,
+  "count": 46351,
   "top_archs": [
    {
     "arch": "Qwen2ForCausalLM",
-    "n": 46088
+    "n": 46116
    },
    {
     "arch": "Qwen2Model",
@@ -17421,11 +17519,11 @@
   ]
  },
  "qwen3": {
-  "count": 30897,
+  "count": 30875,
   "top_archs": [
    {
     "arch": "Qwen3ForCausalLM",
-    "n": 30495
+    "n": 30473
    },
    {
     "arch": "DFlashDraftModel",
@@ -17625,15 +17723,15 @@
   ]
  },
  "qwen3_5": {
-  "count": 2949,
+  "count": 2969,
   "top_archs": [
    {
     "arch": "Qwen3_5ForConditionalGeneration",
-    "n": 2837
+    "n": 2856
    },
    {
     "arch": "Qwen3_5ForCausalLM",
-    "n": 97
+    "n": 98
    },
    {
     "arch": "Qwen3_5DLLMForConditionalGeneration",
@@ -17667,11 +17765,11 @@
   ]
  },
  "qwen3_5_moe": {
-  "count": 1390,
+  "count": 1396,
   "top_archs": [
    {
     "arch": "Qwen3_5MoeForConditionalGeneration",
-    "n": 1341
+    "n": 1347
    },
    {
     "arch": "Qwen3_5MoeForCausalLM",
@@ -17692,11 +17790,11 @@
   ]
  },
  "qwen3_5_moe_text": {
-  "count": 149,
+  "count": 151,
   "top_archs": [
    {
     "arch": "Qwen3_5MoeForCausalLM",
-    "n": 142
+    "n": 144
    },
    {
     "arch": "DashQQwen3_5MoeForCausalLM",
@@ -17722,11 +17820,11 @@
   ]
  },
  "qwen3_5_text": {
-  "count": 990,
+  "count": 993,
   "top_archs": [
    {
     "arch": "Qwen3_5ForCausalLM",
-    "n": 978
+    "n": 981
    },
    {
     "arch": "Qwen3_5ForConditionalGeneration",
@@ -17749,6 +17847,10 @@
     "n": 1
    }
   ]
+ },
+ "qwen3_8": {
+  "count": 1,
+  "top_archs": []
  },
  "qwen3_8_mtp": {
   "count": 1,
@@ -17854,11 +17956,11 @@
   ]
  },
  "qwen3_moe": {
-  "count": 1717,
+  "count": 1720,
   "top_archs": [
    {
     "arch": "Qwen3MoeForCausalLM",
-    "n": 1694
+    "n": 1697
    },
    {
     "arch": "Qwen3TDMoEForCausalLM",
@@ -18011,11 +18113,11 @@
   ]
  },
  "qwen4_exp": {
-  "count": 46,
+  "count": 51,
   "top_archs": [
    {
     "arch": "Qwen4ExpForConditionalGeneration",
-    "n": 45
+    "n": 50
    },
    {
     "arch": "Qwen4ExpForCausalLM",
@@ -18028,11 +18130,11 @@
   "top_archs": []
  },
  "qwen4_exp_text": {
-  "count": 15,
+  "count": 16,
   "top_archs": [
    {
     "arch": "Qwen4ExpForCausalLM",
-    "n": 13
+    "n": 14
    },
    {
     "arch": "Qwen4ExpTextForCausalLM",
@@ -19175,10 +19277,14 @@
   ]
  },
  "shadow": {
-  "count": 1,
+  "count": 2,
   "top_archs": [
    {
     "arch": "Shadow250M",
+    "n": 1
+   },
+   {
+    "arch": "SHADOW50MInstruct",
     "n": 1
    }
   ]
@@ -19660,11 +19766,11 @@
   ]
  },
  "smollm3": {
-  "count": 429,
+  "count": 430,
   "top_archs": [
    {
     "arch": "SmolLM3ForCausalLM",
-    "n": 427
+    "n": 428
    },
    {
     "arch": "SmolLM3ModelForCausalLM",
@@ -19740,6 +19846,15 @@
   "top_archs": [
    {
     "arch": "SokaForCausalLM",
+    "n": 1
+   }
+  ]
+ },
+ "sol_lite": {
+  "count": 1,
+  "top_archs": [
+   {
+    "arch": "SolForCausalLM",
     "n": 1
    }
   ]
@@ -19870,11 +19985,11 @@
   ]
  },
  "spark2_5": {
-  "count": 31,
+  "count": 33,
   "top_archs": [
    {
     "arch": "Spark2_5ForCausalLM",
-    "n": 31
+    "n": 33
    }
   ]
  },
@@ -20503,11 +20618,11 @@
   ]
  },
  "surjo": {
-  "count": 1,
+  "count": 2,
   "top_archs": [
    {
     "arch": "SurjoForCausalLM",
-    "n": 1
+    "n": 2
    }
   ]
  },
@@ -20650,11 +20765,11 @@
   "top_archs": []
  },
  "t5": {
-  "count": 1139,
+  "count": 1140,
   "top_archs": [
    {
     "arch": "T5ForConditionalGeneration",
-    "n": 1015
+    "n": 1016
    },
    {
     "arch": "T5WithLMHeadModel",
@@ -20887,15 +21002,6 @@
   "top_archs": [
    {
     "arch": "TaoNetMiniT2ForCausalLM",
-    "n": 1
-   }
-  ]
- },
- "tara-transformer": {
-  "count": 1,
-  "top_archs": [
-   {
-    "arch": "TaraForCausalLM",
     "n": 1
    }
   ]
@@ -21836,11 +21942,11 @@
   ]
  },
  "upcycled_llama": {
-  "count": 2,
+  "count": 3,
   "top_archs": [
    {
     "arch": "UpcycledLlamaForCausalLM",
-    "n": 2
+    "n": 3
    }
   ]
  },
@@ -22252,7 +22358,7 @@
   ]
  },
  "voice": {
-  "count": 12,
+  "count": 16,
   "top_archs": []
  },
  "voilum_moe": {
@@ -22941,6 +23047,15 @@
    {
     "arch": "ZeusModel",
     "n": 1
+   }
+  ]
+ },
+ "zgcm": {
+  "count": 6,
+  "top_archs": [
+   {
+    "arch": "ZgcmForCausalLM",
+    "n": 6
    }
   ]
  },
