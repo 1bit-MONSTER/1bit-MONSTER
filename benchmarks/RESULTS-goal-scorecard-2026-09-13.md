@@ -382,7 +382,20 @@ VL-4B lands exactly where the dense 4B does (1.22x), which is the expected resul
 and its prefill/TTFT rows behave the same way too.
 
 **Llama-3.1-8B's native decode cannot be measured at all**, and it is worth being precise about
-why, because it is a tooling limit rather than a performance unknown:
+why. **UPDATE 2026-09-14: the cause given below is now STALE, and the real one is unnamed.**
+
+> **What changed**: the two build products blamed here were rebuilt and are now present — the shape xclbins (§10d) and the
+> per-context layer ELFs (family-general `gen_layer_elfs`, **2 s** for Llama, 2049 files). **With both in place the runlist
+> PREFILL works — `Prefill 1024 [runlist]`, `[1] 220`, FLM's exact reference — and the runlist DECODE still fails at
+> `ctx=1025`**, the first decode context, then falls back. So the blocker is **neither** the shape xclbins **nor** the
+> missing layer ELFs, and the *"`gen_layer_elfs` is Qwen3-specific"* explanation below is no longer true of the tool.
+>
+> **And one nearby line must NOT be read as the blocker**: the run prints `small-M(_m0) xclbins absent; decode uses M=128
+> ctx` during init. That is the **expected default-OFF branch** — `NPU_SMALL_M` defaults to 0, and the source comments that
+> the `_m1` path gives *"garbage decode, no perf win — launch-bound."* **Building those files would be actively wrong.**
+>
+> **Current accurate statement**: the decode row is **5 of 6**; the runlist prefill gate for Llama is **re-verified at
+> 220**; and **the cause of `[runlist] decode forward ctx=1025 failed` is not yet identified.**
 
 - `NPU_RUNLIST=1` prints no `ms/tok` line for it, while `NPU_FLM_DECODE=1` does (11 tok/s);
 - the runlist decode needs per-context layer ELFs, and only Qwen3's exist
