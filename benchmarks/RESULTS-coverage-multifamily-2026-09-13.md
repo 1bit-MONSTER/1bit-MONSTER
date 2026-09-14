@@ -13801,3 +13801,34 @@ completeness; a sweep is.**
 honest label is **runs / degenerate output / unvalidated**: the run completes, the tokens are all zeros, and because **FLM
 cannot load this model there is still no reference** to say whether zero is wrong. **Two engine defects were removed and the
 model executes; whether it computes anything correct is a separate question this evidence does not answer.**
+
+## 915. Gemma3-1B's zeros are UPSTREAM of attention — both attention arms give the same output, so the dequant warning is the prime suspect
+
+**The lane's standard bisection, and it is decisive here: change the attention arm and see whether the output moves.**
+
+| arm | prefill | tokens |
+|---|---|---|
+| **A — default (NPU attention)** | 18 ms/tok | **[1] 0, [2] 0, [3] 0, [4] 0** |
+| **B — host attention (`NPU_ATTN_CPU=1`)** | 18 ms/tok | **[1] 0, [2] 0, [3] 0, [4] 0** |
+
+**Identical, including the timing.** So **the degenerate output is not an attention defect** — swapping the attention
+implementation changes nothing, which places the fault **upstream of attention**: embeddings, the weight dequant, the norms,
+or the `lm_head`.
+
+**And the prime suspect was already printed, and I had recorded it as benign.** The first lines of this run include:
+
+```
+[dequant] unaligned dims H=1152 IM=6912 NH*HD=1024 -- tile width taken from
+          the bundle's row size (row_bytes/20), not the 256 constant.
+```
+
+**I read that as "the engine handles the unaligned case"** because the run continued. **It does handle it — it does not
+complain — but handling it is not the same as handling it correctly**, and the distinction is exactly the one this log keeps
+earning. The adaption takes the tile width from `row_bytes/20`: **256 for the usual `shape[1] == 5120`, and 64 for
+Gemma3-1B's `shape[1] == 1280`.** Whether 64 is the right width for this bundle's packing **is not established**, and if it
+is not, the weights are misread and every downstream token is noise — which is what all-zeros looks like.
+
+**So the next step is specific**: determine whether `row_bytes/20` is the correct tile width for a 1280-byte row (by reading
+the dequant against the bundle's own layout), rather than hunting in the attention path or the layer geometry, both of which
+are now ruled out. **What is established**: Gemma3-1B executes end to end, its output is degenerate, the degeneracy is
+**attention-independent**, and the one anomaly the engine itself reports is in the **dequant**.
