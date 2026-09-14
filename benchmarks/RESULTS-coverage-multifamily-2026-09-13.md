@@ -13430,3 +13430,48 @@ group counts were changed from integer division to `ceil`, with a comment naming
 **after** that repair, and Gemma3-1B's own dims (H=1152 = 9×128, IM=6912 = 54×128) are both 128-aligned. **The grouped tile
 reorder is the next place to look**, and its reorder rule is documented as verified only for **G = 8 and G = 16** — while
 this model's `G = K/128` values are **9 and 54**.
+
+## 865. ROOT CAUSE of the Gemma3-1B segfault: the odd-G tile reorder is NOT a permutation — and the source already warns that odd G is unverified
+
+**`npu_pack_layer_bo` calls a grouped tile reorder whose index rule is**
+
+```
+const int S = (G + 1) / 2;
+for (int o = 0; o < n_tiles; o++) {
+    int i = G * (o / G) + (o / 2) % S + S * (o % 2);
+    memcpy(dst + o*TILE, src + i*TILE, TILE);
+}
+```
+
+**Evaluated as a mapping over `o`, for the `G` values that matter:**
+
+| G | n_tiles | max index | out-of-range | duplicates |
+|---|---|---|---|---|
+| **8** | 24 / 25 | 23 / 24 | **0** | no |
+| **16** | 48 / 49 | 47 / 48 | **0** | no |
+| **9** | 27 | **27** | **1** | **yes** |
+| **9** | 28 | **35** | **1** | **yes** |
+| **54** | 162 / 163 | 161 / 162 | **0** | no |
+
+**For even `G` it is a clean permutation. For odd `G` it is not** — it emits **an index at or past `n_tiles`** and
+**duplicates**, so the `memcpy` reads outside the source tensor. With `G=9, n=28` the maximum index is **35 — seven tiles
+past the end, 7 x 5120 B ~ 35 KB out of bounds.** A segmentation fault is the expected outcome.
+
+**And Gemma3-1B is the first model in the set whose `G` is odd.** Its group counts are `G = K/128`:
+**`G_h = 1152/128 = 9` (odd)** and `G_d = 6912/128 = 54` (even). **Every other supported model has power-of-two `G`**, which
+is why this has never surfaced.
+
+**The source says as much, in the comment above the function:**
+
+> *"this is the minimal rule that restores the necessary permutation property, NOT a derivation of the vendor's layout — the
+> reorder was only ever verified byte-exact for G=8 and G=16 (both powers of two; see the note on `npu_pack_layer_bo`).
+> **Odd G needs a device run behind it before it is called correct.**"*
+
+**So this is a KNOWN-UNVERIFIED path, not a hidden one** — and the failure mode it produces is a **segfault**, which is worse
+than the wrong answer it would otherwise give. **The blocker for Gemma3-1B is an engine bug in this lane's own code**, not a
+vendor limit and not a missing artifact.
+
+**What is now established about the Gemma3-1B row, in order**: init needed **six xclbins** (rebuilt); the `k_tile_q4` case is
+a **warning the engine handles**; the lm_head ELF cannot be generated (vendor) but its absence is **harmless here**; and the
+run reaches the layers and dies in **`npu_pack_layer_bo`'s odd-G reorder**, which is **this engine's code** and is
+**documented as unverified for exactly this case.**
