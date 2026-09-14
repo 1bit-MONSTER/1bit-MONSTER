@@ -253,6 +253,23 @@ inline float read_config_rope_theta(const std::string& model_dir) {
     return (float)strtod(s.c_str() + i + 1, nullptr);
 }
 
+inline float read_config_partial_rotary_factor(const std::string& model_dir) {
+    const std::string p = model_dir + "/config.json";
+    FILE* f = fopen(p.c_str(), "rb");
+    if (!f) return NAN;
+    std::string s;
+    char buf[8192];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) s.append(buf, n);
+    fclose(f);
+    const char* key = "\"partial_rotary_factor\"";
+    size_t i = s.find(key);
+    if (i == std::string::npos) return NAN;
+    i = s.find(':', i + strlen(key));
+    if (i == std::string::npos) return NAN;
+    return (float)strtod(s.c_str() + i + 1, nullptr);
+}
+
 // Parse Q4NX JSON header and derive ModelConfig
 inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_tag) {
     ModelConfig cfg;

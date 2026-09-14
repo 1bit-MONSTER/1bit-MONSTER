@@ -1672,6 +1672,14 @@ struct Bf16Ctx {
     std::vector<int> std_nh(NC, cfg.NH), std_nkv(NC, cfg.NKV), std_hd(NC, cfg.HD);
     std::vector<float> rope_theta_per_layer(NC, cfg.rope_theta);
     std::vector<float> partial_rotary_factor(NC, 1.0f);
+    {   // Qwen3.5 stores partial_rotary_factor inside rope_parameters (0.25: rotary on
+        // the first quarter of each head). Default 1.0 applies rotary to the whole head and
+        // corrupts the full-attention layers' attention.
+        float prf = read_config_partial_rotary_factor(cfg.model_dir);
+        if (const char* e = getenv("NPU_PRF")) prf = (float)atof(e);
+        if (prf == prf && prf > 0.0f && prf <= 1.0f)
+            for (int l = 0; l < NC; l++) partial_rotary_factor[l] = prf;
+    }
     if (cfg.has_moe || cfg.has_gated_delta_net) {
         // Per-layer detection: probe every layer individually so heterogeneous
         // models (e.g. DS V4 Flash layers 0-1 sliding-window vs. CSA/HCA rest)
@@ -2267,7 +2275,11 @@ struct Bf16Ctx {
                     for (int d = 0; d < std_hd[l]; d++) std_kn_w[l][d] = bf16g(nb[d]); }
             }
         }
-
+        if (getenv("NPU_DBG") && std_l >= 0 && std_l < NC) {
+            fprintf(stderr, "[gdblk] std_l=%d std_k_w[%d]=%zu std_v_w=%zu qn=%zu kn=%zu\n",
+                    std_l, std_l, std_k_w[std_l].size(), std_v_w[std_l].size(),
+                    std_qn_w[std_l].size(), std_kn_w[std_l].size());
+        }
     }
 
     // ── NPU MoE FFN: 4 per-op xclbins (GU/D concat + shared GU/D) ──
@@ -3354,6 +3366,18 @@ struct Bf16Ctx {
         kvc.n = pos + 1;
         attn_omp(fqo, out, kvc.n, kvc.k.data(), kvc.v.data(),
                  std_nh[l], std_nkv[l], std_hd[l], std_nh[l] / std_nkv[l]);
+        if (l == 3 && pos == 0 && getenv("NPU_DUMP_KV")) {
+            fprintf(stderr, "[nat_kv] layer=3\n");
+            fprintf(stderr, "[nat_rawk] ");
+            for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", kv[i]);
+            fprintf(stderr, "\n");
+            fprintf(stderr, "[nat_k] ");
+            for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", kvc.k[i]);
+            fprintf(stderr, "\n");
+            fprintf(stderr, "[nat_v] ");
+            for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", kvc.v[i]);
+            fprintf(stderr, "\n");
+        }
         const float* gt = fqo + std_nh[l] * std_hd[l];
         for (int i = 0; i < std_nh[l] * std_hd[l]; i++) out[i] *= 1.0f / (1.0f + expf(-gt[i]));
     };
@@ -4740,7 +4764,7 @@ struct Bf16Ctx {
                               dm_gdn_conv.data() + (size_t)l * max_gdn_conv_dim * max_gdn_conv_k,
                               dm_gdn_delta.data() + (size_t)l * max_gdn_vh * max_gdn_hd * max_gdn_hd,
                               &at_b[(size_t)pi * NH * HD]);
-        } else if (has_moe) {
+        } else if (has_moe || cfg.has_gated_delta_net) {
             for (int pi = 0; pi < npt; pi++) {
                 int pos = sp + pi;
                 std_attn_step(l, &h_b[pi * H], &qo_b[(size_t)pi * qkv_n], kv_caches[l][0], pos,

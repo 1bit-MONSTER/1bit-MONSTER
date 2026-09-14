@@ -92,6 +92,25 @@ extern "C" int flm_prefill_run(const int* ids, int n, int* boot_token, double* p
                 (float)lg[0], (float)lg[1], (float)lg[2], (float)lg[3],
                 (float)lg[4], (float)lg[5], (float)lg[6], (float)lg[7]);
     }
+    if (getenv("FLM_DUMP_KV")) {
+        // Dump the KV cache of the first full-attention layer (3) at pos 0,
+        // for a layer-by-layer diff against the native engine.
+        for (int layer = 3; layer <= 3; layer++) {
+            buffer<bf16> kc = g_model->get_k_cache(layer, 0);
+            buffer<bf16> vc = g_model->get_v_cache(layer, 0);
+            fprintf(stderr, "[flm_kv] layer=%d k=%zu v=%zu\n", layer, kc.size(), vc.size());
+            if (kc.size() >= 16) {
+                fprintf(stderr, "[flm_k] ");
+                for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", (float)kc[i]);
+                fprintf(stderr, "\n");
+            }
+            if (vc.size() >= 16) {
+                fprintf(stderr, "[flm_v] ");
+                for (int i = 0; i < 16; i++) fprintf(stderr, "%.4g ", (float)vc[i]);
+                fprintf(stderr, "\n");
+            }
+        }
+    }
     *boot_token = best;
     return 0;
 }
