@@ -297,6 +297,32 @@ static inline uint8_t onebp_nearest_ue4m3(float target) {
     return lo;
 }
 
+// ─── Embedding-table gate (padded-vocab artifacts) ──────────────
+// The embedding table defines the real vocab for a tied-LM-head engine, but some
+// artifacts declare the checkpoint's *padded* vocab in the header while shipping
+// the unpadded table — the v1 `ZAYA1-8B.1bp` upload declares 262272 and carries
+// 262147 rows (the official Zyphra config pads 262147 up to a multiple of 128),
+// converted before the converter learned to prefer the rows (issue #1521).
+//
+// The tail is alignment padding: no token id reaches it, so the rows can simply
+// define the vocab. Anything else stays a hard error — a table larger than
+// declared, a size that isn't a multiple of H, or a shortfall too large to be
+// padding is the truncation case (issue #1606), not padding.
+static constexpr size_t ONEBP_EMBED_MAX_PAD_ROWS = 4096;
+
+// Returns the number of padding rows (declared vocab − table rows), 0 when the
+// table matches the declared vocab, or -1 when the table must be refused.
+static inline long onebp_embed_padding_rows(size_t embed_elems, int vocab, int hidden) {
+    if (vocab <= 0 || hidden <= 0) return -1;
+    if (embed_elems == 0 || embed_elems % (size_t)hidden != 0) return -1;
+    const size_t rows = embed_elems / (size_t)hidden;
+    if (rows == (size_t)vocab) return 0;
+    if (rows > (size_t)vocab) return -1;   // bigger than declared: wrong file/config
+    const size_t pad = (size_t)vocab - rows;
+    if (pad > ONEBP_EMBED_MAX_PAD_ROWS) return -1;
+    return (long)pad;
+}
+
 // ─── Compute tiled size for a weight matrix ──────────────────────
 // Returns bytes needed after tiling rows×cols to tile_rows×tile_cols
 static inline uint64_t onebp_tiled_size(
