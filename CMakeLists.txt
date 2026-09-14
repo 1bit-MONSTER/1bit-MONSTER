@@ -514,7 +514,11 @@ target_include_directories(model_registry_route PUBLIC
 
 # -- registry_route_map : dump/execute the capability -> backend map. Buildable so
 #    a reviewer can print the table and run plan_route() without the engine graph.
-add_executable(registry_route_map tools/registry_route_map.cpp)
+#    plan_route() calls select_backend_route(), which is defined in
+#    model_router.cpp; naming that one source keeps the tool free of the engine
+#    graph (linking backend_manager would drag the whole engine in). The target
+#    has failed to link since #2190 added the call.
+add_executable(registry_route_map tools/registry_route_map.cpp src/model_router.cpp)
 target_link_libraries(registry_route_map PRIVATE model_registry_route)
 target_compile_options(registry_route_map PRIVATE -O3 -Wall)
 
