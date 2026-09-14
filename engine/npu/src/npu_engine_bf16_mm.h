@@ -364,9 +364,22 @@ struct Bf16Mm {
         for (int r = 0; r < 4; r++)
             memcpy(attn_kv->data() + r * reg, kv + r * reg, used * 2);
         xrt::run run(*kern);
-        run.set_arg(0, 3);
-        run.set_arg(1, 0);
-        run.set_arg(2, 0);
+        // BF16MM_ATTN_SCALARS="a,b,c" (default 3,0,0 -- behaviour unchanged): the kernel's
+        // three SCALAR arguments, which are the only part of this call with no stated
+        // meaning in this file and the only part no perturbation has touched.
+        // RESULTS-coverage-multifamily 177: on an MLIR_AIE kernel the scalars are the runtime
+        // parameters, and section 92 established this attention is CONTEXT-FREE -- a kernel
+        // told L_begin=0, L_end=0 computes over a degenerate range by construction, and
+        // context-free is exactly what a zero range produces. So args 1/2 are swept against
+        // npt and arg 0 against the model's head/layer counts. Hypothesis with a one-run
+        // test, not a finding: the lengths may travel in a BO and 3 may be a mode, not a count.
+        {
+            int sa = 3, sb = 0, sc = 0;
+            if (const char* sv = getenv("BF16MM_ATTN_SCALARS")) sscanf(sv, "%d,%d,%d", &sa, &sb, &sc);
+            run.set_arg(0, sa);
+            run.set_arg(1, sb);
+            run.set_arg(2, sc);
+        }
         // BF16MM_ATTN_SWAP_IO (default OFF, behaviour unchanged): swap the two
         // attention argument POSITIONS -- 3 and 4 -- leaving every buffer exactly as
         // allocated. Rationale (RESULTS-coverage-multifamily 174): FLM handed this

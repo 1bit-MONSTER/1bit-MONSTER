@@ -9857,3 +9857,50 @@ re-reading the artifact did.**
 **What the lane actually holds, unchanged:** the **scalar hypothesis is dead** (direct evidence, 481 calls); the **sizes
 are direct** (1 MB / 5 MB / 30 MB against 5 / 5 / 16 MB); and the **role question is reopened as a hypothesis**, with the
 manifest's dump names as **a lead, not a finding.**
+
+## 178. The scalars are a MODE, not a length: arg0=3 is the only value that works, args 1–2 are inert, and one wrong mode reproduces the mysterious "~1200× slower" figure
+
+§177's hypothesis — that the scalars carry `L_begin`/`L_end`, so `L_end = 0` explains the context-free signature — **is
+refuted by its own test**, and the refutation is cleaner than the hypothesis was:
+
+| scalars `(a,b,c)` | boot | prefill |
+|---|---|---|
+| **3, 0, 0** (shipped default) | **188** | 713 ms |
+| 3, 0, 1024 | 188 | 784 ms |
+| 3, 0, 1 | 188 | 686 ms |
+| 3, 1024, 0 | 188 | 693 ms |
+| 3, 1, 1024 | 188 | 695 ms |
+
+**args 1 and 2 are inert** — zero, `npt`, one, and swapped order all leave 188 — so they are **not** the lengths. Sweeping
+arg0 instead:
+
+| arg0 | boot | prefill |
+|---|---|---|
+| **3** | **188** | 713 ms |
+| 0 | 152432 | 1963 ms |
+| **1** | 152432 | **259105 ms** |
+| 2 | 152432 | 684 ms |
+| 4 | 152432 | 695 ms |
+| 16 | 152432 | 741 ms |
+| 20 | 152432 | 667 ms |
+
+**`arg0 = 3` is the only value that produces 188; every other value lands in the `152432` degenerate mode.** So arg0 is
+a **mode selector**, the engine already passes the correct one, and the scalars are **not** the defect. §177's
+hypothesis is withdrawn.
+
+**And the sweep answers a question that had been open since §169.** The engine's own note said a previously-used
+generated ELF was *"both wrong and ~1200× slower (223050 ms)"*. **`arg0 = 1` here costs 259105 ms** — the same order of
+magnitude, from a wrong **mode** rather than a wrong stream. That does not overturn §170 (whose generated-vs-shipped
+comparison measured 743 ms vs 701 ms **at arg0 = 3**), but it does show **what kind of change produces a
+three-orders-of-magnitude regression in this kernel: a mode, not a file** — and it makes the record's figure legible
+where §169 could only cite it.
+
+**Two caveats, because this sweep was contended:** `clang=30` during the run, and one `3,0,0` pass reported 1302 ms
+against 713 ms in another — **so the timings are not comparable across rows and the boots are.** The boot values were
+stable and repeated (`188` for every arg0=3 run, `152432` for six different wrong modes), and the argument is carried
+by those, not by the milliseconds.
+
+**So the scalars close as "already correct", and the lane's remaining surface narrows once more.** Artifact: not the
+discriminator (§167/§170). Argument **positions**: load-bearing (§175). Argument **scalars**: correct as shipped
+(§178). What no perturbation has reached is what the engine **puts inside** those buffers — the KV content layout and
+the region stride interaction — which is now the only remaining candidate rather than the next in a list.
