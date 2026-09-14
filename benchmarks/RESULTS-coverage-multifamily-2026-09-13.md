@@ -12682,3 +12682,54 @@ ruled out as a fix** — it makes the kernel write into the Q buffer and leave t
 allocator memory. **152432 was not the kernel reporting a different role; it was the engine reading an unwritten buffer.**
 That also explains why the value was absorption-like: **once the output is never written, no downstream parameter can
 change what the engine reads.**
+
+## 765. The `buffer_length` field closes §710's arithmetic query — and the unexplained constant decomposes into an artifact constant × a head-group count
+
+**§710 asked how 2.00 MB follows from `512 patches × dim0 64 × dim1 64`, and could not make it come out. The answer is that
+I was using the wrong field.** The descriptor states `buffer_length` per patch, and the totals are exactly `n ×
+buffer_length` — no dim arithmetic at all:
+
+| artifact | tokens | NH | `arg0` patches | `buffer_length` | total |
+|---|---|---|---|---|---|
+| 256-nh16 | 256 | 16 | 64 | 4096 | **0.26 MB** |
+| 1024-nh16 | 1024 | 16 | 256 | 4096 | **1.05 MB** |
+| 2048-nh16 | 2048 | 16 | 512 | 4096 | **2.10 MB** |
+| 1024-nh20 | 1024 | 20 | 512 | 4096 | **2.10 MB** |
+| 1024-nh32 | 1024 | 32 | 512 | 4096 | **2.10 MB** |
+| 256-nh32 | 256 | 32 | 128 | 4096 | **0.52 MB** |
+
+**`buffer_length` is 4096 B in every `arg0` of every artifact — and 4096 B = 2048 bf16 = 16 heads × 128 dims EXACTLY.**
+So the tile is a **16-head group**, and the per-token volume is a count of those groups:
+
+**`per-token bf16 = 512 × ceil(NH / 16)`**
+
+| artifact | patches/token | bf16/token | `512 × ceil(NH/16)` | |
+|---|---|---|---|---|
+| 256-nh16 | 0.25 | 512 | 512 | ✓ |
+| 1024-nh16 | 0.25 | 512 | 512 | ✓ |
+| 2048-nh16 | 0.25 | 512 | 512 | ✓ |
+| 1024-nh20 | 0.50 | 1024 | 1024 | ✓ |
+| 1024-nh32 | 0.50 | 1024 | 1024 | ✓ |
+| 256-nh32 | 0.50 | 1024 | 1024 | ✓ |
+
+**And a competing formula was tested and FAILED**, which is the part that makes this more than curve-fitting: `n =
+tokens × NH / 64` fits all three nh16 artifacts (64, 256, 512 ✓) and **fails nh20** (predicts 320, measured 512).
+
+**But the honest count of independent support is THREE, not six.** The lengths are repeats *within* a head count, so what
+is actually fitted is **NH ∈ {16, 20, 32}** — and **the artefact's own `buffer_length` constant is what supplies the 2048**,
+not the fit. So this is **a hypothesis with an artifact-stated mechanism and three supporting head counts**, and its test
+is a **fourth**:
+
+- **nh24 (Phi4) → predicts 1024** (ceil(24/16) = 2);
+- **nh8 or nh4 (Gemma3) → predicts 512** (ceil = 1).
+
+**And that test is device-free if an ELF can be generated** — `engine/npu/generators/` builds attention ELFs, so an nh24
+or nh8 artifact would settle it by reading one field. **No nh24 artifact exists in the tree today.**
+
+**And it is worth noting this does NOT explain the 512-of-2560 shortfall** — it explains the *produced* volume. The
+partition stays what it was: **wrote 2048 of 2560 per row, 1024 of them NaN, 512 untouched.**
+
+**One further measurement fell out, and it confirms a number already in the code**: `arg2`'s implied KV width.
+`4.72 MB / 4 regions / 1024 tokens = 1152 B = **576 bf16/token**` — **exactly the `576` the `BF16MM_ATTN_KV_PT` comment names
+as "the stream's implied width."** And **`arg2`'s width is not linear in length** — 190 bf16/token at 256, **576** at 1024,
+**1088** at 2048 — so `arg2`'s growth is a separate open observation, recorded with its numbers rather than a formula.
