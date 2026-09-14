@@ -9904,3 +9904,30 @@ by those, not by the milliseconds.
 discriminator (§167/§170). Argument **positions**: load-bearing (§175). Argument **scalars**: correct as shipped
 (§178). What no perturbation has reached is what the engine **puts inside** those buffers — the KV content layout and
 the region stride interaction — which is now the only remaining candidate rather than the next in a list.
+
+## 179. Both of §102's named next steps are already run, and the tree is clean — a short closure so the crossings stop costing runs
+
+§102's profile reached this lane four times, and its two named follow-ups have both been taken. Recording them together,
+because they are already sections and neither is pending:
+
+| §102's recommendation | status |
+|---|---|
+| *"the next measurement has to be the **roles**, not the sizes"* | **run — §175.** Swapping argument **positions 3 and 4** moves the boot **188 → 152432**, so the kernel genuinely distinguishes the slots and the role map is **load-bearing**. Not sufficient (152432 ≠ 1033), but the branch "the slots are interchangeable" is dead. |
+| *"take the `NPU_ATTN_KV_REGION=3932160` run — one run, expected necessary-but-not-sufficient"* | **run — §176.** It gives **152432**, exactly the value the swap produced, while the H-table value and the engine's default both leave 188. So the stride is **not inert** and FLM's captured value is **not the fix**. |
+
+**And §102's own reading of the arg3 role is confirmed at the call site rather than inferred from sizes** — §173 read the
+invocation: FLM's arg3 (512/token = `NKV×HD`) has **no engine counterpart**, while the engine's arg3 is its attention
+output (2560/token) and its arg4 matches. So the size table and the code agree, and the *meaning* question §102 said no
+size comparison could settle was settled by the swap.
+
+**And one housekeeping item resolved rather than assumed:** §102's note recorded
+`engine/npu/src/npu_engine_bf16_mm.h` as **dirty in the tree**. Checked: the tree is **clean** and the file's sha256
+**equals HEAD** — the observation was **stale**, taken before this lane's §178 commit landed. No uncommitted work exists,
+and the only edits this lane made to that file were **env-gated with default OFF** (§175's `BF16MM_ATTN_SWAP_IO`, §178's
+`BF16MM_ATTN_SCALARS`), with the default path re-verified at 188 after each rebuild.
+
+**And the operational form of the whole class, which §102 states better than the instances do:** *every case was caught by
+**widening the measurement**, never by re-reading the claim* — and **six of the eight were caught by the other lane**. So
+the detector is **a wider check run by someone who did not make the claim**, and the corollary is to **share a claim
+early**. That is what these crossings have been doing, expensively but correctly: the four repeats of §102 cost runs, and
+they are also why §167's provenance confound was caught at all.
