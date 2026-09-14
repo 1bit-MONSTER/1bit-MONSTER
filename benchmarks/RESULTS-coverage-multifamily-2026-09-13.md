@@ -9223,3 +9223,37 @@ vs shipped" is a comparison that must name its directory. Only the inference dra
 
 **What this leaves, stated once more and now measured on both axes:** the nh20 defect is **not** in the attention
 artifact — it is in the **invocation** (BO geometry, §102's captured FLM profile, or the caller's `qout`).
+
+## 171. RETRACTED: §162's "the generator reproduces a capture byte-exactly" — the identical pair are TWO GENERATIONS 2 h 23 m apart, so the match proves determinism, not agreement with FLM
+
+§162 rested on two 372512-byte files with the same sha256 and called the pair *"captured"* and *"generated"*. **Both
+are generations.** The mtimes and the record settle it:
+
+| file | bytes | mtime | sha256 (16) |
+|---|---|---|---|
+| `~/npu-build/mha/attn_mha_1024_nh16.elf` | 372512 | **21:36:24** | `6ece6c3301f4d1df` |
+| `~/npu-build/mha/attn_mha_1024_nh16.generated.elf` | 372512 | **23:59:02** | `6ece6c3301f4d1df` |
+| `~/npu-build/mha/attn_cap1024.elf` | **98848** | 23:58:16 | `d1273e3240034988` |
+
+and `engine/npu/generators/FK3-STATUS-2026-09-12.md:1005` names the first outright: *"generated long-context attention
+ELF (`attn_mha_1024_nh16.elf`, 372512 B, **made by `gen_attn_chunk 0 1024`**)"*.
+
+**So the byte-identical pair is the same tool run twice, 2 h 23 m apart.** What it proves is **determinism** — the
+generator is reproducible — and **not** that generation agrees with FLM's runtime. §162's headline is withdrawn; its
+**provenance half survives** (§169: the shipped 98848-byte file is the capture, `attn_cap1024.elf`).
+
+**And that removes the contrast §163/§165 were implicitly built on.** There is no *"byte-exact at nh16, mismatch at
+nh20"*: **generation differs from capture at BOTH shapes** — 3.8× at qwen3 (372512 vs 98848) and 1.9× at Nanbeige
+(340784 vs 177728). The nh20 negative is not a contrast with a positive; it is **the same relationship measured
+twice**. The repo explains the direction: **the capture is a trimmed `elf_00NN`, the generation a full aiebu ELF** —
+different containers, so equality was never the right test.
+
+**Which strengthens §167 rather than weakening it.** At nh20, two artifacts differing **in provenance and in size**
+(1.9×) produce the **same wrong answer** — so the stream is not the discriminator, and the defect is not in the
+sequence. **What is left is the arithmetic or the gate**, where §165/§170 had already arrived by another route.
+
+**And the error is mine, in the shape this session keeps recording.** I read two files in a directory, saw matching
+hashes, and inferred a **provenance relationship** the names and mtimes do not support: **the directory told me what
+existed; I used it as if it had told me what had been done.** Same failure as reading a **comment** as a call site
+(§160/§164) and a **value** as identifying a length (§144) — the fourth instance here of *evidence that describes
+something being used as evidence that it happened*.
