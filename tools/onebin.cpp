@@ -138,6 +138,13 @@ int main(int argc, char** argv) {
         if (cmd == "-h" || cmd == "--help" || cmd == "help") {
             return print_usage();
         }
+        // `1bit --version` printed the usage text too: onebit_main handles the
+        // flag (it is what the `onebit` symlink answers), but it was only ever
+        // reached through argv[0], so the flag form fell through to the same
+        // dead end as the commands above.
+        if (cmd == "--version" || cmd == "-v") {
+            return onebit_main(argc, argv);
+        }
     }
     return print_usage();
 }
