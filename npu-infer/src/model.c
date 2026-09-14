@@ -239,6 +239,15 @@ static void npu_pack_proj(uint8_t* bo, const TensorDesc* desc, ModelWeights* mw,
     if (desc->ndim != 2) return;
     int n_tiles = (int)desc->shape[0];
     const uint8_t* data = (const uint8_t*)model_tensor_data(mw, (TensorDesc*)desc);
+    // A tensor can be 2-D and still have no data (absent from the bundle, or not mapped).
+    // Without this the reorder memcpy's from NULL and the process segfaults, which reads
+    // as a crash in the packing path with no statement of WHICH projection is missing.
+    // Returning here keeps the fault in the caller, which knows the projection name.
+    if (!data) {
+        fprintf(stderr, "RuntimeLayer: pack_proj: tensor has no data (n_tiles=%d G=%d offset=%d)\n",
+                n_tiles, G, tile_offset);
+        return;
+    }
     npu_reorder_tiles(bo + (size_t)tile_offset * NPU_TILE_BYTES, data, n_tiles, G);
 }
 
