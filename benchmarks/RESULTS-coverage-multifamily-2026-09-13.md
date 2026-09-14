@@ -9728,3 +9728,55 @@ zeroing the buffer under test is exactly the experiment.** The missing companion
 `BF16MM_ATTN_SENTINEL` answers *"wrote nothing vs did write"* but not *"how much"*, while GEMM's `BF16MM_CEXTENT`
 **counts the words the device changed** — a one-count analogue on `attn_out` would replace §122's instrument-dependent
 reading with a direct number. **Either outcome is decisive on both.**
+
+## 565. Their synthesis — a recurring value cannot identify a cause — and the call-time truth: NOTHING about geometry is told to the kernel
+
+**Their closure of the single-parameter search, and it is the clean summary of the afternoon:**
+
+| perturbation | boot |
+|---|---|
+| none | 188 |
+| artifact content swapped | 188 |
+| arg3/arg4 swapped | **152432** |
+| kv_region → FLM's value | **152432** |
+| engine's own default region | 188 |
+| host attention | 109440 |
+| **FLM** | **1033** |
+
+**Every single-parameter change moves between two wrong values or does nothing; none reaches the right one** — so the
+defect is **not one parameter**, consistent with §167/§170 (not the artifact), §173 (at the call site) and §175
+(assignment matters, not sufficient).
+
+**And their generalisation is the sharpest methodological result of the afternoon:**
+
+> **Two perturbations with nothing in common converge on the identical wrong answer.** That is §144's rule one level
+> over — there, *a recurring value cannot identify a length*; here, **a recurring value cannot identify a cause.**
+> `152432` twice is not evidence that the two share a mechanism; it is evidence that **the kernel has a small set of
+> stable wrong outputs and drops into one whenever the call is invalid in certain ways.** So `152432` is a
+> **degenerate mode, not a signal** — and matching it again in a future run proves nothing.
+
+**Which is the trap the next probe would have walked into**, and they named it before walking in.
+
+**And their next probe — *what the kernel is told the buffer means* — has a short answer, in the code.** The call passes
+**three scalars and five BO addresses**, and the scalars are:
+
+```cpp
+int sa = 3, sb = 0, sc = 0;                    // line 377
+if (const char* sv = getenv("BF16MM_ATTN_SCALARS")) sscanf(sv, "%d,%d,%d", &sa, &sb, &sc);
+```
+
+bound to **`(opcode, instr, ninstr)`** — so **`opcode = 3`, `instr = ninstr = 0`**, which is **correct for an
+ELF-baked stream**: the instructions live in the ELF, not in the call. **So nothing about geometry is told at call time.
+The kernel's `(M, K, N)` are baked in the ELF**, and the call supplies an opcode, five addresses, and nothing else.
+
+**Which reduces the probe to a comparison that is available offline**: **does the shipped ELF's baked geometry match the
+BO widths the engine passes?** The ELFs are on disk, and the engine already has the `dump_instrs`/`txn` machinery to
+decode them.
+
+**And a second, concrete discrepancy falls out of the same doc comments.** `attn_rows` is documented as *"query rows of
+this call (**<=256, the captured kernel's width**)"*, and *"the caller may pass pointers shifted to a later query block
+to cover a prompt longer than 256"* — **repeated calls, shifted pointers.** But `set_attn_tokens(n)` sets `attn_rows = 0`
+and `set_attn_rows(n)` sets it explicitly, and the engine calls **both with `npt`** — so for `npt = 1024` it passes
+**`attn_rows = 1024` to a kernel documented at `≤256`, in one call.** Either the long-context ELF genuinely handles 1024
+rows — in which case **the doc is stale** — or **the call is out of contract**. That is a **binary question, and it is
+checkable without the device.**
