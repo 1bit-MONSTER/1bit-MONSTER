@@ -14680,3 +14680,36 @@ zero bad commits:**
 **Five reverts is not a failure of the chain — it is the harness doing what §890 built it for.** The committed deliverables
 are unchanged: the **diagnosis** (a 2048-row overrun between the plain and fused QKV layouts) and the **artifact**
 (`final_i8_QKV_K2560_N8192`), plus the **five engine-side fixes** already landed and verified.
+
+## The SIXTH attempt landed — direct cq.init, no hoist, dimension-keyed xclbin (2026-09-14, commit 6d03d0529)
+
+The five failures above share one root: they all went through `init_i8`, which both (a) had to be hoisted into scope and
+(b) routes the file name through `xp()/ip()`, which prefer the **model-tag** file (`final_i8_QKV_qwen3_5_4b.xclbin`, the
+**6144-row** plain-layout build). The fix that landed sidesteps both:
+
+- **no hoist** — the widening block calls `cq.init()` directly, so `init_i8` stays where it was and the §430 "hoist broke
+  three gates, mechanism unestablished" failure mode is simply not exercised;
+- **no tag-named file** — the block builds `final_i8_QKV_K2560_N8192.xclbin` + `insts_i8_QKV_K2560_N8192.txt` from the
+  dimension-keyed name, bypassing `xp()/ip()`;
+- **shape updated before init** — `cq.KD = H; cq.ND = t;` are set BEFORE `cq.init()`, because `init()` reads MD/KD/ND from
+  the context members, not its arguments (the earlier "no widening" attempt #4 missed this).
+
+VERIFIED: Qwen3.5-4B layer 3 re-inits to ND=8192 (bC 4194304 B) and the QKV pack no longer segfaults. Gates re-checked:
+Nanbeige boot 1033 and Qwen3-4B @256 [1] 1614, both unchanged. The crash moved to the **O-projection `transpose_pack`**,
+which is the 4736-byte dense-row dequant (next item).
+
+## The 4736-byte I8 tile is NOT "a 5120-B tile trimmed to [0:4736]" — scales are not at the front (open)
+
+`q4nx_tile_dequant.py` (the 5120-B reference) puts 512 B scales at [0:512] and 512 B mins at [512:1024]. The 4736-byte
+Qwen3.5-4B tile does **not** match that:
+
+- the first two bf16 slots are garbage (`0xd0fc 0xd4fc` → −3.4e10, −8.7e12), and only ~25% of the first 512 bytes read as
+  scale-like (|v| < 0.5) — so the scales are **not** a clean 256-bf16 block at [0:512];
+- the **last 128 bytes** (bf16 idx 2304–2367) are **64/64** clean scale-like values — the only contiguous scale block in the
+  tile.
+
+Arithmetic does not close either: for a [8192, 2560] fused q_proj tiled 256×10, a tile is 32 rows × 256 cols = 8192
+elements, which cannot fit 4736 B as int8 (needs 8192 B) or int4+scales (needs ≥ 4608 B and the scale block would be at the
+front, which it is not). **The format cannot be reconstructed from shape/dsize arithmetic alone**; it needs either FLM's
+dequant source (compiled into `libgemm`/`libdequant`, no plain-text copy in `amd-oss/` or the headers) or a reference dump
+from `bf16mm_dequant`/`Bf16Mm::run_dequant`. Recorded as the precise next blocker, not a fix.
