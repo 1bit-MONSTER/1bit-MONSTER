@@ -1127,9 +1127,20 @@ int main(int argc,char**argv){
     d_i8 *= d_cols;
     }
     int lm_i8=gi8("lm_head.weight");
+    // lm_head tile format: 2-D [tiles, 5120] (int4) vs 3-D [tile_rows, tile_cols, bytes]
+    // (Qwen3.5/3.6: 8704=Q8_0 or 4736=int4). For 3-D, multiply shape[0] by tile-cols
+    // and dispatch the dequant; the old path read shape[0] only and used int4, which
+    // gave a 10x-short lm_head (24832 vs 248320 rows) and garbage logits.
+    int lm_bpt = get_shape_dim(js, jl, "lm_head.weight", 2);
+    if (lm_bpt == 0) lm_bpt = get_shape_dim(js, jl, "lm_head.weight", 1);
+    if (lm_bpt == 4736 || lm_bpt == 8704) { int lm_cols = H / 256; if (lm_cols > 0) lm_i8 *= lm_cols; }
 
     // Load lm_head.weight separately — NOT tied to embed_tokens.weight for this model
-    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=q4_dequant_geom(i8p(lo),lm_i8,H,cfg.cpt,&lr,&lc);if(lm_raw){
+    if(lo&&lm_i8>0){int lr,lc;float*lm_raw=
+        (lm_bpt==8704) ? dequant_q8_0_to_float_ex(i8p(lo),lm_i8,H,&lr,&lc)
+        : (lm_bpt==4736) ? dequant_i8_4736_to_float(i8p(lo),lm_i8,H,&lr,&lc)
+        : q4_dequant_geom(i8p(lo),lm_i8,H,cfg.cpt,&lr,&lc);
+        if(lm_raw){
         lm_head_f32.assign(lm_raw,lm_raw+(size_t)lr*lc);free(lm_raw);
         fprintf(stderr,"  lm_head: %dx%d (loaded from JSON), using for final logits\n",lr,lc);
     }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}}
