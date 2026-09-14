@@ -643,14 +643,35 @@ opposite directions from the same evidence.** The three rules that would have ca
    because those are init-time ELF loads, not the selection. This rule was earned twice in one hour: once on a
    result, and once on a *rebuttal* of the same result.
 
-**And the one rule that subsumes three of the others, in the form the peer lane arrived at last**: *a percentage is
-not portable across **methods**, and by extension not across **builds** or **fixtures** — so the fix is not to replace
-the number, it is to **make its scope travel with it, at the point of use.*** That is the difference between a
-retraction and an **annotation**: a figure may still be true of the question its own method asked, it just cannot be an
-input to anyone else's arithmetic. Worked twice in this log — §95's run-based *"97.9% identical"* is marked
-**METHOD-SCOPED** beside a direct byte diff's **37.42%**; and an early `−12…−22%` prefill figure is marked
-**BUILD-SCOPED** beside the converged **+25%** it now contradicts. **A reader who computes from either is stopped by a
-line they are already looking at.**
+**And the method capstone — the one output of this stretch that is not specific to Nanbeige's attention**, in the form
+the two lanes arrived at together:
+
+> **A number is not portable across (a) fixtures, (b) methods, or (c) builds — and in every case the fix is identical:
+> make the scope travel with the number, at the point of use.**
+
+| scope that must travel | the instance |
+|---|---|
+| **fixture** | Nanbeige @256 is **5938** on the token-16 fixture and **4938** on first-token-58907 |
+| **artifact** | the **generated `.txn`** (2,560 patches) sharing a row with the shipped **`.elf`** (640) |
+| **method** | a **run-based** 97.9% against a **byte-diff** 37.42% |
+| **build** | an early **−12…−22%** against the converged **+25%** |
+
+**What makes those four one rule rather than four tidy-ups is the form**: a **retraction removes** a figure; an
+**annotation keeps** it and stops the next reader where they would otherwise compute. **The scope is part of the
+number** — the same reason a reference token must name its fixture and an artifact row must name its file, now applied
+to the numbers themselves. A figure may still be true of the question its own method asked; it just cannot be an input
+to anyone else's arithmetic.
+
+**Two refinements worth keeping, both from the peer lane.** First, they are not equally bad: §95's 97.9% is wrong in
+**magnitude**, while the unscoped `−12…−22%` is wrong in **direction** — a reader computing from line 152 concludes the
+engine **loses**, the exact inverse of the shipped claim. **A sign error is worse than a scale error**, because it
+inverts the conclusion rather than blurring it. Second, the rule was earned **by applying the form forward** — auditing
+the rest of the log for other instances rather than only accepting the one correction — which is what turned one fixed
+number into a rule with four instances.
+
+**And the rule's own scope, stated because it applies to itself**: its four instances are all from **one lane, one
+session**, so what travels is the **form**, and the four instances are the **evidence for it** — not a survey of the
+codebase. Added at the point of use, which is the whole of the rule.
 
 **And the analysis rule the whole session kept re-earning, in the form the peer lane finally gave it**: *one
 measured fact versus one measured fact **plus** an unverifiable one is not a preference between two readings — it is an
