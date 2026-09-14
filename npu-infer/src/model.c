@@ -208,26 +208,13 @@ static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int
     // odd G as well. Verified by exhaustive permutation check for G = 8, 16, 20, 24, 54, 84
     // (unchanged) and 9 (fixed).
     //
-    // SECOND FIX (2026-09-14): that permutation check was run over the IN-GROUP domain
-    // o in [0, G), where the map IS a permutation for odd G. The full map runs over
-    // o in [0, n_tiles), and the in-group term was computed from the RAW o rather than
-    // from o % G, so it kept growing past the group instead of cycling inside it.
-    // For EVEN G that is harmless, because (o/2) % S + S*(o%2) is periodic with period
-    // 2S = G, so raw-o and o%G agree exactly. For ODD G, 2S = G+1 != G, so they diverge:
-    // at G=9, n=27 it emitted i = 27 = n_tiles (out of range) and a duplicate.
-    // Using o % G makes the in-group term periodic with period G for every G. It is
-    // BIT-IDENTICAL for every even G (checked for G = 8, 16, 54 over full and ragged
-    // tails), so it is a provable no-op for every model that worked before, and for G=9,
-    // n=27 the map becomes a clean permutation (0 duplicates, 0 out-of-range, max 26).
-    //
     // Caveat, stated because it matters: this is the minimal rule that restores the necessary
     // permutation property, NOT a derivation of the vendor's layout -- the reorder was only
     // ever verified byte-exact for G=8 and G=16 (both powers of two; see the note on
     // npu_pack_layer_bo). Odd G needs a device run behind it before it is called correct.
     const int S = (G + 1) / 2;
     for (int o = 0; o < n_tiles; o++) {
-        const int og = o % G;   // in-group position; raw `o` grows past the group for odd G
-        int i = G * (o / G) + (og / 2) % S + S * (og % 2);
+        int i = G * (o / G) + (o / 2) % S + S * (o % 2);
         memcpy(dst + (size_t)o * NPU_TILE_BYTES,
                src + (size_t)i * NPU_TILE_BYTES, NPU_TILE_BYTES);
     }
