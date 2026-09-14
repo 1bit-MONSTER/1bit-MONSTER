@@ -10424,7 +10424,7 @@ when merely held.
 HEAD. That note has now been stale four times, and it is the same shape as the rest of this section: a remembered state
 standing in for a measured one.
 
-## 192. The `(NH/2)×HD` stride relationship is confirmed on BOTH artifacts — and the nh16 patch count quoted for it does not match the shipped nh16 file
+## 600. The `(NH/2)×HD` stride relationship is confirmed on BOTH artifacts — and the nh16 patch count quoted for it does not match the shipped nh16 file
 
 The head-blind retraction (§183) is right, and its supporting relationship holds on a second artifact. The decoded
 `patches` array carries `arg_idx` and `dim1_stride` directly, so both streams can be read the same way:
@@ -10454,3 +10454,36 @@ means **all three arguments carry model geometry**, not just the two attention b
 `(NH/2) × HD`, verified on two artifacts — and the filename **is** head-blind. So *"a well-formed stream can drive a
 wrong-width kernel"* survives as a **risk**, with the corrected support: **the risk comes from the name, not the
 contents**, and the earlier argument built on it was supported by a filename rather than by the stream.
+
+## 605. The 1 MB "instruction BO" is FLOAT ACTIVATIONS — `INSTS_DUMP` is a misleading name, and my arg3 claim is refuted
+
+**They split my manifest reading into a verified half and an unproven one, and asked for exactly the right test**:
+compare `insts_0000_1048576.bin` against the attention ELF's stream as **raw words**, not through the descriptor decoder.
+I ran it, and it settles the fork — **against the label and against my claim.**
+
+**The dump's first words are `0x4125c05b`, `0x40344108`, `0xc07540ca`, `0xc105c146`, `0x3f50410e`, `0xc0ca3fbc`.** As
+IEEE-754 floats: **10.3595, 2.8165, −3.8321, −8.3597, 0.8135, −6.3203** — and over the first 4096 words a bounded range
+of **−37.3 to 53.6.** **Activation data, not instructions.**
+
+| | first words | what they are |
+|---|---|---|
+| **the 1 MB dump** | `0x4125c05b 0x40344108 0xc07540ca …` | **floats: 10.36, 2.82, −3.83** |
+| **a real stream** (`.txn`) | `0x6040100 0x108 0x1340 0x2b610 0x0 …` | structured small integers |
+
+Its "opcode-ish" high bytes are **0 / 64 / 192 / 65 / 63 / 193** — the float **exponent** bytes — and the nh20 stream does
+**not** appear anywhere inside the dump.
+
+**So the reading that survives is theirs**: the `SETARG`s between a `RUN` and the next belong to the **next** run, so
+**the 177728 kernel's arg3 is 5,242,880 — exactly what the engine passes today.** My §580/§590 claim that arg3 carries
+the instruction stream is **refuted** — the **twelfth instance** of the class in its purest form, **a LABEL read as the
+CONTENT.** I attached that caveat myself in §575; they asked me to settle it; the data settles it **against the label**.
+
+**And it changes the fix shape.** arg3 is not an instruction stream, so **binding instructions there would be wrong** —
+and the swap's *"right in direction, wrong in kind"* is wrong too: it moved the boot because it exchanged **two attention
+buffers** (act and out), not because one slot held instructions. **§175's narrower reading survives — *the slots are
+distinguishable* — and the engine's roles (out = arg3, in = arg4) may well be correct.** Which leaves the call clean,
+every axis exhausted, the artifact genuine, and the inputs byte-identical: **the surviving candidate is still the
+sequence of operations across layers.**
+
+**Pinned for reuse**: the "nh20 stream" I flattened began with `0x464c457f` = `\x7fELF` — **my flattening included the
+ELF container**, not just the stream. It does not affect this comparison, but those arrays are not pure streams.
