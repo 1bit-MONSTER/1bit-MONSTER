@@ -11150,3 +11150,56 @@ was stale BO content** — and since `attn_out` is **never cleared by default** 
 
 **Caveat**: the dumps are from a 17:48 run and predate later changes, so the NaN may be historical — **but the 20.47%
 split matches the §194 map exactly, which says the dump's structure still describes current behaviour.**
+
+## 203. The capture's launch sequence is PERIOD-8 — ≈32 periods ≈ 32 layers — and the artifact this engine emulates runs ONCE, in the prologue
+
+§199 counted the launches; reading them **in order** with the per-launch `arg3` size shows a structure:
+
+```
+launch  4   0011:177728   arg3=5242880      <- the nh20 attention the engine emulates
+launch  5   0012: 41920   arg3=5242880
+launch  6   0013:154560   arg3=22020096
+launch  7   0014:154560   arg3=22020096
+launch  8   0015: 41920   arg3=5242880
+launch  9   0015: 41920   arg3=31457280
+launch 10   0015: 41920   arg3=1048576   ┐
+launch 11   0015: 41920   arg3=1048576   │
+launch 12   0015: 41920   arg3=5242880   │
+launch 13   0015: 41920   arg3=5242880   ├─ period 8, repeating
+launch 14   0015: 41920   arg3=22020096  │
+launch 15   0015: 41920   arg3=22020096  │
+launch 16   0015: 41920   arg3=5242880   │
+launch 17   0015: 41920   arg3=31457280  ┘
+launch 18   0015: 41920   arg3=1048576   ┐  the same cycle again
+…
+```
+
+**Three facts, all direct from the log:**
+
+1. **A period-8 cycle** over `elf_0015` (41,920 B), with `arg3` cycling
+   **1 MB, 1 MB, 5 MB, 5 MB, 21 MB, 21 MB, 5 MB, 30 MB** — eight launches per period, endlessly.
+2. **252 launches ÷ 8 ≈ 31.5 periods ≈ 32 layers.** The arithmetic of a 32-layer model fits the observed count, which
+   is the first structural reading in this lane that *predicts* a number rather than fitting one.
+3. **`elf_0011` — the 177,728-byte nh20 attention this engine ships and emulates — runs ONCE, at launch 4**, before the
+   periodic body begins.
+
+**So in FLM's own capture the emulated artifact is a PROLOGUE kernel, not a per-layer one** — and the engine calls it
+**once per layer**. That is the §199 asymmetry with a mechanism attached, and it is the *material* reading's evidence:
+the shape of the operation would be wrong rather than its inputs, which is exactly what a fixed wrong output that no
+call-time parameter can move (§198) and that survives varying the artifact's content (§167/§170) looks like.
+
+**Kept honest, the two limits of that:**
+
+- **a period is not yet a layer.** The cycle's eight launches are consistent with eight per-layer projections (qkv, o,
+  gate, up, down, …) — but the manifest does not label them, and the count fitting 32 layers is **evidence, not proof**;
+- **an unlabelled prologue is not a different role.** `elf_0011` running once could be a one-off for this capture (a
+  warm-up, a first-token special case) rather than a role assignment.
+
+**What would settle it is the same kind of check that settled the last three questions: a per-launch label.** The
+manifest carries per-launch kernel identity, `arg` sizes **and** the `RUN`/`ELF` ordering, so the eight-slot cycle can be
+mapped against the engine's own per-layer op order — **offline, and it is the next step this lane has.**
+
+**And one thing to carry from the peer's newest result** (`633cc5bca`: the attention output **begins with NaN**): §194's
+ownership counts classify by `o[i] != 0x3c00` and `o[i] != 0`, so **NaN words count as "written"**. That does not change
+§194's per-column map — a column is touched if any row differs — but it does mean **the 80/20 split is a split of
+"changed vs still 1.0"**, not necessarily of "real values vs untouched".
