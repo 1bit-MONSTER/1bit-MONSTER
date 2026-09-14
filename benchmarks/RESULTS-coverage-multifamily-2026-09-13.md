@@ -12280,3 +12280,42 @@ exchange. **The fix is the one this log keeps re-deriving: name the artifact —
 
 **Net: the live candidates are two, and `arg3` is no longer one of them** — the **call shape** (512-token blocks against
 the engine's 256) and **§204's NaN partition**, which is *measured* rather than inferred.
+
+## 710. The artifacts' own `direction` field — a real addition — plus a stride fact it carries, and an arithmetic query
+
+**The peer's decoded patches carry a `direction` field that no earlier section used, and it is a property of the artifact
+rather than an inference from a boot value:**
+
+| `arg_idx` | patches | geometry | direction | stated total |
+|---|---|---|---|---|
+| **0** | 512 | dim0 64 / dim1 64 / **dim1_stride 1280** | **S2MM — a WRITE** | 2.00 MB |
+| 1 | 512 | same | MM2S — read | 2.00 MB |
+| 2 | 128 | dim0 64 / dim1 128 / dim1_stride 128 | MM2S — read | 4.50 MB |
+
+**`arg0` is the kernel's WRITE — its output — and `arg1`/`arg2` are reads.** That is the artifact's own statement of which
+slot is which, and it is the first such statement this lane has.
+
+**And the conclusion it supports is robust**: FLM handed this kernel `(arg3 = 1 MB, arg4 = 5 MB)`, and the output volume
+**exceeds 1 MB** — so **the output slot is not the 1 MB argument; it is the 5 MB one, FLM's `arg4`, while the engine reads
+its answer from the buffer it passes at `arg3`.** That is what §175's swap moved toward, now with **a direction field**
+behind it rather than a boot delta.
+
+**The stride fact, which the descriptor carries and which is worth stating for what it is**: `arg0`'s `dim1_stride` is
+**1280 = `(NH/2)×HD` at nh20, exactly.** In a patch descriptor that **is** a stride — not a count — so this is
+artifact-side evidence that the kernel is **nh20-configured**, which is the category §220 required.
+
+**And an arithmetic query, offered as a query rather than a refutation**, because the conclusion does not depend on it:
+**the stated totals do not follow from the stated geometry by my multiplication.** At 2 B/element, 512 patches × 64 × 64 is
+**4.19 MB**, not 2.00; at 4 B it is **8.39 MB**. Either the patch geometry means something other than *patches × dim0 ×
+dim1*, or the element size differs, or the totals come from a different step. **Their stated 2.00 MB is already > 1 MB, so
+the role conclusion holds either way** — but the derivation should be shown, because a *"size fit"* is exactly the kind of
+inference this lane has had to demote before.
+
+**And the coincidence they flagged is confirmed and kept as a hypothesis, not a finding**: `256 × 1,024 = 262,144`, the
+measured NaN total **exactly.** Whether the kernel's write region *is* the NaN region is not established — **the numbers
+agree, which makes it worth one test.**
+
+**And the swap is already implemented and already tested once**: `BF16MM_ATTN_SWAP_IO` at `npu_engine_bf16_mm.h:404`,
+default OFF. **§183's 2×2 showed only the shipped default gives 188; swap ON gives 152432.** So the direction field now
+**predicts which way the swap should help** — and the one swap run on record moved the boot **away** from 188. That is a
+sharp, cheap, already-runnable test with a prediction attached, which is more than the candidate had before.
