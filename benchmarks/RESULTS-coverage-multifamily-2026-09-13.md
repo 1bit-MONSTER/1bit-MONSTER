@@ -8636,7 +8636,7 @@ the support was a file that MENTIONS the mechanism rather than one that RUNS it.
 (§470's `gen_attn_chunk` match is a comment) — the same distinction as §153's guard that cannot fail and §159's set the
 sentence quantified over: **the evidence sat in the same file as the claim and was not the same kind.**
 
-## 162. The KV-region hedge is refuted by FLM's own header — `v_add=2` is the four-region convention and the knob's `add=1` branch is dead
+## 166. The KV-region hedge is refuted by FLM's own header — `v_add=2` is the four-region convention and the knob's `add=1` branch is dead
 
 The teammate read FLM's `nanbeige_npu_sequence.hpp` and found four accessors — `get_k03_offset`, `get_k47_offset`,
 `get_v03_offset`, `get_v47_offset` — i.e. the KV cache is **four regions in the order K03, K47, V03, V47**. Checked
@@ -8773,3 +8773,43 @@ smaller. The engine's own banner reports loading **98848 B** for this slot (visi
 the shipped file is what actually runs. **This is not yet a defect** — the two could be different geometries sharing a
 name — but it is exactly the provenance question that §154's over-broad sentence came from, so it is recorded as a
 **question with the numbers attached**, not as a conclusion.
+
+## 495. FIRST OFFLINE RESULT (complementary to §162): the existing generator REJECTS a Nanbeige config — so the nh20 question needs the FAMILY'S sequence class
+
+**Built the offline tool, because the peer's sharpening made the first experiment offline-only.** Its documented build
+line is **incomplete**: `gen_attn_insts.cpp`'s header comment lists `-lqwen3_npu -lgemm -lmha -lq4_npu_eXpress -laiebu`,
+but the link fails on **`utils::find_xclbin_path`** — declared in `utils/utils.hpp` and **defined in no shipped
+library**. The repo already knows (`npu-infer/docs/txn-decode-findings.md`: *"needs `utils_stub.cpp` for
+find_xclbin_path"*), and with a three-line stub it builds.
+
+**Two configs, same binary, same flags:**
+
+| model | result |
+|---|---|
+| **Qwen3-0.6B** | **8 streams** — `attn_256_1024_128_<ctx>_0.bin`, 3360 B each |
+| **Nanbeige** | **`terminate … std::runtime_error: Unsupported intermediate size: 10752`** |
+
+**Finding 1 — the artifact is keyed on `(M, K, N)` and carries NO head count.** `attn_256_1024_128` against
+Qwen3-0.6B's `nkv8/hd128` is **`K = NKV × HD = 1024`** and **`N = HD = 128`**. So the query-head count is the
+**caller's** loop, not the stream's — which is exactly why a model could be handed a **wrong-width** kernel while the
+*stream* looks structurally fine.
+
+**Finding 2 — the answer to the question.** The tool cannot generate for Nanbeige **at all**, because it instantiates
+**`qwen3_npu_sequence`** and that class **rejects the config**. **The engine's generator is a Qwen3 generator**, and
+FLM ships **`nanbeige_npu_sequence`** as a header in both trees. So the missing piece for the offline experiment is
+**the family's sequence class** — not a flag, and not the runtime wiring.
+
+**Which is why this complements §162 rather than duplicating it.** The peer lane's §162 establishes that the generator
+can reproduce a capture **byte-exactly**, and that the shipped `attn_mha_1024_nh16.elf` is **not** that file. That
+answers *"can generation be exact"* — **yes.** This answers *"can generation be done for the family that needs it"* —
+**not with the tool as built**, and names the binding that is missing. **Together: the generator works and the
+generator is Qwen3's; the errand is to bind the family's class and compare.**
+
+**And the practical consequence for r5** stands: the *"answer it offline first"* plan needs **one more artifact** —
+link `nanbeige_npu_sequence` and generate — which is §158's errand one layer down **again**: **the vocabulary exists,
+the generator exists, and the family binding is what is missing.**
+
+**Numbering**: the duplicate-`162` collision is the eighth, and **the loop is now expensive enough to change
+behaviour**: the KV section moves to **166**, the lowest free number **above both lanes' active ranges**. Re-rolling
+inside a range both lanes are appending to is not a fix — §480 said that about lanes, and it applies to *iterations*
+of the same fix as well.
