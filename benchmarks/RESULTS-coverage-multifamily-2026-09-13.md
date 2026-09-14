@@ -10162,3 +10162,46 @@ single-point picture again, now with a **sixth** perturbation — and it is wort
 **What remains is the one §182 question that is still open, and it is offline:** whether the nh20 ELF bakes **1024 query
 rows or 256**. The decoded header (`rows: 70`, `mem_tile_rows: 1`) is the AIE array geometry, not the token count, so
 that answer has to come from the descriptors' dimension fields — **not from another device run.**
+
+## 184. Reconciled: the two decode analyses measure different quantities (both correct) — and the KV fill is **0.50 MB short** of what the stream transfers
+
+Two independent decodes of the same artifact produced different-looking tables. **They are different aggregates, and both
+are right** — which is worth recording, because reading either as "the" number would have been wrong:
+
+| stream argument | Σ descriptor lengths | max address spanned | `D1` stride |
+|---|---|---|---|
+| arg0 | **2.00 MB** (512 descriptors) | 4.69 MB | **1280** (= 10×128) |
+| arg1 | **2.00 MB** (512 descriptors) | 4.69 MB | **1280** |
+| **arg2** | **4.50 MB** (128 descriptors) | 48.00 MB | 128 |
+
+So `arg0`/`arg1` **transfer** 2.00 MB while **spanning** 4.69 MB — scattered descriptors with gaps, which fits a 5 MB BO
+either way. §183's "the stream addresses 48 MB into a 16 MB buffer" was a **max-address** reading used as if it were
+**volume**; the negative it produced still stands (allocating 48 MB changed nothing), but the framing was loose and this
+table is the correction.
+
+**And the shortfall is real, and it is the first candidate in this lane that is not a perturbation.** The engine fills:
+
+```cpp
+const size_t reg = attn_kv_region;              // region stride in bf16
+const size_t used = (size_t)attn_tokens * 512;  // tokens x 512 bf16
+for (int r = 0; r < 4; r++) memcpy(attn_kv->data() + r * reg, kv + r * reg, used * 2);
+```
+
+**4 regions × (1024 tokens × 512 bf16 × 2 B) = 4.00 MB written; the stream's `arg2` descriptors transfer 4.50 MB.** So
+**0.50 MB of what the kernel reads is never written by the engine** — and because the KV BO *is* memset at :357, that
+region reads as **zeros**, not as garbage. A zero-filled tail inside the KV is exactly the kind of thing that would
+produce a **fixed, context-free answer** (§92) without any of the six perturbations being able to reach it: **they all
+changed the BO's size or the artifacts, and none of them changed `used`.**
+
+**And the engine's own comment does not describe the code:** it says *"Only the 4 used region heads matter (256 tokens ×
+4 heads × 128 dims = 256KB each)"* — **256 tokens**, where the code passes `attn_tokens` (1024). So the comment is stale,
+it explains a 256-token fill, and it is not evidence about the 4.50 MB figure.
+
+**What is measured versus what is inferred, kept separate:** the 4.00 MB write and the 4.50 MB read are both **measured
+from artifacts, offline**; that the missing 0.50 MB reads as zeros follows from the memset at :357; and that this
+**causes** 188 is **not** measured — it is the hypothesis the next run tests.
+
+**And one conflict is left open rather than resolved by arithmetic, which is where the last two sections went wrong.**
+The **sums** (2.00 MB per attention buffer) imply a `1024 × 1024` read — 8 heads × 128, i.e. `nkv8`/`nh16` width —
+while the **stride** (1280) is `nh20` geometry. **Stride says nh20, volume says nh16**, and which is the operative width
+needs the decoder's `dim0/dim1/dim2` semantics rather than more sums.
