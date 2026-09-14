@@ -10790,3 +10790,45 @@ kept  =             131,072  = 20.0%   ->   512 words per row
 **And `512` per row is `NKV×HD` for nkv4/hd128 uniquely** — the same `NKV×HD` unit that sizes FLM's arg3 (`npt × NKV×HD`, §189), against an engine that hands over `npt × NH×HD`. **Two divergences with the same shape**, which is what a single `NKV×HD`-sized unit being handled differently would look like — **a hypothesis, not a finding**, and one that now has two independent supports rather than one.
 
 **Caveat carried from both sides:** a legitimate output can equal bf16 `1.0`, so `kept` is an **upper** bound on unchanged; the **per-column map** is the part that survives it, which is why the position form was the one to build.
+
+## 197. The 4×-unroll verifies and the first-difference correction verifies — but the similarity figure was wrong on BOTH sides: the two ELFs differ in 37.4% of their bytes, not 2.1%
+
+**Their structural finding verifies exactly.** Decoding the 256- and 1024-context ELFs side by side:
+
+| | 256-ctx | 1024-ctx | ratio |
+|---|---|---|---|
+| patches | 160 | 640 | **4.00×** |
+| arg0 / arg1 descriptors | 64 | 256 | **4.00×** |
+| arg0 / arg1 totals | 262,144 B | 1,048,576 B | **4.00×** |
+| TCT | 64 | 256 | **4.00×** |
+| header `rows` | **70** | **70** | identical |
+
+**Every per-query structure is exactly 4× and the header is unchanged**, so the 1024-context artifact is a **4× unroll of the
+256-row form** — the chunking is **baked into the ELF**. A caller-side loop would be redundant, which closes the structural
+candidate from the artifact side as well as from the code (§196).
+
+**And their first-difference correction verifies too** — the first byte that differs between the nh20 and nh32 files is
+**byte 32** = **word 8** = a **32-byte field**, exactly the size delta (177,728 − 177,696 = 32 B). So *"the first
+difference is at word 8, not in the tail"* is right.
+
+**But the similarity figure is wrong, and wrong in both directions at once:**
+
+| source | claim | measured |
+|---|---|---|
+| §95–§98 | *"97.9 % byte-identical"*, *"3408 differing bytes in 580 regular runs"* | **66,502 bytes differ of 177,696 = 37.42 %** ⇒ **62.58 % similar** |
+| their correction | *"~230 words, ~930 bytes"* | same measurement |
+
+**Both figures are too small by an order of magnitude or more.** The measurement here is the simplest possible — the two
+shipped files, compared byte for byte over their common prefix — and it says the nh20 and nh32 artifacts are **genuinely
+different builds**, sharing about 63 % of their bytes, not 98 %.
+
+**Which supports their substantive conclusion while removing the evidence they offered for it**: *"the two are two
+genuinely different builds"* is **true**, and the byte diff says so **emphatically** — it is the *"97.9 % similar,
+therefore a light edit"* framing that does not survive. **§95's figure should be re-derived from its own method before it
+is cited again**, and until then the honest statement is: **the files differ in 37 % of their bytes, first difference at
+byte 32, length delta 32 B.**
+
+**Caveat on the measurement, stated because the sizes differ:** the comparison covers the **common prefix** (177,696 B);
+the 32-byte tail is unexamined by construction, and a byte-level diff between two files of different length has no
+alignment guarantee beyond the front. **That limits precision, not the order of magnitude** — 66,502 differing bytes
+cannot become 3,408 under any alignment.
