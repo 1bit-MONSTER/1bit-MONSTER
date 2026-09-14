@@ -9858,7 +9858,7 @@ re-reading the artifact did.**
 are direct** (1 MB / 5 MB / 30 MB against 5 / 5 / 16 MB); and the **role question is reopened as a hypothesis**, with the
 manifest's dump names as **a lead, not a finding.**
 
-## 178. The scalars are a MODE, not a length: arg0=3 is the only value that works, args 1–2 are inert, and one wrong mode reproduces the mysterious "~1200× slower" figure
+## 182. The scalars are a MODE, not a length: arg0=3 is the only value that works, args 1–2 are inert, and one wrong mode reproduces the mysterious "~1200× slower" figure
 
 §177's hypothesis — that the scalars carry `L_begin`/`L_end`, so `L_end = 0` explains the context-free signature — **is
 refuted by its own test**, and the refutation is cleaner than the hypothesis was:
@@ -9932,7 +9932,7 @@ the detector is **a wider check run by someone who did not make the claim**, and
 early**. That is what these crossings have been doing, expensively but correctly: the four repeats of §102 cost runs, and
 they are also why §167's provenance confound was caught at all.
 
-## 180. The 2×2 is complete and has exactly ONE valid cell — so any perturbation collapses to the same value, and the perturbation method is now exhausted
+## 183. The 2×2 is complete and has exactly ONE valid cell — so any perturbation collapses to the same value, and the perturbation method is now exhausted
 
 §175's swap and §176's region value tested jointly, one cell at a time. The missing cell (FLM's region **with** the swap
 on) is now measured, so the table is closed:
@@ -10004,3 +10004,33 @@ varying what the kernel reads. **The remaining measurement is the one their mess
 built: a direct extent count on `attn_out`** — the analogue of GEMM's `BF16MM_CEXTENT` — which replaces §122's
 instrument-dependent "2048 of 2560" with a number the engine counts itself. That is new code, and it is the only
 candidate left that measures something no perturbation has measured.
+
+## 580. Decoding the streams: they DO encode the head count — `dim1_stride = (NH/2) × HD` — so "the stream carries no nh" is wrong
+
+**The device-free decode worked, and it answers the question the role probe was aiming at.** `decode_txn --decode-only`
+turns a shipped ELF or a `.txn` into JSON with `commands`, an `op_histogram`, and a `patches` list — and those patches
+are the **DDR_PATCH** entries, i.e. the context patch this log described as *"8 immediates per column copy."*
+
+**The shipped nh20 ELF decodes to exactly 44,432 words = 177,728 B** — the file itself — with **BLOCKWRITE 1154,
+DDR_PATCH 1152, MASKWRITE 512, TCT 512, PREEMPT 4, WRITE 1846.**
+
+**And the geometry is in there:**
+
+| stream | patches | `dim1_stride` | arg_offset step |
+|---|---|---|---|
+| **nh20 (nanbeige)** | **1152** | **{1280, 128}** | 256 |
+| **nh16 (qwen3)** | **2560** | **{1024, 1}** | 512 |
+
+**`1280 = 10 × 128` and `1024 = 8 × 128` — and 10 is `NH/2` for nh20, 8 is `NH/2` for nh16.** So **the stream encodes
+`(NH/2) × HD` in its DMA stride**: the **head count is in the artifact**, and the patch count differs too.
+
+**Which corrects a premise both lanes were building on.** The earlier observation — *"`attn_256_1024_128_<ctx>_0.bin`
+against nkv8/hd128 is `(M, K, N)`, and the name carries no `nh`"* — is **true of the FILENAME** and **false of the
+content**. I generalised from a name to a stream, and the other lane built a good argument on it: *a stream can be
+perfectly well-formed while the kernel it drives has the wrong width.* That remains true **as a risk**, but the
+supporting claim — that the stream is head-blind — is **not**.
+
+**It is the tenth instance of the dominant class, and one both lanes share**: a **filename** read as the artifact's
+**contents** — proxy-as-referent, alongside comment→call site, listing→execution, hash→provenance, value→identity and
+label→role. **Caught the same way as the others: by opening the thing instead of reading its name** — here by decoding
+177,728 bytes into 44,432 words and looking at the strides.
