@@ -9409,3 +9409,39 @@ The captured profile is **arg3 = 1 MB, arg4 = 5 MB, arg5 = 30 MB**; the engine b
 **FLM's arg3 is not the attention output**, while the engine's arg3 is. **The arg→role map differs, and no comparison of
 sizes can say which arg holds what** — which is why the next measurement has to be the **roles**, not the sizes, and why
 the `capnb_flm` manifest (which records per-arg sizes but not their meaning) is necessary and not sufficient.
+
+## 174. §173's proposed test is confounded before it is run — `attn_out` is BOTH arg3 and the buffer the engine reads its answer from; the runnable test is a role swap
+
+§173 proposed *"vary arg3's size alone (to `NKV×HD` per token) with the artifact untouched"*. **That test cannot be run
+as stated**, and the reason is in the same function:
+
+```cpp
+memcpy(attn_act->data(), act, (size_t)rows * q * 2);   // :359  arg4 is WRITTEN with the Q input
+…
+memcpy(out, attn_out->data(), (size_t)rows * q * 2);   // :405  arg3 is READ as the answer
+```
+
+**`attn_out` is not a scratch slot that happens to be arg3 — it is the engine's output buffer.** Shrinking it to
+512/token would break the read at :405 independently of anything the kernel does, so **a boot that moved under that
+change would be uninterpretable**, and a boot that did not move would be equally uninformative about the hypothesis.
+
+**What the two lines do establish is the engine's assumed role map — and it is the opposite of FLM's apparent one:**
+
+| | engine (code) | FLM (sizes, §102) |
+|---|---|---|
+| **arg3** | **output** (`attn_out`, read at :405) | 512/token = `NKV×HD` — **KV-width** |
+| **arg4** | **input** (`attn_act`, written at :359) | 2560/token = `NH×HD` — **attention-I/O width** |
+
+**So the engine assumes `out=arg3, in=arg4` while FLM's arg4 is the `NH×HD` slot and its arg3 is too small to hold an
+nh20 output at all.** That is a sharper statement than §173's size comparison, and it suggests the engine's two BOs may
+be **in the wrong slots** rather than wrongly sized.
+
+**Which gives a test that needs no allocation change and cannot break the read:** **swap the two arguments** —
+`set_arg(3, attn_act->bo()); set_arg(4, attn_out->bo());` — leaving every buffer exactly as allocated. The engine still
+fills `attn_act` with Q (:359) and still reads `attn_out` (:405); **if the kernel's output slot is its arg4, the answer
+now lands where the engine looks for it, and the boot moves.** If it does not move, the slots are equivalent to the
+kernel and the role hypothesis dies. **Either outcome is informative, which the size test was not.**
+
+**And the caveat from §173 still governs:** this tests the **call site**, not the arithmetic. §122's coverage figure
+remains a reading to re-establish, and a swap that *fixed* the boot would not by itself explain the 2048-of-2560
+coverage — it would only move the question one level down.
