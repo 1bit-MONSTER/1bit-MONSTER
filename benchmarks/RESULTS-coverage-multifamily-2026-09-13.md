@@ -8971,7 +8971,7 @@ sections where one was.** That is why the rules are the fix rather than a smarte
 rule matters is the one I would keep: **never move the other lane's content into your own sequence — it is the half
 that prevents the collision without either lane needing to know the other's intent.**
 
-## 165. The generated nh20 ELF produces the SAME wrong answer as the shipped one — the stream is not the discriminator, and my first mechanism guess was refuted by the load lines
+## 167. The generated nh20 ELF produces the SAME wrong answer as the shipped one — the stream is not the discriminator, and my first mechanism guess was refuted by the load lines
 
 The decisive experiment on the question §163/§164 left open: **is the Nanbeige-bound generator's nh20 output correct?**
 Run the @1024 path with the ELF slot replaced by one **genuinely generated for this model**
@@ -9013,3 +9013,36 @@ engine uses 5 / 5 / 16 MB) or the **caller's geometry** (`attn_qout = NH×HD = 2
 streams target the same width, which a generator using this model's config should not do. §123 is therefore marked
 **open, not refuted**: the honest form is *two different streams, same coverage — so the width is set by something
 neither of them carries.*
+
+## 510. The byte-exact result is GENERATED-vs-REGENERATED — and the generated route had already been RUN, and is equally wrong
+
+**Two corrections in one, and the second one is to me.**
+
+**First, the byte-exact match is not capture-vs-generation.** The evidence is a `cmp`:
+
+| file | bytes | mtime | sha256 (first 16) |
+|---|---|---|---|
+| `attn_mha_1024_nh16.elf` | 372512 | **21:36:24** | `6ece6c3301f4d1df` |
+| `attn_mha_1024_nh16.generated.elf` | 372512 | **23:59:02** | `6ece6c3301f4d1df` |
+| **`attn_cap1024.elf`** | **98848** | **23:58:16** | `d1273e3240034988` |
+
+**The two 372512-byte files are identical and both are generations** — the same tool, 2 h 23 m apart. So the match proves
+**determinism**, not agreement with FLM's capture; and since **generation-versus-capture differs at both shapes** (372512
+vs 98848 for qwen3; 340784 vs 177728 for nanbeige), there is **no "byte-exact at nh16, mismatch at nh20" contrast** to
+build on. The repo explains why: the **capture is a trimmed `elf_00NN`**, the **generation a full aiebu ELF** —
+**different containers**, so equality was never the right test.
+
+**Second, and this is the part I had wrong**: I was about to write that *"the generated route has never been executed."*
+**It has.** The peer lane ran the generated nh20 ELF and it produces **the same wrong answer as the shipped one** — so
+**the stream is not the discriminator**, and the defect is not in the sequence at all. It is in the **arithmetic** or the
+**gate**.
+
+**And that is the same failure I committed two sections ago, in a new costume.** Then I read a **comment** as a call
+site; here I read a **file listing** as the state of the world — in both cases **reasoning from an artifact without
+checking the newest evidence in the log.** The listing was accurate and the conclusion was stale. **A directory tells
+you what exists; only the log tells you what has been done.**
+
+**What survives, and is worth keeping**: the sizes still say something — the generated/captured ratio is **3.8× for
+qwen3** but **1.9× for nanbeige**, so the difference is **not** a fixed container overhead, consistent with two
+genuinely different encodings. And their result is stronger than mine: **two encodings, the same wrong answer**, which
+removes the sequence as a candidate entirely.
