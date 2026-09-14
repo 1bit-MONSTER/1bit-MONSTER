@@ -8747,3 +8747,29 @@ without checking — **the exact rule I had written two sections earlier.** The 
 **the check ran too late to be useful**: the guard caught it *after* the write and *before* the commit, which is the
 right place for a guard but the wrong place to be choosing from. **Claim the number before typing, not before
 committing.**
+
+## 162. The generator reproduces a capture BYTE-EXACTLY — and the shipped `attn_mha_1024_nh16.elf` is not that file
+
+§160 corrected §470's claim that the generated route is *wired*. The route is offline — but it is **real, built, and
+demonstrably exact at one shape**, which is a stronger answer to the named experiment than either lane had:
+
+| file | bytes | sha256 (first 16) |
+|---|---|---|
+| `~/npu-build/mha/attn_mha_1024_nh16.elf` (captured) | 372512 | `6ece6c3301f4d1df` |
+| `~/npu-build/mha/attn_mha_1024_nh16.generated.elf` (produced by `gen_attn_chunk`) | 372512 | **`6ece6c3301f4d1df`** |
+| `engine/npu/xclbins/attn_mha_1024_nh16.elf` (**shipped**) | **98848** | `d1273e3240034988` |
+
+**The first two are byte-identical**, so **the generator reproduces FLM's capture exactly** — not a similar shape, not
+a plausible sequence, the same **bytes**. `~/npu-build/mha/gen_attn_chunk` is a real built binary (1.9 MB), so this is
+a **tool result** rather than a reading of a comment.
+
+**So the named experiment's core question is answered for this shape: `gen_mha_engine_seq` is byte-exact.** That
+removes the largest unknown from r5 — the machinery is not merely documented (§455), not merely present (§158), it is
+**verified to agree with FLM's own output**. What remains unknown is **nh20**, one shape away.
+
+**And a discrepancy falls out of the same listing**: the **shipped** `attn_mha_1024_nh16.elf` is **98848 bytes** and
+is **not** the 372512-byte file of that name in the build dir — same name, different artifact, and the shipped one is
+smaller. The engine's own banner reports loading **98848 B** for this slot (visible in this file's earlier runs), so
+the shipped file is what actually runs. **This is not yet a defect** — the two could be different geometries sharing a
+name — but it is exactly the provenance question that §154's over-broad sentence came from, so it is recorded as a
+**question with the numbers attached**, not as a conclusion.
