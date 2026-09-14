@@ -13982,3 +13982,40 @@ less than it seemed to**: it was consistent with a fault anywhere upstream, and 
 
 **The instrument note, since it cost a run**: `RT_LOGITS_FINAL` takes a **path** (it dumps to a file), so setting it to `1`
 printed nothing; `RT_ARGMAX_MARGIN=1` is the one that reports values on stderr. **A knob's name is not its interface.**
+
+## 940. ROOT CAUSE of Gemma3-1B's zeros: the lm_head's INPUT is non-zero and its OUTPUT is zero — and the logits BO is 64 elements short of the model's vocab
+
+**`RT_DUMP_POST` dumps exactly the two values the logits depend on, and the three datasets are decisive:**
+
+| dump | size | measurement |
+|---|---|---|
+| **`act_post_*`** — the lm_head's **input** | 4 KB, 1024 bf16 | **576 non-zero (56.25%)** |
+| **`kv_post_*`** — the KV | 32 MB, 8.4 M bf16 | **non-zero and growing linearly**: 128 × ctx (ctx1 → 128, ctx256 → **32,768**) |
+| **`logits_post_*`** — the lm_head's **output** | 1 MB, 262,144 bf16 | **0 non-zero at EVERY ctx, 1 through 256** |
+
+**So the hidden state feeding the `lm_head` is live, the KV is populated, and the `lm_head`'s output is identically zero.**
+That moves the fault from *"at or before the lm_head"* to **AT the lm_head** — and the numbers then say why:
+
+```
+config.json                    vocab_size = 262,208
+the engine's own config line      NV = 262,144      <- 2^18, ROUNDED DOWN
+runtime_layer.cpp:92   bo_logits_ = make_unique<...>(dev, 1048576);   // 1 MB = 262,144 bf16, HARDCODED
+                                            shortfall = 64 elements
+```
+
+**The logits BO is a hardcoded 1 MB, and the engine's derived `NV` is 262,144 — while this model's vocab is 262,208.**
+Both agree with each other and are **64 elements short of the model.** The `lm_head` writes a vocab-wide row, the write does
+not land, and the buffer stays at the zeros it was `memset` to (`:94`).
+
+**And the zero is TOTAL rather than partial**, which is itself informative: if the kernel had written 262,144 values and
+failed on the last 64, the dump would show 262,144 non-zero words. **It shows none**, so the write is **absent**, not
+truncated — consistent with the kernel rejecting the call rather than filling part of it.
+
+**Why no other model hits this**: 262,144 is **larger** than every other supported model's vocab (151,936 for the Qwen3
+family, 128,256 for Llama), so a hardcoded 1 MB is generous there and only **Gemma3-1B's 262,208** crosses it. **The bug is a
+constant that was right for every model until the one with a bigger vocabulary arrived** — the same shape as the byte-extent
+defect (§890-§930), which was also correct until `shape[1] != 5120`.
+
+**The fix direction, not applied here**: size the logits BO from the model's **actual** vocab, and stop rounding `NV` down to
+a power of two. **What this section establishes is the measurement, not the patch** — a non-zero input, a zero output, a BO
+sixty-four elements short, and a hardcoded constant that the model it is now running exceeds.
