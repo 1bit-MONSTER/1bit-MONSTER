@@ -99,6 +99,23 @@ target_link_libraries(npu_engine_universal
     aiebu
 )
 
+# OpenMP is linked dynamically, and on a TheRock/pip SDK the only `libomp.so`
+# lives under a venv path pinned to a Python version, e.g.
+#   /opt/rocm-therock/lib/python3.14/site-packages/_rocm_sdk_core/lib/llvm/lib/libomp.so
+# so the worker refused to start on any machine without exactly that layout —
+# "libomp.so: cannot open shared object file". Nothing on a stock system
+# provides an unversioned libomp.so either (libomp5 ships libomp.so.5), and
+# there is no libomp.a to link statically.
+#
+# Start the search at $ORIGIN, where packages put a copy next to the worker
+# (usr/lib/1bit/{npu_engine_universal,libomp.so}, with usr/bin/1bit-npu a
+# symlink), and keep the XRT directory for the runtime, which real NPU hosts
+# install system-wide. See packaging/README.md.
+target_link_options(npu_engine_universal PRIVATE
+    "-Wl,-rpath,\$ORIGIN:/opt/xilinx/xrt/lib"
+    "-Wl,--enable-new-dtags"
+)
+
 target_compile_options(npu_engine_universal PRIVATE
     -O3 -ffast-math -march=native -funroll-loops -fno-math-errno -mavx2
     -Wno-unused-parameter -Wno-unused-variable -Wno-nan-infinity-disabled -Wno-implicit-const-int-float-conversion
