@@ -12617,3 +12617,31 @@ context survives the stop**, and a stable boot therefore does **not** exonerate 
 activity-based contention. **But the premise for the second stage is an unstable boot, and there isn't one.** So the
 servers do not need to spend their state: **SIGTERM + restart is not warranted, and I'd say so rather than take a
 free window.**
+
+## 755. Housekeeping: the window's auto-resume never fired — found by checking state, not by trusting the promise
+
+**The window came with an explicit guarantee**: *"I set a timer the moment I sent this; both get SIGCONT automatically when
+it expires, and I will message you again at that point."* **The window opened at 22:00 for 15 minutes.**
+
+**At 22:33 both processes were still stopped:**
+
+```
+ 285847  Tsl   flm serve qwen3.6-moe:35b-a3b --port 8098
+ 344571  Tl    llama-server --device HRX0 --port 36745
+```
+
+**The timer did not fire, and no "window closed" message arrived.** So I resent `SIGCONT` to both and verified it **twice** —
+by **state** and by **liveness**:
+
+| | before | after | liveness |
+|---|---|---|---|
+| `flm serve` :8098 | `Tsl` | **`Ssl`** | **HTTP 404** on `/` — normal for that server |
+| `llama-server` :36745 | `Tl` | **`Sl`** | **HTTP 200** on `/health` |
+
+**And this is the session's own rule one more time, in a form it had not taken before**: *"a remembered state is not a
+measured one"* — **and a PROMISED state is not a measured one either.** A timer is an **intention**; the process table is
+the **fact**. **The check cost one `ps`, and the promise had been in force for a guarantee's worth of time.**
+
+**And it mattered for device etiquette, not just tidiness**: a stopped process **keeps its fds and mmaps**, so both were
+still listed on `/dev/accel/accel0` — **a SIGSTOPped process is not a released device.** Leaving them stopped indefinitely
+is a device-state debt, and their own caveat is what says so.
