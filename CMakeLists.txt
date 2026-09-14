@@ -2321,11 +2321,34 @@ message(STATUS "models: 35+ architectures supported for 1BP conversion")
 # NPU Engine (XRT required)
 # ═══════════════════════════════════════════════════════════════════════════
 find_package(XRT QUIET)
+if(NOT XRT_FOUND)
+    # find_package(XRT) needs XRTConfig.cmake, which ships with AMD's
+    # /opt/xilinx/xrt tree — Ubuntu's libxrt-dev has the headers
+    # (/usr/include/xrt/xrt_device.h) and the libraries but no CMake config, so
+    # the release runner could install libxrt-dev and still report
+    # "npu: XRT NOT found — skipping NPU engine build", leaving nothing to package
+    # (issue #2360). Probe the header + library layout as well.
+    find_path(_RC_XRT_HDR_DIR xrt/xrt_device.h
+        PATHS /opt/xilinx/xrt/include /usr/include /usr/local/include)
+    find_library(_RC_XRT_COREUTIL xrt_coreutil
+        PATHS /opt/xilinx/xrt/lib /usr/lib/x86_64-linux-gnu /usr/local/lib)
+    find_library(_RC_XRT_CORE xrt_core
+        PATHS /opt/xilinx/xrt/lib /usr/lib/x86_64-linux-gnu /usr/local/lib)
+    if(_RC_XRT_HDR_DIR AND _RC_XRT_COREUTIL)
+        set(XRT_FOUND TRUE)
+        set(XRT_INCLUDE_DIRS ${_RC_XRT_HDR_DIR})
+        set(XRT_CORE_LIBRARIES ${_RC_XRT_COREUTIL})
+        if(_RC_XRT_CORE)
+            list(APPEND XRT_CORE_LIBRARIES ${_RC_XRT_CORE})
+        endif()
+        message(STATUS "npu: XRT found via header/library probe (${_RC_XRT_COREUTIL})")
+    endif()
+endif()
 if(XRT_FOUND)
     add_subdirectory(engine/npu EXCLUDE_FROM_ALL)
     message(STATUS "npu: XRT found — NPU engine targets available via 'cmake --build build --target npu_engine_universal'")
 else()
-    message(STATUS "npu: XRT NOT found — skipping NPU engine build")
+    message(STATUS "npu: XRT NOT found — skipping NPU engine build (npu_engine_universal will not be a target)")
 endif()
 
 
