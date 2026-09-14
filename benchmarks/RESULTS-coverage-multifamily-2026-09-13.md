@@ -9966,3 +9966,41 @@ packing), which is where "what goes inside the buffers" was already named as the
 **Recorded with the caveat that this whole table rests on boots, not times:** all four cells were run with `clang=0`, and
 the three degenerate cells also share a prefill time (~686 ms, 688 ms, 678 ms), which is consistent with one code path
 and not with three.
+
+## 181. `BF16MM_AZERO` is INERT in both contexts — the one unguarded buffer's CONTENT is not the discriminator, so the attractor is a code path and not data
+
+The hazard was named precisely and it was worth the two runs: `attn_out` is the **only output buffer never cleared** (its
+zeroing exists solely behind `BF16MM_AZERO`), the kernel writes only **2048 of 2560 columns** (§122), and line 421 copies
+back **`rows × q`** regardless — so the unwritten remainder is read back into the activation stream. If that were the
+defect, zeroing before the launch would move the boot.
+
+| configuration (`/tmp/ids_1024.txt`, bf16, `clang=0`) | boot | prefill |
+|---|---|---|
+| baseline — `attn_out` stale | **188** | 712 ms |
+| **`BF16MM_AZERO=1`** — `attn_out` zeroed | **188** | 743 ms |
+| swap only | 152432 | 660 ms |
+| **swap + `BF16MM_AZERO=1`** | **152432** | 684 ms |
+
+**Inert in both contexts.** Starting the buffer zeroed changes nothing in the valid configuration **and** nothing in the
+degenerate one, so **the content of the unguarded buffer is not the discriminator** and the hazard — though real — is
+**inert for the boot**.
+
+**Which refutes the content reading of the attractor, and §180's timing evidence already pointed the same way.** `152432`
+from the swap and from the region stride is **one value from unrelated causes**, and the natural explanation was "the
+kernel reads the same wrong *content* in both" — but if content were it, zeroing would have moved it. It did not. **So
+the attractor is a property of the CODE PATH the kernel takes when its call is invalid**, not of the bytes it is handed
+— which is exactly what the near-identical prefill times across all four cells (660–743 ms) suggested independently.
+
+**And the method note is the useful part, because their reasoning was right and the result was still negative.** They
+checked *"is the buffer under test the one that is unguarded"* — and it was, uniquely — which is the correct way to pick
+an experiment. **The correct way to pick an experiment can still return "the buffer is irrelevant"**, and the difference
+between this and §136's `CZERO` case is real: there, sync made the probe inert (a broken instrument); here the probe was
+sound and the **hypothesis** was wrong. Two different reasons for the same shape of result, which is why §136's
+retraction does not cover this run.
+
+**So the lane's state after five perturbations is unchanged and now has a reason:** `188` remains the only non-degenerate
+point, **no perturbation discriminates**, and the reason is that they all select the same degenerate **path** rather than
+varying what the kernel reads. **The remaining measurement is the one their message also named and neither of us has
+built: a direct extent count on `attn_out`** — the analogue of GEMM's `BF16MM_CEXTENT` — which replaces §122's
+instrument-dependent "2048 of 2560" with a number the engine counts itself. That is new code, and it is the only
+candidate left that measures something no perturbation has measured.
