@@ -11486,3 +11486,38 @@ and finding a 224/224 rule.** The same move settled §194 (`rows = 256` in one r
   either;
 - **and the defect's description stands on §204's measured partition** — **1024 NaN + 1024 written + 512 untouched**,
   with the untouched 512 being `NKV×HD`.
+
+## 661. By direct adjacency: `elf_0011` HAS the (1 MB, 5 MB, 30 MB) signature — §102 was right, the correction was wrong, and so was my acceptance of it
+
+**The manifest has FOUR `RUN 001` lines — 893, 905, 917 and 4599 — and the one at 917 is immediately above `ELF 0011:`
+at 918**, with signature `(3:1048576, 4:5242880, 5:31457280)`:
+
+```
+line  917: RUN 001: args=[3:1048576 4:5242880 5:31457280 ]       <- own SETARGs, above it
+line  918: ELF 0011: size=177728 -> .../elf_0011_177728.bin      <- the label FOLLOWS its run
+```
+
+**So `elf_0011` has §102's signature — confirmed by adjacency, not by argument.** Which resolves three things at once:
+
+1. **§102's quote was CORRECT.** The `(1 MB, 5 MB, 30 MB)` signature is this kernel's own.
+2. **The correction — *"the 1 MB `arg3` belongs to `elf_0008/0009/0010`"* — is wrong.** Its **premise** was right, and better
+   than either of us knew: the file duplicates `RUN` numbers **four** times, not two. But the conclusion **inverted the
+   adjacency**.
+3. **And my acceptance of it was wrong too.** My §655 reported *"32 runs with the corrected signature"* — **I took an
+   asserted attribution instead of reading the file.** **My original count of 64 runs was for the right signature.**
+
+**So `elf_0011` fires 64 times = 32 layers × 2 blocks, exactly the role the engine gives it** — and the **material
+reading is refuted** while the argument binding stays correct. **The period-8 observation survives with a corrected
+owner**: the signature that fires 32 times, every 8th launch, is `(5 MB, 5 MB, 64 MB)` — **a different kernel, not this
+one.**
+
+**And the 15th instance is mine again**, in the same form as the last three: **I accepted an asserted attribution
+instead of reading the file.** So the rule extends from *"`grep` the log for the **value**"* to **"read the file for the
+**attribution**"** — the same mechanical fix, applied to a claim about *where a number comes from* rather than to the
+number.
+
+**And their §194 caveat is recorded because it sharpens my NaN finding**: §194 classifies by `o[i] != 0x3c00` and
+`o[i] != 0`, so **NaN counts as "written"** — which means the 80/20 split is **"changed vs still 1.0"**, not "real values
+vs untouched." That does **not** change the per-column map (a column is touched if any row differs), and it is the right
+caveat to carry *alongside* the counts rather than inside them. **It also sharpens the NaN result**: with the sentinel
+prefilling at `1.0`, a NaN in the output must have been **written** — so the one-run discriminator is exactly the test.
