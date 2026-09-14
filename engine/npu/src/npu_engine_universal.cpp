@@ -2477,6 +2477,19 @@ struct Bf16Ctx {
     std::vector<std::vector<KVCache>> kv_caches;
     for(int i=0;i<NC;i++){ kv_caches.emplace_back(); for(int b=0;b<BS;b++) kv_caches[i].emplace_back(kv_size); }
     int qkv_n=cfg.qkv_total;
+    // Qwen3.5/3.6 (GDN + fused full-attn) widen the QKV GEMM output past the
+    // plain q+k+v layout. GDN packs q+k+v = 2*KD+VD (max_gdn_conv_dim), and
+    // fused full-attn packs q+gate = 2*NH*HD; both are 8192 for the current
+    // families vs qkv_total = NH*HD + 2*NKV*HD = 6144. The pack path widens
+    // cq.ND to match, but qkv_n (the output buffer width + finish `an`) still
+    // used qkv_total, so the GDN v-tail / fused gate-tail was silently dropped
+    // and gdn_attn_step read zeros for the second half of v — boot 163554 vs
+    // FLM's 16. Size the buffer/finish to the widened width.
+    if (cfg.has_gated_delta_net || cfg.has_moe) {
+        if (max_gdn_conv_dim > qkv_n) qkv_n = max_gdn_conv_dim;
+        int fused_w = 2 * NH * HD;
+        if (fused_w > qkv_n) qkv_n = fused_w;
+    }
     std::vector<float> h_b(XM*H), qo_b(XM*qkv_n), at_b(XM*NH*HD), oo_b(XM*H), gt_b(XM*(cfg.gu_split?IM:2*IM)), su_b(XM*IM), dw_b(XM*H);
     std::vector<float> h_data(H), qo_data(qkv_n*BS), ko_data((size_t)NKV*HD*BS), vo_data((size_t)NKV*HD*BS), at_data((size_t)NH*HD*BS), oo_data(H*BS);
     std::vector<float> gt_data((cfg.gu_split?IM:2*IM)*BS), su_data(IM*BS), dwo_data(H*BS), sb_data(XM*H), lg_buf(NV);
@@ -3221,6 +3234,10 @@ struct Bf16Ctx {
         // causal depthwise conv1d on the fused QKV (kernel 4)
         memmove(conv_state, conv_state + gdn_conv_dim[l], (size_t)gdn_conv_dim[l] * (gdn_conv_k[l] - 1) * 4);
         memcpy(conv_state + (size_t)gdn_conv_dim[l] * (gdn_conv_k[l] - 1), fqo, (size_t)gdn_conv_dim[l] * 4);
+        if (l == 0 && getenv("NPU_DUMP_L0")) {
+            FILE* fcs = fopen("/tmp/l0_convstate.bin", "wb");
+            if (fcs) { fwrite(conv_state, 4, (size_t)gdn_conv_k[l] * gdn_conv_dim[l], fcs); fclose(fcs); }
+        }
         const float* cw = gdn_conv_w[l].data();
         for (int cc = 0; cc < gdn_conv_dim[l]; cc++) {
             double s = 0;
