@@ -41,6 +41,19 @@ run rotation  Testing/rotation_table_selfcheck.cpp
 # NPU lane at all (no package ships the worker either — issue #2360). Pins the order,
 # so the legacy ./ and build/ paths can never shadow an installed worker.
 run npu_worker Testing/npu_worker_path_selfcheck.cpp --
+
+# The worker itself: CI cannot compile it (no usable XRT), so it ships as a
+# vendored prebuilt that packaging prefers to override with a fresh build. A
+# prebuilt binary rots silently — this pins manifest↔binary shas, the RUNPATH that
+# lets it find its bundled libomp in every layout we ship, and both staging paths.
+total=$((total+1))
+if bundle_out=$("$PYTHON" Testing/npu_worker_bundle_selfcheck.py 2>&1); then
+    echo "✓ npu_bundle"
+else
+    echo "✗ npu_bundle"
+    printf '%s\n' "$bundle_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 run iq1       Testing/iq1_selfcheck.cpp --
 
 # Padded-vocab embedding gate: some 1BP artifacts declare the checkpoint's padded

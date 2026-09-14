@@ -1,0 +1,25 @@
+{
+  "what": "Prebuilt native NPU worker + its OpenMP runtime, for packaging.",
+  "why": "The release runner has no usable XRT (Ubuntu noble's libxrt-dev is XRT 2.13 with the xrt/experimental/* header layout; this tree needs xrt/xrt_device.h >= 2.14, and AMD ships XRT as source/RPM only), so CI cannot compile npu_engine_universal. Without this the released tarball/.deb/AppImage/GHCR artifact ship CPU/GPU-only \u2014 issue #2360. Packaging prefers a freshly built worker and falls back to these files.",
+  "files": {
+    "npu_engine_universal": {
+      "sha256": "f013498e5a2746cf5a39567b439bb9f1b10f0d51975dee7980c7b6d964bc5178",
+      "size": 1004104
+    },
+    "libomp.so": {
+      "sha256": "f30cf8aa2ae3361aca3e21b19b90747e46ef05c246e4ff5b1a2885d82df79f3d",
+      "size": 1329001
+    }
+  },
+  "built_from_commit": "a9315cec4e910d5f31ae802f49175abfad80d6e0",
+  "built_on": "strixhalo (Ryzen AI Max+ 395 / gfx1151), 2026-09-14",
+  "build_command": "cmake -B build -G Ninja -DCMAKE_HIP_ARCHITECTURES=gfx1151 && cmake --build build --target npu_engine_universal -j8   # engine/npu project",
+  "toolchain": "AMD clang 23.0.0git (TheRock), HIP gfx1151",
+  "runtime_deps": {
+    "libxrt_coreutil.so.2": "system XRT (/opt/xilinx/xrt/lib) \u2014 required on the host",
+    "libxrt_core.so.2": "system XRT (/opt/xilinx/xrt/lib) \u2014 required on the host",
+    "libomp.so": "bundled beside the worker; found via RUNPATH $ORIGIN / $ORIGIN/../lib/1bit"
+  },
+  "runpath": "$ORIGIN:$ORIGIN/../lib/1bit:/opt/xilinx/xrt/lib(+the SDK venv path it was linked against)",
+  "regenerate": "Re-run the build on a host with real XRT, then replace both files here and update the shas. Testing/npu_worker_bundle_selfcheck.py fails if the shas drift."
+}
