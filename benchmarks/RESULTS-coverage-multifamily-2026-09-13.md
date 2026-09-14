@@ -9816,3 +9816,44 @@ slot held, for the calls they captured.**
 **And the engine's `attn_out` (5 MB) at arg3 matches `elf_0012`'s shape, not `elf_0011`'s.** If the engine is emulating
 `elf_0011` — and §102's quoted `RUN 001: args=[3:1048576 4:5242880 5:31457280]` is that call — then **it binds an
 attention buffer where the emulated kernel was handed instructions.**
+
+## 575. SELF-CORRECTION: my "arg3 carries the instructions" rested on an instrument's LABEL — the ninth instance, and it is mine
+
+**What I claimed one section ago**: *"for the emulated kernel, arg3 is followed immediately by an INSTRUCTION-STREAM dump
+— 1 MB = 262,144 words — so for that call arg3 carries the instructions."*
+
+**And the self-check fails it.** `INSTS_DUMP` and `ARG4_DUMP` appear in **no source file** — a `grep` across the repo, the
+build tree and the FLM tree returns **only the manifest logs** and my own write-up. **So the tool that emitted the label
+is not here, and I cannot verify what rule produced it.** *"A source you never opened cannot corroborate a value you
+measured"* — and I read a **filename a tool chose** as a statement about what a buffer **is**.
+
+**So the claim downgrades, and here is exactly what survives:**
+
+| what | status |
+|---|---|
+| `(3, 0, 0)` for all **481** calls — the `SETARG3` lines | **direct, unambiguous** |
+| `idx=3 size=1048576` for the `elf_0011` call | **direct** — a size |
+| **"arg3 carries the instructions"** | **UNCORROBORATED — the label's rule is unread** |
+
+**And the arithmetic survives without the label, which is the part worth keeping.** 1 MB = 1024 × 512 × 2 =
+**`npt × NKV×HD`** — the KV row width times the token count. That is **a shape, not a role**: arg3 is **sized like the
+model's KV-row-width per token**, and whether it is instructions or a KV-shaped buffer is **not settled by the
+manifest.**
+
+**Which makes this the ninth instance of the session's dominant class, and the fourth in the proxy-as-referent family:**
+
+| instance | proxy | read as |
+|---|---|---|
+| §160/§164, my §470 | a comment | a call site |
+| my *"never executed"* | a file listing | the state of the world |
+| their §162 | matching hashes | a provenance relationship |
+| their §144 | a value | an identity |
+| **this one** | **an instrument's label** | **a buffer's role** |
+
+**And it was caught within one exchange by applying the rule to my own claim** — which is the pattern that has held all
+session, and the reason the instance count is worth keeping: **the rule did not prevent the error, the habit of
+re-reading the artifact did.**
+
+**What the lane actually holds, unchanged:** the **scalar hypothesis is dead** (direct evidence, 481 calls); the **sizes
+are direct** (1 MB / 5 MB / 30 MB against 5 / 5 / 16 MB); and the **role question is reopened as a hypothesis**, with the
+manifest's dump names as **a lead, not a finding.**
