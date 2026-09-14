@@ -35,6 +35,12 @@ run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run rotation  Testing/rotation_table_selfcheck.cpp
+
+# Where the NPU worker is looked up: the lane fork/execs `npu_engine_universal`, and
+# resolving it relative to the cwd meant a service started elsewhere silently had no
+# NPU lane at all (no package ships the worker either — issue #2360). Pins the order,
+# so the legacy ./ and build/ paths can never shadow an installed worker.
+run npu_worker Testing/npu_worker_path_selfcheck.cpp --
 run iq1       Testing/iq1_selfcheck.cpp --
 run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
 # NPU artifact key contract (issue #2193): the header-window regression and the

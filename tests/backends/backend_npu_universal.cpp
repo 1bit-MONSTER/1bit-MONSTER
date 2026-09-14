@@ -21,6 +21,7 @@
 // timeout so the server never blocks forever.
 
 #include "backend.h"
+#include "npu_worker_path.h"
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -67,8 +68,14 @@ struct NpuWorker {
         }();
         (void)_sigpipe_ignored;
 
+        // Same resolution as src/backend_npu.cpp — one list, not two that drift.
         const char* engine_bin = getenv("NPU_ENGINE_BIN");
-        std::string bin = engine_bin ? engine_bin : "./npu_engine_universal";
+        const std::string bin = npu_worker_resolve(engine_bin, npu_worker_exe_dir());
+        if (bin.empty()) {
+            fprintf(stderr, "NPU(univ): npu_engine_universal not found — checked %s\n",
+                    npu_worker_candidate_list(engine_bin, npu_worker_exe_dir()).c_str());
+            return false;
+        }
 
         int to_child[2], from_child[2];
         if (pipe(to_child) < 0 || pipe(from_child) < 0) return false;
@@ -190,12 +197,9 @@ public:
     bool is_coherent() const override { return true; }
 
     bool is_available() override {
-        const char* engine_bin = getenv("NPU_ENGINE_BIN");
-        std::string bin = engine_bin ? engine_bin : "./npu_engine_universal";
-        if (access(bin.c_str(), X_OK) == 0) return true;
-        // Also accept the repo build location so zaya finds it out of the box
-        std::string alt = "build/npu_engine_universal";
-        return access(alt.c_str(), X_OK) == 0;
+        // One resolver for both backends: $NPU_ENGINE_BIN, next to the executable,
+        // the deb/AppImage layout, /usr/bin, then the legacy cwd/build paths.
+        return !npu_worker_resolve(getenv("NPU_ENGINE_BIN"), npu_worker_exe_dir()).empty();
     }
 
     bool load_model(const ModelConfig& cfg) override {
