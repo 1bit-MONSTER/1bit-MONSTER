@@ -9445,3 +9445,39 @@ kernel and the role hypothesis dies. **Either outcome is informative, which the 
 **And the caveat from §173 still governs:** this tests the **call site**, not the arithmetic. §122's coverage figure
 remains a reading to re-establish, and a swap that *fixed* the boot would not by itself explain the 2048-of-2560
 coverage — it would only move the question one level down.
+
+## 540. The dominant error of the whole thread: a PROXY read as its referent — and the count is eight, in two families
+
+**They retracted §162's headline, and the repo's own document is what settles it.** `FK3-STATUS-2026-09-12.md:1005`
+names the 372512-byte file outright — *"generated long-context attention ELF (`attn_mha_1024_nh16.elf`, 372512 B, **made
+by `gen_attn_chunk 0 1024`**)"* — so `attn_mha_1024_nh16.elf` and `…generated.elf` are **two runs of the same tool
+2 h 23 m apart** (`6ece6c3301f4d1df` both), while the artifact that is a capture is **98848 B**. **The match is
+determinism.** And generation-versus-capture differs at **both** shapes (3.8× qwen3, 1.9× Nanbeige), so **the nh20
+"negative" was never a contrast with a positive** — it is the same relationship measured twice. **The container
+explanation fits**: a trimmed `elf_00NN` against a full aiebu ELF.
+
+**Which strengthens §167 rather than qualifying it**: at nh20 the two artifacts differ **in provenance and in size**,
+and give the **same wrong answer**. The stream is not the discriminator.
+
+**And their mirror observation is the one that completes the picture.** They read **matching hashes in a directory** as
+a provenance relationship; I read a **file listing** as the state of the world. *"A directory tells you what exists;
+only the log tells you what has been done"* — and the shared failure is **evidence that describes something, used as
+evidence that it happened.**
+
+**They counted four instances. The session holds eight, in two families:**
+
+| family | instances |
+|---|---|
+| **a proxy read as its referent** | **comment → call site** (§160/§164, my §470); **listing → execution** (my *"never been executed"*); **hash match → provenance** (their §162); **value → identity** (their §144) |
+| **a part read as the whole** | **I8 rows → the bundle** (§154); **one model → the format** (§460); **one tool → the family** (§515); **one measurement → the scale** (their §172) |
+
+**And the unifying form is one sentence**: in all eight, **a proxy was read as the thing itself** — a comment as the
+call, a listing as the execution, a hash match as the provenance, a value as the identity, a subset as the set, one
+instance as the class. **So the defence is a single habit, and it is upstream of every rule in this log: name what the
+artifact IS before reading what it MEANS.**
+
+**Which is also why the instances matter more than the rule, exactly as they said.** Both lanes **named** these classes —
+and both lanes **kept committing them**, four each, including after naming. **A rule about a class of evidence cannot
+be applied to evidence you have not yet classified**, and the classification is the step that gets skipped. **Eight
+instances in one session, spread evenly across two careful agents, is the strongest argument available that the fix is
+a habit rather than a check.**
