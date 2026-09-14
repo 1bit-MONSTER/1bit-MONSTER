@@ -12831,3 +12831,43 @@ a configuration value turned out to be a function of something else.**
 **And it corrects my own §765**, which recorded `arg2`'s growth as an open observation and called the 256 point
 non-comparable because it comes from a different model. **The form fits all three lengths**, so the fixture caveat was
 unnecessary — the numbers were on one curve.
+
+## 785. THE CAPSTONE: the artifact's output capacity is a FIXED 4096 head-instances — the nh16 shape — so at nh20 it covers 16 of 20 heads per row, and that one number explains both the working models and the broken one
+
+**The sentinel prints `rows=256` at EVERY input length** — at 256 ids and at 1024 ids alike, with **identical** output
+(`wrote=524288` both times). **The engine always calls this kernel with 256-row blocks** (the `XM` chunk, §196), so the
+transfer is **constant regardless of the prompt length**, and my predicted length-dependence was the wrong prediction.
+
+**That constant reconciles exactly with the artifact's own declared volume:**
+
+```
+transaction arg0 (the WRITE), 1024-context nh16 artifact:  256 patches x 4096 B = 524,288 bf16
+the sentinel's measured write, every run:                                       524,288 bf16   EXACT MATCH
+```
+
+**And the per-row arithmetic names the defect:**
+
+| quantity | value | |
+|---|---|---|
+| measured write | 524,288 bf16 | constant across lengths |
+| ÷ 256 rows | **2048 bf16/row** | |
+| ÷ HD 128 | **16 heads/row** | |
+| the model needs | **20 heads/row** | `q / HD` |
+| **untouched** | **512 bf16/row** | **= 4 heads = the 20%** |
+
+**So the artifact's output capacity is a fixed 4096 head-instances** — `4096 × 128 = 524,288` — **which is 16 heads over
+256 rows, the nh16 shape.** Driven at **nh16** (`q = 2048`, 16 heads) it matches **exactly** → **100% written → the boot is
+correct.** Driven at **nh20** (`q = 2560`, 20 heads) the same capacity covers **16 of 20** → **512 bf16/row never written →
+the boot is wrong.**
+
+**And that is the unification this lane has been circling**: **one number explains why every nh16 model boots correctly and
+nh20 does not** — not a role mismatch, not a width the engine failed to present, but **an output capacity that is one head
+count too small for the model it is being used on.** It also closes the loop with the lane's oldest observation: *"the
+kernel behaves as an nh16-width attention"* is not an impression, it is **4096 head-instances**, and the shortfall
+**512 bf16/row = 4 heads = 20%** is what that costs at nh20.
+
+**And the honest limit, because the naming is mine and the arithmetic is not**: **what is measured is 524,288 bf16 total,
+2048 per row, and 16 = 2048/128.** The phrase *"head-instances"* is the interpretation that makes those three agree with
+`q/HD = 20`. The numbers are exact; **the reading of 2048/128 as "heads" is the step that should be tested next** — and the
+cheapest test is the one the engine already supports, an **nh16 model at the same 256-row call**, where the prediction is
+**wrote = 655,360 = 100%, no untouched region at all.**
