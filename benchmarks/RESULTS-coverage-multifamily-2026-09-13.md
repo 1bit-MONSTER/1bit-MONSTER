@@ -8363,8 +8363,9 @@ header**, and the header was on disk the whole time.
 whether the vendor ships headers.** This tree was one `ls` away, found only because the conv errand sent us looking
 for a `.so`.
 
-**Numbering**: a fifth peer-internal collision — two sections numbered 155 — resolved by moving the later one
-("the performance stake of the attention-ELF fix") to **157**.
+**Numbering**: a fifth peer-internal collision — two sections numbered 155 — was resolved by moving the later one
+("the performance stake of the attention-ELF fix"). **That move went 155 → 157 → 465**, because the two lanes
+resolved it in opposite directions in the same window; see §480 for the crossing.
 
 ## 460. The cross-corpus scan: 5120 is the NORM, 3-D does not imply "no 5120", and my error was a QUANTIFIER at three levels
 
@@ -8564,3 +8565,39 @@ cleared** and the gate is left holding the defect on its own.
 **Caveat, because these are pimpl headers**: the accessors give the **structure** — four regions, K before V, halves
 0–3 and 4–7 — and **not the offsets' values.** So this settles the convention and not the arithmetic, which is the
 same boundary §158 drew for the sequence generator.
+
+## 480. The crossing: two agents resolved the SAME collision in opposite directions, and both fixes landed
+
+**What happened, because it is a failure mode neither lane had named.** I found the peer-internal duplicate (§155
+twice) and moved the later one — *"the performance stake of the attention-ELF fix"* — **155 → 157**. In the same
+window, the other lane used **157** for the new FLM-generated-attention finding. **Two §157s** (lines 8267 and 8409),
+each lane having moved a *different* section into the same number while believing it was fixing a different problem.
+
+**Then we both fixed it, in opposite directions:**
+
+| lane | move | verdict |
+|---|---|---|
+| **theirs** | their attention finding **157 → 158** | **correct** — their content into their own sequence, which is the policy |
+| **mine** | the perf-stake section **157 → 465** | **into MY sequence — which is precisely the half of the policy that says the owner's** |
+
+**So my fix violated the policy I had written two sections earlier**, and the reason is structural rather than careless:
+**the policy says where a section should go but not WHO should move it**, and both lanes read the same duplicate as
+theirs to resolve.
+
+**The outcome is benign** — both sections survive, no duplicate remains, and no reference is stale (the cross-reference
+from §475 already points at §158). **The only damage was a note in §470 recording the move "to 157"**, an intermediate
+state that the second move superseded; it now records the full path, 155 → 157 → 465.
+
+**And the generalisation is worth keeping**: **concurrent collision resolution is itself a collision.** Two agents
+resolving the same duplicate in opposite directions produce a file with **no duplicate and two moved sections** —
+which passes every check either lane has, because the checks look for duplicates and stale references, not for
+over-solving. Neither lane can see the other's choice until after the push, so:
+
+1. **Claim the number in a message before renumbering it** — the commit message is after the fact and the push is
+   later still;
+2. **Never renumber the other lane's content into your own sequence.** Move it within its own range, or move your own
+   and leave theirs alone. **A number is a namespace, and the cheapest fix is the one that never enters the other's.**
+
+**This is the seventh numbering incident and the first that two lanes created jointly.** The first six were append
+collisions — the same number taken twice — and each was fixed by moving one section. This one is the *fix* colliding,
+which is a class above: **it needs a claim, not a convention.**
