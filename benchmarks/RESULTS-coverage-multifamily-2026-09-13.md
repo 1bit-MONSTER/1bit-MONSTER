@@ -14139,3 +14139,36 @@ versus a wrong token, and the reason the arm-B logits count above is "no dumps",
 **So the Gemma3-1B row stands as §950 left it, now with an experiment behind the diagnosis**: the cause is a **missing
 vendor ELF**, the fix is **that artifact with the right shapes**, and the search is closed on this engine's side — attention,
 geometry, dequant, buffer size and now the call path have each been tested rather than argued.
+
+## 960. The lm_head artifact is UNOBTAINABLE from either vendor path — and each refuses with an explicit, named error
+
+**§950 said the fix was *"one vendor artifact with the right shapes."* Both routes to it have now been tried, and both refuse
+in terms:**
+
+```
+$ gle_all <Gemma3-1B-NPU2> <out> 1 1 32768 gemma_text
+  (no lm_head emitted — FLM's gemma_text class does not export gen_lm_head_seq)
+
+$ gle_all <Gemma3-1B-NPU2> <out> 1 1 32768 qwen3
+  terminate called after throwing an instance of 'std::runtime_error'
+    what():  Unsupported intermediate size: 6912
+```
+
+**So the vendor's own classes will not build it**: `gemma_text` has no lm_head generator at all, and `qwen3` — the class that
+does have one — **rejects this config outright on a named dimension.**
+
+**And the second refusal is the informative one.** `qwen3`'s lm_head is not shape-agnostic; it is parameterised over a set of
+**supported intermediate sizes**, and **6912 is not in it.** That is the same class of limit as Gemma3-4B's
+`blocks_per_row <= 63`: **a vendor class that supports a fixed family of shapes, refusing one outside it** — and it is the
+reason the lm_head cannot be assembled from another family's generator with this model's dimensions.
+
+**Which closes the investigation rather than leaving it open.** The remaining dependency is **vendor coverage**: Gemma3-1B is
+outside the set of models the vendor's own sequence classes support, **and the scorecard already records that FLM cannot load
+this model either.** So the artifact is not merely "not committed" (§815's class) and not "backed by the wrong build"
+(§820's) — **it does not exist, and no path available here produces it.**
+
+**The row's final form**: **Gemma3-1B runs end to end; its output is all-zero logits because the lm_head ELF is absent; that
+artifact is unobtainable from either vendor generator, each refusing with a named error; and the shipping engine is
+unaffected.** What the engine side closed along the way — the odd-G reorder, the byte-extent tile count in four functions,
+the lm_head tile count, and the missing-elf silence — are all real repairs with gate-verified no-ops, and they are what let
+the model reach the point where the remaining gap is **this narrow and this well-named.**
