@@ -23,6 +23,7 @@
 #include "models/phi4/phi4_npu.hpp"
 #include "models/nanbeige/nanbeige_npu.hpp"
 #include "models/lfm2/lfm2_npu.hpp"
+#include "models/qwen3_5vl/qwen3_5vl_npu.hpp"
 #include "lm_config.hpp"
 
 // utils::find_xclbin_path is provided by npu_engine_bf16_mm_bridge.cpp.
@@ -58,6 +59,8 @@ extern "C" int flm_prefill_init(const char* model_dir, const char* family) {
             g_model = std::make_unique<nanbeige_npu>(config, g_npu.get(), 32768);
         else if (fam == "lfm2")
             g_model = std::make_unique<lfm2_npu>(config, g_npu.get(), 32768);
+        else if (fam == "qwen3_5vl")
+            g_model = std::make_unique<qwen3_5vl_npu>(config, g_npu.get(), 4096);
         else
             g_model = std::make_unique<qwen3_npu>(config, g_npu.get(), 32768);
         g_model->load_weights(*g_q4nx);

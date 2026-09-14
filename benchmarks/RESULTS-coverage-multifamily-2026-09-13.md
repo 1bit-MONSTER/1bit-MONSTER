@@ -14759,3 +14759,37 @@ own test for whether a change took effect. All ten gates were re-checked green w
 - **And the shared git identity makes this hard to see**: both lanes commit as **`pi agent 07e844`**, so their commits are
   indistinguishable from mine in the log. **An identifier that is not unique is a source that cannot corroborate** — the
   session's own rule, now applying to authorship rather than to log lines.
+
+## 4736-byte "I8" tile — disassembly progress (2026-09-14, authorized disassembly effort)
+
+Recovered the dequant tile-size table from `libqwen3_5_omni_npu.so` (`gen_dequant_mm_512` / `thinker_desc::reorder_cpy`),
+which derive a per-tile byte factor from the `flm_dtype_t` byte (0–7) at `weight_desc_t+0x20`:
+
+| dtype | factor | tile bytes (×512) |
+|---|---|---|
+| 0 | 9 | **4608** |
+| 1 | 17 | **8704** (Q8_0) |
+| 2 | 10 | **5120** (Q4_1) |
+| 3 | 18 | 9216 |
+| 4 | 10 | 5120 |
+| 5 | 18 | 9216 |
+| 6 | 11 | 5632 |
+| 7 | 19 | 9728 |
+
+The file tile is **4736 B**, which is **none** of these: it is **4608 + 128**. Byte analysis of a q_proj layer-3 tile
+fixes the structure:
+
+- `[0:4096]` — **int4 packed** (32×256; nibble histogram is a real weight distribution, not uniform).
+- `[4096:4608]` — **512 bytes that are NOT bf16** (no clean 256-bf16 scale block anywhere in the tile by a 512-B sliding
+  scan; as int8: mean ~135, range 0–255). Consistent with **int8 scales+mins** (256+256) — the "I8" in the dtype.
+- `[4608:4736]` — **64 bf16**, every value ≈ 2⁻¹⁶·(1+m/128) (high byte constant 0x37, exponent 110/111): a tiny second-order
+  rescale block (32 row-scales + 32 row-mins), not a primary scale.
+
+**Not yet closed:** the exact dequant formula (how the int8 scale/min block and the 2⁻¹⁶ bf16 block combine with the int4
+nibbles). The reference-dump route is blocked separately: `qwen3_5vl_npu::load_weights` hard-fails on
+`Weight not found: model.embed_tokens.weight` because Qwen3.5-4B is `tie_word_embeddings=true` and stores no separate
+embedding — FLM's AutoModel layer synthesizes it from `lm_head` (the raw class does not), so a harness against the raw
+class cannot dump the dequant reference without replicating that synthesis.
+
+**Infra landed:** `flm_prefill_bridge` gained a `qwen3_5vl` family + `-lqwen3_5vl_npu`; `engine/npu/tools/flm_q35_ref.cpp`
+is a standalone harness that reproduces the blocked load (family `qwen3_5vl`).
