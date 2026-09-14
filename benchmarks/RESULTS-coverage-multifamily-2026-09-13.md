@@ -13810,6 +13810,12 @@ model executes; whether it computes anything correct is a separate question this
 
 ## 915. Gemma3-1B's zeros are UPSTREAM of attention — both attention arms give the same output, so the dequant warning is the prime suspect
 
+> **The dequant part is REFUTED — see §930.** `row_bytes/20` = 64 is the **intended width for this model**, derived from
+> the bundle and checked against every K (1152/64 = 18, 6912/64 = 108, …), and the `[dequant] unaligned dims` line is a
+> **notice of correct adaptation**, not an anomaly. **What stands from this section is the bisection**: both attention
+> arms give identical output, so the fault is **upstream of attention or downstream of it**, and the dequant is now out.
+
+
 **The lane's standard bisection, and it is decisive here: change the attention arm and see whether the output moves.**
 
 | arm | prefill | tokens |
@@ -13946,3 +13952,33 @@ and the remaining candidates are the ones upstream of the dequant or downstream 
 (Gemma multiplies token embeddings by `sqrt(hidden_size)`; a grep of the engine for such a step finds only the norm
 normalizers, which is a **candidate** and not a finding), the **`lm_head`/vocab** path, and the tokenizer's id mapping.
 **Recorded with the dequant struck off and the next two named.**
+
+## 935. Gemma3-1B's zeros are ZERO LOGITS — `best=0 (0.00000) runner_up=1 (0.00000) margin=0.00000` localises the fault at or before the lm_head
+
+**One probe splits the remaining space, and it is decisive:**
+
+```
+$ RT_ARGMAX_MARGIN=1 … npu_engine_gemma3_1b …
+[argmax] best=0 (0.00000) runner_up=1 (0.00000) margin=0.00000
+```
+
+**The logits are identically zero.** The argmax of an all-zero vector is index 0 with a **margin of exactly zero**, so `[1] 0`
+was never a "confident wrong token" — **there was no signal at all.** That is a much sharper statement than "the output is
+degenerate": **the fault is at or before the `lm_head`.**
+
+**And it narrows the candidates to two shapes that this session has already met:**
+
+- **a never-written buffer** — the logits (or the hidden state feeding them) are zero because nothing filled them. **This is
+  the same failure shape as §59's uninitialised KV BO**, which produced three different wrong tokens from one command until a
+  `memset` was added; a zeroed BO that is never written produces all-zeros instead, which is the quieter version of it.
+- **a wrong tensor offset or a missing embedding row** — the embedding lookup returns zeros, and zeros propagate through the
+  whole stack. Note that this is **not** what a missing embedding **scale** would do: Gemma multiplies token embeddings by
+  `sqrt(hidden_size)`, and omitting that would give **small non-zero** values, not zeros. **So the embedding-scale candidate
+  from §930 is weakened by this probe**, and what remains is something that yields exactly zero.
+
+**And the earlier bisection now reads differently.** Both attention arms gave identical output **because everything downstream
+is zero** — the attention swap could not have changed anything. **That is why "attention-independent" was true and yet told us
+less than it seemed to**: it was consistent with a fault anywhere upstream, and the margin probe is what made it specific.
+
+**The instrument note, since it cost a run**: `RT_LOGITS_FINAL` takes a **path** (it dumps to a file), so setting it to `1`
+printed nothing; `RT_ARGMAX_MARGIN=1` is the one that reports values on stderr. **A knob's name is not its interface.**
