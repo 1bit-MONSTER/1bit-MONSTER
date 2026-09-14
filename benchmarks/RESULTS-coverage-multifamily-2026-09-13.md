@@ -8601,3 +8601,37 @@ over-solving. Neither lane can see the other's choice until after the push, so:
 **This is the seventh numbering incident and the first that two lanes created jointly.** The first six were append
 collisions — the same number taken twice — and each was fixed by moving one section. This one is the *fix* colliding,
 which is a class above: **it needs a claim, not a convention.**
+
+## 160. The generator EXISTS but the bf16 path does not call it — the route is offline, and the runtime bridge has no callers
+
+§470 re-sized r5 on the strength of *"the generator route already exists in this repo, at runtime"* and *"the bf16 path
+**already calls it**"*. Checked against the tree: **the gate half of that finding is exactly right, and the route half
+is not.**
+
+| §470 claim | what the tree shows |
+|---|---|
+| `flm_bridge.cpp:96` dlsyms `gen_mha_engine_seq` | **true** — the symbol is resolved at runtime |
+| `flm_bridge.h:55` documents `(npu_seq, L_begin, L_end)` | **true** |
+| `npu-infer/tools/gen_attn_insts.cpp` generates per-context streams | **true**, and it is **offline**: it links FLM's libraries directly (`-lqwen3_npu -lmha -lq4_npu_eXpress -laiebu`) and writes `attn_<M>_<K>_<N>_<ctx>_<woff>.bin` |
+| **"the bf16 path already calls it"** | **false** — `gen_attn_chunk` occurs in `npu_engine_bf16_mm.h` **only inside a comment** (:187), describing how the shipped ELFs were *generated*: *"Long-context (>256 token) attention ELF: generated with gen_attn_chunk … so chunk variants can be swapped without a re-embed."* |
+| "the generator route already exists **at runtime**" | **not wired** — `FlmBridge`'s methods have **no callers** outside `flm_bridge.cpp` / `flm_bridge.h` |
+
+**So the tree holds three separate things that §470 merged:** an **offline generator** (a tool linking FLM's sequence
+classes), a **runtime bridge** (`FlmBridge`, dlopen'd, currently unused), and the **live ELF route** the bf16 attention
+path actually uses.
+
+**What that changes, and what it does not:**
+
+- **Unchanged, and still the actionable half:** the sticky gate is a real defect, and qualifying it by the actual
+  `(nh, hd)` is a small fix that removes a **silent wrong answer**. Worth doing on its own.
+- **Changed:** *"fall through to the generated route instead of a legacy slot"* is not a fall-through to something
+  already running — the generated route must be **wired** into the bf16 attention path first. That is §158's errand one
+  layer down: the vocabulary is documented, the generator exists offline, and what is missing is the **call site**.
+- **And it sharpens the named first experiment:** the measurement is not *"do the two routes disagree"* but **"does
+  `gen_mha_engine_seq` at nh20 produce a correct sequence at all"** — which the **offline tool can answer without
+  wiring anything**, by generating a stream and comparing it against host attention.
+
+**And the pattern is the third instance this session: a claim's *conclusion* survived while its *support* did not, and
+the support was a file that MENTIONS the mechanism rather than one that RUNS it.** A `grep` hit is not a call site
+(§470's `gen_attn_chunk` match is a comment) — the same distinction as §153's guard that cannot fail and §159's set the
+sentence quantified over: **the evidence sat in the same file as the claim and was not the same kind.**
