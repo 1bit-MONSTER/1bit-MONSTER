@@ -13,7 +13,11 @@ Checks:
   3. commands from bash-fenced / `$ ` lines whose target does not exist
      (CLI subcommands, run.sh, make targets, referenced scripts)
   4. CI workflows that invoke a script which is not in the tree
-  5. flags passed to OUR tools (1bit, run.sh, scripts/, packaging/, tools/,
+  5. `-D` variables in OUR configure commands that CMakeLists.txt does not
+     declare (and that are not standard CMake variables) — a documented knob
+     that does nothing;
+
+  6. flags passed to OUR tools (1bit, run.sh, scripts/, packaging/, tools/,
      Testing/) that appear nowhere in the source — a documented knob nothing
      parses. Flags of other people's tools on the same line are ignored.
 
@@ -164,9 +168,17 @@ def resolves(doc: Path, section_base: str | None, token: str) -> bool:
 
 
 def command_lines(text: str):
-    """Yield (lineno, command, fence_mentions_external_cd)."""
+    """Yield (first_lineno, logical_command, fence_mentions_external_cd).
+
+    Backslash continuations are joined first: a cmake invocation and the -D flags
+    it sets are one command spread over several lines, and a rule that looks at
+    the `cmake` line alone sees none of them.
+    """
     fence = None
     external_cd = False
+    foreign_tree = False
+    pending = ""
+    start = 0
     for i, line in enumerate(text.splitlines(), 1):
         s = line.strip()
         if s.startswith("```"):
@@ -174,15 +186,52 @@ def command_lines(text: str):
             if fence is None:
                 fence = lang
                 external_cd = False
+                foreign_tree = False
             else:
                 fence = None
+            pending = ""
             continue
-        if re.search(r"cd\s+(~|/|\$HOME|\$\{HOME)", s):
-            external_cd = True  # another repository's tree, e.g. ~/torch2aie
-        if fence in ("bash", "sh", "shell", "console", ""):
-            yield i, s, external_cd
-        elif not fence and s.startswith("$ "):
-            yield i, s[2:], external_cd
+        if re.search(r"cd\s+(~|/|\$HOME|\$\{HOME|\.\./|third_party/|path/to)", s):
+            external_cd = True  # another project's tree, e.g. ~/torch2aie, third_party/llama.cpp
+        # Narrower, for the -D rule: a `cd ~`/`cd <our clone>` is still OUR tree —
+        # the main build example does exactly that, and treating it as foreign is
+        # how the first version of this rule managed to miss the very line it was
+        # written for.
+        if re.search(r"cd\s+[^\n]*(third_party/|torch2aie|path/to|\.\./)", s):
+            foreign_tree = True
+        in_code = fence in ("bash", "sh", "shell", "console", "")
+        if not in_code and fence is not None:
+            continue
+        if not in_code and not s.startswith("$ "):
+            continue
+        body = s[2:] if (not in_code and s.startswith("$ ")) else s
+        if not pending:
+            start = i
+        pending = f"{pending} {body}".strip() if pending else body
+        if pending.endswith("\\"):
+            pending = pending[:-1].rstrip()
+            continue  # continuation: keep collecting
+        yield start, pending, (external_cd, foreign_tree)
+        pending = ""
+
+
+# `-D` variables that are not ours to declare: standard CMake variables, which
+# are legitimate on a configure line without an option() entry.
+STANDARD_CMAKE_VARS = {
+    "CMAKE_BUILD_TYPE", "CMAKE_HIP_ARCHITECTURES", "CMAKE_C_COMPILER", "CMAKE_CXX_COMPILER",
+    "CMAKE_HIP_COMPILER", "CMAKE_INSTALL_PREFIX", "CMAKE_PREFIX_PATH", "CMAKE_CUDA_ARCHITECTURES",
+    "CMAKE_EXPORT_COMPILE_COMMANDS", "CMAKE_TOOLCHAIN_FILE", "CMAKE_VERBOSE_MAKEFILE",
+    "BUILD_SHARED_LIBS", "BUILD_TESTING",
+}
+
+
+def declared_cmake_options() -> set[str]:
+    names: set[str] = set()
+    for pat in ("CMakeLists.txt", "cmake/*.cmake", "packaging/**/*.cmake"):
+        for f in ROOT.glob(pat):
+            names |= set(re.findall(r"^\s*option\s*\(\s*([A-Za-z0-9_]+)",
+                                    f.read_text(encoding="utf-8", errors="replace"), re.M))
+    return names
 
 
 def source_corpus() -> str:
@@ -223,6 +272,7 @@ def main() -> int:
     targets = make_targets()
     tracked = set(git("ls-files").split())
     corpus = source_corpus()
+    cmake_options = declared_cmake_options()
     FLAG = re.compile(r"--[a-z][a-z0-9][a-z0-9-]+")
     OUR_TOOL = re.compile(r"^(?:1bit|run\.sh|scripts/[\w.-]+|packaging/[\w.-]+|Testing/[\w.-]+|tools/[\w.-]+)")
 
@@ -277,7 +327,15 @@ def main() -> int:
                 if not resolves(doc, section_base, token):
                     findings.append((rel, lineno, f"path does not resolve: {token}"))
 
-        for lineno, cmd, external_cd in command_lines(text):
+        for lineno, cmd, tree_flags in command_lines(text):
+            external_cd, foreign_tree = tree_flags
+            # our own configure lines, before the tool match below (which does not
+            # cover `cmake`, so this rule used to sit behind an unreachable branch)
+            if not foreign_tree and re.match(r"^cmake\b", cmd):
+                for var in re.findall(r"-D([A-Za-z][A-Za-z0-9_]*)", cmd):
+                    if var not in cmake_options and var not in STANDARD_CMAKE_VARS:
+                        findings.append((rel, lineno,
+                                         f"-D{var}: CMakeLists.txt does not declare this option"))
             m = re.match(r"^(?:\$\s*)?(?:\./)?(?:build/)?(1bit|run\.sh|make|scripts/[\w.-]+\.sh|packaging/[\w.-]+\.sh)\b\s*(.*)$", cmd)
             if not m:
                 continue
