@@ -8813,3 +8813,51 @@ the generator exists, and the family binding is what is missing.**
 behaviour**: the KV section moves to **166**, the lowest free number **above both lanes' active ranges**. Re-rolling
 inside a range both lanes are appending to is not a fix — §480 said that about lanes, and it applies to *iterations*
 of the same fix as well.
+
+## 163. The Nanbeige generator RUNS and responds to its config — and does NOT reproduce FLM's nh20 capture; plus the config's FLM-specific attention addresses
+
+Following §162's byte-exact success with the qwen3 generator, the Nanbeige tool was run — `gen_attn_chunk_nb`, which
+includes `models/nanbeige/nanbeige_npu_sequence.hpp` and calls the **4-argument** form
+`gen_mha_engine_seq(&seq, L0, L1, max_l)`:
+
+| run (`_nb`, Nanbeige config) | txn words | elf bytes |
+|---|---|---|
+| L=[0,512) | 41352 | 173024 |
+| L=[0,1024) | 81544 | **340784** |
+| L=[0,2048) | 161928 | 676288 |
+| L=[256,1024) | 61448 | 256896 |
+| **shipped `attn_mha_1024_nh20_hd128.elf`** | — | **177728** |
+| shipped `attn_mha_1024_nh32.elf` | — | 177696 |
+
+**`max_l` is inert** — 1024, 2048, 4096 and 32768 all give the identical 340784/81544 output at `[0,1024)`.
+
+**And no range tried reproduces the shipped nh20 file** (177728 B). So, **at this shape, the generated route does not
+reproduce FLM's capture** — the opposite of §162's result one shape over.
+
+**The negative is informative, and the controls say so:**
+- **a positive control exists** — the qwen3 tool reproduces a qwen3 capture **byte-exactly** (§162, sha256 match), so
+  the method *can* succeed;
+- **the instrument responds to its input** — `_nb` with the Nanbeige config gives sha `689196a5…` where the Qwen3-0.6B
+  and Phi4 configs give `90a32ccd…` at the same range, and the qwen3 *tool* disagrees with the `_nb` tool at `[0,512)`
+  (44808 vs 41352 words). So the config is being read and the sequence is not a constant.
+
+**And the run surfaced the fact that makes a version-skew explanation plausible.** Nanbeige's `config.json` carries
+FLM-specific attention addresses beyond the geometry:
+
+```
+head_dim 128, hidden_size 2560, num_attention_heads 20, num_key_value_heads 4, layers 32
+addr_qk 5120, addr_kv 34048, addr_kk 33280, addr_l_begin_mha 54016, addr_l_end_mha 25344
+flm_version "0.9.38"
+```
+
+**The config declares where the kernel reads `L_begin` and `L_end`** — the two parameters the generated sequence
+exists to deliver — and the shipped headers read this session are `flm-v0946`, while the model's own config says
+**0.9.38**. So the generator (built against the **0.9.46** tree) and the capture (taken from a **0.9.38** runtime) may
+differ by **version**, not by shape.
+
+**That is a hypothesis with a test attached, not a conclusion:** either build the tool against `flm-v0946`'s own
+libraries and compare, or check whether the `addr_*` values are version-specific. **What is already established is
+narrower and worth keeping:** the generator is **shape-working** (it emits valid ELFs, config-sensitive, at every
+range tried) and **byte-exact for qwen3** — so r5's route is *not* blocked by the generator being broken in general.
+The open question is specifically **Nanbeige at nh20**, and it now has two named candidates: **geometry/config
+mismatch** or **version skew**.
