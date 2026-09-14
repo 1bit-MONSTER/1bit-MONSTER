@@ -13667,8 +13667,9 @@ name the environment it ran under.**
 **Verified after the fix, on this repo's own xclbins: all ten gates match FLM's exact references** — Qwen3-0.6B 25/1614,
 1.7B 220, 4B 1614/220, 8B 220, VL-4B 220, **Nanbeige 1033/5938**, Llama-3.1-8B 220.
 
-**And a consequence for the record, stated plainly:** the **tile-rule work stays reverted**, because **its verifications
-were run under the wrong xclbin directory and are therefore void** — including the run that showed 26 layers packing. The
+**And a consequence for the record, stated plainly** -- **SUPERSEDED, see §900: the tile-rule work was RESTORED and
+RE-VERIFIED, and it is safe.** The paragraph below is kept as written because it records the reasoning at the time: the
+**tile-rule work was reverted**, because **its verifications were run under the wrong xclbin directory and are therefore void** — including the run that showed 26 layers packing. The
 `% G` reorder fix **is** restored and **is** re-verified above, because it is independently reasoned and its behaviour
 change (the fault moving) was observed in a way the path error cannot explain. **Nothing else from that line of work is
 claimed as verified.**
@@ -13705,3 +13706,37 @@ ran under**. Neither helps a run that does not go through the script, so the ope
 **And a note on why this was so expensive**: my hand-run checks *did* export the right value, so **two measurements of the
 same binary disagreed**, and the one that was wrong was the one that looked like evidence of a code fault. The engine was
 never broken. **The variable was.**
+
+## 900. RESTORED and RE-VERIFIED: the tile-rule work is safe — the reverts in §890 were the error, not the code
+
+**§890 reverted three verified commits on the strength of a measurement that was reading a dead xclbin directory. This puts
+the work back, with the verification it never got.**
+
+`model.c` is restored from **`e3adbca45`**, which carries all of it: the **`% G` reorder fix**, the **`npu_desc_tiles`
+helper** (25 references), the **byte-extent tile count at all three sites** (source read, destination offsets, BO size), the
+**null-tensor guard**, and the **`RT_PACK_DEBUG`** instrument.
+
+**Re-verified with `benchmarks/gate-check.sh`, which now pins `NPU_XCLBIN_DIR` to its own repo** — i.e. the harness can no
+longer reproduce the failure that caused the reverts:
+
+| | | | |
+|---|---|---|---|
+| Qwen3-0.6B | **25 @1024, 1614 @256** | Qwen3-1.7B | **220** |
+| Qwen3-4B | **1614 @256, 220 @1024** | Qwen3-8B | **220** |
+| Qwen3-VL-4B | **220** | Nanbeige | **1033 @1024, 5938 @256** |
+| Llama-3.1-8B | **220** | | |
+
+**All ten match.** So the change **is** a no-op for every model that worked, exactly as the byte-extent rule requires — and
+**the earlier "all ten match" runs were right, while the later "Nanbeige regressed" run was the one that was wrong.** The
+reverted work was safe all along.
+
+**And Gemma3-1B reproduces the progression under the correct environment**: **all 26 layers pack** (`packed 26 layer weight
+BOs`) with the corrected counts (`q` 144, `k`/`v` 36, `o` 144, `down` 972; offsets 0/144/180/216/2304), and the fault is now
+**past the packing.** That is the same result as before — but it is now a **measurement** rather than an artefact of the
+environment.
+
+**The lesson goes one step past §890's**, and it is worth stating because the cost was real: **not only is a failed
+measurement not a refuted hypothesis — reverting on one DESTROYS VERIFIED WORK, AND THE REVERT ITSELF BECOMES THE THING THAT
+NEEDS RE-VERIFYING.** Three commits were spent on a dead shell variable, and they were recoverable only because the reverts
+were visible in the log. **The cheaper procedure is the one now in the harness: re-check the failure in isolation and name
+the environment, before touching anything.**
