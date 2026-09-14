@@ -12645,3 +12645,40 @@ the **fact**. **The check cost one `ps`, and the promise had been in force for a
 **And it mattered for device etiquette, not just tidiness**: a stopped process **keeps its fds and mmaps**, so both were
 still listed on `/dev/accel/accel0` — **a SIGSTOPped process is not a released device.** Leaving them stopped indefinitely
 is a device-state debt, and their own caveat is what says so.
+
+## 760. THE UNRUN ARM RUN: under SWAP_IO the kernel writes NOTHING — so the ROLE follows the slot while the WIDTH is baked, and §175's 152432 has a mechanism
+
+**§740 left one arm untested: the sentinel partition under `SWAP_IO`. Ran it, both arms, same binary and prompt:**
+
+```
+arm A  swap OFF  [ATTN-SENTINEL] kept_1.0=131072/655360 nonzero=393216 wrote=524288 -> kernel DID write
+                 positions: first_changed=0 last_changed=524287 ; columns_touched=2560/2560 ; untouched_tail=0
+arm B  swap ON   [ATTN-SENTINEL] kept_1.0=655360/655360 nonzero=655360 wrote=0 -> kernel WROTE NOTHING
+                 positions: first_changed=655360 last_changed=0 ; columns_touched=0/2560 ; untouched_tail=2560
+```
+
+**With the swap on, every word of the buffer the engine reads is still the sentinel's `1.0`.** `wrote = 0`,
+`columns_touched = 0/2560`, `untouched_tail_columns = 2560`. **The kernel writes to whichever BO is in slot 0 — and with the
+swap, slot 0 is `attn_act`.**
+
+**So this is a clean SEPARATION of two properties that had been treated as one:**
+
+| property | answer | instrument |
+|---|---|---|
+| **width** | **BAKED** — `EXACT_BO` moved it by 38 elements in 131,072 | §123 |
+| **role** | **FOLLOWS THE SLOT** — swap moves `wrote` from 524,288 to **0** | this run |
+
+**And it decides §740's own question the other way from what I expected** — the partition is **not** baked; it **follows the
+role**. My §740 said *"if the split moves when the role is swapped, the output follows the role; if identical, it is
+baked"* — **it moves completely, and the width is the thing that is baked.**
+
+**And the engine's un-swapped mapping is confirmed CORRECT**, by direct measurement rather than by the direction field
+alone: **the kernel writes where BO 0 points, and BO 0 is `attn_out` in the default call.** **The swap is definitively
+ruled out as a fix** — it makes the kernel write into the Q buffer and leave the output buffer untouched.
+
+**And §175's absorbing `152432` now has a mechanism.** §175 swapped the slots and the boot moved **188 → 152432**, which
+§183 then found absorbing across every further perturbation. **The mechanism is this run**: with the swap, `attn_out` is
+**never written**, so the engine reads whatever the buffer holds — with the sentinel that is `1.0`s, and without it, stale
+allocator memory. **152432 was not the kernel reporting a different role; it was the engine reading an unwritten buffer.**
+That also explains why the value was absorption-like: **once the output is never written, no downstream parameter can
+change what the engine reads.**
