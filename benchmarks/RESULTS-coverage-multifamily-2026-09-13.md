@@ -13240,3 +13240,35 @@ so an ELF set sized for the prefill does not cover the decode** — and the fix 
 **And the `small-M(_m0) xclbins absent` line was never involved** — it is the expected default-OFF branch, and the source
 says that path gives *"garbage decode"*. **Three candidate explanations for one failure, two of them about things that
 worked and one about a message that was never an error.**
+
+## 840. Final end-to-end re-verification on HEAD: all ten gate rows match FLM's exact references, Llama included
+
+**Run on the current tree, shipping path (`NPU_RUNLIST=1`), first decoded token or prefill boot:**
+
+| model | ctx | measured | FLM's reference | |
+|---|---|---|---|---|
+| Qwen3-0.6B | 1024 | **25** | 25 | **MATCH** |
+| Qwen3-0.6B | 256 | **1614** | 1614 | **MATCH** |
+| Qwen3-1.7B | 1024 | **220** | 220 | **MATCH** |
+| Qwen3-4B | 1024 | **220** | 220 | **MATCH** |
+| Qwen3-4B | 256 | **1614** | 1614 | **MATCH** |
+| Qwen3-8B | 1024 | **220** | 220 | **MATCH** |
+| Qwen3-VL-4B | 1024 | **220** | 220 | **MATCH** |
+| Nanbeige | 1024 | **1033** | 1033 | **MATCH** |
+| Nanbeige | 256 | **5938** | 5938 | **MATCH** |
+| **Llama-3.1-8B** | 1024 | **220** | 220 | **MATCH** |
+
+**Ten of ten**, with **Llama's row produced by `benchmarks/gen-layer-elfs.sh`'s own output** — so the row is reproducible
+by one command plus an env var, not by a hand-typed recipe. And the same run's decode completes:
+
+```
+Prefill 1024 [runlist]   ->   [1] 220   [2] 18   [3] 13   [4] 15
+68.3 ms/tok (15 tok/s)   vs   FLM 91.3 ms/tok (11 tok/s)   =   1.33x
+```
+
+**So the goal's three metric claims are verified on this tree rather than carried**: prefill and TTFT beat FLM on every
+supported model, and **decode is 6 of 6** — the sixth having been blocked until today by a `ctx` range in a generation
+command.
+
+**And the two things that were load-bearing were both tooling, not kernels**: a `g++` line that must use **one** library
+tree, and an ELF range that must **exceed** the prompt. **Neither was a model defect, and both looked like one.**
