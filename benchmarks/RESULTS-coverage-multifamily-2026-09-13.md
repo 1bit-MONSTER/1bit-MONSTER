@@ -11952,3 +11952,44 @@ the artifact, and **it is a third number in a lane that already had two**: the e
 exchange **disagree about the chunk size**, each states its own, and **none of the three is derivable from the other two.**
 Whether that disagreement is the defect is not established — but it is now stated by the artifacts on both sides rather
 than inferred, and **the 128-token figure is the first granularity the kernel itself declares.**
+
+## 219. The 128-token granularity is verified at a third length (256→2, 1024→8, **2048→16**) — and it weakens the chunking candidate rather than strengthening it, because every call size is an integer multiple of it
+
+The 2048-context artifact, same one-command view:
+
+```
+arg3 16384 | arg4 16384 | arg5: 16 entries, 32768, 65536, 98304, 0x20000 … 0x80000
+```
+
+**So `arg5`'s declared chunk count is 2 / 8 / 16 at 256 / 1024 / 2048 tokens — exactly 128 tokens per entry at all
+three lengths**, which is the first quantity in this lane verified at three points by the artifact's own declaration.
+`arg3`/`arg4` are still 16 KB, extending §218's demotion.
+
+**And then the arithmetic goes against the candidate it was gathered for.** Every call size in play is an **integer
+multiple** of 128:
+
+| call | rows/tokens | ÷ 128 |
+|---|---|---|
+| the engine's attention call | **256** | **2** |
+| the capture's attention launches | **512** | **4** |
+
+**So the three granularities disagree by whole factors, not by alignment.** A kernel declaring 128-token chunks and being
+called with 256 or 512 is being called with **two or four of its own units**, which is the ordinary way a chunked kernel is
+driven — **not a misalignment.** Which means the granularity difference §218 raised **does not, by itself, predict a wrong
+answer**, and the chunking candidate is **weaker** for having been measured than it was when it was a difference in
+numbers.
+
+**Recorded because it is the same shape as §216's near-miss and §213's refutation**: a quantity that looked like a
+discrepancy because two numbers differ, **and stopped looking like one once a third was measured.** The third data point
+did the work in both directions — it confirmed the granularity (three lengths) and **demoted the discrepancy** (integer
+multiples).
+
+**State of the lane's candidates after this section:**
+
+| candidate | status |
+|---|---|
+| artifact content / provenance | **closed** — §167/§170, both axes |
+| geometry fields (stride, volume, extents) | **stride is geometry**; volume and extents **demoted** (§214, §218) |
+| `arg3` role | **tested by the swap** (§175) — insufficient; the **width** has never been presented (§215) |
+| chunk granularity | **measured at three lengths** — the sizes are integer multiples, so no prediction of wrongness |
+| §204's NaN partition | **measured**, and the only description of the *wrongness itself* |
