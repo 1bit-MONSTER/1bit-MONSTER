@@ -11293,7 +11293,7 @@ artifact for the role — the signature it loads ran **64 times** in the capture
 signature would be indistinguishable. **But the counts' structure — 64s and 32s, a layer×block grid — is exactly what
 the role table needed, and it is the grid the engine's own chunking follows.**
 
-## 205. The launch-count tangle resolved: the ELF-line method was wrong (mine) AND the signature attribution in §650 is wrong — the tiebreaker is the LAYER COUNT, and it is 32
+## 651. The launch-count tangle resolved: the ELF-line method was wrong (mine) AND the signature attribution in §650 is wrong — the tiebreaker is the LAYER COUNT, and it is 32
 
 Two readings of the same manifest disagreed, and each lane was wrong about a different half.
 
@@ -11340,3 +11340,39 @@ the engine, while `arg5` differs (64 MB against the engine's 16 MB — and 64 MB
 lane used a real instrument for a question it could not answer** — a once-per-kernel log line as a launch count, and a
 signature count without checking it against the model's layer number. **The fix in both cases was a second fact, not a
 re-reading.**
+
+## 656. The role table with the CORRECTED signature: the emulated kernel ran exactly ONCE PER LAYER — and the 252-vs-32 asymmetry resolves into a per-layer ratio
+
+**Their correction to §102 is the key, and it moves my own count too.** The manifest contains **two `RUN 001` lines**
+(894 and 906) with different argument lists; §102 quoted the second, and **the 1 MB `arg3` belongs to
+`elf_0008/0009/0010`.** So **`elf_0011`'s own signature is `(5242880, 5242880, 67108864)` = (5 MB, 5 MB, 64 MB)** — not
+(1 MB, 5 MB, 30 MB). **Which means my earlier count of "64 runs" was for the MISATTRIBUTED signature** — the same trap,
+one section later.
+
+```
+elf_0011's OWN signature (5242880, 5242880, 67108864) : 32 runs
+§102's quoted signature     (1048576, 5242880, 31457280): 64 runs   <- not this kernel
+Nanbeige layers = 32  ->  32 launches = exactly 1.0 per layer
+```
+
+**So the kernel this engine emulates ran exactly ONCE PER LAYER** — a **256-token capture, one block per layer** — and
+the engine calls it **once per layer per 256-row block**: a **perfect match in role *and* chunking.** My earlier
+*"64 = 32 layers × 2 blocks, 512-token blocks"* is corrected to **32 = 32 × 1, 256 tokens.**
+
+**And the last unexplained asymmetry resolves into a role ratio.** `252 / 32 ≈ 7.9 ≈ 8` — the 41,920-B kernel runs
+**about eight times per layer**, the count of per-layer sub-operations, against a once-per-layer attention kernel.
+**That is what the table was for**, and it needed the corrected signature to say it.
+
+**And their other three findings are recorded:**
+
+- **the arg-role question is CLOSED IN THE ENGINE'S FAVOUR**: `arg3` 5 MB = `npt × NH×HD` **matches**, `arg4` **matches**
+  — so **§173's *"the roles differ"* is withdrawn**, since it rested on the misattributed quote. The `npt × NKV×HD`
+  reading describes the kernels that **actually carry a 1 MB `arg3`**, which is what §191 preferred on Occam grounds
+  before the data arrived.
+- **the one real difference does not fix anything**: `arg5` is 64 MB in FLM against 16 MB here — and **64 MB was tested**
+  (`kv_region = 8388608` → **152432**) while the engine's own 16 MB default gives **188**. **Matching FLM's size moves
+  the boot *off* the one value closest to working** — the opposite of what a size mismatch predicts, and **the sixth axis
+  to behave that way.**
+- **their caution generalises**: the file has **two independent `RUN` numberings**, so **a run identifier is not unique
+  in this file** — §199's lesson one level down. **It is the third time §102's quote propagated an error**: into §102's
+  own table, into §173, and into my count.
