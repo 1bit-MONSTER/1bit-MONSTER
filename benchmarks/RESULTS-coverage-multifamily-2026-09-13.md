@@ -8264,7 +8264,7 @@ agreed with every one of them.
 exact, mid-dims **10/16/36** (185/32/32 tensors), and the arithmetic — `4736/20 = 236.8 → 236` against `5120/20 = 256`
 exactly. **Independent verification of the numbers, and independent discovery of the sentence above them.**
 
-## 157. The performance stake of the attention-ELF fix, measured: the correct path costs ~400 ms (~39%) of prefill — and the host residual is (token, length)-dependent
+## 465. The performance stake of the attention-ELF fix, measured: the correct path costs ~400 ms (~39%) of prefill — and the host residual is (token, length)-dependent
 
 The goal this work sits under is **performance** (decode, prefill, TTFT), while the defect measured here is
 **correctness** — but the two meet exactly at the attention path, and that cost had never been quantified on this
@@ -8450,3 +8450,47 @@ format.
 numeric constant in the nanbeige/phi4 headers is `MAX_L = 4096` — so this is the **API shape**, not the attention
 arithmetic. And nothing here says the generated route is small: it is the same errand as before, now with a documented
 vocabulary instead of a memory trace.
+
+## 470. The generator route ALREADY EXISTS, and the ELF route's real defect is a STICKY SHAPE GATE — so r5 is a routing fix, not a multi-day artifact capture
+
+**Their §157 establishes the design difference**: FLM builds attention as a sequence over `(L_begin, L_end)` declared
+by **seven families**, so arbitrary lengths are supported **by construction**; this engine loads a **pre-built
+per-length ELF**, so a length or shape with no file has nothing to load. **Both blockers seen from two sides**, and
+their conclusion — *"generate the sequence as FLM does"* — is the right shape of fix.
+
+**And the generator route already exists in this repo, at runtime:**
+
+| where | what |
+|---|---|
+| `npu-infer/src/flm_bridge.cpp:96` | **`dlsym` of FLM's `_ZN18qwen3_npu_sequence18gen_mha_engine_seqEP12npu_sequencejj`** — resolved at **runtime** |
+| `npu-infer/include/flm_bridge.h:55` | documents the call: *"`gen_mha_engine_seq(npu_seq, L_begin, L_end)`"* |
+| `engine/npu/src/npu_engine_bf16_mm.h:187` | **`gen_attn_chunk` — "(FLM's `qwen3_npu_sequence::gen_mha_engine_seq` + aiebu)"**, and the bf16 path **already calls it** |
+| `npu-infer/tools/gen_attn_insts.cpp` | generates per-context streams offline: `attn_<M>_<K>_<N>_<ctx>_<woff>.bin` |
+
+**So the missing piece is not a generator.** The engine has **both** routes — pre-built ELFs and runtime generation —
+and the measured defect lives in the **gate between them**:
+
+```cpp
+const bool attn_shape_ok = attn_shaped_ok ||
+    ((attn_hd == 128) && (attn_qout == 2048 || attn_qout == 4096));
+```
+
+with the engine's own comment: *"An unmatched shape makes `run_attn` return false (**explicit failure**) instead of a
+plausible-looking wrong answer."* **That is the correct behaviour** — nh20 (`qout` 2560) and nh24 (3072) are outside
+`{2048, 4096}`, so both should fail explicitly and fall through to host attention.
+
+**And `attn_shaped_ok` is a sticky global member**, written **once** when *any* `_hd` file loads. **Nanbeige's nh20
+@1024 file flips it** — so the ≤256 call **passes the gate** and takes the **nh16-256 ELF**, which writes zeros over
+2048 of 2560 columns. **That is the measured defect, and it is a gating bug rather than a missing artifact**: the
+explicit-failure design is defeated by a flag that outlives the shape that set it.
+
+**So r5 re-sizes, and this is the actionable part**: the fix is to **qualify the gate by the actual `(nh, hd)`** rather
+than a sticky global — and to let an unmatched shape **fall through to the generated route instead of a legacy slot**.
+Both routes exist; the bf16 path already exercises the generated one. **The honest caveat**: whether
+`gen_attn_chunk` at nh20 produces a *correct* sequence is untested, and §157's own scope note says the headers give
+the API's shape, not the arithmetic — so the first experiment is a generated nh20 sequence compared against host
+attention, not a wiring change.
+
+**Numbering**: the sixth collision, and the second caused by my own renumbering — I moved a section to **157** and the
+peer then used 157 for a different one. It is now at **465**, per the policy recorded earlier: **a section forced out
+of a contested number moves into its owner's sequence, not into whatever is free in the other lane's.**
