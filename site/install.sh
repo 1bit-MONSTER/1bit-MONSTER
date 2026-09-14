@@ -105,21 +105,37 @@ if [ "$SKIP_ROCM" = false ]; then
     log "Building C++ inference stack (server + CLI + daemon)..."
     cd "$DIR"
     cmake -B build ${CMAKE_GENERATOR:+-G Ninja} -DCMAKE_HIP_ARCHITECTURES=gfx1151 || { warn "cmake configure failed"; exit 1; }
-    cmake --build build --target zaya_server onebitd onebit onebin unified_router ${WITH_JARVIS:+jarvis_app} -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
+    # ONE BINARY. Every entry point (zaya_server, onebitd, unified_router, onebit,
+    # vision_server, …) is a compiled-in main() inside the single `onebin` target,
+    # which is emitted as build/1bit and dispatched on argv[0]; the symlinks that
+    # reach them are created just below. This line used to name standalone targets
+    # (zaya_server onebitd onebit unified_router) that were folded into onebin in
+    # 0761bb411 and no longer exist, so the build died with "unknown target
+    # 'zaya_server'" and the default install path exited 1; the one-liner had
+    # been broken since 2026-08-21. Verified against `ninja -t targets`.
+    cmake --build build --target onebin -j"$(nproc)" || { warn "cmake build failed"; exit 1; }
+    # The TUI is advertised in --help but is not part of the single binary. Build it
+    # best-effort so a TUI-only failure cannot take the whole install down.
+    cmake --build build --target bitnet_tui -j"$(nproc)" || warn "bitnet_tui did not build (optional; the CLI is unaffected)"
+
+    # argv[0] dispatch: one ELF answers to every legacy server name. Exactly the
+    # names packaging/Makefile stages; Testing/cli_smoke.py proves each reaches a
+    # handler in the linked binary.
+    for _name in zaya_server unified_server unified_router vision_server onebitd onebit 1bit-server; do
+        ln -sf 1bit "$DIR/build/$_name"
+    done
+
     log "Build complete:"
-    log "  $DIR/build/zaya_server ($(stat -c%s "$DIR/build/zaya_server" 2>/dev/null || echo '?') bytes)"
-    log "  $DIR/build/onebitd      ($(stat -c%s "$DIR/build/onebitd" 2>/dev/null || echo '?') bytes)"
-    log "  $DIR/build/onebit       ($(stat -c%s "$DIR/build/onebit" 2>/dev/null || echo '?') bytes)"
-    log "  $DIR/build/1bit         → onebit"
-    log "  $DIR/build/unified_router"
+    log "  $DIR/build/1bit ($(stat -c%s "$DIR/build/1bit" 2>/dev/null || echo '?') bytes) — the single binary"
+    log "  + argv[0] symlinks: zaya_server onebitd onebit unified_router vision_server unified_server 1bit-server"
 else
     warn "--skip-rocm: kernel build skipped."
-    warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running zaya_server."
-    log "Checking for pre-built server binary..."
-    if [ -f "$DIR/build/zaya_server" ]; then
-        log "Found existing build: $DIR/build/zaya_server"
+    warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running the server."
+    log "Checking for pre-built binary..."
+    if [ -x "$DIR/build/1bit" ]; then
+        log "Found existing build: $DIR/build/1bit"
     else
-        warn "No pre-built server found at $DIR/build/zaya_server."
+        warn "No pre-built binary found at $DIR/build/1bit."
         warn "Run without --skip-rocm on a ROCm-equipped machine, or"
         warn "download a pre-built release from GitHub."
     fi
@@ -157,14 +173,18 @@ echo ""
 if [ "$WITH_JARVIS" = true ]; then
     log "Installing JARVIS (Zyphra default stack)..."
     mkdir -p "$HOME/.local/bin" "$HOME/.config/1bit"
-    ln -sf "$DIR/build/jarvis" "$HOME/.local/bin/jarvis"
+    # JARVIS is a compiled-in main() in the single ELF, dispatched on argv[0]:
+    # onebin.cpp routes `jarvis_server` → jarvis_app_main. There is no standalone
+    # `jarvis` binary target, so the old `ln -sf "$DIR/build/jarvis"` pointed at a
+    # file that never existed (and a plain `jarvis` symlink would not dispatch).
+    ln -sf "$DIR/build/1bit" "$HOME/.local/bin/jarvis_server"
     cat > "$HOME/.config/1bit/jarvis.env" <<EOF
 # JARVIS defaults — edit to taste, or pass flags: jarvis --help
 1BIT_WEIGHTS_DIR=$MODELS_DIR
 # Uncomment to force a specific model (default: first Zyphra model found):
 # JARVIS_MODEL=ZAYA1-8B
 EOF
-    log "JARVIS installed: $HOME/.local/bin/jarvis (config: $HOME/.config/1bit/jarvis.env)"
+    log "JARVIS installed: $HOME/.local/bin/jarvis_server (config: $HOME/.config/1bit/jarvis.env)"
     log "Default experience is the Zyphra stack (ZAYA/ZR1/BlackMamba/Zamba2);"
     log "use 'jarvis --model <name>' to load any other model."
     if command -v systemctl &>/dev/null && systemctl --user list-units >/dev/null 2>&1; then
@@ -175,7 +195,7 @@ After=network.target
 
 [Service]
 EnvironmentFile=$HOME/.config/1bit/jarvis.env
-ExecStart=$HOME/.local/bin/jarvis --text
+ExecStart=$HOME/.local/bin/jarvis_server --text
 Restart=on-failure
 
 [Install]
@@ -190,10 +210,8 @@ fi
 # ── Done ──────────────────────────────────────────────────────────────────────
 log ""
 log "Done. Run:"
-log "  export HSA_OVERRIDE_GFX_VERSION=11.5.1"
-log "  export HSA_ENABLE_SDMA=0"
-log "  export LD_LIBRARY_PATH=$DIR/build:\$LD_LIBRARY_PATH"
-log "  $DIR/build/zaya_server"
+log "  source $DIR/env.sh            # sets LD_LIBRARY_PATH (+ HSA vars only on ROCm <7)"
+log "  $DIR/build/1bit zaya          # or: $DIR/build/zaya_server"
 log ""
 log "Then send requests:"
 log '  curl -X POST http://localhost:8088/completion \'
