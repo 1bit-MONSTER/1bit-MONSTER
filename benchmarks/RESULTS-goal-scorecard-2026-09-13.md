@@ -622,6 +622,14 @@ opposite directions from the same evidence.** The three rules that would have ca
    because those are init-time ELF loads, not the selection. This rule was earned twice in one hour: once on a
    result, and once on a *rebuttal* of the same result.
 
+**And the analysis rule the whole session kept re-earning, in the form the peer lane finally gave it**: *one
+measured fact versus one measured fact **plus** an unverifiable one is not a preference between two readings — it is an
+evidence asymmetry.* Every one of the twelve instances in this log was an **added** claim resting on an artifact (a
+comment, a listing, a hash match, a value, a label, a filename) **layered on a measurement that was already sufficient
+without it.** So the check is not "be careful with proxies": **remove the added term and ask whether the measurement
+still explains the data.** If it does, the term was never needed. And its counterpart on the housekeeping side, earned
+four times: **check a file's state by content — `sha256` against HEAD — not from memory.**
+
 Plus a note about the references themselves: the published FLM numbers and the on-box FLM numbers are different
 measurements on different hardware, and **FLM's own `forward()` is the only reference that settles a token** —
 which is what `NPU_FLM_PREFILL`/`NPU_FLM_DECODE` and `decode_token_check.sh` exist for. **And a value carries no

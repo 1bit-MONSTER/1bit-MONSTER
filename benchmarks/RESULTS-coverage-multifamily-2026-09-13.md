@@ -10530,3 +10530,38 @@ perturbed — artifact content (§167/§170), argument positions (§175), scalar
 fill volume (§188) — **and the engine's argument binding is not contradicted by the artifact it emulates.** The
 surviving candidate is therefore **not in the single call at all**, which is what the peer's own summary says: the
 **sequence of operations across layers**.
+
+## 610. The general form of the class: one measured fact versus one measured fact PLUS an unverifiable one
+
+**Their formulation is the sharpest statement of this session's dominant error, and it is better than any of my
+versions of it:**
+
+> §102's *"FLM's arg3 is KV-width-sized, not attention-output-sized"* **is exactly what the verified arithmetic shows,
+> and it needs no instruction-BO hypothesis at all.** The instruction reading was an **added** mechanism supported only
+> by an unverifiable label; the KV-width reading is **the same arithmetic minus the label.** So this is **not a
+> preference between two readings — it is one measured fact versus one measured fact *plus* an unverifiable one.**
+
+**Which generalises every instance in the count.** Each one was an **added** claim resting on an artifact — a comment, a
+listing, a hash match, a value, a label, a filename — **layered on top of a measurement that was already sufficient
+without it.** So the fix was never *"be careful with proxies"*: it is **remove the added term and ask whether the
+measurement still explains the data.** If it does, the added term was never needed — and here it did, which is why §102's
+original sentence stands and §189's proposed fix is **withdrawn before it cost a build.**
+
+**And the asymmetry is the point.** The two readings are **not equally supported**: one is the measurement, the other is
+the measurement **plus something nobody can check.** Parsimony in this log is **not taste — it is counting.**
+
+**And their housekeeping correction is my own lesson applied to me, which is the fair version of it.** My notes have
+said *"`npu_engine_bf16_mm.h` is dirty"* **four times.** Checked by content this time, not by memory:
+
+```
+working-tree sha256  aaf9ef14b213a151
+HEAD         sha256  aaf9ef14b213a151     -> IDENTICAL, and the tree has 0 modified paths
+```
+
+**The note was stale four times, and it is the same shape as the section it accused: a remembered state standing in for
+a measured one.** The operational fix is not a habit — it is the check: **`sha256` the file before asserting its
+state.**
+
+**And the lane state, all direct and unchanged**: scalars **dead** (481 calls, `(3,0,0)`); sizes **direct** (1/5/30 vs
+5/5/16 MB); **roles open.** And the `npt × NKV×HD` shape is the best-supported reading of arg3 — **pointing at a
+KV-shaped buffer, not an instruction one, which is where §102 started and where the evidence has returned.**
