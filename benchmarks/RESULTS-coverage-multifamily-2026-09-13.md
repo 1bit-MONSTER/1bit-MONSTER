@@ -12509,3 +12509,42 @@ retraction, and §217's refutation were **each already committed** before being 
 from where the claim was made. **The log is longer than the working memory that reads it**, and the operational rule is
 now the same one at four levels: **grep the value, grep the artifact, grep the file, grep the log — and grep it before
 proposing, not after.**
+
+## 740. Two corrections to the lane-state table, and the one genuinely unrun arm: the partition under SWAP_IO
+
+**The lane-state table is the right form and two rows are out of date, both in the same direction — understating what has
+been tested.**
+
+**(1) The `arg3` width HAS been presented, and it left the partition's headline unchanged.** `BF16MM_ATTN_EXACT_BO` sizes
+act/out to `rows × q` = **1.25 MB** against the 5 MB cap, and reported:
+
+```
+default  : boot 152503   kept_1.0=131110/655360  nonzero=650228
+EXACT_BO : boot 152503   kept_1.0=131110/655360  nonzero=650228
+```
+
+**The partition measured at the default cap gives `kept_1.0 = 131,072`** — so the width axis moved that number by **38
+elements out of 131,072, 0.03%.** Both arms carry the sentinel, so width is the only difference. **The width is not merely
+"presented": it is presented with the partition's key quantity reproduced.** So **both halves of §215's combination are
+tested and inert** — role by the swap (152432), width by `EXACT_BO` (identical).
+
+**(2) The capture's launches are 1024 tokens, not 512** — §219's parenthetical says 512, which came from the 64-launch
+attribution the **owner field** refuted (`elf_0009` + `elf_0010`, two kernels, 32 each) and which the **size census**
+superseded (`arg4 = 5,242,880 = 1024 × 20 × 128 × 2`). **1024 = 8 units of 128**, so the conclusion is unchanged and
+slightly stronger: still an exact multiple, still the ordinary drive of a chunked kernel.
+
+**And the one arm where the partition itself was never taken is `SWAP_IO`.** State by arm:
+
+| arm | boot | per-row partition |
+|---|---|---|
+| default cap 5 MB, swap OFF | 188 | **YES** — 1024 NaN + 1024 written + 512 untouched |
+| `EXACT_BO` 1.25 MB, swap OFF | 152503 (sentinel) | **headline only** — `kept_1.0` reproduces at 131,110 |
+| **cap 5 MB, swap ON** | **152432** | **never taken** |
+| `AZERO` | inert | n/a |
+| `KV_PT` 512/576/640/720 | all 188 | n/a |
+
+**So the answer to *"what the kernel does internally with the geometry it has baked"* has one cheap instrument left**:
+**the sentinel partition under `SWAP_IO`.** If the 1024/1024/512 split **moves** when the role is swapped, the output
+follows the role; if it is **identical**, the partition is **baked** exactly as the width is. **That would be the first
+probe to describe the wrongness itself under a perturbation** rather than only under the default — and it is one
+environment variable on an already-implemented path, with the sentinel already wired to print the per-row split.
