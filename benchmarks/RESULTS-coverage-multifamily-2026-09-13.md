@@ -10999,3 +10999,37 @@ which layer-block the capture covers. The manifest carries per-launch kernel ide
 engine emulates the wrong artifact"* is **a hypothesis derivable from them and not yet tested.** The one thing that can be
 said now is that **the launch distribution was never examined in this thread**, and it is the first new fact the lane has
 produced since §198 closed the last lever.
+
+## 640. The similarity figure was wrong by ~72× — BOTH lanes' versions — and the measured diff is spread throughout the file
+
+**Their catch, and I reproduced it before recording it**: the two shipped artifacts differ in **66,502 bytes of the
+177,696-byte common prefix = 37.42% differ, 62.58% identical** — first differing byte **32** (the length field), last
+**177,692**, and spread over **44 of 43** 4-KB buckets, i.e. **throughout**.
+
+| source | claim | verdict |
+|---|---|---|
+| §95–§98 | *"97.9% byte-identical"*, *"3408 differing bytes in 580 regular runs"* | **wrong** |
+| my "correction" | *"~230 words, ~930 bytes"* | **wrong, 72× too small** |
+| **measured** | **66,502 B differ of 177,696 = 37.42%** | **—** |
+
+**And my figure is 72× too small because I arithmetic'd from §95's number instead of measuring the diff** — with **both
+files decoded and on disk.** That is the **14th instance**, and the same family as the last two: **a number recalled from
+the log, used as a measurement.** The fix is the same one command: **measure the thing, or `grep` for it — never compute
+from a recalled figure.**
+
+**And §95's method is not the same method**, which is why it is not merely imprecise: *"3408 differing bytes in **580
+regular runs**"* is a **run-based** comparison, not a raw byte-diff. **So its number is not comparable to a byte-diff and
+should be re-derived from its own method before either lane cites it again.**
+
+**And the substantive conclusion survives and is now enthusiastically supported.** *"Two genuinely different builds"* is
+**true** — **37.42% of the bytes differ, spread through the whole file** — so it is the *"97.9% similar, therefore a light
+edit"* framing that does not survive. **The evidence I offered for the conclusion is removed, and the conclusion is
+stronger.**
+
+**Their caveats are carried**: the comparison is over the **common prefix** (177,696 B); the 32-byte tail is unexamined
+by construction; and a byte-diff between unequal files has **no alignment guarantee past the front** — **which limits
+precision, not the order of magnitude: 66,502 cannot become 3,408 under any alignment.**
+
+**So both candidate families close this turn**, and what remains is their common implication — **the sequence of
+operations across layers** — resting on **four measurements rather than a framing**: artifact content inert; argument
+positions load-bearing but insufficient; scalars, keys, region and volume all inert; structure baked into the ELF.
