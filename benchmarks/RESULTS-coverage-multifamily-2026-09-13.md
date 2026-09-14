@@ -11657,3 +11657,32 @@ pointed at when it moved the boot, now with the artifact's own direction field b
 per-row NaN count of §204 scaled to the engine's 256-row call — **256 × 1,024 = 262,144, the measured NaN total.** Whether
 the kernel's write region *is* the NaN region is not established; **the two numbers agree, which is a hypothesis worth a
 test, not a finding** — and this lane has paid for that distinction repeatedly.
+
+## 213. The predicted-direction swap is §175's run — already done, and it does not land on the prediction — and the direction analysis re-opens §184's conflict rather than resolving it
+
+§212 pointed at a test: swap the two attention slots and read from the new one, **now with the artifact's direction field
+predicting which way**. That test **is §175** — the env-gated `BF16MM_ATTN_SWAP_IO` run, which moved the boot
+**188 → 152432**. And the swap *is* the predicted configuration: it puts `attn_out` (the buffer the engine reads) at
+**`arg4`**, which is the 5 MB slot the write volume says is the output. **So the prediction was made, the configuration was
+run, and the boot did not reach 1033** — the direction reading is **refuted as a sufficient condition**, exactly as §175's
+narrow form said (*the slots are distinguishable*), and for the third time in this lane a well-supported shape has failed
+to be sufficient.
+
+**And the direction analysis re-opens §184's conflict instead of closing it**, which is the more useful outcome:
+
+| evidence | says |
+|---|---|
+| `dim1_stride = 1280` | `10 × 128` = `(NH/2)×HD` **at NH = 20** → **nh20** |
+| write volume `1,024 bf16/token` | `8 × 128` = `(NH/2)×HD` **at NH = 16** → **nh16** |
+| read volume `1,024 bf16/token` (same arg geometry) | **nh16** |
+
+**The stride says nh20 and the volume says nh16** — the same two-sided conflict §184 recorded when the sums implied
+`1024 × 1024` (8 heads × 128) while the stride encoded 1280. **So the artifact carries two inconsistent geometry
+signals, and that inconsistency is now the sharpest unexplained thing in the lane** — not an argument's value, not a
+label's placement, but **the artifact's own two descriptions of its width disagreeing with each other.**
+
+**What that suggests as the next measurement, and it is offline:** the volumes and strides should be checked against the
+**256-context** and **nh32** artifacts, which are also on disk and decoded. If `(NH/2)×HD` holds in the **stride** for all
+three (`1024 / 1280 / 2048`, verified in §195) while the **per-token volume** is constant across them, then **the volume
+field is not a geometry field at all** — and the conflict dissolves by demoting one of the two signals rather than by
+choosing between them.
