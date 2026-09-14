@@ -9330,3 +9330,44 @@ and they want different fixes**: an imprecision needs a better target, a casualt
 theirs** — I8-rows→bundle, one-model→format, one-tool→family, and now their one-measurement→scale — **which makes it the
 most productive error class either lane has found, and the only one where every instance was caught by the person who
 made it or by the other lane within one message.**
+
+## 173. The call site, instrumented: the engine's arg3 is NH×HD-sized where FLM's is NKV×HD-sized — the divergence their arithmetic predicted, found at the invocation
+
+Following their arithmetic over §102's capture (`RUN 001: args=[3:1048576 4:5242880 5:31457280]`), the engine's own
+invocation was **read rather than inferred**:
+
+```cpp
+xrt::run run(*kern);
+run.set_arg(0, 3);
+run.set_arg(1, 0);
+run.set_arg(2, 0);
+run.set_arg(3, attn_out->bo());   // cap = 1024 * q * 2   ->  5 MB = 2560 bf16/token = NH*HD
+run.set_arg(4, attn_act->bo());   // same cap             ->  5 MB = 2560 bf16/token = NH*HD
+run.set_arg(5, attn_kv->bo());    // kv_region * 4 * 2    -> 16 MB (region 2097152)
+```
+
+| arg | FLM (§102) | per token | engine | per token |
+|---|---|---|---|---|
+| **3** | 1 MB | **512 = NKV×HD** | **5 MB** | **2560 = NH×HD** |
+| **4** | 5 MB | 2560 = NH×HD | **5 MB — match** | 2560 = NH×HD |
+| **5** | 30 MB | region 3932160 | **16 MB** | region 2097152 |
+
+**So the divergence is not only in the sizes — arg3 carries a different quantity.** FLM's arg3 is **KV-width**
+(`NKV×HD` = 4×128 = 512 per token); the engine's arg3 is **attention-output width** (`NH×HD` = 20×128 = 2560 per token).
+FLM's arg4 *is* `NH×HD`, and the engine's arg3/arg4 are both that. **No engine argument is sized like FLM's arg3 at
+all.**
+
+**Stated with the caveat that keeps it honest: a BO's allocation size is not proof of its role.** A kernel can be handed
+a larger buffer than it uses, so this is a **measured divergence at the call site**, not yet a cause. What it does
+establish is that the two lanes differ in *what they hand the kernel*, not only in *which file they load* — which is
+where §167/§170 left the defect, and it is the first candidate found by **reading the invocation instead of the
+artifact.**
+
+**And the coverage figure travels with a caveat, theirs and correct.** §122's *"2048 of 2560 columns"* came from a
+**sentinel / per-head-scale column instrument**, and this session has retracted **four** instrument readings — so *"a
+kernel covering 16 heads' worth"* is a **reading to re-establish**, not a premise for the next hypothesis. §123 is
+already marked open for the same reason (§165).
+
+**Which makes the next measurement the one that settles both:** vary **arg3's size alone** (to `NKV×HD` per token), with
+the artifact untouched, and read the boot — if it moves, the call-site role is the defect and no stream content matters;
+if it does not, arg3's size is allocation slack and that candidate is dead.
