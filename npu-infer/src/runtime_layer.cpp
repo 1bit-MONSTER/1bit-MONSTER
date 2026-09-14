@@ -24,6 +24,7 @@
 
 extern "C" int npu_pack_layer_bo(uint8_t* bo_buffer, void* mw, const void* config, int layer_idx);
 extern "C" int npu_pack_lmhead_bo(uint8_t* bo_buffer, void* mw, const void* config);
+extern "C" int npu_desc_tiles(const void* desc);
 extern "C" int npu_layer_bo_bytes(void* mw, const void* config);
 
 // ---- model-file layout (model-generic) ----
@@ -161,7 +162,7 @@ bool RuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelCon
 
 bool RuntimeLayerEngine::pack_lmhead_bo() {
     if (npu_pack_lmhead_bo && mw_ && mw_->lm_head_weight.ndim == 2) {
-        int tiles = (int)mw_->lm_head_weight.shape[0];
+        int tiles = npu_desc_tiles((const TensorDesc*)&mw_->lm_head_weight);
         size_t bo_bytes = (size_t)tiles * 5120;
         bo_lmhead_w_ = std::make_unique<xrt::ext::bo>(*dev_, bo_bytes);
         uint8_t* m = static_cast<uint8_t*>(bo_lmhead_w_->map());

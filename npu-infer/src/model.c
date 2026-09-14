@@ -207,7 +207,7 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
 // THE SAME RULE MUST BE USED EVERYWHERE a tile count is derived from a tensor: the source
 // read, the destination offsets, and the BO size. Fixing one of the three and not the others
 // moves the fault rather than removing it -- which is how this was found.
-static int npu_desc_tiles(const TensorDesc* d) {
+int npu_desc_tiles(const TensorDesc* d) {
     if (!d || d->ndim != 2) return 0;
     long long rows = (long long)d->shape[0];
     long long rb   = (long long)d->shape[1];
@@ -683,7 +683,12 @@ int npu_pack_lmhead_bo(uint8_t* bo_buffer, ModelWeights* mw, const ModelConfig* 
     (void)config;
     if (!bo_buffer || !mw || mw->lm_head_weight.ndim != 2) return 0;
     const int TILE = 5120;
-    int n_tiles = (int)mw->lm_head_weight.shape[0];
+    // SAME RULE AS THE LAYER PACKING: shape[0] is a ROW count and shape[1] is a row width IN
+    // BYTES, so a row is one tile only when shape[1] == 5120. Gemma3-1B's lm_head tensor has
+    // shape[1] == 1280, which made this read 4x the tensor and fault -- the same defect as
+    // npu_pack_layer_bo, in the lm_head path. The caller sizes the BO with the same helper, so
+    // the two stay consistent.
+    int n_tiles = npu_desc_tiles(&mw->lm_head_weight);
     if (n_tiles <= 0) return 0;
     const uint8_t* data = (const uint8_t*)model_tensor_data(mw, &mw->lm_head_weight);
     if (!data) return 0;
