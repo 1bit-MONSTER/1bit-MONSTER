@@ -12733,3 +12733,36 @@ partition stays what it was: **wrote 2048 of 2560 per row, 1024 of them NaN, 512
 `4.72 MB / 4 regions / 1024 tokens = 1152 B = **576 bf16/token**` — **exactly the `576` the `BF16MM_ATTN_KV_PT` comment names
 as "the stream's implied width."** And **`arg2`'s width is not linear in length** — 190 bf16/token at 256, **576** at 1024,
 **1088** at 2048 — so `arg2`'s growth is a separate open observation, recorded with its numbers rather than a formula.
+
+## 770. Six more nh16 artifacts conform — and the GENERATED one conserves the volume while changing the tiling 4×, so the constant is not a tiling artifact
+
+**Decoded every attention ELF on the box (the tree plus `~/npu-build/mha/`), which adds seven artifacts to the six already
+tabled:**
+
+| artifact | tokens | `arg0` patches | patch/token | total | `arg2` stride |
+|---|---|---|---|---|---|
+| `attn_cap1024.elf` | 1024 | 256 | **0.25** | 1.05 MB | 256 |
+| `attn_cap2048.elf` | 2048 | 512 | **0.25** | 2.10 MB | 256 |
+| `attn_mha_256_nh16.elf.orig` | 256 | 64 | **0.25** | 0.26 MB | 256 |
+| **`attn_mha_1024_nh16.generated.elf`** | 1024 | **1024** | **1.00** | **2.10 MB** | **1** |
+| **`attn_0_256.elf`** | 256 | **248** | **0.97** | 0.51 MB | **1** |
+
+**The nh16 arm is now supported by six conforming artifacts across three lengths** — 256, 1024 and 2048 all at **0.25
+patch/token = 512 bf16/token**. The constant holds across every nh16 artifact in the tree.
+
+**And the generated artifact is the informative one.** It carries **1024 patches instead of 256** — **4× the tiling** — at
+**exactly the same 2.10 MB total.** This is §197's 4× unroll seen from a second direction (patch count rather than word
+count), and it says something the formula needs: **the per-token volume is conserved when the tiling changes by 4×.** So
+`512 × ceil(NH/16)` is **not** a property of the patch grid — **the constant lives in the total, not in the tiling**, and
+the tiling is an implementation choice the generator is free to change.
+
+**And two of the new artifacts belong to a SECOND descriptor class.** `attn_0_256.elf` carries **248 patches** and **127**
+for its two buffers — **neither a power of two nor a multiple of 64** — and `arg2`'s `dim1_stride` is **1**, as is the
+generated artifact's. So there are **two encodings** in the wild: one where `dim1_stride` is the model's stride
+(`1024 / 1280 / 2048 / 256`), and one where it is flattened to `1`. **The formula applies only to the model-strided class**,
+and the flattened class must be excluded from any table that mixes them — which is §605's *"a table mixing them is not a
+table of one thing"*, now with two more members.
+
+**And the test is still a fourth head count.** Every artifact above is nh16 — the tree has nh16, nh20, nh32 and the
+flattened hd64 case, and **no nh24 or nh8 artifact at all**. So the formula remains **3 independent head counts, 6+
+supporting artifacts, and an unrun test** — and the test is a generated ELF, not another reading of the ones we have.
