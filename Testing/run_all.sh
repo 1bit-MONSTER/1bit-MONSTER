@@ -36,6 +36,13 @@ run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.c
 run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run rotation  Testing/rotation_table_selfcheck.cpp
 run iq1       Testing/iq1_selfcheck.cpp --
+
+# Padded-vocab embedding gate: some 1BP artifacts declare the checkpoint's padded
+# vocab (262272) while shipping the unpadded table (262147 rows) — that is the
+# published v1 ZAYA1-8B upload, and the engine used to refuse it outright. The gate
+# adopts the table's rows as the vocab and still refuses real truncation, so this
+# pins the boundary in one place (#1521 producer side, #1606 truncation).
+run embed_pad Testing/embed_pad_gate_selfcheck.cpp --
 run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
 # NPU artifact key contract (issue #2193): the header-window regression and the
 # per-family GEMM names, both verifiable without a device.
