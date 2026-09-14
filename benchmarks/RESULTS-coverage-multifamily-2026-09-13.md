@@ -11292,3 +11292,51 @@ artifact for the role — the signature it loads ran **64 times** in the capture
 **And the caveat is theirs to keep**: a signature identifies **arg sizes**, not a kernel file, so two kernels sharing a
 signature would be indistinguishable. **But the counts' structure — 64s and 32s, a layer×block grid — is exactly what
 the role table needed, and it is the grid the engine's own chunking follows.**
+
+## 205. The launch-count tangle resolved: the ELF-line method was wrong (mine) AND the signature attribution in §650 is wrong — the tiebreaker is the LAYER COUNT, and it is 32
+
+Two readings of the same manifest disagreed, and each lane was wrong about a different half.
+
+**The method error is mine.** `ELF nnnn: size=` is emitted **once per kernel, at its first load** — not per launch. So
+counting `ELF` lines is not counting launches, and §199/§203's *"the artifact this engine emulates runs once"* is
+**RETRACTED**: the correct instrument is the per-launch argument signature. §650's first point is right.
+
+**The attribution error is in §650**, and the tiebreaker is arithmetic against the model:
+
+| signature `(arg3, arg4, arg5)` | runs |
+|---|---|
+| (1,048,576 · 5,242,880 · 31,457,280) | 64 |
+| **(5,242,880 · 5,242,880 · 67,108,864)** | **32** |
+| (5,242,880 · 5,242,880 · 31,457,280) | 64 |
+| (22,020,096 · 5,242,880 · 55,574,528) | 64 |
+| (5,242,880 · 22,020,096 · 55,574,528) | 32 |
+
+**Nanbeige has `num_hidden_layers = 32`.** §650 attributes the shipped kernel to the **64-run** signature and reads
+64 as *"16 layers × 4 blocks"* — **but there is no 16-layer model here.** The **32-run** `(5 MB, 5 MB, 64 MB)` signature
+is **once per layer at exactly the layer count**, and it is the one the manifest assigns to `elf_0011`:
+
+```
+RUN 001: args=[3:1048576 4:5242880 5:31457280]   <- the PREVIOUS run's accumulated line
+ELF 0011: size=177728 -> …/elf_0011_177728.bin   <- loaded here
+EXTKERNEL …   RUN_CTOR …
+SETARG3 idx=0 val=0x3 | idx=1 val=0x0 | idx=2 val=0x0
+SETARG  idx=3 size=5242880                        ┐
+SETARG  idx=4 size=5242880                        ├─ this ELF's run
+SETARG  idx=5 size=67108864                       ┘
+```
+
+**So the shipped kernel ran 32 times — once per layer — and §201 stands**: its `arg3`/`arg4` are **5 MB / 5 MB**, matching
+the engine, while `arg5` differs (64 MB against the engine's 16 MB — and 64 MB was tested: §183, **152432**).
+
+**And the two conclusions that survive together are the useful part:**
+
+- **the frequency MATCHES** — 32 launches of the shipped kernel for a 32-layer model is exactly the role the engine gives
+  it, so **the "wrong artifact for the role" reading is refuted** (§650's conclusion, on repaired evidence rather than on
+  the count it was drawn from);
+- **the argument binding still differs in one slot** — `arg5`, the KV BO size — which is the one host-side lever that has
+  ever moved this boot and which has been driven to FLM's own value without fixing it (§198).
+
+**Recorded as a matched pair of errors rather than a winner**, because the shape is the one this log keeps finding: **each
+lane used a real instrument for a question it could not answer** — a once-per-kernel log line as a launch count, and a
+signature count without checking it against the model's layer number. **The fix in both cases was a second fact, not a
+re-reading.**
