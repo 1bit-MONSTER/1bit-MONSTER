@@ -819,13 +819,17 @@ artifact, and fixing it needed two build products that had never been committed.
    **`cols=8` for QKV/G/U, `cols=4` for O/D** — Llama-3.1-8B needs `QKV:4096:6144`, `O:4096:4096`, `G/U:4096:14336`,
    `D:14336:4096`. **Compile with `install_tmp/bin/aiecc` and `--aietools=<mlir-aie>/install_tmp/python/aie`** —
    `build_tmp/bin/aiecc` rejects these designs *and rejects a known-good shape identically*.
-2. **Per-context layer ELFs** (457 MB — **not committed**; regenerate in **2 s**). Relink `npu-infer/tools/gen_layer_elfs.cpp`
-   against **`amd-oss/fastflowlm/src/lib/xrt`** with all family libs plus `-lllama_npu`, then:
-   `gle_all <Llama-3.1-8B-NPU2> <outdir> 1 1024 32768 llama`, and run with `NPU_LAYER_ELF_DIR=<outdir>`.
-   **Linked against `flm-v0946` instead, the same binary throws `std::bad_alloc` for every family, including qwen3.**
+2. **Per-context layer ELFs** (457 MB — **not committed**; regenerate in **~5 s** with
+   **`benchmarks/gen-layer-elfs.sh <model_dir> <out_dir> <max_ctx> llama`**, then run with `NPU_LAYER_ELF_DIR=<out_dir>`).
+   **Generate with HEADROOM: `ctx` counts tokens processed, so a 1024-token prompt consumes ctx 1..1024 and the first
+   decode step is ctx 1025** — an ELF set sized for the prefill alone fails with `[runlist] decode forward ctx=1025
+   failed`. And **link against `amd-oss/fastflowlm/src/lib/xrt`, not the other FLM install** — linked against `flm-v0946`
+   the same binary throws `std::bad_alloc` **for every family, including qwen3.** Both of those cost time to learn; the
+   script carries them.
 
-**With both in place: `Prefill 1024 [runlist]` → `[1] 220`, FLM's exact reference.** The *"Working (6)"* claim stands and
-is now re-verifiable.
+**With both in place: `Prefill 1024 [runlist]` → `[1] 220` and the decode runs — `68.3 ms/tok (15 tok/s)`, a 1.33× win
+over FLM's 91.3 ms/tok (11 tok/s).** The *"Working (6)"* claim stands and is now re-verifiable, and so is the **decode**
+row (see §9.3).
 
 **What made the difference was running a known-good case through the same pipeline**, twice: the first failure looked
 shape-specific and was the wrong `aiecc`; the second looked family-specific and was the wrong lib tree. **A failed
