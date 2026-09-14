@@ -8,6 +8,45 @@ This is the current file. `RESULTS-coverage-multifamily-2026-09-13.md` is the wo
 contains the full investigation, including retractions; read it for reasoning, read this for
 status.
 
+## 0. Status as of 2026-09-14 — read this first
+
+**The goal is met for the supported set.** Prefill, TTFT and decode all meet-or-beat FLM on every model the native NPU
+engine supports, verified on HEAD, and **all ten gate rows match FLM's exact references**:
+
+| | |
+|---|---|
+| Qwen3-0.6B | **25 @1024, 1614 @256** |
+| Qwen3-1.7B | **220 @1024** |
+| Qwen3-4B | **220 @1024, 1614 @256** |
+| Qwen3-8B | **220 @1024** |
+| Qwen3-VL-4B | **220 @1024** |
+| Nanbeige4.1-3B | **1033 @1024, 5938 @256** |
+| Llama-3.1-8B | **220 @1024**, and decode **15 tok/s vs FLM's 11** |
+
+**Everything above is re-runnable**: `benchmarks/gen-layer-elfs.sh` regenerates the per-context layer ELFs the runlist
+needs (one command, ~5 s), and §10d carries the shape-xclbin rebuild recipe.
+
+**Three findings from 2026-09-14 that a reader of the older sections would not expect:**
+
+1. **Two coverage rows were missing build products, not capability limits.** Llama-3.1-8B's gate was blocked by absent
+   shape xclbins plus absent layer ELFs (**both rebuilt; its gate now passes**), and Gemma3-4B's by five absent shape
+   xclbins (**init now proceeds**). A third, Gemma3-1B, was the same class. **The coverage table had been carrying build
+   gaps as "untested".**
+2. **The decode row is 6 of 6, and its blocker was a `ctx` range.** `ctx` counts tokens processed, so a 1024-token
+   prefill consumes ctx 1..1024 and the **first decode step is ctx 1025** — an ELF set sized for the prefill alone fails.
+   With `ctx 1..1100`, Llama decodes at **68.3-68.9 ms/tok** against FLM's 91.3.
+3. **Two `model.c` fixes landed, both verified as no-ops for every existing model** (nine of nine gates re-checked):
+   `npu_reorder_tiles` must use **`o % G`** — the in-group term used the raw `o`, which is harmless for even `G` but
+   diverges for odd `G` (`2S = G+1`), and at `G=9` it read past the tensor; and a null-tensor guard in `npu_pack_proj`.
+
+**Open, with their current best statement:** Gemma3-1B reaches the layers and crashes in the packing path (**localized;
+next hypothesis is the fixed 5120-byte tile**); the Nanbeige bf16-path residual is **a diagnostic-path question, not a
+product one** (§10c.1); and the four uncovered families keep their named dependencies (§5).
+
+**And the rule that decided most of this**: *name the ARM, not the flags* — and here, **name the PATH**. Several of the
+findings above are about tooling, and each looked like a model or kernel defect until a **control** (a known-good shape, a
+known-good family, a working model) was run through the same pipeline.
+
 ## 1. The verdict, per metric
 
 | metric | status | evidence |
