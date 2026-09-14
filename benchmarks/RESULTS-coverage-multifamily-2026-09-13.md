@@ -11376,3 +11376,33 @@ the engine calls it **once per layer per 256-row block**: a **perfect match in r
 - **their caution generalises**: the file has **two independent `RUN` numberings**, so **a run identifier is not unique
   in this file** — §199's lesson one level down. **It is the third time §102's quote propagated an error**: into §102's
   own table, into §173, and into my count.
+
+## 206. §205's tiebreaker does not discriminate: 64 = 32 layers × 2 blocks fits as well as 32 = 32 × 1 — the arg attribution stays OPEN, while the frequency conclusion holds either way
+
+§205 used the layer count to choose between the two signatures, and **that was too fast.** §650's arithmetic, corrected to
+`64 = 32 layers × 2 blocks`, **fits Nanbeige's 32 layers just as well as `32 = 32 × 1` does.** Both are *once per layer*
+at a per-layer block count, so **the layer number cannot separate them** and the attribution of `arg` sizes to
+`elf_0011` remains **open**.
+
+**What survives, and it is the part that mattered:**
+
+| reading | signature | runs | frequency |
+|---|---|---|---|
+| §201 (ELF-line → following `SETARG`s) | (5 MB, 5 MB, 64 MB) | 32 | once per layer |
+| §650 (signature → §102's quote) | (1 MB, 5 MB, 30 MB) | 64 | once per layer × 2 blocks |
+
+**Under either attribution the frequency is per-layer**, so **the "wrong artifact for the role" reading is refuted on
+both** — which is the conclusion, and it does not depend on which row is right. **Recorded that way deliberately:** the
+lane reached a robust conclusion through an attribution it has not settled, and the honest form names both.
+
+**And §650 surfaces a new difference that is real and was invisible before the table existed.** Two blocks for 1024
+tokens means **the capture ran 512-token blocks** — while the engine's `XM` is **256** and it makes **four** calls per
+layer. **Same kernel, same role, different chunking.** Their reading is that the ELF tolerates it because the caller
+shifts pointers and the geometry is baked — **and that is exactly the kind of claim this lane has learned not to accept
+without testing**: the ELF bakes a 4× unroll of 256-row blocks (§197), so whether a 256-row caller and a 512-row capture
+drive it identically is **an assumption, not a measurement**.
+
+**Which makes a chunk-size test a candidate that no perturbation has covered.** §196's `CUMKEYS` varied the **key count**
+(`sp + npt`) and was inert; **nothing has varied `XM`**, and the capture's own block size is 512 against the engine's 256.
+**The caveat is that `XM` also sizes the GEMM staging**, so it is not a one-line perturbation — which is why it is
+recorded as the next candidate rather than taken here.
