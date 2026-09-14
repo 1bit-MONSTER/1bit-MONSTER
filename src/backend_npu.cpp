@@ -379,8 +379,8 @@ struct NPUBackend : Backend {
     float rope_theta = 1000000.0f;
     int max_seq_len = 4096;
 
-    // Weights loaded from model file (small: embed + norms)
-    std::vector<float> embed;
+    // Weights loaded from model file (norms). The embed table deliberately has no
+    // parent-side copy — see the load site for why (issue #2193).
     std::vector<float> final_norm;
     std::vector<std::vector<float>> in_norms;     // per-layer input norm
     std::vector<std::vector<float>> post_attn_norms; // per-layer post-attn norm
@@ -565,18 +565,29 @@ struct NPUBackend : Backend {
             return false;
         }
 
-        // Embed table (tied lm_head)
+        // Embed table (tied lm_head) — PRESENCE CHECK ONLY, deliberately not read.
+        //
+        // This used to call model.read_floats(emb_off, NV*H) and print
+        // "NPU: loaded embed <n> floats". On a q4nx artifact the embed is stored
+        // quantized (int8), so the float read returns nothing and the log claimed
+        // "loaded embed 0 floats" — indistinguishable from a genuinely missing
+        // tensor, and it read as though the model had no embed at all (issue #2193).
+        // It also asked for NV*H floats: 262272 x 2048 x 4 B ~= 2.1 GB for zaya1-8b.
+        //
+        // The parent does not need the values: the worker expands the int8 table
+        // itself via expand_embed_int8 (engine/npu/src/zaya_decode.cpp), and its own
+        // log shows "embed int8 expansion" plus a perfect EMB correlation. The only
+        // thing worth reporting here is whether the key resolved.
         {
             // JSON keys used by Q4NX format
             uint64_t emb_off = model.find_offset("model_embed_tokens_weight");
             if (!emb_off) emb_off = model.find_offset("model.embed_tokens.weight");
             if (!emb_off) emb_off = model.find_offset("gte");
-            if (emb_off) {
-                embed = model.read_floats(emb_off, (size_t)NV * H);
-                printf("NPU: loaded embed %zu floats\n", embed.size());
-            } else {
+            if (emb_off)
+                printf("NPU: embed table present at offset %llu (the worker expands it; "
+                       "no parent-side float copy loaded)\n", (unsigned long long)emb_off);
+            else
                 fprintf(stderr, "NPU: cannot find embed in model\n");
-            }
         }
 
         // Final norm
@@ -683,7 +694,7 @@ struct NPUBackend : Backend {
         residual_buf.resize(H);
         logits_buf.resize(NV);
 
-        printf("NPU: ready — %d layers, H=%d, V=%d, embed=%zu\n", NC, H, NV, embed.size());
+        printf("NPU: ready — %d layers, H=%d, V=%d\n", NC, H, NV);
         initialized = true;
         return true;
     }
