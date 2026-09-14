@@ -10871,3 +10871,51 @@ is the one run worth taking — and §196 strengthens it: the region is the only
 supplies **to the per-ctx ELF**"* and to the runlist path's own ELFs. **So the `bf16mm` arm's BO contents are covered
 only where they were separately diffed (layer-0 QKV), not by that table** — worth pinning before byte-identity is
 quoted for this lane.
+
+## 198. Their synthesis explains the whole lane's inertness in one stroke — and the one run it proposes is already in the log
+
+**The synthesis is right and it is the most useful thing either lane has said about this defect.** Every `set_arg` on the
+attention run is:
+
+```
+arg0 = sa (opcode 3)     arg3 = attn_act | attn_out   (the swap)
+arg1 = sb (0)            arg4 = attn_out | attn_act   (the swap)
+arg2 = sc (0)            arg5 = attn_kv
+```
+
+**`attn_tokens` and `attn_rows` appear in NO `set_arg`.** They feed only **host-side** quantities — `rows` for the act
+copy, the read-back, the sentinel and the BO cap; `used = attn_tokens × 512` for the KV fill. **So the kernel's geometry
+is entirely ELF-baked and no call-time parameter can reach it** — which is **why the scalars, the rows, the keys and the
+fill volume were all inert**: they never arrive as geometry. That converts five separate null results into **one
+structural explanation**, and it is a better result than any of the five.
+
+**And the exception is the one lever that has ever moved this boot: `attn_kv_region`.** It is host-side too, but it
+changes the **SHAPE of the KV BO the kernel is handed** rather than telling the kernel anything — which is exactly why
+it moves the value where the parameters do not. **The region is the only host-side lever with a path to the device.**
+
+**But the run it proposes has already been taken.** §630 names `NPU_ATTN_KV_REGION=6291456` — the value the artifact's own
+48 MiB `arg2` span implies and the engine's comment names for `H = 2560` — as *"the one run worth taking"*. It was run in
+§183:
+
+| `kv_region` | BO | boot |
+|---|---|---|
+| **2097152** (shipped) | 16.0 MB | **188** |
+| 3932160 (FLM's captured value) | 30.0 MB | 152432 |
+| **6291456** (the artifact's own value) | **48.0 MB** | **152432** |
+| 8388608 | 64.0 MB | 152432 |
+
+**So the region lever has exactly two outcomes, and the artifact's own value is not the working one.** That does not
+weaken their synthesis — the region *is* the only lever that reaches the device — it **closes the lever**: the one
+host-side path to the kernel has been driven to the value the artifact implies, and the boot does not move.
+
+**And their scoping catch is worth pinning, because it limits a claim this lane has leaned on.** The byte-identity claim
+is explicitly limited to *"every input the host supplies **to the per-ctx ELF**"* and to the runlist path's own ELFs — so
+**the `bf16mm` arm's BO contents are covered only where they were separately diffed (layer-0 QKV), not by that table.**
+Byte-identity should therefore not be quoted for this lane without naming what it covers — the same rule this log already
+owns for reference tokens and for artifact rows (§195).
+
+**Where that leaves the lane, and it is the tightest statement available:** the geometry is ELF-baked and unreachable
+from the call; the only host-side lever (the region) has been driven to the artifact's own value and does not move the
+boot; the artifact is a genuine capture sharing only 63 % of its bytes with its nearest neighbour (§197); and the inputs
+are byte-identical **where they have actually been compared**. **The remaining surface is therefore the one no lever
+reaches: the sequence of operations across layers.**
