@@ -14101,3 +14101,41 @@ Gemma3-1B's shapes and **got nothing**, so the gap stands as a **vendor-side dep
 vendor-provided artifact.** The zeros were never an attention defect, a layer-geometry defect, or a dequant defect — each of
 which was proposed and eliminated in turn — and the answer was a **file that was reported missing at init and read as
 harmless.**
+
+## 955. The lm_head diagnosis becomes an EXPERIMENT: `lm_head kernel ready` appears only when a file is present, and the behaviour changes
+
+**§950 explained the zeros from a missing file — an inference. Dropping any `elf_0002_lmhead.bin` into the runlist's ELF
+directory turns it into a measurement**, because the path is fixed (`<elf_dir>/elf_0002_lmhead.bin`) and needs no override.
+
+**Arm A — no lm_head ELF (the state every Gemma3-1B run has had):**
+
+```
+RuntimeLayer: cannot open  …/elf_0002_lmhead.bin
+RuntimeLayer: cannot read lm_head ELF …/elf_0002_lmhead.bin
+RuntimeLayer: packed lm_head BO (36864 tiles)
+  … run completes, [1] 0, logits dump 1,048,576 B, 0 non-zero
+```
+
+**Arm B — an `elf_0002_lmhead.bin` supplied** (from another worktree's Qwen3 capture, 421,536 B):
+
+```
+RuntimeLayer: lm_head kernel ready (/tmp/g1b_withlm/elf_0002_lmhead.bin)
+  … the run does NOT reach decode: it stalls in the layers and hits a 400 s timeout; no logits dump
+```
+
+**What that establishes, and what it does not.**
+
+- **Established**: the kernel is built **only** when a file is present, and **its presence changes the run's behaviour**. Both
+  arms agree with §950's chain — **no kernel, no write to `bo_logits_`, zeros.**
+- **Not established**: whether the stall is the wrong-shape ELF or something else (a slow path, the device, the timeout).
+  **The substitution is not a fix** — the only ELFs on the box are Qwen3's, at a **151,936** vocabulary against Gemma3-1B's
+  **262,208** — so its values would be wrong even if it ran. I am recording the behaviour change and **not** attributing the
+  stall.
+
+**The instrument note is the same one that keeps recurring**: `RT_DUMP_POST` wrote **zero** dumps in arm B because the run
+never reached the post-execution point. **An absent dump is not an empty one** — the same distinction as an absent token
+versus a wrong token, and the reason the arm-B logits count above is "no dumps", not "0 non-zero".
+
+**So the Gemma3-1B row stands as §950 left it, now with an experiment behind the diagnosis**: the cause is a **missing
+vendor ELF**, the fix is **that artifact with the right shapes**, and the search is closed on this engine's side — attention,
+geometry, dequant, buffer size and now the call path have each been tested rather than argued.
