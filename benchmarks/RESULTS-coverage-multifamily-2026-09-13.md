@@ -14562,3 +14562,40 @@ rather than for the comment**: `q_cols` is twelve lines from where the comment i
 **fused** layout correctly (`qr = 2 × NH·HD = 8192`), and the crash at layer 3 is **not a shape-count problem** — it is
 somewhere in the fused packing itself. **That is a different and narrower target than §1000 left, and arriving at it cost two
 reverts that a grep would have prevented.**
+
+## 1010. The layer-3 crash is a SIZE MISMATCH between the two QKV layouts — and the missing shape is built
+
+**The fused branch packs `q + gate`; the QKV context was sized for `q + k + v`.** Both numbers are in the code:
+
+```c
+// the fused branch (the one Qwen3.5-4B's standard layers take):
+int t = std_nh[l] * std_hd[l] * 2;      // 16 * 256 * 2 = 8192   (q + gate; k/v run on CPU)
+// the context, derived from the model dims:
+cq.ND = pad128(NH*HD + 2*NKV*HD)        // pad128(4096 + 2048) = 6144
+```
+
+**The host packs 8192 rows into a context sized for 6144 — a 2048-row overrun**, which is where the segfault is. The
+per-layer `std_nh`/`std_hd` arrays are **not** at fault: they default to `cfg.NH`/`cfg.HD` and the refinement that could
+change them uses the **singular** `model.layer.%d` form and therefore does not fire — leaving the defaults, which are
+**correct** here. The packing loop's offsets are all in bounds too (`h*512 + 256` ≤ 7936 < 8192).
+
+**So the mismatch is between two layout conventions, not between a value and its use:**
+
+| | rows |
+|---|---|
+| **plain** (`Qwen3`, `Llama`): q_proj = `NH·HD`, k/v separate → `NH·HD + 2·NKV·HD` | **6144** |
+| **fused** (`Qwen3.5`/`3.6` standard layers): q_proj = q + gate = `2·NH·HD`, k/v on CPU | **8192** |
+
+**`pad128(NH·HD + 2·NKV·HD)` is the PLAIN-layout size, and this model's standard layers take the FUSED layout.** That is the
+same class as everything else in this stretch — **a dimension derived under one assumption and applied to a model using the
+other** — and it is the fourth time: the byte-extent tile count, the units error, the `gi8` double count, and now a layout
+size.
+
+**The missing artifact is built**: `final_i8_QKV_K2560_N8192` (K=2560, N=8192, 64 tiles, cols=8 divides, 48,650 B), so the
+tree now carries `N3840`, `N4096`, `N6144` and `N8192`.
+
+**And the fix is small but must be conditional.** Sizing `xclbin_qkv_n` to the max of the two would be wrong: **Qwen3-4B's
+plain layout is `4096 + 2048 = 6144` while `2·NH·HD = 8192`**, so a max would make it ask for a file it does not have. The
+correct place is the **fused branch itself** — re-initialise the QKV context when `cq.ND < t`, so only a model that actually
+packs the fused layout asks for the larger shape. **Recorded rather than applied, because the session's last two attempts at
+a "small conditional change" each broke a working model and were caught by the gates; the same discipline applies here.**
