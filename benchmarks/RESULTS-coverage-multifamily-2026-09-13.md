@@ -11250,3 +11250,39 @@ The peer's independent **20.47 % output-equals-input** figure is the same split 
 **Kept honest:** the NaN fraction is measured on the **saved output of a 256-row call**; that it *causes* the wrong boot
 token is still an inference — but it is now an inference from a **computed** value with a **per-row structure**, rather
 than from a count.
+
+## 650. The launch counts do not support the "wrong artifact" reading — the ARG SIGNATURE shows the shipped kernel ran 64 times, once per layer-block
+
+**Their observation, kept as an observation**: 257 launches over 16 kernels, with the artifact this engine ships
+(177,728 B) apparently launched **once** while a 41,920-B nh20-geometry kernel ran **252** times. Two readings were left
+live: **benign** (the capture is a prefill, and the counts reflect what was being captured) and **material** (`elf_0012`
+is FLM's per-layer attention, so **the engine emulated the wrong artifact for the role** — which would explain a wrong
+**shape** rather than wrong inputs).
+
+**They said what separates them is a role table derivable offline. I built it, and it corrects the premise.**
+
+1. **The manifest labels only 8 of its 257 runs.** `ELF nnnn: size=` is emitted **once per kernel, at its first
+   launch** — so a **per-launch kernel identity is not in it**, and the per-kernel table has to be inferred.
+2. **And attribution by size is ambiguous**: `elf_0012` **and** `elf_0015` are **both 41,920 B**, so "the 41,920-byte
+   kernel ran 252 times" does not name a file.
+3. **The discriminator that works is the per-launch `SETARG` signature** — and it gives:
+
+| runs | arg sizes (idx 3/4/5) |
+|---|---|
+| **64** | **(1048576, 5242880, 31457280)** — **§102's own quoted signature for the 177,728-B kernel** |
+| 64 | (22020096, 5242880, 55574528) |
+| 32 | (5242880, 5242880, 67108864) |
+| 32 | (5242880, 5242880, 31457280) |
+| 32 | (5242880, 22020096, 55574528) |
+| 31 | a multi-set |
+| 2 | singletons |
+
+**So the kernel this engine ships was launched 64 times, not once — and 64 = 16 layers × 4 blocks of 256**, i.e. **once
+per layer per chunk of a 1024-token prefill**, which is **exactly the role the engine gives it.**
+
+**Which refutes the "material" reading and supports the "benign" one**: the engine has **not** emulated the wrong
+artifact for the role — the signature it loads ran **64 times** in the capture, at the frequency the engine calls it.
+
+**And the caveat is theirs to keep**: a signature identifies **arg sizes**, not a kernel file, so two kernels sharing a
+signature would be indistinguishable. **But the counts' structure — 64s and 32s, a layer×block grid — is exactly what
+the role table needed, and it is the grid the engine's own chunking follows.**
