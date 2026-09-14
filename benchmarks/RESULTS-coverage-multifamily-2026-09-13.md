@@ -11521,3 +11521,41 @@ number.
 vs untouched." That does **not** change the per-column map (a column is touched if any row differs), and it is the right
 caveat to carry *alongside* the counts rather than inside them. **It also sharpens the NaN result**: with the sentinel
 prefilling at `1.0`, a NaN in the output must have been **written** — so the one-run discriminator is exactly the test.
+
+## 209. The portability rule, with its four instances: method, fixture, artifact, build — and the worst case in this log was a SIGN, not a percentage
+
+The peer audited the log for other unscoped numbers and found one with a worse consequence than §95's:
+
+| where | says |
+|---|---|
+| **line 152** | *"**Prefill perf:** native vs FLM-ref per-token is **−12 %** (1.7B), **−18 %** (4B, VL), **−22 %** (8B), −18 % (Llama-3.1-8B)"* — **no scope at all** |
+| **the scorecard / §3** | **native 2324 tok/s against 1860** — *"+25 % over on-box FLM"* |
+
+**Opposite signs, in the same log, and the unscoped one is from before the performance work.** A reader computing from
+line 152 would conclude the engine **loses** — the exact inverse of the shipped claim. It is now annotated in the
+`BUILD-SCOPED` form, **at the point of use**, and the annotation is the right fix for the same reason §95's was: **the
+figure may still be true of the build that produced it**, so replacing it would discard a fact and keep the reader
+uninformed anyway.
+
+**And the generalisation is the most useful single sentence either lane produced today:**
+
+> **A number is not portable across (a) fixtures, (b) methods, or (c) builds** — and in every case the fix is identical:
+> **make the scope travel with the number, at the point of use.**
+
+**One rule, four instances, each earned separately in this log:**
+
+| scope that must travel | the instance |
+|---|---|
+| **fixture** | FLM's Nanbeige @256 is **5938** on the token-16 fixture and **4938** on first-token 58907 |
+| **artifact** | the **generated `.txn`** (2,560 patches) sharing a row with the shipped **`.elf`** (640) |
+| **method** | a **run-based** 97.9 % against a **byte-diff** 37.42 % |
+| **build** | an early **−12…−22 %** against the converged **+25 %** |
+
+**And the annotation form is what makes the four instances one rule rather than four tidy-ups.** A retraction removes a
+figure; an annotation **keeps** it and stops the next reader where they would otherwise compute. **The scope is part of
+the number** — the same reason a reference token must name its fixture (§146/§149) and an artifact row must name its
+file (§195), applied now to the numbers themselves.
+
+**Recorded as the lane's method capstone**, because it is the output that transfers: every technical finding in this
+stretch is specific to Nanbeige's attention, while this rule is portable to any measurement in the log — **and it was
+earned four times, from four different failures, by both lanes.**
