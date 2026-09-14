@@ -208,13 +208,26 @@ public:
             return false;
         }
 
-        // Check FLM binary
+        // Check FLM binary. This is the optional FLM lane only: the engine's NPU
+        // lane is its own worker (src/backend_npu.cpp → npu_engine_universal) and
+        // does not need FastFlowLM. Say which lane is being skipped so a missing
+        // optional runtime cannot read as "the NPU is unavailable" (#2358).
         if (access(flm_bin_.c_str(), X_OK) != 0) {
-            fprintf(stderr, "NPU: FLM binary not found at %s\n", flm_bin_.c_str());
+            fprintf(stderr,
+                    "NPU: FLM lane disabled - FastFlowLM not found at %s;"
+                    " the native NPU lane (npu_xrt via NPU_ENGINE_BIN) does not need it\n"
+                    "NPU: install FastFlowLM (github.com/ROCm/FastFlowLM releases) or set"
+                    " NPU_FLM_BIN=<flm> [NPU_FLM_CONFIG=<model_list.json>]"
+                    " [NPU_FLM_XCLBINS=<xclbins>] - see docs/vendored-fastflowlm.md\n",
+                    flm_bin_.c_str());
             return false;
         }
         if (access(flm_config_.c_str(), R_OK) != 0) {
-            fprintf(stderr, "NPU: FLM config not found at %s\n", flm_config_.c_str());
+            fprintf(stderr,
+                    "NPU: FLM lane disabled - model list not found at %s;"
+                    " the native NPU lane (npu_xrt via NPU_ENGINE_BIN) does not need it"
+                    " (set NPU_FLM_CONFIG, default <flm-root>/etc/flm/model_list.json)\n",
+                    flm_config_.c_str());
             return false;
         }
 

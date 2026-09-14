@@ -35,6 +35,12 @@ run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run rotation  Testing/rotation_table_selfcheck.cpp
+
+# Where the NPU worker is looked up: the lane fork/execs `npu_engine_universal`, and
+# resolving it relative to the cwd meant a service started elsewhere silently had no
+# NPU lane at all (no package ships the worker either — issue #2360). Pins the order,
+# so the legacy ./ and build/ paths can never shadow an installed worker.
+run npu_worker Testing/npu_worker_path_selfcheck.cpp --
 run iq1       Testing/iq1_selfcheck.cpp --
 
 # Padded-vocab embedding gate: some 1BP artifacts declare the checkpoint's padded
@@ -72,6 +78,20 @@ else
     echo "✗ dedup converter: build/generate failed"
     [ $gen_rc -ne 0 ] && printf '%s\n' "$gen_log" | tail -5 | sed 's/^/    fixture:  /'
     [ $cc_rc -ne 0 ] && printf '%s\n' "$cc_log" | tail -5 | sed 's/^/    compiler: /'
+    fail=$((fail+1))
+fi
+
+# NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
+# → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
+# the legacy FLM test harness printed "FLM not installed" as if the NPU were
+# broken. A compiler cannot see a missing install step or a mislabelled lane (#2358).
+echo "== NPU lane contract =="
+total=$((total+1))
+if npu_lane_out=$("$PYTHON" Testing/npu_lane_selfcheck.py 2>&1); then
+    echo "✓ npu_lane"
+else
+    echo "✗ npu_lane"
+    printf '%s\n' "$npu_lane_out" | tail -6 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 

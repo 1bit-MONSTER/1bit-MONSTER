@@ -18,28 +18,35 @@
 //         but the router picks the right kernel via the MoE config.
 //
 //   qwen3 architecture
-//     ├─ npu_flm (FLM engine — the native Q4NX owner: registered at
-//     │            backend_manager.cpp:162 with score 67.5, and the head of the
-//     │            Q4NX route in the table below)
-//     ├─ npu_xrt (legacy worker subprocess, 0.06 tok/s — backend_manager.cpp:1766+)
+//     ├─ npu_xrt (the engine's own NPU worker — src/backend_npu.cpp fork/execs
+//     │            npu_engine_universal and drives the pre-compiled xclbins,
+//     │            with CPU fallback for RoPE/norm/residual; registered in
+//     │            backend_manager.cpp at `tier_priority(T1) + 50` under the
+//     │            comment "Zero FLM dependency", and the head of the Q4NX route
+//     │            in the table below)
+//     ├─ npu_flm (the optional FastFlowLM lane — src/backend_npu_flm.cpp, MIT,
+//     │            Q4NX-only, registered *below* the native lane)
 //     └─ cpu_generic
-//         npu_flm is the Q4NX route's first entry (see the route table below),
-//         not npu_xrt. The two share BackendType::NPU_XRT and are easy to
-//         conflate, but they are ~1000x apart (67.5 vs 0.06 tok/s): npu_xrt is
-//         reached only when npu_flm cannot be initialised, and a lane that
-//         lands on it reads as "served at ~0 tok/s" rather than as a routing
-//         miss.
+//         The native worker is primary and FLM is the fallback for a box where
+//         the worker cannot initialise. The two share BackendType::NPU_XRT and
+//         are easy to conflate, so identify them by id.
 //
-//         CORRECTED 2026-09-11 (goal mtvd3pmx): the previous text here claimed
-//         "npu_xrt is the sole NPU route since PR #567" and that the FastFlowLM
-//         subprocess fallback "was removed entirely". Both contradicted the code
-//         they sat above — the Q4NX route below returns npu_flm first, and
-//         backend_manager.cpp:162 registers npu_flm as the preferred NPU
-//         backend. The licensing claim in that text (FLM as "a proprietary AMD
-//         binary") is NOT repeated here because it was not verified; what the
-//         tree currently asserts elsewhere is "FLM engine (MIT)" at
-//         backend_manager.cpp:162. Reconcile the licence claim separately — do
-//         not inherit either version from this comment.
+//         CORRECTED 2026-09-14 (#2358). Three revisions of this comment have now
+//         disagreed: "npu_xrt is the sole NPU route since PR #567", then "npu_flm
+//         is the native Q4NX owner … not npu_xrt" with a 67.5 vs 0.06 tok/s
+//         comparison, and now this one. What none of them noticed is that
+//         `npu_xrt` was declared in discover() and **never pushed into
+//         `backends_`** — its block was left unclosed, so the lanes written after
+//         it were swallowed by its scope and the closing brace was reached two
+//         lanes later. The native lane was therefore absent from every list a
+//         consumer walks, which is exactly why the Q4NX route below had no native
+//         entry to put first. It is registered and routed first now.
+//         The FLM-era throughput figure ("0.06 tok/s") is not repeated — it
+//         described the old subprocess worker, not the current engine; see
+//         engine/npu/BENCHMARKS.md for the open-engine numbers. The licence
+//         question (FLM as "a proprietary AMD binary" vs "MIT") is left alone
+//         too: reconcile it from a source that verifies it rather than
+//         inheriting it from a comment.
 //
 //   zamba2 architecture (Mamba2 hybrid SSD)
 //     └─ zamba2_gpu + cpu_generic
@@ -182,9 +189,13 @@ BackendRoute select_backend_route(const ModelConfig& cfg) {
         if (cfg.format == ModelFormat::ONEBP)
             return {{"fused_gpu_npu", "hip_1bp_gpu", "vulkan_hpp_gpu", "cpu_generic"},
                     "qwen3 1BP — Fused GPU+NPU → HIP 1BP → Vulkan-Hpp → CPU"};
-        // Q4NX: FLM NPU engine is the native format owner (67.5 tok/s)
+        // Q4NX: the engine's own NPU worker is primary — it is the lane the Q4NX
+        // format and its xclbins belong to (backend_npu.cpp's worker protocol,
+        // "Zero FLM dependency"). The optional FastFlowLM lane stays as the
+        // fallback for a box where the worker cannot initialise, then CPU.
         if (cfg.format == ModelFormat::Q4NX)
-            return {{"npu_flm", "cpu_generic"}, "qwen3 — FLM NPU engine (67.5 tok/s)"};
+            return {{"npu_xrt", "npu_flm", "cpu_generic"},
+                    "qwen3 Q4NX — native NPU worker (npu_engine_universal) → FLM lane → CPU"};
         // GGUF/H1B qwen3: npu_flm only speaks Q4NX and its token-level
         // forward()/generate() are text-level-only stubs (backend_npu_flm.cpp
         // returns false) — route to the HRX GPU first, then the llama.cpp

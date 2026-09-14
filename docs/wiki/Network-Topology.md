@@ -18,7 +18,7 @@ systemd unit running `1bit zaya` (or `1bit unified`) on its own port:
         ▼
  ┌───────────────────────────────────────────────────────────┐
  │ one or more `1bit` processes, each a systemd unit          │
- │  zaya-npu.service    → 1bit zaya    :8088 (FLM/NPU)        │
+ │  zaya-npu.service    → 1bit zaya    :8088 (NPU: native)    │
  │  zaya-qwen06.service → 1bit zaya    :8089 (NPU2)           │
  │  zaya-gpu8b.service  → 1bit zaya    :8090 (HIP 1BP)        │
  │  jarvis.service      → 1bit jarvis  :8081 (voice loop, UI) │

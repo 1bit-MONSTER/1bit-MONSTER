@@ -125,6 +125,34 @@ else
     fi
 fi
 
+# ── NPU lane state ────────────────────────────────────────────────────────────
+# The NPU lane is the engine's own worker: src/backend_npu.cpp fork/execs
+# npu_engine_universal and runs the pre-compiled xclbins — no FastFlowLM. The
+# worker resolves from NPU_ENGINE_BIN, else ./npu_engine_universal (cwd-relative),
+# and this script never built it, so a source install silently had no NPU lane and
+# a first run only mentioned FastFlowLM. Build it when the target exists, then
+# report the real state (#2358).
+NPU_WORKER=""
+for _cand in "${NPU_ENGINE_BIN:-}" "$DIR/build/npu_engine_universal" ./npu_engine_universal; do
+    if [ -n "$_cand" ] && [ -x "$_cand" ]; then NPU_WORKER="$_cand"; break; fi
+done
+if [ -z "$NPU_WORKER" ] && [ -d "$DIR/build" ]; then
+    log "NPU engine: building npu_engine_universal (needs XRT; skipped if unavailable)..."
+    if cmake --build "$DIR/build" --target npu_engine_universal -j"$(nproc)" >/dev/null 2>&1; then
+        [ -x "$DIR/build/npu_engine_universal" ] && NPU_WORKER="$DIR/build/npu_engine_universal"
+    fi
+fi
+if [ -n "$NPU_WORKER" ]; then
+    log "NPU engine: $NPU_WORKER"
+    log "  enable NPU inference with: export NPU_ENGINE_BIN=$NPU_WORKER"
+else
+    warn "NPU engine: npu_engine_universal not built - the NPU lane stays off (CPU/GPU work)."
+    warn "  build it:  cmake --build build --target npu_engine_universal   # needs XRT"
+    warn "  then set:  export NPU_ENGINE_BIN=\$PWD/build/npu_engine_universal"
+    warn "  (the worker is resolved by cwd, so the absolute path is worth setting)"
+fi
+echo ""
+
 # ── JARVIS (optional) ────────────────────────────────────────────────────────
 if [ "$WITH_JARVIS" = true ]; then
     log "Installing JARVIS (Zyphra default stack)..."

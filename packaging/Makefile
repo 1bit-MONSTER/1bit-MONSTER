@@ -30,8 +30,17 @@ stage:
 		ln -sf 1bit $(STAGE)/usr/bin/$$name; \
 	done
 	# optional sidecars (NPU engine needs XRT; video-lora CLI is a dev tool)
-	if [ -f engine/npu/build/npu_engine_universal ]; then \
-		cp engine/npu/build/npu_engine_universal $(STAGE)/usr/bin/1bit-npu; \
+	# The engine's NPU lane fork/execs this binary by name (src/backend_npu.cpp via
+	# include/npu_worker_path.h), which searches $NPU_ENGINE_BIN, the directory of
+	# the running ELF, /usr/lib/1bit, /usr/bin, /usr/local/bin, then the legacy
+	# ./ and build/ paths — under both `npu_engine_universal` and the legacy
+	# `1bit-npu`. Stage both names so a packaged install resolves without
+	# NPU_ENGINE_BIN (issue #2360).
+	if [ -f ../engine/npu/build/npu_engine_universal ]; then \
+		cp ../engine/npu/build/npu_engine_universal $(STAGE)/usr/bin/1bit-npu; \
+		ln -sf ../../bin/1bit-npu $(STAGE)/usr/lib/1bit/npu_engine_universal; \
+	else \
+		echo "warn: ../engine/npu/build/npu_engine_universal absent — staged tree has no NPU worker (cmake -B engine/npu/build -S engine/npu && cmake --build engine/npu/build)"; \
 	fi
 	if [ -f $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli ]; then \
 		cp $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli $(STAGE)/usr/bin/video_lora_vk_cli; \
