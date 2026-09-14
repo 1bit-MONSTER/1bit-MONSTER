@@ -11723,3 +11723,37 @@ not host-side and not call-time. And **NaN is what a softmax over a degenerate r
 **And their honest limit is the right one and I keep it verbatim**: the fractions are measured on the **saved output of
 a 256-row call**, and that this *causes* the wrong boot token is still an **inference** — **but an inference from a
 computed value with a per-row structure, not from a count.** *"The first time this lane has had that."*
+
+## 214. The volume field is NOT a geometry field — nh20 and nh32 share it — so §213's "the volume says nh16" is refuted and §184's conflict dissolves by demotion, exactly as predicted
+
+§213 named the demotion test and it settles the question on four artifacts rather than two:
+
+| artifact | tokens | NH | `arg0` stride | **`arg0` bf16 per token** | `arg1` total | `arg2` total |
+|---|---|---|---|---|---|---|
+| 256-ctx nh16 | 256 | 16 | **1024** | **512.0** | 0.25 MB | 0.38 MB |
+| 1024-ctx nh16 | 1024 | 16 | **1024** | **512.0** | 1.00 MB | 4.50 MB |
+| **1024-ctx nh20** | 1024 | **20** | **1280** | **1024.0** | 2.00 MB | **4.50 MB** |
+| **1024-ctx nh32** | 1024 | **32** | **2048** | **1024.0** | 2.00 MB | **4.50 MB** |
+
+**The stride tracks `(NH/2)×HD` exactly** — `1024 / 1280 / 2048` for 16 / 20 / 32 heads, verified now on four artifacts.
+
+**And the per-token volume does not track `NH` at all: nh20 and nh32 both carry 1024.0** while differing by twelve heads.
+**So the volume is not a geometry field**, and §213's reading — *"the volume says nh16"* — is **refuted by its own test**:
+1024 bf16/token is not an nh16 signature, it is what **both nh20 and nh32** carry. The value is constant across the
+1024-context artifacts at `NH ≥ 20` and halves at `NH = 16`, which makes it a **per-token-count quantity with a
+family-dependent constant**, not a head count.
+
+**Which dissolves §184's conflict by demotion rather than by choosing a side** — the outcome §213 predicted:
+
+> *"If `(NH/2)×HD` holds in the stride for all three while the per-token volume is constant across them, then the volume
+> field is not a geometry field at all — and the conflict dissolves by demoting one of the two signals rather than by
+> choosing between them."*
+
+**That is what happened.** There was never a conflict between two geometry signals: **the stride is geometry, the volume
+is not.** §184's *"stride says nh20, volume says nh16"* was the error of treating a non-geometry field as the second
+opinion.
+
+**And one more NH-independent quantity falls out: `arg2`'s total is 4.50 MB for all three 1024-context artifacts**,
+regardless of head count, against 0.38 MB at 256 tokens — **a token-count-driven quantity that grows super-linearly**
+(×4 tokens → ×11.8 bytes), which is the shape an attention-sized read has. **Recorded as an observation**, since the
+clean test of it is the 512- and 2048-context artifacts rather than an argument.
