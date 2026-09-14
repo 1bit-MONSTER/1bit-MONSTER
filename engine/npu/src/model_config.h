@@ -293,6 +293,18 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
     memcpy(&hdr_size, md, 8);
     const char* js = (const char*)(md + 8);
     size_t jl = (size_t)hdr_size;
+
+    // 4736-byte "I8" dense-row tiles (Qwen3.5/3.6) — the 3-D shape's last dim
+    // is the byte-per-tile (shape[2]). Detected here (needs only the manifest),
+    // NOT inside the H>0 block: tied-embedding models (Qwen3.5-4B) have no
+    // embed_tokens, so H is still 0 at that point and the gate skipped this.
+    {
+        int q_bpt3 = get_shape_dim(js, jl, "model.layers.0.self_attn.q_proj.weight", 2);
+        if (q_bpt3 == 0) q_bpt3 = get_shape_dim(js, jl, "model.layer.0.self_attn.q_proj.weight", 2);
+        if (q_bpt3 == 0) q_bpt3 = get_shape_dim(js, jl, "model.layers.0.linear_attn.qkv_proj.weight", 2);
+        if (q_bpt3 == 0) q_bpt3 = get_shape_dim(js, jl, "model.layer.0.linear_attn.qkv_proj.weight", 2);
+        cfg.has_i8_4736 = (q_bpt3 == 4736);
+    }
     
     // Step 1: Get H and NV from embed_tokens
     // embed_tokens shape = [NV, H] in the JSON (logical dims, not tiles)
@@ -386,11 +398,6 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
         int q_bpt = bpt_of("self_attn.q_proj.weight");
         if (q_bpt == 0) q_bpt = bpt_of("self_attn.qkv_proj.weight");
         cfg.cpt = cols_per_tile_from_bytes(q_bpt);
-        // 4736-byte "I8" dense-row tiles (Qwen3.5/3.6) — the 3-D shape's last
-        // dim is the byte-per-tile (shape[2]), which bpt_of (shape[1]) misses.
-        int q_bpt3 = get_shape_dim(js, jl, "model.layers.0.self_attn.q_proj.weight", 2);
-        if (q_bpt3 == 0) q_bpt3 = get_shape_dim(js, jl, "model.layer.0.self_attn.q_proj.weight", 2);
-        cfg.has_i8_4736 = (q_bpt3 == 4736);
         int A = (cfg.H + cfg.cpt - 1) / cfg.cpt;  // n_tile_cols for q_proj input (in_features = H)
         if (A > 0) {
             int tile_rows_q = q_tr / A;  // ceil(NH*HD/32)

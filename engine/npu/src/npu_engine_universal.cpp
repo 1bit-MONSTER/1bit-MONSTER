@@ -2123,75 +2123,98 @@ struct Bf16Ctx {
     // Full-attn layers: k/v 2×256 separate; q/k RMSNorm weights [256].
     std::vector<std::vector<float>> gdn_alpha_w, gdn_beta_w, gdn_conv_w, gdn_norm_w, gdn_z_w;
     std::vector<std::vector<float>> gdn_ssm_a, gdn_dt_bias, std_k_w, std_v_w, std_qn_w, std_kn_w;
-    if (has_moe) {  // this model family: GDN + full-attn mix, all MoE
+        // Name-form fallback: Qwen3.5 uses plural "model.layers.N", the MoE 35B uses
+        // singular "model.layer.N". Try the plural form first, then the singular.
+        auto jo_b = [&](const char* bn) -> uint64_t {
+            uint64_t o = jo(js, jl, bn);
+            if (o) return o;
+            std::string alt = bn;
+            size_t p = alt.find("model.layers.");
+            if (p != std::string::npos) { alt.replace(p, 13, "model.layer."); return jo(js, jl, alt.c_str()); }
+            return 0;
+        };
+        auto key_b = [&](const char* bn) -> bool {
+            if (key_exists(js, jl, bn)) return true;
+            std::string alt = bn;
+            size_t p = alt.find("model.layers.");
+            if (p != std::string::npos) { alt.replace(p, 13, "model.layer."); return key_exists(js, jl, alt.c_str()); }
+            return false;
+        };
+    if (has_moe || cfg.has_gated_delta_net) {  // GDN+full-attn mix (MoE 35B AND non-MoE Qwen3.5)
         gdn_alpha_w.resize(NC); gdn_beta_w.resize(NC); gdn_conv_w.resize(NC);
         gdn_norm_w.resize(NC); gdn_z_w.resize(NC); gdn_ssm_a.resize(NC); gdn_dt_bias.resize(NC);
         std_k_w.resize(NC); std_v_w.resize(NC); std_qn_w.resize(NC); std_kn_w.resize(NC);
         for (int l = 0; l < NC; l++) {
             if (is_gdn_layer[l]) {
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_alpha_proj.weight", l);
-                uint64_t o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_alpha_proj.weight", l);
+                uint64_t o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
                     gdn_alpha_w[l].resize((size_t)H * gdn_vh[l]);
                     for (int i = 0; i < H; i++)
                         for (int h = 0; h < gdn_vh[l]; h++)
                             gdn_alpha_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_beta_proj.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_beta_proj.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
                     gdn_beta_w[l].resize((size_t)H * gdn_vh[l]);
                     for (int i = 0; i < H; i++)
                         for (int h = 0; h < gdn_vh[l]; h++)
                             gdn_beta_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_conv1d.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_conv1d.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
                     gdn_conv_w[l].resize((size_t)gdn_conv_k[l] * gdn_conv_dim[l]);
                     for (int i = 0; i < gdn_conv_k[l] * gdn_conv_dim[l]; i++)
                         gdn_conv_w[l][i] = bf16g(rb[i]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_a", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const float* ab = (const float*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_a", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const float* ab = (const float*)i8p(o);
                     gdn_ssm_a[l].assign(ab, ab + gdn_vh[l]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_dt.bias", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const float* db = (const float*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_dt.bias", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const float* db = (const float*)i8p(o);
                     gdn_dt_bias[l].assign(db, db + gdn_vh[l]); }
-                snprintf(bn, 128, "model.layer.%d.linear_attn.ssm_norm.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_norm.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
                     gdn_norm_w[l].resize(gdn_hd[l]);
                     for (int d = 0; d < gdn_hd[l]; d++) gdn_norm_w[l][d] = bf16g(nb[d]); }
                 // z-gate [4096, 2048] Q8_0 f32 (CPU GEMM per token)
-                snprintf(bn, 128, "model.layer.%d.self_attn.gate_proj.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { int zr, zc; float* z = dequant_q8_0(i8p(o), 128 * 8, H, &zr, &zc);
+                snprintf(bn, 128, "model.layers.%d.self_attn.gate_proj.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { int zr, zc;
+                    float* z = cfg.has_i8_4736 ? dequant_i8_4736_to_float(i8p(o), 128 * (H / 256), H, &zr, &zc)
+                                               : dequant_q8_0(i8p(o), 128 * 8, H, &zr, &zc);
                     if (z && zr == 4096) { gdn_z_w[l].assign(z, z + (size_t)zr * zc); }
                     free(z); }
             } else {
                 // Full attention: k/v [512, 2048] Q8_0 f32 (CPU per token), q/k norms
-                snprintf(bn, 128, "model.layer.%d.self_attn.k_proj.weight", l);
-                uint64_t o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { int kr, kc; float* kw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
+                snprintf(bn, 128, "model.layers.%d.self_attn.k_proj.weight", l);
+                uint64_t o = jo_b(bn);
+                if (key_b(bn)) { int kr, kc;
+                    float* kw = cfg.has_i8_4736 ? dequant_i8_4736_to_float(i8p(o), k_i8, H, &kr, &kc)
+                                                : dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
                     if (kw && kr == std_nkv[l] * std_hd[l]) std_k_w[l].assign(kw, kw + (size_t)kr * kc);
                     free(kw); }
-                snprintf(bn, 128, "model.layer.%d.self_attn.v_proj.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { int kr, kc; float* vw = dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
+                snprintf(bn, 128, "model.layers.%d.self_attn.v_proj.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { int kr, kc;
+                    float* vw = cfg.has_i8_4736 ? dequant_i8_4736_to_float(i8p(o), v_i8, H, &kr, &kc)
+                                                : dequant_q8_0(i8p(o), 16 * 8, H, &kr, &kc);
                     if (vw && kr == std_nkv[l] * std_hd[l]) std_v_w[l].assign(vw, vw + (size_t)kr * kc);
                     if (l == 3 && vw && getenv("NPU_DUMP_L0")) {
                         FILE* fv = fopen("/tmp/l3_vw.bin", "wb");
                         if (fv) { fwrite(vw, 4, (size_t)kr * kc, fv); fclose(fv); }
                     }
                     free(vw); }
-                snprintf(bn, 128, "model.layer.%d.self_attn.q_norm.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.self_attn.q_norm.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
                     std_qn_w[l].resize(std_hd[l]);
                     for (int d = 0; d < std_hd[l]; d++) std_qn_w[l][d] = bf16g(nb[d]); }
-                snprintf(bn, 128, "model.layer.%d.self_attn.k_norm.weight", l);
-                o = jo(js, jl, bn);
-                if (key_exists(js, jl, bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
+                snprintf(bn, 128, "model.layers.%d.self_attn.k_norm.weight", l);
+                o = jo_b(bn);
+                if (key_b(bn)) { const uint16_t* nb = (const uint16_t*)i8p(o);
                     std_kn_w[l].resize(std_hd[l]);
                     for (int d = 0; d < std_hd[l]; d++) std_kn_w[l][d] = bf16g(nb[d]); }
             }
@@ -3196,18 +3219,23 @@ struct Bf16Ctx {
             FILE* fr = fopen("/tmp/l0_rawcore.bin", "wb");
             if (fr) { fwrite(out, 4, gdn_vh[l] * gdn_hd[l], fr); fclose(fr); }
         }
-        // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm
-        std::vector<float> zout((size_t)gdn_vh[l] * gdn_hd[l]);
+        // z-gate (CPU GEMM from self_attn.gate_proj) + gated RMSNorm.
+        // Qwen3.5 has no self_attn.gate_proj (attn_output_gate is fused into
+        // q_proj), so when the z-gate is absent the gated RMSNorm is plain RMSNorm.
+        std::vector<float> zout;
         const float* zw = gdn_z_w[l].data();
-        for (int i = 0; i < gdn_vh[l] * gdn_hd[l]; i++) {
-            double s = 0;
-            for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * x[j];
-            zout[i] = (float)s;
+        if (zw) {
+            zout.resize((size_t)gdn_vh[l] * gdn_hd[l]);
+            for (int i = 0; i < gdn_vh[l] * gdn_hd[l]; i++) {
+                double s = 0;
+                for (int j = 0; j < H; j++) s += (double)zw[(size_t)i * H + j] * x[j];
+                zout[i] = (float)s;
+            }
         }
         const float* nw = gdn_norm_w[l].data();
         if (l == 0 && getenv("NPU_DUMP_L0")) {
-            FILE* fz = fopen("/tmp/l0_z.bin", "wb");
-            if (fz) { fwrite(zout.data(), 4, gdn_vh[l] * gdn_hd[l], fz); fclose(fz); }
+            if (zw) { FILE* fz = fopen("/tmp/l0_z.bin", "wb");
+            if (fz) { fwrite(zout.data(), 4, gdn_vh[l] * gdn_hd[l], fz); fclose(fz); } }
         }
         for (int h = 0; h < gdn_vh[l]; h++) {
             float* ch = out + (size_t)h * gdn_hd[l];
@@ -3215,8 +3243,8 @@ struct Bf16Ctx {
             for (int d = 0; d < gdn_hd[l]; d++) var += (double)ch[d] * ch[d];
             float ir = 1.0f / sqrtf((float)(var / gdn_hd[l]) + EPS);
             for (int d = 0; d < gdn_hd[l]; d++) {
-                float zv = zout[(size_t)h * gdn_hd[l] + d];
-                ch[d] = ch[d] * ir * nw[d] * silu_f(zv);
+                float g = zw ? silu_f(zout[(size_t)h * gdn_hd[l] + d]) : 1.0f;
+                ch[d] = ch[d] * ir * nw[d] * g;
             }
         }
     };
@@ -4589,7 +4617,7 @@ struct Bf16Ctx {
     // maxima: access strides are per-layer, so fixed Qwen3.6 sizes overflow
     // on sibling geometry (#1482 review).
     std::vector<float> dm_gdn_conv, dm_gdn_delta;
-    if (has_moe) {
+    if (has_moe || cfg.has_gated_delta_net) {
         dm_gdn_conv.resize((size_t)NC * max_gdn_conv_dim * max_gdn_conv_k, 0.0f);
         dm_gdn_delta.resize((size_t)NC * max_gdn_vh * max_gdn_hd * max_gdn_hd, 0.0f);
     }
