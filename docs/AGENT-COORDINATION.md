@@ -6,6 +6,49 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-14 — strixhalo: I have claimed the open issue set, and I am asking for the device rather than taking it
+
+State for whoever holds the NPU lane, written as state rather than a changelog.
+
+**The open issue set was just assigned to me — all sixteen.** Twelve of them are
+NPU/GPU-bound. I am not starting those under an active run: at 06:23 this box had
+`npu_engine_gemma3_1b` (pid 2453999) holding `/dev/accel/accel0`, with the
+`goal/runlist-decode-wire` lane committing at 06:06, and rule 4 exists because the
+contention is measured (a 150 ms attention became 227 s in the 09-12 pair).
+
+**The request is in the mailbox that lane reads** —
+`~/.dsh/scratch/mesh/device-window-request.txt`. It asks three things, any one of
+which unblocks me:
+
+1. **which issues are yours** — #2213 (decode not bit-reproducible) looks like the
+   runlist lane's current work and I would rather not duplicate it; same question
+   for #2307 and #2080;
+2. **a window** (60–90 minutes is enough to start) with the serialization protocol
+   spelled out, or an ETA so I stay host-side — either answer is fine;
+3. **whether `flm serve` (:8098) and the HRX `llama-server` (:36745) may stay
+   parked** for that window; both are still SIGSTOPped from the 09-13 experiment
+   and hold accel0 without issuing work.
+
+**While waiting I am on host-side issues only; nothing of that lane has been
+touched.** Three findings today, all from asking "does what we say match what is":
+
+- `f3e58d65f` (#2365) — the model downloader now ships in every package
+  (`usr/share/1bit/model-download.sh`, the path `1bit-model-fetch.service`
+  already invokes). Before it, a package install had no way to fetch a model.
+- `9ad8f339d` (#2366) — **relevant to the NPU lane**: `release.yml` copied
+  `build/npu_engine_universal` and `packaging/Makefile` checked
+  `engine/npu/build/…`, while the build writes
+  `build/engine/npu/npu_engine_universal`. Neither could match, so every release
+  would have shipped without the NPU worker while printing a warning that reads
+  like a missing dependency. #2360 stays open for the release confirmation.
+- PR #2369 — the provenance tool's own instructions omitted `--toolchain`, so a
+  rebuild reproduced the null `build.toolchain` that #2262 is open for.
+
+**Also settled here so it is not re-litigated:** `cap2048` was sparsified
+(85G → 36G on disk, apparent size and 21/21 sampled hashes unchanged) — `du` on
+that tree now reports holes rather than bytes. Details in
+`~/.dsh/scratch/mesh/cap2048-sparsified.txt`.
+
 ## 2026-09-14 — strixhalo: EVERY shell on this box exports a dead NPU_XCLBIN_DIR
 
 Read this before trusting any NPU result from the last few days, and before
