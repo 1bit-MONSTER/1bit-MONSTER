@@ -199,7 +199,7 @@ contended device while the native path varied.
 **So the remaining correctness gaps are both bf16/attention-shape**: Nanbeige bf16 (1214 vs 1033, nh20) and
 Phi4-mini (nh24) — re-read on the fixed path: **23976 @256 vs FLM's 19**. The defect is real and nh24-specific, and it is upstream of attention (§165).
 
-## 6. What landed this session (211 commits, `goal/runlist-decode-wire`)
+## 6. What landed this session (**211 commits when written; 1036 on HEAD as of 2026-09-14**, `goal/runlist-decode-wire`)
 
 Performance: double-buffered GEMM blocks (~30% prefill, flipping 4 models from losing to
 winning); host-thread default made npt- and size-dependent.
@@ -842,15 +842,28 @@ Llama decodes at **68.9 ms/tok (15 tok/s)** against FLM's **91.3 (11 tok/s)**, a
 
 ## 11. Session close
 
-**211 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
+**211 commits when this paragraph was written; 1036 on `goal/runlist-decode-wire` as of 2026-09-14** (455 of them since
+2026-09-13 00:00). The goal's three metrics beat FLM for every model the
 native engine supports, and the coverage limits are documented with their best explanations — Gemma3-1B
 reduced to a compiled K-tile in a dependency, Phi4/Qwen3.5/LFM2 to named hybrid implementations, and
 Nanbeige to a device-side question with **every host artifact proven byte-identical**.
 
-**Sixteen of this session's findings were mine and wrong**, and all sixteen are recorded rather than deleted. The
+**And the decode row closed after this paragraph was written**: the sixth model (Llama-3.1-8B) was blocked until
+2026-09-14 by a `ctx` range in a generation command, and now decodes at **15 tok/s** against FLM's **11** (§9.3, §10d).
+**So the prefill, TTFT and decode claims are each 6 of 6 on this tree** — and, as of the final sweep, **all ten gate rows
+match FLM's exact references**.
+
+**Sixteen of this session's findings were mine and wrong at the time this was written; the count is higher now**, and
+all of them are recorded rather than deleted. The
 habit that caught every one was the same, and it is the most transferable thing here: ask what a number
 is **for**, not whether it is correct — and prefer a control over an argument. The last two are the
 cleanest illustrations: I was about to report "my ELF contains the layer sequence twice, so the device
 runs the stack twice" as Nanbeige's root cause — the **Qwen3-4B control**, which works, doubles too; and
 I had invalidated the ELF comparison on the claim that FLM's ELFs are per-op kernels, when comparing them
 properly is exactly what **proved the generator exact**.
+
+**And three later ones belong in the same list, because the same habit caught them**: §815's *"Llama cannot run"* was a
+**missing build product** that two **controls** traced to the wrong `aiecc` and the wrong library tree; the decode blocker
+was an **off-by-range** in my own generation command; and the *"small-M `_m0` xclbins absent"* line was an **expected
+default-OFF branch** the source says would give *"garbage decode"* if built. **Every one looked like a model or kernel
+defect and was tooling.**
