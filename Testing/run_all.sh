@@ -60,6 +60,26 @@ else
     fail=$((fail+1))
 fi
 
+# The same question asked of the ARTIFACT rather than the source lists: the static
+# check cannot tell whether the linked binary really routes those names (that is
+# how `./run.sh chat` shipped printing usage while every static check passed). It
+# runs only when a built binary is present — this suite is host-only and does not
+# build one — so the CI job that DOES build the binary runs it with --require.
+echo "== CLI entry points (built binary) =="
+total=$((total+1))
+if [ -x build/1bit ]; then
+    if smoke_out=$("$PYTHON" Testing/cli_smoke.py 2>&1); then
+        echo "✓ cli_smoke"
+        printf '%s\n' "$smoke_out" | grep -E "^  note" | sed 's/^/  /'
+    else
+        echo "✗ cli_smoke"
+        printf '%s\n' "$smoke_out" | tail -6 | sed 's/^/    /'
+        fail=$((fail+1))
+    fi
+else
+    echo "  - cli_smoke: no build/1bit — skipped (run it where the binary is built)"
+fi
+
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))

@@ -170,6 +170,16 @@ jobs:
               exit 1
             fi
           fi
+      - name: CLI entry points reachable (built binary)
+        run: |
+          # The static list checks live in Testing/dispatch_selfcheck.py, in the
+          # host-only suite. They cannot see whether the LINKED binary routes
+          # those names — which is how `./run.sh chat` shipped printing the usage
+          # text while every static check passed. This runs the artifact: every
+          # subcommand tools/onebin.cpp dispatches and every symlink
+          # packaging/Makefile installs, probed with --help. It skips itself when
+          # the build produced no binary (the no-ROCm runner path).
+          python3 Testing/cli_smoke.py
       - name: Run headless tests (ctest -L host)
         run: |
           if [ -d build ]; then
