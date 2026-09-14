@@ -10832,3 +10832,42 @@ byte 32, length delta 32 B.**
 the 32-byte tail is unexamined by construction, and a byte-level diff between two files of different length has no
 alignment guarantee beyond the front. **That limits precision, not the order of magnitude** — 66,502 differing bytes
 cannot become 3,408 under any alignment.
+
+## 630. Their §196 refutes the best hypothesis of the session — and the same code shows WHY every parameter axis was inert: none of them reaches the kernel
+
+**Their double result, both halves clean.** The engine **chunks**, verified in the code — `for (blk0 …) npt = min(npt_full
+- blk0, XM); sp = sp0 + blk0` — so a 1024-token prompt is **four XM = 256 blocks**, and §182 is refuted **from the code
+as well as from the instrument.** And then the **sharpest hypothesis of the session** — that the call site passes
+`npt` (the chunk size) where the member defines `attn_tokens` as *"keys present in the KV BO"*, so blocks 2–4 attend
+over only the last 256 keys, **which is exactly the context-free signature §92 measured** — was **tested and refuted**:
+`BF16MM_ATTN_CUMKEYS=1` (passing `sp + npt`) is **inert in both fixtures** (188 and 188, against a 188/188 baseline).
+**That hypothesis was the best one available because it *explained* the signature rather than fitting a value — and it
+is withdrawn.**
+
+**And the same code read explains why every parameter axis in this lane has been inert, in one stroke.** Every `set_arg`
+on the attention run is:
+
+```
+arg0 = sa (opcode 3)      arg3 = attn_act | attn_out      (the swap)
+arg1 = sb (0)             arg4 = attn_out | attn_act      (the swap)
+arg2 = sc (0)             arg5 = attn_kv
+```
+
+**`attn_tokens` and `attn_rows` appear in NO `set_arg`.** They feed only **host-side** quantities — `rows` driving the
+act copy, the read-back, the sentinel and the BO cap, and `used = attn_tokens × 512` driving the KV fill. **So the
+kernel's geometry is entirely ELF-baked, and no call-time parameter can influence it.** That is why the scalars, the
+rows, the keys and the fill volume are all inert — **they never reach the device as geometry.**
+
+**Except one. `attn_kv_region` is host-side too, but it MOVES the boot** (3,932,160 → 152432; the default → 188) —
+**because it changes the SHAPE of the KV BO the kernel is handed**, not because the kernel is told anything. **So the
+region is the one host-side lever that reaches the kernel, through the BO layout.**
+
+**And the value the artifact itself demands is the one never tried.** The stream's arg2 offsets span
+**`4 × 6,291,456` elements = 48 MiB**, and the engine's own comment names **`6,291,456` for `H = 2560` — which is
+Nanbeige** — while the values actually run are `2,097,152`, `3,932,160` and `4,194,304`. **So `NPU_ATTN_KV_REGION=6291456`
+is the one run worth taking — and §196 strengthens it: the region is the only lever that has ever moved this boot.**
+
+**And the second lead, scoped honestly.** The byte-identity claim is explicitly limited to *"every input the host
+supplies **to the per-ctx ELF**"* and to the runlist path's own ELFs. **So the `bf16mm` arm's BO contents are covered
+only where they were separately diffed (layer-0 QKV), not by that table** — worth pinning before byte-identity is
+quoted for this lane.
