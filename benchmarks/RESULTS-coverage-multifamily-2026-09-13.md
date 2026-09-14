@@ -12353,3 +12353,47 @@ measured shortfall.
 `dim1_stride = 1280` as **the** stride fact — **it is already in this document, in the descriptor table above, on the
 `arg0` and `arg1` rows.** I re-derived my own record and presented it as new. **The fix is the one the whole session
 earned: grep the log before offering a fact, not after.**
+
+## 720. The peer's question answered from the code, and their proposed combination is half-already-run: the WIDTH axis is §123's `EXACT_BO`
+
+**Their correction is right**: `attn_out` and `attn_act` are both `make_unique<buffer<uint16_t>>(*dev, cap)` with
+**the same `cap`** — `(attn_tokens > 1024 ? attn_tokens : 1024) * q` = 5,242,880 B. **So the engine presents 5 MB at both
+slots, and "the write fits 5 MB" fits either one.** §175's swap therefore **changed only the roles**, with both buffers
+the same size — **and it moved the boot 188 → 152432.** Role: **tested and insufficient.**
+
+**And the question — should the direction field be read as *the output is the first BO argument*? — has a definite
+answer, and it is yes.** The engine's own mapping is:
+
+```cpp
+run.set_arg(3, attn_out->bo());   // BO 0 = the output
+run.set_arg(4, attn_act->bo());   // BO 1 = Q, the input
+run.set_arg(5, attn_kv->bo());    // BO 2 = the KV
+```
+
+**The artifact says `arg0` (BO 0) is S2MM — a write. The engine already puts `attn_out` at BO 0.** So **the un-swapped
+mapping agrees with the direction field**, and **the swap is the wrong half of the combination to keep** — their instinct
+is right. A KV-width *input* would be `arg1`/`arg2`, not the first argument.
+
+**But the other half is not new either — the width axis is §123.** `BF16MM_ATTN_EXACT_BO` was added for exactly this
+question and sizes act/out to `rows × q`:
+
+```
+rows*q*2   = 256 * 2560 * 2 = 1,310,720 B = 1.25 MB   (vs the default cap 5.00 MB, and FLM's arg3 = 1.00 MB)
+default   : boot 152503   kept_1.0=131110/655360  nonzero=650228
+EXACT_BO  : boot 152503   kept_1.0=131110/655360  nonzero=650228
+```
+
+**Identical — and both arms carried the sentinel, so the width is the only thing that differed.** §123's conclusion is
+the direct answer to *"no run has ever handed this kernel a KV-width `arg3`"*: **a 1.25 MB `arg3` was handed to it, and
+the kernel produced the same thing.** *"The output geometry is baked into the ELF's instruction stream."*
+
+**And the code comment declines to shrink `arg3` for a reason that runs backwards**: *"shrinking arg3 was not [done],
+because `attn_out` IS the buffer the engine reads (:405)"* — **but shrinking the `cap` while keeping `attn_out` at that
+position is precisely the untested combination, and §123 did exactly that.** Keeping the buffer and changing its size is
+the whole experiment; the comment treats them as one thing.
+
+**So the state is sharper than *"an untested axis"***: **role tested (swap, 152432 — inert), width tested (`EXACT_BO`,
+1.25 MB — inert).** What has **not** been run is the two together — `EXACT_BO` **with** `SWAP_IO` — and even that is now
+a coherence check rather than a live hypothesis, because the direction field says the un-swapped role is **right** and the
+descriptor total for that write is **2.00 MB**, which does not fit a 1 MB slot at all. **The artifact's own numbers
+argue against sizing that slot to a KV width.**
