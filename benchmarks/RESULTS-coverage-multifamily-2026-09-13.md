@@ -13009,3 +13009,43 @@ is computed rather than stale); the write **follows the artifact** (three of fou
 is **wrong for every artifact tried, with two distinct wrong values**. **What is now refuted is that the write shortfall
 explains the wrong boot** — and since that was the lane's best candidate, **the nh20 residual is back to unexplained, with
 one more possibility eliminated rather than one more mechanism supported.**
+
+## 810. THE SEPARATING EXPERIMENT: the model's OWN attention shape writes 100% of `q` and still boots wrong — coverage is eliminated as the cause
+
+**The cross-model test §790 declared unavailable IS available** (§153: *"0.6B's bf16 path gives FLM's exact 1614 when forced
+off the runlist"* — so nh16 does take this path; the 1.7B binary I tried was simply the wrong probe). **And it confirms the
+capacity arithmetic exactly:**
+
+| model | q | rows | q × rows | measured | coverage |
+|---|---|---|---|---|---|
+| **Qwen3-0.6B (nh16)** | 2048 | 256 | **524,288** | `kept_1.0 = 420/524288` | **99.9%** |
+| **Nanbeige (nh20)** | 2560 | 256 | **655,360** | `kept_1.0 = 131072/655360` | **80%** |
+
+**Same artifact, same engine code, same row count, same sentinel — only the model's head count differs.** At nh16 the write
+covers `q` completely (420 words of 524,288, **0.08%**); at nh20 the same artifact covers 80%. **So the "fixed 524,288
+elements, coverage set by `q`" reading is confirmed, and the nh16/nh20 contrast is a controlled pair.**
+
+**But the separating experiment kills it as a cause.** Forcing artifacts on Nanbeige, with coverage and boot both measured:
+
+| forced artifact | coverage | boot |
+|---|---|---|
+| default `256_nh16` | **80%** | **188** |
+| **`1024_nh20` — the model's OWN shape** | **100%** (`kept_1.0 = 0`) | **188** |
+| `1024_nh16` | **100%** (`kept_1.0 = 0`) | **188** |
+| `1024_nh32` | ~100% (`kept_1.0 = 293`) | **152437** |
+
+**The nh20-shaped artifact — the model's own attention geometry — writes every word of `q` and boots `188` anyway.** So:
+
+- **coverage and correctness are independent**: 80% → **188**, and 100% → **188** (same boot);
+- the boot **does** vary with the artifact — **188** vs **152437** — but **not with the coverage**;
+- **and the 512-per-row shortfall is therefore eliminated as the cause of the bf16 path's wrong boot, using the right shape
+  and full coverage.** §805's fix test used an nh16-shaped artifact; this one uses the model's own, and the answer is the
+  same.
+
+**So the bf16 path's wrongness is artifact-GEOMETRY-dependent and coverage-INDEPENDENT** — which is consistent with §123
+(*"the output geometry is baked into the ELF's instruction stream"*) and with §197 (the 4× unroll): **what the artifact
+bakes decides the boot; how much of `q` it happens to cover does not.**
+
+**And the shipping path is untouched by all of it**: five different artifacts forced, and **`NPU_RUNLIST=1` gives 5938
+every time** — FLM's exact reference — because **it does not take this path at all.** The residual is a diagnostic-path,
+baked-geometry question, and it now has one fewer candidate rather than one more mechanism.
