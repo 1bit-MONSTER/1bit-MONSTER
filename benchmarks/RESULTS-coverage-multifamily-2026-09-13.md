@@ -12585,3 +12585,35 @@ inside it is measured-but-unexplained.**
 **And the split of the limit stands as taken**: *"the produced width and the stride disagree inside one file"* **is**
 offline-settleable, and the answer is that **they don't disagree — they are not the same kind of number.** What remains an
 inference is only the **causal** step, not the defect. **A defect with a shape rather than a value.**
+
+## 750. THE WINDOW TEST: Nanbeige is stable at FLM's exact reference under a quiet device — and was already stable without it
+
+**The peer stopped both resident servers (`flm serve` pid 285847, `llama-server` pid 344571 → SIGSTOP, state Tsl/Tl) for a
+15-minute window and asked for the identical binary and prompt that produced the twelve differing values.**
+
+**Ran the Nanbeige default i8 path, `NPU_RUNLIST=1`, same prompt, same binary:**
+
+| test | runs | boot |
+|---|---|---|
+| Nanbeige @1024 | **6** | **1033 ×6** — FLM's exact reference |
+| Nanbeige @256 | **3** | **5938 ×3** — FLM's exact reference |
+| FLM-ref in-process @1024 (`NPU_FLM_PREFILL=1`) | 2 | **1033 ×2** |
+
+**Perfectly stable, and the in-process reference path did not hit the frozen `flm serve`** — the caveat did not bite.
+
+**But the comparison that decides it is not against the twelve values — it is against today's own pre-window runs.** The
+same gates were run **with both servers active** and gave **the same values**: Nanbeige **1033 @1024** and **5938 @256**,
+and the six-model gate set **1614 / 25 / 1614 / 220 / 220 / 220**. **So the boot is stable with the window open AND with
+it closed.** The window's hypothesis — **activity-based contention** — is therefore **not needed to explain anything
+currently observable**, because **there is nothing currently unstable to explain.**
+
+**And the twelve values are PRE-FIX.** They came from the **uninitialized KV BO** (§59: *"three different answers from the
+same command means the engine reads memory it never wrote"*), which is now `memset` at `npu_engine_bf16_mm.h:357`. **The
+fix, not a quiet device, is what removed them** — and this window is the first independent check of that, taken under
+conditions specifically chosen to expose it.
+
+**And the honest limit is theirs and stays attached**: a stopped process **keeps its fds and mmaps**, so a **resident AIE
+context survives the stop**, and a stable boot therefore does **not** exonerate *resident-context* interference — only
+activity-based contention. **But the premise for the second stage is an unstable boot, and there isn't one.** So the
+servers do not need to spend their state: **SIGTERM + restart is not warranted, and I'd say so rather than take a
+free window.**
