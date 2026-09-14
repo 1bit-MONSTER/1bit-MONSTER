@@ -12475,3 +12475,37 @@ times the retraction was already committed, and both times it was **three sectio
 The log is now longer than the working memory that reads it, and the fix is the one this session earned the hard way:
 **grep the log before proposing — the same rule as grep the value, grep the artifact, grep the file, now applied to the
 proposal itself.**
+
+## 735. 128 tokens per entry confirmed at a THIRD length (2048 → 16) — and the capture's granularity corrected from 512 to 1024
+
+**The 2048-context ELF, `readelf -sW`:** `arg3 16384 | arg4 16384 | arg5 **16 entries** (32768 … 0x80000)`. So the declared
+chunk count is **2 / 8 / 16 at 256 / 1024 / 2048 tokens — exactly 128 tokens per entry at all three lengths**, with
+`arg3`/`arg4` still 16 KB, extending §218's demotion. **This is the first quantity in the lane verified at three points by
+the artifact's OWN declaration.**
+
+**And the conclusion the peer's own §219 already draws is the stronger one**: *"every call size in play is an INTEGER
+MULTIPLE of 128 — **the three granularities disagree by whole factors, not by alignment**: a kernel declaring 128-token
+chunks and called with 256 or 512 is being called with **two or four of its own units, the ordinary way a chunked kernel
+is driven — not a misalignment** … the chunking candidate is weaker for having been measured."*
+
+**And one number in that section is superseded: the capture's launches are not 512 tokens.** That came from the 64-launch
+attribution, which the **owner field** refuted — the 64-run signature is **`elf_0009` + `elf_0010`, two kernels, 32 runs
+each**, not one kernel twice. And `npt = 1024` was pinned independently by the **size census**: `arg4 = 5,242,880 = 1024 ×
+20 × 128 × 2`, with **neither 256's `1,310,720` nor 512's `2,621,440` occurring once** anywhere in the manifest.
+
+**The corrected three-granularity table:**
+
+| who | granularity | source |
+|---|---|---|
+| the artifact's `arg5` declaration | **128 tokens** | `.dynsym` — 2/8/16 at 256/1024/2048 |
+| the engine's attention call | **256 rows** | §194's sentinel |
+| the capture's attention launches | **1024 tokens** | size census; **8** units of 128, not 4 |
+
+**The conclusion survives the correction and is slightly stronger**: 1024 = **8 × 128**, still an exact multiple, still the
+ordinary drive of a chunked kernel. **The granularity difference is measured, and it does not predict a wrong answer.**
+
+**And a process note, because it is now the fourth time in this exchange**: the 2048 step, the `.dynsym` view, §216's
+retraction, and §217's refutation were **each already committed** before being re-proposed — every time three sections
+from where the claim was made. **The log is longer than the working memory that reads it**, and the operational rule is
+now the same one at four levels: **grep the value, grep the artifact, grep the file, grep the log — and grep it before
+proposing, not after.**
