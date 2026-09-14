@@ -12397,3 +12397,48 @@ the whole experiment; the comment treats them as one thing.
 a coherence check rather than a live hypothesis, because the direction field says the un-swapped role is **right** and the
 descriptor total for that write is **2.00 MB**, which does not fit a 1 MB slot at all. **The artifact's own numbers
 argue against sizing that slot to a KV width.**
+
+## 725. The mapping IS in the artifact — `.dynsym` — and it resolves the direction question; plus a caveat on the sizes
+
+**Route (1) is already done, in this repo, as commit `184edb00c` — which retracted this same §216.** The look was one
+`readelf` away and the symbol table has it:
+
+```
+ELF .dynsym (attn_mha_1024_nh20_hd128.elf):
+  name=3  size=16384        name=4  size=16384
+  name=5  size=32768  65536  98304  0x20000  0x28000  0x30000  0x38000  0x40000
+```
+
+**The kernel's BO arguments are declared as symbols NAMED `"3"`, `"4"`, `"5"`** — and the patch stream's internal
+`arg_idx` 0/1/2 maps to them **positionally**. So the binding the decoder does not surface is the one the ELF states:
+
+| `arg_idx` | ELF symbol | host call | engine buffer | direction field |
+|---|---|---|---|---|
+| **0** | **"3"** | `set_arg(3,…)` | `attn_out` | **WRITE (S2MM)** |
+| 1 | "4" | `set_arg(4,…)` | `attn_act` | read |
+| 2 | "5" | `set_arg(5,…)` | `attn_kv` | read |
+
+**`arg_idx` 0 is `arg3`, `arg3` is `attn_out`, and the artifact says `arg0` is a WRITE.** So **the engine's un-swapped
+role is CORRECT**, and **the swap is the wrong half of the combination** — which is where §215's own reasoning arrived
+too. **The mapping question is closed, and it closed offline, for every kernel in the capture, not just this one.**
+
+**And a caveat that narrows my own §217 entry**: the `.dynsym` sizes are **16 KB for `arg3`/`arg4`**, and 16 KB = 8,192
+bf16 = 4 rows × 2,560 *or* 64 × 128 — **an INTERNAL buffer extent, not a BO size.** So they are **not** a third size
+description of the same buffer, and §217's *"every one of the three is different"* framing is **too broad**: the ELF
+declares its own working extents, FLM supplied whole BOs, and the engine caps its own — **three different KINDS of number,
+which is exactly §220's lesson about counts and strides, one more time.**
+
+**And the epistemic addition in §216 is worth keeping even though its instance is answerable** — it names a **third kind of
+closure**, distinct from the two this log has been careful about:
+
+| shape | example | how it reads |
+|---|---|---|
+| **refuted hypothesis** | §182 by an instrument, §196 by a fixture pair, §213 by its own test | a measurement settled it |
+| **failed instrument** | §136's sync broke the probe (§181) | the output looks like a result and is not |
+| **unasked question** | §216's *"the mapping is not in the artifact"* | **the evidence was never looked for** |
+
+**The distinction is real and the trichotomy is worth keeping. But the third shape has a failure mode the other two do
+not: it is unfalsifiable from the outside** — *"the information isn't there"* is a claim about a **search**, and a search
+that stopped early reads identically to a search that is impossible. **Here it stopped three sections short of the answer,
+in a file already in the repo, and the retraction was committed before the claim was re-proposed.** So the operational
+form is: **before recording an evidence limit, name the places searched — that is what makes the limit checkable.**
