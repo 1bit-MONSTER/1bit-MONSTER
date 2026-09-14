@@ -13550,3 +13550,33 @@ confirm — and the guard only fires on a null tensor, which never happens on th
 note about my parser, not about the file.** The engine's own loader reports `341 tensors` and `26 layers` and proceeds, so
 the header is fine; the tile-size question is the next clean step, and it takes a working header read or one instrumented
 run rather than another inference.
+
+## 880. The `IM=24864` in that comment is NOT Gemma3-1B's geometry — the engine's own config line says 6912
+
+**§875 flagged two numbers for the same quantity, unreconciled. The engine prints one of them itself:**
+
+```
+Gemma3-1B:  H=1152 NC=26 NH=4 NKV=1 HD=256 IM=6912 NV=262144 GU_split=0 rope_theta=1000000
+Gemma3-4B:  H=2560 NC=34 NH=8 NKV=4 HD=256 IM=10240 NV=262208 GU_split=1 rope_theta=1000000
+```
+
+**`IM=6912` — and `config.json` says the same (`intermediate_size: 6912`).** So the comment's *"Gemma3-1B has IM=24864
+and 24864 mod 128 == 32"* is **not this model's geometry**, and its stated reason therefore does not apply here:
+`6912 mod 128 == 0`, so **`G_d = 54` exactly and the `ceil` in that fix is a no-op for Gemma3-1B.** The `ceil` itself is
+still right in general — it is the **example attached to it** that is wrong for the model it names.
+
+**That is the session's recurring class one more time**: a **comment** is a claim *about* code, not evidence *of* it — and
+here the program's own output is the measurement that settles it. **The same shape as §95's method, §102's cumulative line,
+and last checkpoint's log-tail: a proxy read as its referent.**
+
+**And the config line yields something more useful than the discrepancy did.** The two Gemma variants differ on a field
+neither lane had compared:
+
+| | `GU_split` | engine asks for | |
+|---|---|---|---|
+| Gemma3-1B | **0** | **`GU_K1152_N13824`** (fused: N = 2 x 6912) | matches the six xclbins built |
+| Gemma3-4B | **1** | split `G` and `U` | — |
+
+**So the Gemma3-1B shape set is `GU`, not `G`+`U`, and that is why the earlier attempt failed at `FAIL GU` while `G`/`U`
+alone were already present.** A one-line reading of the engine's own banner would have said so at the start; instead it took
+two rounds of `No such file`.
