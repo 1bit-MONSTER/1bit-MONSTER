@@ -57,6 +57,16 @@ check(WORKER.is_file(), "the vendored worker is present", str(WORKER))
 check(LIBOMP.is_file(), "the bundled libomp.so is present", str(LIBOMP))
 check(MANIFEST.is_file(), "the prebuilt manifest is present", str(MANIFEST))
 
+# The bundle only helps if it is actually IN the commit: packaging/prebuilt/libomp.so
+# is a *.so, and .gitignore ignores *.so by default (a local run passes while CI,
+# which only sees tracked files, fails). Assert git tracks both binaries.
+if shutil.which("git"):
+    for path in (WORKER, LIBOMP, MANIFEST):
+        tracked = subprocess.run(["git", "ls-files", "--error-unmatch", str(path.relative_to(ROOT))],
+                                 cwd=ROOT, capture_output=True, text=True).returncode == 0
+        check(tracked, f"git tracks {path.relative_to(ROOT)}",
+              "present in the working tree but not in git — check .gitignore (see !packaging/prebuilt/libomp.so)")
+
 if WORKER.is_file() and LIBOMP.is_file() and MANIFEST.is_file():
     man = json.loads(MANIFEST.read_text())
     files = man.get("files", {})
