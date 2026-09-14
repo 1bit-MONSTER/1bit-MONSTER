@@ -71,6 +71,14 @@ stage:
 	# whole, while the .deb/.rpm/AppImage/docker paths read $(STAGE)/usr only —
 	# so this adds a file to the tarballs and to nothing else.
 	install -m 0755 tarball-run.sh $(STAGE)/run.sh
+	# Model downloader. Every package needs a way from "engine installed" to
+	# "model present", and this is the only one: the tarball, .deb, .rpm and
+	# AppImage all shipped without it, so a package user had no way to fetch a
+	# model (issue #2356). It goes to usr/share/1bit/ — the path the packaged
+	# image's 1bit-model-fetch.service already invokes
+	# (/usr/share/1bit/model-download.sh qwen3-0.6b) — and usr/ is what the deb,
+	# rpm and AppImage targets copy, so one line covers every format.
+	install -D -m 0755 model-download.sh $(STAGE)/usr/share/1bit/model-download.sh
 	@echo "staged $(VERSION) -> $(STAGE)"
 
 package-deb: stage
