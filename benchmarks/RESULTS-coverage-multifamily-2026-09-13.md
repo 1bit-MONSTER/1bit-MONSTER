@@ -9627,3 +9627,33 @@ one.** So the nh20 defect is **not one parameter** — which is consistent with 
 the call site), and §175 (the assignment matters but is not sufficient). The lane's next probe is therefore **not
 another single knob** but **what the kernel is told the buffer *means*** — the geometry it reads from the arguments it
 is handed, which is the only thing none of these perturbations changed.
+
+## 177. The one part of the call no perturbation has touched: the SCALAR arguments — `set_arg(0,3), set_arg(1,0), set_arg(2,0)` — unexplained in the code, and one reading of them explains the defect's signature
+
+§175 and §176 closed the single-parameter search over the **buffers** and the **region**. The invocation has three more
+arguments, and every run today left them untouched:
+
+```cpp
+run.set_arg(0, 3);   // scalar -- the ONLY set_arg(0, …) in this file, and uncommented
+run.set_arg(1, 0);   // scalar
+run.set_arg(2, 0);   // scalar
+```
+
+**`set_arg(0, 3)` is the only scalar argument-0 the engine sets anywhere in the attention glue, and no comment explains
+any of the three.** That matters because **on an MLIR_AIE kernel the scalars are the runtime parameters** — what the
+kernel is told *about* its work rather than the buffers it works on — so they are where a model-dependent quantity
+would live, and §175 already showed the *arrangement* of this call is load-bearing.
+
+**And one reading of the engine's own behaviour points straight at them.** §92 established that this attention is
+**context-free** — the boot depends on the last token alone. **A kernel told `L_begin = 0, L_end = 0` computes over a
+degenerate range by construction, and context-free is exactly what a zero range produces.** The model's own
+`config.json` carries per-model **`addr_l_begin_mha` / `addr_l_end_mha`**, which is what a length-carrying kernel needs.
+
+**Stated as a hypothesis with a one-run test, not as a finding:** the lengths may legitimately travel in a BO, and `3`
+may be a mode rather than a count. What is *not* in doubt is that these three values have no stated meaning while every
+other part of the call has been perturbed and measured.
+
+**So the next measurement is the scalars** — args 1 and 2 against `npt`, arg 0 against the model's head/layer counts,
+artifact and buffers untouched. **It is the last untouched surface, and unlike the others it is the surface that would
+explain the *signature* the defect has carried since §92** — which is a better reason to test it than the fact that it
+is unexamined.
