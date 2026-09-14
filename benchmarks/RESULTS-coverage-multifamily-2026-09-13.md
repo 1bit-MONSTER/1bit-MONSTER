@@ -10953,3 +10953,49 @@ inert in **both** fixtures, default OFF, baseline re-verified) — *"the hypothe
 headline and recorded it **as a hypothesis, not a finding**; they committed their source this time (§194's edit had been
 left uncommitted, as §188's was); and **my scorecard change shows as modified in their tree and they have not touched
 it.**
+
+## 199. The manifest's launch counts: the artifact this engine emulates runs ONCE, while a different kernel runs 252 times — an observation with an open interpretation
+
+Reading the capture's **launch sequence** rather than its boot value gives a fact neither lane has used. The manifest
+records **257 launches over 16 kernels**, and the counts are not evenly spread:
+
+| kernel | size | launches |
+|---|---|---|
+| `elf_0012` | 41,920 B | **252** |
+| `elf_0009`, `elf_0010` | 13,760 B | 2 each |
+| `elf_0013`, `elf_0014` | 154,560 B | 2 each |
+| **`elf_0011`** — **the nh20 kernel this engine ships and emulates** | **177,728 B** | **1** |
+
+and the sequence opens `41920 13760 13760 177728 41920 154560 154560 41920 41920 41920 …` — one attention-shaped launch,
+then a long run of `41920`.
+
+**And decoding the two side by side makes the contrast sharper than the counts do:**
+
+| | words | patches | arg0 | arg1 | arg2 |
+|---|---|---|---|---|---|
+| **`elf_0011`** (177,728; **1 launch**) | 44,432 | 1152 | 512 @ **1280** | 512 @ **1280** | 128 @ **128** |
+| **`elf_0012`** (41,920; **252 launches**) | 10,480 | **208** | 80 @ **1280** | 48 @ **1280** | 80 @ **1** |
+
+**Both carry the nh20 stride (`1280`), so both are nh20-geometry kernels** — and they differ in *volume*, not in *model*:
+`elf_0011` is sized for a long context (1152 patches) and `elf_0012` for a short one (208 patches).
+
+**The observation, stated so the interpretation is separable from it:** *the artifact this engine loads into its 1024
+slot and calls per layer is the one FLM launched **once** in this capture, while a smaller nh20 kernel was launched
+**252 times**.* **What that means is not yet established, and there are at least two readings:**
+
+1. **benign** — the capture is a 1024-token prefill in which the long-context attention legitimately runs once per layer
+   *per chunk* while `elf_0012` carries the incremental/decode work, so the counts reflect **what was being captured**
+   rather than a role assignment;
+2. **material** — `elf_0012` is FLM's **per-layer prefill attention** and `elf_0011` is a **different, occasional
+   kernel**, in which case the engine has been emulating **the wrong artifact for the role** — which would explain a
+   fixed wrong output that no call-time parameter can move (§198) and that survives variation of the artifact's
+   *content* (§167/§170), because the **shape** of the operation would be wrong rather than its inputs.
+
+**What separates them is a role table, not another perturbation:** which of the 257 launches belong to which layer, and
+which layer-block the capture covers. The manifest carries per-launch kernel identity and per-launch `SETARG` sizes —
+**so the role assignment is derivable offline**, exactly as the kernel sequence was.
+
+**Recorded with the standard this lane has settled into:** the counts and the two decoded signatures are **facts**; *"the
+engine emulates the wrong artifact"* is **a hypothesis derivable from them and not yet tested.** The one thing that can be
+said now is that **the launch distribution was never examined in this thread**, and it is the first new fact the lane has
+produced since §198 closed the last lever.
