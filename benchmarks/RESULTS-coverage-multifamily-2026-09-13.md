@@ -10034,3 +10034,55 @@ supporting claim — that the stream is head-blind — is **not**.
 **contents** — proxy-as-referent, alongside comment→call site, listing→execution, hash→provenance, value→identity and
 label→role. **Caught the same way as the others: by opening the thing instead of reading its name** — here by decoding
 177,728 bytes into 44,432 words and looking at the strides.
+
+## 182. The scalars are `(opcode, instr, ninstr)` — the geometry is NOT passed at all — and the engine makes ONE call with `rows = npt` where the member doc says "**max 256**"
+
+Two code findings, both verified here, and together they name a candidate that every perturbation so far has been
+*inside* rather than testing.
+
+**1. The scalars are the kernel's `(opcode, instr, ninstr)` — so no geometry is passed.** Confirmed from three places,
+not from the one that was claimed: `npu_attn_ctx.h:11` (*"Kernel signature (MLIR_AIE): (opcode, instr, ninstr, bo0..bo4)"*),
+`npu_engine_i8ctx_inc.h:4` and `:444` (*"kernel(opcode, instr_bo, ninstr, bo0..bo4)"*), and `npu-infer/src/engine.cpp:48`
+(*"opcode=0, instr=1, ninstr=2, host buffers from slot 3 on"*). So the engine's `set_arg(0,3), set_arg(1,0), set_arg(2,0)`
+means **opcode 3, no instruction BO, zero instructions** — correct for an ELF-baked stream, and it explains §178
+completely: arg0 is an **opcode**, which is why exactly one value works and the rest fall into 152432, and args 1–2 are
+inert because the instructions live in the artifact. **The kernel's `(M, K, N)` are baked in the ELF and cannot be
+influenced from the call.**
+
+**2. And the engine violates the member's own stated contract about rows.** The member is documented:
+
+> `int attn_rows = 0;  // query rows this call computes (0 => attn_tokens, max 256)`
+> *"attn_rows = query rows of this call (**<=256, the captured kernel's width**). **The caller may pass pointers shifted
+> to a later query block to cover a prompt longer than 256.**"*
+
+and the engine calls:
+
+```cpp
+bf16mm_set_attn_tokens(npt);
+bf16mm_set_attn_rows(npt);      // npt = 1024  ->  rows = 1024, one call
+```
+
+with `const int rows = attn_rows > 0 ? attn_rows : attn_tokens;` (:336) and `attn_rows = 0` set by
+`set_attn_tokens` (:281) — so the explicit `set_attn_rows(npt)` is what carries 1024 into the call.
+
+**So the engine either does the right thing or is out of contract, and the doc says the caller is supposed to LOOP in
+≤256-row blocks with shifted pointers.** That single fact explains everything the last five sections found without
+requiring any of them to be wrong: **every perturbation kept `rows = 1024`**, so every perturbation stayed inside the
+same (possibly invalid) call, which is exactly why they all converged on one wrong value and why the artifact, the
+positions, the scalars, the region and the buffer contents each moved nothing or moved everything to the same place.
+
+**Stated with the boundary that keeps it honest: the >256 comment says the 1k ELF is *"verified token-correct at npt =
+256/512/896/1024"* — but that verification is for the nh16 case.** The load lines measured in §173 show that for
+**Nanbeige the 1k slot holds the nh20 file** (the captured `elf_0011`, 177728 B), **and whether that file bakes 1024 rows
+or 256 has never been established.** So:
+
+- **if the nh20 ELF is 256-wide**, the engine's one-call form is out of contract and that is the defect;
+- **if it is 1024-wide**, the doc is stale for this slot and the candidate dies.
+
+**And that is an offline question with machinery already in the tree** — the ELF's decoded row count, not another
+device run. Which is where this lane should go next, and it is the first proposal all evening whose *cheap* half is
+offline.
+
+**Inertness of this lane's own new knob, since a control that touches the call needs it:** `BF16MM_ATTN_SCALARS` was left
+default-off, and §178's sweep reports the `(3,0,0)` row at **188** — identical to the untouched binary — so the knob's
+inert state reproduces the shipped behaviour exactly.
