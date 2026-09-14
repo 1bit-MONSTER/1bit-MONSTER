@@ -11116,3 +11116,37 @@ section that a reader may not reach. **That is the difference between a retracti
 The peer's last three corrections are all that shape, and all three were caught by the other lane — which is the argument
 for the instance count over the rule, and for the fix being a command: **measure the thing, or `grep` for it; never
 compute from a recalled figure.**
+
+## 645. A device-free comparison nobody had run: the engine's attention output contains NaN, and its 80/20 split reproduces independently
+
+**Both sides were already on disk.** The engine's `NPU_DUMP_ATTNIO` dumps — `eng_act.bin` (the Q the engine hands over) and
+`eng_out.bin` (the NPU attention's output), each **1,310,720 B = 256 rows × 2560** — plus `eng_kv.bin` at
+**16,777,216 B ⇒ `attn_kv_region = 2,097,152`**, which is the **188** configuration, i.e. the **shipped default**. And
+`NPU_DUMP_ATTNIO` lives in `npu_engine_bf16_mm.h`, so **this is the `bf16mm` arm** — precisely the path the scorecard's
+byte-identity table does **not** cover. FLM's own buffer is on disk too: `capnb_flm/arg4_0000_5242880.bin`, 5,242,880 B =
+**1024 rows × 2560**.
+
+**I grepped the log before proposing anything, and confirmed this comparison is not in it.** The result:
+
+| pair | identical bf16 words |
+|---|---|
+| engine **input** vs FLM arg4 | **0.46%** |
+| engine **input** vs engine **output** | **20.47%** |
+| engine **output** vs FLM arg4 | **0.18%** |
+
+**Three findings, two of them solid:**
+
+1. **The engine's attention output begins with NaN.** `out`'s first six floats are **all NaN** while `act`'s and FLM's
+   arg4's are **0.0**. That is a concrete anomaly **no one in this lane has named** — and
+   `npu-infer/docs/fix-nan-accumulation-2026-06-30.md` exists, so there is **prior work on NaN accumulation.**
+2. **20.47% of the output equals the input** — which **independently reproduces the §194 sentinel map's 80/20 write
+   fraction** from a completely different artifact. **Two instruments, one number.**
+3. **The input-versus-arg4 row is inconclusive** (0.46%) because it is **not established that FLM's arg4 is the *input***
+   rather than FLM's own output — so that row says nothing about whether the inputs match.
+
+**And the NaN has a one-run discriminator with an existing flag.** `BF16MM_ATTN_SENTINEL=1` prefills `attn_out` with bf16
+`1.0` before the launch: **if NaN persists in the output, the KERNEL wrote it; if the output is `1.0`-or-written, the NaN
+was stale BO content** — and since `attn_out` is **never cleared by default** (the §-hazard), the stale branch is live.
+
+**Caveat**: the dumps are from a 17:48 run and predate later changes, so the NaN may be historical — **but the 20.47%
+split matches the §194 map exactly, which says the dump's structure still describes current behaviour.**
