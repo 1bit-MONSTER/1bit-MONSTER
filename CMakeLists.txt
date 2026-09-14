@@ -2322,12 +2322,16 @@ message(STATUS "models: 35+ architectures supported for 1BP conversion")
 # ═══════════════════════════════════════════════════════════════════════════
 find_package(XRT QUIET)
 if(NOT XRT_FOUND)
-    # find_package(XRT) needs XRTConfig.cmake, which ships with AMD's
-    # /opt/xilinx/xrt tree — Ubuntu's libxrt-dev has the headers
-    # (/usr/include/xrt/xrt_device.h) and the libraries but no CMake config, so
-    # the release runner could install libxrt-dev and still report
-    # "npu: XRT NOT found — skipping NPU engine build", leaving nothing to package
-    # (issue #2360). Probe the header + library layout as well.
+    # find_package(XRT) needs XRTConfig.cmake, which AMD's /opt/xilinx/xrt tree
+    # ships; a hand-built or distro-packaged XRT may have the headers and
+    # libraries without any CMake config. Probe that layout too.
+    #
+    # Measured note (release run for c08e51b0d): Ubuntu noble's libxrt-dev is XRT
+    # **2.13**, which does NOT satisfy this probe — its headers are the old
+    # /usr/include/xrt/experimental/*.h set, so `xrt/xrt_device.h` (the >= 2.14
+    # layout this tree includes) is absent, and the release still logs
+    # "npu: XRT NOT found". The probe is for real XRT trees, not for the apt
+    # package (see packaging/README.md and issue #2360).
     find_path(_RC_XRT_HDR_DIR xrt/xrt_device.h
         PATHS /opt/xilinx/xrt/include /usr/include /usr/local/include)
     find_library(_RC_XRT_COREUTIL xrt_coreutil
