@@ -721,6 +721,45 @@ that the NaN in the written half is **computed, not stale** (the sentinel discri
 a path the nh16 models do not take. **So of the two live candidates, one is now closed (`arg3` role and width, both inert)
 and the other — the partition — is described but not explained.**
 
+### 10c.1 The artifact-substitution and fix tests — which move the partition, and which do NOT move the boot
+
+**Two follow-up tests, and they overturn the mechanism while leaving the measurements intact.**
+
+**The write follows the artifact.** Forcing attention ELFs through `NPU_ATTN_ELF_256`:
+
+| forced `attn_elf` | its declared `arg0` | measured write | `kept_1.0` |
+|---|---|---|---|
+| **default `256_nh16`** | 131,072 | **524,288** | **131,072 (20%)** |
+| `1024_nh16` | 524,288 | **655,360 = 100%** | **0** |
+| `1024_nh32` | 1,048,576 | 655,067 | 293 |
+| `256_nh32` | 262,144 | 655,067 | 293 |
+
+**Three of four fill `q` completely; only the default leaves 20% untouched.** So the shortfall is a property of the
+**default artifact**, and one substitution removes it.
+
+**But removing it does not fix the boot — the fix test:**
+
+| forced artifact | write coverage | bf16-path boot (@256, FLM ref **5938**) |
+|---|---|---|
+| default `256_nh16` | 80% | **188** |
+| **`1024_nh16`** | **100%** | **188** |
+| `1024_nh32` | ~100% | **152437** |
+| `256_nh32` | ~100% | **152437** |
+| `1024_nh20` | — | **188** |
+
+**An artifact that writes every word of `q` still boots `188`.** So **§204's partition is a CO-SYMPTOM, not the cause** —
+it was being carried as *the* description of the defect, and its removal does not remove the defect. And **`1024_nh20`, the
+model's own shape, also gives 188** — so “the wrong attention geometry was loaded” is not it either. The artifact **does**
+move the boot (two distinct wrong values), **just not through its write coverage.**
+
+**And the whole residual sits on a DIAGNOSTIC path.** Under the same seven forcings, **`NPU_RUNLIST=1` — the shipping i8
+path — gives `boot=5938` every time, FLM's exact reference**, because **it does not take the `Bf16Mm` path at all**. So the
+partition, the 80% write, the NaN and the 152432 attractor all belong to **`NPU_PREFILL_BF16=1`**, while **the shipped
+engine boots at FLM's references** — which is what this scorecard claimed from the start. **The lane's central worry and
+the product's shipped behaviour were never the same question, and they were one command apart for several exchanges.**
+
+**The rule it re-earns**: *name the ARM, not the flags* — **and here, name the PATH.**
+
 ## 11. Session close
 
 **211 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
