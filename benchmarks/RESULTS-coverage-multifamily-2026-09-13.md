@@ -13272,3 +13272,45 @@ command.
 
 **And the two things that were load-bearing were both tooling, not kernels**: a `g++` line that must use **one** library
 tree, and an ELF range that must **exceed** the prompt. **Neither was a model defect, and both looked like one.**
+
+## 845. Gemma3-4B: the coverage row was also a MISSING BUILD PRODUCT — init is fixed — and the next blocker is named, though its quantity is not understood
+
+**The Llama finding generalised.** §10 listed Gemma3-4B as *"untested native"*; the run failed at init with
+`No such file 'final_i8_QKV_K2560_N4096.xclbin'` — **the same class as Llama's**, not a capability limit.
+
+**Built its five shapes** (config: H=2560, nh=8, nkv=4, hd=256, inter=10240 → q=2048, kv=1024, so **QKV N = 2048+2·1024
+= 4096**, matching the engine's own request):
+
+| xclbin | bytes | cols |
+|---|---|---|
+| `final_i8_QKV_K2560_N4096` | 48,650 | 8 |
+| `final_i8_O_K2048_N2560` | 27,738 | 4 |
+| `final_i8_G_K2560_N10240` | 48,650 | 8 |
+| `final_i8_U_K2560_N10240` | 48,650 | 8 |
+| `final_i8_D_K10240_N2560` | 27,738 | 4 |
+
+**Init is fixed** — no `No such file`, no `FAIL`, and the run proceeds into the layers. So **a second coverage row was
+carrying a build gap as a capability limit.**
+
+**The next blocker is the runlist's per-context ELFs, and the generator cannot produce them for this family:**
+
+```
+gle_all <Gemma3-4B-NPU2> <out> 1 1100 32768 gemma_text 0
+gle_all: gemma_text_npu_sequence.cpp:92: void gemma_text_npu_sequence::Impl::_move_weights(...):
+         Assertion `blocks_per_row <= 63' failed.
+```
+
+**Zero ELFs are written, and the engine then reports `[runlist] RuntimeLayerEngine init failed` and falls back.** So the
+blocker is **an assertion inside FLM's own sequence class** — the same class as **Gemma3-1B's hardcoded `k_tile_q4` in
+`libdequant.so`**. **Both Gemma3 variants are blocked by a limit in the vendor's code, not by a missing file or a
+capability the engine lacks.**
+
+**And a reading of `blocks_per_row` that I had to withdraw.** The natural guess is `intermediate / 128` — Gemma3-4B's 10240
+gives **80 > 63**, which would explain it. **But the same arithmetic on families that generate fine gives Qwen3-4B 76,
+Llama-3.1-8B 112 and Nanbeige 64 — every one of them above 63.** So `blocks_per_row` is **not** `intermediate/128`, and
+**what it measures is unresolved.** The control here is the same move as the two earlier ones: **a plausible quantity that
+fits one case and is refuted by the cases that work.**
+
+**So the Gemma3-4B row moves from *"untested native / missing xclbin"* to: init FIXED by five rebuilt xclbins; blocked by
+a vendor assertion whose quantity is not yet understood.** That is a narrower and more actionable statement than the one it
+replaces, and it is the second coverage row this week to turn out to be a build product rather than a limit.
