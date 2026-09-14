@@ -435,11 +435,28 @@ struct Bf16Mm {
         attn_out->sync_from_device();
         if (sentinel) {
             const uint16_t* o = attn_out->data();
-            size_t kept = 0, nz = 0;
-            for (size_t i = 0; i < (size_t)rows * q; i++) { if (o[i] == 0x3c00) kept++; if (o[i] != 0) nz++; }
-            fprintf(stderr, "[ATTN-SENTINEL] rows=%d q=%d kept_1.0=%zu/%zu nonzero=%zu -> kernel %s\n",
-                    rows, (int)q, kept, (size_t)rows * q, nz,
-                    kept == (size_t)rows * q ? "WROTE NOTHING (output BO untouched)" : "DID write (output changed)");
+            const size_t n = (size_t)rows * q;
+            size_t kept = 0, nz = 0, wrote = 0;
+            size_t first = n, last = 0;
+            std::vector<uint8_t> colwrote((size_t)q, 0);
+            for (size_t i = 0; i < n; i++) {
+                if (o[i] == 0x3c00) kept++;
+                if (o[i] != 0) nz++;
+                if (o[i] != 0x3c00) { wrote++; if (i < first) first = i; last = i; colwrote[i % (size_t)q] = 1; }
+            }
+            size_t cols = 0; for (int j = 0; j < (int)q; j++) cols += colwrote[(size_t)j];
+            int tail = 0; for (int j = (int)q - 1; j >= 0 && !colwrote[(size_t)j]; j--) tail++;
+            fprintf(stderr, "[ATTN-SENTINEL] rows=%d q=%d kept_1.0=%zu/%zu nonzero=%zu wrote=%zu -> kernel %s\n",
+                    rows, (int)q, kept, n, nz, wrote,
+                    kept == n ? "WROTE NOTHING (output BO untouched)" : "DID write (output changed)");
+            // RESULTS-coverage-multifamily 194: POSITIONS, not a binary. The analogue of
+            // BF16MM_CEXTENT -- this replaces section 122's instrument-dependent
+            // "2048 of 2560 columns" with a number the engine counts itself. Caveat carried:
+            // a legitimate output CAN be bf16 1.0, so "unchanged" is an UPPER bound on
+            // "not written"; for a WIDTH claim (which columns are never touched) the sentinel
+            // is the right probe, which is why the per-column map is the form reported.
+            fprintf(stderr, "[ATTN-SENTINEL] positions: first_changed=%zu last_changed=%zu ; columns_touched=%zu/%d ; untouched_tail_columns=%d\n",
+                    first, last, cols, (int)q, tail);
         }
         memcpy(out, attn_out->data(), (size_t)rows * q * 2);
         return true;

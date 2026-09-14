@@ -10633,3 +10633,32 @@ boot to 152503. That is a difference between the two configurations rather than 
 across the full width (§122 refined), and the artifact is genuine (§167/§170, §193). **Every candidate this lane
 generated has now been measured rather than argued — and the single-call surface is empty**, which is the peer's
 conclusion reached from the other side.
+
+## 195. The stream's geometry is TWO fields, verified on THREE genuine captures — and the row error is the same class one level over: two different artifacts stated as one row
+
+Decoding all three **shipped captures** side by side resolves the row that did not match and confirms the formula on a
+third head count:
+
+| artifact | NH | NKV | words | patches | arg0/arg1 stride | `(NH/2)×HD`? | arg2 stride | `HD×(NKV/4)`? |
+|---|---|---|---|---|---|---|---|---|
+| shipped `nh16.elf` (98,848 B) | 16 | 8 | 24,712 | 640 | **1024** | **yes** | **256** | **yes** |
+| shipped `nh20_hd128.elf` (177,728 B) | 20 | 4 | 44,432 | 1152 | **1280** | **yes** | **128** | **yes** |
+| shipped `nh32.elf` (177,696 B) | 32 | 8 | 44,424 | 1152 | **2048** | **yes** | **256** | **yes** |
+
+**`(NH/2) × HD` now holds for 16, 20 and 32 heads — three genuine captures — and `arg2`'s stride follows a second
+formula, `HD × (NKV/4)`** (256 at nkv8, 128 at nkv4). So **the stream carries model geometry in at least two fields**,
+and *"the stream is not head-blind"* is supported three times over rather than twice.
+
+**And the row that failed to match was a different KIND of artifact, which is the reusable part.** It was the
+**generated qwen3 `.txn`** (88,840 words, 2,560 patches, arg2 stride **1**) — **3.6× the words, 4× the patches and a
+different arg2 stride from the shipped nh16 `.elf`** it was sharing a row with. **Two artifacts of different kinds and
+different sizes were stated as one "nh16" row**, and the fix is a rule this log already owns for a different reason:
+**name WHICH artifact a row came from** — exactly as a reference token must name its fixture (§146, §149).
+
+**And the generated/captured distinction is not bookkeeping here, it is a third category:** captures carry geometry in
+both stride fields; the generated `.txn` carries `arg2 stride = 1`. **A table mixing them is not a table of one thing.**
+
+**State, restated once because three sections have now converged on it:** the stream is **not** head-blind; the
+**filename** is; §167/§170 stand (two artifacts differing in content and provenance give the same wrong answer); §183's
+address diff is uninformative; and **the open question is the arg role, with arg3 sized `npt × NKV×HD` — a KV row
+width, not an instruction stream.**
