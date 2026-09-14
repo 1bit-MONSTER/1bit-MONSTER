@@ -1146,6 +1146,14 @@ int main(int argc,char**argv){
     }else{fprintf(stderr,"  lm_head: dequant failed, falling back to emb\n");}}
     if(lm_head_f32.empty()){fprintf(stderr,"  lm_head: using emb_f32 (tied embeddings)\n");}
     const float* lm_emb = lm_head_f32.empty() ? emb_f32.data() : lm_head_f32.data();
+    // Tied embeddings (no embed_tokens.weight): the INPUT embedding is the SAME
+    // matrix as the lm_head. emb_f32 above was filled from data offset 0 (garbage
+    // for a tied model) — replace it with the dequantized lm_head so the prefill's
+    // embedding lookup emb_f32[token*H] is correct.
+    if (!key_exists(js, jl, "model.embed_tokens.weight") && !lm_head_f32.empty()) {
+        emb_f32 = lm_head_f32;
+        fprintf(stderr, "  emb: tied to lm_head (%zu rows x %d)\n", emb_f32.size() / H, H);
+    }
     // Qwen3.6 embed_tokens rows (NV) are 8× the text vocab (multimodal expansion);
     // the LM head only scores the text vocab — OOB read fixed by using its rows.
     int lm_nv = lm_head_f32.empty() ? NV : (int)(lm_head_f32.size() / H);
