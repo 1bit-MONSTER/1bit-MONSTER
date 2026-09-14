@@ -10370,7 +10370,7 @@ arg3.
 changed what occupies that slot — **right in direction, wrong in kind** — and the engine's `attn_out` at arg3 would need
 to become the artifact's instruction stream, with `instr`/`ninstr` staying `0` because the stream travels as a **BO**.
 
-## 190. The fingerprint test could not run — the instrument cannot read the dump — so the ordering question stays open, and the garbage is recorded as an instrument limit rather than a result
+## 192. The fingerprint test could not run — the instrument cannot read the dump — so the ordering question stays open, and the garbage is recorded as an instrument limit rather than a result
 
 §189 left one fork open: whether the kernel we emulate was handed **instructions** or a **5 MB attention buffer** at arg3,
 undecidable from the manifest's ordering. The obvious offline resolution was to **fingerprint the 1 MB instruction dump**
@@ -10423,3 +10423,34 @@ when merely held.
 `npu_engine_bf16_mm.h` as dirty. Checked by content, not by eye — **the tree is clean** and the file's sha256 equals
 HEAD. That note has now been stale four times, and it is the same shape as the rest of this section: a remembered state
 standing in for a measured one.
+
+## 192. The `(NH/2)×HD` stride relationship is confirmed on BOTH artifacts — and the nh16 patch count quoted for it does not match the shipped nh16 file
+
+The head-blind retraction (§183) is right, and its supporting relationship holds on a second artifact. The decoded
+`patches` array carries `arg_idx` and `dim1_stride` directly, so both streams can be read the same way:
+
+| stream | words | patches | arg0 | arg1 | arg2 |
+|---|---|---|---|---|---|
+| **nh20** (`attn_mha_1024_nh20_hd128.elf`, 177728 B) | 44432 | 1152 | **1280** (512 patches) | **1280** (512) | **128** (128) |
+| **nh16** (shipped `attn_mha_1024_nh16.elf`, 98848 B) | 24712 | **640** | **1024** (256) | **1024** (256) | **256** (128) |
+
+**`1280 = 10 × 128 = (20/2) × HD` and `1024 = 8 × 128 = (16/2) × HD`.** So the stride relationship is **confirmed on two
+independent artifacts**, and with it the corrected premise: **the stream encodes the head count; only the filename omits
+it.** Both `n_words` values equal their file sizes exactly (44,432 × 4 = 177,728; 24,712 × 4 = 98,848), so the decoder
+reads the whole artifact.
+
+**And one number in the quoted nh16 row does not survive the same check.** The table carried *"nh16 (qwen3): **2560
+patches**, `dim1_stride` {1024, 1}"*; **the shipped nh16 file has 640 patches** — 256 on arg0, 256 on arg1, 128 on arg2 —
+with stride **{1024, 256}**, not `{1024, 1}`. So the nh16 row is **not describing this file**: either it is a different
+artifact (a capture or a generated variant) or the count and the second stride were read from something else. **The
+relationship it was used to support is unaffected** — that rests on the stride, which matches — but the row itself should
+not be quoted as the shipped file's contents.
+
+**And the third argument is model-specific too, which neither table had:** `arg2`'s stride is **128** for nh20 against
+**256** for nh16. That is a second, independent difference between the two streams, and it is worth having because it
+means **all three arguments carry model geometry**, not just the two attention buffers.
+
+**State of the corrected premise, stated once so it is not re-derived:** the stream is **not** head-blind — the stride is
+`(NH/2) × HD`, verified on two artifacts — and the filename **is** head-blind. So *"a well-formed stream can drive a
+wrong-width kernel"* survives as a **risk**, with the corrected support: **the risk comes from the name, not the
+contents**, and the earlier argument built on it was supported by a filename rather than by the stream.
