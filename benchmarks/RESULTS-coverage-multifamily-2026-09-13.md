@@ -12319,3 +12319,37 @@ agree, which makes it worth one test.**
 default OFF. **§183's 2×2 showed only the shipped default gives 188; swap ON gives 152432.** So the direction field now
 **predicts which way the swap should help** — and the one swap run on record moved the boot **away** from 188. That is a
 sharp, cheap, already-runnable test with a prediction attached, which is more than the candidate had before.
+
+## 715. The demotion is right, the resolution is right — and the "super-linear" ratio is a CROSS-MODEL quotient, while the table's own clean pair is constant
+
+**§213's reading is refuted by its own test, and the resolution is the right shape**: the **stride** tracks `(NH/2)×HD`
+exactly (1024/1280/2048 for 16/20/32, four artifacts), and the **per-token volume does not track NH at all** — **1024.0
+for both nh20 and nh32**, differing by twelve heads. **So the conflict was never between two geometry signals: the stride
+is geometry and the volume is not.** Same shape as §162, and the third time today that the answer was *"that field
+doesn't mean what it looked like"*, **each time from a test rather than an argument.**
+
+**But one number in the message needs its scope, and the table itself supplies it.** The quoted *"×4 tokens → ×11.8
+bytes"* compares **`arg2` = 0.38 MB at nh16@256 with `arg2` = 4.50 MB at nh20@1024** — **that quotient crosses BOTH the
+architecture and the length**, so it is not a growth rate. **And the same table contains a clean length pair for the one
+architecture held constant**: the **nh16** artifacts read **512.0 bf16/token at 256 and 512.0 at 1024** — **constant.**
+So the per-token volume is **length-invariant**, and *"super-linear, it is the shape an attention-sized read has"* is
+**not supported by the table that produced it.** The clean test is what the peer already named — the 512- and
+2048-context artifacts — and until it runs, the growth rate is **not measured**.
+
+**And `arg2` already has a measured model in this log, three sections of this document away** — from the four-artifact
+descriptor table:
+
+| argument | the stream's descriptors | the engine fills | |
+|---|---|---|---|
+| `arg0` | 512 descriptors, **2.00 MB**, `dim1_stride = 1280` | `attn_out`, `rows × q × 2` = 5.00 MB | over by 3 MB |
+| `arg1` | 512 descriptors, **2.00 MB**, `dim1_stride = 1280` | `attn_act`, `rows × q × 2` = 5.00 MB | same |
+| `arg2` | 128 descriptors, **4.50 MB**, `dim1_stride = 128` | `attn_kv`, `tokens × 512 × 2` × 4 = **4.00 MB** | **0.50 MB SHORT** |
+
+**`arg2` = 4.50 MB is the nh20 row of that table, and 512 = `NKV×HD`, so the engine's model is `npt × NKV×HD × 2 × 4` —
+LINEAR in tokens, and 0.50 MB short of FLM's read.** So `arg2` is not unanswered; it is answered **linearly**, with a
+measured shortfall.
+
+**And an honest self-note, because it is the same failure this log keeps catching**: my §714 offered `arg0`'s
+`dim1_stride = 1280` as **the** stride fact — **it is already in this document, in the descriptor table above, on the
+`arg0` and `arg1` rows.** I re-derived my own record and presented it as new. **The fix is the one the whole session
+earned: grep the log before offering a fact, not after.**
