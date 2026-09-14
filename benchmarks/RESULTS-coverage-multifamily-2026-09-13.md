@@ -12187,3 +12187,50 @@ it (16/16).** That is the difference between a claim that happened to be true an
 **One residual flagged rather than re-litigated**: §204's `512 = NKV×HD` is the **sibling** of the naming step §220
 demoted, and it carries the same question — **whether a COUNT of untouched words and a STRIDE value are commensurable.**
 It is recorded as still owing that check, not as established.
+
+## 700. DEFINITIVE: the label's own args equal its own launch's args — 8 of 8 — and the question has now been reversed six times
+
+**The `ELF` position is ambiguous; the `RUN` line's TAIL is not.** Each `RUN` line carries every prior run's args, so its
+**last** triple is its own run's. And each `ELF` label's block contains exactly three `SETARG idx=3/4/5`. **Compare them:**
+
+| block (label → its `RUN`) | the label's own SETARGs | that `RUN` line's tail | match |
+|---|---|---|---|
+| `0008` → line 894 | (5,242,880 · 5,242,880 · 31,457,280) | same | **YES** |
+| `0009` → line 906 | (1,048,576 · 5,242,880 · 31,457,280) | same | **YES** |
+| `0010` → line 918 | (1,048,576 · 5,242,880 · 31,457,280) | same | **YES** |
+| **`0011` → line 929** | **(5,242,880 · 5,242,880 · 67,108,864)** | **same** | **YES** |
+| `0012` → line 940 | (5,242,880 · 5,242,880 · 31,457,280) | same | **YES** |
+| `0013` → line 951 | (22,020,096 · 5,242,880 · 55,574,528) | same | **YES** |
+| `0014` → line 962 | (22,020,096 · 5,242,880 · 55,574,528) | same | **YES** |
+| `0015` → line 972 | (5,242,880 · 22,020,096 · 55,574,528) | same | **YES** |
+
+**Eight of eight.** And the discriminating pair is exact: **`elf_0011`'s SETARGs are `(5 MB · 5 MB · 64 MB)` and `RUN 002`'s
+tail is the same — while under the trailing reading `RUN 002` would be `elf_0012`'s, whose own SETARGs are
+`(5 MB · 5 MB · 30 MB)`.** Tested head to head: **leading 8 of 16, trailing 2 of 16.**
+
+**So `elf_0011`'s signature is `(5 MB · 5 MB · 64 MB)`, 32 runs, once per layer — §206 stays closed and §173 stays
+withdrawn.** And the winning instrument is an **identity** (does the label's own args equal its launch's own args?) rather
+than an **arrangement** (which line sits where) — **8/8 against 8-vs-2.**
+
+**And the history is worth recording, because it is the lesson**: this one question was answered **six times**, and the
+answers alternated.
+
+| # | position | basis |
+|---|---|---|
+| §102 | `elf_0011` = (1 MB · 5 MB · 30 MB) | the run line's **head**, unread |
+| §199/§201 | label **trails** its run | the `ELF`/`RUN` arrangement |
+| §665 | label **leads** — "adjacency confirms §102" | the line above the label |
+| §671 | retracted, **leads**, (5 · 5 · 64) | the tail rule |
+| §206 | closed, (5 · 5 · 64) | 224/224 — **the wrong rule** (dumps, not labels) |
+| §211 | **trails** again, restoring §173 | the arrangement again |
+| **here** | **leads, (5 · 5 · 64)** | **8/8 identity across all blocks** |
+
+**Every reversal came from reading an arrangement. The two positions that survived came from an identity.** And the peer's
+own capstone predicts this: **one fact that constrains many lines, not one line read carefully** — the six entries above
+are six careful readings, and the one that settles it is a **count**.
+
+**And the peer's line numbers were right** — line 918 *is* `RUN 001` and 919 *is* `ELF 0011` (my earlier note printed
+0-indexed numbers without saying so). **The position was never in dispute; only what the position means.** The label sits
+between two runs and **opens the second one** — and the way to tell is the **handle** (it changes at the label:
+`0x7ffd1c178580` → `0x7ffd1c177ff0`, and the following `RUN_CTOR` declares that same new handle) **and the tail-match**,
+not the ordering.
