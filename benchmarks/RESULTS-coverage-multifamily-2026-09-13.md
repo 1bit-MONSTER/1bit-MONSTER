@@ -11203,3 +11203,50 @@ mapped against the engine's own per-layer op order — **offline, and it is the 
 ownership counts classify by `o[i] != 0x3c00` and `o[i] != 0`, so **NaN words count as "written"**. That does not change
 §194's per-column map — a column is touched if any row differs — but it does mean **the 80/20 split is a split of
 "changed vs still 1.0"**, not necessarily of "real values vs untouched".
+
+## 204. The kernel WRITES NaN — the sentinel discriminator settles it — and the per-row structure is exactly 1024 NaN + 1024 written + 512 untouched, where 512 = NKV×HD
+
+The peer's NaN lead, run through the discriminator they proposed (`BF16MM_ATTN_SENTINEL=1` prefills `attn_out` with bf16
+`1.0` before the launch, so **a value that survives was never written**), on current code:
+
+```
+[ATTN-SENTINEL] rows=256 q=2560 kept_1.0=131072/655360 nonzero=393216 wrote=524288 -> kernel DID write
+[ATTN-SENTINEL] positions: first_changed=0 last_changed=524287 ; columns_touched=2560/2560 ; untouched_tail_columns=0
+
+eng_out.bin: first 8 floats = NaN NaN NaN NaN NaN NaN NaN NaN
+  NaN words : 262,144  (40.00%)
+  still 1.0 : 131,072  (20.00%)
+  other     : 262,144  (40.00%)
+  PER ROW   : NaN=1024   one=512   other=1024        (q = 2560)
+```
+
+**1. The NaN is COMPUTED, not stale.** With the buffer prefilled to `1.0`, the first words are **still NaN** — so the
+kernel wrote them. §181's stale-content branch is therefore dead for this signature, and the earlier `AZERO` inertness
+(which zeroed the same buffer and changed nothing) is consistent with it: **the content the kernel is handed does not
+matter because the kernel is producing the NaN itself.**
+
+**2. And the per-row structure is exact, which is the part worth having:**
+
+| per output row (q = 2560) | words | equals |
+|---|---|---|
+| **NaN** | **1024** | `(NH/2)×HD` **for NH = 16** — the nh16 half-width |
+| written, non-NaN | 1024 | — |
+| **untouched (still `1.0`)** | **512** | **`NKV×HD`** (nkv4 × hd128) |
+
+**1512 = 1024 + 512.** And that **independently confirms §196's per-row shortfall from a different instrument**: the
+missing 512/row is the untouched 512/row, and it is `NKV×HD` — the same unit that sizes FLM's `arg3` for the kernels
+that carry it. **Two instruments, one unit, three sections apart.**
+
+**3. And it says what the kernel is doing wrong in a way no earlier section could.** A kernel that **computes NaN** and
+**leaves exactly `NKV×HD` untouched** is not reading wrong data and is not writing the wrong buffer — it is **computing
+over the wrong geometry**: the region it produces for is **1024 words wide** (`(NH/2)×HD` at NH=16, i.e. **eight** rather
+than **ten** half-heads) and it never reaches the `NKV×HD` region at all. **NaN is what a softmax produces over a
+degenerate range** — which is what §92's *context-free* signature has looked like all along, now with a mechanism.
+
+**4. And the earlier readings are corrected rather than discarded:** §194's "2,048 written per row" is **1024 NaN + 1024
+non-NaN** — both are *writes* under the sentinel's rule, so the count was right and its interpretation was incomplete.
+The peer's independent **20.47 % output-equals-input** figure is the same split seen through a third instrument.
+
+**Kept honest:** the NaN fraction is measured on the **saved output of a 256-row call**; that it *causes* the wrong boot
+token is still an inference — but it is now an inference from a **computed** value with a **per-row structure**, rather
+than from a count.
