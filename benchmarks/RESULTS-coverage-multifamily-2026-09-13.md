@@ -13393,3 +13393,40 @@ something — and the first time one was itself the error**, which is worth reco
 paying off so consistently that it was acquiring a halo.
 
 **§845's conclusion ("what it measures is unresolved") is WITHDRAWN. It measures `intermediate/128`, and the bound is 63.**
+
+## 860. CORRECTION: the Gemma3-1B segfault is NOT the missing lm_head ELF — it is in `npu_pack_layer_bo`, and the log line I blamed was simply the last one printed
+
+**§850 and §855 both say the engine *"SEGFAULTS on the missing lm_head ELF."* A backtrace says otherwise.**
+
+```
+RuntimeLayer: cannot open  /tmp/g1b_elfs_full/elf_0002_lmhead.bin
+RuntimeLayer: cannot read lm_head ELF /tmp/g1b_elfs_full/elf_0002_lmhead.bin
+
+Thread 1 "npu_engine_gemm" received signal SIGSEGV, Segmentation fault.
+0x000055555563cd96 in npu_pack_layer_bo ()
+#0  npu_pack_layer_bo ()
+#1  RuntimeLayerEngine::init(...)
+#2  npu_runlist_decode ()
+#3  main ()
+```
+
+**The crash is in `npu_pack_layer_bo`, called from `init` — the very next thing after the lmhead message.** And the lm_head
+path was **already safe**: `init` treats a missing ELF as non-fatal *by design* (`else if (!lmhead_elf_path_.empty())`, with
+`RT_NO_LMHEAD` existing "for isolation"), and `run_lmhead()` opens with `if (!kern_lmhead_) return false;`. **Neither of
+those has a bug.** I had read the last line printed before a crash as the line that caused it.
+
+**That is this log's dominant error class in its plainest form**: a **proxy** — "the last message" — read as its
+**referent** — "the cause". The same shape as §95's run-based percentage read as a byte diff, and §102's cumulative run
+line read as a launch's signature. **A backtrace is the direct measurement; the log tail was the proxy**, and it took one
+`gdb -batch -ex run -ex bt` to settle.
+
+**So the corrected statement**: Gemma3-1B's init is fixed by six rebuilt xclbins, the dequant case is handled, and the
+remaining blocker is **a segfault in `npu_pack_layer_bo`** — **localized, not yet explained.** What is **withdrawn** is the
+claim that a missing optional file crashes the engine; **what is now true is the opposite**: the optional-file path is
+defensive, and the crash is in weight packing.
+
+**And one nearby fact that narrows it**: `npu_pack_layer_bo` already carries a fix for unaligned contraction dims — its
+group counts were changed from integer division to `ceil`, with a comment naming Gemma3-1B's `IM` — so the crash is
+**after** that repair, and Gemma3-1B's own dims (H=1152 = 9×128, IM=6912 = 54×128) are both 128-aligned. **The grouped tile
+reorder is the next place to look**, and its reorder rule is documented as verified only for **G = 8 and G = 16** — while
+this model's `G = K/128` values are **9 and 54**.
