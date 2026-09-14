@@ -12871,3 +12871,35 @@ kernel behaves as an nh16-width attention"* is not an impression, it is **4096 h
 `q/HD = 20`. The numbers are exact; **the reading of 2048/128 as "heads" is the step that should be tested next** — and the
 cheapest test is the one the engine already supports, an **nh16 model at the same 256-row call**, where the prediction is
 **wrote = 655,360 = 100%, no untouched region at all.**
+
+## 790. The cross-model test §785 named is NOT runnable — the sentinel lives in a path nh16 models do not take; plus two number corrections
+
+**§785 named the cheapest test of the *"16 heads"* naming: an nh16 model at the same 256-row call. It cannot be run as
+stated.**
+
+`npu_engine_qwen3_1_7b` links the bf16mm bridge (33 symbols) and runs 278 lines, but **prints no `ATTN-SENTINEL` line under
+`NPU_PREFILL_BF16=1`, `NPU_RUNLIST=1`, or both** — so **that model does not take the `Bf16Mm` attention path the sentinel is
+wired into.** Which matters beyond the test: **if nh16 models do not drive this attention kernel at all, then *"nh16 works
+because the capacity matches"* is not the contrast it looked like** — the working models may simply be using a **different
+path**, and the capacity match would be a coincidence of two unrelated things. **That is now an open question, not a
+supporting fact.**
+
+**And two number corrections, both mine:**
+
+1. **§785's test prediction was wrong in the value.** It said *"wrote = 655,360 = 100%"* — but **655,360 is nh20's host
+   expectation** (256 rows × 2560). For nh16 the host expects **256 × 2048 = 524,288**, which is the **same number as the
+   capacity**, so the prediction is **`kept_1.0 = 0`, zero untouched** — not a larger write.
+2. **And the units of the match needed checking.** The sentinel's `655360` and `524288` are **element** counts (it tests
+   `o[i] != 0x3c00` over `rows × q`), i.e. **bf16**, while the descriptor's `buffer_length` is **bytes**. The
+   **1024-context nh16** artifact is `256 patches × 4096 B = 1,048,576 B = **524,288 bf16**` — **which matches the measured
+   write exactly, once the units are aligned.** §785's table wrote the match without saying which side was bytes.
+
+**And one attribution that stays uncertain**: the 256-row run's load log shows **`attn_mha_1024_nh20_hd128.elf`,
+`attn_mha_2048_nh16.elf` and `attn_mha_256_nh16.elf`** — and the **1024-nh16** artifact, whose total matches the write, is
+**not among the three captured lines**. So the exact match is with an artifact that the run may or may not have loaded, and
+**the `wrote=524288` figure should not yet be attributed to a specific file.**
+
+**What survives without the interpretation**: **the write is a constant 524,288 elements at every input length** (the call
+is always 256 rows), which is **2048 bf16 per row**, and **q is 2560** — so **512 words per row are never written and that
+is the 20%.** Those are measurements. **`2048 / 128 = 16` is arithmetic. Calling 16 "heads" is the step that is still
+untested, and the test that would settle it is not currently available.**
