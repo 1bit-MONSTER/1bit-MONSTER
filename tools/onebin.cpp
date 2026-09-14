@@ -67,6 +67,10 @@ int main(int argc, char** argv) {
     if (prog == "onebitd")        return onebitd_main(argc, argv);
     if (prog == "jarvis_server")  return jarvis_app_main(argc, argv);  // legacy symlink → JARVIS v2
     if (prog == "vision_server")  return vision_server_main(argc, argv);
+    // The package ships this symlink (packaging/Makefile, and the flatpak's list)
+    // and packaging/README.md documents it, but nothing dispatched it: running
+    // `onebit` printed the usage text instead of the agent CLI.
+    if (prog == "onebit")         return onebit_main(argc, argv);
 
     // ── Subcommand dispatch ──
     if (argc > 1) {
@@ -113,6 +117,23 @@ int main(int argc, char** argv) {
         }
         if (cmd == "registry-merge-invariants") {
             return registry_merge_invariants_main(argc - 1, argv + 1);
+        }
+        // tools/onebit.cpp's command set. onebit_main() has been declared at the
+        // top of this file (and compiled into this binary — `nm build/1bit` shows
+        // the symbol) but was never called, so every one of these commands fell
+        // through to the usage text below. That is why `./run.sh chat` — the
+        // quick start printed by packaging/tarball-run.sh and quoted in
+        // docs/guides/getting-started.md — printed usage, and why `1bit pull`
+        // and `1bit list` did nothing. The list mirrors onebit.cpp's own parser.
+        if (cmd == "chat" || cmd == "up" || cmd == "down" || cmd == "status" ||
+            cmd == "health" || cmd == "build" || cmd == "config" || cmd == "auth" ||
+            cmd == "serve" || cmd == "update" || cmd == "pull" || cmd == "download" ||
+            cmd == "get" || cmd == "list" || cmd == "models" || cmd == "ls") {
+            // Full argv, not argv+1: onebit_main parses like a standalone main
+            // (its loop starts at i = 1, i.e. it expects argv[0] to be the
+            // program name), unlike the *_main entry points above which are
+            // handed the subcommand as their argv[0].
+            return onebit_main(argc, argv);
         }
         if (cmd == "-h" || cmd == "--help" || cmd == "help") {
             return print_usage();
