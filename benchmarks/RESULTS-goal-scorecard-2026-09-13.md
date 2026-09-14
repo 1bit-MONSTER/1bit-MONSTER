@@ -39,9 +39,19 @@ needs (one command, ~5 s), and §10d carries the shape-xclbin rebuild recipe.
    `npu_reorder_tiles` must use **`o % G`** — the in-group term used the raw `o`, which is harmless for even `G` but
    diverges for odd `G` (`2S = G+1`), and at `G=9` it read past the tensor; and a null-tensor guard in `npu_pack_proj`.
 
-**Open, with their current best statement:** Gemma3-1B reaches the layers and crashes in the packing path (**localized;
-next hypothesis is the fixed 5120-byte tile**); the Nanbeige bf16-path residual is **a diagnostic-path question, not a
-product one** (§10c.1); and the four uncovered families keep their named dependencies (§5).
+**Open, with their current best statement** — all four are now **named dependencies or diagnostic-path questions**, none of
+them an unexplained engine defect:
+
+- **Gemma3-1B now RUNS end to end** (two engine defects were found and fixed on the way: the odd-G tile reorder and the
+  byte-extent tile count, the latter present in **four** functions). Its output is **all-zero logits**, and that is
+  **fully explained**: the **lm_head ELF is absent** — FLM's `gemma_text` class exports no `gen_lm_head_seq` — so the weights
+  pack, no kernel is built, and nothing ever writes the logits. **Fix = that one vendor artifact with the right shapes**
+  (§950, §955).
+- **Gemma3-4B**: init fixed (five rebuilt shape xclbins); blocked by a **vendor assertion**, `blocks_per_row <= 63` in
+  `gemma_text_npu_sequence` — i.e. any Gemma whose intermediate exceeds `63 × 128 = 8064` (§855).
+- **The Nanbeige bf16-path residual** is **a diagnostic-path question, not a product one** (§10c.1): the shipping
+  `NPU_RUNLIST=1` path boots at FLM's references, and the partition is a **co-symptom** whose removal does not remove it.
+- **The four families outside the supported set** keep their named dependencies (§5).
 
 **And the rule that decided most of this**: *name the ARM, not the flags* — and here, **name the PATH**. Several of the
 findings above are about tooling, and each looked like a model or kernel defect until a **control** (a known-good shape, a
