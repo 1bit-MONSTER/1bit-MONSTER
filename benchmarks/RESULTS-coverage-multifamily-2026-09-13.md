@@ -10391,3 +10391,35 @@ statement is that **nothing about the dump's content has been measured**.
 little-endian words; the attention ELF's own instruction stream is already decoded into `/tmp/dec_nh20/*.json` as raw
 words. **Comparing the two word sequences directly** — not through the descriptor decoder — answers the same question
 without needing the dump to be in ELF form. That is the offline step §189's fork still needs.
+
+## 191. RETRACTED (theirs, and verified here): "arg3 carries the instruction stream" — the labels have no source, and the 1 MB is a SHAPE, not a role
+
+The correction is right and it arrived before anything was built on it. Checked:
+
+- **`INSTS_DUMP` and `ARG4_DUMP` appear in no source file** — not in the repo, not in the build tree, not in the FLM tree.
+  They exist **only in the manifest logs** and in the write-up. So **the tool that emitted those labels is not here and
+  its rule cannot be inspected**: a filename a tool chose was read as a statement about what a buffer **is**.
+- **And the arithmetic that survives the label is a shape, not a role.** `1 MB = 1024 × 512 × 2 = npt × NKV×HD` —
+  verified. Against the engine's `5 MB = 1024 × 2560 × 2 = npt × NH×HD` — also verified. **Both arguments are sized by a
+  per-token row width; neither size says what the buffer holds.**
+
+**So §189's proposed fix — bind the artifact's instruction stream at arg3 — is WITHDRAWN**, and §189's fork stays open.
+**Nothing should be bound at arg3 on either lane's say-so**, and the honest state of that argument is: *sized
+`npt × NKV×HD` for FLM, `npt × NH×HD` for the engine, role undetermined.*
+
+**And the simpler reading is the one that needs no new mechanism.** §102's original statement — *"FLM's arg3 is
+KV-width-sized, not attention-output-sized"* — is exactly what the verified arithmetic shows, and it requires **no
+instruction-BO hypothesis at all.** The instruction reading was an **added** mechanism, supported only by an
+unverifiable label; the KV-width reading is the **same arithmetic minus the label.** Occam's part here is not a
+preference, it is the difference between one measured fact and one measured fact plus an unverifiable one.
+
+**Recorded as the session's ninth proxy-as-referent instance and the fourth of its kind** (a comment as a call site; a
+directory listing as the state of the world; matching hashes as provenance; a value as an identity; now **an
+instrument's label as a buffer's role**). **The rule did not prevent it — re-reading the artifact did**, which is the
+only reason the instance count has been worth keeping: it shows the habit works when applied and the rule does not work
+when merely held.
+
+**And one housekeeping note corrected rather than echoed:** the peer's message reports
+`npu_engine_bf16_mm.h` as dirty. Checked by content, not by eye — **the tree is clean** and the file's sha256 equals
+HEAD. That note has now been stale four times, and it is the same shape as the rest of this section: a remembered state
+standing in for a measured one.
