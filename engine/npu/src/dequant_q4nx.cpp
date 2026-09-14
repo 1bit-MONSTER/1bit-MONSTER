@@ -347,14 +347,34 @@ extern "C" float* dequant_i8_4736_to_float(const uint8_t* data, int i8_rows, int
                     q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
                 }
                 float s, m;
-                if (const char* im = getenv("NPU_I8_MODE")) {
-                    int mode = atoi(im);
-                    if (mode == 1) { s = (float)scales[col] - 128.0f; m = (float)mins[col] - 128.0f; }      // centered
-                    else if (mode == 2) { s = (float)scales[col]; m = (float)mins[col]; }                  // unsigned
-                    else { s = (float)(int8_t)scales[col]; m = (float)(int8_t)mins[col]; }                 // signed
-                } else { s = (float)(int8_t)scales[col]; m = (float)(int8_t)mins[col]; }
+                int mode = 0;
+                if (const char* im = getenv("NPU_I8_MODE")) mode = atoi(im);
+                if (mode == 1) { s = (float)scales[col] - 128.0f; m = (float)mins[col] - 128.0f; }      // centered
+                else if (mode == 2) { s = (float)scales[col]; m = (float)mins[col]; }                  // unsigned
+                else { s = (float)(int8_t)scales[col]; m = (float)(int8_t)mins[col]; }                 // signed
+                float v;
+                if (mode >= 20) {           // signed-int8 formula variants
+                    float ss = (float)(int8_t)scales[col];
+                    float ms = (float)(int8_t)mins[col];
+                    if (mode == 20) v = ((float)q - 8.0f) * ss * rs + rm;          // symmetric zp=8
+                    else if (mode == 21) v = ((float)q * ss + ms) * rs;            // no rm
+                    else if (mode == 22) v = (float)q * ss * rs + rm;              // no m
+                    else v = ((float)q * ss + ms) * rs + rm;
+                } else if (mode >= 10) {           // formula variants (unsigned int8, s=byte)
+                    float su = (float)scales[col];
+                    float mu = (float)mins[col];
+                    if (mode == 10) v = ((float)q - 8.0f) * su * rs + rm;                       // symmetric zp=8, no m
+                    else if (mode == 11) v = (((float)q - 8.0f) * su + mu) * rs + rm;           // symmetric q + per-col m
+                    else if (mode == 12) v = ((float)q - mu) * su * rs + rm;                    // m as zero point
+                    else if (mode == 13) v = ((float)q - (mu - 128.0f)) * su * rs + rm;         // centered m as zp
+                    else if (mode == 14) v = ((float)q - 8.0f) * su * rs;                       // zp=8, no rm
+                    else if (mode == 15) v = ((float)q - 8.0f) * (su - 128.0f) * rs + rm;       // zp=8, centered scale
+                    else v = ((float)q * su + mu) * rs + rm;
+                } else {
+                    v = (float)q * s * rs + m * rs + rm;
+                }
                 out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
-                    (tile_col * TILE_COLS + col)] = (float)q * s * rs + m * rs + rm;
+                    (tile_col * TILE_COLS + col)] = v;
             }
         }
     }

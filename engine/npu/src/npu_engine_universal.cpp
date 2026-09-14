@@ -560,6 +560,10 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
     for(int n=0;n<NV;n++){double s=0;const float*e=&emb[(size_t)n*H];const float*h=hidden;
         #pragma omp simd reduction(+:s)
         for(int k=0;k<H;k++)s+=(double)h[k]*e[k];lg[n]=(float)s;if(lg[n]>mx)mx=lg[n];}
+    if (getenv("NPU_DUMP_LOGITS")) {
+        FILE* fl = fopen("/tmp/native_logits.txt", "wb");
+        if (fl) { for (int n = 0; n < NV && n < 4096; n++) fprintf(fl, "%d %.6g\n", n, lg[n]); fclose(fl); }
+    }
     double sum=0;
     #pragma omp parallel for reduction(+:sum)
     for(int n=0;n<NV;n++){float d=lg[n]-mx;if(d<-80)d=-80;lg[n]=expf(d);sum+=lg[n];}
@@ -2167,18 +2171,43 @@ struct Bf16Ctx {
             if (is_gdn_layer[l]) {
                 snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_alpha_proj.weight", l);
                 uint64_t o = jo_b(bn);
-                if (key_b(bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                if (key_b(bn)) {
                     gdn_alpha_w[l].resize((size_t)H * gdn_vh[l]);
-                    for (int i = 0; i < H; i++)
-                        for (int h = 0; h < gdn_vh[l]; h++)
-                            gdn_alpha_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
+                    // Qwen3.5 stores alpha/beta as I8 Q8_0 [vh, H] (3-D); Qwen3.6 as BF16 [H, vh].
+                    int ab_bpt = get_shape_dim(js, jl, bn, 2);
+                    if (ab_bpt == 8704) {
+                        int a_tiles = (gdn_vh[l] / 32) * (H / 256);
+                        int ar, ac; float* a = dequant_q8_0_to_float_ex(i8p(o), a_tiles, H, &ar, &ac);
+                        if (a && ar == gdn_vh[l]) {
+                            for (int i = 0; i < H; i++)
+                                for (int h = 0; h < gdn_vh[l]; h++)
+                                    gdn_alpha_w[l][(size_t)i * gdn_vh[l] + h] = a[(size_t)h * H + i];
+                        }
+                        free(a);
+                    } else { const uint16_t* rb = (const uint16_t*)i8p(o);
+                        for (int i = 0; i < H; i++)
+                            for (int h = 0; h < gdn_vh[l]; h++)
+                                gdn_alpha_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
+                }
                 snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_beta_proj.weight", l);
                 o = jo_b(bn);
-                if (key_b(bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
+                if (key_b(bn)) {
                     gdn_beta_w[l].resize((size_t)H * gdn_vh[l]);
-                    for (int i = 0; i < H; i++)
-                        for (int h = 0; h < gdn_vh[l]; h++)
-                            gdn_beta_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
+                    int ab_bpt = get_shape_dim(js, jl, bn, 2);
+                    if (ab_bpt == 8704) {
+                        int a_tiles = (gdn_vh[l] / 32) * (H / 256);
+                        int ar, ac; float* a = dequant_q8_0_to_float_ex(i8p(o), a_tiles, H, &ar, &ac);
+                        if (a && ar == gdn_vh[l]) {
+                            for (int i = 0; i < H; i++)
+                                for (int h = 0; h < gdn_vh[l]; h++)
+                                    gdn_beta_w[l][(size_t)i * gdn_vh[l] + h] = a[(size_t)h * H + i];
+                        }
+                        free(a);
+                    } else { const uint16_t* rb = (const uint16_t*)i8p(o);
+                        for (int i = 0; i < H; i++)
+                            for (int h = 0; h < gdn_vh[l]; h++)
+                                gdn_beta_w[l][(size_t)i * gdn_vh[l] + h] = bf16g(rb[(size_t)i * gdn_vh[l] + h]); }
+                }
                 snprintf(bn, 128, "model.layers.%d.linear_attn.ssm_conv1d.weight", l);
                 o = jo_b(bn);
                 if (key_b(bn)) { const uint16_t* rb = (const uint16_t*)i8p(o);
