@@ -10747,3 +10747,46 @@ the same shape.**
 `NKV×HD` per row, scattered across all columns rather than as a tail."* **And the map is what survives a sentinel
 collision** — a legitimate output can equal bf16 `1.0`, so `kept` is an **upper** bound on unchanged, which is precisely
 why the position form was the one to build.
+
+## 196. The engine chunks (verified in code) and the cumulative-keys hypothesis is REFUTED by its own test — 188 in all four runs
+
+§194's `rows = 256` implied the engine chunks; found in the code, and it does:
+
+```cpp
+const int npt_full = npt; const int sp0 = sp;
+for (int blk0 = 0; blk0 < npt_full; blk0 += XM) {
+    npt = (npt_full - blk0 < XM) ? (npt_full - blk0) : XM;   // chunk size
+    sp  = sp0 + blk0;                                        // cumulative start
+```
+
+so a 1024-token prompt is **four XM-token blocks**, and §194's `rows = 256` says `XM = 256` here. **That refutes §182 from the code as well as from the instrument**, and the member's *"≤256 … caller may pass pointers shifted to a later query block"* is describing exactly this loop.
+
+**Which raised the sharpest hypothesis of the session, and then refuted it.** The member defines `attn_tokens` as *"keys present in the KV BO"* — and the KV BO holds the whole prefix — while the call site passes **`npt`, the chunk size**:
+
+```cpp
+bf16mm_set_attn_tokens(npt);   // chunk size, NOT the cumulative key count
+bf16mm_set_attn_rows(npt);
+```
+
+So blocks 2–4 would attend over **only the last 256 keys**, which is **exactly the context-free signature §92 measured** (boot = f(last token) alone; first token 16 vs 220 → same 188). Tested with an env-gated `BF16MM_ATTN_CUMKEYS=1` passing `sp + npt`, on two fixtures — because §143 established a first-token sweep is what separates a context-free result from the real thing:
+
+| configuration | `ids_1024` (first = 16) | `C1024_220` (first = 220) |
+|---|---|---|
+| baseline — keys = chunk size | **188** | **188** |
+| `CUMKEYS=1` — keys = `sp + npt` | **188** | **188** |
+
+**Inert in both fixtures.** The keys convention does not move the boot, so the chunking/keys axis is **closed** and this hypothesis is withdrawn — including its appeal, which was that it explained the context-free signature (§92) rather than merely fitting a value.
+
+**And the session's headline defect is materially revised, by the peer's arithmetic on §194's own map:**
+
+```
+full  = 256 x 2560 = 655,360 words
+wrote =             524,288  = 80.0%   ->  2048 words per ROW
+kept  =             131,072  = 20.0%   ->   512 words per row
+```
+
+**§122's *"2048 of 2560 columns"* is right as a per-row count and wrong as a column map.** With `columns_touched = 2560/2560` and `untouched_tail = 0`, the missing words are **not** a 512-column tail — so the *"an nh16-width kernel writing zeros over 2048 of 2560 columns"* headline becomes **"a kernel that writes 2,048 words per row into a 2,560-word host stride, missing exactly `NKV×HD` per row, scattered across all columns."**
+
+**And `512` per row is `NKV×HD` for nkv4/hd128 uniquely** — the same `NKV×HD` unit that sizes FLM's arg3 (`npt × NKV×HD`, §189), against an engine that hands over `npt × NH×HD`. **Two divergences with the same shape**, which is what a single `NKV×HD`-sized unit being handled differently would look like — **a hypothesis, not a finding**, and one that now has two independent supports rather than one.
+
+**Caveat carried from both sides:** a legitimate output can equal bf16 `1.0`, so `kept` is an **upper** bound on unchanged; the **per-column map** is the part that survives it, which is why the position form was the one to build.

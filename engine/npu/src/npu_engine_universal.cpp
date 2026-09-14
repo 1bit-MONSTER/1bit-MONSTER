@@ -4281,7 +4281,17 @@ struct Bf16Ctx {
                 // attention returns 16 at that length as well.
                 bool attn_npu_ok = !getenv("NPU_ATTN_CPU");
                 if (attn_npu_ok) {
-                    bf16mm_set_attn_tokens(npt);
+                    // BF16MM_ATTN_CUMKEYS (default OFF, behaviour unchanged): pass the
+                    // CUMULATIVE key count (sp + npt) instead of the chunk size. The member
+                    // doc defines attn_tokens as "keys present in the KV BO" -- and this
+                    // prefill loop processes the prompt in XM-token blocks (:4503, measured
+                    // rows=256 at npt=1024 in section 194), with the KV BO holding the whole
+                    // prefix. So passing npt makes blocks 2..N attend over only the LAST XM
+                    // keys, which is exactly the context-free signature section 92 measured
+                    // (boot = f(last token) alone; first token 16 vs 220 -> same 188).
+                    // Order matters: set_attn_tokens RESETS rows to 0, so rows must follow.
+                    const int keys = getenv("BF16MM_ATTN_CUMKEYS") ? (sp + npt) : npt;
+                    bf16mm_set_attn_tokens(keys);
                     bf16mm_set_attn_rows(npt);
                     attn_npu_ok = bf16mm_attn(bA.data(), bActQ.data(), bKv.data()) != 0;
                 }
