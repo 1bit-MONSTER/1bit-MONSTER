@@ -11790,3 +11790,39 @@ either the role or the buffer's *contents* and **none varied that argument's wid
 **And the discipline this lane has earned applies to proposing it**: §173's *"the arg3 roles differ"* was restored on the
 signature evidence, and this is **one step further** — the difference is not only *which* slot but **how wide the slot the
 engine offers is**. That is a claim about a run that has not been made, and it is recorded as such.
+
+## 216. The `arg_idx` → BO mapping is NOT in the artifact — so §215's combination test cannot be specified offline, and that is an information gap rather than a missing run
+
+§215 named the untested combination (the swap **with** a KV-width `arg3`) and left one thing to establish before building it:
+**which descriptor `arg_idx` corresponds to which kernel argument.** The decoded artifact does not carry it:
+
+```
+top-level keys: commands, generator, header, n_words, name, op_histogram, patches
+header: {"cmd_count":2,"cols":1,"rows":70,…}
+fields checked and ABSENT: arg_bo, bo_index, bo_idx, arg_to_bo, buffer_id, bo_id, shim, dma
+```
+
+**The patches carry an internal `arg_idx` (0, 1, 2) and a device offset, and nothing binds those to the host-supplied BO
+arguments.** The binding is established by the **kernel's** signature and metadata — which is a property of the compiled
+kernel, not of the transaction stream the decoder reads.
+
+**So the state of that candidate is specific, and worth recording precisely:**
+
+| | status |
+|---|---|
+| the kernel's `arg0` is a **write** (S2MM) | **measured** — a property of the artifact (§212) |
+| its write is **2.00 MB**, its reads **2.00 + 4.50 MB** | **measured** (§184, §212) |
+| **which BO argument each `arg_idx` is** | **not in the artifact** — an information gap |
+| therefore the swap-plus-KV-width combination | **not specifiable offline** |
+
+**And that is a different kind of closure from every other one in this lane.** §182 was refuted by an instrument, §196 by a
+two-fixture run, §213 by its own demotion test — each was a **claim that a measurement could settle**. This one **cannot be
+settled by measuring the artifact further**, because the missing information is not in the artifact: it is in the kernel's
+argument declaration. **The honest statement is a limit of the available evidence rather than a refuted hypothesis**, and
+conflating those two has been one of this log's recurring errors (a failed instrument recorded as a negative).
+
+**What would close it, in order of cost:** the kernel's own metadata (the AIE/MLIR argument declaration, if the ELF
+carries it in a section the decoder does not read); FLM's own call site for this kernel, which its libraries would
+contain; or an empirical search over the two mappings — **and the last is the one this lane's history argues against**,
+since every perturbation so far has landed on `188` or `152432` and the search space has two destinations rather than
+many.
