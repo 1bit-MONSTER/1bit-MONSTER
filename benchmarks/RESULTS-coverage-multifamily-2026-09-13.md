@@ -11033,3 +11033,46 @@ precision, not the order of magnitude: 66,502 cannot become 3,408 under any alig
 **So both candidate families close this turn**, and what remains is their common implication — **the sequence of
 operations across layers** — resting on **four measurements rather than a framing**: artifact content inert; argument
 positions load-bearing but insufficient; scalars, keys, region and volume all inert; structure baked into the ELF.
+
+## 201. The nh20 kernel's OWN arguments are (5 MB, 5 MB, 64 MB) — §102's "arg3 = 1 MB" was attributed to the wrong run, and the engine's binding matches FLM's exactly
+
+The manifest line for the kernel is unambiguous, and the `SETARG` lines that **follow it** are its own arguments:
+
+```
+ELF 0011: size=177728 -> …/elf_0011_177728.bin
+SETARG3 … idx=0 val=0x3
+SETARG3 … idx=1 val=0x0
+SETARG3 … idx=2 val=0x0
+SETARG  … idx=3 size=5242880   bo=…       <-  5 MB
+SETARG  … idx=4 size=5242880   bo=…       <-  5 MB
+SETARG  … idx=5 size=67108864  bo=…       <- 64 MB
+```
+
+**So the kernel this engine emulates was launched with `(5 MB, 5 MB, 64 MB)` — not `(1 MB, 5 MB, 30 MB)`.** And the
+reason the earlier attribution went wrong is visible in the same file: **it contains two `RUN 001` lines**, at 894 and
+906, with different argument lists (`3:5242880 …` and `3:1048576 …`). §102 quoted the second one; **the 1 MB `arg3` belongs
+to other kernels** (`elf_0008`, `elf_0009`, `elf_0010`), whose own `SETARG`s carry it.
+
+**Which closes the argument-role question in the engine's favour, and closes it on evidence rather than on the absence of
+contrary evidence:**
+
+| arg | FLM (`elf_0011`, the emulated kernel) | engine | |
+|---|---|---|---|
+| 3 | **5,242,880** (5 MB) | 5,242,880 (5 MB) | **match** |
+| 4 | **5,242,880** (5 MB) | 5,242,880 (5 MB) | **match** |
+| 5 | **67,108,864** (64 MB) | 16,777,216 (16 MB) | differs |
+
+**`arg3` at 5 MB is `npt × NH×HD` — the attention-I/O width — and the engine hands over exactly that.** So §173's
+*"arg3 is NKV×HD-sized in FLM and NH×HD-sized here, so the roles differ"* rested on the **misattributed quote**, and it is
+**withdrawn**; the `npt × NKV×HD` reading (which §191 had already preferred on Occam grounds) is now what the numbers say
+for the kernels that actually carry it.
+
+**And the one real difference does not fix anything.** `arg5` is the exception: FLM 64 MB against the engine's 16 MB —
+and **64 MB was tested**: `NPU_ATTN_KV_REGION=8388608` gives **152432**, while the engine's own 16 MB default gives
+**188** (§183). **So matching FLM's own size moves the boot off the one value that is closest to working**, which is the
+opposite of what a size mismatch predicts — and it is the sixth parameter axis to behave that way.
+
+**Recorded with the caveat that keeps it honest:** these are the arguments **as logged for that launch**, and the capture
+contains **two runs** with independent `RUN` numbering, so any earlier quotation of "RUN 001" from this file should name
+**which** of the two. That ambiguity is the whole reason this attribution error was possible — the same class as §199's
+launch counts, one level down: **a run identifier is not unique in this file.**
