@@ -9195,3 +9195,31 @@ of them carries.* But the same sentence applies one level down: **the coverage n
 and this session has retracted four instrument readings.** So "a kernel covering 16 heads' worth" is a **reading to
 re-establish**, not a fact to build the next hypothesis on — and `qout = NH×HD = 2560` versus a putative 2048 is
 exactly the kind of claim that should be measured at the call, not inferred from the artifact.
+
+## 170. Measured: the generated nh20 ELF costs ~6% more, not ~1200× — and §169's refinement was itself a quantifier error, committed by me
+
+§169 applied the engine's recorded *"~1200× slower"* to the generated **nh20** artifact. Measured instead — same fixture,
+same flags, ELF slot swapped and restored (`afb80dda…`, 177728 B verified):
+
+| ELF in the @1024 nh20 slot | boot | prefill |
+|---|---|---|
+| **shipped** capture (177728 B) | 188 | **701 ms** |
+| **generated** (340784 B, `gen_attn_chunk_nb`, L=[0,1024)) | 188 | **743 ms** |
+
+**~6% slower, not three orders of magnitude.** The record's `223050 ms` figure was measured on the **nh16** generated
+ELF (`gen(0,1024)` for the Qwen3 path) — **a different shape** — and §169 carried it across.
+
+**Which makes §169's own refinement an instance of the class §159 named: a true number applied to the wrong set.** The
+record was right about nh16; it is not evidence about nh20; and I used it as if it were. **Third occurrence of that
+class in this session, and the second by me** (§149's token-16 was the other) — which is a useful rate to know: it is
+the error that keeps being made *by people who are looking for it*.
+
+**So §167 stands unqualified, and more strongly than I stated it:** at nh20, varying the stream changes **neither the
+boot (188 both) nor the cost (701 vs 743 ms)**. The attention artifact is not the discriminator on either axis.
+
+**And §169's provenance half is unaffected and holds:** the shipped `attn_mha_1024_nh16.elf` **is** the capture
+(sha256 `d1273e32…` = `attn_cap1024.elf`), the build directory's file of that name is the generated one, and "generated
+vs shipped" is a comparison that must name its directory. Only the inference drawn from the 1200× record is withdrawn.
+
+**What this leaves, stated once more and now measured on both axes:** the nh20 defect is **not** in the attention
+artifact — it is in the **invocation** (BO geometry, §102's captured FLM profile, or the caller's `qout`).
