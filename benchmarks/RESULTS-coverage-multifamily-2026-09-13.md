@@ -10369,3 +10369,25 @@ arg3.
 **And if it was instructions, the fix has a shape §175 already half-verified:** the swap moved the boot because it
 changed what occupies that slot — **right in direction, wrong in kind** — and the engine's `attn_out` at arg3 would need
 to become the artifact's instruction stream, with `instr`/`ninstr` staying `0` because the stream travels as a **BO**.
+
+## 190. The fingerprint test could not run — the instrument cannot read the dump — so the ordering question stays open, and the garbage is recorded as an instrument limit rather than a result
+
+§189 left one fork open: whether the kernel we emulate was handed **instructions** or a **5 MB attention buffer** at arg3,
+undecidable from the manifest's ordering. The obvious offline resolution was to **fingerprint the 1 MB instruction dump**
+— `insts_0000_1048576.bin`, 262,144 words — against the attention stream's signature (512 descriptors at `D1 = 1280`,
+sums 2.00/2.00/4.50 MB): if it matched, the 1 MB BO is the attention instruction stream and §189's fork closes toward
+*instructions*.
+
+**It did not run.** `decode_txn --decode-only` on the dump returns **nonsense** — argument indices like `1067859979`,
+four lines, every stride zero — because the tool expects an **ELF or a `.txn`**, and the dump is **raw words**.
+
+**So the test is uninformative in both directions, and it is recorded as an instrument limit rather than a negative.**
+This matters because of the session's own rule: **a failed instrument and a refuted hypothesis produce the same shape of
+output, and only one of them is a result.** §181 drew the same distinction for `AZERO` (a sound probe, a wrong
+hypothesis); here it is the reverse — a sound hypothesis and a probe that cannot see its subject — and the honest
+statement is that **nothing about the dump's content has been measured**.
+
+**What would make it runnable, and it is a small piece of work rather than a device run:** the dump is 262,144
+little-endian words; the attention ELF's own instruction stream is already decoded into `/tmp/dec_nh20/*.json` as raw
+words. **Comparing the two word sequences directly** — not through the descriptor decoder — answers the same question
+without needing the dump to be in ELF form. That is the offline step §189's fork still needs.
