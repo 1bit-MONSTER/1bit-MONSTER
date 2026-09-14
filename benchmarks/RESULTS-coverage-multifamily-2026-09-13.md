@@ -13905,3 +13905,44 @@ supplies the reason: **a one-hour store against a multi-hour absence is not a de
 
 **And the operational form**: with peers offline, **do not re-send — record.** Eight notices produced one useful fact (this
 one) and no useful deliveries; every technical item they carried is in this log, in the scorecard, or in a commit.
+
+## 930. §915's dequant hypothesis is REFUTED by the code's own arithmetic — the `[dequant]` line is a notice of CORRECT adaptation, not an anomaly
+
+**§915 ended with *"the one anomaly the engine itself reports is in the dequant"* and named `row_bytes/20` as the prime
+suspect. Reading the dequant refutes it, and the refutation is the code's own comment:**
+
+```c
+// Geometry-aware variant: cols_per_tile comes from the BUNDLE's row width (row_bytes/20). 5120 B
+// rows give 256, Gemma3-1B's 1280 B rows give 64 -- and the quantizer only writes tiles that
+// divide K, so with the right width both the column AND row counts divide evenly (1152/64 = 18,
+// 576/18 = 32). cols_per_tile <= 0 falls back to the 256 constant.
+```
+
+**It names the model.** And the divisibility it cites is not a plausible story but a check that can be re-run:
+
+| K | value | K/64 |
+|---|---|---|
+| hidden | 1152 | **18.00 exact** |
+| intermediate | 6912 | **108.00 exact** |
+| q = NH·HD | 1024 | **16.00 exact** |
+| QKV N | 1536 | **24.00 exact** |
+| one more | 2560 | **40.00 exact** |
+
+**So `cols_per_tile = 64` is the *intended* width for this model, derived from the bundle and verified against every K.**
+
+**Which reclassifies the line I called an anomaly:**
+
+```
+[dequant] unaligned dims H=1152 IM=6912 NH*HD=1024 -- tile width taken from
+          the bundle's row size (row_bytes/20), not the 256 constant.
+```
+
+**That is a NOTICE OF CORRECT ADAPTATION, not a defect report.** It fires when the geometry variant takes the non-256 path —
+**the right path for Gemma3-1B.** I read a diagnostic that says *"this model needs the general path"* as *"this model hit a
+problem"*. **Same shape as the log-tail read, the comment read, and the empty parse: a message read as its referent.**
+
+**So the dequant is RULED OUT, and by evidence rather than by elimination from a bisection.** The zeros remain unexplained,
+and the remaining candidates are the ones upstream of the dequant or downstream of attention: **Gemma3's embedding scale**
+(Gemma multiplies token embeddings by `sqrt(hidden_size)`; a grep of the engine for such a step finds only the norm
+normalizers, which is a **candidate** and not a finding), the **`lm_head`/vocab** path, and the tokenizer's id mapping.
+**Recorded with the dequant struck off and the next two named.**
