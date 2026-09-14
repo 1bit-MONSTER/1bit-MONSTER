@@ -13832,3 +13832,41 @@ is not, the weights are misread and every downstream token is noise — which is
 the dequant against the bundle's own layout), rather than hunting in the attention path or the layer geometry, both of which
 are now ruled out. **What is established**: Gemma3-1B executes end to end, its output is degenerate, the degeneracy is
 **attention-independent**, and the one anomaly the engine itself reports is in the **dequant**.
+
+## 920. The dead-variable hazard was fixed by the OTHER LANE, at the shell level — and the engine-level guard its comment cites is NOT in this worktree
+
+**§890 and §895 treated the hazard as live and my script-level pin as the fix. Both are superseded, and the peer lane got
+there first with a better fix.**
+
+**What is real and present** (`~/.bashrc` 22:14, `~/.profile` 22:19):
+
+```sh
+# 2026-09-14: the NPU_XCLBIN_DIR export that lived here pointed at
+# /home/bcloud/1bit-MONSTER-pi/engine/npu/xclbins — a clone that no longer exists. …
+# Removed rather than repointed: unset lets each checkout resolve its own tree
+# (override -> ./engine/npu/xclbins -> installed layout), which a hardcoded path
+# here cannot do for worktrees.
+if [ -n "${NPU_XCLBIN_DIR:-}" ] && [ ! -d "$NPU_XCLBIN_DIR" ]; then
+    unset NPU_XCLBIN_DIR
+fi
+```
+
+**Three things about it are better than my fix.** It **removes** the export rather than repointing it, for the reason given —
+a hardcoded path cannot serve worktrees. The guard is **self-healing**: a shell started from an already-poisoned parent drops
+the stale value while a real override survives. And it is in **both** `.bashrc` and `.profile`, **because `.bashrc`
+early-returns for non-interactive shells** — a subtlety my script-level pin would never have covered. **A fresh login shell
+and an interactive shell both report `NPU_XCLBIN_DIR` unset.**
+
+**And one claim in that comment is not verifiable here.** It says *"engine/npu/src/npu_paths.h now rejects an override that is
+not a directory (#2350)."* **In this worktree `npu_paths.h` has no directory check** — it reads `getenv("NPU_XCLBIN_DIR")` and
+uses the value (`:52`), its last commit is the rebrand, and a grep for `S_ISDIR` finds guards for the **model** dir
+(`npu_engine_universal.cpp:4040`, `npu_runlist_bridge.cpp:181`) but **not for the xclbin override**. So either that change
+lives on another branch, or the comment describes an intent rather than a landed state. **Recorded as unverified in this
+tree, not as absent everywhere** — the distinction the lane keeps needing.
+
+**What remains true here**: my **running** shell still carries the dead path, because a process keeps the environment it
+started with, and `benchmarks/gate-check.sh`'s pin is what protects runs through it. **New shells are clean; long-lived ones
+are not**, which is worth knowing for any agent whose tooling shell predates 22:14.
+
+**And no re-send was needed for the rest**: seven copies of the technical content expired, but every item is in this repo and
+in the scorecard's §0, so **the mesh was never the channel of record.**
