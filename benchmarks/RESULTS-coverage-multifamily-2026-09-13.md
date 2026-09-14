@@ -9520,7 +9520,7 @@ found alone**, which is the strongest available argument for the arrangement its
 and the repo now holds **two** that disagree with their own files, **with the file right in both cases.** One cost a
 correction (§160/§164); one cost a review. **The defence is opening the line the comment is attached to.**
 
-## 175. The argument swap MOVES the boot — so the kernel distinguishes arg3 from arg4, and the engine's role map is load-bearing; but neither pairing gives FLM's answer
+## 176. The argument swap MOVES the boot — so the kernel distinguishes arg3 from arg4, and the engine's role map is load-bearing; but neither pairing gives FLM's answer
 
 §174's runnable test: swap argument **positions 3 and 4** for the nh20 attention call, every buffer left exactly as
 allocated, engine still writing Q into `attn_act` (:359) and still reading its answer from `attn_out` (:405).
@@ -9555,3 +9555,32 @@ throughput artefact of the arrangement.
 **call site is** (§173), and within the call site the **argument assignment is load-bearing** (§175) while **not being
 sufficient**. That is a strictly smaller space than the one this thread started from, and every step of it was a
 measurement rather than an argument.
+
+## 550. The swap MOVES the boot — the role map is load-bearing — and the data flow says why shrinking arg3 could never have tested it
+
+**Three things now agree, from three directions, and the first two are independent.**
+
+**1. The divergence is real and positional.** FLM's arg3 is **512/token = NKV×HD**; the engine's arg3 is
+**2560/token = NH×HD**; arg4 matches; **no engine argument is sized like FLM's arg3 at all.**
+
+**2. The engine's data flow makes the role testable only by swapping.** `attn_out` is genuinely the output:
+`sync_from_device()` (412), a read (414), and **`memcpy(out, attn_out->data(), (size_t)rows * q * 2)`** (421). **So its
+size must stay `rows × q`** — **shrinking arg3 would break the read-back**, and `BF16MM_ATTN_SWAP_IO`, which exchanges
+**only the argument positions** *"leaving every buffer exactly as allocated"*, is the only form that varies the role
+while preserving the data flow.
+
+**3. And the swap was run — it MOVES the boot.** So **the kernel does distinguish arg3 from arg4**, and **the engine's
+role map is load-bearing** rather than allocation slack. **That kills the "a size is not a role" reading in the only way
+it could be killed: by varying the role and changing the answer.**
+
+**But neither pairing gives FLM's answer** — which is the most informative outcome a one-line test can have. It says:
+
+- the **role hypothesis is alive** (something moved), and
+- the **divergence is not purely positional** (nothing matched), so
+- **at least one more argument differs — and arg5 is the candidate**: FLM **30 MB** (region **3932160**), engine **16 MB**
+  (region **2097152**), and the engine's *default* region is a **third** value (**4194304**).
+
+**Which makes the next step a two-factor question rather than a one-factor one** — the **pairing × region** matrix, or
+the region knob alone as the cheap half of it. **And the meta-point is worth keeping: this is the first candidate found
+by reading the INVOCATION rather than the artifact, it survived its own first test by moving something, and it failed to
+be sufficient — which is exactly what a good one-line test is supposed to produce.**
