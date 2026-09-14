@@ -12035,7 +12035,7 @@ whether a **256-row caller** and a **512-row capture** drive it identically is *
 no perturbation has covered** (§196 varied the *key count* and was inert), with the standing caveat that **`XM` also sizes
 the GEMM staging**, so it is not a one-line perturbation.
 
-## 220. The "1024 = nh16 half-width" step is refuted by §214's own datum — nh32 produces 1024 too — and the "internal contradiction" compares a COUNT with a STRIDE
+## 680. The "1024 = nh16 half-width" step is refuted by §214's own datum — nh32 produces 1024 too — and the "internal contradiction" compares a COUNT with a STRIDE
 
 The synthesis is attractive and its **measured** half stands: the partition **1024 NaN + 1024 written + 512 untouched = 2560 = q** is exact, and the kernel **does** produce 1024 words per row. But the interpretive step does not survive the
 lane's own demotion test:
@@ -12064,3 +12064,37 @@ stride expects** — stated as a **count against a count**, which is the compari
 **And one open question is worth naming rather than resolving by pattern:** **why 1024?** It is `8×128`, and it is what
 **both nh20 and nh32** produce while nh16 produces 512. **No formula in this lane's notes fits all three**, and inventing
 one now would be the same move that produced the last two demotions.
+
+## 685. `npt = 1024` pinned by the SIZE CENSUS — and the census also hands over the prologue
+
+**The peer pinned `npt` by arithmetic, and the stronger form is the complete census of every `idx=3/4/5` size anywhere in
+the manifest** — because *"neither 1,310,720 nor 2,621,440 appears"* is a claim about a **set**, and only the set can
+support it:
+
+| idx | sizes present (with counts) |
+|---|---|
+| **3** | 1,048,576 ×161 · **5,242,880 ×128** · 22,020,096 ×64 · 31,457,280 ×32 · 55,574,528 ×96 |
+| **4** | **5,242,880 ×224** · 22,020,096 ×32 · 61,865,984 ×224 · **266,338,304 ×1** |
+| **5** | 1,048,576 ×97 · 31,457,280 ×128 · 55,574,528 ×96 · **67,108,864 ×32** |
+
+**`arg4 = 5,242,880 = 1024 × 20 × 128 × 2` ✓ and `arg3 = 1,048,576 = 1024 × 4 × 128 × 2` ✓.** And **`npt = 256` would need
+`arg4 = 1,310,720` and `npt = 512` would need `2,621,440` — neither occurs even once.** So **the capture is a 1024-token
+capture**: not one 256-block per layer, not two 512-blocks.
+
+**And the census hands over the prologue for free**: `idx=4 size = 266,338,304 ×**1**` — **the only ×1 in the entire
+table**, which is the `+1` in `8 × 32 + 1 = 257`.
+
+**So the chunking difference is now concrete:** the capture's own call is sized for **1024 tokens**, and **the engine never
+makes a call that size** — it makes **four 256-row calls** — while the ELF both drive is a **4× unroll of 256-row blocks**
+(§197). **And `npt = 1024` makes the chunk-size test checkable *in advance*: a 1024-row call must present `arg4 =
+5,242,880`, so the ARM is verifiable before its output is interpreted** — the rule this lane learned the hard way.
+
+**And the block-interior attribution (§676) survives the numbering problem, for a reason worth stating**: it reads
+**`SETARG` lines**, not the cumulative `RUN` line — so it is immune to **both** defects that have bitten this lane (the
+cumulative line, §102/§665; the duplicate numbering, §199). A block is one kernel: `ELF nnnn` → `EXTKERNEL` → `RUN_CTOR`
+→ three `SETARG3` → three `SETARG`. Its `idx=3/4/5` sizes **are that kernel's** — a single value, not a choice.
+
+**And §173 is best recorded scoped rather than open or withdrawn** — a third state: its observation is about a
+**signature**, and it is **right about that signature** (`arg3 = npt × NKV×HD` does describe the kernels carrying 1 MB),
+but those kernels are `elf_0009`/`elf_0010` (13,760 B), **not `elf_0011` (177,728 B)**. **The observation is confirmed and
+its subject is corrected.**
