@@ -57,8 +57,32 @@ best-effort, but Ubuntu noble's package is XRT **2.13** and ships the old
 `npu: XRT NOT found — skipping NPU engine build`, then
 `::warning::no npu_engine_universal in build/`, and the package ships CPU/GPU-only.
 
-Build one yourself on a machine with a real XRT — `install.sh` does it when the
-target exists, and the staged tree is then found without any environment variable.
+**So packages ship a vendored prebuilt instead.** `packaging/prebuilt/` holds the
+worker and the OpenMP runtime it links against, with a manifest recording the
+source commit, toolchain, build command, sizes and sha256s
+(`Testing/npu_worker_bundle_selfcheck.py` fails if the files and manifest drift).
+Packaging prefers a worker this machine built and falls back to the vendored pair,
+verifying the manifest sha before it goes in.
+
+The pair goes in **together**, because the worker's RUNPATH is
+`$ORIGIN:$ORIGIN/../lib/1bit` — it resolves `libomp.so` from beside itself rather
+than from the Python-version-pinned venv directory the SDK links against. That one
+RUNPATH covers every layout:
+
+| Layout | worker | libomp.so |
+|---|---|---|
+| tarball | `bin/npu_engine_universal` | `lib/1bit/libomp.so` |
+| `.deb` | `usr/bin/npu_engine_universal` | `usr/lib/1bit/libomp.so` |
+| `make stage` / `.rpm` / AppImage | `usr/lib/1bit/npu_engine_universal` (+ `usr/bin/1bit-npu` symlink) | `usr/lib/1bit/libomp.so` |
+
+XRT stays a **system** dependency (`/opt/xilinx/xrt`, `libxrt_coreutil.so.2` +
+`libxrt_core.so.2`) — any NPU host has it, and it is also what a source build needs.
+
+To regenerate the prebuilt: build on a host with real XRT
+(`cmake --build build --target npu_engine_universal`), copy the binary and the SDK's
+`libomp.so` into `packaging/prebuilt/`, and update the manifest's shas and
+`built_from_commit`. `install.sh` builds the worker when the target exists, so a
+source install needs none of this.
 
 Where it goes, and how it is found (see `include/npu_worker_path.h`):
 

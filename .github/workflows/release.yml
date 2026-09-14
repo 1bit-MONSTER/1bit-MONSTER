@@ -139,11 +139,29 @@ jobs:
           for cand in build/engine/npu/npu_engine_universal build/npu_engine_universal; do
             if [ -f "$cand" ]; then npu_worker="$cand"; break; fi
           done
+          # No XRT on this runner, so the build normally cannot produce one: fall
+          # back to the vendored prebuilt, verifying it against the manifest. This
+          # is what keeps the packages from being CPU/GPU-only (issue #2360).
+          if [ -z "$npu_worker" ] && [ -f packaging/prebuilt/npu_engine_universal ]; then
+            want="$(python3 -c 'import json;print(json.load(open("packaging/prebuilt/manifest.json"))["files"]["npu_engine_universal"]["sha256"])')"
+            got="$(sha256sum packaging/prebuilt/npu_engine_universal | cut -d' ' -f1)"
+            if [ "$want" != "$got" ]; then
+              echo "::error::vendored NPU worker sha256 mismatch (manifest $want != file $got)"
+              exit 1
+            fi
+            npu_worker=packaging/prebuilt/npu_engine_universal
+            echo "npu worker: vendored prebuilt (this build had no XRT)"
+          fi
           if [ -n "$npu_worker" ]; then
             cp "$npu_worker" dist/bin/npu_engine_universal
-            echo "packaged: bin/npu_engine_universal (from $npu_worker)"
+            # The worker's RUNPATH is $ORIGIN:$ORIGIN/../lib/1bit, so the bundled
+            # OpenMP runtime must sit at lib/1bit/libomp.so in the flat layout
+            # (usr/bin + usr/lib/1bit once unpacked) — see packaging/README.md.
+            mkdir -p dist/lib/1bit
+            cp packaging/prebuilt/libomp.so dist/lib/1bit/libomp.so
+            echo "packaged: bin/npu_engine_universal (from $npu_worker) + lib/1bit/libomp.so"
           else
-            echo "::warning::no npu_engine_universal in build/ — this release ships without the NPU worker"
+            echo "::warning::no npu_engine_universal — this release ships without the NPU worker"
           fi
           # Shared HIP kernel library
           cp build/librocm_cpp.so dist/lib/
@@ -173,10 +191,13 @@ jobs:
           rm -rf deb-build
           cp -r packaging/deb deb-build
 
-          mkdir -p deb-build/usr/bin deb-build/usr/lib/1bit-monster deb-build/etc/ld.so.conf.d
+          mkdir -p deb-build/usr/bin deb-build/usr/lib/1bit-monster deb-build/usr/lib/1bit deb-build/etc/ld.so.conf.d
           cp dist/bin/* deb-build/usr/bin/
-          cp dist/lib/* deb-build/usr/lib/1bit-monster/
-          echo "/usr/lib/1bit-monster" > deb-build/etc/ld.so.conf.d/1bit-monster.conf
+          cp -r dist/lib/* deb-build/usr/lib/1bit-monster/
+          # dist/lib/1bit holds the NPU worker's bundled libomp.so; the worker's
+          # RUNPATH looks in $ORIGIN/../lib/1bit, i.e. /usr/lib/1bit here.
+          cp -r dist/lib/1bit/. deb-build/usr/lib/1bit/ 2>/dev/null || true
+          printf '/usr/lib/1bit-monster\n/usr/lib/1bit\n' > deb-build/etc/ld.so.conf.d/1bit-monster.conf
 
           chmod 755 deb-build/DEBIAN/postinst
           dpkg-deb --build --root-owner-group deb-build "1bit-monster_${VERSION}_amd64.deb"
@@ -192,7 +213,7 @@ jobs:
           cp -r packaging/appimage/AppDir appimage-build
           mkdir -p appimage-build/usr/bin appimage-build/usr/lib
           cp dist/bin/* appimage-build/usr/bin/
-          cp dist/lib/* appimage-build/usr/lib/
+          cp -r dist/lib/* appimage-build/usr/lib/
           chmod +x appimage-build/AppRun
 
           # appimagetool needs FUSE, unavailable in most CI containers —

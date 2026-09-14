@@ -73,6 +73,10 @@ __pycache__/
 *.safetensors
 *.f32bin
 *.so
+# …except the NPU worker's bundled OpenMP runtime, which packaging ships next
+# to the binary (its RUNPATH is $ORIGIN:$ORIGIN/../lib/1bit). Without this the
+# file is silently left out of the commit and the packages lose the NPU lane.
+!packaging/prebuilt/libomp.so
 *.swo
 *.swp
 Thumbs.db
