@@ -68,6 +68,19 @@ sync_file packaging/deb/DEBIAN/postinst \
   "s/v[0-9]{4}\.[0-9]{2}\.[0-9]{2}[A-Za-z0-9.-]*/v${VERSION}/" \
   "v${VERSION}"
 
+# Version strings compiled into the binary — what `1bit --version` and the chat
+# banner print. A drift here ships an artifact that misreports itself, and
+# nothing else can see it: tools/onebit.cpp had sat at 2026.07.22 while VERSION
+# and every package said 2026.08.04, because this script did not know about
+# either file and a compiled constant is invisible to every other check.
+sync_file tools/onebit.cpp \
+  "s/(kVersion = \")[^\"]*(\")/\1${VERSION}\2/" \
+  "kVersion = \"${VERSION}\""
+
+sync_file src/onebit_c.cpp \
+  "s/(kOneBitVersion = \")[^\"]*(\")/\1${VERSION}\2/" \
+  "kOneBitVersion = \"${VERSION}\""
+
 if [ "$MODE" = "--check" ] && [ "$fail" -ne 0 ]; then
   echo "Run scripts/sync-version.sh to fix." >&2
   exit 1
