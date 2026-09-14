@@ -11233,7 +11233,7 @@ matter because the kernel is producing the NaN itself.**
 | written, non-NaN | 1024 | — |
 | **untouched (still `1.0`)** | **512** | **`NKV×HD`** (nkv4 × hd128) |
 
-**1512 = 1024 + 512.** And that **independently confirms §196's per-row shortfall from a different instrument**: the
+**1024 + 1024 + 512 = 2560 = q, exactly** — the three per-row classes partition the output width with no remainder. And that **independently confirms §196's per-row shortfall from a different instrument**: the
 missing 512/row is the untouched 512/row, and it is `NKV×HD` — the same unit that sizes FLM's `arg3` for the kernels
 that carry it. **Two instruments, one unit, three sections apart.**
 
@@ -11277,8 +11277,14 @@ is FLM's per-layer attention, so **the engine emulated the wrong artifact for th
 | 31 | a multi-set |
 | 2 | singletons |
 
-**So the kernel this engine ships was launched 64 times, not once — and 64 = 16 layers × 4 blocks of 256**, i.e. **once
-per layer per chunk of a 1024-token prefill**, which is **exactly the role the engine gives it.**
+**So the kernel this engine ships was launched 64 times, not once — and 64 = 32 layers × 2 blocks.** Nanbeige's
+`num_hidden_layers` is **32**, so the capture's grid is **two blocks per layer**, i.e. **once per layer per block** —
+which is exactly the role the engine gives it. **My own first parenthetical said "16 layers × 4 blocks"; the layer count
+came from the config and corrected it, and the fix is recorded rather than quietly edited.**
+
+**And the block size is a small new difference worth noting**: 1024 tokens over **two** blocks means the capture ran
+**512-token blocks**, while the engine's `XM` is **256** and it makes **four** calls per layer. **Same kernel, same role,
+different chunking** — which the ELF tolerates, since the caller shifts pointers and the geometry is baked.
 
 **Which refutes the "material" reading and supports the "benign" one**: the engine has **not** emulated the wrong
 artifact for the role — the signature it loads ran **64 times** in the capture, at the frequency the engine calls it.
