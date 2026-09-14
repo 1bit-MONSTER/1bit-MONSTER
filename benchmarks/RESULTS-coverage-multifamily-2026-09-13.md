@@ -9128,3 +9128,42 @@ carries **no `nh`**, so the query-head count is the **caller's** loop, and **a s
 the kernel it drives has the wrong width** — *"precisely the measured defect: a structurally fine ELF producing 2048 of
 2560 columns with nothing in the artifact saying so."* Which is why **every check either lane ran on the artifact came
 back clean: every check was a check on the stream, and the stream was never the thing that was wrong.**
+
+## 169. The provenance question is CLOSED — and the answer carries a record I had read past: the generated [0,1024) ELF was already tried and rejected as wrong *and* ~1200× slower
+
+§162 left an open question: the shipped `attn_mha_1024_nh16.elf` is 98848 B while the file of that name in the build
+directory is 372512 B. **Answered, and verified here:**
+
+```
+d1273e3240034988f05bca4a  ~/npu-build/mha/attn_cap1024.elf          (98848 B, 23:58)
+d1273e3240034988f05bca4a  engine/npu/xclbins/attn_mha_1024_nh16.elf (98848 B, 23:59)   <- byte-identical
+6ece6c3301f4d1df8f1e3bfd  ~/npu-build/mha/attn_mha_1024_nh16.elf    (372512 B, 21:36)  <- the GENERATED one
+```
+
+**The shipped file is byte-identical to the capture**, and the record names both: `FK3-STATUS-2026-09-12.md:967`
+(*"L=[0,1024) txn_words=88840 elf_bytes=372512"*) and `:1005` (*"generated long-context attention ELF
+(`attn_mha_1024_nh16.elf`, 372512 B, made by `gen_attn_chunk`)"*), while `npu_engine_bf16_mm.h:318` cites the 98848 B
+one as *"captured from FLM's REAL 1024-token prefill"*. **Same name, two artifacts, and the shipped one is the
+capture** — so §162's discrepancy is **not a defect**, and "generated vs shipped" is not a comparison to run without
+saying which directory is meant.
+
+**And the resolution surfaced a record I had already read past without using.** Three lines below that citation, the
+engine says:
+
+> *"The previously-used generated gen(0,1024) ELF was both **wrong** and **~1200× slower (223050 ms)** and has been
+> replaced in the xclbin dir."*
+
+**That qualifies §167, and the qualification matters.** §167 swapped in a generated nh20 ELF, found the boot unchanged
+at 188, and concluded *"the stream is not the discriminator"*. **The boot result stands — but that run measured the
+boot and not the time**, and the record says the generated route is **three orders of magnitude slower**. So the
+correct form is narrower than §167 stated:
+
+- **correctness at @1024:** varying the stream did not change the boot — consistent with *both* streams being wrong,
+  and consistent with the record's "wrong";
+- **cost:** untested by §167, and the record says the generated route is ~1200× slower — which, for a goal measured in
+  **prefill tok/s**, is the decisive number rather than the boot token.
+
+**So §167 is refined, not retracted: the generated-ELF swap does not settle the defect, and it was never a candidate
+for the fix on cost grounds — which the engine had already written down.** The invariant that would have caught this
+earlier is the one this session keeps re-learning: **read the whole comment the citation sits in, not the line that
+matched the grep.**
