@@ -10634,7 +10634,7 @@ across the full width (§122 refined), and the artifact is genuine (§167/§170,
 generated has now been measured rather than argued — and the single-call surface is empty**, which is the peer's
 conclusion reached from the other side.
 
-## 195. The stream's geometry is TWO fields, verified on THREE genuine captures — and the row error is the same class one level over: two different artifacts stated as one row
+## 611. The stream's geometry is TWO fields, verified on THREE genuine captures — and the row error is the same class one level over: two different artifacts stated as one row
 
 Decoding all three **shipped captures** side by side resolves the row that did not match and confirms the formula on a
 third head count:
@@ -10662,3 +10662,42 @@ both stride fields; the generated `.txn` carries `arg2 stride = 1`. **A table mi
 **filename** is; §167/§170 stand (two artifacts differing in content and provenance give the same wrong answer); §183's
 address diff is uninformative; and **the open question is the arg role, with arg3 sized `npt × NKV×HD` — a KV row
 width, not an instruction stream.**
+
+## 620. The arg2 offsets match the `H=2560` region EXACTLY — the engine's own documented value for Nanbeige, and the one never tried
+
+**Their byte-level check confirms my float reading** (`0x4125c05b …` → 10.3595, 2.8165, −3.8321, −8.3597, 0.8135,
+−6.3203; range −37.31…53.56; first four bytes `5bc02541`, **not `\x7fELF`, not a stream**). So `INSTS_DUMP` is a
+misnomer, **arg3 is not an instruction stream**, the ordering reading holds, and **the engine's `out=arg3, in=arg4` is not
+contradicted by the artifact it emulates.** §175's *"right in direction, wrong in kind"* is **withdrawn** with the
+instruction reading; its narrow form — *the slots are distinguishable* — survives.
+
+**And my absolute-address hypothesis dies on the `min = 0` row.** Every argument's `arg_offset` starts at **0**, so they
+are **relative to each argument's own buffer**, not absolute addresses — so *"the ELF bakes FLM's addresses so XRT's
+placement sends the kernel to the wrong memory"* is **dead before it cost a run.** It is also why §184's *"48 MB into a
+16 MB buffer"* was the wrong framing: **48 MB is an offset range**, and sizing past it changed nothing — exactly what
+their KV_PT sweep found.
+
+**And I checked what that range actually is:**
+
+```
+arg2 max arg_offset                   50,331,904 B   = 48.000 MiB
+4 x 6,291,456 elements x 2 B        =  50,331,648 B   = 48.0 MiB
+difference                                    256 B   (one descriptor header)
+```
+
+**The stream's arg2 layout is exactly `attn_kv_region = 6,291,456`, four regions, bf16 — and the engine's own comment
+names that value for `H = 2560`:**
+
+> *"8MB=4194304 (H<=2048), **12MB=6291456 (H=2560)**, 24MB=12582912 (H=4096)"*
+
+**Nanbeige is H = 2560.** The region values actually run by either lane are **2,097,152**, **3,932,160** and
+**4,194,304** — **6,291,456 was never tried.** A concrete parameter, derived **offline**, named by the engine's own
+documentation **for this exact model's hidden size**, and untested: **one run with an existing knob.**
+
+**And it explains §184's puzzle rather than adding to it**: *"the stream addresses 48 MB"* **is exactly the `H = 2560` BO
+size**, not an overshoot — which is why *"sizing past it changed nothing"* is consistent rather than surprising.
+
+**Caveat, plainly**: the region sets **both** the BO size **and** the stride, and the tested values are **not monotone**
+(3,932,160 → 152432; 4,194,304 → 188), so the default happened to work and `6,291,456` is genuinely unknown. **The
+arithmetic predicts the SIZE; it does not predict that the stride is the operative field** — the same role-versus-size
+distinction this thread has been making throughout.
