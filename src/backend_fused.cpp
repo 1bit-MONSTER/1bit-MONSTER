@@ -11,6 +11,7 @@
 #include "backend_fused_npu.h"
 #include "vulkan_rt.h"
 #include "../engine/npu/src/onebp_loader.cpp"
+#include "../engine/npu/src/npu_paths.h"
 #include "../engine/fusion/zero_copy/shared_bo.h"
 #include "../engine/fusion/gpu_attn_vk/gpu_attn_vk.h"
 
@@ -1428,8 +1429,7 @@ struct FusedBackend : Backend {
         // on the stream.
         const char* bs = getenv("FUSED_BATCH");
         batch_ = (bs && atoi(bs) > 1) ? atoi(bs) : 0;
-        const char* xd_env = getenv("NPU_XCLBIN_DIR");
-        std::string xd0 = xd_env ? xd_env : "engine/npu/xclbins";
+        std::string xd0 = npu_xclbin_dir();
         bool have_m32 = access((xd0 + "/final_i8_GU_qwen3_0_6b_m32.xclbin").c_str(), F_OK) == 0 &&
                         access((xd0 + "/insts_i8_GU_qwen3_0_6b_m32.txt").c_str(), F_OK) == 0;
         int ffn_cap = have_m32 ? 32 : 8;
@@ -1468,9 +1468,8 @@ struct FusedBackend : Backend {
         }
 
         // Init NPU (pure C++ module — no HIP context conflict)
-        const char* xd = getenv("NPU_XCLBIN_DIR");
-        if (!xd) xd = "engine/npu/xclbins";
-        npu = npu_state_create(xd, H, IM, NC);
+        const std::string xd_s = npu_xclbin_dir();
+        npu = npu_state_create(xd_s.c_str(), H, IM, NC);
         npu_ok = (npu != nullptr);
         if (!npu_ok) printf("[fused] NPU unavailable — GPU-only\n");
 

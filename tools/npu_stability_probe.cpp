@@ -17,6 +17,7 @@
 // Run:     NPU_XCLBIN_DIR=engine/npu/xclbins ./build/npu_stability_probe [iterations]
 
 #include "npu_gemm_kernel.h"
+#include "../engine/npu/src/npu_paths.h"
 
 #include <xrt/xrt_device.h>
 #include <cmath>
@@ -70,7 +71,8 @@ int main(int argc, char** argv) {
     int iters = argc > 1 ? atoi(argv[1]) : 10;
     signal(SIGALRM, hang_guard);
     alarm(argc > 2 ? (unsigned)atoi(argv[2]) : 60u);
-    const char* xd = getenv("NPU_XCLBIN_DIR");
+    const std::string xd_s = npu_xclbin_dir();
+    const char* xd = xd_s.c_str();
     const int H = 1024, IM = 3072;   // Qwen3-0.6B FFN shapes
 
     fprintf(stderr, "[npu_probe] %d FFN iterations (GU->silu->D, dummy weights)\n", iters);

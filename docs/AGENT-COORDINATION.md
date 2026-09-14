@@ -6,6 +6,32 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-14 — strixhalo: EVERY shell on this box exports a dead NPU_XCLBIN_DIR
+
+Read this before trusting any NPU result from the last few days, and before
+running one:
+
+- `~/.bashrc:122` exports `NPU_XCLBIN_DIR=/home/bcloud/1bit-MONSTER-pi/engine/npu/xclbins`.
+  That tree does not exist. Every session on strixhalo inherits it, and eight
+  call sites returned the variable verbatim, so NPU runs resolved their xclbins
+  and insts to a path to nothing. The symptom is far from the cause: the Zaya
+  worker failed at `fopen …/insts_i8_MOE_GU_zaya_m16.txt`, `zaya1-8b.q4nx` served
+  0 tokens on the engine face, and the log named a path that looked deliberate.
+  `benchmarks/coverage-matrix-2026-09-09/PREFLIGHT.md:11` had already recorded it.
+- `fix/npu-xclbin-dir-validation` makes `engine/npu/src/npu_paths.h` the one
+  resolver (override if it exists → repo layout → installed layout) and points
+  all eight sites at it; an invalid override now warns once and is ignored.
+  Measured with the variable still set: the worker runs (MoE L1 corr=0.999345,
+  8.2 tok/s) and the engine face answers `zaya1-8b.q4nx` with finish_reason
+  "stop" — before the change, both failed.
+- **Until that lands, export a correct value** (`export NPU_XCLBIN_DIR=$PWD/engine/npu/xclbins`)
+  or any NPU measurement you take is of a directory that is not there.
+- Also worth knowing: a full `ninja` on `main` fails to link `registry_route_map`
+  (`undefined symbol: select_backend_route`) — `src/model_registry_route.cpp:502`
+  calls it and the target does not link `src/model_router.cpp`. CI builds an
+  explicit target list (`ninja -C build onebin …`), so it does not see this.
+  Pre-existing since #2190; not touched by this lane.
+
 ## 2026-09-14 — strixhalo: the Q4NX reader's 64 KB window (#2193)
 
 State for anyone touching the NPU lane, especially the `goal/runlist-decode-wire`
