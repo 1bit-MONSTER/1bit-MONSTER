@@ -12135,3 +12135,55 @@ one turn, all mine, all caught by the other lane — and this is the **purest** 
 measurement (the partition) plus an unverified naming (the quantity) produced a refuted explanation.** **One measured
 fact plus an unverifiable term is not a finding — it is an evidence asymmetry**, and it looked like a finding precisely
 because the measured half was solid.
+
+## 695. §206 CLOSED by two structural rules (224/224 and 16/16) — and the method that closes questions in this lane
+
+**The peer settled it by counting the log's *other* lines rather than reading the `ELF` line. Verified, and there are two
+rules of that shape:**
+
+```
+ARG4_DUMP lines: 224     preceding their own RUN: 224     violations: 0
+ELF labels:       16     with their own SETARGs before the next RUN: 16   violations: 0
+```
+
+**The run object is BUILT (arguments and dumps logged), then the `RUN` line records the launch.** The `ELF` line is emitted
+in that same build phase — which is exactly why it sits between the previous `RUN` and the next run's `SETARG`s. **And
+`elf_0011`'s block reads `idx=3/4/5 = 5,242,880 · 5,242,880 · 67,108,864`** — `(5 MB, 5 MB, 64 MB)`, **32 runs, once per
+layer.**
+
+| | status |
+|---|---|
+| §201 | **confirmed by the log's rule** |
+| §650's `(1 MB, 5 MB, 30 MB)` / 64 runs | a **different kernel** — the one whose `SETARG`s precede `RUN 001` |
+| §173 | **stays withdrawn** — `arg3 = 5 MB = npt × NH×HD`, matching the engine |
+| §206 | **closed** |
+
+**And `XM` closes as UNTESTABLE rather than untested** (their finding, recorded because it retires the last candidate):
+`XM` is **not a free knob** — it is tile geometry derived from the bundle (`cfg.XM` has one literal, `128`, in a fallback
+path; Nanbeige's runtime value is 256). **Forcing it would change the tiling, not the chunking** — so the 1024-vs-256
+chunking difference is **real but not reachable from the call site the engine has.**
+
+## The method, which is the lane's best product
+
+**The deciding evidence was already in the artifact, and it was a *structural regularity* — not a careful reading of any
+single line.** Several exchanges were spent arguing about where one `ELF` line sits; the question was settled by
+**counting the log's other lines and finding a 224/224 rule.**
+
+**And the tally across this session is exact, in both directions:**
+
+| the move | instances |
+|---|---|
+| **one fact that constrains MANY lines** (all successes) | §194 `rows=256` in one run · §196 a `for` loop in the code · §204 the per-row partition · **224/224** · **16/16** · **8 × 32 + 1 = 257** |
+| **one line read carefully** (all five errors this turn) | §102 · §665 · the tail rule's ownership · the `ELF`-line position · **the count-vs-stride comparison** |
+
+**So the rule to carry out of this lane is the inverse of its dominant error class.** *"A proxy read as its referent"* is
+what happens when one line is trusted past its scope; **a structural regularity is what happens when one fact is required
+to hold across many lines** — and the second cannot be produced by reading more carefully, only by **counting.**
+
+**And the honest asymmetry, from my side**: my block-interior reading was **right** — but it was an **instance**, not a
+rule, and an instance cannot corroborate itself. **The peer supplied the rule (224/224); I supplied a second instance of
+it (16/16).** That is the difference between a claim that happened to be true and one that can be checked.
+
+**One residual flagged rather than re-litigated**: §204's `512 = NKV×HD` is the **sibling** of the naming step §220
+demoted, and it carries the same question — **whether a COUNT of untouched words and a STRIDE value are commensurable.**
+It is recorded as still owing that check, not as established.
