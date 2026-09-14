@@ -8970,3 +8970,46 @@ consistent, and after two opposite moves the file is consistent"* — no duplica
 sections where one was.** That is why the rules are the fix rather than a smarter check, and their reading of which
 rule matters is the one I would keep: **never move the other lane's content into your own sequence — it is the half
 that prevents the collision without either lane needing to know the other's intent.**
+
+## 165. The generated nh20 ELF produces the SAME wrong answer as the shipped one — the stream is not the discriminator, and my first mechanism guess was refuted by the load lines
+
+The decisive experiment on the question §163/§164 left open: **is the Nanbeige-bound generator's nh20 output correct?**
+Run the @1024 path with the ELF slot replaced by one **genuinely generated for this model**
+(`gen_attn_chunk_nb`, L=[0,1024), Nanbeige config), and compare.
+
+| configuration (`/tmp/ids_1024.txt`) | boot |
+|---|---|
+| host attention (`NPU_ATTN_CPU=1`) | 109440 |
+| NPU attention, **shipped** nh20 ELF (177728 B) | **188** |
+| NPU attention, **generated** nh20 ELF (340784 B) | **188** |
+| FLM reference (`NPU_FLM_PREFILL=1`) | **1033** |
+
+**The generated stream changes nothing.** Two ELFs of the same nominal shape — one captured from FLM's runtime, one
+produced by FLM's own sequence class for this model — give the **identical** wrong answer. Reverted immediately, and the
+file verified back to its original hash (`afb80dda…`, 177728 B).
+
+**My first explanation was wrong, and the engine's own load lines refute it.** I guessed the nh20 file was loaded but
+never selected; in fact:
+
+```
+Bf16Mm: attention ELF loaded (177728 B): …/attn_mha_1024_nh20_hd128.elf     <- BOTH 1k slots
+Bf16Mm: attention ELF loaded (177728 B): …/attn_mha_1024_nh20_hd128.elf
+Bf16Mm: attention ELF loaded (194736 B): …/attn_mha_2048_nh16.elf
+Bf16Mm: attention ELF loaded ( 26928 B): …/attn_mha_256_nh16.elf
+```
+
+The shaped-first candidate rule (`attn_mha_<tokens>_nh<NH>_hd<HD>.elf`) puts the **nh20 file into both 1k slots**, and
+the `>256` selection reaches `attn_kernel1k` for `qout != 4096` — **which is the nh20 file**. So the nh20 ELF **is**
+the kernel actually invoked, and its content genuinely does not move the number.
+
+**What that establishes, narrowly: the nh20 defect is not in the attention artifact.** Two candidates remain, and they
+are both in the **invocation**: the **BO geometry** (§102: FLM ran this kernel with BOs 1 MB / 5 MB / 30 MB while the
+engine uses 5 / 5 / 16 MB) or the **caller's geometry** (`attn_qout = NH×HD = 2560`, with a kernel that covers **2048 of
+2560 columns** per §122 — i.e. it behaves as if `qout` were 2048).
+
+**And one earlier conclusion is now in question, which is why the experiment was worth running:** §123 read the
+2048-of-2560 coverage as **"ELF-baked, not BO-driven"** (`BF16MM_ATTN_EXACT_BO` did not change the width). This swap
+**varied the ELF** and the coverage did not move either — so "ELF-baked" cannot be the whole story unless **both**
+streams target the same width, which a generator using this model's config should not do. §123 is therefore marked
+**open, not refuted**: the honest form is *two different streams, same coverage — so the width is set by something
+neither of them carries.*
