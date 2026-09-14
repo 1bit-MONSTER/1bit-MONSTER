@@ -13049,3 +13049,40 @@ bakes decides the boot; how much of `q` it happens to cover does not.**
 **And the shipping path is untouched by all of it**: five different artifacts forced, and **`NPU_RUNLIST=1` gives 5938
 every time** — FLM's exact reference — because **it does not take this path at all.** The residual is a diagnostic-path,
 baked-geometry question, and it now has one fewer candidate rather than one more mechanism.
+
+## 815. Six-model gate re-verification: FIVE reproduce at FLM's exact references, and Llama-3.1-8B CANNOT RUN — a required xclbin was never committed
+
+**Ran every "working" model on the shipping path (`NPU_RUNLIST=1`), reading the first decoded token.**
+
+| model | ctx | measured | FLM's reference | |
+|---|---|---|---|---|
+| Qwen3-0.6B | 1024 | **25** | 25 | **MATCH** |
+| Qwen3-0.6B | 256 | **1614** | 1614 | **MATCH** |
+| Qwen3-1.7B | 1024 | **220** | 220 | **MATCH** |
+| Qwen3-4B | 256 | **1614** | 1614 | **MATCH** |
+| Qwen3-4B | 1024 | **220** | 220 | **MATCH** |
+| Qwen3-8B | 1024 | **220** | 220 | **MATCH** |
+| Qwen3-VL-4B | 1024 | **220** | 220 | **MATCH** |
+| Nanbeige | 1024 / 256 | **1033 / 5938** | 1033 / 5938 | **MATCH** |
+| **Llama-3.1-8B** | 1024 | **— fails at init —** | 220 | **CANNOT RUN** |
+
+**And Llama's failure is not a model or a result — it is a missing artifact:**
+
+```
+I8Ctx: xclbin/kernel init failed: No such file
+  '.../engine/npu/xclbins/final_i8_QKV_K4096_N6144.xclbin'
+FAIL QKV
+```
+
+**Checked three ways**: `git log --all` for the path is **empty** (never committed), the path is **not gitignored**, and
+**no `QKV_K4096_*` xclbin exists in the tree at all** — though **121 other `final_i8_*` xclbins are present.** The file is
+absent from the box as well.
+
+**So the scorecard's *"Working (6): … Llama-3.1-8B"* is not re-verifiable on this tree.** That is a **reproducibility** gap,
+not evidence the measurement was wrong — the 220 may well have been observed when the xclbin existed locally and was
+afterwards cleaned. **But it means the headline "6/6" should be read as "five re-verified here, one blocked by an uncommitted
+build product"**, and the fix is a **build step**, not a code change: the generator scripts that would produce
+`final_i8_QKV_K4096_N6144.xclbin` are in `engine/npu/generators/`.
+
+**And this is the goal's own framing applied to the goal**: every coverage limit in this log is a **named dependency
+interface** — and this one is a dependency the repository is missing rather than a capability the engine lacks.
