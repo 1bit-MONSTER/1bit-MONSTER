@@ -12034,3 +12034,33 @@ pointers and the geometry is baked"* is an **assumption** — §197 shows the EL
 whether a **256-row caller** and a **512-row capture** drive it identically is **unmeasured**; and **`XM` is the one axis
 no perturbation has covered** (§196 varied the *key count* and was inert), with the standing caveat that **`XM` also sizes
 the GEMM staging**, so it is not a one-line perturbation.
+
+## 220. The "1024 = nh16 half-width" step is refuted by §214's own datum — nh32 produces 1024 too — and the "internal contradiction" compares a COUNT with a STRIDE
+
+The synthesis is attractive and its **measured** half stands: the partition **1024 NaN + 1024 written + 512 untouched = 2560 = q** is exact, and the kernel **does** produce 1024 words per row. But the interpretive step does not survive the
+lane's own demotion test:
+
+| quantity | nh16 | **nh20** | **nh32** |
+|---|---|---|---|
+| `arg0` produced volume (bf16/token) | 512 | **1024** | **1024** |
+
+**If 1024 were `(NH/2)×HD` at NH = 16, then nh32 — twelve heads wider — would produce 2048.** It produces **1024**.
+**So 1024 does not encode NH = 16; nh20 and nh32 share it**, which is exactly what §214 established when it demoted the
+volume field. **This is the second time 1024 has been read as a geometry signal and the second time the demotion test has
+refuted it** (§213 read it as "the volume says nh16"; here it is read as the produced half-width).
+
+**And the second problem is a category error that this lane has now made four times:** the synthesis compares the kernel's
+**produced count** (1024 bf16 per row) with the artifact's **`dim1_stride`** (1280) and calls the difference a
+contradiction. **A count and a stride are different quantities**, and §184 (*"stride says nh20, volume says nh16"*), §213
+(the same), and §214 (the demotion) each consisted of treating one as the other. **A kernel producing N words per row and
+describing its rows with a stride of M are not in contradiction unless something establishes that N should equal M** —
+and nothing here does.
+
+**What survives, and it is the part that matters:** the **partition is measured**, the kernel **produces 1024 words per
+row**, **512 of them are never written**, and that 512 is **`NKV×HD`** — three facts from two instruments (§194's sentinel
+and the saved output) that agree. **The *width* of what the kernel produces is `1024 + 512 = 1536` of the 2560 the host
+stride expects** — stated as a **count against a count**, which is the comparison the evidence actually supports.
+
+**And one open question is worth naming rather than resolving by pattern:** **why 1024?** It is `8×128`, and it is what
+**both nh20 and nh32** produce while nh16 produces 512. **No formula in this lane's notes fits all three**, and inventing
+one now would be the same move that produced the last two demotions.
