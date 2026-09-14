@@ -13,6 +13,9 @@ Checks:
   3. commands from bash-fenced / `$ ` lines whose target does not exist
      (CLI subcommands, run.sh, make targets, referenced scripts)
   4. CI workflows that invoke a script which is not in the tree
+  5. flags passed to OUR tools (1bit, run.sh, scripts/, packaging/, tools/,
+     Testing/) that appear nowhere in the source — a documented knob nothing
+     parses. Flags of other people's tools on the same line are ignored.
 
 Two scopes, because they are different defects. The GATED surface is what a user
 follows — the front page, the guides and wiki, the packaging and site READMEs —
@@ -28,6 +31,13 @@ Deliberately NOT checked:
   * packaging/live/build/rootfs — a copied Ubuntu root filesystem, not our content;
   * version drift — scripts/sync-version.sh --check owns that, and the Version
     consistency CI job runs it;
+  * documented environment variables: also measured and dropped. A variable name in
+    backticks is indistinguishable from a BackendType enum value (docs/CODEBASE.md
+    lists NPU_XRT, ZINC_GPU, Q4NX_FUSION), a CMake option (docs/guides/building.md
+    lists ZAYA_ENABLE_GPU_DECODE beside CMAKE_HIP_ARCHITECTURES) or another tool's
+    variable (OPENAI_API_BASE). Filtering by our own prefixes still left 26
+    "orphans" and every one triaged to one of those three. Flags ARE checked —
+    the same scan over command lines produced 0 findings and no false positives;
   * "tracked while .gitignore says generated": it cannot be made precise. Without
     --no-index git skips tracked files so it never fires; with it, 239
     deliberately committed files match a broad ignore pattern and drown the
@@ -175,6 +185,20 @@ def command_lines(text: str):
             yield i, s[2:], external_cd
 
 
+def source_corpus() -> str:
+    """Every line of our own source, for "does this flag exist anywhere" checks."""
+    exts = (".cpp", ".h", ".hpp", ".cc", ".sh", ".py", ".yml", ".yaml")
+    roots = ("src", "tools", "engine", "tests", "scripts", "packaging", "Testing", "cmake")
+    out: list[str] = []
+    for r in roots:
+        for f in (ROOT / r).rglob("*"):
+            if f.suffix in exts and f.is_file():
+                rel = str(f.relative_to(ROOT))
+                if included(rel):
+                    out.append(f.read_text(encoding="utf-8", errors="replace"))
+    return "\n".join(out)
+
+
 def make_targets() -> set[str]:
     targets: set[str] = set()
     for mf in ROOT.rglob("Makefile*"):
@@ -198,6 +222,9 @@ def main() -> int:
     cli |= set(re.findall(r'prog\s*==\s*"([\w.-]+)"', onebin))
     targets = make_targets()
     tracked = set(git("ls-files").split())
+    corpus = source_corpus()
+    FLAG = re.compile(r"--[a-z][a-z0-9][a-z0-9-]+")
+    OUR_TOOL = re.compile(r"^(?:1bit|run\.sh|scripts/[\w.-]+|packaging/[\w.-]+|Testing/[\w.-]+|tools/[\w.-]+)")
 
     # ── 1 + 2 + 3: walk the docs once ──
     for doc in markdown_files():
@@ -277,6 +304,14 @@ def main() -> int:
                     break
             elif tool.endswith(".sh") and not (ROOT / tool).exists():
                 findings.append((rel, lineno, f"script does not exist: {tool}"))
+            if OUR_TOOL.match(tool):
+                # Everything after a `#` belongs to a comment, not to the command:
+                # docs/mobile/RUNBOOK.md mentions `systemd-run --unit=…` in a
+                # trailing comment on a line that starts with our binary, and
+                # --unit is systemd-run's flag, not ours.
+                for flag in FLAG.findall(rest.split("#", 1)[0]):
+                    if flag not in corpus:
+                        findings.append((rel, lineno, f"{tool} {flag} — no such flag in the source"))
 
     # ── 4: CI invokes a script that is not in the tree ──
     # Note on a rule that is deliberately absent: "tracked while .gitignore says
