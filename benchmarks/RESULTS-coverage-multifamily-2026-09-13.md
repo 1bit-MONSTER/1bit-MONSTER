@@ -13740,3 +13740,37 @@ measurement not a refuted hypothesis — reverting on one DESTROYS VERIFIED WORK
 NEEDS RE-VERIFYING.** Three commits were spent on a dead shell variable, and they were recoverable only because the reverts
 were visible in the log. **The cheaper procedure is the one now in the harness: re-check the failure in isolation and name
 the environment, before touching anything.**
+
+## 905. GEMMA3-1B RUNS END TO END — the third "fails / dependency boundary" row was TWO ENGINE DEFECTS, not a vendor limit
+
+**The last crash was in `npu_pack_lmhead_bo`, and it was the same byte-extent defect as the layer packing**: `n_tiles` came
+from `shape[0]` — a **row** count — while `shape[1]` (1280 for this model) is the row width **in bytes**. A row is one
+5120-byte tile only when `shape[1] == 5120`. Fixed with the same helper at **both** sites (the packer and the BO sizing in
+`runtime_layer.cpp`), because **a count that disagrees between them is the same bug wearing a different hat** — which is how
+this whole chain was found.
+
+```
+RuntimeLayer: packed 26 layer weight BOs
+RuntimeLayer: packed lm_head BO (36864 tiles)
+=== Prefill 1024 [runlist] ===     Prefill: 17926ms (18 ms/tok)
+  [1] 0
+=== 13.2 ms/tok (76 tok/s) | tokens=4 ===
+```
+
+**So a family the scorecard listed as *"fails — dependency boundary, FLM cannot load it either"* now executes end to end
+through the runlist path.** Its `k_tile_q4` "dependency boundary" was already shown to be a **warning the engine handles**;
+the blockers were **two engine defects** — the odd-G reorder and this byte-extent tile count — **neither of them a vendor
+limit.**
+
+**Verified**: **all ten gates on the rebuilt engine match FLM's exact references** (0.6B 25/1614, 1.7B 220, 4B 1614/220,
+8B 220, VL-4B 220, Nanbeige 1033/5938, Llama 220). The `lm_head` change is a no-op for `shape[1] == 5120` by construction,
+and the gates confirm it.
+
+**And the honest limit, which matters more than the win: IT RUNS, AND ITS CORRECTNESS IS UNVALIDATED.** The boot token is
+**`[1] 0`**, and **FLM cannot load Gemma3-1B at all**, so **there is no reference token to check it against.** The
+**18 ms/tok prefill and 76 tok/s decode are real measurements of a run whose output nobody can yet corroborate.** Recorded
+as **runs / unvalidated**, not as working.
+
+**And that is the third row from §10/§845 to move**: Llama-3.1-8B (gate restored), Gemma3-4B (init fixed, then a vendor
+assertion named), and now Gemma3-1B — **each started as a build gap or an engine defect and had been recorded as a
+capability limit.**
