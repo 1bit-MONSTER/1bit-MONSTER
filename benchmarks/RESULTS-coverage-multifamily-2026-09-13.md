@@ -14379,3 +14379,42 @@ every model that was already working.
 engine rather than three coincidences: **whenever a lookup or a size is taken from layer 0, a hybrid model will eventually
 falsify it** — and the three instances were found by three different symptoms (an under-sized BO, a zero-length BO, and a
 segfault), which is why they read as three bugs rather than one.
+
+## 990. The remaining Qwen3.5-4B gap is precisely sited: the STD tensors are 3-D `[n, k, 4736]`, and the packing reads them as 2-D
+
+**With the layer-0 lookup fixed (§985) the row counts resolve — and the values are the tell:**
+
+```
+std: q=0x…  qr=800  qc=2560
+std: o=0x…  or2=160 oc2=4096
+std: branch qr==NH*HD? 0
+```
+
+**And the header says why:**
+
+```
+model.layers.3.self_attn.q_proj.weight: {"dtype":"I8","shape":[256,10,4736],"data_offsets":[2220545024,2232669184]}
+model.layers.3.self_attn.o_proj.weight: {"dtype":"I8","shape":[ 80,16,4736],"data_offsets":[2214482944,2220545024]}
+model.layers.3.self_attn.k_proj.weight: {"dtype":"I8","shape":[ 32,10,4736],"data_offsets":[2212967424,2214482944]}
+```
+
+**Three-dimensional shapes with a 4736-wide last dimension.** That is §5's *"4736 = the engine's own MoE trim … zero 5120-byte
+I8 rows"* observation, **now seen from the code's side**: `gi8()` returns a `shape[0]`-derived count (**800** for `q`, **160**
+for `o`), the packing compares it against **`NH·HD = 4096`**, the comparison fails, and **the fused-gate branch runs on a
+shape it was never written for.**
+
+**So the row's description sharpens again, and this is the third refinement:**
+
+| stage | description | status |
+|---|---|---|
+| §5 | *"boot 0 — its I8 rows are in formats the default dequant cannot express"* | a **format** claim |
+| §965 | an **initialisation-order engine bug** (zero-length BO) | **fixed** |
+| §970 | plus a **build gap** (fused `GU` xclbin absent) | **fixed** |
+| **§990** | plus **the layer-0 lookup** (zero row counts) | **fixed** |
+| **here** | **the tensors are 3-D `[n,k,4736]` and the packing reads them as 2-D `[rows, cols]`** | **the remaining gap** |
+
+**And the remaining gap is not a dequant limitation** — the dequant has handled 4736-byte rows since §5 (*"`shape[-1]` is
+bytes for I8 and elements for BF16"*, and `row_bytes/20` derives the tile width ✓). **It is a shape-INTERPRETATION gap in the
+packing code**: the STD path expects a 2-D `[rows, cols]` and receives a 3-D packed layout, so the count it computes is
+meaningless and the branch it takes is the wrong one. **That is a much narrower target than "the format cannot be expressed",
+and it is the last thing standing between this model and the packing it needs.**
