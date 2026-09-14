@@ -14630,3 +14630,53 @@ and fused QKV layouts — and the **artifact**, `final_i8_QKV_K2560_N8192`, both
 
 **So the Qwen3.5-4B row remains: five engine-side fixes landed, the sixth failure mechanism identified exactly, the missing
 shape built, and the remaining work a known refactor rather than an unknown.**
+
+## 1020. Two more attempts, two more catches — the widening can't reach the shape-named xclbin, and a pure scope move broke three gates
+
+**Both changes were made together, both were caught by `benchmarks/gate-check.sh` before any commit, and both are reverted. The
+tree is green.**
+
+**Finding 1 — the widening fired, and did not widen.** The log says the fix ran:
+
+```
+layer 3 STD fused: widening QKV context 6144 -> 8192 rows (fused layout)
+I8Ctx::init xp=…/final_i8_QKV_qwen3_5_4b.xclbin  ip=…/insts_i8_QKV_qwen3_5_4b.txt
+  creating bC size=3145728 (MD=128 ND=6144 bC_nd=0)
+```
+
+**`ND=6144` — it loaded the TAG-named file, not the shape-named `final_i8_QKV_K2560_N8192.xclbin`.** `xp()` tries
+`final_i8_<t>_<model_tag>.xclbin` **first** and only falls back to the shape-named form when no tag file exists. **So a
+shape-based re-initialisation cannot widen anything while a tag-named QKV is present** — the artifact built in §1010 is
+necessary and **not sufficient**, because the lookup preference shadows it. **That is a lookup-precedence fact, and it is
+what the next attempt has to design around** (bypass `xp`, or make the tag file the widened one).
+
+**Finding 2 — the hoist itself broke three gates, and I do not have the mechanism.** Moving the `init_i8` lambda verbatim
+from inside `if (!cpu_gemm_fallback && !bf16_only)` to `main`'s scope **compiled cleanly** and **changed nothing in the gate
+set it should have touched** — yet:
+
+```
+Qwen3-1.7B  1024  <none>   NO TOKEN PARSED
+Qwen3-4B     256  <none>   NO TOKEN PARSED
+Qwen3-4B    1024  <none>   NO TOKEN PARSED
+```
+
+**Twelve visible characters of change — an indentation and a move — and three models stopped.** The isolation re-check
+confirmed it was not transient. **I record the failure and not a theory**: the lambda captures `[&]`, so a move should be
+capture-neutral, and the captured names (`xp`, `ip`, `dev`, `XM`, `NC`) are all declared before the new location. **Whatever
+it is, it is not visible in the text of the move, and it is exactly the kind of assumption this log has learned not to
+trust.**
+
+**And the count is now five attempts at "one more small change" in this chain, five caught by the gates, five reverts,
+zero bad commits:**
+
+| # | the change | how it failed |
+|---|---|---|
+| 1 | multiply by `shape[1]` in `gi8()` | **double-counted what `q_cols` already applies** — broke Nanbeige |
+| 2 | the same, with a dimension check | **same non-change** — broke Nanbeige |
+| 3 | widen the QKV context | **did not compile** — `init_i8` out of scope |
+| 4 | widen, after hoisting `init_i8` | **loaded the tag-named xclbin; no widening** |
+| 5 | the hoist alone | **broke Qwen3-1.7B and Qwen3-4B, mechanism unestablished** |
+
+**Five reverts is not a failure of the chain — it is the harness doing what §890 built it for.** The committed deliverables
+are unchanged: the **diagnosis** (a 2048-row overrun between the plain and fused QKV layouts) and the **artifact**
+(`final_i8_QKV_K2560_N8192`), plus the **five engine-side fixes** already landed and verified.
