@@ -13517,3 +13517,36 @@ exactly at odd `G`, and Gemma3-1B is the first model here to reach that case (`G
 | `k_tile_q4` unaligned dims | **not a blocker** -- a warning the engine handles |
 | missing lm_head ELF | **harmless** -- the optional-file path is defensive |
 | **odd-G tile reorder** | **THIS ENGINE'S BUG**, mechanism pinned, **fix needs the vendor's layout** |
+
+## 875. Post-fix gate pass: NINE of nine match on HEAD — the model.c changes are a verified no-op — and the open Gemma3-1B thread
+
+**After the two `model.c` changes (the `% G` reorder fix and the null-tensor guard), the full gate set on the rebuilt engine:**
+
+| model | ctx | measured | FLM ref | |
+|---|---|---|---|---|
+| Qwen3-0.6B | 1024 / 256 | **25 / 1614** | 25 / 1614 | MATCH |
+| Qwen3-4B | 256 / 1024 | **1614 / 220** | 1614 / 220 | MATCH |
+| Qwen3-8B | 1024 | **220** | 220 | MATCH |
+| Qwen3-VL-4B | 1024 | **220** | 220 | MATCH |
+| Nanbeige | 1024 / 256 | **1033 / 5938** | 1033 / 5938 | MATCH |
+| **Llama-3.1-8B** | 1024 | **220** | 220 | MATCH |
+
+**Nine of nine.** The `% G` change is **bit-identical for every even `G`** — which the arithmetic says and the gates now
+confirm — and the guard only fires on a null tensor, which never happens on these models. **Both are safe to keep.**
+
+**And the open Gemma3-1B thread, stated with its uncertainty intact:**
+
+- the `% G` fix **moved** the fault (reorder -> `npu_pack_proj`), so the reorder defect is genuinely repaired;
+- the null-tensor guard **did not fire**, so `data` is not null and the crash is in the reorder's **read of the source**;
+- **next hypothesis**: the packing uses a **fixed 5120-byte tile**, which assumes a 2560-wide row, and Gemma3-1B's `H` is
+  **1152** — so `shape[0]` (a tile count) need not agree with the tensor's byte length while the reorder reads
+  `n_tiles * 5120 B`;
+- **and a provenance caveat on the nearest comment**: the source's note about unaligned dims says *"Gemma3-1B has IM=24864
+  and 24864 mod 128 == 32"*, but **the model's `config.json` says `intermediate_size: 6912`** (and 6912 mod 128 == 0).
+  **Two different numbers for the same quantity, from two places, un-reconciled** — so the comment is evidence of
+  *something*, but not of this model's geometry until they are matched.
+
+**I did not resolve that**, and an attempt to read the q4nx header directly failed on the header's layout — **which is a
+note about my parser, not about the file.** The engine's own loader reports `341 tensors` and `26 layers` and proceeds, so
+the header is fine; the tile-size question is the next clean step, and it takes a working header read or one instrumented
+run rather than another inference.
