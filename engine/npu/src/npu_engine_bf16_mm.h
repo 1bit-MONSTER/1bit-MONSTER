@@ -320,17 +320,21 @@ struct Bf16Mm {
         // runlist path, and its attention costs 186 ms for a 28-layer npt=1024
         // run. The previously-used generated gen(0,1024) ELF was both wrong and
         // ~1200x slower (223050 ms) and has been replaced in the xclbin dir.
+        // Long-context slot. A captured kernel is only valid for the (shape, context)
+        // it was captured at, so BOTH must match. attn_mha_2048_nh16.elf is an nh16
+        // 2048-context capture and there is no nh32 2048-context capture yet, so
+        // nh32 models must NOT fall through to it: before this guard Qwen3-4B at
+        // npt=2048 used the nh16 2k ELF and returned 112103 where the byte-exact
+        // runlist path says 220. With the guard they get nullptr -> run_attn()
+        // returns false -> the caller's CPU attention reference, which is slow but
+        // correct. Do not "fix" a failure here by widening the condition.
+        const bool nh16 = (attn_qout == 2048);
+        const bool nh32 = (attn_qout == 4096);
         if (!attn_shape_ok) kern = nullptr;
-        else if (attn_tokens > 1024 && attn_kernel2k) kern = attn_kernel2k.get();
-        else if (attn_tokens > 256) {
-            // NH=32 models (attn_qout 4096) must use the nh32 long-context ELF;
-            // using the nh16 1k ELF silently produced wrong tokens for
-            // Qwen3-4B/8B (boot 87672 vs FLM 220). The 2k slot has no nh32
-            // variant yet, so (1024,2048] on nh32 still uses the nh16 ELF.
-            if (!attn_shape_ok) kern = nullptr;
-            else if (attn_qout == 4096 && attn_kernel1k32) kern = attn_kernel1k32.get();
-            else if (attn_kernel1k) kern = attn_kernel1k.get();
-        }
+        else if (attn_tokens > 2048) kern = nullptr;                       // no capture this long
+        else if (attn_tokens > 1024) kern = nh16 && attn_kernel2k ? attn_kernel2k.get() : nullptr;
+        else if (attn_tokens > 256)  kern = nh32 ? (attn_kernel1k32 ? attn_kernel1k32.get() : nullptr)
+                                                 : (attn_kernel1k   ? attn_kernel1k.get()   : nullptr);
         if (!kern) return false;
         const size_t q = (size_t)attn_qout;
         const int rows = attn_rows > 0 ? attn_rows : attn_tokens;

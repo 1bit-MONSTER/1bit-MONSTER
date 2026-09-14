@@ -398,3 +398,44 @@ One matched-1k harness run out of nine reported decode **2 tok/s** — the
 command gave 79 tok/s each. I could not reproduce it; treat a lone 2 tok/s
 decode reading as a transient (likely NPU contention from the concurrent
 sessions) and re-run before believing it.
+
+## Shape+context guard on the captured ELF slot, and two operational hazards
+
+### The guard
+
+A captured kernel is valid only for the **(shape, context)** it was captured at.
+The long-context slot was selecting on context alone, so Qwen3-4B/8B (nh32)
+picked up `attn_mha_2048_nh16.elf` — an nh16 capture — at npt=2048 and returned
+`112103` where the byte-exact runlist path says `220`. The slot now requires both:
+
+| model (shape) | <=256 | (256,1024] | (1024,2048] | >2048 |
+|---|---|---|---|---|
+| nh16 (0.6B, 1.7B) | embedded | nh16 1k | nh16 2k | CPU fallback |
+| nh32 (4B, 8B) | embedded | nh32 1k | **CPU fallback** | CPU fallback |
+| other (nh20 Nanbeige, hd64 …) | per-file | per-file | CPU fallback | CPU fallback |
+
+nh32 has no 2048-context capture, so (1024,2048] now falls back to the CPU
+attention reference — slow but *correct*, instead of fast and wrong. Verified:
+4B and 8B at npt=2048 both return 220 (matching runlist), taking ~152 s.
+
+### Hazard 1: the capture harness faults the NPU on the 4B model
+
+Attempting the missing nh32 2048 capture on `Qwen3-4B-NPU2` faulted the device:
+
+```
+amdxdna 0000:c6:00.1: aie2_dump_ctx: Fatal error task ID: 0
+amdxdna 0000:c6:00.1: aie2_dump_ctx: Timed out sub command ID: 0
+```
+
+Immediately after, the engine returned `boot=328` at npt=256 instead of 1614.
+This was **transient** — the driver reset the context and four consecutive
+re-runs returned 1614 — but it means the capture path is only known-safe for
+0.6B/1.7B. Do not run it against the 4B/8B models at 2048 without expecting a
+TDR. The failed capture dir was deleted.
+
+### Hazard 2: the first run after a rebuild can return a wrong token
+
+The same sequence produced `boot=19` at npt=256 (expected 1614) on the first run
+after a rebuild; three re-runs and a CPU-attention run all gave 1614. The earlier
+decode `2 tok/s` flake is the same class. **Always re-run a single failing gate
+before treating it as a regression.**
