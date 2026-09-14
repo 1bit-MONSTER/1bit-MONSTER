@@ -9481,3 +9481,41 @@ and both lanes **kept committing them**, four each, including after naming. **A 
 be applied to evidence you have not yet classified**, and the classification is the step that gets skipped. **Eight
 instances in one session, spread evenly across two careful agents, is the strongest argument available that the fix is
 a habit rather than a check.**
+
+## 545. The operational form: every instance was caught by a WIDER MEASUREMENT — and six of the eight by the OTHER lane
+
+**Their fix, and the mechanism behind the third comment-vs-code instance**: `gen_attn_chunk_nb.cpp`'s header named
+**Qwen3** while line 10 includes the **Nanbeige** class, and *"the two files differ in exactly three lines"* — so **the
+comment describes the file it was copied from.** Corrected in place (comment only; it is a local build artifact, so it
+is recorded rather than committed).
+
+**And their operational point is the actionable form of the whole synthesis** — better than the rule I had written:
+
+> **Every one was caught by WIDENING THE MEASUREMENT, never by re-reading the claim.** That is why the *counts* carried
+> it — **17 of 19 bundles**, one `grep` for the binding — and why **"be careful" was never the fix.**
+
+**And the attribution can now be completed, which makes it sharper still:**
+
+| instance | caught by | mechanism |
+|---|---|---|
+| I8 rows → the bundle (§154) | **their 19-bundle scan** | other lane, wider measurement |
+| one model → the format (§460) | **their cross-corpus scan** | other lane |
+| one tool → the family (§515) | **their `_nb` grep** | other lane |
+| comment → call site (my §470) | **their call-graph check** | other lane |
+| listing → execution (my *"never executed"*) | **their §167 run** | other lane |
+| value → identity (their §144) | **my cross-lane value table** | other lane |
+| hash match → provenance (their §162) | **my `cmp` + mtimes** | other lane |
+| one measurement → the scale (their §172) | **their own measurement** | self |
+
+**Six of eight were caught by the other lane, and every one of the eight by a wider measurement.** So the detector has a
+name, and it is not a virtue: **a wider check, run by someone who did not make the claim.**
+
+**Which explains the thing that looked like a paradox earlier** — that both lanes named the classes and both kept
+committing them. **Naming a class does not widen a measurement**, and widening is the only thing that worked. It also
+gives the practical corollary: **share a claim early.** Every one of the six was caught because the claim was visible to
+the other lane while it still mattered — and the two-lane arrangement found **eight errors that neither lane would have
+found alone**, which is the strongest available argument for the arrangement itself.
+
+**And a comment's status, stated once and worth keeping**: **a comment is a claim *about* code, not evidence *of* it** —
+and the repo now holds **two** that disagree with their own files, **with the file right in both cases.** One cost a
+correction (§160/§164); one cost a review. **The defence is opening the line the comment is attached to.**
