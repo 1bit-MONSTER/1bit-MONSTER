@@ -285,3 +285,60 @@ extern "C" float* dequant_i8_group_signed_to_float_ex(const uint8_t* data, int i
     }
     return out;
 }
+
+// ===========================================================================
+// Qwen3.5/3.6 "I8" dense-row dequant — 4736-byte tiles (recovered 2026-09-14,
+// disassembly of libqwen3_5_omni_npu.so gen_dequant_mm_512 + byte analysis).
+//
+// The 4736-B tile is NOT the 5120-B Q4_1 layout. It is a two-level asymmetric
+// int4 quantization:
+//   [0:4096]      packed int4, 32x256, Q4_1 nibble swizzle (lane*2048 + col*8 + (row%16)/2)
+//   [4096:4352]   256 int8 SCALES (signed), one per column
+//   [4352:4608]   256 int8 MINS   (signed), one per column
+//   [4608:4672]   32 bf16 row-scales (positive, ~2^-16)
+//   [4672:4736]   32 bf16 row-mins   (negative)
+//   value[r][c] = (q[r][c] * scale[c] + min[c]) * row_scale[r] + row_min[r]
+//
+// i8_rows is the TOTAL number of tiles (shape[0] * shape[1] for the 3-D
+// [tile_rows, tile_cols, 4736] tensor form), in_features is the projection's
+// input width (H for q_proj).
+extern "C" float* dequant_i8_4736_to_float(const uint8_t* data, int i8_rows, int in_features,
+                              int* out_rows, int* out_cols) {
+    constexpr int ROW_BYTES = 4736;
+    int n_tile_cols = in_features / TILE_COLS;
+    int n_tile_rows = (n_tile_cols > 0) ? (i8_rows / n_tile_cols) : 0;
+    *out_rows = n_tile_rows * TILE_ROWS;
+    *out_cols = n_tile_cols * TILE_COLS;
+
+    float* out = static_cast<float*>(std::calloc((*out_rows) * (*out_cols), sizeof(float)));
+    if (!out) return nullptr;
+
+    for (int ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* rd = data + (size_t)ir * ROW_BYTES;
+        int tile_row = ir / n_tile_cols;
+        int tile_col = ir % n_tile_cols;
+        const uint8_t* packed = rd;
+        const uint8_t* scales = rd + 4096;    // 256 int8
+        const uint8_t* mins   = rd + 4352;    // 256 int8
+        const uint8_t* rsc    = rd + 4608;    // 32 bf16 row scales
+        const uint8_t* rmn    = rd + 4672;    // 32 bf16 row mins
+        for (int lr = 0; lr < TILE_ROWS; lr++) {
+            int lane = lr / 16;
+            int lane_row = lr % 16;
+            int byte_idx = lane_row / 2;
+            int nibble_sel = lr % 2;
+            const uint8_t* lane_data = packed + lane * (TILE_COLS * 8);
+            float rs = bf16_to_float(load_bf16_bytes(rsc + lr * 2));
+            float rm = bf16_to_float(load_bf16_bytes(rmn + lr * 2));
+            for (int col = 0; col < TILE_COLS; col++) {
+                uint8_t byte_val = lane_data[col * 8 + byte_idx];
+                int q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                float s = (float)(int8_t)scales[col];
+                float m = (float)(int8_t)mins[col];
+                out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
+                    (tile_col * TILE_COLS + col)] = (float)q * s * rs + m * rs + rm;
+            }
+        }
+    }
+    return out;
+}

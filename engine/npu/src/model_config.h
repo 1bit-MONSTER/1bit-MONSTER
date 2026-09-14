@@ -23,6 +23,7 @@ struct ModelConfig {
     int N_SHARED = 0;    // shared experts (1 for Qwen3.6)
     bool has_moe = false;
     bool has_gated_delta_net = false;  // linear_attn tensors present (30/40 layers)
+    bool has_i8_4736 = false;  // Qwen3.5/3.6 4736-byte "I8" dense-row tiles (3-D shapes)
     int xclbin_qkv_k = 0, xclbin_qkv_n = 0;
     int xclbin_o_k = 0, xclbin_o_n = 0;
     int xclbin_g_k = 0, xclbin_g_n = 0;
@@ -385,6 +386,11 @@ inline ModelConfig parse_q4nx_header(const char* model_path, const char* model_t
         int q_bpt = bpt_of("self_attn.q_proj.weight");
         if (q_bpt == 0) q_bpt = bpt_of("self_attn.qkv_proj.weight");
         cfg.cpt = cols_per_tile_from_bytes(q_bpt);
+        // 4736-byte "I8" dense-row tiles (Qwen3.5/3.6) — the 3-D shape's last
+        // dim is the byte-per-tile (shape[2]), which bpt_of (shape[1]) misses.
+        int q_bpt3 = get_shape_dim(js, jl, "model.layers.0.self_attn.q_proj.weight", 2);
+        if (q_bpt3 == 0) q_bpt3 = get_shape_dim(js, jl, "model.layer.0.self_attn.q_proj.weight", 2);
+        cfg.has_i8_4736 = (q_bpt3 == 4736);
         int A = (cfg.H + cfg.cpt - 1) / cfg.cpt;  // n_tile_cols for q_proj input (in_features = H)
         if (A > 0) {
             int tile_rows_q = q_tr / A;  // ceil(NH*HD/32)

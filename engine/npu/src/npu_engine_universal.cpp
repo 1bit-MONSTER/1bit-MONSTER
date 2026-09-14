@@ -151,6 +151,7 @@ static void shuffle_B_atb(const float* in, int K, int N, int l1k, int l1n, float
         }
 }
 extern "C" float* dequant_q8_0_to_float_ex(const uint8_t*,int,int,int*,int*);
+extern "C" float* dequant_i8_4736_to_float(const uint8_t*,int,int,int*,int*);
 
 // ── Q4NX tile dequant matching the 1BP writer (gguf_to_onebp.cpp) ──
 // Tile = [32 rows × 256 cols], 5120 B/row: tr*grps*2 B bf16 scales + same
@@ -1096,12 +1097,16 @@ int main(int argc,char**argv){
         fprintf(stderr, "[shapes] std_l=%d of NC=%d (gdn layers=%d)  q_i8=%d k_i8=%d v_i8=%d\n",
                 std_l, NC, ngdn, q_i8, k_i8, v_i8);
     }
-    // Fallback: GDN fused QKV (try both name forms)
+    // Fallback: GDN fused QKV (try both name forms). Looked up ALWAYS, not only
+    // when q_i8<=0 — hybrid models (Qwen3.5) have BOTH a STD q_proj (full-attn
+    // layers) AND a linear_attn.qkv_proj (GDN layers); gating on q_i8<=0 left
+    // qkv_fused_i8=0 and silently skipped every GDN layer's pack.
     int qkv_fused_i8 = 0;
-    if (q_i8 <= 0) {
+    {
         int a = gi8("model.layers.0.linear_attn.qkv_proj.weight");
         if (a <= 0) a = gi8("model.layer.0.linear_attn.qkv_proj.weight");
-        q_i8 = a; qkv_fused_i8 = a;
+        qkv_fused_i8 = a;
+        if (q_i8 <= 0) q_i8 = a;
     }
     int o_i8=gi8_std("self_attn.o_proj.weight"),g_i8=gi8_std("mlp.gate_proj.weight"),u_i8=gi8_std("mlp.up_proj.weight"),d_i8=gi8_std("mlp.down_proj.weight");
     // GDN fallbacks (both name forms)
@@ -1110,8 +1115,8 @@ int main(int argc,char**argv){
     if (g_i8 <= 0) g_i8 = gi8("model.layer.0.self_attn.gate_proj.weight");
     // Qwen3.6 uses 3D Q4NX shapes [tile_rows, tile_cols, bytes].
     // gi8 returns shape[0] (tile_rows); multiply by tile_cols = in_features/256.
-    // Only for 3D-shape models (MoE); 2D-shape models (Qwen3) have cols already included.
-    if (cfg.has_moe) {
+    // Only for 3D-shape models (MoE + the GDN Qwen3.5); 2D-shape models (Qwen3) have cols already included.
+    if (cfg.has_moe || cfg.has_gated_delta_net) {
     int q_cols = H / 256;      // 8 for H=2048
     int o_cols = (NH * HD) / 256; // 16 for NH*HD=4096
     int d_cols = IM / 256;     // 2 for IM=512
@@ -1711,6 +1716,7 @@ struct Bf16Ctx {
     if (!cpu_gemm_fallback && !bf16_only) {
     auto dq = [&](uint64_t off, int i8_rows, int in_features, int* or_, int* oc, bool is_q8_0) -> float* {
         if (is_q8_0) return dequant_q8_0_to_float_ex(i8p(off), i8_rows, in_features, or_, oc);
+        if (cfg.has_i8_4736) return dequant_i8_4736_to_float(i8p(off), i8_rows, in_features, or_, oc);
         return q4_dequant_geom(i8p(off), i8_rows, in_features, cfg.cpt, or_, oc);
     };
     bool use_q8 = cfg.has_moe;  // MoE models use Q8_0 for attention projections
@@ -1734,6 +1740,19 @@ struct Bf16Ctx {
             transpose_pack(qkv_w, gdn_k_off, H, w.data(), t, 0);                     // Q
             transpose_pack(qkv_w + (size_t)gdn_k_off * H, gdn_k_off, H, w.data(), t, gdn_k_off);  // K
             transpose_pack(qkv_w + (size_t)gdn_v_off * H, gdn_v_off, H, w.data(), t, gdn_v_off);  // V
+            // The GDN fused QKV also packs q+k+v = 2*NH*HD = 8192 rows into a
+            // context sized for the plain layout (6144); widen exactly like the
+            // STD fused branch (dimension-keyed xclbin, shape set before init).
+            if (cq.ND < t) {
+                std::string xp_w = xd + "/final_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".xclbin";
+                std::string ip_w = xd + "/insts_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".txt";
+                fprintf(stderr, "  layer %d GDN: widening QKV context %d -> %d rows\n", l, cq.ND, t);
+                cq.KD = H; cq.ND = t;
+                if (!cq.init(dev, xp_w.c_str(), ip_w.c_str(), 4, NC)) {
+                    fprintf(stderr, "FAIL QKV (GDN widening to N=%d, need %s)\n", t, xp_w.c_str());
+                    free(qkv_w); free(ow); continue;
+                }
+            }
             FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
             free(qkv_w);
             // O projection
