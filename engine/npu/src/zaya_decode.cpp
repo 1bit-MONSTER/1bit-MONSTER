@@ -1386,6 +1386,26 @@ int zaya_decode_main(int argc, char** argv) {
                                         fprintf(stderr, "\n[C2gate] corr=%.9f bad=%lld/%d worst=%lld %s\n",
                                                 cr, bad, d.H, worst,
                                                 bad ? "MISMATCH" : "BYTE-IDENTICAL corr=1.0");
+                                        // FAIL CLOSED (issue #2307). This gate exists because the int4
+                                        // split path's C2 must be exact — "All-integer: MUST be exact"
+                                        // above — and it is measured wrong in every element on the
+                                        // current artifact (bad=2048/2048). Continuing means emitting
+                                        // tokens the engine has just proved wrong and exiting 0, which is
+                                        // a silent wrong-output path: worse than a refusal, and the one
+                                        // thing this issue asked to decide. NPU_FUSED_I4_ALLOW_BAD=1
+                                        // keeps the old report-and-continue behaviour for diagnostics.
+                                        if (bad && !(getenv("NPU_FUSED_I4_ALLOW_BAD") &&
+                                                     atoi(getenv("NPU_FUSED_I4_ALLOW_BAD")) == 1)) {
+                                            fprintf(stderr,
+                                                    "[C2gate] REFUSING to continue: %lld/%d int32 C2 elements "
+                                                    "mismatch (worst=%lld). The int4 split path is known-broken "
+                                                    "(issue #2307) and would emit tokens it has just disproved. "
+                                                    "Use the fused path (NPU_FUSED=1, without NPU_FUSED_I4=1) or "
+                                                    "the int8 split path (no NPU_FUSED); set "
+                                                    "NPU_FUSED_I4_ALLOW_BAD=1 to continue anyway.\n",
+                                                    bad, d.H, worst);
+                                            exit(2);
+                                        }
                                     }
                                     // B_shadow probe: host B'' for tile 0,
                                     // rows 0-7 cols 0-7 (row-major [K*N]).
