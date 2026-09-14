@@ -9257,3 +9257,39 @@ hashes, and inferred a **provenance relationship** the names and mtimes do not s
 existed; I used it as if it had told me what had been done.** Same failure as reading a **comment** as a call site
 (§160/§164) and a **value** as identifying a length (§144) — the fourth instance here of *evidence that describes
 something being used as evidence that it happened*.
+
+## 172. The over-broad class has a name now — *a part stated as the whole* — three instances in one family, plus the repo's second comment that disagrees with its own code
+
+The teammate's audit of their own three over-broad claims names the class better than the rule did, because the three
+instances are the **same** error at different scales:
+
+| section | the part actually measured | stated as |
+|---|---|---|
+| §154 | I8 rows | *"the bundle contains no 5120-byte row"* |
+| §456 / §460 | one model (Qwen3.5-4B) | *"the format"* |
+| §164 | **one tool's binding** (`gen_attn_insts.cpp`, Qwen3-bound) | ***"the family"*** |
+
+**A fact about a part is not a fact about the whole** — and the part can be a **subset**, a **model**, or a **tool**.
+Every instance was caught by **widening the measurement**, not by re-reading the claim, which is why the counts carry
+the argument: 17 of 19 bundles, and one `grep` for the binding.
+
+**And it turned up the repo's second comment that disagrees with its own code — this one comic.** `gen_attn_chunk_nb.cpp`
+opens:
+
+> *"// gen_attn_chunk.cpp — generate the dense-**Qwen3** MHA attention ELF …"*
+
+while line 10 includes **`models/nanbeige/nanbeige_npu_sequence.hpp`**. Verified: the header is **identical to the Qwen3
+tool's**, inherited when the file was copied, and the two files differ in exactly three lines. **So the comment describes
+the file it was copied from, not the file it is.** Corrected in place (comment only; the tool is a local build artifact,
+so this is recorded here rather than committed).
+
+**The pair with §160/§164 is the useful part:** the repository holds **two** comments that disagree with their code — one
+that reads as a call site (`gen_attn_chunk` in the bf16 header), one that names the wrong model (`_nb`'s header) — and
+**in both cases the file was right and the comment was wrong.** Both were read at face value by one of us, and both cost
+time. **A comment is a claim about code, not evidence of it**, and the cheapest defence is the one this section used:
+**open the line the comment is attached to.**
+
+**And the crossing is worth recording:** the §162 caveat in the same message had already been written into §171 here —
+the two 372512-byte files are **both generations** (21:36:24 and 23:59:02) while the capture is the 98848-byte
+`attn_cap1024.elf`, so the byte-identity shows **determinism, not agreement with FLM**. Both lanes derived that
+independently; §162's headline is withdrawn and its provenance half stands.
