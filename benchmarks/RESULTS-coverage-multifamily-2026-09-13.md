@@ -13123,3 +13123,47 @@ same design compiles first time.
 **Without that control this entry would read "the xclbin cannot be built"** — a **failed instrument read as a refuted
 hypothesis**, which is precisely the shape this log has been careful about all session, and the third time in this stretch
 that a control or a demotion rather than an argument produced the right answer.
+
+## 825. RESOLVED: Llama-3.1-8B's gate is REPRODUCIBLE — `Prefill 1024 [runlist]` → `[1] 220`, FLM's exact reference
+
+**Both missing build products are now in place, and the gate runs.**
+
+**(1) The five shape xclbins are rebuilt and committed** (§820). **(2) The per-context layer ELFs generate in two seconds
+once the generator is linked against the right library tree:**
+
+```
+$ g++ -O2 -std=c++17 -include climits gen_layer_elfs.cpp -o gle_all \
+    -I .../fastflowlm/src/include -I .../npu_utils -I/usr/include/aiebu \
+    -L/home/bcloud/amd-oss/fastflowlm/src/lib/xrt \
+    -lqwen3_npu -lllama_npu -lnanbeige_npu -lphi4_npu -lqwen3_6_moe_npu \
+    -lgemma4e_npu -lgemma_text_npu -llfm2_npu -lgemm -lmha -lq4_npu_eXpress \
+    -laiebu -lxrt_coreutil -lxrt_core -Wl,-rpath,<same>
+$ gle_all <Llama-3.1-8B-NPU2> <outdir> 1 1024 32768 llama     # 2 s, 2049 files, 457 MB
+```
+
+**And with `NPU_LAYER_ELF_DIR` pointed at it:**
+
+```
+=== Prefill 1024 [runlist] ===
+Prefill: 94213ms (92 ms/tok)
+  [1] 220
+```
+
+**`[runlist]`, not `[fallback]` — and `220`, FLM's exact reference.** So **the scorecard's Llama-3.1-8B row is
+re-verifiable**, the *"Working (6)"* claim stands, and §815's *"cannot run"* is **resolved rather than merely explained**.
+
+**And the two controls that got here are the entry's real content, because each one caught a false blocker:**
+
+| what I was about to record | the control | the actual cause |
+|---|---|---|
+| *"the xclbin cannot be built"* | the **same command** on the known-good `qwen3.5_4b` K=2560 shape failed identically | **wrong `aiecc`** — `install_tmp`, not `build_tmp` |
+| *"the generator crashes on the llama family"* | the **same binary** on **qwen3** — the family that works — crashed identically | **wrong lib tree** — `flm-v0946` instead of `amd-oss` |
+
+**Both times the failure looked family-specific and was toolchain-specific**, and both times a **known-good case run
+through the same pipeline** is what said so. That is four times in this stretch that a control, not an argument, produced
+the right answer — and the shape it guards against is the one this log has been careful about all session: **a failed
+instrument read as a refuted hypothesis.**
+
+**And the honest remainder**: this restores the **prefill gate**. The **decode** row is still 5 of 6, and for the reason
+§9.3 already gives — the run continues into a `fallback prefill` phase for decode, which is why the run still exits on
+timeout. **Prefill: restored. Decode: unchanged and documented.**
