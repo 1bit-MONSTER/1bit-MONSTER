@@ -14418,3 +14418,60 @@ bytes for I8 and elements for BF16"*, and `row_bytes/20` derives the tile width 
 packing code**: the STD path expects a 2-D `[rows, cols]` and receives a 3-D packed layout, so the count it computes is
 meaningless and the branch it takes is the wrong one. **That is a much narrower target than "the format cannot be expressed",
 and it is the last thing standing between this model and the packing it needs.**
+
+## 995. The GDN detection never fired — the same name-form bug as §985, in a different place — and the last step is described by an EMPTY-BODIED COMMENT
+
+**The debug print settled it in one line:**
+
+```
+[shapes] std_l=0 of NC=32 (gdn layers=0)  q_i8=0 k_i8=0 v_i8=0
+```
+
+**`gdn layers=0` — the hybrid structure was never recognised at all.** And the cause is the **same singular/plural mismatch**
+§985 fixed, in **a different place**: the GDN detection calls `jo()` **directly** with only
+`model.layer.%d.linear_attn.qkv_proj.weight` (**singular**) while this model's JSON uses `model.layers.%d…` (**plural**). `jo()`
+returned 0, `is_gdn_layer[]` was never set, and **the standard-attention path was used for the entire model.**
+
+**And why §985's fix did not help, which is the part worth keeping**: fixing `gi8()`'s fallbacks made the **shapes** resolve,
+but the **layer-type vector** is computed from these direct `jo()` calls — so `std_l` stayed **0** (the "first non-GDN layer"
+was layer 0 **because nothing was marked GDN**) and the lookups went straight back to layer 0's absent tensors. **The two
+fixes are independent and I had only made one.** A fix that removes the symptom of a *different* cause is not progress; it is
+a shorter path back to the same wall.
+
+**After the fix:**
+
+```
+[shapes] std_l=3 of NC=32 (gdn layers=24)  q_i8=256 k_i8=32 v_i8=32
+```
+
+**24 of 32 is exactly the model's 3:1 pattern** (`32 × 3/4`), and **`std_l=3` is its first `full_attention` layer.** The
+detection is not merely firing — **it is correct, and the count matches an independent fact about the model** (its
+`layer_types` list).
+
+**And the remaining step is specified by a comment that has no body.** `gi8()` contains:
+
+```c
+if (r > 0) {
+    // Handle 3D Q4NX shapes [tile_rows, tile_cols, bytes]:
+    // Multiply by tile_cols if present (Qwen3.6 uses 3D, Qwen3 uses 2D).
+    // Default tile_cols = in_features / 256. Compute from known dims.
+}
+```
+
+**The rule is written down and never applied.** `r` stays `shape[0]` — **256** for `q_proj`'s `[256,10,4736]` — where the
+packing needs `256 × 10 = 2560`. **The work is described, not done**, which is this log's *"a comment is a claim about code,
+not evidence of it"* in its most literal form: **here the comment is evidence of an intention, and the code shows it was
+never carried out.**
+
+**So the Qwen3.5-4B chain now stands at five engine-side fixes, all gate-verified**, with **one step left, and that step has
+a written specification in the source**: apply `tile_cols` for 3-D shapes.
+
+| # | fix | evidence it took effect |
+|---|---|---|
+| 1 | `derive_xclbin_dims()` on every config path | `KD=2560 ND=6144` (was 0) |
+| 2 | four shape xclbins built | the run reaches the layer packing |
+| 3 | zero-row dequant guard | a segfault becomes a per-layer diagnostic |
+| 4 | STD lookups from the first non-GDN layer | `unresolved-shape skips: 0` |
+| 5 | **GDN detection tries both name forms** | **`gdn layers=24`, `std_l=3` — the 3:1 pattern** |
+
+**All ten gates still match FLM's references after every one of them.**
