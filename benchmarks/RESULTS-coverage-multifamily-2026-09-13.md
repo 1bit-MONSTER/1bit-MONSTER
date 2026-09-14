@@ -8563,4 +8563,4 @@ cleared** and the gate is left holding the defect on its own.
 
 **Caveat, because these are pimpl headers**: the accessors give the **structure** — four regions, K before V, halves
 0–3 and 4–7 — and **not the offsets' values.** So this settles the convention and not the arithmetic, which is the
-same boundary §157 drew for the sequence generator.
+same boundary §158 drew for the sequence generator.
