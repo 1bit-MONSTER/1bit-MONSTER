@@ -12903,3 +12903,39 @@ supporting fact.**
 is always 256 rows), which is **2048 bf16 per row**, and **q is 2560** — so **512 words per row are never written and that
 is the 20%.** Those are measurements. **`2048 / 128 = 16` is arithmetic. Calling 16 "heads" is the step that is still
 untested, and the test that would settle it is not currently available.**
+
+## 795. Attribution RESOLVED: the active artifact is the 256-row nh16 ELF, and the write is EXACTLY 4× its declared arg0 — the 4× unroll, measured directly
+
+**The full load log says only three distinct artifacts are loaded, all at init:**
+
+```
+ 12  attn_mha_1024_nh20_hd128.elf   177728 B
+ 13  attn_mha_1024_nh20_hd128.elf   177728 B
+ 14  attn_mha_2048_nh16.elf         194736 B
+ 15  attn_mha_256_nh16.elf           26928 B     <- the ONLY one usable at 256 rows
+```
+
+**At 256 rows the selector can only pick `attn_mha_256_nh16.elf`** — the sole artifact at or below that length — and **its
+declared `arg0` is 64 patches × 4096 B = 262,144 B = 131,072 bf16.**
+
+**The measured write is 524,288 bf16 — EXACTLY 4× that.** So **the 4× unroll of §197 is measured directly, as a write
+volume**, and it also explains what looked like an exact match in §785/§790: **the 1024-context nh16 artifact's total is
+524,288 bf16, which is 131,072 × 4.** The match is **real**, and its owner is **the unroll factor, not a loaded
+1024-context file** — the 1024-nh16 ELF is **not in the load list at all.** My §785 called it *"the 1024-context nh16
+artifact: exact match"*; the number is right and **the attribution was wrong by one multiplication.**
+
+**And the shape of the defect follows from the write being a FIXED TOTAL, not a per-row quantity:**
+
+| rows the engine gives | write | per row | q | covered |
+|---|---|---|---|---|
+| **256 (the only call size)** | 524,288 | **2048** | 2560 | **80%** |
+| 1024 (never happens here) | 524,288 | 512 | 2560 | 20% |
+
+**The kernel moves the same 524,288 elements whatever the row count**, so *the fraction of `q` it covers is a function of
+the call size* — and **the engine always calls 256 rows**, giving **80% at every prompt length.** That is why the defect
+looks identical at 256 and at 1024, and it is the mechanical reason the earlier length-sweeps found nothing new.
+
+**So the corrected statement of the capstone**: the artifact's declared output capacity is **131,072 bf16**, the kernel
+transfers **4× that** (524,288 = **2048 bf16/row** over the engine's 256 rows), and `q` is **2560/row** — **512 words per
+row never written, which is the 20%.** The write, the row count, and `q` are all measured; **the 4× is the unroll; and
+`2048/128 = 16` remains arithmetic whose naming as "heads" is still untested.**
