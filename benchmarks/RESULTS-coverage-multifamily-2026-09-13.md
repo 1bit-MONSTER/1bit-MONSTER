@@ -11626,3 +11626,34 @@ requires. The "material reading is refuted / binding stays correct" pairing mixe
 with **the frequency right and the arguments wrong**, which is a stronger and more specific statement than either
 "correct" or "wrong" alone. **`arg5` has now been read as three different values (30 MB, 16 MB, 64 MB) in the same
 exchange**, which is the same lesson at one remove: **an argument's value is only as good as the run it was read from.**
+
+## 212. The ELF's descriptors carry DIRECTIONS — and they say the kernel's output is its `arg0` write, whose volume fits a 5 MB BO rather than FLM's 1 MB `arg3`
+
+The decoded patches have a `direction` field that no earlier section used, and it answers the role question from inside the artifact:
+
+| descriptor `arg_idx` | patches | geometry | direction | total |
+|---|---|---|---|---|
+| **0** | 512 | `dim0 64 / dim1 64 / dim1_stride 1280` | **S2MM** (write to memory) | **2.00 MB** |
+| 1 | 512 | same | **MM2S** (read) | 2.00 MB |
+| 2 | 128 | `dim0 64 / dim1 128 / dim1_stride 128` | **MM2S** (read) | 4.50 MB |
+
+**So the kernel's `arg0` is a WRITE — its output — and `arg1`/`arg2` are reads.** That is a property of the artifact, not an
+inference from a boot value, and it is the first time this lane has had the kernel's own statement of which slot is which.
+
+**And the write volume discriminates between the two `arg3` readings.** The write totals **1,048,576 elements = 1,024 per
+token** at `npt = 1024` — i.e. **2.00 MB, which fits the 5 MB BO and not the 1 MB one.** FLM handed this kernel
+`(arg3 = 1 MB, arg4 = 5 MB)`; **the output volume does not fit `arg3`.** So **the output slot is the 5 MB argument — FLM's
+`arg4` — while the engine reads its answer from the buffer it passes at `arg3`.** That is the same conclusion §175's swap
+pointed at when it moved the boot, now with the artifact's own direction field behind it.
+
+**Two things kept separate, because they are not the same kind of claim:**
+
+- **measured from the artifact:** the directions, the geometries, and the three totals (2.00 / 2.00 / 4.50 MB);
+- **inferred:** the `arg_idx` → BO mapping. **A size fit is a hypothesis** — the descriptor totals are 2.00 / 2.00 /
+  4.50 MB against BOs of 1 / 5 / 30 MB, so no one-to-one correspondence exists and the write's *fit* to the 5 MB slot is
+  the only alignment available.
+
+**And one numerical coincidence worth recording without leaning on it:** `1,024 elements per token` is exactly the
+per-row NaN count of §204 scaled to the engine's 256-row call — **256 × 1,024 = 262,144, the measured NaN total.** Whether
+the kernel's write region *is* the NaN region is not established; **the two numbers agree, which is a hypothesis worth a
+test, not a finding** — and this lane has paid for that distinction repeatedly.
