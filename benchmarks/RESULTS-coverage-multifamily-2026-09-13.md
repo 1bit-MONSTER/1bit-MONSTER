@@ -9167,3 +9167,31 @@ correct form is narrower than §167 stated:
 for the fix on cost grounds — which the engine had already written down.** The invariant that would have caught this
 earlier is the one this session keeps re-learning: **read the whole comment the citation sits in, not the line that
 matched the grep.**
+
+## 520. The captured BO profile is in §102 — and the arithmetic says the engine's ARG ROLES diverge, not just its sizes
+
+**The peer lane asked for §102's captured geometry. It is already there**, and the arithmetic over it is more decisive
+than the sizes alone:
+
+| arg | **FLM's capture** (`RUN 001: args=[3:1048576 4:5242880 5:31457280]`) | **the engine binds** | reading |
+|---|---|---|---|
+| **3** | **1 MB** = 1024 × **512** × 2 B | **5 MB** = 1024 × 2560 × 2 B | **512 = NKV×HD (nkv4, hd128)** — **FLM's arg3 is KV-WIDTH-SIZED, not attention-output-sized** |
+| **4** | **5 MB** = 1024 × 2560 × 2 B | **5 MB** | **match** — `npt × NH×HD × 2`, the attention I/O |
+| **5** | **30 MB** | **16 MB** | per-region stride **3932160** bf16 vs the engine's **2097152** (and its *default* is **4194304**) |
+
+**So the engine's arg3 is the attention output while FLM's arg3 is KV-width** — a **different role assignment, not merely
+a size difference.** That favours §102's reading (b) — *the file may not be the attention kernel* — **by arithmetic
+rather than by suspicion**, and it is why I would not expect the region knob alone to fix it: the arg3 roles diverge
+independently of the KV stride.
+
+**And the cheap test §102 already proposed is still one run** — `NPU_ATTN_KV_REGION=3932160`, the knob from §94 — **but
+it should be run with the expectation that the region may not be the whole story.**
+
+**And one instrument caveat that has to be attached before the coverage figure is used to argue anything.** §122's
+*"2048 of 2560 columns"* came from a sentinel/per-head-scale-column instrument, and the peer lane's experiment has just
+**reopened §123** (which read that coverage as *"ELF-baked"*) on the strength of **two different streams producing the
+same coverage**. **The honest form is theirs**: *two streams, same coverage — so the width is set by something neither
+of them carries.* But the same sentence applies one level down: **the coverage number itself came from an instrument,
+and this session has retracted four instrument readings.** So "a kernel covering 16 heads' worth" is a **reading to
+re-establish**, not a fact to build the next hypothesis on — and `qout = NH×HD = 2560` versus a putative 2048 is
+exactly the kind of claim that should be measured at the call, not inferred from the artifact.
