@@ -13625,3 +13625,50 @@ correct basis:   q=0   k=144   v=180   o=216   down=2304
 **That mismatch is the next fix, and it is named rather than inferred** — which is the whole difference this instrument
 made. `RT_PACK_DEBUG` is left in, env-gated and silent by default, because the next person to hit a packing fault should
 not have to guess which projection it was.
+
+## 890. THE DETOUR, and its cause: a STALE `NPU_XCLBIN_DIR` from a sibling worktree — three verified commits reverted over a broken measurement
+
+**This is the most expensive instance of the session's dominant error class, and it should be read as a procedure, not an
+anecdote.**
+
+**What happened, in order:**
+
+1. Gemma3-1B's crash was traced, instrumented, and fixed twice; the second fix made **all 26 layers pack**.
+2. A gate check then reported **Nanbeige as `<none>`** — no token — and I called it a **regression**, reverted the
+   tile-rule work, rebuilt, and found it **still failing**. Reverted more. **Three verified commits, undone.**
+3. Reverting *all* of `model.c` did not help either — which should have ended the code hypothesis immediately.
+4. The engine was in fact **fine the whole time**: run directly, Nanbeige returns **`[0] boot=5938`**, and it always had.
+
+**The cause, once found, is one line:**
+
+```
+NPU_XCLBIN_DIR=/home/bcloud/1bit-MONSTER-pi/engine/npu/xclbins      <- A SIBLING WORKTREE
+I8Ctx: xclbin/kernel init failed: No such file
+  '.../1bit-MONSTER-pi/.../final_i8_QKV_K2560_N3584.xclbin'
+```
+
+**My hand-run checks re-exported the correct directory in the same command, so they passed. The harness — and every
+reverted-commit diagnosis — inherited the stale value and ran against another tree's xclbins.** Two measurements of the
+same binary disagreed, and **I trusted the one that said the code was broken.**
+
+**Three separate measurement defects compounded it**, and each is now fixed in `benchmarks/gate-check.sh`:
+
+| defect | what it did |
+|---|---|
+| **inherited `NPU_XCLBIN_DIR`** | ran the harness against a sibling worktree's xclbins; every model failed at init |
+| **a hand-rolled parser accepting only `[1] <digits>`** | returned **empty** for Nanbeige, which prints `[0] boot=5938` — an absent value read as a wrong one |
+| **no isolation re-check** | a device-state artefact and a real regression were indistinguishable |
+
+**And the rule this is the strongest case for**, which the log has now earned five times in one day: **a failed measurement
+is not a refuted hypothesis.** The engine never changed; what changed was which directory a shell variable pointed at. **The
+check that would have caught it in one step is the one now built into the harness — re-check any failure in isolation, and
+name the environment it ran under.**
+
+**Verified after the fix, on this repo's own xclbins: all ten gates match FLM's exact references** — Qwen3-0.6B 25/1614,
+1.7B 220, 4B 1614/220, 8B 220, VL-4B 220, **Nanbeige 1033/5938**, Llama-3.1-8B 220.
+
+**And a consequence for the record, stated plainly:** the **tile-rule work stays reverted**, because **its verifications
+were run under the wrong xclbin directory and are therefore void** — including the run that showed 26 layers packing. The
+`% G` reorder fix **is** restored and **is** re-verified above, because it is independently reasoned and its behaviour
+change (the fault moving) was observed in a way the path error cannot explain. **Nothing else from that line of work is
+claimed as verified.**
