@@ -13985,6 +13985,12 @@ printed nothing; `RT_ARGMAX_MARGIN=1` is the one that reports values on stderr. 
 
 ## 940. ROOT CAUSE of Gemma3-1B's zeros: the lm_head's INPUT is non-zero and its OUTPUT is zero — and the logits BO is 64 elements short of the model's vocab
 
+> **THE SIZING CLAIM IS WRONG — see §945. It is a UNITS ERROR**: the BO is **1,048,576 BYTES = 524,288 bf16 ELEMENTS**,
+> which is **twice** the model's 262,208-element vocab. **The buffer is ample; the `lm_head` simply produces nothing.**
+> What stands from this section is the **measurement**: a **non-zero input**, a **live KV**, and an **all-zero output** at
+> **every** ctx.
+
+
 **`RT_DUMP_POST` dumps exactly the two values the logits depend on, and the three datasets are decisive:**
 
 | dump | size | measurement |
@@ -14019,3 +14025,35 @@ defect (§890-§930), which was also correct until `shape[1] != 5120`.
 **The fix direction, not applied here**: size the logits BO from the model's **actual** vocab, and stop rounding `NV` down to
 a power of two. **What this section establishes is the measurement, not the patch** — a non-zero input, a zero output, a BO
 sixty-four elements short, and a hardcoded constant that the model it is now running exceeds.
+
+## 945. CORRECTION to §940: a UNITS ERROR — the logits BO is TWICE the vocab, not 64 short, so the `lm_head` produces nothing from an ample buffer
+
+**§940 said the logits BO was *"64 elements short of the model's vocab."* That is wrong, and the error is the kind this log
+keeps collecting.**
+
+```
+BO size      = 1,048,576 BYTES = 524,288 bf16 ELEMENTS
+model vocab  =   262,208 ELEMENTS
+=> the BO is TWICE what the model needs
+```
+
+**I compared a byte count against an element count.** 1 MB is **524,288** bf16 elements, not 262,144 — I read the byte figure
+as an element figure and then subtracted the vocab from it. **The buffer is ample; the dump is ample; and both are entirely
+zero.**
+
+**Same shape as §220's count-versus-stride**, and the same fix: **ask what KIND of number each side is before comparing
+them.** §940's own arithmetic should have caught it — a 1 MB bf16 buffer cannot hold 262,144 elements, it holds twice that —
+and the tell was there: `262208 - 262144 = 64` looked like a tidy alignment story, which is exactly the kind of coincidence
+that makes a wrong reading feel confirmed.
+
+**So what the dumps establish, corrected and without the sizing story:**
+
+| | |
+|---|---|
+| **`act_post_*`** — the `lm_head`'s input | **576 / 1024 non-zero** |
+| **`kv_post_*`** — the KV | **non-zero, growing 128 × ctx** |
+| **`logits_post_*`** — the `lm_head`'s output | **zero at every ctx, with a buffer twice the size needed** |
+
+**A non-zero input, a live KV, an ample output buffer, and an output of nothing.** The fault is therefore **in the `lm_head`
+call itself** — its arguments, its weight BO, or the ELF it runs — and **not in any buffer's size.** That is a narrower place
+to look than §940 left, and it is narrower *because* the wrong claim was checked.
