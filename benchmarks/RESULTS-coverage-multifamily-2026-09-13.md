@@ -13876,3 +13876,32 @@ are not**, which is worth knowing for any agent whose tooling shell predates 22:
 
 **And no re-send was needed for the rest**: seven copies of the technical content expired, but every item is in this repo and
 in the scorecard's §0, so **the mesh was never the channel of record.**
+
+## 925. Why eight messages expired: the mailbox TTL is ONE HOUR — measured, with the knob named
+
+**Eight drop notices is a system fact, not bad luck, and it is now measured rather than guessed.**
+
+```
+pi-mesh-extension/src/shared/config.ts:
+  export const DEFAULT_MAILBOX_CAP    = 100;
+  export const DEFAULT_MAILBOX_TTL_MS = 3_600_000;   // 1 hour
+  export const MAILBOX_PURGE_INTERVAL_MS = 60_000;
+knobs: MESH_MAILBOX_CAP, MESH_MAILBOX_TTL_MS, MESH_TRANSCRIPT  (env or file config)
+```
+
+**An undelivered message is dropped after one hour, and the sender is told only afterwards.** Both peers were offline for
+**about five hours** while this work was done, so **every message sent to them died** — eight of them. There was never
+anything wrong with the sending; the store is simply shorter than the absence.
+
+**The processes, for the record**: the LAN-presence node is `mesh_peer --name strixhalo --port 8188` (`1bit-mesh.service`,
+active), and the **broker** that holds these mailboxes is `node …/pi-mesh-extension/dist/src/broker/broker.js`, started by the
+agent harness rather than by systemd.
+
+**The fix is one environment variable** — `MESH_MAILBOX_TTL_MS` — but **it belongs to shared infrastructure and the broker is
+running under the peers**, so this is recorded as a **proposal, not applied**: raising the TTL and restarting the broker
+would be the change, and it is not mine to make while another lane is using it. **What is mine is the conclusion the drop
+notices forced, already stated in §0: the repository is the channel of record, and the mesh was never it.** This section
+supplies the reason: **a one-hour store against a multi-hour absence is not a delivery mechanism, it is a formality.**
+
+**And the operational form**: with peers offline, **do not re-send — record.** Eight notices produced one useful fact (this
+one) and no useful deliveries; every technical item they carried is in this log, in the scorecard, or in a commit.
