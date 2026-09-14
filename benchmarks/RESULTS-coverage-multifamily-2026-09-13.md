@@ -11758,7 +11758,7 @@ regardless of head count, against 0.38 MB at 256 tokens — **a token-count-driv
 (×4 tokens → ×11.8 bytes), which is the shape an attention-sized read has. **Recorded as an observation**, since the
 clean test of it is the 512- and 2048-context artifacts rather than an argument.
 
-## 215. §212's size-fit does not discriminate INSIDE the engine — both its slots are the same 5 MB cap — so the role was tested by the swap and the SIZE is what has never been presented
+## 662. §212's size-fit does not discriminate INSIDE the engine — both its slots are the same 5 MB cap — so the role was tested by the swap and the SIZE is what has never been presented
 
 §212 concluded that the write's 2.00 MB volume *"fits the 5 MB BO and not the 1 MB one"*, and read that as identifying the
 output slot. **That inference holds against FLM's pair `(1 MB, 5 MB)` and does not hold against the engine's**, because the
@@ -11826,3 +11826,49 @@ carries it in a section the decoder does not read); FLM's own call site for this
 contain; or an empirical search over the two mappings — **and the last is the one this lane's history argues against**,
 since every perturbation so far has landed on `188` or `152432` and the search space has two destinations rather than
 many.
+
+## 671. RETRACTION of §665, and the mechanism: a cumulative log line's TAIL is its current value, its HEAD is history
+
+**The peer is right and §665 is withdrawn in full.** `elf_0011`'s own signature is `(5,242,880 · 5,242,880 · 67,108,864)`,
+and the manifest's own run line shows why §102 and I both got it wrong — **the line ACCUMULATES**:
+
+```
+917: RUN 001: args=[3:1048576 4:5242880 5:31457280 ]             <- the PREVIOUS kernel's run
+918: ELF 0011: size=177728 -> ...                                <- the label for the NEXT run
+924: SETARG idx=3 size=5242880   ┐
+925: SETARG idx=4 size=5242880   ├─ THIS ELF's run
+927: SETARG idx=5 size=67108864  ┘
+928: RUN 002: args=[3:1048576 4:5242880 5:31457280  3:5242880 4:5242880 5:67108864]
+                    ^^^ history, a previous kernel      ^^^ THIS run
+```
+
+**The label PRECEDES its run**, and the run line **carries every prior run's args** — so **the LAST triple is the current
+run's and every earlier triple is history.** §102 read the head. **§665 read the head again and called it adjacency** —
+the line above the label is the *previous* run's line, which is exactly what adjacency would look like if the log were
+non-cumulative. **It isn't.**
+
+**With the tail rule the count is exact:**
+
+| signature (arg3 · arg4 · arg5) | runs |
+|---|---|
+| (1,048,576 · 5,242,880 · 31,457,280) | 64 |
+| (5,242,880 · 5,242,880 · 31,457,280) | 64 |
+| (22,020,096 · 5,242,880 · 55,574,528) | 64 |
+| (5,242,880 · 22,020,096 · 55,574,528) | 32 |
+| **(5,242,880 · 5,242,880 · 67,108,864) — `elf_0011`'s own** | **32** |
+
+**At positions [4, 12, 20, 28, …, 252] — common difference 8 — and `32 / 32 layers = 1.0`.**
+
+**So the frequency MATCHES exactly: the emulated artifact runs once per layer for a 32-layer model.** *"The wrong artifact
+for the role"* is **refuted**, and §650's conclusion survives — **now resting on repaired evidence rather than on the count
+it was drawn from.** And the residual is **one slot**: `arg3`/`arg4` are **5 MB / 5 MB, matching the engine**; **`arg5`
+differs — 64 MB against the engine's 16 MB — and 64 MB was tested (§183): `152432`, the absorbing attractor.**
+
+**The instrument-level rule, which is new and mechanical:**
+
+> **A cumulative log line's TAIL is its current value; its HEAD is history.**
+
+**And the method lesson is the peer's, and it is the better one:** *"adjacency"* was the wrong instrument — **a label's
+neighbour is ambiguous when the neighbouring lines are cumulative.** What settles it is a **second fact**, not a
+re-reading: **the layer count** (theirs) and **the line's own accumulation semantics** (mine). **Two real instruments,
+each pointed at a question it could not answer — and in both cases the fix was a second fact.**
