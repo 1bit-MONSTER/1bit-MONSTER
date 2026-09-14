@@ -14172,3 +14172,47 @@ artifact is unobtainable from either vendor generator, each refusing with a name
 unaffected.** What the engine side closed along the way — the odd-G reorder, the byte-extent tile count in four functions,
 the lm_head tile count, and the missing-elf silence — are all real repairs with gate-verified no-ops, and they are what let
 the model reach the point where the remaining gap is **this narrow and this well-named.**
+
+## 965. Qwen3.5-4B is not a "format gap" — it is an ENGINE bug, and the engine prints the zero itself: `cq before init: MD=128 KD=0 ND=4608`
+
+**§5 recorded this family as *"boot 0 … its I8 rows are in formats the default dequant cannot express."* The run does not reach
+the dequant. It dies at init, and the engine's own diagnostic names the cause:**
+
+```
+H=2560 NC=32 NH=16 NKV=4 HD=256 IM=9216 NV=248320 GU_split=0 rope_theta=10000000
+  cq before init: MD=128 KD=0 ND=4608
+  creating bA size=0 (MD=128 KD=0)
+[XRT] ERROR: Failed to allocate host memory buffer (mmap_range(len=0) failed (err=-22))
+terminate called after throwing an instance of 'xrt_core::system_error'
+```
+
+**`KD=0` while `H=2560`.** `cq.KD` is copied from `cfg.xclbin_qkv_k`, and that field's derivation is
+`pad128(cfg.H)` — which is **2560**, not zero. So **the copy happens while the field is still at its default**, and the
+`I8Ctx` asks XRT for a **zero-length buffer**, which XRT refuses:
+
+```
+npu_engine_universal.cpp:1257   cq.MD=XM; cq.KD=cfg.xclbin_qkv_k; cq.ND=cfg.xclbin_qkv_n;
+model_config.h:463              cfg.xclbin_qkv_k = ModelConfig::pad128(cfg.H);
+model_config.h:464              cfg.xclbin_qkv_n = ModelConfig::pad128(cfg.qkv_total);
+```
+
+**And the derivations exist in TWO places, neither of which runs for this model** — one at `model_config.h:463`, and a second
+at `:561` under the comment *"Recompute xclbin dimensions (may have been updated by MoE detection)."* **This model is hybrid
+(`layer_types` = three `linear_attention` to one `full_attention`, a 3:1 GDN pattern), so it takes a path where the xclbin
+dimensions are never derived**, and every `I8Ctx` built from them is zero-sized.
+
+**`ND=4608` is the other half of the evidence and it is the more telling one**: a **stale non-zero**. If both fields were
+zero the story would be "nothing ran"; **one field carries a value from somewhere else entirely**, which is what a
+partially-populated config looks like. **The two numbers disagree with each other and neither matches `pad128(H)=2560` /
+`pad128(qkv_total)=6144`.**
+
+**So the row is reclassified**: not a format-selection gap in the dequant, but **an initialisation-order bug in this engine
+that only a hybrid model reaches** — **the same shape as the LFM2 layer-0 defect the code already documents** (*"Hybrid
+models mix layer types: LFM2-1.2B layer 0 is a gated short-conv layer with no q/k/v/o at all… Sizing from layer 0 therefore
+under-allocates"*). **That one was fixed by taking the max over all layers; this one needs the xclbin dims derived on the
+path this model takes.**
+
+**Fix direction, not applied here**: ensure the xclbin-dimension derivation runs for hybrid/GDN models before any `I8Ctx` is
+built, and fail loudly if a context is constructed with a zero dimension rather than letting XRT refuse a zero-length
+allocation deep in `alloc_bo`. **What is established is the measurement**: the engine printed `KD=0`, the code says the field
+should be `pad128(H)=2560`, and the derivations do not run on this path.
