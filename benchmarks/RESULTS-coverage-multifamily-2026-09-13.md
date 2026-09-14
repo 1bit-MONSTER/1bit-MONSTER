@@ -8635,3 +8635,28 @@ path actually uses.
 the support was a file that MENTIONS the mechanism rather than one that RUNS it.** A `grep` hit is not a call site
 (§470's `gen_attn_chunk` match is a comment) — the same distinction as §153's guard that cannot fail and §159's set the
 sentence quantified over: **the evidence sat in the same file as the claim and was not the same kind.**
+
+## 161. The KV-region hedge is refuted by FLM's own header — `v_add=2` is the four-region convention and the knob's `add=1` branch is dead
+
+The teammate read FLM's `nanbeige_npu_sequence.hpp` and found four accessors — `get_k03_offset`, `get_k47_offset`,
+`get_v03_offset`, `get_v47_offset` — i.e. the KV cache is **four regions in the order K03, K47, V03, V47**. Checked
+against the engine's own setup (`npu_engine_universal.cpp`, bf16 attention init), **that is exactly what the engine
+already does**:
+
+> *"bKv places K at region `(kvh<4?0:1)` and V at `region+add`"* — with `add=2`: **K in regions 0–1, V in 2–3.**
+
+The two descriptions are the same layout, and the comment's hedge — *"an nkv4 model (Nanbeige) **may** expect the
+packed K|V layout (add=1)"* — is **refuted by the very model it names**: Nanbeige is nkv4/nh20, its own sequence class
+exposes the four-region split, and `add=2` is correct.
+
+**Corrected in the source** (comment only; default behaviour and the env override are unchanged): the hedge is
+replaced with the refutation, the `add=1` branch is marked **dead**, and the knob is documented as an **inertness
+control that cannot move a meaningful number** rather than as a suspect.
+
+**And the citation is worth noting, because the hedge pointed at retracted work**: it credited *"RESULTS 94/97"* — and
+**§94's KV stride was retracted** (a guessed value rather than a read one; §110 reinstated the captured value). The
+hedge had been resting, in part, on a finding that no longer stood — **the second time this session that a live claim
+turned out to cite a withdrawn one**, which is why the retractions are kept rather than edited away.
+
+**What this clears, and what it leaves:** the **KV region split is cleared** for the nh20 defect — a knob that chased
+it cannot change a meaningful number — leaving the **sticky shape gate** (§470 / §160) holding the defect alone.
