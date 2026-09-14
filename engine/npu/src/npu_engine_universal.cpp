@@ -1712,9 +1712,28 @@ struct Bf16Ctx {
         fflush(stderr);
         // Standard layer: fused QKV in q_proj, split same as GDN
         int qr, qc, or2, oc2;
+        // RT_PACK_DEBUG bisect: the STD-fused block is inlined into main and faulted at
+        // layer 3 with no symbol, so name each step. Silent unless the flag is set.
+        const bool pdbg = getenv("RT_PACK_DEBUG") != nullptr;
+        if (pdbg) fprintf(stderr, "    std: dq(q_proj) off=%llu K=%d\n", (unsigned long long)qp[l], H);
         float* qkv_w = dq(qp[l], q_i8, H, &qr, &qc, use_q8);
+        if (pdbg) fprintf(stderr, "    std: q=%p qr=%d qc=%d\n", (void*)qkv_w, qr, qc);
+        if (pdbg) fprintf(stderr, "    std: dq(o_proj) off=%llu K=%d\n", (unsigned long long)op[l], OIN);
         float* ow = dq(op[l], o_i8, OIN, &or2, &oc2, use_q8);
+        if (pdbg) fprintf(stderr, "    std: o=%p or2=%d oc2=%d\n", (void*)ow, or2, oc2);
         if (!qkv_w || !ow) { free(qkv_w); free(ow); continue; }
+        // A non-NULL dequantized buffer with ZERO rows means the tensor's shape was not
+        // resolved, not that the projection is empty. The branch below then takes the
+        // fused-gate path on a zero-row buffer and faults with no symbol -- observed on
+        // Qwen3.5-4B layer 3 as "qr=0 qc=2560" / "or2=0 oc2=4096". Fail loudly and skip the
+        // layer instead of crashing, so the cause is the message rather than the signal.
+        if (qr <= 0 || or2 <= 0) {
+            fprintf(stderr, "  layer %d STD fused: unresolved weight shape (qr=%d or2=%d) -- skipping layer\n",
+                    l, qr, or2);
+            free(qkv_w); free(ow);
+            continue;
+        }
+        if (pdbg) fprintf(stderr, "    std: branch qr==NH*HD? %d kp=%llu vp=%llu\n", (int)(qr == NH*HD), (unsigned long long)kp[l], (unsigned long long)vp[l]);
 // Plain layout (Qwen3, Llama, Gemma4, …): q_proj=[NH*HD,H] with
         // separate k/v tensors. The dequantized q_proj row count disambiguates
         // it from Qwen3.5/3.6 std-attn layers, whose q_proj fuses the output
