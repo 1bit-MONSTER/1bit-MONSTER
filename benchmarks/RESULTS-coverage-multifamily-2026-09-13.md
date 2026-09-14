@@ -10701,3 +10701,49 @@ size**, not an overshoot — which is why *"sizing past it changed nothing"* is 
 (3,932,160 → 152432; 4,194,304 → 188), so the default happened to work and `6,291,456` is genuinely unknown. **The
 arithmetic predicts the SIZE; it does not predict that the stride is the operative field** — the same role-versus-size
 distinction this thread has been making throughout.
+
+## 625. The position map refutes §182 (their own hypothesis) and MATERIALLY REVISES the session's one measured defect
+
+**My three-capture table verified exactly, both formulas**: `(NH/2)×HD` for arg0/arg1 and `HD×(NKV/4)` for arg2, on
+**three genuine captures** — so the stream carries geometry in **two** fields, and *"not head-blind"* is supported three
+times.
+
+**And the position map they built refutes their own §182:**
+
+```
+[ATTN-SENTINEL] rows=256 q=2560 kept_1.0=131072/655360 nonzero=393216 wrote=524288 -> DID write
+[ATTN-SENTINEL] positions: first_changed=0 last_changed=524287 ; columns_touched=2560/2560 ; untouched_tail_columns=0
+```
+
+**`rows = 256` on a 1024-token prompt ⇒ the engine CHUNKS.** §182 hypothesised a **single** call with `rows = npt = 1024`
+against a member documented at *"≤256 … the caller may pass pointers shifted to a later query block."* **It passes 256 —
+exactly the documented contract.** So **§182 is refuted by its own instrument**, and with it the last structural
+candidate in the single call. *"That is my hypothesis, not yours, and it is the cleanest way I could have been wrong."*
+
+**And the width reading changes, which matters more than the refutation.**
+
+```
+full   = 256 x 2560 = 655,360 words
+wrote  =             524,288      = 80.0%      -> 2048 words per row
+kept   =             131,072      = 20.0%      ->  512 words per row
+```
+
+**§122's *"2048 of 2560 columns"* is right as a PER-ROW COUNT and wrong as a COLUMN MAP.** The kernel wrote
+**2048 words in each of 256 rows**, while **all 2,560 column positions were touched** and the **untouched tail is 0** —
+so the missing words are **not** a 512-column block at the end. **The *"16 of 20 heads"* reading, which made this look
+like an nh16-width kernel, is not supported by the map.**
+
+**And the arithmetic is exact: the shortfall is `512 words per row` — `NKV×HD` for nkv4/hd128, uniquely.** Which leaves
+two readings of the per-row figure `2048` that the map **cannot** separate — **`NH×HD − NKV×HD`** for this model, or the
+**nh16 width** — and one reading of the shortfall `512` that it can: **exactly a KV-width-sized hole in every row.**
+
+**Which is the same quantity that appears in the arg3 finding, and that is the cross-connection worth keeping**: FLM's
+arg3 is sized **`npt × NKV×HD`** (1 MB) and the kernel's per-row shortfall is **`NKV×HD`** (512 words) — **the same
+`NKV×HD`-shaped structure in two places**, against an engine that hands over `npt × NH×HD`. **The two divergences have
+the same shape.**
+
+**So the session's headline "one measured defect" is materially revised**: from *"an nh16-width kernel writing zeros over
+2048 of 2560 columns"* to *"a kernel that writes 2048 words per row into a 2560-word host stride, missing exactly
+`NKV×HD` per row, scattered across all columns rather than as a tail."* **And the map is what survives a sentinel
+collision** — a legitimate output can equal bf16 `1.0`, so `kept` is an **upper** bound on unchanged, which is precisely
+why the position form was the one to build.
