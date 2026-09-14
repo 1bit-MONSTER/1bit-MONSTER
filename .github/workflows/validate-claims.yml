@@ -23,8 +23,6 @@ on:
     paths:
       - "benchmarks/latest.json"
       - "site/numbers.json"
-      - "tools/gen_numbers.py"
-      - "tools/validate_claims.py"
       - "engine/fusion/**"
 
 permissions:

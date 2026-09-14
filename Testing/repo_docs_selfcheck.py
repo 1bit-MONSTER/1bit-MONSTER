@@ -12,7 +12,9 @@ Checks:
      root, the enclosing section's own base, and the doc's directory
   3. commands from bash-fenced / `$ ` lines whose target does not exist
      (CLI subcommands, run.sh, make targets, referenced scripts)
-  4. CI workflows that invoke a script which is not in the tree
+  4. CI workflows that invoke a script which is not in the tree, and trigger
+     `paths:` entries naming files that do not exist (a trigger for a file that
+     is not there can never fire — a gate that silently never runs)
   5. `-D` variables in OUR configure commands that CMakeLists.txt does not
      declare (and that are not standard CMake variables) — a documented knob
      that does nothing;
@@ -117,6 +119,11 @@ GATE_FILES = {"README.md", "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md
 
 def gated(relpath: str, mode: str) -> bool:
     if mode == "all":
+        return True
+    # A CI workflow is not a doc that ages: a trigger naming a file that is not
+    # there, or a step invoking a script that does not exist, is a gate that
+    # silently never runs. Those always gate, wherever they sit.
+    if relpath.startswith(".github/"):
         return True
     if relpath in GATE_FILES or relpath.startswith(GATE_PREFIXES):
         return True
@@ -388,8 +395,19 @@ def main() -> int:
         for i, line in enumerate(lines, 1):
             if re.match(r"^\s*paths(-ignore)?:", line):
                 in_paths = True
-            if in_paths and re.match(r"^\s{0,4}\w+:", line) and not re.match(r"^\s*paths", line):
-                in_paths = False
+                continue
+            if in_paths:
+                entry = re.match(r"^\s*-\s*[\'\"]?([^\'\"\s]+)", line)
+                if entry:
+                    pat = entry.group(1)
+                    # a glob cannot be judged by existence
+                    if not any(c in pat for c in "*?["):
+                        if not (ROOT / pat).exists():
+                            findings.append((str(wf.relative_to(ROOT)), i,
+                                             f"trigger path names nothing: {pat}"))
+                    continue
+                if re.match(r"^\s{0,4}\w+:", line):
+                    in_paths = False
             if line.lstrip().startswith("#"):
                 continue  # a comment may describe a retired script without invoking it
             for m in re.finditer(r"\b((?:scripts|tools|packaging)/[\w./-]+\.(?:sh|py))\b", line):
