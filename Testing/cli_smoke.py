@@ -79,7 +79,11 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=20)
     a = ap.parse_args()
 
-    binary = Path(a.binary)
+    # Resolve first: a RELATIVE --binary makes every symlink created below point
+    # at a path relative to the temp dir, so the symlink half of the check dies
+    # with "No such file or directory" while the subcommand half passes. Caught by
+    # running it the way a human would: `--binary build/1bit`.
+    binary = Path(a.binary).resolve()
     if not binary.exists():
         msg = f"cli_smoke: no binary at {binary} — skipped (the host-only suite does not build one)"
         print(msg)
