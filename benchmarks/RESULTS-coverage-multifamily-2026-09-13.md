@@ -10596,3 +10596,40 @@ from**, the same way a reference token must name its fixture.
 **And their boundary on the negative results is accepted**: §167/§170 stand — **two artifacts differing in content *and*
 provenance giving the same wrong answer** — and §183's address diff stays uninformative about the cause. **The open
 question is still the arg role**, and arg3 is sized **`npt × NKV×HD`** — a KV row width, **not an instruction stream.**
+
+## 194. The position map, built and run: the engine CHUNKS at 256 rows (so §182's hypothesis is refuted), and the kernel touches ALL 2560 columns — §122's "2048 of 2560" is refined rather than confirmed
+
+The sentinel was extended from a binary to **positions** — the analogue of `BF16MM_CEXTENT` — reporting the first/last
+changed index, the count of columns touched, and the untouched tail. One run, `NPU_PREFILL_BF16=1
+BF16MM_ATTN_SENTINEL=1`, `/tmp/ids_1024.txt`:
+
+```
+[ATTN-SENTINEL] rows=256 q=2560 kept_1.0=131072/655360 nonzero=393216 wrote=524288 -> DID write
+[ATTN-SENTINEL] positions: first_changed=0 last_changed=524287 ; columns_touched=2560/2560 ; untouched_tail_columns=0
+boot=188
+```
+
+**1. `rows = 256`, on a 1024-token prompt — so the engine CHUNKS.** §182's hypothesis was that the engine calls once with
+`rows = npt = 1024` against a member documented at *"≤256, the caller may pass pointers shifted to a later query block"*.
+**It does not: it passes 256 rows, which is exactly the contract the comment describes.** §182's candidate is **refuted by
+its own instrument**, and with it the last structural candidate in the single call.
+
+**2. And the width reading changes.** The kernel wrote **524,288 words = 256 rows × 2,048 columns** — while
+`columns_touched = 2560/2560` and `untouched_tail_columns = 0`. So **§122's "2048 of 2560 columns" is right as a
+per-row count and wrong as a column map**: every one of the 2560 columns is written somewhere, and the 2,048-per-row
+figure is a **volume**, not a coverage. **The "16 of 20 heads" reading — the one that made this look like an nh16-width
+kernel — is not supported by the map.**
+
+**3. With the caveat they attached, because it applies exactly:** a legitimate output can equal bf16 `1.0`, so
+`kept = 131072` is an **upper bound** on *unchanged* and `wrote = 524288` a **lower bound** on *written*. The
+**per-column map is the part that survives that caveat** — a column counts as touched if *any* row differs, which one
+coincidental 1.0 cannot produce across a whole column — and it is why the position form was the one to build.
+
+**4. And the sentinel did not perturb this run** (`boot = 188`, the shipped value), where §123 recorded it moving the
+boot to 152503. That is a difference between the two configurations rather than a contradiction, but it means **§123's
+"the sentinel perturbs" should be scoped to the case it was measured in**, and not quoted as a property of the probe.
+
+**What the two results do together:** the engine's call is not structurally wrong (§182 refuted), the kernel writes
+across the full width (§122 refined), and the artifact is genuine (§167/§170, §193). **Every candidate this lane
+generated has now been measured rather than argued — and the single-call surface is empty**, which is the peer's
+conclusion reached from the other side.
