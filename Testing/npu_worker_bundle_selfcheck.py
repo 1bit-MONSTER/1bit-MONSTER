@@ -116,6 +116,11 @@ check("prebuilt/npu_engine_universal" in rel, "release.yml falls back to the ven
 check("packaging/prebuilt/libomp.so" in rel, "release.yml stages the bundled libomp.so")
 check("dist/lib/1bit/libomp.so" in rel, "release.yml puts libomp where the RUNPATH looks")
 check("/usr/lib/1bit" in rel, "the .deb also installs /usr/lib/1bit (the $ORIGIN/../lib/1bit target)")
+# A bare `cp dist/lib/* -> usr/lib/1bit-monster` also copies the 1bit/ subdir, so the
+# .deb ends up with libomp.so twice (caught by rehearsing the recipe with dpkg-deb).
+check("cp dist/lib/*.so deb-build/usr/lib/1bit-monster/" in rel or
+      "dist/lib/1bit/. deb-build/usr/lib/1bit/" not in rel,
+      "the .deb does not sweep dist/lib/1bit into /usr/lib/1bit-monster (duplicate libomp)")
 
 # ── report ────────────────────────────────────────────────────────────────────
 if failures:

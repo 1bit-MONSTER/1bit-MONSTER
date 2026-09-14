@@ -193,7 +193,10 @@ jobs:
 
           mkdir -p deb-build/usr/bin deb-build/usr/lib/1bit-monster deb-build/usr/lib/1bit deb-build/etc/ld.so.conf.d
           cp dist/bin/* deb-build/usr/bin/
-          cp -r dist/lib/* deb-build/usr/lib/1bit-monster/
+          # Only the shared libraries go in /usr/lib/1bit-monster: a bare
+          # `cp -r dist/lib/*` also swept dist/lib/1bit/ in there, so the .deb
+          # carried libomp.so twice (verified with dpkg-deb -c on a rehearsal).
+          cp dist/lib/*.so deb-build/usr/lib/1bit-monster/ 2>/dev/null || true
           # dist/lib/1bit holds the NPU worker's bundled libomp.so; the worker's
           # RUNPATH looks in $ORIGIN/../lib/1bit, i.e. /usr/lib/1bit here.
           cp -r dist/lib/1bit/. deb-build/usr/lib/1bit/ 2>/dev/null || true
