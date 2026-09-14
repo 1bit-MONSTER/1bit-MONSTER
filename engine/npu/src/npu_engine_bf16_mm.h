@@ -360,7 +360,17 @@ struct Bf16Mm {
         // Only the 4 used region heads matter (256 tokens × 4 heads × 128 dims
         // = 256KB each). Copy just those; the rest of the KV BO stays zero.
         const size_t reg = attn_kv_region;                // region stride in bf16
-        const size_t used = (size_t)attn_tokens * 512;    // tokens × 512 bf16
+        // BF16MM_ATTN_KV_PT: elements per token written into each KV region (default
+        // 512 -- behaviour unchanged). RESULTS-coverage-multifamily 184: decoded from the
+        // shipped nh20 ELF, the stream's arg2 descriptors transfer 4.50 MB while this fill
+        // writes 4 regions x attn_tokens x 512 x 2 B = 4.00 MB, so 0.50 MB of what the kernel
+        // reads is never written -- and since attn_kv is memset at :357 that region reads as
+        // ZEROS. 4.50 MB / 4 regions / 1024 tokens = 576 elements per token, so the sweep is
+        // 512 (shipped) / 576 (the stream's implied width) / 640. All six perturbations so far
+        // changed the BO SIZE or the artifact; none changed this number.
+        int kv_pt = 512;
+        if (const char* kvp = getenv("BF16MM_ATTN_KV_PT")) { int v = atoi(kvp); if (v > 0) kv_pt = v; }
+        const size_t used = (size_t)attn_tokens * (size_t)kv_pt;
         for (int r = 0; r < 4; r++)
             memcpy(attn_kv->data() + r * reg, kv + r * reg, used * 2);
         xrt::run run(*kern);

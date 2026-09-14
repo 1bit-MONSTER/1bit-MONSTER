@@ -10287,7 +10287,7 @@ bound** on *"written"*. For a **width** claim — which columns the kernel never
 right probe, and the existing code already trusts it for the binary question. Which is why the **position map** is the
 form to build: it answers the width question without needing the equality to be exact.
 
-## 185. The KV fill volume is INERT (512/576/640/720 → all 188) — so the shortfall is refuted, the contents axis is exhausted, and a pattern separates the two wrong values
+## 188. The KV fill volume is INERT (512/576/640/720 → all 188) — so the shortfall is refuted, the contents axis is exhausted, and a pattern separates the two wrong values
 
 §184's shortfall — the engine writing 4.00 MB where the stream's `arg2` transfers 4.50 MB — was tested by varying **what
 is written**, leaving the BO size, the artifact, the scalars and the positions untouched:
