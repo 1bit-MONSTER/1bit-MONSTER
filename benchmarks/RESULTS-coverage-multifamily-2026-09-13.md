@@ -13580,3 +13580,48 @@ neither lane had compared:
 **So the Gemma3-1B shape set is `GU`, not `G`+`U`, and that is why the earlier attempt failed at `FAIL GU` while `G`/`U`
 alone were already present.** A one-line reading of the engine's own banner would have said so at the start; instead it took
 two rounds of `No such file`.
+
+## 885. Gemma3-1B's crash, second defect found by instrumenting: `shape[1]` is BYTES, and `shape[0]` is a tile count only when a row equals one tile
+
+**My §875 hypothesis — *"the fixed 5120-byte tile assumes a 2560-wide row"* — is REFUTED by a control.** H=2048
+(Qwen3-1.7B), H=2560 (Nanbeige) and H=4096 (Llama) all work, so the tile does not follow from `H`; it is a fixed
+**20 x 128 bf16 block = 5120 B**.
+
+**The instrument found it instead.** `RT_PACK_DEBUG=1` prints one line per projection before it is touched:
+
+```
+Gemma3-1B :  pack q  n_tiles=576 G=9  off_tile=0  ndim=2 shape0=576  shape1=1280
+Qwen3-0.6B:  pack q  n_tiles=256 G=8  off_tile=0  ndim=2 shape0=256  shape1=5120    <- a model that works
+```
+
+**`shape[1]` is a BYTE count.** Every model until now had `shape[1] == 5120`, **so one row was exactly one tile and
+`shape[0]` was also the tile count.** Gemma3-1B's tensors have `shape[1] == 1280` — **a quarter-tile row** — so
+**`shape[0]` is four times the tile count**, and `npu_reorder_tiles` read **4x the tensor's bytes**.
+
+**The fix** derives the count from the byte extent, with the `shape[1] == 5120` case keeping the original branch so it is
+**exactly the old value for every model that worked**. The new run's numbers confirm the geometry:
+
+| projection | `shape[0]` | corrected `n_tiles` | |
+|---|---|---|---|
+| q | 576 | **144** | /4 |
+| k, v | 144 | **36** | /4 |
+| o | 576 | **144** | /4 |
+| down | 3888 | **972** | /4 |
+
+**Verified**: five gate runs on the rebuilt engine all match FLM's reference tokens (0.6B **1614**, 4B **220**, 8B
+**220**, Nanbeige **1033** and **5938**). The change is a no-op for `shape[1] == 5120` by construction, and the gates
+confirm the construction.
+
+**And the crash is now precisely sited, because the fix split the problem in two.** Ten layers pack and then it faults:
+**the SOURCE side is fixed and the DESTINATION side is not.** `off_q/off_k/off_v/off_o/off_d` come from
+`npu_layer_tile_offsets()`, which still uses the **row** counts, so the destinations sit on a basis four times larger than
+the data being written into them:
+
+```
+printed offsets: q=0   k=576   v=720   o=864   down=9216
+correct basis:   q=0   k=144   v=180   o=216   down=2304
+```
+
+**That mismatch is the next fix, and it is named rather than inferred** — which is the whole difference this instrument
+made. `RT_PACK_DEBUG` is left in, env-gated and silent by default, because the next person to hit a packing fault should
+not have to guess which projection it was.
