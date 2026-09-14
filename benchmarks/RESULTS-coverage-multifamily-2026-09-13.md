@@ -13167,3 +13167,40 @@ instrument read as a refuted hypothesis.**
 **And the honest remainder**: this restores the **prefill gate**. The **decode** row is still 5 of 6, and for the reason
 §9.3 already gives — the run continues into a `fallback prefill` phase for decode, which is why the run still exits on
 timeout. **Prefill: restored. Decode: unchanged and documented.**
+
+## 830. The `small-M(_m0) xclbins absent` line looks like the decode's blocker and is NOT — it is the expected default-OFF branch, and the source warns against "fixing" it
+
+**With the shape xclbins and the per-context layer ELFs both in place, the Llama run's phases are:**
+
+```
+=== Prefill 1024 [runlist] ===            Prefill: 94213ms (92 ms/tok)      [1] 220
+[runlist] decode forward ctx=1025 failed
+[runlist] whole-layer path failed (rc=1); falling back to split path
+  small-M(_m0) xclbins absent; decode uses M=128 ctx
+fallback prefill: npt 1024 walked in 128-row blocks (8 blocks; ...)
+```
+
+**The decode fails at `ctx=1025` — the first decode context — and falls back.** But the `small-M(_m0)` line is a **notice
+emitted during init**, not the failure, and reading the source says so explicitly:
+
+```cpp
+int sm = 0;   // default OFF: the _m1 kernel's weight contract differs from the M=128 path
+              // (garbage decode, no perf win — launch-bound)
+const char* e = getenv("NPU_SMALL_M");
+if (e && *e) sm = atoi(e);
+if (sm != 1 && sm != 8 && sm != 32) sm = 0;
+```
+
+**`NPU_SMALL_M` defaults to 0 = OFF, and the code comments that the `_m1` path produces *"garbage decode, no perf win —
+launch-bound."*** So the absent `_m0` files are **the designed state**, not a gap — and **building them would be actively
+wrong**: the source says that path is broken by contract. **I had started to read that line as the decode's blocker and was
+one step from recommending exactly that.**
+
+**What this leaves, stated precisely**: the runlist **prefill** works (220, FLM's reference). The runlist **decode** fails
+at `ctx=1025`. **And the two build products whose absence §815 blamed are now both present — so the decode blocker is
+neither the shape xclbins nor the missing layer ELFs.** §9.3's *"the generator is Qwen3-only"* is stale as a cause (the
+generator is family-general and produced Llama's ELFs in 2 s), and the real cause of `ctx=1025` is **still unnamed**.
+
+**And the pattern, which is now five times in this stretch**: the thing that saved the conclusion was **reading the code
+before acting on the message** — the same move as the two controls (a known-good shape; a known-good family). **A message
+that looks like a blocker and an expected branch of a default-OFF path print the same line.**
