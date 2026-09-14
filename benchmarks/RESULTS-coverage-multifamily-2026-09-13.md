@@ -9085,3 +9085,46 @@ the citing comment and the section title were printed side by side.
 
 **Practical form, and it is cheap: after any renumbering, grep the code for the moved number.** It is one command, and
 it is the only thing that catches this class.
+
+## 515. My "missing family binding" was wrong — the binding exists in a sibling tool, and it is the OVER-BROAD error a third time
+
+**Verified in the source, because a claim that redirects an errand deserves the file:**
+
+| tool | binds | Nanbeige |
+|---|---|---|
+| `npu-infer/tools/gen_attn_insts.cpp:24,35` | **`qwen3_npu_sequence`** | **rejects** — `Unsupported intermediate size: 10752` |
+| `~/npu-build/mha/gen_attn_chunk_nb.cpp:10` | **`nanbeige_npu_sequence`** | **runs**, emitting config-sensitive ELFs at every range tried |
+
+**So the rejection was a property of the TOOL'S BINDING, not of the family.** I asked a **Qwen3-bound** generator for a
+model with `intermediate_size = 10752` and it refused — **correctly**. **Nothing about Nanbeige lacks a sequence class**,
+and my conclusion — *"the missing piece is the family's sequence class"* — **would have sent r5 to write something that
+already exists.**
+
+**And it is the over-broad error again, in a third register:**
+
+| section | the part | stated as the whole |
+|---|---|---|
+| §154 | I8 rows | *"the bundle contains no 5120-byte row"* |
+| §460 | one model (Qwen3.5) | *"the format"* |
+| **this one** | **one tool's binding** | ***"the family"*** |
+
+**Same shape, three instances.** And the rule that catches all three is one line: **a fact about a part is not a fact
+about the whole** — whether the part is a **subset**, a **model**, a **tool**, or, as below, a **comment**.
+
+**Which brings a third comment-vs-code instance, and this one is comic**: `gen_attn_chunk_nb.cpp`'s header says
+*"generate the dense-Qwen3 MHA attention ELF"* — **while line 10 includes `nanbeige_npu_sequence.hpp`.** The comment
+describes the file it was copied from. So the repo now holds **two** comment artifacts that disagree with their own
+code: the `gen_attn_chunk` comment that reads as a call site, and this one that names the wrong model. **In both cases
+the file was right.**
+
+**What survives from my run, and it is the useful half**: the errand is **not** the binding, so the live question is the
+one the peer lane has already answered — **does the Nanbeige-bound generator's nh20 output behave correctly?** Their
+experiment says **no, and identically so**: a captured ELF and a generated one of the same nominal shape give the
+**same wrong answer** (188 both, against FLM's 1033, host 109440). **So the stream is removed as a candidate and the
+defect is in the arithmetic or the gate.**
+
+**And their articulation of the filename finding is the best statement of it either lane has produced**: the name
+carries **no `nh`**, so the query-head count is the **caller's** loop, and **a stream can be perfectly well-formed while
+the kernel it drives has the wrong width** — *"precisely the measured defect: a structurally fine ELF producing 2048 of
+2560 columns with nothing in the artifact saying so."* Which is why **every check either lane ran on the artifact came
+back clean: every check was a check on the stream, and the stream was never the thing that was wrong.**
