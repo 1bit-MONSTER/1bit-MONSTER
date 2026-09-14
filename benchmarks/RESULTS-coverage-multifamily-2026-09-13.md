@@ -9780,3 +9780,39 @@ and `set_attn_rows(n)` sets it explicitly, and the engine calls **both with `npt
 **`attn_rows = 1024` to a kernel documented at `≤256`, in one call.** Either the long-context ELF genuinely handles 1024
 rows — in which case **the doc is stale** — or **the call is out of contract**. That is a **binary question, and it is
 checkable without the device.**
+
+## 570. FLM's own manifest: the scalars are `(3,0,0)` for ALL 481 calls — the hypothesis is dead — and arg3's role is PER-KERNEL
+
+**Their hypothesis was well-formed and they flagged it as a hypothesis**: on an `MLIR_AIE` kernel the scalars are the
+runtime parameters, and since §92 established the attention is **context-free**, a kernel told **`L_begin=0, L_end=0`
+computes over a degenerate range by construction** — *"context-free is exactly what a zero range produces."* One run,
+`BF16MM_ATTN_SCALARS`, default unchanged.
+
+**And FLM's own capture manifest refutes it before the run.** `capnb_flm/capture_manifest.log` records every launch, and:
+
+```
+SETARG3 ... idx=0 bytes=4 val=0x3      481 times
+SETARG3 ... idx=1 bytes=4 val=0x0      481 times
+SETARG3 ... idx=2 bytes=4 val=0x0      481 times
+```
+
+**`(3, 0, 0)` is universal — every kernel FLM launched, across the whole capture.** So the scalars are **not a length
+pair**, and **FLM reaches the correct 1033 with the identical scalars the engine already passes.** **The scalars are not
+the defect**, and **the one-run test is unnecessary: the manifest already ran it 481 times.**
+
+**And the same manifest narrows arg3 — but per kernel, which is the part worth keeping:**
+
+| call | `idx=3` | attached dump |
+|---|---|---|
+| **`elf_0011`** (177728 B — **the kernel the engine emulates**) | **size=1048576** | **`INSTS_DUMP -> insts_0000_1048576.bin`** |
+| `elf_0012` (41920 B) | **size=5242880** | `ARG4_DUMP size=5242880` (on idx=4) |
+
+**For the emulated kernel, arg3 is followed immediately by an INSTRUCTION-STREAM dump** — 1 MB = 262,144 words — so **for
+that call, arg3 carries the instructions.** The very next call uses the **same slot as a 5 MB data buffer.** **So the
+role is per-kernel and must be read per call, not inferred from the signature** — which is why the size alone was never
+going to settle it, and why the manifest's own dumps are the instrument: **`INSTS_DUMP` and `ARG4_DUMP` label what each
+slot held, for the calls they captured.**
+
+**And the engine's `attn_out` (5 MB) at arg3 matches `elf_0012`'s shape, not `elf_0011`'s.** If the engine is emulating
+`elf_0011` — and §102's quoted `RUN 001: args=[3:1048576 4:5242880 5:31457280]` is that call — then **it binds an
+attention buffer where the emulated kernel was handed instructions.**
