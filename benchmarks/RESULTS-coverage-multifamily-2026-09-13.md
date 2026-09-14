@@ -14810,3 +14810,30 @@ Root-caused the `qwen3_5vl_desc::reorder_cpy` segfault that blocked the referenc
   the 4736-byte dequant are loadable in v1.0.4 — the reference is obtainable from the v1.0.4 serve API, not from the raw
   v0.9.46 class. A raw-token diff still needs either v1.0.4 headers for a proper harness or a tokenizer-matched
   completion-vs-native comparison.
+
+## 4736-byte "I8" — reference obtained, native still diverges (2026-09-14)
+
+Using the v1.0.4 lib (flm104) + amd-oss headers (which ABI-match v1.0.4's LM_Config, unlike the v0.9.46
+headers), the reference harness now loads Qwen3.5-4B **clean** (no synth embed — v1.0.4's raw class handles the
+tie) and runs `qwen3_5vl::prefill`:
+
+**FLM reference boot = 16** for ids_16.txt (256 tokens).
+
+The native engine (fallback i8 path) gives boot **240785** → after the tied-embedding fix (emb_f32 = lm_head)
+**142904**. Still wrong, so the layer dequant or the GDN compute diverges.
+
+The 4736 dequant formula `(q*scale_int8 + min_int8) * row_scale_bf16 + row_min_bf16` was re-checked across int8
+interpretations on a q_proj tile:
+
+| interpretation | mean | std |
+|---|---|---|
+| signed (int8_t) | -0.0027 | 0.0157 |
+| centered (byte-128) | +0.0008 | 0.0109 |
+| unsigned (byte) | +0.0234 | 0.0165 |
+| symmetric (q-8)*s | +0.0000 | 0.0072 |
+
+Unsigned is all-positive (min ≈ 0) — ruled out. Signed gives the most weight-like symmetric spread (std closest to
+initializer_range 0.02); centered is the cleanest mean. The stats are **permutation-invariant**, so the **int4 nibble
+swizzle** (assumed Q4_1 `lane*2048+col*8+byte_idx`) cannot be validated from statistics — all four swizzle variants
+give identical mean/std. The divergence (boot 142904 vs 16) is therefore either a **different nibble swizzle** (in
+the dequant.xclbin kernel, not the .so) or a **GDN/attention compute bug**, not the int8 sign or the formula shape.
