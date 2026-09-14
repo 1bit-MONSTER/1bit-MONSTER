@@ -49,9 +49,16 @@ Auto-detects **19 model architectures** from GGUF/1BP headers, **47 1BP models**
 
 The engine's NPU lane is a **separate executable**: `src/backend_npu.cpp` fork/execs
 it and speaks the worker protocol to it (xclbin GEMM, CPU fallback for
-RoPE/norm/residual). It needs XRT, so it is the one binary that may be **absent**
-from a package — the release build installs `libxrt-dev` best-effort and prints a
-warning instead of failing when XRT is unavailable.
+RoPE/norm/residual). It links against XRT, so it is the one binary that is **absent
+from CI-built packages today** — the release build installs `libxrt-dev`
+best-effort, but Ubuntu noble's package is XRT **2.13** and ships the old
+`xrt/experimental/*` header layout, while this tree includes `xrt/xrt_device.h`
+(XRT >= 2.14, the layout AMD's `/opt/xilinx/xrt` uses). The release log prints
+`npu: XRT NOT found — skipping NPU engine build`, then
+`::warning::no npu_engine_universal in build/`, and the package ships CPU/GPU-only.
+
+Build one yourself on a machine with a real XRT — `install.sh` does it when the
+target exists, and the staged tree is then found without any environment variable.
 
 Where it goes, and how it is found (see `include/npu_worker_path.h`):
 

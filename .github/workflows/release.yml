@@ -38,11 +38,28 @@ jobs:
             libvulkan-dev glslc uuid-dev libdrm-dev spirv-headers
 
           # XRT is what makes the native NPU worker a target at all:
-          # CMakeLists.txt gates add_subdirectory(engine/npu) on find_package(XRT).
-          # Non-fatal — without it the release still ships, just without the NPU
-          # worker (issue #2360), and users can build one themselves.
+          # CMakeLists.txt gates add_subdirectory(engine/npu) on an XRT probe.
+          #
+          # NOTE (2026-09-14, measured on the release run for c08e51b0d): Ubuntu
+          # noble's libxrt-dev is XRT **2.13**, which ships the *old* header layout
+          # (/usr/include/xrt/experimental/*.h and xrt/xrt/*), not the
+          # `xrt/xrt_device.h` this tree includes — the configure step logs
+          # "Looking for xrt/xrt_bo.h - not found" and
+          # "npu: XRT NOT found — skipping NPU engine build", so
+          # `ninja -C build npu_engine_universal` fails with "unknown target".
+          # AMD publishes XRT as source/RPM only (repo.radeon.com/xrt 404s), so
+          # this step alone cannot enable the worker today; it is kept so the
+          # build starts working the moment a real XRT (>= 2.14, e.g. AMD's
+          # /opt/xilinx/xrt tree, which engine/npu prefers anyway) is present.
           sudo apt-get install -y -qq libxrt-dev || \
             echo "::warning::libxrt-dev unavailable — this release will not include the NPU worker (npu_engine_universal)"
+
+          # Make the reason visible in every release log instead of leaving it to
+          # be inferred from a silent warning.
+          echo "npu worker prerequisites:"
+          echo "  /usr/include/xrt/xrt_device.h : $([ -f /usr/include/xrt/xrt_device.h ] && echo yes || echo NO)  (noble libxrt-dev is XRT 2.13: experimental layout only)"
+          echo "  /opt/xilinx/xrt               : $([ -d /opt/xilinx/xrt ] && echo yes || echo NO)  (AMD layout this tree targets)"
+          echo "  dpkg libxrt-dev               : $(dpkg-query -W -f='${Version}' libxrt-dev 2>/dev/null || echo none)"
 
           # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo).
           # TheRock 7.15.0a (with the built-in FastFlowLM flm binary) is the ONLY
