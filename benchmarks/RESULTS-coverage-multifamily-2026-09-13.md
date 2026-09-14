@@ -10119,3 +10119,46 @@ choosing between them needs the decoder's `dim0/dim1/dim2` semantics, not more a
 **Which is the right next step, and it is offline**: the per-descriptor **`dim0_size × dim1_size × dim2_stride`** gives
 the exact covered extent per descriptor instead of a sum — turning *"4.50 vs 4.00 MB"* into a **per-descriptor map** of
 what the kernel reads and where, and against the engine's `reg`-strided fill it localises the shortfall to a region.
+
+## 183. `decode_txn` makes the artifact readable — the stream DOES encode nh20 (so this lane's "head-blind stream" is RETRACTED), and the offline address diff refutes the out-of-bounds reading
+
+**The instrument is real and it works.** `npu-infer/tools/decode_txn --decode-only <outdir> <elf>` decodes a shipped ELF
+into JSON, and the shipped nh20 file yields **1152 patches**, **`D1 = 1280`** (= `10 × 128` = `(NH/2) × HD` for nh20),
+and an op histogram of `BLOCKWRITE 1154 / DDR_PATCH 1152 / MASKWRITE 512 / TCT 512 / WRITE 1846`.
+
+**Which retracts a claim this lane has been carrying since §164.** The filename omits `nh` — but **the stream does not**:
+`1280 = (20/2) × 128` for nh20 against `1024 = (16/2) × 128` for nh16. So *"a stream can be well-formed while the kernel
+it drives has the wrong width"* survives as a **risk**, but its support — **that the stream is head-blind — is
+withdrawn.** I asserted it from the *name* when the *content* was decodable all along: **the tenth instance of the
+session's class, and the second of them mine.** It came from the same move as the others — reading the artifact's name
+instead of opening the artifact.
+
+**And the offline diff itself is a clean negative, which is the more valuable half.** Per-argument address ranges from
+the decoded descriptors, against the BOs the engine allocates:
+
+| stream argument | max offset | engine BO |
+|---|---|---|
+| arg0 | 4,920,064 B (**4.69 MB**) | arg3 (out) **5 MB** — fits |
+| arg1 | 4,920,064 B (**4.69 MB**) | arg4 (act) **5 MB** — fits |
+| **arg2** | **50,331,904 B (48.0 MB)** | arg5 (kv) **16 MB** — **does not fit** |
+
+**That looked like out-of-bounds by 3×, and the existing knob tests it directly** — so it was run at four sizes:
+
+| `kv_region` | BO size | boot |
+|---|---|---|
+| **2097152** (H-table) | 16.0 MB | **188** |
+| 3932160 (FLM's value) | 30.0 MB | 152432 |
+| **6291456** (≥ the stream's max) | **48.0 MB** | **152432** |
+| 8388608 | 64.0 MB | 152432 |
+
+**Sizing the buffer to the stream's own maximum does not move it off the degenerate value**, so the address mismatch is
+**not** the cause — and the descriptors' `arg2` offsets are evidently not per-argument offsets in this layout, since
+exceeding them changes nothing.
+
+**And the region knob has exactly two outcomes: `2097152` gives 188, everything else gives 152432.** That is the
+single-point picture again, now with a **sixth** perturbation — and it is worth stating plainly that this lane has
+**exhausted perturbation** as a method: six knobs, two values, no discrimination.
+
+**What remains is the one §182 question that is still open, and it is offline:** whether the nh20 ELF bakes **1024 query
+rows or 256**. The decoded header (`rows: 70`, `mem_tile_rows: 1`) is the AIE array geometry, not the token count, so
+that answer has to come from the descriptors' dimension fields — **not from another device run.**
