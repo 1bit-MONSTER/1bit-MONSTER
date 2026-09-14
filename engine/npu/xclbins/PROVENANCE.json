@@ -19,6 +19,17 @@
    "sha256": "ba2ff3f9829b26cc90a64e5292d7450380f3be36c8372a22f0077a0686a0ecaa",
    "timestamp_utc": "2026-08-09T18:02:00Z"
   },
+  "1634afc5f2575e34ed4ac95506cc07a6": {
+   "aliases": [
+    "final_i8_U_qwen3_4b.xclbin"
+   ],
+   "paths": [
+    "final_i8_U_K2560_N9728.xclbin",
+    "final_i8_U_qwen3_4b.xclbin"
+   ],
+   "sha256": "d32d38d87c60d68638c7d534d31d67b1f05985b7e3ac6505b7784172f765f7c9",
+   "timestamp_utc": "2026-09-14T13:30:59Z"
+  },
   "188103bc20d530a6ff09a89eed1c0786": {
    "aliases": [
     "final_i8_QKV_gemma4_e4b.xclbin"
@@ -580,6 +591,17 @@
    "sha256": "ab9ed923ad416e688d83c2394290dc7ddabd62fa944729aef1dca100d364edd0",
    "timestamp_utc": "2026-08-05T14:22:53Z"
   },
+  "b8d8df8c60e2470087c85dcac2718a8a": {
+   "aliases": [
+    "final_i8_D_qwen3_4b.xclbin"
+   ],
+   "paths": [
+    "final_i8_D_K9728_N2560.xclbin",
+    "final_i8_D_qwen3_4b.xclbin"
+   ],
+   "sha256": "350d882e91277c218145afcf39fa97abbff35ae01d1601926aed1536b6d9fa42",
+   "timestamp_utc": "2026-09-14T13:31:02Z"
+  },
   "ba2938eb28f386f20b73a6e5febb6f6b": {
    "aliases": [],
    "paths": [
@@ -657,6 +679,17 @@
    ],
    "sha256": "22d6157cc5435fa72739e2a570a9c18264e08250c012ae1f2ab097914dac4a3a",
    "timestamp_utc": "2026-08-09T18:03:47Z"
+  },
+  "dca4ec1f04c539dd254044d74ad9ca3c": {
+   "aliases": [
+    "final_i8_G_qwen3_4b.xclbin"
+   ],
+   "paths": [
+    "final_i8_G_K2560_N9728.xclbin",
+    "final_i8_G_qwen3_4b.xclbin"
+   ],
+   "sha256": "4550581539da44a6deeaa36b498d4f5aaa4fcc03b95e5b0d9564cadfe49bb8c9",
+   "timestamp_utc": "2026-09-14T13:30:57Z"
   },
   "de231ad9d858c8220dae72555fdf9644": {
    "aliases": [
@@ -789,12 +822,13 @@
    "2026-08-31": 1,
    "2026-09-03": 1,
    "2026-09-09": 1,
-   "2026-09-12": 1
+   "2026-09-12": 1,
+   "2026-09-14": 3
   },
-  "distinct_builds": 86,
-  "payload_bytes": 9545257,
-  "redundant_bytes": 2226430,
-  "redundant_percent": 23.32,
+  "distinct_builds": 89,
+  "payload_bytes": 9915493,
+  "redundant_bytes": 2411548,
+  "redundant_percent": 24.32,
   "timezone": "UTC (embedded AXLF TimeStamp, never mtime)",
   "top_days_utc": [
    {
@@ -822,11 +856,11 @@
  },
  "declared_dangling": {},
  "generated": {
-  "at": "2026-09-13T00:34:07Z",
+  "at": "2026-09-14T13:45:00Z",
   "by": "pi/coding-agent",
   "check": "engine/npu/tests/check_xclbin_provenance.py",
   "host": "strixhalo",
-  "ref": "bb35a3346"
+  "ref": "5735f9c38"
  },
  "intent": "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py --write-manifest and land it in the same commit as the artifact change.",
  "notes": [
@@ -841,6 +875,7 @@
    "D_K8192_N2560",
    "D_K8192_N3072",
    "D_K9216_N2560",
+   "D_K9728_N2560",
    "D_gemma4_e2b",
    "D_gemma4_e4b",
    "D_llama",
@@ -851,6 +886,7 @@
    "D_qwen3_0_6b_m1",
    "D_qwen3_0_6b_m32",
    "D_qwen3_0_6b_m8",
+   "D_qwen3_4b",
    "D_qwen3_5_4b",
    "D_qwen3_8b",
    "D_qwen3_vl_4b",
@@ -868,12 +904,14 @@
    "G_K2560_N12288",
    "G_K2560_N8192",
    "G_K2560_N9216",
+   "G_K2560_N9728",
    "G_K3072_N8192",
    "G_gemma4_e4b",
    "G_llama",
    "G_nanbeige4_1_3b",
    "G_phi4_mini_4b",
    "G_qwen3.6-moe_35b",
+   "G_qwen3_4b",
    "G_qwen3_5_4b",
    "G_qwen3_8b",
    "G_qwen3_vl_4b",
@@ -929,12 +967,14 @@
    "U_K2560_N12288",
    "U_K2560_N8192",
    "U_K2560_N9216",
+   "U_K2560_N9728",
    "U_K3072_N8192",
    "U_gemma4_e4b",
    "U_llama",
    "U_nanbeige4_1_3b",
    "U_phi4_mini_4b",
    "U_qwen3.6-moe_35b",
+   "U_qwen3_4b",
    "U_qwen3_5_4b",
    "U_qwen3_8b",
    "U_qwen3_vl_4b"
@@ -947,11 +987,11 @@
  "population": {
   "alias_symlinks_in_tree": 12,
   "dangling_symlinks": 0,
-  "distinct_builds_by_uuid": 86,
-  "regular_artifacts": 111,
-  "top_level_xclbin": 123,
-  "tracked_paths_under_dir": 507,
-  "tracked_top_level_entries": 246,
+  "distinct_builds_by_uuid": 89,
+  "regular_artifacts": 117,
+  "top_level_xclbin": 129,
+  "tracked_paths_under_dir": 519,
+  "tracked_top_level_entries": 258,
   "txt_symlinks": 12,
   "xclbin_symlinks": 12
  },
