@@ -11406,3 +11406,36 @@ drive it identically is **an assumption, not a measurement**.
 (`sp + npt`) and was inert; **nothing has varied `XM`**, and the capture's own block size is 512 against the engine's 256.
 **The caveat is that `XM` also sizes the GEMM staging**, so it is not a one-line perturbation — which is why it is
 recorded as the next candidate rather than taken here.
+
+## 207. The capture is a 1024-token capture — `arg4 = npt × NH×HD` in BOTH signatures — so "one block per layer" is one 1024-token call, and the chunking difference is real
+
+The claimed block size can be settled by arithmetic, and it settles against the latest reading:
+
+```
+arg4 = 5,242,880 B = 1024 × 20 × 128 × 2 = npt × NH×HD at npt = 1024
+arg3 = 1,048,576 B = 1024 ×  4 × 128 × 2 = npt × NKV×HD at npt = 1024
+```
+
+**Both observed signatures carry `arg4 = 5,242,880`, so the capture is a 1024-token capture** — not a 256-token one, and
+not two 512-token blocks. **`npt = 1024` is the only value that produces the observed `arg4`**; at 256 it would be
+1,310,720 and at 512 it would be 2,621,440, neither of which appears anywhere in the manifest.
+
+**Which means the chunking difference runs the other way from the last two readings of it:**
+
+| | per layer | per 1024 tokens |
+|---|---|---|
+| **FLM** (if the 32-run attribution holds) | **one attention call, 1024 tokens** | 32 launches for 32 layers |
+| **engine** | **four attention calls, 256 rows each** | 4 × 32 |
+
+**So FLM computes 1024 tokens of attention per layer in ONE call while the engine makes FOUR 256-row calls** — and the
+ELF both are driving is a **4× unroll of 256-row blocks** (§197). Whether those two calling patterns are equivalent is
+**precisely the assumption §206 flagged**, and the arithmetic here makes it concrete rather than hypothetical: **the
+capture's own call is sized for 1024 tokens, and the engine never makes a call that size.**
+
+**And the attribution pivot is still the pivot.** The (1 MB, 5 MB, 30 MB) signature carries `arg3 = npt × NKV×HD` — the
+KV width — which is §173's original observation; the (5 MB, 5 MB, 64 MB) signature carries `arg3 = npt × NH×HD`, which
+matches the engine. **Which one is `elf_0011`'s is undetermined (§206), so §173 is neither withdrawn nor restored** — and
+the honest statement is that **both readings are live and the manifest's two `RUN` numberings cannot separate them.**
+
+**What is robust and needs no attribution:** the frequency is per-layer under both readings, so **no "wrong artifact"
+reading survives**; and the **capture is 1024 tokens**, which is a fact about `npt` that neither lane had pinned.
