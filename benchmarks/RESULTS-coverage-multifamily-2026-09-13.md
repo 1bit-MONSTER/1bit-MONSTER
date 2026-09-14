@@ -11872,3 +11872,42 @@ differs — 64 MB against the engine's 16 MB — and 64 MB was tested (§183): `
 neighbour is ambiguous when the neighbouring lines are cumulative.** What settles it is a **second fact**, not a
 re-reading: **the layer count** (theirs) and **the line's own accumulation semantics** (mine). **Two real instruments,
 each pointed at a question it could not answer — and in both cases the fix was a second fact.**
+
+## 217. RETRACTED (§216): the argument binding IS in the artifact — the ELF's `.dynsym` declares the kernel's BO arguments as symbols *named* `"3"`, `"4"`, `"5"`
+
+§216 concluded that *"the `arg_idx` → BO mapping is not in the artifact"* after checking the decoder's JSON for
+`bo_index`/`arg_bo`-style fields. **It did not check the ELF's own symbol table, and the binding is there:**
+
+```
+Symbol table '.dynsym' contains 11 entries:
+   1: … 16384 OBJECT GLOBAL DEFAULT 2 3
+   2: … 16384 OBJECT GLOBAL DEFAULT 2 4
+   3: … 32768 OBJECT GLOBAL DEFAULT 2 5
+   4: … 65536 OBJECT GLOBAL DEFAULT 2 5
+   …   8 more entries, all named 5, sizes 98304 … 0x40000
+```
+
+**The symbols are named `3`, `4` and `5` — the kernel's BO argument indices — and each carries a size.** So the artifact
+**does** declare which buffers the kernel takes and how large each one is; the decoder simply does not surface
+`.dynsym`. **§216 is retracted, and with it the "information gap" framing**: the evidence was in the file, **three
+sections down from where I looked**, which is the same class of error as every other entry in this log's count — **a
+conclusion drawn from the one place that was checked rather than from the artifact.**
+
+**And the declared sizes are a third set, distinct from both other sets in play:**
+
+| argument | ELF `.dynsym` declares | FLM's BO | engine's BO |
+|---|---|---|---|
+| 3 | **16 KB** (16,384) | 1 MB | 5 MB (cap) |
+| 4 | **16 KB** (16,384) | 5 MB | 5 MB (cap) |
+| 5 | **8 entries, 32 KB → 256 KB** (total 1,125,376 B ≈ **1.07 MB**) | 30 MB | 16 MB |
+
+**Every one of the three is different** — so the lane now has **three** size descriptions of the same three arguments, and
+none of them is the artifact's *own* declaration except this one. **That is the first time the kernel's own statement of
+its buffer extents has been available**, and it is the thing §215's combination test needed: **the engine's `arg3` is 5 MB
+where the artifact declares 16 KB and FLM supplied 1 MB.**
+
+**What that does to the candidate, stated narrowly:** the *mapping* question is no longer open — `3`, `4`, `5` are named —
+and the *size* question now has a third value to reconcile. **Whether a 5 MB `arg3` where the artifact declares 16 KB is a
+defect is NOT established**: an over-allocated BO is normally harmless, and this lane has been wrong before by reading a
+size difference as a role difference. **What is established is that the artifact states its own extents, and that
+statement is now on the record for the first time.**
