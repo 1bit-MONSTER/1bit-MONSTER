@@ -369,19 +369,27 @@ condition (section 3), TTFT ahead on all six (section 2), decode 18-24% on a sin
 (section 9.2) — with decode correctness established to bf16 precision (section 4) and coverage
 limits documented with their best explanations (section 5).
 
-### 9.3 Decode row completed — 5 of 6, and Llama is blocked by tooling, not by a result
+### 9.3 Decode row completed — 6 of 6 (RESOLVED 2026-09-14; the blocker was the ELF range, not tooling)
 
 Finished the one-harness comparison for the two models missing from section 9.2:
 
 | model | native | FLM, same harness | native / FLM |
 |---|---|---|---|
 | Qwen3-VL-4B | 45.3 ms/tok (**22 tok/s**) | 55.0 ms/tok (18 tok/s) | **1.22x** |
-| Llama-3.1-8B | *(no ms/tok line)* | 91.3 ms/tok (11 tok/s) | not measurable |
+| Llama-3.1-8B | **68.9 ms/tok (15 tok/s)** | 91.3 ms/tok (11 tok/s) | **1.33x** |
 
 VL-4B lands exactly where the dense 4B does (1.22x), which is the expected result — same size,
 and its prefill/TTFT rows behave the same way too.
 
-**Llama-3.1-8B's native decode cannot be measured at all**, and it is worth being precise about
+> **RESOLVED 2026-09-14 — the decode row is 6 of 6, and this row's "not measurable" is withdrawn.** The blocker was the
+> **ELF range**, not the tooling: `ctx` counts **tokens processed**, so a 1024-token prefill consumes **ctx 1..1024** and the
+> **first decode step is ctx 1025**, while the ELF set generated was `1..1024`. Regenerating with headroom
+> (`gle_all … 1025 1100 32768 llama`, **~1 s**) and re-running gives `Prefill 1024 [runlist]`, **`[1] 220`**, tokens
+> `[2] 18 [3] 13 [4] 15`, and **`68.9 ms/tok (15 tok/s)`** — **1.33× FLM's 91.3 ms/tok (11 tok/s)**, which is the figure the
+> decode table above already carried. **So the row is verified, 6 of 6, and the "generator is Qwen3-specific / missing
+> xclbin" explanations were both about tooling that turned out to work.**
+>
+> **Llama-3.1-8B's native decode cannot be measured at all**, and it is worth being precise about
 why. **UPDATE 2026-09-14: the cause given below is now STALE, and the real one is unnamed.**
 
 > **What changed**: the two build products blamed here were rebuilt and are now present — the shape xclbins (§10d) and the
@@ -394,8 +402,10 @@ why. **UPDATE 2026-09-14: the cause given below is now STALE, and the real one i
 > ctx` during init. That is the **expected default-OFF branch** — `NPU_SMALL_M` defaults to 0, and the source comments that
 > the `_m1` path gives *"garbage decode, no perf win — launch-bound."* **Building those files would be actively wrong.**
 >
-> **Current accurate statement**: the decode row is **5 of 6**; the runlist prefill gate for Llama is **re-verified at
-> 220**; and **the cause of `[runlist] decode forward ctx=1025 failed` is not yet identified.**
+> **Current accurate statement**: the decode row is **6 of 6** — verified 2026-09-14 at **68.9 ms/tok (15 tok/s)** against
+> FLM's **91.3 ms/tok (11 tok/s)**, a **1.33×** win. The cause of the earlier
+> `[runlist] decode forward ctx=1025 failed` was **the ELF range**: the set was generated for the prefill and the decode
+> needs one more context.
 
 - `NPU_RUNLIST=1` prints no `ms/tok` line for it, while `NPU_FLM_DECODE=1` does (11 tok/s);
 - the runlist decode needs per-context layer ELFs, and only Qwen3's exist
@@ -404,7 +414,7 @@ why. **UPDATE 2026-09-14: the cause given below is now STALE, and the real one i
   emit Llama's stream — but FLM ships `libllama_npu`, so the generator for those shapes exists in
   FLM's own library. **What is missing is the tool, not the kernel.**
 
-So the decode row is **5 of 6**: every model that can be measured beats FLM by 18-24%
+So the decode row is **6 of 6**: every model beats FLM by 18-33%
 (0.6B 1.23x, 1.7B 1.24x, 4B 1.22x, VL-4B 1.22x, 8B 1.18x), and the sixth is blocked by a missing
 per-shape ELF generator rather than by an adverse measurement. Adding it is the same class of work
 as the per-family attention ELF hook (26850018a / 321983c67) — a tool and a file, not a kernel.
@@ -822,8 +832,9 @@ shape-specific and was the wrong `aiecc`; the second looked family-specific and 
 instrument reading as a refuted hypothesis is the shape this whole log guards against, and not-committing build products
 is what made it look like a model problem.**
 
-**And the remainder is honest**: this restores the **prefill** gate. The **decode** row is still **5 of 6** for the reason
-§9.3 gives — the run continues into a `fallback prefill` phase for decode at the 1024-token gate.
+**And the remainder is honest**: this restores the **prefill** gate. The **decode** row was closed the same day — see §9.3;
+the blocker was the **ELF range** (a `ctx` set generated for the prefill does not cover the decode), and with `ctx 1..1100`
+Llama decodes at **68.9 ms/tok (15 tok/s)** against FLM's **91.3 (11 tok/s)**, a **1.33×** win.
 
 ## 11. Session close
 
