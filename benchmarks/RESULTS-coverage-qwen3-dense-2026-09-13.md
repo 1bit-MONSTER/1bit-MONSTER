@@ -1,5 +1,14 @@
 # Coverage pass — dense Qwen3 family (pi agent, 2026-09-13)
 
+> **SUPERSEDED (2026-09-14): the prefill and TTFT rows below are stale.** They
+> predate the cross-block GEMM pipelining and report native *behind* FLM on
+> prefill for 1.7B/4B/8B (-13.3% / -15.6% / -22.2%). Re-measured with the
+> current build on a tokenizer-exact 1024-token prompt, native **beats** FLM on
+> prefill (+72% / +65% / +59%) and TTFT (-25% / -21% / -19%) for all three.
+> See `RESULTS-native-vs-flm-dense-qwen3-REMEASURED-2026-09-14.md`.
+> The correctness gates and the `(nh, nkv, head_dim)` shape table below still hold.
+
+
 Goal `mttxt22c-a6rv75`: "meet-or-beat FLM's measured performance … for **every model**
 the native NPU engine supports." First per-model pass beyond Qwen3-0.6B.
 
