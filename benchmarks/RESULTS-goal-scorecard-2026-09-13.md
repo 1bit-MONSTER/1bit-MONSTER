@@ -775,6 +775,43 @@ the product's shipped behaviour were never the same question, and they were one 
 
 **The rule it re-earns**: *name the ARM, not the flags* — **and here, name the PATH.**
 
+## 10d. Llama-3.1-8B's gate is REPRODUCIBLE — and the rebuild recipe (2026-09-14)
+
+**Verified all six gate rows on the shipping path. Five reproduced immediately; Llama-3.1-8B failed at init on a missing
+artifact, and fixing it needed two build products that had never been committed.**
+
+| model | ctx | measured | FLM's reference | |
+|---|---|---|---|---|
+| Qwen3-0.6B | 1024 / 256 | **25 / 1614** | 25 / 1614 | **MATCH** |
+| Qwen3-1.7B | 1024 | **220** | 220 | **MATCH** |
+| Qwen3-4B | 1024 / 256 | **220 / 1614** | 220 / 1614 | **MATCH** |
+| Qwen3-8B | 1024 | **220** | 220 | **MATCH** |
+| Qwen3-VL-4B | 1024 | **220** | 220 | **MATCH** |
+| Nanbeige | 1024 / 256 | **1033 / 5938** | 1033 / 5938 | **MATCH** |
+| **Llama-3.1-8B** | 1024 | **220** (`[runlist]`) | 220 | **MATCH** |
+
+**The two missing products, and how to rebuild them:**
+
+1. **Shape xclbins** (now committed). `engine/npu/generators/n1_core_i8_v26.py` with `-M 128 -m 32 -k 64 -n 128 -b 5`, and
+   **`cols=8` for QKV/G/U, `cols=4` for O/D** — Llama-3.1-8B needs `QKV:4096:6144`, `O:4096:4096`, `G/U:4096:14336`,
+   `D:14336:4096`. **Compile with `install_tmp/bin/aiecc` and `--aietools=<mlir-aie>/install_tmp/python/aie`** —
+   `build_tmp/bin/aiecc` rejects these designs *and rejects a known-good shape identically*.
+2. **Per-context layer ELFs** (457 MB — **not committed**; regenerate in **2 s**). Relink `npu-infer/tools/gen_layer_elfs.cpp`
+   against **`amd-oss/fastflowlm/src/lib/xrt`** with all family libs plus `-lllama_npu`, then:
+   `gle_all <Llama-3.1-8B-NPU2> <outdir> 1 1024 32768 llama`, and run with `NPU_LAYER_ELF_DIR=<outdir>`.
+   **Linked against `flm-v0946` instead, the same binary throws `std::bad_alloc` for every family, including qwen3.**
+
+**With both in place: `Prefill 1024 [runlist]` → `[1] 220`, FLM's exact reference.** The *"Working (6)"* claim stands and
+is now re-verifiable.
+
+**What made the difference was running a known-good case through the same pipeline**, twice: the first failure looked
+shape-specific and was the wrong `aiecc`; the second looked family-specific and was the wrong lib tree. **A failed
+instrument reading as a refuted hypothesis is the shape this whole log guards against, and not-committing build products
+is what made it look like a model problem.**
+
+**And the remainder is honest**: this restores the **prefill** gate. The **decode** row is still **5 of 6** for the reason
+§9.3 gives — the run continues into a `fallback prefill` phase for decode at the 1024-token gate.
+
 ## 11. Session close
 
 **211 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
