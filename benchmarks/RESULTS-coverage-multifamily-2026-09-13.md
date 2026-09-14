@@ -14057,3 +14057,47 @@ that makes a wrong reading feel confirmed.
 **A non-zero input, a live KV, an ample output buffer, and an output of nothing.** The fault is therefore **in the `lm_head`
 call itself** — its arguments, its weight BO, or the ELF it runs — and **not in any buffer's size.** That is a narrower place
 to look than §940 left, and it is narrower *because* the wrong claim was checked.
+
+## 950. Gemma3-1B's zeros, FULLY EXPLAINED: the lm_head ELF is ABSENT — the weights pack, no kernel runs, and the logits are never written
+
+**The chain is complete and every link is measured.**
+
+```
+$ ls /tmp/g1b_elfs_full/elf_0002_lmhead.bin
+ls: cannot access '…/elf_0002_lmhead.bin': No such file or directory
+
+RuntimeLayer: cannot open  /tmp/g1b_elfs_full/elf_0002_lmhead.bin
+RuntimeLayer: cannot read lm_head ELF /tmp/g1b_elfs_full/elf_0002_lmhead.bin
+RuntimeLayer: packed lm_head BO (36864 tiles)
+```
+
+**The WEIGHTS pack — 36,864 tiles — and the ELF is absent, so `kern_lmhead_` is never built.** With no kernel,
+`run_lmhead()` returns false at its first line (`if (!kern_lmhead_) return false;`), **nothing ever writes `bo_logits_`, and
+the buffer keeps the zeros it was `memset` to.** That is the whole of it:
+
+| | |
+|---|---|
+| **`act_post_*`** — the lm_head's input | **576 / 1024 non-zero** |
+| **`kv_post_*`** — the KV | **non-zero, growing 128 × ctx** |
+| **`logits_post_*`** — the lm_head's output | **zero, because nothing wrote it** |
+| **`[argmax] best=0 (0.00000) … margin=0.00000`** | **the argmax of an all-zero vector** |
+
+**And this is what makes a zero input look like a live one at the token level**: `[1] 0` is what a *correctly wired*
+engine prints when it reads an all-zero logits buffer, and the run completes and reports `ms/tok` and `tok/s` for it.
+**A silent failure with a plausible shape** — the same family as §59's uninitialised KV BO.
+
+**CORRECTION to §850, which called this harmless.** I wrote that the missing lm_head ELF was *"harmless — the optional-file
+path is defensive."* **The path is defensive; the consequence is not.** Defence here means *"do not crash"*, and it achieves
+that by **leaving the logits zero** — so for a model that needs the file, the defensiveness is exactly what converts a
+missing dependency into a wrong answer instead of an error. **"Handled" and "correct" diverged, which is the distinction
+§930 was about, now with a cost attached.**
+
+**And the fix is a NAMED DEPENDENCY, not a patch.** The lm_head ELF must come from the vendor's own class —
+`gen_lm_head_seq` — and **FLM's `gemma_text` class does not export one.** I tried to produce it with the `qwen3` class at
+Gemma3-1B's shapes and **got nothing**, so the gap stands as a **vendor-side dependency** of the same kind as Gemma3-4B's
+`blocks_per_row <= 63` assertion: **an artifact the engine cannot build for itself.**
+
+**So the Gemma3-1B row closes as: RUNS, output explained (all-zero logits from a missing lm_head ELF), fix = one
+vendor-provided artifact.** The zeros were never an attention defect, a layer-geometry defect, or a dequant defect — each of
+which was proposed and eliminated in turn — and the answer was a **file that was reported missing at init and read as
+harmless.**
