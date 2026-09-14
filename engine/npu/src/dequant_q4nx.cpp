@@ -322,6 +322,8 @@ extern "C" float* dequant_i8_4736_to_float(const uint8_t* data, int i8_rows, int
         const uint8_t* mins   = rd + 4352;    // 256 int8
         const uint8_t* rsc    = rd + 4608;    // 32 bf16 row scales
         const uint8_t* rmn    = rd + 4672;    // 32 bf16 row mins
+        int nib_mode = 0;
+        if (const char* nb = getenv("NPU_I8_NIB")) nib_mode = atoi(nb);
         for (int lr = 0; lr < TILE_ROWS; lr++) {
             int lane = lr / 16;
             int lane_row = lr % 16;
@@ -331,8 +333,19 @@ extern "C" float* dequant_i8_4736_to_float(const uint8_t* data, int i8_rows, int
             float rs = bf16_to_float(load_bf16_bytes(rsc + lr * 2));
             float rm = bf16_to_float(load_bf16_bytes(rmn + lr * 2));
             for (int col = 0; col < TILE_COLS; col++) {
-                uint8_t byte_val = lane_data[col * 8 + byte_idx];
-                int q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                uint8_t byte_val;
+                int q;
+                if (nib_mode == 1) {          // row-major: byte = lr*128 + col/2, nib = col%2
+                    byte_val = packed[lr * 128 + col / 2];
+                    q = (col % 2 == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                } else if (nib_mode == 2) {   // col-major: byte = col*16 + lr/2, nib = lr%2
+                    byte_val = packed[col * 16 + lr / 2];
+                    q = (lr % 2 == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                } else {                      // 0: Q4_1 swizzle (3: nib inverted)
+                    byte_val = lane_data[col * 8 + byte_idx];
+                    if (nib_mode == 3) nibble_sel = 1 - nibble_sel;
+                    q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
+                }
                 float s, m;
                 if (const char* im = getenv("NPU_I8_MODE")) {
                     int mode = atoi(im);
