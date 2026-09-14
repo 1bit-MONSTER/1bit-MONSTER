@@ -1804,6 +1804,30 @@ struct Bf16Ctx {
             transpose_pack(qkv_w + h * 2 * std_hd[l], std_hd[l], H, w.data(), t, h * std_hd[l]);                                          // q
             transpose_pack(qkv_w + h * 2 * std_hd[l] + std_hd[l], std_hd[l], H, w.data(), t, std_nh[l] * std_hd[l] + h * std_hd[l]);  // gate
         }
+        // SIZE THE QKV CONTEXT FOR THE LAYOUT THIS BRANCH ACTUALLY PACKS. The context was
+        // initialised from pad128(NH*HD + 2*NKV*HD) -- the PLAIN layout (q + k + v) -- but the
+        // fused branch packs q + gate = 2*NH*HD rows with k/v on the CPU. For Qwen3.5-4B that is
+        // 8192 rows into a context sized 6144: a 2048-row overrun, observed as a segfault at its
+        // first standard layer. Widening only when the context is too small means a model that
+        // packs the plain layout (Qwen3-4B: 6144 rows) never asks for the larger xclbin -- which a
+        // max-of-the-two rule in the general derivation would have made it do.
+        if (cq.ND < t) {
+            // The widened context must load the DIMENSION-KEYED xclbin/insts
+            // (final_i8_QKV_K<H>_N<t>), NOT the model-tag file: xp()/ip() prefer the
+            // per-model file, which was built for the PLAIN layout (q+k+v) and is the
+            // size this branch is escaping (the first attempt re-inited with the SAME
+            // 6144-row file and still segfaulted). Also update the context's shape
+            // BEFORE init() -- init() reads MD/KD/ND from the members, not its args.
+            std::string xp_w = xd + "/final_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".xclbin";
+            std::string ip_w = xd + "/insts_i8_QKV_K" + std::to_string(H) + "_N" + std::to_string(t) + ".txt";
+            fprintf(stderr, "  layer %d STD fused: widening QKV context %d -> %d rows (fused layout)\n",
+                    l, cq.ND, t);
+            cq.KD = H; cq.ND = t;
+            if (!cq.init(dev, xp_w.c_str(), ip_w.c_str(), 4, NC)) {
+                fprintf(stderr, "FAIL QKV (fused widening to N=%d, need %s)\n", t, xp_w.c_str());
+                free(qkv_w); free(ow); continue;
+            }
+        }
         FLM_PACKB(cq, l, w.data(), H, t, qsc[l]);
         // THE LAST UNVERIFIED HOST BRANCH (NPU_DBG=1), and this is the branch Nanbeige actually takes
         // (the run prints "layer N STD fused"). Everything else the host supplies has been checked
