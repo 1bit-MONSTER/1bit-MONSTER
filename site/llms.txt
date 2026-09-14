@@ -1,6 +1,6 @@
 # 1bit.MONSTER
 
-> One engine, any model. A model-agnostic, hardware-agnostic pure-C++ inference engine (GPL-3.0): 568 architecture tokens, 2,040 HF arch strings, 99.97% HuggingFace coverage, 323,793 checkpoints mapped, running on Ryzen AI NPUs and ROCm with a GGUF-native 1-bit pipeline. Zero Python at runtime.
+> One engine, any model. A model-agnostic, hardware-agnostic pure-C++ inference engine (GPL-3.0): 569 architecture tokens, 2,044 HF arch strings, 99.96% HuggingFace coverage, 323,996 checkpoints mapped, running on Ryzen AI NPUs and ROCm with a GGUF-native 1-bit pipeline. Zero Python at runtime.
 
 ## Pages
 
@@ -146,6 +146,11 @@
 - [Zyphra family complete | 1bit.MONSTER](https://1bit.monster/1bit-post-zyphra.html)
 - [1bit.MONSTER: Store](https://1bit.monster/1bit-store.html)
 - [Redirecting… — 1bit.MONSTER](https://1bit.monster/404.html)
+- [1bit.MONSTER: Building](https://1bit.monster/docs-building.html)
+- [1bit.MONSTER: Getting started](https://1bit.monster/docs-getting-started.html)
+- [1bit.MONSTER: JARVIS](https://1bit.monster/docs-jarvis.html)
+- [1bit.MONSTER: Model families](https://1bit.monster/docs-models.html)
+- [1bit.MONSTER: Running](https://1bit.monster/docs-running.html)
 - [1bit.MONSTER](https://1bit.monster/)
 - [Search | 1bit.MONSTER](https://1bit.monster/search.html)
 - [Share 1bit.MONSTER — trackable links](https://1bit.monster/share.html)
