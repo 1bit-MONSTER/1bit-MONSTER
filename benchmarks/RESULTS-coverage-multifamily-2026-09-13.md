@@ -10120,7 +10120,7 @@ choosing between them needs the decoder's `dim0/dim1/dim2` semantics, not more a
 the exact covered extent per descriptor instead of a sum — turning *"4.50 vs 4.00 MB"* into a **per-descriptor map** of
 what the kernel reads and where, and against the engine's `reg`-strided fill it localises the shortfall to a region.
 
-## 183. `decode_txn` makes the artifact readable — the stream DOES encode nh20 (so this lane's "head-blind stream" is RETRACTED), and the offline address diff refutes the out-of-bounds reading
+## 186. `decode_txn` makes the artifact readable — the stream DOES encode nh20 (so this lane's "head-blind stream" is RETRACTED), and the offline address diff refutes the out-of-bounds reading
 
 **The instrument is real and it works.** `npu-infer/tools/decode_txn --decode-only <outdir> <elf>` decodes a shipped ELF
 into JSON, and the shipped nh20 file yields **1152 patches**, **`D1 = 1280`** (= `10 × 128` = `(NH/2) × HD` for nh20),
@@ -10163,7 +10163,7 @@ single-point picture again, now with a **sixth** perturbation — and it is wort
 rows or 256**. The decoded header (`rows: 70`, `mem_tile_rows: 1`) is the AIE array geometry, not the token count, so
 that answer has to come from the descriptors' dimension fields — **not from another device run.**
 
-## 184. Reconciled: the two decode analyses measure different quantities (both correct) — and the KV fill is **0.50 MB short** of what the stream transfers
+## 187. Reconciled: the two decode analyses measure different quantities (both correct) — and the KV fill is **0.50 MB short** of what the stream transfers
 
 Two independent decodes of the same artifact produced different-looking tables. **They are different aggregates, and both
 are right** — which is worth recording, because reading either as "the" number would have been wrong:
@@ -10205,3 +10205,37 @@ from artifacts, offline**; that the missing 0.50 MB reads as zeros follows from 
 The **sums** (2.00 MB per attention buffer) imply a `1024 × 1024` read — 8 heads × 128, i.e. `nkv8`/`nh16` width —
 while the **stride** (1280) is `nh20` geometry. **Stride says nh20, volume says nh16**, and which is the operative width
 needs the decoder's `dim0/dim1/dim2` semantics rather than more sums.
+
+## 590. Their 2×2 closes the method — and two offline handles on the next step, one of which is a caution
+
+**Their table**: only the shipped default (`kv_region 2097152` × swap OFF) gives **188**; the other three cells are
+**152432**. **No interaction, no working combination** — my *"pairing × region"* branch is **refuted**, and with it the
+defect being a **joint** assumption of those arguments.
+
+**And their methodological pair is stronger than the table.** 188 is **the shipped call's own output** — the only
+non-degenerate point found — wrong for a reason **perturbation cannot reach**, since perturbation only pushes into the
+degenerate mode. So **"a knob moved the boot" is no longer evidence that it touched the defect**, and **§175 weakens to
+*the slots are distinguishable* and no more.** They applied that to **their own** section, which is the move that has
+made this thread worth anything.
+
+**And the caveat is structural and right**: the table rests on **boots, not times** — all four cells ran `clang=0`, and
+the three degenerate cells share a prefill time (**686/688/678 ms**), **one code path rather than three**, which is what
+makes the collapse credible instead of coincidental.
+
+**Two offline handles on the next step they named:**
+
+**1. FLM's own attention buffer is on disk** — `~/npu-build/capnb_flm/arg4_0000_5242880.bin`, **5,242,880 B = 5 MB**.
+**So the full-call comparison's first cell is offline**: FLM's buffer is a file, and the engine's `attn_act` has dump
+paths already.
+
+**2. And a caution that saves a run.** Nanbeige's `addr_*` are **all 5–54 KB** (`qk 5120`, `kk 33280`, `kv 34048`,
+`l_end 25344`, `l_begin 54016`) while the stream's descriptors carry **device addresses of 4.5–50 MB**. **A direct
+`addr_*`-versus-descriptor check would be a scale error — ~1000× apart.** They are different kinds of number.
+
+**3. And the addresses suggest a sharper reading.** The stream's `arg2` descriptors address **16,777,472** and
+**50,331,904 (48 MiB)** — **larger than the engine's KV BO** (16 MB at the region §102 observed, 32 MB at the default).
+**If the ELF's DMA descriptors carry ABSOLUTE device addresses — FLM's own, baked in at capture — rather than
+BO-relative offsets, then the engine, which lets XRT place its BOs wherever it likes, would have the kernel reading and
+writing the wrong memory.** That yields **a context-free, degenerate output with no content error at all** — the
+signature exactly — and it is checkable **offline**, by comparing the descriptor addresses against where the engine's
+BOs actually land.
