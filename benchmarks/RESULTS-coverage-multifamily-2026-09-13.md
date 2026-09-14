@@ -13676,6 +13676,12 @@ claimed as verified.**
 
 ## 895. The stale variable, exactly: `NPU_XCLBIN_DIR` points at a worktree that DOES NOT EXIST
 
+> **SUPERSEDED by §920.** The hazard was **fixed at the shell level by the other lane** the same day — the export
+> removed and a self-healing guard added to **both** `.bashrc` and `.profile` — and **a real override survives** while a
+> stale one is dropped. **New shells are clean; long-lived ones keep the environment they started with**, which is the
+> only sense in which this section is still true. The **engine-level guard it cites is not present in this worktree.**
+
+
 **§890 named the variable; this is its actual state, and it makes the failure mode clearer than "a sibling worktree" did.**
 
 ```
