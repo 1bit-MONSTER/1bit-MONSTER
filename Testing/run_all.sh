@@ -68,6 +68,20 @@ else
     fail=$((fail+1))
 fi
 
+# NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
+# → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
+# the legacy FLM test harness printed "FLM not installed" as if the NPU were
+# broken. A compiler cannot see a missing install step or a mislabelled lane (#2358).
+echo "== NPU lane contract =="
+total=$((total+1))
+if npu_lane_out=$("$PYTHON" Testing/npu_lane_selfcheck.py 2>&1); then
+    echo "✓ npu_lane"
+else
+    echo "✗ npu_lane"
+    printf '%s\n' "$npu_lane_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
 echo "== backend compile =="
 total=$((total+1))
 if "$CXX" $FLAGS -c src/backend_generic.cpp -o "$BIN/bg.o" 2>/dev/null; then

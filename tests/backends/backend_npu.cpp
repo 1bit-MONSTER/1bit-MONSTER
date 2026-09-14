@@ -111,7 +111,16 @@ public:
         } else if (access(flm_bin_.c_str(), X_OK) != 0) {
             flm_bin_ = "/usr/bin/flm";
             if (access(flm_bin_.c_str(), X_OK) != 0) {
-                fprintf(stderr, "  NPU: FLM not installed\n");
+                // This is the legacy FLM *test harness*, not the engine's NPU lane:
+                // NPU inference runs through the engine's own worker
+                // (src/backend_npu.cpp fork/execs npu_engine_universal, FLM-free).
+                // Printing "FLM not installed" here made a missing optional runtime
+                // look like a broken NPU, so stay quiet unless explicitly asked
+                // (#2358).
+                if (getenv("NPU_FLM_TEST_VERBOSE"))
+                    fprintf(stderr,
+                            "  NPU: legacy FLM test backend disabled (flm not found;"
+                            " the native npu_xrt lane does not need it)\n");
                 return false;
             }
         }

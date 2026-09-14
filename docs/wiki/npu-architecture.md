@@ -9,9 +9,20 @@
 > The kernel-level material further down (xclbin layouts, bug fixes, tiling)
 > is still historically accurate for the research it documents.
 
-**Update Jul 24**: NPU ternary bridge + on-tile LUT-decode kernels added.
-FLM now fallback — native npu_xrt routes first.
-GPU ternary/binary kernels have full native HIP/Vulkan support.
+**Update Jul 24** (NPU lane priority corrected 2026-09-14 — see #2358): NPU ternary
+bridge + on-tile LUT-decode kernels added. GPU ternary/binary kernels have full
+native HIP/Vulkan support.
+
+> **NPU lane (current).** NPU inference is the engine's own: `npu_xrt` →
+> `src/backend_npu.cpp` fork/execs `npu_engine_universal` and runs the pre-compiled
+> xclbins — **no FastFlowLM** (the registry comment is explicit: "Zero FLM
+> dependency"; the worker resolves from `NPU_ENGINE_BIN`). `npu_flm`
+> (`src/backend_npu_flm.cpp`) is a separate *optional* lane that drives the
+> FastFlowLM runtime, and it is currently registered **above** the native lane in
+> `src/backend_manager.cpp` — a leftover from the FLM era that contradicts this
+> design (tracked in #2358). Neither "FLM now fallback — native npu_xrt routes
+> first" (an earlier revision of this page) nor "FLM is the production lane"
+> describes the tree accurately.
 
 ## Engine Stack (as of 2026-07-24 — superseded, see banner above)
 
