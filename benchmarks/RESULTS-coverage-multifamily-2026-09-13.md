@@ -14793,3 +14793,20 @@ class cannot dump the dequant reference without replicating that synthesis.
 
 **Infra landed:** `flm_prefill_bridge` gained a `qwen3_5vl` family + `-lqwen3_5vl_npu`; `engine/npu/tools/flm_q35_ref.cpp`
 is a standalone harness that reproduces the blocked load (family `qwen3_5vl`).
+
+## 4736-byte "I8" — version mismatch is the reference blocker (2026-09-14)
+
+Root-caused the `qwen3_5vl_desc::reorder_cpy` segfault that blocked the reference dump:
+
+- **v0.9.46** `libqwen3_5vl_npu.so` (what the engine links) has **no `$0x1280` (4736)** tile constant — only
+  `$0x1400` (5120) and `$0x2200` (8704). Its `reorder_cpy` therefore copies **5120 B/tile** from a 4736-B-stride
+  buffer and overruns → the segfault. The 4736-byte "I8" format **postdates v0.9.46**.
+- **v1.0.4** `libqwen3_5vl_npu.so` (flm104) has **`$0x1280` ×16** — it natively handles the 4736-byte tile, which
+  independently **confirms the recovered tile size**.
+- Linking the reference harness against v1.0.4 fails with `std::bad_alloc` in `LM_Config`'s copy constructor: the bridge
+  `.o` was compiled against v0.9.46 headers and the v1.0.4 `LM_Config` layout differs (ABI mismatch), so the copy reads
+  garbage sizes. v1.0.4 headers are not distributed (flm104 ships libs only).
+- **FLM v1.0.4's own `flm serve` runs Qwen3.5-4B** (completions endpoint returns a coherent generation), so the model and
+  the 4736-byte dequant are loadable in v1.0.4 — the reference is obtainable from the v1.0.4 serve API, not from the raw
+  v0.9.46 class. A raw-token diff still needs either v1.0.4 headers for a proper harness or a tokenizer-matched
+  completion-vs-native comparison.
