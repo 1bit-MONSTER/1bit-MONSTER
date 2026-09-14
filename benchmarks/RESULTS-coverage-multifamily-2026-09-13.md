@@ -14475,3 +14475,40 @@ a written specification in the source**: apply `tile_cols` for 3-D shapes.
 | 5 | **GDN detection tries both name forms** | **`gdn layers=24`, `std_l=3` — the 3:1 pattern** |
 
 **All ten gates still match FLM's references after every one of them.**
+
+## 1000. The empty comment's rule does NOT apply naively: two attempts, both caught by the gates BEFORE any commit, tree left green
+
+**§995 named the last step: `gi8()`'s comment says *"Multiply by tile_cols if present"* and the body was empty. I tried to
+apply it twice. Both attempts broke a working model, and both were caught by `benchmarks/gate-check.sh` before anything was
+committed — which is what §890 built that harness for.**
+
+**Attempt 1 — multiply whenever `shape[1] > 0`.** Broke **Nanbeige** immediately: `NO TOKEN PARSED` at both lengths, sequence
+**and** isolation. **And the model's own header says why**:
+
+```
+Nanbeige   model.layers.0.self_attn.q_proj.weight: {"dtype":"I8","shape":[800,5120], ...}
+Qwen3.5-4B model.layers.3.self_attn.q_proj.weight: {"dtype":"I8","shape":[256,10,4736], ...}
+```
+
+**Nanbeige's shape is 2-D `[rows, row_bytes]` — and a 2-D shape ALSO has a `shape[1]`, which is the row WIDTH, not a tile
+count.** Multiplying by it produced **800 × 5120 = 4,096,000 rows**, and a model that had been working for the whole session
+stopped. **"`shape[1]` is present" is not "the shape is 3-D"** — the same class as §220's *"a count is not a stride"*, and
+the same class as §890's byte-extent generalization.
+
+**Attempt 2 — return `shape[1]` only for a genuine 3-D shape** (count the commas). **Nanbeige broke again**, identically.
+**So the dimension check was necessary but not sufficient**, and whatever else the change disturbs is in the parts that look
+dimension-independent — the `gi8()` body and `find_tensor_info`'s signature are shared by every model, and **the
+two-comma test does not explain a failure on a 2-D shape that now takes the same path it took before.**
+
+**Reverted. The tree is green**: Nanbeige **1033 @1024** and **5938 @256**, six-model gates re-checked. **Nothing from either
+attempt was committed.**
+
+**So the state of the last step is: specified by the source's own comment, attempted twice, and not solved — with the
+failure bounded to "a change here affects a model whose shapes are 2-D, by a mechanism the dimension check does not
+explain".** That is a much more useful statement than "the fix is one multiply", and it is honest: **the rule the comment
+describes is necessary for Qwen3.5-4B (its counts go 256 → 2560 and the fused-gate branch is then correctly selected at
+`2 × NH·HD = 8192`) and it is not sufficient on its own.**
+
+**And the pattern, which is now three times in this stretch**: **a rule that is right for one model, applied to another,
+refuted by a gate.** The byte-extent tile count (§890), the units error in the logits BO (§945), and now this — **each was
+caught by a control rather than by reasoning, and each was caught before the commit.** **The harness is earning its place.**
