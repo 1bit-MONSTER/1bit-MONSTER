@@ -18,11 +18,17 @@ native HIP/Vulkan support.
 > xclbins — **no FastFlowLM** (the registry comment is explicit: "Zero FLM
 > dependency"; the worker resolves from `NPU_ENGINE_BIN`). `npu_flm`
 > (`src/backend_npu_flm.cpp`) is a separate *optional* lane that drives the
-> FastFlowLM runtime, and it is currently registered **above** the native lane in
-> `src/backend_manager.cpp` — a leftover from the FLM era that contradicts this
-> design (tracked in #2358). Neither "FLM now fallback — native npu_xrt routes
-> first" (an earlier revision of this page) nor "FLM is the production lane"
-> describes the tree accurately.
+> FastFlowLM runtime, registered **below** the native lane and routed second, as
+> the fallback for a box where the worker cannot initialise.
+>
+> Corrected 2026-09-14 (#2358). Two things were wrong before this: the page's own
+> "FLM now fallback — native npu_xrt routes first" line, and — in the code —
+> `npu_xrt` was **declared in `discover()` and never pushed into `backends_`** (its
+> block was left unclosed, so the following lanes were swallowed by its scope).
+> The native lane existed as a printed banner line and nothing else, which is why
+> the Q4NX route named no native entry and FLM ranked above it. Both are fixed;
+> `Testing/npu_lane_selfcheck.py` now asserts that every lane declared in
+> `discover()` is registered, so this cannot come back silently.
 
 ## Engine Stack (as of 2026-07-24 — superseded, see banner above)
 

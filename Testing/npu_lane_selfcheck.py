@@ -113,6 +113,63 @@ check("npu_engine_universal" in docs_blob,
 check(("optional" in docs_blob.lower() and "FastFlowLM" in docs_blob),
       "docs describe FastFlowLM as optional, not required")
 
+
+# ── 5. the native lane is registered, and it is routed/priced ahead of FLM ────
+# `npu_xrt` was declared in discover() and never pushed into `backends_` — its
+# block was left unclosed, so it printed a "✅ detected" banner line and then
+# existed in no list a consumer walks. That is why the Q4NX route named no native
+# entry (#2358). These checks make the omission impossible to reintroduce quietly.
+import re as _re
+
+manager = text(ROOT / "src" / "backend_manager.cpp")
+router = text(ROOT / "src" / "model_router.cpp")
+
+lines = manager.splitlines()
+try:
+    start = next(i for i, l in enumerate(lines) if l.strip().startswith("void BackendManager::discover"))
+    end = next(i for i, l in enumerate(lines[start + 1:], start + 1) if _re.match(r"^}", l))
+except StopIteration:
+    start = end = -1
+check(start > 0 and end > start, "discover() was located in backend_manager.cpp")
+
+if start > 0:
+    ids = [(m.group(1), i) for i, l in enumerate(lines)
+           if (m := _re.search(r'info\.id = "([^"]+)"', l)) and start < i < end]
+    ids.append(("<end>", end))
+    unregistered = []
+    for (name, i), (_, j) in zip(ids, ids[1:]):
+        if "backends_.push_back(info)" not in "\n".join(lines[i:j]):
+            unregistered.append(name)
+    check(len(ids) - 1 >= 15, "discover() declares the expected set of lanes",
+          f"only {len(ids) - 1} lanes found")
+    check(not unregistered, "every lane declared in discover() is registered in backends_",
+          f"declared but never pushed: {', '.join(unregistered)}")
+    check("npu_xrt" in [n for n, _ in ids], "the native npu_xrt lane is declared")
+
+# Priority: the native lane must rank above the optional FLM lane.
+def _prio(ident: str) -> int | None:
+    i = manager.find(f'info.id = "{ident}"')
+    if i < 0:
+        return None
+    m = _re.search(r"info\.priority = tier_priority\(info\.tier\) \+ (\d+)", manager[i:i + 1200])
+    return int(m.group(1)) if m else None
+
+prio_xrt, prio_flm = _prio("npu_xrt"), _prio("npu_flm")
+check(prio_xrt is not None and prio_flm is not None,
+      "both NPU lanes declare a tier_priority offset", f"xrt={prio_xrt} flm={prio_flm}")
+if prio_xrt is not None and prio_flm is not None:
+    check(prio_flm < prio_xrt, "the optional FLM lane ranks below the native lane",
+          f"npu_flm +{prio_flm} vs npu_xrt +{prio_xrt}")
+
+# Route order for Q4NX: native first, FLM as fallback, CPU last.
+m = _re.search(r'cfg\.format == ModelFormat::Q4NX\)\s*\n\s*return \{\{([^}]*)\}', router)
+check(m is not None, "the qwen3 Q4NX route is present in model_router.cpp")
+if m:
+    order = [x.strip().strip('"') for x in m.group(1).split(",")]
+    check(order[:2] == ["npu_xrt", "npu_flm"],
+          "the Q4NX route tries the native worker before the FLM lane", str(order))
+    check("cpu_generic" in order, "the Q4NX route keeps a CPU fallback", str(order))
+
 # ── report ────────────────────────────────────────────────────────────────────
 if failures:
     print("NPU lane contract FAILED:")
