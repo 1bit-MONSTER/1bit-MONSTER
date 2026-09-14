@@ -35,7 +35,20 @@ run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run rotation  Testing/rotation_table_selfcheck.cpp
+
+# Where the NPU worker is looked up: the lane fork/execs `npu_engine_universal`, and
+# resolving it relative to the cwd meant a service started elsewhere silently had no
+# NPU lane at all (no package ships the worker either — issue #2360). Pins the order,
+# so the legacy ./ and build/ paths can never shadow an installed worker.
+run npu_worker Testing/npu_worker_path_selfcheck.cpp --
 run iq1       Testing/iq1_selfcheck.cpp --
+
+# Padded-vocab embedding gate: some 1BP artifacts declare the checkpoint's padded
+# vocab (262272) while shipping the unpadded table (262147 rows) — that is the
+# published v1 ZAYA1-8B upload, and the engine used to refuse it outright. The gate
+# adopts the table's rows as the vocab and still refuses real truncation, so this
+# pins the boundary in one place (#1521 producer side, #1606 truncation).
+run embed_pad Testing/embed_pad_gate_selfcheck.cpp --
 run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
 # NPU artifact key contract (issue #2193): the header-window regression and the
 # per-family GEMM names, both verifiable without a device.
@@ -43,6 +56,42 @@ run npu_keys  Testing/npu_key_contract_selfcheck.cpp src/q4nx_reader.cpp --
 # NPU path resolution: an override naming a path this machine does not have must
 # not be used (a stale NPU_XCLBIN_DIR in the shell silently broke every NPU run).
 run npu_paths Testing/npu_paths_selfcheck.cpp --
+
+# CLI dispatch coverage: tools/onebit.cpp's whole command set (chat, pull, list,
+# status, …) is compiled into the single ELF, but tools/onebin.cpp declared
+# onebit_main and never called it — so the documented `./run.sh chat` printed the
+# top-level usage, and so did every other command. A compiler cannot see a
+# declared-but-uncalled function or a symlink with no branch, so the three lists
+# (packaged symlinks, accepted commands, dispatch branches) are compared here.
+echo "== CLI dispatch coverage =="
+total=$((total+1))
+if dispatch_out=$("$PYTHON" Testing/dispatch_selfcheck.py 2>&1); then
+    echo "✓ cli_dispatch"
+else
+    echo "✗ cli_dispatch"
+    printf '%s\n' "$dispatch_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
+# The same question asked of the ARTIFACT rather than the source lists: the static
+# check cannot tell whether the linked binary really routes those names (that is
+# how `./run.sh chat` shipped printing usage while every static check passed). It
+# runs only when a built binary is present — this suite is host-only and does not
+# build one — so the CI job that DOES build the binary runs it with --require.
+echo "== CLI entry points (built binary) =="
+total=$((total+1))
+if [ -x build/1bit ]; then
+    if smoke_out=$("$PYTHON" Testing/cli_smoke.py 2>&1); then
+        echo "✓ cli_smoke"
+        printf '%s\n' "$smoke_out" | grep -E "^  note" | sed 's/^/  /'
+    else
+        echo "✗ cli_smoke"
+        printf '%s\n' "$smoke_out" | tail -6 | sed 's/^/    /'
+        fail=$((fail+1))
+    fi
+else
+    echo "  - cli_smoke: no build/1bit — skipped (run it where the binary is built)"
+fi
 
 # Docs-and-repo consistency: links that point at nothing, paths that resolve
 # nowhere, documented commands whose target does not exist, CI that invokes a
@@ -60,7 +109,6 @@ else
     printf '%s\n' "$docs_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
-
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))
@@ -82,6 +130,20 @@ else
     echo "✗ dedup converter: build/generate failed"
     [ $gen_rc -ne 0 ] && printf '%s\n' "$gen_log" | tail -5 | sed 's/^/    fixture:  /'
     [ $cc_rc -ne 0 ] && printf '%s\n' "$cc_log" | tail -5 | sed 's/^/    compiler: /'
+    fail=$((fail+1))
+fi
+
+# NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
+# → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
+# the legacy FLM test harness printed "FLM not installed" as if the NPU were
+# broken. A compiler cannot see a missing install step or a mislabelled lane (#2358).
+echo "== NPU lane contract =="
+total=$((total+1))
+if npu_lane_out=$("$PYTHON" Testing/npu_lane_selfcheck.py 2>&1); then
+    echo "✓ npu_lane"
+else
+    echo "✗ npu_lane"
+    printf '%s\n' "$npu_lane_out" | tail -6 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 

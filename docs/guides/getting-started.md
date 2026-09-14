@@ -33,16 +33,41 @@ from source.
 | **OS**        | Ubuntu 24.04 LTS or later                                         |
 | **Kernel**    | **6.18.22-lts or 7.x** — avoid 6.19.x (see warning below)         |
 | **ROCm**      | TheRock 7.15.0a (HIP runtime + device library)                |
+| **CMake**     | ≥ 3.28                                                            |
+| **Ninja**     | ≥ 1.12                                                            |
+| **Compiler**  | GCC ≥ 15 (C++26) + ROCm's `amdclang++` for HIP              |
+| **Git**       | —                                                                 |
 
 > ⚠️ **Kernel warning (issue #1).** On Strix Halo (gfx1151), Linux **6.19.x**
 > kernels have a reproducible `amdgpu` OPTC CRTC hang under sustained NPU/GPU
 > load — the display pipe locks up mid-inference. Confirmed-stable kernels are
 > **6.18.22-lts** and the **7.x** series. `install.sh` detects a 6.19.x kernel
 > and warns. Check yours with `uname -r` before running GPU inference.
-| **CMake**     | ≥ 3.28                                                            |
-| **Ninja**     | ≥ 1.12                                                            |
-| **Compiler**  | GCC ≥ 15 (C++26) + ROCm's `amdclang++` for HIP              |
-| **Git**       | —                                                                 |
+
+### Two things that surprise people on the first run
+
+**Secure Boot can stay enabled.** The NPU 40-column unlock is passed on the
+kernel command line (`amdxdna.aie2_max_col=40`), which is covered by the signed
+shim+GRUB chain, and the stock Ubuntu `amdxdna` module is already signed by
+Ubuntu's key — so there is no Secure Boot step and no reason to disable it. Only
+a custom/patched `amdxdna.ko` needs a MOK-signed rebuild, and the one case that
+does need Secure Boot off is AIE *simulator* debugging. Details:
+[Boot Configuration](../wiki/boot-configuration.md).
+
+**The NPU lane is the engine's own worker — FastFlowLM is not required.** NPU
+inference runs through `npu_engine_universal`, the FLM-free C++ engine (pre-compiled
+xclbins, CPU fallback for RoPE/norm/residual). It is resolved from
+`NPU_ENGINE_BIN`, else `./npu_engine_universal`, and a source build produces it at
+`build/npu_engine_universal`:
+
+```bash
+cmake --build build --target npu_engine_universal   # needs XRT
+export NPU_ENGINE_BIN=$PWD/build/npu_engine_universal
+```
+
+FastFlowLM is an *optional* extra runtime for the separate `npu_flm` lane — without
+it the engine does not lose the NPU. See
+[NPU architecture](../wiki/npu-architecture.md).
 
 ---
 

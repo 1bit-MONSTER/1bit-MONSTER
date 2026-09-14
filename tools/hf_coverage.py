@@ -134,7 +134,8 @@ def main() -> int:
     flm = flm_models()
     flm_hit = [m for m in flm if model_id.lower() in m.lower()]
     if flm_hit:
-        print(f"L3 FLM NPU (Q4NX): {flm_hit} — npu_flm route (67.5 tok/s)")
+        print(f"L3 FLM NPU (Q4NX): {flm_hit} — npu_flm lane (optional; the Q4NX route tries"
+              f" the native npu_xrt worker first)")
 
     # 4. L2 engine-specialized
     low = model_id.lower()

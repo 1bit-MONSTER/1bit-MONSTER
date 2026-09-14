@@ -140,7 +140,9 @@ int main() {
         c.arch = RCPP_ARCH_QWEN3;
         c.architecture = "qwen3";
         c.format = ModelFormat::Q4NX;
-        expect("qwen3 q4nx", c, {"npu_flm", "cpu_generic"});
+        // Native worker first (#2358): npu_xrt was declared but never registered
+        // in discover(), so this route could not name it. FLM is the fallback.
+        expect("qwen3 q4nx", c, {"npu_xrt", "npu_flm", "cpu_generic"});
     }
     {
         ModelConfig c = make_cfg();

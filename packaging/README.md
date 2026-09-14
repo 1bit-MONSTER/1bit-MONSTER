@@ -45,6 +45,31 @@ Auto-detects **19 model architectures** from GGUF/1BP headers, **47 1BP models**
 | `1bit-npu` | CLI inference engine (47 1BP models, auto-detect; NPU engine sidecar, needs XRT) | ~2.1 MB |
 | `video_lora_vk_cli` | Video-LoRA Vulkan CLI (dev tool, optional sidecar) | — |
 
+### The NPU worker (`npu_engine_universal`)
+
+The engine's NPU lane is a **separate executable**: `src/backend_npu.cpp` fork/execs
+it and speaks the worker protocol to it (xclbin GEMM, CPU fallback for
+RoPE/norm/residual). It needs XRT, so it is the one binary that may be **absent**
+from a package — the release build installs `libxrt-dev` best-effort and prints a
+warning instead of failing when XRT is unavailable.
+
+Where it goes, and how it is found (see `include/npu_worker_path.h`):
+
+| Layout | Path |
+|---|---|
+| tarball (flat) | `bin/npu_engine_universal`, next to `bin/1bit` |
+| `make stage` / `.deb` / `.rpm` / AppImage | `usr/bin/1bit-npu` **and** `usr/lib/1bit/npu_engine_universal` |
+
+Resolution order: `$NPU_ENGINE_BIN` → the running executable's directory →
+`/usr/lib/1bit` → `/usr/bin` → `/usr/local/bin` → the legacy `./` and `build/`
+paths, under either name. No `NPU_ENGINE_BIN` export is needed for an installed
+tree. If it is missing, the engine logs the probe list and runs on CPU/GPU;
+build it with:
+
+```bash
+cmake -S engine/npu -B engine/npu/build && cmake --build engine/npu/build -j
+```
+
 ## Build them yourself
 
 ```bash

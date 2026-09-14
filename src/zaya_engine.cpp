@@ -896,6 +896,30 @@ static void resolve_weights_dir(const char* weights_dir) {
     g_weights_dir.clear();  // fixes #1332: never default to /tmp
 }
 
+// Embedding-table gate shared by zaya_init / zaya_init_onebp.
+//
+// The table defines the real vocab for a tied LM head, but some artifacts declare
+// the checkpoint's *padded* vocab in the header and ship the unpadded table — the
+// v1 ZAYA1-8B upload declares 262272 and carries 262147 rows (125 alignment rows),
+// converted before the converter learned to prefer the rows (#1521). Adopt the
+// table's rows when the shortfall is padding-sized; the tail is never addressed by
+// a token id. Refuse anything else — a bigger table than declared, a size that is
+// not a multiple of H, or a shortfall too large to be padding (the #1606 truncation
+// case) — because padding that off would read past the host buffer on upload.
+static bool zaya_adopt_embed_vocab(const char* who, const std::vector<float>& embed, ZayaConfig& cfg_out) {
+    const long pad = onebp_embed_padding_rows(embed.size(), cfg_out.vocab, cfg_out.h);
+    if (pad < 0) return false;
+    if (pad > 0) {
+        const int rows = (int)(embed.size() / (size_t)cfg_out.h);
+        fprintf(stderr,
+                "%s: embedding table has %d rows, header declares vocab %d — adopting %d rows"
+                " (%ld padding row%s never addressed by a token id)\n",
+                who, rows, cfg_out.vocab, rows, pad, pad == 1 ? " is" : "s are");
+        cfg_out.vocab = rows;
+    }
+    return true;
+}
+
 ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     // Use the passed-in weights_dir (or env fallback)
     resolve_weights_dir(weights_dir);
@@ -942,10 +966,10 @@ ZayaState* zaya_init(const char* weights_dir, const ZayaConfig* cfg) {
     }
 
     // Dimension validation: check loaded weights match expected config dimensions.
-    size_t expected_embed = (size_t)eng.vocab * eng.h;
-    if (s->embed.size() != expected_embed) {
+    // (A padded-vocab artifact is accepted here by adopting the table's rows.)
+    if (!zaya_adopt_embed_vocab("zaya_init", s->embed, eng)) {
         fprintf(stderr, "zaya_init: model embed size %zu != expected %zu (cfg H=%d, vocab=%d)\n",
-                s->embed.size(), expected_embed, eng.h, eng.vocab);
+                s->embed.size(), (size_t)eng.vocab * eng.h, eng.h, eng.vocab);
         fprintf(stderr, "  Engine configured for H=%d, NQ=%d, NKV=%d, L=%d, V=%d.\n",
                 eng.h, eng.nq, eng.nkv, eng.n_layers, eng.vocab);
         fprintf(stderr, "  Refusing to load — would produce silent garbage.\n");
@@ -1137,12 +1161,12 @@ ZayaState* zaya_init_onebp(const char* onebp_path, const ZayaConfig* cfg) {
         return nullptr;
     }
 
-    // Dimension validation — same embed-size gate as zaya_init (fixes #61):
-    // refuse to load a model whose embedding table doesn't match the config.
-    size_t expected_embed = (size_t)eng.vocab * eng.h;
-    if (s->embed.size() != expected_embed) {
+    // Dimension validation — the embed-size gate (fixes #61): refuse a model whose
+    // embedding table doesn't match the config, except for the padded-vocab case,
+    // where the table's own rows define the vocab (#1521 artifacts).
+    if (!zaya_adopt_embed_vocab("zaya_init_onebp", s->embed, eng)) {
         fprintf(stderr, "zaya_init_onebp: model embed size %zu != expected %zu (cfg H=%d, vocab=%d)\n",
-                s->embed.size(), expected_embed, eng.h, eng.vocab);
+                s->embed.size(), (size_t)eng.vocab * eng.h, eng.h, eng.vocab);
         fprintf(stderr, "  Refusing to load — would produce silent garbage.\n");
         zaya_destroy(s);
         return nullptr;

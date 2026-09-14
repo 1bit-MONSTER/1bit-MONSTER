@@ -39,11 +39,24 @@ Zyphra's portfolio spans the entire AI stack: **EEG → LLM (dense, MoE, Mamba) 
 
 ## 1BP catalog
 
-| Model | 1BP Size | Verified |
-|-------|:--------:|:--------:|
-| ZAYA1-8B, ZAYA1-74B-preview | 6.6 GB / 45.8 GB | ✅ loads |
-| ZR1-1.5B | 373 MB | hosted |
-| Zamba2-1.2B / 2.7B / 7B v2 | 1.15 – 7.25 GB | hosted |
-| BlackMamba-1.5B / 2.8B | 1.0 / 1.9 GB | ✅ loads |
+Every file below is on the public mirror and fetchable by name with
+`packaging/model-download.sh <name>` — the script the packaged image's
+`1bit-model-fetch.service` calls. Sizes are the actual file sizes on the mirror,
+decimal (GB = 10⁹ B); `model-download.sh list` prints the same files in IEC units,
+so its ZAYA1-8B reads 6.1G where this table says 6.6 GB. Each download is checked
+against the sha256 the hub reports for that file (deleted on mismatch).
+
+| Model | 1BP Size | Verified | Download name |
+|-------|:--------:|:--------:|-----------|
+| ZAYA1-8B | 6.6 GB | ✅ loads | `zaya1-8b` |
+| ZAYA1-74B-preview | 49.6 GB | ✅ loads | `zaya1-74b` |
+| ZR1-1.5B | 819 MB | hosted | `zr1-1.5b` |
+| Zamba2-1.2B-v2 | 1.15 GB | hosted | `zamba2-1.2b` |
+| BlackMamba-1.5B | 1.0 GB | ✅ loads | `blackmamba-1.5b` |
+
+Zamba2-2.7B/7B-v2, BlackMamba-2.8B and Zamba-7B-v1 are on the mirror as well; they
+are not in the downloader's default list because they are larger and rarely the
+first thing to try. The sizes above are the measured artifacts — ZR1-1.5B is
+819 MB (matching the table at the top of this page), and the 74B `.1bp` is 49.6 GB.
 
 **See also:** [full model support detail](../wiki/models.md) · [benchmarks SSOT](../wiki/performance.md) · [all families](README.md)

@@ -37,6 +37,13 @@ jobs:
             python3 python3-venv libcurl4-openssl-dev libzstd-dev libwebsockets-dev \
             libvulkan-dev glslc uuid-dev libdrm-dev spirv-headers
 
+          # XRT is what makes the native NPU worker a target at all:
+          # CMakeLists.txt gates add_subdirectory(engine/npu) on find_package(XRT).
+          # Non-fatal — without it the release still ships, just without the NPU
+          # worker (issue #2360), and users can build one themselves.
+          sudo apt-get install -y -qq libxrt-dev || \
+            echo "::warning::libxrt-dev unavailable — this release will not include the NPU worker (npu_engine_universal)"
+
           # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo).
           # TheRock 7.15.0a (with the built-in FastFlowLM flm binary) is the ONLY
           # ROCm in this build — the runner has no system ROCm, so CMake's
@@ -87,6 +94,12 @@ jobs:
             rocm_cpp \
             onebin \
             bitnet_tui
+          # Native NPU worker — the lane the engine's own NPU path fork/execs
+          # (src/backend_npu.cpp). The target only exists when CMake found XRT, so
+          # this is best-effort: a miss downgrades the package to CPU/GPU instead of
+          # failing the release.
+          ninja -C build npu_engine_universal || \
+            echo "::warning::npu_engine_universal not built (XRT missing?) — the release ships without the NPU worker"
 
       - name: Package
         run: |
@@ -96,6 +109,16 @@ jobs:
           cp build/1bit dist/bin/
           # TUI frontend (separate binary, not folded into onebin)
           cp build/bitnet_tui dist/bin/ 2>/dev/null || true
+          # Native NPU worker, when this build could produce it. It sits next to
+          # `1bit` in bin/, so the engine resolves it from the executable's own
+          # directory with no NPU_ENGINE_BIN (include/npu_worker_path.h); the .deb
+          # and AppImage inherit it from dist/bin. Issue #2360.
+          if [ -f build/npu_engine_universal ]; then
+            cp build/npu_engine_universal dist/bin/npu_engine_universal
+            echo "packaged: bin/npu_engine_universal"
+          else
+            echo "::warning::no build/npu_engine_universal — this release ships without the NPU worker"
+          fi
           # Shared HIP kernel library
           cp build/librocm_cpp.so dist/lib/
           # Docs + install + license

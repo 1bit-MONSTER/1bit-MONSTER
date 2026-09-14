@@ -78,6 +78,8 @@ void BackendManager::discover() {
         info.instance = nullptr;
         info.plugin_handle = nullptr;
         std::println("  {:<25} {}", "NPU XDNA (XRT)", info.available ? "✅ detected" : "❌ not available");
+        backends_.push_back(info);
+    }
 
     // 1a5. HIP 1BP GPU — full GPU inference engine for 1BP models.
     // Loads the same 1BP files as NPU, runs on GPU via rocBLAS + custom kernels.
@@ -156,10 +158,35 @@ void BackendManager::discover() {
         backends_.push_back(info);
     }
 
-    // 1b. NPU (FLM) — production FLM engine, MIT licensed, 67.5 tok/s
-    // This is the PERMANENT hotpath backend. Highest priority in the system.
-    // It is always tried first during init and always selected as active.
-    {        BackendInfo info;        info.id = "npu_flm";        info.type = BackendType::NPU_XRT;        info.tier = BackendTier::T1_ACCELERATOR;        info.description = "AMD XDNA NPU via FLM engine (MIT, 67.5 tok/s)";        info.priority = tier_priority(info.tier) + 100;        info.available = true;        info.functional = false;        info.auto_selectable = true;        info.score = 67.5;        info.total_inferences = 0;        info.failed_inferences = 0;        info.cumulative_ms = 0;        info.instance = nullptr;        info.plugin_handle = nullptr;        std::println("  {:<25} {}", "NPU FLM (MIT)", "✅ available");        backends_.push_back(info);    }
+    // 1b. NPU (FLM) — the optional FastFlowLM lane (MIT, ROCm/FastFlowLM).
+    // NOT the primary NPU path: the engine's own worker is `npu_xrt` above
+    // (src/backend_npu.cpp -> npu_engine_universal, "Zero FLM dependency"), and
+    // the Q4NX route tries it first (model_router.cpp). This entry stays
+    // registered at a *lower* priority than the native lane so a consumer that
+    // ranks globally cannot pick a lane that needs an external runtime over the
+    // one that ships with the engine. It remains the fallback when the native
+    // worker cannot initialise.
+    {
+        BackendInfo info;
+        info.id = "npu_flm";
+        info.type = BackendType::NPU_XRT;
+        info.tier = BackendTier::T1_ACCELERATOR;
+        info.description = "AMD XDNA NPU via the optional FastFlowLM lane";
+        // Below the native npu_xrt entry (tier + 50): the engine's own
+        // worker is the primary NPU path, this is the fallback.
+        info.priority = tier_priority(info.tier) + 45;
+        info.available = true;   // declared; the FLM binary is probed at init()
+        info.functional = false;
+        info.auto_selectable = true;
+        info.score = 0;
+        info.total_inferences = 0;
+        info.failed_inferences = 0;
+        info.cumulative_ms = 0;
+        info.instance = nullptr;
+        info.plugin_handle = nullptr;
+        // "registered" rather than "available": the FLM binary is only
+        // probed in init(), same contract as the HRX lane below.
+        std::println("  {:<25} {}", "NPU FLM (optional)", "✅ registered (flm probed at init)");
         backends_.push_back(info);
     }
 

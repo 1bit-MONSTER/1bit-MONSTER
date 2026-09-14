@@ -16,6 +16,7 @@
 #include "backend.h"
 #include "q4nx_reader.h"
 #include "npu_key_contract.h"
+#include "npu_worker_path.h"   // worker resolution: not cwd-relative (issue #2360)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -175,8 +176,22 @@ struct NpuWorker {
         }();
         (void)_sigpipe_ignored;
 
+        // Resolve the worker through every layout we ship, not just the cwd
+        // (issue #2360): $NPU_ENGINE_BIN, next to this executable, the deb's
+        // /usr/lib/1bit, /usr/bin, then the legacy ./ and build/ paths.
         const char* engine_bin = getenv("NPU_ENGINE_BIN");
-        std::string bin = engine_bin ? engine_bin : "./npu_engine_universal";
+        const std::string bin = npu_worker_resolve(engine_bin, npu_worker_exe_dir());
+        if (bin.empty()) {
+            fprintf(stderr,
+                    "NPU: npu_engine_universal not found — NPU lane disabled (CPU/GPU unaffected)\n"
+                    "NPU: checked %s\n"
+                    "NPU: build it with 'cmake --build build --target npu_engine_universal' (needs XRT)\n"
+                    "NPU: or set NPU_ENGINE_BIN=<path>\n",
+                    npu_worker_candidate_list(engine_bin, npu_worker_exe_dir()).c_str());
+            return false;
+        }
+        if (getenv("NPU_ENGINE_VERBOSE"))
+            fprintf(stderr, "NPU: worker %s\n", bin.c_str());
 
         int to_child[2], from_child[2];
         if (pipe(to_child) < 0) { perror("NPU: pipe(to_child)"); return false; }
