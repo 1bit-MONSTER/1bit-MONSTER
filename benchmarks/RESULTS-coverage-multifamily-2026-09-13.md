@@ -11911,3 +11911,44 @@ and the *size* question now has a third value to reconcile. **Whether a 5 MB `ar
 defect is NOT established**: an over-allocated BO is normally harmless, and this lane has been wrong before by reading a
 size difference as a role difference. **What is established is that the artifact states its own extents, and that
 statement is now on the record for the first time.**
+
+## 218. The `.dynsym` extents are NH-INDEPENDENT — so §217's "maybe an nh20 signature" is refuted by the same demotion — and `arg5`'s chunk count gives the artifact's own granularity: 128 tokens
+
+The same one-command view on all four artifacts:
+
+| artifact | `arg3` | `arg4` | `arg5` entries |
+|---|---|---|---|
+| 256-ctx nh16 | **16 KB** | **16 KB** | **2** (32 KB, 64 KB) |
+| 1024-ctx nh16 | **16 KB** | **16 KB** | 8 (32 KB → 256 KB) |
+| **1024-ctx nh20** | **16 KB** | **16 KB** | 8 |
+| **1024-ctx nh32** | **16 KB** | **16 KB** | 8 |
+
+**`arg3` and `arg4` are declared 16 KB in every artifact, across three head counts and two context lengths** — so, exactly
+as with the volume field in §214, **the declared extent is not a geometry field**, and §217's suggestion that *"16 KB /
+16 KB / 8 chunks may be an nh20 signature"* is **refuted by its own test**. **Two demotions in two sections, by the same
+method** — which is the useful part: the demotion test is now the lane's cheapest discriminator, and it has converted two
+apparent geometry signals into non-signals.
+
+**And `arg5`'s entry count is the one quantity that does move, and it moves linearly with the context:**
+
+```
+256 tokens  -> 2 entries
+1024 tokens -> 8 entries        =>  1 entry per 128 tokens
+```
+
+**So the artifact declares its KV argument in 128-token chunks** — a granularity that belongs to the *artifact*, stated by
+the artifact, and **it is a third number in a lane that already had two**: the engine calls with **256 rows** (§194's
+`rows=256`), and the capture's own launches were **2 per layer at 1024 tokens**, i.e. **512-token blocks** (§211).
+
+**Three granularities, all measured, none of them equal** — 128 (declared), 256 (the engine's call), 512 (the capture's):
+
+| who | granularity | source |
+|---|---|---|
+| the artifact's `arg5` declaration | **128 tokens** | `.dynsym`, this section |
+| the engine's attention call | **256 rows** | §194, the sentinel's `rows` |
+| the capture's attention launches | **512 tokens** | §211, 64 launches / 32 layers |
+
+**Which is the shape of a real remaining difference rather than an argument about one**: the three participants in this
+exchange **disagree about the chunk size**, each states its own, and **none of the three is derivable from the other two.**
+Whether that disagreement is the defect is not established — but it is now stated by the artifacts on both sides rather
+than inferred, and **the 128-token figure is the first granularity the kernel itself declares.**
