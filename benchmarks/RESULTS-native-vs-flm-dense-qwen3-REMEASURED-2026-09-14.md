@@ -75,3 +75,20 @@ The pipelining and the nh32/nh20 long-context captures came from a concurrent
 session working in this same worktree; this document re-measures their effect
 end-to-end. The 0.6B long-context captures (nh16 1024/2048) and the
 shape+context guard on the ELF slot came from this session.
+
+## Stability: two full passes
+
+The native column was re-measured end-to-end a second time (fresh harness run per
+model). It is reproducible to ~1%:
+
+| model | prefill (pass 1 → 2) | TTFT s (pass 1 → 2) | decode (pass 1 → 2) |
+|---|---|---|---|
+| 0.6B | 1905.2 → **1930.5** | 0.537 → **0.531** | 79.3 → **80** |
+| 1.7B | 1319.3 → **1307.2** | 0.776 → **0.783** | 40 → **40** |
+| 4B | 673.9 → **679.8** | 1.520 → **1.506** | 19 → **19** |
+| 8B | 469.7 → **470.8** | 2.180 → **2.175** | 11 → **11** |
+
+So the prefill and TTFT margins over FLM (+59% to +73%, 19% to 25%) are far
+outside native's own variation, and the 1.7B/4B decode "ties" (−0.6%, +0.2%) are
+genuine ties rather than noise in native's favour — native holds 40 and 19 tok/s
+exactly across passes.
