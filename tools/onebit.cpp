@@ -43,7 +43,7 @@
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
-static constexpr const char *kVersion = "2026.07.22";
+static constexpr const char *kVersion = "2026.08.04";
 static constexpr const char *kDefaultEndpoint = "http://127.0.0.1:9090/v1";
 
 static const char *kBanner = R"(
