@@ -13774,3 +13774,30 @@ as **runs / unvalidated**, not as working.
 **And that is the third row from §10/§845 to move**: Llama-3.1-8B (gate restored), Gemma3-4B (init fixed, then a vendor
 assertion named), and now Gemma3-1B — **each started as a build gap or an engine defect and had been recorded as a
 capability limit.**
+
+## 910. The same defect was in FOUR functions — the sweep, not the fix, is what establishes completeness
+
+**After the layer packing and the lm_head were both fixed with `npu_desc_tiles`, a regex sweep for the idiom found it still
+in two more places:**
+
+- **one line inside `npu_layer_tile_offsets`** that the earlier conversion **missed because its spacing differed**
+  (`gate_t`) — so the offsets were still wrong by a `gate_t` term wherever GU is split, which is every Qwen3 model;
+- **the entire `npu_layer_shortconv_offsets` function** (eight projections), which computes the **LFM2 short-conv** offsets
+  and had **never** been converted.
+
+**All converted. 35 references to the helper, and the sweep now finds ZERO remaining
+`(lw->X.ndim == 2) ? (int)lw->X.shape[0] : 0` idioms** — so the rule is applied *everywhere*, not wherever it was
+remembered.
+
+**Verified**: all ten gates match FLM's exact references, so the conversion is a no-op for `shape[1] == 5120` as the rule
+requires. Gemma3-4B's init still passes, and Gemma3-1B still completes its run.
+
+**The pattern is the finding**: **one conceptual bug — a row count used as a tile count — appeared in FOUR functions** (layer
+packing, tile offsets, short-conv offsets, lm_head), and **each individual fix looked complete when it was made.** The first
+two were found by crashing models; the last two only by **sweeping for the pattern**. **A fix is not evidence of
+completeness; a sweep is.**
+
+**And Gemma3-1B's output sharpens its own caveat**: the first tokens are `[1] 0, [2] 0, [3] 0` — **degenerate**. So the
+honest label is **runs / degenerate output / unvalidated**: the run completes, the tokens are all zeros, and because **FLM
+cannot load this model there is still no reference** to say whether zero is wrong. **Two engine defects were removed and the
+model executes; whether it computes anything correct is a separate question this evidence does not answer.**
