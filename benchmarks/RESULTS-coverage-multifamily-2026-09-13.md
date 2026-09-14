@@ -14297,3 +14297,48 @@ know that `qp[l]` is a search result, not an index.
 the run **reaches the layer packing**, and it now fails **in the standard-attention packing of layer 3**, with the offset and
 the file both validated. **Next: line-level attribution inside that block** — which needs either a debug build or a print
 bisect, and is recorded rather than guessed.
+
+## 980. The guard names the mechanism: every `full_attention` layer resolves no weight shape, and every linear layer does
+
+**The RT_PACK_DEBUG bisect (§975 named the site; this names the values):**
+
+```
+layer 3 STD fused: qp=2220545024
+  std: dq(q_proj) off=2220545024 K=2560
+  std: q=0x564e33d75800 qr=0 qc=2560      <- NON-NULL POINTER, ZERO ROWS
+  std: dq(o_proj) off=2214482944 K=4096
+  std: o=0x564e33d75820 or2=0 oc2=4096    <- SAME
+  std: branch qr==NH*HD? 0
+```
+
+**The COLUMNS are right — `qc=2560=H`, `oc2=4096=NH·HD` — and the ROW counts are zero.** So `qr == NH*HD` is **false**, the
+code takes the **fused-gate branch** instead of the plain-layout one, and **that is where it faults.** A non-NULL buffer with
+zero rows means *"the shape was not resolved"*, **not** *"the projection is empty"* — and nothing checked.
+
+**The guard turns the signal into a diagnostic, and the diagnostic names the pattern immediately:**
+
+```
+layer 3, 7, 11, 15, 19, 23 STD fused: unresolved weight shape (qr=0 or2=0) -- skipping layer
+```
+
+**Exactly the `full_attention` layers — six of thirty-two, the "1" in this model's 3:1 GDN pattern.** So **every
+linear-attention layer resolves its weights and every standard-attention layer does not**, which is a much sharper statement
+than "the STD branch crashes".
+
+**And the mechanism, as a hypothesis with its evidence**: the **offset** and the **shape** come from **different lookups**
+that disagree. `qp[l]` comes from `jo()` — a `memmem` search for the name plus the next `"data_offsets"` (§975) — and **it
+finds the offset**; the shape comes from a separate named lookup inside `dq()`, and **it does not.** The engine already
+contains a **name-mangling helper** that rewrites `model.layers.N` to `model.layer.N`, so a **name-form mismatch between the
+two lookups** is the obvious candidate. **Recorded as a hypothesis, not a finding** — what is *measured* is that the offset
+resolves, the shape does not, and **only on the STD layers.**
+
+**So the stretch's engine-side changes now number three, every one gate-verified:**
+
+| change | effect |
+|---|---|
+| **`derive_xclbin_dims()` on every config path** (§970) | Qwen3.5-4B's zero-length BO is gone; `KD=2560 ND=6144` |
+| **four shape xclbins built** (§970) | the run reaches the layer packing |
+| **zero-row dequant guard** (this section) | a segfault becomes a per-layer diagnostic that named the pattern |
+
+**All ten gates still match FLM's references after each**, so every one is a no-op for the models that were already working —
+which is the property that makes them safe to land.
