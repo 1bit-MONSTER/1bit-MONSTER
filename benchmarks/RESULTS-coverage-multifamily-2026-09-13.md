@@ -9196,7 +9196,7 @@ and this session has retracted four instrument readings.** So "a kernel covering
 re-establish**, not a fact to build the next hypothesis on — and `qout = NH×HD = 2560` versus a putative 2048 is
 exactly the kind of claim that should be measured at the call, not inferred from the artifact.
 
-## 170. Measured: the generated nh20 ELF costs ~6% more, not ~1200× — and §169's refinement was itself a quantifier error, committed by me
+## 530. Measured: the generated nh20 ELF costs ~6% more, not ~1200× — and §169's refinement was itself a quantifier error, committed by me
 
 §169 applied the engine's recorded *"~1200× slower"* to the generated **nh20** artifact. Measured instead — same fixture,
 same flags, ELF slot swapped and restored (`afb80dda…`, 177728 B verified):
@@ -9293,3 +9293,40 @@ time. **A comment is a claim about code, not evidence of it**, and the cheapest 
 the two 372512-byte files are **both generations** (21:36:24 and 23:59:02) while the capture is the 98848-byte
 `attn_cap1024.elf`, so the byte-identity shows **determinism, not agreement with FLM**. Both lanes derived that
 independently; §162's headline is withdrawn and its provenance half stands.
+
+## 525. Their wider audit found a CODE citation my renumbering had retargeted — and the same invariant on the LOG finds one more
+
+**Their finding, and it is mine to own**: `npu_engine_universal.cpp:4091` cited **§161** for the KV-region hedge, and
+**§161 no longer names that section** — the hedge was moved **161 → 166** during the cleanup, and §161 now names their
+generator-route finding. Corrected in `8e378b23e`, comment-only.
+
+**And their diagnosis of why it survived two audits is the part worth keeping.** The breakage is **quiet**, because the
+old number is normally held by a section on a **nearby topic** — *"§161-for-a-Nanbeige-config-section reads perfectly
+plausibly"* — so it passed their duplicate scan and my citation audit both. **It was caught only because they printed
+the citing comment and the section title side by side. The check that works is the one that shows both halves.**
+
+**And they sharpened my caveat into an invariant, which is better than the caveat was.** I called the audit a **lower
+bound** (prose restatements are invisible). They added that it is also a **moving target**: **8+ collisions were
+resolved by moving sections, and each move is a silent edit to every citation of that section.** Hence:
+
+> **After any renumbering, grep the code for the moved number.** A slug or a title would survive a move; **a number
+> cannot.**
+
+**So I ran it, on both corpora — the invariant has two:**
+
+- **the CODE**: **21 distinct cited numbers** across `engine/` and `npu-infer/`, **all resolving, every title on-topic**
+  — their fix landed and the code is clean;
+- **the LOG**: **one retargeted reference.** Line 8753 said *"§160 corrected §470's claim that the generated route is
+  wired"* — but **§160 is the `attn_shaped_ok` correction and the ROUTE correction is §161.** Fixed.
+
+**And one distinction the audit taught me, because it separates two classes that look alike.** Line 5352 cites **§155**
+for *"the live prefill walking in 128-row blocks"* — the block walk is §83, §155 is the nh24 GEMM section. **Weak, but
+not a renumbering casualty**: the original §155 was always the GEMM section, and the section I moved was a **later
+duplicate** that had taken the same number. **One is a pre-existing imprecision, the other an artifact of the policy —
+and they want different fixes**: an imprecision needs a better target, a casualty needs the invariant.
+
+**And the quantifier class is now four for four, across both lanes.** Their §170 corrects §169 with the same term:
+*"§169's refinement was itself a quantifier error, committed by me."* So the count stands at **three of mine and one of
+theirs** — I8-rows→bundle, one-model→format, one-tool→family, and now their one-measurement→scale — **which makes it the
+most productive error class either lane has found, and the only one where every instance was caught by the person who
+made it or by the other lane within one message.**
