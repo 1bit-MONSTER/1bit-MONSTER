@@ -9519,3 +9519,39 @@ found alone**, which is the strongest available argument for the arrangement its
 **And a comment's status, stated once and worth keeping**: **a comment is a claim *about* code, not evidence *of* it** —
 and the repo now holds **two** that disagree with their own files, **with the file right in both cases.** One cost a
 correction (§160/§164); one cost a review. **The defence is opening the line the comment is attached to.**
+
+## 175. The argument swap MOVES the boot — so the kernel distinguishes arg3 from arg4, and the engine's role map is load-bearing; but neither pairing gives FLM's answer
+
+§174's runnable test: swap argument **positions 3 and 4** for the nh20 attention call, every buffer left exactly as
+allocated, engine still writing Q into `attn_act` (:359) and still reading its answer from `attn_out` (:405).
+
+| configuration (`/tmp/ids_1024.txt`, bf16, clean device) | boot | prefill |
+|---|---|---|
+| baseline — `out=arg3, in=arg4` (shipped) | **188** | 682 ms |
+| **swapped — `out=arg4, in=arg3`** | **152432** | 678 ms |
+| FLM reference | **1033** | — |
+| host attention | 109440 | — |
+
+**The swap moves the answer, which is the informative half:** the kernel **does distinguish** arg3 from arg4 — they are
+not interchangeable slots — so **the engine's role map is load-bearing** and §173's candidate is **live, not dead**.
+That was the branch the test was built to decide, and it came back the interesting way.
+
+**But the swap is not the fix, and that is the other half.** `152432` is neither FLM's `1033` nor the host's `109440`
+— **a different wrong answer, not a right one.** So the defect is **not merely the pairing of the two buffers**: the
+argument assignment matters, and correcting it as hypothesised still leaves the result wrong, which means the remaining
+divergence is in **what the buffers contain or how they are sized**, not only in which position they occupy.
+
+**And the timing says the swap is not a cost question** — 682 ms vs 678 ms — so whatever is wrong is not a
+throughput artefact of the arrangement.
+
+**Recorded with the usual caveats, because two of this session's lessons apply directly:**
+- the **coverage figure** (§122's 2048-of-2560) was a **sentinel instrument** reading and is **not** used as a premise
+  here — this run reports only boots and times, both read from the engine's own output;
+- **a single moved number is not a cause.** What is established is narrower and worth keeping: *the two slots are not
+  equivalent to the kernel* — which is exactly what "arg3 size is allocation slack" would have denied, and it is why
+  the size test in §173 would have been the wrong experiment even had it been runnable.
+
+**State of the lane after this run:** the artifact is not the discriminator (§167/§170, measured on both axes), the
+**call site is** (§173), and within the call site the **argument assignment is load-bearing** (§175) while **not being
+sufficient**. That is a strictly smaller space than the one this thread started from, and every step of it was a
+measurement rather than an argument.

@@ -367,8 +367,24 @@ struct Bf16Mm {
         run.set_arg(0, 3);
         run.set_arg(1, 0);
         run.set_arg(2, 0);
-        run.set_arg(3, attn_out->bo());
-        run.set_arg(4, attn_act->bo());
+        // BF16MM_ATTN_SWAP_IO (default OFF, behaviour unchanged): swap the two
+        // attention argument POSITIONS -- 3 and 4 -- leaving every buffer exactly as
+        // allocated. Rationale (RESULTS-coverage-multifamily 174): FLM handed this
+        // kernel 1 MB at arg3 (= NKV*HD per token, a KV-width slot) and 5 MB at arg4
+        // (= NH*HD, the attention-I/O width), while this engine assumes out=arg3 and
+        // in=arg4 -- the opposite pairing. The engine still fills attn_act with Q (:359)
+        // and still reads its answer from attn_out (:405), so if the kernel's output
+        // slot is its arg4 the answer lands where the engine looks for it and the boot
+        // moves. If it does not move, the slots are equivalent to the kernel and the
+        // role hypothesis dies. Either outcome is informative; shrinking arg3 was not,
+        // because attn_out IS the buffer the engine reads (:405).
+        if (getenv("BF16MM_ATTN_SWAP_IO")) {
+            run.set_arg(3, attn_act->bo());
+            run.set_arg(4, attn_out->bo());
+        } else {
+            run.set_arg(3, attn_out->bo());
+            run.set_arg(4, attn_act->bo());
+        }
         run.set_arg(5, attn_kv->bo());
         attn_act->sync_to_device();
         attn_kv->sync_to_device();
