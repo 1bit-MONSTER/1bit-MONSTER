@@ -455,7 +455,11 @@ def main(argv: list[str] | None = None) -> int:
             "intent": (
                 "Provenance for the committed NPU xclbin set, keyed by the artifact's embedded "
                 "XclBinUUID. Regenerate with engine/npu/tests/check_xclbin_provenance.py "
-                "--write-manifest and land it in the same commit as the artifact change."
+                "--write-manifest --toolchain \"<compiler arm + versions>\" "
+                "--script-revision \"<git rev of the generating script>\" and land it in the same "
+                "commit as the artifact change. Those two flags are the point of this file: the "
+                "artifacts carry no compiler marker to derive them from, so a rebuild that omits "
+                "--toolchain records build.toolchain as null again (issue #2262)."
             ),
             "generated": {
                 "by": "pi/coding-agent",
@@ -528,7 +532,11 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"\nVIOLATION: no manifest at {manifest_path.relative_to(root)}\n"
             "  The artifact set has no recorded provenance. Bootstrap it with:\n"
-            "    engine/npu/tests/check_xclbin_provenance.py --write-manifest",
+            "    engine/npu/tests/check_xclbin_provenance.py --write-manifest \\\n"
+            "      --toolchain \"<compiler arm + versions, e.g. 'aiecc (mlir-aie venv), LLVM 23.0.0, XRT 2.26f'>\" \\\n"
+            "      --script-revision \"$(git rev-parse --short HEAD)\"\n"
+            "  Without --toolchain the manifest records build.toolchain as null, which is the\n"
+            "  open half of issue #2262.",
             file=sys.stderr,
         )
         return 1
