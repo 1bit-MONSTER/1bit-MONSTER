@@ -11993,3 +11993,44 @@ multiples).
 | `arg3` role | **tested by the swap** (§175) — insufficient; the **width** has never been presented (§215) |
 | chunk granularity | **measured at three lengths** — the sizes are integer multiples, so no prediction of wrongness |
 | §204's NaN partition | **measured**, and the only description of the *wrongness itself* |
+
+## 676. The attribution closes on a THIRD instrument — the block interior — and the lattice is exact: 8 kernels × 32 layers = 256, + 1 prologue = 257
+
+**The peer is right that the layer number does not separate the two readings** — `32 = 32 × 1` and `64 = 32 × 2` fit Nanbeige's
+32 layers equally well. **But the layer number was never the right discriminator, because it is a per-frequency test being
+asked a per-kernel question.** The instrument that settles it is the **block interior**: the `SETARG idx=3/4/5` lines
+between an `ELF nnnn:` label and the **next** `RUN` line are *that* ELF's own args.
+
+**Read that way, every distinct kernel in the capture runs exactly once per layer:**
+
+| its OWN arg3 · arg4 · arg5 | per-layer total | kernels |
+|---|---|---|
+| 5,242,880 · 5,242,880 · 31,457,280 | 64 | `elf_0008` (41,920 B) **32** + `elf_0012` (41,920 B) **32** |
+| 1,048,576 · 5,242,880 · 31,457,280 | 64 | `elf_0009` (13,760 B) **32** + `elf_0010` (13,760 B) **32** |
+| **5,242,880 · 5,242,880 · 67,108,864** | **32** | **`elf_0011` (177,728 B) — 32** |
+| 22,020,096 · 5,242,880 · 55,574,528 | 64 | `elf_0013` (154,560 B) **32** + `elf_0014` (154,560 B) **32** |
+| 5,242,880 · 22,020,096 · 55,574,528 | 32 | `elf_0015` (41,920 B) **32** |
+
+**Eight distinct kernels, each running 32 times, totals 256 — and the manifest has 257 `RUN` lines.** The extra one is the
+prologue. **`8 × 32 + 1 = 257`, exactly.**
+
+**And this is why the two earlier instruments both failed, in a way that is now nameable:** the **62-run** signatures are
+each **two** kernels sharing one signature (`64 = 2 × 32`), so **a frequency cannot attribute a kernel** — it can only
+show that *some* kernel is per-layer. **The question was per-kernel and both instruments were per-frequency.** §201's
+per-launch signature counting is right *and* insufficient; §650's count was right and its owner was wrong **twice** (it is
+shared by two kernels, and it is not `elf_0011`'s).
+
+**So `elf_0011`'s own args are `(5 MB · 5 MB · 64 MB)`, confirmed by the block interior** — and the residual is **one
+slot**: `arg3`/`arg4` match the engine, **`arg5` differs — 64 MB against the engine's 16 MB — and 64 MB was tested
+(§183): `152432`, the absorbing attractor.**
+
+**And the robust form the peer named is kept, because it is the honest one:** under **either** attribution the frequency
+is per-layer, so *"the wrong artifact for the role"* is **refuted on both rows** — **the conclusion never depended on the
+row.** And the shape explanation now belongs to the **per-row partition** (§204): *1024 NaN + 1024 written + 512 untouched,
+where the 512 is `NKV×HD`* — **a measured wrong computation rather than a role mismatch.**
+
+**And their two flags are recorded as flags, not accepted as facts:** my *"the ELF tolerates it because the caller shifts
+pointers and the geometry is baked"* is an **assumption** — §197 shows the ELF bakes a 4× unroll of 256-row blocks, so
+whether a **256-row caller** and a **512-row capture** drive it identically is **unmeasured**; and **`XM` is the one axis
+no perturbation has covered** (§196 varied the *key count* and was inert), with the standing caveat that **`XM` also sizes
+the GEMM staging**, so it is not a one-line perturbation.
