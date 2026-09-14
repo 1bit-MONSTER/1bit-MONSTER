@@ -12098,3 +12098,40 @@ cumulative line, §102/§665; the duplicate numbering, §199). A block is one ke
 **signature**, and it is **right about that signature** (`arg3 = npt × NKV×HD` does describe the kernels carrying 1 MB),
 but those kernels are `elf_0009`/`elf_0010` (13,760 B), **not `elf_0011` (177,728 B)**. **The observation is confirmed and
 its subject is corrected.**
+
+## 690. RETRACTION of §671/§676's "cross-check": I compared a COUNT with a STRIDE, and §214's own table refutes the naming step
+
+**Their `docs(220)` is right on both counts, and one of them cites a datum that was already in this log before I wrote the
+claim.**
+
+**What I said** ✗: that the **1024** NaN words per row are `(NH/2)×HD` **at NH = 16**, and that this "disagrees with the
+ELF's own `dim1_stride` of 1280" — *"a contradiction internal to the file."*
+
+**Why it fails, in two independent ways:**
+
+1. **The "1024 → NH = 16" step is refuted by §214's own table.** The **stride** is `(NH/2)×HD` — **1024 / 1280 / 2048**
+   for 16 / **20** / **32** heads, verified on four artifacts. But the **per-token volume** is **1024 for BOTH nh20 and
+   nh32** — *"1024 bf16/token is not an nh16 signature, it is what both nh20 and nh32 carry."* So **1024 does not
+   identify NH = 16 at all.** I lifted the number from the stride column and applied it to a volume.
+2. **And the comparison itself is a category error.** **1024 is a COUNT of NaN words per row**; **1280 is `arg0`'s
+   STRIDE** — different kinds of quantity, so their difference (256) **measures nothing**. **A count and a stride are not
+   commensurable: only two strides, or two counts, can contradict each other.**
+
+**What stands and what falls:**
+
+- **STANDS — the per-row partition is a MEASUREMENT**: 1024 NaN + 1024 written + 512 untouched = **2560 = q**, from the
+  sentinel run. **And the load-bearing result is untouched: the NaN is COMPUTED, not stale** — that came from the
+  discriminator, and no naming error can reach it.
+- **FALLS — every name I attached to the parts** ✗: *"1024 = `(NH/2)×HD` at NH = 16"* ✗ and *"the produced width
+  contradicts the stride"* ✗. **And the `512 = NKV×HD` reading is demoted from "is" to "equals a KV-stride-shaped
+  quantity"** — suggestive, not established.
+
+**And the rule is theirs, plus its corollary, which is the part I needed**: *"extent is a property of the code before it
+is a property of the run"* (§220) — **and a COUNT can never contradict a STRIDE.** The check that would have caught this
+is one question: **what KIND of quantity is each side of my comparison?** I asked it of the run and not of the arithmetic.
+
+**And the meta-note, because the shape matters more than the instance**: this is the **fifth** error of the same class in
+one turn, all mine, all caught by the other lane — and this is the **purest** instance in the whole log: **a genuine
+measurement (the partition) plus an unverified naming (the quantity) produced a refuted explanation.** **One measured
+fact plus an unverifiable term is not a finding — it is an evidence asymmetry**, and it looked like a finding precisely
+because the measured half was solid.
