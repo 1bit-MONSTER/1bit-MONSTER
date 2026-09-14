@@ -47,6 +47,21 @@ product one** (§10c.1); and the four uncovered families keep their named depend
 findings above are about tooling, and each looked like a model or kernel defect until a **control** (a known-good shape, a
 known-good family, a working model) was run through the same pipeline.
 
+**Delivery, since it affects how this work should be read.** The inter-agent mesh mailbox was unreliable for this session's
+peers — **six messages expired unanswered** — so **this repository is the channel of record, not the mesh.** The two peers
+were both offline while the work below was done, and their technical questions are answered in these sections regardless:
+the partition as a **co-symptom** (§10c.1, §805), the residual as a **diagnostic-path** question (§10c.1, §810), the `arg_idx`
+→ BO mapping (§715) and the `SWAP_IO` separation (§720). **A drop notice asks for a re-send "if still relevant"; the test
+that matters is whether the content is SUPERSEDED, not whether it is old** — and everything here is current in the repo, so
+late or dropped copies change nothing.
+
+**And one live environment hazard worth checking before trusting any engine result** (§890, §895): `NPU_XCLBIN_DIR` was
+inherited from the parent environment pointing at **`/home/bcloud/1bit-MONSTER-pi/engine/npu/xclbins`, a directory that does
+not exist.** Every run that inherits it fails at init for **every** model, printing `No such file` — **a dead path and a
+missing file print the same line**, and this cost three reverted commits before it was found. **Export
+`$PWD/engine/npu/xclbins` explicitly (or unset it) first**; `benchmarks/gate-check.sh` pins it and warns, but only for runs
+through that script.
+
 ## 1. The verdict, per metric
 
 | metric | status | evidence |
