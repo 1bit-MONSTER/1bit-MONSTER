@@ -11559,3 +11559,45 @@ file (§195), applied now to the numbers themselves.
 **Recorded as the lane's method capstone**, because it is the output that transfers: every technical finding in this
 stretch is specific to Nanbeige's attention, while this rule is portable to any measurement in the log — **and it was
 earned four times, from four different failures, by both lanes.**
+
+## 210. RETRACTED (§201, §208): the `ELF` label FOLLOWS its own run — verified on all six `ELF` lines — so `elf_0011` has `(1 MB, 5 MB, 30 MB)`, §102 was right, and §173 is RESTORED
+
+The peer's adjacency argument is correct, and it is checkable on every labelled kernel rather than on the one in dispute:
+
+```
+line 917: SETARG … idx=5 size=31457280
+line 918: RUN 001: args=[3:1048576 4:5242880 5:31457280 ]
+line 919: ELF 0011: size=177728 -> …/elf_0011_177728.bin      <- the label FOLLOWS its run
+```
+
+and the same holds for **every** `ELF` line in the file — `elf_0012` follows `RUN 002`, `elf_0013` follows `RUN 003`,
+`elf_0014` follows `RUN 004`, `elf_0015` follows `RUN 005`. **Six for six: the label trails the run it names.**
+
+**So `elf_0011`'s signature is `(1 MB, 5 MB, 30 MB)` — §102's original quote — and two of my sections are wrong:**
+
+- **§201** read the `SETARG`s *after* the label as that kernel's arguments. The label trails its run, so those belong to
+  the **next** run.
+- **§208** claimed to have *"settled"* the attribution with a 224/224 `ARG4_DUMP`-precedes-`RUN` count. **The count was
+  real and the inference was wrong**: it shows that a **dump** is emitted during the run's construction, while a
+  **kernel label** is emitted after the launch. **Two different logging points, and I generalised one to the other** —
+  the same failure as reading a directory listing as the state of the world, one indirection further out.
+- **And the file holds FOUR `RUN 001` lines** (894, 906, 918, 4600), not two — so §205's premise was right and its
+  resolution was still inverted.
+
+**Which restores a candidate this lane had closed:**
+
+| | FLM (`elf_0011`, 64 launches) | engine | |
+|---|---|---|---|
+| **arg3** | **1,048,576** = `npt × NKV×HD` (KV width) | **5,242,880** = `npt × NH×HD` | **DIFFERS** |
+| arg4 | 5,242,880 | 5,242,880 | match |
+| arg5 | 31,457,280 (30 MB) | 16,777,216 | differs |
+
+**§173 is RESTORED**: *"the arg3 roles differ — FLM's is KV-width, the engine's is attention-output-width"* is what the
+settled attribution says, and the earlier withdrawal rested on my inverted reading. **And `arg5` differs again** — 30 MB
+here against the engine's 16 MB and the 64 MB tested in §183, i.e. **three different values across three readings of this
+one argument.**
+
+**And the launch count changes with it: 64 = 32 layers × 2 blocks** — so the capture ran **512-token blocks** while the
+engine's chunking is **256** (four per 1024). **The chunking difference §650 raised and §207 called reversed is live
+again**, and `XM`'s derived-tiling status (§208's closing note) does not make it measurable — it makes it **structural**:
+the two lanes differ in the *shape of the calls they make*, not in a knob either can turn.
