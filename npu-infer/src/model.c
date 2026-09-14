@@ -197,6 +197,26 @@ int npu_pack_weight_bo(uint8_t* bo_buffer, const void* in,
 // ===========================================================================
 #define NPU_TILE_BYTES 5120
 
+
+// Tiles in a projection tensor. shape[0] is the ROW count and shape[1] is the row width IN
+// BYTES (a q4nx byte extent; for bf16 tensors shape[-1] counts elements, so the two must not
+// be conflated). A tile is NPU_TILE_BYTES = 5120 B. Every model until Gemma3-1B had
+// shape[1] == 5120, i.e. one row == one tile, so shape[0] was also the tile count and this
+// returns exactly shape[0]. Gemma3-1B has shape[1] == 1280 -- a quarter-tile row -- where
+// using shape[0] overstates the count 4x and every derived offset and BO size is wrong.
+// THE SAME RULE MUST BE USED EVERYWHERE a tile count is derived from a tensor: the source
+// read, the destination offsets, and the BO size. Fixing one of the three and not the others
+// moves the fault rather than removing it -- which is how this was found.
+static int npu_desc_tiles(const TensorDesc* d) {
+    if (!d || d->ndim != 2) return 0;
+    long long rows = (long long)d->shape[0];
+    long long rb   = (long long)d->shape[1];
+    if (rows <= 0) return 0;
+    if (rb > 0 && rb != NPU_TILE_BYTES)
+        return (int)((rows * rb + NPU_TILE_BYTES - 1) / NPU_TILE_BYTES);
+    return (int)rows;
+}
+
 static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int G) {
     // S is the HALF-GROUP length. It was G/2, which is integer division and therefore breaks
     // for an ODD G: with G=9 (Gemma3-1B, H=1152 -> 1152/128 = 9) the map o -> i was not a
@@ -235,9 +255,24 @@ static void npu_reorder_tiles(uint8_t* dst, const uint8_t* src, int n_tiles, int
 
 // Pack one projection's reordered tiles into the layer BO at `tile_offset`.
 static void npu_pack_proj(uint8_t* bo, const TensorDesc* desc, ModelWeights* mw,
-                          int tile_offset, int G) {
+                          int tile_offset, int G, const char* name) {
     if (desc->ndim != 2) return;
-    int n_tiles = (int)desc->shape[0];
+    // shape[0] is the ROW count and shape[1] is the row width IN BYTES (this is a q4nx
+    // byte extent, not an element count -- for bf16 tensors shape[-1] counts elements,
+    // which is why the two must not be conflated).
+    //
+    // A tile is NPU_TILE_BYTES = 5120 B. Every model until Gemma3-1B had shape[1] == 5120,
+    // i.e. one row == one tile, and shape[0] was therefore the tile count as well. Gemma3-1B's
+    // tensors have shape[1] == 1280 -- a QUARTER-tile row -- so shape[0] (576 for q_proj) is
+    // FOUR TIMES the tile count (144), and npu_reorder_tiles read 4x the tensor's bytes and
+    // segfaulted. Deriving the count from the byte extent is IDENTICAL whenever
+    // shape[1] == 5120 (checked for Qwen3-0.6B: 256*5120/5120 == 256) and correct otherwise.
+    int n_tiles = npu_desc_tiles(desc);
+    if (getenv("RT_PACK_DEBUG"))
+        fprintf(stderr, "  pack %-5s n_tiles=%4d G=%3d off_tile=%5d ndim=%d shape0=%d shape1=%d\n",
+                name ? name : "?", n_tiles, G, tile_offset,
+                desc->ndim, desc->ndim > 0 ? (int)desc->shape[0] : -1,
+                desc->ndim > 1 ? (int)desc->shape[1] : -1);
     const uint8_t* data = (const uint8_t*)model_tensor_data(mw, (TensorDesc*)desc);
     // A tensor can be 2-D and still have no data (absent from the bundle, or not mapped).
     // Without this the reorder memcpy's from NULL and the process segfaults, which reads
@@ -274,17 +309,17 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
     const int G_d = (config->intermediate_size + 127) / 128;                      // down_proj
     const int CH  = config->hidden_size / 16;                                    // 8 * G_h
 
-    const int q_t  = (lw->q_proj_weight.ndim == 2)    ? (int)lw->q_proj_weight.shape[0]    : 0;
-    const int k_t  = (lw->k_proj_weight.ndim == 2)    ? (int)lw->k_proj_weight.shape[0]    : 0;
-    const int v_t  = (lw->v_proj_weight.ndim == 2)    ? (int)lw->v_proj_weight.shape[0]    : 0;
-    const int o_t  = (lw->o_proj_weight.ndim == 2)    ? (int)lw->o_proj_weight.shape[0]    : 0;
-    const int up_t = (lw->up_proj_weight.ndim == 2)   ? (int)lw->up_proj_weight.shape[0]   : 0;
-    const int gate_t = (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
-    const int d_t  = (lw->down_proj_weight.ndim == 2) ? (int)lw->down_proj_weight.shape[0]  : 0;
+    const int q_t  = npu_desc_tiles(&lw->q_proj_weight);
+    const int k_t  = npu_desc_tiles(&lw->k_proj_weight);
+    const int v_t  = npu_desc_tiles(&lw->v_proj_weight);
+    const int o_t  = npu_desc_tiles(&lw->o_proj_weight);
+    const int up_t = npu_desc_tiles(&lw->up_proj_weight);
+    const int gate_t = npu_desc_tiles(&lw->gate_proj_weight);
+    const int d_t  = npu_desc_tiles(&lw->down_proj_weight);
 
     // LFM2 hybrid: a short-conv layer has no q/k/v/o at all and carries its own block.
-    const int sp_t = (lw->shortconv_in_proj_weight.ndim == 2)  ? (int)lw->shortconv_in_proj_weight.shape[0]  : 0;
-    const int so_t = (lw->shortconv_out_proj_weight.ndim == 2) ? (int)lw->shortconv_out_proj_weight.shape[0] : 0;
+    const int sp_t = npu_desc_tiles(&lw->shortconv_in_proj_weight);
+    const int so_t = npu_desc_tiles(&lw->shortconv_out_proj_weight);
     // G is the CONTRACTION-dim group count (see the rule above: G = K/128). The short-conv
     // in_proj is H -> 3H, so K = H and G must be H/128 -- writing 3H/128 here used the OUTPUT
     // dim instead, and the byte diff against FLM's own LFM2 weight BO showed exactly that: the
@@ -315,14 +350,14 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
 
     memset(bo_buffer, 0, (size_t)total * NPU_TILE_BYTES);
 
-    npu_pack_proj(bo_buffer, &lw->q_proj_weight, mw, off_q, G_h);
-    npu_pack_proj(bo_buffer, &lw->k_proj_weight, mw, off_k, G_h);
-    npu_pack_proj(bo_buffer, &lw->v_proj_weight, mw, off_v, G_h);
-    npu_pack_proj(bo_buffer, &lw->o_proj_weight, mw, off_o, G_o);
+    npu_pack_proj(bo_buffer, &lw->q_proj_weight, mw, off_q, G_h, "q");
+    npu_pack_proj(bo_buffer, &lw->k_proj_weight, mw, off_k, G_h, "k");
+    npu_pack_proj(bo_buffer, &lw->v_proj_weight, mw, off_v, G_h, "v");
+    npu_pack_proj(bo_buffer, &lw->o_proj_weight, mw, off_o, G_o, "o");
 
     // Short-conv block (LFM2 conv layers only; absent elsewhere so these no-op).
-    if (sp_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_in_proj_weight,  mw, off_sp, G_sp);
-    if (so_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_out_proj_weight, mw, off_so, G_so);
+    if (sp_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_in_proj_weight,  mw, off_sp, G_sp, "scin");
+    if (so_t > 0) npu_pack_proj(bo_buffer, &lw->shortconv_out_proj_weight, mw, off_so, G_so, "scout");
 
     // gate/up: alternating CH-tile chunks (up0, gate0, up1, gate1, ...)
     const uint8_t* up = (const uint8_t*)model_tensor_data(mw, &lw->up_proj_weight);
@@ -340,7 +375,7 @@ int npu_pack_layer_bo(uint8_t* bo_buffer, ModelWeights* mw,
                               gate + (size_t)c * CH * NPU_TILE_BYTES, gate_n, G_h);
     }
 
-    npu_pack_proj(bo_buffer, &lw->down_proj_weight, mw, off_d, G_d);
+    npu_pack_proj(bo_buffer, &lw->down_proj_weight, mw, off_d, G_d, "down");
     return total;
 }
 
@@ -351,11 +386,11 @@ void npu_layer_tile_offsets(ModelWeights* mw, int layer_idx,
                             int* off_gu, int* off_d) {
     if (off_q) *off_q = 0;
     LayerWeights* lw = &mw->layers[layer_idx];
-    int q_t  = (lw->q_proj_weight.ndim == 2)  ? (int)lw->q_proj_weight.shape[0]  : 0;
-    int k_t  = (lw->k_proj_weight.ndim == 2)  ? (int)lw->k_proj_weight.shape[0]  : 0;
-    int v_t  = (lw->v_proj_weight.ndim == 2)  ? (int)lw->v_proj_weight.shape[0]  : 0;
-    int o_t  = (lw->o_proj_weight.ndim == 2)  ? (int)lw->o_proj_weight.shape[0]  : 0;
-    int up_t = (lw->up_proj_weight.ndim == 2) ? (int)lw->up_proj_weight.shape[0] : 0;
+    int q_t  = npu_desc_tiles(&lw->q_proj_weight);
+    int k_t  = npu_desc_tiles(&lw->k_proj_weight);
+    int v_t  = npu_desc_tiles(&lw->v_proj_weight);
+    int o_t  = npu_desc_tiles(&lw->o_proj_weight);
+    int up_t = npu_desc_tiles(&lw->up_proj_weight);
     int gate_t = (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
     int oq = 0, ok = q_t, ov = q_t + k_t, oo = q_t + k_t + v_t;
     int ogu = oo + o_t, od = ogu + up_t + gate_t;
@@ -404,16 +439,16 @@ int npu_layer_bo_bytes(ModelWeights* mw, const ModelConfig* config) {
     for (int l = 0; l < nl; l++) {
         LayerWeights* lw = &mw->layers[l];
         int t = 0;
-        t += (lw->q_proj_weight.ndim == 2)    ? (int)lw->q_proj_weight.shape[0]    : 0;
-        t += (lw->k_proj_weight.ndim == 2)    ? (int)lw->k_proj_weight.shape[0]    : 0;
-        t += (lw->v_proj_weight.ndim == 2)    ? (int)lw->v_proj_weight.shape[0]    : 0;
-        t += (lw->o_proj_weight.ndim == 2)    ? (int)lw->o_proj_weight.shape[0]    : 0;
-        t += (lw->up_proj_weight.ndim == 2)   ? (int)lw->up_proj_weight.shape[0]   : 0;
-        t += (lw->gate_proj_weight.ndim == 2) ? (int)lw->gate_proj_weight.shape[0] : 0;
-        t += (lw->down_proj_weight.ndim == 2) ? (int)lw->down_proj_weight.shape[0] : 0;
+        t += npu_desc_tiles(&lw->q_proj_weight);
+        t += npu_desc_tiles(&lw->k_proj_weight);
+        t += npu_desc_tiles(&lw->v_proj_weight);
+        t += npu_desc_tiles(&lw->o_proj_weight);
+        t += npu_desc_tiles(&lw->up_proj_weight);
+        t += npu_desc_tiles(&lw->gate_proj_weight);
+        t += npu_desc_tiles(&lw->down_proj_weight);
         // The short-conv block also needs room when present (LFM2 conv layers).
-        t += (lw->shortconv_in_proj_weight.ndim == 2)  ? (int)lw->shortconv_in_proj_weight.shape[0]  : 0;
-        t += (lw->shortconv_out_proj_weight.ndim == 2) ? (int)lw->shortconv_out_proj_weight.shape[0] : 0;
+        t += npu_desc_tiles(&lw->shortconv_in_proj_weight);
+        t += npu_desc_tiles(&lw->shortconv_out_proj_weight);
         if (t > tmax) tmax = t;
     }
     return tmax * NPU_TILE_BYTES;
