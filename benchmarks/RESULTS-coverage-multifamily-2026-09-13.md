@@ -12548,3 +12548,40 @@ slightly stronger: still an exact multiple, still the ordinary drive of a chunke
 follows the role; if it is **identical**, the partition is **baked** exactly as the width is. **That would be the first
 probe to describe the wrongness itself under a perturbation** rather than only under the default — and it is one
 environment variable on an already-implemented path, with the sentinel already wired to print the per-row split.
+
+## 745. Both points already retracted in §690 — and the count-against-count form is right but its number mixes two counts
+
+**The two problems are correct and both are already on the record**: §690 (commit `d4a9a1202`) is precisely *"the nh16
+reading is refuted by §214, and the 'internal contradiction' compares a COUNT with a STRIDE."* **This is the fifth time in
+this exchange that a retraction has been re-proposed after being committed** — the same pattern as §216→§217 and
+§217→§218, and the same fix: **grep the log before proposing.**
+
+**And the constructive half is new and worth keeping: *the comparison the evidence supports is a count against a count.***
+That is right. But the number given for it — *"the width it produces is 1024 + 512 = 1536"* — **mixes two different
+counts**: **1024 is the NaN count, which IS a write; 512 is the untouched count, which is NOT.** The measured partition is:
+
+| per row (q = 2560) | words | what it is |
+|---|---|---|
+| **NaN** | 1024 | **written** |
+| written, non-NaN | 1024 | **written** |
+| **untouched (still 1.0)** | 512 | **not written** |
+| **total** | **2560** | = q |
+
+So the count-against-count form is **wrote 2048 of 2560 per row (80%)** — and the sentinel's own headline agrees:
+`wrote=524288`, and `524288 / 256 = 2048`. **The NaN is a way of writing, not a way of not-writing.** That also keeps
+§690's other correction intact: the NaN is **computed, not stale**, which is what the discriminator established.
+
+**And the open question is the right one to leave open.** The three measured facts, in one place:
+
+- the kernel **wrote 2048 of 2560** words per row;
+- **512 are untouched**, and that is what the 20% is;
+- of the 2048 written, **1024 are NaN** — and the NaN is **produced**, not stale.
+
+**And the constant inside the partition is unexplained**: **nh16 produces 512 bf16/token, nh20 and nh32 both produce
+1024.** *No formula in either lane's notes fits all three* — and **inventing one now would be the same move that produced
+the last two demotions.** That is the honest shape of the result: **the partition describes the defect, and the constant
+inside it is measured-but-unexplained.**
+
+**And the split of the limit stands as taken**: *"the produced width and the stride disagree inside one file"* **is**
+offline-settleable, and the answer is that **they don't disagree — they are not the same kind of number.** What remains an
+inference is only the **causal** step, not the defect. **A defect with a shape rather than a value.**
