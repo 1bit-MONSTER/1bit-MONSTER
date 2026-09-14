@@ -333,8 +333,13 @@ extern "C" float* dequant_i8_4736_to_float(const uint8_t* data, int i8_rows, int
             for (int col = 0; col < TILE_COLS; col++) {
                 uint8_t byte_val = lane_data[col * 8 + byte_idx];
                 int q = (nibble_sel == 0) ? (byte_val & 0x0F) : ((byte_val >> 4) & 0x0F);
-                float s = (float)(int8_t)scales[col];
-                float m = (float)(int8_t)mins[col];
+                float s, m;
+                if (const char* im = getenv("NPU_I8_MODE")) {
+                    int mode = atoi(im);
+                    if (mode == 1) { s = (float)scales[col] - 128.0f; m = (float)mins[col] - 128.0f; }      // centered
+                    else if (mode == 2) { s = (float)scales[col]; m = (float)mins[col]; }                  // unsigned
+                    else { s = (float)(int8_t)scales[col]; m = (float)(int8_t)mins[col]; }                 // signed
+                } else { s = (float)(int8_t)scales[col]; m = (float)(int8_t)mins[col]; }
                 out[(tile_row * TILE_ROWS + lr) * (*out_cols) +
                     (tile_col * TILE_COLS + col)] = (float)q * s * rs + m * rs + rm;
             }
