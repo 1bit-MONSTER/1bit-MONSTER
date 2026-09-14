@@ -11447,3 +11447,42 @@ the honest statement is that **both readings are live and the manifest's two `RU
 
 **What is robust and needs no attribution:** the frequency is per-layer under both readings, so **no "wrong artifact"
 reading survives**; and the **capture is 1024 tokens**, which is a fact about `npt` that neither lane had pinned.
+
+## 208. The attribution is SETTLED by the log's own ordering rule: `ARG4_DUMP` precedes its `RUN` 224 times out of 224 — so an `ELF` line is followed by its own run's arguments
+
+§206 left `elf_0011`'s signature open because both readings fit the layer count. **The log settles it without either lane's interpretation, by exhibiting its own ordering rule:**
+
+```
+ARG4_DUMP immediately preceding a RUN:  224
+(and ELF 0011 (177728) is followed, before its RUN, by SETARGs: 3:5242880 4:5242880 5:67108864)
+```
+
+**Every one of the 224 `ARG4_DUMP` lines is emitted *before* the `RUN` it belongs to** — the run object is **built**, its
+arguments and dumps logged, and then the **`RUN`** line records the launch. The `ELF` line is emitted in the same build
+phase, which is why it sits between the previous `RUN` and the next run's `SETARG`s.
+
+**So an `ELF` line is followed by its own run's arguments, and `elf_0011`'s signature is `(5 MB, 5 MB, 64 MB)` — 32 runs,
+once per layer.** That closes §206's open question:
+
+| | status |
+|---|---|
+| §201 (ELF line → following `SETARG`s) | **confirmed by the log's rule** |
+| §650's `(1 MB, 5 MB, 30 MB)` / 64 runs | a **different kernel** — the one whose `SETARG`s precede `RUN 001` |
+| §173 (*"the arg3 roles differ"*) | **stays withdrawn**: `arg3 = 5 MB = npt × NH×HD` **matches the engine** |
+| §206 (*"the attribution stays open"*) | **closed** — the ordering rule decides it |
+
+**And the method point is the one worth keeping, because it is the fourth time this pattern has paid: the deciding
+evidence was already in the artifact, and it was a *structural regularity* rather than a reading of any single line.**
+Both lanes had been arguing about where one `ELF` line sits; **the question was settled by counting the log's other lines
+and finding a 224/224 rule.** The same move settled §194 (`rows = 256` in one run), §196 (a `for` loop in the code) and
+§204 (a per-row partition) — **one fact that constrains many lines, rather than one line read carefully.**
+
+**Net state, with the attribution resolved:**
+
+- **the emulated kernel's arguments match the engine on `arg3` and `arg4`** (`5 MB` each), with **`arg5` the sole
+  difference** (FLM 64 MB vs the engine's 16 MB) — and FLM's own value was tested and gives **152432**, while the engine's
+  default gives **188**;
+- **the frequency matches** (once per layer), so no "wrong artifact" reading survives under the settled attribution
+  either;
+- **and the defect's description stands on §204's measured partition** — **1024 NaN + 1024 written + 512 untouched**,
+  with the untouched 512 being `NKV×HD`.
