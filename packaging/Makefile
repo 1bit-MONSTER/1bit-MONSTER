@@ -36,11 +36,20 @@ stage:
 	# ./ and build/ paths — under both `npu_engine_universal` and the legacy
 	# `1bit-npu`. Stage both names so a packaged install resolves without
 	# NPU_ENGINE_BIN (issue #2360).
-	if [ -f ../engine/npu/build/npu_engine_universal ]; then \
-		cp ../engine/npu/build/npu_engine_universal $(STAGE)/usr/bin/1bit-npu; \
+	# Two build layouts produce this binary and the previous single path matched
+	# NEITHER, so the packages shipped without a worker even on a box that had
+	# built one: the main CMake build writes $(BUILD_DIR)/engine/npu/…, and the
+	# standalone flow in engine/npu/CMakeLists.txt writes engine/npu/build/….
+	NPU_WORKER=""; \
+	for cand in $(BUILD_DIR)/engine/npu/npu_engine_universal engine/npu/build/npu_engine_universal; do \
+		if [ -f "$$cand" ]; then NPU_WORKER="$$cand"; break; fi; \
+	done; \
+	if [ -n "$$NPU_WORKER" ]; then \
+		cp "$$NPU_WORKER" $(STAGE)/usr/bin/1bit-npu; \
 		ln -sf ../../bin/1bit-npu $(STAGE)/usr/lib/1bit/npu_engine_universal; \
+		echo "staged NPU worker from $$NPU_WORKER"; \
 	else \
-		echo "warn: ../engine/npu/build/npu_engine_universal absent — staged tree has no NPU worker (cmake -B engine/npu/build -S engine/npu && cmake --build engine/npu/build)"; \
+		echo "warn: no NPU worker found — staged tree has no NPU lane (build it: cmake --build build --target npu_engine_universal)"; \
 	fi
 	if [ -f $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli ]; then \
 		cp $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli $(STAGE)/usr/bin/video_lora_vk_cli; \

@@ -113,11 +113,20 @@ jobs:
           # `1bit` in bin/, so the engine resolves it from the executable's own
           # directory with no NPU_ENGINE_BIN (include/npu_worker_path.h); the .deb
           # and AppImage inherit it from dist/bin. Issue #2360.
-          if [ -f build/npu_engine_universal ]; then
-            cp build/npu_engine_universal dist/bin/npu_engine_universal
-            echo "packaged: bin/npu_engine_universal"
+          # The path matters: `ninja -C build npu_engine_universal` writes
+          # build/engine/npu/npu_engine_universal, while this step used to look
+          # for build/npu_engine_universal — so the copy never fired and every
+          # release shipped without the worker even when the build had produced
+          # one. Both layouts are checked, main build first.
+          npu_worker=""
+          for cand in build/engine/npu/npu_engine_universal build/npu_engine_universal; do
+            if [ -f "$cand" ]; then npu_worker="$cand"; break; fi
+          done
+          if [ -n "$npu_worker" ]; then
+            cp "$npu_worker" dist/bin/npu_engine_universal
+            echo "packaged: bin/npu_engine_universal (from $npu_worker)"
           else
-            echo "::warning::no build/npu_engine_universal — this release ships without the NPU worker"
+            echo "::warning::no npu_engine_universal in build/ — this release ships without the NPU worker"
           fi
           # Shared HIP kernel library
           cp build/librocm_cpp.so dist/lib/
