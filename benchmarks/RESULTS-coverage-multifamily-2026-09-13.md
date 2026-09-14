@@ -10035,7 +10035,7 @@ supporting claim — that the stream is head-blind — is **not**.
 label→role. **Caught the same way as the others: by opening the thing instead of reading its name** — here by decoding
 177,728 bytes into 44,432 words and looking at the strides.
 
-## 182. The scalars are `(opcode, instr, ninstr)` — the geometry is NOT passed at all — and the engine makes ONE call with `rows = npt` where the member doc says "**max 256**"
+## 184. The scalars are `(opcode, instr, ninstr)` — the geometry is NOT passed at all — and the engine makes ONE call with `rows = npt` where the member doc says "**max 256**"
 
 Two code findings, both verified here, and together they name a candidate that every perturbation so far has been
 *inside* rather than testing.
@@ -10086,3 +10086,36 @@ offline.
 **Inertness of this lane's own new knob, since a control that touches the call needs it:** `BF16MM_ATTN_SCALARS` was left
 default-off, and §178's sweep reports the `(3,0,0)` row at **188** — identical to the untouched binary — so the knob's
 inert state reproduces the shipped behaviour exactly.
+
+## 585. The one open surface, measured OFFLINE: the stream reads 4.50 MB of KV and the engine writes 4.00 MB
+
+**Their state, accepted — with two of my own notes corrected by it.** The roles were run (§175), the region run was run
+(§176), and **`npu_engine_bf16_mm.h` is clean, sha256 equal to HEAD** — my repeated *"still dirty"* notes were taken
+before §178 landed and were **stale, not cautious.** The lane: artifact not the discriminator → positions load-bearing →
+scalars already correct (`arg0 = 3`, the only working mode) → single-parameter search closed → **the one untouched
+surface is what the engine puts INSIDE the buffers.**
+
+**And that surface has an offline instrument.** `decode_txn --decode-only` on the shipped nh20 ELF gives every DMA
+descriptor; summed per argument against what the engine's code fills:
+
+| argument | the stream's descriptors | the engine fills | |
+|---|---|---|---|
+| **arg0** | **512 descriptors, 2.00 MB**, `dim1_stride = 1280` | `attn_out`, `rows × q × 2` = **5.00 MB** | **over by 3 MB** |
+| **arg1** | **512 descriptors, 2.00 MB**, `dim1_stride = 1280` | `attn_act`, `rows × q × 2` = **5.00 MB** | same |
+| **arg2** | **128 descriptors, 4.50 MB**, `dim1_stride = 128` | `attn_kv`, `tokens × 512 × 2` per region × 4 = **4.00 MB** | **0.50 MB SHORT** |
+
+**The third row is the measurement worth having.** For `npt = 1024` the engine writes **`1024 × 512 × 2 = 1 MB` per region
+= 4.00 MB**; the stream's `arg2` descriptors read **4.50 MB**. **So 0.5 MB of what the kernel reads is not written by
+the engine** — and the engine's own comment states the fill as *"tokens × 512 bf16"* while the per-region stride is
+`reg = attn_kv_region`, **a separate number from `tokens × 512`.** That is a **contents shortfall measured from two
+artifacts, with no device and no perturbation** — the shape this candidate needed.
+
+**And the first two rows carry a conflict I will not resolve by arithmetic.** Their totals say the stream's attention
+buffers cover **2 MB = 1024 × 1024 elements = 1024 per query row = 8 heads × 128** — an **nkv8/nh16** width, not
+nanbeige's nkv4/nh20. But their `dim1_stride = 1280 = 10 × 128` **is** nh20 geometry. **The two signals disagree**, so
+the honest reading is: **the stride field encodes nh20 geometry and the coverage totals encode nh16 geometry** — and
+choosing between them needs the decoder's `dim0/dim1/dim2` semantics, not more arithmetic.
+
+**Which is the right next step, and it is offline**: the per-descriptor **`dim0_size × dim1_size × dim2_stride`** gives
+the exact covered extent per descriptor instead of a sum — turning *"4.50 vs 4.00 MB"* into a **per-descriptor map** of
+what the kernel reads and where, and against the engine's `reg`-strided fill it localises the shortfall to a region.
