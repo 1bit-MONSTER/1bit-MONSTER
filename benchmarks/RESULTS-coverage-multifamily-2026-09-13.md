@@ -12234,3 +12234,49 @@ are six careful readings, and the one that settles it is a **count**.
 between two runs and **opens the second one** — and the way to tell is the **handle** (it changes at the label:
 `0x7ffd1c178580` → `0x7ffd1c177ff0`, and the following `RUN_CTOR` declares that same new handle) **and the tail-match**,
 not the ordering.
+
+## 705. The OWNER of each launch position settles it — and the "pairs" are two DIFFERENT kernels, not one kernel twice
+
+**The peer's position table is exactly right**, and it is the best form the question has had:
+
+| signature | runs | positions | structure |
+|---|---|---|---|
+| (1,048,576 · 5,242,880 · 31,457,280) | **64** | 2, 3, 10, 11, 18, 19, 26, 27 … | **pairs**, gaps of 8 |
+| **(5,242,880 · 5,242,880 · 67,108,864)** | **32** | 4, 12, 20, 28, 36, 44 … | every 8th, gap 8 |
+
+**But position identifies a launch, not a kernel** — so I asked who *owns* each position, and the answer is decisive:
+
+```
+run   2: sig=(1 MB,5 MB,30 MB)   owner = elf_0009
+run   3: sig=(1 MB,5 MB,30 MB)   owner = elf_0010
+run   4: sig=(5 MB,5 MB,64 MB)   owner = elf_0011
+```
+
+**The "pair" is `elf_0009` and `elf_0010` — two different kernels, adjacent, each firing once per period.** So *"2 per
+period"* is not one kernel twice; it is **two kernels, each once.** And the owner field, over all five signatures:
+
+| signature | runs | named kernels | each |
+|---|---|---|---|
+| (1,048,576 · 5,242,880 · 31,457,280) | 64 | `elf_0009` + `elf_0010` | **32** |
+| (5,242,880 · 5,242,880 · 31,457,280) | 64 | `elf_0008` + `elf_0012` | **32** |
+| **(5,242,880 · 5,242,880 · 67,108,864)** | **32** | **`elf_0011`** | **32** |
+| (22,020,096 · 5,242,880 · 55,574,528) | 64 | `elf_0013` + `elf_0014` | **32** |
+| (5,242,880 · 22,020,096 · 55,574,528) | 32 | `elf_0015` | **32** |
+
+**Eight kernels, each exactly 32 runs — once per layer, total, 5 of 5.**
+
+**So `elf_0011`'s `arg3` IS `5,242,880 = npt × NH×HD` — matching the engine.** The *"material reading refuted / binding
+stays correct"* pairing does **not** diverge: **§173 stays withdrawn and the binding stays correct**, because the
+divergence required the attribution that the owner field refutes.
+
+**And this is the claim I made three rounds ago, demonstrated on the real numbers**: *"a frequency cannot attribute a
+kernel."* **Three of the five signatures belong to two kernels each** — so every argument from *"this signature fires 64
+times"* to *"this kernel fires twice per period"* is an argument **from a frequency to a role**, and the **owner field**
+is what breaks it.
+
+**And their general point is true, and is this session's rule for the seventh time**: *an argument's value is only as good
+as the run it was read from* — which is exactly why `arg5` has now been read as **30 MB, 16 MB and 64 MB** in the same
+exchange. **The fix is the one this log keeps re-deriving: name the artifact — and for a launch, name the run.**
+
+**Net: the live candidates are two, and `arg3` is no longer one of them** — the **call shape** (512-token blocks against
+the engine's 256) and **§204's NaN partition**, which is *measured* rather than inferred.
