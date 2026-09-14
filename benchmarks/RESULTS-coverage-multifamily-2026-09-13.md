@@ -12766,3 +12766,39 @@ table of one thing"*, now with two more members.
 **And the test is still a fourth head count.** Every artifact above is nh16 — the tree has nh16, nh20, nh32 and the
 flattened hd64 case, and **no nh24 or nh8 artifact at all**. So the formula remains **3 independent head counts, 6+
 supporting artifacts, and an unrun test** — and the test is a generated ELF, not another reading of the ones we have.
+
+## 775. The fourth-head-count test is NOT reachable by a parameter — and the failure states the nh16 stride's mechanism
+
+**Attempted the test the formula needs: regenerate `n1_core_attn.py` with a different head count. It fails, and the reason
+is worth having.**
+
+```
+$ python3 n1_core_attn.py -M 8 -K 128 -N 512 -m 8 -k 64 -n 128 -c 12 -b 2 > design.mlir
+$ aiecc ... design.mlir
+loc("design.mlir":17:10): error: 'aie.tile' op column index (8) must be less than the number of columns in the device (8)
+```
+
+**`-c/--cols` is `n_aie_cols`, not the head count** — the design does `tile(col, row) for col in range(n_aie_cols)`, and
+**the device has 8 columns**, so 12 is a hard error. My own reading twenty minutes ago — *"`-c` is NH/2"* — **was wrong**, and
+this is the correction: **the generator's parameter is the column count, and it is bounded by the hardware.**
+
+**But the generated file states the relationship, and it is a real one.** The generator's own help calls `-c` *"n_aie_cols
+(q heads)"*, and **one column carries an HD=128 head group**:
+
+```
+ 8 columns x 128 = 1024  =  the nh16 arg0 dim1_stride, exactly
+```
+
+**So the nh16 stride has a mechanism — `columns × HD` — and it is the only head count this generator can emit**, because 8
+is the device's limit. **And that bounds the neighbours too**: nh20's stride **1280 = 10 × 128** and nh32's **2048 = 16 ×
+128** would need **10 and 16 columns**, both **beyond the device's 8** — **so those artifacts did not come from this
+generator.** That is consistent with what the tree already says: the **nh20 ELF is FLM's own capture** (§102's byte-identity
+to `attn_cap1024.elf`), and the **nh32** file is shipped from elsewhere.
+
+**So the formula's test is not a parameter change.** Reaching a fourth head count would need a **redesigned kernel** — a
+looped column schedule, or a different generator — **not a flag**. The test stays **unrun**, and it now has a reason
+attached rather than an oversight: **the generator's family is nh16, and the two other head counts in the tree came from
+another source entirely.**
+
+**And one small thing this run establishes for free**: the device reports exactly **8 AIE columns**, which is a bound the
+lane had been treating as a design choice rather than a hardware fact.
