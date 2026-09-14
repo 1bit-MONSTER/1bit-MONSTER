@@ -14256,3 +14256,44 @@ crashes** — the same family as the LFM2 layer-0 defect, and the next site to l
 **So the Qwen3.5-4B row has moved twice in one checkpoint**: from *"boot 0, a format gap in the dequant"* to **an
 initialisation-order engine bug** (§965) to **that bug fixed, plus a build gap fixed, plus a named third site**. **Two of the
 three were this engine's own, and neither was a format problem.**
+
+## 975. The Qwen3.5-4B fault, sited: it is in `main`'s own STD-fused packing block for layer 3 — and `jo()` is a naive JSON scan
+
+**Two measurements, both cheap, both narrowing.**
+
+**1. The fault is in `main` itself, not in a library:**
+
+```
+Thread 1 "npu_engine_qwen" received signal SIGSEGV, Segmentation fault.
+0x00005555555ac876 in main ()
+#0  0x00005555555ac876 in main ()
+```
+
+**The STD-fused packing block is inlined into `main`**, and the print immediately before it is
+`layer %d STD fused: qp=%llu`, so the fault is inside `dq(qp[l], q_i8, H, …)` or the packing that follows. **And exactly ONE
+`STD fused` line is printed before the crash — layer 3 — which is this model's first `full_attention` layer**, so the
+**linear-attention layers are all handled** and **the standard-attention branch is what fails, on its first use.**
+
+**2. The offset is valid, so this is not an overrun.** `qp[3] = 2,220,545,024` against a model file of
+**2,750,560,152 B** — inside the file with **530 MB** to spare. **A valid offset into a valid file, and a crash in the code
+that consumes it.** That rules out the simplest story and points at the arithmetic around it.
+
+**And a fragility worth recording while looking at how `qp[l]` is obtained.** `jo()` is:
+
+```c
+static uint64_t jo(const char*js,size_t jl,const char*nm){
+  ... while(p<e){ auto q=(const char*)memmem(p,e-p,nm,nl); if(!q)return 0;
+      if(q>js&&*(q-1)=='"'&&*(q+nl)=='"'){ ... return strtoull(...); } p=q+1; } return 0; }
+```
+
+**A naive `memmem` scan of the whole 38 KB header for each name**, called **13 keys × 32 layers = 416 times**. The
+quote-boundary check makes an exact-name match likely, but **it does not make the search structural** — a name that appears
+inside a longer one, or a `"data_offsets"` key belonging to a *different* tensor on the same region, is one careless edit
+away from being returned. **It is the same class as everything else this log has collected: a lookup that is right by
+accident of the input rather than by construction.** Not the cause here — the offset is valid — but the next reader should
+know that `qp[l]` is a search result, not an index.
+
+**State of the row**: the initialisation-order engine bug is **fixed** (§970), the build gap is **fixed** (four shapes built),
+the run **reaches the layer packing**, and it now fails **in the standard-attention packing of layer 3**, with the offset and
+the file both validated. **Next: line-level attribution inside that block** — which needs either a debug build or a print
+bisect, and is recorded rather than guessed.
