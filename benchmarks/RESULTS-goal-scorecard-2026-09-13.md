@@ -687,6 +687,40 @@ which is what `NPU_FLM_PREFILL`/`NPU_FLM_DECODE` and `decode_token_check.sh` exi
 length information on its own**: 220 is *wrong* on the Phi4 lane at npt 32–144 and *correct* on the Nanbeige lane
 at npt 448. So "the plateau value tells you which length was computed" is **not** a valid inference in either lane.
 
+## 10c. The Nanbeige device question, after the final probes (2026-09-13, late)
+
+**Two exact forms came out of decoding every attention ELF on the box, and one attribution was resolved — by correcting my
+own earlier claim.**
+
+**`arg2` has a closed form: `total = 4 × npt × (npt + HD)` bytes**, exact at all three lengths (`256 → 0.39 MB`,
+`1024 → 4.72 MB`, `2048 → 17.83 MB`, errors 0.03% or better). Per region that is an **`npt × npt` score row plus an
+`npt × HD` input vector** — the shape of an attention intermediate. **And it corrects a number the engine's own comment
+mistook for a config value**: the stream's implied width `576` is **not a KV width**, it is **`(npt + HD)/2` in bf16 at
+`npt = 1024`** — an `npt`-dependent quantity. **No fixed `BF16MM_ATTN_KV_PT` can match it across lengths, so that sweep's
+inertness (512/576/640/720 all → 188) was expected, not puzzling.** Third demotion by the same pattern.
+
+**`arg0` decomposes into an artifact constant × a head-group count**: `buffer_length` is **4096 B = 2048 bf16 = 16 heads ×
+128 exactly** in every artifact, and the per-token volume is **`512 × ceil(NH/16)`** — fitted on **three** independent
+head counts (16, 20, 32), with a **competing formula tested and failed**. It is a hypothesis with an artifact-stated
+mechanism; **the fourth-head-count test is not reachable by a parameter** (the generator's `-c` is *AIE columns*, capped at
+the device's **8**, and 8 × 128 = 1024 = the nh16 stride).
+
+**And the attribution of the sentinel's write is resolved — against my own first reading.** The 256-row run loads three
+artifacts, and at 256 rows the selector can only pick **`attn_mha_256_nh16.elf`**, whose declared `arg0` is **131,072 bf16**.
+The measured write is **524,288 bf16 — exactly 4× that**, which is §197's unroll measured directly. My earlier *"exact match
+with the 1024-context nh16 artifact"* was **right in the number and wrong in the owner** (that file is not loaded at all;
+`131,072 × 4 = 524,288`).
+
+**And the defect's shape follows**: the write is a **fixed total**, not a per-row quantity, so the fraction of `q` it covers
+depends on the call size — **2048 bf16/row at the engine's only call size (256 rows) against `q` = 2560 → 80%, 512 words per
+row never written.** That is why the defect is identical at every prompt length.
+
+**What is measured**: the write (524,288 elements), the row count (256), `q` (2560), the untouched region (512/row), and
+that the NaN in the written half is **computed, not stale** (the sentinel discriminator). **What is not**: calling
+`2048/128 = 16` *"heads"* — and the test that would settle it **is not currently available**, because the sentinel lives in
+a path the nh16 models do not take. **So of the two live candidates, one is now closed (`arg3` role and width, both inert)
+and the other — the partition — is described but not explained.**
+
 ## 11. Session close
 
 **211 commits** on `goal/runlist-decode-wire`. The goal's three metrics beat FLM for every model the
