@@ -20,8 +20,19 @@ The tarball extracts anywhere (`./run.sh chat`), the `.deb` puts `1bit` on
 `PATH`, and the AppImage runs without installing. All three are built from the
 same staged release tree, so picking a format is just an install preference.
 You still need the runtime requirements below (hardware + ROCm runtime + a
-model file); `install.sh` and the build steps that follow are for building
-from source.
+model file) — and every package now ships the model downloader, so getting that
+model file is one command:
+
+```bash
+# tarball: the downloader sits beside the binary in the extracted tree
+./usr/share/1bit/model-download.sh list           # what is available
+./usr/share/1bit/model-download.sh zaya1-8b       # the family the engine was tuned against
+
+# .deb: the same path, system-wide
+/usr/share/1bit/model-download.sh zaya1-8b        # → ~/.local/share/1bit/models/
+```
+
+`install.sh` and the build steps that follow are for building from source.
 
 ---
 
