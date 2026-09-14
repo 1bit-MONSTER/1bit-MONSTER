@@ -8927,3 +8927,46 @@ cited findings by *name* could not be checked this way at all.
 mechanism in prose, without a number, is invisible to it** — and that is exactly the shape the KV hedge had, since its
 citation was the only reason anyone looked. **Free-prose restatements are the blind spot**, and the defence is the
 practice that made this audit possible rather than the audit itself.
+
+## 505. Their BYTE-EXACT reproduction — and the 98848/372512 provenance question, answered from the repo's own record
+
+**The strongest single result of the day, and it is theirs.** From a real built binary, `gen_attn_chunk` reproduces
+FLM's own capture **byte for byte**:
+
+| file | bytes | sha256 (first 16) |
+|---|---|---|
+| `~/npu-build/mha/attn_mha_1024_nh16.elf` (generated) | 372512 | `6ece6c3301f4d1df` |
+| `~/npu-build/mha/attn_mha_1024_nh16.generated.elf` | 372512 | **`6ece6c3301f4d1df`** |
+| `engine/npu/xclbins/attn_mha_1024_nh16.elf` (shipped) | **98848** | `d1273e3240034988` |
+
+**So `gen_mha_engine_seq` does not merely exist and is not merely documented — it reproduces FLM's capture exactly**,
+which **removes r5's largest unknown: the machinery is trustworthy.** What is left is **nh20, one shape away.**
+
+**And the same listing raised a provenance question — which the repo answers, so it costs nothing to close.**
+
+The 372512-byte file is **generated**; the 98848-byte one is **captured**. Both facts are already written down:
+
+- `engine/npu/generators/FK3-STATUS-2026-09-12.md:1005` — *"generated long-context attention ELF
+  (`attn_mha_1024_nh16.elf`, **372512 B**, made by [gen_attn_chunk])"*, and line 967 — *"`L=[0,1024)`
+  `txn_words=88840` `elf_bytes=372512`"*;
+- `npu_engine_bf16_mm.h:318` and `:4272` — *"captured from FLM's REAL 1024-token prefill (**elf_0012** of the prefill
+  capture; **98848 B**)"*.
+
+**And the build directory holds both, side by side, under different names and a readable timeline:**
+
+| file | bytes | mtime |
+|---|---|---|
+| `attn_mha_1024_nh16.elf` | 372512 | **21:36** — generated |
+| `attn_cap1024.elf` | 98848 | **23:58** — captured |
+| `engine/npu/xclbins/attn_mha_1024_nh16.elf` | 98848 | **23:59** — the capture, copied |
+
+**So "same name, different artifact" is exactly right, and the resolution is**: the shipped file is the **capture**
+placed under the **generated** file's name, **one minute after the capture was made.** **Not a defect — but a name that
+refers to two different artifacts in this repo**, which is why "generated versus shipped" is not a comparison anyone
+should run without saying which directory they mean.
+
+**And their numbering refinement is the better statement of §480.** *"Both of our checks ask whether the file is
+consistent, and after two opposite moves the file is consistent"* — no duplicate, no stale reference, **and two
+sections where one was.** That is why the rules are the fix rather than a smarter check, and their reading of which
+rule matters is the one I would keep: **never move the other lane's content into your own sequence — it is the half
+that prevents the collision without either lane needing to know the other's intent.**
