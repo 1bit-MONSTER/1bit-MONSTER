@@ -12802,3 +12802,32 @@ another source entirely.**
 
 **And one small thing this run establishes for free**: the device reports exactly **8 AIE columns**, which is a bound the
 lane had been treating as a design choice rather than a hardware fact.
+
+## 780. `arg2` has an EXACT closed form — `4 × npt × (npt + HD)` bytes — which closes the "super-linear" observation and explains the `576`
+
+**The `arg2` growth I recorded as an open observation has a closed form, exact at all three lengths:**
+
+| npt | measured | predicted `4·npt·(npt+128)` | error |
+|---|---|---|---|
+| 256 | 0.39 MB | `4·256·384` = 393,216 B = **0.39 MB** | within 2-dp rounding |
+| **1024** | **4.72 MB** | `4·1024·1152` = 4,718,592 B = **4.72 MB** | **0.03%** |
+| 2048 | 17.83 MB | `4·2048·2176` = 17,825,792 B = **17.83 MB** | **0.02%** |
+
+**So `arg2` total = `4 × npt × (npt + HD)` bytes**, i.e. **`(npt + HD)` bytes per token per region**, over **4 regions** —
+which is **`NKV`**. And the structure is transparent: **per region, `npt × (npt + HD)` is an `npt × npt` score row plus an
+`npt × HD` input vector** — the shape of an attention intermediate, exactly.
+
+**And that explains `576` — while correcting what it meant.** The code's `BF16MM_ATTN_KV_PT` comment reads the stream's
+implied width as `4.50 MB / 4 regions / 1024 tokens = 576 elements per token` and offers it as a *"KV width"* to sweep
+against 512 and 640. **But 576 bf16 = 1152 B = `npt + HD` at npt = 1024** — **it is not a width, it is an
+`npt`-dependent quantity.** At npt = 256 the same expression gives 384 B = **192 bf16/token**, and the measured value
+there is **190.4** — the same form.
+
+**So the `KV_PT` sweep varied a constant that does not exist.** No fixed `KV_PT` can match `npt + HD` across lengths,
+because the artifact's number **grows with the context**. **The sweep's inertness (512 / 576 / 640 / 720 all → 188) is
+therefore expected rather than puzzling** — and this is the third demotion in the same pattern: **a number that looked like
+a configuration value turned out to be a function of something else.**
+
+**And it corrects my own §765**, which recorded `arg2`'s growth as an open observation and called the 256 point
+non-comparable because it comes from a different model. **The form fits all three lengths**, so the fixture caveat was
+unnecessary — the numbers were on one curve.
