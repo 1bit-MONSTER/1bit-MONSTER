@@ -4088,7 +4088,7 @@ struct Bf16Ctx {
             // (Nanbeige) "may expect the packed K|V layout (add=1)" -- is REFUTED: FLM's own
             // nanbeige_npu_sequence.hpp exposes get_k03/get_k47/get_v03/get_v47 offsets, i.e.
             // the SAME four-region split (K in halves 0-3 and 4-7, then V the same), so add=2
-            // is right for nkv4 as well. RESULTS-coverage-multifamily 161. The add=1 branch is
+            // is right for nkv4 as well. RESULTS-coverage-multifamily 166. The add=1 branch is
             // therefore DEAD, and this knob cannot move a number that means anything; it is
             // kept only as an inertness control, with the default 2 being correct.
             int v_add = 2; if (const char* e = getenv("NPU_ATTN_V_REGION_ADD")) { int v = atoi(e); if (v >= 1 && v <= 3) v_add = v; }

@@ -9046,3 +9046,42 @@ you what exists; only the log tells you what has been done.**
 qwen3** but **1.9× for nanbeige**, so the difference is **not** a fixed container overhead, consistent with two
 genuinely different encodings. And their result is stronger than mine: **two encodings, the same wrong answer**, which
 removes the sequence as a candidate entirely.
+
+## 168. The code-citation audit extended: 32 sites, not 4 — and the renumbering policy had silently broken one of them
+
+The audit for *live claims resting on withdrawn findings* is mechanical because the code cites **section numbers**, and
+it was run here against every `RESULTS-coverage-multifamily` reference in `engine/npu/src/`, not only the two files
+first checked.
+
+**32 citation sites across 6 files**, every one resolving to an existing section:
+
+| file | sites | sections cited |
+|---|---|---|
+| `npu_engine_universal.cpp` | 8 | 66, 83 (×2), 93, 133, 113/118, 166 |
+| `npu_engine_bf16_mm.h` | 9 | 122, 59, 121, 225/230, 265/280/135, 260/265 |
+| `npu_engine_i8ctx_inc.h` | 8 | 59, 67, 82 (×2), 68, 62/64/65/66 |
+| `npu_engine_hybrid_flm.h` | 1 | 64 |
+| … | | |
+
+**All four sites checked earlier are correct, and every cited number resolves.** But the audit found **one dangling
+citation**, and its cause is the numbering policy itself:
+
+> `npu_engine_universal.cpp:4091` cited **§161** for the KV-region hedge. The hedge's section was **renumbered
+> 161 → 166** during the numbering cleanup, and **§161 now names a different section** — the generator-route finding.
+> Corrected to §166 in this commit.
+
+**So the reusable finding is a cost of the policy nobody had accounted for: renumbering a section silently invalidates
+every numeric citation to it — and the breakage is quiet, because after a move the old number is usually held by a
+section on a *nearby* topic.** §161-citing-§161 would have looked plausible to any reader; it was caught only because
+the citing comment and the section title were printed side by side.
+
+**Two limits, both worth stating since this audit will be re-run:**
+
+1. **It is a lower bound** (the earlier caveat, which holds for this wider pass too): a comment that restates a
+   withdrawn mechanism **in prose without a number** is invisible to it — the shape the KV hedge originally had.
+2. **Numbers are not stable identifiers while the file is being renumbered.** 8+ numbering collisions have been
+   resolved by moving sections; **each move is a silent edit to every citation of that section.** A slug or title would
+   survive a move; a number does not.
+
+**Practical form, and it is cheap: after any renumbering, grep the code for the moved number.** It is one command, and
+it is the only thing that catches this class.
