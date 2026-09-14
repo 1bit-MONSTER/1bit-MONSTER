@@ -8453,7 +8453,7 @@ vocabulary instead of a memory trace.
 
 ## 470. The generator route ALREADY EXISTS, and the ELF route's real defect is a STICKY SHAPE GATE — so r5 is a routing fix, not a multi-day artifact capture
 
-**Their §157 establishes the design difference**: FLM builds attention as a sequence over `(L_begin, L_end)` declared
+**Their §158 establishes the design difference**: FLM builds attention as a sequence over `(L_begin, L_end)` declared
 by **seven families**, so arbitrary lengths are supported **by construction**; this engine loads a **pre-built
 per-length ELF**, so a length or shape with no file has nothing to load. **Both blockers seen from two sides**, and
 their conclusion — *"generate the sequence as FLM does"* — is the right shape of fix.
@@ -8487,10 +8487,80 @@ explicit-failure design is defeated by a flag that outlives the shape that set i
 **So r5 re-sizes, and this is the actionable part**: the fix is to **qualify the gate by the actual `(nh, hd)`** rather
 than a sticky global — and to let an unmatched shape **fall through to the generated route instead of a legacy slot**.
 Both routes exist; the bf16 path already exercises the generated one. **The honest caveat**: whether
-`gen_attn_chunk` at nh20 produces a *correct* sequence is untested, and §157's own scope note says the headers give
+`gen_attn_chunk` at nh20 produces a *correct* sequence is untested, and §158's own scope note says the headers give
 the API's shape, not the arithmetic — so the first experiment is a generated nh20 sequence compared against host
 attention, not a wiring change.
 
 **Numbering**: the sixth collision, and the second caused by my own renumbering — I moved a section to **157** and the
 peer then used 157 for a different one. It is now at **465**, per the policy recorded earlier: **a section forced out
 of a contested number moves into its owner's sequence, not into whatever is free in the other lane's.**
+
+## 159. The quantifier error is its own class — and it applies to this lane's numbers too, including one published an hour ago
+
+The teammate's analysis of the `5120` mistake names a level neither of us had named: **the failure was a quantifier,
+not a measurement.** Every number in it was correct and the arithmetic checked to 236 and 256 exactly; the error was
+in **the set the sentence quantified over** — the scan covered I8 rows, the sentence said "the bundle", and the true
+scope was **one model**.
+
+| level | what was done | what was true |
+|---|---|---|
+| units | grouped `shape[-1]` across dtypes | bytes for I8, elements for BF16 |
+| arity | assumed 2-D rows | Qwen3.5's I8 shapes are 3-D |
+| **quantifier** | wrote *"the bundle"* | the scan covered **I8 only**, and the true scope was **one model** |
+
+**So it is a fifth degeneracy class, and the only one no control can catch.** Fixture, arm, contention and
+fixture-length all produce a **bad reading**, and each has a detector that fails when it happens. A quantifier error
+produces a **true reading described as holding over more than it does** — there is nothing for a control to fail on,
+because nothing was measured wrongly. It needs a different **practice**, not a different instrument: **state the
+quantified set explicitly, and check it against what was actually scanned.**
+
+**And applying that to this lane's own numbers is the point of writing it down:**
+
+- **§465's "~400 ms (~39%) of prefill"** is quantified over **(Nanbeige, lengths 256 and 1024, the *broken* NPU
+  kernel vs host)**. It is **not** "what the attention fix is worth" — not across the corpus, not across lengths, and
+  the NPU arm may be doing less work because it is broken. The portable part of that section is the **method** (same
+  fixtures, both arms, banner-asserted, load recorded), not the number.
+- **§150/§146's PARTIAL** is quantified over **eight token-ids at length 32 on Nanbeige** — which is why the
+  cross-lane result is explicitly a comparison of **structure**, and why §146's tokenizer caveat is not decoration.
+- **§149's 319 zero-embedding rows** are quantified over **Nanbeige only** — the very finding that made the
+  cross-corpus scan necessary for `5120`, and it happened to be done in the right order there by **luck, not by rule**.
+
+**The reusable form, and it is cheap: after every claim, read back the set the sentence quantifies over and ask
+whether it is the set the scan actually covered.** Both errors of this class in this session — the token and the byte
+width — were caught by scanning **a second member of the class**, which is a scan, not a control.
+
+## 475. FLM's own API settles the engine's KV-convention uncertainty: Nanbeige uses the SAME four-region split as nkv8 — so `v_region_add = 2` is correct and the packed-layout branch is dead
+
+**The peer lane read `nanbeige_npu_sequence.hpp` after the header find, and it exposes four accessors**:
+
+```
+size_t get_k03_offset() const;   size_t get_k47_offset() const;
+size_t get_v03_offset() const;   size_t get_v47_offset() const;
+```
+
+**So the KV cache is addressed as FOUR regions in the order K03, K47, V03, V47** — K in halves 0–3 and 4–7, then V in
+halves 0–3 and 4–7.
+
+**And that refutes a live speculation in this engine.** `npu_engine_universal.cpp` carries its own hedge:
+
+> *"add=2 is the nkv8 convention (K in regions 0-1, V in 2-3) and is what the embedded nh16 ELF consumes; an nkv4
+> model (Nanbeige) **may expect the packed K|V layout (add=1)**."*
+
+**Nanbeige is nh20/nkv4** — the model the hedge is about — **and its own sequence class exposes the same four-region
+split as the nkv8 families.** So:
+
+- **`v_add = 2` (the default) is correct for Nanbeige**, and the `add=1` branch is **dead**;
+- **`NPU_ATTN_V_REGION_ADD` is a knob chasing a non-problem** — one more entry for the list of controls that
+  *can* move a number without the number meaning anything.
+
+**And it confirms the peer lane's own observation**: the two-halves KV addressing *"matches the `kv_region` /
+`v_region_add` split our engine already logs."* Their reading of the header and the engine's existing logging agree.
+
+**The convergence is the useful part.** Two independent lines now point at the same cause for the nh20 defect:
+**the sticky shape gate** (the ELF route passes a gate it should fail, and takes the nh16-width kernel) — and **this
+API check** (the KV layout the engine worried about is the one it already uses). Between them, **the KV region split is
+cleared** and the gate is left holding the defect on its own.
+
+**Caveat, because these are pimpl headers**: the accessors give the **structure** — four regions, K before V, halves
+0–3 and 4–7 — and **not the offsets' values.** So this settles the convention and not the arithmetic, which is the
+same boundary §157 drew for the sequence generator.
