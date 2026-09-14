@@ -14599,3 +14599,34 @@ plain layout is `4096 + 2048 = 6144` while `2·NH·HD = 8192`**, so a max would 
 correct place is the **fused branch itself** — re-initialise the QKV context when `cq.ND < t`, so only a model that actually
 packs the fused layout asks for the larger shape. **Recorded rather than applied, because the session's last two attempts at
 a "small conditional change" each broke a working model and were caught by the gates; the same discipline applies here.**
+
+## 1015. The widening fix needs `init_i8` in scope — a first attempt failed to compile, and the obstacle is named rather than worked around
+
+**§1010 specified the fix as *"re-initialise the QKV context when `cq.ND < t`"*, in the fused branch. Applied literally, it does
+not compile:**
+
+```
+npu_engine_universal.cpp:1817:18: error: 'init_i8' was not declared in this scope
+```
+
+**`init_i8` is a lambda declared at line 1336, inside the I8-context initialisation block, which closes long before the
+per-layer packing loop reaches line 1817.** So the fix is **not** a two-line insert: it needs `init_i8` (and `dev`, `NC`, `XM`,
+`ip`/`xp`) **in scope at the packing loop** — a **hoist**, not an edit. **Reverted; the tree is green and the gates were
+re-checked.**
+
+**And that is the useful part of the record.** §1010's specification was right about *what* to do and silent about *where it
+can be done from* — and the two previous attempts in this stretch failed for a related reason: **a change that looks local
+and is not.** The three failures now form one pattern:
+
+| attempt | looked like | actually required |
+|---|---|---|
+| multiply in `gi8()` (§1000) | a one-line rule application | **not applying a rule that `q_cols` already applies** |
+| return `shape[1]` for 3-D (§1000) | a dimension check | **the same non-change** |
+| widen the context in the fused branch (§1010) | a two-line conditional | **`init_i8` hoisted out of its block** |
+
+**In every case the code was correct and the change was the error**, and in every case the **gates** said so before anything was
+committed. **The two committed deliverables from this chain stand**: the **diagnosis** — a 2048-row overrun between the plain
+and fused QKV layouts — and the **artifact**, `final_i8_QKV_K2560_N8192`, both of which are what a next attempt needs.
+
+**So the Qwen3.5-4B row remains: five engine-side fixes landed, the sixth failure mechanism identified exactly, the missing
+shape built, and the remaining work a known refactor rather than an unknown.**
