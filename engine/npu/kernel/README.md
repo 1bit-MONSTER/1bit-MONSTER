@@ -89,7 +89,7 @@ The fused xclbin is generated from an MLIR design produced by
 
 1. Create `qwen3_06b_decode_layer_runner` (copied from `qwen3_8b` case)
 2. Override constants to use `qwen3_constants_06b.h` values
-3. Adjust `WEIGHT_PATCH_BD_IDS` for 5 spans instead of 8 (see docs/MLIR-GENERATOR-BLOCKER.md)
+3. Adjust `WEIGHT_PATCH_BD_IDS` for 5 spans instead of 8 (see docs/archive/MLIR-GENERATOR-BLOCKER.md)
 4. Update `link_with` paths to `*_06b.o` kernel objects
 
-See `docs/MLIR-GENERATOR-BLOCKER.md` for the full blocker analysis.
+See `docs/archive/MLIR-GENERATOR-BLOCKER.md` for the full blocker analysis.

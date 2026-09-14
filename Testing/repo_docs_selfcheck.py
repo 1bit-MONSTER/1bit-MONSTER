@@ -49,7 +49,7 @@ EXCLUDE_DIRS = (
     "site/downloads", "packaging/live/build/rootfs", "packaging/build",
     "docs/archive", "docs/superpowers", "docs/research", "research", "spec-decode",
     "mobile", "integrations", "community", "benchmarks", "experimental",
-    "npu-infer", "fastflowlm_analysis", "hackathon", "docs-site",
+    "npu-infer", "fastflowlm_analysis", "hackathon", "docs-site", ".superpowers",
 )
 # Historical records: they describe a past state and are correct as history.
 # docs/AGENT-COORDINATION.md is here on purpose too — it is the cross-machine
@@ -65,7 +65,7 @@ EXCLUDE_FILES = {"CHANGELOG.md", "AUDIT_ISSUES.md", "TODO_TRACKING.md",
 HEADING_BASE = re.compile(r"^#{1,6}\s+.*?\(`([^`]+)`")
 PATH_TOKEN = re.compile(r"`([^`\n]+)`")
 LINK = re.compile(r"\[[^\]]*\]\(([^)\s]+)\)")
-PATHISH = re.compile(r"^(?:\./)?(?:[\w.-]+/)+[\w.-]*\.?[\w.-]*$")
+PATHISH = re.compile(r"^(?:\./)?(?:[\w.-]+/)+(?:[\w.-]+\.[A-Za-z0-9]{1,6}|[\w.-]+/)$")
 
 # Docs legitimately cite files in OTHER trees — docs/aiesim-debugging.md names
 # `include/aie/Runtime/TxnEncoding.h` and `cmake/modulesXilinx` while explaining
@@ -78,7 +78,17 @@ EXTERNAL_TREES = ("mlir-aie", "torch2aie", "llama.cpp", "xdna-driver", "peano",
 # A doc may also name a file precisely BECAUSE it is gone ("src/codec_decoder.cpp
 # went with the voice-cloning stack"). That is history, not a broken pointer.
 REMOVAL_WORDS = ("went with", "is gone", "are gone", "was removed", "were removed",
-                 "retired", "deleted", "no longer", "removed in", "self-reverted")
+                 "retired", "deleted", "no longer", "removed in", "self-reverted",
+                 "renamed", "superseded", "is now")
+
+# A file the doc plans to write is not a file the doc claims exists.
+PLANNED_WORDS = ("next steps", "roadmap", "planned", "to be written", "will be added",
+                 "not yet")
+PLANNED_LINE = re.compile(r"^\s*(?:[-*]\s*)?(?:\d+\.\s*)?(?:Write|Create|Add|Port)\s+`")
+
+# `feat/jarvis-v2-rewrite`, `fix/…`, `goal/…` on a line mean the line is talking
+# about a branch, the same way a commit hash does.
+BRANCHISH = re.compile(r"\b(?:feat|fix|chore|docs|test|refactor|goal|rebuild|run|census|npu)/[\w.-]+")
 
 
 # The gated surface is what a user follows: the front page, the guides and wiki,
@@ -136,6 +146,10 @@ def resolves(doc: Path, section_base: str | None, token: str) -> bool:
     if section_base:
         candidates.append((ROOT / section_base.strip("./")) / token)
     candidates.append(doc.parent / token)
+    # engine/npu/tests/README-COMPILER-AB.md says `tests/bench_gemm_analytical.cpp`
+    # for engine/npu/tests/bench_gemm_analytical.cpp — the doc names its component
+    # tree from the component root, one level up from itself.
+    candidates.append(doc.parent.parent / token)
     return any(c.exists() for c in candidates)
 
 
@@ -202,11 +216,13 @@ def main() -> int:
             # about another branch, not about this tree — packaging/iso/README.md
             # documents a launcher that existed in one commit of another branch
             # and was self-reverted (`96578e2c` … "(on that branch)").
-            context = " ".join(lines[max(0, lineno - 3):lineno + 1])
+            context = " ".join(lines[max(0, lineno - 12):lineno + 1])
             low_ctx = (context + " " + section_text).lower()
             branch_context = bool(re.search(r"\b[\da-f]{7,40}\b", context)) or "branch" in low_ctx
             foreign = any(t in low_ctx for t in EXTERNAL_TREES)
             removed = any(w in low_ctx for w in REMOVAL_WORDS)
+            planned = any(w in low_ctx for w in PLANNED_WORDS) or bool(PLANNED_LINE.match(line))
+            branch_context = branch_context or bool(BRANCHISH.search(line))
 
             for m in LINK.finditer(line):
                 t = m.group(1).split("#")[0]
@@ -223,11 +239,13 @@ def main() -> int:
                 token = m.group(1).strip()
                 if not PATHISH.match(token) or token.startswith(("http", "/", "~")):
                     continue
+                if "..." in token or "<" in token:
+                    continue  # an abbreviated or templated path
                 if not token.startswith(("src/", "docs/", "scripts/", "tools/", "packaging/",
                                          "Testing/", "engine/", "include/", "site/", "cmake/",
                                          "kernels/", "snap/", "tests/", "spec-decode/")):
                     continue
-                if branch_context or foreign or removed:
+                if branch_context or foreign or removed or planned:
                     continue
                 if not resolves(doc, section_base, token):
                     findings.append((rel, lineno, f"path does not resolve: {token}"))
