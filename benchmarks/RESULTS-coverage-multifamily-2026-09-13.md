@@ -10487,3 +10487,46 @@ sequence of operations across layers.**
 
 **Pinned for reuse**: the "nh20 stream" I flattened began with `0x464c457f` = `\x7fELF` — **my flattening included the
 ELF container**, not just the stream. It does not affect this comparison, but those arrays are not pure streams.
+
+## 193. The 1 MB "instruction dump" is FLOAT ACTIVATIONS (verified) — so arg3 is not an instruction stream, the engine's binding matches FLM's, and the descriptors are BO-relative (which kills the absolute-address hypothesis too)
+
+Two claims closed in one pass, both offline, and together they leave the call itself clean.
+
+**1. `INSTS_DUMP` is a misleading name: the dump is activations.** Verified from the bytes —
+`0x4125c05b 0x40344108 0xc07540ca 0xc105c146 …` — which as IEEE-754 floats are **10.3595, 2.8165, −3.8321,
+−8.3597, 0.8135, −6.3203**, with a bounded range over the first 4096 words of **−37.31 … 53.56**. **A sequence of small
+normals**, and the first four bytes are `5bc02541`, not `\x7fELF`. **A real stream looks nothing like it**: the nh20
+artifact's first words are `0x464c457f` (`\x7fELF`) then structured small integers. So the 1 MB BO holds **float data**,
+and *"arg3 carries the instruction stream"* is **refuted** — the twelfth instance of the class, and this time the label
+was read as the content.
+
+**2. Which confirms the ordering reading, and therefore the engine's binding.** With the `SETARG`s between a `RUN` and
+the next belonging to the **next** run, the 177728-byte kernel's arg3 is **5,242,880 — exactly what the engine passes
+today.** So **the engine's `out = arg3, in = arg4` is not contradicted by anything measured**, §175's *"right in
+direction, wrong in kind"* is withdrawn with the instruction reading that motivated it, and **§175's narrow form —
+*the slots are distinguishable* — is what survives.**
+
+**3. And the descriptors are BO-relative, which kills the absolute-address hypothesis before it costs a run.** The
+patches carry `arg_offset` directly:
+
+| arg | `arg_offset` | `buffer_offset` | `buffer_length` |
+|---|---|---|---|
+| arg0 | n=512, **min 0**, max 4,920,064 | 0 | 4096 |
+| arg1 | n=512, **min 0**, max 4,920,064 | 0 | 4096 |
+| arg2 | n=128, **min 0**, max 50,331,904 | 0 | 8192 – 65536 |
+
+**Every argument's offsets start at 0**, so they are **relative to each argument's own buffer**, not absolute device
+addresses — and the hypothesis that the ELF bakes FLM's absolute addresses (so XRT's placement would send the kernel to
+the wrong memory) **dies on the `min = 0` row.** That is also why the earlier *"the stream addresses 48 MB into a 16 MB
+buffer"* framing was wrong (§184): the 48 MB is an offset range, and sizing the BO past it changed nothing.
+
+**4. And a small pin, theirs and verified:** the flattened "nh20 stream" used for these comparisons **begins with
+`0x464c457f` = `\x7fELF`** — the array includes the **ELF container**, not only the transaction. It does not affect the
+float comparison above (which is about the *dump*, a different file), but those arrays are not pure streams and should not
+be quoted as such.
+
+**Where that leaves the lane, and it is the cleanest statement available:** every axis this thread can perturb has been
+perturbed — artifact content (§167/§170), argument positions (§175), scalars/opcode (§178), region stride (§176), KV
+fill volume (§188) — **and the engine's argument binding is not contradicted by the artifact it emulates.** The
+surviving candidate is therefore **not in the single call at all**, which is what the peer's own summary says: the
+**sequence of operations across layers**.
