@@ -14,7 +14,7 @@ status.
 |---|---|---|
 | **Prefill** | **beats FLM on every working model** | six-model table below; +25% over on-box FLM and +71% over the published bar at the published 2K condition |
 | **TTFT** | **beats FLM on all six models** | same table |
-| **Decode speed** | **matches or beats FLM on all six** | same table |
+| **Decode speed** | **beats or matches FLM on all six, and now 6 of 6 measured** | same table; the sixth (Llama-3.1-8B) was blocked until 2026-09-14 and is now **68.3-68.9 ms/tok (15 tok/s)** against FLM's **91.3 (11 tok/s)** — a **1.33-1.35×** win (§9.3, §10d) |
 | **Decode correctness** | **established to bf16 precision** | token-for-token vs FLM's own `forward()` until a 1-ULP tie (§4) |
 | **Coverage** | **6 models in the goal's supported set, all beating FLM; 6 families outside it** | §5 — one of the six now matches FLM on its **default** path (Nanbeige), one stands at a dependency boundary (Gemma3-1B, which FLM also cannot load), two are family implementations not yet built (Qwen3.5, LFM2), and two are characterised residuals (Phi4, Gemma3-4B untested) |
 
@@ -27,7 +27,7 @@ status.
 | Qwen3-4B | 672 | 510.0 | 1.524 | 1.925 | 19 | 18.75 |
 | Qwen3-8B | 461 | 362.8 | 2.207 | 2.705 | 11 | 10.70 |
 | Qwen3-VL-4B | 680 | 513.25 | 1.506 | 1.903 | 19 | 18.78 |
-| Llama-3.1-8B | 472 | 366.15 | 2.171 | 2.741 | see §4 | 11.10 |
+| Llama-3.1-8B | 472 | 366.15 | 2.171 | 2.741 | **15** | 11.10 |
 
 **The FLM column is independently verified.** A separate agent re-ran `flm bench` on
 `llama3.1:8b` and got 364.84 / 11.09 / 2.750 against this table's 366.15 / 11.10 / 2.741 — the
