@@ -106,3 +106,38 @@ met; the *parity* framing is met on prefill and not on decode/TTFT at 1k; and th
 prescribed mechanism (small-M + cascade-fused wiring) is not what produced the
 speed — it is measured neutral, and small-M is disabled with a recorded
 falsification.
+
+### The TTFT column is not like-for-like: native TTFT is *defined* as prefill time
+
+Before treating the TTFT gap (1.182 s vs 0.745 s) as an engine deficit, check what
+the harness measures. `benchmarks/flm_parity.sh:157`:
+
+```bash
+ttft_s="$(python3 -c "print(round($prefill_ms/1000.0,4))")"
+```
+
+**Native's TTFT is, by construction, its whole prefill duration.** FLM's TTFT comes
+from its own CSV and is a genuine first-token latency, which for FLM is *shorter
+than its own prefill*: its 0.745 s against an implied 1928 / 1318.19 = **1.46 s** of
+prefill. So FLM starts emitting roughly halfway through its prefill — it streams
+the first chunk — while native cannot emit until the entire prefill has finished.
+
+That reframes the row completely:
+
+| | native | FLM on-box |
+|---|---|---|
+| prefill throughput | **1754.4 tok/s** (ahead) | 1318.19 tok/s |
+| prefill *duration* for the prompt | 1.186 s (2088 tok) | ~1.46 s (1928 tok) |
+| TTFT as measured | 1.182 s — i.e. **the prefill itself** | 0.745 s — first chunk, ~half the prefill |
+
+Native is **faster at prefill** and still shows a worse TTFT, because "TTFT" means
+two different things in the two columns. This is the same class of error as the
+published-vs-on-box decode comparison: a number that looks like a deficit is a
+method difference.
+
+It also connects to this goal's `task-r2` (skipped): "@1k chunked TTFT needs
+chunked prefill (>256-token attention ELF) … the @256 TTFT is already first-chunk
+by construction". The open item was **chunked prefill — emitting the first token
+before the prompt finishes** — not attention-kernel work, and the generated
+attention now being correct at N=1024 (chunked score range) removes one of the two
+things that skip note called blocking.
