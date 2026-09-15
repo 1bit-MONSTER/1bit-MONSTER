@@ -411,10 +411,20 @@ struct Bf16Mm {
                 }
             }
         std::vector<float> qf((size_t)nh * attn_hd), ao((size_t)nh * attn_hd);
+        // CAUSAL WITHIN THE BLOCK. attn_tokens is the TOTAL key count and attn_rows
+        // the rows of this block, so the block occupies positions
+        // [attn_tokens - rows, attn_tokens) and row r may see only its own prefix:
+        // seq_r = attn_tokens - rows + r + 1. Handing every row the full key count
+        // lets each row attend to its own future - which is what the first run did
+        // (AttnCtx masks t >= seq, so seq IS the causal bound).
+        const int key0 = attn_tokens - rows;
         for (int r = 0; r < rows; r++) {
+            int seq_r = key0 + r + 1;
+            if (seq_r < 1) seq_r = 1;
+            if (seq_r > attn_tokens) seq_r = attn_tokens;
             const uint16_t* arow = act + (size_t)r * attn_qout;
             for (int i = 0; i < attn_qout; i++) qf[i] = bf16_to_f32(arow[i]);
-            gen_ctx->run(qf.data(), kf.data(), vf.data(), attn_tokens, ao.data());
+            gen_ctx->run(qf.data(), kf.data(), vf.data(), seq_r, ao.data());
             uint16_t* orow = out + (size_t)r * attn_qout;
             for (int i = 0; i < attn_qout; i++) orow[i] = f32_to_bf16(ao[i]);
         }

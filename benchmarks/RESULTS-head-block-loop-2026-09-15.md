@@ -957,3 +957,38 @@ answer by reading `zaya_decode.cpp`'s call site, the second a mechanical refacto
 Note: opt-in means nothing else is affected — the six working models still take their
 capture path, and the moved-aside shaped ELF stays aside until this produces a right
 answer.
+
+### `seq` is the causal bound — the first generated-path run fed every row its own future
+
+Two facts from the engine's own source, both checked before changing anything:
+
+1. **`act`/`bKv` are already RoPE'd** — the fill site says it in words:
+   *"attn.xclbin expects PRE-RoPE'd Q and K + raw V — the host applies q_norm/k_norm +
+   RoPE, the kernel does NOT"*. `zaya_decode.cpp` passes `cca_prep` output to
+   `attn_ctx.run` for the same reason. So the leading candidate in the previous entry
+   — "the generated path feeds un-rotated q" — **is refuted**, and the RoPE question
+   is closed.
+2. **`seq` is the mask.** `AttnCtx`'s contract masks `t >= seq`, so `seq` is not "how
+   many keys exist", it is "how far this query may look". The engine sets
+   `set_attn_tokens(keys)` = total keys and `set_attn_rows(npt)` = this block's rows,
+   so the block occupies positions `[keys - npt, keys)` and **row r must get
+   `seq_r = keys - npt + r + 1`**.
+
+The first run passed `attn_tokens` to every row, i.e. gave each row the whole block
+including its own future — a wrong answer that looks plausible, which is the failure
+mode this file keeps producing. Now:
+
+```cpp
+const int key0 = attn_tokens - rows;
+for (int r = 0; r < rows; r++) {
+    int seq_r = std::clamp(key0 + r + 1, 1, attn_tokens);
+    gen_ctx->run(qf.data(), kf.data(), vf.data(), seq_r, ao.data());
+    ...
+}
+```
+
+Verification is running (2048 keys, Nanbeige, `NPU_ATTN_GEN=1`): boot token against
+FLM's 7753. Cost is still ~18 minutes per attempt because `AttnCtx::run` re-packs all
+K/V on every per-token launch, so the hoist is not optional for iteration speed either
+— with it, a rerun is ~30 s and the path becomes the ~4-10 s fallback it was meant to
+be instead of something slower than the CPU reference it replaces.
