@@ -45,10 +45,10 @@ three PREINSTS dumps in and **before** the loop's `pre-dumped N insts BOs` termi
 
 Fixed and verified on **`fix/cap-interposer-bo-uaf`** (worktree
 `/home/bcloud/wt/cap-interposer-bo-uaf`, branched off `goal/runlist-decode-wire` at
-`4db62ecd5`, commit **`12e8dea9f`**, pushed to origin — preservation only, no PR, since
-it branches off that lane): an owning-copy registry (`own_bo` / `bo_from_addr`) with
-all 13 raw-address deref sites routed through it, `+87/−18`, built with the line the
-file's own header documents. The same command that crashed now reaches `RUNLIST 128`
+`4db62ecd5`, commits **`12e8dea9f`** and **`0023cf309`**, pushed to origin —
+preservation only, no PR, since it branches off that lane): an owning-copy registry
+(`own_bo` / `bo_from_addr`) with all 13 raw-address deref sites routed through it,
+`+87/−18`, built with the line the file's own header documents. The same command that crashed now reaches `RUNLIST 128`
 and exits 0 (baseline died mid-loop at 65; 32 of 33 pre-dump blocks → 64 of 64), and
 the rebuilt `.so` exports an **identical 16-symbol set**, so it interposes exactly what
 it did before. I committed it only after the run and did not touch another lane's tree
@@ -67,10 +67,32 @@ substitute: the fault is a stale read, not a big-BO dump.
 
 Deliberately not changed, so it is not mistaken for fixed: `cap_attn.cpp` and
 `cap_attnio.cpp` define the same `set_arg_at_index` hook and still carry the original
-raw-address pattern; and `own_bo()` keys by address, so if the runtime reuses one
-stack/heap address for a *different* `xrt::bo` while an older map entry still points
-at it, the lookup resolves to the newer BO — a wrong-capture risk, never a crash, and
-wrong captures are how the phantom arg3 build-up happened.
+raw-address pattern (neither is invoked by any documented command, so this is
+forward-looking rather than live).
+
+**Update, same session, `0023cf309` — the run-keyed path no longer resolves by
+address at all.** The registry above removes the crash but still looks BOs up BY
+ADDRESS, and on this path that is not enough: the runtime allocates fresh BOs per
+call (the log shows a4 and a7 changing every runlist), so a freed 1 MiB slot is
+handed straight back for the next 1 MiB BO, and `execute()` walks *every* run key —
+so an address recorded under an older run key could resolve to a NEWER BO and dump
+the wrong buffer under the old run's name. Silent wrong capture, which is the
+failure mode this lane has already been burned by. `g_run_bos` + `run_bo()` now own
+the BO in the `(run, arg)` slot itself, so the five run-keyed deref sites (execute
+pre-dump, both start-hook postrun dumps, act/kv record → wait-hook dumps) cannot
+alias; `set_arg` no longer touches the address registry, which also stops it
+accumulating one owner per BO FLM ever binds. `g_bo_sizes` / `g_extbo_sizes` stay
+address-keyed on purpose — their identity *is* the address, since the dump filenames
+are addresses.
+
+Verification level, stated rather than implied: `0023cf309` **builds clean and
+exports an identical 16-symbol set**, but is **not device-verified** — accel0 was
+held throughout by another lane's parity run (`npu_engine_qwen3_0_6b … ids4200.txt`)
+and running a bench under it would be the rule-4 contention this file warns about. I
+checked and deferred rather than repeating my own breach. The device-verified
+end-to-end remains `12e8dea9f` (RUNLIST 128 / exit 0 against the baseline's death at
+65); `0023cf309` only changes which owning map the deref reads from, and the next
+capture exercises it.
 
 ## 2026-09-14 — strixhalo: the lane that ran on the device today without a window, and what it claims
 
