@@ -332,3 +332,55 @@ gap. The defect is present in both formats. The remaining content errors (Kyoto 
 Barcelona for Madrid, Neptune for Jupiter, `helium` for oxygen) and this new
 prompt-independent degeneration are the two concrete things to chase, and the special-token
 hypothesis above is the cheapest next measurement.
+
+## Step 5 RESULT: the special tokens are the bug — a plain-word control proves it
+
+The step-5 lead was that prompt-independent output under the real template implied
+mishandled special tokens. The control that tests it: the same structural prompt with the
+markers as **plain words** (`user\n<prompt>\nassistant\n`, ordinary tokens, no special ids):
+
+```
+prompt                          with real special ids (151644/151645)   with plain words "user"/"assistant"
+The capital of France is        "\nOkay, the user "  (same for all)   "The capital of France is Paris.\nThe"   <- prompt-dependent AND correct
+Water is made of hydrogen and   "\nOkay, the user "  (same for all)   "Okay, the user is asking about the"     <- prompt-dependent
+The opposite of black is        "\nOkay, the user "  (same for all)   "The answer is: black\nThe answer"       <- prompt-dependent (answer wrong)
+```
+
+**Confirmed: feeding the real special tokens breaks the native path.** With ids 151644 /
+151645 the model emits an identical preamble regardless of the prompt; with the same
+structure written in plain words the output becomes prompt-dependent again — and on the first
+prompt it produces a fully correct sentence.
+
+This is a concrete, specific defect in the native engine, and it is the first one found in
+this goal that is unambiguously a *bug* rather than an artefact or a confound:
+
+- Ids 151644 (`<|im_start|>`) and 151645 (`<|im_end|>`) sit at the very top of a 151936-entry
+  vocabulary range, and nothing in this engine had ever been exercised with them before this
+  test (the raw-completion path never used them).
+- The failure mode — output that is invariant to the prompt — is exactly what a bad
+  embedding for those ids would produce: the model's context is dominated by a token whose
+  vector is wrong, so the prompt stops influencing the result.
+- The plain-word control rules out the alternative explanations (attention broken in general,
+  or the structural prompt itself being the problem): only the special ids change the outcome.
+
+### Corrected picture of the goal's problem
+
+There are now three separate things, and earlier sections conflated them:
+
+1. **Raw completion vs chat template** — a real confound, confirmed. The exam-format
+   `A) … B)` output was a raw-completion artefact.
+2. **Special-token handling is broken** — a real bug, now demonstrated. It makes the
+   model's own template unusable in the native path, which is why "apply the template"
+   (the obvious fix) degenerated instead of improving.
+3. **Content errors that survive every format** — Kyoto for Tokyo, Barcelona for Madrid,
+   Neptune for Jupiter, `helium` for oxygen, and "black" for the opposite of black (which
+   also appears with the plain-word prompt). These are the residual accuracy defect: they
+   are wrong in raw completion, wrong with plain-word structure, and wrong with the real
+   template. They are not explained by (1) or (2).
+
+Priority is now clear: **fix (2) first**, because until the special tokens work the native
+path cannot even be given the same prompt as the oracle, so (3) cannot be measured fairly.
+The cheapest next step is to find where id 151644's embedding comes from and whether it
+matches the model's table (e.g. compare the embedding row the engine uses for 151644 against
+the value the same id produces through FLM, or check that the engine's embedding BO is
+indexed with the full 151936 range rather than a truncated one).
