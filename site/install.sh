@@ -118,16 +118,8 @@ if [ "$SKIP_ROCM" = false ]; then
     # best-effort so a TUI-only failure cannot take the whole install down.
     cmake --build build --target bitnet_tui -j"$(nproc)" || warn "bitnet_tui did not build (optional; the CLI is unaffected)"
 
-    # argv[0] dispatch: one ELF answers to every legacy server name. Exactly the
-    # names packaging/Makefile stages; Testing/cli_smoke.py proves each reaches a
-    # handler in the linked binary.
-    for _name in zaya_server unified_server unified_router vision_server onebitd onebit 1bit-server; do
-        ln -sf 1bit "$DIR/build/$_name"
-    done
-
     log "Build complete:"
     log "  $DIR/build/1bit ($(stat -c%s "$DIR/build/1bit" 2>/dev/null || echo '?') bytes) — the single binary"
-    log "  + argv[0] symlinks: zaya_server onebitd onebit unified_router vision_server unified_server 1bit-server"
 else
     warn "--skip-rocm: kernel build skipped."
     warn "Make sure librocm_cpp.so is on LD_LIBRARY_PATH before running the server."
@@ -139,6 +131,23 @@ else
         warn "Run without --skip-rocm on a ROCm-equipped machine, or"
         warn "download a pre-built release from GitHub."
     fi
+fi
+
+# ── argv[0] dispatch symlinks ─────────────────────────────────────────────────
+# One ELF answers to every legacy server name. Exactly the names packaging/Makefile
+# stages; Testing/cli_smoke.py proves each reaches a handler in the linked binary.
+#
+# This runs on BOTH paths on purpose. It used to sit inside the build branch, so a
+# --skip-rocm install (the documented opt-in path, e.g. from a release tarball that
+# already ships build/1bit) reported success while never creating the names — and
+# the "Done. Run:" hint below names zaya_server either way, so the user was told to
+# run something that did not exist. That is the same "no entry point on disk"
+# failure this change fixes for the build path.
+if [ -x "$DIR/build/1bit" ]; then
+    for _name in zaya_server unified_server unified_router vision_server onebitd onebit 1bit-server; do
+        ln -sf 1bit "$DIR/build/$_name"
+    done
+    log "  + argv[0] symlinks: zaya_server onebitd onebit unified_router vision_server unified_server 1bit-server"
 fi
 
 # ── NPU lane state ────────────────────────────────────────────────────────────
@@ -177,17 +186,31 @@ if [ "$WITH_JARVIS" = true ]; then
     # onebin.cpp routes `jarvis_server` → jarvis_app_main. There is no standalone
     # `jarvis` binary target, so the old `ln -sf "$DIR/build/jarvis"` pointed at a
     # file that never existed (and a plain `jarvis` symlink would not dispatch).
-    ln -sf "$DIR/build/1bit" "$HOME/.local/bin/jarvis_server"
+    # Guarded: with --skip-rocm and nothing pre-built there is no ELF to link to,
+    # and the systemd unit below would ExecStart a dangling symlink. Say so rather
+    # than install a link that cannot run.
+    if [ -x "$DIR/build/1bit" ]; then
+        ln -sf "$DIR/build/1bit" "$HOME/.local/bin/jarvis_server"
+    else
+        warn "not linking $HOME/.local/bin/jarvis_server: $DIR/build/1bit does not exist"
+        warn "  build first (run without --skip-rocm on a ROCm machine), or install a release"
+    fi
     cat > "$HOME/.config/1bit/jarvis.env" <<EOF
-# JARVIS defaults — edit to taste, or pass flags: jarvis --help
+# JARVIS defaults — edit to taste, or pass flags: jarvis_server --help
 1BIT_WEIGHTS_DIR=$MODELS_DIR
 # Uncomment to force a specific model (default: first Zyphra model found):
 # JARVIS_MODEL=ZAYA1-8B
 EOF
-    log "JARVIS installed: $HOME/.local/bin/jarvis_server (config: $HOME/.config/1bit/jarvis.env)"
+    if [ -x "$HOME/.local/bin/jarvis_server" ]; then
+        log "JARVIS installed: $HOME/.local/bin/jarvis_server (config: $HOME/.config/1bit/jarvis.env)"
+    else
+        warn "JARVIS config written to $HOME/.config/1bit/jarvis.env, but no launcher was installed —"
+        warn "  the commands below will not work until $DIR/build/1bit exists."
+    fi
     log "Default experience is the Zyphra stack (ZAYA/ZR1/BlackMamba/Zamba2);"
-    log "use 'jarvis --model <name>' to load any other model."
-    if command -v systemctl &>/dev/null && systemctl --user list-units >/dev/null 2>&1; then
+    log "use 'jarvis_server --model <name>' to load any other model."
+    if [ -x "$HOME/.local/bin/jarvis_server" ] \
+        && command -v systemctl &>/dev/null && systemctl --user list-units >/dev/null 2>&1; then
         cat > "$HOME/.config/systemd/user/jarvis.service" <<EOF
 [Unit]
 Description=JARVIS voice assistant (1bit engine)
@@ -211,7 +234,11 @@ fi
 log ""
 log "Done. Run:"
 log "  source $DIR/env.sh            # sets LD_LIBRARY_PATH (+ HSA vars only on ROCm <7)"
-log "  $DIR/build/1bit zaya          # or: $DIR/build/zaya_server"
+if [ -x "$DIR/build/1bit" ]; then
+    log "  $DIR/build/1bit zaya          # or: $DIR/build/zaya_server"
+else
+    log "  (nothing to run yet: no $DIR/build/1bit — build without --skip-rocm, or install a release)"
+fi
 log ""
 log "Then send requests:"
 log '  curl -X POST http://localhost:8088/completion \'
