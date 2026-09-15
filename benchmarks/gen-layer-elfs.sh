@@ -59,15 +59,21 @@ g++ -O2 -std=c++17 -include climits "$SRC" -o "$BIN" \
     echo "link failed — check the family libs exist in $FLM_LIB" >&2; exit 1; }
 [ -x "$BIN" ] || { echo "generator build produced no binary" >&2; exit 1; }
 
-echo "== generating ctx 1..$MAX_CTX as family=$FAMILY (MAX_L=$MAX_L) =="
-mkdir -p "$OUT_DIR"
 # MAX_L bakes the KV region stride into the ELF and must match the runtime's
 # layout (runtime_layer.cpp: region_stride_u16 = token_u16 * 8192 -> MAX_L 8192),
 # NOT the 128MB BO capacity. max_l=32768 produces byte-size-identical ELFs that
 # run at the same speed and return WRONG tokens; every committed ELF in
 # npu-infer/captures/txn-elfs* is 8192. Override with MAX_L= only if you also
 # change the runtime stride.
+#
+# This default MUST be set before the line below reads it: under `set -u` a
+# reference to "$MAX_L" before assignment is a fatal "unbound variable", which
+# aborted the script after the (expensive) generator build and before it wrote
+# a single ELF. Order matters here, not just the value.
 MAX_L="${MAX_L:-8192}"
+
+echo "== generating ctx 1..$MAX_CTX as family=$FAMILY (MAX_L=$MAX_L) =="
+mkdir -p "$OUT_DIR"
 
 # --- MAX_L self-check -------------------------------------------------------
 # This script overwrites the whole ctx set, so a wrong MAX_L silently replaces
