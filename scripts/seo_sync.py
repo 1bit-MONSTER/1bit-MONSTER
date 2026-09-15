@@ -42,6 +42,11 @@ SITE = os.path.join(ROOT, "site")
 # only surface that stays honest.
 README = os.path.join(ROOT, "README.md")
 HEADER = os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")
+# Backends and families are facts the hero line states and nothing derived
+# (#2399): the engine enumerates its backends in backend_name()/BackendType, and
+# the repo enumerates its families as docs/model-families/*.md.
+BACKENDS_HEADER = os.path.join(ROOT, "include", "common.h")
+FAMILIES_DIR = os.path.join(ROOT, "docs", "model-families")
 CENSUS = os.path.join(ROOT, "Testing", "census_full_summary.json")
 WATCH_STATE = os.path.join(ROOT, "Testing", "hf_new_models_state.json")
 LEMONADE_CMAKE = os.path.join(ROOT, "third_party", "lemonade", "CMakeLists.txt")
@@ -73,6 +78,32 @@ def count_arch_strings():
             if "return RCPP_ARCH_" in line and "RCPP_ARCH_UNKNOWN" not in line:
                 n += 1
     return n
+
+
+def count_backends():
+    """Backends the engine dispatches to: BackendType values minus NONE.
+
+    The engine's own enumeration (backend_name() in include/common.h). 16 today
+    -- the front page said 12, which matched nothing (#2399).
+    """
+    with open(BACKENDS_HEADER, encoding="utf-8") as f:
+        m = re.search(r"enum class BackendType[^{]*\{(.*?)\}", f.read(), re.S)
+    if not m:
+        return None
+    return len([v for v in re.findall(r"^\s*([A-Z][A-Z0-9_]*)\s*=", m.group(1), re.M)
+                if v != "NONE"])
+
+
+def count_families():
+    """Published model families: docs/model-families/*.md minus its index.
+
+    The engine has no family enumeration, so the repo's family list is the
+    source (16 pages and 16 rows in that index's "All families" table).
+    """
+    if not os.path.isdir(FAMILIES_DIR):
+        return None
+    return len([n for n in os.listdir(FAMILIES_DIR)
+                if n.endswith(".md") and n != "README.md"])
 
 
 def census_coverage():
@@ -178,6 +209,18 @@ def _arch_to_tokens(m, arch, tokens):
             (g[3] if g[3] == tokens else tokens) + g[4])
 
 
+def _hero_counts(m, tokens, families, backends):
+    """The front-page hero: "resolve to 569 tokens, 32 families, 12 backends"
+    (groups: prefix, tokens, sep, families, sep, backends, suffix). A None fact
+    preserves whatever the page says, so the pattern is a no-op without it."""
+    g = m.groups()
+    fam = families if families is not None else g[3]
+    bck = backends if backends is not None else g[5]
+    return (g[0] + (g[1] if g[1] == tokens else tokens) + g[2] +
+            (g[3] if g[3] == fam else fam) + g[4] +
+            (g[5] if g[5] == bck else bck) + g[6])
+
+
 def _pct_claim(m, covered, with_arch, suffix_groups):
     """Percentage claims only move when coverage actually drops below 100%.
 
@@ -203,8 +246,10 @@ def _pct_claim(m, covered, with_arch, suffix_groups):
     return g[0] + _pct(covered, with_arch) + g[-1]
 
 
-def _build_patterns(tokens, arch, covered, with_arch):
+def _build_patterns(tokens, arch, covered, with_arch, families=None, backends=None):
     t, a, c, w = fmt(tokens), fmt(arch), fmt(covered), fmt(with_arch)
+    f = fmt(families) if families is not None else None
+    b = fmt(backends) if backends is not None else None
     pats = [
         # "552 architecture tokens, 1,774 HF arch strings" (+ "/" variant in posts)
         (re.compile(r"(\d[\d,]*)( architecture tokens[ ,/]+)(\d[\d,]*)( HF arch strings)"),
@@ -261,6 +306,12 @@ def _build_patterns(tokens, arch, covered, with_arch):
         (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( text-generation checkpoints on the hub \()"
                     r"(\d+(?:\.\d+)?)(%\))"),
          lambda m: _readme_cov(m, covered, with_arch)),
+        # Front-page hero: "resolve to 569 tokens, 32 families, 12 backends"
+        # (#2399). 32 and 12 matched no source in the tree or the engine -- the
+        # family docs list 16 and the engine's BackendType enumerates 16.
+        (re.compile(r"(resolve to )(\d[\d,]*)( tokens, )(\d[\d,]*)"
+                    r"( families, )(\d[\d,]*)( backends)"),
+         lambda m: _hero_counts(m, t, f, b)),
         # Census facts written as prose in blog/post bodies (#2394):
         # site/1bit-post-1775-models.html calls its own numbers "live" while three
         # of its sentences used the pre-2,044 values -- one of them stating both
@@ -340,22 +391,27 @@ def _build_patterns(tokens, arch, covered, with_arch):
     # the README actually use. Each entry names the measured value its rewrite
     # must contain -- "starts with 100" only works for claims already at 100%.
     want_pct = _pct(covered, with_arch)
-    for claim, must in (
-            ("100% HuggingFace coverage", want_pct),
-            ("100% HuggingFace architecture coverage", want_pct),
-            ("100% of HuggingFace's arch-bearing checkpoints", want_pct),
-            ("100% coverage / 6 hardware targets probed", want_pct),
-            ("566 architecture tokens mapping 1,946 HuggingFace arch strings",
-             f"{t} architecture tokens"),
-            ("321,611 / 321,611 text-generation checkpoints on the hub (100%)",
-             f"{c} / {w}"),
-            ("Every architecture token on HuggingFace \u2014 566 of them \u2014 resolves to one binary",
-             f"{t} of them"),
-            ("all 1,946 of them \u2014 normalizes down to one of 566 architecture tokens",
-             f"{a} of them"),
-            (", and 566 tokens resolve to one engine", f", and {t} tokens"),
-            ("the whole class now resolves to one binary \u2014 the census claim stays at 100% coverage",
-             "one fewer class on the census's uncovered list")):
+    probes = [
+        ("100% HuggingFace coverage", want_pct),
+        ("100% HuggingFace architecture coverage", want_pct),
+        ("100% of HuggingFace's arch-bearing checkpoints", want_pct),
+        ("100% coverage / 6 hardware targets probed", want_pct),
+        ("566 architecture tokens mapping 1,946 HuggingFace arch strings",
+         f"{t} architecture tokens"),
+        ("321,611 / 321,611 text-generation checkpoints on the hub (100%)",
+         f"{c} / {w}"),
+        ("Every architecture token on HuggingFace \u2014 566 of them \u2014 resolves to one binary",
+         f"{t} of them"),
+        ("all 1,946 of them \u2014 normalizes down to one of 566 architecture tokens",
+         f"{a} of them"),
+        (", and 566 tokens resolve to one engine", f", and {t} tokens"),
+        ("the whole class now resolves to one binary \u2014 the census claim stays at 100% coverage",
+         "one fewer class on the census's uncovered list"),
+    ]
+    if f is not None and b is not None:
+        probes.append(("resolve to 569 tokens, 32 families, 12 backends",
+                       f"{f} families, {b} backends"))
+    for claim, must in probes:
         got = claim
         for pat, repl in pats:
             got = pat.sub(repl, got)
@@ -388,7 +444,9 @@ def sync_site_numbers(apply=True):
     tokens = count_tokens()
     arch = count_arch_strings()
     covered, with_arch = census_coverage()
-    patterns = _build_patterns(tokens, arch, covered, with_arch)
+    families = count_families()
+    backends = count_backends()
+    patterns = _build_patterns(tokens, arch, covered, with_arch, families, backends)
 
     targets = [os.path.join(SITE, name) for name in sorted(os.listdir(SITE))
                if name.endswith(".html")]
