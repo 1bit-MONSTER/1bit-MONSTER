@@ -149,6 +149,22 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                       softmax(C1[c][0], C1[c][1], C1[c][2 if n_n > 2 else 0],
                               C1[c][3 if n_n > 3 else 0], Par, A2o)
                       A2o_c[c].release(ObjectFifoPort.Produce, 1)
+                      # ── PV phase: C2 = A2 · V[kv(h)] into the C2 writeback FIFO.
+                      # This block was dropped from the n_grp == 1 path when the
+                      # chunked branch landed (b2cfb080f): the refactor placed the
+                      # Cb/C2 code under `else` only, so for N <= 512 the core
+                      # produced A2 but never consumed the PV feed nor wrote C2.
+                      # The seq always emits n_k_pv (A,B) pairs and a C2 read task,
+                      # so its absence is what hung the launch and left C2 at zero.
+                      Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
+                      zero(Cb)
+                      for ki in range_(n_k_pv):
+                          Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                          Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                          matmul(Ab, Bb, Cb)
+                          A_c[c].release(ObjectFifoPort.Consume, 1)
+                          B_c[c].release(ObjectFifoPort.Consume, 1)
+                      C2_c[c].release(ObjectFifoPort.Produce, 1)
 
                   else:
                     for g in range(n_grp):
@@ -225,8 +241,42 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
                         A2o_s[c], SCR, offset=32 + c * (M * N) + g * (G_TILES * n),
                         sizes=[1, 1, m, G_TILES * n], strides=[4, 4, N, 1], issue_token=True)
                     dma_start_task(a2t); a2_list.append(a2t)
-                dma_await_task(*a2_list)
-                dma_free_task(*a2_list)
+                # the params tiles ride the same A stream; await/free them WITH
+                # the writeback so the A FIFO stays in lockstep with the core's
+                # per-group acquires (n_k*G_TILES A + 1 params each). Leaving
+                # them pending (as the first cut did) stalls group 2's QK^T.
+                dma_await_task(*a2_list, *pt_list)
+                dma_free_task(*a2_list, *pt_list)
+            # ── PV phase. The chunked core has always had its Cb/C2 block, but
+            # this sequence never fed it: the group loop above ends at the A2
+            # writeback, so the core's n_k_pv A/B acquires blocked forever and
+            # C2 was never read. A = A2 read back from bo4 (row stride N, the
+            # layout the strided writeback above produces), B = V[kv] tile.
+            for ki in range(n_k_pv):
+                at_list, bt_list = [], []
+                for c in range(n_aie_cols):
+                    at = shim_dma_single_bd_task(
+                        A_s[c], SCR, offset=32 + c * (M * N) + ki * k,
+                        sizes=[1, k // 8, 8, 8], strides=[8 * N, 8, N, 1], issue_token=True)
+                    dma_start_task(at); at_list.append(at)
+                for cc in range(n_aie_cols):
+                    kvv = cc // 4
+                    bt = shim_dma_single_bd_task(
+                        B_s[cc], V,
+                        offset=kvv * (N * K) + ki * (k * n),
+                        sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                    dma_start_task(bt); bt_list.append(bt)
+                dma_await_task(*at_list, *bt_list)
+                dma_free_task(*at_list, *bt_list)
+            # C2 writeback per head (same geometry as the n_grp == 1 path).
+            ctasks = []
+            for c in range(n_aie_cols):
+                ct = shim_dma_single_bd_task(
+                    C2_s[c], C2, offset=c * (M * K),
+                    sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
+                dma_start_task(ct); ctasks.append(ct)
+            dma_await_task(*ctasks)
+            dma_free_task(*ctasks)
           else:
               # QK^T phase: per (ki, nt): A = q row c chunk ki (offset c*K+ki*k,
               # A-layout strides [1, 8, K, 1] sizes [1, k/8, 8, 8]); B = K^T tile

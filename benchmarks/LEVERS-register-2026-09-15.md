@@ -485,6 +485,15 @@ shipped kernel, on the identical instruction stream, does not stall.
 
 #### The zero-output defect: exact repro, and what has been ruled out
 
+> **Superseded (2026-09-15) — read this first.** The defect was **not** a C2
+> handshake. Two `b2cfb080f` generator bugs explain everything below: the
+> `n_grp == 1` core lost its PV/C2 block (N ≤ 512 output all zeros and waited
+> 6 s on a C2 task nothing produced), and the chunked `seq()` never fed the PV
+> nor read C2 (N > 512). With Bug 1 fixed, **N=512 is correct and FLM-class —
+> 2/2 non-zero C2, error 4.564293e-02 exactly matching the shipped kernel,
+> 2.515 ms vs FLM's 2.161 ms.** There was no 2000× gap. The bisect and
+> ruled-out tables below stand as measurements but none of them was the cause.
+> See [RESULTS-attention-c2-regression-2026-09-15.md](RESULTS-attention-c2-regression-2026-09-15.md).
 *(Was titled "the re-arm defect" until the `max_abs_out` check above showed there is
 no re-arm to speak of: the output is zeros on every call. The repro and the
 ruled-out list below are unaffected — the C2 check does correctly report that C2 is
