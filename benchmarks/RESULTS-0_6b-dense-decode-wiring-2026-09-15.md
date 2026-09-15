@@ -416,3 +416,52 @@ in the same way, the divergence is in the model body (int8 vs bf16 GEMMs); if th
 agree, it is the device bf16 lm_head. That decides where a fix belongs — and it is the
 same class of measurement that just overturned the previous section, so it must remove
 its target file first and assert the dump was actually written by the run it belongs to.
+
+## LOCALISATION: the divergence is in the model body, not (only) the lm_head
+
+The dense `NPU_DUMP_HIDDEN` hook appends per layer (`fopen(..., "ab")` at
+`npu_engine_universal.cpp:4869`) and writes fp32, so the file is a **trace**, not one
+state. With a 5-token prompt:
+
+```
+dense   dump 143360 floats = 140 rows of 1024  = 28 layers x 5 prompt tokens
+runlist dump 2048 bytes    =  1024 bf16 values = the act BO that feeds the lm_head
+```
+
+Correlating the runlist act against every dense row, the alignment resolves cleanly —
+row index = layer*5 + token, and the correlation climbs steeply exactly where it should:
+
+```
+row 119 (layer 23, tok 4)  corr 0.8082
+row 124 (layer 24, tok 4)  corr 0.8628
+row 129 (layer 25, tok 4)  corr 0.8973
+row 134 (layer 26, tok 4)  corr 0.9206
+row 139 (layer 27, tok 4)  corr 0.987526   max|diff| = 47.18   <-- the row that feeds the lm_head
+```
+
+So the comparison that matters — the final layer's hidden for the last prompt token,
+against the runlist act that feeds its lm_head — is **corr 0.9875, i.e. below the
+objective's 0.998**, with `max|diff| = 47.18`. The hidden states therefore disagree
+*before* the lm_head is reached, which says the divergence lives in the **model body**
+(dense int8 GEMMs vs runlist bf16 GEMMs) rather than being created by the device bf16
+lm_head. The lm_head comparison (`corr 0.971`) is then the *compounded* effect of an
+already-different hidden state, not an independent lm_head defect.
+
+### Caveat that could still overturn this
+
+This compares two dumps whose **stage alignment is not proven**: the dense row is the
+layer-27 output, while the runlist act is documented as "the bf16 hidden … fed to the
+first runlist lm_head/forward", and the dense path applies a **final norm** before its
+lm_head. If one dump is pre-norm and the other post-norm, a pure scale/normalisation
+difference would depress the correlation without any numeric disagreement — a norm alone
+can move a correlation like this. The token ordering within each layer (corr rising from
+token 0 to token 4) is at least self-consistent with the alignment, but that is
+suggestive, not proof. Before this is quoted as "the model body is at 0.9875", the two
+dumps must be shown to be at the same stage — dump the dense hidden *immediately before*
+its lm_head and the runlist act at the same point, and confirm a same-stage pair agrees
+at ~1.0 for a case known to match (e.g. an identical arm run twice).
+
+This is the third caveat of the same kind in this goal, and it is the reason none of
+these numbers are being reported as a final verdict: each successive measurement has
+moved the conclusion, so the standard here is that a cross-arm number is only trusted
+once the two sides are demonstrably the same quantity.
