@@ -439,3 +439,14 @@ The same sequence produced `boot=19` at npt=256 (expected 1614) on the first run
 after a rebuild; three re-runs and a CPU-attention run all gave 1614. The earlier
 decode `2 tok/s` flake is the same class. **Always re-run a single failing gate
 before treating it as a regression.**
+
+> **CORRECTION (2026-09-14): the decode-cliff fix described above was measured on
+> WRONG ELFs.** The contexts 2049..2200 were generated with the tool's default
+> `max_l=32768`, but every committed per-context ELF in these dirs uses
+> `max_l=8192`. The mismatch produces byte-size-identical files with a different
+> KV region stride baked in, so they run fast and return wrong tokens. The
+> "14.8 ms/tok = 67 tok/s" figure is therefore invalid. The ranges were
+> regenerated with `max_l=8192` and now match a fresh regeneration by sha256, and
+> all four models pass the 2048 gate (bf16 boot == runlist decode `[1]` = 220).
+> Re-measure long-context decode on an idle NPU before quoting it. See
+> `SESSION-FINDINGS-2026-09-14.md` §4b and §7.
