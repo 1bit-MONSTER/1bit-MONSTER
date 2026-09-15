@@ -4724,6 +4724,22 @@ struct Bf16Ctx {
                     for (int v = 1; v < NV; v++) if (lg[v] > lg[best]) best = v;
                     uni_ids[i] = best;
                     printf("  [%d] %d\n", i + 1, best);
+                    // RT_ARGMAX_MARGIN: top-2 logits and their gap, for every step
+                    // including the boot. A token that differs from the reference
+                    // implementation at a gap of ~bf16 noise is a tie; the same
+                    // difference at a large gap is a defect. Without this every
+                    // token-level disagreement in a comparison table is
+                    // uninterpretable — 220 vs 16 is a big difference in ID and can
+                    // still be a coin flip in logits.
+                    if (getenv("RT_ARGMAX_MARGIN")) {
+                        int b2 = -1;
+                        for (int v = 0; v < NV; v++)
+                            if (v != best && (b2 < 0 || lg[v] > lg[b2])) b2 = v;
+                        fprintf(stderr, "[margin] step=%d top=%d(%.6g) second=%d(%.6g) gap=%.6g\n",
+                                i + 1, best, (double)lg[best], b2,
+                                b2 >= 0 ? (double)lg[b2] : 0.0,
+                                b2 >= 0 ? (double)(lg[best] - lg[b2]) : 0.0);
+                    }
                 }
                 auto tge = std::chrono::steady_clock::now();
                 double tts = std::chrono::duration<double>(tge - tgs).count();
