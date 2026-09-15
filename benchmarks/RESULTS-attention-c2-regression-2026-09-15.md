@@ -796,3 +796,44 @@ nothing about this block.
 So the lever is the **entry gate of the bf16-prefill block** (around line 4380),
 not the xclbins, not the attention ELFs, and not `bf16_done`. That is where the
 next probe goes.
+
+### ROOT CAUSE (final): the bf16 prefill block is gated `!has_moe`, and Nanbeige IS MoE
+
+The block that calls `bf16mm_init` is entered at `npu_engine_universal.cpp:4433`:
+
+```cpp
+if (getenv("NPU_PREFILL_BF16") && !has_moe) {
+    ...
+    const char* fmd = fmd_use.c_str();          // 4458
+    const char* fxd = fxd_use.c_str();          // 4459
+    fprintf(stderr, "bf16 prefill: model=%s xclbins=%s\n", fmd, fxd);   // 4460
+    ...
+    if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(...) == 0) {     // 4493
+```
+
+Two gates, and the second is fatal for this model: Nanbeige's own startup line is
+`[ModelConfig] manifest: H=2048 NC=40 NH=8 NKV=2 HD=128 IM=2048 NV=262272
+experts=16 top_k=2` — it is a **MoE** model, so `has_moe` is true and `!has_moe`
+is false. The block is skipped wholesale.
+
+That is the complete explanation, and it retires the whole line of enquiry:
+
+```
+!has_moe false  (Nanbeige has 16 experts)
+  -> the 4433 block is never entered
+  -> 'bf16 prefill: model=... xclbins=...' never prints   (the decisive tell)
+  -> bf16mm_init never called -> Bf16Mm::init never runs
+  -> load_attn_elf never runs -> no attention ELF of ANY shape is loaded
+  -> bf16_done stays false -> '=== Prefill NNNN [fallback] ==='
+```
+
+Also note the flag is **`NPU_PREFILL_BF16`**, not `NPU_BF16`: `NPU_BF16` only turns
+on the projection `Bf16Ctx` mode (which is why those five inits print and made the
+arm look half-alive), while the prefill/attention path needs `NPU_PREFILL_BF16`.
+
+**So the Nanbeige bf16 arm is not blocked by a missing file, a wrong context, a
+wrong shape name, or a lost ELF — it is architecturally excluded: the bf16 prefill
+path has no MoE support.** The nh20 attention capture is irrelevant until that
+changes; every 4096-candidate experiment was vacuous, and this is why. Opening it
+is a feature (bf16 prefill for MoE), not a config or capture change — which also
+means L2 as originally scoped ("a Nanbeige nh20 capture at 4096") was mis-scoped.
