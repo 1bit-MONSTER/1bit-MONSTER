@@ -518,3 +518,48 @@ run `n1_core_bf16_v1.py` per shape and aiecc to
 existing `build_new_xclbins.sh` is the right template — it already has the
 env/aiecc incantation and the shape-table loop; it just calls the i8 generator and
 names for i8.
+
+### The Nanbeige bf16 arm RUNS now — the missing producer was the whole blocker
+
+Wrote `engine/npu/generators/build_bf16_xclbins.sh` (the producer that did not
+exist) and built all five Nanbeige bf16 projections:
+
+| proj | K | N | cols | xclbin | insts |
+|---|---|---|---|---|---|
+| QKV | 2560 | 3584 | 4 | 84752 B | 371968 B |
+| O | 2560 | 2560 | 4 | 84752 B | 265696 B |
+| G | 2560 | 10752 | 4 | 84752 B | 1115872 B |
+| U | 2560 | 10752 | 4 | 84752 B | 1115872 B |
+| D | 10752 | 2560 | 4 | 84752 B | 1105376 B |
+
+Two constraints the generator imposes, both learned the hard way:
+`n1_core_bf16_v1.py` asserts `(N//n) % n_aie_cols == 0`, so N=3584 (28 tiles)
+needs **cols=4**, not 8 — the old shape-table value was unusable on that ground
+too; and `aiecc` resolves `link_with` against **CWD**, so the kernel object
+(`mm_bf16_32x64x128.o`) must be staged next to `design.mlir`, and the
+`--npu-insts-name` must land in `xclbins/` because that is where
+`Bf16Ctx::init` looks for it.
+
+Progression, each step exposing the next missing file:
+
+```
+Bf16Ctx: xclbin init failed: ... 'final_bf16_QKV_K2560_N3584.xclbin'   FAIL bf16 QKV
+Bf16Ctx: xclbin init failed: ... 'final_bf16_O_K2560_N2560.xclbin'     FAIL bf16 O
+   (after building all five)
+Prefill: 245532ms (60 ms/tok)  ...  [0] boot=98153 (20ms)
+[npu] KV overflow at layer 0 (sp=4096) — restarting context
+=== 2135.2 ms/tok | boot=20ms batches=3 tokens=4 ===
+```
+
+So the arm **executes end to end** where it previously failed at projection init.
+
+**Two things it is not yet:** correct or fast. The boot token is `98153` against
+the i8 arm's `2236` — these are different numerical paths (bf16 vs int8), so that
+alone is not proof of a defect, but it is unverified. And 60 ms/tok prefill is the
+CPU attention fallback: with no `attn_mha_4096_nh20_hd128.elf` installed,
+`attn_shaped_ok` stays false and nh20 correctly refuses the nh16/nh32 captures.
+The `KV overflow at layer 0 (sp=4096)` is a separate thing to chase.
+
+**Next:** install the nh20 4096 attention candidate (one of
+`{32736, 124256, 490336, 570848}`), then compare the bf16 arm's boot token against
+the i8 arm's `2236`.
