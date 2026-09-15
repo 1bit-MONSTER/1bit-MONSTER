@@ -477,3 +477,28 @@ correct one differ only in the numbers the kernel returns.
 
 Corollary worth keeping: `NPU_ATTN_KV_REGION` is not a debugging knob for families —
 for an N=4096 bucket it is *required*.
+
+### Engine binaries built from this branch (needed before any family run)
+
+The family A/B in the queued runner uses `~/1bit-MONSTER-goal/engine/npu/build/*`,
+and those binaries are **the other session's** — they predate the selector change,
+so they cannot run a shaped ELF above 1024 keys. This branch's own binaries now
+exist:
+
+```
+~/wt/family-head-block/engine/npu/build/npu_engine_<variant>   # 18 variants, 19:19-19:25
+```
+
+Built with `bash engine/npu/build_npu.sh` after `mkdir -p engine/npu/build` (a fresh
+worktree has no build dir, and the script fails with "can't create …: No such file
+or directory" rather than creating it). Verified as built from this source, not
+stale: the nanbeige binary contains the new `AttnCtx` gate string ("is not a multiple
+of cols"), while the generator-side asserts ("gqa = heads/nkv") are absent because
+they are Python, not compiled in — which is the expected split, not a missing piece.
+
+So two different binaries are in play and they are not interchangeable:
+
+| purpose | binary | why |
+|---|---|---|
+| family A/B at <=1024 keys | `~/1bit-MONSTER-goal/engine/npu/build/…` (the other session's) | measures the current default path, which is what that table is for; the selector is irrelevant at <=1024 |
+| Nanbeige above 1024 keys | `~/wt/family-head-block/engine/npu/build/…` (this branch) | only these carry the per-slot shaped-ELF selector, and the shaped `attn_mha_*_nh20_hd128.elf` must be installed where the loader searches |
