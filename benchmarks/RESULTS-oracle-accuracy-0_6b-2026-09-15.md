@@ -713,3 +713,51 @@ equality is unachievable by either side. Worse, **substring scoring is itself to
 `H₂O` and continents cases show it failing on formatting rather than correctness. A graded
 comparison (does the answer's *content* match, judged per prompt) is what the criterion needs,
 and that is a `/goal-tweak` decision rather than something to assume.
+
+## The repetition defect is real, mode-independent, and thinking mode is still ON
+
+Two things came out of investigating the one defect where the oracle succeeds and the native arm
+fails ("What planet is known as the Red Planet?").
+
+**1. The loop is not a greedy artifact.** Running the prompt twice — with `NPU_GREEDY=1` and with
+the engine's default sampling — gives the *identical* 256-token loop:
+
+```
+...Human: The Red Planet.  Human: The Red Planet.  Human: The Red Planet.  Human: ...
+```
+
+So forcing argmax is not the cause, and the defect is genuine.
+
+**2. The head of the reply shows the real failure, and it is knowledge + degeneration:**
+
+```
+ĊOkay, the user is asking which planet is known as the Red Planet. Let me think. I know that
+ the Red Planet is called the Moon. Wait, but the Moon is a natural satellite of Earth. So...
+```
+
+The model reasons itself to "**the Moon**" — a wrong answer, not a truncation — notices the
+problem ("Wait, but the Moon is a natural satellite of Earth"), fails to recover, and then falls
+into the `Human:` dialogue loop. This is the first defect in the goal that is unambiguously the
+engine's/model's own behaviour rather than a measurement artifact.
+
+**3. The first generated token is the special id `151667`.** The full head is
+`151667 198 32313 11 279 1196 ...` = `<special> \n Okay , the user is ...`. A special token
+emitted *first*, immediately before reasoning text, is the signature of **Qwen3's thinking-mode
+marker** — and it explains several things at once:
+
+- why the native arms spend dozens of tokens reasoning before answering, and therefore why a
+  6-token budget looked like failure and why 256 tokens was needed;
+- why the native output has a long "Okay, the user is asking…" preamble at all;
+- why FLM differs: FLM answers in one line (`The capital of France is **Paris**.`), which is
+  thinking-DISABLED behaviour. The two sides are not merely formatted differently — **one has
+  thinking on and the other off.**
+
+### Next step this implies
+
+Use Qwen3's **non-thinking** template (pre-fill the assistant turn's think block as empty, which
+is the documented way to disable thinking) instead of the plain assistant turn, then re-measure
+both sets. If that is right, the native arm should answer directly like FLM, which would:
+remove the reasoning-preamble confound entirely, make the token budget irrelevant rather than
+load-bearing, and give a comparison in which "token parity" is at least *conceivable* — which is
+what the goal's done-criterion originally asked for and what no measurement so far has been able
+to test.
