@@ -195,7 +195,7 @@ def main():
             f"Example checkpoint on HuggingFace: <span class=\"mono\">{args.model}</span> "
             f"(stripped class <span class=\"mono\">{args.arch}</span>).",
             "The engine maps it to an architecture token, so the whole class now resolves to one binary — "
-            "the census claim stays at 100% coverage.",
+            "one fewer class on the census's uncovered list.",
             "<b>Draft scaffold:</b> fill in what the architecture actually does, kernel/backend support, "
             "and decode-validation status before publishing.",
             "The daily census keeps this live: the new-model watcher catches the arrival, the autopr drafts "
