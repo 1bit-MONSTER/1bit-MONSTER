@@ -72,23 +72,36 @@ the broken slot.
 
 ## Next attempt: what is left to check, in order
 
-1. **Is the 8192 capture structurally the same kernel?** FLM could switch
-   attention strategy above some length, in which case `elf_0012` at 8192 is a
-   different object that merely happens to scale with L. Decode it with
-   `npu-infer/tools/decode_txn --decode-only` and compare its `op_histogram` and
-   patch count against the 4096 capture's — the tool already reads these and a
-   difference would settle it in one command.
+1. ~~**Is the 8192 capture structurally the same kernel?**~~ **ANSWERED, and it
+   is the same kernel.** `readelf -S` on both captures shows an identical section
+   layout and sizes that are exactly double:
+
+   | section | 4096 capture | 8192 capture | ratio |
+   |---|---:|---:|---:|
+   | `.ctrltext` | 354064 B | 706832 B | 1.996 |
+   | `.rela.dyn` | 30720 B (2560 relocs) | 61440 B (5120 relocs) | 2.000 |
+   | `.dynsym` | 560 B | 1072 B | 1.914 |
+
+   2560 patches is the count the multifamily log already recorded for the qwen3
+   nh16 stream, and the 8192 capture simply has twice as many. So FLM does *not*
+   switch attention strategy at this length and `elf_0012` is the same object
+   scaled — the fault is on the engine's side of the boundary, not the artifact's.
+   (`objcopy` cannot read these files — the AIE machine type is not one it knows —
+   so `readelf` is the tool for this comparison.)
 2. **The `attn_rows` convention above 4096.** The engine passes `rows =
-   attn_tokens` in one call. FLM's prefill may chunk rows in that range, and a
-   kernel captured from a chunked walk would not accept 4200 rows in one call.
-   The distinguishing experiment is to drive the 8192 capture with `rows = 256`
-   and a growing key prefix and see whether the output becomes input-dependent.
+   attn_tokens` in one call, while the member's own documentation says rows are
+   capped at 256 in the captured kernel's width and the prefill walks in 256-row
+   blocks. The 8192 capture accepting `rows=4095` through the 4096 slot shows the
+   kernel is row-flexible below its length; whether that holds above 4096 is the
+   first thing to test, by driving it with a block walk instead of one call.
 3. **The heap corruption is unexplained and may be the same fault.** It is
    independent of the token being wrong (it happens at exit) and it is the only
-   other symptom; a 4200-row run with the CPU attention reference would say
-   whether it lives in the bf16 prefill above 4096 rather than in the kernel.
+   other symptom. A 4200-row run with the CPU attention reference would say
+   whether it lives in the bf16 prefill above 4096 rather than in the kernel —
+   that is the cheapest next experiment, and it needs no new capture.
 4. Only then re-lift the cap — the diff is two edits (the cap bound and the
    selector branch) and is described here.
+
 
 ## Kept from this round
 
