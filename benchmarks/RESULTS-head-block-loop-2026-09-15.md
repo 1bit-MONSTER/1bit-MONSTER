@@ -620,3 +620,52 @@ are clobbered after being computed".
 Consequence unchanged and absolute: **the bucket ELFs stay in `/tmp`, the shaped-ELF
 selector stays unexercised, and no family verdict can be written yet.** The gate did
 its job — this is what it is for.
+
+### FIX: the A2 scratch must be per HEAD, not per column (multi-pass shapes verified)
+
+The localisation pointed at shared per-pass state, and this file's own history had
+the mechanism: the chunked path already learned that **a second write to the same A2
+scratch slice is dropped silently** ("group 1's A2 came out all-zero",
+`RESULTS-attention-c2-regression-2026-09-15.md`). My head-block change had every pass
+writing its A2 to `32 + c*(M*N)` — the same slice — so pass 1's PV read pass 0's A2.
+
+Changed, all on the host side of the design (no core change):
+
+| item | before | after |
+|---|---|---|
+| A2 writeback (both branches) | `32 + c*(M*N)` | `32 + (hp*cols + c)*(M*N)` |
+| PV A2 read (both branches) | `32 + c*(M*N) + ki*k` | `32 + (hp*cols + c)*(M*N) + ki*k` |
+| SCR size | `32 + cols*M*N` | `32 + n_hpass*cols*M*N` (= per head) |
+| `AttnCtx` scrsz | `32 + cols*8*MAX_SEQ` | `32 + nq*8*MAX_SEQ` (per head) |
+
+Verification, EMU (host reference) against NPU, same packed buffers, one run each:
+
+| shape | passes | groups | EMU | NPU | verdict |
+|---|---:|---:|---:|---:|---|
+| guard nh8/cols8/nkv2 | 1 | 1 | 4.564293e-02 | 4.564293e-02 | MATCH |
+| nb20 nh20/cols4/nkv4 | 5 | 1 | 4.646571e-02 | 4.646571e-02 | MATCH (was 12.33) |
+| ph24 nh24/cols8/nkv8 | 3 | 1 | 2.403474e-02 | 2.403474e-02 | MATCH (was 10.65) |
+| **nb20 N=2048** | 5 | 4 | 4.646571e-02 | 4.646571e-02 | MATCH |
+| **ph24 N=2048** | 3 | 4 | 2.403474e-02 | 2.403474e-02 | MATCH |
+| q35 nh16/nkv4/hd256 | 2 | 1 | 4.791975e-01 | 4.654262e-01 | residual ~3% |
+
+Two things this settles and one it does not:
+
+1. The multi-pass head feed was the *only* thing wrong with the head-block change:
+   with the A2 slice per head, every head-block shape agrees with the EMU to seven
+   digits, at one group *and* at four groups (`n_hpass=5` and `n_grp=4` together).
+   The earlier per-head pattern (pass 0 partly wrong, pass 1 grossly wrong) is
+   exactly what "pass 1 overwrites pass 0's A2" predicts, and it is gone.
+2. The guard's stream is still byte-identical (`f3d0a132bde24a60`), so the fix
+   cannot have altered the single-pass path — the numbers above are not a
+   reinterpretation of a changed control.
+3. **hd256 is still not exact** (0.479 vs 0.465, ~3%). That is the PV N-split
+   (`n_hd=2`), a different change, and the bench's own note says the absolute error
+   at these magnitudes is partly inherent to the int8 design — but EMU and NPU are
+   both quantised paths that should agree exactly, so a 3% gap is a real residual,
+   not a tolerance to wave through.
+
+Caveat, again: the device was never exclusive during any of this (the other
+session's dense loop has been running throughout), so these magnitudes deserve a
+clean re-run. The pattern — control plus five shapes agreeing to seven digits, with
+the previously-failing ones now exact — is not something contention produces.

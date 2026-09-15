@@ -309,7 +309,12 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, nkv=2):
             # n_heads * M * K int32 (n_hd tiles per head are contiguous).
             np.ndarray[(n_heads * M * K,), np.dtype[dtype_out]],
             np.ndarray[(nkv * N * K,), np.dtype[dtype_in]],  # V (bo3)
-            np.ndarray[(32 + n_aie_cols * M * N,), np.dtype[dtype_in]],  # scratch (bo4)
+            # scratch (bo4): one (8,N) A2 slice PER HEAD ((hp*cols + c)), plus the
+            # 32-byte header. Per column is not enough once there are several
+            # passes: the second write to the same slice is dropped silently (the
+            # failure the chunked path hit for groups), leaving that pass's PV
+            # reading the previous pass's A2.
+            np.ndarray[(32 + n_hpass * n_aie_cols * M * N,), np.dtype[dtype_in]],
         )
         def seq(Q, KT, C2, V, SCR):
           # Head-block passes (n_hpass == 1 is the original single pass; the
@@ -355,7 +360,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, nkv=2):
                   a2_list = []
                   for c in range(n_aie_cols):
                       a2t = shim_dma_single_bd_task(
-                          A2o_s[c], SCR, offset=32 + c * (M * N) + g * (G_TILES * n),
+                          A2o_s[c], SCR, offset=32 + (hp * n_aie_cols + c) * (M * N) + g * (G_TILES * n),
                           sizes=[1, 1, m, G_TILES * n], strides=[4, 4, N, 1], issue_token=True)
                       dma_start_task(a2t); a2_list.append(a2t)
                   # the params tiles ride the same A stream; await/free them WITH
@@ -377,7 +382,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, nkv=2):
                   at_list, bt_list = [], []
                   for c in range(n_aie_cols):
                       at = shim_dma_single_bd_task(
-                          A_s[c], SCR, offset=32 + c * (M * N) + ki * k,
+                          A_s[c], SCR, offset=32 + (hp * n_aie_cols + c) * (M * N) + ki * k,
                           sizes=[1, k // 8, 8, 8], strides=[8 * N, 8, N, 1], issue_token=True)
                       dma_start_task(at); at_list.append(at)
                   for cc in range(n_aie_cols):
@@ -456,7 +461,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, nkv=2):
                 a2_list = []
                 for c in range(n_aie_cols):
                     a2t = shim_dma_single_bd_task(
-                        A2o_s[c], SCR, offset=32 + c * (M * N),
+                        A2o_s[c], SCR, offset=32 + (hp * n_aie_cols + c) * (M * N),
                         sizes=[1, 1, 1, M * N], strides=[1, 1, 1, 1], issue_token=True)
                     dma_start_task(a2t); a2_list.append(a2t)
                 # the PV reads the A2 back — the writebacks MUST be visible first.
@@ -469,7 +474,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, nkv=2):
                     at_list, bt_list = [], []
                     for c in range(n_aie_cols):
                         at = shim_dma_single_bd_task(
-                            A_s[c], SCR, offset=32 + c * (M * N) + ki * k,
+                            A_s[c], SCR, offset=32 + (hp * n_aie_cols + c) * (M * N) + ki * k,
                             sizes=[1, k // 8, 8, 8], strides=[8 * N, 8, N, 1], issue_token=True)
                         dma_start_task(at); at_list.append(at)
                     for cc in range(n_aie_cols):

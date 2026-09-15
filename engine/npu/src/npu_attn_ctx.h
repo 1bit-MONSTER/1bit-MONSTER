@@ -191,8 +191,12 @@ struct AttnCtx {
         const size_t ktsz  = (size_t)nkv * hd * MAX_SEQ;                  // 65536
         const size_t c2sz  = (size_t)nq * 8 * hd * sizeof(int32_t);       // 32768
         const size_t vsz   = (size_t)nkv * MAX_SEQ * hd;                  // 65536
-        // A2 scratch holds one (8,N) slice per column (the passes reuse it).
-        const size_t scrsz = 32 + (size_t)cols * 8 * MAX_SEQ;
+        // A2 scratch holds one (8,N) slice PER HEAD (32 + nq*8*MAX_SEQ): the passes
+        // write their own slice at 32 + (hp*cols + c)*8*MAX_SEQ, because a second
+        // write to the same slice is dropped silently -- the failure the chunked path
+        // hit for groups. Per-column sizing (32 + cols*...) would under-size it for
+        // any nq > cols and the passes would read each other's A2.
+        const size_t scrsz = 32 + (size_t)nq * 8 * MAX_SEQ;
 
         bQ    = std::make_unique<xrt::bo>(d, qsz,   XRT_BO_FLAGS_HOST_ONLY, grp_a);
         bKT   = std::make_unique<xrt::bo>(d, ktsz,  XRT_BO_FLAGS_HOST_ONLY, grp_w);
