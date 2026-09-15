@@ -385,3 +385,35 @@ across the 1k / 2k / 4k captures.)
 was tested — bench error vs EMU, then engine token-identity. A wrong-family or
 wrong-context ELF passes neither, which is precisely how `154528` was caught, so
 the loop is self-checking and needs no oracle.
+
+### L2 is blocked BEFORE attention: the Nanbeige bf16 arm has no QKV xclbin
+
+Attempting the candidate test surfaced a more fundamental blocker. Running the
+Nanbeige engine with the bf16 arm on:
+
+```
+NPU_BF16=1 engine/npu/build/npu_engine_nanbeige4_1_3b \
+  ~/.config/flm/models/Nanbeige4.1-3B-NPU2/model.q4nx 4 /tmp/ids4096.txt
+```
+
+fails before any attention ELF is consulted:
+
+```
+=== BF16 mode (n1_core_placed.py) ===
+Bf16Ctx: xclbin init failed: No such file or directory
+  'engine/npu/xclbins/final_bf16_QKV_K2560_N3584.xclbin'
+FAIL bf16 QKV
+```
+
+`final_bf16_QKV_K2560_N3584.xclbin` (K=2560 = Nanbeige's qkv width) does not
+exist. **So the nh20 attention kernel is not the only thing standing between
+Nanbeige and a working bf16 arm** — the bf16 QKV GEMM xclbin is missing too, and
+attn is downstream of it. The candidate ELF was therefore removed untested
+(`xclbins/attn_mha_4096_nh20_hd128.elf` is not in the tree).
+
+For reference, the i8 arm does run at 4096 (`boot=2236`, 29 ms) — it is only slow
+(6530 ms/tok), which is the known per-token host/device cost, not a correctness
+problem.
+
+Revised L2 order: (1) produce/generate `final_bf16_QKV_K2560_N3584.xclbin`, (2)
+*then* the nh20 attention candidate test above becomes reachable.
