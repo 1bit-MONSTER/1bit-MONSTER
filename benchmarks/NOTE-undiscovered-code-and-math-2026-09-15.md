@@ -71,9 +71,56 @@ So the machine to build this at *any* length already exists. But:
   §2). Generated attention has a bad track record here; this one is verified
   correct on the hardware but its **speed for dense shapes is unmeasured**.
 
-**Why it matters here:** it is the natural route past 8192 — the captured ELFs
-cannot go further without new FLM captures at those lengths, while this can be
-built at 16k tomorrow. The open question is cost, not feasibility.
+**Why it matters here:** it looked like the natural route past 8192 — the captured
+ELFs cannot go further without new FLM captures at those lengths, while this is
+*buildable* at any length.
+
+### …and then I tried to build it, and it is not actually parametric
+
+The first of my own recommendations was to build at N=1024 and time it. It does
+not build:
+
+```
+$ NPU_ATTN_N=1024 bash build_attn.sh
+loc("/tmp/attn_build.237157/design.mlir":1000:44): error: expected ')'
+Error parsing MLIR file
+```
+
+The generator *runs* and emits 4754 lines (N=512 emits 2674, rc=0 both times), and
+the buffer sizes do scale (`nkv * K * N`, `K * N`). The defect is one call, in
+`n1_core_attn.py`:
+
+```python
+# line 134
+softmax(C1[c][0], C1[c][1], C1[c][2 if n_n > 2 else 0],
+        C1[c][3 if n_n > 3 else 0], Par, A2o)
+```
+
+The softmax is **hand-wired for at most four C1 tiles**. `n_n = N // n` and the
+kernel builds with `n = 128`, so `n_n = 4` exactly when `N = 512` — the shipped
+build — and at `N = 1024`, `n_n = 8` and the emitted op is malformed. The two
+conditional indexes are worse than a crash in principle: they *clamp to tile 0*
+rather than index out of range, so any N where the arity happened to match would
+silently reuse tile 0's data.
+
+So: **N=512 is the largest this generator can emit**, and `-N` plus the runtime
+`NPU_ATTN_MAX_SEQ` make it look like a parameter. Nothing in the tree records that;
+the only exercise it ever gets is at its one working value.
+
+**The fix is bounded** — generalise the operand list to `n_n` tiles (and confirm
+the AIE softmax kernel accepts that arity) — but until someone does it, this is
+not a route past 8192 and the entry above is a *candidate*, not a plan.
+
+Also found while trying: **10+ builders in `engine/npu/generators/` compile their
+AIE kernel objects with `-I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include`, a
+path that does not exist** — the 2025.2 install lives at
+`/home/bcloud/Xilinx2025/2025.2`. `build_attn.sh`, `build_p1i4*.sh`,
+`build_zaya_*.sh`, `build_c1b_iron*.sh` and `build_iron_cascade_qwen3.sh` all
+reference it. Nothing at runtime notices, because the xclbins are prebuilt — which
+is exactly why it stayed undiscovered. Restored with a symlink
+(`/home/bcloud/Xilinx/2025.2 -> /home/bcloud/Xilinx2025/2025.2`), which fixes all
+of them at once and touches no script. (This predates this session: no deletion of
+mine was under `Xilinx/`.)
 
 ## 3. `NPU_QWEN_I4` + `NPU_GUSILU_BF16PAIR` — a fused int4 GU→SiLU for the DENSE FFN, opt-in and unexercised
 
@@ -120,11 +167,12 @@ instrumentation, and the interesting items are the four above.
 
 ## What I would do next, in order
 
-1. **Measure the generated attention's cost at a length where it is already
-   correct** — build `NPU_ATTN_N=1024` (or 2048) and time it against the captured
-   `attn_mha_1024_nh16.elf` on the same shape and prompt. One build and one
-   measurement decides whether (2) is the route past 8192 or another 1200× dead
-   end. Everything else here is blocked behind that number.
+1. **Generalise the softmax operand list in `n1_core_attn.py` to `n_n` tiles.**
+   That is the one thing standing between the generated attention and any length
+   above 512; everything else about it is verified. Then build N=1024 and time it
+   against the captured `attn_mha_1024_nh16.elf` on the same shape and prompt —
+   one build and one measurement decides whether this is the route past 8192 or
+   another 1200× dead end (§2's caution). Everything else here is behind it.
 2. Only if (1) is competitive: `NPU_ATTN_N=16384`, and the int8-KV dtype change
    that adopting it implies.
 3. `kv_quant.h` is a larger, separate project (implement + new kernels); it is not
