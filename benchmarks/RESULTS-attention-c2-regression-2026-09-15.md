@@ -279,3 +279,18 @@ attention — on a prompt both can serve (≤512 tokens, where the chunked kerne
 runs only group 0), and then on a >512-token prompt against the shipped
 long-context capture. That isolates the generator change; the CPU baseline only
 tests the int8 approximation itself, which is a known, accepted design property.
+
+### The decisive test passes: generated == captured, token for token
+
+Generated-N=512 versus the engine's **embedded captured** kernel (no override) —
+both int8 NPU, same 16-token argv prompt, same Zaya engine:
+
+```
+captured  (embedded): 132187 41195 98398 22969 98398 68020 6496 4508
+generated (N=512)   : 132187 41195 98398 22969 98398 68020 6496 4508
+```
+
+**Byte-identical output.** The generated attention kernel is a faithful
+drop-in for the captured FLM-derived one, engine-driven — which is exactly what
+the L1 step needed, and it also confirms the earlier NPU-vs-CPU divergence was
+the int8-vs-float design difference, not a defect in the generator.
