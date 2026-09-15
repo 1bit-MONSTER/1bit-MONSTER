@@ -11,7 +11,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Deepseek",
-  "model": "Chinook416/caracat-pro"
+  "model": "drowzeys/DeepSeek-V4.1-Flash-Abliterated-Cybersecurity-Unleashed"
  },
  "deepseekv4": {
   "arch": "deepseekv4",
@@ -39,7 +39,7 @@
   "covered": true,
   "date": "2026-09-11",
   "family": "Gemma",
-  "model": "Elio2151/Gemma-2-9B-Instruct-TechnicalAgentFineTuned-Merged_5"
+  "model": "g-assismoraes/DeltaP2S-Gemma2-9B-SameFormula-Code-S13"
  },
  "gemma2forcausallm_polysurgery": {
   "arch": "gemma2forcausallm_polysurgery",
@@ -53,14 +53,14 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "neutrypl/neutry-functiongemma-270m-v2"
+  "model": "bhushan1729/gemma3-1b-given-to-find-distilled"
  },
  "gemma4": {
   "arch": "gemma4",
   "covered": true,
   "date": "2026-09-05",
   "family": "Gemma",
-  "model": "hariharasudhan/en-indic-translate-26b"
+  "model": "vwdubb/gemma-4-31B-it-uncensored-heretic-FP8"
  },
  "gemma4unified": {
   "arch": "gemma4unified",
@@ -81,7 +81,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Glm",
-  "model": "HawkBearPig/GLM-5.3-Flash-NVFP4-FP8"
+  "model": "frederic-ai/GLM-5.3-Flash-MLX-mixed-4_6bit"
  },
  "glm_moe_dsa": {
   "arch": "glm_moe_dsa",
@@ -95,7 +95,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Glm",
-  "model": "destr8803/GLM-5.3-224E-FP8-MAN"
+  "model": "SirGreblik/GLM-5.2-colibri-int4-g64-with-int8-mtp"
  },
  "granite": {
   "arch": "granite",
@@ -123,7 +123,7 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Llama",
-  "model": "Raghav-Singhal/1pp-1.7b-ua-seed42-sft"
+  "model": "huihui-ai/Huihui-MiniCPM5-2B-abliterated"
  },
  "llama3forcausallm_polysurgery": {
   "arch": "llama3forcausallm_polysurgery",
@@ -202,12 +202,19 @@
   "family": "Phi",
   "model": "minjaechoi/Phi-4-mini-instruct-W4A16"
  },
+ "qwen": {
+  "arch": "qwen",
+  "covered": true,
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "model": "eemin/halogen-qwen3.8-flash-next-copy"
+ },
  "qwen2": {
   "arch": "qwen2",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO"
+  "model": "ppsub/Qwen-PhishDetectAI-SMS-GRPO"
  },
  "qwen2_5_vl": {
   "arch": "qwen2_5_vl",
@@ -249,14 +256,21 @@
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "YueLinHu/GAC-Qwen3.5-4B"
+  "model": "INCModel3/Qwen3.5-9B-MXFP8-FP8KV-FP8Attn-CT-RTN-AutoRound"
  },
  "qwen3_5moe": {
   "arch": "qwen3_5moe",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "mlx-community/BigBang-v1-MLX-oQ4e"
+  "model": "neopolita/Qwen3.6-23B-A3B-Niwaki-v2.2-2bit-mlx"
+ },
+ "qwen3moe": {
+  "arch": "qwen3moe",
+  "covered": true,
+  "date": "2026-09-13",
+  "family": "Qwen",
+  "model": "InfiniCloud/llm-jp-4-32b-a3b-thinking-GPTQ-INT4-G64"
  },
  "qwen3next": {
   "arch": "qwen3next",
@@ -270,14 +284,14 @@
   "covered": true,
   "date": "2026-09-09",
   "family": "Qwen",
-  "model": "zhongweixie/claw-rl-v13-grpo-dr-rubric"
+  "model": "ngqtrung/video-hopchain-8b"
  },
  "qwen4exp": {
   "arch": "qwen4exp",
   "covered": true,
   "date": "2026-09-05",
   "family": "Qwen",
-  "model": "inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i"
+  "model": "TracNetwork/mayhem-catalog-Qwen-Qwen3-8-Flash-Next-NVFP4"
  },
  "rwkv": {
   "arch": "rwkv",
