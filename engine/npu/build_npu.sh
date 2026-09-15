@@ -83,7 +83,9 @@ fi
 # bf16 mm bridge (FLM headers + libgemm/libdequant at link time)
 if [ ! -f "$BF16MM_BRIDGE_O" ] || [ "$BF16MM_BRIDGE" -nt "$BF16MM_BRIDGE_O" ] || [ "$SRCDIR/src/npu_engine_bf16_mm.h" -nt "$BF16MM_BRIDGE_O" ]; then
     echo "g++ -c -std=c++17 -O2 -o $BF16MM_BRIDGE_O $BF16MM_BRIDGE"
-    g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE"
+    # -I generators: npu_attn_ctx.h (the generated-attention path) includes
+# attn_quant.h from there, same as the Zaya TU.
+g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$SRCDIR/generators" -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE"
 fi
 # flm prefill bridge (libqwen3_npu)
 if [ ! -f "$FLM_PREFILL_BRIDGE_O" ] || [ "$FLM_PREFILL_BRIDGE" -nt "$FLM_PREFILL_BRIDGE_O" ]; then

@@ -45,6 +45,8 @@
 #include "modules/gemm.hpp"
 #include "modules/dequant.hpp"
 
+#include "npu_attn_ctx.h"   // AttnCtx: the generated-attention path (xclbin + insts)
+
 // Fixed 256-token MHA attention ELF (FLM's attn.xclbin instruction stream for
 // the dense-Qwen3 NH=16/NKV=8/HD=128 prefill, position range [0,256)). Captured
 // byte-exact from FLM's runtime (see benchmarks/RESULTS-qwen3-dense-parity).
@@ -135,6 +137,14 @@ struct Bf16Mm {
                                   // was found for this model's (NH, HD)
     int attn_tokens = 256;  // KEYS present in the KV BO for this call
     size_t attn_bo_elems = 0;  // current act/out BO capacity, in u16
+    int attn_nkv = 2;       // kv heads; the KV region holds 4 heads per 512-element slot
+    // Generated-attention fallback (NPU_ATTN_GEN=1), used when no capture covers the
+    // (shape, bucket): the kernel from engine/npu/generators/n1_core_attn.py runs
+    // through AttnCtx, one query token per launch (its M=8 tile is the eight columns'
+    // head rows of ONE token, not eight tokens).
+    std::string attn_xclbin_dir;   // init()'s xclbin_dir, kept for the generated path
+    std::unique_ptr<AttnCtx> gen_ctx;
+    int gen_tok = 0;        // bucket the loaded generated kernel covers
     int attn_rows = 0;      // query rows this call computes (0 => attn_tokens, max 256)
     uint32_t attn_kv_region = 4194304;   // KV region stride in bf16 (8MB, MAX_L=8192)
 
@@ -174,6 +184,7 @@ struct Bf16Mm {
     /// Gemm/Dequant + npu_app contexts.
     bool init(xrt::device& d, const std::string& model_dir,
               const std::string& xclbin_dir) {
+        attn_xclbin_dir = xclbin_dir;
         dev = &d;
         try {
             config = std::make_unique<LM_Config>();
@@ -329,6 +340,7 @@ struct Bf16Mm {
     /// Query rows for the next attention call (<=256 = the captured kernel's
     /// width). Pairs with pointers shifted to that query block.
     void set_attn_rows(int n) { attn_rows = n; }
+    void set_attn_nkv(int n) { if (n > 0) attn_nkv = n; }
 
     /// 256-token MHA attention (attn.xclbin): out = attn(Q, K/V cache).
     ///   act: attn_rows×qout bf16 [token][head][dim] (Q GEMM output, raw)
@@ -337,6 +349,78 @@ struct Bf16Mm {
     /// attn_tokens = keys present in the KV BO; attn_rows = query rows of this
     /// call (<=256, the captured kernel's width). The caller may pass pointers
     /// shifted to a later query block to cover a prompt longer than 256.
+    static inline float bf16_to_f32(uint16_t h) {
+        uint32_t u = (uint32_t)h << 16; float f; std::memcpy(&f, &u, 4); return f;
+    }
+    static inline uint16_t f32_to_bf16(float f) {
+        uint32_t u; std::memcpy(&u, &f, 4); u += 0x7fffu + ((u >> 16) & 1u); return (uint16_t)(u >> 16);
+    }
+
+    /// Generated-attention fallback: run the generator's kernel for this (shape,
+    /// bucket) through AttnCtx - one launch per query token, K/V packed once.
+    /// Returns false when no generated artifact covers it, so the caller keeps its
+    /// existing "no kernel -> CPU reference" behaviour.
+    bool run_gen_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv, int rows) {
+        if (!getenv("NPU_ATTN_GEN")) return false;
+        const int nh = attn_hd > 0 ? attn_qout / attn_hd : 0;
+        if (nh <= 0 || attn_hd <= 0 || attn_hd % 128 != 0) return false;
+        const int bucket = attn_tokens <= 512 ? 512 : attn_tokens <= 1024 ? 1024
+                         : attn_tokens <= 2048 ? 2048 : attn_tokens <= 4096 ? 4096 : 8192;
+        if (!gen_ctx || gen_tok != bucket) {
+            char base[128];
+            std::snprintf(base, sizeof base, "attn_gen_%d_nh%d_hd%d", bucket, nh, attn_hd);
+            std::string xc, ins;
+            std::string dirs[3] = { getenv("NPU_XCLBIN_DIR") ? getenv("NPU_XCLBIN_DIR") : "",
+                                    attn_xclbin_dir, "engine/npu/xclbins" };
+            for (int i = 0; i < 3 && xc.empty(); i++) {
+                if (dirs[i].empty()) continue;
+                std::string a = dirs[i] + "/" + base + ".xclbin";
+                std::string b = dirs[i] + "/" + base + "_insts.txt";
+                FILE* f1 = fopen(a.c_str(), "rb"); if (!f1) continue; fclose(f1);
+                FILE* f2 = fopen(b.c_str(), "rb"); if (!f2) continue; fclose(f2);
+                xc = a; ins = b;
+            }
+            if (xc.empty()) return false;
+            // AttnCtx sizes its BOs from MAX_SEQ, which it reads from
+            // NPU_ATTN_MAX_SEQ (default 512). The kernel is baked for `bucket`, so
+            // running seq=attn_tokens against 512-sized BOs walks off them - the
+            // first attempt at this segfaulted at 2048 keys for exactly that reason.
+            char bk[16]; std::snprintf(bk, sizeof bk, "%d", bucket);
+            setenv("NPU_ATTN_MAX_SEQ", bk, 1);
+            gen_ctx = std::make_unique<AttnCtx>();
+            if (!gen_ctx->init(*dev, xc.c_str(), ins.c_str(), nh, attn_nkv, attn_hd)) {
+                gen_ctx.reset(); return false;
+            }
+            gen_tok = bucket;
+            fprintf(stderr, "  Bf16Mm: generated attention %s (nh%d hd%d nkv%d)\n",
+                    xc.c_str(), nh, attn_hd, attn_nkv);
+        }
+        // K/V do not depend on the query row: convert once. The region layout is the
+        // one the engine's own bKv fill writes - K in regions 0/1 by kvh<4?0:1 and V
+        // in regions 2/3, 4 heads x HD per token slot (see npu_engine_universal.cpp).
+        const int kd = attn_nkv * attn_hd;
+        std::vector<float> kf((size_t)attn_tokens * kd), vf((size_t)attn_tokens * kd);
+        for (int t = 0; t < attn_tokens; t++)
+            for (int kvh = 0; kvh < attn_nkv; kvh++) {
+                const int reg = kvh < 4 ? 0 : 1, lh = kvh & 3;
+                const size_t src = (size_t)reg * attn_kv_region + (size_t)t * 512 + (size_t)lh * attn_hd;
+                for (int d = 0; d < attn_hd; d++) {
+                    kf[(size_t)t * kd + kvh * attn_hd + d] = bf16_to_f32(kv[src + d]);
+                    vf[(size_t)t * kd + kvh * attn_hd + d] =
+                        bf16_to_f32(kv[src + 2 * (size_t)attn_kv_region + d]);
+                }
+            }
+        std::vector<float> qf((size_t)nh * attn_hd), ao((size_t)nh * attn_hd);
+        for (int r = 0; r < rows; r++) {
+            const uint16_t* arow = act + (size_t)r * attn_qout;
+            for (int i = 0; i < attn_qout; i++) qf[i] = bf16_to_f32(arow[i]);
+            gen_ctx->run(qf.data(), kf.data(), vf.data(), attn_tokens, ao.data());
+            uint16_t* orow = out + (size_t)r * attn_qout;
+            for (int i = 0; i < attn_qout; i++) orow[i] = f32_to_bf16(ao[i]);
+        }
+        return true;
+    }
+
     bool run_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv) {
         // qout alone is NOT a shape selector. Every ELF in the xclbin dir is
         // head_dim=128 and only nh16/nh32 exist, so a 2-way qout test silently
@@ -416,7 +500,13 @@ struct Bf16Mm {
                         : (attn_shaped2k && attn_kernel2k ? attn_kernel2k.get() : nullptr);
         else if (attn_tokens > 256)  kern = nh32 ? (attn_kernel1k32 ? attn_kernel1k32.get() : nullptr)
                                                  : (attn_kernel1k   ? attn_kernel1k.get()   : nullptr);
-        if (!kern) return false;
+        if (!kern) {
+            // No capture for this (shape, bucket): the generated kernel can still
+            // cover it (opt-in NPU_ATTN_GEN=1). Otherwise the caller's CPU reference
+            // path is unchanged.
+            if (run_gen_attn(out, act, kv, attn_rows > 0 ? attn_rows : attn_tokens)) return true;
+            return false;
+        }
         const size_t q = (size_t)attn_qout;
         const int rows = attn_rows > 0 ? attn_rows : attn_tokens;
         // Device buffers. BF16MM_ATTN_EXACT_BO sizes act/out to exactly rows*q, to

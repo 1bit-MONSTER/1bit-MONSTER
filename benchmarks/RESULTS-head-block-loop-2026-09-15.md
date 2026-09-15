@@ -908,3 +908,52 @@ I would take **1** for the objective as written (families "match or beat FLM"), 
 **2** written down as the honest current state until it is measured — and I would not
 start **3** without the user's say, because it invalidates the verification set that
 makes everything else here trustworthy.
+
+### The generated attention path runs in the engine for the first time (and is slow)
+
+Implemented option 1 (opt-in, `NPU_ATTN_GEN=1`) and ran it for real:
+
+```
+Bf16Mm: generated attention .../attn_gen_2048_nh20_hd128.xclbin   (nh20 hd128 nkv4)
+Prefill 2048 [bf16]      native boot = 53898   (FLM reference = 7753)   wall = 1087.92 s
+```
+
+**What works.** The path loads the generator's `xclbin` + `insts` through `AttnCtx`,
+packs K/V from the engine's own `bKv` using the decoded region layout, quantizes q per
+row, and completes without crashing — the first time a kernel from
+`n1_core_attn.py` has been driven through the engine rather than the bench. Two
+failures were hit and fixed on the way: `AttnCtx` gates on `nq % cols` (nh20 needs
+`cols=4`, not the default 8), and it sizes its BOs from `MAX_SEQ`, which it reads from
+`NPU_ATTN_MAX_SEQ` — with the default 512 and `seq=2048` it walked off its buffers and
+segfaulted. The helper now sets that from the bucket.
+
+**What does not work — the boot token is wrong (53898 vs 7753).** Candidates, in the
+order I would test them:
+
+1. **`act` may be raw Q, not RoPE'd Q.** The header's own signature says
+   "`act`: attn_rows x qout bf16 [token][head][dim] (Q GEMM output, **raw**)", and the
+   captured kernels may apply RoPE internally while `AttnCtx` expects q already
+   processed — `zaya_decode.cpp` applies RoPE *before* calling `attn_ctx.run`. If so,
+   the generated path is feeding un-rotated q and every head's attention is wrong in a
+   way that still looks plausible.
+2. The K/V region mapping (decoded from the fill, but the fill's `v_add` and the
+   kernel's expectation are two different documents).
+3. Which query rows the block covers, and whether `seq` should be the *block's* key
+   count rather than `attn_tokens`.
+
+**And it is not usable at this speed.** 1088 s for a 2048-key prefill, against ~2 s
+for FLM and ~40 s for the CPU reference it is meant to beat — because
+`AttnCtx::run` re-packs all K/V on **every one of the 2048 per-token launches**
+(2 G+ conversions). Hoisting that packing out of the row loop is a prerequisite for
+the path to be worth having; with it the host cost drops to one pack per block and the
+launches dominate (~4-10 s).
+
+So option 1 is real but incomplete: the plumbing exists, the kernel runs, and the two
+things between here and a family number above 1024 keys are the q preprocessing
+question and the K/V packing hoist — the first being a correctness question I can
+answer by reading `zaya_decode.cpp`'s call site, the second a mechanical refactor of
+`AttnCtx::run`.
+
+Note: opt-in means nothing else is affected — the six working models still take their
+capture path, and the moved-aside shaped ELF stays aside until this produces a right
+answer.
