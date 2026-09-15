@@ -533,6 +533,44 @@ built through the same `build_attn.sh` flow, to establish whether this toolchain
 generator is wrong" from "our build flow cannot re-arm". Do (2) first if time is
 short: it is the cheaper fork and it decides where the work belongs.
 
+#### Bisected: the stall is the C2 writeback handshake
+
+The zero-output defect is now localised by cutting pieces out of the design and
+timing what is left. All at N=512, `ms/call`, same bench:
+
+| build | QK^T+softmax+A2 | PV consumes | C2 produce | ms/launch |
+|---|---|---|---|---|
+| full | yes | yes | yes | **6048** |
+| A-tap from Q instead of SCR | yes | yes | yes | **8064** |
+| front half only | yes | no | no | **4.6** |
+| C2 produce only | yes | no | yes | **7055** |
+
+Reading it:
+
+- **The front half is fine and fast.** QK^T + softmax + the A2 writeback complete in
+  4.6 ms — the same order as the shipped kernel's 2 ms. Everything through the
+  softmax is correct and quick.
+- **The A2 read-back is not the stall.** Pointing the PV's A-tap at `Q` instead of
+  the scratch buffer changes nothing except the timeout constant (8064 vs 6048), so
+  the round-trip through DDR is not what hangs.
+- **The PV's matmul consumes are not the stall either.** Removing them and keeping
+  everything else still hangs (7055 ms).
+- **What is left is the C2 produce itself** — `C2_c[c].acquire(Produce,1)` /
+  `zero(Cb)` / `release(Produce,1)` plus the shim's `C2_s[c]` read task. That alone,
+  with no PV arithmetic at all, reproduces the hang.
+
+This is consistent with a suspicion already in the tree: the dump path in
+`npu_attn_ctx.h` carries a "Race check: re-scan after a delay to see if the S2MM is
+draining" — the C2 writeback is an S2MM, and someone previously suspected exactly
+this drain. That comment now has a measurement behind it.
+
+Next action is therefore narrow and specific: **why does the C2 FIFO's
+produce→drain handshake never complete?** The A2o path uses the identical FIFO
+pattern (core→mem→shim, depth 2/1) and works, so the difference is in the C2
+wiring or in what the core does across the acquire — not in the PV and not in the
+generator's feed order. Note that `C2_c` is depth 1 where `A2o_c` is depth 2, and
+that raising it to 2 did *not* fix the hang, so depth alone is not the answer.
+
 **Fork (2) is already answered, from the repo rather than from a new design.** The
 i8 decode GEMMs (`final_i8_D_*`) are built by the *same* generators with the *same*
 flags — `grep` over `build_*.sh` shows every one of them using
