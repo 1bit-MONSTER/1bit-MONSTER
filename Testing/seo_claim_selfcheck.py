@@ -42,12 +42,24 @@ CLAIMS = [
     ("pct",     r"(\d+(?:\.\d+)?)% HuggingFace[ a-zA-Z]*coverage"),
     ("pct",     r"(\d+(?:\.\d+)?)% of HuggingFace's arch-bearing checkpoints"),
     ("pct",     r"(\d+(?:\.\d+)?)% coverage"),
+    # Canonical docs (#2408): docs/wiki/models.md, docs/model-families/README.md
+    # and docs/CODEBASE.md state the same facts in their own words.
+    ("arch",    r"(?<![\d,/])(\d[\d,]*) HF `architectures` strings"),
+    ("tokens",  r"(?<![\d,/])(\d[\d,]*) engine arch tokens"),
+    ("tokens",  r"(?<![\d,/])(\d[\d,]*) engine tokens"),
+    ("total",   r"(?<![\d,/])(\d[\d,]*) text-gen checkpoints"),
+    ("total",   r"(?<![\d,/])(\d[\d,]*) text-generation checkpoints\*\*, of which"),
+    ("with_arch", r"(?<![\d,/])(\d[\d,]*) declare an `architectures` field"),
+    ("with_arch", r"(?<![\d,/])(\d[\d,]*) arch-bearing text-gen checkpoints\*\* remain"),
+    ("pct",     r"(\d+(?:\.\d+)?)%\) map to an engine token"),
 ]
 
 # Ratios: groups 1 and 2 are the numerator and denominator of the census ratio.
 RATIOS = [
     r"(?<![\d,/])(\d[\d,]*) / (\d[\d,]*) text-generation checkpoints",
     r"(?<![\d,/])(\d[\d,]*) / (\d[\d,]*) checkpoints mapped",
+    r"(?<![\d,/])(\d[\d,]*) / (\d[\d,]*) arch-bearing text-gen checkpoints",
+    r"(?<![\d,/])(\d[\d,]*) / (\d[\d,]*) \(\d+(?:\.\d+)?%\) map to an engine token",
 ]
 
 # The front-page hero pairs three facts in one sentence (#2399). A *global*
@@ -76,6 +88,7 @@ def main():
     tokens = seo_sync.count_tokens()
     arch = seo_sync.count_arch_strings()
     covered, with_arch = seo_sync.census_coverage()
+    total = seo_sync.census_total()
     pct = seo_sync._pct(covered, with_arch)
 
     allowed = {
@@ -85,6 +98,7 @@ def main():
         "with_arch": {str(with_arch), f"{with_arch:,}"},
         "either": {str(tokens), f"{tokens:,}", str(arch), f"{arch:,}"},
         "pct": {pct, pct.rstrip("%")},
+        "total": {str(total), f"{total:,}"},
     }
 
     families = seo_sync.count_families()
@@ -96,6 +110,12 @@ def main():
     files = sorted(glob.glob(os.path.join(args.site, "*.html")))
     if os.path.exists(args.readme):
         files.append(args.readme)
+    # The canonical documents that state the same facts; seo_sync rewrites them
+    # in the daily sweep, and this makes a stale one fail at PR time (#2408).
+    for rel in ("docs/wiki/models.md", "docs/model-families/README.md", "docs/CODEBASE.md"):
+        p = os.path.join(ROOT, rel)
+        if os.path.exists(p):
+            files.append(p)
 
     checked = 0
     bad = []
