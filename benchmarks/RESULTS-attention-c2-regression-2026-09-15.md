@@ -294,3 +294,43 @@ generated (N=512)   : 132187 41195 98398 22969 98398 68020 6496 4508
 drop-in for the captured FLM-derived one, engine-driven — which is exactly what
 the L1 step needed, and it also confirms the earlier NPU-vs-CPU divergence was
 the int8-vs-float design difference, not a defect in the generator.
+
+## L2 first step: the generic interposer capture RUNS (2026-09-15)
+
+The Nanbeige capture had been blocked by the `xrt::bo` use-after-free documented
+in `npu-infer/tools/capture/cap_interposer.cpp` (it killed two runs on 2026-09-15
+at `RUNLIST 65: execute (pre-dump)`). The `own_bo()`/`g_bo_owner` fix (merged as
+PR #2417) holds — the capture now completes.
+
+Complete recipe, assembled from `benchmarks/flm_parity.sh` and the interposer:
+
+```sh
+# cfg: {"max_length": N, "iterations": n, "input_text": "<prompt>"}
+CAP_DIR=/tmp/nbcap/cap4096 \
+LD_PRELOAD=$REPO/npu-infer/tools/capture/cap_interposer.so \
+CAP_NO_SYNC=1 \
+  /opt/fastflowlm/bin/flm bench nanbeige4.1:3b -i cfg4096.json
+```
+
+(`flm bench` is a hidden command; `flm` is at `/opt/fastflowlm/bin/flm`, also
+`flm104/bin/flm`. `CAP_NO_SYNC` keeps only the runlist preinsts dumps — without it
+the per-sync 32 MB KV writes fill `/tmp`.)
+
+Run result: clean, exercising **1k / 2k / 4k** (prefill 423 / 588 / 697 tok/s),
+**10499 artifacts** in `CAP_DIR`, including the `elf_*.bin` ELF dumps.
+
+**Identification lead.** The `elf_*.bin` size histogram contains **`154528`**
+(2 occurrences) — exactly the size of the on-disk, previously-distrusted
+`engine/npu/xclbins/attn_mha_1024_nh20_hd128.elf`. So that file is very likely a
+genuine capture artifact after all, and the prior session's "installing it did not
+move the boot" may mean it is the wrong *context* (1024, not 4096) or the wrong
+member of the family, rather than "not the attention kernel". For reference the
+known attention captures are `attn_mha_1024_nh16.elf` = 98848 and
+`attn_mha_4096_nh16.elf` = 386512; the most common captured size is 86672
+(105 occurrences, so that is a per-layer weight ELF, not attention).
+
+Next: capture at ONE fixed context per run (the run above swept three) and diff
+the `elf_*.bin` size sets across contexts — the attention ELF is the one whose
+size moves with context. Then install as `attn_mha_4096_nh20_hd128.elf` and
+verify exactly as the generated kernel was: bench error vs EMU, then engine
+token-identity.
