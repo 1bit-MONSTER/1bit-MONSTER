@@ -117,3 +117,61 @@ earlier single-prompt reading ("the fast arm is correct", then "2 of 4") underst
 problem because four prompts cannot distinguish 35% from 90%. This is the real baseline for
 step 3 (localise the runlist arm's first wrong answer) and it changes the shape of the work:
 this is a broad accuracy defect, not one flipped argmax.
+
+## Step 3: classifying the runlist arm's 13 failures
+
+Full text of every runlist outcome (passes included), which answers the planned
+"formatting vs genuine error" question in a way I did not expect:
+
+```
+FAIL  Japan is                  want=tokyo    got="A.  Kyoto B"            <- wrong answer
+FAIL  Spain is                  want=madrid   got="A)  Barcelona B"        <- wrong answer
+FAIL  hydrogen and              want=oxygen   got="helium.  The "          <- wrong answer
+FAIL  2 + 2 =                   want=4        got="Let me solve this problem step"   <- narration
+FAIL  3 + 4 =                   want=7        got="Let me solve this problem step"   <- narration
+FAIL  days in a week?           want=7        got="\n\n\n\n\n\n"           <- degenerate
+FAIL  minutes in an hour?       want=60       got="\nThe question is: How" <- narration
+FAIL  sky on a clear day is     want=blue     got="A)  black B"            <- wrong answer
+FAIL  baby cat is called a      want=kitten   got="A.  A  baby"            <- degenerate loop
+FAIL  baby dog is called a      want=puppy    got="A. A. A."               <- degenerate loop
+FAIL  largest planet is         want=jupiter  got="A) Neptune B)"          <- wrong answer
+FAIL  first month of the year   want=january  got="A) the beginning of the"<- non-answer
+FAIL  opposite of black is      want=white    got="A) black B)"            <- wrong answer (echoes the prompt's word)
+
+PASS  France is                 want=paris    got="A)  Paris B"
+PASS  Italy is                  want=rome     got="A. Rome B."
+PASS  opposite of hot is        want=cold     got="A)  cold B"
+PASS  opposite of up is         want=down     got="A) down B)"
+PASS  opposite of day is        want=night    got="A)  night B"
+PASS  symbol for gold is        want=au       got="A)  Au B"
+PASS  Germany is                want=berlin   got="A)  Berlin B"
+```
+
+Two conclusions, and the first kills the hypothesis I was about to test:
+
+1. **The "A) … B)" prefix is not the discriminator.** It appears in *every* output, passes
+   and failures alike. So the chat-template/formatting theory does not explain the 13
+   failures, and there is in fact no chat template in the code at all — `grep` for
+   `im_start|im_end|<\|.*\|>|chat|template` finds nothing in either the runlist bridge or
+   the dense path. The quiz shape is coming **from the model**, not from prompt assembly.
+2. **The failures are genuine content errors, not narration.** Six of the thirteen are
+   straightforwardly wrong answers (Kyoto for Tokyo, Barcelona for Madrid, Neptune for
+   Jupiter, "black" for the sky, "helium" for oxygen, "black" for the opposite of black),
+   three are degenerate loops (`\n\n\n\n\n\n`, `A. A. A.`, `A.  A  baby`), and only three
+   are the narration I predicted. So the (a)/(b) split resolves almost entirely to **(b)**.
+
+The most informative single row is `The opposite of black is -> "A) black B)"` — the model
+answers with the word *from the prompt*, in multiple-choice format, as if it were
+completing a quiz item rather than a sentence. Combined with FLM answering the same prompts
+in plain prose from the same weight files, this says the native path's **context is not what
+I think it is**: the model behaves as though it is looking at a multiple-choice question.
+That is a context/KV hypothesis, not a numerics hypothesis, and it fits both arms failing
+differently (the dense arm degenerating to `A)  7,.` after three good ids).
+
+Checked and **ruled out** as the cause: prompt encoding. The tokens round-trip exactly —
+`echo "The capital of France is" | tokenize` gives `785 220 65063 220 1055 220 49000 220 285
+198`, which detokenizes back to `The capital of France is\n`. The model is receiving the
+right prompt.
+
+So step 3's next target is the **KV/context** the native arms actually attend over (region
+offset, stale contents, or a mis-written region), not the feed-forward numerics.
