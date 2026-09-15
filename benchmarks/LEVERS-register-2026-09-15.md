@@ -81,11 +81,33 @@ The two causes, both visible in the source:
    (8,N) int8: **N=512 → 4×4 KB + 4 KB = 20 KB; N=1024 → 8×4 KB + 8 KB = 40 KB**,
    past the core tile's data memory. Hence the allocation failure.
 
-So the work to pass 512 is two changes that must land together — **extend the
-softmax contract past four tiles, and chunk (or relocate) C1 so 512+ scores are
-not all resident** — and then a measurement. A `C1` chunk of four also matches the
-softmax's current arity, which is why 512 is the natural break point rather than an
-arbitrary one.
+**Both are smaller than they look, and the second reading shrank them further.**
+`attn_softmax_contract` is *already* general — its signature is
+`(const int32_t* const c1[], const float* params, int8_t* a2)` and it indexes
+`c1[t >> 7]`, with a comment saying so: *"the caller supplies n_half = max_seq/128
+pointers (2 for N=256, 4 for N=512)"*. The four-pointer
+`attn_softmax_i8` wrapper is only a fixed-arity **shim**. And the generator's
+`params` are `{scale, seq, MAX_SEQ, 0.0f}` — **`params[3]` is free**.
+
+So the plan is:
+
+1. **`attn_quant.h`**: take the A2 **row stride** from `params[3]`, defaulting to
+   `max_seq` when 0 — two lines, changing `a2[r*max_seq + …]` to `a2[r*row_stride + …]`.
+   The host caller (`npu_attn_ctx.h`) passes 0, so its behaviour is unchanged.
+2. **`n1_core_attn.py`**: chunk the N dimension into groups of **four** tiles
+   (512 scores), which is exactly the wrapper's arity — so **no kernel-arity change
+   at all**. Each group zeroes `C1[0..3]`, accumulates its QK^T, and calls softmax
+   with `params = {scale, seq_slice, 512, N}` and an `a2` offset of `512·g`
+   (the slice per row is contiguous: `(t/8)*8 + t%8 = t` for `t < 512`).
+3. **Result: four `C1` tiles resident instead of `n_n`** — 16 KB + 8 KB A2 = 24 KB
+   at N=1024, against 40 KB today. That is what makes it fit.
+
+Then build `NPU_ATTN_N=1024` and measure. The delicate part is not the kernel but
+the **sequence feed**: the FIFO order is hand-matched to the unrolled QK^T loop
+("matches the seq feed" in the source), so the group loop has to reorder the B
+tiles consistently with it. The regression test is already in hand — N=512 must
+keep reproducing the shipped `attn_insts.txt` byte-for-byte
+(`f3d0a132bde24a60`).
 **Gate:** generalise the operand list, then build `NPU_ATTN_N=1024` and time it
 against the captured `attn_mha_1024_nh16.elf` on the same shape and prompt. Within
 ~1.5× of the capture, N=16384 is the route past 8192; another 1200× (this repo has
