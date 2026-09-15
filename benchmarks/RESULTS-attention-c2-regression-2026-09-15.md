@@ -334,3 +334,33 @@ the `elf_*.bin` size sets across contexts — the attention ELF is the one whose
 size moves with context. Then install as `attn_mha_4096_nh20_hd128.elf` and
 verify exactly as the generated kernel was: bench error vs EMU, then engine
 token-identity.
+
+### L2 identification, first differential: 154528 is NOT the attention ELF
+
+Two captures, same recipe, differing only in `max_length` (which sets how far the
+bench sweeps — 1024 sweeps only 1k, 4096 sweeps 1k/2k/4k):
+
+```
+1024-only : 6816(1) 13728(2) 15440(1) 26528(2) 41888(3) 86672(37) 154528(2) 177696(1) 459552(1)
+4k-swept  : 6816(1) 13728(2) 15440(1) 20064(2) 26528(2) 32736(2) 41888(3) 69344(3)
+            86672(105) 124256(3) 154528(2) 177696(1) 266464(2) 308736(1) 459552(1)
+            490336(2) 570848(1)
+```
+
+**`154528` appears in BOTH, ×2 each.** It is therefore *context-independent* and
+**not** the attention ELF — which independently confirms the earlier session's
+"installing it did not move the boot". The previous section's lead is withdrawn:
+the on-disk `attn_mha_1024_nh20_hd128.elf` is a real capture artifact but not the
+attention kernel.
+
+`86672` also grows 37 → 105 with context, so counts (not just the size set) carry
+information — per-context *layer* ELFs multiply rather than change size.
+
+The attention ELF must be among the sizes unique to the higher-context capture:
+`20064, 32736, 69344, 124256, 266464, 308736, 490336, 570848`. To separate 2k-
+from 4k-specific ones, a third capture at `max_length=2048` is needed; the sizes
+present at 4096 but absent at 2048 are the 4k set. Then install the single
+candidate as `attn_mha_4096_nh20_hd128.elf` and verify it the way the generated
+kernel was verified (bench error vs EMU, then engine token-identity) — a
+wrong-family or wrong-context ELF passes no test, which is how the 154528 file was
+caught.
