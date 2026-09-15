@@ -249,6 +249,81 @@ Next, concretely: `xclbinutil --dump-section main_aie_partit` on both containers
 compare the core ELFs; and instrument the core's loop (a cycle counter written to a
 BO) to see whether it is spinning or blocked. Still not kernel *optimisation*.
 
+**Two things tried since, and what they rule out.** `xclbinutil` will not name the
+section (`Section 'main_aie_partit' isn't a valid section name`); extracting it from
+the mirror-JSON `Offset`/`Size` with `dd`-equivalent works fine and gives 88632 B
+(shipped) vs 76472 B (ours). Both blobs are raw array config, not ELF — **zero**
+`\x7fELF` headers in either, and their first eight words are *identical*
+(`0 0xb8 0x800 0 0x5b7f 0 0x3039 0`), so the difference is in the body and is not a
+naively-embedded core ELF anyone can diff by eye. That route needs the amdxdna
+partition format, not more time with `xclbinutil`.
+
+What the N=1024 datapoint now rules out is the *other* easy story. The chunked build
+has **more** N-tiles and **more** groups than the N=512 build and is **5× faster**
+(1170 vs 6047 ms) — so the cost does not track partition complexity, tile count, or
+work. What it does track is the **order of the object-FIFO feed**: the chunked
+generator changed that order; the non-chunked path is the original one. A stall that
+changes by 5× when only the feed order changes, with byte-identical instructions,
+points at the core code desynchronising from the stream and being released by a
+timeout — not at anything the host or the container controls. It also means this
+cost has been present in the generated attention all along, including the N=512
+build that was believed to be the working one.
+
+The cheapest decisive next test is therefore **not** more container forensics: build
+the N=256 variant (same kernel code, different partition and feed) and see where its
+fixed cost lands. If it lands on its own value again, the constant is a property of
+each generated design's synchronisation and the fix belongs in `n1_core_attn.py`'s
+feed/FIFO contract.
+
+**Done, and it is a timeout.** N=256, a different partition with a different tile
+count, the same kernel code and the *original* feed order:
+
+| build | feed order | N | ms/launch |
+|---|---|---|---|
+| non-chunked | original | 256 | **6046** |
+| non-chunked | original | 512 | **6047** |
+| chunked | per-group | 1024 | **1170** |
+
+N=256 and N=512 agree to **one millisecond** (6046 vs 6047) across different
+partitions and different amounts of work, while the chunked design sits at a
+different constant again. Two designs landing on two exact constants, with the work
+between them varying by 4× and the results bit-correct, is the signature of a
+**fixed timeout being waited out**, not of execution time. The most likely mechanism
+follows directly from the generator: the core body is `for _ in range_(0xFFFFFFFF)`
+— the tile never terminates, so nothing tells the driver the invocation is finished
+and it falls off a cliff-edge timer instead. The data is already in the BOs, which
+is why every result is correct.
+
+That hypothesis is cheap to falsify and is the next action: give the core loop a
+finite bound (or a completion signal) and re-measure. If the constant collapses to
+milliseconds, the entire 2000× was never a kernel-speed problem at all — it was the
+core never saying "done", and the lever's timing gate reopens completely.
+
+**Falsified, same day.** Built N=512 with the core body's outer loop changed from
+`range_(0xFFFFFFFF)` to `range_(1)` — one line, nothing else — and it measures
+**6049 ms**, i.e. the same constant, with the same bit-identical output (3.321927e-01).
+The never-terminating core loop is **not** the cause, and the "the tile never says
+done" story is dead.
+
+Where that leaves it, stated as narrowly as the evidence allows:
+
+- The cost is device-side (`submit` 0.5 ms, `wait` 6 s), per launch, and does not
+  respond to N (256/512 identical to 1 ms), to the amount of work (seq 1/8/512
+  identical), or to the core's loop bound.
+- It *does* differ between two generators of ours (non-chunked ≈ 6046–6049 ms;
+  chunked ≈ 1170 ms), so it is a property of the built partition, not of the driver
+  or of XRT — but not one that scales with anything in the design that has been
+  varied so far.
+- It is therefore most likely a **fixed wait inside the kernel's own
+  synchronisation** (a FIFO/token acquire that is satisfied only on a timer) that
+  the non-chunked and chunked feeds happen to hit a different number of times.
+
+The two falsified stories are worth more than the surviving one: *kernel
+throughput* and *the infinite core loop* are both ruled out, so whoever picks this
+up should instrument the core (cycle counter into a BO, or a marker write per
+phase) rather than guess a third time. The bench is the instrument and it is
+committed.
+
 What the two containers differ in (from `xclbinutil`; topology, connectivity and
 kernel name are structurally identical):
 
