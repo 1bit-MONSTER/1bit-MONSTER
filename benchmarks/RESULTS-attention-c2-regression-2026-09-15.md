@@ -563,3 +563,29 @@ The `KV overflow at layer 0 (sp=4096)` is a separate thing to chase.
 **Next:** install the nh20 4096 attention candidate (one of
 `{32736, 124256, 490336, 570848}`), then compare the bf16 arm's boot token against
 the i8 arm's `2236`.
+
+### Candidate 570848 does not engage the nh20 attention
+
+Installed `elf_0012_570848.bin` as `xclbins/attn_mha_4096_nh20_hd128.elf` and
+re-ran the bf16 arm. **No effect:**
+
+```
+=== Prefill 4095 [fallback] ===
+Prefill: 239390ms (58 ms/tok)      # was 245532ms — noise, still CPU attention
+  [0] boot=98153 (27ms)            # identical
+  [1] 130334  [2] 35876  [3] 41007 # identical
+```
+
+No `Bf16Mm: attention ELF loaded …` line appears — the load site in
+`npu_engine_bf16_mm.h` prints one unconditionally when it opens a candidate — so
+the file was never opened, and `[fallback]` says the prefill kept using the CPU
+attention. `attn_shaped_ok` stayed false.
+
+Two readings, not yet separated: (a) 570848 is not the attention kernel; or
+(b) the name never matched — the search builds `attn_mha_<tokens>_nh<NH>_hd<HD>.elf`
+where `tokens` comes from the *prompt length*, and this run reports `Prefill 4095`,
+not 4096, so the candidate may simply be looked for under a different token count.
+(b) is the cheaper thing to test next: print or vary `tokens` (or install the same
+blob under several token counts) before concluding the size is wrong.
+
+The candidate was removed; the tree carries no unverified ELF.
