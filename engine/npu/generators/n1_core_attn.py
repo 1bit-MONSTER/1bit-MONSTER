@@ -37,14 +37,18 @@ def main():
     parser.add_argument("-k", type=int, default=64)
     parser.add_argument("-n", type=int, default=128)
     parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols (q heads)")
+    parser.add_argument("-H", "--heads", type=int, default=0,
+                        help="total q heads in the model (default 0 = same as --cols). "
+                             "Must equal --cols until the multi-pass head-block loop exists.")
     parser.add_argument("-b", "--batch-size", type=int, default=2)
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
-        my_attn(args.M, args.K, args.N, args.m, args.k, args.n, args.cols, args.batch_size)
+        my_attn(args.M, args.K, args.N, args.m, args.k, args.n, args.cols,
+                args.batch_size, args.heads or args.cols)
         print(ctx.module)
 
 
-def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
+def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
     dtype_in = np.int8
     dtype_out = np.int32
     K_FRAME = 2048   # fused-style A-frame K (the small-K 4D tap fails on AIE2P)
@@ -65,6 +69,23 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         f"Pass -n {K} (and check the QK^T context tiling) or implement the PV N-split."
     )
     n_k = K // k            # QK^T K-chunks (hd/64 = 2)
+    # The design is ONE CORE COLUMN PER Q HEAD: column c is fed from q row
+    # c*K_FRAME and writes back head c. So a model with more heads than columns
+    # gets a kernel for only the first n_aie_cols heads -- and, like the K>n trap
+    # below, nothing reports it: the xclbin builds, loads and runs, and the host
+    # silently gets the wrong heads. There is no multi-pass head-block loop yet,
+    # so require the caller to say how many heads the model has and fail if it
+    # does not match the column count. See
+    # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md for the loop that
+    # would lift this (Nanbeige nh20, Phi4 nh24, Qwen3.5-4B nh16).
+    if n_heads is None:
+        n_heads = n_aie_cols
+    assert n_heads == n_aie_cols, (
+        f"model has {n_heads} q heads but the kernel has {n_aie_cols} columns "
+        f"(one head per column): it would compute only the first {n_aie_cols} "
+        f"heads and the toolchain would not report it. Pass --cols {n_heads}, "
+        f"or implement the multi-pass head-block loop."
+    )
     n_n = N // n            # QK^T N-tiles (MAX_SEQ/128 = 2)
     # CHUNKING (L1). Every C1 tile is resident on the core tile, so N=1024 needs
     # 8x4KB = 32KB plus A2 and overruns core data memory. Process the score range
