@@ -589,3 +589,37 @@ not 4096, so the candidate may simply be looked for under a different token coun
 blob under several token counts) before concluding the size is wrong.
 
 The candidate was removed; the tree carries no unverified ELF.
+
+### Reading (b) is refuted — the name was right; the load block never ran
+
+`npu_engine_bf16_mm.h` builds the shape name from **fixed** token counts, not from
+the prompt length:
+
+```cpp
+load_attn_elf("NPU_ATTN_ELF_256",  "attn_mha_256_nh16.elf",   256,  ...);
+load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024,  ...);
+load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048,  ...);
+load_attn_elf("NPU_ATTN_ELF_4096", "attn_mha_4096_nh16.elf", 4096,  ...);
+load_attn_elf("NPU_ATTN_ELF_8192", "attn_mha_8192_nh16.elf", 8192,  ...);
+```
+
+so `attn_mha_<tokens>_nh<NH>_hd<HD>.elf` is generated for tokens ∈
+{256, 1024, 2048, 4096, 8192}. With Nanbeige nh20/hd128 (qout 2560, 2560 % 128 = 0)
+the shaped name for the 4096 slot is **exactly**
+`attn_mha_4096_nh20_hd128.elf` — the name I installed. So the "wrong token count"
+explanation is dead.
+
+The stronger observation is that **no `Bf16Mm: attention ELF loaded` line printed
+at all** — not for the shaped nh20 name, and not for the legacy
+`attn_mha_4096_nh16.elf` either, even though that file exists in `xclbins/` and the
+load site prints unconditionally whenever it successfully opens a candidate. The
+whole `load_attn_elf` block therefore never executed in this run.
+
+That is consistent with the prefill reporting `=== Prefill 4095 [fallback] ===`:
+the bf16 attention ELFs are not being initialised on this path at all, so no
+attention ELF — nh20 or otherwise — can take effect. Chasing the nh20 capture
+further is pointless until the load block runs.
+
+**Revised next step:** find why `load_attn_elf` is never reached on the Nanbeige
+bf16 prefill path (the `[fallback]` marker is the thread to pull), rather than
+trying more 4096 candidates.
