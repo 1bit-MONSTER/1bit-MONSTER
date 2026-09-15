@@ -114,12 +114,14 @@ Bench, and the decisive check against the kernel's own host contract:
 
 | build | C2 | NPU max_abs_err | EMU max_abs_err | ms/call |
 |---|---|---|---|---|
+| N=256 | 2/2 non-zero | 4.853413e-02 | **4.853413e-02** | 1.007 |
 | N=512 | 2/2 non-zero | 4.564293e-02 | **4.564293e-02** | 2.456 |
 | N=1024 chunked | 2/2 non-zero | **1.026515e-01** | **1.026515e-01** | 4.314 |
 
-NPU == EMU on both, to the digit: the generated kernel now implements its
-contract exactly. The residual `1.03e-01` is the int8 design's own error (the
-same value the host contract produces), not a defect.
+NPU == EMU on all three, to the digit: the generated kernel now implements its
+contract exactly across the `n_grp == 1` path (N=256 and N=512 exercise different
+`n_n` branches) and the chunked path. The residual error is the int8 design's own
+(the same value the host contract produces), not a defect.
 
 `attn_insts.txt` for N=512 is still `f3d0a132bde24a60`, so the `n_grp == 1` path
 is untouched.
