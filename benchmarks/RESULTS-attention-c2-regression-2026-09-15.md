@@ -898,3 +898,53 @@ That is the honest shape of what remains for "every model the native engine
 supports": the *hd* axis is open, the *head-count* axis is not. It also explains
 why these four families were the ones parked on the CPU fallback while the
 nh16/nh32/hd128 models gate natively.
+
+### CORRECTION: the hd axis is NOT open — `-K` never reaches the PV output width
+
+The previous section claimed "the generator's HD axis is already open (all have
+hd % 64 == 0)". **That is wrong.** It passes the *asserts* and it does not mean
+what it looks like:
+
+| run | result |
+|---|---|
+| `-K 128 -c 8 -N 1024` | generates, 4930 lines |
+| `-K 256 -c 4 -N 1024` | generates, 3366 lines |
+| `-K 256 -c 8 -N 1024` | generates, 6722 lines |
+
+but in the `-K 256` output the PV is still 128 wide:
+
+```
+objectfifo @C2_C0(...) : !aie.objectfifo<memref<8x128xi32>>
+matmul_i8_i32(memref<8x64xi8>, memref<64x128xi8>, memref<8x128xi32>)
+dma_bd(%arg2 : memref<8192xi32>, 0, 2048, ...)      ; 2048 = 8*256 / ... M*K
+```
+
+`C_ty = np.ndarray[(m, n), ...]` is the **C2 tile = (8, 128)**, and that 128 is the
+PV's **output** width, i.e. the head dim:
+
+- QK^T is `q·Kᵀ` → output `(rows, context)`, so `-K` (hd) enters as the
+  *contraction* dim → `n_k = K//k` chunks. hd=256 is fine here (n_k=4).
+- PV is `A2·V` → output `(rows, hd)`, so **the head dim enters as the N dim**, and
+  the generator's N tile is hard-wired to `n = 128`.
+
+So `-K 256` builds a kernel that computes hd=128 worth of output for an hd=256
+model. It is the silent-failure class the register warns about, not a working
+hd256 kernel — and it is exactly the trap that would have been hit by "just pass
+`-K 256`".
+
+`-n` cannot simply be raised to 256 either, because the same `-n` is the QK^T's
+**context** tile width: raising it to 256 would silently retile the score range
+(and `G_TILES * n == 512` is asserted on the chunked path).
+
+**So hd > 128 needs an N-split on the PV** (two C2 tiles per head, V tiled in the
+head dim) — the same kind of change as the head-count one, and independent of it.
+Breadth therefore needs both: (1) a multi-pass head-block loop for nh > n_aie_cols,
+and (2) a PV N-split for hd > 128. hd=128/nh≤8 families (Gemma3 nh4/nh8 hd256 is
+*hd256*, so it needs (2) as well) are not a free win.
+
+Corollary for the four remaining families: **all four need at least one of these
+two changes** —
+- Nanbeige nh20 hd128 → (1)
+- Phi4 nh24 hd128 → (1)
+- Qwen3.5-4B nh16 hd256 → (1) and (2)
+- Gemma3 nh4/nh8 hd256 → (2)
