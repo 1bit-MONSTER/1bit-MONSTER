@@ -851,3 +851,39 @@ advantage for measurement and reproduction; FLM's nondeterminism is itself a rea
 
 Two real, unfixed defects remain on the native side: the **Red Planet knowledge/degeneration**
 case and **mojibake for non-ASCII output**. Plus the dense arm still has no trustworthy number.
+
+## The "mojibake defect" is a TOOL bug, not an engine bug — proven
+
+`engine/npu/tokenizer/detokenize.cpp` is 84 lines and does exactly one interesting thing:
+
+```cpp
+std::printf("%s", vocab[id]);      // detokenize.cpp:78
+```
+
+It prints the vocabulary string as stored, without reversing GPT-2's **byte-level BPE** encoding —
+so every byte-level placeholder appears literally (`Ġ` for space, `Ċ` for newline, and multi-byte
+UTF-8 rendered as its byte-encoded characters). That is why `H₂O` displays as `HâĤĤO`.
+
+Decoding the *same token ids* correctly settles where the fault is:
+
+```
+engine token ids          : 271 785 11483 7735 369 3015 374 3070 39 31807 46 334 13 151645 198 151643
+current tool (raw)        : ĊĊTheĠchemicalĠsymbolĠforĠwaterĠisĠ**HâĤĤO**.Ċ
+correct byte-level decode : The chemical symbol for water is **H₂O**.
+```
+
+**The engine's output is correct.** `31807 46` is `₂O`; the ids, the EOS (`151645`) and the
+end-of-text (`151643`) are all exactly right. The mojibake is introduced solely by the display
+tool, and it also explains every `Ġ`/`Ċ` placeholder in this document's quoted outputs — those are
+byte-level markers, not engine artefacts.
+
+Consequences worth keeping straight:
+
+- The model does **not** have an encoding defect, so this is not an accuracy item at all; it is a
+  measurement-tooling item. It should be fixed in `detokenize.cpp` (implement the GPT-2
+  byte→unicode decode and emit real bytes) or worked around with a correct decoder in the harness.
+  A working reference decoder is the 8-line Python snippet used above.
+- It also explains the scoring asymmetry on this prompt: FLM's `**H₂O**` and the native
+  `HâĤĤO`/`H₂O` both fail a literal `h2o` match, so **neither side can be scored on that prompt by
+  substring matching** — which is the third independent reason the goal's scoring method needs
+  replacing with a graded, content-level comparison.
