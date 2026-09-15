@@ -612,3 +612,51 @@ the dense path" is the wrong goal; but the runlist path is not yet proven correc
 cannot simply be declared the answer either. The next real step is unchanged and now
 clearly necessary: a **CPU/float reference** for this model, against which both arms can
 be scored, instead of arm-vs-arm comparisons that have now misled three times.
+
+## THE REFERENCE TEST (FLM as the independent implementation) — neither native arm matches it
+
+The arm-vs-arm comparisons misled three times because neither arm is a reference. FLM is an
+independent, known-good implementation of the same model on the same box, so it supplies
+exactly the reference this goal needed. Scoring the four prompts against it
+(`echo "<prompt>" | flm run qwen3:0.6b`, reading its RAW Output):
+
+```
+prompt                          FLM (reference)   runlist (64-103 t/s)                 dense (2 t/s)
+The capital of France is        "Paris"           "A)  Paris\nB"                 OK    "A)  7,."                   BAD
+Water is made of hydrogen and   "oxygen"          "helium.  The "                BAD   "oxygen.  If the."          OK
+The opposite of hot is          "cold"            "A)  cold\nB"                  OK    "A.\n\nTo answer this/"     BAD
+2 + 2 =                         "4"               "Let me solve this problem..."  BAD*  "The\n 2  '"                BAD
+```
+
+(`*` runlist did not reach the answer within the 6 generated tokens, so this is
+not-demonstrated rather than demonstrably wrong.)
+
+**Conclusion: the native Qwen3-0.6B path does not match a known-good reference — on either
+arm.** The runlist arm answers "helium" where the reference answers "oxygen", which is a
+genuine correctness error in the fast arm, not a formatting quirk. The dense arm gets only
+the one prompt the runlist arm fails.
+
+This is the answer to the objective's central requirement, and it is negative:
+
+- **"corr ≥ 0.998 + token parity vs a CPU/float reference" is NOT satisfied by the native
+  path.** The runlist arm — the one `flm_parity.sh` measures and the one carrying the
+  speed — has a demonstrable wrong answer. The claim that the native path is merely
+  *slower* than FLM was never a correctness claim, and this shows it should not have been
+  treated as one at 64-103 tok/s.
+- Both arms being wrong on different prompts is consistent with the measured body
+  divergence (`hidden corr 0.9875`, 16.6% residual after scaling): the two paths disagree
+  *and* the reference disagrees with each of them on different inputs. So this is not
+  "one arm is the bug, the other is fine" — it is **an unresolved accuracy problem in the
+  native 0.6B path**, whose two arms fail differently.
+
+The one-prompt "the fast arm is CORRECT" claim is now fully superseded: with the reference
+in hand the runlist arm is 2 of 4, the dense arm 1 of 4, and neither is trustworthy.
+
+### What this means for the objective
+
+The objective's success criterion was decode ≥ 4 tok/s **with corr ≥ 0.998 and token
+parity**. The speed half is met many times over (64-103 tok/s), and the correctness half
+is **not met**. So the goal should not be closed as complete on speed alone, and the
+honest next work is accuracy — using FLM as the oracle that was available all along
+instead of arm-vs-arm comparison. `flm run <tag>` + the model's own `tokenize`/`detokenize`
+(now built at `engine/npu/tokenizer/detokenize`) is a working harness for exactly that.
