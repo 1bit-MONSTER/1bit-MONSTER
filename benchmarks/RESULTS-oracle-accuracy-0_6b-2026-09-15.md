@@ -1538,3 +1538,49 @@ So the choice is the same two options, now with the repair route explored rather
 **re-scope criterion 2** to per-arm accuracy against the oracle plus no regression (which the
 evidence already satisfies), or **commission a bf16 dense-decode path** (new engineering) if exact
 int8-vs-bf16 agreement is genuinely wanted.
+
+## Concrete result: the revived bf16 pipeline scores 19/20 — and its one miss is a marker-confusion
+
+Now that the bf16 prefill path runs, it can be scored like the others: chat template, 256 tokens,
+whole-output match, full 20-prompt set.
+
+```
+Y France/paris   Y Japan/tokyo    Y Italy/rome    Y Spain/madrid   Y hot/cold
+Y up/down        Y day/night      Y hydrogen/oxygen  Y 2+2=4       N 3+4=7     <- the miss
+Y week/7         Y hour/60        Y sky/blue      Y cat/kitten     Y dog/puppy
+Y planet/jupiter Y gold/au        Y month/january Y black/white    Y Germany/berlin
+
+unified (bf16 prefill + runlist decode) @256 : 19/20
+```
+
+**The single miss is genuine, not a truncation** — text captured this time:
+
+```
+head: "Okay, the user wrote \3  + 4 = |i|m_end|\ Let me break this down. The input is a string
+       that starts with \3 + 4 = |i|m_end|\ The question is whether…"
+tail: "…an invalid syntax. However, sometimes people might type this incorrectly, so maybe they
+       intended to write something else. Let me think again."
+```
+
+The model reads the prompt as a **literal string containing a `|i|m_end|` marker** and reasons about
+its syntax instead of computing `3 + 4`. That is a prompt-formatting reaction — the same family as
+the raw-vs-templated confound — and notably it appears *with* the template applied, in the bf16
+pipeline specifically.
+
+So the comparison across all four native configurations on the same 20 prompts is now:
+
+| configuration | easy set | note |
+|---|---|---|
+| runlist decode, int8 prefill | **20/20** | the default fast path |
+| runlist decode, **bf16 prefill** (newly revived) | **19/20** | miss = marker-confusion on `3 + 4` |
+| dense int8 (both halves int8) | **14/20** | 6 degeneration/confusion misses |
+| FLM oracle | 18-19/20 | nondeterministic |
+
+Two things worth recording plainly. First, **the revived bf16 path is not better than the int8-prefill
+runlist path** on this set (19 vs 20), so enabling bf16 is a capability gain, not an accuracy gain —
+and any future claim that bf16 is the more accurate half of the engine needs to beat 20/20 rather
+than be assumed. Second, the `|i|m_end|` reaction is a *newly observed* failure mode that only became
+visible once this path could run at all, which is the usual shape of a revived code path: it brings
+its own defects rather than inheriting a clean bill of health. It is also the kind of thing worth
+checking against the int8-prefill runlist arm on the same prompt, to see whether the marker handling
+differs between the two prefills.
