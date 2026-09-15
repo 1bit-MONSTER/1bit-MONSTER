@@ -351,3 +351,43 @@ overflows.
 
 The six bucket ELFs sit in `/tmp/elf2_attn_mha_*.elf`, still deliberately outside
 `engine/npu/xclbins/` until the device gate passes.
+
+### The host KV layout is hardcoded to 4 kv heads — which reorders the family work
+
+`npu_engine_universal.cpp:4495-4527` sizes the KV regions as
+
+```
+region = MAX_L x 4 heads x HD x 2 bytes          # the "4" is literal
+kv_region = 4194304 (8 MB = 8192 tokens) by default
+           2097152 (4 MB = 4096 tokens) when H == 2560 or H == 4096
+           4194304 again when npt > 4096 (the capture's own stride wins)
+NPU_ATTN_KV_REGION overrides it; NPU_ATTN_V_REGION_ADD (default 2) is the
+K-in-regions-0/1, V-in-regions-2/3 split that FLM's own nanbeige sequence uses.
+```
+
+So the *host* packs K and V as **4 kv heads per token** and the ELF is expected to
+match that. Measured against the shapes this lane has just made buildable:
+
+| family | nkv | hd | host layout matches? |
+|---|---:|---:|---|
+| Nanbeige nh20 | 4 | 128 | **yes** — nkv=4 is exactly the host convention, and the H=2560 row gives the 4 MB/4096-token region |
+| Qwen3.5-4B nh16 | 4 | **256** | nkv yes, but the region's `HD` term must become 256 (MAX_L × 4 × 256 × 2) |
+| Gemma3-1B/4B, Gemma4 | 2 | **256** | nkv 2 of 4 slots is a layout question as well as the HD term |
+| Phi4-mini nh24 | **8** | 128 | **no** — 8 kv heads need a different region size and a different `(kvh < 4 ? 0 : 1)` split in `bKv` |
+
+That is a *host* gap, not a kernel gap, and it is invisible to the selector change:
+an nh20 or nh24 ELF can now be loaded and selected, and the nh24 one would be fed
+the wrong KV layout. Two consequences:
+
+1. **Nanbeige is the first family to attempt**, because it is the only one whose
+   (nkv, hd) already matches the host convention. Its bucket ELFs (1024/2048/4096,
+   nh20 hd128) are built and waiting.
+2. **Phi4 needs `bKv` work before its ELF means anything**, and the hd256 families
+   need the region's `HD` term generalised. Both are host changes with their own
+   verification, not artifacts.
+
+This also gives the `attn_kv_region` comment's own warning teeth: the table keys on
+`H` as a proxy for nh16-vs-nh32, so a family inherits another model's region stride
+unless it is overridden — which is why `NPU_ATTN_KV_REGION` exists. For a generated
+ELF the stride should be derived from the ELF's own `-N` (its MAX_SEQ) rather than
+from the model's H, because that is the only thing the kernel actually baked in.
