@@ -4494,7 +4494,7 @@ struct Bf16Ctx {
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) for (int i = 0; i < qout; i++)
                     bActQ[pi * qout + i] = f32_to_bf16(bqo[pi * qkvn + i]);
-                if (unified && npu_runlist_write_kv(l, sp, npt, bKv.data()) != 0) {
+                if (unified && npu_runlist_write_kv(l, sp, npt, bKv.data(), (int)kv_region) != 0) {
                     fprintf(stderr, "\nbf16 prefill: runlist KV write L%d failed\n", l);
                     return 1;
                 }

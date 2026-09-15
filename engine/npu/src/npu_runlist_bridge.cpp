@@ -16,6 +16,7 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <algorithm>    // std::fill (KV re-pack)
 #include <chrono>
 #include <sys/stat.h>   // struct stat / S_ISDIR for the model-dir probe
 
@@ -106,9 +107,37 @@ extern "C" int npu_runlist_session_init(const char* model_path, int H, int NC, i
     return 0;
 }
 
-extern "C" int npu_runlist_write_kv(int layer, int token_begin, int n_tokens, const uint16_t* bf16_kv) {
+extern "C" int npu_runlist_write_kv(int layer, int token_begin, int n_tokens,
+                                    const uint16_t* bf16_kv, int src_region_stride_u16) {
     if (!g_sess_rt) return 1;
-    return g_sess_rt->write_kv(layer, token_begin, n_tokens, bf16_kv, g_sess_kv_region_u16) ? 0 : 1;
+    if (!bf16_kv) return 1;
+    // The caller's region stride is the bf16 attention ELF's, which is per-shape
+    // (8 MB nh16 / 4 MB nh32); this session's and every layer ELF's is 8 MB.
+    // Re-pack when they differ instead of reading regions 1..3 at the wrong
+    // offsets — that mismatch is what broke nh32 (4B/8B/VL-4B) decode, whose
+    // first token after the boot was wrong while nh16 was correct.
+    if (src_region_stride_u16 <= 0 || src_region_stride_u16 == g_sess_kv_region_u16)
+        return g_sess_rt->write_kv(layer, token_begin, n_tokens, bf16_kv,
+                                   g_sess_kv_region_u16) ? 0 : 1;
+    const int token_u16 = (g_sess_cfg.num_key_value_heads / 2) * g_sess_cfg.head_dim;
+    if (token_u16 <= 0) return 1;
+    static std::vector<uint16_t> repack;
+    const size_t need = (size_t)g_sess_kv_region_u16 * 4;
+    if (repack.size() < need) repack.assign(need, 0);
+    else std::fill(repack.begin(), repack.begin() + need, 0);
+    for (int r = 0; r < 4; r++)
+        memcpy(repack.data() + (size_t)r * g_sess_kv_region_u16 + (size_t)token_begin * token_u16,
+               bf16_kv + (size_t)r * src_region_stride_u16 + (size_t)token_begin * token_u16,
+               (size_t)n_tokens * token_u16 * sizeof(uint16_t));
+    static bool warned = false;
+    if (!warned) {
+        warned = true;
+        fprintf(stderr, "[runlist] KV re-pack: source region stride %d u16 (%d MB) -> session %d u16 (%d MB), token_u16=%d\n",
+                src_region_stride_u16, src_region_stride_u16 * 2 >> 20,
+                g_sess_kv_region_u16, g_sess_kv_region_u16 * 2 >> 20, token_u16);
+    }
+    return g_sess_rt->write_kv(layer, token_begin, n_tokens, repack.data(),
+                               g_sess_kv_region_u16) ? 0 : 1;
 }
 
 extern "C" int npu_runlist_write_act(const uint16_t* bf16_hidden) {

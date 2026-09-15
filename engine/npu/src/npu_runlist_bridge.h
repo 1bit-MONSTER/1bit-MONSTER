@@ -33,7 +33,18 @@ extern "C" void npu_runlist_set_rope_theta(float th);
 int npu_runlist_session_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV);
 // Write `n_tokens` of bf16 K/V (runtime 4-region layout) into layer `layer`'s
 // device KV BO at token offset `token_begin`.
-int npu_runlist_write_kv(int layer, int token_begin, int n_tokens, const uint16_t* bf16_kv);
+//
+// src_region_stride_u16 is the region stride the CALLER laid the source out
+// with, in u16. It is NOT always the session's stride: the bf16 attention ELF
+// bakes its own, and it is per-shape (8 MB for the nh16 captures, 4 MB for the
+// nh32 ones) while every runlist layer ELF is baked at MAX_L=8192 -> 8 MB. When
+// they differ the source is re-packed region by region; when they match the
+// copy is direct. Passing the caller's real stride is what makes the unified
+// handoff work for nh32 at all — assuming the session's stride silently read
+// regions 1..3 from the wrong offsets and the decode was wrong from the first
+// step (see the results doc).
+int npu_runlist_write_kv(int layer, int token_begin, int n_tokens,
+                         const uint16_t* bf16_kv, int src_region_stride_u16);
 // Write the prefill's final hidden state (bf16, H) into the act BO.
 int npu_runlist_write_act(const uint16_t* bf16_hidden);
 // Embed a token into the act BO (for the decode loop's forward step).
