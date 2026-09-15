@@ -336,8 +336,15 @@ struct Bf16Mm {
         const bool nh32 = (attn_qout == 4096);
         if (!attn_shape_ok) kern = nullptr;
         else if (attn_tokens > 2048) kern = nullptr;                       // no capture this long
-        else if (attn_tokens > 1024) kern = nh16 ? (attn_kernel2k   ? attn_kernel2k.get()   : nullptr)
-                                                 : (attn_kernel2k32 ? attn_kernel2k32.get() : nullptr);
+        else if (attn_tokens > 1024)
+            // Only nh16/nh32 have 2k captures. Any other shape must fall through
+            // to the CPU reference rather than borrow the nh32 kernel: Nanbeige
+            // (nh20) and Phi4 (nh24) reach this branch above 1024 keys, and the
+            // nh32 2048 kernel returns wrong tokens for them (Nanbeige @1000:
+            // CPU attn = FLM-ref 163569, shape ELF = 90724).
+            kern = nh16 ? (attn_kernel2k ? attn_kernel2k.get() : nullptr)
+                 : nh32 ? (attn_kernel2k32 ? attn_kernel2k32.get() : nullptr)
+                        : nullptr;
         else if (attn_tokens > 256)  kern = nh32 ? (attn_kernel1k32 ? attn_kernel1k32.get() : nullptr)
                                                  : (attn_kernel1k   ? attn_kernel1k.get()   : nullptr);
         if (!kern) return false;
