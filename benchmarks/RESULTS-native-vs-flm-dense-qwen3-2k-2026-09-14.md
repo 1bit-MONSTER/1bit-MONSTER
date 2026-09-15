@@ -40,24 +40,33 @@ The NH=16 models (0.6B/1.7B) already had their 2048 capture
 Native meets-or-beats the published prefill table at every size and both
 contexts, and beats FLM's own on-box prefill at every point.
 
-### Decode @2k where the captures allow it
+### Decode (tok/s): native vs published
 
-The runlist decode needs `layer_ctx<N>.elf` for every step's context, and the
-per-model captures are: 0.6B up to ctx 2200, 1.7B/4B/8B up to ctx 2048. So a
-2048-token prompt followed by 32 decode steps (ctx 2049..2080) is only runnable
-for 0.6B:
+The runlist decode needs `layer_ctx<N>.elf` for every step's context. The
+per-model captures stop at ctx 2048 for 1.7B/4B/8B (0.6B reached 2200), so a
+2048-token prompt plus 32 decode steps (ctx 2049..2080) needed the runtime's
+lazy ELF build — `RT_ELF_GEN=npu-infer/tools/gen_layer_elfs` with
+`RT_ELF_MODEL=<model dir>` makes `RuntimeLayerEngine::ensure_layer_kernel`
+shell out to it on a cache miss (~1 ms/ctx). With those generated, all four
+sizes decode @2k:
 
-| model | decode @2k native | published @2k | verdict |
-|---|---|---|---|
-| 0.6B | **67.0 tok/s** (14.9 ms/tok) | 57.5 | +16.5% beats |
-| 1.7B | — | — | blocked: captures stop at ctx 2048 |
-| 4B   | — | 18.1 | blocked: needs layer_ctx2049+ |
-| 8B   | — | 11.5 | blocked: needs layer_ctx2049+ |
+| model | decode @1k native | pub @1k | Δ | decode @2k native | pub @2k | Δ |
+|---|---|---|---|---|---|---|
+| 0.6B | 79.4 | 66.5 | **+19.4%** | **67.0** | 57.5 | **+16.5%** |
+| 1.7B | 40.0 | 40.2 | −0.5% | **36.8** | 35.8 | **+2.8%** |
+| 4B   | 19.2 | 19.6 | −2.0% | **18.2** | 18.1 | **+0.5%** |
+| 8B   | 11.0 | 11.9 | −7.6% | 10.6 | 11.5 | −7.8% |
 
-1.7B/4B/8B also fall back to the split i8 path when the runlist build fails,
-and that path has no `final_i8_G_K2560_N9728.xclbin` (4B) — so there is no
-second route. The exact published @2k decode columns for those three remain
-unmeasured, not merely unrecorded.
+Native's decode degrades more slowly with context than FLM's, so 1.7B and 4B
+cross from just-behind at 1k to just-ahead at 2k. Only 8B trails at both.
+
+The @1k column was re-measured under `pmode=performance`; it is within 1% of
+the earlier Default-mode figures, so the power mode does not materially change
+decode here. The intermittent ~2x slow mode is NPU contention, not a native
+setting: the values above are the uncontended mode, each reproduced within 0.5%
+across two runs (4B @2k 55.0/55.1, 1.7B 27.2/27.3, 8B 94.1/94.2 ms/tok). The
+decode boot token is 220 for all four sizes, matching the validated bf16
+prefill.
 
 @2k native is two passes where run twice (4B 758.2 → 765.1 tok/s, 8B 524.9 →
 513.9 tok/s; reported as the pass pair, <2% spread). 0.6B/1.7B @2k are single
@@ -88,16 +97,13 @@ reliable ones.
 
 ## Still open
 
-- **Decode @2k for 1.7B/4B/8B**: blocked on layer-ELF captures beyond ctx 2048
-  (they exist to 2048; 0.6B reaches 2200). `NPU_RUNLIST=1` decode at 2048 falls
-  through to the split i8 path and fails to init
-  `final_i8_G_K2560_N9728.xclbin`, which does not exist in
-  `engine/npu/xclbins/` — so there is no fallback route either. Capture
-  layer_ctx2049+ (or build the missing i8 G xclbin) is the bounded follow-up.
 - **Context > 2048**: no attention capture exists, so the published table's
   4k/8k/16k/32k columns are unreachable today.
-- Decode vs the published table remains the tightest gap for this family
-  (4B −3.1%, 8B −7.6% @1k); prefill/TTFT are native wins.
+- **8B decode**: the only dense metric still behind published (−7.6% @1k,
+  −7.8% @2k). 0.6B/1.7B/4B decode and every size's prefill now meet-or-beat
+  the published table at 1k and 2k.
+- The per-ctx layer ELFs for 1.7B/4B/8B now exist to ctx 2200 (generated with
+  `RT_ELF_GEN`), so no capture work remains for the 2k decode row.
 
 ## Measurement conditions
 

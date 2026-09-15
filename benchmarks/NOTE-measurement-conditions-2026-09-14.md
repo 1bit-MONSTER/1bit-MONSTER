@@ -52,11 +52,10 @@ the two-pass figure in `RESULTS-native-vs-flm-dense-qwen3-REMEASURED-2026-09-14.
 - The 1k and 2k **prefill** tables were measured before the concurrent 8B loop
   started (22:38) and reproduced to <2% across two passes, so they are not
   affected by (2). The power-mode caveat (1) applies to all of them.
-- **Decode** numbers need re-measurement with the device quiesced and the power
-  mode pinned. The `RESULTS-native-vs-flm-dense-qwen3-2k` decode row (0.6B
-  67 tok/s) was taken at 22:31, before the 8B loop, so it is uncontended; the
-  1.7B/4B/8B @2k decode columns remain unmeasured for the capture reason in that
-  document plus this contention.
+- **Decode** was subsequently re-measured while the concurrent agent was
+  between jobs; the uncontended values are now in
+  `RESULTS-native-vs-flm-dense-qwen3-2k-2026-09-14.md` (1k and 2k, all four
+  sizes). Each was reproduced within 0.5% and the ~2x slow mode was absent.
 
 ## Recommendation
 
