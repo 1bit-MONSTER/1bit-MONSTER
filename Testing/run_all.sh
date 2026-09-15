@@ -328,6 +328,18 @@ else
     echo "  - glm_moe_dsa: fixture absent, skipped (python3 Testing/make_mini_glm_moe_dsa.py /tmp/onebit-glmdsa)"; skip=$((skip+1))
 fi
 
+# ── GLM-MoE-DSA "shared" indexer configuration (issue #2423) ──
+# Uses the same fixture and skips itself when that fixture is absent, so its
+# result is folded into this suite's counters rather than reported separately.
+total=$((total+1))
+shared_out=$(bash Testing/check_glmdsa_shared_config.sh 2>&1) && shared_rc=0 || shared_rc=$?
+printf '%s\n' "$shared_out"
+if printf '%s' "$shared_out" | grep -q 'fixture absent, skipped'; then
+    skip=$((skip+1))
+elif [ "$shared_rc" -ne 0 ]; then
+    fail=$((fail+1))
+fi
+
 # ── MiMo-V2 gate (mini fixture, vendored remote modeling oracle) ──
 total=$((total+1))
 mimo_dir=/tmp/onebit-mimo
