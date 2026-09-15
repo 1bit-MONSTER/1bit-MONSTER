@@ -581,6 +581,15 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
 int zaya_decode_main(int argc, char** argv);
 int main(int argc,char**argv){
     setvbuf(stdout,NULL,_IONBF,0);
+    // NPU_UNIFIED=1 means "bf16 prefill + runlist decode", and the unified
+    // session is initialised INSIDE the bf16 prefill block, so the flag cannot
+    // do anything on its own. Fold it into NPU_PREFILL_BF16 here, before anything
+    // reads either, so one flag means what it says — the combination used to
+    // require knowing to pass both, and passing only NPU_UNIFIED was silently a
+    // no-op (the runlist gate would take the runlist path and return first).
+    // An explicit NPU_PREFILL_BF16 setting is left alone.
+    if (getenv("NPU_UNIFIED") && atoi(getenv("NPU_UNIFIED")) == 1 && !getenv("NPU_PREFILL_BF16"))
+        setenv("NPU_PREFILL_BF16", "1", 0);
     // issue #1431: sampling was deterministic
     // NPU_SEED=<n> pins the RNG so e2e token comparisons are reproducible.
     const char* npu_seed = getenv("NPU_SEED");
