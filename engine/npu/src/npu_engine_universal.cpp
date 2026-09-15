@@ -715,6 +715,10 @@ int main(int argc,char**argv){
             }
         }
     }
+    // Set by the runlist gate below when it hands the run to the unified path on
+    // its own initiative (not because the user asked). Read at the unified
+    // session's init failure to fall back rather than abort.
+    bool unified_auto = false;
     // NPU_RUNLIST=1: single-launch whole-layer per-ctx ELF decode for dense
     // Qwen3-0.6B (28 layers, H=1024, vocab 151936, no MoE). The RuntimeLayerEngine
     // path is byte-identical to the FastFlowLM runtime and runs ~71 tok/s vs the
@@ -758,7 +762,62 @@ int main(int argc,char**argv){
         // not honoured, and it says so rather than doing nothing.
         const char* uni = getenv("NPU_UNIFIED");
         const bool unified_requested = uni && atoi(uni) == 1;
-        const bool want_unified = unified_requested && getenv("NPU_PREFILL_BF16") != nullptr;
+        // ---- automatic selection for dense Qwen3 -----------------------------
+        // The two halves of this engine are fast at different things, and the
+        // numbers are measured (Qwen3-0.6B, 2026-09-15): the bf16 prefill costs
+        // ~0.53 ms per prompt token against the runlist prefill's ~13.46 — it is
+        // one whole-layer forward PER TOKEN, which is why its TTFT is 25-40x
+        // FLM's — and the runlist decode is ~11.4 ms/token against the unified
+        // decode's ~13.8.
+        //
+        // Break-even, written out so the rule is checkable rather than a hunch:
+        //     npt*13.46 + ng*11.4   >   npt*0.53 + ng*13.8
+        // <=> npt*12.93           >   ng*2.4
+        // <=> ng                  <   5.4*npt
+        // So the combination wins for every prompt above a handful of tokens, and
+        // the ONLY case that favours the runlist path is a short prompt with a
+        // long generation. The bound used here is 4x rather than 5.4x, which keeps
+        // the margin on the side of the path whose decode is verified
+        // token-for-token against FLM (RESULTS-ctx2200-cliff / the tie analysis).
+        //
+        // An explicit NPU_RUNLIST or NPU_UNIFIED always wins over this.
+        auto count_ids = [](const char* path) -> int {
+            if (!path || !path[0] || strcmp(path, "-") == 0) return -1;  // stdin: cannot peek
+            FILE* f = fopen(path, "r");
+            if (!f) return -1;
+            int n = 0, t;
+            while (fscanf(f, "%d", &t) == 1) n++;
+            fclose(f);
+            return n;
+        };
+        const int npt_hint = count_ids(input_tok_file);
+        if (dense_qwen3 && !unified_requested && !rl && npt_hint > 0 && npt_hint * 4 > ng) {
+            // Set both, because the NPU_UNIFIED -> NPU_PREFILL_BF16 fold happens at
+            // the top of main and has already run by now.
+            setenv("NPU_UNIFIED", "1", 1);
+            setenv("NPU_PREFILL_BF16", "1", 1);
+            unified_auto = true;
+            fprintf(stderr, "[auto] dense Qwen3, npt=%d ng=%d: bf16 prefill + runlist decode "
+                            "(the runlist prefill is ~13.5 ms/prompt-token against ~0.5, and this "
+                            "prompt is long enough that the prefill dominates). Force the runlist "
+                            "path with NPU_RUNLIST=1.\n", npt_hint, ng);
+        }
+        const bool want_unified =
+            (unified_requested || unified_auto) && getenv("NPU_PREFILL_BF16") != nullptr;
+        // The bf16 prefill caps the prompt at NPU_PREFILL_MAX, defaulting to 256
+        // ("the historical 256"). Every non-runlist path below therefore answers
+        // from a TRUNCATED context unless the caller raises it -- so selecting the
+        // unified path has to carry the prompt length with it. Measured before
+        // this: `NPU_UNIFIED=1 ... ids1024.txt` ran `Prefill 256 [bf16]` and
+        // returned the 256-token answer for a 1024-token prompt, silently.
+        if (want_unified && !getenv("NPU_PREFILL_MAX") && npt_hint > 0) {
+            char pb[32];
+            snprintf(pb, sizeof pb, "%d", npt_hint);
+            setenv("NPU_PREFILL_MAX", pb, 0);
+            fprintf(stderr, "[unified] NPU_PREFILL_MAX defaulted to the prompt length (%d); the "
+                            "bf16 path caps at 256 otherwise and would answer from a truncated "
+                            "context\n", npt_hint);
+        }
         if (unified_requested && !want_unified)
             fprintf(stderr, "[unified] NPU_UNIFIED=1 needs NPU_PREFILL_BF16=1 (the unified "
                             "session is initialised inside the bf16 prefill block) — ignoring "
@@ -4321,10 +4380,28 @@ struct Bf16Ctx {
         const char* fmd = fmd_use.c_str();
         const char* fxd = fxd_use.c_str();
         fprintf(stderr, "bf16 prefill: model=%s xclbins=%s\n", fmd, fxd);
-        const bool unified = getenv("NPU_UNIFIED") && atoi(getenv("NPU_UNIFIED")) == 1;
+        bool unified = getenv("NPU_UNIFIED") && atoi(getenv("NPU_UNIFIED")) == 1;
         if (unified && npu_runlist_session_init(mp, H, NC, NH, NKV, IM, NV) != 0) {
-            fprintf(stderr, "bf16 prefill: runlist session init failed — aborting unified path\n");
-            return 1;
+            // When the gate chose this path on its own, its failure must not take
+            // the run down: nothing has run yet, so the runlist path is exactly
+            // where execution would have gone anyway. An EXPLICIT NPU_UNIFIED is
+            // still a hard error — the user asked for this specific combination.
+            if (unified_auto) {
+                fprintf(stderr, "[auto] unified session init failed — falling back to the runlist path\n");
+                int rc = npu_runlist_decode(mp, ng, input_tok_file,
+                                            cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.IM, cfg.NV);
+                if (rc == 0) return 0;
+                // Both are unavailable. Clear `unified` so the bf16 prefill below
+                // does not hand its KV to a session that was never built — that
+                // path returns 1 after a full prefill, which reads as a crash
+                // rather than as "this box has no per-ctx ELFs".
+                fprintf(stderr, "[auto] runlist path failed too (rc=%d) — continuing without the "
+                                "unified decode\n", rc);
+                unified = false;
+            } else {
+                fprintf(stderr, "bf16 prefill: runlist session init failed — aborting unified path\n");
+                return 1;
+            }
         }
         int qout = NH * HD, kout = NKV * HD, qkvn = qout + 2 * kout;
         const int gu_chunks = IM / 512;   // GU: 512-out-row chunks (16 tile-rows x 32)
