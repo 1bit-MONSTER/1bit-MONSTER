@@ -948,3 +948,63 @@ two changes** —
 - Phi4 nh24 hd128 → (1)
 - Qwen3.5-4B nh16 hd256 → (1) and (2)
 - Gemma3 nh4/nh8 hd256 → (2)
+
+## Implementation sketch for the two breadth changes
+
+Both are in `engine/npu/generators/n1_core_attn.py` (the generated-attention
+kernel, now proven correct and engine-coherent). Neither touches the
+`n_grp == 1` / hd128 / nq8 path, so `attn_insts.txt` must stay
+`f3d0a132bde24a60` for that build after the change — that check is the guard.
+
+### (1) Multi-pass head blocks — for nh > n_aie_cols (Nanbeige 20, Phi4 24, Qwen3.5 16)
+
+Today one core column owns one q head: `A_s[c]` is fed from
+`Q + c*K_FRAME + ki*k`, i.e. head `c`, and there are `n_aie_cols` columns.
+
+Change: add a head-base parameter and loop the whole core body over head blocks.
+
+- `-H <nh>` (total q heads) alongside `-c` (columns per pass) →
+  `n_hpass = ceil(H / n_aie_cols)`.
+- The core body gains an outer AIE loop over `hp`; the A-tile feed becomes
+  `Q + (hp*n_aie_cols + c)*K_FRAME + ki*k`.
+- `A2O`/`C2` writeback offsets gain `(hp*n_aie_cols + c)` in place of `c`, and the
+  per-head FIFOs stay per-column but are reused per pass.
+- The host side must supply a q BO sized for `H` head rows (it already is: the
+  A-frame is `16*K_FRAME`, i.e. 16 head rows — enough for nh ≤ 16; nh 20 and 24
+  need the frame widened, which is a host BO-size change, not a layout change).
+- The GQA mapping (`nkv`, `gqa`) is a *feed* concern: the B/V tiles for head `h`
+  come from kv head `h // gqa`, which is already how the seq indexes
+  (`kvv = cc // 4`). Generalise `//4` to `//gqa`.
+
+### (2) PV N-split — for hd > 128 (Qwen3.5-4B, Gemma3)
+
+Today `C_ty = (m, n) = (8,128)` is both the QK^T output tile **and** the PV output
+tile, and the PV's output width *is* the head dim. 128 is therefore the ceiling.
+
+Change: give the PV its own tiling over the head dim, decoupled from `-n`.
+
+- `-K` stays the head dim (QK^T contraction, `n_k = K//k`).
+- Add `n_hd = K // n` head-dim tiles; `C2` becomes `n_hd` resident tiles per
+  column (or `n_hd` FIFOs), mirroring how `C1` is already a list per N-tile.
+- The PV loop becomes `for nh_i in range(n_hd): for ki in range(n_k_pv): …` with
+  the V B-tile offset gaining `nh_i * (k*n)`.
+- The C2 writeback per head becomes `n_hd` strided BDs (one per head-dim tile) at
+  `c*(M*K_total) + nh_i*(M*n)`, and the host C2 reader widens to `hd` columns.
+- `G_TILES * n == 512` stays untouched — that assertion is about the QK^T's
+  *context* chunking and must not be conflated with `n_hd` (this conflation is the
+  trap described in the correction above).
+
+### Ordering
+
+Do (2) first: it is self-contained (one loop nest plus a writeback split) and it
+unblocks Gemma3 nh4/nh8 hd256, the family with the fewest other unknowns (nh ≤ 8
+fits today's columns, so no head-block work is needed). Then (1), which unblocks
+Nanbeige and Phi4 at hd128 with no PV change. Qwen3.5-4B needs both.
+
+### Verification must match what L1 used
+
+For each new shape, in this order — a wrong kernel passes none of them:
+1. `attn_insts.txt` byte-identity for the hd128/nq8 build (no regression);
+2. standalone bench `NPU_ATTN_MAX_SEQ=<N> /tmp/ck <xclbin> <insts> <N> 2` →
+   `2/2` non-zero C2 **and** NPU `max_abs_err` == EMU `max_abs_err` to the digit;
+3. engine-driven token-identity against the captured/CPU reference for that family.
