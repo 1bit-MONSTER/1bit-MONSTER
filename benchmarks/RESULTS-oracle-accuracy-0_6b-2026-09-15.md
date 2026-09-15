@@ -813,3 +813,41 @@ So:
 - "Token parity" remains unusable as a criterion: with thinking ON the two sides cannot match
   token-for-token, and with thinking OFF the native answer beats itself on accuracy. The criterion
   should be replaced (`/goal-tweak`) with answer-level content agreement on a graded rubric.
+
+## Auditing the easy-set oracle misses: they are GENUINE, so the easy-set gap is real
+
+The hard-set audit found that 2 of FLM's 3 misses were my scoring artifacts, so the easy-set
+comparison (native 20/20 vs FLM 18/20) needed the same scrutiny before being called a win.
+Full raw FLM output for the two prompts it missed:
+
+```
+The capital of Japan is      -> "The capital of Japan is **Osaka**."       <- FLM is simply WRONG (it is Tokyo)
+A baby cat is called a       -> "A baby cat is called a kitten."           <- CORRECT; it scored N in one run
+```
+
+So the two are **not** scoring artifacts:
+
+- The Japan miss is a **genuine factual error by the oracle**. A 0.6B model gets a common capital
+  wrong; that is the reference's own limitation, not my scoring.
+- The kitten prompt is scored differently across runs because **FLM is nondeterministic** (the
+  variance already measured: ~1-2 prompts in 20 flip per run). In this run it is correct.
+
+Therefore the easy-set comparison stands as **native 20/20 (deterministic) vs FLM ~18-19/20
+(nondeterministic, with at least one genuine factual miss)** — unlike the hard set, where
+correcting my two scoring artifacts put FLM at ~14/15 against the native 13/15.
+
+### Where the goal now actually stands
+
+| set | native (thinking on) | FLM | notes |
+|---|---|---|---|
+| easy (20) | **20/20** | 18-19/20 | FLM's misses are genuine (Osaka) plus nondeterminism |
+| hard (15) | **13/15** | ~14/15 | FLM's misses were mostly my scoring artifacts; native's 2 are real |
+
+So the honest summary is: **the native arm is ahead on the easy set and marginally behind on the
+hard set, and the two are broadly comparable.** Neither "native beats FLM" nor "native is worse
+than FLM" is supported as a general claim. The native arm is deterministic, which is a real
+advantage for measurement and reproduction; FLM's nondeterminism is itself a reason the
+"token parity with the oracle" criterion cannot work.
+
+Two real, unfixed defects remain on the native side: the **Red Planet knowledge/degeneration**
+case and **mojibake for non-ASCII output**. Plus the dense arm still has no trustworthy number.
