@@ -131,5 +131,41 @@ accounting** (element is the full `(8,N)` = 8192 B while each group's `a2t`
 transfers a strided 4096 B of it). Next probe: dump C1 per group (or give the
 two groups different KT tiles that cannot quantise away).
 
+#### The `A2O` element/transfer mismatch is the best fit (2026-09-15, later)
+
+The host KT side is clean: `npu_attn_ctx.h` fills **all** `n_k*n_n = 16` (ki,nt)
+tiles for the baked N, so group 1's tiles (4–7, 12–15) are populated, and their
+`t < seq` guard passes at `seq=1024`. So "group 1's C1 is zero" cannot be a
+missing-B-tile problem.
+
+What the two probes actually pin is different, and simpler: **only one distinct
+A2 element ever reaches SCR.**
+
+- `seq=513`: SCR `32..543` holds a *one-key* result (`[0]=127`), SCR `544+` is
+  untouched. Group 1 is the group whose `seq_g = 1`; group 0's is 512.
+  So element 0 carries **group 1's** data.
+- `seq=1024`: SCR `0..511`-block is populated (~435), `512+` untouched.
+
+Both say: the core's **second** `A2O_C[c].acquire(Produce, 1)` returns the same
+buffer as the first, so group 1's softmax overwrites group 0's element and the
+second element is never produced — the `a2t` that reads it writes zeros.
+
+That is exactly what an **element vs transfer size mismatch** produces. The
+`A2O` element is the full `(8,N)` = 8192 B (`memref<8x1024xi8>`, verified in the
+IR), while each group's `a2t` reads a *strided 4096 B* of it
+(`[<1,4>,<1,4>,<8,1024>,<512,1>]`). The strided read is forced: SCR has room for
+only **one** `(8,N)` per head (`32 + c·M·N`), so both groups must interleave into
+it (g at column `g*512`, row stride N). But a partial element read never lets the
+MemTile hand the buffer on, so the producer never advances.
+
+**Fix to try:** make the `A2O` element the *group slice* `(8, G_TILES*n)` =
+`(8,512)` = 4096 B for `n_grp > 1`, and set the chunked `params[3]` to `0`
+(packed) so `attn_softmax_contract` writes a **contiguous** `(8,512)` element.
+The `a2t` then reads the FIFO **contiguously** (a whole element) and writes SCR
+strided — the same `[<1,4>,<1,4>,<8,N>,<512,1>]` BD, which is a strided *write*
+into SCR with a contiguous FIFO read. Keep the `n_grp == 1` path untouched so
+`attn_insts.txt` stays `f3d0a132bde24a60`.
+
+
 2. The stale-`dist` engines need a rebuild only if the generated xclbin is
    promoted over the captured ELF; the bench drives the artifact directly.
