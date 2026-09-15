@@ -271,9 +271,16 @@ bool RuntimeLayerEngine::ensure_layer_kernel(int ctx_len) {
         const char* gen = getenv("RT_ELF_GEN");
         const char* mdir = getenv("RT_ELF_MODEL");
         if (gen && mdir && gen[0] && mdir[0]) {
+            // MAX_L MUST match the region stride this runtime lays the KV out with
+            // (see write_kv: region_stride_u16 = token_u16 * 8192). gen_layer_elfs
+            // defaults to 32768, and that mismatch produces byte-size-identical
+            // ELFs with a 4x-wrong region stride which run at the SAME speed and
+            // return WRONG tokens. Pass it explicitly. Override only if the region
+            // stride above is changed to match.
+            const int kElfMaxL = 8192;
             char cmd[1024];
-            snprintf(cmd, sizeof(cmd), "%s %s %s %d %d", gen, mdir, elf_dir_.c_str(),
-                     ctx_len, ctx_len);
+            snprintf(cmd, sizeof(cmd), "%s %s %s %d %d %d", gen, mdir, elf_dir_.c_str(),
+                     ctx_len, ctx_len, kElfMaxL);
             fprintf(stderr, "RuntimeLayer: generating missing ELF ctx=%d (%s)\n",
                     ctx_len, cmd);
             int rc = system(cmd);

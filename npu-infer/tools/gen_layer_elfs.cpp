@@ -108,13 +108,18 @@ int main(int argc, char** argv) {
     std::string outdir = (argc > 2) ? argv[2] : ".";
     int L0 = (argc > 3) ? atoi(argv[3]) : 1;
     int L1 = (argc > 4) ? atoi(argv[4]) : 2;
-    // MAX_L bounds gen_layer_seq (assert L <= MAX_L+1) AND sizes the runtime's
-    // per-layer KV BO: kv_bytes = MAX_L * NKV * HD * 4. The native
-    // RuntimeLayerEngine allocates npu_kv_cache_bo_size (128MB = 32768 tokens
-    // at NKV=8/HD=128), so MAX_L must be 32768 to match. A SMALLER MAX_L works
-    // for short contexts but caps the KV window; a LARGER one would walk past
-    // the KV BO. Default 32768; override via argv (must match the KV BO size).
-    uint32_t max_l = (argc > 5) ? (uint32_t)atoi(argv[5]) : 32768;
+    // MAX_L bounds gen_layer_seq (assert L <= MAX_L+1) AND bakes the KV REGION
+    // STRIDE into the instruction stream. It must equal the stride the runtime
+    // writes, which is NOT the BO capacity: RuntimeLayerEngine allocates
+    // npu_kv_cache_bo_size (128MB) as a ceiling but lays the 4 regions out with
+    // region_stride_u16 = token_u16 * 8192, i.e. an 8MB stride -> MAX_L = 8192.
+    //
+    // Getting this wrong is silent: max_l=32768 yields an ELF of the SAME byte
+    // size that runs at the SAME speed and returns WRONG tokens. Every committed
+    // ELF in npu-infer/captures/txn-elfs* is 8192 (verified by regenerating a
+    // known ctx and comparing sha256). Override via argv only to match a changed
+    // stride. See benchmarks/SESSION-FINDINGS-2026-09-14.md section 4b.
+    uint32_t max_l = (argc > 5) ? (uint32_t)atoi(argv[5]) : 8192;
     std::string family = (argc > 6) ? argv[6] : "qwen3";
     // gemma_text only: which layers are sliding-window is a property of the model, so the
     // caller states it rather than this tool guessing. Ignored by every other family.

@@ -59,9 +59,38 @@ g++ -O2 -std=c++17 -include climits "$SRC" -o "$BIN" \
     echo "link failed — check the family libs exist in $FLM_LIB" >&2; exit 1; }
 [ -x "$BIN" ] || { echo "generator build produced no binary" >&2; exit 1; }
 
-echo "== generating ctx 1..$MAX_CTX as family=$FAMILY =="
+echo "== generating ctx 1..$MAX_CTX as family=$FAMILY (MAX_L=$MAX_L) =="
 mkdir -p "$OUT_DIR"
-"$BIN" "$MODEL_DIR" "$OUT_DIR" 1 "$MAX_CTX" 32768 "$FAMILY"
+# MAX_L bakes the KV region stride into the ELF and must match the runtime's
+# layout (runtime_layer.cpp: region_stride_u16 = token_u16 * 8192 -> MAX_L 8192),
+# NOT the 128MB BO capacity. max_l=32768 produces byte-size-identical ELFs that
+# run at the same speed and return WRONG tokens; every committed ELF in
+# npu-infer/captures/txn-elfs* is 8192. Override with MAX_L= only if you also
+# change the runtime stride.
+MAX_L="${MAX_L:-8192}"
+
+# --- MAX_L self-check -------------------------------------------------------
+# This script overwrites the whole ctx set, so a wrong MAX_L silently replaces
+# good ELFs with ones that run at the same speed and return wrong tokens. If the
+# target dir already holds ELFs, prove our MAX_L reproduces one of them first.
+if [ -n "$(ls "$OUT_DIR"/layer_ctx*.elf 2>/dev/null | head -1 || true)" ]; then
+  ref="$(ls "$OUT_DIR"/layer_ctx*.elf | head -1)"
+  refn="$(basename "$ref" | sed 's/^layer_ctx\([0-9]*\)\.elf$/\1/')"
+  chk="$(mktemp -d)"
+  "$BIN" "$MODEL_DIR" "$chk" "$refn" "$refn" "$MAX_L" "$FAMILY" >/dev/null 2>&1 || true
+  a="$(sha256sum "$ref" | awk '{print $1}')"
+  b="$(sha256sum "$chk/layer_ctx$refn.elf" 2>/dev/null | awk '{print $1}')"
+  rm -rf "$chk"
+  if [ -n "$b" ] && [ "$a" != "$b" ]; then
+    echo "ERROR: MAX_L=$MAX_L does not reproduce the existing $ref" >&2
+    echo "       existing sha256 $a" >&2
+    echo "       ours     sha256 $b" >&2
+    echo "       Refusing to overwrite the set. Pass MAX_L=<the value that matches>." >&2
+    exit 1
+  fi
+  [ -n "$b" ] && echo "MAX_L=$MAX_L reproduces $ref byte-for-byte"
+fi
+"$BIN" "$MODEL_DIR" "$OUT_DIR" 1 "$MAX_CTX" "$MAX_L" "$FAMILY"
 
 n=$(ls "$OUT_DIR" 2>/dev/null | grep -c 'layer_ctx.*\.elf$' || true)
 echo
