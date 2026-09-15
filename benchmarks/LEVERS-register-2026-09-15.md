@@ -680,7 +680,26 @@ Still open, in order:
    against its own host emulation's 0.046 on the same buffers is an unexplained
    gap in the *emulation comparison*, not a demonstrated kernel defect.
 
-### L2 — a Nanbeige nh20 capture at 4096 *(the one non-dense family already close)*
+### L2 — a Nanbeige nh20 capture at 4096 *(MIS-SCOPED 2026-09-15 — see note)*
+
+> **Superseded (2026-09-15): L2 as written was mis-scoped.** A correct nh20
+> attention ELF cannot matter for Nanbeige's bf16 arm, because that arm is
+> **architecturally excluded**: the block that loads the attention ELFs and calls
+> `bf16mm_init` is gated at `npu_engine_universal.cpp:4433` by
+> `if (getenv("NPU_PREFILL_BF16") && !has_moe)`, and Nanbeige is MoE
+> (`[ModelConfig] … experts=16 top_k=2`). So `!has_moe` is false, the block never
+> runs, no attention ELF of any shape is ever loaded, and the run falls through to
+> the generic `=== Prefill NNNN [fallback] ===`. Every 4096-candidate experiment
+> was therefore vacuous. Two claims made while chasing this are withdrawn: the
+> mm/dequant xclbins were never missing (they live in
+> `/home/bcloud/amd-oss/fastflowlm/src/xclbins/Nanbeige4.1-3B-NPU2/`, the dir
+> `Bf16Mm` actually uses), and `load_attn_elf` was never unreachable for a naming
+> reason. The real work item, if bf16-MoE prefill is wanted, is the `!has_moe`
+> guard itself — a **feature**, not a capture. Full trail:
+> [RESULTS-attention-c2-regression-2026-09-15.md](RESULTS-attention-c2-regression-2026-09-15.md).
+> Nanbeige's geometry was also settled from `config.json`: nh20 / hd128 / nkv4,
+> qout 2560, QKV N = 3584 (the generator's shape table had a stale nh32/hd80
+> reading on every Nanbeige entry; corrected).
 Nanbeige's default i8 path matches FLM exactly (`1033 @1024`, `5938 @256`); only
 its **bf16 arm** falls to the broken nh20 kernel. A correct nh20 capture is a
 drop-in file by the existing shape naming — the same one-file change as L1's
