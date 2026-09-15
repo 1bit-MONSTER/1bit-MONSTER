@@ -83,3 +83,42 @@ be driven end to end.
 2. The engine-side changes above, then the family token-identity check against each
    family's FLM reference (Nanbeige `nanbeige4.1:3b`, Phi4 `phi4-mini-it:4b`).
 3. Only then can the family verdict table carry numbers rather than "builds".
+
+## Integration map: what the engine path actually needs (found 2026-09-15)
+
+Two different attention kernels exist in the tree and they consume **different
+artifacts**. Conflating them is why "the generated attention" and "the engine's
+attention" have looked like one item:
+
+| path | artifact | loaded by | shapes today |
+|---|---|---|---|
+| standalone kernel bench / Zaya decode | `attn.xclbin` + `attn_insts.txt` (the generator's output, driven through `AttnCtx`) | `tools/attn_kernel_bench.cpp`, `zaya_decode.cpp` | any the generator builds — **now includes nh20/nh24/hd256** |
+| the bf16 family prefill path | `attn_mha_<tokens>_nh<NH>_hd<HD>.elf` (prebuilt `xrt::elf`, per context bucket: 256 / 1024 / 2048 / 4096 / 8192) | `Bf16Mm` in `npu_engine_bf16_mm.h`, `load_attn_elf(...)` | nh16 (qout 2048) and nh32 (qout 4096) only, hd128 |
+
+So the families' >1024 attention does **not** come from this generator change by
+itself: `Bf16Mm` wants an **ELF**, and there is no `attn_mha_2048_nh20_hd128.elf`
+in the tree. That is exactly the artifact the L1 lane was capturing from FLM with
+`cap_interposer`, and the one the withdrawn L2 note was chasing for the wrong
+reason (the bf16 arm of a MoE model is gated out by `!has_moe` at
+`npu_engine_universal.cpp:4433`, so a capture there would never be loaded).
+
+The route that closes it, in order:
+
+1. **Generator** — done: the shapes build (this doc).
+2. **Host packing** — done for `AttnCtx` (this doc); still needed for `Bf16Mm`'s
+   own packing if it is to drive them.
+3. **ELF assembly per shape** — the missing piece. The toolchain is already in
+   tree for the GEMM path: `Bf16Mm`'s `mm_app_cache` does "generate_seq + aiebu
+   ELF assembly + kernel" (`npu_engine_bf16_mm.h:158-161`), so assembling an ELF
+   from the generated design is the same mechanism, not a new one. The output must
+   be named `attn_mha_<tokens>_nh<NH>_hd<HD>.elf` for the loader to find it.
+4. **Verification** — bench first (NPU-vs-EMU equality, the L1 rule), then the
+   family token identity at >1024.
+
+Until step 3 exists, the honest family verdict at >1024 is "CPU reference
+fallback", which is correct-but-slow and is what
+`RESULTS-family-attention-shape-2026-09-14.md` already records.
+
+Note that a verdict at **≤1024** does not depend on any of this: those buckets use
+the shape-specific ≤1024 ELF or the embedded nh16 kernel, which is why the armed
+family A/B runs at 1024 tokens.
