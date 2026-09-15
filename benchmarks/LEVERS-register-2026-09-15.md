@@ -456,6 +456,49 @@ Next action, unchanged in target but now unambiguous: **fix the core's re-arm in
 `n1_core_attn.py`** (the shipped kernel, on the identical instruction stream, re-arms),
 then re-run the gate. Not the softmax, not the PV, not the container.
 
+#### The re-arm defect: exact repro, and what has been ruled out
+
+**Repro** (in-tree, no engine, no model):
+
+```
+g++ -std=c++17 -O2 -mavx2 -I src -I generators -o ck tools/attn_kernel_bench.cpp \
+    -lxrt_coreutil -lxrt_core -laiebu -luuid -ldl
+NPU_ATTN_MAX_SEQ=512 ./ck <ours>.xclbin <ours>_insts.txt 512 2   # -> run(): 0/2 wrote a non-zero C2
+NPU_ATTN_MAX_SEQ=512 ./ck xclbins/attn.xclbin xclbins/attn_insts.txt 512 2  # -> 2/2
+```
+
+The check is in the timing loop and it is the whole reason this was findable: it
+zeroes C2 on the host before each `run()` and verifies the device wrote it back. A
+timing harness without that line reports a confident number for a pipeline that
+stopped after its first call — which is what this one did for several rounds.
+
+**Localised further:** the QK^T and softmax phases DO re-arm — A2 is on the device
+1.5 ms into *every* later launch — while C2 never appears at all. So the break is
+specifically the PV phase's consume/produce handshake or the C2 writeback, not the
+front half of the kernel and not the launch path.
+
+Ruled out by measurement, so nobody repeats them:
+
+| story | test | result |
+|---|---|---|
+| kernel throughput | seq 1 vs 8 vs 512 | identical, 6048 ms |
+| infinite core loop | `range_(0xFFFFFFFF)` → `range_(1)` | 6049 ms, same output |
+| amount of work | N=256 vs N=512 vs chunked N=1024 | 6046 / 6047 / 1170 ms |
+| host dispatch | submit vs wait split | 0.5 ms submit, 6 s wait |
+| XRT version | relink against `/usr/local/xrt-runlist` | 6049 ms either way |
+| container metadata | partition blobs, headers, topology | structurally identical |
+| core FIFO depth | `C2_c` 1 → 2 (deeper blows tile memory) | still 0/2, still 6048 ms |
+| pre-launch syncs | probe with `run()`'s exact `bQ`/`bKT`/`bV` pushes | no change |
+| pipelined lag | two consecutive zeroed probes | probe #2 same as #1 |
+
+Still untested and the best next leads, in order: (1) the core's per-iteration
+lock/token accounting around the C2 produce — A2 re-arms and C2 does not, which
+narrows it to a specific acquire/release pair; (2) a **minimal** two-FIFO design
+built through the same `build_attn.sh` flow, to establish whether this toolchain's
+`--unified --dynamic-objFifos` output re-arms at all, separating "our attention
+generator is wrong" from "our build flow cannot re-arm". Do (2) first if time is
+short: it is the cheaper fork and it decides where the work belongs.
+
 What the two containers differ in (from `xclbinutil`; topology, connectivity and
 kernel name are structurally identical):
 
