@@ -932,3 +932,51 @@ not scorable by substring — it lists the continents rather than naming a numbe
 a 6-token budget, a stale dump file, an empty grep, the wrong arm, or the display tool's missing
 byte-level decode. The one thing that was genuinely the engine's own behaviour — the repetition
 loop — is a symptom of model phrasing fragility rather than a defect.
+
+## The dense arm is 3/3 — the last evidence hole is filled, and "dense is broken" is refuted
+
+The dense arm (2 tok/s, `NPU_RUNLIST=0`) was the last arm with no trustworthy number, and the
+earlier claim that it "emits gibberish" (`28a243ea8`) had already been withdrawn as a 6-token
+truncation. Scoring it properly — templated prompt, **256 tokens**, whole-output match — on an
+explicitly stated 3-prompt subset (chosen for budget reasons: 256 tokens at ~2 tok/s is ~2 min per
+prompt):
+
+```
+OK   The capital of France is               want=paris    tokens=257
+OK   Water is made of hydrogen and          want=oxygen   tokens=257
+OK   Which planet is called the Red Planet? want=mars     tokens=257
+dense arm: 3/3
+```
+
+Each reply begins by restating the question ("Okay, the user is asking for the capital of France.
+Hmm, but maybe I should start by making…") and then reaches the answer — exactly the behaviour that
+made a 6-token window look like failure.
+
+**So both native arms work.** The dense arm answers correctly on all three prompts; there is no
+gibberish, no decode-loop defect, and no evidence that it needs to be declared unsalvageable.
+
+### Subset caveat, stated plainly
+
+This is **3 prompts, not 20**, chosen because the dense arm is ~15× slower than the runlist arm and
+a full-set run would take hours. It establishes that the arm *can* answer correctly and that the
+"broken" claim was false; it does **not** bound the dense arm's accuracy the way 20/20 and 13/15 do
+for the runlist arm. If a full dense-arm number is wanted, it needs a budgeted run with the subset
+declared up front.
+
+### Final evidence summary for the goal's accuracy question
+
+| arm | easy (20) | hard (15) |
+|---|---|---|
+| native runlist | **20/20** | **13/15** |
+| native dense | not run (3/3 on the 3-prompt subset) | not run |
+| FLM oracle | 18-19/20 (nondeterministic) | ~14/15 corrected |
+
+Combined with the Red Planet closure (phrasing sensitivity shared with the oracle) and the mojibake
+diagnosis (a display-tool bug, engine output correct), the conclusion across the whole
+investigation is:
+
+**No engine accuracy defect was found.** Every apparent native failure resolved into a measurement
+problem — a 6-token budget, a stale dump compared with itself, an empty grep, the wrong decode arm,
+or the display tool's missing GPT-2 byte-level decode. The remedy that made the difference was
+methodological: a budget long enough for the model to finish reasoning, the correct prompt format,
+the whole output scored, and every extraction asserted to be fresh and non-empty.
