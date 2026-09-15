@@ -1,5 +1,14 @@
 # Context 4096 → 8192: capture obtained, one real bug fixed, still blocked (2026-09-15)
 
+> **UNBLOCKED the same day — see `RESULTS-ctx8192-UNBLOCKED-2026-09-15.md`.** The
+> attention kernel was never involved: the same wrong token and the same heap
+> corruption appear with the CPU attention reference, and the cause was two
+> structures sized for exactly 4096 positions in the bf16 prefill (the RoPE
+> tables' read overrun and the host K/V caches' write overrun). With those sized
+> by the run's own length, 4200 … 8191 all match FLM on the NPU kernel, and the
+> default cap now reaches 8191 for the nh16 shapes. The "next attempt" list below
+> is kept as the record of how it was localised — item 3 is what found it.
+
 FastFlowLM's published Qwen3 tables reach 32k; the native engine caps a prompt at
 4095. This round went after the next doubling, got the artifact and found a real
 bug on the way, but **did not** get a working >4096 path. It is written up because

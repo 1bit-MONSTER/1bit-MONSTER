@@ -2512,8 +2512,31 @@ struct Bf16Ctx {
         }
     }
 
+    // How many positions this RUN needs: the prompt plus the tokens generated
+    // from it, with the historical 4096 as the floor so nothing changes unless a
+    // longer prompt is actually requested (NPU_PROMPT_MAX). Computed HERE, before
+    // the tables and the K/V caches below, because BOTH of those were sized for
+    // exactly 4096 positions and both are indexed unchecked:
+    //   * ra()/ra2() read rc[p*hd+d] for the token's position, so a longer prompt
+    //     READ past the RoPE table — wrong cos/sin, hence the wrong,
+    //     context-independent answer at 4200/5000/7000;
+    //   * the bf16 prefill WRITES kv_caches[..].k[(sp+pi)*NKV*HD+..], so a longer
+    //     prompt overran that buffer — the `double free or corruption (out)`.
+    // Two independent 4096-sized structures, two symptoms, both fixed by using
+    // the run's own length. RESULTS-ctx8192-blocked-2026-09-15.md.
+    int ctx_need = 4096;
+    if (input_tok_file && input_tok_file[0] && strcmp(input_tok_file, "-") != 0) {
+        FILE* cf = fopen(input_tok_file, "r");
+        if (cf) {
+            int t, n = 0;
+            while (fscanf(cf, "%d", &t) == 1) n++;
+            fclose(cf);
+            if (n + ng > ctx_need) ctx_need = n + ng;
+        }
+    }
+
     // RoPE — primary table for GDN/dense layers
-    ri(HD,cfg.rope_theta,4096);
+    ri(HD,cfg.rope_theta,ctx_need);
     // Partial rotary tables for full-attention (STD) layers.
     // Slot 0: primary theta (most STD layers, or the single theta for
     //         homogeneous models).
@@ -2540,9 +2563,9 @@ struct Bf16Ctx {
             }
         }
         if (rdim0 <= 0) rdim0 = 64;  // fallback: Qwen3.6 default
-        ri2_build(0, th0, 4096, rdim0);
+        ri2_build(0, th0, ctx_need, rdim0);
         if (th1 != 0.0f && rdim1 > 0)
-            ri2_build(1, th1, 4096, rdim1);
+            ri2_build(1, th1, ctx_need, rdim1);
         else
             g_rt2[1] = g_rt2[0];  // alias slot 1 → slot 0 for single-theta models
     }
@@ -2570,7 +2593,21 @@ struct Bf16Ctx {
     int BS=8;
     if (getenv("NPU_BS")) BS = atoi(getenv("NPU_BS"));
     struct KVCache{std::vector<float>k,v;int n;KVCache(int size):k(size),v(size),n(0){}};
-    int kv_size=4096*NKV*HD;
+    // The host K/V caches must hold the whole prompt plus the tokens generated
+    // from it. They were sized for exactly 4096, and the bf16 prefill writes one
+    // row per PROMPT TOKEN into them (:4559), so any prompt longer than 4096
+    // wrote past the end of every layer's cache — 28 overruns of ~100k floats
+    // for a 4200-token prompt. That is the whole >4096 failure:
+    //   * `double free or corruption (out)` at exit, once per run;
+    //   * a CONTEXT-INDEPENDENT answer (49691 at 4200, 5000 and 7000 alike),
+    //     because the overrun lands on adjacent heap and the victim depends on
+    //     the allocation layout, not on the input;
+    //   * identical with the CPU attention reference and with the 8192-context
+    //     NPU capture — which is what proved the attention kernel was innocent
+    //     (RESULTS-ctx8192-blocked-2026-09-15.md).
+    // A prompt longer than the cap only reaches here via NPU_PROMPT_MAX, so the
+    // default allocation is unchanged.
+    int kv_size=ctx_need*NKV*HD;
     std::vector<std::vector<KVCache>> kv_caches;
     for(int i=0;i<NC;i++){ kv_caches.emplace_back(); for(int b=0;b<BS;b++) kv_caches[i].emplace_back(kv_size); }
     int qkv_n=cfg.qkv_total;
@@ -4291,7 +4328,31 @@ struct Bf16Ctx {
         while(fscanf(tf,"%d",&tid)==1) pt_vec.push_back(tid);
         if(tf!=stdin) fclose(tf);
         if(pt_vec.empty()){ fprintf(stderr,"Empty input token file: %s\n",input_tok_file); return 1; }
-        if((int)pt_vec.size() > 4095) {
+        // The cap keeps a run inside the KV window the artifacts are baked for.
+        // That window is 8192 tokens (MAX_L=8192 for the layer ELFs and for the
+        // 8192-context attention capture), and the WHOLE run has to fit it — the
+        // prompt plus the tokens generated from it — so the cap is 8193-ng, not a
+        // flat 8192.
+        //
+        // Only the nh16 shapes get the raised cap: the 8192-context attention
+        // capture exists for nh16 alone, so every other shape would fall to the
+        // CPU attention reference (~60 ms/token, ~8 minutes for 8191 tokens),
+        // which is correct but is not a useful default. NPU_PROMPT_MAX overrides
+        // either way.
+        int prompt_cap = 4095;
+        if (cfg.NH * cfg.HD == 2048) {
+            prompt_cap = 8193 - ng;
+            if (prompt_cap < 4095) prompt_cap = 4095;
+        }
+        if (const char* pm = getenv("NPU_PROMPT_MAX")) {
+            int v = atoi(pm);
+            if (v > 0) {
+                prompt_cap = v;
+                fprintf(stderr, "input: NPU_PROMPT_MAX=%d — prompts longer than 4095 tokens take "
+                                "the CPU attention reference (~59 ms/token at 4095): correct, and slow\n", v);
+            }
+        }
+        if((int)pt_vec.size() > prompt_cap) {
             // Announce, as the bf16 and fallback caps do. A SILENT 4095-token cap is the same defect
             // class as the fallback's silent 128-token truncation (RESULTS-coverage-multifamily
             // 83/84), which cost this investigation several checkpoints precisely because it left no
@@ -4307,9 +4368,9 @@ struct Bf16Ctx {
             // attention kernel yet; the cap stays where a correct path exists. See
             // RESULTS-ctx8192-blocked-2026-09-15.md.
             fprintf(stderr, "input: prompt %d tokens -> %d (max_seq_len 4096: the KV window and the "
-                            "per-ctx ELFs are built for 4096)\n",
-                    (int)pt_vec.size(), 4095);
-            pt_vec.resize(4095);
+                            "per-ctx ELFs are built for 4096; raise with NPU_PROMPT_MAX)\n",
+                    (int)pt_vec.size(), prompt_cap);
+            pt_vec.resize(prompt_cap);
         }
     }else{
         pt_vec={151644,872,198,13048,151645,198,151644,77091,198};

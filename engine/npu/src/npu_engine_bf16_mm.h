@@ -113,6 +113,9 @@ struct Bf16Mm {
     std::unique_ptr<xrt::ext::kernel> attn_kernel4k32; // (2048,4096] nh32 ELF (4B/8B)
     std::unique_ptr<xrt::elf> attn_elf4k32;
     std::unique_ptr<xrt::module> attn_module4k32;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel8k;   // (4096,8192] nh16 ELF, captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf8k;
+    std::unique_ptr<xrt::module> attn_module8k;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
     int attn_qout = 2048;   // NH*HD: 2048 = nh16x128, but 4096 is BOTH nh32x128 and nh16x256
     int attn_hd = 128;      // model head_dim; every shipped attn ELF is hd128, so this
@@ -271,6 +274,10 @@ struct Bf16Mm {
                 // over to the NPU.
                 load_attn_elf("NPU_ATTN_ELF_4096", "attn_mha_4096_nh16.elf", 4096, attn_elf4k, attn_module4k, attn_kernel4k);
                 load_attn_elf("NPU_ATTN_ELF_4096_NH32", "attn_mha_4096_nh32.elf", 4096, attn_elf4k32, attn_module4k32, attn_kernel4k32);
+                // (4096, 8192] slot. nh16 only: the nh32 shapes run the region
+                // stride the H table gives them (2097152 u16 = 4096 tokens), which
+                // cannot address 8192 tokens.
+                load_attn_elf("NPU_ATTN_ELF_8192", "attn_mha_8192_nh16.elf", 8192, attn_elf8k, attn_module8k, attn_kernel8k);
                 // <=256 slot. The legacy name resolves to the embedded nh16 kernel's source,
                 // so for the six working models this loads the same thing the embedded kernel
                 // already is (harmless); for a family with a different shape it lets
@@ -283,6 +290,8 @@ struct Bf16Mm {
                 if (!attn_kernel4k && !attn_kernel4k32)
                     fprintf(stderr, "  Bf16Mm: no 4096-context attention ELF — npt>2048 will use CPU attention\n");
             }
+                if (!attn_kernel8k)
+                    fprintf(stderr, "  Bf16Mm: no 8192-context attention ELF — npt>4096 will use CPU attention (nh16 only)\n");
 #endif
         } catch (std::exception& ex) {
             fprintf(stderr, "Bf16Mm::init failed: %s\n", ex.what());
@@ -357,14 +366,18 @@ struct Bf16Mm {
         // its length is WRONG, not merely slower (a 1024-context ELF at npt=2048
         // returned 19841 where the byte-exact path says 220).
         //
-        // An 8192-context nh16 capture exists on disk
-        // (engine/npu/xclbins/attn_mha_8192_nh16.elf) and is deliberately NOT
-        // loaded or wired here:
-        // it returns the known-good 44353 at npt=4095 through the 4096 slot, but
-        // from 4200 up it returns the same token for every prompt length and
-        // corrupts the heap on exit. Until that is understood, >4096 keeps the CPU
-        // reference, which is slow and correct.
-        else if (attn_tokens > 4096) kern = nullptr;                       // no working capture
+        // Above 4096 the fault that made this slot unusable was NOT here: it was
+        // two 4096-sized structures in the engine (the RoPE tables' read overrun
+        // and the host K/V caches' write overrun), and with those fixed the 8192
+        // capture is correct at 4200 against FLM's own reference. See
+        // RESULTS-ctx8192-blocked-2026-09-15.md.
+        else if (attn_tokens > 8192) kern = nullptr;                       // no capture this long
+        else if (attn_tokens > 4096)
+            // nh16 only, and only when the capture is present: the nh32 shapes run
+            // a 4096-token region stride which cannot address 8192 tokens, so
+            // lending them this kernel would read past the region — wrong, not slow.
+            kern = nh16 ? (attn_kernel8k ? attn_kernel8k.get() : nullptr)
+                        : nullptr;
         else if (attn_tokens > 2048)
             // (2048, 4096]. As for the 2k slot, only the nh16/nh32 shapes may use a
             // capture; every other shape (nh20 Nanbeige, nh24 Phi4) gets nullptr and
@@ -401,7 +414,8 @@ struct Bf16Mm {
         const size_t exact = getenv("BF16MM_ATTN_EXACT_BO") ? (size_t)rows * q : 0;
         const int slot_len = attn_tokens <= 256 ? 256
                            : attn_tokens <= 1024 ? 1024
-                           : attn_tokens <= 2048 ? 2048 : 4096;
+                           : attn_tokens <= 2048 ? 2048
+                           : attn_tokens <= 4096 ? 4096 : 8192;
         const int sel = slot_len > attn_tokens ? slot_len : attn_tokens;
         const size_t cap = exact ? exact : (size_t)(sel > 1024 ? sel : 1024) * q;
         if (!attn_out || attn_bo_elems < cap) {
