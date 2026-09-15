@@ -582,3 +582,41 @@ a contention artefact — C agreeing to seven digits is not something contention
 produces — but that is an argument, not a measurement.
 
 My runner is stopped; it will not fire again on its own.
+
+### Per-head localisation: pass 1 is grossly wrong, pass 0 partially corrupted
+
+Instrument: `CK_PER_HEAD=1` now prints the per-head max error **of the iteration**
+(not of the pre-iteration stale-buffer call — the first placement printed the
+pre-loop call, whose `max_abs_out` was 0.000000e+00, i.e. it was reporting |ref| for
+an all-zero output; that is the fourth harness mis-placement of the session and the
+same lesson each time: print the line that is the measurement).
+
+B = nh16 hd128 cols8 nkv2, N=512, `n_hpass = 2`:
+
+```
+head:   0      1      2      3      4      5      6      7      8      9     10     11     12     13     14     15
+err:  3.9e-1 9.4e-2 2.5e-2 8.7e-3 9.3e-2 2.4e0  2.0e-2 8.8e-3 3.3e0  8.0e0  7.0e0  8.0e0  7.7e0  3.2e0  2.1e-1 8.0e-1
+```
+
+Control (guard, nh8 cols8, `n_hpass = 1`): every head 8.0e-3 … 4.6e-2.
+
+So the failure is **not** a wrong constant on every head: pass 0 (heads 0..7) is
+mostly at control level with a few corrupted heads (0, 1, 4, 5), and pass 1
+(heads 8..15) is grossly wrong with two exceptions (14, 15 at 2e-1 / 8e-1). That is
+the signature of per-pass state being reused or clobbered, which is what this
+change introduced: the A2 scratch region is per column and now written **twice per
+launch** (once per pass) at the same address, and the C2 FIFO is per column with
+depth `n_hd` (1), now produced/consumed twice per launch.
+
+The four candidate bases (A-tile row, KV, C2, PARAM_ROW) all read correctly *on
+inspection* — pass 1's A rows are (8+c), its KV base is (8+cc)/8 = 1 for every
+column with gqa=8, its C2 base is (8+c)*M*K — which is why the next step is a
+controlled layout experiment rather than another reading of the same code: pack the
+same head into all 16 A-frame rows and observe which outputs follow it. That pins
+the tap's row semantics empirically (the one thing the source text has not settled
+for me), and it distinguishes "pass 1 reads the wrong rows" from "pass 1's results
+are clobbered after being computed".
+
+Consequence unchanged and absolute: **the bucket ELFs stay in `/tmp`, the shaped-ELF
+selector stays unexercised, and no family verdict can be written yet.** The gate did
+its job — this is what it is for.
