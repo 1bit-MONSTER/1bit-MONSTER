@@ -868,3 +868,33 @@ being a host difference (FLM's published `Kraken-Point` figure), not an engine
 deficit. What remains for the objective is not decode parity but breadth: the
 models that gate via the CPU attention fallback (now only genuinely-excluded
 families), and the i8 arm's cost at 4096.
+
+## Breadth: what extending the now-working generator to the remaining families needs
+
+The generator asserts only `M % m == 0 and K % k == 0 and N % n == 0` (plus
+`N % (G_TILES*n) == 0` on the chunked path), so the *head dimension* is already a
+free parameter — every remaining family passes it:
+
+| family | nh | nkv | hd | qout | hd % 64 | cols dividing N//n (N=1024) |
+|---|---|---|---|---|---|---|
+| Nanbeige | 20 | 4 | 128 | 2560 | 0 | 1, 2, 4, 8 |
+| Phi4-mini | 24 | 8 | 128 | 3072 | 0 | 1, 2, 4, 8 |
+| Gemma3 (1B/4B) | 4 / 8 | 2 | 256 | 1024 / 2048 | 0 | 1, 2, 4, 8 |
+| Qwen3.5-4B | 16 | 4 | 256 | 4096 | 0 | 1, 2, 4, 8 |
+
+So hd256 (Gemma3, Qwen3.5-4B) is **not** the blocker — `K=256, k=64` gives
+`n_k = 4` and the assertion is satisfied.
+
+The real constraint is **head handling**, and it is structural rather than
+parameteric: the design is *one core tile per q head*, with
+`n_aie_cols` columns each carrying one head's q row (`A_s[c]` reads
+`c * K_FRAME`). It is built and verified for `nq == n_aie_cols == 8`, `nkv = 2`,
+`gqa = 4`. A family with nh 4, 8, 16, 20 or 24 therefore needs either that many
+columns (not available) or a multi-pass loop over head blocks in the core and a
+correspondingly staged A/B feed — a design change in `n1_core_attn.py`, not a new
+invocation.
+
+That is the honest shape of what remains for "every model the native engine
+supports": the *hd* axis is open, the *head-count* axis is not. It also explains
+why these four families were the ones parked on the CPU fallback while the
+nh16/nh32/hd128 models gate natively.
