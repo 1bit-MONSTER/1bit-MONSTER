@@ -98,3 +98,12 @@ reliable ones.
   4k/8k/16k/32k columns are unreachable today.
 - Decode vs the published table remains the tightest gap for this family
   (4B −3.1%, 8B −7.6% @1k); prefill/TTFT are native wins.
+
+## Measurement conditions
+
+The NPU was in **Default** power mode for all of the above (FLM defaults to
+`--pmode performance` and the published bar is a Performance-mode number), and
+decode numbers are contaminated ~2× by concurrent `/dev/accel/accel0` users.
+Both are recorded in `NOTE-measurement-conditions-2026-09-14.md`; the prefill
+wins here were achieved in Default mode (i.e. not power-mode-assisted) and were
+taken before the concurrent 8B loop started.
