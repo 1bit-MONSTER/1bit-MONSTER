@@ -16,6 +16,16 @@
 //                       │ (decode_kernel)  │
 //                       └──────────────┘
 //
+// STATUS (2026-09-14): the parallelism drawn above is NOT implemented yet.
+// PipelineOverlap::run() launches the NPU exactly once, in its layer-0 boot;
+// the pipelined loop never calls npu_ffn_fn, so the "GPU L1 + NPU L0" panel
+// never actually runs concurrently. Both callbacks are synchronous as well
+// (gpu_attn calls hipStreamSynchronize, NpuGemmKernel::go calls r.wait()), so
+// real overlap additionally needs an async NPU path. What this test DOES verify
+// today is the real-kernel integration: xclbin load, both GEMM contexts, and
+// the GPU attention passes. It prints its own stage-launch counts, so the gap
+// shows up in the output rather than being implied by the diagram above.
+//
 // KV cache managed on GPU (allocated once, updated per-layer).
 //
 // Build:
