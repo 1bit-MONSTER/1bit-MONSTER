@@ -264,3 +264,54 @@ implementations (the dense i8 arm vs the runlist per-ctx-ELF arm), not of one ar
 being unplugged. **Which one matches a CPU/float reference is still open and is the
 gating question for the objective's "corr ≥ 0.998 + token parity"** — and it matters
 becausethe runlist arm is the one the FLM-parity numbers are reported from.
+
+## ROOT CAUSE of the token divergence: the runlist arm selects tokens with a *bf16* argmax
+
+The arms do not disagree numerically. Dumping logits (`NPU_DUMP_LOGITS=1`, which writes
+`/tmp/native_logits.txt`) from both arms on prompt A with one decode step:
+
+```
+common logits: 4096
+pearson corr = 1.000000
+dense   argmax: 9    runlist argmax: 9    top3 both: [9, 8, 701]
+max abs diff = 0                      <-- bit-identical logits
+```
+
+Identical logits, yet the runlist arm *emitted* **8** — its own second-best — while the
+dense arm emitted **9**. The divergence is entirely in **token selection**, and the two
+arms use different selection code:
+
+- **dense arm** — `npu_engine_universal.cpp:5161` calls `lm_topk_omp(...)`, whose sampler
+  at `:570-573` is the *only* place in the engine that reads `NPU_GREEDY`
+  (`grep GREEDY src/` returns lines 570 and 571 and nothing else). fp32, and
+  argmax when `NPU_GREEDY=1`.
+- **runlist arm** — `npu_runlist_bridge.cpp:376-385` and `:412`:
+  `// 6) greedy decode — bf16 argmax -> emit -> advance` then
+  `int best = rt.argmax_logits(cfg.vocab_size);`. **bf16 argmax**, and it never consults
+  `NPU_GREEDY`.
+
+The top two logits (`9`, `8`) differ by less than one bf16 quantum (bf16 has ~3 decimal
+digits), so a bf16 argmax can legitimately flip them. That is exactly what happened,
+and it also explains why prompt B's first token *did* match (492 — presumably a more
+decisive top-1) while prompt A's did not (9 vs 8).
+
+**So "the two arms are not token-parity" (earlier section) is explained, and it is not
+a numerical bug in either arm.** It is a *selection-precision* difference: the arm the
+FLM-parity numbers are reported from picks its token from bf16 logits.
+
+### Caveat on this measurement
+
+The dump site is inside `lm_topk_omp` (line 563), which the *dense* decode calls at
+5161. It is not established that the runlist arm reaches that same code for its decode
+step rather than only for a shared prefill step — with 1 decode token the two dumps
+could both be the shared **prefill's** final logits rather than per-arm decode logits.
+Read the corr = 1.000 / diff = 0 result as "the arms agree wherever this dump site is
+reached", not yet as "the arms' decode logits are identical". Confirming which would
+need the dump moved into (or added to) the runlist path's own selection site.
+
+### Fix implied for criterion 1 (token parity)
+
+Make the runlist arm select in fp32 — or, minimally, have it honour `NPU_GREEDY` the way
+`lm_topk_omp` does — so that "token parity" compares the same selection rule on both
+arms. Until then, a parity claim between the arms is testing a bf16-vs-fp32 argmax
+difference, not a kernel correctness difference.
