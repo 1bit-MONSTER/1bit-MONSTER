@@ -49,6 +49,21 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
     dtype_out = np.int32
     K_FRAME = 2048   # fused-style A-frame K (the small-K 4D tap fails on AIE2P)
     assert M % m == 0 and K % k == 0 and N % n == 0
+    # The PV output width is the HEAD DIM, and it is this generator's `n` tile
+    # (C_ty = (m, n); the PV matmul is (m,k)x(k,n)->(m,n)). `-K` only feeds the
+    # QK^T contraction, so -K larger than `n` builds a kernel that computes n of
+    # K head dims -- and NOTHING catches it: aiecc compiles it, XRT loads it, and
+    # it runs silently wrong (measured 2026-09-15: -K 256 -N 512 -c 8 produced a
+    # clean 90192 B xclbin computing 128 of 256 head dims, and the seq's C2
+    # writeback over-read M*K=2048 elements from a (8,128) FIFO). Fail loudly
+    # instead: pass -n = head dim, and see
+    # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md for the PV N-split
+    # that would make K > n a real multi-tile design.
+    assert K <= n, (
+        f"head dim K={K} exceeds the C2/PV output tile n={n}: the PV would compute "
+        f"only {n} of {K} head dims and the toolchain would not report it. "
+        f"Pass -n {K} (and check the QK^T context tiling) or implement the PV N-split."
+    )
     n_k = K // k            # QK^T K-chunks (hd/64 = 2)
     n_n = N // n            # QK^T N-tiles (MAX_SEQ/128 = 2)
     # CHUNKING (L1). Every C1 tile is resident on the core tile, so N=1024 needs
