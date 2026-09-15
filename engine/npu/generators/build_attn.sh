@@ -58,6 +58,12 @@ HEADS_ARG=""
 [ -n "${NPU_ATTN_HEADS:-}" ] && HEADS_ARG="-H ${NPU_ATTN_HEADS}"
 NKV_ARG=""
 [ -n "${NPU_ATTN_NKV:-}" ] && NKV_ARG="--nkv ${NPU_ATTN_NKV}"
+# The engine's bf16 family path loads a preemptible ELF (xrt::elf, .ctrltext),
+# not the xclbin: aiecc --aie-generate-elf emits exactly that via aiebu. Set
+# NPU_ATTN_ELF=<path> to get one, named attn_mha_<tokens>_nh<NH>_hd<HD>.elf for
+# the loader in npu_engine_bf16_mm.h.
+ELF_ARG=""
+[ -n "${NPU_ATTN_ELF:-}" ] && ELF_ARG="--aie-generate-elf --elf-name=${NPU_ATTN_ELF}"
 $PYTHON "$G/n1_core_attn.py" -M 8 -K "${NPU_ATTN_K:-128}" -N "${NPU_ATTN_N:-512}" \
     -m 8 -k 64 -n 128 -c "${NPU_ATTN_COLS:-8}" $NKV_ARG -b 2 $HEADS_ARG \
     > "$W/design.mlir" 2>/dev/null
@@ -80,6 +86,8 @@ export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
     --aie-generate-npu-insts \
     --xclbin-name="$XCLBIN_OUT" \
     --npu-insts-name="$INSTS_OUT" \
+    $ELF_ARG \
     "$W/design.mlir"
 echo "built: $XCLBIN_OUT"
 echo "insts: $INSTS_OUT ($(sha256sum "$INSTS_OUT" | cut -c1-16))"
+[ -n "${NPU_ATTN_ELF:-}" ] && echo "elf:   $NPU_ATTN_ELF ($(stat -c%s "${NPU_ATTN_ELF}" 2>/dev/null || echo missing) B)"

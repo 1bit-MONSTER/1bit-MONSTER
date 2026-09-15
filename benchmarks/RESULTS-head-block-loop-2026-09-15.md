@@ -168,3 +168,44 @@ each family (`device-claim-goal-lane-2026-09-15.txt` shows the recipe and three
 capture dirs at `/tmp/nbcap/cap{1024,2048,4096}`) — but (A) needs the device for
 every shape and (B) does not need it until verification, and (B) is the only route
 that works for a shape FLM never ships.
+
+### CLOSED: `aiecc --aie-generate-elf` emits the ELF directly (same session)
+
+The ELF step needed no aiebu research — `aiecc` already wraps it:
+
+```
+--aie-generate-elf            Generate ELF for AIE control/configuration (via aiebu)
+--elf-name=<string>           Output ELF filename for instruction ELF
+--aie-generate-txn            Generate transaction binary MLIR for configuration
+--generate-full-elf, --ctrlpkt-elf-name=...   (the ctrlpkt/full-ELF variants)
+```
+
+`build_attn.sh` now passes `--aie-generate-elf --elf-name=$NPU_ATTN_ELF` when
+`NPU_ATTN_ELF` is set. Measured, CPU-only, one build:
+
+| artifact | size | `.ctrltext` | `.note.xrt.UID` |
+|---|---:|---:|---:|
+| **ours**: `attn_mha_1024_nh20_hd128_ours.elf` (built from this generator) | 243600 B | 226336 B | 32 B |
+| the tree's `attn_mha_1024_nh20_hd128.elf` (capture) | 177728 B | 163088 B | 32 B |
+| FLM's `attn_mha_1024_nh16.elf` | 98848 B | 90384 B | 32 B |
+
+Same container shape (`xrt::elf`-loadable, `.ctrltext` + `.note.xrt.UID`), so the
+loader in `npu_engine_bf16_mm.h` can consume a generated ELF with no change beyond
+the filename it already looks for. Ours is larger because the design carries the
+chunked/multi-pass structure rather than FLM's single-pass kernel — sizes are not
+expected to match, and the identity check against FLM's `.ctrltext` therefore
+applies only where our design is meant to reproduce theirs (the layer streams), not
+here. For attention the gate is the bench (NPU vs EMU) plus the family token
+identity.
+
+So the recipe is complete and scripted:
+
+```bash
+NPU_ATTN_K=128 NPU_ATTN_N=1024 NPU_ATTN_HEADS=20 NPU_ATTN_COLS=4 NPU_ATTN_NKV=4 \
+  NPU_ATTN_ELF=engine/npu/xclbins/attn_mha_1024_nh20_hd128.elf \
+  bash engine/npu/generators/build_attn.sh
+```
+
+Remaining for family >1024 parity: build the ELF per (shape, bucket), pass the real
+`nq/nkv/hd/cols` from `Bf16Mm`, and run the device gate. No missing artifact, no
+missing tool, no unknown format.
