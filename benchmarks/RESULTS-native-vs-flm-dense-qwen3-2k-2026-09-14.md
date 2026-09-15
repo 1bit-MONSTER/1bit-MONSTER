@@ -101,8 +101,12 @@ reliable ones.
 
 ## Still open
 
-- **Context > 2048**: no attention capture exists, so the published table's
-  4k/8k/16k/32k columns are unreachable today.
+- **Context > 2048**: **RESOLVED for 4k (2026-09-15)** — nh16 and nh32
+  4096-context attention captures now exist and are wired into a `(2048, 4096]`
+  slot, so no dense-Qwen3 size falls back to CPU attention below 4096 any more.
+  See `RESULTS-native-4096-context-2026-09-15.md`. The published table's
+  8k/16k/32k columns are still unreachable (the longest capture is 4096, and the
+  CLI caps a prompt at 4095).
 - **8B decode**: the only dense metric still behind published (−7.6% @1k,
   −7.8% @2k). 0.6B/1.7B/4B decode and every size's prefill now meet-or-beat
   the published table at 1k and 2k.
