@@ -1183,3 +1183,44 @@ specific claim made about it along the way (gibberish from step 1, a decode-loop
   meta-confusion, refusal or false assertion rather than truncation.
 - The **runlist arm — the one the engine selects by default and the one `flm_parity.sh` measures —
   is 20/20 easy and 13/15 hard.** That is the headline result.
+
+## Diagnosing the dense arm's degeneration: step 1 is NOT the cause
+
+The dense arm degenerates on ~6 of 20 prompts while the runlist arm answers all 20. To find where
+that starts, the two arms' **first-step** logits were compared on a prompt that works and a prompt
+that degenerates:
+
+```
+prompt                       step-1 corr   dense argmax   runlist argmax   same?
+The capital of France is       0.938153       151667          151667        YES   (works)
+2 + 2 =                        0.944076       151667          151667        YES   (degenerates)
+```
+
+**The arms agree on the first token in both cases, and their step-1 correlation is essentially the
+same (0.938 vs 0.944) whether or not the prompt goes on to degenerate.** So:
+
+- The degeneration is **not** in the prefill and **not** in the first decode step. If it were, the
+  degenerating prompt would show a lower correlation or a different argmax at step 1 — it shows
+  neither, and in fact its correlation is marginally *higher*.
+- Therefore the divergence **accumulates during the decode loop**: both arms start from the same
+  token, and on some prompts the dense arm drifts into a degenerate state (repetition, meta-
+  confusion, refusal) that the runlist arm never reaches.
+
+That is a meaningful confirmation of the hypothesis the objective started with — that this arm's
+problem is in the **decode loop (KV-cache/position state)**, not the GEMMs — arrived at
+independently and from measurement rather than assumption. Note it took the corrected methodology
+to see it: the original 6-token comparison appeared to show the argmaxes *differing* (8 vs 9) at
+step 1, which is exactly the artefact that sent the earlier investigation after a first-step bug.
+
+### Next step this identifies
+
+The logits dump currently covers **only the first step** (the hook fires once per run, at the
+prefill's final logits / the priming argmax). To find the step at which the arms diverge, the dump
+must be extended to fire on every decode step and write a per-step file — then the first diverging
+step can be identified, and the KV/position state at that step inspected. That is the concrete
+instrumentation change this goal now needs, and it is the same class of work as the two dump hooks
+already added.
+
+The remaining question — *why* the dense arm drifts and the runlist arm does not — is then a
+comparison of accumulated KV state at the divergence step, which is tractable now that the
+starting point is known to be identical.
