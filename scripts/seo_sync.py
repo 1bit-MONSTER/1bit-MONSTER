@@ -277,6 +277,15 @@ def _build_patterns(tokens, arch, covered, with_arch):
         # match.
         (re.compile(r"(, and )(\d[\d,]*)( tokens resolve to one engine)"),
          lambda m: _num_between(m, t)),
+        # #2397: the 94 covered-mode posts asserted "the census claim stays at
+        # 100% coverage". Neither metric is 100% -- checkpoints are 99.96% and
+        # in-scope CLASS coverage is 97.42% (2,040 of 2,094 classes; 54
+        # uncovered, deepseekv41 among them) -- so the claim is replaced by what
+        # mapping a class actually guarantees, with no number left to drift.
+        (re.compile(r"the whole class now resolves to one binary \u2014 the census "
+                    r"claim stays at \d+(?:\.\d+)?% coverage"),
+         lambda m: "the whole class now resolves to one binary \u2014 one fewer "
+                   "class on the census's uncovered list"),
         (re.compile(r"(<span class=\"n\">)(\d+(?:\.\d+)?)(</span><span class=\"l\">checkpoints mapped</span>)"),
          lambda m: _pct_claim(m, covered, with_arch, 3)),
         # bare prose forms (no fraction): "321,611 checkpoints mapped",
@@ -344,7 +353,9 @@ def _build_patterns(tokens, arch, covered, with_arch):
              f"{t} of them"),
             ("all 1,946 of them \u2014 normalizes down to one of 566 architecture tokens",
              f"{a} of them"),
-            (", and 566 tokens resolve to one engine", f", and {t} tokens")):
+            (", and 566 tokens resolve to one engine", f", and {t} tokens"),
+            ("the whole class now resolves to one binary \u2014 the census claim stays at 100% coverage",
+             "one fewer class on the census's uncovered list")):
         got = claim
         for pat, repl in pats:
             got = pat.sub(repl, got)
