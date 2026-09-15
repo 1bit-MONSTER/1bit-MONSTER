@@ -103,13 +103,50 @@ conditional indexes are worse than a crash in principle: they *clamp to tile 0*
 rather than index out of range, so any N where the arity happened to match would
 silently reuse tile 0's data.
 
-So: **N=512 is the largest this generator can emit**, and `-N` plus the runtime
-`NPU_ATTN_MAX_SEQ` make it look like a parameter. Nothing in the tree records that;
-the only exercise it ever gets is at its one working value.
+**RETRACTED, and the correction is the more useful finding.** I wrote that
+"N=512 is the largest this generator can emit". The control falsified it: **the
+build fails at N=512 too**, with the same error one construct earlier —
 
-**The fix is bounded** — generalise the operand list to `n_n` tiles (and confirm
-the AIE softmax kernel accepts that arity) — but until someone does it, this is
-not a route past 8192 and the entry above is a *candidate*, not a plan.
+```
+$ NPU_ATTN_N=512 bash build_attn.sh
+loc("design.mlir":712:44): error: expected ')'
+```
+
+— so the softmax arity is a real limit but it is **not the first blocker**, and
+nothing above was measured, only read. What the two runs together show is
+different and better:
+
+| N | emitted lines | result |
+|---:|---:|---|
+| 512 | 2674 | **parse error at 712:44** |
+| 1024 | 4754 | parse error at 1000:44 |
+
+Both fail at column 44 of an `aie.dma_bd` produced by
+`shim_dma_single_bd_task()` — a **mlir-aie Python helper**, not anything in this
+repo (the generator only calls the helper; `grep dma_bd n1_core_attn.py` is empty).
+And the installed toolchain carries a **local WIP patch**:
+
+```
+mlir-aie  1e6b70af0  2026-08-29  wip(toolchain): local NPU2-40 patches —
+                                  AIELowerDynamicBDPool + BdLowering
+```
+
+That patch is about DMA BD lowering, and the syntax has moved:
+
+```
+current mlir-aie tests:  aie.dma_bd(%a : memref<16xi32> offset = 0 len = 16)
+what aiecc now rejects:  aie.dma_bd(%arg0 : memref<32768xi8>, 0, 512, [<size = 1, …>])
+```
+
+So the attention build is broken **at any N, including the one that was
+previously shipped** (the xclbin predates the patch; the `aiecc` binary is dated
+2026-09-12, after it). This is a toolchain-drift blocker, in a *separate* repository
+with someone else's WIP patch on it — not mine to revert.
+
+**What that means for the softmax finding:** it is still real, and still worth
+fixing — `n_n = N // 128` and the call passes four tiles with indexes that *clamp
+to tile 0*, so the arity limit does exist independently of the toolchain. But it
+must be fixed **second**: with the toolchain as installed, no N builds at all.
 
 Also found while trying: **10+ builders in `engine/npu/generators/` compile their
 AIE kernel objects with `-I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include`, a
@@ -167,12 +204,16 @@ instrumentation, and the interesting items are the four above.
 
 ## What I would do next, in order
 
-1. **Generalise the softmax operand list in `n1_core_attn.py` to `n_n` tiles.**
-   That is the one thing standing between the generated attention and any length
-   above 512; everything else about it is verified. Then build N=1024 and time it
-   against the captured `attn_mha_1024_nh16.elf` on the same shape and prompt —
-   one build and one measurement decides whether this is the route past 8192 or
-   another 1200× dead end (§2's caution). Everything else here is behind it.
+1. **Unblock the toolchain first** — the installed mlir-aie's WIP
+   `AIELowerDynamicBDPool`/`BdLowering` patch (2026-08-29) emits an `aie.dma_bd`
+   its own parser rejects, so **no** attention build succeeds at any N. That is in
+   another repository with another lane's patch on it, so it needs a decision, not
+   a revert by me. Until it is resolved, L1 in the levers register is blocked.
+2. **Then generalise the softmax operand list in `n1_core_attn.py` to `n_n` tiles**
+   (the arity limit above), build `NPU_ATTN_N=1024`, and time it against the
+   captured `attn_mha_1024_nh16.elf` on the same shape and prompt — one
+   measurement decides whether this is the route past 8192 or another 1200× dead
+   end (§2's caution).
 2. Only if (1) is competitive: `NPU_ATTN_N=16384`, and the int8-KV dtype change
    that adopting it implies.
 3. `kv_quant.h` is a larger, separate project (implement + new kernels); it is not
