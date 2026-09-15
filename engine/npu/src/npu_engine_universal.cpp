@@ -4339,8 +4339,24 @@ struct Bf16Ctx {
         // CPU attention reference (~60 ms/token, ~8 minutes for 8191 tokens),
         // which is correct but is not a useful default. NPU_PROMPT_MAX overrides
         // either way.
+        // A shape gets the raised cap only when ITS 8192 capture is on disk:
+        // without one the selector falls through to the CPU attention reference
+        // (~60 ms/token, ~8 minutes for 8191 tokens), which is correct but is not
+        // a useful default. Both captures are committed; the check is here so a
+        // missing file degrades to the old cap instead of to a very slow run.
+        const char* k8name = (cfg.NH * cfg.HD == 2048) ? "attn_mha_8192_nh16.elf"
+                          : (cfg.NH * cfg.HD == 4096) ? "attn_mha_8192_nh32.elf" : nullptr;
+        bool have8k = false;
+        if (k8name) {
+            const char* xd = getenv("NPU_XCLBIN_DIR");
+            const std::string c1 = std::string(xd ? xd : "engine/npu/xclbins") + "/" + k8name;
+            const std::string c2 = std::string("engine/npu/xclbins/") + k8name;
+            FILE* f = fopen(c1.c_str(), "rb");
+            if (f) { have8k = true; fclose(f); }
+            else if ((f = fopen(c2.c_str(), "rb"))) { have8k = true; fclose(f); }
+        }
         int prompt_cap = 4095;
-        if (cfg.NH * cfg.HD == 2048) {
+        if (have8k) {
             prompt_cap = 8193 - ng;
             if (prompt_cap < 4095) prompt_cap = 4095;
         }
@@ -4483,6 +4499,13 @@ struct Bf16Ctx {
             uint32_t kv_region = 4194304;
             if (H == 2560) kv_region = 2097152;
             else if (H == 4096) kv_region = 2097152;
+            // ...but the stride must follow the CAPTURE that will actually run,
+            // not just the shape. The <=4096 nh32 kernels were taken with
+            // MAX_L=4096 (a 4096-token region) and the 8192 nh32 capture with
+            // MAX_L=8192 (8192 tokens), so above 4096 the wider stride is the
+            // correct one — and with the narrow one the kernel would read past
+            // the region, which is wrong rather than slower.
+            if (npt > 4096 && (H == 2560 || H == 4096)) kv_region = 4194304;
             // NPU_ATTN_KV_REGION: override for the shape the H table conflates.
             // The table keys on H (a proxy for nh16-vs-nh32), so Nanbeige (H=2560,
             // nh20) inherits Qwen3-4B's nh32 4MB region even though it runs the

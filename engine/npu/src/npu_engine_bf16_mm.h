@@ -116,6 +116,9 @@ struct Bf16Mm {
     std::unique_ptr<xrt::ext::kernel> attn_kernel8k;   // (4096,8192] nh16 ELF, captured from FLM
     std::unique_ptr<xrt::elf> attn_elf8k;
     std::unique_ptr<xrt::module> attn_module8k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel8k32; // (4096,8192] nh32 ELF (4B/8B)
+    std::unique_ptr<xrt::elf> attn_elf8k32;
+    std::unique_ptr<xrt::module> attn_module8k32;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
     int attn_qout = 2048;   // NH*HD: 2048 = nh16x128, but 4096 is BOTH nh32x128 and nh16x256
     int attn_hd = 128;      // model head_dim; every shipped attn ELF is hd128, so this
@@ -278,6 +281,7 @@ struct Bf16Mm {
                 // stride the H table gives them (2097152 u16 = 4096 tokens), which
                 // cannot address 8192 tokens.
                 load_attn_elf("NPU_ATTN_ELF_8192", "attn_mha_8192_nh16.elf", 8192, attn_elf8k, attn_module8k, attn_kernel8k);
+                load_attn_elf("NPU_ATTN_ELF_8192_NH32", "attn_mha_8192_nh32.elf", 8192, attn_elf8k32, attn_module8k32, attn_kernel8k32);
                 // <=256 slot. The legacy name resolves to the embedded nh16 kernel's source,
                 // so for the six working models this loads the same thing the embedded kernel
                 // already is (harmless); for a family with a different shape it lets
@@ -293,6 +297,8 @@ struct Bf16Mm {
                 if (!attn_kernel8k)
                     fprintf(stderr, "  Bf16Mm: no 8192-context attention ELF — npt>4096 will use CPU attention (nh16 only)\n");
 #endif
+                if (!attn_kernel8k32)
+                    fprintf(stderr, "  Bf16Mm: no nh32 8192-context attention ELF — those shapes fall to CPU attention above npt=4096\n");
         } catch (std::exception& ex) {
             fprintf(stderr, "Bf16Mm::init failed: %s\n", ex.what());
             return false;
@@ -373,10 +379,11 @@ struct Bf16Mm {
         // RESULTS-ctx8192-blocked-2026-09-15.md.
         else if (attn_tokens > 8192) kern = nullptr;                       // no capture this long
         else if (attn_tokens > 4096)
-            // nh16 only, and only when the capture is present: the nh32 shapes run
-            // a 4096-token region stride which cannot address 8192 tokens, so
-            // lending them this kernel would read past the region — wrong, not slow.
+            // nh16 or nh32, and only when that shape's capture is present.
+            // The region stride follows the capture (see the H table below):
+            // the <=4096 nh32 kernels are 4 MB and this one is 8 MB.
             kern = nh16 ? (attn_kernel8k ? attn_kernel8k.get() : nullptr)
+                 : nh32 ? (attn_kernel8k32 ? attn_kernel8k32.get() : nullptr)
                         : nullptr;
         else if (attn_tokens > 2048)
             // (2048, 4096]. As for the 2k slot, only the nh16/nh32 shapes may use a
