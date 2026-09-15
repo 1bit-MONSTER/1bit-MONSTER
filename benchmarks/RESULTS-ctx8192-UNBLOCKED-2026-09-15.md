@@ -92,6 +92,24 @@ Regressions checked after the change, all unchanged: bf16 gates
 256/1024/2048/4095 → 1614/25/220/44353; the default at 1024 still takes the
 auto-selected bf16+unified path; `NPU_RUNLIST=1` still takes the runlist path.
 
+## A side effect this made prominent: generation writes into the checkout
+
+Reaching 8191 by default means the unified decode needs per-context ELFs at
+`npt+1 … npt+ng`, and the shipped sets stop at 2200 — so a long prompt now
+generates a window on demand (round 6's `RT_ELF_GEN`/`RT_ELF_MODEL` auto-config).
+The default ELF directory is `npu-infer/captures/txn-elfs*` **inside the
+checkout**, so that wrote 1540 untracked files during this round's verification
+(512 per long-prompt run, ~35 MB). They were removed again, and they are
+regenerable, but the default should not write into a git working tree at all.
+
+Until that is fixed, **set `NPU_LAYER_ELF_DIR` to a scratch directory for long
+runs**, or accept the untracked files and `git clean` them. The fix is to point
+generation at a cache directory (e.g. `~/.cache/1bit-monster/elfs/<model>/`,
+seeded with symlinks to the shipped set) whenever the caller has not chosen an
+ELF dir — the same place round 6's `ensure_elf_gen_env` already resolves the
+generator from. It is the next hygiene item, not a correctness one: the tokens
+and the timings above do not depend on where the ELFs live.
+
 ## Still open
 
 - **nh32 to 8192** needs its own 8192 capture *and* a region-stride change for
