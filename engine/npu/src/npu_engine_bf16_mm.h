@@ -101,9 +101,12 @@ struct Bf16Mm {
     std::unique_ptr<xrt::ext::kernel> attn_kernel1k32; // (256,1024] NH=32 ELF (Qwen3-4B/8B), captured from FLM
     std::unique_ptr<xrt::elf> attn_elf1k32;
     std::unique_ptr<xrt::module> attn_module1k32;
-    std::unique_ptr<xrt::ext::kernel> attn_kernel2k;   // (1024,2048] context ELF, captured from FLM
+    std::unique_ptr<xrt::ext::kernel> attn_kernel2k;   // (1024,2048] nh16 ELF, captured from FLM
     std::unique_ptr<xrt::elf> attn_elf2k;
     std::unique_ptr<xrt::module> attn_module2k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel2k32; // (1024,2048] nh32 ELF (4B/8B)
+    std::unique_ptr<xrt::elf> attn_elf2k32;
+    std::unique_ptr<xrt::module> attn_module2k32;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
     int attn_qout = 2048;   // NH*HD: 2048 = nh16x128, but 4096 is BOTH nh32x128 and nh16x256
     int attn_hd = 128;      // model head_dim; every shipped attn ELF is hd128, so this
@@ -252,6 +255,7 @@ struct Bf16Mm {
                 load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024, attn_elf1k, attn_module1k, attn_kernel1k);
                 load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", 1024, attn_elf1k32, attn_module1k32, attn_kernel1k32);
                 load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048, attn_elf2k, attn_module2k, attn_kernel2k);
+                load_attn_elf("NPU_ATTN_ELF_2048_NH32", "attn_mha_2048_nh32.elf", 2048, attn_elf2k32, attn_module2k32, attn_kernel2k32);
                 // <=256 slot. The legacy name resolves to the embedded nh16 kernel's source,
                 // so for the six working models this loads the same thing the embedded kernel
                 // already is (harmless); for a family with a different shape it lets
@@ -332,7 +336,8 @@ struct Bf16Mm {
         const bool nh32 = (attn_qout == 4096);
         if (!attn_shape_ok) kern = nullptr;
         else if (attn_tokens > 2048) kern = nullptr;                       // no capture this long
-        else if (attn_tokens > 1024) kern = nh16 && attn_kernel2k ? attn_kernel2k.get() : nullptr;
+        else if (attn_tokens > 1024) kern = nh16 ? (attn_kernel2k   ? attn_kernel2k.get()   : nullptr)
+                                                 : (attn_kernel2k32 ? attn_kernel2k32.get() : nullptr);
         else if (attn_tokens > 256)  kern = nh32 ? (attn_kernel1k32 ? attn_kernel1k32.get() : nullptr)
                                                  : (attn_kernel1k   ? attn_kernel1k.get()   : nullptr);
         if (!kern) return false;
