@@ -34,6 +34,20 @@
   "file": "1bit-post-announcement-aecetin-qwen-2-5-7b-polysurgery.html",
   "mode": "announcement"
  },
+ "announcement:chiruan/DeepSeek-R1-Distill-Qwen-1.5B-QuaRot-W4A8KV4": {
+  "arch": "qwen2quarot",
+  "date": "2026-09-15",
+  "family": "Qwen",
+  "file": "1bit-post-announcement-chiruan-deepseek-r1-distill-qwen-1-5b-quarot-w4a8kv4.html",
+  "mode": "announcement"
+ },
+ "announcement:chiruan/Qwen3-4B-QuaRot-W4A4KV4": {
+  "arch": "qwen3quarot",
+  "date": "2026-09-15",
+  "family": "Qwen",
+  "file": "1bit-post-announcement-chiruan-qwen3-4b-quarot-w4a4kv4.html",
+  "mode": "announcement"
+ },
  "announcement:iVisionSH79/DeepSeek-V4.1-Flash": {
   "arch": "deepseekv41",
   "date": "2026-09-02",
@@ -46,6 +60,13 @@
   "date": "2026-09-02",
   "family": "Deepseek",
   "file": "1bit-post-announcement-lightseekorg-kimi-k3-eagle3-1-mla.html",
+  "mode": "announcement"
+ },
+ "announcement:mazz68/VisionPsy-Nano-460M": {
+  "arch": "visionpsynano",
+  "date": "2026-09-15",
+  "family": "visionpsynano",
+  "file": "1bit-post-announcement-mazz68-visionpsy-nano-460m.html",
   "mode": "announcement"
  },
  "announcement:scikit-plots/minimind-3v": {
@@ -137,6 +158,13 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-automatosx-ax-ornith-1-5-35b-a3b-mlx-axq-6bit-mtp.html",
+  "mode": "covered"
+ },
+ "covered:Blackfrost-AI/BLACKFROST-3.8-ICED-BF16": {
+  "arch": "qwen4_exp",
+  "date": "2026-09-15",
+  "family": "Qwen",
+  "file": "1bit-post-significant-blackfrost-ai-blackfrost-3-8-iced-bf16.html",
   "mode": "covered"
  },
  "covered:BosonicJustin/transcendent-logic-model": {
@@ -307,6 +335,13 @@
   "file": "1bit-post-significant-muhhendri12-qwen2-5-3b-legal-id-grpo.html",
   "mode": "covered"
  },
+ "covered:OS-Software/gemma-4-E4B-it-uncensored-heretic": {
+  "arch": "gemma4",
+  "date": "2026-09-15",
+  "family": "Gemma",
+  "file": "1bit-post-significant-os-software-gemma-4-e4b-it-uncensored-heretic.html",
+  "mode": "covered"
+ },
  "covered:Rab007/Qwen3.8-2.4T-A95B": {
   "arch": "qwen3_5moe",
   "date": "2026-09-02",
@@ -384,6 +419,13 @@
   "file": "1bit-post-significant-wing22-lvr-align-v2-1000.html",
   "mode": "covered"
  },
+ "covered:YCF-AI/CyberTiel-Coder-35B-MLX": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-15",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ycf-ai-cybertiel-coder-35b-mlx.html",
+  "mode": "covered"
+ },
  "covered:YueLinHu/GAC-Qwen3.5-4B": {
   "arch": "qwen3_5",
   "date": "2026-09-02",
@@ -438,6 +480,13 @@
   "date": "2026-09-02",
   "family": "Llama",
   "file": "1bit-post-significant-arefehrajabian-phi-finetune-reasoning-plus-16bit.html",
+  "mode": "covered"
+ },
+ "covered:azherali/Riazi-8B-CPT-SFT": {
+  "arch": "qwen3",
+  "date": "2026-09-15",
+  "family": "Qwen",
+  "file": "1bit-post-significant-azherali-riazi-8b-cpt-sft.html",
   "mode": "covered"
  },
  "covered:brennercruvinel/truw-rwkv7-2.9b-v3": {
@@ -517,6 +566,20 @@
   "file": "1bit-post-significant-forgeguard-ai-ornith-1-5-35b-a3b-nvfp4.html",
   "mode": "covered"
  },
+ "covered:fukuneko2000/sarashina2.2-3b-instruct-v0.1": {
+  "arch": "llama",
+  "date": "2026-09-15",
+  "family": "Llama",
+  "file": "1bit-post-significant-fukuneko2000-sarashina2-2-3b-instruct-v0-1.html",
+  "mode": "covered"
+ },
+ "covered:g-assismoraes/DeltaP2S-Gemma2-9B-DeltaP2S-CodeGemma7B-Code-S13-a025": {
+  "arch": "gemma2",
+  "date": "2026-09-15",
+  "family": "Gemma",
+  "file": "1bit-post-significant-g-assismoraes-deltap2s-gemma2-9b-deltap2s-codegemma7b-code-s13-a025.html",
+  "mode": "covered"
+ },
  "covered:ganscs/Olmo7b-olmo-a100-new-20260908-CPT-merged-step-750": {
   "arch": "olmo3",
   "date": "2026-09-02",
@@ -578,6 +641,20 @@
   "date": "2026-09-02",
   "family": "Qwen",
   "file": "1bit-post-significant-just1nseo-qwen3-4b-ifrlvr-grpo-judge-30ba3b.html",
+  "mode": "covered"
+ },
+ "covered:khazarai/Qwen3.5-4B-Agentic-Coding": {
+  "arch": "qwen3_5",
+  "date": "2026-09-15",
+  "family": "Qwen",
+  "file": "1bit-post-significant-khazarai-qwen3-5-4b-agentic-coding.html",
+  "mode": "covered"
+ },
+ "covered:lewtun/tailsft-repro-smoke-tail50": {
+  "arch": "olmo2",
+  "date": "2026-09-15",
+  "family": "Olmo",
+  "file": "1bit-post-significant-lewtun-tailsft-repro-smoke-tail50.html",
   "mode": "covered"
  },
  "covered:madiaxa/granite-4.2-3b-openvino": {
@@ -664,6 +741,13 @@
   "file": "1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
   "mode": "covered"
  },
+ "covered:sesko818/RsEvi-8B": {
+  "arch": "qwen3vl",
+  "date": "2026-09-15",
+  "family": "Qwen",
+  "file": "1bit-post-significant-sesko818-rsevi-8b.html",
+  "mode": "covered"
+ },
  "covered:shahedm2001/qwen3-vl-2b-cataract-sft": {
   "arch": "qwen3vl",
   "date": "2026-09-02",
@@ -676,6 +760,13 @@
   "date": "2026-09-02",
   "family": "Smollm",
   "file": "1bit-post-significant-smshahbaj-rifa-pro-3b.html",
+  "mode": "covered"
+ },
+ "covered:suryadv/IncorrectTraceSFT-Qwen2.5-7B-AIME-SplitB-correct": {
+  "arch": "qwen2",
+  "date": "2026-09-15",
+  "family": "Qwen",
+  "file": "1bit-post-significant-suryadv-incorrecttracesft-qwen2-5-7b-aime-splitb-correct.html",
   "mode": "covered"
  },
  "covered:thuyduongjoe123/checkpoints_en_my_logit": {
