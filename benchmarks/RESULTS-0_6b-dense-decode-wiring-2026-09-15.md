@@ -197,3 +197,35 @@ ELF work (#2080)"). The in-scope artifact, the cascade-fused xclbin, is measured
 - Therefore the honest disposition is **not** "complete" and **not** "more of the same":
   either the objective is re-scoped to the arm that actually carries the win, or it is
   closed as superseded. Nothing in scope remains to try.
+
+## The two arms do NOT produce the same tokens
+
+The fast (runlist) arm is what the harness measures, so the objective's second
+requirement — "token parity" — has to hold between it and a reference. It does not
+hold against the dense arm. Same weights, same prompt (`/tmp/ids.txt`, 5 tokens),
+8 decode tokens:
+
+```
+dense  (NPU_RUNLIST=0, 624.3 ms/tok = 2 tok/s)   [1] toks: 568   [2] 758   [3] 419   [4] 1142   [5] 11   [6] 582   [7] 646
+runlist(NPU_RUNLIST=1,   9.7 ms/tok = 103 tok/s)              [3] 400   [4] 4071   [5] 11   [6] 3764   [7] 3   [8] 382
+```
+
+Aligned by context index (`RuntimeLayer: layer kernel ctx=N ready` shows runlist
+`[3]` sits at ctx 8 = 5 prompt + 3), steps 3/4/6/7 differ — 419 vs 400, 1142 vs 4071,
+582 vs 3764, 646 vs 3. Step 5 matches (11), which is a coincidence of a common token,
+not alignment. So **the fast arm is not token-parity with the dense arm.** Which of
+the two matches a CPU/float reference is not yet determined, and that is the next
+thing to establish before any parity claim is made: the objective's "corr ≥ 0.998 +
+token parity" cannot be asserted for the fast arm until it is compared against a
+float reference rather than against the other arm.
+
+### Method pitfall caught in my own verification (recording it so it is not repeated)
+
+A first attempt at this comparison used
+`diff <(grep -aoE '^[0-9 ]{5,}$' dense.log) <(grep -aoE '^[0-9 ]{5,}$' runlist.log)`
+and printed "TOKEN PARITY: IDENTICAL". That result was **vacuous**: neither grep
+matched a single line (the engine prints `[n] toks: <id>` for the dense arm and
+`[n] <id>` for the runlist arm), so `diff` compared two empty streams and agreed with
+itself. Two empty inputs are not evidence of parity. Both arms' formats had to be
+parsed separately; the divergence above is the real result. Any future parity check
+must assert the extraction produced a non-empty token sequence *before* comparing.
