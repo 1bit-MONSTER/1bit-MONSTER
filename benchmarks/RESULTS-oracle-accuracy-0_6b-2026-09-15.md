@@ -384,3 +384,63 @@ The cheapest next step is to find where id 151644's embedding comes from and whe
 matches the model's table (e.g. compare the embedding row the engine uses for 151644 against
 the value the same id produces through FLM, or check that the engine's embedding BO is
 indexed with the full 151936 range rather than a truncated one).
+
+## RETRACTION: the "special tokens are the bug" claim is WRONG — and the budget was the artefact
+
+The step-5 conclusion above ("CONFIRMED: feeding real special tokens breaks the native path")
+is **withdrawn**. It rested on all three prompts producing the identical `\nOkay, the user `
+under the real template, at a budget of 8 tokens. Re-running the *same* templated prompts with
+**24 tokens**:
+
+```
+The capital of France is     -> "Okay, the user is asking about the capital of France. Let me start by
+                                 recalling the basic information. France"
+Water is made of hydrogen and-> "Okay, the user is asking about what water is made of. Let me start by
+                                 recalling the basic composition."
+The opposite of black is     -> "Okay, the user is asking about the opposite of \black.\. Let me think.
+                                 First, I need to"
+```
+
+**Prompt-dependent, coherent, and grammatical.** So `"Okay, the user "` is not a corrupted
+embedding — it is a **prompt-independent assistant preamble**, which a chat model naturally
+emits before it gets to the topic. Eight tokens was simply too short to see past it, and I
+mistook a shared opening for an invariant output.
+
+Supporting evidence that the embedding is fine, gathered while testing the hypothesis:
+`NPU_DUMP_L0=1` (an existing hook, `npu_engine_universal.cpp:1033`, which dumps the embedding
+row for id 151644 specifically — a previous session was already investigating this id) gives a
+row with **989/1024 nonzero, all finite, rms 0.0118, max 0.084** — a perfectly ordinary 0.6B
+embedding, not empty and not garbage.
+
+So of the three "problems" listed in the corrected picture above, **problem (2) does not
+exist** as stated. What remains:
+
+1. **Raw completion vs chat template** — real confound, confirmed (the exam-format `A) … B)`
+   output really is a raw-completion artefact).
+2. ~~Special-token handling is broken~~ — **RETRACTED.** Special tokens work; the templated
+   path produces coherent prompt-dependent text once it is not truncated mid-preamble.
+3. **Content errors** — still open, and now the only real accuracy item.
+
+This is the third confident claim in this goal that later measurement overturned, and in all
+three cases the failure was the same kind: comparing or concluding from a quantity that was
+truncated, stale, or empty. The rule already written into this file — assert the measurement
+is fresh and non-empty — needs a companion: **assert the generation is long enough to have
+left any shared preamble before judging output to be prompt-invariant.**
+
+## NEW OPEN DISCREPANCY: the harness's runlist run stops at 6 tokens while a manual run gives 24
+
+While re-scoring, the harness with `NTOK=32` reported `rl_toks=6` for every prompt, and its
+raw log ends at `[6] 1196`. A manual invocation with the identical engine, prompt file and
+environment produced 24 tokens of coherent text. Both used the same templated prompt.
+
+So the harness is not reproducing the manual run, and its accuracy numbers are therefore not
+trustworthy yet — this is the same class of problem as the earlier two (a measurement harness
+disagreeing with a direct invocation), and it must be resolved before any number from
+`oracle_accuracy_0_6b.sh` is quoted. Likely candidates to check: the harness running the
+runlist arm with a different effective budget than `$NTOK`, an early stop on a token the
+manual run did not reach at that point, or the harness's extraction dropping ids (its grep is
+`'^\s*\[[0-9]+\] [0-9]+'` while the engine's own formatting may vary for multi-digit indices).
+
+**Net state: the scoreboard in this document (runlist 7/20, dense 1/20) is from the raw
+format and is confounded; the templated comparison is not yet measurable because the harness
+stops early. Neither number should be used until the harness is fixed.**
