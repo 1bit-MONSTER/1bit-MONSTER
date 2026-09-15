@@ -721,3 +721,59 @@ Two smaller notes from the same run:
   kernel, which is why the family A/B at 1024 tokens does not depend on any of this.
 * `NPU_ATTN_KV_REGION=4194304` is not needed at 2048 (the H=2560 row already gives
   2 MB = 2048 tokens exactly); it is the **4096** bucket that is undersized.
+
+### Which contract to bridge, and why I would pick the host side
+
+The two options are not symmetric, and the asymmetry is that the kernel side is
+already **verified** on one of them.
+
+**What is verified today** (EMU vs NPU, one run each, same packed buffers):
+
+| shape | passes | groups | verdict |
+|---|---:|---:|---|
+| guard nh8/cols8/nkv2 | 1 | 1 | MATCH to 7 digits |
+| nb20 nh20/cols4/nkv4 | 5 | 1 | MATCH |
+| ph24 nh24/cols8/nkv8 | 3 | 1 | MATCH |
+| nb20 N=2048 | 5 | 4 | MATCH |
+| ph24 N=2048 | 3 | 4 | MATCH |
+| q35 hd256 | 2 | 1 | ~3% residual (PV N-split) |
+
+All of that verification is against the **`AttnCtx` contract**: the packed A-frame
+(head `h` at row `h*K_FRAME`, params at row 15 or `n_heads`), the int8 quantization
+of `attn_quant.h`, and `nkv`-major `K*N` / `N*K` KT/V slices. Change the generator's
+addressing to the bf16 layout and every one of those results has to be re-established
+against a reference that does not exist yet for that layout (the bench computes its
+reference from the AttnCtx-packed buffers, so it would have to be reworked too).
+
+**Option 2 — give the family path the `AttnCtx` contract — keeps the verified side
+verified.** The work is host-side and bounded, and the reference implementation
+already exists in the same tree:
+
+1. **A-frame + quantization**: port `AttnCtx::run`'s packing (q8 = sat8(round(q*sq)),
+   `sq = 127/max|q|` over all heads; head `h` at row `h*K_FRAME`; params tile at
+   `PARAM_ROW*K_FRAME`, one 8-float set per group when chunked) to build the frame
+   from the bf16 path's Q GEMM output before loading the generated ELF.
+2. **KV slices**: the same `nkv`-major slices the bench packs, from the bf16 path's
+   KV region — with the region stride taken from the **ELF's own `-N`**, not the
+   model's `H` (the H table is what undersizes the 4096 bucket).
+3. **BO sizing**: q frame `max(16, PARAM_ROW+1)*K_FRAME`, C2 `n_heads*M*K`, SCR
+   `32 + n_heads*8*MAX_SEQ` — the sizes `AttnCtx` now uses.
+4. **Verification path**: bench parity for the shape, then the 2048-key family boot
+   token against `NPU_FLM_PREFILL=1` (the test that failed with 152981 vs 7753).
+
+**Option 1 — emit for the bf16 layout instead** — is the mirror image: the host stays
+untouched but the generator gains a second addressing mode *and* every verification
+above must be redone against a reworked bench. Unless there is a reason the family
+path cannot build the AttnCtx frame (I have not found one — it already holds both the
+Q GEMM output and the KV cache in memory), option 1 buys nothing for more risk.
+
+**Second, independent reason to prefer option 2**: the family path's `act` is bf16,
+and the generated kernel is **int8 x int8 → int32**. Feeding it is a *quantization*
+step either way, and `attn_quant.h`'s contract (dual-compiled, bench-checked) is the
+one with a host-side reference. Option 1 would leave that quantization implicit in
+tap arithmetic, which is exactly how the "silently wrong" class of bug in this file
+happened.
+
+Unless you would rather I wrote the second addressing mode, I will take option 2 and
+start with step 1 (the A-frame/quantization port), verifying each step on the bench
+before it goes near the family path.
