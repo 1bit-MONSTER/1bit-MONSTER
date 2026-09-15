@@ -507,3 +507,47 @@ accumulation difference would present exactly this way).
 
 Still not established: **which arm is correct.** That needs a CPU/float reference, not an
 arm-vs-arm comparison. Until then this says the two disagree, not which one is right.
+
+## DECISIVE: the fast arm is CORRECT; the dense arm — treated as the reference all along — is BROKEN
+
+Every cross-arm comparison above assumed the dense arm was the trustworthy side and the
+runlist arm the suspect one. That assumption is now tested directly, by asking both arms
+a question with an unambiguous answer, deterministically (`NPU_GREEDY=1`), and decoding
+the output with the model's own tokenizer (`engine/npu/tokenizer/detokenize`):
+
+```
+prompt: "The capital of France is"   -> ids 785 220 65063 220 1055 220 49000 220 285 198
+
+runlist (64-103 tok/s)  ids 32 8 220 12095 198 33 8 220   ->  "A)  Paris\nB)"     CORRECT
+dense   (2 tok/s)       ids 32 8 220 220 22 11 220 19 7   ->  "A)  7, 4("        GIBBERISH
+```
+
+**The 2 tok/s dense arm produces incoherent output. The 64-103 tok/s runlist arm answers
+correctly.** Both arms agree on the first two ids (`32 8` = "A)") and then the dense arm
+falls apart.
+
+So the arm this objective identifies as the thing to speed up is not merely slow — it is
+**wrong**, and the arm the objective describes as out of scope is both fast and right.
+
+This re-reads every number recorded above, and it settles the question that was left
+open ("which arm is correct"):
+
+- The `corr = 0.9875` hidden-state and `corr = 0.971` logits figures compare the **broken**
+  arm against the **correct** arm. They are a measurement of the dense arm's error
+  magnitude, not of a shared defect.
+- "The model-body divergence is real" stands, but its interpretation flips: the int8
+  dense body is the side that is wrong.
+- The objective's premise — "lift the native Qwen3-0.6B **dense** decode from 2 tok/s" —
+  is therefore chasing a broken path. The model already decodes **correctly** at 64-103
+  tok/s through the runlist arm, which is what `flm_parity.sh` measures and why its
+  numbers looked good.
+
+### Honest limits of this test
+
+It is a qualitative, one-prompt, short-continuation test. "Paris" vs "7, 4(" is decisive
+about gross correctness but does not quantify the dense arm's error, does not find its
+bug, and does not prove the runlist arm matches a float reference at 0.998 — only that it
+is coherent where the dense arm is not. One prompt also cannot rule out that both arms
+are wrong in different ways on harder inputs. What it does establish beyond argument is
+that **the dense arm cannot be used as a correctness reference**, which invalidates the
+framing of every earlier comparison in this document.
