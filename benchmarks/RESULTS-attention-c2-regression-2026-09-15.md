@@ -481,3 +481,40 @@ family for Nanbeige — nh20/hd128 is the true geometry — so the earlier
 `attn_mha_1024_nh20_hd128.elf` (154528 B) was a real nh20 artifact after all; it
 is simply context-independent (both captures) and therefore not the attention
 kernel. The 4096 attention ELF is one of {32736, 124256, 490336, 570848}.
+
+### L2's real blocker: nothing produces `final_bf16_*` xclbins
+
+My shape-table correction fixes the **i8** K/N xclbins, but that is not what was
+missing. `src/npu_engine_universal.cpp:1302` builds the name it wants:
+
+```cpp
+auto xpb=[&](const char*t,int K,int N){return xd+"/final_bf16_"+t
+        +"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";};
+```
+
+and **no script in the tree emits `final_bf16_*` at all**:
+
+- `grep -rln 'final_bf16' generators/ src/` → only `src/npu_engine_universal.cpp`
+  (the consumer); no producer.
+- `build_new_xclbins.sh` emits `final_i8_${proj}_${model_tag}.xclbin` via
+  `n1_core_i8_v26.py` — a different name *and* a different generator.
+- `ls xclbins/ | grep bf16` → only `final_i8_GUSILU_i4_qwen3_0_6b_bf16pair.xclbin`.
+
+The bf16 generator itself exists and is documented —
+`FUSED-RMSNORM-QKV-DESIGN.md:74` gives the invocation
+
+```
+.venv/bin/python n1_core_bf16_v1.py -M 128 -K 1024 -N 4096 -m 32 -k 64 -n 128 -c 8 -r 4 -b 5 > design.mlir
+```
+
+— but it is wired into no build script, and the engine's filename convention
+(`final_bf16_<proj>_K<K>_N<N>.xclbin`, K/N-tagged, *not* model-tagged) is what a
+producer must match.
+
+**So the next step is to write that producer**, not to re-run an existing script:
+run `n1_core_bf16_v1.py` per shape and aiecc to
+`xclbins/final_bf16_<PROJ>_K<K>_N<N>.xclbin`, starting with
+`QKV K=2560 N=3584` (Nanbeige's true geometry, now in the shape table). The
+existing `build_new_xclbins.sh` is the right template — it already has the
+env/aiecc incantation and the shape-table loop; it just calls the i8 generator and
+names for i8.
