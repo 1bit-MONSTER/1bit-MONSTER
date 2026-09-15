@@ -165,9 +165,26 @@ times: the two models agree with each other, and with FLM, at 4900 and 5100.
 Only VL-4B at 5000 splits, and 4B at 5000 returns native's answer in both
 implementations.
 
-Unresolved, deliberately: the decisive control is the CPU attention reference at
-npt=5000 for VL-4B — the same experiment that localised the >4096 fault — and it
-has not been run. Until it is, this is one unexplained position, not a bug.
+**The control was run, and native is self-consistent.** The same experiment that
+localised the >4096 fault — swap the attention for the CPU reference and see
+whether the answer moves — gives, for VL-4B at npt=5000:
+
+| path | token |
+|---|---:|
+| native bf16 prefill + NPU attention | **30566** |
+| native bf16 prefill + **CPU attention reference** | **30566** |
+| FLM's own runtime | 11211 |
+
+Two independent native attention implementations agree, so **the attention step is
+not the variable** and this is not a native attention defect. What remains is
+FLM-vs-native numeric drift at a position where native's top-2 are 2.625 apart —
+and the disagreement is with a model whose config is identical to 4B's, at one
+length out of nine tested, while 4B at that same length returns native's answer in
+*FLM* as well.
+
+(For the record the CPU run is expensive at this length: 952863 ms, 190.6 ms/tok,
+16 minutes for a 5000-token prefill — which is why it belongs behind an
+environment variable and not in a default.)
 
 ## Still open
 
