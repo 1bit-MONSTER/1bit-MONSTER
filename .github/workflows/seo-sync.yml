@@ -82,7 +82,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add site/ scripts/seo_sync.py
+          git add site/ scripts/seo_sync.py README.md
           git commit -m "seo: daily sync $DATE — refresh site claims to current engine state"
           git push origin "$BRANCH"
 
