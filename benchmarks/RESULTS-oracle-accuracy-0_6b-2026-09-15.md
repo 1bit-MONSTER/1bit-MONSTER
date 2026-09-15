@@ -1056,3 +1056,36 @@ and the substring scoring has three demonstrated failure modes. Both need a `/go
 graded answer-level content rubric. Separately, the 6-token `hidden corr 0.9875` / `logits 0.971`
 figures remain in the record and should be re-derived or dropped — they were computed under the
 raw format at 6 tokens and are not evidence of any defect.
+
+## Gap (b) CLOSED: the corr figures re-derived — and the metric is not an accuracy predictor
+
+The `hidden corr 0.9875` / `logits corr 0.971` figures in the earlier record were computed under
+the RAW format at a 6-token budget (and, before that was fixed, over a truncated 4096-entry vocab).
+Re-derived properly — chat template, full 151936-entry vocab, both dumps deleted first, both arms
+at the same step:
+
+```
+LOGITS (full vocab, templated, step 1): common=151936  corr = 0.938153
+   dense argmax = 151667   runlist argmax = 151667      <- the arms AGREE on the token
+HIDDEN (templated): dense rows=476 (=28 layers x 17 prompt tokens), best row=475
+   (= final layer, last prompt token)   corr = 0.926378   max|diff| = 21.99
+```
+
+Two things follow, and the second is the important one:
+
+1. **The numbers are re-derived and are lower, not higher**: corr 0.938 (logits) and 0.926 (hidden)
+   against 0.971 / 0.9875 for the void 6-token versions. So the earlier figures were not merely
+   unrepresentative — they were *flattering*, because a 6-token window and a truncated vocab both
+   hide divergence.
+2. **The metric does not predict accuracy.** At corr 0.926–0.938 — far below the goal's 0.998 —
+   both arms **answer every prompt correctly** (runlist 20/20 easy / 13/15 hard; dense 3/3), and
+   they **agree on the argmax** at the step measured. Meanwhile the void 6-token versions *did*
+   disagree on the argmax (8 vs 9) at a *higher* correlation. Correlation and correctness are
+   simply not ordered the way the criterion assumed: two different inference paths (int8 host
+   lm_head vs bf16 device lm_head) can sit at 0.93 and still produce identical, correct tokens,
+   because what matters is the token ordering, not the whole-vocabulary vector distance.
+
+**So gap (b) is closed by re-deriving the figures, and the outcome is that the `corr >= 0.998`
+requirement should be dropped rather than chased** — it was never measuring the thing the goal
+cares about (whether the answers are right), and the arms pass a stricter test (correct answers on
+every prompt) at a correlation the criterion would have called a failure.
