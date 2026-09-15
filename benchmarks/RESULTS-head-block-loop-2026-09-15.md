@@ -777,3 +777,45 @@ happened.
 Unless you would rather I wrote the second addressing mode, I will take option 2 and
 start with step 1 (the A-frame/quantization port), verifying each step on the bench
 before it goes near the family path.
+
+### Correction to the plan: do not port *into* the bf16 ELF interface — bypass it
+
+The previous entry said to port the `AttnCtx` packing into the bf16 path. Reading
+`run_attn` in full shows that understates the problem, and in a way that changes the
+plan rather than just its size:
+
+| the bf16 path does | what this file says about it |
+|---|---|
+| `run.set_arg(0..2)` | "the kernel's three SCALAR arguments, which are the only part of this call with **no stated meaning** in this file" |
+| `memcpy(attn_kv->data() + r*reg, kv + r*reg, used*2)` for `r` in 0..3 | the stream transfers 4.50 MB while this fills 4.00 MB, so "0.50 MB of what the kernel reads is never written" (`BF16MM_ATTN_KV_PT` sweep exists because of it) |
+| `attn_act` as the input, `attn_out` as the output | `BF16MM_ATTN_SWAP_IO`, because FLM handed the kernel the opposite pairing to what this engine assumes |
+| a captured ELF with one 2k/4k/8k kernel per slot | Nanbeige's native boot token was **nondeterministic** (1214 / 131718 / 145029 from the same command) before the KV BO was zeroed |
+
+So the family path's attention interface is **partially reverse-engineered**, not
+merely a different operand layout. Porting the verified `AttnCtx` packing *into* it
+would mean satisfying that machinery — unknowns included — and then trusting a
+result produced through it.
+
+**Revised plan, and it is the smaller one:** the generated kernel does not need that
+interface at all. `AttnCtx` (header-only, in this same tree, already used by
+`zaya_decode.cpp` and the bench) takes `init(xclbin, insts)` and
+`run(q, k, v, seq, ao)` with the packing that is verified above, and it launches the
+five BOs the generator declares (`q`, `KT`, `C2`, `V`, `SCR`) directly. The change is
+therefore:
+
+1. when a shape-matched generated attention kernel exists for the family's shape, the
+   bf16 prefill path uses an `AttnCtx` instance for attention **instead of** loading a
+   captured ELF and calling it through the scalar/region machinery;
+2. the KV and Q data flow from the engine's existing buffers into `AttnCtx::run`,
+   which is the only new code;
+3. the existing ELF path stays exactly as it is for the six working models, so nothing
+   verified today is put at risk;
+4. verification is the pair already in hand: bench parity for the shape (done for
+   nb20/ph24), then the 2048-key family boot token against `NPU_FLM_PREFILL=1`.
+
+That also removes two of the residuals at once: the KV region is sized from the ELF's
+own `-N` (so the 4096-bucket undersize cannot recur), and the ELF's scalar arguments
+stop being part of the family path entirely.
+
+Nothing about this changes the recommendation to bridge on the host side — it changes
+*where*: a new, verified call path, not an extension of the unreversed one.
