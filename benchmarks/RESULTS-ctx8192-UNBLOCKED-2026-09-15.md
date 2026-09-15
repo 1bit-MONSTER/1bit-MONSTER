@@ -173,18 +173,23 @@ whether the answer moves — gives, for VL-4B at npt=5000:
 |---|---:|
 | native bf16 prefill + NPU attention | **30566** |
 | native bf16 prefill + **CPU attention reference** | **30566** |
-| FLM's own runtime | 11211 |
+| native **int8 runlist** path (byte-exact, FLM's own per-ctx layer kernels) | **30566** |
+| FLM's own runtime (`run_qwen3_prefill`) | 11211 |
 
-Two independent native attention implementations agree, so **the attention step is
-not the variable** and this is not a native attention defect. What remains is
+Three native implementations — two different attention paths and the byte-exact
+int8 runlist, which drives FLM's own layer kernels from the engine's side — all
+agree, so **the attention step is not the variable** and this is not a native
+attention defect. It is also not a near-degenerate position *for native*: three
+paths with different numerics landing on the same token is the opposite of a coin
+flip. What remains is
 FLM-vs-native numeric drift at a position where native's top-2 are 2.625 apart —
 and the disagreement is with a model whose config is identical to 4B's, at one
 length out of nine tested, while 4B at that same length returns native's answer in
 *FLM* as well.
 
-(For the record the CPU run is expensive at this length: 952863 ms, 190.6 ms/tok,
-16 minutes for a 5000-token prefill — which is why it belongs behind an
-environment variable and not in a default.)
+(For the record the two slow controls cost, at this length: CPU attention
+952863 ms / 190.6 ms-tok / 16 minutes; int8 runlist prefill 317506 ms / 64 ms-tok.
+Both are behind environment variables, which is where they belong.)
 
 ## Still open
 
