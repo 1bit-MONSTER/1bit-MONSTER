@@ -861,3 +861,50 @@ fixes without changing this arithmetic to `4 * HD`.
 That is what step 1 of the revised plan needs, and it is now a transcription rather
 than a reverse-engineering exercise. The hd256 slot arithmetic belongs to
 `task-family-host` as its own item.
+
+### The generated kernel is per-QUERY-TOKEN — which reframes the family decision
+
+`AttnCtx::run(const float* qo, const float* ko, const float* vo, int seq, float* ao)`
+takes `qd = NQ*HD` floats of query and no row dimension: **one query token's heads
+against `seq` keys**. `zaya_decode.cpp` calls it exactly that way, one token at a
+time (line 784), which is what a decode step is. The bench does the same.
+
+That is not an accident of the wrapper; it is the kernel's shape. The A-frame holds
+head `h` at row `h*K_FRAME`, and the M=8 tile is the **eight columns' head rows**
+(i.e. eight heads of one token), not eight tokens. So one launch = one query token.
+
+Where that leaves each use:
+
+| use | shape needed | verdict |
+|---|---|---|
+| decode (one token at a time) | one token | **the kernel's shape** — and per the register it is at decode parity |
+| Zaya path | one token | already wired (line 784) |
+| family **prefill** (the bf16 path) | up to 256 rows per call | **2048 launches for a 2048-key prefill**, ~2-5 ms each = ~4-10 s |
+| the six working models | block | use the captures they already use — untouched |
+
+So "give the family path the AttnCtx contract" means **one launch per query token**,
+and for prefill that is 4-10 s where FLM takes ~2 s and the current CPU reference
+takes ~240 s. Correct, and a large improvement on the fallback — but it is a
+fallback-shaped path, not parity.
+
+This is why the register's own L1 note says the chunked path "has never been driven
+through `zaya_decode.cpp` end to end" and calls the bench "a kernel instrument, not
+that gate": the gate wanted an *engine* run, and the engine's prefill is block-shaped.
+
+**Three honest options for family >1024, and they differ in kind:**
+
+1. **Per-token loop in the family prefill path** — bounded work, uses the verified
+   kernel, gives correct output at ~2-5x FLM's prefill time instead of ~100x. This is
+   what the bridge mapping I just decoded enables.
+2. **Document the boundary** — families keep the CPU reference above 1024 keys,
+   recorded with the reason (the generator emits a decode-shaped kernel; the engine's
+   prefill is block-shaped), and the generated kernel stays where it is genuinely at
+   parity: decode and the Zaya path.
+3. **Make the generator block-shaped** — M=8 becomes a row block (tokens) rather than
+   the eight heads of one token. That is a kernel redesign, and every verification in
+   this session applies to the current shape, not to that one.
+
+I would take **1** for the objective as written (families "match or beat FLM"), with
+**2** written down as the honest current state until it is measured — and I would not
+start **3** without the user's say, because it invalidates the verification set that
+makes everything else here trustworthy.
