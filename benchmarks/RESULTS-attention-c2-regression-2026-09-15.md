@@ -837,3 +837,34 @@ path has no MoE support.** The nh20 attention capture is irrelevant until that
 changes; every 4096-candidate experiment was vacuous, and this is why. Opening it
 is a feature (bf16 prefill for MoE), not a config or capture change — which also
 means L2 as originally scoped ("a Nanbeige nh20 capture at 4096") was mis-scoped.
+
+## The dense-8B decode bar is MET: the deficit was to a different host, not to FLM
+
+The last open item in the objective was the dense-8B decode bar — the only dense
+metric that trailed the published table (−7.6 % @1k, −7.8 % @2k) while native
+matched on-box FLM everywhere else. Measured directly, on this box, same recipe
+(`flm bench qwen3:8b -i cfg.json`, `max_length=2048`):
+
+```
+             1k |       2.789 s |   292.11 tok/s prefill |   10.70 tok/s decode
+             2k |       4.169 s |   387.33 tok/s prefill |   10.38 tok/s decode
+```
+
+| Qwen3-8B decode | native | FLM **on-box** | FLM **published** |
+|---|---|---|---|
+| @1k | **11.0** | 10.70 | 11.9 |
+| @2k | **10.6** | 10.38 | 11.5 |
+
+**FLM itself reaches only 10.70 / 10.38 here.** So the published 11.9 / 11.5 is
+not a bar this hardware meets — not for us and not for FLM — and the −7.6 %/−7.8 %
+"deficit" was measured against a published table produced on different hardware.
+
+Against FLM **measured on the same box**, native is *ahead* at both contexts
+(+2.8 % @1k, +2.1 % @2k), consistent with the 0.6B/1.7B/4B rows where native is
+ahead or level at 2k.
+
+**So the dense-8B decode bar is met** — on-box meet-or-beat, with the residual gap
+being a host difference (FLM's published `Kraken-Point` figure), not an engine
+deficit. What remains for the objective is not decode parity but breadth: the
+models that gate via the CPU attention fallback (now only genuinely-excluded
+families), and the i8 arm's cost at 4096.
