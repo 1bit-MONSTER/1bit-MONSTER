@@ -443,3 +443,41 @@ generator entry is wrong for the bf16 arm or the engine's N is. Resolve which
 geometry Nanbeige's bf16 arm is actually specified with before generating
 anything, then build `final_bf16_QKV_K2560_N3584.xclbin` through
 `n1_core_bf16_v1.py` / `build_new_xclbins.sh`.
+
+### RESOLVED: Nanbeige is nh20 / hd128 / nkv4 — the generator table was wrong, not the engine
+
+`~/.config/flm/models/Nanbeige4.1-3B-NPU2/config.json` settles it:
+
+```
+hidden_size           : 2560
+num_attention_heads   : 20
+num_key_value_heads   : 4
+head_dim              : 128
+intermediate_size     : 10752
+num_hidden_layers     : 32
+```
+
+→ qout = 20·128 = 2560, n_kv = 4·128 = 512, **QKV N = 2560 + 2·512 = 3584**.
+
+So the engine's request for `final_bf16_QKV_K2560_N3584.xclbin` is **correct**, and
+`generators/build_new_xclbins.sh` was wrong on every Nanbeige entry — it carried a
+stale nh32/hd80 reading of the model (n_q = 32·80 = 2560 aliases the real 20·128,
+which is exactly what made the error survive). Corrected against the config:
+
+| entry | was | now | config |
+|---|---|---|---|
+| QKV | 2560:3840 | **2560:3584** | 2560:3584 ✓ |
+| O | 2560:2560 | 2560:2560 | 2560:2560 ✓ |
+| G | 2560:8192 | **2560:10752** | 2560:10752 ✓ |
+| U | 2560:8192 | **2560:10752** | 2560:10752 ✓ |
+| D | 8192:2560 | **10752:2560** | 10752:2560 ✓ |
+
+G/U/D were independently corroborated before the edit: the engine's own D context
+prints `creating bC size=5505024 (MD=128 ND=10752)`, so 10752 is what it expects,
+not 8192.
+
+This also settles the shape name: `attn_mha_*_nh20_hd128.elf` **is** the right
+family for Nanbeige — nh20/hd128 is the true geometry — so the earlier
+`attn_mha_1024_nh20_hd128.elf` (154528 B) was a real nh20 artifact after all; it
+is simply context-independent (both captures) and therefore not the attention
+kernel. The 4096 attention ELF is one of {32736, 124256, 490336, 570848}.
