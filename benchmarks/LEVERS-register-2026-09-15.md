@@ -141,6 +141,55 @@ against the captured `attn_mha_1024_nh16.elf` on the same shape and prompt. With
 ~1.5× of the capture, N=16384 is the route past 8192; another 1200× (this repo has
 that precedent for a generated attention ELF) closes the lever.
 
+#### L1 status — the BUILD gate is passed; the timing gate is open *(2026-09-15)*
+
+`NPU_ATTN_N=1024` now builds: **104784 B xclbin, aiecc rc=0**. The regression the
+gate named holds exactly — `NPU_ATTN_N=512` still reproduces the shipped
+`attn_insts.txt` **byte-for-byte** (`f3d0a132bde24a60`), which is what proves the
+group loop's single-group branch *is* the original path rather than merely
+agreeing with it.
+
+Getting there turned up two things the plan did not anticipate. Both are in the
+kernel/verifier contract, not in the generator:
+
+1. **The strided A2 writeback is rejected in its obvious encoding.** Group *g*'s
+   slice is 8 rows of 512 bytes at row stride N, i.e. `sizes=[1,1,8,512]`. With
+   `strides=[1,1,N,1]` aiecc refuses it:
+   `'aie.dma_bd' op Stride 2 is 1 elements * 1 bytes = 1 bytes, which is not
+   divisible by 4`. The degenerate leading dims are **size 1**, so their stride is
+   never applied — but `verifyStridesWraps` (`lib/Dialect/AIEX/IR/AIEXDialect.cpp`)
+   checks *every* stride ≥ 1 for 4-byte divisibility **regardless of that
+   dimension's size**, and it is not the branch that `skipTransformationChecks`
+   guards. `strides=[4,4,N,1]` is semantically identical and legal.
+2. **A row stride alone is not enough — the causal mask needs per-group params.**
+   Group *g* owns the keys `[512g, 512g+512)`, so its mask must fire at the
+   group-local `t_local ≥ seq − 512g`. The plan's `params = {scale, seq_slice,
+   512, N}` only works if `seq_slice` can *differ per group*, which means the feed
+   has to read a different params tile per group. It now reads group *g*'s at
+   `15·K_FRAME + g·64`, and the host writes one 8-float set per group with its own
+   clamped key count. Feeding every group the global `seq` **compiles, runs, and is
+   silently wrong for every group past the first** — precisely the failure mode the
+   "silently wrong, not merely slow" line above was warning about, arrived at from
+   the other direction.
+
+Landed: `n1_core_attn.py` (group loop), `attn_quant.h` (A2 row stride from
+`params[3]`, 0 = packed = previous behaviour), `npu_attn_ctx.h` (per-group params;
+`NPU_ATTN_EMU` emulation mirrors the chunked core so the contract stays checkable
+host-side). **Not landed, and the reason the lever is not closed:**
+
+- **No NPU run of the N=1024 kernel yet.** Everything above is compile-time plus
+  the byte-identity regression. The chunked multi-group path has never executed.
+- **The timing comparison has no harness.** The default prefill path runs the
+  *capture* (`attn_mha_1024_nh16.elf`, 98848 B) through `bf16mm_attn`; the
+  generated kernel's consumer is `AttnCtx`, reached from `zaya_decode.cpp`. They
+  are two different drivers for two different containers, so "time it against the
+  capture on the same shape and prompt" needs one harness that can drive both —
+  that harness does not exist yet. Until it does, the ~1.5× criterion is
+  unmeasurable, and no timing claim should be read into this note.
+
+The next action is therefore the harness (or a standalone XRT runner for
+`/tmp/ck1024.xclbin` + `ck1024_insts.txt`), not a larger N.
+
 ### L2 — a Nanbeige nh20 capture at 4096 *(the one non-dense family already close)*
 Nanbeige's default i8 path matches FLM exactly (`1033 @1024`, `5938 @256`); only
 its **bf16 arm** falls to the broken nh20 kernel. A correct nh20 capture is a
