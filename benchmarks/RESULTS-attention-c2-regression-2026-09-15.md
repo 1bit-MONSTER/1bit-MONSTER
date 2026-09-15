@@ -1110,3 +1110,32 @@ per-shape insts are sufficient, as Qwen3-4B already demonstrates.
 Net breadth picture, corrected: **all four remaining families are missing exactly
 one thing — a per-shape attention kernel** — split by which of the two generator
 changes each needs (hd256 → PV N-split; nh20/nh24 → head-block loop).
+
+### The PV N-split is NOT generator-only — the host packs V and reads C2 too
+
+Reading the feed offsets to plan the edit surfaced a hole in the sketch above: it
+listed the generator changes and "the host C2 reader widened to hd", but the host
+also **packs V**, and that packing bakes in the same 128-wide head-dim assumption.
+
+Generator side, for `n_hd = ceil(K/n)` head-dim tiles, the V B-tile stride is
+`ki*(k*K) + nh_i*(k*n)` (for `n_hd == 1` this collapses to today's `ki*(k*n)`, so
+hd128 stays byte-identical), and the core/seq PV loops gain an outer `for nh_i`.
+
+Host side (`src/npu_attn_ctx.h`), two symmetric changes:
+
+- **V packing**: today it writes
+  `Vm + kv*N*K + ki*8192 + i0*1024 + i1*64 + i2*8` with a flat `ki*8192` stride
+  (= `k*n`). For `hd > 128` the layout must become `[kv][ki][nh_i]`, i.e. the
+  stride is `ki*(k*K) + nh_i*(k*n)` — the same expression as the generator's feed,
+  which is exactly the coupling that has to match.
+- **C2 read-back**: today row 0 of each `(8,128)` tile is read at the interleaved
+  mmul C-layout positions (`c1_idx`-style mapping, `(c/8)*64 + c%8`). With `n_hd`
+  tiles per head the reader must walk `nh_i` too, over `c*(M*K) + nh_i*(M*n)`.
+
+So the N-split is a **three-part** change: generator core, generator seq, host
+(pack + read) — and the generator's `strides=[8*N, 8, N, 1]` PV A-tap plus the
+`[4,4,N,1]` C2/A2 writebacks are all stated in terms of `N` and stay as they are;
+only the head-dim axis is new. That is why the verification triad matters more here
+than elsewhere: a generator change alone would produce a kernel whose V tiles and
+whose C2 columns disagree with the host, and — as the hd256 experiment showed —
+nothing in the toolchain reports it.
