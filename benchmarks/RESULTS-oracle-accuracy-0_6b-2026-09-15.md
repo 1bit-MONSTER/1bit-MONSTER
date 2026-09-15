@@ -175,3 +175,45 @@ right prompt.
 
 So step 3's next target is the **KV/context** the native arms actually attend over (region
 offset, stale contents, or a mis-written region), not the feed-forward numerics.
+
+## Step 4: the first-step distribution is shifted, and the logits dump cannot see it
+
+The decisive observation is available without new instrumentation, because the generated
+sequence *is* the argmax sequence under `NPU_GREEDY=1`. Across all 20 prompts the runlist
+arm's **first token is always `A`** (id 32), surfacing as the uniform `A)` / `A.` prefix:
+
+```
+A)  Paris B      A.  Kyoto B      A)  Barcelona B     A)  black B
+A)  down B)      A)  night B      A)  Au B            A)  Berlin B
+A.  A  baby      A. A. A.         A) Neptune B)       A) the beginning of the
+```
+
+For a prompt like "The capital of France is" the argmax should be a content token, not the
+letter `A`. A top-1 of `A` on *every* prompt means the native first-step distribution is
+shifted away from sensible continuation and toward exam-answer formatting — consistent with
+the model behaving as if it is mid-multiple-choice-question, which is the same signal as the
+`The opposite of black is -> "A) black B)"` row.
+
+**But I cannot currently see by how much, and that is a real blocker.** Both logits dumps
+truncate the vocab:
+
+```
+npu_engine_universal.cpp:565   for (int n = 0; n < NV && n < 4096; n++) ...
+npu_runlist_bridge.cpp:400     for (int n = 0; n < cfg.vocab_size && n < 4096; n++)
+```
+
+So they capture only vocabulary ids 0..4095, while the tokens that matter live far above:
+`A`=32 and `The`=785 are inside the window, but `Paris`=12095, and the ordinary content
+words that should be the real argmax, are outside it. **Every logits comparison recorded in
+this document — including the `corr = 0.971089` figure and the `argmax 9 vs 8` result — was
+computed over that 4096-entry prefix**, not over the vocabulary. Those comparisons are not
+wrong (both sides were truncated identically), but they are far less informative than they
+read: an argmax over the first 4096 ids is an argmax over a window that excludes most real
+words.
+
+The engine already computes a top-32 (`lm_topk_omp`, line 575) but never prints it, so the
+cheapest correct next action is to widen both dumps to the full vocabulary (and optionally
+print the top-32 with detokenised ids) and then read the actual first-step candidates for a
+prompt the arm fails. Until that is done, "is the first-step distribution shifted?" has no
+measured answer — only the `A`-onset symptom above, which is suggestive but is a symptom,
+not a distribution.
