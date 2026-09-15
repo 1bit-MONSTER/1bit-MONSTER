@@ -1400,3 +1400,43 @@ So the repair is real, progress has been made on it, and it is now a single well
 away from testable. Until that change is made, criterion 2 (corr >= 0.998, token parity) remains
 unsatisfiable — not because the criterion is wrong this time, but because the path that would
 satisfy it has a concrete, located bug.
+
+## Correction to the localisation above: the readback IS wired for bf16
+
+The previous section concluded that "the bf16 path never populates `h_data`". Checking that claim
+before acting on it, it does **not** hold in the simple form stated:
+
+```cpp
+// npu_engine_universal.cpp:5056 — the O projection, dispatched through the bf16-aware macro
+FLM_GO_ROWS(co, l, at_b.data(), npt, NH*HD, o_ascales.data(), o_ascales.data(), osc[l], oo_b.data(), H);
+...
+// :5071 — h_b IS updated from the (now non-zero) oo_b
+for(int pi=0;pi<npt;pi++)for(int i=0;i<H;i++)h_b[pi*H+i]=sb_data[pi*H+i]+oo_b[pi*H+i];
+...
+// :5133 — and h_data is taken from h_b
+memcpy(h_data.data(),&h_b[last_row*H],H*4);
+```
+
+`FLM_GO_ROWS` expands to the bf16 context's `go_rows` when `bf16_mode` is set, so the bf16 path
+*does* route its O output into `oo_b`, and `h_b` is updated from it. A missing readback is therefore
+**not** the explanation, and that part of the localisation is withdrawn before it could mislead a
+fix. This is the sixth time in this goal that a confident mechanism claim has had to be corrected,
+and the correction came from checking the claim against the code rather than from new measurement —
+which is the cheapest kind of check available and should have been done first.
+
+What remains established:
+
+- `NPU_BF16=1` was dead for this model because its four xclbins were missing; **built**, and the path
+  now loads and runs at 970.5 ms/tok. (Solid.)
+- Its output is garbage (193 backslashes) and its logits dump is all zeros. (Measured.)
+- An all-zero logit vector means `lm_topk_omp`'s input is zero, i.e. either `sb_data` (the normed
+  hidden from `h_data`) or `emb_f32` (the lm_head table). `emb_f32` is built once at line 1031 from
+  the model's embedding tensor and works for the int8 path, so the suspicion falls on the hidden —
+  but **which** of the two, and **why**, is not established, and the two candidates are not
+  distinguished by anything measured so far.
+
+So the honest status is: the defect is real, reproducible and narrowed to "the bf16 mode's lm_head
+input is zero", but the *cause* is still open. Naming it precisely needs one cheap measurement —
+dump `sb_data` and `emb_f32` (or re-use `NPU_DUMP_HIDDEN`, which writes `h_b[0]` at line 5122) in
+bf16 mode and see which of the two is zero. That is the next step, and it should be taken before any
+fix is written.
