@@ -623,3 +623,32 @@ further is pointless until the load block runs.
 **Revised next step:** find why `load_attn_elf` is never reached on the Nanbeige
 bf16 prefill path (the `[fallback]` marker is the thread to pull), rather than
 trying more 4096 candidates.
+
+### Why prefetch reports `[fallback]`: `bf16_done` is never set
+
+`npu_engine_universal.cpp:4946` prints the fallback banner inside
+
+```cpp
+    if (!bf16_done) {
+    printf("=== Prefill %d [fallback] ===\n",npt);
+```
+
+and `bf16_done = true;` is set immediately *after* the bf16 block (the block ends
+with `_exit(0)` when it completes). So `[fallback]` means the bf16 prefill block
+**did not run to completion** — it is not an attention-selection marker at all,
+which is why the nh20 capture could never have changed it.
+
+Two separate facts, both now on the record and neither yet explained:
+
+1. the bf16 projection `Bf16Ctx` contexts *do* initialise (the bf16 QKV/O/G/U/D
+   xclbins load) yet `bf16_done` stays false, so control reaches the generic
+   fallback prefill; and
+2. **no** `Bf16Mm: attention ELF loaded` line appears in that same run, so the
+   `load_attn_elf` block at `npu_engine_bf16_mm.h:268–289` does not execute even
+   though a legacy `attn_mha_4096_nh16.elf` is present and its print is
+   unconditional on a successful open.
+
+(1) and (2) are likely the same story: the object that owns `load_attn_elf` is not
+the object being constructed on this path. The next probe is to find which
+constructor those calls live in and what guards construction — not to try more
+attention candidates.
