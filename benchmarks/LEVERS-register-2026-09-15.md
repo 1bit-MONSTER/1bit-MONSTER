@@ -592,6 +592,22 @@ comparison. The clean statement is the one above: with FLM's sequence intact, ou
 core hangs; with the C2 task deleted, nothing waits for our core and the measure
 falls to its true value.
 
+**And the circular-wait reading of it is falsified too.** The obvious mechanism — the
+core blocks on the C2 acquire, so it never consumes the PV feed, so the sequence
+never reaches the C2 task that would unblock it — predicts that moving the acquire
+after the consumes fixes it. Built exactly that (PV accumulates into a resident
+`C1[c][0]`, then `C2_c[c].acquire`), token counts unchanged, sequence untouched:
+**6048 ms, unchanged.** So the wait is not an ordering deadlock between the core's
+C2 acquire and the PV feed.
+
+That leaves the C2 read task itself never completing, for a reason that is neither
+ordering, nor depth, nor the A-tap source, nor the PV arithmetic. The next
+experiment should be on the *token accounting* of that one task: the core's
+`acquire(Produce)`/`release(Produce)` pair on `C2_c` versus what that task expects,
+given that `A2o` uses the same pair, the same two-arg link and the same 4096-byte
+transfer and satisfies its handshake. Something about the C2 pair differs from the
+A2o pair in a way not yet named — that is the whole remaining question.
+
 Consequence for the next attempt: **do not touch the sequence** — it is the one
 part of this design known to be correct, and changing it (as the C2-drain-position
 experiment did) invalidates the byte-identity that makes the rest diagnosable. The
