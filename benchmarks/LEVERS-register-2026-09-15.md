@@ -175,20 +175,51 @@ kernel/verifier contract, not in the generator:
 Landed: `n1_core_attn.py` (group loop), `attn_quant.h` (A2 row stride from
 `params[3]`, 0 = packed = previous behaviour), `npu_attn_ctx.h` (per-group params;
 `NPU_ATTN_EMU` emulation mirrors the chunked core so the contract stays checkable
-host-side). **Not landed, and the reason the lever is not closed:**
+host-side), and `engine/npu/tools/attn_kernel_bench.cpp` — a standalone driver for
+`AttnCtx` that needs no engine, no Zaya and no model on disk:
 
-- **No NPU run of the N=1024 kernel yet.** Everything above is compile-time plus
-  the byte-identity regression. The chunked multi-group path has never executed.
-- **The timing comparison has no harness.** The default prefill path runs the
-  *capture* (`attn_mha_1024_nh16.elf`, 98848 B) through `bf16mm_attn`; the
-  generated kernel's consumer is `AttnCtx`, reached from `zaya_decode.cpp`. They
-  are two different drivers for two different containers, so "time it against the
-  capture on the same shape and prompt" needs one harness that can drive both —
-  that harness does not exist yet. Until it does, the ~1.5× criterion is
-  unmeasurable, and no timing claim should be read into this note.
+```
+g++ -std=c++17 -O2 -mavx2 -I src -I generators -o ck_test tools/attn_kernel_bench.cpp \
+    -lxrt_coreutil -lxrt_core -laiebu -luuid -ldl
+NPU_ATTN_MAX_SEQ=1024 NPU_ATTN_EMU=1 ./ck_test XCLBIN INSTS 1024   # contract, host-side
+NPU_ATTN_MAX_SEQ=1024             ./ck_test XCLBIN INSTS 1024 20  # NPU + ms/call
+```
 
-The next action is therefore the harness (or a standalone XRT runner for
-`/tmp/ck1024.xclbin` + `ck1024_insts.txt`), not a larger N.
+It checks the kernel against a double-precision causal-GQA reference and times it.
+First results, back-to-back on an otherwise idle device, same shape (nq8/nkv2/hd128):
+
+| kernel | N | insts | max abs err vs float | ms/call |
+|---|---|---|---|---|
+| shipped `attn.xclbin` (FLM's) | 512 | shipped | 3.32e-01 | **3.0** |
+| ours, generator, same build | 512 | **byte-identical to shipped** | 3.32e-01 | **6047** |
+| ours, chunked generator | 1024 | new | 1.67e-01 | **1170** |
+
+**Read that table carefully, because the first two rows are the finding.** Row 2
+runs a byte-identical instruction stream to row 1 and returns *bit-identical*
+output (3.321927e-01 both, to 7 digits) — and is **~2000× slower**. So the entire
+deficit is in our core kernel code (`attn_kernel_reference.cc` as compiled into the
+xclbin's PDI), not in the design, not in the instruction stream, and not in the
+harness. `attn_insts.txt` being byte-identical was never evidence that the *kernel*
+matched; it was evidence that the *schedule* matched. This is the "1200×" the gate
+line above already expected this repo to have to find.
+
+It also settles what the N=1024 number is not: 1170 ms is **5× faster than our own
+N=512 build**, so the chunked multi-group path is not what makes it slow. Nothing
+about chunking has been shown to cost anything.
+
+Still open, in order:
+
+1. **The ~2000× kernel gap.** Until it closes, no N is competitive with the
+   capture and the lever cannot close at 16384 or anywhere else. This is where the
+   work is, and the bench above is the instrument for it.
+2. **The chunked path has no *engine* run.** It executes on the NPU (that is what
+   row 3 is) and its error is in the same range as its own emulation, but it has
+   never been driven through `zaya_decode.cpp` end to end. The gate as written
+   asked for "the same shape and prompt", which means the engine — the bench is a
+   kernel instrument, not that gate.
+3. The absolute-vs-float error (0.33 at N=512, on white-noise input) is a property
+   of the int8 design and is identical for FLM's kernel and ours, so it is not a
+   defect to chase here.
 
 ### L2 — a Nanbeige nh20 capture at 4096 *(the one non-dense family already close)*
 Nanbeige's default i8 path matches FLM exactly (`1033 @1024`, `5938 @256`); only
