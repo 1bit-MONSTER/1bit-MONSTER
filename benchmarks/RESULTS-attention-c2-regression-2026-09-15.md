@@ -1077,3 +1077,36 @@ files — Qwen3-4B has 0 model-tagged i8 xclbins yet gates natively, so generic
 per-shape insts are already the mechanism. Gemma3 is therefore plausibly reachable
 by generating generic shapes rather than a model-tagged set, once its attention
 shape exists.
+
+### CORRECTION to the triage: Gemma3 has ALL its GEMM shapes — only its attention shape is missing
+
+The triage above said Gemma3 "needs EVERYTHING" because it has zero *model-tagged*
+i8 xclbins. That was the wrong conclusion from the right observation: model-tagged
+is not the only mechanism. `engine/npu/xclbins/` carries **41 generic K/N-tagged i8
+insts** (`insts_i8_<proj>_K<K>_N<N>.txt`), and Qwen3-4B — which has *zero*
+model-tagged files — gates natively on exactly those.
+
+Checked Gemma3's required shapes against that generic set, from the model configs:
+
+| family | QKV | O | G | U | D | all present? |
+|---|---|---|---|---|---|---|
+| Gemma3-1B (h1152, nh4, nkv1, hd256, im6912) | 1152→1536 | 1024→1152 | 1152→6912 | 1152→6912 | 6912→1152 | **yes, all five** |
+| Gemma3-4B (h2560, nh8, nkv4, hd256, im10240) | 2560→4096 | 2048→2560 | 2560→10240 | 2560→10240 | 10240→2560 | **yes, all five** |
+
+The generic set contains every one of those names (`QKV_K1152_N1536`,
+`O_K1024_N1152`, `G_K1152_N6912`, `U_K1152_N6912`, `D_K6912_N1152`,
+`QKV_K2560_N4096`, `O_K2048_N2560`, `G_K2560_N10240`, `U_K2560_N10240`,
+`D_K10240_N2560`).
+
+**So Gemma3's only gap is the attention kernel** — the same single missing piece as
+Phi4, Qwen3.5-4B and Nanbeige, not "everything". That *strengthens* the sequencing:
+the PV N-split is not merely the cheapest change, it is the **whole unlock for a
+family that otherwise has a complete GEMM path** — Gemma3-1B and Gemma3-4B go from
+ungated to gated on that one change, with no model-tagged xclbin set needed.
+
+This also retires the earlier "would need a model-tagged set" caveat: generic
+per-shape insts are sufficient, as Qwen3-4B already demonstrates.
+
+Net breadth picture, corrected: **all four remaining families are missing exactly
+one thing — a per-shape attention kernel** — split by which of the two generator
+changes each needs (hd256 → PV N-split; nh20/nh24 → head-block loop).
