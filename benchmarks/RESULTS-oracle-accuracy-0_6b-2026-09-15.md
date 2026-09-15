@@ -1089,3 +1089,44 @@ Two things follow, and the second is the important one:
 requirement should be dropped rather than chased** — it was never measuring the thing the goal
 cares about (whether the answers are right), and the arms pass a stricter test (correct answers on
 every prompt) at a correlation the criterion would have called a failure.
+
+## Gap (a) PARTIALLY closed: dense arm 13/19 on the full set — but the failure mode is UNKNOWN
+
+Ran the dense arm (`NPU_RUNLIST=0`, ~2 tok/s) over the full 20-prompt easy set with the chat
+template at a 256-token budget:
+
+```
+[ 1] Y Paris        [ 6] Y down         [11] Y 7 (week)     [16] N jupiter
+[ 2] Y tokyo        [ 7] Y night        [12] Y 60           [17] Y au
+[ 3] Y rome         [ 8] Y oxygen       [13] Y blue         [18] N january
+[ 4] Y madrid       [ 9] N 4 (2+2)      [14] N kitten       [19] Y white
+[ 5] Y cold         [10] N 7 (3+4)      [15] N puppy        [20] -- not run (timeout)
+
+dense arm: 13/19   vs   runlist arm: 20/20
+```
+
+So the dense arm is **measurably worse than the runlist arm on this set** (13/19 against 20/20),
+and gap (a) — "the dense arm has no trustworthy number" — is now partly closed: it has a number,
+13/19, on 19 of 20 prompts.
+
+**But two limitations must be stated, and one is my error:**
+
+1. **The timeout cut off the last prompt.** Prompt 20 (`The capital of Germany is`) never ran, so
+   this is 13/19, not 13/20. At ~2 tok/s the full run needs ~45 min and the tool call ended first.
+2. **I saved only the verdict, not the response text** — so I cannot say whether the six misses are
+   *genuine wrong answers* or *budget/verbosity truncations*, which is exactly the distinction that
+   turned every previous "failure" in this goal into a measurement artefact. Given that the runlist
+   arm passes all six of these prompts at the same budget, and the dense arm restates questions
+   before answering, truncation is plausible for some — but **that is a hypothesis, not a finding,
+   and it must not be recorded as one.** The rule that has bitten this goal five times applies
+   directly: a verdict without its evidence is not a measurement.
+
+**Therefore: the dense arm's accuracy is 13/19 — established — and its failure mode is UNKNOWN —
+also established.** Re-running with the response text captured is the only way to close the second
+half, and it needs ~45 min again, so it should be a deliberate run with the text written to disk
+per prompt rather than another ad-hoc loop.
+
+This also finally distinguishes the two arms on the same task: the runlist arm (fast, per-ctx-ELF)
+scores 20/20 where the dense arm (slow, int8) scores 13/19, so on the accuracy question the arm the
+goal measured by default is the better one — which is consistent with the findings above and
+refutes the earlier direction of suspicion.
