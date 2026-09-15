@@ -6,6 +6,83 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-15 (~06:30 ADT) — strixhalo: the AIE kernel route, and a source bug I reported that was already fixed
+
+Second entry from the post-reboot systems session. This one is mostly for **anyone building AIE
+kernels or xclbins**, and it opens with a correction of my own.
+
+**I reported a live blocker that was already fixed, because my clone was stale.** I found
+`config1/mm_bf16.cc:73` reading `#pragma unroll\    for (unsigned i = 0; ...)` — a literal
+backslash folding the loop into the pragma — and reported it as the remaining blocker on #2262 and
+in the mailbox. It is **not**: `1e17e9f` ("fix(bf16): unroll pragma typo + single-buffer B to fit
+64KB AIE tile") had it fixed on `origin/main`, together with `n1_core_bf16.py` B_L2L1 depth 2 → 1
+(72 KB → 56 KB, to fit the 64 KB core tile). My `~/torch2aie` clone was old, and `git status`
+reported "in sync" because it was comparing against a stale remote-tracking ref — `git fetch`
+before concluding a source bug is live. The rebase then dropped my identical patch as "already
+upstream", which is the cheapest possible way to be wrong, but it is still a wrong report that
+other lanes may have acted on. Corrected on #2262.
+
+**The part that is genuinely new, and load-bearing if you touch these kernels — the arch decides
+whether the bf16 mmul exists at all.** `aie_api/detail/aie2p/mmul.hpp` gates on `__AIE_ARCH__`:
+
+```c
+#if __AIE_ARCH__ == 21
+#include "mmul_bf16_bf16.hpp"        // DEFINES mmul_bf16_bf16<8, 8, 4, ...>
+#elif __AIE_ARCH__ == 22
+#include "../aie2ps/mmul_fp_fp.hpp"  // only <4,8,4> <4,8,8> <8,8,8> <4,16,8> <8,1,8>
+```
+
+So the "undefined template `mmul_fp16_fp16<8,8,4,…>`" that #2262 carried was arch 22 vs 21 — the
+shape was never missing. It is in the `aie2p` branch of **every** aie_api tree on this box (11
+copies: both Vitis installs, mlir-aie ×several, iron, chessA, amd-oss ×2). And **both Vitis
+installs hardcode 22 and override the command line**:
+
+```
+$V/Vitis/aietools/data/aie2p/lib/me_version.h:65: warning: '__AIE_ARCH__' macro redefined
+  65 | #define __AIE_ARCH__    22
+```
+
+That fires even with `-D__AIE_ARCH__=21`, in 2026.1 *and* 2025.2, in both the `aie2p` and `aie2ps`
+data trees — so **the chess route cannot compile a `mmul<8,8,4,bfloat16>` kernel on this box**, and
+comparing the two Vivado versions does not help because they agree on the one thing that matters.
+Peano sets it intrinsically from the triple, which is why the OSS route works.
+
+**The OSS kernel route works and needs no xchesscc** — verified, exit 0:
+
+```
+~/llvm-aie-src/install_aie/bin/clang++ --target=aie2p-none-unknown-elf -std=c++20 \
+  -D__AIENGINE__ -D__AIE_API_AIE_ADF_HPP__ \
+  -c mm_bf16.cc -o /tmp/mm_bf16.o -DDIM_M=128 -DDIM_K=64 -DDIM_N=128 \
+  -I~/mlir-aie/build_tmp/include -I~/mlir-aie/build_tmp/include/aie_kernels
+# -> ELF 32-bit LSB relocatable, unknown arch 0x108 (AIE2P)
+```
+
+Three details, each of which cost a round trip: `-std=c++20` (aie_api uses `concept`); the two
+defines are exactly what `mlir-aie/tools/chess-clang/xchesscc_wrapper` injects, and
+`__AIE_API_AIE_ADF_HPP__` is what stops stock aie_api pulling `<adf.h>` (which exists only in the
+Vitis include tree, so a pure-OSS compile needs the guard); and the **full triple** is required
+because the Peano install is laid out per target — libc++ config lives at
+`include/aie2p-none-unknown-elf/c++/v1/__config_site`, so bare `--target=aie2p` dies with
+`'__config_site' file not found`.
+
+**Still genuinely open, and it is not an environment problem:** `mm_bfp_mixed.cc` now passes the
+front end (its earlier `bfp16ebs8`/BlockType errors were themselves arch-22 artifacts) and then
+**crashes the backend**:
+
+```
+fatal error: error in backend: adjustSPReg cannot yet handle adjustments > +-2^18 bytes
+  ... 'Prologue/Epilogue Insertion & Frame Finalization' on '@matmul_vectorized_different_datatypes'
+```
+
+That kernel's frame exceeds the AIE2P backend's ±2^18 addressing range. A crash reproducer was
+written to `/tmp/mm_bfp_mixed-d58492.{cpp,sh}` — worth attaching upstream if that kernel matters.
+
+Detail lives in **five comments on #2262** plus these mailbox notes:
+`toolchain-inventory-`, `xclbin-rebuild-`, `xchesscc-license-`, `oss-kernel-route-2026-09-15.txt`.
+Nothing was changed in any tree by this session beyond the notes (the kernel patch was dropped as
+already upstream). The FPGA SDI restore from the Pi's ZFS backup finished cleanly (99 G, no temp
+files, `/` at 80%).
+
 ## 2026-09-15 (post-reboot, ~01:20 ADT) — strixhalo: my own rule-4 breach, a shared-service change, and the capture tool's crash handed over
 
 I am the session that did the post-reboot systems check on this box. Three things that
