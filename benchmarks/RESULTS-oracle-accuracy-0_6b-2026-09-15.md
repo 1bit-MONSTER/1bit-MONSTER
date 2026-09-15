@@ -667,3 +667,49 @@ This is the first time in this goal that a defect has been identified that is no
 artefact, and both are worth pursuing: the repetition loop looks like a decode/format issue
 (the `Human:` token appearing mid-generation suggests the model believes a new turn has
 started), and the continents error is a straightforward knowledge miss.
+
+## The oracle on the hard set: FLM 12/15 vs native 13/15 — a ~1-prompt difference, not a win
+
+Running the same 15 hard prompts through FLM (`echo "<p>" | flm run qwen3:0.6b`, RAW Output,
+whole-output substring match):
+
+```
+native runlist @256 : 13/15
+FLM oracle          : 12/15
+```
+
+But FLM's three "misses" are not three wrong answers:
+
+| prompt | FLM's actual output | verdict |
+|---|---|---|
+| chemical symbol for water | `**H₂O**` | **correct** — my expected `h2o` cannot match the Unicode subscript |
+| how many continents | `Africa, Americas, Eurasia, Antarctica, Europe, Asia, and Oceania` | **correct** — answered by listing all seven, not with the numeral `7` |
+| longest river | "Father of the **Amazon**" | **contested** — the Nile/Amazon question has no settled answer |
+
+So at least two of the three are **scoring artifacts in my substring test**, and FLM's real score
+is ~14/15. Meanwhile the native arm's two misses are genuine: the Red Planet **repetition loop**
+(FLM answers Mars correctly) and the continents error (five).
+
+**Honest reading: the two are comparable on this set (13 vs ~14), and the native arm is not
+demonstrably ahead.** On the one prompt where they clearly differ, FLM is right and the native
+arm loops. This also means the easy-set comparison (native 20/20 vs FLM 18/20) needs the same
+scrutiny before being called a native win — FLM's two easy-set misses were not inspected for
+scoring artifacts.
+
+### Two conclusions that survive
+
+1. **The measurement harness, not the engine, produced every earlier "failure."** That conclusion
+   is now well-supported: after fixing the NTOK bug, the previously "wrong" answers all appear
+   (Tokyo, Madrid, oxygen, Jupiter, white).
+2. **Two genuine defects exist and are worth fixing**: the repetition/`Human:`-marker degeneration,
+   and the continents knowledge miss. Neither is a measurement artifact — both survive a 256-token
+   budget and whole-output scoring, and the repetition one is a case where the oracle succeeds.
+
+### On the done-criterion
+
+"Token parity with the oracle" remains the wrong test and should be replaced: the native arm
+reasons for dozens of tokens before answering while FLM answers in one line, so token-for-token
+equality is unachievable by either side. Worse, **substring scoring is itself too brittle** — the
+`H₂O` and continents cases show it failing on formatting rather than correctness. A graded
+comparison (does the answer's *content* match, judged per prompt) is what the criterion needs,
+and that is a `/goal-tweak` decision rather than something to assume.
