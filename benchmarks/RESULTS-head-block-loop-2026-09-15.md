@@ -669,3 +669,55 @@ Caveat, again: the device was never exclusive during any of this (the other
 session's dense loop has been running throughout), so these magnitudes deserve a
 clean re-run. The pattern — control plus five shapes agreeing to seven digits, with
 the previously-failing ones now exact — is not something contention produces.
+
+### The family >1024 blocker is an OPERAND-CONTRACT mismatch, not BO sizing
+
+Ran the Nanbeige >1024 test end to end with the (now EMU-verified) nh20 hd128 2k ELF
+installed in this worktree's `engine/npu/xclbins/`:
+
+```
+FLM reference arm : Prefill 2048 [flm-ref]   boot=7753
+native arm        : Prefill 2048 [bf16]      boot=152981
+                    Bf16Mm: attention ELF loaded (177728 B): attn_mha_1024_nh20_hd128.elf
+```
+
+So the selector works (the shaped ELF is found and loaded — the 177728 B line is the
+*1k* slot's shape-matched capture, and my 2k file takes the 2k slot) and the native
+arm runs — but it returns a different boot token. Reading `run_attn` explains it: the
+bf16 path does **not** size or pack an A-frame itself. It hands the kernel
+
+* `act` = the Q GEMM output, `attn_rows x qout`, laid out `[token][head][dim]`, and
+* a KV region sized `MAX_L x 4 heads x HD x 2 bytes`,
+
+and lets **the ELF's own taps** decide how to read them. The earlier greps for a
+`K_FRAME` / params-row in that path came back empty because there is none to find:
+the layout lives inside the ELF.
+
+That is a different contract from the one my generator emits. `n1_core_attn.py`
+builds for the `AttnCtx`/Zaya convention — head `h` at A-frame row `h*K_FRAME`, params
+at row 15 (or row `n_heads` once `nh > 15`), KT/V as `nkv`-major `K*N` / `N*K` slices.
+An ELF built that way, fed by a host that provides the bf16 layout, reads the wrong
+places; the boot-token disagreement is that, not a tuning error.
+
+So `task-family-host` is bigger than "size the BOs like AttnCtx": one of these has to
+happen, and they are different projects —
+
+1. **Emit for the bf16 contract** — teach the generator the `[token][head][dim]` A
+   layout, the 4-kv-head KV region and the bf16 params convention, i.e. a second
+   addressing mode in `n1_core_attn.py`; or
+2. **Give the family path the AttnCtx contract** — have `Bf16Mm` drive the generated
+   kernel through the same packed A-frame the bench and Zaya use, which means
+   building that frame from the Q GEMM output.
+
+Either way the *generator work is done*: the shapes build, their streams are faithful
+(`aie.dma_bd` == `XAIE_IO_WRITE`), and five of six shapes now agree with the EMU to
+seven digits. What is missing is the interface between that kernel and the family
+path's operand layout.
+
+Two smaller notes from the same run:
+
+* the 1k slot's shape-matched ELF is the *capture* (`attn_mha_1024_nh20_hd128.elf`,
+  177728 B), not a generated one — so at <=1024 Nanbeige is still running FLM's
+  kernel, which is why the family A/B at 1024 tokens does not depend on any of this.
+* `NPU_ATTN_KV_REGION=4194304` is not needed at 2048 (the H=2560 row already gives
+  2 MB = 2048 tokens exactly); it is the **4096** bucket that is undersized.
