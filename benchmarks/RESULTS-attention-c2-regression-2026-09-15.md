@@ -1043,3 +1043,37 @@ its own. The guard is the PV N-split plus the L1 verification triad (insts
 byte-identity for hd128/nq8, then NPU err == EMU err to the digit, then
 engine-driven token-identity) — because neither the compiler, the loader, nor the
 runner will report anything.
+
+## Breadth triage refinement: which families actually lack a path
+
+Inventory of `engine/npu/xclbins/` before choosing what to implement (the four
+"remaining" families are not equivalent):
+
+| family | model-tagged i8 xclbins | attention capture | so what is missing |
+|---|---|---|---|
+| dense Qwen3 0.6B | 15 | nh16 @256/1024/2048/4096/8192 | — (gates natively) |
+| dense Qwen3 8B | 5 | nh32 @256/1024/2048/4096 | — (gates natively) |
+| Nanbeige 3B (nh20 hd128) | 5 | **`attn_mha_1024_nh20_hd128.elf`** | bf16 arm only — and that is MoE-excluded |
+| Phi4-mini 4B (nh24 hd128) | 5 | — | an nh24 attention kernel |
+| Qwen3.5-4B (nh16 hd256) | 5 | — | an hd256 attention kernel |
+| Gemma3 1B / 4B (nh4/nh8 hd256) | **0** | — | **everything** |
+
+The point that changes the plan: **Nanbeige, Phi4 and Qwen3.5-4B each already have a
+model-tagged i8 xclbin set, so their i8 path is the default and the bf16 attention
+arm is the only thing that falls back** — and for Nanbeige that arm is
+MoE-excluded anyway. So of the four families on the "remaining" list, three are not
+*missing a path*; they have an i8 path and a degraded optional arm.
+
+**Gemma3 is the genuine gap**: zero model-tagged i8 xclbins, and its hd256
+attention shape is unsupported. That makes Gemma3 both the family with the most
+missing and the one that needs the PV N-split — which is why the N-split is
+sequenced first (it is the only change that unlocks a family with no path at all;
+the head-block loop only upgrades an optional arm on families whose default already
+gates).
+
+Corollary: `engine/npu/src/npu_engine_universal.cpp`'s per-K/N insts lookup (the
+uncommitted change in the tree) is what lets a family gate without model-tagged
+files — Qwen3-4B has 0 model-tagged i8 xclbins yet gates natively, so generic
+per-shape insts are already the mechanism. Gemma3 is therefore plausibly reachable
+by generating generic shapes rather than a model-tagged set, once its attention
+shape exists.
