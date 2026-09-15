@@ -499,6 +499,22 @@ built through the same `build_attn.sh` flow, to establish whether this toolchain
 generator is wrong" from "our build flow cannot re-arm". Do (2) first if time is
 short: it is the cheaper fork and it decides where the work belongs.
 
+**Fork (2) is already answered, from the repo rather than from a new design.** The
+i8 decode GEMMs (`final_i8_D_*`) are built by the *same* generators with the *same*
+flags — `grep` over `build_*.sh` shows every one of them using
+`--unified --dynamic-objFifos` — and `npu_engine_i8ctx_inc.h` drives them through
+the identical launch pattern this kernel uses: `hw_context`, then
+`xrt::kernel(*hc, "MLIR_AIE")`, then `(*k)((unsigned)3, ...)` and `r.wait()`, once
+per token per layer, thousands of times in a single process. Those kernels
+demonstrably work repeatedly — that path is the byte-exact reference the rest of
+the work is measured against.
+
+So **our build flow re-arms, and the one-call defect is specific to
+`n1_core_attn.py` and its design.** That eliminates the toolchain, the flags, the
+XRT version and the launch pattern in one step, and it makes lead (1) — the core's
+token accounting around the C2 produce — the only remaining direction. No minimal
+design needs to be written.
+
 What the two containers differ in (from `xclbinutil`; topology, connectivity and
 kernel name are structurally identical):
 
