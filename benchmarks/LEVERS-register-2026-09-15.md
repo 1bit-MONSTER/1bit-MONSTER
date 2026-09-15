@@ -424,39 +424,71 @@ core's synchronisation, it is answerable from the generator, and it should be se
 before any further performance work on this kernel — including before the L1 timing
 gate is attempted again.
 
-**Confirmed, and it is worse than "later launches": our kernel is good for exactly
-one call per process.** The timing loop now zeroes C2 on the host before each `run()`
-and checks whether the device wrote it back — without that check the loop's 6 s
-average could be timing no-ops, which is precisely the hole the original bench had:
+**RETRACTED the next day, by a check that should have been there from the start.**
+The claim that stood here was "our kernel is good for exactly one call per process",
+with "the first call is real — it matches the shipped kernel's output to the digit".
+Both halves are wrong, and the error is instructive.
 
-```
-ours,    N=512:  first run() -> max_abs_err 3.321927e-01   (a real result)
-                 loop         -> 0/2 iterations wrote a non-zero C2
-shipped, N=512:  first run() -> max_abs_err 5.60e+00 (new XRT) / 3.32e-01 (old)
-                 loop         -> 3/3 iterations wrote a non-zero C2
-```
+The bench now prints `max_abs_out` (the largest output magnitude) alongside the
+error. That single number separates "produced a real result" from "produced zeros":
 
-The first call is real — it matches the shipped kernel's output to the digit. Every
-call after it completes and writes nothing. So:
+| N=512 | max_abs_err | max_abs_ref | **max_abs_out** |
+|---|---|---|---|
+| ours | 3.321927e-01 | 3.321927e-01 | **0.000000e+00** |
+| EMU (host contract) | 4.564293e-02 | 3.321927e-01 | 3.778357e-01 |
+| shipped | 4.564293e-02 (loop) | 3.321927e-01 | 1.060043e+01 |
 
-- **Every timing number in this document for our kernel is the cost of a launch that
-  produced no output.** 6047 ms buys one correct answer and then 6047 ms per no-op.
-  That does not invalidate the *cost* measurements (the device really did take that
-  long), but it does mean they were never measuring a working pipeline, and the
-  "2000× slower" framing is wrong in kind: it is not a slow kernel, it is a kernel
-  that runs once.
-- This is very likely why the generated attention was never competitive and why the
-  lever has stayed open — and it means **the L1 timing gate cannot be evaluated at
-  all** until this is fixed, at any N.
-- The check that found it is three lines and should have been in the bench from the
-  start: a timing harness that does not verify each iteration did work will happily
-  report a confident number for a pipeline that stopped after its first call.
+**`max_abs_err == max_abs_ref` is the signature of an all-zero output**, and our
+kernel has `max_abs_out = 0` on *every* call — first call included. The "real first
+result" I celebrated was that arithmetic coincidence: an all-zero output has error
+exactly equal to `max|ref|`, which happens to be 3.321927e-01. And the *shipped*
+kernel reported the same 3.32e-01 in the very first run for the same reason — its
+first launch after `init` returns garbage too (10.33 here, 5.60 under the newer XRT,
+0.332 when its output happened to be zeros); only its **loop** iterations are
+trustworthy, and those sit at 4.564293e-02 — **identical to the host emulation's**,
+which is what a working kernel looks like.
 
-Next action, unchanged in target but now unambiguous: **fix the core's re-arm in
-`n1_core_attn.py`** (the shipped kernel, on the identical instruction stream, re-arms),
-then re-run the gate. Not the softmax, not the PV, not the container.
+So the correct finding is simpler and stronger than the one it replaces:
 
-#### The re-arm defect: exact repro, and what has been ruled out
+**Our generated attention kernel produces all-zero output. It has never produced a
+result in this harness, at any N, on any call.**
+
+That also unifies everything else, which is the real reason to prefer it:
+
+- A2 **is** produced, 1.5 ms in (measured, non-zero in SCR). QK^T and softmax work.
+- C2 is never written. The PV phase is the failure.
+- The 6 s is the host waiting on a kernel that never finishes — the PV stalls, the
+  driver times out, C2 stays zero. Hence the data-independence, the N-invariance,
+  and the two different constants (a stall, not work).
+- The instruction stream being byte-identical to FLM's is consistent: the schedule
+  is right, and our core fails to complete the phase that schedule sets up.
+
+Consequences, replacing the retracted ones:
+
+- **Every timing number for our kernel in this document is the cost of a launch that
+  produced nothing.** 6047 ms buys zeros. That does not invalidate the *cost*
+  measurements (the device really did take that long) but the "2000× slower" framing
+  is wrong in kind: it is not a slow kernel, it is a kernel whose PV phase stalls
+  until a timeout.
+- **The L1 timing gate cannot be evaluated at all** until this is fixed, at any N.
+  There is no performance question here yet; there is a correctness one.
+- The lesson worth keeping: `max_abs_err` alone cannot distinguish a correct kernel
+  from one that outputs zeros whenever the reference is non-zero — you must look at
+  `max_abs_out`. I read four separate confirmations out of that ambiguity before
+  noticing.
+
+Next action, corrected: **find why the PV phase never completes in
+`n1_core_attn.py`** — the core stalls after the A2 writeback, so the suspect is the
+PV's consume of the A-tap read back from SCR (the `A_s`/`A_c` FIFO being reused for
+QK^T tiles, the params tile, and then the A2 read-back) or the C2 produce. The
+shipped kernel, on the identical instruction stream, does not stall.
+
+#### The zero-output defect: exact repro, and what has been ruled out
+
+*(Was titled "the re-arm defect" until the `max_abs_out` check above showed there is
+no re-arm to speak of: the output is zeros on every call. The repro and the
+ruled-out list below are unaffected — the C2 check does correctly report that C2 is
+never written — but the name was wrong.)*
 
 **Repro** (in-tree, no engine, no model):
 
@@ -472,10 +504,11 @@ zeroes C2 on the host before each `run()` and verifies the device wrote it back.
 timing harness without that line reports a confident number for a pipeline that
 stopped after its first call — which is what this one did for several rounds.
 
-**Localised further:** the QK^T and softmax phases DO re-arm — A2 is on the device
-1.5 ms into *every* later launch — while C2 never appears at all. So the break is
-specifically the PV phase's consume/produce handshake or the C2 writeback, not the
-front half of the kernel and not the launch path.
+**Localised:** the QK^T and softmax phases run — A2 is on the device 1.5 ms into
+every launch — while C2 never appears at all. So the break is specifically the PV
+phase's consume/produce handshake or the C2 writeback, not the front half of the
+kernel and not the launch path. (This was written as "DO re-arm"; nothing re-arms,
+because nothing ever completes. The stage localisation itself stands.)
 
 Ruled out by measurement, so nobody repeats them:
 
@@ -490,6 +523,7 @@ Ruled out by measurement, so nobody repeats them:
 | core FIFO depth | `C2_c` 1 → 2 (deeper blows tile memory) | still 0/2, still 6048 ms |
 | pre-launch syncs | probe with `run()`'s exact `bQ`/`bKT`/`bV` pushes | no change |
 | pipelined lag | two consecutive zeroed probes | probe #2 same as #1 |
+| C2 drain position | arm the C2 read before the PV loop instead of after | still 0/2, still 6048 ms |
 
 Still untested and the best next leads, in order: (1) the core's per-iteration
 lock/token accounting around the C2 produce — A2 re-arms and C2 does not, which

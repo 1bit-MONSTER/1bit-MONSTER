@@ -70,10 +70,13 @@ int main(int argc, char** argv) {
     ctx.run(q.data(), k.data(), v.data(), seq, ao.data());
 
     // max |out - float ref| and the mean |ref| (to scale it)
-    double mx = 0; double sref = 0;
-    for (int i = 0; i < qd; i++) { double d = std::fabs((double)ao[i] - ref[i]); if (d > mx) mx = d; sref += std::fabs(ref[i]); }
-    printf("seq=%d %s max_abs_err=%.6e mean_abs_ref=%.6e\n",
-           seq, getenv("NPU_ATTN_EMU") ? "EMU " : "NPU ", mx, sref / qd);
+    double mx = 0; double sref = 0; double mref = 0; double mao = 0;
+    for (int i = 0; i < qd; i++) { double d = std::fabs((double)ao[i] - ref[i]); if (d > mx) mx = d;
+                                   sref += std::fabs(ref[i]);
+                                   if (std::fabs(ref[i]) > mref) mref = std::fabs(ref[i]);
+                                   if (std::fabs(ao[i]) > mao) mao = std::fabs(ao[i]); }
+    printf("seq=%d %s max_abs_err=%.6e mean_abs_ref=%.6e max_abs_ref=%.6e max_abs_out=%.6e\n",
+           seq, getenv("NPU_ATTN_EMU") ? "EMU " : "NPU ", mx, sref / qd, mref, mao);
 
     // ── NPU_ATTN_POLL=1: watch the device from outside the launch. The control
     //    is bV, a BO the kernel never writes: if syncing IT during an active
@@ -168,15 +171,30 @@ int main(int argc, char** argv) {
         auto t0 = std::chrono::steady_clock::now();
         // How many of these iterations actually produced an output? run() returns
         // either way, so without this the average could be timing 20 no-ops.
-        int produced = 0;
+        int produced = 0, zeros = 0;
         for (int it = 0; it < iters; it++) {
             std::memset(ctx.C2m, 0, (size_t)8 * ctx.hd * sizeof(int32_t));
             ctx.bC2->sync(XCL_BO_SYNC_BO_TO_DEVICE);
             ctx.run(q.data(), k.data(), v.data(), seq, ao.data());
+            bool nz = false;
             for (size_t i = 0; i < (size_t)8 * ctx.hd; i++)
-                if (ctx.C2m[i]) { produced++; break; }
+                if (ctx.C2m[i]) { nz = true; break; }
+            if (nz) produced++;
+            // "non-zero" alone cannot tell an unwritten C2 from a C2 written as
+            // zeros -- and A2*V is exactly zero if the PV's read-back comes back
+            // empty. So also measure the error against the same float reference
+            // run #1 was scored against: err == mean|ref| means all-zero output.
+            double m = 0;
+            for (int i = 0; i < qd; i++) {
+                double d = std::fabs((double)ao[i] - ref[i]);
+                if (d > m) m = d;
+            }
+            printf("  iter %d: c2_nonzero=%d  max_abs_err=%.6e  (all-zero-output err would be %.6e)\n",
+                   it, nz ? 1 : 0, m, sref / qd);
+            if (!nz) zeros++;
         }
-        printf("run(): %d/%d iterations wrote a non-zero C2\n", produced, iters);
+        printf("run(): %d/%d iterations wrote a non-zero C2, %d wrote nothing/zeros\n",
+               produced, iters, zeros);
         auto t1 = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
         printf("seq=%d NPU ms_per_call=%.3f (iters=%d)\n", seq, ms, iters);
