@@ -19,7 +19,8 @@
 #include <algorithm>    // std::fill (KV re-pack)
 #include <chrono>
 #include <sys/stat.h>   // struct stat / S_ISDIR for the model-dir probe
-#include <unistd.h>     // readlink(/proc/self/exe) — locate gen_layer_elfs
+#include <unistd.h>     // readlink(/proc/self/exe), symlink, getcwd
+#include <dirent.h>     // seeding the ELF cache
 
 #include <xrt/xrt_device.h>
 
@@ -87,10 +88,12 @@ static const char* sess_elf_default(int H) {
                      : "npu-infer/captures/txn-elfs";
 }
 
-static void ensure_elf_gen_env(const char* model_path);   // defined below
+static bool npu_dbg_elf() { const char* e = getenv("NPU_ELF_DEBUG"); return e && e[0] && e[0] != '0'; }
+
+static void ensure_elf_gen_env(const char* model_path, int H);   // defined below
 
 extern "C" int npu_runlist_session_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
-    ensure_elf_gen_env(model_path);
+    ensure_elf_gen_env(model_path, H);
     sess_build_cfg(H, NC, NH, NKV, IM, NV);
     if (!getenv("LAYER_XCLBIN")) {
         std::string xb = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + sess_model_dir(H) + "/layer.xclbin";
@@ -183,7 +186,46 @@ extern "C" void npu_runlist_session_free(void) {
 // The generator is looked up next to the engine binary first (build_npu.sh puts
 // it there), then in the source tree, so a normal build needs no environment at
 // all. Both stay overridable by the environment, which is checked first.
-static void ensure_elf_gen_env(const char* model_path) {
+// Where the SHIPPED per-context ELF sets live, by shape. Duplicated from the
+// callers' own default because the cache redirect below has to seed from it.
+static const char* shipped_elf_dir(int H) {
+    return H == 2048 ? "npu-infer/captures/txn-elfs-1p7b"
+         : H == 2560 ? "npu-infer/captures/txn-elfs-4b"
+         : H == 4096 ? "npu-infer/captures/txn-elfs-8b"
+                     : "npu-infer/captures/txn-elfs";
+}
+
+static void mkdir_p(const std::string& d) {
+    std::string cur;
+    for (size_t i = 0; i <= d.size(); i++) {
+        if (i == d.size() || d[i] == '/') {
+            if (!cur.empty() && cur != "/") mkdir(cur.c_str(), 0755);
+            if (i < d.size()) cur += '/';
+        } else cur += d[i];
+    }
+}
+
+// Seed `dst` with symlinks to every file in `src` (once). The shipped set is the
+// baseline; contexts past its end are generated into `dst` as real files, so the
+// checkout stays clean and the cache is self-contained.
+static void seed_symlinks(const std::string& src, const std::string& dst) {
+    DIR* d = opendir(src.c_str());
+    if (!d) return;
+    char cwd[4096];
+    const std::string abs_src = (getcwd(cwd, sizeof cwd) ? std::string(cwd) : std::string()) + "/" + src;
+    struct dirent* e;
+    while ((e = readdir(d)) != nullptr) {
+        const std::string n = e->d_name;
+        if (n == "." || n == "..") continue;
+        const std::string to = dst + "/" + n;
+        struct stat st;
+        if (lstat(to.c_str(), &st) == 0) continue;    // already seeded or generated
+        if (symlink((abs_src + "/" + n).c_str(), to.c_str()) != 0) { /* best effort */ }
+    }
+    closedir(d);
+}
+
+static void ensure_elf_gen_env(const char* model_path, int H) {
     if (!model_path || !model_path[0]) return;
     const std::string mp(model_path);
     const size_t slash = mp.rfind('/');
@@ -207,14 +249,46 @@ static void ensure_elf_gen_env(const char* model_path) {
         struct stat st;
         if (stat(c.c_str(), &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR)) {
             setenv("RT_ELF_GEN", c.c_str(), 0);
-            return;
+            break;
+        }
+    }
+
+    // Send GENERATED contexts to a cache directory rather than into the ELF dir
+    // the caller would otherwise inherit, which for the shipped sets is
+    // npu-infer/captures/txn-elfs* INSIDE THE CHECKOUT. Since the default prompt
+    // cap now reaches 8191, a long prompt generates a 256-context window as a
+    // matter of course: one session's verification left 1540 untracked .elf/.txn
+    // pairs in the working tree. The shipped set is symlinked in as the baseline
+    // so a cache hit costs nothing and a miss still generates.
+    //
+    // Only when the caller has not chosen a directory: NPU_LAYER_ELF_DIR is an
+    // explicit instruction and is never second-guessed.
+    if (!getenv("NPU_LAYER_ELF_DIR")) {
+        std::string root;
+        if (const char* x = getenv("XDG_CACHE_HOME"); x && x[0])
+            root = std::string(x) + "/1bit-monster/elfs";
+        else if (const char* h = getenv("HOME"); h && h[0])
+            root = std::string(h) + "/.cache/1bit-monster/elfs";
+        if (!root.empty()) {
+            const std::string mdir = getenv("RT_ELF_MODEL") ? getenv("RT_ELF_MODEL") : "";
+            const size_t sl = mdir.rfind('/');
+            const std::string base = sl == std::string::npos ? mdir : mdir.substr(sl + 1);
+            if (!base.empty()) {
+                const std::string dir = root + "/" + base;
+                mkdir_p(dir);
+                const char* ship = shipped_elf_dir(H);
+                struct stat st;
+                if (stat(ship, &st) == 0 && S_ISDIR(st.st_mode)) seed_symlinks(ship, dir);
+                setenv("NPU_LAYER_ELF_DIR", dir.c_str(), 0);
+                if (npu_dbg_elf()) fprintf(stderr, "[runlist] generated ELFs go to %s (shipped set symlinked in)\n", dir.c_str());
+            }
         }
     }
 }
 
 extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* ids_file,
                                int H, int NC, int NH, int NKV, int IM, int NV) {
-    ensure_elf_gen_env(model_path);
+    ensure_elf_gen_env(model_path, H);
     // 1) prompt token ids (the engine feeds pre-tokenized ids; no tokenizer here)
     std::vector<int> ids;
     if (!read_ids(ids_file, ids)) { fprintf(stderr, "[runlist] no prompt tokens\n"); return 1; }

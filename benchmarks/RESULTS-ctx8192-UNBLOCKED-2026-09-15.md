@@ -102,13 +102,21 @@ checkout**, so that wrote 1540 untracked files during this round's verification
 (512 per long-prompt run, ~35 MB). They were removed again, and they are
 regenerable, but the default should not write into a git working tree at all.
 
-Until that is fixed, **set `NPU_LAYER_ELF_DIR` to a scratch directory for long
-runs**, or accept the untracked files and `git clean` them. The fix is to point
-generation at a cache directory (e.g. `~/.cache/1bit-monster/elfs/<model>/`,
-seeded with symlinks to the shipped set) whenever the caller has not chosen an
-ELF dir — the same place round 6's `ensure_elf_gen_env` already resolves the
-generator from. It is the next hygiene item, not a correctness one: the tokens
-and the timings above do not depend on where the ELFs live.
+**FIXED (same day).** `ensure_elf_gen_env` now sends generated contexts to a
+cache directory — `$XDG_CACHE_HOME/1bit-monster/elfs/<model>/`, or
+`~/.cache/1bit-monster/elfs/<model>/` — whenever the caller has not set
+`NPU_LAYER_ELF_DIR`, which is still never second-guessed. The shipped set is
+symlinked into the cache once as the baseline, so a hit costs nothing and a miss
+still generates.
+
+Verified: a default 5000-token run reports
+
+    [runlist] generated ELFs go to /home/bcloud/.cache/1bit-monster/elfs/Qwen3-0.6B-NPU2
+    RuntimeLayer: generating missing ELFs ctx=5001..5256 (... 5001 5256 8192)
+
+and `git status npu-infer/captures/` is **empty** afterwards, where the same run
+previously left 512 untracked pairs. The cache is 52 MB for that model. An
+explicit `NPU_LAYER_ELF_DIR` still suppresses the redirect entirely.
 
 ## Still open
 
