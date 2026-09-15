@@ -134,6 +134,18 @@ else
     printf '%s\n' "$census_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# Published coverage claims must equal the census. seo_sync rewrites them in the
+# daily apply workflows, but that is not a gate — four false-claim shapes
+# survived for months in wordings its patterns did not know (#2389 -> #2397).
+# This checks the content of site/*.html and README.md, not the patterns.
+total=$((total+1))
+if claims_out=$("$PYTHON" Testing/seo_claim_selfcheck.py 2>&1); then
+    echo "✓ seo_claims"
+else
+    echo "✗ seo_claims"
+    printf '%s\n' "$claims_out" | tail -10 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))
