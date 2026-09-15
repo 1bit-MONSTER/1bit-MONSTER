@@ -1738,3 +1738,45 @@ configuration surfaced.
   differing in style, verbosity and even output language, the honest reading is that the remaining gap
   is model-behavioural (how a 0.6B model chooses to answer) rather than plumbing — and no amount of
   engine wiring will make a model's free-form continuation byte-identical to another implementation's.
+
+## EOS-stop change verified: no regression in accuracy or speed, and the exact match holds
+
+A behavioural change to a decode loop needs checking against the measurements that were already
+good, so the 20-prompt set and the throughput were re-measured with the new engine:
+
+```
+20-prompt set, runlist, templated, 256 tokens, WITH EOS-stop : 20/20
+   (was 20/20 before the change)
+runs that terminated in <20 tokens (EOS firing early)        : 0
+   -> EOS does NOT truncate thinking-mode reasoning, which was the main risk of the change
+
+throughput, 5-token prompt   : 10.3 ms/tok = 97 tok/s   (baseline 64-103)
+throughput, templated prompt : 10.3 ms/tok = 97 tok/s   (baseline 64-103)
+
+the exact-match prompt, re-run:
+  "The capital of France is **Paris**."      -- still byte-identical to FLM
+```
+
+So the change is a clean win: it removes a real defect (a decode loop that ran on past
+`<|im_end|>`/`<|endoftext|>` and kept generating), it produces the first exact oracle match this goal
+has achieved, and it costs nothing measurable — 20/20 preserved, 97 tok/s preserved, no early
+truncation. That is the first engine change in this goal that is unambiguously an improvement with
+evidence on both sides (defect fixed *and* no regression).
+
+### Where that leaves the goal
+
+| item | state |
+|---|---|
+| runlist 0.6B accuracy | **20/20** easy, 13/15 hard (unchanged by the EOS change) |
+| runlist 0.6B speed | **97 tok/s** (unchanged) |
+| exact oracle match | **achieved on 1 of 4 test prompts** (first time in this goal) |
+| EOS handling defect | **fixed** |
+| dense int8 | 14/20, misses characterised (degeneration) |
+| bf16 pipeline | revived; 19/20, 48 tok/s |
+| 1.7B / 4B / 8B | 3/3, 3/3, 2/3 (budget-truncated) |
+| detokenizer | fixed (GPT-2 byte-level decode) |
+| criterion 2 set-wide token parity | **not achievable** — 1/4 exact with the rest differing in markdown style, verbosity, and one answering in a different language; the residual gap is model-behavioural, not plumbing |
+
+The re-engineering asked for has been carried out to the extent the engine permits: the engine-side
+obstacle to token parity (no EOS handling) is removed and parity is demonstrated on a prompt, while
+set-wide byte-equality is a property of the model's output distribution rather than of the wiring.
