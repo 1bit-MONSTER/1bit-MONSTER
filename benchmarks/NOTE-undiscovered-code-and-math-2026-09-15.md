@@ -114,17 +114,21 @@ still a real limit — `n1_core_attn.py:134` passes exactly four C1 tiles and
 `n_n = N // 128`, with indexes that **clamp to tile 0** rather than faulting — but
 it is not what was stopping the build.
 
-**Where N=1024 actually stands now:** with the compiler matched, it gets past
-parsing and fails later, at
+**Where N=1024 actually stands now:** with the compiler matched it gets past
+parsing and fails at resource allocation under both schemes
+(`allocated buffers exceeded available memory` / `Bank-aware allocation failed`),
+for two reasons that are both in the kernel contract:
 
-```
-Error: Resource allocation pipeline failed
-Compilation failed
-```
+- `attn_softmax_i8` is declared with **four** `C_ty` half-tiles, and the generator's
+  own comment says the contract *"reads only `c1[t>>7]`"* — `t/128`, i.e. the tile
+  index for `t < 512`. So the 512 ceiling is the **kernel's**, and a design that
+  fit at 1024 without changing it would be silently wrong;
+- **C1 is resident per N-tile on the core tile**: N=512 is 4×4 KB + 4 KB A2 = 20 KB,
+  N=1024 is 8×4 KB + 8 KB = 40 KB, past the tile's data memory.
 
-That is a design/capacity problem — more BD tasks, buffers and fifos than the array
-will place at that length — and it is the real next work item for L1, alongside the
-softmax arity. Nothing about it is a "blocker"; it is simply not done yet.
+The work is therefore: extend the softmax contract past four tiles **and** chunk or
+relocate C1 — together, then measure. Nothing about it is a blocker; it is two
+changes and a benchmark.
 
 **The lesson worth keeping:** I named two blockers in a row and both were
 artifacts — one of a stale path in a script this repo owns, one of inference from

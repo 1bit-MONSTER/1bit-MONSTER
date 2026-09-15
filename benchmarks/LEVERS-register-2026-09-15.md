@@ -58,16 +58,34 @@ later rebuild whose parser rejects the older dialect syntax. Pointing it at
 the shipped `attn_insts.txt` **byte-for-byte**. My earlier "the local mlir-aie WIP
 patch broke it" was a misdiagnosis, corrected in the survey note.
 
-**The arity limit is real but is not what stops the build.** `n1_core_attn.py:134`
-passes exactly four C1 tiles and `n_n = N // 128`, with indexes that clamp to tile
-0; that needs generalising to `n_n` tiles. With the compiler matched, N=1024 gets
-past parsing and fails on
+**And the 512 ceiling is real — there are two of them, and both are in the kernel
+contract, not in a flag.** With the compiler matched, N=1024 parses and then fails
+at resource allocation, the same way under both schemes:
 
 ```
-Error: Resource allocation pipeline failed
+--alloc-scheme=basic-sequential -> 'aie.tile' op allocated buffers exceeded available memory
+--alloc-scheme=bank-aware       -> 'aie.tile' op Bank-aware allocation failed
 ```
 
-— a design/capacity problem (BD tasks, buffers, fifos) at that length.
+The two causes, both visible in the source:
+
+1. **the softmax contract is 512 scores.** `attn_softmax_i8` is declared with four
+   `C_ty` half-tiles, and `n1_core_attn.py` says why in a comment: *"takes 4 C1
+   half-tiles + params + a2 (extra halves unused for N < 512 — **the contract reads
+   only `c1[t>>7]`**)"*. `t>>7` is `t/128`, i.e. the tile index for `t < 512`. At
+   N=1024 there are eight tiles and the kernel would read the first four — so a
+   design that *did* fit would be **silently wrong**, not merely slow. That is the
+   clamp, and it is in `attn_kernel_reference.cc`, not in the generator.
+2. **C1 is held resident on the core tile, one per N-tile.** `C1_ty` is a (8,128)
+   int32 = 4 KB tile, and `C1` allocates `n_n` of them per column plus `A2_ty` of
+   (8,N) int8: **N=512 → 4×4 KB + 4 KB = 20 KB; N=1024 → 8×4 KB + 8 KB = 40 KB**,
+   past the core tile's data memory. Hence the allocation failure.
+
+So the work to pass 512 is two changes that must land together — **extend the
+softmax contract past four tiles, and chunk (or relocate) C1 so 512+ scores are
+not all resident** — and then a measurement. A `C1` chunk of four also matches the
+softmax's current arity, which is why 512 is the natural break point rather than an
+arbitrary one.
 **Gate:** generalise the operand list, then build `NPU_ATTN_N=1024` and time it
 against the captured `attn_mha_1024_nh16.elf` on the same shape and prompt. Within
 ~1.5× of the capture, N=16384 is the route past 8192; another 1200× (this repo has
