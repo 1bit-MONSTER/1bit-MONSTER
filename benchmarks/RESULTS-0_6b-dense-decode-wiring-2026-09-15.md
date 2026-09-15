@@ -229,3 +229,38 @@ matched a single line (the engine prints `[n] toks: <id>` for the dense arm and
 itself. Two empty inputs are not evidence of parity. Both arms' formats had to be
 parsed separately; the divergence above is the real result. Any future parity check
 must assert the extraction produced a non-empty token sequence *before* comparing.
+
+## Prompt-dependence and the off-by-one: neither arm ignores the prompt, but they disagree numerically
+
+The divergence above could have been "one arm ignores the prompt" (this engine has a
+known trap where a mis-passed argument silently yields prompt-independent output). It
+is not. Running both arms on a second, disjoint prompt:
+
+```
+prompt A: 5 7 9 11 3          prompt B: 40 1079 264 3575 4749
+
+NPU_RUNLIST=0  prompt A  [0] boot=9   [1] 568  [2] 758  [3] 419  [4] 1142 ...
+NPU_RUNLIST=1  prompt A  [1] 8        [2] 323  [3] 400  [4] 4071 ...
+NPU_RUNLIST=0  prompt B  [0] boot=492 [1] 2408 [2] 42222 [3] 1823 [4] 5005
+NPU_RUNLIST=1  prompt B  [1] 492      [2] 676  [3] 1823 [4] 263  [5] 492
+```
+
+Two things follow.
+
+**1. Both arms are prompt-dependent** — the token sequences change completely between
+A and B on both arms, so neither is silently ignoring its input. The divergence is a
+numeric disagreement, not a plumbing failure.
+
+**2. The dense arm's `[0] boot=<n>` IS a generated token, not just a timing marker.**
+On prompt B it equals the runlist arm's `[1]` exactly (492 = 492). The two arms
+therefore label the same sequence with a one-step offset: dense `[n]` ↔ runlist
+`[n+1]`. Any future comparison must align on that offset, and the first-token
+comparison is dense `[0]` vs runlist `[1]` — which *matches* on prompt B (492) and
+does *not* match on prompt A (9 vs 8).
+
+So the arms agree on the first token for one prompt and disagree for another, then
+diverge on later tokens for both. That is the signature of two numerically different
+implementations (the dense i8 arm vs the runlist per-ctx-ELF arm), not of one arm
+being unplugged. **Which one matches a CPU/float reference is still open and is the
+gating question for the objective's "corr ≥ 0.998 + token parity"** — and it matters
+becausethe runlist arm is the one the FLM-parity numbers are reported from.
