@@ -166,7 +166,17 @@ int main(int argc, char** argv) {
                std::chrono::duration<double, std::milli>(s2 - s1).count());
 
         auto t0 = std::chrono::steady_clock::now();
-        for (int it = 0; it < iters; it++) ctx.run(q.data(), k.data(), v.data(), seq, ao.data());
+        // How many of these iterations actually produced an output? run() returns
+        // either way, so without this the average could be timing 20 no-ops.
+        int produced = 0;
+        for (int it = 0; it < iters; it++) {
+            std::memset(ctx.C2m, 0, (size_t)8 * ctx.hd * sizeof(int32_t));
+            ctx.bC2->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+            ctx.run(q.data(), k.data(), v.data(), seq, ao.data());
+            for (size_t i = 0; i < (size_t)8 * ctx.hd; i++)
+                if (ctx.C2m[i]) { produced++; break; }
+        }
+        printf("run(): %d/%d iterations wrote a non-zero C2\n", produced, iters);
         auto t1 = std::chrono::steady_clock::now();
         double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / iters;
         printf("seq=%d NPU ms_per_call=%.3f (iters=%d)\n", seq, ms, iters);

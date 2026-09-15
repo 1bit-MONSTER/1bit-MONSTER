@@ -424,6 +424,38 @@ core's synchronisation, it is answerable from the generator, and it should be se
 before any further performance work on this kernel — including before the L1 timing
 gate is attempted again.
 
+**Confirmed, and it is worse than "later launches": our kernel is good for exactly
+one call per process.** The timing loop now zeroes C2 on the host before each `run()`
+and checks whether the device wrote it back — without that check the loop's 6 s
+average could be timing no-ops, which is precisely the hole the original bench had:
+
+```
+ours,    N=512:  first run() -> max_abs_err 3.321927e-01   (a real result)
+                 loop         -> 0/2 iterations wrote a non-zero C2
+shipped, N=512:  first run() -> max_abs_err 5.60e+00 (new XRT) / 3.32e-01 (old)
+                 loop         -> 3/3 iterations wrote a non-zero C2
+```
+
+The first call is real — it matches the shipped kernel's output to the digit. Every
+call after it completes and writes nothing. So:
+
+- **Every timing number in this document for our kernel is the cost of a launch that
+  produced no output.** 6047 ms buys one correct answer and then 6047 ms per no-op.
+  That does not invalidate the *cost* measurements (the device really did take that
+  long), but it does mean they were never measuring a working pipeline, and the
+  "2000× slower" framing is wrong in kind: it is not a slow kernel, it is a kernel
+  that runs once.
+- This is very likely why the generated attention was never competitive and why the
+  lever has stayed open — and it means **the L1 timing gate cannot be evaluated at
+  all** until this is fixed, at any N.
+- The check that found it is three lines and should have been in the bench from the
+  start: a timing harness that does not verify each iteration did work will happily
+  report a confident number for a pipeline that stopped after its first call.
+
+Next action, unchanged in target but now unambiguous: **fix the core's re-arm in
+`n1_core_attn.py`** (the shipped kernel, on the identical instruction stream, re-arms),
+then re-run the gate. Not the softmax, not the PV, not the container.
+
 What the two containers differ in (from `xclbinutil`; topology, connectivity and
 kernel name are structurally identical):
 
