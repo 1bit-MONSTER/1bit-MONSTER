@@ -502,3 +502,43 @@ So two different binaries are in play and they are not interchangeable:
 |---|---|---|
 | family A/B at <=1024 keys | `~/1bit-MONSTER-goal/engine/npu/build/…` (the other session's) | measures the current default path, which is what that table is for; the selector is irrelevant at <=1024 |
 | Nanbeige above 1024 keys | `~/wt/family-head-block/engine/npu/build/…` (this branch) | only these carry the per-slot shaped-ELF selector, and the shaped `attn_mha_*_nh20_hd128.elf` must be installed where the loader searches |
+
+### Gate result #1 (2026-09-15 22:27Z): control PASSES, three new shapes FAIL
+
+First device window for this lane. The gate ran the bench for four shapes, EMU
+(host reference, kv-aware: `kv = h/gqa`) versus NPU, on the same packed buffers.
+
+| shape | EMU `max_abs_err` | NPU steady-state | verdict |
+|---|---:|---:|---|
+| **guard** nh8/nkv2/hd128/cols8 (byte-identical shipped kernel) | 4.564293e-02 | **4.564293e-02** | **MATCH** |
+| nb20 nh20/nkv4/hd128/cols4 | 4.646571e-02 | 1.233142e+01 | FAIL |
+| ph24 nh24/nkv8/hd128/cols8 | 2.403474e-02 | 1.064977e+01 | FAIL |
+| q35 nh16/nkv4/hd256/cols8 | 4.791975e-01 | 4.027662e-01 | FAIL (close, not equal) |
+
+Read the control first: the shipped kernel matches to seven digits on this bench, so
+the harness, the packing and the EMU are sound at the shape they were validated on.
+The three failures are therefore specific to this lane's changes, and every one of
+them is real — nb20's output is stable across iterations at 1.23e+01 where an
+all-zero output would score 6.17e-02, i.e. wrong values, not zeros.
+
+**Nothing gets installed, and no parity claim is made.** The bucket ELFs stay in
+`/tmp`; the shaped-ELF selector stays unexercised.
+
+Two caveats on the window itself, both of which mean these numbers need a clean
+re-run before they are used for diagnosis:
+
+1. **The window was not exclusive.** The runner's idle check caught an inter-row gap
+   in the other session's dense-20 loop, so the bench ran with 7 engine processes
+   resident (its 19th/20th row in flight). The register documents concurrency as
+   this box's largest variance source. The control passing argues the *verdicts* are
+   not contention artefacts, but the magnitudes should be re-measured idle.
+2. **Part 2 started in the same gap** and is now measuring the family A/B while the
+   other session's last row runs, so those numbers need a re-run too.
+
+Also fixed here: the runner reported the *first* `max_abs_err` in the NPU log, which
+is a pre-iteration stale-buffer read, so the guard was printed as a 7.19 failure
+whose own iterations said 4.564293e-02. The parser now takes the steady-state
+iteration value. That is the third false-reading of this session produced by my own
+harness (after the `${name}` collision and the `set -e` exit code), and the same rule
+covers all three: read the line that is the measurement, not the first line that
+looks like one.
