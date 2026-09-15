@@ -19,6 +19,7 @@
 #include <algorithm>    // std::fill (KV re-pack)
 #include <chrono>
 #include <sys/stat.h>   // struct stat / S_ISDIR for the model-dir probe
+#include <unistd.h>     // readlink(/proc/self/exe) — locate gen_layer_elfs
 
 #include <xrt/xrt_device.h>
 
@@ -86,7 +87,10 @@ static const char* sess_elf_default(int H) {
                      : "npu-infer/captures/txn-elfs";
 }
 
+static void ensure_elf_gen_env(const char* model_path);   // defined below
+
 extern "C" int npu_runlist_session_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
+    ensure_elf_gen_env(model_path);
     sess_build_cfg(H, NC, NH, NKV, IM, NV);
     if (!getenv("LAYER_XCLBIN")) {
         std::string xb = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + sess_model_dir(H) + "/layer.xclbin";
@@ -168,8 +172,49 @@ extern "C" void npu_runlist_session_free(void) {
     if (g_sess_mw) { model_free(g_sess_mw); g_sess_mw = nullptr; }
 }
 
+// Point RT_ELF_GEN / RT_ELF_MODEL at a generator and the model dir when the
+// caller has not, so a per-context ELF the shipped set does not cover is BUILT
+// instead of failing. Without this the shipped sets (ctx 1..2200) make every
+// prompt longer than ~2200 tokens abandon the fast paths and land on the
+// 112-launch split path at ~2 tok/s — measured, and the single largest cliff in
+// the engine: a 2500-token prompt ran at 2 tok/s while the same prompt inside
+// the shipped range runs at 57.
+//
+// The generator is looked up next to the engine binary first (build_npu.sh puts
+// it there), then in the source tree, so a normal build needs no environment at
+// all. Both stay overridable by the environment, which is checked first.
+static void ensure_elf_gen_env(const char* model_path) {
+    if (!model_path || !model_path[0]) return;
+    const std::string mp(model_path);
+    const size_t slash = mp.rfind('/');
+    if (slash != std::string::npos && !getenv("RT_ELF_MODEL"))
+        setenv("RT_ELF_MODEL", mp.substr(0, slash).c_str(), 0);
+    if (getenv("RT_ELF_GEN")) return;   // explicit wins
+    std::vector<std::string> cands;
+    {
+        char exe[4096];
+        const ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+        if (n > 0) {
+            exe[n] = 0;
+            std::string d(exe);
+            const size_t s = d.rfind('/');
+            if (s != std::string::npos) cands.push_back(d.substr(0, s) + "/gen_layer_elfs");
+        }
+    }
+    cands.push_back("engine/npu/build/gen_layer_elfs");
+    cands.push_back("npu-infer/tools/gen_layer_elfs");
+    for (const std::string& c : cands) {
+        struct stat st;
+        if (stat(c.c_str(), &st) == 0 && S_ISREG(st.st_mode) && (st.st_mode & S_IXUSR)) {
+            setenv("RT_ELF_GEN", c.c_str(), 0);
+            return;
+        }
+    }
+}
+
 extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* ids_file,
                                int H, int NC, int NH, int NKV, int IM, int NV) {
+    ensure_elf_gen_env(model_path);
     // 1) prompt token ids (the engine feeds pre-tokenized ids; no tokenizer here)
     std::vector<int> ids;
     if (!read_ids(ids_file, ids)) { fprintf(stderr, "[runlist] no prompt tokens\n"); return 1; }

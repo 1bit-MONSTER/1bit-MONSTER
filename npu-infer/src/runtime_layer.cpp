@@ -265,9 +265,9 @@ bool RuntimeLayerEngine::ensure_layer_kernel(int ctx_len) {
     std::vector<uint8_t> elfb;
     if (!read_file(fname, elfb)) {
         // Lazy on-demand ELF build (Round 38): if the per-ctx ELF is missing,
-        // shell out to tools/gen_layer_elfs (0.6ms/ELF — full MAX_L 4096 is
-        // ~2.5s). Configure via RT_ELF_GEN=<gen_layer_elfs path> and
-        // RT_ELF_MODEL=<model dir>; otherwise this stays a hard error.
+        // shell out to tools/gen_layer_elfs. Configure via
+        // RT_ELF_GEN=<gen_layer_elfs path> and RT_ELF_MODEL=<model dir>;
+        // otherwise this stays a hard error.
         const char* gen = getenv("RT_ELF_GEN");
         const char* mdir = getenv("RT_ELF_MODEL");
         if (gen && mdir && gen[0] && mdir[0]) {
@@ -278,11 +278,22 @@ bool RuntimeLayerEngine::ensure_layer_kernel(int ctx_len) {
             // return WRONG tokens. Pass it explicitly. Override only if the region
             // stride above is changed to match.
             const int kElfMaxL = 8192;
+            // Generate a WINDOW of contexts, not just this one. Measured on this
+            // box: 256 contexts in ONE invocation cost 0.225 s and reproduce the
+            // committed ELFs byte-for-byte (ctx2300 checked). One process per
+            // context is what made this path useless — a 2500-token RUNLIST
+            // prefill walks ctx 1..2500 and the shipped sets stop at 2200, so the
+            // whole missing range is needed at once. With a window that is two
+            // spawns instead of three hundred, and the run stays on the fast path
+            // rather than falling back to the 112-launch split path (~2 tok/s).
+            int win = 256;
+            if (const char* w = getenv("RT_ELF_WINDOW")) { int v = atoi(w); if (v > 0) win = v; }
+            const int lo = ctx_len, hi = ctx_len + win - 1;
             char cmd[1024];
             snprintf(cmd, sizeof(cmd), "%s %s %s %d %d %d", gen, mdir, elf_dir_.c_str(),
-                     ctx_len, ctx_len, kElfMaxL);
-            fprintf(stderr, "RuntimeLayer: generating missing ELF ctx=%d (%s)\n",
-                    ctx_len, cmd);
+                     lo, hi, kElfMaxL);
+            fprintf(stderr, "RuntimeLayer: generating missing ELFs ctx=%d..%d (%s)\n",
+                    lo, hi, cmd);
             int rc = system(cmd);
             if (rc == 0) read_file(fname, elfb);
         }

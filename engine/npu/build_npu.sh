@@ -132,6 +132,30 @@ ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLI
 echo "=== Building NPU engine variants ==="
 mkdir -p "$BUILDDIR"
 
+# gen_layer_elfs — the on-demand per-context ELF generator the runtime shells
+# out to when a context is missing (RT_ELF_GEN, see runtime_layer.cpp
+# ensure_layer_kernel). Built here, next to the engine binaries, because the
+# bridge looks for it there: the shipped per-context ELF sets stop at ctx 2200,
+# and without a generator every prompt longer than that abandons the fast paths
+# and lands on the 112-launch split path (~2 tok/s instead of ~57).
+# It needs gemma_text_npu for its family switch, which LIBS above does not list.
+GEN_SRC="$REPO_ROOT/npu-infer/tools/gen_layer_elfs.cpp"
+GEN_BIN="$BUILDDIR/gen_layer_elfs"
+if [ -f "$GEN_SRC" ]; then
+    echo ""
+    echo "--- gen_layer_elfs -> $GEN_BIN ---"
+    if ! $CXX -O2 -std=c++17 -include climits "$GEN_SRC" -o "$GEN_BIN" \
+        -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I/usr/include/aiebu \
+        -L"$FLM_LIB" \
+        -lqwen3_npu -lllama_npu -lnanbeige_npu -lphi4_npu -lqwen3_6_moe_npu \
+        -lgemma4e_npu -lgemma_text_npu -llfm2_npu \
+        -lgemm -lmha -lq4_npu_eXpress -L/usr/local/lib -laiebu -lxrt_coreutil -lxrt_core \
+        -Wl,-rpath,"$FLM_LIB" 2>&1 | tail -5; then
+        echo "WARN: gen_layer_elfs did not build — contexts beyond the shipped" >&2
+        echo "      per-context ELF sets will not be generated on demand." >&2
+    fi
+fi
+
 for model in "${MODELS[@]}"; do
     binary="$BUILDDIR/npu_engine_$model"
     echo ""
