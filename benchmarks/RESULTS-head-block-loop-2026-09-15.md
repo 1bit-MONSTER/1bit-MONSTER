@@ -542,3 +542,43 @@ iteration value. That is the third false-reading of this session produced by my 
 harness (after the `${name}` collision and the `set -e` exit code), and the same rule
 covers all three: read the line that is the measurement, not the first line that
 looks like one.
+
+### Isolation: the head-block loop is the broken change; nkv/gqa is fine
+
+Two shapes chosen so that one variable moves at a time, both at N=512 so neither the
+PV N-split (n_hd=1) nor the group loop (n_grp=1) is exercised:
+
+| shape | nh | cols | nkv | n_hpass | gqa | EMU | NPU | verdict |
+|---|---:|---:|---:|---:|---:|---:|---:|---|
+| B | 16 | 8 | 2 | **2** | 8 | 1.601470e-01 | 8.882848e+00 | **FAIL** |
+| C | 8 | 8 | 4 | 1 | **2** | 2.549498e-02 | 2.549498e-02 | **MATCH** |
+
+C proves the nkv>2 / gqa path works (nkv=4, gqa=2, seven-digit agreement), and B
+fails purely because its head count exceeds the 8 columns. Every passing case this
+session — the guard (nh8/cols8) and C (nh8/cols8) — has `n_hpass == 1`; every
+failing one (B, nb20, ph24, q35) has `n_hpass > 1`. Together with result #1, that
+narrows the bug to exactly one of this lane's changes: the multi-pass head feed.
+
+Not yet localised *within* that change. The candidates, all mine, in the order I
+would test them:
+
+1. the A-tile Q-row base `(hp*cols + c)*K_FRAME` — my read of the "one column per
+   head" contract;
+2. the pass's KV base `(hp*cols + cc)/gqa`;
+3. the pass's C2 writeback base `(hp*cols + c)*(M*K)`;
+4. `PARAM_ROW` moving to row `n_heads` once `nh > 15` (B is the first shape to use it:
+   nh8 and C keep row 15).
+
+The decisive localiser is a per-head error dump rather than a max: if heads 0..7 are
+exact and 8..15 wrong, the second pass's data path is at fault; if the error is spread
+across all heads, the feed corrupted the first pass too. `ck2` prints only the max
+today, so that dump is the next instrument to add.
+
+**Caveat, unchanged and important:** this run also failed to get an exclusive device.
+The wait loop capped at 600 s and then proceeded with 5 processes resident (the other
+session's dense-20 loop is still going), so B's magnitude and C's agreement both need
+a clean re-run before the *numbers* are quoted. The pass/fail split is unlikely to be
+a contention artefact — C agreeing to seven digits is not something contention
+produces — but that is an argument, not a measurement.
+
+My runner is stopped; it will not fire again on its own.
