@@ -9,7 +9,9 @@ VLM / UNKNOWN.
 """
 import json, os, re, subprocess, sys, time, urllib.request, urllib.parse
 
-ROOT = "/home/bcloud/1bit-MONSTER"
+# Derived, never hardcoded: a pinned /home/bcloud/1bit-MONSTER made this script
+# read and write the shared checkout when run from a worktree (#2387).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 COUNTS = os.path.join(ROOT, "Testing", "census_arch_counts.json")
 AGG = os.path.join(ROOT, "Testing", "census_modeltype_aggregate.json")
 INDEX = os.path.join(ROOT, "Testing", "census_model_index.json")
@@ -17,11 +19,14 @@ OUT = os.path.join(ROOT, "Testing", "census_tail_verify.json")
 MIN_C = int(sys.argv[1]) if len(sys.argv) > 1 else 5
 LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else 0
 
+# The out-of-scope class set has ONE definition, census_coverage.py (#2387).
+# This file used to carry a stale 14-entry copy of what is now a 276-entry
+# policy, so 262 policy-excluded classes were still probed here.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from census_coverage import NON_TEXT_GEN  # noqa: E402
+
 STRIP = ("forcausallm", "lmheadmodel", "model",
          "forconditionalgeneration", "forvisiontext2text")
-NON_TEXT_GEN = {"parlertts", "t5", "mt5", "t5with", "umt5", "bart", "mbart",
-                "marian", "longformerbart", "t5gemma", "bert", "roberta",
-                "xlmroberta", "xlnet"}
 
 
 def strip_arch(a):

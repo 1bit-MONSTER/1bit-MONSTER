@@ -25,16 +25,20 @@ model_type, sample_model}}. Prints the alias block.
 """
 import json, os, subprocess, sys
 
-ROOT = "/home/bcloud/1bit-MONSTER"
+# Derived, never hardcoded: a pinned /home/bcloud/1bit-MONSTER made this script
+# read and write the shared checkout when run from a worktree (#2387).
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DUMP = "/tmp/census_full_data.jsonl"
 COUNTS = os.path.join(ROOT, "Testing", "census_arch_counts.json")
 OUT = os.path.join(ROOT, "Testing", "census_classified.json")
 
+# The out-of-scope class set has ONE definition, census_coverage.py (#2387);
+# this file used to carry a stale 14-entry copy of the 276-entry policy.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from census_coverage import NON_TEXT_GEN  # noqa: E402
+
 STRIP = ("forcausallm", "lmheadmodel", "model",
          "forconditionalgeneration", "forvisiontext2text")
-NON_TEXT_GEN = {"parlertts", "t5", "mt5", "t5with", "umt5", "bart", "mbart",
-                "marian", "longformerbart", "t5gemma", "bert", "roberta",
-                "xlmroberta", "xlnet"}
 
 
 def strip_arch(a):

@@ -122,6 +122,18 @@ else
     printf '%s\n' "$docs_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# Census diagnostics: one repo root, one policy set. Three scripts pinned ROOT
+# to the shared checkout and two carried a stale NON_TEXT_GEN copy (#2387), so a
+# worktree run read the wrong inputs and wrote the wrong tree — invisible,
+# because the run succeeds against them.
+total=$((total+1))
+if census_out=$("$PYTHON" Testing/census_scripts_selfcheck.py 2>&1); then
+    echo "✓ census_scripts"
+else
+    echo "✗ census_scripts"
+    printf '%s\n' "$census_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))
