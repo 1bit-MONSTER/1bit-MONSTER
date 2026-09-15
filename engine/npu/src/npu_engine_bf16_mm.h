@@ -107,6 +107,12 @@ struct Bf16Mm {
     std::unique_ptr<xrt::ext::kernel> attn_kernel2k32; // (1024,2048] nh32 ELF (4B/8B)
     std::unique_ptr<xrt::elf> attn_elf2k32;
     std::unique_ptr<xrt::module> attn_module2k32;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel4k;   // (2048,4096] nh16 ELF, captured from FLM
+    std::unique_ptr<xrt::elf> attn_elf4k;
+    std::unique_ptr<xrt::module> attn_module4k;
+    std::unique_ptr<xrt::ext::kernel> attn_kernel4k32; // (2048,4096] nh32 ELF (4B/8B)
+    std::unique_ptr<xrt::elf> attn_elf4k32;
+    std::unique_ptr<xrt::module> attn_module4k32;
     std::unique_ptr<buffer<uint16_t>> attn_out, attn_act, attn_kv;
     int attn_qout = 2048;   // NH*HD: 2048 = nh16x128, but 4096 is BOTH nh32x128 and nh16x256
     int attn_hd = 128;      // model head_dim; every shipped attn ELF is hd128, so this
@@ -256,6 +262,14 @@ struct Bf16Mm {
                 load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", 1024, attn_elf1k32, attn_module1k32, attn_kernel1k32);
                 load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048, attn_elf2k, attn_module2k, attn_kernel2k);
                 load_attn_elf("NPU_ATTN_ELF_2048_NH32", "attn_mha_2048_nh32.elf", 2048, attn_elf2k32, attn_module2k32, attn_kernel2k32);
+                // (2048, 4096] slot. Both names are absent from a default checkout
+                // (only the nh16 4096 capture exists so far), and an absent file is
+                // NOT an error: the selector below then leaves kern null and the
+                // caller uses the CPU attention reference, which is slow but
+                // correct. Install a capture under either name to switch the range
+                // over to the NPU.
+                load_attn_elf("NPU_ATTN_ELF_4096", "attn_mha_4096_nh16.elf", 4096, attn_elf4k, attn_module4k, attn_kernel4k);
+                load_attn_elf("NPU_ATTN_ELF_4096_NH32", "attn_mha_4096_nh32.elf", 4096, attn_elf4k32, attn_module4k32, attn_kernel4k32);
                 // <=256 slot. The legacy name resolves to the embedded nh16 kernel's source,
                 // so for the six working models this loads the same thing the embedded kernel
                 // already is (harmless); for a family with a different shape it lets
@@ -265,6 +279,8 @@ struct Bf16Mm {
                     fprintf(stderr, "  Bf16Mm: no 1024-context attention ELF — npt>256 will use CPU attention\n");
                 if (!attn_kernel2k)
                     fprintf(stderr, "  Bf16Mm: no 2048-context attention ELF — npt>1024 will use CPU attention\n");
+                if (!attn_kernel4k && !attn_kernel4k32)
+                    fprintf(stderr, "  Bf16Mm: no 4096-context attention ELF — npt>2048 will use CPU attention\n");
             }
 #endif
         } catch (std::exception& ex) {
@@ -335,7 +351,18 @@ struct Bf16Mm {
         const bool nh16 = (attn_qout == 2048);
         const bool nh32 = (attn_qout == 4096);
         if (!attn_shape_ok) kern = nullptr;
-        else if (attn_tokens > 2048) kern = nullptr;                       // no capture this long
+        // Longest capture that exists today is 4096. Above it, fall through to the
+        // CPU reference rather than borrowing a shorter kernel: a capture used past
+        // its length is WRONG, not merely slower (a 1024-context ELF at npt=2048
+        // returned 19841 where the byte-exact path says 220).
+        else if (attn_tokens > 4096) kern = nullptr;                       // no capture this long
+        else if (attn_tokens > 2048)
+            // (2048, 4096]. As for the 2k slot, only the nh16/nh32 shapes may use a
+            // capture; every other shape (nh20 Nanbeige, nh24 Phi4) gets nullptr and
+            // the host reference, which is the correct-answer path for them.
+            kern = nh16 ? (attn_kernel4k ? attn_kernel4k.get() : nullptr)
+                 : nh32 ? (attn_kernel4k32 ? attn_kernel4k32.get() : nullptr)
+                        : nullptr;
         else if (attn_tokens > 1024)
             // Only nh16/nh32 have 2k captures. Any other shape must fall through
             // to the CPU reference rather than borrow the nh32 kernel: Nanbeige
