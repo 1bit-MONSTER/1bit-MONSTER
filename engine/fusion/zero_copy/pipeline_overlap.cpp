@@ -32,6 +32,7 @@ PipelineMetrics PipelineOverlap::run(
     std::function<void(int, int, float*, float*)> npu_ffn_fn)
 {
     PipelineMetrics m{};
+    double overlapped_ns = 0;
     auto t_start = std::chrono::steady_clock::now();
 
     const int NC = (int)cfg_.layer_count;
@@ -94,12 +95,22 @@ PipelineMetrics PipelineOverlap::run(
 
         uint64_t overlap_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - t_overlap_start).count();
-        m.overlap_efficiency += (double)overlap_ns;
+        overlapped_ns += (double)overlap_ns;
     }
 
     // Total time
     auto t_end = std::chrono::steady_clock::now();
     m.total_ms = std::chrono::duration<double, std::milli>(t_end - t_start).count();
+
+    // pipeline_overlap.h documents overlap_efficiency as the FRACTION of total
+    // time during which both engines were live; the loop above accumulates
+    // nanoseconds. Storing the raw ns sum in a field named "fraction" is what
+    // made every consumer print a value ~1000x too large (they scaled the ns/ms
+    // quotient by /10 instead of /1e4). Normalise here so the field means what
+    // its header says, and consumers print *100 for a percentage.
+    m.overlap_efficiency = (m.total_ms > 0.0)
+        ? (overlapped_ns / (m.total_ms * 1e6))
+        : 0.0;
     return m;
 }
 
