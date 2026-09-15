@@ -571,6 +571,35 @@ wiring or in what the core does across the acquire — not in the PV and not in 
 generator's feed order. Note that `C2_c` is depth 1 where `A2o_c` is depth 2, and
 that raising it to 2 did *not* fix the hang, so depth alone is not the answer.
 
+#### The sequence is provably FLM's — so the defect is the core's C2 protocol
+
+This is the sharpest constraint available and it took too long to apply. The
+instruction stream is not just "similar to" FLM's: `attn_insts.txt` for this build
+is **byte-identical** to the shipped file (verified by `sha256sum`,
+`f3d0a132bde24a60`). That stream *is* the sequence — every
+`shim_dma_single_bd_task`, every `dma_start_task`, every `dma_await_task`, every
+token. **Our sequence is a working sequence.** It cannot be the bug, and neither
+can the feed order, the task counts, the C2 drain's position, or anything else on
+that side of the design.
+
+Which leaves exactly one artifact that differs: **the core ELF**. FLM's core
+satisfies the C2 handshake in that stream; ours does not. The failure is in what
+our core does across `C2_c[c].acquire(ObjectFifoPort.Produce, 1)`.
+
+That also re-reads the bisect honestly. "Front half only" was fast (4.6 ms) — but
+it removed the C2 task *from the sequence as well*, so it was not a core-only
+comparison. The clean statement is the one above: with FLM's sequence intact, our
+core hangs; with the C2 task deleted, nothing waits for our core and the measure
+falls to its true value.
+
+Consequence for the next attempt: **do not touch the sequence** — it is the one
+part of this design known to be correct, and changing it (as the C2-drain-position
+experiment did) invalidates the byte-identity that makes the rest diagnosable. The
+work is in the core: how the C2 buffer is acquired and released relative to the A2o
+produce and the PV consumes. The A2o path uses the same core→mem→shim pattern with
+the same two-arg `object_fifo_link` and *does* satisfy its handshake, so the
+difference is in the core's use of the C2 buffer, not in the wiring.
+
 **Fork (2) is already answered, from the repo rather than from a new design.** The
 i8 decode GEMMs (`final_i8_D_*`) are built by the *same* generators with the *same*
 flags — `grep` over `build_*.sh` shows every one of them using
