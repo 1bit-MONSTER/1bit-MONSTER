@@ -21,7 +21,9 @@
 #   NPU_ATTN_K=256        head dim (default 128); K != 128 needs the PV N-split,
 #                         which divides K into K/n tiles of n=128
 #   NPU_ATTN_COLS=8       AIE columns == q heads per pass (default 8)
-#   NPU_ATTN_HEADS=<nh>   total q heads, when nh > cols (needs the head-block loop)
+#   NPU_ATTN_HEADS=<nh>   total q heads, when nh > cols (multi-pass head blocks;
+#                         must be a multiple of --cols)
+#   NPU_ATTN_NKV=<nkv>    kv heads (default 2 -> gqa 4)
 #   NPU_ATTN_XCLBIN=/path NPU_ATTN_INSTS=/path   override the outputs (default
 #                         writes the shipped engine/npu/xclbins/attn{.xclbin,_insts.txt})
 set -euo pipefail
@@ -54,8 +56,10 @@ XCLBIN_OUT="${NPU_ATTN_XCLBIN:-$G/../xclbins/attn.xclbin}"
 INSTS_OUT="${NPU_ATTN_INSTS:-$G/../xclbins/attn_insts.txt}"
 HEADS_ARG=""
 [ -n "${NPU_ATTN_HEADS:-}" ] && HEADS_ARG="-H ${NPU_ATTN_HEADS}"
+NKV_ARG=""
+[ -n "${NPU_ATTN_NKV:-}" ] && NKV_ARG="--nkv ${NPU_ATTN_NKV}"
 $PYTHON "$G/n1_core_attn.py" -M 8 -K "${NPU_ATTN_K:-128}" -N "${NPU_ATTN_N:-512}" \
-    -m 8 -k 64 -n 128 -c "${NPU_ATTN_COLS:-8}" -b 2 $HEADS_ARG \
+    -m 8 -k 64 -n 128 -c "${NPU_ATTN_COLS:-8}" $NKV_ARG -b 2 $HEADS_ARG \
     > "$W/design.mlir" 2>/dev/null
 cd "$W"  # link_with resolves attn_kernel.o from CWD
 export PATH=/home/bcloud/Xilinx/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH

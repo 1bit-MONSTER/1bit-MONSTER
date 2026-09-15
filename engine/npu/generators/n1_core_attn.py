@@ -39,16 +39,19 @@ def main():
     parser.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols (q heads)")
     parser.add_argument("-H", "--heads", type=int, default=0,
                         help="total q heads in the model (default 0 = same as --cols). "
-                             "Must equal --cols until the multi-pass head-block loop exists.")
+                             "--heads greater than --cols runs the multi-pass head-block "
+                             "loop; it must be a multiple of --cols.")
+    parser.add_argument("--nkv", type=int, default=2,
+                        help="kv heads; gqa = --cols / --nkv (default 2 -> gqa 4)")
     parser.add_argument("-b", "--batch-size", type=int, default=2)
     args = parser.parse_args()
     with mlir_mod_ctx() as ctx:
         my_attn(args.M, args.K, args.N, args.m, args.k, args.n, args.cols,
-                args.batch_size, args.heads or args.cols)
+                args.batch_size, args.heads or args.cols, args.nkv)
         print(ctx.module)
 
 
-def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
+def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, nkv=2):
     dtype_in = np.int8
     dtype_out = np.int32
     K_FRAME = 2048   # fused-style A-frame K (the small-K 4D tap fails on AIE2P)
@@ -74,22 +77,33 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
     n_hd = K // n           # PV head-dim tiles (1 for hd128/n128 = unchanged)
     n_k = K // k            # QK^T K-chunks (hd/64 = 2)
     # The design is ONE CORE COLUMN PER Q HEAD: column c is fed from q row
-    # c*K_FRAME and writes back head c. So a model with more heads than columns
-    # gets a kernel for only the first n_aie_cols heads -- and, like the K>n trap
-    # below, nothing reports it: the xclbin builds, loads and runs, and the host
-    # silently gets the wrong heads. There is no multi-pass head-block loop yet,
-    # so require the caller to say how many heads the model has and fail if it
-    # does not match the column count. See
-    # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md for the loop that
-    # would lift this (Nanbeige nh20, Phi4 nh24, Qwen3.5-4B nh16).
+    # (hp*cols + c)*K_FRAME and writes back that head, where hp is the head-block
+    # pass. A model with more heads than columns is therefore served by
+    # n_hpass = ceil(H/cols) passes over the SAME columns: the q BO carries all H
+    # head rows, and each pass feeds the next cols of them. Before the head-block
+    # loop existed, such a model got a kernel for only the first cols heads and
+    # NOTHING reported it -- the xclbin builds, loads and runs, and the host
+    # silently gets the wrong heads. See
+    # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md.
+    #
+    # n_hpass == 1 is the original single-pass path and stays byte-identical (the
+    # `for hp in range(n_hpass)` loops below unroll to the old expressions).
     if n_heads is None:
         n_heads = n_aie_cols
-    assert n_heads == n_aie_cols, (
-        f"model has {n_heads} q heads but the kernel has {n_aie_cols} columns "
-        f"(one head per column): it would compute only the first {n_aie_cols} "
-        f"heads and the toolchain would not report it. Pass --cols {n_heads}, "
-        f"or implement the multi-pass head-block loop."
+    assert n_heads % n_aie_cols == 0, (
+        f"model has {n_heads} q heads, which is not a multiple of the {n_aie_cols} "
+        f"columns: a partial head block would read past the end of the q BO. "
+        f"Pick --cols dividing --heads (and the QK^T tiling)."
     )
+    n_hpass = n_heads // n_aie_cols      # head-block passes (1 = unchanged)
+    assert nkv >= 1 and n_aie_cols % nkv == 0, (
+        f"--nkv {nkv} must divide --cols {n_aie_cols} (gqa = cols/nkv)"
+    )
+    gqa = n_aie_cols // nkv              # q heads per kv head within a pass
+    # Head rows live in rows 0..H-1 of the fused A-frame; the params tile rides
+    # row 15 of the frame, so it must move out of the head range once H > 15.
+    # H <= 15 keeps row 15 -- that is what preserves the old instruction stream.
+    PARAM_ROW = 15 if n_heads <= 15 else n_heads
     n_n = N // n            # QK^T N-tiles (MAX_SEQ/128 = 2)
     # CHUNKING (L1). Every C1 tile is resident on the core tile, so N=1024 needs
     # 8x4KB = 32KB plus A2 and overruns core data memory. Process the score range
@@ -103,7 +117,6 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
         assert N % (G_TILES * n) == 0, "chunked path needs N a multiple of 512"
         assert G_TILES * n == 512
     n_k_pv = N // k         # PV K-chunks (MAX_SEQ/64 = 4)
-    nkv = 2
 
     @device(AIEDevice.npu2)
     def device_body():
@@ -271,160 +284,79 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                             C2_c[c].release(ObjectFifoPort.Produce, 1)
 
         @runtime_sequence(
-            np.ndarray[(16 * K_FRAME,), np.dtype[dtype_in]],  # q (bo0, fused A-frame)
+            # q (bo0, fused A-frame): one row per q head plus the params row, so
+            # the frame is (max(16, PARAM_ROW+1)) head rows. 16 rows is the old
+            # size and stays for nh <= 15, which is what keeps the nh8/nh16
+            # instruction stream unchanged.
+            np.ndarray[(max(16, PARAM_ROW + 1) * K_FRAME,), np.dtype[dtype_in]],
             np.ndarray[(nkv * K * N,), np.dtype[dtype_in]],  # K^T (bo1)
-            np.ndarray[(n_aie_cols * M * K,), np.dtype[dtype_out]],  # C2 (bo2, one (8,128) tile per column)
+            # C2 (bo2): one (m,n) tile per head per PV head-dim tile, i.e.
+            # n_heads * M * K int32 (n_hd tiles per head are contiguous).
+            np.ndarray[(n_heads * M * K,), np.dtype[dtype_out]],
             np.ndarray[(nkv * N * K,), np.dtype[dtype_in]],  # V (bo3)
             np.ndarray[(32 + n_aie_cols * M * N,), np.dtype[dtype_in]],  # scratch (bo4)
         )
         def seq(Q, KT, C2, V, SCR):
-          if n_grp > 1:
-            # CHUNKED: the core consumes, per group g, n_k*G_TILES (A,B) pairs,
-            # then ONE params tile, then produces one (8,512) A2 slice. The feed
-            # below must be in exactly that order -- the A-stream and B-stream
-            # FIFO counts are matched to the core's acquires.
-            for g in range(n_grp):
-                for ki in range(n_k):
-                    for ntl in range(G_TILES):
-                        at_list, bt_list = [], []
-                        for c in range(n_aie_cols):
-                            at = shim_dma_single_bd_task(
-                                A_s[c], Q, offset=c * K_FRAME + ki * k,
-                                sizes=[1, k // 8, 8, 8], strides=[8 * K_FRAME, 8, K_FRAME, 1],
-                                issue_token=True)
-                            dma_start_task(at); at_list.append(at)
-                        for cc in range(n_aie_cols):
-                            kvv = cc // 4
-                            bt = shim_dma_single_bd_task(
-                                B_s[cc], KT,
-                                offset=kvv * (K * N) + (ki * (N // n) + g * G_TILES + ntl) * (k * n),
-                                sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
-                            dma_start_task(bt); bt_list.append(bt)
-                        dma_await_task(*at_list, *bt_list)
-                        dma_free_task(*at_list, *bt_list)
-                pt_list = []
-                for c in range(n_aie_cols):
-                    # params are PER GROUP: group g reads its own 8-float set
-                    # at 15*K_FRAME + g*64, so the causal mask can use the
-                    # group-local key count (seq - 512*g, clamped). Without
-                    # this every group would mask against the global seq and
-                    # every group past the first would be numerically wrong.
-                    pt = shim_dma_single_bd_task(A_s[c], Q, offset=15 * K_FRAME + g * 64,
-                                                 sizes=[1, 1, 1, 512], strides=[1, 1, 1, 1],
-                                                 issue_token=True)
-                    dma_start_task(pt); pt_list.append(pt)
-                a2_list = []
-                for c in range(n_aie_cols):
-                    a2t = shim_dma_single_bd_task(
-                        A2o_s[c], SCR, offset=32 + c * (M * N) + g * (G_TILES * n),
-                        sizes=[1, 1, m, G_TILES * n], strides=[4, 4, N, 1], issue_token=True)
-                    dma_start_task(a2t); a2_list.append(a2t)
-                # the params tiles ride the same A stream; await/free them WITH
-                # the writeback so the A FIFO stays in lockstep with the core's
-                # per-group acquires (n_k*G_TILES A + 1 params each). Leaving
-                # them pending (as the first cut did) stalls group 2's QK^T.
-                dma_await_task(*a2_list, *pt_list)
-                dma_free_task(*a2_list, *pt_list)
-            # ── PV phase. The chunked core has always had its Cb/C2 block, but
-            # this sequence never fed it: the group loop above ends at the A2
-            # writeback, so the core's n_k_pv A/B acquires blocked forever and
-            # C2 was never read. A = A2 read back from bo4 (row stride N, the
-            # layout the strided writeback above produces), B = V[kv] tile.
-            # PV N-split: the core consumes hi-major (n_hd output tiles, each
-            # n_k_pv (A2,V) pairs), so the feed is hi-major too, and the V tile
-            # is a (k,n) slice of a K-wide row instead of a flat k*n block.
-            for hi in range(n_hd):
-              for ki in range(n_k_pv):
-                at_list, bt_list = [], []
-                for c in range(n_aie_cols):
-                    at = shim_dma_single_bd_task(
-                        A_s[c], SCR, offset=32 + c * (M * N) + ki * k,
-                        sizes=[1, k // 8, 8, 8], strides=[8 * N, 8, N, 1], issue_token=True)
-                    dma_start_task(at); at_list.append(at)
-                for cc in range(n_aie_cols):
-                    kvv = cc // 4
-                    if n_hd == 1:
-                        # unchanged single-tile form (byte-identity guard)
-                        bt = shim_dma_single_bd_task(
-                            B_s[cc], V,
-                            offset=kvv * (N * K) + ki * (k * n),
-                            sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
-                    else:
-                        # strides[0..1] = 4, not 1: the verifier checks every
-                        # stride for 4-byte divisibility even when that dim is
-                        # size 1 (same trap as the A2 writeback). Semantically
-                        # identical -- those dims are never applied.
-                        bt = shim_dma_single_bd_task(
-                            B_s[cc], V,
-                            offset=kvv * (N * K) + ki * (k * K) + hi * n,
-                            sizes=[1, 1, k, n], strides=[4, 4, K, 1], issue_token=True)
-                    dma_start_task(bt); bt_list.append(bt)
-                dma_await_task(*at_list, *bt_list)
-                dma_free_task(*at_list, *bt_list)
-            # C2 writeback per head: n_hd tiles of (m,n) per column, i.e. the
-            # same flat (M,K) region at c*(M*K) + hi*(M*n). n_hd == 1 keeps the
-            # original single M*K task.
-            ctasks = []
-            for c in range(n_aie_cols):
-                if n_hd == 1:
-                    ct = shim_dma_single_bd_task(
-                        C2_s[c], C2, offset=c * (M * K),
-                        sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
-                    dma_start_task(ct); ctasks.append(ct)
-                else:
-                    for hi in range(n_hd):
-                        ct = shim_dma_single_bd_task(
-                            C2_s[c], C2, offset=c * (M * K) + hi * (M * n),
-                            sizes=[1, 1, 1, M * n], strides=[1, 1, 1, 1], issue_token=True)
-                        dma_start_task(ct); ctasks.append(ct)
-            dma_await_task(*ctasks)
-            dma_free_task(*ctasks)
-          else:
-              # QK^T phase: per (ki, nt): A = q row c chunk ki (offset c*K+ki*k,
-              # A-layout strides [1, 8, K, 1] sizes [1, k/8, 8, 8]); B = K^T tile
-              # (ki, nt) per column's kv.
-              for ki in range(n_k):
-                  for nt in range(n_n):
-                      at_list, bt_list = [], []
-                      for c in range(n_aie_cols):
-                          # A in the fused M×Kframe layout: K_frame=2048 (the
-                          # small-K 4D tap pattern does not deliver on AIE2P).
-                          at = shim_dma_single_bd_task(
-                              A_s[c], Q, offset=c * K_FRAME + ki * k,
-                              sizes=[1, k // 8, 8, 8], strides=[8 * K_FRAME, 8, K_FRAME, 1],
-                              issue_token=True)
-                          dma_start_task(at); at_list.append(at)
-                      for cc in range(n_aie_cols):
-                          kvv = cc // 4
-                          bt = shim_dma_single_bd_task(
-                              B_s[cc], KT,
-                              offset=kvv * (K * N) + (ki * (N // n) + nt) * (k * n),
-                              sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
-                          dma_start_task(bt); bt_list.append(bt)
-                      dma_await_task(*at_list, *bt_list)
-                      dma_free_task(*at_list, *bt_list)
-              # params (8 floats) ride each A stream as one (8,64) tile — the
-              # floats in the first 32 bytes (A-layout row 0).
-              pt_list = []
-              for c in range(n_aie_cols):
-                  # params ride the A stream from the q BO's padding (row 15
-                  # of the A-frame — never read by the head taps).
-                  pt = shim_dma_single_bd_task(A_s[c], Q, offset=15 * K_FRAME,
-                                               sizes=[1, 1, 1, 512], strides=[1, 1, 1, 1],
-                                               issue_token=True)
-                  dma_start_task(pt); pt_list.append(pt)
-              # A2 writeback: core A2 (A-layout, r*N + (t/8)*8 + t%8) → bo4[32..]
-              a2_list = []
-              for c in range(n_aie_cols):
-                  a2t = shim_dma_single_bd_task(
-                      A2o_s[c], SCR, offset=32 + c * (M * N),
-                      sizes=[1, 1, 1, M * N], strides=[1, 1, 1, 1], issue_token=True)
-                  dma_start_task(a2t); a2_list.append(a2t)
-              # the PV reads the A2 back — the writebacks MUST be visible first.
-              dma_await_task(*a2_list)
-              dma_free_task(*a2_list)
-              # PV phase: A = A2 from bo4 (A-layout), B = V[kv] tile. hi-major
-              # so it matches the core's per-head-dim-block acquires.
+          # Head-block passes (n_hpass == 1 is the original single pass; the
+          # loop is Python-unrolled, so the emitted stream is unchanged
+          # for one pass). Each pass feeds the next n_aie_cols head rows
+          # of the q frame and writes its own C2 head region.
+          for hp in range(n_hpass):
+            if n_grp > 1:
+              # CHUNKED: the core consumes, per group g, n_k*G_TILES (A,B) pairs,
+              # then ONE params tile, then produces one (8,512) A2 slice. The feed
+              # below must be in exactly that order -- the A-stream and B-stream
+              # FIFO counts are matched to the core's acquires.
+              for g in range(n_grp):
+                  for ki in range(n_k):
+                      for ntl in range(G_TILES):
+                          at_list, bt_list = [], []
+                          for c in range(n_aie_cols):
+                              at = shim_dma_single_bd_task(
+                                  A_s[c], Q, offset=(hp * n_aie_cols + c) * K_FRAME + ki * k,
+                                  sizes=[1, k // 8, 8, 8], strides=[8 * K_FRAME, 8, K_FRAME, 1],
+                                  issue_token=True)
+                              dma_start_task(at); at_list.append(at)
+                          for cc in range(n_aie_cols):
+                              kvv = (hp * n_aie_cols + cc) // gqa
+                              bt = shim_dma_single_bd_task(
+                                  B_s[cc], KT,
+                                  offset=kvv * (K * N) + (ki * (N // n) + g * G_TILES + ntl) * (k * n),
+                                  sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                              dma_start_task(bt); bt_list.append(bt)
+                          dma_await_task(*at_list, *bt_list)
+                          dma_free_task(*at_list, *bt_list)
+                  pt_list = []
+                  for c in range(n_aie_cols):
+                      # params are PER GROUP: group g reads its own 8-float set
+                      # at 15*K_FRAME + g*64, so the causal mask can use the
+                      # group-local key count (seq - 512*g, clamped). Without
+                      # this every group would mask against the global seq and
+                      # every group past the first would be numerically wrong.
+                      pt = shim_dma_single_bd_task(A_s[c], Q, offset=PARAM_ROW * K_FRAME + g * 64,
+                                                   sizes=[1, 1, 1, 512], strides=[1, 1, 1, 1],
+                                                   issue_token=True)
+                      dma_start_task(pt); pt_list.append(pt)
+                  a2_list = []
+                  for c in range(n_aie_cols):
+                      a2t = shim_dma_single_bd_task(
+                          A2o_s[c], SCR, offset=32 + c * (M * N) + g * (G_TILES * n),
+                          sizes=[1, 1, m, G_TILES * n], strides=[4, 4, N, 1], issue_token=True)
+                      dma_start_task(a2t); a2_list.append(a2t)
+                  # the params tiles ride the same A stream; await/free them WITH
+                  # the writeback so the A FIFO stays in lockstep with the core's
+                  # per-group acquires (n_k*G_TILES A + 1 params each). Leaving
+                  # them pending (as the first cut did) stalls group 2's QK^T.
+                  dma_await_task(*a2_list, *pt_list)
+                  dma_free_task(*a2_list, *pt_list)
+              # ── PV phase. The chunked core has always had its Cb/C2 block, but
+              # this sequence never fed it: the group loop above ends at the A2
+              # writeback, so the core's n_k_pv A/B acquires blocked forever and
+              # C2 was never read. A = A2 read back from bo4 (row stride N, the
+              # layout the strided writeback above produces), B = V[kv] tile.
+              # PV N-split: the core consumes hi-major (n_hd output tiles, each
+              # n_k_pv (A2,V) pairs), so the feed is hi-major too, and the V tile
+              # is a (k,n) slice of a K-wide row instead of a flat k*n block.
               for hi in range(n_hd):
                 for ki in range(n_k_pv):
                   at_list, bt_list = [], []
@@ -434,7 +366,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                           sizes=[1, k // 8, 8, 8], strides=[8 * N, 8, N, 1], issue_token=True)
                       dma_start_task(at); at_list.append(at)
                   for cc in range(n_aie_cols):
-                      kvv = cc // 4
+                      kvv = (hp * n_aie_cols + cc) // gqa
                       if n_hd == 1:
                           # unchanged single-tile form (byte-identity guard)
                           bt = shim_dma_single_bd_task(
@@ -442,7 +374,10 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                               offset=kvv * (N * K) + ki * (k * n),
                               sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
                       else:
-                          # strides[0..1] = 4: see the chunked branch above.
+                          # strides[0..1] = 4, not 1: the verifier checks every
+                          # stride for 4-byte divisibility even when that dim is
+                          # size 1 (same trap as the A2 writeback). Semantically
+                          # identical -- those dims are never applied.
                           bt = shim_dma_single_bd_task(
                               B_s[cc], V,
                               offset=kvv * (N * K) + ki * (k * K) + hi * n,
@@ -450,23 +385,112 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                       dma_start_task(bt); bt_list.append(bt)
                   dma_await_task(*at_list, *bt_list)
                   dma_free_task(*at_list, *bt_list)
-              # C2 writeback per head: n_hd tiles of (m,n) per column at
-              # c*(M*K) + hi*(M*n) (the flat (M,K) layout the host already reads).
+              # C2 writeback per head: n_hd tiles of (m,n) per column, i.e. the
+              # same flat (M,K) region at c*(M*K) + hi*(M*n). n_hd == 1 keeps the
+              # original single M*K task.
               ctasks = []
               for c in range(n_aie_cols):
                   if n_hd == 1:
                       ct = shim_dma_single_bd_task(
-                          C2_s[c], C2, offset=c * (M * K),
+                          C2_s[c], C2, offset=(hp * n_aie_cols + c) * (M * K),
                           sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
                       dma_start_task(ct); ctasks.append(ct)
                   else:
                       for hi in range(n_hd):
                           ct = shim_dma_single_bd_task(
-                              C2_s[c], C2, offset=c * (M * K) + hi * (M * n),
+                              C2_s[c], C2, offset=(hp * n_aie_cols + c) * (M * K) + hi * (M * n),
                               sizes=[1, 1, 1, M * n], strides=[1, 1, 1, 1], issue_token=True)
                           dma_start_task(ct); ctasks.append(ct)
-              dma_await_task(*ctasks, *pt_list)
-              dma_free_task(*ctasks, *pt_list)
+              dma_await_task(*ctasks)
+              dma_free_task(*ctasks)
+            else:
+                # QK^T phase: per (ki, nt): A = q row c chunk ki (offset c*K+ki*k,
+                # A-layout strides [1, 8, K, 1] sizes [1, k/8, 8, 8]); B = K^T tile
+                # (ki, nt) per column's kv.
+                for ki in range(n_k):
+                    for nt in range(n_n):
+                        at_list, bt_list = [], []
+                        for c in range(n_aie_cols):
+                            # A in the fused M×Kframe layout: K_frame=2048 (the
+                            # small-K 4D tap pattern does not deliver on AIE2P).
+                            at = shim_dma_single_bd_task(
+                                A_s[c], Q, offset=(hp * n_aie_cols + c) * K_FRAME + ki * k,
+                                sizes=[1, k // 8, 8, 8], strides=[8 * K_FRAME, 8, K_FRAME, 1],
+                                issue_token=True)
+                            dma_start_task(at); at_list.append(at)
+                        for cc in range(n_aie_cols):
+                            kvv = (hp * n_aie_cols + cc) // gqa
+                            bt = shim_dma_single_bd_task(
+                                B_s[cc], KT,
+                                offset=kvv * (K * N) + (ki * (N // n) + nt) * (k * n),
+                                sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                            dma_start_task(bt); bt_list.append(bt)
+                        dma_await_task(*at_list, *bt_list)
+                        dma_free_task(*at_list, *bt_list)
+                # params (8 floats) ride each A stream as one (8,64) tile — the
+                # floats in the first 32 bytes (A-layout row 0).
+                pt_list = []
+                for c in range(n_aie_cols):
+                    # params ride the A stream from the q BO's padding (row 15
+                    # of the A-frame — never read by the head taps).
+                    pt = shim_dma_single_bd_task(A_s[c], Q, offset=PARAM_ROW * K_FRAME,
+                                                 sizes=[1, 1, 1, 512], strides=[1, 1, 1, 1],
+                                                 issue_token=True)
+                    dma_start_task(pt); pt_list.append(pt)
+                # A2 writeback: core A2 (A-layout, r*N + (t/8)*8 + t%8) → bo4[32..]
+                a2_list = []
+                for c in range(n_aie_cols):
+                    a2t = shim_dma_single_bd_task(
+                        A2o_s[c], SCR, offset=32 + c * (M * N),
+                        sizes=[1, 1, 1, M * N], strides=[1, 1, 1, 1], issue_token=True)
+                    dma_start_task(a2t); a2_list.append(a2t)
+                # the PV reads the A2 back — the writebacks MUST be visible first.
+                dma_await_task(*a2_list)
+                dma_free_task(*a2_list)
+                # PV phase: A = A2 from bo4 (A-layout), B = V[kv] tile. hi-major
+                # so it matches the core's per-head-dim-block acquires.
+                for hi in range(n_hd):
+                  for ki in range(n_k_pv):
+                    at_list, bt_list = [], []
+                    for c in range(n_aie_cols):
+                        at = shim_dma_single_bd_task(
+                            A_s[c], SCR, offset=32 + c * (M * N) + ki * k,
+                            sizes=[1, k // 8, 8, 8], strides=[8 * N, 8, N, 1], issue_token=True)
+                        dma_start_task(at); at_list.append(at)
+                    for cc in range(n_aie_cols):
+                        kvv = (hp * n_aie_cols + cc) // gqa
+                        if n_hd == 1:
+                            # unchanged single-tile form (byte-identity guard)
+                            bt = shim_dma_single_bd_task(
+                                B_s[cc], V,
+                                offset=kvv * (N * K) + ki * (k * n),
+                                sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                        else:
+                            # strides[0..1] = 4: see the chunked branch above.
+                            bt = shim_dma_single_bd_task(
+                                B_s[cc], V,
+                                offset=kvv * (N * K) + ki * (k * K) + hi * n,
+                                sizes=[1, 1, k, n], strides=[4, 4, K, 1], issue_token=True)
+                        dma_start_task(bt); bt_list.append(bt)
+                    dma_await_task(*at_list, *bt_list)
+                    dma_free_task(*at_list, *bt_list)
+                # C2 writeback per head: n_hd tiles of (m,n) per column at
+                # c*(M*K) + hi*(M*n) (the flat (M,K) layout the host already reads).
+                ctasks = []
+                for c in range(n_aie_cols):
+                    if n_hd == 1:
+                        ct = shim_dma_single_bd_task(
+                            C2_s[c], C2, offset=(hp * n_aie_cols + c) * (M * K),
+                            sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
+                        dma_start_task(ct); ctasks.append(ct)
+                    else:
+                        for hi in range(n_hd):
+                            ct = shim_dma_single_bd_task(
+                                C2_s[c], C2, offset=(hp * n_aie_cols + c) * (M * K) + hi * (M * n),
+                                sizes=[1, 1, 1, M * n], strides=[1, 1, 1, 1], issue_token=True)
+                            dma_start_task(ct); ctasks.append(ct)
+                dma_await_task(*ctasks, *pt_list)
+                dma_free_task(*ctasks, *pt_list)
 
 
 main()
