@@ -551,3 +551,24 @@ is coherent where the dense arm is not. One prompt also cannot rule out that bot
 are wrong in different ways on harder inputs. What it does establish beyond argument is
 that **the dense arm cannot be used as a correctness reference**, which invalidates the
 framing of every earlier comparison in this document.
+
+### Where the dense arm's bug is, from the ids already in hand
+
+```
+runlist  32 8 220 12095 198 33 8 220
+dense    32 8 220 220   22  11 220 19  7
+         ^^^^^^^  agree
+```
+
+The two arms agree on the first **three** ids (`32 8 220` = `"A) "`) and diverge at the
+fourth (`12095` = `"Paris"` vs `220` = a space). The first token is produced from the
+**prefill**, which therefore computes correctly; the divergence begins in the **decode
+loop**. That points the dense arm's defect at per-step decode state — the KV-cache
+update / position handling across steps — rather than at the GEMMs or the prefill. The
+`hidden rms` growth across the dump (0.255 at layer 0 → 21.5 at layer 27) is consistent
+with a residual stream that is fine at prefill and corrupted step-to-step afterwards.
+
+This is a *hypothesis from two ids*, and the test that would confirm it is cheap: give
+the dense arm a prompt whose first generated token is checked, then a 2-token
+continuation, and see whether token 2 is already wrong — i.e. whether the corruption
+begins at the first KV write or accumulates.
