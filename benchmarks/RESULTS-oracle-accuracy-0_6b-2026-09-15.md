@@ -980,3 +980,31 @@ problem — a 6-token budget, a stale dump compared with itself, an empty grep, 
 or the display tool's missing GPT-2 byte-level decode. The remedy that made the difference was
 methodological: a budget long enough for the model to finish reasoning, the correct prompt format,
 the whole output scored, and every extraction asserted to be fresh and non-empty.
+
+## FIXED: the detokenizer now reverses GPT-2 byte-level BPE
+
+`engine/npu/tokenizer/detokenize.cpp` previously printed `vocab[id]` verbatim, so byte-level
+placeholders appeared literally and non-ASCII output was mojibake. It now builds the inverse
+GPT-2 byte→Unicode table and decodes each vocabulary string's codepoints back to their original
+bytes before writing them (the recovered bytes are already valid UTF-8). Unmapped codepoints fall
+through unchanged, so literal special tokens like `<|im_start|>` are unaffected (their characters
+are printable ASCII and map to themselves).
+
+Verified against the ids that produced the original mojibake:
+
+```
+ids                        : 271 785 11483 7735 369 3015 374 3070 39 31807 46 334 13
+before                     : "The chemical symbol for water is **Hâ¤¤O**."
+after                      : "The chemical symbol for water is **H₂O**."
+regression (plain sentence): "The capital of France is" + a real newline
+```
+
+Consequences for this goal's work:
+
+- All future native output is readable and non-ASCII answers (**H₂O**) now match a scoring regex
+  that a mojibake string could not — removing one of the three substring-scoring failure modes
+  recorded above.
+- Output now contains **real newlines** rather than `Ċ`, so any consumer that split on lines
+  instead of running `tr '\n' ' '` will behave differently; the accuracy harness already
+  translates newlines to spaces and is unaffected.
+- The engine itself was never involved: this was purely a display/tooling defect.
