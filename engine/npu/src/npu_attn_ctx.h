@@ -194,39 +194,55 @@ struct AttnCtx {
     // ── Host emulation of the kernel (NPU_ATTN_EMU=1): run the exact packed-
     //    buffer math through the SHIPPED on-core softmax contract
     //    (attn_quant.h) — pins the packing/quant before any NPU round-trip. ──
-    void run_emu(float* ao, const std::vector<float>& sv) {
+    void run_emu(float* ao, const std::vector<float>& sv, int seq_total) {
         const int qd = nq * hd, kd = nkv * hd, gqa = nq / nkv;
         const int N = MAX_SEQ, K = hd;
         const int n_k = K / 64, n_n = N / 128;
-        const float* params = (const float*)(Qm + (size_t)15 * K_FRAME);
-        const int seq = (int)params[1];
+        // The GLOBAL sequence length. It cannot be read back out of params[1]
+        // any more: on a chunked build (N > 512) params[1] is group 0's own
+        // clamp(seq, 0, 512), not the total.
+        const int seq = seq_total;
         int32_t c1flat[4 * 1024];
         const int32_t* c1p[4] = { c1flat, c1flat + 1024, c1flat + 2048, c1flat + 3072 };
         std::vector<int8_t> a2((size_t)8 * MAX_SEQ);   // sized by the baked N
         for (int h = 0; h < nq; h++) {
             const int kv = h / gqa;
             const int8_t* qh = Qm + (size_t)h * K_FRAME;
-            std::memset(c1flat, 0, sizeof(c1flat));
-            for (int ki = 0; ki < n_k; ki++)
-                for (int nt = 0; nt < n_n; nt++) {
-                    const int8_t* tile = KTm + (size_t)kv * K * N
-                                       + (size_t)(ki * n_n + nt) * (64 * 128);
-                    // unpack the mmul chunk interleave: pos = i0·1024+i1·64+
-                    // i2·8+i3 holds K^T[k=ki·64+i0·8+i2][t=nt·128+i1·8+i3]
-                    for (int i0 = 0; i0 < 8; i0++)
-                        for (int i1 = 0; i1 < 16; i1++)
-                            for (int i2 = 0; i2 < 8; i2++) {
-                                const int d = ki * 64 + i0 * 8 + i2;
-                                const int8_t* d8 = tile + (size_t)i0 * 1024
-                                                 + i1 * 64 + i2 * 8;
-                                for (int i3 = 0; i3 < 8; i3++) {
-                                    const int t = nt * 128 + i1 * 8 + i3;
-                                    c1flat[(t >> 7) * 1024 + c1_idx(0, t & 127)] +=
-                                        (int32_t)qh[d] * d8[i3];
+            // The chunked kernel holds only FOUR C1 tiles resident and loops
+            // the N dimension in groups of four tiles, so the emulation does
+            // the same: group g zeroes its four tiles, accumulates its own
+            // QK^T quarter, and runs the shipped contract with group g's
+            // params (its own key count) writing into a2 + 512*g at row stride
+            // N. For N <= 512 there is one group and this is exactly the
+            // original single-pass code.
+            const int n_grp = (N > 512) ? (N / 512) : 1;
+            for (int g = 0; g < n_grp; g++) {
+                std::memset(c1flat, 0, sizeof(c1flat));
+                for (int ki = 0; ki < n_k; ki++)
+                    for (int ntl = 0; ntl < 4; ntl++) {
+                        const int nt = g * 4 + ntl;
+                        if (nt >= n_n) break;
+                        const int8_t* tile = KTm + (size_t)kv * K * N
+                                           + (size_t)(ki * n_n + nt) * (64 * 128);
+                        // unpack the mmul chunk interleave: pos = i0·1024+i1·64+
+                        // i2·8+i3 holds K^T[k=ki·64+i0·8+i2][t=nt·128+i1·8+i3]
+                        for (int i0 = 0; i0 < 8; i0++)
+                            for (int i1 = 0; i1 < 16; i1++)
+                                for (int i2 = 0; i2 < 8; i2++) {
+                                    const int d = ki * 64 + i0 * 8 + i2;
+                                    const int8_t* d8 = tile + (size_t)i0 * 1024
+                                                     + i1 * 64 + i2 * 8;
+                                    for (int i3 = 0; i3 < 8; i3++) {
+                                        const int t = (nt & 3) * 128 + i1 * 8 + i3;
+                                        c1flat[ntl * 1024 + c1_idx(0, t & 127)] +=
+                                            (int32_t)qh[d] * d8[i3];
+                                    }
                                 }
-                            }
-                }
-            attn_softmax_contract(c1p, params, a2.data());
+                    }
+                const float* pg = (const float*)(Qm + (size_t)15 * K_FRAME
+                                                  + (size_t)g * 64);
+                attn_softmax_contract(c1p, pg, a2.data() + (size_t)g * 512);
+            }
             const float* svh = &sv[(size_t)kv * hd];
             float z = 0;
             for (int t = 0; t < seq; t++) z += (float)a2[t] / 127.0f;
@@ -289,10 +305,33 @@ struct AttnCtx {
                 row[dd] = (int8_t)v;
             }
         }
-        float params[8] = {
-            1.0f / (sq * sk * std::sqrt((float)hd)), (float)seq, (float)N, 0, 0, 0, 0, 0
-        };
-        std::memcpy(Qm + (size_t)15 * K_FRAME, params, sizeof(params));
+        // ── params, one set per GROUP when this is a chunked build (N > 512).
+        //    The chunked kernel reads its params tile at 15*K_FRAME + g*64,
+        //    so group g can carry its OWN key count: it owns the keys
+        //    [512g, 512g+512), and the causal mask must fire at the group-local
+        //    t_local >= seq - 512g. Feeding every group the global seq is the
+        //    silent-wrongness trap: groups past the first would mask against
+        //    the wrong key origin. params[2] stays the kernel's softmax tile
+        //    width (512 = four N-tiles) and params[3] carries the A2 row
+        //    stride (the full N), which attn_quant.h takes the row stride from.
+        //    For N <= 512 this writes the identical single set as before
+        //    (params[2] = N, params[3] = 0 → row stride defaults to max_seq).
+        const int n_grp = (N > 512) ? (N / 512) : 1;
+        for (int g = 0; g < n_grp; g++) {
+            int seq_g = seq - 512 * g;
+            if (seq_g < 0) seq_g = 0;
+            if (seq_g > 512) seq_g = 512;
+            float params[8] = {
+                1.0f / (sq * sk * std::sqrt((float)hd)), (float)seq_g,
+                (float)(n_grp > 1 ? 512 : N), (float)(n_grp > 1 ? N : 0),
+                0, 0, 0, 0
+            };
+            std::memcpy(Qm + (size_t)15 * K_FRAME + (size_t)g * 64,
+                        params, sizeof(params));
+        }
+        // Group 0's set: the dump path below only uses params[0] (the scale),
+        // which is identical for every group.
+        const float* params = (const float*)(Qm + (size_t)15 * K_FRAME);
         bQ->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
         // ── bo1: K^T per kv, per (ki,nt) 64×128 tile, in the MMUL B chunk
@@ -359,7 +398,7 @@ struct AttnCtx {
         // the packed buffers with the SHIPPED on-core softmax contract — pins
         // the host packing/quant before any NPU round-trip.
         static const bool EMU = getenv("NPU_ATTN_EMU") && atoi(getenv("NPU_ATTN_EMU")) == 1;
-        if (EMU) { run_emu(ao, sv); return; }
+        if (EMU) { run_emu(ao, sv, seq); return; }
         bV->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
         // ── launch ──

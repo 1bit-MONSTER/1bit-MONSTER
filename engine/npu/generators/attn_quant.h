@@ -77,6 +77,14 @@ static inline void attn_softmax_contract(const int32_t* const c1[],
     // caller supplies n_half = max_seq/128 pointers (2 for N=256, 4 for
     // N=512 — N comes from params[2]).
     const int max_seq = (int)params[2];
+    // Row stride of the a2 output. params[3] == 0 means "packed" (stride ==
+    // max_seq), which is every caller today, so behaviour is unchanged. A
+    // non-zero value lets a CHUNK of the score range be written into a wider
+    // a2: chunk g of a max_seq_total=N run passes max_seq=512 and stride=N, so
+    // the slice lands at a2 + 512*g with the rows spaced N apart. That is what
+    // lets N > 512 be processed four C1 tiles at a time instead of holding
+    // every tile in core memory.
+    const int row_stride = (params[3] > 0.0f) ? (int)params[3] : max_seq;
     int seq = (int)params[1];
     float scale = params[0];
     if (seq < 0) seq = 0;
@@ -92,7 +100,7 @@ static inline void attn_softmax_contract(const int32_t* const c1[],
     for (int r = 0; r < 8; r++) {
         for (int t = 0; t < max_seq; t++) {
             if (r != 0 || t >= seq) {
-                a2[r * max_seq + (t / 8) * 8 + (t % 8)] = 0;
+                a2[r * row_stride + (t / 8) * 8 + (t % 8)] = 0;
                 continue;
             }
             const int32_t* ct = c1[t >> 7];
@@ -107,7 +115,7 @@ static inline void attn_softmax_contract(const int32_t* const c1[],
             }
             int q = (int)(w * 127.0f + 0.5f);
             if (q > 127) q = 127;
-            a2[r * max_seq + (t / 8) * 8 + (t % 8)] = (int8_t)q;
+            a2[r * row_stride + (t / 8) * 8 + (t % 8)] = (int8_t)q;
         }
     }
 }
