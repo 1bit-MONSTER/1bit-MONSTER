@@ -212,3 +212,40 @@ into SCR with a contiguous FIFO read. Keep the `n_grp == 1` path untouched so
 
 2. The stale-`dist` engines need a rebuild only if the generated xclbin is
    promoted over the captured ELF; the bench drives the artifact directly.
+
+## L1 closing step: the chunked path is now engine-driven (2026-09-15)
+
+First end-to-end engine run of the generated chunked attention — it had only ever
+been bench-driven. Zaya engine (`engine/npu/build/npu_engine_zr1`,
+`/home/bcloud/models/zaya1-8b.q4nx`, 600-token synthetic prompt), chunked build
+`/tmp/attn_v3_1024` (attn.xclbin 104784 B, attn_insts.txt 90544 B):
+
+```
+NPU_ATTN=1 NPU_ATTN_MAX_SEQ=1024 \
+NPU_ATTN_XCLBIN=/tmp/attn_v3_1024/attn.xclbin \
+NPU_ATTN_INSTS=/tmp/attn_v3_1024/attn_insts.txt \
+  engine/npu/build/npu_engine_zr1 /home/bcloud/models/zaya1-8b.q4nx 4 /tmp/ids600.txt
+```
+
+- `AttnCtx: xp=/tmp/attn_v3_1024/attn.xclbin instr=22636 words` then
+  `NPU attention ready (attn.xclbin, 20 layers, MAX_SEQ=1024)` — the chunked
+  kernel loads and initialises inside the engine.
+- `[MoE L1 dbg] corr=0.999342 maxdiff=0.022679`, `[EMB dbg] corr=1.0000000` —
+  the run is sound.
+- `[perf] 8 tokens in 1431 ms (178.8 ms/tok)` for a 600-token prefill.
+
+**Two caveats, both open.**
+
+1. **`NPU_ATTN_MAX_SEQ` must be set.** Unset, `AttnCtx` defaults to `MAX_SEQ=512`
+   from its own env read (`npu_attn_ctx.h`), *not* from the kernel's baked N — so
+   the first attempt loaded the N=1024 xclbin but reported `MAX_SEQ=512` and
+   clamped the 600-token prompt. The engine and the kernel only agree when the
+   env matches the build.
+2. **Coherence is not yet established.** With `NPU_ATTN=0` (CPU attention) the
+   same prompt yields different final tokens (`99078 34848 …` vs
+   `121561 3974 …`), and the `[MoE L1 dbg]` line is byte-identical between the
+   two — it compares NPU MoE against a CPU MoE built from the *same* attention
+   output, so it does not discriminate them. A 600-token **synthetic random-id**
+   prompt is chaotic, so divergence there is not evidence of a defect; a
+   real tokenized prompt is needed before the chunked attention can be called
+   coherent engine-side.
