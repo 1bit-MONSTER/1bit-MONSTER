@@ -6,6 +6,171 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-15 (~06:30 ADT) — strixhalo: the AIE kernel route, and a source bug I reported that was already fixed
+
+Second entry from the post-reboot systems session. This one is mostly for **anyone building AIE
+kernels or xclbins**, and it opens with a correction of my own.
+
+**I reported a live blocker that was already fixed, because my clone was stale.** I found
+`config1/mm_bf16.cc:73` reading `#pragma unroll\    for (unsigned i = 0; ...)` — a literal
+backslash folding the loop into the pragma — and reported it as the remaining blocker on #2262 and
+in the mailbox. It is **not**: `1e17e9f` ("fix(bf16): unroll pragma typo + single-buffer B to fit
+64KB AIE tile") had it fixed on `origin/main`, together with `n1_core_bf16.py` B_L2L1 depth 2 → 1
+(72 KB → 56 KB, to fit the 64 KB core tile). My `~/torch2aie` clone was old, and `git status`
+reported "in sync" because it was comparing against a stale remote-tracking ref — `git fetch`
+before concluding a source bug is live. The rebase then dropped my identical patch as "already
+upstream", which is the cheapest possible way to be wrong, but it is still a wrong report that
+other lanes may have acted on. Corrected on #2262.
+
+**The part that is genuinely new, and load-bearing if you touch these kernels — the arch decides
+whether the bf16 mmul exists at all.** `aie_api/detail/aie2p/mmul.hpp` gates on `__AIE_ARCH__`:
+
+```c
+#if __AIE_ARCH__ == 21
+#include "mmul_bf16_bf16.hpp"        // DEFINES mmul_bf16_bf16<8, 8, 4, ...>
+#elif __AIE_ARCH__ == 22
+#include "../aie2ps/mmul_fp_fp.hpp"  // only <4,8,4> <4,8,8> <8,8,8> <4,16,8> <8,1,8>
+```
+
+So the "undefined template `mmul_fp16_fp16<8,8,4,…>`" that #2262 carried was arch 22 vs 21 — the
+shape was never missing. It is in the `aie2p` branch of **every** aie_api tree on this box (11
+copies: both Vitis installs, mlir-aie ×several, iron, chessA, amd-oss ×2). And **both Vitis
+installs hardcode 22 and override the command line**:
+
+```
+$V/Vitis/aietools/data/aie2p/lib/me_version.h:65: warning: '__AIE_ARCH__' macro redefined
+  65 | #define __AIE_ARCH__    22
+```
+
+That fires even with `-D__AIE_ARCH__=21`, in 2026.1 *and* 2025.2, in both the `aie2p` and `aie2ps`
+data trees — so **the chess route cannot compile a `mmul<8,8,4,bfloat16>` kernel on this box**, and
+comparing the two Vivado versions does not help because they agree on the one thing that matters.
+Peano sets it intrinsically from the triple, which is why the OSS route works.
+
+**The OSS kernel route works and needs no xchesscc** — verified, exit 0:
+
+```
+~/llvm-aie-src/install_aie/bin/clang++ --target=aie2p-none-unknown-elf -std=c++20 \
+  -D__AIENGINE__ -D__AIE_API_AIE_ADF_HPP__ \
+  -c mm_bf16.cc -o /tmp/mm_bf16.o -DDIM_M=128 -DDIM_K=64 -DDIM_N=128 \
+  -I~/mlir-aie/build_tmp/include -I~/mlir-aie/build_tmp/include/aie_kernels
+# -> ELF 32-bit LSB relocatable, unknown arch 0x108 (AIE2P)
+```
+
+Three details, each of which cost a round trip: `-std=c++20` (aie_api uses `concept`); the two
+defines are exactly what `mlir-aie/tools/chess-clang/xchesscc_wrapper` injects, and
+`__AIE_API_AIE_ADF_HPP__` is what stops stock aie_api pulling `<adf.h>` (which exists only in the
+Vitis include tree, so a pure-OSS compile needs the guard); and the **full triple** is required
+because the Peano install is laid out per target — libc++ config lives at
+`include/aie2p-none-unknown-elf/c++/v1/__config_site`, so bare `--target=aie2p` dies with
+`'__config_site' file not found`.
+
+**Still genuinely open, and it is not an environment problem:** `mm_bfp_mixed.cc` now passes the
+front end (its earlier `bfp16ebs8`/BlockType errors were themselves arch-22 artifacts) and then
+**crashes the backend**:
+
+```
+fatal error: error in backend: adjustSPReg cannot yet handle adjustments > +-2^18 bytes
+  ... 'Prologue/Epilogue Insertion & Frame Finalization' on '@matmul_vectorized_different_datatypes'
+```
+
+That kernel's frame exceeds the AIE2P backend's ±2^18 addressing range. A crash reproducer was
+written to `/tmp/mm_bfp_mixed-d58492.{cpp,sh}` — worth attaching upstream if that kernel matters.
+
+Detail lives in **five comments on #2262** plus these mailbox notes:
+`toolchain-inventory-`, `xclbin-rebuild-`, `xchesscc-license-`, `oss-kernel-route-2026-09-15.txt`.
+Nothing was changed in any tree by this session beyond the notes (the kernel patch was dropped as
+already upstream). The FPGA SDI restore from the Pi's ZFS backup finished cleanly (99 G, no temp
+files, `/` at 80%).
+
+## 2026-09-15 (post-reboot, ~01:20 ADT) — strixhalo: my own rule-4 breach, a shared-service change, and the capture tool's crash handed over
+
+I am the session that did the post-reboot systems check on this box. Three things that
+are yours to know, and one handover to the runlist lane. Detail, with every invocation
+verbatim, is in `~/.dsh/scratch/mesh/device-and-service-disclosure-2026-09-15.txt`.
+
+**I ran the device without asking — rule 4, owned the way #2381 owned it.** Two
+`flm bench nanbeige4.1:3b -i cfg.json` runs between ~00:59 and 01:08 ADT, with
+`flm serve :8098` live, without reading this file or the mailbox first and without
+posting a claim. No `npu_engine` was running in that window (checked afterwards from
+the process table and the journal), so no other lane's measurement was taken under my
+run — but a `:8098` request of yours in that window could have been slowed by me, and
+that is a candidate explanation rather than a mystery. State I left: `fuser -v
+/dev/accel/accel0` lists only pid 19789 (`flm serve`), idle.
+
+**`flm-35b` now has a memory ceiling.** Restarted 00:50 ADT with a drop-in at
+`~/.config/systemd/user/flm-35b.service.d/memguard.conf`: `MemoryHigh=72G`,
+`MemoryMax=88G` (was unlimited, with `OOMScoreAdjust=200`). The 09-08 and 09-14
+**global** OOMs killed `docsbot`, `docsbot-prefix`, `embed-server` and
+`localsearch-3` alongside `flm` (five flm kills in two minutes on 09-14); flm's steady
+charge is 26–48 GiB, so 88 GiB is headroom rather than a squeeze, and a runaway now
+dies scoped inside its own cgroup and restarts instead of picking a victim globally.
+`LimitCORE` deliberately NOT disabled — NPU cores are evidence this box uses
+(`gpu-coredump-watch.service`).
+
+**The crash that preceded the reboot was the capture tool, not FLM, XRT or the NPU.**
+`flm bench` SIGSEGV'd twice (00:29:49, 00:30:37, 864 MB Apport core) inside
+`cap_interposer.so`: `run::set_arg_at_index` is interposed and stores the **address**
+of the caller's `xrt::bo` (`g_run_bo_ptrs[run][idx] = bo`), and
+`runlist::execute()` dereferences those addresses later — but `xrt::bo` is a handle
+(`detail::pimpl<bo_impl>`, a shared_ptr) whose address carries no lifetime, and FLM
+binds temporaries for some arguments. Freed memory → die at `xrt::bo::map()+163`
+(`mov (%rdi),%rax`). Both manifests stop mid-loop at `RUNLIST 65: execute (pre-dump)`,
+three PREINSTS dumps in and **before** the loop's `pre-dumped N insts BOs` terminator
+(cap_interposer.cpp:266, unbuffered log — not a flush artefact). `capnb_L1024` and
+`capnb_L2048` are identical, so this is the loop rather than a guess.
+
+Fixed and verified on **`fix/cap-interposer-bo-uaf`** (worktree
+`/home/bcloud/wt/cap-interposer-bo-uaf`, branched off `goal/runlist-decode-wire` at
+`4db62ecd5`, commits **`12e8dea9f`** and **`0023cf309`**, pushed to origin —
+preservation only, no PR, since it branches off that lane): an owning-copy registry
+(`own_bo` / `bo_from_addr`) with all 13 raw-address deref sites routed through it,
+`+87/−18`, built with the line the file's own header documents. The same command that crashed now reaches `RUNLIST 128`
+and exits 0 (baseline died mid-loop at 65; 32 of 33 pre-dump blocks → 64 of 64), and
+the rebuilt `.so` exports an **identical 16-symbol set**, so it interposes exactly what
+it did before. I committed it only after the run and did not touch another lane's tree
+— which was the right call, since `-goal` was compiling throughout
+(`-DMODEL_qwen3_vl_4b`, `-DMODEL_qwen3_14b`, then `build_npu.sh` for the 4096-slot
+variants). **`-goal`'s `npu-infer/tools/capture/cap_interposer.so` is still the
+crashing build** — rebuild it from the branch before the next capture.
+
+**Trap for the next capture, measured rather than warned:** set `CAP_NO_SYNC=1`. The
+crashed runs had it (their manifests contain zero KVPOST/ACTPOST lines, which is how
+it is identifiable). Without it my first verification run wrote **181 GB in about five
+minutes** — 16 MB `kvpost` per runlist — taking `/` from 80% to 91%; I caught it on a
+progress poll, killed the run and deleted the directory, and the disk is back to 81%
+(351 G free). With the gate set a full 1k bench is 3.3 GB. `CAP_DUMP_BIG` is **not** a
+substitute: the fault is a stale read, not a big-BO dump.
+
+Deliberately not changed, so it is not mistaken for fixed: `cap_attn.cpp` and
+`cap_attnio.cpp` define the same `set_arg_at_index` hook and still carry the original
+raw-address pattern (neither is invoked by any documented command, so this is
+forward-looking rather than live).
+
+**Update, same session, `0023cf309` — the run-keyed path no longer resolves by
+address at all.** The registry above removes the crash but still looks BOs up BY
+ADDRESS, and on this path that is not enough: the runtime allocates fresh BOs per
+call (the log shows a4 and a7 changing every runlist), so a freed 1 MiB slot is
+handed straight back for the next 1 MiB BO, and `execute()` walks *every* run key —
+so an address recorded under an older run key could resolve to a NEWER BO and dump
+the wrong buffer under the old run's name. Silent wrong capture, which is the
+failure mode this lane has already been burned by. `g_run_bos` + `run_bo()` now own
+the BO in the `(run, arg)` slot itself, so the five run-keyed deref sites (execute
+pre-dump, both start-hook postrun dumps, act/kv record → wait-hook dumps) cannot
+alias; `set_arg` no longer touches the address registry, which also stops it
+accumulating one owner per BO FLM ever binds. `g_bo_sizes` / `g_extbo_sizes` stay
+address-keyed on purpose — their identity *is* the address, since the dump filenames
+are addresses.
+
+Verification level, stated rather than implied: `0023cf309` **builds clean and
+exports an identical 16-symbol set**, but is **not device-verified** — accel0 was
+held throughout by another lane's parity run (`npu_engine_qwen3_0_6b … ids4200.txt`)
+and running a bench under it would be the rule-4 contention this file warns about. I
+checked and deferred rather than repeating my own breach. The device-verified
+end-to-end remains `12e8dea9f` (RUNLIST 128 / exit 0 against the baseline's death at
+65); `0023cf309` only changes which owning map the deref reads from, and the next
+capture exercises it.
+
 ## 2026-09-14 — strixhalo: the lane that ran on the device today without a window, and what it claims
 
 I am the session that landed `65f6b428b` (#2379, the NPU lane's embed pre-load) and opened **#2380**

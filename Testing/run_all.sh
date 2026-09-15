@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.." || exit 1   # repo root
 CXX="${CXX:-g++}"; FLAGS="-std=c++17 -Iinclude -Isrc -O2"
 PYTHON="${PYTHON:-python3}"
 BIN=/tmp/onebit_tests; mkdir -p "$BIN"
-fail=0; total=0
+fail=0; total=0; skip=0
 
 run() {  # run <name> <compile-args...> -- <run-args...>
     local name="$1"; shift
@@ -103,7 +103,7 @@ if [ -x build/1bit ]; then
         fail=$((fail+1))
     fi
 else
-    echo "  - cli_smoke: no build/1bit — skipped (run it where the binary is built)"
+    echo "  - cli_smoke: no build/1bit — skipped (run it where the binary is built)"; skip=$((skip+1))
 fi
 
 # Docs-and-repo consistency: links that point at nothing, paths that resolve
@@ -120,6 +120,30 @@ if docs_out=$("$PYTHON" Testing/repo_docs_selfcheck.py 2>&1); then
 else
     echo "✗ repo_consistency"
     printf '%s\n' "$docs_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+# Census diagnostics: one repo root, one policy set. Three scripts pinned ROOT
+# to the shared checkout and two carried a stale NON_TEXT_GEN copy (#2387), so a
+# worktree run read the wrong inputs and wrote the wrong tree — invisible,
+# because the run succeeds against them.
+total=$((total+1))
+if census_out=$("$PYTHON" Testing/census_scripts_selfcheck.py 2>&1); then
+    echo "✓ census_scripts"
+else
+    echo "✗ census_scripts"
+    printf '%s\n' "$census_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+# Published coverage claims must equal the census. seo_sync rewrites them in the
+# daily apply workflows, but that is not a gate — four false-claim shapes
+# survived for months in wordings its patterns did not know (#2389 -> #2397).
+# This checks the content of site/*.html and README.md, not the patterns.
+total=$((total+1))
+if claims_out=$("$PYTHON" Testing/seo_claim_selfcheck.py 2>&1); then
+    echo "✓ seo_claims"
+else
+    echo "✗ seo_claims"
+    printf '%s\n' "$claims_out" | tail -10 | sed 's/^/    /'
     fail=$((fail+1))
 fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
@@ -168,7 +192,7 @@ if "$CXX" $FLAGS -c src/backend_generic.cpp -o "$BIN/bg.o" 2>/dev/null; then
 echo "== e2e (needs model fixtures in /tmp/onebit-e2e — skipped if absent) =="
 e2e() {  # e2e <name> <model_dir> <oracle.gguf> [expect-torch-string]
     local name="$1" dir="$2" gguf="$3"
-    if [ ! -f "$gguf" ]; then echo "  - $name: fixtures absent, skipped"; return; fi
+    if [ ! -f "$gguf" ]; then echo "  - $name: fixtures absent, skipped"; total=$((total+1)); skip=$((skip+1)); return; fi
     total=$((total+1))
     if ! "$CXX" $FLAGS src/backend_generic.cpp src/model_discovery.cpp src/gguf_reader.cpp \
         src/q4nx_reader.cpp src/safetensors_reader.cpp Testing/e2e_safetensors_selfcheck.cpp \
@@ -195,6 +219,7 @@ if [ -f "$instella_mini" ] && [ -f "$instella_ref" ]; then
     else echo "✗ instella engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
     echo "  - instella: fixtures absent, skipped (cp -r 1bit-monster/models/kl-test/mini-full* /tmp/onebit-instella/)"
+    total=$((total+1)); skip=$((skip+1))
 fi
 
 
@@ -219,6 +244,7 @@ if [ -f "$instella_mini" ]; then
     fi
 else
     echo "  - instella-1bp: fixture absent, skipped"
+    total=$((total+1)); skip=$((skip+1))
 fi
 
 # ── DeepSeek V4 gate (mini fixture, HF safetensors oracle) ──
@@ -232,7 +258,7 @@ if [ -f "$dsv4_dir/logits_last.npy" ] && [ -f "$dsv4_dir/model.safetensors" ]; t
         echo "✓ deepseek_v4 engine (Shared-KV MQA + mHC + hash-MoE)";
     else echo "✗ deepseek_v4 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
-    echo "  - deepseek_v4: fixture absent, skipped (python3 Testing/make_mini_deepseek_v4.py /tmp/onebit-dsv4)"
+    echo "  - deepseek_v4: fixture absent, skipped (python3 Testing/make_mini_deepseek_v4.py /tmp/onebit-dsv4)"; skip=$((skip+1))
 fi
 
 # ── ws13: DeepSeek V4/V4.1 architecture gates (fixtures: Testing/make_ws13_fixtures.sh) ──
@@ -282,10 +308,10 @@ if [ -f "$ws13/csa_nt/comp_ref_L1.npy" ]; then
             echo "✓ ws13 indexer scores (<=1e-6 + order-independent selection validity)"
         else echo "✗ ws13 indexer scores: mismatch"; fail=$((fail+1)); fi
     else
-        echo "  - ws13 python gates skipped (no numpy in $PYTHON)"
+        echo "  - ws13 python gates skipped (no numpy in $PYTHON)"; total=$((total+2)); skip=$((skip+2))
     fi
 else
-    echo "  - ws13: fixtures absent, skipped (PYTHON=<torch env> Testing/make_ws13_fixtures.sh)"
+    echo "  - ws13: fixtures absent, skipped (PYTHON=<torch env> Testing/make_ws13_fixtures.sh)"; total=$((total+1)); skip=$((skip+1))
 fi
 
 # ── GLM-MoE-DSA gate (mini fixture, HF safetensors oracle) ──
@@ -299,7 +325,7 @@ if [ -f "$glmdsa_dir/logits_last.npy" ] && [ -f "$glmdsa_dir/model.safetensors" 
         echo "✓ glm_moe_dsa engine (V3-MLA + DSA indexer + group-topk MoE)";
     else echo "✗ glm_moe_dsa engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
-    echo "  - glm_moe_dsa: fixture absent, skipped (python3 Testing/make_mini_glm_moe_dsa.py /tmp/onebit-glmdsa)"
+    echo "  - glm_moe_dsa: fixture absent, skipped (python3 Testing/make_mini_glm_moe_dsa.py /tmp/onebit-glmdsa)"; skip=$((skip+1))
 fi
 
 # ── MiMo-V2 gate (mini fixture, vendored remote modeling oracle) ──
@@ -313,7 +339,7 @@ if [ -f "$mimo_dir/logits_last.npy" ] && [ -f "$mimo_dir/model.safetensors" ]; t
         echo "✓ mimo_v2 engine (MoD hybrid: SWA+full GQA, sigmoid group-topk MoE)";
     else echo "✗ mimo_v2 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
-    echo "  - mimo_v2: fixture absent, skipped (python3 Testing/make_mini_mimo_v2.py /tmp/onebit-mimo)"
+    echo "  - mimo_v2: fixture absent, skipped (python3 Testing/make_mini_mimo_v2.py /tmp/onebit-mimo)"; skip=$((skip+1))
 fi
 
 # ── Qwen3_5 text gate (mini fixture, HF oracle) ──
@@ -327,7 +353,7 @@ if [ -f "$q35_dir/logits_last.npy" ] && [ -f "$q35_dir/model.safetensors" ]; the
         echo "✓ qwen3_5 text engine (GatedDeltaNet + gated GQA hybrid)";
     else echo "✗ qwen3_5 text engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
-    echo "  - qwen3_5: fixture absent, skipped (python3 Testing/make_mini_qwen3_5.py /tmp/onebit-q35)"
+    echo "  - qwen3_5: fixture absent, skipped (python3 Testing/make_mini_qwen3_5.py /tmp/onebit-q35)"; skip=$((skip+1))
 fi
 
 # ── Mesh: self-aware network substrate (optional — needs the CMake build) ──
@@ -337,7 +363,7 @@ if [ -x build/mesh_peer ]; then
         echo "✓ mesh (peer discovery + ask/answer)";
     else echo "✗ mesh (peer discovery + ask/answer)"; fail=$((fail+1)); fi
 else
-    echo "  - mesh: mesh_peer binary absent, skipped (cmake --build build --target mesh_peer)"
+    echo "  - mesh: mesh_peer binary absent, skipped (cmake --build build --target mesh_peer)"; skip=$((skip+1))
 fi
 
 # ── JARVIS fleet dispatch (optional — needs build/1bit + build/mesh_peer) ──
@@ -347,12 +373,13 @@ if [ -x build/1bit ] && [ -x build/mesh_peer ]; then
         echo "✓ jarvis fleet dispatch (mesh-aware, DSH brain path)";
     else echo "✗ jarvis fleet dispatch (mesh-aware, DSH brain path)"; fail=$((fail+1)); fi
 else
-    echo "  - jarvis fleet: binaries absent, skipped (cmake --build build --target onebin mesh_peer)"
+    echo "  - jarvis fleet: binaries absent, skipped (cmake --build build --target onebin mesh_peer)"; skip=$((skip+1))
 fi
 
 
+run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --
+
 echo "======================================"
-echo "$((total-fail))/$total passed"
+echo "$((total-fail-skip))/$total passed, $skip skipped"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }
 
-run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --
