@@ -75,89 +75,61 @@ So the machine to build this at *any* length already exists. But:
 ELFs cannot go further without new FLM captures at those lengths, while this is
 *buildable* at any length.
 
-### …and then I tried to build it, and it is not actually parametric
+### …and then I tried to build it: I got this wrong twice, and the truth is smaller
 
-The first of my own recommendations was to build at N=1024 and time it. It does
-not build:
+I first reported that the generated attention could not be built "at any N" because
+of a WIP mlir-aie patch. **Both halves of that were wrong, and the correction is
+the useful part.**
 
-```
-$ NPU_ATTN_N=1024 bash build_attn.sh
-loc("/tmp/attn_build.237157/design.mlir":1000:44): error: expected ')'
-Error parsing MLIR file
-```
-
-The generator *runs* and emits 4754 lines (N=512 emits 2674, rc=0 both times), and
-the buffer sizes do scale (`nkv * K * N`, `K * N`). The defect is one call, in
-`n1_core_attn.py`:
-
-```python
-# line 134
-softmax(C1[c][0], C1[c][1], C1[c][2 if n_n > 2 else 0],
-        C1[c][3 if n_n > 3 else 0], Par, A2o)
-```
-
-The softmax is **hand-wired for at most four C1 tiles**. `n_n = N // n` and the
-kernel builds with `n = 128`, so `n_n = 4` exactly when `N = 512` — the shipped
-build — and at `N = 1024`, `n_n = 8` and the emitted op is malformed. The two
-conditional indexes are worse than a crash in principle: they *clamp to tile 0*
-rather than index out of range, so any N where the arity happened to match would
-silently reuse tile 0's data.
-
-**RETRACTED, and the correction is the more useful finding.** I wrote that
-"N=512 is the largest this generator can emit". The control falsified it: **the
-build fails at N=512 too**, with the same error one construct earlier —
+**What is actually wrong: one stale path in our own build script.** The emitted
+MLIR is written by the python bindings, and those bindings and the `aiecc` binary
+must come from the **same** install. `build_attn.sh` took its bindings from
+`install_tmp/python` (2026-08-07) and its compiler from
+`/home/bcloud/mlir-aie/build_tmp/bin/aiecc` — a tree rebuilt later, whose parser
+does not accept the older dialect syntax. Hence:
 
 ```
-$ NPU_ATTN_N=512 bash build_attn.sh
-loc("design.mlir":712:44): error: expected ')'
+build_tmp aiecc  + install_tmp bindings -> design.mlir:712:44: error: expected ')'
+install_tmp aiecc+ install_tmp bindings -> compiles
 ```
 
-— so the softmax arity is a real limit but it is **not the first blocker**, and
-nothing above was measured, only read. What the two runs together show is
-different and better:
+**Fixed** (`build_attn.sh` now calls `install_tmp/bin/aiecc`, with a comment saying
+why so nobody "fixes" it back). Verified:
 
-| N | emitted lines | result |
-|---:|---:|---|
-| 512 | 2674 | **parse error at 712:44** |
-| 1024 | 4754 | parse error at 1000:44 |
+| check | result |
+|---|---|
+| N=512 build | `rc=0`, `Successfully wrote (94672 bytes)` — the shipped size |
+| `attn_insts.txt` vs the shipped one | **byte-identical** (`f3d0a132bde24a60`) |
+| `attn.xclbin` | same size, different hash — expected, the xclbin embeds a UID |
 
-Both fail at column 44 of an `aie.dma_bd` produced by
-`shim_dma_single_bd_task()` — a **mlir-aie Python helper**, not anything in this
-repo (the generator only calls the helper; `grep dma_bd n1_core_attn.py` is empty).
-And the installed toolchain carries a **local WIP patch**:
+So the toolchain was never broken, and **the local mlir-aie WIP patch
+(`AIELowerDynamicBDPool + BdLowering`) is exonerated** — I had inferred it from
+proximity (a Sep-12 rebuild after an Aug-29 patch) instead of testing it, which is
+the same instrument-by-proximity mistake this repo keeps recording.
+
+**And the N=512 softmax claim was also wrong.** I had concluded from the N=1024
+failure that "N=512 is the largest N the generator can emit". A control at N=512
+falsified it: 512 failed too, for the path reason above. The reading underneath was
+still a real limit — `n1_core_attn.py:134` passes exactly four C1 tiles and
+`n_n = N // 128`, with indexes that **clamp to tile 0** rather than faulting — but
+it is not what was stopping the build.
+
+**Where N=1024 actually stands now:** with the compiler matched, it gets past
+parsing and fails later, at
 
 ```
-mlir-aie  1e6b70af0  2026-08-29  wip(toolchain): local NPU2-40 patches —
-                                  AIELowerDynamicBDPool + BdLowering
+Error: Resource allocation pipeline failed
+Compilation failed
 ```
 
-That patch is about DMA BD lowering, and the syntax has moved:
+That is a design/capacity problem — more BD tasks, buffers and fifos than the array
+will place at that length — and it is the real next work item for L1, alongside the
+softmax arity. Nothing about it is a "blocker"; it is simply not done yet.
 
-```
-current mlir-aie tests:  aie.dma_bd(%a : memref<16xi32> offset = 0 len = 16)
-what aiecc now rejects:  aie.dma_bd(%arg0 : memref<32768xi8>, 0, 512, [<size = 1, …>])
-```
-
-So the attention build is broken **at any N, including the one that was
-previously shipped** (the xclbin predates the patch; the `aiecc` binary is dated
-2026-09-12, after it). This is a toolchain-drift blocker, in a *separate* repository
-with someone else's WIP patch on it — not mine to revert.
-
-**What that means for the softmax finding:** it is still real, and still worth
-fixing — `n_n = N // 128` and the call passes four tiles with indexes that *clamp
-to tile 0*, so the arity limit does exist independently of the toolchain. But it
-must be fixed **second**: with the toolchain as installed, no N builds at all.
-
-Also found while trying: **10+ builders in `engine/npu/generators/` compile their
-AIE kernel objects with `-I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include`, a
-path that does not exist** — the 2025.2 install lives at
-`/home/bcloud/Xilinx2025/2025.2`. `build_attn.sh`, `build_p1i4*.sh`,
-`build_zaya_*.sh`, `build_c1b_iron*.sh` and `build_iron_cascade_qwen3.sh` all
-reference it. Nothing at runtime notices, because the xclbins are prebuilt — which
-is exactly why it stayed undiscovered. Restored with a symlink
-(`/home/bcloud/Xilinx/2025.2 -> /home/bcloud/Xilinx2025/2025.2`), which fixes all
-of them at once and touches no script. (This predates this session: no deletion of
-mine was under `Xilinx/`.)
+**The lesson worth keeping:** I named two blockers in a row and both were
+artifacts — one of a stale path in a script this repo owns, one of inference from
+timestamps. "No such file" and "the parser rejects our syntax" both looked like
+somebody else's toolchain problem and were both ours.
 
 ## 3. `NPU_QWEN_I4` + `NPU_GUSILU_BF16PAIR` — a fused int4 GU→SiLU for the DENSE FFN, opt-in and unexercised
 

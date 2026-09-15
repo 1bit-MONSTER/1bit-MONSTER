@@ -51,16 +51,24 @@ whether it is worth continuing — no lever here should be started without its g
 the largest N the generator can emit** and the `-N` flag is not a parameter.
 **Fix:** generalise the operand list to `n_n` tiles, confirm the AIE softmax kernel
 accepts that arity.
-**BLOCKED, and not by the arity.** A control build at the *default* N=512 fails
-too (`design.mlir:712:44: error: expected ')'`), so the first blocker is
-**toolchain drift**: the installed mlir-aie carries a local WIP patch
-(`1e6b70af0`, 2026-08-29, `AIELowerDynamicBDPool + BdLowering`) whose emitted
-`aie.dma_bd` uses the old positional form
-(`aie.dma_bd(%arg0 : memref<32768xi8>, 0, 512, [<size = 1, …>])`) while the current
-dialect wants `offset =`/`len =`. The shipped xclbin predates the patch; the
-`aiecc` binary (2026-09-12) does not. **That is another repository with another
-lane's WIP on it — it needs a decision, not a revert from here.**
-**Gate:** with the toolchain unblocked — build `NPU_ATTN_N=1024` and time it
+**The build was fixed (one stale path, not a blocker).** `build_attn.sh` took its
+python bindings from `install_tmp` but its compiler from `build_tmp/bin/aiecc` — a
+later rebuild whose parser rejects the older dialect syntax. Pointing it at
+`install_tmp/bin/aiecc` (the matching install) makes N=512 compile and reproduce
+the shipped `attn_insts.txt` **byte-for-byte**. My earlier "the local mlir-aie WIP
+patch broke it" was a misdiagnosis, corrected in the survey note.
+
+**The arity limit is real but is not what stops the build.** `n1_core_attn.py:134`
+passes exactly four C1 tiles and `n_n = N // 128`, with indexes that clamp to tile
+0; that needs generalising to `n_n` tiles. With the compiler matched, N=1024 gets
+past parsing and fails on
+
+```
+Error: Resource allocation pipeline failed
+```
+
+— a design/capacity problem (BD tasks, buffers, fifos) at that length.
+**Gate:** generalise the operand list, then build `NPU_ATTN_N=1024` and time it
 against the captured `attn_mha_1024_nh16.elf` on the same shape and prompt. Within
 ~1.5× of the capture, N=16384 is the route past 8192; another 1200× (this repo has
 that precedent for a generated attention ELF) closes the lever.
