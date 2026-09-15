@@ -41,6 +41,15 @@ SITE = os.path.join(ROOT, "site")
 # be rewritten by the same pass, or it drifts silently -- the site cannot be the
 # only surface that stays honest.
 README = os.path.join(ROOT, "README.md")
+# Canonical documents that state the same census facts. They are not "site", and
+# leaving them out is how they drifted: docs/wiki/models.md calls itself "the
+# canonical model support document" and published 100.00% coverage next to a
+# 99.95% census, with 566/1,946 tokens from two census passes ago (#2408).
+DOCS = [
+    os.path.join(ROOT, "docs", "wiki", "models.md"),
+    os.path.join(ROOT, "docs", "model-families", "README.md"),
+    os.path.join(ROOT, "docs", "CODEBASE.md"),
+]
 HEADER = os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")
 CENSUS = os.path.join(ROOT, "Testing", "census_full_summary.json")
 WATCH_STATE = os.path.join(ROOT, "Testing", "hf_new_models_state.json")
@@ -73,6 +82,19 @@ def count_arch_strings():
             if "return RCPP_ARCH_" in line and "RCPP_ARCH_UNKNOWN" not in line:
                 n += 1
     return n
+
+
+def census_total():
+    """Total text-gen checkpoints the census walked (410,618 today).
+
+    docs/wiki/models.md quotes this next to the arch-bearing count; the watcher
+    delta deliberately does not move it (new arrivals are already in the walk).
+    """
+    try:
+        with open(CENSUS, encoding="utf-8") as f:
+            return int(json_load(f).get("total", 0))
+    except (OSError, ValueError, TypeError):
+        return 0
 
 
 def census_coverage():
@@ -170,6 +192,27 @@ def _readme_cov(m, covered, with_arch):
             " text-generation checkpoints on the hub (" + _pct(covered, with_arch) + ")")
 
 
+def _ratio_pct(m, covered, with_arch):
+    """Bare ratio plus its percentage: "321,611 / 321,611 (100.00%) map to an
+    engine token" (docs/wiki/models.md). groups: (num, ' / ', num, ' (', pct,
+    '%)')."""
+    g = m.groups()
+    return (fmt(covered) + g[1] + fmt(with_arch) + g[3] +
+            _pct(covered, with_arch).rstrip("%") + g[5])
+
+
+def _docs_cov(m, covered, with_arch):
+    """docs/wiki/models.md's sentence: "321,611 / 321,611 arch-bearing text-gen
+    checkpoints (100.00%) map to an engine token" -- same rebuild-whole rule as
+    the README form, different suffix. The separator is a captured group because
+    models.md wraps that sentence across two lines and the newline is part of it.
+    groups: (covered, ' / ', with_arch, ' arch-bearing text-gen checkpoints',
+             whitespace+'(', pct, '%)')."""
+    g = m.groups()
+    return (fmt(covered) + " / " + fmt(with_arch) + g[3] + g[4] +
+            _pct(covered, with_arch).rstrip("%") + g[6])
+
+
 def _arch_to_tokens(m, arch, tokens):
     """Prose pair with a prefix: "all 1,946 of them -- normalizes down to one of
     566 architecture tokens" (groups: prefix, arch, sep, tokens, suffix)."""
@@ -203,8 +246,9 @@ def _pct_claim(m, covered, with_arch, suffix_groups):
     return g[0] + _pct(covered, with_arch) + g[-1]
 
 
-def _build_patterns(tokens, arch, covered, with_arch):
+def _build_patterns(tokens, arch, covered, with_arch, total=None):
     t, a, c, w = fmt(tokens), fmt(arch), fmt(covered), fmt(with_arch)
+    tot = fmt(total) if total is not None else None
     pats = [
         # "552 architecture tokens, 1,774 HF arch strings" (+ "/" variant in posts)
         (re.compile(r"(\d[\d,]*)( architecture tokens[ ,/]+)(\d[\d,]*)( HF arch strings)"),
@@ -261,6 +305,41 @@ def _build_patterns(tokens, arch, covered, with_arch):
         (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( text-generation checkpoints on the hub \()"
                     r"(\d+(?:\.\d+)?)(%\))"),
          lambda m: _readme_cov(m, covered, with_arch)),
+        # Canonical docs (#2408). docs/wiki/models.md, docs/model-families/README.md
+        # and docs/CODEBASE.md state the same census facts in their own words, and
+        # nothing had ever rewritten them: models.md published 100.00% coverage
+        # beside its own 99.95% census and 566/1,946 from two passes ago.
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( architecture tokens)"),
+         lambda m: _bare(m, t)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( engine arch tokens)"),
+         lambda m: _bare(m, t)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( engine tokens)"),
+         lambda m: _bare(m, t)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( HF `architectures` strings)"),
+         lambda m: _bare(m, a)),
+        # "...counts **405,884 text-gen checkpoints**, 326,341 with an
+        # `architectures` field" -- total then arch-bearing (may wrap a line).
+        (re.compile(r"(counts \*\*)(\d[\d,]*)( text-gen checkpoints\*\*, )"
+                    r"(\d[\d,]*)( with an\s+`architectures` field)"),
+         lambda m: _arch_to_tokens(m, tot or m.group(1), w)),
+        (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( arch-bearing text-gen checkpoints)"
+                    r"(\s+\()(\d+(?:\.\d+)?)(%\))"),
+         lambda m: _docs_cov(m, covered, with_arch)),
+        # The same page states the census paragraph in its own words: total,
+        # arch-bearing, unmappable, and the bare ratio with its percentage.
+        # Scoped: "N text-generation checkpoints**, of which" -- the README's
+        # "text-generation checkpoints on the hub" is a different claim and is
+        # rewritten by its own pattern above.
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( text-generation checkpoints\*\*, of which)"),
+         lambda m: _bare(m, tot or m.group(0))),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( declare an `architectures` field)"),
+         lambda m: _bare(m, w)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( arch-bearing text-gen checkpoints\*\* remain)"),
+         lambda m: _bare(m, w)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( have none)"),
+         lambda m: _bare(m, fmt(total - with_arch) if total is not None else m.group(1))),
+        (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( \()(\d+(?:\.\d+)?)(%\))"),
+         lambda m: _ratio_pct(m, covered, with_arch)),
         # Census facts written as prose in blog/post bodies (#2394):
         # site/1bit-post-1775-models.html calls its own numbers "live" while three
         # of its sentences used the pre-2,044 values -- one of them stating both
@@ -355,7 +434,21 @@ def _build_patterns(tokens, arch, covered, with_arch):
              f"{a} of them"),
             (", and 566 tokens resolve to one engine", f", and {t} tokens"),
             ("the whole class now resolves to one binary \u2014 the census claim stays at 100% coverage",
-             "one fewer class on the census's uncovered list")):
+             "one fewer class on the census's uncovered list"),
+            # Canonical docs (#2408).
+            ("566 architecture tokens", f"{t} architecture tokens"),
+            ("1,946 HF `architectures` strings", f"{a} HF `architectures` strings"),
+            ("566 engine tokens", f"{t} engine tokens"),
+            ("566 engine arch tokens", f"{t} engine arch tokens"),
+            ("counts **405,884 text-gen checkpoints**, 326,341 with an `architectures` field",
+             f"{tot or ''} text-gen checkpoints"),
+            ("321,611 / 321,611 arch-bearing text-gen checkpoints (100.00%)",
+             f"{c} / {w}"),
+            ("405,884 text-generation checkpoints**, of which", f"{tot or ''} text-generation checkpoints"),
+            ("326,341 declare an `architectures` field", f"{w} declare an"),
+            ("321,611 arch-bearing text-gen checkpoints** remain", f"{w} arch-bearing"),
+            ("79,543 have none", f"{fmt(total - with_arch) if total is not None else ''} have none"),
+            ("321,611 / 321,611 (100.00%) map to an engine token", f"{c} / {w}")):
         got = claim
         for pat, repl in pats:
             got = pat.sub(repl, got)
@@ -382,17 +475,19 @@ def _pct(covered, with_arch):
 
 
 def sync_site_numbers(apply=True):
-    """Rewrite drifted numbers in site/*.html and the README.
+    """Rewrite drifted numbers in site/*.html, the README and the canonical docs.
 
     Returns {path: [notes]}."""
     tokens = count_tokens()
     arch = count_arch_strings()
     covered, with_arch = census_coverage()
-    patterns = _build_patterns(tokens, arch, covered, with_arch)
+    total = census_total()
+    patterns = _build_patterns(tokens, arch, covered, with_arch, total)
 
     targets = [os.path.join(SITE, name) for name in sorted(os.listdir(SITE))
                if name.endswith(".html")]
     targets.append(README)
+    targets.extend(p for p in DOCS if os.path.exists(p))
     changed = {}
     for path in targets:
         with open(path, encoding="utf-8") as f:
