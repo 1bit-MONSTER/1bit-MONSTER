@@ -686,3 +686,33 @@ That closes the loop on the two anomalies at once:
 true and a shape ELF — nh20 or otherwise — can take effect. Every 4096-candidate
 experiment before that point is vacuous, which is exactly what the null result for
 570848 looked like.
+
+### The actual failure: `Bf16Mm::init` bails before the attention block
+
+`bf16mm_init` **is** called — `npu_engine_universal.cpp:4493`:
+
+```cpp
+bf16mm_set_attn_qout(NH * HD);      // 4491
+bf16mm_set_attn_hd(HD);             // 4492
+if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV, HD) == 0) {
+```
+
+so the earlier "never called" reading is corrected: it is called, and the `&&`
+short-circuit is what decides everything. `Bf16Mm::init` (line 167) loads its
+**mm + dequant** xclbins first and only then reaches the `load_attn_elf` block at
+210. If that first load fails, `init` returns false: no attention ELF is loaded,
+`bf16mm_init` returns 0, the `&&` short-circuits, the bf16 prefill block never
+runs, `bf16_done` stays false, and the generic `[fallback]` prefill executes.
+
+That is one cause for every symptom observed:
+
+| symptom | explanation |
+|---|---|
+| no `Bf16Mm: attention ELF loaded` | `init` returned before line 210 |
+| bf16 projection `Bf16Ctx` inits still print | they are a *different* object, initialised elsewhere |
+| `bf16mm_init` "silent" | it returned 0, and its caller is a bare `if (...)` with no else |
+| `=== Prefill … [fallback] ===` | `bf16_done` never set |
+
+**Next probe:** find which mm/dequant xclbins `Bf16Mm::init` opens first for
+Nanbeige (`model_dir`/`xclbin_dir` arguments) and whether they exist — that, not
+the nh20 attention capture, is what gates the whole bf16 arm.
