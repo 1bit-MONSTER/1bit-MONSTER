@@ -572,3 +572,43 @@ This is a *hypothesis from two ids*, and the test that would confirm it is cheap
 the dense arm a prompt whose first generated token is checked, then a 2-token
 continuation, and see whether token 2 is already wrong — i.e. whether the corruption
 begins at the first KV write or accumulates.
+
+## QUALIFICATION: the fast arm is not uniformly correct either — one of four prompts contradicts it
+
+The "DECISIVE" section above rests on a single prompt. Broadened to four prompts with
+unambiguous answers (same binary, `NPU_GREEDY=1`, decoded with the model's tokenizer):
+
+```
+prompt                          runlist (64-103 tok/s)              dense (2 tok/s)
+--------------------------------------------------------------- ---------------------------------
+The capital of France is        "A)  Paris\nB"                  ✅  "A)  7,."                ❌
+2 + 2 =                         "Let me solve this problem step" ✅  "The\n 2  '"              ❌
+The opposite of hot is          "A)  cold\nB"                   ✅  "A.\n\nTo answer this/"   ❌
+Water is made of hydrogen and   "helium.  The "                 ❌  "oxygen.  If the."       ✅
+```
+
+So the strong form of the previous claim — "the fast arm is CORRECT" — **does not hold** and
+is withdrawn. The correct, weaker statement is:
+
+- The **dense arm is broken on most prompts** (3 of 4 produce degenerate or wrong output:
+  `7,.`, `The\n 2 '`, `A.\n\nTo answer this/`). That part stands, and it is still enough to
+  invalidate its use as a correctness reference.
+- The **runlist arm is largely coherent but not verified**: 3 of 4 answers are right, and
+  on the fourth it answers "**helium**" where the answer is oxygen. A word-level error on
+  one of four easy prompts is not the profile of a verified-correct path.
+- **"Which arm is correct" therefore remains OPEN.** Neither arm can be used as the
+  reference for the other, which is exactly the situation a float/CPU reference exists to
+  resolve — and that reference is still what this goal needs before any corr ≥ 0.998 claim
+  can be made about either arm.
+
+The hydrogen prompt is also a useful specimen for the body divergence: "oxygen" and
+"helium" are both high-probability element completions, so this is plausibly the same
+near-tie flip that the 0.9875 hidden-state disagreement would produce — but that is a
+hypothesis, not a measurement, and it cuts both ways now that one arm is wrong in each
+direction on the two prompts where they disagree most.
+
+**Net effect on the objective:** the dense path is demonstrably unreliable, so "speed up
+the dense path" is the wrong goal; but the runlist path is not yet proven correct, so it
+cannot simply be declared the answer either. The next real step is unchanged and now
+clearly necessary: a **CPU/float reference** for this model, against which both arms can
+be scored, instead of arm-vs-arm comparisons that have now misled three times.
