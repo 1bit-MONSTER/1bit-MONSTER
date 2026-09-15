@@ -730,7 +730,32 @@ int main(int argc,char**argv){
         const char* elf_env = getenv("NPU_LAYER_ELF_DIR");
         const bool runlist_eligible = dense_qwen3 ||
             (!cfg.has_moe && elf_env && elf_env[0]);
-        if (runlist_eligible && !getenv("NPU_FLM_PREFILL") && (!rl || atoi(rl) != 0)) {
+        // NPU_UNIFIED=1 asks for the bf16-prefill + runlist-decode COMBINATION,
+        // which is built further down (the bf16 block hands its final hidden and
+        // its KV to the runlist session and _exit()s from there). This block
+        // returns 0, so without the exception below the flag was silently
+        // ignored: `NPU_PREFILL_BF16=1 NPU_UNIFIED=1` alone ran the plain
+        // runlist path and never reached the unified decode. Measured cost of
+        // that shadowing, Qwen3-0.6B, same prompt and tokens: the unified
+        // prefill is 546 ms at npt=1024 and 1755 ms at npt=4095 against this
+        // block's 13783 ms and 70417 ms (25x / 40x), which is the whole reason
+        // the flag exists.
+        //
+        // The exception is deliberately narrow: the unified session is
+        // initialised INSIDE the bf16 prefill block, so NPU_UNIFIED without
+        // NPU_PREFILL_BF16 cannot work. Skipping this block for that
+        // combination would silently demote the runlist DECODE to the 112-launch
+        // split path, i.e. a flag typo would cost the fast decode too. So it is
+        // not honoured, and it says so rather than doing nothing.
+        const char* uni = getenv("NPU_UNIFIED");
+        const bool unified_requested = uni && atoi(uni) == 1;
+        const bool want_unified = unified_requested && getenv("NPU_PREFILL_BF16") != nullptr;
+        if (unified_requested && !want_unified)
+            fprintf(stderr, "[unified] NPU_UNIFIED=1 needs NPU_PREFILL_BF16=1 (the unified "
+                            "session is initialised inside the bf16 prefill block) — ignoring "
+                            "it and using the runlist path\n");
+        if (runlist_eligible && !getenv("NPU_FLM_PREFILL") && !want_unified &&
+            (!rl || atoi(rl) != 0)) {
             int rc = npu_runlist_decode(mp, ng, input_tok_file,
                                         cfg.H, cfg.NC, cfg.NH, cfg.NKV, cfg.IM, cfg.NV);
             if (rc == 0) return 0;
