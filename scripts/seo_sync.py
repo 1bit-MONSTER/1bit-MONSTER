@@ -133,9 +133,24 @@ def count_families():
     """
     try:
         with open(FAMILIES_MANIFEST, encoding="utf-8") as f:
-            return len(json_load(f).get("families", []))
+            manifest = json_load(f)
     except (OSError, ValueError, TypeError):
         return None
+    # None is the documented no-op -- the caller then leaves the published text
+    # alone -- so anything we cannot affirmatively count returns None, never 0.
+    # The two ways `.get("families", [])` used to escape that contract:
+    #   * a top-level JSON array raises AttributeError on .get(), which is not in
+    #     the tuple above, so --check aborted with a traceback instead of no-op;
+    #   * a renamed key (e.g. "models") yields [] -> len 0 -> the hero rewritten
+    #     to "0 families", a silently wrong derived claim, which is the exact
+    #     failure class this derivation replaced.
+    # An empty list is not a fact we can publish either, so it is None too.
+    if not isinstance(manifest, dict):
+        return None
+    families = manifest.get("families")
+    if not isinstance(families, list) or not families:
+        return None
+    return len(families)
 
 
 def census_coverage():
