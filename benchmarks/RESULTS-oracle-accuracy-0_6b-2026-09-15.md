@@ -444,3 +444,62 @@ manual run did not reach at that point, or the harness's extraction dropping ids
 **Net state: the scoreboard in this document (runlist 7/20, dense 1/20) is from the raw
 format and is confounded; the templated comparison is not yet measurable because the harness
 stops early. Neither number should be used until the harness is fixed.**
+
+## THE HARNESS BUG: every accuracy number above was measured at 6 tokens
+
+The "new discrepancy" above is explained, and the explanation invalidates the scoreboard.
+
+```
+harness:  NTOK="${NTOK:-6}"        <-- reads the ENVIRONMENT
+invoked:  bash oracle_accuracy_0_6b.sh <set> 32      <-- $2 was silently ignored
+engine:   === 9.6 ms/tok (104 tok/s) | tokens=6 ===  <-- the engine's own summary
+```
+
+`NTOK` was never taken from the command line, so **every run labelled "ntok=16", "ntok=32" or
+"ntok=40" actually ran at 6 tokens.** Fixed to `NTOK="${2:-${NTOK:-6}}"`.
+
+Consequences, all of which must be stated plainly:
+
+- **The "budget caveat is REFUTED" section is wrong and is withdrawn.** It argued that raising
+  the cap from 6 to 16 left the score unchanged, and concluded the cap did not matter. The
+  second run was also 6 tokens. The cap was never actually varied, so nothing was refuted —
+  and the templated runs that appeared to show prompt-independent degeneration were simply
+  truncated inside the assistant's shared preamble.
+- **`runlist 7/20` and `dense 1/20` were both measured at 6 tokens** and are not accuracy
+  figures for either arm.
+- Likewise the earlier single-prompt 4-way table and the "arms are not token-parity" tokens —
+  all 6-token truncations.
+
+Re-running the three-prompt templated comparison with a **true** 40 tokens:
+
+```
+The capital of France is      runlist: "Okay, the user is asking about the capital of France. Let me start by reca..."
+                              dense  : "Okay, the user is asking for the capital of France. Hmm, but maybe I shoul..."
+Water is made of hydrogen and runlist: "Okay, the user is asking about what water is made of. Let me start by rec..."
+                              dense  : "Okay, the user is asking what water is made of. Let me start by recalling..."
+The opposite of black is      runlist: "Okay, the user is asking about the opposite of \black.\. Let me think. First..."
+                              dense  : "Okay, the user is asking what the opposite of \black\ is. Hmm, let me thin..."
+```
+
+**Both arms are coherent, prompt-dependent and grammatical once given room** — including the
+dense arm, whose raw-format "gibberish" was a 6-token truncation of a reply that starts by
+restating the question. So the dense arm is not obviously "broken" either; that claim (in the
+earlier commit `28a243ea8`) needs re-testing at a real budget.
+
+What the arms still do not do within 40 tokens is **state the answer**: they reason aloud
+("Let me start by recalling…") and the expected token never appears. Meanwhile FLM answers
+immediately and *echoes the prompt* — `The capital of France is **Paris**.` — which is itself
+telling: that is raw-completion behaviour, not templated assistant behaviour. So the format
+story is more subtle than "native raw vs oracle templated" and needs re-deriving now that the
+budget bug is fixed.
+
+### State of the goal after this correction
+
+- **No trustworthy accuracy number exists yet.** The harness now passes its budget correctly,
+  which is the precondition for measuring anything.
+- The three "problems" reduce to: (1) prompt-format/style differences between the native arms
+  and FLM, still not correctly characterised; (2) **not a bug** (special tokens work — see the
+  retraction); (3) content accuracy, unmeasured.
+- The immediate next step is a re-run of the full 20-prompt set at a real budget (long enough
+  for answers to appear, e.g. 64-128 tokens), scoring each arm, *before* any further
+  interpretation. Everything measured at 6 tokens should be treated as void.

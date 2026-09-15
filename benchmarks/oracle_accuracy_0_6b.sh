@@ -21,7 +21,11 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SET="${1:-$ROOT/benchmarks/prompts/qwen3_0_6b_oracle_set.txt}"
-NTOK="${NTOK:-6}"
+# NB: NTOK must be accepted from the command line. It previously read only the
+# ENVIRONMENT ("${NTOK:-6}"), so every run invoked as `script <set> 32` silently used
+# 6 tokens -- which made a 3-prompt templated comparison look like prompt-independent
+# degeneration when it was only truncated inside the assistant's shared preamble.
+NTOK="${2:-${NTOK:-6}}"
 
 MODEL_DIR="$HOME/.config/flm/models/Qwen3-0.6B-NPU2"
 TOK="$ROOT/engine/npu/tokenizer/tokenize"
