@@ -70,3 +70,50 @@ The dense arm's single hit is the hydrogen prompt — the same one the runlist a
   oracle that fails 2 of its own prompts bounds how much a 20/20 could mean.
 - One prompt (`The capital of Japan is`) the oracle itself got wrong without the newline
   and right with it, so prompt-boundary handling is load-bearing for all three arms.
+
+## Re-run at ntok=16: the budget caveat is REFUTED, and the oracle itself is nondeterministic
+
+Re-running the same set with the cap raised 6 -> 16 (so the runlist arm's narration has room
+to reach its answer):
+
+```
+prompts scored         : 20      FLM oracle self-check : 18/20
+native runlist arm     : 7/20    native dense arm      : 1/20
+```
+
+**Identical totals, and identical per-prompt outcomes for both native arms** (the runlist's
+seven hits are the same seven). So the token cap was *not* what was suppressing the runlist
+arm's score: at 6 tokens and at 16 it is 7/20 either way. The "lower bound, penalised by
+verbosity" caveat recorded above is **withdrawn** — the measurement it predicted did not
+materialise. The natives are deterministic (identical results across both runs), so their
+35% and 5% are stable numbers, not sampling noise.
+
+The oracle, however, is **not** deterministic. Two prompts changed between the two runs:
+
+```
+A baby cat is called a   flm: N -> Y      <-- FLM's own answer changed
+The capital of Germany is flm: Y -> N
+```
+
+FLM generates with a non-zero temperature, so it is a reference with run-to-run variance of
+roughly 1-2 prompts in 20. That matters for how the goal's done-criterion can be read:
+"token parity with the oracle" is not achievable literally against a nondeterministic
+oracle — the target has to be an accuracy level, or a fixed-seed/deterministic oracle mode,
+and that choice should be made explicitly rather than discovered later.
+
+## Where this leaves the goal after steps 1-2
+
+Measured, with the harness committed and reproducible:
+
+| arm | accuracy on 20 easy prompts | determinism |
+|---|---|---|
+| FLM (the oracle) | 18/20 | nondeterministic (~1-2/20 vary) |
+| native runlist (64-103 tok/s) | **7/20 (35%)** | deterministic |
+| native dense (2 tok/s) | **1/20 (5%)** | deterministic |
+
+So the arm that carries the speed is **not** "occasionally wrong on a near-tie" — it is wrong
+on roughly two thirds of straightforward prompts, while the reference gets nine in ten. The
+earlier single-prompt reading ("the fast arm is correct", then "2 of 4") understated the
+problem because four prompts cannot distinguish 35% from 90%. This is the real baseline for
+step 3 (localise the runlist arm's first wrong answer) and it changes the shape of the work:
+this is a broad accuracy defect, not one flipped argmax.
