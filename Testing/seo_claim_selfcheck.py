@@ -112,7 +112,10 @@ def main():
         files.append(args.readme)
     # The canonical documents that state the same facts; seo_sync rewrites them
     # in the daily sweep, and this makes a stale one fail at PR time (#2408).
-    for rel in ("docs/wiki/models.md", "docs/model-families/README.md", "docs/CODEBASE.md"):
+    # site/search-index.json embeds chunks of the pages' text, so it carries the
+    # same claims; it is generated off-CI and went stale for two days (#2411).
+    for rel in ("docs/wiki/models.md", "docs/model-families/README.md",
+                "docs/CODEBASE.md", "site/search-index.json"):
         p = os.path.join(ROOT, rel)
         if os.path.exists(p):
             files.append(p)
