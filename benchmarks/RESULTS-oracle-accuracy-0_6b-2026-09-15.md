@@ -1130,3 +1130,54 @@ This also finally distinguishes the two arms on the same task: the runlist arm (
 scores 20/20 where the dense arm (slow, int8) scores 13/19, so on the accuracy question the arm the
 goal measured by default is the better one — which is consistent with the findings above and
 refutes the earlier direction of suspicion.
+
+## Gap (a) CLOSED: the dense arm's misses are GENUINE DEGENERATION, not truncation
+
+Re-ran the six failing prompts **with the response text captured** (the omission that invalidated
+the first attempt). Six of seven ran; the seventh (Germany) hit the timeout again. The tails are
+unambiguous:
+
+```
+2 + 2 =                    -> "...TRTRTRTRTRTRTRTRTRTRTRTRTRTRTRTRTRTRT5"        REPETITION LOOP
+3 + 4 =                    -> "...the final answer would be 3+4, with the |iM_end| tag
+                               possibly being a label or placeholder."            META-CONFUSION
+A baby cat is called a     -> "...maybe the user is pointing out that the phrase is
+                               missing a part. So the answer would be \A baby cat is-"  META-CONFUSION
+A baby dog is called a     -> "...perhaps the user made a typo and actually intended to
+                               say \A baby dog is called a...\ with a period."    META-CONFUSION
+The largest planet ... is  -> "...that there is no single largest planet. But the question
+                               is phrased as \the largest planet ... is.\ So perhaps"  CONFUSED
+The first month ... is     -> "...that I can't help with that. But maybe I should check
+                               once again. Alternatively, maybe the user is asking
+                               where to get help for the first month of'"           REFUSAL
+```
+
+**So the dense arm's 13/19 is a real accuracy deficit, not a budget artefact.** These are not
+truncations — the model has room and spends it looping (`TRTRTR…`), treating the prompt as a
+meta-problem ("maybe the user made a typo", "perhaps the user is pointing out that the phrase is
+missing a part"), refusing, or asserting falsehoods ("there is no single largest planet"). The
+runlist arm answers **all 20** of these prompts correctly at the same budget.
+
+This is the first **genuine, characterised engine-side quality difference** found in this goal, and
+it survives every methodological correction applied here:
+
+- it is not a 6-token truncation (256-token budget, text captured);
+- it is not the raw-format confound (chat template applied on both arms);
+- it is not my display tool (the fixed detokenizer is used);
+- it is not the scoring method (these are visibly degenerate continuations, whatever the rubric);
+- and it is **arm-specific** — the runlist arm passes the identical prompts.
+
+It is consistent with the re-derived divergence (logits corr 0.938 / hidden corr 0.926): the dense
+arm's numerically different path is close enough to answer most prompts but far enough to fall into
+degenerate states on roughly a third of them. So the goal's original instinct — that the dense arm
+is the problematic one — was **directionally right for quality reasons**, even though every
+specific claim made about it along the way (gibberish from step 1, a decode-loop KV bug, corr <
+0.998 as the gate) was wrong or unmeasurable.
+
+### Remaining, stated plainly
+
+- Dense arm: **13/19** with the failure mode **established** (degeneration/confusion), plus prompt
+  20 unscored because two consecutive 30-minute tool calls timed out on it. A dedicated run is
+  needed only if the 20th prompt's verdict matters; it does not change the finding.
+- The **runlist arm — the one the engine selects by default and the one `flm_parity.sh` measures —
+  is 20/20 easy and 13/15 hard.** That is the headline result.
