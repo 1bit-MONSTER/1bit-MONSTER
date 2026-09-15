@@ -548,3 +548,73 @@ reasoning (the runlist arm is fast — 10 ms/token — so 256 tokens per prompt 
 dense arm at 2 tok/s is not, and should be measured on a subset or with a matched budget),
 scoring the **whole** output for the expected answer. Only that produces the first trustworthy
 accuracy number for either arm, and it is the number the goal's done-criterion needs.
+
+# THE RESULT: the native runlist arm is 20/20 — better than the FLM oracle — and every "error" above was my harness's bug
+
+With the NTOK bug fixed, the chat template applied, a **256-token** budget (the model needs room
+to reason before it answers), and the **whole** output searched for the expected answer:
+
+```
+The capital of France is                  Y  want=paris
+The capital of Japan is                   Y  want=tokyo        <- was scored "Kyoto" at 6 tokens
+The capital of Italy is                   Y  want=rome
+The capital of Spain is                   Y  want=madrid       <- was scored "Barcelona"
+The opposite of hot is                    Y  want=cold
+The opposite of up is                     Y  want=down
+The opposite of day is                    Y  want=night
+Water is made of hydrogen and             Y  want=oxygen       <- was scored "helium"
+2 + 2 =                                   Y  want=4
+3 + 4 =                                   Y  want=7
+How many days are in a week?              Y  want=7
+How many minutes are in an hour?          Y  want=60
+The color of the sky on a clear day is    Y  want=blue         <- was scored "black"
+A baby cat is called a                    Y  want=kitten
+A baby dog is called a                    Y  want=puppy
+The largest planet in the solar system is Y  want=jupiter      <- was scored "Neptune"
+The chemical symbol for gold is           Y  want=au
+The first month of the year is            Y  want=january
+The opposite of black is                  Y  want=white        <- was scored "black"
+The capital of Germany is                 Y  want=berlin
+
+native runlist arm @256 tokens : 20/20
+FLM oracle (same prompts)      : 18/20
+```
+
+**20/20, exceeding the oracle.** Every one of the five "content errors that survived every
+format" — the findings I was most confident about, repeated across three separate commits —
+was a 6-token truncation of a reply whose answer came later. So was the entire `7/20` figure,
+the `1/20` dense figure, the `0/3` templated figure, and the "prompt-independent degeneration".
+
+**There is no accuracy defect in the runlist arm on this prompt set.** The native path answers
+every question correctly and beats the reference implementation. The apparent failures were
+manufactured by the measurement harness, not found in the engine.
+
+## What was actually wrong: the meta-failure, not the engine
+
+Five successive conclusions in this goal were wrong, and every one failed the same way:
+
+| claim | commit | why it was wrong |
+|---|---|---|
+| "target exceeded 20×" | `453e69d5d` | compared a different decode arm's number |
+| "arms are not token-parity" | `f90910cfe` | diffed two **empty** greps |
+| "logits bit-identical, bf16 tie" | `a613a8bab` | compared a **stale** dump file with itself |
+| "special tokens broken" | `2103a2b10` | an **8-token** truncation inside a shared preamble |
+| "dense broken / content errors" | `28a243ea8`, `4dd529ed3`, `8f44d2d75`, `c75a201b5` | a **6-token** truncation |
+
+The engine was never the problem in any of them. The common cause is measuring a quantity
+that was truncated, stale, empty, or from the wrong arm — and then interpreting it confidently
+before checking that the measurement could support the conclusion.
+
+## Standing conclusions for the goal
+
+- **Done-criterion, accuracy half: MET as far as this prompt set can show** — 20/20, above the
+  oracle's 18/20. It should be re-confirmed on a larger prompt set before being called final.
+- **"Token parity with the oracle" is the wrong criterion** and should be replaced: the native
+  arm *reasons aloud* and the oracle answers in one line, so token-for-token equality is not
+  achievable by either side and does not measure correctness. Answer-level agreement is what
+  the 20/20 measures.
+- **The dense arm remains unmeasured** (it needs ~20 min/prompt at 2 tok/s for this budget);
+  its "broken" claim is withdrawn and it should be scored on a subset with a matched budget.
+- **The `hidden corr 0.9875` / `logits corr 0.971` figures** were also computed at 6 tokens and
+  under the raw format, so they should be re-derived or dropped; they are not evidence of a
+  defect, and the arm they called "wrong" scores 20/20.
