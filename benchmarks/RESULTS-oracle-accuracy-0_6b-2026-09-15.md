@@ -1584,3 +1584,49 @@ visible once this path could run at all, which is the usual shape of a revived c
 its own defects rather than inheriting a clean bill of health. It is also the kind of thing worth
 checking against the int8-prefill runlist arm on the same prompt, to see whether the marker handling
 differs between the two prefills.
+
+## The two prefills differ on special-token handling — the bf16 one is derailed by the marker
+
+The comparison the previous section called for: the same prompt (`3 + 4 =`), the same token ids, the
+two different prefills.
+
+```
+int8-prefill runlist arm:
+  "Okay, the user is asking for the sum of 3 plus 4. Let me think. First, I need to add 3 and 4.
+   Adding them together should be straightforward. Let me do the calculation."   -> standalone 7 PRESENT, CORRECT
+
+bf16-prefill (unified) arm:
+  "Okay, the user wrote \3  + 4 = |i|m_end|\ Let me break this down. The input is a string that
+   starts with \3 + 4 = |i|m_end|\ The question is whether ... an invalid syntax."  -> no 7, DERAILED
+```
+
+Both outputs mention the marker, so the marker is visible to both — but only the **bf16** prefill is
+derailed by it, treating it as literal syntax to analyse rather than as turn structure. So this is a
+concrete, reproducible **difference in special-token handling between the two prefills**, and it
+accounts for the bf16 pipeline's single miss.
+
+This is exactly the kind of defect a revived path brings with it, and it is worth being precise about
+what it is and is not:
+
+- It is **not** the raw-vs-templated confound (both runs used the identical templated prompt and the
+  identical token ids — only the prefill changed).
+- It is **not** the earlier "bf16 emits garbage" claim (that was my `NPU_RUNLIST=0` misconfiguration,
+  withdrawn); here bf16 runs in its supported pairing and produces coherent, sensible-looking
+  reasoning that happens to be about the wrong thing.
+- It is a **prompt-representation** difference: the same token ids lead the bf16 prefill to a hidden
+  state in which the `im_end` marker behaves like text. The natural next measurement is the bf16
+  path's **embedding** of the special-token ids (151644/151645) against the int8 path's — the int8
+  table was already verified non-zero for 151644 via `NPU_DUMP_L0` (`/tmp/l0_emb.bin`, 989/1024
+  nonzero), so the question is whether the bf16 path's table agrees for those rows.
+
+### Scoreboard, all four native configurations plus the oracle, same 20 prompts
+
+| configuration | easy set | notes |
+|---|---|---|
+| runlist decode, int8 prefill | **20/20** | default fast path, 93 tok/s |
+| runlist decode, bf16 prefill | **19/20** | newly revived, 48 tok/s; miss = marker derailment on `3 + 4` |
+| dense int8 | **14/20** | 6 misses = degeneration/confusion |
+| FLM oracle | 18-19/20 | nondeterministic |
+
+The `|i|m_end|` derailment is a real, reproducible defect in a path that could not previously run,
+and it is now the most specific open item in the whole goal.
