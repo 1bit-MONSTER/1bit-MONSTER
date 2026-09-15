@@ -386,6 +386,11 @@ def _build_patterns(tokens, arch, covered, with_arch, total=None,
          lambda m: _bare(m, fmt(total - with_arch) if total is not None else m.group(1))),
         (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( \()(\d+(?:\.\d+)?)(%\))"),
          lambda m: _ratio_pct(m, covered, with_arch)),
+        # The same claim without the spaces around the slash:
+        # site/1bit-post-lemonade-v1170.html says "321,611/321,611 (100%)", which
+        # every other pattern's " / " missed (#2411).
+        (re.compile(r"(\d[\d,]*)(/)(\d[\d,]*)( \()(\d+(?:\.\d+)?)(%\))"),
+         lambda m: _ratio_pct(m, covered, with_arch)),
         # Front-page hero: "resolve to 569 tokens, 32 families, 12 backends"
         # (#2399). 32 and 12 matched no source in the tree or the engine -- the
         # family docs list 16 and the engine's BackendType enumerates 16.
@@ -408,6 +413,19 @@ def _build_patterns(tokens, arch, covered, with_arch, total=None,
         # match.
         (re.compile(r"(, and )(\d[\d,]*)( tokens resolve to one engine)"),
          lambda m: _num_between(m, t)),
+        # site/search-index.json stores the pages' prose with the em dash already
+        # JSON-escaped ("\u2014"), so the literal-dash patterns above cannot see
+        # it. Same claims, same rewrite, escaped spelling (#2411).
+        (re.compile(r"(Every architecture token on HuggingFace \\u2014 )(\d[\d,]*)"
+                    r"( of them \\u2014 resolves to one binary)"),
+         lambda m: _num_between(m, t)),
+        (re.compile(r"(all )(\d[\d,]*)( of them \\u2014 normalizes down to one of )"
+                    r"(\d[\d,]*)( architecture tokens)"),
+         lambda m: _arch_to_tokens(m, a, t)),
+        (re.compile(r"the whole class now resolves to one binary \\u2014 the census "
+                    r"claim stays at \d+(?:\.\d+)?% coverage"),
+         lambda m: "the whole class now resolves to one binary \\u2014 one fewer "
+                   "class on the census's uncovered list"),
         # #2397: the 94 covered-mode posts asserted "the census claim stays at
         # 100% coverage". Neither metric is 100% -- checkpoints are 99.96% and
         # in-scope CLASS coverage is 97.42% (2,040 of 2,094 classes; 54
@@ -501,6 +519,13 @@ def _build_patterns(tokens, arch, covered, with_arch, total=None,
             ("321,611 arch-bearing text-gen checkpoints** remain", f"{w} arch-bearing"),
             ("79,543 have none", f"{fmt(total - with_arch) if total is not None else ''} have none"),
             ("321,611 / 321,611 (100.00%) map to an engine token", f"{c} / {w}"),
+            ("321,611/321,611 (100%) HF census", f"{c}/{w}"),
+            ("Every architecture token on HuggingFace \\u2014 566 of them \\u2014 resolves to one binary",
+             f"{t} of them"),
+            ("all 1,946 of them \\u2014 normalizes down to one of 566 architecture tokens",
+             f"{a} of them"),
+            ("the whole class now resolves to one binary \\u2014 the census claim stays at 100% coverage",
+             "one fewer class on the census's uncovered list")
     ]
     if f is not None and b is not None:
         probes.append(("resolve to 569 tokens, 32 families, 12 backends",
@@ -547,6 +572,13 @@ def sync_site_numbers(apply=True):
                if name.endswith(".html")]
     targets.append(README)
     targets.extend(p for p in DOCS if os.path.exists(p))
+    # site/search-index.json embeds chunks of the pages' text, so it carries the
+    # same claims. It is generated off-CI (build_embed_index.py needs the engine's
+    # /v1/embeddings), which is exactly why it went stale: the pages were fixed
+    # and the index kept the old numbers (#2411).
+    si = os.path.join(SITE, "search-index.json")
+    if os.path.exists(si):
+        targets.append(si)
     changed = {}
     for path in targets:
         with open(path, encoding="utf-8") as f:
