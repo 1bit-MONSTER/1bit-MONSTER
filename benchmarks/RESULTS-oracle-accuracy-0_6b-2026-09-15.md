@@ -1176,8 +1176,10 @@ specific claim made about it along the way (gibberish from step 1, a decode-loop
 
 ### Remaining, stated plainly
 
-- Dense arm: **13/19** with the failure mode **established** (degeneration/confusion), plus prompt
-  20 unscored because two consecutive 30-minute tool calls timed out on it. A dedicated run is
-  needed only if the 20th prompt's verdict matters; it does not change the finding.
+- Dense arm: **14/20 — the full set is now complete.** Prompt 20 (`The capital of Germany is`)
+  was run separately and PASSES: *"The capital of Germany is Berlin."* (followed by a repetition
+  loop, as with `2 + 2 =`, but the answer is stated correctly). So the dense arm's final score is
+  **14/20 against the runlist arm's 20/20**, with the six misses characterised as degeneration,
+  meta-confusion, refusal or false assertion rather than truncation.
 - The **runlist arm — the one the engine selects by default and the one `flm_parity.sh` measures —
   is 20/20 easy and 13/15 hard.** That is the headline result.
