@@ -54,20 +54,24 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
     K_FRAME = 2048   # fused-style A-frame K (the small-K 4D tap fails on AIE2P)
     assert M % m == 0 and K % k == 0 and N % n == 0
     # The PV output width is the HEAD DIM, and it is this generator's `n` tile
-    # (C_ty = (m, n); the PV matmul is (m,k)x(k,n)->(m,n)). `-K` only feeds the
-    # QK^T contraction, so -K larger than `n` builds a kernel that computes n of
-    # K head dims -- and NOTHING catches it: aiecc compiles it, XRT loads it, and
-    # it runs silently wrong (measured 2026-09-15: -K 256 -N 512 -c 8 produced a
-    # clean 90192 B xclbin computing 128 of 256 head dims, and the seq's C2
-    # writeback over-read M*K=2048 elements from a (8,128) FIFO). Fail loudly
-    # instead: pass -n = head dim, and see
-    # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md for the PV N-split
-    # that would make K > n a real multi-tile design.
-    assert K <= n, (
-        f"head dim K={K} exceeds the C2/PV output tile n={n}: the PV would compute "
-        f"only {n} of {K} head dims and the toolchain would not report it. "
-        f"Pass -n {K} (and check the QK^T context tiling) or implement the PV N-split."
+    # (C_ty = (m, n); the PV matmul is (m,k)x(k,n)->(m,n)). `-K` feeds BOTH the
+    # QK^T contraction and the PV output width, so -K larger than `n` used to
+    # build a kernel that computed n of K head dims -- and NOTHING caught it:
+    # aiecc compiles it, XRT loads it, and it runs silently wrong (measured
+    # 2026-09-15: -K 256 -N 512 -c 8 produced a clean 90192 B xclbin computing
+    # 128 of 256 head dims, and the seq's C2 writeback over-read M*K=2048
+    # elements from a (8,128) FIFO).
+    #
+    # PV N-split (hd > n): the PV now tiles the head dim into n_hd = K/n output
+    # tiles of width n instead of failing. n_hd == 1 is the original single-tile
+    # path and stays byte-identical (the `if n_hd == 1` branches below are what
+    # keep it that way -- do not merge them into the multi-tile path).
+    # See benchmarks/RESULTS-attention-c2-regression-2026-09-15.md.
+    assert K % n == 0, (
+        f"head dim K={K} is not a multiple of the PV output tile n={n}: the PV "
+        f"N-split needs whole tiles. Pass -n dividing -K."
     )
+    n_hd = K // n           # PV head-dim tiles (1 for hd128/n128 = unchanged)
     n_k = K // k            # QK^T K-chunks (hd/64 = 2)
     # The design is ONE CORE COLUMN PER Q HEAD: column c is fed from q row
     # c*K_FRAME and writes back head c. So a model with more heads than columns
@@ -154,10 +158,13 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
             A2o_c[c] = object_fifo(f"A2O_C{c}", core_tiles[0][c], mem_tiles[c], 2, A2o_ty)
             A2o_s[c] = object_fifo(f"A2O_S{c}", mem_tiles[c], shim_tiles[c], 1, A2o_ty)
             object_fifo_link(A2o_c[c], A2o_s[c])
+        # C2: one (m,n) int32 tile per PV head-dim tile, so the FIFO depth is
+        # n_hd (1 for hd128). The host-side C2 layout is unchanged: the tiles of
+        # column c land at c*(M*K) + hi*(M*n), i.e. the same flat (M,K) region.
         C2_c = [None] * n_aie_cols; C2_s = [None] * n_aie_cols
         for c in range(n_aie_cols):
-            C2_c[c] = object_fifo(f"C2_C{c}", core_tiles[0][c], mem_tiles[c], 1, C_ty)
-            C2_s[c] = object_fifo(f"C2_S{c}", mem_tiles[c], shim_tiles[c], 1, C_ty)
+            C2_c[c] = object_fifo(f"C2_C{c}", core_tiles[0][c], mem_tiles[c], n_hd, C_ty)
+            C2_s[c] = object_fifo(f"C2_S{c}", mem_tiles[c], shim_tiles[c], n_hd, C_ty)
             object_fifo_link(C2_c[c], C2_s[c])
 
         # One (8,128) int32 C1 half-tile per N/128 chunk (2 for N=256, 4 for N=512).
@@ -201,15 +208,29 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                       # produced A2 but never consumed the PV feed nor wrote C2.
                       # The seq always emits n_k_pv (A,B) pairs and a C2 read task,
                       # so its absence is what hung the launch and left C2 at zero.
-                      Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
-                      zero(Cb)
-                      for ki in range_(n_k_pv):
-                          Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
-                          Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
-                          matmul(Ab, Bb, Cb)
-                          A_c[c].release(ObjectFifoPort.Consume, 1)
-                          B_c[c].release(ObjectFifoPort.Consume, 1)
-                      C2_c[c].release(ObjectFifoPort.Produce, 1)
+                      if n_hd == 1:
+                          Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
+                          zero(Cb)
+                          for ki in range_(n_k_pv):
+                              Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                              Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                              matmul(Ab, Bb, Cb)
+                              A_c[c].release(ObjectFifoPort.Consume, 1)
+                              B_c[c].release(ObjectFifoPort.Consume, 1)
+                          C2_c[c].release(ObjectFifoPort.Produce, 1)
+                      else:
+                          # PV N-split: one output tile per head-dim block. Same
+                          # A2 tile per ki (re-read), a different V slice per hi.
+                          for hi in range(n_hd):
+                              Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
+                              zero(Cb)
+                              for ki in range_(n_k_pv):
+                                  Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                                  Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                                  matmul(Ab, Bb, Cb)
+                                  A_c[c].release(ObjectFifoPort.Consume, 1)
+                                  B_c[c].release(ObjectFifoPort.Consume, 1)
+                              C2_c[c].release(ObjectFifoPort.Produce, 1)
 
                   else:
                     for g in range(n_grp):
@@ -227,15 +248,27 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                         A2o = A2o_c[c].acquire(ObjectFifoPort.Produce, 1)
                         softmax(C1[c][0], C1[c][1], C1[c][2], C1[c][3], Par, A2o)
                         A2o_c[c].release(ObjectFifoPort.Produce, 1)
-                    Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
-                    zero(Cb)
-                    for ki in range_(n_k_pv):
-                        Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
-                        Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
-                        matmul(Ab, Bb, Cb)
-                        A_c[c].release(ObjectFifoPort.Consume, 1)
-                        B_c[c].release(ObjectFifoPort.Consume, 1)
-                    C2_c[c].release(ObjectFifoPort.Produce, 1)
+                    if n_hd == 1:
+                        Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
+                        zero(Cb)
+                        for ki in range_(n_k_pv):
+                            Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                            Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                            matmul(Ab, Bb, Cb)
+                            A_c[c].release(ObjectFifoPort.Consume, 1)
+                            B_c[c].release(ObjectFifoPort.Consume, 1)
+                        C2_c[c].release(ObjectFifoPort.Produce, 1)
+                    else:
+                        for hi in range(n_hd):
+                            Cb = C2_c[c].acquire(ObjectFifoPort.Produce, 1)
+                            zero(Cb)
+                            for ki in range_(n_k_pv):
+                                Ab = A_c[c].acquire(ObjectFifoPort.Consume, 1)
+                                Bb = B_c[c].acquire(ObjectFifoPort.Consume, 1)
+                                matmul(Ab, Bb, Cb)
+                                A_c[c].release(ObjectFifoPort.Consume, 1)
+                                B_c[c].release(ObjectFifoPort.Consume, 1)
+                            C2_c[c].release(ObjectFifoPort.Produce, 1)
 
         @runtime_sequence(
             np.ndarray[(16 * K_FRAME,), np.dtype[dtype_in]],  # q (bo0, fused A-frame)
@@ -297,7 +330,11 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
             # writeback, so the core's n_k_pv A/B acquires blocked forever and
             # C2 was never read. A = A2 read back from bo4 (row stride N, the
             # layout the strided writeback above produces), B = V[kv] tile.
-            for ki in range(n_k_pv):
+            # PV N-split: the core consumes hi-major (n_hd output tiles, each
+            # n_k_pv (A2,V) pairs), so the feed is hi-major too, and the V tile
+            # is a (k,n) slice of a K-wide row instead of a flat k*n block.
+            for hi in range(n_hd):
+              for ki in range(n_k_pv):
                 at_list, bt_list = [], []
                 for c in range(n_aie_cols):
                     at = shim_dma_single_bd_task(
@@ -306,20 +343,40 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                     dma_start_task(at); at_list.append(at)
                 for cc in range(n_aie_cols):
                     kvv = cc // 4
-                    bt = shim_dma_single_bd_task(
-                        B_s[cc], V,
-                        offset=kvv * (N * K) + ki * (k * n),
-                        sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                    if n_hd == 1:
+                        # unchanged single-tile form (byte-identity guard)
+                        bt = shim_dma_single_bd_task(
+                            B_s[cc], V,
+                            offset=kvv * (N * K) + ki * (k * n),
+                            sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                    else:
+                        # strides[0..1] = 4, not 1: the verifier checks every
+                        # stride for 4-byte divisibility even when that dim is
+                        # size 1 (same trap as the A2 writeback). Semantically
+                        # identical -- those dims are never applied.
+                        bt = shim_dma_single_bd_task(
+                            B_s[cc], V,
+                            offset=kvv * (N * K) + ki * (k * K) + hi * n,
+                            sizes=[1, 1, k, n], strides=[4, 4, K, 1], issue_token=True)
                     dma_start_task(bt); bt_list.append(bt)
                 dma_await_task(*at_list, *bt_list)
                 dma_free_task(*at_list, *bt_list)
-            # C2 writeback per head (same geometry as the n_grp == 1 path).
+            # C2 writeback per head: n_hd tiles of (m,n) per column, i.e. the
+            # same flat (M,K) region at c*(M*K) + hi*(M*n). n_hd == 1 keeps the
+            # original single M*K task.
             ctasks = []
             for c in range(n_aie_cols):
-                ct = shim_dma_single_bd_task(
-                    C2_s[c], C2, offset=c * (M * K),
-                    sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
-                dma_start_task(ct); ctasks.append(ct)
+                if n_hd == 1:
+                    ct = shim_dma_single_bd_task(
+                        C2_s[c], C2, offset=c * (M * K),
+                        sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
+                    dma_start_task(ct); ctasks.append(ct)
+                else:
+                    for hi in range(n_hd):
+                        ct = shim_dma_single_bd_task(
+                            C2_s[c], C2, offset=c * (M * K) + hi * (M * n),
+                            sizes=[1, 1, 1, M * n], strides=[1, 1, 1, 1], issue_token=True)
+                        dma_start_task(ct); ctasks.append(ct)
             dma_await_task(*ctasks)
             dma_free_task(*ctasks)
           else:
@@ -366,8 +423,10 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
               # the PV reads the A2 back — the writebacks MUST be visible first.
               dma_await_task(*a2_list)
               dma_free_task(*a2_list)
-              # PV phase: A = A2 from bo4 (A-layout), B = V[kv] tile (ki)
-              for ki in range(n_k_pv):
+              # PV phase: A = A2 from bo4 (A-layout), B = V[kv] tile. hi-major
+              # so it matches the core's per-head-dim-block acquires.
+              for hi in range(n_hd):
+                for ki in range(n_k_pv):
                   at_list, bt_list = [], []
                   for c in range(n_aie_cols):
                       at = shim_dma_single_bd_task(
@@ -376,24 +435,36 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None):
                       dma_start_task(at); at_list.append(at)
                   for cc in range(n_aie_cols):
                       kvv = cc // 4
-                      bt = shim_dma_single_bd_task(
-                          B_s[cc], V,
-                          offset=kvv * (N * K) + ki * (k * n),
-                          sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                      if n_hd == 1:
+                          # unchanged single-tile form (byte-identity guard)
+                          bt = shim_dma_single_bd_task(
+                              B_s[cc], V,
+                              offset=kvv * (N * K) + ki * (k * n),
+                              sizes=[1, 1, 1, k * n], strides=[1, 1, 1, 1], issue_token=True)
+                      else:
+                          # strides[0..1] = 4: see the chunked branch above.
+                          bt = shim_dma_single_bd_task(
+                              B_s[cc], V,
+                              offset=kvv * (N * K) + ki * (k * K) + hi * n,
+                              sizes=[1, 1, k, n], strides=[4, 4, K, 1], issue_token=True)
                       dma_start_task(bt); bt_list.append(bt)
                   dma_await_task(*at_list, *bt_list)
                   dma_free_task(*at_list, *bt_list)
-              # C2 writeback per head: the full (8,128) tile of column c →
-              # bo2[c * (M*K) ..] (each column's tile is M*K int32 = 4096 B,
-              # flat, no 4D permutation; the host reads row 0 of each tile at
-              # the interleaved mmul C-layout positions (c/8)*64 + c%8 — the
-              # same c1_idx mapping the softmax kernel uses).
+              # C2 writeback per head: n_hd tiles of (m,n) per column at
+              # c*(M*K) + hi*(M*n) (the flat (M,K) layout the host already reads).
               ctasks = []
               for c in range(n_aie_cols):
-                  ct = shim_dma_single_bd_task(
-                      C2_s[c], C2, offset=c * (M * K),
-                      sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
-                  dma_start_task(ct); ctasks.append(ct)
+                  if n_hd == 1:
+                      ct = shim_dma_single_bd_task(
+                          C2_s[c], C2, offset=c * (M * K),
+                          sizes=[1, 1, 1, M * K], strides=[1, 1, 1, 1], issue_token=True)
+                      dma_start_task(ct); ctasks.append(ct)
+                  else:
+                      for hi in range(n_hd):
+                          ct = shim_dma_single_bd_task(
+                              C2_s[c], C2, offset=c * (M * K) + hi * (M * n),
+                              sizes=[1, 1, 1, M * n], strides=[1, 1, 1, 1], issue_token=True)
+                          dma_start_task(ct); ctasks.append(ct)
               dma_await_task(*ctasks, *pt_list)
               dma_free_task(*ctasks, *pt_list)
 

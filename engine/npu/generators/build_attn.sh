@@ -17,6 +17,13 @@
 # Run: bash build_attn.sh
 #
 # Usage: bash build_attn.sh
+#   NPU_ATTN_N=1024       MAX_SEQ (default 512)
+#   NPU_ATTN_K=256        head dim (default 128); K != 128 needs the PV N-split,
+#                         which divides K into K/n tiles of n=128
+#   NPU_ATTN_COLS=8       AIE columns == q heads per pass (default 8)
+#   NPU_ATTN_HEADS=<nh>   total q heads, when nh > cols (needs the head-block loop)
+#   NPU_ATTN_XCLBIN=/path NPU_ATTN_INSTS=/path   override the outputs (default
+#                         writes the shipped engine/npu/xclbins/attn{.xclbin,_insts.txt})
 set -euo pipefail
 P=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 M=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/mlir_aie
@@ -41,7 +48,14 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
 $P/bin/ld.lld -r "$W/mm.o" "$W/softmax.o" -o "$W/attn_kernel.o"
 
 # 2. design
-$PYTHON "$G/n1_core_attn.py" -M 8 -K 128 -N "${NPU_ATTN_N:-512}" -m 8 -k 64 -n 128 -c 8 -b 2 \
+# Outputs default to the shipped artifacts; override them (e.g. to build a
+# candidate without touching the tracked attn.xclbin / attn_insts.txt).
+XCLBIN_OUT="${NPU_ATTN_XCLBIN:-$G/../xclbins/attn.xclbin}"
+INSTS_OUT="${NPU_ATTN_INSTS:-$G/../xclbins/attn_insts.txt}"
+HEADS_ARG=""
+[ -n "${NPU_ATTN_HEADS:-}" ] && HEADS_ARG="-H ${NPU_ATTN_HEADS}"
+$PYTHON "$G/n1_core_attn.py" -M 8 -K "${NPU_ATTN_K:-128}" -N "${NPU_ATTN_N:-512}" \
+    -m 8 -k 64 -n 128 -c "${NPU_ATTN_COLS:-8}" -b 2 $HEADS_ARG \
     > "$W/design.mlir" 2>/dev/null
 cd "$W"  # link_with resolves attn_kernel.o from CWD
 export PATH=/home/bcloud/Xilinx/2026.1/Vitis/bin:/opt/xilinx/xrt/bin:$PATH
@@ -60,6 +74,8 @@ export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
     --alloc-scheme=basic-sequential --no-xchesscc --no-xbridge \
     --aie-generate-xclbin --no-compile-host --unified --dynamic-objFifos \
     --aie-generate-npu-insts \
-    --xclbin-name="$G/../xclbins/attn.xclbin" \
-    --npu-insts-name="$G/../xclbins/attn_insts.txt" \
+    --xclbin-name="$XCLBIN_OUT" \
+    --npu-insts-name="$INSTS_OUT" \
     "$W/design.mlir"
+echo "built: $XCLBIN_OUT"
+echo "insts: $INSTS_OUT ($(sha256sum "$INSTS_OUT" | cut -c1-16))"
