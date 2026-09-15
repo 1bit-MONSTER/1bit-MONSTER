@@ -316,3 +316,38 @@ That fixes the direction of the fix: replacing the C1 buffer list with a rotatin
 pair (so the group loop can be a real AIE loop) removes the per-group growth from
 the core program, and the sequence's BD count is a separate, larger ceiling that
 does not bind first.
+
+### The ceiling is lifted: the chunked group loop is now a real AIE loop
+
+The counting above pointed at the core program, and the core body never uses the
+group index `g` — all four `C1` tiles are reused per group, and the per-group
+differences (the params tile, the A2 slice) are host-fed. So unrolling it bought
+nothing and cost program memory. `for g in range(n_grp)` → `for g in range_(n_grp)`.
+
+| build | before | after |
+|---|---|---|
+| N=512 (single group, the guard) | `f3d0a132bde24a60` | **`f3d0a132bde24a60` — unchanged** |
+| N=3072, nh8/cols8 | OK | OK (90448 B xclbin) |
+| N=4096, nh8/cols8 | **Overflow of program memory** | **OK** (90448 B xclbin — same as 3072, i.e. no longer growing with the chunk count) |
+
+The full shape-ELF matrix now builds end to end:
+
+| family | shape | 1024 | 2048 | 4096 |
+|---|---|---|---|---|
+| Nanbeige | nh20 hd128 nkv4 cols4 | 243600 B | 482960 B | 961680 B |
+| Phi4-mini | nh24 hd128 nkv8 cols8 | 292176 B | 579408 B | 1153872 B |
+
+**Two things this does NOT mean.** (1) It is not verified: the emitted stream for
+every chunked build has changed, and a loop that alters FIFO acquisition order is
+exactly the class of change that produced the silent C2 failure earlier in this
+file's history — the bench gate (NPU vs EMU) and a family token identity are still
+required, and the chunked kernels measured before today no longer correspond to
+what the generator now emits. (2) The ELF byte size did **not** change for the
+previously "failed" 4096 attempts (961680 / 1153872 B before and after): the ELF
+carries the *transaction stream*, which is still unrolled on the host side — what
+shrank is the core program. That also explains why a failed build left a
+plausible-looking ELF on disk: the file is written before the CDO step that
+overflows.
+
+The six bucket ELFs sit in `/tmp/elf2_attn_mha_*.elf`, still deliberately outside
+`engine/npu/xclbins/` until the device gate passes.

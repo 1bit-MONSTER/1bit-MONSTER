@@ -246,7 +246,15 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, nkv=2):
                               C2_c[c].release(ObjectFifoPort.Produce, 1)
 
                   else:
-                    for g in range(n_grp):
+                    # The group loop is a REAL AIE loop, not a Python-unrolled one:
+                    # the body below never references g (all four C1 tiles are
+                    # reused for every group, and the per-group differences live in
+                    # the params tile and the A2 slice, both host-fed), so unrolling
+                    # it only inflated the core program -- 592 kernel calls at
+                    # N=4096, past the tile's program memory (_XAie_LoadProgMemSection:
+                    # Overflow of program memory). Keep this as range_(): see
+                    # benchmarks/RESULTS-head-block-loop-2026-09-15.md.
+                    for g in range_(n_grp):
                         for nt in range(G_TILES):
                             zero(C1[c][nt])
                         for ki in range_(n_k):
