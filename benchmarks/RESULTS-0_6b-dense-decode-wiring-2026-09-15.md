@@ -465,3 +465,45 @@ This is the third caveat of the same kind in this goal, and it is the reason non
 these numbers are being reported as a final verdict: each successive measurement has
 moved the conclusion, so the standard here is that a cross-arm number is only trusted
 once the two sides are demonstrably the same quantity.
+
+## The stage-alignment caveat is CLEARED — the model-body divergence is real
+
+The open question was whether the two hidden dumps were at the same stage (pre- vs
+post-final-norm), which alone could depress a correlation. A norm test answers it: a
+**post-final-norm** hidden has rms ≈ 1.0 by construction, while a pre-norm hidden does
+not.
+
+```
+runlist act     n=1024  mean=-0.3550  rms=19.9525  max=334.000  min= -73.500
+dense row 139   n=1024  mean= 0.7662  rms=21.5217  max=381.179  min= -80.461
+dense row 134   n=1024  mean= 0.8129  rms=17.9332  max=345.073  min= -39.740
+dense row   0   n=1024  mean=-0.0033  rms= 0.2552  max=  3.009  min=  -1.216
+```
+
+Both are rms ≈ 20, i.e. **both pre-norm**, at the same scale — not a normalised vector
+on one side and a raw one on the other. (The early-layer rows at rms ≈ 0.25 also confirm
+the dump tracks the residual stream growing across depth, rather than a fixed
+normalisation.) So the comparison is same-stage and the caveat does not apply.
+
+Decomposing the remaining difference:
+
+```
+best-fit scale k = 1.063665   (dense ~= k * runlist)
+rms residual after removing k = 3.5746   vs dense rms 21.5217   ->  16.6% of signal
+```
+
+So the difference is **not** a pure scaling artefact: after absorbing a 6.4% uniform
+scale difference, **16.6% of the signal remains as genuine disagreement**. Combined with
+`corr = 0.987526` (below the objective's 0.998), the conclusion holds:
+
+**The dense (int8) and runlist (bf16) paths produce materially different final hidden
+states before the lm_head, so the divergence originates in the model body — the GEMM
+numerics / accumulation — not in the device bf16 lm_head.** The lm_head comparison
+(`corr 0.971`) is the compounded effect of that already-different input.
+
+Where a fix belongs is therefore the int8-vs-bf16 GEMM disagreement in the body, and the
+6.4% global scale component is a useful first clue for it (a per-tensor scale or
+accumulation difference would present exactly this way).
+
+Still not established: **which arm is correct.** That needs a CPU/float reference, not an
+arm-vs-arm comparison. Until then this says the two disagree, not which one is right.
