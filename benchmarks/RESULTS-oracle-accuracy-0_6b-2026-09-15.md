@@ -1480,3 +1480,61 @@ So the repair is genuinely in progress rather than abandoned: the dead path is n
 single remaining defect is narrowed to one buffer by two independent exclusions. The next step is to
 find why that hidden is zero — starting with the bf16 prefill branch that this run did not enter —
 and it is a debugging task on the bf16 path, not a measurement or criterion question.
+
+## REPAIR RESULT: the bf16 prefill path was dead, is now alive and correct — and my "garbage" finding was my own misconfiguration
+
+Two corrections and one real result.
+
+**Correction 1: `NPU_BF16=1 NPU_RUNLIST=0` is a configuration the engine never intends.** The bf16
+prefill's output is handed to the **runlist** decode, not the dense int8 decode:
+
+```cpp
+// :4873-4886
+memcpy(h_data.data(), &bh[(npt-1)*H], H*4);
+// ===== unified decode: bf16-prefill KV + final hidden -> runlist =====
+if (unified) {                       // unified = getenv("NPU_UNIFIED")==1   (:4461)
+    for (int i=0;i<H;i++) bfh[i] = f32_to_bf16(bh[(npt-1)*H+i]);
+    if (npu_runlist_write_act(bfh.data()) != 0) { ... }
+```
+
+So bf16 is a **prefill** mode paired with a bf16 **runlist** decode (`NPU_UNIFIED=1`). My earlier
+test drove bf16 prefill into the *int8 dense* decode — two incompatible halves — and the backslash
+garbage was the result of that mismatch, not a defect in the bf16 path. **That finding is
+withdrawn**, and with it the whole "bf16 emits garbage" line of reasoning. (Seventh corrected claim
+in this goal; the correction came from reading the code, which again was the cheapest available
+check.)
+
+**Real result: the bf16 prefill path for Qwen3-0.6B was DEAD and now works.** Its four xclbins were
+missing (`FAIL bf16 QKV`), I built them, and the supported pairing now runs correctly:
+
+```
+NPU_BF16=1 NPU_UNIFIED=1 NPU_GREEDY=1 npu_engine_qwen3_0_6b model.q4nx 96 ids
+  [unified] NPU_PREFILL_MAX defaulted to the prompt length (17)
+  Prefill: 738ms (43.414 ms/tok) [GEMM 59ms, attn 199ms, conv+other 727ms]
+  === 21.0 ms/tok (48 tok/s) | tokens=32 ===
+  output: "Okay, the user is asking about the capital of France. Let me start by recalling the
+           basic information. France's capital is Paris. I should confirm that there isn't any
+           other city or location mentione..."                       -> 'Paris' FOUND, CORRECT
+```
+
+So the repair route did produce a genuine improvement: a path that could not run at all now runs and
+answers correctly. That is worth keeping regardless of the criterion question.
+
+**Structural conclusion this forces.** The engine has exactly two pipelines:
+
+| pipeline | prefill | decode |
+|---|---|---|
+| unified / bf16 | bf16 (`NPU_BF16=1`, `NPU_UNIFIED=1`) | runlist (bf16) |
+| dense / int8 | int8 | dense int8 GEMMs |
+
+**There is no bf16 dense-decode path**, so "make the dense arm bf16" cannot be achieved by wiring or
+by xclbins — it would be new engineering. Criterion 2's requirement that the two arms agree at
+`corr >= 0.998` with token parity is therefore comparing an **int8 pipeline against a bf16 pipeline
+by design**, and the measured 0.938/0.926 is the expected consequence of that design difference, not
+a defect to repair. The repair route has been followed to its end and the answer is that it does not
+exist as a wiring change.
+
+So the choice is the same two options, now with the repair route explored rather than assumed:
+**re-scope criterion 2** to per-arm accuracy against the oracle plus no regression (which the
+evidence already satisfies), or **commission a bf16 dense-decode path** (new engineering) if exact
+int8-vs-bf16 agreement is genuinely wanted.
