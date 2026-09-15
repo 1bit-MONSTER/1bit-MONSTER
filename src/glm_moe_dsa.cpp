@@ -2,9 +2,12 @@
 //
 // Math follows HF modeling_glm_moe_dsa.py 5.14 exactly. See header for the
 // architecture summary. Two subtleties vs other MLA engines:
-//   - the DSA indexer uses NON-interleaved (half-split) RoPE on its rope
-//     slice, while the main MLA attention uses INTERLEAVED RoPE — they share
-//     cos/sin but rotate differently;
+//   - BOTH the DSA indexer and the main MLA attention use INTERLEAVED RoPE (they
+//     share cos/sin and rotate the same way). This file used to rotate the indexer
+//     with the non-interleaved half-split convention — carried over from
+//     DeepSeek-V3.2, whose indexer works that way and whose docs this engine's
+//     first paragraph was written against. GLM-MoE-DSA changed it; corrected in
+//     #2418. It is invisible until the indexer drops tokens (index_topk < seq_len);
 //   - indexer scoring: relu(q·k)·weights_proj summed over index heads, then
 //     top-k per query; "shared" layers reuse the previous full layer's
 //     top-k indices (cross-layer sharing) instead of running their own.
@@ -356,10 +359,20 @@ std::vector<float> glm_moe_dsa_forward(GlmMoeDsaModel& model, int token_id,
                       cfg.index_head_dim, 1e-6f);
             std::copy(idx_k.begin(), idx_k.begin() + ROPE, idx_k_rot.begin());
             std::copy(idx_k.begin() + ROPE, idx_k.end(), idx_k_pass.begin());
-            // indexer uses NON-interleaved rope; then rebuild q = [rot | pass]
+            // The indexer uses INTERLEAVED RoPE, the same convention as the main
+            // MLA attention above — not the non-interleaved half-split one. HF says
+            // so explicitly above its own call: "Same as DeepseekV32Indexer.forward,
+            // but the indexer applies **interleaved** RoPE rather than the
+            // non-interleaved half-split RoPE used by DeepSeek-V3.2"
+            // (modeling_glm_moe_dsa.py, apply_rotary_pos_emb_interleave at both the
+            // indexer and the attention). This file had carried V3.2's convention
+            // over; it only shows up when the indexer actually drops tokens
+            // (index_topk < seq_len), because with nothing dropped the scores do not
+            // affect the result — which is why the gate in #2418 failed at
+            // index_topk=2 and passed at index_topk=8.
             for (int h = 0; h < cfg.index_n_heads; h++)
-                rope_halfsplit(&idx_q_rot[(size_t)h * ROPE], &idx_q_rot[(size_t)h * ROPE], ROPE, pos, cfg.rope_theta);
-            rope_halfsplit(idx_k_rot.data(), idx_k_rot.data(), ROPE, pos, cfg.rope_theta);
+                rope_interleave(&idx_q_rot[(size_t)h * ROPE], &idx_q_rot[(size_t)h * ROPE], ROPE, pos, cfg.rope_theta);
+            rope_interleave(idx_k_rot.data(), idx_k_rot.data(), ROPE, pos, cfg.rope_theta);
             // rebuild idx_q as [roped_rot | pass] in place
             for (int h = 0; h < cfg.index_n_heads; h++) {
                 std::copy(&idx_q_rot[(size_t)h * ROPE], &idx_q_rot[(size_t)h * ROPE] + ROPE,
