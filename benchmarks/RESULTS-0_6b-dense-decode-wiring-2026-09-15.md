@@ -141,3 +141,59 @@ by construction". The open item was **chunked prefill — emitting the first tok
 before the prompt finishes** — not attention-kernel work, and the generated
 attention now being correct at N=1024 (chunked score range) removes one of the two
 things that skip note called blocking.
+
+## CORRECTION: which arm does each number come from?
+
+The section above reads the parity number as if it measured the dense decode path this
+objective targets. It does not. `benchmarks/flm_parity.sh` runs **two different arms**:
+
+```
+line 139  (prefill, "NAT_P"): NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX="${NPU_PREFILL_MAX:-1024}"
+line 141  (decode,  "NAT_D"): NPU_RUNLIST=1
+line 143/144 (optional FLM-prefill/FLM-decode arms): NPU_FLM_PREFILL=1 [NPU_FLM_DECODE=1]
+```
+
+So the harness's **decode column is the `NPU_RUNLIST=1` arm**. Running the dense arm
+directly on the same binary:
+
+```
+NPU_RUNLIST=0                 Prefill: 724ms (145 ms/tok)   === 613.8 ms/tok (2 tok/s) | boot=16ms batches=7 tokens=8 ===
+NPU_RUNLIST=0 NPU_FUSED_USE=1 Prefill: 710ms (142 ms/tok)   === 617.4 ms/tok (2 tok/s) | boot=18ms batches=7 tokens=8 ===
+```
+
+with `small-M(_m0) xclbins absent; decode uses M=128 ctx` on both.
+
+**The dense decode path is 2 tok/s — the objective's stated starting point, verbatim
+and still true.** The 64 tok/s in the parity table is a different decode arm. Earlier
+in this document I treated the two as the same measurement and concluded the target
+was exceeded 20×; that conclusion is **withdrawn**. The correct statement is: *the
+model decodes at 64 tok/s when the engine picks the runlist arm, and at 2 tok/s on the
+dense arm the objective is about.*
+
+## What the arms say about criterion 2 (launches)
+
+- The dense arm is the 112-launch path: `npu_engine_universal.cpp:5138` — "NOTE
+  (2026-08-13, perf diagnosis): decode = 112 launches/token × ~4ms". 112 = 4 × 28
+  layers. Its measured cost is 613.8 ms/tok.
+- The runlist arm is documented as **one submit per token** —
+  `npu_runlist_bridge.h:15`: "per-ctx ELF path (RuntimeLayerEngine, one xrt::runlist
+  submit/token)". Its measured cost is 14–16 ms/tok.
+
+So the launch reduction the objective was reaching for (112 → ~28) **was delivered —
+far more completely than 28, down to ~1 submit/token — by the runlist arm, which this
+objective explicitly places out of scope** ("Out of scope: … the whole-layer per-ctx
+ELF work (#2080)"). The in-scope artifact, the cascade-fused xclbin, is measured
+**neutral on the dense arm** (613.8 → 617.4 ms/tok, i.e. no change outside noise).
+
+## Conclusion for the objective
+
+- In-scope mechanism (wire small-M + cascade-fused into the dense path): **does not
+  move the number.** small-M is still disabled (`_m0` absent, M=128 ctx) and the fused
+  xclbin changes nothing measurable on the arm it was built for. The recorded
+  falsification at `npu_engine_universal.cpp:1474-1477` predicted exactly this —
+  "garbage decode, **no perf win — launch-bound**".
+- The 2 → 64 tok/s win exists, but it comes from the runlist/RuntimeLayer arm that the
+  objective rules out of scope.
+- Therefore the honest disposition is **not** "complete" and **not** "more of the same":
+  either the objective is re-scoped to the arm that actually carries the win, or it is
+  closed as superseded. Nothing in scope remains to try.
