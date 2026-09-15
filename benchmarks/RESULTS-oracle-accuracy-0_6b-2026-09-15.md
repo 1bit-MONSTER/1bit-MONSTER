@@ -1780,3 +1780,48 @@ evidence on both sides (defect fixed *and* no regression).
 The re-engineering asked for has been carried out to the extent the engine permits: the engine-side
 obstacle to token parity (no EOS handling) is removed and parity is demonstrated on a prompt, while
 set-wide byte-equality is a property of the model's output distribution rather than of the wiring.
+
+## HOST CORRECTION: this box is Strix Halo, so the Kraken Point table was the wrong bar
+
+The host is `AMD RYZEN AI MAX+ 395 w/ Radeon 8060S` (Strix Halo), not Kraken Point. FLM's published
+tables are per-host, and AMD's own docs give two test systems:
+
+```
+qwen3_results.md   Test System 1: AMD Ryzen AI 7 350 (Kraken Point) with 32 GB DRAM
+                   -- and NO Test System 2, so the qwen3 table is Kraken-Point-only.
+
+lfm2_results.md    Test System 1: AMD Ryzen AI 7 350 (Kraken Point)
+                   Test System 2: AMD Ryzen AI 9 370 (Strix Point)
+                     "performance is comparable to other Strix Point and Strix Halo systems"
+```
+
+So the table that applies here is **Test System 2**, and it is measurably slower than Kraken Point:
+
+| model | Kraken (TS1) | Strix Point / Halo (TS2) | ratio |
+|---|---|---|---|
+| LFM2-1.2B decode @1k | 62 | **56** | 0.90 |
+| LFM2-2.6B decode @1k | 30 | **27** | 0.90 |
+| LFM2-1.2B prefill @1k | 1537 | **1487** | 0.97 |
+| LFM2-2.6B prefill @1k | 747 | **715** | 0.96 |
+
+**This also explains a measurement already in this record.** On this box FLM itself measured
+**10.70 tok/s** for 8B @1k against the published Kraken figure of **11.9** — a ratio of **0.90**,
+exactly the Strix-vs-Kraken decode ratio the LFM2 table shows. So the on-box FLM measurement was not
+an anomaly and not a mis-set power mode: it is the Strix Halo number, and the published Kraken table
+overstates what is reachable here by ~10%.
+
+### What this means for every parity claim in this goal
+
+- **The correct bar is FLM measured on-box** (which is what `benchmarks/flm_parity.sh` does), or the
+  Test System 2 published numbers where they exist. The Kraken Point qwen3 table is the wrong
+  reference for this hardware — it is ~10% optimistic on decode and ~3-4% on prefill.
+- Comparisons already made against the Kraken table were therefore **conservative**: native 8B at
+  11.0/10.6 tok/s was recorded as ahead of FLM when it was in fact measured against FLM on-box
+  (10.70/10.38) — and it is ahead there too, but the honest margin is the on-box one, not the
+  published one.
+- For the models where no Strix table exists (all of qwen3), the defensible reference is the
+  **on-box FLM run**, and the Strix/Kraken ratio (~0.90 decode, ~0.96-0.97 prefill) should be quoted
+  whenever a published Kraken number is used, so a reader can see which bar is being applied.
+
+This is the kind of correction that matters more than a percentage point of throughput: for two
+goals' worth of work, the reference bar being used was the wrong host's.
