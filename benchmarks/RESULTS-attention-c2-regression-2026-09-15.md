@@ -716,3 +716,42 @@ That is one cause for every symptom observed:
 **Next probe:** find which mm/dequant xclbins `Bf16Mm::init` opens first for
 Nanbeige (`model_dir`/`xclbin_dir` arguments) and whether they exist — that, not
 the nh20 attention capture, is what gates the whole bf16 arm.
+
+### ROOT CAUSE FOUND: `mm.xclbin` and `dequant.xclbin` do not exist
+
+`Bf16Mm::init` opens, in order, from `xclbin_dir`:
+
+```
+xclbin_dir + "/mm.xclbin"        <-- MISSING
+xclbin_dir + "/dequant.xclbin"   <-- MISSING
+xclbin_dir + "/attn.xclbin"      (present, 94672 B)
+...then the load_attn_elf block
+```
+
+and neither `engine/npu/xclbins/mm.xclbin` nor
+`engine/npu/xclbins/dequant.xclbin` exists — nor are they anywhere else in the
+tree (`find . -maxdepth 3 -name mm.xclbin -o -name dequant.xclbin` → nothing).
+
+So the very first `xrt::xclbin` construction throws, `init` returns false, and the
+whole chain unrolls exactly as predicted:
+
+```
+mm.xclbin missing
+  -> Bf16Mm::init() false            (never reaches load_attn_elf at :210)
+  -> bf16mm_init() returns 0
+  -> `if (bf16mm_init(...) && npu_bf16_prefill_init(...) == 0)` short-circuits
+  -> the bf16 prefill block never runs
+  -> bf16_done stays false
+  -> === Prefill NNNN [fallback] ===
+```
+
+**This is the answer.** The Nanbeige bf16 arm is not blocked by the nh20 attention
+capture, by the attention-ELF lookup, or by `bf16_done` semantics: it is blocked by
+two missing base xclbins that nothing in the repo produces. The nh20 thread was a
+dead end, and so was every 4096 candidate experiment, because `load_attn_elf` is
+downstream of an `init` that dies on its first file.
+
+**Next:** produce `mm.xclbin` (bf16 GEMM) and `dequant.xclbin` (Q4NX dequant) —
+`build_bf16_xclbins.sh` is the template, and the engine's `npu_bf16_*` entry points
+name what they must contain — then re-run; the attention ELF question becomes live
+only after those two load.
