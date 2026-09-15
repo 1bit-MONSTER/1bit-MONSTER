@@ -122,3 +122,49 @@ fallback", which is correct-but-slow and is what
 Note that a verdict at **≤1024** does not depend on any of this: those buckets use
 the shape-specific ≤1024 ELF or the embedded nh16 kernel, which is why the armed
 family A/B runs at 1024 tokens.
+
+### The ELF route: tools, targets, and the acceptance test (found 2026-09-15)
+
+The missing artifacts are **preemptible ELFs** (8 sections: `.ctrltext` = the
+instruction stream, `.rela.dyn`, `.dynamic`, `.note.xrt.UID`), which is what
+`xrt::elf` loads. `readelf -h engine/npu/xclbins/attn_mha_2048_nh16.elf` shows
+`ELF 32-bit LSB, machine AT&T WE32100, OS/ABI unknown: 45, ABI Version: 2` with
+`.ctrltext` = 178512 B — a container format, not the xclbin.
+
+The assembler is present, in two installs:
+
+```
+~/Xilinx2025/2025.2/Vitis/aietools/bin/aiebu-asm     # and aiebu-dump
+~/Xilinx/2026.1/Vitis/aietools/bin/aiebu-asm
+```
+
+`aiebu-asm -t <target>` accepts `aie2ps | aie2asm | aie2txn | aie2dpu |
+aie2_config | aie4 | aie2ps_config | aie4_config`. The API headers that name the
+input forms are on the box at `~/.local/flm-v0946/include/aiebu/aiebu_assembler.h`
+and `/usr/local/include/aiebu/` (also `amd-oss/fastflowlm/src/include/aiebu/`).
+No script in the tree invokes it — the evidence is that the previous lane drove it
+ad hoc, which is worth turning into a script as part of this work.
+
+**The acceptance test already exists and is cheap.** A prior lane validated its
+generated layer streams exactly this way: `aiebu-dump` the `.ctrltext` of the
+generated ELF and of FLM's ELF for the same shape, then byte-diff
+(`RESULTS-coverage-multifamily-2026-09-13.md:2551-2634` records 0 differing bytes
+for `layer_ctx1025` vs FLM `elf_0016`, and for a generated Phi4 `layer_ctx1` vs
+FLM `elf_0001`; `RESULTS-task-n2-…-2026-09-11.md:144` decodes nh16 = 6084 txns vs
+nh32 = 10628). So an assembled attention ELF can be checked for *identity with
+FLM's own kernel* before it is ever run, and where no FLM counterpart exists
+(nh20/nh24/hd256) the check degrades to the bench gate instead.
+
+Order for the next session, therefore:
+
+1. `aiecc` the shape (done — builds for nh20/nh24/hd256).
+2. Assemble the insts into `attn_mha_<tokens>_nh<NH>_hd<HD>.elf` with `aiebu-asm`,
+   wrapping the invocation in a script.
+3. Compare `.ctrltext` with an FLM capture of the same shape if one exists.
+4. Bench gate (NPU vs EMU), then the family token identity at >1024.
+
+Route (B) competes with route (A) — `cap_interposer` captures of `flm bench` for
+each family (`device-claim-goal-lane-2026-09-15.txt` shows the recipe and three
+capture dirs at `/tmp/nbcap/cap{1024,2048,4096}`) — but (A) needs the device for
+every shape and (B) does not need it until verification, and (B) is the only route
+that works for a shape FLM never ships.
