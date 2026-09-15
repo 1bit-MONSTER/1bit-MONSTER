@@ -50,6 +50,14 @@ RATIOS = [
     r"(?<![\d,/])(\d[\d,]*) / (\d[\d,]*) checkpoints mapped",
 ]
 
+# The front-page hero pairs three facts in one sentence (#2399). A *global*
+# "N backends" rule would flag the Lemonade posts' version-scoped "14/15
+# backends" -- statements about the SDK, not the engine -- so the pairing is
+# matched exactly instead.
+PAIRS = [
+    ("families_backends", r"(\d[\d,]*) families, (\d[\d,]*) backends"),
+]
+
 
 def _line(text, pos):
     return text.count("\n", 0, pos) + 1
@@ -79,6 +87,12 @@ def main():
         "pct": {pct, pct.rstrip("%")},
     }
 
+    families = seo_sync.count_families()
+    backends = seo_sync.count_backends()
+    pair_facts = {}
+    if families is not None and backends is not None:
+        pair_facts["families_backends"] = (f"{families:,}", f"{backends:,}")
+
     files = sorted(glob.glob(os.path.join(args.site, "*.html")))
     if os.path.exists(args.readme):
         files.append(args.readme)
@@ -105,6 +119,18 @@ def main():
                 bad.append("%s:%d: %r — expected %s / %s\n      …%s…"
                            % (rel, _line(text, m.start()), m.group(0),
                               f"{covered:,}", f"{with_arch:,}", _ctx(text, m)))
+        for fact, pat in PAIRS:
+            want = pair_facts.get(fact)
+            if want is None:
+                continue
+            for m in re.finditer(pat, text):
+                checked += 1
+                if ([g.replace(",", "") for g in m.groups()]
+                        == [w.replace(",", "") for w in want]):
+                    continue
+                bad.append("%s:%d: %r — expected %s\n      …%s…"
+                           % (rel, _line(text, m.start()), m.group(0),
+                              " families, ".join(want) + " backends", _ctx(text, m)))
 
     if bad:
         print("seo_claim_selfcheck: FAIL — %d published claim(s) do not match the "
