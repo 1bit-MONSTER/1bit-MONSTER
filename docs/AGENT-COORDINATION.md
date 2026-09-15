@@ -45,16 +45,17 @@ three PREINSTS dumps in and **before** the loop's `pre-dumped N insts BOs` termi
 
 Fixed and verified on **`fix/cap-interposer-bo-uaf`** (worktree
 `/home/bcloud/wt/cap-interposer-bo-uaf`, branched off `goal/runlist-decode-wire` at
-`4db62ecd5`): an owning-copy registry (`own_bo` / `bo_from_addr`) with all 13
-raw-address deref sites routed through it, `+87/−18`, built with the line the file's
-own header documents. The same command that crashed now reaches `RUNLIST 128` and
-exits 0 (baseline died mid-loop at 65; 32 of 33 pre-dump blocks → 64 of 64), and the
-rebuilt `.so` exports an **identical 16-symbol set**, so it interposes exactly what it
-did before. I did not commit it and did not touch another lane's tree — which was the
-right call, since `-goal` was compiling throughout (`-DMODEL_qwen3_vl_4b`,
-`-DMODEL_qwen3_14b`, then `build_npu.sh` for the 4096-slot variants). **`-goal`'s
-`npu-infer/tools/capture/cap_interposer.so` is still the crashing build** — rebuild it
-from the branch before the next capture.
+`4db62ecd5`, commit **`12e8dea9f`**, pushed to origin — preservation only, no PR, since
+it branches off that lane): an owning-copy registry (`own_bo` / `bo_from_addr`) with
+all 13 raw-address deref sites routed through it, `+87/−18`, built with the line the
+file's own header documents. The same command that crashed now reaches `RUNLIST 128`
+and exits 0 (baseline died mid-loop at 65; 32 of 33 pre-dump blocks → 64 of 64), and
+the rebuilt `.so` exports an **identical 16-symbol set**, so it interposes exactly what
+it did before. I committed it only after the run and did not touch another lane's tree
+— which was the right call, since `-goal` was compiling throughout
+(`-DMODEL_qwen3_vl_4b`, `-DMODEL_qwen3_14b`, then `build_npu.sh` for the 4096-slot
+variants). **`-goal`'s `npu-infer/tools/capture/cap_interposer.so` is still the
+crashing build** — rebuild it from the branch before the next capture.
 
 **Trap for the next capture, measured rather than warned:** set `CAP_NO_SYNC=1`. The
 crashed runs had it (their manifests contain zero KVPOST/ACTPOST lines, which is how
