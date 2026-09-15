@@ -120,6 +120,7 @@ struct Bf16Mm {
     bool attn_shaped_ok = false;  // a shape-specific ELF (attn_mha_<tok>_nh<NH>_hd<HD>.elf)
                                   // was found for this model's (NH, HD)
     int attn_tokens = 256;  // KEYS present in the KV BO for this call
+    size_t attn_bo_elems = 0;  // current act/out BO capacity, in u16
     int attn_rows = 0;      // query rows this call computes (0 => attn_tokens, max 256)
     uint32_t attn_kv_region = 4194304;   // KV region stride in bf16 (8MB, MAX_L=8192)
 
@@ -355,7 +356,15 @@ struct Bf16Mm {
         // CPU reference rather than borrowing a shorter kernel: a capture used past
         // its length is WRONG, not merely slower (a 1024-context ELF at npt=2048
         // returned 19841 where the byte-exact path says 220).
-        else if (attn_tokens > 4096) kern = nullptr;                       // no capture this long
+        //
+        // An 8192-context nh16 capture exists on disk
+        // (engine/npu/xclbins/attn_mha_8192_nh16.elf) and is deliberately NOT
+        // loaded or wired here:
+        // it returns the known-good 44353 at npt=4095 through the 4096 slot, but
+        // from 4200 up it returns the same token for every prompt length and
+        // corrupts the heap on exit. Until that is understood, >4096 keeps the CPU
+        // reference, which is slow and correct.
+        else if (attn_tokens > 4096) kern = nullptr;                       // no working capture
         else if (attn_tokens > 2048)
             // (2048, 4096]. As for the 2k slot, only the nh16/nh32 shapes may use a
             // capture; every other shape (nh20 Nanbeige, nh24 Phi4) gets nullptr and
@@ -377,17 +386,28 @@ struct Bf16Mm {
         if (!kern) return false;
         const size_t q = (size_t)attn_qout;
         const int rows = attn_rows > 0 ? attn_rows : attn_tokens;
-        if (!attn_out) {
-            // Device buffers sized for the max supported call (1024 tokens);
-            // the per-call copy below uses attn_tokens.
-            // BF16MM_ATTN_EXACT_BO: size act/out to exactly rows*q instead, to test whether the
-            // kernel's output WIDTH follows the BO it is handed or is baked into the ELF.
-            // RESULTS-coverage-multifamily 122: the kernel writes zeros and only 2048 of 2560
-            // dims wide, so which of those it is decides the fix (bind like FLM, or new ELF).
-            const size_t exact = getenv("BF16MM_ATTN_EXACT_BO") ? (size_t)rows * q : 0;
-            const size_t cap = exact ? exact : (size_t)(attn_tokens > 1024 ? attn_tokens : 1024) * q;
+        // Device buffers. BF16MM_ATTN_EXACT_BO sizes act/out to exactly rows*q, to
+        // test whether the kernel's output WIDTH follows the BO it is handed or is
+        // baked into the ELF (RESULTS-coverage-multifamily 122: it writes zeros and
+        // only 2048 of 2560 dims wide).
+        //
+        // Otherwise the BO must satisfy the KERNEL's baked shape, not just this
+        // call's row count: the selected capture was taken at its slot length L and
+        // writes L rows, so sizing by attn_tokens alone overruns it whenever
+        // attn_tokens < L — at npt=4095 the 4096-slot kernel wrote one row past the
+        // end of the act/out BO. Use the slot length the selector picks (the
+        // smallest slot covering attn_tokens), not the largest one loaded, so a
+        // short-context run does not carry 33 MB of unused act/out.
+        const size_t exact = getenv("BF16MM_ATTN_EXACT_BO") ? (size_t)rows * q : 0;
+        const int slot_len = attn_tokens <= 256 ? 256
+                           : attn_tokens <= 1024 ? 1024
+                           : attn_tokens <= 2048 ? 2048 : 4096;
+        const int sel = slot_len > attn_tokens ? slot_len : attn_tokens;
+        const size_t cap = exact ? exact : (size_t)(sel > 1024 ? sel : 1024) * q;
+        if (!attn_out || attn_bo_elems < cap) {
             attn_out = std::make_unique<buffer<uint16_t>>(*dev, cap);
             attn_act = std::make_unique<buffer<uint16_t>>(*dev, cap);
+            attn_bo_elems = cap;
             attn_kv  = std::make_unique<buffer<uint16_t>>(*dev, (size_t)attn_kv_region * 4);
             // The comment below says "the rest of the KV BO stays zero" -- but nothing made it
             // so. The HOST bKv is memset to zero (npu_engine_universal.cpp:4101) while this

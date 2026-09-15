@@ -288,7 +288,17 @@ bool RuntimeLayerEngine::ensure_layer_kernel(int ctx_len) {
             // rather than falling back to the 112-launch split path (~2 tok/s).
             int win = 256;
             if (const char* w = getenv("RT_ELF_WINDOW")) { int v = atoi(w); if (v > 0) win = v; }
-            const int lo = ctx_len, hi = ctx_len + win - 1;
+            // Clamp to the generator's own domain. gen_layer_elfs asserts
+            // `L <= MAX_L + 1` (qwen3_npu_sequence.cpp:285) and MAX_L is the KV
+            // region bake, so a window that runs past it does not fail politely —
+            // it aborts the child process, and the caller then reports the decode
+            // as a plain failure with the assertion buried in the log. Asking for
+            // ctx 8192 from an empty dir generated 8192..8447 and did exactly that.
+            const int hi_max = kElfMaxL + 1;
+            int lo = ctx_len, hi = ctx_len + win - 1;
+            if (hi > hi_max) hi = hi_max;
+            if (lo > hi) { fprintf(stderr, "RuntimeLayer: ctx=%d is past the ELF domain (MAX_L=%d)\n",
+                                    ctx_len, kElfMaxL); return false; }
             char cmd[1024];
             snprintf(cmd, sizeof(cmd), "%s %s %s %d %d %d", gen, mdir, elf_dir_.c_str(),
                      lo, hi, kElfMaxL);

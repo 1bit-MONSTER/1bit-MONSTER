@@ -4239,6 +4239,14 @@ struct Bf16Ctx {
             // trace beyond a banner count. The cap ITSELF is correct -- 4096 is the runlist's
             // max_seq_len and the KV window the per-ctx ELFs are built for -- so only the silence is
             // fixed here.
+            //
+            // RAISING THIS IS NOT ENOUGH FOR LONG CONTEXTS (2026-09-15). The cap was lifted
+            // to 8191 while testing an 8192-context attention capture, and the paths below
+            // then run, but with the 8192 kernel they return a CONTEXT-INDEPENDENT token
+            // (49691 at 4200, 5000 and 7000 alike) and corrupt the heap on exit, while the
+            // same kernel at 4095 returns the known-good 44353. So >4096 has no working
+            // attention kernel yet; the cap stays where a correct path exists. See
+            // RESULTS-ctx8192-blocked-2026-09-15.md.
             fprintf(stderr, "input: prompt %d tokens -> %d (max_seq_len 4096: the KV window and the "
                             "per-ctx ELFs are built for 4096)\n",
                     (int)pt_vec.size(), 4095);
