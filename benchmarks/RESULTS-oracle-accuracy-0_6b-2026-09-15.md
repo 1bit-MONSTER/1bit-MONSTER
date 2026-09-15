@@ -1224,3 +1224,48 @@ already added.
 The remaining question — *why* the dense arm drifts and the runlist arm does not — is then a
 comparison of accumulated KV state at the divergence step, which is tractable now that the
 starting point is known to be identical.
+
+## The first divergence, exactly — and it is not the defect either
+
+Both arms emit token sequences, so diffing them locates the first divergent step directly, with no
+new instrumentation (chat template, `NPU_GREEDY=1`, 24 tokens):
+
+```
+2 + 2 =                    dense  : 151667 198 32313 11 279 1196 | 1588 374 10161 369 1492 ...
+                           runlist: 151667 198 32313 11 279 1196 |  374 10161 330  17  488 ...
+                           first divergence: step 7   (dense 1588 vs runlist 374)
+
+The capital of France is   dense  : 151667 198 32313 11 279 1196 374 10161 | 369 279 6722 ...
+                           runlist: 151667 198 32313 11 279 1196 374 10161 | 911 279 6722 ...
+                           first divergence: step 9   (dense 369 vs runlist 911)
+```
+
+Three things this establishes:
+
+1. **The arms are token-identical for the first 6-8 tokens** — the `"<special> \n Okay , the user"`
+   preamble — and then diverge. This is consistent with the step-1 finding above (same argmax) and
+   confirms the shared prefix extends a few tokens past it.
+2. **Divergence is normal, not the defect.** The *working* prompt diverges at step 9 and still
+   reaches the right answer; both prompts diverge at similar early steps. So there is no single
+   "divergence point" whose repair would fix the degenerating prompt.
+3. **Therefore the dense arm's degeneration is a downstream consequence of its numerically
+   different trajectory**, not a discrete bug at a particular step: the int8 path tracks the bf16
+   path for the preamble, then drifts, and on roughly a third of prompts the drift lands in a
+   degenerate attractor (repetition, meta-confusion, refusal) that the bf16 path never reaches.
+   That is exactly what the measured divergence predicts — logits corr 0.938, hidden corr 0.926 —
+   and it is why the defect is prompt-dependent rather than systematic.
+
+### What this means for the goal
+
+"Fix the dense arm" resolves to **improving its numerical fidelity**, not repairing a broken step:
+the runlist arm uses bf16 GEMMs and answers 20/20, the dense arm uses int8 GEMMs with a host fp32
+lm_head, tracks it only to ~0.93, and degenerates on ~30% of prompts. The evidence therefore
+supports the arm that the engine already prefers by default, and the practical recommendation is
+the one the measurements have pointed to throughout: **treat the runlist arm as the correctness
+reference path and the dense int8 arm as the fast-side experiment it is** — or accept a
+quality-for-speed trade explicitly, rather than treating the 2 tok/s arm as a correctness baseline.
+
+The original objective's framing — that the dense arm's defect would be found in its decode loop —
+was right about the *location of the symptom* (degeneration happens during decode) but wrong about
+its *nature*: there is no defect to repair in the loop; there is accumulated numerical divergence
+between two quantization schemes, and only one of them is accurate enough on this model.
