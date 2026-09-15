@@ -195,23 +195,56 @@ First results, back-to-back on an otherwise idle device, same shape (nq8/nkv2/hd
 | ours, chunked generator | 1024 | new | 1.67e-01 | **1170** |
 
 **Read that table carefully, because the first two rows are the finding.** Row 2
-runs a byte-identical instruction stream to row 1 and returns *bit-identical*
-output (3.321927e-01 both, to 7 digits) — and is **~2000× slower**. So the entire
-deficit is in our core kernel code (`attn_kernel_reference.cc` as compiled into the
-xclbin's PDI), not in the design, not in the instruction stream, and not in the
-harness. `attn_insts.txt` being byte-identical was never evidence that the *kernel*
-matched; it was evidence that the *schedule* matched. This is the "1200×" the gate
-line above already expected this repo to have to find.
+runs a byte-identical instruction stream to row 1 — verified, not assumed: the
+`sha256sum` of the shipped `xclbins/attn_insts.txt` and of the fresh build's agree
+at `f3d0a132bde24a60` — and returns *bit-identical* output (3.321927e-01 both, to
+7 digits), and is **~2000× slower**. `attn_insts.txt` being byte-identical was
+never evidence that the *kernel* matched; it was evidence that the *schedule* did.
+
+**Correction to this note's own first reading (same day).** The sentence that stood
+here first said the deficit "is in our core kernel code". That is **not
+established, and the follow-up measurements point away from it**:
+
+| ours, N=512 | seq | ms/call |
+|---|---|---|
+| | 1 | 6048 |
+| | 8 | 6048 |
+| | 512 | 6047 |
+
+The cost is **independent of the workload** — 1 key or 512 keys, the same time to
+the millisecond. Arithmetic that is 2000× slower than someone else's does not
+behave that way. This is a **fixed per-launch cost**, so what is wrong is the
+launch / dispatch / partition path, not demonstrated to be the kernel's
+throughput. The stronger claim is retracted.
+
+What the two containers differ in (from `xclbinutil`; topology, connectivity and
+kernel name are structurally identical):
+
+| | shipped | ours |
+|---|---|---|
+| xclbin `Version` | 2.15.75 | 2.13.0 |
+| `main_aie_partit` size | 88632 B | 76472 B |
+| ms/launch | 2.5–3.0 | 6047 |
+
+The cost also survives an XRT swap: relinking the bench against the engine's
+`/usr/local/xrt-runlist/lib` gives ours 6049 ms, the shipped one 2.5 ms. That run
+also showed the shipped container returning a *different and wrong* answer under
+the newer XRT (5.60 vs 0.33), so it is version-coupled to the XRT it was built
+against — worth knowing before anyone tries to "fix" this by swapping XRT.
 
 It also settles what the N=1024 number is not: 1170 ms is **5× faster than our own
-N=512 build**, so the chunked multi-group path is not what makes it slow. Nothing
-about chunking has been shown to cost anything.
+N=512 build**, from the *same* compiled kernel object, differing only in the
+partition graph. Nothing about chunking has been shown to cost anything, and work
+volume is not what drives these numbers at all.
 
 Still open, in order:
 
-1. **The ~2000× kernel gap.** Until it closes, no N is competitive with the
-   capture and the lever cannot close at 16384 or anywhere else. This is where the
-   work is, and the bench above is the instrument for it.
+1. **Localise the fixed per-launch cost.** Start by extracting and diffing the two
+   `main_aie_partit` sections and by timing `xrt::hw_context` creation separately
+   from a launch. The instrument is the bench above; the question is why a launch
+   in our container costs seconds when the same instruction stream in FLM's costs
+   milliseconds. Do **not** begin by optimizing the kernel — the evidence does not
+   support that yet.
 2. **The chunked path has no *engine* run.** It executes on the NPU (that is what
    row 3 is) and its error is in the same range as its own emulation, but it has
    never been driven through `zaya_decode.cpp` end to end. The gate as written
@@ -219,7 +252,9 @@ Still open, in order:
    kernel instrument, not that gate.
 3. The absolute-vs-float error (0.33 at N=512, on white-noise input) is a property
    of the int8 design and is identical for FLM's kernel and ours, so it is not a
-   defect to chase here.
+   defect to chase here. It also means the bench is not a clean oracle: NPU 0.33
+   against its own host emulation's 0.046 on the same buffers is an unexplained
+   gap in the *emulation comparison*, not a demonstrated kernel defect.
 
 ### L2 — a Nanbeige nh20 capture at 4096 *(the one non-dense family already close)*
 Nanbeige's default i8 path matches FLM exactly (`1033 @1024`, `5938 @256`); only
