@@ -1299,3 +1299,59 @@ unless enabled, which is why the default path is unaffected.
 
 All six ordered steps are complete. The only outstanding item is the `/goal-tweak` for the second
 criterion, which cannot be satisfied by any amount of further measurement.
+
+## REPAIR ATTEMPT: the missing bf16 xclbins — built, path now loads, and it exposes a NEW defect
+
+The criterion blocks because the two native arms sit at corr 0.938 / 0.926 rather than 0.998. The
+cleanest repair is not a measurement change but making the dense arm use the **same bf16 numerics**
+as the runlist path, which already answers 20/20. That route exists as `NPU_BF16=1`, and it was
+**dead for this model**:
+
+```
+$ NPU_BF16=1 NPU_RUNLIST=0 npu_engine_qwen3_0_6b ...
+  Bf16Ctx: xclbin init failed: No such file or directory
+    'engine/npu/xclbins/final_bf16_QKV_K1024_N4096.xclbin'
+  FAIL bf16 QKV
+```
+
+The engine names these `final_bf16_<PROJ>_K<K>_N<N>.xclbin` (`npu_engine_universal.cpp:1302`) and
+the producer existed (`generators/build_bf16_xclbins.sh`) but had only ever been run for Nanbeige's
+shapes. Built the four Qwen3-0.6B shapes, all four succeeding (exit 0):
+
+```
+final_bf16_QKV_K1024_N4096.xclbin     final_bf16_GU_K1024_N6144.xclbin
+final_bf16_O_K2048_N1024.xclbin       final_bf16_D_K3072_N1024.xclbin
+```
+
+**The path now loads and runs** — `=== BF16 mode (n1_core_placed.py) ===`, 970.5 ms/tok (1 tok/s).
+But it does **not** unblock the criterion, for two reasons, and the second is itself a finding:
+
+1. **Its output is garbage.** On `2 + 2 =` — the prompt where the int8 arm loops (`TRTRTR…`) — the
+   bf16 path emits **193 repeated backslash characters** and never answers. So enabling bf16 does
+   not produce a second correct arm that could agree with the runlist reference at corr >= 0.998; it
+   produces a third, worse failure mode.
+2. **Its host logits buffer is entirely zeros** — `rp_bf16.txt` has 151936 entries, all zero,
+   against the runlist dump's min -18.5 / max 28.5 with 151936 non-zero entries. So the bf16 path
+   does not populate the `lg[]` array that `NPU_DUMP_LOGITS` captures (it computes the lm_head
+   elsewhere), meaning the correlation comparison cannot even be run against it without new
+   instrumentation.
+
+**This is a genuine new defect, and it was invisible until now precisely because the xclbins were
+missing** — nothing had ever exercised `NPU_BF16=1` on this model, so a path that cannot produce
+coherent output went unnoticed. The xclbins are kept (they are the correct shape and the producer is
+committed), but the finding is the reverse of the intended repair: building them turned a loud
+"FAIL bf16 QKV" into a silent garbage generator.
+
+### Effect on the blocker
+
+The repair does **not** unblock criterion 2. The intended route — make the dense arm bf16 so it
+agrees with the runlist reference at corr >= 0.998 and token parity — is blocked by the bf16 path
+being non-functional, which is a new bug to fix rather than a criterion to re-scope. So there are
+now two honest options, and the choice is yours:
+
+- **(a) Re-scope the criterion** (`/goal-tweak`) to per-arm accuracy against the oracle plus no
+  regression — which the evidence already satisfies — and close the goal.
+- **(b) Repair the `NPU_BF16=1` path** so the dense arm really can run bf16, then the original
+  criterion becomes testable on merits. That is new engineering (the path emits backslashes, and its
+  lm_head output is not where the dump hook looks), not a measurement tweak, and it is the larger
+  piece of work.
