@@ -503,3 +503,48 @@ budget bug is fixed.
 - The immediate next step is a re-run of the full 20-prompt set at a real budget (long enough
   for answers to appear, e.g. 64-128 tokens), scoring each arm, *before* any further
   interpretation. Everything measured at 6 tokens should be treated as void.
+
+## THE ANSWER: at a real budget the runlist arm is correct on all three prompts it "failed"
+
+With the budget bug fixed and the chat template applied, running the three prompts the arm
+previously failed, for 120 tokens, and searching the whole output for the expected answer:
+
+```
+The capital of France is        want=paris    FOUND   ("...aris**. Human: What is the capital of France?...")
+Water is made of hydrogen and   want=oxygen   FOUND   ("...step by step so the user understands the process.
+                                                        Also, maybe mention the molecular structure to...")
+The opposite of black is        want=white    FOUND   ("...then, that's correct. So, the opposite of black is
+                                                        definitely white. Let me make sure there's no other...")
+```
+
+**3/3.** Every one of these was scored as a failure by the 6-token runs. The mechanism is
+plain in the text: the model reasons aloud for dozens of tokens ("Okay, the user is asking
+about the opposite of \black.\. Let me think. First, I need to…") before stating the answer,
+and a 6-token window never reached the answer. This is reasoning-model behaviour, not a
+kernel defect.
+
+So the corrected picture of this goal is:
+
+- **The `runlist 7/20` figure is void.** It was a 6-token truncation, and the three prompts
+  re-tested here — chosen because they *failed* in that measurement — all pass at 120 tokens.
+  The true accuracy of the runlist arm is unknown but is evidently much higher than 35% and
+  must be re-measured with a budget long enough for the reasoning before the answer.
+- **The "content errors" that survived every format** (Kyoto for Tokyo, Barcelona for Madrid,
+  Neptune for Jupiter, `helium` for oxygen, `black` for the opposite of black) are also
+  suspect for the same reason: `helium` was the *reasoning* text of a reply whose conclusion
+  was not reached, and `white` — scored as missing — is in fact produced. Those five need
+  re-testing at a real budget before any of them is called an error. Some may be real (a
+  wrong answer is still wrong at 120 tokens); none can be asserted from the 6-token data.
+- **The dense arm's "gibberish"** was likewise a truncated reply that begins by restating the
+  question; the claim that it is broken (`28a243ea8`) is not established.
+- **No bug was found in the special-token path** (retraction above), and the format question
+  remains genuinely open: FLM echoes the prompt and answers in one line while the native arms
+  reason first, so "same format" has not actually been achieved by adding the template.
+
+### What the goal should do next
+
+Re-run the **full 20-prompt set** with the fixed harness at a budget long enough for the
+reasoning (the runlist arm is fast — 10 ms/token — so 256 tokens per prompt is cheap; the
+dense arm at 2 tok/s is not, and should be measured on a subset or with a matched budget),
+scoring the **whole** output for the expected answer. Only that produces the first trustworthy
+accuracy number for either arm, and it is the number the goal's done-criterion needs.
