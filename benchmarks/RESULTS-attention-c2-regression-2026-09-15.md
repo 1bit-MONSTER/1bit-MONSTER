@@ -1008,3 +1008,38 @@ For each new shape, in this order — a wrong kernel passes none of them:
 2. standalone bench `NPU_ATTN_MAX_SEQ=<N> /tmp/ck <xclbin> <insts> <N> 2` →
    `2/2` non-zero C2 **and** NPU `max_abs_err` == EMU `max_abs_err` to the digit;
 3. engine-driven token-identity against the captured/CPU reference for that family.
+
+### The hd=256 trap is SILENT, not a build error (measured)
+
+Followed the correction above to its conclusion: does the toolchain catch the
+half-width kernel, or does it hand back a valid-looking artifact?
+
+Built it through the normal path (`build_attn.sh` with `-K 256`, N=512, cols=8):
+
+```
+$PYTHON n1_core_attn.py -M 8 -K 256 -N 512 -m 8 -k 64 -n 128 -c 8 -b 2
+Compilation completed successfully
+Successfully wrote (90192 bytes) to /tmp/attn_k256/attn.xclbin
+```
+
+**It builds. 90192 bytes, exit 0, no warning.** So `-K 256` produces an
+artifact that loads and runs — and computes only 128 of the 256 head dims
+(`C2_C*` is `memref<8x128xi32>`, the PV matmul is
+`(8x64, 64x128) -> 8x128`). This is the silent-failure class the levers register
+warns about, now demonstrated rather than inferred:
+
+- **assembly-time**: nothing fails;
+- **load-time**: nothing fails (the xclbin is well-formed — wrong *semantics*, not
+  wrong *shape*);
+- **run-time**: half the head dim is garbage, with no error and no assertion.
+
+It also over-reads: the seq's C2 writeback is sized `M*K` = 8·256 = 2048 elements
+per head (`dma_bd(%arg2 : memref<8192xi32>, 0, 2048, …)` for cols=4), while the C2
+FIFO holds only `(8,128)` = 1024 — so the host receives `(8,256)` of which the
+second 128 columns were never produced.
+
+**Consequence for anyone implementing breadth:** `-K <hd>` must never be trusted on
+its own. The guard is the PV N-split plus the L1 verification triad (insts
+byte-identity for hd128/nq8, then NPU err == EMU err to the digit, then
+engine-driven token-identity) — because neither the compiler, the loader, nor the
+runner will report anything.
