@@ -64,3 +64,45 @@ Close `mtuhp2fy-c8yfgb` as **achieved by a different means than prescribed**:
 - `task-4` (extend to 1.7B/4B/8B + record) is satisfiable from the existing
   `RESULTS-native-vs-flm-dense-qwen3-2k-2026-09-14.md`, which already carries
   decode @1k/@2k for 0.6B/1.7B/4B/8B.
+
+## Criterion 1, formally measured via `benchmarks/flm_parity.sh`
+
+The goal's criterion is "≥ 4 tok/s **measured via `benchmarks/flm_parity.sh`**", so
+the direct engine run above is not sufficient on its own. Ran the harness:
+
+```
+bash benchmarks/flm_parity.sh --model qwen3_0_6b --flm-tag qwen3:0.6b \
+  --engine engine/npu/build/npu_engine_qwen3_0_6b \
+  --q4nx ~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx \
+  --tokenizer ~/.config/flm/models/Qwen3-0.6B-NPU2/tokenizer.json \
+  --prompt benchmarks/prompts/reclaimer.txt --ctx-k 1 --decode-tokens 32
+
+metric               native    FLM(on-box)           gap%
+decode tok/s             64          74.24          -13.8
+prefill tok/s         1754.4        1318.19
+TTFT (s)              1.182       0.745276
+prefill tokens           2088 ~1928 (1 story copy)
+```
+
+**Criterion 1 is MET: native 0.6B decode is 64 tok/s against a 4 tok/s target —
+16× the bar, and 32× the "2 tok/s" the objective starts from.** It is measured by
+the prescribed script, at the prescribed context (1k), on this box.
+
+Two things the same run shows honestly, which the objective's framing hides:
+
+- **Decode is 13.8 % *behind* FLM on-box here** (64 vs 74.24). The earlier
+  "+19.4 % ahead" figure in `RESULTS-native-vs-flm-dense-qwen3-2k-2026-09-14.md`
+  compared native against FLM's *published* 66.5, not against FLM measured on this
+  machine. Against same-hardware FLM, native trails at 1k for 0.6B. (Note the
+  direct short-context run measured 88 tok/s, so the deficit is context-dependent,
+  not a flat rate.)
+- **Native leads on prefill** (1754.4 vs 1318.19 tok/s) and **trails on TTFT**
+  (1.182 s vs 0.745 s) — prefill *throughput* is ahead while time-to-first-token is
+  behind, which together say the first chunk is arriving late rather than the
+  prefill being slow.
+
+So the scorecard for this objective is: the stated numeric target is handsomely
+met; the *parity* framing is met on prefill and not on decode/TTFT at 1k; and the
+prescribed mechanism (small-M + cascade-fused wiring) is not what produced the
+speed — it is measured neutral, and small-M is disabled with a recorded
+falsification.
