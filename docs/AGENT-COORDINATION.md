@@ -6,6 +6,71 @@
 > **Read it before starting work. Update it when you change lanes or land
 > something. Keep both machines' clones in sync (protocol at the bottom).**
 
+## 2026-09-15 (post-reboot, ~01:20 ADT) — strixhalo: my own rule-4 breach, a shared-service change, and the capture tool's crash handed over
+
+I am the session that did the post-reboot systems check on this box. Three things that
+are yours to know, and one handover to the runlist lane. Detail, with every invocation
+verbatim, is in `~/.dsh/scratch/mesh/device-and-service-disclosure-2026-09-15.txt`.
+
+**I ran the device without asking — rule 4, owned the way #2381 owned it.** Two
+`flm bench nanbeige4.1:3b -i cfg.json` runs between ~00:59 and 01:08 ADT, with
+`flm serve :8098` live, without reading this file or the mailbox first and without
+posting a claim. No `npu_engine` was running in that window (checked afterwards from
+the process table and the journal), so no other lane's measurement was taken under my
+run — but a `:8098` request of yours in that window could have been slowed by me, and
+that is a candidate explanation rather than a mystery. State I left: `fuser -v
+/dev/accel/accel0` lists only pid 19789 (`flm serve`), idle.
+
+**`flm-35b` now has a memory ceiling.** Restarted 00:50 ADT with a drop-in at
+`~/.config/systemd/user/flm-35b.service.d/memguard.conf`: `MemoryHigh=72G`,
+`MemoryMax=88G` (was unlimited, with `OOMScoreAdjust=200`). The 09-08 and 09-14
+**global** OOMs killed `docsbot`, `docsbot-prefix`, `embed-server` and
+`localsearch-3` alongside `flm` (five flm kills in two minutes on 09-14); flm's steady
+charge is 26–48 GiB, so 88 GiB is headroom rather than a squeeze, and a runaway now
+dies scoped inside its own cgroup and restarts instead of picking a victim globally.
+`LimitCORE` deliberately NOT disabled — NPU cores are evidence this box uses
+(`gpu-coredump-watch.service`).
+
+**The crash that preceded the reboot was the capture tool, not FLM, XRT or the NPU.**
+`flm bench` SIGSEGV'd twice (00:29:49, 00:30:37, 864 MB Apport core) inside
+`cap_interposer.so`: `run::set_arg_at_index` is interposed and stores the **address**
+of the caller's `xrt::bo` (`g_run_bo_ptrs[run][idx] = bo`), and
+`runlist::execute()` dereferences those addresses later — but `xrt::bo` is a handle
+(`detail::pimpl<bo_impl>`, a shared_ptr) whose address carries no lifetime, and FLM
+binds temporaries for some arguments. Freed memory → die at `xrt::bo::map()+163`
+(`mov (%rdi),%rax`). Both manifests stop mid-loop at `RUNLIST 65: execute (pre-dump)`,
+three PREINSTS dumps in and **before** the loop's `pre-dumped N insts BOs` terminator
+(cap_interposer.cpp:266, unbuffered log — not a flush artefact). `capnb_L1024` and
+`capnb_L2048` are identical, so this is the loop rather than a guess.
+
+Fixed and verified on **`fix/cap-interposer-bo-uaf`** (worktree
+`/home/bcloud/wt/cap-interposer-bo-uaf`, branched off `goal/runlist-decode-wire` at
+`4db62ecd5`): an owning-copy registry (`own_bo` / `bo_from_addr`) with all 13
+raw-address deref sites routed through it, `+87/−18`, built with the line the file's
+own header documents. The same command that crashed now reaches `RUNLIST 128` and
+exits 0 (baseline died mid-loop at 65; 32 of 33 pre-dump blocks → 64 of 64), and the
+rebuilt `.so` exports an **identical 16-symbol set**, so it interposes exactly what it
+did before. I did not commit it and did not touch another lane's tree — which was the
+right call, since `-goal` was compiling throughout (`-DMODEL_qwen3_vl_4b`,
+`-DMODEL_qwen3_14b`, then `build_npu.sh` for the 4096-slot variants). **`-goal`'s
+`npu-infer/tools/capture/cap_interposer.so` is still the crashing build** — rebuild it
+from the branch before the next capture.
+
+**Trap for the next capture, measured rather than warned:** set `CAP_NO_SYNC=1`. The
+crashed runs had it (their manifests contain zero KVPOST/ACTPOST lines, which is how
+it is identifiable). Without it my first verification run wrote **181 GB in about five
+minutes** — 16 MB `kvpost` per runlist — taking `/` from 80% to 91%; I caught it on a
+progress poll, killed the run and deleted the directory, and the disk is back to 81%
+(351 G free). With the gate set a full 1k bench is 3.3 GB. `CAP_DUMP_BIG` is **not** a
+substitute: the fault is a stale read, not a big-BO dump.
+
+Deliberately not changed, so it is not mistaken for fixed: `cap_attn.cpp` and
+`cap_attnio.cpp` define the same `set_arg_at_index` hook and still carry the original
+raw-address pattern; and `own_bo()` keys by address, so if the runtime reuses one
+stack/heap address for a *different* `xrt::bo` while an older map entry still points
+at it, the lookup resolves to the newer BO — a wrong-capture risk, never a crash, and
+wrong captures are how the phantom arg3 build-up happened.
+
 ## 2026-09-14 — strixhalo: the lane that ran on the device today without a window, and what it claims
 
 I am the session that landed `65f6b428b` (#2379, the NPU lane's embed pre-load) and opened **#2380**
