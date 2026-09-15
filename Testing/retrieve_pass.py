@@ -1,6 +1,6 @@
 import json, subprocess, os, sys, time, urllib.request, urllib.parse
 
-ROOT = "/home/bcloud/1bit-MONSTER"
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # #2387: was pinned to the shared checkout
 v = json.load(open(os.path.join(ROOT, "Testing/census_tail_verify.json")))
 rem = json.load(open(os.path.join(ROOT, "Testing/census_true_remaining.json")))
 rem_by = {s: c for s, c, _ in rem}
