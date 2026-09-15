@@ -315,3 +315,58 @@ Make the runlist arm select in fp32 — or, minimally, have it honour `NPU_GREED
 `lm_topk_omp` does — so that "token parity" compares the same selection rule on both
 arms. Until then, a parity claim between the arms is testing a bf16-vs-fp32 argmax
 difference, not a kernel correctness difference.
+
+## RETRACTION: the "bit-identical logits" result was a stale-file comparison
+
+The section "ROOT CAUSE of the token divergence" is **withdrawn**, and the caveat in it
+turned out to be the actual answer rather than a footnote.
+
+`NPU_DUMP_LOGITS` is handled at `npu_engine_universal.cpp:563`, inside `lm_topk_omp`,
+which **only the dense arm reaches**. The dump path is a fixed filename
+(`/tmp/native_logits.txt`) that is overwritten, not removed. So running the runlist arm
+with `NPU_DUMP_LOGITS=1` left the *dense* arm's file in place, and comparing
+`lg_dense.txt` against `lg_runlist.txt` compared **the dense dump with itself** — hence
+`corr = 1.000000` and `max abs diff = 0`. Identical numbers because it was one file.
+
+The test that settles it:
+
+```
+$ rm -f /tmp/native_logits.txt
+$ NPU_RUNLIST=1 NPU_GREEDY=1 NPU_DUMP_LOGITS=1 npu_engine_qwen3_0_6b model.q4nx 1 /tmp/ids.txt
+*** RUNLIST RUN did NOT write the dump ***
+```
+
+So **the two arms' logits have never been compared.** Everything downstream of that
+claim goes with it:
+
+- The bf16-tie explanation is **wrong**, and it was wrong on its own terms anyway: I
+  checked the arithmetic and the top two are *not* tied in bf16 — token 9 = 12.6875 vs
+  token 8 = 12.3125, a gap of ~42 bf16 quanta at that magnitude. A bf16 argmax should
+  have picked 9. The tie story could not have explained the emitted 8 regardless.
+- The statement "the runlist arm selects with a bf16 argmax and that is not a numerical
+  bug" is withdrawn. The runlist arm *does* select with a bf16 argmax
+  (`npu_runlist_bridge.cpp:376-385` → `RuntimeLayerEngine::argmax_logits`,
+  `npu-infer/src/runtime_layer.cpp:814`, a sign-magnitude key over raw bf16), and that
+  remains a *real* precision difference from the dense arm's host-side fp32
+  `lm_topk_omp` — but **it is not established that this causes the divergence**, because
+  the two arms' logits have not been compared.
+
+What is still true: the arms emit different tokens on prompt A (`9` vs `8`) and the same
+token on prompt B (`492`), both arms are prompt-dependent, and the dense arm's
+`[0] boot=<n>` is a generated token. The cause of the divergence is **open**.
+
+### Fix applied so the question becomes answerable
+
+Added a dump to the runlist path itself (`engine/npu/src/npu_runlist_bridge.cpp`, before
+the priming `rt.argmax_logits`), writing `/tmp/runlist_logits.txt` from
+`RuntimeLayerEngine::get_logits` — i.e. the *device* bf16→fp32 logits, which is the
+quantity that was never measured. Comparing `/tmp/native_logits.txt` (dense, host fp32)
+against `/tmp/runlist_logits.txt` (runlist, device bf16) is the real test. Requires an
+engine rebuild.
+
+**Lesson recorded for this goal:** a dump hook guarded by `getenv` and writing a fixed
+path must have its file removed before each run, and a comparison must assert the file
+was actually (re)written by the run it belongs to. This is the second time in this goal
+that a vacuous comparison produced a confident result (the first was the empty-`grep`
+token "parity"), so the rule is now: *assert the extraction/measurement is non-empty and
+fresh before comparing*.

@@ -382,6 +382,22 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
     // Prime: emit token 1 (logits already ready from the prefill's last forward)
     // and launch the first decode forward (ctx = npt+1) on slot sb.
     {
+        // Parity instrumentation: the runlist path's logits come from the device
+        // (bf16 -> fp32 via RuntimeLayerEngine::get_logits) and are NOT the logits
+        // the dense arm's NPU_DUMP_LOGITS hook writes (that hook lives in lm_topk_omp,
+        // which only the dense path reaches). Dump them here so the two arms' logits
+        // can actually be compared instead of comparing a stale dense file twice.
+        if (getenv("NPU_DUMP_LOGITS")) {
+            std::vector<float> lg((size_t)cfg.vocab_size);
+            if (rt.get_logits(lg.data(), cfg.vocab_size)) {
+                FILE* fl = fopen("/tmp/runlist_logits.txt", "wb");
+                if (fl) {
+                    for (int n = 0; n < cfg.vocab_size && n < 4096; n++)
+                        fprintf(fl, "%d %.6g\n", n, lg[(size_t)n]);
+                    fclose(fl);
+                }
+            }
+        }
         int best = rt.argmax_logits(cfg.vocab_size);
         printf("  [%d] %d\n", 1, best);
         total++;
