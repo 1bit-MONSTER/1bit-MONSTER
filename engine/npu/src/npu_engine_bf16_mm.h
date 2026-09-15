@@ -124,6 +124,14 @@ struct Bf16Mm {
     int attn_hd = 128;      // model head_dim; every shipped attn ELF is hd128, so this
                             // must be 128 for any of them to be a valid shape match
     bool attn_shaped_ok = false;  // a shape-specific ELF (attn_mha_<tok>_nh<NH>_hd<HD>.elf)
+    // Per-bucket version of the same fact. attn_shaped_ok says *some* shaped ELF
+    // was loaded; the long-context selector needs to know whether the ELF in THIS
+    // bucket is shape-matched, because a shaped ELF is the only legitimate way for
+    // a non-nh16/nh32 family (Nanbeige nh20, Phi4 nh24, hd256 shapes) to run the
+    // NPU above 1024 keys instead of the CPU reference. Without this, a correct
+    // attn_mha_2048_nh20_hd128.elf loads and is then discarded by the selector.
+    bool attn_shaped256 = false, attn_shaped1k = false, attn_shaped2k = false,
+         attn_shaped4k = false, attn_shaped8k = false;
                                   // was found for this model's (NH, HD)
     int attn_tokens = 256;  // KEYS present in the KV BO for this call
     size_t attn_bo_elems = 0;  // current act/out BO capacity, in u16
@@ -222,7 +230,8 @@ struct Bf16Mm {
                 auto load_attn_elf = [&](const char* envname, const char* fname, int tokens,
                                          std::unique_ptr<xrt::elf>& e,
                                          std::unique_ptr<xrt::module>& m,
-                                         std::unique_ptr<xrt::ext::kernel>& k) {
+                                         std::unique_ptr<xrt::ext::kernel>& k,
+                                         bool* shaped_out = nullptr) {
                     std::vector<std::string> cands;
                     if (const char* ev = getenv(envname)) cands.push_back(ev);
                     // Shape-specific name FIRST, so a per-family attention ELF is a
@@ -257,17 +266,19 @@ struct Bf16Mm {
                             k = std::make_unique<xrt::ext::kernel>(*attn_hc, *m, "MLIR_AIE");
                             // Remember whether this came from the shape-specific name.
                             if (path.find("attn_mha_") != std::string::npos &&
-                                path.find("_hd") != std::string::npos)
+                                path.find("_hd") != std::string::npos) {
                                 attn_shaped_ok = true;
+                                if (shaped_out) *shaped_out = true;
+                            }
                             fprintf(stderr, "  Bf16Mm: attention ELF loaded (%ld B): %s\n", sz, path.c_str());
                         }
                         fclose(ft);
                         if (k) break;
                     }
                 };
-                load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024, attn_elf1k, attn_module1k, attn_kernel1k);
+                load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024, attn_elf1k, attn_module1k, attn_kernel1k, &attn_shaped1k);
                 load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", 1024, attn_elf1k32, attn_module1k32, attn_kernel1k32);
-                load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048, attn_elf2k, attn_module2k, attn_kernel2k);
+                load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048, attn_elf2k, attn_module2k, attn_kernel2k, &attn_shaped2k);
                 load_attn_elf("NPU_ATTN_ELF_2048_NH32", "attn_mha_2048_nh32.elf", 2048, attn_elf2k32, attn_module2k32, attn_kernel2k32);
                 // (2048, 4096] slot. Both names are absent from a default checkout
                 // (only the nh16 4096 capture exists so far), and an absent file is
@@ -275,7 +286,7 @@ struct Bf16Mm {
                 // caller uses the CPU attention reference, which is slow but
                 // correct. Install a capture under either name to switch the range
                 // over to the NPU.
-                load_attn_elf("NPU_ATTN_ELF_4096", "attn_mha_4096_nh16.elf", 4096, attn_elf4k, attn_module4k, attn_kernel4k);
+                load_attn_elf("NPU_ATTN_ELF_4096", "attn_mha_4096_nh16.elf", 4096, attn_elf4k, attn_module4k, attn_kernel4k, &attn_shaped4k);
                 load_attn_elf("NPU_ATTN_ELF_4096_NH32", "attn_mha_4096_nh32.elf", 4096, attn_elf4k32, attn_module4k32, attn_kernel4k32);
                 // (4096, 8192] slot. nh16 only: the nh32 shapes run the region
                 // stride the H table gives them (2097152 u16 = 4096 tokens), which
@@ -386,21 +397,23 @@ struct Bf16Mm {
                  : nh32 ? (attn_kernel8k32 ? attn_kernel8k32.get() : nullptr)
                         : nullptr;
         else if (attn_tokens > 2048)
-            // (2048, 4096]. As for the 2k slot, only the nh16/nh32 shapes may use a
-            // capture; every other shape (nh20 Nanbeige, nh24 Phi4) gets nullptr and
-            // the host reference, which is the correct-answer path for them.
+            // (2048, 4096]. nh16/nh32 use their captures; any other shape may use
+            // the NPU only through a SHAPE-MATCHED ELF (attn_shaped4k), which the
+            // loader found under attn_mha_4096_nh<NH>_hd<HD>.elf. Absent that, the
+            // host reference is the correct-answer path for them -- a capture used
+            // for a shape it was not built for is WRONG, not merely slower.
             kern = nh16 ? (attn_kernel4k ? attn_kernel4k.get() : nullptr)
                  : nh32 ? (attn_kernel4k32 ? attn_kernel4k32.get() : nullptr)
-                        : nullptr;
+                        : (attn_shaped4k && attn_kernel4k ? attn_kernel4k.get() : nullptr);
         else if (attn_tokens > 1024)
-            // Only nh16/nh32 have 2k captures. Any other shape must fall through
-            // to the CPU reference rather than borrow the nh32 kernel: Nanbeige
-            // (nh20) and Phi4 (nh24) reach this branch above 1024 keys, and the
-            // nh32 2048 kernel returns wrong tokens for them (Nanbeige @1000:
-            // CPU attn = FLM-ref 163569, shape ELF = 90724).
+            // (1024, 2048]. As above: nh16/nh32 captures, or a shape-matched ELF for
+            // any other family (Nanbeige nh20, Phi4 nh24, hd256 shapes). The nh32 2k
+            // kernel returns WRONG tokens for nh20/nh24 (Nanbeige @1000: CPU attn =
+            // FLM-ref 163569, nh32 shape ELF = 90724), so the shaped flag is the
+            // only thing that may widen this branch.
             kern = nh16 ? (attn_kernel2k ? attn_kernel2k.get() : nullptr)
                  : nh32 ? (attn_kernel2k32 ? attn_kernel2k32.get() : nullptr)
-                        : nullptr;
+                        : (attn_shaped2k && attn_kernel2k ? attn_kernel2k.get() : nullptr);
         else if (attn_tokens > 256)  kern = nh32 ? (attn_kernel1k32 ? attn_kernel1k32.get() : nullptr)
                                                  : (attn_kernel1k   ? attn_kernel1k.get()   : nullptr);
         if (!kern) return false;

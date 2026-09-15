@@ -209,3 +209,44 @@ NPU_ATTN_K=128 NPU_ATTN_N=1024 NPU_ATTN_HEADS=20 NPU_ATTN_COLS=4 NPU_ATTN_NKV=4 
 Remaining for family >1024 parity: build the ELF per (shape, bucket), pass the real
 `nq/nkv/hd/cols` from `Bf16Mm`, and run the device gate. No missing artifact, no
 missing tool, no unknown format.
+
+### Shape-ELF matrix: 1024/2048 build, 4096 overflows program memory
+
+The selector in `npu_engine_bf16_mm.h` was the last code gap: it allowed only
+nh16/nh32 to take an NPU kernel above 1024 keys, so a correct
+`attn_mha_2048_nh20_hd128.elf` would have loaded and then been discarded. Each
+long-context slot now carries its own `attn_shaped*` flag (set when the ELF that
+actually loaded came from the `attn_mha_<tok>_nh<NH>_hd<HD>.elf` name), and the
+2k/4k branches accept a shape-matched ELF for any family. The nh16/nh32 branches,
+and everything at <=1024, are untouched; the TU compiles
+(`g++ -fsyntax-only … src/npu_engine_bf16_mm_bridge.cpp` → rc 0, warnings only).
+
+Built from this generator, CPU-only:
+
+| family | shape | bucket | result |
+|---|---|---|---|
+| Nanbeige | nh20 hd128 nkv4, cols4 | 2048 | **OK** — 482960 B ELF, `.ctrltext` 0x06db60 |
+| Nanbeige | nh20 hd128 nkv4, cols4 | 4096 | **FAILS**: `_XAie_LoadProgMemSection():231: Overflow of program memory` → `XAie_LoadElf failed with XAIE_INVALID_ELF` |
+| Phi4-mini | nh24 hd128 nkv8, cols8 | 1024 | **OK** — 292176 B ELF, `.ctrltext` 0x0424f0 |
+| Phi4-mini | nh24 hd128 nkv8, cols8 | 2048 | **OK** — 579408 B ELF, `.ctrltext` 0x083a70 |
+| Phi4-mini | nh24 hd128 nkv8, cols8 | 4096 | **FAILS** — same program-memory overflow |
+
+Two things follow, and the second is new work rather than a formality:
+
+1. **A failed CDO build still leaves a file on disk** (961680 B / 1153872 B for the
+   4096 attempts). Those are invalid and must not be installed — check the build
+   exit status (and the `Compilation failed` line), never the file's existence.
+2. **4096 does not fit.** The transaction count scales with
+   `N` × head-block passes (and × head-dim tiles), so the unrolled stream for
+   nh20×5 passes at N=4096 exceeds AIE program memory — a *design* limit, not a
+   flag. Options, in the order I would try them: reduce the unrolled stream (the
+   generator currently unrolls the QK^T and PV loops entirely); or keep the
+   per-context-bucket approach and accept that the 4096 bucket needs the capture
+   route; or make the chunked path's group loop a real AIE loop rather than
+   Python-unrolled. Until one lands, the family verdict for >2048 is the CPU
+   reference, which is correct but slow.
+
+Bucket ELFs live in `/tmp/elfmat_attn_mha_*.elf` for now, deliberately **not** in
+the tree: they are unverified, and the working models' ELFs share that directory.
+They move into `engine/npu/xclbins/` only after the bench gate and a family token
+identity pass.
