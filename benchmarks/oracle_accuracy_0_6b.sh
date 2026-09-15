@@ -49,12 +49,23 @@ while IFS='|' read -r prompt expected; do
     n=$((n+1))
 
     # ---- tokenize (stdin), assert non-empty -------------------------------
-    # NB: use `echo`, not `printf '%s'`. FLM below receives the prompt via echo and
-    # therefore sees a trailing newline; feeding the natives a newline-less prompt
-    # makes this an unfair comparison (it flipped the runlist arm from "Paris" to
-    # " in the city" on the France prompt). Same bytes on all three, or it is not a
-    # comparison.
-    echo "$prompt" | "$TOK" "$TJSON" 2>/dev/null | tr ',' ' ' > /tmp/oa_ids.txt
+    # TPL=1 (default) wraps the prompt in the model's own Qwen chat template,
+    # because FLM below is a chat application and applies that same template
+    # internally. Without this the native arms are asked a RAW completion while
+    # the oracle is asked an ASSISTANT question -- two different tasks. That
+    # confound is why the native arm answered every prompt in exam format
+    # ('A) ... B)'), with first-step top candidates A/Choices/Options/Which/Answer
+    # (see benchmarks/RESULTS-oracle-accuracy-0_6b-2026-09-15.md). Set TPL=0 to
+    # reproduce the raw-completion comparison instead.
+    # NB: use `echo` semantics -- FLM receives the prompt via echo and therefore
+    # sees a trailing newline; a newline-less prompt is not a fair comparison (it
+    # flipped the runlist arm from "Paris" to " in the city").
+    if [ "${TPL:-1}" = "1" ]; then
+        printf '<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n' "$prompt" \
+            | "$TOK" "$TJSON" 2>/dev/null | tr ',' ' ' > /tmp/oa_ids.txt
+    else
+        echo "$prompt" | "$TOK" "$TJSON" 2>/dev/null | tr ',' ' ' > /tmp/oa_ids.txt
+    fi
     ids="$(tr -s ' ' < /tmp/oa_ids.txt | sed 's/^ *//; s/ *$//')"
     nids=$(wc -w < /tmp/oa_ids.txt)
     if [ "$nids" -eq 0 ]; then

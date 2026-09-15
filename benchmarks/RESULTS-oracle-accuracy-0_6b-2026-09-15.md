@@ -277,3 +277,58 @@ problem found in this line of work, and it is the one that plausibly accounts fo
 **Next action (now unambiguous): equalise the prompt format** — either apply the model's chat
 template in the native engine, or run the oracle in raw-completion mode — then re-score with
 `benchmarks/oracle_accuracy_0_6b.sh`. Only after that does the accuracy number mean anything.
+
+## Step 5 attempt: equalising the format with the chat template — it changes behaviour, and it degenerates
+
+The cheapest same-format route needs no engine rebuild: wrap the prompt in the model's own
+Qwen template **in the harness** before tokenizing, since FLM applies that same template
+internally. The tokenizer encodes the special tokens correctly
+(`151644`=`<|im_start|>`, `872`=`user`, `151645`=`<|im_end|>`, `77091`=`assistant`), so the
+templated prompt is well-formed at the token level.
+
+Re-scoring the three worst prompts with the template applied (`TPL=1`):
+
+```
+flm     : "Water is made of hydrogen and oxygen."      (3/3 -- oracle unchanged)
+runlist : "\nOkay, the user "        <- for ALL THREE prompts
+dense   : "\nOkay, the user" / "\nOkay, the user." / "\nOkay, the user0"
+native  : 0/3 runlist, 0/3 dense
+```
+
+Three things follow, and two of them are negative:
+
+1. **The format confound is real and confirmed.** The template changes the native arms'
+   behaviour completely — the exam-format `A) … B)` output disappears entirely. So the
+   earlier `A/Choices/Options/Which/Answer` first-step distribution really was a
+   raw-completion artefact, not a kernel defect. That part of the step-4 conclusion holds.
+2. **But equalising the format does NOT recover accuracy — it makes it worse** (raw 7/20 on
+   the full set; templated 0/3 here, on prompts the raw format partially got right). So the
+   accuracy defect is *not* explained by the format confound either. Both formats fail, in
+   different ways.
+3. **The templated path degenerates to prompt-independent output.** All three prompts give
+   the same `\nOkay, the user ` from both arms, and the dense arm's variant differs only in
+   a trailing punctuation character. Identical output across different prompts means the
+   context contributed almost nothing — the model is emitting an assistant preamble and then
+   hanging.
+
+Point 3 is the sharpest lead yet, and it is a specific, testable claim rather than a
+gesture: an assistant preamble that ignores the prompt suggests the **special tokens are not
+being embedded correctly** (ids 151644/151645 sit at the very top of a 151936-entry vocab,
+and nothing in the engine was ever exercised with them before this test). A cheap test: feed
+the same template with the special tokens written as literal text (`im_start`, `im_end`)
+instead of real special ids — if that restores prompt dependence, the bug is special-token
+embedding, not attention.
+
+### Honest state after step 5's first attempt
+
+| format | runlist | dense |
+|---|---|---|
+| native raw completion (20 prompts) | 7/20 | 1/20 |
+| native with the oracle's chat template (3 prompts) | 0/3 | 0/3 |
+
+The format is now equalised on the templated side and the gap *widened*, so "we were asking
+different questions" — while true and now confirmed — is not the explanation for the accuracy
+gap. The defect is present in both formats. The remaining content errors (Kyoto for Tokyo,
+Barcelona for Madrid, Neptune for Jupiter, `helium` for oxygen) and this new
+prompt-independent degeneration are the two concrete things to chase, and the special-token
+hypothesis above is the cheapest next measurement.
