@@ -118,6 +118,57 @@ and `git status npu-infer/captures/` is **empty** afterwards, where the same run
 previously left 512 untracked pairs. The cache is 52 MB for that model. An
 explicit `NPU_LAYER_ELF_DIR` still suppresses the redirect entirely.
 
+## nh32 too: 4B / 8B / VL-4B reach 8191
+
+The nh16 shapes got the range first. nh32 shares the tokenizer and layer geometry
+(H=2560 for 4B and VL-4B, H=4096 for 8B) but needed both halves of the support
+before the cap could be raised for them:
+
+- **The capture.** `attn_mha_8192_nh32.elf`, 1400848 B, sha256
+  `20fd31b373187c9c…`, taken from Qwen3-4B with the same harness. Identified the
+  same way — `elf_0012`, and the nh32 affine size model (2960 + 170.641·L)
+  predicts 1400851 against 1400848, the four committed nh32 captures landing at
+  −0.4 / −0.8 / −1.5 / −3.1 B.
+- **The region stride.** The engine's H table gives H=2560/H=4096 a 2097152 u16
+  region because the ≤4096 nh32 captures were taken at `MAX_L=4096`. Above 4096
+  the stride must be 4194304, to match the 8192 capture; with the narrow one the
+  kernel reads past the region, which is wrong rather than slow. The stride now
+  follows the capture that will run.
+- **The cap.** `8193-ng` now applies to any shape whose 8192 capture is on disk —
+  a file-existence check, not a shape list, so a missing capture degrades to the
+  old 4095 cap rather than to an eight-minute CPU-attention prefill.
+
+Verified against FLM's own runtime on the same tokens:
+
+| model | length | native | FLM |
+|---|---:|---:|---:|
+| Qwen3-4B | 4200 / 5000 / 7000 / 8191 | 5381 / 30566 / 1011 / 59277 | same |
+| Qwen3-8B | 5000 / 8191 | 30566 / 59277 | same |
+| Qwen3-VL-4B | 4095 / 4200 / 4600 / 4700 / 4800 / 4900 / 5100 / 5200 | 59277 / 5381 / 220 / 9628 / 25 / 15 / 220 / 13 | same |
+
+Held: nh16 gates 256/1024/2048/4095 → 1614/25/220/44353; nh32 gates (4B
+1024/2048/4095) → 220/220/59277; and `git status npu-infer/captures/` stays
+empty, so the ELF cache redirect holds through all of it.
+
+### One position disagrees, and it is written down rather than smoothed over
+
+**Qwen3-VL-4B at exactly npt=5000 returns 30566 where FLM returns 11211**, both
+deterministic across repeats. It is **not** a tie: native's own margin there is
+**2.625 logits**, with 11211 as the runner-up.
+
+Two things point to numeric drift at a near-degenerate position rather than a
+defect. VL-4B matches FLM at every other length tested — 4095, 4200, 4600, 4700,
+4800, 4900, 5100, 5200 — including both sides of 5000. And VL-4B and 4B have
+**identical** configs (H 2560, 36 layers, 32/8 heads, head_dim 128, IM 9728,
+rope_theta 1e6, no rope_scaling) on a prompt that is `ids1024` repeated five
+times: the two models agree with each other, and with FLM, at 4900 and 5100.
+Only VL-4B at 5000 splits, and 4B at 5000 returns native's answer in both
+implementations.
+
+Unresolved, deliberately: the decisive control is the CPU attention reference at
+npt=5000 for VL-4B — the same experiment that localised the >4096 fault — and it
+has not been run. Until it is, this is one unexplained position, not a bug.
+
 ## Still open
 
 - **nh32 to 8192** needs its own 8192 capture *and* a region-stride change for
