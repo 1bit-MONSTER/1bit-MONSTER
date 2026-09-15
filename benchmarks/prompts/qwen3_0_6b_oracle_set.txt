@@ -1,0 +1,20 @@
+The capital of France is|paris
+The capital of Japan is|tokyo
+The capital of Italy is|rome
+The capital of Spain is|madrid
+The opposite of hot is|cold
+The opposite of up is|down
+The opposite of day is|night
+Water is made of hydrogen and|oxygen
+2 + 2 =|4
+3 + 4 =|7
+How many days are in a week?|7
+How many minutes are in an hour?|60
+The color of the sky on a clear day is|blue
+A baby cat is called a|kitten
+A baby dog is called a|puppy
+The largest planet in the solar system is|jupiter
+The chemical symbol for gold is|au
+The first month of the year is|january
+The opposite of black is|white
+The capital of Germany is|berlin
