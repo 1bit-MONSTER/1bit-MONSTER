@@ -364,3 +364,24 @@ candidate as `attn_mha_4096_nh20_hd128.elf` and verify it the way the generated
 kernel was verified (bench error vs EMU, then engine token-identity) — a
 wrong-family or wrong-context ELF passes no test, which is how the 154528 file was
 caught.
+
+### Differential isolated: the 4096-specific ELF sizes
+
+Third capture at `max_length=2048` (sweeps 1k/2k). Sizes present at 4096 but
+**absent** at 2048 — i.e. the 4k-specific set — are exactly four:
+
+```
+32736   124256   490336   570848
+```
+
+The Nanbeige nh20 **4096** attention ELF is one of them. (For contrast the 1k
+capture's singleton sizes — candidates for the nh20 *1024* attention ELF — are
+`6816, 15440, 177696, 459552`; the *count* matters as well as the size, since
+per-context layer ELFs multiply rather than change size: 86672 goes 37 → 71 → 105
+across the 1k / 2k / 4k captures.)
+
+**How to pin it:** install each candidate in turn as
+`xclbins/attn_mha_4096_nh20_hd128.elf` and test it the way the generated kernel
+was tested — bench error vs EMU, then engine token-identity. A wrong-family or
+wrong-context ELF passes neither, which is precisely how `154528` was caught, so
+the loop is self-checking and needs no oracle.
