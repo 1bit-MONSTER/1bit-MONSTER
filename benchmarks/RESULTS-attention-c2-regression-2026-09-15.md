@@ -87,8 +87,49 @@ problem — C2 is written now — it is that half the softmax weights are missin
 ## Still open
 
 1. **Chunked group-1 A2** (above) — the one remaining correctness bug in the
-   generated attention. Likely in the per-group A2 writeback / `A2o` FIFO
-   element accounting (the FIFO element is the full `(8,N)`, while each group's
-   `a2t` transfers a strided 4096 B of it).
+   generated attention.
+
+### Diagnostics run on the chunked group-1 A2 (2026-09-15, later)
+
+A `seq=513` probe is decisive because the two groups then have unmistakable
+signatures: group 0 owns 512 active keys (softmax ≈ uniform → nearly all-zero
+after `sat8(w·127)`), group 1 owns **one** active key (`seq_g = 513−512 = 1` →
+`A2[0] = 127`). Observed on the N=1024 chunked build:
+
+```
+head0 row0 block map: [0]=1 [1]=0 [2]=0 [3]=0 [4..7]=0
+head0 row0[0..15]   : 127 0 0 0 0 0 0 0 ...
+```
+
+So **the group-1 slot (cols 512–1023) is empty and the group-0 slot holds what
+looks like group 1's one-key result.** At `seq=1024` the same probe gives
+`[0]=107 [1]=114 [2]=100 [3]=114 [4..7]=0` — group 0 populated, group 1 empty.
+
+**Ruled out by IR audit** (the generated `design.mlir`, N=1024):
+
+| suspect | finding |
+|---|---|
+| A2 writeback offsets | correct — `dma_bd(SCR, 32, …)` for g=0 and `dma_bd(SCR, 544, …)` for g=1, 16 tasks (2 per column) |
+| params feed offsets | correct — 8 tasks at `30720` (g=0) then 8 at `30784` (g=1), in order |
+| core acquire order | correct — 8 `A_C` acquires + 1 params per group, two `attn_softmax_i8` calls with distinct `Par` operands and distinct `A2O_C` produce buffers |
+| C2 geometry | correct — `C2_S` is `memref<8x128xi32>`, offsets `c*(M*K)` |
+
+**Ruled out by experiment: the params are not the driver.** Writing *and*
+reading group g's params at slot `g+1` (host `npu_attn_ctx.h` + generator, both
+shifted, IR confirmed at `30784`/`30848`) produced a **byte-identical runtime
+result** — `seq=513` still `[0]=1 … [4..7]=0`. If the core were consuming the
+params one slot late, the shift would have moved the 512-key result into the
+group-0 slot; it did not.
+
+**Narrowed to:** group 1's **C1 is zero** (uniform softmax → `sat8(w·127) = 0`
+for all 512 weights), i.e. the group-1 QK^T never accumulates, while group 0's
+C1 does (its `seq=513` peakedness is a quantisation artefact — `sq`/`sk` are
+recomputed from the shorter k array, so the two seq values are not comparable
+C1-for-C1). The remaining suspects are the **group-1 B/KT tile addressing**
+(`(ki*(N//n) + g*G_TILES + ntl)*(k*n)`) and the **`A2O` FIFO element
+accounting** (element is the full `(8,N)` = 8192 B while each group's `a2t`
+transfers a strided 4096 B of it). Next probe: dump C1 per group (or give the
+two groups different KT tiles that cannot quantise away).
+
 2. The stale-`dist` engines need a rebuild only if the generated xclbin is
    promoted over the captured ELF; the bench drives the artifact directly.
