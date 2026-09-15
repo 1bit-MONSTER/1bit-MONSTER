@@ -35,6 +35,12 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE = os.path.join(ROOT, "site")
+# The README publishes the same census facts and had no sync at all: it said
+# "321,611 / 321,611 text-generation checkpoints on the hub (100%)" for months
+# after the census fell below 100% (#2392). Whatever states these numbers has to
+# be rewritten by the same pass, or it drifts silently -- the site cannot be the
+# only surface that stays honest.
+README = os.path.join(ROOT, "README.md")
 HEADER = os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")
 CENSUS = os.path.join(ROOT, "Testing", "census_full_summary.json")
 WATCH_STATE = os.path.join(ROOT, "Testing", "hf_new_models_state.json")
@@ -156,6 +162,14 @@ def _meta_pair(m, covered, tokens):
            (g[2] if g[2] == fmt(tokens) else fmt(tokens)) + g[3]
 
 
+def _readme_cov(m, covered, with_arch):
+    """README's sentence: "321,611 / 321,611 text-generation checkpoints on the
+    hub (100%) land on an engine token" -- the ratio and the percentage are one
+    claim, so it is rebuilt whole rather than patched per number."""
+    return (fmt(covered) + " / " + fmt(with_arch) +
+            " text-generation checkpoints on the hub (" + _pct(covered, with_arch) + ")")
+
+
 def _pct_claim(m, covered, with_arch, suffix_groups):
     """Percentage claims only move when coverage actually drops below 100%.
 
@@ -232,6 +246,13 @@ def _build_patterns(tokens, arch, covered, with_arch):
         # monster-v2 census line: "100% coverage / 6 hardware targets probed / ..."
         (re.compile(r"([0-9][0-9.]*)%( coverage /)"),
          lambda m: _pct_claim(m, covered, with_arch, 2)),
+        # README: "566 architecture tokens mapping 1,946 HuggingFace arch strings"
+        (re.compile(r"(\d[\d,]*)( architecture tokens mapping )(\d[\d,]*)( HuggingFace arch strings)"),
+         lambda m: _pair(m, t, a)),
+        # README: "321,611 / 321,611 text-generation checkpoints on the hub (100%)"
+        (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( text-generation checkpoints on the hub \()"
+                    r"(\d+(?:\.\d+)?)(%\))"),
+         lambda m: _readme_cov(m, covered, with_arch)),
         (re.compile(r"(<span class=\"n\">)(\d+(?:\.\d+)?)(</span><span class=\"l\">checkpoints mapped</span>)"),
          lambda m: _pct_claim(m, covered, with_arch, 3)),
         # bare prose forms (no fraction): "321,611 checkpoints mapped",
@@ -280,23 +301,29 @@ def _build_patterns(tokens, arch, covered, with_arch):
         raise SystemExit(
             f"[seo_sync] fraction rewrite is wrong: {probe!r} -> {got!r}, "
             f"expected {want!r} -- a bare-count pattern is eating the denominator")
-    # Same standard for the percentage claims, and run on the REAL strings: the
-    # failure that motivated this was a wording the pattern did not know, so the
-    # check has to be the wordings the site actually uses, not a synthetic one.
-    if covered < with_arch:
-        want_pct = _pct(covered, with_arch)
-        for claim in ("100% HuggingFace coverage",
-                      "100% HuggingFace architecture coverage",
-                      "100% of HuggingFace's arch-bearing checkpoints",
-                      "100% coverage / 6 hardware targets probed"):
-            got = claim
-            for pat, repl in pats:
-                got = pat.sub(repl, got)
-            if got.startswith("100"):
-                raise SystemExit(
-                    f"[seo_sync] percentage claim is not rewritten: {claim!r} -> "
-                    f"{got!r}, expected {want_pct!r} -- a wording the patterns "
-                    f"cannot see keeps publishing 100% on the site")
+    # Same standard for the claim wordings, run on the REAL strings: the failure
+    # that motivated this was a wording the patterns did not know (and then a
+    # whole surface they never walked), so the check is the wordings the site and
+    # the README actually use. Each entry names the measured value its rewrite
+    # must contain -- "starts with 100" only works for claims already at 100%.
+    want_pct = _pct(covered, with_arch)
+    for claim, must in (
+            ("100% HuggingFace coverage", want_pct),
+            ("100% HuggingFace architecture coverage", want_pct),
+            ("100% of HuggingFace's arch-bearing checkpoints", want_pct),
+            ("100% coverage / 6 hardware targets probed", want_pct),
+            ("566 architecture tokens mapping 1,946 HuggingFace arch strings",
+             f"{t} architecture tokens"),
+            ("321,611 / 321,611 text-generation checkpoints on the hub (100%)",
+             f"{c} / {w}")):
+        got = claim
+        for pat, repl in pats:
+            got = pat.sub(repl, got)
+        if must not in got:
+            raise SystemExit(
+                f"[seo_sync] claim is not rewritten: {claim!r} -> {got!r}, "
+                f"expected it to contain {must!r} -- a wording the patterns cannot "
+                f"see keeps publishing a stale number")
     return pats
 
 
@@ -315,17 +342,19 @@ def _pct(covered, with_arch):
 
 
 def sync_site_numbers(apply=True):
-    """Rewrite drifted numbers in site/*.html. Returns {path: [notes]}."""
+    """Rewrite drifted numbers in site/*.html and the README.
+
+    Returns {path: [notes]}."""
     tokens = count_tokens()
     arch = count_arch_strings()
     covered, with_arch = census_coverage()
     patterns = _build_patterns(tokens, arch, covered, with_arch)
 
+    targets = [os.path.join(SITE, name) for name in sorted(os.listdir(SITE))
+               if name.endswith(".html")]
+    targets.append(README)
     changed = {}
-    for name in sorted(os.listdir(SITE)):
-        if not name.endswith(".html"):
-            continue
-        path = os.path.join(SITE, name)
+    for path in targets:
         with open(path, encoding="utf-8") as f:
             html = f.read()
         orig = html

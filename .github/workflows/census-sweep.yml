@@ -121,7 +121,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add Testing/ site/ scripts/seo_sync.py
+          git add Testing/ site/ scripts/seo_sync.py README.md
           git commit -m "census: full HF sweep $DATE — refresh coverage + SEO claim numbers"
           git push origin "$BRANCH"
 
