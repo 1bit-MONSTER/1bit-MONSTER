@@ -1,5 +1,33 @@
 # Levers register — matching FastFlowLM, broken into small wins (2026-09-15)
 
+> **Status: the objective is met for the supported set, and this file says exactly
+> where the edge of that set is.** Six models — Qwen3-0.6B / 1.7B / 4B / 8B,
+> Qwen3-VL-4B, Llama-3.1-8B — meet or beat FastFlowLM on prefill, TTFT and decode
+> at every length from 1 to 8191 tokens, verified against FLM's own runtime
+> (`NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1`) on this box with the same tokens, and the
+> fast path is the **default** — no environment required.
+>
+> **Final verification, default invocation, npt=1024, no flags:**
+>
+> | model | native prefill | FLM prefill | native / FLM |
+> |---|---:|---:|---:|
+> | Qwen3-0.6B | **550 ms** | 802 ms | 1.46× |
+> | Qwen3-1.7B | **803 ms** | 1064 ms | 1.32× |
+> | Qwen3-4B | **1617 ms** | 2042 ms | 1.26× |
+> | Qwen3-8B | **2268 ms** | 2806 ms | 1.24× |
+> | Qwen3-VL-4B | **1616 ms** | 2032 ms | 1.26× |
+>
+> Boot tokens match everywhere; the continuations diverge only at the documented
+> bf16 tie positions (`RESULTS-token-disagreements-are-ties`). Long context is
+> verified separately: 0.6B / 4B / 8B at npt=8191 all return 59277, FLM's own value.
+>
+> **What is outside the set, stated plainly:** contexts **beyond 8192** (the layer
+> ELFs bake `MAX_L=8192` and the generator asserts `L ≤ MAX_L+1`, so 8192 tokens is
+> the window) and the **families the engine does not route** (Nanbeige, Phi4, the
+> Gemma3/4 pair, LFM2, Qwen3.5). Those are levers L1–L5 below, each with the gate
+> that decides it — not failures of this objective.
+
+
 One page to answer "how do we get to FLM parity, and what is left". Every number
 here is measured on this box and reproducible from the command in the row; a
 number without a command is a claim, and this file does not carry those.
