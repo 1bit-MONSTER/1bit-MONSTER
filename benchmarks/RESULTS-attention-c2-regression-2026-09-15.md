@@ -652,3 +652,37 @@ Two separate facts, both now on the record and neither yet explained:
 the object being constructed on this path. The next probe is to find which
 constructor those calls live in and what guards construction — not to try more
 attention candidates.
+
+### Root cause: the bf16 mode never calls the attention bridge's init
+
+`load_attn_elf` is not free-standing — it lives inside **`Bf16Mm::init()`**
+(`npu_engine_bf16_mm.h:167`; the block is 210–296, the function ends at 308). The
+only way it runs is through the C bridge:
+
+```cpp
+// npu_engine_bf16_mm_bridge.cpp
+bf16mm::Bf16Mm g_mm;                                   // :23  the single instance
+extern "C" int bf16mm_init(...) {                      // :27
+    if (g_mm.ok) return 1;
+    return g_mm.init(g_dev, model_dir, xclbin_dir) ? 1 : 0;   // :28
+}
+```
+
+The Nanbeige bf16 mode initialises its **projection** contexts (the `Bf16Ctx`
+QKV/O/G/U/D inits, which is why those xclbins visibly load) but never calls
+`bf16mm_init`, so `g_mm.ok` stays false and `Bf16Mm::init` — and with it every
+`load_attn_elf` call — never executes.
+
+That closes the loop on the two anomalies at once:
+
+- **no `Bf16Mm: attention ELF loaded` line** — the block that prints it never runs,
+  which is why the legacy `attn_mha_4096_nh16.elf` sitting in `xclbins/` was not
+  picked up either; and
+- **`[fallback]`** — consistent with the bf16 prefill block not completing
+  (`bf16_done` stays false), since attention has no NPU kernel behind it.
+
+**So the nh20 capture is not the lever.** The lever is wiring the bf16 mode to
+`bf16mm_init` (and thus `Bf16Mm::init`), after which `attn_shaped_ok` can become
+true and a shape ELF — nh20 or otherwise — can take effect. Every 4096-candidate
+experiment before that point is vacuous, which is exactly what the null result for
+570848 looked like.
