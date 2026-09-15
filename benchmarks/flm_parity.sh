@@ -34,6 +34,18 @@ FLM="${FLM:-/opt/fastflowlm/bin/flm}"
 # point them at this repo's xclbins (see FLM-PARITY-DATA-SOURCES.md).
 export NPU_XCLBIN_DIR="${NPU_XCLBIN_DIR:-$ROOT/engine/npu/xclbins}"
 
+# FLM's CLI defaults --pmode performance and the published tables are
+# Performance-mode numbers, but the native engine never sets the power mode.
+# Pin it here so native and FLM are measured under the same conditions
+# (benchmarks/NOTE-measurement-conditions-2026-09-14.md). Non-fatal: warn and
+# continue if it cannot be set (needs root).
+if [ "${FLM_PARITY_SKIP_PMODE:-0}" != 1 ]; then
+  if ! sudo -n xrt-smi configure --pmode performance >/dev/null 2>&1 && \
+     ! xrt-smi configure --pmode performance >/dev/null 2>&1; then
+    echo "WARN: could not set NPU pmode=performance (FLM's default) — native runs may be at a lower power mode than the reference bar" >&2
+  fi
+fi
+
 MODEL="" FLM_TAG="" ENGINE="" Q4NX="" TOKENIZER="" PROMPT=""
 CTX_K=1 DECODE_TOKENS=32
 FLM_MAX_LENGTH=1024 FLM_ITERATIONS=1
