@@ -358,6 +358,72 @@ is only completed by whatever `run()` does differently. **Next action is to
 instrument the PV phase specifically** (and to reconcile the direct launch against
 `run()`), not to touch the softmax.
 
+**That loose end was then attacked directly, and it survived.** The probe launch was
+changed to match `run()`'s pre-launch syncs exactly (`bQ`, `bKT`, `bV` pushed
+TO_DEVICE before the launch — the one place the two launches differed): identical
+result, `a2_first = 1.504 ms`, `c2_first = never`. So the difference between the
+probe and `run()` is **not** the pre-launch syncs.
+
+Two explanations remain and they are not equivalent:
+
+1. **The kernel is pipelined and each launch advances it one iteration**, so the
+   outputs lag: the probe's A2 at 1.5 ms could belong to an iteration whose C2 is
+   simply the *next* launch's business. If so, "6 s per launch" is the pipeline's
+   iteration time, the 1.5 ms A2 is the previous iteration's tail, and the whole
+   picture above — including "the 6 s is after A2" — has to be re-read rather than
+   built on.
+2. **The C2 writeback stalls**, and the probe's kernel completing without writing C2
+   is the same defect seen from the other side.
+
+These are distinguished cheaply and that is the next action, before any further
+conclusion: run the **probe launch twice in a row** and see whether C2 appears on
+the second one. If it does, explanation 1 is right and the phase timing needs
+re-doing against a warmed pipeline. If it does not, explanation 2 is right and the
+C2 writeback is the target. Nothing above should be quoted as final until that is
+settled — the A2 timing in particular is only meaningful under explanation 2.
+
+**Settled, and it is neither — it is worse and more useful than both.** Two
+consecutive probes, both zeroed first, both launched with `run()`'s exact syncs:
+
+```
+poll#1: control_bV_sync=0.003 ms  a2_first=1.538 ms  c2_first=never  waited=20000 ms
+poll#2: control_bV_sync=0.003 ms  a2_first=1.500 ms  c2_first=never  waited=20000 ms
+```
+
+So explanation 1 (pipelined, C2 on the next launch) is **falsified** — the second
+probe is no different from the first. And the shipped kernel on the *same probe
+path* produces both A2 and C2 in under a millisecond. The two kernels therefore
+differ **qualitatively**, not by a constant:
+
+| | first launch (`run()`) | later bare launch |
+|---|---|---|
+| shipped | correct output, ~1 ms | A2 + C2, <1 ms |
+| ours | correct output, ~6 s | A2 at ~1.5 ms, **C2 never** |
+
+Two things follow, and the second is the one that matters:
+
+1. **The QK^T + softmax stages are genuinely fast in our kernel** (~1.5 ms to
+   produce A2, against the shipped kernel's 0.5 ms). That part of the earlier
+   reading survives.
+2. **Our kernel does not re-arm like FLM's.** The shipped kernel produces a complete
+   result on every launch; ours produces A2 on later launches, never C2, and still
+   reports completion. A design that behaves differently on launch #2 than on
+   launch #1 is desynchronised somewhere, and that is now the leading and
+   best-evidenced explanation for the 6 s as well: the first launch is the one that
+   pays the full desync cost.
+
+**Therefore the earlier sentence "the 6 s is after A2" is not safe to build on** —
+it was read from a launch that never finishes its PV phase, so it constrains the
+QK^T/softmax stages and says nothing about the PV's cost. Retracted as a conclusion
+about the whole design; kept only as the statement about the first two stages.
+
+The next action is no longer a timing question. It is: **why does our kernel produce
+a complete result once and then stop producing C2?** The shipped kernel, byte-identical
+instruction stream and all, does not. That is a correctness-shaped question about our
+core's synchronisation, it is answerable from the generator, and it should be settled
+before any further performance work on this kernel — including before the L1 timing
+gate is attempted again.
+
 What the two containers differ in (from `xclbinutil`; topology, connectivity and
 kernel name are structurally identical):
 

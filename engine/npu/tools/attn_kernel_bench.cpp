@@ -87,6 +87,12 @@ int main(int argc, char** argv) {
         std::memset(ctx.SCRm + 32, 0, (size_t)8 * ctx.MAX_SEQ);
         ctx.bC2->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         ctx.bSCR->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // Match run()'s pre-launch syncs exactly: the loose end recorded in the
+        // register was C2 never appearing on a direct launch, and the one place
+        // this launch differed from run()'s is these TO_DEVICE pushes.
+        ctx.bQ->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        ctx.bKT->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        ctx.bV->sync(XCL_BO_SYNC_BO_TO_DEVICE);
         auto r = (*ctx.k)((unsigned)3, *ctx.bInstr, (unsigned)ctx.instr.size(),
                           *ctx.bQ, *ctx.bKT, *ctx.bC2, *ctx.bV, *ctx.bSCR);
         auto t0 = std::chrono::steady_clock::now();
@@ -109,8 +115,39 @@ int main(int argc, char** argv) {
             if (t_a2 >= 0 && t_c2 >= 0) break;
         }
         r.wait();
-        printf("poll: control_bV_sync=%.3f ms  a2_first=%.3f ms  c2_first=%.3f ms  waited=%.3f ms\n",
+        printf("poll#1: control_bV_sync=%.3f ms  a2_first=%.3f ms  c2_first=%.3f ms  waited=%.3f ms\n",
                t_vsync, t_a2, t_c2, el());
+
+        // ── probe #2: says whether a launch advances a PIPELINE (C2 shows up on
+        //    the second go, meaning the first probe saw the previous iteration's
+        //    tail) or whether the C2 writeback is simply broken on a bare launch
+        //    (C2 absent again). Those two readings mean opposite things, so the
+        //    fork is worth 6 s of device time to close. ──
+        std::memset(ctx.C2m, 0, (size_t)8 * ctx.hd * sizeof(int32_t));
+        std::memset(ctx.SCRm + 32, 0, (size_t)8 * ctx.MAX_SEQ);
+        ctx.bC2->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        ctx.bSCR->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        auto r2 = (*ctx.k)((unsigned)3, *ctx.bInstr, (unsigned)ctx.instr.size(),
+                           *ctx.bQ, *ctx.bKT, *ctx.bC2, *ctx.bV, *ctx.bSCR);
+        auto u0 = std::chrono::steady_clock::now();
+        auto el2 = [&] { return std::chrono::duration<double, std::milli>(
+                                std::chrono::steady_clock::now() - u0).count(); };
+        double u_a2 = -1, u_c2 = -1;
+        while (el2() < 20000.0) {
+            ctx.bSCR->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+            ctx.bC2->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+            const double e = el2();
+            if (u_a2 < 0)
+                for (size_t i = 0; i < na2; i++)
+                    if (ctx.SCRm[32 + i]) { u_a2 = e; break; }
+            if (u_c2 < 0)
+                for (size_t i = 0; i < nc2; i++)
+                    if (ctx.C2m[i]) { u_c2 = e; break; }
+            if (u_a2 >= 0 && u_c2 >= 0) break;
+        }
+        r2.wait();
+        printf("poll#2: a2_first=%.3f ms  c2_first=%.3f ms  waited=%.3f ms\n",
+               u_a2, u_c2, el2());
         return 0;
     }
 
