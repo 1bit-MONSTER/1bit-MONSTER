@@ -170,6 +170,14 @@ def _readme_cov(m, covered, with_arch):
             " text-generation checkpoints on the hub (" + _pct(covered, with_arch) + ")")
 
 
+def _arch_to_tokens(m, arch, tokens):
+    """Prose pair with a prefix: "all 1,946 of them -- normalizes down to one of
+    566 architecture tokens" (groups: prefix, arch, sep, tokens, suffix)."""
+    g = m.groups()
+    return (g[0] + (g[1] if g[1] == arch else arch) + g[2] +
+            (g[3] if g[3] == tokens else tokens) + g[4])
+
+
 def _pct_claim(m, covered, with_arch, suffix_groups):
     """Percentage claims only move when coverage actually drops below 100%.
 
@@ -253,6 +261,22 @@ def _build_patterns(tokens, arch, covered, with_arch):
         (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( text-generation checkpoints on the hub \()"
                     r"(\d+(?:\.\d+)?)(%\))"),
          lambda m: _readme_cov(m, covered, with_arch)),
+        # Census facts written as prose in blog/post bodies (#2394):
+        # site/1bit-post-1775-models.html calls its own numbers "live" while three
+        # of its sentences used the pre-2,044 values -- one of them stating both
+        # ("resolve to 569 tokens, and 566 tokens resolve to one engine").
+        # \u2014 is the em dash used in those sentences.
+        (re.compile(r"(Every architecture token on HuggingFace \u2014 )(\d[\d,]*)"
+                    r"( of them \u2014 resolves to one binary)"),
+         lambda m: _num_between(m, t)),
+        (re.compile(r"(all )(\d[\d,]*)( of them \u2014 normalizes down to one of )"
+                    r"(\d[\d,]*)( architecture tokens)"),
+         lambda m: _arch_to_tokens(m, a, t)),
+        # Tail only: the head of that sentence already matches the _meta_pair
+        # pattern above, and a whole-sentence pattern would fight it over the
+        # match.
+        (re.compile(r"(, and )(\d[\d,]*)( tokens resolve to one engine)"),
+         lambda m: _num_between(m, t)),
         (re.compile(r"(<span class=\"n\">)(\d+(?:\.\d+)?)(</span><span class=\"l\">checkpoints mapped</span>)"),
          lambda m: _pct_claim(m, covered, with_arch, 3)),
         # bare prose forms (no fraction): "321,611 checkpoints mapped",
@@ -315,7 +339,12 @@ def _build_patterns(tokens, arch, covered, with_arch):
             ("566 architecture tokens mapping 1,946 HuggingFace arch strings",
              f"{t} architecture tokens"),
             ("321,611 / 321,611 text-generation checkpoints on the hub (100%)",
-             f"{c} / {w}")):
+             f"{c} / {w}"),
+            ("Every architecture token on HuggingFace \u2014 566 of them \u2014 resolves to one binary",
+             f"{t} of them"),
+            ("all 1,946 of them \u2014 normalizes down to one of 566 architecture tokens",
+             f"{a} of them"),
+            (", and 566 tokens resolve to one engine", f", and {t} tokens")):
         got = claim
         for pat, repl in pats:
             got = pat.sub(repl, got)
