@@ -25,7 +25,12 @@ int main(int argc, char** argv) {
     if (argc < 4) { fprintf(stderr, "usage: %s XCLBIN INSTS SEQ [ITERS]\n", argv[0]); return 2; }
     const int seq   = atoi(argv[3]);
     const int iters = argc > 4 ? atoi(argv[4]) : 20;
-    const int NQ = 8, NKV = 2, HD = 128, GQA = NQ / NKV;
+    // Shapes from the environment so one binary can exercise every kernel the
+    // generator can build (the ground truth below is shape-agnostic).
+    const int NQ  = getenv("CK_NQ")  ? atoi(getenv("CK_NQ"))  : 8;
+    const int NKV = getenv("CK_NKV") ? atoi(getenv("CK_NKV")) : 2;
+    const int HD  = getenv("CK_HD")  ? atoi(getenv("CK_HD"))  : 128;
+    const int GQA = NQ / NKV;
     const int qd = NQ * HD, kd = NKV * HD;
 
     std::mt19937 rng(1234);

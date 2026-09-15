@@ -47,18 +47,33 @@ prefix. This is the same failure class the correctness-lane goal lists as a bind
 rule ("assert the extraction belongs to the run you think it does") — a stale or
 shared output path is the cheapest way to manufacture a false result.
 
-## Paired host-side changes (NOT made here — engine untouched)
+## Host side (`AttnCtx` + the bench) — made here, compile-verified
 
-The generator's `runtime_sequence` signature changed for H > cols, so the engine
-side must move with it before any of this can be measured:
+`src/npu_attn_ctx.h` now checks shapes against the kernel's *structure* instead of
+pinning them to the one built configuration:
 
-1. q BO: `max(16, PARAM_ROW + 1) * K_FRAME` bytes, i.e. all H head rows plus the
-   params row (params move to row `H` when `H > 15`).
-2. C2 BO: `n_heads * M * K` int32 instead of `n_aie_cols * M * K`.
-3. Feed `n_hpass` passes per attention call, and the KV head for global head h is
-   `h / gqa`, not `h / 4`.
-4. Both live in the `Bf16Mm` attention path (`npu_engine_bf16_mm.h`) and its
-   caller, not in the generator.
+| was | now |
+|---|---|
+| `if (nq != 8 \|\| nkv != 2 \|\| hd != 128) unsupported` | `nq % cols == 0` (one column = one head), `nkv` divides `cols`, `hd` a multiple of 128 and `<= K_FRAME` |
+| `cols` implicit (8) | `cols` from `NPU_ATTN_COLS`, and `scrsz` scales with `cols` (the A2 scratch is per column, reused per pass) |
+| params hard-wired to row 15 | `PARAM_ROW = 15` for `nq <= 15`, else row `nq`; `qsz = max(16, PARAM_ROW+1) * K_FRAME` |
+| C2 `nq*8*hd` | unchanged — it already matches the generator's `n_heads*M*K` |
+
+For the shipped shapes (`nq=8, nkv=2, hd=128, cols=8`) every one of these
+collapses to the previous value, so the existing lane is behaviourally identical.
+`AttnCtx` is included only by `zaya_decode.cpp` and the bench, **not** by the
+dense `Bf16Mm` path.
+
+`tools/attn_kernel_bench.cpp` takes `CK_NQ` / `CK_NKV` / `CK_HD` from the
+environment (its ground truth was already shape-agnostic), and the whole thing
+compiles: `g++ -std=c++17 -O2 -mavx2 -I src -I generators -o /tmp/ck2
+tools/attn_kernel_bench.cpp -lxrt_coreutil -lxrt_core -laiebu -luuid -ldl`.
+
+**Still open, and now the only engine-side gap:** the dense path that the family
+measurements go through (`Bf16Mm` in `npu_engine_bf16_mm.h`, whose attention
+selection is the thing the L1 lane patched for nh20/nh24) must pass the real
+`nq`/`nkv`/`hd`/`cols` and size its q and C2 BOs the same way before a family can
+be driven end to end.
 
 ## Open (device, in this order)
 
