@@ -87,6 +87,34 @@ static xrt::bo* bo_from_addr(const void* addr) {
     return it == g_bo_owner.end() ? nullptr : &it->second;
 }
 
+// ---------------------------------------------------------------------------
+// The run-keyed path owns its BOs DIRECTLY, keyed by the very (run, arg) slots
+// g_run_bo_ptrs already uses — this is the path the kernel-identification work
+// actually reads (the preinsts / arg3 / postrun dumps).
+//
+// The address registry above removes the crash but still resolves BY ADDRESS,
+// and on this path that is not enough: the runtime allocates fresh BOs per call
+// (the capture log shows a4 and a7 changing on every runlist), so a freed 1 MiB
+// slot is handed straight back for the next 1 MiB BO. An address recorded for an
+// older run key — and execute() walks EVERY run key, not just the current one —
+// can therefore resolve to a NEWER BO and dump the wrong buffer under the old
+// run's name. That is a silent wrong capture, which is the failure mode this
+// lane has already been burned by, so it is worth more than the crash fix.
+//
+// Owning the copy in the (run, arg) slot cannot alias: the slot holds exactly the
+// BO currently bound to that run and argument, and a stale different run key
+// keeps its own pinned copy.
+// ---------------------------------------------------------------------------
+static std::map<unsigned long, std::map<int, xrt::bo>> g_run_bos;
+
+// Owning BO for one (run, arg) slot, or nullptr if that slot was never bound.
+static xrt::bo* run_bo(unsigned long runkey, int arg) {
+    auto it = g_run_bos.find(runkey);
+    if (it == g_run_bos.end()) return nullptr;
+    auto a = it->second.find(arg);
+    return a == it->second.end() ? nullptr : &a->second;
+}
+
 static void ensure_log() {
     if (!g_log) {
         mkdir(CAP_DIR, 0755);
@@ -178,9 +206,12 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, co
     try {
         // The caller's object is alive for the duration of this call, but NOT
         // necessarily until runlist::execute() reads the address back out of
-        // g_run_bo_ptrs. Own it now; deref through the copy from here on.
-        own_bo(bo);
+        // g_run_bo_ptrs. The (run, arg) slot below owns a copy from here on and
+        // every later dereference on this path goes through run_bo(), so this
+        // path does not touch the address registry at all — which also stops
+        // g_bo_owner accumulating one owner per BO FLM ever binds.
         const xrt::bo* b = reinterpret_cast<const xrt::bo*>(bo);
+        g_run_bos[(unsigned long)self][idx] = *b;   // exact owner for this (run, arg)
         g_run_args[(unsigned long)self].push_back({idx, b->size()});
         g_run_bo_ptrs[(unsigned long)self][idx] = bo;
         ensure_log();
@@ -232,7 +263,7 @@ extern "C" void _ZN3xrt3run5startEv(void* self) {
             auto a7 = it->second.find(7);
             if (a7 != it->second.end()) {
                 try {
-                    xrt::bo* bo = bo_from_addr(a7->second);
+                    xrt::bo* bo = run_bo((unsigned long)self, 7);
                     const uint8_t* p = bo ? (const uint8_t*)bo->map() : nullptr;
                     if (p) {
                         char fname[256];
@@ -252,7 +283,7 @@ extern "C" void _ZN3xrt3run5startEv(void* self) {
             auto a3 = it->second.find(3);
             if (a3 != it->second.end()) {
                 try {
-                    xrt::bo* bo = bo_from_addr(a3->second);
+                    xrt::bo* bo = run_bo((unsigned long)self, 3);
                     const uint8_t* p = bo ? (const uint8_t*)bo->map() : nullptr;
                     if (p) {
                         char fname[256];
@@ -292,8 +323,8 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
                 const void* bop = ab.second;
                 if (bop == nullptr) continue;
                 try {
-                    xrt::bo* bo = bo_from_addr(bop);
-                    if (!bo) continue;   // never seen alive: skip instead of dereferencing a dead address
+                    xrt::bo* bo = run_bo(runkey, aidx);   // owned by the (run, arg) slot — cannot alias
+                    if (!bo) continue;   // slot never bound: skip instead of dereferencing a dead address
                     size_t bosz = bo->size();
                     if (bosz > 3000000) {           // weight/kv BOs: dump once if CAP_DUMP_BIG
                         if (!getenv("CAP_DUMP_BIG")) continue;
@@ -410,21 +441,32 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
 
 // ===== runlist::add hook — capture the EXACT per-forward run order =====
 static long g_add_n = 0;
-static const void* g_act_bo = nullptr;   // last-seen arg idx=3 (act) BO
+// Owning pointers into g_run_bos nodes (std::map nodes are stable), so the wait
+// hook holds the BO itself rather than an address that may have been reused.
+// The original address is kept alongside purely for filenames and log lines.
+static xrt::bo* g_act_bo = nullptr;         // last-seen arg idx=3 (act) BO
+static const void* g_act_bo_addr = nullptr;
 static void record_act_bo(const void* run) {
+    xrt::bo* b = run_bo((unsigned long)run, 3);
+    if (!b) return;
+    g_act_bo = b;
     auto it = g_run_bo_ptrs.find((unsigned long)run);
     if (it != g_run_bo_ptrs.end()) {
         auto a3 = it->second.find(3);
-        if (a3 != it->second.end()) g_act_bo = a3->second;
+        if (a3 != it->second.end()) g_act_bo_addr = a3->second;
     }
 }
 
-static const void* g_kv_bo = nullptr;   // last-seen arg idx=7 (kv) BO
+static xrt::bo* g_kv_bo = nullptr;          // last-seen arg idx=7 (kv) BO
+static const void* g_kv_bo_addr = nullptr;
 static void record_kv_bo(const void* run) {
+    xrt::bo* b = run_bo((unsigned long)run, 7);
+    if (!b) return;
+    g_kv_bo = b;
     auto it = g_run_bo_ptrs.find((unsigned long)run);
     if (it != g_run_bo_ptrs.end()) {
         auto a7 = it->second.find(7);
-        if (a7 != it->second.end()) g_kv_bo = a7->second;
+        if (a7 != it->second.end()) g_kv_bo_addr = a7->second;
     }
 }
 typedef void (*rl_add_fn)(void*, const void*);
@@ -469,29 +511,29 @@ extern "C" void _ZNK3xrt7runlist4waitERKNSt6chrono8durationIlSt5ratioILl1ELl1000
     fprintf(g_log, "RUNLIST wait done\n");
     if (g_act_bo && !getenv("CAP_NO_SYNC")) {
         try {
-            xrt::bo* bo = bo_from_addr(g_act_bo);
-            size_t bosz = bo ? bo->size() : 0;
-            const uint8_t* p = bo ? (const uint8_t*)bo->map() : nullptr;
+            xrt::bo* bo = g_act_bo;
+            size_t bosz = bo->size();
+            const uint8_t* p = (const uint8_t*)bo->map();
             if (p) {
                 char fname[256];
-                snprintf(fname, sizeof(fname), "%s/actpost_%03ld_%zx_%zu.bin", CAP_DIR, g_runlist_n, (size_t)g_act_bo, bosz);
+                snprintf(fname, sizeof(fname), "%s/actpost_%03ld_%zx_%zu.bin", CAP_DIR, g_runlist_n, (size_t)g_act_bo_addr, bosz);
                 FILE* f = fopen(fname, "wb");
                 if (f) { fwrite(p, 1, bosz, f); fclose(f); }
-                fprintf(g_log, "ACTPOST runlist=%ld act=%p size=%zu -> %s\n", g_runlist_n, g_act_bo, bosz, fname);
+                fprintf(g_log, "ACTPOST runlist=%ld act=%p size=%zu -> %s\n", g_runlist_n, g_act_bo_addr, bosz, fname);
             }
         } catch (...) {}
     }
     if (g_kv_bo && !getenv("CAP_NO_SYNC")) {
         try {
-            xrt::bo* bo = bo_from_addr(g_kv_bo);
-            size_t bosz = bo ? bo->size() : 0;
-            const uint8_t* p = bo ? (const uint8_t*)bo->map() : nullptr;
+            xrt::bo* bo = g_kv_bo;
+            size_t bosz = bo->size();
+            const uint8_t* p = (const uint8_t*)bo->map();
             if (p) {
                 char fname[256];
-                snprintf(fname, sizeof(fname), "%s/kvpost_%03ld_%zx_%zu.bin", CAP_DIR, g_runlist_n, (size_t)g_kv_bo, bosz);
+                snprintf(fname, sizeof(fname), "%s/kvpost_%03ld_%zx_%zu.bin", CAP_DIR, g_runlist_n, (size_t)g_kv_bo_addr, bosz);
                 FILE* f = fopen(fname, "wb");
                 if (f) { fwrite(p, 1, bosz, f); fclose(f); }
-                fprintf(g_log, "KVPOST runlist=%ld kv=%p size=%zu -> %s\n", g_runlist_n, g_kv_bo, bosz, fname);
+                fprintf(g_log, "KVPOST runlist=%ld kv=%p size=%zu -> %s\n", g_runlist_n, g_kv_bo_addr, bosz, fname);
             }
         } catch (...) {}
     }
