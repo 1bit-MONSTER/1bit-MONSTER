@@ -190,6 +190,11 @@ int main(int argc, char** argv) {
     fprintf(stderr, "Pipeline: %d layers, H=%d, NH=%d, NKV=%d, HD=%d, IM=%d\n",
             NC, H, NH, NKV, HD, IM);
     
+    // Stage-launch counters. "Overlap" is only meaningful if both engines run
+    // for every layer, so the harness now reports what actually ran instead of
+    // assuming it. PipelineOverlap::run() launches the NPU once (layer-0 boot).
+    int gpu_calls = 0, npu_calls = 0;
+
     // ── GPU attention callback (REAL HIP kernel) ──
     // Uses rcpp_kv_cache_attn_decode for Flash-Decoding-style attention.
     // K/V cache lives on GPU, updated each layer. Q comes from shared buffer.
@@ -226,6 +231,7 @@ int main(int argc, char** argv) {
             d_K[off] = __float2half(h_f32[kvh * HD + d] * 0.1f);
             d_V[off] = __float2half(h_f32[kvh * HD + d] * 0.1f);
         }
+        gpu_calls++;
         fprintf(stderr,"G"); fflush(stderr);
     };
     
@@ -244,6 +250,7 @@ int main(int argc, char** argv) {
         }
         float as_d = dyn_scale(gu.data(), IM);
         cd.go(gu.data(), 1, IM, as_d, ds, out, H);
+        npu_calls++;
         fprintf(stderr,"N"); fflush(stderr);
     };
     
@@ -253,15 +260,42 @@ int main(int argc, char** argv) {
     auto m = pl.run(gpu_attn, npu_ffn);
     auto ms = std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-t0).count();
     
-    double seq = NC * 2.0; // GPU ~2ms simulated
+    // overlap_efficiency is a FRACTION of total_ms (see pipeline_overlap.h), so
+    // the pipelined-loop portion of the pass is fraction * total; the remainder
+    // is the layer-0 boot, which for this harness is one-time NPU init.
+    double loop_ms = m.overlap_efficiency * m.total_ms;
+    double boot_ms = m.total_ms - loop_ms;
+
     fprintf(stderr, "\n\n=== Results ===\n");
-    fprintf(stderr, "Total:       %.2f ms (%.2f ms/layer)\n", m.total_ms, m.total_ms/NC);
-    fprintf(stderr, "Wall clock:  %.2f ms\n", ms);
-    fprintf(stderr, "Sequential:  ~%.0f ms\n", seq);
-    fprintf(stderr, "Overlap eff: %.1f%%\n\n", m.overlap_efficiency/m.total_ms/10.0f);
+    fprintf(stderr, "Total:        %.2f ms (%.2f ms/layer)\n", m.total_ms, m.total_ms/NC);
+    fprintf(stderr, "Wall clock:   %.2f ms\n", ms);
+    fprintf(stderr, "  layer-0 boot (one-time init): %.2f ms\n", boot_ms);
+    fprintf(stderr, "  pipelined loop:               %.2f ms\n", loop_ms);
+    fprintf(stderr, "Overlap share of wall clock: %.2f%%\n", m.overlap_efficiency * 100.0);
+    fprintf(stderr, "Stage launches: GPU attn x%d, NPU FFN x%d (of %d layers each)\n\n",
+            gpu_calls, npu_calls, NC);
     
-    if (ms < seq) fprintf(stderr, "✅ REAL GPU+NPU OVERLAP — attention on GPU, FFN on NPU\n");
-    else fprintf(stderr, "⚠️  Sequential — tune work sizes for overlap\n");
+    // Verdict driven by what actually ran, not by a hardcoded baseline. The
+    // previous version compared the wall clock against `NC * 2.0` ("GPU ~2ms
+    // simulated") -- a stub that no real run can beat, which made its success
+    // branch unreachable and printed the tune-work-sizes warning every run.
+    if (npu_calls < NC) {
+        fprintf(stderr, "⚠️  NO OVERLAP MEASURED — NPU FFN ran %d time(s) for %d layers.\n",
+                npu_calls, NC);
+        fprintf(stderr, "    PipelineOverlap::run() launches the NPU only in the layer-0 boot;\n");
+        fprintf(stderr, "    the pipelined loop never calls npu_ffn_fn, so the two engines cannot\n");
+        fprintf(stderr, "    run concurrently. Both callbacks are also synchronous\n");
+        fprintf(stderr, "    (hipStreamSynchronize in gpu_attn, r.wait() in NpuGemmKernel::go),\n");
+        fprintf(stderr, "    so real overlap additionally needs an async NPU path.\n");
+        fprintf(stderr, "    These are measurements, not a PASS verdict: this test does not\n");
+        fprintf(stderr, "    currently exercise GPU/NPU overlap.\n");
+    } else if (boot_ms > 0.5 * m.total_ms) {
+        fprintf(stderr, "⚠️  INCONCLUSIVE — %.0f%% of wall clock is one-time layer-0 boot;\n",
+                100.0 * boot_ms / m.total_ms);
+        fprintf(stderr, "    steady-state overlap is not separable at this granularity.\n");
+    } else {
+        fprintf(stderr, "✅ Both engines ran every layer — see the overlap share above.\n");
+    }
     
     // Cleanup — hipHostFree, matching the hipHostMalloc allocations above.
     auto hip_host_free = [](void* p) { if (p) { hipError_t e = hipHostFree(p); if (e != hipSuccess) fprintf(stderr, "hipHostFree: %s\n", hipGetErrorString(e)); } };
