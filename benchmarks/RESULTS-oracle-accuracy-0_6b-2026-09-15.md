@@ -1630,3 +1630,54 @@ what it is and is not:
 
 The `|i|m_end|` derailment is a real, reproducible defect in a path that could not previously run,
 and it is now the most specific open item in the whole goal.
+
+## WITHDRAWING "the prefills differ on special-token handling" — a one-sample conclusion, refuted
+
+The previous section concluded from a single prompt (`3 + 4 =`) that the two prefills differ in
+special-token handling, with the bf16 prefill derailed by the `im_end` marker. That was one sample,
+and the obvious follow-up test — more marker-prone prompts on both prefills — refutes it:
+
+```
+prompt          int8-prefill   bf16-prefill
+5 + 5 =   (10)      OK             OK
+7 times 2 = (14)    OK             OK
+10 - 3 =  (7)       OK             OK
+6 + 1 =   (7)       OK             OK
+                    4/4            4/4     (8/8 overall)
+```
+
+**The bf16 prefill is not systematically derailed by markers** — it answers all four of these
+correctly, including arithmetic with the identical templated prompt that contains the same
+`<|im_end|>` structure. So the claim is **withdrawn**: the `3 + 4 =` derailment is a prompt-specific
+event, not a systematic special-token defect, and with n=1 out of 20 the 19/20-vs-20/20 difference is
+**not** evidence of a systematic deficit in the bf16 pipeline.
+
+This is the ninth corrected claim in this goal, and the sequence is worth stating plainly as the
+lesson: **every time I have drawn a mechanism conclusion from one or two samples it has needed
+withdrawing, and every time the correction came from running the cheap follow-up test I could have
+run first.** The claims that have survived are the ones with a sample or a control behind them — the
+20-prompt scores, the 4-prompt arithmetic set above, the code checks (readback wired, embedding table
+non-zero), and the two real defects (int8 degeneration on 6/20; the marker derailment on exactly one
+prompt).
+
+### Corrected standing of the revived bf16 pipeline
+
+- It runs (it could not before), answers **19/20** on the easy set and **4/4** on an extra arithmetic
+  set, at 48 tok/s.
+- The single miss is a real but isolated prompt-specific derailment; it is recorded as an observation,
+  not as a defect class.
+- It is therefore **not** better than the int8-prefill runlist path (20/20) on the evidence available,
+  and it is not demonstrably worse either — one prompt apart on a 20-prompt set, which this goal has
+  repeatedly shown is not a sound basis for a directional claim.
+
+### Concrete state of the whole goal after the repair work
+
+| item | state |
+|---|---|
+| repair route (make dense arm bf16) | **explored and closed** — there is no bf16 dense-decode path; the engine has exactly two pipelines (bf16 prefill+runlist decode, int8 prefill+dense GEMMs) |
+| dead bf16 prefill for 0.6B | **fixed** — four xclbins built; path runs and answers correctly |
+| bf16 pipeline accuracy | 19/20 easy, 4/4 arithmetic, 48 tok/s |
+| int8-prefill runlist accuracy | 20/20 easy, 13/15 hard, 93 tok/s, no regression |
+| dense int8 accuracy | 14/20, misses characterised as degeneration/confusion |
+| FLM oracle | 18-19/20 easy, ~14/15 hard, nondeterministic |
+| criterion 2 (corr >= 0.998 + token parity) | **structurally unsatisfiable** while the two pipelines differ in precision by design |
