@@ -391,3 +391,30 @@ This also gives the `attn_kv_region` comment's own warning teeth: the table keys
 unless it is overridden — which is why `NPU_ATTN_KV_REGION` exists. For a generated
 ELF the stride should be derived from the ELF's own `-N` (its MAX_SEQ) rather than
 from the model's H, because that is the only thing the kernel actually baked in.
+
+### Artifact pre-flight: the assembled ELF carries the design exactly
+
+Cheap, offline, and it removes one whole class of doubt before the device window.
+Count the design's `aie.dma_bd` ops in the generated MLIR, then count the control
+code's `XAIE_IO_WRITE`s in the assembled ELF with `aiebu-dump -m aie2ps -p`:
+
+| shape | design `aie.dma_bd` | ELF `XAIE_IO_WRITE` | verdict |
+|---|---:|---:|---|
+| nh20 hd128 cols4 N=1024 | 1380 | 1380 | MATCH (6900 ops) |
+| nh20 hd128 cols4 N=2048 | 2740 | 2740 | MATCH (13700 ops) |
+| nh20 hd128 cols4 N=4096 | 5460 | 5460 | MATCH (27300 ops) |
+| nh24 hd128 cols8 N=4096 | 6552 | 6552 | MATCH (32760 ops) |
+
+Two things this establishes. **The ELF is a faithful carrier** — nothing dropped,
+nothing duplicated, and it holds for the 4096 builds that used to overflow, so the
+real group loop fixed the build without mangling the stream. And the stream's size
+is exactly `NH x N` in transactions: `.ctrltext` grows 226336 -> 449376 -> 895456 B
+for nh20 across 1024/2048/4096 (x1.985, x1.993 per doubling) and nh24/nh20 = 24/20
+= 1.20, which is the 1.20 observed — i.e. the head-block passes and columns
+multiply the way the design says they do, rather than one of them being silently
+applied twice.
+
+It does **not** say the design is correct: a wrong offset, a mismatched KV layout or
+a FIFO desync all survive this check untouched. It says the artifact is worth
+spending device time on. `aiebu-dump` lives at `/usr/local/bin/aiebu-dump` (not in
+the Vitis trees, which is where I looked first) and takes `-m aie2ps`, not `-t`.
