@@ -755,3 +755,44 @@ downstream of an `init` that dies on its first file.
 `build_bf16_xclbins.sh` is the template, and the engine's `npu_bf16_*` entry points
 name what they must contain — then re-run; the attention ELF question becomes live
 only after those two load.
+
+### CORRECTION: the xclbins are not missing — the bf16 prefill block never runs
+
+The previous section blamed missing `mm.xclbin`/`dequant.xclbin`. That is **wrong**,
+and the code says why.
+
+`npu_engine_universal.cpp:4444-4459` resolves the xclbin dir the `Bf16Mm` path uses:
+
+```cpp
+const std::string xd = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + base;
+if (isdir(xd)) fxd_own = xd;                       // base = model dir basename
+...
+if (H == 2560) { fmd_def = ".../Qwen3-4B-NPU2"; fxd_def = ".../xclbins/Qwen3-4B-NPU2"; }
+const std::string fxd_use = fxd_own.empty() ? fxd_def : fxd_own;
+fprintf(stderr, "bf16 prefill: model=%s xclbins=%s\n", fmd, fxd);
+```
+
+So it is **not** `engine/npu/xclbins/` — and
+`/home/bcloud/amd-oss/fastflowlm/src/xclbins/Nanbeige4.1-3B-NPU2/` **already
+contains** `mm.xclbin` (512220), `dequant.xclbin` (114060), `attn.xclbin` and
+`layer.xclbin`. Nothing is missing there. (Copying them into
+`engine/npu/xclbins/`, as I first did, was the wrong directory and changed
+nothing — those copies should not be kept.)
+
+The decisive observation is what does **not** print. A run shows only:
+
+```
+=== BF16 mode (n1_core_placed.py) ===
+Bf16Ctx::init xp=…/final_bf16_QKV_K2560_N3584.xclbin …   (then O, G, U, D)
+```
+
+and **never** the `bf16 prefill: model=… xclbins=…` line that sits at line 4460,
+immediately before `bf16mm_init`. So the whole block from ~4436 to 4493 is never
+entered: `bf16mm_init` is not called, `Bf16Mm::init` never runs, no attention ELF
+is ever loaded, and control reaches the generic `[fallback]` prefill. Every
+projection `Bf16Ctx` init above it belongs to a different object and proves
+nothing about this block.
+
+So the lever is the **entry gate of the bf16-prefill block** (around line 4380),
+not the xclbins, not the attention ELFs, and not `bf16_done`. That is where the
+next probe goes.
