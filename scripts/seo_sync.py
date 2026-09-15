@@ -217,7 +217,20 @@ def _build_patterns(tokens, arch, covered, with_arch):
         # with the narrow pattern the regex would match only the trailing "99.97" and
         # leave the garbage in front of a corrected value. Greedy, but digits and dots
         # cannot run past the '%' into markup.
-        (re.compile(r"([0-9][0-9.]*)%( HuggingFace coverage)"),
+        #
+        # The qualifier is OPTIONAL because the same claim is written three ways in
+        # the tree, and the front page used the one this single pattern could not
+        # see: "100% HuggingFace architecture coverage" sat at 100% while the census
+        # read 99.96% (#2389). A wording this machinery cannot match is not a
+        # cosmetic miss -- it is a published false claim.
+        (re.compile(r"([0-9][0-9.]*)%( HuggingFace(?: architecture)? coverage)"),
+         lambda m: _pct_claim(m, covered, with_arch, 2)),
+        # site/index.html:460 and site/1bit-post-npu-reversal.html state the same
+        # checkpoint ratio as "...of HuggingFace's arch-bearing checkpoints".
+        (re.compile(r"([0-9][0-9.]*)%( of HuggingFace's arch-bearing checkpoints)"),
+         lambda m: _pct_claim(m, covered, with_arch, 2)),
+        # monster-v2 census line: "100% coverage / 6 hardware targets probed / ..."
+        (re.compile(r"([0-9][0-9.]*)%( coverage /)"),
          lambda m: _pct_claim(m, covered, with_arch, 2)),
         (re.compile(r"(<span class=\"n\">)(\d+(?:\.\d+)?)(</span><span class=\"l\">checkpoints mapped</span>)"),
          lambda m: _pct_claim(m, covered, with_arch, 3)),
@@ -267,6 +280,23 @@ def _build_patterns(tokens, arch, covered, with_arch):
         raise SystemExit(
             f"[seo_sync] fraction rewrite is wrong: {probe!r} -> {got!r}, "
             f"expected {want!r} -- a bare-count pattern is eating the denominator")
+    # Same standard for the percentage claims, and run on the REAL strings: the
+    # failure that motivated this was a wording the pattern did not know, so the
+    # check has to be the wordings the site actually uses, not a synthetic one.
+    if covered < with_arch:
+        want_pct = _pct(covered, with_arch)
+        for claim in ("100% HuggingFace coverage",
+                      "100% HuggingFace architecture coverage",
+                      "100% of HuggingFace's arch-bearing checkpoints",
+                      "100% coverage / 6 hardware targets probed"):
+            got = claim
+            for pat, repl in pats:
+                got = pat.sub(repl, got)
+            if got.startswith("100"):
+                raise SystemExit(
+                    f"[seo_sync] percentage claim is not rewritten: {claim!r} -> "
+                    f"{got!r}, expected {want_pct!r} -- a wording the patterns "
+                    f"cannot see keeps publishing 100% on the site")
     return pats
 
 
