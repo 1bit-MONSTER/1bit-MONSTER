@@ -1,0 +1,15 @@
+What is the capital of Australia?|canberra
+What is the capital of Canada?|ottawa
+What is the capital of Switzerland?|bern
+How many sides does a hexagon have?|6
+What is 12 times 12?|144
+What is 100 minus 37?|63
+What is the largest ocean on Earth?|pacific
+What is the smallest prime number?|2
+Who wrote Romeo and Juliet?|shakespeare
+What planet is known as the Red Planet?|mars
+What is the chemical symbol for water?|h2o
+How many continents are there on Earth?|7
+What language is spoken in Brazil?|portuguese
+What is the longest river in the world?|nile
+How many degrees are in a right angle?|90

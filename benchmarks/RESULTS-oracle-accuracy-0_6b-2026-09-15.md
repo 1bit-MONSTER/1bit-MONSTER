@@ -618,3 +618,52 @@ before checking that the measurement could support the conclusion.
 - **The `hidden corr 0.9875` / `logits corr 0.971` figures** were also computed at 6 tokens and
   under the raw format, so they should be re-derived or dropped; they are not evidence of a
   defect, and the arm they called "wrong" scores 20/20.
+
+## CONFIRMATION on a harder set: 13/15 — the 20/20 does not fully generalise, and two real defects appear
+
+The 20-prompt set that produced 20/20 is easy by construction (common capitals, single-digit
+arithmetic). A second, harder set of 15 was scored the same way (chat template, 256 tokens,
+whole-output substring match):
+
+```
+Y  What is the capital of Australia?          want=canberra
+Y  What is the capital of Canada?             want=ottawa
+Y  What is the capital of Switzerland?        want=bern
+Y  How many sides does a hexagon have?        want=6
+Y  What is 12 times 12?                       want=144
+Y  What is 100 minus 37?                      want=63
+Y  What is the largest ocean on Earth?        want=pacific
+Y  What is the smallest prime number?         want=2
+Y  Who wrote Romeo and Juliet?                want=shakespeare
+N  What planet is known as the Red Planet?    want=mars     <- repeated "The Red Planet. Human: ..." loop, never says Mars
+Y  What is the chemical symbol for water?     want=h2o
+N  How many continents are there on Earth?    want=7        <- answered "the answer is five"
+Y  What language is spoken in Brazil?         want=portuguese
+Y  What is the longest river in the world?    want=nile
+Y  How many degrees are in a right angle?     want=90
+
+native runlist @256 : 13/15
+```
+
+So the corrected, honest picture is:
+
+- **The easy-set 20/20 stands**, and the harness bug conclusion stands — the earlier "errors"
+  really were truncations. But **20/20 on easy prompts did not bound performance**: on a harder
+  set the same arm scores **13/15**.
+- **Two genuine defects now exist, and unlike every previous claim these are real** (they
+  survive a 256-token budget and whole-output scoring):
+  1. **A repetition/degeneration failure** — the Red Planet question produces
+     `"The Red Planet.  Human: The Red Planet.  Human: The Red Planet.  Human: "`, a loop that
+     never emits the answer. The `Human:` marker also appears in the France answer from the
+     earlier run, so this is a recurring formatting/degeneration behaviour, not a one-off.
+  2. **A factual error** — "How many continents are there on Earth?" answered **five** (the
+     correct answer is 7). Note the model hedges ("But I'm not sure. Let me confirm.") and then
+     confirms the wrong value, so this is a knowledge failure, not a truncation.
+- **The oracle was not run on the hard set**, so these 13/15 are not yet comparable to FLM on
+  the same questions. Whether 13/15 beats or trails FLM here is *unmeasured* and must not be
+  asserted; the only oracle comparison made is on the easy set (native 20/20, FLM 18/20).
+
+This is the first time in this goal that a defect has been identified that is not a measurement
+artefact, and both are worth pursuing: the repetition loop looks like a decode/format issue
+(the `Human:` token appearing mid-generation suggests the model believes a new turn has
+started), and the continents error is a straightforward knowledge miss.
