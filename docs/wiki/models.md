@@ -73,7 +73,12 @@ every page walked) counts **410,618 text-gen checkpoints**, 324,863 with an
 `architectures` field (85,755 have none). After excluding ~4,730 out-of-scope
 encoder-decoders, **324,712 / 324,863 arch-bearing text-gen checkpoints
 (99.95%) map to an engine token** (class-name + model_type two-step dispatch);
-the 32 manifest families (29 validated) gate the bulk of it. Per-class counts
+the 32 manifest families (29 `status: validated` in
+`Testing/models_manifest.json`) gate the bulk of it. Three other counts are
+often mistaken for this one: 16 of the manifest entries are `tier: full`; the
+16 pages under `docs/model-families/` are a *brand-level* grouping that shares
+only 6 names with the manifest; and the site's validated-families table lists
+13 rows. Per-class counts
 are now exact, not sampled: deepseek v2/v3 ~780 (V4 ~513), qwen3.5 ~4,300
 (loadable via the QWEN35 token, unvalidated), kimi ~84, mamba ~220, whisper
 ~20. **NO-MORE-SECRETS caveat:** "the engine loads them" means the arch
