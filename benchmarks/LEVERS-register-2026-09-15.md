@@ -212,10 +212,42 @@ established, and the follow-up measurements point away from it**:
 | | 512 | 6047 |
 
 The cost is **independent of the workload** — 1 key or 512 keys, the same time to
-the millisecond. Arithmetic that is 2000× slower than someone else's does not
-behave that way. This is a **fixed per-launch cost**, so what is wrong is the
-launch / dispatch / partition path, not demonstrated to be the kernel's
-throughput. The stronger claim is retracted.
+the millisecond. This is a **fixed per-launch cost**, so it is not the arithmetic
+scaling with the sequence.
+
+**And it is device-side, not host dispatch** — a split of one launch (the bench
+re-issues the identical call, `AttnCtx`'s members being public):
+
+| | submit | wait |
+|---|---|---|
+| ours, N=512 | 0.487 ms | **6047.2 ms** |
+| shipped, N=512 | 0.014 ms | **0.719 ms** |
+
+Submission is instant in both. The six seconds are spent *waiting for the NPU to
+finish*, so the host path, the XRT call and the instruction stream are all
+exonerated — the device takes 6 s to complete a single invocation.
+
+**But do not read the seq-invariance as "the kernel's work is fine".** That was the
+next over-correction, and it is wrong for a specific reason: the core's per-
+invocation work is fixed by `MAX_SEQ`, **not** by `seq`. The softmax contract loops
+`t` over `max_seq` (= `params[2]` = 512) and merely *masks* `t >= seq`; the mmul
+runs its full tile set either way. So the core does the same work at seq=1 and
+seq=512 — the table above is consistent with a kernel that is simply very slow, and
+does not distinguish it from one that stalls. What the numbers do rule out is any
+explanation involving the *amount of data transferred*, which is what "dispatch
+overhead" would predict.
+
+So the open question is narrowed to: **why does one invocation of our partition
+take 6 s of device time to complete, when the same instruction stream driving FLM's
+partition takes 0.7 ms?** The suspect is the core program's synchronisation against
+the instruction stream — our schedule is FLM's (byte-identical) but our *core code*
+is our own reimplementation (`attn_kernel_reference.cc`), so a FIFO/token contract
+that is satisfied only after a wait/timeout would look exactly like this: correct
+results (the DMAs landed), fixed cost, independent of payload.
+
+Next, concretely: `xclbinutil --dump-section main_aie_partit` on both containers and
+compare the core ELFs; and instrument the core's loop (a cycle counter written to a
+BO) to see whether it is spinning or blocked. Still not kernel *optimisation*.
 
 What the two containers differ in (from `xclbinutil`; topology, connectivity and
 kernel name are structurally identical):

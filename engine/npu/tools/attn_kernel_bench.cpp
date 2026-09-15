@@ -72,6 +72,19 @@ int main(int argc, char** argv) {
            seq, getenv("NPU_ATTN_EMU") ? "EMU " : "NPU ", mx, sref / qd);
 
     if (!getenv("NPU_ATTN_EMU")) {
+        // ── Split a single launch into submit vs wait. AttnCtx's members are
+        //    public, so this re-issues the identical call to see whether the
+        //    fixed cost is in the submission or in the completion wait. ──
+        auto s0 = std::chrono::steady_clock::now();
+        auto r = (*ctx.k)((unsigned)3, *ctx.bInstr, (unsigned)ctx.instr.size(),
+                          *ctx.bQ, *ctx.bKT, *ctx.bC2, *ctx.bV, *ctx.bSCR);
+        auto s1 = std::chrono::steady_clock::now();
+        r.wait();
+        auto s2 = std::chrono::steady_clock::now();
+        printf("split: submit=%.3f ms wait=%.3f ms\n",
+               std::chrono::duration<double, std::milli>(s1 - s0).count(),
+               std::chrono::duration<double, std::milli>(s2 - s1).count());
+
         auto t0 = std::chrono::steady_clock::now();
         for (int it = 0; it < iters; it++) ctx.run(q.data(), k.data(), v.data(), seq, ao.data());
         auto t1 = std::chrono::steady_clock::now();
