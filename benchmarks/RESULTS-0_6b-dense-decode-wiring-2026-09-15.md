@@ -370,3 +370,49 @@ was actually (re)written by the run it belongs to. This is the second time in th
 that a vacuous comparison produced a confident result (the first was the empty-`grep`
 token "parity"), so the rule is now: *assert the extraction/measurement is non-empty and
 fresh before comparing*.
+
+## THE REAL RESULT: the two arms' logits correlate only 0.971, and their argmaxes disagree
+
+With the runlist dump actually in place (retraction section above), and each run's file
+removed first:
+
+```
+dense   dump: 4096 lines (host fp32,    /tmp/native_logits.txt)
+runlist dump: 4096 lines (device bf16,  /tmp/runlist_logits.txt)   <- now really written
+runlist emitted: [1] 8
+
+common logits: 4096
+pearson corr = 0.971089
+dense   argmax: 9   top3: [9, 8, 701]
+runlist argmax: 8   top3: [8, 9, 692]
+max abs diff = 2.594
+```
+
+**This is the substantive finding of the whole investigation: the arm that FLM-parity is
+reported from is correlated with the dense arm at 0.971, not at the objective's
+required 0.998, and its argmax is different (8 vs 9 — the same flip that produced the
+token divergence).** `max abs diff = 2.594` is ~300× a bf16 quantum at that magnitude
+(bf16 near 12.6 resolves ~0.008), so this is *not* explained by bf16 rounding of the
+same underlying values; the two paths are computing materially different logits.
+
+Caveats, stated because the previous claim in this document died of one:
+
+- The dump caps at `n < 4096` of a 151936-token vocab, so this correlation is over the
+  **first 4096 entries only**. It happens to include both candidates (8, 9), but it is
+  not a full-vocab correlation and must not be quoted as one.
+- The comparison is between two *different* lm_head implementations — dense computes
+  logits on the host in fp32 from the hidden state (`lm_topk_omp`), runlist reads the
+  device's bf16 logits (`RuntimeLayerEngine::get_logits`). So this measures the two
+  full paths end to end; it does **not** yet localise whether the difference lives in
+  the hidden state (int8 GEMMs vs bf16 GEMMs) or in the lm_head itself.
+- Which arm is *correct* is still not established — that needs a CPU/float reference,
+  not a comparison between the two arms.
+
+### Next step to localise it
+
+`NPU_DUMP_HIDDEN` exists as a hook. Dumping the hidden state from both arms on the same
+prompt at the same step separates the two possibilities: if the hidden states disagree
+in the same way, the divergence is in the model body (int8 vs bf16 GEMMs); if they
+agree, it is the device bf16 lm_head. That decides where a fix belongs — and it is the
+same class of measurement that just overturned the previous section, so it must remove
+its target file first and assert the dump was actually written by the run it belongs to.
