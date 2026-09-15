@@ -819,3 +819,45 @@ stop being part of the family path entirely.
 
 Nothing about this changes the recommendation to bridge on the host side — it changes
 *where*: a new, verified call path, not an extension of the unreversed one.
+
+### The KV layout, decoded — and a correction to my own earlier claim
+
+Filling it is one loop in `npu_engine_universal.cpp` (`qk_norm_pi`):
+
+```cpp
+int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
+for (int d = 0; d < HD; d++) {
+    bKv[ region       * kv_region + pi * 512 + lh * HD + d] = bf16(ks[d]);   // K
+    bKv[(region + v_add) * kv_region + pi * 512 + lh * HD + d] = bf16(vs[d]); // V
+}
+```
+
+with `v_add = 2`. So:
+
+* each token owns a **512-element slot**, which is **4 heads x 128 dims**;
+* **K** lives in regions 0 (kvh 0..3) and 1 (kvh 4..7); **V** in regions 2 and 3;
+* the iteration is `for kvh < NKV`, so NKV up to 8 is filled correctly.
+
+**Correction:** the earlier audit claimed "the host KV layout is hardcoded to 4 kv
+heads, so Phi4 (nkv8) needs a `bKv` change". That is **wrong**, and the `khv < 4 ? 0 :
+1` line is what refutes it — Phi4's 8 kv heads already have a home (4 in region 0, 4
+in region 1). Withdrawing it here, as the register's own rule requires. The consequence
+for the plan is favourable: no `bKv` work is needed for any of these families.
+
+What the same line does show is the **hd256 blocker**, precisely: the slot is a literal
+`512`, i.e. `4 heads x 128 dims`. With HD=256 the write index `pi*512 + lh*256 + d`
+reaches 1023 inside a 512-element slot, so an hd256 family would overwrite the next
+token's K with its own V — a real defect, and one that no amount of region resizing
+fixes without changing this arithmetic to `4 * HD`.
+
+**The bridge mapping is therefore fully known**, with no unknowns left:
+
+| `AttnCtx` wants | take from | formula |
+|---|---|---|
+| `k[t][kvh][d]` (int8, `nkv`-major) | `bKv` | `bKv[(kvh<4?0:1)*kv_region + t*512 + (kvh&3)*HD + d]` |
+| `v[t][kvh][d]` | `bKv` | `bKv[((kvh<4?0:1)+2)*kv_region + t*512 + (kvh&3)*HD + d]` |
+| `q[head][d]` | `act` (bf16, `rows x qout`) | direct bf16->float, then the `attn_quant.h` q8 contract |
+
+That is what step 1 of the revised plan needs, and it is now a transcription rather
+than a reverse-engineering exercise. The hd256 slot arithmetic belongs to
+`task-family-host` as its own item.
