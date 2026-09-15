@@ -32,9 +32,23 @@ are nh16/nh32); re-checked after the rebuild: 4B @2048 2693 ms, 8B @2048
 | native bf16 + `NPU_ATTN_CPU=1` | **163569** ✓ | 10819 ms (92 tok/s) |
 
 So the Gemm/host-math half of the Nanbeige bf16 path is right, and the nh20
-attention ELF is the sole cause of the divergence — the same conclusion
-reachable from `RESULTS-coverage-multifamily-2026-09-13.md` §9/§11, now with a
-matched-length gate.
+attention ELF is the cause of the divergence — consistent with §11's shape
+correlation, and contrary to §9's "host math" inference, corrected below.
+
+### Correction to multifamily §9
+
+§9 concluded the opposite — "the wrong-shape attention kernel is a REAL defect
+but NOT the cause of the wrong token … the divergence must be in the shared host
+math upstream of attention" — because installing a captured Nanbeige ELF as
+`attn_mha_1024_nh20_hd128.elf` left the boot unchanged (1214 vs reference 1033).
+That inference does not hold: a substituted ELF that still gives the wrong token
+only shows *that ELF* is not the attention kernel (the generic capture's index
+for the attention ELF is model-specific — §5's own caveat), not that the
+attention step is innocent. The decisive test is the CPU reference, which
+reuses the same host GEMM/norm/RoPE math and *does* fix the token (163569 both
+lengths). So the host math is correct and the fault is in the NPU attention path
+— the kernel, or the `bActQ`/`bKv` device packing it reads (`attn_omp` consumes
+`bqo`/`kv_caches` instead).
 
 At 1087 tokens (>1024) the same prompt gives, with the selection fix:
 
