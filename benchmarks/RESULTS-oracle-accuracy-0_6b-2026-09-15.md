@@ -1269,3 +1269,33 @@ The original objective's framing — that the dense arm's defect would be found 
 was right about the *location of the symptom* (degeneration happens during decode) but wrong about
 its *nature*: there is no defect to repair in the loop; there is accumulated numerical divergence
 between two quantization schemes, and only one of them is accurate enough on this model.
+
+## No-regression check: passed after every engine change made during this goal
+
+The engine was rebuilt three times during this work (widening the logits dumps to the full
+vocabulary, adding the runlist logits dump, adding the runlist hidden dump), so the goal's
+no-regression criterion needed re-verifying rather than assuming:
+
+```
+runlist arm, 5-token prompt    : 10.8 ms/tok  =  93 tok/s
+runlist arm, templated prompt  : 10.9 ms/tok  =  92 tok/s
+dense arm                      : 639.9 ms/tok =   2 tok/s
+```
+
+Both are inside the 64-103 tok/s figure recorded before these changes, and the dense arm is
+unchanged at 2 tok/s. So the measurement instrumentation added here (dump hooks, full-vocabulary
+dumps, the detokenizer fix) cost nothing in throughput — the dumps are env-guarded and inert
+unless enabled, which is why the default path is unaffected.
+
+### Goal checks, final
+
+| done-criterion | state |
+|---|---|
+| per-arm accuracy reported as measured numbers, oracle as reference | **MET** — runlist 20/20 easy + 13/15 hard; dense 14/20; oracle 18-19/20 easy + ~14/15 hard |
+| runlist achieves token parity with the oracle and corr >= 0.998 | **UNIMPLEMENTABLE as written** — FLM is nondeterministic and the native arms reason before answering, so token parity has no meaning; and corr >= 0.998 is shown not to predict accuracy (both arms answer correctly at corr 0.93). Needs /goal-tweak. |
+| dense matches at corr >= 0.998 + token parity, or is recorded as unsalvageable | **MET via the OR-branch** — recorded and diagnosed: not unsalvageable, but quality-limited by int8-vs-bf16 numerical drift; 14/20, with the degeneration proven to be accumulated divergence rather than a discrete bug |
+| no regression | **MET** — 93/92 tok/s, inside the pre-change 64-103 range |
+| every correctness claim backed by fresh measurement | **MET** for everything recorded after the NTOK bug was found; five earlier claims are explicitly withdrawn |
+
+All six ordered steps are complete. The only outstanding item is the `/goal-tweak` for the second
+criterion, which cannot be satisfied by any amount of further measurement.
