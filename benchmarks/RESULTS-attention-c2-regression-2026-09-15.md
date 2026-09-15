@@ -417,3 +417,29 @@ problem.
 
 Revised L2 order: (1) produce/generate `final_bf16_QKV_K2560_N3584.xclbin`, (2)
 *then* the nh20 attention candidate test above becomes reachable.
+
+### Why the bf16 QKV xclbin is missing: the requested N does not match the generator
+
+The engine asks for `final_bf16_QKV_K2560_N3584.xclbin`, but
+`engine/npu/generators/build_new_xclbins.sh` carries Nanbeige as
+
+```
+"nanbeige4.1_3b:QKV:2560:3840:8"     # QKV K=2560, N=3840, 8 cols
+```
+
+**N=3584 vs N=3840** is not a typo on either side — it is a head-geometry
+disagreement, and both give qout = 2560:
+
+| | n_q | n_kv | hd | N = n_q + 2·n_kv |
+|---|---|---|---|---|
+| engine requests | 20·128 = 2560 | 4·128 = 512 | 128 | **3584** |
+| generator entry | 32·80 = 2560 | 8·80 = 640 | 80 | **3840** |
+
+So the bf16 arm is built for **nh20 / hd128** (which is also why the shape ELF it
+wants is `attn_mha_1024_nh20_hd128.elf`, and why the whole nh20 thread exists),
+while the i8 path and the generator shape table use **nh32 / hd80**. The missing
+xclbin is a *shape-table* mismatch, not a missing build step: either the
+generator entry is wrong for the bf16 arm or the engine's N is. Resolve which
+geometry Nanbeige's bf16 arm is actually specified with before generating
+anything, then build `final_bf16_QKV_K2560_N3584.xclbin` through
+`n1_core_bf16_v1.py` / `build_new_xclbins.sh`.
