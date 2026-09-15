@@ -72,6 +72,16 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         C_ty = np.ndarray[(m, n), np.dtype[dtype_out]]
         C1_ty = np.ndarray[(m, N), np.dtype[dtype_out]]   # full scores
         A2_ty = np.ndarray[(m, N), np.dtype[dtype_in]]    # softmax weights
+        # A2 writeback element. Chunked (n_grp > 1) MUST use the GROUP SLICE
+        # (8, 512) = 4096 B, not the whole (8, N): SCR has room for only one
+        # (8,N) per head, so each group's a2t writes a strided 4096 B slice of
+        # it -- and a PARTIAL element read never lets the MemTile hand the
+        # buffer on, so the core's second A2O acquire returned the first buffer
+        # and element 1 was never produced (group 1's A2 came out all-zero).
+        # With the slice as the element, the a2t reads the FIFO contiguously
+        # (a whole element) and writes SCR strided. See
+        # benchmarks/RESULTS-attention-c2-regression-2026-09-15.md.
+        A2o_ty = A2_ty if n_grp == 1 else np.ndarray[(m, G_TILES * n), np.dtype[dtype_in]]
         P_ty = np.ndarray[(8,), np.dtype[np.float32]]
 
         kernel_o = "attn_kernel.o"
@@ -80,7 +90,7 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         # attn_softmax_i8 takes 4 C1 half-tiles + params + a2 (extra halves
         # unused for N < 512 — the contract reads only c1[t>>7]).
         softmax = external_func("attn_softmax_i8",
-                                inputs=[C_ty, C_ty, C_ty, C_ty, A_ty, A2_ty],
+                                inputs=[C_ty, C_ty, C_ty, C_ty, A_ty, A2o_ty],
                                 link_with=kernel_o)
 
         tiles = [[tile(col, row) for col in range(n_aie_cols)] for row in range(2 + 1)]
@@ -105,8 +115,8 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
         # A2 writeback: core → mem → shim → DDR (bo4 scratch, after the params)
         A2o_c = [None] * n_aie_cols; A2o_s = [None] * n_aie_cols
         for c in range(n_aie_cols):
-            A2o_c[c] = object_fifo(f"A2O_C{c}", core_tiles[0][c], mem_tiles[c], 2, A2_ty)
-            A2o_s[c] = object_fifo(f"A2O_S{c}", mem_tiles[c], shim_tiles[c], 1, A2_ty)
+            A2o_c[c] = object_fifo(f"A2O_C{c}", core_tiles[0][c], mem_tiles[c], 2, A2o_ty)
+            A2o_s[c] = object_fifo(f"A2O_S{c}", mem_tiles[c], shim_tiles[c], 1, A2o_ty)
             object_fifo_link(A2o_c[c], A2o_s[c])
         C2_c = [None] * n_aie_cols; C2_s = [None] * n_aie_cols
         for c in range(n_aie_cols):
@@ -116,10 +126,9 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2):
 
         # One (8,128) int32 C1 half-tile per N/128 chunk (2 for N=256, 4 for N=512).
         # Chunked (N>512): only G_TILES are resident, reused per group.
-        A2_ty_c = np.ndarray[(m, G_TILES * n), np.dtype[dtype_in]]
         C1 = [[buffer(core_tiles[0][c], C_ty, name=f"C1_{c}_{nt}")
                for nt in range(min(n_n, G_TILES))] for c in range(n_aie_cols)]
-        A2buf = [buffer(core_tiles[0][c], A2_ty if n_grp == 1 else A2_ty_c, name=f"A2_{c}")
+        A2buf = [buffer(core_tiles[0][c], A2o_ty, name=f"A2_{c}")
                  for c in range(n_aie_cols)]
 
         for c in range(n_aie_cols):

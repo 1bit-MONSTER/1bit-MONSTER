@@ -84,10 +84,51 @@ problem — C2 is written now — it is that half the softmax weights are missin
 - The ruled-out table's rows all still hold as measurements; none of them was
   the cause.
 
+## Resolved (2026-09-15, later): the chunked A2 loss was an element size mismatch
+
+**Fixed.** Two changes, neither touching the `n_grp == 1` path:
+
+1. The `A2O` FIFO element is now the **group slice** `(8, G_TILES*n)` = `(8,512)`
+   = 4096 B for `n_grp > 1`, instead of the whole `(8,N)` = 8192 B. The element
+   and the per-group `a2t` transfer are now the same size, so a produce/consume
+   advances the FIFO instead of leaving the buffer un-handed-on.
+2. The chunked `params[3]` (A2 row stride) is now `0` (packed), so
+   `attn_softmax_contract` writes a **contiguous** `(8,512)` element. The strided
+   placement into SCR (group g at column `g*512`, row stride N) is done by the
+   `a2t` BD — a contiguous FIFO read with a strided write — not by the softmax.
+
+**Evidence.**
+
+`seq=513` (group 0 = 512 active keys, group 1 = 1) now shows both:
+
+```
+head0 row0 block map: [0]=124 [1]=125 [2]=125 [3]=122 [4]=1 [5..7]=0
+head0 row0 nonzero=497 first=0 last=512
+```
+
+Group 0 fills columns 0–511 (its 512-key softmax) **and group 1 appears at
+column 512** — the one-key result. Before the fix, column 512 was empty and the
+group-0 slot held the one-key shape.
+
+Bench, and the decisive check against the kernel's own host contract:
+
+| build | C2 | NPU max_abs_err | EMU max_abs_err | ms/call |
+|---|---|---|---|---|
+| N=512 | 2/2 non-zero | 4.564293e-02 | **4.564293e-02** | 2.456 |
+| N=1024 chunked | 2/2 non-zero | **1.026515e-01** | **1.026515e-01** | 4.314 |
+
+NPU == EMU on both, to the digit: the generated kernel now implements its
+contract exactly. The residual `1.03e-01` is the int8 design's own error (the
+same value the host contract produces), not a defect.
+
+`attn_insts.txt` for N=512 is still `f3d0a132bde24a60`, so the `n_grp == 1` path
+is untouched.
+
 ## Still open
 
-1. **Chunked group-1 A2** (above) — the one remaining correctness bug in the
-   generated attention.
+1. **The chunked path has no engine run** — the bench drives the artifact
+   directly; `AttnCtx` (the consumer) has never been driven through
+   `zaya_decode.cpp` end to end for N > 512.
 
 ### Diagnostics run on the chunked group-1 A2 (2026-09-15, later)
 

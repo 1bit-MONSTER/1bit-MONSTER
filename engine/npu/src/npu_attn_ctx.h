@@ -323,7 +323,13 @@ struct AttnCtx {
             if (seq_g > 512) seq_g = 512;
             float params[8] = {
                 1.0f / (sq * sk * std::sqrt((float)hd)), (float)seq_g,
-                (float)(n_grp > 1 ? 512 : N), (float)(n_grp > 1 ? N : 0),
+                // params[2] = the softmax tile width (512 = four N-tiles).
+                // params[3] = the A2 row stride, 0 = packed. The chunked
+                // kernel's A2O element is now the GROUP SLICE (8,512), so the
+                // softmax must write it contiguously (packed). The strided
+                // placement into SCR is done by the a2t BD, not by the
+                // softmax. See RESULTS-attention-c2-regression-2026-09-15.md.
+                (float)(n_grp > 1 ? 512 : N), 0.0f,
                 0, 0, 0, 0
             };
             std::memcpy(Qm + (size_t)15 * K_FRAME + (size_t)g * 64,
