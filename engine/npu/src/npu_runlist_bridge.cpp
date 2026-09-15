@@ -388,11 +388,16 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
         // which only the dense path reaches). Dump them here so the two arms' logits
         // can actually be compared instead of comparing a stale dense file twice.
         if (getenv("NPU_DUMP_LOGITS")) {
+            // Localisation hook: NPU_DUMP_HIDDEN=<path> dumps the act BO (the bf16
+            // hidden state that feeds the lm_head) so it can be compared against the
+            // dense arm's NPU_DUMP_HIDDEN dump. Same env name, different arm.
+            if (const char* dh = getenv("NPU_DUMP_HIDDEN"))
+                rt.dump_act(dh, (size_t)cfg.hidden_size * 2);
             std::vector<float> lg((size_t)cfg.vocab_size);
             if (rt.get_logits(lg.data(), cfg.vocab_size)) {
                 FILE* fl = fopen("/tmp/runlist_logits.txt", "wb");
                 if (fl) {
-                    for (int n = 0; n < cfg.vocab_size && n < 4096; n++)
+                    for (int n = 0; n < cfg.vocab_size; n++)
                         fprintf(fl, "%d %.6g\n", n, lg[(size_t)n]);
                     fclose(fl);
                 }

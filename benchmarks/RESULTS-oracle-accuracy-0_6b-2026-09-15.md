@@ -217,3 +217,63 @@ print the top-32 with detokenised ids) and then read the actual first-step candi
 prompt the arm fails. Until that is done, "is the first-step distribution shifted?" has no
 measured answer — only the `A`-onset symptom above, which is suggestive but is a symptom,
 not a distribution.
+
+## Step 4 RESULT (decisive): the native path does RAW COMPLETION while the oracle CHAT-TEMPLATES — the comparison is confounded
+
+Widening both dumps to the full vocabulary (the 4096 cap above) made the first-step
+distribution visible for a prompt the arm fails. For `The opposite of black is`:
+
+```
+ids   : 32    89283   785    3798   64     1986    23085   2877  7     58    16141  3838
+text  : A     Choices The    Options a      This    Which   (     a     (     Answer What
+logit : 17.375 15.438 15.250 15.188 15.000 14.875  14.875  14.625 14.375 14.250 14.250 14.188
+```
+
+The model's top candidates are `A`, **`Choices`**, `The`, **`Options`**, `a`, `This`,
+**`Which`**, `(`, … , **`Answer`**, `What`. That is the vocabulary of a **multiple-choice
+exam question**, not of a sentence completion — and the correct continuation (`white`) is not
+in the top twelve. This is the mechanism behind *every* `A)` / `A.` prefix in the 20-prompt
+run: the model believes it is answering a quiz.
+
+**Why it believes that, and why the oracle disagrees:**
+
+```
+model dir: config.json  model.q4nx  tokenizer.json  tokenizer_config.json
+tokenizer_config.json:  "chat_template": "{%- if tools %}... {{- '<|im_start|>system\n' }} ..."
+npu_engine_universal.cpp:  no chat_template / <|im_start|> handling anywhere (grep: nothing)
+npu-infer/src/main.cpp:139: "strip a trailing <|im_start|>user turn if the model started one"
+```
+
+- The model directory ships a **Qwen chat template**, and **FLM — being a chat application —
+  applies it**: its prompt tells the model it is an assistant answering a user, which is why
+  it replies in plain prose (`The opposite of "hot" is **cold**.`).
+- **The native universal engine applies no template.** It feeds the bare text
+  `The opposite of black is`, and a raw Qwen3 completion of a bare question is most
+  plausibly drawn from exam/quiz text, so the model continues in exam format with `A) … B)`.
+
+So the 7/20-vs-18/20 gap is **not purely an accuracy gap**: the two sides are being asked
+different questions. Raw-completion-format and assistant-format prompts are different tasks,
+and this goal has been scoring one against the other. This is the fourth methodological
+problem found in this line of work, and it is the one that plausibly accounts for most of the
+13 "failures" — the arm was never given the oracle's prompt format.
+
+### What this changes
+
+1. **Every accuracy number in this document is for `native(raw) vs FLM(templated)` and must
+   be labelled as such.** It does not measure how accurate the native path is at the task the
+   oracle was given.
+2. The goal's criterion "token parity with the oracle" is unreachable while the two sides use
+   different prompt formats — it must be restated as same-format comparison, or the native
+   path must apply the model's own template (available in `tokenizer_config.json`, and
+   `npu-infer` already contains template-handling code that could be reused).
+3. The remaining wrong answers (Kyoto for Tokyo, Barcelona for Madrid, Neptune for Jupiter,
+   `helium` for oxygen) are **not** explained by the confound — those are content errors
+   inside a coherent quiz answer, and they remain the real accuracy defect to chase once the
+   format is equalised.
+4. Note the same reasoning re-reads the `hidden corr 0.9875` / `logits corr 0.971` figures:
+   those compare a raw-completion state against a templated state, so part of that divergence
+   is expected and is not evidence of a kernel defect.
+
+**Next action (now unambiguous): equalise the prompt format** — either apply the model's chat
+template in the native engine, or run the oracle in raw-completion mode — then re-score with
+`benchmarks/oracle_accuracy_0_6b.sh`. Only after that does the accuracy number mean anything.

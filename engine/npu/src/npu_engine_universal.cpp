@@ -562,7 +562,7 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
         for(int k=0;k<H;k++)s+=(double)h[k]*e[k];lg[n]=(float)s;if(lg[n]>mx)mx=lg[n];}
     if (getenv("NPU_DUMP_LOGITS")) {
         FILE* fl = fopen("/tmp/native_logits.txt", "wb");
-        if (fl) { for (int n = 0; n < NV && n < 4096; n++) fprintf(fl, "%d %.6g\n", n, lg[n]); fclose(fl); }
+        if (fl) { for (int n = 0; n < NV; n++) fprintf(fl, "%d %.6g\n", n, lg[n]); fclose(fl); }
     }
     double sum=0;
     #pragma omp parallel for reduction(+:sum)
@@ -1283,7 +1283,7 @@ int main(int argc,char**argv){
         }
         return xd+"/final_i8_"+t+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".xclbin";
     };
-    auto ip=[&](const char*t){
+    auto ip=[&](const char*t, int K=-1, int N=-1){
         std::string base=xd+"/insts_i8_"+t, tag=cfg.model_tag;
         while(true){
             std::string tp=base+"_"+tag+".txt";
@@ -1291,6 +1291,7 @@ int main(int argc,char**argv){
             size_t u=tag.find('_'); if(u==std::string::npos||u==tag.size()-1) break;
             tag=tag.substr(u+1);
         }
+        if (K > 0 && N > 0) return base+"_K"+std::to_string(K)+"_N"+std::to_string(N)+".txt";
         return base+"_"+cfg.model_tag+".txt";
     };
     // M-suffixed small-M xclbin/insts (decode M=1 -> _m1; batch -> _m8/_m32).
@@ -1459,7 +1460,7 @@ int main(int argc,char**argv){
         // This makes any model with compatible GEMM shapes (K,N multiples of 128)
         // work without pre-compiling per-model instruction files.
         auto init_i8=[&](I8Ctx& ctx, const char* t, int K, int N) -> bool {
-            std::string xp_s=xp(t,K,N), ip_s=ip(t);
+            std::string xp_s=xp(t,K,N), ip_s=ip(t,K,N);
             FILE* f=fopen(ip_s.c_str(),"rb");
             if(f){fclose(f); return ctx.init(dev,xp_s.c_str(),ip_s.c_str(),4,NC);}
             fprintf(stderr,"  No insts for %s, using runtime generator\n",t);
@@ -2439,7 +2440,7 @@ struct Bf16Ctx {
                                int K, int N, int nlayers) -> bool {
                 c = std::make_unique<I8Ctx>();
                 c->MD = XM; c->KD = K; c->ND = N;
-                if (!c->init(dev, xp(t, K, N).c_str(), ip(t).c_str(), 4, nlayers)) {
+                if (!c->init(dev, xp(t, K, N).c_str(), ip(t, K, N).c_str(), 4, nlayers)) {
                     c.reset(); return false;
                 }
                 return true;
