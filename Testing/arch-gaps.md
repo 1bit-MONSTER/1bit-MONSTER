@@ -134,14 +134,14 @@ Measured reference — the shape the census compares against:
 The lane split above is the *watcher's*: a class is printed `!! SIGNIFICANT` when
 `_is_significant()` calls it a major-family/vision arrival, and `!! UNCOVERED`
 otherwise — and the alert's instruction for that second lane is "add the mapping
-… alias if it is a known family". The three below arrived in the `!! UNCOVERED`
-lane on 2026-09-13 and are **not** aliases either, for the same reason the
-sections above exist: a mapping would claim support the engine has not
-validated, and for `englishbase` it would be silently wrong rather than merely
-unsupported.
+… alias if it is a known family". The entries below arrived in the `!! UNCOVERED`
+lane from 2026-09-13 on (`han2han` on 2026-09-14) and are **not** aliases either,
+for the same reason the sections above exist: a mapping would claim support the
+engine has not validated, and for `englishbase` it would be silently wrong rather
+than merely unsupported.
 
 Evidence below is from the official HF configs **and the models' own modeling
-code**, fetched 2026-09-13.
+code**, fetched 2026-09-13/14.
 
 ### `englishbase` — `SlayerLab/fabryka-english-250m-e01-sft-v1`
 
@@ -271,6 +271,41 @@ decided the shape of the implementation.
   There is no partial match to argue about.
 * **Real support needs**: a scope decision first — this is a policy model, not a
   chat LM — and then the adapter/conditioner machinery.
+
+### `han2han` — `cadazar/han2han-it`
+
+**Excluded from the census 2026-09-15, not mapped.** It belongs to the `#1676`
+encoder-decoder lane in `Testing/census_coverage.py`'s `NON_TEXT_GEN`, beside
+`t5`/`bart`/`m2m100`, so it no longer counts in the `with_arch` denominator and
+the watcher no longer prints it as an uncovered class. The review below is the
+evidence for that classification.
+
+* **Class / model_type**: `Han2Han` / `han2han` (custom code — `han2han_config.py`,
+  `modeling_han2han.py`, Flax-origin port).
+* **A seq2seq encoder-decoder, not a causal decoder.** The config states it
+  (`is_encoder_decoder: true`, `decoder_start_token_id` 9, 18 encoder + 18
+  decoder layers at H=640, `d_ff` 2048, `decoder_cross_attention_types: ["mha"]`,
+  `attn_window` 128), and the 825-tensor header (read 2026-09-15 by range
+  request — the file was never downloaded) confirms it: `encoder.h.layers.N`
+  has no cross-attention, while **every** `decoder.h.layers.N.crossattention.*`
+  carries its own `query`/`key`/`value`/`c_proj` plus per-head `q_norm`/`k_norm`
+  and sub-layer `attn_sub_norm`.
+* **Its input machinery is unlike any engine family.** Three embedding tables
+  per side — `wte` (subword), `wce` (char, `char_vocab_size` 5376), `wje` (jamo,
+  `jamo_vocab_size` 4992) — feed `subword_proj` + `ln_emb`, with char/jamo
+  bucket buffers `cbu`/`jbu`; the MLP is dense GEGLU (`wi_0`/`wi_1`/`wo`), so the
+  config's `moe_num_experts: 8` is not in the weights at all (the shipped code
+  raises `NotImplementedError` for sparse layers). `wce`, `wje`,
+  `subword_proj`, `crossattention`, `cbu` and `jbu` have **0 hits** in the
+  engine.
+* **Why an exclusion is the right verdict, not a mapping**: the engine's only
+  cross-attention kernel is whisper's (`src/whisper_hip.hip`), a speech path,
+  and the plan that produced `#1676` declared encoder-decoders out of scope.
+  Mapping `han2han` onto a decoder-only family would be a guess about a
+  checkpoint half of whose layers attend to an encoder that does not exist in
+  the engine.
+* **Real support needs**: a whole encoder stack + decoder cross-attention — i.e.
+  the scope decision `#1676` already made in the negative.
 
 The common thread: each of these is *shaped* like a family the engine already
 routes (`llama`, `gdn`, `kimi`, `lfm2`) — `fidel` only in the loosest sense, as a
