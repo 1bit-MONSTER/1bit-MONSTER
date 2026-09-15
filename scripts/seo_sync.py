@@ -55,7 +55,9 @@ HEADER = os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")
 # (#2399): the engine enumerates its backends in backend_name()/BackendType, and
 # the repo enumerates its families as docs/model-families/*.md.
 BACKENDS_HEADER = os.path.join(ROOT, "include", "common.h")
-FAMILIES_DIR = os.path.join(ROOT, "docs", "model-families")
+# The family registry (32 entries, 29 `status: validated`) that the canonical
+# models page cites; docs/model-families/ is a different, brand-level grouping.
+FAMILIES_MANIFEST = os.path.join(ROOT, "Testing", "models_manifest.json")
 CENSUS = os.path.join(ROOT, "Testing", "census_full_summary.json")
 WATCH_STATE = os.path.join(ROOT, "Testing", "hf_new_models_state.json")
 LEMONADE_CMAKE = os.path.join(ROOT, "third_party", "lemonade", "CMakeLists.txt")
@@ -117,15 +119,38 @@ def count_backends():
 
 
 def count_families():
-    """Published model families: docs/model-families/*.md minus its index.
+    """Manifest families: entries in Testing/models_manifest.json (32 today).
 
-    The engine has no family enumeration, so the repo's family list is the
-    source (16 pages and 16 rows in that index's "All families" table).
+    This is the project's family registry -- one entry per architecture family,
+    each with a status (29 `validated`, 1 documented-limitation, 2
+    mapped-unvalidated) and an e2e oracle. It is also the set the canonical
+    models page cites as "the 32 manifest families (29 validated)".
+
+    docs/model-families/*.md is a DIFFERENT, brand-level grouping: 16 pages that
+    share only 6 names with this registry. Counting pages made the hero and
+    models.md quote different quantities under the same word -- and the hero's
+    original "32 families" was in fact this registry (#2399 -> #2414).
     """
-    if not os.path.isdir(FAMILIES_DIR):
+    try:
+        with open(FAMILIES_MANIFEST, encoding="utf-8") as f:
+            manifest = json_load(f)
+    except (OSError, ValueError, TypeError):
         return None
-    return len([n for n in os.listdir(FAMILIES_DIR)
-                if n.endswith(".md") and n != "README.md"])
+    # None is the documented no-op -- the caller then leaves the published text
+    # alone -- so anything we cannot affirmatively count returns None, never 0.
+    # The two ways `.get("families", [])` used to escape that contract:
+    #   * a top-level JSON array raises AttributeError on .get(), which is not in
+    #     the tuple above, so --check aborted with a traceback instead of no-op;
+    #   * a renamed key (e.g. "models") yields [] -> len 0 -> the hero rewritten
+    #     to "0 families", a silently wrong derived claim, which is the exact
+    #     failure class this derivation replaced.
+    # An empty list is not a fact we can publish either, so it is None too.
+    if not isinstance(manifest, dict):
+        return None
+    families = manifest.get("families")
+    if not isinstance(families, list) or not families:
+        return None
+    return len(families)
 
 
 def census_coverage():
