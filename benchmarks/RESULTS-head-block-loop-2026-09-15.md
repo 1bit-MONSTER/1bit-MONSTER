@@ -292,3 +292,27 @@ from the build logs rather than the exit status. Two false-failure classes in on
 session (this, and the `${name}` substitution collision) is the argument for
 reading the *log* for the success line and never trusting a wrapper's exit code
 alone.
+
+#### Which side grows into the limit (no device needed)
+
+The generator emits the design directly, so the scaling can be counted without
+aiecc at all (`n1_core_attn.py -M 8 -K 128 -m 8 -k 64 -n 128 -c 8 -b 2`):
+
+| N | mlir lines | `aie.dma_bd` (sequence) | `func.call` (core program) |
+|---|---:|---:|---:|
+| 1024 | 4930 | 552 | 160 |
+| 2048 | 9442 | 1096 | 304 |
+| 3072 | 13954 | 1640 | 448 |
+| 4096 | 18466 | 2184 | **592** |
+
+Both sides grow linearly in N, and the failure names program memory
+(`_XAie_LoadProgMemSection`), i.e. the **core** program: 448 kernel calls fit,
+592 do not. The unrolled group body in the core is therefore the binding
+constraint, which matches the generator's structure — `for g in range(n_grp)` is
+Python-unrolled because `C1` is a Python list of buffers, so each 512-key group
+adds its own matmul/zero/softmax calls to the tile's program.
+
+That fixes the direction of the fix: replacing the C1 buffer list with a rotating
+pair (so the group loop can be a real AIE loop) removes the per-group growth from
+the core program, and the sequence's BD count is a separate, larger ceiling that
+does not bind first.
