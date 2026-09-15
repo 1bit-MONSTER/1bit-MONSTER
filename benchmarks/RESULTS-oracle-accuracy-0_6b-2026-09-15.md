@@ -1355,3 +1355,48 @@ now two honest options, and the choice is yours:
   criterion becomes testable on merits. That is new engineering (the path emits backslashes, and its
   lm_head output is not where the dump hook looks), not a measurement tweak, and it is the larger
   piece of work.
+
+## Repair LOCALISED: the bf16 path never populates `h_data`, so the lm_head reads zeros
+
+The two symptoms (all-zero logits, backslash-token garbage) have a single common cause visible in
+the decode path's boot-token code:
+
+```cpp
+// npu_engine_universal.cpp:5158
+memcpy(sb_data.data(), h_data.data(), H*4);   // the lm_head's input comes from h_data
+rn_c(sb_data.data(), fin_v.data(), H);        // final norm
+lm_topk_omp(sb_data.data(), lg_buf.data(), top_ids, BS, lm_nv, H, lm_emb);
+```
+
+`lm_topk_omp` computes the logits on the host as `sum_k hidden[k] * emb[n][k]`. Its input is
+`h_data`. If `h_data` is zero, **every logit is exactly zero** — which is exactly what the bf16 dump
+showed (151936 zero entries, versus the runlist dump's min -18.5 / max 28.5 all non-zero) — and a
+zero logit vector makes the argmax degenerate, which is how 193 identical backslash tokens get
+emitted.
+
+So the defect is not in the bf16 GEMMs (which now run, courtesy of the xclbins built above) but in
+the **hand-off**: the `NPU_BF16=1` path computes its hidden somewhere other than `h_data`, so the
+lm_head — which is still the host fp32 one reading `h_data` — sees nothing. This is also the same
+site a previous session annotated: *"the first and emits garbage while prefill logits were already
+correct"*, i.e. the boot-token hand-off has a history here.
+
+The fix is therefore **not** a criterion change and **not** more xclbins: it is to make the bf16
+decode path write its final hidden into `h_data` (or to point the lm_head at wherever the bf16 path
+does write it). That is a targeted code change in one place, followed by a rebuild and a re-run of
+the same tests — and it is the honest continuation of the "unblock by repair" route.
+
+### Status of the repair
+
+| step | state |
+|---|---|
+| identify why `NPU_BF16=1` was dead | done — the four Qwen3-0.6B bf16 xclbins were missing |
+| build them | done — QKV/O/GU/D built, exit 0 |
+| path loads | done — `=== BF16 mode ===`, 970.5 ms/tok |
+| path produces correct output | **NO** — garbage, and the logits are all zero |
+| root cause | **localised** — the bf16 path does not populate `h_data`, the buffer the host fp32 lm_head reads |
+| fix | **not applied** — needs the bf16 path to write its hidden into `h_data`, then rebuild + re-test |
+
+So the repair is real, progress has been made on it, and it is now a single well-defined change
+away from testable. Until that change is made, criterion 2 (corr >= 0.998, token parity) remains
+unsatisfiable — not because the criterion is wrong this time, but because the path that would
+satisfy it has a concrete, located bug.
