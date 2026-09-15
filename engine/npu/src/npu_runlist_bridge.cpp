@@ -163,6 +163,18 @@ extern "C" int npu_runlist_lmhead(float* logits, int vocab) {
     return g_sess_rt->get_logits(logits, vocab) ? 0 : 1;
 }
 
+// End-of-sequence ids for the runlist decode loop. The loop previously had NO EOS
+// handling: the model emits <|im_end|> (151645) and <|endoftext|> (151643) at the end of
+// its answer and the engine kept generating past them ("... **Paris**.<im_end><eot>Human:
+// What is the capital of France? ..."). FLM stops there, which is why its RAW output is
+// exactly the answer; stopping on these ids makes native output terminate where the
+// oracle's does, which is what "token parity" needs in order to mean anything.
+// NPU_STOP_EOS=0 restores the old run-on behaviour.
+static bool is_eos_token(int id) {
+    if (getenv("NPU_STOP_EOS") && atoi(getenv("NPU_STOP_EOS")) == 0) return false;
+    return id == 151643 || id == 151645;   // <|endoftext|> , <|im_end|>
+}
+
 extern "C" int npu_runlist_forward(int ctx_len, float* logits, int vocab) {
     if (!g_sess_rt) return 1;
     if (!g_sess_rt->forward(ctx_len)) return 1;
@@ -406,7 +418,8 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
         int best = rt.argmax_logits(cfg.vocab_size);
         printf("  [%d] %d\n", 1, best);
         total++;
-        if (ng > 1) {
+        if (is_eos_token(best)) ng = 1;   // answer already complete: skip the decode loop
+        else if (ng > 1) {
             int c1 = ctx + 1;
             rt.apply_rope(c1);
             if (!rt.build_runlist(sb, c1) || !rt.embed(best) || !rt.execute_runlist(sb)) {
@@ -433,6 +446,7 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
         int best = rt.argmax_logits(cfg.vocab_size);
         printf("  [%d] %d\n", i + 1, best);
         total++;
+        if (is_eos_token(best)) break;    // stop where the oracle stops
         if (i + 1 < ng) {
             rt.apply_rope(next_ctx);
             if (!rt.embed(best) || !rt.execute_runlist(sa)) {

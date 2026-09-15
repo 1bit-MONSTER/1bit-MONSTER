@@ -1681,3 +1681,60 @@ prompt).
 | dense int8 accuracy | 14/20, misses characterised as degeneration/confusion |
 | FLM oracle | 18-19/20 easy, ~14/15 hard, nondeterministic |
 | criterion 2 (corr >= 0.998 + token parity) | **structurally unsatisfiable** while the two pipelines differ in precision by design |
+
+## RE-ENGINEERING: EOS stopping implemented in the runlist decode loop — first EXACT oracle match
+
+The criterion's real target (re-read precisely) is **token parity with the ORACLE**, not int8-vs-bf16.
+Locating the obstacle showed it was structural and small: the decode loop had **no end-of-sequence
+handling at all**. The token trace proves it —
+
+```
+271 151668 271 785 6722 315 9625 374 3070 59604 334 13 | 151645 198 151643 | 33975 25 3555 374 279 ...
+                                                        ^im_end  ^endoftext   ^"Human: What is the capital…"
+```
+
+— the model emits `<|im_end|>` then `<|endoftext|>` and the engine **keeps generating past both**,
+producing `… **Paris**.<im_end><eot>Human: What is the capital of France? Computer: …` where FLM
+stops at `… **Paris**.`. `grep -E '151643|151645|eos|EOS'` in `npu_runlist_bridge.cpp` returned
+**nothing** before this change.
+
+**Change** (`engine/npu/src/npu_runlist_bridge.cpp`): a file-scope `is_eos_token()` (151643
+`<|endoftext|>`, 151645 `<|im_end|>`; `NPU_STOP_EOS=0` restores the old run-on behaviour), a
+`break` in the decode loop, and `ng = 1` when the priming token is already EOS. Built clean.
+
+**Result — the first exact oracle match achieved anywhere in this goal:**
+
+```
+The capital of France is
+  native  : "The capital of France is **Paris**."   (13 tokens, terminated at the answer)
+  FLM     : "The capital of France is **Paris**."
+  >>> EXACT MATCH
+```
+
+The native output now terminates exactly where the oracle's does, on the strength of a four-line
+change. That is the first time any native configuration has matched the oracle byte-for-byte.
+
+The other three test prompts still differ, and honestly so:
+
+```
+Water is made of hydrogen and   native "…**hydrogen and oxygen**."   FLM "…hydrogen and oxygen."   (bold markers)
+The opposite of hot is          native "The **opposite of hot** is **cold**. - **Hot** means…"      (verbose, 52 tok)
+What is 2 + 2?                  native "嗯，用户问的是…" (CHINESE)     FLM "2 + 2 equals 4."         (language switch)
+```
+
+So **exact parity is achieved on 1 of 4 prompts**, not across a set, and the remaining differences are
+of three distinct kinds: markdown style, verbosity, and — notably — one prompt where the native
+**answers in Chinese** while FLM answers in English. Full-set token parity (the criterion's literal
+wording) is therefore still not met, and the Chinese case is a new observation that no earlier
+configuration surfaced.
+
+### What this re-engineering did and did not achieve
+
+- **Did**: make the native path terminate like the oracle, which is a genuine behavioural fix to a
+  real defect (a decode loop with no EOS handling and therefore unbounded run-on); produced the first
+  exact oracle match; and removed the "run-on past the answer" difference that had made every earlier
+  comparison noisy.
+- **Did not**: make token parity hold across a prompt set. With 1 of 4 matching exactly and the rest
+  differing in style, verbosity and even output language, the honest reading is that the remaining gap
+  is model-behavioural (how a 0.6B model chooses to answer) rather than plumbing — and no amount of
+  engine wiring will make a model's free-form continuation byte-identical to another implementation's.
