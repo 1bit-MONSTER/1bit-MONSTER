@@ -96,10 +96,17 @@ def my_attn(M, K, N, m, k, n, n_aie_cols=8, BATCH_SIZE=2, n_heads=None, nkv=2):
         f"Pick --cols dividing --heads (and the QK^T tiling)."
     )
     n_hpass = n_heads // n_aie_cols      # head-block passes (1 = unchanged)
-    assert nkv >= 1 and n_aie_cols % nkv == 0, (
-        f"--nkv {nkv} must divide --cols {n_aie_cols} (gqa = cols/nkv)"
+    # GQA is a property of the MODEL, not of the column count: head h reads the kv
+    # head h // gqa_model, and gqa_model = total q heads / total kv heads. Deriving
+    # it as cols/nkv is wrong for every family whose head count is not a multiple of
+    # the column count in that way -- Nanbeige (nh20, nkv4, cols4) would map heads
+    # 0..3 onto four distinct kv heads instead of all onto kv0, i.e. it would read
+    # the wrong K/V for 16 of its 20 heads. n_heads is the total, so it is available.
+    assert nkv >= 1 and n_heads % nkv == 0, (
+        f"--nkv {nkv} must divide the total q heads {n_heads} (gqa = heads/nkv)"
     )
-    gqa = n_aie_cols // nkv              # q heads per kv head within a pass
+    gqa = n_heads // nkv                 # q heads per kv head, across the model
+    assert gqa >= 1
     # Head rows live in rows 0..H-1 of the fused A-frame; the params tile rides
     # row 15 of the frame, so it must move out of the head range once H > 15.
     # H <= 15 keeps row 15 -- that is what preserves the old instruction stream.

@@ -418,3 +418,27 @@ It does **not** say the design is correct: a wrong offset, a mismatched KV layou
 a FIFO desync all survive this check untouched. It says the artifact is worth
 spending device time on. `aiebu-dump` lives at `/usr/local/bin/aiebu-dump` (not in
 the Vitis trees, which is where I looked first) and takes `-m aie2ps`, not `-t`.
+
+### Bug found by review: the head->kv mapping used the columns, not the model
+
+`gqa` was derived as `cols / nkv`. It must be the **model's** `nh / nkv`: head `h`
+reads kv head `h / gqa_model`, and the column count has nothing to do with it.
+
+| family | nh | nkv | cols | old gqa (cols/nkv) | correct gqa (nh/nkv) | effect of the old value |
+|---|---:|---:|---:|---:|---:|---|
+| guard (working shape) | 8 | 2 | 8 | 4 | 4 | none — that is why it went unnoticed |
+| Nanbeige | 20 | 4 | 4 | **1** | **5** | heads 0..3 read four *distinct* kv heads instead of all reading kv0: wrong K/V for 16 of 20 heads |
+| Phi4-mini | 24 | 8 | 8 | **1** | **3** | every head read its own kv head |
+| Qwen3.5-4B | 16 | 4 | 8 | **2** | **4** | half the heads read the wrong kv head |
+
+The working shape cannot see the difference (cols/nkv == nh/nkv there), which is
+exactly why a byte-identity guard on it proves nothing about this parameter — the
+guard held while the family mapping was wrong. Fixed to
+`gqa = n_heads // nkv` with `assert n_heads % nkv == 0`; the guard build is still
+byte-identical (`f3d0a132bde24a60`), and the family streams changed as they should
+(nb20 `6b269c9b396e637a`, ph24 `a4df122b20e4c801`, q35 `4d155ad4b67a2049`).
+
+**Every artifact built before this fix is stale and must not be installed** — the
+`/tmp/elf2_*` bucket ELFs and the `/tmp/hb2_*` bench kernels both predate it. They
+are rebuilt before the device window opens, and the runner's paths are updated to
+the rebuilt set so the gate cannot pass judgement on a superseded kernel.
