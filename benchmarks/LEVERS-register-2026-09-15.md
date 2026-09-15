@@ -324,6 +324,40 @@ up should instrument the core (cycle counter into a BO, or a marker write per
 phase) rather than guess a third time. The bench is the instrument and it is
 committed.
 
+**And then the instrument that does not need a generator change at all: watch the
+device from outside the launch.** `run()` zeroes the A2 scratch and C2 before each
+call, so a non-zero byte in either is a progress marker; the poll mode
+(`NPU_ATTN_POLL=1`) launches, then spins syncing those BOs and timestamping the
+first non-zero, then waits. The validity question — does `sync(FROM_DEVICE)` block
+while a launch is active, which would make every reading a lie — is answered by
+polling **`bV`, a BO the kernel never writes**: it returns in **0.003 ms** mid-launch,
+so sync does not block and the readings are real.
+
+| N=512, one launch | control `bV` sync | A2 first non-zero | C2 first non-zero | `wait()` total |
+|---|---|---|---|---|
+| shipped | 0.003 ms | **0.52 ms** | **0.66 ms** | 0.99 ms |
+| ours | 0.003 ms | **1.49 ms** | never (≥20 s) | 20000 ms (loop cap) |
+
+**The softmax is not the bottleneck, and neither is QK^T.** Our A2 — the softmax
+output, i.e. everything through the QK^T scan *and* the softmax contract — is on
+the device at **1.5 ms**, versus the shipped kernel's 0.52 ms. Three times slower
+and 4000× off the 6 s. This also kills the "the softmax's 8×MAX_SEQ serial loop is
+the fixed cost" reading of the seq-invariance, which was the best remaining
+arithmetic story.
+
+So the 6 s is **after A2**: in the PV phase or the C2 writeback — the last two
+stages and nothing else.
+
+One loose end that must be closed before that is treated as final: in the poll
+launch C2 never went non-zero, yet the kernel still completed (the `wait()` after
+the 20 s loop returned immediately, so it had finished at some earlier point). A
+kernel that produces A2 but not C2 and then completes is not what `run()` does —
+`run()`'s output is correct — so either the direct launch differs from `run()`'s in
+some way not yet identified, or the C2 writeback is itself the thing that stalls and
+is only completed by whatever `run()` does differently. **Next action is to
+instrument the PV phase specifically** (and to reconcile the direct launch against
+`run()`), not to touch the softmax.
+
 What the two containers differ in (from `xclbinutil`; topology, connectivity and
 kernel name are structurally identical):
 

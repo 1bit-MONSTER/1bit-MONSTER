@@ -59,7 +59,11 @@ int main(int argc, char** argv) {
 
     xrt::device dev(0);
     AttnCtx ctx;
+    auto i0 = std::chrono::steady_clock::now();
     if (!ctx.init(dev, argv[1], argv[2], NQ, NKV, HD)) { fprintf(stderr, "init failed\n"); return 1; }
+    auto i1 = std::chrono::steady_clock::now();
+    printf("init: %.3f ms (xclbin load + register + hw_context + kernel + BOs)\n",
+           std::chrono::duration<double, std::milli>(i1 - i0).count());
     fprintf(stderr, "[ck] MAX_SEQ=%d seq=%d emu=%d\n", ctx.MAX_SEQ, seq, getenv("NPU_ATTN_EMU") ? 1 : 0);
 
     std::vector<float> ao((size_t)qd, 0.0f);
@@ -70,6 +74,45 @@ int main(int argc, char** argv) {
     for (int i = 0; i < qd; i++) { double d = std::fabs((double)ao[i] - ref[i]); if (d > mx) mx = d; sref += std::fabs(ref[i]); }
     printf("seq=%d %s max_abs_err=%.6e mean_abs_ref=%.6e\n",
            seq, getenv("NPU_ATTN_EMU") ? "EMU " : "NPU ", mx, sref / qd);
+
+    // ── NPU_ATTN_POLL=1: watch the device from outside the launch. The control
+    //    is bV, a BO the kernel never writes: if syncing IT during an active
+    //    launch blocks, then sync blocks unconditionally and this instrument
+    //    proves nothing. If it returns at once, the A2/C2 arrival times are
+    //    real and localise the 6 s to before or after the results exist. ──
+    if (!getenv("NPU_ATTN_EMU") && getenv("NPU_ATTN_POLL")) {
+        // Zero the two output regions FIRST, so any non-zero byte seen later
+        // was produced by THIS launch and not left by the previous run().
+        std::memset(ctx.C2m, 0, (size_t)8 * ctx.hd * sizeof(int32_t));
+        std::memset(ctx.SCRm + 32, 0, (size_t)8 * ctx.MAX_SEQ);
+        ctx.bC2->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        ctx.bSCR->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        auto r = (*ctx.k)((unsigned)3, *ctx.bInstr, (unsigned)ctx.instr.size(),
+                          *ctx.bQ, *ctx.bKT, *ctx.bC2, *ctx.bV, *ctx.bSCR);
+        auto t0 = std::chrono::steady_clock::now();
+        auto el = [&] { return std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - t0).count(); };
+        ctx.bV->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        const double t_vsync = el();
+        double t_a2 = -1, t_c2 = -1;
+        const size_t na2 = (size_t)8 * ctx.MAX_SEQ, nc2 = (size_t)8 * ctx.hd;
+        while (el() < 20000.0) {
+            ctx.bSCR->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+            ctx.bC2->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+            const double e = el();
+            if (t_a2 < 0)
+                for (size_t i = 0; i < na2; i++)
+                    if (ctx.SCRm[32 + i]) { t_a2 = e; break; }
+            if (t_c2 < 0)
+                for (size_t i = 0; i < nc2; i++)
+                    if (ctx.C2m[i]) { t_c2 = e; break; }
+            if (t_a2 >= 0 && t_c2 >= 0) break;
+        }
+        r.wait();
+        printf("poll: control_bV_sync=%.3f ms  a2_first=%.3f ms  c2_first=%.3f ms  waited=%.3f ms\n",
+               t_vsync, t_a2, t_c2, el());
+        return 0;
+    }
 
     if (!getenv("NPU_ATTN_EMU")) {
         // ── Split a single launch into submit vs wait. AttnCtx's members are
