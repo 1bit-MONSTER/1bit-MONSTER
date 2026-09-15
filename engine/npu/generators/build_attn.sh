@@ -90,4 +90,9 @@ export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
     "$W/design.mlir"
 echo "built: $XCLBIN_OUT"
 echo "insts: $INSTS_OUT ($(sha256sum "$INSTS_OUT" | cut -c1-16))"
-[ -n "${NPU_ATTN_ELF:-}" ] && echo "elf:   $NPU_ATTN_ELF ($(stat -c%s "${NPU_ATTN_ELF}" 2>/dev/null || echo missing) B)"
+# NOTE: keep this an if-statement, not `[ -n ... ] && echo`: as the last
+# command of a `set -e` script the && form returns 1 whenever NPU_ATTN_ELF is
+# unset, so every successful xclbin-only build would report failure.
+if [ -n "${NPU_ATTN_ELF:-}" ]; then
+    echo "elf:   $NPU_ATTN_ELF ($(stat -c%s "${NPU_ATTN_ELF}" 2>/dev/null || echo missing) B)"
+fi

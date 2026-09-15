@@ -250,3 +250,45 @@ Bucket ELFs live in `/tmp/elfmat_attn_mha_*.elf` for now, deliberately **not** i
 the tree: they are unverified, and the working models' ELFs share that directory.
 They move into `engine/npu/xclbins/` only after the bench gate and a family token
 identity pass.
+
+### Measured boundary: the unrolled stream fits to N=3072, overflows at 4096
+
+Two probes, because the first pass got a false reading from my own script (below):
+
+| shape | 1024 | 2048 | 3072 | 4096 |
+|---|---|---|---|---|
+| nh8 hd128 cols8 nkv2 | OK | OK | **OK** | **OVERFLOW** |
+| nh20 hd128 cols4 nkv4 | OK | OK | **OK** | **OVERFLOW** |
+| nh24 hd128 cols8 nkv8 | OK | OK | — | **OVERFLOW** |
+
+`Overflow of program memory` (`_XAie_LoadProgMemSection` → `Error generating CDO
+files`) is therefore a **shape-independent** ceiling at the 4096 bucket (8 chunks
+of 512), not a property of the head-block or N-split changes: nh8 — which has
+neither — fails identically. N=3072 (6 chunks) still builds for both.
+
+What that means for the verdict table: a family's `(2048, 4096]` bucket cannot be
+served by an ELF from this generator today, and a 3072-context ELF must **not** be
+installed in its place — a kernel used past its length is wrong, not merely slow
+(the rule the nh32-2k guard already encodes). So >2048 stays the CPU reference
+until the stream shrinks.
+
+Both places that scale with the chunk count are Python-unrolled: the core's
+per-group body (`n1_core_attn.py`, `for g in range(n_grp)`, unrolled because `C1`
+is a Python list of buffers) and the sequence's DMA task list. The next diagnostic
+is cheap and does not need the device: build 3072 and 4096 and diff the containers
+(`xclbinutil`/`aiebu-dump`) to see which section actually grows into the limit,
+since the fix differs — a real AIE loop over groups needs the C1 list replaced by a
+rotating buffer pair, whereas a shim/BD-slot limit needs the feed restructured
+instead.
+
+### Harness bug: the build script reported failure on every xclbin-only build
+
+`build_attn.sh` ended with `[ -n "${NPU_ATTN_ELF:-}" ] && echo …`. As the last
+command of a `set -e` script, the `&&` form returns 1 whenever `NPU_ATTN_ELF` is
+unset — so builds that succeeded (identical "Compilation completed successfully"
+lines) exited non-zero, and my first boundary pass reported "FAIL" for nh8 at
+1024, 2048 and 3072. Fixed to an `if` statement, and the table above was re-read
+from the build logs rather than the exit status. Two false-failure classes in one
+session (this, and the `${name}` substitution collision) is the argument for
+reading the *log* for the success line and never trusting a wrapper's exit code
+alone.
