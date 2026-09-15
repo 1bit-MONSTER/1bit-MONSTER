@@ -93,6 +93,7 @@
   "gptbertformaskedlm": 1,
   "grapht5transformer": 1,
   "greedy": 1,
+  "han2han": 1,
   "hca": 2,
   "hed": 1,
   "helloworld": 5,
@@ -1000,11 +1001,11 @@
   "ZZJRABBIT22": 2,
   "ZZJRABBIT3": 1
  },
- "n_archs": 2095,
+ "n_archs": 2094,
  "no_arch": 80778,
  "registry_covered": 323996,
  "registry_direct": 323641,
  "registry_fallback": 355,
  "total": 409737,
- "with_arch": 324127
+ "with_arch": 324126
 }

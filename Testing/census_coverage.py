@@ -254,6 +254,15 @@ NON_TEXT_GEN = {
     "qwen2vision", "kimivl", "mllava", "pllava", "plava",
     "llavallamaatt", "llavagptneox", "tarsier",
     "custompegasus", "dit", "metadiffusion600m", "glide", "gemini",
+
+    # ── 2026-09-15 pass-7: encoder-decoder seq2seq filed as uncovered ──
+    # Han2Han (cadazar/han2han-it, custom code) is `is_encoder_decoder: true`
+    # with a separate 18-layer encoder and a decoder whose every layer
+    # cross-attends to it (config + 825-tensor header verified 2026-09-15).
+    # Same #1676 lane as t5/bart/m2m100: the engine's only cross-attention
+    # kernel is whisper's (speech), so this is out of scope, not a mapping.
+    # Review recorded in Testing/arch-gaps.md.
+    "han2han",
 }
 
 
