@@ -442,3 +442,38 @@ byte-identical (`f3d0a132bde24a60`), and the family streams changed as they shou
 `/tmp/elf2_*` bucket ELFs and the `/tmp/hb2_*` bench kernels both predate it. They
 are rebuilt before the device window opens, and the runner's paths are updated to
 the rebuilt set so the gate cannot pass judgement on a superseded kernel.
+
+### Post-gqa-fix pre-flight, and a KV-region undersize the host table would cause
+
+The rebuilt bucket ELFs pass the same fidelity check as before the fix (aiebu-dump
+on the ELF, not the xclbin — the xclbin has no `.ctrltext` to dump):
+
+| shape | design `aie.dma_bd` | ELF `XAIE_IO_WRITE` | verdict |
+|---|---:|---:|---|
+| nh20 N=1024 | 1380 | 1380 | MATCH |
+| nh20 N=2048 | 2740 | 2740 | MATCH |
+| nh20 N=4096 | 5460 | 5460 | MATCH |
+| nh24 N=1024 | 1656 | 1656 | MATCH |
+| nh24 N=4096 | 6552 | 6552 | MATCH |
+
+So the gqa fix changed the offsets it should have changed and nothing else.
+
+The KV-region arithmetic, checked against the bucket ELFs:
+
+| bucket | kernel needs `N x 4 heads x 128 dims x 2 B` | host (H=2560 row) |
+|---|---:|---:|
+| 1024 | 1048576 | 2097152 — larger, fine |
+| 2048 | 2097152 | 2097152 — exact |
+| 4096 | **4194304** | 2097152 — **UNDERSIZED** |
+
+The host only widens to 4 MB above `npt > 4096`, so a Nanbeige run at 3073..4096
+keys would hand an N=4096 kernel a 2 MB region: the kernel reads past it, which is
+*wrong*, not merely slow — the same class the nh32-2k guard already encodes. Two
+ways to fix, both host-side: set `NPU_ATTN_KV_REGION=4194304` for that bucket, or
+derive the stride from the *ELF's own* `-N` instead of the model's `H` (which is
+what the H table is doing, badly, for families). The second is the real fix; it is
+also the one that needs the device to validate, since a wrong region stride and a
+correct one differ only in the numbers the kernel returns.
+
+Corollary worth keeping: `NPU_ATTN_KV_REGION` is not a debugging knob for families —
+for an N=4096 bucket it is *required*.
