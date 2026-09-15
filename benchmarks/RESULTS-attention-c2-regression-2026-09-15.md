@@ -249,3 +249,33 @@ NPU_ATTN_INSTS=/tmp/attn_v3_1024/attn_insts.txt \
    prompt is chaotic, so divergence there is not evidence of a defect; a
    real tokenized prompt is needed before the chunked attention can be called
    coherent engine-side.
+
+### Correction: the Zaya engine takes ids as ARGV, and int8-vs-float is not a coherence test
+
+Two mistakes in the run above, both worth recording.
+
+**The Zaya engine's prompt interface is argv, not a file.** `npu_engine_zr1`'s
+printed usage is the universal one (`model.q4nx [decode_tokens]
+[input_tokens_file|-]`), but a model whose header says "zaya" is dispatched to
+`zaya_decode_main`, whose own usage is `model.q4nx [token_id...]`. So
+`… zaya1-8b.q4nx 4 /tmp/ids600.txt` parsed the *path* as a token id
+(`atoi → 0`) and ran with the prompt `[4, 0]`. That is why two completely
+different token files produced byte-identical output — the prompt never reached
+the model. With ids passed as argv the output tracks the prompt:
+
+```
+4 100 200 300 400   -> 37263 413 206971 206971 413 96004 239109 74431
+4 500 600 700 800   -> 56478 54505 34097 31114 229140 55384 55384 52589
+```
+
+**NPU-vs-CPU attention is not a coherence test.** The NPU path is int8
+(`sat8(round(w·127))`, an exp LUT) and the CPU path is float, so the two are
+numerically different *by design*; a chaotic decode amplifies that immediately.
+They differ at 16 tokens (`132187 …` vs `131526 …`) as well as at 600, which
+tells us nothing about the chunked path.
+
+**The right test** is generated-N=1024 versus captured-N=512 — *both* int8 NPU
+attention — on a prompt both can serve (≤512 tokens, where the chunked kernel
+runs only group 0), and then on a >512-token prompt against the shipped
+long-context capture. That isolates the generator change; the CPU baseline only
+tests the int8 approximation itself, which is a known, accepted design property.
