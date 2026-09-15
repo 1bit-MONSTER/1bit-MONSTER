@@ -761,3 +761,55 @@ remove the reasoning-preamble confound entirely, make the token budget irrelevan
 load-bearing, and give a comparison in which "token parity" is at least *conceivable* — which is
 what the goal's done-criterion originally asked for and what no measurement so far has been able
 to test.
+
+## Thinking mode identified AND controlled — but disabling it costs accuracy
+
+The hypothesis was that the native path runs Qwen3 with thinking ON while FLM answers directly
+(thinking OFF). Appending an **empty think block** to the assistant turn tests it, and the order
+of the two special ids matters:
+
+```
+suffix none        -> "Okay, the user is asking about the capital of France. Let me start by recalling..."   (thinking)
+suffix 151667 151668 -> identical thinking behaviour                                                        (no effect)
+suffix 151668 151667 -> "The capital of France is **Paris**."                                              (THINKING OFF)
+```
+
+So `151668 151667` is the empty think block, and it works: the native arm then answers directly,
+in the same one-line style as FLM (`The capital of France is **Paris**.`) rather than reasoning
+for dozens of tokens. **The thinking-mode difference is confirmed and is now controllable.**
+
+But disabling thinking is **not** a free win — a five-prompt probe at 20 tokens:
+
+```
+OK   The capital of France is              -> "The capital of France is **Paris**."
+OK   What is the capital of Australia?     -> "The capital of Australia is Canberra."
+MISS What planet is known as the Red Planet? -> "The planet known as the Red Planet is **Mare Ulterior**."  (a lunar feature -- still wrong)
+MISS How many continents are there on Earth? -> "There are no continents on Earth. The Earth is a single plane..."  (worse than the "five" given with thinking on)
+MISS What is the chemical symbol for water?  -> "The chemical symbol for water is **Hâ¤¤O**."  (CORRECT answer, mojibake subscript -- my "h2o" greedy match missed it)
+```
+
+So:
+
+- **Thinking ON is better for accuracy** (13/15 on the hard set, 20/20 on the easy set). Thinking
+  OFF gives direct, FLM-style answers but degrades several hard questions — notably the continents
+  question, where it goes from a wrong numeral ("five") to a nonsensical "there are no continents".
+- **The Red Planet question is a genuine knowledge deficit in the model**, not a decode artifact:
+  with thinking on it reasons to "the Moon", with thinking off it answers "Mare Ulterior" (a lunar
+  mare). Both are lunar; neither is Mars. The repetition loop I recorded earlier is the *symptom*;
+  the cause is that the model has no Mars association for this phrasing, then flails.
+- **A new, minor defect: mojibake in non-ASCII output.** `H₂O` comes out as `Hâ¤¤O` — a UTF-8
+  decoding problem in the detokenizer. It also means the scoring artifact that made FLM look wrong
+  on this prompt (`**H₂O**`) has a native counterpart, so this prompt cannot be scored by a plain
+  substring match on either side.
+
+### Net for the goal
+
+- The accuracy picture is now: native **20/20 easy**, **13/15 hard** with thinking on; FLM **18/20
+  easy**, ~**14/15 hard** after correcting my scoring artifacts. The two are close and the native
+  arm is **not** demonstrably ahead.
+- The two real defects to carry forward are (1) the **Red Planet knowledge/degeneration** case,
+  and (2) **mojibake for non-ASCII tokens** — plus the observation that the easy-set 20/20 vs
+  18/20 has still not been audited for the same scoring artifacts that inflated the hard-set gap.
+- "Token parity" remains unusable as a criterion: with thinking ON the two sides cannot match
+  token-for-token, and with thinking OFF the native answer beats itself on accuracy. The criterion
+  should be replaced (`/goal-tweak`) with answer-level content agreement on a graded rubric.
