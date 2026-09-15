@@ -1440,3 +1440,43 @@ input is zero", but the *cause* is still open. Naming it precisely needs one che
 dump `sb_data` and `emb_f32` (or re-use `NPU_DUMP_HIDDEN`, which writes `h_b[0]` at line 5122) in
 bf16 mode and see which of the two is zero. That is the next step, and it should be taken before any
 fix is written.
+
+## Narrowed: the lm_head table is fine, so the zero logits come from the HIDDEN
+
+The two candidates were `sb_data` (the normed hidden) and `emb_f32` (the lm_head table). One cheap
+run distinguishes them, because `NPU_DUMP_L0` already dumps both a table row and a bf16-specific
+hidden:
+
+```
+NPU_RUNLIST=0 NPU_BF16=1 NPU_GREEDY=1 NPU_DUMP_L0=1 npu_engine_qwen3_0_6b model.q4nx 1 ids
+
+/tmp/l0_emb.bin          1024 values, 989 nonzero, min -0.1123 max 0.08398   <- lm_head table FINE
+/tmp/bf16_l0_hidden.bin  not written                                          <- that branch not taken
+```
+
+So **`emb_f32` is excluded** — the lm_head table is populated correctly, and row 151644 is a normal
+embedding. Combined with the all-zero logits, the conclusion is that the **hidden** reaching
+`lm_topk_omp` is zero in bf16 decode mode. That is now the single remaining candidate, and it is
+consistent with the garbage output (a zero hidden gives a zero logit vector, whose argmax is
+degenerate, which is how identical backslash tokens get emitted).
+
+The absence of `/tmp/bf16_l0_hidden.bin` is itself informative: the bf16 *prefill* branch that would
+write it (line ~4873) was not taken in this configuration, so the bf16 decode path is being driven
+without the prefill hand-off that populates `h_data` for it — which is a plausible mechanism for the
+zero hidden and the next thing to verify.
+
+### Where the "unblock by repair" attempt stands
+
+| | state |
+|---|---|
+| repair route identified (make the dense arm bf16 so it matches the runlist reference) | yes |
+| blocker on that route (four missing xclbins) | **removed** — QKV/O/GU/D built, exit 0 |
+| path loads and runs | **yes** — `=== BF16 mode ===`, 970.5 ms/tok |
+| path produces correct output | **no** — 193 identical backslashes; logits all zero |
+| cause narrowed | **yes** — not the lm_head table (excluded by measurement), not a missing O-readback (excluded by code); the hidden reaching the lm_head is zero |
+| fix applied | **no** — needs the bf16 decode path's hidden hand-off repaired, then rebuild + re-test |
+
+So the repair is genuinely in progress rather than abandoned: the dead path is now alive, and its
+single remaining defect is narrowed to one buffer by two independent exclusions. The next step is to
+find why that hidden is zero — starting with the bf16 prefill branch that this run did not enter —
+and it is a debugging task on the bf16 path, not a measurement or criterion question.
