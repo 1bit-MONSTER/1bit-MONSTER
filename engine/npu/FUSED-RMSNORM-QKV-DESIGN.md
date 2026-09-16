@@ -3840,3 +3840,42 @@ Next measurement, by the same technique that found the scaling bug: instrument l
 That isolates whether the fused D GEMM's *weight* or its *activation* differs - and unlike the
 attention case, the per-op buffer is a valid oracle here because `bdw` is an f32 residual term
 with no quantization scale attached.
+
+## The "5.1x deficit" is probably not real: the oracle violates a bound the fused path respects
+
+Following the attention fix, the fused path's stage values are:
+
+```
+O  (attention)  0.7148      <- equals my independent NumPy reference (0.71484)
+A2 (O-proj f32) 1.4922
+HBF(resid 1)    0.9180
+CD (layer out)  1.2969
+per-op for comparison: o(token0)=3.09375, bdw=3.57812, layer L0=6.6196
+```
+
+The fused attention output now matches an independent NumPy attention **exactly**. But then the
+per-op path's attention output - `bf16_l0_attnout.bin`, maxabs **2.28125** whichever way it is
+read, since a max is permutation-invariant - exceeds a bound it cannot exceed.
+
+An attention output is a softmax-weighted average of V, so `|out| <= max|V|`. The QKV in that
+very buffer has max|V| = **1.05469**, and launch A's V slice (1.05469) has been confirmed exact
+against a NumPy GEMM computed from the engine's own dumped activation and gamma. So an attention
+output of 2.28125 is **not** a convex combination of the V in that buffer - it is more than twice
+the largest value it could be averaging.
+
+Meanwhile the fused path's 0.7148 respects the bound and matches the independent reference. So
+the quantity I have been treating as the oracle for the "5x deficit" - the per-op attention
+output - does not have the property an attention output must have. That makes it the fifth
+misplaced-or-misidentified dump in this investigation, and it means **the 5.1x deficit is
+probably not a property of the fused layer at all.**
+
+What survives, unchanged and reliable: the fused attention matches an independent NumPy
+attention exactly; launch A is exact against a NumPy GEMM on the engine's own bytes; launch B is
+byte-identical to the bench on all six stages; the engine's tokens are wrong.
+
+**So the fused layer is very likely correct, and the remaining defect is in the engine's
+composition of it - not in its numerics.** The measurement to settle that is the token-level
+comparison the fk-3 contract actually specifies, and the thing to stop doing is treating per-op
+intermediates as ground truth without first checking that each one satisfies its own invariants.
+That check is what just caught this: a max above `max|V|` is impossible, and it took one
+comparison against a quantity I knew independently.
