@@ -421,7 +421,7 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
         if (is_eos_token(best)) ng = 1;   // answer already complete: skip the decode loop
         else if (ng > 1) {
             int c1 = ctx + 1;
-            rt.apply_rope(c1);
+            rt.apply_rope(c1, sb);
             if (!rt.build_runlist(sb, c1) || !rt.embed(best) || !rt.execute_runlist(sb)) {
                 fprintf(stderr, "[runlist] decode forward ctx=%d failed\n", c1);
                 model_free(mw);
@@ -438,6 +438,11 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
             model_free(mw);
             return 1;
         }
+        // RoPE for the NEXT forward writes slot sa's i6 BO while slot sb still
+        // executes on-device reading ITS OWN slot's i6 (now double-buffered) —
+        // this overlaps the ~0.4 ms/token rope write instead of paying it serial.
+        if (i + 1 < ng)
+            rt.apply_rope(next_ctx, sa);
         if (!rt.wait_runlist(sb)) {
             fprintf(stderr, "[runlist] wait ctx=%d failed\n", ctx);
             model_free(mw);
@@ -448,7 +453,6 @@ extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* id
         total++;
         if (is_eos_token(best)) break;    // stop where the oracle stops
         if (i + 1 < ng) {
-            rt.apply_rope(next_ctx);
             if (!rt.embed(best) || !rt.execute_runlist(sa)) {
                 fprintf(stderr, "[runlist] decode forward ctx=%d failed\n", next_ctx);
                 model_free(mw);

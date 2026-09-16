@@ -181,6 +181,7 @@ bool RuntimeLayerEngine::build_norm_bos() {
     const size_t H2 = (size_t)cfg_.hidden_size * 2;   // one norm tensor in bytes (bf16)
     i5_bos_.resize(cfg_.num_layers);
     i6_bos_.resize(cfg_.num_layers);
+    i6_bos2_.resize(cfg_.num_layers);
     for (int L = 0; L < cfg_.num_layers; L++) {
         LayerWeights* lw = &mw_->layers[L];
         // i5 = ILN(H) + PALN(H)  (bf16, from metadata data_offsets)
@@ -215,6 +216,12 @@ bool RuntimeLayerEngine::build_norm_bos() {
         if (lw->k_norm_weight.ndim >= 1 && lw->k_norm_weight.shape[0] > 0)
             memcpy(m6 + 512, model_tensor_data(mw_, &lw->k_norm_weight), 256);
         i6_bos_[L]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // i6 slot 1 (rope overlap): identical static content (q/k norms + pos-0
+        // rope). apply_rope rewrites only [0:256] per forward; a second BO lets
+        // that write overlap the executing runlist on the OTHER slot.
+        i6_bos2_[L] = std::make_unique<xrt::ext::bo>(*dev_, 1048576);
+        memcpy(i6_bos2_[L]->map(), i6_bos_[L]->map(), 1048576);
+        i6_bos2_[L]->sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
     fprintf(stderr, "RuntimeLayer: built %d per-layer norm BOs\n", cfg_.num_layers);
 
@@ -423,9 +430,10 @@ bool RuntimeLayerEngine::prefill_batch(const int* tokens, int n) {
     return forward(n);
 }
 
-void RuntimeLayerEngine::apply_rope(int ctx_len) {
+void RuntimeLayerEngine::apply_rope(int ctx_len, int slot) {
+    auto& i6 = (slot == 1) ? i6_bos2_ : i6_bos_;
     for (int L = 0; L < cfg_.num_layers; L++)
-        update_rope_i6(*i6_bos_[L], ctx_len - 1);
+        update_rope_i6(*i6[L], ctx_len - 1);
 }
 
 bool RuntimeLayerEngine::build_runlist(int slot, int ctx_len) {
@@ -447,7 +455,7 @@ bool RuntimeLayerEngine::build_runlist(int slot, int ctx_len) {
         run.set_arg(3, (const xrt::bo&)*bo_act_);
         run.set_arg(4, (const xrt::bo&)*weight_bos_[L]);
         run.set_arg(5, (const xrt::bo&)*i5_bos_[L]);
-        run.set_arg(6, (const xrt::bo&)*i6_bos_[L]);
+        run.set_arg(6, (const xrt::bo&)*(slot == 1 ? i6_bos2_[L] : i6_bos_[L]));
         run.set_arg(7, (const xrt::bo&)*kv_bos_[L]);
         s.rl->add(run);
     }

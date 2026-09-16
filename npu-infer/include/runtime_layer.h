@@ -68,10 +68,11 @@ public:
     /// executes on the device, hiding the ~0.8 ms/token runlist-build latency.
     /// Two slots are double-buffered: while slot A executes, slot B is built.
     ///
-    /// apply_rope writes the per-layer i6 RoPE BOs (host->device) — it must be
-    /// serial w.r.t. the executing runlist (which reads i6), so it is NOT
-    /// overlapped. build_runlist is pure host and IS overlapped.
-    void apply_rope(int ctx_len);
+    /// apply_rope writes the per-layer i6 RoPE BOs (host->device). The i6 BOs
+    /// are double-buffered (slot 0/1), so apply_rope(next_ctx, slot) writes one
+    /// slot's tables while the OTHER slot's runlist executes — the rope write is
+    /// overlapped. build_runlist is pure host and IS overlapped too.
+    void apply_rope(int ctx_len, int slot = 0);
     bool build_runlist(int slot, int ctx_len);
     bool execute_runlist(int slot);
     bool wait_runlist(int slot);
@@ -132,7 +133,8 @@ private:
     std::map<int, std::unique_ptr<xrt::ext::kernel>> layer_kernels_;
 
     std::vector<std::unique_ptr<xrt::ext::bo>> weight_bos_;   // per layer 10MB
-    std::vector<std::unique_ptr<xrt::ext::bo>> i5_bos_, i6_bos_;
+    std::vector<std::unique_ptr<xrt::ext::bo>> i5_bos_, i6_bos_;   // i6 slot 0
+    std::vector<std::unique_ptr<xrt::ext::bo>> i6_bos2_;           // i6 slot 1 (rope overlap)
     std::vector<std::unique_ptr<xrt::ext::bo>> kv_bos_;       // per layer 32MB
     std::unique_ptr<xrt::ext::bo> bo_act_;
     std::unique_ptr<xrt::ext::bo> bo_logits_;
