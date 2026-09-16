@@ -3524,3 +3524,41 @@ both cores come from one `mm_32x64x128.o` (the real m1 GEMM plus a dummy `zero_i
 DMA, NO memory tile) completes at the real shape and leaves the GEMM exact at 8192/8192 -- and the
 sharpest untested difference between that and the failing two-phase design remains the norm's memory
 tile with its three linked fifos and three runtime DMAs.
+
+### Addendum 101 — the MEMORY-TILE/linked-fifo path is REFUTED too; the API bug was mine
+
+Fixed the addendum-100 build by mirroring the m1 generator's working C pattern exactly, and the fix
+taught me the API rule I had broken: with `object_fifo_link`, the CORE must acquire ITS OWN fifo, not
+the shim-side one. The working C path is
+
+  C_c[j][c] = object_fifo(name, core_tiles[j][c], mem_tiles[c], 1, C_ty)     # core -> mem
+  C_s[c]    = object_fifo(name, mem_tiles[c], shim_tiles[c], 1, C_l2_ty)     # mem  -> shim
+  object_fifo_link([C_c[j][c] for j ...], C_s[c], [m * n * j for j ...])
+
+and the core does `C_c[j][c].acquire(ObjectFifoPort.Produce, 1)`. My first attempt called
+`object_fifo_link(D_m, D_c)` without the list/offset form AND had the core acquiring `D_c`; hence
+"producer port of objectFifo accessed by core running on non-producer tile". With both fixed:
+
+  m1 GEMM + dummy core with a FULL core->mem->shim linked output path, K=64 N=256 c=2:
+    compiled; insts blob 1000 B; submit COMPLETED; GEMM 113/256
+  ... same, at the REAL shape K=2048 N=8192 c=4:
+    compiled; insts blob 430,516 B; submit COMPLETED; GEMM 8192/8192 COLUMNS MATCH
+
+So a second core with a memory tile in its output path -- the exact fifo shape the norm phase's O uses
+-- COMPLETES at the real shape and leaves the GEMM bit-exact. THE MEM-TILE/LINKED-FIFO PATH IS NOT THE
+CAUSE. This is the second of the two candidate differences addendum 99 proposed, and it is now dead.
+
+WHAT STILL SEPARATES the working two-core design from the failing two-phase design, exhaustively:
+  (a) the KERNEL: the dummy calls `zero_i32`; the norm calls `rms_norm_f32_bf16` (both from the same
+      object now, so this is about the function, not the object);
+  (b) an INPUT-side mem-tile path -- shim->mem->core for A and W -- where the dummy has only an
+      output path;
+  (c) THREE fifos and a two-input, one-output runtime DMA sequence, where the dummy has one output;
+  (d) the norm's acquire order (W then A then O) and its inner row loop.
+The next build should add the INPUT-side mem-tile path to the working dummy core first (the cheapest of
+the four), and if it still completes, switch the dummy's kernel to the norm's.
+
+REBUILD POSITION unchanged: (a) compiles -- MET; (c) one submit -- MET, driver validated at 8192/8192;
+(b) both phases correct together -- my GEMM is exact at the real shape, my norm is exact alone
+(bit-identical to the proven design), and the combination's hang is now narrowed to four concrete
+structural differences, two of which have been tested and eliminated.
