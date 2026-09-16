@@ -5465,3 +5465,39 @@ from (a) the peer's 45-69 GB/s, which rests on their stated assumption that a de
 weight set, and (b) the elimination of tap, runlist, flags and shape as causes. The cheap test that would
 settle it is to run ONE compiled layer ELF kernel through my own timed harness and see whether it delivers
 GB/s rather than ~1.5.
+
+### Addendum 147 — CONFIRMED: the per-ctx ELF runlist path is ~59 GB/s. And the harness default measures an 86x slower engine.
+
+I ran the peer lane's own yardstick, npu_ab.sh, against the 0.6B model, twice, changing ONE variable —
+ROOT, which selects which worktree's engine binary is used:
+
+  ROOT=/home/bcloud/1bit-MONSTER        engine=98d02ccde1dd115b
+      rep 1 NATIVE[runlist] ttft=2.027s  prefill=62.5 t/s   decode=1.0 t/s
+  ROOT=/home/bcloud/1bit-MONSTER-goal   engine=d7d5852424ef2a90
+      rep 1 NATIVE[runlist] ttft=14.127s prefill=71.4 t/s   decode=86 t/s   gate=NATIVE-TOKENS-PLAUSIBLE
+      "runlist vs FLM: native is 114.6% of FLM decode"
+
+SO THE PEER'S CLAIM IS CONFIRMED, and my addendum 146's inference with it. At the 0.6B model's 683.8
+MB/token, 86 tok/s is 11.6 ms/token = 58.9 GB/s — squarely inside the 45-69 GB/s they reported. Against
+every generator-built MLIR_AIE xclbin design I measured (~1.5 GB/s) that is a factor of 39. The per-ctx
+ELF runlist path IS the fast path, and the objective's own phrase names it.
+
+THE TRAP, and it cost me one wrong run before I saw it: npu_ab.sh defaults to
+ROOT=/home/bcloud/1bit-MONSTER, NOT this goal worktree, so ITS DEFAULT MEASURES A DIFFERENT ENGINE THAT IS
+86x SLOWER ON DECODE (1.0 vs 86 tok/s) AND 7x FASTER ON TTFT (2.03 s vs 14.13 s — the slow engine has
+less to set up). Nothing in the stdout table says which engine produced the row; the ONLY distinguishing
+field is the provenance hash. I ran the default first, got 1.0 tok/s, and briefly believed I had refuted
+the peer. Anyone comparing lanes on this harness should set ROOT explicitly and quote the engine hash.
+
+WHAT THIS MEANS FOR THE OBJECTIVE, finally with both ends measured rather than inferred:
+  * the instrument the objective names (single-launch whole-layer per-ctx ELF runlist) EXISTS, is FAST,
+    and lives in THIS worktree at engine/npu/build/npu_engine_qwen3_0_6b;
+  * the 35B MoE runs at ~0.7 tok/s through the native path while the device demonstrably sustains
+    ~59 GB/s of weight streaming on the same box, so there is a large implementation gap to close;
+  * and the work is to EXTEND THE ELF PATH TO THE MoE — which is what the objective says — rather than
+    rebuild it from generators, which is what this lane's rebuild workstream has been doing and which
+    measures ~39x slower.
+
+The verified fused xclbin design from addendum 141 (one submit, RMSNorm + i8 GEMM + FFNnorm, GEMM
+8192/8192 in 12 of 14 runs) remains correct and remains the wrong instrument for this objective. It is
+recorded so nobody rebuilds it.
