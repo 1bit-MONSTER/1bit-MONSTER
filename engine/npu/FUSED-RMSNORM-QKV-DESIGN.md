@@ -1459,3 +1459,22 @@ row-major silu buffer), so the defect is structural — most likely the GEMM cor
 THIRD phase in one core body. Next step: give D its own core (or its own column)
 instead of a third phase, and if that fixes it, bisect what about the third phase
 breaks the sequence.
+
+### Tried and FAILED: moving D onto the O-proj core (recorded so it is not repeated)
+
+The obvious fix — take the D phase out of the GEMM core's body and append it to
+the O-proj core (col 4, whose fifos have identical shapes and whose shim is only
+at 2 MM2S + 1 S2MM, so no new channels) — made things WORSE, not better: with the
+D seq block moved to the end, **every** stage came back all-zero, including QKV
+and GU, i.e. the sequence now stalls at its very first phase rather than partway.
+So the failure mode is sensitive to how the DMA-task order and the cores' acquire
+order interleave, and "which core runs the phase" is not the whole story. Reverted.
+
+Two things worth carrying forward: (a) an extra phase in a core body is not
+obviously the culprit, since the O-proj core with two phases also stalls; and
+(b) the symptom moved from "tail silently dropped" to "nothing at all", which
+means the first thing to check next is not D but the seq<->core ordering
+invariant (every phase's task block must match its core's acquire sequence
+exactly, and adding a phase anywhere perturbs it). The committed, verified
+configuration is `ND=0`:
+`ND=0 bash build_fk3_layer.sh 16 1024 16 128 1024 2 2 64 64 64`.
