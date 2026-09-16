@@ -2055,3 +2055,31 @@ non-mechanical piece is appending the identity block to W_D (the residual-2 fusi
 
 That makes the remaining fk-3 work: build the bf16 matrices per layer, launch the
 fused kernel, and compare tokens against the existing per-op prefill.
+
+### The integration is now EXECUTABLE (all three prerequisites verified present)
+
+1. **Kernel dimensioned for the real model.** 0.6B is H=1024, NH=16, NKV=8,
+   HD=128, IM=3072, so NQKV=4096, N2=6144, NI=3072, NO=1024 — *exactly* the shape
+   the M=128 build already runs and verifies. No dimension changes needed.
+2. **Weights.** `~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx` is present;
+   `npu_bf16_pack_layer` + `bf16mm_dequant` turn it into the four bf16 row-major
+   matrices, via the engine's own on-NPU dequant (parity by construction).
+3. **Measurement vehicle.** `benchmarks/flm_parity.sh` already takes `--engine`, so
+   the A/B is a flag:
+   ```
+   benchmarks/flm_parity.sh --model qwen3_0_6b --flm-tag qwen3:0.6b \
+     --engine engine/npu/build/npu_engine_qwen3_0_6b \
+     --q4nx ~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx \
+     --tokenizer ~/.config/flm/models/Qwen3-0.6B-NPU2/tokenizer.json ...
+   ```
+
+So the remaining fk-3 work is exactly:
+
+* a per-layer driver: `npu_bf16_pack_layer(L, bo, offs)` once, four
+  `bf16mm_dequant` calls (appending `I` to W_D for the residual-2 fusion), then ONE
+  fused launch with the 17 buffers;
+* gate it behind an env flag (e.g. `NPU_FK3=1`) so the per-op path stays selectable
+  for the A/B;
+* take the engine's `/tmp/1bit-npu-device.lock` flock before any accel0 work;
+* run `flm_parity.sh` both ways and compare TOKENS, not timings — that is the fk-3
+  contract, and only after tokens match does the fk-4 tok/s number mean anything.
