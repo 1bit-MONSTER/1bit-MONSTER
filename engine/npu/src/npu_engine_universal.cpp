@@ -4793,6 +4793,7 @@ struct Bf16Ctx {
                                 bA[(size_t)pi * qout + j] = f32_to_bf16(ac_ao[j]);
                             if (getenv("NPU_ATTN_EMU_DIFF") && pi == npt - 1) {
                                 std::vector<float> emu_out((size_t)qout), f_out((size_t)qout);
+                                ac.emu_vo = kv_caches[l][0].v.data();
                                 ac.run_emu(emu_out.data(), ac.kv_sv, keys2);
                                 attn_omp(&bqo[(size_t)pi * qkvn], f_out.data(),
                                          kv_caches[l][0].n, kv_caches[l][0].k.data(),

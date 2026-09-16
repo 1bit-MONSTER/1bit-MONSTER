@@ -417,3 +417,38 @@ Cited status for Nanbeige: the `AttnCtx` adapter is implemented, deterministic, 
 verified correct at the interface; end-to-end parity is **blocked by the int8
 attention contract** (quantified above) and, independently, by the bf16 prefill stack
 differing from FLM even with float attention (CPU 166103 vs FLM 13).
+
+## Addendum 10: term attribution — int8 Q/K dominate; A2 and V are negligible
+
+Env-gated EMU variants in `npu_attn_ctx.h` (`NPU_ATTN_EMU_FLOAT_A2`, `NPU_ATTN_EMU_FLOAT_V`)
+keep the int8 path for every term except the one under test, then re-run
+`NPU_ATTN_EMU_DIFF` (8-token prompt, last row, per layer):
+
+| variant | L1 max\|emu-float\| | L2 max\|emu-float\| | L7 max\|emu-float\| |
+|---|---:|---:|---:|
+| int8 everywhere (baseline) | 0.197073 | 0.784570 | 1.231850 |
+| **float A2** (int8 Q/K/V) | 0.192873 | 0.781741 | 1.205480 |
+| **float V** (int8 Q/K/A2) | 0.195907 | 0.781921 | 1.233460 |
+
+Making the softmax output exact changes the divergence by ~2%; making V exact
+changes it by ~1%. Both are noise next to the 0.197-1.232 baseline. **So the
+residual Nanbeige gap is the int8 Q/K quantisation** (the QK^T), which is the one
+term neither variant touches — and it is the term a per-dim/per-head/row scale cannot
+rescue (a per-dim K scale lives inside the mmul sum; a per-head/row Q scale is a
+temperature).
+
+**Consequence for the fix:** a targeted change is worth doing here — a
+**bf16/mixed-precision QK^T** (wider score accumulation) rather than a full bf16
+rewrite of the whole kernel, since the PV/A2 sides are already effectively exact at
+int8. That is also the term the beyond-8192 route needs addressed (int8 KV there vs
+bf16 in the dense path).
+
+The two variants are committed env-gated and OFF by default (`emu_vo` is only set by
+the `NPU_ATTN_EMU_DIFF` probe). Both were corrected during this work: the first cut
+applied a spurious extra `/127` to the float-V dequantisation (`sv` already carries
+`max|V_d|/127`), which made float-V look 127x wrong; the fixed numbers are above.
+
+Also reconfirmed while toggling: `npu-float` is invariant across the variants
+(0.197524 / 0.784974 / 1.23304), i.e. the NPU output does not depend on the EMU
+variant — the earlier apparent dependence was a line-selection artefact in the
+paired-loop shell, not a real effect.
