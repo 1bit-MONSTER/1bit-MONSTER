@@ -742,3 +742,41 @@ the aggregate host-side expert handling (~120 ms/layer of pack) plus ~20 ms of N
 per layer, and none of the three levers tried (M=1 kernels, cache, SIMD quant) moved it
 materially. The durable deliverables of this line of work are the M=1 kernels (built,
 wired, bit-identical) and the M=128-baked-kernel finding.
+
+## Addendum 20 — EXPERT PREPACK (all 256/layer): FFN 70 -> 29 ms/layer, decode 3.49 -> 1.83 s/tok
+
+The lever addendum 12 identified and addendum 17 wrongly retired, now actually done — using
+the engine's own existing warm path (`NPU_WARM_EXPERTS=<stats> NPU_WARM_TOP=N`, which packs
+the top-N routed experts per layer at init through `moe_pack_experts`).
+
+Generate an all-expert stats file (the format is `layer expert count`):
+```
+for l in 0..39: for e in 0..255: print(f"{l} {e} 1")   # 10240 lines
+```
+Run:
+```
+NPU_MOE=1 NPU_MOE_FUSED=1 NPU_MOE_SMALL_M=1 NPU_WARM_EXPERTS=/tmp/route_all256.txt NPU_WARM_TOP=256 \
+  npu_engine_qwen3_6_moe_35b model.q4nx 8 /tmp/ids35b.txt
+```
+Result:
+```
+  warm: 10240 experts pre-packed in 148195 ms
+  [1] 154742  [2] 16023  [3] 136614  [4] 25238  [5] 32858  [6] 248050  [7] 184997
+  [decode-stage] QKV=8.4 attn=5.5 O=5.4 FFN=28.9 ms/layer
+  === 1826.5 ms/tok (0.55 tok/s) ===
+```
+
+| metric | addendum 18 (M=1, cold) | addendum 20 (M=1 + warm 256) |
+|---|---|---|
+| FFN / layer | ~70 ms | **~29 ms** |
+| decode | 3.49 s/tok (0.29 tok/s) | **1.83 s/tok (0.55 tok/s)** |
+
+So: **~1.9x**, tokens bit-identical, at the cost of ~148 s init and ~30 GB RAM (10240
+expert slices x ~3 MB). The MoE FFN is no longer the whole story: it is still the largest
+per-layer term (~29 ms, of which ~20 ms is the now-M=1 GEMM and ~9 ms the concat-BO
+memcpy/sync of 18.9 MB/layer), with QKV 8.4 + attn 5.5 + O 5.4 alongside.
+
+Steady state is now **0.55 tok/s** — 1.9x the 0.29 of the M=128 baseline measured in
+addendum 10c, and within ~1.3x of the ~0.7 tok/s figure the objective starts from (though
+far below the dense-class target). Remaining levers, in order of size: the per-layer
+18.9 MB concat-BO sync/memcpy, then the M=1 GEMM's own ~10 ms/launch.
