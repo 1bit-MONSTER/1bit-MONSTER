@@ -2219,3 +2219,35 @@ Cost note for route 1: it is `(MA + NC) * rope_dim/2` trig calls per chunk, i.e.
 = 2048 per chunk here, which is comparable to the chunk's own MACs — so it needs the
 cheap polynomial, not a libm call, even if libm existed. This is the one remaining
 piece between the current fused layer and a valid model layer.
+
+### RoPE, second attempt: the polynomial works, but it does not FIT
+
+Built exactly the design above — in-kernel `fast_sincos` (Cody-Waite reduction + a
+4-term minimax, ~1e-3 rad), the frequency table by recurrence from a build-time
+constant (no libm `pow` either — that also fails to link), the engine's half-split
+convention, Q rotated in place before the mmul and K rotated inside the existing
+layout conversion. It compiles and links, and the rotation order was verified in
+the source before building.
+
+Then it fails on program memory:
+
+```
+attn core .text   without RoPE : 11504 B   (headroom  4880 B of 16384)
+attn core .text   with RoPE    : 24768 B   (OVER by   8384 B)
+after a noinline refactor      : 24640 B   (still over)
+```
+So RoPE costs ~13 KB of `.text` — the index arithmetic and bf16 gather/scatter for
+the microtiled Q and the blocked K, times two call sites, times whatever the
+compiler unrolls. Making the two block rotations `noinline` recovered only 128 B,
+so it is not the unrolled loops. **The attention core cannot host RoPE.**
+
+Where it CAN go, and this is the useful part: `.text` per core in this build is
+attn 11504 B, **norm 12336 B (4048 free), GEMM 4192 B (12192 free)**. The QKV GEMM
+core is the obvious host — it holds ~12 KB of headroom, it already knows each row's
+GLOBAL position (within its C tile the row index IS the position, since the tile
+spans all of M), and it knows the channel from the N-tile index, so it can tell a Q
+column from a K column and rotate the right ones before storing. The frequency table
+and `fast_sincos` are then instantiated once, in the core with room.
+
+That is now the concrete plan for RoPE: move it from attn1 to the QKV GEMM core's C
+store. Reverted for now — the verified causal mask is intact.
