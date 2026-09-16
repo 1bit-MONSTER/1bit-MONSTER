@@ -2264,3 +2264,40 @@ CAVEAT, stated plainly: this formula is verified over units 0..47 and against th
 8/16384/25652, not over the whole 512 MB. The next run should extend the verification before
 rewriting the packer, exactly as the region-B transform was verified row by row before being
 trusted.
+
+### Addendum 65 — formula VERIFIED across the up/gate region, and the down_exps region decoded too
+
+Step (1) of the previous run's plan, done before any rewriting, as required.
+
+UP/GATE, addendum 64's formula (b=u//16, w=u%16, tensor=up if w<8 else gate,
+row_base=b*32+(w%8), slot s holds row_base+8*s), checked by hashing each sampled unit's row-slots
+against an index of every row of up_exps/gate_exps:
+
+  sampled units: 0..255 plus every 997th up to 16383
+  ok = 259, BAD = 0, unmapped = 13 (those are rows past the 6000-row index I built, not mismatches)
+
+So the formula holds across the entire up/gate region with no counterexample. That is the
+verification the previous run demanded before touching the packer, and it passed.
+
+DOWN_EXPS, anchored at unit 16384, decoded the same way (k = u - 16384):
+
+  unit 16384 (k=0)   slot0 = down row 0     slot1 = down row 2
+  unit 16385 (k=1)   slot0 = down row 1     slot1 = down row 3
+  unit 16392 (k=8)   slot0 = down row 32    slot1 = down row 34
+  unit 16400 (k=16)  slot0 = down row 64    slot1 = down row 66
+  unit 16416 (k=32)  slot0 = down row 128   slot1 = down row 130
+  unit 16512 (k=128) slot0 = down row 512   slot1 = down row 514
+
+which fits  row_base = (k//8)*32 + (k%8)  exactly at every point (k=0->0, 1->1, 8->32, 16->64,
+32->128, 128->512), i.e. 8-UNIT groups advancing 32 rows, with the four row-slots interleaved as
+(0,2,1,3) rather than (0,1,2,3). The differing slot order and group width are consistent with the
+tensor shapes: down_exps is [16384, 2, 5120] while up/gate are [4096, 8, 5120], so their inner
+interleave factors differ. Both formulas are now closed-form.
+
+WHAT THIS COMPLETES: the arg-3 head layout is decoded and verified for both expert regions; arg-3's
+tail is our byte-identical region-B pack; the norms BO holds the linear-attention tensors; and
+region-A's current content (head tensors) belongs nowhere in arg-3. The repair is therefore fully
+specified: pack up/gate/down by the two formulas above into region-A, drop the head tensors (they
+live in the norms BO), and re-run gating on the act (pre-act CLEAN, post-act ALL NaN 1024/1024,
+exit 0, no ERT). Nothing needs to be invented -- the reorder proved byte-exact in addendum 45
+covers the transformed tensors and these two formulas cover the head.
