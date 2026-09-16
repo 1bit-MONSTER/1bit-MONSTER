@@ -332,9 +332,8 @@ runs re-confirm the committed numbers on the current tree:
 Decisive split: **build and rope are context-constant; the entire 1024→2088
 scaling (~2.8 ms) is in `exec`** — the `layer.xclbin` attention reading a longer
 KV prefix. This closes ra-3's open question: the host passes (§10) are NOT the
-@2k gap; the gap is device-side, and the native exec scales ~2.5x more steeply
-than FLM's (12.5→15.3 vs 12.8→13.9 ms), which is the one remaining unexplained
-delta (KV layout / per-ctx ELF vs FLM's internal sequence).
+@2k gap; the gap is device-side. (The earlier "~2.5x-steeper than FLM" framing
+was later found to be a context-mismatch artifact — see the CORRECTED §12c.)
 
 ### 12b. ra-6 device-free narrowing: FLM's forward uses the SAME mechanism
 
@@ -344,11 +343,10 @@ and per-run `set_arg_at_index` — the SAME per-ctx-kernel + runlist structure t
 native's `RuntimeLayerEngine::build_runlist` replicates (28 layer runs + lm_head
 in one runlist). `gen_layer_seq`/`gen_mha_engine_seq` are not called in forward
 itself (the sequence is generated inside `_setup_kernel`, matching the native's
-pre-generated per-ctx ELF). So the ~2.5x-steeper native exec scaling is **not a
-different-mechanism effect** — it is either a KV-layout/BO-size difference or a
-measurement-condition artifact (FLM's 12.8/13.9 ms were taken clean 2026-09-12,
-the native's 12.5/15.3 ms today with the 35B serve loaded). Both need the clean
-A/B of ra-6 to settle.
+pre-generated per-ctx ELF). So the native's decode is **not a different-mechanism effect** — it uses the
+identical per-ctx-kernel + runlist structure as FLM. (The earlier "~2.5x-steeper"
+framing and FLM's "12.8/13.9 ms" figures were mis-attributed ~1k-context numbers;
+see the CORRECTED §12c.)
 
 KV-size cross-check: the native allocates `npu_kv_cache_bo_size = 128 MB` per
 layer (134217728 B, `npu-infer/include/common.h:32`) and writes only 32 MB
@@ -356,24 +354,23 @@ layer (134217728 B, `npu-infer/include/common.h:32`) and writes only 32 MB
 (`flm_prefill_bridge.cpp`), i.e. a 128 MB KV cache (32768×8×128×4 B) — the
 allocation sizes match, so a BO-size difference is unlikely to be the cause.
 
-### 12c. ra-6 A/B RESULT (clean, same-condition): the gap is REAL, not an artifact
+### 12c. ra-6 A/B RESULT (CORRECTED): NO exec-scaling gap — native beats FLM at every context
 
-Clean A/B after the numpy process cleared (both sides measured with only the
-idle 35B serve present, so the serve is not the confound):
+My earlier "−8…−10% @2k" was a **measurement error**: `flm_parity.sh` runs FLM
+with `FLM_MAX_LENGTH=1024` (default), so its "FLM 74.88" was FLM at ~1024
+context while the native side repeated the prompt to ~2088 tokens — a
+context-mismatched comparison. The correct same-context A/B is in the committed
+`npu-ab` run `runs/20260916T142049Z` (ctx=2k, `flm_max_length=2048`, decode=8)
+plus `runs/ab-F1c-flm-1k` (ctx=1k):
 
-| ctx | native decode | FLM decode (fresh) |
-|---|---:|---:|
-| 1024 | **82 tok/s** (12.2 ms) | 77.9 (committed) |
-| 2088 | **69 tok/s** (14.4 ms) | **74.88 tok/s** (13.35 ms, fresh) |
+| ctx | native decode | FLM decode (same context) | verdict |
+|---|---:|---:|---|
+| 1024 | **82 tok/s** (12.2 ms) | 73.7 (`ab-F1c-flm-1k`) | **+10%** |
+| 2048 | **73.0 tok/s** (13.7 ms) | 63.5 (`20260916T142049Z`) | **+15%** |
 
-So the native decode is +5% at 1k but −8…−10% at 2k — it degrades ~2× steeper
-with context (exec 12.5→15.3 ms) than FLM (12.8→13.9 ms). Same-condition FLM
-(74.88) rules out the serve as the cause. Device-free narrowing ruled out
-different mechanism (same `xrt::runlist`+per-ctx-kernel, §12b) and different KV
-allocation (§12). The one structural delta found is the KV REGION STRIDE baked
-into the per-ctx ELF: native `max_l=8192` → 8 MB region stride, FLM `MAX_L=32768`
-→ 32 MB stride — but a smaller (packed) stride should be *faster*, not slower,
-so it is an unlikely cause. The residual ~1.4 ms/token at 2k lives in the
-`layer.xclbin` attention KV-prefix read (closed-source), and is **not
-host-fixable**: the host passes are context-constant (§12), the mechanism and KV
-size match, and the only difference is inside the closed kernel's KV walk.
+So the fused runlist/ELF decode is **faster than FLM at both contexts** (+10%
+@1k, +15% @2k), and the exec scaling is comparable (native 12.2→13.7 ms, FLM
+13.6→15.7 ms — both grow ~2 ms 1k→2k). There is **no exec-scaling gap to
+root-cause or close**, and the KV-stride delta (native 8 MB vs FLM 32 MB) is
+moot — if anything the native's packed stride is the faster layout. The earlier
+§12/§12b "~2.5x-steeper" framing is retracted as a context-mismatch artifact.
