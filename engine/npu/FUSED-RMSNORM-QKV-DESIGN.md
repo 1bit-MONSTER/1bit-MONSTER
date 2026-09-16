@@ -4167,3 +4167,44 @@ the difference is inside the single launch and the next step is the region betwe
 Recorded as a candidate, deliberately not as a conclusion - this session has retracted seven claims
 made that way, and the last three were all resolved by making the engine answer rather than reasoning
 about it.
+
+## Both remaining theories refuted by measurement. The inconsistency is now fully forced.
+
+Probe 2 ran inside the layer loop, immediately before the real QKV launch, on the same `Wqkv[l]`:
+
+```
+P1  (pre-loop, Wqkv[0])  [ 0.00171 -0.02588  0.01880 -0.00635 -0.00293 -0.01758 ... ]
+P2  (in-loop,  Wqkv[0])  [ 0.00171 -0.02588  0.01880 -0.00635 -0.00293 -0.01758 ... ]
+P1 == P2 : 100.00% match, maxdiff 0.00000
+```
+
+So the weights are **not** rebound between the prep loop and the prefill loop. The "stale W_idx"
+candidate is refuted, and with it the last theory. (Note one of my own checks was invalid: comparing
+P2 against `bC` is meaningless, because with a one-hot A the GEMM returns a row of W and there is no
+reason it should equal a GEMM against the real `bA`. I caught that only because the shapes differed
+and NumPy refused the broadcast - worth recording as the kind of check that fails loudly instead of
+silently agreeing.)
+
+**Where that leaves fk-3, stated exactly.** Every link is now individually verified:
+
+| link | how verified |
+|---|---|
+| effective weight == my raw array | two black-box probes, at two points in the run, 100.00% identical |
+| `bA` dump position | read line 4692: immediately after `rn_bf16`, nothing touches `bA` before the GEMM |
+| `bC` is the raw GEMM output | read `qk_norm_pi` (copies to `bqo`, never writes `bC`) and the dump (`2`-byte bf16) |
+| the GEMM itself | with a one-hot A it returns the weight row exactly |
+| the call contract | measured: 256 rows are read from the A pointer |
+
+And they are **mutually inconsistent**: `bC != bA @ W_raw` (0.08% element match) while all five
+above hold. That means exactly one of my verifications is *still* wrong, and the session's tally says
+the likely one is the least-directly-measured: I verified the `bA` dump's **code path**, but never
+that the loop at 4690 covers **the same rows the GEMM consumes**. `rn_bf16` is called per-row in a
+block-structured loop, and the dump captures `bA.data()` for `4*H` elements; if the norm loop and the
+GEMM's block loop do not agree on row indices - the same off-by-block class as the `(i+2)*256*H`
+launch at 4748 - then the activation I compared against is the right buffer at the wrong rows. That
+is testable in one step: dump `bA` **at the launch site**, for the same block index, and compare
+row-for-row.
+
+Two results from this session are secure regardless, and both are fixes rather than analysis: the
+missing `1/sqrt(HD)` score scaling (verified against an independent NumPy attention), and the
+measured `256`-row staging contract for `bf16mm_gemm_launch`.
