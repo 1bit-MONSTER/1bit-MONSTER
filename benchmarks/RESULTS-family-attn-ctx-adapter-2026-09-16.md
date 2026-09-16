@@ -137,3 +137,50 @@ hw_context count at the time AttnCtx launches (`hwctx_limit=16`) — if the engi
 already holds its full complement of contexts, the AttnCtx launch may be silently
 degraded. Also worth testing: create the AttnCtx **before** the bf16 contexts, and
 force an explicit device-level sync between the last GEMM and the AttnCtx launch.
+
+## Addendum 3: the non-determinism is ROOT-CAUSED and FIXED (construct AttnCtx early)
+
+**Cause.** The `AttnCtx` (its own `hw_context`, xclbin registration and data BOs)
+was being constructed **lazily inside the prefill's attention block**, i.e. in the
+middle of a run that is already driving five `Bf16Ctx` contexts plus Bf16Mm's
+decompression/mm contexts on the same device. Registering a new context and
+allocating its BOs at that point perturbs the in-flight work, and the delivered
+attention (and hence the token) varies run to run.
+
+**Fix.** Construct it **before** the bf16 contexts: `ac_ctx_init(dev, NH, NKV, HD)`
+is called just before `bf16mm_init(...) && npu_bf16_prefill_init(...)`, and the
+attention block only *uses* the pre-built context.
+
+**Result — deterministic.**
+
+| case | before | after (early init) |
+|---|---|---|
+| 8-token prompt | 152369 / 152367 / 8900 / 6037 / 152360 / 152552 / 2092 | **13, 13, 13, 13** |
+| 1202-token templated ids | (not reliable) | **764, 764** (prefill 335 s) |
+
+Also confirms the two reference paths were never the problem (captured-ELF bf16
+= 152343 x2, plain fallback = 152367 x2).
+
+**So the generated kernel now drives a real prefill reproducibly.** The adapter is
+no longer merely a "vehicle"; its output is stable. Note the `[NPU_ATTN_CTX] EARLY
+init OK` line is printed once, before `bf16 contexts ready`.
+
+## But Nanbeige is still NOT at parity — and now the reason is measurable
+
+With determinism restored, the 1202-template-matched prompt gives **764**, where
+`flm run nanbeige4.1:3b` gives **13**. Two separate divergences are now visible:
+
+1. **AttnCtx vs CPU attention, same in-situ Q/K/V** — the deterministic CPU
+   (`NPU_ATTN_CPU=1`) prefill gives **166103**, the AttnCtx path gives **764**. The
+   bench already showed the generated int8 attention carries max abs error
+   ~8.5e-2 against its own EMU on an output whose mean magnitude is ~3e-2 — large
+   enough to move the final argmax. So the int8 generated attention is too lossy
+   for this bf16 prefill at long context, independent of any race.
+2. **Prefill stack vs FLM** — the CPU-attention path (float, the trusted reference
+   for attention) gives 166103, which also differs from FLM's 13. So something
+   upstream of attention (Q/K/V norm+RoPE ordering vs the kernel's pre-RoPE
+   contract, the GDN layers in the 32-layer stack, or the rendered template's
+   system section vs what FLM actually feeds) diverges from FLM.
+
+Cited conclusion for Nanbeige: **adapter fixed and deterministic; parity not
+established**, with the two divergences above explicitly localised.

@@ -32,6 +32,27 @@
 #include "silu_quant.h"             // silu_lut / silu_quant_i8 (#1934)
 #include "npu_attn_ctx.h"           // AttnCtx: generated family attention (Nanbeige nh20/nkv4/hd128)
 
+// NPU_ATTN_CTX=1 — generated family attention through the AttnCtx driver (the
+// same one zaya_decode.cpp uses). Constructed EARLY (before the bf16 contexts)
+// so the hw_context/xclbin registration does not perturb an in-flight prefill;
+// the attention block below only *uses* it.
+static AttnCtx g_ac;
+static bool g_ac_tried = false, g_ac_ready = false;
+static bool ac_ctx_init(xrt::device& d, int nq, int nkv, int hd) {
+    if (g_ac_tried) return g_ac_ready;
+    g_ac_tried = true;
+    const char* ax = getenv("NPU_ATTN_XCLBIN") ? getenv("NPU_ATTN_XCLBIN")
+                     : "engine/npu/xclbins/attn_gen_2048_nh20_hd128.xclbin";
+    const char* ai = getenv("NPU_ATTN_INSTS") ? getenv("NPU_ATTN_INSTS")
+                     : "engine/npu/xclbins/attn_gen_2048_nh20_hd128_insts.txt";
+    if (getenv("NPU_ATTN_MAX_SEQ") && atoi(getenv("NPU_ATTN_MAX_SEQ")) > 0)
+        g_ac.MAX_SEQ = atoi(getenv("NPU_ATTN_MAX_SEQ"));
+    g_ac_ready = g_ac.init(d, ax, ai, nq, nkv, hd);
+    fprintf(stderr, "\n[NPU_ATTN_CTX] EARLY init %s (nh=%d nkv=%d hd=%d xclbin=%s)\n",
+            g_ac_ready ? "OK" : "FAILED", nq, nkv, hd, ax);
+    return g_ac_ready;
+}
+
 // Forward declarations: INT8 NPU instruction generators from gemm_npu_instructions.cpp
 void gemm_generate_sequence_i8(
     npu_sequence*           seq,
@@ -4524,6 +4545,8 @@ struct Bf16Ctx {
         // attention ELF a drop-in file instead of a code change.
         bf16mm_set_attn_qout(NH * HD);
         bf16mm_set_attn_hd(HD);
+        if (getenv("NPU_ATTN_CTX") && atoi(getenv("NPU_ATTN_CTX")) == 1
+            && NH == 20 && NKV == 4 && HD == 128) ac_ctx_init(dev, NH, NKV, HD);
         if (bf16mm_init(fmd, fxd) && npu_bf16_prefill_init(mp, H, NC, NH, NKV, IM, NV, HD) == 0) {
             // KV cache region stride is baked into the captured attention ELF
             // (region = MAX_L x 4 heads x HD x 2 bytes): the NH=16 ELF was
@@ -4756,23 +4779,9 @@ struct Bf16Ctx {
                 // select the build; NPU_ATTN_KV_REGION (already handled above) sizes bKv.
                 if (attn_npu_ok && getenv("NPU_ATTN_CTX") && atoi(getenv("NPU_ATTN_CTX")) == 1
                     && NH == 20 && NKV == 4 && HD == 128) {
-                    static AttnCtx ac;
-                    static bool ac_tried = false, ac_ready = false;
-                    if (!ac_tried) {
-                        ac_tried = true;
-                        const char* ax = getenv("NPU_ATTN_XCLBIN")
-                            ? getenv("NPU_ATTN_XCLBIN")
-                            : "engine/npu/xclbins/attn_gen_2048_nh20_hd128.xclbin";
-                        const char* ai = getenv("NPU_ATTN_INSTS")
-                            ? getenv("NPU_ATTN_INSTS")
-                            : "engine/npu/xclbins/attn_gen_2048_nh20_hd128_insts.txt";
-                        if (getenv("NPU_ATTN_MAX_SEQ") && atoi(getenv("NPU_ATTN_MAX_SEQ")) > 0)
-                            ac.MAX_SEQ = atoi(getenv("NPU_ATTN_MAX_SEQ"));
-                        ac_ready = ac.init(dev, ax, ai, NH, NKV, HD);
-                        fprintf(stderr, "\n[NPU_ATTN_CTX] init %s (nh=%d nkv=%d hd=%d xclbin=%s)\n",
-                                ac_ready ? "OK" : "FAILED", NH, NKV, HD, ax);
-                    }
-                    if (ac_ready) {
+                    if (!g_ac_tried) ac_ctx_init(dev, NH, NKV, HD);
+                    if (g_ac_ready) {
+                        AttnCtx& ac = g_ac;
                         static std::vector<float> ac_ao;
                         ac_ao.resize((size_t)qout);
                         for (int pi = 0; pi < npt; pi++) {
