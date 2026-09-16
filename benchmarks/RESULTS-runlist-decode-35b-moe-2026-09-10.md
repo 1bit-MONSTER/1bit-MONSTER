@@ -5625,3 +5625,30 @@ Two follow-ups on addendum 149, both byte/decoded evidence.
 
 Oracle remains /tmp/lin5dump/{lin5_b1_L1.bin,lin5_b2_L1.bin,pool_L1_head.bin}; tooling
 npu-infer/tools/{dump_lin5_weights,gen_layer_stages_moe}.cpp both build against the vendor .so.
+
+### Addendum 151 — Impl::load_weights structure: two loaders + per-tensor memcpy into the final BOs
+
+Disassembled the start of qwen3_6_moe_npu::Impl::load_weights (0x7a060) enough to see the
+assembly of the final BOs from addendum 149/150's intermediates:
+
+1. There are TWO weight loaders, both exported with the same ABI
+   `(int L, Q4NX&, buffer<uchar>& pool, buffer<bf16>&, buffer<bf16>&)`:
+     load_linear_weights @0x7f690   (dumped, addendum 149) — linear-attn SSM + expert pool
+     load_attn_weights   @0x7ce80   (full-attn layers: q/k/v/o_proj) — NOT yet dumped
+   The harness has no full-attn packer at all (npu_pack_moe_linear5_bo returns 0 when
+   ssm_conv1d is absent), so full-attn layers are a second, separate gap.
+
+2. After load_linear_weights, Impl::load_weights loads INDIVIDUAL tensors by name
+   (SafeTensors::load_weights) and memcpy's each into a BO at a field-held offset:
+       rsi = tensor bytes;  rdi = *(Impl+0x4d0)  (the destination BO's data ptr);
+       edx = *(Impl+0xb8);  rdi += edx*2  (offset in bf16 units);  memcpy; sync_to_device(*(Impl+0x4e8)).
+   That is the mechanism that places input_layernorm / post_attention_layernorm /
+   shared_expert_gate / moe_router into the router BO (arg2) at their real offsets — the
+   offsets the harness's npu_pack_moe_router_bo (iln@0/paln@0x1000/sg@0x2000/router@0x3000)
+   has never been checked against.
+
+CONSEQUENCE: the authoritative arg0/arg2/arg3 layout is recoverable without the vendor runtime —
+dump load_attn_weights (same tooling as dump_lin5_weights), and read the per-tensor BO base
+(Impl+0x4d0) / offset (Impl+0xb8) values + the tensor name strings from the disassembly around
+0x7a2b2..0x7a564. That, plus the region-B packer (already byte-exact), fully specifies every BO
+the layer ELF reads.
