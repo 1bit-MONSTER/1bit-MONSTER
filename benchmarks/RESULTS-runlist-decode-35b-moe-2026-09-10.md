@@ -487,3 +487,29 @@ state rather than a pure binding bug. Tested the same hypothesis on the 35B:
 So on the 35B the ERT timeout is **reproducible, not transient** (2/2 loads), unlike
 the Llama case. The 35B runtime whole-layer path is reliably broken rather than
 flaky, which is consistent with (and does not rescue) Addenda 6-9b.
+
+### Addendum 10c — CORRECTION of 10b: M=1 decode is ~9.5-9.9 s/tok; FFN dominates
+
+Addendum 10b was wrong: the `... 1 <ids>` run only executes the BOOT (the decode
+`while` loop needs step<ng), so its "867.8 ms/tok" is not a decode rate. Re-ran with
+3 tokens and NPU_TIMING, which prints the real per-layer breakdown:
+
+```
+=== M=8 Batch Decode (3 tokens) ===
+[decode-stage] QKV=27.3ms attn=5.6ms O=25.4ms FFN=188.7ms misc=0.0ms per-layer
+  [1] 154742   9911 ms/tok
+[decode-stage] QKV=27.1ms attn=5.4ms O=24.1ms FFN=181.0ms misc=0.0ms per-layer
+  [2] 16023    9533 ms/tok
+=== 6747.8 ms/tok | batches=2 tokens=3 ===
+```
+
+So the engine's own, M=1 **sequential** 35B decode is **~9.5-9.9 s/tok (≈0.10 tok/s)**,
+and the cost is dominated by the **MoE FFN at ~188 ms/layer (76% of the ~247 ms/layer)**;
+QKV 27 ms + O 25 ms + attn 5.6 ms are the rest. That matches the engine's own comment
+(v12 note): decode is launch/kernel-bound because the microkernel is **M=128-baked**
+(~4 ms minimum per launch, and the fused GUSGU/DSD pair costs ~94 ms/launch here), and
+"the fix is per-shape small-M xclbins … or fused layer streams — not a runtime regen".
+
+Net: the working engine route is **~0.10 tok/s**, i.e. ~7× BELOW the ~0.7 tok/s
+baseline, with a fully identified bottleneck (MoE FFN launches on an M=128-baked
+kernel). The objective's dense-class target remains ~900× away.
