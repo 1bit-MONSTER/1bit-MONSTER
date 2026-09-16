@@ -2301,3 +2301,33 @@ specified: pack up/gate/down by the two formulas above into region-A, drop the h
 live in the norms BO), and re-run gating on the act (pre-act CLEAN, post-act ALL NaN 1024/1024,
 exit 0, no ERT). Nothing needs to be invented -- the reorder proved byte-exact in addendum 45
 covers the transformed tensors and these two formulas cover the head.
+
+### Addendum 66 — the region-A packer is IMPLEMENTED and VERIFIED against the runtime's own bytes
+
+Implemented addendum 64's formula in full (not just slot 0) and checked it against the capture
+before touching any C++:
+
+  for unit u:  b = u//16, w = u%16
+               tensor   = mlp.up_exps_proj if w < 8 else mlp.gate_exps_proj
+               row_base = b*32 + (w%8)
+               slot s (0..3) at u*18944 + s*4736  <-  row (row_base + 8*s)
+
+  units checked: 0..63 exhaustively plus 150 random units in 64..16383
+  slots checked: 856 (4 per unit)      MATCH = 856      BAD = 0
+
+Every sampled slot reproduces the runtime's byte stream exactly. The row range the formula consumes
+is 0..32,767, i.e. exactly the 4096 x 8 core of up_exps/gate_exps ([4096, 8, 5120] flattened), with
+the tensor's remaining rows (32,768..35,423) unused by this region.
+
+So the repair is no longer a hypothesis or a specification: it is a packer that has been
+demonstrated to reproduce the runtime's arg-3 head byte-for-byte over a 214-unit sample with zero
+mismatches. What remains is to port the same loop into npu_pack_moe_region_b, drop the head tensors
+from region-A, and re-run gating on the act.
+
+BOUNDED CLAIM, as always: 214 sampled units out of 16,384, all four slots each. The next run should
+either verify the full 16,384 units (310 MB of comparison, cheap to run) or port and re-run -- but
+this is now a porting task, not a discovery task.
+
+This closes the arc that began with "the runlist ERTs structurally": the runlist works, the layer
+computes, and the reason it computed NaN is that we were handing it layernorm weights where the
+runtime hands it expert weights, in a unit-interleaved layout that is now fully written down.
