@@ -718,3 +718,27 @@ Prepack ALL 256 experts per layer at init (or SIMD the host dequant): with the p
 removed, FFN -> ~20 ms/layer, giving 40 x (8.7+5.6+5.5+20) ~= 1.6 s/tok ~= 0.6 tok/s.
 Cost: ~30-41 GB RAM (the engine's own comment) and a long init. That is the same lever
 addendum 12 identified; addendum 17 wrongly retired it.
+
+### Addendum 19 — AMENDED: the host pack is NOT quant_slice-bound either (SIMD attempt neutral)
+
+Addendum 18 attributed the ~70 ms/layer FFN cost to the host pack on cache miss, and the
+engine's own comment blames `quant_slice` ("~32 ms/expert ... dominant cost of a cache
+miss"). So I AVX2-vectorised `quant_slice`: contiguous `j` inner loop (the old one
+strided by N), 8-wide max/scale/quantize, half-away rounding reproduced exactly via
+`copysign(floor(|v|+0.5), v)`.
+
+Result: **bit-identical output** (the 7 decode tokens were unchanged: 154742, 16023,
+136614, 25238, 32858, 248050, 184997) but **no speed-up** — avg `q` 7.31 ms vs 6.81 ms
+scalar, and e2e 3681 vs 3494 ms/tok. So `quant_slice` is not the wall either; the SIMD
+change was reverted (dead complexity, slightly worse measured).
+
+Per-expert miss accounting on the 35B (avg over 1649 misses): `deq` ~2.9-3.6 ms,
+`q` ~6.8-7.3 ms => ~10.5 ms of the ~18 ms/expert; the remaining ~7 ms is the BO/concat
+write and call overhead. The pack is therefore spread across dequant + quantize + BO
+writes, with no single dominant vectorisable hot spot.
+
+Honest position after addenda 17/18/19: the engine's ~3.5 s/tok (0.29 tok/s) is bound by
+the aggregate host-side expert handling (~120 ms/layer of pack) plus ~20 ms of NPU GEMM
+per layer, and none of the three levers tried (M=1 kernels, cache, SIMD quant) moved it
+materially. The durable deliverables of this line of work are the M=1 kernels (built,
+wired, bit-identical) and the M=128-baked-kernel finding.
