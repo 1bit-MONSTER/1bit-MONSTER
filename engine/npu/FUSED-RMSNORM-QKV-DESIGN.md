@@ -2434,3 +2434,32 @@ is by construction rather than something to verify.
 That leaves the driver as: reuse weights -> 17 buffers -> launch A -> host RoPE ->
 scatter K/V into the KV cache -> launch B -> f32 out for the next layer. Wiring, not
 numerics.
+
+## The driver's exact hook: `npu_engine_universal.cpp` lines ~4666-4862
+
+Located the bf16 prefill's layer execution loop, and it IS the "~9 launches/layer"
+the objective names — a sequence of `bf16mm_gemm_launch` calls per layer:
+
+```
+4666  bf16mm_gemm_launch(Wqkv[l], H,    qkvn,   0, i&1, bA + i*256*H)     <- QKV
+4808  bf16mm_gemm_launch(Wo[l],   qout, H,      0, i&1, bA + i*256*qout)  <- O-proj
+4837  bf16mm_gemm_launch(Wgu[l],  H,    2 * IM, 0, i&1, bA + i*256*H)     <- GU
+4862  bf16mm_gemm_launch(Wd[l],   IM,   H,      0, i&1, bGu + i*256*IM)   <- D
+```
+(with 256-row sub-batches and a 2-deep pipeline, hence the several calls each.)
+Weights `Wqkv/Wo/Wgu/Wd[l]` are prepared once in the loop at ~4530-4571, in exactly
+my layouts (see above), and the buffers are the engine's `bA`/`bC`/`bGu` BO set.
+
+So the driver is: **replace that region with launch A -> host RoPE -> KV-cache
+scatter -> launch B**, keeping `NPU_FK3=1` as the switch. Nothing else in the file
+needs to move, and the weight prep is reused as-is.
+
+Two notes for whoever writes it:
+* my worktree's copy of this file does NOT yet contain afbeb7's device-lock change
+  (0 matches for `flock`/`npu-device.lock`), because that lives on another branch.
+  Their edit is at the top of `main()` and mine would be inside the prefill loop, so
+  the two regions do not overlap and a merge should be clean — but take the flock in
+  the driver regardless, since the driver will run on accel0.
+* the DEFAULT prefill in this file is a different path (int8 `final_i8_*` GEMMs with
+  host `rn_c` norms and CPU attention, loop at ~4980). The BF16 prefill at ~4666 is
+  the target; hooking the wrong loop would look like nothing happened.
