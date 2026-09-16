@@ -79,3 +79,68 @@ the repo uses for packer changes before it goes anywhere near `main`.
   `lm_head.weight` is **not** established; the dense guard means any that do are silently affected.
 - Nothing here changes the MoE decode rate. It says the instrument that was measuring the MoE could
   not produce logits at all.
+
+---
+
+# Follow-up: which models are affected, and why the fix is NOT a guard widening
+
+## Every model probed (18 models, host-side, no device)
+
+`lm_head_weight.ndim` from `model_load()`, all models under `~/.config/flm/models/`:
+
+| model | ndim | shape | tiles (5120 B) | |
+|---|---|---|---|---|
+| **Qwen3.6-35B-A3B-NPU2** | **3** | `[7760, 8, 8704]` | 105,536 | **silently skipped** |
+| **Qwen3.5-4B-NPU2** | **3** | `[7760, 10, 8704]` | 131,920 | **silently skipped** |
+| Gemma3-1B | 2 | `[147456, 1280]` | 36,864 | ok |
+| Gemma3-4B | 2 | `[81940, 5120]` | 81,940 | ok |
+| Gemma4-E2B-IT | 2 | `[49152, 5120]` | 49,152 | ok |
+| Gemma4-E4B-IT | 2 | `[81920, 5120]` | 81,920 | ok |
+| LFM2-1.2B | 2 | `[16384, 5120]` | 16,384 | ok |
+| LFM2-2.6B | 2 | `[16384, 5120]` | 16,384 | ok |
+| Llama-3.1-8B | 2 | `[64128, 5120]` | 64,128 | ok |
+| Llama-3.2-1B | 2 | `[32064, 5120]` | 32,064 | ok |
+| Llama-3.2-3B | 2 | `[48096, 5120]` | 48,096 | ok |
+| Nanbeige4.1-3B | 2 | `[51920, 5120]` | 51,920 | ok |
+| Phi4-mini-Instruct | 2 | `[75024, 5120]` | 75,024 | ok |
+| Qwen3-0.6B | 2 | `[18992, 5120]` | 18,992 | ok |
+| Qwen3-1.7B | 2 | `[37984, 5120]` | 37,984 | ok |
+| Qwen3-4B | 2 | `[47480, 5120]` | 47,480 | ok |
+| Qwen3-8B | 2 | `[75968, 5120]` | 75,968 | ok |
+| Qwen3-VL-4B-Instruct | 2 | `[47480, 5120]` | 47,480 | ok |
+
+**Two of eighteen — and they are exactly the two MoE-family models.** Qwen3.6-35B-A3B is parity gap
+#1 (the dominant one) and Qwen3.5-4B is gap #4. Both are the tied-embedding bundles that FLM's own
+`qwen3_5vl` is also documented as unable to load. **The two MoE-family parity rows are being measured
+through an engine whose lm_head never runs.**
+
+Scope note: this shows the *guard* skips them. Whether a given model's runs actually reach that path
+depends on which engine it uses — verified by running for the MoE (`moe_smoke`, all-zero logits),
+not verified per-model for the dense path.
+
+## Correction to the fix direction I gave earlier in this same document
+
+I wrote that the guards "should be widened rather than the tensors reshaped", because
+`npu_desc_tiles` already derives tiles from the byte extent. **That was too optimistic and I am
+retracting it.** The arithmetic says the 3-D layout is a different format, not a 2-D one viewed
+differently:
+
+| model | shape | size | size/5120 | tiles ÷ shape[0] |
+|---|---|---|---|---|
+| Qwen3-4B (works) | `[47480, 5120]` | 243,097,600 | 47,480 | **1.0** |
+| Qwen3.6-35B-A3B | `[7760, 8, 8704]` | 540,344,320 | 105,536 | **13.6** |
+| Qwen3.5-4B | `[7760, 10, 8704]` | 675,430,400 | 131,920 | **17.0** |
+
+All three are exactly tile-aligned, so `size/5120` gives a tile count — but for the working 2-D models
+`tiles == shape[0]` (one row per tile) while the 3-D models are 17.0 and **13.6** tiles per `shape[0]`.
+A non-integer ratio means `shape[0]` is not a tile dimension there at all.
+
+`npu_pack_lmhead_bo` feeds that count to `npu_reorder_tiles(..., G = hidden/128)`, a permutation
+defined for the 2-D form. **Widening the guard would hand that permutation a count and a layout it
+was not written for — producing silently wrong weights, which is the exact failure class this lane
+keeps rediscovering.** The 3-D layout has to be understood first (FLM's runtime packing, or the
+captured lm_head BO), and until it is, `n_tiles = 0` is *failing closed*, which is better than the
+alternative.
+
+So: the defect is real and the impact is now precisely scoped, but the fix is a layout
+investigation, not a one-line guard change.
