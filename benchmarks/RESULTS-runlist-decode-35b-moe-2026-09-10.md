@@ -3562,3 +3562,44 @@ REBUILD POSITION unchanged: (a) compiles -- MET; (c) one submit -- MET, driver v
 (b) both phases correct together -- my GEMM is exact at the real shape, my norm is exact alone
 (bit-identical to the proven design), and the combination's hang is now narrowed to four concrete
 structural differences, two of which have been tested and eliminated.
+
+### Addendum 102 — the input-side mem-tile path is REFUTED too. TWO variables remain, and one is the kernel.
+
+Extended the working two-core design with the input-side memory-tile path the norm uses, mirroring the
+m1's B path exactly (shim->mem->core, linked, the core acquiring its OWN fifo). First attempt failed to
+build, and the failure is itself a fact worth keeping:
+
+  adding the dummy's input path to COLUMN 0's mem tile -- which already carries the GEMM's B and C --
+    => "Error: Resource allocation pipeline failed"
+  moving the dummy to its OWN column (n_aie_cols), shim/mem/core triple, exactly as the norm phase has
+    => compiles
+
+So a second phase needs its own column for a reason beyond the tile count: the mem tile's DMA capacity
+is the scarce resource, and this is the same class as addendum 78's "number of output DMA channel
+exceeded" at a shared shim. The combined design already does this, so it is not the bug -- but it is
+why addendum 78's attempt to share a column could never have worked.
+
+With the dummy on its own column and BOTH mem-tile paths (shim->mem->core for input, core->mem->shim
+for output -- the exact fifo shapes the norm's W/A and O use):
+
+  m1 GEMM + dummy core, own column, both paths, K=64 N=256 c=2:      compiled; blob 1164 B;  submit COMPLETED; GEMM 18/256
+  m1 GEMM + dummy core, own column, both paths, K=2048 N=8192 c=4:   compiled; blob 430,680 B; submit COMPLETED; GEMM 8192/8192 COLUMNS MATCH
+
+THE STRUCTURE IS NOT THE PROBLEM. A second core on its own column, with both input and output
+memory-tile paths, from the same kernel object, coexists with the full-size m1 GEMM and leaves it
+BIT-EXACT at the real shape.
+
+WHAT REMAINS, and it is now down to TWO variables:
+  (a) THE KERNEL: the dummy calls `zero_i32`; the norm calls `rms_norm_f32_bf16`. Both now come from
+      the same relocatable object, so this is about the FUNCTION, not the file.
+  (b) THE THIRD FIFO AND ITS SEQUENCE: the norm has three fifos (A and W in, O out) and a two-input
+      one-output runtime DMA sequence with a specific acquire order (W then A then O), where the dummy
+      has two fifos and one input plus one output.
+The cheapest remaining build switches the dummy's kernel to the norm's while keeping this exact fifo
+structure -- if THAT hangs, the norm's kernel is the culprit; if it completes, the third fifo and the
+runtime sequence are all that is left.
+
+REBUILD POSITION: (a) compiles -- MET. (c) one submit -- MET, driver validated 8192/8192. (b) both
+phases correct together -- my GEMM is exact at the real shape, my norm is exact alone (bit-identical to
+the proven design), and of the four structural differences addendum 101 listed, two are now tested and
+eliminated, one is untestable-as-difference (the objects were unified in addendum 99), and two remain.
