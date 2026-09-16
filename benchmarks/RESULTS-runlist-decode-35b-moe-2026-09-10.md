@@ -5720,3 +5720,24 @@ constraint any repack must satisfy.
 Also noted: the router is read 2x/slice — consistent with two router uses per layer (router logits +
 shared-expert gate), not with reading the full router in one forward; this is worth resolving before
 repacking npu_pack_moe_router_bo.
+
+### Addendum 155 — the router is stored TRANSPOSED [256,2048]; the read is [2048h x 32e] (1/8), and ssm_out order is likely the region-B H=n/256 reorder
+
+Re-expanded addendum 154's router read with the TRANSPOSED (e-major) reading, which is the one that
+closes the "1/8 of h" puzzle:
+  BO stored as router_T[e][h] = router[h][e] at e*2048+h. Read index it*16 + d2*32768 + d1*128 + d0
+  decomposes as  h = (d1%16)*128 + it*16 + d0  (0..2047, ALL hidden)  and  e = d2*16 + d1//16 (0..31).
+So ONE read covers every hidden row for 32 experts, and the router is read in 8 N-chunks of 32 experts;
+the full [2048,256] is 8 such reads (the 2 observed at word 10316/22634 are two of the eight, or two
+distinct router uses — still to reconcile). Either way the BO layout is e-major TRANSPOSED with a
+16x16 microtile walk, NOT the harness's stride-8 interleave dst[(i%8)*65536+j*256+i/8].
+
+ssm_out: the harness's npu_pack_moe_linear5_bo emits ssm_out in 32-row blocks with
+j = base + 16*(i%2) + i/2 (a 16-stride interleave). That is the down_exps family order, NOT the
+region-B reorder the other 4736-row tensors use. The ELF reads ssm_out @328192 CONTIGUOUSLY in
+4736-B rows, so the row order is whatever the host writes; the consistent choice is the verified
+region-B reorder H = n_tiles/256 (for ssm_out n=1024 -> H=4, 8-row blocks, j = blk*8 + i/2 + 4*(i%2)),
+not the 16-stride order. This is a second concrete repack.
+
+Next: implement (a) router as e-major [256,2048] 16x16-microtile (exact walk from the read formula
+above) and (b) ssm_out in H=n/256 order, then re-run moe_smoke on a quiet device.
