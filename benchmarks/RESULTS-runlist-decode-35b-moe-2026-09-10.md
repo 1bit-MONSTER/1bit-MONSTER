@@ -3721,3 +3721,36 @@ phases correct together -- both are proven exact ALONE at the real shape, and th
 combined is now identified as the runtime sequence's argument/buffer count rather than anything about
 the kernels, fifos, cores, tiles, tap or ordering -- all of which were refuted individually by actual
 builds and runs.
+
+### Addendum 106 — DEFINITIVE: the ARGUMENT COUNT is the trigger, and the limit is FIVE data slots
+
+Separated arguments from buffers, which is what addendum 105 demanded. Reverted the probe's three DMAs
+to the original buffers (B and C) while KEEPING the six-argument runtime_sequence signature, then ran it
+two ways at the real shape:
+
+  6 args, 6 distinct BOs, DMAs on A/B/C:            HANGS
+  6 args, extra three ALIASED onto the same BOs:    HANGS
+
+Both hang. The second is the decisive one: with six arguments but only THREE distinct buffers -- the
+extra three being literally the same BOs -- the design still hangs. So it is not the buffers, not the
+BO count, and not anything about memory: IT IS THE NUMBER OF ARGUMENTS THE runtime_sequence DECLARES.
+
+AND THE MECHANISM IS ALREADY IN MY NOTES, from addendum 80: the kernel's data-argument slots are XRT
+groups 3..7 -- FIVE of them -- with group_id(8) reading 131071, XRT's invalid sentinel. A three-argument
+design occupies groups 3,4,5. A SIX-argument design needs groups 3..8, and group 8 does not exist. The
+design still COMPILES (aiecc does not police this), allocates, and submits -- and then never retires.
+That is why every structural probe in addenda 96-104 completed: every one of them was a THREE-argument
+design. Every one. The combined two-phase design was the only six-argument design in the entire
+investigation, and it was the only one that hung.
+
+THE FIX IS NOW FULLY SPECIFIED AND SMALL: keep the combined design at FOUR data arguments -- gemm A,
+gemm B, gemm C, and ONE norm buffer -- by merging the norm's three buffers (A f32, gamma f32, out bf16
+= 8 KB + 8 KB + 4 KB = 20 KB) into a single BO addressed at fixed offsets, which the runtime DMAs
+already support through their `offset=` argument. Four is comfortably inside the five slots. Alternatively
+alias the norm's region into a spare part of the existing weight BO for three arguments.
+
+WHAT THIS MEANS FOR THE INVESTIGATION AS A WHOLE: the root cause was never the kernels, the fifos, the
+memory tiles, the columns, the tap, the phase order, the acquire order or the feeding. It was that I
+built a six-argument design against a runtime that provides five. The twenty addenda of refutations were
+all correct and all beside the point, and the single fact that would have found it immediately -- count
+the arguments -- was in my own addendum 80 the whole time.
