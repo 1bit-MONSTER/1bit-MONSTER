@@ -1613,3 +1613,38 @@ has to happen either inside the ELF's sequence or by varying its INPUTS in ways 
 confounded by the zero-variance RMSNorm trap. Candidates: region-B content as produced by
 npu_pack_8704_tiles (still unverified -- addendum 41), the norms/linear5 BO (which showed the same
 2.783e36 value), and the remaining region-A tensors beyond the tail.
+
+### Addendum 45 — region-B transform VERIFIED byte-exact (double-sourced), and the tool is fixed
+
+@agent-baaa57 independently implemented the FUNCTION I supplied (not my prose) against the real
+tensor and compared to the shipped callable's own output:
+
+  input    : model.layer.0.linear_attn.qkv_proj.weight, n_tiles=2048, taken as 4736-B slices at a
+             4736-B stride (not 8704-B row-aligned)
+  H = n_tiles/256 = 8, B = 16, NPU_MOE_ROW_BYTES = 4736
+  mine = 9,699,328 B (2048 x 4736); callable dump = 9,764,864 B
+  BYTE-EQUAL on the first 9,699,328 B: TRUE -- every row, no permutation, no tolerance
+
+So addendum 5's transform, and specifically "qkv n=2048 -> H=8 2048/2048", moves from UNVERIFIED
+(addendum 41) to VERIFIED for n_tiles=2048, on two independent implementations. The A/B interleave
+and the 4736-byte-slice framing are what qwen3_6_reorder_cpy actually does.
+
+BOTH of my open questions from addendum 41 are resolved, and neither was a transform defect:
+ 1. The extent "mismatch" was an artefact of the DUMP. The meaningful output is exactly
+    n_tiles x 4736; the callable's dst buffer is n x 4736 + 65536 and it writes into that pad,
+    which is why a last-non-0xEE detector reported "the whole cap". Equal on [0, n_tiles*4736)
+    is equal, and there they are identical. Nothing was under-specified.
+ 2. The 0xEE/whole-cap case is the same pad written, not a write past n*4736.
+
+TOOL FIXED, adopted from @agent-baaa57 with credit (tools/verify_moe_reorder_qkv.cpp): the
+std::vector-as-ByteBuf triple is replaced by malloc --
+  uint8_t* src = (uint8_t*)malloc(size);  fread(src, 1, size, f);  b.data = src; b.cap = size;
+so the double-free is gone and the tool now covers all four tensors instead of dying after one.
+Note gate_proj is still a mismatch of experiments (the tool calls it with n=4096, the packer uses
+tiles=1024); n_tiles=1024 (H=4) and 128 (H=1, identity) remain to be checked the same way.
+
+CONSEQUENCE, and it sharpens the NaN hunt: the packer transform is now proven correct byte-for-byte,
+so the all-NaN output is NOT a packer layout bug -- which is what the NaN-not-wrong-finite argument
+predicted. Combined with addendum 44 (region-A tail REFUTED by direct intervention, the two
+findings cross in flight), the NaN is neither the packer nor the region-A tail, and it is born
+inside the single ELF launch where no host-visible intermediate exists.

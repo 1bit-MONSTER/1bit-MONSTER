@@ -58,10 +58,10 @@ static int run_one(ReorderFn reorder, const char* path, const char* key,
     }
     fprintf(stderr, "%s: size=%llu n=%d flag=%d\n", key,
             (unsigned long long)size, n, flag);
-    std::vector<uint8_t> src(size);
+    uint8_t* src = (uint8_t*)malloc(size);   // FIX (@agent-baaa57): a std::vector here double-frees, because the callable freezes/reallocs the ByteBuf -- the run died after ONE tensor
     FILE* f = fopen(path, "rb");
     fseek(f, (long)(db + off), SEEK_SET);
-    size_t br = fread(src.data(), 1, size, f);
+    size_t br = fread(src, 1, size, f);
     fclose(f);
     if (br != size) { fprintf(stderr, "%s: short read %zu\n", key, br); return -1; }
 
@@ -69,7 +69,7 @@ static int run_one(ReorderFn reorder, const char* path, const char* key,
     size_t dst_cap = (size_t)n * 4736 + 65536;
     std::vector<uint8_t> dst(dst_cap, 0xEE);
     ByteBuf b; b.vtable = nullptr; b.unk = 0;
-    b.data = src.data(); b.cap = src.size();
+    b.data = src;        b.cap = size;
     reorder(dst.data(), b, n, 8, flag);
 
     // how much of dst was written (first non-0xEE byte marks the end)?
