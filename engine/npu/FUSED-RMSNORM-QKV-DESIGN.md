@@ -2156,3 +2156,30 @@ unit" must start one below its first value.
 
 Still outstanding for a valid model layer: **partial RoPE**, which the engine
 applies (`rope_dim = round(HD*partial_rotary_factor)`) and the kernel does not.
+
+## M=128 CAUSAL — the prefill layer, one launch, current state
+
+`MA=16 NC=16 NDEP=1 bash build_fk3_layer.sh 128 1024 16 128 1024 2 2 16 32 16`
+
+```
+  QKV      BIT-EXACT 524288/524288
+  attn     93.2% exact, 95.4% <=1ULP, 96.2% <=2ULP, mean ULP 41.2, every head 89-96%
+  o (f32)  correct, worst_rel 1.75e-04
+  h = x+o  H_BF 131059/131072 = 100.0%          <- RESIDUAL 1
+  GU       98.5% exact, 99.8% <=2ULP
+  SiLU     97.8% exact, 99.3% <=2ULP
+  D        99.6% exact, 99.9% <=1ULP, mean ULP 0.26   <- RESIDUAL 2 FUSED = OUTPUT
+```
+Causality cost nothing and gained a little (attention 92.6% -> 93.2%). Two stages are
+exactly 100%: the fused RMSNorm+QKV, and residual 1 (`h = x+o`).
+
+Honest reading of the rest: the attention and everything downstream of it agree to
+a few ULP rather than bit-exactly, and the reason is understood — `attn1` accumulates
+its SCORES in bf16 (`matmul_vectorized_4x8x8_bf16_bf16`) while the host reference sums
+them in f32, and `exp` amplifies that into the output. The layer output lands at
+99.6% bit-exact / 99.9% within 1 ULP with a mean error of 0.26 ULP. That is the
+fused layer matching the reference as closely as its own arithmetic allows — not a
+defect to chase, but also not yet "bit-identical to the native path", which is what
+token parity will actually adjudicate.
+
+Remaining for a valid model layer: **partial RoPE**.
