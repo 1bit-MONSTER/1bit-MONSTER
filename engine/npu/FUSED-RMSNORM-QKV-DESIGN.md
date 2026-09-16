@@ -3080,3 +3080,47 @@ from those formulas, which should have told me the probe was reading a stale sta
 rather than device memory. A post-launch probe WITH a sync reads 1.0469, consistent with the
 real embedding. Pre-launch probes on this driver are only meaningful with a sync, and that is
 now noted in the driver.
+
+## Where fk-3 actually stands (honest state, including my own measurement errors)
+
+**Proven, with matched inputs and byte comparison:**
+
+1. **The driver's launch B is bit-identical to the working bench.** All six computed stages
+   (oB, cB, c2B, slB, hbfB, cdB) match byte for byte, with all six inputs (aB, a2B, qB, w2, wd,
+   wo) also byte-identical, on an idle device. Not "99.6% against a reference" - identical.
+2. **Launch A's kernel is bit-exact**, 524288/524288 with a NON-UNIT gamma
+   (`0.25+(i%7)*0.25`), after I patched the bench to stop fixing gamma at 1.0.
+3. **Its phase structure is correct**: `zero_f32` (once, before the reduce) →
+   `rms_reduce_f32` (in the K-tile loop) → `rms_scale_f32_bf16` (second pass) →
+   `nq_acc_zero/mac/store_bf16`, each exactly once.
+4. **Its inputs in the engine are correct**: `aA` is 528384 bytes, its gamma row matches
+   `gamma_in` exactly (maxabs 1.04688, meanabs 0.17476), and `in_n[0]` is a real gamma
+   (same stats) - so gamma is NOT the missing factor I hypothesised.
+5. **Weights are bit-identical**: GU 0.38672 vs 0.3867; and Wqkv identical between
+   `bf16mm_dequant` (host) and `bf16mm_dequant_dev` (device), zero diff - retiring the
+   host-vs-device dequant theory.
+6. **The engine's fused layer output is genuinely ~5x small**: layer-0 hidden 1.2344 against
+   the baseline's 6.6196, both maxima over the same 128 tokens.
+7. **Confirmed real bugs found along the way**: the wrong weight BOs (fixed), three
+   object-lifetime bugs (fixed), the norm's epsilon 1e-5 vs the engine's 1e-6 (NOT yet
+   fixed - and the bench's reference copies 1e-5, so it could never have caught it), and my
+   own `size_t` wraparound in the test rig (fixed).
+
+**Not proven, and where I went wrong.** Everything I concluded about *which* stage is too
+small turned out to rest on dumps that were misplaced or repurposed, three separate times:
+`bA` is reused through the layer (norm input, attention input, attention output), so a dump
+labelled "attnin" and one labelled "bA" measure different things at different points; my
+first SiLU dump landed before the GU phases ran and read zeros; my gamma stats read `a2B`
+before the block that writes it; and one pre-launch probe read `map()` without a sync and
+reported 3.689e17 of garbage that I nearly adopted as evidence. The reliable numbers are the
+ones where both sides are measured at a well-defined seam over the same token set - the
+bit-identical launch-B comparison, and the layer-output 1.2344 vs 6.6196.
+
+**So the honest summary**: the two kernels are each independently verified against a
+known-good reference, their weights and inputs are verified, and the composed system still
+produces a ~5x-small layer. The remaining defect is therefore in how the two launches are
+*composed* in the engine - not in either kernel - and the next experiment must compare a
+single quantity at a single well-defined seam on both paths, rather than reaching for
+another stage dump. The cheapest such seam is launch A's output: dump the per-op path's QKV
+buffer at the point immediately after ITS GEMM (not `bA`, which is reused) and compare it
+with `/tmp/fk3_drv_A.bin`, which is already a well-defined launch-A output.

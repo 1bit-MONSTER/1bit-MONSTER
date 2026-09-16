@@ -441,6 +441,25 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
 
     // ---- launch A: fused RMSNorm(input) + QKV --------------------------------
     if (!getenv("NPU_FK3_SKIP_A")) {
+        if (l == 0 && getenv("NPU_FK3_DUMP")) {
+            // Verify what LAUNCH A actually consumes. Every probe so far measured launch B's
+            // A (s.aB) - the buffer launch A reads (s.aA, including its gamma row M) has
+            // never been checked, and that is precisely the pair whose output is 2.51x off
+            // versus the per-op path. Sync first: a pre-launch read without sync sees a
+            // stale staging buffer, which has already misled me twice.
+            s.aA.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+            const float* a = (const float*)s.aA.map();
+            auto st = [](const char* n, const float* v, int n_el) {
+                double mx = 0, sum = 0;
+                for (int i = 0; i < n_el; i++) { double q = v[i] < 0 ? -v[i] : v[i]; if (q > mx) mx = q; sum += q; }
+                fprintf(stderr, "[fk3] %-22s maxabs=%.5f meanabs=%.5f first4=[%.4f %.4f %.4f %.4f]\n",
+                        n, mx, sum / n_el, v[0], v[1], v[2], v[3]);
+            };
+            st("aA data (all M rows)", a, M * s.H);
+            st("aA row M (gamma)", a + (size_t)M * s.H, s.H);
+            fprintf(stderr, "[fk3] aA bytes=%llu  (want %llu)\n",
+                    (unsigned long long)s.aA.size(), (unsigned long long)((size_t)(M + 1) * s.H * 4));
+        }
         auto t0 = std::chrono::steady_clock::now();
         auto r = s.krA((unsigned)3, s.iA, (unsigned)s.insA_words, s.aA, s.wQKV[l], s.anA, s.cA);
         r.wait();
