@@ -6751,3 +6751,45 @@ tap order.
   them **by intervention rather than argument**, which is the only one of the four that counts as knowledge.
 * I have **no fifth hypothesis with evidence**. The arithmetic that pointed at the tap was sound; the
   inference from it was not.
+
+## Launch-B census and toolchain check: two hypotheses excluded by inspection, attention now leads by arithmetic
+
+@agent-baaa57 suggested a free host-side check (count the attention invocations in the emitted MLIR, which is
+my own verify-emitted-MLIR rule) and a candidate with its own falsifying test (stub the attention phase and
+re-time). I did the check.
+
+```
+9 @attn1_reset
+9 @attn1_finalize
+9 @attn1_chunk
+4 @nq_acc_zero
+4 @nq_acc_mac
+3 @nq_acc_store_bf
+2 @silu_split
+2 @nq_acc_store_f
+```
+
+**I first read the 9 as suspiciously low and it is not** - it is exactly as designed: NCH=8 key chunks + 1
+reset + 1 finalize, with the 16-head loop living INSIDE `attn1_chunk` rather than being unrolled in the
+MLIR. So a low call count is expected and says nothing about missing work. (Correcting my own alarm rather
+than building on it - the same class of error as reading a count as a finding.)
+
+**Toolchain mismatch: EXCLUDED by inspection.** `benchmarks/NOTE-undiscovered-code-and-math-2026-09-15.md`
+documents a real failure mode here - `build_tmp` aiecc with `install_tmp` bindings produces
+`error: expected ')'`, while `install_tmp` + `install_tmp` compiles. Both of my build scripts were identical
+on every toolchain line (`MLIR`, `P`, `PY`, `AIECC=$MLIR/build_tmp/bin/aiecc`, `AIETOOLS=$MLIR/build_tmp`,
+the same `PYTHONPATH` and the same `-I`), so they use the consistent pair and the mismatch does not apply.
+That also means launch A (63 ms) and launch B (991 ms) run through the SAME toolchain, so the difference is
+in the generator/kernel, not the build.
+
+**What the arithmetic now says.** Launch B's attention for one layer at M=128 over 128 keys is 2 x 16 heads
+x 128 q x 128 k x 128 d = **67.1 MMAC**. Even at a bad 0.1 TMAC/s that is **671 us**; at a plausible
+1 TMAC/s it is 67 us. Measured: **991,340 us** - about **1477x** slower than even the pessimistic figure.
+Nothing else in the layer has that much headroom to be wrong: the instruction volume is 8.76 MB for ~20
+calls, the taps are excluded by intervention, and the GEMM side moved 0.86% when I quadrupled its bursts.
+
+So: **the attention phase is the leading candidate, and it is the peer's**, with the decisive test being to
+stub it (the `NOQKV` pattern shows how to remove a phase) and re-time launch B alone. If launch B then falls
+to roughly the O/FFN cost, attention owns the 991 ms; if it stays near 991 ms, attention is excluded and the
+bisection moves to the FFN stages. Either outcome is decisive, which is the property my tap test had and my
+bracket arithmetic did not - so this is a hypothesis with a test, not a fifth guess.
