@@ -2316,3 +2316,30 @@ in-kernel.
 
 This is a genuine fork between the objective's wording and the array's resource
 limits, so it is the user's call rather than something to silently pick.
+
+## DECIDED: split into 2 launches, host RoPE — and launch A already exists
+
+User decision. The fused layer becomes two launches with the host rotating Q/K in
+between, and the priority is token parity + fk-4 numbers.
+
+**Launch A already exists and is already verified.** `n1_fused_norm_gemm_rr.py` /
+`build_fused_norm_gemm_rr.sh` is exactly "fused RMSNorm + QKV, bf16 out", verified
+bit-exact at M=128, N=4096. Its C store de-microtiles with
+`sizes=[M/4, NT/8, 4, 8], strides=[4*N, 8, N, 1]`, i.e. it emits **row-major
+(M, NQKV)** — precisely the layout launch B reads. So no new kernel work:
+
+```
+launch A : bash engine/npu/generators/build_fused_norm_gemm_rr.sh 128 1024 4096 32 32 1
+           -> bit-exact QKV, row-major (M, 4096) bf16
+host     : rotate Q (cols [h*HD, h*HD+HD)) and K (cols KOFF + kh*HD) in place,
+           full rotary, theta 1e6, half-split pairs — ~microseconds at M=128
+launch B : n1_fk3_layer.py with -NOQKV : attention + O-proj + FFN norm + GU + SiLU + D
+```
+`-NOQKV` only needs to drop TWO phases, not any hardware: the FFN norm already
+shares the norm column and the GU/D already share the GEMM column, so B keeps every
+fifo and core it has today and merely skips the QKV norm phase and the QKV GEMM
+phase — in BOTH the core bodies and the sequence, because a core's fifo ratio is a
+compile-time constant and the two must stay in step.
+
+That is the whole change, and it is small — which is the point of having chosen this
+route.
