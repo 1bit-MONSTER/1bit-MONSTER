@@ -4566,3 +4566,44 @@ NEXT, precisely:
   3. Diff against n1_core_i8_m1.py's C path: if the m1 design has the same depth-1 C fifo and the same
      bimodality at small shapes, this is a generator-level hazard and the fix belongs in the pattern;
      if the m1 is stable there, the difference between the two is the answer.
+
+### Addendum 127 — the C fifo depth is not it either, and the failure is SEQUENCE-LEVEL
+
+Two more measurements at n_k=1.
+
+FIRST, the corrected B-feed test (ALLONES_A with CHUNK_B=1 this time, so the B's layout is right):
+
+  1272, 19, 1304, 19, 1557, 19        (out of 2048)
+
+So the B feed is also only PARTIALLY arriving -- a mixed pattern, three runs at ~1,300 correct columns
+and three at exactly 19. Not a packing error (the packing is now correct) and not all-or-nothing.
+
+SECOND, the C fifo back at depth 1 (it was raised to 2 in addendum 118), eight runs, counting all-zero
+outputs:
+
+  C nonzero: 2041, 160, 0, 0, 0, 0, 2041, 0        -> FIVE ALL-ZERO RUNS IN EIGHT
+
+Depth 1 does not help -- if anything the all-zero rate is higher -- so the double-buffered C slot is NOT
+the mechanism, and addendum 126's hypothesis is dead. (The generator now carries depth 1, as it
+originally did.)
+
+AND THE IMPORTANT CHARACTERISATION, which the counts make plain: when the output is all-zero it is ALL
+of C that is zero -- all 2,048 columns, i.e. ALL FOUR CORES produced nothing at the same time. Not one
+core late, not one column-group late: the entire phase. And when it is not all-zero, it is largely
+present (2041 of 2048). So the failure is BIMODAL AND SYSTEMIC, and at this shape it is a SEQUENCE-LEVEL
+event: the runtime's C reads complete, the sequence retires, and the cores have not written anything at
+all.
+
+WHAT THAT POINTS AT, and it is now the narrowest remaining hypothesis: THE CORES' START-UP RELATIVE TO
+THE RUNTIME'S DMAs. If the cores have not reached their first acquire when the sequence's DMAs are
+consumed, the whole phase can retire empty -- and it would do so for every core at once, exactly as
+observed. The norms are unaffected in every run ever taken, and they are the FIRST phase: their DMAs are
+the ones that give the cores their running start. At n_k=1 the GEMM phase after them is only ~50
+descriptors long, i.e. roughly the shortest possible amount of work after the start, which is consistent
+with the small shapes being the worst case and with the m1's own small-shape breakage (addendum 92).
+
+THE TEST THAT FOLLOWS, and it is cheap: PUT WORK BETWEEN THE CORES' START AND THE GEMM'S C READS. The
+norms are proven and run before the GEMM; duplicating a norm phase, or otherwise lengthening the sequence
+before the GEMM's reads, should reduce the all-zero rate if the hypothesis is right. If it does not, the
+start-up idea joins the list and the next thing to question is the ordering of core release versus the
+shim's S2MM in the compiled control program, which is aiecc's business rather than the generator's.

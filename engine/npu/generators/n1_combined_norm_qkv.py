@@ -158,8 +158,8 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
             gB_s[c] = object_fifo(f"G_B_S{c}", qkv_shim[c], qkv_mem[c], BATCH_SIZE + 1, Gb_ty)
             gB_c[c] = object_fifo(f"G_B_C{c}", qkv_mem[c], [qkv_core[c]], BATCH_SIZE + 1, Gb_ty)
             object_fifo_link(gB_s[c], gB_c[c])
-            gC_c[c] = object_fifo(f"G_C_C{c}", qkv_core[c], qkv_mem[c], 2, Gc_ty)
-            gC_s[c] = object_fifo(f"G_C_S{c}", qkv_mem[c], qkv_shim[c], 2, Gc_l2)
+            gC_c[c] = object_fifo(f"G_C_C{c}", qkv_core[c], qkv_mem[c], 1, Gc_ty)
+            gC_s[c] = object_fifo(f"G_C_S{c}", qkv_mem[c], qkv_shim[c], 1, Gc_l2)
             object_fifo_link(gC_c[c], gC_s[c])
 
         num_col_group = N // n // n_aie_cols
