@@ -4406,3 +4406,43 @@ shape -- not at K=64, not at K=2048 -- and the three-phase design's GEMM claim m
 this startup fault is fixed. That is the honest position, and it is a much better position than it was:
 the fault is now localised to the first tile of a feed, reproducible in 8 of 8 runs at a shape small
 enough to reason about, and the prime suspect has a name.
+
+### Addendum 123 — the tokens are MANDATORY; the sharpest test left is a warm-up round
+
+Probe 1 of addendum 122 is impossible as stated. Removing `issue_token=True` from the GEMM's A/B/C tasks
+does not build:
+
+  error: 'aiex.dma_await_task' op Cannot wait on a BD that is not configured to issue a token.
+  error: 'aiex.dma_configure_task' op Cannot lower while op still exists.
+
+The token IS the synchronization mechanism for `dma_await_task`: a BD must issue a token or the runtime
+cannot wait on it. So the handshake is not optional and is used by construction in every design here --
+mine and the m1's alike. That eliminates "the tokens are simply wrong" and leaves "the handshake is
+correct but something about the first transfer is not", which is where the 8-of-8 startup evidence
+points anyway. (The generator has been restored to its committed state; the variant is not kept.)
+
+THE SHARPEST TEST THAT REMAINS, and it is a small change: A WARM-UP ROUND. Issue the entire A/B/C DMA
+sequence TWICE inside the same runtime sequence -- the second pass overwriting the first -- and check
+whether the SECOND result is exact. If the second round is clean and the first is not, the fault is
+specifically in the first transfer of a feed and the fix is a dummy first pass, or a barrier between the
+core's start and the first BD. If both rounds are wrong, the fault is steady-state and the warm-up idea
+is dead. This costs one duplicated block in the generator and separates the two possibilities directly,
+which nothing so far has.
+
+OTHER LIVE THREADS, in order of value:
+  1. Diff my generator's GEMM runtime against n1_core_i8_m1.py's at equal shapes. The m1 design with the
+     same pattern fails 1 in 8 at c=8 where mine fails 6 in 8 at c=4 -- different enough that whatever
+     the m1 does differently (a per-row A fifo, and its BATCH batching) may be exactly the difference
+     between a narrow startup window and a wide one.
+  2. Read the mlir-aie examples for how `issue_token` is meant to be paired on the CORE side. The runtime
+     side is mandatory and present; whether the core side needs an explicit token release is not
+     something I have verified, and the examples are the authority.
+  3. Only after that, revisit fifo depths -- addendum 120 showed depth 6 versus 32 changes the rate
+     (5/8 versus 3/8) but does not fix it, so depth tunes the window rather than closing it.
+
+STATE OF THE RECORD, honestly: the norm phases (RMSNorm and FFNnorm, bit-identical to each other over
+2048/2048 in every run ever taken, in every design) are verified. The GEMM is verified at NO shape --
+wrong 8 of 8 at K=64, roughly 3 of 4 runs at K=2048 -- and every 8192/8192 quoted in this lane before
+addendum 117 should be read as a single lucky sample. The three-phase design's structure (one xclbin,
+one submit, four arguments, phases sharing one buffer) is sound and its norms are correct; its GEMM is
+not yet trustworthy, and that is now the only thing standing between this workstream and a usable layer.
