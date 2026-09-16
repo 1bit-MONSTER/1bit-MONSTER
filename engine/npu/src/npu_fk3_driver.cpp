@@ -353,7 +353,8 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
 }
 
 bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* gamma_ffn,
-                     int nrow, int pos0, uint16_t* bKv, int kv_region, int v_add, float* out) {
+                     int nrow, int pos0, uint16_t* bKv, int kv_region, int v_add, float* out,
+                     float* kvf_k, float* kvf_v) {
     Impl& s = *p;
     if (l < 0 || l >= s.NC || !s.wQKV_ready[l] || !s.wO_ready[l] || !s.w2_ready[l] || !s.wd_ready[l]) {
         fprintf(stderr, "[fk3] layer %d not prepared\n", l);
@@ -499,6 +500,17 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
                 uint16_t* vd = bKv + (size_t)(region + v_add) * kv_region + (size_t)pi * slot + (size_t)lh * s.HD;
                 memcpy(kd, k, (size_t)s.HD * 2);
                 memcpy(vd, v, (size_t)s.HD * 2);
+                if (kvf_k && kvf_v) {
+                    // Also fill the ENGINE's f32 KV cache - the buffer the decode reads.
+                    // Same index the per-op path uses: (pos)*NKV*HD + kvh*HD.
+                    float* fk = kvf_k + (size_t)(pos0 + pi) * s.NKV * s.HD + (size_t)kvh * s.HD;
+                    float* fv = kvf_v + (size_t)(pos0 + pi) * s.NKV * s.HD + (size_t)kvh * s.HD;
+                    for (int d = 0; d < s.HD; d++) {
+                        uint32_t uk = (uint32_t)k[d] << 16, uv = (uint32_t)v[d] << 16;
+                        float a, b; memcpy(&a, &uk, 4); memcpy(&b, &uv, 4);
+                        fk[d] = a; fv[d] = b;
+                    }
+                }
             }
         }
     }

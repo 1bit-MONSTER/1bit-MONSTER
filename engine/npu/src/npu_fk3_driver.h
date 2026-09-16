@@ -66,8 +66,14 @@ public:
     // M and always computes M, but RoPE, the KV scatter and the output copy must be
     // limited to nrow or a partial last block would scatter garbage into the cache.
     // x and out may alias (x is copied into the A BO before out is written).
+    // kvf_k / kvf_v, when non-null, are the engine's f32 KV cache for this layer (the one
+    // the DECODE path reads via kv_caches[l][0].k/.v, indexed (pos)*NKV*HD + kvh*HD). The
+    // per-op path fills both this and bKv; writing only bKv leaves the decode with an empty
+    // cache while the prefill itself is numerically correct, which is precisely the failure
+    // observed. Values come from the same rotated QKV, converted bf16->f32.
     bool run(int l, const float* x, const float* gamma_in, const float* gamma_ffn,
-             int nrow, int pos0, uint16_t* bKv, int kv_region, int v_add, float* out);
+             int nrow, int pos0, uint16_t* bKv, int kv_region, int v_add, float* out,
+             float* kvf_k = nullptr, float* kvf_v = nullptr);
 
     int M() const;
 

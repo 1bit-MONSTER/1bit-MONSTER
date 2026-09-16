@@ -4645,10 +4645,16 @@ struct Bf16Ctx {
                 if (g_fk3) {
                     const int nrow = npt < XM ? npt : XM;
                     if (!g_fk3->run(l, bh.data(), in_n[l].data(), pa_n[l].data(), nrow, sp,
-                                    bKv.data(), (int)kv_region, v_add, bh.data())) {
+                                    bKv.data(), (int)kv_region, v_add, bh.data(),
+                                    kv_caches[l][0].k.data(), kv_caches[l][0].v.data())) {
                         fprintf(stderr, "[fk3] layer %d run failed; falling back\n", l);
                         g_fk3.reset();
                     } else {
+                        // The DECODE path reads kv_caches[l][0].n as the key count and
+                        // kv_caches[l][0].k/.v as the cache. The per-op path sets this at the
+                        // end of its layer body; the fused branch returns early, so it must
+                        // set it here or the decode sees an empty cache.
+                        kv_caches[l][0].n = sp + nrow;
                         fprintf(stderr, " [fk3]"); fflush(stderr);
                         // Same per-layer dump the per-op path does at the end of the layer
                         // body, so the two paths can be compared layer by layer (this is

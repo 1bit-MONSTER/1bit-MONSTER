@@ -3319,3 +3319,35 @@ would still be wrong - which is exactly the observed symptom, wrong from token 1
 
 That is the next thing to check, and it is cheap: write the f32 `kv_caches[l][0]` as well as
 `bKv` in the fused scatter, and see whether the tokens move.
+
+## The f32 KV cache is now written too - and the tokens did not move, which narrows it further
+
+`qk_norm_pi` fills both `bKv` (bf16) and `kv_caches[l][0].k/.v` (f32), and the per-op path sets
+`kv_caches[l][0].n = sp + npt`. The fused branch returned early and did none of the three.
+That is a real defect and it is now fixed: `run()` takes optional `kvf_k`/`kvf_v` pointers,
+writes the rotated K/V as f32 at the engine's index `(pos0+pi)*NKV*HD + kvh*HD`, and the engine
+sets `kv_caches[l][0].n = sp + nrow`.
+
+Tokens before and after this fix are **identical** (105199, 100889, 100889, 100889; baseline
+220, 49789, 220, 11141). That is itself the useful result: this configuration's decode is the
+**unified** one, which reads `bKv` (the bf16 buffer the driver already filled) rather than the
+f32 cache - as the `[unified]` path in this file describes. So the f32 cache was a real hole
+but not the cause of the wrong tokens.
+
+Combined with everything now established - launch A reproduces an independent CPU reference
+exactly, launch B is bit-identical to the working bench, weights and inputs verified, and the
+"5.36x deficit" was an artefact of a mis-scaled oracle - the remaining candidate is the one
+thing **no bench has ever exercised: the attention inside launch B.**
+
+Every bench run in this document leaves `bQ` at zero. `bench_fk3_layer` memsets it and never
+fills it; its reference then computes the whole FFN path from a *zero* attention output, and
+reports D = 98.4% and "per-head attn exactness 0% for all 16 heads" - which I read past for
+weeks as a benign consequence of the missing input. It means the attention has never been
+validated with real Q/K/V in any test in this project. And the fused path's layer-0 hidden
+being 5.4x small is exactly what an attention that produces too little would look like.
+
+**Next experiment, one line of setup:** run the bench with `bQ` filled from the REAL QKV
+(`/tmp/fk3_drv_A.bin`, already dumped and already verified correct by the CPU reference). Then
+the bench's D reference exercises the attention for the first time ever. If it fails there, the
+attention is the bug and the whole investigation closes; if it passes, the composition is
+wrong in a way attention does not explain.
