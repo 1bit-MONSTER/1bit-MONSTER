@@ -703,7 +703,7 @@ int64_t npu_pack_moe_linear5_bo(uint8_t* bo, ModelWeights* mw, int layer) {
 // byte-verified against the captured runtime lm_head BO (Round 36).
 // The tensor's own data_offset (metadata, relative to data_base) points at
 // the physical data. Returns bytes written or 0 on error.
-int npu_pack_lmhead_bo(uint8_t* bo_buffer, ModelWeights* mw, const ModelConfig* config) {
+extern "C" int npu_pack_lmhead_bo(uint8_t* bo_buffer, ModelWeights* mw, const ModelConfig* config) {
     (void)config;
     if (!bo_buffer || !mw || mw->lm_head_weight.ndim != 2) return 0;
     const int TILE = 5120;
