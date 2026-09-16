@@ -5187,3 +5187,70 @@ DEVICE: still saturated, and I found the mechanism. /sys/module/amdxdna/paramete
 it returns Permission denied for me. xrt-smi has no reset subcommand. So reclaiming the leaked contexts
 needs root -- a module reload or a reboot. `context_limit=64`, `autosuspend_ms=5000` and
 `aie4_ctx_hysteresis_us=1000` are all as documented; nothing there reclaims the slots on its own.
+
+### Addendum 141 — BREAKTHROUGH: three instrument bugs, not a device fault. GEMM 8192/8192 in 12 of 14 runs
+
+I had three separate defects in my own tooling, and all three had to be fixed before the design could be
+measured at all. None of them was numerical.
+
+BUG 1 — THE DESIGN NEEDED TEN COLUMNS. The combined generator places the norm at `tile(NC, *)` and the
+FFN norm at `tile(NC+1, *)` where NC = n_aie_cols, while the GEMM occupies columns 0..NC-1. At the
+default `-c 8` that is columns 0..7 for the GEMM plus 8 and 9 for the norms: TEN columns on an device
+with EIGHT. The kernel log says so plainly:
+
+  amdxdna 0000:c6:00.1: aie2_rq_add: Require 9 columns exceed 8
+  amdxdna 0000:c6:00.1: aie2_ctx_init: Add ctx ctx.1262896.1 failed, ret -28
+
+That is the real meaning of err=-28 here, and it is why the failure did not recover with time and why it
+was identical under both XRT builds. My addendum 139 diagnosis of "leaked hw-context slots" was WRONG;
+hwctx_limit=16 bracketing ~25 opens was a coincidence, and the peer who told me so was right. FIX: `-c 4`
+puts the norms at columns 4 and 5 and the GEMM at 0..3 — six columns, which fits. The design now opens
+every single time.
+
+BUG 2 — THE INSTRUCTION BO MUST BE CACHEABLE, and addendum 139 was wrong to change it. Same xclbin, same
+everything, one variable:
+
+  cacheable   ->  FOUR-arg RMSNorm: 910/2048 exact, 1024/2048 within 1 bf16 ULP
+  host_only   ->  FOUR-arg RMSNorm:   0/2048 exact,    0/2048 within 1 bf16 ULP
+
+With host_only THE DEVICE EXECUTES NOTHING AT ALL. The engine uses XRT_BO_FLAGS_HOST_ONLY for its own
+instruction BO and works, so I generalised from its code — exactly the "interface assumption" mistake
+class. That is why the v27 M=128 test in addendum 140 produced an entirely zero C: I had disabled
+execution myself and then read the zeros as a property of v27. FIX: reverted to cacheable by default,
+host_only now opt-in via INS_HOST_ONLY=1 so the comparison stays reproducible.
+
+BUG 3 — THE B PACKING. The design uses the LINEAR B tap, which reads ONE CONTIGUOUS 8192-BYTE TILE per
+DMA, with tiles in (nt,ki) column-major order — visible in the MLIR as
+`aie.dma_bd(%arg2, 0, 8192, [<size=1,stride=0>,<size=1,stride=0>,<size=1,stride=0>,<size=8192,stride=1>])`
+with the next DMA at +262,144 = 32 k-tiles x 8192. Feeding row-major B gives 3/8192 columns; feeding the
+(nt,ki) tile order the driver already implements under CHUNK_B gives 8192/8192.
+
+RESULT — the verified three-phase, ONE-SUBMIT design, FOUR runtime arguments, at the real shape:
+
+  FOUR-arg RMSNorm: 910/2048 exact, 1024/2048 within 1 bf16 ULP     (the known reference-formula artifact)
+  FOUR-arg FFNnorm: 910/2048 exact, 1024/2048 within 1 bf16 ULP
+  PHASE1 vs PHASE3 with identical inputs: 2048/2048 EQUAL           (every run, no host reference needed)
+  FOUR-arg GEMM: 8192/8192 columns match
+
+EIGHT runs: 8192, 8192, 8192, 8144, 8192, 8192, 8192, 8176. Then SIX more with the corrected default:
+8192 in all six. So TWELVE OF FOURTEEN runs are exact at 8192/8192, and the two failures are 8144/8192
+(99.4%) and 8176/8192 (99.8%) — partial, not the all-zero collapse I spent sixteen addenda on. THE
+ALL-ZERO-C PHENOMENON IS GONE, and its cause was my own wrong instruction-BO flag plus my own wrong B
+packing: I had been measuring a framework that could not execute, then interpreting its silence as a
+property of the design.
+
+WHAT THIS MEANS FOR THE OBJECTIVE. The single-launch whole-layer path is real: ONE xrt::runlist submit
+drives RMSNorm + the i8 GEMM + FFNnorm, in one xclbin, with the runtime sequence at four arguments, and
+the norms are proven by direct phase-against-phase comparison. And the LINEAR B TAP — the objective's
+~44x lever, the fix for the 8-byte-burst/4096-byte-stride pathology — is now NUMERICALLY VALIDATED at
+the real shape rather than argued from timing. It computes the GEMM exactly when fed correctly.
+
+REMAINING, stated honestly: two of fourteen runs lost 16-48 columns of 8192 (0.2-0.6%), which is a
+residual I have not explained — device contention from other lanes cycling short runs is a candidate but
+I have not measured it. The norm's 910/2048 against my host reference is a reference-formula artifact
+(the same design scores identically on the proven norm-only strip), and PHASE1-vs-PHASE3 agreement at
+2048/2048 is the stronger evidence.
+
+MY ERROR PATTERN, worth recording: four failures this session, all interface assumptions rather than
+numerical ones — a cacheable instruction BO, a six-argument sequence where the runtime provides five, a
+column count, and a B packing order. Two of the four I "fixed" in the wrong direction first.

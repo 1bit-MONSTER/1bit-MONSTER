@@ -85,10 +85,16 @@ int main(int argc, char** argv) {
     fflush(stderr);
 
     // ---- buffers, one per runtime_sequence argument ------------------------------
-    // Addendum 139: the engine uses XRT_BO_FLAGS_HOST_ONLY for EVERY BO, including the
-    // instruction blob (npu_engine_i8ctx_inc.h:155). A cacheable instruction BO lets the
-    // device read stale instructions -- the same symptom class as "the DPU never starts".
-    auto bo_ins  = xrt::bo(dev, ins.size() * 4, xrt::bo::flags::host_only, k.group_id(1));
+    // Addendum 141: CACHEABLE IS REQUIRED -- measured, not assumed. Running the SAME xclbin with
+    // the only variable being this flag: cacheable gives RMSNorm 910/2048, host_only gives
+    // RMSNorm 0/2048 (the device executes NOTHING). Addendum 139's change to host_only, which the
+    // engine uses for its own instruction BO, DISABLES EXECUTION on my designs; it is reverted here
+    // and made opt-in so the comparison stays reproducible.
+    const bool ins_hostonly = getenv("INS_HOST_ONLY") != nullptr;
+    fprintf(stderr, "instr BO flags: %s\n", ins_hostonly ? "host_only" : "cacheable");
+    auto bo_ins  = xrt::bo(dev, ins.size() * 4,
+                           ins_hostonly ? xrt::bo::flags::host_only : xrt::bo::flags::cacheable,
+                           k.group_id(1));
     auto bo_nA   = xrt::bo(dev, 2 * (H * 4 + H * 4 + H * 2), xrt::bo::flags::host_only, k.group_id(3));
     auto bo_nW   = xrt::bo(dev, H * 4,          xrt::bo::flags::host_only, k.group_id(3)); // same SIZE as nA -> same group
     auto bo_nO   = xrt::bo(dev, 4096 * 2048,    xrt::bo::flags::host_only, k.group_id(4));  // re-used as OB
