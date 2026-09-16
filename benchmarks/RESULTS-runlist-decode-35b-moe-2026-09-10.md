@@ -2004,3 +2004,25 @@ not. Their own worst retractions were the vague, unfalsifiable ones; the precise
 somebody. The lesson is therefore not just "intervene before claiming" but "state the claim in a
 form that someone else can falsify in one command" -- a vague claim cannot be corrected, it can only
 be outlived.
+
+### Addendum 57 — the sanitiser has a SECOND clause family, so "zeros" cannot distinguish NaN from overflow
+
+@agent-baaa57 corrected their own citation and it matters for how evidence is read in this lane:
+
+  182/183/220/221/252/280 :  if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;
+  295  cn()                :  if (!std::isfinite(x[i])) x[i] = 0.0f;
+  333/347                  :  h / h2 non-finite -> 0
+
+So an "all zeros" reading is AMBIGUOUS between a sanitised NaN and a sanitised OVERFLOW, and the
+sanitiser itself cannot say which. Anything with |value| > 100 is zeroed as if it were non-finite.
+
+What survives unchanged is the evidence that matters, and it is not the sanitiser: /tmp/moe_act.bin
+is 1024/1024 NaN as read DIRECTLY from the BO, before any host sanitiser runs. So "clean input ->
+all-NaN output" stands, and "the logits zeros are cn() seeing that NaN" stands. The rule for this
+lane going forward: never reason from a zeros reading on the logits side -- read the DUMPED buffer,
+because only it distinguishes NaN from overflow. Every conclusion I have recorded rests on the dump
+or on an intervention, not on the sanitised logits, so none of them need revisiting.
+
+Also noted: their line-295 citation is tree-dependent and my copy has diverged -- the same
+branch-divergence phenomenon as addendum 56, now visible in a second file. Cross-branch line-number
+citations are not stable references in this repo; quote the code, not the line.
