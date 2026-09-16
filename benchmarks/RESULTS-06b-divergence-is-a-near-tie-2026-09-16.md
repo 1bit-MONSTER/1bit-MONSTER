@@ -116,3 +116,54 @@ first *by a normal margin*, and the chosen token is a repeat of the prompt-prefi
   top-8 comparison at step 3 that was done at step 9 for the cat prompt.
 - Whether this generalises beyond these two prompts.
 - Nothing here closes gap #3; it changes which evidence should be chased.
+
+---
+
+# The step-3 fork is a SUBSTANTIVE difference, not a tie — top-8 compared directly
+
+The section above said the next step was "the same top-8 comparison at step 3". Done. **The two arms
+are not tie-breaking there; their distributions are materially different.**
+
+`The largest planet in the solar system is`, step 3:
+
+| token | dense | runlist |
+|---|---|---|
+| `32313` | **rank 6**, logit 14.366 | **rank 1**, logit 27.750 |
+| `106287` | rank 8, logit 14.120 | rank 2, logit 22.125 |
+| `151667` (`<think>`) | **rank 1**, logit 18.279 | below 2nd |
+
+`32313` is the runlist arm's clear winner at **27.750** and only **6th** in the dense arm at
+**14.366** — **13.4 logits apart** — and the dense arm's own winner is `151667`, the `<think>` opener
+it had already emitted at step 1.
+
+Contrast with the cat prompt, where the dense arm's pick *was* the runlist arm's runner-up at a 0.375
+gap. Same procedure, opposite conclusion. **So the dense arm has at least two distinct failure
+modes**, and only one of them is a tie-break.
+
+## The logit SCALES differ too, and that may be the thread
+
+Reading the top-1 magnitudes across the two runs:
+
+| step | dense top-1 value | runlist top-1 value |
+|---|---|---|
+| 1 (`151667`) | 27.701 | 28.375 |
+| 2 (`198`) | 27.466 | 33.000 |
+| 3 | 18.279 (`151667`) | 27.750 (`32313`) |
+
+Step 1 agrees to within 0.7. By step 2 they differ by 5.5 on the same token, and at step 3 the dense
+arm's whole distribution has dropped to ~14–18 while the runlist arm's sits at ~22–28.
+
+**A shrinking logit scale on one arm is a different symptom from a reordering**, and it is testable:
+if the dense arm's logits are being scaled down relative to the runlist's, the divergence is a
+*magnitude* problem (accumulating error, a norm, a quantisation step) rather than a *ranking* problem.
+That is the next measurement — track the top-1 magnitude against step for both arms over a longer run
+and see whether the dense arm's drifts systematically.
+
+## Scope
+
+- Two prompts, examined by hand. Both are real measurements, but neither is a general claim about the
+  dense arm, and this does not close gap #3.
+- The dense arm's logits here are f32 from `lm_topk_omp`; the runlist arm's are bf16 read out of the
+  logits BO. **The bf16 quantisation of the runlist arm's logits is a confound for absolute
+  magnitudes** — it is small (bf16 has ~3 decimal digits) but it is not zero, and any claim about a
+  systematic scale difference has to clear it.
