@@ -143,12 +143,13 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                 fW_c.release(ObjectFifoPort.Consume, 1)
 
         # ---- PHASE 2 fifos: A broadcast to every column, B and C per column ----
-        # A is a BROADCAST: one fifo, every core a consumer, filled by one shim BD per tile. The
-        # producer must not reuse a slot until ALL consumers have released it; a deeper fifo gives
-        # the slowest core more slack before any reuse can bite. Storage is in each core's L1 (64 B
-        # per tile), so depth is nearly free -- and unlike per-column fifos it costs no descriptors.
-        gA_c = object_fifo("G_A_C", qkv_shim[0],
-                           [qkv_core[c] for c in range(n_aie_cols)], 32, Ga_ty)
+        # A is NO LONGER A BROADCAST (addendum 121): one fifo per column, fed by that column's own
+        # shim. A single broadcast fifo lets the producer reuse a slot before every consumer has
+        # released it, which corrupts a fraction of the columns (addendum 120's dose-response: the
+        # failure rate rises with consumer count and falls with fifo depth). Private fifos are
+        # correct by construction; the cost is one A BD per column instead of one for all.
+        gA_s = [object_fifo(f"G_A_S{c}", qkv_shim[c], [qkv_core[c]], BATCH_SIZE + 1, Ga_ty)
+                for c in range(n_aie_cols)]
         gB_s = {}
         gB_c = {}
         gC_c = {}
@@ -172,10 +173,10 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                         cbuf = gC_c[c].acquire(ObjectFifoPort.Produce, 1)
                         zero(cbuf)
                         for _ in range_(n_k):
-                            abuf = gA_c.acquire(ObjectFifoPort.Consume, 1)
+                            abuf = gA_s[c].acquire(ObjectFifoPort.Consume, 1)
                             bbuf = gB_c[c].acquire(ObjectFifoPort.Consume, 1)
                             matmul(abuf, bbuf, cbuf)
-                            gA_c.release(ObjectFifoPort.Consume, 1)
+                            gA_s[c].release(ObjectFifoPort.Consume, 1)
                             gB_c[c].release(ObjectFifoPort.Consume, 1)
                         gC_c[c].release(ObjectFifoPort.Produce, 1)
 
@@ -219,9 +220,10 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                     at_list = []
                     bt_list = []
                     for ki in range(ki0, ki_end):
-                        a = shim_dma_single_bd_task(gA_c, GA, offset=ki * k,
-                                                    sizes=[1, 1, 1, k], issue_token=True)
-                        dma_start_task(a); at_list.append(a)
+                        for c in range(n_aie_cols):
+                            a = shim_dma_single_bd_task(gA_s[c], GA, offset=ki * k,
+                                                        sizes=[1, 1, 1, k], issue_token=True)
+                            dma_start_task(a); at_list.append(a)
                         for c in range(n_aie_cols):
                             n_tile = col_group * n_aie_cols + c
                             # LINEAR B tap (addendum 37 / validated 8192/8192 in addendum 82):

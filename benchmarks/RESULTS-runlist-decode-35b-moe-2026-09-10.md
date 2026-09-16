@@ -4310,3 +4310,52 @@ IMMEDIATE CORRECTION TO THE RECORD: addendum 112's three-phase "verified" number
 FFNnorm bit-identical, GEMM 8192/8192) must be restated as "the norm phases exact in every run tested;
 the GEMM exact in roughly 3 of 4 runs". The norm claims stand. The GEMM claim does not, and it should
 never have been quoted for a design whose A feed is a broadcast.
+
+### Addendum 121 — the A broadcast is REFUTED as the cause; the result is final and wrong
+
+Two probes, and together they remove the two best explanations I had.
+
+PROBE 1: per-column A fifos, i.e. the broadcast removed entirely. Each column now has its own
+`G_A_S{c}` fed by its own shim, at the cost of one A BD per column (662 -> 1,046 descriptors at N=2048,
+which fits). Eight runs:
+
+  2048, 2048, 2048, 2048, 2048, 1363, 3, 578        -> 3 FAILURES IN 8
+
+STILL FLAKY, and severely so (3 of 2048 columns correct in one run). The A broadcast is NOT the cause,
+and addendum 120's dose-response -- the failure rate rising with consumer count and falling with fifo
+depth -- was a CORRELATION, not the mechanism: both of those change how many operations are in flight
+and therefore how wide a different race's window is. I stated it as confirmed when it was not, and this
+corrects it.
+
+PROBE 2: is the device still writing when we read? The driver now reads C, waits half a second, syncs
+and reads again, and reports the difference. Six runs of the per-column design:
+
+  run 1: C stable yes (0 words changed)   GEMM 1376/2048
+  run 2: C stable yes (0 words changed)   GEMM 2048/2048
+  run 3: C stable yes (0 words changed)   GEMM 2048/2048
+  run 4: C stable yes (0 words changed)   GEMM 1761/2048
+  run 5: C stable yes (0 words changed)   GEMM 1792/2048
+  run 6: C stable yes (0 words changed)   GEMM 2048/2048
+
+NOT ONE WORD CHANGES in any run, including the failing ones. So this is not a readback race and not a
+completion-barrier problem: by the time `run.wait()` returns, the device has finished, and what it
+finished with is WRONG. The corruption is created during the computation and is stable afterwards --
+which makes it a genuine intra-run race, timing-dependent (it varies between runs on identical inputs
+and identical binary) but not a matter of when the host looks.
+
+WHAT IS NOW RULED OUT: the A broadcast (probe 1); the C readback timing and the completion barrier
+(probe 2); the descriptor pool (addendum 119: 662 descriptors fails worse than 2,630); the C fifo depth
+(addendum 118); the norm phases, which are exact in every run ever taken and have no such feed; and the
+driver, whose reference and readback the norm phases validate in the same binary.
+
+WHAT REMAINS: the A and B feeds themselves -- per-column, single-consumer, BATCH_SIZE-deep, with
+`issue_token=True` on every BD -- and the core's acquire/release discipline over them. The sharpest next
+probe is to take the loop apart: set n_k = 1 (K = 64, a single A tile and a single B tile per column),
+which removes every iteration, every batch and every reuse, and run 8 times. If a single-tile GEMM is
+flaky, the fault is in the fundamental shim-DMA/fifo pair or the token semantics; if it is exact, the
+race lives in the multi-iteration machinery and narrows to the batch loop, the fifo reuse, or the
+accumulation into cbuf.
+
+SECOND PROBE, also cheap: drop `issue_token=True` from the A/B/C tasks and re-measure. Tokens are the
+mechanism by which a shim BD latches against the core's progress, and misusing them is exactly how a
+producer could latch a buffer the core is still reading.

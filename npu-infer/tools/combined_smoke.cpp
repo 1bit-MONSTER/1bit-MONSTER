@@ -35,6 +35,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <random>
+#include <unistd.h>
 #include <vector>
 
 static int H = 2048;              // RMSNorm size (argv[3], default 2048)
@@ -306,6 +307,19 @@ int main(int argc, char** argv) {
             int32_t acc = 0;
             for (int k2 = 0; k2 < K; k2++) acc += (int32_t)gA[k2] * (int32_t)gB[(size_t)k2 * N + n];
             if (gc[n] != acc) cb++;
+        }
+        // IS THE DEVICE STILL WRITING WHEN WE READ? Read C again after a pause and compare.
+        {
+            std::vector<int32_t> first(N);
+            memcpy(first.data(), bo_gC.map<void*>(), (size_t)N * 4);
+            usleep(500000);
+            bo_gC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+            std::vector<int32_t> second(N);
+            memcpy(second.data(), bo_gC.map<void*>(), (size_t)N * 4);
+            int diff = 0;
+            for (int i = 0; i < N; i++) if (first[i] != second[i]) diff++;
+            fprintf(stderr, "  C stable across a 0.5 s pause: %s (%d words changed)\n",
+                    diff ? "NO" : "yes", diff);
         }
         fprintf(stderr, "FOUR-arg GEMM: %d/%d columns match\n", N - cb, N);
         return 0;
