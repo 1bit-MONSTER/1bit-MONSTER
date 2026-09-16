@@ -303,3 +303,21 @@ meets FLM at prefill/TTFT; it trails by ~7% only at the ~2k context the
 harness's standard prompt happens to tokenize to, and that residual is the
 closed-source attention KV-scaling — not something the native host side can
 remove (the i6 rope-overlap of §10 buys only ~0.5 ms/tok of the ~1.4 ms gap).
+
+## 12. FRESH RE-MEASUREMENT (2026-09-16, current tree, device usable)
+
+After the user noted the device is not actually hard-blocked (idle `flm serve`
+holds one of 16 shared hw contexts), direct `NPU_RUNLIST=1 NPU_FWD_TIMING=1`
+runs re-confirm the committed numbers on the current tree:
+
+| ctx | exec ms | build ms | rope ms | decode tok/s |
+|---|---:|---:|---:|---:|
+| 1024 | **12.5** | 2.0 (overlapped) | 0.4 | **82** (matches committed 82) |
+| 2088 | **15.3** | 2.1 (overlapped) | 0.4 | **69** (committed 67, within variance) |
+
+Decisive split: **build and rope are context-constant; the entire 1024→2088
+scaling (~2.8 ms) is in `exec`** — the `layer.xclbin` attention reading a longer
+KV prefix. This closes ra-3's open question: the host passes (§10) are NOT the
+@2k gap; the gap is device-side, and the native exec scales ~2.5x more steeply
+than FLM's (12.5→15.3 vs 12.8→13.9 ms), which is the one remaining unexplained
+delta (KV layout / per-ctx ELF vs FLM's internal sequence).
