@@ -1826,3 +1826,38 @@ WHAT THIS RUN ESTABLISHED, in one place:
    all exonerated by intervention, act unchanged;
  - every input we can name is verified or exonerated, so the NaN is either in the ELF's sequence or
    in an argument we are passing wrongly (this addendum).
+
+### Addendum 51 — the arg->group mapping IS group N <-> arg N, and the WEIGHT BO is 20,480 B SHORT of what the ELF declares
+
+Resolved from the harness's own set_arg order and the ELF's .dynsym object names:
+
+  harness: set_arg(3)=bo_weight_, (4)=bo_act_, (5)=bo_router_, (6)=bo_norms_, (7)=bo_kv_
+  ELF .dynsym object names ARE the group ids:
+     group/arg 3 (weight): objects 18944, 75776          sum 94,720
+     group/arg 4 (act)   : object  4096                   sum  4,096
+     group/arg 5 (router): objects 12288, 131072          sum 143,360
+     group/arg 6 (norms) : objects 66048, 131072, 151552  sum 348,672
+     group/arg 7 (kv)    : objects 49152, 2097152         sum 2,146,304
+
+CORROBORATION that group N maps to arg N: group 5's 12288 == 0x3000, which is EXACTLY the router
+header offset the harness writes (bo_router_ = 0x3000 + 2048*256*2). 66048 in group 6 is also
+exactly the six norms heads (65536+256+128+128). So the mapping is not a guess.
+
+THE DISCREPANCY, and it is hard: group 3 declares 18944 + 75776 = 94,720 B, while
+npu_pack_moe_region_b writes region-A as 74,240 B -- 20,480 B SHORT of what the ELF declares for
+the very argument the layer reads its weights from.
+
+HYPOTHESIS for the decomposition (labelled a hypothesis; specificity is not evidence -- see
+addendum 48, where an arithmetically exact prediction was still wrong as a causal claim):
+   18944 = 2 x FP32 layernorm (2048 x 4 = 8192 each) + 2048 + 256 + 128 + 128   [exact]
+   75776 = conv1d 65536 + 8192 + 2048                                            [exact]
+   sum   = 94,720                                                                [exact]
+while the packer writes the two layernorms as BF16 (4096 each) and totals 74,240. If that is the
+shape of it, the weight BO carries the layernorms in the WRONG WIDTH as well as the wrong offsets,
+which would make arg-3 structurally different from what the layer expects -- and would explain
+garbage-in with clean activations, no error, and a deterministic all-NaN out.
+
+NEXT RUN: do NOT guess the layout. Get it from the authoritative source -- the lib's
+gen_layer_seq (exported at 0x97ad0, the same function that yielded the reorder_cpy callable) --
+by disassembling how it assigns the group-3 objects, or by matching the harness's packing against
+a captured LEGITIMATE weight BO. Then repack arg-3 to match and re-run, gating on the act.
