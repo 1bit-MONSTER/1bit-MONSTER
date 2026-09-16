@@ -67,6 +67,14 @@ struct AttnCtx {
     int MAX_SEQ = 512;   // kernel-baked N (shipped attn.xclbin = N=512 build);
                      // kernel-baked N (n1_core_attn.py -N)
     int nq = 8, nkv = 2, hd = 128;         // Zaya1-8B GQA shapes
+    // cols = the generator's n_aie_cols (one core column per q head per pass),
+    // so n_hpass = nq / cols. The kernel is built for a specific cols; the host
+    // must be told the same one (NPU_ATTN_COLS) or the head->column mapping and
+    // the C2 region walk disagree. PARAM_ROW is where the params tile sits in
+    // the A-frame: row 15 is the padding row for nq <= 15, and above that the
+    // params move past the head rows (see n1_core_attn.py PARAM_ROW).
+    int cols = 8;
+    int PARAM_ROW = 15;
 
     std::unique_ptr<xrt::xclbin> xc;
     std::unique_ptr<xrt::hw_context> hc;
@@ -79,17 +87,46 @@ struct AttnCtx {
     int8_t* Vm = nullptr;
     int8_t* SCRm = nullptr;
     bool ready = false;
+    // K/V-side cache: the engine's prefill runs one query row per launch against a
+    // single K/V set, and re-packing KT/V for every row made a 2048-key prefill take
+    // 18 minutes. Packing for the LARGEST seq seen is safe because the causal mask is
+    // params[1] (the softmax masks t >= seq), so keys beyond a shorter row's seq are
+    // masked rather than leaked into the result.
+    const float* kv_ko = nullptr;
+    const float* kv_vo = nullptr;
+    int kv_seq = -1;
+    float kv_sk = 1.0f;
+    std::vector<float> kv_sv;
 
     bool init(xrt::device& d, const char* xp, const char* ip,
               int nq_, int nkv_, int hd_) {
         nq = nq_; nkv = nkv_; hd = hd_;
         if (getenv("NPU_ATTN_MAX_SEQ") && atoi(getenv("NPU_ATTN_MAX_SEQ")) > 0)
             MAX_SEQ = atoi(getenv("NPU_ATTN_MAX_SEQ"));
-        if (nq != 8 || nkv != 2 || hd != 128) {
-            fprintf(stderr, "  AttnCtx: shapes nq=%d nkv=%d hd=%d unsupported "
-                            "(kernel is baked for 8/2/128)\n", nq, nkv, hd);
+        if (getenv("NPU_ATTN_COLS") && atoi(getenv("NPU_ATTN_COLS")) > 0)
+            cols = atoi(getenv("NPU_ATTN_COLS"));
+        // Shapes are now checked against the kernel's structure instead of
+        // being pinned to the one built configuration:
+        //  * nq must be a whole number of head blocks (one column = one head)
+        //  * gqa = cols/nkv must divide, and nkv must divide cols
+        //  * hd must be a whole number of 128-wide PV output tiles (the PV
+        //    N-split) and fit the 2048 B A-frame row
+        if (nq % cols != 0) {
+            fprintf(stderr, "  AttnCtx: nq=%d is not a multiple of cols=%d "
+                            "(set NPU_ATTN_COLS to the value the kernel was built with)\n",
+                    nq, cols);
             return false;
         }
+        if (nkv < 1 || cols % nkv != 0) {
+            fprintf(stderr, "  AttnCtx: nkv=%d must divide cols=%d\n", nkv, cols);
+            return false;
+        }
+        if (hd < 128 || hd % 128 != 0 || hd > K_FRAME) {
+            fprintf(stderr, "  AttnCtx: hd=%d must be a multiple of 128 and <= %d "
+                            "(PV head-dim tiles)\n", hd, K_FRAME);
+            return false;
+        }
+        PARAM_ROW = (nq <= 15) ? 15 : nq;
         FILE* f = fopen(ip, "rb");
         if (!f) {
 #ifdef NPU_EMBED_ATTN_INSTS
@@ -157,11 +194,19 @@ struct AttnCtx {
         fprintf(stderr, "  AttnCtx: grp_a=%d grp_w=%d grp_c=%d grp_v=%d grp_s=%d "
                         "grp_ins=%d\n", grp_a, grp_w, grp_c, grp_v, grp_s, grp_ins);
 
-        const size_t qsz   = (size_t)16 * K_FRAME;                        // 32768
+        // A-frame rows: one per q head plus the params row, never fewer than
+        // the original 16 (nq <= 15 keeps qsz byte-identical to before).
+        const int frame_rows = std::max(16, PARAM_ROW + 1);
+        const size_t qsz   = (size_t)frame_rows * K_FRAME;
         const size_t ktsz  = (size_t)nkv * hd * MAX_SEQ;                  // 65536
         const size_t c2sz  = (size_t)nq * 8 * hd * sizeof(int32_t);       // 32768
         const size_t vsz   = (size_t)nkv * MAX_SEQ * hd;                  // 65536
-        const size_t scrsz = 32 + (size_t)nq * 8 * MAX_SEQ;               // 16416
+        // A2 scratch holds one (8,N) slice PER HEAD (32 + nq*8*MAX_SEQ): the passes
+        // write their own slice at 32 + (hp*cols + c)*8*MAX_SEQ, because a second
+        // write to the same slice is dropped silently -- the failure the chunked path
+        // hit for groups. Per-column sizing (32 + cols*...) would under-size it for
+        // any nq > cols and the passes would read each other's A2.
+        const size_t scrsz = 32 + (size_t)nq * 8 * MAX_SEQ;
 
         bQ    = std::make_unique<xrt::bo>(d, qsz,   XRT_BO_FLAGS_HOST_ONLY, grp_a);
         bKT   = std::make_unique<xrt::bo>(d, ktsz,  XRT_BO_FLAGS_HOST_ONLY, grp_w);
@@ -178,7 +223,7 @@ struct AttnCtx {
         C2m = (int32_t*)bC2->map();
         Vm = (int8_t*)bV->map();
         SCRm = (int8_t*)bSCR->map();
-        // Zero the A-frame rows 8..15 (params/zero pad), scratch, C2.
+        // Zero the A-frame head/pad rows, scratch, C2.
         std::memset(Qm, 0, qsz);
         std::memset(C2m, 0, c2sz);
         std::memset(SCRm, 0, scrsz);
@@ -239,7 +284,7 @@ struct AttnCtx {
                                     }
                                 }
                     }
-                const float* pg = (const float*)(Qm + (size_t)15 * K_FRAME
+                const float* pg = (const float*)(Qm + (size_t)PARAM_ROW * K_FRAME
                                                   + (size_t)g * 64);
                 attn_softmax_contract(c1p, pg, a2.data() + (size_t)g * 512);
             }
@@ -282,20 +327,28 @@ struct AttnCtx {
         }
         // ── scales: global sq/sk (kernel params are shared across columns),
         //    per-(kv,d) sv (dequant scale = max/127) over the whole cache ──
-        float mq = 0, mk = 0;
+        float mq = 0;
         for (int i = 0; i < qd; i++) { float a = std::fabs(qo[i]); if (a > mq) mq = a; }
-        for (int i = 0; i < kd; i++) { float a = std::fabs(ko[i]); if (a > mk) mk = a; }
         const float sq = mq > 0 ? 127.0f / mq : 1.0f;
-        const float sk = mk > 0 ? 127.0f / mk : 1.0f;
-        std::vector<float> sv((size_t)kd, 0.0f);
-        for (int t = 0; t < seq; t++)
-            for (int i = 0; i < kd; i++) {
-                float a = std::fabs(vo[(size_t)t * kd + i]);
-                if (a > sv[i]) sv[i] = a;
-            }
-        for (int i = 0; i < kd; i++) sv[i] = sv[i] > 0 ? sv[i] / 127.0f : 1.0f;
+        const bool repack = (ko != kv_ko) || (vo != kv_vo) || (seq > kv_seq);
+        if (repack) {
+            float mk = 0;
+            for (int i = 0; i < kd; i++) { float a = std::fabs(ko[i]); if (a > mk) mk = a; }
+            kv_sk = mk > 0 ? 127.0f / mk : 1.0f;
+            std::vector<float> svn((size_t)kd, 0.0f);
+            for (int t = 0; t < seq; t++)
+                for (int i = 0; i < kd; i++) {
+                    float a = std::fabs(vo[(size_t)t * kd + i]);
+                    if (a > svn[i]) svn[i] = a;
+                }
+            for (int i = 0; i < kd; i++) svn[i] = svn[i] > 0 ? svn[i] / 127.0f : 1.0f;
+            kv_sv.swap(svn);
+            kv_ko = ko; kv_vo = vo; kv_seq = seq;
+        }
+        const float sk = kv_sk;
+        const std::vector<float>& sv = kv_sv;
 
-        // ── bo0: A-frame (head h at row h·2048) + params at row 15 ──
+        // ── bo0: A-frame (head h at row h·2048) + params at PARAM_ROW ──
         for (int h = 0; h < nq; h++) {
             const float* qh = qo + (size_t)h * hd;
             int8_t* row = Qm + (size_t)h * K_FRAME;
@@ -306,7 +359,7 @@ struct AttnCtx {
             }
         }
         // ── params, one set per GROUP when this is a chunked build (N > 512).
-        //    The chunked kernel reads its params tile at 15*K_FRAME + g*64,
+        //    The chunked kernel reads its params tile at PARAM_ROW*K_FRAME + g*64,
         //    so group g can carry its OWN key count: it owns the keys
         //    [512g, 512g+512), and the causal mask must fire at the group-local
         //    t_local >= seq - 512g. Feeding every group the global seq is the
@@ -332,12 +385,12 @@ struct AttnCtx {
                 (float)(n_grp > 1 ? 512 : N), 0.0f,
                 0, 0, 0, 0
             };
-            std::memcpy(Qm + (size_t)15 * K_FRAME + (size_t)g * 64,
+            std::memcpy(Qm + (size_t)PARAM_ROW * K_FRAME + (size_t)g * 64,
                         params, sizeof(params));
         }
         // Group 0's set: the dump path below only uses params[0] (the scale),
         // which is identical for every group.
-        const float* params = (const float*)(Qm + (size_t)15 * K_FRAME);
+        const float* params = (const float*)(Qm + (size_t)PARAM_ROW * K_FRAME);
         bQ->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
         // ── bo1: K^T per kv, per (ki,nt) 64×128 tile, in the MMUL B chunk
@@ -346,6 +399,7 @@ struct AttnCtx {
         //    k = ki·64 + i0·8 + i2 (K-dim), n = nt·128 + i1·8 + i3 (t). A
         //    row-major pack mispairs (d,t) and scrambles the QK^T scores. ──
         const int n_k = K / 64, n_n = N / 128;
+        if (repack)
         for (int kv = 0; kv < nkv; kv++)
             for (int ki = 0; ki < n_k; ki++)
                 for (int nt = 0; nt < n_n; nt++) {
@@ -379,6 +433,7 @@ struct AttnCtx {
         // ── bo3: V per kv — the PV mmul B operand (B[k=t][n=d]), same chunk
         //    interleave: byte i0·1024 + i1·64 + i2·8 + i3 holds V[t][d] with
         //    t = ki·64 + i0·8 + i2, d = i1·8 + i3. t ≥ seq zeroed (causal). ──
+        if (repack)
         for (int kv = 0; kv < nkv; kv++)
             for (int ki = 0; ki < N / 64; ki++)
                 for (int i0 = 0; i0 < 8; i0++)
