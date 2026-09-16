@@ -5912,3 +5912,48 @@ away. It is the first thing to look at in the layer-1 divergence.
 solving for the transform instead of assuming the convention, then reading the engine's own ground-truth
 diagnostic rather than deriving the weights. Each step was one command, and the combination localised and
 fixed a defect that hours of careful measurement on the wrong axis had not touched.
+
+## Second bug found and fixed (overrides gated to l==0), but layer 1 still diverges
+
+**The bug: all four weight overrides were gated `if (l == 0)`.** That was my own logging artifact - the
+helper printed a line per call, so I suppressed it for `l>0` by suppressing the *call*. Effect: only layer 0
+ever received the effective weights; layers 1-27 used the raw (permuted) ones. Removed the gate and moved the
+"print only for l==0" inside the helper, so the override applies everywhere and the log stays quiet.
+
+Tokens, same prompt:
+
+```
+per-op reference (correct)      220 49789 220 11141
+fused, overrides gated to l==0  3164 13378 13378 13378
+fused, overrides on ALL layers  128218 97824 97824 97824
+```
+
+Changed, so the fix took effect - but still not converged, and the degenerate repeat (`97824 x3`) persists.
+
+Per-layer correlation and magnitudes:
+
+```
+layer  corr (all-layers)  corr (l==0 gate)  per-op maxabs  fused maxabs
+0      0.997135           0.997135          6.6            6.6
+1      0.067892           0.123197          7.8            468.0     <- fused explodes HERE
+2      0.076159           -                 6467.0         756.0     <- reference explodes HERE
+3      0.113529           -                 6466.3         2368.0
+4      0.141127           -                 6465.9         3344.0
+5      0.146501           -                 6465.8         4096.0
+```
+
+**Layer 0 matches exactly (6.6 both). Then the two paths diverge in magnitude:** mine jumps 6.6 -> 468 at
+layer 1, the reference jumps 7.8 -> 6467 at layer 2. So they are not the same trajectory, and the divergence
+begins immediately after the layer I just made correct.
+
+**And the reference's own explosion is unexplained and suspicious.** A 1000x jump in `bh` between layers 1
+and 2, in a path that produces *correct* tokens, should not happen: RMSNorm renormalises the activation, but
+the residual stream is additive, so a 6467-magnitude `bh` would dominate everything after it. Either the
+engine's path tolerates it in a way I do not understand, or the `bh` I am dumping is not the residual stream
+at that point despite being read as the layer output. **I am not treating the per-layer correlations above
+as trustworthy until that is settled** - if the reference dump is not what I think, every layer>=1 comparison
+is against the wrong object, which is the same class of error as the cross-prompt bug.
+
+**Where fk-3 stands:** layer 0 correct on identical inputs (0.997, and Q at 0.99997 in isolation); the
+qk-norm omission found, fixed and proved; the l==0 override gate found and fixed; the remaining divergence
+is from layer 1 onward, with the reference's own hidden-state behaviour as the first thing to explain.
