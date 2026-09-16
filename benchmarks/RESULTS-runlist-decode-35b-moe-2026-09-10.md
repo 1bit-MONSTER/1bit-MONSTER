@@ -3103,3 +3103,38 @@ REBUILD STATE: (a) compiles -- MET. (c) one submit -- MET, driver validated 8192
 half is proven alone (256/256); the norm half now matches the proven implementation exactly; the
 combination reaches a legal context and fails either by hanging or by an XRT bitset exception
 depending on num_col_group, with the column-8 impossibility now removed from the picture.
+
+### Addendum 89 — the failure mode is set by num_col_group, and it is NOT phase order
+
+Two controlled experiments on the axis addendum 88 opened.
+
+(A) num_col_group ALONE, with c held at 2:
+      c=2 N=256 num_col_group=1:  bitset::test: __position (140472597077016) >= _Nb (which is 64)
+      c=2 N=512 num_col_group=2:  HANGS (submit issued, never returns)
+    Same column count, same norm, same driver, same fifos. The number of GEMM column-groups in the
+    runtime sequence decides WHICH failure appears: one group -> the sequence completes and XRT
+    itself throws; two groups -> the submit never returns.
+
+(B) PHASE ORDER is not the axis. Moved the norm's DMAs to AFTER the whole GEMM phase (so the GEMM
+    runs first), rebuilt c=2 N=512 -- the configuration that hangs -- and it STILL HANGS. So the
+    hang is not "the norm runs before the GEMM"; it belongs to the GEMM's own multi-group loop.
+
+WHAT THIS NARROWS IT TO: with num_col_group=2 the runtime issues the A/B tile batch and the C reads
+TWICE, and the GEMM core's outer loop runs `for _ in range_(num_col_group)` before cycling. Every
+variant with num_col_group=1 retires the sequence and then trips XRT's bitset; every variant with
+num_col_group=2 never retires. The next probe should therefore be the SECOND group specifically:
+whether the second A/B batch's DMAs are what never complete (the core may be unable to reach them
+because the C fifo, depth 1, is still holding group 1's buffer), rather than anything about the norm
+or the phase boundary.
+
+RUN SUMMARY (addenda 84-89), for whoever picks this up:
+ - err=-28 SOLVED: the device has EIGHT columns (0..7). My full design put the norm on column 8;
+   with a 65 KB B buffer c=8 still fails while c=4 creates its context. Addendum 79's "at least 9
+   columns" was inferred from aiecc compiling and is REFUTED -- aiecc does not know the device.
+ - THE REAL BUG: my norm core never released W; the proven n1_rms_norm.py releases it each outer
+   iteration. Fixed, and the pure hang went away for the num_col_group=1 case, which now retires far
+   enough for XRT to throw.
+ - TWO HYPOTHESES KILLED BY TEST, ONE BY READING: phase order (B above); BO order (declared order
+   matches the driver); XRT group assignment (a pool of valid ids -- retracts part of addendum 80).
+ - STILL STANDING: the GEMM half is proven correct ALONE (256/256 columns, addendum 85). Everything
+   that fails, fails only when a second phase or a second column-group is present.
