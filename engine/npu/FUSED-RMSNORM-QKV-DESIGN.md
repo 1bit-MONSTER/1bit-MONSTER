@@ -4826,3 +4826,47 @@ FLM_PARITY_TRUE_NATIVE=1 benchmarks/flm_parity.sh --model qwen3_0_6b --engine en
 This is the second time in this session that reading a peer's methodological note - rather than
 reasoning about my own setup - prevented a wrong measurement. Both times the trap was the same shape:
 a run that looks like it tests my code but silently substitutes a different implementation.
+
+## fk-4 measurement recipe, verified against the script itself
+
+`@agent-baaa57` answered with the source, and I re-read it directly. Facts confirmed in
+`benchmarks/flm_parity.sh`:
+
+```sh
+137:  local pout="$WORK/prefill.log" dout="$WORK/decode.log"
+138:  if [ "${FLM_PARITY_TRUE_NATIVE:-0}" = 1 ]; then
+139:    NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX="${NPU_PREFILL_MAX:-1024}" \
+140:      "$ENGINE" "$Q4NX" 1 "$all" >"$pout" 2>&1 || true
+141:    NPU_RUNLIST=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
+142:  else
+143:    NPU_FLM_PREFILL=1 "$ENGINE" "$Q4NX" 1 "$all" >"$pout" 2>&1 || true
+144:    NPU_FLM_PREFILL=1 NPU_FLM_DECODE=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
+```
+
+* `grep -c NPU_FK3 benchmarks/flm_parity.sh` = **0**. The script knows nothing about my arm, so there is
+  no switch for it - I must either add a branch or rely on environment inheritance.
+* **Both branches run the same `"$ENGINE"` I pass with `--engine`.** So my fk-4 run is my engine either
+  way; the flag selects which *code path inside it* runs. (My earlier note said this correctly; the
+  peer's phrasing is sharper and worth keeping: same program, different path.)
+* **The inline env assignments are additive, so a pre-exported variable survives.** Therefore
+  `NPU_FK3=1` exported before the script **does** reach the prefill line - and the prefill line sets
+  `NPU_PREFILL_BF16=1 NPU_PREFILL_MAX=1024`, which is exactly my lane's path (the bf16 prefill the fused
+  layer sits inside). The decode line additionally forces `NPU_RUNLIST=1`, which is a different path and
+  not what fk-4 measures - fk-4 is a prefill measurement, so that line does not matter here.
+
+**So the fk-4 command is:**
+
+```
+NPU_FK3=1 KEEP_WORK=1 FLM_PARITY_TRUE_NATIVE=1 \
+  benchmarks/flm_parity.sh --model qwen3_0_6b --engine engine/npu/build/npu_engine_qwen3_0_6b ...
+```
+
+**And the verification, which is the point** - never let the measurement share an assumption with the
+thing under test. `KEEP_WORK=1` leaves the raw logs at `$WORK/prefill.log` and `$WORK/decode.log`, and
+the engine's **own banner** in `prefill.log` says which path actually ran: a `[bf16]` prefill tag for the
+bf16 path, or my own `[fk3]` lines for the fused layer. If `[fk3]` is absent, the number is not mine and
+must be discarded - regardless of what the summary table claims.
+
+Also recorded: the peer's default-mode vs TRUE_NATIVE numbers differed (60/34/17/10 vs 67/37/18/11) on
+the same binary and the same weights, purely from `NPU_FLM_*`. A ~11% difference from a path selector is
+exactly the kind of error that looks like a real result.
