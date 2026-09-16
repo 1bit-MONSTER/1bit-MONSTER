@@ -3879,3 +3879,50 @@ comparison the fk-3 contract actually specifies, and the thing to stop doing is 
 intermediates as ground truth without first checking that each one satisfies its own invariants.
 That check is what just caught this: a max above `max|V|` is impossible, and it took one
 comparison against a quantity I knew independently.
+
+## RETRACTION + resolution: the 5.1x deficit IS real. My launch A's QKV is 5.36x too small.
+
+I claimed the per-op attention output (2.28125) was "impossible" because it exceeded my launch A's
+max|V| (1.05469), and concluded the deficit was an oracle artifact. **That was wrong**, and reading
+the code - which I should have done before claiming - shows why:
+
+```c
+extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);   // line 118
+attn_npu_ok = bf16mm_attn(bA.data(), bActQ.data(), bKv.data()) != 0;                  // line 4806
+```
+
+`bA` is the **output**, not the input, so `bf16_l0_attnout.bin` (dumped from `bA` at line 4869,
+after the attention) genuinely is the attention output.
+
+And the correct bound test - against **each path's own V** - exonerates both:
+
+```
+                          Q          K          V       attn out    <= max|V|?
+per-op path (rawqkv)   5.65625    5.25000    2.29688     2.28125     VALID
+my launch A            1.03906    1.04688    1.05469     0.71480     VALID
+=> each path is internally consistent; they differ in QKV SCALE by 5.36x
+```
+
+Both attention outputs are valid convex combinations of their own path's V. The per-op V is
+2.29688 and mine is 1.05469, and that 5.36x is the same ratio as the layer outputs (6.6196 /
+1.2344) and as the raw QKVs. So **the deficit is real, my launch A is the small one, and the
+"oracle" was fine all along.** Earlier I had also measured the per-op raw QKV's V at 2.29688 and
+my launch A's at 1.05469 - the number was in front of me and I read its significance backwards.
+
+That also revives the hypothesis I abandoned too early: **the effective weight the engine's GEMM
+consumes is not the raw `bf16mm_dequant` array.** A row-major GEMM of the engine's own normed
+activation (2.54688, dumped) and raw weight (meanabs 0.0229) gives ~1.05, which is what both my
+kernel and my NumPy reference produce; the engine's own path gets 5.66 from the same activation.
+So the engine's effective `Wqkv` is ~5.4x larger in effect than the raw array. My earlier
+"verification" that they match used `bf16mm_dump_w(Wqkv[0], ...)` - a read-back whose provenance I
+never established, and which most plausibly returns the host-side pre-upload array.
+
+**Two corrections from one measurement, and the same lesson both times**: a check is worthless if
+its reference shares the failing component's assumption (my NumPy reference read the weight the
+way my kernel does), *and* a claim is worthless if it rests on a buffer whose identity I inferred
+rather than read. The bound test worked only because I finally compared against each path's own V.
+
+**Next**: establish what `bf16mm_upload_w` actually does to the array - by dumping the effective
+weight through a path that is definitely post-upload, or by running the engine's own GEMM on a
+known vector and reading back what it computed. That is the last unexplained factor, and it
+accounts for the entire 5.36x.
