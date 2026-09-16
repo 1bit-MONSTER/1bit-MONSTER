@@ -112,3 +112,37 @@ Open question that ra-2 must settle first: whether the norm-bearing GEMM
 sequence (`_send_rms_weights` + `Gemm::generate_seq`) is byte-equivalent to the
 host `rn_bf16` at the 0.6B shapes, or whether FLM's norm sequence assumes the
 whole-layer `layer.xclbin`'s kernel ABI rather than the standalone `mm.xclbin`.
+
+## 6. RESOLVED (ra-2 feasibility): the xclbin designs are disjoint, not modes
+
+`xclbinutil` on the FLM set (`amd-oss/fastflowlm/src/xclbins/Qwen3-0.6B-NPU2/`)
+shows every kernel — `mm.xclbin`, `layer.xclbin`, `dequant.xclbin`, `attn.xclbin`
+— exposes the SAME host ABI (`MLIR_AIE:MLIRAIE`, 5 data BOs `bo0..bo4` +
+`instr`/`ninstr`/`opcode`). The difference is entirely in the compiled AIE
+**design** (AIE_PARTITION):
+
+- `mm.xclbin`   = pure bf16 GEMM datapath (`A_bf16 × W_bf16 → C_bf16`), **no
+  norm/rope/silu logic in the tiles**.
+- `layer.xclbin` = whole-layer datapath (norm + QKV + RoPE + attention + O +
+  norm + gated SiLU + D all in the tiles), **M=1 per token**.
+- `attn.xclbin`  = MHA-engine (batched attention over a position range), driven
+  by `gen_mha_engine_seq(seq, L_begin, L_end)`.
+- `dequant.xclbin` = Q4NX→bf16.
+
+The instruction streams are **design-specific**: `Gemm::generate_seq` (libgemm)
+emits for `mm.xclbin`, `qwen3_npu_sequence::gen_layer_seq`/`gen_mha_engine_seq`
+emit for `layer.xclbin`/`attn.xclbin`. `_send_rms_weights` is an
+`Impl`-method of `qwen3_npu_sequence` — i.e. part of the **layer** sequence, not
+the mm GEMM. So a norm-bearing `_send_rms_weights` + `Gemm::generate_seq` mix
+(the `flm_bridge.cpp` sketch) would be an invalid mixed-design stream — which is
+consistent with that bridge having been removed from the engine build
+(`engine/npu/CMakeLists.txt:32`).
+
+**Consequence for the objective**: "fuse RMSNorm/RoPE/SiLU in-kernel" is only
+reachable via `layer.xclbin` (whole-layer, in-kernel everything) or FLM's closed
+`qwen3_npu::prefill`. `layer.xclbin` is M=1, so a *fast batched* fused native
+prefill requires reconstructing FLM's batched whole-layer orchestration from the
+open symbols (`gen_layer_seq` + `gen_mha_engine_seq` + the BO/npu_app plumbing
+that `RuntimeLayerEngine` already implements for decode) — a real but bounded
+effort, NOT a flag flip on `mm.xclbin`. The per-op bf16 path's speed (1945 tok/s)
+is the bar to preserve.
