@@ -1180,3 +1180,29 @@ wdepth=1 for the MEM budget): O-proj K=2048 -> 131072/131072 exact, D K=3072 ->
 non-re-read builds already cover K=1024. So the fused linear stages run at the
 real prefill M, and the remaining work is the composition at that M (the
 attention already query-tiles there).
+
+### Normed-stage re-read: builds, but A_norm never reaches DDR (OPEN)
+
+`n1_fused_norm_gemm_rr.py` + `build_fused_norm_gemm_rr.sh` apply the proven shim
+re-read to a NORMED stage: col 0 runs the norm (A f32 K-tiles -> reduce+scale ->
+A_norm bf16 K-tiles) and sends A_norm to DDR; col 1 re-reads it per N-tile and
+multiplies by W. Two columns because one column's shim would need 3 MM2S (A,
+A_norm-in, W) against the limit of 2. It builds at the prefill shape
+(`M=128 H=1024 N=4096 k=32 NT=32` -> 20474 B) — note the norm's A tile is
+`(M+1) x k` f32, so k must drop to 32 at M=128 for the MEM tile's budget.
+
+**But it is not correct yet: A_norm is ALL ZERO in DDR** (0/131072 nonzero), and
+C is all zero downstream. The DMA tasks are generated correctly
+(`dma_configure_task_for @AN_S` with the verbatim `sizes=[1,1,128,32]
+strides=[1,1,32,1]`, 32 of them; 64 `@A_S` tasks = 2 reps x 32 K-tiles), and the
+run completes — so the norm core consumes A (the A_S awaits would otherwise
+stall) but its A_norm does not arrive. The difference from the verified path is
+the LINK TARGET: the verified `AN_W -> AN_R` forwards core->mem->CORE, this one
+forwards core->mem->SHIM. So the suspicion is the mem->shim direction of the link
+(and/or the AN_S depth), not the kernel.
+
+Next probes, cheapest first: (1) AN_S/AN_W depth 2 -> n_k; (2) replace the
+mem->shim link with the verified mem->core link plus a dummy consumer core, to
+see whether the norm output appears at all; (3) if the link is the problem, have
+the norm core write A_norm through a DIFFERENT mem tile (or straight into the
+N-tile loop's fifo) so no mem->shim forwarding is needed.
