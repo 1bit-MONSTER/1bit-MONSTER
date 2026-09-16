@@ -1753,3 +1753,36 @@ sequence.
 Note on method, because it is the whole story of this hunt: the ELF's symbol table gave me a
 genuinely specific, arithmetically exact prediction (66048 = 65536+256+128+128) and it was still
 wrong as a causal claim. Specificity is not evidence. Ten lines and one run answered it.
+
+### Addendum 49 — PACKER CLOSED for every case the callable can be asked; n=128 is identity-by-construction
+
+@agent-baaa57 finished the verification, calling the callable at the RIGHT n (the tool's own list
+uses 4096/512 for these tensors, which are different experiments, so they patched a copy to call
+reorder() with n=1024 and n=128):
+
+  n_tiles=2048 (qkv_proj,       H=8, B=16): mine 9,699,328 B  callable 9,764,864 B  BYTE-EQUAL TRUE
+  n_tiles=1024 (gate_proj,      H=4, B=8 ): mine 4,849,664 B  callable 4,915,200 B  BYTE-EQUAL TRUE
+  n_tiles=128  (share_up_exps): CANNOT BE VERIFIED -- THE CALLABLE ITSELF FAULTS:
+      === model.layer.0.mlp.share_up_exps_proj.weight (n=128 flag=64) ===
+      Floating point exception (core dumped)
+
+That is H = n/256 = 0, a division by zero inside qwen3_6_reorder_cpy for n < 256. So the packer's
+`if (H < 1) H = 1;` (npu-infer/src/model.c:578) is a NECESSARY DIVERGENCE from the shipped
+function, not a discrepancy: at H=1, B=2 the interleave degenerates to
+out[blk*2+0]=in[blk*2+0], out[blk*2+1]=in[blk*2+1] -- the identity -- which is the only sensible
+reading and is presumably why the shipped runtime never calls it with n<256. The share_up /
+share_gate / share_down entries are tiles=128, so those rows are produced by OUR guard and have
+NO ORACLE: treat them as identity-by-construction, not as callable-verified. That is a small
+residual uncertainty in the packer, recorded rather than smoothed over.
+
+Addendum 41's question is therefore fully answered: my original "byte-exact" claim was right for
+the two tile sizes that CAN be checked against the shipped callable, and the third is ours by
+construction. Also confirmed: the tool's dst buffer is n x 4736 + 65536 in all cases
+(4,915,200 = 1024 x 4736 + 65536), which is exactly what made the crude write-length probe report
+"the whole cap" -- equal outputs means equal on [0, n x 4736).
+
+CONSEQUENCE, by elimination: every input we can currently name is now verified or exonerated --
+region-B byte-exact (2048, 1024), region-A content and layout both neutralised with no effect,
+the F32/bf16 defect neutralised in both of its copies with no effect, and the input activations
+clean. The all-NaN output is therefore produced INSIDE the ELF's own sequence, which is where the
+next run looks.
