@@ -49,6 +49,20 @@ LOG="${LOG:-/tmp/oracle_acc_0_6b.log}"
 # describes exactly this failure mode; the scorer reproduced it a second time.
 TXT_CAP="${ORACLE_TEXT_CHARS:-4000}"
 
+# ---- per-run scratch ------------------------------------------------------
+# These paths were FIXED ($IDS, $RL_RAW, ...). This harness
+# happens to fail LOUDLY on a tokenize failure -- it writes the ids with a shell
+# `>` redirect, which truncates, so nids==0 and the row is reported TOKENIZE
+# EMPTY -- but two concurrent runs still clobber each other's ids and raw files
+# with no error at all. The sibling oracle_accuracy_model.sh had the worse form
+# (ids written from inside python, so a failed tokenize left the PREVIOUS run's
+# prompt in place and the engine was scored on it silently). Per-invocation
+# scratch removes the shared-path class for both.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/oa.XXXXXX")" || exit 2
+trap 'rm -rf "$WORK"' EXIT
+IDS="$WORK/ids.txt"; RL_RAW="$WORK/rl.raw"; D_RAW="$WORK/d.raw"; FLM_RAW="$WORK/flm.raw"
+RL_IDS="$WORK/rl.ids"; D_IDS="$WORK/d.ids"
+
 # Post-reasoning region: the text after the last </think>, else the whole text.
 ans_region() {
     python3 -c 'import sys
@@ -87,11 +101,12 @@ while IFS='|' read -r prompt expected; do
     # flipped the runlist arm from "Paris" to " in the city").
     if [ "${TPL:-1}" = "1" ]; then
         printf '<|im_start|>user\n%s<|im_end|>\n<|im_start|>assistant\n' "$prompt" \
-            | "$TOK" "$TJSON" 2>/dev/null | tr ',' ' ' > /tmp/oa_ids.txt
+            | "$TOK" "$TJSON" 2>/dev/null | tr ',' ' ' > $IDS
     else
-        echo "$prompt" | "$TOK" "$TJSON" 2>/dev/null | tr ',' ' ' > /tmp/oa_ids.txt
+        echo "$prompt" | "$TOK" "$TJSON" 2>/dev/null | tr ',' ' ' > $IDS
     fi
-    nids=$(wc -w < /tmp/oa_ids.txt)
+    ids="$(tr -s ' ' < $IDS | sed 's/^ *//; s/ *$//')"
+    nids=$(wc -w < $IDS)
     if [ "$nids" -eq 0 ]; then
         echo "[$n] TOKENIZE EMPTY for: $prompt" >&2
         printf '%s\t%s\t%s\t%s\t%s\tERR\tERR\tERR\t0\t0\t0\n' \
@@ -100,32 +115,32 @@ while IFS='|' read -r prompt expected; do
     fi
 
     # ---- arrow: runlist ----------------------------------------------------
-    NPU_RUNLIST=1 NPU_GREEDY=1 timeout 240 "$ENGINE" "$Q4NX" "$NTOK" /tmp/oa_ids.txt \
-        >/tmp/oa_rl.raw 2>&1
-    grep -aoE '^\s*\[[0-9]+\] [0-9]+' /tmp/oa_rl.raw | awk '{print $2}' > /tmp/oa_rl.ids
-    rl_n=$(wc -w < /tmp/oa_rl.ids)
+    NPU_RUNLIST=1 NPU_GREEDY=1 timeout 240 "$ENGINE" "$Q4NX" "$NTOK" $IDS \
+        >$RL_RAW 2>&1
+    grep -aoE '^\s*\[[0-9]+\] [0-9]+' $RL_RAW | awk '{print $2}' > $RL_IDS
+    rl_n=$(wc -w < $RL_IDS)
     if [ "$rl_n" -eq 0 ]; then
         rl_txt="<EXTRACTION EMPTY>"
     else
-        rl_txt="$("$DET" "$TJSON" < /tmp/oa_rl.ids 2>/dev/null | tr '\n' ' ')"
+        rl_txt="$("$DET" "$TJSON" < $RL_IDS 2>/dev/null | tr '\n' ' ')"
         [ "${TXT_CAP:-0}" -gt 0 ] && rl_txt="${rl_txt:0:$TXT_CAP}"
     fi
 
     # ---- arm: dense --------------------------------------------------------
-    NPU_RUNLIST=0 NPU_GREEDY=1 timeout 600 "$ENGINE" "$Q4NX" "$NTOK" /tmp/oa_ids.txt \
-        >/tmp/oa_d.raw 2>&1
-    grep -aoE 'boot=[0-9]+|toks: [0-9]+' /tmp/oa_d.raw | grep -oE '[0-9]+' > /tmp/oa_d.ids
-    d_n=$(wc -w < /tmp/oa_d.ids)
+    NPU_RUNLIST=0 NPU_GREEDY=1 timeout 600 "$ENGINE" "$Q4NX" "$NTOK" $IDS \
+        >$D_RAW 2>&1
+    grep -aoE 'boot=[0-9]+|toks: [0-9]+' $D_RAW | grep -oE '[0-9]+' > $D_IDS
+    d_n=$(wc -w < $D_IDS)
     if [ "$d_n" -eq 0 ]; then
         d_txt="<EXTRACTION EMPTY>"
     else
-        d_txt="$("$DET" "$TJSON" < /tmp/oa_d.ids 2>/dev/null | tr '\n' ' ')"
+        d_txt="$("$DET" "$TJSON" < $D_IDS 2>/dev/null | tr '\n' ' ')"
         [ "${TXT_CAP:-0}" -gt 0 ] && d_txt="${d_txt:0:$TXT_CAP}"
     fi
 
     # ---- oracle: FLM -------------------------------------------------------
-    echo "$prompt" | timeout 240 "$FLM" run qwen3:0.6b >/tmp/oa_flm.raw 2>&1
-    flm_txt="$(sed -n '/Model RAW Output/,$p' /tmp/oa_flm.raw \
+    echo "$prompt" | timeout 240 "$FLM" run qwen3:0.6b >$FLM_RAW 2>&1
+    flm_txt="$(sed -n '/Model RAW Output/,$p' $FLM_RAW \
                  | sed '1d' | sed '/^>>>/,$d' \
                  | tr '\n' ' ' | sed 's/^ *//; s/ *$//')"
     [ "${TXT_CAP:-0}" -gt 0 ] && flm_txt="${flm_txt:0:$TXT_CAP}"
