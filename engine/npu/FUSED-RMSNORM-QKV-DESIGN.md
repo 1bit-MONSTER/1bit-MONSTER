@@ -3229,3 +3229,50 @@ per-token ascales) and the bf16 path (`bf16mm_gemm_launch`), and the bf16 loop I
 runs while the engine reports "Prefill 128 [bf16]". If the per-op QKV in that buffer carries
 an int8 ascale or comes from the other path, its 5.36x is explained without any bug in my
 work at all.
+
+## Refined, self-consistent root cause: the pre-upload weight array is not the effective weight
+
+Everything now fits one explanation, and it is the one line the whole investigation skipped.
+
+The engine's per-op path never feeds a GEMM the array `bf16mm_dequant` returns. It goes
+through `bf16mm_upload_w`, which registers the weight and yields a **W_idx** that
+`bf16mm_gemm_launch` consumes. My driver skips that and uploads the raw dequant array
+straight into the kernel's BO. So there are two different "weights" in play:
+
+* the **pre-upload** array - what `bf16mm_dequant` writes, and what I compared, twice, and
+  found bit-identical between the engine and my driver. Both comparisons were of pre-upload
+  arrays, which is why they kept agreeing while the results diverged;
+* the **effective** weight - what the engine's GEMM actually multiplies by.
+
+And the arithmetic tells us which is correct for the model. My fused launch A computes
+`normed @ W_raw` and gets 1.05469, exactly reproducing an independent CPU reference that also
+treats the array as row-major. The engine's own per-op path, from the same normed activation
+(2.54688, matching my reference's 2.59375) and the same array, gets 5.65625. A row-major GEMM
+of those operands **cannot** produce 5.65625 - |W|max is 0.64, |n|max is 2.59, K=1024. So the
+engine is not multiplying by the row-major reading of that array: `bf16mm_upload_w` reorders
+it, and the reordered form is the one that yields the model's correct tokens.
+
+Which means the "2.51x/5.36x too small" finding that drove several rounds was backwards: my
+fused launch A is the outlier, and it is the outlier because my kernel and my CPU reference
+share one wrong assumption - that the dequant output is row-major (H, NQKV). The per-op path's
+5.65625 is the correct QKV. This also explains, without residue, why the layer output was
+5.36x small while every stage looked internally consistent.
+
+**The fix**, and it is a driver-side change, not a kernel change: replicate
+`bf16mm_upload_w`'s ordering before handing weights to the fused kernels - for every weight,
+not just the QKV. The transform almost certainly follows the q4nx packing this document
+already records ([32 rows x 256 cols] tiles), and it is discoverable without device guesswork:
+reorder the real Wqkv in Python against candidate tile orders and find the one whose
+`normed @ W_reordered` reproduces 5.65625. The bench now accepts `NG_LOAD_W`, so the winner can
+be confirmed on hardware in one run.
+
+**The general lesson, and it is the same one three times over in this document.** Every false
+conclusion here came from a check whose reference shared an assumption with the thing being
+checked: the bench's D reference derives from the same `An2` the kernel computes; the bench's
+norm reference copies the kernel's epsilon; the bench's W is row-major synthetic like the
+kernel's assumption; and my CPU reference read the array the same way my kernel does. None of
+those could ever have found this. The only checks in this whole investigation that found real
+bugs were the ones that compared **byte-for-byte against a differently-derived artefact** -
+the driver-vs-bench stage diff, and finally the engine's own per-op QKV. When a verification
+keeps passing while the system keeps failing, suspect that the verification shares the bug's
+assumption.
