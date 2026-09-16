@@ -1060,3 +1060,40 @@ RMSNorm+GU N=6144 (88.5% exact, beyond=0, worst 3.663e-07), plain O-proj K=2048
 and D K=3072 (100% exact each), and the attention NH=16/N=64/C=16/PASSES=2
 (16 heads correct under distinct data). So the composition's M is settled with no
 stage left at a different one.
+
+## ✅ First composition xclbin: attention + O-proj in ONE launch
+
+`n1_fk3_attn_oproj.py` + `build_fk3_attn_oproj.sh` + `tests/bench_fk3_ao.cpp` are
+the first real composition: the attention (cols 0-3, 1 core/head, 2 passes) and
+the O-proj (col 4, the plain N-tiled GEMM over the attention output) in ONE
+xclbin, with the attention output round-tripping through a host BO.
+
+```
+bash build_fk3_attn_oproj.sh                 # defaults M=8 N=64 C=16 NH=16 P=2 PASSES=2 NO=1024
+== OK: fk3_ao.xclbin (255952 B)              # 1024 keys, 0.6B attention + O-proj
+```
+**Verified on the NPU with the uniform probe** (q=0 => the softmax is exactly
+uniform, so each head's attention output is exactly mean_k V — a deterministic
+value the host can reproduce without emulating the online softmax):
+
+| what | result |
+|---|---|
+| attention out ([NH*M*HD] via the host BO) | **0/16384 mismatches** vs mean(V) — exact |
+| final C (O-proj, M x 1024 f32) | 14.6% bit-exact, worst rel 8.5e-05 at a near-zero reference |
+
+The exact attention output proves the whole first half end-to-end (per-head Q/K/V
+gather, 2 passes, the `attn1` kernel, and the `O_s` de-microtiling into a
+row-major host buffer). The final C's small absolute error (~2e-4 against
+reference values of order 0.3) is the f32 4x8-tiled accumulation order on random
+data — the standalone O-proj's 100%-exact result was an artifact of its
+low-entropy test data (i%13 / i%29), not a guarantee. A wrong cross-stage layout
+would show bf16-scale deltas (the O-merge scramble measured ~48000), so the
+magnitude is itself the layout check.
+
+Two things this pinned down for the rest of the composition:
+* the attention's `O_s` BD **de-microtiles**, so the attention-output host buffer
+  is ROW-MAJOR `(M x HD)` per head — the O-proj gathers a K-tile with the plain
+  row-major tap (`sizes=[M//4, KO//8, 4, 8]`, `strides=[4*HD, 8, HD, 1]`,
+  `offset = h*M*HD + d0`), not a microtiled one;
+* the O-proj phase is a sibling of the attention loop in the runtime sequence, so
+  its DMA tasks are emitted once, after the attention's.
