@@ -25,12 +25,7 @@ int main(int argc, char** argv) {
     if (argc < 4) { fprintf(stderr, "usage: %s XCLBIN INSTS SEQ [ITERS]\n", argv[0]); return 2; }
     const int seq   = atoi(argv[3]);
     const int iters = argc > 4 ? atoi(argv[4]) : 20;
-    // Shapes from the environment so one binary can exercise every kernel the
-    // generator can build (the ground truth below is shape-agnostic).
-    const int NQ  = getenv("CK_NQ")  ? atoi(getenv("CK_NQ"))  : 8;
-    const int NKV = getenv("CK_NKV") ? atoi(getenv("CK_NKV")) : 2;
-    const int HD  = getenv("CK_HD")  ? atoi(getenv("CK_HD"))  : 128;
-    const int GQA = NQ / NKV;
+    const int NQ = 8, NKV = 2, HD = 128, GQA = NQ / NKV;
     const int qd = NQ * HD, kd = NKV * HD;
 
     std::mt19937 rng(1234);
@@ -82,23 +77,6 @@ int main(int argc, char** argv) {
                                    if (std::fabs(ao[i]) > mao) mao = std::fabs(ao[i]); }
     printf("seq=%d %s max_abs_err=%.6e mean_abs_ref=%.6e max_abs_ref=%.6e max_abs_out=%.6e\n",
            seq, getenv("NPU_ATTN_EMU") ? "EMU " : "NPU ", mx, sref / qd, mref, mao);
-
-    // Per-head error, so a multi-pass failure can be localised to a head range
-    // instead of only to "the kernel". A wrong A/C2/KV base for pass 1 shows up as
-    // exact heads 0..cols-1 and wrong ones after it; a corrupted first pass shows up
-    // as errors spread across every head.
-    if (getenv("CK_PER_HEAD")) {
-        printf("per-head max_abs_err:");
-        for (int h = 0; h < NQ; h++) {
-            double hm = 0;
-            for (int i = 0; i < HD; i++) {
-                double d = std::fabs((double)ao[(size_t)h * HD + i] - ref[(size_t)h * HD + i]);
-                if (d > hm) hm = d;
-            }
-            printf(" %d:%.3e", h, hm);
-        }
-        printf("\n");
-    }
 
     // ── NPU_ATTN_POLL=1: watch the device from outside the launch. The control
     //    is bV, a BO the kernel never writes: if syncing IT during an active
@@ -213,54 +191,6 @@ int main(int argc, char** argv) {
             }
             printf("  iter %d: c2_nonzero=%d  max_abs_err=%.6e  (all-zero-output err would be %.6e)\n",
                    it, nz ? 1 : 0, m, sref / qd);
-            // Per-head error of THIS iteration (the measurement), so a multi-pass
-            // failure localises to a head range: pass 1's A/C2/KV base being wrong
-            // shows as exact heads 0..cols-1 and wrong ones after it, whereas a
-            // corrupted first pass spreads over every head.
-            // CK_PER_HEAD=2 adds the decisive question for a multi-pass failure:
-            // for each output head, WHICH head's reference does it match? A pass that
-            // reads the wrong A rows shows up as head h matching a different h' with a
-            // tiny error; a clobbered result matches nothing.
-            // CK_PER_HEAD=3: split head 0's error at the 128-dim tile boundary. For
-            // an hd>128 shape the PV runs one output tile per 128 dims, so an error
-            // confined to d>=128 points at the second tile's feed, while an error
-            // spread across both points at the QK^T/softmax side.
-            if (getenv("CK_PER_HEAD") && atoi(getenv("CK_PER_HEAD")) >= 3) {
-                double lo = 0, hi = 0;
-                for (int d = 0; d < HD; d++) {
-                    double e = std::fabs((double)ao[d] - ref[d]);   // head 0, row 0
-                    if (d < 128) { if (e > lo) lo = e; } else { if (e > hi) hi = e; }
-                }
-                printf("    tile-split head0: d<128 max=%.3e  d>=128 max=%.3e\n", lo, hi);
-            }
-            if (getenv("CK_PER_HEAD") && atoi(getenv("CK_PER_HEAD")) >= 2) {
-                printf("    match:");
-                for (int h = 0; h < NQ; h++) {
-                    int best = -1; double bestd = 1e30;
-                    for (int hp2 = 0; hp2 < NQ; hp2++) {
-                        double dm = 0;
-                        for (int i = 0; i < HD; i++) {
-                            double d = std::fabs((double)ao[(size_t)h * HD + i] - ref[(size_t)hp2 * HD + i]);
-                            if (d > dm) dm = d;
-                        }
-                        if (dm < bestd) { bestd = dm; best = hp2; }
-                    }
-                    printf(" %d->%d(%.1e)", h, best, bestd);
-                }
-                printf("\n");
-            }
-            if (getenv("CK_PER_HEAD")) {
-                printf("    per-head:");
-                for (int h = 0; h < NQ; h++) {
-                    double hm = 0;
-                    for (int i = 0; i < HD; i++) {
-                        double d = std::fabs((double)ao[(size_t)h * HD + i] - ref[(size_t)h * HD + i]);
-                        if (d > hm) hm = d;
-                    }
-                    printf(" %d:%.2e", h, hm);
-                }
-                printf("\n");
-            }
             if (!nz) zeros++;
         }
         printf("run(): %d/%d iterations wrote a non-zero C2, %d wrote nothing/zeros\n",

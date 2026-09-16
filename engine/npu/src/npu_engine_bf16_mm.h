@@ -186,35 +186,18 @@ struct Bf16Mm {
             mm_app = std::make_unique<npu_app>(device_npu2, dev, mm_hc.get(), "MLIR_AIE");
             dq_app = std::make_unique<npu_app>(device_npu2, dev, dq_hc.get(), "MLIR_AIE");
 
-            // g++ (this build's compiler) has no __has_embed, so the embedded
-            // nh16/nh32 ELFs are never available. Compile the runtime attention
-            // loader unconditionally and gate it on attn.xclbin existing, so a
-            // family's shape-specific attn_mha_<tok>_nh<NH>_hd<HD>.elf is a
-            // drop-in by filename (nanbeige nh20, phi4 nh24, hd256, ...).
-            std::string atp = xclbin_dir + "/attn.xclbin";
-            {
-                FILE* atf = fopen(atp.c_str(), "rb");
-                if (atf) { fclose(atf);
-                    attn_xc = std::make_unique<xrt::xclbin>(atp);
-                    dev->register_xclbin(*attn_xc);
-                    attn_hc = std::make_unique<xrt::hw_context>(*dev, attn_xc->get_uuid());
-                } else {
-                    fprintf(stderr, "  Bf16Mm: no attn.xclbin at %s - runtime attention ELFs disabled\n", atp.c_str());
-                }
-            }
 #ifdef BF16MM_HAS_ATTN_ELF
-            if (attn_hc) {
+            std::string atp = xclbin_dir + "/attn.xclbin";
+            attn_xc = std::make_unique<xrt::xclbin>(atp);
+            dev->register_xclbin(*attn_xc);
+            attn_hc = std::make_unique<xrt::hw_context>(*dev, attn_xc->get_uuid());
             attn_elf = std::make_unique<xrt::elf>((const char*)kAttnMhaElf16, sizeof(kAttnMhaElf16));
             attn_module = std::make_unique<xrt::module>(*attn_elf);
             attn_kernel = std::make_unique<xrt::ext::kernel>(*attn_hc, *attn_module, "MLIR_AIE");
-            }
-#endif
 #ifdef BF16MM_HAS_ATTN_ELF32
-            if (attn_hc) {
             attn_elf32 = std::make_unique<xrt::elf>((const char*)kAttnMhaElf32, sizeof(kAttnMhaElf32));
             attn_module32 = std::make_unique<xrt::module>(*attn_elf32);
             attn_kernel32 = std::make_unique<xrt::ext::kernel>(*attn_hc, *attn_module32, "MLIR_AIE");
-            }
 #endif
             // Long-context (>256 token) attention ELF: generated with
             // gen_attn_chunk (FLM's qwen3_npu_sequence::gen_mha_engine_seq +
@@ -282,9 +265,6 @@ struct Bf16Mm {
                         if (k) break;
                     }
                 };
-                if (!attn_hc)
-                    fprintf(stderr, "  Bf16Mm: attention loader skipped (no attn.xclbin/hw_context)\n");
-                if (attn_hc) {
                 load_attn_elf("NPU_ATTN_ELF_1024", "attn_mha_1024_nh16.elf", 1024, attn_elf1k, attn_module1k, attn_kernel1k);
                 load_attn_elf("NPU_ATTN_ELF_1024_NH32", "attn_mha_1024_nh32.elf", 1024, attn_elf1k32, attn_module1k32, attn_kernel1k32);
                 load_attn_elf("NPU_ATTN_ELF_2048", "attn_mha_2048_nh16.elf", 2048, attn_elf2k, attn_module2k, attn_kernel2k);
@@ -307,7 +287,6 @@ struct Bf16Mm {
                 // already is (harmless); for a family with a different shape it lets
                 // attn_mha_256_nh20_hd128.elf &c. take over the short-context path.
                 load_attn_elf("NPU_ATTN_ELF_256", "attn_mha_256_nh16.elf", 256, attn_elfs, attn_modules, attn_kernels);
-                }
                 if (!attn_kernel1k)
                     fprintf(stderr, "  Bf16Mm: no 1024-context attention ELF — npt>256 will use CPU attention\n");
                 if (!attn_kernel2k)
@@ -317,6 +296,7 @@ struct Bf16Mm {
             }
                 if (!attn_kernel8k)
                     fprintf(stderr, "  Bf16Mm: no 8192-context attention ELF — npt>4096 will use CPU attention (nh16 only)\n");
+#endif
                 if (!attn_kernel8k32)
                     fprintf(stderr, "  Bf16Mm: no nh32 8192-context attention ELF — those shapes fall to CPU attention above npt=4096\n");
         } catch (std::exception& ex) {
