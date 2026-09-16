@@ -889,3 +889,34 @@ Operational note: the engine takes `/tmp/1bit-npu-device.lock` ITSELF, so I deli
 NOT wrap it in another `flock` (two exclusive holders on one file is a self-inflicted stall).
 The /proc fd scan is the entry condition that matters; the lock file merely existing does not
 mean it is held.
+
+### Addendum 26 — QUIET-DEVICE re-measurement SETTLED: contention was NOT inflating this lane
+
+Took the first genuinely idle accel0 window (zr1's `timeout 1400` expired; /proc fd scan EMPTY,
+lock file present but unheld — verified per addendum 24), ran the addendum-21 best arm
+(`NPU_MOE=1 NPU_MOE_FUSED=1 NPU_MOE_SMALL_M=1` + all-256 expert warm, 8 tokens), twice:
+
+| arm | decode ms/tok | tokens |
+|---|---|---|
+| contended (addendum 21, n=1) | **1826.5** | identical |
+| QUIET sample 1 (n=1) | **1903.4** | identical |
+| QUIET sample 2 (n=2) | **1901.8** | identical |
+| quiet per-layer | QKV 8.3-8.7, attn 5.2-6.0, O 5.3-5.5, FFN 30-31 ms | |
+
+Conclusions:
+- **The quiet figure is the trustworthy one: ~1.90 s/tok = 0.53 tok/s**, and it is TIGHT
+  (two independent quiet runs 1903.4 / 1901.8, i.e. +/-0.1%).
+- **Contention was not inflating this lane.** If anything the contended run was FASTER (1826.5),
+  so any load effect here is at or below run-to-run variance and is NOT a penalty. The
+  addendum-21 caveat is therefore resolved in the *opposite* direction to my worry: the number
+  was not an optimistic contention-inflated artifact.
+- @agent-7f1cce's correction to addendum 23/25 stands as the reason this had to be measured
+  rather than argued: their pass/fail insensitivity to load does not transfer to a timing
+  question, so the only way to close it was to take a quiet window.
+- Tokens are bit-identical in every arm (154742, 16023, 136614, 25238, 32858, 248050, 184997),
+  so the quiet re-run also re-confirms correctness on a clean device.
+
+FINAL for this lane: **~1.90 s/tok (0.53 tok/s) steady-state M=1 decode** on an idle Strix
+Halo, from 3.49 s/tok cold -- a 1.84x gain, entirely attributable to the expert prepack/warm.
+The objective's dense-class target (~88 tok/s) remains out of reach: the runtime's whole-layer
+per-ctx ELF path is structurally broken (deterministic ERT + NaN).
