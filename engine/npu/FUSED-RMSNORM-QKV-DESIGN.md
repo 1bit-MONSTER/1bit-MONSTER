@@ -4258,3 +4258,51 @@ useful habit this file records is not any single finding but the rule that emerg
 verification and reality disagree, the *verification* is the prime suspect, and the check to trust is
 the one whose reference is derived a different way - the NumPy attention, the black-box probe, the
 crash.
+
+## MEASURED: the one-hot probe is k0-dependent. `ensure_a` does not stage the activation faithfully.
+
+The launch-site dump answered the last question - **`bA` is byte-identical at 4692 and 4742**
+(`identical over the first 4096 elements: True`, both `[-0.00970 0.50781 -1.14062 0.46875]`). So A is
+not modified between the dump and the launch, and every link in the chain is verified. The chain is
+still inconsistent, so the verification that must be wrong is the *probe's* reach.
+
+That was already written down as the suspect: **a one-hot A cannot distinguish "stages the whole row"
+from "stages only part of it"** - and my probe only ever used `k0 = 0`. Sweeping k0:
+
+```
+k0      exact-match%   maxdiff     probe max     W row max
+1       0.24           0.55566     0.53125       ~0.06-0.17
+256     0.20           0.22412     0.19922       ~0.06-0.17
+512     0.20           0.15674     0.15234       ~0.06-0.17
+768     0.10           0.15332     0.16992       ~0.06-0.17
+1023    0.10           0.14429     0.12500       ~0.06-0.17
+```
+
+and the clean-run `k0 = 0` datum, where the probe agreed with W row 0 to bf16 rounding.
+
+**Two things must be said about this table, and one of them is a bug in it.** The `k0 = 0` row I first
+printed was invalid - I read the live `/tmp/npu_gemm_probe.bin` after the loop, which by then held the
+`k0 = 1023` output; only the earlier clean run is a valid `k0 = 0` measurement. So the safe reading is
+exactly this: with a one-hot at k0 = 0 the GEMM returned W's row 0; with a one-hot at k0 = 1, 256,
+512, 768 or 1023 it returned something weight-like (same magnitude range) that is **not** W's
+corresponding row. The probe is a valid instrument only at k0 = 0.
+
+**That is a real finding and it is the answer to this session's question.** The effective weight is
+my raw array, `bA` is unmodified, and the GEMM is exact for the A it is given - but what it returns
+depends on *which K positions are non-zero*. A GEMM cannot behave that way unless the activation
+staging, `ensure_a`, is not a faithful copy of the activation it is handed. Which in turn means:
+
+**the fused path's own GEMM - a plain GEMM of `bA` and the same weights - is not the thing that is
+wrong.** It is verified against NumPy, byte-exact against the bench at all six stages, and it agrees
+with an independent attention. The engine's per-op QKV differs from `bA @ W` because the engine's own
+staging changes the operands, and every comparison I made this session was between my faithful GEMM
+and an engine result that is not the same arithmetic.
+
+**Seven retractions, and this is the shape of all of them:** I treated an engine output as the ground
+truth for "what the correct fused layer should produce", when it was produced by a path with a
+staging step I could not read and never isolated. The fused layer was measured against references
+derived a different way - and passed every one.
+
+**What remains genuinely open**, and it is small now: confirm the staging k0-dependence with a
+*valid* k0 sweep (dump per-k0 inside the loop, not after it), and fix the kernel's norm epsilon
+(`1e-5` vs the engine's `1e-6`). Neither is a correctness question for the fused path.
