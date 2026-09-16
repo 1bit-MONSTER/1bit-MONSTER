@@ -1572,3 +1572,29 @@ materialises no h, so it solves residual1 with zero new fifos — but residual2
 whether the engine's `h_b` hidden state handed to the fused layer is f32. If bf16
 is acceptable, route (A) is strictly the simplest and the fastest (one fewer pass
 over the hidden state, and residual1 costs nothing).
+
+### RESOLVED: keep f32 (the engine's `h_b` is `std::vector<float>`), and both residuals cost NO extra stage and NO extra fifo
+
+Checked the engine rather than guessing: `npu_engine_universal.cpp:2629` declares
+`std::vector<float> h_b(XM*H)`, so the layer interface is f32 and route (A) would
+mean changing the engine for no benefit. Folding that in gives a design that
+sidesteps the fork entirely — it uses only fifos that already exist, on columns
+that are already full:
+
+1. **residual1, without materialising h.** Add `rms_reduce_add_f32(x, o, ss)` /
+   `rms_scale_add_f32_bf16(x, o, ss, out)`: col 5 already has TWO f32 (M+1,k)
+   inputs (A and A2), and the norm already wants exactly 2-in/1-out. Point A at
+   the layer input x and A2 at the O-proj output o (the O-proj then needs an f32
+   store, `nq_acc_store_f32`, so A2 carries o). The FFN norm then reads
+   `sum((x+o)^2)` and emits `(x+o)*inv*gamma` directly — h is never written.
+2. **h as bf16, for free.** The same norm core gains one more phase writing
+   `h = x+o` as bf16 into a new `H_BF (M,H)` buffer, reusing the bf16 A_norm
+   output fifo with different offsets — still no new fifos.
+3. **residual2, fused into D.** Extend the D GEMM's K with an identity block:
+   `A_D = [silu | H_BF]`, `W_D = [W_D | I]`, K = 3072+1024 = 4096, so
+   `C_D = silu*W_D + h = silu*W_D + x + o = the layer output`. n_k_d goes 48 -> 64,
+   which is only a declared ratio in the core body — and now we know to verify it
+   lands in the MLIR.
+
+Net: the two residual adds disappear as stages. They cost one kernel variant, one
+f32 store variant, one extra norm phase, and one identity block in W_D.
