@@ -4682,6 +4682,15 @@ struct Bf16Ctx {
                         // end of its layer body; the fused branch returns early, so it must
                         // set it here or the decode sees an empty cache.
                         kv_caches[l][0].n = sp + nrow;
+                        // The per-op path feeds the unified/runlist DECODE by writing this layer's
+                        // K/V into the runlist KV buffer (see npu_runlist_write_kv below, which the
+                        // fused branch skips because it continues past the layer body). Without it
+                        // the prefill produces the right first token - its own logits - and every
+                        // decode step after that reads an unwritten cache.
+                        if (unified && npu_runlist_write_kv(l, sp, npt, bKv.data(), (int)kv_region) != 0) {
+                            fprintf(stderr, "\nbf16 prefill: runlist KV write L%d failed (fused)\n", l);
+                            return 1;
+                        }
                         fprintf(stderr, " [fk3]"); fflush(stderr);
                         // Same per-layer dump the per-op path does at the end of the layer
                         // body, so the two paths can be compared layer by layer (this is

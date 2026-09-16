@@ -6212,3 +6212,49 @@ per-op prefill leaves there.
 **This is the furthest fk-3 has been**: prefill correct on a matched prompt, with three real bugs found and
 fixed along the way (the qk-norm omission, the layer-0-only override gate, and the per-layer weights), and
 launch A independently verified at corr 1.0000 against the engine's own QKV.
+
+# TOKEN PARITY. The fused prefill now matches the per-op reference exactly.
+
+```
+per-op reference  : 220 49789 220 11141
+before KV fix     : 220 27147 27147 27147
+AFTER KV fix      : 220 49789 220 11141    <- exact match, same prompt, same ids file
+```
+
+**The fourth and final bug: the fused branch never fed the decode's KV cache.** `npu_runlist_write_kv(l,
+sp, npt, bKv.data(), kv_region)` sits in the per-op layer body, and the fused branch `continue`s past that
+whole body - so in unified mode the prefill produced correct logits (hence the correct first token) while
+never writing the KV the decode reads. Every decode step after the first therefore ran on an unwritten
+cache. That is exactly the symptom: first token right, the rest degenerate (`27147 27147 27147`).
+
+Fix: call the same `npu_runlist_write_kv` from the fused branch after `run()` succeeds. Two lines.
+
+**Four real bugs this session, in the order they surfaced:**
+
+1. **qk-norm was omitted.** 0.6B *does* have `q_norm`/`k_norm` (BF16 [128], all 28 layers); this file's
+   config notes wrongly said it had none. `qk_norm_head` in `npu_fk3_rope.h` now applies
+   `iq * qn_w` before RoPE, with the weights read at q4nx data base 34592. Proved in isolation: Q at
+   corr 0.99997, magnitude ratio 1.0000.
+2. **The override gate was `l == 0`** - a logging artifact of mine that limited the effective weights to
+   layer 0. (I briefly removed it, wrongly, then restored it with the real reason; the eventual fix was
+   per-layer paths.)
+3. **The weights are per layer.** One per-op npt=6144 pass, per-layer dumps, and 112 least-squares solves
+   (4 weights x 28 layers), all full rank. One env-var template now serves every layer.
+4. **The missing runlist KV write** for the decode.
+
+**And the measurements that stayed trustworthy throughout**: launch A at corr 1.0000 against the engine's
+own QKV on a matched prompt and run; V at 0.9999; the per-layer hidden comparisons once both dumps were
+confirmed to be layer outputs written on the same prompt.
+
+**What this establishes for the objective**: the fused 0.6B layer - RMSNorm+QKV, attention, O-projection,
+GU+SiLU and D, with qk-norm and per-layer effective weights - reproduces the engine's own prefill **token
+for token**. The correctness milestone is met, and the remaining question is the one the objective was
+written around: speed, measured against FLM's published 1494 tok/s @1k (fk-4).
+
+**Method note, and it is the honest summary of the session.** Every one of the four bugs was a
+*documented assumption about an interface* that was never checked against the artifact: the presence of
+qk-norm in the model, the scope of my own debug gate, the per-layer-ness of weights, and the decode's KV
+contract. None was a numerical defect. The instruments that found them were the cheap ones - `wc -l` on a
+dump, `md5sum` on two files, the engine's own `[qknorm]` diagnostic, splitting a comparison by what each
+operation acts on - and the expensive ones (a held-out validation, a permutation solve, 112 least-squares
+fits) mostly confirmed things that were already true or answered questions that per-layer data made moot.
