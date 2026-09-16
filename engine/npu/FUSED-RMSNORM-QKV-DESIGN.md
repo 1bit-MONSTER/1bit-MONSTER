@@ -685,3 +685,26 @@ cores/head only 8 fit; 16 needs 2 cores/head (fuse qk+softmax into one core, and
 pv+combine+normalize into the other -> 16 x 2 = 32 tiles), with 2 heads sharing
 each column's shim/mem. That is the next step; it is kernel fusion, not a
 dataflow change, and the pipeline above is the correctness reference for it.
+
+### NH=16: two constraints beyond the 8-head result
+
+To put 16 heads on the 32 compute tiles, each column must host 2 heads with 2
+cores each (fuse qk+softmax -> one core; pv+combine+normalize -> the other). Two
+things must be checked/resolved, in this order:
+
+1. **Shim MM2S channels.** Each single-head pipeline today uses 2 MM2S (QK_s and
+   V_s) + 1 S2MM (O_s). Two heads per column would need 4 MM2S against the
+   shim's limit of 2 (the same limit the v27 GEMM generator works around). The
+   fix is to stop giving Q/K^T and V separate channels: issue them as multiple
+   BDs on one channel (Q and K^T already share the QK_s channel as two BD tasks,
+   so the pattern exists) — but a mlir-aie objectfifo has one element type, so
+   Q/K^T (bf16, HD-paced) and V (bf16, HD-paced) would have to move to a common
+   element type or a single packed stream. This is a dataflow change, not a
+   kernel change.
+2. **Per-core DM.** The fused pv+combine core holds AT_local (M*HD*4 = 8 KB) +
+   O_state (8 KB) + V (N*HD*2 = 32 KB) + E (M*N*2 = 4 KB) = 52 KB against 64 KB;
+   it must be checked with aiecc, and N or the AT precision reduced if it does
+   not fit (the same wall that capped DEPTH at 2).
+
+Neither is conceptual, but both are real work. The 8-head parallel xclbin is the
+correctness reference for them.
