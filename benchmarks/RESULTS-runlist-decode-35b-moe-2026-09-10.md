@@ -3496,3 +3496,31 @@ taps, feeding, or group counts.
 NOTE FOR WHOEVER BUILDS NEXT: n1_combined_norm_qkv.py now references `combined_kernels.o`, which must
 be produced with the `ld.lld -r` command above and placed beside the design. n1_norm_only_mine.py
 still references the separate objects.
+
+### Addendum 100 — the mem-tile probe does not build yet (an API error in MY variant, not a result)
+
+Attempted the next test -- give the working two-core design the memory-tile path the norm uses, by
+replacing the dummy core's direct `core -> shim` fifo with `core -> mem -> shim` plus
+`object_fifo_link(D_m, D_c)`. It does NOT build:
+
+  error: 'aie.core' op producer port of objectFifo accessed by core running on non-producer tile
+
+That is my construction being wrong, not the design's: once two fifos are linked, the producer port of
+the shim-side fifo belongs to the memory tile, so a core that acquires `ObjectFifoPort.Produce` on it is
+acquiring a port it does not own. The working reference for this exact shape is the m1 generator's own C
+path -- `C_c[j][c] = object_fifo(..., core_tiles[j][c], mem_tiles[c], 1, C_ty)`, then
+`object_fifo_link([C_c[j][c] for j ...], C_s[c], [m * n * j for j ...])` -- and the correct probe will
+mirror it exactly, including the explicit offset list, rather than approximating it.
+
+So the mem-tile hypothesis is UNTESTED, not refuted, and must not be reported as either. This is the
+fourth time in this stretch that a probe of mine failed to build (three splices and now an API misuse),
+and each time the failure produced no information about the question being asked. The lesson already
+written down in addendum 95 applies to the API as much as to shapes: build the variant by editing the
+generator with the edit tool, and copy the working pattern verbatim instead of reconstructing it from
+memory.
+
+STATE (unchanged by this addendum): the strongest datum remains addendum 98's -- a two-core design where
+both cores come from one `mm_32x64x128.o` (the real m1 GEMM plus a dummy `zero_i32` core fed by one shim
+DMA, NO memory tile) completes at the real shape and leaves the GEMM exact at 8192/8192 -- and the
+sharpest untested difference between that and the failing two-phase design remains the norm's memory
+tile with its three linked fifos and three runtime DMAs.
