@@ -6702,3 +6702,52 @@ that.** It assumes the tap accounts for all of the time and that packing deliver
 measured. The session's own rule applies: an extrapolation is not a measurement, and the delta remains the
 only test. But it does mean the experiment is worth running, because the plausible upside is large and the
 cost is small.
+
+## THE TAP HYPOTHESIS IS REFUTED BY INTERVENTION - and the tap is not a defect at all
+
+I ran the test instead of trusting the arithmetic, and it came back negative. Changing the four weight taps
+from `sizes=[k//8,NT//8,8,8] strides=[8*NQKV,8,NQKV,1]` (8-element = 16 B inner bursts) to `sizes=[k,NT]
+strides=[NQKV,1]` (NT=32 elements = 64 B bursts, i.e. 4x fewer transactions) produced:
+
+```
+                       launch A     launch B
+BASELINE  (0.78% taps)   63.35 ms    991.34 ms
+NEW       (3.12% taps)   63.48 ms    982.82 ms      delta = -8.52 ms = -0.86%
+```
+
+**A 4x reduction in weight-tap transactions bought 0.86%, which is noise.** The MLIR confirms the taps did
+change (inner run 8 -> 32 elements, eff 0.78% -> 3.12% for W_QKV/W_O; 0.13% -> 0.52% for W_D), and the build
+fingerprint matched the baseline exactly (8,758,928 B, i.e. the NOQKV variant). So the intervention was real
+and the effect was nil: **launch B's 991 ms is not weight-tap-bound.** My bracket of 21-169 MB/s effective
+was real arithmetic about a real quantity, but it did not imply the tap was the cause, and I treated it as
+though it did.
+
+## And I broke correctness doing it - the reason is the important part
+
+The post-change run emitted token `101372` where the verified parity is `220 49789 220 11141`. My edit was
+**not** semantically neutral, and the reason is a real property of the design that I had assumed away:
+
+**A BD's dimension order IS the DMA's iteration order, and the receiving fifo expects one specific order.**
+The original tap walks `(a,b,c,d)` with strides `(8*NQKV, 8, NQKV, 1)`, so it emits elements in
+**8x8-block-major** order: `0..7`, then `1024..1031`, then `8..15`, ... My `(i,j)` with strides `(NQKV,1)`
+emits `0..31` first, which is a different sequence. Same address *set*, different *order* - and the kernel
+consumes in the order the fifo delivers.
+
+So the tap is not a "row-major 4D defect". **It is the descriptor that produces exactly the order this
+kernel's fifo consumes.** It cannot be made burst-friendlier without also changing what the kernel expects -
+which means the fix I scoped earlier ("one generator line plus host-side packing, no new kernel") was
+**wrong**: improving the burst requires a kernel change on the consumption side too. That correction matters
+more than the timing did, because it was the basis of a plan.
+
+Reverted (`git checkout engine/npu/generators/n1_fk3_layer.py`); the tree is back to the verified-correct
+tap order.
+
+## Honest state of fk-3/fk-4 after this
+
+* fk-3 correctness: still MET and proved (token parity `220 49789 220 11141`).
+* fk-4: still COMPLETE (1945.5 tok/s @1k native, path verified).
+* Launch B's 991.34 ms = 94% of the layer: **cause still UNMEASURED.** I have now refuted four explanations
+  of my own - host round-trip, attention over-size, missing KV write, and weight-tap starvation - the last of
+  them **by intervention rather than argument**, which is the only one of the four that counts as knowledge.
+* I have **no fifth hypothesis with evidence**. The arithmetic that pointed at the tap was sound; the
+  inference from it was not.
