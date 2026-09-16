@@ -30,6 +30,7 @@
 #include "npu_engine_hybrid_flm.h"
 #include "zaya_moe_cpu.h"           // host_h2_amax_qn_s (#1934 fused int4 GU->SiLU)
 #include "silu_quant.h"             // silu_lut / silu_quant_i8 (#1934)
+#include "npu_attn_ctx.h"           // AttnCtx: generated family attention (Nanbeige nh20/nkv4/hd128)
 
 // Forward declarations: INT8 NPU instruction generators from gemm_npu_instructions.cpp
 void gemm_generate_sequence_i8(
@@ -4744,7 +4745,51 @@ struct Bf16Ctx {
                 // argmax between the bf16 and int8 decompositions: bf16 with CPU
                 // attention returns 16 at that length as well.
                 bool attn_npu_ok = !getenv("NPU_ATTN_CPU");
-                if (attn_npu_ok) {
+                bool attn_ctx_ok = false;
+                // NPU_ATTN_CTX=1: drive the GENERATED family attention kernel through
+                // the AttnCtx host driver (the same one zaya_decode.cpp uses) instead of
+                // Bf16Mm's captured (act,out,kv) ELF. The generated kernel is a
+                // decode-shape (M=8) kernel, so this issues one query row per call: it is
+                // the CORRECTNESS path for families whose generated ELF is AttnCtx-ABI
+                // (Nanbeige nh20/nkv4/hd128) and is much slower than the captured
+                // short-context ELF. NPU_ATTN_XCLBIN / NPU_ATTN_INSTS / NPU_ATTN_MAX_SEQ
+                // select the build; NPU_ATTN_KV_REGION (already handled above) sizes bKv.
+                if (attn_npu_ok && getenv("NPU_ATTN_CTX") && atoi(getenv("NPU_ATTN_CTX")) == 1
+                    && NH == 20 && NKV == 4 && HD == 128) {
+                    static AttnCtx ac;
+                    static bool ac_tried = false, ac_ready = false;
+                    if (!ac_tried) {
+                        ac_tried = true;
+                        const char* ax = getenv("NPU_ATTN_XCLBIN")
+                            ? getenv("NPU_ATTN_XCLBIN")
+                            : "engine/npu/xclbins/attn_gen_2048_nh20_hd128.xclbin";
+                        const char* ai = getenv("NPU_ATTN_INSTS")
+                            ? getenv("NPU_ATTN_INSTS")
+                            : "engine/npu/xclbins/attn_gen_2048_nh20_hd128_insts.txt";
+                        if (getenv("NPU_ATTN_MAX_SEQ") && atoi(getenv("NPU_ATTN_MAX_SEQ")) > 0)
+                            ac.MAX_SEQ = atoi(getenv("NPU_ATTN_MAX_SEQ"));
+                        ac_ready = ac.init(dev, ax, ai, NH, NKV, HD);
+                        fprintf(stderr, "\n[NPU_ATTN_CTX] init %s (nh=%d nkv=%d hd=%d xclbin=%s)\n",
+                                ac_ready ? "OK" : "FAILED", NH, NKV, HD, ax);
+                    }
+                    if (ac_ready) {
+                        static std::vector<float> ac_ao;
+                        ac_ao.resize((size_t)qout);
+                        for (int pi = 0; pi < npt; pi++) {
+                            const int keys2 = sp + pi + 1;
+                            ac.run(&bqo[(size_t)pi * qkvn],
+                                   kv_caches[l][0].k.data(), kv_caches[l][0].v.data(),
+                                   keys2, ac_ao.data());
+                            for (int j = 0; j < qout; j++)
+                                bA[(size_t)pi * qout + j] = f32_to_bf16(ac_ao[j]);
+                        }
+                        attn_ctx_ok = true;
+                        if (l == 0 || l == NC - 1)
+                            fprintf(stderr, "[NPU_ATTN_CTX] L%d rows=%d keys=%d..%d\n",
+                                    l, npt, sp + 1, sp + npt);
+                    }
+                }
+                if (attn_npu_ok && !attn_ctx_ok) {
                     // BF16MM_ATTN_CUMKEYS (default OFF, behaviour unchanged): pass the
                     // CUMULATIVE key count (sp + npt) instead of the chunk size. The member
                     // doc defines attn_tokens as "keys present in the KV BO" -- and this
@@ -5264,9 +5309,20 @@ struct Bf16Ctx {
                 auto tl0 = std::chrono::steady_clock::now();
                 for (int b = 0; b < batch_size; b++) for (int i = 0; i < H; i++) sb_data[b*H+i] = h_b[b*H+i];
                 for (int b = 0; b < batch_size; b++) rn_c(&h_b[b*H], in_n[l].data(), H);
-                FLM_GO(cq, l, h_b.data(), batch_size, H, dynamic_ascale(h_b.data(), batch_size*H),
+                auto tsp0 = std::chrono::steady_clock::now();
+                float asc_qkv = dynamic_ascale(h_b.data(), batch_size*H);
+                auto tsp1 = std::chrono::steady_clock::now();
+                FLM_GO(cq, l, h_b.data(), batch_size, H, asc_qkv,
                        qsc[l], qo_b.data(), qkv_n);
+                auto tsp2 = std::chrono::steady_clock::now();
                 cn(qo_b.data(), batch_size*qkv_n);
+                auto tsp3 = std::chrono::steady_clock::now();
+                if (getenv("NPU_STAGE_SPLIT"))
+                    fprintf(stderr, "[qkv-split l=%d] prep=%.2f ascale=%.2f GO=%.2f cn=%.2f ms\n", l,
+                            std::chrono::duration<double, std::milli>(tsp0 - tl0).count(),
+                            std::chrono::duration<double, std::milli>(tsp1 - tsp0).count(),
+                            std::chrono::duration<double, std::milli>(tsp2 - tsp1).count(),
+                            std::chrono::duration<double, std::milli>(tsp3 - tsp2).count());
                 double dq = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tl0).count();
                 t_qkv += dq;
                 auto tl1 = std::chrono::steady_clock::now();
