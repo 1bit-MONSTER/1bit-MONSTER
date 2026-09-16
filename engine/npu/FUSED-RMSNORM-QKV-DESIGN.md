@@ -5676,3 +5676,47 @@ measurement but a *different* one: comparing the slices separately - and noticin
 does not touch matched while the ones it does touch did not. That split, available for hours, localised it
 to the rotation, and the model metadata then named the cause in one command. Both were cheap; what was
 missing was the idea of splitting the comparison by what each operation acts on.
+
+## QK-norm confirmed present and directionally confirmed as the cause - but NOT yet a complete explanation
+
+Two facts, both checked:
+
+**1. It exists.** Read from the model at the correct base offset (`BASE=38680`, located by arithmetic -
+`file_size - last_data_offset = 34592` - and confirmed by a sanity check a norm weight must pass:
+mean 0.9667, min 0.8086, max 1.1328):
+
+```
+qn_w mean=0.9667 min=0.8086 max=1.1328     (a norm scale is ~1; my first read gave 0.0017 because
+                                            I used the metadata offset without the data-block base)
+```
+
+**2. Applying it improves the match, but does not close it.** Row 0 has RoPE angle 0 (identity), so the
+engine's `bqo` there should be the QK-normed Q and nothing more:
+
+```
+Q  WITH qk-norm :  corr 0.645784   mine|mean| 0.63765   eng|mean| 1.22673
+Q  without      :  corr 0.490355   mine|mean| 0.21430   eng|mean| 1.22673
+```
+
+Improvement from 0.490 to 0.646 is real and in the predicted direction - **but 0.646 is not 1.0, and a
+qk-normed head has RMS 1 while the engine's Q averages 1.9x my qk-normed value.** So QK-norm is *a* factor
+and probably *the* missing step, but it does not, on its own, reproduce the engine's Q at row 0.
+
+**Deliberately not claiming a root cause.** One commit ago I wrote "ROOT CAUSE FOUND" and named QK-norm. The
+evidence supports "necessary component, insufficient explanation" and I am not repeating the mistake of
+promoting a directional result to a conclusion - that is precisely the pattern that produced most of this
+session's retractions.
+
+**What is not yet excluded, and is cheap to test:**
+
+* the RoPE convention at row 0 - I assumed angle 0 makes RoPE the identity, which is true for the standard
+  `pos * theta^(-2i/d)` form but has not been checked against the engine's `ra()` implementation;
+* an additional scale between the engine's `bA @ W` and its `bqo` (the engine's QKV GEMM and my launch A
+  agree at corr 1.0000, so the difference must be introduced in `qk_norm_pi` or after it);
+* whether `qk_norm_pi`'s `iq` uses `HD` as I assume for the mean, or a different reduction.
+
+**The fix, unchanged in shape but now incomplete in specification.** The driver must receive `qn_w`/`kn_w`
+per layer and apply per-head RMSNorm before RoPE - a real API change, since the driver currently gets
+neither. That work should not start until the 0.646 result is understood, because implementing it now
+would produce a fused path that is *closer* and still wrong, which is exactly the state that cost this
+session hours: a plausible improvement that suppresses the search for the remaining factor.
