@@ -4101,3 +4101,37 @@ migration entirely.
 STATE: the THREE-phase design (no O projection) is verified and unaffected -- ONE xclbin, ONE submit,
 RMSNorm and FFNnorm bit-identical (2048/2048), GEMM exact (8192/8192). The four-phase design now gets
 past the descriptor-pool limit and stops on a slice-type mismatch.
+
+### Addendum 116 — the batched tile CANNOT be passed to the kernel; and the real answer is multiple submits per runlist
+
+Finished diagnosing addendum 115's rank error by reading the DSL rather than guessing. `Buffer.__getitem__`
+in `aie/dialects/aie.py` supports exactly two things:
+
+    if all(isinstance(d, ScalarValue) for d in idx) and len(idx) == len(self.shape):
+        return memref_load(self, idx, loc=loc)
+    else:
+        raise ValueError("Buffer slicing not supported, only indexing supported")
+
+and the object-fifo acquire result's `[r]` produces a RANK-PRESERVING STRIDED SUBVIEW
+(`memref<1x64x128xi8, strided<[8192,128,1]>>`), not the `memref<64x128xi8>` that `matmul_i8_i32`
+declares. So the amortisation pattern of addendum 114 -- one BD filling a batched fifo element,
+then handing each tile to the kernel -- IS BLOCKED at the kernel-call boundary by a DSL limitation,
+not by anything about the device. Addendum 114's probe passed only because it indexed ELEMENTS of the
+slice and never passed the slice to a call.
+
+WHAT WAS STILL GAINED: batching B alone (A left per-tile, so the unit-dimension element that also
+tripped the check is gone) brought the sequence from ~4,182 descriptors to 1,864 -- inside the pool,
+confirming the arithmetic and confirming that the B feed is the dominant term, exactly as predicted.
+
+AND THE REAL ANSWER IS SIMPLER, AND IS ALREADY IN THE OBJECTIVE'S OWN FRAMING: A RUNLIST CAN CARRY
+MORE THAN ONE SUBMIT. The objective asks for "one xrt::runlist submit/token" -- a runlist is a batch of
+kernel invocations, and each invocation draws its own descriptor pool. So the four-phase design does not
+need the O projection crammed into the same submit as the other phases: it can be ITS OWN submit inside
+the same runlist, with its own arguments and its own ~1,552 descriptors, and the whole thing is still
+one runlist per token. The verified three-phase design already fits in one submit, so nothing about it
+changes.
+
+NOTE ON STATE: I restored n1_combined_norm_qkv.py to the addendum-111 commit (the VERIFIED three-phase
+version, 910/2048 + 2048/2048 + 8192/8192) so the tree holds a design that builds. The O-projection
+generator block, its runtime DMAs and the driver's FIVE_BO mode are all retrievable from commit
+da7371b9e for re-application as a SEPARATE SUBMIT rather than as a fourth argument-set in the same one.
