@@ -257,13 +257,43 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
 
         @core(gc, stack_size=GSTACK)
         def gemm_body():
+            # NOTE: this core's A:W:C consumption pattern is a COMPILE-TIME ratio.
+            # Every phase the runtime sequence streams into these fifos must use
+            # the SAME number of K-tiles per N-tile, or the stream desyncs and the
+            # whole launch stalls. The QKV and GU both take n_k = H/k = 16, which is
+            # why a single 16-K-tile phase consumed BOTH correctly; D's K is the
+            # FFN intermediate (n_k_d = 48) and therefore NEEDS ITS OWN phase here.
+            # Getting this wrong is silent: no error, no timeout, buffers stay zero.
             for _ in range_(0xFFFFFFFF):
-                # GU phase FIRST is wrong; order is QKV then GU, and the shim
-                # posts A_norm/W/C from the matching DDR buffers for each phase.
+                # --- QKV phase: n_n = NQKV/NT N-tiles x n_k K-tiles ---
                 for _nt in range_(n_n):
                     cbuf = QKV_f.acquire(ObjectFifoPort.Produce, 1)
                     acc0()
                     for _kt in range_(n_k):
+                        an = ANR_c.acquire(ObjectFifoPort.Consume, 1)
+                        wt = W_c.acquire(ObjectFifoPort.Consume, 1)
+                        accm(an, wt)
+                        ANR_c.release(ObjectFifoPort.Consume, 1)
+                        W_c.release(ObjectFifoPort.Consume, 1)
+                    accs(cbuf)
+                    QKV_f.release(ObjectFifoPort.Produce, 1)
+                # --- GU phase: same 16-K-tile pattern, different DDR source/dest ---
+                for _nt in range_(n_n_gu):
+                    cbuf = QKV_f.acquire(ObjectFifoPort.Produce, 1)
+                    acc0()
+                    for _kt in range_(n_k):
+                        an = ANR_c.acquire(ObjectFifoPort.Consume, 1)
+                        wt = W_c.acquire(ObjectFifoPort.Consume, 1)
+                        accm(an, wt)
+                        ANR_c.release(ObjectFifoPort.Consume, 1)
+                        W_c.release(ObjectFifoPort.Consume, 1)
+                    accs(cbuf)
+                    QKV_f.release(ObjectFifoPort.Produce, 1)
+                # --- D phase: K = the FFN intermediate, so n_k_d K-tiles ---
+                for _nt in range_(n_n_d):
+                    cbuf = QKV_f.acquire(ObjectFifoPort.Produce, 1)
+                    acc0()
+                    for _kt in range_(n_k_d):
                         an = ANR_c.acquire(ObjectFifoPort.Consume, 1)
                         wt = W_c.acquire(ObjectFifoPort.Consume, 1)
                         accm(an, wt)

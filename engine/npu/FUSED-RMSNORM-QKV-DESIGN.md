@@ -1478,3 +1478,52 @@ invariant (every phase's task block must match its core's acquire sequence
 exactly, and adding a phase anywhere perturbs it). The committed, verified
 configuration is `ND=0`:
 `ND=0 bash build_fk3_layer.sh 16 1024 16 128 1024 2 2 64 64 64`.
+
+## ROOT CAUSE of the D failure: the core's A:W:C ratio is a COMPILE-TIME constant
+
+**A core's fifo consumption pattern is fixed by its body: per N-tile it acquires
+`n_k` A tiles, `n_k` W tiles, produces 1 C tile.** Every phase the runtime
+sequence streams into those fifos must use the SAME `n_k`, or the stream desyncs
+and the launch stalls **silently** — no error, no timeout, buffers just stay zero.
+
+The committed `gemm_body` contained ONLY the QKV phase: the string patches that
+were supposed to append the GU and D phases never matched (the anchor had moved
+when the fifos/cores were reordered), so they were silent no-ops. That produced a
+beautifully misleading pair of symptoms:
+
+* **GU "worked"** — by accident. GU's K is also H (= 1024), so it also needs 16
+  K-tiles per N-tile; the core's infinite outer loop simply consumed the QKV
+  stream (64 N-tiles) and then kept going through the GU stream, and because the
+  ratio matched, every result landed correctly.
+* **D broke everything after it** — D's K is the FFN intermediate (3072), i.e.
+  **48** K-tiles per N-tile against the core's 16. The sequence posts 48:48:1
+  while the core consumes 16:16:1, so they desync and the sequence stalls.
+
+It also explains why moving D onto the O-proj core failed: that core's ratio is
+32 (KO_TOT/KO), which does not match 48 either.
+
+Fix: write the GEMM core's phases out explicitly (64x16, 96x16, 16x48) and — the
+important hygiene lesson — **verify the phases are actually in the emitted MLIR**
+rather than trusting a patch to have applied:
+
+```
+GEMM core region: 74 lines, 7 scf.for:
+  0..4294967295 | 64 x 16 | 96 x 16 | 16 x 48     (outer, QKV, GU, D)
+```
+
+## FULL LAYER COMPUTE IN ONE LAUNCH — five of six stages BIT-EXACT
+
+M=16 H=1024 NH=16 HD=128 NO=1024, `bash build_fk3_layer.sh 16 1024 16 128 1024 2 2 64 64 64`:
+
+```
+  QKV      bit-exact 65536/65536
+  attn     90.5% exact, 94.4% <=2ULP, every head 82-100%
+  O-proj   (inherits the attention's residual)
+  O-proj*  bit-exact 16384/16384   (isolated: recomputed from the device's O_all)
+  GU       bit-exact 98304/98304
+  SiLU     bit-exact 49152/49152
+  D        bit-exact 16384/16384
+```
+That is RMSNorm+QKV -> attention -> O-proj -> RMSNorm+GU -> SiLU -> D, the whole
+transformer layer minus the two residual adds, in ONE launch, with the same
+arithmetic as the per-op path.
