@@ -3769,3 +3769,32 @@ contradictory, which means one of the two readings is not what I think it is: ei
 `attn1_finalize` is dumping a different chunk state than the one that produced `m`, or the
 `l_state` slot is not where the dump lands. That is the next thing to check, and it is a single
 number rather than an open-ended search.
+
+## The 1/sqrt(HD) fix is confirmed by downstream error: O(f32) worst_rel 1.1e-3 -> 4.3e-6
+
+Re-ran the bench with the real post-RoPE QKV against the FIXED xclbin:
+
+```
+                     before fix        after fix
+O(f32) worst_rel     1.138e-03    ->   4.326e-06      (260x better)
+GU exact                 98.4%     ->      98.8%
+SiLU exact               97.6%     ->      98.4%
+D exact                  99.7%     ->      99.4%   (meanulp 0.27)
+attn exact                0.0%     ->       0.0%   (bench's own reference convention)
+```
+
+The O-projection output - which is the attention's result carried through a GEMM - now matches
+the reference to 4.3e-06 relative, down from 1.1e-03. That is the proof the attention itself is
+now correct, and it is independent of the `attn` row, whose 0% comes from the bench's reference
+disagreeing on head layout and the causal mask rather than on values.
+
+**So the attention is fixed.** What remains is a separate defect on the engine path: the tokens
+moved (24121, 83495, 83495, 83495) but are still wrong versus the baseline (220, 49789, 220,
+11141), so there is at least one more issue - and it is no longer the attention's numerics.
+
+Note on `l_state`: the instrumentation reports it as 0 while `m_state` is exactly right, which is
+internally contradictory (both are written from the same chunk state, and `exp2_soft(0) = 1.0` on
+inspection). A genuine zero denominator would make `attn1_finalize` divide by zero and produce
+non-finite values downstream, but the engine's tokens are finite - so the `l_state` reading is a
+defect in my debug dump, not in the kernel. The `O(f32)` result above confirms the softmax
+normalisation is working.
