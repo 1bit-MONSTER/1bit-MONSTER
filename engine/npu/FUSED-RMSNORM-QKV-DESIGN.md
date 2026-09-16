@@ -4671,3 +4671,43 @@ lane), not residual collateral; the file is sane at 988 lines ending in `} // na
 "diff against d5dd1764f is empty" is only a valid integrity test while no legitimate work lands in
 between - the invariant that survives later commits is to assert the revert restored what the clobber
 commit removed, i.e. diff against the **immediate parent of the clobber**, not a fixed older sha.
+
+## Decision: stop searching for the permutation. Use `W_eff` obtained by the calibration solve.
+
+Two further attempts, both negative, and they close the reverse-engineering route:
+
+* **256-block permutations of W** (guided by `reorder_cpy`'s disassembly, which divides by 256:
+  `lea 0xff(%rdx),%r9d; sar $0x8,%ecx` = ceil(n/256), then a division by that block count, then SIMD):
+  block-transpose, even/odd block interleave, and the peer's split-half in-block form, at B = 256
+  through 8192. Best mean |corr| 0.0184, identical to the identity baseline of 0.017656. No match.
+* **Value-based recovery**: only 74 of 4,194,304 entries are unique under bf16 rounding, giving exactly
+  one unambiguous (src,dst) pair. Structurally hopeless.
+
+So the permutation is real (the multisets match to 3.8e-5 and the residuals are 0.43% vs 129%) but not
+any form I can guess - most likely because `reorder_cpy` operates on a **quantized/packed** buffer with
+its own (rows, cols) interpretation, not on the dequantized array I have. Reverse-engineering it would
+mean reconstructing the library's packing as well, and the disassembly says that is a SIMD bulk routine
+over a `buffer<unsigned char>` whose ABI (a vtable-likely class, fields at 0x10/0x18) I should not be
+constructing out of band.
+
+**And none of that is necessary.** `W_eff = pinv(A) @ bC` is already *the* effective weight, verified at
+a 0.43% residual on a well-conditioned full-rank solve. The permutation is only interesting if I needed
+it analytically; I don't, because I can obtain its result by measurement.
+
+**The implementation, which is now purely mechanical:**
+
+1. Calibration (once per model): run the engine's own prefill at `npt >= 2048` with `NPU_DUMP_L0`; take
+   `bA` (launch-site dump) and `bC` (`bf16_l0_rawqkv.bin`); compute `W_eff = pinv(bA) @ bC`; cache it.
+2. Driver: load the cached `W_eff` for the fused path's QKV weight (a `NPU_FK3_WQKV_FROM=<file>` hook,
+   alongside the existing `NPU_FK3_RANDOM_WB`), converting to bf16.
+3. Measure parity: `benchmarks/flm_parity.sh` both ways, compare tokens - the fk-3 contract.
+4. Then fk-4: chunked prefill @1k toward FLM's 1494 tok/s.
+
+`/tmp/Weff.npy` holds the weight from the 2048-token solve, so step 2 is immediately testable without
+re-running the calibration.
+
+**The honest summary of fk-3.** The kernel work is done and verified - six stages byte-exact against the
+bench, attention matching an independent NumPy reference, the `1/sqrt(HD)` scaling bug found and fixed,
+plus five driver/lifetime/UB defects. What remained was never numerics: it was that the fused path fed
+the kernel the pre-upload weight array while the engine's GEMM consumes a reordered one. Twelve
+retractions were spent learning that, most of them by arguing where I should have measured.
