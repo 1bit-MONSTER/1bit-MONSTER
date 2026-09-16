@@ -297,3 +297,43 @@ Concrete next step: instrument the AttnCtx's per-call params inside the engine
 compare with the same quantities the bench computes for its own buffers — the one
 that is off identifies the input conversion (most likely the Q/K scale, since
 `max|bActQ|=26.75` in-engine).
+
+## Addendum 7: the input conversion is CORRECT — the AttnCtx softmax saturates on large scores
+
+`NPU_ATTN_DBG=1` prints the AttnCtx per-call scale in-engine (`npu_attn_ctx.h`, gated,
+first three calls only):
+
+```
+[ACTX-DBG] seq=1 nq=20 nkv=4 hd=128 sq=14.2098 sk=17.0042 maxq=8.9375  maxk=7.46875 maxv=0.234375 p0=0.000365807 sv0..3=0.001845 9.948e-05 0.0003153 0.0002922
+[ACTX-DBG] seq=2 nq=20 nkv=4 hd=128 sq=4.74767 sk=17.0042 maxq=26.75   maxk=19.5    maxv=0.4375   p0=0.00109486  sv0..3=0.001845 0.0003499 0.0007382 0.001146
+[ACTX-DBG] seq=3 nq=20 nkv=4 hd=128 sq=8.19356 sk=17.0042 maxq=15.5    maxk=19.5    maxv=0.4375   p0=0.000634405 sv0..3=0.001845 0.0003499 0.0007382 0.001146
+```
+
+The conversion arithmetic is **correct**: `sq = 127/max|q|`, `sk = 127/max|k|`,
+`p0 = 1/(sq·sk·sqrt(hd))`, and the per-dim `sv` is positive and stable. So the
+in-engine **input conversion is not the defect** (it is the same formula the bench
+uses and the same one `zaya_decode.cpp` uses).
+
+What the numbers do reveal is the **score magnitude**: with `max|q|=26.75` and
+`max|k|=19.5`, the raw `q·k/sqrt(hd)` is of order `128 · 26.75 · 19.5 / 11.3 ≈ 6e3`
+(int8-scaled: `127·127·128 · p0 ≈ 2.3e3`). The softmax must therefore subtract a
+large max to stay in range — and addendum 6 shows the delivered **A2 saturated at
+127**. So the working hypothesis is now:
+
+> The AttnCtx's softmax/A2 quantisation does not handle the large raw score range the
+> bf16 prefill produces (post-RoPE Q/K with max ~20-27), while Zaya's decode — the
+> path AttnCtx was written for — feeds bounded, normally-distributed Q/K, as does the
+> standalone bench.
+
+That is a **contract range limit**, not a wiring bug. It also matches the shape of the
+evidence: `npu[0][0] == host[0][0]` exactly (single-key case is just V, no softmax
+pressure), while the error grows with the number of keys and concentrates in heads
+whose scores are largest.
+
+Options if this line is continued: (a) scale Q/K into the AttnCtx's expected range
+before the call and undo the scale after (the params already carry a scale, so a
+bounded pre-normalisation is cheap); (b) add a max-subtraction/max-aware A2 to the
+kernel; (c) accept that the generated int8 kernel serves bounded-Q/K families only,
+and cite the range limit as the exclusion for the bf16 prefill. The `NPU_ATTN_DBG`
+probe stays in `npu_attn_ctx.h` (env-gated, first three calls only) for the next
+round.
