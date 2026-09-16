@@ -73,7 +73,8 @@ public:
     // observed. Values come from the same rotated QKV, converted bf16->f32.
     bool run(int l, const float* x, const float* gamma_in, const float* gamma_ffn,
              int nrow, int pos0, uint16_t* bKv, int kv_region, int v_add, float* out,
-             float* kvf_k = nullptr, float* kvf_v = nullptr);
+             float* kvf_k = nullptr, float* kvf_v = nullptr,
+             const float* qn = nullptr, const float* kn = nullptr);
 
     int M() const;
 

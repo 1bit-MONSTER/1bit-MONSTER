@@ -44,8 +44,23 @@ static inline void rope_head(float* v, int hd, int rope_dim, float theta, int po
 //   Q columns: h*HD            for h in [0, NH)
 //   K columns: KOFF + kh*HD    for kh in [0, NKV),  KOFF = NH*HD
 // `pos0` is the global position of row 0 (0 for a fresh prefill).
+
+// Per-head RMSNorm with a learned per-dimension weight, exactly as the engine's
+// qk_norm_pi does it:  iq = 1/sqrt(mean(v^2 over HD) + eps);  v[d] *= iq * gamma[d].
+// Qwen3-0.6B DOES have q_norm/k_norm (BF16 [128] per layer) - this file's notes wrongly
+// said it had none, and omitting this step is what made the fused Q/K wrong.
+static inline void qk_norm_head(float* v, int hd, const float* gamma, float eps) {
+    if (!gamma) return;
+    double s = 0.0;
+    for (int d = 0; d < hd; d++) s += (double)v[d] * (double)v[d];
+    const float iq = 1.0f / std::sqrt((float)(s / (double)hd) + eps);
+    for (int d = 0; d < hd; d++) v[d] *= iq * gamma[d];
+}
+
 static inline void rope_qk_bf16(uint16_t* qkv, int M, int NH, int NKV, int HD,
-                               float theta, int pos0, int rope_dim = -1) {
+                               float theta, int pos0, int rope_dim = -1,
+                               const float* qn = nullptr, const float* kn = nullptr,
+                               float eps = 1e-6f) {
     if (rope_dim <= 0) rope_dim = HD;
     const int NQKV = (NH + 2 * NKV) * HD;
     const int KOFF = NH * HD;
@@ -55,6 +70,7 @@ static inline void rope_qk_bf16(uint16_t* qkv, int M, int NH, int NKV, int HD,
             uint16_t* q = row + (size_t)h * HD;
             float v[512];
             for (int d = 0; d < HD; d++) { uint32_t u = (uint32_t)q[d] << 16; std::memcpy(&v[d], &u, 4); }
+            qk_norm_head(v, HD, qn, eps);
             rope_head(v, HD, rope_dim, theta, pos0 + i);
             for (int d = 0; d < HD; d++) {
                 float f = v[d]; uint32_t u; std::memcpy(&u, &f, 4);
@@ -65,6 +81,7 @@ static inline void rope_qk_bf16(uint16_t* qkv, int M, int NH, int NKV, int HD,
             uint16_t* k = row + (size_t)KOFF + (size_t)kh * HD;
             float v[512];
             for (int d = 0; d < HD; d++) { uint32_t u = (uint32_t)k[d] << 16; std::memcpy(&v[d], &u, 4); }
+            qk_norm_head(v, HD, kn, eps);
             rope_head(v, HD, rope_dim, theta, pos0 + i);
             for (int d = 0; d < HD; d++) {
                 float f = v[d]; uint32_t u; std::memcpy(&u, &f, 4);

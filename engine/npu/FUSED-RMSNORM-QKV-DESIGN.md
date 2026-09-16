@@ -5862,3 +5862,53 @@ the 0.49 correlation without QK-norm, the improvement to 0.65 with *wrong* weigh
 base (found by arithmetic, rejected on plausibility), and QK-norm (present in the model, recorded absent
 in this file's own notes). Each was a documented assumption about an interface that was never checked
 against the artifact - and in each case the check that would have caught it was one command.
+
+## THE FIX WORKS: layer 0 goes 0.611 -> 0.997. A second, downstream defect remains from layer 1.
+
+Implemented the QK-norm fix (per-head RMSNorm with the learned weights, applied before RoPE) and plumbed
+`qn_w[l]`/`kn_w[l]` from the engine into the driver:
+
+* `npu_fk3_rope.h`: new `qk_norm_head(v, hd, gamma, eps)` implementing exactly the engine's reduction
+  (`iq = 1/sqrt(mean(v^2 over HD) + eps)`, then `v[d] *= iq * gamma[d]`), called for Q with `qn` and K with
+  `kn` immediately before `rope_head`; `rope_qk_bf16` gained optional `qn`/`kn`/`eps` parameters.
+* `npu_fk3_driver.h/.cpp`: `run()` gained two defaulted `const float* qn, const float* kn`.
+* `npu_engine_universal.cpp`: passes `qn_w[l].data(), kn_w[l].data()` - the vectors it already loads.
+
+Per-layer fused-vs-per-op hidden comparison, same prompt, same run:
+
+```
+layer  corr (fixed)   corr (before)
+0      0.997135       0.610931     <- essentially matching the engine
+1      0.123197       0.020150     <- improved but still wrong
+2      0.094086       -
+3      0.078881       -
+```
+
+**Layer 0 is now effectively correct (0.997).** The root cause was right and the fix is right: with QK-norm
+applied the fused layer reproduces the engine's first layer, which before stood at 0.611 and which no
+earlier change had moved.
+
+**And a second defect is now cleanly isolated: everything from layer 1 onward.** Layer 0's output (corr
+0.997) becomes layer 1's input, so layer 1 should also be ~0.997; it is 0.123. That is not a small residual
+- it is a different failure, downstream of the part I just fixed and upstream of nothing I have checked
+since. The tokens are correspondingly unchanged, because 27 of 28 layers are still wrong.
+
+**One clue already in hand.** The per-op reference's hidden state explodes to maxabs ~6466 from layer 2
+while the fused path stays in the 7-260 range. A per-layer RMSNorm renormalises, so a large `bh` can be
+benign - but the two paths differ in whether they grow, which is worth investigating rather than assuming
+away. It is the first thing to look at in the layer-1 divergence.
+
+**Where that leaves fk-3**, all of it measured:
+
+* **launch A: correct** (corr 1.0000 against the engine's QKV);
+* **QK-norm/RoPE path: now correct** (layer 0 at 0.997, and Q at corr 0.99997 in isolation);
+* **V: correct** (0.9999);
+* **the four effective weights: valid** (npt=6144, held-out validated);
+* **the "5.36x deficit" never existed** (cross-prompt artifact);
+* **remaining: the layer-1-onward divergence**, with the fused layer's `bh` growth differing from the
+  reference's as the first concrete lead.
+
+**Method note.** This fix came from comparing slices by what each operation acts on (V vs Q/K), then
+solving for the transform instead of assuming the convention, then reading the engine's own ground-truth
+diagnostic rather than deriving the weights. Each step was one command, and the combination localised and
+fixed a defect that hours of careful measurement on the wrong axis had not touched.

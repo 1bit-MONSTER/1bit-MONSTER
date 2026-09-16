@@ -4672,7 +4672,8 @@ struct Bf16Ctx {
                     if (const char* di = getenv("NPU_FK3_DUMP_IN")) { FILE* df = fopen(di, "ab"); if (df) { fwrite(bh.data(), 4, (size_t)nrow * H, df); fclose(df); } }
                     if (!g_fk3->run(l, bh.data(), in_n[l].data(), pa_n[l].data(), nrow, sp,
                                     bKv.data(), (int)kv_region, v_add, bh.data(),
-                                    kv_caches[l][0].k.data(), kv_caches[l][0].v.data())) {
+                                    kv_caches[l][0].k.data(), kv_caches[l][0].v.data(),
+                                    qn_w[l].data(), kn_w[l].data())) {
                         fprintf(stderr, "[fk3] layer %d run failed; falling back\n", l);
                         g_fk3.reset();
                     } else {

@@ -382,7 +382,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
 
 bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* gamma_ffn,
                      int nrow, int pos0, uint16_t* bKv, int kv_region, int v_add, float* out,
-                     float* kvf_k, float* kvf_v) {
+                     float* kvf_k, float* kvf_v, const float* qn, const float* kn) {
     Impl& s = *p;
     if (l < 0 || l >= s.NC || !s.wQKV_ready[l] || !s.wO_ready[l] || !s.w2_ready[l] || !s.wd_ready[l]) {
         fprintf(stderr, "[fk3] layer %d not prepared\n", l);
@@ -511,7 +511,7 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
     if (!getenv("NPU_FK3_SKIP_A")) {
         uint16_t* q = (uint16_t*)s.qB.map();
         // Q at head stride HD from 0; K at KOFF + kh*HD; V untouched.
-        fk3::rope_qk_bf16(q, nrow, s.NH, s.NKV, s.HD, 1e6f, pos0);
+        fk3::rope_qk_bf16(q, nrow, s.NH, s.NKV, s.HD, 1e6f, pos0, -1, qn, kn);
         s.qB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
         // Same layout qk_norm_pi writes: region = kvh<4?0:1, lh = kvh&3, slot = 4*HD.
