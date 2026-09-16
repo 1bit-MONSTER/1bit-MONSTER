@@ -1861,3 +1861,35 @@ NEXT RUN: do NOT guess the layout. Get it from the authoritative source -- the l
 gen_layer_seq (exported at 0x97ad0, the same function that yielded the reorder_cpy callable) --
 by disassembling how it assigns the group-3 objects, or by matching the harness's packing against
 a captured LEGITIMATE weight BO. Then repack arg-3 to match and re-run, gating on the act.
+
+### Addendum 52 — arg-3 is 20 ROWS OF 4736 BYTES; region-A (74,240) is not row-aligned to it
+
+Disassembled the lib's exported gen_layer_seq (0x97ad0 in libqwen3_6_moe_npu.so) looking for the
+group-3 object sizes rather than guessing them again, and the constants are there:
+
+  97b41:  movl  $0x4a00,-0x4c(%rbp)          <- 0x4a00 = 18944 stored as a size
+  97b70:  imul  $0x4a00,%r12d,%r15d          <- 18944 used as a UNIT, multiplied by a count
+
+and the ELF's group-3 object sizes factor exactly by the SAME 4736-byte row unit this lane already
+uses for region-B (NPU_MOE_ROW_BYTES):
+
+  18944 = 4 x 4736      (whole rows)
+  75776 = 16 x 4736     (whole rows)
+  94720 = 20 x 4736     (whole rows) = 18944 + 75776 = 5 x 18944
+
+So the ELF's arg-3 -- the weight argument the layer actually reads -- is 20 ROWS OF 4736 BYTES,
+i.e. a row-oriented object of the same unit as region-B. Meanwhile npu_pack_moe_region_b writes
+region-A as 74,240 B, which is 15.68 rows: NOT row-aligned to 4736 at all, and 20,480 B short of
+the 94,720 the ELF declares.
+
+This is the strongest structural lead this lane has had, and it is consistent with every prior
+negative result: my addendum-44 (tail only) and addendum-48 (repack the four non-layernorm tensors
+as 66,048 at offset 0) both tested the WRONG target size -- 66,048 and 74,240 are both wrong, the
+declared size is 94,720 -- so neither experiment could have found the fault even if the layout were
+the cause. It also explains the "region A TODO" comment: somebody knew this packing had never been
+reconciled with what the sequence declares.
+
+NEXT: determine the CONTENT of those 20 rows -- disassemble how gen_layer_seq consumes them, or
+capture a legitimate weight BO from the runtime -- then repack arg-3 to 94,720 B (20 x 4736) with
+that content and re-run, gating on the act. Do not guess the content; the size is now established,
+the content is not.
