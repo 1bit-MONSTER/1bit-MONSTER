@@ -4180,3 +4180,39 @@ descriptors in a way that races.
 
 THIS IS NOW THE TOP PRIORITY, ABOVE THE O PROJECTION: a design whose GEMM is right three times out of
 four is not something the objective can build on, and the fix is likely small.
+
+### Addendum 118 — the C fifo depth is NOT the cause; the failure is a partial-tile tear
+
+Established the baseline properly first, because addendum 117's four runs were too few to conclude
+anything. Eight runs of the unchanged, verified design:
+
+  8192, 8192, 8192, 8192, 8192, 7536, 7184, 8192      -> 2 failures in 8 (~25%)
+
+Then deepened the C fifo from 1 to 2 (both `G_C_C` and `G_C_S`, so the core can double-buffer and the
+readback always has a full buffer to take), rebuilt, and ran eight more:
+
+  8160, 8192, 8192, 8192, 8192, 8192, 8192, 8192      -> 1 failure in 8
+
+So the C fifo depth is NOT the mechanism. 2/8 versus 1/8 at n=8 is not a signal, and I am recording it
+as a negative result rather than as an improvement. (The depth-2 fifo is left in place: it is harmless
+and marginally more forgiving, but nothing is claimed for it.)
+
+THE SIGNATURE IS A PARTIAL-TILE TEAR. The wrong counts are 7536, 7184, 8160 -- differences from 8192 of
+656, 1008 and 32. Every one is a fraction of one n-tile (128 columns) or of one k-block, never a whole
+tile and never a wrong address pattern. Combined with the norm phases being bit-stable at 2048/2048 in
+every single run (including the phase-against-phase comparison that uses no reference at all), that says
+a DMA occasionally moves LESS than it was asked to move, or the consumer reads it part-written -- not
+that anything is mis-addressed or mis-laid-out.
+
+NEXT PROBES, cheapest and most discriminating first:
+  1. REDUCE THE COLUMN-GROUP COUNT and re-measure. With c=8 the GEMM's sequence is 8 groups x 296 tasks
+     = 2,368 instead of 16 x 164 = 2,624, and the whole design drops below the 2,630 boundary it
+     currently sits exactly on. If the flakiness vanishes, the mechanism is BD-pool saturation and
+     descriptor reuse pressure, and the fix is to keep every design well inside the pool.
+  2. If it persists, shrink to a single column-group (nc=1) and re-run many times: flaky there means a
+     single DMA/BD pair tears, which points at the BD length or the shim DMA itself; stable there means
+     the multi-group interleaving is what breaks.
+  3. Only then revisit fifo depths or the core's release ordering.
+A useful instrument for all three: run each configuration at least 8 times and report the FAILURE
+COUNT, never a single run -- addendum 112's "stable" claim and addendum 117's four runs both show how
+misleading a small n is in this lane.
