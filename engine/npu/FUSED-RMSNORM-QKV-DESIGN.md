@@ -2903,3 +2903,50 @@ This also retires a hypothesis I had ranked first: the weights are NOT mis-laid-
 `prepare_layer` as far as launch B is concerned, because launch B now demonstrably consumes
 exactly what it is given and produces the reference's answer. Whatever is wrong in the
 engine is upstream of that, or in the weights as the engine dequantizes them.
+
+## ROOT CAUSE of the engine's wrong tokens: residual 1 carries the NORMALIZED (x+o), not the raw sum
+
+With the driver's launch now proven bit-identical to the bench, the engine's remaining
+wrongness must be upstream of launch B. Measured the fused path's layer-0 stages **in the
+engine with the real dequantized weights**:
+
+```
+A  (launch B in)   nonzero=0.9789  maxabs=1.0469     <- the residual stream x
+A2 (O-proj f32)    nonzero=1.0000  maxabs=1.4922     <- the attention output o
+W2 (GU weight)     nonzero=0.9979  maxabs=0.3867
+WD (D weight)      nonzero=0.7487  maxabs=1.0000     <- identity block present
+O  (attention)     nonzero=1.0000  maxabs=0.7695
+C2 (GU)            nonzero=1.0000  maxabs=2.5469
+SL (SiLU)          nonzero=1.0000  maxabs=2.8438
+HBF (resid 1)      nonzero=1.0000  maxabs=0.9414     <- SMALLER THAN EITHER INPUT
+CD (LAYER OUT)     nonzero=1.0000  maxabs=1.2344     <- ~= HBF, stream not accumulating
+```
+
+Every stage is healthy and non-zero. The tell is `HBF`. Residual 1 is supposed to be
+`x + o`, so with `|x|max = 1.0469` and `|o|max = 1.4922` it should come out at least
+1.5. It is **0.9414 — smaller than both inputs**, which is what a *normalized* vector looks
+like, not a sum. And `CD = 1.2344` is then just `HBF` plus a small FFN term, so the residual
+stream never accumulates. The baseline's layer-0 output is `maxabs = 6.6196` against the
+fused path's `1.2344` — a 5.4x shortfall, and the fused state stays pinned near unit scale
+for all 28 layers (1.23, 3.56, 4.63, 6.22, 7.91) while the baseline grows (6.62, 7.82,
+6466, ...).
+
+So the fused layer computes `silu*W_D + normalize(x+o)` where it must compute
+`(x+o) + silu*W_D`. The add-aware norm's *scale* output `(x+o)*inv*gamma` (correct and
+needed for the FFN input) is being used as `H_BF`, the value the identity block adds back.
+The design doc itself is ambiguous on this — one line says "h=x+o (bf16, H_BF)", the note
+next to the norm says "emits (x+o)*inv*gamma, h never materialised" — and the code followed
+the second. `add_f32_bf16` already exists as a raw adder, so the fix is a small kernel
+change: emit the RAW `x+o` into H_BF via `add_f32_bf16(A, A2)`, and keep the normalized
+value only for the FFN's GU input.
+
+**Why the bench could not catch this, which is the methodological point.** bench_fk3_layer's
+D reference is computed from `An2`, and `An2` is built as
+`rne(href * ir * A2m[M*H+h])` — i.e. from the *normalized* h. So the reference encodes the
+same mistake as the kernel, they agree to 99.6%, and both are wrong. A "99.6% exact" figure
+against a reference derived from the same wrong intermediate is not evidence of
+correctness. That is exactly why the parity check has to be TOKENS against the per-op path,
+which is the only independent oracle in this project — and it is what caught this.
+
+The `H_BF 1.6%` reading I repeatedly explained away as "the bench's row-major reference
+artifact" was the same signal, visible much earlier and dismissed.
