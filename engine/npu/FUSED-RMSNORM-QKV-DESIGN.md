@@ -3484,3 +3484,41 @@ Next, in order:
    directly;
 3. only then look at `attn1.cc`'s Q/K/V tap offsets, since the tap is the other mechanism that
    can scramble the per-head structure.
+
+## Named: it is the Q/K/V tap, not the head mapping
+
+Searched every (Q-source head, KV head) combination for the pairing that would make a kernel
+head match the independent reference - i.e. asked not just "is it h//GQA or h%NKV" but "is it
+any of the 16x8 possibilities":
+
+```
+kernel head  0 -> best ref (qsrc=13, kv=0) corr=0.1317   | default (qsrc=0, kv=0)  corr=0.1301
+kernel head  1 -> best ref (qsrc=13, kv=0) corr=0.1232   | default (qsrc=1, kv=0)  corr=0.1228
+kernel head  2 -> best ref (qsrc=13, kv=0) corr=0.1444   | default (qsrc=2, kv=1)  corr=0.1174
+kernel head  3 -> best ref (qsrc=13, kv=0) corr=0.1268   | default (qsrc=3, kv=1)  corr=0.1059
+kernel head  4 -> best ref (qsrc=0,  kv=4) corr=0.1257   | default (qsrc=4, kv=2)  corr=0.1066
+kernel head  5 -> best ref (qsrc=3,  kv=7) corr=0.1250   | default (qsrc=5, kv=2)  corr=0.1111
+```
+
+Every correlation is ~0.12 - noise - and no combination stands out above the others. So the
+kernel's attention output does not correspond to **any** valid pairing of the reference's heads.
+A wrong head mapping would have shown one strong match somewhere in that 16x8 search; finding
+nothing means the Q/K/V values the kernel operates on are not the Q/K/V in the buffer.
+
+That leaves the **tap** - how `attn1.cc` reads Q, K and V out of the QKV buffer - and it is the
+component this document has flagged as most fragile from the beginning: "the Q tap must be
+MICROTILED ... because mm.cc reads the A operand via load_v<size_A> in 32-element blocks
+(row-major Q scored 0.9%, microtiled 90.5%)", and "K read row-major + attn1.cc -DK_ROW_MAJOR
+builds the mmul's blocked B layout locally, because no BD can transpose".
+
+So the final answer to "what is wrong with fk-3" is: **the attention's Q/K/V tap does not
+deliver the QKV that launch A produced**, despite launch A being verified exact and launch B
+being byte-identical to the bench on every stage the bench exercises. The bench could not see it
+because it never put a real QKV in `bQ` - every one of its runs left that buffer zero, so the
+attention's taps were reading zeros into a zero-output reference that agreed with itself.
+
+The check that would confirm it in one run: dump the attention's Q and K tiles as the kernel
+sees them (or the pre-softmax scores) and compare against Q/K/V sliced from `/tmp/fk3_drv_Q.bin`
+at `[0,KOFF)`, `[KOFF,VOFF)`, `[VOFF,NQKV)`. Given the tap is where the buffer's row-major
+(M, NQKV) layout meets the mmul's blocked/tiled operand layouts, a mismatch there is exactly
+what a 32-element-block operand loader would produce.
