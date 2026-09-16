@@ -816,7 +816,8 @@ in fewer.
 whole head (QK^T -> online softmax -> PV -> combine -> normalize) in ONE core, so
 NH=16 costs 16 tiles and 16 remain for the linear stages (5 needed).
 
-**Status: the kernel compiles, the design generates, but the core does not link.**
+**SOLVED (see below) — the core links and NH=16 is verified at 1 core/head.**
+The original obstacle:
 The two GEMMs have different shapes (QK^T is M x HD x N; PV is M x N x HD) and one
 mm.cc compilation carries ONE DIM_* set, so the PV mmul is a second object
 (mm_pv.o, mm.cc with -Dbf16_f32_ONLY and its own dims; the bf16->bf16 and
@@ -837,3 +838,29 @@ Three ways out, cheapest first:
    88 KB) and so is not viable for the 1-core case.
 
 Option 1 is the recommended next step.
+
+
+### ✅ 1-core/head attention verified — the composition budget is now open
+
+The link problem was solved by calling mm.cc's mmul **templates** directly instead
+of its exported combo functions: the templates are not behind the combo guards, so
+one object can instantiate the QK^T shape (M x HD x N) and the PV shape
+(M x N x HD) with no DIM_* clash and no second object:
+
+```cpp
+matmul_vectorized_4x8x8_bf16_bf16<M_TILE, HD, N_KEYS>(q, kt, g_sc);
+matmul_vectorized_4x8x8_bf16_f32 <M_TILE, N_KEYS, HD>(g_sc, v, g_at);
+```
+The only other change was the core stack (0x2000 -> 0x1000); at N=64 chunks the
+DM is QK 20 KB + V 16 KB + g_sc 2 KB + g_at 8 KB + O_state 8 KB + stack 4 KB.
+
+**Verified on the NPU:**
+| build | keys | cores | result (identical data) |
+|---|---|---|---|
+| NH=2 P=1 N=64 C=2 | 128 | 2 | heads byte-identical (973/2048, max_delta 33304) |
+| **NH=16 P=2 N=64 C=16** | **1024** | **16** | **all 16 heads byte-identical (230/2048, max_delta 33289)** |
+
+So the attention now costs 16 of the 32 compute tiles, leaving 16 for
+RMSNorm+QKV (2), O-proj (1), GU (2) and D (1) = 6 — the one-launch composition
+fits. (The exact-count differences across N/C are the online-softmax vs
+single-pass reference, as before; all-heads-agree is the correctness signal.)

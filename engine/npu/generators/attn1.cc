@@ -43,8 +43,6 @@
 #define DIM_N N_KEYS
 #endif
 
-extern "C" void matmul_bf16_f32(bfloat16 *a, bfloat16 *b, float *c);
-
 static uint16_t g_sc[M_TILE * N_KEYS] __attribute__((aligned(64)));
 static float g_at[M_TILE * HD] __attribute__((aligned(64)));
 static float O_state[M_TILE * HD];
@@ -80,8 +78,11 @@ extern "C" void attn1_chunk(const uint16_t *__restrict qk,
                             const uint16_t *__restrict v) {
     // --- QK^T -> g_sc (bf16 scores, microtiled) ---
     for (int i = 0; i < M_TILE * N_KEYS; i++) g_sc[i] = 0;
-    matmul_bf16_bf16((bfloat16 *)qk, (bfloat16 *)(qk + DIM_M * DIM_K),
-                     (bfloat16 *)g_sc);
+    // Call the mmul TEMPLATE directly with the QK^T's own dims (M x HD x N);
+    // mm.cc's templates are not behind the combo guards, so one object can
+    // instantiate both shapes without the DIM_* clash.
+    matmul_vectorized_4x8x8_bf16_bf16<M_TILE, HD, N_KEYS>(
+        (bfloat16 *)qk, (bfloat16 *)(qk + M_TILE * HD), (bfloat16 *)g_sc);
 
     // --- online softmax in place: g_sc becomes exp, alpha[] the rescale ---
     const float log2e = 1.4426950408889634f;
@@ -112,7 +113,8 @@ extern "C" void attn1_chunk(const uint16_t *__restrict qk,
 
     // --- PV -> g_at (f32) ---
     for (int i = 0; i < M_TILE * HD; i++) g_at[i] = 0.0f;
-    matmul_bf16_f32((bfloat16 *)g_sc, (bfloat16 *)v, g_at);
+    matmul_vectorized_4x8x8_bf16_f32<M_TILE, N_KEYS, HD>(
+        (bfloat16 *)g_sc, (bfloat16 *)v, g_at);
 
     // --- combine: O = O*alpha + attn_chunk ---
     for (int r = 0; r < M_TILE; r++) {

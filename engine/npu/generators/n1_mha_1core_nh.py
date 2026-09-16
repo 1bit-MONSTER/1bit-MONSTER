@@ -47,12 +47,6 @@ def mha1(M, N, C, HD, NH, PERCOL=2):
         OUT_ty = np.ndarray[(M_, HD_), np.dtype[bfloat16]]
 
         chunk = external_func("attn1_chunk", inputs=[QK_ty, V_ty], link_with="attn1.o")
-        # Declared (not called from the MLIR) so aiecc puts the PV mmul's object
-        # in the core's link list — attn1.o references it for the PV GEMM.
-        E_ty = np.ndarray[(M_, N_), np.dtype[bfloat16]]
-        GAT_ty = np.ndarray[(M_, HD_), np.dtype[np.float32]]
-        _mm_pv = external_func("matmul_bf16_f32", inputs=[E_ty, V_ty, GAT_ty],
-                               link_with="mm_pv.o")
         reset = external_func("attn1_reset", inputs=[], link_with="attn1.o")
         fin = external_func("attn1_finalize", inputs=[OUT_ty], link_with="attn1.o")
 
@@ -107,7 +101,7 @@ def mha1(M, N, C, HD, NH, PERCOL=2):
                 fin(o)
                 f["O_f"].release(ObjectFifoPort.Produce, 1)
 
-            core(f["ac"], stack_size=0x2000)(body)
+            core(f["ac"], stack_size=0x1000)(body)
 
         for f in pipes:
             make_core(f)

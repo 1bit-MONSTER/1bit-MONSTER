@@ -46,11 +46,6 @@ build_cc() { local obj="$1" src="$2"; shift 2
 echo "== kernels (QK^T ${M}x${HD}x${N} bf16-C; PV ${M}x${N}x${HD} f32-C)"
 # attn1.cc includes mm.cc (bf16->bf16, DIM = M/HD/N) for the QK^T.
 build_cc attn1.o attn1.cc -DM_TILE=$M -DHD=$HD -DN_KEYS=$N -DDIM_M=$M -DDIM_K=$HD -DDIM_N=$N -Dbf16_bf16_ONLY
-# The PV mmul: mm.cc again, bf16->f32, its own DIM = M/N/HD (disjoint symbols).
-if ! "$CLANG" "${CFLAGS[@]}" -DDIM_M=$M -DDIM_K=$N -DDIM_N=$HD -Dbf16_f32_ONLY \
-      -c "$MLIR/aie_kernels/aie2p/mm.cc" -o mm_pv.o >>cc.log 2>&1; then
-  echo "== CC FAILED mm_pv.o"; tail -15 cc.log; exit 1; fi
-echo "   cc mm_pv.o"
 
 echo "== aiecc"
 if ! "$AIECC" --peano="$P" --aietools="$AIETOOLS" \
