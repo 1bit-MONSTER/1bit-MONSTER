@@ -449,3 +449,28 @@ Combined with Addenda 6-9b (the lib's whole-layer ELF NaNs with every input forc
 finite), **both routes to the objective are currently dead or far off**:
   - lib per-ctx ELF runlist path -> NaN (R59);
   - engine's own path -> 19.4 s/tok, launch-bound, small-M documented as no-win.
+
+### Addendum 10b — CORRECTION: M=1 decode is ~1 tok/s; 19.4 s/tok was the M=8 BATCH path
+
+The `npu_engine_qwen3_6_moe_35b ... 4 <ids>` run goes through the "M=8 Batch Decode"
+path; re-running with **1 token** (and NPU_TIMING=1) gives:
+
+```
+=== M=8 Batch Decode (1 tokens) ===
+=== 867.8 ms/tok (1 tok/s) | boot=28ms batches=0 tokens=1 ===
+```
+
+So the engine's own 35B **single-token** decode is **867 ms/tok ≈ 1.0 tok/s** —
+about 1.4× the ~0.7 tok/s baseline (and consistent with R99's 1.5 tok/s), while the
+**batch path is ~22× slower** (19.4 s/tok) and is a separate regression.
+
+Per-layer init timings recorded under NPU_TIMING (dequant/pack phase, not the token):
+`[moe l=L pack] ~100-120 ms`, `gu ~115-145 ms`, `d ~150-180 ms`, `moe_ffn_npu
+~150-180 ms` per layer.
+
+So the honest current state of the two routes:
+- **engine's own M=1 path: ~1.0 tok/s** (works; modest gain over baseline; the M=8
+  batch path is broken/slow);
+- **lib per-ctx ELF runlist path: NaN** (dead, Addenda 6-9b).
+The objective's dense-class (~88 tok/s) runlist decode remains ~88× away on the
+working route.
