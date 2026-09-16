@@ -85,7 +85,10 @@ int main(int argc, char** argv) {
     fflush(stderr);
 
     // ---- buffers, one per runtime_sequence argument ------------------------------
-    auto bo_ins  = xrt::bo(dev, ins.size() * 4, xrt::bo::flags::cacheable, k.group_id(1));
+    // Addendum 139: the engine uses XRT_BO_FLAGS_HOST_ONLY for EVERY BO, including the
+    // instruction blob (npu_engine_i8ctx_inc.h:155). A cacheable instruction BO lets the
+    // device read stale instructions -- the same symptom class as "the DPU never starts".
+    auto bo_ins  = xrt::bo(dev, ins.size() * 4, xrt::bo::flags::host_only, k.group_id(1));
     auto bo_nA   = xrt::bo(dev, 2 * (H * 4 + H * 4 + H * 2), xrt::bo::flags::host_only, k.group_id(3));
     auto bo_nW   = xrt::bo(dev, H * 4,          xrt::bo::flags::host_only, k.group_id(3)); // same SIZE as nA -> same group
     auto bo_nO   = xrt::bo(dev, 4096 * 2048,    xrt::bo::flags::host_only, k.group_id(4));  // re-used as OB

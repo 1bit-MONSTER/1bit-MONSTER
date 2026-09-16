@@ -5096,3 +5096,55 @@ STANDING CORRECTIONS, unchanged: the structure of the whole-layer design is solv
 submit, four-argument runtime sequence, three phases sharing one buffer at fixed offsets; RMSNorm and
 FFNnorm exact in every run ever taken and bit-identical to each other); the GEMM is verified at NO shape
 through MY driver; and every 8192/8192 quoted in this lane before addendum 117 is a single lucky sample.
+
+### Addendum 139 — THE INSTRUCTION BO FLAG IS REAL (and the patched XRT leaks hw contexts)
+
+I diffed my driver's BO setup against `I8Ctx`'s line by line, looking for what differs. Almost everything
+matched: opcode 3, the whole blob's word count as `ninstr`, the loader (`fread(ins.data(), 4, sz/4, f)`),
+argument order (A, B, C), `host_only` for every DATA BO, group ids from `group_id(3/4/5)` for the data and
+`group_id(1)` for the instructions, and a `xrt::hw_context`-scoped kernel. ONE THING DID NOT MATCH:
+
+  engine:  layerInstr[0] = xrt::bo(..., XRT_BO_FLAGS_HOST_ONLY, grp_ins);   // npu_engine_i8ctx_inc.h:155
+  mine:    bo_ins = xrt::bo(dev, ins.size()*4, xrt::bo::flags::cacheable, k.group_id(1));
+
+I changed one word in combined_smoke.cpp (`cacheable` -> `host_only`) and re-ran v27 at M=128 eight times:
+
+  BEFORE: 0/128 rows, ~374/1048576 cells,   96 all-zero rows
+  AFTER:  0/128 rows,    374/1048576 cells, 128 all-zero rows     <- identical in all 8 runs
+
+THE FLAG CHANGES WHAT THE DEVICE COMPUTES. That is not a cosmetic difference. With a cacheable
+instruction BO the device read a PARTIALLY STALE instruction blob and computed one 32-row m-tile's worth
+of output; with host_only it reads the whole stream and computes nothing at all. Either way the failure
+is deterministic, so this is a real device-visible property of the BO, not noise.
+
+WHY THIS IS A STRONG CANDIDATE FOR THE FLAKINESS I CHASED FOR SIXTEEN ADDENDA: a cacheable instruction
+BO is exactly the mechanism that would make a stream's DMAs arrive STALE OR NOT AT ALL, intermittently,
+depending on cache state -- which is the shape of every symptom I measured. Addendum 131's arithmetic
+("each feed independently arrives empty about a quarter of the time": p_A ~ 0.25 with trivial B,
+1 - 0.75^2 ~ 0.4375 with random B) is what stale instruction reads would look like from the outside. And
+it explains the observation that most damaged my confidence in the lane's reference design: n1_core_i8_m1.py
+looked flaky "too" -- because it was measured through THIS DRIVER, with this flag. The engine's own
+designs use HOST_ONLY and are not flaky (addendum 138). I have not yet re-measured my m1 design with the
+fix, so I am recording this as a strong hypothesis with a concrete experiment attached, not as a settled
+root cause.
+
+SECOND FINDING, AND IT IS ABOUT THE TOOLCHAIN RATHER THAN MY CODE: after roughly sixteen device opens in
+this session the driver began failing with
+
+  DRM_IOCTL_AMDXDNA_CREATE_HWCTX IOCTL failed (err=-28): No space left on device
+
+and it keeps failing. `benchmarks/npu-device-preflight.sh` reports IDLE -- no PID holds accel0 -- and
+`fuser -v /dev/accel/accel0` shows NOTHING open. So the hw-context slots are leaked in the driver, not
+held by a process, and they persist until the device is reset. My driver links the RUNLIST-PATCHED XRT at
+/usr/local/xrt-runlist/lib; qwen36_moe_probe links the system /opt/xilinx/xrt/lib. The leak appeared
+after the former had been used repeatedly. hwctx_limit is 16, which brackets the failure.
+
+I am flagging that for the whole lane, because it would explain a great deal of the device contention
+everyone has been working around, and because anything that leaks device contexts is exactly the kind of
+thing that also produces stale state inside a live one. It is NOT something I can reset from here.
+
+STATUS OF THE LANE, honestly: the engine's path is deterministic and reference-matching (addendum 138),
+so the design class is sound. My driver had a real defect in exactly the place that would produce my
+symptoms, and I have fixed it but could not complete the re-measurement because the device ran out of
+hw-context slots. That experiment -- my m1 combined design, `host_only` instruction BO, failure count
+over 8 runs -- is the next thing to run, and it is a single command away.
