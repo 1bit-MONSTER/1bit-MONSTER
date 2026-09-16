@@ -2656,3 +2656,32 @@ it emits a NaN that is independent of every input's content and magnitude, with 
 intermediate to bisect. Our own sequence is the live route: the 35B RMSNorm M=1 kernel and the
 M=1 GEMMs (QKV, O, GUSGU, DSD) are built and measured, the constraints are known, and the engine
 path stands at 1.90 s/tok.
+
+### Addendum 77 — third shared-index incident, this time caught and handled WITHOUT damage
+
+While committing addendum 76 I ran `git diff --cached --name-status` first (the habit from addenda
+30/42/55) and it listed three entries: my runtime_layer_moe.cpp, plus a foreign
+`D benchmarks/RESULTS-family-attn-ctx-adapter-2026-09-16.md` and a foreign
+`M engine/npu/src/npu_engine_universal.cpp`. I committed PATH-SCOPED with both of my paths named, so
+the commit contains only my two files (verified with `git show --name-status`: runtime_layer_moe.cpp
+and the results doc). FIRST TIME the check fired and I acted on it rather than committing anyway.
+
+Then I cleaned the index, in this order and with this reasoning:
+ - the staged DELETION was SPURIOUS -- the file exists on disk and its md5 equals HEAD's, i.e. an
+   index-only deletion of an intact file, the same pattern as addenda 30/42. Restored with `git add`.
+ - the staged MODIFICATION of npu_engine_universal.cpp was a REDUCTION (+2/-58 vs HEAD) while the
+   DISK held the fuller content (+26/-17 vs HEAD) -- the same shape as the 629-line attn_ctx.h case.
+   I first staged the disk version, then reconsidered: the correct end state for a SHARED index is
+   to match HEAD and leave everyone's edits in the working tree, so I used
+   `git restore --staged engine/npu/src/npu_engine_universal.cpp` (INDEX ONLY -- the rule from
+   addendum 55) and verified `git diff --cached` is now EMPTY, with the peer's modification still
+   present on disk, unstaged.
+
+WHAT I DID NOT DO: commit, revert, or discard anything of anyone else's. No working-tree bytes were
+touched by any of this; the only thing that changed was which version the index pointed at, and it
+now points at HEAD.
+
+The rule set that made this a non-event, for the record: (1) `git commit -m ... -- <paths>` ALWAYS;
+(2) if a pre-commit listing shows a foreign path, STOP and `git restore --staged` it -- do not merely
+note it; (3) revert/interse with `git restore --staged` (index only), never `git checkout <commit> --
+<path>`, which writes the working tree and can destroy someone's uncommitted work.
