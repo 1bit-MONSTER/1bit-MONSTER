@@ -890,3 +890,35 @@ attention fifo uses. If aiecc counts channel INDICES rather than fifos, that
 fits everything; if it rejects the double assignment, the fallback is to merge
 each column's O outputs into one S2MM (a 4->1 `object_fifo_link`, which then
 needs the head order made deterministic).
+
+### Decisive: shim DMA channels cannot be shared across phases
+
+The proposed escape (pin a linear-stage fifo to the channel index an attention
+fifo uses, since the phases are time-disjoint) does NOT work. Probe: one column,
+three shim->mem fifos, the third carrying `prod_dma_channel = 0` (confirmed
+present in the generated MLIR, `aie.objectfifo @D_S(...) {prod_dma_channel = 0 :
+i32}`). aiecc still fails with
+
+```
+design.mlir:3:26: error: 'aie.tile' op number of output DMA channel exceeded!
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+```
+so the shim's channel count is per FIFO, not per channel index — `set_*_dma_channel`
+cannot double-book, and time-disjointness is not considered.
+
+**Consequence for the composition.** Every stage's data enters through a shim, and
+one shim is 2 MM2S + 2 S2MM. With the attention at P=2 (all 8 columns, 2 MM2S +
+2 S2MM each) no column has a channel left for a linear stage, and P=4 dies on
+4 heads' O outputs vs the 2 S2MM. So the one-launch composition is blocked by
+the shim channel budget, not by compute tiles ([the tile budget was solved by
+the 1-core attention]) and not by DM.
+
+The two remaining routes, both real work:
+1. **Merge each column's attention O outputs into ONE S2MM** (4->1
+   `object_fifo_link`) so a P=4 attention needs 2 MM2S + 1 S2MM per column and
+   frees 4 whole columns for the linear stages. The open question is making the
+   merged head order deterministic so the shim writes each head to the right
+   offset.
+2. **Keep the attention's O on-chip** and feed the O-proj from shared memory
+   (no shim S2MM at all) — an on-chip many-to-one gather, which also removes the
+   O DDR round-trip.
