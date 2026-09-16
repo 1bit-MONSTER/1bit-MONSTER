@@ -240,6 +240,27 @@ bool MoERuntimeLayerEngine::get_logits(float* out, int vocab) {
     return true;
 }
 
+bool MoERuntimeLayerEngine::dump_bos(const char* dir) {
+    auto dump = [&](const char* name, xrt::ext::bo* bo, size_t n, size_t off) {
+        if (!bo) return;
+        try {
+            bo->sync(XCL_BO_SYNC_BO_FROM_DEVICE, n, off);
+            char fn[512]; snprintf(fn, sizeof(fn), "%s/%s.bin", dir, name);
+            FILE* f = fopen(fn, "wb");
+            if (f) { fwrite((const uint8_t*)bo->map() + off, 1, n, f); fclose(f); }
+            fprintf(stderr, "DUMPBO %s -> %s (%zu @%zu)\n", name, fn, n, off);
+        } catch (...) {}
+    };
+    dump("act",      bo_act_.get(),    4096,      0);
+    dump("router",   bo_router_.get(), 0x3000,    0);
+    dump("norms",    bo_norms_.get(),  0x50200,   0);
+    dump("kv",       bo_kv_.get(),     0x100000,  0);
+    dump("weightA",  bo_weight_.get(), 0x100000,  0);          // region-A head
+    dump("weightB",  bo_weight_.get(), 0x200000,  0x1bc00000); // region-B head
+    dump("logits",   bo_logits_.get(), 0x100000,  0);
+    return true;
+}
+
 bool MoERuntimeLayerEngine::dump_act(const char* path, size_t n) {
     bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
     FILE* f = fopen(path, "wb");

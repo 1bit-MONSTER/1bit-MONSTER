@@ -63,6 +63,7 @@ int main(int argc, char** argv) {
     fprintf(stderr, "logits: argmax=%d max=%.4f NaN=%d (of %d)\n",
             argmax, mx, nan, vocab);
     fprintf(stderr, "reference: greedy next token = 76740\n");
+    if (getenv("NPU_DUMP_BOS")) eng.dump_bos("/tmp/bo");
     eng.dump_act("/tmp/moe_act.bin");
     fprintf(stderr, "act dumped to /tmp/moe_act.bin\n");
     fprintf(stderr, "DONE\n");

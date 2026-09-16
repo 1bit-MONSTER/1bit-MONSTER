@@ -50,6 +50,7 @@ public:
     bool get_logits(float* out, int vocab);
     /// Dump the act BO (first `n` bytes) to a file.
     bool dump_act(const char* path, size_t n = 4096);
+    bool dump_bos(const char* dir);
 
 private:
     bool ensure_layer_kernel(int ctx_len);
