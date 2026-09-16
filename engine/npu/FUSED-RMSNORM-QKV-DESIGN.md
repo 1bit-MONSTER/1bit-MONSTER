@@ -6848,3 +6848,45 @@ which changed delivery order and broke token parity.
 **Fifth hypothesis, first one with a mechanism that predicts the measurement I actually have** - including
 predicting the null result of the previous experiment, which is the strongest form of fit available here. Test
 remains the intervention: pipeline the weight taps, rebuild, re-time launch B, and confirm token parity.
+
+## Fifth hypothesis REFUTED too: pipelining the taps changed nothing - and broke parity again
+
+Prediction, stated before running: if the 18.6 us per descriptor is exposed DMA latency, pipelining the
+weight taps (the A-tap `pend`/`while len(pend) >= 8` pattern, keeping `ant` and `wt` in one list so the
+pairing order is preserved, drained before `ct` which consumes the GEMM output) should cut launch B
+substantially - up to ~8x if fully overlapped. Result:
+
+```
+BASELINE:   launch A 63.35 ms    launch B 991.34 ms
+PIPELINED:  launch A 64.62 ms    launch B 997.09 ms     (+0.58%, i.e. nothing)
+```
+
+And the tokens changed again: `3163 65814 15835 15835` against the verified `220 49789 220 11141`.
+
+**So the mechanism is wrong, AND the ordering is load-bearing in a second way I had not appreciated.** Last
+time I learned that a BD's dimension order is the DMA's delivery order (data order matters). This time I
+learned the *interleaving* matters too: issuing `ant` and `wt` as overlapping in-flight BDs changes when the
+shared fifos are filled, and the core consumes a specific sequence. That is exactly the compile-time
+fifo-ratio rule already in my notes - "a core's fifo consumption pattern is a COMPILE-TIME RATIO; a phase
+with the wrong ratio stalls silently" - and I had filed it as a performance note when it is a correctness
+constraint.
+
+**The consequence is the important part: the serial `dma_start_task(wt); dma_await_task(wt);
+dma_free_task(wt)` is not laziness or an oversight. It is required.** The kernel takes this shape precisely
+to sidestep the on-chip objectfifo multi-shot re-stream blocker (the reason `nq_nt.cc` uses the core-local-A
+mechanism), and a serial shim-DMA-per-tap design necessarily pays full DMA latency per tap. With 53,408 taps
+at ~18.6 us that is the 991 ms, and it is a **structural floor of this architecture**, not a bug to fix by
+scheduling.
+
+### What this means for fk-3, honestly
+
+The fused path is: correct (token parity, proved), and ~56x slower than the per-op path it replaces, for a
+reason that is now fully explained and **not fixable by the interventions I have tried**. Four mechanisms
+refuted by intervention (host round-trip, attention over-size, weight-tap burst efficiency, tap pipelining)
+plus one refuted by inspection (attention call count). The remaining lever is to reduce the DESCRIPTOR COUNT
+itself - fewer, larger tiles per BD, or fewer phases - which is a redesign of the kernel's data flow, not a
+tweak. The per-op path achieves 1945.5 tok/s @1k through the engine's runlist/ELF mechanism, which is why it
+is 56x faster; my fused kernel does not use that mechanism at all.
+
+The honest summary of this goal's performance half: I did not close the gap, and I now know why it exists.
+The correctness half is done and proved. Both are recorded with the measurements that establish them.
