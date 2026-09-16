@@ -7017,3 +7017,59 @@ removed - potentially a large fraction of the 991 ms, with the weight taps (whic
 **Not yet an intervention.** This is reading the generator plus arithmetic on measured quantities. The test is
 to hoist the A tap, rebuild, re-time launch B against 991.34 ms, and confirm token parity (`220 49789 220
 11141`) - the parity check is what caught both previous defects and is mandatory here too.
+
+## CORRECTION: my "redundancy finding" is a DOCUMENTED trade-off, the hoist is IMPOSSIBLE - but there is a valid 64x fix
+
+I proposed hoisting the A-tap out of the `nt` loop. Reading `nq_nt.cc` refutes the premise - the source says
+it plainly:
+
+```
+// (The core-local A_norm buffer and nq_store/nq_gemm used to live here. The
+//  re-read design never calls them - the shim re-delivers A per N-tile - so
+//  they were removed: they cost N_K*DIM_M*DIM_K*2 bytes of .bss in every GEMM
+//  core, and the core data region is only ~20 KB, which is what capped M.)
+```
+
+**The re-sending of A per `nt` is the deliberate "re-read design".** The alternative - holding A in core-local
+memory - was implemented, measured, and removed because it consumed the core data region and capped M. The
+arithmetic confirms why hoisting is impossible now:
+
+```
+M=16 : core-local whole A_norm = n_k*M*k*2 =  32,768 B =  32 KB   (core data region ~20 KB)
+M=128: core-local whole A_norm = n_k*M*k*2 = 262,144 B = 256 KB   (12x the core)
+```
+
+So at M=128 the kernel *must* receive A per N-tile. **My proposed intervention was invalid, and calling the
+re-transfers "99.2% waste" was wrong - they are the cost of not capping M.** That is the fifth time this
+session that a plausible "waste" turned out to be a documented decision, and the third time reading the source
+rather than reasoning from a pattern is what caught it.
+
+**What the same read does give, and it is a real 64x.** A's memory IS contiguous across `kt` - the tap uses
+`offset=kt*M*k` with `strides=[1,1,k,1]`, so consecutive kt tiles are `M*k` elements apart. Therefore ONE BD
+can deliver all n_k tiles for a given `nt`:
+
+```
+current : sizes=[1, 1, M, k]        strides=[1, 1, k, 1]        x n_n*n_k = 8192 BDs
+proposed: sizes=[n_k, M, k]         strides=[M*k, k, 1]        x n_n     =  128 BDs   (64x fewer)
+```
+
+**And the same aggregation applies to the W tap.** W's offset is `kt*k*NQKV + nt*NT`, so for a fixed `nt`
+consecutive kt are `k*NQKV` elements apart:
+
+```
+current : sizes=[k//8, NT//8, 8, 8] strides=[8*NQKV, 8, NQKV, 1]  x n_n*n_k = 8192 BDs
+proposed: sizes=[n_k, k, NT]        strides=[k*NQKV, NQKV, 1]     x n_n     =  128 BDs   (64x fewer)
+```
+
+**Crucially both are ORDER-PRESERVING**: the sequence stays nt-major with kt running within each nt, so the
+fifo sees the same elements in the same order - only the number of descriptors carrying them falls. That is
+the property both of my failed edits lacked.
+
+**Effect on phase 3's descriptor count: ~16,384 -> ~256.** If the ~18.6 us/descriptor cost holds, this is the
+lever that matters, and it is a generator-side change (the BDs), needing no repack and no kernel change - so
+unlike the repack plan it does not touch data layout at all.
+
+**Prediction, to be tested and falsified if wrong**: A- and W-taps per GEMM phase fall from ~8,192 to ~128
+each, descriptor count drops by ~64x, and launch B falls correspondingly from 991.34 ms. Token parity
+(`220 49789 220 11141`) remains mandatory - order-preserving by construction, but that is exactly the
+assumption that has been wrong twice.
