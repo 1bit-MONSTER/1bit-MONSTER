@@ -1763,3 +1763,28 @@ M-independent and unchanged. That points at a per-shim program-memory accounting
 issue specific to those columns rather than a real capacity wall — the next step is
 to identify the failing TILE (the error names none) and bisect the attention tap
 count, since a shim that carries 7344 tasks elsewhere plainly has room for 32.
+
+### Fixed: the layer's M was leaking into attn1's COMPILE — but it is not what breaks M=32
+
+`build_fk3_layer.sh` passed `-DDIM_M=$M -DDIM_N=$N` to `attn1.cc`, i.e. the
+LAYER's M, even though the kernel's real dims are the attention TILES. That is why
+the attention cores' ELFs grew with M (21368 -> 21904 B) and why they sit at the
+edge of the program memory. Now compiled with `-DDIM_M=$MA -DDIM_N=$NC`, so
+`attn1.o` is **byte-identical for any M** (md5 aea65eac... at both M=16 and M=32) —
+correct on its own terms, and it removes a real M-dependency from the kernel.
+
+M=32 nevertheless still fails, so the trigger is NOT attn1's compile:
+
+```
+M=32, -DDIM_*=M : attn1.o 14368 B -> core ELF 21904 B -> Overflow of program memory
+M=32, -DDIM_*=tile: attn1.o 14268 B (== M=16's) -> core ELF 21904 B -> still fails
+```
+The attention core's ELF is 21904 B at M=32 and 21368 B at M=16 **even with an
+identical object file**, so the difference is in the link/BD accounting rather than
+in the kernel's code — while a core elsewhere in the array carries 7344 DMA tasks
+without complaint. Every core's ELF grows slightly with M (+64 B for the norm and
+GEMM cores, the statics that are legitimately sized by M), so the attention cores
+were already the tallest pole and any M-driven growth tips them over. Next: either
+identify the failing tile directly (the error names none) or take a few hundred
+bytes out of attn1's program — note the earlier `g_at` removal, which saves DATA,
+made the program LARGER and failed.

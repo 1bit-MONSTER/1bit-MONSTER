@@ -50,7 +50,7 @@ build_cc() { local obj="$1" src="$2"; shift 2
 build_cc rms_split.o rms_norm_split.cc -DM_TILE=$M -DK_TILE=$K -DH=$H
 build_cc nq_nt.o      nq_nt.cc        -DDIM_M=$M -DDIM_K=$K -DDIM_N=$NT -DN_K=1 -Dbf16_f32_ONLY
 build_cc silu_split.o silu_split.cc   -DM_TILE=$M -DIM_TILE=$NT
-build_cc attn1.o      attn1.cc        -DM_TILE=${MA:-16} -DHD=$HD -DN_KEYS=${NC:-16} -DDIM_M=$M -DDIM_K=$HD -DDIM_N=$N -Dbf16_bf16_ONLY -DK_ROW_MAJOR
+build_cc attn1.o      attn1.cc        -DM_TILE=${MA:-16} -DHD=$HD -DN_KEYS=${NC:-16} -DDIM_M=${MA:-16} -DDIM_K=$HD -DDIM_N=${NC:-16} -Dbf16_bf16_ONLY -DK_ROW_MAJOR
 
 echo "== aiecc"
 if ! "$AIECC" --peano="$P" --aietools="$AIETOOLS" \
