@@ -96,6 +96,10 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     uint8_t* r = static_cast<uint8_t*>(bo_router_->map());
     memset(r, 0, 0x3000 + 2048ull * 256ull * 2);
     npu_pack_moe_router_bo(r, mw_, 0);
+    if (getenv("MOE_ZERO_ROUTER")) {
+        memset(r + 0x3000, 0, 2048ull * 256ull * 2);   // zero the router, keep iln/paln/sg
+        fprintf(stderr, "MoERuntimeLayer: ROUTER ZEROED (input-independence probe)\n");
+    }
     bo_router_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     // ---- norms BO (arg-3) = the 5 MB linear-attn BO ----
@@ -103,6 +107,10 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     uint8_t* n = static_cast<uint8_t*>(bo_norms_->map());
     memset(n, 0, 5242880);
     npu_pack_moe_linear5_bo(n, mw_, 0);
+    if (getenv("MOE_ZERO_NORMS_HEAD")) {
+        memset(n, 0, 66048);   // conv1d + norm + a + dt (the SSM head)
+        fprintf(stderr, "MoERuntimeLayer: NORMS HEAD ZEROED (SSM-param probe)\n");
+    }
     bo_norms_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     // ---- kv/state BO (arg-4) ----
@@ -186,6 +194,11 @@ bool MoERuntimeLayerEngine::embed(int token) {
 
 bool MoERuntimeLayerEngine::forward(int ctx_len) {
     if (!ensure_layer_kernel(ctx_len)) return false;
+    if (getenv("MOE_ZERO_ACT")) {
+        memset(bo_act_->map(), 0, 4096);
+        bo_act_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        fprintf(stderr, "MoERuntimeLayer: ACT ZEROED (input-independence probe)\n");
+    }
     // single-launch: layer + lm_head batched into ONE xrt::runlist submit.
     std::vector<xrt::run> runs;
     xrt::runlist rl(*hwctx_);

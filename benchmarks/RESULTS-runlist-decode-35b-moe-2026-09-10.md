@@ -5780,3 +5780,34 @@ derived from the vendor's actual path; the vendor packs ssm_out as 8704-byte row
 interleave first. ssm_out is the layer's last GEMM so it is unlikely to be the NaN source; the router
 transpose + raw alpha/beta/conv1d remain the substantive fix. Leave ssm_out as-is until a device test
 or a final-BO dump settles the 8704-row interleave + 4736 trim.
+
+### Addendum 158 — moe_smoke on-device: NaN persists after router/ssm_out repack; NaN is INPUT-INDEPENDENT (structural)
+
+Rebuilt moe_smoke against the modified model.c (router e-major transpose + ssm_out H=4) with a
+-fpermissive C++ build and a fixed npu_pack_lmhead_bo extern "C" linkage, then ran it on-device
+(concurrent hw context; the NPU tolerates the busy 35b/0.6b peers). Result: the post-act is STILL
+all-NaN (2048/2048), pre-act clean (0/2048), logits all-zero (the sanitized NaN). The router
+transpose + ssm_out H=4 did NOT change the NaN.
+
+Then three input-independence probes (new env-gated zeroing in runtime_layer_moe.cpp):
+  1. MOE_ZERO_ACT=1     (zero the input hidden state)      -> act still 2048/2048 NaN
+  2. MOE_ZERO_ROUTER=1  (zero the router, keep iln/paln/sg)-> act still 2048/2048 NaN
+  3. MOE_ZERO_NORMS_HEAD=1 (zero conv1d+norm+a+dt @0)      -> act still 2048/2048 NaN
+A correct layer with a ZERO input must produce a ZERO/finite output (RMSNorm(0)=0, conv1d(0)=0,
+SSM(0)=0, attention(0)=0, FFN(0)=0). All-NaN under a zero act means the ELF's output is NOT a
+function of the BO contents — the vendor 35B whole-layer ELF is STRUCTURALLY broken (reads an
+uninitialised buffer/region the harness does not fill, or a kernel-internal NaN source), exactly
+the prior addenda 70/72 "input-independent NaN" conclusion, now confirmed with the corrected
+weight packing in place.
+
+CORRECTION to addendum 157: the 8704-byte (0x2200) row-pair memcpy loop at 0x7a4d4/0x7a508 is the
+LM_HEAD pack, NOT ssm_out. The three SafeTensors::load_weights calls in Impl::load_weights load
+"model.embed_tokens" (@0x7a0cc), "model.norm.weight" (@0x7a296), and "lm_head.weight" (@0x7a33d ->
+.rodata 0x189c04) — ssm_out_proj's name string (0x18b280) is referenced only from
+qwen3_6_moe_desc::build (@0x8bc5d), so ssm_out is packed by load_linear_weights via a desc, not by
+the Impl::load_weights memcpy loop. ssm_out was re-searched in pool/b1/b2 (raw 4736/8704 slices and
+H=4/auto interleaves) and is still ABSENT — it lands in a buffer not covered by the b1/b2/pool dump.
+
+DECISION: the reuse route (vendor whole-layer ELF) is closed — the NaN is structural and independent
+of every harness-packed BO. Pivot to the REBUILD route: assemble a whole-layer single-launch MoE ELF
+from the engine's own working MoE kernels (I8Ctx + v27/v28) with the Peano/xchesscc toolchain on-box.
