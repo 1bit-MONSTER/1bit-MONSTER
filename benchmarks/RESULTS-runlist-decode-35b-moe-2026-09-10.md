@@ -1195,3 +1195,42 @@ legacy invocation of the identical xclbin. Same kernel, same weights, two invoca
  - if the runlist is much faster (tens of GB/s), the lever is the invocation path and the
    objective's mechanism is vindicated for a reason quite different from the one first assumed.
 Either branch is decisive and neither requires the AIE fusion project.
+
+### Addendum 35 — HYPOTHESIS for the 44x (labelled as hypothesis, not yet measured): the array is STARVED BETWEEN KERNELS
+
+Reading the dense lane's runlist construction (npu-infer/src/runtime_layer.cpp:431-460) shows the
+structural difference from this lane's engine, and it is not the BO, the flags, the group ids, or
+the submit overhead -- all of which I have now ruled out (addendum 34):
+
+  dense lane:   build_runlist() creates runs.reserve(num_layers + 1) and does
+                `s.rl->add(run)` for EVERY layer, each with its own weight BO, then submits the
+                whole thing ONCE per token  ->  "29 runs batched -> 1 submit".
+  this lane:    the serial MoE decode loop does submit -> r.wait() -> host work -> submit, once
+                per GEMM, ~4 times per layer, 40 layers.
+
+So the dense path presents 29 weight-streaming runs to the array as one continuous sequence,
+while this path presents one small run, waits for it to finish, does host work with the array
+IDLE, then presents the next. The measured per-GEMM rate of ~2 GB/s (addendum 32) is therefore
+the rate of ONE isolated kernel with nothing behind it, and my wait times (8-10 ms per GEMM)
+are consistent with a kernel that cannot overlap its weight DMA with anything.
+
+HYPOTHESIS: the ~44x gap is primarily ARRAY STARVATION / absent cross-kernel DMA overlap, not a
+raw bandwidth limit and not per-submit overhead. With one submit covering many runs, successive
+runs' weight streams can pipeline, which is exactly the several-fold-to-tens-fold effect needed
+to get from ~2 GB/s to tens of GB/s.
+
+WHY THIS MATTERS: it VINDICATES the objective's stated mechanism ("one xrt::runlist
+submit/token") -- but for a reason different from the one addendum 27 assumed. Not "submit
+overhead is collapsed" (I measured submit+sync at 0.05 ms, i.e. negligible) but "the array stops
+being idle between kernels". The lever is real; the explanation changes.
+
+THIS IS A HYPOTHESIS AND IS LABELLED ONE. Per addendum 28 it is worth nothing until measured.
+The two-branch experiment of addendum 34 decides it, and addendum 35 sharpens the prediction:
+  - if the SAME kernel through a multi-run runlist is much faster per unit of weight streamed
+    than the same kernel submitted-and-waited in isolation, starvation is confirmed and the
+    lever is batching runs (buildable in this engine WITHOUT the AIE fusion project);
+  - if it is the same ~2 GB/s, starvation is refuted and the ceiling is the kernel's own
+    weight-flow design.
+Cheapest decisive form: instrument the engine to put the 40 layers' GEMM runs into ONE runlist
+and compare weight-streamed-per-second against the current serial loop, keeping tokens
+bit-identical as the correctness gate.
