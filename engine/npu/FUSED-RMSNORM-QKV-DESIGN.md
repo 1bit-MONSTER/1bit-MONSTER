@@ -6519,3 +6519,46 @@ and the per-op bar to beat is high (1945.5, not 655 or 1494).
 because the objective - which I must not edit - is aimed at a gap that does not exist, and the decision
 about what to do next (fix launch B to try to beat 1945.5, abandon the fused path as a net loss, or retire
 the objective) is the user's, not mine.
+
+## Two corrections, and the B-streaming arithmetic (from @agent-baaa57's discriminator)
+
+### Correction 1: the @1k window is set by the CAP, not by --ctx-k
+
+@agent-baaa57 read it at source: `NPU_PREFILL_MAX="${NPU_PREFILL_MAX:-1024}"` is line **139**, and line 50
+is `CTX_K=1 DECODE_TOKENS=32`. So `--ctx-k` decides how much story text is *generated*, and the cap decides
+how much of it is *processed*. My note above ("the @1k contract needs an explicit `--ctx-k 1024`") is
+imprecise: what actually mattered is that `--ctx-k 1` generates so little that the cap never binds (1 token
+processed, 3.3 tok/s), while `--ctx-k 1024` generates enough for the cap to truncate at 1024. The window is
+the cap. Worth the precision because "fixing" the cap would quietly change what @1k means.
+
+### Correction 2: I had the tap argument BACKWARDS, and caught it
+
+I first reasoned: "20.97 MB at the documented pathological ~2.4 GB/s takes only 8.5 ms, not 991 ms, so the
+B tap is exonerated." That reasoning assumes the data *does* flow at 2.4 GB/s. It does not:
+
+```
+launch B weight bytes (bf16): W_QKV 8.39 + W_O 2.10 + W_GU 4.19 + W_D 6.29 = 20.97 MB
+read once                     20.97 MB ->    21.2 MB/s effective over 0.99134 s
+re-read per M-tile (x8)      167.80 MB ->   169.2 MB/s
+re-read per M-tile x head    2684.4 MB ->  2707.8 MB/s
+```
+
+At 21-169 MB/s the kernel is running **~113x below even the pathological rate**. 2.4 GB/s would be a 113x
+*improvement*, not a slowdown. So this arithmetic does not exonerate the B tap - it makes **B-streaming
+starvation the leading candidate**, and it is the same failure class already documented in this repo
+(`npu_engine_i8ctx_inc.h:778`: "the row-major 4D tap read 8-byte bursts at 4096-byte strides, ~2.4 GB/s
+effective, ~5 ms of the 5.1 ms fused wait"), with a fix already in-tree twice (`pack_tile_chunk` /
+`packB_into_fused`, and @agent-c1b76d's `-L/--linear-b` on `n1_core_i8_m1.py`, built but not yet measured).
+
+**This is arithmetic, not measurement.** It uses two measured quantities (the weight bytes from the 112
+least-squares solves, and the 991.34 ms timing) and one documented in-repo figure; it does not observe the
+tap. @agent-baaa57's caution is the right frame - a plausible mechanism plus a suggestive datum is untrusted
+until an intervention says otherwise - and the intervention here is cheap: try the contiguous-tile B path.
+
+### The experiment to run when this resumes
+
+1. Instrument or infer launch B's actual B-tap pattern (is it row-major 4D like `npu_engine_i8ctx_inc.h`?);
+2. if so, build the contiguous/linear-B variant (`packB_into_fused` semantics, or `-L/--linear-b`) and
+   re-time launch B against the 991.34 ms baseline;
+3. accept or refute the hypothesis on that delta alone, not on the arithmetic above.
+   Bar to beat remains 1945.5 tok/s @1k (the per-op native path), not 655 or 1494.
