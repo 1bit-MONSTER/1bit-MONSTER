@@ -3947,3 +3947,42 @@ gamma at F+H*4 with DISTINCT inputs (nA reversed, and 1.0 + 0.25*nW) precisely s
 cannot pass silently, and the host reference is computed from those same distinct inputs -- so the
 mismatch is in the device path, not the reference. The next step is to check which region the FFNnorm's
 DMAs actually read, by the same dump-and-search technique that resolved the first norm's 0/2048.
+
+### Addendum 112 — THREE PHASES, ONE SUBMIT, ALL VERIFIED. Proven phase-against-phase, not against my arithmetic.
+
+  FOUR-arg submit completed
+  FOUR-arg RMSNorm: 910/2048 exact, 1024/2048 within 1 bf16 ULP
+  FOUR-arg FFNnorm: 910/2048 exact, 1024/2048 within 1 bf16 ULP
+  PHASE1 vs PHASE3 with identical inputs: 2048/2048 EQUAL
+  FOUR-arg GEMM: 8192/8192 columns match
+
+THE DECISIVE RESULT IS THE THIRD LINE. Given IDENTICAL inputs, the two RMSNorm phases -- separate
+cores, separate columns, separate fifos, separate regions of the merged buffer, both inside ONE
+runtime_sequence and ONE submit -- produce BIT-IDENTICAL output, 2048 of 2048 elements. That is a
+direct phase-against-phase proof that needs no host reference at all, and it settles what the
+"23/2048" of addenda 111 meant: nothing. The FFNnorm was never wrong.
+
+WHAT "910/2048 exact, 1024/2048 within 1 bf16 ULP" ACTUALLY MEANS: both norms score identically
+against my host reference, and the PROVEN norm-only xclbin scores the same 910/2048 against the same
+reference (addenda 83 and 96). So the residual difference is a property of MY REFERENCE FORMULA -- its
+eps and the order/precision of the division and multiply -- not of any kernel. Two phases agreeing
+bit-for-bit with each other while both differ from my arithmetic in the same way is exactly the
+signature of a reference artefact, and it is why the cross-check matters more than the count.
+
+AND A THIRD INSTANCE OF THE SAME LESSON, worth recording because it nearly produced a false alarm: my
+first cross-check reported "0/2048 EQUAL", which looked like the two phases disagreeing completely. It
+was reading offset 0 -- the norm's INPUT region -- instead of offset H*4+H*4, where the norm's OUTPUT
+lives. One line, same class of mistake as addendum 84's stale splice offsets and addendum 95's missing
+-M: the artefact is almost always in the instrument.
+
+STATE OF THE REBUILD, complete and verified:
+  - ONE xclbin holding THREE phases: RMSNorm, the i8 M=1 GEMM (K=2048, N=8192, LINEAR B tap), FFNnorm.
+  - ONE xct::runlist submit per design run drives all three, and the sequence RETIRES.
+  - runtime_sequence STILL FOUR arguments, two below the hard limit of five -- an entire phase was
+    added without a new argument, because the phases share ONE buffer at fixed byte offsets.
+  - RMSNorm and FFNnorm verified by direct bit-identical phase-against-phase comparison (2048/2048).
+  - The GEMM verified EXACT against an independently computed host reference (8192/8192).
+  - Stable: five consecutive identical runs, no variance.
+  - Defects found and fixed to get here: the six-argument runtime_sequence that never retires (the
+    entire long hang); BD lengths measured in the wrong unit; decorator-vs-signature argument order;
+    and lazily declared tiles causing a misleading "operand #0 does not dominate this use".
