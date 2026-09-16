@@ -951,3 +951,32 @@ fixed order — which costs the 4 S2MM we were trying to save, i.e. back to the
 channel wall, unless the attention drops to fewer columns per head.
 
 The generator is restored to the verified per-head-O form after the experiment.
+
+### Route 1b measured: serialising the cores does NOT fix the merge order
+
+A token chain was added so each head in a column may write its O only after the
+previous head has (token fifos h_i -> h_{i+1}, acquired before the O write and
+released after). It builds (577792 B) and runs — and the result is BYTE-IDENTICAL
+to the un-serialised merge build (same 0/2048, same per-head max_delta
+48130..48194). So the ordering is NOT determined by the order in which the cores
+release their O buffers: it is fixed somewhere in the mem -> shim DMA path
+(the token only guarantees the core's release order, not that the mem has
+forwarded that tile before the next arrives).
+
+Consequence: an arrival-order merge cannot be ordered from the core side. Route 1
+therefore reduces to keeping per-head O channels (4 S2MM, over the shim's 2) or
+dropping to fewer heads per column. Combined with the measured limits:
+
+| attention shape | columns used | shim channels/col | columns free for linear stages |
+|---|---|---|---|
+| P=2, 2 cores/head | 8 | 2 MM2S + 2 S2MM (full) | 0 |
+| P=4 merge | 4 | 2 MM2S + 1 S2MM | 4, but O order is wrong |
+| P=2, 8 heads/launch | 4 | 2 MM2S + 2 S2MM (full) | 4, at the cost of 2 attention launches/layer |
+
+The last row is the only combination that is both correct with what is measured
+so far and leaves columns for the linear stages: it trades "~1 launch/layer" for
+"2 attention launches + the linear stages", i.e. ~4 launches/layer instead of the
+9 the goal set out to remove. That is a real, honest fallback if the merge
+ordering cannot be pinned down from the shim side (e.g. by posting the four O
+DMA tasks with explicit per-head source offsets rather than relying on arrival
+order).
