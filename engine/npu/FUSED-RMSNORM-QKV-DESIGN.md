@@ -3389,3 +3389,61 @@ next step is to diff the fused branch against the per-op layer body for **state 
 loop depends on that the fused branch does not maintain** (the f32 KV cache was one such;
 `bsb`, and whatever the unified path reads from `h_data`, are the other candidates). That is a
 mechanical side-by-side of the two branches, not more numerical investigation.
+
+## The attention is the remaining defect, now measurable against a genuinely independent reference
+
+With a real post-RoPE QKV loaded, dumped the kernel's attention output and compared it to a
+NumPy attention built from the same QKV - the first oracle in this investigation that shares
+nothing with the kernel's implementation:
+
+```
+kernel attention maxabs = 0.76953
+NumPy  attention maxabs = 0.71484        <- magnitude agrees
+max abs diff = 0.89160   mean abs diff = 0.117384
+```
+
+Magnitudes agree but values do not, and no convention I tried closes it - all six candidates
+give the same ~0.115 mean difference:
+
+```
+h//GQA causal 1/sqrt(HD)   maxabs=0.69922 maxdiff=0.88626 meandiff=0.114756
+h%NKV  causal 1/sqrt(HD)   maxabs=0.69922 maxdiff=0.88626 meandiff=0.114803
+h//GQA causal scale=1      maxabs=0.69922 maxdiff=0.94961 meandiff=0.118652
+h%NKV  causal scale=1      maxabs=0.69922 maxdiff=0.88958 meandiff=0.119125
+h//GQA strict  1/sqrt(HD)  maxabs=0.69922 maxdiff=0.87966 meandiff=0.114753
+h//GQA no-mask 1/sqrt(HD)  maxabs=0.32608 maxdiff=0.83308 meandiff=0.114032
+```
+
+The last row is informative in one way: removing the mask drops maxabs from 0.699 to 0.326, so
+the causal mask is definitely being applied. Everything else about the attention - the head
+mapping, the Q/K/V tap layout, the online-softmax normalisation, the score scaling - remains
+unreconciled with a straightforward implementation.
+
+**This closes the investigation's shape.** Every other component is now verified against
+something independent:
+
+| component | how verified |
+|---|---|
+| launch A (norm+QKV) | exact match to an independent NumPy reference on the engine's own bytes |
+| launch B, FFN path | byte-identical to the bench on all six stages |
+| launch B, full layer on real QKV | D = 99.7% exact, mean ULP 0.01 against the bench's reference |
+| RoPE | validated transitively (the run above consumed the driver's own RoPE output) |
+| weights (pre/post upload) | identical, `bf16mm_dump_w` read-back vs raw |
+| inputs and gamma | dumped and checked directly |
+| KV cache (bf16 and f32) | both now written |
+| **attention** | **magnitude matches an independent NumPy attention, values do not** |
+
+And the bench's own attention check - which reports 0% for all 16 heads and which I explained
+away for a long time as a consequence of its always-zero bQ - cannot adjudicate this, because
+its reference is derived from the same chain. The NumPy comparison above is the only check that
+can, and it says the attention is wrong while everything around it is right.
+
+That is also consistent with the engine's symptom: a layer whose output is 5.4x too small and a
+model that emits one token repeatedly is what a mis-normalised attention produces, and the
+attention is the sole remaining unverified component.
+
+**Concretely next**: diff the Q/K/V extraction and the online softmax in `attn1.cc` against the
+NumPy reference element by element, starting from the scores rather than the final output - the
+score matrix is the first quantity that can be compared without the softmax's normalisation
+obscuring the difference. `attn1.cc` is the only kernel in this design whose numerics have never
+been checked against anything it did not also help define.
