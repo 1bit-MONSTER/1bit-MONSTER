@@ -1866,3 +1866,47 @@ points at this file, and the JSON re-parses cleanly after the edit.
 **Worth fixing upstream:** a `blocked` goal should still expose `update_goal`, otherwise an agent that
 has correctly stopped on a blocker cannot record anything further about it — including the fact that
 the blocker was resolved by repair, as happened here.
+
+## Extending the EOS fix to the dense loop: correct change, and it does NOT cure the degeneration
+
+The dense decode loop also had no end-of-sequence handling, so the same fix was applied there
+(`dense_eos()` for 151643/151645, `stop_eos` terminating `while(step<ng && !stop_eos)`, checked for
+both the boot token and each decoded token; `NPU_STOP_EOS=0` restores old behaviour). Built clean.
+
+**Hypothesis being tested:** that the dense arm's degeneration was *caused* by continuing past EOS —
+a model forced to keep talking after it has finished would plausibly loop (`TRTRTR…`) or spiral into
+meta-commentary ("maybe the user made a typo"). If so, stopping at EOS should restore those prompts.
+
+**Result: the hypothesis is refuted.**
+
+```
+dense @256, WITH the EOS stop : 14/20      (was 14/20 before)
+runs that terminated early (<200 tokens) : 7 of 20      <- EOS fires correctly
+misses that terminated early             : 0 of 6       <- all six ran the full 257 tokens
+```
+
+The fix works mechanically — seven prompts now stop as soon as the model emits
+`<|im_end|>`/`<|endoftext|>` (e.g. `gold/au` in 62 tokens, `Germany/berlin` in 147) — but **none of
+the six misses ever emits EOS at all**. They run the entire budget without concluding, so there is no
+EOS for the stop to act on. The degeneration is therefore *not* run-on-past-EOS: the model enters a
+degenerate state and never reaches a terminator, rather than finishing and being pushed onward.
+
+That is the tenth corrected claim in this goal, and it was cheap to test and cheap to disprove, which
+is the pattern that keeps working here. It also leaves the dense arm's defect correctly described:
+its misses are degeneration/confusion (repetition, meta-commentary, refusal, false assertion) that
+produce no terminator, and the six prompts it fails are arithmetic, animal-naming and calendar
+questions where it second-guesses itself indefinitely.
+
+### Where the EOS work leaves things
+
+| item | state |
+|---|---|
+| runlist decode loop | EOS stop added; **first exact oracle match**; 20/20 and 97 tok/s preserved |
+| dense decode loop | EOS stop added; 14/20 unchanged; degeneration shown **not** to be run-on-past-EOS |
+| dense arm's actual defect | mid-generation degeneration with no terminator reached — unrelated to EOS |
+| bf16 prefill | revived (19/20, 4/4 arithmetic, 48 tok/s) |
+| host bar | Strix Halo: on-box FLM / Test System 2 (~0.90× Kraken decode) |
+
+The dense arm's remaining defect is now pinned down more precisely than before — it is not the
+decode loop's terminator handling, which is now correct in both loops, but the model's own state
+trajectory on ~30% of prompts.

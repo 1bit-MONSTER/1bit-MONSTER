@@ -5153,6 +5153,15 @@ struct Bf16Ctx {
     // (fix for #1699: the old code re-ran a phantom position-N forward with
     // the previous hidden as input, which predicts the SECOND next token as
     // the first and emits garbage while prefill logits were already correct.)
+    // EOS stop, matching the runlist loop (npu_runlist_bridge.cpp). A model that emits
+    // <|im_end|> (151645) or <|endoftext|> (151643) has finished answering; continuing
+    // past that point turns a correct answer into run-on degeneration, and this loop had
+    // no end-of-sequence handling at all. NPU_STOP_EOS=0 restores old behaviour.
+    auto dense_eos = [](int id) {
+        if (getenv("NPU_STOP_EOS") && atoi(getenv("NPU_STOP_EOS")) == 0) return false;
+        return id == 151643 || id == 151645;
+    };
+    bool stop_eos = false;
     {
         auto ts_boot=std::chrono::steady_clock::now();
         memcpy(sb_data.data(),h_data.data(),H*4);rn_c(sb_data.data(),fin_v.data(),H);
@@ -5193,6 +5202,7 @@ struct Bf16Ctx {
             for (int b = 1; b < BS; b++) kv_caches[l][b] = kv_caches[l][0];
         for (int b = 1; b < BS; b++) top_ids[b] = top_ids[0];
         printf("  [0] boot=%d (%.0fms)\n",top_ids[0],t_boot);
+        if (dense_eos(top_ids[0])) stop_eos = true;   // answer already complete
         if (bf16_only && !i8_ready) {
             fprintf(stderr, "bf16-only: int8 ctxs unavailable — prefill+boot done, skipping int8 decode\n");
             return 0;
@@ -5200,7 +5210,7 @@ struct Bf16Ctx {
     }
 
     int step=1;
-    while(step<ng){
+    while(step<ng && !stop_eos){
         auto ts_batch=std::chrono::steady_clock::now();
         // #1699: sequential decode — one token per step. The old
         // batch_size=min(BS,ng-step) decoded every candidate at the SAME
@@ -5488,6 +5498,7 @@ struct Bf16Ctx {
         printf("  [%d] batch=%d toks:", step, batch_size);
         for (int tb = 0; tb < batch_size; tb++) printf(" %d", top_ids[tb]);
         printf("  %.0fms (%.0f ms/tok)\n", batch_ms, batch_ms/batch_size);
+        for (int tb = 0; tb < batch_size; tb++) if (dense_eos(top_ids[tb])) stop_eos = true;
         step+=batch_size;
     }
 
