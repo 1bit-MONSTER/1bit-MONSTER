@@ -798,3 +798,42 @@ So the attention stage is at the real dense-Qwen3-0.6B shape. Remaining for the
 the pieces all exist at real dims now (the four linear stages above, and this
 attention), and the earlier per-tile numbers say the composition is a dataflow
 exercise, not a new kernel problem.
+
+## Composition: the core-budget wall and the 1-core/head enabler (WIP)
+
+The contract's "~1 launch/layer" needs all six stages in one xclbin. The blocker
+is compute-tile budget, not correctness: the verified attention is 2 cores/head,
+so **NH=16 already occupies all 32 compute tiles** (4 rows x 8 columns) and leaves
+none for RMSNorm+QKV / O-proj / GU / D.
+
+Sharing cores between the attention and the linear stages does NOT work either:
+a fused-linear core carries the core-local A (up to 32 KB for QKV/GU), and the
+attention cores carry ~54 KB of A_norm/PV/O state; together they exceed the 64 KB
+DM. So the linear stages need their OWN tiles, which means the attention must fit
+in fewer.
+
+`attn1.cc` + `n1_mha_1core_nh.py` + `build_mha_1core_nh.sh` are the enabler: a
+whole head (QK^T -> online softmax -> PV -> combine -> normalize) in ONE core, so
+NH=16 costs 16 tiles and 16 remain for the linear stages (5 needed).
+
+**Status: the kernel compiles, the design generates, but the core does not link.**
+The two GEMMs have different shapes (QK^T is M x HD x N; PV is M x N x HD) and one
+mm.cc compilation carries ONE DIM_* set, so the PV mmul is a second object
+(mm_pv.o, mm.cc with -Dbf16_f32_ONLY and its own dims; the bf16->bf16 and
+bf16->f32 symbol sets are disjoint, so they *would* coexist). The failure is that
+aiecc links objects for CALLED functions only — the fixed-size build declares
+`matmul_bf16_f32` with link_with="mm_pv.o" but never calls it from the MLIR, so
+mm_pv.o is dropped and the link fails with "undefined symbol: matmul_bf16_f32".
+
+Three ways out, cheapest first:
+1. Inline the PV mmul into `attn1.cc` with `aie::mmul<4,8,8,bfloat16,bfloat16,float>`
+   (its own dims), keeping only the QK^T from the included mm.cc. Self-contained,
+   no second object, no link trickery.
+2. Keep two objects but make the PV reachable: expose it as a called external
+   kernel (`attn1_pv`) — which then needs the shared softmax state to live in one
+   object, i.e. pass exp/alpha through a buffer.
+3. Sidestep the shape clash entirely by choosing N == HD (both mmuls then share
+   DIM_K=DIM_N), which does not fit the DM at N=128 (QK 36 KB + V 32 KB + ... =
+   88 KB) and so is not viable for the 1-core case.
+
+Option 1 is the recommended next step.
