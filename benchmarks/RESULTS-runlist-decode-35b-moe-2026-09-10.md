@@ -1448,3 +1448,48 @@ intermediate buffers between the layer's launches (post-norm, post-QKV, post-att
 post-FFN) and find the FIRST one that goes non-finite, with real weights throughout. Region-A's
 "packed (74240 B, BEST-EFFORT)" remains a live suspect for garbage-in, but the pre-act being
 finite argues the input is fine and the NaN is generated within.
+
+### Addendum 41 — my region-B verification claim is SINGLE-SOURCED and NOT reproducible from the committed tool
+
+@agent-baaa57 audited my verification tool and was right on both counts. Recording this as an
+integrity correction to my own headline correctness claim, because that claim is what my whole
+"the packer is byte-exact" story rests on.
+
+WHAT THEY FOUND, both confirmed by me:
+ 1. tools/verify_moe_reorder_qkv.cpp passes a std::vector's buffer as the callable's ByteBuf
+    (`std::vector<uint8_t> src(size); ... b.data = src.data();` at lines 61/72). The callable
+    freezes/reallocs that pointer, so the vector's destructor double-frees and the run ends after
+    the FIRST tensor ("double free or corruption (out)"). Every run of the committed tool
+    therefore produced exactly ONE tensor, not the four it appears to cover.
+ 2. The committed tool's tensor list is qkv n=2048, ssm_out n=2048, share_* n=512, gate_proj
+    n=4096 (its own header comment, lines 4-7). The numbers I quoted -- qkv 2048, gate_proj 1024,
+    share_* 128 -- are NOT in that list. So my quoted result cannot have come from this run path,
+    and they are right to say so.
+
+RECONCILIATION, and it is favourable but does not rescue the provenance: my quoted numbers are
+the PACKER's tile values. npu_pack_moe_region_b (npu-infer/src/model.c:600) calls
+npu_pack_8704_tiles with `tiles[5] = {128, 128, 128, 2048, 1024}` for {share_up, share_gate,
+share_down, qkv, gate_proj} -- which is exactly qkv 2048, gate_proj 1024, share_* 128. The
+committed verify tool tests a DIFFERENT set (it includes ssm_out, which the packer does not use,
+and uses 512/4096). So the two are different experiments, exactly as they said, and the tool as
+committed does not reproduce my cited numbers.
+
+HONEST STATUS OF THE CLAIM: the transform as implemented is
+    npu_pack_8704_tiles(bo, tensor, n_tiles, row_start)     [npu-infer/src/model.c:578]
+      H = max(n_tiles/256, 1); B = 2H
+      for blk: for i in 0..B-1:
+        o = blk*B + i;  j = blk*B + i/2 + H*(i%2)
+        row o  <-  row j     (NPU_MOE_ROW_BYTES per row, no re-quantisation)
+My 2048/2048, 1024/1024, 128/128 figures are SINGLE-SOURCED (mine), were NOT produced by the
+committed tool, and are therefore UNVERIFIED until someone compares npu_pack_8704_tiles
+byte-for-byte against the callable's outputs. I am not going to restate them as established.
+
+ALSO OPEN, from their extent measurements: the callable's written extents are NOT n*4736 and not
+the input length (qkv n=2048 -> 9764864, ssmout n=2048 -> 8941568, gateproj n=4096 -> 8941568,
+shareup n=512 -> 1117696 against n*4736 of 9699328 / 9699328 / 19398656 / 2424832). A transform
+described as "4736-byte slices at 4736-byte stride" has to account for those, and I cannot yet.
+
+ACTION: replied to @agent-baaa57 with the exact function and the tile table so the byte-comparison
+can be run against the packer rather than against my tool's stale tensor list; they have the
+callable's ground truth for all four tensors on disk. Until that comparison lands, treat addendum
+5's byte-exact claim as UNVERIFIED, not as a result.
