@@ -2635,3 +2635,45 @@ The driver now carries the isolation switches this used: `NPU_FK3_TIMING` (print
 launch times for layer 0), `NPU_FK3_SKIP_A` (skips launch A's context and weight prep
 entirely and drives launch B bench-style), and `NPU_FK3_DUMP` (writes launch A's C, bQ
 after RoPE, launch B's CD, and the layer-0 W2/WO/WD host arrays).
+
+## The measurements above were taken on a CONTENDED device — re-measure before believing them
+
+While checking whether the "starvation" hypothesis could be tested cheaply, the answer to
+where the starvation comes from turned out to be sitting in `ps`:
+
+```
+PID 541042  ./engine/npu/build/npu_engine_zr1 /home/bcloud/models/zaya1-8b.q4nx ...
+            /dev/accel/accel0 OPEN, holds /tmp/1bit-npu-device.lock
+            started under `timeout 1400`, so long-lived (waited 7 min, still running)
+```
+
+Another lane on this box runs a zaya1-8b engine on the SAME NPU. Every fk-3 measurement
+in this document — the 63.4 ms launch A, the 792 ms launch B, the all-zero CD, and the
+"launch B alone still zeroes" isolation run — was taken on a device that had another
+workload's contexts live at some point in the same window. That matters because the
+failure signature is exactly contention-shaped: compute here serialises at submission
+granularity with no fine preemption, so a dataflow kernel waiting on its own objectfifos
+while another context occupies the array makes no progress, burns wall time, reports no
+error, and leaves its output buffer untouched (zeroed).
+
+Two consequences, both important:
+
+1. The "launch B alone with bench-style inputs still zeroes" result — which I had read as
+   proof that the driver itself is broken — is NOT proof of that. It was run while the
+   array may have been busy. The bench's own success (93.2% attn, 99.6% D) is the
+   trustworthy data point precisely because it was a short, isolated run.
+2. The driver's data being verified correct (launch A's C, bQ post-RoPE, W2, WO, WD's
+   identity block, and every size/group_id/arg-order/insts-count matching the bench) is
+   still true and still valuable — the fix for launch B's own A buffer was a REAL bug
+   that would have produced zeros regardless.
+
+So the next experiment is unchanged but must be run properly: take the device lock, verify
+no other PID has /dev/accel/accel0 open, then re-measure the fused path. If the zeros
+survive an idle device, the stall is genuinely ours and the fifo-ratio / phase reasoning
+applies. If they do not, the fused layer was fine and the whole "silent stall" line of
+investigation was a measurement artifact of a shared NPU.
+
+Practical note for this box: the engine takes /tmp/1bit-npu-device.lock itself, but the
+standalone benches and the xclbin generators do not, so two lanes can overlap silently.
+Check `for p in /proc/[0-9]*; do ls -l $p/fd | grep -q accel0 && echo $p; done` before
+trusting any NPU number, including your own.
