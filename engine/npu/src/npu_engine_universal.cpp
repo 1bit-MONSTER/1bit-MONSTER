@@ -4941,7 +4941,7 @@ struct Bf16Ctx {
                         }
                     }
                 }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, H, fo); fclose(fo); } }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, getenv("NPU_DUMP_L0_FULL") ? (size_t)npt * H : (size_t)H, fo); fclose(fo); } }
                 // FFN: RMSNorm + GU + SiLU×up + D (bsb copy fused into the norm region)
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) {
@@ -4996,7 +4996,7 @@ struct Bf16Ctx {
                         }
                     }
                 }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, H, fd); fclose(fd); } }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, getenv("NPU_DUMP_L0_FULL") ? (size_t)npt * H : (size_t)H, fd); fclose(fd); } }
                 tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
                 // NPU_DUMP_HIDDEN: full [token][H] block for this layer (was H
                 // floats = token 0 only, which cannot see rows the fixed-width

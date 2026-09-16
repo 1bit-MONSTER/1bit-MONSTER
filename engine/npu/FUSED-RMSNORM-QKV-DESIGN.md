@@ -4711,3 +4711,57 @@ bench, attention matching an independent NumPy reference, the `1/sqrt(HD)` scali
 plus five driver/lifetime/UB defects. What remained was never numerics: it was that the fused path fed
 the kernel the pre-upload weight array while the engine's GEMM consumes a reordered one. Twelve
 retractions were spent learning that, most of them by arguing where I should have measured.
+
+## Implementation: the W_eff override works; one of four weights is not enough
+
+Added `NPU_FK3_WQKV_FROM=<file>` to `prepare_layer()` beside `NPU_FK3_RANDOM_WB`, loading a bf16 weight
+over the dequantized array. Confirmed working:
+
+```
+[fk3] WQKV[0] override: loaded 4194304 of 4194304 bf16 from /tmp/weff_qkv.bin
+```
+
+Tokens, same prompt (4 tokens), on an idle device:
+
+```
+baseline (no fk3)                785, 220, 62014, 220
+fused + W_QKV_eff override       81080, 18306, 18306, 18306
+```
+
+**Still wrong - and that is the expected result, not a failure.** I overrode one weight of four. The
+engine's upload reorders **every** weight it is handed, so W_O, W_GU and W_D are permuted as well and
+the layer stays wrong until all four are effective. The informative part is that the override
+mechanism itself is now proven end-to-end: the file loaded, the driver used it, the kernel ran.
+
+**The complete fix, all four weights by the same solve.** Each needs its own (input activation, GEMM
+output) pair from the engine's own dumps, at `npt >= 1024` so the solve is full-rank and unique:
+
+| weight | solve | input | output |
+|---|---|---|---|
+| W_QKV (H x 4096) | `pinv(bA) @ rawqkv` | `bf16_l0_bA_launch.bin` | `bf16_l0_rawqkv.bin` |
+| W_O (2048 x 1024) | `pinv(attnout) @ o` | `bf16_l0_attnout.bin` | `bf16_l0_o.bin` |
+| W_GU (1024 x 6144) | `pinv(h_bf) @ gu` | the add-aware-norm output | the pre-SiLU buffer in `bC` |
+| W_D (4096 x 1024) | `pinv(silu) @ dw` | `bf16_l0_silu.bin` | `bf16_l0_dw.bin` |
+
+W_QKV is done (0.43% residual, `/tmp/weff_qkv.bin`). The other three need two things, both small:
+
+1. **Full dumps.** `NPU_DUMP_L0_FULL` did not cover `o` and `dw` - they wrote `H` floats (row 0 only),
+   which is why the earlier rows were 4096 bytes. **Fixed in this commit**: both now honour
+   `NPU_DUMP_L0_FULL` and write `npt * H`. `gu` has **no dump at all**; the pre-SiLU GU is in `bC`
+   (`bf16g(bC[pi * 2 * IM + i2])` is exactly what the SiLU loop consumes, at ~line 4970), so a dump
+   belongs immediately before that loop.
+2. **Hooks for the other three weights**, mirroring `NPU_FK3_WQKV_FROM`: `NPU_FK3_WO_FROM`,
+   `NPU_FK3_WGU_FROM`, `NPU_FK3_WD_FROM`.
+
+Then: one `npt >= 1024` run with `NPU_DUMP_L0=1 NPU_DUMP_L0_FULL=1`, four `pinv` solves, and
+`flm_parity.sh` both ways to compare tokens - the fk-3 contract.
+
+**Why not the permutation instead.** If the reorder were shared across weights - plausible, since it is
+a property of the upload - deriving it once would beat four solves. But it cannot be recovered from the
+values: only 74 of 4,194,304 entries are unique under bf16 rounding, and every structured form I tried
+(tilings, K-reorders, 256-block interleaves guided by `reorder_cpy`'s disassembly) scores at the
+identity baseline. Four solves need no understanding of the layout and are exact; that is the cheaper
+road.
+
+**State:** the override hook and the two FULL-dump fixes are in this commit. Nothing new is unverified
+here - the solve numbers were measured, and the token comparison above is a real run.

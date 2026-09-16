@@ -301,6 +301,20 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     } else {
         std::vector<uint16_t> w((size_t)s.H * s.NQKV);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.H, (uint32_t)s.NQKV, off(0));
+        // EMPIRICAL OVERRIDE. bf16mm_dequant gives the PRE-UPLOAD array; the engine's GEMM
+        // consumes a REORDERED one (proven: W_eff is a permutation of this array, and
+        // A @ W_raw misses the engine's own QKV buffer by 129% while A @ W_eff hits it at
+        // 0.43%). So feed the effective weight recovered by the calibration solve instead.
+        // See FUSED-RMSNORM-QKV-DESIGN.md.
+        if (const char* wf = getenv("NPU_FK3_WQKV_FROM")) {
+            if (FILE* f = fopen(wf, "rb")) {
+                size_t got = fread(w.data(), 2, w.size(), f);
+                fclose(f);
+                if (l == 0 && getenv("NPU_FK3_DUMP"))
+                    fprintf(stderr, "[fk3] WQKV[0] override: loaded %zu of %zu bf16 from %s\n",
+                            got, w.size(), wf);
+            }
+        }
         if (l == 0 && getenv("NPU_FK3_DUMP")) {
             FILE* f = fopen("/tmp/fk3_w_wqkv.bin", "wb");
             if (f) { fwrite(w.data(), 2, w.size(), f); fclose(f); }
