@@ -983,3 +983,28 @@ correct with what is measured so far and leaves columns for the linear stages: i
 ordering cannot be pinned down from the shim side (e.g. by posting the four O
 DMA tasks with explicit per-head source offsets rather than relying on arrival
 order).
+
+### Multi-pass 1-core attention: correct, but program memory caps C
+
+The 1-core attention's state is core-local (g_sc/g_at/O_state statics, no SC/E/AT
+fifos), so unlike the 2-core pipeline a head boundary does NOT need fifo depth —
+it is just an `attn1_reset()` + another chunk loop. `--passes P` makes each core
+process P heads sequentially, so NH heads fit in NH/P cores: NH=16 with
+PASSES=2 needs only 8 cores (4 columns), leaving 4 columns for the linear stages.
+
+**Verified (NH=4, PERCOL=1, PASSES=2, N=64, C=2 = 2 cores x 2 heads):** all four
+heads return their own correct results under distinct per-head data
+(973/590/1061/930 exact, max_delta ~33000) and head 0's value (973) is identical
+to the single-pass C=2 run — so the per-pass reset and the head->data mapping are
+right.
+
+**But C is capped by program memory.** The same design at C=16 (1024 keys) fails
+at ELF load: `_XAie_LoadProgMemSection():231: Overflow of program memory` (the
+MLIR is small and clean — 1456 lines, 196 dma_bd — so it is the shim's descriptor
+program, i.e. the number of DMA tasks landing on the few shims, not the core).
+So multi-pass buys cores at the cost of chunks-per-shim; the composition needs a
+combination where the shim task count stays under that limit, e.g. more columns
+(fewer passes) or fewer BDs per chunk.
+
+Regression checked: PASSES defaults to 1 and NH=8/P=2/C=16 reproduces the
+verified numbers exactly (1636/16384, head 5/6/7 = 189/182/147).

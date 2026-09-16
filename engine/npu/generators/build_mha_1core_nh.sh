@@ -8,7 +8,7 @@ set -euo pipefail
 
 N="${1:?usage: build_mha_1core_nh.sh <N_chunk> <C_chunks> <NH> [percol] [outdir]}"
 C="${2:?}"
-NH="${3:-16}"; PERCOL="${4:-2}"; OUT="${5:-$HOME/npu-build/mha1_nh${NH}_p${PERCOL}_n${N}_c${C}}"
+NH="${3:-16}"; PERCOL="${4:-2}"; PASSES="${PASSES:-1}"; OUT="${5:-$HOME/npu-build/mha1_nh${NH}_p${PERCOL}_g${PASSES}_n${N}_c${C}}"
 HD=128
 M=16
 
@@ -32,7 +32,7 @@ CFLAGS=(--target=aie2p-none-unknown-elf --std=c++20 -O2 -DNDEBUG -D__AIE_API_AIE
 rm -rf "$OUT"; mkdir -p "$OUT"; cd "$OUT"
 
 echo "== generator: n1_mha_1core_nh.py -M $M -N $N -C $C -HD $HD -NH $NH -P $PERCOL"
-"$PY" "$G/n1_mha_1core_nh.py" -M "$M" -N "$N" -C "$C" -HD "$HD" -NH "$NH" -P "$PERCOL" \
+"$PY" "$G/n1_mha_1core_nh.py" -M "$M" -N "$N" -C "$C" -HD "$HD" -NH "$NH" -P "$PERCOL" --passes "$PASSES" \
       >design.mlir 2>gen.err \
   || { echo "== GENERATOR FAILED"; tail -20 gen.err; exit 1; }
 [ -s design.mlir ] || { echo "== EMPTY design.mlir"; tail -20 gen.err; exit 1; }

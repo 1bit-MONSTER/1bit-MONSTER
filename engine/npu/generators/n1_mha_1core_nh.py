@@ -26,17 +26,21 @@ def main():
     p.add_argument("-HD", type=int, default=128)
     p.add_argument("-NH", type=int, default=16)
     p.add_argument("-P", "--percol", type=int, default=2)
+    p.add_argument("--passes", type=int, default=1,
+                   help="heads each core processes sequentially (head groups)")
     a = p.parse_args()
     with mlir_mod_ctx() as ctx:
-        mha1(a.M, a.N, a.C, a.HD, a.NH, a.percol)
+        mha1(a.M, a.N, a.C, a.HD, a.NH, a.percol, a.passes)
         print(ctx.module)
 
 
-def mha1(M, N, C, HD, NH, PERCOL=2):
+def mha1(M, N, C, HD, NH, PERCOL=2, PASSES=1):
     assert PERCOL in (1, 2, 4)
     assert HD % 8 == 0 and N % 8 == 0 and M % 4 == 0
-    ncol = (NH + PERCOL - 1) // PERCOL
-    assert ncol * PERCOL == NH, "NH must be a multiple of PERCOL"
+    ncore = NH // PASSES                      # one core per head per pass
+    assert ncore * PASSES == NH, "NH must be a multiple of PASSES"
+    ncol = (ncore + PERCOL - 1) // PERCOL
+    assert ncol * PERCOL == ncore, "core count must be a multiple of PERCOL"
     assert ncol <= 8
     M_, N_, C_, HD_ = M, N, C, HD
 
@@ -51,55 +55,58 @@ def mha1(M, N, C, HD, NH, PERCOL=2):
         fin = external_func("attn1_finalize", inputs=[OUT_ty], link_with="attn1.o")
 
         cols = [{"shim": tile(c, 0), "mem": tile(c, 1)} for c in range(ncol)]
+        # core (col, slot) handles heads p*ncore + col*PERCOL + slot for each pass p
+        def head_of(p, col, slot):
+            return p * ncore + col * PERCOL + slot
         pipes = []
-        # phase 1a: per-head core + its mem<->core and core<->mem fifos
-        for h in range(NH):
-            col = h // PERCOL
-            slot = h % PERCOL
-            cm = cols[col]
-            f = {"col": col, "slot": slot, "shim": cm["shim"], "mem": cm["mem"]}
-            f["ac"] = tile(col, 2 + slot)
-            f["O_f"] = object_fifo(f"O_F_{h}", f["ac"], f["mem"], 1, OUT_ty)
-            f["O_s"] = object_fifo(f"O_S_{h}", f["mem"], f["shim"], 1, OUT_ty)
-            object_fifo_link(f["O_f"], f["O_s"])
-            pipes.append(f)
+        # phase 1a: one core per (column, slot), not per head
+        for cc in range(ncol):
+            for slot in range(PERCOL):
+                cm = cols[cc]
+                f = {"col": cc, "slot": slot, "shim": cm["shim"], "mem": cm["mem"]}
+                f["ac"] = tile(cc, 2 + slot)
+                f["O_f"] = object_fifo(f"O_F_{cc}_{slot}", f["ac"], f["mem"], 1, OUT_ty)
+                f["O_s"] = object_fifo(f"O_S_{cc}_{slot}", f["mem"], f["shim"], 1, OUT_ty)
+                object_fifo_link(f["O_f"], f["O_s"])
+                pipes.append(f)
 
         # phase 1b: one shim->mem QK and V fifo per column, broadcast to that
         # column's cores (the shim's 2-MM2S limit does not scale with heads).
         for c in range(ncol):
-            hs = [h for h in range(NH) if h // PERCOL == c]
+            hs = [i for i, f in enumerate(pipes) if f["col"] == c]
             cm = cols[c]
             QK_s = object_fifo(f"QK_S_{c}", cm["shim"], cm["mem"], 1, QK_ty)
             QK_c = object_fifo(f"QK_C_{c}", cm["mem"],
-                               [pipes[h]["ac"] for h in hs], 1, QK_ty)
+                               [pipes[i]["ac"] for i in hs], 1, QK_ty)
             object_fifo_link(QK_s, QK_c)
             V_s = object_fifo(f"V_S_{c}", cm["shim"], cm["mem"], 1, V_ty)
             V_c = object_fifo(f"V_C_{c}", cm["mem"],
-                              [pipes[h]["ac"] for h in hs], 1, V_ty)
+                              [pipes[i]["ac"] for i in hs], 1, V_ty)
             object_fifo_link(V_s, V_c)
-            for h in hs:
-                pipes[h]["QK_s"] = QK_s
-                pipes[h]["V_s"] = V_s
-                pipes[h]["QK_c"] = QK_c
-                pipes[h]["V_c"] = V_c
+            for i in hs:
+                pipes[i]["QK_s"] = QK_s
+                pipes[i]["V_s"] = V_s
+                pipes[i]["QK_c"] = QK_c
+                pipes[i]["V_c"] = V_c
 
         # phase 2: one core per head
         def make_core(f):
             SLOT = f["slot"]
 
             def body():
-                reset()
-                for _ in range_(C_):
-                    for s2 in range(PERCOL):   # every broadcast tile; use our own
-                        qk = f["QK_c"].acquire(ObjectFifoPort.Consume, 1)
-                        v = f["V_c"].acquire(ObjectFifoPort.Consume, 1)
-                        if s2 == SLOT:
-                            chunk(qk, v)
-                        f["QK_c"].release(ObjectFifoPort.Consume, 1)
-                        f["V_c"].release(ObjectFifoPort.Consume, 1)
-                o = f["O_f"].acquire(ObjectFifoPort.Produce, 1)
-                fin(o)
-                f["O_f"].release(ObjectFifoPort.Produce, 1)
+                for _p in range_(PASSES):
+                    reset()                    # fresh per head; state is core-local
+                    for _ in range_(C_):
+                        for s2 in range(PERCOL):   # every broadcast tile; use our own
+                            qk = f["QK_c"].acquire(ObjectFifoPort.Consume, 1)
+                            v = f["V_c"].acquire(ObjectFifoPort.Consume, 1)
+                            if s2 == SLOT:
+                                chunk(qk, v)
+                            f["QK_c"].release(ObjectFifoPort.Consume, 1)
+                            f["V_c"].release(ObjectFifoPort.Consume, 1)
+                    o = f["O_f"].acquire(ObjectFifoPort.Produce, 1)
+                    fin(o)
+                    f["O_f"].release(ObjectFifoPort.Produce, 1)
 
             core(f["ac"], stack_size=0x1000)(body)
 
@@ -113,30 +120,35 @@ def mha1(M, N, C, HD, NH, PERCOL=2):
             np.ndarray[(NH * M * HD,), np.dtype[bfloat16]],
         )
         def seq(QK_all, V_all, O):
+            # pass -> column -> chunk -> slot, matching the cores' acquire order
             for c in range(ncol):
-                hs = [h for h in range(NH) if h // PERCOL == c]
-                for ch in range(C):
-                    for h in hs:
-                        base_qk = (h * C + ch) * (M_ * HD_ + HD_ * N_)
-                        qt = shim_dma_single_bd_task(pipes[h]["QK_s"], QK_all, offset=base_qk,
-                                                     sizes=[1, 1, M_, HD_], strides=[1, 1, HD_, 1],
-                                                     issue_token=True)
-                        dma_start_task(qt); dma_await_task(qt); dma_free_task(qt)
-                        ktt = shim_dma_single_bd_task(pipes[h]["QK_s"], QK_all,
-                                                      offset=base_qk + M_ * HD_,
-                                                      sizes=[HD_ // 8, N_ // 8, 8, 8],
-                                                      strides=[8 * N_, 8, N_, 1], issue_token=True)
-                        dma_start_task(ktt); dma_await_task(ktt); dma_free_task(ktt)
-                        vt = shim_dma_single_bd_task(pipes[h]["V_s"], V_all,
-                                                     offset=(h * C + ch) * N_ * HD_,
-                                                     sizes=[N_ // 8, HD_ // 8, 8, 8],
-                                                     strides=[8 * HD_, 8, HD_, 1], issue_token=True)
-                        dma_start_task(vt); dma_await_task(vt); dma_free_task(vt)
-                for h in hs:
-                    ot = shim_dma_single_bd_task(pipes[h]["O_s"], O, offset=h * M_ * HD_,
-                                                 sizes=[M_ // 4, HD_ // 8, 4, 8],
-                                                 strides=[4 * HD_, 8, HD_, 1], issue_token=True)
-                    dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
+                hs = [i for i, f in enumerate(pipes) if f["col"] == c]
+                for p in range(PASSES):
+                    for ch in range(C):
+                        for i in hs:
+                            h = head_of(p, pipes[i]["col"], pipes[i]["slot"])
+                            base_qk = (h * C + ch) * (M_ * HD_ + HD_ * N_)
+                            qt = shim_dma_single_bd_task(pipes[i]["QK_s"], QK_all, offset=base_qk,
+                                                         sizes=[1, 1, M_, HD_],
+                                                         strides=[1, 1, HD_, 1], issue_token=True)
+                            dma_start_task(qt); dma_await_task(qt); dma_free_task(qt)
+                            ktt = shim_dma_single_bd_task(pipes[i]["QK_s"], QK_all,
+                                                          offset=base_qk + M_ * HD_,
+                                                          sizes=[HD_ // 8, N_ // 8, 8, 8],
+                                                          strides=[8 * N_, 8, N_, 1], issue_token=True)
+                            dma_start_task(ktt); dma_await_task(ktt); dma_free_task(ktt)
+                            vt = shim_dma_single_bd_task(pipes[i]["V_s"], V_all,
+                                                         offset=(h * C + ch) * N_ * HD_,
+                                                         sizes=[N_ // 8, HD_ // 8, 8, 8],
+                                                         strides=[8 * HD_, 8, HD_, 1], issue_token=True)
+                            dma_start_task(vt); dma_await_task(vt); dma_free_task(vt)
+                    for i in hs:
+                        h = head_of(p, pipes[i]["col"], pipes[i]["slot"])
+                        ot = shim_dma_single_bd_task(pipes[i]["O_s"], O, offset=h * M_ * HD_,
+                                                     sizes=[M_ // 4, HD_ // 8, 4, 8],
+                                                     strides=[4 * HD_, 8, HD_, 1], issue_token=True)
+                        dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
+
 
 
 main()
