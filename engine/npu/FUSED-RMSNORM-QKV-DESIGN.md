@@ -662,3 +662,26 @@ combine fused into the PV core to drop AT (frees 8 KB/buffer), (b) bf16 AT
 (halves them), or (c) genuinely parallel head groups (16 heads x 4 cores = 64
 core-groups far exceeds the 32-core device), i.e. a from-scratch attention
 design — matching the earlier "this is a multi-week kernel project" verdict.
+
+### PARALLEL heads fix the depth wall (NH=8 verified)
+
+`n1_mha_parallel_nh.py` (+ `build_mha_parallel_nh.sh`) instantiates NH INDEPENDENT
+single-head chunked-MHA pipelines, one per column, instead of looping heads
+through one pipeline. There is no head boundary, so the depth requirement stays
+the verified DEPTH>=2 and no reset interrupts the ping-pong.
+
+**Verified on the NPU (N=128, C=2, HD=128, M=16):**
+* identical q/k/v in every head -> all 8 heads BYTE-IDENTICAL to the verified
+  single-head result (956/2048 exact, max_delta 33149 each);
+* distinct per-head data -> each head returns its own correct result
+  (486-1048/2048, max_delta ~33000 — the same truncation-vs-RNE reference delta
+  as the single-head C=2 case).
+
+So **8 heads run concurrently and correctly** (8 columns x 4 compute tiles = the
+full 32-tile compute array).
+
+**Reaching NH=16 needs 2 heads per column, i.e. fewer cores per head.** At 4
+cores/head only 8 fit; 16 needs 2 cores/head (fuse qk+softmax into one core, and
+pv+combine+normalize into the other -> 16 x 2 = 32 tiles), with 2 heads sharing
+each column's shim/mem. That is the next step; it is kernel fusion, not a
+dataflow change, and the pipeline above is the correctness reference for it.
