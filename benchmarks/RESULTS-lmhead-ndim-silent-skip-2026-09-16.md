@@ -208,3 +208,54 @@ dequant, the row arithmetic and a working reference all already exist in-tree.
 
 `npu_desc_tiles` and the three `ndim == 2` guards are still the places that decide this, and they are
 still failing closed, which remains better than the alternative.
+
+---
+
+# Implementation + verification, and a correction to the table above
+
+## `logits_host` — a host lm_head for the 3-D format
+
+Added `MoERuntimeLayerEngine::logits_host()` (declared in `runtime_layer_moe.h`), which streams the
+8704-byte source rows, dequantizes with the layout above, and accumulates logits straight from the
+act BO — so it never materialises the 2 GB dequantized matrix. `moe_smoke` prefers it and prints
+`lm_head: HOST path (3-D/Q8_0 source, device lm_head skipped)`; for 2-D models it returns false and
+the device path is used unchanged. `moe_smoke` also now distinguishes **ALL ZERO / NO RESULT** from
+a real reading instead of printing `max=0.0000 NaN=0` as if it were one.
+
+## Verification — and it is only half as strong as it first looked
+
+I linked the engine's **own** `dequant_q8_0_to_float_ex` (`engine/npu/src/dequant_q4nx.cpp`) as the
+reference and compared it against my streaming mapping on 200,000 random `(vocab_row, hidden_col)`
+samples. No device needed.
+
+| model | reference `out_rows` | `out_cols` | model vocab | H | result |
+|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B | 248,320 | 2048 | **248,320 ✓** | **2048 ✓** | 200,000 samples, **0 mismatches** |
+| Qwen3.5-4B | 248,320 | 1024 | 151,936 ✗ | 1024 ✗ | 200,000 samples, 0 mismatches — **VACUOUS** |
+
+**The 35B result is sound**: its hidden and vocab are correctly derived, the reference reproduces
+both, and my mapping matches the reference exactly.
+
+**The Qwen3.5-4B result is vacuous and I am not counting it.** Both sides agreed because both used
+the *same* `H` — and that `H` is a placeholder, not the model's. Agreement under a shared wrong
+input is not verification.
+
+## Correction to the table in the section above
+
+I wrote that `shape[1] == H/256` **"in both cases, to the digit."** That is **verified only for the
+35B** (shape[1]=8, H/256=8, H=2048 derived from `embed_tokens`). For Qwen3.5-4B I had *assumed*
+H=2560 to make 10 = H/256; **I never verified that assumption and the loader does not supply an H
+for that model at all.** The claim should read: verified for the 35B; **unverified** for Qwen3.5-4B.
+
+## …and that exposed a further defect
+
+`Qwen3.5-4B-NPU2`'s header has **no `model.embed_tokens.weight`** (it is a tied-embedding bundle),
+and `model_load` derives `hidden_size` and `vocab_size` *from that tensor*. With no `embed_tokens`,
+neither is derived, so both keep whatever the caller passed — here `QWEN3_0_6B_CONFIG`'s
+`(hidden 1024, vocab 151936)`, Qwen3-0.6B's values, on a 4B model.
+
+`Qwen3.6-35B-A3B-NPU2` *does* carry `embed_tokens` `[248320, 2048]` and derives correctly.
+
+So for tied-embedding bundles the loaded `ModelConfig` is silently the placeholder. That is the same
+silent-default class as the rest of this document, and it is why `logits_host` carries an explicit
+`out_rows != vocab` warning — which, on Qwen3.5-4B, is exactly what fires.

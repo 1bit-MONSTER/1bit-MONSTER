@@ -66,6 +66,16 @@ public:
     bool forward(int layer);
     /// Copy the logits BO's first `vocab` bf16 values as float.
     bool get_logits(float* out, int vocab);
+
+    /// Host lm_head for the 3-D / Q8_0 lm_head format the device path cannot
+    /// express. Qwen3.5-4B and Qwen3.6-35B-A3B load lm_head_weight with ndim == 3,
+    /// which makes n_tiles == 0 in init() and silently skips the device lm_head,
+    /// leaving an all-zero logits BO reported as if the run had succeeded.
+    /// This dequantizes with the same layout the end-to-end engine uses
+    /// (engine/npu/src/dequant_q4nx.cpp: dequant_q8_0_to_float_ex) and computes
+    /// logits from the act BO on the CPU. Returns false when not applicable
+    /// (ndim != 3), so callers can fall back to the device path.
+    bool logits_host(float* out, int vocab);
     /// Dump the act BO (first `n` bytes) to a file.
     bool dump_act(const char* path, size_t n = 4096);
     bool dump_bos(const char* dir);

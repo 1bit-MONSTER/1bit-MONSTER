@@ -68,15 +68,26 @@ int main(int argc, char** argv) {
 
     int vocab = mw->config.vocab_size;
     std::vector<float> logits(vocab);
-    eng.get_logits(logits.data(), vocab);
-    int nan = 0; int argmax = 0; float mx = logits[0];
+    // Prefer the host lm_head when the model's lm_head is 3-D: the device path
+    // cannot express that format and silently skips the lm_head, which leaves the
+    // logits BO all-zero and reports it as a successful run.
+    if (eng.logits_host(logits.data(), vocab))
+        fprintf(stderr, "lm_head: HOST path (3-D/Q8_0 source, device lm_head skipped)\n");
+    else
+        eng.get_logits(logits.data(), vocab);
+    int nan = 0; int argmax = 0; int nz = 0;
+    float mx = logits[0];
     for (int i = 0; i < vocab; i++) {
         if (!std::isfinite(logits[i])) nan++;
+        if (logits[i] != 0.0f) nz++;
         if (logits[i] > mx) { mx = logits[i]; argmax = i; }
     }
-    fprintf(stderr, "logits: argmax=%d max=%.4f NaN=%d (of %d)\n",
-            argmax, mx, nan, vocab);
-    fprintf(stderr, "reference: greedy next token = 76740\n");
+    if (nz == 0)
+        fprintf(stderr, "logits: ALL ZERO (of %d) -- no lm_head produced anything; treat as NO RESULT\n", vocab);
+    else
+        fprintf(stderr, "logits: argmax=%d max=%.4f NaN=%d nonzero=%d (of %d)\n",
+                argmax, mx, nan, nz, vocab);
+    fprintf(stderr, "reference: greedy next token = 76740 (for a SINGLE layer this is informational only)\n");
     if (getenv("NPU_DUMP_BOS")) eng.dump_bos("/tmp/bo");
     eng.dump_act("/tmp/moe_act.bin");
     fprintf(stderr, "act dumped to /tmp/moe_act.bin\n");

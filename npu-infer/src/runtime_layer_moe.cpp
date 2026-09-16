@@ -273,6 +273,84 @@ bool MoERuntimeLayerEngine::get_logits(float* out, int vocab) {
     return true;
 }
 
+// ── Host lm_head for the 3-D / Q8_0 lm_head format ──────────────────────────
+// Why this exists: init() derives the lm_head tile count as
+//     n_tiles = (lm_head_weight.ndim == 2) ? shape[0] : 0
+// and Qwen3.5-4B / Qwen3.6-35B-A3B load ndim == 3. n_tiles is therefore 0, the
+// weight BO is never created, and forward()'s `if (kern_lmhead_ && bo_lmhead_w_)`
+// never adds the lm_head to the runlist — so nothing writes bo_logits_, which is
+// memset to zero at init. The run reports success and reads back all zeros.
+// See benchmarks/RESULTS-lmhead-ndim-silent-skip-2026-09-16.md.
+//
+// The layout below is taken verbatim from the dequant the end-to-end engine
+// already uses for these models (engine/npu/src/dequant_q4nx.cpp:
+// dequant_q8_0_to_float_ex, TILE_ROWS=32 / TILE_COLS=256):
+//   8704-byte row = 512 B of 256 bf16 scales, then 8192 B of signed int8
+//   scale for (lr, col) = scales[(col/32)*32 + lr]
+//   value             = values[lr*TILE_COLS + col]
+//   row ir maps to    (tile_row = ir / n_tile_cols, tile_col = ir % n_tile_cols)
+//   so output row is  tile_row*TILE_ROWS + lr  and output col is tile_col*TILE_COLS + col
+// Checked against the probe: H=2048 -> n_tile_cols = 8 = shape[1], out_rows =
+// shape[0]*32 = 248320 = vocab, out_cols = 2048 = H.
+bool MoERuntimeLayerEngine::logits_host(float* out, int vocab) {
+    if (!mw_ || !out || vocab <= 0) return false;
+    TensorDesc* t = &mw_->lm_head_weight;
+    if (t->ndim != 3) return false;                 // 2-D models keep the device path
+
+    const int H  = cfg_.hidden_size;
+    const int TC = 256, TR = 32;
+    const long long ROW_BYTES = 8704;
+    if (H <= 0 || H % TC != 0) return false;
+    const int n_tile_cols = H / TC;
+    const long long i8_rows  = (long long)t->shape[0] * n_tile_cols;
+    const long long out_rows = (long long)t->shape[0] * TR;
+
+    if (out_rows != (long long)vocab)
+        fprintf(stderr, "MoERuntimeLayer: WARNING lm_head dequant yields %lld rows vs vocab %d\n",
+                out_rows, vocab);
+    if ((long long)t->data_size < i8_rows * ROW_BYTES) {
+        fprintf(stderr, "MoERuntimeLayer: lm_head tensor is %llu B, need %lld B for %lld rows\n",
+                (unsigned long long)t->data_size, i8_rows * ROW_BYTES, i8_rows);
+        return false;
+    }
+    const uint8_t* data = (const uint8_t*)model_tensor_data(mw_, t);
+    if (!data) return false;
+
+    // hidden state = the first H bf16 of the act BO (it is 1 MB; only H*2 bytes are meaningful)
+    bo_act_->sync(XCL_BO_SYNC_BO_FROM_DEVICE, 1048576, 0);
+    const uint16_t* act = (const uint16_t*)bo_act_->map();
+    std::vector<float> hid((size_t)H);
+    for (int i = 0; i < H; i++) hid[(size_t)i] = bf16_to_f32(act[i]);
+
+    for (int i = 0; i < vocab; i++) out[i] = 0.0f;
+
+    // Stream one 8704-byte source row at a time: each yields TR output rows for one
+    // tile_col slice of the hidden dim. No full dequantized copy (that would be 2 GB).
+    for (long long ir = 0; ir < i8_rows; ir++) {
+        const uint8_t* rd = data + ir * ROW_BYTES;
+        const uint8_t* scales = rd;                       // 256 bf16, [0,512)
+        const int8_t*  values = (const int8_t*)(rd + 512); // 8192 signed int8
+        const long long tile_row = ir / n_tile_cols;
+        const int tile_col = (int)(ir % n_tile_cols);
+        const int hbase = tile_col * TC;
+
+        for (int lr = 0; lr < TR; lr++) {
+            const long long v = tile_row * TR + lr;
+            if (v >= (long long)vocab) continue;
+            float acc = 0.0f;
+            const int8_t* vrow = values + (size_t)lr * TC;
+            for (int col = 0; col < TC; col++) {
+                uint16_t sb; memcpy(&sb, scales + ((size_t)(col / 32) * 32 + lr) * 2, 2);
+                float s = bf16_to_f32(sb);
+                if (!std::isfinite(s) || std::fabs(s) > 100.0f) s = 0.0f;  // as the reference dequant does
+                acc += hid[(size_t)(hbase + col)] * ((float)vrow[col] * s);
+            }
+            out[v] = acc;
+        }
+    }
+    return true;
+}
+
 bool MoERuntimeLayerEngine::dump_bos(const char* dir) {
     auto dump = [&](const char* name, xrt::ext::bo* bo, size_t n, size_t off) {
         if (!bo) return;
