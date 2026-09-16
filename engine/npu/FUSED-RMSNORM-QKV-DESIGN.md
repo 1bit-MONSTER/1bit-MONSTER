@@ -6128,3 +6128,46 @@ mechanical**: extend the activation dumps past `l=0`, then 4 weights x 28 layers
 * **two mechanisms are now identified and fixed** - the qk-norm omission, and a correct `l == 0` gate that I
   had briefly and wrongly removed;
 * **the remaining work is data production, not diagnosis**: per-layer dumps plus per-layer solves.
+
+## Route (A) started: per-layer dumps work, and all 28 W_QKV solves succeeded
+
+Key realisation: **one** npt=6144 run can dump **all 28 layers**, so the per-layer route needs one run, not
+28. Changed the `rawqkv` and launch-site `bA` dumps from `l == 0 && getenv("NPU_DUMP_L0")` to
+`getenv("NPU_DUMP_L0")` with per-layer filenames (`/tmp/fk3_l%d_rawqkv.bin`, `/tmp/fk3_l%d_bA.bin`).
+
+One per-op run at npt=6144 (21 GB free in /tmp; 28 x 50 MB + 28 x 12 MB = 1.76 GB) produced **all 28**:
+
+```
+rawqkv dumps: 28   (50331648 B each = 6144 x 4096 x 2)
+bA dumps:     28   (12582912 B each = 6144 x 1024 x 2)
+```
+
+and 28 least-squares solves of `W_QKV_eff = pinv(bA_l) @ rawqkv_l`:
+
+```
+layer  residual   rank   layer  residual   rank
+0      0.005520   1024   27     0.004631   1024
+1      0.005401   1024   ...    (all 28 solved)
+2      0.005336   1024
+3      0.005445   1024
+```
+
+Residuals are uniform across layers (0.0046-0.0055) and every solve has full rank 1024 - the same
+signature as layer 0's accepted solve. Saved as `/tmp/weff_l%d_qkv.bin` for l in 0..27.
+
+**What remains for route (A) to complete:**
+
+1. **The other three weights need the same treatment** - per-layer dumps for the O-projection
+   (`attnout` -> `o`), GU (`a_gu` -> `gu`) and D (`silu` -> `dw`) paths, at npt>=6144 (6144 for W_GU,
+   4096 suffices for the others), then 3 x 28 more solves. Roughly 4 GB more dumps.
+2. **The driver's override gate must accept per-layer files** - it currently reads one path per weight
+   behind `if (l == 0)`; it needs `snprintf(".../weff_l%d_<which>.bin", l)`.
+3. Then the tokens test.
+
+**And one prediction to check cheaply once the raw per-layer weights are dumped** (run without overrides
+with `NPU_FK3_DUMP`): whether the 28 (raw, effective) pairs share the same permutation. If they do, the rule
+is one object and could be extracted once - but that is optional, since route (A) does not need it.
+
+**Note on the earlier route-(B) conclusion**: it stands - the transform is a general 2-D reorder and
+`W_eff ~= P(W_raw) + noise`, so recovering it from the solved matrices alone is not practical. Route (A)
+sidesteps that entirely by solving each layer against its own activations.

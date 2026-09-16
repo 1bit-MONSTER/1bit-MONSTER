@@ -4747,8 +4747,9 @@ struct Bf16Ctx {
                     // THE ONE REMAINING QUESTION: are the first 128 rows of bA here the same
                     // bytes as at line 4692, where I dumped them? If yes, bC genuinely is not
                     // bA @ W; if no, bA is modified between the two lines.
-                    if (l == 0 && getenv("NPU_DUMP_L0"))
-                        { FILE* fl = fopen("/tmp/bf16_l0_bA_launch.bin", "wb");
+                    if (getenv("NPU_DUMP_L0"))
+                        { char pn[128]; snprintf(pn, sizeof(pn), "/tmp/fk3_l%d_bA.bin", l);
+                          FILE* fl = fopen(pn, "wb");
                           if (fl) { fwrite(bA.data(), 2, (size_t)npt * H, fl); fclose(fl); } }
                     const int nblk = (npt + 255) / 256;
                     // SECOND probe point: same W_idx (Wqkv[l]) but measured HERE, inside the layer
@@ -4796,8 +4797,9 @@ struct Bf16Ctx {
                     // quantity the fused path's launch A produces, so the two can be
                     // compared directly - unlike bA, which the layer reuses for the
                     // attention input and output.
-                    if (l == 0 && getenv("NPU_DUMP_L0")) {
-                        FILE* fq = fopen("/tmp/bf16_l0_rawqkv.bin", "wb");
+                    if (getenv("NPU_DUMP_L0")) {
+                        char pn[128]; snprintf(pn, sizeof(pn), "/tmp/fk3_l%d_rawqkv.bin", l);
+                        FILE* fq = fopen(pn, "wb");
                         if (fq) { fwrite(bC.data(), 2, (size_t)npt * qkvn, fq); fclose(fq); }
                     }
                 }
