@@ -27,6 +27,13 @@
 #ifndef M_TILE
 #define M_TILE 16
 #endif
+// 1/sqrt(HD): the softmax score scaling. Without it the QK^T scores are ~sqrt(HD) (~11.3x at
+// HD=128) too large, which drives exp2_soft outside its limited valid range and makes it
+// return 0 for every element - collapsing l_state to zero. Invisible with Q=0, which is why a
+// bench that never fills bQ cannot see it.
+#ifndef ATT_SCALE
+#define ATT_SCALE (1.0f / 11.3137085f)   /* 1/sqrt(128) */
+#endif
 // Query blocks per pass (M/MA) and the key chunk size. Together with two static
 // counters these give the kernel its GLOBAL positions WITHOUT any index arithmetic
 // in the generator's DSL (which has none): the sequence drives every core in
@@ -157,7 +164,7 @@ extern "C" void attn1_chunk(const uint16_t *__restrict qk,
         float m_local = -1e30f;
         for (int c = 0; c < N_KEYS; c++) {
             int tc = c / 8, cc = c % 8;
-            float s = bf16_to_f32(g_sc[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc]);
+            float s = bf16_to_f32(g_sc[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc]) * ATT_SCALE;
             if (s > m_local) m_local = s;
         }
         float m_new = m_old > m_local ? m_old : m_local;
@@ -165,7 +172,7 @@ extern "C" void attn1_chunk(const uint16_t *__restrict qk,
         float l_chunk = 0.0f;
         for (int c = 0; c < N_KEYS; c++) {
             int tc = c / 8, cc = c % 8;
-            float s = bf16_to_f32(g_sc[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc]);
+            float s = bf16_to_f32(g_sc[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc]) * ATT_SCALE;
             float e = exp2_soft((s - m_new) * log2e);
             l_chunk += e;
             g_sc[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc] = f32_to_bf16(e);
@@ -194,6 +201,21 @@ extern "C" void attn1_chunk(const uint16_t *__restrict qk,
 
 // Final normalize: out = O / l (row-major O -> microtiled bf16 out).
 extern "C" void attn1_finalize(uint16_t *__restrict out) {
+#ifdef ATTN_DUMP_SOFTMAX
+    // Debug build: emit this head's final softmax statistics INSTEAD of the output, through
+    // the existing output path (the attention cores have no separate writable BSP). Slots
+    // 0..15 = m_state[r] (the running max of the scores), 16..31 = l_state[r] (sum of exp).
+    // Comparing these against NumPy isolates the QK^T + softmax from the PV half: if these
+    // match, the scores and the normalisation are right and any error is in the mmuls.
+    for (int r = 0; r < M_TILE; r++) {
+        uint32_t u; float f;
+        f = m_state[r]; __builtin_memcpy(&u, &f, 4);
+        out[r] = (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1u)) >> 16);
+        f = l_state[r]; __builtin_memcpy(&u, &f, 4);
+        out[M_TILE + r] = (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1u)) >> 16);
+    }
+    return;
+#endif
     for (int r = 0; r < M_TILE; r++) {
         int tr = r / 4, rr = r % 4;
         float inv = 1.0f / l_state[r];

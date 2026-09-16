@@ -3708,3 +3708,64 @@ remaining question is whether what the BD leaves in memory is what the loader fi
 
 That needs in-kernel instrumentation: a per-core dump of the Q operand or `g_sc`, which requires
 adding a fifo or overloading an existing output (the attention cores have no writable BSP).
+
+## FOUND BY INSTRUMENTATION: the attention has NO 1/sqrt(HD) score scaling
+
+The instrumentation that the previous rounds concluded was necessary - emitting the softmax's
+own statistics through the existing output path under `-DATTN_DUMP_SOFTMAX` (slots 0..15 =
+`m_state[r]`, 16..31 = `l_state[r]`) - immediately produced the answer:
+
+```
+BEFORE:  m: kernel 0.89 / 1.02 / 0.69   numpy 0.079 / 0.091 / 0.061     ratio 11.26-11.37
+         l: kernel 0.0000                numpy 1.0 / 1.98 / 2.87
+```
+
+The ratio is **sqrt(HD) = 11.3137** at HD=128, on every head. `attn1.cc`'s two softmax score
+reads were `bf16_to_f32(g_sc[...])` with no scaling - the QK^T scores were being used raw.
+
+Why that destroys the attention: `exp2_soft` is a 4-term float polynomial with the exponent
+folded in, documented as ~1e-6 relative only on `|f| <= 0.5` (its own comment). Scores 11.3x too
+large put `(s - m)*log2e` far outside that range, and the function returns 0 for every element,
+collapsing `l_state` to 0 - i.e. the softmax divided by zero.
+
+**Why no bench run in this project could ever have found it.** With `bQ = 0` every score is 0,
+`exp2_soft(0) = 1`, the softmax is well behaved, and any self-consistent reference agrees. The
+bug exists only for non-zero Q - and every bench run left `bQ` at zero. The "per-head attn
+exactness 0% for all 16 heads" line was the only clue and I explained it away for weeks.
+
+Fixed: `ATT_SCALE (1/sqrt(HD))` applied to both score reads. Verified by the same instrumentation:
+
+```
+AFTER:   m: kernel maxabs 0.1611 == numpy maxabs 0.1611
+            head0 [-0.0703 -0.0086 0.0262 -0.0101] vs numpy [-0.0701 -0.0086 0.0264 -0.0100]
+```
+
+The scores now match an independent NumPy reference essentially exactly.
+
+Engine effect (same prompt, artifacts, NPU_PREFILL_MAX=128):
+
+```
+before the fix:  105199, 100889, 100889, 100889
+after  the fix:   24121,  83495,  83495,  83495
+baseline:           220,  49789,    220,  11141
+```
+
+Still not parity, but the numbers moved, which they never did for any earlier change of mine.
+
+## Remaining defect, now isolated to one number
+
+`l_state` is still 0.0000 after the fix while `m_state` is exactly right. Those two are written
+in the same place from the same chunk state:
+
+```c
+m_state[r] = m_new;
+l_state[r] = l_state[r] * a + (float)l_chunk;
+```
+
+and `l_chunk` accumulates `exp2_soft((s - m_new) * log2e)`, whose maximum element has
+`s == m_new` and therefore argument 0 - and `exp2_soft(0)` returns exactly 1.0 on inspection
+(`n=0, f=0, p=1.0, e=127`). So a correct `m_state` with a zero `l_state` is internally
+contradictory, which means one of the two readings is not what I think it is: either
+`attn1_finalize` is dumping a different chunk state than the one that produced `m`, or the
+`l_state` slot is not where the dump lands. That is the next thing to check, and it is a single
+number rather than an open-ended search.
