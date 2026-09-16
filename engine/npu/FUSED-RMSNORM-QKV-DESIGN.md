@@ -5957,3 +5957,36 @@ is against the wrong object, which is the same class of error as the cross-promp
 **Where fk-3 stands:** layer 0 correct on identical inputs (0.997, and Q at 0.99997 in isolation); the
 qk-norm omission found, fixed and proved; the l==0 override gate found and fixed; the remaining divergence
 is from layer 1 onward, with the reference's own hidden-state behaviour as the first thing to explain.
+
+## CORRECTION: the l==0 gate was RIGHT. My effective weights are layer 0's only.
+
+I "fixed" the `if (l == 0)` gate on the four weight overrides, calling it a logging artifact. It was not -
+**the `_FROM` files hold LAYER 0's effective weights**, because they were solved from the `bf16_l0_*` dumps
+(`W_eff = pinv(bA_layer0) @ rawqkv_layer0`). Every layer has its own q/k/v/o/gate/up/down weights, so
+applying layer 0's to all 28 layers is wrong. Removing the gate produced different tokens
+(`128218 97824 97824 97824`) - which I read as "the fix took effect", when it was the fix making things
+worse in a new way.
+
+Gate restored, with the real reason written next to it rather than a claim about logging. And the diagnosis
+of the layer-1 divergence is now clear and cheap:
+
+**the effective weights must be solved PER LAYER.** The permutation is presumably the same upload rule for
+every layer, but the weights differ per layer, so layer 0's solved matrices cannot stand in for the rest.
+That needs per-layer activation/output dumps - `NPU_DUMP_L0` currently does layer 0 only - followed by 28
+solves of the same shape (4 weights, npt>=6144 per layer, ~112 solves total, all mechanical).
+
+**Or the cheaper route, now that a (W_raw, W_eff) pair exists**: recover the permutation itself, since it is
+a bijection and presumably shared across layers. Value-matching failed on bf16 ties (74 unique of 4.19M), and
+every structured form I tried scored at the identity baseline - but that search was against layer 0's QKV
+weight only, and the pair is now known exactly. Deriving the index map from an upload of a **known sparse**
+weight would be authoritative, and my earlier attempt at that is what crashed on the A-pointer.
+
+**Also settled this turn:** both `NPU_DUMP_HIDDEN` sites are layer *outputs* and both dumps are 28 aligned
+blocks, so the per-layer comparison is valid - the engine's hidden genuinely reaches ~6467 by layer 2 while
+producing correct tokens, which remains unexplained but is not a dump-alignment artifact.
+
+**The honest summary of the last three turns**: the qk-norm omission was real, proved, and fixed (layer 0
+0.611 -> 0.997). Then I found a second bug, "fixed" it, and the fix was wrong for a reason I could have
+read off my own artifacts - the files are named `bf16_l0_*` and the env vars are `_FROM` a layer-0 solve.
+The lesson is the session's one lesson again: I acted on the shape of the code (`if (l == 0)` looks like
+debug scaffolding) instead of on what the artifact it guards actually contains.

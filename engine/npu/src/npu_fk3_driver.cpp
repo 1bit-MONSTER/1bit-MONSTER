@@ -326,7 +326,9 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     } else {
         std::vector<uint16_t> w((size_t)s.H * s.NQKV);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.H, (uint32_t)s.NQKV, off(0));
-        fk3_maybe_override(w, w.size(), "NPU_FK3_WQKV_FROM", "WQKV", l);
+        // NOTE: the *_FROM files hold LAYER 0 effective weights (solved from the bf16_l0_* dumps),
+        // so they must only be applied to layer 0. Per-layer weights need per-layer dumps.
+        if (l == 0) fk3_maybe_override(w, w.size(), "NPU_FK3_WQKV_FROM", "WQKV", l);
         if (l == 0 && getenv("NPU_FK3_DUMP")) {
             FILE* f = fopen("/tmp/fk3_w_wqkv.bin", "wb");
             if (f) { fwrite(w.data(), 2, w.size(), f); fclose(f); }
@@ -339,7 +341,9 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     {
         std::vector<uint16_t> w((size_t)s.qout * s.NO);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.qout, (uint32_t)s.NO, off(3));
-        fk3_maybe_override(w, w.size(), "NPU_FK3_WO_FROM", "WO", l);
+        // NOTE: the *_FROM files hold LAYER 0 effective weights (solved from the bf16_l0_* dumps),
+        // so they must only be applied to layer 0. Per-layer weights need per-layer dumps.
+        if (l == 0) fk3_maybe_override(w, w.size(), "NPU_FK3_WO_FROM", "WO", l);
         memcpy(s.wO[l].map(), w.data(), w.size() * 2);
         s.wO[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         s.wO_ready[l] = 1;
@@ -350,7 +354,9 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
         std::vector<uint16_t> g((size_t)s.H * 2 * s.IM);
         bf16mm_dequant_mode(g.data(), src.bo, (uint32_t)s.H, (uint32_t)s.IM, off(4), 2);              // gate
         bf16mm_dequant_mode(g.data() + (size_t)s.H * s.IM, src.bo, (uint32_t)s.H, (uint32_t)s.IM, off(4), 1);  // up
-        fk3_maybe_override(g, g.size(), "NPU_FK3_WGU_FROM", "WGU", l);
+        // NOTE: the *_FROM files hold LAYER 0 effective weights (solved from the bf16_l0_* dumps),
+        // so they must only be applied to layer 0. Per-layer weights need per-layer dumps.
+        if (l == 0) fk3_maybe_override(g, g.size(), "NPU_FK3_WGU_FROM", "WGU", l);
         memcpy(s.w2[l].map(), g.data(), g.size() * 2);
         s.w2[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         if (l == 0 && getenv("NPU_FK3_DUMP")) {
@@ -366,7 +372,8 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     {
         std::vector<uint16_t> w((size_t)(s.NI + s.H) * s.ND);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.NI, (uint32_t)s.ND, off(5));
-        fk3_maybe_override(w, (size_t)s.NI * s.ND, "NPU_FK3_WD_FROM", "WD", l);
+        // LAYER 0 only - see the note above.
+        if (l == 0) fk3_maybe_override(w, (size_t)s.NI * s.ND, "NPU_FK3_WD_FROM", "WD", l);
         for (int r = 0; r < s.H; r++)
             for (int n = 0; n < s.ND; n++)
                 w[(size_t)(s.NI + r) * s.ND + n] = (uint16_t)(r == n ? 0x3F80 : 0x0000);  // bf16 1.0 / 0.0
