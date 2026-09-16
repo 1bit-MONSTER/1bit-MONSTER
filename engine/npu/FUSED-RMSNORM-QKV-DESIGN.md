@@ -1851,3 +1851,20 @@ the sequence posts Q/K/V per (p, qb, ch) with the O store per (p, qb). So the ne
 step is to trace the fifo accounting across the qb boundary specifically — the
 first thing to check is whether the QK/V fifo's write pointer still advances as the
 taps assume once a second query block re-sends the same K/V rows.
+
+## Note for fk-4: the driver's per-SUBMISSION TDR interacts with fusion
+
+@agent-afbeb7 traced the shared `ERT_CMD_STATE_TIMEOUT` to the amdxdna driver's
+`timeout_in_sec` TDR (it was 2 s; 83 dmesg "Firmware timeout state capture" dumps
+all at ctx_pc 0x28b05db8/0x28b060ad/0x28b06005, matching the native Llama runlist,
+the FLM oracle and the 35B runtime), and raising it to 15 s made the Llama runlist
+complete alone at 82.9 ms/tok.
+
+That matters for the fused direction in a specific way: TDR fires on a
+SUBMISSION's latency, not on a launch's total work. The per-op prefill path makes
+~9 submissions per layer, so it exposes ~9 opportunities per layer to sit behind
+other hwctx traffic; the fused layer makes ONE, which is larger but far less
+latency-exposed. Measured here, one fused layer is ~tens of ms of device time, so
+it is nowhere near even the old 2 s cliff — and the fused path is therefore the
+structural mitigation for the ERT class rather than a victim of it. Worth
+re-confirming at prefill M, where the single launch gets much bigger.
