@@ -3874,3 +3874,40 @@ CARRY-FORWARD FOR THE EXTENSION WORK, so none of it has to be rediscovered:
  - A second phase needs its OWN column (its mem tile cannot share with the GEMM's B and C).
  - The working invariants to preserve: one submit; host-computed references for every phase; the
    LINEAR B tap (8192/8192 verified, and the documented fix for the B-feed pathology).
+
+### Addendum 110 — the dominance error is NOT what I assumed; the FFNnorm block emits correctly
+
+Checked addendum 109's hypothesis by reading the failing MLIR rather than re-deriving it, and the
+hypothesis is WRONG. The FFNnorm block is emitted correctly and completely:
+
+  line 47:    %shim_noc_tile_3_0 = aie.tile(3, 0)
+  line 48:    %mem_tile_3_1 = aie.tile(3, 1)
+  line 49:    %tile_3_2 = aie.tile(3, 2)
+  line 50:    aie.objectfifo @F_A_S(%shim_noc_tile_3_0, {%mem_tile_3_1}, 2 : i32) : <memref<2048xf32>>
+  line 51:    aie.objectfifo @F_A_C(%mem_tile_3_1, {%tile_3_2}, 2 : i32) : <memref<2048xf32>>
+  line 52:    aie.objectfifo @F_W_S(%shim_noc_tile_3_0, {%mem_tile_3_1}, 1 : i32) : <memref<2048xf32>>
+  line 53:    aie.objectfifo @F_W_C(%mem_tile_3_1, {%tile_3_2}, 1 : i32) : <memref<2048xf32>>
+  line 54:    aie.objectfifo @F_O_C(%tile_3_2, {%mem_tile_3_1}, 2 : i32) : <memref<2048xbf16>>
+
+Tiles first, then the fifos that use them, exactly as the working norm block does. And the reported
+line is `design.mlir:18:5`, which is `aie.objectfifo @N_W_S(%shim_noc_tile_2_0, {%mem_tile_2_1}, 1)`
+-- the FIRST norm's fifo, whose operands `%shim_noc_tile_2_0` (line 6) and `%mem_tile_2_1` (line 7) are
+defined twelve lines EARLIER and plainly dominate it. So the message does not describe the literal MLIR
+that aiecc was handed; it is either raised after aiecc's own transforms have reordered something, or it
+is a downstream symptom of a different failure that the pipeline reports with this wording.
+
+WHAT THIS RULES OUT, and it is worth having ruled out: my inserted block is not referencing a
+value defined too late, and it is not a type-alias scoping mistake. The addendum-109 guess was wrong,
+and the honest position is that the cause of this error is NOT yet known.
+
+NEXT DIAGNOSTIC, the one that has worked repeatedly in this lane: isolate. Build the FFNnorm phase as a
+STANDALONE design -- a second norm-only xclbin, exactly as `n1_norm_only_mine.py` was built for the
+first norm -- and drive it with NORM_ONLY against a host reference. If it hangs or errors on its own,
+the fault is in my block; if it works alone, the fault is in how two norm phases coexist, and the
+comparison becomes a diff between one norm phase and two in the same design rather than a hunt for a
+scope bug that does not exist.
+
+REBUILD POSITION: the two-phase milestone is MET and verified (addendum 108). The third phase is an
+extension in progress whose first build error remains unexplained; the extension has cost no new
+runtime argument (the merge pattern holds) and has not disturbed the working design, which still gives
+910/2048 and 8192/8192.
