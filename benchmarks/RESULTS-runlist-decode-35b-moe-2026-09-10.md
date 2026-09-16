@@ -641,3 +641,35 @@ extend the probe to EXECUTE in N contexts concurrently and measure the serialisa
 Also confirmed (via @agent-7f1cce): the only worktree on `goal/runlist-decode-wire` is
 this one (`/home/bcloud/1bit-MONSTER-goal`), so the git churn traced back here; my
 process is now path-scoped commits (`git commit <paths>`), index checked first.
+
+### Addendum 17 — the expert-pack lever is ALREADY IMPLEMENTED (cache warms): real steady state ~3.5 s/tok
+
+Before writing the prepack change proposed in addendum 12, tested whether the expert
+cache simply needs to warm. Ran 8 decode tokens with NPU_TIMING:
+
+```
+[1] 4263 ms   [decode-stage] QKV=8.7 attn=5.7 O=5.4 FFN=86.2 ms/layer
+[2] 4160 ms   QKV=8.7 attn=5.8 O=5.5 FFN=83.3
+[3] 4105 ms   QKV=8.6 attn=5.5 O=5.3 FFN=82.6
+[4] 3766 ms   QKV=8.7 attn=5.5 O=5.4 FFN=74.0
+[5] 3571 ms   QKV=8.6 attn=5.8 O=5.4 FFN=68.7
+[6] 3619 ms   QKV=8.6 attn=5.4 O=5.5 FFN=70.4
+[7] 3668 ms   QKV=8.6 attn=5.8 O=5.3 FFN=71.3
+=== 3485.9 ms/tok ===
+```
+
+So the per-layer cost falls and then plateaus: **FFN ~70 ms/layer, QKV ~8.6 ms, O ~5.4 ms,
+attn ~5.6 ms**, i.e. a steady-state decode of **~3.5 s/tok (≈0.29 tok/s)** — 2.8× better
+than the 9.5-9.9 s/tok I reported in addenda 10c/12, which were **cold-cache** numbers
+(and measured while other agents were loading the device).
+
+CONSEQUENCE: addendum 12's proposed lever (prepack the expert pool to remove host
+dequant) is **already implemented** — `exp_cache[l]` (EXP_CACHE_SZ=256) is warm after a
+few tokens and the pack drops from 122 ms (miss) to 2.8 ms (hit); misses are only
+cold-start. The remaining bottleneck is the **FFN's NPU kernels (~70 ms/layer of
+2 launches ≈ 35 ms/launch)** — the engine's documented M=128-baked-kernel problem
+("per-shape small-M xclbins or fused layer streams"), not host packing.
+
+Corrected steady-state accounting per token: FFN ~2.8 s (80%), QKV ~0.34 s, O ~0.22 s,
+attn ~0.22 s => **~3.5 s/tok, ~0.29 tok/s**, i.e. ~2.4× below the ~0.7 baseline and
+~300× from the dense class.
