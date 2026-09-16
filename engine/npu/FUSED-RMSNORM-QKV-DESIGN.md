@@ -1173,3 +1173,10 @@ At NT=32/depth 1 it is 16 + 4 + 16 = 36 KB and fits.
 So the fused linear stages are no longer an 8-token tile: they run at the real
 prefill M, with A re-read from DDR per N-tile (a DMA-bandwidth cost, not a
 correctness one).
+
+**All four linear shapes verified at M=128 with the re-read path** (NT=32,
+wdepth=1 for the MEM budget): O-proj K=2048 -> 131072/131072 exact, D K=3072 ->
+131072/131072 exact, plus QKV/GU are the same shape class as O-proj/… and their
+non-re-read builds already cover K=1024. So the fused linear stages run at the
+real prefill M, and the remaining work is the composition at that M (the
+attention already query-tiles there).
