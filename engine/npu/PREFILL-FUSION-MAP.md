@@ -146,3 +146,36 @@ open symbols (`gen_layer_seq` + `gen_mha_engine_seq` + the BO/npu_app plumbing
 that `RuntimeLayerEngine` already implements for decode) — a real but bounded
 effort, NOT a flag flip on `mm.xclbin`. The per-op bf16 path's speed (1945 tok/s)
 is the bar to preserve.
+
+## 7. RESOLVED (ra-2/ra-3 gate): no fast fused-prefill kernel exists for dense Qwen3
+
+Inventory of FLM's shipped xclbins (`amd-oss/fastflowlm/src/xclbins/`):
+
+| family | xclbin set |
+|---|---|
+| Qwen3-0.6B / 1.7B / 4B / 8B | `attn.xclbin` + `layer.xclbin` + `mm.xclbin` (+`dequant.xclbin` on 0.6B) — **no prefill kernel** |
+| Qwen3.5-*/Hy-MT2/GateDeltaNet (newer) | + `fused_prefill.xclbin` / `GateDeltaNet_prefill.xclbin` — a dedicated **batched fused prefill** kernel |
+
+FLM only ships a `fused_prefill.xclbin` (the whole-layer batched prefill, in-kernel
+norm/RoPE/SiLU) for the **newer** families. Dense Qwen3 (the objective's target)
+never got one — its FLM prefill is the per-op `mm.xclbin` + `attn.xclbin` path
+with the norms done in the closed `libqwen3_npu.so` (which carries AVX2 host
+intrinsics: `<immintrin.h>` in `qwen3_npu.hpp`). So FLM itself did **not** move
+prefill RMSNorm/RoPE/SiLU in-kernel for dense Qwen3.
+
+**This closes the re-architecture gate**: there is no fast fused-prefill kernel
+to "re-architect onto" for dense Qwen3-0.6B. The three candidate routes are all
+blocked or non-winning:
+1. `mm.xclbin` — pure GEMM, no norm/RoPE/SiLU tiles (section 6).
+2. `layer.xclbin` — in-kernel everything but **M=1** (decode-only; `gen_layer_seq(seq,L)` is per-position).
+3. Building a `fused_prefill.xclbin` for 0.6B via the open generators — this is
+exactly fk-3's route, which hit the depth-2-objectfifo descriptor hard floor at
+~56x slower than the per-op path (see `fk-3`/`fk-4` commit history).
+
+The one remaining question before calling this gate closed is whether
+`layer.xclbin` can be driven batched (M>1) by an instruction sequence FLM does
+not expose as an open symbol — the batched attention `gen_mha_engine_seq` exists
+for `attn.xclbin`, but no batched *layer* sequence symbol exists. That is the
+single experiment ra-2 needs (capture `qwen3_npu::prefill` on-box and read its
+runlist/xclbin usage) and it requires the device, which is currently busy with
+`flm serve`/`flm run` processes from other lanes.
