@@ -1287,3 +1287,32 @@ Two things this plan exposes, both budget rather than architecture:
 
 `residual_add.cc` (new) provides the bf16 and f32 residual adds; `silu_split.cc`
 from the fk-3 PoC is the SiLU.
+
+### QKV output -> attention taps (the last unwritten interface)
+
+The QKV GEMM produces ONE bf16 buffer `QKV (Mtot, 4096)` row-major, blocks
+`Q = [0,2048)`, `K = [2048,3072)`, `V = [3072,4096)` (Qwen3-0.6B: 16 q heads /
+8 kv heads x HD=128). Every tap the attention needs is expressible from it,
+because a BD's `sizes`/`strides` need not be in source order — the destination is
+filled in `sizes` order, so the dim order IS the layout permutation.
+
+For chunk `ch` (chunk tokens `[ch*N, (ch+1)*N)`), head `h`, kv head `kh = h/2`:
+
+* **Q** (row-major (N,HD) in the mem buffer — source is already row-major, so no
+  permutation): `offset = ch*N*4096 + h*128`, `sizes=[1,1,N,HD]`,
+  `strides=[1,1,4096,1]`.
+* **V** (row-major (N,HD)): `offset = ch*N*4096 + 3072 + kh*128`,
+  `sizes=[N/8,HD/8,8,8]`, `strides=[8*4096,8,4096,1]`.
+* **K^T** (the buffer holds K TRANSPOSED as (HD,N) row-major — that is what
+  `attn1.cc` was verified against): the source is (N,HD), so this needs a real
+  permutation. With dim order `(d, j/8, j%8)` the destination is
+  `d*N + (j/8)*8 + (j%8)` = `d*N + j`, i.e. exactly K^T row-major, so
+  `sizes=[HD, N/8, 8]`, `strides=[1, 8*4096, 4096]`,
+  `offset = ch*N*4096 + 2048 + kh*128`.
+
+(Note the K^T dim order — sizes `[HD,N/8,8]`, not `[HD/8,N/8,8,8]` — is what makes
+the transpose come out right; the naive 4D form yields `a*8N+b*64+c*8+r`, which
+is not `d*N+j`.)
+
+So the whole QKV -> attention handoff needs **no extra kernel and no extra
+buffer**: it is three BD parameterisations of the one QKV output.
