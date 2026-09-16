@@ -2533,3 +2533,37 @@ against the runtime's own captured BO), npu_pack_moe_expert_pool already exists 
 independently decoded formula, region-A's head-tensor packing really is wrong in kind, and the
 harness does not call the expert-pool packer for that head. Those are real defects with real
 evidence, they are simply not this NaN.
+
+### Addendum 73 — the naive expert-pool fix would CLOBBER region-B; the real layout is window-aligned
+
+Before recommending "just call npu_pack_moe_expert_pool for arg-3's head" (addendum 68), I checked the
+geometry, and the arithmetic says that fix is wrong as stated:
+
+  expert pool = 478,146,560 B = 100,960 windows of 4736, ending at 0x1c7ff000
+  region-B base = 0x1bc00000 = 465,567,744 B = 98,304 windows of 4736
+  -> the pool OVERLAPS region-B by 12,578,816 B
+
+That is exactly the confound that made my first porting attempt worthless (addendum 69), and it says
+the runtime cannot be holding the full pool before region-B either. The numbers then resolve
+themselves, and the resolution is clean:
+
+  region-B base 465,567,744 B is EXACTLY 98,304 windows -- 0x18000, window-ALIGNED, not an arbitrary byte offset
+  space before it            98,304 windows
+     up/gate                  65,536 windows (0x10000)   -- verified BAD=0 over units 0..16383
+     down                     32,768 windows (0x8000)    -- of down's 35,424 total
+     total                    98,304 windows             -- exactly region-B's base
+
+So the arg-3 image is [up/gate 0x10000 windows][down 0x8000 windows][region-B at window 0x18000],
+and 32,768 = 2^15 happens to be exactly down_exps' [16384,2] core, with down's remaining 2,656
+windows (35,424 - 32,768) accounted for somewhere else in the image.
+
+CONSEQUENCE FOR THE LATENT-BUG FIX, stated so the next run does not do what I nearly recommended:
+calling npu_pack_moe_expert_pool alone is WRONG -- it writes 478,146,560 B and destroys region-B,
+which we have independently verified is byte-identical to the runtime's at that offset. The correct
+fix packs up/gate plus down's first 32,768 windows (98,304 windows total, stopping exactly at
+0x1bc00000) and leaves the region-B packer to write the tail. And regardless of the fix, the NaN
+survives it (addendum 69), so this is a correctness change, not a repair of the failure.
+
+METHOD NOTE: this is the third time in this lane that ARITHMETIC ON THE BO GEOMETRY, done before
+running anything, caught an error -- once in my own first porting attempt, once here. Check the
+overlap before the call.
