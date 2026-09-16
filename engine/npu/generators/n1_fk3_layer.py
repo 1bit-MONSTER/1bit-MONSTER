@@ -37,6 +37,8 @@ def main():
     p.add_argument("-HD", type=int, default=128)
     p.add_argument("-NO", type=int, default=1024, help="O-proj N (= H)")
     p.add_argument("-N2", type=int, default=6144, help="GU N (2 x intermediate size)")
+    p.add_argument("-NI", type=int, default=3072, help="FFN intermediate size (SiLU width)")
+    p.add_argument("-ND", type=int, default=1024, help="D N (= H)")
     p.add_argument("-P", "--percol", type=int, default=2)
     p.add_argument("--passes", type=int, default=2)
     p.add_argument("-k", type=int, default=64, help="QKV K-tile")
@@ -47,11 +49,12 @@ def main():
     a = p.parse_args()
     with mlir_mod_ctx() as ctx:
         layer(a.M, a.H, a.NH, a.HD, a.NO, a.percol, a.passes,
-              a.k, a.NT, a.kO, a.stack, a.gstack, a.N2)
+              a.k, a.NT, a.kO, a.stack, a.gstack, a.N2, a.NI, a.ND)
         print(ctx.module)
 
 
-def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144):
+def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
+          NI=3072, ND=1024):
     N = M                       # single chunk: the keys ARE the query tokens
     C = 1                       # one chunk => a full self-attention over M
     NQKV = NH * HD + 2 * (NH // 2) * HD   # 4096 for Qwen3-0.6B: Q=NH*HD, K=V=(NH/2)*HD
@@ -70,6 +73,12 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144):
     assert GCOL <= 7, "the QKV norm/GEMM need two more columns"
     n_n_gu = N2 // NT              # GU N-tiles (the FFN, same K-tiles as the QKV)
     assert N2 % NT == 0
+    n_si = NI // NT                # SiLU tiles (gate/up are NI wide each)
+    n_k_d = NI // k                # the D projection's K = the intermediate size
+    n_n_d = ND // NT
+    assert NI % NT == 0 and NI % k == 0 and ND % NT == 0 and N2 == 2 * NI
+    SCOL = GCOL + 1                # the SiLU takes the last column
+    assert SCOL <= 7
     GQA = NH // (NH // 2)          # q heads per kv head (2 for Qwen3-0.6B)
     KO_TOT = NH * HD
     assert KO_TOT % KO == 0 and NO % 64 == 0
@@ -96,6 +105,8 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144):
         acc0 = external_func("nq_acc_zero", inputs=[], link_with="nq_nt.o")
         accm = external_func("nq_acc_mac", inputs=[AN_ty, W_ty], link_with="nq_nt.o")
         accs = external_func("nq_acc_store_bf16", inputs=[QKV_ty], link_with="nq_nt.o")
+        silu = external_func("silu_split", inputs=[QKV_ty, QKV_ty, QKV_ty],
+                             link_with="silu_split.o")
         # The O-proj reuses the QKV's nq_acc_* helpers with the QKV's own
         # declaration: with KO = k = 64 and the O-proj's C N-tile = NT = 64 the
         # signatures are IDENTICAL ((M,64) A, (64,64) W, (M,64) C), which is
@@ -131,6 +142,18 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144):
         QKV_f = object_fifo("QKV_F", gc, m1, 1, QKV_ty)
         QKV_s = object_fifo("QKV_S", m1, s1, 1, QKV_ty)
         object_fifo_link(QKV_f, QKV_s)
+
+        # ---- col SCOL: SiLU over the GU output (gate|up) ----------------
+        s7, m7, sc7 = tile(SCOL, 0), tile(SCOL, 1), tile(SCOL, 2)
+        G_s = object_fifo("G_S", s7, m7, 2, QKV_ty)
+        G_c = object_fifo("G_C", m7, sc7, 2, QKV_ty)
+        object_fifo_link(G_s, G_c)
+        U_s = object_fifo("U_S", s7, m7, 2, QKV_ty)
+        U_c = object_fifo("U_C", m7, sc7, 2, QKV_ty)
+        object_fifo_link(U_s, U_c)
+        SL_f = object_fifo("SL_F", sc7, m7, 2, QKV_ty)
+        SL_s = object_fifo("SL_S", m7, s7, 2, QKV_ty)
+        object_fifo_link(SL_f, SL_s)
 
         # ---- cols 0..ncol-1: attention, PERCOL cores per column ----------
         cols = [{"shim": tile(c, 0), "mem": tile(c, 1)} for c in range(ncol)]
@@ -170,6 +193,18 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144):
         OC_s = object_fifo("OC_S", oc["mem"], oc["shim"], 1, CO_ty)
         object_fifo_link(OC_f, OC_s)
         n_ko, n_no = KO_TOT // KO, NO // 64
+
+        @core(sc7, stack_size=0x2000)
+        def silu_body():
+            for _ in range_(0xFFFFFFFF):
+                for _nt in range_(n_si):
+                    g = G_c.acquire(ObjectFifoPort.Consume, 1)
+                    u = U_c.acquire(ObjectFifoPort.Consume, 1)
+                    o = SL_f.acquire(ObjectFifoPort.Produce, 1)
+                    silu(g, u, o)
+                    G_c.release(ObjectFifoPort.Consume, 1)
+                    U_c.release(ObjectFifoPort.Consume, 1)
+                    SL_f.release(ObjectFifoPort.Produce, 1)
 
         def oproj_body():
             for _ in range_(0xFFFFFFFF):
@@ -272,8 +307,11 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144):
             np.ndarray[(n_k * M * k,), np.dtype[bfloat16]],     # AN2
             np.ndarray[(H * N2,), np.dtype[bfloat16]],          # W_GU
             np.ndarray[(M * N2,), np.dtype[bfloat16]],          # C_GU (gate|up)
+            np.ndarray[(M * NI,), np.dtype[bfloat16]],          # SILU (D's A)
+            np.ndarray[(NI * ND,), np.dtype[bfloat16]],         # W_D
+            np.ndarray[(M * ND,), np.dtype[bfloat16]],          # C_D
         )
-        def seq(A, W, AN, QKV, O_all, W_O, C_O, A2, AN2, W2, C2):
+        def seq(A, W, AN, QKV, O_all, W_O, C_O, A2, AN2, W2, C2, SILU, W_D, C_D):
             # === phase 1: fused RMSNorm. A_norm leaves for DDR microtiled, so
             # its DDR copy is verbatim; the drain is armed during the scale pass
             # (before the scale pass it would deadlock) and windowed, because the
@@ -345,7 +383,41 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144):
                                              strides=[4 * N2, 8, N2, 1], issue_token=True)
                 dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
 
-            # === phase 5: attention, Q / K^T / V gathered STRAIGHT OUT OF QKV.
+            # === phase 5: SiLU over the GU output. gate[nt] is C2's row-major
+            # N-tile nt, up[nt] is the same tile shifted by NI columns.
+            for nt in range(n_si):
+                gt = shim_dma_single_bd_task(G_s, C2, offset=nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * N2, 8, N2, 1], issue_token=True)
+                dma_start_task(gt); dma_await_task(gt); dma_free_task(gt)
+                ut = shim_dma_single_bd_task(U_s, C2, offset=NI + nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * N2, 8, N2, 1], issue_token=True)
+                dma_start_task(ut); dma_await_task(ut); dma_free_task(ut)
+                st = shim_dma_single_bd_task(SL_s, SILU, offset=nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * NI, 8, NI, 1], issue_token=True)
+                dma_start_task(st); dma_await_task(st); dma_free_task(st)
+
+            # === phase 6: the D projection. A is the row-major silu buffer, so the
+            # A tile is DE-MICROTILED into the mmul's (M,k) layout (the QKV's
+            # A_norm is already microtiled, which is why its tap is a verbatim copy).
+            for nt in range(n_n_d):
+                for kt in range(n_k_d):
+                    ant = shim_dma_single_bd_task(ANR_s, SILU, offset=kt * k,
+                                                  sizes=[M // 4, k // 8, 4, 8],
+                                                  strides=[4 * NI, 8, NI, 1], issue_token=True)
+                    dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
+                    wt = shim_dma_single_bd_task(W_s, W_D, offset=kt * k * ND + nt * NT,
+                                                 sizes=[k // 8, NT // 8, 8, 8],
+                                                 strides=[8 * ND, 8, ND, 1], issue_token=True)
+                    dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
+                ct = shim_dma_single_bd_task(QKV_s, C_D, offset=nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * ND, 8, ND, 1], issue_token=True)
+                dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
+
+            # === phase 7: attention, Q / K^T / V gathered STRAIGHT OUT OF QKV.
             # Q is row-major already; V is row-major with row stride NQKV; K^T
             # needs the permutation, which the dim ORDER provides (sizes
             # [HD,N/8,8] fills d*N+j, i.e. K^T row-major).
@@ -386,7 +458,7 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144):
                                                      strides=[4 * HD, 8, HD, 1], issue_token=True)
                         dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
 
-            # === phase 6: O-proj over the attention output (row-major per head),
+            # === phase 8: O-proj over the attention output (row-major per head),
             # re-reading the A K-tile per N-tile like the QKV does.
             for nt in range(n_no):
                 for kt in range(n_ko):

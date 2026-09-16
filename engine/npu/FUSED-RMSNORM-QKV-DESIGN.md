@@ -1423,3 +1423,39 @@ GU with one ANR/W/C fifo set, since the tile shapes are identical.
 Left for the full layer: SiLU (`silu_split.cc`), the D projection, and the two
 residual adds (`residual_add.cc`) — the SiLU can take over the FFN norm column as
 a later phase, and D can become a third phase of the GEMM column (K=3072, N=1024).
+
+## + SiLU (BIT-EXACT), and the D phase is a DISCRIMINATED bug
+
+`silu_split.cc` now runs on its own column (2 MM2S: gate, up + 1 S2MM) over the
+GU output: gate tile `nt` at `offset=nt*NT`, up tile `nt` at `offset=NI+nt*NT`,
+both de-microtiled from the row-major C2 into the mmul's (M,NT) layout.
+
+```
+  ND=0 build (no D phase):   QKV bit-exact | GU bit-exact | SiLU BIT-EXACT 49152/49152
+                             attn 90.5% | O-proj* bit-exact
+```
+The bench mirrors `sigmoid_fast` exactly, so SiLU is bit-exact, not just close.
+
+**The D phase silently kills the tail of the sequence.** Adding it makes BOTH the
+D output and the attention come back all-zero, while everything before it (QKV,
+GU, SiLU) stays perfect — i.e. the sequence stops partway, with no error, no
+timeout and no XRT failure.
+
+This is NOT a task/instruction-count ceiling, and that was worth proving:
+
+| build | tasks | insts | attention |
+|---|---|---|---|
+| QKV+GU+attn+O-proj | 6480 | 1,062,736 | 90.5% |
+| + SiLU, ND=0 | 6624 | 1,086,352 | 90.5% |
+| + SiLU, ND=64 | 6721 | 1,102,260 | **0%** |
+| + SiLU, ND=1024 | 8176 | 1,340,880 | **0%** |
+| + SiLU, ND=0, **bigger GU** (N2=8192) | **7728** | **1,267,408** | 90.5% |
+
+The last row is larger than every failing row and still works, so the ceiling
+hypothesis is dead: the **presence of the D phase** is what breaks it, at any
+size (ND=64, a single N-tile, is enough). Its emitted BDs are correct
+(`sizes=[4,8,4,8] strides=[12288,8,3072,1]` = `[4*NI,8,NI,1]`, reading the
+row-major silu buffer), so the defect is structural — most likely the GEMM core's
+THIRD phase in one core body. Next step: give D its own core (or its own column)
+instead of a third phase, and if that fixes it, bisect what about the third phase
+breaks the sequence.

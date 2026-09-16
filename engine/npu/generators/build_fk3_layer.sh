@@ -32,7 +32,8 @@ rm -rf "$OUT"; mkdir -p "$OUT"; cd "$OUT"
 N_K=$(( NH * HD / KO ))
 
 echo "== generator -M $M -H $H -NH $NH -HD $HD -NO $NO -P $PERCOL --passes $PASSES -k $K -NT $NT -kO $KO"
-"$PY" "$G/n1_fk3_layer.py" -M "$M" -H "$H" -NH "$NH" -HD "$HD" -NO "$NO" -N2 6144 \
+"$PY" "$G/n1_fk3_layer.py" -M "$M" -H "$H" -NH "$NH" -HD "$HD" -NO "$NO" -N2 ${N2:-6144} \
+      -NI ${NI:-3072} -ND ${ND:-1024} \
       -P "$PERCOL" --passes "$PASSES" -k "$K" -NT "$NT" -kO "$KO" >design.mlir 2>gen.err \
   || { echo "== GENERATOR FAILED"; tail -20 gen.err; exit 1; }
 [ -s design.mlir ] || { echo "== EMPTY design.mlir"; tail -20 gen.err; exit 1; }
@@ -48,6 +49,7 @@ build_cc() { local obj="$1" src="$2"; shift 2
 # sizes the core-local g_an (unused now that both stages re-read), so keep it 1.
 build_cc rms_split.o rms_norm_split.cc -DM_TILE=$M -DK_TILE=$K -DH=$H
 build_cc nq_nt.o      nq_nt.cc        -DDIM_M=$M -DDIM_K=$K -DDIM_N=$NT -DN_K=1 -Dbf16_f32_ONLY
+build_cc silu_split.o silu_split.cc   -DM_TILE=$M -DIM_TILE=$NT
 build_cc attn1.o      attn1.cc        -DM_TILE=$M -DHD=$HD -DN_KEYS=$N -DDIM_M=$M -DDIM_K=$HD -DDIM_N=$N -Dbf16_bf16_ONLY -DK_ROW_MAJOR
 
 echo "== aiecc"
