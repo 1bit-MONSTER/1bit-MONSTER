@@ -3325,3 +3325,32 @@ STANDING SUMMARY (addenda 84-94): err=-28 solved (the device has columns 0..7; a
 norm's missing W release fixed; LINEAR tap adopted; the small test shapes are broken in the SHARED
 generator and were never valid tests; MY GEMM is exact at the real shape (8192/8192); MY NORM PHASE
 HANGS EVEN WITH THE GEMM'S DMAS REMOVED; the combination hangs at every configuration tried.
+
+### Addendum 95 — a shape trap in my own builds, and the cheap instrument that detects it
+
+Rebuilt the PROVEN norm-only design (n1_rms_norm.py, the generator whose shipped xclbin works) and it
+HUNG under my driver -- which looked like a contradiction, since that same design's shipped xclbin
+gives 910/2048 through the same driver mode. The cause is entirely mine:
+
+  n1_rms_norm.py:            parser.add_argument("-M", type=int, default=128)
+  build_rms35b_m1.sh:        $PYTHON n1_rms_norm.py -M "$M_ROWS" -H "$H"      (M_ROWS=1)
+
+My rebuild omitted `-M`, so I built a 128-ROW norm design and fed it ONE row. The instruction blob
+says it plainly and I had it in front of me: the shipped M=1 design's blob is 508 BYTES (127 words);
+my M=128 build's blob is 42,164 BYTES (10,541 words). ~83x. The design then blocks waiting for the 127
+rows that never come -- my tooling, not the design, and not a result about the norm at all.
+
+TWO THINGS WORTH KEEPING:
+ 1. THE INSTRUMENT: insts-blob SIZE is a cheap, one-command proxy for a design's shape. 508 B = one
+    norm row; 42 KB = 128 of them; the m1 QKV GEMM's is 388,368 B. Any time a design's behaviour
+    changes, compare blob sizes before theorising.
+ 2. MY COMBINED GENERATOR HAS NO `-M` PARAMETER AT ALL -- its norm memref is `np.ndarray[(H,), f32]`,
+    one row by construction (grep of its argparse: -H, -K, -N, -k, -n, -c, -b only). So the combined
+    design and my driver DO agree on one row, this trap is not the combined hang, and the combined
+    hang still has to be explained by whatever is left.
+
+STATUS OF THE DECIDING EXPERIMENT: still not done. A TRUE norm-only build of MY generator (GEMM's
+fifos, cores and runtime DMAs all removed) has now failed to build four times, every time to a
+string-splice cutting inside a nested loop. The next attempt must edit the file with the edit tool
+rather than splice it, and it should check the resulting insts-blob size against the M=1 norm-only
+design's 508 B before drawing any conclusion from a run.
