@@ -5810,3 +5810,55 @@ that is closer and still wrong. That is the state this session spent hours in.
 slice, and it matches the engine's `rawqkv` (bC) at corr 1.0000 - but `bqo` is a *copy* of `bC` made inside
 `qk_norm_pi`, and it is possible the engine's `bqo` row 0 is not the row I think it is, or that `qn_w` is
 indexed differently (per head-slot rather than per dimension, say). Both are reads, not measurements.
+
+## ROOT CAUSE PROVEN: the fused path omits QK-norm. corr 0.99997, magnitude ratio 1.0000.
+
+The engine prints its own ground truth at `NPU_DUMP_L0` (`[qknorm] qn_off=... qn_w: ...`). From my logs:
+
+```
+[qknorm] qn_off=311169280 kn_off=311169024 qn_w: 4.5312 1.2422 -0.7344 1.7031 2.5938 1.5547 1.0938 1.4609
+                                             kn_w: 1.2969 2.3281 4.4062 2.0156 1.7578 2.5312 4.2812 2.4062
+```
+
+I had been reading those weights at the wrong file base. Searching the file for the engine's own 5-value
+byte pattern located it exactly:
+
+```
+pattern found at file offset 311203872  ->  data base = 311203872 - 311169280 = 34592
+qn_w at that base: 4.5312 1.2422 -0.7344 1.7031 2.5938 1.5547 1.0938 1.4609   <- matches the engine exactly
+```
+
+**34592 is the value the arithmetic gave me hours ago** (`file_size - last_data_offset = 683820832 -
+683786240 = 34592`). I then rejected it because the weights it produced (mean 1.97) "looked implausible for
+a norm weight", and picked 38680 because that base yielded a vector with mean ~1. **That heuristic cost
+this session its last several hours, and it is the exact failure this file keeps recording: a plausibility
+check standing in for a measurement.** The true `qn_w` reaches **4.53**, which no norm-weight prior would
+accept, and it is correct.
+
+**With the correct weights, QK-norm reproduces the engine's Q exactly** (row 0 is the RoPE identity, so
+this isolates QK-norm alone):
+
+```
+per-head corr: [0.9999, 0.9999, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+mean 0.999971   min 0.999919
+|mine| mean 1.22675   |eng| mean 1.22673   ratio 1.0000
+```
+
+**All 16 heads, corr 0.99997, magnitude ratio 1.0000. The root cause is proven, not inferred.**
+
+And it explains every earlier anomaly: the engine's Q being ~1.8x larger (the `qn_w` scale reaches 4.53),
+the 0.49 correlation without QK-norm, the improvement to 0.65 with *wrong* weights, V matching perfectly
+(QK-norm does not touch V), and the non-orthogonality of the map (a per-dimension scale is not a rotation).
+
+**The fix, now exact and specified:**
+
+1. the engine must pass `qn_w[l]` and `kn_w[l]` (each [HD]) into the driver - currently it passes neither;
+2. in the host RoPE path (`engine/npu/src/npu_fk3_rope.h`), before rotating: scale each Q head by
+   `1/sqrt(mean(q^2 over HD) + 1e-6)` and then by `qn_w[l][d]`; each K head the same with `kn_w[l][d]`;
+   V untouched;
+3. then the fused Q/K should match the engine at ~1.0 like V already does.
+
+**Three interface-assumption bugs, one shape.** The weight layout (pre- vs post-upload), the q4nx data
+base (found by arithmetic, rejected on plausibility), and QK-norm (present in the model, recorded absent
+in this file's own notes). Each was a documented assumption about an interface that was never checked
+against the artifact - and in each case the check that would have caught it was one command.
