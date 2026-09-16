@@ -593,3 +593,29 @@ structural** — it is not the `timeout_in_sec=2` contention cliff.
 THE 35B (the contention explanation applies to the dense path, not this one). The 35B
 whole-layer ELF path fails reliably and independently of device load, consistent with
 Addenda 6-9b (the lib's 35B layer sequence is broken).
+
+### Addendum 15 — toolchain hazards banked for any engine-side layer rebuild
+
+From @agent-7f1cce (mtygjrxl, fused prefill), five mlir-aie/NPU failure modes that are
+all "the toolchain tells you nothing". Three matter if the 35B layer is ever authored
+engine-side (the only remaining route after Addenda 6-14):
+
+1. `XAIE_INVALID_ELF` / `_XAie_LoadProgMemSection():231 Overflow of program memory` is
+   normally the **per-core 16 KB `.text`** limit, not a corrupt ELF. Check with
+   `llvm-readelf -S <core>.elf` vs `0x4000`. `.bss` is a separate budget.
+2. Soft-`double` is very expensive *code* on a 32-bit AIE core (one kernel:
+   `.text` 16,208 -> 10,976 B when double->float, and it got MORE accurate). Grep
+   kernels for `double` before blaming shapes.
+3. A core's fifo ratio is compile-time: per N-tile it consumes `n_k` A-tiles and
+   `n_k` W-tiles and produces 1 C-tile. A phase streamed with a DIFFERENT `n_k`
+   **stalls silently** — no error, no timeout, no XRT failure, buffers just stay
+   zero, and it can look like plausible partial correctness. This is a live hazard
+   for a NaN/zero hunt.
+4. Verify phases are actually in the emitted MLIR (`grep -c scf.for`), since patches
+   silently no-op when anchors move.
+5. `aie.dma_bd` legality (AIEXDialect.cpp ~236, applied to the REVERSED stride
+   array): the LAST stride may be anything; every other must satisfy
+   `stride * elemWidth % 256 == 0` (bf16 -> even). Leading size-1 dims are NOT
+   exempt; no BD can transpose.
+
+Detail: `engine/npu/FUSED-RMSNORM-QKV-DESIGN.md` (branch `family/head-block-loop`).
