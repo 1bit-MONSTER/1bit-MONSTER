@@ -1395,3 +1395,31 @@ sampled outputs agree to 4 bf16 ULP (dev `0.58594 -0.00230 0.08643` vs ref
 
 So the whole attention block — fused RMSNorm+QKV -> attention -> O-proj — is now
 ONE launch, with the same arithmetic as the per-op path.
+
+## + FFN GU: two norms, two GEMMs and the attention in ONE launch
+
+The GU projection (the FFN's gate|up, N=6144) was added WITHOUT a new column: the
+FFN's RMSNorm shares the QKV norm column and the GU GEMM shares the QKV GEMM
+column, because the two phases never overlap — so the runtime sequence simply
+points the SAME fifos at different DDR buffers and weights:
+
+```
+  QKV      exact=65536/65536 (100.0%)   BIT-EXACT
+  attn     exact=29642/32768  (90.5%)
+  O-proj*  exact=16384/16384 (100.0%)   BIT-EXACT (isolated)
+  GU       exact=98304/98304 (100.0%)   BIT-EXACT
+```
+`build_fk3_layer.sh 16 1024 16 128 1024 2 2 64 64 64` -> 348 KB xclbin, 1.06 MB of
+instructions, i.e. two fused RMSNorm+GEMM stages, the whole 16-head attention and
+the O-proj in a single launch.
+
+**Shim channel budget (the constraint that shaped this):** the norm column needs
+A and A2 (2 MM2S) and would naively need AN and AN2 (2 S2MM) — and 2+2 trips
+`'aie.tile' op number of output DMA channel exceeded`. Sharing ONE A_norm output
+fifo between the two norm phases (the sequence points its drain at AN or at AN2)
+brings it back to 2 MM2S + 1 S2MM. Likewise the single GEMM column runs QKV then
+GU with one ANR/W/C fifo set, since the tile shapes are identical.
+
+Left for the full layer: SiLU (`silu_split.cc`), the D projection, and the two
+residual adds (`residual_add.cc`) — the SiLU can take over the FFN norm column as
+a later phase, and D can become a third phase of the GEMM column (K=3072, N=1024).

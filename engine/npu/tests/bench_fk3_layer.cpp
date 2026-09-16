@@ -19,7 +19,7 @@ static float b2f(uint16_t u){uint32_t v=(uint32_t)u<<16;float f;memcpy(&f,&v,4);
 int main(int argc,char**argv){
   if(argc<7){fprintf(stderr,"usage: %s <xclbin> <insts> M H NH HD NO\n",argv[0]);return 1;}
   int M=atoi(argv[3]),H=atoi(argv[4]),NH=atoi(argv[5]),HD=atoi(argv[6]),NO=atoi(argv[7]);
-  int N=M, GQA=2, KO=64, NT=64;
+  int N=M, GQA=2, KO=64, NT=64, N2=6144;
   int NQKV=NH*HD+2*(NH/2)*HD, KOFF=NH*HD, VOFF=NH*HD+(NH/2)*HD;
   int n_k=H/KO, n_ko=(NH*HD)/KO;
   long n_n=NQKV/NT;
@@ -42,6 +42,11 @@ int main(int argc,char**argv){
   auto bO =xrt::bo(dev,sO,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(7));
   auto bWO=xrt::bo(dev,sWO,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(8));
   auto bC =xrt::bo(dev,sC,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(9));
+  size_t sA2=(size_t)(M+1)*H*4, sAN2=(size_t)n_k*M*KO*2, sW2=(size_t)H*N2*2, sC2=(size_t)M*N2*2;
+  auto bA2 =xrt::bo(dev,sA2 ,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(10));
+  auto bAN2=xrt::bo(dev,sAN2,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(11));
+  auto bW2 =xrt::bo(dev,sW2 ,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(12));
+  auto bC2 =xrt::bo(dev,sC2 ,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(13));
   memcpy(bI.map(),ins.data(),ins.size()*4);bI.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
   float*Am=(float*)bA.map();uint16_t*Wm=(uint16_t*)bW.map();uint16_t*WOm=(uint16_t*)bWO.map();
@@ -49,14 +54,23 @@ int main(int argc,char**argv){
   for(int i=0;i<H;i++) Am[(size_t)M*H+i]=1.0f;                       // gamma
   for(long i=0;i<(long)H*NQKV;i++) Wm[i]=rne((float)((i%13)-6)*0.05f);
   for(long i=0;i<(long)(NH*HD)*NO;i++) WOm[i]=rne((float)((i%11)-5)*0.05f);
+  float*A2m=(float*)bA2.map();uint16_t*W2m=(uint16_t*)bW2.map();
+  for(long i=0;i<(long)M*H;i++) A2m[i]=(float)((i%47)-23)*0.02f;
+  for(int i=0;i<H;i++) A2m[(size_t)M*H+i]=1.0f;
+  for(long i=0;i<(long)H*N2;i++) W2m[i]=rne((float)((i%13)-6)*0.05f);
+  memset(bAN2.map(),0,sAN2);memset(bC2.map(),0,sC2);
   memset(bAN.map(),0,sAN);memset(bQ.map(),0,sQ);memset(bO.map(),0,sO);memset(bC.map(),0,sC);
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW.sync(XCL_BO_SYNC_BO_TO_DEVICE);bWO.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bA2.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW2.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  bAN2.sync(XCL_BO_SYNC_BO_TO_DEVICE);bC2.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bAN.sync(XCL_BO_SYNC_BO_TO_DEVICE);bQ.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bO.sync(XCL_BO_SYNC_BO_TO_DEVICE);bC.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-  auto r=kr((unsigned)3,bI,(unsigned)ins.size(),bA,bW,bAN,bQ,bO,bWO,bC);
+  auto r=kr((unsigned)3,bI,(unsigned)ins.size(),bA,bW,bAN,bQ,bO,bWO,bC,bA2,bAN2,bW2,bC2);
   r.wait();
   bQ.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bO.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  bC2.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  const uint16_t*C2out=(const uint16_t*)bC2.map();
   const uint16_t*QKV=(const uint16_t*)bQ.map();
   const uint16_t*Oall=(const uint16_t*)bO.map();
   const uint16_t*Cout=(const uint16_t*)bC.map();
@@ -126,6 +140,18 @@ int main(int argc,char**argv){
            name,ex,n,100.0*ex/(double)n,100.0*u1/(double)n,100.0*u2/(double)n,
            100.0*u8/(double)n,sumulp/(double)n);
   };
+  // ---- reference: the FFN norm + GU GEMM ----
+  std::vector<uint16_t> An2((size_t)M*H);
+  for(int i=0;i<M;i++){
+    float ss=0;for(int h=0;h<H;h++){float v=A2m[(size_t)i*H+h];ss+=v*v;}
+    float ir=1.0f/sqrtf(ss/(float)H+1e-5f);
+    for(int h=0;h<H;h++) An2[(size_t)i*H+h]=rne(A2m[(size_t)i*H+h]*ir*A2m[(size_t)M*H+h]);
+  }
+  std::vector<uint16_t> C2ref((size_t)M*N2);
+  for(int i=0;i<M;i++)for(int c=0;c<N2;c++){
+    float acc=0;for(int h=0;h<H;h++)acc+=b2f(An2[(size_t)i*H+h])*b2f(W2m[(size_t)h*N2+c]);
+    C2ref[(size_t)i*N2+c]=rne(acc);
+  }
   printf("fk-3 attention block, ONE launch: M=%d H=%d NH=%d HD=%d NO=%d (N=%d keys)\n",M,H,NH,HD,NO,N);
   cmp("QKV",QKV,Qref,(long)M*NQKV);
   cmp("attn",Oall,Oref,(long)NH*M*HD);
@@ -140,6 +166,7 @@ int main(int argc,char**argv){
     Cdev[(size_t)i*NO+n]=rne(acc);
   }
   cmp("O-proj*",Cout,Cdev,(long)M*NO);
+  cmp("GU",C2out,C2ref,(long)M*N2);
   // Per-head breakdown: if head 0 is right and the rest are wrong it is a
   // head-mapping bug; if all are wrong it is the Q/K/V layout.
   printf("  per-head attn exactness:");

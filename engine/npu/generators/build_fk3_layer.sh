@@ -32,7 +32,7 @@ rm -rf "$OUT"; mkdir -p "$OUT"; cd "$OUT"
 N_K=$(( NH * HD / KO ))
 
 echo "== generator -M $M -H $H -NH $NH -HD $HD -NO $NO -P $PERCOL --passes $PASSES -k $K -NT $NT -kO $KO"
-"$PY" "$G/n1_fk3_layer.py" -M "$M" -H "$H" -NH "$NH" -HD "$HD" -NO "$NO" \
+"$PY" "$G/n1_fk3_layer.py" -M "$M" -H "$H" -NH "$NH" -HD "$HD" -NO "$NO" -N2 6144 \
       -P "$PERCOL" --passes "$PASSES" -k "$K" -NT "$NT" -kO "$KO" >design.mlir 2>gen.err \
   || { echo "== GENERATOR FAILED"; tail -20 gen.err; exit 1; }
 [ -s design.mlir ] || { echo "== EMPTY design.mlir"; tail -20 gen.err; exit 1; }
