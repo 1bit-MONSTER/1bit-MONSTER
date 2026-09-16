@@ -76,3 +76,54 @@ extern "C" void rms_scale_f32_bf16(float *__restrict A_tile, float *__restrict s
 extern "C" void zero_f32(float *__restrict buf) {
     for (int i = 0; i < M_TILE; i++) buf[i] = 0.0f;
 }
+
+// ---- residual-aware variants (fk-3 layer: the add stops being a stage) --------
+//
+// The FFN norm's input is h = x + o (x = the layer input, o = the O-proj output),
+// and h is never materialised: the norm reads BOTH f32 K-tiles and reduces
+// (x+o)^2. Col 5 already carries exactly two f32 (M+1,k) inputs (A and A2), so
+// this costs no fifo and no column. As with the plain variant, the learned gamma
+// rides in the extra row M of a K-tile — here the SECOND buffer's, since that is
+// the one the host can pre-fill (the O-proj only writes rows 0..M-1).
+extern "C" void rms_reduce_add_f32(float *__restrict A, float *__restrict O,
+                                   float *__restrict ss) {
+    for (int r = 0; r < M_TILE; r++) {
+        float acc = ss[r];
+        for (int i = 0; i < K_TILE; i++) {
+            float v = clamp_nonfinite(A[r * K_TILE + i]) + clamp_nonfinite(O[r * K_TILE + i]);
+            acc += v * v;
+        }
+        ss[r] = acc;
+    }
+}
+
+extern "C" void rms_scale_add_f32_bf16(float *__restrict A, float *__restrict O,
+                                       float *__restrict ss, bfloat16 *__restrict out) {
+    uint16_t *o = reinterpret_cast<uint16_t *>(out);
+    for (int r = 0; r < M_TILE; r++) {
+        float ir = aie::invsqrt(ss[r] / (float)H + 1e-5f);
+        int tr = r / 4, rr = r % 4;
+        for (int tc = 0; tc < K_TILE / 8; tc++)
+            for (int cc = 0; cc < 8; cc++) {
+                float gamma = O[M_TILE * K_TILE + tc * 8 + cc];   // A2's row M_TILE = FFN gamma
+                float v = clamp_nonfinite(A[r * K_TILE + tc * 8 + cc]) +
+                          clamp_nonfinite(O[r * K_TILE + tc * 8 + cc]);
+                o[(tr * (K_TILE / 8) + tc) * 32 + rr * 8 + cc] = f32_to_bf16_rne(v * ir * gamma);
+            }
+    }
+}
+
+// h = x + o as bf16, microtiled exactly like A_norm so the D GEMM can read it
+// with the same verbatim tap it uses for A_norm.
+extern "C" void add_f32_bf16(float *__restrict A, float *__restrict O,
+                             bfloat16 *__restrict out) {
+    uint16_t *o = reinterpret_cast<uint16_t *>(out);
+    for (int r = 0; r < M_TILE; r++) {
+        int tr = r / 4, rr = r % 4;
+        for (int tc = 0; tc < K_TILE / 8; tc++)
+            for (int cc = 0; cc < 8; cc++)
+                o[(tr * (K_TILE / 8) + tc) * 32 + rr * 8 + cc] = f32_to_bf16_rne(
+                    clamp_nonfinite(A[r * K_TILE + tc * 8 + cc]) +
+                    clamp_nonfinite(O[r * K_TILE + tc * 8 + cc]));
+    }
+}

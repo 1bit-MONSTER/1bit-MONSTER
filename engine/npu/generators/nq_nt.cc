@@ -69,6 +69,10 @@ extern "C" void nq_acc_zero(void) {
 extern "C" void nq_acc_mac(const uint16_t *a, const uint16_t *w) {
     matmul_bf16_f32((bfloat16 *)a, (bfloat16 *)w, g_cacc);
 }
+// f32 C store: the O-proj must emit f32 so the FFN norm can add it to x in f32.
+extern "C" void nq_acc_store_f32(float *out) {
+    for (int i = 0; i < DIM_M * DIM_N; i++) out[i] = g_cacc[i];
+}
 extern "C" void nq_acc_store_bf16(uint16_t *out) {
     for (int i = 0; i < DIM_M * DIM_N; i++) {
         uint32_t u; __builtin_memcpy(&u, &g_cacc[i], 4);
