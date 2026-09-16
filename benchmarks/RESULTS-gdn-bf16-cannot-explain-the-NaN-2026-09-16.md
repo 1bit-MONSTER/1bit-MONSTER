@@ -71,3 +71,44 @@ The measurement above is a *negative* result and narrows the space rather than f
 
 `/tmp/gdntest/t.cpp` — 60 lines, `g++ -O2 -o t t.cpp && ./t`. Kept out of the repo because it is a
 scratch check, not an artifact.
+
+---
+
+# Addendum: the stored `ssm_a` carries the correct decay sign
+
+Checked the cheap thing first, so the sign hypothesis above is properly scoped rather than left dangling.
+
+`ssm_a` read straight from the model via the repo's own loader, first three layers:
+
+```
+L0 ssm_a ndim=1 n=32  neg=32 pos=0  first: -0.03642 -0.02315 -0.03116 -34.16665 -0.13747 ...
+L1 ssm_a ndim=1 n=32  neg=32 pos=0  first: -0.51075 -8.63868 -1.64872  -0.30025 -9.94306 ...
+L2 ssm_a ndim=1 n=32  neg=32 pos=0  first: -18.00456 -0.70911 -1.21688 -2.59380 -4.17739 ...
+```
+
+**All 32 values are negative in every layer, so `g = ssm_a · softplus(a + dt_bias) ≤ 0` and
+`exp(g) ≤ 1` — the recurrence decays, as intended.** The model data is not the problem.
+
+That narrows the sign hypothesis to a **kernel/packing** question: the data says decay, so a wrong
+sign could only arise if the packed BO the kernel reads does not preserve it, or if the kernel negates
+again. Both are checkable against the `/tmp/lin5dump0946` dumps the goal lane already produced, and
+neither is a rebuild.
+
+It also means the growth branch of my sweep (`ssm_a` positive) is **not** what the model does — it was
+a control for "does growth reach non-finite, and is that dtype-separable?", and the answer to both was
+yes and no respectively. Worth keeping the two questions apart:
+
+- *Does a wrong sign produce non-finite values?* **Yes** — so it remains a live candidate if the
+  packing is wrong.
+- *Is that non-finiteness dtype-separable?* **No** — so it still cannot be fixed by float32.
+
+# Status of this note
+
+Two measurements, both negative results:
+
+1. bf16 and f32 reach non-finite together at every scale — **the float32 rebuild is not justified**.
+2. the stored `ssm_a` is correctly negative — **the data is not the problem**, so if the sign is wrong
+   it is in the packing or the kernel.
+
+**Neither identifies the cause.** They remove two candidates and, in doing so, redirect effort away
+from the most expensive one.
