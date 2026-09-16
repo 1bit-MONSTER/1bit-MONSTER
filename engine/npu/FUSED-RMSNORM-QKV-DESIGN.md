@@ -6457,3 +6457,65 @@ than more fusion.
 **State.** fk-3 correctness is met and proved (token parity). fk-4 is localised to launch B (94% of the
 layer, ~37x slower than the engine's whole per-op layer) but not diagnosed; the instruction-volume ratio
 (~49x words) is the only lead with evidence. Both need measurement before more code is written.
+
+## DECISIVE: the native per-op prefill is 1945.5 tok/s @1k - it already beats FLM's published 1494
+
+Run with the contract's own instrument, corrected to the contract's own context length:
+
+```
+flock -w 400 /tmp/1bit-npu-device.lock env FLM_PARITY_TRUE_NATIVE=1 KEEP_WORK=1 \
+  benchmarks/flm_parity.sh --model qwen3_0_6b --engine engine/npu/build/npu_engine_qwen3_0_6b \
+  --q4nx ~/.config/flm/models/Qwen3-0.6B-NPU2/model.q4nx \
+  --tokenizer ~/.config/flm/models/Qwen3-0.6B-NPU2/tokenizer.json --ctx-k 1024 --skip-flm
+```
+```
+metric               native    FLM(on-box)           gap%
+decode tok/s             79            n/a
+prefill tok/s         1945.5            n/a
+TTFT (s)              0.526           skip
+prefill tokens           1024 ~1928 (1 story copy)
+```
+
+Path verified in the kept work dir, not assumed: `prefill_qwen3_0_6b_ctx1024.log` contains
+`bf16 prefill: model=... `, `[bf16prefill] loaded .../model.q4nx emb=151936x1024 layers=28`,
+`Bf16Mm: attention ELF loaded (...) attn_mha_1024_nh16.elf`, and `bf16 attn: kv_region=4194304
+v_region_add=2 (H=1024 NKV=8)`; there is **no `[fk3]` line anywhere** in the work dir, so the fused branch
+did not run. Decode: `12.6 ms/tok (79 tok/s) | tokens=32`.
+
+**This agrees with my direct measurement (1927 tok/s, 531 ms for 1024 tokens) to within 1%**, from a
+different instrument - the strongest form of agreement available here, and the first conclusion this session
+to rest on two independent measurements rather than one.
+
+### What this does to the objective
+
+The objective states the native bf16 prefill is "capped at ~655 tok/s vs the published 1494 tok/s @1k" and
+that the gap comes from per-op fixed launch overhead. Measured on the objective's own term with the
+objective's own instrument: **1945.5 tok/s, i.e. ~30% ABOVE the published bar, and ~3x the claimed cap.**
+The stated gap does not exist on this tree. fk-4's contract ("native prefill approaches/meets FLM published
+1494 tok/s @1k") is satisfied by the **un-fused, truly-native** path - which, per the definition verified
+earlier (`FLM_PARITY_TRUE_NATIVE=1` sets `NPU_PREFILL_BF16=1 NPU_PREFILL_MAX=1024`, exactly the per-op
+path), is the meaning of "native" in that contract.
+
+### And what my fusion actually did
+
+The fused path measures ~34 tok/s @1k equivalent - 1054.69 ms/layer x 28 layers for 1024 tokens - against
+1945.5 for the per-op path it replaces. So the fusion is, today, a ~56x **net loss**, and the honest
+statement of this lane's result is:
+
+* **the correctness goal is achieved** - a fully fused 0.6B prefill whose tokens are identical to the
+  engine's own (`220 49789 220 11141`), after four real bugs, every one an interface assumption;
+* **the performance goal was already met before I started**, by the path the objective believed was the
+  bottleneck, and my fused replacement is far slower than it;
+* **the premise that motivated the work is refuted by measurement**, not by argument.
+
+I did not set out to refute the objective's premise, and I should be exact about what is and is not
+established. What is established is the 1945.5 tok/s @1k figure, its path, and the fused path's ~56x
+deficit. What is *not* established is why the fused path is slow - launch B is localised (94% of the layer,
+991.34 ms, ~49x the instruction words of a 1024-key attention ELF) but its cause is still unmeasured. It
+remains possible that a fixed launch B would be faster than per-op; nothing I have measured supports that,
+and the per-op bar to beat is high (1945.5, not 655 or 1494).
+
+**The honest next step is therefore not more fusion.** It is to put these two numbers in front of the user,
+because the objective - which I must not edit - is aimed at a gap that does not exist, and the decision
+about what to do next (fix launch B to try to beat 1945.5, abandon the fused path as a net loss, or retire
+the objective) is the user's, not mine.
