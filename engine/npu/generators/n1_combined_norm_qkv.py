@@ -64,10 +64,10 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
 
         # ---- PHASE 1: RMSNorm on its OWN core at (0,3); shim/mem shared with column 0 ----
         rms = external_func("rms_norm_f32_bf16", inputs=[Rn_ty, Rw_ty, Ro_ty],
-                            link_with="rms_norm_f32_bf16.o")
+                            link_with="combined_kernels.o")
 
         # ---- PHASE 2: i8 M=1 GEMM, 8 columns x 1 row, cores at row 2 ----
-        kernel_o = "mm_32x64x128.o"
+        kernel_o = "combined_kernels.o"
         zero = external_func("zero_i32", inputs=[Gc_ty], link_with=kernel_o)
         matmul = external_func("matmul_i8_i32", inputs=[Ga_ty, Gb_ty, Gc_ty], link_with=kernel_o)
 

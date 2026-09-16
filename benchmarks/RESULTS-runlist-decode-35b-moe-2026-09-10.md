@@ -3459,3 +3459,40 @@ object and have the combined generator reference both symbols through a single `
 REBUILD POSITION: (a) compiles -- MET. (c) one submit -- MET and the driver is validated (8192/8192).
 (b) both phases correct together -- each phase is PROVEN exact alone at the real shape, the failure
 mode is now fully explained, and the single remaining engineering step has a proven-feasible design.
+
+### Addendum 99 — the two-object hypothesis is REFUTED: one kernel object, same hang
+
+Built the fix that addendum 98 called for, and it did not work -- which is worth recording precisely,
+because addendum 98's EVIDENCE is still good while its INFERENCE is now dead.
+
+  ld.lld -r mm_32x64x128.o rms_norm_f32_bf16.o -o combined_kernels.o      (17,616 B)
+  llvm-nm: matmul_i8_i32, matmul_i8_i32_i4, rms_norm_f32_bf16, zero_i32 -- all present
+
+Pointed all three externals in n1_combined_norm_qkv.py at that single object (the design then contains
+THREE references to combined_kernels.o and no other kernel object), rebuilt at the real shape
+(K=2048 N=8192 c=4, num_col_group=16), and ran it:
+
+  design refs one object: 3
+  compiled: 1
+  allocated all BOs; submitting ONE run          <- HANGS
+
+So a design whose kernels all come from ONE relocatable object STILL HANGS. The two-different-
+`link_with` structure is therefore NOT the cause, and addendum 98's closing inference must be
+withdrawn. What addendum 98 actually ESTABLISHED stands unchanged and is still the strongest datum in
+this investigation: a two-core design where BOTH cores come from one `mm_32x64x128.o` -- the real m1
+GEMM plus a dummy `zero_i32` core on row 3 -- completes at the real shape and leaves the GEMM EXACT at
+8192/8192.
+
+WHAT DIFFERS between that working two-core design and the failing one, now that the kernel object is
+ruled out:
+  - the dummy core was fed by ONE shim DMA straight into the core, with NO memory tile involved;
+  - the norm phase uses a MEMORY TILE with `object_fifo_link` on all three of its fifos
+    (shim->mem->core for A and W, core->mem->shim for O) and three separate runtime DMAs.
+That is now the sharpest remaining difference, and it is directly testable: give the working dummy-core
+design a mem-tile path (core->mem->shim via object_fifo_link) and see whether IT starts to hang. If it
+does, the culprit is the mem-tile/linked-fifo path for a second phase's output, not kernels, columns,
+taps, feeding, or group counts.
+
+NOTE FOR WHOEVER BUILDS NEXT: n1_combined_norm_qkv.py now references `combined_kernels.o`, which must
+be produced with the `ld.lld -r` command above and placed beside the design. n1_norm_only_mine.py
+still references the separate objects.
