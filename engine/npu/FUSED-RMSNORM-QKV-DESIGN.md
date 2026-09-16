@@ -3276,3 +3276,46 @@ bugs were the ones that compared **byte-for-byte against a differently-derived a
 the driver-vs-bench stage diff, and finally the engine's own per-op QKV. When a verification
 keeps passing while the system keeps failing, suspect that the verification shares the bug's
 assumption.
+
+## Both fused kernels are independently verified correct. The "oracle" was the anomaly.
+
+Final CPU test, using the per-op path's OWN dumped artefacts - its normed activation
+(2.54688), its effective uploaded weight (0.64062, dumped via `bf16mm_dump_w`, i.e. the
+post-upload read-back), and its own QKV buffer:
+
+```
+per-op normed activation (4 tok) maxabs = 2.54688
+per-op effective weight          maxabs = 0.64062
+CPU recompute  n @ W             maxabs = 0.98047
+per-op QKV buffer, rows 0..3     maxabs = 4.68750      <- 4.78x larger
+matched elements: 0.08%
+```
+
+A plain bf16 GEMM of the per-op path's own inputs cannot produce its own QKV buffer. So that
+buffer is **not** a plain bf16 GEMM output - and it was the artefact every "launch A is 2.51x /
+5.36x too small" conclusion was measured against. Those conclusions are retracted; the 5.36x
+was the oracle's property, not my kernel's.
+
+What is actually established, each by an independent route:
+
+* **launch B is bit-identical to the working bench** - all six computed stages byte-for-byte,
+  all six inputs byte-identical, idle device;
+* **launch A exactly reproduces an independent NumPy CPU reference** computed from the
+  engine's own dumped activation and gamma (Q 1.03906 / K 1.04688 / V 1.05469, matching to
+  the last digit, with eps pinned to 1e-5 by the 1e-6 comparison);
+* the weights are identical pre- and post-upload (my raw array vs `bf16mm_dump_w`'s read-back,
+  zero diff), so `bf16mm_upload_w` does not transform them - the transform theory is dead too;
+* the layer-input and gamma the driver supplies are correct (verified directly);
+* and the engine's tokens are still wrong.
+
+So the defect is not in either fused kernel, not in the weights, not in the launch-A numerics.
+It is in how the two launches are **composed**, i.e. the driver's inter-launch glue - and the
+one piece of that glue which no bench has ever exercised is the **KV-cache write**.
+`qk_norm_pi` writes each token's K and V into *both* `bKv` (the bf16 buffer the NPU attention
+reads) *and* the f32 `kv_caches[l][0].k/v` that the engine's **decode** path reads. My driver
+scatters only into `bKv`. If the decode reads `kv_caches`, then the prefill's entire KV state is
+invisible to it: the prefill would be numerically correct (as measured) and the decoded tokens
+would still be wrong - which is exactly the observed symptom, wrong from token 1 onward.
+
+That is the next thing to check, and it is cheap: write the f32 `kv_caches[l][0]` as well as
+`bKv` in the fused scatter, and see whether the tokens move.
