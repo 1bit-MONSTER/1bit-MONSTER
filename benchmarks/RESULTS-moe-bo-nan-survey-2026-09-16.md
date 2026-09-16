@@ -69,3 +69,53 @@ drawing anything from it. `dump_bos`'s kv size is a one-line change (`0x100000` 
 `runtime_layer_moe.cpp:355`), and this branch builds in minutes. Until that is done, the state figures
 above should not be used to argue a mechanism — which is exactly the mistake this lane has made
 repeatedly, and the reason this note separates what is solid from what is not.
+
+---
+
+# RESOLVED: the state is f32, and it is 98.2% NaN — the "half inf" was my slice
+
+Ran the cheap check this note said was needed: dump the **full** 2 MB arg-4 region (one line,
+`runtime_layer_moe.cpp:355`, `0x100000` → `0x200000`) and read it at both widths.
+
+```
+kv.bin = 2,097,152 bytes
+
+  as bf16 : n=1,048,576  inf=515,455  nan=1,719   (49.3% non-finite)
+  as f32  : n=  524,288  inf=     14  nan=514,588 (98.2% non-finite)
+```
+
+**The f32 element count is 524,288 — exactly 32 v-heads × 128 × 128, the state size this repo's own
+`gdn_host_recurrence.h` documents.** The bf16 count (1,048,576) is exactly double, which is what you
+get reading f32 data as half-width. Combined with `mamba_ssm_dtype=float32` in the model config, the
+reading is unambiguous:
+
+**The recurrent state is stored in float32 and 514,588 of its 524,288 entries — 98.2% — are NaN.**
+
+## What this settles
+
+1. **The "exactly 8192 inf per head, identically for 30 of 32 heads" pattern was an artefact of
+   dumping half the tensor.** Half the window, half the state: it read as a suspiciously regular
+   overflow signature because it *was* a boundary, not data. The lesson generalises — the pattern was
+   too regular for arithmetic, and that was the clue that the reading was wrong.
+2. **The state is already float32 and it still NaNs.** This is the strongest possible form of the
+   earlier refutation: it is no longer "bf16 and f32 have the same range so float32 would not help",
+   it is "**the state is f32 and is 98% NaN anyway**". A float32 GDN kernel cannot fix a float32 state
+   that has already gone NaN.
+3. Only **1,492** of 524,288 state entries are finite and non-zero. This is not partial corruption or
+   a few heads overflowing — it is essentially the whole state.
+
+## What it still does not establish
+
+**The mechanism.** A state that is ~98% NaN says the recurrence diverged; it does not say why. The
+candidates remain open, and the ones this session has already ruled out are the dtype (above) and a
+wrong sign *in the model data* (`ssm_a` is correctly negative):
+
+- `ssm_a` (or the other GDN gates) not reaching the kernel — `npu_pack_moe_linear5_bo` writes
+  `ssm_conv1d`/`ssm_norm`/`ssm_a`/`ssm_dt_bias` into `norms[0, 66048)`, and the ELF's own S2MM write
+  clobbers that region and never reads it. If the kernel's gate inputs come from anywhere near there,
+  it is reading clobbered bytes;
+- the region-B base differing between the v0.9.46 and v1.0.x layouts (the goal lane's addendum 160);
+- something outside the recurrence.
+
+**Distinguishing them needs the gate values the kernel actually consumes**, not the state it produced
+— and that is the next measurement, not another inference.

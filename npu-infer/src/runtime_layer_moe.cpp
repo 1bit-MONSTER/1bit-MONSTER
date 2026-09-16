@@ -365,7 +365,12 @@ bool MoERuntimeLayerEngine::dump_bos(const char* dir) {
     dump("act",      bo_act_.get(),    4096,      0);
     dump("router",   bo_router_.get(), 0x3000,    0);
     dump("norms",    bo_norms_.get(),  0x50200,   0);
-    dump("kv",       bo_kv_.get(),     0x100000,  0);
+    // 0x200000, not 0x100000: decode_txn reports the ELF's arg-4 lengths in 4-BYTE
+    // WORDS, so `arg4 @49152 len=524288` is 2 MB of traffic. Dumping only the first
+    // 1 MB showed "exactly half of every state entry non-finite", which is not what
+    // overflow looks like -- it is what half a tensor looks like. See
+    // RESULTS-moe-bo-nan-survey-2026-09-16.md.
+    dump("kv",       bo_kv_.get(),     0x200000,  0);
     dump("weightA",  bo_weight_.get(), 0x100000,  0);          // region-A head
     dump("weightB",  bo_weight_.get(), 0x200000,  0x1bc00000); // region-B head
     dump("logits",   bo_logits_.get(), 0x100000,  0);
