@@ -3798,3 +3798,45 @@ inspection). A genuine zero denominator would make `attn1_finalize` divide by ze
 non-finite values downstream, but the engine's tokens are finite - so the `l_state` reading is a
 defect in my debug dump, not in the kernel. The `O(f32)` result above confirms the softmax
 normalisation is working.
+
+## After the attention fix: the layer-output deficit persists, so a second defect is in the magnitude path
+
+Re-ran the per-layer hidden comparison (baseline vs fused, same prompt, NPU_PREFILL_MAX=128) with
+the fixed launch B:
+
+```
+        baseline maxabs     fused maxabs     ratio
+L0          6.6196             1.2969         5.10
+L1          7.8188             3.5625         2.19
+L2       6466.9751             4.4375     1457.35
+L3       6466.2598             6.3750     1014.32
+L4       6465.8730             7.4375      869.36
+```
+
+L0 first six values: base `0.28889 -0.43481 -0.12939 -0.92279 0.01874 0.47302`
+                    fused `-0.13086 0.14746 -0.82422 0.44141 -0.10498 0.21777`
+
+Two things stand out.
+
+**The deficit at L0 barely moved** (5.36 before the attention fix, 5.10 after), so the attention
+bug - real, and worth a 260x improvement in O(f32)'s relative error - was not what was suppressing
+the layer output. There is a second, independent defect in the magnitude path.
+
+**The baseline's explosion at L2 is the baseline's own behaviour, not a fused-path artifact.**
+This engine's own comments record per-token `su` maxima around 3671 for 0.6B prefill, so large
+hidden-state values are normal for this model here, and the fused path's smooth growth
+(1.30, 3.56, 4.44, 6.38, 7.44) is the anomaly. Its residual stream is not accumulating the way
+the baseline's does.
+
+The largest identified discrepancy in that chain remains the D projection: measured earlier at
+`bdw` maxabs **3.57812** on the per-op path versus roughly **0.29** for the fused equivalent,
+with the same SiLU (3.06 vs 2.84) and the same `Wd` - a ~12x gap in the term that supplies
+`silu*W_D` to the layer output. Both paths take `Wd` from the same `bf16mm_dequant` output and
+both treat it as (IM, H), so the layout story that explained other discrepancies does not
+obviously apply here.
+
+Next measurement, by the same technique that found the scaling bug: instrument launch B's D phase
+(or its `silu` operand) and compare against the per-op path's `bdw` for the same real weights.
+That isolates whether the fused D GEMM's *weight* or its *activation* differs - and unlike the
+attention case, the per-op buffer is a valid oracle here because `bdw` is an f32 residual term
+with no quantization scale attached.
