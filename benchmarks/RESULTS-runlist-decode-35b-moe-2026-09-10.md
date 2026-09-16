@@ -3911,3 +3911,39 @@ REBUILD POSITION: the two-phase milestone is MET and verified (addendum 108). Th
 extension in progress whose first build error remains unexplained; the extension has cost no new
 runtime argument (the merge pattern holds) and has not disturbed the working design, which still gives
 910/2048 and 8192/8192.
+
+### Addendum 111 — ROOT CAUSE OF THE DOMINANCE ERROR: tiles declared lazily. THREE PHASES NOW RUN, ONE SUBMIT.
+
+  Compilation completed successfully
+  insts blob: 431,336 B
+  FOUR-arg submit completed
+  FOUR-arg RMSNorm: 910/2048 match
+  FOUR-arg FFNnorm:  23/2048 match
+  FOUR-arg GEMM: 8192/8192 columns match
+
+THREE PHASES -- RMSNorm, the i8 M=1 GEMM, and FFNnorm -- compile, RETIRE in ONE submit, and all three
+execute. The two proven phases are UNCHANGED by the extension (910/2048, bit-identical, and 8192/8192,
+exact), and the third phase runs. The runtime_sequence is STILL FOUR arguments: adding an entire phase
+cost no new argument, because the merged-buffer pattern holds.
+
+THE DOMINANCE ERROR'S CAUSE, found by reading rather than re-deriving (addendum 110 was right to reject
+the scope hypothesis): AIECC EMITS A TILE DECLARATION WHERE THE TILE IS FIRST CREATED IN THE PYTHON.
+My FFNnorm block created `tile(NC+1, 0/1/2)` deep inside the design, after the norm phase, so the MLIR
+put those three `aie.tile` ops at lines 53-55 -- AFTER the fifos and core that reference them. Hence
+"operand #0 does not dominate this use", reported at a line that moved between variants (18:5, 24:5)
+because it points at whichever op happens to sit at the boundary, not at the offending tile. The fix is
+one move: declare the tiles at the TOP of the device_body, beside `shim0`/`mem0`/`norm_core`. That is a
+general rule for this generator, not a special case -- EVERY tile a design uses must be created before
+anything references it, and the failure mode is a dominance error at a misleading location.
+
+CONFIRMED BY TWO PROBES before the fix: removing the FFNnorm's runtime DMAs changed nothing (the error
+simply moved from 18:5 to 24:5), which correctly localised the fault to the core/fifos rather than the
+DMA sequence.
+
+REMAINING, and it is now ordinary arithmetic rather than structure: the FFNnorm's values are wrong
+(23/2048), while the norm and GEMM are exact. The FFNnorm's three DMAs address the second half of the
+merged buffer at F, F+H*4 and F+H*4+H*4 (F = H*4+H*4+H*2 = 20480), the driver fills region A at F and
+gamma at F+H*4 with DISTINCT inputs (nA reversed, and 1.0 + 0.25*nW) precisely so a region mix-up
+cannot pass silently, and the host reference is computed from those same distinct inputs -- so the
+mismatch is in the device path, not the reference. The next step is to check which region the FFNnorm's
+DMAs actually read, by the same dump-and-search technique that resolved the first norm's 0/2048.

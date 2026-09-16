@@ -79,6 +79,12 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
         shim0 = tile(NC, 0)
         mem0 = tile(NC, 1)
         norm_core = tile(NC, 2)
+        # FFNnorm's tiles are declared HERE, beside the norm's, rather than lazily when its fifos are
+        # built: aiecc emits tile declarations where they are first created, and creating them deep
+        # inside the design put them after fifos that reference them. (Addendum 111.)
+        ffn_shim = tile(NC + 1, 0)
+        ffn_mem = tile(NC + 1, 1)
+        ffn_core = tile(NC + 1, 2)
         qkv_mem = [tile(c, 1) for c in range(n_aie_cols)]
         qkv_core = [tile(c, 2) for c in range(n_aie_cols)]
         qkv_shim = [tile(c, 0) for c in range(n_aie_cols)]
@@ -114,9 +120,6 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
         # A second phase needs its OWN column (addendum 102: sharing a mem tile that already
         # carries the GEMM's B and C fails resource allocation). The buffer argument count stays
         # at FOUR, the hard limit being five (addendum 106): the new regions live inside NRM.
-        ffn_shim = tile(NC + 1, 0)
-        ffn_mem = tile(NC + 1, 1)
-        ffn_core = tile(NC + 1, 2)
         fA_s = object_fifo("F_A_S", ffn_shim, ffn_mem, 2, Rn_ty)
         fA_c = object_fifo("F_A_C", ffn_mem, ffn_core, 2, Rn_ty)
         fW_s = object_fifo("F_W_S", ffn_shim, ffn_mem, 1, Rw_ty)
