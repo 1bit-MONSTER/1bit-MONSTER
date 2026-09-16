@@ -95,3 +95,33 @@ Qwen3-8B / Llama-3.1-8B (H=4096) have none. Extending the (c) sweep across the s
 supported models therefore requires **building the missing per-model `final_bf16_*`
 xclbins** — a generator/build task, not a measurement — and that is the honest boundary
 of this criterion as it stands.
+
+## Addendum 2: Qwen3-1.7B — bf16 tiles built, prefill parity holds, decode does not
+
+The census shows the `final_bf16_*` set in the tree is complete only for **Qwen3-0.6B**
+(H=1024, GU form); the four H=2560 tiles present (`QKV_K2560_N3584`,
+`G/U_K2560_N10752`, `D_K10752_N2560`, `O_K2560_N2560`) are **Nanbeige's**
+(NH+2·NKV = 20+8 = 28 → 3584), not any Qwen3 model's. So 1.7B/4B/8B/VL-4B/Llama have
+no bf16 tiles at all. Built Qwen3-1.7B's four with
+`build_bf16_xclbins.sh QKV:2048:4096 O:2048:2048 GU:2048:12288 D:6144:2048`
+(all four compiled; `final_bf16_{QKV_K2048_N4096,O_K2048_N2048,GU_K2048_N12288,D_K6144_N2048}.xclbin`).
+
+| ctx | native bf16 prefill | t/s | FLM t/s | ratio | native TTFT | FLM TTFT | native decode | FLM decode | decode ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1k | 797 ms | 1285 | 961.32 | **1.34x** | 0.797 s | 1.022 s | 33 | 39.41 | 0.84x |
+| 2k | 1327 ms | 1544 | 1254.82 | **1.23x** | 1.327 s | 1.555 s | 30 | 36.40 | 0.82x |
+| 4k | 2559 ms | 1601 | 1413.84 | **1.13x** | 2.559 s | 2.750 s | 20 | 31.37 | 0.64x |
+| 8k | 5775 ms | 1419 | 1373.25 | **1.03x** | 5.775 s | 5.651 s | 24 | 24.61 | 0.98x |
+
+- **Prefill >= FLM at every context** (1.03-1.34x), the same shape as 0.6B.
+- **TTFT faster at 1k-4k**, 2% slower at 8k.
+- **Decode is BELOW FLM at every context** — 0.64-0.98x — unlike 0.6B where it was at
+  or above. So criterion (c)'s decode clause is **not** met for this model, and the
+  six-model claim cannot be made as stated. The decode figures are the engine's own
+  `ms/tok` report and vary non-monotonically (33/30/20/24), so they carry noise; the
+  yardstick's native lane would be the stronger instrument but needs per-model layer
+  ELFs, which do not exist for 1.7B yet.
+
+Honest status of (c): **0.6B fully gated parity on all three metrics at 1k-8k**;
+**1.7B prefill + mostly TTFT, decode behind**; 4B/8B/VL-4B/Llama still need their bf16
+tiles built (4 each) and then the same sweep.
