@@ -4758,16 +4758,20 @@ struct Bf16Ctx {
                         // A[0,k2] the output row MUST be W[k2,:].
                         const int k2 = getenv("NPU_GEMM_PROBE_K") ? atoi(getenv("NPU_GEMM_PROBE_K")) : 0;
                         const size_t AR2 = 256, span = (size_t)AR2 * H;
+                        fprintf(stderr, "[probe2] begin l=%d Wqkv=%d bA=%zu span=%zu\n", l, Wqkv[l], bA.size(), span); fflush(stderr);
                         std::vector<uint16_t> save(span), C2(span, 0);
                         memcpy(save.data(), bA.data(), span * 2);
                         memset(bA.data(), 0, span * 2);
                         bA[(size_t)k2] = 0x3F80;   // one-hot at row 0, K position k2
+                        fprintf(stderr, "[probe2] A prepared (one-hot at k=%d)\n", k2); fflush(stderr);
                         bf16mm_gemm_launch(Wqkv[l], H, qout, 0, 0, bA.data());
+                        fprintf(stderr, "[probe2] launched, waiting...\n"); fflush(stderr);
                         bf16mm_gemm_wait(0, C2.data());
+                        fprintf(stderr, "[probe2] wait returned\n"); fflush(stderr);
                         memcpy(bA.data(), save.data(), span * 2);   // restore before the real launch
                         FILE* f2 = fopen("/tmp/npu_gemm_probe2.bin", "wb");
                         if (f2) { fwrite(C2.data(), 2, (size_t)qout, f2); fclose(f2); }
-                        fprintf(stderr, "[probe2] l=%d Wqkv=%d row %d via bA\n", l, Wqkv[l], k2);
+                        fprintf(stderr, "[probe2] l=%d Wqkv=%d row %d via bA\n", l, Wqkv[l], k2); fflush(stderr);
                     }
                     for (int i = 0; i < nblk && i < 2; i++)
                         bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, i & 1, bA.data() + (size_t)(i * 256) * H);

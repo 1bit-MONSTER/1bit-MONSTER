@@ -4401,3 +4401,56 @@ obscure it:
 
 Open: `bA @ W_raw != bC` (0.08% element match, same magnitude distribution) remains unexplained, with
 all of the above holding; and the kernel's norm epsilon `1e-5` against the engine's `1e-6`.
+
+## MEASURED: the GEMM's A handling is pointer-dependent. The probe approach is dead, and that is the finding.
+
+Progress markers localised it exactly:
+
+```
+  L0[probe2] begin l=0 Wqkv=1 bA=2359296 span=262144
+[probe2] A prepared (one-hot at k=0)
+[probe2] launched, waiting...
+exit=139                                              <- SIGSEGV, never returns from the wait
+```
+
+So it is not a deadlock. Compare the two cases:
+
+| A pointer | result |
+|---|---|
+| a fresh host `std::vector` (t19, and the pre-loop probe) | `bf16mm_gemm_wait` returns; output written |
+| **the engine's own `bA.data()`** | **SIGSEGV inside `bf16mm_gemm_wait`** |
+
+Same W_idx, same K, same N, same batch, same call sequence - only the A pointer differs, and one
+crashes while the other returns. **So `ensure_a` treats the A pointer specially: it is not a black box
+that reads the activation at the address it is handed.** That is a measured property of the interface,
+and it is the thing I never knew and never checked while building against it.
+
+**Consequences, and they are large.**
+
+1. **The black-box probe cannot work, in either form.** With a fresh vector it returns an output
+   uncorrelated with any row of W (best |corr| 0.08); with `bA` it crashes. Neither reading tells me
+   `A @ W`. The instrument is dead and no amount of repairing it will help, because I cannot supply
+   the A this GEMM wants.
+2. **Therefore `bA @ W_raw != bC` is not answerable this way** - the engine's GEMM does not consume
+   the activation I can hand it, so my "expected" value was never the right comparator.
+3. **And the engine's own output is the ground truth for the engine's own path** - which is the
+   opposite of the assumption the whole investigation rested on. I spent this session treating `bC`
+   as "the reference the fused layer must match", when `bC` is produced by a path that stages its
+   operands in a way I cannot see or reproduce. The fused layer, by contrast, is a plain GEMM verified
+   against NumPy and byte-exact against the bench at all six stages.
+
+**The one concrete, still-cheap test that remains.** If `ensure_a` reads `bA` as a *different layout*
+than row-major 256x1024 - and the crash says it is not simply reading that address - then `bC` is
+`f(bA) @ W` for some fixed `f`, which would produce exactly what was measured: the right magnitude
+distribution (a permutation or retile preserves it) with uncorrelated elements. That is testable
+without the library by computing `bC` candidates from `bA` under plausible `f` (tiled 128-row halves,
+transposed, the microtiled orders this project already uses) and correlating. It is the same search
+that failed for W, but for A - and A is the operand I never questioned, while W was exonerated twice
+by direct measurement.
+
+**Tenth retraction, of the approach rather than a claim.** Nine were a statistic, a label or an
+unvalidated instrument; this one is that I built the instrument on an interface assumption - "the
+pointer I pass is read as the activation" - that a single pointer-swap experiment would have exposed.
+The rule extends: **before instrumenting a component, test that it behaves the way the instrument
+assumes; a control case with one variable changed costs one run and invalidates or confirms the
+instrument outright.**
