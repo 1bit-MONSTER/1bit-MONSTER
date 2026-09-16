@@ -848,3 +848,21 @@ declarations, and never trust a TRUNCATED grep for a pass/fail verdict (their "N
 QKV phases" conclusion happened to hold, but their grep had been truncated at 24/41 matches;
 proper call counts: nq_acc_mac=3, nq_acc_store_bf16=2, nq_acc_store_f32=1 -> exactly O-proj +
 GU + D, a QKV phase would need a 4th mac and a 3rd bf16 store).
+
+### Addendum 24 — NPU pre-flight recipe adopted; the lock GAP that matters for this lane
+
+@agent-7f1cce supplied the cheap device pre-flight and flagged a real gap:
+
+- pre-flight: `for p in /proc/[0-9]*; do ls -l $p/fd 2>/dev/null | grep -q accel0 && echo $p; done`
+  (non-empty => any NPU number taken now is suspect). Wrapped as
+  `benchmarks/npu-device-preflight.sh` (prints holders + their cmdline + lock state).
+- **the gap: the engine takes /tmp/1bit-npu-device.lock itself, but STANDALONE BENCHES and the
+  XCLBIN GENERATORS do NOT.** For this lane that is exactly `npu-infer/tools/moe_smoke` (the
+  runlist harness) and the `aiecc` builds — those can silently overlap someone else's run.
+  So: run the pre-flight before recording any number from `moe_smoke` or a generator build.
+- They also confirmed the discriminator this lane rests on: **zeros-with-no-error was their
+  starvation-shaped symptom and it turned out to be DETERMINISTIC**, so the 35B ERT
+  reproducing on a VERIFIED-QUIET device plus a NaN (not zeros) is a genuinely different,
+  stronger signal. Keep both on the books as non-contention.
+- zr1/zaya1-8b has re-spawned at least twice in the last hour, so waiting for a
+  `timeout 1400` run to expire is futile; the quiet window has to be caught, not waited for.
