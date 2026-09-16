@@ -327,3 +327,22 @@ So the first real localisation is: the DMA-only prefix is harmless and does not
 touch the act; the **conv1d stage is where the failure signature first appears**
 (ERT timeout in isolation; the full layer gets past it but then NaNs the act).
 That is the stage to rebuild first — not a blanket "the lib path is broken".
+
+### Addendum 7 — the layer's arg map is now readable per stage
+
+Decoding the generated per-stage sequences (corrected runs) gives the layer's
+weight sources factually:
+
+| generator | arg (0-based in ELF) | engine slot | read | len |
+|---|---|---|---|---|
+| `_send_hidden_states` | arg1 | slot4 = act | MM2S | 1024 |
+| `_send_rms_weights` | arg2 | slot5 = **router BO** | MM2S @0 | **3072** |
+| `_send_linear_conv_weights` | (see full decode) | slot5 | | |
+
+So the RMSNorm weights are read from the **router BO at offset 0**, length 3072 B —
+while `npu_pack_moe_router_bo()` writes `input_layernorm` (4096 B) at offset 0 there.
+That is a concrete layout mismatch on the norm path and a prime NaN suspect for a
+linear-attn layer. `gen_seq_conv1d` is NOT called by `_gen_linear_sequence`
+(the label's conv is done inline with `npu_dma_memcpy_nd`), so the earlier "conv
+stage timeouts" result came from calling that generator with invented arguments and
+is not evidence about the linear layer.
