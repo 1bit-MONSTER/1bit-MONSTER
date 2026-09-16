@@ -1868,3 +1868,43 @@ latency-exposed. Measured here, one fused layer is ~tens of ms of device time, s
 it is nowhere near even the old 2 s cliff — and the fused path is therefore the
 structural mitigation for the ERT class rather than a victim of it. Worth
 re-confirming at prefill M, where the single launch gets much bigger.
+
+### The qb desync: everything the sequence emits is CORRECT, and the 2nd block ignores its Q
+
+Three checks narrowed this a long way, and the last one is the decisive negative.
+
+**The emitted taps are all correct.** Dumped from the M=32 MLIR (M=32, HD=128,
+NQKV=4096, KOFF=2048):
+```
+QK_S_0 taps:  Q off=0     K off=2048      (p0 qb0 ch0, head 0)
+              Q off=128   K off=2048      (p0 qb0 ch0, head 1)
+              Q off=0     K off=67584     (p0 qb0 ch1)      67584 = 16*4096 + 2048
+              Q off=65536 K off=2048      (p0 qb1 ch0)      65536 = 16*4096
+O_S_0_0 taps: off=0 2048 32768 34816      (= h*M*HD + qb*MA*HD for h=0 and h=8)
+```
+i.e. query block, key chunk, head and output row block all index exactly right.
+
+**The core structure is right** — `outer -> p(2) -> qb(2) -> ch(2)`, with
+`attn1_reset()` at the qb level, `attn1_chunk()` inside ch, and
+`attn1_finalize()` per qb.
+
+**The plumbing is consistent** — core qk acquires 16 == QK taps/2, v 16 == V taps
+16, O 4 == O taps 4.
+
+**And yet: posting query block 0's Q for BOTH blocks changes nothing.**
+
+```
+normal : attn 23.4%  halves-identical 0.0%   heads 0-7 ~46%, 8-15 0%
+probe  : attn 23.4%  halves-identical 0.0%   heads 0-7 ~46%, 8-15 0%   (Q always qb=0)
+```
+If the second block were computing with the wrong Q we would at least see the two
+halves converge; instead the result is completely insensitive to the second
+block's Q. Together with "the halves are never identical", that says the second
+query block's output is not a function of its posted Q at all — consistent with its
+O item never being produced/drained as intended (every non-QB tap would then keep
+working, which is exactly what we see: QKV/GU/SiLU/D all still verify).
+
+Next hypotheses, in order: (1) the O_F/O_S handshake when a core produces MORE
+THAN ONE O per loop body (at M=16 it produced one per pass; now it produces
+qb-times that), i.e. give each query block its own O_F/O_S fifo pair; (2) the
+QK/V broadcast fifo's item accounting across the qb boundary.
