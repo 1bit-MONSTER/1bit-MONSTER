@@ -4454,3 +4454,50 @@ pointer I pass is read as the activation" - that a single pointer-swap experimen
 The rule extends: **before instrumenting a component, test that it behaves the way the instrument
 assumes; a control case with one variable changed costs one run and invalidates or confirms the
 instrument outright.**
+
+## THE ANSWER: my activation is correct; the weight layout is not. `bC` lies in the row space of `bA`.
+
+Every layout/permutation search failed - tiling W, reordering W's rows (K), reading A under 16 different
+storage orders, the pre-norm hidden state, an f32 dump. All correlated ~0.01 with `bC`. Then instead of
+searching, I solved:
+
+```
+A  = bf16_l0_bA_launch.bin   (128 x 1024)   my exact post-norm activation
+W  = fk3_w_wqkv.bin          (1024 x 4096)  the weight I believed was effective
+bC = bf16_l0_rawqkv.bin      (128 x 4096)   the engine's own QKV buffer
+
+W_eff = pinv(A) @ bC
+residual |A @ W_eff - bC| / |bC| = 0.002418      <- 0.24%
+```
+
+**A 0.24% residual means `bC` lies almost exactly in the row space of `bA`.** So the engine's QKV *is* a
+linear function of my activation - my `bA` is the correct operand, and the difference from `A @ W_raw`
+is entirely in the weight. That is the answer, and it reverses the direction I had been leaning.
+
+It also resolves the contradiction that survived every other check:
+
+* `bf16mm_dump_w` returns **pre-upload** data - my own earlier note said so, and I then used it to
+  "verify" that the upload does not transform the weights. **That argument was circular**: I measured
+  the pre-upload array with a function that returns the pre-upload array. The evidence that the
+  effective weight is my raw array was never independent.
+* `bf16mm_gemm_launch` does not read the A pointer the way I assumed (SIGSEGV with `bA`, uncorrelated
+  output with a fresh vector) - consistent with an upload that transforms the operands' layout.
+
+**What is *not* claimed here.** `W_eff` from `pinv` with only 128 rows of `A` is the minimum-norm
+solution among many - the system is underdetermined - so the *values* of `W_eff` are not meaningful
+and I am not claiming to have recovered the effective weight. The two claims that are solid and
+measurement-backed are: (1) `bC = A @ W_x` for some `W_x` (0.24% residual, i.e. `bC` is in the row
+space of `A`); and (2) `W_x != W_raw`, since `A @ W_raw` matches `bC` at 0.08% with elementwise
+correlation ~0.01.
+
+**The concrete next step this makes possible - and it is exact.** Run the engine with `npt >= 1024` so
+`A` has full column rank. Then `W_eff = pinv(A) @ bC` is the **unique** solution, the upload's
+transform is fully determined, and the driver can replicate it - which is the whole fk-3 correctness
+gap. I have the dumps; this needs one longer-prompt run, not more guessing.
+
+**Eleventh retraction, of my central verification.** The weight was "exonerated twice by direct
+measurement" and the second measurement was circular. The first - the one-hot probe - was invalid. So
+the weight was never verified at all, and the assumption that survived longest was the one I had
+declared most thoroughly proven. The rule this file keeps re-learning, now stated in its sharpest
+form: **a verification is only as good as the independence of its reference; a function used to
+inspect a value is part of the system under test, not an oracle.**
