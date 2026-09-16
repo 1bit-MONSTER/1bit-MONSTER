@@ -4601,6 +4601,26 @@ struct Bf16Ctx {
                 Wo[l]    = bf16mm_dequant_dev(bo.data(), qout, H, (uint32_t)offs[3] * 5120, (size_t)layer_bo_bytes);
                 Wd[l]    = bf16mm_dequant_dev(bo.data(), IM, H, (uint32_t)offs[5] * 5120, (size_t)layer_bo_bytes);
             }
+            // BLACK-BOX PROBE of the engine's own GEMM. Feed an activation that is a single
+            // 1.0 in one K position and zeros elsewhere, so the output row IS row kprobe of the
+            // effective weight the GEMM actually multiplies by - no assumptions about staging,
+            // layout or scale, because the input is chosen so the output is the answer.
+            if (getenv("NPU_GEMM_PROBE")) {
+                const int kprobe = getenv("NPU_GEMM_PROBE_K") ? atoi(getenv("NPU_GEMM_PROBE_K")) : 0;
+                // The engine's own call contract, measured not assumed: the previous version of
+                // this probe passed an A of H elements and the engine died with 'corrupted
+                // double-linked list' - so bf16mm_gemm_launch reads 256 rows from that pointer,
+                // which is the documented 'ensure_a() stages two 128-row halves' contract.
+                const size_t AROWS = 256;
+                std::vector<uint16_t> Ap((size_t)AROWS * H, 0), Cp((size_t)AROWS * qout, 0);
+                Ap[(size_t)kprobe] = 0x3F80;   // bf16 1.0, at row 0
+                bf16mm_gemm_launch(Wqkv[0], H, qout, 0, 0, Ap.data());
+                bf16mm_gemm_wait(0, Cp.data());
+                FILE* fp = fopen("/tmp/npu_gemm_probe.bin", "wb");
+                if (fp) { fwrite(Cp.data(), 2, (size_t)qout, fp); fclose(fp); }   // row 0 only
+                fprintf(stderr, "[probe] GEMM row %d dumped (%d bf16 values); out-max=%.6f\n",
+                        kprobe, qout, (double)(int16_t)Cp[0]);
+            }
             fprintf(stderr, "bf16 prefill: %d layers dequant done\n", NC);
             printf("=== Prefill %d [bf16] ===\n", npt); fflush(stdout);
             // npt- and model-size-dependent host-thread default (see host_threads()).
@@ -4717,7 +4737,38 @@ struct Bf16Ctx {
                     // Double-buffered blocks: launch block i+1 (the other slot)
                     // BEFORE converting block i, so the device runs while the host
                     // converts. Each block reads/writes its own bC region.
+                    // THE ONE REMAINING QUESTION: are the first 128 rows of bA here the same
+                    // bytes as at line 4692, where I dumped them? If yes, bC genuinely is not
+                    // bA @ W; if no, bA is modified between the two lines.
+                    if (l == 0 && getenv("NPU_DUMP_L0"))
+                        { FILE* fl = fopen("/tmp/bf16_l0_bA_launch.bin", "wb");
+                          if (fl) { fwrite(bA.data(), 2, (size_t)npt * H, fl); fclose(fl); } }
                     const int nblk = (npt + 255) / 256;
+                    // SECOND probe point: same W_idx (Wqkv[l]) but measured HERE, inside the layer
+                    // loop, immediately before the real QKV launch - where bC is produced. If this
+                    // row differs from the pre-loop probe's row, the weights were rebound between
+                    // the prep loop and the prefill loop, and every earlier comparison used a
+                    // different matrix than the one bC came from.
+                    if (l == 0 && getenv("NPU_GEMM_PROBE2")) {
+                        // VALIDATED probe: reuse the ENGINE'S OWN A buffer (bA) instead of a fresh
+                        // vector. If ensure_a() caches by pointer, a fresh pointer gets a stale
+                        // staged activation and the probe measures nothing - which is exactly what
+                        // happened (corr ~0 at every k0). Writing the one-hot into bA removes that
+                        // variable, and the result is checked against a known answer: with 1.0 at
+                        // A[0,k2] the output row MUST be W[k2,:].
+                        const int k2 = getenv("NPU_GEMM_PROBE_K") ? atoi(getenv("NPU_GEMM_PROBE_K")) : 0;
+                        const size_t AR2 = 256, span = (size_t)AR2 * H;
+                        std::vector<uint16_t> save(span), C2(span, 0);
+                        memcpy(save.data(), bA.data(), span * 2);
+                        memset(bA.data(), 0, span * 2);
+                        bA[(size_t)k2] = 0x3F80;   // one-hot at row 0, K position k2
+                        bf16mm_gemm_launch(Wqkv[l], H, qout, 0, 0, bA.data());
+                        bf16mm_gemm_wait(0, C2.data());
+                        memcpy(bA.data(), save.data(), span * 2);   // restore before the real launch
+                        FILE* f2 = fopen("/tmp/npu_gemm_probe2.bin", "wb");
+                        if (f2) { fwrite(C2.data(), 2, (size_t)qout, f2); fclose(f2); }
+                        fprintf(stderr, "[probe2] l=%d Wqkv=%d row %d via bA\n", l, Wqkv[l], k2);
+                    }
                     for (int i = 0; i < nblk && i < 2; i++)
                         bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, i & 1, bA.data() + (size_t)(i * 256) * H);
                     for (int i = 0; i < nblk; i++) {
