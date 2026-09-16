@@ -274,6 +274,20 @@ slot's table BEFORE `wait_runlist`, so the 28×256 B syncs overlap the current e
 Expected ~0.5 ms/tok (≈3-4% decode), taking ~67 → ~69-70 tok/s. The argmax+embed
 (~2 ms) sit in the strict `logits→argmax→embed→next-exec` chain and are inherent.
 
+### 10b. RESULT (ra-5, landed 2026-09-16): the rope overlap is a NO-OP
+
+The i6 double-buffer was implemented and committed (`48a5dd4b2`, token parity
+preserved: 16 tokens byte-identical). Clean measurement (numpy process cleared,
+only the idle 35B serve present): decode is **12.2 ms/tok = 82 tok/s @1k — exactly
+the pre-change number**, not the ~84-85 expected. The ~0.4 ms/token rope write was
+NOT actually on the critical path: `xrt::ext::bo::sync(XCL_BO_SYNC_BO_TO_DEVICE)`
+queues behind the in-flight runlist on the device's command queue, so moving
+`apply_rope` before `wait_runlist` does not hide it — the sync still waits for the
+executing runlist. Conclusion: overlapping the rope write via double-buffering
+buys nothing on this driver; the decode critical path is `exec → argmax → embed`,
+and the rope sync is effectively serial with exec regardless of slot. The change
+is correctness-neutral and kept, but it is not a speed win.
+
 **Honest ceiling** (from the same doc): best case ≈ 14.7 ms ≈ **68-70 tok/s** vs
 FLM's 73.58-74.92 — the residual is host logits-sync/embed plus device time that
 FLM shares. The i6 double-buffer is a correctness-sensitive hot-path change (the
