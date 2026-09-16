@@ -144,3 +144,52 @@ content (Q8_0→Q4NX re-quant) is underived, and there is no working whole-layer
 35B ELF to consume it.** With the captures deleted and no FastFlowLM source, this
 is a research-scale effort (disassemble `load_linear_weights`'s re-quant helper,
 or obtain upstream source) — not completable with on-box assets alone.
+
+---
+
+# Addendum 2 — ON-BOX live capture (2026-09-16, per user: "you live on the strixhalo")
+
+Correction to the prior "everything is off-box" framing: the **FastFlowLM source
+tree IS on this box** at `/home/bcloud/amd-oss/fastflowlm/src` (include/models/
+qwen3_6_moe/qwen3_6_moe_npu.hpp, common/AutoModel/modeling_qwen3_6_moe.cpp,
+lib/xrt/libqwen3_6_moe_npu.so, 35B xclbins). The npu-side `*_npu.cpp` impl is not
+in the tree, but the **.so exports the weight-prep entry points**, so the runtime
+can be driven/inspected locally.
+
+## What was captured live (gdb on the running runtime, this box)
+
+`qwen3_6_moe_desc::load_linear_weights(int, Q4NX&, buffer<uchar>&, buffer<bf16>&,
+buffer<bf16>&)` is exported at `0x7ed90` in
+`/tmp/flm105/lib/libqwen3_6_moe_npu.so`. Breaking on it and dumping its buffer
+args (3rd arg = `[rcx+0x10]`, per the prologue `mov r14,[rcx+0x10]`) yields, per
+layer:
+- **arg3 = the 512 MB expert pool BO** (`0x7fffa8000000`, `0x7fff88000000`, … one
+  per layer). **R50's pool layout reproduces byte-exactly on-box**: spot-checked
+  206/206 pool rows (up/gate 32-row blocks `j=base+8*(i%4)+i//4`, down 8-groups
+  `[0,2,4,6,1,3,5,7]`) → `tools/verify_moe_current_layout.py`'s spec is CONFIRMED
+  against the live v1.0.5 runtime, not just the deleted captures.
+- arg3 rows ≥102624 (through 113359) are all-zero → **region-B (share_*/qkv/
+  ssm_out/gate_proj) is NOT in the pool BO** (R50's "allocator slack" holds).
+- arg4/arg5 = per-layer 5 MB buffers (the linear-attn BOs) — not region-B.
+
+A process-wide memory scan for the raw `input_layernorm` bytes found no hit →
+region-A is transformed too (consistent with the R14 note that `reorder_cpy`
+dtype=8 chunks the BF16 small tensors).
+
+## FastFlowLM v1.0.5 tested (downloaded this session)
+
+`fastflowlm_1.0.5_linux.tar.gz` (portable `flm-real` + `lib/*.so` +
+`xclbins/Qwen3.6-35B-A3B-NPU2/*`). It **loads** the 23.2 GB model and reaches the
+prompt, then the first forward dies: `runlist failed execution
+(ERT_CMD_STATE_TIMEOUT)`, `Kernel Instance: MLIR_AIE`, `txn_op_idx=0xFFFFFFFF`,
+`ctx_pc=0x28B060AD`. So the 35B whole-layer path is broken in v1.0.4
+(SIGSEGV/NaN) **and** v1.0.5 (hang) on this box.
+
+## Status
+
+Region-B's exact content is still not located (it is a buffer that is neither the
+pool nor the 5 MB linear BOs; the per-layer ~460 MB region-A+B weight BO the
+layer ELF reads is created/filled outside `load_linear_weights`' three args).
+The next concrete on-box step is to hook the layer kernel's arg-0 BO at submit
+(e.g. via `cap_interposer` on `xrt::bo` creation, or a breakpoint on the runlist
+arg setup) and dump it — the runtime's own forward need not succeed for that.
