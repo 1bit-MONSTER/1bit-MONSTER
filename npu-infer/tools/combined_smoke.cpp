@@ -86,11 +86,11 @@ int main(int argc, char** argv) {
     // ---- buffers, one per runtime_sequence argument ------------------------------
     auto bo_ins  = xrt::bo(dev, ins.size() * 4, xrt::bo::flags::cacheable, k.group_id(1));
     auto bo_nA   = xrt::bo(dev, H * 4,          xrt::bo::flags::host_only, k.group_id(3));
-    auto bo_nW   = xrt::bo(dev, H * 4,          xrt::bo::flags::host_only, k.group_id(4));
-    auto bo_nO   = xrt::bo(dev, H * 2,          xrt::bo::flags::host_only, k.group_id(5));
-    auto bo_gA   = xrt::bo(dev, K,              xrt::bo::flags::host_only, k.group_id(6));
-    auto bo_gB   = xrt::bo(dev, (size_t)K * N,  xrt::bo::flags::host_only, k.group_id(7));
-    auto bo_gC   = xrt::bo(dev, N * 4,          xrt::bo::flags::host_only, k.group_id(8));
+    auto bo_nW   = xrt::bo(dev, H * 4,          xrt::bo::flags::host_only, k.group_id(3)); // same SIZE as nA -> same group
+    auto bo_nO   = xrt::bo(dev, H * 2,          xrt::bo::flags::host_only, k.group_id(4));
+    auto bo_gA   = xrt::bo(dev, K,              xrt::bo::flags::host_only, k.group_id(5));
+    auto bo_gB   = xrt::bo(dev, (size_t)K * N,  xrt::bo::flags::host_only, k.group_id(6));
+    auto bo_gC   = xrt::bo(dev, N * 4,          xrt::bo::flags::host_only, k.group_id(7));
 
     // ---- synthetic inputs + INDEPENDENTLY-DERIVED host references ----------------
     std::mt19937 rng(12345);
@@ -123,6 +123,26 @@ int main(int argc, char** argv) {
     std::vector<int8_t> gB((size_t)K * N);
     for (size_t i = 0; i < gB.size(); i++) gB[i] = (int8_t)i8d(rng);
     memcpy(bo_gA.map<void*>(), gA.data(), K);
+    // The _m1lin xclbins use the LINEAR B tap: one contiguous 64x128 tile per DMA, tiles in
+    // column-major (nt,ki), each tile in mmul chunk order -- byte s = i0*1024+i1*64+i2*8+i3 holds
+    // B[ki*64+i0*8+i2][nt*128+i1*8+i3] (npu_engine_i8ctx_inc.h:777-780). Feed that when asked, so
+    // the driver can be validated against a reference rather than merely exercised.
+    if (getenv("CHUNK_B")) {
+        std::vector<int8_t> bp(gB.size(), 0);
+        int n_k = K / 64, n_tiles = N / 128;
+        for (int ki = 0; ki < n_k; ki++)
+          for (int nt = 0; nt < n_tiles; nt++) {
+            size_t tbase = ((size_t)nt * n_k + ki) * (64 * 128);
+            for (int i0 = 0; i0 < 8; i0++)
+              for (int i1 = 0; i1 < 16; i1++)
+                for (int i2 = 0; i2 < 8; i2++) {
+                  int krow = ki * 64 + i0 * 8 + i2, ncol = nt * 128 + i1 * 8;
+                  int8_t* d = &bp[tbase + (size_t)i0 * 1024 + i1 * 64 + i2 * 8];
+                  for (int i3 = 0; i3 < 8; i3++) d[i3] = gB[(size_t)krow * N + ncol + i3];
+                }
+          }
+        memcpy(bo_gB.map<void*>(), bp.data(), bp.size());
+    } else
     memcpy(bo_gB.map<void*>(), gB.data(), gB.size());
     memset(bo_gC.map<void*>(), 0, N * 4);
 
@@ -147,6 +167,46 @@ int main(int argc, char** argv) {
 
     // ---- ONE submit --------------------------------------------------------------
     fprintf(stderr, "allocated all BOs; submitting ONE run\n"); fflush(stderr);
+    if (getenv("NORM_ONLY")) {
+        // ISOLATION PROBE (addendum 82 -> next action): does the NORM phase work ALONE?
+        // The norm-only xclbin (final_rms_qwen3_6_35b_a3b_m1.xclbin) has THREE data BOs, so this
+        // separates "the norm phase is broken" from "the two-phase combination deadlocks".
+        auto rn = k(3, bo_ins, (unsigned)ins.size(), bo_nA, bo_nW, bo_nO);
+        rn.wait();
+        fprintf(stderr, "norm-only submit completed\n");
+        bo_nO.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        std::vector<uint16_t> got(H), ref(H);
+        memcpy(got.data(), bo_nO.map<void*>(), (size_t)H * 2);
+        FILE* rf = fopen("/tmp/combined_norm_ref.bin", "rb");
+        if (rf) { if (fread(ref.data(), 2, H, rf) != (size_t)H) {} fclose(rf); }
+        int nb = 0, first = -1;
+        for (int i = 0; i < H; i++) if (got[i] != ref[i]) { nb++; if (first < 0) first = i; }
+        fprintf(stderr, "norm-only RMSNorm: %d/%d match\n", H - nb, H);
+        if (first >= 0)
+            fprintf(stderr, "  first mismatch at %d: got %.6f ref %.6f\n", first,
+                    bf16_to_f32(got[first]), bf16_to_f32(ref[first]));
+        return 0;
+    }
+    if (getenv("SINGLE_PHASE")) {
+        // Discriminator: the SAME driver against a single-phase m1 GEMM xclbin. Its design has
+        // THREE data BOs (A, B, C) and is called with 8 args, so this isolates "our driver is
+        // wrong" from "our combined design deadlocks".
+        auto r2 = k(3, bo_ins, (unsigned)ins.size(), bo_gA, bo_gB, bo_gC);
+        r2.wait();
+        fprintf(stderr, "single-phase submit completed\n");
+        bo_gC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        std::vector<int32_t> gotC2(N);
+        memcpy(gotC2.data(), bo_gC.map<void*>(), (size_t)N * 4);
+        int bad2 = 0;
+        for (int n = 0; n < N; n++) {
+            int32_t acc = 0;
+            for (int k2 = 0; k2 < K; k2++) acc += (int32_t)gA[k2] * (int32_t)gB[(size_t)k2 * N + n];
+            if (gotC2[n] != acc) bad2++;
+        }
+        fprintf(stderr, "single-phase GEMM: %d/%d columns match\n", N - bad2, N);
+        return 0;
+    }
+    // six BOs over FIVE groups: groups are assigned per distinct buffer, and nA/nW match in size.
     auto run = k(3, bo_ins, (unsigned)ins.size(), bo_nA, bo_nW, bo_nO, bo_gA, bo_gB, bo_gC);
     run.wait();
     fprintf(stderr, "ONE submit issued and completed\n");

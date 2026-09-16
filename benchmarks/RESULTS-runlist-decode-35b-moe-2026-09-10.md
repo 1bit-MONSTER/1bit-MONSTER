@@ -2856,3 +2856,52 @@ STATE OF THE REBUILD: (a) compiles -- MET (addendum 79). (c) one submit -- DEMON
 single-phase design (here), and the driver is proven correct. (b) correctness of BOTH phases -- the
 GEMM phase is proven correct through this driver; the norm phase and the two-phase combination wait
 on the deadlock.
+
+### Addendum 83 — the driver is written and PROVEN, the norm phase works ALONE, and the deadlock is in the COMBINATION
+
+Wrote the driver the rebuild needed (npu-infer/tools/combined_smoke.cpp): loads a combined xclbin plus
+its instruction blob, allocates one BO per runtime_sequence argument, fills synthetic inputs, computes
+BOTH host references itself, issues ONE kernel call, and compares. It carries three isolation modes
+(SINGLE_PHASE, NORM_ONLY, CHUNK_B) so it can validate itself against designs that already work.
+
+WHAT IT PROVED, in the order it was established:
+
+1. THE DRIVER IS VALIDATED, NOT MERELY EXERCISED. Against final_i8_QKV_qwen3_6_35b_a3b_m1lin.xclbin
+   it completes and matches 8192/8192 COLUMNS against a host reference it computes itself as exact
+   int32 accumulation. Its very first run gave 3/8192, which is the failure mode the linear-B tap's
+   own comment predicts when B is fed row-major; feeding B in the declared layout (one contiguous
+   64x128 tile per DMA, column-major (nt,ki), mmul chunk order) gives 8192/8192.
+2. THE LINEAR-B-TAP XCLBIN FROM ADDENDUM 37 IS NOW NUMERICALLY VERIFIED for the first time. It was
+   built and never measured; it is correct.
+3. ONE SUBMIT IS DEMONSTRATED. A single kernel call drives the whole single-phase design and
+   completes. Milestone (c) holds for a one-phase design; what remains for the combined design is
+   its deadlock, not the submit mechanism.
+4. err=-28 IS MY ALLOCATION, NOT THE DEVICE. The full design (gemm-B = 16.8 MB) fails context
+   creation with "DRM_IOCTL_AMDXDNA_CREATE_HWCTX ... No space left on device; a tiny K=64 N=256
+   variant creates its hw_context fine. Recording it because "no space left on device" on a shared
+   box invites exactly the wrong conclusion.
+5. THE NORM PHASE WORKS ALONE. Against the existing norm-only xclbin
+   (final_rms_qwen3_6_35b_a3b_m1.xclbin) the single submit COMPLETES and the row matches the host
+   RMSNorm reference to within one bf16 ULP (first mismatch 0.765625 vs 0.769531; 910/2048 exact).
+   So the norm kernel, its fifos and its runtime DMAs are all sound on their own.
+6. THEREFORE THE DEADLOCK IS IN THE COMBINATION -- and TWO explanations are now REFUTED BY TEST,
+   not by argument:
+     (a) addendum 81's hypothesis -- the norm core acquiring W inside its infinite loop on a
+         never-released depth-1 fifo. Fixed it (W acquired once, outside the loop, which is what the
+         code's own "gamma once" comment always intended). STILL HANGS.
+     (b) the non-interleaved ordering. n1_rms_norm.py states the rule in a comment: interleave A-in
+         with O-out per row, because otherwise the O fifo stalls, backs A up, and deadlocks. Adopted
+         exactly that pattern (W first and awaited, then A, then O, all with explicit strides).
+         STILL HANGS.
+   A third probe -- making the norm core EXIT after its one row instead of spinning -- does not
+   reach our code at all: XRT throws "bitset::test: __position (which is 94079075371752) >= _Nb
+   (which is 64)", an XRT-internal failure, so it says nothing about the deadlock.
+
+ALSO ESTABLISHED: the design's six data arguments land on FIVE valid XRT groups (group_id(3..7) =
+65536); group_id(8) = 131071 is XRT's invalid sentinel. Remapping six BOs onto five groups does not
+change the hang, so that is a fact to design around, not the cause.
+
+STATE: (a) compiles -- MET (79). (c) one submit -- MET and the driver proven (83). (b) both phases
+correct -- the GEMM phase and the NORM phase are each proven correct SEPARATELY, through this driver;
+only the two-phase combination remains, and its hang has now survived two refutations, which narrows
+it to something the two phases share rather than anything either phase does on its own.

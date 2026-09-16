@@ -96,8 +96,11 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
 
         @core(norm_core, stack_size=0x2000)
         def norm_body():
+            # gamma is acquired ONCE, outside the loop -- the comment always said "once" but the
+            # acquire sat inside, on a depth-1 fifo that is never released, so iteration 2 could
+            # never acquire it. (Addendum 83.)
+            wbuf = nW_c.acquire(ObjectFifoPort.Consume, 1)
             for _ in range_(0xFFFFFFFF):
-                wbuf = nW_c.acquire(ObjectFifoPort.Consume, 1)   # gamma once
                 arow = nA_c.acquire(ObjectFifoPort.Consume, 1)
                 orow = nO_c.acquire(ObjectFifoPort.Produce, 1)
                 rms(arow, wbuf, orow)
@@ -148,10 +151,17 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
         )
         def seq(NA, NW, NO, GA, GB, GC):
             # phase 1: one norm row
-            at = shim_dma_single_bd_task(nA_s, NA, offset=0, sizes=[1, 1, 1, H], issue_token=True)
-            wt = shim_dma_single_bd_task(nW_s, NW, offset=0, sizes=[1, 1, 1, H], issue_token=True)
-            dma_start_task(at); dma_start_task(wt); dma_await_task(at, wt); dma_free_task(at, wt)
-            ot = shim_dma_single_bd_task(nO_s, NO, offset=0, sizes=[1, 1, 1, H], issue_token=True)
+            # gamma ONCE, awaited before any A -- then INTERLEAVED A-in / O-out. Both are the
+            # pattern n1_rms_norm.py proved: pushing A and W together and reading O only
+            # afterwards stalls the O side, backs A up, and deadlocks. (Addendum 83.)
+            wt = shim_dma_single_bd_task(nW_s, NW, offset=0, sizes=[1, 1, 1, H],
+                                         strides=[1, 1, 1, 1], issue_token=True)
+            dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
+            at = shim_dma_single_bd_task(nA_s, NA, offset=0, sizes=[1, 1, 1, H],
+                                         strides=[1, 1, 1, 1], issue_token=True)
+            dma_start_task(at); dma_await_task(at); dma_free_task(at)
+            ot = shim_dma_single_bd_task(nO_s, NO, offset=0, sizes=[1, 1, 1, H],
+                                         strides=[1, 1, 1, 1], issue_token=True)
             dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
             # phase 2: the GEMM, unchanged in structure from n1_core_i8_m1.py
             for gi in range(num_col_group):
