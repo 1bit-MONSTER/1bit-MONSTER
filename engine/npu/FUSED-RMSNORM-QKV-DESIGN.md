@@ -1162,3 +1162,14 @@ throughput question, not a correctness one.
 This also means the composition no longer has to be pinned at M=8 — the M from
 the attention (which query-tiles naturally) and the M of the linear stages can
 both be the real prefill length.
+
+**And it scales: M=128 verified.** The same re-read build at the engine's prefill
+tile width `XM=128` (O-proj shape K=2048, N=1024) is **exact = 131072/131072
+(100.0%)**. It needs `NT=32` and `wdepth=1` because the MEM tile's buffer budget,
+not the core's, becomes the limit at M=128: the A tile alone is 2 x (128*64*2) =
+32 KB and the f32 C tile (128 x NT x 4) is 32 KB at NT=64 — 80 KB against 64 KB.
+At NT=32/depth 1 it is 16 + 4 + 16 = 36 KB and fits.
+
+So the fused linear stages are no longer an 8-token tile: they run at the real
+prefill M, with A re-read from DDR per N-tile (a DMA-bandwidth cost, not a
+correctness one).
