@@ -355,3 +355,25 @@ layer (134217728 B, `npu-infer/include/common.h:32`) and writes only 32 MB
 (4 regions × 8 MB stride, MAX_L=8192); FLM's Qwen3 is constructed at MAX_L=32768
 (`flm_prefill_bridge.cpp`), i.e. a 128 MB KV cache (32768×8×128×4 B) — the
 allocation sizes match, so a BO-size difference is unlikely to be the cause.
+
+### 12c. ra-6 A/B RESULT (clean, same-condition): the gap is REAL, not an artifact
+
+Clean A/B after the numpy process cleared (both sides measured with only the
+idle 35B serve present, so the serve is not the confound):
+
+| ctx | native decode | FLM decode (fresh) |
+|---|---:|---:|
+| 1024 | **82 tok/s** (12.2 ms) | 77.9 (committed) |
+| 2088 | **69 tok/s** (14.4 ms) | **74.88 tok/s** (13.35 ms, fresh) |
+
+So the native decode is +5% at 1k but −8…−10% at 2k — it degrades ~2× steeper
+with context (exec 12.5→15.3 ms) than FLM (12.8→13.9 ms). Same-condition FLM
+(74.88) rules out the serve as the cause. Device-free narrowing ruled out
+different mechanism (same `xrt::runlist`+per-ctx-kernel, §12b) and different KV
+allocation (§12). The one structural delta found is the KV REGION STRIDE baked
+into the per-ctx ELF: native `max_l=8192` → 8 MB region stride, FLM `MAX_L=32768`
+→ 32 MB stride — but a smaller (packed) stride should be *faster*, not slower,
+so it is an unlikely cause. The residual ~1.4 ms/token at 2k lives in the
+`layer.xclbin` attention KV-prefix read (closed-source), and is **not
+host-fixable**: the host passes are context-constant (§12), the mechanism and KV
+size match, and the only difference is inside the closed kernel's KV walk.
