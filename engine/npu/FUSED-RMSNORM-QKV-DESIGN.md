@@ -1206,3 +1206,26 @@ mem->shim link with the verified mem->core link plus a dummy consumer core, to
 see whether the norm output appears at all; (3) if the link is the problem, have
 the norm core write A_norm through a DIFFERENT mem tile (or straight into the
 N-tile loop's fifo) so no mem->shim forwarding is needed.
+
+### ✅ RESOLVED — the normed re-read works; it was the DRAIN ORDER, not the link
+
+The all-zero A_norm was a **shim BD-lifetime** bug, not a mem->shim link problem.
+The A_norm drain tasks must be:
+* **armed concurrently with the scale pass** (and NOT before it — awaiting a drain
+  task before the A that feeds it deadlocks, since the core has produced nothing
+  yet), and
+* **windowed** (started-but-not-awaited, at most ~8 in flight — arming all 32 at
+  once trips `Too many simultaneously active buffer descriptors on tile (0,0),
+  which supports up to 16`).
+
+With the drain armed per scale-pass tile inside an 8-deep window:
+
+```
+A_norm nonzero = 128923/131072, C nonzero = 524288/524288
+fused RMSNorm+QKV  M=128 H=1024 N=4096 (k=32 NT=32):
+  exact = 498761/524288 (95.1%), within-few-ULP = 23950, worst_rel = 4.11e-06
+```
+i.e. the real QKV projection at the engine's prefill M, correct to the same
+tiled-accumulation ULP as the M=16 build (95.2%). **The linear stages now run at
+prefill scale with the fused RMSNorm, and every architectural blocker on the
+fused layer is closed.**

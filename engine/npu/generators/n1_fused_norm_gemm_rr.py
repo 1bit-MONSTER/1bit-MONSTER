@@ -121,21 +121,31 @@ def fused(M, H, N, k, NT, NSTACK, GSTACK, WDEPTH):
             np.ndarray[(M * N,), np.dtype[np.float32]],
         )
         def seq(A, W, AN, C):
-            # ---- norm phase: A twice (reduce, scale); A_norm out to DDR ----
+            # ARM THE DRAIN FIRST, WITHOUT AWAITING: the norm core produces A_norm
+            # while the shim feeds it A, so awaiting a drain task before the A that
+            # fills it would deadlock, and leaving it un-armed makes the core block
+            # on a full A_norm fifo. A_norm is written MICROTILED by the norm core,
+            # so the DDR copy is verbatim (2D [M,k] with row stride k = contiguous).
+            pend = []
+            WINDOW = 8                     # the shim allows <=16 active BDs
+            # ---- norm phase: rep 0 = reduce pass, rep 1 = scale pass ----
             for _rep in range(2):
                 for kt in range(n_k):
                     at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
                                                  sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
                                                  issue_token=True)
                     dma_start_task(at); dma_await_task(at); dma_free_task(at)
-            for kt in range(n_k):
-                # The norm core writes A_norm MICROTILED, so the DDR buffer holds
-                # those bytes verbatim: a linear copy (2D [M,k] with row stride k is
-                # contiguous), NOT the row-major tap.
-                ant = shim_dma_single_bd_task(AN_s, AN, offset=kt * M * k,
-                                              sizes=[1, 1, M, k],
-                                              strides=[1, 1, k, 1], issue_token=True)
-                dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
+                    if _rep == 1:
+                        # The core produces A_norm[kt] right after consuming A[kt] in
+                        # the scale pass, so arm its drain now (started, not awaited).
+                        ant = shim_dma_single_bd_task(AN_s, AN, offset=kt * M * k,
+                                                      sizes=[1, 1, M, k],
+                                                      strides=[1, 1, k, 1], issue_token=True)
+                        dma_start_task(ant); pend.append(ant)
+                        while len(pend) >= WINDOW:
+                            dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
+            while pend:
+                dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
             # ---- GEMM phase: A_norm re-read per N-tile, N-outer / K-inner ----
             for nt in range(n_n):
                 for kt in range(n_k):
