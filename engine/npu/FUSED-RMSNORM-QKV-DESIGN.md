@@ -5492,3 +5492,47 @@ correlation needs re-deriving from that.
 I compared two things that were not the same thing, and the comparison could not fail in a way that
 announced itself. Twelve retractions were about instruments and inference; this one is about the *data* -
 and it was available to catch at any point with `wc -l` on a dump and a glance at the ids file.
+
+## CLEAN TEST: launch A is CORRECT. The "5.36x deficit" never existed.
+
+Both paths re-run on the **same** ids file (`/tmp/ids_fk3.txt`, 128 tokens), and compared row for row:
+
+```
+MY launch-A QKV (fused driver)      maxabs 5.62500  meanabs 0.18299
+ENGINE QKV (per-op, same prompt)    maxabs 5.65625  meanabs 0.18400
+
+meanabs ratio mine/engine          0.9945          (0.55%)
+per-row corr(mine, engine)         mean 1.0000   min 0.9999   max 1.0000
+exact bf16 match                   11.92%
+```
+
+**Correlation 1.0000.** The fused RMSNorm+QKV launch produces the engine's QKV. The residual 0.55% in
+magnitude and the 11.92% exact-match rate are what the known epsilon difference predicts (my kernel uses
+`1e-5`, the engine `1e-6` - the one item this file has listed as unfixed throughout).
+
+**So the "5.36x deficit" - the finding this entire session was built on - does not exist.** It was an
+artifact of comparing two different prompts: `bf16_l0_rawqkv.bin` came from the 6144-token calibration
+run, while the fused runs used the 128-token prompt. Different inputs, so a large apparent discrepancy
+was guaranteed, and no amount of care in the arithmetic could have detected it.
+
+**What this means for the actual state of fk-3:**
+
+* **launch A is verified correct against the engine on identical inputs** - not against a self-derived
+  reference, but against the other implementation, same prompt, corr 1.0000;
+* the fused path still produces the wrong tokens (`3164, 13378, 13378, 13378` vs `220, 49789, 220, 11141`
+  on the same prompt), so **the defect is downstream** - in launch B (attention / O-proj / GU / D), in the
+  layer-to-layer handoff, or in the 28-layer composition;
+* the permutation work, the held-out validated weights, and the `corr 1.0000` kernel check all remain
+  valid, and the last of those is now confirmed twice by different routes.
+
+**The generalisable failure, and it is the sharpest lesson in this file.** Every earlier retraction was an
+inference error - a wrong statistic, a wrong instrument, a wrong level. This one is a **data** error: two
+files that were not comparable, compared anyway, with a result that looked like a dramatic finding and
+could not fail visibly. The check was `wc -l` on a dump and one glance at the ids file. What made it
+survive so long is that it *agreed with an expectation* - I expected a deficit after the first comparison,
+and every later measurement inherited the premise rather than testing it.
+
+**Next:** the same same-prompt comparison for launch B's stages and the layer output (`CD` vs the engine's
+`bf16_l0_hidden`/`attn`/`o`/`dw`), which localises the remaining defect inside the layer. The method is now
+established and cheap: one per-op run and one fused run on the same ids file, then compare the dumps
+row for row.
