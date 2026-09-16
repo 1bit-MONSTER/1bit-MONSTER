@@ -757,3 +757,32 @@ repair is a path fix rather than a reinstall.
 | `NPU_RUNLIST=1` | the byte-exact int8 path (FLM's own per-ctx layer kernels, driven from here) — the third opinion |
 | `NPU_PROMPT_MAX=<n>` | raise the prompt cap deliberately, for lengths without a fast path |
 | `NPU_ELF_DEBUG=1` | show where generated per-context ELFs land |
+
+## 6. Post-goal status (2026-09-16) — supersedes the boundary in the header
+
+Pointer: `benchmarks/RESULTS-consolidation-2026-09-16.md` carries the
+yardstick-green invocation, the phase-by-phase state, and the boundary list.
+Changes since this register was written:
+
+- **The ~6 s per-launch cost is FIXED, not an open lever.** It was the
+  `n_grp == 1` core losing its PV/C2 block (host waiting on a C2 task no core
+  satisfied); N=512 is now 2.515 ms against the shipped 2.161 ms = 1.16x, NPU==EMU.
+- **`ERT_CMD_STATE_TIMEOUT` root-caused and repaired.** It is the amdxdna driver
+  TDR (`timeout_in_sec=2`; 83 firmware-timeout dumps, `ctx_pc` matching). Repaired
+  durably by `/etc/modprobe.d/amdxdna-tdr.conf` (15) plus an exclusive engine
+  `flock` device lock in all 19 `npu_engine_*` binaries.
+- **The bf16 attention-ELF loader was compiled out** (gated on Clang's
+  `__has_embed`, absent under the g++ build); fixed and verified on the supported
+  models — the runtime `attn_mha_*` ELFs are now loaded.
+- **The generated nh20/nkv4/cols4 head-block kernel passes its bench gate**
+  (NPU==EMU at seq=2048 and 513, C2 2/2).
+- **Beyond 8192 is bounded**, not merely unexplored: N=3072 builds and gates,
+  N=4096/8192 fail with AIE program-memory overflow, so the N=16384 route needs a
+  chunked/multi-core design.
+- **Family >1024 remains outside the set**: the generated ELF is `AttnCtx`-ABI and
+  `Bf16Mm` drives FLM's `(act,out,kv)` ABI; the four 2k capture candidates either
+  hang or (308736) compute the wrong attention (boot 152349 vs CPU 456).
+
+The yardstick is green (`0 PARITY CLAIM REFUSED`, runlist 109.9% of FLM decode) when
+invoked with the goal's engine binary — its default `ROOT` points at another
+worktree and measures a stale binary.
