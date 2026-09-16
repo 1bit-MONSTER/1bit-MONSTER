@@ -5501,3 +5501,53 @@ WHAT THIS MEANS FOR THE OBJECTIVE, finally with both ends measured rather than i
 The verified fused xclbin design from addendum 141 (one submit, RMSNorm + i8 GEMM + FFNnorm, GEMM
 8192/8192 in 12 of 14 runs) remains correct and remains the wrong instrument for this objective. It is
 recorded so nobody rebuilds it.
+
+### Addendum 148 — the MoE layer ELF's full I/O map decoded; arg binding is CONSISTENT, and the linear-attn conv1d/SSM weights are packed in a clobbered scratch region
+
+Decoded the vendor 35B MoE layer ELF (moe_layer_ctx1.txn = layer 1, linear_attention) with
+tools/decode_txn --decode-only, and cross-checked the dense (working) layer_ctx1.txn the same way.
+Two findings that matter, plus one gap that is now the concrete next step.
+
+1. ARG BINDING IS CONSISTENT — NOT a binding bug. The dense qwen3 ELF (which works at 86 tok/s) and
+the MoE ELF (which NaNs) both use DDR_PATCH arg_idx 0..4 over the FIVE data arguments, which the
+harness binds at set_arg(3..7) with opcode/instr_bo/ninstr at 0..2. Dense: arg0=act, arg1=weight,
+arg2=i5, arg3=i6, arg4=kv. MoE (Round-73): arg0=weight, arg1=act, arg2=router, arg3=norms, arg4=kv.
+The MoE ELF's own reads confirm the MoE harness's mapping (weight BO read at region-B offsets, act
+read/write len=1024 words = 4096 B = H=2048 bf16, router read @0 len=3072 words = iln+paln+shared_gate
+12288 B, moe_router @12288). So the NaN is NOT a set_arg-order or group-id mismatch.
+
+2. THE NORMS BO (arg3) IS DUAL-PURPOSE, AND THE CONV1D/SSM WEIGHTS ARE PACKED IN THE SCRATCH HALF.
+The MoE layer ELF's arg3 (norms) I/O map is exactly:
+   S2MM @0         len=16512 words (66048 B)   — the norm/attention intermediate is WRITTEN here
+   MM2S @66048     len=32768 words (131072 B)  — ssm_alpha_proj
+   MM2S @197120    len=32768 words (131072 B)  — ssm_beta_proj
+   MM2S @328192+   len=37888 words             — ssm_out_proj windows (4736-B rows, 32-row blocks)
+There is NO read of norms [0, 66048). npu_pack_moe_linear5_bo packs ssm_conv1d (65536 B) + ssm_norm
+(256) + ssm_a (128) + ssm_dt.bias (128) exactly into that [0, 66048) region — so those four tensors
+are CLOBBERED by the ELF's own S2MM write and are NEVER READ from there. The alpha/beta/ssm_out
+placement is correct (the head sizes happen to sum to 66048, landing alpha@66048, beta@197120,
+ssm_out@328192), but the conv1d/ssm_norm/ssm_a/ssm_dt prefix is dead weight in the wrong half of the
+BO. The ELF's first phase is RMSNorm(act, iln) -> write norm output into norms @0, so the runtime
+treats norms [0,66048) as scratch, not weight storage.
+
+3. GAP — where the conv1d/SSM weights ARE read from is still unidentified. ssm_conv1d is [4,8192] bf16
+= 65536 B (confirmed from model metadata). The TXN is fully word-accounted (630 BLOCKWRITE + 630
+DDR_PATCH + 568 WRITE + 556 MASKWRITE + 552 TCT = all 24636 words), so the conv1d weights are NOT
+embedded in the instruction stream, and they appear in NO BO's DDR_PATCH read set (arg0 reads only
+region-B weights + the Q4NX expert-pool gathers; arg1 act; arg2 router; arg3 alpha/beta/ssm_out;
+arg4 kv). Either the conv1d weights live in a BO region the harness never fills (the read exists but
+points at an offset outside what the packers write), or they are consumed by a path decode_txn does
+not model. This is the concrete next thing to pin down, and the same method that closed region-B
+(addendum 5/45) applies: derive it from the vendor's own weight-prep path.
+
+4. SIDE FINDING — the harness packs LAYER 0 but runs LAYER 1. moe_smoke / MoERuntimeLayerEngine::init
+call npu_pack_moe_expert_pool/region_b/router_bo/linear5_bo all with layer=0, while forward(1) loads
+moe_layer_ctx1.elf = layer 1 (both are linear_attention so layouts match, values differ). Not the NaN
+cause, but it means the harness is a layer-0-weight / layer-1-ELF mismatch and any correct-output
+comparison must pack the SAME layer the ELF encodes.
+
+CONSEQUENCE: the reuse route's NaN is still open, but the "input-independent NaN" framing (addenda
+70/72) is weaker than recorded — the act-scale test is confounded by RMSNorm scale-invariance, and the
+zero-the-BO tests cannot distinguish wrong CONTENT from wrong OFFSETS. A harness-side defect in the
+linear-attn weight feed (finding 2/3) remains a live, fixable candidate; the vendor ELF has not been
+shown to be internally broken.
