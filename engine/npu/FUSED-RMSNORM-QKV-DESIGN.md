@@ -4306,3 +4306,52 @@ derived a different way - and passed every one.
 **What remains genuinely open**, and it is small now: confirm the staging k0-dependence with a
 *valid* k0 sweep (dump per-k0 inside the loop, not after it), and fix the kernel's norm epsilon
 (`1e-5` vs the engine's `1e-6`). Neither is a correctness question for the fused path.
+
+## NINTH RETRACTION: the one-hot probe is invalid. I promoted an unvalidated instrument to "decisive".
+
+The valid per-k0 sweep, with each k0 captured separately so nothing reads a stale file:
+
+```
+k0      match%   maxdiff   probe max   W row max   corr(probe, W[k0,:])
+0       0.24     0.15845   0.17188     0.06885     +0.0357
+1       0.24     0.55566   0.53125     0.23047     -0.0164
+256     0.20     0.22412   0.19922     0.10400     -0.0029
+512     0.20     0.15674   0.15234     0.10645     -0.0241
+768     0.10     0.15332   0.16992     0.10107     -0.0231
+1023    0.10     0.14429   0.12500     0.09424     +0.0047
+```
+
+Correlation with the expected row is ~0 at **every** k0 - including k0 = 0, where I had read the first
+eight values, seen them agree to ~1%, and called it decisive. Scanning the probe output against all
+1024 rows of W gives a best |corr| of **+0.08** (row 426, and it is not k0); a valid one-hot probe
+must give **1.0000** with row k0. So the instrument never measured the weight at all. The k0 = 0
+"agreement" was eight numbers coinciding, and the "k0-dependent staging" conclusion in the previous
+section is retracted with it - there is no k0 dependence; the probe is uniformly invalid.
+
+**What this costs and what it does not.** The weight finding survives on its other leg:
+`bf16mm_dump_w` - the library's own read-back - matched my raw array **bit-exactly**, and that
+measurement does not involve my probe. So the effective weight is still my raw array. The 256-row
+staging contract also survives, and now rests on the *source* rather than the crash:
+`bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, i & 1, bA.data() + (size_t)(i * 256) * H)` at line 4742,
+plus the comment at 4737 stating it outright.
+
+So `bA @ W_raw != bC` remains, unexplained, with these verifications in place: `bA` byte-identical at
+its dump and at the launch site; W equal to the library's own read-back; the 256-row contract from
+source; and `bC` read as the engine's raw GEMM output. One of those is still wrong, and the honest
+reading of this session is that it is most likely a verification of mine that I have not yet thought
+to question.
+
+**Why the probe failed - a hypothesis, not a conclusion.** The comment at 4737 says `ensure_a()`
+stages both 128-row halves from the same pointer and that `batch 1 costs no extra staging (cache
+hit)`. If that cache is keyed on the activation pointer, then my probe's A (a fresh vector each time)
+could have been served a *stale* staged activation - which would produce exactly what I measured:
+output of the right magnitude, uncorrelated with the weight, at every k0. That would also mean the
+probe cannot be validated by construction without controlling that cache, and that a correct version
+must reuse the engine's own A buffer.
+
+**Ninth retraction, and it is the most instructive of the nine.** All the others were a statistic or a
+label standing in for a measurement. This one is a *measurement instrument* that was built, run,
+produced a plausible number, and was promoted to "decisive" without ever being validated against a
+case whose answer I already knew - which for this instrument would have cost one correlation. The
+rule this file keeps rediscovering now extends one step: **validate the instrument before trusting
+its reading, and the validation must have a differently-derived expected answer.**
