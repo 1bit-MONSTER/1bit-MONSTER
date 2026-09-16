@@ -4959,3 +4959,44 @@ makes the M-tiled C a single row. So my single-row design is not a small version
 DEGENERATE case of it, and the flakiness I have spent sixteen addenda on may be a property of that
 degeneracy rather than of the shared pattern. Testing that properly means running the engine's own v27
 path and counting failures, which is now the next step.
+
+### Addendum 136 — the engine's A is ROW-MAJOR and both instruction streams carry the same header
+
+Two readings that remove the two remaining explanations for addendum 135's v27 result.
+
+FIRST, THE ENGINE'S A LAYOUT, read from `I8Ctx::quantize_async`:
+
+    Am[m * KD + k] = (int8_t)q;          // m outer, k inner -- ROW-MAJOR
+
+So the engine fills its activation buffer row-major, exactly as my driver does. My row-major feed was
+RIGHT and v27's A layout is not the problem. (The function also zero-pads all MD rows, with a comment
+about issue #1775 -- "the M=128 stream reads rows [am, MD) every launch" -- which is itself confirmation
+that the engine's production path really is M=128.)
+
+SECOND, THE INSTRUCTION STREAMS. The engine's fallback path prepends a four-word "FLM-parity header"
+(`0x06040100, 0x00000108, ncmds, raw.size()*4 + 16`), and I suspected aiecc's blob lacked it. It does not:
+
+  mine  (aiecc):      0001 0406 | 0401 0000 | 4051 0000 | 1069 0a00
+                      magic     | 0x00000104 | 20,800    | 682,256
+  engine (shipped):   0001 0406 | 0801 0000 | 402e 0000 | 10ed 0500
+                      magic     | 0x00000108 | 11,840    | 388,368
+
+SAME FOUR-WORD STRUCTURE, same magic, a four-byte difference in the second word (0x104 versus 0x108) and
+different counts and sizes because the designs differ. So the header is present in both and is NOT the
+difference either.
+
+WHERE THAT LEAVES THE v27 TEST, stated honestly: A row-major (matches the engine), C row-major M x N
+(matches the signature), B row-major (the default tap), argument order (A, B, C) matching the engine's own
+call `(*k)(opcode, instr_bo, ninstr, *bA, wbo, *bC)`, and the instruction format matching -- and still
+0/128 rows with 96 all-zero rows, deterministically, with only ONE m-tile (32 rows) carrying any data.
+I do not have an explanation, and with the budget spent I am not going to guess one. What I can say
+precisely is that THIS RESULT IS NOT EVIDENCE ABOUT v27. It is evidence that my driver still does not
+reproduce the engine's feed in some respect I have not found, and the correct way to validate v27 is
+through the engine's own path, which is what the saved plan already says.
+
+CARRY-FORWARD, unchanged and all of it measured: the engine's production topology is v27 (M=128, four
+core rows, 4,160 descriptors, 32 rows per A DMA) and it runs at 1.9 s/tok; the norm phases are verified
+and bit-identical to each other in every run ever taken; the GEMM is verified at NO shape; and the
+lane's reference design n1_core_i8_m1.py is a v26-style single-row derivation whose failure rate I
+measured at 1 in 8, which is why every 8192/8192 quoted before addendum 117 should be read as a single
+lucky sample.
