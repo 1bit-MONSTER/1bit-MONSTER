@@ -6613,3 +6613,52 @@ binary - ~38k of 53,408 BDs at 0.13-6.25% burst efficiency, one pattern at 100%,
 mechanism for launch B's 991.34 ms. NOT yet established: the *delta*. I have not rebuilt with a
 contiguous-B tap and re-timed. Until that number exists, "the tap causes the 991.34 ms" is a mechanism with
 strong evidence, not a demonstrated cause - and the bar to beat remains 1945.5 tok/s @1k, not 655 or 1494.
+
+## The A/W split, verified independently per memref: the defect is entirely weight-side
+
+@agent-baaa57 identified the assignment from the generator's own tap table
+(`n1_fk3_layer.py`: A taps `sizes=[1,1,M,k] strides=[1,1,k,1]` at lines 417-436 / 523-547; W taps
+`sizes=[k//8,NT//8,8,8] strides=[8*NQKV,8,NQKV,1]` at 439-440 and the same shape for O/GU/D at 469-513).
+Rather than accept it, I re-derived the split from the MLIR alone, grouping all 53,408 BDs **by memref** and
+computing each group's burst efficiency:
+
+```
+memref   size          BDs     burst_eff          kind
+%arg8    131072      12352    100.00%             A / activation  (M*k = 128*1024)
+%arg14   131072       2112    100.00%             A / activation
+%arg9   6291456      12288      0.13%             W
+%arg12  4194304       8192      0.78%             W  (4096x1024 = W_QKV / fused W_D)
+%arg5   2097152       4096      0.78%             W  (1024x2048 = W_O)
+%arg11   393216       6240      0.26%             ?
+%arg4    262144       4224      6.25%             ?
+%arg3    524288       3072      0.20- 3.12%        ?
+%arg10   786432        384      0.13%             ?
+%arg7    132096        224      0.78- 1.56%        ?
+%arg0    132096        192      1.56%             ?
+%arg13   131072         32      0.78%             A-ish (131072) but 0.78%
+```
+
+**Not one activation tap is pathological, and not one weight tap is efficient.** The peer's arithmetic
+reproduces both of my efficiency figures to the digit: A-tap with M=128, k=16 gives an inner run equal to
+the full k (32 B contiguous, no hop) = 100.00%; W-tap with k//8=2, NT//8=4, 8*NQKV=8192 gives an 8-element
+(16 B) inner run then a NQKV=1024-element (2048 B) hop = 16/2048 = 0.78%, and the 6144-stride rows are the
+same shape with NQKV read as HD/NO/H = 3072.
+
+**Consequences.**
+
+1. **The pathology is per-tap and entirely weight-side.** A is already fully burst-efficient. The engine
+   already knows how to emit a perfect tap; it does so for A and not for W. So this is a **packing / tap-choice
+   defect, not a hardware or generator-capability limit**, and @agent-c1b76d's `-L/--linear-b`
+   (`n1_core_i8_m1.py:36`, one contiguous 8192-B tile per DMA in column-major (nt,ki) order matching
+   `pack_tile_chunk`) is the ready-made intervention - it needs the **W BO packed in the order the W tap
+   reads** (the 8-element inner runs placed contiguously), not a new kernel.
+2. **The memref tag does separate them** (the peer's refinement is right, and my "the memref tag does not
+   separate them" note was wrong because my three-line sample drew `%arg3` - a third tap - for both good and
+   bad patterns). `131072 = M*k` marks A; `6291456` / `4194304` / `2097152` mark weights. The reliable
+   separator remains the generator's sizes/strides table.
+
+**Status, held to the standard.** This is **source-level identification**: the generator's own tap table, the
+emitted pattern in the timed binary, and arithmetic that reproduces the measured efficiencies exactly. It is
+**not the delta**. The acceptance test remains the rebuild with a contiguous W tap and the re-timed delta
+against 991.34 ms - and if that delta is small, the identification is still correct and the cause lies
+elsewhere. That falsifiable form is the point. No accel0 was needed for any of this work.
