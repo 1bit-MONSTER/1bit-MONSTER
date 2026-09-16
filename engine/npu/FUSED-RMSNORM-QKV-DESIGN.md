@@ -6379,3 +6379,44 @@ interface assumptions. fk-4 is diagnosed to the *launch*, not to the cause: laun
 the layer and is ~37x slower than the engine's entire per-op layer, and three of my proposed explanations
 for that (host round-trip, attention over-size, missing KV write) turned out to be either small or already
 correct.
+
+## The instruction-volume lead, measured (and a method error caught in the measuring of it)
+
+The `_insts.txt` file is **binary**, not text: `wc -l` on it counts newline bytes and my `awk` "opcode
+census" was reading binary as fields. Both were meaningless, and I noticed only because the `head` output
+was obviously corrupt. That is the same shape as every other error this session - treating an artifact as
+the kind of thing its *name* suggests - and it is worth recording that I nearly drew a conclusion from an
+opcode histogram of random bytes.
+
+The real numbers:
+
+```
+launch B insts file            8,758,928 B  = ~2.19 million 4-byte instruction words
+attn_mha_1024_nh32.elf           177,696 B  = ~44k words (code+data, so an upper bound on instructions)
+attn_mha_256_nh16.elf             98,848 B  = ~25k words
+```
+
+So launch B carries roughly **45x** the instruction words of a 1024-key attention ELF, for a layer whose
+per-op equivalent costs ~19-27 ms against launch B's 991 ms - a 37x time ratio. Two independent ratios of
+the same order, which is at least consistent with the instruction stream being the cost rather than the
+arithmetic. It is not proof: the ELF figure includes data and the counts are not like-for-like. But it is a
+measurement, and it points somewhere testable (how many of those 2.19M words are per-phase setup versus
+per-tile work).
+
+**Where fk-3/fk-4 stands at the end of this session:**
+
+* **fk-3 correctness: met and proved.** The fused 0.6B prefill reproduces the engine's own prefill token
+  for token - `220 49789 220 11141` - after four real bugs, every one an interface assumption rather than a
+  numerical defect (the qk-norm omission, my own `l == 0` logging gate, the per-layer-ness of the weights,
+  and the missing runlist KV write for the decode).
+* **fk-4: localised but not diagnosed.** Launch B is 94% of the layer and ~37x slower than the engine's
+  entire per-op layer. Three of my explanations for that (host round-trip, attention over-size, missing KV
+  write) were each small or already correct, and the instruction-volume lead is the first with evidence
+  behind it.
+* **and the premise needs re-measuring**: the per-op path now benchmarks at 1927 tok/s @1024, above FLM's
+  published 1494, so "close the gap to 1494" may already be true of the un-fused path.
+
+**The durable lesson, five times over this session**: every wrong turn came from reading a story off an
+artifact's appearance - a filename, a number in a build command, a statistic, a text tool applied to a
+binary file - instead of reading the thing itself. The four bugs were found by reading lines of code and
+by comparing artifacts on matched inputs; the five retractions were all inference.
