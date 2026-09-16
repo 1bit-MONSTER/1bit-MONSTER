@@ -635,14 +635,15 @@ int64_t npu_pack_moe_router_bo(uint8_t* bo, ModelWeights* mw, int layer) {
     if (paln && lw->post_attention_layernorm_weight.ndim == 1)
         memcpy(bo + 0x1000, paln, (size_t)lw->post_attention_layernorm_weight.data_size);
     if (seg_bytes) memcpy(bo + 0x2000, seg, seg_bytes);
-    // stride-8 interleave: flat[(i%8)*blk + j*(n_in//8) + i//8], blk = n_out*(n_in//8)
-    const int64_t in8 = n_in / 8;
-    const int64_t blk = n_out * in8;
+    // e-major TRANSPOSE (addendum 155): the layer ELF reads the router at
+    // @12288 as dst[e*2048 + h] = router[h][e], i.e. transposed [256 experts]
+    // [2048 hidden], read [2048h x 32e] per DMA. The old stride-8 interleave
+    // (dst[(i%8)*blk + j*in8 + i/8]) was a guess and contradicts this read.
     const uint16_t* src = (const uint16_t*)rt;
     uint16_t* dst = (uint16_t*)(bo + 0x3000);
-    for (int64_t i = 0; i < n_in; i++)
-        for (int64_t j = 0; j < n_out; j++)
-            dst[(i % 8) * blk + j * in8 + i / 8] = src[i * n_out + j];
+    for (int64_t j = 0; j < n_out; j++)
+        for (int64_t i = 0; i < n_in; i++)
+            dst[j * n_in + i] = src[i * n_out + j];
     return (int64_t)(0x3000 + n_in * n_out * 2);   // 0x3000 + 1 MB
 }
 
@@ -671,10 +672,18 @@ int64_t npu_pack_moe_linear5_bo(uint8_t* bo, ModelWeights* mw, int layer) {
 
     const uint8_t* ssm = (const uint8_t*)model_tensor_data(mw, &lw->ssm_out_proj_weight);
     int64_t ssm_len = lw->ssm_out_proj_weight.data_size;   // 8,912,896
-    int b = 0;
+    // region-B H=n/256 interleave (addendum 155): the ELF reads ssm_out @328192
+    // CONTIGUOUSLY in 4736-B rows, so the host writes the same reorder the other
+    // 4736-row tensors use -- H = n_tiles/256 (1024 -> H=4), out[blk*2H+i] =
+    // in[blk*2H + i/2 + H*(i%2)]. The old 16*(i%2)+i/2 order was the down_exps
+    // family order, not this one.
+    const int n_tiles = 1024;              // 64 x 16 logical rows
+    int H = n_tiles / 256; if (H < 1) H = 1;
+    int B = 2 * H;
+    int blk = 0;
     while ((size_t)(dst - bo) < BO5) {
-        for (int i = 0; i < 32; i++) {
-            int64_t j = (int64_t)b * 32 + 16 * (i % 2) + i / 2;
+        for (int i = 0; i < B; i++) {
+            int64_t j = (int64_t)blk * B + i / 2 + H * (i % 2);
             if (j * NPU_MOE_ROW_BYTES + NPU_MOE_ROW_BYTES <= ssm_len) {
                 size_t n = NPU_MOE_ROW_BYTES;
                 if ((size_t)(dst - bo) + n > BO5) n = BO5 - (size_t)(dst - bo);
@@ -683,7 +692,7 @@ int64_t npu_pack_moe_linear5_bo(uint8_t* bo, ModelWeights* mw, int layer) {
             }
             if ((size_t)(dst - bo) >= BO5) break;
         }
-        b++;
+        blk++;
     }
     return (int64_t)(dst - bo);   // 5,242,880
 }
