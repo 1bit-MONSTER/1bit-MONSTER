@@ -1008,3 +1008,27 @@ combination where the shim task count stays under that limit, e.g. more columns
 
 Regression checked: PASSES defaults to 1 and NH=8/P=2/C=16 reproduces the
 verified numbers exactly (1636/16384, head 5/6/7 = 189/182/147).
+
+### ✅ Composition attention verified: NH=16 / 1024 keys in FOUR columns
+
+The "Overflow of program memory" that blocked multi-pass was a PER-SHIM limit, not
+a per-core one: PASSES=2 with PERCOL=1 (2 columns) overflows, the SAME design with
+PERCOL=2 (4 columns) builds — the shim's DMA-task/program budget is spread over
+twice as many shims.
+
+```
+PASSES=2 bash build_mha_1core_nh.sh 64 16 16 2     # NH=16, ncol=4, C=16 = 1024 keys
+== OK: mha1.xclbin (294048 B)
+```
+**Verified on the NPU with DISTINCT per-head data — all 16 heads correct:**
+heads 0..7 give 230/179/195/254/260/189/182/147 (byte-identical to the verified
+NH=8/P=2/C=16 run, i.e. pass 1 is exactly right), and heads 8..15 give their own
+correct values (169..334). This is the multi-pass signal that matters — an
+identical-data test cannot distinguish the two passes.
+
+**So the composition budget is fully open:** the attention costs 8 cores in
+columns 0-3, leaving columns 4-7 (16 compute tiles and 4 shims) for
+RMSNorm+QKV (norm + GEMM), O-proj, RMSNorm+GU (norm + GEMM) and D — one column
+each, 2 MM2S + 1 S2MM apiece, well inside 2 + 2. With C=16 = 1024 keys, and the
+attention's two passes run inside the single launch, the layer stays one xclbin
+launch.
