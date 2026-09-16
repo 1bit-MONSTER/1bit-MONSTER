@@ -27,6 +27,31 @@ extern "C" int npu_pack_lmhead_bo(uint8_t* bo_buffer, void* mw, const void* conf
 extern "C" int npu_desc_tiles(const void* desc);
 extern "C" int npu_layer_bo_bytes(void* mw, const void* config);
 
+// gen_layer_elfs takes the model family as argv[6] and DEFAULTS IT TO "qwen3"
+// (gen_layer_elfs.cpp:123). The lazy-ELF spawn below passed only six arguments, so a
+// model from any other family could not generate its per-context ELFs at all.
+// Measured 2026-09-16, Nanbeige4.1-3B with the shipped-set seeding corrected:
+//   RuntimeLayer: generating missing ELFs ctx=1..256 (gen_layer_elfs ... 1 256 8192)
+//   terminate called after throwing an instance of 'std::runtime_error'
+//     what():  Unsupported intermediate size: 10752
+//   [runlist] RuntimeLayerEngine init failed
+// so a non-Qwen3 model could not run from the default path (with NPU_LAYER_ELF_DIR
+// supplied the ELFs exist and the spawn is never reached, which is why this stayed
+// hidden). Derived from the model DIRECTORY, the same model-not-dimension resolution
+// the xclbin and shipped-ELF-set lookups use. Anything unrecognised keeps the
+// generator's own default, so no existing behaviour changes.
+static const char* elf_family_from_model(const char* model_dir) {
+    if (!model_dir || !model_dir[0]) return "qwen3";
+    const char* b = strrchr(model_dir, '/');
+    b = b ? b + 1 : model_dir;
+    if (strncmp(b, "Llama",    5) == 0) return "llama";
+    if (strncmp(b, "Nanbeige", 8) == 0) return "nanbeige";
+    if (strncmp(b, "Phi4",     4) == 0) return "phi4";
+    if (strncmp(b, "Phi-4",    5) == 0) return "phi4";
+    if (strncmp(b, "Gemma",    5) == 0) return "gemma_text";
+    return "qwen3";   // the generator's default, so nothing changes for it
+}
+
 // ---- model-file layout (model-generic) ----
 // Metadata data_offsets are relative to data_base (8-byte len + JSON header);
 // absolute file offset = data_base + data_offset. The per-layer norm tensors
@@ -307,8 +332,8 @@ bool RuntimeLayerEngine::ensure_layer_kernel(int ctx_len) {
             if (lo > hi) { fprintf(stderr, "RuntimeLayer: ctx=%d is past the ELF domain (MAX_L=%d)\n",
                                     ctx_len, kElfMaxL); return false; }
             char cmd[1024];
-            snprintf(cmd, sizeof(cmd), "%s %s %s %d %d %d", gen, mdir, elf_dir_.c_str(),
-                     lo, hi, kElfMaxL);
+            snprintf(cmd, sizeof(cmd), "%s %s %s %d %d %d %s", gen, mdir, elf_dir_.c_str(),
+                     lo, hi, kElfMaxL, elf_family_from_model(mdir));
             fprintf(stderr, "RuntimeLayer: generating missing ELFs ctx=%d..%d (%s)\n",
                     lo, hi, cmd);
             int rc = system(cmd);
