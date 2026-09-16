@@ -973,8 +973,11 @@ dropping to fewer heads per column. Combined with the measured limits:
 | P=4 merge | 4 | 2 MM2S + 1 S2MM | 4, but O order is wrong |
 | P=2, 8 heads/launch | 4 | 2 MM2S + 2 S2MM (full) | 4, at the cost of 2 attention launches/layer |
 
-The last row is the only combination that is both correct with what is measured
-so far and leaves columns for the linear stages: it trades "~1 launch/layer" for
+The last row is VERIFIED (NH=8, P=2, N=64, C=16 = 1024 keys, 1 core/head, 4
+columns): all 8 heads return their own correct results under distinct per-head
+data (147..260/2048 exact, max_delta ~33000 — the online-softmax vs single-pass
+delta), and columns 4-7 are left free. It is the only combination that is both
+correct with what is measured so far and leaves columns for the linear stages: it trades "~1 launch/layer" for
 "2 attention launches + the linear stages", i.e. ~4 launches/layer instead of the
 9 the goal set out to remove. That is a real, honest fallback if the merge
 ordering cannot be pinned down from the shim side (e.g. by posting the four O
