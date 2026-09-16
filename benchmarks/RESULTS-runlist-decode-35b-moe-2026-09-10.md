@@ -1525,3 +1525,51 @@ Pattern worth naming about my own conduct today: twice I moved from a real obser
 dramatic conclusion without checking the step in between -- "ERFs are structural" from a quiet
 device, and "data was destroyed" from a dirty status. Both were corrected by someone else
 actually measuring. The observation was right both times; the inference was not.
+
+### Addendum 43 — ROOT CAUSE FOUND (with @agent-baaa57): two F32 tensors raw-memcpy'd into a region the ELF reads as bf16
+
+They dumped the layer's INPUTS via the existing NPU_DUMP_BOS hook and found region-A is sane except
+for 9 values at byte offsets 74016..74104 with magnitudes 1.351e24 .. -2.783e36, with the last
+non-zero byte at 74239 -- exactly the END of the 74240-byte region. Their reading: a dtype
+mismatch, not a permutation, because a layout bug spreads wrong FINITE values through the region,
+whereas a short run of huge magnitudes at the very end of a sequentially packed region is what a
+raw memcpy of a small FLOAT tensor read as bf16 looks like.
+
+I ran their check 1 against the model header and it CONFIRMS the dtype mismatch:
+
+  model.layer.0.input_layernorm.weight           dtype=BF16  shape=[2048]   4096 B
+  model.layer.0.post_attention_layernorm.weight  dtype=BF16  shape=[2048]   4096 B
+  model.layer.0.linear_attn.ssm_a                dtype=F32   shape=[32]      128 B   <-- F32
+  model.layer.0.linear_attn.ssm_dt.bias          dtype=F32   shape=[32]      128 B   <-- F32
+
+and the packer (npu-infer/src/runtime_layer_moe.cpp:75-84) does exactly what they said:
+
+  TensorDesc* heads[6] = { input_layernorm, post_attention_layernorm, ssm_conv1d,
+                           ssm_norm, ssm_a, ssm_dt_bias };
+  for (h..) { const uint8_t* s = model_tensor_data(...);
+              memcpy(w + off, s, heads[h]->data_size); off += heads[h]->data_size; }
+
+NO dtype conversion, and the header comment on that very function says "region A TODO". So 32 F32
+values (128 B) are memcpy'd raw into a region the ELF consumes as bf16: two bytes of every float
+are read as one bf16 element, the elements are MISALIGNED relative to the writer, and the result is
+the 1e24-1e36 exponent garbage they measured. ssm_a and ssm_dt_bias are the LAST two tensors in the
+pack order, which is exactly why the corruption sits in the final ~256 B.
+
+WHY THIS EXPLAINS EVERYTHING, with no extra assumptions: a layernorm reading a gamma whose tail is
+1e36 produces finite-then-inf on the first multiply; from there the whole layer is NaN; the input
+activations were clean; the output is deterministically all-NaN; there is no ERT; and the run is
+not contention-sensitive. It ALSO explains why zeroing every weight BO still NaN'd -- the region-A
+tail is not part of any weight BO I was zeroing, so my bisection was simultaneously confounded
+(0-variance RMSNorm) AND aimed at the wrong buffers.
+
+CAVEAT worth keeping: the same 2.783e36 value also appears in the `norms` (linear5) BO, so the
+same small tensor appears to be landing in two places; whether the ELF wants these two as F32 at
+specific offsets, or as bf16, is the thing to pin down -- their check 2 (compare the ELF's expected
+region-A offsets/sizes against the sequential 74240-B layout) settles it, and their check 3
+(overwrite bytes ~74016..74240 with bf16 1.0 and re-run) is the decisive confirmation either way.
+
+ALSO RECORDED, because it invalidates the request I made: there are NO host-visible intermediates
+between launches. runtime_layer_moe.cpp:189 -- "single-launch: layer + lm_head batched into ONE
+xrt::runlist submit" -- the whole layer is ONE ELF launch, so post-norm/post-QKV/post-attention/
+post-O/post-FFN do not exist as buffers and "name the first intermediate that goes non-finite" is
+not directly answerable. The input dump was the right substitute.
