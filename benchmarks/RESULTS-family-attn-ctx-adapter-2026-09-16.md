@@ -184,3 +184,44 @@ With determinism restored, the 1202-template-matched prompt gives **764**, where
 
 Cited conclusion for Nanbeige: **adapter fixed and deterministic; parity not
 established**, with the two divergences above explicitly localised.
+
+## Addendum 4: the AttnCtx attention does NOT match the engine's own attention reference
+
+With the path now deterministic, `NPU_ATTN_DIFF=1` compares, in-situ, the AttnCtx
+result (`bA`) against the engine's float attention (`attn_omp -> bat`) on the SAME
+Q/K/V, per layer. 8-token prompt, nh20/nkv4/hd128:
+
+```
+[ATTN-DIFF L0] npt=8 max|npu-host|=0.152134 at (tok 1, dim 689) | max|bActQ|=26.75 max|bKv|=19.5 | npu[0][0]=0.234375 host[0][0]=0.234375
+[ATTN-DIFF L1] max|npu-host|=0.197524  (tok 7, dim 1003)
+[ATTN-DIFF L2] max|npu-host|=0.784974  (tok 7, dim 1445)
+[ATTN-DIFF L3] max|npu-host|=0.349967  (tok 7, dim 2018)
+[ATTN-DIFF L4] max|npu-host|=0.818040  (tok 4, dim 1428)
+[ATTN-DIFF L5] max|npu-host|=0.690879  (tok 7, dim 1132)
+[ATTN-DIFF L6] max|npu-host|=0.591314  (tok 5, dim 2243)
+[ATTN-DIFF-H0] per head (max|npu-host| / max|npu| / max|host|):
+  h5: 0.5323/0.3203/0.2415  h6-h9: 0.4827/0.2412/0.2415  h10-h14: ~0.295/0.154/0.154
+```
+
+Readings:
+
+- **`npu[0][0] == host[0][0]` exactly on every layer** — token 0 agrees; the
+  divergence is at later tokens (1, 4, 5, 7) and concentrates in specific heads
+  (h5-h9 worst). That is a *content* disagreement, not a uniform rounding offset.
+- **Magnitude:** 0.15-0.82 against head outputs scaled ~0.15-0.32 — far larger than
+  the bench's `NPU==EMU 8.575258e-02` (which is max abs error on an output whose
+  mean magnitude is ~3e-2). So the kernel matches **its own** host EMU, but the
+  EMU's contract does **not** match the engine's `attn_omp` on the same data.
+
+- Prime suspect: the **pre-RoPE / scale contract**. The bf16 prefill's own comment
+  says the captured `attn.xclbin` "expects PRE-RoPE'd Q and K + raw V — the host
+  applies q_norm/k_norm + RoPE, the kernel does NOT". The AttnCtx (written for
+  Zaya's decode) computes its own global `sq`/`sk` and per-dim `sv` and quantises
+  Q/K/V to int8 — a different contract from the engine's float `attn_omp`. Feeding
+  the AttnCtx the bf16 path's post-RoPE `bqo` therefore does not reproduce
+  `attn_omp`.
+
+This is now the sharpest localisation available for Nanbeige: the divergence is in
+the **AttnCtx's Q/K/V contract vs the engine's attention**, not in the kernel and
+not in a race. Next step would be to make the two agree on one layer (same Q/K/V,
+same scale/RoPE convention) before any parity claim.
