@@ -4695,3 +4695,40 @@ WHATEVER THE ANSWER, THE LANE'S REFERENCE DESIGN IS NOT EXEMPT. Every "8192/8192
 addendum 117, including the m1 QKV result that this workstream treated as ground truth since addendum 82,
 was a single sample of a design that fails in roughly one run in eight. Anything built on it inherits
 that.
+
+### Addendum 130 — the mem-tile relay is exonerated too; and the failure is DATA-dependent
+
+Tested the one structural difference between my C path and a direct one: replaced the linked
+`core -> mem` + `mem -> shim` pair with a SINGLE direct `core -> shim` fifo, removing the memory tile
+and the `object_fifo_link` entirely. Eight runs at n_k=1, counting all-zero outputs:
+
+  192, 2041, 16, 0, 0, 0, 0, 0        -> FIVE ALL-ZERO RUNS IN EIGHT
+
+Identical to the linked version. THE MEMORY-TILE RELAY IS NOT THE CAUSE, and the C path's structure does
+not matter. (The generator is restored to the committed linked form.)
+
+AND A RE-READING OF ADDENDUM 126 THAT MATTERS. The ALLONES_B runs there were made WITHOUT CHUNK_B -- I
+noted that as an error for ALLONES_A but not for ALLONES_B, where I assumed it did not matter. It does
+matter, in the opposite direction from what I assumed: with B = all ones the LINEAR tap's ordering is
+irrelevant, so those runs were comparing a correctly-fed device against a correctly-computed reference
+and they came out EXACT 2048/2048 three times in four. So when the B's content is trivial, THE A FEED,
+THE CORE, THE KERNEL AND THE C READBACK ALL WORK. The failure appears with REAL data, on both feeds, with
+packing correct.
+
+That is the sharpest statement of the fault available: it is DATA-DEPENDENT, or at least it depends on
+the feed carrying real content rather than a constant. A data-dependence in what looked like a timing
+fault is strange enough to be worth stating plainly rather than explaining away -- it may mean the
+all-ones case is not a fair control (the values happen to be large and uniform, so a partially-fed tile
+still produces a non-zero, sometimes-correct column), or it may point at something value-dependent I have
+not considered. Either way it is the next thing to pin down, and it is cheap: run ALLONES_B WITH CHUNK_B
+set and with the packing actually moving data, and run a B filled with a NON-uniform but trivially
+verifiable pattern (e.g. B = 1 for n even, 0 for n odd), so "fed correctly" and "trivially checkable" are
+separated.
+
+STATE AFTER ADDENDA 117-130, honestly: the norm phases (RMSNorm, FFNnorm) are exact in every run ever
+taken and proven bit-identical to each other. The GEMM is verified at NO shape: at K=64 it usually
+produces an all-zero C when fed real data, at K=2048 it is exact in roughly 3 of 4 runs, and its
+behaviour moves with preceding DMA work (5/8 -> 2/8 with an extra FFNnorm round) and with whether the
+feed carries real content. The lane's REFERENCE design, n1_core_i8_m1.py, is structurally IDENTICAL and
+is itself flaky, so every 8192/8192 quoted here before addendum 117 -- including the m1 QKV result this
+workstream has treated as ground truth since addendum 82 -- was a single lucky sample.
