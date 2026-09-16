@@ -5536,3 +5536,50 @@ and every later measurement inherited the premise rather than testing it.
 `bf16_l0_hidden`/`attn`/`o`/`dw`), which localises the remaining defect inside the layer. The method is now
 established and cheap: one per-op run and one fused run on the same ids file, then compare the dumps
 row for row.
+
+## LOCALISED: launch A correct, layer output diverges at layer 0 -> the defect is in launch B
+
+Both paths dumped their per-layer hidden state (`NPU_DUMP_HIDDEN`) on the **same** ids file, 3584 rows
+each = 28 layers x 128. Per-layer comparison, fused vs per-op:
+
+```
+layer  fused maxabs  perop maxabs  ratio    corr      verdict
+0      6.59375       6.61963       0.55592  0.610931  DIVERGES
+1      7.00000       7.81885       6.51319  0.020150  DIVERGES
+2      7.78125       6466.97510    4.16305  0.020420  DIVERGES
+...
+27     260.00000     687.95111     3.87656  -0.029710 DIVERGES
+
+FIRST DIVERGING LAYER: 0
+```
+
+**Launch A is verified correct (corr 1.0000 against the engine's own QKV, same prompt), and the layer
+output is already wrong at layer 0 (corr 0.611). Since launch A is exonerated, the defect is in launch
+B - attention, O-projection, GU+SiLU, or D - or in the driver's composition of them.** The layer-0
+correlation of 0.611 rather than ~0 says launch B is *partially* right, which is consistent with one
+stage of its four being wrong rather than the whole thing.
+
+**An anomaly I am recording rather than explaining.** From layer 2 onward the **per-op** hidden state
+reaches maxabs ~6466 while the fused path stays in the 7-260 range. The per-op path produces the
+*correct tokens* (220, 49789, 220, 11141), so a large `bh` is not automatically a bug - RMSNorm is
+scale-invariant and would normalise it away. But a 6466 magnitude appearing in a working reference is
+something I do not understand, and it means the ratio column above should not be read as diagnostic
+until it is explained. Two possibilities worth testing rather than assuming: the two dumps are taken at
+slightly different points in the layer despite both being "the layer output", or the per-op path's
+hidden state genuinely grows and is renormalised each layer.
+
+**What this does and does not establish.** It establishes that the fused layer's *output* is wrong from
+the first layer, on identical inputs, which is the localisation the last several hours were for - and it
+is the first localisation in this file made with a same-prompt comparison. It does **not** say which of
+launch B's stages is at fault; that needs the same same-prompt comparison against the engine's
+`attnout` / `o` / `gu` / `dw` dumps, which exist for the per-op path but have no fused counterpart yet.
+
+**Next, and it is a clear list:** add per-stage dumps on the fused side (`NPU_FK3_DUMP` currently emits
+only `aA`, launch A's C, `bQ` and `CD`), then compare attention / O / GU / D stage by stage against the
+engine's `bf16_l0_attnout`, `bf16_l0_o`, `bf16_l0_gu`, `bf16_l0_dw` - all on the same ids file. That
+should name the stage in one run each.
+
+**Also note for whoever picks this up:** the layer-0 fused output being wrong at corr 0.611 while launch A
+is exact means the error is introduced *after* the QKV. The `bQ` post-RoPE dump (`fk3_drv_Q.bin`) is
+already emitted and is the first thing to check against the engine's `bf16_l0_qkv` - if RoPE/scatter is
+wrong, everything downstream inherits it.
