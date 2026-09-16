@@ -474,3 +474,16 @@ So the honest current state of the two routes:
 - **lib per-ctx ELF runlist path: NaN** (dead, Addenda 6-9b).
 The objective's dense-class (~88 tok/s) runlist decode remains ~88× away on the
 working route.
+
+### Addendum 11 — the 35B runtime ERT timeout is SYSTEMIC (not the intermittent Llama kind)
+
+@agent-afbeb7 found the shipped FLM runtime itself trips `ERT_CMD_STATE_TIMEOUT`
+on llama3.1:8b **intermittently** (France/Japan ok, Italy failed), suggesting device
+state rather than a pure binding bug. Tested the same hypothesis on the 35B:
+22 consecutive `flm run qwen3.6-moe:35b-a3b` attempts on flap-v1.0.5 —
+- 20/22 died in `load_weights` with the ASLR SIGSEGV,
+- **2/22 loaded, and BOTH then hit `ERT_CMD_STATE_TIMEOUT` on the first runlist.**
+
+So on the 35B the ERT timeout is **reproducible, not transient** (2/2 loads), unlike
+the Llama case. The 35B runtime whole-layer path is reliably broken rather than
+flaky, which is consistent with (and does not rescue) Addenda 6-9b.
