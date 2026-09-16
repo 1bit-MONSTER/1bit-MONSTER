@@ -3447,3 +3447,40 @@ NumPy reference element by element, starting from the scores rather than the fin
 score matrix is the first quantity that can be compared without the softmax's normalisation
 obscuring the difference. `attn1.cc` is the only kernel in this design whose numerics have never
 been checked against anything it did not also help define.
+
+## The attention's signature: head-to-KV mapping or Q/K/V tap, not a scale
+
+Two more diagnostics on the same real-QKV comparison, both CPU-only.
+
+**It is not a scale error.** Best single scale factor kernel/reference = 0.11422 (neither
+1/sqrt(HD)=0.08839 nor 1/HD=0.00781), and the residual after removing it is still
+maxabs 0.74916 against a reference whose own maxabs is 0.71484 - i.e. removing the best
+possible scale leaves the outputs as dissimilar as the outputs themselves. Per-head best scales
+vary (0.17357, 0.15868, 0.11862, 0.11348 for heads 0-3), so there is no single constant either.
+
+**The signature is the head pairing.** With NH=16 and NKV=8, a correct GQA attention has heads
+(0,1), (2,3), (4,5)... sharing one KV head, and their output magnitudes pair up accordingly:
+
+```
+reference per-head maxabs: 0.5000 0.5000 0.5742 0.5742 0.6836 0.6836   <- pairs
+kernel    per-head maxabs: 0.7148 0.7695 0.5117 0.7461 0.5195 0.6445   <- no pairing
+```
+
+The reference pairs exactly, the kernel does not. That is not a normalisation difference - a
+wrong softmax denominator would preserve the pairing - it points at the kernel associating the
+wrong K/V with each Q head, or reading Q/K/V at the wrong offsets in the QKV buffer. Those are
+the two places a per-head structure can be lost: the tap layout (`attn1.cc -DK_ROW_MAJOR` and
+the microtiled Q tap) and the KV head index.
+
+Everything else in this design is now verified against something independent; this is the last
+unreconciled component and it has a specific, checkable signature rather than a vague "numbers
+look wrong".
+
+Next, in order:
+1. compare the **scores** (pre-softmax, per head) rather than the final output - the score matrix
+   isolates the Q·K^T and the head mapping from the softmax;
+2. with the reference's scores in hand, check whether the kernel's head h scores match the
+   reference's head h with KV head h//GQA, h%NKV, or some other pairing - that names the bug
+   directly;
+3. only then look at `attn1.cc`'s Q/K/V tap offsets, since the tap is the other mechanism that
+   can scramble the per-head structure.
