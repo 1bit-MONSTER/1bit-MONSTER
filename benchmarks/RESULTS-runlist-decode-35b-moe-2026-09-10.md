@@ -2431,3 +2431,39 @@ believe.
 METHOD NOTE, and it is the useful part of this run: the first attempt would have been recorded as a
 refutation if I had not checked the BO geometry against region-B's base first. The confound was
 findable by arithmetic (478,146,560 > 465,567,744) and it took one line to remove.
+
+### Addendum 70 — argument sweep: ALL FOUR BOs exonerated. The NaN is INPUT-INDEPENDENT.
+
+Ran the remaining suspects the way region-A was run -- intervene, then believe:
+
+  norms BO  (arg-6, 5,242,880 B)  zeroed entirely          -> act 1024/1024 NaN (unchanged)
+  kv BO     (arg-4, 134,217,728 B) filled with pattern 'Z' -> act 1024/1024 NaN (unchanged)
+  router BO (arg-5)               zeroed entirely          -> act 1024/1024 NaN (unchanged)
+  region-A  (arg-3 head)          replaced by expert pool  -> act 1024/1024 NaN (addendum 69)
+
+Every sampled kernel argument can be neutralised or corrupted without changing the output AT ALL.
+The pre-activation stays clean and the post-activation stays all-NaN through all of it.
+
+CONCLUSION: the NaN is INPUT-INDEPENDENT. It is produced by the ELF's own sequence regardless of
+what we hand it, which is why four separate content investigations (region-A's tail, its dtype, its
+layout, and then the whole argument set) each ended the same way. This is the strongest statement
+this lane can make about the defect, and it is the opposite of where I started: addendum 14 said
+"the ELF sequence is structurally broken" on the basis of a confounded zeroing experiment, I
+retracted that in addendum 40 when the ERT turned out environmental, and the input-independence
+result now re-establishes the same conclusion on sound evidence -- every argument neutralised, the
+failure bit-for-bit identical.
+
+CAVEAT, because the word "exonerated" deserves one: zeroing or filling a BO shows that its CONTENT
+does not change the failure mode. It does not prove the kernel never reads it. What it does
+establish is that no wrong CONTENT in any BO we can reach is the cause -- the NaN is produced from
+whatever the sequence does internally.
+
+WHAT IS LEFT: only the ELF itself -- its .ctrltext stream and the kernel sequence it encodes.
+Addenda 39/40 established there are no host-visible intermediates (the whole layer + lm_head is ONE
+xrt::runlist submit), so bisection must go inside the sequence: disassemble/inspect .ctrltext for a
+divide or reciprocal with no guard, an uninitialised buffer, or a phase whose inputs nobody fills
+(the addendum-22 hazard: the same group_id in a different hw_context is a DIFFERENT buffer).
+
+METHOD NOTE, now three times in this lane: the intervention that is cheap and decisive keeps being
+cheaper than the theory. Four BOs, four runs, four minutes -- and the answer is that none of them
+was ever the problem.
