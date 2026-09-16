@@ -1925,3 +1925,31 @@ ground truth is on disk, and only the transform is unknown.
 NEXT RUN: derive the arg-3 transform and check it against /tmp/cap/L0_arg3.bin; repack arg-3 to
 94,720 B when it matches; gate on the act (pre-act CLEAN, post-act ALL NaN 1024/1024, exit 0, no
 ERT). Do not re-derive the capture -- it exists, and its provenance is cap_interposer.cpp.
+
+### Addendum 54 — a COMMON 20,480-byte gap in TWO groups; the harness writes a header for one group but not the others
+
+Cross-checking the ELF's per-group declared sizes against what the packers actually write, the same
+gap appears twice:
+
+  group 3 (arg=weight): declares 18944 + 75776          = 94,720   tensors account for 74,240  -> gap 20,480
+  group 6 (arg=norms) : declares 66048+131072+151552    = 348,672  packer writes        328,192 -> gap 20,480
+
+and 20,480 = 4 x 5120 -- 5120 being the q4nx expert tile size, not an arbitrary number.
+
+Corroborating structure: the harness DOES write a header for the router argument
+(bo_router_ = 0x3000 + 2048*256*2), and group 5 declares exactly 12288 = 0x3000 as its first
+object. So for at least one argument the harness writes the ELF's declared header object, while for
+groups 3 and 6 nothing equivalent is written. The engine's own fused BOs are built the same way --
+npu_engine_i8ctx_inc.h describes "the unfolded gs into each column's header slice (the per-token
+update_fused_header folds ag/qn_s in)" -- i.e. these BOs are expected to carry per-column HEADER
+slices that the per-token pass then fills.
+
+HYPOTHESIS (labelled): groups 3 and 6 each require a 20,480-byte (4 x 5120) header that
+npu_pack_moe_region_b and npu_pack_moe_linear5_bo do not write, which would make both BOs start at
+the wrong offset for every object after the header -- garbage-in with clean activations, no error,
+deterministic all-NaN out.
+
+NEXT RUN: confirm against /tmp/cap/L0_arg3.bin (the real runtime's arg-3, addendum 53) WHERE the
+layer-0 tensors sit relative to offset 0 -- if they begin at 20,480 the hypothesis is confirmed and
+the fix is to prepend that header in both packers. Do not guess the header's CONTENT: determine it
+from the capture (the runtime's own bytes) or from gen_layer_seq, then verify byte-for-byte.
