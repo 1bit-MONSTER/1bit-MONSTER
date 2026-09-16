@@ -221,3 +221,19 @@ breakpoint on the BO-creation/resident-object path inside `Impl::load_weights`.
 
 Net on-box assets now banked: FastFlowLM source tree (Addendum 2), the live
 expert-pool BO (R50 verified 206/206), and the interposer idx/size run map.
+
+## Addendum 4 — pre-exec BO probe (2026-09-16)
+
+Extended the interposer's `runlist::execute` pre-dump with a small-identity probe
+(`CAP_BIG_PROBE`) so big BOs emit 4 KB @0 + 4 KB @0x1bc00000 instead of 512 MB.
+The run reached **82 `runlist::execute`** calls but the pre-exec big-BO dump
+produced nothing (the `run_bo()` slot lookup returned no >3 MB BOs for the
+recorded runs), and the interposer SIGSEGVs during the run. The synced BO set
+for the layer includes **11,534,336 B (11 MB)** and **10,485,760 B (10 MB)**
+dumps; the 11 MB one is plausible BF16 weight data (0.80, −0.005, 0.29, …) but
+contains no raw bytes of any layer-0 qkv/share_*/gate_proj/layernorm/router
+tensor, so it is not region-A/B in any raw form.
+
+Conclusion unchanged: on this box the region-A/B weight BO is not reachable from
+a failing forward, and the runtime's own 35B forward cannot complete
+(v1.0.4 SIGSEGV at load, v1.0.5 ERT_CMD_STATE_TIMEOUT at the first runlist).
