@@ -4355,3 +4355,49 @@ produced a plausible number, and was promoted to "decisive" without ever being v
 case whose answer I already knew - which for this instrument would have cost one correlation. The
 rule this file keeps rediscovering now extends one step: **validate the instrument before trusting
 its reading, and the validation must have a differently-derived expected answer.**
+
+## Session end: the validated probe hangs; and a correction to an earlier "dead branch" claim.
+
+The validated probe (one-hot written into the engine's **own** `bA`, so the `ensure_a` pointer is not a
+variable) did **not** complete. The run reaches
+
+```
+bf16 prefill: 28 layers dequant done
+  L0
+```
+
+and stops there - no `[probe2]` line and no output file. Because the `fprintf` comes *after*
+`bf16mm_gemm_wait(0, ...)`, the wait is the likely hang point: launching and waiting on batch 0
+before the engine's own pipeline has started appears not to complete. Note that the *same* probe,
+without the `bA` write, did print in an earlier run (`L0[probe2] l=0 Wqkv=1 row 0 dumped`), so the
+`bA` modification is the difference and is the suspect - either the wait itself, or the engine
+stalling afterwards on a `bA` it no longer recognises.
+
+**Correction to my own earlier claim.** I twice reported that `"bf16 prefill: N layers dequant done"`
+never printed and inferred a dead branch. It does print. The runs where I looked (t16, t17) had
+already died of heap corruption before reaching it - from my own probes passing an `A` of `H`
+elements. The "dead branch" was my inference from a truncated log, which is the same failure mode as
+the other nine.
+
+**State of the working tree at session end:** `npu_engine_universal.cpp` contains the uncommitted
+probe instrumentation (`NPU_GEMM_PROBE` at ~4617, `NPU_GEMM_PROBE2` at ~4751, the launch-site `bA`
+dump at ~4742). The probe2 variant **hangs** as described; the launch-site dump and the pre-loop
+probe are harmless and gated by env vars, but probe2 should be repaired (move the `fprintf` before the
+wait, and confirm the wait is what blocks) or removed before the next real measurement. The committed
+tree at `1ba9c9085` is clean and is the state to build from.
+
+**What is secure after this session**, in one place, because the retractions are numerous enough to
+obscure it:
+
+* the missing `1/sqrt(HD)` score scaling in `attn1.cc` - found by instrumentation, verified against an
+  independent NumPy attention (fused attention output 0.7148 vs 0.71484), and by `O(f32)`'s relative
+  error falling 260x to 4.326e-06;
+* the wrong weight BOs in launch B, three object-lifetime bugs, the `SKIP_A` UB, an unsigned
+  wraparound in my test rig, and the missing f32 KV-cache write;
+* the effective weight equals my raw dequantized array, **bit-exactly**, via the library's own
+  `bf16mm_dump_w` - a measurement that does not involve any probe of mine;
+* the 256-row activation-staging contract, from the source at line 4742 and the `(i*256)*H` offsets;
+* and `bA` is byte-identical at its dump (4692) and at the launch site (4742).
+
+Open: `bA @ W_raw != bC` (0.08% element match, same magnitude distribution) remains unexplained, with
+all of the above holding; and the kernel's norm epsilon `1e-5` against the engine's `1e-6`.
