@@ -920,3 +920,35 @@ FINAL for this lane: **~1.90 s/tok (0.53 tok/s) steady-state M=1 decode** on an 
 Halo, from 3.49 s/tok cold -- a 1.84x gain, entirely attributable to the expert prepack/warm.
 The objective's dense-class target (~88 tok/s) remains out of reach: the runtime's whole-layer
 per-ctx ELF path is structurally broken (deterministic ERT + NaN).
+
+### Addendum 27 — feasibility inventory for building the 35B whole-layer ELF from OUR OWN kernels
+
+The objective's core work ("extend the single-launch whole-layer per-ctx ELF runlist path to
+Qwen3.6-35B-A3B") is now BUILDABLE without the runtime. Reuse of the lib's ELF stays rejected
+(addenda 6-14), but every piece needed to author our own exists:
+
+| 35B layer op | kernel status |
+|---|---|
+| QKV (K=2048 N=8192) | M=1 built (addendum 21 artifacts) |
+| O (K=4096 N=2048) | M=1 built |
+| MoE GUSGU (K=2048 N=9216) | M=1 built, WIRED, bit-identical |
+| MoE DSD (K=4608 N=4096) | M=1 built, WIRED, bit-identical |
+| attention | xclbins present (17 variants) |
+| SiLU/activation | present (8) |
+| RMSNorm | MISSING for 35B -> generators exist in fk-3 (`n1_rms_norm.py`, `n1_fused_rmsnorm_qkv.py`, `rms_norm_*.cc`) |
+| RoPE | not a kernel upstream (a table / host-side in fk-3); fold or keep host |
+
+WHY THIS IS WORTH BUILDING — where the current ~50 ms/layer actually goes. The engine's hot path
+is, per kernel: `quantize_async(A)` (HOST quantize + `sync(TO_DEVICE)`) -> launch ->
+`sync(FROM_DEVICE)` readback (npu_engine_universal.cpp:1621-1646, 1651-1654). That host
+quantize+2-sync cycle repeats ~7x per layer, and it -- not the arithmetic -- dominates: the M=1
+QKV GEMM does ~33.5 MFLOP, i.e. single-digit MICROSECONDS of math, against a measured 8.7 ms
+stage. Same story for FFN (30 ms) where the prepack already removed expert packing. So the
+per-layer time is host-side per-kernel overhead, which is EXACTLY what one runlist submit/token
+collapses. This is the objective's premise and it survives scrutiny.
+
+NEXT ACTION for the next run: author the 35B whole-layer per-ctx ELF from the above (QKV/O/attn/
+GUSGU/DSD M=1 + an RMSNorm for the 35B hidden size generated with fk-3's generator), drive it
+from npu-infer/tools with ONE xrt::runlist per token, and validate against the engine's
+bit-identical token stream (154742, 16023, 136614, 25238, 32858, 248050, 184997).
+Pre-flight the device first: benchmarks/npu-device-preflight.sh (addendum 24).
