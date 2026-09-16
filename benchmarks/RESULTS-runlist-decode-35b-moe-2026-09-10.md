@@ -2165,3 +2165,33 @@ NEXT: map WHICH tensors occupy WHICH row-slots of which units, using the capture
 verified method -- search raw rows (and reorder-transformed rows) unit by unit, and identify what
 fills row-slots 1..3 of the units whose slot 0 is up_exps. Then repack arg-3 as units rather than as
 concatenated tensors, and re-run gating on the act.
+
+### Addendum 62 — four anchors in the arg-3 unit map, and three tensors that are stored transformed
+
+Full-capture (512 MB) search for the RAW row 0 of every layer-0 I8 tensor, reported as unit and
+row-slot (unit = 18944 B = 4 rows of 4736):
+
+  mlp.up_exps_proj.weight              rows 35424   row0 @ unit 0      slot 0   (offset 0)
+  mlp.gate_exps_proj.weight            rows 35424   row0 @ unit 8      slot 0   (offset 151552 = 8 x 18944)
+  mlp.down_exps_proj.weight            rows 35424   row0 @ unit 16384  slot 0   (offset 310378496, 16384 = 2^14)
+  self_attn.gate_proj.weight           rows  1881   row0 @ unit 25652  slot 1   (offset 485956224)
+  linear_attn.qkv_proj.weight          rows  3763   NO raw row anywhere in 512 MB
+  linear_attn.ssm_out_proj.weight      rows  1881   NO raw row anywhere in 512 MB
+  mlp.share_{up,gate,down}_exps_proj   rows   235   NO raw row anywhere in 512 MB
+
+So the map is filling in with real offsets rather than inferences, and it is not uniform: three
+tensors sit at slot 0 of widely separated units (0, 8, 16384), one sits at slot 1, and three have no
+raw representation at all -- meaning they are stored in a TRANSFORMED form, the same situation
+region-B was in before reorder_cpy was derived. The slot-1 placement of self_attn.gate_proj also
+confirms that row-slots within a unit carry different tensors, which is the interleaving the size
+arithmetic implied.
+
+Also worth recording: 16384 = 2^14 units for down_exps' start, and up/gate separated by exactly 8
+units, are the kind of round numbers that come from a generator's loop structure rather than from
+data. If the generator groups per expert or per block, the anchors should fall on those boundaries,
+and the next run can fit the loop rather than guess it.
+
+NEXT: keep mapping with the same method -- transformed rows for the three tensors that have no raw
+representation, and slot 1..3 occupancy for the units already anchored. Then repack arg-3 as UNITS
+to the declared 94720 B and re-run, gating on the act (pre-act CLEAN, post-act ALL NaN 1024/1024,
+exit 0, no ERT).
