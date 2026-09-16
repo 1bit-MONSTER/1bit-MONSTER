@@ -2677,3 +2677,56 @@ Practical note for this box: the engine takes /tmp/1bit-npu-device.lock itself, 
 standalone benches and the xclbin generators do not, so two lanes can overlap silently.
 Check `for p in /proc/[0-9]*; do ls -l $p/fd | grep -q accel0 && echo $p; done` before
 trusting any NPU number, including your own.
+
+## Contention REFUTED — and a correction: check CALL counts, not a truncated grep
+
+Waited for the NPU to be genuinely idle (222 s; verified no PID had /dev/accel/accel0
+open) and re-ran the fused path with both launches. The numbers are IDENTICAL to the
+contended runs to three significant figures:
+
+```
+              contended      IDLE device
+launch A       63.43 ms   ->   63.71 ms
+launch B      792.43 ms   ->  793.13 ms
+CD           all zeros    ->   all zeros  (131072 elems, nonzero 0.000)
+launch A's C nonzero 1.000 -> nonzero 1.000   (maxabs 1.0547)
+bQ post-RoPE nonzero 1.000 -> nonzero 1.000   (maxabs 1.2344)
+```
+
+So device contention is NOT the cause: the behaviour is deterministic and reproducible,
+which is good news — it means this is debuggable rather than a scheduling artifact. It
+also means the ~63 ms / ~793 ms timings are probably simply what these kernels cost here
+(the bench never measured kernel time separately, only total wall time dominated by its
+C++ host reference), so timing is a red herring in this investigation and only the zeros
+matter.
+
+**Correction to the QKV-phase check.** Earlier I concluded from a `dsh__grep` of the
+NOQKV MLIR that the QKV phases were gone. That grep was truncated (head_limit 24 of 41
+matches), and it is the kind of check that has silently misled this project before. Doing
+it properly with call counts:
+
+```
+nq_acc_mac          calls=3   nq_acc_zero       calls=3
+nq_acc_store_bf16   calls=2   nq_acc_store_f32  calls=1
+rms_reduce_f32      calls=0   rms_scale_f32_bf16 calls=0
+rms_reduce_add_f32  calls=1   rms_scale_add_f32_bf16 calls=1
+silu_split          calls=1   attn1_chunk       calls=8
+```
+
+3 mac phases with 2 bf16 stores and 1 f32 store is exactly O-proj (f32) + GU (bf16) + D
+(bf16). A QKV phase would need a 4th mac and a 3rd bf16 store. And `rms_reduce_f32` /
+`rms_scale_f32_bf16` have ZERO calls — only the plain input norm was dropped, the GEMM
+phases were never touched. So the QKV phases ARE absent, the zeroed W really is never
+consumed, and the `-bf16out`-style "did my build flag do anything" trap does not apply
+here. The lesson is the method: count `func.call`, not `func.func` declarations, and never
+trust a truncated result for a pass/fail question.
+
+Where that leaves it: all of launch B's inputs are verified non-zero (launch A's C, bQ
+post-RoPE, W2, WO, WD with its identity block, and every buffer size / group_id /
+argument order / insts count matching the working bench), the QKV phases are confirmed
+absent, the device is idle, and CD is still deterministically zero. The identical xclbin
+in the standalone bench produces 99.6% correct layer output. Next experiments, in order:
+(1) make NPU_FK3_SKIP_A actually run — it currently hangs rather than producing a clean
+single-hw_context measurement, which is itself a signal; (2) have the bench print the
+statistics of its OWN CD buffer so the two can be compared byte for byte on identical
+inputs, which localises this to either the invocation or the read-back.
