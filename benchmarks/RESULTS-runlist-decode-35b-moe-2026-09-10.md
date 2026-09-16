@@ -2567,3 +2567,37 @@ survives it (addendum 69), so this is a correctness change, not a repair of the 
 METHOD NOTE: this is the third time in this lane that ARITHMETIC ON THE BO GEOMETRY, done before
 running anything, caught an error -- once in my own first porting attempt, once here. Check the
 overlap before the call.
+
+### Addendum 74 — the ENTIRE arg-3 head is now decoded and exhaustively verified (98,304 slots, BAD=0)
+
+Two steps, one correction.
+
+1. MY DOWN FORMULA WAS WRONG. Addendum 65's "slots interleaved (0,2,1,3)" was inferred from TWO
+   slots (I had only checked slot0 and slot1), and the full sweep proved it: units 16384..24575,
+   32768 slots, BAD = 28672, first_bad = (16384, slot2, expected row 1). An inference from two data
+   points that I then recorded as a formula. Fourth time in this lane that too little data produced a
+   confident statement.
+
+2. CORRECTED, AND THE CORRECTION IS THE TREE'S OWN ORDER. The existing packer writes down's windows
+   in 8-window groups ordered [0,2,4,6,1,3,5,7]. With 4 windows per unit that gives
+      for unit u: k = u - 16384;  row = (k//2)*8 + ORDER[(k%2)*4 + s],  ORDER = (0,2,4,6,1,3,5,7)
+   and it verifies EXHAUSTIVELY:
+      units 16384..24575, all 4 slots each -> 32768 slots checked, BAD = 0, first_bad = None
+   consuming exactly 32768 windows = down_exps' [16384,2] core.
+
+3. THE GEOMETRY CLOSES EXACTLY, which is what makes this the finished article rather than another
+   hypothesis:
+      units 0..16383      up/gate  65,536 windows   (verified BAD=0, addendum 67)
+      units 16384..24575  down     32,768 windows   (verified BAD=0, here)
+      total                        98,304 windows   = 465,567,744 B = 0x1bc00000 = region-B's base EXACTLY
+
+So arg-3's head is precisely the 98,304 windows before region-B, holding up/gate then down in the
+unit-interleaved layout, and every one of its slots has been checked against the runtime's own
+captured bytes. The whole head is now written down: two loops, both verified.
+
+WHAT THIS DOES AND DOES NOT CHANGE: it makes the latent-bug fix safe to write (up/gate + down's
+first 32,768 windows, stopping exactly at 0x1bc00000, leaving region-B to the region-B packer) and
+it confirms that calling npu_pack_moe_expert_pool alone would be wrong -- it writes 100,960 windows
+and would overwrite region-B by 12,578,816 B. It does NOT touch the NaN: addendum 69 showed the
+activation is still all-NaN with the expert pool in place, and addenda 70/72 showed the failure is
+independent of every input's content and magnitude. The vendor ELF remains closed as a route.
