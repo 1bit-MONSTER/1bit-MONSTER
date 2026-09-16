@@ -5741,3 +5741,25 @@ not the 16-stride order. This is a second concrete repack.
 
 Next: implement (a) router as e-major [256,2048] 16x16-microtile (exact walk from the read formula
 above) and (b) ssm_out in H=n/256 order, then re-run moe_smoke on a quiet device.
+
+### Addendum 156 — repack committed (router e-major transpose, ssm_out H=4); alpha/ssm_out NOT in the pool; ssm_out reorder still open
+
+Applied the two addendum-155 repacks to npu-infer/src/model.c and committed:
+  1. npu_pack_moe_router_bo now writes the router TRANSPOSED (dst[e*n_in+h] = router[h][e]),
+     matching the ELF's e-major read at @12288 (was a stride-8 interleave guess).
+  2. npu_pack_moe_linear5_bo now writes ssm_out in region-B H=n_tiles/256 order (H=4 for n=1024,
+     8-row blocks, j = blk*8 + i/2 + 4*(i%2)), replacing the down_exps-family 16-stride order.
+
+Verified against the FULL 512 MB pool dump (pool_L1_full.bin): alpha, ssm_out, and the router are
+all ABSENT from the pool (raw and transposed) — the pool is expert weights only, so the linear-attn
+tensors live entirely in b1/b2. alpha is reordered in b1/b2 (not raw, not transposed, not
+col-interleaved) while its same-shape sibling beta is raw @b2[111560]; that asymmetry is a
+load_linear_weights-internal detail and does NOT change the final-BO conclusion (the ELF reads
+alpha/beta CONTIGUOUSLY, addendum 153), so the harness's raw alpha/beta stays correct.
+
+CAVEAT: the ssm_out H=4 order is UNVERIFIED — neither H=4 nor the old 16-stride order of ssm_out
+appears in b1/b2, so the vendor's actual ssm_out reorder is still unknown (candidates: the
+down_exps [0,2,4,6,1,3,5,7] 8-window order, a [64,16] dim interleave, or it is applied only in
+Impl::load_weights' final assembly). ssm_out is the last GEMM of the layer and unlikely to be the
+NaN source; the NaN is more plausibly the SSM (alpha/beta/dt/a) or the router, both now corrected.
+Next: moe_smoke on a quiet device; if the act is still all-NaN, derive ssm_out from a final-BO dump.
