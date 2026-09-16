@@ -225,3 +225,39 @@ This is now the sharpest localisation available for Nanbeige: the divergence is 
 the **AttnCtx's Q/K/V contract vs the engine's attention**, not in the kernel and
 not in a race. Next step would be to make the two agree on one layer (same Q/K/V,
 same scale/RoPE convention) before any parity claim.
+
+## Addendum 5: the pre-RoPE hypothesis is RULED OUT; the gap is bigger than the bench's int8 error
+
+Two checks on addendum 4's prime suspect:
+
+1. **`attn_omp` applies no RoPE.** Its body is `scores[p] = (q·k)/sqrt(HD)`, softmax,
+   then `sum_p softmax * v` — no rotation anywhere (npu_engine_universal.cpp:556).
+   It consumes `bqo` (already q_norm/k_norm'd + RoPE'd) and the KV cache. The AttnCtx
+   adapter passes the **same** `bqo` row and the **same** `kv_caches[l][0].k/v`. So
+   both sides already receive post-RoPE Q/K — feeding AttnCtx "pre-RoPE" Q/K would
+   make it *differ* from `attn_omp`, not match it. The pre-RoPE hypothesis is dead.
+
+2. **The in-situ gap is larger than the kernel's own int8-vs-float error.** The
+   standalone bench (same nh20 kernel, CK_NQ=20/CK_NKV=4/CK_HD=128/COLS=4) reports,
+   for the EMU against the bench's float reference:
+
+   | seq | max_abs_err | mean_abs_ref | max_abs_ref |
+   |---:|---:|---:|---:|
+   | 8 | 1.202951e-01 | 3.627920e-01 | 2.008213e+00 |
+   | 32 | 4.889638e-02 | 2.039903e-01 | 1.053947e+00 |
+   | 128 | 1.115882e-01 | 1.169874e-01 | 1.101512e+00 |
+
+   So the int8 contract's own error against float at seq=8 is ~1.2e-1 — whereas the
+   in-situ `NPU_ATTN_DIFF` at 8 tokens is up to **8.2e-1**. A 7x gap is not explained
+   by quantization alone (though the magnitudes differ, so this is indicative, not
+   exact).
+
+So the disagreement is *not* a RoPE convention and *not* pure int8 rounding. What
+remains: the AttnCtx's per-call contract differs from `attn_omp` in a way the bench
+cannot see, because the bench feeds the AttnCtx from **its own** reference buffers
+while the engine feeds it the prefill's `bqo`/KV cache. Concrete next probe: dump the
+AttnCtx's layer-0 `C2` **inside the engine** (`NPU_ATTN_DUMP=1` with
+`NPU_ATTN_DUMP_SEQ` set to the first prefill call) and recompute the expected C2 from
+the same `bqo`/KV-cache bytes on the host — is the difference (a) the Q/K/V bytes the
+engine hands over, or (b) the AttnCtx's internal scale/quantisation? That separates
+"wrong input" from "wrong contract" in one run.
