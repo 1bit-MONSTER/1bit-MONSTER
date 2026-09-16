@@ -120,6 +120,7 @@ int main(int argc,char**argv){
         float s=0;for(int d=0;d<HD;d++)
           s+=b2f(Qref[(size_t)i*NQKV+hh*HD+d])*b2f(Qref[(size_t)j*NQKV+KOFF+kh*HD+d]);
         sc[j]=b2f(rne(s));                          // g_sc holds bf16 scores
+        if (j > i) sc[j] = -1e30f;                  // CAUSAL: no looking ahead
       }
       float mx=-1e30f;for(int j=0;j<N;j++)if(sc[j]>mx)mx=sc[j];
       // Mirror the kernel exactly: l_state sums the FLOAT exp, but the PV mmul

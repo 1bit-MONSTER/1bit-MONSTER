@@ -27,6 +27,16 @@
 #ifndef M_TILE
 #define M_TILE 16
 #endif
+// Query blocks per pass (M/MA) and the key chunk size. Together with two static
+// counters these give the kernel its GLOBAL positions WITHOUT any index arithmetic
+// in the generator's DSL (which has none): the sequence drives every core in
+// (pass -> query block -> key chunk) order, so the kernel can count for itself.
+#ifndef N_QB
+#define N_QB 1
+#endif
+#ifndef N_CH
+#define N_CH 1
+#endif
 #ifndef HD
 #define HD 128
 #endif
@@ -55,6 +65,30 @@ static float g_at[M_TILE * HD] __attribute__((aligned(64)));
 static float O_state[M_TILE * HD];
 static float m_state[M_TILE];
 static float l_state[M_TILE];
+
+// Global position bookkeeping, driven by the launch order (see N_QB/N_CH above).
+static int g_qb = -1;  // which query block we are in, per pass. Starts at -1
+                       // because attn1_reset() ADVANCES it before first use, so the
+                       // first query block must come out as 0. At N_QB == 1 the wrap
+                       // hid this; at N_QB > 1 every query block was off by one and
+                       // the causal mask cut the wrong rows.
+static int g_ch = 0;   // which key chunk within that query block
+
+// CAUSAL MASK. Applied to the bf16 scores before the online softmax, so the max
+// and the exp loops need no change: a masked entry becomes a huge negative, its
+// exp underflows to 0, and l_state simply never sees it. Query row r sits at
+// global position q0+r, key index c at k0+c, and a query may not see the future.
+static inline void causal_mask(uint16_t *g_sc, int q0, int k0) {
+    for (int r = 0; r < M_TILE; r++) {
+        int tr = r / 4, rr = r % 4;
+        int qpos = q0 + r;
+        for (int c = 0; c < N_KEYS; c++) {
+            if (k0 + c > qpos)
+                g_sc[(tr * (N_KEYS / 8) + (c / 8)) * 32 + rr * 8 + (c % 8)] =
+                    (uint16_t)0xFF80u;   /* bf16 -inf: max stays finite, exp -> 0 */
+        }
+    }
+}
 
 static inline uint16_t f32_to_bf16(float f) {
     uint32_t u; __builtin_memcpy(&u, &f, 4);
@@ -90,6 +124,8 @@ static inline float exp2_soft(float x) {
 extern "C" void attn1_chunk(const uint16_t *__restrict qk,
                             const uint16_t *__restrict v) {
     // --- QK^T -> g_sc (bf16 scores, microtiled) ---
+    const int q0 = g_qb * M_TILE;      // this query block's first global position
+    const int k0 = g_ch * N_KEYS;      // this key chunk's first global position
     for (int i = 0; i < M_TILE * N_KEYS; i++) g_sc[i] = 0;
     // Call the mmul TEMPLATE directly with the QK^T's own dims (M x HD x N);
     // mm.cc's templates are not behind the combo guards, so one object can
@@ -108,6 +144,9 @@ extern "C" void attn1_chunk(const uint16_t *__restrict qk,
 #endif
     matmul_vectorized_4x8x8_bf16_bf16<M_TILE, HD, N_KEYS>(
         (bfloat16 *)qk, (bfloat16 *)kB, (bfloat16 *)g_sc);
+
+    causal_mask(g_sc, q0, k0);
+    g_ch = (g_ch + 1) % N_CH;
 
     // --- online softmax in place: g_sc becomes exp, alpha[] the rescale ---
     const float log2e = 1.4426950408889634f;
@@ -170,6 +209,8 @@ extern "C" void attn1_finalize(uint16_t *__restrict out) {
 
 // Once per launch (one head per core; the statics persist in the xclbin).
 extern "C" void attn1_reset() {
+    g_qb = (g_qb + 1) % N_QB;   // one reset per query block, in launch order
+    g_ch = 0;
     for (int r = 0; r < M_TILE; r++) { m_state[r] = -1e30f; l_state[r] = 0.0f; }
     for (int i = 0; i < M_TILE * HD; i++) O_state[i] = 0.0f;
 }

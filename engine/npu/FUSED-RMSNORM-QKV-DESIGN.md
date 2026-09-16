@@ -2126,3 +2126,33 @@ count — the sequence and the buffers stay exactly as verified. But until they 
 Ordering for fk-3 now: (a) causal mask, (b) partial RoPE, (c) then the engine driver
 and token parity; and the bench's reference must be updated in step with (a)/(b) or
 it will keep agreeing about the unmasked, unrotated function.
+
+## ✅ CAUSAL MASK LANDED (and it improved accuracy)
+
+`attn1.cc` is now causal, which it has to be for a prefill of fresh tokens. Two
+static counters give the kernel its GLOBAL positions without any index arithmetic
+in the generator's DSL (which has none): the sequence drives every core in
+(pass -> query block -> key chunk) order, so `attn1_reset()` advances `g_qb` and
+starts `g_ch`, and `attn1_chunk()` masks scores with `k0 + c > q0 + r` before the
+online softmax — masked entries become bf16 -inf, so the max and exp loops are
+untouched and `l_state` never sees them.
+
+```
+            attn exact   <=2ULP   mean ULP
+M=16        92.2% -> 96.6%   95.3% -> 98.3%   31.3 -> 20.6
+M=32        92.6% -> 94.5%   95.8% -> 97.0%   40.6 -> 25.3
+```
+It *improves* agreement rather than degrading it, which makes sense: each query now
+sums over fewer keys, so the accumulation error drops. The bench's reference was
+given the same mask in the same commit — without that it would have kept agreeing
+about the unmasked function.
+
+One bug worth recording, because the shape of it recurs: `g_qb` was incremented in
+`attn1_reset()` but initialised to 0, so the FIRST query block came out as 1.
+At `N_QB == 1` the modulo wrapped it back to 0 and hid the bug; at `N_QB > 1` every
+query block was off by one and the mask cut the wrong rows (30.5% instead of 94.5%).
+Initialising it to `-1` is the fix. Any counter that is "advanced at the start of a
+unit" must start one below its first value.
+
+Still outstanding for a valid model layer: **partial RoPE**, which the engine
+applies (`rope_dim = round(HD*partial_rotary_factor)`) and the kernel does not.
