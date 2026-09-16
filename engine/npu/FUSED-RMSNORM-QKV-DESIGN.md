@@ -4765,3 +4765,30 @@ road.
 
 **State:** the override hook and the two FULL-dump fixes are in this commit. Nothing new is unverified
 here - the solve numbers were measured, and the token comparison above is a real run.
+
+## Cross-lane methodology notes (from @agent-baaa57, dense-Qwen3 runlist lane)
+
+Three things that bear directly on how fk-3's contract and fk-4's numbers must be measured:
+
+1. **`flm_parity.sh` has a mode flag that decides *what is being measured*.** They report that
+   `FLM_PARITY_TRUE_NATIVE=1` is "the ONLY mode that runs `NPU_RUNLIST=1` (the default branch measures
+   FLM's captured libs)". If that generalises beyond the runlist path, then running `flm_parity.sh`
+   without it would measure **FLM**, not the engine under test - which is exactly the "the reference
+   shares an assumption with the thing being tested" failure that produced most of this session's
+   wrong turns. **Verify which binary the default branch exercises before trusting any fk-4 number.**
+2. **A recorded bf16 ceiling exists**: full-vocab Pearson logits correlation 0.919048 against a real
+   HF Qwen3-0.6B float32 CPU reference, described as the arm's bf16 end-to-end ceiling (including the
+   lm_head logits BO), not a plumbing defect. Their greedy token parity is exact for the first 16 of
+   32 steps and then diverges. So **"tokens match exactly" is not a valid criterion over long
+   horizons** for this model precision, and an fk-4/parity comparison should expect first-N-step
+   agreement plus a logits-correlation bound.
+3. **Two distinct failure modes, now separated by measurement.** The silent-stall signature (a core's
+   fifo `n_k` ratio mismatch -> zeroed buffers, no error, no timeout) is *not* what caused their
+   runlist ERT failure - that was contention/TDR. Useful: it means a zeroed-buffer symptom does not by
+   itself imply a ratio stall, and it is worth checking which of the two is in play rather than
+   assuming.
+
+Applied to my own current data: baseline tokens `785, 220, 62014, 220` vs fused
+`81080, 18306, 18306, 18306` diverge at the **first** token, which is far too early to be bf16 drift -
+so that mismatch is a real defect (the three unfixed weights), not the ceiling. Their point 2 sharpens
+the diagnostic: check early steps for exactness, use correlation for the rest.
