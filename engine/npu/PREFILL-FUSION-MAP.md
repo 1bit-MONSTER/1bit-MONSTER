@@ -374,3 +374,9 @@ So the fused runlist/ELF decode is **faster than FLM at both contexts** (+10%
 root-cause or close**, and the KV-stride delta (native 8 MB vs FLM 32 MB) is
 moot — if anything the native's packed stride is the faster layout. The earlier
 §12/§12b "~2.5x-steeper" framing is retracted as a context-mismatch artifact.
+
+**Current-build confirmation (post-double-buffer binary, same 8-token setup as
+`20260916T142049Z`, two runs each):** native @1k = 87/88 tok/s, @2048 = 74/74
+tok/s. The @2k matches the pre-double-buffer npu-ab 73.0 tok/s (the double-buffer
+is a no-op per ra-5), and both sit ~17-19% above FLM's same-setup 73.7 @1k /
+63.5 @2k. So the "native beats FLM" conclusion holds on the CURRENT build.
