@@ -2626,3 +2626,33 @@ METHOD NOTE, and it is the fifth time in this lane: I labelled a run "confounded
 BOGEOMETRY WITHOUT READING THE PACK ORDER. The arithmetic was right, the assumption underneath it
 (the head is written last) was not. Geometry says whether buffers collide; the code says which write
 wins. Check both.
+
+### Addendum 76 — the latent bug is FIXED in the harness (and the NaN is, as predicted, unaffected)
+
+Applied the one-line fix to npu-infer/src/runtime_layer_moe.cpp: the head block that copied
+input_layernorm, post_attention_layernorm, conv1d, ssm_norm, ssm_a and ssm_dt into region-A is
+replaced by a call to npu_pack_moe_expert_pool, with the reasoning and the verification in a comment.
+Ran it:
+
+  MoERuntimeLayer: region-A = EXPERT POOL (478146560 B, verified layout)
+  MoERuntimeLayer: init OK (weight 481935360 B, region-B base 0x1bc00000)
+  forward(1): EXECUTED        act 1024/1024 NaN
+
+So the harness now packs arg-3's head to the layout that is verified exhaustively against the
+runtime's own captured bytes (98,304 windows, BAD=0 across units 0..16383 up/gate and
+16384..24575 down), the BO size and region-B base are unchanged, and -- exactly as addendum 69
+predicted -- the all-NaN outcome is unaffected. This is a correctness fix for a demonstrable
+wrong-content bug, not a repair of the layer failure, and it is recorded that way.
+
+WHY IT IS STILL WORTH COMMITTING: the previous content was not merely rearranged, it was the wrong
+tensors entirely -- layernorm weights near 1.0 where the runtime stores expert weights at 1e6..1e38
+magnitudes -- and anyone reading or reusing this harness would have inherited that. The evidence for
+the replacement is the strongest available kind here: byte-for-byte against the runtime's own
+capture, exhaustively, not a sample.
+
+STATE OF THE LANE, in one place after 76 addenda: the runlist path WORKS mechanically (batches,
+submits, executes, exit 0, no ERT) and the vendor ELF is nonetheless unusable for this model because
+it emits a NaN that is independent of every input's content and magnitude, with no host-visible
+intermediate to bisect. Our own sequence is the live route: the 35B RMSNorm M=1 kernel and the
+M=1 GEMMs (QKV, O, GUSGU, DSD) are built and measured, the constraints are known, and the engine
+path stands at 1.90 s/tok.

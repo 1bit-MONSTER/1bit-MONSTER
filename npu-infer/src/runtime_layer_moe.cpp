@@ -70,19 +70,19 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     bo_weight_ = std::make_unique<xrt::ext::bo>(dev, WEIGHT_BO_BYTES);
     uint8_t* w = static_cast<uint8_t*>(bo_weight_->map());
     memset(w, 0, WEIGHT_BO_BYTES);
-    // ---- region A (best-effort): layernorms + ssm smalls sequential @0 ----
+    // ---- region A = the EXPERT POOL (addenda 63-75) ----
+    // The runtime's arg-3 head is a UNIT-INTERLEAVED EXPERT IMAGE, not the layernorm/conv1d/ssm
+    // tensors (those live in the norms BO via npu_pack_moe_linear5_bo). Verified exhaustively
+    // against the runtime's own captured arg-3 BO: units 0..16383 up/gate and units 16384..24575
+    // down, 98,304 windows total = 465,567,744 B = region-B's base EXACTLY, every slot BAD=0.
+    // npu_pack_moe_expert_pool implements exactly those two orders. It writes 478,146,560 B, which
+    // runs past 0x1bc00000, but the region-B pack below is issued AFTER this one and covers the
+    // whole overlap, so region-B ends up intact.
     {
-        LayerWeights* lw = &mw_->layers[0];
-        TensorDesc* heads[6] = { &lw->input_layernorm_weight, &lw->post_attention_layernorm_weight,
-                                 &lw->ssm_conv1d_weight, &lw->ssm_norm_weight,
-                                 &lw->ssm_a, &lw->ssm_dt_bias };
-        size_t off = 0;
-        for (int h = 0; h < 6; h++) {
-            if (heads[h]->ndim == 0) continue;
-            const uint8_t* s = (const uint8_t*)model_tensor_data(mw_, heads[h]);
-            if (s) { memcpy(w + off, s, (size_t)heads[h]->data_size); off += (size_t)heads[h]->data_size; }
-        }
-        fprintf(stderr, "MoERuntimeLayer: region-A head packed (%zu B, best-effort)\n", off);
+        int64_t pa = npu_pack_moe_expert_pool(w, mw_, 0);
+        if (pa <= 0) { fprintf(stderr, "MoERuntimeLayer: expert pool pack failed\n"); return false; }
+        fprintf(stderr, "MoERuntimeLayer: region-A = EXPERT POOL (%lld B, verified layout)\n",
+                (long long)pa);
     }
     int64_t rb = npu_pack_moe_region_b(w + REGION_B_BASE, mw_, 0);
     if (rb != (int64_t)3456 * 4736) {
