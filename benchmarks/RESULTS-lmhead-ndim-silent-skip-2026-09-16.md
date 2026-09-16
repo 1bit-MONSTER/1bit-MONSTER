@@ -259,3 +259,49 @@ neither is derived, so both keep whatever the caller passed — here `QWEN3_0_6B
 So for tied-embedding bundles the loaded `ModelConfig` is silently the placeholder. That is the same
 silent-default class as the rest of this document, and it is why `logits_host` carries an explicit
 `out_rows != vocab` warning — which, on Qwen3.5-4B, is exactly what fires.
+
+---
+
+# End-to-end result: the host lm_head works, and the NaN is in the LAYER
+
+Ran `moe_smoke` (layer 1, packed and executed consistently) with the host lm_head on device:
+
+```
+layer: 1 (moe_layer_ctx1.elf)
+MoERuntimeLayer: packing LAYER 1 weights (moe_layer_ctx1.elf)
+forward(1): EXECUTED
+lm_head: HOST path (3-D/Q8_0 source, device lm_head skipped)
+logits: argmax=0 max=nan NaN=248320 (of 248320)
+```
+
+The logits path is now a working instrument. It reports **248,320 / 248,320 NaN**.
+
+## The NaN is upstream of the lm_head, and the input is clean
+
+Both act-BO dumps from the same run, first 2048 bf16 values (H = 2048):
+
+| buffer | when | NaN/Inf | nonzero | first values |
+|---|---|---|---|---|
+| `/tmp/moe_act_pre.bin` | after `embed()` — the layer's **input** | **0** | 2038 | 0.01648, −0.02197, 0.00053, −0.02161 |
+| `/tmp/moe_act.bin` | after `forward(1)` — the layer's **output** | **2048** | 2048 | nan, nan, nan, nan |
+
+**A healthy input goes in; all-NaN comes out.** The lm_head faithfully propagates it, so the
+poisoning is entirely inside the MoE layer's device computation.
+
+This is the first time the NaN has been measured through an instrument that is known to work — the
+previous observations came through a harness that (a) ran layer 1's ELF over layer 0's weights, and
+(b) never ran an lm_head at all, so `NaN=0` and `max=0.0000` could not be distinguished from "no
+result". Both of those are now fixed, and the NaN survives them.
+
+## What that establishes, and what it does not
+
+- **Established:** the layer produces NaN from a non-NaN input, reproducibly, with the layer/ELF
+  consistent and a functioning logits path. The conv1d-never-applied finding is a live candidate
+  (the layer is being fed a signal the model does not expect), as is the clobbered `norms` scratch
+  region — but neither is *shown* to be the cause here.
+- **Not established:** which stage inside the layer produces it. The next step is to bisect across
+  the layer's phases, and the instrument for that now exists.
+
+Also fixed in this commit: `moe_smoke`'s `nonzero` counter counted NaN as nonzero (`NaN != 0.0f` is
+true), which is exactly the kind of number that reads like a healthy result. It now reports
+`nz_finite` and says `ALL NaN -- check the layer, not the head` when that is what it sees.

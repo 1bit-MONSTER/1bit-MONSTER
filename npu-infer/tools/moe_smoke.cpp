@@ -75,18 +75,23 @@ int main(int argc, char** argv) {
         fprintf(stderr, "lm_head: HOST path (3-D/Q8_0 source, device lm_head skipped)\n");
     else
         eng.get_logits(logits.data(), vocab);
-    int nan = 0; int argmax = 0; int nz = 0;
-    float mx = logits[0];
+    int nan = 0; int argmax = 0; int nz = 0, nz_finite = 0;
+    float mx = -INFINITY;
     for (int i = 0; i < vocab; i++) {
-        if (!std::isfinite(logits[i])) nan++;
-        if (logits[i] != 0.0f) nz++;
-        if (logits[i] > mx) { mx = logits[i]; argmax = i; }
+        bool fin = std::isfinite(logits[i]);
+        if (!fin) nan++;
+        if (logits[i] != 0.0f) nz++;                 // NB: NaN != 0.0f is true, so this
+        if (fin && logits[i] != 0.0f) nz_finite++;   // counts NaN as "nonzero" -- use nz_finite
+        if (fin && logits[i] > mx) { mx = logits[i]; argmax = i; }
     }
-    if (nz == 0)
+    if (nan == vocab)
+        fprintf(stderr, "logits: ALL NaN (of %d) -- the lm_head ran; the NaN comes from upstream "
+                        "(the act BO). Check the layer, not the head.\n", vocab);
+    else if (nz_finite == 0)
         fprintf(stderr, "logits: ALL ZERO (of %d) -- no lm_head produced anything; treat as NO RESULT\n", vocab);
     else
         fprintf(stderr, "logits: argmax=%d max=%.4f NaN=%d nonzero=%d (of %d)\n",
-                argmax, mx, nan, nz, vocab);
+                argmax, mx, nan, nz_finite, vocab);
     fprintf(stderr, "reference: greedy next token = 76740 (for a SINGLE layer this is informational only)\n");
     if (getenv("NPU_DUMP_BOS")) eng.dump_bos("/tmp/bo");
     eng.dump_act("/tmp/moe_act.bin");
