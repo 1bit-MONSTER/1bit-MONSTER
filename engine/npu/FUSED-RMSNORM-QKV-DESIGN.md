@@ -1825,3 +1825,29 @@ candidates, largest first: the two inlined 4x8x8 mmul instantiations (QK bf16->b
 PV bf16->f32), the softmax's per-element microtile index arithmetic
 (`/8`,`%8`,`*32` recomputed in the inner loops — strength-reducible), and the
 `-DK_ROW_MAJOR` K-layout conversion loop.
+
+## M=32 NOW BUILDS (the all-float attention freed 5 KB), and the qb loop has a desync
+
+Removing soft-double from attn1 took `.text` from 16,208 B to **10,976 B** — 5,232
+bytes of program memory back — so the attention core is no longer the tallest pole
+and **M=32 builds** (M=32 attention core: `.text` 11,504 B, headroom 4,880 B).
+At M=32 (MA=16, NC=16 => n_qb=2, C=2) the layer's non-attention stages are as
+good as at M=16 — QKV 131072/131072 bit-exact, GU 196608/196608 bit-exact, SiLU
+98304/98304 bit-exact, H_BF 32762/32768, o (f32) worst_rel 1.1e-05, D 99.2%.
+
+The ATTENTION, however, is only 23.4% and the per-head breakdown localises it
+exactly:
+
+```
+heads  0-7: 45-49% exact      (pass 0)
+heads 8-15:  0%     exact      (pass 1)
+```
+~46% is half of the 92% those heads get at M=16, i.e. **pass 0's FIRST query block
+is right and everything after it is wrong** — a desync that starts at `qb=1` and
+never recovers. It is NOT the key chunking (NC=32 => C=1 gives byte-identical
+numbers) and NOT the emitted structure: the attention core's loops are exactly
+`outer -> p(2) -> qb(2) -> ch(2)` with `reset()` inside qb and `fin()` per qb, and
+the sequence posts Q/K/V per (p, qb, ch) with the O store per (p, qb). So the next
+step is to trace the fifo accounting across the qb boundary specifically — the
+first thing to check is whether the QK/V fifo's write pointer still advances as the
+taps assume once a second query block re-sends the same K/V rows.
