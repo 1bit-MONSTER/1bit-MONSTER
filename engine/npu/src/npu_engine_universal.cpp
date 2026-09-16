@@ -967,7 +967,45 @@ int main(int argc,char**argv){
         fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
         if(!init_i8(cq,"QKV",cfg.xclbin_qkv_k,cfg.xclbin_qkv_n)){fprintf(stderr,"FAIL QKV\n");return 1;}
         if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){fprintf(stderr,"FAIL O\n");return 1;}
-        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){fprintf(stderr,"FAIL G\n");return 1;}}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL GU\n");return 1;}}
+        // #2329: a bare "FAIL G" made the reader reconstruct the shape selection
+        // from the source (the issue body had to explain IM*2 > 14336 by hand).
+        // Name the routing decision, the exact artifacts the split path wants,
+        // which candidates exist, and which G shapes the set does have — so the
+        // next absent split-G shape is diagnosable from the log alone.
+        auto diag_split_g=[&](){
+            auto present=[](const std::string& p){
+                std::error_code ec; return std::filesystem::exists(p,ec);
+            };
+            const std::string gx=xp("G",cfg.xclbin_g_k,cfg.xclbin_g_n), gi=ip("G");
+            fprintf(stderr,
+                "FAIL G: the split-G FFN artifacts are missing or unusable.\n"
+                "  why split-G : IM=%d; gu_split is selected when IM*2 > 14336 (here %d)\n"
+                "  wanted xclbin: %s  [%s]\n"
+                "  wanted insts : %s  [%s]\n",
+                IM, IM*2, gx.c_str(), present(gx)?"present":"MISSING",
+                gi.c_str(), present(gi)?"present":"MISSING");
+            std::vector<std::string> have;
+            std::error_code ec;
+            for (const auto& de : std::filesystem::directory_iterator(xd, ec)) {
+                const std::string n=de.path().filename().string();
+                if(n.rfind("final_i8_G_",0)==0 && n.size()>7 &&
+                   n.compare(n.size()-7,7,".xclbin")==0) have.push_back(n);
+            }
+            std::sort(have.begin(), have.end());
+            if(have.empty()){
+                fprintf(stderr,"  this xclbin set has no final_i8_G_*.xclbin at all (%s)\n", xd.c_str());
+            } else {
+                fprintf(stderr,"  G shapes this set does have (%s):\n", xd.c_str());
+                for(const auto& n:have) fprintf(stderr,"    %s\n", n.c_str());
+            }
+            fprintf(stderr,
+                "  FAIL GU is not a fallback here: the shape selector chose split-G from\n"
+                "  the model's own IM, so the fused GU artifact (N=2*IM) is not what this\n"
+                "  path wants. Build the pair, or point NPU_XCLBIN_DIR at a set containing\n"
+                "  final_i8_G_K%d_N%d.xclbin.\n",
+                cfg.xclbin_g_k, cfg.xclbin_g_n);
+        };
+        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){diag_split_g();return 1;}}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){fprintf(stderr,"FAIL GU\n");return 1;}}
         if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){fprintf(stderr,"FAIL D\n");return 1;}
         // #1934: env-gated int4 fused GU->SiLU (GUSILU_i4) for the DENSE FFN
         // (qwen3-0.6b). Kernel contract silicon-verified (zaya 0.999336); this
