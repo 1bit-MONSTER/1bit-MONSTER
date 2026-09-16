@@ -2824,3 +2824,35 @@ WHAT REMAINS UNSETTLED, and the next concrete probes (each one cheap run, not re
 
 STATE OF THE REBUILD: milestone (a) is MET (the combined RMSNorm+QKV design compiles, addendum 79).
 (b) correctness and (c) one submit are blocked on the above, not on any design or layout question.
+
+### Addendum 82 — DRIVER VALIDATED (8192/8192), ONE SUBMIT DEMONSTRATED, and the combined design's deadlock isolated
+
+Ran the discriminator from addendum 81 and it paid off twice over.
+
+Against the SINGLE-PHASE m1 QKV xclbin (final_i8_QKV_qwen3_6_35b_a3b_m1lin.xclbin + its insts):
+  allocated all BOs; submitting ONE run
+  single-phase submit completed
+  single-phase GEMM: 8192/8192 columns match
+
+1. THE DRIVER IS VALIDATED, not merely exercised. It reproduces the m1 QKV GEMM EXACTLY, every one
+   of 8192 columns, against a host reference this driver computes itself as exact int32 accumulation
+   (addendum 28's rule: an independently-derived expected answer, not a statistic produced by the
+   artifact under test).
+2. ONE SUBMIT IS DEMONSTRATED. A single kernel call drives the whole single-phase design and
+   completes. Milestone criterion (c) is therefore demonstrated for a one-phase design; what is left
+   for the combined design is its deadlock, not the submit mechanism.
+3. AS A SIDE EFFECT, THE LINEAR-B-TAP XCLBIN IS NOW NUMERICALLY VERIFIED. `-L/--linear-b` was built
+   in addendum 37 and never measured. It matches 8192/8192 once B is fed in the layout the tap
+   declares -- one contiguous 64x128 tile per DMA, tiles in column-major (nt,ki), each tile in mmul
+   chunk order (byte s = i0*1024+i1*64+i2*8+i3 holds B[ki*64+i0*8+i2][nt*128+i1*8+i3], per
+   npu_engine_i8ctx_inc.h:777-780). Feeding it row-major instead gives 3/8192, which is exactly the
+   failure mode that file predicts, and is what my first run showed.
+4. THE HANG IS IN THE COMBINED DESIGN, not the driver: the same driver, same convention, same BO
+   plumbing completes for one phase and hangs for two. Addendum 81's hypothesis (2) -- an internal
+   deadlock, most likely the norm's W fifo being acquired ONCE outside its loop while the runtime
+   feeds it once and the A fifo depth is 2 -- is now the surviving explanation.
+
+STATE OF THE REBUILD: (a) compiles -- MET (addendum 79). (c) one submit -- DEMONSTRATED for a
+single-phase design (here), and the driver is proven correct. (b) correctness of BOTH phases -- the
+GEMM phase is proven correct through this driver; the norm phase and the two-phase combination wait
+on the deadlock.
