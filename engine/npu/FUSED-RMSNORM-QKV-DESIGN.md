@@ -6034,3 +6034,54 @@ that I had assumed were different.
 what `weff_qkv.bin` *was*. I treated a file I had written hours earlier as an established fact about the
 world, when it was an artifact of my own pipeline - and my own pipeline had already been shown, once, to
 be capable of writing the wrong thing.
+
+## The retraction above was WRONG. The permutation is real - proved by removing the overrides.
+
+Direct A/B on the same prompt, same run, qk-norm fix in place in both:
+
+```
+layer  corr WITHOUT overrides   corr WITH overrides
+0      0.007253                 0.997135
+1      0.010395                 0.067892
+2      0.011483                 0.076159
+3      0.004126                 0.113529
+4     -0.008081                 0.141127
+```
+
+**Without the override files the fused QKV is uncorrelated with the engine's (0.007); with them layer 0
+reaches 0.997.** A no-op cannot do that. So `weff_*.bin` are genuinely different from what
+`bf16mm_dequant` produces, and the permutation is real.
+
+**And the md5 "proof" that led me to retract was an artifact of my own dump ordering.** Here is the actual
+sequence in `prepare_layer`:
+
+1. `bf16mm_dequant(...)` fills `w` with the raw array;
+2. `fk3_maybe_override(w, ...)` **replaces** it with the effective array;
+3. `if (l == 0 && getenv("NPU_FK3_DUMP"))` writes `w` to `/tmp/fk3_w_wqkv.bin`.
+
+So `fk3_w_wqkv.bin` is the **post-override** array. I compared it to `weff_qkv.bin`, found them
+byte-identical, and concluded "the effective weight equals the raw weight" - but I was comparing the
+effective weight to a dump *of itself*. The `corr(Weff.npy, fk3_w_wqkv.bin) = 0.9999` point was the same
+tautology: both were the effective array.
+
+**So: two retractions in a row, both about the same file, in opposite directions.** First I concluded a
+permutation from a cross-prompt comparison (wrong for that reason); then I retracted it from a md5
+comparison against a dump that could not have shown anything else (wrong for this reason). The A/B above is
+the first measurement of the question that can actually fail in a meaningful way: leave the overrides out
+and see whether the output changes. It does, by a factor of 140 in correlation.
+
+**What stands, now properly established:**
+
+* **the permutation is real** (0.007 vs 0.997 without/with the effective weights);
+* **layer 0 is correct with them** (0.997135) and the qk-norm fix was necessary for that;
+* **the remaining defect is layer 1 onward** (0.068-0.141 with overrides), and the leading explanation is
+  that the override files hold **layer 0's** weights while every layer has its own;
+* the per-layer solve plan (route A) is therefore back on the table, and route B (recover the permutation
+  map) is still the cheaper option if the map is shared across layers.
+
+**The lesson, and it is sharper than the last one.** I retracted a true finding using evidence that could
+not have distinguished the two hypotheses - a comparison between a value and a dump of that same value.
+The check felt rigorous (md5, byte equality) and was structurally incapable of failing. That is the same
+defect as the twelve wrong turns before it: a verification that shares an assumption with the thing it
+verifies, this time the assumption that a debug dump is written before rather than after the code I was
+testing.
