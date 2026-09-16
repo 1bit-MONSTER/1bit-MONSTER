@@ -71,6 +71,7 @@ __pycache__/
 *.q4nx
 /rust/target
 *.safetensors
+!Testing/fixtures/glmdsa/model.safetensors
 *.f32bin
 *.so
 # …except the NPU worker's bundled OpenMP runtime, which packaging ships next
