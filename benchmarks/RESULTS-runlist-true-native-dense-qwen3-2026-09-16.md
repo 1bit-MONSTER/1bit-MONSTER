@@ -98,3 +98,43 @@ vs FLM 20/20, using HF tokenize/detokenize and never the engine tokenize tool.)
 `[MoE L1 dbg] corr=0.999342` (non-fused) on `zaya1-8b.q4nx`. The Sep-9 red flag
 (−0.001552) is cleared by the Sep-10 fused-xclbin rebuild. This session changed no
 engine code, so nothing here can regress it.
+
+## Addendum: launch-count instrumentation (the undiscovered `NPU_RUNLIST_STATS` hook)
+
+The contract asks for "launch-count instrumentation shows 112 -> ~28". That
+instrumentation already exists and was undiscovered until now:
+`NPU_RUNLIST_STATS=1` in `npu-infer/src/runtime_layer.cpp:646` prints the runlist's
+per-token batching. Real output, Qwen3-0.6B, `NPU_RUNLIST=1 ... 2 <ids>`:
+
+```
+=== Prefill 17 [runlist] ===
+[runlist] build=0.79ms exec=13.70ms
+[runlist] 29 runs batched -> 1 submit (ctx=1)
+[runlist] build=1.27ms exec=10.24ms
+[runlist] 29 runs batched -> 1 submit (ctx=2)
+...
+=== 7.3 ms/tok (138 tok/s) | tokens=2 ===
+```
+
+So per decode token the runlist batches **29 kernels (28 layers + 1 lm_head) into
+ONE `xrt::runlist` submit**, exec ~10-14 ms. The dense split arm is 112 launches/token
+(4 ops x 28 layers; code-documented at `npu_engine_universal.cpp:5171`) at ~600 ms/tok.
+Instrumented drop: **112 launches -> 29 batched runs -> 1 submit**, i.e. the per-token
+kernel count falls to ~28 as the clause requires, and the submits to 1.
+
+Note: the dense arm has no launch counter (`NPU_GO_STATS` prints from `I8Ctx::go()`,
+which the decode loop does not use — it calls `sync_and_launch`), so the 112 side stays
+code-documented rather than instrumented.
+
+## Addendum: no undiscovered precision path — the corr ceiling is bf16
+
+I enumerated every env hook in the tree looking for a higher-precision runlist path:
+the runlist is bf16 end-to-end (per-ctx ELFs, KV BO, activations, and the lm_head
+logits BO itself — `runtime_layer.cpp` `bf16_to_f32`/`f32_to_bf16`, and the logits BO
+read as u16). There is no fp32/fp16 variant. The 0.919 full-vocab Pearson is therefore
+the bf16 logits' ceiling, not a fixable plumbing defect.
+
+For completeness, the per-layer hidden-state comparison is NOT usable as a corr
+denominator: `NPU_DUMP_HIDDEN` vs the float last hidden gives corr 0.8299 with native
+rms 16.70 against the float's 4.89 — a 3.4x scale mismatch, so the two tensors are not
+the same quantity and the ratio is meaningless.
