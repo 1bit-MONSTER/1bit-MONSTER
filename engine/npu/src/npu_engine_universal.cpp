@@ -4664,6 +4664,12 @@ struct Bf16Ctx {
                 // partial last block cannot scatter padding into the cache.
                 if (g_fk3) {
                     const int nrow = npt < XM ? npt : XM;
+                    // Dump the fused path's INPUT before run() overwrites bh (run() is called
+                    // with bh as BOTH input and output, so the NPU_DUMP_HIDDEN dump below is the
+                    // layer's OUTPUT). Without this, comparing a driver A BO against that dump
+                    // compares layer N's input to layer N's output - which is what I did, and it
+                    // produced a meaningless corr~0 that I then reasoned from.
+                    if (const char* di = getenv("NPU_FK3_DUMP_IN")) { FILE* df = fopen(di, "ab"); if (df) { fwrite(bh.data(), 4, (size_t)nrow * H, df); fclose(df); } }
                     if (!g_fk3->run(l, bh.data(), in_n[l].data(), pa_n[l].data(), nrow, sp,
                                     bKv.data(), (int)kv_region, v_add, bh.data(),
                                     kv_caches[l][0].k.data(), kv_caches[l][0].v.data())) {

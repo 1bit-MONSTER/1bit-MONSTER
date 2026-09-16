@@ -5440,3 +5440,55 @@ third: **an observation at one level is not evidence about another level.** A re
 nothing about the *buffer*, and I treated it as if it did. That is the same error as treating a grep count
 as a finding, or a filename as a reference - and it is now three for three this session that the wrong
 inference had this shape.
+
+## THE CENTRAL MEASUREMENT WAS INVALID: my cross-path comparisons used different prompts
+
+`bf16_l0_rawqkv.bin` has **6144 rows** - it came from the npt=6144 calibration run, which used
+`/tmp/ids_long.txt`. My fused runs used `/tmp/ids_fk3.txt` (128 tokens). The prompts do not even share
+their first token:
+
+```
+ids_fk3  [:6] = 785  220 18844 220 1055 220
+ids_long [:6] = 84890 39544 103500 12657 18988 140478
+```
+
+**So every "my kernel vs the engine" comparison in this file compared two different inputs.** Row 0 of
+one is token `785`, row 0 of the other is token `84890` - unrelated vectors, and any correlation between
+them is noise by construction.
+
+**What that invalidates - which is most of the investigation:**
+
+* the original **"4.8x / 5.36x deficit"** - the finding the whole session was built on;
+* the **0.51 correlation** to the engine's QKV, and therefore the **"second defect"** conclusion and the
+  **"activation handoff"** localisation;
+* the "the layer emits a constant" (already corrected separately) and the reasoning that rested on the
+  deficit.
+
+**What survives, and why - the distinction is same-run versus cross-run:**
+
+* **The kernel is faithful.** `corr(rmsnorm(x,gamma) @ W_eff, MY output) = 1.0000` used the driver's own
+  `aA` and `fk3_drv_A.bin` from **the same run**, with `W_eff`. That comparison is internally consistent
+  and stands.
+* **The permutation finding stands.** The calibration and the solve used only data from within the
+  npt=6144 run (`bA_launch` and `rawqkv` produced together), and the held-out test split those same rows.
+* **`bA` byte-identical at dump and launch** - same run, stands.
+* **The ruled-out causes** (ERT, contention, ratio stall) were diagnosed from logs and buffer shapes, not
+  from cross-path correlation, so they stand.
+
+**And a second confound in the same family, found by reading rather than measuring.** The fused branch
+calls `g_fk3->run(l, bh.data(), ..., bh.data())` - **`bh` is both the input and the output**. So the
+`NPU_DUMP_HIDDEN` dump at 4682, which I compared against the driver's input `aA`, is the layer's
+**output**, not its input. That comparison was doubly broken: wrong prompt *and* wrong end of the layer.
+I have added `NPU_FK3_DUMP_IN` to dump `bh` **before** `run()` overwrites it, so the next comparison is
+same-run and same-end.
+
+**The honest state.** I do not currently know whether the fused path is correct, because the measurement I
+used to conclude it was not had two independent confounds (prompt mismatch, and input-versus-output). The
+clean test is two runs on the same ids file - one per-op with `NPU_DUMP_L0`, one fused with
+`NPU_FK3_DUMP_IN` - and only then a comparison. Every conclusion in this file that rests on a cross-path
+correlation needs re-deriving from that.
+
+**This is the most consequential error of the session and it has the same shape as all the others:**
+I compared two things that were not the same thing, and the comparison could not fail in a way that
+announced itself. Twelve retractions were about instruments and inference; this one is about the *data* -
+and it was available to catch at any point with `wc -l` on a dump and a glance at the ids file.
