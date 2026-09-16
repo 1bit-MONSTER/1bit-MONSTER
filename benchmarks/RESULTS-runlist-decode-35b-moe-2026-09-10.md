@@ -1648,3 +1648,32 @@ so the all-NaN output is NOT a packer layout bug -- which is what the NaN-not-wr
 predicted. Combined with addendum 44 (region-A tail REFUTED by direct intervention, the two
 findings cross in flight), the NaN is neither the packer nor the region-A tail, and it is born
 inside the single ELF launch where no host-visible intermediate exists.
+
+### Addendum 46 — the adopted tool fix is VERIFIED; the tool now covers all four tensors
+
+Built the patched tools/verify_moe_reorder_qkv.cpp (malloc instead of std::vector for the
+callable's ByteBuf) and ran it: exit 0, ZERO "double free"/"corruption" matches, and all four
+tensors now execute and dump --
+
+  model.layer.0.linear_attn.qkv_proj.weight           (n=2048) -> /tmp/reorder_qkv.bin
+  model.layer.0.linear_attn.ssm_out_proj.weight       (n=2048) -> /tmp/reorder_ssmout.bin
+  model.layer.0.mlp.share_up_exps_proj.weight         (n=512)  -> /tmp/reorder_shareup.bin
+  model.layer.0.self_attn.gate_proj.weight            (n=4096) -> /tmp/reorder_gateproj.bin
+
+Previously the run died after the FIRST one (measured by @agent-baaa57), so two of the four
+dumps I had relied on could not have been produced by this tool at all -- consistent with
+addendum 41 and now fixed. Build note for the next person: the tool dlopens both libs at runtime
+(libq4_npu_eXpress.so + libqwen3_6_moe_npu.so), so do NOT add -lqwen3_6_moe_npu to the link line --
+doing so fails on undefined SafeTensors symbols and looks like a broken tool when it is not.
+
+STILL TO CHECK on the packer's tile list, now cheap because the tool works: gate_proj at
+n_tiles=1024 (H=4) and share_* at n_tiles=128 (H=1, expected identity). The committed tool's own
+tensor list uses 4096 and 512 for those, which are DIFFERENT experiments from the packer's
+tiles[5]={128,128,128,2048,1024} -- so n_tiles=2048 is verified (addendum 45) and 1024/128 are not.
+
+WHERE THE NaN STANDS after addenda 43-46, all three leads now closed by measurement rather than
+argument: it is NOT the region-A tail (addendum 44, direct intervention), NOT a region-B packer
+layout bug (addendum 45, byte-exact on two independent implementations), and it is born inside the
+single ELF launch where no host-visible intermediate exists. Two real, separate defects have been
+found along the way on their own merits: the region-A F32/bf16 dtype mismatch (ssm_a,
+ssm_dt.bias) and the verify-tool double free. Neither is the NaN.
