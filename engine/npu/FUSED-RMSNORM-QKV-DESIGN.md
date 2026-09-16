@@ -1980,3 +1980,47 @@ being hardcoded 64 wide so `NT` could actually be reduced.
 
 The result is the milestone the objective asked for: the per-op path's ~9 launches
 per layer are now ONE, at prefill M, with token-equivalent arithmetic.
+
+## Engine integration: the surface, and the one real obstacle
+
+Reconnaissance for wiring `n1_fk3_layer` in as the dense-Qwen3 prefill path.
+
+**The surface.** The native bf16 prefill is driven from
+`engine/npu/src/npu_runlist_bridge.cpp` (`npu_bf16_prefill_init`, 496 lines) plus
+`npu_engine_bf16_mm_bridge`, and the engine calls it at
+`npu_engine_universal.cpp:4495` behind an auto-select at :795 ("dense Qwen3,
+bf16 prefill + runlist decode"). Note `flm_prefill_bridge.cpp` is NOT the target —
+it drives FLM's own mm/attn xclbins; the native per-op path is the one that caps at
+~655 tok/s.
+
+The bridge already exposes exactly the shape a fused layer wants:
+```c
+int npu_bf16_prefill_init(model_path, H, NC, NH, NKV, IM, NV, HD);
+int npu_bf16_pack_layer(int layer, uint8_t* bo, int* offs);   // offs[6] = {q,k,v,o,gu,d}
+int npu_bf16_layer_bo_bytes();
+```
+so a drop-in is: pack layer L's weights, call the fused kernel once with the
+17 buffers n1_fk3_layer expects, and let the engine keep its decode path.
+
+**The obstacle — and it is a real one.** `npu_bf16_pack_layer` packs the weights as
+**Q4NX quantized tiles** (`woff = tile*5120`, dequantized on the NPU by mm.xclbin),
+whereas `n1_fk3_layer` consumes **bf16 matrices** in specific layouts: W row-major
+`(H, NQKV)`, W_GU `(H, N2)`, W_O `(KO_TOT, NO)`, and W_D as `[W_D ; I]`
+(`(NI+H, ND)`). Three ways to bridge it:
+
+1. **Host-side dequant once per layer** into those four bf16 matrices, then call the
+   fused kernel. Simplest, and per-layer dequant of ~33 MB is affordable — but it
+   must produce the SAME bf16 values as the engine's on-NPU dequant, or token parity
+   fails for a reason that has nothing to do with the fusion. This is the part to
+   validate FIRST, in isolation, before any timing is believed.
+2. Teach nq_nt.cc to consume Q4NX tiles directly (no dequant pass). Best for speed,
+   most kernel work, and it changes the verified bit-exactness surface.
+3. Extend the fused kernel to take the Q4NX tile handles the engine already packs.
+
+Recommended order: (1) to establish token parity, then (2) once parity is pinned.
+**Validate the dequant parity first** — it is the one thing that can make a fused
+layer look numerically wrong when it is fine.
+
+Also note for the integration: the engine now takes an exclusive flock on
+`/tmp/1bit-npu-device.lock` (afbeb7's repair) — my harnesses must take the same
+lock, and the driver TDR is now a durable 15 s.
