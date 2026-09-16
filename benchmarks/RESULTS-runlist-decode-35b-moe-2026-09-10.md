@@ -2905,3 +2905,37 @@ STATE: (a) compiles -- MET (79). (c) one submit -- MET and the driver proven (83
 correct -- the GEMM phase and the NORM phase are each proven correct SEPARATELY, through this driver;
 only the two-phase combination remains, and its hang has now survived two refutations, which narrows
 it to something the two phases share rather than anything either phase does on its own.
+
+### Addendum 84 — the silent-BO-order hypothesis is RULED OUT; one attempted isolation failed in my own tooling
+
+NEXT-ACTION ITEM (3) from addendum 83 is now answered, and it is a null result worth recording
+because it eliminates a hypothesis that would produce exactly the observed hang.
+
+THE DECLARED ORDER MATCHES THE DRIVER. The generated design exposes, in order,
+  @rms_norm_f32_bf16(memref<2048xf32>, memref<2048xf32>, memref<2048xbf16>)
+i.e. norm A (f32), norm gamma (f32), norm out (bf16), then the GEMM's A (i8), B (i8), C (i32) -- and
+combined_smoke passes exactly bo_nA, bo_nW, bo_nO, bo_gA, bo_gB, bo_gC after (opcode, instr_bo,
+ninstr). No silent transposition. So the "a swapped BO order hangs exactly like this" hypothesis is
+dead, not merely unlikely.
+
+A SECOND FACT fell out of the same reading, and it RETRACTS part of addendum 80's reasoning: for the
+THREE-argument m1 QKV xclbin, group_id(6) and group_id(7) are ALSO valid (65536), not only 3..5. So
+XRT groups are not assigned one-per-argument and not one-per-distinct-size either -- they are simply
+a pool of valid groups, and passing a valid one is what matters. My driver's BOs landed on valid
+groups in every run, including the one that matched 8192/8192. The group_id(8)=131071 sentinel is
+real, but choosing groups was never the cause of the hang, and addendum 80's "groups are assigned per
+distinct buffer" reading is unsupported.
+
+ATTEMPTED AND NOT ACHIEVED: isolating my combined generator's GEMM section by stripping the norm from
+it, to ask whether the GEMM half works on its own. The strip was done by string-splicing the Python
+source and it cut a line mid-identifier ("BATCHr c"), so the variant raised SyntaxError and emitted a
+4-line non-MLIR file; aiecc then reported "custom op 'File' is unknown". That is my tooling failing,
+not a property of the design, and it produced NO information about the deadlock. The real generator is
+unmodified and parses cleanly (verified). The isolation still needs doing, and it should be done by
+editing the generator's source properly rather than by splicing strings.
+
+WHERE THE DEADLOCK STANDS: the combination hangs; the norm phase alone works (addendum 83); the BO
+order is correct (here); the group choice is not implicated (here); the W-acquire placement and the
+A/W/O interleaving are both refuted as causes (addendum 83). What the two phases SHARE is therefore
+still the open question, and the cheapest untried discriminator remains running my combined
+generator's GEMM half alone.
