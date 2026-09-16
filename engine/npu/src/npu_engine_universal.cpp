@@ -4723,6 +4723,15 @@ struct Bf16Ctx {
                         #pragma omp parallel for schedule(static) num_threads(host_threads())
                         for (int pi = b; pi < b + rows; pi++) qk_norm_pi(pi, pi);   // readback lands at bC[pi*qkvn]
                     }
+                    // WELL-DEFINED SEAM: bC now holds the raw QKV (before RoPE and before
+                    // the KV scatter) computed from the host-normed bA. That is exactly the
+                    // quantity the fused path's launch A produces, so the two can be
+                    // compared directly - unlike bA, which the layer reuses for the
+                    // attention input and output.
+                    if (l == 0 && getenv("NPU_DUMP_L0")) {
+                        FILE* fq = fopen("/tmp/bf16_l0_rawqkv.bin", "wb");
+                        if (fq) { fwrite(bC.data(), 2, (size_t)npt * qkvn, fq); fclose(fq); }
+                    }
                 }
                 auto ta0 = std::chrono::steady_clock::now();
                 tg += std::chrono::duration<double, std::milli>(ta0 - tg0).count();

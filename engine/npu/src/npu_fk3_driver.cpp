@@ -457,6 +457,8 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
             };
             st("aA data (all M rows)", a, M * s.H);
             st("aA row M (gamma)", a + (size_t)M * s.H, s.H);
+            FILE* fa = fopen("/tmp/fk3_drv_aA.bin", "wb");
+            if (fa) { fwrite(s.aA.map(), 1, (size_t)(M + 1) * s.H * 4, fa); fclose(fa); }
             fprintf(stderr, "[fk3] aA bytes=%llu  (want %llu)\n",
                     (unsigned long long)s.aA.size(), (unsigned long long)((size_t)(M + 1) * s.H * 4));
         }

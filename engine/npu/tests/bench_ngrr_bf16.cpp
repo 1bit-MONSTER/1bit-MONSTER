@@ -33,11 +33,40 @@ int main(int argc,char**argv){
   // gamma=1.0 run could not exercise the kernel's gamma path at all. Varied values with
   // a mean near 1 keep the magnitudes the same order as a real model.
   for(int i=0;i<H;i++) Am[(size_t)M*H+i]=0.25f + (float)(i%7)*0.25f;   // 0.25..1.75
+  // If NG_LOAD_A names a (M+1)xH f32 file, use those exact bytes instead of the synthetic
+  // input, so the kernel can be run on the ENGINE's real activation and the two results
+  // compared directly.
+  if (const char* pa = getenv("NG_LOAD_A")) {
+    FILE* gp = fopen(pa, "rb");
+    if (gp) {
+      size_t want = (size_t)(M + 1) * H * 4;
+      size_t got = fread(Am, 1, want, gp);
+      fclose(gp);
+      fprintf(stderr, "[bench] loaded A from %s (%zu of %zu bytes)\n", pa, got, want);
+    } else {
+      fprintf(stderr, "[bench] NG_LOAD_A=%s could not be opened; using synthetic A\n", pa);
+    }
+  }
   for(long i=0;i<(long)H*N;i++) Wm[i]=rne((float)((i%13)-6)*0.1f);
+  // Optionally load the REAL dequantized weight (the engine's own bf16mm_dequant output).
+  // The bench's synthetic fill is row-major, which is what the kernel assumes; if the
+  // engine's per-op path instead feeds bf16mm_upload_w's transformed layout, this is where
+  // the two conventions diverge.
+  if (const char* pw = getenv("NG_LOAD_W")) {
+    FILE* gp = fopen(pw, "rb");
+    if (gp) {
+      size_t want = (size_t)H * N * 2, got = fread(Wm, 1, want, gp);
+      fclose(gp);
+      fprintf(stderr, "[bench] loaded W from %s (%zu of %zu bytes)\n", pw, got, want);
+    } else {
+      fprintf(stderr, "[bench] NG_LOAD_W=%s could not be opened; using synthetic W\n", pw);
+    }
+  }
   memset(bAN.map(),0,(size_t)M*H*2);memset(bC.map(),0,(size_t)M*N*2);
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bAN.sync(XCL_BO_SYNC_BO_TO_DEVICE);bC.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   auto r=kr((unsigned)3,bI,(unsigned)ins.size(),bA,bW,bAN,bC);r.wait();bC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  if (getenv("NG_DUMP_C")) { FILE* dc = fopen("/tmp/bench_ngrr_C.bin","wb"); if (dc) { fwrite(bC.map(), 2, (size_t)M*N, dc); fclose(dc); fprintf(stderr,"[bench] dumped C (%zu B)\n",(size_t)M*N*2); } }
   const uint16_t*C=(const uint16_t*)bC.map();
   std::vector<uint16_t> An((size_t)M*H);
   for(int row=0;row<M;row++){

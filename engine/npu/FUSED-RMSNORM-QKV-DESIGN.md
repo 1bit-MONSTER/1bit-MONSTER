@@ -3124,3 +3124,60 @@ single quantity at a single well-defined seam on both paths, rather than reachin
 another stage dump. The cheapest such seam is launch A's output: dump the per-op path's QKV
 buffer at the point immediately after ITS GEMM (not `bA`, which is reused) and compare it
 with `/tmp/fk3_drv_A.bin`, which is already a well-defined launch-A output.
+
+## ROOT CAUSE FOUND: the engine's GEMMs get a TRANSFORMED weight; my driver uploads the raw dequant
+
+The two-path comparison, done properly this time - one quantity, one seam, both sides' **byte
+identity** established rather than assumed:
+
+```
+bench, engine's real aA input + engine's real Wqkv weight:
+    Q 1.03906   K 1.04688   V 1.05469   whole 1.05469
+engine launch A (fused, same input, same weight):
+    Q 1.03906   K 1.04688   V 1.05469   whole 1.05469     <- BYTE-IDENTICAL
+engine per-op path (same input, same dequantized weight):
+    Q 5.65625   K 5.25000   V 2.29688   whole 5.65625     <- 5.36x larger
+```
+
+Note the last two lines: **the same weight array, the same input, two different answers from
+two GEMM implementations.** And 5.65625 / 1.05469 = 5.363 - exactly the engine's layer-output
+ratio (6.6196 / 1.2344 = 5.36). So this single difference accounts for the entire parity
+failure; nothing else needs explaining.
+
+The mechanism is the one line I never questioned. The engine's per-op path does:
+
+```c
+Wqkv[l] = bf16mm_dequant_dev(bo.data(), H, qkvn, offs[0]*5120, layer_bo_bytes);
+bf16mm_gemm_launch(Wqkv[l], H, qkvn, 0, i&1, ...);        // engine's mm.xclbin
+```
+
+`bf16mm_gemm_launch` takes a **W_idx**, and the index comes from `bf16mm_upload_w`, not from
+the dequant array directly. My driver skips that entirely:
+
+```c
+bf16mm_dequant(w.data(), src.bo, H, NQKV, off(0));   // raw dequant output
+memcpy(s.wQKV[l].map(), w.data(), w.size() * 2);     // straight to the kernel
+```
+
+So the engine uploads a weight that has passed through `bf16mm_upload_w`, and my kernel reads
+the pre-upload array. They differ by 5.36x in effect. I had "verified dequant parity by
+construction" and then verified the *host arrays* matched - `Wqkv[0]` (the engine's host
+array, via NPU_DUMP_L0) against mine - and they are indeed bit-identical. That verified the
+wrong thing: both are pre-upload. The upload step is where the layouts diverge, and it lives
+in the prebuilt FLM library (`g_mm.upload_w`), so it cannot be read off the source.
+
+**Why no bench could ever have caught this.** bench_ngrr_bf16 fills its W with
+`Wm[i]=rne(...)` - a *row-major* synthetic weight - and its reference indexes `Wm[k*N+j]`,
+also row-major. So the bench's weight is in the layout my kernel assumes, the reference
+agrees, and it reports 100.0% exact. It never once consumed a `bf16mm_dequant` output. Every
+"launch A is bit-exact" result in this document was measuring agreement between my kernel and
+a reference that shares my kernel's assumption. The engine is the first place the real
+upload path is exercised - and that is exactly where the 5x appears.
+
+**The fix.** Not a kernel change: the driver must put the weights in the layout the engine's
+GEMMs consume, i.e. replicate what `bf16mm_upload_w` does before handing them to the fused
+kernels. The q4nx format note in this document gives the likely shape of it - tiles of
+[32 rows x 256 cols], 5120 B/row - so the transform is probably a tiling of the dequantized
+(1024, 4096) array, testable directly: tile the real Wqkv in the bench (which now accepts
+`NG_LOAD_W`) and see whether the result moves from 1.05469 to ~5.65625. That is the next
+experiment, and it needs no device-side guesswork.
