@@ -335,3 +335,9 @@ different-mechanism effect** — it is either a KV-layout/BO-size difference or 
 measurement-condition artifact (FLM's 12.8/13.9 ms were taken clean 2026-09-12,
 the native's 12.5/15.3 ms today with the 35B serve loaded). Both need the clean
 A/B of ra-6 to settle.
+
+KV-size cross-check: the native allocates `npu_kv_cache_bo_size = 128 MB` per
+layer (134217728 B, `npu-infer/include/common.h:32`) and writes only 32 MB
+(4 regions × 8 MB stride, MAX_L=8192); FLM's Qwen3 is constructed at MAX_L=32768
+(`flm_prefill_bridge.cpp`), i.e. a 128 MB KV cache (32768×8×128×4 B) — the
+allocation sizes match, so a BO-size difference is unlikely to be the cause.
