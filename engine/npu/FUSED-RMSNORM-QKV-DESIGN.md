@@ -4792,3 +4792,37 @@ Applied to my own current data: baseline tokens `785, 220, 62014, 220` vs fused
 `81080, 18306, 18306, 18306` diverge at the **first** token, which is far too early to be bf16 drift -
 so that mismatch is a real defect (the three unfixed weights), not the ceiling. Their point 2 sharpens
 the diagnostic: check early steps for exactness, use correlation for the rest.
+
+## ANSWERED from source: `FLM_PARITY_TRUE_NATIVE=1` decides WHICH CODE is measured, not which binary
+
+Checked `benchmarks/flm_parity.sh` directly instead of waiting for a reply. Both branches invoke the
+same `$ENGINE`; the flag selects **environment**, and the default branch drives **FLM's own captured
+libs through my engine**:
+
+```sh
+131:  # TRULY-NATIVE mode (FLM_PARITY_TRUE_NATIVE=1): do NOT set NPU_FLM_* — those
+132:  # drive FLM's own captured libs through the engine and are NOT the native
+136:  # native decode = the whole-layer runlist (NPU_RUNLIST=1).
+138:  if [ "${FLM_PARITY_TRUE_NATIVE:-0}" = 1 ]; then
+139:    NPU_RUNLIST=0 NPU_PREFILL_BF16=1 NPU_PREFILL_MAX="${NPU_PREFILL_MAX:-1024}" \
+141:    NPU_RUNLIST=1 "$ENGINE" "$Q4NX" "$DECODE_TOKENS" "$all" >"$dout" 2>&1 || true
+```
+
+So the peer's warning holds exactly, and the mechanism is the `NPU_FLM_*` variables rather than the
+binary: **run `flm_parity.sh` without the flag and you measure FLM's captured libraries inside your own
+engine**, i.e. the reference shares an assumption with the thing under test - the failure mode that
+produced most of this session's wrong conclusions.
+
+**Consequence for fk-4, which would otherwise have invalidated the number.** The truly-native branch sets
+`NPU_PREFILL_BF16=1` and `NPU_PREFILL_MAX=1024` - which is precisely my lane's path (the bf16 prefill
+that the fused layer sits inside). My notes had the fk-4 command written *without* the flag, so the
+measurement would have exercised FLM's libs and reported a number that has nothing to do with the fused
+kernel. Every fk-4/parity run from here must use:
+
+```
+FLM_PARITY_TRUE_NATIVE=1 benchmarks/flm_parity.sh --model qwen3_0_6b --engine engine/npu/build/npu_engine_qwen3_0_6b ...
+```
+
+This is the second time in this session that reading a peer's methodological note - rather than
+reasoning about my own setup - prevented a wrong measurement. Both times the trap was the same shape:
+a run that looks like it tests my code but silently substitutes a different implementation.
