@@ -2067,3 +2067,39 @@ WHAT IS NOW ESTABLISHED about arg-3, on solid ground:
 NEXT: derive the HEAD transform the way the region-B one was derived -- from the lib's own callable
 or gen_layer_seq -- and verify against the capture. Reuse the region-B method; it is the one that
 has worked twice.
+
+### Addendum 59 — DECISIVE: the head tensors do not belong in arg-3 at all. region-A is wrong IN KIND.
+
+I went back to the flagged hypothesis instead of deriving a transform for a possibly mis-conceived
+buffer, and the capture answers it outright. Compare what the head tensors ARE with what the
+runtime's arg-3 head CONTAINS:
+
+  model.layer.0.input_layernorm.weight        min 0.9219  max 1.3281  mean 1.0312   |v|>1e6: 0
+  model.layer.0.post_attention_layernorm.w    min 0.1875  max 1.4766  mean 0.8951   |v|>1e6: 0
+  runtime arg-3 [0:94720) read as bf16        min -1.901e38 max 1.848e38             |v|>1e6: 5154
+
+Layernorm weights are, by construction, values near 1.0. The runtime's arg-3 head contains
+thousands of values at 1e6..1e38 and none of the character of a layernorm. Therefore:
+
+  ARG-3's head is NOT layernorm-scale content. The head tensors (input_layernorm,
+  post_attention_layernorm, conv1d, ssm_norm, ssm_a, ssm_dt) do not belong in the weight BO the
+  way npu_pack_moe_region_b puts them -- the buffer's content is wrong in KIND, not merely in
+  layout, size or dtype.
+
+This is the finding the "region A TODO" comment was pointing at, and it retroactively explains the
+whole sequence of failed experiments: addendum 44 (tail), 47 (F32/bf16 in both copies) and 48
+(repacking the four non-layernorm tensors as 66,048) were all rearranging or neutralising content
+that should not have been in that buffer in the first place, so none of them could have worked.
+It also fits the duplication @agent-baaa57 noticed -- the SAME small tensors (conv1d, ssm_norm,
+ssm_a, ssm_dt) are packed by npu_pack_moe_linear5_bo into the norms BO as well, so region-A was
+plausibly written by copying an assumption rather than by reading what arg-3 must contain.
+
+WHAT ARG-3's HEAD IS, by contrast, is weight-like: huge magnitudes in the same style as the
+region-B content (which we already match byte-for-byte at offset 0x1bc00000). So the next step is
+not "transform the head tensors", it is "find out WHAT arg-3 must contain and where those bytes
+come from" -- the same question reorder_cpy answered for region-B, and the capture is the oracle.
+
+METHOD NOTE: this is the first time in this lane that checking the KIND of the content, rather than
+its arrangement, produced an answer -- after four experiments that rearranged it. When a series of
+layout hypotheses keeps failing on the same buffer, the hypothesis to test is that the buffer's
+contents were never right, not that they are arranged wrongly.
