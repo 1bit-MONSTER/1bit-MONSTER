@@ -3354,3 +3354,40 @@ fifos, cores and runtime DMAs all removed) has now failed to build four times, e
 string-splice cutting inside a nested loop. The next attempt must edit the file with the edit tool
 rather than splice it, and it should check the resulting insts-blob size against the M=1 norm-only
 design's 508 B before drawing any conclusion from a run.
+
+### Addendum 96 — MY NORM PHASE IS CORRECT ALONE, bit-identical to the proven design. The hang needs BOTH phases' CORES.
+
+Finally built the deciding artifact -- my own generator's NORM-ONLY design -- by editing
+n1_norm_only_mine.py with the edit tool (three exact-block removals: the GEMM's fifos and core loop,
+its three runtime_sequence arguments, and its runtime DMA block) instead of string-splicing, which had
+failed four times. The instrument from addendum 95 was checked BEFORE the run, as promised:
+
+  INSTS BLOB: 508 B   (508 B = one norm row; 42 KB = 128 rows)
+  norm-only submit completed
+  norm-only RMSNorm: 910/2048 match
+    first mismatch at 10: got 0.765625 ref 0.769531
+
+That is BIT-IDENTICAL to the shipped, proven norm-only design's result (addendum 83: 910/2048, first
+mismatch 0.765625 vs 0.769531). MY generator's norm phase is CORRECT -- it reproduces the proven
+implementation exactly -- and the 508-byte blob-size check predicted the shape correctly.
+
+THIS CORRECTS ADDENDUM 94, which recorded "MY generator's norm phase with the GEMM's DMAs removed:
+HANGS". That variant still contained the GEMM's CORES and FIFOS, merely unfed. So the hang does not
+follow from the norm phase at all; it follows from the two phases' CORES being present together.
+
+THE PATTERN, now complete and consistent across five probes:
+  - my GEMM phase alone (cores present, norm absent):            COMPLETES, 8192/8192 exact
+  - my NORM phase alone (core present, GEMM absent):             COMPLETES, 910/2048 exact
+  - norm's phase with the GEMM's cores present but UNFED:        HANGS
+  - GEMM's phase with the norm's core present but UNFED:         HANGS
+  - both phases fed, as designed:                                HANGS
+So a core that has no data waiting for it prevents the runtime sequence from retiring -- and in the
+combined design, whichever phase finishes first leaves the other's cores blocked, which is precisely
+the designed operation. THE OPEN QUESTION is no longer "which phase is broken" (neither is) but what
+about a second, differently-kernelled core prevents retirement. The sharpest candidate, and the next
+test: these are the first designs in this work to contain TWO DIFFERENT external functions
+(`rms_norm_f32_bf16` alongside `matmul_i8_i32`/`zero_i32`), where every working design so far used one.
+
+REBUILD POSITION: (a) compiles -- MET. (c) one submit -- MET. (b) both phases correct together -- each
+phase is now PROVEN correct alone at the real shape through this driver, and the only remaining defect
+is the interaction of their cores, with a named candidate mechanism and a one-command next test.
