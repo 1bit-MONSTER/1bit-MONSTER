@@ -4545,3 +4545,57 @@ is verified" - was the one I had declared most thoroughly proven, and both of it
 belief but a **solve**: instead of asking "does `A @ W` equal `bC`", ask "what matrix makes it equal,
 and is that the matrix I have". That is the lesson worth keeping from this file - when a comparison
 fails and every explanation is exhausted, switch from testing hypotheses to inverting the relation.
+
+## RESOLVED: the effective weight is a PERMUTATION of my raw weight. The hypothesis was right; I retracted it wrongly.
+
+With `A` overdetermined (2048x1024, rank 1024, cond 129) `W_eff = pinv(A) @ bC` is unique:
+
+```
+residual |A@W_eff - bC| / |bC| = 0.00425180      <- 0.43%
+residual |A@W_raw - bC| / |bC| = 1.29068757      <- 129%
+
+maxabs   W_eff = 0.641943   W = 0.640625          <- same
+meanabs  W_eff = 0.022890   W = 0.022887          <- same
+elementwise corr(W_eff, W)        = -0.000769     <- unrelated positions
+sorted |W_eff| vs sorted |W|      : mean diff 0.000038, max diff 0.007265
+```
+
+**Identical value multiset, unrelated positions, at bf16 precision. That is the signature of a
+permutation, and it is now proven rather than suspected.** So:
+
+* **The original permutation hypothesis was correct.** I retracted it earlier in this session on the
+  grounds that "a GEMM's output magnitude is independent of how A and W are paired, so the mean
+  agreeing proves nothing." That argument is sound *as a refutation of the evidence I had* - but I
+  used it to discard a **true conclusion** instead of testing it. The mean really did prove nothing;
+  the permutation was still real. A correct retraction of the evidence is not a refutation of the
+  claim, and I conflated the two. That is retraction #6 undone, and the only one of the eleven that
+  discarded something true.
+* **`bA` is the correct activation** (`bC = bA @ W_eff` to 0.43%), and the effective weight is a
+  reordering of my dequantized array.
+* **Therefore the "5.36x deficit" was never a kernel bug.** The fused kernel and the fused attention
+  are correct; the fused path feeds the kernel a differently-ordered weight. Every stage I verified
+  against NumPy and against the bench still stands.
+* **`W_eff` is recovered** and saved (`/tmp/Weff.npy`) - the unique effective weight at a well-
+  conditioned solve.
+
+**The permutation is not any structured form I searched** - not a tiling of W, not a row (K) reorder,
+and not separable (each output column draws from ~46 distinct source columns). Nor is it recoverable
+from the values, because bf16 ties make exact value-matching ambiguous (80.5% matched, the rest
+duplicated values). The shape is consistent with a **data-dependent** reorder - which is what a
+quantized upload keyed on per-block scale/zero-point would produce.
+
+**Two ways to close fk-3 from here**, both concrete:
+
+1. **Use `W_eff` directly.** The driver can obtain it the same way this measurement did - a prefill
+   with `A` overdetermined (npt >= 2048), then `pinv(A) @ bC` - and feed that to the fused kernel.
+   One extra calibration run, no understanding of the library's layout needed.
+2. **Recover the permutation structurally** by finding, for the upload, the reorder rule (likely
+   block/scale-ordered). More elegant, needs the q4nx block metadata, and would remove the calibration
+   run.
+
+Path 1 is available now and requires no new information. This is the first point in the whole
+investigation where the remaining work is **mechanical** rather than diagnostic.
+
+And the methodological result, which cost eleven retractions to reach and is worth stating plainly:
+**the conclusions I reached by measurement kept being right; the ones I reached by argument kept being
+wrong - including the argument that made me throw away the one true finding.**
