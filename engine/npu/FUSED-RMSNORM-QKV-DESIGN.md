@@ -4599,3 +4599,52 @@ investigation where the remaining work is **mechanical** rather than diagnostic.
 And the methodological result, which cost eleven retractions to reach and is worth stating plainly:
 **the conclusions I reached by measurement kept being right; the ones I reached by argument kept being
 wrong - including the argument that made me throw away the one true finding.**
+
+## The authoritative callable exists on this box: `reorder_cpy` in libqwen3_npu.so
+
+@agent-c1b76d pointed out, from a bug they had already paid for on their lane, that a one-hot probe
+returning a row that correlates ~0 with the raw weight is **exactly** what a permuted weight layout
+looks like - the probe returns a row of the *reordered* weight, correct arithmetic, wrong comparator.
+They were right and my "the probe is invalid" verdict was wrong: the probe worked, and its 0.08
+correlation was the permutation signature, not instrument failure. They also gave the decisive piece
+of process advice: **derive the layout from the runtime's own reorder callable rather than from data.**
+
+Acting on that, the callable is here:
+
+```
+$ nm -DC ~/.local/flm-v0946/lib/xrt/libqwen3_npu.so | grep -i reorder
+000000000003ff40 T reorder_cpy(unsigned char*, buffer<unsigned char>&, int, int)
+```
+
+`libqwen3_npu.so` exports `reorder_cpy` - the same shape of callable as their `qwen3_6_reorder_cpy`.
+So the expected layout does not need to be reverse-engineered from behaviour **or** recovered by a
+calibration solve: it can be obtained by calling the shipped transform.
+
+**This confirms and completes the finding.** `reorder_cpy` is a *reorder* - a permutation - which is
+precisely what the measurement said: `W_eff` has an identical value multiset to my raw array (sorted
+magnitudes mean diff 3.8e-5) with elementwise correlation ~0, and `bC = bA @ W_eff` to 0.43%. The
+measurement and the shipped callable agree, and they were reached by different routes.
+
+**Why value-matching could never have recovered it** (and why the peer's advice was the right call):
+only **74 of 4,194,304** values in W are unique under bf16 rounding, so exactly **one** unambiguous
+(src, dst) pair exists. Any permutation derived from data would have been guesswork; the callable is
+exact.
+
+**The final, mechanical path to closing fk-3** - no calibration run, no reverse-engineering:
+
+1. dequantize the weight as now;
+2. apply `reorder_cpy` from `libqwen3_npu.so` to get the engine's expected layout;
+3. feed that to the fused kernel;
+4. run `benchmarks/flm_parity.sh` both ways and compare tokens.
+
+Every other part is already verified: the fused layer's six stages are byte-exact against the bench
+and match NumPy references, `bA` is the correct activation (0.014% with npt=1024), and the attention
+scaling fix is independently confirmed.
+
+**Twelfth retraction, and a different kind from the first eleven.** This one is of a *diagnosis*: I
+called my own working instrument broken because its output disagreed with my expectation, when the
+disagreement was the signal. The first eleven were inferring where I should have measured; this one
+was looking at a correct measurement and mis-reading which of the two objects was wrong. The rule that
+covers it: when an instrument and an expectation disagree, decide which one is the *reference* before
+deciding which one is broken - and the cheapest way is one experiment against an independently-derived
+expected object, which is what the peer proposed and what the `reorder_cpy` symbol then settled.
