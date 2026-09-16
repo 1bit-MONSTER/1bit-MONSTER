@@ -2721,3 +2721,37 @@ host-quantised i8 A and an on-device quantiser is new work.
 DOCUMENTED CONSTRAINT for whoever does the dataflow step: the engine's i8 GEMM consumes an
 host-quantised i8 activation (I8Ctx::quantize_async), so a fused RMSNorm->GEMM on device needs a
 NEW i8-output norm kernel. That is the next piece of new code after co-residency is proven.
+
+### Addendum 79 — REBUILD, MILESTONE (a) MET: the combined 2-phase design COMPILES
+
+Wrote `engine/npu/generators/n1_combined_norm_qkv.py` (full generator, not a sketch): one design
+containing PHASE 1 = RMSNorm H=2048 and PHASE 2 = the i8 M=1 GEMM K=2048 N=8192 with 8 columns x
+1 row, driven by a single runtime_sequence. Call-site census (counting CALLS, per addendum 28):
+rms_norm_f32_bf16 x1, matmul_i8_i32 x8, zero_i32 x8 -- both phases present.
+
+TWO REAL FINDINGS, both from aiecc rather than from reasoning:
+
+1. THE SHIM TILE HAS A HARD OUTPUT-DMA-CHANNEL LIMIT, and sharing it fails with a precise error:
+     error: 'aie.tile' op number of output DMA channel exceeded!
+     %shim_noc_tile_0_0 = aie.tile(0, 0)
+   My first design put the norm on the shared shim/mem of column 0 (tile(0,0)/(0,1)) with its core
+   moved to the free row (0,3). That is NOT viable: tile(0,0) already carries the GEMM's broadcast A
+   plus column 0's B, and adding the norm's A and W fifos exceeds the channel budget. Addendum 78's
+   "row 3 is free, share the shim/mem" plan was therefore WRONG -- the free ROW was never the
+   constraint; the shim's channel budget was.
+
+2. THE DEVICE HAS AT LEAST 9 COLUMNS. Fixing it by giving the norm its OWN column (col = n_aie_cols
+   = 8, with its own shim(8,0)/mem(8,1)/core(8,2)) COMPILES:
+     Compilation completed successfully
+     XCLBIN: 43,226 bytes
+   The m1 GEMMs use columns 0..7, so col 8 was previously unused and its availability is new
+   information about the array.
+
+WHAT THIS ESTABLISHES: co-residency of two DIFFERENT kernels in one design is POSSIBLE -- the open
+question from addendum 31 ("can the per-op kernels be co-resident so ONE xrt::runlist submit/token
+is real?") now has a worked, compiling answer. Milestone criterion (a) is met. Criteria (b)
+correctness in moe_smoke and (c) demonstrably ONE submit are next.
+
+METHOD NOTE: the plan in addendum 78 was reasoned from tile coordinates, and its central claim (share
+the shim) was falsified by the compiler in one run. The resource that was actually scarce was DMA
+channels, not tiles.

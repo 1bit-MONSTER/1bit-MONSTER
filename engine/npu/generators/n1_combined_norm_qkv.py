@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+#
+# COMBINED 2-PHASE MLIR generator: RMSNorm (H) + i8 M=1 GEMM (K x N) in ONE design.
+#
+# Addendum 78 of benchmarks/RESULTS-runlist-decode-35b-moe-2026-09-10.md. The point is
+# CO-RESIDENCY: a xrt::runlist submits against ONE hw_context, so every phase of our own
+# whole-layer sequence must live in ONE xclbin. This generator proves two *different* kernels
+# can share one design and be driven by one submit.
+#
+#      n1_core_i8_m1.py -> aie.tile(col,row) for col 0..7, rows 0(shim) / 1(mem) / 2(core)
+#      n1_rms_norm.py   -> aie.tile(0,0)=shim, (0,1)=mem, (0,2)=core
+#   CONFLICT on (0,2). RESOLUTION: row 3 is free in the m1 footprint, and (0,0)/(0,1) can be
+#   shared by both phases with distinct fifo names. So:
+#      [shim(0,0) shared][mem(0,1) shared][QKV cores row 2, cols 0..7][norm core (0,3)]
+#
+# The two phases are independent in this milestone (the QKV still takes a host-quantised i8 A);
+# dataflow between them needs a new i8-output norm kernel, which is the next piece of new code.
+#
+# Usage: python3 n1_combined_norm_qkv.py -H 2048 -K 2048 -N 8192 -k 64 -n 128 -c 8 -b 5 > d.mlir
+import argparse
+import numpy as np
+from ml_dtypes import bfloat16
+from aie.extras.context import mlir_mod_ctx
+from aie.dialects.aie import *
+from aie.dialects.aiex import *
+from aie.helpers.dialects.scf import _for as range_
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("-H", type=int, default=2048, help="RMSNorm hidden size (f32 in, bf16 out)")
+    p.add_argument("-K", type=int, default=2048, help="GEMM K")
+    p.add_argument("-N", type=int, default=8192, help="GEMM N")
+    p.add_argument("-k", type=int, default=64, help="GEMM K tile")
+    p.add_argument("-n", type=int, default=128, help="GEMM N tile")
+    p.add_argument("-c", "--cols", type=int, default=8, help="n_aie_cols")
+    p.add_argument("-b", "--batch-size", type=int, default=5, help="K-tiles per DMA round")
+    a = p.parse_args()
+    with mlir_mod_ctx() as ctx:
+        combined(a.H, a.K, a.N, a.k, a.n, a.cols, a.batch_size)
+        print(ctx.module)
+
+
+def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
+    m = 1  # decode M=1
+    assert H % 8 == 0 and K % k == 0 and N % n == 0
+    assert (N // n) % n_aie_cols == 0 and n_aie_cols >= 2
+
+    @device(AIEDevice.npu2)
+    def device_body():
+        # ---- types -------------------------------------------------------------
+        f32 = np.dtype[np.float32]
+        i8 = np.dtype[np.int8]
+        i32 = np.dtype[np.int32]
+        bf16 = np.dtype[bfloat16]
+
+        Rn_ty = np.ndarray[(H,), f32]      # norm input row
+        Rw_ty = np.ndarray[(H,), f32]      # norm gamma
+        Ro_ty = np.ndarray[(H,), bf16]     # norm output row
+        Ga_ty = np.ndarray[(m, k), i8]     # GEMM A tile
+        Gb_ty = np.ndarray[(k, n), i8]     # GEMM B tile
+        Gc_ty = np.ndarray[(m, n), i32]    # GEMM C tile
+        Gc_l2 = np.ndarray[(m, n), i32]
+
+        # ---- PHASE 1: RMSNorm on its OWN core at (0,3); shim/mem shared with column 0 ----
+        rms = external_func("rms_norm_f32_bf16", inputs=[Rn_ty, Rw_ty, Ro_ty],
+                            link_with="rms_norm_f32_bf16.o")
+
+        # ---- PHASE 2: i8 M=1 GEMM, 8 columns x 1 row, cores at row 2 ----
+        kernel_o = "mm_32x64x128.o"
+        zero = external_func("zero_i32", inputs=[Gc_ty], link_with=kernel_o)
+        matmul = external_func("matmul_i8_i32", inputs=[Ga_ty, Gb_ty, Gc_ty], link_with=kernel_o)
+
+        # The shim's OUTPUT DMA channels are limited (2 per tile here): tile(0,0) already
+        # carries the GEMM's broadcast A plus column 0's B, so the norm cannot share it --
+        # aiecc reports "number of output DMA channel exceeded". Give the norm its OWN column
+        # (n_aie_cols) so both phases have their own shim/mem/core triple.
+        NC = n_aie_cols
+        shim0 = tile(NC, 0)
+        mem0 = tile(NC, 1)
+        norm_core = tile(NC, 2)
+        qkv_mem = [tile(c, 1) for c in range(n_aie_cols)]
+        qkv_core = [tile(c, 2) for c in range(n_aie_cols)]
+        qkv_shim = [tile(c, 0) for c in range(n_aie_cols)]
+
+        # ---- PHASE 1 fifos (names distinct from the GEMM's) ----
+        nA_s = object_fifo("N_A_S", shim0, mem0, 2, Rn_ty)
+        nA_c = object_fifo("N_A_C", mem0, norm_core, 2, Rn_ty)
+        nW_s = object_fifo("N_W_S", shim0, mem0, 1, Rw_ty)
+        nW_c = object_fifo("N_W_C", mem0, norm_core, 1, Rw_ty)
+        nO_c = object_fifo("N_O_C", norm_core, mem0, 2, Ro_ty)
+        nO_s = object_fifo("N_O_S", mem0, shim0, 2, Ro_ty)
+        object_fifo_link(nA_s, nA_c)
+        object_fifo_link(nW_s, nW_c)
+        object_fifo_link(nO_c, nO_s)
+
+        @core(norm_core, stack_size=0x2000)
+        def norm_body():
+            for _ in range_(0xFFFFFFFF):
+                wbuf = nW_c.acquire(ObjectFifoPort.Consume, 1)   # gamma once
+                arow = nA_c.acquire(ObjectFifoPort.Consume, 1)
+                orow = nO_c.acquire(ObjectFifoPort.Produce, 1)
+                rms(arow, wbuf, orow)
+                nA_c.release(ObjectFifoPort.Consume, 1)
+                nO_c.release(ObjectFifoPort.Produce, 1)
+
+        # ---- PHASE 2 fifos: A broadcast to every column, B and C per column ----
+        gA_c = object_fifo("G_A_C", qkv_shim[0],
+                           [qkv_core[c] for c in range(n_aie_cols)], BATCH_SIZE + 1, Ga_ty)
+        gB_s = {}
+        gB_c = {}
+        gC_c = {}
+        gC_s = {}
+        for c in range(n_aie_cols):
+            gB_s[c] = object_fifo(f"G_B_S{c}", qkv_shim[c], qkv_mem[c], BATCH_SIZE + 1, Gb_ty)
+            gB_c[c] = object_fifo(f"G_B_C{c}", qkv_mem[c], [qkv_core[c]], BATCH_SIZE + 1, Gb_ty)
+            object_fifo_link(gB_s[c], gB_c[c])
+            gC_c[c] = object_fifo(f"G_C_C{c}", qkv_core[c], qkv_mem[c], 1, Gc_ty)
+            gC_s[c] = object_fifo(f"G_C_S{c}", qkv_mem[c], qkv_shim[c], 1, Gc_l2)
+            object_fifo_link(gC_c[c], gC_s[c])
+
+        num_col_group = N // n // n_aie_cols
+        n_k = K // k
+
+        for c in range(n_aie_cols):
+            @core(qkv_core[c], stack_size=0x2000)
+            def gemm_body():
+                for _ in range_(0xFFFFFFFF):
+                    for _ in range_(num_col_group):
+                        cbuf = gC_c[c].acquire(ObjectFifoPort.Produce, 1)
+                        zero(cbuf)
+                        for _ in range_(n_k):
+                            abuf = gA_c.acquire(ObjectFifoPort.Consume, 1)
+                            bbuf = gB_c[c].acquire(ObjectFifoPort.Consume, 1)
+                            matmul(abuf, bbuf, cbuf)
+                            gA_c.release(ObjectFifoPort.Consume, 1)
+                            gB_c[c].release(ObjectFifoPort.Consume, 1)
+                        gC_c[c].release(ObjectFifoPort.Produce, 1)
+
+        # ---- runtime sequence: ONE host-side sequence driving BOTH phases ----
+        @runtime_sequence(
+            np.ndarray[(H,), f32],            # norm A
+            np.ndarray[(H,), f32],            # norm gamma
+            np.ndarray[(H,), bf16],           # norm out
+            np.ndarray[(K,), i8],             # gemm A
+            np.ndarray[(K * N,), i8],         # gemm B
+            np.ndarray[(N,), i32],            # gemm C
+        )
+        def seq(NA, NW, NO, GA, GB, GC):
+            # phase 1: one norm row
+            at = shim_dma_single_bd_task(nA_s, NA, offset=0, sizes=[1, 1, 1, H], issue_token=True)
+            wt = shim_dma_single_bd_task(nW_s, NW, offset=0, sizes=[1, 1, 1, H], issue_token=True)
+            dma_start_task(at); dma_start_task(wt); dma_await_task(at, wt); dma_free_task(at, wt)
+            ot = shim_dma_single_bd_task(nO_s, NO, offset=0, sizes=[1, 1, 1, H], issue_token=True)
+            dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
+            # phase 2: the GEMM, unchanged in structure from n1_core_i8_m1.py
+            for gi in range(num_col_group):
+                col_group = gi % num_col_group
+                for ki0 in range(0, n_k, BATCH_SIZE):
+                    ki_end = min(ki0 + BATCH_SIZE, n_k)
+                    at_list = []
+                    bt_list = []
+                    for ki in range(ki0, ki_end):
+                        a = shim_dma_single_bd_task(gA_c, GA, offset=ki * k,
+                                                    sizes=[1, 1, 1, k], issue_token=True)
+                        dma_start_task(a); at_list.append(a)
+                        for c in range(n_aie_cols):
+                            n_tile = col_group * n_aie_cols + c
+                            b = shim_dma_single_bd_task(
+                                gB_s[c], GB, offset=ki * k * N + n_tile * n,
+                                sizes=[k // 8, n // 8, 8, 8], strides=[8 * N, 8, N, 1],
+                                issue_token=True)
+                            dma_start_task(b); bt_list.append(b)
+                    dma_await_task(*at_list, *bt_list)
+                    dma_free_task(*at_list, *bt_list)
+                c_tasks = []
+                for c in range(n_aie_cols):
+                    n_tile = col_group * n_aie_cols + c
+                    ct = shim_dma_single_bd_task(gC_s[c], GC, offset=n_tile * n,
+                                                 sizes=[1, 1, 1, n], issue_token=True)
+                    dma_start_task(ct); c_tasks.append(ct)
+                dma_await_task(*c_tasks); dma_free_task(*c_tasks)
+
+
+main()
