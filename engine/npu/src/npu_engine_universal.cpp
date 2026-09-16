@@ -4650,6 +4650,10 @@ struct Bf16Ctx {
                         g_fk3.reset();
                     } else {
                         fprintf(stderr, " [fk3]"); fflush(stderr);
+                        // Same per-layer dump the per-op path does at the end of the layer
+                        // body, so the two paths can be compared layer by layer (this is
+                        // how the fused path's first divergence gets located).
+                        if (const char* dh = getenv("NPU_DUMP_HIDDEN")) { FILE* df = fopen(dh, "ab"); if (df) { fwrite(bh.data(), 4, (size_t)nrow * H, df); fclose(df); } }
                         continue;
                     }
                 }
