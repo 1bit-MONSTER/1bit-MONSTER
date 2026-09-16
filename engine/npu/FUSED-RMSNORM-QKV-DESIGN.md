@@ -4950,3 +4950,51 @@ is the concatenation gate|up, so the file must be in that order), then run all f
 Method note worth keeping: I checked the override log **before** reading the tokens, because "the run
 produced different tokens" is not evidence that the weights were used - the same lesson as every other
 retraction in this file.
+
+## All four weights effective: NOT converged. And the reason is a flaw in my own solve.
+
+```
+overrides loaded: 4 of 4     (verified in the driver log, not assumed)
+baseline          785, 220, 62014, 220
+3 of 4            52402, 220, 760, 220
+ALL 4 WEIGHTS     37142, 5369, 58251, 58251
+```
+
+Loading all four moved the output but did **not** converge it. Before concluding anything about the
+permutation story, look at what my "exact" solves actually were:
+
+```
+WQKV  A(1024,1024) -> 4096 outputs    rank 1022   UNDERDETERMINED (fewer rows than outputs)
+WO    A(1024,2048) -> 1024 outputs    rank 1024   A has 1024 rows, 2048 columns  <- UNDERDETERMINED
+WGU   A(1024,1024) -> 6144 outputs    rank 1024   UNDERDETERMINED
+WD    A(1024,3072) -> 1024 outputs    rank 1024   A has 1024 rows, 3072 columns  <- UNDERDETERMINED
+```
+
+`pinv` returns the **minimum-norm solution**, and when the system is underdetermined there are
+infinitely many matrices that reproduce the calibration outputs exactly. That is why WO, WGU and WD all
+reported **residual 0.000000**: they were not found to be *the effective weight*, they were found to
+*interpolate the calibration set*. An exact fit was evidence of nothing, and the 0.000000 is the
+signature of the trap rather than of success.
+
+**This is the same failure as every other retraction in this file, applied to my own fix**: I accepted a
+verification (residual 0) that shared an assumption with the thing being verified (that fitting the
+observed data means being the right object). A correctness check that cannot fail is not a check.
+
+**The fix is one run.** `W_eff = pinv(A) @ Y` is unique and correct only when `A` has at least as many
+rows as the weight has output columns. The largest is WGU's 6144, so the calibration needs
+**`npt >= 6144`** - an ids file of ~6300 tokens and `NPU_PREFILL_MAX=6144`. Then all four solves are
+overdetermined, the permutation is genuinely recovered, and loading them tests the permutation account
+properly. The npt=1024 numbers above say nothing about whether that account is right; they only say my
+weights were interpolants.
+
+**What the npt=2048 WQKV solve does establish** (that one was overdetermined: 2048 rows, 4096 outputs,
+rank 1024, cond 129 - still fewer rows than outputs, so *its* uniqueness is also suspect, and the 0.43%
+rather than 0 residual is consistent with that). The **permutation evidence that is independent of the
+solve** remains solid: the value multiset of `W_eff` matched `W`'s to 3.8e-5 and the elementwise
+correlation was ~0. But the claim "A @ W_eff reproduces bC better than A @ W_raw" is weaker than I
+treated it as, because `W_eff` was fit to `bC` by construction. Both facts are still informative; only
+the second is weaker than stated.
+
+**Next:** calibration at `npt >= 6144`, re-solve all four, re-run. If tokens converge, the permutation
+account is confirmed end-to-end. If they do not, the weight layout was not the whole story and that is
+worth knowing before fk-4.

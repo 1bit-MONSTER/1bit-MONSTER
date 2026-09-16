@@ -4953,6 +4953,9 @@ struct Bf16Ctx {
                 // next block's A readback.
                 {
                     const int nblk = (npt + 255) / 256;
+                    // GU GEMM INPUT (bA after attention + residual-1 add) - needed to solve the effective
+                    // W_GU, which no other dump captures. See FUSED-RMSNORM-QKV-DESIGN.md.
+                    if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fq2 = fopen("/tmp/bf16_l0_a_gu.bin", "wb"); if (fq2) { fwrite(bA.data(), 2, (size_t)npt * H, fq2); fclose(fq2); } }
                     for (int i = 0; i < nblk && i < 2; i++)
                         bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, i & 1, bA.data() + (size_t)(i * 256) * H);
                     for (int i = 0; i < nblk; i++) {
