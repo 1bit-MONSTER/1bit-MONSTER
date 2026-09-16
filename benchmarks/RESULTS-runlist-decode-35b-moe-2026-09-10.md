@@ -5676,3 +5676,26 @@ alpha/beta in the 16x16-microtile order above (and ssm_out in the 4736-B row ord
 npu_pack_moe_router_bo must emit the router in the D1=256/128 tiled order (exact index map still
 to confirm against the load_attn_weights / _send_router_w_and_share_exp_gate dumps). The tiling
 formula for alpha/beta above is the first exact, derivable reorder of this lane.
+
+### Addendum 153 — CORRECTION to 152: alpha/beta are read CONTIGUOUSLY (raw packing is right); only the ROUTER is tiled
+
+Re-derived the DMA walk from the decoded strides, and addendum 152's "alpha/beta are 16x16-microtile
+tiled" is WRONG. For a 4D shim BD the read index is it*iter_stride + d2*D2s + d1*D1_stride + d0*D0_stride:
+
+  alpha/beta (arg3 @66048/@197120): D0=16/1, D1=256/16, D2s=4096, iter=1/1
+     -> d2*4096 + d1*16 + d0 runs over 0..65535 with NO gaps (each d2 block starts exactly where the
+        last d1 row ended). It is a LINEAR read of 65536 contiguous bf16. So the BO stores alpha/beta
+        CONTIGUOUSLY, and npu_pack_moe_linear5_bo's raw row-major memcpy of alpha/beta is CORRECT.
+        The fancy strides are just the 4D decomposition of a linear transfer, not a tiling.
+
+  router (arg2 @12288): D0=16/1, D1=256/128, D2s=32768, iter=8/16
+     -> it*16 + d2*32768 + d1*128 + d0 HAS gaps (D1 stride 128 skips 112 elements each row). This one
+        is genuinely STRIDED/tiled, and reads 65536 of the 524288 router elements (32 of 256 experts).
+        npu_pack_moe_router_bo's stride-8 interleave (dst[(i%8)*blk + j*in8 + i/8]) is the thing to
+        check against this read pattern — it is the one remaining real reorder, together with the
+        ssm_out 4736-B-row order.
+
+Net, after 153 addenda, the concrete defects narrow to: (1) the router BO tiling in
+npu_pack_moe_router_bo, (2) the ssm_out row order in npu_pack_moe_linear5_bo, and (3) the dead
+conv1d/ssm head at norms @0 (harmless — the ELF S2MM-writes over it). alpha/beta/conv1d offsets and
+arg binding are all verified correct.
