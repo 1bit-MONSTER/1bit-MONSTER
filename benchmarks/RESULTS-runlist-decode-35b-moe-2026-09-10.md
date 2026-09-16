@@ -4446,3 +4446,46 @@ wrong 8 of 8 at K=64, roughly 3 of 4 runs at K=2048 -- and every 8192/8192 quote
 addendum 117 should be read as a single lucky sample. The three-phase design's structure (one xclbin,
 one submit, four arguments, phases sharing one buffer) is sound and its norms are correct; its GEMM is
 not yet trustworthy, and that is now the only thing standing between this workstream and a usable layer.
+
+### Addendum 124 — THE WARM-UP ROUND FAILS TOO, AND THE DEVICE'S C IS ALL ZERO. The kernel is reading empty buffers.
+
+WARM-UP PROBE. Duplicated the entire GEMM DMA sequence so the runtime issues it twice, the second pass
+overwriting C, and ran the n_k=1 shape (K=64, N=2048, c=4, b=1; 102 descriptors) eight times:
+
+  7, 7, 7, 7, 7, 7, 2048, 7        -> 7 FAILURES IN 8, still almost always exactly 7/2048
+
+The second pass is wrong in the same way as the first. THE FAULT IS STEADY-STATE, NOT A FIRST-TRANSFER
+PROBLEM, and the warm-up idea is dead. One run in eight was exact, which is the same intermittency as
+before and not evidence of anything else.
+
+THEN I DUG INTO WHAT "7 OF 2048" MEANS, and the answer is the most important thing in this addendum.
+Dumping C and comparing:
+
+  device C: nonzero 0/2048   min 0 max 0
+  "reference": nonzero 0/2048
+
+THE DEVICE'S C IS ALL ZERO. The GEMM computes NOTHING at this shape. And "7/2048 columns match" is not
+partial correctness -- it is simply the seven columns where the true reference value happens to BE zero,
+so an all-zero output agrees by coincidence. That reframes the entire investigation: the failures I have
+been reading as "a fraction of the columns are corrupted" include cases where the output is not corrupted
+but ABSENT, and a count of matching columns cannot tell those apart from a handful of genuine
+coincidences. It also explains the eerie recurrence of exactly 7 across runs: the number of zeros in the
+reference is a property of the INPUT, not of the run.
+
+(My dump had a naming trap of its own, caught because the sanity recomputation failed: the driver's
+`gc` vector holds the DEVICE's C, and I dumped it under the name "reference" -- so both dumps were the
+same data at first. Worth remembering as the fourth instrument-vs-artefact error in this session.)
+
+THE COHERENT MECHANISM, and it now fits every measurement: THE CORE IS CONSUMING A AND B BEFORE THE SHIM
+HAS FILLED THEM, so the kernel multiplies zeros. With n_k=1 that is the ENTIRE accumulation -- zero times
+zero, C = 0 -- while with n_k=32 a fraction of the tiles are affected, which is exactly the
+partial-column failure signature at large K, and the shape dependence tracked since addendum 92 (2/256 at
+K=64, 112/256 at K=128, 0/256 at K=256) is the same thing seen through a host reference that cannot
+distinguish "absent" from "coincidentally equal". The warm-up round cannot help because both passes race
+identically.
+
+WHERE THAT LEAVES IT: the fault is in the A/B FEED SYNCHRONIZATION -- the `issue_token` handshake or the
+fifo acquire/release protocol between the shim BD and the core -- and not in the kernel, the addresses,
+the packing, the descriptor pool, the readback, or the host reference. The next step is to read the
+mlir-aie examples for the CORE side of that handshake rather than to keep guessing at the runtime side,
+since the runtime side is mandatory and present and demonstrably insufficient on its own.

@@ -321,6 +321,14 @@ int main(int argc, char** argv) {
             fprintf(stderr, "  C stable across a 0.5 s pause: %s (%d words changed)\n",
                     diff ? "NO" : "yes", diff);
         }
+        {   // dump C and the reference for offline characterisation
+            FILE* f1 = fopen("/tmp/gc_dump.bin", "wb");
+            if (f1) { fwrite(bo_gC.map<void*>(), 4, N, f1); fclose(f1); }
+            FILE* f2 = fopen("/tmp/gc_ref.bin", "wb");
+            if (f2) { fwrite(gc.data(), 4, N, f2); fclose(f2); }
+            FILE* f3 = fopen("/tmp/gc_gab.bin", "wb");
+            if (f3) { fwrite(gA.data(), 1, K, f3); fwrite(gB.data(), 1, (size_t)K * N, f3); fclose(f3); }
+        }
         fprintf(stderr, "FOUR-arg GEMM: %d/%d columns match\n", N - cb, N);
         return 0;
     }
