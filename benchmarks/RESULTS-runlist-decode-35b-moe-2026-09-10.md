@@ -2788,3 +2788,39 @@ METHOD NOTE: eleven addenda of this lane have now been decided by an error messa
 the tooling rather than by reasoning about it -- tile channels (79), the pack order (75), the capture
 tautology (58), the pool overlap (73), and now the allocation size (80). The reasoning keeps being
 the part that is wrong.
+
+### Addendum 81 — milestone (b)/(c) BLOCKED on XRT arg/insts plumbing; what is ruled out
+
+The combined driver (npu-infer/tools/combined_smoke.cpp) loads the xclbin, loads the instruction blob,
+allocates one BO per runtime_sequence argument, fills synthetic inputs, computes both host references
+itself, issues ONE kernel call and compares. It gets as far as "allocated all BOs; submitting ONE run"
+and then HANGS. Ruled out, by reading the engine rather than guessing:
+
+ - THE GROUP MAPPING. group_id(3..7)=65536 are valid and group_id(8)=131071 is XRT's invalid
+   sentinel, so the design's six data arguments land on five groups. I tested the obvious reading
+   (groups assigned per DISTINCT buffer, so norm A and norm W -- both 8192 B -- share group 3, with
+   nO=4, gA=5, gB=6, gC=7) by remapping the driver. STILL HANGS. So the mapping is not the cause,
+   and my addendum-80 hypothesis is not confirmed by that test.
+ - THE INSTRUCTION BLOB FORMAT. The engine's loader is fopen(ip,"rb") then fread(ins.data(), 4,
+   ins.size(), f) -- raw uint32 words, exactly what my driver does -- and its kernel is called as
+   (opcode, instr_bo, ninstr, bo0..bo4). My driver matches that convention and passes ins.size()
+   words. Same shape, same group_id(1)=65537 for the insts BO.
+ - ERR -28 IS NOT THE DEVICE. The full-size design (K=2048 N=8192, gemm-B BO = 16.8 MB) fails
+   context creation with "No space left on device"; the tiny design (K=64 N=256) creates its
+   hw_context fine. So that message is about MY allocation.
+
+WHAT REMAINS UNSETTLED, and the next concrete probes (each one cheap run, not reasoning):
+ (1) the kernel's EXPECTED ARGUMENT COUNT -- print it from the xclbin metadata instead of assuming
+     3 + nBOs; the engine's 5-BO designs are called with 8 args, which is consistent with that, but
+     it has never been checked for a 6-BO design;
+ (2) whether the design DEADLOCKS internally. The norm core loops forever consuming A, and the GEMM
+     cores loop over num_col_group inside an infinite outer loop; in the engine's m1 design the same
+     shape completes because the runtime_sequence's DMAs finish, but a two-phase design has twice the
+     fifo traffic and the norm's W fifo is acquired ONCE outside its loop -- if any acquire order
+     disagrees across cores, the sequence never retires and the submit hangs exactly like this;
+ (3) whether a single-phase control run of the SAME driver against the existing m1 QKV xclbin
+     completes. That is the cheapest discriminator of all: it isolates "our driver is wrong" from
+     "our combined design deadlocks", and it should be the FIRST thing the next run does.
+
+STATE OF THE REBUILD: milestone (a) is MET (the combined RMSNorm+QKV design compiles, addendum 79).
+(b) correctness and (c) one submit are blocked on the above, not on any design or layout question.
