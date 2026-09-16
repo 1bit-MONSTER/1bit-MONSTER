@@ -3638,3 +3638,32 @@ recorded: emit the kernel's Q and K operands, or its pre-softmax scores, for one
 against `/tmp/fk3_drv_Q.bin` slices. Four rounds of this investigation have ended with a
 grep-level inference being wrong; this component has now had five such inferences checked and
 cleared, so it needs a measurement.
+
+## The causal mask is empirically cleared too - and nothing constructible from the buffer matches
+
+Tested the mask hypotheses by measurement rather than reasoning, since five readings in a row had
+been wrong. Computed the NumPy attention with (a) the correct causal mask, (b) `k0` forced to 0
+for every chunk (what a broken chunk counter would produce), and (c) no mask at all, and
+correlated each against the kernel's dumped output:
+
+```
+correct causal mask             maxabs=0.71484  corr=0.1081  meandiff=0.117384
+mask with k0=0 for every chunk  maxabs=0.71484  corr=0.0966  meandiff=0.130681
+no mask at all                  maxabs=0.32608  corr=0.1075  meandiff=0.114032
+kernel attention                maxabs=0.76953
+```
+
+Every variant is at noise level, including the one that would result from the bug I hypothesised
+and retracted. (The no-mask row at least confirms the mask is applied - maxabs drops from 0.699
+to 0.326 without it.)
+
+So the kernel's attention output does not match an attention over that buffer under the correct
+mask, a broken mask, no mask, any of the 128 (q-head, kv-head) pairings, or any single global or
+per-head scale. Each of those was a concrete, plausible explanation and each is now excluded by
+measurement. What remains is that the kernel is not operating on the Q/K/V that the buffer holds
+at the offsets I believe - and that is a matter to settle with an instrumented kernel (emit the
+loaded Q/K operands or the pre-softmax scores), not with further reasoning from outside.
+
+That is where fk-3 stands: both kernels verified independently, every input and weight verified,
+the attention demonstrably wrong and demonstrably not wrong for any reason visible from outside
+it. The next action is to instrument `attn1.cc` itself.
