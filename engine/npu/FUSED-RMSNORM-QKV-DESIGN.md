@@ -1527,3 +1527,48 @@ M=16 H=1024 NH=16 HD=128 NO=1024, `bash build_fk3_layer.sh 16 1024 16 128 1024 2
 That is RMSNorm+QKV -> attention -> O-proj -> RMSNorm+GU -> SiLU -> D, the whole
 transformer layer minus the two residual adds, in ONE launch, with the same
 arithmetic as the per-op path.
+
+## The residual adds: the design fork, worked out (read this before coding)
+
+Everything except the two residual adds now runs in one launch. The residuals hit
+a genuine constraint, and the constraint is TYPE CONSISTENCY, not capacity:
+
+* the norm kernels are `rms_reduce_f32(float* A, float* ss)` and
+  `rms_scale_f32_bf16(float* A, float* ss, bfloat16* out)` — they take **f32** A;
+* every elementwise-friendly fifo on the array is **bf16** (`(M,NT)` tiles);
+* all 8 columns are full at 2 MM2S + 2 S2MM (attention 0-3, O-proj 4, norm 5,
+  GEMM 6, SiLU 7), so a new stage cannot get its own fifos, and the A:W:C ratio
+  rule means it cannot silently piggyback either.
+
+So a residual stage can only live on a column whose fifos already have the right
+TYPE and the 2-in/1-out pattern — which today means col 7 (bf16, the SiLU's
+fifos) — and that forces the residual stream to be **bf16**, which then forces the
+FFN norm's input to be bf16, which the norm kernels do not accept. That is the
+whole difficulty, and it has three clean resolutions:
+
+**(A) Make the hidden state bf16 throughout (recommended).** Add bf16 norm
+variants (`rms_reduce_bf16`, `rms_scale_bf16_bf16`) and make the layer input
+`(M+1, H)` bf16. Then names everything elementwise is bf16, both residuals fit on
+col 7 sharing the SiLU core's fifos and its exact 2-in/1-out pattern (the core
+body just gains two more phases — which is safe now that we know to verify the
+phases land in the MLIR), and — the real prize — **residual1 can be fused into the
+O-proj for free** by extending its K with an identity block: `A = [O_all | x]`,
+`W = [W_O | I]`, so `C = O_all*W_O + x = attn_out + x` with no extra stage at all
+(K becomes 2048+1024 = 3072, i.e. n_ko 32 -> 48, which is a ratio change the O-proj
+core body simply declares). That leaves only residual2 needing a stage.
+
+**(B) Keep f32 and fuse both.** Same identity-block trick, but the extra K-tile
+source must be the same type as the GEMM's A tiles (bf16 O_all vs f32 x) — so this
+needs a bf16 copy of x anyway, which is route (A) plus work.
+
+**(C) Keep f32 and push the add into the norm.** New variants
+`rms_reduce_add_f32(x, o, ss)` / `rms_scale_add_f32_bf16(x, o, ss, out)` reading x
+from the A fifo and o from the A2 fifo (col 5 already has exactly those two f32
+inputs, and the O-proj would just need an f32 store, `nq_acc_store_f32`). This
+materialises no h, so it solves residual1 with zero new fifos — but residual2
+(h + D) still needs h materialised, so it needs a column anyway.
+
+**Decision needed:** whether the fused layer's interface is f32 or bf16 — i.e.
+whether the engine's `h_b` hidden state handed to the fused layer is f32. If bf16
+is acceptable, route (A) is strictly the simplest and the fastest (one fewer pass
+over the hidden state, and residual1 costs nothing).
