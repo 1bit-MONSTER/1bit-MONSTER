@@ -1048,3 +1048,8 @@ xclbin needs ONE M for the whole layer, and the binding stage is the O-proj:
 
 So the composition runs at **M=8**, and the QKV/GU generators should be built with
 `-m 8` for it (their M is a parameter, not a design change).
+
+**M=8 attention verified too** (the composition's M): NH=16, N=64, C=16, PASSES=2,
+4 columns, M=8 builds (218400 B) and gives all 16 heads their own correct results
+under distinct data (55..265/1024 exact, max_delta ~33000 — the same
+online-softmax truncation delta as M=16). The build script now takes `MGEN` for M.

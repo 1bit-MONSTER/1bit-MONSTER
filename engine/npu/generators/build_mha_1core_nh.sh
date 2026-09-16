@@ -10,7 +10,7 @@ N="${1:?usage: build_mha_1core_nh.sh <N_chunk> <C_chunks> <NH> [percol] [outdir]
 C="${2:?}"
 NH="${3:-16}"; PERCOL="${4:-2}"; PASSES="${PASSES:-1}"; OUT="${5:-$HOME/npu-build/mha1_nh${NH}_p${PERCOL}_g${PASSES}_n${N}_c${C}}"
 HD=128
-M=16
+M="${MGEN:-16}"
 
 G="$(cd "$(dirname "$0")" && pwd)"
 MLIR=/home/bcloud/mlir-aie
