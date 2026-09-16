@@ -242,13 +242,14 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
 }
 
 bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* gamma_ffn,
-                     int pos0, uint16_t* bKv, int kv_region, int v_add, float* out) {
+                     int nrow, int pos0, uint16_t* bKv, int kv_region, int v_add, float* out) {
     Impl& s = *p;
     if (l < 0 || l >= s.NC || !s.wQKV_ready[l] || !s.wO_ready[l] || !s.w2_ready[l] || !s.wd_ready[l]) {
         fprintf(stderr, "[fk3] layer %d not prepared\n", l);
         return false;
     }
     const int M = s.M;
+    if (nrow <= 0 || nrow > M) nrow = M;
 
     // ---- inputs ---------------------------------------------------------------
     // A rows 0..M-1 = x, row M = the input norm's gamma (the fused norm reads it as
@@ -276,14 +277,14 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
     {
         uint16_t* q = (uint16_t*)s.qB.map();
         // Q at head stride HD from 0; K at KOFF + kh*HD; V untouched.
-        fk3::rope_qk_bf16(q, M, s.NH, s.NKV, s.HD, 1e6f, pos0);
+        fk3::rope_qk_bf16(q, nrow, s.NH, s.NKV, s.HD, 1e6f, pos0);
         s.qB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
         // Same layout qk_norm_pi writes: region = kvh<4?0:1, lh = kvh&3, slot = 4*HD.
         // K/V are already rotated here (the engine's cache holds rotated keys and the
         // decode kernel depends on that).
         const size_t slot = (size_t)4 * s.HD;
-        for (int pi = 0; pi < M; pi++) {
+        for (int pi = 0; pi < nrow; pi++) {
             const uint16_t* row = q + (size_t)pi * s.NQKV;
             for (int kvh = 0; kvh < s.NKV; kvh++) {
                 const int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
@@ -308,7 +309,7 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
     // ---- layer output: bf16 -> f32 for the next layer -------------------------
     {
         const uint16_t* cd = (const uint16_t*)s.cdB.map();
-        for (size_t i = 0; i < (size_t)M * s.H; i++) {
+        for (size_t i = 0; i < (size_t)nrow * s.H; i++) {
             uint32_t v = (uint32_t)cd[i] << 16;
             float f;
             memcpy(&f, &v, 4);

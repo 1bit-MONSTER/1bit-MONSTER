@@ -103,7 +103,16 @@ extern "C" int bf16mm_dequant_dev(const uint8_t* layer_bo, uint32_t D_in, uint32
 extern "C" void bf16mm_gemm_dev(uint16_t* C, const uint16_t* A, int W_idx, uint32_t K, uint32_t N, uint32_t woff_elements);
 extern "C" void bf16mm_gemm_launch(int W_idx, uint32_t K, uint32_t N, uint32_t woff, int batch, const uint16_t* A);
 extern "C" void bf16mm_gemm_wait(int batch, uint16_t* C);
+#include <memory>
 extern "C" void bf16mm_dequant(uint16_t* wout, const uint8_t* q4nx, uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset);
+// fk-3 fused layer (NPU_FK3=1): TWO launches replace the ~9-launch/layer per-op bf16
+// prefill below. Launch A fuses the input RMSNorm with QKV; launch B does
+// attention + O-proj + FFN norm + GU + SiLU + D with both residuals folded in. The
+// RoPE and the KV-cache scatter happen on the host in between, exactly as
+// qk_norm_pi does them. Weights are the engine's own, dequantized from the same
+// packed blob by the same functions, so parity is a construction.
+#include "npu_fk3_driver.h"
+static std::unique_ptr<fk3::FusedLayer> g_fk3;
 extern "C" void bf16mm_dequant_mode(uint16_t* wout, const uint8_t* q4nx, uint32_t D_in, uint32_t D_out, uint32_t q4nx_weight_offset, int mode);
 extern "C" int bf16mm_upload_w(const uint16_t* w, uint32_t D_in, uint32_t D_out);
 extern "C" int bf16mm_attn(uint16_t* out, const uint16_t* act, const uint16_t* kv);
@@ -4541,6 +4550,28 @@ struct Bf16Ctx {
             int offs[6];
             for (int l = 0; l < NC; l++) {
                 npu_bf16_pack_layer(l, bo.data(), offs);
+                // fk-3: give the fused layer its own weight BOs, built from this same
+                // packed blob with this same dequantizer, so dequant parity is by
+                // construction and there is nothing to reconcile.
+                if (getenv("NPU_FK3")) {
+                    if (!g_fk3) {
+                        const char* xa = getenv("NPU_FK3_XCLBIN_A");
+                        const char* ia = getenv("NPU_FK3_INSTS_A");
+                        const char* xb = getenv("NPU_FK3_XCLBIN_B");
+                        const char* ib = getenv("NPU_FK3_INSTS_B");
+                        g_fk3.reset(new fk3::FusedLayer());
+                        if (!xa || !ia || !xb || !ib ||
+                            !g_fk3->init(0, xa, ia, xb, ib, XM, H, NH, NKV, HD, IM, NC)) {
+                            fprintf(stderr, "[fk3] init failed (set NPU_FK3_XCLBIN_A/INSTS_A/"
+                                            "XCLBIN_B/INSTS_B); falling back to the per-op path\n");
+                            g_fk3.reset();
+                        }
+                    }
+                    if (g_fk3) {
+                        fk3::WeightSource ws; ws.bo = bo.data(); ws.offs = offs; ws.byte_row = 5120;
+                        if (!g_fk3->prepare_layer(l, ws)) { fprintf(stderr, "[fk3] layer %d weight prep failed\n", l); g_fk3.reset(); }
+                    }
+                }
                 if (l == 0 && getenv("NPU_DUMP_BO")) {
                     FILE* fbo = fopen("/tmp/bo_dump.bin", "wb");
                     if (fbo) { fwrite(bo.data(), 1, layer_bo_bytes, fbo); fclose(fbo); }
@@ -4607,6 +4638,21 @@ struct Bf16Ctx {
             double tg = 0, ta = 0, tc = 0;
             for (int l = 0; l < NC; l++) {
                 fprintf(stderr, "  L%d", l); fflush(stderr);
+                // fk-3: the whole layer in two launches. bh is both the input and the
+                // output (the driver copies x into the A BO before it writes out), and
+                // nrow limits RoPE/the KV scatter/the output copy to the live rows so a
+                // partial last block cannot scatter padding into the cache.
+                if (g_fk3) {
+                    const int nrow = npt < XM ? npt : XM;
+                    if (!g_fk3->run(l, bh.data(), in_n[l].data(), pa_n[l].data(), nrow, sp,
+                                    bKv.data(), (int)kv_region, v_add, bh.data())) {
+                        fprintf(stderr, "[fk3] layer %d run failed; falling back\n", l);
+                        g_fk3.reset();
+                    } else {
+                        fprintf(stderr, " [fk3]"); fflush(stderr);
+                        continue;
+                    }
+                }
                 auto tc0 = std::chrono::steady_clock::now();
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) {

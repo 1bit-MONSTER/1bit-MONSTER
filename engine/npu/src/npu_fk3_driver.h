@@ -55,8 +55,12 @@ public:
     //              lh = kvh&3, slot = 4*HD) — matching qk_norm_pi exactly.
     //   out        (M, H)  f32, the layer output.
     // Returns false on any device error.
+    // Run one layer. nrow <= M is the number of LIVE rows: the kernel was built for
+    // M and always computes M, but RoPE, the KV scatter and the output copy must be
+    // limited to nrow or a partial last block would scatter garbage into the cache.
+    // x and out may alias (x is copied into the A BO before out is written).
     bool run(int l, const float* x, const float* gamma_in, const float* gamma_ffn,
-             int pos0, uint16_t* bKv, int kv_region, int v_add, float* out);
+             int nrow, int pos0, uint16_t* bKv, int kv_region, int v_add, float* out);
 
     int M() const;
 
