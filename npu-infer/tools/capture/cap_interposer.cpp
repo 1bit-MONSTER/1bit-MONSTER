@@ -20,13 +20,82 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/vfs.h>
 #include "xrt/xrt_bo.h"
 extern "C" {
 #include <xrt.h>
 }
 
-static const char* CAP_DIR = getenv("CAP_DIR") ? getenv("CAP_DIR") : "/tmp/cap2";
+// ---- capture destination ---------------------------------------------------
+// The default used to be /tmp/cap2, which is the worst available choice: /tmp on
+// this box is a RAM-backed tmpfs with no size= limit (~50% of RAM) and
+// nr_inodes=1048576. Default to a disk-backed path under the user's cache.
+static const char* cap_dir_default() {
+    static char buf[512];
+    if (!buf[0]) {
+        const char* h = getenv("HOME");
+        if (h && h[0]) snprintf(buf, sizeof buf, "%s/.cache/1bit-monster/capture", h);
+        else           snprintf(buf, sizeof buf, "/var/tmp/1bit-capture");
+    }
+    return buf;
+}
+static const char* CAP_DIR = getenv("CAP_DIR") ? getenv("CAP_DIR") : cap_dir_default();
 static FILE* g_log = nullptr;
+
+// ---- capture safety --------------------------------------------------------
+// dump_bo() and the sync hook write each syncing buffer IN FULL, unconditionally
+// ("capture ALL BO syncs"). For Qwen3.6-35B-A3B the per-layer weight BO is
+// 536870912 B and one forward syncs 40 of them, so a single run emits ~20 GB; a
+// few runs filled a 64 GB tmpfs completely.
+//
+// That did not merely fail the capture. Every agent tool on the box stages its
+// scratch in /tmp, so bash/glob/subagent all died with ENOSPC BEFORE their
+// command ran, and no in-session tool could delete or even truncate a file on
+// that mount (write and edit returned ENOSPC there while working normally on /,
+// /var/tmp and /dev/shm). The machine's agent tooling could not self-recover.
+// These two guards exist so a capture can never do that again. Both are cheap
+// and neither changes what is captured when the capture is behaving.
+//
+//   1. CAP_MAX_BYTES (default 64 MiB): BOs larger than this are logged as
+//      SKIPPED and not written. The capture's value is the instruction TXNs,
+//      which are small — the SETARG hook already caps its insts dump at 2 MB.
+//      The multi-hundred-MB weight/activation BOs are not the target. Raise
+//      CAP_MAX_BYTES deliberately when a large BO really is the subject.
+//   2. CAP_DIR may not be a tmpfs, unless CAP_ALLOW_TMPFS=1 says so explicitly.
+#ifndef TMPFS_MAGIC
+#define TMPFS_MAGIC 0x01021994
+#endif
+static size_t cap_max_bytes() {
+    static size_t v = 0;
+    if (!v) {
+        const char* e = getenv("CAP_MAX_BYTES");
+        v = e ? (size_t)strtoull(e, nullptr, 10) : (size_t)0;
+        if (!v) v = (size_t)64 * 1024 * 1024;
+    }
+    return v;
+}
+static void cap_dir_guard() {
+    static bool checked = false;
+    if (checked) return;
+    checked = true;
+    if (getenv("CAP_ALLOW_TMPFS")) return;
+    // Create it first, THEN check. The first version of this guard called
+    // statfs() on CAP_DIR and returned early when it failed -- which it always
+    // does for a directory that does not exist yet, i.e. the normal case. The
+    // guard therefore never fired once, and its own test caught it: it created
+    // /tmp/should-be-refused and captured into it.
+    bool created = (mkdir(CAP_DIR, 0755) == 0);
+    struct statfs st;
+    if (statfs(CAP_DIR, &st) != 0) return;
+    if ((unsigned long)st.f_type != (unsigned long)TMPFS_MAGIC) return;
+    fprintf(stderr,
+        "cap_interposer: REFUSING to capture into a tmpfs: %s\n"
+        "  A BO dump reaches tens of GB on a large model and tmpfs is RAM.\n"
+        "  Point CAP_DIR at disk, or set CAP_ALLOW_TMPFS=1 to override.\n",
+        CAP_DIR);
+    if (created) rmdir(CAP_DIR);
+    _exit(2);
+}
 #include <set>
 #include <vector>
 static std::set<std::pair<unsigned long, size_t>> g_bo_sizes;
@@ -35,12 +104,30 @@ static long g_seq = 0;
 static std::map<unsigned long, std::string> g_bo_labels;
 
 static void ensure_log() {
+    cap_dir_guard();
     if (!g_log) {
         mkdir(CAP_DIR, 0755);
         std::string p = std::string(CAP_DIR) + "/capture_manifest.log";
         g_log = fopen(p.c_str(), "w");
         setvbuf(g_log, nullptr, _IONBF, 0);
     }
+}
+
+
+// Every dump in this file goes through cap_fopen. One choke point, because the
+// first version of these guards capped two call sites by hand and the capture
+// still wrote 26 GB: there are ELEVEN fwrite sites, and the biggest one -- the
+// post-runlist loop that dumps every BO >= 1 MB -- had no upper bound at all.
+// A guard that must be remembered at each new dump site is not a guard.
+static FILE* cap_fopen(const char* path, const char* mode, size_t nbytes) {
+    if (nbytes > cap_max_bytes()) {
+        ensure_log();
+        if (g_log)
+            fprintf(g_log, "SKIP %s (%zu bytes > CAP_MAX_BYTES=%zu, not dumped)\n",
+                    path, nbytes, cap_max_bytes());
+        return nullptr;
+    }
+    return fopen(path, mode);
 }
 
 // map BO memory
@@ -59,10 +146,16 @@ static void dump_bo(xrtBufferHandle bhdl, size_t size, size_t offset, int dir, s
     void* p = bo_map_cached(bhdl);
     size_t bosz = xrtBOSize(bhdl);
     if (!p) { fprintf(g_log, "CAP %04ld: size=%zu dir=%d (map failed)\n", g_seq, bosz, dir); return; }
+    if (bosz > cap_max_bytes()) {
+        fprintf(g_log, "CAP %04ld: size=%zu dir=%d SKIPPED (exceeds CAP_MAX_BYTES=%zu, not dumped)\n",
+                g_seq, bosz, dir, cap_max_bytes());
+        g_seq++;
+        return;
+    }
     char fname[256];
     const char* dn = (dir == XCL_BO_SYNC_BO_TO_DEVICE) ? "to" : "from";
     snprintf(fname, sizeof(fname), "%s/bo_%s_%04ld_%zu.bin", CAP_DIR, dn, g_seq, bosz);
-    FILE* f = fopen(fname, "wb");
+    FILE* f = cap_fopen(fname, "wb", bosz);
     if (f) {
         fwrite(p, 1, bosz, f);
         fclose(f);
@@ -89,14 +182,21 @@ extern "C" void _ZN3xrt2bo4syncE18xclBOSyncDirectionmm(void* self, int dir,
         xrt::bo* bo = reinterpret_cast<xrt::bo*>(self);
         size_t bosz = bo->size();
         g_bo_sizes.insert({(unsigned long)self, bosz});
-        bool capture = true;  // capture ALL BO syncs (TXN insts + weight + act + kv)
-        if (capture) {
+        // Was: `bool capture = true; // capture ALL BO syncs` and then an
+        // unconditional write of the whole buffer. The comment was right about
+        // intent and wrong about cost: "all" includes the 512 MB weight BOs, 40
+        // per forward. Size-capped now -- see the block at the top of this file.
+        ensure_log();
+        if (bosz > cap_max_bytes()) {
+            fprintf(g_log, "CAP %04ld: size=%zu SKIPPED (exceeds CAP_MAX_BYTES=%zu, not dumped)\n",
+                    g_seq, bosz, cap_max_bytes());
+            g_seq++;
+        } else {
             const uint8_t* p = (const uint8_t*)bo->map();
-            ensure_log();
             char fname[256];
             const char* dn = (dir == XCL_BO_SYNC_BO_TO_DEVICE) ? "to" : "from";
             snprintf(fname, sizeof(fname), "%s/bo_%s_%04ld_%zu.bin", CAP_DIR, dn, g_seq, bosz);
-            FILE* f = fopen(fname, "wb");
+            FILE* f = cap_fopen(fname, "wb", bosz);
             if (f) { fwrite(p, 1, bosz, f); fclose(f); }
             fprintf(g_log, "CAP %04ld: %s size=%zu offset=%zu synced=%zu -> %s\n",
                     g_seq, dn, bosz, offset, size, fname);
@@ -129,7 +229,7 @@ extern "C" void _ZN3xrt3run16set_arg_at_indexEiRKNS_2boE(void* self, int idx, co
             const uint8_t* pm = (const uint8_t*)b->map();
             char fn[256];
             snprintf(fn, sizeof(fn), "%s/insts_%04ld_%zu.bin", CAP_DIR, g_seq, b->size());
-            FILE* ff = fopen(fn, "wb");
+            FILE* ff = cap_fopen(fn, "wb", b->size());
             if (ff) { fwrite(pm, 1, b->size(), ff); fclose(ff); }
             fprintf(g_log, "INSTS_DUMP -> %s\n", fn);
         }
@@ -169,7 +269,7 @@ extern "C" void _ZN3xrt3run5startEv(void* self) {
                     if (p) {
                         char fname[256];
                         snprintf(fname, sizeof(fname), "%s/postrun_act_%03d_%zx.bin", CAP_DIR, n, (size_t)a3->second);
-                        FILE* f = fopen(fname, "wb");
+                        FILE* f = cap_fopen(fname, "wb", bo->size());
                         if (f) { fwrite(p, 1, bo->size(), f); fclose(f); }
                         fprintf(g_log, "POSTRUN_ACT -> %s\n", fname);
                     }
@@ -211,7 +311,7 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
                     if (p) {
                         char fname[256];
                         snprintf(fname, sizeof(fname), "%s/preinsts_%03ld_%02d_i%d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, aidx, (size_t)bop, bosz);
-                        FILE* f = fopen(fname, "wb");
+                        FILE* f = cap_fopen(fname, "wb", bosz);
                         if (f) { fwrite(p, 1, bosz, f); fclose(f); }
                         fprintf(g_log, "PREINSTS run=%p arg=%d bo=%p size=%zu -> %s\n", (void*)runkey, aidx, bop, bosz, fname);
                         n++;
@@ -234,7 +334,7 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
             if (pm) {
                 char fname[256];
                 snprintf(fname, sizeof(fname), "%s/extsmall_%03ld_%02d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, (size_t)kv.first, kv.second);
-                FILE* f = fopen(fname, "wb");
+                FILE* f = cap_fopen(fname, "wb", kv.second);
                 if (f) { fwrite(pm, 1, kv.second, f); fclose(f); }
                 n++;
             }
@@ -250,7 +350,7 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
                 const uint8_t* p = (const uint8_t*)bo->map();
                 char fname[256];
                 snprintf(fname, sizeof(fname), "%s/small_%03ld_%02d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, (size_t)kv.first, bosz);
-                FILE* f = fopen(fname, "wb");
+                FILE* f = cap_fopen(fname, "wb", bosz);
                 if (f) { fwrite(p, 1, bosz, f); fclose(f); }
                 n++;
             } catch (...) {}
@@ -263,7 +363,7 @@ extern "C" void _ZN3xrt7runlist7executeEv(void* self) {
             const uint8_t* p = (const uint8_t*)bo->map();
             char fname[256];
             snprintf(fname, sizeof(fname), "%s/post_%03ld_%02d_%zx_%zu.bin", CAP_DIR, g_runlist_n, n, (size_t)kv.first, bosz);
-            FILE* f = fopen(fname, "wb");
+            FILE* f = cap_fopen(fname, "wb", bosz);
             if (f) { fwrite(p, 1, bosz, f); fclose(f); }
             n++;
         } catch (...) {}
@@ -299,7 +399,7 @@ extern "C" void _ZN3xrt3ext2boC1ERKNS_6deviceEm(void* self, const void* dev, siz
             if (pm) {
                 char fn[256];
                 snprintf(fn, sizeof(fn), "%s/extbo_%04ld_%zu.bin", CAP_DIR, g_seq, size);
-                FILE* ff = fopen(fn, "wb");
+                FILE* ff = cap_fopen(fn, "wb", size);
                 if (ff) { fwrite(pm, 1, size, ff); fclose(ff); }
                 fprintf(g_log, "EXTBO_DUMP size=%zu -> %s\n", size, fn);
             }
@@ -345,7 +445,7 @@ extern "C" void _ZN3xrt3elfC1EPKvm(void* self, const void* buf, size_t size) {
     g_elf_n++;
     char fname[256];
     snprintf(fname, sizeof(fname), "%s/elf_%04ld_%zu.bin", CAP_DIR, g_elf_n, size);
-    FILE* f = fopen(fname, "wb");
+    FILE* f = cap_fopen(fname, "wb", size);
     if (f) { fwrite(buf, 1, size, f); fclose(f); }
     fprintf(g_log, "ELF %04ld: size=%zu -> %s\n", g_elf_n, size, fname);
     // also try the 2-arg form symbol in case it's used instead
@@ -357,7 +457,7 @@ extern "C" void _ZN3xrt3elfC2EPKvm(void* self, const void* buf, size_t size) {
     g_elf_n++;
     char fname[256];
     snprintf(fname, sizeof(fname), "%s/elf_%04ld_%zu.bin", CAP_DIR, g_elf_n, size);
-    FILE* f = fopen(fname, "wb");
+    FILE* f = cap_fopen(fname, "wb", size);
     if (f) { fwrite(buf, 1, size, f); fclose(f); }
     fprintf(g_log, "ELF %04ld: size=%zu -> %s\n", g_elf_n, size, fname);
 }
