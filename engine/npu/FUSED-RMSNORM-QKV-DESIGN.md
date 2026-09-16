@@ -922,3 +922,32 @@ The two remaining routes, both real work:
 2. **Keep the attention's O on-chip** and feed the O-proj from shared memory
    (no shim S2MM at all) — an on-chip many-to-one gather, which also removes the
    O DDR round-trip.
+
+### Route 1 measured: the O-merge builds, but its order is arrival-order (scrambled)
+
+Merging a column's head-O outputs into one S2MM works at the aiecc level:
+
+```
+aie.objectfifo @O_S_0(%mem_tile_0_1, {%shim_noc_tile_0_0}, 1 : i32) : !aie.objectfifo<memref<16x128xbf16>>
+aie.objectfifo.link [@O_F_0, @O_F_1, @O_F_2, @O_F_3] -> [@O_S_0]([0, 0, 0, 0] [])
+```
+A P=4 attention (16 cores in 4 columns, 4 heads/column) with this merge BUILDS
+(575840 B) — but only after two fixes: the 4->1 link needs `srcOffsets` (one per
+input fifo) and the merged fifo must be depth 1 (depth 4 exhausts the channel's BD
+IDs: "Allocator exhausted available BD IDs (maximum 24 available for channel 2)").
+
+**It is numerically wrong, exactly on the predicted sub-problem.** With DISTINCT
+per-head data every head misses (0/2048, max_delta ~48150): the mem forwards the
+four O tiles in ARRIVAL order, which is racy across the four concurrent cores, so
+each tile lands at the wrong head's offset. Note this is invisible to the
+identical-data test we have been using as the correctness signal — all four tiles
+are equal there, so any permutation passes. Any future merge must therefore be
+validated with distinct per-head data.
+
+So route 1 needs a DETERMINISTIC head order, which an arrival-order merge cannot
+give. The practical options are (a) serialise the O production with a token/lock
+so the heads write in sequence, or (b) keep per-head O buffers and read them in a
+fixed order — which costs the 4 S2MM we were trying to save, i.e. back to the
+channel wall, unless the attention drops to fewer columns per head.
+
+The generator is restored to the verified per-head-O form after the experiment.
