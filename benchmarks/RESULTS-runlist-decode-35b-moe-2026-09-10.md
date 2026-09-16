@@ -569,3 +569,27 @@ If the 35B runtime forward completes when quiet, then (a) the "lib whole-layer p
 reliably broken" claim in Addenda 6-11 is overstated for the ERT half, and (b) it
 becomes worth re-testing whether its forward still NaNs (R59) or produces real logits —
 which is the only thing that would reopen the objective's mechanism.
+
+### Addendum 14 — QUIET-device test: the 35B runtime ERT is STRUCTURAL (addendum 11 was right)
+
+Ran the decisive A/B that @agent-baaa57's result implied for my lane: FastFlowLM v1.0.5
+`run qwen3.6-moe:35b-a3b` with **accel0 completely quiet** (fuser empty, all other
+agents stopped, verified free immediately before each attempt).
+
+- 14 attempts: 13 died at load with the ASLR SIGSEGV; **1 loaded, and it ERT'd**:
+```
+[FLM]  Prefill chunk 1/1 with 13 tokens
+[ERROR]  Generation error: runlist failed execution (ERT_CMD_STATE_TIMEOUT)
+ELF UUID: 65c06f83-...   txn_op_idx = 0xFFFFFFFF   ctx_pc = 0x28B060AD
+```
+- ctx_pc `0x28B060AD` is the same value @agent-afbeb7 recorded for the 35B/runtime ERT.
+
+Combined with the earlier 2 loads under load: **3/3 loads ERT, one of them with the
+device quiet.** So unlike the dense-Qwen3 runlist ERT (which @agent-baaa57 showed is
+contention/TDR-induced and completes when quiet), **the 35B runtime whole-layer ERT is
+structural** — it is not the `timeout_in_sec=2` contention cliff.
+
+=> Addendum 11's conclusion stands; addendum 13's retraction is itself retracted FOR
+THE 35B (the contention explanation applies to the dense path, not this one). The 35B
+whole-layer ELF path fails reliably and independently of device load, consistent with
+Addenda 6-9b (the lib's 35B layer sequence is broken).
