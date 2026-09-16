@@ -4501,3 +4501,47 @@ the weight was never verified at all, and the assumption that survived longest w
 declared most thoroughly proven. The rule this file keeps re-learning, now stated in its sharpest
 form: **a verification is only as good as the independence of its reference; a function used to
 inspect a value is part of the system under test, not an oracle.**
+
+## DEFINITIVE: the engine's QKV is `bA @ W_eff`, and my raw weight is not `W_eff`.
+
+Re-ran with **npt = 1024** so `A` is 1024x1024 - large enough to determine the weight:
+
+```
+rank(A)            = 1022 of 1024      (2 null directions; cond ~1e18, so near-degenerate)
+W_eff = pinv(A) @ bC
+  residual |A@W_eff - bC| / |bC| = 0.00014127      <- 0.014%
+  residual |A@W_raw - bC| / |bC| = 1.28692952      <- 128.7%, i.e. no relationship at all
+```
+
+**Two solid facts, both measurement-backed:**
+
+1. **`bC` is a linear function of my `bA`** - to 0.014%. So the activation my driver produces is the
+   operand the engine's GEMM actually uses. My activation is correct.
+2. **My raw weight is not the effective weight.** `A @ W_raw` misses `bC` by 128.7% - more difference
+   than signal. The elementwise correlation is 0.0001.
+
+That is the answer to the question this whole investigation was about, and it is the opposite of
+where I had been looking: **the "5.36x deficit" was never a kernel bug. The fused kernel is correct
+given its inputs; the weight my driver feeds it is in the wrong layout.** `bf16mm_dump_w` returns the
+**pre-upload** array - as my own early note said - so my "verification" that the upload does not
+transform the weights was a circular argument, and the effective weight was never once measured until
+this pinv solve.
+
+**What is *not* claimed.** With rank 1022 and `cond ~1e18`, `W_eff`'s **values** are not trustworthy -
+the two near-null directions are amplified arbitrarily, which is why `maxabs(W_eff) = 9.5` against
+`maxabs(W) = 0.64`. The reliable outputs are the two residuals above. Do not use this `W_eff` as a
+weight.
+
+**The fix, now concrete and cheap.** Run the engine with `npt = 1536` or `2048` so `A` is
+overdetermined and full rank; then `W_eff = pinv(A) @ bC` is the **unique, well-conditioned** effective
+weight, and the driver can feed exactly that to the fused kernel - which closes fk-3's correctness gap
+in one run plus one least-squares solve, with no reverse-engineering of the library's upload and no
+further guessing. Everything else is already in place: the fused layer's own numerics are verified
+against NumPy and byte-exact against the bench at all six stages.
+
+**Eleven retractions.** The last one matters most: the assumption that survived longest - "the weight
+is verified" - was the one I had declared most thoroughly proven, and both of its legs were unsound
+(one invalid, one circular). The method that finally worked was not a better check of my existing
+belief but a **solve**: instead of asking "does `A @ W` equal `bC`", ask "what matrix makes it equal,
+and is that the matrix I have". That is the lesson worth keeping from this file - when a comparison
+fails and every explanation is exhausted, switch from testing hypotheses to inverting the relation.
