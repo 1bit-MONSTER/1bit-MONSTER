@@ -5092,3 +5092,40 @@ looking for a stage that is constant, zero, or wrong, rather than anything to do
 **Method note.** This test exists because I asked what would falsify my own fix instead of what
 confirmed it. The in-sample residual could not distinguish a correct weight from an interpolant; the
 held-out residual can. Every retraction in this file is a variation on not doing this.
+
+## Cross-check: the shipped attention pair is intact, and the toolchain exoneration is confirmed
+
+`@agent-baaa57` reported two things about the length-parametric attention path, and flagged a shared-
+worktree hazard: `build_attn.sh` writes its outputs straight into `engine/npu/xclbins/attn.xclbin` and
+`attn_insts.txt`, **overwriting the shipped pair**.
+
+Checked, since my engine loads ELFs from that directory at runtime:
+
+```
+git status --short engine/npu/xclbins/   ->  only the 2 pre-existing untracked attn_gen_* files
+attn.xclbin      : tracked, NOT modified
+attn_insts.txt   : tracked, NOT modified
+md5sum attn_insts.txt -> ce2f219a5e2cbb66765162cb3ebaa812
+```
+
+**The last line is the interesting one.** That hash is exactly what the peer reported for their
+independent N=512 rebuild of `n1_core_attn.py` with the pinned toolchain. So, from this worktree:
+
+1. the overwrite hazard **did not materialise** - the shipped pair is byte-identical to HEAD;
+2. their **toolchain exoneration is independently confirmed** - a rebuild in a different lane
+   reproduced the shipped `attn_insts.txt` exactly, which is a stronger statement than either of us
+   made alone.
+
+Their other finding - that N=1024 now **generates and compiles** (4930-line design.mlir, 104784 B
+xclbin), so the note's "resource allocation exceeded available memory" no longer holds with the pinned
+toolchain - is recorded here because the note is cited in this file's budget discussions. The
+"also overwrites" caveat is worth keeping: **redirect `build_attn.sh` outputs to /tmp** before running
+it in this worktree.
+
+Not claimed: correctness or speed of the N=1024 build. That is the measurement that decides the >8192
+route, it needs a device, and it is **not this lane's** - fk-3 has a live blocker and takes priority for
+my next window.
+
+**Method note, since it keeps paying:** this cost one `git status` and one `md5sum` and produced an
+independent confirmation of another lane's result. Checking a shared asset you depend on, whenever
+someone reports having touched it, is cheap and has no downside.
