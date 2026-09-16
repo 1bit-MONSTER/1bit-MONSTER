@@ -33,6 +33,10 @@ FLM_INC="${FLM_INC:-/home/bcloud/.local/flm-v0946/include}"
 FLM_LIB="${FLM_LIB:-/home/bcloud/.local/flm-v0946/lib/xrt}"
 BF16MM_BRIDGE="$SRCDIR/src/npu_engine_bf16_mm_bridge.cpp"
 BF16MM_BRIDGE_O="$BUILDDIR/npu_engine_bf16_mm_bridge.o"
+# fk-3: the fused two-launch 0.6B layer (launch A fused RMSNorm+QKV -> host RoPE +
+# KV scatter -> launch B attention..D). Header-only rope, so this is one object.
+FK3_DRIVER="$SRCDIR/src/npu_fk3_driver.cpp"
+FK3_DRIVER_O="$BUILDDIR/npu_fk3_driver.o"
 # FLM prefill bridge (libqwen3_npu::prefill — the prefill/TTFT measurement path)
 FLM_PREFILL_BRIDGE="$SRCDIR/src/flm_prefill_bridge.cpp"
 FLM_PREFILL_BRIDGE_O="$BUILDDIR/flm_prefill_bridge.o"
@@ -86,6 +90,12 @@ if [ ! -f "$BF16MM_BRIDGE_O" ] || [ "$BF16MM_BRIDGE" -nt "$BF16MM_BRIDGE_O" ] ||
     # -I generators: npu_attn_ctx.h (the generated-attention path) includes
 # attn_quant.h from there, same as the Zaya TU.
 g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$SRCDIR/generators" -I"$FLM_INC" -I"$FLM_INC/npu_utils" -I"$XRT_INC" -o "$BF16MM_BRIDGE_O" "$BF16MM_BRIDGE"
+
+# fk-3 driver: needs only its own src dir (npu_fk3_rope.h is inline) plus XRT.
+if [ ! -f "$FK3_DRIVER_O" ] || [ "$FK3_DRIVER" -nt "$FK3_DRIVER_O" ] || [ "$SRCDIR/src/npu_fk3_driver.h" -nt "$FK3_DRIVER_O" ] || [ "$SRCDIR/src/npu_fk3_rope.h" -nt "$FK3_DRIVER_O" ]; then
+    echo "g++ -c -std=c++17 -O2 -o $FK3_DRIVER_O $FK3_DRIVER"
+fi
+g++ -c -std=c++17 -O2 -I"$SRCDIR/src" -I"$XRT_INC" -o "$FK3_DRIVER_O" "$FK3_DRIVER"
 fi
 # flm prefill bridge (libqwen3_npu)
 if [ ! -f "$FLM_PREFILL_BRIDGE_O" ] || [ "$FLM_PREFILL_BRIDGE" -nt "$FLM_PREFILL_BRIDGE_O" ]; then
@@ -129,7 +139,7 @@ fi
 # XRT uses shared libs (must come AFTER source on command line)
 LIBS=("${XRT_LIBS[@]}" -laiebu -luuid -lm -ldl -L"$FLM_LIB" -lgemm -ldequant -lqwen3_npu -lqwen3_6_moe_npu -lqwen3_5vl_npu -lq4_npu_eXpress -lmha -llm_head -lllama_npu -lgemma4e_npu -lphi4_npu -lnanbeige_npu -llfm2_npu -Wl,-rpath,"$FLM_LIB")
 CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRCDIR/include" -I"$SRCDIR/generators" -I"$REPO_ROOT/include" -I"$XRT_INC")
-ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O" "$FLM_PREFILL_BRIDGE_O")
+ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O" "$FLM_PREFILL_BRIDGE_O" "$FK3_DRIVER_O")
 
 echo "=== Building NPU engine variants ==="
 mkdir -p "$BUILDDIR"
