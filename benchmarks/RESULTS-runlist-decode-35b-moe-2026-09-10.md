@@ -346,3 +346,27 @@ linear-attn layer. `gen_seq_conv1d` is NOT called by `_gen_linear_sequence`
 (the label's conv is done inline with `npu_dma_memcpy_nd`), so the earlier "conv
 stage timeouts" result came from calling that generator with invented arguments and
 is not evidence about the linear layer.
+
+## Addendum 8 — internal-BO dump localises the NaN to the layer compute
+
+Important device fact (user): the NPU exposes `hwctx_limit = 16` (xrt-smi shows
+multiple live hw contexts per PID) — **the box supports concurrent hw contexts**, so
+runs do not need accel0 to be idle. All runs below were done concurrently.
+
+Added `MoERuntimeLayerEngine::dump_bos()` (env `NPU_DUMP_BOS`) and ran one linear
+layer, dumping every BO device-synced after the layer run:
+
+| BO | bf16 result |
+|---|---|
+| `weightA` (region-A head, norms/smalls) | **clean** (1.10, 1.04, 1.05, 0.96 …) |
+| `router` (RMS w + router + shared gate) | **clean** |
+| `norms` (5 MB linear BO) | **clean** |
+| `weightB` (region-B head) | NaN only where Q8_0 int8 bytes pattern as bf16-NaN (expected — raw int8) |
+| `logits` | all zero (lm_head wrote nothing finite) |
+| `kv` (128 MB state) | 1634/524288 **NaN** |
+| `act` | **2048/2048 NaN** |
+
+So the layer's *inputs* (norm weights, router, region-A) are finite and the NaN is
+produced by the layer's **compute** (the attention/state path and hence the act).
+Diagnostic: zeroing the region-B `[512:1024]` "zp" half (the Q4NX-vs-Q8_0 question)
+did **not** change the NaN — so the zp interpretation is not the cause.
