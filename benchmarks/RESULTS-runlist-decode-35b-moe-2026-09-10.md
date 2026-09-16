@@ -1786,3 +1786,43 @@ region-B byte-exact (2048, 1024), region-A content and layout both neutralised w
 the F32/bf16 defect neutralised in both of its copies with no effect, and the input activations
 clean. The all-NaN output is therefore produced INSIDE the ELF's own sequence, which is where the
 next run looks.
+
+### Addendum 50 — the ELF's args are GROUP-ID objects with MULTIPLE buffers per group; the harness passes one BO per arg
+
+Read the ELF's .dynsym properly: the object NAMES are the group ids, not indices, and there are
+several objects per group:
+
+  group 4: 4096
+  group 5: 12288, 131072
+  group 6: 66048, 131072, 151552
+  group 7: 49152, 2097152
+  group 3: 18944, 75776
+
+That is precisely the hazard banked in addendum 22 (from @agent-7f1cce): the same group_id in a
+DIFFERENT hw_context is a DIFFERENT buffer, and a chain that fills one of them produces a
+legitimate-looking all-zero (or here, garbage) output with no error.
+
+Against that, the harness allocates ONE BO per argument:
+  bo_act_    1,048,576
+  bo_weight_ WEIGHT_BO_BYTES (region-A 74,240 + region-B)
+  bo_router_ 12,288 + 2048*256*2 = 1,060,864
+  bo_norms_  5,242,880
+  bo_kv_     134,217,728
+  bo_logits_ 1,048,576
+
+So the ELF declares objects of 66048 / 131072 / 151552 (group 6) and 49152 / 2097152 (group 7),
+while the harness passes single BOs and never distinguishes them. Static inspection cannot resolve
+which declared object corresponds to which set_arg, and that ambiguity is now the concrete blocker:
+it is the thing to pin down before any further intervention, because a wrong mapping would put
+garbage where the kernel reads and would explain "clean input, all-NaN output, no error, no ERT,
+deterministic" as well as anything else I have considered.
+
+WHAT THIS RUN ESTABLISHED, in one place:
+ - the runlist path WORKS: batches 1 run, 1 submit, executes, exit 0, no ERT -- my "structural ERT"
+   was the environmental contention/TDR class and is refuted by my own re-run (39/40);
+ - the failure is a NaN born inside the single ELF launch; there are no host-visible intermediates;
+ - region-B is byte-exact at n_tiles=2048 and 1024 against the shipped callable (45/49);
+ - region-A's tail (44), the F32/bf16 defect in BOTH its copies (47) and region-A's layout (48) are
+   all exonerated by intervention, act unchanged;
+ - every input we can name is verified or exonerated, so the NaN is either in the ELF's sequence or
+   in an argument we are passing wrongly (this addendum).
