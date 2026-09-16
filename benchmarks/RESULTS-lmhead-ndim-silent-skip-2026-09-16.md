@@ -144,3 +144,67 @@ alternative.
 
 So: the defect is real and the impact is now precisely scoped, but the fix is a layout
 investigation, not a one-line guard change.
+
+---
+
+# The 3-D layout is NOT unknown — the codebase already documents and implements it
+
+I was about to file this as "needs a layout investigation". It does not. **`npu_engine_universal.cpp`
+already handles the 3-D form**, and says so at line 1336:
+
+```c
+// lm_head tile format: 2-D [tiles, 5120] (int4) vs 3-D [tile_rows, tile_cols, bytes]
+// (Qwen3.5/3.6: 8704=Q8_0 or 4736=int4). For 3-D, multiply shape[0] by tile-cols
+// and dispatch the dequant; the old path read shape[0] only and used int4, which
+// gave a 10x-short lm_head (24832 vs 248320 rows) and garbage logits.
+int lm_bpt = get_shape_dim(js, jl, "lm_head.weight", 2);
+if (lm_bpt == 0) lm_bpt = get_shape_dim(js, jl, "lm_head.weight", 1);
+if (lm_bpt == 4736 || lm_bpt == 8704) { int lm_cols = H / 256; if (lm_cols > 0) lm_i8 *= lm_cols; }
+```
+
+and dispatches the matching dequant on the next lines:
+
+```c
+(lm_bpt==8704) ? dequant_q8_0_to_float_ex(i8p(lo), lm_i8, H, &lr, &lc)
+: (lm_bpt==4736) ? dequant_i8_4736_to_float(i8p(lo), lm_i8, H, &lr, &lc)
+: q4_dequant_geom(...)
+```
+
+## The probe data confirms that description exactly
+
+| model | shape | `H/256` | `shape[1]` | rows = `shape[0]×(H/256)` | check |
+|---|---|---|---|---|---|
+| Qwen3.6-35B-A3B | `[7760, 8, 8704]` | **8** | **8** | 62,080 | ×4 = **248,320 = vocab** |
+| Qwen3.5-4B | `[7760, 10, 8704]` | **10** | **10** | 77,600 | — |
+
+- `shape[1] == H/256` in **both** cases, to the digit.
+- bytes/row = **8704 → Q8_0**, and `8704 / 34 = 256.0` exactly — 256 Q8_0 blocks × 32 = 8192
+  weights per row-tile.
+- The 35B's 62,080 row-tiles × 4 = **248,320**, its exact vocab.
+
+## What this changes
+
+**The defect is narrower than "these models' lm_head is unhandled".** It is that the
+**`npu-infer` runtime-layer engines** (`RuntimeLayerEngine`, `MoERuntimeLayerEngine`) pack a *device*
+lm_head tile BO and their `ndim == 2` guard cannot express this format — while the **end-to-end
+`npu_engine_universal` engine handles it correctly**, on the host, via the dequant above.
+
+That is consistent with the scorecard: Qwen3.5-4B "fallback prefill boots `[0] boot=22069`" through
+the universal engine. **The models are not broken in general — the runlist/MoE path cannot score
+them.**
+
+## Consequence for the fix, and why it is still not one line
+
+The device lm_head kernel in `npu-infer` expects 2-D tiles reordered by `npu_reorder_tiles(G=H/128)`.
+Adopting the 3-D form there means either
+
+- dequantizing Q8_0 to host floats and doing the host lm_head the universal engine already does, or
+- teaching the tile packer the `[tile_rows, H/256, 8704]` source layout and whatever the kernel
+  expects for it.
+
+Both are real work, and the second needs the kernel's expected layout, which is not documented here.
+**The cheapest correct route to unblocking a MoE correctness measurement is the first one** — the
+dequant, the row arithmetic and a working reference all already exist in-tree.
+
+`npu_desc_tiles` and the three `ndim == 2` guards are still the places that decide this, and they are
+still failing closed, which remains better than the alternative.
