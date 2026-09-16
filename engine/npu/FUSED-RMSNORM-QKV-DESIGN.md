@@ -1032,3 +1032,19 @@ RMSNorm+QKV (norm + GEMM), O-proj, RMSNorm+GU (norm + GEMM) and D — one column
 each, 2 MM2S + 1 S2MM apiece, well inside 2 + 2. With C=16 = 1024 keys, and the
 attention's two passes run inside the single launch, the layer stays one xclbin
 launch.
+
+### Composition design constraint: M must be 8, not 16
+
+The stages were verified at different M (QKV/GU at M=16, O-proj/D at M=8). A single
+xclbin needs ONE M for the whole layer, and the binding stage is the O-proj:
+
+* O-proj: the core-local A is `M*K*2` with K = NH*HD = 2048 -> M=16 is 64 KB, over
+  the ~40 KB the core can spare; **M=8 is 32 KB and fits** (verified).
+* D is worse (K = IM = 3072): M=8 is 48 KB and only fits with the W fifo at depth
+  1 and a 2 KB stack (verified).
+* QKV (K=1024) and GU (K=1024) are comfortable at M=16 and also fine at M=8.
+* the attention's `attn1.cc` is templated on `M_TILE`, so it compiles at M=8 as
+  well (the mmul needs `M % 8 == 0`).
+
+So the composition runs at **M=8**, and the QKV/GU generators should be built with
+`-m 8` for it (their M is a parameter, not a design change).
