@@ -3604,3 +3604,37 @@ the only place the transpose can be wrong.
 **Standing rule from four occurrences**: never state a root cause from grep output. Read the
 line, or better, read the compiled artefact. Every one of these four retractions would have been
 avoided by dumping the constant or the buffer instead of inferring it.
+
+## Checked and cleared: the K^T -> blocked-B conversion in attn1.cc is correct
+
+Read it rather than inferring it, per the standing rule:
+
+```c
+const uint16_t *krow = qk + M_TILE * HD;      // k[j][d] at j*HD + d
+for (int d = 0; d < HD; d++)
+    for (int j = 0; j < N_KEYS; j++)
+        g_kt[((d / 8) * (N_KEYS / 8) + (j / 8)) * 64 + (d % 8) * 8 + (j % 8)] = krow[j * HD + d];
+```
+
+My first reading of this was that it blocks into 8x8 = 64-element tiles while the loaders use
+4x8 = 32-element blocks (as the Q tap's `sizes=[MA//4, HD//8, 4, 8]` suggests), which would have
+scrambled K. That is wrong: the kernel is
+`matmul_vectorized_4x8x8_bf16_bf16<M_TILE, HD, N_KEYS>`, and **4x8x8 means a 4x8 A-tile and an
+8x8 B-tile** - the operands have different tile shapes, which is exactly what the name encodes.
+For a (HD, N_KEYS) B operand the 8x8-blocked layout is
+`((d/8)*(N_KEYS/8) + (j/8))*64 + (d%8)*8 + (j%8)`, precisely what the loop writes. Correct.
+
+So of the attention's parts, these are now all cleared by reading: the Q tap (4x8 microtiled at
+`qb*MA*NQKV + QOFF + h*HD`), the K tap (row-major `sizes=[NC,HD]`, strides `[NQKV,1]`, at
+`ch*NC*NQKV + KOFF + (h//GQA)*HD`), the V tap (microtiled at `ch*NC*NQKV + VOFF + ...`), the
+offsets `QOFF/KOFF/VOFF = 0/2048/3072` mated to the buffer layout, the causal mask's chunk
+indexing (`N_KEYS = NC`, `k0 = g_ch * N_KEYS`, `N_CH = M/NC`, `N_QB = M/MA`), and the K^T
+blocked-B conversion. Each of those was a place the attention could have been wrong, and none
+of them is.
+
+Which means the remaining defect is not in a piece I can identify by reading, and further reading
+is now the least efficient thing to do. The reliable next step is the empirical one already
+recorded: emit the kernel's Q and K operands, or its pre-softmax scores, for one head and compare
+against `/tmp/fk3_drv_Q.bin` slices. Four rounds of this investigation have ended with a
+grep-level inference being wrong; this component has now had five such inferences checked and
+cleared, so it needs a measurement.
