@@ -673,3 +673,48 @@ cold-start. The remaining bottleneck is the **FFN's NPU kernels (~70 ms/layer of
 Corrected steady-state accounting per token: FFN ~2.8 s (80%), QKV ~0.34 s, O ~0.22 s,
 attn ~0.22 s => **~3.5 s/tok, ~0.29 tok/s**, i.e. ~2.4× below the ~0.7 baseline and
 ~300× from the dense class.
+
+## Addendum 18 — M=1 (true 1-row) fused MoE xclbins BUILT and wired; GEMM ~3x faster but the FFN is pack-bound
+
+### Built
+Adapted the engine's own M=1 generator (`generators/n1_core_i8_m1.py`, the one behind
+`build_qwen3_0_6b_m1.sh`) to the 35B fused MoE shapes and built:
+```
+engine/npu/xclbins/final_i8_MOE_GUSGU_qwen3_6_35b_a3b_m1.xclbin  (K=2048 N=9216, 38,106 B)
+engine/npu/xclbins/final_i8_MOE_DSD_qwen3_6_35b_a3b_m1.xclbin    (K=4608 N=4096, 38,106 B)
++ matching insts_*.txt
+```
+Toolchain gotcha fixed en route: the Python `aie` API in `install_tmp` is 2026-08-07 but
+`build_tmp/bin/aiecc` is 2026-09-12 — a 5-week drift, so the newer aiecc rejects the
+older `aie.dma_bd` syntax (same error on the already-working 0.6B shapes, so it was
+toolchain, not shapes). The **2026-07-12 `mlir-aie/install/bin/aiecc` parses it**; the
+build script now uses that.
+
+### Wired
+`moe_ctx` in `npu_engine_universal.cpp` now honours `NPU_MOE_SMALL_M=1` and prefers the
+`_m1` xclbin/insts pair with `MD=1` (opt-in; unchanged otherwise).
+
+### Measured
+```
+NPU_MOE=1 NPU_MOE_FUSED=1 NPU_MOE_SMALL_M=1 ... 8 tokens
+  moe_ctx MOE_GUSGU M=1 (m1 kernel) K=2048 N=9216
+  moe_ctx MOE_DSD   M=1 (m1 kernel) K=4608 N=4096
+  [1] 4617 ms   [2] 4222   [3] 3959   [4] 3667   [5] 3759   [6] 3569   [7] 3417
+  === 3493.8 ms/tok ===
+[decode-stage] FFN plateaus at ~65-73 ms/layer (M=128 was ~68-86)
+```
+The tokens are IDENTICAL to the M=128 path (154742, 16023, 136614, 25238, 32858, 248050,
+184997) -> the m1 kernel is numerically equivalent (as its own header claims: int8 x int8
+-> int32 is exact). And the GEMM portion did shrink (~67 -> ~20 ms/layer).
+
+BUT end-to-end is unchanged (3493.8 vs 3485.9 ms/tok) because the FFN cost is the
+**host pack on cache MISS (~70 ms/layer: 8 experts x ~8.5 ms)**, which persists: routed
+experts change per token, so `exp_cache[l]` keeps missing. Addendum 17's "the pack lever
+is already implemented" was therefore wrong for a *changing* routing set — the cache only
+helps repeated experts.
+
+### Real remaining lever
+Prepack ALL 256 experts per layer at init (or SIMD the host dequant): with the pack
+removed, FFN -> ~20 ms/layer, giving 40 x (8.7+5.6+5.5+20) ~= 1.6 s/tok ~= 0.6 tok/s.
+Cost: ~30-41 GB RAM (the engine's own comment) and a long init. That is the same lever
+addendum 12 identified; addendum 17 wrongly retired it.

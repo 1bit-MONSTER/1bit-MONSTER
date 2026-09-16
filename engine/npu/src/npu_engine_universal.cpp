@@ -2459,10 +2459,23 @@ struct Bf16Ctx {
             auto moe_ctx = [&](std::unique_ptr<I8Ctx>& c, const char* t,
                                int K, int N, int nlayers) -> bool {
                 c = std::make_unique<I8Ctx>();
-                c->MD = XM; c->KD = K; c->ND = N;
-                if (!c->init(dev, xp(t, K, N).c_str(), ip(t, K, N).c_str(), 4, nlayers)) {
+                int mdx = XM;
+                std::string xf = xp(t, K, N), ifn = ip(t, K, N);
+                // NPU_MOE_SMALL_M=1: use the true M=1 (1-row tile) kernel pair when
+                // present (final_i8_<t>_<tag>_m1.xclbin/.txt). The m1 generator keeps
+                // the SAME 8x8-microtile B (weight) tap, so the packed weights and the
+                // concat layout are unchanged; only A/C become linear 1-row taps.
+                if (getenv("NPU_MOE_SMALL_M") && atoi(getenv("NPU_MOE_SMALL_M")) == 1) {
+                    std::string a = xpm(t, 1), b = ipm(t, 1);
+                    FILE* fa = fopen(a.c_str(), "rb"); FILE* fb = fopen(b.c_str(), "rb");
+                    if (fa && fb) { mdx = 1; xf = a; ifn = b; }
+                    if (fa) fclose(fa); if (fb) fclose(fb);
+                }
+                c->MD = mdx; c->KD = K; c->ND = N;
+                if (!c->init(dev, xf.c_str(), ifn.c_str(), 4, nlayers)) {
                     c.reset(); return false;
                 }
+                if (mdx != XM) fprintf(stderr, "  moe_ctx %s M=%d (m1 kernel) K=%d N=%d\n", t, mdx, K, N);
                 return true;
             };
             bool ok = moe_ctx(mgu, "MOE_GU", H, moe_n, 1) &&
