@@ -635,6 +635,32 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
         FILE* fl = fopen("/tmp/native_logits.txt", "wb");
         if (fl) { for (int n = 0; n < NV; n++) fprintf(fl, "%d %.6g\n", n, lg[n]); fclose(fl); }
     }
+    // Per-call top-K dump (NPU_DUMP_LOGITS_PERSTEP=<path>). The block above REWRITES its
+    // file every call, so it can only ever show the LAST step -- useless for asking "when
+    // did the two arms first disagree, and was it a near-tie?". This appends one line per
+    // call: call index, K, the top-8 (id, raw logit), and the margin between #1 and #2 --
+    // the number that separates "genuinely different" from "differed by a hair".
+    // Read BEFORE the softmax below overwrites lg, so these are raw logits.
+    if (const char* lps = getenv("NPU_DUMP_LOGITS_PERSTEP")) {
+        static int call_no = 0;
+        int idx[8]; float val[8];
+        for (int b = 0; b < 8; b++) { idx[b] = -1; val[b] = -1e30f; }
+        for (int n = 0; n < NV; n++) {
+            float v = lg[n];
+            for (int b = 0; b < 8; b++) {
+                if (v > val[b]) {
+                    for (int j = 7; j > b; j--) { val[j] = val[j-1]; idx[j] = idx[j-1]; }
+                    val[b] = v; idx[b] = n; break;
+                }
+            }
+        }
+        FILE* fp = fopen(lps, "a");
+        if (fp) {
+            fprintf(fp, "call=%d K=%d top1=%d margin=%.6g |", call_no++, K, idx[0], val[0]-val[1]);
+            for (int b = 0; b < 8; b++) fprintf(fp, " %d:%.6g", idx[b], val[b]);
+            fprintf(fp, "\n"); fclose(fp);
+        }
+    }
     double sum=0;
     #pragma omp parallel for reduction(+:sum)
     for(int n=0;n<NV;n++){float d=lg[n]-mx;if(d<-80)d=-80;lg[n]=expf(d);sum+=lg[n];}
