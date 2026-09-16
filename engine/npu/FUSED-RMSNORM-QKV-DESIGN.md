@@ -4130,3 +4130,40 @@ activation at the point the GEMM is handed it, not the point I chose to dump.
 pattern is unchanged and worth the space it takes: every wrong conclusion came from a statistic or a
 label standing in for a measurement; the weight question was only settled when the engine was made to
 *answer* it.
+
+## The contradiction is now forced to a single candidate
+
+I checked the two remaining ways my "raw QKV" dump could have been mis-read, and both are clean:
+
+* `qk_norm_pi` (line 4697) does **not** modify `bC`. It copies out first -
+  `for (i<qkvn) bqo[pi*qkvn+i] = bf16g(bC[brow*qkvn+i]);` - and then applies QK-norm and RoPE to
+  `bqo`, building `bKv` from `bqo`. So `bC` stays the raw GEMM output, and the comment at 4753
+  ("bC now holds the raw QKV, before RoPE") is accurate.
+* The dump itself is honest: `fwrite(bC.data(), 2, (size_t)npt*qkvn, fq)` - `bC` is a
+  `std::vector<uint16_t>`, written as 2-byte elements. My read as bf16 is correct.
+
+So, with every element of the chain now verified by reading the line or measuring the device:
+
+```
+A  = bA             dumped at 4692, immediately after rn_bf16, nothing touches it before the GEMM
+W  = my raw array   verified twice - black-box probe row 0 (~1%), and bf16mm_dump_w (bit-exact)
+GEMM                with a known aligned A it returns W's row exactly (my probe: row 0)
+bC                  is the engine's raw GEMM output (the two checks above)
+and yet             bC != bA @ W : same magnitudes (mean ratio 1.0325), uncorrelated elements
+```
+
+A, W and the GEMM are each individually verified, so the only place left for the difference is
+**which `W_idx` the prefill loop actually multiplies by**. My probe used `Wqkv[0]` - but it ran
+*before* the prefill loop, right after the weight-prep loop. If anything between those two points
+re-uploads or rebinds the weights (`npu_bf16_prefill_init`, or a later leg of the prep loop), then
+`Wqkv[0]` at 4617 and `Wqkv[0]` at 4742 are not the same weights, and every comparison I have made
+has been between two different matrices that happen to share a magnitude distribution.
+
+That is one measurement, not a theory: **move the probe inside the layer loop, run it immediately
+before the QKV launch for l==0, and compare its output row against `bC`'s row 0.** If the row matches
+`bC`, the weights were rebound and the fused path has been consuming a stale set. If it does not,
+the difference is inside the single launch and the next step is the region between them.
+
+Recorded as a candidate, deliberately not as a conclusion - this session has retracted seven claims
+made that way, and the last three were all resolved by making the engine answer rather than reasoning
+about it.
