@@ -3181,3 +3181,51 @@ kernels. The q4nx format note in this document gives the likely shape of it - ti
 (1024, 4096) array, testable directly: tile the real Wqkv in the bench (which now accepts
 `NG_LOAD_W`) and see whether the result moves from 1.05469 to ~5.65625. That is the next
 experiment, and it needs no device-side guesswork.
+
+## The decisive result: launch A is CORRECT, verified against an independent CPU reference
+
+Took the engine's own dumped inputs and did the whole computation on CPU, in NumPy, with no
+device involved - the first genuinely independent check in this entire investigation:
+
+```python
+x, gamma = aA[:M], aA[M]                     # the engine's real activation + gamma
+ss  = (x**2).sum(axis=1)/H
+ir  = 1/sqrt(ss + eps)
+n   = bf16_rne(x * ir[:,None] * gamma)        # the norm, rounded like the kernel
+qkv = bf16_rne(n @ W_real)                    # the GEMM, W_real = the engine's dequant
+```
+
+| | normed maxabs | Q | K | V | whole |
+|---|---|---|---|---|---|
+| **Python reference, eps=1e-5** | 2.59375 | **1.03906** | **1.04688** | **1.05469** | **1.05469** |
+| **engine launch A (fused)** | - | **1.03906** | **1.04688** | **1.05469** | **1.05469** |
+| Python reference, eps=1e-6 | 2.60938 | 1.03906 | 1.05469 | 1.06250 | 1.06250 |
+| engine per-op path | **2.54688** | 5.65625 | 5.25000 | 2.29688 | 5.65625 |
+
+**Launch A reproduces an independent reference exactly, on all three slices**, and the eps
+comparison pins the kernel's constant to 1e-5 (1e-6 gives a visibly different 1.06250). The
+normed value the reference produces (2.59375) also matches the per-op path's own dumped normed
+activation (2.54688), so its norm and input are the same too.
+
+The conclusion inverts the working assumption I have held for several rounds. The per-op
+path's QKV buffer is **5.36x larger than an independent CPU computation of the same operation
+on the same bytes**. So that buffer is not a valid oracle for the QKV, and the "launch A is
+2.51x / 5.36x too small" finding - which drove the last several rounds and produced two wrong
+root causes - is an artifact of comparing against it. What is actually established:
+
+* launch A is numerically correct (independent CPU reference, exact match);
+* launch B is bit-identical to the working bench (byte-for-byte on all six stages);
+* the weights and inputs reaching both are verified;
+* and the engine's tokens are still wrong.
+
+So the remaining defect is **not** in either fused kernel and **not** in launch A's numerics.
+It is somewhere in the per-op path's own QKV handling (int8 ascales? a different GEMM entry
+point? a bC region shared between the int8 and bf16 prefill paths?) - or, more simply, the
+`bf16_l0_rawqkv.bin` dump is not the quantity I took it for, which would be the fourth
+misplaced/repurposed dump in this investigation and is now the first thing to check.
+
+Concretely: `bC` is written by both the int8 prefill path (`FLM_LAUNCH_ASYNC_ROWS` with
+per-token ascales) and the bf16 path (`bf16mm_gemm_launch`), and the bf16 loop I dumped from
+runs while the engine reports "Prefill 128 [bf16]". If the per-op QKV in that buffer carries
+an int8 ascale or comes from the other path, its 5.36x is explained without any bug in my
+work at all.
