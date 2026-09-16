@@ -4,6 +4,12 @@ set -euo pipefail
 
 SRCDIR="$(cd "$(dirname "$0")" && pwd)"
 BUILDDIR="$SRCDIR/build"
+# Create it here, not further down: the object files below are compiled to this
+# path long before the mkdir that used to sit next to the link step, so a fresh
+# clone or worktree — where build/ does not exist yet — died at the very first
+# compile with "can't create .../dequant_q4nx.o: No such file or directory".
+# It worked for years only because existing trees already had the directory.
+mkdir -p "$BUILDDIR"
 REPO_ROOT="$(cd "$SRCDIR/../.." && pwd)"
 SRC="$SRCDIR/src/npu_engine_universal.cpp"
 DEQUANT="$SRCDIR/src/dequant_q4nx.cpp"
@@ -130,7 +136,6 @@ CXXFLAGS=(-std=c++26 -O3 -mavx2 -fopenmp -DONEBP_SUPPORT -I"$SRCDIR/src" -I"$SRC
 ENGINE_OBJS=("$DEQUANT_O" "$INSTR_GEN_O" "$ZAYA_DECODE_O" "$NPU_MODEL_O" "$RUNLIST_RT_O" "$RUNLIST_BRIDGE_O" "$BF16MM_BRIDGE_O" "$FLM_PREFILL_BRIDGE_O")
 
 echo "=== Building NPU engine variants ==="
-mkdir -p "$BUILDDIR"
 
 # gen_layer_elfs — the on-demand per-context ELF generator the runtime shells
 # out to when a context is missing (RT_ELF_GEN, see runtime_layer.cpp
