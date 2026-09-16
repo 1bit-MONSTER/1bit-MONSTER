@@ -6662,3 +6662,43 @@ emitted pattern in the timed binary, and arithmetic that reproduces the measured
 **not the delta**. The acceptance test remains the rebuild with a contiguous W tap and the re-timed delta
 against 991.34 ms - and if that delta is small, the identification is still correct and the cause lies
 elsewhere. That falsifiable form is the point. No accel0 was needed for any of this work.
+
+## What the fix requires: one generator line plus host-side packing - NOT a new kernel
+
+Read at source (`n1_fk3_layer.py:439-440`), the W tap is:
+
+```python
+wt = shim_dma_single_bd_task(W_s, W, offset=kt * k * NQKV + nt * NT,
+                             sizes=[k // 8, NT // 8, 8, 8],
+                             strides=[8 * NQKV, 8, NQKV, 1], issue_token=True)
+```
+
+and the A tap for contrast (`:417-418`):
+
+```python
+sizes=[1, 1, M, k], strides=[1, 1, H, 1]      # inner run = full k -> contiguous
+```
+
+`offset = kt*k*NQKV + nt*NT` with an innermost stride of 1 along NQKV means **W is stored row-major as
+(K_total x NQKV)**, and the tap reads an **8x8 sub-tile of each (k, NT) block**: 8 contiguous elements (16 B)
+along N, then a stride of NQKV=1024 elements (2048 B) to the next of the 8 rows. So it is not a transposing
+or striding impossibility - it is a **narrow 16-byte column slice taken out of each 2048-byte row**.
+
+Two consequences, and they are what make this cheap:
+
+1. **The pathology is a packing/read-order mismatch, not a kernel limitation.** The same kernel already
+   emits a 100%-efficient tap for A. Packing W into the tap's read order - the `(k//8, NT//8, 8, 8)` tile
+   order, i.e. the 8-element inner runs stored contiguously - turns each tile into one contiguous run.
+2. **The change is one generator line (the W-tap BD) plus host-side packing in the driver's weight prep.**
+   No new kernel, no new math, no correctness risk to the numerics: the values are unchanged, only their
+   order in the BO and the descriptor that reads them. That is exactly @agent-c1b76d's `-L/--linear-b` shape
+   (`n1_core_i8_m1.py:36`), which replaces a row-major offender with one contiguous tile per DMA.
+
+**The extrapolated prize, explicitly flagged as an extrapolation.** The tap reads 8 of every 1024 elements =
+0.78%; making it contiguous is a ~128x reduction in transactions. If launch B's 991.34 ms were *entirely*
+weight-tap-bound, the floor would be ~991/128 = **~7.7 ms**, which is below the per-op path's ~19-27 ms per
+layer - i.e. the fused path would become competitive and might beat 1945.5 tok/s @1k. **I am not claiming
+that.** It assumes the tap accounts for all of the time and that packing delivers the full 128x; neither is
+measured. The session's own rule applies: an extrapolation is not a measurement, and the delta remains the
+only test. But it does mean the experiment is worth running, because the plausible upside is large and the
+cost is small.
