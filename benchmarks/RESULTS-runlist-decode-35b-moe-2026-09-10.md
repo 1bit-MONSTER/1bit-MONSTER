@@ -4607,3 +4607,43 @@ norms are proven and run before the GEMM; duplicating a norm phase, or otherwise
 before the GEMM's reads, should reduce the all-zero rate if the hypothesis is right. If it does not, the
 start-up idea joins the list and the next thing to question is the ordering of core release versus the
 shim's S2MM in the compiled control program, which is aiecc's business rather than the generator's.
+
+### Addendum 128 — the all-zero rate depends on how much work precedes the GEMM: 5/8 down to 2/8
+
+Inserted a SECOND FFNnorm round immediately before the GEMM phase -- pure extra DMA work in the sequence,
+using only the proven norm path -- and ran the n_k=1 shape eight times:
+
+  C nonzero: 16, 0, 2041, 2041, 0, 16, 2041, 2041     -> TWO ALL-ZERO RUNS IN EIGHT
+
+Against five in eight without it. The all-zero rate halves when the GEMM's C reads are pushed later in
+the sequence, which is direct evidence for addendum 127's hypothesis: the empty phase is a TIMING
+failure, not a wiring failure, and the cores need time in the sequence before the phase that reads their
+output can be trusted. A new intermediate value (16 correct columns) also appears, so the effect is a
+shift of a distribution rather than a switch.
+
+WHAT THIS MEANS, and it is worth stating plainly: THE CORRECTNESS OF THE GEMM DEPENDS ON HOW MUCH OTHER
+WORK HAPPENS TO PRECEDE IT. That is not a property a layer design can rely on. Padding the sequence with
+proven work would improve the odds and would be a workaround, but the fault would still be present at
+whatever rate the padding failed to cover, and it would corrupt decode intermittently.
+
+THE FIX HAS TO BE A REAL BARRIER -- something that gates the C read on the CORE's completion rather than
+on the DMA's. The runtime's `dma_await_task` waits for the descriptor, and addendum 125 established that
+`issue_token` is only a task-completion token for that DMA; neither of them knows whether the core has
+run. Candidate directions, in order of directness:
+  1. Re-order the runtime so that EVERY DMA in the sequence precedes the C reads, so the reads happen at
+     the latest possible moment. This is cheap, uses the existing structure, and if the timing window is
+     the whole story it should close the gap almost entirely.
+  2. Ask whether the m1 design's C path has anything equivalent. It fails at 1 in 8 rather than 6 in 8 at
+     comparable shapes, and its structure differs in exactly the places that would matter: a per-row A
+     fifo, and BATCH batching on the feeds. If it has a de-facto barrier that mine lacks, that is the fix.
+  3. Look at the compiled control program's core release versus the shim S2MM ordering -- aiecc's
+     business rather than the generator's, and the last place to look if 1 and 2 come up empty.
+
+STANDING RECORD, for whoever picks this up: the norm phases (RMSNorm, FFNnorm) are exact in every run
+ever taken and are proven bit-identical to each other given identical inputs. The GEMM is verified at NO
+shape: wrong 8 of 8 at K=64 (mostly producing NOTHING, 7/2048 "matches" being the columns where the
+reference is also zero), roughly 3 of 4 runs at K=2048, and its failure rate moves with the amount of DMA
+work that precedes it. The three-phase design's STRUCTURE -- one xclbin, one submit, four runtime
+arguments, phases sharing a single buffer at fixed byte offsets -- is sound and compiles, and its norms
+are correct. What it does not yet have is a trustworthy GEMM, and every 8192/8192 quoted in this lane
+before addendum 117 was a single lucky sample.
