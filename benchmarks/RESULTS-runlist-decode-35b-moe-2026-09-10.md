@@ -4059,3 +4059,45 @@ TWO BUILD ERRORS ON THE WAY, both mine and both the same lesson: the probe first
 function requires a Context" because the device was defined outside the `mlir_mod_ctx` block, then with
 "'Operation' object is not callable" because I called the `@device`-decorated function -- the decorator
 executes the body itself. Neither was about the mechanism under test.
+
+### Addendum 115 — AMORTISATION WORKS: 4,182 BDs down to 1,096. One rank issue left in the batched slice.
+
+Applied addendum 114's pattern to the four-phase design: batched fifo element types for A and B
+(`(BATCH_SIZE, m, k)` and `(BATCH_SIZE, k, n)`), the cores acquiring one batch per round and iterating
+its rows, and the runtime issuing ONE A BD and ONE B BD per (column, batch) instead of per tile. With
+BATCH_SIZE=4 -- chosen because it DIVIDES both n_k=32 and n_k2=64, so every batch is full and the core's
+loop is a compile-time constant:
+
+  total BDs in the sequence: 1096
+
+Down from ~4,182, and comfortably inside the pool that addendum 113 bracketed (~2,630 works, ~4,182
+refused). THE AMORTISATION IS EFFECTIVE, and by construction: the B-task count was the tile count, and
+one BD now carries BATCH_SIZE tiles.
+
+ONE ERROR REMAINS, and it is a type-shape problem, not a design problem:
+
+  error: 'func.call' op operand type mismatch: expected operand type 'memref<1x64xi8>',
+         but provided 'memref<1x1x64xi8, strided<[64, 64, 1], offset: ?>>' for operand number 0
+
+The DSL's `abuf_b[r]` on a `(4,1,64)` fifo element yields a RANK-3 STRIDED SUBVIEW rather than the
+rank-2 `(1,64)` that `matmul_i8_i32` declares. Note this is exactly why addendum 114's probe passed:
+there I only indexed ELEMENTS of the slice (`row[i] = bb[r,i]`), never passed the slice to a call, so a
+strided rank-3 view was harmless. The probe proved the fifo and the BD work; it did not prove the slice
+is CALL-COMPATIBLE, and that is the remaining gap.
+
+THE FIX IS A SHAPE QUESTION WITH SEVERAL CANDIDATES, all cheap to try in order:
+  1. find the DSL's rank-dropping subview form (an explicit `memref.subview`-style access, or indexing
+     all leading dimensions at once) so `abuf_b[r]` yields exactly `memref<m x k xi8>`;
+  2. restructure the batched element so a single leading index lands on the kernel's signature --
+     e.g. a `(BATCH, k, n)` B element is already rank-3, so slicing dim 0 should give `(k,n)`; verify
+     whether `bbuf_b[r]` behaves differently from `abuf_b[r]` (whose element has a leading unit dim that
+     may be what forces the extra rank);
+  3. keep A per-tile (its tasks are only ~512 of the total) and batch only B, if the rank problem is
+     specific to the unit-dimension A type.
+Note the 1,096 BD figure was obtained with BOTH A and B batched; batching B alone would still leave the
+design far inside the pool, so option 3 is a perfectly acceptable fallback that also avoids the A
+migration entirely.
+
+STATE: the THREE-phase design (no O projection) is verified and unaffected -- ONE xclbin, ONE submit,
+RMSNorm and FFNnorm bit-identical (2048/2048), GEMM exact (8192/8192). The four-phase design now gets
+past the descriptor-pool limit and stops on a slice-type mismatch.

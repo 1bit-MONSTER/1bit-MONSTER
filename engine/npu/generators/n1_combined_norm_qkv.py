@@ -59,6 +59,12 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
         Ro_ty = np.ndarray[(H,), bf16]     # norm output row
         Ga_ty = np.ndarray[(m, k), i8]     # GEMM A tile
         Gb_ty = np.ndarray[(k, n), i8]     # GEMM B tile
+        # BATCHED fifo elements: ONE buffer descriptor per (column, batch) instead of per tile.
+        # The runtime sequence's buffer-descriptor pool is finite (~2,630 IDs works, ~4,182 is
+        # refused), and the B-task count == the tile count, so tiles must be amortised into fewer,
+        # larger DMAs. BATCH_SIZE must DIVIDE n_k so every batch is full -- see the asserts below.
+        Ga_b_ty = np.ndarray[(BATCH_SIZE, m, k), i8]
+        Gb_b_ty = np.ndarray[(BATCH_SIZE, k, n), i8]
         Gc_ty = np.ndarray[(m, n), i32]    # GEMM C tile
         Gc_l2 = np.ndarray[(m, n), i32]
 
@@ -148,14 +154,14 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
 
         # ---- PHASE 2 fifos: A broadcast to every column, B and C per column ----
         gA_c = object_fifo("G_A_C", qkv_shim[0],
-                           [qkv_core[c] for c in range(n_aie_cols)], BATCH_SIZE + 1, Ga_ty)
+                           [qkv_core[c] for c in range(n_aie_cols)], BATCH_SIZE + 1, Ga_b_ty)
         gB_s = {}
         gB_c = {}
         gC_c = {}
         gC_s = {}
         for c in range(n_aie_cols):
-            gB_s[c] = object_fifo(f"G_B_S{c}", qkv_shim[c], qkv_mem[c], BATCH_SIZE + 1, Gb_ty)
-            gB_c[c] = object_fifo(f"G_B_C{c}", qkv_mem[c], [qkv_core[c]], BATCH_SIZE + 1, Gb_ty)
+            gB_s[c] = object_fifo(f"G_B_S{c}", qkv_shim[c], qkv_mem[c], BATCH_SIZE + 1, Gb_b_ty)
+            gB_c[c] = object_fifo(f"G_B_C{c}", qkv_mem[c], [qkv_core[c]], BATCH_SIZE + 1, Gb_b_ty)
             object_fifo_link(gB_s[c], gB_c[c])
             gC_c[c] = object_fifo(f"G_C_C{c}", qkv_core[c], qkv_mem[c], 1, Gc_ty)
             gC_s[c] = object_fifo(f"G_C_S{c}", qkv_mem[c], qkv_shim[c], 1, Gc_l2)
@@ -171,10 +177,11 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                     for _ in range_(num_col_group):
                         cbuf = gC_c[c].acquire(ObjectFifoPort.Produce, 1)
                         zero(cbuf)
-                        for _ in range_(n_k):
-                            abuf = gA_c.acquire(ObjectFifoPort.Consume, 1)
-                            bbuf = gB_c[c].acquire(ObjectFifoPort.Consume, 1)
-                            matmul(abuf, bbuf, cbuf)
+                        for _ in range_(n_k // BATCH_SIZE):
+                            abuf_b = gA_c.acquire(ObjectFifoPort.Consume, 1)
+                            bbuf_b = gB_c[c].acquire(ObjectFifoPort.Consume, 1)
+                            for r in range_(BATCH_SIZE):
+                                matmul(abuf_b[r], bbuf_b[r], cbuf)
                             gA_c.release(ObjectFifoPort.Consume, 1)
                             gB_c[c].release(ObjectFifoPort.Consume, 1)
                         gC_c[c].release(ObjectFifoPort.Produce, 1)
@@ -187,14 +194,14 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
         n_k2 = K2 // k
         nc2 = N2 // n // C2
         oA_c = object_fifo("O_A_C", o_shim[0],
-                           [o_core[c] for c in range(C2)], BATCH_SIZE + 1, Ga_ty)
+                           [o_core[c] for c in range(C2)], BATCH_SIZE + 1, Ga_b_ty)
         oB_s = {}
         oB_c = {}
         oC_c = {}
         oC_s = {}
         for c in range(C2):
-            oB_s[c] = object_fifo(f"O_B_S{c}", o_shim[c], o_mem[c], BATCH_SIZE + 1, Gb_ty)
-            oB_c[c] = object_fifo(f"O_B_C{c}", o_mem[c], [o_core[c]], BATCH_SIZE + 1, Gb_ty)
+            oB_s[c] = object_fifo(f"O_B_S{c}", o_shim[c], o_mem[c], BATCH_SIZE + 1, Gb_b_ty)
+            oB_c[c] = object_fifo(f"O_B_C{c}", o_mem[c], [o_core[c]], BATCH_SIZE + 1, Gb_b_ty)
             object_fifo_link(oB_s[c], oB_c[c])
             oC_c[c] = object_fifo(f"O_C_C{c}", o_core[c], o_mem[c], 1, Gc_ty)
             oC_s[c] = object_fifo(f"O_C_S{c}", o_mem[c], o_shim[c], 1, Gc_l2)
@@ -207,10 +214,11 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                     for _ in range_(nc2):
                         cbuf = oC_c[c].acquire(ObjectFifoPort.Produce, 1)
                         zero(cbuf)
-                        for _ in range_(n_k2):
-                            abuf = oA_c.acquire(ObjectFifoPort.Consume, 1)
-                            bbuf = oB_c[c].acquire(ObjectFifoPort.Consume, 1)
-                            matmul(abuf, bbuf, cbuf)
+                        for _ in range_(n_k2 // BATCH_SIZE):
+                            abuf_b = oA_c.acquire(ObjectFifoPort.Consume, 1)
+                            bbuf_b = oB_c[c].acquire(ObjectFifoPort.Consume, 1)
+                            for r in range_(BATCH_SIZE):
+                                matmul(abuf_b[r], bbuf_b[r], cbuf)
                             oA_c.release(ObjectFifoPort.Consume, 1)
                             oB_c[c].release(ObjectFifoPort.Consume, 1)
                         oC_c[c].release(ObjectFifoPort.Produce, 1)
@@ -253,23 +261,22 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                 col_group = gi % num_col_group
                 for ki0 in range(0, n_k, BATCH_SIZE):
                     ki_end = min(ki0 + BATCH_SIZE, n_k)
+                    nb = ki_end - ki0
                     at_list = []
                     bt_list = []
-                    for ki in range(ki0, ki_end):
-                        a = shim_dma_single_bd_task(gA_c, GA, offset=ki * k,
-                                                    sizes=[1, 1, 1, k], issue_token=True)
-                        dma_start_task(a); at_list.append(a)
-                        for c in range(n_aie_cols):
-                            n_tile = col_group * n_aie_cols + c
-                            # LINEAR B tap (addendum 37 / validated 8192/8192 in addendum 82):
-                            # one contiguous k*n tile per DMA, tiles in column-major (nt,ki).
-                            # The default 4D-strided tap read 8-byte bursts at 4096-byte strides
-                            # (~2.4 GB/s effective, the documented ~44x lever).
-                            b = shim_dma_single_bd_task(
-                                gB_s[c], GB, offset=(n_tile * n_k + ki) * (k * n),
-                                sizes=[1, 1, 1, k * n],
-                                issue_token=True)
-                            dma_start_task(b); bt_list.append(b)
+                    # ONE amortised A BD for the whole batch (tiles are contiguous: offset ki*k).
+                    a = shim_dma_single_bd_task(gA_c, GA, offset=ki0 * k,
+                                                sizes=[1, 1, 1, nb * k], issue_token=True)
+                    dma_start_task(a); at_list.append(a)
+                    for c in range(n_aie_cols):
+                        n_tile = col_group * n_aie_cols + c
+                        # ONE amortised B BD per column covering the batch's tiles, which the LINEAR
+                        # tap lays out contiguously: tile (nt,ki) at (nt*n_k+ki)*(k*n).
+                        b = shim_dma_single_bd_task(
+                            gB_s[c], GB, offset=(n_tile * n_k + ki0) * (k * n),
+                            sizes=[1, 1, 1, nb * k * n],
+                            issue_token=True)
+                        dma_start_task(b); bt_list.append(b)
                     dma_await_task(*at_list, *bt_list)
                     dma_free_task(*at_list, *bt_list)
                 c_tasks = []
@@ -284,18 +291,21 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                 col_group = gi % nc2
                 oa_list = []
                 ob_list = []
-                for ki in range(n_k2):
+                for ki in range(0, n_k2, BATCH_SIZE):
+                    nb = min(BATCH_SIZE, n_k2 - ki)
+                    oa_list = []
+                    ob_list = []
                     a = shim_dma_single_bd_task(oA_c, GA, offset=K + ki * k,
-                                                sizes=[1, 1, 1, k], issue_token=True)
+                                                sizes=[1, 1, 1, nb * k], issue_token=True)
                     dma_start_task(a); oa_list.append(a)
                     for c in range(C2):
                         n_tile = col_group * C2 + c
                         b = shim_dma_single_bd_task(
                             oB_s[c], OB, offset=(n_tile * n_k2 + ki) * (k * n),
-                            sizes=[1, 1, 1, k * n], issue_token=True)
+                            sizes=[1, 1, 1, nb * k * n], issue_token=True)
                         dma_start_task(b); ob_list.append(b)
-                dma_await_task(*oa_list, *ob_list)
-                dma_free_task(*oa_list, *ob_list)
+                    dma_await_task(*oa_list, *ob_list)
+                    dma_free_task(*oa_list, *ob_list)
             oc_tasks = []
             for c in range(C2):
                 n_tile = col_group * C2 + c
