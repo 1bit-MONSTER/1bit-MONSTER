@@ -981,3 +981,61 @@ bit-for-bit reproducible on idle accel0). The idle-device check is what makes a 
 claim meaningful.
 Operational note banked: their probe code is env-gated and inert by default, but
 **NPU_GEMM_PROBE2 currently HANGS when enabled** (documented, unfixed) -- do not set it.
+
+### Addendum 29 — step 1 of the 35B whole-layer build DONE: the RMSNorm M=1 kernel exists
+
+Addendum 27 identified exactly one missing op. It is now built.
+
+- `engine/npu/generators/build_rms35b_m1.sh` (new) drives fk-3's `n1_rms_norm.py` for the
+  35B hidden size and compiles it with the SAME pinned toolchain as the M=1 GEMMs
+  (`/home/bcloud/mlir-aie/install/bin/aiecc`, venv python3.14 + the pinned PYTHONPATH,
+  pid-unique workdir per issue #1777).
+- 35B dims confirmed from the engine's own banner (not assumed):
+  **H=2048 NC=40 NH=32 NKV=16 HD=128 IM=512 rope_theta=1e7**.
+- Generated `final_rms_qwen3_6_35b_a3b_m1.xclbin` (12,058 B) + `insts_rms_qwen3_6_35b_a3b_m1.txt`
+  (508 B); aiecc reports "Compilation completed successfully".
+- Addendum-28 discipline applied at generation time: the script FAILS if the design has no
+  kernel call site, and it reports **call sites, not declarations** (1 `func.func` decl,
+  1 `func.call` to `rms_norm_f32_bf16`).
+
+All five GEMM/activation ops of the 35B layer now have built M=1 kernels
+(QKV, O, MOE_GUSGU, MOE_DSD, attn, SiLU) plus this RMSNorm, so the whole-layer path no
+longer depends on ANY lib artifact.
+
+NEXT: the load-bearing question is not "can we build the pieces" (answered yes) but **"can the
+per-op kernels be co-resident so ONE xrt::runlist submit/token is possible"** -- a runlist
+submits a sequence against one hw_context, and today the ops live in SEPARATE xclbins
+(QKV/O/MOE_GUSGU/MOE_DSD/rms/attn), so either they must be combined into one design or the
+submit-count claim has to be re-derived. That is the next experiment, and it should be settled
+BEFORE investing in a driver: measure whether a single xclbin containing these phases can be
+built at all (the M=1 GEMMs are single-core-row designs, so a combined design must multiplex
+cores rather than union them naively).
+
+### Addendum 30 — INCIDENT: I clobbered the shared index, and the fix (disclosed to all lanes)
+
+What happened: in commit `1516fb950` (addendum 29) I ran `git add <my 3 paths> && git diff
+--cached --name-status && git commit -m ...` -- and **omitted the path arguments on
+`git commit`**. This worktree's index is SHARED with other lanes, and it was carrying their
+staged work, so my commit swept in 8 benchmark result docs as DELETIONS plus reductions to
+`benchmarks/LEVERS-register-2026-09-15.md`, `engine/npu/src/npu_engine_bf16_mm.h` and
+`engine/npu/tools/attn_kernel_bench.cpp` (827 deletions, 15 files total instead of my 3).
+It auto-pushed immediately.
+
+Why no content was lost: every affected file was still on disk, and 11 of the 12 were
+byte-identical to the parent commit -- the "deletions" were index-only, exactly the pattern I
+had already seen twice (addenda 22/24 hygiene notes). Only `engine/npu/src/npu_attn_ctx.h`
+held genuinely newer work, so I deliberately did NOT touch it.
+
+Fix (`6547a52a8`, path-scoped): `git checkout d5dd1764f -- <11 paths>` then
+`git commit -- <11 paths>`. Verified `git diff d5dd1764f HEAD -- <11 paths>` is EMPTY, my 3
+intended files remain in `1516fb950`, and the lane's `npu_attn_ctx.h` is still present and
+modified in the working tree (unstaged, i.e. returned to its owner).
+
+THE LESSON, stated so it cannot recur: the earlier note said "use path-scoped
+`git commit <paths>`, not plain `git commit` after `git add`" -- and I still slipped, because I
+did `git add` and then a bare `git commit` in the SAME command. Discipline that would have
+caught it:
+  1. never `git add` in this worktree unless the very next commit names the same paths;
+  2. ALWAYS `git commit -m ... -- <paths>`;
+  3. verify with `git show --name-status --format="" HEAD` AFTER every commit, before moving on.
+Step 3 alone would have caught this in one line.
