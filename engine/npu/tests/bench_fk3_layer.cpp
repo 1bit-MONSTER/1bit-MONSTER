@@ -83,12 +83,45 @@ int main(int argc,char**argv){
   bAN.sync(XCL_BO_SYNC_BO_TO_DEVICE);bQ.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bO.sync(XCL_BO_SYNC_BO_TO_DEVICE);bC.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
+  if (getenv("BENCH_DUMP_STAGES")) {
+    auto pdump = [](const char* n, const void* q, size_t bytes) {
+      char path[256]; snprintf(path, sizeof path, "/tmp/benchPRE_%s.bin", n);
+      FILE* f = fopen(path, "wb"); if (f) { fwrite(q, 1, bytes, f); fclose(f); }
+    };
+    pdump("aB",  bA.map(),  (size_t)(M + 1) * H * 4);
+    pdump("a2B", bA2.map(), (size_t)(M + 1) * H * 4);
+    pdump("qB",  bQ.map(),  (size_t)M * NQKV * 2);
+    pdump("w2",  bW2.map(), (size_t)H * N2 * 2);
+    pdump("wd",  bWD.map(), (size_t)(NI + H) * ND * 2);
+    pdump("wo",  bWO.map(), (size_t)(NH * HD) * NO * 2);
+  }
   auto r=kr((unsigned)3,bI,(unsigned)ins.size(),bA,bW,bAN,bQ,bO,bWO,bC,bA2,bAN2,bW2,bC2,bSL,bWD,bCD,bHBF);
   r.wait();
   bQ.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bO.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
   bC2.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bSL.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
   bCD.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bA2.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
   bHBF.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  // Stage dump for byte-for-byte comparison against the driver's own stage dump, so the
+  // first diverging buffer identifies where the two invocations part company.
+  if (getenv("BENCH_DUMP_STAGES")) {
+    auto dump = [](const char* n, const void* p, size_t bytes) {
+      char path[256]; snprintf(path, sizeof path, "/tmp/bench_%s.bin", n);
+      FILE* f = fopen(path, "wb"); if (f) { fwrite(p, 1, bytes, f); fclose(f); }
+      fprintf(stderr, "[bench] dumped %-8s %zu bytes\n", n, bytes);
+    };
+    dump("aB",  bA.map(),  (size_t)(M + 1) * H * 4);
+    dump("a2B", bA2.map(), (size_t)(M + 1) * H * 4);
+    dump("qB",  bQ.map(),  (size_t)M * NQKV * 2);
+    dump("oB",  bO.map(),  (size_t)NH * M * HD * 2);
+    dump("cB",  bC.map(),  (size_t)M * NO * 2);
+    dump("c2B", bC2.map(), (size_t)M * N2 * 2);
+    dump("slB", bSL.map(), (size_t)M * NI * 2);
+    dump("hbfB",bHBF.map(),(size_t)M * H * 2);
+    dump("cdB", bCD.map(), (size_t)M * ND * 2);
+    dump("w2",  bW2.map(), (size_t)H * N2 * 2);
+    dump("wd",  bWD.map(), (size_t)(NI + H) * ND * 2);
+    dump("wo",  bWO.map(), (size_t)(NH * HD) * NO * 2);
+  }
   const uint16_t*HBFout=(const uint16_t*)bHBF.map();
   const float*A2out=(const float*)bA2.map();
   const uint16_t*C2out=(const uint16_t*)bC2.map();

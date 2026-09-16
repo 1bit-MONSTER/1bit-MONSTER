@@ -207,7 +207,7 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
         if (getenv("NPU_FK3_RANDOM_WB")) {
             uint16_t* wb = (uint16_t*)s.wB.map();
             for (size_t i = 0; i < (size_t)s.H * s.NQKV; i++) {
-                float v = (float)((i % 13) - 6) * 0.05f;
+                float v = (float)((int)(i % 13) - 6) * 0.05f;
                 uint32_t u; memcpy(&u, &v, 4);
                 wb[i] = (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1)) >> 16);
             }
@@ -262,14 +262,14 @@ bool FusedLayer::prepare_random(int l) {
     // Same formulas as bench_fk3_layer.cpp, element index i over each buffer.
     {
         std::vector<uint16_t> w((size_t)s.qout * s.NO);
-        for (size_t i = 0; i < w.size(); i++) w[i] = rne((float)((i % 11) - 5) * 0.05f);
+        for (size_t i = 0; i < w.size(); i++) w[i] = rne((float)((int)(i % 11) - 5) * 0.05f);   // (int) is load-bearing: size_t would wrap
         memcpy(s.wO[l].map(), w.data(), w.size() * 2);
         s.wO[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         s.wO_ready[l] = 1;
     }
     {
         std::vector<uint16_t> w((size_t)s.H * s.N2);
-        for (size_t i = 0; i < w.size(); i++) w[i] = rne((float)((i % 13) - 6) * 0.05f);
+        for (size_t i = 0; i < w.size(); i++) w[i] = rne((float)((int)(i % 13) - 6) * 0.05f);   // (int) is load-bearing: size_t would wrap
         memcpy(s.w2[l].map(), w.data(), w.size() * 2);
         s.w2[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         if (getenv("NPU_FK3_DUMP")) verify_upload("w2", s.w2[l], w.data(), w.size() * 2);
@@ -277,7 +277,7 @@ bool FusedLayer::prepare_random(int l) {
     }
     {
         std::vector<uint16_t> w((size_t)(s.NI + s.H) * s.ND);
-        for (size_t i = 0; i < (size_t)s.NI * s.ND; i++) w[i] = rne((float)((i % 9) - 4) * 0.05f);
+        for (size_t i = 0; i < (size_t)s.NI * s.ND; i++) w[i] = rne((float)((int)(i % 9) - 4) * 0.05f);    // (int) is load-bearing: size_t would wrap
         for (int r = 0; r < s.H; r++)
             for (int n = 0; n < s.ND; n++)
                 w[(size_t)(s.NI + r) * s.ND + n] = (uint16_t)(r == n ? 0x3F80 : 0x0000);
@@ -408,7 +408,7 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
         // launch A entirely. Built into a LOCAL buffer because launch A's BOs do not
         // exist in this mode.
         std::vector<float> a((size_t)(M + 1) * s.H);
-        for (size_t i = 0; i < (size_t)M * s.H; i++) a[i] = (float)((i % 61) - 30) * 0.02f;
+        for (size_t i = 0; i < (size_t)M * s.H; i++) a[i] = (float)((int)(i % 61) - 30) * 0.02f;       // (int) is load-bearing: size_t would wrap
         for (int i = 0; i < s.H; i++) a[(size_t)M * s.H + i] = 1.0f;
         memcpy(s.aB.map(), a.data(), a.size() * sizeof(float));
         s.aB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -427,7 +427,7 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
             memset(q, 0, (size_t)M * s.NQKV * 2);
         } else {
             for (size_t i = 0; i < (size_t)M * s.NQKV; i++) {
-                float v = (float)((i % 13) - 6) * 0.05f;
+                float v = (float)((int)(i % 13) - 6) * 0.05f;
                 uint32_t u; memcpy(&u, &v, 4);
                 q[i] = (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1)) >> 16);
             }
@@ -511,6 +511,20 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
         // zeros, SiLU emits zeros, the add-aware norm divides by a zero variance, and the
         // layer output is zero. Launch A escaped it because its weight is already
         // per-layer (wQKV[l]), which is exactly the A-works/B-doesn't asymmetry observed.
+        if (l == 0 && getenv("NPU_FK3_DUMP")) {
+            // PRE-launch input dump to files: the post-launch dump cannot distinguish "I
+            // uploaded the wrong thing" from "the kernel overwrote its own input".
+            auto pdump = [](const char* n, const void* q, size_t bytes) {
+                char path[256]; snprintf(path, sizeof path, "/tmp/drvPRE_%s.bin", n);
+                FILE* f = fopen(path, "wb"); if (f) { fwrite(q, 1, bytes, f); fclose(f); }
+            };
+            pdump("aB",  s.aB.map(),  (size_t)(M + 1) * s.H * 4);
+            pdump("a2B", s.a2B.map(), (size_t)(M + 1) * s.H * 4);
+            pdump("qB",  s.qB.map(),  (size_t)M * s.NQKV * 2);
+            pdump("w2",  s.w2[l].map(), (size_t)s.H * s.N2 * 2);
+            pdump("wd",  s.wd[l].map(), (size_t)(s.NI + s.H) * s.ND * 2);
+            pdump("wo",  s.wO[l].map(), (size_t)s.qout * s.NO * 2);
+        }
         auto t0 = std::chrono::steady_clock::now();
         auto r = s.krB((unsigned)3, s.iB, (unsigned)s.insB_words, s.aB, s.wB, s.anB, s.qB, s.oB,
                        s.wO[l], s.cB, s.a2B, s.an2B, s.w2[l], s.c2B, s.slB, s.wd[l], s.cdB, s.hbfB);
@@ -525,6 +539,25 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
             if (f) { fwrite(s.cdB.map(), 2, (size_t)M * s.H, f); fclose(f); }
             FILE* g = fopen("/tmp/fk3_drv_Q.bin", "wb");
             if (g) { fwrite(s.qB.map(), 2, (size_t)M * s.NQKV, g); fclose(g); }
+            // Full stage dump, matching bench_fk3_layer's BENCH_DUMP_STAGES names, so the
+            // two invocations can be compared byte-for-byte and the first differing buffer
+            // identifies where they part company.
+            auto dump = [](const char* n, const void* ptr, size_t bytes) {
+                char path[256]; snprintf(path, sizeof path, "/tmp/drv_%s.bin", n);
+                FILE* f = fopen(path, "wb"); if (f) { fwrite(ptr, 1, bytes, f); fclose(f); }
+            };
+            dump("aB",  s.aB.map(),  (size_t)(M + 1) * s.H * 4);
+            dump("a2B", s.a2B.map(), (size_t)(M + 1) * s.H * 4);
+            dump("qB",  s.qB.map(),  (size_t)M * s.NQKV * 2);
+            dump("oB",  s.oB.map(),  (size_t)s.NH * M * s.HD * 2);
+            dump("cB",  s.cB.map(),  (size_t)M * s.NO * 2);
+            dump("c2B", s.c2B.map(), (size_t)M * s.N2 * 2);
+            dump("slB", s.slB.map(), (size_t)M * s.NI * 2);
+            dump("hbfB",s.hbfB.map(),(size_t)M * s.H * 2);
+            dump("cdB", s.cdB.map(), (size_t)M * s.ND * 2);
+            dump("w2",  s.w2[l].map(), (size_t)s.H * s.N2 * 2);
+            dump("wd",  s.wd[l].map(), (size_t)(s.NI + s.H) * s.ND * 2);
+            dump("wo",  s.wO[l].map(), (size_t)s.qout * s.NO * 2);
             // Which of launch B's outputs does the kernel actually touch? If some are
             // non-zero and CD is not, the schedule ran and the failure is confined to the
             // final D output; if ALL are zero, the kernel wrote nothing at all.

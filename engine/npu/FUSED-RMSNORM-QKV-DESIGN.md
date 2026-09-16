@@ -2864,3 +2864,42 @@ So the remaining work on fk-3 splits cleanly:
    uploads themselves are now proven byte-correct by memcmp.
 2. speed - see above; this is where the objective's "one launch" argument actually gets
    tested.
+
+## RESOLVED: the driver's launch is bit-identical to the working bench
+
+The garbage output was **my own test rig**, not the kernel. `prepare_random()` and the
+`NPU_FK3_SKIP_A` A-fill used the bench's formulas but with `size_t i`:
+
+```c
+w[i] = rne((float)((i % 13) - 6) * 0.05f);   // size_t: (i%13)-6 WRAPS for the negative half
+```
+
+The bench uses `long i`, so its expression ranges over [-6, 6]; mine wrapped to ~1.8e19 for
+half the indices, and `rne()` of a huge value saturates the bf16 exponent — which is why
+every non-zero element collapsed to the *same* bit pattern (23885 / 9.232379e17) while the
+zero positions still matched the bench's exactly. That single detail produced a plausible
+"the kernel is broken" signal: huge weights, `inf` layer output, and a byte-level diff that
+looked like a layout mismatch. Casting to `(int)` fixed it.
+
+How it was caught, and the method worth keeping: I dumped every stage of both invocations
+to files and compared bytes, **before and after the launch**. The pre-launch comparison is
+the one that matters — a post-launch "input" dump cannot distinguish "I uploaded the wrong
+thing" from "the kernel overwrote its own input", and I had already been misled once by a
+probe that reinterpreted bytes in place. After the fix:
+
+```
+pre-launch inputs :  aB a2B qB w2 wd wo   -> ALL IDENTICAL to the bench
+computed stages   :  oB cB c2B slB hbfB cdB -> ALL IDENTICAL, byte for byte
+layer output      :  nonzero 1.000, maxabs 1.40625   (was inf)
+```
+
+Six stages of a fused attention+FFN layer matching a known-good reference byte for byte,
+with identical inputs on an idle device, is as strong as this file's evidence gets. **The
+driver's launch-B invocation is correct.** Launch A, the host RoPE, the KV scatter and the
+real-weight path (`prepare_layer`) are therefore where the engine's remaining wrongness
+lives — the standalone test exercises none of them, since it uses random weights.
+
+This also retires a hypothesis I had ranked first: the weights are NOT mis-laid-out by
+`prepare_layer` as far as launch B is concerned, because launch B now demonstrably consumes
+exactly what it is given and produces the reference's answer. Whatever is wrong in the
+engine is upstream of that, or in the weights as the engine dequantizes them.
