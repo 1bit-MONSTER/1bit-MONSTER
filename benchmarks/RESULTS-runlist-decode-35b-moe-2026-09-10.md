@@ -513,3 +513,37 @@ QKV 27 ms + O 25 ms + attn 5.6 ms are the rest. That matches the engine's own co
 Net: the working engine route is **~0.10 tok/s**, i.e. ~7× BELOW the ~0.7 tok/s
 baseline, with a fully identified bottleneck (MoE FFN launches on an M=128-baked
 kernel). The objective's dense-class target remains ~900× away.
+
+### Addendum 12 — the 35B FFN bottleneck is HOST per-token expert dequant, not the NPU
+
+Dug into the 188 ms/layer FFN from addendum 10c. Per-layer instrumentation shows TWO
+packs (routed + shared) and the FFN total:
+
+```
+[pack l=38] 122.2 ms (miss=119.9 sync=0.3)     <- routed top-8: HOST dequant, cache MISS
+[pack l=38]   2.8 ms (miss=  0.0 sync=0.4)     <- cache HIT
+[moe_ffn_npu_batch l=38 M=1] 193.3 ms (U=8)
+[pack l=39]  81.9 ms (miss= 79.7)
+[pack l=39]   3.1 ms (miss=  0.0)
+[moe_ffn_npu_batch l=39 M=1] 194.6 ms (U=8)
+```
+
+`EXP_CACHE_SZ = 256` (all experts fit), but the **routed** experts change per token, so
+the cache misses and the host re-dequantises 8 experts × 3 matrices every layer
+(~15 ms/expert → ~120 ms/layer → **~4.8 s of the ~9.9 s/token**). The NPU GUSGU/DSD
+portion is the remainder (~70 ms/layer).
+
+So the working route's breakdown at M=1 is approximately:
+| stage | per layer | per token (40 layers) |
+|---|---|---|
+| MoE FFN host expert dequant (misses) | ~120 ms | ~4.8 s |
+| MoE FFN NPU (fused GUSGU/DSD) | ~70 ms | ~2.8 s |
+| QKV (M=128-baked kernel) | 27 ms | 1.1 s |
+| O (M=128-baked kernel) | 25 ms | 1.0 s |
+| attention (GDN) | 5.6 ms | 0.2 s |
+
+Actionable lever: dequantise/bf16-preload the expert pool ONCE (init already spends
+~50 s on "Dequant+pack") so the per-token pack is a memcpy instead of a scalar
+int4→float→int8 pass. Best case that removes ~4.8 s of ~9.9 s — i.e. ~0.2 tok/s, still
+~440× short of the dense class. Everything else (the M=128-baked kernels) is the
+engine's documented "per-shape small-M xclbins or fused layer streams" problem.
