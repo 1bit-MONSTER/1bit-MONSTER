@@ -4732,3 +4732,47 @@ behaviour moves with preceding DMA work (5/8 -> 2/8 with an extra FFNnorm round)
 feed carries real content. The lane's REFERENCE design, n1_core_i8_m1.py, is structurally IDENTICAL and
 is itself flaky, so every 8192/8192 quoted here before addendum 117 -- including the m1 QKV result this
 workstream has treated as ground truth since addendum 82 -- was a single lucky sample.
+
+### Addendum 131 — EACH FEED INDEPENDENTLY ARRIVES EMPTY ABOUT A QUARTER OF THE TIME, and the arithmetic closes
+
+Two more measurements, and together they give the first quantitative account that fits everything.
+
+  random B, CHUNK_B unset (row-major feed):   4 all-zero runs in 8     -> the PACKING PATH is not it (5/8 with CHUNK_B)
+  ALLONES_B with CHUNK_B=1 (packing active):  2 all-zero runs in 8     -> the DATA still matters (4-5/8 with random B)
+
+THE MODEL. An all-zero C appears exactly when a feed arrives EMPTY, because the core multiplies zeros.
+
+  With B = all ones, C[n] = sum(A) for every n. An all-zero C therefore means THE A ARRIVED EMPTY.
+      p_A  ~=  2/8  =  0.25
+  With random B, an all-zero C means EITHER feed arrived empty (or both).
+      P    =  1 - (1 - p_A)(1 - p_B)  =  1 - 0.75^2  =  0.4375  ~=  4/8
+  and 4 of 8 is exactly what was measured.
+
+So the two rates are consistent with ONE number: EACH FEED INDEPENDENTLY ARRIVES EMPTY ABOUT A QUARTER OF
+THE TIME. That explains the bimodality (empty gives an all-zero C, full gives a correct one), why the
+K=2048 case is better (with 32 A tiles and 2,048 B tiles per column, a single empty tile corrupts a
+column rather than the whole output), and why more preceding DMA work helps (longer sequence, more slack
+for the shim to win the race).
+
+AND IT EXPLAINS WHY THE NORMS NEVER FAIL. The norms also have two feeds -- A and W -- but their core
+acquires W ONCE per row and A once per row, with the whole RMSNorm computation between acquires. The
+GEMM's core acquires A and B in a TIGHT PER-ki LOOP. The difference is not the fifos, the depths, the
+tiles or the columns: it is that the GEMM's consumer OUTRUNS the shim, and an unfilled fifo slot is
+apparently RETURNED AS ZEROS RATHER THAN BLOCKING the consumer.
+
+THAT IS THE FAULT: the object fifo's acquire is not providing the backpressure the design assumes. Every
+structural hypothesis I tested -- broadcast, depths, pools, mem-tile relay, packing, phase order, tiles,
+columns, tokens -- is consistent with that one sentence, and so is the m1's being flaky while looking
+identical: it is the same pattern with a different race margin.
+
+WHAT TO TRY NEXT, in order:
+  1. Find out whether the DSL offers a fifo form whose acquire genuinely blocks for a shim-fed fifo --
+     the mlir-aie examples and the `object_fifo` signature are the place to look, and this is now a
+     specific, answerable question rather than a hunt.
+  2. Failing that, PACE THE CONSUMER: make the core's next acquire depend on something that cannot be
+     produced before the shim has filled the slot -- e.g. a depth-1 fifo with an explicit dependency, or
+     a second fifo the core must also acquire, ordered so the shim cannot fill one without the other.
+  3. Establish whether the m1 design's small shapes fail for the same reason (they should) and whether
+     the engine's own I8Ctx path -- which has run at 1.9 s/tok without producing garbage tokens -- avoids
+     it by construction. The engine's design is the existence proof that this is solvable, and reading
+     how it feeds its cores is probably the fastest route to the answer.
