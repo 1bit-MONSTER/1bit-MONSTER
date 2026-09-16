@@ -1893,3 +1893,35 @@ NEXT: determine the CONTENT of those 20 rows -- disassemble how gen_layer_seq co
 capture a legitimate weight BO from the runtime -- then repack arg-3 to 94,720 B (20 x 4736) with
 that content and re-run, gating on the act. Do not guess the content; the size is now established,
 the content is not.
+
+### Addendum 53 — the GROUND TRUTH exists on this box: /tmp/cap/L0_arg3.bin is the real runtime's arg-3
+
+Found a capture already on disk from earlier work: /tmp/cap/L0_arg3.bin (536,870,912 B) -- the REAL
+runtime's arg-3 weight BO for layer 0, plus /tmp/cap/full_L0.bin and full_L1.bin (482,344,960 B)
+and rb_L0.bin (16,291,840 B), produced by npu-infer/tools/capture/cap_interposer.cpp (which dumps
+both the small BO_TO syncs and the weight/activation BOs on BO_FROM syncs). So the "capture a
+legitimate weight BO from the runtime" half of the next action is already satisfied -- no need to
+re-run the runtime under an interposer.
+
+Two structural facts from it, both of which bear on my earlier reasoning:
+ 1. THE LAYERNORMS ARE NOT IN IT VERBATIM. Searched the first 4 MB for
+    model.layer.0.input_layernorm.weight and post_attention_layernorm.weight as raw bf16, as f32,
+    and by first-256-byte prefix: no match, and likewise for ssm_a / ssm_dt.bias. So the runtime's
+    arg-3 does NOT begin with the two layernorms the way npu_pack_moe_region_b writes them --
+    independent support for the size discrepancy in addendum 52 and for my addendum-48 refutation.
+ 2. HUGE VALUES IN arg-3 ARE NORMAL. Interpreting the first 94,720 B as bf16: 47,318 of 94,720
+    bytes nonzero, all finite, maxabs 1.901e38, and 5,154 elements with |v| > 1e6. So the
+    "1e36-class values" that looked like a smoking gun in region-A (addendum 43) exist in the
+    WORKING runtime's own arg-3 in their thousands. That is a third, independent reason the tail
+    theory was wrong, and it means the magnitude signature I was shown was never diagnostic.
+
+WHAT THIS CHANGES: the missing piece is no longer "what should arg-3 contain?" (the capture answers
+that) but "what TRANSFORM maps the model tensors into it?" -- the same question that
+qwen3_6_reorder_cpy answered for region-B, and the same method should answer it here: derive the
+transform from the lib's own callable / from gen_layer_seq, then verify byte-for-byte against
+L0_arg3.bin rather than against my reasoning. The size is established (20 x 4736 = 94,720 B), the
+ground truth is on disk, and only the transform is unknown.
+
+NEXT RUN: derive the arg-3 transform and check it against /tmp/cap/L0_arg3.bin; repack arg-3 to
+94,720 B when it matches; gate on the act (pre-act CLEAN, post-act ALL NaN 1024/1024, exit 0, no
+ERT). Do not re-derive the capture -- it exists, and its provenance is cap_interposer.cpp.
