@@ -3834,3 +3834,43 @@ of refuted structural hypotheses) is closed with a two-line root cause: too many
 lengths measured in the wrong unit. The remaining work is extension, not diagnosis: attention, O,
 FFNnorm, GUSGU, SiLU and DSD phases, then one runlist per token validated against the engine's
 bit-identical tokens.
+
+### Addendum 109 — the first extension (FFNnorm as a third phase) does not build yet; the milestone stands
+
+Added a THIRD phase to the working two-phase design: FFNnorm -- the same `rms_norm_f32_bf16` kernel on a
+SECOND column, reading and writing NEW REGIONS of the same merged buffer (A at F, gamma at F+H*4, out at
+F+H*4+H*4, where F = H*4+H*4+H*2), with the buffer doubled to 40,960 bytes and the runtime_sequence
+still at FOUR arguments. The merge pattern holds: adding a whole phase cost no new argument.
+
+IT DOES NOT COMPILE YET:
+
+  /tmp/cap/FFN2/design.mlir:18:5: error: operand #0 does not dominate this use
+  Error: Resource allocation pipeline failed
+
+That is an MLIR/SSA scoping problem in the block I added -- a value referenced before it dominates the
+use -- not a resource limit and not a property of the design idea. It is also NOT the column count: I
+first suspected six columns and rebuilt at c=2 (five columns: GEMM on 0-1, norm on 2, FFNnorm on 3) and
+it fails identically, with the same dominance error rather than any "exceeded" message. The likely
+cause is that one of the type aliases or fifo values my block uses (`Rn_ty`, `Rw_ty`, `Ro_ty`, or the
+tile/fifo objects) is defined in a narrower scope than the point where I inserted the new core, since
+the working norm block sits mid-function and the GEMM's core is created inside a `for c in range(...)`
+loop. The next attempt should compare the placement of my block against the norm's line by line rather
+than re-deriving it.
+
+WHAT IS NOT IN DOUBT: the two-phase design is MET and re-verified (addendum 108) -- one xclbin, one
+submit, `FOUR-arg RMSNorm: 910/2048 match` (bit-identical to the proven norm-only design) and
+`FOUR-arg GEMM: 8192/8192 columns match`. This addendum records an extension in progress, not a
+regression.
+
+CARRY-FORWARD FOR THE EXTENSION WORK, so none of it has to be rediscovered:
+ - The runtime_sequence allows FIVE data arguments at most (XRT groups 3..7; group_id(8)=131071 is the
+   invalid sentinel). Six arguments compile, allocate, submit -- and never retire. Four phases are
+   already using four slots; every further phase must share a buffer at fixed byte offsets.
+ - `shim_dma_single_bd_task` sizes are in ELEMENTS OF THE BUFFER MEMREF, not the fifo's type: with an
+   i8 buffer an f32 row needs H*4 and a bf16 row H*2.
+ - `def seq(...)` parameter names must follow the DECORATOR's np.ndarray list order.
+ - Use the generator's own type aliases (`i8`, `f32`, `bf16`); `np.uint8` and `np.int8` make aie's
+   `np_ndarray_type_get_dtype` raise and the generator emits a traceback instead of MLIR.
+ - A second phase needs its OWN column (its mem tile cannot share with the GEMM's B and C).
+ - The working invariants to preserve: one submit; host-computed references for every phase; the
+   LINEAR B tap (8192/8192 verified, and the documented fix for the B-feed pathology).

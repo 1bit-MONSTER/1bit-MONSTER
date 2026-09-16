@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
 
     // ---- buffers, one per runtime_sequence argument ------------------------------
     auto bo_ins  = xrt::bo(dev, ins.size() * 4, xrt::bo::flags::cacheable, k.group_id(1));
-    auto bo_nA   = xrt::bo(dev, H * 4 + H * 4 + H * 2, xrt::bo::flags::host_only, k.group_id(3));
+    auto bo_nA   = xrt::bo(dev, 2 * (H * 4 + H * 4 + H * 2), xrt::bo::flags::host_only, k.group_id(3));
     auto bo_nW   = xrt::bo(dev, H * 4,          xrt::bo::flags::host_only, k.group_id(3)); // same SIZE as nA -> same group
     auto bo_nO   = xrt::bo(dev, H * 2,          xrt::bo::flags::host_only, k.group_id(4));
     auto bo_gA   = xrt::bo(dev, K,              xrt::bo::flags::host_only, k.group_id(5));
@@ -191,8 +191,14 @@ int main(int argc, char** argv) {
         // THE FIX: FOUR runtime arguments. The norm's A, gamma and out live in ONE buffer at fixed
         // byte offsets 0, H*4, H*4+H*4 -- inside the runtime's five data-argument slots.
         char* nm = (char*)bo_nA.map<void*>();
+        const int F = H * 4 + H * 4 + H * 2;          // NRM is TWO norm regions
         memcpy(nm, nA.data(), H * 4);                 // norm A   at 0
         memcpy(nm + H * 4, nW.data(), H * 4);         // gamma    at H*4
+        // FFNnorm (phase 3) gets DISTINCT inputs, so a region mix-up cannot pass silently.
+        std::vector<float> nA2(H), nW2(H);
+        for (int i = 0; i < H; i++) { nA2[i] = nA[H - 1 - i]; nW2[i] = 1.0f + 0.25f * nW[i]; }
+        memcpy(nm + F, nA2.data(), H * 4);            // FFNnorm A     at F
+        memcpy(nm + F + H * 4, nW2.data(), H * 4);    // FFNnorm gamma at F + H*4
         bo_nA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         auto r4 = k(3, bo_ins, (unsigned)ins.size(), bo_nA, bo_gA, bo_gB, bo_gC);  // MLIR arg order: (NRM, GA, GB, GC)
         r4.wait();
@@ -209,6 +215,17 @@ int main(int argc, char** argv) {
           if (rf) { if (fread(ro.data(), 2, H, rf) != (size_t)H) {} fclose(rf); } }
         int nb = 0; for (int i = 0; i < H; i++) if (go[i] != ro[i]) nb++;
         fprintf(stderr, "FOUR-arg RMSNorm: %d/%d match\n", H - nb, H);
+        {   // phase 3: FFNnorm, verified against its OWN independently computed reference
+            double ss = 0.0;
+            for (int i = 0; i < H; i++) ss += (double)nA2[i] * nA2[i];
+            double rmsv = std::sqrt(ss / H) + 1e-5;
+            std::vector<uint16_t> fo(H);
+            memcpy(fo.data(), (char*)bo_nA.map<void*>() + F + H * 4 + H * 4, (size_t)H * 2);
+            int fb = 0;
+            for (int i = 0; i < H; i++)
+                if (fo[i] != f32_to_bf16((float)(nA2[i] / rmsv) * nW2[i])) fb++;
+            fprintf(stderr, "FOUR-arg FFNnorm: %d/%d match\n", H - fb, H);
+        }
         std::vector<int32_t> gc(N);
         memcpy(gc.data(), bo_gC.map<void*>(), (size_t)N * 4);
         int cb = 0;

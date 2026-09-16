@@ -110,6 +110,35 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                     nO_c.release(ObjectFifoPort.Produce, 1)
                 nW_c.release(ObjectFifoPort.Consume, 1)
 
+        # ---- PHASE 3: FFNnorm -- the SAME kernel on a SECOND column, regions 2..4 of NRM ----
+        # A second phase needs its OWN column (addendum 102: sharing a mem tile that already
+        # carries the GEMM's B and C fails resource allocation). The buffer argument count stays
+        # at FOUR, the hard limit being five (addendum 106): the new regions live inside NRM.
+        ffn_shim = tile(NC + 1, 0)
+        ffn_mem = tile(NC + 1, 1)
+        ffn_core = tile(NC + 1, 2)
+        fA_s = object_fifo("F_A_S", ffn_shim, ffn_mem, 2, Rn_ty)
+        fA_c = object_fifo("F_A_C", ffn_mem, ffn_core, 2, Rn_ty)
+        fW_s = object_fifo("F_W_S", ffn_shim, ffn_mem, 1, Rw_ty)
+        fW_c = object_fifo("F_W_C", ffn_mem, ffn_core, 1, Rw_ty)
+        fO_c = object_fifo("F_O_C", ffn_core, ffn_mem, 2, Ro_ty)
+        fO_s = object_fifo("F_O_S", ffn_mem, ffn_shim, 2, Ro_ty)
+        object_fifo_link(fA_s, fA_c)
+        object_fifo_link(fW_s, fW_c)
+        object_fifo_link(fO_c, fO_s)
+
+        @core(ffn_core, stack_size=0x2000)
+        def ffn_norm_body():
+            for _ in range_(0xFFFFFFFF):
+                wbuf = fW_c.acquire(ObjectFifoPort.Consume, 1)
+                for _ in range_(1):
+                    arow = fA_c.acquire(ObjectFifoPort.Consume, 1)
+                    orow = fO_c.acquire(ObjectFifoPort.Produce, 1)
+                    rms(arow, wbuf, orow)
+                    fA_c.release(ObjectFifoPort.Consume, 1)
+                    fO_c.release(ObjectFifoPort.Produce, 1)
+                fW_c.release(ObjectFifoPort.Consume, 1)
+
         # ---- PHASE 2 fifos: A broadcast to every column, B and C per column ----
         gA_c = object_fifo("G_A_C", qkv_shim[0],
                            [qkv_core[c] for c in range(n_aie_cols)], BATCH_SIZE + 1, Ga_ty)
@@ -145,7 +174,7 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
 
         # ---- runtime sequence: ONE host-side sequence driving BOTH phases ----
         @runtime_sequence(
-            np.ndarray[(H * 4 + H * 4 + H * 2,), i8],   # ONE norm buffer: A|gamma|out
+            np.ndarray[(2 * (H * 4 + H * 4 + H * 2),), i8],   # TWO norm buffers: A1|W1|O1|A2|W2|O2
             np.ndarray[(K,), i8],             # gemm A
             np.ndarray[(K * N,), i8],         # gemm B
             np.ndarray[(N,), i32],            # gemm C
@@ -164,6 +193,17 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
             ot = shim_dma_single_bd_task(nO_s, NRM, offset=H * 4 + H * 4, sizes=[1, 1, 1, H * 2],
                                          strides=[1, 1, 1, 1], issue_token=True)
             dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
+            # phase 3: FFNnorm -- the same three DMAs, into the SECOND half of NRM
+            F = H * 4 + H * 4 + H * 2
+            fwt = shim_dma_single_bd_task(fW_s, NRM, offset=F + H * 4, sizes=[1, 1, 1, H * 4],
+                                          strides=[1, 1, 1, 1], issue_token=True)
+            dma_start_task(fwt); dma_await_task(fwt); dma_free_task(fwt)
+            fat = shim_dma_single_bd_task(fA_s, NRM, offset=F, sizes=[1, 1, 1, H * 4],
+                                          strides=[1, 1, 1, 1], issue_token=True)
+            dma_start_task(fat); dma_await_task(fat); dma_free_task(fat)
+            fot = shim_dma_single_bd_task(fO_s, NRM, offset=F + H * 4 + H * 4, sizes=[1, 1, 1, H * 2],
+                                          strides=[1, 1, 1, 1], issue_token=True)
+            dma_start_task(fot); dma_await_task(fot); dma_free_task(fot)
             # phase 2: the GEMM, unchanged in structure from n1_core_i8_m1.py
             for gi in range(num_col_group):
                 col_group = gi % num_col_group
