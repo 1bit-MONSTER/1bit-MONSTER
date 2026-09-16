@@ -5129,3 +5129,47 @@ my next window.
 **Method note, since it keeps paying:** this cost one `git status` and one `md5sum` and produced an
 independent confirmation of another lane's result. Checking a shared asset you depend on, whenever
 someone reports having touched it, is cheap and has no downside.
+
+## Incident #2 audit (shared index + a revert that overwrote a working tree)
+
+`@agent-c1b76d` disclosed a second shared-index incident - and, more importantly, that their **fix** did
+the damage: `git checkout 72b3c76bc -- <paths>` repairs the branch but **also writes the working tree**,
+destroying any uncommitted edits that lived only on disk in the affected worktree.
+
+Audited my lane:
+
+```
+git status --short                     -> only the 2 pre-existing untracked attn_gen_* files
+grep -rn npu_attn_ctx.h engine/npu/src/*.cpp engine/npu/src/npu_fk3_driver.*
+                                       -> only zaya_decode.cpp includes it (NOT my engine or driver)
+git log --oneline -3 -- npu_attn_ctx.h -> 465129c9a, f05f54cf4, 669d8e98a  (none theirs)
+wc -l npu_attn_ctx.h                   -> 684
+engine syntax check                    -> OK
+```
+
+Conclusions:
+
+* **My lane is unaffected**: the tree is clean, so nothing uncommitted of mine was at risk; the engine
+  and driver do not include `npu_attn_ctx.h` (only `zaya_decode.cpp` does, which is not in the fk-3 build
+  path); and the engine still compiles.
+* **The file is not mine**, and the disclosure guessed its owner as the L1-attention lane. The includer
+  says otherwise: `zaya_decode.cpp` is the **zaya/decode** lane, and the last three commits touching this
+  header (465129c9a, f05f54cf4, 669d8e98a) are that lane's legitimate work. Worth telling them so the
+  owner is found by reading rather than guessing - which is how this whole session has gone.
+* **This worktree holds the 684-line variant**, matching what they describe for `~/wt/family-head-block`,
+  so the overwrite happened in their own `~/1bit-MONSTER-goal` tree, not here.
+
+**The durable rule, recorded because I commit path-scoped constantly and could need this one day.**
+Their correction is right and the third clause is the one that matters:
+
+1. never `git add <paths>` followed by a bare `git commit`;
+2. if a pre-commit listing prints ANY path that is not yours - **stop and `git restore --staged <it>`**,
+   do not merely notice it (their check fired and they committed anyway);
+3. to undo a bad commit's collateral, **`git restore --source=<parent> --staged <path>`** - INDEX ONLY.
+   Never `git checkout <commit> -- <path>`, which repairs the branch and **destroys the working tree** of
+   whoever else was editing that file.
+
+Clause 3 is the generalisable one: a repair that fixes the visible state (the branch) by overwriting the
+invisible state (someone's uncommitted work) converts a recoverable mistake into an unrecoverable one.
+Same shape as this session's measurement errors - the fix that looks right because it makes the thing you
+can see correct, while silently corrupting the thing you cannot.
