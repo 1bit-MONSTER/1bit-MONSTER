@@ -4359,3 +4359,50 @@ accumulation into cbuf.
 SECOND PROBE, also cheap: drop `issue_token=True` from the A/B/C tasks and re-measure. Tokens are the
 mechanism by which a shim BD latches against the core's progress, and misusing them is exactly how a
 producer could latch a buffer the core is still reading.
+
+### Addendum 122 — WITH A SINGLE TILE THE GEMM IS WRONG IN 8 OF 8 RUNS. It is a startup fault.
+
+Took the loop apart: K=64 so n_k=1, a single A tile and a single B tile per column, no iteration, no
+batching, no reuse, 54 buffer descriptors. Eight runs:
+
+  7, 421, 87, 7, 103, 7, 7, 7        -> 8 FAILURES IN 8 (and 5 of them gave exactly 7/2048)
+
+EVERY RUN IS WRONG, and more than half give the SAME value. That combination -- wrong always, but
+usually wrong in the same way, with occasional excursions to 421, 87 and 103 -- is not the signature of a
+subtle steady-state race. It is the signature of a STARTUP fault: something consistent happens at the
+beginning of every run, and a timing-dependent component occasionally makes it worse.
+
+AND IT EXPLAINS THE WHOLE PICTURE, including the shape dependence that has been visible since addendum
+92 (where the m1 generator gave 2/256 at K=64, 112/256 at K=128 and 0/256 at K=256, and I recorded "the
+small configurations are broken in the shared generator" without knowing why):
+
+  - n_k=1  (54 BDs):     the ONLY tile is corrupted, so nearly everything is wrong -- 8 of 8 runs, 7/2048
+  - n_k=32 (2,630 BDs):  the FIRST few tiles are corrupted and the rest are fine -- 1 to 3 failures in 8,
+                         wrong by 32, 112, 656, 1008 columns, i.e. a fraction of a tile or a few tiles
+  - the norms:           no such feed at all, exact in EVERY run ever taken
+
+A startup window that corrupts the first tile or two, and that is occasionally longer, produces exactly
+this spectrum: catastrophic when there is only one tile, a few percent when there are thousands, and
+nothing at all for phases that do not use the pattern. The "partial-tile" signature I have been chasing
+since addendum 117 is one instance of it.
+
+THE PRIME SUSPECT IS NOW THE TOKEN PROTOCOL. Every task is issued with `issue_token=True`, which makes a
+shim BD latch against the core's progress -- and if the core's side of that handshake is not what the
+token expects at the moment the first BD is issued, the first transfer lands in a buffer the core is
+already using. That is precisely a startup-only, first-tile-only corruption.
+
+NEXT PROBES, in order:
+  1. Remove `issue_token=True` from the A/B/C tasks and re-run 8 times at n_k=1. If a single-tile GEMM
+     becomes exact, the token handshake is the fault and the fix is to use it correctly (or not at all).
+  2. If that fails, run n_k=1 with an explicit delay or barrier between the core's start and the first
+     DMA, to separate "the first BD is wrong" from "the core is not ready".
+  3. Read n1_core_i8_m1.py again for how the m1 generator uses tokens and fifo depths at its own small
+     shapes -- addendum 92's 2/256, 112/256, 0/256 progression is the same fault seen from the other
+     side, and the m1 generator's AUTHORED structure may already show what its own small cases lacked.
+
+NOTE ON WHAT THIS MEANS FOR THE MILESTONE: the norm phases (RMSNorm, FFNnorm, bit-identical to each
+other over 2048/2048 in every run) are unaffected and remain verified. The GEMM is not verified at any
+shape -- not at K=64, not at K=2048 -- and the three-phase design's GEMM claim must be withdrawn until
+this startup fault is fixed. That is the honest position, and it is a much better position than it was:
+the fault is now localised to the first tile of a feed, reproducible in 8 of 8 runs at a shape small
+enough to reason about, and the prime suspect has a name.
