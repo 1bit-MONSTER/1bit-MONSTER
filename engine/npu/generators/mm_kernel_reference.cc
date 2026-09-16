@@ -17,6 +17,16 @@
 
 #include "zero.cc"
 
+// Mutable statics must be placed in .data, never .bss: the aiecc-generated
+// bare-metal ld.script maps only .text/.data, so a zero-init static lands in
+// .bss and is DROPPED from the kernel ELF — kernel reads of it then return
+// garbage (issue #1838, observed in the #1769 round). mm_binary_q1.cc has
+// carried this annotation since; the fused kernel lost it, so two counters sat
+// in .bss again (issue #2199). engine/npu/tests/check_kernel_bss.sh and
+// build_p1i4.sh fail loudly if any .bss symbol survives a build. Same
+// definition as engine/npu/kernel/mm_binary_q1.cc:23.
+#define KERNEL_STATIC __attribute__((section(".data")))
+
 // Fused GU→SiLU→D on-core arithmetic (issue #1759) — dual-compiled with the
 // host CPU reference (engine/npu/src/zaya_moe_cpu.h) so the exact bit-level
 // contract is verified on x86 before the NPU round-trip. No libm: pure
@@ -623,10 +633,68 @@ extern "C" {
 #endif
 #endif
 
+// ── DELIVERY PROBE (opt-in: -DDELIVERY_PROBE) ───────────────────────────────
+// A kernel's arguments arrive in p0/p1/p2 on aie2p. Peano and Chess do not
+// implement that delivery the same way (Peano emits `movs p0, r0` in the core
+// program; Chess reaches an argument block through p6/p7), so when an arm
+// delivers nothing every output is zero and there is no way to see WHAT the
+// kernel received. This probe makes the delivered ABI observable as a number:
+// it stashes the three pointers it was handed into c_out[0..2] plus a sentinel
+// in c_out[3], then returns without computing. bench_gemm_analytical prints
+// C[0..7] when PROBE is set in the environment.
+#ifdef DELIVERY_PROBE
+#include <stdint.h>
+#define DELIVERY_PROBE_OR_NOTHING(a_in, b_in, c_out)                           \
+    do {                                                                       \
+      volatile int32_t *pr_ = (volatile int32_t *)(c_out);                     \
+      pr_[0] = (int32_t)(uintptr_t)(a_in);                                     \
+      pr_[1] = (int32_t)(uintptr_t)(b_in);                                     \
+      pr_[2] = (int32_t)(uintptr_t)(c_out);                                    \
+      pr_[3] = (int32_t)0x5A5A5A5A;                                            \
+      return;                                                                  \
+    } while (0)
+#else
+#define DELIVERY_PROBE_OR_NOTHING(a_in, b_in, c_out) do { } while (0)
+#endif
+
+// Second probe, for the 1-pointer kernel (zero_i32, called by the same core
+// just before matmul). Distinct sentinel 0xA5A5A5A5: if the chess arm shows it,
+// the 1-arg call was delivered while the 3-arg call was not.
+#ifdef DELIVERY_PROBE
+#define DELIVERY_PROBE_ZERO_OR_NOTHING(c_out)                                  \
+    do {                                                                       \
+      volatile int32_t *zr_ = (volatile int32_t *)(c_out);                     \
+      zr_[0] = (int32_t)(uintptr_t)(c_out);                                    \
+      zr_[1] = (int32_t)0xA5A5A5A5;                                            \
+      return;                                                                  \
+    } while (0)
+#else
+#define DELIVERY_PROBE_ZERO_OR_NOTHING(c_out) do { } while (0)
+#endif
+
+// Third knob, independent of the two above: DELIVERY_PROBE_FIXED=<address>
+// makes the kernel write a sentinel through an address that does NOT come from
+// the delivered arguments (the C-tile base of the core that owns C[0], which
+// the pointer stash reports on the working arm as c_out). It is emitted BEFORE
+// the pointer stash, so it still happens when the arguments are garbage, which
+// is the entire point:
+//   C[0] == 0xDEAD1234 -> the kernel executed and its arguments were garbage
+//   C[0] == 0          -> the kernel never reached this function
+#ifdef DELIVERY_PROBE_FIXED
+#define DELIVERY_PROBE_FIXED_OR_NOTHING()                                      \
+    do {                                                                       \
+      *((volatile int32_t *)(DELIVERY_PROBE_FIXED)) = (int32_t)0xDEAD1234;     \
+    } while (0)
+#else
+#define DELIVERY_PROBE_FIXED_OR_NOTHING() do { } while (0)
+#endif
+
 #define matmul_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,            \
                                  mlir_type_out, r, s, t)                       \
   void matmul_##mlir_type_in##_##mlir_type_out(ctype_in *a_in, ctype_in *b_in, \
                                                ctype_out *c_out) {             \
+    DELIVERY_PROBE_FIXED_OR_NOTHING();                                         \
+    DELIVERY_PROBE_OR_NOTHING(a_in, b_in, c_out);                              \
     matmul_vectorized_##r##x##s##x##t##_##mlir_type_in##_##mlir_type_out<      \
         DIM_M, DIM_K, DIM_N>(a_in, b_in, c_out);                               \
   }
@@ -642,6 +710,7 @@ extern "C" {
 #define zero_vectorized_c_func(ctype_in, mlir_type_in, ctype_out,              \
                                mlir_type_out, r, s, t)                         \
   void zero_##mlir_type_out(ctype_out *c_out) {                                \
+    DELIVERY_PROBE_ZERO_OR_NOTHING(c_out);                                     \
     zero_vectorized<ctype_out, DIM_M, DIM_N>(c_out);                           \
   }
 
@@ -758,7 +827,7 @@ static int32_t g_i4_rq_dump4[8];   // ratios for chunk (i=3, jt=7)
 static int8_t g_i4_dq_dump5[64];   // chunk (i=0, jt=3) — same col-tile, i=0
 static int8_t g_i4_dq_dump6[64];   // chunk (i=1, jt=0) — same k-step, jt=0
 static int32_t g_i4_c00_tile[64];  // full (8,8) C00 accumulator after call 0
-static unsigned g_i4_call = 0;     // matmul call counter (first call = tile 0)
+static KERNEL_STATIC unsigned g_i4_call = 0;     // matmul call counter (first call = tile 0)
 static int g_cap5 = 1, g_cap6 = 1, g_cap3 = 1, g_cap4 = 1;
 static int8_t g_i4_a_dump[512];    // A tile (8,64) all bytes — I4_A_DUMP
 static int32_t g_i4_ref_c1[8];    // scalar reference C1 row-0 cols 0-7 (mmul vs scalar)
@@ -1089,7 +1158,7 @@ extern "C" void matmul_i8_i32_i4(const int8_t *__restrict pA,
     // (8,128) int32 MICROTILED: element (r,c) at (c/8)*64 + r*8 + c%8,
     // so row r col c = row-0 position + r*8.
     {
-        static unsigned call = 0;
+        static KERNEL_STATIC unsigned call = 0;
         const unsigned ki = call % 32;   // only ki%4 is used (== call%4 since 32%4==0)
         const int32_t* mq = (const int32_t*)(pB4 + 5120);
         if (ki % 4 == 3) {

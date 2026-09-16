@@ -32,6 +32,7 @@
 #include "pipeline_overlap.h"
 #include "shared_bo.h"
 #include "npu_gemm_kernel.h"
+#include "../../npu/src/npu_paths.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -129,7 +130,8 @@ int main(int argc, char** argv) {
     float attn_scale = 1.0f / sqrtf((float)HD);
     
     // Init NPU GEMM contexts
-    const char* xd = getenv("NPU_XCLBIN_DIR") ?: "engine/npu/xclbins";
+    const std::string xd_s = npu_xclbin_dir();
+    const char* xd = xd_s.c_str();
     auto xp = [&](const char* t) { static char b[256]; snprintf(b,256,"%s/final_i8_%s_v.xclbin",xd,t); return b; };
     auto ip = [&](const char* t) { static char b[256]; snprintf(b,256,"%s/insts_i8_%s_v.txt",xd,t); return b; };
     int XM = 128;

@@ -43,6 +43,16 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # seo_meta.py dates each page with `git log -1 --format=%cI origin/main
+          # -- site/<page>` (git_lastmod) to build sitemap.xml. A depth-1 checkout
+          # has no history to walk: at the shallow boundary the tip commit is a
+          # root commit, so every path matches it and EVERY url gets the run
+          # date as <lastmod> — 147/147 on 2026-09-13, 39 of them wrong, and it
+          # re-stamps them to "today" on each run. Do not drop this for speed:
+          # without full history the sitemap silently claims every page changed
+          # today, every day.
+          fetch-depth: 0
 
       - name: Generate post SEO tags
         id: gen
@@ -54,9 +64,9 @@ jobs:
           python3 scripts/gen_rss.py
           python3 scripts/gen_llms.py
           python3 scripts/seo_sync.py
-          if git status --porcelain site/ | grep -q .; then
+          if git status --porcelain site/ README.md docs/wiki/models.md docs/model-families/README.md docs/CODEBASE.md | grep -q .; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
-            echo "changed files:"; git status --porcelain site/
+            echo "changed files:"; git status --porcelain site/ README.md docs/wiki/models.md docs/model-families/README.md docs/CODEBASE.md
           else
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
@@ -104,7 +114,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add site/
+          git add site/ README.md docs/wiki/models.md docs/model-families/README.md docs/CODEBASE.md
           git commit -m "seo: generate tags/RSS/llms for posts ($DATE)"
           git push origin "$BRANCH"
 
@@ -113,9 +123,10 @@ jobs:
             echo "A blog post was added/updated on main, so its Open Graph / Twitter / JSON-LD / canonical, RSS item, llms.txt and claim numbers are regenerated for discovery."
             echo
             echo '```'
-            git status --porcelain site/
+            git status --porcelain site/ README.md docs/wiki/models.md docs/model-families/README.md docs/CODEBASE.md
             echo '```'
           } > /tmp/seo_pr_body.md
           gh pr create --base main --head "$BRANCH" \
             --title "seo: post SEO tags $DATE" \
             --body-file /tmp/seo_pr_body.md
+          gh pr merge "$BRANCH" --auto || echo "auto-merge enqueue failed (retry next run)"

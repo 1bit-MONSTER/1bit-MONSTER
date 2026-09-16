@@ -100,6 +100,24 @@ struct BackendPlugin {
 // monitors health, and handles failover.
 class BackendManager {
 public:
+
+    /// #2263: narrow the out-of-process spawn/health budget applied to every
+    /// backend this manager creates (0 = leave that lane's own budget alone).
+    /// The server sets this for *auto-selected* candidates, which are probes
+    /// rather than commitments; a model pinned with -m keeps the lane's budget.
+    void set_init_budget(int retries, int timeout_s) {
+        probe_retries_ = retries;
+        probe_timeout_s_ = timeout_s;
+    }
+
+    /// #2263: engine ids not to instantiate at all for the next init. Set with
+    /// set_init_budget for auto-selected probes, where the plan has already
+    /// emitted a KNOWN-ABORT verdict (the engine aborts on this artifact rather
+    /// than failing closed, so attempting it is worse than skipping it) and the
+    /// lane would otherwise consume the whole per-lane budget before declining.
+    /// Empty (the default) skips nothing, so a model pinned with -m is unaffected.
+    void set_skip_ids(const std::vector<std::string>& ids) { skip_ids_ = ids; }
+
     BackendManager();
     ~BackendManager();
 
@@ -145,7 +163,7 @@ public:
     /// Text-level whole-prompt generation, with automatic failover: tries the
     /// active backend's generate_text(); on failure (empty result or throw)
     /// it cascades to the next backend in the route, exactly like generate().
-    std::string generate_text(const std::string& prompt, int max_tokens);
+    std::string generate_text(const std::string& prompt, int max_tokens, float temperature = -1.0f);
     /// Forward pass with hidden state output
     bool forward(int token_id, float* hidden_out);
     /// LM head
@@ -231,6 +249,12 @@ private:
     bool pilot_active_ = false;
     bool initialized_ = false;
     mutable std::mutex mtx_;
+
+private:
+    int probe_retries_ = 0;     // #2263: 0 = leave the lane's budget alone
+    int probe_timeout_s_ = 0;
+    std::vector<std::string> skip_ids_;  // #2263: empty = skip nothing
+
 };
 
 // ── Convenience: global singleton ──

@@ -482,6 +482,46 @@ target_include_directories(gguf_reader PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>)
 
+# ── model_registry : artifact-first registry (goal mtvd3pmx, ADR R1/R3/R5) ───
+# The registry's unit is an ARTIFACT (id, container, dtype-space, 1..N shard
+# files, capabilities, tokenizer, lineage), not a file and not a ModelConfig.
+# Std-library only — no HIP/XRT — so this target configures and builds even
+# where the NPU toolchain is absent, and `registry_scan` stays usable as the
+# standalone oracle for the server's /v1/registry + /v1/models output.
+add_library(model_registry STATIC src/model_registry.cpp)
+target_include_directories(model_registry PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+# -- registry_scan : standalone registry CLI (argv[0]/subcommand-dispatched
+#    into onebin as `1bit registry`) --
+add_executable(registry_scan tools/registry_scan.cpp)
+target_link_libraries(registry_scan PRIVATE model_registry)
+target_compile_definitions(registry_scan PRIVATE REGISTRY_SCAN_STANDALONE)
+target_compile_options(registry_scan PRIVATE -O3 -Wall)
+
+# ── model_registry_route : capability -> backend bridge (goal mtvd3pmx 2c-2) ──
+# The registry stays engine-independent; this is the translation layer and it needs
+# BackendType/BackendRoute, so it lives on the engine side. Built as its own target
+# AND linked into onebin so the bridge is available to the shipped binary — it was
+# previously compiled only by hand, which meant a build could succeed while the
+# bridge was absent from the product.
+add_library(model_registry_route STATIC src/model_registry_route.cpp)
+target_link_libraries(model_registry_route PUBLIC model_registry)
+target_include_directories(model_registry_route PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>)
+
+# -- registry_route_map : dump/execute the capability -> backend map. Buildable so
+#    a reviewer can print the table and run plan_route() without the engine graph.
+#    plan_route() calls select_backend_route(), which is defined in
+#    model_router.cpp; naming that one source keeps the tool free of the engine
+#    graph (linking backend_manager would drag the whole engine in). The target
+#    has failed to link since #2190 added the call.
+add_executable(registry_route_map tools/registry_route_map.cpp src/model_router.cpp)
+target_link_libraries(registry_route_map PRIVATE model_registry_route)
+target_compile_options(registry_route_map PRIVATE -O3 -Wall)
+
 # -- gguf_to_onebp : pure-C++ GGUF -> 1BP converter (F16 lossless default; --q4nx/--tq2/--tq2nz/--tq1) --
 # Replaces the old tools/gguf_to_onebp.py. No Python anywhere in the convert
 # path. Default is lossless F16 (4-bit Q4NX loses ~0.998/layer and compounds
@@ -1489,7 +1529,23 @@ set(ONE_BIN_SOURCES
     tools/vision_server.cpp
     tools/zuna_port.cpp
     tools/onebit.cpp
-    tools/onebitd.cpp)
+    tools/onebitd.cpp
+    # `1bit registry` — artifact-level registry (goal mtvd3pmx). No main():
+    # REGISTRY_SCAN_STANDALONE is only set on the standalone registry_scan target.
+    tools/registry_scan.cpp
+    # `1bit registry-diff` — the legacy-scan vs registry disagreement table (step 2's
+    # evidence, read-only).
+    tools/registry_diff.cpp
+    # `1bit registry-merge-invariants` — asserts the merge's two properties (never drop a
+    # lane; move the head only for a stated exclusion). This is the check for the design
+    # fault I actually introduced and found by eye.
+    tools/registry_merge_invariants.cpp
+    # `1bit route-compare` — the flip decision table. In onebin by CONVENTION (the repo
+    # ships everything reachable from the CLI inside the single binary), and because two
+    # standalone attempts failed: linking backend_manager leaked HIP defines into a plain
+    # CXX TU, and compiling the loader sources in chased a dependency chain
+    # (safetensors_reader, q4nx_reader, ...). onebin already links all of it.
+    tools/route_compare.cpp)
 
 # zuna_port.cpp has its own main() -> zuna_main via ONE_BIN_DISPATCH; compile as C++.
 set_source_files_properties(tools/zuna_port.cpp PROPERTIES LANGUAGE CXX)
@@ -1526,7 +1582,7 @@ target_compile_options(onebin PRIVATE
     $<$<COMPILE_LANGUAGE:CXX>:-O3 -Wall -Wno-unused-result -std=c++23 -fopenmp>)
 target_link_libraries(onebin PRIVATE
     backend_manager vl_image vision_encoder whisper dl
-    rocm_cpp hip::host hip::device httplib::httplib
+    rocm_cpp model_registry model_registry_route hip::host hip::device httplib::httplib
     nlohmann_json::nlohmann_json hipblas)
 target_link_options(onebin PRIVATE -rdynamic -luuid)
 if(TARGET ggml_vulkan)
@@ -2265,11 +2321,38 @@ message(STATUS "models: 35+ architectures supported for 1BP conversion")
 # NPU Engine (XRT required)
 # ═══════════════════════════════════════════════════════════════════════════
 find_package(XRT QUIET)
+if(NOT XRT_FOUND)
+    # find_package(XRT) needs XRTConfig.cmake, which AMD's /opt/xilinx/xrt tree
+    # ships; a hand-built or distro-packaged XRT may have the headers and
+    # libraries without any CMake config. Probe that layout too.
+    #
+    # Measured note (release run for c08e51b0d): Ubuntu noble's libxrt-dev is XRT
+    # **2.13**, which does NOT satisfy this probe — its headers are the old
+    # /usr/include/xrt/experimental/*.h set, so `xrt/xrt_device.h` (the >= 2.14
+    # layout this tree includes) is absent, and the release still logs
+    # "npu: XRT NOT found". The probe is for real XRT trees, not for the apt
+    # package (see packaging/README.md and issue #2360).
+    find_path(_RC_XRT_HDR_DIR xrt/xrt_device.h
+        PATHS /opt/xilinx/xrt/include /usr/include /usr/local/include)
+    find_library(_RC_XRT_COREUTIL xrt_coreutil
+        PATHS /opt/xilinx/xrt/lib /usr/lib/x86_64-linux-gnu /usr/local/lib)
+    find_library(_RC_XRT_CORE xrt_core
+        PATHS /opt/xilinx/xrt/lib /usr/lib/x86_64-linux-gnu /usr/local/lib)
+    if(_RC_XRT_HDR_DIR AND _RC_XRT_COREUTIL)
+        set(XRT_FOUND TRUE)
+        set(XRT_INCLUDE_DIRS ${_RC_XRT_HDR_DIR})
+        set(XRT_CORE_LIBRARIES ${_RC_XRT_COREUTIL})
+        if(_RC_XRT_CORE)
+            list(APPEND XRT_CORE_LIBRARIES ${_RC_XRT_CORE})
+        endif()
+        message(STATUS "npu: XRT found via header/library probe (${_RC_XRT_COREUTIL})")
+    endif()
+endif()
 if(XRT_FOUND)
     add_subdirectory(engine/npu EXCLUDE_FROM_ALL)
     message(STATUS "npu: XRT found — NPU engine targets available via 'cmake --build build --target npu_engine_universal'")
 else()
-    message(STATUS "npu: XRT NOT found — skipping NPU engine build")
+    message(STATUS "npu: XRT NOT found — skipping NPU engine build (npu_engine_universal will not be a target)")
 endif()
 
 

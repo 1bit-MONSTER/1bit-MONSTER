@@ -79,7 +79,7 @@ The state-of-the-stack doc (2026-07-14) hypothesized that `npu_engine_universal.
 
 The `gpu_npu_bridge.cpp` code that used `hipImportExternalMemory` with `hipExternalMemoryHandleTypeDmaBuf` never compiled. The installed TheRock HIP (7.16 — the "7.2.4" figure in older copies of this note was a stale attribution) genuinely lacks that enum value: `hipExternalMemoryHandleType` is `{OpaqueFd, OpaqueWin32, OpaqueWin32Kmt, D3D12Heap, D3D12Resource, D3D11Resource, D3D11ResourceKmt, NvSciBuf}` (compile-verified), and the newer mem-pool sharing enum (`hipMemAllocationHandleType`) is `{None, PosixFileDescriptor, Win32, Win32Kmt, Fabric}` — no dma-buf either. The only dma-buf API present is the EXPORT-only `hipMemGetHandleForAddressRange(hipMemRangeHandleTypeDmaBufFd)` (HIP allocation → fd); there is no import counterpart that turns an external dma-buf fd into a HIP device pointer.
 
-**The production GPU import path must be Vulkan** (`VK_KHR_external_memory_fd`), matching `engine/fusion/gpu_attn.zig` and the stub in `interop.zig`.
+**The production GPU import path must be Vulkan** (`VK_KHR_external_memory_fd`), matching the `gpu_attn.zig` design and the stub in `interop.zig` — both from the predecessor tree and **not present here** (see the note further down).
 
 ### 3. Zero-copy IS possible and PROVEN
 

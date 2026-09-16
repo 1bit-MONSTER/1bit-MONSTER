@@ -2,9 +2,12 @@
 //
 // Math follows HF modeling_glm_moe_dsa.py 5.14 exactly. See header for the
 // architecture summary. Two subtleties vs other MLA engines:
-//   - the DSA indexer uses NON-interleaved (half-split) RoPE on its rope
-//     slice, while the main MLA attention uses INTERLEAVED RoPE — they share
-//     cos/sin but rotate differently;
+//   - BOTH the DSA indexer and the main MLA attention use INTERLEAVED RoPE (they
+//     share cos/sin and rotate the same way). This file used to rotate the indexer
+//     with the non-interleaved half-split convention — carried over from
+//     DeepSeek-V3.2, whose indexer works that way and whose docs this engine's
+//     first paragraph was written against. GLM-MoE-DSA changed it; corrected in
+//     #2418. It is invisible until the indexer drops tokens (index_topk < seq_len);
 //   - indexer scoring: relu(q·k)·weights_proj summed over index heads, then
 //     top-k per query; "shared" layers reuse the previous full layer's
 //     top-k indices (cross-layer sharing) instead of running their own.
@@ -143,6 +146,31 @@ bool GlmMoeDsaModel::load_from_safetensors(const std::string& dir, const GlmMoeD
     if (override_cfg) cfg = *override_cfg;
     if (cfg.layer_is_full.empty())
         cfg.layer_is_full.assign(cfg.num_layers, 1);
+    // A "shared" indexer layer reuses the top-k row of the last full layer in the
+    // same forward pass. If no full layer precedes it in the stack there is no
+    // such row -- not at pos 0, and not at pos > 0 either, because prev_topk_row
+    // is cleared only at pos 0 and would otherwise carry the PREVIOUS POSITION's
+    // indices into this layer. HF raises ValueError here ("Shared DSA layers
+    // require top-k indices from a previous full indexer layer.",
+    // modeling_glm_moe_dsa.py:444-447), and the engine cannot do better than
+    // refuse as well: the indexer weights are loaded only for full layers (:201),
+    // so a shared layer has nothing to select with. This has to be refused,
+    // because the forward's fallback is "select every position", which is not a
+    // selection at all.
+    {
+        bool seen_full = false;
+        for (int il = 0; il < cfg.num_layers; il++) {
+            if (cfg.layer_is_full[il]) { seen_full = true; continue; }
+            if (!seen_full) {
+                fprintf(stderr,
+                        "[glmdsa] FAIL: layer %d is a \"shared\" indexer layer but no "
+                        "\"full\" indexer layer precedes it, so it has no top-k row to "
+                        "reuse (config.json's indexer_types starts with \"shared\"). "
+                        "Refusing: HF raises ValueError for this config.\n", il);
+                return false;
+            }
+        }
+    }
     cfg.qk_head_dim = cfg.qk_nope_head_dim + cfg.qk_rope_head_dim;
 
     const int H = cfg.hidden_size;
@@ -337,6 +365,14 @@ std::vector<float> glm_moe_dsa_forward(GlmMoeDsaModel& model, int token_id,
         }
 
         // ── DSA indexer (full layers) ──
+        // Only a "full" layer computes a row here, and that is not merely a
+        // style choice: the indexer weights are loaded *only* for full layers
+        // (see the `cfg.layer_is_full[il]` guard at :201), so a "shared" layer
+        // has empty idx_wq_b/idx_wk/idx_weights and cannot select for itself.
+        // A config whose first indexer layer is "shared" therefore has nothing
+        // to reuse at pos 0 and is refused at load time, mirroring HF's
+        // ValueError ("Shared DSA layers require top-k indices from a previous
+        // full indexer layer.", modeling_glm_moe_dsa.py:444-447).
         if (cfg.layer_is_full[il]) {
             // indexer q from q_resid
             matmul(idx_q.data(), q_resid.data(), l.idx_wq_b.data(),
@@ -356,10 +392,20 @@ std::vector<float> glm_moe_dsa_forward(GlmMoeDsaModel& model, int token_id,
                       cfg.index_head_dim, 1e-6f);
             std::copy(idx_k.begin(), idx_k.begin() + ROPE, idx_k_rot.begin());
             std::copy(idx_k.begin() + ROPE, idx_k.end(), idx_k_pass.begin());
-            // indexer uses NON-interleaved rope; then rebuild q = [rot | pass]
+            // The indexer uses INTERLEAVED RoPE, the same convention as the main
+            // MLA attention above — not the non-interleaved half-split one. HF says
+            // so explicitly above its own call: "Same as DeepseekV32Indexer.forward,
+            // but the indexer applies **interleaved** RoPE rather than the
+            // non-interleaved half-split RoPE used by DeepSeek-V3.2"
+            // (modeling_glm_moe_dsa.py, apply_rotary_pos_emb_interleave at both the
+            // indexer and the attention). This file had carried V3.2's convention
+            // over; it only shows up when the indexer actually drops tokens
+            // (index_topk < seq_len), because with nothing dropped the scores do not
+            // affect the result — which is why the gate in #2418 failed at
+            // index_topk=2 and passed at index_topk=8.
             for (int h = 0; h < cfg.index_n_heads; h++)
-                rope_halfsplit(&idx_q_rot[(size_t)h * ROPE], &idx_q_rot[(size_t)h * ROPE], ROPE, pos, cfg.rope_theta);
-            rope_halfsplit(idx_k_rot.data(), idx_k_rot.data(), ROPE, pos, cfg.rope_theta);
+                rope_interleave(&idx_q_rot[(size_t)h * ROPE], &idx_q_rot[(size_t)h * ROPE], ROPE, pos, cfg.rope_theta);
+            rope_interleave(idx_k_rot.data(), idx_k_rot.data(), ROPE, pos, cfg.rope_theta);
             // rebuild idx_q as [roped_rot | pass] in place
             for (int h = 0; h < cfg.index_n_heads; h++) {
                 std::copy(&idx_q_rot[(size_t)h * ROPE], &idx_q_rot[(size_t)h * ROPE] + ROPE,
@@ -416,14 +462,27 @@ std::vector<float> glm_moe_dsa_forward(GlmMoeDsaModel& model, int token_id,
         const float scale = 1.0f / std::sqrt((float)qk_hd);
         const int seq_len = pos + 1;
         std::fill(attn_out.begin(), attn_out.end(), 0.0f);
-        // top-k membership mask from this layer's effective selection
         std::vector<uint8_t> masked(seq_len, 0);
-        if (!prev_topk_row.empty()) {
+        // top-k membership mask from this layer's effective selection.
+        // prev_topk_pos is what makes this a guard rather than dead state: it
+        // records the position the stored row was computed at, so a row left
+        // over from an earlier position cannot be mistaken for one from this
+        // pass. Without that check a leading "shared" layer at pos > 0 consumed
+        // the previous position's indices silently.
+        if (prev_topk_pos == pos && !prev_topk_row.empty()) {
             for (int k = 0; k < (int)prev_topk_row.size(); k++)
                 if (prev_topk_row[k] < seq_len) masked[prev_topk_row[k]] = 1;
         } else {
-            // no full layer ran yet (impossible after layer 0 in practice);
-            // treat all as selected
+            // Unreachable for a model that loaded: load_from_safetensors refuses
+            // any config whose first indexer layer is "shared", which is the only
+            // way to arrive here. It is loud rather than silent because the old
+            // behaviour ("treat all as selected") is not a selection, and a
+            // future caller constructing a model another way would otherwise get
+            // exactly the silent wrong answer #2423 is about.
+            fprintf(stderr,
+                    "[glmdsa] layer %d: no top-k row for pos %d (shared layer with no "
+                    "preceding full indexer layer in this pass) -- refusing to guess\n",
+                    il, pos);
             std::fill(masked.begin(), masked.end(), 1);
         }
         for (int h = 0; h < NH; h++) {

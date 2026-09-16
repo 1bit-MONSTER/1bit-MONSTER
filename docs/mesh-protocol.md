@@ -9,7 +9,10 @@ This document is the wire contract between installs. Implementations:
 
 - **C++ substrate** — `src/mesh/` (identity, discovery, API, agent). Compiled
   into `build/1bit` (`1bit unified`) and the standalone demo `build/mesh_peer`.
-- **DSH brain** — `integrations/dsh/` (Node: `mesh-client.js`, `mesh-brain.js`).
+- **DSH brain** — was `integrations/dsh/` (Node: `mesh-client.js`,
+  `mesh-brain.js`); **retired from this repo in #2289** (the agent stack is a
+  product layer, not the engine). Older worktrees and pre-#2289 copies still
+  carry it. The C++ substrate is the supported implementation.
 
 ## 1. Transport
 
@@ -158,9 +161,11 @@ In the C++ engine (`mesh_agent.cpp`, on by default, `--no-agent` to disable):
 4. Incoming intros are auto-answered with a templated accept that completes
    the handshake (`integrated = true` on both sides).
 
-The **DSH brain** (`integrations/dsh/mesh-brain.js`) is the LLM-driven
+The **DSH brain** (`integrations/dsh/mesh-brain.js`) was the LLM-driven
 replacement: it attaches to a node, discovers peers, generates questions via
-the node's local model, and answers inbound asks. Run one per node:
+the node's local model, and answers inbound asks. **It was retired from this
+repo in #2289**, so the command below only applies to a tree that still carries
+it — kept here as the wire-level description of what a brain does:
 
 ```bash
 node integrations/dsh/mesh-brain.js --node http://<node>:<port>

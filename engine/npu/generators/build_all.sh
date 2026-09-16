@@ -1,16 +1,32 @@
 #!/bin/bash
 # Sequential build of all new xclbins with isolated workdirs
+#
+# The toolchain roots are derived from this script's location and from the mlir-aie
+# tree, never from a hardcoded absolute path: the previous KERNEL/XDIR/GEN trio
+# pointed at /home/bcloud/1bit-monster/... (lowercase), which does not exist on any
+# of our machines, and the script never mkdir'd it, so every write failed against a
+# nonexistent directory. Same "declared vs effective path" class as issue #1913.
+#
+# PEANO-only by construction: this script passes --no-xchesscc explicitly, for which
+# mlir-aie's build_tmp is the legitimate --aietools value (the chess arm needs the
+# Vitis aietools ROOT instead - see generators/check_chess_aietools.sh).
 set -e
 
-export PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
-export AIECC=/home/bcloud/mlir-aie/build_tmp/bin/aiecc
-export PEANO=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
-export AIETOOLS=/home/bcloud/mlir-aie/build_tmp
-export KERNEL=/home/bcloud/1bit-monster/engine/npu/generators/mm_32x64x128.o
-export XDIR=/home/bcloud/1bit-monster/engine/npu/xclbins
-export GEN=/home/bcloud/1bit-monster/engine/npu/generators
-export PYTHONPATH=/home/bcloud/mlir-aie/install_tmp/python:/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages
-export LD_LIBRARY_PATH=/home/bcloud/mlir-aie/install_tmp/python/aie/_mlir_libs
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MLIR_AIE="${MLIR_AIE:-$HOME/mlir-aie}"
+
+# "xclbins\" dir = the repo's tracked set (this file lives in engine/npu/generators)
+XDIR="${XDIR:-$SCRIPT_DIR/../xclbins}"
+mkdir -p "$XDIR"
+
+export PYTHON="${PYTHON:-$MLIR_AIE/.venv/bin/python3}"
+export AIECC="${AIECC:-$MLIR_AIE/build_tmp/bin/aiecc}"
+export PEANO="${PEANO:-$MLIR_AIE/.venv/lib/python3.14/site-packages/llvm-aie}"
+export AIETOOLS="${AIETOOLS:-$MLIR_AIE/build_tmp}"
+export KERNEL="${KERNEL:-$SCRIPT_DIR/mm_32x64x128.o}"
+export GEN="${GEN:-$SCRIPT_DIR}"
+export PYTHONPATH="${PYTHONPATH:-$MLIR_AIE/install_tmp/python:$MLIR_AIE/.venv/lib/python3.14/site-packages}"
+export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-$MLIR_AIE/install_tmp/python/aie/_mlir_libs}"
 
 build_one() {
     local tag="$1" proj="$2" K="$3" N="$4" cols="$5"

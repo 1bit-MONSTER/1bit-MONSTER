@@ -27,6 +27,7 @@
 #   DIM_M=32, DIM_K=64, DIM_N=128
 
 import argparse
+import sys
 import numpy as np
 from aie.extras.context import mlir_mod_ctx
 from aie.dialects.aie import *
@@ -62,6 +63,21 @@ def main():
 
     batch_size = args.batch_size
     mtk = args.mtk
+
+    # The default L2 K tile (MTK = BATCH_SIZE * k = 384) only divides K when K is
+    # a multiple of 384 (3072, 6144, ...). For the QKV layer K=1024 the tiler
+    # rejects it outright -- "Tensor dimension 1 (1024) is not divisible by tile
+    # dim (384)" -- and build_xclbins.sh passes no --mtk, so the whole v24 path
+    # fell back to the torch2aie Makefile flow. Derive the largest
+    # (batch_size * k) that divides K without exceeding the default budget; the
+    # caller's explicit --mtk/--batch-size is respected when it already fits.
+    if args.mtk == MTK and args.batch_size == BATCH_SIZE and (args.K % mtk != 0 or mtk % args.k != 0):
+        for bs in range(BATCH_SIZE, 0, -1):
+            if args.K % (bs * args.k) == 0:
+                batch_size, mtk = bs, bs * args.k
+                break
+        print(f"[v24] K={args.K} is not a multiple of the default mtk={MTK}; "
+              f"using mtk={mtk} (batch_size={batch_size})", file=sys.stderr)
 
     with mlir_mod_ctx() as ctx:
         my_matmul(args.M, args.K, args.N, args.m, args.k, args.n,

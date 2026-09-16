@@ -81,7 +81,18 @@ jobs:
       - name: Start server
         run: |
           rm -f /tmp/unified_server.lock
-          ./build/1bit unified --port 8099 --weights models/ \
+          # Pin the model (issue #2206). Without -m the server takes
+          # discovered.front(), and discovery orders by quality first
+          # (Q8_0 > Q4_K_M). On this self-hosted runner `models/` is a
+          # symlink into the shared ~/models, which also carries a
+          # Qwen3.6-35B-A3B Q8_0 — so the 35B outranks this 135M Q4_K_M and
+          # becomes the active model, and every backend then fails to init
+          # (arch=21 needs NPU-FLM/HIP; FLM is Q4NX-only), leaving /v1/health
+          # silent until the wait below times out. Naming the file resolves it
+          # through the direct-path branch (issue #1958) and makes this smoke
+          # test independent of the machine's model inventory.
+          MODEL="models/SmolLM2-135M-Instruct-Q4_K_M.gguf"
+          ./build/1bit unified --port 8099 --weights models/ -m "$MODEL" \
             --gen-timeout-ms 10000 --quick &>/tmp/smoke_server.log &
           echo "pid=$!"
           # Wait for startup (GPU init can take ~90s on Strix Halo)

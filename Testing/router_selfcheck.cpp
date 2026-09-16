@@ -39,12 +39,21 @@ int main() {
         }
     };
 
+    // NOTE on the GGUF expectations below (2026-09-13): every GGUF/H1B route now
+    // leads with `hrx_gpu`, deliberately and with fail-fast semantics — HRX init()
+    // succeeds only when its llama-server can spawn and the graph is inside the
+    // fused node set, otherwise the caller cascades down the list (see the lane
+    // comments in src/model_router.cpp: the "HRX-first" paragraph and the MoE-GGUF
+    // note at :95). This file predated that policy, so these cases were failing on
+    // `main`; they are updated to the policy, not the policy to them. The check is
+    // not wired into CI, which is how it went stale unnoticed.
+
     // ── Bring-up pilot archs (mapped to LLAMA in pilot #1) ──
     {
         ModelConfig c = make_cfg();
         c.arch = rcpp_arch_from_string("openelm");
         c.architecture = "openelm";
-        expect("openelm GGUF", c, {"ggml_vulkan", "zinc_gpu", "cpu_generic"});
+        expect("openelm GGUF", c, {"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"});
     }
     {
         ModelConfig c = make_cfg();
@@ -64,7 +73,7 @@ int main() {
         ModelConfig c = make_cfg();
         c.arch = rcpp_arch_from_string("minicpm");
         c.architecture = "minicpm";
-        expect("minicpm GGUF", c, {"ggml_vulkan", "zinc_gpu", "cpu_generic"});
+        expect("minicpm GGUF", c, {"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"});
     }
 
     // ── Pilot #2 regression: qwen3 via safetensors must take the qwen3 route ──
@@ -73,7 +82,7 @@ int main() {
         c.arch = rcpp_arch_from_string("qwen3");
         c.architecture = "qwen3";
         c.format = ModelFormat::SAFETENSORS;
-        expect("qwen3 safetensors (pilot#2 fix)", c, {"ggml_vulkan", "zinc_gpu", "cpu_generic"});
+        expect("qwen3 safetensors (pilot#2 fix)", c, {"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"});
     }
 
     // ── Key route regressions ──
@@ -124,14 +133,16 @@ int main() {
         c.arch = RCPP_ARCH_LLAMA;
         c.architecture = "llama";
         c.num_experts = 8;
-        expect("MoE llama", c, {"hip_gpu", "cpu_scalar"});
+        expect("MoE llama", c, {"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"});   // was {hip_gpu, cpu_scalar} pre-HRX-first
     }
     {
         ModelConfig c = make_cfg();
         c.arch = RCPP_ARCH_QWEN3;
         c.architecture = "qwen3";
         c.format = ModelFormat::Q4NX;
-        expect("qwen3 q4nx", c, {"npu_flm", "cpu_generic"});
+        // Native worker first (#2358): npu_xrt was declared but never registered
+        // in discover(), so this route could not name it. FLM is the fallback.
+        expect("qwen3 q4nx", c, {"npu_xrt", "npu_flm", "cpu_generic"});
     }
     {
         ModelConfig c = make_cfg();
@@ -180,7 +191,7 @@ int main() {
         c.arch = RCPP_ARCH_LLAMA;
         c.architecture = "llama";
         c.num_experts = 8;
-        expect("MoE llama unchanged", c, {"hip_gpu", "cpu_scalar"});
+        expect("MoE llama unchanged", c, {"hrx_gpu", "ggml_vulkan", "zinc_gpu", "cpu_generic"});
     }
 
     if (fails) { std::printf("ROUTER: %d/%d FAILED\n", fails, total); return 1; }

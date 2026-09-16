@@ -447,6 +447,42 @@ Zaya MoE xclbins (tag `zaya`, in `engine/npu/xclbins/`):
 - `final_i8_MOE_GU_zaya.xclbin` — K=2048 (H) × N=4096 (2·n_ff), cols=8 → **NPU-verified: 0/524288 wrong, 659 GOP/s**
 - `final_i8_MOE_D_zaya.xclbin`  — K=2048 (n_ff) × N=2048 (H), cols=4 → **NPU-verified: 0/262144 wrong, 410 GOP/s**
 
+> **Correction (measured 2026-09-15, strixhalo).** The `AIECC=` line above says
+> `~/mlir-aie/build_tmp/bin/aiecc`. **That binary no longer parses the current generators' output**,
+> and following this recipe as written ends in
+> `loc("d.mlir":1059:45): error: expected ')'` at an `aie.dma_bd` line, which reads like a generator
+> bug and is not one — the generators emit the post-#3306 form (sizes/strides/offset/len as SSA
+> operands, upstream mlir-aie `398f7f704`).
+>
+> Measured on one MLIR from the line above (698,369 B, 1568 `dma_bd`, all in the operand form):
+>
+> ```
+> ~/mlir-aie/install_tmp/bin/aie-opt   OK
+> ~/mlir-aie/install/bin/aie-opt       OK
+> ~/mlir-aie/build_tmp/bin/aie-opt     REJECT  error: expected ')'
+> ~/mlir-aie/iron/bin/aie-opt          REJECT  error: expected ')'
+> ```
+>
+> **Use `AIE_TOOLS_DIR=~/mlir-aie/install_tmp`** — the variable
+> `engine/npu/build_xclbins.sh:31` actually reads (it otherwise falls back to
+> `${TORCH2AIE_DIR}/toolchain`), and the root that script's own env-check error at `:130`
+> names as known-good. **`AIE_TOOLS_DIR` is not the same knob as the `AIECC`/`AIETOOLS`
+> in the block above**: those two are expanded on that manual `aiecc` command line,
+> whereas the script reads `AIE_TOOLS_DIR` and derives its own `aiecc` from
+> `$AIE_TOOLS_DIR/bin` (`:64`). Exporting `AIECC`/`AIETOOLS` alone will not move the
+> script, so a reader who pairs the wrong name with the wrong entry point sees the
+> original `aie-opt` rejection and no change. Verified with `AIE_TOOLS_DIR`:
+> **"Successfully wrote (131360 bytes)" / "Compilation completed successfully"**.
+> `engine/npu/build_xclbins.sh:110-115` runs
+> `engine/npu/generators/check_aie_dialect.sh` in its env check (added in #2413), so a
+> wrong pairing fails in under a second instead of mid-build.
+>
+> Two smaller drifts in the same block: the kernel-compile line below this one gives the Vitis include
+> as `~/Xilinx/2025.2/Vitis/aietools/include`, but this box has it at
+> `~/Xilinx2025/2025.2/Vitis/aietools/include`; and `find` for a toolchain root that "has no
+> `aie-opt`" is not the same as "the toolchain is missing" — the working one is one directory down.
+
+
 Remaining: wire `npu_engine_universal` to load `zaya1-8b-fresh.q4nx` and route the
 MoE FFN through these xclbins (CCA attention stays on CPU/GPU, per the
 "NPU FFN ∥ CPU/GPU attention" hybrid).

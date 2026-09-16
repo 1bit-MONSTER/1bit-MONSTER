@@ -109,57 +109,83 @@ for the first two:
 sudo apt install ./fastflowlm_0.9.46_ubuntu26.04_amd64.deb
 ```
 
-## Build: zaya_gpu_decode (optional)
+## Build: zaya_gpu_decode (benchmarking tool, always built)
 
-If your model uses the **Q4NX** quantisation format, you can build `zaya_gpu_decode`
-to offload the dequantisation and matmul steps to the GPU:
+`zaya_gpu_decode` is a GPU-decode benchmarking tool for **Q4NX** models. It is an
+unconditional target — there is no option to switch it on or off, and the normal
+configure builds it (`add_executable(zaya_gpu_decode tests/zaya_gpu_decode.cpp
+kernels/zaya_cca_attn.hip)` in `CMakeLists.txt`):
 
 ```bash
 cmake -B build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
-  -DZAYA_ENABLE_GPU_DECODE=ON
+  -DCMAKE_HIP_ARCHITECTURES=gfx1151
 
 cmake --build build --target zaya_gpu_decode
+./build/zaya_gpu_decode model.q4nx [--prompt N] [--tokens N]
 ```
 
-The resulting shared library (or object) is `build/libzaya_gpu_decode.so`.
-
-> **Note:** `zaya_server` will auto-detect the presence of this library at startup
-> and use it when loading Q4NX models. Building without `ZAYA_ENABLE_GPU_DECODE`
-> disables GPU decode; the server still runs, but inference stays entirely on CPU.
+> **Corrected 2026-09-14.** This section used to tell you to configure with
+> `-DZAYA_ENABLE_GPU_DECODE=ON`, to expect `build/libzaya_gpu_decode.so`, and to
+> rely on `zaya_server` auto-detecting that library at startup. None of the three
+> exists: there is no such CMake variable anywhere in the project (CMake warns
+> "Manually-specified variables were not used"), the target produces an
+> executable rather than a shared library, and no server code looks for one. The
+> server's Q4NX path is unaffected by whether you build this tool.
 
 ---
 
-## Build: llama.cpp with ROCm backend (optional)
+## Build: llama.cpp (the vendored snapshot, no path variable)
 
-If the server depends on **llama.cpp** and you want its inference to use the same
-ROCm device:
+The engine links llama.cpp from the **vendored snapshot at `third_party/llama.cpp`**,
+and there is no `-DLLAMA_DIR`-style override: `CMakeLists.txt` sets
+`GGML_VULKAN_DIR` to that path and `GGML_BUILD_DIR` to `<it>/build`, then imports
+the static libs from there if they exist. So you build the snapshot in place, in
+the configuration the engine expects — the same recipe CI uses:
 
 ```bash
-# Either bundled in the zaya repo or standalone
-cd path/to/llama.cpp
-
-cmake -B build -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_HIP_ARCHITECTURES=gfx1151 \
-  -DGGML_HIP=ON
-
-cmake --build build --target llama
+cd third_party/llama.cpp
+cmake -B build -G Ninja -DBUILD_SHARED_LIBS=OFF -DGGML_VULKAN=ON \
+  -DLLAMA_CURL=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TESTS=OFF \
+  -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF
+cmake --build build -j8 --target ggml-vulkan llama llama-common
 ```
 
-Then ensure `zaya_server`'s CMake configuration points to this build (e.g. via
-`-DLLAMA_DIR=/path/to/llama.cpp/build` during the zaya configure step).
+`BUILD_SHARED_LIBS=OFF` matters: with shared ggml the import check in
+`CMakeLists.txt` does not match and the engine silently builds without the
+ggml-vulkan path. For the HIP variant, configure the same tree with
+`-DGGML_HIP=ON` instead of `-DGGML_VULKAN=ON`.
 
+> **Corrected 2026-09-14.** This section previously ended by telling you to point
+> the configure step at your own llama.cpp build with `-DLLAMA_DIR=…`. That
+> variable appears nowhere in the project — CMake would warn it was unused and
+> use the vendored snapshot regardless. The paragraph above is the mechanism the
+> build actually has.
 ---
 
 ## CMake option summary
 
-| Option                     | Default | Description                                |
-|----------------------------|---------|--------------------------------------------|
-| `ZAYA_ENABLE_GPU_DECODE`   | OFF     | Build `zaya_gpu_decode` for Q4NX GPU offload |
-| `ZAYA_USE_LLAMACPP_ROCM`   | OFF     | Link llama.cpp compiled with `GGML_HIP=ON` |
-| `CMAKE_HIP_ARCHITECTURES`  | —       | **Must** be set to `gfx1151`               |
+These are the options `CMakeLists.txt` actually declares (`option(NAME …)`), with
+their real defaults, `grep -n 'option(' CMakeLists.txt` being the source of truth:
+
+| Option              | Default | Description                                     |
+|---------------------|---------|-------------------------------------------------|
+| `CMAKE_HIP_ARCHITECTURES` | —  | **Must** be set to `gfx1151` on Strix Halo      |
+| `EMBED_LEMONADE`    | ON      | Embed the Lemonade SDK server core              |
+| `USE_LORA`          | ON      | LoRA adapter runtime support                    |
+| `USE_CUDA`          | OFF     | CUDA backend for NVIDIA GPUs                    |
+| `USE_METAL`         | OFF     | Metal backend for Apple Silicon                 |
+| `USE_VULKAN`        | OFF     | Portable Vulkan backend proof (`test_vulkan_gemv`) |
+| `USE_VART`          | OFF     | VART backend for Versal/Zynq DPU/NPU            |
+| `USE_DIFFUSION`     | OFF     | stable-diffusion.cpp integration                |
+| `USE_AUDIO_CPP`     | OFF     | audio.cpp integration                           |
+| `SANITIZE`          | OFF     | AddressSanitizer + UndefinedBehaviorSanitizer   |
+
+> **Corrected 2026-09-14.** This table listed `ZAYA_ENABLE_GPU_DECODE` and
+> `ZAYA_USE_LLAMACPP_ROCM`. Neither is declared anywhere in the project: CMake
+> accepts the flags, warns that they were not used, and builds the same thing.
+> `zaya_gpu_decode` is unconditional, and llama.cpp comes from the vendored
+> snapshot (see above) rather than from a variable you set.
 
 ---
 

@@ -38,7 +38,14 @@ struct Q4nxReader {
 
     // Find data offset for a JSON key in the model header
     // Uses standard C string search instead of GNU memmem extension.
+    // Searches the whole header (issue #2193: it used to stop at 64 KB).
     uint64_t find_offset(const char* key) const;
+
+    // The artifact's declared family — the top-level "model_type" string of the
+    // JSON header, or "" when it declares none (FLM's dense exports do not).
+    // Callers use this to pick the tensor names the worker for that family
+    // actually loads, instead of assuming a dense transformer.
+    std::string model_type() const;
 
     // Read a BF16 array at offset, widened to float32, into a vector
     std::vector<float> read_floats(uint64_t offset, size_t count) const;

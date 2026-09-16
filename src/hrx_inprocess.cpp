@@ -374,11 +374,44 @@ long Inprocess::load_session_file(const std::string& path) {
     impl_->pos = (llama_pos)n;  // continue after the imported tokens
     fprintf(stderr, "[hrx] session imported: %zu tokens from %s (pos=%lld)\n",
             n, path.c_str(), (long long)impl_->pos);
+    const long lim = max_decode_ctx();
+    if (lim > 0 && (long)impl_->pos > lim) {
+        fprintf(stderr,
+            "[hrx] WARNING: imported context %lld tokens exceeds HRX_MAX_CTX_TOKENS (%ld) — the "
+            "bundle's HRX flash-attn supports KV <= 2048 (issue #2145), so decode will be refused "
+            "and the request must be served by another lane.\n",
+            (long long)impl_->pos, lim);
+    }
     return (long)n;
 }
 
+long Inprocess::max_decode_ctx() const {
+    // Measured ceiling of the shipped bundle's HRX flash-attn path (#2145):
+    // KV <= 2048 decodes; >= 2304 fails at graph build with no CPU fallback.
+    const char* v = std::getenv("HRX_MAX_CTX_TOKENS");
+    long lim = v ? std::atol(v) : 2048L;
+    return lim;  // 0 disables the guard
+}
+
+long Inprocess::current_pos() const { return impl_ ? (long)impl_->pos : -1L; }
+
 int Inprocess::generate(int token_id) {
     if (!impl_->ctx || !impl_->llama_decode) return -1;
+    // #2145 fail-close: do not hand a >limit context to the bundle — it dies
+    // with "unsupported HRX node FLASH_ATTN_EXT" -> compute -1 -> ret -3.
+    const long lim = max_decode_ctx();
+    if (lim > 0 && (long)impl_->pos >= lim) {
+        static bool warned = false;
+        if (!warned) {
+            warned = true;
+            fprintf(stderr,
+                "[hrx] REFUSING decode: context %ld >= HRX_MAX_CTX_TOKENS (%ld). The bundle's HRX "
+                "flash-attn supports KV <= 2048 (issue #2145); a larger context fails with an opaque "
+                "compute -1. Route this request to a non-HRX backend, or set HRX_MAX_CTX_TOKENS=0 "
+                "to override (unsafe on this bundle).\n", (long)impl_->pos, lim);
+        }
+        return -1;
+    }
     llama_token tok = (llama_token)token_id;
     llama_batch b = impl_->llama_batch_get_one(&tok, 1, impl_->pos, 0);
     impl_->pos++;

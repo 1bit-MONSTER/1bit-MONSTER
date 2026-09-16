@@ -1,9 +1,723 @@
 {
+ "announcement:Prannesshkva/ISOM-Qwen2.5-Coder-1.5B-Instruct": {
+  "arch": "isomqwen25coder",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-announcement-prannesshkva-isom-qwen2-5-coder-1-5b-instruct.html",
+  "mode": "announcement"
+ },
+ "announcement:Terom/DeepSeek-V4.1-Flash": {
+  "arch": "deepseekv41",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-announcement-terom-deepseek-v4-1-flash.html",
+  "mode": "announcement"
+ },
+ "announcement:aecetin/Gemma-2-2B-PolySurgery": {
+  "arch": "gemma2forcausallm_polysurgery",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-announcement-aecetin-gemma-2-2b-polysurgery.html",
+  "mode": "announcement"
+ },
+ "announcement:aecetin/Llama-3.2-3B-PolySurgery": {
+  "arch": "llama3forcausallm_polysurgery",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-announcement-aecetin-llama-3-2-3b-polysurgery.html",
+  "mode": "announcement"
+ },
+ "announcement:aecetin/Qwen-2.5-7B-PolySurgery": {
+  "arch": "qwen2forcausallm_polysurgery",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-announcement-aecetin-qwen-2-5-7b-polysurgery.html",
+  "mode": "announcement"
+ },
+ "announcement:iVisionSH79/DeepSeek-V4.1-Flash": {
+  "arch": "deepseekv41",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-announcement-ivisionsh79-deepseek-v4-1-flash.html",
+  "mode": "announcement"
+ },
+ "announcement:lightseekorg/kimi-k3-eagle3.1-mla": {
+  "arch": "eagle3deepseekv2",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-announcement-lightseekorg-kimi-k3-eagle3-1-mla.html",
+  "mode": "announcement"
+ },
+ "announcement:scikit-plots/minimind-3v": {
+  "arch": "minimindvlm",
+  "date": "2026-09-02",
+  "family": "minimindvlm",
+  "file": "1bit-post-announcement-scikit-plots-minimind-3v.html",
+  "mode": "announcement"
+ },
+ "announcement:ubr-physical-ai/Cosmos3-Edge-NF4-bnb": {
+  "arch": "cosmos3edge",
+  "date": "2026-09-02",
+  "family": "cosmos3edge",
+  "file": "1bit-post-announcement-ubr-physical-ai-cosmos3-edge-nf4-bnb.html",
+  "mode": "announcement"
+ },
+ "covered:0x795E2795/Vanta-Alpha-26B-A4B-it-qat-w4a16-ct": {
+  "arch": "gemma4",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-0x795e2795-vanta-alpha-26b-a4b-it-qat-w4a16-ct.html",
+  "mode": "covered"
+ },
+ "covered:0xSero/GLM-5.3-500B-EXL3-3.0bpw": {
+  "arch": "glmmoedsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-0xsero-glm-5-3-500b-exl3-3-0bpw.html",
+  "mode": "covered"
+ },
+ "covered:0xSero/GLM-5.3-EXL3-4.0bpw": {
+  "arch": "glmmoedsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-0xsero-glm-5-3-exl3-4-0bpw.html",
+  "mode": "covered"
+ },
+ "covered:Aeronix-zzz/SpaSEViLA-7B": {
+  "arch": "qwen2_5_vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-aeronix-zzz-spasevila-7b.html",
+  "mode": "covered"
+ },
+ "covered:AnkitBirGurung/Granite-4.2-8b-BoardPolitics": {
+  "arch": "granite",
+  "date": "2026-09-02",
+  "family": "Granite",
+  "file": "1bit-post-significant-ankitbirgurung-granite-4-2-8b-boardpolitics.html",
+  "mode": "covered"
+ },
+ "covered:AnonimXxx/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive": {
+  "arch": "qwen3next",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-anonimxxx-qwen3-6-35b-a3b-uncensored-hauhaucs-aggressive.html",
+  "mode": "covered"
+ },
+ "covered:ArchSpace-Collection/NCP_ArchPreview_dolma3_8.9B_Stage1_Step1300000": {
+  "arch": "ncpolmo3",
+  "date": "2026-09-02",
+  "family": "Olmo",
+  "file": "1bit-post-significant-archspace-collection-ncp-archpreview-dolma3-8-9b-stage1-step1300000.html",
+  "mode": "covered"
+ },
+ "covered:ArchSpace-Collection/OLMo3-3B-SiameseNorm-DepthAttention-stage4-instruct": {
+  "arch": "olmo3siamesedepth",
+  "date": "2026-09-02",
+  "family": "Olmo",
+  "file": "1bit-post-significant-archspace-collection-olmo3-3b-siamesenorm-depthattention-stage4-instruct.html",
+  "mode": "covered"
+ },
+ "covered:ArchSpace-Collection/OLMo3-3B-stage4-instruct": {
+  "arch": "olmo3",
+  "date": "2026-09-02",
+  "family": "Olmo",
+  "file": "1bit-post-significant-archspace-collection-olmo3-3b-stage4-instruct.html",
+  "mode": "covered"
+ },
+ "covered:Aurigene-AI/BioMistral-7B": {
+  "arch": "mistral",
+  "date": "2026-09-02",
+  "family": "Mistral",
+  "file": "1bit-post-significant-aurigene-ai-biomistral-7b.html",
+  "mode": "covered"
+ },
+ "covered:AutomatosX/AX-Ornith-1.5-35B-A3B-MLX-AXQ-6bit-MTP": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-automatosx-ax-ornith-1-5-35b-a3b-mlx-axq-6bit-mtp.html",
+  "mode": "covered"
+ },
+ "covered:BosonicJustin/transcendent-logic-model": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-bosonicjustin-transcendent-logic-model.html",
+  "mode": "covered"
+ },
+ "covered:Chinook416/caracat-pro": {
+  "arch": "deepseek",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-chinook416-caracat-pro.html",
+  "mode": "covered"
+ },
+ "covered:Coder40-95/DeepSeek-V4-Flash-Vision-Exp": {
+  "arch": "deepseekv4",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-coder40-95-deepseek-v4-flash-vision-exp.html",
+  "mode": "covered"
+ },
+ "covered:Coder40-95/GLM-5.3-Flash": {
+  "arch": "glm5next",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-coder40-95-glm-5-3-flash.html",
+  "mode": "covered"
+ },
+ "covered:Darmm/darmm-ocr-kazakh-vl-3b": {
+  "arch": "qwen2_5_vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-darmm-darmm-ocr-kazakh-vl-3b.html",
+  "mode": "covered"
+ },
+ "covered:DripGhad1223/GLM-5.3-CYBERSECURITY-FP8": {
+  "arch": "glmmoedsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-dripghad1223-glm-5-3-cybersecurity-fp8.html",
+  "mode": "covered"
+ },
+ "covered:Earlychildhoodeducation/EleMo-V3-Base": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-earlychildhoodeducation-elemo-v3-base.html",
+  "mode": "covered"
+ },
+ "covered:Elio2151/Gemma-2-9B-Instruct-TechnicalAgentFineTuned-Merged_5": {
+  "arch": "gemma2",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-elio2151-gemma-2-9b-instruct-technicalagentfinetuned-merged-5.html",
+  "mode": "covered"
+ },
+ "covered:Elio2151/Llama-3.1-8B-Instruct-TechnicalAgentFineTuned-Merged_4": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-elio2151-llama-3-1-8b-instruct-technicalagentfinetuned-merged-4.html",
+  "mode": "covered"
+ },
+ "covered:Endersand/Gemma-4-12B-StyleTune": {
+  "arch": "gemma4unified",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-endersand-gemma-4-12b-styletune.html",
+  "mode": "covered"
+ },
+ "covered:FalconZypp/Qwen3.8-Flash-Next-AWQ-INT4": {
+  "arch": "qwen4exp",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-falconzypp-qwen3-8-flash-next-awq-int4.html",
+  "mode": "covered"
+ },
+ "covered:Fluxmire/GLM-4.6V-Flash-FP8-DYNAMIC": {
+  "arch": "glm4v",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-fluxmire-glm-4-6v-flash-fp8-dynamic.html",
+  "mode": "covered"
+ },
+ "covered:HYU-NLP-EVAL/qwen3-4b-rar-medicine-onlinerubrics-seed11-step-045": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-hyu-nlp-eval-qwen3-4b-rar-medicine-onlinerubrics-seed11-step-045.html",
+  "mode": "covered"
+ },
+ "covered:HarithSami/qwen2.5-7b-instruct-arabic-yt-merged": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-harithsami-qwen2-5-7b-instruct-arabic-yt-merged.html",
+  "mode": "covered"
+ },
+ "covered:HawkBearPig/GLM-5.3-Flash-NVFP4-FP8": {
+  "arch": "glm5next",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-hawkbearpig-glm-5-3-flash-nvfp4-fp8.html",
+  "mode": "covered"
+ },
+ "covered:Healshsj/smollm3-3b-claude-fable5": {
+  "arch": "smollm3",
+  "date": "2026-09-02",
+  "family": "Smollm",
+  "file": "1bit-post-significant-healshsj-smollm3-3b-claude-fable5.html",
+  "mode": "covered"
+ },
+ "covered:HerrHruby/MR_midtrain_9B_v4_quarter": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-herrhruby-mr-midtrain-9b-v4-quarter.html",
+  "mode": "covered"
+ },
+ "covered:IzNrsydn/legal-chatbot-llama3-finetuned": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-iznrsydn-legal-chatbot-llama3-finetuned.html",
+  "mode": "covered"
+ },
+ "covered:JJarvinen/Qwen3.5-2B-EU-Tool-JARVIS-Compact-v1.1": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-jjarvinen-qwen3-5-2b-eu-tool-jarvis-compact-v1-1.html",
+  "mode": "covered"
+ },
+ "covered:Jkatdare/gemma-3-4b-it-tulumix-30k": {
+  "arch": "gemma3",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-jkatdare-gemma-3-4b-it-tulumix-30k.html",
+  "mode": "covered"
+ },
+ "covered:Joyfulxp/DeepSeek-V4-Flash-Vision-Exp-Abliterated": {
+  "arch": "deepseekv4",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-joyfulxp-deepseek-v4-flash-vision-exp-abliterated.html",
+  "mode": "covered"
+ },
+ "covered:LibertAIDAI/DeepSeek-V4.1-Flash-NVFP4": {
+  "arch": "deepseek",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-libertaidai-deepseek-v4-1-flash-nvfp4.html",
+  "mode": "covered"
+ },
+ "covered:MidnightPhreaker/Qwen3.8-Flash-Next-REAP-384-exl3-4.00bpw-ORIGINAL-MTP": {
+  "arch": "qwen4exp",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-midnightphreaker-qwen3-8-flash-next-reap-384-exl3-4-00bpw-original-mtp.html",
+  "mode": "covered"
+ },
+ "covered:MuhHendri12/qwen2.5-3b-legal-id-grpo": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-muhhendri12-qwen2-5-3b-legal-id-grpo.html",
+  "mode": "covered"
+ },
+ "covered:Rab007/Qwen3.8-2.4T-A95B": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-rab007-qwen3-8-2-4t-a95b.html",
+  "mode": "covered"
+ },
+ "covered:Raghav-Singhal/1pp-1.7b-ua-seed42-sft": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-raghav-singhal-1pp-1-7b-ua-seed42-sft.html",
+  "mode": "covered"
+ },
+ "covered:SAIFIINDUSTRIES/Qwen3.5-35B-A3B": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-saifiindustries-qwen3-5-35b-a3b.html",
+  "mode": "covered"
+ },
+ "covered:Solstice-AI/DeepSeek-V4-Flash-Vision-Exp-MXFP4": {
+  "arch": "deepseekv4",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-solstice-ai-deepseek-v4-flash-vision-exp-mxfp4.html",
+  "mode": "covered"
+ },
+ "covered:SongSeungJae/Llama-VARCO-8b-news2stock-analyzer-4bit-merged": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-songseungjae-llama-varco-8b-news2stock-analyzer-4bit-merged.html",
+  "mode": "covered"
+ },
+ "covered:Spangler3000/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp": {
+  "arch": "nemotronh",
+  "date": "2026-09-02",
+  "family": "Nemotron",
+  "file": "1bit-post-significant-spangler3000-nvidia-nemotron-3-5-lightning-30b-a3b-mlx-4bit-mtp.html",
+  "mode": "covered"
+ },
+ "covered:StationPC/Qwen3.5-4B-RKNN3-RK1828": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-stationpc-qwen3-5-4b-rknn3-rk1828.html",
+  "mode": "covered"
+ },
+ "covered:Terom/GLM-5.3": {
+  "arch": "glmmoedsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-terom-glm-5-3.html",
+  "mode": "covered"
+ },
+ "covered:Titanfrm/gemma-4-E4B-it-uncensored-heretic": {
+  "arch": "gemma4",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-titanfrm-gemma-4-e4b-it-uncensored-heretic.html",
+  "mode": "covered"
+ },
+ "covered:Ttimms/Bible-Assistant-Qwen3.5-4B-v3.2": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ttimms-bible-assistant-qwen3-5-4b-v3-2.html",
+  "mode": "covered"
+ },
+ "covered:Wing22/lvr-align-v2-1000": {
+  "arch": "qwen3-vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-wing22-lvr-align-v2-1000.html",
+  "mode": "covered"
+ },
+ "covered:YueLinHu/GAC-Qwen3.5-4B": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-yuelinhu-gac-qwen3-5-4b.html",
+  "mode": "covered"
+ },
+ "covered:a15846/DeepSeek-v4-Fable": {
+  "arch": "deepseekv4",
+  "date": "2026-09-02",
+  "family": "Deepseek",
+  "file": "1bit-post-significant-a15846-deepseek-v4-fable.html",
+  "mode": "covered"
+ },
+ "covered:aasim-m/DAFT-Qwen3-0.6B-checkpoint-4000": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-aasim-m-daft-qwen3-0-6b-checkpoint-4000.html",
+  "mode": "covered"
+ },
+ "covered:aasim-m/daft-qwen2.5-coder-7b-instruct-checkpoint-2000": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-aasim-m-daft-qwen2-5-coder-7b-instruct-checkpoint-2000.html",
+  "mode": "covered"
+ },
+ "covered:ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ahmadnawaz21-qwen2-5-1-5b-medical-qlora-dpo.html",
+  "mode": "covered"
+ },
+ "covered:amad-iq/amad-vlm6": {
+  "arch": "qwen2_5_vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-amad-iq-amad-vlm6.html",
+  "mode": "covered"
+ },
+ "covered:anthori/GLM-5.3-Flash-EXL3-Q8Core-Q3Q4Q6": {
+  "arch": "glm5next",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-anthori-glm-5-3-flash-exl3-q8core-q3q4q6.html",
+  "mode": "covered"
+ },
+ "covered:arefehRajabian/phi_finetune_reasoning_plus_16bit": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-arefehrajabian-phi-finetune-reasoning-plus-16bit.html",
+  "mode": "covered"
+ },
+ "covered:brennercruvinel/truw-rwkv7-2.9b-v3": {
+  "arch": "rwkv",
+  "date": "2026-09-02",
+  "family": "Rwkv",
+  "file": "1bit-post-significant-brennercruvinel-truw-rwkv7-2-9b-v3.html",
+  "mode": "covered"
+ },
+ "covered:bullerwins/GLM-5.3-Flash-exl3-4bpw-ablit": {
+  "arch": "glm5next",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-bullerwins-glm-5-3-flash-exl3-4bpw-ablit.html",
+  "mode": "covered"
+ },
+ "covered:con-cord/GRPO-MOD2adv-sft-agreed-no-ref": {
+  "arch": "gemma3",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-con-cord-grpo-mod2adv-sft-agreed-no-ref.html",
+  "mode": "covered"
+ },
+ "covered:cont1037/GLM-4.6V-Flash": {
+  "arch": "glm4v",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-cont1037-glm-4-6v-flash.html",
+  "mode": "covered"
+ },
  "covered:deepseek-ai/DeepSeek-V4-Flash": {
   "arch": "deepseek_v4_flash",
   "date": "2026-09-02",
   "family": "DeepSeek V4",
   "file": "1bit-post-significant-deepseek-ai-deepseek-v4-flash.html",
+  "mode": "covered"
+ },
+ "covered:defiobi00/GLM-5.3-DERISKED-Int4-Int8Mix": {
+  "arch": "glm_moe_dsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-defiobi00-glm-5-3-derisked-int4-int8mix.html",
+  "mode": "covered"
+ },
+ "covered:destr8803/GLM-5.3-224E-FP8-MAN": {
+  "arch": "glmmoedsa",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-destr8803-glm-5-3-224e-fp8-man.html",
+  "mode": "covered"
+ },
+ "covered:dharun2049/kaveri-stgrpo-0.5b": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-dharun2049-kaveri-stgrpo-0-5b.html",
+  "mode": "covered"
+ },
+ "covered:dureduck/Olmo-3-7B-PostTraining8K-SFT-step-40": {
+  "arch": "olmo3",
+  "date": "2026-09-02",
+  "family": "Olmo",
+  "file": "1bit-post-significant-dureduck-olmo-3-7b-posttraining8k-sft-step-40.html",
+  "mode": "covered"
+ },
+ "covered:emese-tech/patak": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-emese-tech-patak.html",
+  "mode": "covered"
+ },
+ "covered:forgeguard-ai/Ornith-1.5-35B-A3B-NVFP4": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-forgeguard-ai-ornith-1-5-35b-a3b-nvfp4.html",
+  "mode": "covered"
+ },
+ "covered:ganscs/Olmo7b-olmo-a100-new-20260908-CPT-merged-step-750": {
+  "arch": "olmo3",
+  "date": "2026-09-02",
+  "family": "Olmo",
+  "file": "1bit-post-significant-ganscs-olmo7b-olmo-a100-new-20260908-cpt-merged-step-750.html",
+  "mode": "covered"
+ },
+ "covered:hariharasudhan/en-indic-translate-26b": {
+  "arch": "gemma4",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-hariharasudhan-en-indic-translate-26b.html",
+  "mode": "covered"
+ },
+ "covered:icysunny/gemma4_e2b_reasoner_merged": {
+  "arch": "gemma4",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-icysunny-gemma4-e2b-reasoner-merged.html",
+  "mode": "covered"
+ },
+ "covered:idrock/aruz": {
+  "arch": "gemma4",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-idrock-aruz.html",
+  "mode": "covered"
+ },
+ "covered:ikppramesh/irx-1": {
+  "arch": "qwen3_5",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ikppramesh-irx-1.html",
+  "mode": "covered"
+ },
+ "covered:imtixz/gemma-2-2b-it-sleeper-multi-token-fixed-string-poison5pct": {
+  "arch": "gemma2",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-imtixz-gemma-2-2b-it-sleeper-multi-token-fixed-string-poison5pct.html",
+  "mode": "covered"
+ },
+ "covered:inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i": {
+  "arch": "qwen4exp",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-inferencerlabs-qwen3-8-flash-next-mlx-q4i.html",
+  "mode": "covered"
+ },
+ "covered:joincrksilverb/Nemotron-Mini-4B-Instruct": {
+  "arch": "nemotron",
+  "date": "2026-09-02",
+  "family": "Nemotron",
+  "file": "1bit-post-significant-joincrksilverb-nemotron-mini-4b-instruct.html",
+  "mode": "covered"
+ },
+ "covered:just1nseo/qwen3-4b-ifrlvr-grpo-judge-30ba3b": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-just1nseo-qwen3-4b-ifrlvr-grpo-judge-30ba3b.html",
+  "mode": "covered"
+ },
+ "covered:madiaxa/granite-4.2-3b-openvino": {
+  "arch": "granite",
+  "date": "2026-09-02",
+  "family": "Granite",
+  "file": "1bit-post-significant-madiaxa-granite-4-2-3b-openvino.html",
+  "mode": "covered"
+ },
+ "covered:minjaechoi/Midm-2.0-Mini-Instruct-W4A16": {
+  "arch": "llama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-minjaechoi-midm-2-0-mini-instruct-w4a16.html",
+  "mode": "covered"
+ },
+ "covered:minjaechoi/Phi-4-mini-instruct-W4A16": {
+  "arch": "phi3",
+  "date": "2026-09-02",
+  "family": "Phi",
+  "file": "1bit-post-significant-minjaechoi-phi-4-mini-instruct-w4a16.html",
+  "mode": "covered"
+ },
+ "covered:minjaechoi/Qwen3-4B-W4A16": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-minjaechoi-qwen3-4b-w4a16.html",
+  "mode": "covered"
+ },
+ "covered:mlx-community/BigBang-v1-MLX-oQ4e": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-mlx-community-bigbang-v1-mlx-oq4e.html",
+  "mode": "covered"
+ },
+ "covered:mobilint/Llama-3.2-1B-Instruct-regulus-rb-usb": {
+  "arch": "mobilintllama",
+  "date": "2026-09-02",
+  "family": "Llama",
+  "file": "1bit-post-significant-mobilint-llama-3-2-1b-instruct-regulus-rb-usb.html",
+  "mode": "covered"
+ },
+ "covered:neutrypl/neutry-functiongemma-270m-v2": {
+  "arch": "gemma3",
+  "date": "2026-09-02",
+  "family": "Gemma",
+  "file": "1bit-post-significant-neutrypl-neutry-functiongemma-270m-v2.html",
+  "mode": "covered"
+ },
+ "covered:noodcon/Safetensors.granite-4.0-Improved-Enhanced-Refined": {
+  "arch": "granitemoehybrid",
+  "date": "2026-09-02",
+  "family": "Granite",
+  "file": "1bit-post-significant-noodcon-safetensors-granite-4-0-improved-enhanced-refined.html",
+  "mode": "covered"
+ },
+ "covered:pgmharikrishnan/grug-35b-v2-MLX-4bit": {
+  "arch": "qwen3_5moe",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-pgmharikrishnan-grug-35b-v2-mlx-4bit.html",
+  "mode": "covered"
+ },
+ "covered:ram-lexsi/safetune-testrun-unlearn_rmu": {
+  "arch": "qwen2",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ram-lexsi-safetune-testrun-unlearn-rmu.html",
+  "mode": "covered"
+ },
+ "covered:ramazanoff34/Neo-One_Lite": {
+  "arch": "qwen2vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-ramazanoff34-neo-one-lite.html",
+  "mode": "covered"
+ },
+ "covered:scouzi1966/GLM-5.3-Flash-AFM-MLX-4bit": {
+  "arch": "glm5next",
+  "date": "2026-09-02",
+  "family": "Glm",
+  "file": "1bit-post-significant-scouzi1966-glm-5-3-flash-afm-mlx-4bit.html",
+  "mode": "covered"
+ },
+ "covered:shahedm2001/qwen3-vl-2b-cataract-sft": {
+  "arch": "qwen3vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-shahedm2001-qwen3-vl-2b-cataract-sft.html",
+  "mode": "covered"
+ },
+ "covered:smshahbaj/RIFA-PRO-3B": {
+  "arch": "smollm3",
+  "date": "2026-09-02",
+  "family": "Smollm",
+  "file": "1bit-post-significant-smshahbaj-rifa-pro-3b.html",
+  "mode": "covered"
+ },
+ "covered:thuyduongjoe123/checkpoints_en_my_logit": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-thuyduongjoe123-checkpoints-en-my-logit.html",
+  "mode": "covered"
+ },
+ "covered:yamatazen/Himeyuri-Magnum-12B-HereticLoRA": {
+  "arch": "mistral",
+  "date": "2026-09-02",
+  "family": "Mistral",
+  "file": "1bit-post-significant-yamatazen-himeyuri-magnum-12b-hereticlora.html",
+  "mode": "covered"
+ },
+ "covered:zhezi12138/Qwen3-4B-formal-r1-RL-50iter-seed42": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-zhezi12138-qwen3-4b-formal-r1-rl-50iter-seed42.html",
+  "mode": "covered"
+ },
+ "covered:zhiyaowang/MiniCPM-SALA-NVFP4-GPTQ": {
+  "arch": "minicpmsala",
+  "date": "2026-09-02",
+  "family": "Minicpm",
+  "file": "1bit-post-significant-zhiyaowang-minicpm-sala-nvfp4-gptq.html",
+  "mode": "covered"
+ },
+ "covered:zhongweixie/claw-rl-v13-grpo-dr-rubric": {
+  "arch": "qwen3vl",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-zhongweixie-claw-rl-v13-grpo-dr-rubric.html",
+  "mode": "covered"
+ },
+ "covered:zhongweixie/inplace-ttt-qwen3-4b-64k-baseline": {
+  "arch": "qwen3",
+  "date": "2026-09-02",
+  "family": "Qwen",
+  "file": "1bit-post-significant-zhongweixie-inplace-ttt-qwen3-4b-64k-baseline.html",
   "mode": "covered"
  }
 }

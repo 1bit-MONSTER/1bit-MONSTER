@@ -6,6 +6,7 @@
 #include <cstring>
 #include <cmath>
 #include <ctime>
+#include <algorithm>
 #include <filesystem>
 #include <vector>
 #include <chrono>
@@ -25,6 +26,7 @@
 #include <aiebu/aiebu_assembler.h>
 #include <omp.h>
 #include "model_config.h"
+#include "npu_paths.h"           // npu_xclbin_dir() — env-if-present, else repo/install layout
 #include "npu_runlist_bridge.h"  // NPU_RUNLIST=1 whole-layer per-ctx ELF decode (#2080/#2150)
 #include "npu_engine_i8ctx_inc.h"
 #include "npu_engine_hybrid_flm.h"
@@ -1304,8 +1306,7 @@ int main(int argc,char**argv){
     // Init NPU
     fprintf(stderr,"Init NPU...\n");xrt::device dev(0);
     // Xclbin directory: respect NPU_XCLBIN_DIR env var, fall back to repo-relative path
-    const char* env_xd = getenv("NPU_XCLBIN_DIR");
-    std::string xd = env_xd ? env_xd : "engine/npu/xclbins";
+    std::string xd = npu_xclbin_dir();  // env if this machine has it, else repo/install layout
     // xp(): try model-tag-keyed xclbin first (backward compat), then dimension-keyed
     // (e.g. final_i8_QKV_K2048_N2560.xclbin) so any model sharing GEMM shapes can reuse
     // the same xclbin without a per-model rebuild.
@@ -1511,7 +1512,45 @@ int main(int argc,char**argv){
         fprintf(stderr,"  cq before init: MD=%d KD=%d ND=%d\n", cq.MD, cq.KD, cq.ND);
         if(!init_i8(cq,"QKV",cfg.xclbin_qkv_k,cfg.xclbin_qkv_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL QKV\n");return 1;} }
         if(!init_i8(co,"O",cfg.xclbin_o_k,cfg.xclbin_o_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL O\n");return 1;} }
-        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL G\n");return 1;} }}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL GU\n");return 1;} }}
+        // #2329: a bare "FAIL G" made the reader reconstruct the shape selection
+        // from the source (the issue body had to explain IM*2 > 14336 by hand).
+        // Name the routing decision, the exact artifacts the split path wants,
+        // which candidates exist, and which G shapes the set does have — so the
+        // next absent split-G shape is diagnosable from the log alone.
+        auto diag_split_g=[&](){
+            auto present=[](const std::string& p){
+                std::error_code ec; return std::filesystem::exists(p,ec);
+            };
+            const std::string gx=xp("G",cfg.xclbin_g_k,cfg.xclbin_g_n), gi=ip("G");
+            fprintf(stderr,
+                "FAIL G: the split-G FFN artifacts are missing or unusable.\n"
+                "  why split-G : IM=%d; gu_split is selected when IM*2 > 14336 (here %d)\n"
+                "  wanted xclbin: %s  [%s]\n"
+                "  wanted insts : %s  [%s]\n",
+                IM, IM*2, gx.c_str(), present(gx)?"present":"MISSING",
+                gi.c_str(), present(gi)?"present":"MISSING");
+            std::vector<std::string> have;
+            std::error_code ec;
+            for (const auto& de : std::filesystem::directory_iterator(xd, ec)) {
+                const std::string n=de.path().filename().string();
+                if(n.rfind("final_i8_G_",0)==0 && n.size()>7 &&
+                   n.compare(n.size()-7,7,".xclbin")==0) have.push_back(n);
+            }
+            std::sort(have.begin(), have.end());
+            if(have.empty()){
+                fprintf(stderr,"  this xclbin set has no final_i8_G_*.xclbin at all (%s)\n", xd.c_str());
+            } else {
+                fprintf(stderr,"  G shapes this set does have (%s):\n", xd.c_str());
+                for(const auto& n:have) fprintf(stderr,"    %s\n", n.c_str());
+            }
+            fprintf(stderr,
+                "  FAIL GU is not a fallback here: the shape selector chose split-G from\n"
+                "  the model's own IM, so the fused GU artifact (N=2*IM) is not what this\n"
+                "  path wants. Build the pair, or point NPU_XCLBIN_DIR at a set containing\n"
+                "  final_i8_G_K%d_N%d.xclbin.\n",
+                cfg.xclbin_g_k, cfg.xclbin_g_n);
+        };
+        if(cfg.gu_split){if(!init_i8(cg,"G",cfg.xclbin_g_k,cfg.xclbin_g_n)){ if(bf16_only) i8_ready=false; else {diag_split_g();return 1;} }}else{if(!init_i8(cg,"GU",cfg.xclbin_gu_k,cfg.xclbin_gu_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL GU\n");return 1;} }}
         if(!init_i8(cd,"D",cfg.xclbin_d_k,cfg.xclbin_d_n)){ if(bf16_only) i8_ready=false; else {fprintf(stderr,"FAIL D\n");return 1;} }
         // task-2: init small-M decode contexts (GU + D) when the _m{M} xclbin/insts
         // pair is present. M defaults to 1 (single-token decode); NPU_SMALL_M overrides.

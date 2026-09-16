@@ -45,9 +45,23 @@ jobs:
         id: gen
         run: |
           set -euo pipefail
-          ARCH="${{ github.event.inputs.arch || 'deepseek_v4_flash' }}"
-          MODEL="${{ github.event.inputs.model || 'deepseek-ai/DeepSeek-V4-Flash' }}"
-          FAMILY="${{ github.event.inputs.family || '' }}"
+          ARCH="${{ github.event.inputs.arch }}"
+          MODEL="${{ github.event.inputs.model }}"
+          FAMILY="${{ github.event.inputs.family }}"
+          # arch/model are `required: true` on workflow_dispatch, so an empty
+          # value here means the daily schedule fired. Do NOT fall back to the
+          # examples these lines used to carry: on 2026-09-04 a scheduled run
+          # did exactly that and published PR #2095 — a post claiming the engine
+          # maps the placeholder class `deepseek_v4_flash`, which
+          # include/rocm_cpp/bitnet_model.h does not map (DeepSeek-V4-Flash's
+          # real class is `deepseekv4`). A scheduled run has nothing to
+          # scaffold; auto-firing from the census escalation is the follow-up
+          # named in this file's header.
+          if [ -z "$ARCH" ] || [ -z "$MODEL" ]; then
+            echo "no --arch/--model input (scheduled run) — not scaffolding a placeholder post"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           CMD=(python3 Testing/significant_model_post.py --arch "$ARCH" --model "$MODEL")
           [ -n "$FAMILY" ] && CMD+=(--family "$FAMILY")
           "${CMD[@]}"

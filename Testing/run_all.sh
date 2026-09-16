@@ -5,8 +5,9 @@
 set -u
 cd "$(dirname "$0")/.." || exit 1   # repo root
 CXX="${CXX:-g++}"; FLAGS="-std=c++17 -Iinclude -Isrc -O2"
+PYTHON="${PYTHON:-python3}"
 BIN=/tmp/onebit_tests; mkdir -p "$BIN"
-fail=0; total=0
+fail=0; total=0; skip=0
 
 run() {  # run <name> <compile-args...> -- <run-args...>
     local name="$1"; shift
@@ -15,8 +16,13 @@ run() {  # run <name> <compile-args...> -- <run-args...>
     [ $# -gt 0 ] && shift
     while [ $# -gt 0 ]; do runargs+=("$1"); shift; done
     total=$((total+1))
-    if ! "$CXX" $FLAGS "${src[@]}" -o "$BIN/$name" 2>/dev/null; then
-        echo "✗ $name: COMPILE FAILED"; fail=$((fail+1)); return
+    # Keep the compiler's own words on failure: a bare "COMPILE FAILED" is a red
+    # gate that names nothing, and in CI nobody can walk over and re-run it by hand.
+    local log
+    if ! log=$("$CXX" $FLAGS "${src[@]}" -o "$BIN/$name" 2>&1); then
+        echo "✗ $name: COMPILE FAILED"
+        printf '%s\n' "$log" | tail -5 | sed 's/^/    /'
+        fail=$((fail+1)); return
     fi
     if "$BIN/$name" "${runargs[@]}" >/dev/null 2>&1; then
         echo "✓ $name"; else echo "✗ $name: CHECK FAILED"; fail=$((fail+1)); fi
@@ -29,15 +35,127 @@ run router    Testing/router_selfcheck.cpp src/model_router.cpp
 run dtypes    Testing/safetensors_weights_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run sharded   Testing/sharded_reader_selfcheck.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp
 run rotation  Testing/rotation_table_selfcheck.cpp
-run iq1       Testing/iq1_selfcheck.cpp --
-run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
 
+# Where the NPU worker is looked up: the lane fork/execs `npu_engine_universal`, and
+# resolving it relative to the cwd meant a service started elsewhere silently had no
+# NPU lane at all (no package ships the worker either — issue #2360). Pins the order,
+# so the legacy ./ and build/ paths can never shadow an installed worker.
+run npu_worker Testing/npu_worker_path_selfcheck.cpp --
+
+# The worker itself: CI cannot compile it (no usable XRT), so it ships as a
+# vendored prebuilt that packaging prefers to override with a fresh build. A
+# prebuilt binary rots silently — this pins manifest↔binary shas, the RUNPATH that
+# lets it find its bundled libomp in every layout we ship, and both staging paths.
+total=$((total+1))
+if bundle_out=$("$PYTHON" Testing/npu_worker_bundle_selfcheck.py 2>&1); then
+    echo "✓ npu_bundle"
+else
+    echo "✗ npu_bundle"
+    printf '%s\n' "$bundle_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+run iq1       Testing/iq1_selfcheck.cpp --
+
+# Padded-vocab embedding gate: some 1BP artifacts declare the checkpoint's padded
+# vocab (262272) while shipping the unpadded table (262147 rows) — that is the
+# published v1 ZAYA1-8B upload, and the engine used to refuse it outright. The gate
+# adopts the table's rows as the vocab and still refuses real truncation, so this
+# pins the boundary in one place (#1521 producer side, #1606 truncation).
+run embed_pad Testing/embed_pad_gate_selfcheck.cpp --
+run tq2nz     Testing/tq2nz_e4m3_selfcheck.cpp --
+# NPU artifact key contract (issue #2193): the header-window regression and the
+# per-family GEMM names, both verifiable without a device.
+run npu_keys  Testing/npu_key_contract_selfcheck.cpp src/q4nx_reader.cpp --
+# NPU path resolution: an override naming a path this machine does not have must
+# not be used (a stale NPU_XCLBIN_DIR in the shell silently broke every NPU run).
+run npu_paths Testing/npu_paths_selfcheck.cpp --
+
+# CLI dispatch coverage: tools/onebit.cpp's whole command set (chat, pull, list,
+# status, …) is compiled into the single ELF, but tools/onebin.cpp declared
+# onebit_main and never called it — so the documented `./run.sh chat` printed the
+# top-level usage, and so did every other command. A compiler cannot see a
+# declared-but-uncalled function or a symlink with no branch, so the three lists
+# (packaged symlinks, accepted commands, dispatch branches) are compared here.
+echo "== CLI dispatch coverage =="
+total=$((total+1))
+if dispatch_out=$("$PYTHON" Testing/dispatch_selfcheck.py 2>&1); then
+    echo "✓ cli_dispatch"
+else
+    echo "✗ cli_dispatch"
+    printf '%s\n' "$dispatch_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+
+# The same question asked of the ARTIFACT rather than the source lists: the static
+# check cannot tell whether the linked binary really routes those names (that is
+# how `./run.sh chat` shipped printing usage while every static check passed). It
+# runs only when a built binary is present — this suite is host-only and does not
+# build one — so the CI job that DOES build the binary runs it with --require.
+echo "== CLI entry points (built binary) =="
+total=$((total+1))
+if [ -x build/1bit ]; then
+    if smoke_out=$("$PYTHON" Testing/cli_smoke.py 2>&1); then
+        echo "✓ cli_smoke"
+        printf '%s\n' "$smoke_out" | grep -E "^  note" | sed 's/^/  /'
+    else
+        echo "✗ cli_smoke"
+        printf '%s\n' "$smoke_out" | tail -6 | sed 's/^/    /'
+        fail=$((fail+1))
+    fi
+else
+    echo "  - cli_smoke: no build/1bit — skipped (run it where the binary is built)"; skip=$((skip+1))
+fi
+
+# Docs-and-repo consistency: links that point at nothing, paths that resolve
+# nowhere, documented commands whose target does not exist, CI that invokes a
+# missing script. Every one of these shipped in a form a compiler cannot see —
+# the README told you to run a model you could not download, and `./run.sh chat`
+# printed the usage text — so they are checked here, against the gated surface
+# only (front page, guides, wiki, packaging/site READMEs).
+echo "== repo consistency =="
+total=$((total+1))
+if docs_out=$("$PYTHON" Testing/repo_docs_selfcheck.py 2>&1); then
+    echo "✓ repo_consistency"
+    printf '%s\n' "$docs_out" | grep -E "^  \(" | sed 's/^/  /'
+else
+    echo "✗ repo_consistency"
+    printf '%s\n' "$docs_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+# Census diagnostics: one repo root, one policy set. Three scripts pinned ROOT
+# to the shared checkout and two carried a stale NON_TEXT_GEN copy (#2387), so a
+# worktree run read the wrong inputs and wrote the wrong tree — invisible,
+# because the run succeeds against them.
+total=$((total+1))
+if census_out=$("$PYTHON" Testing/census_scripts_selfcheck.py 2>&1); then
+    echo "✓ census_scripts"
+else
+    echo "✗ census_scripts"
+    printf '%s\n' "$census_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
+# Published coverage claims must equal the census. seo_sync rewrites them in the
+# daily apply workflows, but that is not a gate — four false-claim shapes
+# survived for months in wordings its patterns did not know (#2389 -> #2397).
+# This checks the content of site/*.html and README.md, not the patterns.
+total=$((total+1))
+if claims_out=$("$PYTHON" Testing/seo_claim_selfcheck.py 2>&1); then
+    echo "✓ seo_claims"
+else
+    echo "✗ seo_claims"
+    printf '%s\n' "$claims_out" | tail -10 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # v4 dedup e2e: synthetic GGUF with duplicated tensors -> converter -> loaders
 DEDUP_DIR=/tmp/onebit_dedup; mkdir -p "$DEDUP_DIR"
 total=$((total+1))
-if python3 Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" >/dev/null 2>&1 && \
-   "$CXX" $FLAGS src/gguf_to_onebp.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp \
-       -o "$BIN/g2o" 2>/dev/null; then
+# Both halves report separately: "build/generate failed" covered a missing
+# python package and a compile error alike, and said which of them it was to
+# nobody. The fixture is stdlib-only now, but the next cause must be readable.
+gen_log=$("$PYTHON" Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" 2>&1); gen_rc=$?
+cc_log=$("$CXX" $FLAGS src/gguf_to_onebp.cpp src/gguf_reader.cpp src/q4nx_reader.cpp src/safetensors_reader.cpp \
+    -o "$BIN/g2o" 2>&1); cc_rc=$?
+if [ $gen_rc -eq 0 ] && [ $cc_rc -eq 0 ]; then
     conv_out=$("$BIN/g2o" "$DEDUP_DIR/mini.gguf" "$DEDUP_DIR/mini.1bp" 2>&1)
     if [ $? -eq 0 ] && printf '%s' "$conv_out" | grep -q 'dedup: blk.1.attn_q.weight'; then
         echo "✓ dedup converter (alias emitted)"
@@ -46,7 +164,24 @@ if python3 Testing/make_mini_gguf.py "$DEDUP_DIR/mini.gguf" >/dev/null 2>&1 && \
         echo "✗ dedup converter: no alias emitted"; fail=$((fail+1))
     fi
 else
-    echo "✗ dedup converter: build/generate failed"; fail=$((fail+1))
+    echo "✗ dedup converter: build/generate failed"
+    [ $gen_rc -ne 0 ] && printf '%s\n' "$gen_log" | tail -5 | sed 's/^/    fixture:  /'
+    [ $cc_rc -ne 0 ] && printf '%s\n' "$cc_log" | tail -5 | sed 's/^/    compiler: /'
+    fail=$((fail+1))
+fi
+
+# NPU lane contract: the NPU runs on the engine's own worker (src/backend_npu.cpp
+# → npu_engine_universal, FLM-free). install.sh never built or mentioned it, and
+# the legacy FLM test harness printed "FLM not installed" as if the NPU were
+# broken. A compiler cannot see a missing install step or a mislabelled lane (#2358).
+echo "== NPU lane contract =="
+total=$((total+1))
+if npu_lane_out=$("$PYTHON" Testing/npu_lane_selfcheck.py 2>&1); then
+    echo "✓ npu_lane"
+else
+    echo "✗ npu_lane"
+    printf '%s\n' "$npu_lane_out" | tail -6 | sed 's/^/    /'
+    fail=$((fail+1))
 fi
 
 echo "== backend compile =="
@@ -57,7 +192,7 @@ if "$CXX" $FLAGS -c src/backend_generic.cpp -o "$BIN/bg.o" 2>/dev/null; then
 echo "== e2e (needs model fixtures in /tmp/onebit-e2e — skipped if absent) =="
 e2e() {  # e2e <name> <model_dir> <oracle.gguf> [expect-torch-string]
     local name="$1" dir="$2" gguf="$3"
-    if [ ! -f "$gguf" ]; then echo "  - $name: fixtures absent, skipped"; return; fi
+    if [ ! -f "$gguf" ]; then echo "  - $name: fixtures absent, skipped"; total=$((total+1)); skip=$((skip+1)); return; fi
     total=$((total+1))
     if ! "$CXX" $FLAGS src/backend_generic.cpp src/model_discovery.cpp src/gguf_reader.cpp \
         src/q4nx_reader.cpp src/safetensors_reader.cpp Testing/e2e_safetensors_selfcheck.cpp \
@@ -84,6 +219,7 @@ if [ -f "$instella_mini" ] && [ -f "$instella_ref" ]; then
     else echo "✗ instella engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
     echo "  - instella: fixtures absent, skipped (cp -r 1bit-monster/models/kl-test/mini-full* /tmp/onebit-instella/)"
+    total=$((total+1)); skip=$((skip+1))
 fi
 
 
@@ -108,6 +244,7 @@ if [ -f "$instella_mini" ]; then
     fi
 else
     echo "  - instella-1bp: fixture absent, skipped"
+    total=$((total+1)); skip=$((skip+1))
 fi
 
 # ── DeepSeek V4 gate (mini fixture, HF safetensors oracle) ──
@@ -121,21 +258,90 @@ if [ -f "$dsv4_dir/logits_last.npy" ] && [ -f "$dsv4_dir/model.safetensors" ]; t
         echo "✓ deepseek_v4 engine (Shared-KV MQA + mHC + hash-MoE)";
     else echo "✗ deepseek_v4 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
-    echo "  - deepseek_v4: fixture absent, skipped (python3 Testing/make_mini_deepseek_v4.py /tmp/onebit-dsv4)"
+    echo "  - deepseek_v4: fixture absent, skipped (python3 Testing/make_mini_deepseek_v4.py /tmp/onebit-dsv4)"; skip=$((skip+1))
+fi
+
+# ── ws13: DeepSeek V4/V4.1 architecture gates (fixtures: Testing/make_ws13_fixtures.sh) ──
+# Every gate here compares against the REFERENCE'S OWN values captured by forward hooks.
+# Skipped when the fixtures are absent, like the V4 gate above. The compressed gates all
+# use a NON-SELECTIVE indexer (--index-topk 64): with the configured index_topk, which of
+# several exactly-equal scores wins is implementation-defined on the reference side, so
+# an index-equality gate would fail a correct implementation (see ws13 FINDINGS.md).
+ws13="${WS13_FIXTURE_DIR:-/tmp/onebit-ws13}"
+if [ -f "$ws13/csa_nt/comp_ref_L1.npy" ]; then
+    "$CXX" $FLAGS Testing/cmp_deepseek_v4_compressor.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp -o "$BIN/cmp_comp" 2>/dev/null || { echo "✗ ws13 compressor: COMPILE FAILED"; fail=$((fail+1)); }
+    "$CXX" $FLAGS Testing/cmp_deepseek_v4_compressor_incremental.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp -o "$BIN/cmp_comp_inc" 2>/dev/null || { echo "✗ ws13 compressor-incremental: COMPILE FAILED"; fail=$((fail+1)); }
+    "$CXX" $FLAGS Testing/cmp_deepseek_v4_indexer.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp -o "$BIN/cmp_indexer" 2>/dev/null || { echo "✗ ws13 indexer: COMPILE FAILED"; fail=$((fail+1)); }
+    # build our own comparator: the V4 gate above only builds $BIN/cmp_dsv4 when ITS
+    # fixture is present, so depending on it would make these gates un-runnable alone.
+    "$CXX" $FLAGS Testing/cmp_deepseek_v4.cpp src/deepseek_v4.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp -o "$BIN/cmp_dsv4_ws13" 2>/dev/null || { echo "✗ ws13 e2e: COMPILE FAILED"; fail=$((fail+1)); }
+
+    # compressor maths, batched and incremental (CSA two-series, HCA single-series)
+    total=$((total+1))
+    if "$BIN/cmp_comp" "$ws13/csa_nt" 1 "$ws13/csa_nt/attn_input_L1.npy" "$ws13/csa_nt/comp_ref_L1.npy" 1e-6 >/dev/null 2>&1 \
+       && "$BIN/cmp_comp" "$ws13/hca160" 2 "$ws13/hca160/attn_input_L2.npy" "$ws13/hca160/comp_ref_L2.npy" 1e-6 >/dev/null 2>&1; then
+        echo "✓ ws13 compressor (CSA batched + HCA batched)"
+    else echo "✗ ws13 compressor: mismatch vs the reference"; fail=$((fail+1)); fi
+
+    total=$((total+1))
+    if "$BIN/cmp_comp_inc" "$ws13/csa_nt" 1 "$ws13/csa_nt/attn_input_L1.npy" "$ws13/csa_nt/comp_ref_L1.npy" 1e-6 >/dev/null 2>&1 \
+       && "$BIN/cmp_comp_inc" "$ws13/hca160" 2 "$ws13/hca160/attn_input_L2.npy" "$ws13/hca160/comp_ref_L2.npy" 1e-6 >/dev/null 2>&1; then
+        echo "✓ ws13 compressor incremental (token-by-token == batched reference)"
+    else echo "✗ ws13 compressor incremental: mismatch"; fail=$((fail+1)); fi
+
+    # compressed attention integrated: non-selective indexer -> exact per layer
+    total=$((total+1))
+    if "$BIN/cmp_dsv4_ws13" "$ws13/csa_nt" "$ws13/csa_nt/ids.txt" "$ws13/csa_nt/logits_last.npy" 20 18 "$BIN/ws13_nt.bin" >/dev/null 2>&1 \
+       && "$BIN/cmp_dsv4_ws13" "$ws13/odd_nt" "$ws13/odd_nt/ids.txt" "$ws13/odd_nt/logits_last.npy" 20 18 "$BIN/ws13_odd.bin" >/dev/null 2>&1; then
+        echo "✓ ws13 compressed attention (integration + shape-agnostic, non-selective)"
+    else echo "✗ ws13 compressed attention: mismatch"; fail=$((fail+1)); fi
+
+    # python-level gates (per-layer bound, indexer scores) — need numpy
+    if "$PYTHON" -c 'import numpy' >/dev/null 2>&1; then
+        total=$((total+1))
+        if "$PYTHON" Testing/cmp_deepseek_v4_layers.py "$ws13/csa_nt" "$BIN/ws13_nt.bin" --tol 1e-6 >/dev/null 2>&1; then
+            echo "✓ ws13 per-layer bound (<=1e-6, non-selective indexer)"
+        else echo "✗ ws13 per-layer bound: exceeded"; fail=$((fail+1)); fi
+        total=$((total+1))
+        if "$BIN/cmp_indexer" "$ws13/csa" 1 "$ws13/csa/attn_input_L1.npy" "$ws13/csa/indexer_ref_L1.npy" "$BIN/ws13_ix.bin" >/dev/null 2>&1 \
+           && "$PYTHON" Testing/cmp_deepseek_v4_indexer_scores.py "$ws13/csa" "$BIN/ws13_ix.bin" --layer 1 --tol 1e-6 >/dev/null 2>&1; then
+            echo "✓ ws13 indexer scores (<=1e-6 + order-independent selection validity)"
+        else echo "✗ ws13 indexer scores: mismatch"; fail=$((fail+1)); fi
+    else
+        echo "  - ws13 python gates skipped (no numpy in $PYTHON)"; total=$((total+2)); skip=$((skip+2))
+    fi
+else
+    echo "  - ws13: fixtures absent, skipped (PYTHON=<torch env> Testing/make_ws13_fixtures.sh)"; total=$((total+1)); skip=$((skip+1))
 fi
 
 # ── GLM-MoE-DSA gate (mini fixture, HF safetensors oracle) ──
 total=$((total+1))
-glmdsa_dir=/tmp/onebit-glmdsa
+# Committed fixture (Testing/fixtures/glmdsa) so the gate runs in CI without torch;
+# GLMDSA_FIXTURE_DIR overrides for a locally regenerated /tmp fixture.
+glmdsa_dir=${GLMDSA_FIXTURE_DIR:-Testing/fixtures/glmdsa}
+[ -f "$glmdsa_dir/logits_last.npy" ] && [ -f "$glmdsa_dir/model.safetensors" ] || glmdsa_dir=/tmp/onebit-glmdsa
+ids_file=/tmp/onebit-glmdsa-ids.txt
 if [ -f "$glmdsa_dir/logits_last.npy" ] && [ -f "$glmdsa_dir/model.safetensors" ]; then
-    echo "5 7 9 11 3" > /tmp/onebit-glmdsa-ids.txt
+    echo "5 7 9 11 3" > "$ids_file"
     if ! "$CXX" $FLAGS Testing/cmp_glm_moe_dsa.cpp src/glm_moe_dsa.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
         -o "$BIN/cmp_glmdsa" 2>/dev/null; then echo "✗ glm_moe_dsa: COMPILE FAILED"; fail=$((fail+1));
-    elif "$BIN/cmp_glmdsa" "$glmdsa_dir" /tmp/onebit-glmdsa-ids.txt "$glmdsa_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+    elif "$BIN/cmp_glmdsa" "$glmdsa_dir" "$ids_file" "$glmdsa_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
         echo "✓ glm_moe_dsa engine (V3-MLA + DSA indexer + group-topk MoE)";
     else echo "✗ glm_moe_dsa engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
-    echo "  - glm_moe_dsa: fixture absent, skipped (python3 Testing/make_mini_glm_moe_dsa.py /tmp/onebit-glmdsa)"
+    echo "  - glm_moe_dsa: fixture absent, skipped (python3 Testing/make_mini_glm_moe_dsa.py /tmp/onebit-glmdsa)"; skip=$((skip+1))
+fi
+
+# ── GLM-MoE-DSA "shared" indexer configuration (issue #2423) ──
+# Uses the same fixture and skips itself when that fixture is absent, so its
+# result is folded into this suite's counters rather than reported separately.
+total=$((total+1))
+shared_out=$(bash Testing/check_glmdsa_shared_config.sh 2>&1) && shared_rc=0 || shared_rc=$?
+printf '%s\n' "$shared_out"
+if printf '%s' "$shared_out" | grep -q 'fixture absent, skipped'; then
+    skip=$((skip+1))
+elif [ "$shared_rc" -ne 0 ]; then
+    fail=$((fail+1))
 fi
 
 # ── MiMo-V2 gate (mini fixture, vendored remote modeling oracle) ──
@@ -149,7 +355,7 @@ if [ -f "$mimo_dir/logits_last.npy" ] && [ -f "$mimo_dir/model.safetensors" ]; t
         echo "✓ mimo_v2 engine (MoD hybrid: SWA+full GQA, sigmoid group-topk MoE)";
     else echo "✗ mimo_v2 engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
-    echo "  - mimo_v2: fixture absent, skipped (python3 Testing/make_mini_mimo_v2.py /tmp/onebit-mimo)"
+    echo "  - mimo_v2: fixture absent, skipped (python3 Testing/make_mini_mimo_v2.py /tmp/onebit-mimo)"; skip=$((skip+1))
 fi
 
 # ── Qwen3_5 text gate (mini fixture, HF oracle) ──
@@ -163,7 +369,7 @@ if [ -f "$q35_dir/logits_last.npy" ] && [ -f "$q35_dir/model.safetensors" ]; the
         echo "✓ qwen3_5 text engine (GatedDeltaNet + gated GQA hybrid)";
     else echo "✗ qwen3_5 text engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
-    echo "  - qwen3_5: fixture absent, skipped (python3 Testing/make_mini_qwen3_5.py /tmp/onebit-q35)"
+    echo "  - qwen3_5: fixture absent, skipped (python3 Testing/make_mini_qwen3_5.py /tmp/onebit-q35)"; skip=$((skip+1))
 fi
 
 # ── Mesh: self-aware network substrate (optional — needs the CMake build) ──
@@ -173,7 +379,7 @@ if [ -x build/mesh_peer ]; then
         echo "✓ mesh (peer discovery + ask/answer)";
     else echo "✗ mesh (peer discovery + ask/answer)"; fail=$((fail+1)); fi
 else
-    echo "  - mesh: mesh_peer binary absent, skipped (cmake --build build --target mesh_peer)"
+    echo "  - mesh: mesh_peer binary absent, skipped (cmake --build build --target mesh_peer)"; skip=$((skip+1))
 fi
 
 # ── JARVIS fleet dispatch (optional — needs build/1bit + build/mesh_peer) ──
@@ -183,12 +389,13 @@ if [ -x build/1bit ] && [ -x build/mesh_peer ]; then
         echo "✓ jarvis fleet dispatch (mesh-aware, DSH brain path)";
     else echo "✗ jarvis fleet dispatch (mesh-aware, DSH brain path)"; fail=$((fail+1)); fi
 else
-    echo "  - jarvis fleet: binaries absent, skipped (cmake --build build --target onebin mesh_peer)"
+    echo "  - jarvis fleet: binaries absent, skipped (cmake --build build --target onebin mesh_peer)"; skip=$((skip+1))
 fi
 
 
+run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --
+
 echo "======================================"
-echo "$((total-fail))/$total passed"
+echo "$((total-fail-skip))/$total passed, $skip skipped"
 [ "$fail" -eq 0 ] || { echo "$fail FAILURES"; exit 1; }
 
-run rni-bf16 Testing/aie2p_bf16_rni_selfcheck.cpp --

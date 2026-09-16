@@ -270,7 +270,8 @@ std::string LseBackend::http_post(const std::string& path, const std::string& bo
     return out;
 }
 
-std::string LseBackend::generate_text(const std::string& prompt, int max_tokens) {
+std::string LseBackend::generate_text(const std::string& prompt, int max_tokens, float temperature) {
+    (void)temperature;  // the LSE server applies its own sampling; temp is not plumbed here
     if (pid_ <= 0 || !initialized_) return "";
     if (max_tokens <= 0) max_tokens = 16;
     if (max_tokens > 4096) max_tokens = 4096;  // server default cap

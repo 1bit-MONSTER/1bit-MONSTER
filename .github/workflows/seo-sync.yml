@@ -82,7 +82,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add site/ scripts/seo_sync.py
+          git add site/ scripts/seo_sync.py README.md docs/wiki/models.md docs/model-families/README.md docs/CODEBASE.md
           git commit -m "seo: daily sync $DATE — refresh site claims to current engine state"
           git push origin "$BRANCH"
 
@@ -126,3 +126,5 @@ jobs:
             fi
           fi
           echo "PR: $(cat /tmp/pr_url.txt)"
+          # Enqueue to the merge queue so it self-merges once CI is green.
+          gh pr merge "$BRANCH" --auto || echo "auto-merge enqueue failed (retry next run)"

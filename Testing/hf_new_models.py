@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hf_new_models.py — watch HF for new causal-LM models the registry doesn't cover.
 
-The census (census_coverage.py) is a snapshot: 317,310/317,310 on 2026-08-15.
+The census (census_coverage.py) is rebuilt daily by the full census sweep.
 New models drop on HF daily; this watcher polls the newest text-generation
 models, fetches each config.json, strips the architecture class, and probes
 the REAL engine registry (rcpp_arch_from_string via the compiled probe). Any
@@ -202,7 +202,23 @@ def main():
                 seen[mid] = True
             else:
                 if mid not in seen or not seen[mid]:
-                    unverifiable[mid] = "no config / no mapped tag"
+                    # Record WHY it is unverifiable. The listing is fetched with
+                    # full=true, so `gated`/`private` are right here (verified
+                    # against the live API) — and the print used to assert
+                    # "gated repos need a token" for every entry regardless,
+                    # which sends readers after a token that cannot help.
+                    # Issue #2178 listed 7 such models; 5 of 7 checked, all
+                    # gated=false, two of them shipping training-hyperparameter
+                    # files (`batch_size`, `learning_rate`) instead of a model
+                    # config. Only claim gating when the API says so.
+                    if m.get("gated"):
+                        unverifiable[mid] = "gated — a token would let this be checked"
+                    elif m.get("private"):
+                        unverifiable[mid] = "private repo"
+                    elif cfg is None:
+                        unverifiable[mid] = "config fetch failed (404/network)"
+                    else:
+                        unverifiable[mid] = "no config / no mapped tag"
                 seen[mid] = False  # retry next run
             time.sleep(0.2)
             continue
@@ -226,8 +242,8 @@ def main():
     # Accrue the census delta: every in-scope model the watcher newly observes
     # is one more arch-bearing text-gen checkpoint in the HF census, and every
     # covered one is one more mapped checkpoint. seo_sync.py adds these to the
-    # frozen 317,310/317,310 snapshot so the SEO claim numbers keep moving
-    # without a full daily re-sweep. This is a floor estimate — the watcher
+    # daily full-sweep snapshot so the SEO claim numbers keep moving
+    # without waiting for the next day's re-sweep. This is a floor estimate — the watcher
     # samples only the newest models, so it undercounts true daily volume.
     state["delta_with_arch"] = int(state.get("delta_with_arch", 0)) + n_in_scope
     state["delta_covered"] = int(state.get("delta_covered", 0)) + n_covered
@@ -256,6 +272,8 @@ def main():
         print(f"  !! SIGNIFICANT {s}: {len(ids)} model(s), e.g. {ids[0]}")
         print(f"     -> major-family/vision arrival — needs REAL engine arch "
               f"support + decode validation, NOT an alias")
+        print(f"     -> reviewed evidence (config diff + what support needs): "
+              f"Testing/arch-gaps.md")
     # Record significant arrivals (covered + uncovered) so the post generator
     # (significant-post workflow) can publish a blog entry for the ones the
     # engine now maps. Only COVERED significant classes get a post — an
@@ -288,8 +306,9 @@ def main():
         except Exception as _e:
             print(f"[watch] census_autopr failed: {_e}", file=sys.stderr)
     for mid, why in sorted(unverifiable.items()):
-        print(f"  ? UNVERIFIABLE {mid} ({why}) — gated repos need a token; "
-              f"retried next run")
+        # `why` carries the cause now, so no blanket gating claim: only the
+        # entries whose reason is actually gated benefit from a token.
+        print(f"  ? UNVERIFIABLE {mid} ({why}) — retried next run")
 
     # Only uncovered classes are a real alert. Unverifiable (gated/no-config)
     # models are expected — HF gates repos without a token, and a missing

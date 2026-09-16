@@ -41,12 +41,95 @@ jobs:
           cp -a site/. _deploy/
           python3 scripts/gen_docs_site.py --out _deploy/docs
 
+      - name: Set the gh-auth function secrets on the Pages project
+        # The function needs the App credentials as *Pages project* env, not as
+        # repo files. Values come from Actions secrets and are never printed.
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+          AUTH_TOKEN: ${{ secrets.GH_AUTH_WORKER_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=""
+          for v in APP_ID APP_PRIVATE_KEY AUTH_TOKEN; do
+            eval "val=\$$v"
+            [ -n "$val" ] || missing="$missing $v"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::missing repo secrets:$missing"; exit 1
+          fi
+          for key in APP_ID APP_PRIVATE_KEY AUTH_TOKEN; do
+            eval "val=\$$key"
+            printf '%s' "$val" | npx --yes wrangler@4 pages secret put "$key" --project-name=1bit-monster
+          done
+          echo "gh-auth secrets set on Pages project 1bit-monster (values not printed)"
+
+      - name: Stage the Pages Function at the project root
+        # Cloudflare compiles Pages Functions from `functions/` at the project
+        # root, not from inside the uploaded directory -- and this repo's Scope
+        # Guard keeps the set of committed top-level paths fixed, which is a gate
+        # the operator owns, not something a feature PR should edit. So the handler
+        # is committed under site/ (in scope) and materialised here for the deploy.
+        run: |
+          set -euo pipefail
+          mkdir -p functions
+          cp site/functions/gh-auth.js functions/gh-auth.js
+          ls -l functions/
+
       - name: Deploy to Cloudflare Pages
         uses: cloudflare/wrangler-action@ebbaa1584979971c8614a24965b4405ff95890e0  # v4
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           command: pages deploy _deploy --project-name=1bit-monster
+
+  indexnow:
+    # Tell Bing/Yandex which pages this push changed. The protocol key file has
+    # been hosted since #1993/#1994 but nothing ever submitted with it, so the
+    # engines only learned about changes by re-crawling on their own schedule
+    # (scripts/indexnow_submit.py is the missing half). Runs after the Pages
+    # deploy so the URLs it names are already live.
+    # Reads the repo and POSTs URLs to the search engines — nothing here needs a
+    # write scope. Declared explicitly because without a permissions block the
+    # job inherits the repository default: CodeQL actions/missing-workflow-permissions.
+    permissions:
+      contents: read
+    needs: deploy
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          # The changed-page list comes from the push's own commit range, so the
+          # before-SHA has to be in the clone -- a depth-1 checkout cannot diff it.
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.11'
+
+      - name: Submit the pages this push changed
+        env:
+          BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          if [ -z "${BEFORE:-}" ] || [ "$BEFORE" = "0000000000000000000000000000000000000000" ]; then
+            echo "indexnow: no usable before-SHA (new branch or force push) — submitting the sitemap"
+            python3 scripts/indexnow_submit.py --all
+          else
+            python3 scripts/indexnow_submit.py --changed-since "$BEFORE" --head "$HEAD_SHA"
+          fi
+          rc=$?
+          case "$rc" in
+            0) echo "indexnow: ok" ;;
+            2) echo "::warning::indexnow: transient failure (rate limited or 5xx) — not failing the run" ;;
+            *) echo "::error::indexnow: submission refused (rc=$rc)"; exit "$rc" ;;
+          esac
 
   deploy-github-pages:
     runs-on: ubuntu-latest
@@ -83,4 +166,4 @@ jobs:
         with:
           path: _deploy
       - id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128  # v5.0.0
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346  # v5.0.1

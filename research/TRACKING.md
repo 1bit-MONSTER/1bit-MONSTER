@@ -1,12 +1,155 @@
 # Workstream Tracking
 
-> Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed. Updated: 2026-08-29.
+> Single source of truth for workstream/task status. Legend: 🔲 not started · 🔄 in progress · ✅ done · ⛔ blocked · ❌ killed.
+> Table rows below last walked **2026-08-29**; the dated delta underneath supersedes them where the two disagree.
+
+## Status delta — 2026-09-13 (dsh, strixhalo)
+
+Both corrections below were verified from `main` alone — neither needs the NPU.
+
+* **The Census row is superseded.** The newest full sweep is `4eb5dc43a`
+  (#2315, 2026-09-13): it refreshed `Testing/census_*.json` and the site's claim
+  numbers, so the row's `051d93e8d` (#2255) is now the 09-12 sweep. The summary
+  committed after it reads
+  `registry_covered 323,793 / with_arch 323,904 = 99.966%` — **not 100%**, i.e.
+  unmapped classes remain. *Which* classes and what to do about them belongs to
+  issue #2178 and `Testing/arch-gaps.md`; this entry only fixes which sweep the
+  tables' pointer follows.
+* **Open question 5 is closed — `NPU_PREFILL_MAX` is a non-item in `main`.**
+  Neither the switch nor the body it guards exists here: `NPU_PREFILL_MAX` has
+  **0 hits** across `engine/`, `include/` and `src/` (checked 2026-09-13), as
+  does `Bf16Mm` — the 256-row prefill body the withdrawn @1k claim blamed — with
+  `ensure_a` / `gemm_wait` likewise absent. So `main` cannot run the silent
+  256-row prefill and there is no merge-time check to remember: when
+  `goal/runlist-decode-wire` lands, it brings the branch's already-fixed version
+  (which warns and caps to 256) with it.
+
+## Status delta — 2026-09-12 (dsh, strixhalo) — read this before the tables
+
+Fourteen days of work were never folded back into the rows below. This section is
+the correction, with the artifact that carries the evidence. It is deliberately
+split into *verified*, *open*, and *settled negative* — and it prefers a withdrawn
+claim to a flattering one.
+
+### Verified
+
+| Item | State | Evidence |
+|------|-------|----------|
+| P0.1 NPU IO_PAGE_FAULT path | **not blocking any more** — NPU attention runs end-to-end at 1k ctx (~147 ms of attention for a 28-layer dense Qwen3 vs ~14 s CPU reference), served by the **embedded captured** ELF. The storm itself is *not* fixed: it still fires and degrades individual execs (see the P0.1 row below — the `amd_iommu=off` fix is not staged anywhere, so a reboot would not apply it), but the device keeps producing verified results either side of a burst | `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` (branch `goal/runlist-decode-wire`) + device check 2026-09-13 |
+| WS-00 Baseline & measurement | measurement works, but the **harness is branch-only**: `benchmarks/flm_parity.sh`, incl. `FLM_PARITY_TRUE_NATIVE=1` (without it the "native" column silently drives FLM's own libs) | smoke test `benchmarks/RESULTS-flm-parity-harness-2026-09-09.md` (landed in `main` by PR #2306); the harness and `FLM-PARITY-DATA-SOURCES.md` only on `goal/runlist-decode-wire` |
+| On-box parity: decode @1k | **survives** — 12.6 ms/tok / **79 tok/s** vs FLM 13.6 ms/tok / 73.58 tok/s on-box (+7 %) after the double-buffered runlist build-overlap. This is the int8/runlist path, the one that is byte-exact against FLM | `benchmarks/RESULTS-on-box-parity-2026-09-12.md` — **branch-only** on `goal/runlist-decode-wire`; goal `mtyfjavg-r1vlak` |
+| On-box parity: prefill @256 | **throughput survives** (~400–413 ms for 256 tokens ≈ **620–668 tok/s**, boot=1614 on all three paths) but the original write-up overstated the *correctness* basis: the argmax boot-token gate is now known to be weak on this path (see open question 2) | `benchmarks/RESULTS-on-box-parity-2026-09-12.md` + `RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` — **branch-only** |
+| WS-01 NPU fused attention | no in-engine fused-attention kernel was written. The **generator** finding stands — FLM's exported `gen_mha_engine_seq` + `aiebu` reproduce the committed 1024-position ELF **byte-identically** (sha256 `6ece6c33…`) — but that ELF is **not a perf path**: ~1500× slower than the embedded captured kernel (225 s vs 147 ms attention at npt=1024), so it is opt-in behind `NPU_ATTN_ELF_1024_USE` | `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` |
+| WS-02/WS-03 native quantized + ternary AIE | still not started as scoped; the AIE effort went into the fk-1..fk-3 fused-layer PoC instead (`n1_fk3*.py`, `build_fk3.sh`) | FK3-STATUS §fk-3 PoC |
+| WS-07 MoE decode & spec (35B-A3B runlist) | **proven dead end** — see "Settled negative results" below | goal `mtusoiy1-cfdhqr`; `benchmarks/RESULTS-runlist-decode-35b-moe-2026-09-10.md` (on branch `goal/runlist-decode-wire`) |
+| WS-11 NPU weight path | dense-Qwen3 **@1k prefill: WITHDRAWN** (`ca02e75ac`, 2026-09-12). The bf16 prefill body only ever computes 256 rows (`Bf16Mm::ensure_a` stages two 128-row halves; `gemm_wait` copies back `128*N`), so `NPU_PREFILL_MAX=1024` ran a 256-token pipeline and reported 1024-token throughput — and the gate was self-referential (bf16-NPU vs `NPU_ATTN_CPU`, the same broken pipeline). Boot-token re-gate: 256 → 1614 on all three paths; 512 → 132352 vs the trusted 220; 1024 → 44402 vs 25 | `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md` |
+| #2199 fused int4 `.data` placement | **fixed and merged** (`f3825fbb6`, PR #2282); xclbin rebuilt 67,306 → 75,040 B, provenance manifest regenerated | `bash engine/npu/tests/check_kernel_bss.sh` → `bss=0 / RESULT: PASS` on `f3825fbb6` (re-run 2026-09-12) |
+| Census | full HF sweep refreshed | `051d93e8d` (#2255) |
+| HRX `reset()` context loss (#2203) | fixed: re-imports `HRX_STATE_FILE` after reset, guards resumed ctx against `HRX_MAX_CTX_TOKENS` | `docs/issue-campaign/1942-triage.md` §1.2 |
+| Zaya1-8B fused NPU decode | **correct and FLM-class in `main`**: PR #2172 rebuilt the fused xclbin to match the #2163 host ABI (the 2026-09-09 corr −0.0015 red flag is closed) → corr 0.998, token parity, **21.3 tok/s** | `engine/npu/xclbins/final_i8_MOE_FUSED_zaya.xclbin` + PR #2172 (`e1c20d09f`) |
+
+### Open questions and corrections (read before quoting any number)
+
+1. **The @1k dense-Qwen3 prefill claim is WITHDRAWN — resolved in the negative.**
+   `ca02e75ac` (2026-09-12): the bf16 prefill body computes only 256 rows, the
+   "verification" compared the broken pipeline against itself, and the generated
+   1024-position ELF is ~1500× slower than the embedded captured kernel. No clean
+   re-run is owed — it would reproduce a wrong token. *An earlier version of this
+   entry blamed the 227 s post-fix attention measurement on two concurrent NPU
+   runs; the confound was real, but the cause was the generated ELF itself
+   (225 s vs 147 ms).* The FK3-STATUS rounds 21–26 that carried the claim are
+   superseded by `benchmarks/RESULTS-bf16-prefill-CORRECTION-2026-09-12.md`.
+   The re-entry path is scoped in that same doc (§ *To actually reach @1k*):
+   generalize the bf16 layer body past two hardcoded 128-row batches, run the
+   attention ELF once per 256-query chunk with KV accumulation (the way FLM's own
+   runtime does), and re-gate against `NPU_RUNLIST=1` / `NPU_FLM_PREFILL=1` boot
+   tokens instead of against another bf16 variant.
+2. **The captured attention kernel deviates from reference softmax — but not by a
+   scale factor.** Independently audited 2026-09-13 on a *correct* 256-token run
+   (`boot=1614`): 239/256 query rows differ from host reference causal softmax by
+   more than 0.05, and the deviation is real — the head→KV-head mapping checks out
+   (all 16 heads fit their own kv-head's V-span to <3 %), Q and K are both
+   post-RoPE, so it is not a layout or RoPE artifact. But the mechanism recorded
+   here earlier ("wrong softmax scale, ≈1/16"; row-1 mixing weight 0.727 vs 0.826)
+   is **not supported**: per-head implied scales scatter 0.46×–1.85× of `1/√128`
+   with one negative, where a single scale error would be uniform across heads.
+   The "row 255 matches to 4 bf16 ULP" figure is likewise not reproducible
+   (row 255 = 0.194 here), and row 0's agreement is degenerate — one key means the
+   output *is* V0 by construction.
+   **What stands:** an argmax boot-token gate is a weak correctness test for any
+   path that composes these kernels differently. **Cause, tested:** it is not a
+   temperature (a scale sweep leaves the *reference* scale as the best fit; 1/16
+   is worse), not bf16 arithmetic (identical when the reference is computed in
+   bf16), and not an extra rotation (much worse). The weights are **monotone in
+   the reference scores but equal to no exponential of them** — median Spearman
+   +0.80 against `q·k` over 144 well-fitted (row, head) pairs — which reads as an
+   **approximate exp** inside the kernel (consistent with this repo's own
+   software `exp2` softmax kernels). Inference, not disassembly: the established
+   part is the negative.
+   Separately established: the byte-exact int8/runlist path replays FLM's own
+   layer sequence (`gen_layer_seq`), so it inherits FLM's numerics by
+   construction — its agreement with FLM is *parity*, not reference correctness.
+   `benchmarks/RESULTS-attn-kernel-audit-2026-09-13.md`.
+3. **Zaya1-8B fused-MoE red flag (2026-09-09) — RESOLVED, and the fix is in `main`.**
+   The fused path genuinely did regress to corr **−0.001552** (identical on the
+   single-launch and split variants, so deterministic), while the non-fused path
+   stayed at 0.999342. Root cause: a **host↔xclbin ABI desync** — the shipped
+   fused xclbin was still the Aug-23 build while #2163 had changed the host
+   header (`#2130`/`#2163` touched the fused weight feed). Two fixes were
+   available: revert the batch-M feature, or rebuild the xclbin.
+   **Only the rebuild landed**: PR **#2172** (`e1c20d09f`, merged 2026-09-09
+   19:53Z) ships the rebuilt `final_i8_MOE_FUSED_zaya.xclbin` (insts 296 KB → 52 KB)
+   together with the matching host changes, and records **corr 0.998 / token
+   parity / 21.3 tok/s** — FLM-class. The revert commits (`817806b8`, `06b7a86d`)
+   are **not** in `main`; they were the stopgap for the old artifact, so do not
+   "restore" them.
+   Re-checked 2026-09-12: the two later commits that touched
+   `mm_kernel_reference.cc` (#2282's `KERNEL_STATIC`, #2229's opt-in
+   `DELIVERY_PROBE`) do **not** invalidate the shipped fused artifact — the fused
+   generator links `matmul_i8_i32` from `mm_32x64x128.o`, while the `.data`
+   statics belong to the int4 kernel (`matmul_i8_i32_i4`), which the fused insts
+   stream and the xclbin do not reference. `check_xclbin_provenance.py` reports
+   OK on `main`.
+   *Caveat on the landed record:* `benchmarks/RESULTS-zaya1-8b-rebaseline-2026-09-09.md`
+   is an append-log and contradicts itself — its "RESOLVED — rebuild unblocked and
+   15-20 tok/s EXCEEDED" section matches what shipped (#2172), while a later
+   "Rebuild attempt — blocked on generator/toolchain drift" section does not.
+   Trust the PR/artifact, not the doc's tail. The corr/tok-s figures here are
+   #2172's own record; they were not re-measured in this pass (the NPU is held by
+   the live thread).
+4. **The harness's decode column — the recorded diagnosis does not match the
+   script.** `FK3-STATUS-2026-09-12.md` blames the parser for reading the
+   prefill's ms/tok instead of the final `=== Z ms/tok (W tok/s) ===` line, but
+   the current `benchmarks/flm_parity.sh` parses `decode_tok_s` from the
+   **decode** log's last `(N tok/s)` marker and the prefill figures from the
+   prefill log — the parse source is correct (`decode_tok_s` came in with
+   `cf5529ae6`). Not re-verified against a live run (the NPU is held by the live
+   thread, and the configuration that note referred to is withdrawn anyway), so
+   treat the "column reads 2" claim as **unconfirmed**, not as a known defect.
+5. **`NPU_PREFILL_MAX > 256` in `main`?** — **CLOSED 2026-09-13, see the
+   09-13 delta above:** `main` has neither the switch nor the bf16 prefill body
+   (`Bf16Mm`, `ensure_a`, `gemm_wait` are all absent), so there is no merge-time
+   check to make and no silent 256-row path to run here.
+
+### Settled negative results (don't re-litigate without new evidence)
+
+- **35B-A3B single-launch runlist decode.** Two independent causes: (a) the
+  per-ctx 35B layer ELFs produce NaNs — the region-B int4 generator is closed
+  source; (b) cross-xclbin runlist batching is infeasible because the MoE xclbins
+  carry different ERT `group_id`s (R98). Net: 0.57 tok/s (CPU MoE, 80
+  launches/token) or 0.32 tok/s (NPU fused M=1) — both below the ~0.7 tok/s
+  baseline and far from the dense-Qwen3 one-submit class. Results:
+  `benchmarks/RESULTS-runlist-decode-35b-moe-2026-09-10.md` (branch
+  `goal/runlist-decode-wire`). Goal `mtusoiy1-cfdhqr` stopped 2026-09-11.
+- **Native single-launch zero-h2-DMA MoE fusion** (2026-08-28) remains blocked by
+  the iron ObjectFifo + 2-input-DMA constraint; p1/p2 two-launch (h2 via DDR) is
+  the production path. See `docs/AGENT-COORDINATION.md`.
 
 ## Phase 0 — Stabilize the floor
 
 | ID | Item | Status | Notes |
 |----|------|:------:|-------|
-| P0.1 | NPU exec fault path (IO_PAGE_FAULT per exec, ~10 s/layer) | 🔄 | Fix staged: amd_iommu=off in grub (backup grub.bak-20260731-1418); reboot + validate_npu_after_reboot.sh | Diagnosed: not a hang — 1000x-slow faulting exec; engine works e2e at 0.1 tok/s; see P01-DIG-FINDINGS.md |
+| P0.1 | NPU exec fault path (IO_PAGE_FAULT per exec, ~10 s/layer) | 🔄 | **The "fix staged" claim that used to sit here is stale — do not reboot expecting it.** Re-checked 2026-09-13: `amd_iommu=off` is **not** in `/boot/grub/grub.cfg` (0 occurrences), not in `/etc/default/grub`, and not in any loader entry, so a reboot returns the same kernel with IOMMU on (`AMD-Vi: Interrupt remapping enabled`, `ivhd0`) and the same faults. The storm is chronic but transient: `aie2_tdr_work: Device isn't making progress` + `IO_PAGE_FAULT` bursts cluster when executions overlap, and the device works either side of them (2026-09-13: a 04:00–05:00 burst of 128 TDR lines, then corr-0.99 bundle checks at 09:31 and successful FLM decodes at 07:04). To actually apply the fix: stage `amd_iommu=off` → `update-grub` → reboot → `research/ws01-npu-attention/validate_npu_after_reboot.sh`. Cheap mitigation meanwhile: **serialize on the device** (rule 4 of the coordination protocol). Original diagnosis 2026-07-31: not a hang — a ~1000×-slow faulting exec; see P01-DIG-FINDINGS.md |
 | P0.2 | One router, retire the other two | 🔄 | cascade vs `tools/token_router.cpp` vs `unified-router.py` — those two tools are no longer in this tree (2026-08-29 triage); remaining work: failover order now follows the model route (`BackendManager::fallback_order()`, G1a), DynamicRouter per-token strategy still separate |
 | P0.3 | 40-column decision in writing | 🔲 | NPU2-40 compiler or formally closed |
 | P0.4 | Re-baseline raw numbers (HIP 113, DSpark 0.8, fusion 291) | 🔲 | After WS-00 harness lands |
@@ -27,9 +170,15 @@
 | WS-08 | MLA & KV cache | 🔄 | 🔲 | 🔲 | gauge probe done; QK-normed MLA next |
 | WS-09 | Router unification | 🔲 | 🔲 | 🔲 | gated on P0.2 |
 | WS-10 | Metal/M5 + MLIR toolchain | 🔲 | 🔲 | 🔲 | — |
+| WS-13 | Arch-gap closure (V4/V4.1, Mamba-3) | ✅ | 🔄 | 🔲 | P0 done (oracle ≤1e-8, compressor ≤5.4e-07, indexer ≤1.3e-08, compressed attention exact 7.451e-09, rope-theta control, shape-agnostic 1.080e-07); P1: GGUF route CLOSED (no V4 converter; no compressor/mhc tensors) → engine-native quantisation, real-checkpoint ingest open (WS-07/WS-11); P2: V4.1 modules + Mamba-3 specified, not implemented — ws13/FINDINGS.md + SPEC-v41-modules.md |
 | WS-12 | HRX/Loom platform transition | ✅ | 🔲 | 🔲 | re-vendored 7953d7f + native `HRX_GPU` backend + decode-time failover (commits 43b38b4e, cc4fd23d, 2026-08-29) |
 
 ## Task detail
+
+### ws13-arch-gap-closure
+- [ ] P0: tiny-config oracle (V4.1 + Qwen3Mamba3) + compressor/indexer maths spec + runtime-format decision
+- [ ] P1: CSA/HCA compressors + Lightning Indexer; shape-agnostic loader + GGUF aliases; real V4-Flash e2e identity gate
+- [ ] P2: V4.1 deltas (engram, gate.bias_vl, candidate blocks, MTP) · vision scope decision · Mamba-3 SSM lane
 
 ### ws12-hrx-loom
 - [x] P0: Re-vendor lemonade e1b31683 → 7953d7f (hrx backend arrives) — verified onebin registers `llamacpp-hrx` on gfx1151 (2026-08-29)

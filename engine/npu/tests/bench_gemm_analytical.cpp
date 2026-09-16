@@ -86,6 +86,14 @@ int main(int argc, char** argv) {
     bC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
 
     const int32_t* C = (const int32_t*)bC.map();
+    // PROBE: with a -DDELIVERY_PROBE kernel, c_out[0..2] hold the three
+    // pointers the kernel was handed and c_out[3] a sentinel, so these lines
+    // show what each compiler actually delivered to the kernel.
+    if (pass == 0 && getenv("PROBE")) {
+      printf("    PROBE c_out[0..3] = %d %d %d %d\n", C[0], C[1], C[2], C[3]);
+      printf("    PROBE hex        = 0x%08x 0x%08x 0x%08x 0x%08x\n",
+             (unsigned)C[0], (unsigned)C[1], (unsigned)C[2], (unsigned)C[3]);
+    }
     long wrong = 0, zero = 0;
     int32_t lo = C[0], hi = C[0];
     for (long i = 0; i < M; i++)

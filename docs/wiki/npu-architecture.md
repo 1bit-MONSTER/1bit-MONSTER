@@ -9,9 +9,26 @@
 > The kernel-level material further down (xclbin layouts, bug fixes, tiling)
 > is still historically accurate for the research it documents.
 
-**Update Jul 24**: NPU ternary bridge + on-tile LUT-decode kernels added.
-FLM now fallback — native npu_xrt routes first.
-GPU ternary/binary kernels have full native HIP/Vulkan support.
+**Update Jul 24** (NPU lane priority corrected 2026-09-14 — see #2358): NPU ternary
+bridge + on-tile LUT-decode kernels added. GPU ternary/binary kernels have full
+native HIP/Vulkan support.
+
+> **NPU lane (current).** NPU inference is the engine's own: `npu_xrt` →
+> `src/backend_npu.cpp` fork/execs `npu_engine_universal` and runs the pre-compiled
+> xclbins — **no FastFlowLM** (the registry comment is explicit: "Zero FLM
+> dependency"; the worker resolves from `NPU_ENGINE_BIN`). `npu_flm`
+> (`src/backend_npu_flm.cpp`) is a separate *optional* lane that drives the
+> FastFlowLM runtime, registered **below** the native lane and routed second, as
+> the fallback for a box where the worker cannot initialise.
+>
+> Corrected 2026-09-14 (#2358). Two things were wrong before this: the page's own
+> "FLM now fallback — native npu_xrt routes first" line, and — in the code —
+> `npu_xrt` was **declared in `discover()` and never pushed into `backends_`** (its
+> block was left unclosed, so the following lanes were swallowed by its scope).
+> The native lane existed as a printed banner line and nothing else, which is why
+> the Q4NX route named no native entry and FLM ranked above it. Both are fixed;
+> `Testing/npu_lane_selfcheck.py` now asserts that every lane declared in
+> `discover()` is registered, so this cannot come back silently.
 
 ## Engine Stack (as of 2026-07-24 — superseded, see banner above)
 
@@ -250,7 +267,8 @@ DDR ──► Shim ──► MemTile ──► Main16 (Q4NX GEMM)
   8×8×8 mmul + K-tile DMA batching) at **M=128** (engine batch size). Previous
   production mix was broken: QKV/O were v23 **scalar** builds (~154 ms/GEMM) and
   GU/D were M=32 builds incompatible with the engine's M=128 batches.
-- **Measured** (analytical GEMM bench, `engine/npu/src/bench_i8_gemm.cpp`):
+- **Measured** (analytical GEMM bench — its source is *not* in this tree, so these
+  numbers carry their measurement date rather than a path you can re-run today):
   QKV 9.3 ms, GU 13.7 ms, D 6.7 ms, O 4.4 ms at ~110-120 GFLOPs — 10-40×
   faster than the scalar builds; all correct when the NPU DMA path is clean.
 - **Wall**: the core loop runs at ~5-6 MACs/cycle/core (the prebuilt

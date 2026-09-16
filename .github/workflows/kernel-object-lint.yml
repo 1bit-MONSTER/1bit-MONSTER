@@ -1,0 +1,53 @@
+name: Kernel object lint
+
+# The complement to the xclbin provenance check: that one asserts the *committed artifact
+# set* against its manifest, this one asserts the *generators* produce a kernel object that
+# satisfies the invariants their own lints encode — required entry symbols, no duplicate Q22
+# LUT, and no .bss symbols (issue #1838: the bare-metal ld.script drops .bss, so a
+# zero-initialised static reads back as garbage on the NPU).
+#
+# It runs on the self-hosted runner because it needs the aie2p (Peano) toolchain. It does NOT
+# need the aiecc/mlir stage, which is why it can run while that stage is blocked by a
+# toolchain version mismatch.
+
+on:
+  pull_request:
+    paths:
+      - "engine/npu/generators/**"
+      - "engine/npu/kernel/**"
+      - "engine/npu/tests/check_kernel_bss.sh"
+      - ".github/workflows/kernel-object-lint.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  kernel-object-lint:
+    name: kernel object lint (.bss / symbols / duplicate LUT)
+    runs-on: [self-hosted, strix-halo]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run the kernel object lint
+        run: |
+          set -o pipefail
+          rc=0
+          # invoke via bash: the script has a shebang and is committed +x, but calling it explicitly removes the
+          # "executable bit lost in a merge/tooling round-trip" failure class, which is how this job first went red
+          # (exit 126: the file was 100644 in the checkout while the step executed it directly).
+          out="$(bash engine/npu/tests/check_kernel_bss.sh 2>&1)" || rc=$?
+          echo "$out"
+          case "$out" in
+            *"RESULT: PASS"*)
+              echo "kernel object lint: PASS"
+              exit 0
+              ;;
+          esac
+          # The ticket-tied "KNOWN FAILING (issue #2199)" branch that used to sit here is
+          # gone: #2199 landed as #2282 (f3825fbb6 restored KERNEL_STATIC and rebuilt the
+          # xclbin), the script has printed RESULT: PASS since, and a branch for a state
+          # that can no longer occur is just a place for the next reader to be misled.
+          echo "kernel object lint: FAIL (exit code was $rc)"
+          exit 1

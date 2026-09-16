@@ -1,5 +1,30 @@
 # DeepSeek V4 Flash Reverse Engineering Report
 
+> ### ⚠ SUPERSEDED — read before using this report (dated 2026-09-12, agent-d4ff3d)
+>
+> **The architecture section below describes the FICTIONAL V4 design.** `include/deepseek_v4.h` states it
+> plainly: the previous implementation "was written against a fictional design (MLA + `kv_lora_rank` + a
+> 4x4 mHC mix matrix) that does not exist in V4", and the real architecture was written 2026-08-16 against
+> `modeling_deepseek_v4.py` 5.14 — shared-KV MQA (`q_a`/`q_a_norm`/`q_b`, one KV head with K=V,
+> per-head sinks, grouped `o_a`/`o_b`), mHC hyper-connections with Sinkhorn-Knopp, hash/top-k MoE, and
+> **per-layer CSA/HCA compressors + a Lightning Indexer** (which this report's "TODO — GPU path" mentions
+> but which the report's own layer list does not describe).
+>
+> **Two claims below are contradicted by the tree today:**
+>
+> 1. The "Done" checklist says `src/deepseek_v4.cpp` contains a **GGUF loader** (with FP4 dequant). It does
+>    not: the loader is **HF-safetensors-only**, and GGUF `blk.*` aliases are explicitly *not* handled
+>    (`include/deepseek_v4.h`). That work is P1.2 in `research/ws13-arch-gap-closure/` and is still open.
+> 2. The `blk.*` **tensor-name table is hypothetical** (the report says so itself, in its own words) and was
+>    never verified against a real GGUF. **Do not implement against it.** The authoritative names are the
+>    published checkpoint's (`model.safetensors.index.json`, inventoried in `Testing/arch-gaps.md` and the
+>    ws13 `FINDINGS.md`) plus the transformers reference's module names, mapped in
+>    `research/ws13-arch-gap-closure/SPEC-v41-modules.md` §1.
+>
+> Kept for the historical record — the quantisation notes (fp8/FP4, `ue8m0` block scales) are still useful;
+> the layout and the `blk.*` names are not. Verified state of the V4 path: ws13 `FINDINGS.md`
+> (per-layer gate 7.451e-09, compressor + indexer implemented, GGUF/fp8 loading still to do).
+
 **Model**: DeepSeek-V4-Flash-0731 (284B total / 13B active parameters)
 **Source**: https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731
 **Release**: July 31, 2026 · MIT license · ~166.9 GB weights

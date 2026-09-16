@@ -50,6 +50,32 @@ def post_description(site_dir: Path, name: str) -> str:
     return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
 
 
+def post_date(site_dir: Path, name: str) -> str:
+    """The feed item's date: the post page's OWN datePublished (#2295).
+
+    Preferred over git_firstmod() for two reasons measured on this repo:
+
+      * git_firstmod returns the first commit touching the path AS NAMED TODAY, so
+        the date moves if a post is ever renamed. That is why 2 of the 28 posts
+        carried a page date that disagreed with it (by 1 and 4 days).
+      * in a shallow checkout -- actions/checkout's default fetch-depth: 1 -- the
+        single fetched commit is a graft root with no parent, so EVERY path looks
+        added in it and git_firstmod returns that one commit's date for all of
+        them. site/blog.xml on main had all 28 items stamped with the generation
+        day for exactly this reason.
+
+    The page's datePublished is a snapshot taken when the post was published and is
+    not regenerated afterwards, so it is stable and needs no git history at all.
+    Falls back to git_firstmod only for a page that predates the tag.
+    """
+    try:
+        page = (site_dir / name).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        page = ""
+    m = re.search(r'"datePublished"\s*:\s*"([0-9]{4}-[0-9]{2}-[0-9]{2})"', page)
+    return m.group(1) if m else git_firstmod(f"site/{name}")
+
+
 def gen_blog_rss(site_dir: Path) -> None:
     blog = (site_dir / "1bit-blog.html").read_text(encoding="utf-8")
     posts = collect_posts(blog)
@@ -57,7 +83,7 @@ def gen_blog_rss(site_dir: Path) -> None:
     for name, title in posts:
         url = f"{SITE}/{name}"
         desc = post_description(site_dir, name)
-        pub = rfc2822(git_firstmod(f"site/{name}"))
+        pub = rfc2822(post_date(site_dir, name))
         items.append(
             "    <item>\n"
             f"      <title>{html.escape(title)}</title>\n"

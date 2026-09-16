@@ -15,13 +15,15 @@ pure C++26 · zero Python at runtime · GPL-3.0
 
 **One engine. Any model. Zero Python.**
 
-A model-agnostic, hardware-agnostic inference engine in a single C++26 binary. Point it at a model file — GGUF, 1BP, ONNX, H1B, safetensors — and it auto-detects the architecture and runs on whatever hardware you have: AMD XDNA 2 NPU, GPU (HIP, CUDA, Metal, Vulkan), or CPU. No config files, no per-model glue, no Python interpreter anywhere.
+A model-agnostic, hardware-agnostic inference engine in a single C++26 binary. Point it at a model file — GGUF, 1BP, ONNX, H1B, safetensors — and it auto-detects the architecture and routes it to the best available backend: AMD XDNA 2 NPU, GPU (HIP, CUDA, Metal, Vulkan), or CPU. No config files, no per-model glue, no Python interpreter anywhere.
+
+> **Validated target today: AMD Strix Halo (gfx1151).** The engine builds for NPU, GPU and CPU backends, but the prebuilt packages and the validated fast paths currently target AMD Strix Halo (Ryzen AI Max+ 395 / Radeon 8060S). CUDA compiles but has not been run on real NVIDIA hardware, and Vulkan/Metal coverage is partial. For other targets, build from source — see the [downloads page](https://1bit.monster/1bit-downloads.html).
 
 ## What you get
 
 - **One binary** — `build/1bit` is busybox-style: every server and CLI in a single ELF, dispatched by subcommand (`1bit zaya`, `unified`, `router`, `jarvis`, `vision`, …).
-- **Any model** — 566 architecture tokens mapping 1,946 HuggingFace arch strings; 321,611 / 321,611 text-generation checkpoints on the hub (100%) land on an engine token.
-- **Any hardware** — NPU (XDNA 2, reverse-engineered in 4 days — [the story](docs/journey.md)), GPU (HIP, CUDA, Metal, Vulkan), CPU (AVX-512/scalar). Auto-routed per model.
+- **Any model** — 569 architecture tokens mapping 2,044 HuggingFace arch strings; 325,111 / 325,283 text-generation checkpoints on the hub (99.95%) land on an engine token.
+- **Any hardware** — NPU (XDNA 2, reverse-engineered in 4 days — [the story](docs/journey.md)), GPU (HIP, CUDA, Metal, Vulkan), CPU (AVX-512/scalar). Auto-routed per model. *Currently shipped and validated on AMD Strix Halo (gfx1151); CUDA and Metal are compiled but unvalidated, Vulkan is partial.*
 - **Zero Python** — pure C++26 at runtime. No virtualenv, no interpreter, no runtime stack to babysit.
 
 ## Quick start
@@ -29,8 +31,21 @@ A model-agnostic, hardware-agnostic inference engine in a single C++26 binary. P
 ```bash
 git clone https://github.com/1bit-MONSTER/1bit-MONSTER
 cd 1bit-MONSTER && cmake -B build && cmake --build build
-./build/1bit zaya -m model.1bp -p "Hello world"
+
+# Models are NOT in the repo. Fetch one first — the engine runs 1BP/GGUF weights
+# you supply. This lists the pre-converted 1BP set and installs a model:
+packaging/model-download.sh list
+packaging/model-download.sh zaya1-8b      # Zyphra flagship, 6.6 GB
+
+./build/1bit zaya -m ~/.local/share/1bit/models/ZAYA1-8B.1bp -p "Hello world"
 ```
+
+**The last line needs a model first.** Plain GGUF files run directly (`-m model.gguf`)
+and need no downloader; it is the 1BP/NPU weights that have to be fetched, by
+`packaging/model-download.sh <name>` — the same script the packaged image's
+`1bit-model-fetch.service` invokes, and it verifies each download against the
+sha256 the mirror reports. The [Zyphra family](docs/model-families/zyphra.md) —
+Zaya, BlackMamba, ZR1, Zamba2 — is the one the engine was tuned against.
 
 That's the whole install. Full build guide: [docs/guides/building.md](docs/guides/building.md).
 

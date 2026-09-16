@@ -66,7 +66,7 @@ jobs:
             .gitattributes  # repo-wide binary/diff attributes (like .gitignore/.clang-format) — engine scope; marks the site *.deb/*.AppImage/*.tar.xz package downloads as binary
             .clang-format  # engine C++23 style config — engine scope
             .superpowers  # agent-tooling task docs (SDD dispatch/brief/report) — same category as .claude/.abacusai
-            .agent-tools .dsh-memory.md context7.json  # agent tooling + session memory + context7 parsing rules — same category as .superpowers/.claude/.abacusai (DSH/context7 agent tooling, PR #1922)
+            .agent-tools context7.json  # agent tooling + context7 parsing rules — same category as .superpowers/.claude/.abacusai (context7 agent tooling, PR #1922; .dsh-memory.md dropped 2026-09-12 with the DeepSeek Harness retirement)
             pixi.toml pixi.lock  # Mojo 1.0 toolchain pin (build tooling, like install.sh) — engine scope
             .rocm-stub  # ROCm stub headers/lib for build machines without a full ROCm install (whisper HIP port) — engine scope
             personas prompts skills workers zaya_audio  # burn-era deletions (UPDATE 34 cut) — removal-only, see docs/wiki/decisions.md

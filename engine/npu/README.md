@@ -2,12 +2,20 @@
 
 Pure C++ inference engine for Qwen3-0.6B on AMD Strix Halo NPU.
 
+> **Layout note (2026-09-14).** This page describes the engine as it was first
+> built. Some files it names have since been renamed or superseded —
+> `src/npu_engine_i8.cpp` in particular is now `engine/npu/src/npu_engine_universal.cpp`
+> plus the `npu_engine_fused.hip` / `npu_engine_overlap.hip` pair, and the
+> dequantizer is `src/dequant_q4nx.cpp` (it was `.c`). For the current tree, read
+> `engine/npu/src/`; the design reasoning below is unchanged and is why this page
+> is still worth reading.
+
 ## Files
 
 | File | Purpose |
 |------|---------|
 | `src/npu_engine_i8.cpp` | Main engine — 4-live INT8 contexts, NPU attention |
-| `src/dequant_q4nx.c` | Q4NX weight dequantizer (C99) |
+| `src/dequant_q4nx.cpp` | Q4NX weight dequantizer (C99) |
 | `xclbins/n1_core_i8_v2.py` | INT8 MLIR generator with K-interleaving fix |
 | `kernel/edge_attention.cc` | NPU attention kernel (Chess C++) |
 | `build/dequant_q4nx.o` | Compiled dequantizer (committed, zero-dependency) |
@@ -89,7 +97,7 @@ $ xbutil examine
 
 ```bash
 cd engine/npu
-gcc -c -O3 -o build/dequant_q4nx.o src/dequant_q4nx.c
+gcc -c -O3 -o build/dequant_q4nx.o src/dequant_q4nx.cpp
 ```
 
 ### 2. Known-good Toolchain Setup (as of 2026-07-29)

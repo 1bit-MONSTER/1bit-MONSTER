@@ -1,0 +1,69 @@
+name: Bundle decoder check
+
+# A 4-bit bundle can be decoded four ways (scale-index layout x nibble signedness) and a WRONG
+# pairing does not look wrong: it still yields a weight distribution of the right shape and
+# scale, so the model loads, runs, and answers confidently with the wrong token. LFM2-1.2B and
+# 2.6B were both in that state — they need group-major scales AND signed nibbles, which neither
+# decoder in dequant_q4nx.cpp implemented, and nothing failed.
+#
+# This asserts, per bundle, that it still decodes with the convention its family is known to
+# use. The oracle is the model's own tying: with tie_word_embeddings=true, lm_head must equal
+# embed_tokens, so decoding lm_head under each convention and correlating against the BF16
+# embedding rows names the convention. Bundles that are untied cannot be classified this way
+# and are reported, never failed — an unclassifiable bundle is not a passing one, but neither
+# is it evidence of drift.
+#
+# It runs on the self-hosted runner because it needs the model store (~/.config/flm/models);
+# it needs no NPU, no aiecc and no xclbin, so like the kernel lint it is cheap enough to gate on.
+
+on:
+  pull_request:
+    paths:
+      # The decoder itself belongs here: a change to how a tile is decoded is
+      # exactly when the per-family convention needs re-checking. Without this
+      # line a refactor of dequant_q4nx.cpp would not run the gate at all, which
+      # is how this PR found the omission — the check did not run on it.
+      - "engine/npu/src/dequant_q4nx.cpp"
+      - "engine/npu/tests/check_bundle_decoders.py"
+      - "engine/npu/tools/q4nx_decoder_map.py"
+      - ".github/workflows/bundle-decoder-check.yml"
+  schedule:
+    # converters change upstream without anything in this repo moving — the whole LFM2 case
+    # was found by hand; this is what would have found it.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bundle-decoder-check:
+    name: bundle decoder check (int4 convention per family)
+    runs-on: [self-hosted, strix-halo]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Run the bundle decoder check
+        run: |
+          set -o pipefail
+          rc=0
+          out="$(python3 engine/npu/tests/check_bundle_decoders.py 2>&1)" || rc=$?
+          echo "$out"
+          case "$out" in
+            *"RESULT: PASS"*)
+              echo "bundle decoder check: PASS"
+              exit 0
+              ;;
+            *"RESULT: FAIL"*)
+              echo "bundle decoder check: FAIL — a bundle no longer decodes with its family's"
+              echo "convention. Either the converter changed upstream, or a new family needs a"
+              echo "convention nobody has implemented yet. Decide which, then update EXPECTED."
+              exit 1
+              ;;
+          esac
+          # exit 2 is the environment case (no model store): report it as such rather than as a
+          # verdict about the bundles, but still red — a check that cannot see the store has
+          # verified nothing, and "could not run" must not read as "clean".
+          echo "bundle decoder check: could not run (exit code $rc) — no model store on this runner?"
+          exit 1

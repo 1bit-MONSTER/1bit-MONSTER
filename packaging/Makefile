@@ -30,8 +30,36 @@ stage:
 		ln -sf 1bit $(STAGE)/usr/bin/$$name; \
 	done
 	# optional sidecars (NPU engine needs XRT; video-lora CLI is a dev tool)
-	if [ -f engine/npu/build/npu_engine_universal ]; then \
-		cp engine/npu/build/npu_engine_universal $(STAGE)/usr/bin/1bit-npu; \
+	# The engine's NPU lane fork/execs this binary by name (src/backend_npu.cpp via
+	# include/npu_worker_path.h), which searches $NPU_ENGINE_BIN, the directory of
+	# the running ELF, /usr/lib/1bit, /usr/bin, /usr/local/bin, then the legacy
+	# ./ and build/ paths — under both `npu_engine_universal` and the legacy
+	# `1bit-npu`. Stage both names so a packaged install resolves without
+	# NPU_ENGINE_BIN (issue #2360).
+	# Two build layouts produce this binary and the previous single path matched
+	# NEITHER, so the packages shipped without a worker even on a box that had
+	# built one: the main CMake build writes $(BUILD_DIR)/engine/npu/…, and the
+	# standalone flow in engine/npu/CMakeLists.txt writes engine/npu/build/….
+	# The worker and its bundled OpenMP runtime go in usr/lib/1bit/ TOGETHER, with
+	# usr/bin/1bit-npu a symlink to the worker: the binary's RUNPATH is
+	# $ORIGIN:$ORIGIN/../lib/1bit, so libomp.so is found beside it and the usr/bin
+	# name still works (glibc resolves $ORIGIN from the real path). See
+	# engine/npu/CMakeLists.txt.
+	NPU_WORKER=""; \
+	for cand in $(BUILD_DIR)/engine/npu/npu_engine_universal engine/npu/build/npu_engine_universal; do \
+		if [ -f "$$cand" ]; then NPU_WORKER="$$cand"; break; fi; \
+	done; \
+	if [ -z "$$NPU_WORKER" ] && [ -f prebuilt/npu_engine_universal ]; then \
+		NPU_WORKER=prebuilt/npu_engine_universal; \
+		echo "NPU worker: using the vendored prebuilt ($(shell echo $$(sha256sum prebuilt/npu_engine_universal | cut -c1-16))…)"; \
+	fi; \
+	if [ -n "$$NPU_WORKER" ]; then \
+		cp "$$NPU_WORKER" $(STAGE)/usr/lib/1bit/npu_engine_universal; \
+		cp prebuilt/libomp.so $(STAGE)/usr/lib/1bit/libomp.so; \
+		ln -sf ../lib/1bit/npu_engine_universal $(STAGE)/usr/bin/1bit-npu; \
+		echo "staged NPU worker from $$NPU_WORKER (+ bundled libomp.so)"; \
+	else \
+		echo "warn: no NPU worker — staged tree has no NPU lane (build it: cmake --build build --target npu_engine_universal)"; \
 	fi
 	if [ -f $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli ]; then \
 		cp $(BUILD_DIR)/tools/video-lora/vulkan/video_lora_vk_cli $(STAGE)/usr/bin/video_lora_vk_cli; \
@@ -52,6 +80,24 @@ stage:
 	mkdir -p $(STAGE)/usr/share/1bit-monster/shaders
 	cp -r $(BUILD_DIR)/zinc_cpp_build/shaders/. $(STAGE)/usr/share/1bit-monster/shaders/ 2>/dev/null || true
 	cp $(BUILD_DIR)/tools/video-lora/vulkan/libvideo_lora_vk.a $(STAGE)/usr/lib/1bit/ 2>/dev/null || true
+	# Tarball launcher. The Downloads page and docs/guides/getting-started.md
+	# promise `./run.sh chat` for the extracted .tar.xz, but the only run.sh in
+	# the project was the one release.yml writes into the GHCR tarball — the
+	# website .tar.xz built here shipped WITHOUT one, so `./run.sh` was a
+	# "no such file" and the shared lib needed a hand-set LD_LIBRARY_PATH
+	# (librocm_cpp.so is on no system search path in an extracted tree).
+	# Root of the tree on purpose: package-tarball/package-site tar $(STAGE)
+	# whole, while the .deb/.rpm/AppImage/docker paths read $(STAGE)/usr only —
+	# so this adds a file to the tarballs and to nothing else.
+	install -m 0755 tarball-run.sh $(STAGE)/run.sh
+	# Model downloader. Every package needs a way from "engine installed" to
+	# "model present", and this is the only one: the tarball, .deb, .rpm and
+	# AppImage all shipped without it, so a package user had no way to fetch a
+	# model (issue #2356). It goes to usr/share/1bit/ — the path the packaged
+	# image's 1bit-model-fetch.service already invokes
+	# (/usr/share/1bit/model-download.sh qwen3-0.6b) — and usr/ is what the deb,
+	# rpm and AppImage targets copy, so one line covers every format.
+	install -D -m 0755 model-download.sh $(STAGE)/usr/share/1bit/model-download.sh
 	@echo "staged $(VERSION) -> $(STAGE)"
 
 package-deb: stage

@@ -25,6 +25,7 @@
 // Usage: ./test_npu_ffn_real_weights [path/to/Qwen3-0.6B.1bp]
 
 #include "npu_gemm_kernel.h"
+#include "../../npu/src/npu_paths.h"
 #include <cstdio>
 #include <cstdlib>
 #include <cmath>
@@ -111,7 +112,8 @@ int main(int argc, char** argv) {
             d_kn[(size_t)k * H + n] = down_w[(size_t)n * IM + k];
 
     xrt::device npu(0);
-    const char* xd = getenv("NPU_XCLBIN_DIR") ?: "engine/npu/xclbins";
+    const std::string xd_s = npu_xclbin_dir();
+    const char* xd = xd_s.c_str();
     // xclbin selection: NPU_XCLBIN_SUFFIX picks the file family (default
     // "_qwen3_0_6b" = the fixed 128-row-tile xclbins; "_qwen3_0_6b_m1" = the
     // true M=1 single-row decode xclbins) and NPU_XCLBIN_XM overrides the

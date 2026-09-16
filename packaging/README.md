@@ -9,7 +9,7 @@ The HTTP server speaks OpenAI-compatible JSON — Ollama, Open WebUI, LangChain,
 | **One-liner install** | ✅ | `curl -sL https://1bit.monster/install.sh \| bash` |
 | **Debian (.deb)** | ✅ | `sudo dpkg -i 1bit-monster_*_amd64.deb` (download from the website) |
 | **AppImage** | ✅ | `chmod +x 1bit-monster-*.AppImage && ./1bit-monster-*.AppImage` (download from the website) |
-| **Binary tarball** | ✅ | `make package-tarball` — the website hosts the `.tar.xz` build |
+| **Binary tarball** | ✅ | `make package-tarball` — the website hosts the `.tar.xz` build; extract it anywhere and run `./run.sh chat` |
 | **GitHub Releases** | 📋 attached when a `v*` tag is pushed | `gh release download` |
 | **Docker** | ✅ Dockerfile ready | `docker run 1bit-monster/npu` |
 | **Ollama** | ✅ Modelfile | `ollama create qwen3-npu -f Modelfile` |
@@ -45,10 +45,67 @@ Auto-detects **19 model architectures** from GGUF/1BP headers, **47 1BP models**
 | `1bit-npu` | CLI inference engine (47 1BP models, auto-detect; NPU engine sidecar, needs XRT) | ~2.1 MB |
 | `video_lora_vk_cli` | Video-LoRA Vulkan CLI (dev tool, optional sidecar) | — |
 
+### The NPU worker (`npu_engine_universal`)
+
+The engine's NPU lane is a **separate executable**: `src/backend_npu.cpp` fork/execs
+it and speaks the worker protocol to it (xclbin GEMM, CPU fallback for
+RoPE/norm/residual). It links against XRT, so it is the one binary that is **absent
+from CI-built packages today** — the release build installs `libxrt-dev`
+best-effort, but Ubuntu noble's package is XRT **2.13** and ships the old
+`xrt/experimental/*` header layout, while this tree includes `xrt/xrt_device.h`
+(XRT >= 2.14, the layout AMD's `/opt/xilinx/xrt` uses). The release log prints
+`npu: XRT NOT found — skipping NPU engine build`, then
+`::warning::no npu_engine_universal in build/`, and the package ships CPU/GPU-only.
+
+**So packages ship a vendored prebuilt instead.** `packaging/prebuilt/` holds the
+worker and the OpenMP runtime it links against, with a manifest recording the
+source commit, toolchain, build command, sizes and sha256s
+(`Testing/npu_worker_bundle_selfcheck.py` fails if the files and manifest drift).
+Packaging prefers a worker this machine built and falls back to the vendored pair,
+verifying the manifest sha before it goes in.
+
+The pair goes in **together**, because the worker's RUNPATH is
+`$ORIGIN:$ORIGIN/../lib/1bit` — it resolves `libomp.so` from beside itself rather
+than from the Python-version-pinned venv directory the SDK links against. That one
+RUNPATH covers every layout:
+
+| Layout | worker | libomp.so |
+|---|---|---|
+| tarball | `bin/npu_engine_universal` | `lib/1bit/libomp.so` |
+| `.deb` | `usr/bin/npu_engine_universal` | `usr/lib/1bit/libomp.so` |
+| `make stage` / `.rpm` / AppImage | `usr/lib/1bit/npu_engine_universal` (+ `usr/bin/1bit-npu` symlink) | `usr/lib/1bit/libomp.so` |
+
+XRT stays a **system** dependency (`/opt/xilinx/xrt`, `libxrt_coreutil.so.2` +
+`libxrt_core.so.2`) — any NPU host has it, and it is also what a source build needs.
+
+To regenerate the prebuilt: build on a host with real XRT
+(`cmake --build build --target npu_engine_universal`), copy the binary and the SDK's
+`libomp.so` into `packaging/prebuilt/`, and update the manifest's shas and
+`built_from_commit`. `install.sh` builds the worker when the target exists, so a
+source install needs none of this.
+
+Where it goes, and how it is found (see `include/npu_worker_path.h`):
+
+| Layout | Path |
+|---|---|
+| tarball (flat) | `bin/npu_engine_universal`, next to `bin/1bit` |
+| `make stage` / `.deb` / `.rpm` / AppImage | `usr/bin/1bit-npu` **and** `usr/lib/1bit/npu_engine_universal` |
+
+Resolution order: `$NPU_ENGINE_BIN` → the running executable's directory →
+`/usr/lib/1bit` → `/usr/bin` → `/usr/local/bin` → the legacy `./` and `build/`
+paths, under either name. No `NPU_ENGINE_BIN` export is needed for an installed
+tree. If it is missing, the engine logs the probe list and runs on CPU/GPU;
+build it with:
+
+```bash
+cmake -S engine/npu -B engine/npu/build && cmake --build engine/npu/build -j
+```
+
 ## Build them yourself
 
 ```bash
-# Binary tarball
+# Binary tarball — `make stage` also drops run.sh at the tree root, so the
+# extracted tarball runs with no hand-set LD_LIBRARY_PATH: ./run.sh chat
 make package-tarball
 
 # Debian package

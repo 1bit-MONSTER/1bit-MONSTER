@@ -58,6 +58,12 @@ Evidence: 1bit-MONSTER repo (branch `goal/flm-parity-zaya-perf`), fork `~/hrx-ws
 
 ## #1942 — hybrid prefill/decode policy (HIP prefill + HRX warm decode) (P2)
 
+> **⚠ STATUS 2026-09-11** (goal `mtwqm7qx-hlc0ht`): the handoff is resolved and #2082 is CLOSED; the "GET_ROWS gap"
+> framing below was corrected the same day by #2145's own root cause — the bundle **over-claims `FLASH_ATTN_EXT` above
+> KV 2048** — and the pre-fix failure was actually **silent context loss reported as success**. The §5.2 positive clause
+> is **not met on the shipped bundle** (no engine-loadable bundle here supports >2048 KV); re-open on **#1945** (bundle
+> repin) or HRX2 decode-ADD. Measured matrix + triggers: §5.2 of `docs/research/hybrid-prefill-decode.md`.
+
 **Diagnosis: the stated blocker (cross-backend KV handoff) is RESOLVED on the tree; remaining = #2145 + #2082.**
 
 - The blocker "cross-backend KV handoff" has been solved via zero-copy memfd/SCM_RIGHTS fd handoff + a single-API router:

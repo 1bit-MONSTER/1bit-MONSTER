@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+"""make_mini_deepseek_v41.py — Phase-0 oracle fixtures for the V4/V4.1 arch work (research/ws13).
+
+A tiny, seeded DeepSeek-V4 fixture with the HF oracle logits AND per-layer hidden
+states, for two profiles:
+
+  sliding      all layers `sliding_attention`
+               → the engine PASSES today. Regression baseline for the modules that
+                 exist (mHC, shared-KV MQA, sinks, hash/top-k MoE).
+
+  compressed   1 sliding + 1 CSA + 1 HCA + 1 sliding
+               → the engine FAILS today, by design: it does not implement the
+                 compressors (CSA/HCA) or the Lightning Indexer. This is the gate
+                 that can fail — the instrument the P1 work is measured against.
+
+Why the reference is trustworthy: transformers 5.16.1 ships `DeepseekV4` **with**
+`compressed_sparse_attention` / `heavily_compressed_attention` layers,
+`compress_rates`, and `DeepseekV4CSACache` (which carries the `"indexer"` entries) —
+so the oracle implements the very machinery the engine is missing. There is no
+`DeepseekV41` class in transformers, so V4.1-only modules (engram, candidate
+blocks, `ffn.gate.bias_vl`, the MTP rewrite) have **no** reference here; that is
+recorded in research/ws13-arch-gap-closure/FINDINGS.md rather than papered over.
+
+Usage:
+    python3 Testing/make_mini_deepseek_v41.py /tmp/onebit-dsv4-csa --profile compressed
+    python3 Testing/make_mini_deepseek_v41.py /tmp/onebit-dsv4-ssl --profile sliding
+
+Env: needs torch + transformers with native DeepseekV4 (e.g. ~/ft-zaya/bin/python).
+"""
+import argparse
+import json
+import os
+
+import numpy as np
+import torch
+from safetensors.torch import save_file as st_save
+from transformers import DeepseekV4Config, DeepseekV4ForCausalLM
+
+# V4-Flash's own compress ratios (config.json: compress_ratios values {0, 4, 128}).
+COMPRESS_RATES = {"compressed_sparse_attention": 4, "heavily_compressed_attention": 128}
+
+PROFILES = {
+    "sliding": ["sliding_attention"] * 4,
+    "compressed": ["sliding_attention", "compressed_sparse_attention",
+                   "heavily_compressed_attention", "sliding_attention"],
+}
+
+# Default sliding windows per profile. The compressed profile needs a window
+# much smaller than the prompt: with the rate at 4 the compressed entries carry
+# the long-range context, so a model that ignores them cannot agree. (The first
+# version of this fixture kept window=32 with a 5-token prompt and the ENGINE
+# PASSED the compressed profile — the compressed entries were redundant with the
+# sliding window and one 4-token entry was not enough to move top-20 logits.
+# A gate that cannot fail is not a gate.)
+DEFAULT_WINDOW = {"sliding": 32, "compressed": 4}
+
+PROMPT = [5, 7, 9, 11, 3]
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("outdir", nargs="?", default="/tmp/onebit-dsv4-csa")
+    ap.add_argument("--profile", choices=sorted(PROFILES), default="compressed")
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--prompt-len", type=int, default=0,
+                    help="0 = the original 5-token prompt; >5 = seeded random ids")
+    ap.add_argument("--window", type=int, default=0, help="0 = profile default")
+    # Shape knobs: the V4.1 deltas are supposed to be MODULES, not dimensions — so the
+    # engine must work at non-default shapes. These make that testable.
+    ap.add_argument("--hidden", type=int, default=64)
+    ap.add_argument("--heads", type=int, default=4)
+    ap.add_argument("--head-dim", type=int, default=16)
+    ap.add_argument("--q-lora", type=int, default=8)
+    ap.add_argument("--o-lora", type=int, default=8)
+    ap.add_argument("--o-groups", type=int, default=8)
+    ap.add_argument("--experts", type=int, default=8)
+    ap.add_argument("--moe-int", type=int, default=32)
+    ap.add_argument("--rope-frac", type=float, default=0.125,
+                    help="partial_rotary_factor; with head_dim=16, 0.125 gives rd=2 (ONE rope "
+                         "pair, freq = theta^0 = 1, so the compress-vs-main theta is invisible) "
+                         "while 0.5 gives rd=8 and makes the theta observable")
+    ap.add_argument("--index-topk", type=int, default=0,
+                    help="0 = config default (8); set large to make the indexer keep every "
+                         "causal-visible entry, which removes tie-broken selection from the "
+                         "picture and isolates the attention integration")
+    ap.add_argument("--weights-dtype", choices=("float32", "bfloat16"), default="float32",
+                    help="fixture weight storage. float32 for the per-layer gate: bf16 "
+                         "rounding alone perturbs the layer-0 state by ~1e-4, which is "
+                         "100x above the 1e-6 bound the gate wants to measure")
+    args = ap.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+    torch.manual_seed(args.seed)
+    window = args.window or DEFAULT_WINDOW[args.profile]
+
+    cfg = DeepseekV4Config(
+        partial_rotary_factor=args.rope_frac,
+        vocab_size=1000, hidden_size=args.hidden, moe_intermediate_size=args.moe_int,
+        num_hidden_layers=4, num_attention_heads=args.heads, num_key_value_heads=1,
+        head_dim=args.head_dim, q_lora_rank=args.q_lora, o_lora_rank=args.o_lora,
+        o_groups=args.o_groups,
+        n_routed_experts=args.experts, n_shared_experts=1, num_experts_per_tok=2,
+        max_position_embeddings=256, sliding_window=window,
+        # indexer dims: the Lightning Indexer needs its own heads/dim (HCA has none)
+        index_n_heads=2, index_head_dim=8, index_topk=(args.index_topk or 8),
+        layer_types=PROFILES[args.profile],
+        mlp_layer_types=["hash_moe", "hash_moe", "moe", "moe"],
+        compress_rates=COMPRESS_RATES,
+    )
+    for _t, _rp in (cfg.rope_parameters or {}).items():
+        if isinstance(_rp, dict):
+            _rp["partial_rotary_factor"] = args.rope_frac
+    model = DeepseekV4ForCausalLM(cfg).eval()
+    n_params = sum(p.numel() for p in model.parameters())
+
+    # Exact compressor oracle: forward hooks on the real forward, so what we dump IS
+    # what the reference computed (no re-derivation, no standalone-call semantics).
+    comp_out = {}
+    hooks = []
+    def _mk(name):
+        def _hook(mod, args, out):
+            ck, bias = out if isinstance(out, tuple) else (out, None)
+            comp_out[name] = ck.detach().float().cpu().numpy()      # [B,1,n_win,head_dim]
+            if bias is not None:
+                comp_out[name + ".bias"] = bias.detach().float().cpu().numpy()
+        return _hook
+    for i, layer in enumerate(model.model.layers):
+        comp = getattr(layer.self_attn, "compressor", None)
+        if comp is not None:
+            hooks.append(comp.register_forward_hook(_mk(f"L{i}")))
+            # CSA layers carry an indexer; capture the INDICES it returns (its only
+            # output) so stage 2 has an exact oracle: [B, S, k] int64, -1 = invalid.
+            idx = getattr(comp, "indexer", None)
+            if idx is not None:
+                def _ix(mod, args, out, name=f"L{i}"):
+                    comp_out[name + ".indexer"] = out.detach().cpu().numpy()
+                hooks.append(idx.register_forward_hook(_ix))
+                # Pre-mask indexer SCORES (the scorer's output, before the causal /
+                # sentinel handling). The indices themselves are a tie-broken top-k;
+                # the scores are what an implementation can be held to.
+                if getattr(idx, "scorer", None) is not None:
+                    def _sc(mod, args, out, name=f"L{i}"):
+                        comp_out[name + ".scores"] = out.detach().float().cpu().numpy()
+                    hooks.append(idx.scorer.register_forward_hook(_sc))
+
+    ids = torch.tensor([PROMPT])
+    if args.prompt_len and args.prompt_len != len(PROMPT):
+        g = torch.Generator().manual_seed(args.seed + 1)
+        ids = torch.randint(0, 1000, (1, args.prompt_len), generator=g)
+    prompt = ids[0].tolist()
+    with torch.no_grad():
+        out = model(ids, output_hidden_states=True)
+
+    logits_last = out.logits[0, -1].float().cpu()
+    np.save(os.path.join(args.outdir, "logits_last.npy"), logits_last.numpy())
+    torch.save(logits_last, os.path.join(args.outdir, "logits_last.pt"))
+    torch.save(ids, os.path.join(args.outdir, "ids.pt"))
+    open(os.path.join(args.outdir, "ids.txt"), "w").write(" ".join(map(str, prompt)) + "\n")
+
+    # ── Sensitivity: measured by the engine, not assumed ─────────────────────
+    # A same-weights ablation is IMPOSSIBLE here and that is a finding: the
+    # compressor's `position_bias` is shaped [compress_rate, dim], so the rate is
+    # baked into the tensors (a real checkpoint's `compress_ratios` must be read
+    # from its weights, never guessed). So sensitivity is established by the
+    # engine instead: on this profile the engine (which ignores compressor
+    # weights entirely) must DISAGREE, while it agrees 20/20 on the sliding
+    # profile whose only difference is those two layer types. First-divergent
+    # -layer attribution is P1.1's job and uses hidden_states.npz below.
+    if "compressed_sparse_attention" in PROFILES[args.profile]:
+        n_entries = len(prompt) // COMPRESS_RATES["compressed_sparse_attention"]
+        print(f"  compressed entries the reference emits (CSA, rate "
+              f"{COMPRESS_RATES['compressed_sparse_attention']}): "
+              f"{n_entries} over {len(prompt)} tokens (window={window})")
+
+    for h in hooks:
+        h.remove()
+    if comp_out:
+        np.savez(os.path.join(args.outdir, "compressor_ref.npz"), **comp_out)
+        # plain .npy per compressed layer too: the C++ gate reads npy directly
+        # (npz is a zip, which a C harness should not have to unzip).
+        for k, v in sorted(comp_out.items()):
+            if k.endswith(".bias") or k.endswith(".indexer"):
+                continue
+            np.save(os.path.join(args.outdir, f"comp_ref_{k}.npy"), v[0, 0])  # [n_win, head_dim]
+        for k, v in sorted(comp_out.items()):
+            if k.endswith(".indexer"):
+                np.save(os.path.join(args.outdir, f"indexer_ref_{k[:-8]}.npy"), v[0])  # [S, k]
+            if k.endswith(".scores"):
+                np.save(os.path.join(args.outdir, f"indexer_scores_{k[:-7]}.npy"), v[0])  # [S, n_win]
+        for k, v in sorted(comp_out.items()):
+            if not k.endswith(".bias"):
+                print(f"  compressor ref {k}: {v.shape}")
+    # Collapsed attention-site input per layer (the compressor's actual input): the
+    # mHC pre collapses streams -> [T, H]; hidden_states[i] above is the pre-layer
+    # STREAM state, so this is what a C++ compressor implementation must be fed.
+    attn_input = {}
+    def _cap(i):
+        def _hook(mod, args, out=None):  # torch passes (module, args[, kwargs])
+            attn_input[i] = args[0].detach().float().cpu().numpy() if args else None
+        return _hook
+    hh = [l.self_attn.register_forward_pre_hook(_cap(i)) for i, l in enumerate(model.model.layers)]
+    with torch.no_grad():
+        model(ids)
+    for h in hh:
+        h.remove()
+    np.savez(os.path.join(args.outdir, "attn_input_ref.npz"),
+             **{f"L{i}": v for i, v in attn_input.items() if v is not None})
+    for i, v in attn_input.items():
+        if v is not None:
+            np.save(os.path.join(args.outdir, f"attn_input_L{i}.npy"), v[0])  # [T, H]
+
+    # Per-layer reference activations: the half of the instrument that lets P1
+    # locate the FIRST diverging layer instead of only comparing final logits.
+    hs = {f"hidden_{i}": h[0].float().cpu().numpy() for i, h in enumerate(out.hidden_states)}
+    np.savez(os.path.join(args.outdir, "hidden_states.npz"), **hs)
+
+    wdtype = torch.float32 if args.weights_dtype == "float32" else torch.bfloat16
+    sd = {k: v.detach().to(wdtype).contiguous() for k, v in model.state_dict().items()}
+    torch.save(sd, os.path.join(args.outdir, "model.pt"))
+    st_save({k: v.float() for k, v in sd.items()}, os.path.join(args.outdir, "model.safetensors"))
+
+    cfgd = cfg.to_dict()
+    cfgd["_mini_fixture"] = True
+    cfgd["_profile"] = args.profile
+    cfgd["_weights_dtype"] = args.weights_dtype
+    cfgd["_prompt_ids"] = prompt[:8] + (["..."] if len(prompt) > 8 else [])
+    json.dump(cfgd, open(os.path.join(args.outdir, "config.json"), "w"), indent=2)
+
+    # What the engine will trip over, named up front (the point of this profile).
+    compressor = sorted({k.split(".", 2)[-1] for k in sd if ".compressor." in k})
+    indexer = sorted({k.split(".", 2)[-1] for k in sd if ".indexer." in k})
+    print(f"profile={args.profile} params={n_params} layers={len(PROFILES[args.profile])}")
+    print(f"  layer_types={PROFILES[args.profile]}")
+    print(f"  window={window} prompt_len={len(prompt)} weights={args.weights_dtype} "
+          f"rope_frac={args.rope_frac} (rd={int(cfg.head_dim * args.rope_frac)})")
+    print(f"  compressor tensors: {compressor}")
+    print(f"  indexer tensors:    {indexer}")
+    print(f"  top1={int(logits_last.argmax())}  wrote {args.outdir}")
+
+
+if __name__ == "__main__":
+    main()

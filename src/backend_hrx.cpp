@@ -113,6 +113,7 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
     // explicitly configured it.
     if (cfg.architecture == "qwen3moe" && std::getenv("GGML_HRX_CPU_OPS") == nullptr) {
         setenv("GGML_HRX_CPU_OPS", "RMS_NORM", 1);
+        cpu_ops_set_by_us_ = true;
         fprintf(stderr, "HRX: qwen3moe decode needs CPU RMSNorm (#2147) - set GGML_HRX_CPU_OPS=RMS_NORM\n");
     }
 
@@ -141,6 +142,8 @@ bool HrxBackend::init(const ModelConfig& cfg, const std::string& weights_dir) {
                 long n = inprocess_->load_session_file(sf);
                 if (n < 0) {
                     fprintf(stderr, "HRX: state import failed (%s) — continuing with empty KV\n", sf);
+                } else {
+                    imported_ctx_ = n;   // #2145: used by the ctx-limit routing guard
                 }
             }
             inprocess_mode_ = true;
@@ -324,16 +327,40 @@ void HrxBackend::destroy() {
     inprocess_mode_ = false;
     kill_server();
     initialized_ = false;
+    // #2147 follow-up: init() sets GGML_HRX_CPU_OPS process-global for
+    // qwen3moe (single-model constraint). Restore the environment on teardown
+    // so a later backend/model served in this process doesn't inherit the
+    // RMS_NORM CPU split (and a later qwen3moe init re-applies it cleanly).
+    if (cpu_ops_set_by_us_) {
+        unsetenv("GGML_HRX_CPU_OPS");
+        cpu_ops_set_by_us_ = false;
+    }
 }
 
 bool HrxBackend::reset() {
-    if (inprocess_mode_ && inprocess_) return inprocess_->reset();
+    if (inprocess_mode_ && inprocess_) {
+        const bool ok = inprocess_->reset();
+        // #2145: reset() recreates the context (pos = 0) — whatever
+        // HRX_STATE_FILE imported is gone, so the ctx-limit guard must stop
+        // counting it (otherwise it would move later requests off HRX for a
+        // context that no longer exists).
+        if (ok) imported_ctx_ = -1;
+        return ok;
+    }
     return true;
 }
 
 bool HrxBackend::forward(int, float*) {
     fprintf(stderr, "HRX: forward() not supported — use generate() (in-process) or generate_text() (subprocess)\n");
     return false;
+}
+
+long HrxBackend::import_state_file(const char* session_path) {
+    if (!inprocess_mode_ || !inprocess_ || !session_path) return -1;
+    const long n = inprocess_->load_session_file(session_path);
+    if (n >= 0) imported_ctx_ = n;
+    else fprintf(stderr, "HRX: state re-import failed (%s)\n", session_path);
+    return n;
 }
 
 int HrxBackend::generate(int token_id) {
@@ -347,7 +374,8 @@ bool HrxBackend::lm_head(const float*, float*, int*) {
     return false;
 }
 
-std::string HrxBackend::generate_text(const std::string& prompt, int max_tokens) {
+std::string HrxBackend::generate_text(const std::string& prompt, int max_tokens, float temperature) {
+    (void)temperature;  // the HRX server applies its own sampling; temp is not plumbed here
     if (pid_ <= 0 || !initialized_) return "";
     if (max_tokens <= 0) max_tokens = 16;
     if (max_tokens > 4096) max_tokens = 4096;

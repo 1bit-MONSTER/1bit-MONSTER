@@ -130,6 +130,35 @@ jobs:
             "$API/popular/paths") || PATH_JSON='[]'
           TOP_PATH=$(echo "$PATH_JSON" | jq -r '.[0] | "\(.path) — \(.count) views" // "none"')
 
+          # --- CI attribution for the same day (issue #2378) ---
+          # Clone stats include automated traffic and expose no source, but this
+          # repo's clone series tracks Actions run volume (r=0.95, ~3.5 clones
+          # per run over 14 days - docs/traffic-attribution.md). The runs API is
+          # public, so read it without a token: total_count(created >= D) minus
+          # total_count(created >= D+1) is the run count for day D. Every failure
+          # below is non-fatal - the alert still files, just without the number.
+          CI_RUNS=""
+          CLONES_PER_RUN=""
+          Y_TS=$(echo "$CLONE_RESP" | jq -r '.clones[-2].timestamp // empty' 2>/dev/null || true)
+          if [ -n "$Y_TS" ]; then
+            Y_DAY="${Y_TS%%T*}"
+            NEXT_DAY=$(date -u -d "$Y_DAY +1 day" +%F 2>/dev/null || true)
+            if [ -n "$NEXT_DAY" ]; then
+              R0=$(curl -sf -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$OWNER/$REPO/actions/runs?per_page=1&created=%3E%3D${Y_DAY}T00:00:00Z" \
+                | jq '.total_count // empty' 2>/dev/null || true)
+              R1=$(curl -sf -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$OWNER/$REPO/actions/runs?per_page=1&created=%3E%3D${NEXT_DAY}T00:00:00Z" \
+                | jq '.total_count // empty' 2>/dev/null || true)
+              if [[ "$R0" =~ ^[0-9]+$ ]] && [[ "$R1" =~ ^[0-9]+$ ]] && (( R0 >= R1 )); then
+                CI_RUNS=$(( R0 - R1 ))
+                if (( CI_RUNS > 0 )); then
+                  CLONES_PER_RUN=$(awk -v c="$YESTERDAY" -v r="$CI_RUNS" 'BEGIN { printf "%.1f", c / r }')
+                fi
+              fi
+            fi
+          fi
+
           # --- Spike detection ---
           # Baseline is ~2k clones/day from CI/bots, so judge spikes against
           # the trailing average (excluding today + yesterday) rather than a
@@ -165,6 +194,8 @@ jobs:
             echo "VIEW_UNIQUES_14D=$VIEW_UNIQUES"
             echo "TOP_REFERRER=$TOP_REF"
             echo "TOP_PATH=$TOP_PATH"
+            echo "CI_RUNS_YESTERDAY=$CI_RUNS"
+            echo "CLONES_PER_RUN=$CLONES_PER_RUN"
             echo "SPIKE=$SPIKE"
             EOF_MARKER="SPIKE_EOF_$(date +%s)_${RANDOM}"
             echo "SPIKE_MSG<<${EOF_MARKER}"
@@ -181,7 +212,9 @@ jobs:
           V: ${{ steps.traffic.outputs.VIEW_14D }}
           VU: ${{ steps.traffic.outputs.VIEW_UNIQUES_14D }}
           REF: ${{ steps.traffic.outputs.TOP_REFERRER }}
-          PATH: ${{ steps.traffic.outputs.TOP_PATH }}
+          TOP_PATH: ${{ steps.traffic.outputs.TOP_PATH }}
+          CIRUNS: ${{ steps.traffic.outputs.CI_RUNS_YESTERDAY }}
+          CPR: ${{ steps.traffic.outputs.CLONES_PER_RUN }}
           SPIKE: ${{ steps.traffic.outputs.SPIKE }}
           SPIKE_MSG: ${{ steps.traffic.outputs.SPIKE_MSG }}
         run: |
@@ -193,8 +226,11 @@ jobs:
           echo "| Yesterday | $CY clones ($CYU unique) |" >> $GITHUB_STEP_SUMMARY
           echo "| Views (14d) | $V ($VU unique) |" >> $GITHUB_STEP_SUMMARY
           echo "| Top referrer | $REF |" >> $GITHUB_STEP_SUMMARY
-          echo "| Top path | $PATH |" >> $GITHUB_STEP_SUMMARY
+          echo "| Top path | $TOP_PATH |" >> $GITHUB_STEP_SUMMARY
           echo "| Spike detected | $SPIKE |" >> $GITHUB_STEP_SUMMARY
+          if [ -n "$CIRUNS" ]; then
+            echo "| Workflow runs (same day) | $CIRUNS — $CPR clones/run |" >> $GITHUB_STEP_SUMMARY
+          fi
           if [ "$SPIKE" = "true" ]; then
             echo "" >> $GITHUB_STEP_SUMMARY
             echo "Alert: $SPIKE_MSG" >> $GITHUB_STEP_SUMMARY
@@ -210,6 +246,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CY: ${{ steps.traffic.outputs.CLONE_YESTERDAY }}
           CYU: ${{ steps.traffic.outputs.CLONE_YESTERDAY_UNIQ }}
+          REF: ${{ steps.traffic.outputs.TOP_REFERRER }}
+          TOP_PATH: ${{ steps.traffic.outputs.TOP_PATH }}
+          CIRUNS: ${{ steps.traffic.outputs.CI_RUNS_YESTERDAY }}
+          CPR: ${{ steps.traffic.outputs.CLONES_PER_RUN }}
         run: |
           # Ensure the label exists
           gh label create traffic-spike 2>/dev/null || true
@@ -223,7 +263,16 @@ jobs:
             echo ""
             echo "**Yesterday:** $CY clones ($CYU unique)"
             echo ""
-            echo "Please investigate the source and update README / docs accordingly."
+            if [ -n "$CIRUNS" ]; then
+              echo "- Workflow runs that day: **$CIRUNS** → **$CPR** clones per run"
+            fi
+            echo "- Top referrer (14d): ${REF:-none}"
+            echo "- Top path (14d): ${TOP_PATH:-none}"
+            echo ""
+            echo "Clone figures include CI and bots, and this repo's series tracks"
+            echo "Actions run volume (~3.5 clones/run, r=0.95). Compare the two"
+            echo "numbers above before reading a spike as outside interest — see"
+            echo "docs/traffic-attribution.md for the method and the baseline."
             echo ""
             echo "Report: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           } > /tmp/spike_body.md

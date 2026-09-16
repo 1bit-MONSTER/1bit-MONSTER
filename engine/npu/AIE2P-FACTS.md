@@ -76,9 +76,16 @@ def rni_bf16(x):  # x: fp32 ndarray -> uint16 bf16 values, RNI rounding
   convention); the engine uses separate A/B BOs. Removing the K*M term is
   TOKEN-IDENTICAL — descriptor addressing doesn't affect this kernel's result.
 - **The fix that works:** per-shape SMALL-M xclbins (build_xclbins.sh Peano
-  path — the missing final_i8_*_K1024_N4096.xclbin files) so decode launches
-  run M=1 streams (~50µs), or fused whole-layer streams (FLM-style, one launch
-  per token). Estimated 460ms → 5-15ms/token with either.
+  path) so decode launches run M=1 streams (~50µs), or fused whole-layer streams
+  (FLM-style, one launch per token). Estimated 460ms → 5-15ms/token with either.
+  **Status 2026-09-11:** built for GU/D — `final_i8_{GU,D}_qwen3_0_6b_m1.xclbin`
+  (37-38 KB, true 1-row decode, `build_qwen3_0_6b_m1.sh`), plus `_m8`/`_m32`; the
+  QKV/O small-M variants are still unbuilt. The four M-less names this bullet used
+  to point at (`final_i8_{GU,D,QKV,O}_K*_N*.xclbin`) have been **removed**: they
+  resolved to FLM's M=128 `mm.xclbin` on a box with fastflowlm installed and to
+  nothing elsewhere, and the M=128 batch builds are not the artifact their names
+  claim either — a name that omits the parameter distinguishing M cannot be
+  honestly resolved, which is why the M-explicit names are the ones to use.
 - Correctness caveat: the generated path's output was never oracle-validated
   (the single-core-row vs multi-row WARN). Verify tokens vs the CPU engine
   before trusting any speedup.

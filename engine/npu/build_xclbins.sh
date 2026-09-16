@@ -95,6 +95,45 @@ check_env() {
         echo "  fix_toolchain.sh found ✓"
     fi
 
+    # ── Generator ↔ aiecc dialect pairing (PR #2407) ─────────────────────
+    # A wrong pairing fails ~40 minutes into a build with a bare
+    # `loc(...): error: expected ')'` at an aie.dma_bd line, which reads like a
+    # generator bug. It is a dialect-version mismatch: the generators emit the
+    # post-#3306 form (sizes/strides/offset/len as SSA operands, mlir-aie
+    # 398f7f704) and an aiecc built before that change cannot parse it. Check it
+    # here, in seconds, and name the cause instead.
+    #
+    # ONLY the configured root is probed, with the SAME interpreter and
+    # PYTHONPATH the build's generator step uses (see the export at the top of
+    # this script), so this tests the pairing the build will actually use rather
+    # than an internally-consistent combination that only exists here.
+    if [ -x "${GENERATORS_DIR}/check_aie_dialect.sh" ] \
+        && [ -x "${AIE_TOOLS_DIR}/bin/aie-opt" ] \
+        && [ "${NPU_SKIP_DIALECT_CHECK:-0}" != "1" ]; then
+        local dialect_out dialect_rc
+        dialect_out=$(PYTHON=python3 PYTHONPATH="${AIE_TOOLS_DIR}/python:${PYTHONPATH:-}" \
+            "${GENERATORS_DIR}/check_aie_dialect.sh" "$AIE_TOOLS_DIR" 2>&1) && dialect_rc=0 || dialect_rc=$?
+        case "$dialect_rc" in
+            0)
+                echo "  generator ↔ aiecc dialect: ok ✓"
+                ;;
+            2)
+                echo "ERROR: the MLIR generator could not run at all."
+                echo "  This is not a dialect problem — check the python deps for"
+                echo "  PYTHONPATH=${AIE_TOOLS_DIR}/python (ml_dtypes is the usual miss)."
+                echo "$dialect_out" | sed 's/^/    /'
+                errors=$((errors + 1))
+                ;;
+            *)
+                echo "ERROR: aiecc at $AIE_TOOLS_DIR cannot parse the MLIR our generators emit."
+                echo "$dialect_out" | sed 's/^/    /'
+                echo "  Known-good root on this box: AIE_TOOLS_DIR=~/mlir-aie/install_tmp"
+                echo "  (Set NPU_SKIP_DIALECT_CHECK=1 to bypass this check.)"
+                errors=$((errors + 1))
+                ;;
+        esac
+    fi
+
     # Check config1 directory
     if [ -n "$TORCH2AIE_DIR" ] && [ ! -d "$CFG1" ]; then
         echo "WARNING: GEMM config directory not found at: $CFG1"
@@ -261,7 +300,10 @@ check_env
 
 # Set up toolchain paths
 export PATH="${AIE_TOOLS_DIR}/bin:$PATH"
-export PYTHONPATH="${AIE_TOOLS_DIR}/python:$PYTHONPATH"
+# ${PYTHONPATH:-}: the script sets -u (line 24), so an unset PYTHONPATH aborts here with "PYTHONPATH: unbound
+# variable" -- a one-word failure that reads like a toolchain problem. The other build scripts in this tree already use
+# the :- idiom.
+export PYTHONPATH="${AIE_TOOLS_DIR}/python:${PYTHONPATH:-}"
 mkdir -p "$INT8_DIR" "$mk_dir"
 
 build() {

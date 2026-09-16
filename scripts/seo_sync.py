@@ -35,7 +35,29 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SITE = os.path.join(ROOT, "site")
+# The README publishes the same census facts and had no sync at all: it said
+# "321,611 / 321,611 text-generation checkpoints on the hub (100%)" for months
+# after the census fell below 100% (#2392). Whatever states these numbers has to
+# be rewritten by the same pass, or it drifts silently -- the site cannot be the
+# only surface that stays honest.
+README = os.path.join(ROOT, "README.md")
+# Canonical documents that state the same census facts. They are not "site", and
+# leaving them out is how they drifted: docs/wiki/models.md calls itself "the
+# canonical model support document" and published 100.00% coverage next to a
+# 99.95% census, with 566/1,946 tokens from two census passes ago (#2408).
+DOCS = [
+    os.path.join(ROOT, "docs", "wiki", "models.md"),
+    os.path.join(ROOT, "docs", "model-families", "README.md"),
+    os.path.join(ROOT, "docs", "CODEBASE.md"),
+]
 HEADER = os.path.join(ROOT, "include", "rocm_cpp", "bitnet_model.h")
+# Backends and families are facts the hero line states and nothing derived
+# (#2399): the engine enumerates its backends in backend_name()/BackendType, and
+# the repo enumerates its families as docs/model-families/*.md.
+BACKENDS_HEADER = os.path.join(ROOT, "include", "common.h")
+# The family registry (32 entries, 29 `status: validated`) that the canonical
+# models page cites; docs/model-families/ is a different, brand-level grouping.
+FAMILIES_MANIFEST = os.path.join(ROOT, "Testing", "models_manifest.json")
 CENSUS = os.path.join(ROOT, "Testing", "census_full_summary.json")
 WATCH_STATE = os.path.join(ROOT, "Testing", "hf_new_models_state.json")
 LEMONADE_CMAKE = os.path.join(ROOT, "third_party", "lemonade", "CMakeLists.txt")
@@ -69,13 +91,76 @@ def count_arch_strings():
     return n
 
 
+def census_total():
+    """Total text-gen checkpoints the census walked (410,618 today).
+
+    docs/wiki/models.md quotes this next to the arch-bearing count; the watcher
+    delta deliberately does not move it (new arrivals are already in the walk).
+    """
+    try:
+        with open(CENSUS, encoding="utf-8") as f:
+            return int(json_load(f).get("total", 0))
+    except (OSError, ValueError, TypeError):
+        return 0
+
+
+def count_backends():
+    """Backends the engine dispatches to: BackendType values minus NONE.
+
+    The engine's own enumeration (backend_name() in include/common.h). 16 today
+    -- the front page said 12, which matched nothing (#2399).
+    """
+    with open(BACKENDS_HEADER, encoding="utf-8") as f:
+        m = re.search(r"enum class BackendType[^{]*\{(.*?)\}", f.read(), re.S)
+    if not m:
+        return None
+    return len([v for v in re.findall(r"^\s*([A-Z][A-Z0-9_]*)\s*=", m.group(1), re.M)
+                if v != "NONE"])
+
+
+def count_families():
+    """Manifest families: entries in Testing/models_manifest.json (32 today).
+
+    This is the project's family registry -- one entry per architecture family,
+    each with a status (29 `validated`, 1 documented-limitation, 2
+    mapped-unvalidated) and an e2e oracle. It is also the set the canonical
+    models page cites as "the 32 manifest families (29 validated)".
+
+    docs/model-families/*.md is a DIFFERENT, brand-level grouping: 16 pages that
+    share only 6 names with this registry. Counting pages made the hero and
+    models.md quote different quantities under the same word -- and the hero's
+    original "32 families" was in fact this registry (#2399 -> #2414).
+    """
+    try:
+        with open(FAMILIES_MANIFEST, encoding="utf-8") as f:
+            manifest = json_load(f)
+    except (OSError, ValueError, TypeError):
+        return None
+    # None is the documented no-op -- the caller then leaves the published text
+    # alone -- so anything we cannot affirmatively count returns None, never 0.
+    # The two ways `.get("families", [])` used to escape that contract:
+    #   * a top-level JSON array raises AttributeError on .get(), which is not in
+    #     the tuple above, so --check aborted with a traceback instead of no-op;
+    #   * a renamed key (e.g. "models") yields [] -> len 0 -> the hero rewritten
+    #     to "0 families", a silently wrong derived claim, which is the exact
+    #     failure class this derivation replaced.
+    # An empty list is not a fact we can publish either, so it is None too.
+    if not isinstance(manifest, dict):
+        return None
+    families = manifest.get("families")
+    if not isinstance(families, list) or not families:
+        return None
+    return len(families)
+
+
 def census_coverage():
     """(covered, with_arch) = census snapshot + the watcher's live delta.
 
-    census_full_summary.json is the frozen 2026-08-15 snapshot
-    (317,310/317,310). hf_new_models.py accrues delta_with_arch /
-    delta_covered in its state as it observes new HF models daily; add those
-    so the SEO claim numbers keep moving without a full re-sweep.
+    census_full_summary.json is rebuilt daily by the full census sweep
+    (census_sweep.py --reset-delta at 03:30), which also zeroes the watcher
+    delta. hf_new_models.py (04:30) then accrues delta_with_arch /
+    delta_covered for same-day new models; add those so the SEO claim
+    numbers include the same-day arrivals before the next sweep.
     """
     try:
         with open(CENSUS, encoding="utf-8") as f:
@@ -155,17 +240,87 @@ def _meta_pair(m, covered, tokens):
            (g[2] if g[2] == fmt(tokens) else fmt(tokens)) + g[3]
 
 
+def _readme_cov(m, covered, with_arch):
+    """README's sentence: "321,611 / 321,611 text-generation checkpoints on the
+    hub (100%) land on an engine token" -- the ratio and the percentage are one
+    claim, so it is rebuilt whole rather than patched per number."""
+    return (fmt(covered) + " / " + fmt(with_arch) +
+            " text-generation checkpoints on the hub (" + _pct(covered, with_arch) + ")")
+
+
+def _ratio_pct(m, covered, with_arch):
+    """Bare ratio plus its percentage: "321,611 / 321,611 (100.00%) map to an
+    engine token" (docs/wiki/models.md). groups: (num, ' / ', num, ' (', pct,
+    '%)')."""
+    g = m.groups()
+    return (fmt(covered) + g[1] + fmt(with_arch) + g[3] +
+            _pct(covered, with_arch).rstrip("%") + g[5])
+
+
+def _docs_cov(m, covered, with_arch):
+    """docs/wiki/models.md's sentence: "321,611 / 321,611 arch-bearing text-gen
+    checkpoints (100.00%) map to an engine token" -- same rebuild-whole rule as
+    the README form, different suffix. The separator is a captured group because
+    models.md wraps that sentence across two lines and the newline is part of it.
+    groups: (covered, ' / ', with_arch, ' arch-bearing text-gen checkpoints',
+             whitespace+'(', pct, '%)')."""
+    g = m.groups()
+    return (fmt(covered) + " / " + fmt(with_arch) + g[3] + g[4] +
+            _pct(covered, with_arch).rstrip("%") + g[6])
+
+
+def _arch_to_tokens(m, arch, tokens):
+    """Prose pair with a prefix: "all 1,946 of them -- normalizes down to one of
+    566 architecture tokens" (groups: prefix, arch, sep, tokens, suffix)."""
+    g = m.groups()
+    return (g[0] + (g[1] if g[1] == arch else arch) + g[2] +
+            (g[3] if g[3] == tokens else tokens) + g[4])
+
+
+def _hero_counts(m, tokens, families, backends):
+    """The front-page hero: "resolve to 569 tokens, 32 families, 12 backends"
+    (groups: prefix, tokens, sep, families, sep, backends, suffix). A None fact
+    preserves whatever the page says, so the pattern is a no-op without it."""
+    g = m.groups()
+    fam = families if families is not None else g[3]
+    bck = backends if backends is not None else g[5]
+    return (g[0] + (g[1] if g[1] == tokens else tokens) + g[2] +
+            (g[3] if g[3] == fam else fam) + g[4] +
+            (g[5] if g[5] == bck else bck) + g[6])
+
+
 def _pct_claim(m, covered, with_arch, suffix_groups):
-    """Percentage claims only move when coverage actually drops below 100%."""
+    """Percentage claims only move when coverage actually drops below 100%.
+
+    suffix_groups is not decoration: the two callers capture the number in different
+    positions, and rebuilding as g[0] + pct + g[-1] is only correct for one of them.
+
+      "N% HuggingFace coverage"        2 groups. Group 0 IS the number, and the '%'
+                                       sits outside the match, so _pct()'s own '%'
+                                       supplies it -- including g[0] as well re-emitted
+                                       the OLD number ahead of the new one, so every
+                                       run prepended another copy and the claim grew
+                                       without bound ("10099.9799.97...% HuggingFace
+                                       coverage"; 12 such spans had accumulated on
+                                       main). No prefix to preserve here.
+      "<span ...>N</span>..."          3 groups. Group 0 is leading MARKUP, which must
+                                       be preserved.
+    """
     if covered >= with_arch:
         return m.group(0)
     g = m.groups()
+    if suffix_groups == 2:
+        return _pct(covered, with_arch) + g[-1]
     return g[0] + _pct(covered, with_arch) + g[-1]
 
 
-def _build_patterns(tokens, arch, covered, with_arch):
+def _build_patterns(tokens, arch, covered, with_arch, total=None,
+                   families=None, backends=None):
     t, a, c, w = fmt(tokens), fmt(arch), fmt(covered), fmt(with_arch)
-    return [
+    tot = fmt(total) if total is not None else None
+    f = fmt(families) if families is not None else None
+    b = fmt(backends) if backends is not None else None
+    pats = [
         # "552 architecture tokens, 1,774 HF arch strings" (+ "/" variant in posts)
         (re.compile(r"(\d[\d,]*)( architecture tokens[ ,/]+)(\d[\d,]*)( HF arch strings)"),
          lambda m: _pair(m, t, a)),
@@ -193,22 +348,223 @@ def _build_patterns(tokens, arch, covered, with_arch):
         # monster-v2 lead "317,310 arch-bearing checkpoints resolve to 552 tokens"
         (re.compile(r"(\d[\d,]*)( arch-bearing checkpoints resolve to )(\d[\d,]*)( tokens,)"),
          lambda m: _meta_pair(m, covered, tokens)),
-        # percentage claims only move when coverage drops below 100%
-        (re.compile(r"(\d+(?:\.\d+)?)%( HuggingFace coverage)"),
+        # percentage claims only move when coverage drops below 100%.
+        # [0-9][0-9.]* (not \d+(?:\.\d+)?) so the match also swallows the malformed
+        # leading runs this bug already wrote into site/*.html ("10099.9799.97...%") --
+        # with the narrow pattern the regex would match only the trailing "99.97" and
+        # leave the garbage in front of a corrected value. Greedy, but digits and dots
+        # cannot run past the '%' into markup.
+        #
+        # The qualifier is OPTIONAL because the same claim is written three ways in
+        # the tree, and the front page used the one this single pattern could not
+        # see: "100% HuggingFace architecture coverage" sat at 100% while the census
+        # read 99.96% (#2389). A wording this machinery cannot match is not a
+        # cosmetic miss -- it is a published false claim.
+        (re.compile(r"([0-9][0-9.]*)%( HuggingFace(?: architecture)? coverage)"),
          lambda m: _pct_claim(m, covered, with_arch, 2)),
+        # site/index.html:460 and site/1bit-post-npu-reversal.html state the same
+        # checkpoint ratio as "...of HuggingFace's arch-bearing checkpoints".
+        (re.compile(r"([0-9][0-9.]*)%( of HuggingFace's arch-bearing checkpoints)"),
+         lambda m: _pct_claim(m, covered, with_arch, 2)),
+        # monster-v2 census line: "100% coverage / 6 hardware targets probed / ..."
+        (re.compile(r"([0-9][0-9.]*)%( coverage /)"),
+         lambda m: _pct_claim(m, covered, with_arch, 2)),
+        # README: "566 architecture tokens mapping 1,946 HuggingFace arch strings"
+        (re.compile(r"(\d[\d,]*)( architecture tokens mapping )(\d[\d,]*)( HuggingFace arch strings)"),
+         lambda m: _pair(m, t, a)),
+        # README: "321,611 / 321,611 text-generation checkpoints on the hub (100%)"
+        (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( text-generation checkpoints on the hub \()"
+                    r"(\d+(?:\.\d+)?)(%\))"),
+         lambda m: _readme_cov(m, covered, with_arch)),
+        # Canonical docs (#2408). docs/wiki/models.md, docs/model-families/README.md
+        # and docs/CODEBASE.md state the same census facts in their own words, and
+        # nothing had ever rewritten them: models.md published 100.00% coverage
+        # beside its own 99.95% census and 566/1,946 from two passes ago.
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( architecture tokens)"),
+         lambda m: _bare(m, t)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( engine arch tokens)"),
+         lambda m: _bare(m, t)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( engine tokens)"),
+         lambda m: _bare(m, t)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( HF `architectures` strings)"),
+         lambda m: _bare(m, a)),
+        # "...counts **405,884 text-gen checkpoints**, 326,341 with an
+        # `architectures` field" -- total then arch-bearing (may wrap a line).
+        (re.compile(r"(counts \*\*)(\d[\d,]*)( text-gen checkpoints\*\*, )"
+                    r"(\d[\d,]*)( with an\s+`architectures` field)"),
+         lambda m: _arch_to_tokens(m, tot or m.group(1), w)),
+        (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( arch-bearing text-gen checkpoints)"
+                    r"(\s+\()(\d+(?:\.\d+)?)(%\))"),
+         lambda m: _docs_cov(m, covered, with_arch)),
+        # The same page states the census paragraph in its own words: total,
+        # arch-bearing, unmappable, and the bare ratio with its percentage.
+        # Scoped: "N text-generation checkpoints**, of which" -- the README's
+        # "text-generation checkpoints on the hub" is a different claim and is
+        # rewritten by its own pattern above.
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( text-generation checkpoints\*\*, of which)"),
+         lambda m: _bare(m, tot or m.group(0))),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( declare an `architectures` field)"),
+         lambda m: _bare(m, w)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( arch-bearing text-gen checkpoints\*\* remain)"),
+         lambda m: _bare(m, w)),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( have none)"),
+         lambda m: _bare(m, fmt(total - with_arch) if total is not None else m.group(1))),
+        (re.compile(r"(\d[\d,]*)( / )(\d[\d,]*)( \()(\d+(?:\.\d+)?)(%\))"),
+         lambda m: _ratio_pct(m, covered, with_arch)),
+        # The same claim without the spaces around the slash:
+        # site/1bit-post-lemonade-v1170.html says "321,611/321,611 (100%)", which
+        # every other pattern's " / " missed (#2411).
+        (re.compile(r"(\d[\d,]*)(/)(\d[\d,]*)( \()(\d+(?:\.\d+)?)(%\))"),
+         lambda m: _ratio_pct(m, covered, with_arch)),
+        # Front-page hero: "resolve to 569 tokens, 32 families, 12 backends"
+        # (#2399). 32 and 12 matched no source in the tree or the engine -- the
+        # family docs list 16 and the engine's BackendType enumerates 16.
+        (re.compile(r"(resolve to )(\d[\d,]*)( tokens, )(\d[\d,]*)"
+                    r"( families, )(\d[\d,]*)( backends)"),
+         lambda m: _hero_counts(m, t, f, b)),
+        # Census facts written as prose in blog/post bodies (#2394):
+        # site/1bit-post-1775-models.html calls its own numbers "live" while three
+        # of its sentences used the pre-2,044 values -- one of them stating both
+        # ("resolve to 569 tokens, and 566 tokens resolve to one engine").
+        # \u2014 is the em dash used in those sentences.
+        (re.compile(r"(Every architecture token on HuggingFace \u2014 )(\d[\d,]*)"
+                    r"( of them \u2014 resolves to one binary)"),
+         lambda m: _num_between(m, t)),
+        (re.compile(r"(all )(\d[\d,]*)( of them \u2014 normalizes down to one of )"
+                    r"(\d[\d,]*)( architecture tokens)"),
+         lambda m: _arch_to_tokens(m, a, t)),
+        # Tail only: the head of that sentence already matches the _meta_pair
+        # pattern above, and a whole-sentence pattern would fight it over the
+        # match.
+        (re.compile(r"(, and )(\d[\d,]*)( tokens resolve to one engine)"),
+         lambda m: _num_between(m, t)),
+        # site/search-index.json stores the pages' prose with the em dash already
+        # JSON-escaped ("\u2014"), so the literal-dash patterns above cannot see
+        # it. Same claims, same rewrite, escaped spelling (#2411).
+        (re.compile(r"(Every architecture token on HuggingFace \\u2014 )(\d[\d,]*)"
+                    r"( of them \\u2014 resolves to one binary)"),
+         lambda m: _num_between(m, t)),
+        (re.compile(r"(all )(\d[\d,]*)( of them \\u2014 normalizes down to one of )"
+                    r"(\d[\d,]*)( architecture tokens)"),
+         lambda m: _arch_to_tokens(m, a, t)),
+        (re.compile(r"the whole class now resolves to one binary \\u2014 the census "
+                    r"claim stays at \d+(?:\.\d+)?% coverage"),
+         lambda m: "the whole class now resolves to one binary \\u2014 one fewer "
+                   "class on the census's uncovered list"),
+        # #2397: the 94 covered-mode posts asserted "the census claim stays at
+        # 100% coverage". Neither metric is 100% -- checkpoints are 99.96% and
+        # in-scope CLASS coverage is 97.42% (2,040 of 2,094 classes; 54
+        # uncovered, deepseekv41 among them) -- so the claim is replaced by what
+        # mapping a class actually guarantees, with no number left to drift.
+        (re.compile(r"the whole class now resolves to one binary \u2014 the census "
+                    r"claim stays at \d+(?:\.\d+)?% coverage"),
+         lambda m: "the whole class now resolves to one binary \u2014 one fewer "
+                   "class on the census's uncovered list"),
         (re.compile(r"(<span class=\"n\">)(\d+(?:\.\d+)?)(</span><span class=\"l\">checkpoints mapped</span>)"),
          lambda m: _pct_claim(m, covered, with_arch, 3)),
         # bare prose forms (no fraction): "321,611 checkpoints mapped",
         # "321,611 checkpoints map to", "mapping 321,611 checkpoints".
         # Run LAST so the fraction pattern above has already rewritten
         # "X/Y checkpoints mapped" -> "X'/Y' checkpoints mapped" first.
-        (re.compile(r"(\d[\d,]*)( checkpoints mapped)"),
+        #
+        # (?<!/) is load-bearing and its absence was a false-claim bug: after the
+        # fraction pattern has written "323,579/323,682", this bare pattern still
+        # matched the DENOMINATOR — the digits directly in front of
+        # " checkpoints mapped" — and rewrote it to the numerator, publishing
+        # "323,579/323,579 checkpoints mapped", i.e. a fabricated 100% on every
+        # page that states the ratio. main read "323,303/323,303" while the
+        # census said 323,303 of 323,386, and --check could not see it because
+        # the clobbered text IS its idempotent output. A bare count is never
+        # preceded by "/", and a partial match of it is preceded by a digit --
+        # so the lookbehind has to exclude digits and commas too, or the regex
+        # merely starts one character later inside the same number ("323,682" ->
+        # "23,682" -> "3323,579").
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( checkpoints mapped)"),
          lambda m: _bare(m, c)),
-        (re.compile(r"(\d[\d,]*)( checkpoints map to)"),
+        (re.compile(r"(?<![\d,/])(\d[\d,]*)( checkpoints map to)"),
          lambda m: _bare(m, c)),
         (re.compile(r"(mapping )(\d[\d,]*)( checkpoints)"),
          lambda m: _num_between(m, c)),
+        # Prose percentage sitting immediately beside the ratio it describes:
+        # "The engine's own HF coverage stays at 100%: ... 323,579/323,682
+        # checkpoints mapped." Fixing the ratio alone would leave that page
+        # asserting 100% right next to its own 99.97%. Deliberately narrower
+        # than the generated posts' "the census claim stays at 100% coverage",
+        # which is about CLASS coverage rather than this checkpoint ratio.
+        (re.compile(r"(coverage stays at )(\d+(?:\.\d+)?)(%)"),
+         lambda m: m.group(0) if covered >= with_arch
+         else m.group(1) + _pct(covered, with_arch).rstrip("%") + m.group(3)),
     ]
+    # Invariant, checked on every run: the bare-count patterns must not touch a
+    # fraction's denominator, and the fraction must land on covered/with_arch.
+    # Worth asserting rather than trusting -- the corrupted text was idempotent,
+    # so --check reported "no drift" for months while every page claimed 100%.
+    probe = "1/2 checkpoints mapped"
+    got = probe
+    for pat, repl in pats:
+        got = pat.sub(repl, got)
+    want = f"{c}/{w} checkpoints mapped"
+    if got != want:
+        raise SystemExit(
+            f"[seo_sync] fraction rewrite is wrong: {probe!r} -> {got!r}, "
+            f"expected {want!r} -- a bare-count pattern is eating the denominator")
+    # Same standard for the claim wordings, run on the REAL strings: the failure
+    # that motivated this was a wording the patterns did not know (and then a
+    # whole surface they never walked), so the check is the wordings the site and
+    # the README actually use. Each entry names the measured value its rewrite
+    # must contain -- "starts with 100" only works for claims already at 100%.
+    want_pct = _pct(covered, with_arch)
+    probes = [
+            ("100% HuggingFace coverage", want_pct),
+            ("100% HuggingFace architecture coverage", want_pct),
+            ("100% of HuggingFace's arch-bearing checkpoints", want_pct),
+            ("100% coverage / 6 hardware targets probed", want_pct),
+            ("566 architecture tokens mapping 1,946 HuggingFace arch strings",
+             f"{t} architecture tokens"),
+            ("321,611 / 321,611 text-generation checkpoints on the hub (100%)",
+             f"{c} / {w}"),
+            ("Every architecture token on HuggingFace \u2014 566 of them \u2014 resolves to one binary",
+             f"{t} of them"),
+            ("all 1,946 of them \u2014 normalizes down to one of 566 architecture tokens",
+             f"{a} of them"),
+            (", and 566 tokens resolve to one engine", f", and {t} tokens"),
+            ("the whole class now resolves to one binary \u2014 the census claim stays at 100% coverage",
+             "one fewer class on the census's uncovered list"),
+            # Canonical docs (#2408).
+            ("566 architecture tokens", f"{t} architecture tokens"),
+            ("1,946 HF `architectures` strings", f"{a} HF `architectures` strings"),
+            ("566 engine tokens", f"{t} engine tokens"),
+            ("566 engine arch tokens", f"{t} engine arch tokens"),
+            ("counts **405,884 text-gen checkpoints**, 326,341 with an `architectures` field",
+             f"{tot or ''} text-gen checkpoints"),
+            ("321,611 / 321,611 arch-bearing text-gen checkpoints (100.00%)",
+             f"{c} / {w}"),
+            ("405,884 text-generation checkpoints**, of which", f"{tot or ''} text-generation checkpoints"),
+            ("326,341 declare an `architectures` field", f"{w} declare an"),
+            ("321,611 arch-bearing text-gen checkpoints** remain", f"{w} arch-bearing"),
+            ("79,543 have none", f"{fmt(total - with_arch) if total is not None else ''} have none"),
+            ("321,611 / 321,611 (100.00%) map to an engine token", f"{c} / {w}"),
+            ("321,611/321,611 (100%) HF census", f"{c}/{w}"),
+            ("Every architecture token on HuggingFace \\u2014 566 of them \\u2014 resolves to one binary",
+             f"{t} of them"),
+            ("all 1,946 of them \\u2014 normalizes down to one of 566 architecture tokens",
+             f"{a} of them"),
+            ("the whole class now resolves to one binary \\u2014 the census claim stays at 100% coverage",
+             "one fewer class on the census's uncovered list")
+    ]
+    if f is not None and b is not None:
+        probes.append(("resolve to 569 tokens, 32 families, 12 backends",
+                       f"{f} families, {b} backends"))
+    for claim, must in probes:
+        got = claim
+        for pat, repl in pats:
+            got = pat.sub(repl, got)
+        if must not in got:
+            raise SystemExit(
+                f"[seo_sync] claim is not rewritten: {claim!r} -> {got!r}, "
+                f"expected it to contain {must!r} -- a wording the patterns cannot "
+                f"see keeps publishing a stale number")
+    return pats
 
 
 def _pct(covered, with_arch):
@@ -226,17 +582,30 @@ def _pct(covered, with_arch):
 
 
 def sync_site_numbers(apply=True):
-    """Rewrite drifted numbers in site/*.html. Returns {path: [notes]}."""
+    """Rewrite drifted numbers in site/*.html, the README and the canonical docs.
+
+    Returns {path: [notes]}."""
     tokens = count_tokens()
     arch = count_arch_strings()
     covered, with_arch = census_coverage()
-    patterns = _build_patterns(tokens, arch, covered, with_arch)
+    total = census_total()
+    families = count_families()
+    backends = count_backends()
+    patterns = _build_patterns(tokens, arch, covered, with_arch, total, families, backends)
 
+    targets = [os.path.join(SITE, name) for name in sorted(os.listdir(SITE))
+               if name.endswith(".html")]
+    targets.append(README)
+    targets.extend(p for p in DOCS if os.path.exists(p))
+    # site/search-index.json embeds chunks of the pages' text, so it carries the
+    # same claims. It is generated off-CI (build_embed_index.py needs the engine's
+    # /v1/embeddings), which is exactly why it went stale: the pages were fixed
+    # and the index kept the old numbers (#2411).
+    si = os.path.join(SITE, "search-index.json")
+    if os.path.exists(si):
+        targets.append(si)
     changed = {}
-    for name in sorted(os.listdir(SITE)):
-        if not name.endswith(".html"):
-            continue
-        path = os.path.join(SITE, name)
+    for path in targets:
         with open(path, encoding="utf-8") as f:
             html = f.read()
         orig = html

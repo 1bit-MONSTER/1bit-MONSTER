@@ -169,6 +169,41 @@ HIP wins; short prompts amortize the handoff cost poorly).
 - Documented state-format compatibility: the round-trip result + the exact
   `LLAMA_STATE_VERSION`/`LLAMA_SESSION_VERSION` pair (9/9).
 
+**Measured status 2026-09-11 (goal `mtwqm7qx-hlc0ht`) — the positive clause is NOT met on the shipped path, and
+what it was hiding was worse than a decode error.** Run through the engine with the shipped b66 bundle and the real
+2,940-token blob (`~/hrx-2145/hyp_blob.bin`, session v9), model Qwen3-Coder-30B-A3B-Instruct-Q4_K_M, one greedy
+`X-Backend: hrx_gpu` request:
+
+| binary | `HRX_MAX_CTX_TOKENS` | HRX graph saw | response |
+|---|---|---|---|
+| pre-fix `main` (`598fa66ca`) | 2048 | **no `FLASH_ATTN_EXT` node, no 3072 KV** | **`finish_reason: stop`** |
+| fix (PR #2203, `80a8a81eb`) | 2048 | the imported ~3k KV (re-imported) | explicit `REFUSING decode: context 2940 >= HRX_MAX_CTX_TOKENS (2048) … (issue #2145)` |
+| fix (PR #2203, `80a8a81eb`) | 0 | `unsupported HRX node 25: FLASH_ATTN_EXT … f16[128,3072,4,1]` | `compute status: -1` |
+
+- **Pre-fix the lane reported success while decoding from an EMPTY KV.** `HrxBackend::reset()` recreates the
+  in-process context (`pos = 0`), so the `HRX_STATE_FILE` import was discarded before the first decode: the graph
+  never touched the imported context, yet the request returned `stop`. That is **context loss reported as success**
+  — the §5.2 clause "correct continuation (no context loss)" defeated invisibly. The PR #2203 re-import (landed as `80a8a81eb`) removes it.
+- **The positive clause cannot be met on this box as configured.** The only engine-loadable, self-contained HRX lib
+  set is the shipped b66 bundle, and its HRX over-claims `FLASH_ATTN_EXT` above KV 2048; the named GET_ROWS-capable
+  local build segfaults the *engine* after bundle init (split libs — fine as the `rt_b66` harness lane, not as an
+  engine lane). So no bundle here decodes a >2048-token imported context on the HRX device.
+- **RE-OPEN TRIGGERS (either):** (a) the upstream bundle repin (#1945) — an HRX that supports >2048 KV; (b) the HRX2
+  decode-ADD coverage named in the 2026-09-08 decision. Re-run the matrix above with the pinned blob; `HRX_MAX_CTX_TOKENS=0`
+  exposes the raw lane.
+- **Artifact provenance — mandatory for any re-run (added 2026-09-11, after the acceptance run exposed it).** The import
+  *mechanism* is sound: same-binary controls on the reference backend (`rt_q3fix`, `GGML_HRX_DISABLE=1`) reproduce the
+  native continuation **exactly** — 16/16 on a 0.6B session, and **16/16 on a fresh 30B session at 2,940 stored tokens**
+  (`exp` → save → `run`). But **the blob the 2026-09-08/11 analyses used does not round-trip**: importing
+  `~/hrx-2145/hyp_blob.bin` degenerates to `R 15` × 12 **on the CPU oracle too**, while a fresh session from the same
+  prompt has the same header (`first: 2 49627 855`) and round-trips correctly. No artifact in that directory records a
+  30B import continuation at all (`h30_hrxnat.out` = 100 `N`, 0 `R`; the only `R` lines anywhere are `d500.out` =
+  `R 15` × 500). So a version match (`LLAMA_SESSION_VERSION` 9/9) is **not** sufficient — verify the blob before trusting it:
+  run `rt_q3fix exp <model> <blob> @prompt_2k.txt 16` then `rt_q3fix run <model> <blob> "" 16` with
+  `RT_NGL=0 RT_NC=4096 GGML_HRX_DISABLE=1` and require `N` == `R`. Known-good reference created exactly this way:
+  `~/hrx-2145/s52_ref_2940t.bin` (2,940 tokens, md5 `8674b97900e5884af81afe73008512fe`, `exp`/`run` identical 16/16;
+  `prompt_2k.txt` md5 `e9a198613a82f252c06f00b0bb194f72`; `q3normfix` `libllama.so.0` md5 `4f04a9f81c5fea15acf402561bb1fee2`).
+
 ## 6. Open questions
 
 - HRX bundle prefill speed (needed to confirm D1 is only a fallback).

@@ -7,6 +7,12 @@ the DSA cross-layer sharing path AND both MLP types. Saves safetensors
 (engine-readable f32), bf16 .pt, config.json, tensor manifest, HF oracle npy.
 
 Usage: python3 Testing/make_mini_glm_moe_dsa.py [outdir]
+
+Diagnosing a gate failure (issue #2418): `index_topk` is the discriminator. At
+`index_topk=2` with `seq_len=5` the DSA indexer drops tokens and the engine
+diverges from this oracle (4 layers: 15/20 top-20; 1 layer: argmax 263 vs 56);
+at `index_topk=8` (drops nothing) it matches 20/20 at both depths. Edit that one
+value to toggle the failure.
 """
 import sys, os, json, torch
 sys.path.insert(0, '/home/bcloud/models/venv-zaya/lib/python3.14/site-packages')
@@ -33,6 +39,20 @@ cfg = GlmMoeDsaConfig(
 m = GlmMoeDsaForCausalLM(cfg)
 m.eval()
 
+# Round to bf16 FIRST, load the rounded values back, and only then compute the
+# oracle — the engine reads the bf16 weights below, so the reference has to be
+# built from the same numbers. make_mini_mimo_v2.py states this rule explicitly
+# ("the engine loads the bf16 weights; the oracle must use the same numbers");
+# this file used to compute its oracle from the pre-rounding f32 weights and cast
+# afterwards, which is the opposite order. Measured on the mini fixture: no change
+# to the outcome (15/20 top-20 either way), so it was not the cause of #2418 — it
+# is fixed so the two generators stop disagreeing about a rule that only shows up
+# in some configurations.
+with torch.no_grad():
+    sd = {k: v.detach().to(torch.bfloat16).contiguous() for k, v in m.state_dict().items()}
+m.load_state_dict({k: v.to(torch.float32) for k, v in sd.items()})
+m.eval()
+
 ids = torch.tensor([[5, 7, 9, 11, 3]])
 with torch.no_grad():
     out = m(ids)
@@ -40,7 +60,6 @@ with torch.no_grad():
 np.save(os.path.join(OUT, 'logits_last.npy'), out.logits[0, -1].float().cpu().numpy())
 torch.save(ids, os.path.join(OUT, 'ids.pt'))
 
-sd = {k: v.detach().to(torch.bfloat16).contiguous() for k, v in m.state_dict().items()}
 torch.save(sd, os.path.join(OUT, 'model.pt'))
 st_save({k: v.float() for k, v in sd.items()}, os.path.join(OUT, 'model.safetensors'))
 

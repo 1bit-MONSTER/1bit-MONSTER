@@ -4,6 +4,15 @@ set -euo pipefail
 P=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/llvm-aie
 M=/home/bcloud/mlir-aie/.venv/lib/python3.14/site-packages/mlir_aie
 PYTHON=/home/bcloud/mlir-aie/.venv/bin/python3
+# The aie2p tools include is DERIVED, and a missing one is fatal. The previous literal
+# /home/bcloud/Xilinx/2025.2/Vitis/aietools/include does not exist (the real path is
+# ~/Xilinx2025/2025.2/...), and every compile below redirected stderr to /dev/null — so the
+# script exited 1 with no message at all and this file's own lints were unreachable.
+AIETOOLS_INC=$(ls -d "$HOME"/Xilinx*/2025.2/Vitis/aietools/include 2>/dev/null | head -n1 || true)
+if [ -z "${AIETOOLS_INC:-}" ] || [ ! -d "$AIETOOLS_INC" ]; then
+    echo "ERROR: aie2p tools include not found (looked for ~/Xilinx*/2025.2/Vitis/aietools/include)" >&2
+    exit 2
+fi
 G=$(cd "$(dirname "$0")" && pwd)
 W=/tmp/p1i4_build.$$
 mkdir -p "$W"; trap 'rm -rf "$W"' EXIT
@@ -28,21 +37,21 @@ $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
     "${I4_FLAGS[@]}" \
     -isystem $P/include/c++/v1 \
-    -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
+    -I "$AIETOOLS_INC" \
     -I $M/include/aie_kernels/aie2p \
-    -c "$G/mm_kernel_reference.cc" -o "$W/mm.o" 2>/dev/null
+    -c "$G/mm_kernel_reference.cc" -o "$W/mm.o"
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -DDIM_M=8 -DDIM_K=64 -DDIM_N=128 -Di8_i32_ONLY -DM8_VECTORIZED \
     -isystem $P/include/c++/v1 \
-    -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
+    -I "$AIETOOLS_INC" \
     -I $M/include/aie_kernels/aie2p \
-    -c "$G/attn_kernel_reference.cc" -o "$W/silu.o" 2>/dev/null
+    -c "$G/attn_kernel_reference.cc" -o "$W/silu.o"
 $P/bin/clang++ --target=aie2p-none-unknown-elf --std=c++20 -O2 \
     -isystem $P/include/c++/v1 \
-    -I /home/bcloud/Xilinx/2025.2/Vitis/aietools/include \
+    -I "$AIETOOLS_INC" \
     -I $M/include/aie_kernels/aie2p \
     -I "$G" \
-    -c "$G/i4_dequant_kernel.cc" -o "$W/dequant.o" 2>/dev/null
+    -c "$G/i4_dequant_kernel.cc" -o "$W/dequant.o"
 $P/bin/ld.lld -r "$W/mm.o" "$W/silu.o" "$W/dequant.o" -o "$W/mm_32x64x128.o"
 
 # Post-build symbol check (issue #1841 follow-up): the merged kernel object

@@ -36,14 +36,54 @@ mkdir -p "${LOG_DIR}"
 
 echo "== census-watch $(date -u +%FT%TZ) ==" | tee "${LOG}"
 
+# ── Optional self-refresh (opt-in: CENSUS_WATCH_REFRESH=1, set by the unit) ──
+# WHY: a census checkout that drifts silently reproduces an OLD decision. On
+# 2026-09-11 ryzen's timer was running a feature-branch worktree 55 commits
+# behind main, so the daily alert printed the retired "add to bitnet_model.h"
+# hint for four architectures that main classifies as SIGNIFICANT ("NOT an
+# alias"). The automation was calling the family-variant lane on arrivals that
+# need real engine architecture work.
+# The guards are what make it safe to leave enabled on every box:
+#   * DETACHED HEAD only — `reset --hard` would otherwise move a branch out
+#     from under the lane working in it. A named branch means this is
+#     someone's checkout, so we refuse and say so.
+#   * no local changes apart from the census's own run state, so a detached
+#     tree someone is experimenting in is never wiped.
+# A refused refresh is a note, not a failure: the census still runs.
+if [ "${CENSUS_WATCH_REFRESH:-0}" = "1" ]; then
+    ok_refresh=1
+    if [ -n "$(git -C "${ROOT}" symbolic-ref -q HEAD || true)" ]; then
+        echo "[census-watch] refresh skipped — ${ROOT} is on branch" \
+             "$(git -C "${ROOT}" branch --show-current); the census needs a" \
+             "detached main checkout" | tee -a "${LOG}"
+        ok_refresh=0
+    elif [ -n "$(git -C "${ROOT}" status --porcelain -- . | grep -v -E 'Testing/(hf_new_models_state|significant_arrivals)\.json$' || true)" ]; then
+        echo "[census-watch] refresh skipped — ${ROOT} has local changes" \
+             | tee -a "${LOG}"
+        ok_refresh=0
+    fi
+    if [ "${ok_refresh}" = "1" ]; then
+        if git -C "${ROOT}" fetch --quiet origin main 2>/dev/null \
+           && git -C "${ROOT}" reset --hard --quiet origin/main 2>/dev/null; then
+            echo "[census-watch] refreshed to $(git -C "${ROOT}" log --oneline -1)" \
+                 | tee -a "${LOG}"
+        else
+            echo "[census-watch] refresh failed (offline?) — running the" \
+                 "current checkout $(git -C "${ROOT}" log --oneline -1)" \
+                 | tee -a "${LOG}"
+        fi
+    fi
+fi
+
 set +e
 python3 "${ROOT}/Testing/hf_new_models.py" "$@" 2>&1 | tee -a "${LOG}"
 RC=${PIPESTATUS[0]}
 set -e
 
 if [ "${RC}" -ne 0 ]; then
-    echo "census-watch: EXIT ${RC} (uncovered class -> needs a bitnet_model.h" \
-         "mapping; full log: ${LOG})" | tee -a "${LOG}"
+    echo "census-watch: EXIT ${RC} (uncovered class -> see the class's line" \
+         "above: a SIGNIFICANT arrival needs real engine support, a family" \
+         "variant needs a bitnet_model.h mapping; full log: ${LOG})" | tee -a "${LOG}"
 fi
 
 exit "${RC}"

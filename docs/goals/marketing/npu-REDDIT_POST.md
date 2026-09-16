@@ -78,7 +78,7 @@ Full handoff documents + xclbins + engine source:
 |------|---------|
 | `HANDOFF-NPU-OPTIMIZATION.md` | Complete 3-day optimization journey (880+ lines) |
 | `INT8-HANDOFF.md` | INT8 investigation: 6 failed paths, root cause, fix strategy |
-| `src/npu_engine_fused.cpp` | Working engine (310 lines, 210ms/tok) |
+| `engine/npu/src/npu_engine_fused.hip` | Working engine (310 lines, 210ms/tok) |
 | `build/int8/` | Built INT8 xclbins + MLIR generator |
 | `bf16_kernel_dev/` | All BF16/IRON/INT8 investigation artifacts |
 

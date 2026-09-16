@@ -68,6 +68,49 @@ What IS comparable today (compile-time structure, same source):
 - Target `aie2p` vs `aie2ps` tps dir and the `data/aie2p → aie2ps` device-json
   symlinks were already applied on strixhalo (see OKF `machines/strixhalo.md`).
 
+## Measured 2026-09-15: two per-compiler rules that cost an afternoon each
+
+**1. The `__AIE_ARCH__` macro decides whether a bf16 mmul exists at all, and Vitis hardcodes it.**
+`aie_api/detail/aie2p/mmul.hpp` selects the implementation on that macro:
+
+```c
+#if __AIE_ARCH__ == 21
+#include "mmul_bf16_bf16.hpp"          // DEFINES mmul_bf16_bf16<8, 8, 4, ...>
+#elif __AIE_ARCH__ == 22
+#include "../aie2ps/mmul_fp_fp.hpp"   // <4,8,4> <4,8,8> <8,8,8> <4,16,8> <8,1,8> — NOT <8,8,4>
+```
+
+Both installed Vitis toolchains (**2026.1** `X-2025.06` and **2025.2** `V-2024.06`) hardcode
+`#define __AIE_ARCH__ 22` in `data/aie2p/lib/me_version.h`, and that definition beats a
+`-D__AIE_ARCH__=21` on the command line (`warning: '__AIE_ARCH__' macro redefined`). So the **chess
+arm cannot compile a kernel that instantiates `aie::mmul<8,8,4,bfloat16>`**:
+
+```
+error: implicit instantiation of undefined template
+       'aie::detail::mmul_fp16_fp16<8, 8, 4, bfloat16, bfloat16, 32>'
+```
+
+Peano sets the value intrinsically from the triple — `clang++ --target=aie2p-none-unknown-elf -dM -E`
+gives `#define __AIE_ARCH__ 21` / `#define __AIE_ARCH_NAME__ AIE2P`. **That is the mechanism behind the
+arm difference in the table above**, and it is worth knowing before reading a chess-arm compile
+failure as a source or licence problem. The `<8,8,4>` shape is not missing: it is in the `aie2p`
+branch of every installed aie_api.
+
+**2. Compile kernels with `-O1` or better — `-O0` can trip a backend abort.**
+`adjustSPReg` calls `report_fatal_error` for a stack adjustment larger than the `PADD*_sp_imm`
+immediate carries (±2^18 for aie2p/aie2ps, ±2^17 for aie2), in **all three** sub-targets
+(`aie2/AIE2FrameLowering.cpp:56`, `aie2p/AIE2PFrameLowering.cpp:81`, `aie2ps/AIE2PSFrameLowering.cpp:80`):
+
+```
+fatal error: error in backend: adjustSPReg cannot yet handle adjustments > +-2^18 bytes
+  Running pass 'Prologue/Epilogue Insertion & Frame Finalization'
+```
+
+Measured on `mm_bfp_mixed.cc` (torch2aie config1, 128×64×128): `-O0` fatal; `-O1`/`-Os` 3,996 B;
+`-O2` 3,980 B. It is the **unoptimised** frame that crosses the bound, not a property of the kernel.
+Filed upstream as **Xilinx/llvm-aie#1293**, which also carries a verified fix (materialise the delta
+as a sequence of in-range steps).
+
 ## Next steps (to actually get chess perf numbers)
 
 - **aiesim path**: `aiecc --aiesim --xchesscc --xbridge` generates the sim

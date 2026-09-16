@@ -1,0 +1,296 @@
+{
+ "cosmos3edge": {
+  "arch": "cosmos3edge",
+  "covered": false,
+  "date": "2026-09-11",
+  "family": "cosmos3edge",
+  "model": "ubr-physical-ai/Cosmos3-Edge-NF4-bnb"
+ },
+ "deepseek": {
+  "arch": "deepseek",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Deepseek",
+  "model": "Chinook416/caracat-pro"
+ },
+ "deepseekv4": {
+  "arch": "deepseekv4",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Deepseek",
+  "model": "a15846/DeepSeek-v4-Fable"
+ },
+ "deepseekv41": {
+  "arch": "deepseekv41",
+  "covered": false,
+  "date": "2026-09-11",
+  "family": "Deepseek",
+  "model": "iVisionSH79/DeepSeek-V4.1-Flash"
+ },
+ "eagle3deepseekv2": {
+  "arch": "eagle3deepseekv2",
+  "covered": false,
+  "date": "2026-09-09",
+  "family": "Deepseek",
+  "model": "lightseekorg/kimi-k3-eagle3.1-mla"
+ },
+ "gemma2": {
+  "arch": "gemma2",
+  "covered": true,
+  "date": "2026-09-11",
+  "family": "Gemma",
+  "model": "Elio2151/Gemma-2-9B-Instruct-TechnicalAgentFineTuned-Merged_5"
+ },
+ "gemma2forcausallm_polysurgery": {
+  "arch": "gemma2forcausallm_polysurgery",
+  "covered": false,
+  "date": "2026-09-08",
+  "family": "Gemma",
+  "model": "aecetin/Gemma-2-2B-PolySurgery"
+ },
+ "gemma3": {
+  "arch": "gemma3",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Gemma",
+  "model": "neutrypl/neutry-functiongemma-270m-v2"
+ },
+ "gemma4": {
+  "arch": "gemma4",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Gemma",
+  "model": "hariharasudhan/en-indic-translate-26b"
+ },
+ "gemma4unified": {
+  "arch": "gemma4unified",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Gemma",
+  "model": "Endersand/Gemma-4-12B-StyleTune"
+ },
+ "glm4v": {
+  "arch": "glm4v",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Glm",
+  "model": "Fluxmire/GLM-4.6V-Flash-FP8-DYNAMIC"
+ },
+ "glm5next": {
+  "arch": "glm5next",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Glm",
+  "model": "HawkBearPig/GLM-5.3-Flash-NVFP4-FP8"
+ },
+ "glm_moe_dsa": {
+  "arch": "glm_moe_dsa",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Glm",
+  "model": "defiobi00/GLM-5.3-DERISKED-Int4-Int8Mix"
+ },
+ "glmmoedsa": {
+  "arch": "glmmoedsa",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Glm",
+  "model": "destr8803/GLM-5.3-224E-FP8-MAN"
+ },
+ "granite": {
+  "arch": "granite",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Granite",
+  "model": "AnkitBirGurung/Granite-4.2-8b-BoardPolitics"
+ },
+ "granitemoehybrid": {
+  "arch": "granitemoehybrid",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Granite",
+  "model": "noodcon/Safetensors.granite-4.0-Improved-Enhanced-Refined"
+ },
+ "isomqwen25coder": {
+  "arch": "isomqwen25coder",
+  "covered": false,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "Prannesshkva/ISOM-Qwen2.5-Coder-1.5B-Instruct"
+ },
+ "llama": {
+  "arch": "llama",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Llama",
+  "model": "Raghav-Singhal/1pp-1.7b-ua-seed42-sft"
+ },
+ "llama3forcausallm_polysurgery": {
+  "arch": "llama3forcausallm_polysurgery",
+  "covered": false,
+  "date": "2026-09-08",
+  "family": "Llama",
+  "model": "aecetin/Llama-3.2-3B-PolySurgery"
+ },
+ "minicpmsala": {
+  "arch": "minicpmsala",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Minicpm",
+  "model": "zhiyaowang/MiniCPM-SALA-NVFP4-GPTQ"
+ },
+ "minimindvlm": {
+  "arch": "minimindvlm",
+  "covered": false,
+  "date": "2026-09-08",
+  "family": "minimindvlm",
+  "model": "scikit-plots/minimind-3v"
+ },
+ "mistral": {
+  "arch": "mistral",
+  "covered": true,
+  "date": "2026-09-10",
+  "family": "Mistral",
+  "model": "Aurigene-AI/BioMistral-7B"
+ },
+ "mobilintllama": {
+  "arch": "mobilintllama",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Llama",
+  "model": "mobilint/Llama-3.2-1B-Instruct-regulus-rb-usb"
+ },
+ "ncpolmo3": {
+  "arch": "ncpolmo3",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Olmo",
+  "model": "ArchSpace-Collection/NCP_ArchPreview_dolma3_8.9B_Stage1_Step1300000"
+ },
+ "nemotron": {
+  "arch": "nemotron",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Nemotron",
+  "model": "joincrksilverb/Nemotron-Mini-4B-Instruct"
+ },
+ "nemotronh": {
+  "arch": "nemotronh",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Nemotron",
+  "model": "Spangler3000/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-MLX-4bit-mtp"
+ },
+ "olmo3": {
+  "arch": "olmo3",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Olmo",
+  "model": "dureduck/Olmo-3-7B-PostTraining8K-SFT-step-40"
+ },
+ "olmo3siamesedepth": {
+  "arch": "olmo3siamesedepth",
+  "covered": true,
+  "date": "2026-09-07",
+  "family": "Olmo",
+  "model": "ArchSpace-Collection/OLMo3-3B-SiameseNorm-DepthAttention-stage4-instruct"
+ },
+ "phi3": {
+  "arch": "phi3",
+  "covered": true,
+  "date": "2026-09-06",
+  "family": "Phi",
+  "model": "minjaechoi/Phi-4-mini-instruct-W4A16"
+ },
+ "qwen2": {
+  "arch": "qwen2",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "ahmadnawaz21/Qwen2.5-1.5B-Medical-QLoRA-DPO"
+ },
+ "qwen2_5_vl": {
+  "arch": "qwen2_5_vl",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "amad-iq/amad-vlm6"
+ },
+ "qwen2forcausallm_polysurgery": {
+  "arch": "qwen2forcausallm_polysurgery",
+  "covered": false,
+  "date": "2026-09-08",
+  "family": "Qwen",
+  "model": "aecetin/Qwen-2.5-7B-PolySurgery"
+ },
+ "qwen2vl": {
+  "arch": "qwen2vl",
+  "covered": true,
+  "date": "2026-09-11",
+  "family": "Qwen",
+  "model": "ramazanoff34/Neo-One_Lite"
+ },
+ "qwen3": {
+  "arch": "qwen3",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "thuyduongjoe123/checkpoints_en_my_logit"
+ },
+ "qwen3-vl": {
+  "arch": "qwen3-vl",
+  "covered": true,
+  "date": "2026-09-08",
+  "family": "Qwen",
+  "model": "Wing22/lvr-align-v2-1000"
+ },
+ "qwen3_5": {
+  "arch": "qwen3_5",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "YueLinHu/GAC-Qwen3.5-4B"
+ },
+ "qwen3_5moe": {
+  "arch": "qwen3_5moe",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "mlx-community/BigBang-v1-MLX-oQ4e"
+ },
+ "qwen3next": {
+  "arch": "qwen3next",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "AnonimXxx/Qwen3.6-35B-A3B-Uncensored-HauhauCS-Aggressive"
+ },
+ "qwen3vl": {
+  "arch": "qwen3vl",
+  "covered": true,
+  "date": "2026-09-09",
+  "family": "Qwen",
+  "model": "zhongweixie/claw-rl-v13-grpo-dr-rubric"
+ },
+ "qwen4exp": {
+  "arch": "qwen4exp",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Qwen",
+  "model": "inferencerlabs/Qwen3.8-Flash-Next-MLX-Q4i"
+ },
+ "rwkv": {
+  "arch": "rwkv",
+  "covered": true,
+  "date": "2026-09-11",
+  "family": "Rwkv",
+  "model": "brennercruvinel/truw-rwkv7-2.9b-v3"
+ },
+ "smollm3": {
+  "arch": "smollm3",
+  "covered": true,
+  "date": "2026-09-05",
+  "family": "Smollm",
+  "model": "Healshsj/smollm3-3b-claude-fable5"
+ }
+}

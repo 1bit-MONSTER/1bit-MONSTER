@@ -64,8 +64,19 @@ uint64_t Q4nxReader::find_offset(const char* key) const {
     if (!data || !key) return 0;
     size_t kl = strlen(key);
     if (kl == 0) return 0;
-    const char* p = data;
-    const char* e = data + (size > 65536 ? 65536 : size); // header within first 64KB
+    // Search the whole JSON header — which is exactly [8, data_start): the
+    // 8-byte length prefix, then hdr_len bytes of JSON, then tensor data.
+    // This used to stop at a hardcoded 64 KB, so every artifact with a larger
+    // header silently lost its later entries: `find_offset` returned 0 for
+    // tensors that are in the file, and the caller could not tell "absent"
+    // from "not looked at". Measured 2026-09-13 (issue #2193): zaya1-8b's
+    // header is 232,415 B and layers >= 20 were invisible; Gemma4-E4B-IT
+    // (97,256 B) and Qwen3.6-35B-A3B (85,552 B) cross the same line.
+    // Falls back to the old window only when `open` could not derive a header
+    // length (data_start == 0 means the length prefix did not validate).
+    size_t hdr_end = data_start > 8 ? data_start : (size > 65536 ? 65536 : size);
+    const char* p = data + 8;                 // skip the length prefix
+    const char* e = data + hdr_end;
     while (p + kl <= e) {
         // Find first character match
         const char* q = (const char*)memchr(p, key[0], e - p);
@@ -89,6 +100,23 @@ uint64_t Q4nxReader::find_offset(const char* key) const {
         }
     }
     return 0;
+}
+
+// The artifact's declared family: the top-level "model_type" string of the JSON
+// header, or "" when it declares none (FLM's dense exports do not — Q4NX has no
+// required architecture field, see the header comment in include/q4nx_reader.h).
+std::string Q4nxReader::model_type() const {
+    if (!data || data_start <= 8) return std::string();
+    std::string h(data + 8, data_start - 8);
+    size_t k = h.find("\"model_type\"");
+    if (k == std::string::npos) return std::string();
+    size_t c = h.find(':', k);
+    if (c == std::string::npos) return std::string();
+    size_t q1 = h.find('"', c + 1);
+    if (q1 == std::string::npos) return std::string();
+    size_t q2 = h.find('"', q1 + 1);
+    if (q2 == std::string::npos) return std::string();
+    return h.substr(q1 + 1, q2 - q1 - 1);
 }
 
 // Read a BF16 array at offset, widened to float32, into a vector.
@@ -233,7 +261,19 @@ bool read_q4nx_metadata(const std::string& path, ModelConfig& cfg) {
                       ? path.substr(0, slash)
                       : path.substr(dir_start + 1, slash - dir_start - 1);
     }
-    std::string base = dirname.empty() ? path.substr(slash + 1) : dirname;
+    std::string base;
+    {
+        // The artifact's OWN stem names it, UNLESS the FLM layout applies
+        // (<ModelName>/model.q4nx — where every basename is literally "model",
+        // so only then does the directory carry the name). Deriving the arch from
+        // the PARENT DIR for a bare artifact in a shared store
+        // (e.g. ~/models/zaya1-8b.q4nx) named it after the directory — "models" —
+        // which routed the artifact to the wrong backend and failed every lane.
+        std::string filename = (slash == std::string::npos) ? path : path.substr(slash + 1);
+        auto dot = filename.find_last_of('.');
+        std::string stem = (dot == std::string::npos) ? filename : filename.substr(0, dot);
+        base = (stem == "model" && !dirname.empty()) ? dirname : stem;
+    }
     auto sep = base.find_first_of("-_");
     cfg.architecture = sep == std::string::npos ? base : base.substr(0, sep);
     // GGUF arch tags are lowercase ("qwen3", "llama") — the router compares

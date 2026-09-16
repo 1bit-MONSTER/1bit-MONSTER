@@ -37,6 +37,30 @@ jobs:
             python3 python3-venv libcurl4-openssl-dev libzstd-dev libwebsockets-dev \
             libvulkan-dev glslc uuid-dev libdrm-dev spirv-headers
 
+          # XRT is what makes the native NPU worker a target at all:
+          # CMakeLists.txt gates add_subdirectory(engine/npu) on an XRT probe.
+          #
+          # NOTE (2026-09-14, measured on the release run for c08e51b0d): Ubuntu
+          # noble's libxrt-dev is XRT **2.13**, which ships the *old* header layout
+          # (/usr/include/xrt/experimental/*.h and xrt/xrt/*), not the
+          # `xrt/xrt_device.h` this tree includes — the configure step logs
+          # "Looking for xrt/xrt_bo.h - not found" and
+          # "npu: XRT NOT found — skipping NPU engine build", so
+          # `ninja -C build npu_engine_universal` fails with "unknown target".
+          # AMD publishes XRT as source/RPM only (repo.radeon.com/xrt 404s), so
+          # this step alone cannot enable the worker today; it is kept so the
+          # build starts working the moment a real XRT (>= 2.14, e.g. AMD's
+          # /opt/xilinx/xrt tree, which engine/npu prefers anyway) is present.
+          sudo apt-get install -y -qq libxrt-dev || \
+            echo "::warning::libxrt-dev unavailable — this release will not include the NPU worker (npu_engine_universal)"
+
+          # Make the reason visible in every release log instead of leaving it to
+          # be inferred from a silent warning.
+          echo "npu worker prerequisites:"
+          echo "  /usr/include/xrt/xrt_device.h : $([ -f /usr/include/xrt/xrt_device.h ] && echo yes || echo NO)  (noble libxrt-dev is XRT 2.13: experimental layout only)"
+          echo "  /opt/xilinx/xrt               : $([ -d /opt/xilinx/xrt ] && echo yes || echo NO)  (AMD layout this tree targets)"
+          echo "  dpkg libxrt-dev               : $(dpkg-query -W -f='${Version}' libxrt-dev 2>/dev/null || echo none)"
+
           # Install TheRock nightly ROCm SDK (AMD's C++ toolchain for Strix Halo).
           # TheRock 7.15.0a (with the built-in FastFlowLM flm binary) is the ONLY
           # ROCm in this build — the runner has no system ROCm, so CMake's
@@ -87,6 +111,12 @@ jobs:
             rocm_cpp \
             onebin \
             bitnet_tui
+          # Native NPU worker — the lane the engine's own NPU path fork/execs
+          # (src/backend_npu.cpp). The target only exists when CMake found XRT, so
+          # this is best-effort: a miss downgrades the package to CPU/GPU instead of
+          # failing the release.
+          ninja -C build npu_engine_universal || \
+            echo "::warning::npu_engine_universal not built (XRT missing?) — the release ships without the NPU worker"
 
       - name: Package
         run: |
@@ -96,6 +126,43 @@ jobs:
           cp build/1bit dist/bin/
           # TUI frontend (separate binary, not folded into onebin)
           cp build/bitnet_tui dist/bin/ 2>/dev/null || true
+          # Native NPU worker, when this build could produce it. It sits next to
+          # `1bit` in bin/, so the engine resolves it from the executable's own
+          # directory with no NPU_ENGINE_BIN (include/npu_worker_path.h); the .deb
+          # and AppImage inherit it from dist/bin. Issue #2360.
+          # The path matters: `ninja -C build npu_engine_universal` writes
+          # build/engine/npu/npu_engine_universal, while this step used to look
+          # for build/npu_engine_universal — so the copy never fired and every
+          # release shipped without the worker even when the build had produced
+          # one. Both layouts are checked, main build first.
+          npu_worker=""
+          for cand in build/engine/npu/npu_engine_universal build/npu_engine_universal; do
+            if [ -f "$cand" ]; then npu_worker="$cand"; break; fi
+          done
+          # No XRT on this runner, so the build normally cannot produce one: fall
+          # back to the vendored prebuilt, verifying it against the manifest. This
+          # is what keeps the packages from being CPU/GPU-only (issue #2360).
+          if [ -z "$npu_worker" ] && [ -f packaging/prebuilt/npu_engine_universal ]; then
+            want="$(python3 -c 'import json;print(json.load(open("packaging/prebuilt/manifest.json"))["files"]["npu_engine_universal"]["sha256"])')"
+            got="$(sha256sum packaging/prebuilt/npu_engine_universal | cut -d' ' -f1)"
+            if [ "$want" != "$got" ]; then
+              echo "::error::vendored NPU worker sha256 mismatch (manifest $want != file $got)"
+              exit 1
+            fi
+            npu_worker=packaging/prebuilt/npu_engine_universal
+            echo "npu worker: vendored prebuilt (this build had no XRT)"
+          fi
+          if [ -n "$npu_worker" ]; then
+            cp "$npu_worker" dist/bin/npu_engine_universal
+            # The worker's RUNPATH is $ORIGIN:$ORIGIN/../lib/1bit, so the bundled
+            # OpenMP runtime must sit at lib/1bit/libomp.so in the flat layout
+            # (usr/bin + usr/lib/1bit once unpacked) — see packaging/README.md.
+            mkdir -p dist/lib/1bit
+            cp packaging/prebuilt/libomp.so dist/lib/1bit/libomp.so
+            echo "packaged: bin/npu_engine_universal (from $npu_worker) + lib/1bit/libomp.so"
+          else
+            echo "::warning::no npu_engine_universal — this release ships without the NPU worker"
+          fi
           # Shared HIP kernel library
           cp build/librocm_cpp.so dist/lib/
           # Docs + install + license
@@ -103,16 +170,14 @@ jobs:
           cp README.md dist/
           cp LICENSE dist/
           cp site/assets/logo.png dist/
-          # A loader script so binaries find librocm_cpp.so
-          # next to the tarball without the user hand-setting LD_LIBRARY_PATH.
-          cat > dist/run.sh <<'EOF'
-          #!/usr/bin/env bash
-          set -e
-          HERE="$(cd "$(dirname "$0")" && pwd)"
-          export LD_LIBRARY_PATH="$HERE/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-          export PATH="$HERE/bin:$PATH"
-          exec "$HERE/bin/1bit" "$@"
-          EOF
+          # Loader script so binaries find librocm_cpp.so next to the tarball
+          # without the user hand-setting LD_LIBRARY_PATH. Single source of
+          # truth: packaging/tarball-run.sh — packaging/Makefile's `stage`
+          # target installs the same file as run.sh in the website tarball, and
+          # it detects this flat bin/+lib/ layout as well as that FHS one, so
+          # the two artifacts can no longer drift (the website .tar.xz had no
+          # run.sh at all while the docs told users to run ./run.sh).
+          cp packaging/tarball-run.sh dist/run.sh
           chmod +x dist/run.sh
           tar czf 1bit-linux-x86_64.tar.gz -C dist .
 
@@ -126,10 +191,16 @@ jobs:
           rm -rf deb-build
           cp -r packaging/deb deb-build
 
-          mkdir -p deb-build/usr/bin deb-build/usr/lib/1bit-monster deb-build/etc/ld.so.conf.d
+          mkdir -p deb-build/usr/bin deb-build/usr/lib/1bit-monster deb-build/usr/lib/1bit deb-build/etc/ld.so.conf.d
           cp dist/bin/* deb-build/usr/bin/
-          cp dist/lib/* deb-build/usr/lib/1bit-monster/
-          echo "/usr/lib/1bit-monster" > deb-build/etc/ld.so.conf.d/1bit-monster.conf
+          # Only the shared libraries go in /usr/lib/1bit-monster: a bare
+          # `cp -r dist/lib/*` also swept dist/lib/1bit/ in there, so the .deb
+          # carried libomp.so twice (verified with dpkg-deb -c on a rehearsal).
+          cp dist/lib/*.so deb-build/usr/lib/1bit-monster/ 2>/dev/null || true
+          # dist/lib/1bit holds the NPU worker's bundled libomp.so; the worker's
+          # RUNPATH looks in $ORIGIN/../lib/1bit, i.e. /usr/lib/1bit here.
+          cp -r dist/lib/1bit/. deb-build/usr/lib/1bit/ 2>/dev/null || true
+          printf '/usr/lib/1bit-monster\n/usr/lib/1bit\n' > deb-build/etc/ld.so.conf.d/1bit-monster.conf
 
           chmod 755 deb-build/DEBIAN/postinst
           dpkg-deb --build --root-owner-group deb-build "1bit-monster_${VERSION}_amd64.deb"
@@ -145,7 +216,7 @@ jobs:
           cp -r packaging/appimage/AppDir appimage-build
           mkdir -p appimage-build/usr/bin appimage-build/usr/lib
           cp dist/bin/* appimage-build/usr/bin/
-          cp dist/lib/* appimage-build/usr/lib/
+          cp -r dist/lib/* appimage-build/usr/lib/
           chmod +x appimage-build/AppRun
 
           # appimagetool needs FUSE, unavailable in most CI containers —
