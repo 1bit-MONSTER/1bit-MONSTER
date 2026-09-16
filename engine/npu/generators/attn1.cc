@@ -44,6 +44,13 @@
 #endif
 
 static uint16_t g_sc[M_TILE * N_KEYS] __attribute__((aligned(64)));
+#ifdef K_ROW_MAJOR
+// K arrives ROW-MAJOR (N_KEYS x HD) because no aie.dma_bd can transpose it: the
+// only contiguous axis of a row-major K is d, and the BD rules force that axis to
+// be the LAST stride, which forces the destination's fastest axis to be d (K
+// row-major) again. So the mmul's blocked B layout is built here instead.
+static uint16_t g_kt[HD * N_KEYS] __attribute__((aligned(64)));
+#endif
 static float g_at[M_TILE * HD] __attribute__((aligned(64)));
 static float O_state[M_TILE * HD];
 static float m_state[M_TILE];
@@ -81,8 +88,20 @@ extern "C" void attn1_chunk(const uint16_t *__restrict qk,
     // Call the mmul TEMPLATE directly with the QK^T's own dims (M x HD x N);
     // mm.cc's templates are not behind the combo guards, so one object can
     // instantiate both shapes without the DIM_* clash.
+#ifdef K_ROW_MAJOR
+    {
+        const uint16_t *krow = qk + M_TILE * HD;      // k[j][d] at j*HD + d
+        for (int d = 0; d < HD; d++)
+            for (int j = 0; j < N_KEYS; j++)
+                g_kt[((d / 8) * (N_KEYS / 8) + (j / 8)) * 64 + (d % 8) * 8 + (j % 8)] =
+                    krow[j * HD + d];
+    }
+    const uint16_t *kB = g_kt;
+#else
+    const uint16_t *kB = qk + M_TILE * HD;
+#endif
     matmul_vectorized_4x8x8_bf16_bf16<M_TILE, HD, N_KEYS>(
-        (bfloat16 *)qk, (bfloat16 *)(qk + M_TILE * HD), (bfloat16 *)g_sc);
+        (bfloat16 *)qk, (bfloat16 *)kB, (bfloat16 *)g_sc);
 
     // --- online softmax in place: g_sc becomes exp, alpha[] the rescale ---
     const float log2e = 1.4426950408889634f;

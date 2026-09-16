@@ -85,9 +85,12 @@ int main(int argc,char**argv){
         sc[j]=b2f(rne(s));                          // g_sc holds bf16 scores
       }
       float mx=-1e30f;for(int j=0;j<N;j++)if(sc[j]>mx)mx=sc[j];
-      float sum=0;for(int j=0;j<N;j++){sc[j]=expf(sc[j]-mx);sum+=sc[j];}
+      // Mirror the kernel exactly: l_state sums the FLOAT exp, but the PV mmul
+      // consumes the exp ROUNDED TO BF16 (g_sc is a bf16 buffer).
+      float sum=0;std::vector<float> eb(N);
+      for(int j=0;j<N;j++){float e=expf(sc[j]-mx);sum+=e;eb[j]=b2f(rne(e));}
       for(int d=0;d<HD;d++){
-        float acc=0;for(int j=0;j<N;j++)acc+=sc[j]*b2f(Qref[(size_t)j*NQKV+VOFF+kh*HD+d]);
+        float acc=0;for(int j=0;j<N;j++)acc+=eb[j]*b2f(Qref[(size_t)j*NQKV+VOFF+kh*HD+d]);
         Oref[(size_t)hh*M*HD+(size_t)i*HD+d]=rne(acc/sum);
       }
     }
@@ -110,8 +113,18 @@ int main(int argc,char**argv){
       if(rel>worst){worst=rel;wz=i;}
       if(rel>0.02)far_++;
     }
-    printf("  %-8s exact=%ld/%ld (%.1f%%) beyond2%%=%ld worst_rel=%.3e at %ld\n",
-           name,ex,n,100.0*ex/(double)n,far_,worst,wz);
+    // ULP distance on the bf16 bit patterns: the honest metric when the kernel's
+    // own arithmetic (bf16 score accumulation) differs from a f32 reference.
+    long u1=0,u2=0,u8=0; double sumulp=0;
+    for(long i=0;i<n;i++){
+      int a=(int)got[i],b=(int)want[i];
+      if((a<0)!=(b<0)){ if(a!=b) u8++; continue; }
+      int d=abs(a-b);
+      sumulp+=d; if(d<=1)u1++; if(d<=2)u2++; if(d>8)u8++;
+    }
+    printf("  %-8s exact=%ld/%ld (%.1f%%) <=1ulp=%.1f%% <=2ulp=%.1f%% >8ulp=%.1f%% meanulp=%.2f\n",
+           name,ex,n,100.0*ex/(double)n,100.0*u1/(double)n,100.0*u2/(double)n,
+           100.0*u8/(double)n,sumulp/(double)n);
   };
   printf("fk-3 attention block, ONE launch: M=%d H=%d NH=%d HD=%d NO=%d (N=%d keys)\n",M,H,NH,HD,NO,N);
   cmp("QKV",QKV,Qref,(long)M*NQKV);
@@ -127,5 +140,15 @@ int main(int argc,char**argv){
     Cdev[(size_t)i*NO+n]=rne(acc);
   }
   cmp("O-proj*",Cout,Cdev,(long)M*NO);
+  // Per-head breakdown: if head 0 is right and the rest are wrong it is a
+  // head-mapping bug; if all are wrong it is the Q/K/V layout.
+  printf("  per-head attn exactness:");
+  for(int hh=0;hh<NH;hh++){
+    long ex=0; for(long k=0;k<(long)M*HD;k++) if(Oall[(size_t)hh*M*HD+k]==Oref[(size_t)hh*M*HD+k]) ex++;
+    printf(" %d:%.0f%%",hh,100.0*ex/(double)(M*HD));
+  }
+  printf("\n  dev O_all[0..3]=%.5f %.5f %.5f %.5f   ref=%.5f %.5f %.5f %.5f\n",
+    b2f(Oall[0]),b2f(Oall[1]),b2f(Oall[2]),b2f(Oall[3]),
+    b2f(Oref[0]),b2f(Oref[1]),b2f(Oref[2]),b2f(Oref[3]));
   return 0;
 }

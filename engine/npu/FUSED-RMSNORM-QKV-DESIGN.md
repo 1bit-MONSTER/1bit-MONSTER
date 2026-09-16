@@ -1354,6 +1354,16 @@ last must be EVEN*. This single rule explains why:
 * and a BD's `sizes` order IS the layout permutation of the destination (the
   destination is filled contiguously in `sizes` order, fastest last).
 
+### The Q tap must be MICROTILED (correcting an earlier note)
+
+`mm.cc` reads the A operand with `load_v<MMUL::size_A>(pA)` in 32-element (4x8)
+steps, so A must be in the mmul's 4x8 MICROTILED layout — NOT row-major. The Q tap
+is therefore `sizes=[N/4,HD/8,4,8], strides=[4*NQKV,8,NQKV,1]` (all strides even
+except the last, so it is BD-legal). Getting this wrong is not subtle: with a
+row-major Q the attention scored 0.9% exact, with the microtiled Q it scores
+90.5%. The earlier claim that the QKV->attention handoff needed no kernel was
+wrong about Q; only K/V are plain gather taps.
+
 ### Consequence: a BD CANNOT transpose for the attention
 
 The verified attention expects the K buffer blocked as `[d/8][j/8][d%8][j%8]`.
@@ -1367,3 +1377,21 @@ or a `-DK_ROW_MAJOR` mode in `attn1.cc` that reads K row-major and lays it into
 the blocked order locally). The current generator uses the legal-but-swapped
 `sizes=[HD/8,N/8,8,8], strides=[8,8*NQKV,NQKV,1]`, which is why only the
 attention fails.
+
+### FINAL state of the one-launch attention block (M=16, H=1024, NH=16, HD=128, NO=1024)
+
+```
+  QKV      exact=65536/65536 (100.0%)  <=2ulp=100.0%   BIT-EXACT
+  attn     exact=29642/32768  (90.5%)  <=1ulp=93.2% <=2ulp=94.4%   all 16 heads 82-100%
+  O-proj   exact=6607/16384   (40.3%)  (inherits the attention's residual)
+  O-proj*  exact=16384/16384 (100.0%)  BIT-EXACT when fed the device's own O_all
+```
+Three of the four stages are bit-exact, and the attention is structurally correct
+with a residual explained by `attn1` accumulating its SCORES in bf16
+(`matmul_vectorized_4x8x8_bf16_bf16`) while the host reference sums them in f32 —
+so the two disagree by a few ULP in the scores, which `exp` then amplifies. The
+sampled outputs agree to 4 bf16 ULP (dev `0.58594 -0.00230 0.08643` vs ref
+`0.57812 -0.00574 0.08398`).
+
+So the whole attention block — fused RMSNorm+QKV -> attention -> O-proj — is now
+ONE launch, with the same arithmetic as the per-op path.

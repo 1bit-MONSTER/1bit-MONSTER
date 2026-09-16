@@ -293,13 +293,21 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK):
                             base = ch * N * NQKV
                             qt = shim_dma_single_bd_task(pipes[i]["QK_s"], QKV,
                                                          offset=base + QOFF + h * HD,
-                                                         sizes=[N, HD],
-                                                         strides=[NQKV, 1], issue_token=True)
+                                                         # Q must be in the mmul's 4x8
+                                                         # MICROTILED layout (mm.cc reads
+                                                         # A contiguously in 32-element
+                                                         # blocks), not row-major.
+                                                         sizes=[N // 4, HD // 8, 4, 8],
+                                                         strides=[4 * NQKV, 8, NQKV, 1], issue_token=True)
                             dma_start_task(qt); dma_await_task(qt); dma_free_task(qt)
                             ktt = shim_dma_single_bd_task(pipes[i]["QK_s"], QKV,
                                                           offset=base + KOFF + (h // GQA) * HD,
-                                                          sizes=[HD // 8, N // 8, 8, 8],
-                                                          strides=[8, 8 * NQKV, NQKV, 1], issue_token=True)
+                                                          # K ROW-MAJOR: the only
+                                                          # BD-legal form; attn1
+                                                          # (-DK_ROW_MAJOR) does the
+                                                          # layout conversion.
+                                                          sizes=[N, HD],
+                                                          strides=[NQKV, 1], issue_token=True)
                             dma_start_task(ktt); dma_await_task(ktt); dma_free_task(ktt)
                             vt = shim_dma_single_bd_task(pipes[i]["V_s"], QKV,
                                                          offset=base + VOFF + (h // GQA) * HD,

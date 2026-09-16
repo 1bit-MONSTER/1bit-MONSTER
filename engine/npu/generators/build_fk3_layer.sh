@@ -48,7 +48,7 @@ build_cc() { local obj="$1" src="$2"; shift 2
 # sizes the core-local g_an (unused now that both stages re-read), so keep it 1.
 build_cc rms_split.o rms_norm_split.cc -DM_TILE=$M -DK_TILE=$K -DH=$H
 build_cc nq_nt.o      nq_nt.cc        -DDIM_M=$M -DDIM_K=$K -DDIM_N=$NT -DN_K=1 -Dbf16_f32_ONLY
-build_cc attn1.o      attn1.cc        -DM_TILE=$M -DHD=$HD -DN_KEYS=$N -DDIM_M=$M -DDIM_K=$HD -DDIM_N=$N -Dbf16_bf16_ONLY
+build_cc attn1.o      attn1.cc        -DM_TILE=$M -DHD=$HD -DN_KEYS=$N -DDIM_M=$M -DDIM_K=$HD -DDIM_N=$N -Dbf16_bf16_ONLY -DK_ROW_MAJOR
 
 echo "== aiecc"
 if ! "$AIECC" --peano="$P" --aietools="$AIETOOLS" \
