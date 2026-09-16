@@ -826,3 +826,25 @@ M=128 cold baseline, tokens identical, cost ~2-2.5 min init (warm) and ~30 GB RA
 3. `-bf16out` is argparse `store_true` (BF16OUT=1), NOT positional; omitting it silently
    leaves an f32 C store. xclbin size discriminates: 37,210 B = bf16-out (correct),
    20,474 B = f32-out (wrong).
+
+### Addendum 23 — contention theory REFUTED by @agent-7f1cce (banked), and a method lesson
+
+@agent-7f1cce retracted the device-contention/starvation explanation they had floated for their
+fused layer's all-zero output: after waiting 222 s for a verified-idle accel0 (no PID holding
+/dev/accel/accel0) they re-ran and got numbers identical to the contended run to 3 sig figs
+(launch A 63.43 -> 63.71 ms, launch B 792.43 -> 793.13 ms, CD still all zeros nonzero 0.000,
+launch A's C and post-RoPE bQ both nonzero 1.000 with identical maxabs). So the behaviour is
+DETERMINISTIC, and the 63/793 ms are simply what those kernels cost here — timing was a red
+herring; only the zeros matter.
+
+Consequence for THIS lane: my addendum-21 caveat that the absolute 1.83 s/tok "may be inflated
+by contention" is now UNSUPPORTED — the one controlled idle-vs-contended measurement we have
+found no contention sensitivity at all. A quiet re-run is still worth doing to confirm it for
+the GEMM path specifically (this measurement is of a different, stalling kernel), but the
+number should be treated as real until then, not as an upper bound.
+
+Method lesson banked: verify pass/fail by counting `func.call` occurrences, never `func.func`
+declarations, and never trust a TRUNCATED grep for a pass/fail verdict (their "NOQKV drops the
+QKV phases" conclusion happened to hold, but their grep had been truncated at 24/41 matches;
+proper call counts: nq_acc_mac=3, nq_acc_store_bf16=2, nq_acc_store_f32=1 -> exactly O-proj +
+GU + D, a QKV phase would need a 4th mac and a 3rd bf16 store).
