@@ -2285,3 +2285,34 @@ So the honest options for RoPE are:
    costs the accumulator budget and therefore M.
 
 This is now a genuine open design decision rather than a missing implementation.
+
+### RoPE option 1 is ELIMINATED: the attention cannot run in 2 columns
+
+Tested `PERCOL=4` (which would put 8 attention cores into 2 columns and free two for
+a RoPE stage):
+
+```
+design.mlir:54:26: error: 'aie.tile' op number of input DMA channel exceeded!
+```
+The MEM tile cannot take four consumer channels per column, so 4 cores per column is
+not buildable at all. Option 1 is out, and with it the cheapest in-kernel route.
+
+That leaves, honestly:
+
+| route | cost |
+|---|---|
+| keep RoPE in attn1 | needs ~13 KB of program text the core does not have (4880 B free) |
+| RoPE in the QKV GEMM store | the pair (d, d+hd2) spans two N-tiles; NT=128 would fix it and cost the accumulator budget (hence M) |
+| dedicated RoPE column | no column left, and the attention cannot shrink to two (above) |
+| **split the launch**: QKV launch -> host RoPE -> attention+O+FFN launch | **2 launches per layer instead of 1**, RoPE stays on the host |
+| host RoPE inside one launch | impossible: Q and K are produced and consumed inside the same launch |
+
+The split route is worth stating plainly because it still delivers the objective's
+actual goal: the per-op path's ~9 launches/layer become **2**, the fixed per-launch
+overhead drops by ~4.5x, and RoPE on M=128 tokens x 16 heads x 128 dims is
+microseconds of host work. What it does NOT deliver is the literal "~1 fused layer
+launch" wording, and it leaves RoPE as a host op, which the objective asked to move
+in-kernel.
+
+This is a genuine fork between the objective's wording and the array's resource
+limits, so it is the user's call rather than something to silently pick.
