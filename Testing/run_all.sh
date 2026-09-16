@@ -316,12 +316,16 @@ fi
 
 # ── GLM-MoE-DSA gate (mini fixture, HF safetensors oracle) ──
 total=$((total+1))
-glmdsa_dir=/tmp/onebit-glmdsa
+# Committed fixture (Testing/fixtures/glmdsa) so the gate runs in CI without torch;
+# GLMDSA_FIXTURE_DIR overrides for a locally regenerated /tmp fixture.
+glmdsa_dir=${GLMDSA_FIXTURE_DIR:-Testing/fixtures/glmdsa}
+[ -f "$glmdsa_dir/logits_last.npy" ] && [ -f "$glmdsa_dir/model.safetensors" ] || glmdsa_dir=/tmp/onebit-glmdsa
+ids_file=/tmp/onebit-glmdsa-ids.txt
 if [ -f "$glmdsa_dir/logits_last.npy" ] && [ -f "$glmdsa_dir/model.safetensors" ]; then
-    echo "5 7 9 11 3" > /tmp/onebit-glmdsa-ids.txt
+    echo "5 7 9 11 3" > "$ids_file"
     if ! "$CXX" $FLAGS Testing/cmp_glm_moe_dsa.cpp src/glm_moe_dsa.cpp src/safetensors_reader.cpp src/q4nx_reader.cpp \
         -o "$BIN/cmp_glmdsa" 2>/dev/null; then echo "✗ glm_moe_dsa: COMPILE FAILED"; fail=$((fail+1));
-    elif "$BIN/cmp_glmdsa" "$glmdsa_dir" /tmp/onebit-glmdsa-ids.txt "$glmdsa_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
+    elif "$BIN/cmp_glmdsa" "$glmdsa_dir" "$ids_file" "$glmdsa_dir/logits_last.npy" 20 18 >/dev/null 2>&1; then
         echo "✓ glm_moe_dsa engine (V3-MLA + DSA indexer + group-topk MoE)";
     else echo "✗ glm_moe_dsa engine: top-20 mismatch vs HF"; fail=$((fail+1)); fi
 else
