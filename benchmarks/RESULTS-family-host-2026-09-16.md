@@ -100,3 +100,26 @@ confirm the built ELF actually carries `n_hd = 2`.
 
 The build for the measurement: `n1_core_attn.py -H 16 -c 8 --nkv 4 -K 256 -N 512`
 (goal tree's generator), gated with `CK_NQ=16 CK_NKV=4 CK_HD=256 NPU_ATTN_COLS=8`.
+
+### hd256 follow-up: where it stands (2026-09-16, later)
+
+Rebuilt the hd256 kernel from the current family generator
+(`NPU_ATTN_K=256 NPU_ATTN_N=512 NPU_ATTN_HEADS=16 NPU_ATTN_NKV=4 NPU_ATTN_COLS=8`)
+— same NPU error, so the stored xclbin was not stale. `NPU_ATTN_DUMP=1
+NPU_ATTN_DUMP_SEQ=512` shows:
+
+- **QK^T MATCH** (`2/2 8/8 8/8 8/8 3/3 27/27 3/3 5/5 9/9`, and the t=126/t=254
+  tile-boundary probes MATCH) — the Q/KT packing is correct for hd256.
+- The design's emitted V feed is confirmed **row-major**:
+  `aie.dma_bd(%arg3, 376960, 8192, [<1,4>, <1,4>, <64,256>, <128,1>])`
+  (= `kv*N*K + ki*(k*hd) + hi*n`, strides `(hd,1)`) — exactly the host pack.
+- Both head-dim tiles are written (`C2 head0 nonzero=256`, the row-0 elements of
+  both 1024-wide `M*n` tiles).
+- But the delivered C2 row 0 is wrong: `-8935 -13136 ...` vs expected
+  `16110 -30925 ...`, i.e. the **PV phase**, not QK^T.
+
+So with the host pack, the V DMA and the QK^T all verified, the disagreement is
+inside the kernel's PV path for `n_hd > 1` (the A2 re-read for the second tile,
+the C2 tile ordering, or the `n_hd`-deep C2 FIFO drain). Next diagnostic is to
+have the dump also print the A2 the PV consumes (bo4) per `hi`, and to check
+whether the two C2 tiles are swapped. hd128 (Nanbeige/Phi4) is unaffected.
