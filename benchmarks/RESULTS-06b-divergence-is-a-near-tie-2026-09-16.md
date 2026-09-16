@@ -167,3 +167,54 @@ and see whether the dense arm's drifts systematically.
   logits BO. **The bf16 quantisation of the runlist arm's logits is a confound for absolute
   magnitudes** — it is small (bf16 has ~3 decimal digits) but it is not zero, and any claim about a
   systematic scale difference has to clear it.
+
+---
+
+# The "shrinking logit scale" hypothesis is REFUTED — measured and it does not hold
+
+The section above proposed that the dense arm's logits might be systematically scaled down relative
+to the runlist arm's, and said that was the next measurement. **Ran it. It does not hold.**
+
+Top-1 raw logit per step, both arms, `A baby cat is called a`, 16 steps:
+
+| step | dense token | dense top-1 | runlist token | runlist top-1 | Δ |
+|---|---|---|---|---|---|
+| 1 | 151667 | 28.220 | 151667 | 25.875 | +2.345 |
+| 2 | 198 | 31.147 | 198 | 32.250 | −1.103 |
+| 3 | 32313 | 25.080 | 32313 | 25.875 | −0.795 |
+| 4 | 11 | 29.611 | 11 | 25.750 | +3.861 |
+| 5 | 279 | 27.057 | 279 | 25.375 | +1.682 |
+| 6 | 1196 | 29.414 | 1196 | 27.500 | +1.914 |
+| 7 | 374 | 23.842 | 374 | 25.000 | −1.158 |
+| 8 | 10161 | 25.003 | 10161 | 28.750 | −3.747 |
+| 9 | **264** | 23.712 | **911** | 22.000 | +1.712 |
+
+**Steps 1–8 are the tokens the arms agree on, and across them Δ runs +2.35, −1.10, −0.80, +3.86,
++1.68, +1.91, −1.16, −3.75 — alternating sign and averaging ≈ +0.37. There is no systematic drift,
+in either direction, before the fork.**
+
+The scale gap at step 3 of the *largest-planet* prompt (dense 18.279 vs runlist 27.750) is therefore
+**not** an accumulating-scale symptom: that step is already *past* the fork on that prompt, so the two
+numbers are top-1s of two different distributions. Comparing them was never going to show a drift.
+
+Δ is also comfortably larger than the bf16 confound flagged earlier (±3 on values ≈25 is ~12%; bf16
+resolves ~3 decimal digits), so the arms do have somewhat different logit magnitudes — but
+**unsystematically**, which is what the hypothesis needed and did not get.
+
+## Where that leaves gap #3
+
+Three hypotheses tried on the dense arm, and the tally is now:
+
+| hypothesis | verdict |
+|---|---|
+| divergence is a near-tie (cat prompt) | **holds** — dense picks runlist's runner-up, margin 0.375 |
+| divergence is a near-tie (largest-planet prompt) | **refuted** — margin 2.879, `32313` is rank 1 vs rank 6, 13.4 logits apart |
+| dense logits are systematically scaled down | **refuted** — no trend across 8 agreeing steps |
+
+Two prompts, two different behaviours, and the one unifying hypothesis is gone. The remaining
+observation that is both concrete and unexplained is the **repeated `<think>\n`** on the
+largest-planet prompt with a normal margin behind it. That, not the scale, is what should be chased.
+
+Worth stating plainly: **this round produced no fix.** What it produced is two hypotheses killed and
+one symptom narrowed, which is progress of a sort this lane has repeatedly needed — the alternative
+was another plausible mechanism published untested.
