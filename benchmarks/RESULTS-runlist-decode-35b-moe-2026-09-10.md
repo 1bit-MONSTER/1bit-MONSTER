@@ -3603,3 +3603,41 @@ REBUILD POSITION: (a) compiles -- MET. (c) one submit -- MET, driver validated 8
 phases correct together -- my GEMM is exact at the real shape, my norm is exact alone (bit-identical to
 the proven design), and of the four structural differences addendum 101 listed, two are now tested and
 eliminated, one is untestable-as-difference (the objects were unified in addendum 99), and two remain.
+
+### Addendum 103 — variable (a) REFUTED: the norm's kernel is not the culprit. ONE variable remains.
+
+Switched the dummy core's kernel from `zero_i32` to `rms_norm_f32_bf16` -- the norm's own kernel, from
+the same relocatable object -- keeping its own column and both memory-tile paths. Two small build
+errors first, both mine and both trivial: this numpy has no `bfloat16` (the working generators import it
+from `ml_dtypes`), and the generator crashed so the "design.mlir" was a Python traceback.
+
+With that fixed:
+
+  dummy calling rms_norm_f32_bf16, own column, both mem-tile paths, K=64 N=256 c=2:
+    compiled; insts blob 1164 B; submit COMPLETED; GEMM 2/256
+  ... same, at the REAL shape K=2048 N=8192 c=4:
+    compiled; insts blob 430,680 B; submit COMPLETED; GEMM 3/8192
+
+IT COMPLETES AT THE REAL SHAPE. So the norm's KERNEL is not the culprit either, and variable (a) is
+dead. The low column-match counts are my probe's own artefact, the same one as in addenda 98 and 102:
+the dummy's output DMA is pointed at the SAME C buffer the GEMM's C reads use, so the dummy overwrites
+part of it. That does not affect the question being asked -- whether the sequence retires.
+
+ONE VARIABLE REMAINS, and it is now exhaustively the only difference between a two-core design that
+completes at the real shape and the two-phase design that hangs: THE NORM'S THIRD FIFO AND ITS
+TWO-INPUT-ONE-OUTPUT SEQUENCE. My dummy calls `rms(Ebuf, Ebuf, Dbuf)` -- two fifos, ONE input DMA,
+one output DMA -- whereas the norm has A and W as separate inputs on separate fifos with asymmetric
+depths (W depth 1, A depth 2, O depth 2), fed by TWO runtime input DMAs, with the acquire order
+W then A then O and W acquired once per outer iteration.
+
+Note that "two inputs and one output" is NOT itself unique -- the m1 GEMM's cores consume A and B and
+produce C -- so what is left to test is specifically the SEPARATE THIRD FIFO with its own runtime DMA
+and its own depth, and the acquire order that goes with it.
+
+THE NEXT BUILD IS THEREFORE THE LAST ONE: give the dummy a third fifo, feed it from a second runtime
+input DMA off a different buffer, call `rms(Ebuf, Wbuf, Dbuf)` with the W acquire where the norm has
+it, and see whether THAT hangs. If it does, the difference is pinned to the three-fifo/two-input
+sequence and the fix is a fifo or DMA restructuring; if it does not, then the two-phase design differs
+from a working two-core design in no respect I have been able to construct, and the remaining
+explanation would have to be scale (the norm's fifos are 8 KB f32 rows against the dummy's, and its
+second phase spans 16 column-groups).
