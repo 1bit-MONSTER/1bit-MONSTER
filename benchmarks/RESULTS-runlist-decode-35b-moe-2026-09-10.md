@@ -2195,3 +2195,38 @@ NEXT: keep mapping with the same method -- transformed rows for the three tensor
 representation, and slot 1..3 occupancy for the units already anchored. Then repack arg-3 as UNITS
 to the declared 94720 B and re-run, gating on the act (pre-act CLEAN, post-act ALL NaN 1024/1024,
 exit 0, no ERT).
+
+### Addendum 63 — SYNTHESIS: where every layer-0 weight actually lives, and what region-A should hold
+
+Composing everything located so far (offsets from the capture, never inferred):
+
+  arg-3 HEAD, unit-interleaved, units of 18944 B = 4 row-slots of 4736:
+     mlp.up_exps_proj       @ unit 0      (offset 0)
+     mlp.gate_exps_proj     @ unit 8      (offset 151552)
+     mlp.down_exps_proj     @ unit 16384  (offset 310378496)
+     self_attn.gate_proj    @ unit 25652, row-slot 1 (offset 485956224)
+  arg-3 TAIL @ 0x1bc00000 (465,567,744) = our region-B pack, BYTE-IDENTICAL:
+     share_up/gate/down_exps_proj + linear_attn.qkv_proj + self_attn.gate_proj
+  NORMS BO (arg-6, not captured here) = npu_pack_moe_linear5_bo:
+     ssm_conv1d, ssm_norm, ssm_a, ssm_dt, ssm_alpha_proj, ssm_beta_proj, then ssm_out_proj rows
+
+and the harness's REGION-A content (input_layernorm, post_attention_layernorm, conv1d, ssm_norm,
+ssm_a, ssm_dt = 74,240 B at offset 0) matches NONE of those locations, and its values have none of
+the character of what is actually stored at offset 0 (expert weights at 1e6..1e38 magnitudes vs
+layernorm weights near 1.0).
+
+THE PICTURE IS NOW CLOSED AND IT NAMES THE FIX: arg-3's head holds the EXPERT weights in a
+unit-interleaved layout; arg-3's tail holds region-B (which we already reproduce byte-for-byte);
+the norms BO holds the linear-attention tensors including ssm_out_proj. The head tensors the harness
+packs into region-A have no place in arg-3 at all -- they belong in the norms BO, which is exactly
+the duplication @agent-baaa57 noticed (the same small tensors appearing in two BOs).
+
+So the repair is not a transform, a width change, or an offset shift: REGION-A MUST BE REPLACED BY
+THE EXPERT WEIGHTS IN THE UNIT-INTERLEAVED LAYOUT, and the layernorm/conv1d/ssm tensors must be
+dropped from it (they are already in the norms BO). Every failed experiment along the way -- the
+tail overwrite, the F32/bf16 neutralisation in both copies, the 66,048 repack, the 20,480-byte
+header hypothesis -- was rearranging head tensors in a buffer that holds expert weights.
+
+NEXT: build the unit-interleaved head for the expert tensors (up/gate/down per the anchors, then
+whatever fills units 16385..25651 and slots 1..3), verify byte-for-byte against the capture, and
+re-run gating on the act (pre-act CLEAN, post-act ALL NaN 1024/1024, exit 0, no ERT).
