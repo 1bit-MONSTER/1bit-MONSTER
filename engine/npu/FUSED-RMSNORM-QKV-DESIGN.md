@@ -619,3 +619,46 @@ Verify: `tests/bench_fk2nt.cpp` / `tests/bench_nt_gemm.cpp`.
    M*K*2 <= ~40 KB, so larger M needs an M-split (row-slices are contiguous in
    the 4x8 microtile layout, so an M-split needs no reduction — unlike a K-split)
    or a K-split. The M-split is the cleaner route.
+
+### Multi-head chunked attention — correct mechanism, blocked by the DM depth wall
+
+`n1_mha_chunked_nh.py` (+ `build_mha_chunked_nh.sh`, `tests/bench_mhac_nh.cpp`)
+extends the verified single-head chunked MHA to NH heads with a **head-outer /
+chunk-inner** loop, Python-unrolled so each head's body has distinct static
+buffer indices, and `softmax_reset()` / `combine_reset()` at the head boundary
+(the m/l/O statics persist for the xclbin's life).
+
+**The per-head mechanism is correct.** With identical q/k/v in every head and
+DEPTH=2, head 0 and head 1 are BYTE-IDENTICAL on the NPU:
+
+```
+NH=2 N=128 C=1 DEPTH=2, identical data:
+  head 0: exact=1424/2048 max_delta=32643
+  head 1: exact=1424/2048 max_delta=32643   <-- same numbers, not a coincidence
+```
+(1424/2048 rather than a bit-exact 2048/2048 is the kernel's documented
+truncation-vs-RNE reference delta, not an error.)
+
+**But the fifo depth must grow with the pass count, and the core DM cannot.**
+Measured:
+| NH | C | DEPTH | result |
+|---|---|---|---|
+| 2 | 1 | 1 | head 1 garbage (42/2048) |
+| 2 | 1 | 2 | **head 1 == head 0** (correct) |
+| 2 | 2 | 2 | head 1 garbage |
+| 2 | 2 | 3 | **aiecc: basic sequential allocation failed at tile (0,4)** |
+| 1 | 8 | 2 | correct (documented) |
+
+The pattern is DEPTH >= C + (NH-1) — each head boundary's reset+normalize
+interrupts the ping-pong and the rotation needs one more buffer. DEPTH=3 fails
+because `pv_c` already holds V (N*HD*2 = 32 KB at N=128) plus the AT buffers
+(M*HD*4 = 8 KB each): AT_buff_2 lands at 0xE000-0xFFFF and there is nothing left
+of the 64 KB.
+
+For the real model (NH=16, 1024 keys -> C=8) the requirement would be DEPTH >= 23
+on a core that cannot hold 3. So the **sequential-head** structure cannot reach
+NH=16. The realistic routes are (a) fewer, wider heads per column with the
+combine fused into the PV core to drop AT (frees 8 KB/buffer), (b) bf16 AT
+(halves them), or (c) genuinely parallel head groups (16 heads x 4 cores = 64
+core-groups far exceeds the 32-core device), i.e. a from-scratch attention
+design — matching the earlier "this is a multi-week kernel project" verdict.
