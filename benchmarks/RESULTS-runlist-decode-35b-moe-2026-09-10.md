@@ -5837,3 +5837,28 @@ MoE ELF whose GDN recurrence runs in float32, using the engine's MLIR-AIE toolch
 xchesscc, see engine/npu/generators/build_moe_v28.sh) and the engine's own working kernels (v27/v28
 GUSGU/DSD for the MoE FFN) plus a new float32 GDN kernel. The engine already has the correct host
 reference (gdn_host_recurrence.h) to validate against.
+
+### Addendum 160 — the v0.9.46 lib generates the CORRECT whole-layer sequence; v1.0.x is the NaN regression
+
+The bf16-GDN NaN is a **v1.0.x-only regression** (already documented in RESULTS-qwen3.6-moe-parity
+2026-09-11): FastFlowLM v0.9.46 (libqwen3_6_moe_npu.so md5 39a6c36a, /home/bcloud/.local/flm-v0946)
+generates the correct whole-layer sequence, while v1.0.x (md5 51cddb62, amd-oss/fastflowlm/src) NaNs.
+
+Regenerated the per-ctx whole-layer ELF from v0.9.46 (new tool npu-infer/tools/gen_layer_elfs_moe_0946.cpp;
+v0.9.46 gen_layer_seq is 3-arg vs v1.0.x 4-arg) and decoded both:
+  * arg2 (router) reads are IDENTICAL (iln/paln/seg @0 12288 B + router @12288, D0=16/1 D1=256/128
+    D2s=32768 iter=8/16, read twice) → the e-major router transpose stays correct.
+  * arg0 (weight) region-B base DIFFERS: v0.9.46 = 0x1E000000 (503,316,480), v1.0.x = 0x1BC00000
+    (465,567,744). v0.9.46 region-B rows are 8704 B (reads 139,264 B = 16 rows, and 34,816 B = 4 rows);
+    v1.0.x rows are 4736 B (75,776/18,944 B). Total v0.9.46 arg0 = 63.4 MB vs v1.0.x 35.8 MB.
+  * arg3 (norms) ssm_out DIFFERS: v0.9.46 reads 278,528 B chunks = 32 rows × 8704 B; v1.0.x reads
+    151,552 B = 32 rows × 4736 B. alpha @66048 and beta @197120 (131,072 B each) are IDENTICAL.
+  * All region-B and ssm_out reads are LINEAR (D0=0/1 D1=0/1 iter=1/1) → the ELF reads the BO
+    contiguously; the interleave is a HOST-pack concern, not an ELF tiling.
+
+So v0.9.46 packs region B and ssm_out as **full 8704-B Q8_0 tiles** (no 4736 trim), with a different
+region-B base and expert-pool size (480 MB vs 444 MB). Dumped v0.9.46 load_linear_weights
+(/tmp/lin5dump0946/{lin5_b1_L1,lin5_b2_L1,pool_L1_full}.bin) — the tensors are NOT raw in b1/b2
+(dense 0..4 MB regions), so the final-BO assembly (Impl::load_weights) applies the reorders, same as
+v1.0.x. Next: derive the v0.9.46 region-B + ssm_out + norms-head reorders from the dumps and update
+npu_pack_moe_* in model.c, then run moe_smoke against the v0.9.46 ELF (no NaN expected).

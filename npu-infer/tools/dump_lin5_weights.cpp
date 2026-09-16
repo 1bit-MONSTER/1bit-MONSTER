@@ -32,6 +32,15 @@
 #include "typedef.hpp"                       // bf16 = biovault::bfloat16_t
 #include "device_runtime.hpp"                // flm_rt = xrt (device-backed buffers)
 
+// Minimal utils::find_xclbin_path stub (build-only; the dump never loads an xclbin).
+namespace utils {
+std::string find_xclbin_path() {
+    const char* env = std::getenv("FLM_XCLBIN_PATH");
+    if (env && *env) return std::string(env);
+    return "/home/bcloud/.local/flm-v0946";
+}
+}
+
 // ---- opaque ABI decl for the binary-only qwen3_6_moe_desc ----
 struct qwen3_6_moe_desc {
     unsigned char _pad[0x2000];
@@ -90,8 +99,8 @@ int main(int argc, char** argv) {
     dump(p, b1.data(), 5242880);
     snprintf(p, sizeof(p), "%s/lin5_b2_L%d.bin", outdir.c_str(), L);
     dump(p, b2.data(), 5242880);
-    snprintf(p, sizeof(p), "%s/pool_L%d_head.bin", outdir.c_str(), L);
-    dump(p, pool.data(), 1u << 20);   // 1 MB head of the pool
+    snprintf(p, sizeof(p), "%s/pool_L%d_full.bin", outdir.c_str(), L);
+    dump(p, pool.data(), 536870912ull);   // full 512 MB pool
 
     free(desc_mem);
     return 0;
