@@ -2685,3 +2685,39 @@ The rule set that made this a non-event, for the record: (1) `git commit -m ... 
 (2) if a pre-commit listing shows a foreign path, STOP and `git restore --staged` it -- do not merely
 note it; (3) revert/interse with `git restore --staged` (index only), never `git checkout <commit> --
 <path>`, which writes the working tree and can destroy someone's uncommitted work.
+
+### Addendum 78 — REBUILD AUTHORISED: plan for our own M=1 whole-layer sequence, and the co-residency merge point
+
+The user has directed a complete rebuild of the layer path using our own kernels, so the vendor ELF
+is set aside entirely (addenda 63-77 record why: it produces an input-independent all-NaN). This
+addendum fixes the plan and the first milestone's feasibility.
+
+KERNEL SET, ALL ALREADY BUILT AND BIT-IDENTICAL:
+  RMSNorm H=2048       final_rms_qwen3_6_35b_a3b_m1.xclbin
+  QKV   K=2048 N=8192  final_i8_QKV_qwen3_6_35b_a3b_m1(.lin).xclbin
+  O     K=4096 N=2048  final_i8_O_qwen3_6_35b_a3b_m1(.lin).xclbin
+  GUSGU K=2048 N=9216  final_i8_MOE_GUSGU_qwen3_6_35b_a3b_m1.xclbin
+  DSD   K=4608 N=4096  final_i8_MOE_DSD_qwen3_6_35b_a3b_m1.xclbin
+
+THE OPEN QUESTION (addendum 31): a runlist submits against ONE hw_context, so all phases must live in
+ONE xclbin; the M=1 GEMMs are 8-column x 1-row designs and cannot simply be unioned; and fk-2/fk-3's
+bf16 fusion pattern cannot serve M=1 because mm.cc's 4x8x8 bf16 matmul static_asserts m % (2*r)==0.
+
+MERGE POINT, now established by reading the two generated designs rather than assuming:
+  n1_core_i8_m1.py  -> aie.tile(col,row) for col 0..7, rows 0(shim), 1(mem), 2(core)
+  n1_rms_norm.py    -> aie.tile(0,0)=shim, (0,1)=mem, (0,2)=core
+  CONFLICT: both want (0,2) as a core tile.
+  RESOLUTION: row 3 is FREE in the m1 design's footprint, and tile(0,0)/tile(0,1) can serve as a
+  shared shim/mem for a second phase with distinct fifo names. So a combined design is
+  [shim (0,0)][mem (0,1)][QKV cores row 2, cols 0..7][norm core (0,3)] -- the norm phase moves down
+  one row and the two phases share the shim/mem tiles.
+
+FIRST MILESTONE (unchanged from the pause, and now known to be buildable): a 2-phase combined
+xclbin -- RMSNorm + QKV -- that (a) compiles, (b) produces correct results for BOTH phases in
+npu-infer/tools/moe_smoke, and (c) is demonstrably ONE xrt::runlist submit. Co-residency is the
+thing being tested; dataflow between the phases can come after, since the QKV currently takes a
+host-quantised i8 A and an on-device quantiser is new work.
+
+DOCUMENTED CONSTRAINT for whoever does the dataflow step: the engine's i8 GEMM consumes an
+host-quantised i8 activation (I8Ctx::quantize_async), so a fused RMSNorm->GEMM on device needs a
+NEW i8-output norm kernel. That is the next piece of new code after co-residency is proven.
