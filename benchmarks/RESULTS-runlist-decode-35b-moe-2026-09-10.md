@@ -4024,3 +4024,38 @@ inside the pool -- and with far less DMA-issue overhead, which is the direction 
 WHAT THE THREE-PHASE DESIGN STILL DOES, unaffected by this: ONE xclbin, ONE submit, RMSNorm and
 FFNnorm proven bit-identical to each other (2048/2048) and the GEMM exact (8192/8192). The fourth phase
 is written and waiting on the BD budget, not on any question of correctness.
+
+### Addendum 114 — THE AMORTISATION PATH IS OPEN: batched fifo elements and sub-memref row extracts both compile
+
+Ran addendum 113's cheap experiment first, as planned, and it passes on both counts. A minimal probe
+generator with a BATCHED object-fifo element type `memref<5x8xi8>` and a core that reads it:
+
+  version 1, element access:   oo[i] = bb[r, i]        -> generator rc=0, aiecc "Compilation completed successfully", xclbin 9,337 B
+  version 2, sub-memref row:   row = bb[r]; oo[i] = row[i]  -> generator rc=0, aiecc "Compilation completed successfully"
+
+AND THE BD COVERS THE WHOLE BATCH IN ONE TASK:
+
+  aie.dma_bd(%arg0 : memref<40xi8>, 0, 40, [<size=1,stride=0> x3, <size=40,stride=1>])
+
+40 bytes -- the entire 5x8 batch -- in a single buffer descriptor, against a fifo whose element type is
+the batch. That is precisely the mechanism addendum 113 identified as the only lever: the B-task count
+equals the tile count, so the way to shrink it is to put several tiles into one BD, which requires the
+fifo's element type to be batched. IT IS.
+
+THE PATTERN TO APPLY TO THE COMBINED GENERATOR:
+  - the B fifo element type becomes `(BATCH_SIZE, k, n)` instead of `(k, n)`;
+  - the runtime issues ONE B BD per (column, batch) with `sizes=[1,1,1,BATCH_SIZE*k*n]` on the flat
+    source buffer, replacing BATCH_SIZE separate per-ki tasks;
+  - the core acquires the batch once and iterates: `bb = gB_c[c].acquire(Consume, 1)` then
+    `for r in range_(BATCH_SIZE): matmul(abuf, bb[r], cbuf)` -- the sub-memref form, which is the one
+    that had to be verified and is.
+  - the fifo depth already accepts the batch (it is BATCH_SIZE+1 tiles today), and the mem tile's ~64 KB
+    still bounds BATCH_SIZE, which is why the existing batch of 5 is the right granularity.
+Expected effect: the GEMM's B tasks fall from 2,048 to ~448 and the whole design from ~4,182 to roughly
+950-1,000 descriptor IDs -- inside the pool (bracketed at ~2,630 working, ~4,182 refused) and with much
+less DMA-issue overhead, which is the objective's speed direction as well.
+
+TWO BUILD ERRORS ON THE WAY, both mine and both the same lesson: the probe first failed with "An MLIR
+function requires a Context" because the device was defined outside the `mlir_mod_ctx` block, then with
+"'Operation' object is not callable" because I called the `@device`-decorated function -- the decorator
+executes the body itself. Neither was about the mechanism under test.
