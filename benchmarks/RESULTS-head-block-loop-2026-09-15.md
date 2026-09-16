@@ -992,3 +992,49 @@ FLM's 7753. Cost is still ~18 minutes per attempt because `AttnCtx::run` re-pack
 K/V on every per-token launch, so the hoist is not optional for iteration speed either
 — with it, a rerun is ~30 s and the path becomes the ~4-10 s fallback it was meant to
 be instead of something slower than the CPU reference it replaces.
+
+### Option 1 is measured non-viable for prefill (and the token is still wrong)
+
+Ran the per-token generated path twice at 2048 keys, Nanbeige:
+
+| run | K/V cache | wall | boot | FLM reference |
+|---|---|---:|---|---|
+| first | none | 1087.92 s | 53898 | 7753 |
+| second | **yes** (repack only when ko/vo change or seq grows) | **823.86 s** | 152368 | 7753 |
+| CPU reference (no generated kernel) | — | ~44 s (from 10808 ms at 1000 keys, `RESULTS-family-attention-shape-2026-09-14.md`) | **7753** ✅ | 7753 |
+
+Three separate reasons it cannot serve prefill:
+
+1. **It is slower than the fallback it was meant to replace.** ~824 s against ~44 s for
+   the CPU reference, i.e. **19x slower** — and the CPU reference gets the *right*
+   token. The K/V cache halved nothing important because the cost is the launch count:
+   32 layers x 8 blocks x 256 rows ~ **65k launches** at ~2 ms each, which is 2-3
+   minutes of pure launch time before any host work. This is the per-token kernel shape
+   meeting a block-shaped prefill, and no amount of caching fixes a launch per row.
+2. **The answer is wrong** (53898, then 152368 for the two different causal
+   arrangements — neither is 7753), so the correctness question is not closed either;
+   the per-row causal bound was a real fix in principle and did not make it right.
+3. **It corrupts the heap** — `free(): invalid size`, the engine's SIGABRT handler
+   caught it and re-raised for a core dump. That is a new failure in this path, not a
+   pre-existing one (the same run without `NPU_ATTN_GEN` completes correctly), and it
+   has to be understood before the code could be trusted even if the other two points
+   went away.
+
+**Conclusion: option 1 (per-token loop in the family prefill) is not viable, and I am
+not going to keep iterating on it.** A path that is 19x slower than the CPU reference
+and wrong cannot be the answer to "match or beat FLM", regardless of further fixes. It
+remains committed behind `NPU_ATTN_GEN=1`, off by default, and the six working models
+are untouched by it.
+
+What that leaves, unchanged from the three options but now with the first measured out:
+
+* **2. Document the boundary** — families keep the CPU reference above 1024 keys, with
+  this measurement as the stated reason. The generated kernel stays where it is at
+  parity: decode, and the Zaya path.
+* **3. Make the generator block-shaped** — M=8 becomes a row block of tokens rather
+  than one token's heads, so a prefill is a handful of launches instead of 65k. That is
+  a kernel redesign, and it invalidates every verification in this session.
+
+My recommendation is now **2**, with **3** as the only route to actual family parity
+above 1024 keys if that is wanted — and it is a decision for the user, because 3
+discards the verification set that makes the rest of this lane trustworthy.

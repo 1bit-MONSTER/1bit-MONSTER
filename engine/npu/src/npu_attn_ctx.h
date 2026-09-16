@@ -87,6 +87,16 @@ struct AttnCtx {
     int8_t* Vm = nullptr;
     int8_t* SCRm = nullptr;
     bool ready = false;
+    // K/V-side cache: the engine's prefill runs one query row per launch against a
+    // single K/V set, and re-packing KT/V for every row made a 2048-key prefill take
+    // 18 minutes. Packing for the LARGEST seq seen is safe because the causal mask is
+    // params[1] (the softmax masks t >= seq), so keys beyond a shorter row's seq are
+    // masked rather than leaked into the result.
+    const float* kv_ko = nullptr;
+    const float* kv_vo = nullptr;
+    int kv_seq = -1;
+    float kv_sk = 1.0f;
+    std::vector<float> kv_sv;
 
     bool init(xrt::device& d, const char* xp, const char* ip,
               int nq_, int nkv_, int hd_) {
@@ -317,18 +327,26 @@ struct AttnCtx {
         }
         // ── scales: global sq/sk (kernel params are shared across columns),
         //    per-(kv,d) sv (dequant scale = max/127) over the whole cache ──
-        float mq = 0, mk = 0;
+        float mq = 0;
         for (int i = 0; i < qd; i++) { float a = std::fabs(qo[i]); if (a > mq) mq = a; }
-        for (int i = 0; i < kd; i++) { float a = std::fabs(ko[i]); if (a > mk) mk = a; }
         const float sq = mq > 0 ? 127.0f / mq : 1.0f;
-        const float sk = mk > 0 ? 127.0f / mk : 1.0f;
-        std::vector<float> sv((size_t)kd, 0.0f);
-        for (int t = 0; t < seq; t++)
-            for (int i = 0; i < kd; i++) {
-                float a = std::fabs(vo[(size_t)t * kd + i]);
-                if (a > sv[i]) sv[i] = a;
-            }
-        for (int i = 0; i < kd; i++) sv[i] = sv[i] > 0 ? sv[i] / 127.0f : 1.0f;
+        const bool repack = (ko != kv_ko) || (vo != kv_vo) || (seq > kv_seq);
+        if (repack) {
+            float mk = 0;
+            for (int i = 0; i < kd; i++) { float a = std::fabs(ko[i]); if (a > mk) mk = a; }
+            kv_sk = mk > 0 ? 127.0f / mk : 1.0f;
+            std::vector<float> svn((size_t)kd, 0.0f);
+            for (int t = 0; t < seq; t++)
+                for (int i = 0; i < kd; i++) {
+                    float a = std::fabs(vo[(size_t)t * kd + i]);
+                    if (a > svn[i]) svn[i] = a;
+                }
+            for (int i = 0; i < kd; i++) svn[i] = svn[i] > 0 ? svn[i] / 127.0f : 1.0f;
+            kv_sv.swap(svn);
+            kv_ko = ko; kv_vo = vo; kv_seq = seq;
+        }
+        const float sk = kv_sk;
+        const std::vector<float>& sv = kv_sv;
 
         // ── bo0: A-frame (head h at row h·2048) + params at PARAM_ROW ──
         for (int h = 0; h < nq; h++) {
@@ -381,6 +399,7 @@ struct AttnCtx {
         //    k = ki·64 + i0·8 + i2 (K-dim), n = nt·128 + i1·8 + i3 (t). A
         //    row-major pack mispairs (d,t) and scrambles the QK^T scores. ──
         const int n_k = K / 64, n_n = N / 128;
+        if (repack)
         for (int kv = 0; kv < nkv; kv++)
             for (int ki = 0; ki < n_k; ki++)
                 for (int nt = 0; nt < n_n; nt++) {
@@ -414,6 +433,7 @@ struct AttnCtx {
         // ── bo3: V per kv — the PV mmul B operand (B[k=t][n=d]), same chunk
         //    interleave: byte i0·1024 + i1·64 + i2·8 + i3 holds V[t][d] with
         //    t = ki·64 + i0·8 + i2, d = i1·8 + i3. t ≥ seq zeroed (causal). ──
+        if (repack)
         for (int kv = 0; kv < nkv; kv++)
             for (int ki = 0; ki < N / 64; ki++)
                 for (int i0 = 0; i0 < 8; i0++)
