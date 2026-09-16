@@ -4776,3 +4776,47 @@ WHAT TO TRY NEXT, in order:
      the engine's own I8Ctx path -- which has run at 1.9 s/tok without producing garbage tokens -- avoids
      it by construction. The engine's design is the existence proof that this is solvable, and reading
      how it feeds its cores is probably the fastest route to the answer.
+
+### Addendum 132 — not the dynamic-fifo flag either. The engine's own path is the existence proof to read.
+
+Another plausible structural difference, tested and eliminated: ALL of my builds pass `--dynamic-objFifos`,
+which is a NON-DEFAULT aiecc flag, and the engine's own xclbins were built by the same recipe while the
+production vendor ELF was not. So I built the n_k=1 design both ways (54 descriptors in each) and ran
+eight times each, counting all-zero outputs:
+
+  STATIC (no --dynamic-objFifos):  4 all-zero runs in 8
+  DYN    (--dynamic-objFifos):     4 all-zero runs in 8
+
+Identical. The flag is not the cause, and the two builds are functionally the same design here.
+
+FULL LIST OF WHAT HAS NOW BEEN RULED OUT BY MEASUREMENT, for whoever continues:
+  the A broadcast (per-column A still fails); the C fifo depth (1 and 2 alike); the descriptor pool
+  (662 BDs fails worse than 2,630); the C readback timing and completion barrier (C is STABLE across a
+  0.5 s pause in EVERY run, failing ones included -- the result is final and wrong); the memory-tile relay
+  (a DIRECT core->shim C fifo fails identically); the CHUNK_B packing path (4/8 unset versus 5/8 set);
+  the BATCH_SIZE and the tile counts; the phase order and the number of preceding phases (an extra
+  FFNnorm round only shifts the rate, 5/8 -> 2/8); `--dynamic-objFifos`; dropping `issue_token` (which is
+  a task-completion token and is REQUIRED by dma_await_task); and any barrier missing from
+  n1_core_i8_m1.py, whose runtime is structurally identical to mine.
+
+WHAT REMAINS, and it is one sentence: THE OBJECT FIFO'S ACQUIRE IS NOT PROVIDING BACKPRESSURE. An
+unfilled slot is returned to the consumer as zeros instead of blocking it, so a core that outruns the
+shim multiplies zeros -- each feed independently arrives empty about a quarter of the time, which is
+exactly the arithmetic in addendum 131 (p_A ~= 0.25 gives 2/8 with trivial B and 4/8 with random B).
+
+THE FASTEST ROUTE TO THE ANSWER IS NOW TO READ A KNOWN-GOOD DESIGN RATHER THAN TO KEEP BISECTING MINE.
+The engine's own I8Ctx path builds and runs GEMMs from these same kernels at 1.9 s/tok and does not
+produce garbage tokens, so IT SOLVES THIS. Read how it declares its object fifos, what depths and
+producer/consumer forms it uses, whether it links through a memory tile, and how its runtime sequences
+its DMAs relative to the cores -- the answer is in there, written by people who got it working, and it
+is a reading task rather than a measurement task. Second, look for a fifo form in the mlir-aie DSL whose
+acquire genuinely blocks for a shim-fed fifo; that is now a specific, answerable question. Third, pace
+the consumer artificially so its next acquire depends on something the shim cannot have produced early.
+
+THE HONEST BOTTOM LINE FOR THIS WORKSTREAM: the layer's STRUCTURE is solved and proven -- one xclbin,
+one submit, a four-argument runtime sequence, three phases sharing a single buffer at fixed byte offsets,
+with the RMSNorm and FFNnorm phases exact in every run ever taken and bit-identical to each other given
+identical inputs. Its GEMM is not, at any shape, and neither is the lane's reference design, which shares
+the fault. Every 8192/8192 quoted before addendum 117 was a single lucky sample. The next person should
+not re-derive the structure, and should not trust a GEMM result without a failure count over at least
+eight runs.
