@@ -95,6 +95,15 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
         fprintf(stderr, "MoERuntimeLayer: region-B pack failed (%lld)\n", (long long)rb);
         return false;
     }
+    // MOE_ZERO_WEIGHTS: zero the packed weight BO AFTER packing. This is the decisive
+    // test for "an inf in the packed weights poisons everything": 0 * inf = NaN, so if
+    // the NaN DISAPPEARS with zeroed weights the weights were the source, and if it
+    // PERSISTS it is not. Note this also removes any real weight contribution, so a
+    // non-NaN result here is not a working layer -- it is only evidence about the source.
+    if (getenv("MOE_ZERO_WEIGHTS")) {
+        memset(w, 0, WEIGHT_BO_BYTES);
+        fprintf(stderr, "MoERuntimeLayer: WEIGHT BO ZEROED (packed-weight poison probe)\n");
+    }
     bo_weight_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     // ---- router BO (arg-2) ----
@@ -116,6 +125,15 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     if (getenv("MOE_ZERO_NORMS_HEAD")) {
         memset(n, 0, 66048);   // conv1d + norm + a + dt (the SSM head)
         fprintf(stderr, "MoERuntimeLayer: NORMS HEAD ZEROED (SSM-param probe)\n");
+    }
+    // MOE_ZERO_NORMS: zero the WHOLE 5 MB norms BO, including ssm_out at [328192, ...).
+    // ssm_out is the one region neither the data-path probe (act), the weights probe
+    // (weight BO) nor the gate check (norms head) covers -- and it is read by the ELF at
+    // exactly the offset where dump_bos coverage ended. 0 * inf = NaN, so if the NaN goes
+    // away here, ssm_out held an inf.
+    if (getenv("MOE_ZERO_NORMS")) {
+        memset(n, 0, 5242880);
+        fprintf(stderr, "MoERuntimeLayer: ENTIRE NORMS BO ZEROED (ssm_out probe)\n");
     }
     bo_norms_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
