@@ -289,6 +289,30 @@ bool FusedLayer::prepare_random(int l) {
     return true;
 }
 
+// Empirical weight override. The engine's upload reorders every weight it is handed, so the
+// dequantized array is not what its GEMM multiplies by (measured: the effective weight is a
+// permutation of the raw one - A @ W_eff matches the engine's own QKV buffer to 0.43% while
+// A @ W_raw misses by 129%). A weight recovered by the calibration solve is fed here.
+// See FUSED-RMSNORM-QKV-DESIGN.md. `count` limits how many leading elements are replaced, so a
+// weight that has extra structure appended after the dequant (W_D's identity block) keeps it.
+// Returns true only on a full-length read.
+static bool fk3_maybe_override(std::vector<uint16_t>& w, size_t count,
+                               const char* envname, const char* label) {
+    const char* path = getenv(envname);
+    if (!path) return false;
+    if (count > w.size()) count = w.size();
+    FILE* f = fopen(path, "rb");
+    if (!f) { fprintf(stderr, "[fk3] %s: cannot open %s\n", label, path); return false; }
+    size_t got = fread(w.data(), 2, count, f);
+    fclose(f);
+    if (got != count) {
+        fprintf(stderr, "[fk3] %s: SHORT read %zu of %zu from %s - ignoring\n", label, got, count, path);
+        return false;
+    }
+    fprintf(stderr, "[fk3] %s override: loaded %zu bf16 from %s\n", label, got, path);
+    return true;
+}
+
 bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     Impl& s = *p;
     if (l < 0 || l >= s.NC || !src.bo || !src.offs) return false;
@@ -301,20 +325,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     } else {
         std::vector<uint16_t> w((size_t)s.H * s.NQKV);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.H, (uint32_t)s.NQKV, off(0));
-        // EMPIRICAL OVERRIDE. bf16mm_dequant gives the PRE-UPLOAD array; the engine's GEMM
-        // consumes a REORDERED one (proven: W_eff is a permutation of this array, and
-        // A @ W_raw misses the engine's own QKV buffer by 129% while A @ W_eff hits it at
-        // 0.43%). So feed the effective weight recovered by the calibration solve instead.
-        // See FUSED-RMSNORM-QKV-DESIGN.md.
-        if (const char* wf = getenv("NPU_FK3_WQKV_FROM")) {
-            if (FILE* f = fopen(wf, "rb")) {
-                size_t got = fread(w.data(), 2, w.size(), f);
-                fclose(f);
-                if (l == 0 && getenv("NPU_FK3_DUMP"))
-                    fprintf(stderr, "[fk3] WQKV[0] override: loaded %zu of %zu bf16 from %s\n",
-                            got, w.size(), wf);
-            }
-        }
+        if (l == 0) fk3_maybe_override(w, w.size(), "NPU_FK3_WQKV_FROM", "WQKV");
         if (l == 0 && getenv("NPU_FK3_DUMP")) {
             FILE* f = fopen("/tmp/fk3_w_wqkv.bin", "wb");
             if (f) { fwrite(w.data(), 2, w.size(), f); fclose(f); }
@@ -327,6 +338,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     {
         std::vector<uint16_t> w((size_t)s.qout * s.NO);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.qout, (uint32_t)s.NO, off(3));
+        if (l == 0) fk3_maybe_override(w, w.size(), "NPU_FK3_WO_FROM", "WO");
         memcpy(s.wO[l].map(), w.data(), w.size() * 2);
         s.wO[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         s.wO_ready[l] = 1;
@@ -337,6 +349,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
         std::vector<uint16_t> g((size_t)s.H * 2 * s.IM);
         bf16mm_dequant_mode(g.data(), src.bo, (uint32_t)s.H, (uint32_t)s.IM, off(4), 2);              // gate
         bf16mm_dequant_mode(g.data() + (size_t)s.H * s.IM, src.bo, (uint32_t)s.H, (uint32_t)s.IM, off(4), 1);  // up
+        if (l == 0) fk3_maybe_override(g, g.size(), "NPU_FK3_WGU_FROM", "WGU");
         memcpy(s.w2[l].map(), g.data(), g.size() * 2);
         s.w2[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         if (l == 0 && getenv("NPU_FK3_DUMP")) {
@@ -352,6 +365,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     {
         std::vector<uint16_t> w((size_t)(s.NI + s.H) * s.ND);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.NI, (uint32_t)s.ND, off(5));
+        if (l == 0) fk3_maybe_override(w, (size_t)s.NI * s.ND, "NPU_FK3_WD_FROM", "WD");
         for (int r = 0; r < s.H; r++)
             for (int n = 0; n < s.ND; n++)
                 w[(size_t)(s.NI + r) * s.ND + n] = (uint16_t)(r == n ? 0x3F80 : 0x0000);  // bf16 1.0 / 0.0

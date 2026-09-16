@@ -4870,3 +4870,42 @@ must be discarded - regardless of what the summary table claims.
 Also recorded: the peer's default-mode vs TRUE_NATIVE numbers differed (60/34/17/10 vs 67/37/18/11) on
 the same binary and the same weights, purely from `NPU_FLM_*`. A ~11% difference from a path selector is
 exactly the kind of error that looks like a real result.
+
+## Three effective weights solved; the fourth needs one more dump
+
+Added a generic `fk3_maybe_override(w, count, env, label)` helper to the driver and wired all four
+weights; added the pre-SiLU GU dump to the engine (`NPU_DUMP_L0_FULL` now yields `bf16_l0_gu.bin` from
+`bC`, which is what the SiLU loop consumes). All seven activation/output dumps are full at npt=1024.
+The `count` argument matters for W_D: its identity block is appended after the dequant, so the override
+covers only the leading `NI*ND` elements and the identity survives.
+
+Solves, all at npt=1024:
+
+```
+WQKV  A(1024,1024) rank=1022 cond=1.7e18   residual 0.000141
+WO    A(1024,2048) rank=1024 cond=186.5    residual 0.000000   <- exact
+WD    A(1024,3072) rank=1024 cond=71.1     residual 0.000000   <- exact
+```
+
+Written as `/tmp/weff_qkv.bin`, `/tmp/weff_wo.bin`, `/tmp/weff_wd.bin` (bf16, correct shapes).
+`o` and `dw` are **f32** dumps (4 bytes/element) while the rest are bf16 - read them accordingly.
+
+**W_GU is not yet solvable**: it needs the GU GEMM's *input* activation, which is `bA` after the
+attention and the residual-1 add - not any of the existing dumps (`bf16_l0_bA_launch.bin` is post-norm
+*before* the QKV, and `bf16_l0_attnout.bin` is the attention output before the O-projection). Add one
+dump of `bA` immediately before the GU launch block (~line 4955), then
+`W_GU = pinv(that) @ gu` with `bf16_l0_gu.bin`.
+
+**The remaining test, blocked only on device contention this session** (another lane held accel0):
+
+```
+NPU_FK3=1 \
+NPU_FK3_WQKV_FROM=/tmp/weff_qkv.bin NPU_FK3_WO_FROM=/tmp/weff_wo.bin NPU_FK3_WD_FROM=/tmp/weff_wd.bin \
+NPU_FK3_XCLBIN_A=/tmp/fk3_A128bf/normgemm_rr.xclbin NPU_FK3_INSTS_A=/tmp/fk3_A128bf/normgemm_rr_insts.txt \
+NPU_FK3_XCLBIN_B=/tmp/fk3_Bfix/fk3_layer.xclbin      NPU_FK3_INSTS_B=/tmp/fk3_Bfix/fk3_layer_insts.txt \
+NPU_PREFILL_MAX=128 engine/npu/build/npu_engine_qwen3_0_6b <model.q4nx> 4 /tmp/ids_fk3.txt
+```
+
+Compare against baseline `785, 220, 62014, 220`. One weight gave `81080, 18306, 18306, 18306`; three of
+four is the next data point, and it is expected to move - whether it converges is what decides if the
+permutation story is complete or if something else is also in play.

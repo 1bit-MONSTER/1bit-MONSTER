@@ -4975,6 +4975,9 @@ struct Bf16Ctx {
                         }
                     }
                 }
+                // Pre-SiLU GU GEMM output, which the loop above consumes from bC. Needed to solve the
+                // effective W_GU (see FUSED-RMSNORM-QKV-DESIGN.md).
+                if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fg = fopen("/tmp/bf16_l0_gu.bin", "wb"); if (fg) { fwrite(bC.data(), 2, (size_t)npt * 2 * IM, fg); fclose(fg); } }
                 if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fs2 = fopen("/tmp/bf16_l0_silu.bin", "wb"); if (fs2) { fwrite(bGu.data(), 2, (size_t)npt * IM, fs2); fclose(fs2); } }
                 // D GEMM — 128-row blocks, A = the SiLU'd GU output.
                 {
