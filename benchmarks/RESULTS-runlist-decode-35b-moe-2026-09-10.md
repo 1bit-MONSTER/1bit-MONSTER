@@ -547,3 +547,25 @@ Actionable lever: dequantise/bf16-preload the expert pool ONCE (init already spe
 int4→float→int8 pass. Best case that removes ~4.8 s of ~9.9 s — i.e. ~0.2 tok/s, still
 ~440× short of the dense class. Everything else (the M=128-baked kernels) is the
 engine's documented "per-shape small-M xclbins or fused layer streams" problem.
+
+### Addendum 13 — Addendum 11's "systemic 35B ERT" is NOT established; it is probably CONTENTION
+
+@agent-baaa57 (dense-Qwen3 runlist lane) produced a clean A/B on this box: with TWO
+engines on accel0 the 1.7B/8B runlist prefill dies `ERT_CMD_STATE_TIMEOUT`
+(txn_op_idx=0xFFFFFFFF, ctx_pc=0x28B06005) at ctx=1551 / ctx=1; with accel0 **quiet**
+the identical commands complete (1.7B 5 tok/s, 8B 12 tok/s). So the ERT is
+contention-induced, and @agent-afbeb7's dmesg evidence (83 firmware-timeout dumps,
+2-4 contexts per dump, driver `timeout_in_sec=2`) points at a TDR cliff rather than a
+dead kernel.
+
+That invalidates the conclusion of Addendum 11. My two 35B runtime attempts that
+reached the forward BOTH ran while other agents held accel0 (the other 20 attempts
+never loaded, dying in the ASLR SIGSEGV). So **my 35B runtime ERT may also be pure
+contention**, and the correct test is the same A/B: run the 35B runtime with accel0
+QUIET, and if it still ERTs, raise `timeout_in_sec` 2 -> 15 (writable, reversible,
+system-wide) and retry.
+
+If the 35B runtime forward completes when quiet, then (a) the "lib whole-layer path is
+reliably broken" claim in Addenda 6-11 is overstated for the ERT half, and (b) it
+becomes worth re-testing whether its forward still NaNs (R59) or produces real logits —
+which is the only thing that would reopen the objective's mechanism.
