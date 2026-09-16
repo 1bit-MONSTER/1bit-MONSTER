@@ -3287,3 +3287,41 @@ NET POSITION AFTER ADDENDA 84-93:
    are broken in the SHARED generator for both taps and were never valid test cases.
  - REMAINING, and now narrowly defined: one design, two validated phases, hangs -- reproducibly, at
    K=2048 N=8192 c=4, in a single submit, regardless of the B tap.
+
+### Addendum 94 — MY GEMM IS EXACT AT THE REAL SHAPE (8192/8192); MY NORM PHASE ALONE HANGS
+
+Ran the GEMM half of the CURRENT combined generator (with the newly adopted LINEAR tap) alone at the
+REAL shape -- K=2048, N=8192, c=4, num_col_group=16 -- through the SINGLE_PHASE driver:
+
+  chunk-order B: 8192/8192 columns match
+  row-major B:   3/8192
+
+So my GEMM section is EXACT at the shape the combined design actually uses, it responds to the feed
+exactly as the tap predicts, num_col_group=16 is valid for it, and the LINEAR tap I adopted in
+addendum 93 is correct. My GEMM half is now validated at the real shape rather than at a small shape
+that addendum 92 showed is broken.
+
+BUT the same pass overturns addendum 83, and in exactly the way this lane keeps failing. Three probes
+at the real shape, all of which HANG:
+  - norm DMAs removed, norm core + fifos still present (unfed):      HANGS
+  - norm core does ONE row then exits instead of spinning:           HANGS
+  - MY generator's norm phase with the GEMM's DMAs removed:          HANGS
+
+That last one matters most: addendum 83 recorded "the NORM phase works ALONE" -- but that run used the
+SEPARATE norm-only xclbin built by build_rms35b_m1.sh from n1_rms_norm.py, NOT my generator. So the
+sentence was about a different artifact, my own norm phase has now been run (as far as the GEMM's DMAs
+being removed permits) and it HANGS. The instruction I set myself at the top of this lane -- validate
+the artifact, not a lookalike -- was violated again, and the correction is worth more than the
+original claim: it means the hang does NOT require the GEMM's phase at all, which is a much narrower
+and more testable statement than "the combination hangs".
+
+I also attempted the cleanest version -- a TRUE norm-only design from my generator with the GEMM's
+fifos, cores and runtime DMAs all removed -- and the string-splice cut inside the nested GEMM loop
+(IndentationError at `at_list = []`), so that design never built. Unfinished, and it is the right next
+experiment: it decides whether my generator's norm section is broken BY ITSELF or only in the presence
+of the GEMM's cores.
+
+STANDING SUMMARY (addenda 84-94): err=-28 solved (the device has columns 0..7; addendum 79 refuted);
+norm's missing W release fixed; LINEAR tap adopted; the small test shapes are broken in the SHARED
+generator and were never valid tests; MY GEMM is exact at the real shape (8192/8192); MY NORM PHASE
+HANGS EVEN WITH THE GEMM'S DMAS REMOVED; the combination hangs at every configuration tried.
