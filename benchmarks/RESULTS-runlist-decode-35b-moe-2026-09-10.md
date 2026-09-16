@@ -4820,3 +4820,53 @@ identical inputs. Its GEMM is not, at any shape, and neither is the lane's refer
 the fault. Every 8192/8192 quoted before addendum 117 was a single lucky sample. The next person should
 not re-derive the structure, and should not trust a GEMM result without a failure count over at least
 eight runs.
+
+### Addendum 133 — THE ENGINE'S PRODUCTION GEMM IS M=128 ON FOUR CORE ROWS, NOT M=1 ON ONE ROW
+
+Read the engine's own build path, as addendum 132 said to. `engine/npu/generators/run_build.sh` builds
+every production i8 xclbin with:
+
+    $PYTHON "$GENERATOR_DIR/n1_core_i8_v27.py" \
+        -M 128 -K "$K" -N "$N" -m 32 -k 64 -n 128 -c "$cols" -r 4 -b 5 ...
+
+and its own comment says why the pair matters:
+
+    # i.e. 8 of the 32 compute tiles.  Both emit the same xclbin interface, but
+    # an xclbin and its instruction stream encode the same topology and must be
+    # regenerated as a pair -- never mix a v27 xclbin with v26 instructions.
+
+and `npu_engine_i8ctx_inc.h` spells out the consequence:
+
+    The generated sequence assumes the single-core-row topology that
+    n1_core_i8_v26.py emitted.  An xclbin built by v27 spreads the tile grid
+    over 4 core rows and expects a matching instruction stream, so pairing it
+    with this fallback SILENTLY COMPUTES THE WRONG RESULT rather than failing.
+
+THREE THINGS FOLLOW, AND THEY REFRAME THIS WHOLE INVESTIGATION.
+
+1. THE ENGINE'S PRODUCTION TOPOLOGY IS M=128 ON FOUR CORE ROWS -- `-M 128 ... -r 4`. That is the design
+   that runs at 1.9 s/tok without producing garbage tokens, i.e. the existence proof. It is NOT M=1 and
+   it is NOT a single core row.
+
+2. MY ENTIRE GEMM PHASE IS BUILT ON n1_core_i8_m1.py -- an M=1, SINGLE-ROW derivation of my own, not the
+   engine's production generator. Everything I have been debugging for the last sixteen addenda is a
+   topology the engine's own lineage treats as the FALLBACK case, and its header warns that mixing
+   topologies "silently computes the wrong result rather than failing" -- which is a precise description
+   of what I have been measuring: an all-zero C with no error, no crash, and perfect stability once read.
+
+3. AND THE ENGINE'S RUNTIME PAIRS ITS XCLBIN WITH AN INSTRUCTION STREAM IT GENERATES ITSELF, in C++
+   (`gemm_generate_sequence_i8`), with an explicit FLM-parity header -- not with aiecc's
+   `--aie-generate-npu-insts` output. My driver passes the aiecc blob. Those are two different
+   instruction streams for the same interface, and the header warning exists precisely because a
+   mismatch between an xclbin and its stream is silent.
+
+WHAT TO DO NEXT, and it is now a much better-aimed step than anything in the previous ten addenda:
+BUILD THE GEMM FROM n1_core_i8_v27.py (M=128, 4 core rows, the engine's production generator) and measure
+its failure rate over at least 8 runs. If v27 is reliable where my m1 is not, then the flakiness is a
+property of the single-row/M=1 topology rather than of any of the things I ruled out, the fix is to
+rebuild the combined design's GEMM phase on v27's structure, and the objective's M=1 requirement
+(single-token decode) has to be met by the engine's own route -- batching rows, or the separate scalar
+path the engine keeps for exactly this reason -- rather than by my hand-derived single-row generator.
+
+If v27 is ALSO flaky at 8 runs, then the fault really is in the shared pattern and the instruction-stream
+pairing becomes the prime suspect instead, which is a reading task with two concrete artifacts to compare.
