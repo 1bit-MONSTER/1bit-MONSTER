@@ -13,7 +13,7 @@ for p in /proc/[0-9]*; do
 done
 if [ -n "$holders" ]; then
   echo "BUSY — accel0 open by:$holders"
-  for pid in $holders; do tr '\0' ' ' < "$pid/cmdline" 2>/dev/null | cut -c1-160; echo; done
+  for pid in $holders; do tr "\0" " " < "/proc/$pid/cmdline" 2>/dev/null | cut -c1-160; echo; done
   [ -e /tmp/1bit-npu-device.lock ] && echo "lock present: $(ls -l /tmp/1bit-npu-device.lock)"
   exit 1
 fi
