@@ -39,6 +39,10 @@ def main():
     p.add_argument("-N2", type=int, default=6144, help="GU N (2 x intermediate size)")
     p.add_argument("-NI", type=int, default=3072, help="FFN intermediate size (SiLU width)")
     p.add_argument("-ND", type=int, default=1024, help="D N (= H)")
+    p.add_argument("-MA", type=int, default=16,
+                   help="ATTENTION query tile: attn1's statics are sized by THIS, "
+                        "not by the layer's M, which is what lets prefill scale")
+    p.add_argument("-NC", type=int, default=16, help="attention KEY chunk (K/V per chunk)")
     p.add_argument("-P", "--percol", type=int, default=2)
     p.add_argument("--passes", type=int, default=2)
     p.add_argument("-k", type=int, default=64, help="QKV K-tile")
@@ -49,12 +53,12 @@ def main():
     a = p.parse_args()
     with mlir_mod_ctx() as ctx:
         layer(a.M, a.H, a.NH, a.HD, a.NO, a.percol, a.passes,
-              a.k, a.NT, a.kO, a.stack, a.gstack, a.N2, a.NI, a.ND)
+              a.k, a.NT, a.kO, a.stack, a.gstack, a.N2, a.NI, a.ND, a.MA, a.NC)
         print(ctx.module)
 
 
 def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
-          NI=3072, ND=1024):
+          NI=3072, ND=1024, MA=16, NC=16):
     N = M                       # single chunk: the keys ARE the query tokens
     C = 1                       # one chunk => a full self-attention over M
     NQKV = NH * HD + 2 * (NH // 2) * HD   # 4096 for Qwen3-0.6B: Q=NH*HD, K=V=(NH/2)*HD
@@ -83,6 +87,14 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
     assert NI % NT == 0 and NI % k == 0 and ND % NT == 0 and N2 == 2 * NI
     SCOL = GCOL + 1                # the SiLU takes the last column
     assert SCOL <= 7
+    # ATTN TILING: the layer's M is the number of QUERY tokens, processed in
+    # tiles of MA (attn1's O_state/g_at are sized by MA, NOT by M - that is the
+    # whole point: the M=32 '.bss overflowed by 14656 bytes' failure came from
+    # sizing them by the layer's M), and each query tile attends to ALL M keys,
+    # streamed in chunks of NC so the online softmax accumulates across them.
+    assert M % MA == 0 and M % NC == 0
+    n_qb = M // MA                 # query blocks
+    C = M // NC                    # key chunks (flash-style accumulation)
     GQA = NH // (NH // 2)          # q heads per kv head (2 for Qwen3-0.6B)
     KO_TOT = NH * HD
     assert KO_TOT % KO == 0 and NO % 64 == 0
@@ -95,8 +107,8 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
         AN_ty = np.ndarray[(M, k), np.dtype[bfloat16]]
         W_ty = np.ndarray[(k, NT), np.dtype[bfloat16]]
         QKV_ty = np.ndarray[(M, NT), np.dtype[bfloat16]]
-        QK_ty = np.ndarray[(M * HD + HD * N,), np.dtype[bfloat16]]
-        V_ty = np.ndarray[(N * HD,), np.dtype[bfloat16]]
+        QK_ty = np.ndarray[(MA * HD + HD * NC,), np.dtype[bfloat16]]  # Q tile + K^T chunk
+        V_ty = np.ndarray[(NC * HD,), np.dtype[bfloat16]]
         OUT_ty = np.ndarray[(M, HD), np.dtype[bfloat16]]
         AOT_ty = np.ndarray[(M, KO), np.dtype[bfloat16]]
         WO_ty = np.ndarray[(KO, 64), np.dtype[bfloat16]]
@@ -331,18 +343,19 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
             def body():
                 for _ in range_(0xFFFFFFFF):
                     for _p in range_(PASSES):
-                        reset()
-                        for _ in range_(C):
-                            for s2 in range(PERCOL):
-                                qk = f["QK_c"].acquire(ObjectFifoPort.Consume, 1)
-                                v = f["V_c"].acquire(ObjectFifoPort.Consume, 1)
-                                if s2 == SLOT:
-                                    chunk_f(qk, v)
-                                f["QK_c"].release(ObjectFifoPort.Consume, 1)
-                                f["V_c"].release(ObjectFifoPort.Consume, 1)
-                        o = f["O_f"].acquire(ObjectFifoPort.Produce, 1)
-                        fin(o)
-                        f["O_f"].release(ObjectFifoPort.Produce, 1)
+                        for _qb in range_(n_qb):     # query tile: sizes the statics
+                            reset()
+                            for _ in range_(C):      # key chunks: softmax accumulates
+                                for s2 in range(PERCOL):
+                                    qk = f["QK_c"].acquire(ObjectFifoPort.Consume, 1)
+                                    v = f["V_c"].acquire(ObjectFifoPort.Consume, 1)
+                                    if s2 == SLOT:
+                                        chunk_f(qk, v)
+                                    f["QK_c"].release(ObjectFifoPort.Consume, 1)
+                                    f["V_c"].release(ObjectFifoPort.Consume, 1)
+                            o = f["O_f"].acquire(ObjectFifoPort.Produce, 1)
+                            fin(o)
+                            f["O_f"].release(ObjectFifoPort.Produce, 1)
             core(f["ac"], stack_size=0x1000)(body)
 
         for f in pipes:
@@ -411,37 +424,44 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
             for c in range(ncol):
                 hs = [i for i, f in enumerate(pipes) if f["col"] == c]
                 for p in range(PASSES):
-                    for ch in range(C):
+                  for qb in range(n_qb):          # ONE query tile per block; the
+                    for ch in range(C):           # statics are sized by MA, not M
                         for i in hs:
                             h = head_of(p, pipes[i]["col"], pipes[i]["slot"])
-                            base = ch * N * NQKV
+                            # Q rows come from THIS query block...
+                            qbase = qb * MA * NQKV + QOFF + h * HD
+                            # ...K/V rows from THIS key chunk.
+                            kbase = ch * NC * NQKV + KOFF + (h // GQA) * HD
+                            vbase = ch * NC * NQKV + VOFF + (h // GQA) * HD
                             qt = shim_dma_single_bd_task(pipes[i]["QK_s"], QKV,
-                                                         offset=base + QOFF + h * HD,
+                                                         offset=qbase,
                                                          # Q must be in the mmul's 4x8
                                                          # MICROTILED layout (mm.cc reads
                                                          # A contiguously in 32-element
                                                          # blocks), not row-major.
-                                                         sizes=[N // 4, HD // 8, 4, 8],
+                                                         sizes=[MA // 4, HD // 8, 4, 8],
                                                          strides=[4 * NQKV, 8, NQKV, 1], issue_token=True)
                             dma_start_task(qt); dma_await_task(qt); dma_free_task(qt)
                             ktt = shim_dma_single_bd_task(pipes[i]["QK_s"], QKV,
-                                                          offset=base + KOFF + (h // GQA) * HD,
+                                                          offset=kbase,
                                                           # K ROW-MAJOR: the only
                                                           # BD-legal form; attn1
                                                           # (-DK_ROW_MAJOR) does the
                                                           # layout conversion.
-                                                          sizes=[N, HD],
+                                                          sizes=[NC, HD],
                                                           strides=[NQKV, 1], issue_token=True)
                             dma_start_task(ktt); dma_await_task(ktt); dma_free_task(ktt)
                             vt = shim_dma_single_bd_task(pipes[i]["V_s"], QKV,
-                                                         offset=base + VOFF + (h // GQA) * HD,
-                                                         sizes=[N // 8, HD // 8, 8, 8],
+                                                         offset=vbase,
+                                                         sizes=[NC // 8, HD // 8, 8, 8],
                                                          strides=[8 * NQKV, 8, NQKV, 1], issue_token=True)
                             dma_start_task(vt); dma_await_task(vt); dma_free_task(vt)
                     for i in hs:
+                        # this query tile's own output rows
                         h = head_of(p, pipes[i]["col"], pipes[i]["slot"])
-                        ot = shim_dma_single_bd_task(pipes[i]["O_s"], O_all, offset=h * M * HD,
-                                                     sizes=[M // 4, HD // 8, 4, 8],
+                        ot = shim_dma_single_bd_task(pipes[i]["O_s"], O_all,
+                                                     offset=h * M * HD + qb * MA * HD,
+                                                     sizes=[MA // 4, HD // 8, 4, 8],
                                                      strides=[4 * HD, 8, HD, 1], issue_token=True)
                         dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
 

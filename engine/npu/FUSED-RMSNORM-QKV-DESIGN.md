@@ -1725,3 +1725,41 @@ instruction store. Reverted. Raising M therefore cannot come from shrinking
 attn1's data alone — it needs the query-tiling (M_attn=16 with the outer query
 loop) so that `O_state`/`g_at` are sized by the QUERY TILE rather than by the
 layer's M, which is the plan recorded above anyway.
+
+## Query-tiling the attention: the refactor is IN and verified (and what M=32 hits)
+
+`n1_fk3_layer.py` now takes `-MA` (attention query tile) and `-NC` (attention key
+chunk), and the attention core gained an OUTER query-block loop:
+
+```
+for _p in range_(PASSES):            # head (per pass)
+    for _qb in range_(n_qb):         # QUERY TILE - sizes attn1's statics
+        reset()
+        for _ in range_(C):          # KEY CHUNKS - online softmax accumulates
+            chunk_f(qk, v)
+        fin(o)
+```
+`attn1.cc` is compiled with `-DM_TILE=$MA -DN_KEYS=$NC`, so its `O_state`/`g_at`
+are sized by the QUERY TILE rather than by the layer's M — which is the whole
+point of the exercise. The QK/V fifo types are now `(MA*HD + HD*NC)` / `(NC*HD)`,
+and the sequence posts one Q tile (from query block `qb`) plus a K^T/V chunk
+(from key chunk `ch`) per (qb, ch), with the O store per query block.
+
+**At M=16 with MA=NC=16 (n_qb=1, C=1) the build is byte-identical in behaviour**
+— same xclbin size, same every-stage result — so the refactor is a verified
+no-op there and a safe base to scale from.
+
+**M=32 still fails, and it is NOT the volume or the tiling:**
+```
+M=16: 8768 DMA tasks -> builds and verifies
+M=32 (MA=16,NC=16): 8928 tasks -> _XAie_LoadProgMemSection(): Overflow of program memory
+M=32 (MA=16,NC=32): 8832 tasks -> same overflow
+```
+i.e. only **+64 tasks** over a configuration that works, and *fewer* tasks in the
+NC=32 case that also fails — so it is not the task count and not the key-chunking.
+The only fifos whose counts change are the ATTENTION columns' shims (each +16
+tasks: QK 8->32, V 4->16, O 2->4), while the heavy shim 6 (7344 tasks) is
+M-independent and unchanged. That points at a per-shim program-memory accounting
+issue specific to those columns rather than a real capacity wall — the next step is
+to identify the failing TILE (the error names none) and bisect the attention tap
+count, since a shim that carries 7344 tasks elsewhere plainly has room for 32.
