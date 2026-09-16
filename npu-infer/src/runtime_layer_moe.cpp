@@ -36,9 +36,25 @@ static inline float bf16_to_f32(uint16_t v) {
 }
 
 // region B base (desc-logical offset of share_up) within the arg-0 weight BO.
-static const size_t REGION_B_BASE = 0x1bc00000ull;
+//
+// The base is a property of the ELF, not of the model, and it DIFFERS BY LIBRARY
+// VERSION: the committed v1.0.x capture reads region B at 0x1BC00000, while the
+// v0.9.46-regenerated ELF reads it at 0x1E000000. Sizing the BO for one layout and
+// running the other ELF puts every weight read out of bounds, which does not fail
+// cleanly -- it hangs the runlist and reports ERT_CMD_STATE_TIMEOUT. So this is
+// overridable, and MOE_REGION_B_BASE must be set to match whichever ELF is used.
+// Measured with decode_txn: the v0.9.46 ELF's arg0 reads end at 533,293,056 B, which
+// is 51,357,696 B past the v1.0.x-sized BO.
+static size_t region_b_base() {
+    if (const char* e = getenv("MOE_REGION_B_BASE")) return (size_t)strtoull(e, nullptr, 0);
+    return 0x1bc00000ull;
+}
 // arg-0 weight BO size: region B base + region B content (3456 rows x 4736).
-static const size_t WEIGHT_BO_BYTES = REGION_B_BASE + 3456ull * 4736ull;
+// MOE_WEIGHT_BO_BYTES overrides, for testing an ELF whose read extent is larger.
+static size_t weight_bo_bytes() {
+    if (const char* e = getenv("MOE_WEIGHT_BO_BYTES")) return (size_t)strtoull(e, nullptr, 0);
+    return region_b_base() + 3456ull * 4736ull;
+}
 
 MoERuntimeLayerEngine::MoERuntimeLayerEngine() {}
 MoERuntimeLayerEngine::~MoERuntimeLayerEngine() {}
@@ -73,9 +89,9 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     bo_act_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     // ---- weight BO (~460 MB): region B at 0x1bc00000 (region A TODO) ----
-    bo_weight_ = std::make_unique<xrt::ext::bo>(dev, WEIGHT_BO_BYTES);
+    bo_weight_ = std::make_unique<xrt::ext::bo>(dev, weight_bo_bytes());
     uint8_t* w = static_cast<uint8_t*>(bo_weight_->map());
-    memset(w, 0, WEIGHT_BO_BYTES);
+    memset(w, 0, weight_bo_bytes());
     // ---- region A = the EXPERT POOL (addenda 63-75) ----
     // The runtime's arg-3 head is a UNIT-INTERLEAVED EXPERT IMAGE, not the layernorm/conv1d/ssm
     // tensors (those live in the norms BO via npu_pack_moe_linear5_bo). Verified exhaustively
@@ -90,7 +106,7 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
         fprintf(stderr, "MoERuntimeLayer: region-A = EXPERT POOL (%lld B, verified layout)\n",
                 (long long)pa);
     }
-    int64_t rb = npu_pack_moe_region_b(w + REGION_B_BASE, mw_, layer);
+    int64_t rb = npu_pack_moe_region_b(w + region_b_base(), mw_, layer);
     if (rb != (int64_t)3456 * 4736) {
         fprintf(stderr, "MoERuntimeLayer: region-B pack failed (%lld)\n", (long long)rb);
         return false;
@@ -101,7 +117,7 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     // PERSISTS it is not. Note this also removes any real weight contribution, so a
     // non-NaN result here is not a working layer -- it is only evidence about the source.
     if (getenv("MOE_ZERO_WEIGHTS")) {
-        memset(w, 0, WEIGHT_BO_BYTES);
+        memset(w, 0, weight_bo_bytes());
         fprintf(stderr, "MoERuntimeLayer: WEIGHT BO ZEROED (packed-weight poison probe)\n");
     }
     bo_weight_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -169,7 +185,7 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     }
 
     fprintf(stderr, "MoERuntimeLayer: init OK (weight %zu B region-B base 0x%zx)\n",
-            WEIGHT_BO_BYTES, REGION_B_BASE);
+            weight_bo_bytes(), region_b_base());
     if (getenv("MOE_DUMP_ADDRS")) {
         fprintf(stderr, "  BO device addrs: weight=0x%llx act=0x%llx router=0x%llx norms=0x%llx kv=0x%llx logits=0x%llx\n",
                 (unsigned long long)bo_weight_->address(),
