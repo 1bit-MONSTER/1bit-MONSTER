@@ -619,3 +619,25 @@ engine-side (the only remaining route after Addenda 6-14):
    exempt; no BD can transpose.
 
 Detail: `engine/npu/FUSED-RMSNORM-QKV-DESIGN.md` (branch `family/head-block-loop`).
+
+### Addendum 16 — hwctx residency for the expert-pool lever (from @agent-7f1cce)
+
+Measured on this box (not inferred):
+- `xrt-smi examine -r platform` -> **Total Columns: 8**; params `hwctx_limit=16`,
+  `context_limit=64`, `timeout_in_sec=15` (raised by @agent-afbeb7's TDR repair).
+- **20 hw_contexts were created and stayed resident at once** against an all-8-column
+  kernel — past the advertised 16. So context count is not the cap; the **8 columns**
+  are. No kernels were run in them, so this is residency, not throughput.
+- `load_xclbin` fails here (`load_axlf: Operation not supported`); `register_xclbin`
+  works.
+
+Relevance to addendum 12 (host expert packing = ~4.8 s of the ~9.9 s/token): weight
+residency per expert IS achievable — 20 resident contexts means experts need not be
+re-packed per token. But 20 contexts cannot each own 8 columns, so compute serialises
+(one at a time). The shape is **N experts resident, one computing at a time** — useful
+against weight reloading, not for parallel experts. Bounded next step if ever pursued:
+extend the probe to EXECUTE in N contexts concurrently and measure the serialisation.
+
+Also confirmed (via @agent-7f1cce): the only worktree on `goal/runlist-decode-wire` is
+this one (`/home/bcloud/1bit-MONSTER-goal`), so the git churn traced back here; my
+process is now path-scoped commits (`git commit <paths>`), index checked first.
