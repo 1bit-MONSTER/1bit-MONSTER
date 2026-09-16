@@ -53,8 +53,16 @@ import sys
 from transformers import AutoTokenizer
 d, prompt, out = sys.argv[1], sys.argv[2], sys.argv[3]
 tok = AutoTokenizer.from_pretrained(d)
-text = tok.apply_chat_template([{"role": "user", "content": prompt}],
-                               tokenize=False, add_generation_prompt=True)
+try:
+    # Some templates (Qwen3-1.7B among them) reference optional variables such as
+    # user_system_prompt; supply them so the guard renders instead of raising.
+    text = tok.apply_chat_template([{"role": "user", "content": prompt}],
+                                   tokenize=False, add_generation_prompt=True,
+                                   user_system_prompt="", tools=None)
+except Exception as e:
+    # Last resort: the plain ChatML form every one of these models accepts.
+    print("TEMPLATE_FALLBACK", type(e).__name__, e, file=sys.stderr)
+    text = "<|im_start|>user\n" + prompt + "<|im_end|>\n<|im_start|>assistant\n"
 ids = tok(text, add_special_tokens=False)["input_ids"]
 open(out, "w").write(" ".join(map(str, ids)))
 print("TPL", repr(text))
