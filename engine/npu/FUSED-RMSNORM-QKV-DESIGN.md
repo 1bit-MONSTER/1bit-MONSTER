@@ -2979,3 +2979,58 @@ which is the only independent oracle in this project — and it is what caught t
 
 The `H_BF 1.6%` reading I repeatedly explained away as "the bench's row-major reference
 artifact" was the same signal, visible much earlier and dismissed.
+
+## The divergence is localized to launch A's normed activation, with a proper oracle
+
+Built a real oracle this time: the engine's per-op path already had the dumps needed to
+compare the two paths stage by stage, and I extended them (a correct-point `bGu`/SiLU dump -
+my first attempt landed before the GU phases ran and read zeros). Same prompt, same
+NPU_PREFILL_MAX=128, same idle device, **all quantities measured over the same 128 tokens**:
+
+| quantity | per-op path | fused path | verdict |
+|---|---|---|---|
+| GU weight (bf16_l0_W vs W2) | 0.38672 | 0.3867 | **identical** |
+| Wqkv: device vs host dequant | maxabs 0.64062 | maxabs 0.64062 | **bit-identical, zero diff** |
+| attention INPUT (attnin) | **2.60938** | QKV maxabs 1.0547 pre / 1.2344 post-RoPE | **~2.4x small** |
+| attention OUTPUT (attnout) | **2.28125** | **0.7695** | **~3.0x small** |
+| SiLU output | 3.06250 | 2.8438 | comparable |
+| D-GEMM output (dw) | 3.57812 | ~0.29 | far off |
+| layer-0 hidden | 6.6196 | 1.2344 | 5.4x |
+
+The attention comparison is the one that can be trusted without caveat: both maxima are over
+the same 128 tokens, and a max over a superset cannot be smaller than a max over a subset.
+So **the fused path's attention output is genuinely ~3x smaller**, and since it is a convex
+combination of V — bounded by max|V| — the input it is combining must itself be smaller. The
+attention input row confirms it: **2.61 vs 1.05-1.23**.
+
+Weights are exonerated twice over (GU identical, Wqkv bit-identical between the *device* and
+*host* dequantizers — so `bf16mm_dequant` and `bf16mm_dequant_dev` agree exactly, which also
+retires my earlier suspicion that the host dequant was the problem). Gammas are the same
+(`in_n[l]`/`pa_n[l]`), the input `bh` is the same. What is left is **the in-kernel RMSNorm in
+launch A**, i.e. `rms_reduce_f32`/`rms_scale_f32_bf16`, versus the engine's host `rn_bf16`.
+
+One concrete difference is already visible and is a genuine bug regardless:
+
+```c
+// engine's host norm (rms_norm_eps for Qwen3 is 1e-6)
+static constexpr float EPS=1e-6f;  ... ir = 1.0f/sqrtf(ss/n + EPS)
+// the kernel's norm
+float ir = aie::invsqrt(ss[r] / (float)H + 1e-5f);     // 1e-5f
+```
+
+and the reason the bench never flagged it: the bench's own norm reference also uses `1e-5f`,
+having copied the kernel's constant. With `ss/H ~ O(1)` this is worth only ~0.05%, so it does
+not explain 2.4x on its own — but it is wrong, it is exactly the class of "reference mirrors
+the kernel" defect that let the earlier mistakes through, and it should be fixed to 1e-6.
+
+The remaining 2.4x is therefore in the norm's arithmetic or in how its result reaches the QKV
+GEMM. Note the strongest constraint on any explanation: the bench reported launch A
+`exact=524288/524288 (100.0%)`, but it did so with **gamma fixed at 1.0** (`Am[M*H+i]=1.0f`)
+and its reference elementwise on the host. So the bench validated the norm's *shape* and the
+GEMM, and validated nothing at all about the real learned gamma. A gamma-path defect would
+pass it, and the engine is the first place the real gamma has ever been exercised.
+
+Both paths' dumps are now in place and reproducible; the next comparison is a direct one of
+the norm's OUTPUT activation (not the QKV weight) between the two paths, which needs one more
+dump on the fused side (`A_norm`, the microtiled norm output) and one on the per-op side
+(`bA` immediately after `rn_bf16`).

@@ -4905,6 +4905,7 @@ struct Bf16Ctx {
                         }
                     }
                 }
+                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fs2 = fopen("/tmp/bf16_l0_silu.bin", "wb"); if (fs2) { fwrite(bGu.data(), 2, (size_t)npt * IM, fs2); fclose(fs2); } }
                 // D GEMM — 128-row blocks, A = the SiLU'd GU output.
                 {
                     const int nblk = (npt + 255) / 256;

@@ -301,6 +301,10 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     } else {
         std::vector<uint16_t> w((size_t)s.H * s.NQKV);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.H, (uint32_t)s.NQKV, off(0));
+        if (l == 0 && getenv("NPU_FK3_DUMP")) {
+            FILE* f = fopen("/tmp/fk3_w_wqkv.bin", "wb");
+            if (f) { fwrite(w.data(), 2, w.size(), f); fclose(f); }
+        }
         memcpy(s.wQKV[l].map(), w.data(), w.size() * 2);
         s.wQKV[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         s.wQKV_ready[l] = 1;
