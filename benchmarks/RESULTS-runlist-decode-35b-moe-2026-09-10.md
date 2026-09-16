@@ -3683,3 +3683,41 @@ NINE-argument kernel call against my six. Addenda 80/84 showed the extra argumen
 (pointing at additional BOs) and see whether IT starts to hang: if it does, the trigger is the argument
 or BO count, and the fix is to alias the norm's three buffers onto the existing ones rather than adding
 BOs -- which would also simplify the eventual engine integration.
+
+### Addendum 105 — FOUND IT: a SIX-argument runtime_sequence hangs where the same design with THREE completes
+
+Ran the last untested difference. Took the probe that completes at the real shape and changed exactly
+one thing: three extra `np.ndarray` arguments on the `@runtime_sequence` (f32 row, f32 row, bf16 row),
+three extra BOs in the driver (a new SIX_BO mode), and the dummy's three DMAs pointed at them instead
+of at B and C. Everything else -- the m1 GEMM, the dummy core on its own column, both memory-tile
+paths, three fifos, two input DMAs in W-then-A order, the kernel `rms_norm_f32_bf16`, the real shape
+K=2048 N=8192 c=4, num_col_group=16, 8 KB f32 rows -- is byte-for-byte what completed a moment ago.
+
+  SIX-ARGUMENT design, K=64 N=256 c=2:      compiled; insts blob 1328 B;  HANGS
+  SIX-ARGUMENT design, K=2048 N=8192 c=4:   compiled; insts blob 430,844 B; HANGS
+
+IT HANGS. The three-argument version of this exact design completes at the real shape; the six-argument
+version hangs. THAT IS THE TRIGGER, and it explains the entire investigation: every structural probe of
+cores, fifos, kernels, mem-tile paths, columns and taps completed because every one of them was a
+THREE-argument design, while the combined two-phase design hung because it has SIX.
+
+HONEST CAVEAT, because the test conflates two things: it added three ARGUMENTS and three BOs together,
+and it may also have mismatched XRT group ids (the extra BOs take groups 3 and 4 here, where addenda
+80/84 showed my assumptions about group assignment have been wrong twice). So "six arguments" is not
+yet separated from "six buffers". The discriminating test is immediate and cheap: pass the three extra
+ARGUMENTS but point them at the EXISTING BOs (alias the norm's A, gamma and out onto the buffers the
+GEMM already uses). If that HANGS, the ARGUMENT COUNT is the trigger and the fix is to MERGE the norm's
+three buffers into fewer -- e.g. one combined buffer holding A, W and O at fixed offsets, addressed
+with the `offset=` argument the runtime DMAs already take, dropping the combined design to four
+arguments, or aliasing them into the existing weight buffer for three. If it COMPLETES, the BO COUNT is
+the trigger, and the same merging fixes it.
+
+EITHER WAY THE FIX DIRECTION IS THE SAME AND IT IS NOW CONCRETE: the combined design must not add three
+new buffers and three new arguments. That also simplifies the eventual engine integration, which
+already has a 512 MB weight BO and small activation/router/norms/kv BOs it could reuse.
+
+REBUILD POSITION: (a) compiles -- MET. (c) one submit -- MET, driver validated 8192/8192. (b) both
+phases correct together -- both are proven exact ALONE at the real shape, and the reason they cannot be
+combined is now identified as the runtime sequence's argument/buffer count rather than anything about
+the kernels, fifos, cores, tiles, tap or ordering -- all of which were refuted individually by actual
+builds and runs.
