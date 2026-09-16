@@ -1677,3 +1677,42 @@ layout bug (addendum 45, byte-exact on two independent implementations), and it 
 single ELF launch where no host-visible intermediate exists. Two real, separate defects have been
 found along the way on their own merits: the region-A F32/bf16 dtype mismatch (ssm_a,
 ssm_dt.bias) and the verify-tool double free. Neither is the NaN.
+
+### Addendum 47 — the F32/bf16 dtype defect is EXONERATED as the NaN cause, by a properly-SCOPED test
+
+@agent-baaa57 supplied the scope caveat that made my addendum-44 refutation valid: I had
+neutralised only region-A's copy of the two F32 tensors, while the SAME two tensors
+(ssm_a, ssm_dt_bias) are raw-memcpy'd a second time by npu_pack_moe_linear5_bo (model.c:652-670)
+into the 5,242,880-B norms BO. So "region-A tail is not the cause" did NOT license "the dtype
+defect is not the cause", and I had written the broader claim.
+
+RAN IT PROPERLY -- neutralised BOTH copies under one flag (bf16 1.0 over region-A's last 256 B at
+off=74240, and over bytes 65,792..66,048 of the norms BO, which is 65,536 conv1d + 256 ssm_norm =
+ssm_a at 65,792 then ssm_dt_bias to 66,048):
+
+  TAIL OVERWRITE   -> bf16 1.0 over last 256 B (off=74240)
+  LINEAR5 OVERWRITE-> bf16 1.0 over bytes 65792..66048
+  forward(1): EXECUTED
+  act: n=1024 NaN=1024 finite=0        <-- IDENTICAL to baseline and to the region-A-only run
+
+CONCLUSION, now scoped correctly: the F32-vs-bf16 mismatch is a REAL defect (ssm_a and
+ssm_dt.bias are dtype=F32 shape=[32], raw-copied with no conversion into buffers read as bf16,
+under a "region A TODO"; region-A's arithmetic closes exactly at 74,240 B =
+4096+4096+65536+256+128+128, and only those two tensors are affected) but it is NOT the NaN
+source. Fix it on its own merits; do not expect it to fix the NaN.
+
+Also consistent, and it narrows what remains: reading an F32 pattern as two bf16 halves yields
+(~correct value, 0), so those 256 B degrade to an approximation rather than to a NaN factory. The
+two 1e36-class values in the dumps are therefore STILL UNEXPLAINED by any story I currently have,
+and I am no longer attaching a causal claim to them.
+
+STATE OF THE HUNT: the NaN is born inside the single ELF launch. Every input we can currently name
+is now either verified or exonerated -- region-B byte-exact at n_tiles=2048 (addendum 45, two
+independent implementations), region-A tail and the norms-BO copy both neutralised with no effect
+(this addendum). Remaining unverified: the packer's other two tile sizes (n_tiles=1024, H=4;
+n_tiles=128, H=1 identity), which @agent-baaa57 can now check cheaply with the working tool.
+
+Process note worth keeping: their caveat is the third time today that someone else's precision
+stopped me over-claiming, and the cheapest of the three (6 lines, one run). "The experiment I ran
+does not test the hypothesis I stated" is the failure mode to watch for when a refutation feels
+conclusive.
