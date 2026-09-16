@@ -1403,3 +1403,48 @@ wrong.
 NEXT ACTION CHANGES ENTIRELY: diagnose the ZEROS, starting from region-A's best-effort pack and
 the act/weight BO identity across hw_contexts; re-run the harness with NPU_RUNLIST_STATS=1 to
 confirm no-ERT reproduces for me, and verify I am on the 8704-byte-row model.
+
+### Addendum 40 — RECONCILED: no ERT, CLEAN input, all-NaN output. "Zeros" was sanitized NaN.
+
+I re-ran this lane's own harness with NPU_RUNLIST_STATS=1 and reproduced @agent-baaa57 exactly --
+and then read the activation dumps, which they had not:
+
+  exit=0, ZERO matches for ERT/timeout/error
+  [runlist] 1 runs batched -> 1 submit (ctx=1)
+  forward(1): EXECUTED
+  logits: argmax=0 max=0.0000 NaN=0
+  /tmp/moe_act_pre.bin : n=1024 nonzero=1024 (100.0%) NaN=0     maxabs=0.0383869   <-- CLEAN
+  /tmp/moe_act.bin     : n=1024 nonzero=1024 (100.0%) NaN=1024                    <-- ALL NaN
+
+THE ZEROS WERE AN ARTEFACT OF A SANITIZER, NOT THE LAYER'S OUTPUT. The engine's `cn()` is
+`for(i) if(!std::isfinite(x[i])) x[i]=0.0f;` (npu_engine_universal.cpp:295), so an all-NaN
+activation becomes all-zeros downstream and the harness prints `max=0.0000 NaN=0`. So my NaN
+observation (addendum 6) and @agent-baaa57's zeros observation were THE SAME DEFECT seen on
+opposite sides of a sanitizer. Neither of us was wrong; the reporting layer was.
+
+THE TRUE STATE OF THE OBJECTIVE'S ORIGINAL PATH, which is far better than what I had recorded:
+ 1. NO ERT. My "structural ERT" (addendum 14) is REFUTED BY MY OWN RE-RUN on this machine with
+    this harness. The ERT was the environmental contention/TDR class, repaired by the flock plus
+    timeout_in_sec=15. My "quiet accel0" check ruled out one narrow thing (a PID holding the
+    device) and I over-read it as "clean device" -- those are different claims.
+ 2. The runlist DOES its job: 1 run batched, 1 submit, executes.
+ 3. The layer takes a CLEAN input (pre-act finite, maxabs 0.038) and produces an ALL-NaN output.
+    That is a deterministic numerical defect inside the whole-layer sequence -- exactly the kind
+    of thing that is debuggable, and nothing like "the asset set cannot do this".
+
+ALSO INVALIDATED, and it was load-bearing: my bisection conclusion that "every weight BO can be
+zeroed and it still NaNs, therefore the ELF sequence itself is broken" (addenda 6-11) is
+CONFOUNDED. Zeroing the weights drives the activations to zero, and an RMSNorm with zero variance
+and a zero numerator is 0/sqrt(0+eps) -- a 0/0-shaped NaN source. So "it still NaNs with zeroed
+weights" is exactly what a correctly working layer could do; that experiment could not
+distinguish the hypotheses it was used to decide.
+
+REVISED LANE STATE: the objective's original route is REOPENED and the defect is now narrowed to
+"clean in, NaN out" inside the layer sequence. That is a much better place than "structurally
+broken, reuse is a dead end", which is what I had written.
+
+NEXT: localise the NaN INSIDE the sequence rather than by zeroing weights -- dump the
+intermediate buffers between the layer's launches (post-norm, post-QKV, post-attention, post-O,
+post-FFN) and find the FIRST one that goes non-finite, with real weights throughout. Region-A's
+"packed (74240 B, BEST-EFFORT)" remains a live suspect for garbage-in, but the pre-act being
+finite argues the input is fine and the NaN is generated within.
