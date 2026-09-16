@@ -2463,3 +2463,36 @@ Two notes for whoever writes it:
 * the DEFAULT prefill in this file is a different path (int8 `final_i8_*` GEMMs with
   host `rn_c` norms and CPU attention, loop at ~4980). The BF16 prefill at ~4666 is
   the target; hooking the wrong loop would look like nothing happened.
+
+## The host pass, exactly: RoPE + KV scatter (and NO QK-norm for 0.6B)
+
+Read the engine's `qk_norm_pi` — the lambda that turns the QKV GEMM's output into
+attention-ready Q/K and the KV cache — and it settles the last open questions.
+
+What it does per token, per head: RMS over HD (`iq = 1/sqrt(mean(x^2)+EPS)`) then
+`x *= iq * <norm weight>` **only if `cfg.has_q_norm` / `cfg.has_k_norm`**, then RoPE
+(`ra`), then K/V are written to both the f32 `kv_caches[l][0].k/v` and the bf16
+device KV buffer `bKv`.
+
+**Qwen3-0.6B's config.json has neither `q_norm` nor `k_norm`** (its only norm key is
+`rms_norm_eps`), so for the target model the host pass between launch A and launch B
+is exactly two things — no per-head Q/K normalization:
+
+1. `fk3::rope_qk_bf16(qkv, M, NH, NKV, HD, 1e6f, pos0)` — rotate Q and K in place.
+2. Scatter K and V out of the same buffer into `bKv`, which is what decode reads:
+   ```
+   region = kvh < 4 ? 0 : 1;  lh = kvh & 3;  slot = 4 * HD;
+   bKv[region*kv_region       + pi*slot + lh*HD + d] = bf16(K[pi][kh][d]);
+   bKv[(region+v_add)*kv_region + pi*slot + lh*HD + d] = bf16(V[pi][kh][d]);
+   ```
+   with K at columns `[KOFF, VOFF)` and V at `[VOFF, NQKV)` of A's output, and the
+   rotation already applied (the engine's cache holds ROTATED keys, and decode
+   depends on that).
+
+Worth flagging the generalisation trap: QK-norm is a per-head RMSNorm that Qwen3-0.6B
+does NOT have but other families DO. If the driver ever runs a model with
+`has_q_norm`/`has_k_norm`, those two lines must come back — and forgetting them would
+look like an attention bug rather than a missing norm.
+
+So the driver is: launch A -> `rope_qk_bf16` -> the KV scatter -> launch B, with the
+engine's own weights (only `Wd + I` is new) and `NPU_FK3=1` as the switch.
