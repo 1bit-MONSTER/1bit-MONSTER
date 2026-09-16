@@ -2396,3 +2396,38 @@ WHY THIS WAS INVISIBLE FOR SO LONG, worth recording: npu_pack_moe_region_b (the 
 calls) sits in the same file, packs the RIGHT tensors for the TAIL, and its name was close enough to
 "the MoE packer" that the existence of a separate expert-pool packer never came up -- while
 npu_pack_moe_expert_pool went uncalled for exactly the head region that was producing all-NaN.
+
+### Addendum 69 — the region-A fix was IMPLEMENTED and RUN: it is NOT the NaN's cause (clean negative)
+
+I did the port rather than describing it, and ran it twice.
+
+ATTEMPT 1 -- full expert pool (npu_pack_moe_expert_pool, 478,146,560 B):
+  MoERuntimeLayer: region-A = EXPERT POOL (478146560 B via npu_pack_moe_expert_pool)
+  forward(1): EXECUTED        act: 1024/1024 NaN
+  CONFOUNDED, and I say so rather than banking it: the pool is 478,146,560 B while region-B begins
+  at 0x1bc00000 = 465,567,744, so the pool OVERWRITES region-B. That run cannot distinguish
+  "expert pool is wrong" from "region-B was clobbered".
+
+ATTEMPT 2 -- up/gate only, 310,378,496 B, deliberately clear of 0x1bc00000:
+  MoERuntimeLayer: region-A = EXPERT POOL (310378496 B via npu_pack_moe_expert_pool)
+  forward(1): EXECUTED        act: 1024/1024 NaN
+  NO CONFOUND. Same failure as baseline.
+
+CONCLUSION, stated plainly because it costs me the clean story: replacing region-A's content with
+the expert pool does NOT fix the NaN. The addenda 59-68 findings stand on their own -- region-A's
+contents really are the wrong tensors, they really are wrong in kind (layernorm weights cannot
+produce 1e38 magnitudes), the arg-3 head layout really is the unit-interleaved expert image (65,536
+slots verified BAD=0), and npu_pack_moe_expert_pool really does exist and agree with it -- but
+NONE of that is the NaN's cause. The NaN survives a region-A whose contents match the runtime's own
+bytes.
+
+WHAT THAT MEANS FOR THE HUNT: region-A is now closed as a suspect on CONTENT, SIZE, LAYOUT and
+DTYPE grounds -- all four, by intervention. The remaining candidates are the other arguments and
+the ELF itself: the norms BO (only 256 B of 5,242,880 B ever touched), the kv/state BO (arg-4,
+134,217,728 B, never examined at all), the router BO (arg-5), and the sequence inside the ELF.
+The next run should work through those the way region-A was worked through: intervene, then
+believe.
+
+METHOD NOTE, and it is the useful part of this run: the first attempt would have been recorded as a
+refutation if I had not checked the BO geometry against region-B's base first. The confound was
+findable by arithmetic (478,146,560 > 465,567,744) and it took one line to remove.
