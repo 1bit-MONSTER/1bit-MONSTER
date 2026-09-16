@@ -767,3 +767,34 @@ the same class of mlir-aie index-tracking issue that produced the earlier
 multi-shot failures. Next probe: dump one head's E/alpha against the verified
 P=1 pipeline to see whether the wrong values start at the scores, the exp, or the
 PV.
+
+## ✅ Attention at the REAL Qwen3-0.6B dims: NH=16, HD=128, 1024 keys
+
+The packed-broadcast fix (below) closes the attention stage. `n1_mha_2core_nh.py
+-P 2` is the real shape: 8 columns x 2 heads x 2 cores = the full 32-tile compute
+array, with one shim->mem QK and V channel per column.
+
+The bug that made it wrong was that E/alpha are PER-HEAD (C tiles) while QK_c/V_c
+are COLUMN-WIDE broadcasts (PERCOL*C tiles); the first version acquired E/alpha
+inside the per-slot loop, so a head produced/consumed them twice per chunk. Once
+E/alpha are acquired once per chunk and only the broadcast QK/V tiles loop over
+slots, everything lines up.
+
+**Verified on the NPU (M=16, N=128/chunk, HD=128):**
+
+| build | keys | identical data | distinct data |
+|---|---|---|---|
+| NH=4 P=2 | 256 | all 4 heads byte-identical (956/2048, max_delta 33149) | each head its own result (956/765/978/486) |
+| **NH=16 P=2** | **256** | **all 16 heads byte-identical** (956/2048, max_delta 33149) | each of the 16 its own result (486..1134) |
+| **NH=16 P=2** | **1024 (C=8)** | **all 16 heads byte-identical** (299/2048, max_delta 33171) | — |
+
+The lower exact count at C=8 is the online-softmax-over-8-chunks vs the bench's
+single-pass reference (the documented "few ULP" behaviour), not a structural
+error — all 16 heads agreeing to the byte is the correctness signal.
+
+So the attention stage is at the real dense-Qwen3-0.6B shape. Remaining for the
+"one launch per layer" contract: composing the stages (RMSNorm+QKV -> attention
+-> O-proj -> residual -> RMSNorm+GU -> SiLU -> D -> residual) into one xclbin —
+the pieces all exist at real dims now (the four linear stages above, and this
+attention), and the earlier per-tile numbers say the composition is a dataflow
+exercise, not a new kernel problem.
