@@ -2365,3 +2365,20 @@ signature is unchanged.
 Remaining for the 2-launch design: the host RoPE pass between A and B (rotate Q at
 columns `[h*HD, h*HD+HD)` and K at `KOFF + kh*HD`, full rotary, theta 1e6,
 half-split pairs), then the engine driver.
+
+### Host RoPE: implemented and verified (`engine/npu/src/npu_fk3_rope.h`)
+
+`fk3::rope_qk_bf16(qkv, M, NH, NKV, HD, theta, pos0)` rotates Q and K in place in a
+row-major `(M, NQKV)` bf16 buffer — Q at columns `h*HD`, K at `KOFF + kh*HD`,
+V untouched — using the engine's **half-split** convention, in f32 working precision
+with an RNE bf16 store.
+
+`engine/npu/tests/test_fk3_rope.cpp` checks it against an independent transcription
+of the engine's `ra2` loop on a small full-rotary case:
+
+```
+rope_qk vs independent reference: 0/160 differ -> MATCH
+V untouched: yes
+```
+So the pass between launch A and launch B is done and self-checked. It is
+microseconds at M=128 (M*24 heads*HD/2 rotations, all host-side).
