@@ -63,6 +63,8 @@ int main(int argc, char** argv) {
     else if (which=="conv1d") { qs->gen_seq_conv1d(&seq, 4, 2048, 8192, 4); g_stage=5; }
     else if (which=="linear") { qs->_gen_linear_sequence(&seq, false); g_stage=9; }
     else if (which=="layer") { qs->gen_layer_seq(&seq, L, false, false); g_stage=10; }
+    else if (which=="norm") { qs->_send_hidden_states(&seq); qs->_send_rms_weights(&seq); g_stage=21; }
+    else if (which=="conv") { qs->_send_hidden_states(&seq); qs->_send_rms_weights(&seq); qs->_send_linear_conv_weights(&seq); qs->gen_seq_conv1d(&seq,4,2048,8192,4); g_stage=22; }
     else { fprintf(stderr,"unknown stage %s\n", which.c_str()); return 2; }
     dump_elf(seq, out.c_str());
     return 0;
