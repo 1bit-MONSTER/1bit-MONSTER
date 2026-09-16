@@ -67,3 +67,52 @@ recording because the asymmetry is easy to miss:
 
 Rebuilding this branch's engine took minutes (`build_npu.sh`), which is what made iterating on the
 instrument possible at all; earlier rounds borrowed the goal lane's binaries by symlink and could not.
+
+---
+
+# Two prompts, two DIFFERENT divergence modes — the near-tie is not the whole story
+
+The section above is one prompt (`A baby cat is called a`). Running the identical procedure on
+`The largest planet in the solar system is` gives a **different** answer, and it is the one the goal's
+premise was probably written from.
+
+```
+dense:   151667  198  151667  198  32313  11  1077  594  1490  13 ...
+runlist: 151667  198          32313  11  279  1196  374  10161  892 ...
+                       ^ diverge here (3rd token)
+```
+
+**The dense arm emits `<think>\n` (151667, 198) TWICE**, then resumes in step with the runlist arm's
+3rd and 4th tokens. This is *not* a near-tie: the dense margin at the repeat is **2.879**, the same
+order as its margins across the whole run (2.0–11.6), against the **0.298/0.375** that characterised
+the cat-prompt fork.
+
+So the two prompts fail differently:
+
+| prompt | diverges at | margin at the fork | dense behaviour |
+|---|---|---|---|
+| `A baby cat is called a` | 9th token | **0.375** (near-tie; dense picked runlist's runner-up) | benign tie-break, then drifts into a loop |
+| `The largest planet in the solar system is` | **3rd token** | **2.879** (normal) | repeats `<think>\n`, then continues |
+
+**This is the "wide margin at the fork" signal the section above said would be the real bug.** On this
+prompt the arms are not tie-breaking — the dense arm chooses a token the runlist arm does not rank
+first *by a normal margin*, and the chosen token is a repeat of the prompt-prefix token.
+
+## Revised statement of what is known about gap #3
+
+- **Not one mechanism.** The near-tie explanation covers the cat prompt and does **not** cover this
+  one. Any single-cause story for the dense arm is now unsupported.
+- **The early-divergence observation in the goal is corroborated here** (3rd token), even though the
+  cat prompt diverges at the 9th. So `mu34scbf`'s "its first 3 ids match the runlist arm" reads as a
+  measurement on a prompt like this one, not a general claim.
+- **`<think>\n` being emitted twice is a concrete, reproducible symptom** with a normal margin behind
+  it. It is worth more than the near-tie was: a repeated template prefix is a specific failure, not a
+  tie-break, and it should be the thread to pull next.
+
+## Still not established
+
+- Why the dense arm repeats the prefix. Whether the runlist arm's own logits at that step even contain
+  151667 near the top, or whether the dense arm's distribution is shifted there, needs the same
+  top-8 comparison at step 3 that was done at step 9 for the cat prompt.
+- Whether this generalises beyond these two prompts.
+- Nothing here closes gap #3; it changes which evidence should be chased.
