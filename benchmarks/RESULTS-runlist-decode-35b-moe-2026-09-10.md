@@ -2467,3 +2467,36 @@ divide or reciprocal with no guard, an uninitialised buffer, or a phase whose in
 METHOD NOTE, now three times in this lane: the intervention that is cheap and decisive keeps being
 cheaper than the theory. Four BOs, four runs, four minutes -- and the answer is that none of them
 was ever the problem.
+
+### Addendum 71 — the 35B ELF's group structure is NOT anomalous; the reuse route is blocked by an input-independent defect inside the vendor sequence
+
+Compared the group-object structure of three layer ELFs:
+
+  /tmp/elf105/moe_layer_ctx1.elf (35B MoE):  g3 {18944, 75776}  g4 {4096}  g5 {0x20000, 12288}
+                                             g6 {0x20000, 0x25000, 66048}  g7 {0x200000, 49152}
+  /tmp/llama-elfs/layer_ctx98.elf:           g3 {8192}  g4 {0x28000, 0x8c000}  g5 {16384}
+                                             g6 {256}  g7 {0x1c000, 1024}
+  /tmp/q4b-chk/layer_ctx3.elf:               g3 {5120}  g4 {0x19000, 0x28000, 0x5f000}
+                                             g5 {10240}  g6 {768}  g7 {1024, 16384}
+
+All three use groups 3..7 with multiple objects each, and the 35B's set is not structurally odd --
+no missing group, no degenerate object, no size that fails to decompose. So there is no gross
+malformation to point at, which is consistent with everything else: the ELF is well-formed, it
+submits, it executes, and it produces NaN regardless of what we feed it.
+
+CONSEQUENCE FOR THE OBJECTIVE, stated plainly: the reuse route -- extend the runtime's whole-layer
+per-ctx ELF path to 35B by continuing to use the lib's generated ELF -- is BLOCKED, and now for a
+precise, evidence-backed reason rather than the confounded one I originally gave (addendum 14's
+"structural ERT", retracted in addendum 40 because the ERT was environmental). The blocker is an
+INPUT-INDEPENDENT non-finite value produced inside the vendor's own sequence: four separate
+arguments neutralised or corrupted with no change to the failure, a clean pre-activation, and no
+host-visible intermediate to bisect because the whole layer plus lm_head is one runlist submit.
+Without the lib's source or a working reference for that sequence, there is no next measurement --
+only disassembly of .ctrltext, which is where I would look but with low confidence.
+
+WHAT THAT LEAVES: our OWN kernels. Addendum 29 built the 35B RMSNorm M=1 kernel and addenda 18-21
+built and measured the M=1 GEMMs (QKV, O, GUSGU, DSD) -- i.e. the pieces for a layer sequence we
+control, which is what the objective ultimately wants ("one xrt::runlist submit/token" being about
+the SUBMIT, not about reusing the vendor's ELF). The measured alternative on this lane remains the
+engine path at 1.90 s/tok (0.53 tok/s), whose bottleneck was measured in addenda 32/33
+(weight-traffic bound in the implementation, ~44x under an achievable rate).
