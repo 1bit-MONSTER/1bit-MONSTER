@@ -65,18 +65,23 @@ static inline uint16_t f32_to_bf16(float f) {
 static inline float bf16_to_f32(uint16_t u) {
     uint32_t v = (uint32_t)u << 16; float f; __builtin_memcpy(&f, &v, 4); return f;
 }
-static inline double exp2_soft(double x) {
-    if (x < -1000.0) return 0.0;
+// 2^x. Deliberately COMPACT: the attention core's .text sits at 16,304 B of the
+// AIE2P core's 16,384 B program memory (80 bytes of headroom!), and the 8-term
+// DOUBLE-precision Horner this replaces was the largest single block in it. A
+// 4-term float polynomial is ~1e-6 relative on |f|<=0.5 - orders of magnitude
+// below the bf16 the scores are stored in - and costs a fraction of the .text.
+static inline float exp2_soft(double x) {
+    if (x < -126.0) return 0.0f;
+    if (x > 126.0) return (float)INFINITY;
     double n = (double)(int)(x + (x >= 0.0 ? 0.5 : -0.5));
-    double f = x - n;
-    double p = f * f;
-    double y = 1.0 + f * (0.6931471805599453 + p * (0.2402265069591007 + p * (0.05550410866482158 + p * (0.009618129107628477 + p * (0.0013333558146428443 + p * (0.00015403530393381612 + p * (0.000015252733814068 + p * 0.00000132154867901443)))))));
-    uint64_t bits; __builtin_memcpy(&bits, &y, 8);
-    int64_t e = (int64_t)((bits >> 52) & 0x7FFULL) + (int64_t)n;
-    if (e <= 0) return 0.0;
-    if (e >= 0x7FF) return (double)INFINITY;
-    bits = (bits & 0x800FFFFFFFFFFFFFULL) | ((uint64_t)e << 52);
-    double r; __builtin_memcpy(&r, &bits, 8);
+    float f = (float)(x - n);
+    float p = 1.0f + f * (0.6931472f + f * (0.2402265f + f * (0.0555041f + f * 0.0096181f)));
+    uint32_t bits; __builtin_memcpy(&bits, &p, 4);
+    int e = (int)((bits >> 23) & 0xFF) + (int)n;
+    if (e <= 0) return 0.0f;
+    if (e >= 0xFF) return (float)INFINITY;
+    bits = (bits & 0x807FFFFFu) | ((uint32_t)e << 23);
+    float r; __builtin_memcpy(&r, &bits, 4);
     return r;
 }
 

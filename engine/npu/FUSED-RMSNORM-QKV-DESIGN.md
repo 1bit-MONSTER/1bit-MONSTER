@@ -1788,3 +1788,40 @@ were already the tallest pole and any M-driven growth tips them over. Next: eith
 identify the failing tile directly (the error names none) or take a few hundred
 bytes out of attn1's program — note the earlier `g_at` removal, which saves DATA,
 made the program LARGER and failed.
+
+## THE M-CAP IS A 16 KB PROGRAM (.text) LIMIT — the attention core sits 80 B under it
+
+Found the real wall by reading the ELF sections rather than guessing:
+
+```
+main_core_3_2.elf   .text            limit = 0x4000 = 16384 B (AIE2P core program memory)
+  M=16 (WORKS)      0x3fb0 = 16304 B   headroom   80 B
+  M=32 (FAILS)      0x41c0 = 16832 B   OVER by    448 B
+```
+So the attention core is at **99.5% of its program memory**, and ANY M-driven
+growth tips it over — which is exactly why:
+* `_XAie_LoadProgMemSection():231: Overflow of program memory` appears at M=32
+  even though the DMA-task count barely moves (+64) and `attn1.o` is byte-identical;
+* the `g_at` elimination failed — it saves DATA but makes the program bigger;
+* every core's ELF grows slightly with M (legitimately M-sized statics), the
+  attention cores were already the tallest pole, and they go over first.
+
+`.bss` is a separate 0x5280 = 21,120 B and is not the constraint here.
+
+**First fix landed — and it improved accuracy as well as size.** The 8-term
+DOUBLE-precision `exp2_soft` Horner was the largest single block in `.text`;
+replacing it with a 4-term float polynomial (≈1e-6 relative on |f|<=0.5, orders of
+magnitude below the bf16 the scores are stored in) gives
+
+```
+.text   16304 B -> 16208 B   (headroom 80 -> 176 B)
+attn    90.5% -> 92.2% exact, <=2ULP 94.4% -> 95.3%, mean ULP 41.2 -> 31.3
+H_BF    16383/16384 -> 16384/16384 (100%)
+```
+i.e. smaller AND better — the old double Horner was not buying accuracy.
+
+M=32 still needs roughly another 450 bytes out of `.text`. The remaining
+candidates, largest first: the two inlined 4x8x8 mmul instantiations (QK bf16->bf16,
+PV bf16->f32), the softmax's per-element microtile index arithmetic
+(`/8`,`%8`,`*32` recomputed in the inner loops — strength-reducible), and the
+`-DK_ROW_MAJOR` K-layout conversion loop.
