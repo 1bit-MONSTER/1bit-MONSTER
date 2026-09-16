@@ -2496,3 +2496,62 @@ look like an attention bug rather than a missing norm.
 
 So the driver is: launch A -> `rope_qk_bf16` -> the KV scatter -> launch B, with the
 engine's own weights (only `Wd + I` is new) and `NPU_FK3=1` as the switch.
+
+## RE-VERIFIED at M=128 from fresh artifacts, and the `BF16OUT` trap that nearly sank the driver
+
+Rebuilt both xclbins from the current source and re-ran the benches. Every number
+reproduces the recorded M=128 verification exactly:
+
+| stage | fresh run (2026-09-16) | recorded earlier |
+|---|---|---|
+| QKV | **524288/524288 = 100.0%** (bit-exact) | bit-exact |
+| attn | 93.2% exact, 95.4% <=1ULP, 96.2% <=2ULP | 93.2 / 95.4 / 96.2 |
+| GU | 98.5% exact, 99.8% <=2ULP | 98.5 / 99.8 |
+| SiLU | 97.8% exact, 99.3% <=2ULP | 97.8 / 99.3 |
+| **D = layer output** | **99.6% exact, 99.9% <=1ULP, mean ULP 0.26** | 99.6 / 99.9 / 0.26 |
+| per-head attn | 89-96%, every head | 89-96% |
+| O (f32) | worst_rel 1.748e-04 | 1.75e-04 |
+
+(`H_BF 1.6%` is the bench's row-major reference artifact, not the kernel: its sampled
+values match the reference exactly, and the correctly-microtiled comparison is the
+100.0% recorded earlier.)
+
+**THE TRAP.** `-bf16out` is NOT a positional argument — it is `action="store_true"`,
+enabled by the environment (`${BF16OUT:+-bf16out}` in build_fused_norm_gemm_rr.sh).
+The build line "128 1024 4096 32 32 1" therefore sets `-wdepth 1` and leaves the
+kernel with an **f32** C store. Two consequences, both silent:
+
+* the bench reports 0.0% / worst_rel 3e+37 (it reads the C buffer as bf16, so it is
+  reading f32 bits — `got=-1.2e38 want=0`);
+* the driver reads launch A's C as bf16 too, so it would have fed garbage into launch
+  B's QKV input.
+
+The correct launch A line, and an unambiguous size discriminator:
+
+```
+BF16OUT=1 bash engine/npu/generators/build_fused_norm_gemm_rr.sh 128 1024 4096 32 32 1 <out>
+    -> normgemm_rr.xclbin 37,210 B   (bf16-out, CORRECT — verified 524288/524288)
+    bash ... (without BF16OUT)       -> normgemm_rr.xclbin 20,474 B   (f32-out, WRONG here)
+```
+
+Launch B at M=128 is `MA=16 NC=16 NDEP=1 bash build_fk3_layer.sh 128 1024 16 128 1024 2 2 16 32 16 <out>`
+(45 s), and `NOQKV=1` on top of that drops the QKV phases to make the driver's launch B
+(8,758,928 B insts vs 11,498,384 B for the full build). A NOQKV build correctly shows
+QKV/attn = 0% in the bench — that bench feeds its own QKV, so those two rows are
+meaningless for it; GU/SiLU/O(f32) come out 100.0% and D 98.4%.
+
+Fresh artifacts to run the engine against:
+```
+NPU_FK3=1 \
+NPU_FK3_XCLBIN_A=/tmp/fk3_A128bf/normgemm_rr.xclbin \
+NPU_FK3_INSTS_A=/tmp/fk3_A128bf/normgemm_rr_insts.txt \
+NPU_FK3_XCLBIN_B=/tmp/fk3_B128/fk3_layer.xclbin \
+NPU_FK3_INSTS_B=/tmp/fk3_B128/fk3_layer_insts.txt \
+  engine/npu/build/npu_engine_qwen3_0_6b ...
+```
+
+Also worth knowing: `/tmp/fk3_m128g` — the artifact that looked like the recorded
+M=128 build — is **stale** (pre O_F/O_S fifo-depth fix): it reads attn 70.8% and
+`qb0 vs qb1 halves identical: 14.5%`, which is exactly the symptom of the second
+query block being insensitive to its own Q. Rebuilding from current source gives
+93.2% and every head 89-96%. Trust the source, not the /tmp directory.
