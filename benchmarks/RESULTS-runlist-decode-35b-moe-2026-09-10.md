@@ -5551,3 +5551,47 @@ CONSEQUENCE: the reuse route's NaN is still open, but the "input-independent NaN
 zero-the-BO tests cannot distinguish wrong CONTENT from wrong OFFSETS. A harness-side defect in the
 linear-attn weight feed (finding 2/3) remains a live, fixable candidate; the vendor ELF has not been
 shown to be internally broken.
+
+### Addendum 149 — the vendor's own weight-prep path is now drivable, and it does NOT match the harness's norms-BO packer
+
+Built npu-infer/tools/dump_lin5_weights.cpp (links -lqwen3_6_moe_npu -lq4_npu_eXpress like
+gen_layer_elfs_moe) and drove the exported weight-prep entry point directly:
+
+  qwen3_6_moe_desc::load_linear_weights(int L, Q4NX&, buffer<uchar>& pool,
+                                        buffer<bf16>& b1, buffer<bf16>& b2)
+  (_ZN16qwen3_6_moe_desc19load_linear_weightsEiR4Q4NXR6bufferIhERS2_IN8biovault10bfloat16_tEES8_)
+
+It needs device-backed buffers (load_linear_weights ends with sync_to_device), and Q4NX is
+constructed from the model DIRECTORY. Layer 1 (linear_attention) was dumped to /tmp/lin5dump.
+
+FINDINGS, all byte-verified against the model.q4nx tensor bytes:
+
+1. load_linear_weights produces THREE buffers, not the ONE norms BO the harness packs:
+   pool (512 MB expert pool) + b1 (5 MB) + b2 (5 MB). The harness's npu_pack_moe_linear5_bo
+   folds everything into a single 5 MB BO; the vendor does not.
+
+2. b2 holds some tensors RAW at offsets that do NOT match the harness's layout:
+   ssm_beta_proj  @ b2[111560..242632)  (131072 B, verbatim)
+   ssm_conv1d     @ b2[242632..308168)  (65536 B, verbatim)
+   ssm_norm       @ b2[308168..308424)  (256 B, verbatim)
+   (moe_router[:64] also appears at b2[308424].)
+   The harness puts conv1d@0, norm@65536, alpha@66048, beta@197120 — none of which match b2.
+
+3. NOT found verbatim in either b1 or b2 (i.e. transformed/reordered by the vendor):
+   ssm_alpha_proj, input_layernorm, post_attention_layernorm, shared_expert_gate,
+   moe_router (1 MB), ssm_a, ssm_dt, ssm_out_proj. Notably alpha is reordered while its
+   same-shape sibling beta is raw — the vendor's per-tensor treatment is not uniform.
+
+4. This is consistent with the layer ELF's strided DMA reads: the norms BO (arg3) reads
+   alpha@66048 with a 2-D gather (D0=16/1, D1=256/16), i.e. it UN-REORDERS the alpha as it
+   reads — so the BO content the ELF expects is REORDERED, not the raw memcpy the harness
+   writes. npu_pack_moe_linear5_bo's raw-memcpy of conv1d/ssm_norm/ssm_a/ssm_dt/alpha/beta is
+   therefore wrong in content (and, per addendum 148, the conv1d/ssm head it writes lands in
+   the scratch half the ELF overwrites).
+
+CONSEQUENCE: the NaN is no longer "input-independent" in any strong sense — the harness feeds the
+linear-attn layer weight BOs that differ in layout AND content from what the vendor's own
+load_linear_weights produces. The reuse route is fixable in principle: repack the router/norms BOs
+to match load_linear_weights (or call it directly), then re-run moe_smoke. The exact b1/b2 -> ELF
+arg mapping and the alpha/iln/paln/sg/router/ssm_out reorder remain to be derived; the dumps at
+/tmp/lin5dump are the oracle.
