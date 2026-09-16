@@ -141,3 +141,59 @@ anything measured here: the inputs were corrupt before the decode loop ever ran.
 **Untested, and the honest next step:** at a larger budget (`ntok`) the four budget-limited rows would
 very likely convert. That would separate "the dense arm is wrong" from "the dense arm is slow to
 commit", and it is one command.
+
+---
+
+# CORRECTION — I was wrong that the other 4 dense failures are budget
+
+The section above says *"the remaining 4 dense failures are budget, not gibberish"*, and the doc
+adds that a larger budget "would very likely convert" them. **I tested that and it is false.**
+
+Same prompts, same engine, same arms, `ntok` raised 128 → 512:
+
+| prompt | want | FLM @512 | runlist @512 | dense @512 |
+|---|---|---|---|---|
+| `A baby cat is called a` | kitten | Y | Y | **N** (513 tok) |
+| `A baby dog is called a` | puppy | **N** | Y | **N** (374 tok) |
+| `The largest planet in the solar system is` | jupiter | Y | Y | **N** (513 tok) |
+| `The first month of the year is` | january | Y | Y | **N** (513 tok) |
+
+**The dense arm is 0/4 at 512 tokens.** Not one row converted, and two of the four ran the entire
+513-token budget. The budget hypothesis is dead.
+
+## What the dense arm actually does — three distinct failure modes
+
+- **Degenerate repetition.** `A baby cat…` ends: *"…called a baby cat is called a baby cat is called a
+  baby cat is called a…"* to the end of the window; it never once says "kitten". `A baby dog…` loops on
+  *"The question is missing a period."* Repetition, not truncation.
+- **Confident wrong conclusions.** `largest planet…` concludes *"there is no single largest planet"*.
+  `first month…` concludes *"I can't help with that"*. Both are stated answers, both wrong, neither is
+  a cut-off.
+- **Giving up rather than answering.** Both of the above also show the arm reasoning that the prompt
+  is an incomplete sentence or a typo. It is a legitimate reading of *"A baby cat is called a"* as an
+  input, but the runlist arm and FLM both resolve it and the dense arm does not.
+
+So the dense arm **does** have a real defect. It is not "gibberish", and (see the sections above) the
+inputs it was blamed for were corrupt — but this correction should not be read as vindicating the arm
+either. The honest statement:
+
+- the harness defects (90-char truncation, shared scratch, the tokenizer span bug) were **real** and
+  removed **2 of its 6 baseline failures**;
+- the remaining **4 are a genuine dense-arm defect**, which the larger-budget test was supposed to
+  rule out and instead confirmed.
+
+## And the runlist arm is the strongest of the three here
+
+On these four rows at 512 tokens: **runlist 4/4, FLM 3/4, dense 0/4.** FLM's own miss is
+`A baby dog is called a` → *"A baby dog is called a **dog**."* The goal's premise treats the runlist arm
+as the one with a correctness problem and the dense arm as the one with a decode problem; on this
+evidence it is the other way round.
+
+**What this changes about "the defect is in the decode loop (KV-cache/position state)":** still not
+supported — the failure modes above are sampling/repetition and early-abandonment, not a KV or position
+error, and raising the budget changes nothing. A repetition loop points at the sampler or the logits
+distribution, not the cache.
+
+**Next step:** `NPU_GREEDY=1` is already set by the harness, so this is not a sampling-mode artefact.
+The useful comparison is the dense arm's token distribution against the runlist arm's *at the same
+step* — if they diverge before the loop starts, the loop is a symptom of the logits, not of decoding.
