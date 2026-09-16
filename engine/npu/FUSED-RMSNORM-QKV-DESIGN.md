@@ -6301,3 +6301,39 @@ result is solid. But finding them consumed the session, and the performance gap 
 was only measured at the very end. The per-layer-dump/solve machinery (112 least-squares fits) was built to
 answer a question that per-layer data made moot, and the two "retract/retract-the-retraction" episodes cost
 hours for a fact that a single A/B (0.007 vs 0.997) settled in one run.
+
+# fk-4 diagnosis: the cost is LAUNCH B's kernel, not the host round-trip
+
+Measured the per-launch split (`NPU_FK3_TIMING`), layer 0:
+
+```
+launch A (fused RMSNorm+QKV):    63.35 ms
+launch B (attention..D):        991.34 ms    <- 94% of the layer
+total per layer:               1054.69 ms
+```
+
+and the reference for scale: the per-op path does **771 ms for all 28 layers** (Prefill 531 ms total; the
+`[GEMM 59ms, attn 189ms, conv+other 523ms]` breakdown covers the whole prefill), i.e. **~19-27 ms per
+layer**.
+
+**So launch B alone is ~37x slower than the engine's entire per-op layer**, and the host round-trip I had
+recorded as the prime suspect (RoPE between the launches, BO syncs, output readback) is a small fraction of
+a 1055 ms layer. The earlier note in this file - "79x slower... suspected: two hw_contexts alternating per
+layer, a full host round-trip between them" - had the right magnitude and the wrong cause. This is the
+fourth time this session that a named cause lost to a measurement, and it is the same shape as the other
+three: I attributed a cost to the part I could see moving data, without timing the parts.
+
+**Where the work should go**, in order of what the numbers suggest:
+
+1. **Launch B's attention length.** The kernel is built for **1024 keys** per the notes, but a 128-token
+   causal prefill needs 128. It is doing ~8x the necessary score/softmax work, plus whatever the masking
+   costs. Building for the actual key count (or skipping fully-masked blocks) is the first thing to try.
+2. **Launch B's instruction volume.** 11.5 MB of insts at M=128 is very large (the engine's attention ELF
+   is ~1.4 MB). Worth checking how much is per-phase setup rather than per-tile work.
+3. **Then** the host round-trip, which this measurement demotes from "the problem" to "the remainder".
+
+**What this does not change.** Token parity stands: the fused prefill is *correct* (`220 49789 220 11141`,
+identical to the per-op reference). fk-3's correctness milestone is met. What fk-4 needs is not more fusion
+in the sense of merging launches, but making launch B's kernel competitive - the "~1 launch per layer"
+objective is about eliminating fixed per-op overhead, and the fixed overhead is evidently not what dominates
+here.
