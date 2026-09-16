@@ -48,6 +48,15 @@ static const char* elf_family_from_model(const char* model_dir) {
     if (strncmp(b, "Nanbeige", 8) == 0) return "nanbeige";
     if (strncmp(b, "Phi4",     4) == 0) return "phi4";
     if (strncmp(b, "Phi-4",    5) == 0) return "phi4";
+    // Gemma4 FIRST: the generic "Gemma" test below used to swallow Gemma4 and send it to
+    // the gemma_text class, whose _move_weights asserts `blocks_per_row <= 63` on Gemma4's
+    // weights -- an abort that took the process down, so the oracle saw no output at all
+    // (0/20) and it read as a model failure rather than a capability gap. "gemma4e" is the
+    // honest name: gen_layer_elfs does NOT support it yet (no gemma4e_npu_sequence class
+    // exists; gemma4e_npu is a causal_lm with prefill()), so the tool now reaches its own
+    // "unknown family" error and returns 1 -- a diagnosable message instead of a crash.
+    // When a gemma4e path is added to the tool, this mapping is already correct.
+    if (strncmp(b, "Gemma4",   6) == 0) return "gemma4e";
     if (strncmp(b, "Gemma",    5) == 0) return "gemma_text";
     return "qwen3";   // the generator's default, so nothing changes for it
 }
