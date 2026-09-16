@@ -46,7 +46,7 @@ int main(int argc, char** argv) {
 
     // token 151644 (the reference prompt's first token)
     if (!eng.embed(151644)) { fprintf(stderr, "embed failed\n"); return 1; }
-    fprintf(stderr, "embed done; running forward(1)...\n");
+    eng.dump_act("/tmp/moe_act_pre.bin"); fprintf(stderr, "embed done (pre-embed act dumped); running forward(1)...\n");
 
     bool ok = eng.forward(1);
     fprintf(stderr, "forward(1): %s\n", ok ? "EXECUTED" : "FAILED");

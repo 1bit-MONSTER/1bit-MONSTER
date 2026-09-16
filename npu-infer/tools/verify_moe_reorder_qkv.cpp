@@ -82,7 +82,7 @@ static int run_one(ReorderFn reorder, const char* path, const char* key,
     }
     // write the first 1 MB (or dst_cap) to outfile
     FILE* of = fopen(outfile, "wb");
-    if (of) { fwrite(dst.data(), 1, dst_cap < (1u<<20) ? dst_cap : (1u<<20), of); fclose(of); }
+    if (of) { fwrite(dst.data(), 1, dst_cap, of); fclose(of); }
     fprintf(stderr, "%s: first non-0xEE at byte %zu; wrote %s\n", key, written, outfile);
     return 0;
 }
