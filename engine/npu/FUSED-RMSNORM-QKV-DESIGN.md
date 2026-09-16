@@ -6969,3 +6969,51 @@ what makes a contiguous read deliver the sequence the kernel already expects.
 prediction stands as recorded: descriptor count falls substantially (target <5000) and launch B drops
 proportionally; if the count falls and the time does not, the model is wrong again. And the parity check
 (expect `220 49789 220 11141`) remains mandatory, because the order is what broke twice.
+
+## THE REDUNDANCY: phase 3 re-sends the same A tile 8,192 times (99.2% waste) - and the fix is order-safe
+
+@agent-baaa57 pointed at a second attention generator (`n1_mha_chunked.py`, flash attention) whose
+instruction stream is 4,116 B for 1024 keys and 31,668 B for 8192 keys, against my launch B's 8,758,928 B.
+That sent me to compare instruction streams within my own work, and the result redraws the diagnosis:
+
+```
+fk3_ao  (attention + O-proj only, 1024 keys, nh16, m8)      220,432 B
+mha_k8192 (the peer's chunked flash attention, 8192 keys)     31,668 B
+fk3_layer = launch B (the whole layer)                     8,758,928 B
+```
+
+**So the 8.76 MB is NOT the attention.** My own attention+O-proj build is 220 KB - 40x smaller - so the
+descriptor explosion lives in the **GEMM weight-streaming phases** (QKV, GU, D), which `fk3_ao` does not
+contain. Reading the phase-3 loop:
+
+```python
+for nt in range(n_n):            # n_n = 128
+    for kt in range(n_k):        # n_k = 64
+        ant = shim_dma_single_bd_task(ANR_s, AN, offset=kt * M * k,
+                                      sizes=[1, 1, M, k], strides=[1, 1, k, 1], ...)
+        wt  = shim_dma_single_bd_task(W_s, W, offset=kt * k * NQKV + nt * NT, ...)
+```
+
+**`ant` is issued n_n x n_k = 128 x 64 = 8192 times, but A does not depend on `nt`.** The identical activation
+tile is re-transferred on every `nt` iteration: **8,128 of the 8,192 phase-3 A-transfers are redundant
+(99.2%)**. At the measured ~18.6 us per descriptor that is ~151 ms of pure waste in phase 3 alone, and the
+same shape appears in the O-proj, GU and D phases.
+
+**This is exactly what the core-local-A mechanism exists to avoid.** `nq_nt.cc` is the GEMM that sidesteps the
+on-chip objectfifo multi-shot re-stream blocker by keeping A on core and streaming only W - so the machinery
+to hold A across `nt` iterations is already in this repo, in the kernel launch B already calls.
+
+**And crucially, this fix is ORDER-SAFE, unlike both of my earlier edits.** Hoisting `ant` out of the `nt`
+loop removes redundant transfers of *unchanged* data; W still streams in the same sequence, so the fifo
+consumption order the kernel expects is untouched. My two previous attempts failed precisely because they
+changed delivery order (and one changed it twice). This one changes only *how many times identical data is
+re-sent*.
+
+**Expected effect, stated as a prediction rather than a result**: A-taps per GEMM phase fall from ~8,192 to
+~64, i.e. ~128x fewer. If the ~18.6 us/descriptor cost holds, that is on the order of 150 ms per phase
+removed - potentially a large fraction of the 991 ms, with the weight taps (which genuinely do vary with
+(nt,kt)) then dominating and becoming the next target via the tile-major repack already specified.
+
+**Not yet an intervention.** This is reading the generator plus arithmetic on measured quantities. The test is
+to hoist the A tap, rebuild, re-time launch B against 991.34 ms, and confirm token parity (`220 49789 220
+11141`) - the parity check is what caught both previous defects and is mandatory here too.
