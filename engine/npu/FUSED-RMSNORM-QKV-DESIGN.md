@@ -3522,3 +3522,55 @@ sees them (or the pre-softmax scores) and compare against Q/K/V sliced from `/tm
 at `[0,KOFF)`, `[KOFF,VOFF)`, `[VOFF,NQKV)`. Given the tap is where the buffer's row-major
 (M, NQKV) layout meets the mmul's blocked/tiled operand layouts, a mismatch there is exactly
 what a 32-element-block operand loader would produce.
+
+## Final confirmation: the attention is not an attention over the QKV it is given
+
+Last CPU diagnostic - compute the reference attention from the buffer's own slices
+`Q=[0,KOFF)`, `K=[KOFF,VOFF)`, `V=[VOFF,NQKV)` and correlate with the kernel's dumped output:
+
+```
+Q=q K=k V=v   corr=0.1081   maxdiff=0.89160   meandiff=0.117384
+Q=q K=v V=k   corr=-0.0202  maxdiff=0.88345   meandiff=0.127051
+```
+
+The **correct** layout gives correlation 0.108 with the kernel - essentially none. So the
+kernel's attention output is not an attention over the Q/K/V sitting in that buffer under any
+slice arrangement, and combined with the empty 16x8 head-mapping search this settles it: the
+Q/K/V **tap** in `attn1.cc` does not deliver the buffer's contents to the mush.
+
+## Where fk-3 ends, honestly
+
+Verified against independent references:
+
+* launch A (fused RMSNorm+QKV): **exact** against a NumPy reference computed from the engine's
+  own dumped activation, gamma and effective weight behaviour;
+* launch B (attention+O-proj+FFN norm+GU+SiLU+D): **byte-identical** to the working bench on all
+  six computed stages, with all six inputs byte-identical;
+* launch B on a real post-RoPE QKV: final layer output **99.7% exact, mean ULP 0.01** against the
+  bench's reference, with `o` and `H_BF` matching digit for digit;
+* RoPE: validated transitively through the above;
+* weights: identical pre- and post-upload (`bf16mm_dump_w` read-back);
+* inputs, gamma, KV cache (bf16 and f32), buffer sizes, group ids, argument order, insts counts:
+  all checked.
+
+And yet the layer output is 5.4x small and the engine emits one token repeatedly, because **the
+attention's Q/K/V tap is wrong** - the one component whose numerics were never checked against
+anything it did not also help define.
+
+**This is exactly why it survived so long.** Every check in this project had a reference that
+shared an assumption with the thing under test: the bench's D reference derives from the same
+`An2`; its norm reference copies the kernel's epsilon; its weight is row-major synthetic like the
+kernel's assumption; it leaves `bQ` at zero so the attention is never exercised and its
+zero-output reference agrees with itself; and my own first CPU reference read the weight array
+the same way my kernel does. Four separate verifications all "passed" while the system failed.
+The checks that actually found bugs were the ones compared against a **differently-derived
+artefact** - the driver-vs-bench stage diff, the engine's own per-op buffers, and finally the
+NumPy attention. When verification keeps passing while the system keeps failing, the verification
+is sharing the bug's assumption; that is the durable lesson from this work, and it is worth more
+than any single fix in it.
+
+**Next step, concretely**: instrument `attn1.cc` to emit the Q and K tiles it actually loads (or
+the pre-softmax scores) for one head, and compare against the same slices of
+`/tmp/fk3_drv_Q.bin`. The tap is where a row-major (M, NQKV) buffer meets the mmul's blocked
+operand layouts, and a 32-element-block loader reading the wrong stride is precisely the failure
+this document already recorded once for the Q tap ("row-major Q scored 0.9%, microtiled 90.5%").
