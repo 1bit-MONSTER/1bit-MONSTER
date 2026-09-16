@@ -2251,3 +2251,37 @@ and `fast_sincos` are then instantiated once, in the core with room.
 
 That is now the concrete plan for RoPE: move it from attn1 to the QKV GEMM core's C
 store. Reverted for now — the verified causal mask is intact.
+
+### …and the QKV-GEMM placement does not work either: a RoPE pair spans two N-tiles
+
+Correcting the paragraph above before anyone acts on it. Moving RoPE into the QKV
+GEMM's C store looked ideal (12 KB of program headroom, the row index IS the global
+position, the channel is known from the N-tile index) — but the rotation needs the
+pair `(d, d + hd2)`, which is **64 channels apart**, while a C tile covers only
+`NT` adjacent channels. With `NT = 64` the two halves of every pair land in
+DIFFERENT N-tiles, i.e. in two separate stores, so the store never sees both.
+
+So RoPE needs a stage that holds a **full head (all 128 channels) at once** *and*
+has program headroom — and on this build nothing has both:
+
+| core | .text | headroom | sees a full head? |
+|---|---|---|---|
+| attn1 | 11504 B | 4880 B | yes (that is where it belongs) |
+| QKV GEMM | 4192 B | 12192 B | no — N-tiled, pair split across tiles |
+| norm / SiLU | ~12 KB / ~7.5 KB | small | no |
+
+Making the GEMM accumulator `NT = 128` would fix the visibility but the f32
+accumulator is then `M*128*4` = 64 KB against a ~20 KB core data region, which is
+the same wall that already forced `NT = 32` at M=128.
+
+So the honest options for RoPE are:
+1. **a dedicated RoPE stage** — a core that reads Q and K back, rotates, writes:
+   correct and modular, but it costs a column and shim channels, both of which are
+   exhausted;
+2. **shrink attn1** enough to fit ~13 KB of RoPE — the kernel is already lean;
+3. **keep RoPE on the host** — pragmatic, and it is what the objective wanted moved
+   in-kernel, so this is a real (if temporary) concession;
+4. **restructure the QKV N-tiling** so a head is contiguous in one tile, which
+   costs the accumulator budget and therefore M.
+
+This is now a genuine open design decision rather than a missing implementation.
