@@ -263,31 +263,37 @@ bool MoERuntimeLayerEngine::forward(int layer) {
         run.set_arg(0, (const void*)&v0, sizeof(v0));
         run.set_arg(1, (const void*)&v1, sizeof(v1));
         run.set_arg(2, (const void*)&v2, sizeof(v2));
-        // ARG ORDER -- THIS WAS THE MoE NaN ROOT CAUSE.
+        // ARG ORDER -- and why NEITHER order here is a fix.
         //
-        // The capture log (npu-infer/captures/capture_manifest-2026-09-03.log)
-        // records FLM's OWN bindings: idx3=1048576 (1 MB = ACTIVATION),
-        // idx4=98566144 (94 MB = WEIGHTS), idx7=33554432 (32 MB KV). The vendor's
-        // create_run binds BOs at 3+i in CALLER order, and FLM's first BO is its
-        // activation. The previous order here had idx3=weight and idx4=act -- the
-        // OPPOSITE -- so the ELF read its ACTIVATION out of the packed quantized
-        // weight BO. ~0.4% of arbitrary 16-bit patterns are bf16 NaN, and a single
-        // NaN in a matmul row makes every output NaN, which the norm then spreads
-        // everywhere. That is why the output was NaN invariant to zeroing the act,
-        // the norms, the router and the whole weight BO: the ELF never read the act
-        // BO at all.
+        // History, because this comment previously claimed a root cause it had not earned:
+        //   - the original order was idx3=weight, idx4=act.
+        //   - swapping them removes the NaN: idx3=weight -> ALL NaN, idx3=act -> finite.
+        //   - the mechanism is that this ELF reads its ACTIVATION from arg3, so with the
+        //     weight BO there it reads packed quantized weight bytes as bf16. ~0.4% of
+        //     arbitrary 16-bit patterns are bf16 NaN, one NaN in a matmul row NaNs the
+        //     row, and the norm spreads it across the hidden vector.
         //
-        // Measured A/B (moe_smoke, layer 1, same BOs, only the two args swapped):
-        //   idx3=weight/idx4=act -> logits: ALL NaN (of 248320)
-        //   idx3=act/idx4=weight -> logits: argmax=193722 NaN=0 nonzero=248320
-        // MOE_ARG_LEGACY_ORDER restores the old (wrong) order for A/B only.
+        // BUT THE SWAP IS NOT A FIX. Measured: zeroing ANY of the weight/router/norms BOs
+        // leaves the output byte-identical, and the output is byte-identical for weight BO
+        // sizes of 481935360, 536870912, 542113792 and 1073741824. A real MoE layer must
+        // consume ~12 MB of expert weights per layer; this ELF consumes none of them in
+        // ANY order. So it is not a complete MoE layer -- the expert FFN must be carried by
+        // other kernels (FLM ships mm.xclbin and dequant_mm.xclbin separately). The finite
+        // output below is therefore NOT a valid layer output and must not be read as one.
+        //
+        // FLM's real bindings for the 35B MoE were captured (run_qwen3_6_moe under
+        // cap_interposer.so) and are recorded, including the fact that FLM uses DIFFERENT
+        // arg orders for DIFFERENT kernels -- two kernels both carry ~512 MB weight BOs,
+        // one at idx3 and one at idx4. See
+        // benchmarks/RESULTS-moe35b-flm-real-arg-bindings-2026-09-16.md.
+        // MOE_ARG_LEGACY_ORDER restores the original order for A/B only.
         if (getenv("MOE_ARG_LEGACY_ORDER")) {
             run.set_arg(3, (const xrt::bo&)*bo_weight_);
             run.set_arg(4, (const xrt::bo&)*bo_act_);
             fprintf(stderr, "MoERuntimeLayer: ARG ORDER = LEGACY (idx3=weight, idx4=act) -- NaNs\n");
         } else {
-            run.set_arg(3, (const xrt::bo&)*bo_act_);      // FLM idx3 = activation
-            run.set_arg(4, (const xrt::bo&)*bo_weight_);   // FLM idx4 = weights
+            run.set_arg(3, (const xrt::bo&)*bo_act_);      // this ELF reads the ACT from arg3
+            run.set_arg(4, (const xrt::bo&)*bo_weight_);   // never consumed -- see above
         }
         run.set_arg(5, (const xrt::bo&)*bo_router_);
         run.set_arg(6, (const xrt::bo&)*bo_norms_);
