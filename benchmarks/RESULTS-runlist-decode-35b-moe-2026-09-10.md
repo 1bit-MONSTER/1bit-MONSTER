@@ -1076,3 +1076,49 @@ hw_context.
 Recorded honestly as the state of the lever: the objective's path is OPEN and its premise is
 measured (per-kernel host overhead dominates), but the remaining work is a multi-phase
 multi-column AIE design, not an assembly step.
+
+### Addendum 32 — THE REAL BOTTLENECK: weight-DMA bandwidth (~2 GB/s). Addendum 27's premise was WRONG.
+
+Instrumented `I8Ctx::go`'s existing `NPU_GO_STATS` probe AND a new `NPU_STAGE_SPLIT` probe around
+the serial QKV stage, then ran both together so the two could be CORRELATED line by line:
+
+  [go] q=0.02 sync+launch=0.04 wait=8.14 deq=0.09 ms
+  [qkv-split l=37] prep=0.00 ascale=0.01 GO=8.33 cn=0.00 ms      <-- the same call
+
+Per-call split, averaged over 160 I8Ctx gos (2 tokens x 40 layers x 2):
+  quantize 0.02 ms | sync+launch ~0.05 ms | **WAIT 9.774 ms** | dequant ~0.05 ms
+Individual waits: QKV 8.1-8.4, O 5.0-5.1, MoE 6.1 up to 14.7 ms.
+
+MY ERROR, caught by the second probe (addendum-28 failure class, in my own hands): I first
+summarised the `[go]` lines with `awk -F'[= ]'` and took `$8` as the wait. The line's field order
+makes $8 the literal string "deq", so the wait column was read as zero and I published
+"the GEMMs are free, 0.06 ms/call, ~0.25% of runtime" — a statistic from a mis-parsed
+instrument, which I then started to reason from. The `[qkv-split]` probe is what exposed it: a
+stage measured at 8.33 ms cannot contain a 0.06 ms call. **A second, independently-derived
+instrument is what caught it** — exactly the rule, learned from @agent-7f1cce the same hour.
+
+WHAT IS ACTUALLY TRUE — and it unifies several earlier results:
+
+  QKV  wait 8.1 ms for K=2048 x N=8192 int8 = 16.8 MB of weights -> **2.07 GB/s**
+  O    wait 5.0 ms for K=4096 x N=2048 int8 =  8.4 MB of weights -> **1.68 GB/s**
+
+The M=1 decode is **weight-DMA-bandwidth-bound at roughly 2 GB/s**, not launch-bound and not
+host-quantize-bound. Per token the engine must stream the layer weights past the array:
+QKV 16.8 + O 8.4 + the routed experts (~18 MB for top-8) = ~43 MB/layer x 40 layers ~= **1.7 GB
+per token**, which at ~2 GB/s is ~0.85 s -- the right order for the measured 1.90 s/tok.
+
+This RETRACTS addendum 27's premise ("per-kernel host quantize + 2 BO syncs dominate; one
+runlist submit collapses it") and it EXPLAINS, without new assumptions, three things that were
+previously separate observations:
+ - addendum 21: the M=1 kernels gave no speedup over M=128 -- correct, because the cost is the
+   weight load, which is identical at M=1 and M=128 (both measured ~8.4 ms for QKV);
+ - addendum 20: the expert prepack gave a real 1.9x -- it removed re-quantisation/packing WORK,
+   which is NOT bandwidth;
+ - the dense-Qwen3 runlist class is unreachable for this model NOT because of submits but
+   because a 35B MoE must move ~1.7 GB of weights per token.
+
+Consequence for the objective: a single `xrt::runlist` submit/token cannot fix a
+bandwidth-bound loop. The remaining levers are bandwidth-side (keep weights resident where
+possible, reduce the routed-expert weight volume, or improve the DMA path) -- NOT launch fusion.
+This should be said plainly rather than proceeding with an AIE fusion project whose premise has
+just been measured false.
