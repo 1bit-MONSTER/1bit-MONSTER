@@ -91,6 +91,7 @@ static const char* sess_elf_default(int H) {
 static bool npu_dbg_elf() { const char* e = getenv("NPU_ELF_DEBUG"); return e && e[0] && e[0] != '0'; }
 
 static void ensure_elf_gen_env(const char* model_path, int H);   // defined below
+static void load_eos_ids(const char* model_path);                // defined below
 
 // The runlist session's layer.xclbin must belong to the MODEL. It cannot be inferred
 // from a single model dimension, and sess_model_dir(H) below maps EVERY H to a Qwen3
@@ -114,6 +115,7 @@ static std::string sess_model_dir_from_path(const char* model_path) {
 
 extern "C" int npu_runlist_session_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
     ensure_elf_gen_env(model_path, H);
+    load_eos_ids(model_path);
     sess_build_cfg(H, NC, NH, NKV, IM, NV);
     if (!getenv("LAYER_XCLBIN")) {
         const std::string base = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/";
@@ -196,9 +198,88 @@ extern "C" int npu_runlist_lmhead(float* logits, int vocab) {
 // exactly the answer; stopping on these ids makes native output terminate where the
 // oracle's does, which is what "token parity" needs in order to mean anything.
 // NPU_STOP_EOS=0 restores the old run-on behaviour.
+// The model's own end-of-sequence ids, read from its tokenizer_config.json by
+// load_eos_ids() below. Defaults to the Qwen3 pair so that a model whose config cannot
+// be read behaves exactly as before.
+static std::vector<int> g_eos_ids = {151643, 151645};
+
 static bool is_eos_token(int id) {
     if (getenv("NPU_STOP_EOS") && atoi(getenv("NPU_STOP_EOS")) == 0) return false;
-    return id == 151643 || id == 151645;   // <|endoftext|> , <|im_end|>
+    for (int e : g_eos_ids) if (id == e) return true;
+    return false;
+}
+
+// Qwen3's ids were hardcoded here, so a non-Qwen3 decode could never stop on its OWN
+// end-of-sequence token: it always ran to the token budget, and it would stop
+// spuriously if the model happened to emit 151643/151645. Measured configs:
+//   Qwen3-0.6B/4B  [151645]                Nanbeige4.1-3B  [166101, 166102]
+//   Phi-4-mini     [199999, 200020]
+//
+// Qwen3 is deliberately a UNION of its config and the two original ids: its
+// tokenizer_config lists only <|im_end|> (151645), but the answer also ends with
+// <|endoftext|> (151643) -- that was the whole reason the second id was added. Reading
+// the config alone would therefore drop 151643 and regress Qwen3. Other families take
+// exactly what their config says, so no Qwen3 id can stop them spuriously.
+static void load_eos_ids(const char* model_path) {
+    if (!model_path || !model_path[0]) return;
+    const std::string mp(model_path);
+    const size_t slash = mp.rfind('/');
+    if (slash == std::string::npos) return;
+    const std::string base = mp.substr(0, slash);
+
+    std::vector<int> ids;
+    {
+        const std::string cfg = base + "/tokenizer_config.json";
+        FILE* f = fopen(cfg.c_str(), "rb");
+        if (f) {
+            std::string buf;
+            char tmp[8192];
+            size_t n;
+            while ((n = fread(tmp, 1, sizeof tmp, f)) > 0) buf.append(tmp, n);
+            fclose(f);
+            const size_t k = buf.find("\"eos_token_id\"");
+            size_t i = (k == std::string::npos) ? std::string::npos : buf.find(':', k);
+            if (i != std::string::npos) {
+                ++i;
+                // Skip whitespace BEFORE testing for '[': the configs are pretty-printed
+                // as `"eos_token_id": [`, so testing at i sees a space, concludes "scalar",
+                // and reads only the FIRST id. That silently dropped 166102 for Nanbeige
+                // and 200020 for Phi-4 -- caught by re-implementing the scan independently
+                // rather than by reading it.
+                while (i < buf.size() && (buf[i] == ' ' || buf[i] == '\t' ||
+                                          buf[i] == '\n' || buf[i] == '\r')) ++i;
+                const bool list = (i < buf.size() && buf[i] == '[');
+                if (list) ++i;
+                while (i < buf.size()) {
+                    const char c = buf[i];
+                    if (c == ']') break;
+                    if (c >= '0' && c <= '9') {
+                        int v = 0;
+                        while (i < buf.size() && buf[i] >= '0' && buf[i] <= '9') { v = v * 10 + (buf[i] - '0'); ++i; }
+                        ids.push_back(v);
+                        if (!list) break;
+                        continue;
+                    }
+                    ++i;
+                }
+            }
+        }
+    }
+
+    const size_t bslash = base.rfind('/');
+    const std::string name = (bslash == std::string::npos) ? base : base.substr(bslash + 1);
+    if (name.rfind("Qwen3", 0) == 0) {
+        ids.push_back(151643);   // <|endoftext|>: not in Qwen3's config, but emitted
+        ids.push_back(151645);
+    }
+    if (!ids.empty()) g_eos_ids = ids;
+    // NPU_DBG_EOS=1 prints what was actually loaded, so this is verifiable rather than
+    // assumed -- the ids decide where generation stops, and a wrong set is silent.
+    if (getenv("NPU_DBG_EOS")) {
+        fprintf(stderr, "[runlist] EOS ids for %s:", name.c_str());
+        for (int e : g_eos_ids) fprintf(stderr, " %d", e);
+        fprintf(stderr, "\n");
+    }
 }
 
 extern "C" int npu_runlist_forward(int ctx_len, float* logits, int vocab) {
@@ -346,6 +427,7 @@ static void ensure_elf_gen_env(const char* model_path, int H) {
 extern "C" int npu_runlist_decode(const char* model_path, int ng, const char* ids_file,
                                int H, int NC, int NH, int NKV, int IM, int NV) {
     ensure_elf_gen_env(model_path, H);
+    load_eos_ids(model_path);
     // 1) prompt token ids (the engine feeds pre-tokenized ids; no tokenizer here)
     std::vector<int> ids;
     if (!read_ids(ids_file, ids)) { fprintf(stderr, "[runlist] no prompt tokens\n"); return 1; }
