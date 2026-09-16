@@ -4916,3 +4916,46 @@ NEXT, CONCRETELY:
      engine's 1.9 s/tok figure is made of) or the separate scalar i8 M=1 path the engine keeps for exactly
      this case. The engine's production path is the existence proof that this works, and it is built on
      v27, not on a single-row design.
+
+### Addendum 135 — v27 needs ITS OWN tiled packing; my driver cannot feed it, and the engine's C++ packer is the authority
+
+Built v27 at its production parameters (M=128, m=32, k=64, n=128, c=4, r=4, b=5) and drove it with a new
+M=128 mode in combined_smoke. Its signature is exactly what the shapes imply:
+
+  aie.runtime_sequence @seq(%arg0: memref<262144xi8>, %arg1: memref<16777216xi8>, %arg2: memref<1048576xi32>)
+      262,144 = M*K,  16,777,216 = K*N,  1,048,576 = M*N        -- my argument order was already right.
+
+Eight runs, feeding A row-major (A[m*K+k]):
+
+  0/128 rows exact, ~373/1048576 cells exact, 96 ALL-ZERO ROWS      -- every run, to within one cell
+
+Eight more, feeding A K-major (A[k*M+m]), on the theory that its A tap's strides [16384, 8, 2048, 1] imply
+a K-major layout:
+
+  0/128 rows exact, ~376/1048576 cells exact, 96 ALL-ZERO ROWS      -- indistinguishable
+
+THE NUMBER 96 IS THE TELL. 128 - 96 = 32, exactly one m-tile, i.e. ONE COLUMN'S BLOCK of output is where
+everything non-zero lives. And v27's A tap confirms the shape of the problem: four BDs at offsets
+0 / 65536 / 131072 / 196608 -- c x 32 x 2048, one 32-row block of A per COLUMN -- each a 4-D strided
+gather `[<size=4,stride=16384>, <size=8,stride=8>, <size=8,stride=2048>, <size=8,stride=1>]`. That is not
+row-major and not simply K-major either; it is a TILED layout with its own packing convention, and my two
+guesses moved the cell count by three in a million.
+
+SO: I CANNOT VALIDATE v27 WITH MY DRIVER. Its A, B and C all need the packing that the engine implements
+in C++ -- `I8Ctx` and `gemm_generate_sequence_i8` -- and the correct way to measure v27's reliability is
+through the engine's own path, or after reading its packing code, not by guessing layouts against a
+hand-written reference. This is a limitation of my instrument, not evidence about v27, and I am recording
+it as such rather than as a result. It is also the seventh instrument-vs-artefact moment of this session.
+
+WHAT STANDS FROM ADDENDUM 134, unaffected: the engine's production topology is v27, M=128 on FOUR core
+rows, and it is the design running at 1.9 s/tok; my GEMM phase is built on n1_core_i8_m1.py, a
+single-row M=1 derivation of the topology its own lineage superseded (v26 used row 2 only, 8 of 32
+compute tiles); v27 uses 4,160 descriptors, MORE than my 2,630, so descriptor pressure is not what makes
+a design flaky; and v27 moves 32 rows per A DMA where mine moves 1.
+
+AND A CONSEQUENCE WORTH STATING PLAINLY: AT M=1 THE TILING DISTINCTIONS THAT v27 DEPENDS ON COLLAPSE.
+A single row makes row-major and K-major identical, makes the per-column 32-row block a single row, and
+makes the M-tiled C a single row. So my single-row design is not a small version of v27 -- it is a
+DEGENERATE case of it, and the flakiness I have spent sixteen addenda on may be a property of that
+degeneracy rather than of the shared pattern. Testing that properly means running the engine's own v27
+path and counting failures, which is now the next step.

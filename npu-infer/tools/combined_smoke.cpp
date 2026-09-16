@@ -252,6 +252,49 @@ int main(int argc, char** argv) {
             fprintf(stderr, "FIVE-arg O-projection GEMM: %d/%d columns match\n", N2 - ob, N2); }
         return 0;
     }
+    if (getenv("M128")) {
+        // v27 topology test: M rows, NOT M=1. A = M*K i8, B = K*N i8 (row-major: v27 uses the
+        // DEFAULT B tap, no -L), C = M*N i32. Failure COUNT over repeats is the measurement.
+        const int M = 128;
+        xrt::bo a = xrt::bo(dev, (size_t)M * K, xrt::bo::flags::host_only, k.group_id(3));
+        xrt::bo bb = xrt::bo(dev, (size_t)K * N, xrt::bo::flags::host_only, k.group_id(4));
+        xrt::bo cc = xrt::bo(dev, (size_t)M * N * 4, xrt::bo::flags::host_only, k.group_id(5));
+        std::vector<int8_t> A((size_t)M * K), Bv((size_t)K * N);
+        // v27's A tap is a K-MAJOR gather: strides [16384, 8, 2048, 1] with the innermost stride 1
+        // spanning 8 M values, so A is indexed A[k*M + m], NOT A[m*K + k]. (At M=1 the two coincide,
+        // which is why the single-row designs never exposed this.)
+        if (getenv("A_KMAJOR")) { for (int kk = 0; kk < K; kk++) for (int m = 0; m < M; m++) A[(size_t)kk * M + m] = (int8_t)i8d(rng); }
+        else for (auto& v : A) v = (int8_t)i8d(rng);
+        for (auto& v : Bv) v = (int8_t)i8d(rng);
+        memcpy(a.map<void*>(), A.data(), A.size());
+        memcpy(bb.map<void*>(), Bv.data(), Bv.size());
+        memset(cc.map<void*>(), 0, (size_t)M * N * 4);
+        a.sync(XCL_BO_SYNC_BO_TO_DEVICE); bb.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        auto r = k(3, bo_ins, (unsigned)ins.size(), a, bb, cc);
+        r.wait();
+        cc.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        const int32_t* C = (const int32_t*)cc.map<void*>();
+        long rowbad = 0, cellbad = 0, cells = (long)M * N;
+        long rowszero = 0;
+        for (int m = 0; m < M; m++) {
+            long rb = 0; bool allz = true;
+            for (int n = 0; n < N; n++) {
+                int32_t acc = 0;
+                const bool kmaj = getenv("A_KMAJOR") != nullptr;
+                for (int kk = 0; kk < K; kk++) {
+                    int8_t av = kmaj ? A[(size_t)kk * M + m] : A[(size_t)m * K + kk];
+                    acc += (int32_t)av * (int32_t)Bv[(size_t)kk * N + n];
+                }
+                if (C[(size_t)m * N + n] != acc) { rb++; cellbad++; }
+                if (C[(size_t)m * N + n] != 0) allz = false;
+            }
+            if (rb) rowbad++;
+            if (allz) rowszero++;
+        }
+        fprintf(stderr, "M128 v27: %ld/%d rows exact, %ld/%ld cells exact, %ld all-zero rows\n",
+                (long)M - rowbad, M, cells - cellbad, cells, rowszero);
+        return 0;
+    }
     if (getenv("FOUR_BO")) {
         // THE FIX: FOUR runtime arguments. The norm's A, gamma and out live in ONE buffer at fixed
         // byte offsets 0, H*4, H*4+H*4 -- inside the runtime's five data-argument slots.
