@@ -282,6 +282,24 @@ int main(int argc, char** argv) {
         a.sync(XCL_BO_SYNC_BO_TO_DEVICE); bb.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         auto r = k(3, bo_ins, (unsigned)ins.size(), a, bb, cc);
         r.wait();
+        // Addendum 144: time the SUBMIT, not the setup, so this production-shape number can be
+        // compared against my own fused design's 21.16 ms at the SAME K=2048/N=8192 shape. That
+        // comparison is what decides whether 793 MB/s is the device's ceiling or my design's fault.
+        if (const char* rp = getenv("REPEAT")) {
+            const int n = atoi(rp);
+            if (n > 0) {
+                auto t0 = std::chrono::steady_clock::now();
+                for (int i = 0; i < n; i++) {
+                    auto rr = k(3, bo_ins, (unsigned)ins.size(), a, bb, cc);
+                    rr.wait();
+                }
+                auto t1 = std::chrono::steady_clock::now();
+                double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / n;
+                double mb = (double)K * N / (1024.0 * 1024.0);
+                fprintf(stderr, "M128 v27 TIMING: %.3f ms/submit over %d submits, B=%.2f MB -> "
+                                "%.0f MB/s\n", ms, n, mb, mb / (ms / 1000.0));
+            }
+        }
         cc.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
         const int32_t* C = (const int32_t*)cc.map<void*>();
         long rowbad = 0, cellbad = 0, cells = (long)M * N;

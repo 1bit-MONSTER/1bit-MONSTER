@@ -5317,3 +5317,48 @@ the fused QKV-plus-norms path is about 1.1% of the 1900 ms per-token layer time.
 weights, of which only top-8 of 256 experts are active per token. Fusing the QKV and norms into one
 runlist submit is architecturally right and now proven correct, but it cannot move a 0.7 tok/s number by
 itself, and I should say so plainly rather than let the workstream's momentum imply otherwise.
+
+### Addendum 144 — TWO independent designs agree: ~750-800 MB/s is the device, not the implementation. The ~44x framing is REFUTED.
+
+I added submit-level timing to the M=128 branch so the engine's production xclbin could be measured the
+same way I measured my own, at the SAME shape (K=2048, N=8192, B=16 MB of weights), with the same
+technique (REPEAT=20 inside one process, so setup does not contaminate it):
+
+  engine production v27 (M=128, four core rows, 4,160 BDs, default 4-D row-major tap):
+      M128 v27 TIMING: 21.363 ms/submit over 20 submits, B=16.00 MB -> 749 MB/s
+  my fused design (M=1, single row, 2,630 BDs, LINEAR tap):
+      SUBMIT TIMING:   21.160 ms/submit over 20 submits, B=16.78 MB -> 793 MB/s
+
+THEY AGREE TO 0.7%. Two designs that share almost nothing — different M, different core-row count,
+different descriptor counts, different B taps, different generators — land within one percent of each
+other. THE INESCAPABLE READING IS THAT ~750-800 MB/s IS A PROPERTY OF THE DEVICE OR THE ACCESS PATTERN,
+NOT OF EITHER IMPLEMENTATION.
+
+THAT REFUTES THE CENTRAL FRAMING OF THIS LANE. Addendum 32 measured the m1 QKV xclbin at 16.8 MB in
+8.1 ms (2.07 GB/s) and addendum 33 concluded a "~44x implementation gap, not a hardware wall", with the
+row-major 4-D tap blamed for it (addendum 36/37, reading the 2.4 GB/s note at
+npu_engine_i8ctx_inc.h:777-780). Those two numbers were ONE measurement each. Now two independent designs
+measured minutes apart both say ~0.75-0.8 GB/s for this pattern, and the linear tap — the specific fix
+proposed for the pathology — lands at the SAME bandwidth as the design it was supposed to outperform. The
+2.4 GB/s figure at line 778 is a comment, not a measurement, and my own 2.07 GB/s figure is now contradicted
+by two designs. I am recording this as the correction it is.
+
+CAVEAT, and it is a real one: `sys_eff_factor = 2` is set in the amdxdna module parameters here (mode 444,
+so I cannot change it), the device is shared with a peer lane cycling short runs, and autosuspend_ms is
+5000 — so the ceiling could be a POWER OR LOAD STATE rather than silicon. I did NOT isolate that, and
+anyone re-basing the objective should treat ~0.8 GB/s as "what this device delivers right now", not as a
+hardware constant.
+
+WHAT IT MEANS FOR THE OBJECTIVE: a token needs roughly 40 MB of active weights — top-8 of 256 experts
+(~14.5 MB) plus QKV (16.8 MB) plus O and the shared expert — so at ~0.8 GB/s the CEILING IS ABOUT 20
+tok/s, NOT the ~88 tok/s dense-Qwen3 class the objective names. That is still roughly 30x the current
+0.53-0.7 tok/s, so the direction of the work is right and the fused single-submit structure is proven
+correct — but the TARGET SHOULD BE RE-BASED ON A MEASURED DEVICE CEILING, and raising that ceiling (power
+state, sys_eff_factor, contention) is worth more than any further tap tuning. A design change that halves
+bytes-per-token is worth more than one that doubles bandwidth utilization.
+
+AND THE METHOD LESSON, which is the one I keep relearning: both of the numbers this lane's framing rested
+on were single measurements, and it took a second, structurally different instrument to show they did not
+generalise. The peer lane reached the same conclusion from their own direction this hour — their tap
+change bought 0.86% — and two lanes independently finding "not tap-bound" is much stronger evidence than
+either alone.
