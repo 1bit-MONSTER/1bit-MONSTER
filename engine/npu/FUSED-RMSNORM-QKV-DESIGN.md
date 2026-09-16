@@ -1251,3 +1251,39 @@ the same RNE rule.
 verified:** normed linear stages at prefill M (f32 or bf16 out), the attention at
 NH=16/1024 keys, the cross-stage layout rules (O_s de-microtiles => row-major
 buffers; A_norm is microtiled => verbatim copies), and the shim BD-lifetime rules.
+
+## The full-layer assembly plan (and the column budget that shapes it)
+
+Every piece is verified; this is the map for `n1_fk3_layer.py`.
+
+**The stages need 10 columns but the array has 8**, so phases MUST share columns
+(the cores are statically placed, but a core's body is a program: it can run
+phase 1's loop then phase 4's, with per-phase fifos):
+
+| column | phase 1 | phase 3 | phase 4 | phase 7 |
+|---|---|---|---|---|
+| 0-3 | attention (NH=16, 2 passes, query-tiled) | | | |
+| 4 | norm col (A -> A_norm to DDR) | — | norm col (post-O residual) | — |
+| 5 | GEMM col (QKV, N=4096) | — | GEMM col (GU, N=6144) | — |
+| 6 | — | O-proj (K=2048) | — | D (K=3072) |
+
+Both GEMM columns use the SAME tile shapes ((M,k) A, (k,NT) W, (M,NT) C), so one
+set of fifos per column serves both phases; only the DDR offsets (the BD
+`offset=`) and the runtime sequence's task order change.
+
+Phase order (one launch): `norm+QKV -> attention (x2 passes) -> O-proj ->
+residual -> norm+GU -> SiLU -> D -> residual`.
+
+Two things this plan exposes, both budget rather than architecture:
+* the re-read makes the DMA-task count large — QKV alone is `n_n * n_k` A tasks
+  (128 x 32 = 4096 at NT=32), and the whole layer is ~5x that, so the shim's
+  BD/program budget (the limit that already bit at PASSES=2/C=16) must be
+  re-checked per column;
+* the residual adds and SiLU are elementwise, so they are cheap to place — but
+  the residual add is on the critical path between O-proj and the GU norm, and
+  the cleanest form is to FUSE it into the O-proj's store (the core adds the
+  saved layer input, delivered by one more shim fifo) rather than add another
+  round-trip through DDR.
+
+`residual_add.cc` (new) provides the bf16 and f32 residual adds; `silu_split.cc`
+from the fk-3 PoC is the SiLU.
