@@ -6258,3 +6258,46 @@ contract. None was a numerical defect. The instruments that found them were the 
 dump, `md5sum` on two files, the engine's own `[qknorm]` diagnostic, splitting a comparison by what each
 operation acts on - and the expensive ones (a held-out validation, a permutation solve, 112 least-squares
 fits) mostly confirmed things that were already true or answered questions that per-layer data made moot.
+
+# fk-4 first measurement: the fused path is CORRECT but 56x SLOWER. And the per-op path beats FLM's bar.
+
+```
+                       prefill @1024      per-token      rate
+FUSED (NPU_FK3=1)      29726 ms           29.030 ms/tok  34 tok/s
+PER-OP (reference)       531 ms            0.519 ms/tok  1927 tok/s
+FLM published bar                                           1494 tok/s
+```
+
+**Two findings, and the second was not expected.**
+
+1. **The fused path is 56x slower than the per-op path** (29.030 vs 0.519 ms/tok). This matches what this
+   file recorded much earlier ("the fused path is currently 79x slower... suspected: two hw_contexts
+   alternating per layer, a full host round-trip between them - read A's C, RoPE, scatter K/V, write B's Q -
+   four BO syncs and a full output readback per layer"). The fused path is *correct* but **not fused**: it
+   is two launches plus a host round-trip per layer, which is the opposite of the objective's "~1 fused
+   layer launch".
+
+2. **The per-op prefill now measures 1927 tok/s @1k - above FLM's published 1494.** The objective's premise
+   was that the native bf16 prefill was capped at ~655 tok/s against a 1494 bar, which is why fusion was
+   wanted. On this box, today, with the same engine and the same 1024-token prompt, the *per-op* path
+   already clears the bar by 29%. Either the path improved since that measurement, or the conditions differ
+   (chunking, prompt, build) - either way the premise needs re-checking before more work is aimed at it, and
+   that is a measurement, not an argument.
+
+**So the state of the objective is:**
+
+* **correctness: met.** The fused layer reproduces the engine's own prefill token for token
+  (`220 49789 220 11141`), which was milestone one.
+* **speed: the fused path loses badly**, and for a reason that is structural rather than numerical - the
+  host round-trip between launch A and launch B per layer. Eliminating *that* is the remaining fusion work:
+  the objective's "~1 launch" means moving the RoPE and the K/V scatter in-kernel (or into the same
+  launch), not making the kernel faster.
+* **and the comparison bar itself should be re-measured** with `FLM_PARITY_TRUE_NATIVE=1` (the flag that
+  selects the truly-native code path rather than FLM's captured libs) before either number is used to
+  justify or reject anything.
+
+**Honest note on effort.** The session's four bugs were all interface assumptions, and the correctness
+result is solid. But finding them consumed the session, and the performance gap - the actual objective -
+was only measured at the very end. The per-layer-dump/solve machinery (112 least-squares fits) was built to
+answer a question that per-layer data made moot, and the two "retract/retract-the-retraction" episodes cost
+hours for a fact that a single A/B (0.007 vs 0.997) settled in one run.
