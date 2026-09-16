@@ -65,3 +65,31 @@ token comparison is not yet a gate.
   `boot=13` must be explained or replaced by FLM's own runtime / the byte-exact CPU
   attention), then re-enable the selector with `elf_0012_308736.bin` and claim the
   identity. Do not re-enable the selector before the reference is sound.
+
+## DECISIVE (2026-09-16 04:05 ADT): 308736 is not the correct kernel either
+
+Same 1500-key prompt, same bf16 path, same one decode token, deterministic
+(`NPU_SEED=1 NPU_GREEDY=1`):
+
+| arm | boot |
+|---|---|
+| `NPU_PREFILL_BF16=1 NPU_ATTN_CPU=1` (byte-exact CPU attention reference) | **456** |
+| `NPU_PREFILL_BF16=1` with `attn_mha_2048_nh20_hd128.elf = elf_0012_308736.bin` | **152349** |
+| engine FLM arm (`NPU_FLM_PREFILL/DECODE=1 NPU_RUNLIST=0`) | 13 |
+| Bf16Ctx path (`NPU_BF16=1`, separate implementation) | 51752 |
+
+The CPU attention is the trustworthy reference (it is the path the engine falls
+back to and it is deterministic here), and 308736 does **not** match it: the
+candidate runs the device but computes the wrong attention. So **all four**
+`cap2048`-but-not-`cap1024` candidates are eliminated — 20064 / 69344 / 266464
+hang the device, 308736 runs but is numerically wrong.
+
+Conclusion for this route: either the correct nh20 2048 attention ELF is not among
+those four sizes (the size differential is not a sufficient identifier), or the
+`Bf16Mm` nh20 KV/region contract is also wrong independent of the kernel. Until
+that is separated, the family >1024 identity cannot be claimed. The generated
+`n1_core_attn.py` ELF is a different ABI from `Bf16Mm`'s (act/out/kv vs
+Q/KT/C2/V/SCR), so route (B) remains an adapter, not a packing tweak.
+
+State unchanged and safe: the shape-specific 2k selector is reverted, the Nanbeige
+binary is rebuilt, and the verified loader fix (`c066f1621`) stays.
