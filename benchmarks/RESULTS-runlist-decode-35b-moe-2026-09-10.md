@@ -265,3 +265,21 @@ output is byte-identical to the runtime's reorder for qkv (2048/2048) and
 gate_proj (1024/1024). This removes the "wrong region-B weights" cause of the
 engine layer's all-NaN output (R90/R92/R93/R114); the end-to-end NPU re-test
 (`tools/moe_smoke`) is pending the device being free.
+
+### Addendum 5b — end-to-end re-test with the repaired packer
+
+`tools/moe_smoke` (single xrt::runlist: layer ELF + lm_head, repaired region-B):
+```
+forward(1): EXECUTED
+logits: argmax=0 max=0.0000 NaN=0 (of 248320)
+act (device-synced): 2048/2048 NaN
+```
+So the repaired (byte-exact) region-B **removed the all-NaN logits** (R90/R92 had
+NaN logits) but the layer's hidden state is still all-NaN. The remaining cause is
+NOT region-B: it is either (a) the region-A layout, which the engine packs
+"best-effort" as a naive sequential copy (input_layernorm, post_attention_layer-
+norm, ssm_conv1d/norm/a/dt.bias) while the runtime demonstrably *reorders* its
+weight regions (region-B proof above), or (b) the lib's own 35B layer sequence
+(R59's conclusion). Disambiguating needs region-A derived the same way region-B
+was — i.e. locating the runtime's norm/router transform (the `reorder_cpy`
+dtype=8 BF16 path is the candidate) — or an engine-side layer sequence.
