@@ -6337,3 +6337,45 @@ identical to the per-op reference). fk-3's correctness milestone is met. What fk
 in the sense of merging launches, but making launch B's kernel competitive - the "~1 launch per layer"
 objective is about eliminating fixed per-op overhead, and the fixed overhead is evidently not what dominates
 here.
+
+## CORRECTION: the attention is NOT over-sized. My "1024 keys" claim was wrong.
+
+I recorded above that launch B is penalised because "the kernel is built for 1024 keys but a 128-token
+causal prefill needs 128". Reading the build script refutes it:
+
+```sh
+M="${1:-16}"; H="${2:-1024}"; ...; NO="${5:-1024}"          # arg 2 is H, arg 5 is NO - neither is a key count
+NQB=$(( M / ${MA:-16} ))     # query blocks per pass        = 8
+NCH=$(( M / ${NC:-16} ))     # key chunks per query block   = 8
+build_cc attn1.o attn1.cc -DN_KEYS=${NC:-16} -DN_QB=${NQB:-1} -DN_CH=${NCH:-1} ...
+attn1.cc:135   const int k0 = g_ch * N_KEYS;   // this key chunk's first global key
+```
+
+`N_KEYS` is a **tile** size (16), and the kernel walks `N_CH` chunks of it: `8 x 16 = 128 keys`, i.e.
+exactly the prefill length. There is no 1024-key over-size and no masking waste of that kind. The number I
+took for a key count (arg 2 = 1024) is `H`, and arg 5 is `NO`.
+
+**So the cause of launch B's 991 ms is still unmeasured**, and I nearly spent the next stretch of work on a
+phantom. That is the fifth named cause this session to lose to a measurement, and the pattern is
+consistent: I read a plausible story off a number's *appearance* (1024 in the build command, "1024 keys" in
+my own earlier note) instead of reading the code that consumes it.
+
+**What is actually established about launch B**, with no story attached:
+
+* 991.34 ms for one layer at M=128, against ~19-27 ms for the whole per-op layer;
+* 11.5 MB of instructions at M=128, versus ~99-194 KB for the engine's attention ELF;
+* the attention is correctly sized for the prefill (128 keys), so the cost is not excess key work;
+* the host round-trip between launches is a small fraction.
+
+**Next, and it must be a measurement rather than a hypothesis**: profile inside launch B. The cheapest
+useful probes are (a) build a launch-B variant with the attention phase omitted (the `NOQKV` pattern
+already exists for dropping phases) to see how much of the 991 ms it accounts for, and (b) compare the
+11.5 MB instruction volume against what the per-phase tile counts predict - a 60x instruction-to-ELF ratio
+suggests per-phase setup rather than per-tile work, but that too is a guess until measured.
+
+**Session summary, honestly.** fk-3's correctness milestone is met and proved: the fused 0.6B prefill
+reproduces the engine's own prefill token for token (`220 49789 220 11141`), after four real bugs - all
+interface assumptions. fk-4 is diagnosed to the *launch*, not to the cause: launch B's kernel costs 94% of
+the layer and is ~37x slower than the engine's entire per-op layer, and three of my proposed explanations
+for that (host round-trip, attention over-size, missing KV write) turned out to be either small or already
+correct.
