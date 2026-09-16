@@ -2601,3 +2601,28 @@ it confirms that calling npu_pack_moe_expert_pool alone would be wrong -- it wri
 and would overwrite region-B by 12,578,816 B. It does NOT touch the NaN: addendum 69 showed the
 activation is still all-NaN with the expert pool in place, and addenda 70/72 showed the failure is
 independent of every input's content and magnitude. The vendor ELF remains closed as a route.
+
+### Addendum 75 — CORRECTION: the "confound" was imaginary, and the simple fix is the correct one
+
+Checking the pack ORDER rather than assuming it: runtime_layer_moe.cpp packs the head block FIRST and
+calls npu_pack_moe_region_b on line 88 AFTER it. So region-B is written over whatever the head stage
+left at 0x1bc00000. My addendum-69 concern -- "attempt 1 was confounded because the 478,146,560-B
+pool overwrites region-B" -- was therefore WRONG: region-B was re-packed after the pool and was
+intact in that run too. Both attempts were clean, and both produced 1024/1024 NaN, which makes the
+conclusion (the NaN survives region-A holding the expert pool) STRONGER, not weaker -- two variants,
+neither confounded, same failure.
+
+AND THE GEOMETRY MAKES THE SIMPLE FIX CORRECT AFTER ALL:
+   pool        ends at      478,146,560 B
+   region-B    occupies     465,567,744 .. 481,935,360 B
+   -> the pool's end lies INSIDE region-B's extent, so the region-B pack that follows covers the
+      entire overlap. Calling npu_pack_moe_expert_pool for the head, and letting the existing
+      region-B call follow, is sufficient -- no splitting, no temp buffer, no special ordering.
+So my addendum-73 "correct fix: up/gate plus down's first 32,768 windows, stopping at 0x1bc00000" was
+unnecessarily complicated: the layout is fully verified (98,304 windows, BAD=0) and the pack order
+already protects region-B. The one-line fix is the pool call.
+
+METHOD NOTE, and it is the fifth time in this lane: I labelled a run "confounded" by reasoning about
+BOGEOMETRY WITHOUT READING THE PACK ORDER. The arithmetic was right, the assumption underneath it
+(the head is written last) was not. Geometry says whether buffers collide; the code says which write
+wins. Check both.
