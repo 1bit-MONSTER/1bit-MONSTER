@@ -4216,3 +4216,53 @@ NEXT PROBES, cheapest and most discriminating first:
 A useful instrument for all three: run each configuration at least 8 times and report the FAILURE
 COUNT, never a single run -- addendum 112's "stable" claim and addendum 117's four runs both show how
 misleading a small n is in this lane.
+
+### Addendum 119 — THE RACE IS IN THE SHARED GEMM PATTERN, INCLUDING THE "PROVEN" m1 XCLBIN
+
+Two probes, and together they relocate the defect entirely.
+
+PROBE 1 refutes my own addendum-118 plan. I intended to drop below the 2,630-descriptor boundary with
+c=8, but that is impossible here: the norm needs its own column, the device has eight, and c=4 already
+minimises the task count (c=2 gives MORE, c=8 does not fit). So instead I shrank the PROBLEM: N=2048
+gives 662 descriptors, far below the boundary.
+
+  N=2048, 662 BDs, 8 runs:  3, 1952, 2048, 2048, 99, 1745, 2048, 210     -> 5 FAILURES IN 8
+
+WORSE than the big design's 2/8, with wildly varying corruption. THE BD POOL IS NOT THE CAUSE, and
+descriptor pressure is not merely unproven -- it is now contradicted.
+
+PROBE 2 is the decisive one. The same driver, same chunk-order feed, same host reference, run eight
+times against THE PROVEN m1 QKV XCLBIN -- the design built by n1_core_i8_m1.py, whose 8192/8192 result
+this lane has quoted since addendum 82:
+
+  m1 QKV xclbin, 8 runs:  8128, 8192, 8192, 8192, 8192, 8192, 8192, 8192   -> 1 FAILURE IN 8
+
+THE PROVEN DESIGN IS FLAKY TOO. The race is therefore NOT in my combined generator: it is in the SHARED
+GEMM PATTERN that both designs use, and my generator inherits it faithfully. That is the most useful
+possible outcome from this probe, and also the most uncomfortable: every 8192/8192 claim in this lane --
+mine, and the m1's before mine -- was a single run, or a handful of runs that happened to fall on the
+lucky side. Addendum 112's "stable over five consecutive runs" was luck. My own addendum 117 corrected
+one instance of this; this corrects the whole lineage.
+
+THE LIKELY MECHANISM, and it matches the signature exactly: THE A BROADCAST. `gA_c` is ONE object fifo
+from a single shim tile to EVERY core, filled by one shim BD per A tile. The producer must not reuse a
+slot until every consumer has released it. If it can -- which the structure permits when the cores
+consume at different rates -- a core reads a TORN OR STALE A TILE, which corrupts a fraction of the
+columns of whatever it feeds and leaves the address arithmetic untouched. That is precisely what is
+observed: counts short of the total by 32, 112, 656, 1008, 2045 columns, never a whole tile, never a
+wrong-address pattern, and never in the norm phases (which have no broadcast).
+
+NEXT PROBES, cheapest first:
+  1. Give each column its OWN A FIFO instead of one broadcast fifo to all of them, and re-run 8 times.
+     A private fifo per consumer removes the multi-consumer slot-reuse hazard outright; the cost is more
+     descriptors (which we now know are NOT the binding constraint for the small case), so it is
+     affordable and directly tests the mechanism.
+  2. Deepen the A broadcast fifo and re-measure (weaker test: it narrows the window rather than closing
+     it).
+  3. Re-establish ALL correctness claims with at least 8 runs and a reported FAILURE COUNT. Addendum
+     112's numbers (910/2048, 2048/2048, 8192/8192) should be restated as "exact in N of 8 runs" until
+     the race is fixed -- the norm results have held in every run so far, the GEMM has not.
+
+THIS IS NOW THE HIGHEST-VALUE WORK IN THE LANE. The objective's whole premise is a GEMM feed fast enough
+and correct enough to replace the per-GEMM launches; a GEMM that silently drops a tile once in four to
+once in eight runs would corrupt decode intermittently, and no amount of speed would compensate.
