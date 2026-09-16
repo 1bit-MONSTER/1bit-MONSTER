@@ -4909,3 +4909,44 @@ NPU_PREFILL_MAX=128 engine/npu/build/npu_engine_qwen3_0_6b <model.q4nx> 4 /tmp/i
 Compare against baseline `785, 220, 62014, 220`. One weight gave `81080, 18306, 18306, 18306`; three of
 four is the next data point, and it is expected to move - whether it converges is what decides if the
 permutation story is complete or if something else is also in play.
+
+## With three of four weights effective: structure changes, not yet converged
+
+All three overrides load (verified in the log, not assumed):
+
+```
+[fk3] WQKV override: loaded 4194304 bf16 from /tmp/weff_qkv.bin
+[fk3] WO   override: loaded 2097152 bf16 from /tmp/weff_wo.bin
+[fk3] WD   override: loaded 3145728 bf16 from /tmp/weff_wd.bin
+```
+
+Tokens on the same prompt, idle device:
+
+```
+baseline                    785, 220, 62014, 220
+0 effective weights         81080, 18306, 18306, 18306
+1 of 4 (WQKV)               81080, 18306, 18306, 18306
+3 of 4 (WQKV+WO+WD)         52402, 220, 760, 220
+```
+
+**Read this carefully rather than optimistically.** Positions 2 and 4 now equal the baseline (`220`),
+which is real movement in the right direction - but `220` is a very common token (it appears twice in
+the baseline itself), so those two coincidences are weak evidence on their own. What is solid:
+
+* three overrides load and are consumed (measured, from the driver's own log);
+* the output changed substantially and in structure from the one-weight case;
+* it is **not** converged, which is exactly what a still-permuted **W_GU** predicts, since the GU path
+  feeds the MLP/D branch and therefore every position.
+
+So the permutation account remains the leading explanation and is not yet confirmed end-to-end. The
+next data point is decisive in a way this one is not: **W_GU is the last weight**, and with all four
+effective either the tokens converge (permutation story complete) or they do not (something else is
+also in play, and that is worth knowing before fk-4 is attempted).
+
+Order of work next: add the `bA`-before-GU dump (~line 4955), re-run the npt=1024 dump, solve
+`W_GU = pinv(a_gu) @ gu` (`gu` is (1024, 6144), so `W_GU` is (1024, 6144) - note the driver's GU buffer
+is the concatenation gate|up, so the file must be in that order), then run all four overrides.
+
+Method note worth keeping: I checked the override log **before** reading the tokens, because "the run
+produced different tokens" is not evidence that the weights were used - the same lesson as every other
+retraction in this file.
