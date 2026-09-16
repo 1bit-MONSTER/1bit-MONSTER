@@ -89,6 +89,8 @@ case "$GEN" in
     build_cc silu_split.cc   -DM_TILE=16 -DIM_TILE=64
     ;;
   fk3_qkv)
+    build_cc_named rms_split.o rms_norm_split.cc -DM_TILE=16 -DK_TILE=64 -DH=64
+    build_cc copy_1024.cc
     build_cc mm_qk_concat.cc -DDIM_M=16 -DDIM_K=64 -DDIM_N=64 -Dbf16_bf16_ONLY
     build_cc mm_oproj.cc     -DDIM_M=16 -DDIM_K=64 -DDIM_N=64 -Dbf16_bf16_ONLY
     build_cc mm_ffn.cc       -DDIM_M=16 -DDIM_K=64 -DDIM_N=64 -Dbf16_bf16_ONLY
