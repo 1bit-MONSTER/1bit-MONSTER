@@ -1716,3 +1716,40 @@ Process note worth keeping: their caveat is the third time today that someone el
 stopped me over-claiming, and the cheapest of the three (6 lines, one run). "The experiment I ran
 does not test the hypothesis I stated" is the failure mode to watch for when a refutation feels
 conclusive.
+
+### Addendum 48 — region-A's LAYOUT is also REFUTED as the NaN source (third hypothesis tested and rejected)
+
+Structural observation that looked strong: the ELF's own .dynsym lists OBJECTs of size 4096 and
+66048, and 66048 is EXACTLY conv1d+ssm_norm+ssm_a+ssm_dt (65536+256+128+128), while 4096 is
+exactly one layernorm (2048 bf16). The packer instead concatenates ALL SIX tensors into a single
+74240-B buffer: 0..4096 input_layernorm, 4096..8192 post_attention_layernorm, 8192..73728
+ssm_conv1d, 73728..73984 ssm_norm, 73984..74112 ssm_a, 74112..74240 ssm_dt_bias. If the ELF's
+arg-3 is the 66048 object, it would be reading conv1d at offset 0 where the packer wrote
+input_layernorm -- garbage, and a neat explanation for the 1e36 magnitudes. It is also consistent
+with my addendum-44 result, which only overwrote the last 256 B and could not have fixed a
+whole-object misalignment.
+
+TESTED: RLM_REGIONA_LOW=1 skips the two layernorms so the four non-layernorm tensors land at
+offset 0, matching the 66048 object exactly.
+
+  MoERuntimeLayer: region-A head packed (66048 B, best-effort)
+  forward(1): EXECUTED
+  act: n=1024 NaN=1024 finite=0        <-- IDENTICAL to baseline
+
+REFUTED. Region-A's layout is not the NaN source either.
+
+THREE HYPOTHESES TESTED AND REJECTED so far, all by intervention rather than argument:
+  1. region-A tail (256 B)                    -> no effect (addendum 44)
+  2. F32-vs-bf16 in BOTH copies of ssm_a/dt   -> no effect (addendum 47)
+  3. region-A layout (74240 vs the ELF's 4096 + 66048 objects) -> no effect (this addendum)
+Region-B is byte-exact at n_tiles=2048 (addendum 45). So the NaN is NOT driven by region-A's
+content or layout, and the input activations are clean. What that leaves, in the order I would
+look next: the norms/linear5 BO BEYOND the 256 B already neutralised (it is 5,242,880 B and is
+packed by a layout that has the same "does the packer match the ELF's expectation?" question
+unresolved -- npu_pack_moe_linear5_bo concatenates conv1d, norm, ssm_a, ssm_dt, alpha, beta,
+ssm_out...), the kv/state BO (arg-4, 134,217,728 B, never examined at all), and the ELF's own
+sequence.
+
+Note on method, because it is the whole story of this hunt: the ELF's symbol table gave me a
+genuinely specific, arithmetically exact prediction (66048 = 65536+256+128+128) and it was still
+wrong as a causal claim. Specificity is not evidence. Ten lines and one run answered it.
