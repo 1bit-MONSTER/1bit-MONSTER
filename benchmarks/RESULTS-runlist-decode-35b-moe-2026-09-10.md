@@ -5000,3 +5000,48 @@ and bit-identical to each other in every run ever taken; the GEMM is verified at
 lane's reference design n1_core_i8_m1.py is a v26-style single-row derivation whose failure rate I
 measured at 1 in 8, which is why every 8192/8192 quoted before addendum 117 should be read as a single
 lucky sample.
+
+### Addendum 137 — v27's A, B and C addressing decode to EXACTLY the layout my driver feeds
+
+Read v27's remaining DMA descriptors and decoded them against the parameters (M=128, m=32, K=2048,
+k=64, N=8192, n=128, c=4, r=4):
+
+  A (arg0, 262,144 B):  dma_bd(offset, 512, sizes=[4,8,8,8], strides=[16384, 8, 2048, 1]), repeat_count 3
+      address = ki*64 + c*65536 + a*16384 + b*8 + d*2048 + e
+      -> 512 B gathered then repeated 4x = one k-tile (64) x 32 rows = 2048 B per column
+      -> ROW-MAJOR [M][K] with the M dimension SPLIT into 32-row blocks, one per column
+  B (arg1, 16,777,216 B): dma_bd(offset, 1024, sizes=[8,16,8,8], strides=[65536, 8, 8192, 1])
+      offset = ki*k*N + n_tile*n          (0,128,256,384 then 524288, 524416, ...)
+      -> ROW-MAJOR [K][N], tile = 64 k x 128 n
+  C (arg2, 1,048,576 i32): 32 rows x 8192 per column -> ROW-MAJOR [M][N], M split into 32-row blocks
+
+ALL THREE MATCH WHAT MY DRIVER FEEDS. The A is row-major (confirmed independently by I8Ctx::quantize_async
+writing `Am[m*KD + k]`), the B offset formula is literally the one n1_core_i8_m1.py uses
+(`ki*k*N + n_tile*n`), and the C is row-major M x N. So the v27 result is NOT a layout mismatch, and the
+list of things it could be is now short.
+
+AND THE SHAPE OF THE FAILURE IS NOW PRECISE: 96 all-zero rows out of 128 means THREE OF THE FOUR COLUMN
+BLOCKS produced nothing, consistently across eight runs, while one 32-row block carried data. That is a
+COLUMN-LEVEL failure, not a tile-level or cell-level one -- columns 1, 2 and 3 either never ran, or their
+output never reached C. It is also the same phenomenon as my own m1 design's all-zero C: a whole
+producer's output missing rather than a value being wrong.
+
+WHAT THAT LEAVES, and it is a genuinely short list for whoever continues:
+  1. Run the engine's own path (I8Ctx / npu_engine) against a v27 xclbin and count failures. That is the
+     only way to know whether v27 is sound and my driver is still wrong, or whether -- as my m1
+     measurements suggest -- these generator designs have a real, shared, column-level completion
+     problem that the engine's own decode may ALSO be silently suffering from.
+  2. If the engine's path is clean, diff its launch against mine at the level of BO contents and sizes
+     rather than layouts, since layouts are now eliminated.
+  3. If the engine's path is ALSO flaky, then the finding is much bigger than this workstream: the
+     engine's 1.9 s/tok decode would be built on GEMMs that occasionally drop a whole column block.
+     Given that its own header already warns that a topology mismatch "silently computes the wrong
+     result rather than failing", that possibility deserves to be checked rather than assumed away.
+
+NOTE ON BUDGET: this lane has now spent an extremely large number of tokens, and the remaining work is
+investigation of a toolchain-level hazard rather than further implementation. Everything produced is
+committed and pushed -- 137 addenda in benchmarks/RESULTS-runlist-decode-35b-moe-2026-09-10.md, the
+verified three-phase design in n1_combined_norm_qkv.py, and the driver with its isolation modes in
+npu-infer/tools/combined_smoke.cpp -- and the honest summary is in addendum 132: the STRUCTURE is solved
+and the norms are proven, the GEMM is verified at no shape, and the lane's own reference design shares
+its fault.
