@@ -6793,3 +6793,58 @@ stub it (the `NOQKV` pattern shows how to remove a phase) and re-time launch B a
 to roughly the O/FFN cost, attention owns the 991 ms; if it stays near 991 ms, attention is excluded and the
 bisection moves to the FFN stages. Either outcome is decisive, which is the property my tap test had and my
 bracket arithmetic did not - so this is a hypothesis with a test, not a fifth guess.
+
+## FOUND IT: launch B is DMA-DESCRIPTOR-bound. The cost is per-BD latency, not bytes.
+
+Per-memref data volume across launch B (parsed from design.mlir, bf16):
+
+```
+memref   size        BDs     MB moved   mean_burst_eff
+%arg8       131072   12352      50.59 MB      100.00%     activation (efficient)
+%arg11      393216    6240      25.95 MB        0.26%
+%arg4       262144    4224      17.30 MB        6.25%
+%arg3       524288    3072      12.58 MB        1.17%     attention QKV
+%arg9      6291456   12288      12.58 MB        0.13%     W
+%arg14      131072    2112       8.65 MB      100.00%     activation
+%arg12     4194304    8192       8.39 MB        0.78%     W_QKV / W_D
+%arg5      2097152    4096       4.19 MB        0.78%     W_O
+...                                                                 TOTAL 145.50 MB
+```
+
+The weights are 20.97 MB of 145.50 MB - **14%**. So even a perfect fix on them could not move the number
+much. But the decisive figure is this:
+
+```
+                          launch A      launch B
+  wall time                 63.48 ms    991.34 ms
+  aie.dma_bd descriptors      8416        53408
+  ns per descriptor          7543        18562
+  descriptors per second   132577        53875
+```
+
+**Both launches pay 7.5-18.6 us per descriptor against a healthy ~1-2 us, and the wall time is linear in the
+DESCRIPTOR COUNT** (6.3x the descriptors, ~15x the time). 145.5 MB in 991 ms is only **147 MB/s effective** -
+20x below even the pathological rate this repo documents - which is the signature of *waiting*, not moving.
+53,408 descriptors at 18.6 us each is the 991 ms.
+
+**And this explains my failed experiment exactly.** My tap change widened each BD from 16 B to 64 B bursts but
+left the descriptor COUNT at 53,408 and the elements-per-BD unchanged (sizes=[2,4,8,8] and [1,1,16,32] are both
+512 elements). If the cost is per-descriptor latency rather than bytes per burst, that change was required to
+do nothing - and it did nothing (0.86%). My "0.78% burst efficiency" framing measured the right quantity for
+the wrong model: efficiency matters when you are bandwidth-bound, and this kernel is not.
+
+It also explains the asymmetry with launch A, which is fast not because it is efficient per descriptor (7.5 us
+is still poor) but because it issues 6.3x fewer of them.
+
+**The fix is therefore to REDUCE THE DESCRIPTOR COUNT, and the generator shows both patterns side by side.**
+The A taps are issued as a pipeline - `at = ...; dma_start_task(at); pend.append(at); while len(pend) >= 8:` -
+so up to 8 are in flight and latency overlaps. The weight taps are issued
+`dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)` - **start, await, free, serially, one at a time**,
+paying full DMA latency per tap. 24,576 weight descriptors out of 53,408 issued strictly serially is the bulk
+of the 991 ms. Pipelining the weight taps (same pattern as A, or a multi-BD task) is the intervention to
+test next, and it is a generator change with no correctness implication for the DATA - unlike my last one,
+which changed delivery order and broke token parity.
+
+**Fifth hypothesis, first one with a mechanism that predicts the measurement I actually have** - including
+predicting the null result of the previous experiment, which is the strongest form of fit available here. Test
+remains the intervention: pipeline the weight taps, rebuild, re-time launch B, and confirm token parity.
