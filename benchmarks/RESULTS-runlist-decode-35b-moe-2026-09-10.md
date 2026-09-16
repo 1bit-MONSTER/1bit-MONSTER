@@ -5652,3 +5652,27 @@ dump load_attn_weights (same tooling as dump_lin5_weights), and read the per-ten
 (Impl+0x4d0) / offset (Impl+0xb8) values + the tensor name strings from the disassembly around
 0x7a2b2..0x7a564. That, plus the region-B packer (already byte-exact), fully specifies every BO
 the layer ELF reads.
+
+### Addendum 152 — the alpha/beta (and router) weights are TILED in the final BOs, not raw; offsets confirmed
+
+Decoded the remaining exported per-stage generators (addresses from nm):
+  _send_linear_conv_weights  @0x92ac0  -> conv1d+ssm_norm+ssm_a+ssm_dt @ norms-BO(arg3) 0, 66048 B (addendum 150)
+  _move_alpha_beta_weights   @0x92d70  -> TWO MM2S BDs: alpha @arg3 0, beta @arg3 65536
+  _send_router_w_and_share_exp_gate @0x92020 -> (needs qwen3_6_layer_weright_def*, not yet decoded)
+  _gen_linear_sequence call order (0x97650): hidden -> rms -> convw -> conv1d(inline) ->
+      move_linear_kv_cache -> move_alpha_beta_weights -> send_router_w_and_share_exp_gate.
+
+The full layer ELF's own read side (authoritative) reads alpha @arg3 66048 and beta @arg3 197120
+each as a 3-D tiled gather: D0=16/1, D1=256/16, D2s=4096, i.e. [16 D2][256 D1][16 D0] over
+65536 bf16 — alpha[2048,32] is stored TILED in the norms BO, not the raw row-major memcpy
+npu_pack_moe_linear5_bo writes. The reorder is: BO[g//256*4096 + (g%256)*16 + c] = alpha[g//2][(g%2)*16+c]
+with g = row*2 + col//16 (16-column split, then 256-row blocks) — i.e. the "16x16 microtile"
+weight layout. beta uses the same formula. ssm_out @328192 is read linear in 4736-B rows (its own
+Q8_0-style reorder, addendum 45 family). Router is read @arg2 12288 as a strided gather
+(D0=16/1 D1=256/128), i.e. also tiled, not the stride-8 interleave npu_pack_moe_router_bo writes.
+
+CONSEQUENCE: the fix is a pure host-side repack, no device work. npu_pack_moe_linear5_bo must emit
+alpha/beta in the 16x16-microtile order above (and ssm_out in the 4736-B row order), and
+npu_pack_moe_router_bo must emit the router in the D1=256/128 tiled order (exact index map still
+to confirm against the load_attn_weights / _send_router_w_and_share_exp_gate dumps). The tiling
+formula for alpha/beta above is the first exact, derivable reorder of this lane.
