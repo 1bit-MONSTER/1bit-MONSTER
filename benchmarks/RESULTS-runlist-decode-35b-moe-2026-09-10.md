@@ -5254,3 +5254,34 @@ I have not measured it. The norm's 910/2048 against my host reference is a refer
 MY ERROR PATTERN, worth recording: four failures this session, all interface assumptions rather than
 numerical ones — a cacheable instruction BO, a six-argument sequence where the runtime provides five, a
 column count, and a B packing order. Two of the four I "fixed" in the wrong direction first.
+
+### Addendum 142 — two transferable facts: the ELF carries no column count, and the fused-design column budget
+
+FACT 1 — A BARE LAYER ELF DOES NOT DECLARE A COLUMN COUNT. I checked this directly rather than by
+inference, because a peer lane was about to hunt for a 9-column ELF among the 8,193 files in
+/home/bcloud/npu-ab/elfs-4k/:
+
+  $ readelf -n elfs-4k/elf_0002_lmhead.bin
+      .note.xrt.UID    Owner XRT    desc: GO BUILDID (16 bytes)
+  $ strings -n 4 elf_0002_lmhead.bin | grep -iE "column|partition"
+      (nothing)
+
+The only note section is an XRT build id. The column requirement lives in the XCLBIN's AIE_PARTITION
+section, and `xclbinutil --dump-section AIE_PARTITION:JSON` returns 457 bytes with no column field — so
+neither the ELF nor that dump is the place to read it. THE AUTHORITATIVE SOURCE IS THE DESIGN'S OWN
+aie.tile OPS, which is how I settled my own case. Worth knowing before anyone spends time on ELF
+metadata.
+
+FACT 2 — THE COLUMN BUDGET FOR A FUSED DESIGN ON THIS PART. The device has EIGHT columns (0..7). The
+GEMM array of n1_core_i8_v27.py occupies columns 0..cols-1 and nothing else, so the engine's own xclbins
+fit exactly at cols=8 — which is why the engine's path runs and why npu_ab.sh, which sets
+NPU_XCLBIN_DIR to $ROOT/engine/npu/xclbins, is not a source of 9-column requests. But n1_combined_norm_qkv.py
+adds TWO tile columns beyond the GEMM array (the norm at tile(NC,*) and the FFN norm at tile(NC+1,*)), so
+a fused design has the budget cols + 2 <= 8, i.e. COLS <= 6. Combined with the generator's own requirement
+that cols divide (N/n), on the 35B shapes (N=8192, n=128, so 64 tiles) that means C=4 — which is exactly
+the value that works, and the value my own addendum 88 had already found for a different reason.
+
+That constraint was invisible in every timing number and every success I had measured; it appeared only
+in dmesg, as `aie2_rq_add: Require 9 columns exceed 8`. A design that overflows the column budget does not
+fail cleanly or consistently — it may open when the device is quiet and be refused when it is busy, which
+is a plausible shape for the intermittency this lane fought, though I have not measured that either.
