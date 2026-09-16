@@ -5049,3 +5049,46 @@ an explanation that fit the evidence I had, without a test that could have faile
 weights, to find where the second defect is. The bench comparison was previously run with the raw
 weight and passed, so either the defect is in a path the bench does not exercise, or the valid weights
 expose something the raw ones masked.
+
+## HELD-OUT TEST: the effective weights generalise. So the second defect is real and is in the fused path.
+
+The right check for a fit is not its residual on the data it was fit to - that is the trap I fell into
+with the npt=1024 overfit. It is whether it predicts data it never saw. Fit on rows 0..3071, predict
+3072..6143:
+
+```
+wt     in-sample res   HELD-OUT res   verdict
+WQKV   0.004971        0.007318       generalises
+WO     0.004134        0.012939       generalises
+WGU    0.004891        0.007311       generalises
+WD     0.000000        4.411620       inconclusive - see below
+```
+
+**W_QKV, W_O and W_GU genuinely generalise**: held-out residuals within 1.5-3x of in-sample, all at bf16
+noise level. Those three override matrices are the effective weights, established by a test that could
+have failed and did not.
+
+**WD's run is ill-posed, not evidence of failure**: its training subset is 3072 rows against 3072
+unknowns - *square* - so it interpolates by construction (hence in-sample 0.000000 and held-out 4.41).
+That says nothing about WD either way. What does bear on it is the full fit: 6144 rows against 3072
+unknowns, rank 3072, residual 0.006562, i.e. overdetermined with the same bf16-level non-zero residual
+the other three show. So WD is as sound as the rest.
+
+**Conclusion, and it settles the open question.** The four effective weights are correct by a test that
+can fail, and with all four loaded the tokens are still `3164, 13378, 13378, 13378` against a baseline
+of `785, 220, 62014, 220`. **The weight layout is necessary and not sufficient. The fused path has at
+least one further defect, and it is in the kernel or the driver's composition of it** - not in the
+weights.
+
+That also confirms the retraction I recorded one commit ago: "the 5.36x deficit was never a kernel bug"
+was premature, and the correct statement is the narrower one - *the weight layout was one real defect*.
+Two independent lines now say the same thing: the tokens do not converge with correct weights, and the
+degenerate constant-output pattern (`13378 x3`) persists, which is the silent-stall signature.
+
+**The path from here is unchanged and now well-targeted**: stage-by-stage comparison of the fused kernel
+against the bench and against the engine's own per-stage buffers, with the **valid** weights loaded -
+looking for a stage that is constant, zero, or wrong, rather than anything to do with weights.
+
+**Method note.** This test exists because I asked what would falsify my own fix instead of what
+confirmed it. The in-sample residual could not distinguish a correct weight from an interpolant; the
+held-out residual can. Every retraction in this file is a variation on not doing this.
