@@ -33,7 +33,7 @@ N_K=$(( H / K ))
 
 echo "== generator: n1_fused_norm_gemm_rr.py -m $M -H $H -N $N -k $K -NT $NT -wdepth $WD"
 "$PY" "$G/n1_fused_norm_gemm_rr.py" -m "$M" -H "$H" -N "$N" -k "$K" -NT "$NT" \
-      -wdepth "$WD" -stack "$NSTACK" -gstack "$GSTACK" >design.mlir 2>gen.err \
+      -wdepth "$WD" -stack "$NSTACK" -gstack "$GSTACK" ${BF16OUT:+-bf16out} >design.mlir 2>gen.err \
   || { echo "== GENERATOR FAILED"; tail -20 gen.err; exit 1; }
 [ -s design.mlir ] || { echo "== EMPTY design.mlir"; tail -20 gen.err; exit 1; }
 echo "   design.mlir: $(wc -l <design.mlir) lines"

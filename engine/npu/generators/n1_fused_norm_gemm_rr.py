@@ -34,13 +34,16 @@ def main():
     p.add_argument("-stack", type=int, default=4096)
     p.add_argument("-gstack", type=int, default=4096)
     p.add_argument("-wdepth", type=int, default=1)
+    p.add_argument("-bf16out", action="store_true",
+                   help="bf16 C output (static f32 accumulator + RNE store): what a "
+                        "bf16 consumer such as the attention needs")
     a = p.parse_args()
     with mlir_mod_ctx() as ctx:
-        fused(a.m, a.H, a.N, a.k, a.NT, a.stack, a.gstack, a.wdepth)
+        fused(a.m, a.H, a.N, a.k, a.NT, a.stack, a.gstack, a.wdepth, a.bf16out)
         print(ctx.module)
 
 
-def fused(M, H, N, k, NT, NSTACK, GSTACK, WDEPTH):
+def fused(M, H, N, k, NT, NSTACK, GSTACK, WDEPTH, BF16OUT=False):
     n_k = H // k
     n_n = N // NT
     assert H % k == 0 and N % NT == 0
@@ -52,7 +55,7 @@ def fused(M, H, N, k, NT, NSTACK, GSTACK, WDEPTH):
         SS_ty = np.ndarray[(M,), np.dtype[np.float32]]
         AN_ty = np.ndarray[(M, k), np.dtype[bfloat16]]
         W_ty = np.ndarray[(k, NT), np.dtype[bfloat16]]
-        C_ty = np.ndarray[(M, NT), np.dtype[np.float32]]
+        C_ty = np.ndarray[(M, NT), np.dtype[bfloat16 if BF16OUT else np.float32]]
 
         ko = "rms_split.o"
         reduce = external_func("rms_reduce_f32", inputs=[A_ty, SS_ty], link_with=ko)
@@ -60,6 +63,9 @@ def fused(M, H, N, k, NT, NSTACK, GSTACK, WDEPTH):
         zf32 = external_func("zero_f32", inputs=[SS_ty], link_with=ko)
         mm = external_func("matmul_bf16_f32", inputs=[AN_ty, W_ty, C_ty], link_with="nq_nt.o")
         accz = external_func("acc_zero", inputs=[C_ty], link_with="mm_acc.o")
+        acc0 = external_func("nq_acc_zero", inputs=[], link_with="nq_nt.o")
+        accm = external_func("nq_acc_mac", inputs=[AN_ty, W_ty], link_with="nq_nt.o")
+        accs = external_func("nq_acc_store_bf16", inputs=[C_ty], link_with="nq_nt.o")
 
         # ---- col 0: the norm half; A_norm leaves for DDR ----
         s0 = tile(0, 0); m0 = tile(0, 1); nc = tile(0, 2)
@@ -105,20 +111,32 @@ def fused(M, H, N, k, NT, NSTACK, GSTACK, WDEPTH):
             for _ in range_(0xFFFFFFFF):
                 for _nt in range_(n_n):
                     cbuf = C_f.acquire(ObjectFifoPort.Produce, 1)
-                    accz(cbuf)
-                    for _kt in range_(n_k):
-                        an = ANr_c.acquire(ObjectFifoPort.Consume, 1)
-                        wt = W_c.acquire(ObjectFifoPort.Consume, 1)
-                        mm(an, wt, cbuf)
-                        ANr_c.release(ObjectFifoPort.Consume, 1)
-                        W_c.release(ObjectFifoPort.Consume, 1)
+                    if BF16OUT:
+                        # f32 accumulation in a core-local static, converted to bf16
+                        # once on store (a bf16 C fifo cannot accumulate over K).
+                        acc0()
+                        for _kt in range_(n_k):
+                            an = ANr_c.acquire(ObjectFifoPort.Consume, 1)
+                            wt = W_c.acquire(ObjectFifoPort.Consume, 1)
+                            accm(an, wt)
+                            ANr_c.release(ObjectFifoPort.Consume, 1)
+                            W_c.release(ObjectFifoPort.Consume, 1)
+                        accs(cbuf)
+                    else:
+                        accz(cbuf)
+                        for _kt in range_(n_k):
+                            an = ANr_c.acquire(ObjectFifoPort.Consume, 1)
+                            wt = W_c.acquire(ObjectFifoPort.Consume, 1)
+                            mm(an, wt, cbuf)
+                            ANr_c.release(ObjectFifoPort.Consume, 1)
+                            W_c.release(ObjectFifoPort.Consume, 1)
                     C_f.release(ObjectFifoPort.Produce, 1)
 
         @runtime_sequence(
             np.ndarray[((M + 1) * H,), np.dtype[np.float32]],
             np.ndarray[(H * N,), np.dtype[bfloat16]],
             np.ndarray[(n_k * M * k,), np.dtype[bfloat16]],
-            np.ndarray[(M * N,), np.dtype[np.float32]],
+            np.ndarray[(M * N,), np.dtype[bfloat16 if BF16OUT else np.float32]],
         )
         def seq(A, W, AN, C):
             # ARM THE DRAIN FIRST, WITHOUT AWAITING: the norm core produces A_norm

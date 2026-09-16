@@ -1229,3 +1229,25 @@ i.e. the real QKV projection at the engine's prefill M, correct to the same
 tiled-accumulation ULP as the M=16 build (95.2%). **The linear stages now run at
 prefill scale with the fused RMSNorm, and every architectural blocker on the
 fused layer is closed.**
+
+### bf16 output: the QKV -> attention interface, verified bit-exact
+
+The QKV projection's consumer is the attention, whose mmuls are bf16, but the
+re-read GEMM accumulates in f32 over K — so the output must be converted once at
+the end. `nq_nt.cc` gained a core-local f32 accumulator with an RNE store
+(`nq_acc_zero` / `nq_acc_mac` / `nq_acc_store_bf16`): the accumulator stays in the
+core (which matters because the MEM tile's buffers bind first at prefill M) and C
+leaves as bf16, so there is no f32 round-trip through DDR just to convert.
+
+```
+BF16OUT=1 bash build_fused_norm_gemm_rr.sh 128 1024 4096 32 32 1
+tests/bench_ngrr_bf16.cpp:
+  fused RMSNorm+QKV bf16-out M=128 H=1024 N=4096: exact = 524288/524288 (100.0%)
+```
+Bit-exact against a host reference that rounds the f32 accumulation to bf16 with
+the same RNE rule.
+
+**So every interface the full-layer composition needs now exists and is
+verified:** normed linear stages at prefill M (f32 or bf16 out), the attention at
+NH=16/1024 keys, the cross-stage layout rules (O_s de-microtiles => row-major
+buffers; A_norm is microtiled => verbatim copies), and the shim BD-lifetime rules.

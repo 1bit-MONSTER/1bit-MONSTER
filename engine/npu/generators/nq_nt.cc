@@ -54,3 +54,25 @@ extern "C" void nq_gemm(const uint16_t *w, int32_t kt, float *c) {
     matmul_bf16_f32((bfloat16 *)(g_an + (size_t)kt * DIM_M * DIM_K),
                     (bfloat16 *)w, c);
 }
+
+// ---- static f32 accumulator with an RNE bf16 store -------------------------
+// For stages whose CONSUMER needs bf16 (the QKV projection feeding the attention,
+// whose mmuls are bf16). Keeping the accumulator in a core-local static avoids a
+// second (f32) C fifo — which matters because the MEM tile's buffers, not the
+// core's, are the binding budget at prefill M — and avoids the f32 C round-trip
+// through DDR just to convert it.
+static float g_cacc[DIM_M * DIM_N] __attribute__((aligned(64)));
+
+extern "C" void nq_acc_zero(void) {
+    for (int i = 0; i < DIM_M * DIM_N; i++) g_cacc[i] = 0.0f;
+}
+extern "C" void nq_acc_mac(const uint16_t *a, const uint16_t *w) {
+    matmul_bf16_f32((bfloat16 *)a, (bfloat16 *)w, g_cacc);
+}
+extern "C" void nq_acc_store_bf16(uint16_t *out) {
+    for (int i = 0; i < DIM_M * DIM_N; i++) {
+        uint32_t u; __builtin_memcpy(&u, &g_cacc[i], 4);
+        uint32_t lsb = (u >> 16) & 1u;
+        out[i] = (uint16_t)((u + 0x7FFFu + lsb) >> 16);
+    }
+}
