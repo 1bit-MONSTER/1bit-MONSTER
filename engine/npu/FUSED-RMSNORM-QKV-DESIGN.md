@@ -7073,3 +7073,35 @@ unlike the repack plan it does not touch data layout at all.
 each, descriptor count drops by ~64x, and launch B falls correspondingly from 991.34 ms. Token parity
 (`220 49789 220 11141`) remains mandatory - order-preserving by construction, but that is exactly the
 assumption that has been wrong twice.
+
+## The bound on that aggregation: FIFO DEPTH, so it is partial, not 64x
+
+Before implementing the aggregation I have to record the constraint that limits it, because getting this wrong
+is the silent-stall failure my notes already document ("a core's fifo consumption pattern is a COMPILE-TIME
+RATIO; a phase with the wrong ratio stalls SILENTLY").
+
+Aggregating all n_k=64 kt-tiles into one BD delivers 64 x M x k = 64 x 2048 = **131,072 elements (256 KB) in a
+single descriptor**. A fifo is nowhere near that deep, so the naive 64x form would overrun the fifo and stall -
+trading a 991 ms descriptor cost for a stall, which is not progress.
+
+So the aggregation must be **partial, bounded by the fifo depth**: AGG kt-tiles per BD where AGG x M x k fits
+the fifo the kernel reads from. With the recorded fifo depths in this design being small (the O_F/O_S fifos had
+to be depth 2, and the shim allows only 16 simultaneously active BDs), the realistic AGG is small - a handful,
+not 64.
+
+That still matters: every factor of AGG is a proportional cut in descriptors, and the measured cost is
+~18.6 us **per descriptor**, so AGG=4 is ~4x fewer A- and W-taps in each GEMM phase. What it is NOT is the
+order-of-magnitude I wrote a moment ago, and I am correcting that before anyone builds on it.
+
+**Revised, honest plan for the next run:**
+1. Determine the actual fifo depth for the ANR_s / W_s fifos from the emitted MLIR (the `aie.objectfifo`
+   declarations state depth) - it is a grep, not a device run.
+2. Pick the largest AGG whose payload fits that depth with margin.
+3. Aggregate the A-tap and W-tap BDs in phase 3 (and the same shape in O-proj/GU/D) to that AGG.
+4. Rebuild, re-time against 991.34 ms, and check token parity (`220 49789 220 11141`).
+5. Report the descriptor-count delta and the time delta together; if the count falls and the time does not,
+   the per-descriptor cost model is wrong and I say so.
+
+The per-descriptor cost model (launch A 7.54 us/BD contiguous vs launch B 18.56 us/BD strided) and the
+in-tree evidence against a fixed shim limit both still stand. What I corrected here is only the SIZE of the
+win I can claim from aggregation before measuring.
