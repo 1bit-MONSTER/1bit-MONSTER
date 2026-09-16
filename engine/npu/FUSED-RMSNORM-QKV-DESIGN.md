@@ -1097,3 +1097,40 @@ Two things this pinned down for the rest of the composition:
   `offset = h*M*HD + d0`), not a microtiled one;
 * the O-proj phase is a sibling of the attention loop in the runtime sequence, so
   its DMA tasks are emitted once, after the attention's.
+
+## ⚠ Architectural limit found while wiring the composition: M is the whole ballgame
+
+The first composition (attention + O-proj) is a **token tile**, not a prefill. That
+is fine for the attention — it QUERY-TILES by design (M queries against all
+keys) — but it does not extend to the linear stages, and the reason is the
+core-local-A mechanism itself:
+
+* every fused linear stage holds the whole `(M x K)` A on chip, so
+  `M <= ~40KB / (2K)`:
+  **K=1024 (QKV, GU) -> M <= 20; K=2048 (O-proj) -> M <= 10; K=3072 (D) -> M <= 6**,
+  which is why the composition is pinned at M=8.
+* the ENGINE's prefill runs the QKV projection **batched at M = npt**
+  (`npu_engine_universal.cpp` allocates `qkv_ascales(npt)` and reads
+  `h_b[pi * H]` for every prompt token), i.e. M = 1024 at @1k.
+
+So a fused layer at M=8 would need **128 launches to prefill 1024 tokens** — worse
+than the ~9-launch/layer per-op path the goal set out to replace. "~1 launch per
+layer" is only true **per 8-token tile**.
+
+The KV projection is the part that cannot be tiled this way: Q can be
+query-tiled (M=8) but K and V are needed for the WHOLE context, so their
+projection is an `(npt x 1024) x (1024 x 2048)` GEMM.
+
+Two structural ways out, neither built:
+1. **A_norm in DDR, N-outer/K-inner re-reading the A_norm K-tiles from the shim**
+   for each N-tile. The on-chip version of this re-stream is the documented
+   multi-shot zeroing blocker, but a *shim* re-delivery from DDR is a different
+   path (`dma_bd` tasks again, not an objectfifo handshake) and may not hit it.
+   **This is the decisive next experiment**: one N-tiled fused RMSNorm+GEMM with
+   `n_n > 2` N-tiles, A_norm read from DDR each N-tile, at M=8 — does it stay
+   correct? If yes, the linear stages scale to any M and the composition becomes a
+   real prefill path; if it zeroes like the on-chip handoff, the fused-layer
+   approach cannot do long-context prefill at all.
+2. **Keep the KV projection as the engine's existing per-op large-M GEMM** and use
+   the fused layer only for the query-tiled parts. That is a hybrid, and it is
+   what the numbers in FK3-STATUS already pointed at.
