@@ -3034,3 +3034,49 @@ Both paths' dumps are now in place and reproducible; the next comparison is a di
 the norm's OUTPUT activation (not the QKV weight) between the two paths, which needs one more
 dump on the fused side (`A_norm`, the microtiled norm output) and one on the per-op side
 (`bA` immediately after `rn_bf16`).
+
+## Launch A's kernel is exonerated too - with a non-unit gamma
+
+Patched bench_ngrr_bf16 so the gamma is no longer fixed at 1.0 (it now uses
+`0.25 + (i%7)*0.25`, i.e. 0.25..1.75 with mean ~1.0, matching a real model's range) - the
+one thing the earlier verification never exercised, since `Am[M*H+i]=1.0f` makes the gamma
+path untestable.
+
+```
+fused RMSNorm+QKV bf16-out M=128 H=1024 N=4096:
+  exact=524288/524288 (100.0%) within1bf16ulp=0 beyond=0 worst_rel=0.000e+00
+```
+
+Still bit-exact. So the kernel's norm arithmetic AND its learned-gamma path are correct.
+
+Yet the engine measures a 2.51x deficit in exactly that kernel's output. Extracted the Q/K/V
+slices from the driver's launch-A dump on the same 128-token block the per-op path dumps:
+
+```
+my launch A C (QKV) : Q 1.03906  K 1.04688  V 1.05469
+bQ post-RoPE        : Q 1.03906  K 1.23438  V 1.05469   (RoPE rotates K only, as designed)
+per-op path Q       : 2.60938
+per-op attn OUTPUT  : 2.28125   (my fused: 0.7695)
+```
+
+RoPE behaves correctly (K changes under rotation, Q and V do not). Everything about the
+kernel is verified; everything about the weights is verified (GU identical, Wqkv
+bit-identical between host and device dequant); the gamma range is verified. Therefore the
+inputs the driver actually supplies must differ from what I believe they are.
+
+**The constraint that matters, and my next mistake to avoid.** The engine's own
+`NPU_DUMP_L0` dumps show the per-op path's normed activation (`bf16_l0_bA.bin`) at
+**maxabs 2.54688** while the layer input `bh` is ~1.05 - so the real `in_n[l]` gamma
+*amplifies* by ~2.4x, exactly as RMSNorm with a mean gamma near 2.4 would. My fused path's
+QKV (~1.04) is consistent with a normed activation near 1.4, i.e. roughly `bh` itself, as if
+the gamma were near 1. So the strongest hypothesis now is that **the real gamma is not
+reaching the kernel** - and the thing to check first is what the driver actually puts in A's
+row M and whether `in_n[l]` is what I assume, not another norm's weights.
+
+**Process note.** My first attempt at a supporting measurement was a pre-launch probe reading
+`map()` WITHOUT a `sync(FROM_DEVICE)`. It reported `aB` as 3.689e17 of garbage, which I
+initially blamed on the standalone test's unsigned bug. In the ENGINE that value cannot come
+from those formulas, which should have told me the probe was reading a stale staging buffer
+rather than device memory. A post-launch probe WITH a sync reads 1.0469, consistent with the
+real embedding. Pre-launch probes on this driver are only meaningful with a sync, and that is
+now noted in the driver.

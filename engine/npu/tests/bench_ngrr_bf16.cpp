@@ -29,7 +29,10 @@ int main(int argc,char**argv){
   memcpy(bI.map(),ins.data(),ins.size()*4);bI.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   float*Am=(float*)bA.map();uint16_t*Wm=(uint16_t*)bW.map();
   for(long i=0;i<(long)M*H;i++) Am[i]=(float)((i%61)-30)*0.1f;
-  for(int i=0;i<H;i++) Am[(size_t)M*H+i]=1.0f;
+  // NON-UNIT gamma: the engine's learned norm weights are ~0.1-2, and the earlier
+  // gamma=1.0 run could not exercise the kernel's gamma path at all. Varied values with
+  // a mean near 1 keep the magnitudes the same order as a real model.
+  for(int i=0;i<H;i++) Am[(size_t)M*H+i]=0.25f + (float)(i%7)*0.25f;   // 0.25..1.75
   for(long i=0;i<(long)H*N;i++) Wm[i]=rne((float)((i%13)-6)*0.1f);
   memset(bAN.map(),0,(size_t)M*H*2);memset(bC.map(),0,(size_t)M*N*2);
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW.sync(XCL_BO_SYNC_BO_TO_DEVICE);
