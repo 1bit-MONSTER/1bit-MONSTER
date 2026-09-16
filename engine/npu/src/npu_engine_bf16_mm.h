@@ -394,6 +394,14 @@ struct Bf16Mm {
             gen_tok = bucket;
             fprintf(stderr, "  Bf16Mm: generated attention %s (nh%d hd%d nkv%d)\n",
                     xc.c_str(), nh, attn_hd, attn_nkv);
+            // Measured 2026-09-15 at 2048 keys: 823.86 s (with the K/V cache) against
+            // ~44 s for the CPU reference, a wrong boot token, and an abort with
+            // "free(): invalid size". The kernel is per query token, so a block-shaped
+            // prefill needs one launch per row and cannot beat the fallback. Kept
+            // opt-in for the block-shaped redesign; not a working path.
+            fprintf(stderr, "  Bf16Mm: WARNING NPU_ATTN_GEN is a measured non-viable path "
+                            "for prefill (19x slower than the CPU reference, wrong token, "
+                            "heap corruption) - see RESULTS-head-block-loop-2026-09-15.md\n");
         }
         // K/V do not depend on the query row: convert once. The region layout is the
         // one the engine's own bKv fill writes - K in regions 0/1 by kvh<4?0:1 and V
