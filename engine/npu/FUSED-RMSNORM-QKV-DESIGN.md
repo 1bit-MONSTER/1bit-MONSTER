@@ -5261,3 +5261,54 @@ the second time a peer has corrected a zeroed-buffer inference of mine.
 weights and `NPU_FK3_DUMP`, and classify each stage's C buffer as **zero / constant / finite-but-wrong**.
 Their transferable finding says which way it will probably fall - every non-ERT failure on their lane was
 a dtype/layout mismatch presenting as a wrong **finite** value, never a zero and never a constant.
+
+## CLASSIFIED: all stages finite -> layout/logic, and the defect localises to launch A
+
+The peer's third signal, applied to the driver's own stage dumps with the **valid** weights:
+
+```
+launch B input (aA)   FINITE  nonzerofrac 0.4894  maxabs 0.18750  meanabs 0.01193
+bQ post-RoPE          FINITE  nonzerofrac 1.0000  maxabs 5.50000  meanabs 0.18595
+launch A out (QKV)    FINITE  nonzerofrac 1.0000  maxabs 5.62500  meanabs 0.18299
+launch B out (CD)     FINITE  nonzerofrac 1.0000  maxabs 6.59375  meanabs 0.07249
+```
+
+**Nothing is zero and nothing is constant.** Per their signature (zeros => ratio stall; finite-but-wrong
+=> layout/logic) this rules the fifo-ratio stall out for good and puts the defect in layout/logic -
+matching the prior they gave, that every non-ERT failure on their lane presented as a wrong **finite**
+value.
+
+**And my "the layer emits a constant" reading was wrong** - it was about the *token* stream, not the
+buffer. The layer output has **128 distinct rows of 128** and a per-row std of 0.039. The repeated token
+(`13378 x3`) is an **argmax artifact** downstream, not a constant layer. Two corrections in one line:
+I attributed a token-level symptom to a buffer-level cause without looking at the buffer.
+
+**The isolation, which is the useful part.** My launch-A QKV against the engine's own QKV, now with the
+valid weight:
+
+```
+mine    maxabs 5.62500  meanabs 0.18299
+engine  maxabs 12.50000 meanabs 0.17632
+meanabs ratio                        1.0378          <- was 4.8x before the weight fix
+per-row corr(mine, engine):  mean 0.5124  min 0.1416  max 0.8052   <- was ~0.01
+```
+
+The weight fix genuinely worked: magnitudes now agree to **3.8%** and the correlation rose from noise to
+**0.51**. But 0.51 is not 1.0, so something structural remains - **and it is already visible at launch
+A's output, which depends only on `bA` and `W_QKV`.**
+
+Both of those are now independently validated: `bA` is byte-identical at its dump and at the launch site,
+and `W_QKV` is well-conditioned (cond 73) and **held-out validated** (in 0.00497 -> out 0.00732). So the
+remaining discrepancy is in the **launch-A path itself** - the fused RMSNorm+QKV kernel, or the driver's
+composition of it - **not** in the weights and **not** in buffering.
+
+**Which means my retracted claim was right to be retracted.** "The 5.36x deficit was never a kernel bug"
+is now contradicted by a stage-level measurement rather than by an argument, and launch A is where the
+next instrument goes. This is also the first time this session a defect has been localised to a specific
+launch by a measurement whose reference was independent of it.
+
+**Next:** compare launch A's output against the **bench** (`bench_fk3_layer`) on the same input and the
+same valid weight - the bench and the driver agree on all six stages historically, so if they now
+disagree, the divergence is in the driver's launch-A composition (input staging, weight BO, or
+`NPU_FK3_SKIP_A`-adjacent pathing); if they agree, the divergence is in what the driver feeds launch A
+relative to what the engine feeds its own QKV GEMM.
