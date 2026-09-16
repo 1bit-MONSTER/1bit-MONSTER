@@ -5862,3 +5862,26 @@ region-B base and expert-pool size (480 MB vs 444 MB). Dumped v0.9.46 load_linea
 (dense 0..4 MB regions), so the final-BO assembly (Impl::load_weights) applies the reorders, same as
 v1.0.x. Next: derive the v0.9.46 region-B + ssm_out + norms-head reorders from the dumps and update
 npu_pack_moe_* in model.c, then run moe_smoke against the v0.9.46 ELF (no NaN expected).
+
+### Addendum 161 — v0.9.46 reorder_cpy decoded: H=n/256 pair-interleave, dtype-tiled (8704 Q8_0 / 5120 Q4K)
+
+gdb on the v0.9.46 load_linear_weights pins the reorder primitive qwen3_6_moe_desc::
+reorder_cpy(dst, src_buffer, n, dtype, tile, …) (constprop.2 @0x6fad0):
+  * tile size = 17<<9 = 8704 B for dtype&1 (Q8_0) and 10<<9 = 5120 B for dtype==2 (Q4K),
+    computed from the dtype nibble (0x12/0x11/… branch ladder).
+  * H = n/256 (sar $0x8 on arg n); the loop memcpys PAIRS — dst[2k]=src[k], dst[2k+1]=src[k+H]
+    (src2 = src + H*tile) — i.e. the SAME out[i]=in[i/2+H*(i%2)] interleave as region-B v1.0.x,
+    but over full 8704/5120 tiles (no 4736 trim).
+  * load_linear_weights calls reorder_cpy EXACTLY 3 times for L=1: qkv (n=2048→H=8, 2048 tiles),
+    ssm_out (n=2048→H=8, 1024 tiles), share (n=512→H=2, 128 tiles). The Q4K experts
+    (up/gate/down, 32768 tiles each) are packed by a DIFFERENT path (not reorder_cpy).
+  * reorder_cpy dst offsets (pool.data=0x7fffd0000000 in-session): share @+0x1E220000
+    (region-B +256 tiles), qkv @+0x1E330000 (+384), ssm_out @+0x1F430000 (+2432) → region-B
+    order [share_up, share_gate, share_down(256), qkv(384), ssm_out(2432)], 8704-B tiles,
+    base 0x1E000000.
+
+OPEN: the reorder_cpy dst does not byte-match the host pool dump at those offsets (device-backed
+buffer: reorder_cpy writes the device mapping while pool.data() is the host view, or load_linear_weights
+copies temp→pool afterward). So the final-BO assembly (temp→arg0/arg3 copy + the Q4K expert pack) still
+needs tracing before npu_pack_moe_* can be rewritten for v0.9.46. The router (arg2, identical read to
+v1.0.x) and the alpha/beta/conv1d norms-head (raw, identical) carry over unchanged.

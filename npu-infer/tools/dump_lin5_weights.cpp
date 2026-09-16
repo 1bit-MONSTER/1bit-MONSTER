@@ -89,7 +89,8 @@ int main(int argc, char** argv) {
     buffer<unsigned char> pool(dev, 536870912ull);
     buffer<bf16> b1(dev, 2621440);   // 5 MB / 2
     buffer<bf16> b2(dev, 2621440);
-    fprintf(stderr, "buffers ready; calling load_linear_weights(L=%d)...\n", L);
+    fprintf(stderr, "buffers ready; pool.data=%p b1.data=%p b2.data=%p; calling load_linear_weights(L=%d)...\n",
+            (void*)pool.data(), (void*)b1.data(), (void*)b2.data(), L);
 
     desc->load_linear_weights(L, q4nx, pool, b1, b2);
     fprintf(stderr, "load_linear_weights returned\n");
