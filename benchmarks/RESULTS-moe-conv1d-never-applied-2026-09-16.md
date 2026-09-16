@@ -42,13 +42,35 @@ step. So in the MoE path the conv1d is **neither applied on the host nor read by
 
 ## 3. It cannot be hiding inside the ELF
 
-Addendum 148 already recorded that the ELF's arg-3 read set is
+**First, the read set.** Addendum 148 recorded that the ELF's arg-3 reads are
 `@66048 alpha_proj`, `@197120 beta_proj`, `@328192+ ssm_out` with **no read of `[0, 66048)`** — the
-region the packer fills with `ssm_conv1d`, `ssm_norm`, `ssm_a`, `ssm_dt_bias`.
+region the packer fills with `ssm_conv1d`, `ssm_norm`, `ssm_a`, `ssm_dt_bias`. I re-derived this
+independently with the decoder: across all 630 patches, `arg3 @0` appears only as an **S2MM
+(write)** of 16,512 words, never as an MM2S (read). No patch anywhere reads a 65,536-byte region.
 
-Independently: `ssm_conv1d` alone is `[4, 8192]` bf16 = **65,536 B = 32,768 words**, while the
-whole TXN is **24,636 words** (addendum 148's own word accounting). The weights are therefore
-*arithmetically* unable to fit in the instruction stream. The ELF cannot be applying this conv.
+**Second, the ELF has nowhere to put the weights.** `ssm_conv1d` is `[4, 8192]` bf16 = **65,536 B**.
+The ELF is **103,104 B**, and its instruction stream is **98,544 B of that** — the `.txn` is present
+inside the `.elf` *verbatim* (verified by substring search, not inferred):
+
+```
+ELF                 103,104 B
+TXN inside it        98,544 B   (95.6% of the ELF)
+non-TXN remainder     4,560 B
+conv1d needs         65,536 B
+```
+
+**4,560 B of remaining space cannot hold 65,536 B of weights.** The conv weights are not in the
+ELF, and the ELF cannot be applying this conv.
+
+> **Correction (2026-09-16, same day).** The first version of this note argued instead that
+> "65,536 B = 32,768 words > the TXN's 24,636 words, so it is *arithmetically* unable to fit."
+> **That argument was wrong and has been removed.** The TXN's words are **uint32** (98,544 B /
+> 24,636 = exactly 4.000 B/word), so 65,536 B is **16,384 words — fewer than 24,636**, and it
+> *could* have fit on that count. The conclusion above survives on the ELF byte budget instead,
+> which is sound and verified. Recording the bad reasoning rather than quietly swapping it: it is
+> the same class of error as the ones this file's other sections are about — a confident claim
+> resting on a quantity I had not checked.
+
 
 So the packer's 65,536-byte prefix is not "dead weight in the wrong half of the BO" so much as
 **weights for a step that never runs**, written into the exact region the ELF uses as S2MM scratch
