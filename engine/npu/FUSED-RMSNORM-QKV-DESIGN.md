@@ -586,3 +586,36 @@ So `g_an` = M*H*2 B must fit in `64 KB - (stack + W buffers + C buffers + AN_R)`
    xclbin with the QKV/O/FFN stages.
 3. **O-proj + FFN N-tiling** at H=1024, IM=3072 (same core-local-A_norm
    mechanism; O's A is the attention output, GU's A is the O output).
+
+### fk-3 stage scale-up status (2026-09-16, after the plain-GEMM commit)
+
+All FOUR linear stages of the layer now have real-Qwen3-0.6B-dim builds verified
+on the NPU (one launch each; core-local-A mechanism throughout):
+
+| stage | dims | generator | NPU result |
+|---|---|---|---|
+| fused RMSNorm+QKV | M=16 H=1024 N=4096 | `n1_fused_norm_qkv_nt.py` | exact 95.2%, worst 1.59e-06 |
+| fused RMSNorm+GU  | M=16 H=1024 N=6144 | `n1_fused_norm_qkv_nt.py` | exact 91.3%, worst 3.66e-07 |
+| O-proj (plain)    | M=8  K=2048 N=1024 | `n1_nt_gemm.py`           | exact 100% |
+| D      (plain)    | M=8  K=3072 N=1024 | `n1_nt_gemm.py` (wdepth=1) | exact 100% |
+
+Build: `bash build_fk2nt.sh 16 1024 4096 64 64` (QKV),
+`bash build_fk2nt.sh 16 1024 6144 64 64` (GU),
+`bash build_nt_gemm.sh 8 2048 1024 64 64 2` (O-proj),
+`STACK=2048 bash build_nt_gemm.sh 8 3072 1024 64 64 1` (D).
+Verify: `tests/bench_fk2nt.cpp` / `tests/bench_nt_gemm.cpp`.
+
+**Still missing for "one launch per layer":**
+1. **Attention at real dims** — NH=16 (GQA 2:1, NKV=8), HD=128, N_KEYS=1024.
+   The single-head chunked MHA (`n1_mha_chunked.py`) is verified correct but is
+   ~7 ms per 128-key chunk (lock/DMA-sync bound); 16 heads x 8 chunks would be
+   ~0.9 s/layer. Multi-head needs (a) a head loop with `softmax_reset` /
+   `combine_reset` per head (the per-head m/l/O state cannot be held 16x — it is
+   M*HD*4 = 8 KB per head, 128 KB total), and (b) per-head Q/K/V streaming.
+2. **Composition** of the four stages + attention into one xclbin (the fk-3 PoC
+   chain in `n1_fk3_qkv.py` does this at 64-dim tiles; the real-dims stages above
+   are separate xclbins).
+3. **M-scaling** past 16 (QKV/GU) and 8 (O/D): the single-core A cap is
+   M*K*2 <= ~40 KB, so larger M needs an M-split (row-slices are contiguous in
+   the 4x8 microtile layout, so an M-split needs no reduction — unlike a K-split)
+   or a K-split. The M-split is the cleaner route.
