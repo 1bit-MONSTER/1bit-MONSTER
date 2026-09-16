@@ -26,6 +26,7 @@
 // Run:   ./combined_smoke <combined.xclbin> <combined_insts.txt>
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
+#include <chrono>
 #include <xrt/xrt_kernel.h>
 #include <xrt/xrt_hw_context.h>
 
@@ -321,6 +322,25 @@ int main(int argc, char** argv) {
         auto r4 = k(3, bo_ins, (unsigned)ins.size(), bo_nA, bo_gA, bo_gB, bo_gC);  // MLIR arg order: (NRM, GA, GB, GC)
         r4.wait();
         fprintf(stderr, "FOUR-arg submit completed\n");
+        // Addendum 143: the objective is tok/s, and wall-clock around this driver is setup-dominated
+        // (xclbin registration, BO allocation, the 16.8 MB B fill, the host reference GEMM). So time
+        // the SUBMIT itself, over repeats, inside one process. NOTE the label: this design covers the
+        // QKV projection and two norms, NOT a whole layer, so the number is per-submit for THIS phase
+        // set and must not be quoted as a token rate.
+        if (const char* rp = getenv("REPEAT")) {
+            const int n = atoi(rp);
+            if (n > 0) {
+                auto t0 = std::chrono::steady_clock::now();
+                for (int i = 0; i < n; i++) {
+                    auto rr = k(3, bo_ins, (unsigned)ins.size(), bo_nA, bo_gA, bo_gB, bo_gC);
+                    rr.wait();
+                }
+                auto t1 = std::chrono::steady_clock::now();
+                double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / n;
+                fprintf(stderr, "SUBMIT TIMING: %.3f ms/submit over %d submits "
+                                "(QKV+norms phase set only, NOT a whole layer)\n", ms, n);
+            }
+        }
         { const size_t NB = 2 * ((size_t)H * 4 + H * 4 + H * 2);
           FILE* df = fopen("/tmp/nrm_dump.bin", "wb");
           if (df) { fwrite(bo_nA.map<void*>(), 1, NB, df); fclose(df); } }

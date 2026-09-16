@@ -5285,3 +5285,35 @@ That constraint was invisible in every timing number and every success I had mea
 in dmesg, as `aie2_rq_add: Require 9 columns exceed 8`. A design that overflows the column budget does not
 fail cleanly or consistently — it may open when the device is quiet and be refused when it is busy, which
 is a plausible shape for the intermittency this lane fought, though I have not measured that either.
+
+### Addendum 143 — the first honest per-submit measurement, and it does NOT vindicate the linear tap on speed
+
+Added a REPEAT mode that times the SUBMIT itself inside one process, because wall-clock around this driver
+is setup-dominated (xclbin registration, BO allocation, the 16.8 MB B fill, and a 16.7M-MAC host reference
+GEMM). Over 20 submits of the fused design:
+
+  SUBMIT TIMING: 21.160 ms/submit     (QKV projection K=2048 N=8192 + both RMSNorms, M=1)
+  FOUR-arg GEMM: 8192/8192 columns match
+
+BANDWIDTH: 16,777,216 B / 21.160 ms = 793 MB/s. THAT IS BELOW the 2.07 GB/s I recorded for the m1 QKV
+xclbin in addendum 32 (16.8 MB in 8.1 ms). So on this measurement THE LINEAR TAP IS SLOWER, not faster —
+and addendum 141's claim that the linear-B tap is "numerically validated" has to be read strictly as
+CORRECTNESS-validated, which is what I measured (8192/8192 columns against an independently-derived
+reference, versus 3/8192 on the wrong packing order). It is NOT speed-validated and I should not have let
+the phrase "the objective's ~44x lever" sit next to it without that distinction. A peer lane reached the
+same conclusion from the other direction this hour: their burst-friendlier tap bought 0.86% and broke
+correctness, i.e. their launch was not tap-bound at all.
+
+WHY THE TWO NUMBERS ARE NOT DIRECTLY COMPARABLE, stated so nobody treats this as a regression: the 8.1 ms
+figure is a different xclbin (the m1 QKV design, no fused norms), measured under different conditions. It
+is not an A/B. An A/B requires regenerating THIS design with the 4-D row-major tap, and
+n1_combined_norm_qkv.py has no switch for that — it always emits the linear tap. So the comparison is a
+generator edit, not a driver flag, and per the peer's warning it must be gated on byte parity first and
+timed second.
+
+THE FRAMING THIS MEASUREMENT ACTUALLY ESTABLISHES, and it matters more than the tap question: at 21.16 ms,
+the fused QKV-plus-norms path is about 1.1% of the 1900 ms per-token layer time. THE OBJECTIVE'S GAP FROM
+~0.7 tok/s TO THE DENSE-QWEN3 CLASS IS NOT IN THE QKV PATH. It is in the MoE region — 465 MB of expert
+weights, of which only top-8 of 256 experts are active per token. Fusing the QKV and norms into one
+runlist submit is architecturally right and now proven correct, but it cannot move a 0.7 tok/s number by
+itself, and I should say so plainly rather than let the workstream's momentum imply otherwise.
