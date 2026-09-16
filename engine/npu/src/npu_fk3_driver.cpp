@@ -21,6 +21,7 @@
 #include <xrt/xrt_kernel.h>
 
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -124,7 +125,10 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
     s.dev = xrt::device(device_index);
 
     // ---- launch A -------------------------------------------------------------
-    {
+    // Skipped entirely under NPU_FK3_SKIP_A so a run can isolate whether merely
+    // having a SECOND hw_context (and a second registered xclbin) is what breaks
+    // launch B's dispatch.
+    if (!getenv("NPU_FK3_SKIP_A")) {
         xrt::xclbin xc{xb_a};
         s.dev.register_xclbin(xc);
         s.hwA.reset(new xrt::hw_context(s.dev, xc.get_uuid()));
@@ -181,7 +185,8 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
     s.wQKV_ready.assign(NC, 0); s.wO_ready.assign(NC, 0);
     s.w2_ready.assign(NC, 0); s.wd_ready.assign(NC, 0);
     for (int l = 0; l < NC; l++) {
-        s.wQKV[l] = xrt::bo(s.dev, (size_t)s.H * s.NQKV * 2, XRT_BO_FLAGS_HOST_ONLY, s.krA.group_id(4));
+        if (!getenv("NPU_FK3_SKIP_A"))
+            s.wQKV[l] = xrt::bo(s.dev, (size_t)s.H * s.NQKV * 2, XRT_BO_FLAGS_HOST_ONLY, s.krA.group_id(4));
         s.wO[l] = xrt::bo(s.dev, (size_t)s.qout * s.NO * 2, XRT_BO_FLAGS_HOST_ONLY, s.krB.group_id(8));
         s.w2[l] = xrt::bo(s.dev, (size_t)s.H * s.N2 * 2, XRT_BO_FLAGS_HOST_ONLY, s.krB.group_id(12));
         s.wd[l] = xrt::bo(s.dev, (size_t)(s.NI + s.H) * s.ND * 2, XRT_BO_FLAGS_HOST_ONLY, s.krB.group_id(15));
@@ -201,7 +206,9 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
     auto off = [&](int i) { return (uint32_t)src.offs[i] * row; };
 
     // QKV: (H, NQKV), the engine's own Wqkv.
-    {
+    if (getenv("NPU_FK3_SKIP_A")) {
+        s.wQKV_ready[l] = 1;   // not built and never read - launch B drops the QKV phases
+    } else {
         std::vector<uint16_t> w((size_t)s.H * s.NQKV);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.H, (uint32_t)s.NQKV, off(0));
         memcpy(s.wQKV[l].map(), w.data(), w.size() * 2);
@@ -224,6 +231,12 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
         bf16mm_dequant_mode(g.data() + (size_t)s.H * s.IM, src.bo, (uint32_t)s.H, (uint32_t)s.IM, off(4), 1);  // up
         memcpy(s.w2[l].map(), g.data(), g.size() * 2);
         s.w2[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        if (l == 0 && getenv("NPU_FK3_DUMP")) {
+            FILE* f = fopen("/tmp/fk3_w_w2.bin", "wb");
+            if (f) { fwrite(g.data(), 2, g.size(), f); fclose(f); }
+            FILE* f2 = fopen("/tmp/fk3_w_wo.bin", "wb");
+            if (f2) { fwrite(s.wO[l].map(), 2, (size_t)s.qout * s.NO, f2); fclose(f2); }
+        }
         s.w2_ready[l] = 1;
     }
     // D: the engine's Wd is (IM, H); the fused kernel wants [W_D ; I] = (IM+H, H),
@@ -234,6 +247,10 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
         for (int r = 0; r < s.H; r++)
             for (int n = 0; n < s.ND; n++)
                 w[(size_t)(s.NI + r) * s.ND + n] = (uint16_t)(r == n ? 0x3F80 : 0x0000);  // bf16 1.0 / 0.0
+        if (l == 0 && getenv("NPU_FK3_DUMP")) {
+            FILE* f = fopen("/tmp/fk3_w_wd.bin", "wb");
+            if (f) { fwrite(w.data(), 2, w.size(), f); fclose(f); }
+        }
         memcpy(s.wd[l].map(), w.data(), w.size() * 2);
         s.wd[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         s.wd_ready[l] = 1;
@@ -252,9 +269,15 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
     if (nrow <= 0 || nrow > M) nrow = M;
 
     // ---- inputs ---------------------------------------------------------------
-    // A rows 0..M-1 = x, row M = the input norm's gamma (the fused norm reads it as
-    // a plain f32 row rather than holding it in the kernel).
+    // BOTH launches have their own A (group 3). Launch A's A is the layer input x +
+    // the input norm's gamma in row M. Launch B's A is the SAME x (its add-aware FFN
+    // norm reduces x against A2 and has no separate x fifo) plus a gamma row that the
+    // FFN norm does not read (it takes its gamma from A2's row M). Forgetting launch
+    // B's A is a silent all-zero layer: silu=0, h=0, so D = 0*W_D + h = 0.
     {
+        memcpy(s.aB.map(), (const void*)x, (size_t)M * s.H * 4);
+        memcpy((char*)s.aB.map() + (size_t)M * s.H * 4, gamma_in, (size_t)s.H * 4);
+        s.aB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         float* a = (float*)s.aA.map();
         memcpy(a, x, (size_t)M * s.H * 4);
         memcpy(a + (size_t)M * s.H, gamma_in, (size_t)s.H * 4);
@@ -264,17 +287,50 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
         s.a2B.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
 
+    if (getenv("NPU_FK3_SKIP_A")) {
+        // Decisive isolation: drive launch B exactly as the bench does - its own
+        // pseudo-random A (non-zero), gamma rows 1.0, pseudo-random QKV - and skip
+        // launch A entirely. If CD is still zero, the driver's launch-B invocation is
+        // at fault; if CD becomes non-zero, the two-launch interaction is.
+        float* a = (float*)s.aA.map();
+        for (size_t i = 0; i < (size_t)M * s.H; i++) a[i] = (float)((i % 61) - 30) * 0.02f;
+        for (int i = 0; i < s.H; i++) a[(size_t)M * s.H + i] = 1.0f;
+        s.aA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        memcpy(s.aB.map(), a, (size_t)(M + 1) * s.H * 4);
+        s.aB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        float* a2 = (float*)s.a2B.map();
+        for (size_t i = 0; i < (size_t)M * s.H; i++) a2[i] = 0.0f;
+        for (int i = 0; i < s.H; i++) a2[(size_t)M * s.H + i] = 1.0f;
+        s.a2B.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        uint16_t* q = (uint16_t*)s.qB.map();
+        for (size_t i = 0; i < (size_t)M * s.NQKV; i++) {
+            float v = (float)((i % 13) - 6) * 0.05f;
+            uint32_t u; memcpy(&u, &v, 4);
+            q[i] = (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1)) >> 16);
+        }
+        s.qB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+    }
+
     // ---- launch A: fused RMSNorm(input) + QKV --------------------------------
-    {
+    if (!getenv("NPU_FK3_SKIP_A")) {
+        auto t0 = std::chrono::steady_clock::now();
         auto r = s.krA((unsigned)3, s.iA, (unsigned)s.insA_words, s.aA, s.wQKV[l], s.anA, s.cA);
         r.wait();
+        auto t1 = std::chrono::steady_clock::now();
         s.cA.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        if (l == 0 && getenv("NPU_FK3_TIMING"))
+            fprintf(stderr, "[fk3] launch A (l=0): %.2f ms\n",
+                    std::chrono::duration<double, std::milli>(t1 - t0).count());
+        if (l == 0 && getenv("NPU_FK3_DUMP")) {
+            FILE* f = fopen("/tmp/fk3_drv_A.bin", "wb");
+            if (f) { fwrite(s.cA.map(), 2, (size_t)M * s.NQKV, f); fclose(f); }
+        }
         memcpy(s.qB.map(), s.cA.map(), (size_t)M * s.NQKV * 2);
         s.qB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
 
     // ---- host: RoPE on Q and K in place, then scatter K/V into the KV cache ----
-    {
+    if (!getenv("NPU_FK3_SKIP_A")) {
         uint16_t* q = (uint16_t*)s.qB.map();
         // Q at head stride HD from 0; K at KOFF + kh*HD; V untouched.
         fk3::rope_qk_bf16(q, nrow, s.NH, s.NKV, s.HD, 1e6f, pos0);
@@ -300,10 +356,21 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
 
     // ---- launch B: attention + O-proj + FFN norm + GU + SiLU + D -------------
     {
+        auto t0 = std::chrono::steady_clock::now();
         auto r = s.krB((unsigned)3, s.iB, (unsigned)s.insB_words, s.aB, s.wB, s.anB, s.qB, s.oB,
                        s.woB, s.cB, s.a2B, s.an2B, s.w2B, s.c2B, s.slB, s.wdB, s.cdB, s.hbfB);
         r.wait();
+        auto t1 = std::chrono::steady_clock::now();
         s.cdB.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        if (l == 0 && getenv("NPU_FK3_TIMING"))
+            fprintf(stderr, "[fk3] launch B (l=0): %.2f ms\n",
+                    std::chrono::duration<double, std::milli>(t1 - t0).count());
+        if (l == 0 && getenv("NPU_FK3_DUMP")) {
+            FILE* f = fopen("/tmp/fk3_drv_B.bin", "wb");
+            if (f) { fwrite(s.cdB.map(), 2, (size_t)M * s.H, f); fclose(f); }
+            FILE* g = fopen("/tmp/fk3_drv_Q.bin", "wb");
+            if (g) { fwrite(s.qB.map(), 2, (size_t)M * s.NQKV, g); fclose(g); }
+        }
     }
 
     // ---- layer output: bf16 -> f32 for the next layer -------------------------

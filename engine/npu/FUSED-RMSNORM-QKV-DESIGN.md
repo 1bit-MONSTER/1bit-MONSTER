@@ -2590,3 +2590,48 @@ Two problems remain, both expected for a first run:
    got (upload A once per block, keep B resident, double-buffer). This is fk-4 work.
 
 Both are now measurable rather than speculative, which is the point of the run.
+
+## Debugging the zero output: everything the driver feeds is CORRECT — the suspect is the device state it runs in
+
+Chased the fused path's all-zero layer output to the end of the "is my data wrong" list. It is not:
+
+| what was checked | result |
+|---|---|
+| launch A's C (the QKV the driver feeds B) | 524288 elems, nonzero 1.000, maxabs 1.0547 — healthy |
+| bQ after the in-place RoPE | 524288 elems, nonzero 1.000, maxabs 1.2344 — healthy |
+| W2 (gate+up), i.e. `bf16mm_dequant_mode` | nonzero 0.998 in BOTH halves — and gate-before-up, the order W2 wants |
+| WO | nonzero 0.998, maxabs 0.42 |
+| WD, incl. the appended identity block | W_D rows nonzero 0.998; identity rows exactly 1.0 on the diagonal (maxabs 1.0) |
+| launch B's A input (the add-aware FFN norm's x) | a real bug found and fixed here: launch B has its OWN A BO (group 3) and the driver was only filling launch A's, so x read as 0 and `D = 0*W_D + h` was legitimately all zeros. Now filled from x, with gamma rows on both A and A2. |
+| the emitted MLIR of the NOQKV build | the QKV phases really are GONE (no `nq_acc_mac` / `rms_reduce_f32` calls; the kernels are declared but never called), so a zeroed W is NOT consumed — this refuted the "zeroed weight propagates" theory |
+| buffer sizes, group_ids, argument order, insts word counts | identical to the working bench, item by item |
+
+That leaves the ONE thing that genuinely differs from the bench, and it explains both
+symptoms at once. **The bench runs launch B on a device with nothing else queued. The
+driver runs it inside the engine, which has just done its own NPU work** (the
+`bf16 prefill: 28 layers dequant done` line is immediately before the first fused
+layer, and that dequant plus the bf16mm/runlist contexts are live). Measured:
+
+```
+launch A :  63.43 ms   (works, non-zero output — but ~50x slower than the bench)
+launch B : 792.43 ms   (outputs zeros)
+launch B alone, bench-style pseudo-random inputs, launch A's context never created:
+           744.87 ms   (still zeros — so it is not the two-launch interaction)
+```
+
+Earlier hwctx measurements already established the mechanism: this box can hold many
+resident hw_contexts, but compute **serialises at submission granularity with no fine
+preemption**. A dataflow kernel that is waiting on its own objectfifos while other
+contexts' dispatches occupy the array will not make progress, and the observable
+result is exactly this: enormous wall time, no error, no timeout, no XRT failure, and
+zeroed output buffers.
+
+So the next experiment is not about the kernel at all — it is about quiescing the
+device around the fused layer (let the engine's dequant/other contexts drain, or run
+the fused layer before they are submitted), and re-measuring. That also predicts the
+60x slowdown will collapse at the same time, since both are the same starvation.
+
+The driver now carries the isolation switches this used: `NPU_FK3_TIMING` (prints both
+launch times for layer 0), `NPU_FK3_SKIP_A` (skips launch A's context and weight prep
+entirely and drives launch B bench-style), and `NPU_FK3_DUMP` (writes launch A's C, bQ
+after RoPE, launch B's CD, and the layer-0 W2/WO/WD host arrays).
