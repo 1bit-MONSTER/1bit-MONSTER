@@ -2555,3 +2555,38 @@ M=128 build — is **stale** (pre O_F/O_S fifo-depth fix): it reads attn 70.8% a
 `qb0 vs qb1 halves identical: 14.5%`, which is exactly the symptom of the second
 query block being insensitive to its own Q. Rebuilding from current source gives
 93.2% and every head 89-96%. Trust the source, not the /tmp directory.
+
+## FIRST END-TO-END RUN of the fused path: it engages on all 28 layers, tokens do not match yet
+
+Ran the freshly linked engine both ways on a 208-token prompt (NPU_PREFILL_MAX=128, so
+two blocks of 128 and 80):
+
+```
+baseline : Prefill 128 [bf16] 357ms (2.786 ms/tok) [GEMM 27ms, attn 139ms, conv+other 349ms]
+           tokens 220, 49789, 220, 11141        -> 11.3 ms/tok decode
+NPU_FK3=1: Prefill 128 [bf16] 22308ms (174.280 ms/tok)
+           tokens 0, 16930, 91, 10              -> 10.3 ms/tok decode
+           stderr: "[fk3] init ok: M=128 H=1024 NH=16 NKV=8 HD=128 IM=3072 NC=28
+                    NQKV=4096 KOFF=2048 VOFF=3072 (launch A 345060 words,
+                    launch B 2189732 words)"
+                   "L0 [fk3] L1 [fk3] ... L27 [fk3]"   (28/28, no fallback)
+```
+
+So: the driver initialises, prepares every layer's weights, and **replaces the per-op
+path on all 28 layers with no fallback** — the structural half of the fk-3 contract.
+Two problems remain, both expected for a first run:
+
+1. **Tokens differ** (0,16930,91,10 vs 220,49789,220,11141), so an interface bug is
+   somewhere in the A -> RoPE -> KV scatter -> B chain. The way to find it is already
+   in the engine: `NPU_DUMP_HIDDEN` appends `bh` for every layer, so run both paths
+   with it set and bisect for the first layer whose hidden state diverges. Prime
+   suspects, in order: the KV scatter region/slot layout, `sp` (pos0) for the second
+   block, the gamma rows in A/A2, and launch A's bf16-out C being read at the right
+   offset.
+2. **174 ms/token vs 2.786** — 60x slower, and the per-op timers read 0 because the
+   fused path returns before them, so all 22308 ms is in "conv+other". Almost all of
+   that is per-layer host cost: two hw_contexts alternating per layer, four BO syncs,
+   and a full readback of the layer output. Needs the same treatment the per-op path
+   got (upload A once per block, keep B resident, double-buffer). This is fk-4 work.
+
+Both are now measurable rather than speculative, which is the point of the run.
