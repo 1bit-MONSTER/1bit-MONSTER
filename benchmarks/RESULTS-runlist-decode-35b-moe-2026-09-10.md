@@ -5699,3 +5699,24 @@ Net, after 153 addenda, the concrete defects narrow to: (1) the router BO tiling
 npu_pack_moe_router_bo, (2) the ssm_out row order in npu_pack_moe_linear5_bo, and (3) the dead
 conv1d/ssm head at norms @0 (harmless — the ELF S2MM-writes over it). alpha/beta/conv1d offsets and
 arg binding are all verified correct.
+
+### Addendum 154 — generator args pinned via gdb; the router read is a [256h x 256e] strided 1/8 slice, 2x per forward
+
+Got the real per-stage args by breaking in gdb on gen_layer_stages_moe ("linear" stage):
+  _move_alpha_beta_weights(seq, 64, 2048, 66048)  -> alpha @arg3 66048, beta @arg3 197120 (matches ELF)
+  _send_router_w_and_share_exp_gate(seq, 256, 2048, 12288, weight_def) -> router [2048,256] @arg2 12288
+
+Re-decoded the router read with the CORRECT BD pairing (BLOCKWRITE word 10316 + DDR_PATCH word 10328,
+col5/row0/bd12, the decode's "BD(0,5,12)"): buf_len=32768 words, D0=16/1, D1=256/128, D2s=32768,
+iter=8/16. Expanded in bf16 units, read_index = it*16 + d2*32768 + d1*128 + d0 covers 65536 elements,
+i.e. h = d2*128 + d1//2 (0..255) x e = (d1%2)*128 + it*16 + d0 (0..255) — a [256 hidden][256 expert]
+strided slice = 1/8 of the [2048,256] router, issued TWICE (word 10316 and 22634) at the SAME arg2
+offset. So the router is read in 8 (hidden) x 2 (expert-half) chunks; the full [2048,256] is NOT one
+DMA, and the harness's stride-8 interleave (dst[(i%8)*65536+j*256+i/8]) is inconsistent with this
+h = d2*128 + d1//2 / e = (d1%2)*128 + it*16 + d0 walk. The exact host-side router tiling (write side)
+still needs Impl::load_weights disassembly or a final-BO dump; the read-side walk above is the
+constraint any repack must satisfy.
+
+Also noted: the router is read 2x/slice — consistent with two router uses per layer (router logits +
+shared-expert gate), not with reading the full router in one forward; this is worth resolving before
+repacking npu_pack_moe_router_bo.
