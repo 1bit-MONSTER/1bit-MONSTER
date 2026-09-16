@@ -5312,3 +5312,47 @@ same valid weight - the bench and the driver agree on all six stages historicall
 disagree, the divergence is in the driver's launch-A composition (input staging, weight BO, or
 `NPU_FK3_SKIP_A`-adjacent pathing); if they agree, the divergence is in what the driver feeds launch A
 relative to what the engine feeds its own QKV GEMM.
+
+## The dumped input cannot be the input the kernel used
+
+Comparing my launch-A output against CPU references built from the **driver's own dumped input**
+(`fk3_drv_aA.bin`), with the valid weight:
+
+```
+reference                        maxabs     meanabs    corr vs MY kernel output
+aA @ W           (no norm)       0.22669    0.01532    0.0313
+rmsnorm(aA) @ W  (with norm)    10.70100    0.73265    0.0313     <- unchanged
+MY kernel launch-A output        5.62500    0.18299
+ENGINE own QKV buffer           12.50000    0.17632
+corr(rmsnorm(aA)@W, engine QKV) = 0.0264
+```
+
+Three things are solid here.
+
+1. **My kernel's magnitude is right**: meanabs 0.18299 against the engine's 0.17632, a 3.8% agreement.
+   The weight fix did real work.
+2. **My kernel's output positively correlates with the engine's QKV** (0.5124, measured earlier) - it is
+   computing something QKV-like.
+3. **My kernel's output does not correlate with either CPU reference** (0.0313), and the correlation is
+   *identical* with and without the RMSNorm despite the reference's meanabs changing by 48x (0.015 ->
+   0.733). That is not a scaling curiosity: RMSNorm scales each row by a different factor, so it must
+   change a per-row correlation unless the rows' RMS values are near-uniform - and either way it cannot
+   leave the agreement at noise level while the engine agreement is 0.51.
+
+**An output that correlates with the engine's QKV but with neither reference built from the dumped input
+is not consistent with that dumped buffer being the input.** So exactly one of:
+
+* **the dump is not the kernel's actual A operand** - wrong dump point, or the kernel is passed a
+  different BO than the one dumped; or
+* **the kernel does not compute `A @ W`** for the A it is given - which is what the earlier "the kernel
+  differs from the GEMM" reading said, but that reading used a normless reference and is now suspect.
+
+Both point at the driver's composition or the kernel's A handling, and the first is the same class of bug
+this file already records once: **the driver passing a shared BO while the per-layer BO was the filled
+one** (the zeroed-weight bug). A wrong-buffer defect reproduced in a second place is the leading
+hypothesis, and it is checkable by reading rather than measuring - which is what should happen next.
+
+**Deliberately not naming it.** The previous zeroed-weight bug was found by reading `run()`'s launch call
+and comparing the BO passed against the BO filled; that is the same one-minute read available here. Twelve
+retractions this session came from naming a cause from a statistic, and this statistic supports a
+disjunction, not a name.
