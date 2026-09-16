@@ -2730,3 +2730,44 @@ in the standalone bench produces 99.6% correct layer output. Next experiments, i
 single-hw_context measurement, which is itself a signal; (2) have the bench print the
 statistics of its OWN CD buffer so the two can be compared byte for byte on identical
 inputs, which localises this to either the invocation or the read-back.
+
+## LOCALIZED: the driver's own launch-B invocation is broken — the engine was never the cause
+
+Built a standalone test that removes the engine from the picture entirely while keeping the
+driver's code path (`engine/npu/tests/test_fk3_driver_standalone.cpp`, reusing
+`fk3::FusedLayer` with new hooks `prepare_random()` — bench_fk3_layer's exact weight
+formulas — and `NPU_FK3_SKIP_A`, which fills A/A2/Q bench-style and never creates launch
+A's context). On a verified-idle device:
+
+```
+$ test_fk3_driver_standalone /tmp/fk3_A128bf/normgemm_rr.xclbin .../insts.txt \
+                             /tmp/fk3_B128/fk3_layer.xclbin    .../insts.txt 128
+[fk3] init ok: M=128 H=1024 NH=16 NKV=8 HD=128 IM=3072 NC=1 NQKV=4096 KOFF=2048 VOFF=3072
+<HANGS — no further output, killed by timeout>
+```
+
+The same xclbin and the same insts file produce a correct layer output in
+`bench_fk3_layer` (GU 100.0%, SiLU 100.0%, O(f32) 100.0%, D 98.4% on that NOQKV build).
+So:
+
+* it is NOT device contention (verified idle, and the engine's numbers were identical);
+* it is NOT the engine's environment, its other hw_contexts, or its NPU state;
+* it is NOT the weights or the inputs (weights verified; inputs bench-style random here);
+* it is NOT the xclbin or the instruction stream (both are the bench's);
+* it IS the driver's own XRT invocation.
+
+The behavioural difference between the two environments is now itself a clue:
+`launch A's context present` -> launch B returns with an all-zero output;
+`launch A's context absent`   -> launch B hangs.
+
+One real bug was found and fixed during this hunt: the driver created its `xrt::xclbin`
+objects as LOCALS inside `init()`, so they were destroyed while the `hw_context` and
+`kernel` built from them were still live — those reference the xclbin and the axlf buffer
+it owns. The working bench keeps its xclbin alive for the whole program, which is one of
+the few things it did that this driver did not. The xclbins are now members of `Impl`,
+declared first so they are destroyed last, after the kernels and BOs. That fix did not
+change the symptom, but it was a genuine use-after-free.
+
+Next step, with the search space now this small: diff `init()` and `run()` against
+`bench_fk3_layer.cpp` line by line. The bench is the known-good reference and it is ~90
+lines, so this is a mechanical comparison rather than more hypothesis-driven guessing.

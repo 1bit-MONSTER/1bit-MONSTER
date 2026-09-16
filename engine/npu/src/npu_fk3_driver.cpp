@@ -77,6 +77,14 @@ struct FusedLayer::Impl {
 
     xrt::device dev;
 
+    // The xclbin objects MUST outlive the hw_contexts and kernels built from them:
+    // xrt::kernel/hw_context reference the xclbin (and the axlf buffer it owns), so a
+    // local xclbin destroyed at the end of init() leaves them pointing at freed memory.
+    // The working bench keeps its xclbin alive for the whole program, which is one of
+    // the few things it does that this driver did not. Declared FIRST so it is destroyed
+    // LAST, after the kernels and BOs that depend on it.
+    std::unique_ptr<xrt::xclbin> xcA, xcB;
+
     // launch A
     xrt::kernel krA;
     xrt::bo iA, aA, wA, anA, cA;
@@ -129,9 +137,9 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
     // having a SECOND hw_context (and a second registered xclbin) is what breaks
     // launch B's dispatch.
     if (!getenv("NPU_FK3_SKIP_A")) {
-        xrt::xclbin xc{xb_a};
-        s.dev.register_xclbin(xc);
-        s.hwA.reset(new xrt::hw_context(s.dev, xc.get_uuid()));
+        s.xcA.reset(new xrt::xclbin(xb_a));
+        s.dev.register_xclbin(*s.xcA);
+        s.hwA.reset(new xrt::hw_context(s.dev, s.xcA->get_uuid()));
         s.krA = xrt::kernel(*s.hwA, "MLIR_AIE");
         s.iA = xrt::bo(s.dev, ins_a.size() * 4, XCL_BO_FLAGS_CACHEABLE, s.krA.group_id(1));
         s.aA = xrt::bo(s.dev, (size_t)(s.M + 1) * s.H * 4, XRT_BO_FLAGS_HOST_ONLY, s.krA.group_id(3));
@@ -146,9 +154,9 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
 
     // ---- launch B -------------------------------------------------------------
     {
-        xrt::xclbin xc{xb_b};
-        s.dev.register_xclbin(xc);
-        s.hwB.reset(new xrt::hw_context(s.dev, xc.get_uuid()));
+        s.xcB.reset(new xrt::xclbin(xb_b));
+        s.dev.register_xclbin(*s.xcB);
+        s.hwB.reset(new xrt::hw_context(s.dev, s.xcB->get_uuid()));
         s.krB = xrt::kernel(*s.hwB, "MLIR_AIE");
         const size_t sAN = (size_t)s.n_k * s.M * s.KO * 2;
         s.iB = xrt::bo(s.dev, ins_b.size() * 4, XCL_BO_FLAGS_CACHEABLE, s.krB.group_id(1));
@@ -196,6 +204,42 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
                     "NQKV=%d KOFF=%d VOFF=%d (launch A %zu words, launch B %zu words)\n",
             s.M, s.H, s.NH, s.NKV, s.HD, s.IM, s.NC, s.NQKV, s.KOFF, s.VOFF,
             s.insA_words, s.insB_words);
+    return true;
+}
+
+bool FusedLayer::prepare_random(int l) {
+    Impl& s = *p;
+    if (l < 0 || l >= s.NC) return false;
+    auto rne = [](float f) -> uint16_t {
+        uint32_t u; memcpy(&u, &f, 4);
+        return (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1)) >> 16);
+    };
+    // Same formulas as bench_fk3_layer.cpp, element index i over each buffer.
+    {
+        std::vector<uint16_t> w((size_t)s.qout * s.NO);
+        for (size_t i = 0; i < w.size(); i++) w[i] = rne((float)((i % 11) - 5) * 0.05f);
+        memcpy(s.wO[l].map(), w.data(), w.size() * 2);
+        s.wO[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.wO_ready[l] = 1;
+    }
+    {
+        std::vector<uint16_t> w((size_t)s.H * s.N2);
+        for (size_t i = 0; i < w.size(); i++) w[i] = rne((float)((i % 13) - 6) * 0.05f);
+        memcpy(s.w2[l].map(), w.data(), w.size() * 2);
+        s.w2[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.w2_ready[l] = 1;
+    }
+    {
+        std::vector<uint16_t> w((size_t)(s.NI + s.H) * s.ND);
+        for (size_t i = 0; i < (size_t)s.NI * s.ND; i++) w[i] = rne((float)((i % 9) - 4) * 0.05f);
+        for (int r = 0; r < s.H; r++)
+            for (int n = 0; n < s.ND; n++)
+                w[(size_t)(s.NI + r) * s.ND + n] = (uint16_t)(r == n ? 0x3F80 : 0x0000);
+        memcpy(s.wd[l].map(), w.data(), w.size() * 2);
+        s.wd[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.wd_ready[l] = 1;
+    }
+    s.wQKV_ready[l] = 1;   // never consumed by launch B (QKV phases are dropped)
     return true;
 }
 

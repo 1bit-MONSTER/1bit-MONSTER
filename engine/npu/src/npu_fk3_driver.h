@@ -46,6 +46,13 @@ public:
     // upload them. Call once per layer before the first fk3_layer(l, ...).
     bool prepare_layer(int l, const WeightSource& src);
 
+    // Bench-equivalent weight fill, for standalone testing without the engine's packed
+    // blob: pseudo-random WO/W2/WD using exactly the formulas bench_fk3_layer uses, so a
+    // driver run and a bench run can push identical bytes through the same xclbin.
+    // (Launch B's own A/AN/W are not consumed - the NOQKV build drops the QKV phases,
+    // confirmed by call counts in the emitted MLIR.)
+    bool prepare_random(int l);
+
     // Run one layer for M tokens starting at absolute position pos0.
     //   x          (M, H)  f32, the layer input  -> becomes A rows 0..M-1
     //   gamma_in   (H)     f32, the input norm's weight      -> A row M
