@@ -428,23 +428,41 @@ int main(int argc, char** argv) {
         fprintf(stderr, "FOUR-arg GEMM: %d/%d columns match\n", N - cb, N);
         return 0;
     }
-    if (getenv("SIX_ALIAS")) {
-        // DECISIVE: SIX runtime arguments, but only THREE DISTINCT buffers -- the extra three alias
-        // the same BOs. The design's DMAs use the first three. If this HANGS, the ARGUMENT COUNT is
-        // the trigger; if it COMPLETES, the BO COUNT is.
-        auto ra = k(3, bo_ins, (unsigned)ins.size(), bo_gA, bo_gB, bo_gC, bo_gA, bo_gB, bo_gC);
-        ra.wait();
-        fprintf(stderr, "six-arg/three-buffer submit completed\n");
+    if (getenv("THREE_BO")) {
+        // Addendum 145: the m1lin QKV xclbin (final_i8_QKV_qwen3_6_35b_a3b_m1lin.xclbin) has a
+        // THREE-argument sequence (memref<2048xi8>, memref<16777216xi8>, memref<8192xi32>), and it is
+        // the very design addendum 32 measured at "16.8 MB in 8.1 ms = 2.07 GB/s". Re-measuring it
+        // with the same submit-level timing I applied to v27 and to my fused design decides whether
+        // ~0.8 GB/s is the device's ceiling today or whether that 8.1 ms number simply does not
+        // reproduce. Same instrument, same method, the original subject.
+        auto r3 = k(3, bo_ins, (unsigned)ins.size(), bo_gA, bo_gB, bo_gC);
+        r3.wait();
+        fprintf(stderr, "THREE-arg submit completed\n");
+        if (const char* rp = getenv("REPEAT")) {
+            const int n = atoi(rp);
+            if (n > 0) {
+                auto t0 = std::chrono::steady_clock::now();
+                for (int i = 0; i < n; i++) {
+                    auto rr = k(3, bo_ins, (unsigned)ins.size(), bo_gA, bo_gB, bo_gC);
+                    rr.wait();
+                }
+                auto t1 = std::chrono::steady_clock::now();
+                double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / n;
+                double mb = (double)K * N / (1024.0 * 1024.0);
+                fprintf(stderr, "m1lin QKV TIMING: %.3f ms/submit over %d submits, B=%.2f MB -> "
+                                "%.0f MB/s\n", ms, n, mb, mb / (ms / 1000.0));
+            }
+        }
         bo_gC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-        std::vector<int32_t> ga(N);
-        memcpy(ga.data(), bo_gC.map<void*>(), (size_t)N * 4);
-        int bad = 0;
+        std::vector<int32_t> oc3(N);
+        memcpy(oc3.data(), bo_gC.map<void*>(), (size_t)N * 4);
+        int bad3 = 0;
         for (int n = 0; n < N; n++) {
             int32_t acc = 0;
             for (int k2 = 0; k2 < K; k2++) acc += (int32_t)gA[k2] * (int32_t)gB[(size_t)k2 * N + n];
-            if (ga[n] != acc) bad++;
+            if (oc3[n] != acc) bad3++;
         }
-        fprintf(stderr, "six-arg/three-buffer GEMM: %d/%d columns match\n", N - bad, N);
+        fprintf(stderr, "m1lin QKV GEMM: %d/%d columns match\n", N - bad3, N);
         return 0;
     }
     if (getenv("SIX_BO")) {

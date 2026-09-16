@@ -5362,3 +5362,50 @@ on were single measurements, and it took a second, structurally different instru
 generalise. The peer lane reached the same conclusion from their own direction this hour — their tap
 change bought 0.86% — and two lanes independently finding "not tap-bound" is much stronger evidence than
 either alone.
+
+### Addendum 145 — CORRECTION TO 144: both effects are real. The linear tap IS worth 2x, and my norm columns cost another 2x.
+
+I measured the THIRD design — the one addendum 32 originally measured — with the same instrument I used
+for the other two. final_i8_QKV_qwen3_6_35b_a3b_m1lin.xclbin has a three-argument sequence
+(memref<2048xi8>, memref<16777216xi8>, memref<8192xi32>), so I added a THREE_BO timed mode and ran it with
+REPEAT=20:
+
+  m1lin QKV TIMING: 10.265 ms/submit over 20 submits, B=16.00 MB -> 1559 MB/s
+  m1lin QKV GEMM: 8192/8192 columns match
+
+Three designs, SAME shape (K=2048, N=8192), SAME 16 MB of weights, SAME instrument:
+
+  m1lin QKV    (3 args, 8 GEMM columns, LINEAR tap):     10.265 ms   1559 MB/s
+  my fused     (4 args, 4 GEMM columns + 2 norm columns): 21.160 ms    793 MB/s
+  engine v27   (M=128, 8 GEMM columns, ROW-MAJOR tap):   21.363 ms    749 MB/s
+
+ADDENDUM 144 WAS WRONG AND I AM CORRECTING IT. I concluded from the v27-vs-mine agreement that ~750-800
+MB/s was "the device" and that the linear tap was worth nothing. That was a false inference from two
+designs that each carry a DIFFERENT 2x penalty. Holding the tap constant (m1lin vs mine, both linear) the
+extra two norm columns cost 2.06x. Holding the column count constant (m1lin vs v27, both 8 columns) the
+row-major 4-D tap costs 2.08x. TWO INDEPENDENT 2x EFFECTS, and my design happened to suffer exactly one of
+each, which made them cancel and look like a device ceiling.
+
+SO, AND THIS REVERSES MY LAST TWO ADDENDA:
+  * THE LINEAR TAP IS WORTH ~2x AND IS VINDICATED, as addenda 36/37 claimed. 1559 MB/s against 749 MB/s
+    at the same column count is the clean measurement of it that this lane never actually had.
+  * ADDENDUM 32's 2.07 GB/s REPRODUCES: same design, same method, 1559 MB/s, within 25% of the original
+    figure. It was never contradicted; I retract that part of 144.
+  * THE ~44x FRAMING IS STILL AN OVERCLAIM from one measurement, but for a different reason than I said:
+    the honest number is ~2x per effect, not 44x.
+  * AND MY FUSED DESIGN IS 2x SLOWER THAN IT NEEDS TO BE, for a reason I chose: the norms occupy two
+    tile columns, and the GEMM array gets only 4 of 8 columns as a result. THE NORMS COST HALF THE
+    GEMM'S BANDWIDTH. On a 2048-element f32 norm that is an absurd trade — a host norm is microseconds.
+
+ACTIONABLE, and this is the most useful thing in the session: get the norms OFF the device's columns, or
+share a column with a GEMM core, and keep the linear tap. With both, the QKV path runs at 1559 MB/s =
+10.3 ms for 16.8 MB, so a ~40 MB token lands near 26 ms = ~39 tok/s rather than the 0.7 tok/s we have —
+still short of the dense-Qwen3 class the objective names, but ~55x today, and with a single design change
+rather than a device intervention.
+
+METHOD NOTE, on myself: addendum 144 was a confident correction built on two data points that each
+contained a confound, and it took a THIRD design — the original one, measured with the same instrument —
+to expose it. Two agreeing measurements are not confirmation when both have the same unknown in them; I
+had written that rule down and then broken it within the hour. The specific error was comparing across a
+variable I had changed myself (the column count) and attributing the result to a variable I had not (the
+tap).
