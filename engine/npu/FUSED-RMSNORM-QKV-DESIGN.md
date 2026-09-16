@@ -708,3 +708,31 @@ things must be checked/resolved, in this order:
 
 Neither is conceptual, but both are real work. The 8-head parallel xclbin is the
 correctness reference for them.
+
+### 2 cores/head: the fusion is byte-identical, and the shim limit is confirmed
+
+`qk_softmax.cc` (QK^T + online softmax, scores stay in a core-local buffer) and
+`pv_combine.cc` (PV + flash combine + normalize, PV output stays core-local) fuse
+the 4-core pipeline down to 2 cores/head. `n1_mha_2core_nh.py` +
+`build_mha_2core_nh.sh` build it.
+
+**Verified on the NPU (N=128 C=2 HD=128 M=16): the fused 2-core pipeline produces
+BYTE-IDENTICAL results to the 4-core pipeline** — identical per-head data gives
+956/2048 exact / max_delta 33149 (head 0 and head 1 alike, both equal to the
+4-core numbers), and distinct per-head data gives the same 956/765 split.
+
+**The shim MM2S budget is the hard blocker for 2 heads/column.** The generator's
+`-P/--percol 2` maps two heads onto one column (cores at rows 2-3 and 4-5), and
+aiecc rejects it:
+
+```
+design.mlir:8:26: error: 'aie.tile' op number of output DMA channel exceeded!
+    %shim_noc_tile_0_0 = aie.tile(0, 0)
+```
+Each head wants its own QK_s and V_s shim->mem fifo (2 MM2S), so 2 heads = 4
+against the shim's limit of 2. The fix is a dataflow change, not a kernel
+change: carry all of a column's heads on ONE QK_s and ONE V_s channel and let
+`object_fifo_link`'s round-robin distribution (issue #1207) deliver alternating
+tiles to the per-head mem->core fifos, with the shim DMA ordering chunk-outer /
+head-inner to match. The O outputs (one per head) must also fit the shim's S2MM
+budget and may need the same treatment.
