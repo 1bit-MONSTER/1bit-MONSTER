@@ -3667,3 +3667,44 @@ loaded Q/K operands or the pre-softmax scores), not with further reasoning from 
 That is where fk-3 stands: both kernels verified independently, every input and weight verified,
 the attention demonstrably wrong and demonstrably not wrong for any reason visible from outside
 it. The next action is to instrument `attn1.cc` itself.
+
+## Corrected: the attention really is wrong (my comparison had two bugs, and fixing them changes nothing)
+
+Two errors in my own comparison, found by reading `attn1_finalize` rather than assuming:
+
+1. **`attn1_finalize` writes the output in the microtiled 4x8-blocked layout** -
+   `out[(tr*(HD/8)+tc)*32 + rr*8 + cc]` for row `r=tr*4+rr`, col `d=tc*8+cc` - and I had
+   reshaped `bO` as if it were row-major `(M, NH, HD)`. So the original 0.108 correlation was
+   partly my layout mistake, and I should not have reported it as a property of the kernel.
+2. **The head ordering in `bO` is set by the hardware core assignment** (`head_of(p, col, slot)`),
+   not by logical head index, so comparing buffer head h against reference head h is unfounded.
+
+Fixed both: unblocked the output properly, then searched the full 16x16 head assignment. Result:
+
+```
+kernel head -> best-matching NumPy head (of 16), unblocked:
+  kernel  0 -> ref  6 corr=0.0524   (2nd best 0.0518)
+  kernel  3 -> ref  3 corr=0.1118   (2nd best 0.1117)
+  kernel  8 -> ref 11 corr=0.0339   (2nd best 0.0334)
+  kernel 12 -> ref 12 corr=0.0564   (2nd best 0.0561)
+  ... all 16 rows: best is within ~0.001 of second-best in every case
+kernel attention maxabs=0.76953   NumPy attention maxabs=0.71484
+max abs diff=1.02407   mean abs diff=0.123249   correlation=0.045782
+```
+
+Every "best" match is within ~0.001 of its runner-up - that is noise, not a match. So after
+correcting both of my own errors, the conclusion is unchanged and now properly supported: **the
+kernel's attention output does not correspond to the reference attention over that QKV under any
+head assignment.**
+
+Which is a genuinely useful outcome from a round that began with me finding two bugs in my own
+method: the finding survived the correction, so it is not an artifact. Combined with every line
+of `attn1.cc` having now been read and found mutually consistent (score layout `*32` matches the
+mask and the softmax; K^T `*64` matches `size_B`; Q tap matches `size_A=32`'s contiguous block
+order; `g_at` `*32` matches the PV mmul's C), the defect is inside the attention's arithmetic or
+the operand-loader expectations in a way that reading cannot distinguish - `load_v<size_A>` reads
+contiguously, and both the BD output and the kernel's index formula agree with that, so the
+remaining question is whether what the BD leaves in memory is what the loader finds there.
+
+That needs in-kernel instrumentation: a per-core dump of the Q operand or `g_sc`, which requires
+adding a fifo or overloading an existing output (the attention cores have no writable BSP).
