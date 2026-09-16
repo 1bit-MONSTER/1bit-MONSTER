@@ -5720,3 +5720,45 @@ per layer and apply per-head RMSNorm before RoPE - a real API change, since the 
 neither. That work should not start until the 0.646 result is understood, because implementing it now
 would produce a fused path that is *closer* and still wrong, which is exactly the state that cost this
 session hours: a plausible improvement that suppresses the search for the remaining factor.
+
+## Verified from the engine's own code: row 0 is identity, and its RoPE is half-split
+
+Read `ra()` and `ri2_build()` rather than assuming:
+
+```c
+static inline void ra(float*x,int hd,int p){int hd2=hd/2;for(int d=0;d<hd2;d++){
+    float a=x[d],b=x[d+hd2],c=rc[p*hd+d],s=rs[p*hd+d];
+    x[d]=a*c-b*s; x[d+hd2]=b*c+a*s;}}
+// ri2_build: f = 1/th^(d/hd2); a = p * f; c = cosf(a); s = sinf(a)
+```
+
+Two things settled:
+
+* **Row 0 is the identity.** `a = p * f` and `p = 0`, so `cos=1, sin=0`. My QK-norm test compared against
+  a pure QK-normed Q with no rotation, and that was valid - no correction needed.
+* **The engine's RoPE is standard half-split** (pairs `(d, d+hd/2)`), and its frequency exponent is
+  `d/hd2`, which is the standard `theta^(-2i/d)` with `i = d` over `hd2`. So the convention matches what
+  this file already records, and the 0.490 -> 0.646 improvement is not a pairing artefact.
+
+**So the residual is real and unexplained**: applying QK-norm with correct weights moves the Q correlation
+from 0.490 to 0.646 and leaves a ~1.9x magnitude gap, with RoPE provably the identity at the row compared.
+The remaining candidates are narrow - the exact reduction `iq` uses, an additional scale inside
+`qk_norm_pi`, or my `weff_qkv` Q-columns not corresponding to the engine's head order - and each is
+checkable the same way: read the line, or compare one head at a time rather than the whole 2048-wide slice.
+
+**Where fk-3 stands at the end of this session, in one place:**
+
+* **launch A is correct** - corr 1.0000 against the engine's own QKV, same prompt, same run;
+* **V is correct** - corr 0.9999, which also confirms the QKV split, the head count and the scatter;
+* **the "5.36x deficit" never existed** - it was a cross-prompt comparison artifact, and it was the premise
+  the whole session was built on;
+* **Q and K are wrong**, and QK-norm - present in the model, absent from my driver, and wrongly recorded as
+  absent in this file's own config notes - is the leading and directionally confirmed cause, explaining the
+  correlation, the magnitude gap and the non-orthogonality, but not yet completely;
+* **the four effective weights are valid** (npt=6144 solves, held-out validated), the kernel is faithful,
+  and ERT / contention / ratio stall are all ruled out with evidence.
+
+**The single most useful thing in this file for whoever continues**: the step that broke the deadlock was
+splitting a comparison by *what each operation acts on* - V matched, Q and K did not, and that named the
+rotation. Everything before it was measured carefully and still misled, because it was measured on the
+wrong axis.
