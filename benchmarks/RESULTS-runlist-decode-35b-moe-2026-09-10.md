@@ -402,3 +402,16 @@ table on a finite input is exactly the kind of op that yields NaN, and it matche
 
 Next: implement the MoE layer's i6/norm-BO setup from the dense template (RoPE table
 via the model's rope_theta + the q/k norm slots) and re-run the BO dump.
+
+### Addendum 9b — the RoPE-table lead is also excluded
+
+Wrote a correct identity RoPE table (pos 0: cos=1, sin=0, theta=1e7) into
+`arg3[0:256]` (the MoE analog of the dense i6 head) before the runlist → the act is
+**still all-NaN**. So the missing RoPE table is not the cause either.
+
+With this, the NaN survives: region-B zeroed, router zeroed, 5 MB norms zeroed, RoPE
+table written, and ELF identical across lib versions. Every input to the layer can be
+made finite/known and it still NaNs ⇒ the defect is inside the lib's 35B layer
+instruction sequence itself (or its kernel-side contract), matching R59's conclusion
+that the runtime's 35B layer forward is non-functional. Reusing that sequence is a
+dead end; the layer must be authored engine-side (the rebuild).
