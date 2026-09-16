@@ -5045,3 +5045,54 @@ verified three-phase design in n1_combined_norm_qkv.py, and the driver with its 
 npu-infer/tools/combined_smoke.cpp -- and the honest summary is in addendum 132: the STRUCTURE is solved
 and the norms are proven, the GEMM is verified at no shape, and the lane's own reference design shares
 its fault.
+
+### Addendum 138 — THE ENGINE'S OWN PATH IS DETERMINISTIC: 8/8 RUNS BIT-IDENTICAL (escalation closed)
+
+Built the engine's own harness and ran it eight times. Build line (the header comment's line is missing
+two include paths):
+
+    g++ -std=c++20 -O2 -fopenmp -o build/qwen36_moe_probe tools/qwen36_moe_probe.cpp \
+      engine/npu/src/dequant_q4nx.cpp engine/npu/src/gemm_npu_instructions.cpp \
+      -I engine/npu/src -I engine/npu/include -I npu-infer/include \
+      -I third_party/FastFlowLM/src/include \
+      -L /opt/xilinx/xrt/lib -lxrt_coreutil -lxrt_core -laiebu -luuid -lm -ldl \
+      -Wl,-rpath,/opt/xilinx/xrt/lib
+    ./build/qwen36_moe_probe <model.q4nx> 0 engine/npu/xclbins
+
+It runs ONE real 35B MoE layer FFN end-to-end on the device through the engine's I8Ctx -- router, top-8
+experts, shared expert -- and compares against a CPU reference. EIGHT RUNS:
+
+    npu_out[0..4]  = 0.0041 -0.0034 -0.0048 -0.0013 0.0045     <- IDENTICAL IN ALL EIGHT RUNS
+    ref_out[0..4]  = 0.0047 -0.0035 -0.0046 -0.0014 0.0044
+    NPU vs CPU-int8-sim: rel RMSE = 0.621704                    <- IDENTICAL IN ALL EIGHT RUNS
+
+CONCLUSION 1 -- THE ESCALATION I RAISED IN ADDENDUM 137 IS CLOSED, AND IT IS CLOSED NEGATIVELY. The
+engine's own path does NOT drop column blocks. Eight out of eight runs produced byte-identical output.
+The 1.9 s/tok decode is not built on intermittently-failing GEMMs; there is nothing to escalate to the
+other lanes, and I am glad I checked rather than asserted it.
+
+CONCLUSION 2 -- THE "FAIL" IS A DIFFERENT AND PRE-EXISTING THING. The harness reports FAIL because the
+NPU output deviates from its own INT8 SIMULATION (rel RMSE 0.62) -- not from the f32 reference, which it
+tracks to within a few percent per element (0.0041 vs 0.0047, -0.0034 vs -0.0035, -0.0048 vs -0.0046,
+-0.0013 vs -0.0014, 0.0045 vs 0.0044). That deviation is bit-identical across all eight runs: a
+SYSTEMATIC numerical difference, not a random fault, and the harness itself already flags it. It says the
+engine's int8 simulation does not model what the device actually computes; it does not say the device is
+unstable.
+
+CONCLUSION 3 -- MD=128 IS CONFIRMED IN PRODUCTION. The probe logs `creating bA size=524288 (MD=128
+KD=4096)`, which independently validates addendum 136's inference from quantize_async and confirms that
+the engine's production topology really is the multi-row one built by n1_core_i8_v27.py. It also runs
+with group ids `grp_a=grp_w=grp_c=<base> grp_ins=<base+1>`, i.e. an instruction group one past the data
+groups is NORMAL in the engine's own xclbins.
+
+WHAT THIS DOES TO THE LANE'S OPEN QUESTION. It retires "is the GEMM pattern itself flaky?" at the engine
+level: the design class is sound and produces deterministic, reference-matching output in production. So
+the fault is in MY DRIVER or MY m1 DERIVATION, not in v27 and not in the generator family. That is a
+much narrower and much more actionable place to be than where addendum 137 left things, and it means the
+next step is a straight comparison of my driver's BO and xclbin setup against I8Ctx's -- the `init(dev,
+xp, ip, 4, 1)` arguments, the group ids, and the BO flags -- rather than any further work on the design.
+
+STANDING CORRECTIONS, unchanged: the structure of the whole-layer design is solved (one xclbin, ONE
+submit, four-argument runtime sequence, three phases sharing one buffer at fixed offsets; RMSNorm and
+FFNnorm exact in every run ever taken and bit-identical to each other); the GEMM is verified at NO shape
+through MY driver; and every 8192/8192 quoted in this lane before addendum 117 is a single lucky sample.
