@@ -2103,3 +2103,35 @@ METHOD NOTE: this is the first time in this lane that checking the KIND of the c
 its arrangement, produced an answer -- after four experiments that rearranged it. When a series of
 layout hypotheses keeps failing on the same buffer, the hypothesis to test is that the buffer's
 contents were never right, not that they are arranged wrongly.
+
+### Addendum 60 — arg-3's head holds EXPERT weight rows, not the layernorm tensors
+
+Following addendum 59 ("find out what arg-3 must contain, the capture is the oracle"), I applied the
+PROVEN region-B transform to every layer-0 I8 tensor and searched the runtime capture. Bounded
+claims only, because the matches are short and I am not going to inflate them:
+
+  model.layer.0.mlp.up_exps_proj.weight    [35424 rows] -> its row 0 appears VERBATIM at capture offset 0
+  model.layer.0.mlp.gate_exps_proj.weight  [35424 rows] -> its row 0 appears VERBATIM at capture offset 151552
+
+155,552 = 32 x 4736 exactly. The matched prefix is 4736 bytes in both cases -- ONE row -- because
+row 0 is the identity case of the interleave (o=0 <- j=0) and row 1 onwards diverge, so this is a
+real 4736-byte identity and NOT a sequential match, and I am recording it as exactly that.
+
+WHY THIS MATTERS ANYWAY: 4736 random int8 bytes do not coincide by accident, so the runtime's
+arg-3 begins with a row of mlp.up_exps_proj -- an EXPERT WEIGHT -- and carries
+mlp.gate_exps_proj's row 0 at a 32-row boundary. It does NOT begin with input_layernorm, whose
+values are near 1.0 and which I showed in addendum 59 cannot produce the 1e6..1e38 magnitudes the
+capture actually has. So the two findings agree and are now mutually supporting: arg-3's head is
+EXPERT WEIGHT content, and the harness's region-A packing of layernorm/conv1d/ssm tensors into it
+is wrong in kind.
+
+WHY THE EARLIER EXPERIMENTS COULD NOT HAVE WORKED, now with the mechanism named: addendum 44
+(tail), 47 (F32/bf16 in both copies) and 48 (repacking as 66048) all treated arg-3's head as
+layernorm-ish content needing rearrangement. The buffer holds weights. Rearranging the wrong tensors
+correctly still leaves the wrong tensors.
+
+NEXT, precisely: determine the full layout of arg-3's head -- which expert tensors, in what order,
+at what row boundaries -- using the capture as the oracle and the SAME method (apply the verified
+transform, locate offsets, do not infer). The 32-row boundary at 151,552 and the fact that
+npu_pack_moe_linear5_bo already packs conv1d/ssm_norm/ssm_a/ssm_dt into the norms BO both suggest
+the head tensors belong ONLY in the norms BO, freeing arg-3's head for expert content.
