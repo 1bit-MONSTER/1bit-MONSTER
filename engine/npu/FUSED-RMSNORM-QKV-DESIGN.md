@@ -5629,3 +5629,50 @@ take the engine's `bqo` and its pre-RoPE Q (recoverable from `bA @ W_eff` for th
 to corr 1.0000) and solve for the transform that maps one to the other, rather than transcribing a
 convention and assuming it is the same one. That is the same *solve-rather-than-search* move that resolved
 the weight permutation, and the operands for it are already dumped.
+
+## ROOT CAUSE FOUND: 0.6B HAS QK-norm, my notes said it did not, and the fused path omits it.
+
+The metadata in `model.q4nx` contains, for **every one of the 28 layers**:
+
+```
+"model.layers.N.self_attn.k_norm.weight":{"dtype":"BF16","shape":[128], ...}
+"model.layers.N.self_attn.q_norm.weight":{"dtype":"BF16","shape":[128], ...}
+```
+
+and the engine uses them - `if (cfg.has_q_norm && qn_off[l]) ... qn_w[l][i] = bf16g(qq[i]);` then in
+`qk_norm_pi`: `if (cfg.has_q_norm) for (d<HD) bqo[...] *= iq * qn_w[l][d];`, where `iq` is
+`1/sqrt(mean(q^2)+eps)` per head.
+
+**My fused path does not do this.** This file's notes say, of the 0.6B config: *"no q_norm/k_norm (only
+rms_norm_eps)"*. That is **wrong**, and it is the reason the fused tokens are wrong.
+
+**It explains every observation at once**, which is the test a root cause has to pass:
+
+| observation | explanation |
+|---|---|
+| V matches (corr 0.9999) | QK-norm does not touch V |
+| Q wrong (0.49), K wrong (0.26) | the two slices QK-norm *does* touch |
+| engine Q 5.72x larger than pre-RoPE Q | the `qn_w`/`kn_w` per-dimension scale |
+| neither pairing gives a rotation (|det| ~ 33) | a per-dimension scale is not orthogonal |
+| magnitudes 15-35x V's | the same scale, applied before RoPE |
+
+**And it is the same class as the weight layout**: my driver omits a step the engine performs. Two
+instances now of the same failure - a documented assumption about the interface that was never checked
+against the artifact.
+
+**Why it survived so long.** The note was written early, in a config survey, and every later step inherited
+it. The RoPE work was then "verified ... vs an independent ra2 transcription, V untouched" - a check whose
+reference shared the assumption that no QK-norm was involved, so it could not detect the omission. This is
+the failure mode this file keeps recording: a green check on a step that is wrong, because the reference
+was derived the same way the implementation was.
+
+**The fix, and it is small.** In the host RoPE path (`engine/npu/src/npu_fk3_rope.h`), before rotating each
+head: scale Q by `1/sqrt(mean(q^2)+eps) * q_norm.weight` and K by `1/sqrt(mean(k^2)+eps) * k_norm.weight`,
+using the `qn_w`/`kn_w` the engine already loads (offsets in the model metadata, shape [128]). V is
+untouched. Then the fused Q/K should match the engine's at ~1.0 like V already does.
+
+**Method note, and it is the cleanest of the session.** The step that found this was not a better
+measurement but a *different* one: comparing the slices separately - and noticing that the slice RoPE
+does not touch matched while the ones it does touch did not. That split, available for hours, localised it
+to the rotation, and the model metadata then named the cause in one command. Both were cheap; what was
+missing was the idea of splitting the comparison by what each operation acts on.
