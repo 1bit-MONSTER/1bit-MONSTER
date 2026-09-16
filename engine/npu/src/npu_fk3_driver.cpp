@@ -298,9 +298,14 @@ bool FusedLayer::prepare_random(int l) {
 // Returns true only on a full-length read.
 static bool fk3_maybe_override(std::vector<uint16_t>& w, size_t count,
                                const char* envname, const char* label, int l) {
-    const char* path = getenv(envname);
-    if (!path) return false;
+    const char* tmpl = getenv(envname);
+    if (!tmpl) return false;
     if (count > w.size()) count = w.size();
+    // The value may be a printf template with %d, so one env var serves every layer
+    // (e.g. NPU_FK3_WQKV_FROM=/tmp/weff_l%d_qkv.bin). Without %d it is used literally.
+    char path[512];
+    if (strchr(tmpl, '%')) snprintf(path, sizeof(path), tmpl, l);
+    else snprintf(path, sizeof(path), "%s", tmpl);
     FILE* f = fopen(path, "rb");
     if (!f) { fprintf(stderr, "[fk3] %s: cannot open %s\n", label, path); return false; }
     size_t got = fread(w.data(), 2, count, f);
@@ -328,7 +333,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.H, (uint32_t)s.NQKV, off(0));
         // NOTE: the *_FROM files hold LAYER 0 effective weights (solved from the bf16_l0_* dumps),
         // so they must only be applied to layer 0. Per-layer weights need per-layer dumps.
-        if (l == 0) fk3_maybe_override(w, w.size(), "NPU_FK3_WQKV_FROM", "WQKV", l);
+        fk3_maybe_override(w, w.size(), "NPU_FK3_WQKV_FROM", "WQKV", l);
         if (l == 0 && getenv("NPU_FK3_DUMP")) {
             FILE* f = fopen("/tmp/fk3_w_wqkv.bin", "wb");
             if (f) { fwrite(w.data(), 2, w.size(), f); fclose(f); }
@@ -343,7 +348,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.qout, (uint32_t)s.NO, off(3));
         // NOTE: the *_FROM files hold LAYER 0 effective weights (solved from the bf16_l0_* dumps),
         // so they must only be applied to layer 0. Per-layer weights need per-layer dumps.
-        if (l == 0) fk3_maybe_override(w, w.size(), "NPU_FK3_WO_FROM", "WO", l);
+        fk3_maybe_override(w, w.size(), "NPU_FK3_WO_FROM", "WO", l);
         memcpy(s.wO[l].map(), w.data(), w.size() * 2);
         s.wO[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         s.wO_ready[l] = 1;
@@ -356,7 +361,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
         bf16mm_dequant_mode(g.data() + (size_t)s.H * s.IM, src.bo, (uint32_t)s.H, (uint32_t)s.IM, off(4), 1);  // up
         // NOTE: the *_FROM files hold LAYER 0 effective weights (solved from the bf16_l0_* dumps),
         // so they must only be applied to layer 0. Per-layer weights need per-layer dumps.
-        if (l == 0) fk3_maybe_override(g, g.size(), "NPU_FK3_WGU_FROM", "WGU", l);
+        fk3_maybe_override(g, g.size(), "NPU_FK3_WGU_FROM", "WGU", l);
         memcpy(s.w2[l].map(), g.data(), g.size() * 2);
         s.w2[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
         if (l == 0 && getenv("NPU_FK3_DUMP")) {
@@ -373,7 +378,7 @@ bool FusedLayer::prepare_layer(int l, const WeightSource& src) {
         std::vector<uint16_t> w((size_t)(s.NI + s.H) * s.ND);
         bf16mm_dequant(w.data(), src.bo, (uint32_t)s.NI, (uint32_t)s.ND, off(5));
         // LAYER 0 only - see the note above.
-        if (l == 0) fk3_maybe_override(w, (size_t)s.NI * s.ND, "NPU_FK3_WD_FROM", "WD", l);
+        fk3_maybe_override(w, (size_t)s.NI * s.ND, "NPU_FK3_WD_FROM", "WD", l);
         for (int r = 0; r < s.H; r++)
             for (int n = 0; n < s.ND; n++)
                 w[(size_t)(s.NI + r) * s.ND + n] = (uint16_t)(r == n ? 0x3F80 : 0x0000);  // bf16 1.0 / 0.0

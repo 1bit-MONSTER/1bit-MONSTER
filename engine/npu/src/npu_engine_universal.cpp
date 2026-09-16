@@ -4930,7 +4930,7 @@ struct Bf16Ctx {
                 // O GEMM (K = NH*HD) — 128-row blocks.
                 if (attn_host) for (int k = 0; k < npt; k++) for (int j = 0; j < qout; j++) bA[(size_t)k * qout + j] = f32_to_bf16(bat[k * qout + j]);
                 // NPU_DUMP_L0_FULL: the POST-attention activation, for all npt rows (RESULTS 133).
-                if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fa = fopen("/tmp/bf16_l0_attnout.bin", "wb"); if (fa) { fwrite(bA.data(), 2, (size_t)npt * qout, fa); fclose(fa); } }
+                if (getenv("NPU_DUMP_L0_FULL")) { char pn[128]; snprintf(pn,sizeof(pn),"/tmp/fk3_l%d_attnout.bin",l); FILE* fa = fopen(pn, "wb"); if (fa) { fwrite(bA.data(), 2, (size_t)npt * qout, fa); fclose(fa); } }
                 {
                     const int nblk = (npt + 255) / 256;
                     for (int i = 0; i < nblk && i < 2; i++)
@@ -4950,7 +4950,7 @@ struct Bf16Ctx {
                         }
                     }
                 }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fo = fopen("/tmp/bf16_l0_o.bin", "wb"); if (fo) { fwrite(boo.data(), 4, getenv("NPU_DUMP_L0_FULL") ? (size_t)npt * H : (size_t)H, fo); fclose(fo); } }
+                if (getenv("NPU_DUMP_L0")) { char pn[128]; snprintf(pn,sizeof(pn),"/tmp/fk3_l%d_o.bin",l); FILE* fo = fopen(pn, "wb"); if (fo) { fwrite(boo.data(), 4, (size_t)npt * H, fo); fclose(fo); } }
                 // FFN: RMSNorm + GU + SiLU×up + D (bsb copy fused into the norm region)
                 #pragma omp parallel for schedule(static) num_threads(host_threads())
                 for (int pi = 0; pi < npt; pi++) {
@@ -4964,7 +4964,7 @@ struct Bf16Ctx {
                     const int nblk = (npt + 255) / 256;
                     // GU GEMM INPUT (bA after attention + residual-1 add) - needed to solve the effective
                     // W_GU, which no other dump captures. See FUSED-RMSNORM-QKV-DESIGN.md.
-                    if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fq2 = fopen("/tmp/bf16_l0_a_gu.bin", "wb"); if (fq2) { fwrite(bA.data(), 2, (size_t)npt * H, fq2); fclose(fq2); } }
+                    if (getenv("NPU_DUMP_L0_FULL")) { char pn[128]; snprintf(pn,sizeof(pn),"/tmp/fk3_l%d_a_gu.bin",l); FILE* fq2 = fopen(pn, "wb"); if (fq2) { fwrite(bA.data(), 2, (size_t)npt * H, fq2); fclose(fq2); } }
                     for (int i = 0; i < nblk && i < 2; i++)
                         bf16mm_gemm_launch(Wgu[l], H, 2 * IM, 0, i & 1, bA.data() + (size_t)(i * 256) * H);
                     for (int i = 0; i < nblk; i++) {
@@ -4989,8 +4989,8 @@ struct Bf16Ctx {
                 }
                 // Pre-SiLU GU GEMM output, which the loop above consumes from bC. Needed to solve the
                 // effective W_GU (see FUSED-RMSNORM-QKV-DESIGN.md).
-                if (l == 0 && getenv("NPU_DUMP_L0_FULL")) { FILE* fg = fopen("/tmp/bf16_l0_gu.bin", "wb"); if (fg) { fwrite(bC.data(), 2, (size_t)npt * 2 * IM, fg); fclose(fg); } }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fs2 = fopen("/tmp/bf16_l0_silu.bin", "wb"); if (fs2) { fwrite(bGu.data(), 2, (size_t)npt * IM, fs2); fclose(fs2); } }
+                if (getenv("NPU_DUMP_L0_FULL")) { char pn[128]; snprintf(pn,sizeof(pn),"/tmp/fk3_l%d_gu.bin",l); FILE* fg = fopen(pn, "wb"); if (fg) { fwrite(bC.data(), 2, (size_t)npt * 2 * IM, fg); fclose(fg); } }
+                if (getenv("NPU_DUMP_L0")) { char pn[128]; snprintf(pn,sizeof(pn),"/tmp/fk3_l%d_silu.bin",l); FILE* fs2 = fopen(pn, "wb"); if (fs2) { fwrite(bGu.data(), 2, (size_t)npt * IM, fs2); fclose(fs2); } }
                 // D GEMM — 128-row blocks, A = the SiLU'd GU output.
                 {
                     const int nblk = (npt + 255) / 256;
@@ -5011,7 +5011,7 @@ struct Bf16Ctx {
                         }
                     }
                 }
-                if (l == 0 && getenv("NPU_DUMP_L0")) { FILE* fd = fopen("/tmp/bf16_l0_dw.bin", "wb"); if (fd) { fwrite(bdw.data(), 4, getenv("NPU_DUMP_L0_FULL") ? (size_t)npt * H : (size_t)H, fd); fclose(fd); } }
+                if (getenv("NPU_DUMP_L0")) { char pn[128]; snprintf(pn,sizeof(pn),"/tmp/fk3_l%d_dw.bin",l); FILE* fd = fopen(pn, "wb"); if (fd) { fwrite(bdw.data(), 4, (size_t)npt * H, fd); fclose(fd); } }
                 tc += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - tc0).count();
                 // NPU_DUMP_HIDDEN: full [token][H] block for this layer (was H
                 // floats = token 0 only, which cannot see rows the fixed-width

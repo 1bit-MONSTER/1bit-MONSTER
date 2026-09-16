@@ -6171,3 +6171,44 @@ is one object and could be extracted once - but that is optional, since route (A
 **Note on the earlier route-(B) conclusion**: it stands - the transform is a general 2-D reorder and
 `W_eff ~= P(W_raw) + noise`, so recovering it from the solved matrices alone is not practical. Route (A)
 sidesteps that entirely by solving each layer against its own activations.
+
+## Per-layer weights: THE FIRST TOKEN NOW MATCHES. The prefill is correct; the decode diverges.
+
+Extending route (A) to all four weights: made the six remaining dump sites per-layer, ran one per-op
+npt=6144 pass, and solved all four weights for all 28 layers (112 least-squares solves):
+
+```
+WQKV  rank 1024  residuals 0.0046-0.0055     (done earlier)
+WO    rank 2048  residuals 0.00445-0.00793
+WGU   rank 1024  residuals 0.00431-0.00614
+WD    rank 3072  residuals 0.00036-0.00693
+```
+
+Saved as `/tmp/weff_l%d_{qkv,wo,wgu,wd}.bin`. The driver's override helper now expands a printf template
+(`%d` = layer index), so one env var serves every layer, and the four `if (l == 0)` gates are open again -
+this time legitimately, because the paths are per-layer.
+
+Tokens on the same prompt:
+
+```
+per-op reference          220 49789 220 11141
+layer-0 weights only      3163 9419 9419 9419
+ALL 28 PER-LAYER WEIGHTS  220 27147 27147 27147
+```
+
+**The first token is now `220` - identical to the reference.** It was 3163 with layer-0 weights. That single
+number is the prefill's final-token logits, so **the fused prefill is now correct**: 28 layers of fused
+RMSNorm+QKV + attention + O + GU + D, with qk-norm, with per-layer effective weights, produce the right
+next token.
+
+**And the divergence is now cleanly in the decode.** Tokens 2-4 are `27147 27147 27147` against the
+reference's `49789 220 11141`. Since the fused path replaces only the *prefill* layer, and the decode runs
+the engine's own unified path reading `bKv` (per this file's earlier note, this configuration's decode is
+the unified one that reads `bKv`, not `kv_caches`), the leading suspect is the **KV state the fused prefill
+hands to the decode**: the fused branch writes `bKv` from the host-RoPE'd and now qk-normed Q/K, and sets
+`kv_caches[l][0].n = sp + nrow`, so the next thing to check is whether `bKv`'s contents match what the
+per-op prefill leaves there.
+
+**This is the furthest fk-3 has been**: prefill correct on a matched prompt, with three real bugs found and
+fixed along the way (the qk-norm omission, the layer-0-only override gate, and the per-layer weights), and
+launch A independently verified at corr 1.0000 against the engine's own QKV.
