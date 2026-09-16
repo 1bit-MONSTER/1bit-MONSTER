@@ -3067,3 +3067,39 @@ REBUILD STATE: (a) compiles -- MET. (c) one submit -- MET; driver validated 8192
 phases correct: both halves now correct ALONE, and the combination's deadlock is replaced by a
 different, more specific failure that only shows up at small size because the full-size design cannot
 yet allocate a context.
+
+### Addendum 88 — err=-28 SOLVED: the device has EIGHT columns, and my full design put the norm on column 8
+
+Bisected addendum 87's puzzle the cheap way, by holding everything constant except the one variable
+that differed, and the answer is not about allocation size at all.
+
+  c=8 (norm on column 8), B BO = 65,536 B:  DRM_IOCTL_AMDXDNA_CREATE_HWCTX failed (err=-28)
+  c=4 (norm on column 4), B BO = 65,536 B:  context created, all BOs allocated, submit issued
+
+Same K, same N, same 65 KB B buffer that cannot possibly exhaust anything. The only difference is
+which column the norm occupies. Therefore err=-28 "No space left on device" is the driver's way of
+saying THE ARRAY HAS NO COLUMN 8: the device has columns 0..7, exactly eight.
+
+THIS REFUTES ADDENDUM 79's claim that "the device has at least 9 columns". That claim was inferred
+from aiecc compiling a 9-column design -- but aiecc does not know how many columns the target device
+has, so compiling proved nothing about the hardware. It is the twelfth time in this lane that a
+statement was published from reasoning rather than from the box, and this one cost a full-size
+context-creation failure and a wrong "no space" diagnosis on top of it.
+
+CONSEQUENCE FOR THE REBUILD: the full-size combined design CANNOT simply give the norm its own ninth
+column. The norm must share one of the eight, which is exactly what addendum 78 tried and what failed
+with "number of output DMA channel exceeded" -- so the real problem to solve is DMA channel budgeting
+within a shared column (or accepting fewer GEMM columns, e.g. c=4, leaving column 7 free for the
+norm). Addendum 78's plan was not wrong in spirit; its fix (a ninth column) was impossible.
+
+ALSO OBSERVED: with a VALID column the two-phase design creates its context, allocates every BO,
+issues its submit, and then HANGS (c=4, K=64, N=1024, num_col_group=2). So the deadlock is
+independent of the err=-28 issue and survives at a legal column, while the c=2 K=64 N=256 variant with
+the addendum-86 fix instead raised XRT's bitset exception. The two failure modes differ with
+num_col_group (1 versus 2), which is a new and concrete axis: the GEMM's runtime loop count now
+correlates with which of the two failures appears.
+
+REBUILD STATE: (a) compiles -- MET. (c) one submit -- MET, driver validated 8192/8192. (b) the GEMM
+half is proven alone (256/256); the norm half now matches the proven implementation exactly; the
+combination reaches a legal context and fails either by hanging or by an XRT bitset exception
+depending on num_col_group, with the column-8 impossibility now removed from the picture.
