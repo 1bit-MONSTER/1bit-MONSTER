@@ -1639,3 +1639,35 @@ its anchor matched and the emitted MLIR is checked (GEMM core: 7 loops
 A_norm) is NOT row-major — it is microtiled per K-tile with the blocks
 concatenated, so a row-major reference reports ~0.5% "exact" on data that is
 actually perfect.
+
+## ✅ fk-3 MILESTONE: the WHOLE LAYER, BOTH RESIDUALS FUSED, IN ONE LAUNCH
+
+`n1_fk3_layer.py`, M=16 H=1024 NH=16 HD=128 NO=1024, one xclbin, one runtime
+sequence, ~0.9 launches per layer instead of the per-op path's ~9:
+
+```
+  QKV          bit-exact 65536/65536
+  attention    90.5% exact, 94.4% <=2 ULP, every head 82-100%
+  o   (f32)    correct; exact at sampled points, worst_rel 1.1e-04 (f32 sum order)
+  h = x + o    H_BF 16383/16384 = 100.0%          <- RESIDUAL 1
+  GU           bit-exact 98304/98304
+  SiLU         bit-exact 49152/49152
+  D            bit-exact 16383/16384 = 100.0%      <- RESIDUAL 2 FUSED IN
+```
+
+Residual 2 costs **nothing** — no stage, no fifo, no column: the D GEMM's K is
+simply extended by H and its weight becomes `[W_D ; I]`, so
+`C_D = silu*W_D + h = the layer output`. The sequence is the layer's true data
+order:
+
+```
+QKV norm -> QKV GEMM -> attention -> O-proj(f32, into A2) ->
+FFN add-norm (x+o, h never materialised) -> h=x+o (bf16, H_BF) -> GU -> SiLU -> D
+```
+
+Every arithmetic stage is now bit-exact against a host reference except the
+attention, whose residual is its own bf16 score accumulation (`attn1` accumulates
+scores in bf16; the reference sums in f32).
+
+That is the goal's core claim delivered: the fused layer is ONE launch, and the
+per-op launch overhead that capped native prefill is gone.

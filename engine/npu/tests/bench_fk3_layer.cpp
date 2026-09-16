@@ -49,7 +49,7 @@ int main(int argc,char**argv){
   auto bC2 =xrt::bo(dev,sC2 ,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(13));
   size_t sHBF=(size_t)M*H*2;
   auto bHBF=xrt::bo(dev,sHBF,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(17));
-  size_t sSL=(size_t)M*NI*2, sWD=(size_t)NI*ND*2, sCD=(size_t)M*ND*2;
+  size_t sSL=(size_t)M*NI*2, sWD=(size_t)(NI+H)*ND*2, sCD=(size_t)M*ND*2;
   auto bSL=xrt::bo(dev,sSL,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(14));
   auto bWD=xrt::bo(dev,sWD,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(15));
   auto bCD=xrt::bo(dev,sCD,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(16));
@@ -67,8 +67,12 @@ int main(int argc,char**argv){
   for(int i=0;i<H;i++) A2m[(size_t)M*H+i]=1.0f;
   for(long i=0;i<(long)H*N2;i++) W2m[i]=rne((float)((i%13)-6)*0.05f);
   memset(bAN2.map(),0,sAN2);memset(bC2.map(),0,sC2);
+  // W_D is [W_D ; I] now: the identity half makes the D GEMM add h, which is how
+  // residual 2 is fused (A_D = [silu | h]).
   uint16_t*WDm=(uint16_t*)bWD.map();
   for(long i=0;i<(long)NI*ND;i++) WDm[i]=rne((float)((i%9)-4)*0.05f);
+  for(int r=0;r<H;r++)for(int n=0;n<ND;n++)
+    WDm[(size_t)(NI+r)*ND+n]=rne((r==n)?1.0f:0.0f);
   memset(bSL.map(),0,sSL);memset(bCD.map(),0,sCD);
   memset(bAN.map(),0,sAN);memset(bQ.map(),0,sQ);memset(bO.map(),0,sO);memset(bC.map(),0,sC);
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW.sync(XCL_BO_SYNC_BO_TO_DEVICE);bWO.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -208,6 +212,8 @@ int main(int argc,char**argv){
   std::vector<uint16_t> CDref((size_t)M*ND);
   for(int i=0;i<M;i++)for(int n=0;n<ND;n++){
     float acc=0;for(int j=0;j<NI;j++)acc+=b2f(SLref[(size_t)i*NI+j])*b2f(WDm[(size_t)j*ND+n]);
+    // the identity half contributes h[n] (bf16, exactly as the device feeds it)
+    acc+=b2f(HBFref[(size_t)i*H+n] ? rne(href[(size_t)i*H+n]) : 0);
     CDref[(size_t)i*ND+n]=rne(acc);
   }
   printf("fk-3 attention block, ONE launch: M=%d H=%d NH=%d HD=%d NO=%d (N=%d keys)\n",M,H,NH,HD,NO,N);

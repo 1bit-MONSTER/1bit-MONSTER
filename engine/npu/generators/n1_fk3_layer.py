@@ -74,7 +74,11 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
     n_n_gu = N2 // NT              # GU N-tiles (the FFN, same K-tiles as the QKV)
     assert N2 % NT == 0
     n_si = NI // NT                # SiLU tiles (gate/up are NI wide each)
-    n_k_d = NI // k                # the D projection's K = the intermediate size
+    # RESIDUAL 2 is FUSED INTO D: A_D = [silu | h] and W_D = [W_D ; I], so
+    # C_D = silu*W_D + h = the layer output. K grows by H, i.e. by H/k K-tiles.
+    n_k_silu = NI // k             # the silu half of the D projection's K
+    n_k_d = (NI + H) // k          # ...plus the identity half, acting on h
+    assert H % k == 0
     n_n_d = ND // NT
     assert NI % NT == 0 and NI % k == 0 and ND % NT == 0 and N2 == 2 * NI
     SCOL = GCOL + 1                # the SiLU takes the last column
@@ -358,7 +362,7 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
             np.ndarray[(H * N2,), np.dtype[bfloat16]],          # W_GU
             np.ndarray[(M * N2,), np.dtype[bfloat16]],          # C_GU (gate|up)
             np.ndarray[(M * NI,), np.dtype[bfloat16]],          # SILU (D's A)
-            np.ndarray[(NI * ND,), np.dtype[bfloat16]],         # W_D
+            np.ndarray[((NI + H) * ND,), np.dtype[bfloat16]],   # W_D | I
             np.ndarray[(M * ND,), np.dtype[bfloat16]],          # C_D
             np.ndarray[(M * H,), np.dtype[bfloat16]],           # H_BF (h = x+o)
         )
@@ -539,9 +543,17 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
             # A_norm is already microtiled, which is why its tap is a verbatim copy).
             for nt in range(n_n_d):
                 for kt in range(n_k_d):
-                    ant = shim_dma_single_bd_task(ANR_s, SILU, offset=kt * k,
-                                                  sizes=[M // 4, k // 8, 4, 8],
-                                                  strides=[4 * NI, 8, NI, 1], issue_token=True)
+                    if kt < n_k_silu:
+                        ant = shim_dma_single_bd_task(ANR_s, SILU, offset=kt * k,
+                                                      sizes=[M // 4, k // 8, 4, 8],
+                                                      strides=[4 * NI, 8, NI, 1], issue_token=True)
+                    else:
+                        # the identity half acts on h, which is already in the
+                        # microtiled-per-K-tile layout, so this is a verbatim copy
+                        ant = shim_dma_single_bd_task(ANR_s, H_BF,
+                                                      offset=(kt - n_k_silu) * M * k,
+                                                      sizes=[1, 1, M, k],
+                                                      strides=[1, 1, k, 1], issue_token=True)
                     dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
                     wt = shim_dma_single_bd_task(W_s, W_D, offset=kt * k * ND + nt * NT,
                                                  sizes=[k // 8, NT // 8, 8, 8],
