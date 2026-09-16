@@ -5595,3 +5595,33 @@ load_linear_weights produces. The reuse route is fixable in principle: repack th
 to match load_linear_weights (or call it directly), then re-run moe_smoke. The exact b1/b2 -> ELF
 arg mapping and the alpha/iln/paln/sg/router/ssm_out reorder remain to be derived; the dumps at
 /tmp/lin5dump are the oracle.
+
+### Addendum 150 — load_linear_weights' b1/b2 are INTERMEDIATE, not the ELF's args; the conv1d read is confirmed at norms-BO @0
+
+Two follow-ups on addendum 149, both byte/decoded evidence.
+
+1. The conv1d+SSM head DOES belong at norms-BO @0 (the harness's npu_pack_moe_linear5_bo
+   structure is right). Built gen_layer_stages_moe and decoded the vendor's own per-stage
+   `qwen3_6_moe_npu_sequence::_send_linear_conv_weights` TXN: it is ONE DDR_PATCH —
+   arg3 @0, len=16512 words = 66048 B = ssm_conv1d(65536)+ssm_norm(256)+ssm_a(128)+ssm_dt(128)
+   — MM2S from the norms BO. So the conv1d/norm/a/dt placement the harness writes is the
+   vendor's own, not a guess. (Addendum 7's "slot5 = router BO" for this stage was wrong.)
+
+2. But load_linear_weights' b1/b2 are NOT the ELF's final args — they are intermediate.
+   b2 holds beta@111560, conv1d@242632, norm@308168 (addendum 149), i.e. NOT the norms BO's
+   beta@197120; and the full layer ELF (moe_layer_ctx1.txn) reads norms only at
+   @66048(alpha)/@197120(beta)/@328192(ssm_out) and WRITES norms @0 (S2MM 66048 B), never
+   reading the conv1d head back. Neither b1 nor b2 carries alpha/beta at those offsets, so the
+   final arg3 (norms) BO is assembled from b1/b2 by a further step — that step lives in
+   qwen3_6_moe_npu::Impl::load_weights (exported at 0x7a060), which is the next thing to
+   disassemble to get the authoritative arg0/arg2/arg3 layout.
+
+3. Side: the conv1d head is read by _send_linear_conv_weights (a stage gen_layer_seq does NOT
+   call — the full layer's conv is "inline with npu_dma_memcpy_nd", addendum 7 correction) yet
+   the full layer ELF never issues a norms-@0 read. Whether the full-layer conv1d reads its
+   weights from the router BO @12288 (131072 B strided — currently labelled moe_router) or the
+   conv is folded elsewhere is still open; disassembling _gen_linear_sequence (0x97650) would
+   settle it.
+
+Oracle remains /tmp/lin5dump/{lin5_b1_L1.bin,lin5_b2_L1.bin,pool_L1_head.bin}; tooling
+npu-infer/tools/{dump_lin5_weights,gen_layer_stages_moe}.cpp both build against the vendor .so.
