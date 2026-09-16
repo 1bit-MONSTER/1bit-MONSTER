@@ -864,3 +864,29 @@ So the attention now costs 16 of the 32 compute tiles, leaving 16 for
 RMSNorm+QKV (2), O-proj (1), GU (2) and D (1) = 6 — the one-launch composition
 fits. (The exact-count differences across N/C are the online-softmax vs
 single-pass reference, as before; all-heads-agree is the correctness signal.)
+
+### Composition: the SHIM channel budget, not just the tile budget
+
+Freeing compute tiles (the 1-core attention, above) is necessary but NOT
+sufficient. The linear stages need data, and every byte enters the array through
+a shim tile — and each shim has **2 MM2S + 2 S2MM** (both measured, not assumed):
+
+* 2 MM2S: hit by the 2-heads/column attention (QK_s + V_s) — the error was
+  "'aie.tile' op number of output DMA channel exceeded" at tile (0,0);
+* 2 S2MM: hit by putting 4 heads on one column (4 O_s outputs) — the error is
+  now "'aie.tile' op number of **input** DMA channel exceeded" at tile (0,0).
+
+So both ways of making room fail on shim channels:
+* attention at P=2 -> uses all 8 columns' shims; the free rows 4-5 of those
+  columns still have no shim channel left for a linear stage;
+* attention at P=4 -> frees 4 whole columns, but a 4-head column needs 4 S2MM
+  for its O outputs, over the limit.
+
+The next experiment is DMA-channel SHARING across phases: the mlir-aie fifo API
+exposes `set_prod_dma_channel()` / `set_cons_dma_channels()`, and the phases are
+time-disjoint (phase 1 QKV, phase 2 attention, phase 3 O-proj, ...), so a
+linear-stage fifo could be pinned to the same channel index its column's
+attention fifo uses. If aiecc counts channel INDICES rather than fifos, that
+fits everything; if it rejects the double assignment, the fallback is to merge
+each column's O outputs into one S2MM (a 4->1 `object_fifo_link`, which then
+needs the head order made deterministic).
