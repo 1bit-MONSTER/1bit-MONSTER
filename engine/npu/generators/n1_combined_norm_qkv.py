@@ -143,8 +143,12 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                 fW_c.release(ObjectFifoPort.Consume, 1)
 
         # ---- PHASE 2 fifos: A broadcast to every column, B and C per column ----
+        # A is a BROADCAST: one fifo, every core a consumer, filled by one shim BD per tile. The
+        # producer must not reuse a slot until ALL consumers have released it; a deeper fifo gives
+        # the slowest core more slack before any reuse can bite. Storage is in each core's L1 (64 B
+        # per tile), so depth is nearly free -- and unlike per-column fifos it costs no descriptors.
         gA_c = object_fifo("G_A_C", qkv_shim[0],
-                           [qkv_core[c] for c in range(n_aie_cols)], BATCH_SIZE + 1, Ga_ty)
+                           [qkv_core[c] for c in range(n_aie_cols)], 32, Ga_ty)
         gB_s = {}
         gB_c = {}
         gC_c = {}

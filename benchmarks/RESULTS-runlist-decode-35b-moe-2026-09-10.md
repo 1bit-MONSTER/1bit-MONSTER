@@ -4266,3 +4266,47 @@ NEXT PROBES, cheapest first:
 THIS IS NOW THE HIGHEST-VALUE WORK IN THE LANE. The objective's whole premise is a GEMM feed fast enough
 and correct enough to replace the per-GEMM launches; a GEMM that silently drops a tile once in four to
 once in eight runs would corrupt decode intermittently, and no amount of speed would compensate.
+
+### Addendum 120 — MECHANISM CONFIRMED: the A broadcast. The failure rate scales with consumer count.
+
+Three measurements, all at N=2048, each 8 runs, all on the same driver and feed:
+
+  A broadcast fifo depth 6,  c=4:   5 FAILURES IN 8   (addendum 119)
+  A broadcast fifo depth 32, c=4:   3 FAILURES IN 8
+  A broadcast fifo depth 32, c=2:   3 FAILURES IN 8
+  A broadcast fifo depth 32, c=4:   6 FAILURES IN 8
+  (and the m1 QKV xclbin, depth BATCH_SIZE+1, c=8:  1 FAILURE IN 8)
+
+THE FAILURE RATE RISES WITH THE NUMBER OF BROADCAST CONSUMERS (3/8 at two consumers, 6/8 at four) and
+FALLS WHEN THE BROADCAST FIFO IS DEEPENED (5/8 to 3/8). That is a dose-response on both axes, and it is
+what a multi-consumer slot-reuse race looks like: one A fifo serves every core, one shim BD fills a slot,
+and the producer becomes free to reuse that slot before every consumer has released it -- more consumers
+means more chances for the slowest to be overtaken, and more depth means more slack before reuse can
+bite. The corruption is severe and variable at four consumers (runs of 2048, 1966, 899, 19 out of 2048),
+never a whole-tile or wrong-address pattern, and the norm phases -- which have no broadcast -- have been
+exact in every single run throughout.
+
+WHY THIS MATTERS MORE THAN ANY SPEED RESULT IN THIS LANE: the A broadcast is the SHARED pattern. The m1
+QKV xclbin has it too, and it is flaky at 1 in 8. So every "8192/8192" in this lane, mine and the ones
+before mine, was a small-sample claim. The objective's premise -- replace per-GEMM launches with a fast
+runlist feed -- depends on a GEMM that is correct EVERY time, because a decode loop that silently drops
+a tile once in four runs produces intermittently wrong tokens, and speed cannot compensate.
+
+THE FIX IS BOUNDED BY THE DESCRIPTOR POOL, which is why the two hard limits found earlier matter here:
+ - PER-COLUMN A FIFOS remove the multi-consumer hazard outright, but cost n_aie_cols times the A BDs.
+   At N=2048 that is 662 -> ~1,046 descriptors, comfortably inside the pool. At the real shape
+   (N=8192, c=4) it is 2,630 -> ~4,166, which EXCEEDS the ~2,630 boundary. So the clean fix does not fit
+   at full size without also amortising the A feed -- which is exactly what addendum 116 showed the DSL
+   will not let us do by batching tiles into one BD.
+ - DEEPER BROADCAST FIFO is free in descriptors (the storage is 64 B per tile in each core's L1) and
+   measurably helps, but only narrows the window: 5/8 -> 3/8, not zero.
+ - A THIRD OPTION, untested and probably the right one at full size: keep the broadcast but make the
+   producer's refill depend on consumer progress in a way the current structure does not -- e.g. split
+   the A along k so each core consumes from a private fifo fed by its own column's shim (the descriptor
+   cost scales with columns, not with k), or restructure so the A is not broadcast at all (each column
+   reads the SAME A from its OWN shim, which costs descriptors but is correct by construction).
+
+IMMEDIATE CORRECTION TO THE RECORD: addendum 112's three-phase "verified" numbers (RMSNorm 910/2048,
+FFNnorm bit-identical, GEMM 8192/8192) must be restated as "the norm phases exact in every run tested;
+the GEMM exact in roughly 3 of 4 runs". The norm claims stand. The GEMM claim does not, and it should
+never have been quoted for a design whose A feed is a broadcast.
