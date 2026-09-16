@@ -5356,3 +5356,49 @@ hypothesis, and it is checkable by reading rather than measuring - which is what
 and comparing the BO passed against the BO filled; that is the same one-minute read available here. Twelve
 retractions this session came from naming a cause from a statistic, and this statistic supports a
 disjunction, not a name.
+
+## RESOLVED: the kernel is faithful. My "dumped input" conclusion was my own dtype error.
+
+Reading `aA` correctly - it is an **f32** BO (`s.aA = xrt::bo(..., (M+1)*H*4, ...)` at driver line 154,
+and the dump at line 490 writes `(M+1)*H*4` **raw bytes**, which I had read as bf16) - and including the
+gamma row at offset `M*H`:
+
+```
+rmsnorm(x, gamma) @ W_eff    maxabs 5.62140   meanabs 0.18301   corr vs MY kernel out = 1.0000
+MY kernel launch-A output    maxabs 5.62500   meanabs 0.18299
+ENGINE own QKV buffer        maxabs 12.50000  meanabs 0.17632   (corr vs the same reference = 0.5124)
+```
+
+**`corr = 1.0000`.** Launch A computes exactly `rmsnorm(x, gamma) @ W_eff`. The fused RMSNorm+QKV kernel
+is **faithful** - verified against a reference built from the driver's own dumped operands at the correct
+dtype, with the valid weight.
+
+**So my previous section's conclusion - "the dumped input cannot be the input the kernel used" - was
+wrong, and wrong in the most ordinary way available**: I read a float buffer as bf16 and then built an
+argument on the resulting 13x magnitude discrepancy and a suspiciously-identical correlation. The
+identical-correlation observation was the tell - it was identical because both "references" were
+deterministic functions of the *same misread bytes*, not because RMSNorm was scale-invariant.
+
+**Worse, and worth recording precisely:** this file already documents that trap, for the engine's `o` and
+`dw` dumps ("NOTE o and dw are F32 dumps (4 bytes/element) while the rest are bf16"). I wrote that
+warning, applied it to the engine's dumps, and then failed to apply it to my own driver's. A documented
+trap is only useful if it is applied to the next instance, and I had already met this exact one.
+
+**So where the defect actually is.** My kernel is exonerated *for launch A*, and the engine's own QKV does
+**not** match the same reference (corr 0.5124). Both are `norm(input) @ W_eff`, so they should agree
+exactly if the inputs agree. RMSNorm is scale-invariant, so a magnitude difference in the raw input
+cannot explain 0.51 - **the driver's activation vector must differ structurally from the engine's `bh`.**
+That is now the single remaining question, and it is in the engine-to-driver activation handoff, not in
+the kernel, not in the weights, not in buffering.
+
+**And it retro-corrects the retraction of my earlier claim.** I wrote "the 5.36x deficit was never a
+kernel bug", then retracted it because the tokens did not converge with correct weights. With launch A now
+verified faithful against its own operands, the original statement looks right after all - the tokens
+fail because the *input handed to the kernel* is wrong, which is what "not a kernel bug" meant. I
+retracted a correct claim on the strength of a symptom whose cause I had not yet localised; the fix was
+to localise first, which took three more measurements.
+
+**Method note, and the sharpest one in this file:** two of my wrong turns today were the *same* dtype
+error against the *same* kind of dump, once on the engine's files and once on my own - and the second
+happened while I was actively looking for a defect. The only reason it was caught is that I recomputed
+from the raw bytes instead of trusting my earlier read.
