@@ -2135,3 +2135,33 @@ at what row boundaries -- using the capture as the oracle and the SAME method (a
 transform, locate offsets, do not infer). The 32-row boundary at 151,552 and the fact that
 npu_pack_moe_linear5_bo already packs conv1d/ssm_norm/ssm_a/ssm_dt into the norms BO both suggest
 the head tensors belong ONLY in the norms BO, freeing arg-3's head for expert content.
+
+### Addendum 61 — arg-3 is a UNIT-INTERLEAVED weight layout with stride 18944 = 4 x 4736
+
+Searched the runtime capture for many RAW rows of every layer-0 I8 tensor (not just row 0):
+
+  mlp.up_exps_proj.weight    row0 @      0   row1 @  18944   row2 @  37888   row3 @  56832
+  mlp.gate_exps_proj.weight  row0 @ 151552   row1 @ 170496   row2 @ 189440   row3 @ 208384
+  every other layer-0 I8 tensor: NO raw row found in the first 2 MB
+
+Two exact facts fall out, and they are structural rather than suggestive:
+
+  STRIDE = 18944 = 4 x 4736. Consecutive rows of a tensor sit 18944 B apart, and 18944 is the very
+  unit gen_layer_seq uses (0x4a00, addendum 52). So a "unit" holds 4 rows of 4736 and a tensor's
+  successive rows occupy the FIRST row-slot of successive units.
+  OFFSET 151552 = 8 x 18944 exactly. So up_exps occupies units 0..7 and gate_exps begins at unit 8.
+  8 units x 18944 = 151,552 B, which is ALSO one of the ELF's declared group-6 object sizes.
+
+Combined with addendum 60 (row 0 of up_exps verbatim at offset 0) this says arg-3 is a
+UNIT-INTERLEAVED weight image -- units of 18944 B, 4 row-slots each -- and NOT a concatenation of
+tensors the way npu_pack_moe_region_b and the region-A assumption treat it. That is the structural
+reason every region-A rearrangement failed: the buffer is not laid out as a sequence of tensors at
+all, so shifting a tensor-sized block inside it cannot be right.
+
+It also reconciles the sizes that have been nagging: 94720 = 5 x 18944 (the ELF's group-3
+18944 + 75776 = 1 + 4 units), and 75776 = 4 x 18944. Everything is denominated in units of 18944.
+
+NEXT: map WHICH tensors occupy WHICH row-slots of which units, using the capture as oracle and the
+verified method -- search raw rows (and reorder-transformed rows) unit by unit, and identify what
+fills row-slots 1..3 of the units whose slot 0 is up_exps. Then repack arg-3 as units rather than as
+concatenated tensors, and re-run gating on the act.
