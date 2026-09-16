@@ -6085,3 +6085,46 @@ The check felt rigorous (md5, byte equality) and was structurally incapable of f
 defect as the twelve wrong turns before it: a verification that shares an assumption with the thing it
 verifies, this time the assumption that a debug dump is written before rather than after the code I was
 testing.
+
+## Route (B) characterised: a general 2-D reorder, not recoverable from the noisy solve
+
+Ran the fused path **without** any override so `NPU_FK3_DUMP` captures `bf16mm_dequant`'s true output, and
+compared it against the solved effective weight:
+
+```
+md5 differs?                              True
+elementwise corr(raw, eff)                -0.000774     <- genuinely different arrays
+pure ROW permutation?   cols matching      0.000       <- NO
+pure COLUMN permutation? rows matching     0.000       <- NO
+full value multiset: max|sorted diff|      0.005859    <- matches to ~solve noise
+```
+
+**Three conclusions.**
+
+1. **The permutation is real** - raw and effective are uncorrelated elementwise (-0.0008) yet share a value
+   multiset. This is the third independent confirmation and the first from a comparison whose two operands
+   are both correctly identified (a true raw dump vs the effective array).
+2. **It is a general 2-D reorder**, not a row permutation and not a column permutation - neither per-column
+   nor per-row sorted multisets match at all.
+3. **`W_eff ~= P(W_raw)` plus about 0.5% noise.** The multiset mismatch (0.005859) is essentially the
+   solve residual (0.0055) - i.e. the solved matrix is a noisy image of the permuted one. That is expected:
+   `W_eff` came from a least-squares fit, and the fit's error shows up here.
+
+**Why route (B) is therefore hard, and route (A) is the practical one.** Recovering a *general* 2-D
+permutation from a *noisy* estimate needs either exact per-element correspondence - impossible here, bf16
+ties make only 74 of 4.19M values unique - or a structured family, and the family is not row/column/tiling.
+The authoritative source would be the upload itself: `reorder_cpy`, which `libqwen3_npu.so` exports and
+whose disassembly I partially read earlier (256-element block structure, SIMD bulk copy). That remains the
+clean route if someone wants the rule analytically; otherwise **route (A) - per-layer solves - is
+mechanical**: extend the activation dumps past `l=0`, then 4 weights x 28 layers at npt>=6144.
+
+**For whoever continues, the state is unambiguous:**
+
+* **launch A is correct** - corr 1.0000 against the engine's own QKV on a matched prompt and run;
+* **layer 0 is correct with the effective weights and the qk-norm fix** - corr 0.997135, and removing either
+  one collapses it (0.007 without the weights; qk-norm proved separately at 0.99997);
+* **layers 1-27 are wrong** because the only effective weights available are layer 0's, and the permuted
+  upload differs per layer's values even if the rule is shared;
+* **two mechanisms are now identified and fixed** - the qk-norm omission, and a correct `l == 0` gate that I
+  had briefly and wrongly removed;
+* **the remaining work is data production, not diagnosis**: per-layer dumps plus per-layer solves.
