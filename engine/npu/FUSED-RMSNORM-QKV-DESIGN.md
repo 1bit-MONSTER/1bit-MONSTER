@@ -4998,3 +4998,54 @@ the second is weaker than stated.
 **Next:** calibration at `npt >= 6144`, re-solve all four, re-run. If tokens converge, the permutation
 account is confirmed end-to-end. If they do not, the weight layout was not the whole story and that is
 worth knowing before fk-4.
+
+## The permutation fix is NECESSARY BUT NOT SUFFICIENT. The fused path has a second defect.
+
+Calibration at **npt=6144**, so every solve is overdetermined, full rank and unique - the genuinely
+valid effective weights:
+
+```
+WQKV  A(6144,1024) rank=1024(need 1024) cond=73.1      residual 0.005520
+WO    A(6144,2048) rank=2048(need 2048) cond=1281.9    residual 0.005815
+WGU   A(6144,1024) rank=1024(need 1024) cond=1.5e6     residual 0.005460
+WD    A(6144,3072) rank=3072(need 3072) cond=166.6     residual 0.006562
+```
+
+Rank is exactly the needed rank, the systems are overdetermined, and the residuals are small but
+**non-zero** - the honest signature of a real fit with bf16 noise, in contrast to the 0.000000 of the
+underdetermined npt=1024 overfit. These are as good as these weights can be obtained.
+
+Loaded, verified `4 of 4`, and the result:
+
+```
+baseline (correct)              785, 220, 62014, 220
+npt=1024 overfit weights        37142, 5369, 58251, 58251
+npt=6144 VALID weights          3164, 13378, 13378, 13378
+```
+
+**Not converged.** So the weight-layout story, tested properly for the first time, does **not** explain
+the failure on its own.
+
+Two things follow, and the second matters more than the first.
+
+1. **The fused path has at least two defects.** The layout is one (the tokens *do* change when the
+   weights change, so the overrides are genuinely consumed - 37142 -> 3164). Something else is wrong as
+   well, in the kernel or in the driver's composition of it.
+
+2. **The degenerate repeat pattern persists** - `13378, 13378, 13378` now, and `18306, 18306, 18306`
+   before, is the same signature my notes originally attributed to zeroed weight BOs. A layer emitting a
+   constant is the classic silent-stall symptom (a phase with the wrong fifo `n_k` ratio stalls with no
+   error and leaves buffers zero), and a peer has since shown that zeroed buffers have at least two
+   causes, so it must be discriminated rather than assumed.
+
+**And I must correct a claim I made confidently**: I wrote that the "5.36x deficit was never a kernel
+bug" and that the fused kernel was correct given its inputs. That was premature. If the fused path were
+correct given the right weights, the tokens would now match, and they do not. The layout finding is
+real and necessary; treating it as sufficient was the same error as every other in this file - accepting
+an explanation that fit the evidence I had, without a test that could have failed.
+
+**Next, and this is now the whole remaining question:** re-run the stage-by-stage comparison
+(`test_fk3_driver_standalone` / `bench_fk3_layer` versus the driver's own stage dumps) with the **valid**
+weights, to find where the second defect is. The bench comparison was previously run with the raw
+weight and passed, so either the defect is in a path the bench does not exercise, or the valid weights
+expose something the raw ones masked.
