@@ -5990,3 +5990,47 @@ producing correct tokens, which remains unexplained but is not a dump-alignment 
 read off my own artifacts - the files are named `bf16_l0_*` and the env vars are `_FROM` a layer-0 solve.
 The lesson is the session's one lesson again: I acted on the shape of the code (`if (l == 0)` looks like
 debug scaffolding) instead of on what the artifact it guards actually contains.
+
+## RETRACTION: the "permutation" was a cross-prompt artifact. The weights were never permuted.
+
+Checking the artifacts directly instead of reasoning from the earlier statistic:
+
+```
+md5sum fk3_w_wqkv.bin weff_qkv.bin   ->  1c497f762760d94702c7e1f636631771  (both, byte-identical)
+corr(Weff.npy, fk3_w_wqkv.bin)       =  0.999895      <- the npt=2048 solve, ~the raw array
+```
+
+**`weff_qkv.bin` is byte-identical to the driver's own dequantized dump, and the npt=2048 solve has
+correlation 0.9999 with the raw weight.** So:
+
+* **the effective weight is the raw weight.** There was never a permutation. My `W_eff` was fit to `bC`
+  by construction, and with the cross-prompt mismatch supplying a large apparent "residual", the solve
+  returned something that looked permuted (elementwise corr ~0) when compared against *different-prompt*
+  data. On matched data it is the raw matrix.
+* **the four `_FROM` override files are therefore redundant** - they carry the same values the driver
+  already dequantizes.
+* **the "5.36x deficit" and the "permutation" were the same single error**: `bf16_l0_*` dumps from the
+  6144-token run compared against 128-token fused runs. One mistake, propagated through a dozen
+  measurements, a held-out validation, a 112-solve plan, and a `W_eff` file that turned out to be a copy.
+
+**What this changes about the remaining work, and it simplifies it a lot:**
+
+* **No per-layer solves are needed.** The weights are not the problem and never were; route (A) from the
+  last checkpoint is dead, and route (B) is answered - there is no permutation to recover.
+* **The one real fix stands**: the qk-norm omission, proven by an artifact comparison that could not have
+  been produced by the cross-prompt error (Q at corr 0.99997, magnitude ratio 1.0000, using the engine's
+  own `[qknorm]` diagnostic values). Layer 0 went 0.610931 -> 0.997135.
+* **The remaining layer-1-onward divergence is therefore *not* a weight issue** and is exactly the thing
+  to chase next - on matched data, with no override files, and with the layer-0 fix in place.
+
+**Why this took so long is worth stating exactly.** The cross-prompt error made a *large apparent
+discrepancy* that demanded explanation; the permutation was the explanation I found; and every later
+measurement inherited it, including ones that "confirmed" it. Held-out validation of the weights passed
+because both halves came from the same (wrong) prompt. The only checks that falsified it were the ones
+that touched the artifacts themselves: `wc -l` on a dump (prompt lengths), then `md5sum` on two files
+that I had assumed were different.
+
+**And the generalisable form, which is the same shape as all twelve earlier retractions**: I never asked
+what `weff_qkv.bin` *was*. I treated a file I had written hours earlier as an established fact about the
+world, when it was an artifact of my own pipeline - and my own pipeline had already been shown, once, to
+be capable of writing the wrong thing.
