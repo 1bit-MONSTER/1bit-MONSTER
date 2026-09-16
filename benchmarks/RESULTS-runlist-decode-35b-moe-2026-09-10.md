@@ -5148,3 +5148,42 @@ so the design class is sound. My driver had a real defect in exactly the place t
 symptoms, and I have fixed it but could not complete the re-measurement because the device ran out of
 hw-context slots. That experiment -- my m1 combined design, `host_only` instruction BO, failure count
 over 8 runs -- is the next thing to run, and it is a single command away.
+
+### Addendum 140 — CORRECTION: the v27 M=128 test is invalid under BOTH flag settings
+
+I have to correct part of addendum 139. I reported that flipping the instruction BO from `cacheable` to
+`host_only` changed the result from "96 all-zero rows" to "128 all-zero rows" and called that a strong
+candidate for the flakiness. The flag finding is real, but the v27 result it was drawn from is not
+usable, and here is why.
+
+MY DRIVER MEMSETS `cc` TO ZERO BEFORE THE SUBMIT. I checked. So "128 all-zero rows" does not mean "the
+GEMM produced zeros" -- it means THE KERNEL WROTE NOTHING AT ALL. And with the correct flag it wrote
+nothing; with the stale flag it wrote 32 rows. A stale instruction stream produced MORE output than a
+correct one, which is only possible if the stream my driver feeds does not drive this xclbin properly in
+the first place.
+
+The "374/1048576 cells exact" figure is likewise an artifact, and I should have caught this earlier: I
+zero C, the reference happens to be zero in some cells, and the two agree. 374/1048576 = 0.036%. It is
+measuring zero-against-zero, not correctness.
+
+SO THE v27 M=128 MEASUREMENT IS RETRACTED AS EVIDENCE ABOUT v27 -- which is what addenda 135, 136 and 137
+each concluded from a different angle. What remains from addendum 139 is the narrower and still-valid
+claim: for a design that DOES execute, the instruction BO's flag is device-visible. My own designs
+execute; v27 through my driver does not; therefore the flag hypothesis for my m1 flakiness is untested
+and remains exactly as stated in 139 -- a strong hypothesis with a concrete experiment attached, not a
+settled root cause.
+
+WHAT I DID ESTABLISH ABOUT v27 STATICALLY, decoding its C tap at line 2327:
+
+  dma_bd(%arg2, n_tile*128, 1024, sizes=[16,16,8,8], strides=[65536, 8, 8192, 1])   -- 64 such BDs
+
+which is ROW-MAJOR [M][N] with the M dimension split into 8-row groups, exactly as my driver reads it
+back. So the C's layout was never in question, and the reason v27 produces nothing through my driver is
+still unexplained -- but it is now clear that it is a DRIVER/BINDING mismatch, not a design fault, which
+is consistent with the engine's own path running this design class deterministically (addendum 138).
+
+DEVICE: still saturated, and I found the mechanism. /sys/module/amdxdna/parameters exposes `hwctx_limit`
+(16) and `fw_reload`; hwctx_limit is mode 444 (read-only) and `fw_reload` is root-owned, so writing 1 to
+it returns Permission denied for me. xrt-smi has no reset subcommand. So reclaiming the leaked contexts
+needs root -- a module reload or a reboot. `context_limit=64`, `autosuspend_ms=5000` and
+`aie4_ctx_hysteresis_us=1000` are all as documented; nothing there reclaims the slots on its own.
