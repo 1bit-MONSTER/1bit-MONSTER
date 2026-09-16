@@ -2939,3 +2939,43 @@ order is correct (here); the group choice is not implicated (here); the W-acquir
 A/W/O interleaving are both refuted as causes (addendum 83). What the two phases SHARE is therefore
 still the open question, and the cheapest untried discriminator remains running my combined
 generator's GEMM half alone.
+
+### Addendum 85 — EACH PHASE IS CORRECT ALONE. The deadlock exists ONLY in the combination.
+
+Finished the isolation that failed twice in addendum 84, by stripping the norm out of the generator
+properly (one anchor at a time, each recomputed on the CURRENT text, and `ast.parse` gating the write
+before anything else). The earlier failures are worth one line because they were mine, not the box's:
+the first reuse stale offsets after a first cut, the second tripped an over-strict assertion on a tile
+line that is legitimately outside the stripped range.
+
+Result, driving the stripped design with the driver's SINGLE_PHASE mode:
+
+  gemm-only variant: parses, norm stripped
+  module {
+  Compilation completed successfully
+  single-phase submit completed
+  single-phase GEMM: 256/256 columns match
+
+So, with three independently-run artifacts, every part of the rebuild now stands on its own:
+  - MY generator's NORM phase, alone: submit completes, matches to one bf16 ULP (addendum 83).
+  - MY generator's GEMM phase, alone: submit completes, 256/256 columns exact (here).
+  - The two TOGETHER: hangs, and the hang has survived two refutations (addendum 83) and is not
+    explained by BO order, by group choice, or by either phase's own fifo discipline (addenda 83-84).
+
+That is a much sharper statement of the problem than "the combined design hangs": there is nothing
+wrong with either phase, nothing wrong with the driver, and nothing wrong with the argument plumbing.
+What remains is something the two phases share ONLY when present together -- the runtime_sequence
+itself, or some piece of per-column state that the first phase leaves behind.
+
+LEADING CONCRETE SUSPECT, from the difference between my norm and the WORKING one:
+n1_rms_norm.py gives a ONE-ROW norm A_s/A_c depth M = 1. My combined norm uses depth 2 for both
+nA_s and nA_c (and 1 for W, 2 for O), while feeding exactly ONE row. Across a single-phase design
+that is harmless -- and the norm-only xclbin proves it. Across two phases, a fifo sized for more
+elements than are ever produced is exactly the kind of state that can leave the sequence unable to
+retire. The cheapest next experiment is therefore to make the combined design's norm fifos match the
+proven one's depths exactly, rather than to keep reasoning about the phase boundary.
+
+STATE OF THE REBUILD: (a) compiles -- MET. (c) one submit -- MET, driver validated 8192/8192. (b)
+both phases correct -- the NORM and the GEMM are each now PROVEN correct alone through this driver;
+what is left is making them correct TOGETHER, and that is one bounded experiment away from being
+either fixed or pinned to a specific shared resource.
