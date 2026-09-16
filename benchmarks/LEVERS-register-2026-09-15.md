@@ -786,3 +786,24 @@ Changes since this register was written:
 The yardstick is green (`0 PARITY CLAIM REFUSED`, runlist 109.9% of FLM decode) when
 invoked with the goal's engine binary — its default `ROOT` points at another
 worktree and measures a stale binary.
+
+### 6.1 NPU device-context construction is a first-class hazard (2026-09-16, later)
+
+- **Construct every `hw_context`/xclbin registration/data-BO set BEFORE the run
+  starts.** Building an `AttnCtx` lazily *inside* the prefill — while five
+  `Bf16Ctx` contexts plus Bf16Mm's decompression/mm contexts are already live on
+  the same device — made the attention output (and the token) vary run to run:
+  the same 8-token prompt returned 152369 / 152367 / 8900 / 6037 / 152360 /
+  152552 / 2092. Moving the construction to just *before* `bf16mm_init` removed it
+  completely (13/13/13/13, and 764/764 at 1202 keys). Ruled out along the way:
+  contention, host-thread races (`NPU_HOST_THREADS=1` still varied), stale caches,
+  and the kernel itself (it syncs; the standalone bench was always deterministic).
+  This applies to any generated-kernel route, not just the family adapter.
+- **Corrected family >1024 status:** the `AttnCtx` adapter now drives the generated
+  kernel in a real prefill deterministically, but Nanbeige is still **not** at
+  parity. With determinism restored, the in-situ `NPU_ATTN_DIFF` localises the gap
+  to the **AttnCtx Q/K/V contract** vs the engine's `attn_omp` (max |npu-host| =
+  0.15-0.82 against head outputs scaled ~0.15-0.32, with `npu[0][0] ==
+  host[0][0]` exactly), i.e. the pre-RoPE/scale/int8 convention — not the kernel
+  and not a race. Bench gate remains NPU==EMU 8.575258e-02 (the kernel matches its
+  *own* EMU).
