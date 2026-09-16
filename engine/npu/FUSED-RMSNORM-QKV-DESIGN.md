@@ -6926,3 +6926,46 @@ consumption order together so one BD moves a whole k-row of a tile instead of an
 contiguous/linear-B redesign (@agent-c1b76d's `-L/--linear-b` does exactly this on their lane). That would
 take the 24,576 weight descriptors toward a few hundred. After that the two named gaps remain: merge A into B
 for ~1 launch/layer, and move RoPE in-kernel. Bar to beat: 1945.5 tok/s @1k, with the FUSED path.
+
+## The descriptor cost is per-descriptor COMPLEXITY, not a fixed shim limit - and that specifies the fix
+
+Launch A is the control I had been missing. Both use the same shim, but A is **2.5x faster per descriptor**:
+
+```
+launch A:   8416 BDs,    63.48 ms ->  7.54 us/BD,  132577 BDs/s   41 words/BD
+launch B:  53408 BDs,   991.34 ms -> 18.56 us/BD,   53875 BDs/s   41 words/BD
+```
+
+Three things follow, and each kills a candidate I would otherwise have chased:
+
+1. **There is no fixed shim throughput limit.** If there were, B's ~54k BDs/s would be A's too. A sustains
+   132k BDs/s, so the ceiling is not the shim's BD rate.
+2. **Per-descriptor cost scales with descriptor COMPLEXITY.** A's taps are contiguous 2-D reads
+   (`sizes=[1,1,M,k] strides=[1,1,H,1]`, the inner run being the full k). B's weight taps are 4-D *strided*
+   reads over `sizes=[k//8,NT//8,8,8] strides=[8*NQKV,8,NQKV,1]` - 8-element inner runs hopped across
+   multi-KB strides. Same word count per BD (41 words both), 2.5x the cost.
+3. **Instruction volume is NOT the limit.** B executes 2.19M words in 0.99 s = 2.21M words/s, about 1000x
+   below any plausible fetch rate. So the 8.76 MB of instructions is a symptom of 53,408 unrolled
+   descriptors, not the cause of the time.
+
+**Both levers point the same way: fewer descriptors AND simpler descriptors.** That is one change - repack W
+so that consecutive tiles are contiguous in memory, then read a group of tiles with a single *simple*
+contiguous BD:
+
+```
+current :  sizes=[k//8, NT//8, 8, 8]   strides=[8*NQKV, 8, NQKV, 1]   one 4-D strided BD per (kt,nt) tile
+proposed:  W repacked tile-major (kt, nt, k, NT)  ->  sizes=[TILES, k*NT]  strides=[k*NT, 1]
+           one contiguous BD per TILES tiles  =>  descriptor count / TILES
+```
+
+**And this finally explains my earlier failed experiment properly, which I owe the record.** Changing the taps
+to `sizes=[k,NT] strides=[NQKV,1]` did make them *simpler* (2-D instead of 4-D) - but it left the descriptor
+COUNT identical at 53,408 and, worse, changed the delivery order so token parity broke. Simpler-with-same-count
+-and-wrong-order buys nothing, and indeed bought nothing measurable (-0.86%). The fix needs **fewer AND
+simpler AND the same order**, which is exactly why repacking is required rather than a tap tweak: repacking is
+what makes a contiguous read deliver the sequence the kernel already expects.
+
+**Status.** This is mechanical analysis plus the control measurement - not yet an intervention. The falsifiable
+prediction stands as recorded: descriptor count falls substantially (target <5000) and launch B drops
+proportionally; if the count falls and the time does not, the model is wrong again. And the parity check
+(expect `220 49789 220 11141`) remains mandatory, because the order is what broke twice.
