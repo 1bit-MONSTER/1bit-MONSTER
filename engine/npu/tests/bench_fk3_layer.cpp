@@ -75,6 +75,19 @@ int main(int argc,char**argv){
     WDm[(size_t)(NI+r)*ND+n]=rne((r==n)?1.0f:0.0f);
   memset(bSL.map(),0,sSL);memset(bCD.map(),0,sCD);
   memset(bAN.map(),0,sAN);memset(bQ.map(),0,sQ);memset(bO.map(),0,sO);memset(bC.map(),0,sC);
+  // Optionally load a REAL post-RoPE QKV into bQ. Every previous run left bQ zero, so the
+  // reference only ever exercised the FFN path with a zero attention output and reported
+  // 'per-head attn exactness 0%' - i.e. the attention has never been validated at all.
+  if (const char* pq = getenv("NG_LOAD_Q")) {
+    FILE* gq = fopen(pq, "rb");
+    if (gq) {
+      size_t want = (size_t)M * NQKV * 2, got = fread(bQ.map(), 1, want, gq);
+      fclose(gq);
+      fprintf(stderr, "[bench] loaded QKV from %s (%zu of %zu bytes)\n", pq, got, want);
+    } else {
+      fprintf(stderr, "[bench] NG_LOAD_Q=%s could not be opened\n", pq);
+    }
+  }
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW.sync(XCL_BO_SYNC_BO_TO_DEVICE);bWO.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bA2.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW2.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bAN2.sync(XCL_BO_SYNC_BO_TO_DEVICE);bC2.sync(XCL_BO_SYNC_BO_TO_DEVICE);

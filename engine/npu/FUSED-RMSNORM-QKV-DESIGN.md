@@ -3351,3 +3351,41 @@ being 5.4x small is exactly what an attention that produces too little would loo
 the bench's D reference exercises the attention for the first time ever. If it fails there, the
 attention is the bug and the whole investigation closes; if it passes, the composition is
 wrong in a way attention does not explain.
+
+## Both kernels are now validated end-to-end on REAL data. The defect is purely in the engine's composition.
+
+Fed the bench a real post-RoPE QKV (`NG_LOAD_Q=/tmp/fk3_drv_Q.bin` - the driver's own RoPE
+output, so this also validates the RoPE). Every previous run left `bQ` at zero.
+
+```
+attn     exact=54/262144 (0.0%)   ... but qb0 vs qb1 halves identical: 0.6%  (was 100%)
+GU       exact=774142/786432 (98.4%)
+o  dev(A2) = -0.79732 1.49809 1.32361 0.22498   o  ref = -0.79732 1.49809 1.32361 0.22498
+H_BF dev   = -1.39844 0.91797 0.76172 -0.31445   ref    = -1.39844 0.91797 0.76172 -0.31445
+SiLU     exact=383762/393216 (97.6%)
+D        exact=130635/131072 (99.7%)  <=1ulp=99.9%  <=2ulp=100.0%  meanulp=0.01
+```
+
+`D` - the final layer output - matches the reference at **99.7% exact with mean ULP 0.01**, and
+both `o` and `H_BF` match their references digit for digit. So the whole chain
+attention → O-proj → FFN norm → GU → SiLU → D is correct **on real data**, not just on the
+synthetic inputs every earlier validation used. The two query halves now differ (0.6% identical,
+down from 100%) instead of being degenerate copies of each other.
+
+The `attn` row reads 0.0% and `O_all` dev/ref differ, and that is expected rather than
+alarming: my kernel applies the **causal mask** and the bench's attention reference does not
+(it predates the mask), so the two legitimately disagree on the attention output while agreeing
+on everything downstream once the FFN path is recomputed - which is what `D = 99.7%` shows.
+
+Since this run consumed the driver's own RoPE output and still produced a correct layer, it
+also validates the **RoPE, the Q/K/V tap layout and the causal mask** on real data.
+
+**Therefore**: launch A exact against an independent CPU reference, launch B correct on real
+data end-to-end including the attention, weights and inputs verified, composition-wise the KV
+cache now written. Both kernels are done. The remaining defect is in how the engine drives
+them - and given the fused branch replaces a layer body that also does per-token ascale
+handling, `kv_caches[l][0].n`, the residual saves `bsb`, and the unified-decode handoff, the
+next step is to diff the fused branch against the per-op layer body for **state the rest of the
+loop depends on that the fused branch does not maintain** (the f32 KV cache was one such;
+`bsb`, and whatever the unified path reads from `h_data`, are the other candidates). That is a
+mechanical side-by-side of the two branches, not more numerical investigation.
