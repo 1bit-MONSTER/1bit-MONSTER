@@ -179,3 +179,29 @@ for `attn.xclbin`, but no batched *layer* sequence symbol exists. That is the
 single experiment ra-2 needs (capture `qwen3_npu::prefill` on-box and read its
 runlist/xclbin usage) and it requires the device, which is currently busy with
 `flm serve`/`flm run` processes from other lanes.
+
+## 8. RESOLVED (disassembly): FLM's own dense-Qwen3 prefill is per-op + HOST norms
+
+Disassembly of `libqwen3_npu.so` settles it without the device.
+`qwen3_npu::Impl::prefill` → `_prefill_with_mm`, whose call graph is:
+
+- `_rms_norm(...)`   — **HOST** RMSNorm (local fn in libqwen3_npu.so)
+- `_rope_rms(...)`   — **HOST** RoPE + q/k-norm
+- `Gemm::generate_seq(...)` — `mm.xclbin` batched GEMM
+- `MHA::generate_mha_sequence(...)` + `MHA::get_chunk_size()` — `attn.xclbin` batched chunked attention
+- `fill_kv_cache(...)` — host KV fill
+- `xrt::runlist::add/execute/wait` — batches the per-op kernels
+- `npu_app::operator()` / `create_run` — per-op kernel launch
+
+`gen_layer_seq` (the `layer.xclbin` whole-layer sequence) is **not** called by
+prefill — it is decode-only. So FLM's own fast prefill for dense Qwen3 is
+**exactly the per-op `mm.xclbin` + `attn.xclbin` + host-norm/RoPE/SiLU
+structure** that the native bf16 path (1945 tok/s) already reimplements. FLM
+never moved prefill norm/RoPE/SiLU in-kernel for this family.
+
+**The objective therefore asks for a kernel that does not exist in FLM's dense-Qwen3
+set and that FLM itself never built.** Every route to "fused + fast" is closed:
+`mm.xclbin` (no norm tiles), `layer.xclbin` (M=1 decode-only), open generators
+(fk-3 depth-2-fifo hard floor, 56x slow), and `fused_prefill.xclbin` (only newer
+families). The re-architecture direction is definitively blocked for dense
+Qwen3-0.6B.
