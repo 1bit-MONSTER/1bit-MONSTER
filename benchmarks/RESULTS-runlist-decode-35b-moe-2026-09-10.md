@@ -2755,3 +2755,36 @@ correctness in moe_smoke and (c) demonstrably ONE submit are next.
 METHOD NOTE: the plan in addendum 78 was reasoned from tile coordinates, and its central claim (share
 the shim) was falsified by the compiler in one run. The resource that was actually scarce was DMA
 channels, not tiles.
+
+### Addendum 80 — the combined driver runs, and XRT surfaces TWO plumbing facts
+
+Wrote npu-infer/tools/combined_smoke.cpp: loads the combined xclbin + its instruction blob, allocates
+one BO per runtime_sequence argument, fills synthetic inputs, computes BOTH host references itself
+(RMSNorm in float->bf16; the GEMM as exact int32 accumulation), issues ONE kernel call, and compares.
+Using the engine's own documented convention, kernel(opcode, instr_bo, ninstr, bo0, bo1, ...).
+
+FIRST ATTEMPT on the full design (K=2048 N=8192) failed at CONTEXT CREATION:
+  DRM_IOCTL_AMDXDNA_CREATE_HWCTX IOCTL failed (err=-28): No space left on device
+DISCRIMINATED with a tiny design (K=64 N=256, cols=2), which compiles to 19,354 B: it creates its
+hw_context FINE. So err=-28 is about MY ALLOCATION (the 16.8 MB gemm-B BO), not leaked device state
+and not the driver. Worth recording because "No space left on device" invites exactly the wrong
+conclusion about a shared box.
+
+SECOND, and this is the real blocker: the kernel's GROUPS do not match my assumption.
+  group_id(0)=131071  (1)=65537  (2)=131071  (3..7)=65536  (8)=131071  (9)=131071
+131071 = 0x1FFFF is XRT's invalid-group sentinel. The design has SIX data arguments but the xclbin
+exposes only FIVE valid data groups (3..7). My driver assumed one group per argument (3..8), so its
+sixth BO has no group and the single submit HANGS rather than failing loudly.
+
+WHAT I DID NOT DO: guess the mapping and iterate. The engine's own xclbins have THREE data BOs and use
+group_id(3),(4),(5), which is consistent with "one group per argument" only because those three BOs
+have three DIFFERENT sizes (A = MD*KD, W = KD*ND, C = MD*ND*4). With six arguments, two of mine (norm
+A and norm W) are the SAME size, so the most likely explanation is that AIE groups are assigned per
+distinct buffer, not per argument -- which would mean the driver must REUSE a group for equal-sized
+BOs rather than inventing one. That is testable in one run: give the two norm buffers distinct sizes
+(pad one) and see whether six valid groups appear.
+
+METHOD NOTE: eleven addenda of this lane have now been decided by an error message or a number from
+the tooling rather than by reasoning about it -- tile channels (79), the pack order (75), the capture
+tautology (58), the pool overlap (73), and now the allocation size (80). The reasoning keeps being
+the part that is wrong.
