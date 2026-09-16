@@ -84,6 +84,13 @@ struct FusedLayer::Impl {
     // the few things it does that this driver did not. Declared FIRST so it is destroyed
     // LAST, after the kernels and BOs that depend on it.
     std::unique_ptr<xrt::xclbin> xcA, xcB;
+    // And the RAW BYTES the xclbins were parsed from must outlive them too: xrt::xclbin
+    // is constructed from a byte buffer and holds a reference into it in this XRT, so
+    // reading the file into a local vector in init() and letting it die on return leaves
+    // every kernel built from that xclbin pointing at freed memory. That is what made
+    // launch B return zeros (and occasionally hang) while the identical xclbin driven by
+    // bench_fk3_layer - whose xb lives for the whole program - worked perfectly.
+    std::vector<char> xbA_bytes, xbB_bytes;
 
     // launch A
     xrt::kernel krA;
@@ -124,8 +131,10 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
 
     auto ins_a = read_words(instsA);
     auto ins_b = read_words(instsB);
-    auto xb_a = read_file(xclbinA);
-    auto xb_b = read_file(xclbinB);
+    s.xbA_bytes = read_file(xclbinA);
+    s.xbB_bytes = read_file(xclbinB);
+    const std::vector<char>& xb_a = s.xbA_bytes;
+    const std::vector<char>& xb_b = s.xbB_bytes;
     if (ins_a.empty() || ins_b.empty() || xb_a.empty() || xb_b.empty()) return false;
     s.insA_words = ins_a.size();
     s.insB_words = ins_b.size();
@@ -183,9 +192,36 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
         memset(s.wB.map(), 0, (size_t)s.H * s.NQKV * 2);
         memset(s.anB.map(), 0, sAN);
         memset(s.an2B.map(), 0, sAN);
+        // bench_fk3_layer's exact initial state for the rest: everything zeroed, and the
+        // QKV weight filled with pseudo-random values even though the emitted MLIR calls
+        // no QKV phase (nq_acc_mac x3 = O-proj + GU + D). If the kernel consumes this BO
+        // anyway, a zeroed one would silently zero the whole layer; the bench never
+        // leaves it zero, which is one difference this driver introduced on its own.
+        memset(s.oB.map(), 0, (size_t)s.NH * s.M * s.HD * 2);
+        memset(s.cB.map(), 0, (size_t)s.M * s.NO * 2);
+        memset(s.c2B.map(), 0, (size_t)s.M * s.N2 * 2);
+        memset(s.slB.map(), 0, (size_t)s.M * s.NI * 2);
+        memset(s.cdB.map(), 0, (size_t)s.M * s.ND * 2);
+        memset(s.hbfB.map(), 0, (size_t)s.M * s.H * 2);
+        memset(s.qB.map(), 0, (size_t)s.M * s.NQKV * 2);
+        if (getenv("NPU_FK3_RANDOM_WB")) {
+            uint16_t* wb = (uint16_t*)s.wB.map();
+            for (size_t i = 0; i < (size_t)s.H * s.NQKV; i++) {
+                float v = (float)((i % 13) - 6) * 0.05f;
+                uint32_t u; memcpy(&u, &v, 4);
+                wb[i] = (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1)) >> 16);
+            }
+        }
         s.wB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         s.anB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         s.an2B.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.oB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.cB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.c2B.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.slB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.cdB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.hbfB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        s.qB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
 
     // ---- per-layer weight BOs --------------------------------------------------
@@ -205,6 +241,15 @@ bool FusedLayer::init(int device_index, const char* xclbinA, const char* instsA,
             s.M, s.H, s.NH, s.NKV, s.HD, s.IM, s.NC, s.NQKV, s.KOFF, s.VOFF,
             s.insA_words, s.insB_words);
     return true;
+}
+
+
+// Upload verification: compares what map() shows against the host array that was just
+// copied in. This is the only trustworthy check here - a probe that reinterprets bytes
+// can mislead, but memcmp of the exact bytes cannot.
+static void verify_upload(const char* name, xrt::bo& b, const void* host, size_t bytes) {
+    int rc = memcmp(b.map(), host, bytes);
+    fprintf(stderr, "[fk3] upload %s: %zu bytes, memcmp=%s\n", name, bytes, rc == 0 ? "MATCH" : "DIFFER");
 }
 
 bool FusedLayer::prepare_random(int l) {
@@ -227,6 +272,7 @@ bool FusedLayer::prepare_random(int l) {
         for (size_t i = 0; i < w.size(); i++) w[i] = rne((float)((i % 13) - 6) * 0.05f);
         memcpy(s.w2[l].map(), w.data(), w.size() * 2);
         s.w2[l].sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        if (getenv("NPU_FK3_DUMP")) verify_upload("w2", s.w2[l], w.data(), w.size() * 2);
         s.w2_ready[l] = 1;
     }
     {
@@ -310,6 +356,26 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
         return false;
     }
     const int M = s.M;
+    if (l == 0 && getenv("NPU_FK3_DUMP")) {
+        // If two BOs map to the same host address, they are the same memory and every
+        // write to one clobbers the other - which is what identical garbage values in
+        // different buffers (W2 and WD sharing the exact same maxabs) would mean.
+        fprintf(stderr, "[fk3] BO maps: aB=%p a2B=%p wB=%p wO[0]=%p w2[0]=%p wd[0]=%p\n",
+                (void*)s.aB.map(), (void*)s.a2B.map(), (void*)s.wB.map(),
+                (void*)s.wO[l].map(), (void*)s.w2[l].map(), (void*)s.wd[l].map());
+        // Is map() stable across calls? The bench calls it once per BO and keeps the
+        // pointer; this driver calls it inline at every write. If the address moves, every
+        // write lands in one mapping while sync() transfers another - which is exactly the
+        // symptom (host mapping unchanged, device full of garbage, a2B's one-shot write
+        // being the only one that survived).
+        fprintf(stderr, "[fk3] map() repeat: aB %p %p %p | w2 %p %p %p\n",
+                (void*)s.aB.map(), (void*)s.aB.map(), (void*)s.aB.map(),
+                (void*)s.w2[l].map(), (void*)s.w2[l].map(), (void*)s.w2[l].map());
+        fprintf(stderr, "[fk3] BO sizes: aB=%llu a2B=%llu w2=%llu wd=%llu\n",
+                (unsigned long long)s.aB.size(), (unsigned long long)s.a2B.size(),
+                (unsigned long long)s.w2[l].size(), (unsigned long long)s.wd[l].size());
+        fflush(stderr);
+    }
     if (nrow <= 0 || nrow > M) nrow = M;
 
     // ---- inputs ---------------------------------------------------------------
@@ -319,13 +385,18 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
     // FFN norm does not read (it takes its gamma from A2's row M). Forgetting launch
     // B's A is a silent all-zero layer: silu=0, h=0, so D = 0*W_D + h = 0.
     {
+        // Launch A's A only exists when launch A does: under NPU_FK3_SKIP_A its BOs are
+        // never created, and calling map() on a default-constructed xrt::bo is UB (this
+        // is what made the standalone isolation run hang rather than report).
+        if (!getenv("NPU_FK3_SKIP_A")) {
+            float* a = (float*)s.aA.map();
+            memcpy(a, x, (size_t)M * s.H * 4);
+            memcpy(a + (size_t)M * s.H, gamma_in, (size_t)s.H * 4);
+            s.aA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        }
         memcpy(s.aB.map(), (const void*)x, (size_t)M * s.H * 4);
         memcpy((char*)s.aB.map() + (size_t)M * s.H * 4, gamma_in, (size_t)s.H * 4);
         s.aB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        float* a = (float*)s.aA.map();
-        memcpy(a, x, (size_t)M * s.H * 4);
-        memcpy(a + (size_t)M * s.H, gamma_in, (size_t)s.H * 4);
-        s.aA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         float* a2 = (float*)s.a2B.map();
         memcpy(a2 + (size_t)M * s.H, gamma_ffn, (size_t)s.H * 4);   // rows 0..M-1 are outputs
         s.a2B.sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -334,23 +405,32 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
     if (getenv("NPU_FK3_SKIP_A")) {
         // Decisive isolation: drive launch B exactly as the bench does - its own
         // pseudo-random A (non-zero), gamma rows 1.0, pseudo-random QKV - and skip
-        // launch A entirely. If CD is still zero, the driver's launch-B invocation is
-        // at fault; if CD becomes non-zero, the two-launch interaction is.
-        float* a = (float*)s.aA.map();
+        // launch A entirely. Built into a LOCAL buffer because launch A's BOs do not
+        // exist in this mode.
+        std::vector<float> a((size_t)(M + 1) * s.H);
         for (size_t i = 0; i < (size_t)M * s.H; i++) a[i] = (float)((i % 61) - 30) * 0.02f;
         for (int i = 0; i < s.H; i++) a[(size_t)M * s.H + i] = 1.0f;
-        s.aA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
-        memcpy(s.aB.map(), a, (size_t)(M + 1) * s.H * 4);
+        memcpy(s.aB.map(), a.data(), a.size() * sizeof(float));
         s.aB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        if (getenv("NPU_FK3_DUMP")) verify_upload("aB(skipA)", s.aB, a.data(), a.size() * sizeof(float));
         float* a2 = (float*)s.a2B.map();
         for (size_t i = 0; i < (size_t)M * s.H; i++) a2[i] = 0.0f;
         for (int i = 0; i < s.H; i++) a2[(size_t)M * s.H + i] = 1.0f;
         s.a2B.sync(XCL_BO_SYNC_BO_TO_DEVICE);
         uint16_t* q = (uint16_t*)s.qB.map();
-        for (size_t i = 0; i < (size_t)M * s.NQKV; i++) {
-            float v = (float)((i % 13) - 6) * 0.05f;
-            uint32_t u; memcpy(&u, &v, 4);
-            q[i] = (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1)) >> 16);
+        if (getenv("NPU_FK3_ZERO_Q")) {
+            // The bench never fills bQ: it memsets it, so its attention runs on Q=0 and
+            // it STILL produces 98.4% correct layer output via the residual path. Running
+            // the driver under the same condition is the tightest A/B available: if CD is
+            // non-zero here the invocation is sound and only the Q-dependent path differs;
+            // if CD is still zero, the invocation itself is the problem.
+            memset(q, 0, (size_t)M * s.NQKV * 2);
+        } else {
+            for (size_t i = 0; i < (size_t)M * s.NQKV; i++) {
+                float v = (float)((i % 13) - 6) * 0.05f;
+                uint32_t u; memcpy(&u, &v, 4);
+                q[i] = (uint16_t)((u + 0x7FFFu + ((u >> 16) & 1)) >> 16);
+            }
         }
         s.qB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
     }
@@ -400,9 +480,40 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
 
     // ---- launch B: attention + O-proj + FFN norm + GU + SiLU + D -------------
     {
+        if (l == 0 && getenv("NPU_FK3_DUMP")) {
+            // BEFORE the launch: distinguishes "my upload never reached the device" from
+            // "the kernel overwrote its own input". Same probe runs after the launch.
+            auto stat = [&](const char* n, xrt::bo& b, size_t elems, bool is_f32, bool do_sync) {
+                if (do_sync) b.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                const float* fp = (const float*)b.map();
+                const uint16_t* hp = (const uint16_t*)b.map();
+                long nz = 0; double mx = 0.0;
+                for (size_t i = 0; i < elems; i++) {
+                    double v;
+                    if (is_f32) v = fp[i];
+                    else { uint32_t u = (uint32_t)hp[i] << 16; float t; memcpy(&t, &u, 4); v = t; }
+                    if (v != 0.0) nz++;
+                    if (v < 0) v = -v;
+                    if (v > mx) mx = v;
+                }
+                fprintf(stderr, "[fk3] PRE  %-18s nonzero=%.4f maxabs=%.4f\n", n, (double)nz / (double)elems, mx);
+            };
+            stat("A  (launch B in)", s.aB, (size_t)(M + 1) * s.H, true, false);
+            stat("A2 (O-proj f32)", s.a2B, (size_t)(M + 1) * s.H, true, false);
+            stat("W2 (GU weight)", s.w2[l], (size_t)s.H * s.N2, false, false);
+            stat("WD (D weight)", s.wd[l], (size_t)(s.NI + s.H) * s.ND, false, false);
+            stat("WO (O weight)", s.wO[l], (size_t)s.qout * s.NO, false, false);
+            fflush(stderr);
+        }
+        // NOTE: the PER-LAYER weight BOs (wO[l]/w2[l]/wd[l]) are the ones prepare_layer()
+        // and prepare_random() fill. Passing the shared woB/w2B/wdB here instead - as this
+        // driver did - hands the kernel three zeroed weight buffers: the GU GEMM emits
+        // zeros, SiLU emits zeros, the add-aware norm divides by a zero variance, and the
+        // layer output is zero. Launch A escaped it because its weight is already
+        // per-layer (wQKV[l]), which is exactly the A-works/B-doesn't asymmetry observed.
         auto t0 = std::chrono::steady_clock::now();
         auto r = s.krB((unsigned)3, s.iB, (unsigned)s.insB_words, s.aB, s.wB, s.anB, s.qB, s.oB,
-                       s.woB, s.cB, s.a2B, s.an2B, s.w2B, s.c2B, s.slB, s.wdB, s.cdB, s.hbfB);
+                       s.wO[l], s.cB, s.a2B, s.an2B, s.w2[l], s.c2B, s.slB, s.wd[l], s.cdB, s.hbfB);
         r.wait();
         auto t1 = std::chrono::steady_clock::now();
         s.cdB.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
@@ -414,6 +525,38 @@ bool FusedLayer::run(int l, const float* x, const float* gamma_in, const float* 
             if (f) { fwrite(s.cdB.map(), 2, (size_t)M * s.H, f); fclose(f); }
             FILE* g = fopen("/tmp/fk3_drv_Q.bin", "wb");
             if (g) { fwrite(s.qB.map(), 2, (size_t)M * s.NQKV, g); fclose(g); }
+            // Which of launch B's outputs does the kernel actually touch? If some are
+            // non-zero and CD is not, the schedule ran and the failure is confined to the
+            // final D output; if ALL are zero, the kernel wrote nothing at all.
+            struct OutProbe { const char* n; xrt::bo* b; size_t elems; bool is_f32; };
+            OutProbe outs[] = {
+                {"A  (launch B in)", &s.aB, (size_t)(M + 1) * s.H, true},
+                {"A2 (O-proj f32)", &s.a2B, (size_t)(M + 1) * s.H, true},
+                {"W2 (GU weight)",   &s.w2[l], (size_t)s.H * s.N2, false},
+                {"WD (D weight)",    &s.wd[l], (size_t)(s.NI + s.H) * s.ND, false},
+                {"O  (attention)",  &s.oB,  (size_t)s.NH * M * s.HD, false},
+                {"C  (O-proj bf16)",&s.cB,  (size_t)M * s.NO, false},
+                {"C2 (GU)",         &s.c2B, (size_t)M * s.N2, false},
+                {"SL (SiLU)",       &s.slB, (size_t)M * s.NI, false},
+                {"HBF (resid 1)",   &s.hbfB,(size_t)M * s.H, false},
+                {"CD (LAYER OUT)",  &s.cdB, (size_t)M * s.ND, false},
+            };
+            for (auto& o : outs) {
+                o.b->sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+                const float* fp = (const float*)o.b->map();
+                const uint16_t* hp = (const uint16_t*)o.b->map();
+                long nz = 0; double mx = 0.0;
+                for (size_t i = 0; i < o.elems; i++) {
+                    double v;
+                    if (o.is_f32) { v = fp[i]; }
+                    else { uint32_t u = (uint32_t)hp[i] << 16; float t; memcpy(&t, &u, 4); v = t; }
+                    if (v != 0.0) nz++;
+                    if (v < 0) v = -v;
+                    if (v > mx) mx = v;
+                }
+                fprintf(stderr, "[fk3]   %-18s nonzero=%.4f maxabs=%.4f\n", o.n, (double)nz / (double)o.elems, mx);
+            }
+            fflush(stderr);
         }
     }
 

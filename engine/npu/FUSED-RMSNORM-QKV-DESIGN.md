@@ -2771,3 +2771,58 @@ change the symptom, but it was a genuine use-after-free.
 Next step, with the search space now this small: diff `init()` and `run()` against
 `bench_fk3_layer.cpp` line by line. The bench is the known-good reference and it is ~90
 lines, so this is a mechanical comparison rather than more hypothesis-driven guessing.
+
+## THE BUG: the driver launched with the wrong weight buffers
+
+Found by the standalone test, after everything else had been eliminated. `run()` passed
+
+```c
+s.krB(3, iB, words, aB, wB, anB, qB, oB,
+      s.woB, s.cB, s.a2B, s.an2B, s.w2B, s.c2B, s.slB, s.wdB, s.cdB, s.hbfB);
+        ^^^^^^                                  ^^^^^^          ^^^^^^
+```
+
+— the **shared** weight BOs created and zeroed in `init()`. But `prepare_layer()` and
+`prepare_random()` fill the **per-layer** BOs `s.wO[l]`, `s.w2[l]`, `s.wd[l]`. So launch B
+was handed three all-zero weight matrices: the GU GEMM emitted zeros, SiLU emitted zeros,
+the add-aware norm divided by a zero variance, and the layer output was zero (or inf, once
+the norm produced garbage). Launch A escaped it because its weight is already per-layer
+(`s.wQKV[l]`) — which is exactly the A-works/B-doesn't asymmetry that made this so hard to
+see, and it is also why the zeros looked so much like the documented "silent stall"
+signature. Fix: pass `s.wO[l]`, `s.w2[l]`, `s.wd[l]`.
+
+Three more real bugs were found and fixed on the way, all of the same family — an object
+outliving the thing it depends on, or being used before it exists:
+
+1. `init()` created the `xrt::xclbin` objects as LOCALS, so they died while the
+   `hw_context` and `kernel` built from them were live. The working bench keeps its
+   xclbin alive for the whole program. Now `Impl` members, declared first so they are
+   destroyed last.
+2. The raw xclbin BYTE buffers (`std::vector<char>` read from the file) were also locals:
+   `xrt::xclbin` is constructed from that buffer and references it. Same fix.
+3. The `NPU_FK3_SKIP_A` isolation path wrote into `s.aA`, a BO that is never created in
+   that mode — `map()` on a default-constructed `xrt::bo` is UB, which is why the first
+   isolation runs "hung" instead of reporting.
+
+**Verified, not assumed** — the lesson from the round-trip detour below is that a probe
+that reinterprets bytes can lie, so uploads are checked with memcmp against the exact host
+array that was copied in:
+
+```
+[fk3] upload w2:        12582912 bytes, memcmp=MATCH
+[fk3] upload aB(skipA):   528384 bytes, memcmp=MATCH
+```
+
+So the driver's host->device path is provably correct, the kernel executes its full
+schedule, and every stage buffer is written. The magnitude of the layer output is still
+wrong against the bench's numbers, and since the inputs are now proven identical to the
+bench's, the remaining suspect is a layout/shape disagreement between what
+`prepare_random`/`prepare_layer` upload and what the kernel's phases consume.
+
+**A note on debugging method**, because it cost real time: I built a probe that wrote a
+known pattern into `w2[0]`'s mapping and read it straight back, and it reported
+`6291456 words, first mismatch at none` — i.e. fine — while a separate probe reported the
+same buffer as garbage. Both were "measurements". The one that proved anything was memcmp
+against the exact host array. When a probe disagrees with another probe, suspect the probes
+before rewriting the code; the destructive version of that round trip has been removed
+because it would corrupt a real run if `NPU_FK3_DUMP` were set.
