@@ -5811,3 +5811,29 @@ H=4/auto interleaves) and is still ABSENT — it lands in a buffer not covered b
 DECISION: the reuse route (vendor whole-layer ELF) is closed — the NaN is structural and independent
 of every harness-packed BO. Pivot to the REBUILD route: assemble a whole-layer single-launch MoE ELF
 from the engine's own working MoE kernels (I8Ctx + v27/v28) with the Peano/xchesscc toolchain on-box.
+
+### Addendum 159 — ROOT CAUSE FOUND: the GDN recurrence is bf16 on the NPU and NaNs; the model needs float32
+
+The structural NaN is NOT a weight-packing bug. The engine's own code pins it: engine/npu/src/
+gdn_host_recurrence.h (this repo, already present) says verbatim that "the bf16 NPU kernel
+(GateDeltaNet_prefill.xclbin, MLIR_AIE single fused DPU kernel) gets wrong: the recurrent gated-delta
+state update. The NPU runs the whole layer in bf16 and the state update NaNs (act BO dump showed
+262144/524288 bf16 state entries NaN), while the model's config declares mamba_ssm_dtype=float32."
+
+This exactly matches moe_smoke: the whole-layer ELF (moe_layer_ctx1.txn) runs the GDN (linear_attention)
+recurrence in bf16, the recurrent state update overflows to NaN independent of the input act/router/
+norms head (hence the three zero-probes in addendum 158 all stay all-NaN). The engine's working path
+therefore runs ONLY the GEMMs on the NPU and the float32 GDN recurrence on the HOST (gdn_attn_cpu +
+gdn_host_recurrence.h, float32 state [32][128][128], exp(g)/softplus/delta in f32, validated against
+tools/gdn_reference.py + tools/qwen36_gdn_probe.cpp, rel RMSE < 1e-3).
+
+The router e-major transpose and the raw alpha/beta/conv1d packing remain CORRECT (and now byte-verified
+derivations); the ssm_out H=4 order is still unverified but is the layer's last GEMM and irrelevant to
+the NaN. The reuse route is closed for a different reason than "wrong weights": the vendor's fused
+whole-layer GDN kernel is bf16-only and cannot be made correct by repacking.
+
+PATH FORWARD (user green-lighted a full rebuild; toolchains on-box): build a single-launch whole-layer
+MoE ELF whose GDN recurrence runs in float32, using the engine's MLIR-AIE toolchain (aiecc + Peano +
+xchesscc, see engine/npu/generators/build_moe_v28.sh) and the engine's own working kernels (v27/v28
+GUSGU/DSD for the MoE FFN) plus a new float32 GDN kernel. The engine already has the correct host
+reference (gdn_host_recurrence.h) to validate against.
