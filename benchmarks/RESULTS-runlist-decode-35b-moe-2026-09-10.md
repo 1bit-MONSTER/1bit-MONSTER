@@ -4489,3 +4489,38 @@ fifo acquire/release protocol between the shim BD and the core -- and not in the
 the packing, the descriptor pool, the readback, or the host reference. The next step is to read the
 mlir-aie examples for the CORE side of that handshake rather than to keep guessing at the runtime side,
 since the runtime side is mandatory and present and demonstrably insufficient on its own.
+
+### Addendum 125 — issue_token is a COMPLETION token (not a handshake), and my probe ran in the wrong order
+
+READING THE AUTHORITY, as addendum 124 said to do, and it corrects my model of the runtime:
+
+  _aiex_ops_gen.py: "To be able to wait on a task, it must issue a task completion token (TCT).
+                     Tasks only emit these tokens if the attribute `issue_token` is set to `true`."
+
+`issue_token` is a TASK-COMPLETION token, consumed by `dma_await_task` on the RUNTIME side. It is not an
+inter-core handshake and there is no core-side counterpart to fix. So the runtime's awaits mean "this DMA
+finished", the shim-to-core synchronization is entirely the object fifo's own acquire/release protocol,
+and the empty-buffer fault must live in that protocol or in how the fifos are declared -- not in tokens.
+
+AND MY PROBE RAN IN THE WRONG ORDER. I inserted the ALLONES_A / ALLONES_B overrides immediately before
+the "allocated all BOs" message, which comes AFTER the driver has already copied gA and gB into their
+buffers. So the DEVICE received random data in all three cases while only the host REFERENCE changed,
+and the "0/2048", "12/2048" comparisons are between a random device result and an all-ones reference.
+They are meaningless, which is the fifth instrument-vs-artefact error of this session and the second in
+two addenda. The fix is to move the two overrides ABOVE the fill.
+
+BUT THE DUMPS STILL CARRIED A REAL SIGNAL, because they have nothing to do with the reference:
+
+  one run of the n_k=1 design:   device C nonzero 0/2048   (min 0, max 0)
+  another run, same inputs:      device C nonzero 160/2048 (min -556, max 445)
+
+IDENTICAL device inputs, and one run produced NOTHING AT ALL while another produced partially-populated
+output. That is exactly what "the feeds are not fully arriving" predicts, and it is a third independent
+sighting of the same phenomenon (after 8-of-8 at n_k=1 and the partial-tile counts at large K). The
+all-zero case is not "wrong values", it is NO OUTPUT, and a matching-column count cannot distinguish it
+from a small amount of genuine agreement.
+
+NEXT, precisely: move the two overrides above the fill and re-run. With B = all ones, C[n] = sum(A)
+identically for every n, so a zero C means the A arrived empty and any nonzero C means the A arrived --
+and vice versa for A = all ones. That cleanly identifies WHICH feed is failing, which is the last thing
+standing between this and a fix.

@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
           }
         memcpy(bo_gB.map<void*>(), bp.data(), bp.size());
     } else
-    memcpy(bo_gB.map<void*>(), gB.data(), gB.size());
+    memcpy(bo_gB.map<void*>(), gB.data(), gB.size());  // gA/gB already reflect ALLONES_*
     memset(bo_gC.map<void*>(), 0, N * 4);
 
     // host GEMM reference: C[n] = sum_k A[k]*B[k][n] in exact int32
@@ -168,6 +168,11 @@ int main(int argc, char** argv) {
     bo_gB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     // ---- ONE submit --------------------------------------------------------------
+    // FAULT LOCALISATION (addendum 125): which feed arrives EMPTY? All-ones B makes C[n] = sum(A)
+    // for every n, so a zero C means the A is empty; all-ones A makes C[n] = sum_k B[k][n], so a
+    // zero C means the B is empty. Either way the ORDER of the packed feed stops mattering.
+    if (getenv("ALLONES_B")) { for (size_t i = 0; i < gB.size(); i++) gB[i] = 1; }
+    if (getenv("ALLONES_A")) { for (int i = 0; i < K; i++) gA[i] = 1; }
     fprintf(stderr, "allocated all BOs; submitting ONE run\n"); fflush(stderr);
     if (getenv("NORM_ONLY")) {
         // ISOLATION PROBE (addendum 82 -> next action): does the NORM phase work ALONE?
