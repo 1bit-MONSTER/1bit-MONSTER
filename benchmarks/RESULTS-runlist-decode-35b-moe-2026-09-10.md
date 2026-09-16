@@ -780,3 +780,26 @@ Steady state is now **0.55 tok/s** — 1.9x the 0.29 of the M=128 baseline measu
 addendum 10c, and within ~1.3x of the ~0.7 tok/s figure the objective starts from (though
 far below the dense-class target). Remaining levers, in order of size: the per-layer
 18.9 MB concat-BO sync/memcpy, then the M=1 GEMM's own ~10 ms/launch.
+
+### Addendum 21 — QKV/O M=1 kernels HURT (reverted); the MoE m1 is a small win; the warm is the real gain
+
+Built `_m1` variants for QKV (K=2048 N=8192) and O (K=4096 N=2048) with the same generator,
+and patched `init_i8` to prefer them with `MD=1`. Measured against the addendum-20 config
+(warm all-256), 8 tokens, tokens bit-identical in every arm:
+
+| config | QKV ms | O ms | FFN ms | decode ms/tok |
+|---|---|---|---|---|
+| warm, no small-M | 9.1 | 5.6 | 30.0 | **1872.7** |
+| warm + MoE m1 (GUSGU/DSD) | 8.4 | 5.4 | 28.9 | **1826.5** |
+| warm + MoE m1 **+ QKV/O m1** | 11.5 | 6.4 | 30.0 | **2004.7** |
+
+So:
+- **QKV/O `_m1` is ~9% SLOWER** (QKV 8.4 -> 11.5 ms, O 5.4 -> 6.4) -> reverted (`init_i8`
+  patch removed; the `moe_ctx` small-M patch kept).
+- the **MoE (GUSGU/DSD) `_m1` is a genuine but small win** (~2.5%: 1873 -> 1827).
+- the **real gain remains the expert warm/prepack** (addendum 20): 3486 -> 1827 ms/tok.
+- This vindicates the engine's own note "*no perf win*" for the small-M path (its
+  "*garbage decode*" half was wrong — every arm is bit-identical).
+
+FINAL steady state on this lane: **~1.83 s/tok = 0.55 tok/s**, 1.9x the 0.29 of the
+M=128 cold baseline, tokens identical, cost ~2-2.5 min init (warm) and ~30 GB RAM.
