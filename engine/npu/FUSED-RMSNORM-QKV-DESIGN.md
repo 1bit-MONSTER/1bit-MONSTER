@@ -736,3 +736,34 @@ change: carry all of a column's heads on ONE QK_s and ONE V_s channel and let
 tiles to the per-head mem->core fifos, with the shim DMA ordering chunk-outer /
 head-inner to match. The O outputs (one per head) must also fit the shim's S2MM
 budget and may need the same treatment.
+
+### 2 heads/column: the channel packing builds, but the data path is wrong
+
+To fit the shim's 2 MM2S with 2 heads/column, `n1_mha_2core_nh.py -P 2` now puts
+ONE shim->mem QK and V fifo per column and fans each out to the column's cores
+with a MULTI-CONSUMER (broadcast) mem fifo:
+
+```
+QK_s (shim->mem, 1 ch) -> QK_c (mem -> [qk_sm of every head in the column])
+V_s  (shim->mem, 1 ch) -> V_c  (mem -> [pv_rs of every head in the column])
+```
+The shim posts tiles chunk-outer / head-inner, so a core sees
+tile(2*chunk + slot) for its own chunk `chunk`, and each core consumes every
+tile of the broadcast but only computes on its own (slot-th) one.
+
+**Status: it BUILDS (NH=4, P=2 -> mha2.xclbin 171920 B) and the routing is
+per-head, but the values are wrong.**
+* NH=4 P=2, identical data: all 4 heads give the SAME wrong answer
+  (0/2048, max_delta 48300) — wrong, but consistently so.
+* NH=4 P=2, distinct data: heads differ slightly (max_delta 48266..48302), so
+  each head really does process its own data — the defect is in the computation,
+  not cross-head data sharing.
+* **P=1 is unaffected and still correct** (NH=2: 956/2048 exact, heads
+  byte-identical), so the broadcast structure itself is sound.
+
+Prime suspect: the in-loop acquire/release static index tracking with the
+Python-unrolled `for s2 in range(PERCOL)` nested inside the `range_` chunk loop —
+the same class of mlir-aie index-tracking issue that produced the earlier
+multi-shot failures. Next probe: dump one head's E/alpha against the verified
+P=1 pipeline to see whether the wrong values start at the scores, the exp, or the
+PV.
