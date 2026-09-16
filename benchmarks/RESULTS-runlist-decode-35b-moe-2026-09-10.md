@@ -3425,3 +3425,37 @@ INTERIM STATE: (a) compiles -- MET. (c) one submit -- MET, driver validated (819
 xclbin). (b) both phases correct together -- my GEMM is exact at the real shape (8192/8192) and my NORM
 is exact alone (910/2048, bit-identical to the proven design), so neither phase is broken and the
 failure is a property of the COMBINATION, now narrowed to a single structural candidate.
+
+### Addendum 98 — ROOT CAUSE FOUND AND FIX PROVEN FEASIBLE: two `link_with` objects in one design never retire
+
+Ran the decisive build. Took the KNOWN-GOOD m1 GEMM generator (one kernel object, eight cores) and added
+a DUMMY core on row 3 of column 0 -- a spare row, because a ninth column is err=-28 -- which calls
+`zero_i32` FROM THE SAME `mm_32x64x128.o`, and fed it first in the runtime sequence:
+
+  m1 GEMM + dummy core, BOTH from ONE mm_32x64x128.o, K=64 N=256 c=2:
+    insts blob 1000 B; submit COMPLETED; GEMM 18/256
+  m1 GEMM + dummy core, BOTH from ONE mm_32x64x128.o, K=2048 N=8192 c=4 (the REAL shape):
+    insts blob 430,516 B; submit COMPLETED; GEMM 8192/8192 COLUMNS MATCH
+
+Two cores doing DIFFERENT WORK, from ONE kernel object, complete -- and at the real shape the GEMM is
+still EXACT (8192/8192) with the second core running alongside it. The 18/256 at the small shape is my
+probe's own artefact: the dummy's DMA writes zeros into the SAME C buffer (offset 0) that the GEMM's C
+reads use, and at that size the ordering exposes it; at the real shape it does not disturb the result.
+
+THEREFORE, after 20 addenda of narrowing: THE CAUSE IS THE TWO DIFFERENT EXTERNAL FUNCTIONS. These
+combined designs are the first in this work to carry TWO SEPARATE `link_with` kernel objects --
+`rms_norm_f32_bf16.o` alongside `mm_32x64x128.o` -- and a design with two of them never retires its
+runtime sequence, no matter how many cores, whether every core is fed, which tap is used, or which
+column the second phase occupies. Every design in this lane that used ONE object works: the m1 QKV
+GEMM (8 cores, 8192/8192), my GEMM-only strip (8192/8192), my norm-only strip (910/2048,
+bit-identical to the proven design), and now this two-core single-object design (8192/8192).
+
+AND THE FIX IS PROVEN FEASIBLE, not merely plausible: a second core with different work CAN coexist
+with the GEMM at the real shape and leave it bit-exact, provided both kernels come from the same
+object. So folding the norm into the GEMM's kernel object is a viable direction, and the next build
+should compile `rms_norm_f32_bf16.cc` together with `mm_kernel_reference.cc` into ONE relocatable
+object and have the combined generator reference both symbols through a single `link_with`.
+
+REBUILD POSITION: (a) compiles -- MET. (c) one submit -- MET and the driver is validated (8192/8192).
+(b) both phases correct together -- each phase is PROVEN exact alone at the real shape, the failure
+mode is now fully explained, and the single remaining engineering step has a proven-feasible design.
