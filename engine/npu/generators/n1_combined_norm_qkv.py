@@ -179,9 +179,13 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                         dma_start_task(a); at_list.append(a)
                         for c in range(n_aie_cols):
                             n_tile = col_group * n_aie_cols + c
+                            # LINEAR B tap (addendum 37 / validated 8192/8192 in addendum 82):
+                            # one contiguous k*n tile per DMA, tiles in column-major (nt,ki).
+                            # The default 4D-strided tap read 8-byte bursts at 4096-byte strides
+                            # (~2.4 GB/s effective, the documented ~44x lever).
                             b = shim_dma_single_bd_task(
-                                gB_s[c], GB, offset=ki * k * N + n_tile * n,
-                                sizes=[k // 8, n // 8, 8, 8], strides=[8 * N, 8, N, 1],
+                                gB_s[c], GB, offset=(n_tile * n_k + ki) * (k * n),
+                                sizes=[1, 1, 1, k * n],
                                 issue_token=True)
                             dma_start_task(b); bt_list.append(b)
                     dma_await_task(*at_list, *bt_list)

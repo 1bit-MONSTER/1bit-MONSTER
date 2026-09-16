@@ -3257,3 +3257,33 @@ REVISED STATE: (a) compiles -- MET. (c) one submit -- MET. (b) both phases corre
 met. My GEMM section is not implicated (it matches the proven generator at the tested size); the norm
 half now matches the proven implementation; the remaining failure is a pure norm+GEMM combination
 hang, reproducible at K=2048 N=8192 c=4.
+
+### Addendum 93 — the combined generator now uses the validated LINEAR tap; the combination hang is tap-independent
+
+Switched n1_combined_norm_qkv.py's runtime B DMA from the default 4D-strided tap to the LINEAR tap,
+which addendum 82 verified exact (8192/8192) and which addendum 37 records as the fix for the
+8-byte-burst/4096-byte-stride pathology -- the objective's ~44x lever:
+
+  offset = (n_tile * n_k + ki) * (k * n),  sizes = [1, 1, 1, k * n]     (was: offset = ki*k*N +
+  n_tile*n, sizes = [k//8, n//8, 8, 8], strides = [8*N, 8, N, 1])
+
+Rebuilt at the real shape (K=2048 N=8192 c=4, num_col_group=16, the configuration addendum 92 showed
+is VALID). It compiles, creates its context (the 16.8 MB B BO fits -- the norm is on column 4), issues
+its single submit, and HANGS. So the two-phase hang is independent of the B tap, and switching the tap
+is a performance fix for the objective rather than a correctness fix for the combination.
+
+ALSO CONFIRMED in this pass, at the real shape rather than at a small one: the PROVEN m1 generator's
+GEMM is exact at BOTH c=4 (num_col_group=16) and c=8 (num_col_group=8) -- 8192/8192 with chunk-order B,
+3/8192 row-major, in both cases. So num_col_group=16 is a legal configuration, the GEMM kernel is
+sound at the shape my combined design uses, and the hang cannot be blamed on the GEMM half.
+
+NET POSITION AFTER ADDENDA 84-93:
+ - SOLVED: err=-28 is the impossible ninth column (the device has columns 0..7). Confirmed at 65 KB
+   and, in addendum 92, at full size with the same 16.8 MB buffer -- c=8 fails, c=4 succeeds.
+ - FIXED: the norm core never released W; restored to the proven structure.
+ - ADOPTED: the LINEAR B tap in the combined generator (validated 8192/8192 in its m1 form).
+ - ESTABLISHED: the GEMM half is correct at the real shape (8192/8192 x2 configurations, proven
+   generator); the norm half matches the proven implementation; the small shapes I had been testing
+   are broken in the SHARED generator for both taps and were never valid test cases.
+ - REMAINING, and now narrowly defined: one design, two validated phases, hangs -- reproducibly, at
+   K=2048 N=8192 c=4, in a single submit, regardless of the B tap.
