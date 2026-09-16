@@ -415,3 +415,37 @@ made finite/known and it still NaNs ⇒ the defect is inside the lib's 35B layer
 instruction sequence itself (or its kernel-side contract), matching R59's conclusion
 that the runtime's 35B layer forward is non-functional. Reusing that sequence is a
 dead end; the layer must be authored engine-side (the rebuild).
+
+## Addendum 10 — the ENGINE'S OWN 35B path measured today: 19.4 s/tok (0.05 tok/s)
+
+Ran the engine's own 35B entry point end-to-end on this box:
+
+```
+NPU_MOE=1 NPU_MOE_FUSED=1 NPU_GREEDY=1 \
+  engine/npu/build/npu_engine_qwen3_6_moe_35b model.q4nx 4 /tmp/ids35b.txt
+```
+Result:
+```
+[ModelConfig] MoE: experts=256 top_k=8 im_exp=512 shared=1 gdn=1
+NPU MoE enabled (MOE_GU/D/SGU/SD xclbins + fused v28 GUSGU/DSD)   <-- fused path IS active
+small-M(_m0) xclbins absent; decode uses M=128 ctx
+Prefill: 21741 ms
+  [1] 154742  22792 ms
+  [2] 16023   22938 ms
+  [3] 58404   30951 ms
+=== 19407.0 ms/tok (0 tok/s) | boot=36ms batches=3 tokens=4 ===
+```
+
+So:
+- the engine's own fused MoE is engaged (2 launches/layer), yet **decode is 19.4 s/tok** —
+  i.e. **0.05 tok/s**, ~27× SLOWER than the ~0.7 tok/s baseline the goal is meant to
+  lift, and far from the R99 "1.5 tok/s" figure (which does not reproduce today);
+- the bottleneck is the **M=128 QKV/O kernels** plus launch overhead, not the MoE;
+- the engine's own comment (line 1477) records the small-M alternative as
+  *"the _m1 kernel's weight contract differs from the M=128 path (garbage decode, no
+  perf win — launch-bound)"* — so M-shrinking is measured not to help.
+
+Combined with Addenda 6-9b (the lib's whole-layer ELF NaNs with every input forced
+finite), **both routes to the objective are currently dead or far off**:
+  - lib per-ctx ELF runlist path -> NaN (R59);
+  - engine's own path -> 19.4 s/tok, launch-bound, small-M documented as no-win.
