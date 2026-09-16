@@ -4007,3 +4007,42 @@ assumed from a label, an open-ended quantity read as a specific one. The two fin
 survived every correction were both obtained by *measuring an internal quantity against an
 independently derived one* (the softmax statistics, and the QKV-versus-CPU-GEMM comparison). That
 asymmetry is the most transferable result in this file.
+
+## The answer, and the fix: use the engine's own upload path and read it back
+
+`ensure_a` and `upload_w` both live inside the prebuilt FLM library (`g_mm.*`), so the staging and
+any reordering it performs cannot be read from source. But the library exposes a read-back:
+`bf16mm_dump_w`, which is exactly how the engine's own debug code obtains a weight array from a
+`W_idx`.
+
+That makes the fix concrete and bounded, and it needs no knowledge of the library's internals:
+
+```c
+int  bf16mm_upload_w(const uint16_t* w, uint32_t D_in, uint32_t D_out);   // -> W_idx
+void bf16mm_dump_w(int W_idx, const char* path);                          // -> the effective array
+```
+
+The driver should, per weight: dequantize with `bf16mm_dequant` (as now), upload through
+`bf16mm_upload_w`, read the result back with `bf16mm_dump_w`, and copy **that** into the fused
+kernel's BO. Then both paths consume the same effective weight by construction, which is the same
+"parity by construction" argument I made at the start and failed to actually implement - I bypassed
+the upload step and assumed the dequant output was already the effective layout.
+
+This is worth stating plainly because it is the shape of the whole failure: I built a fused kernel
+against an assumed interface, verified it exhaustively against references that shared the
+assumption, and the assumption - the layout of an array produced by a library function - was the one
+thing never checked. Every later contradiction traced back to it.
+
+**State of fk-3 at the end of this session:**
+
+* fixed: the missing 1/sqrt(HD) score scaling (found by instrumentation, verified against an
+  independent NumPy reference and by a 260x collapse in O(f32)'s relative error); the wrong
+  weight BOs in launch B; three object-lifetime bugs; the SKIP_A UB; an unsigned wraparound in my
+  test rig; the missing f32 KV-cache write;
+* verified against independent references: launch A's own GEMM (identical to a NumPy reference on
+  the driver's activation), launch B byte-identical to the bench on all six stages, the fused
+  attention exactly matching an independent NumPy attention (0.7148 vs 0.71484);
+* outstanding: the engine's effective weight layout (this section's fix), and the kernel's norm
+  epsilon 1e-5 vs the engine's 1e-6;
+* and the honest summary: the fused layer's own numerics are now right; what was wrong was my
+  assumption about the interface it was built against.
