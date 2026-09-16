@@ -524,3 +524,65 @@ Tried AN depth 8 (n_k_h * n_n_gu, one buffer per K-tile) to sidestep the multi-s
 handoff: `_XAie_LoadProgMemSection(): Overflow of program memory` — the 8 buffers'
 locks + DMA BDs exceed the core's program memory. So the depth-2 ping-pong is the
 only fit, and the >4-cycle multi-shot zeros remain a hardware/consistency issue.
+
+---
+
+## fk-3 scale-up (2026-09-16): the QKV stage at the REAL 0.6B width, and the N-tiling blocker solved
+
+The fk-3 PoC (`n1_fk3_qkv.py`) fuses the whole layer (RMSNorm+QKV → attention →
+O-proj → FFN) but only at 64-dim tiles, and its single-N-tile base means the real
+QKV width (N=4096) had no path: the documented N-outer/K-inner loop re-reads the
+A_norm handoff once per N-tile, and the investigation above found that multi-shot
+core-to-core / mem-routed re-streams return stale data past ~4 cycles.
+
+**The scale-up sidesteps the re-stream instead of fixing it: hold the WHOLE
+(M x H) A_norm in the GEMM core's local memory**, so the handoff is streamed
+exactly once and the N-outer/K-inner GEMM re-reads it from local memory.
+
+New in-tree:
+| file | role |
+|---|---|
+| `n1_fused_norm_qkv_nt.py` | N-tiled fused RMSNorm+QKV generator |
+| `nq_nt.cc` | `nq_store`/`nq_gemm` over the core-local A_norm (+ `mm.cc` f32-C) |
+| `build_fk2nt.sh` | reproducible build (defaults M=16 H=1024 N=4096 k=64 NT=64) |
+| `tests/bench_fk2nt.cpp` | NPU verification vs a host RMSNorm + bf16 GEMM f32-acc reference |
+
+**Verified on the NPU** (Qwen3-0.6B QKV: M=16, H=1024, N = 2048(Q)+1024(K)+1024(V)
+= 4096, k=64, NT=64, ONE launch):
+```
+exact=62385/65536 (95.2%), within-few-ULP=2836, beyond=315, worst_rel=1.587e-06
+```
+The residual ~1.6e-6 (≈13 f32 ULP) is the 4x8-microtile accumulation order vs a
+sequential host f32 sum — identical for M=8 and M=16, so it is not a dataflow
+defect.
+
+### The DM budget is the real ceiling (not the program)
+
+The core DM (64 KB, `0x70000..0x80000`) is laid out by the generated
+`main_core_*.ld.script` as:
+
+```
+0x70000  stack                       (stack_size)
+0x72000  W_C_cons_buff_0/1           (2 * k * NT * 2 B)   <-- the big one
+0x7A000  C_F / C_S                   (1 * M * NT * 4 B)
+0x7B000  AN_R_cons_buff_0/1          (2 * M * k * 2 B)
+0x7B80C  .bss  -> g_an (N_K*M*k*2)   <-- the core-local A_norm must fit here
+```
+
+So `g_an` = M*H*2 B must fit in `64 KB - (stack + W buffers + C buffers + AN_R)`:
+* M=16, H=1024 → `g_an` = 32 KB. At NT=128 the two W buffers alone are 32 KB and
+  the link overflows by 20544 B. At **NT=64** they are 16 KB, a 4 KB stack frees
+  4 KB more, and M=16 fits.
+* **M=16 is the single-core ceiling at H=1024** (g_an = 32 KB, the remaining DM
+  after the fifo buffers is ~32 KB). M must be a multiple of 8 (`mm.cc`:
+  `static_assert(m % (2*r) == 0)`, r=4). Larger M needs a K-split (2+ GEMM cores
+  over H/2 each, partial C summed).
+
+### Next (in order)
+1. **K-split** the GEMM to lift M past 16 (general for every K-tiled stage).
+2. **Attention at real dims**: NH=16, HD=128, N_KEYS=1024 (chunked). The chunked
+   MHA is already verified correct (`n1_mha_chunked.py`, C=8 = 1024 keys) but is
+   ~7 ms per 128-key chunk (sync-bound); the fused layer needs it inside the one
+   xclbin with the QKV/O/FFN stages.
+3. **O-proj + FFN N-tiling** at H=1024, IM=3072 (same core-local-A_norm
+   mechanism; O's A is the attention output, GU's A is the O output).
