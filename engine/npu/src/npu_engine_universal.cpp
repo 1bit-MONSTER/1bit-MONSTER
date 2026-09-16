@@ -11,6 +11,7 @@
 #include <chrono>
 #include <exception>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -581,6 +582,25 @@ inline void lm_topk_omp(const float*hidden,float*lg,int*top_ids,int K,int NV,int
 int zaya_decode_main(int argc, char** argv);
 int main(int argc,char**argv){
     setvbuf(stdout,NULL,_IONBF,0);
+    // Exclusive device lock — repair for ERT_CMD_STATE_TIMEOUT.
+    // Concurrent hwctx submissions queue behind one another and can exceed the
+    // amdxdna driver TDR (timeout_in_sec), which tears the submission down with
+    // ERT_CMD_STATE_TIMEOUT. Serialise engine invocations unless opted out.
+    // Held for the life of the process (the fd is intentionally not closed).
+    if (!getenv("NPU_NO_DEVICE_LOCK")) {
+        const char* lk = getenv("NPU_DEVICE_LOCK");
+        if (!lk || !lk[0]) lk = "/tmp/1bit-npu-device.lock";
+        int lfd = open(lk, O_CREAT | O_RDWR, 0666);
+        if (lfd >= 0) {
+            if (flock(lfd, LOCK_EX | LOCK_NB) != 0) {
+                fprintf(stderr, "[npu] waiting for the exclusive device lock (%s)...\n", lk);
+                if (flock(lfd, LOCK_EX) != 0)
+                    fprintf(stderr, "[npu] device lock unavailable; continuing unlocked\n");
+                else
+                    fprintf(stderr, "[npu] device lock acquired\n");
+            }
+        }
+    }
     // NPU_UNIFIED=1 means "bf16 prefill + runlist decode", and the unified
     // session is initialised INSIDE the bf16 prefill block, so the flag cannot
     // do anything on its own. Fold it into NPU_PREFILL_BF16 here, before anything
