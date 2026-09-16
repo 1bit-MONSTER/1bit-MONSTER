@@ -39,13 +39,34 @@ export NPU_XCLBIN_DIR="${NPU_XCLBIN_DIR:-$ROOT/engine/npu/xclbins}"
 OUT="${OUT:-/tmp/oracle_acc_0_6b.tsv}"
 LOG="${LOG:-/tmp/oracle_acc_0_6b.log}"
 
+# Text kept per arm for scoring, in characters (0 = unlimited).
+#
+# This was hard-coded to 90, so every arm was scored on the first 90 characters of
+# its output. These models emit a <think> reasoning block before the answer, so a
+# 90-char window usually contains only the assistant's shared preamble -- the same
+# defect the model-generic harness had at 200 chars, and more aggressive. The note
+# above about a previous NTOK truncation "inside the assistant's shared preamble"
+# describes exactly this failure mode; the scorer reproduced it a second time.
+TXT_CAP="${ORACLE_TEXT_CHARS:-4000}"
+
+# Post-reasoning region: the text after the last </think>, else the whole text.
+ans_region() {
+    python3 -c 'import sys
+t = sys.stdin.read()
+i = t.rfind("</think")
+if i >= 0:
+    j = t.find(">", i)
+    t = t[j + 1:] if j >= 0 else t[i + 8:]
+sys.stdout.write(t)'
+}
+
 for f in "$TOK" "$DET" "$ENGINE" "$Q4NX" "$TJSON"; do
     [ -e "$f" ] || { echo "MISSING: $f" >&2; exit 2; }
 done
 
-printf 'prompt\texpected\tflm\trunlist\tdense\tflm_ok\trl_ok\tdense_ok\tids\trl_toks\tdense_toks\n' > "$OUT"
+printf 'prompt\texpected\tflm\trunlist\tdense\tflm_ok\trl_ok\tdense_ok\tids\trl_toks\tdense_toks\tflm_ans\trl_ans\tdense_ans\n' > "$OUT"
 
-n=0; flm_ok=0; rl_ok=0; d_ok=0; err=0
+n=0; flm_ok=0; rl_ok=0; d_ok=0; flm_ans=0; rl_ans=0; d_ans=0; err=0
 
 while IFS='|' read -r prompt expected; do
     [ -z "${prompt:-}" ] && continue
@@ -86,7 +107,8 @@ while IFS='|' read -r prompt expected; do
     if [ "$rl_n" -eq 0 ]; then
         rl_txt="<EXTRACTION EMPTY>"
     else
-        rl_txt="$("$DET" "$TJSON" < /tmp/oa_rl.ids 2>/dev/null | tr '\n' ' ' | cut -c1-90)"
+        rl_txt="$("$DET" "$TJSON" < /tmp/oa_rl.ids 2>/dev/null | tr '\n' ' ')"
+        [ "${TXT_CAP:-0}" -gt 0 ] && rl_txt="${rl_txt:0:$TXT_CAP}"
     fi
 
     # ---- arm: dense --------------------------------------------------------
@@ -97,39 +119,54 @@ while IFS='|' read -r prompt expected; do
     if [ "$d_n" -eq 0 ]; then
         d_txt="<EXTRACTION EMPTY>"
     else
-        d_txt="$("$DET" "$TJSON" < /tmp/oa_d.ids 2>/dev/null | tr '\n' ' ' | cut -c1-90)"
+        d_txt="$("$DET" "$TJSON" < /tmp/oa_d.ids 2>/dev/null | tr '\n' ' ')"
+        [ "${TXT_CAP:-0}" -gt 0 ] && d_txt="${d_txt:0:$TXT_CAP}"
     fi
 
     # ---- oracle: FLM -------------------------------------------------------
     echo "$prompt" | timeout 240 "$FLM" run qwen3:0.6b >/tmp/oa_flm.raw 2>&1
     flm_txt="$(sed -n '/Model RAW Output/,$p' /tmp/oa_flm.raw \
                  | sed '1d' | sed '/^>>>/,$d' \
-                 | tr '\n' ' ' | sed 's/^ *//; s/ *$//' | cut -c1-90)"
+                 | tr '\n' ' ' | sed 's/^ *//; s/ *$//')"
+    [ "${TXT_CAP:-0}" -gt 0 ] && flm_txt="${flm_txt:0:$TXT_CAP}"
     [ -z "$flm_txt" ] && flm_txt="<EXTRACTION EMPTY>"
 
     # ---- score (substring, case-insensitive), never on empty extractions ----
-    fk="-"; rk="-"; dk="-"
-    case "$flm_txt" in "<EXTRACTION EMPTY>") fk="ERR" ;; *)
-        echo "$flm_txt" | grep -qiF "$expected" && { fk="Y"; flm_ok=$((flm_ok+1)); } || fk="N" ;;
+    # Two verdicts, both over the FULL text now:
+    #   *_ok  -- the expected string appears anywhere in the output (the metric
+    #            this script already reported, which only ever saw 90 chars)
+    #   *_ans -- the expected string appears OUTSIDE the reasoning block, i.e. in
+    #            the text after the last </think>. Stricter, and the one a reader
+    #            actually wants when asking whether the model answered.
+    fk="-"; rk="-"; dk="-"; fa="-"; ra="-"; da="-"
+    case "$flm_txt" in "<EXTRACTION EMPTY>") fk="ERR"; fa="ERR" ;; *)
+        echo "$flm_txt" | grep -qiF "$expected" && { fk="Y"; flm_ok=$((flm_ok+1)); } || fk="N"
+        echo "$flm_txt" | ans_region | grep -qiF "$expected" && { fa="Y"; flm_ans=$((flm_ans+1)); } || fa="N" ;;
     esac
-    case "$rl_txt" in "<EXTRACTION EMPTY>") rk="ERR" ;; *)
-        echo "$rl_txt" | grep -qiF "$expected" && { rk="Y"; rl_ok=$((rl_ok+1)); } || rk="N" ;;
+    case "$rl_txt" in "<EXTRACTION EMPTY>") rk="ERR"; ra="ERR" ;; *)
+        echo "$rl_txt" | grep -qiF "$expected" && { rk="Y"; rl_ok=$((rl_ok+1)); } || rk="N"
+        echo "$rl_txt" | ans_region | grep -qiF "$expected" && { ra="Y"; rl_ans=$((rl_ans+1)); } || ra="N" ;;
     esac
-    case "$d_txt" in "<EXTRACTION EMPTY>") dk="ERR" ;; *)
-        echo "$d_txt" | grep -qiF "$expected" && { dk="Y"; d_ok=$((d_ok+1)); } || dk="N" ;;
+    case "$d_txt" in "<EXTRACTION EMPTY>") dk="ERR"; da="ERR" ;; *)
+        echo "$d_txt" | grep -qiF "$expected" && { dk="Y"; d_ok=$((d_ok+1)); } || dk="N"
+        echo "$d_txt" | ans_region | grep -qiF "$expected" && { da="Y"; d_ans=$((d_ans+1)); } || da="N" ;;
     esac
 
-    printf '[%2d] flm=%s rl=%s dense=%s  %s | want=%s\n' "$n" "$fk" "$rk" "$dk" "$prompt" "$expected"
+    printf '[%2d] flm=%s/%s rl=%s/%s dense=%s/%s  %s | want=%s\n' "$n" "$fk" "$fa" "$rk" "$ra" "$dk" "$da" "$prompt" "$expected"
     printf '  flm    : %s\n  runlist: %s\n  dense  : %s\n' "$flm_txt" "$rl_txt" "$d_txt"
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$prompt" "$expected" "$flm_txt" "$rl_txt" "$d_txt" "$fk" "$rk" "$dk" \
-        "$nids" "$rl_n" "$d_n" >> "$OUT"
+        "$nids" "$rl_n" "$d_n" "$fa" "$ra" "$da" >> "$OUT"
 done < "$SET"
 
 echo
 echo "================= ORACLE ACCURACY: Qwen3-0.6B ================="
 echo "prompts scored         : $n  (extraction errors: $err)"
+echo "text kept per arm      : ${TXT_CAP} chars (ORACLE_TEXT_CHARS; 0 = unlimited)"
 echo "FLM oracle self-check  : $flm_ok/$n   (should be $n/$n; if not, the scoring or oracle parse is wrong)"
 echo "native runlist arm     : $rl_ok/$n"
 echo "native dense arm       : $d_ok/$n"
+echo "FLM    answer-region   : $flm_ans/$n   (expected string outside the <think> block)"
+echo "native runlist answer-region: $rl_ans/$n"
+echo "native dense   answer-region: $d_ans/$n"
 echo "tsv: $OUT"
