@@ -205,3 +205,46 @@ set and that FLM itself never built.** Every route to "fused + fast" is closed:
 (fk-3 depth-2-fifo hard floor, 56x slow), and `fused_prefill.xclbin` (only newer
 families). The re-architecture direction is definitively blocked for dense
 Qwen3-0.6B.
+
+## 9. DECODE PATH — the runlist/ELF whole-layer is the fused ~1-launch path (ra-2)
+
+User redirect (2026-09-16): apply the fusion effort to the **decode** path, where
+the runlist/ELF whole-layer genuinely is the fast in-kernel ~1-launch structure.
+Code refs are `npu-infer/src/runtime_layer.cpp` + `engine/npu/src/npu_runlist_bridge.cpp`.
+
+**Launch structure (per token)** — `RuntimeLayerEngine::build_runlist` builds ONE
+`xrt::runlist` containing 28 layer runs + 1 lm_head run (29 runs), executed as a
+single submit (`execute_runlist`). So the decode is already **~1 launch/token**
+for the WHOLE model, not per layer. Double-buffered slots (`build_runlist(sa/sb)`)
+overlap the next token's runlist build against the current device exec.
+
+**In-kernel vs host (per forward)** — the layer kernel (`layer.xclbin`) reads five
+BOs and computes the whole layer in-kernel:
+
+| BO | arg | contents |
+|---|---|---|
+| `bo_act_` | 3 | hidden state (bf16, H) |
+| `weight_bos_[L]` | 4 | dequant'd per-layer weights (QKV/O/GU/D) |
+| `i5_bos_[L]` | 5 | input + post-attn RMSNorm weights |
+| `i6_bos_[L]` | 6 | RoPE cos/sin (host-written) + q/k-norm weights |
+| `kv_bos_[L]` | 7 | per-layer KV cache |
+
+So **RMSNorm, q/k-norm, RoPE rotation, gated SiLU and the residuals are all
+in-kernel** in `layer.xclbin`. The only host passes per forward are: `embed`
+(act write), `apply_rope` (cos/sin table → `i6[0:128]`, 256 B sync × 28 layers),
+`build_runlist` (overlapped), and `argmax_logits`. The kernel does NOT compute
+RoPE internally — it reads the host-written cos/sin table (comment in
+`update_rope_i6`).
+
+**Measured** (`benchmarks/RESULTS-runlist-true-native-dense-qwen3-2026-09-16.md`,
+and addendum 147):
+
+| context | native decode | FLM on-box | gap |
+|---|---:|---:|---:|
+| short prompt (~10 tok) | **86 tok/s** | ~75 | **+14.6%** |
+| 2k-token prompt | 67 tok/s | 74.92 | **−10.6%** |
+
+At short context the fused decode beats FLM; at 2k context it trails by 10.6%
+because the per-token attention cost scales with the KV prefix length (2k keys
+vs 10). That context-length scaling — not the fusion structure — is the open
+decode gap (ra-3/ra-4).
