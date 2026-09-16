@@ -2343,3 +2343,25 @@ compile-time constant and the two must stay in step.
 
 That is the whole change, and it is small — which is the point of having chosen this
 route.
+
+### Launch B is built: `-NOQKV` verified structurally
+
+`NOQKV=1 bash build_fk3_layer.sh 16 1024 16 128 1024 2 2 64 64 64` →
+315 KB xclbin, 1.08 MB of instructions (down from 1.44 MB). Checked in the emitted
+MLIR, which is the only thing that proves it:
+
+```
+norm core loops : outer, 16, 16, 16            (was 5 loops - QKV norm phase gone)
+GEMM core loops : outer, 96x16, 16x64          (was 64x16 + 96x16 + 16x64)
+seq A_S taps    : 48   (was 80 - only the FFN add-norm's A reads remain)
+seq QKV_S stores: 112  = GU 96 + D 16          (was 176 - the QKV's 64 gone)
+```
+So the two phases are dropped from BOTH the core bodies and the sequence, which is
+the only way it can work: a core's fifo ratio is a compile-time constant, so the
+body and the stream have to move together. `QKV` is now an input to launch B rather
+than an output — the host passes launch A's buffer straight in, so the sequence
+signature is unchanged.
+
+Remaining for the 2-launch design: the host RoPE pass between A and B (rotate Q at
+columns `[h*HD, h*HD+HD)` and K at `KOFF + kh*HD`, full rotary, theta 1e6,
+half-split pairs), then the engine driver.

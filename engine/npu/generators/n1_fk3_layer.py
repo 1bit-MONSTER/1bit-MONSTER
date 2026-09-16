@@ -43,6 +43,12 @@ def main():
                    help="ATTENTION query tile: attn1's statics are sized by THIS, "
                         "not by the layer's M, which is what lets prefill scale")
     p.add_argument("-NC", type=int, default=16, help="attention KEY chunk (K/V per chunk)")
+    p.add_argument("-NOQKV", action="store_true",
+                   help="launch B of the 2-launch split: Q/K arrive already "
+                        "rotated from launch A (n1_fused_norm_gemm_rr) via a host "
+                        "RoPE pass, so skip the QKV norm phase and the QKV GEMM "
+                        "phase. No hardware changes - the FFN norm already shares "
+                        "the norm column and GU/D already share the GEMM column.")
     p.add_argument("-NDEP", type=int, default=2,
                    help="depth of the norm column's fifos. The norm's A tile is a "
                         "whole (M+1,k) f32 COLUMN strip, so 4 fifos x depth 2 is "
@@ -58,12 +64,13 @@ def main():
     a = p.parse_args()
     with mlir_mod_ctx() as ctx:
         layer(a.M, a.H, a.NH, a.HD, a.NO, a.percol, a.passes,
-              a.k, a.NT, a.kO, a.stack, a.gstack, a.N2, a.NI, a.ND, a.MA, a.NC, a.NDEP)
+              a.k, a.NT, a.kO, a.stack, a.gstack, a.N2, a.NI, a.ND, a.MA, a.NC, a.NDEP,
+              a.NOQKV)
         print(ctx.module)
 
 
 def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
-          NI=3072, ND=1024, MA=16, NC=16, NDEP=2):
+          NI=3072, ND=1024, MA=16, NC=16, NDEP=2, NOQKV=False):
     N = M                       # single chunk: the keys ARE the query tokens
     C = 1                       # one chunk => a full self-attention over M
     NQKV = NH * HD + 2 * (NH // 2) * HD   # 4096 for Qwen3-0.6B: Q=NH*HD, K=V=(NH/2)*HD
@@ -261,20 +268,21 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
         @core(nc, stack_size=NSTACK)
         def norm_body():
             for _ in range_(0xFFFFFFFF):
-                # phase 1: the QKV norm, from the layer input A.
-                ss = SS.acquire(ObjectFifoPort.Produce, 1)
-                zf32(ss)
-                for _kt in range_(n_k):
-                    a = A_c.acquire(ObjectFifoPort.Consume, 1)
-                    reduce_f(a, ss)
-                    A_c.release(ObjectFifoPort.Consume, 1)
-                for _kt in range_(n_k):
-                    a = A_c.acquire(ObjectFifoPort.Consume, 1)
-                    an = AN_w.acquire(ObjectFifoPort.Produce, 1)
-                    scale_f(a, ss, an)
-                    A_c.release(ObjectFifoPort.Consume, 1)
-                    AN_w.release(ObjectFifoPort.Produce, 1)
-                SS.release(ObjectFifoPort.Produce, 1)
+                if not NOQKV:
+                  # phase 1: the QKV norm, from the layer input A.
+                  ss = SS.acquire(ObjectFifoPort.Produce, 1)
+                  zf32(ss)
+                  for _kt in range_(n_k):
+                      a = A_c.acquire(ObjectFifoPort.Consume, 1)
+                      reduce_f(a, ss)
+                      A_c.release(ObjectFifoPort.Consume, 1)
+                  for _kt in range_(n_k):
+                      a = A_c.acquire(ObjectFifoPort.Consume, 1)
+                      an = AN_w.acquire(ObjectFifoPort.Produce, 1)
+                      scale_f(a, ss, an)
+                      A_c.release(ObjectFifoPort.Consume, 1)
+                      AN_w.release(ObjectFifoPort.Produce, 1)
+                  SS.release(ObjectFifoPort.Produce, 1)
                 # phase 2: the FFN norm over h = x + o, where o is the O-proj's f32
                 # output sitting in A2. h is NEVER materialised: the reduce takes
                 # (x+o)^2 and the scale emits (x+o)*inv*gamma. Col 5 already has
@@ -318,17 +326,18 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
             # Getting this wrong is silent: no error, no timeout, buffers stay zero.
             for _ in range_(0xFFFFFFFF):
                 # --- QKV phase: n_n = NQKV/NT N-tiles x n_k K-tiles ---
-                for _nt in range_(n_n):
-                    cbuf = QKV_f.acquire(ObjectFifoPort.Produce, 1)
-                    acc0()
-                    for _kt in range_(n_k):
-                        an = ANR_c.acquire(ObjectFifoPort.Consume, 1)
-                        wt = W_c.acquire(ObjectFifoPort.Consume, 1)
-                        accm(an, wt)
-                        ANR_c.release(ObjectFifoPort.Consume, 1)
-                        W_c.release(ObjectFifoPort.Consume, 1)
-                    accs(cbuf)
-                    QKV_f.release(ObjectFifoPort.Produce, 1)
+                if not NOQKV:
+                  for _nt in range_(n_n):
+                      cbuf = QKV_f.acquire(ObjectFifoPort.Produce, 1)
+                      acc0()
+                      for _kt in range_(n_k):
+                          an = ANR_c.acquire(ObjectFifoPort.Consume, 1)
+                          wt = W_c.acquire(ObjectFifoPort.Consume, 1)
+                          accm(an, wt)
+                          ANR_c.release(ObjectFifoPort.Consume, 1)
+                          W_c.release(ObjectFifoPort.Consume, 1)
+                      accs(cbuf)
+                      QKV_f.release(ObjectFifoPort.Produce, 1)
                 # --- GU phase: same 16-K-tile pattern, different DDR source/dest ---
                 for _nt in range_(n_n_gu):
                     cbuf = QKV_f.acquire(ObjectFifoPort.Produce, 1)
@@ -400,38 +409,40 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
             # its DDR copy is verbatim; the drain is armed during the scale pass
             # (before the scale pass it would deadlock) and windowed, because the
             # shim allows only 16 simultaneously active BDs.
-            pend = []
-            for _rep in range(2):
-                for kt in range(n_k):
-                    at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
-                                                 sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
-                                                 issue_token=True)
-                    dma_start_task(at); dma_await_task(at); dma_free_task(at)
-                    if _rep == 1:
-                        ant = shim_dma_single_bd_task(AN_s, AN, offset=kt * M * k,
-                                                      sizes=[1, 1, M, k],
-                                                      strides=[1, 1, k, 1], issue_token=True)
-                        dma_start_task(ant); pend.append(ant)
-                        while len(pend) >= 8:
-                            dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
-            while pend:
-                dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
+            if not NOQKV:
+              pend = []
+              for _rep in range(2):
+                  for kt in range(n_k):
+                      at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
+                                                   sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
+                                                   issue_token=True)
+                      dma_start_task(at); dma_await_task(at); dma_free_task(at)
+                      if _rep == 1:
+                          ant = shim_dma_single_bd_task(AN_s, AN, offset=kt * M * k,
+                                                        sizes=[1, 1, M, k],
+                                                        strides=[1, 1, k, 1], issue_token=True)
+                          dma_start_task(ant); pend.append(ant)
+                          while len(pend) >= 8:
+                              dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
+              while pend:
+                  dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
 
-            # === phase 3: fused RMSNorm+QKV, bf16 output, N-outer / K-inner.
-            for nt in range(n_n):
-                for kt in range(n_k):
-                    ant = shim_dma_single_bd_task(ANR_s, AN, offset=kt * M * k,
-                                                  sizes=[1, 1, M, k],
-                                                  strides=[1, 1, k, 1], issue_token=True)
-                    dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
-                    wt = shim_dma_single_bd_task(W_s, W, offset=kt * k * NQKV + nt * NT,
-                                                 sizes=[k // 8, NT // 8, 8, 8],
-                                                 strides=[8 * NQKV, 8, NQKV, 1], issue_token=True)
-                    dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
-                ct = shim_dma_single_bd_task(QKV_s, QKV, offset=nt * NT,
-                                             sizes=[M // 4, NT // 8, 4, 8],
-                                             strides=[4 * NQKV, 8, NQKV, 1], issue_token=True)
-                dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
+            if not NOQKV:
+              # === phase 3: fused RMSNorm+QKV, bf16 output, N-outer / K-inner.
+              for nt in range(n_n):
+                  for kt in range(n_k):
+                      ant = shim_dma_single_bd_task(ANR_s, AN, offset=kt * M * k,
+                                                    sizes=[1, 1, M, k],
+                                                    strides=[1, 1, k, 1], issue_token=True)
+                      dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
+                      wt = shim_dma_single_bd_task(W_s, W, offset=kt * k * NQKV + nt * NT,
+                                                   sizes=[k // 8, NT // 8, 8, 8],
+                                                   strides=[8 * NQKV, 8, NQKV, 1], issue_token=True)
+                      dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
+                  ct = shim_dma_single_bd_task(QKV_s, QKV, offset=nt * NT,
+                                               sizes=[M // 4, NT // 8, 4, 8],
+                                               strides=[4 * NQKV, 8, NQKV, 1], issue_token=True)
+                  dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
 
             # === phase 7: attention, Q / K^T / V gathered STRAIGHT OUT OF QKV.
             # Q is row-major already; V is row-major with row stride NQKV; K^T
