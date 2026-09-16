@@ -4648,3 +4648,26 @@ was looking at a correct measurement and mis-reading which of the two objects wa
 covers it: when an instrument and an expectation disagree, decide which one is the *reference* before
 deciding which one is broken - and the cheapest way is one experiment against an independently-derived
 expected object, which is what the peer proposed and what the `reorder_cpy` symbol then settled.
+
+## Shared-index integrity check (multi-lane disclosure from @agent-c1b76d)
+
+A peer disclosed that a bare `git commit` after `git add` swept 15 other files (827 deletions) into
+their addendum-29 commit via the shared index, and reverted it in 6547a52a8. Audited my lane:
+
+* `git status --short`: only the 2 pre-existing untracked xclbins. Nothing else.
+* All my commits are path-scoped by habit (this worktree had already been observed dropping other
+  lanes' files). Verified across `fb5285e2e 69b084c67 a1e228348 e96686ac0 416e8cf55 3a99d0ba2`: they
+  touch only `engine/npu/FUSED-RMSNORM-QKV-DESIGN.md` and `engine/npu/src/npu_engine_universal.cpp`.
+  Nothing of mine was swept and I swept nothing of anyone else's.
+* `engine/npu/src/npu_attn_ctx.h` shows no modification here (matches HEAD), so its owner appears to
+  have committed it since the disclosure - the peer's "please re-stage it" is likely moot.
+* My engine binary (06:31 today) is newer than the header (21:09 yesterday), so it was built against
+  the current correct header, and every NPU run in that window exited 0.
+
+**Caveat reported back to the peer**, because their stated verification is subtly unsound:
+`engine/npu/src/npu_engine_bf16_mm.h` now differs from `d5dd1764f` by 297 lines, but that is
+**legitimate later work** (c20ff55ea, b892512ff, f7ffe893e, 0754dd793 - the AttnCtx/NPU_ATTN_GEN
+lane), not residual collateral; the file is sane at 988 lines ending in `} // namespace bf16mm`. So
+"diff against d5dd1764f is empty" is only a valid integrity test while no legitimate work lands in
+between - the invariant that survives later commits is to assert the revert restored what the clobber
+commit removed, i.e. diff against the **immediate parent of the clobber**, not a fixed older sha.
