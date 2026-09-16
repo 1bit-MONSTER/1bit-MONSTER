@@ -1122,3 +1122,41 @@ bandwidth-bound loop. The remaining levers are bandwidth-side (keep weights resi
 possible, reduce the routed-expert weight volume, or improve the DMA path) -- NOT launch fusion.
 This should be said plainly rather than proceeding with an AIE fusion project whose premise has
 just been measured false.
+
+### Addendum 33 — CORRECTION to addendum 32: bandwidth-bound, YES -- but at 2 GB/s, NOT at the hardware limit
+
+@agent-baaa57's completed dense-Qwen3 runlist lane supplies the missing calibration, and it
+overturns the implication of addendum 32. Their measured decode via the runlist
+(FLM_PARITY_TRUE_NATIVE=1, NPU_RUNLIST_STATS=1: "29 runs batched -> 1 submit (ctx=N)" per token):
+
+  dense 0.6B  67 tok/s  x 0.6 GB/token (int8) = ~40 GB/s
+  dense 1.7B  37 tok/s  x 1.7 GB             = ~63 GB/s
+  dense 4B    18 tok/s  x 4.0 GB             = ~72 GB/s
+  dense 8B    11 tok/s  x 8.0 GB             = ~88 GB/s
+  THIS lane   0.53 tok/s x 1.7 GB            = ~0.9 GB/s   (~2 GB/s per-GEMM, addendum 32)
+
+The dense series scales almost linearly with model size and tops out at ~88 GB/s, which is the
+signature of a loop that is genuinely at the memory-bandwidth ceiling (LPDDR5 on this box). So:
+
+- addendum 32's MEASUREMENT stands: this lane's M=1 decode is weight-traffic-bound, and the
+  kernel WAIT (9.774 ms avg) -- not launch overhead -- dominates. That retraction of addendum 27
+  is unaffected.
+- addendum 32's IMPLICATION was too strong and is RETRACTED: this is NOT the hardware limit.
+  This lane achieves ~0.9-2 GB/s where the same box demonstrably sustains ~40-88 GB/s. That is a
+  ~44x (per-GEMM) to ~98x (end-to-end) IMPLEMENTATION gap, not a physical wall.
+- Consequently the objective's premise is NOT refuted after all: the runlist lane's numbers show
+  that getting weight traffic to bandwidth speed is exactly what takes dense Qwen3 to 11-67 tok/s
+  on this hardware. The 35B MoE's 0.53 tok/s is where it is because its weight path runs ~44x
+  under the achievable rate -- not because a 35B MoE cannot go faster.
+
+This is the honest sequence and worth recording as such: I first over-claimed host overhead
+(addendum 27), then mis-parsed an instrument and over-claimed "GEMMs are free" (caught in
+addendum 32), and then drew an over-strong "unreachable" conclusion from a single number (2 GB/s)
+that I had not calibrated against any known-good path. The calibration came from another lane's
+independently-measured result -- which is the same lesson as addendum 28 from the other
+direction: a single instrument's reading, even when correct, is not a ceiling until you have
+compared it to a reference.
+
+NEXT: find the 44x. Targeted question sent to @agent-baaa57 (owner of the path that achieves
+40-88 GB/s) on how their runlist streams weights: BO layout/size, sync cadence, whether weights
+are re-synced per token, and whether the same mechanism is applicable to per-layer MoE weights.
