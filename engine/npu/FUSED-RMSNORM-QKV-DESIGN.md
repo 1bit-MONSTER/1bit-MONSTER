@@ -6420,3 +6420,40 @@ per-tile work).
 artifact's appearance - a filename, a number in a build command, a statistic, a text tool applied to a
 binary file - instead of reading the thing itself. The four bugs were found by reading lines of code and
 by comparing artifacts on matched inputs; the five retractions were all inference.
+
+## fk-4 measurement recipe, corrected: flm_parity.sh defaults to a 1-TOKEN prefill
+
+The fk-4 contract says "chunked prefill @1k measured via flm_parity.sh". Running it as documented:
+
+```
+FLM_PARITY_TRUE_NATIVE=1 KEEP_WORK=1 benchmarks/flm_parity.sh --model qwen3_0_6b \
+  --engine engine/npu/build/npu_engine_qwen3_0_6b --q4nx .../model.q4nx --tokenizer .../tokenizer.json --skip-flm
+```
+```
+metric               native    FLM(on-box)           gap%
+decode tok/s            100            n/a
+prefill tok/s           3.3            n/a
+TTFT (s)              0.299           skip
+prefill tokens              1 ~1928 (1 story copy)
+```
+
+It reports **prefill tokens = 1**, because `CTX_K=1` is the script's default (line 50). A one-token
+"prefill" is a TTFT/decode measurement - 3.3 tok/s is that request's whole-prompt rate, fixed cost over one
+token - and it says nothing about @1k. So:
+
+**the correct invocation passes `--ctx-k 1024`** (and `KEEP_WORK=1`, then grep the log for `[fk3]` vs the
+per-op markers to confirm which path actually ran - the flag decides which code is measured, not which
+binary). Without that, a 3.3-vs-1494 comparison is a category error of exactly the kind I have made five
+times this session: comparing two numbers produced by different measurements because both were labelled
+"prefill tok/s".
+
+The @1k numbers I have are direct: the per-op path at `NPU_PREFILL_MAX=1024` on a real 1024-token prompt
+takes 531 ms for 1024 tokens = **1927 tok/s**, above FLM's published 1494. That is measured on the
+objective's own term (@1k), which is why it matters to the premise: if the un-fused path already clears the
+bar the objective was written to close, then the objective's framing - "the fixed per-op overhead caps
+native prefill at ~655 tok/s" - is stale, and the useful next work is deciding what to do about that rather
+than more fusion.
+
+**State.** fk-3 correctness is met and proved (token parity). fk-4 is localised to launch B (94% of the
+layer, ~37x slower than the engine's whole per-op layer) but not diagnosed; the instruction-volume ratio
+(~49x words) is the only lead with evidence. Both need measurement before more code is written.
