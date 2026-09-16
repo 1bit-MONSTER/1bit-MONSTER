@@ -2024,3 +2024,34 @@ layer look numerically wrong when it is fine.
 Also note for the integration: the engine now takes an exclusive flock on
 `/tmp/1bit-npu-device.lock` (afbeb7's repair) — my harnesses must take the same
 lock, and the driver TDR is now a durable 15 s.
+
+### CORRECTION: the weight bridge already exists — the "obstacle" is mostly solved
+
+The Q4NX-vs-bf16 gap I flagged above is narrower than I thought, because
+`npu_engine_bf16_mm_bridge.cpp` already exposes exactly the conversion needed:
+
+```c
+// Dequantize a Q4NX layer-BO projection -> bf16 W (D_in x D_out, row-major).
+// q4nx_weight_offset is in Q4NX BYTES (tile*5120, see npu_pack_layer_bo).
+extern "C" void bf16mm_dequant(uint16_t* wout, const uint8_t* q4nx,
+                               int D_in, int D_out, int q4nx_weight_offset);
+```
+It runs `g_mm.run_dequant`, i.e. the SAME on-NPU dequant the engine's own prefill
+uses. So dequant parity is guaranteed **by construction** rather than something to
+chase — the one risk I said to validate first is already eliminated, and it also
+means my layout requirement is met directly: each projection comes out as bf16
+row-major `(D_in, D_out)`, which is what `n1_fk3_layer` consumes.
+
+| fused buffer | source | shape |
+|---|---|---|
+| `W` (QKV) | `bf16mm_dequant(bo, H, NQKV, offs[0])` | (1024, 4096) |
+| `W_O` | `offs[3]` | (2048, 1024) |
+| `W2` (GU) | `offs[4]` | (1024, 6144) |
+| `W_D` | `offs[5]` + an appended identity block | (4096, 1024) = [W_D ; I] |
+
+So the integration is: per layer, `npu_bf16_pack_layer(layer, bo, offs)` once, four
+`bf16mm_dequant` calls, and ONE fused-kernel launch with the 17 buffers. The only
+non-mechanical piece is appending the identity block to W_D (the residual-2 fusion).
+
+That makes the remaining fk-3 work: build the bf16 matrices per layer, launch the
+fused kernel, and compare tokens against the existing per-op prefill.
