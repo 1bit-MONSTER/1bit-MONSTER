@@ -2399,3 +2399,38 @@ for V, i.e. ~0.5 MB of memcpy, once per layer.
 
 Worth stating because "the layer is verified" and "the engine works" differ by
 exactly this kind of interface detail, and this is the last one I can see.
+
+## The driver is mostly WIRING: the engine already builds my weights, in my layouts
+
+Looked at where the bf16 prefill prepares its per-layer weights
+(`npu_engine_universal.cpp` ~4543-4571) and it is already exactly what the fused
+kernel wants. `qkvn = qout + 2*kout = NH*HD + 2*NKV*HD = 4096` for 0.6B — my `NQKV`
+exactly:
+
+```c
+npu_bf16_pack_layer(l, bo.data(), offs);
+Wqkv[l] = bf16mm_dequant_dev(bo.data(), H,    qkvn, offs[0]*5120, bo_bytes);
+Wo[l]   = bf16mm_dequant_dev(bo.data(), qout, H,    offs[3]*5120, bo_bytes);
+Wd[l]   = bf16mm_dequant_dev(bo.data(), IM,   H,    offs[5]*5120, bo_bytes);
+std::vector<uint16_t> gu_full(H * 2 * IM);
+bf16mm_dequant_mode(gu_full.data(),             bo.data(), H, IM, gu_off*5120, 2);  // gate
+bf16mm_dequant_mode(gu_full.data() + H*IM,      bo.data(), H, IM, gu_off*5120, 1);  // up
+Wgu[l] = bf16mm_upload_w(gu_full.data(), H, 2 * IM);
+```
+
+| engine buffer | shape | my kernel's buffer |
+|---|---|---|
+| `Wqkv[l]` | (1024, 4096) | `W` (H, NQKV) — **exact match** |
+| `Wo[l]` | (2048, 1024) | `W_O` (KO_TOT, NO) — **exact match** |
+| `Wgu[l]` | (1024, 6144), **gate then up** | `W2` (H, N2) — **exact match, same order** |
+| `Wd[l]` | (3072, 1024) | `W_D` minus the identity block |
+
+So there is no weight surgery to do: the driver reuses these three directly (making
+its own BOs from the host bf16 arrays) and builds **one** new array per layer —
+`Wd` with an identity block appended to make (4096, 1024), which is the residual-2
+fusion. And `bf16mm_dequant` runs the engine's own on-NPU dequant, so dequant parity
+is by construction rather than something to verify.
+
+That leaves the driver as: reuse weights -> 17 buffers -> launch A -> host RoPE ->
+scatter K/V into the KV cache -> launch B -> f32 out for the next layer. Wiring, not
+numerics.
