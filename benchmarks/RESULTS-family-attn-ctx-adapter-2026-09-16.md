@@ -261,3 +261,39 @@ AttnCtx's layer-0 `C2` **inside the engine** (`NPU_ATTN_DUMP=1` with
 the same `bqo`/KV-cache bytes on the host — is the difference (a) the Q/K/V bytes the
 engine hands over, or (b) the AttnCtx's internal scale/quantisation? That separates
 "wrong input" from "wrong contract" in one run.
+
+## Addendum 6: in-engine dump — the AttnCtx softmax output is SATURATED (wrong input)
+
+`NPU_ATTN_CTX=1 NPU_ATTN_DUMP=1 NPU_ATTN_DUMP_SEQ=8` on the 8-token prompt:
+
+```
+[attnDump] params0=5.198035e-03 seq=8
+[attnDump] pass0 C2 head0 nonzero=128
+[attnDump] pass1 C2 head0 nonzero=128
+[attnDump] C2 head0 nonzero idx: 0 1 2 3 4 5 6 7 64 65 ... 448 449 450 451  (mmul C row-0 pattern)
+[attnDump] A2 head0 t=0..3: 127 127 127 127 | t=128..131: 0 0 0 0
+Segmentation fault (core dumped)
+```
+
+**The A2 (the kernel's int8 softmax output) is saturated at 127 for every token
+shown**, where the standalone bench delivered `2/8/8/8/3/27/3/5/9` and the host A2
+expectation agreed with it exactly. A saturated softmax output means the scores the
+kernel sees are far too large (or the per-call params/scale is wrong) — i.e. the
+engine is feeding the AttnCtx something that does not match the contract the bench
+exercises. That is the **"wrong input"** branch, not merely a contract/precision
+disagreement.
+
+This also explains the in-situ `NPU_ATTN_DIFF` magnitude (0.15-0.82) being ~7x the
+bench's int8-vs-float error (1.2e-1 at seq=8): a saturated A2 is not quantisation
+noise, it is a different computation.
+
+Also note: **the DUMP path itself segfaults** (core dumped after the A2 line) when
+run in-engine — the diagnostic code assumes the bench's buffer sizes/state. That
+must be fixed before the C2raw-vs-expv comparison can complete; treat the printed A2
+as the usable signal for now.
+
+Concrete next step: instrument the AttnCtx's per-call params inside the engine
+(print `sq`, `sk`, `sv[0..3]`, and the packed Q/K extremes for the seq=8 call) and
+compare with the same quantities the bench computes for its own buffers — the one
+that is off identifies the input conversion (most likely the Q/K scale, since
+`max|bActQ|=26.75` in-engine).
