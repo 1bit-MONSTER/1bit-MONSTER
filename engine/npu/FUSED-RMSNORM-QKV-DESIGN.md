@@ -2083,3 +2083,46 @@ So the remaining fk-3 work is exactly:
 * take the engine's `/tmp/1bit-npu-device.lock` flock before any accel0 work;
 * run `flm_parity.sh` both ways and compare TOKENS, not timings — that is the fk-3
   contract, and only after tokens match does the fk-4 tok/s number mean anything.
+
+## ⚠ THE FUSED LAYER IS NOT YET A VALID MODEL LAYER: no causal mask, no RoPE
+
+Checked before wiring it in, and it would have made token parity fail for reasons
+that have nothing to do with the fusion:
+
+```
+attn1.cc:  no causal mask    (no mask/position logic anywhere)
+attn1.cc:  no RoPE           (no cos/sin/theta)
+engine:    DOES apply RoPE   (partial rotary: rope_dim = round(HD*partial_rotary_factor),
+                              tables built by ri2_build/ra2 at npu_engine_universal.cpp:362+)
+```
+So everything verified so far is a **fusion** result — correct as a composition, and
+bit-exact or near-bit-exact against a reference that has the same structure — but
+the layer is not yet a correct *transformer* layer:
+
+* **Causality**: my attention lets every query attend to every key, including future
+  ones. For a fresh prefill of M tokens the mask is mandatory. The reference in
+  `bench_fk3_layer.cpp` is also unmasked, which is exactly why it agreed — the
+  agreement was real, but it is agreement about the wrong function.
+* **RoPE**: Q/K go into the attention unrotated. Qwen3 uses partial rotary, so the
+  engine rotates only the first `rope_dim` dims of each head, with a precomputed
+  table per slot.
+
+**Where both belong, and why it is cheap.** Both are contained `attn1.cc` changes,
+and the query-tiled + key-chunked structure I already built makes them natural,
+because it is the only place that knows the GLOBAL positions:
+
+* *causal*: in the score loop, masked entries become -inf before the max, so the
+  online softmax handles them for free; for query block `qb` and key chunk `ch` the
+  mask is the usual `key_pos > query_pos`.
+* *RoPE*: applied on load of the Q tile and the K chunk, using the same
+  `rope_dim`/theta the engine uses, at the global positions `qb*MA + row` and
+  `ch*NC + col`. Partial rotary means only the first `rope_dim` of each head's HD
+  dims rotate.
+
+Neither changes the fusion architecture, the buffers, the tariffs, or the launch
+count — the sequence and the buffers stay exactly as verified. But until they land,
+**token parity is not a test of the fusion**, and I should not run it as one.
+
+Ordering for fk-3 now: (a) causal mask, (b) partial RoPE, (c) then the engine driver
+and token parity; and the bench's reference must be updated in step with (a)/(b) or
+it will keep agreeing about the unmasked, unrotated function.
