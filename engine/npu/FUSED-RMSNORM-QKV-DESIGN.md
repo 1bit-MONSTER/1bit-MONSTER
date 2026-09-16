@@ -4081,3 +4081,52 @@ but to **measure the engine's GEMM as a black box**: feed `bf16mm_gemm_launch` a
 the effective weight, directly, with no assumptions about staging, layout or scale. Repeating it for
 a few K positions identifies whatever transform is applied, and unlike everything attempted this
 session it cannot be misread, because the input is chosen so that the output *is* the answer.
+
+## MEASURED: the engine's effective weight is my raw array. The GEMM is exonerated twice over.
+
+The black-box probe finally emitted. It feeds `bf16mm_gemm_launch` an activation that is a single
+1.0 in one K position and zeros elsewhere, so the output row *is* row 0 of the effective weight -
+nothing to infer, because the input is chosen so the output is the answer.
+
+```
+probe (row 0 of the effective W)  [ 0.00171 -0.02588  0.01880 -0.00635 -0.00293 -0.01758 -0.03125 -0.01025 ]
+my raw W row 0                    [ 0.00177 -0.02563  0.01880 -0.00635 -0.00287 -0.01758 -0.03113 -0.01019 ]
+```
+
+Same values in the same order, agreeing to bf16 quantization (~1%). Together with `bf16mm_dump_w`'s
+bit-exact match, **the effective weight is the raw dequantized array, established by two independent
+measurements, and the earlier "permutation" theory is dead.**
+
+**It also measured the call contract**: my first probe passed an A of `H` elements and the engine died
+with `corrupted double-linked list` / `free(): invalid size`. So `bf16mm_gemm_launch` reads **256
+rows** from that pointer - exactly the documented "`ensure_a()` stages two 128-row halves" - and an
+A buffer must hold 256 rows. That is the only part of this that was ever a plumbing bug, and even it
+produced a fact.
+
+**What remains, as a disjunction rather than a named cause** (six retractions says: do not name it):
+
+```
+engine normed activation (dumped)   mean |.| 0.149461
+my raw W (verified identical)       mean |.| 0.022887
+CPU  A_norm @ W_raw                 mean |.| 0.17758
+engine QKV (its own buffer)         mean |.| 0.18336     <- ratio of means 1.0325
+elementwise eng/cpu ratio: median -0.0019, spread +/-56000%
+```
+
+Same magnitude distribution, uncorrelated elements, and an operand pair verified identical on the
+weight side. So the engine's QKV is **not** `A_norm @ W_raw` for the activation *as I dumped it*. The
+remaining possibilities are exactly:
+
+1. the activation the GEMM consumes is not the activation at my dump point (`ensure_a` stages,
+   converts or scales it); or
+2. the engine's QKV buffer is post-processed after the GEMM and before my dump.
+
+Both are testable the same way and neither requires reading the library. **The probe has already
+shown that with a known aligned activation the GEMM is exact** - so whatever differs is upstream of
+the GEMM's multiply, at or around `ensure_a`, and the next measure is the engine's *real* prefill
+activation at the point the GEMM is handed it, not the point I chose to dump.
+
+**Tally now seven retractions** (this session's sixth gave way to the direct measurement above). The
+pattern is unchanged and worth the space it takes: every wrong conclusion came from a statistic or a
+label standing in for a measurement; the weight question was only settled when the engine was made to
+*answer* it.
