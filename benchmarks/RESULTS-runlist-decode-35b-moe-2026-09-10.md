@@ -2364,3 +2364,35 @@ holds expert weights.
 REMAINING WORK IS A PORT, NOT A DISCOVERY: move this loop into npu_pack_moe_region_b, drop the head
 tensors from region-A, re-run with NPU_RUNLIST_STATS=1, and check the act goes finite. The
 correctness gate is the capture: the packer reproduces it byte-for-byte over 65,536 slots today.
+
+### Addendum 68 — THE EXPERT POOL PACKER ALREADY EXISTS, and it agrees with my decoded formula
+
+Going to implement the port, I found the packer already in the tree:
+
+  npu-infer/src/model.c:517   int64_t npu_pack_moe_expert_pool(uint8_t* bo, ModelWeights*, int layer)
+
+with its own comment: "Pack one linear layer's expert pool (up+gate+down). The pool BO is 512 MB
+but only rows 0..100959 are packed (478,146,560 B)" -- 512 MB being EXACTLY the size of the capture
+/tmp/cap/L0_arg3.bin (536,870,912 B = 512 MiB). Its window order:
+
+  rows 0..65535      : 1024 alternating 32-row up/gate blocks, window order within a block
+                       j = base + 8*(i%4) + i/4
+  rows 65536..100959 : down, all 35424 windows in 8-window groups [0,2,4,6,1,3,5,7] (+8 per group)
+
+TWO INDEPENDENT DERIVATIONS AGREE. My addendum-64 formula gives, for a 32-row block, unit 0 =
+rows (0, 8, 16, 24) in slots 0..3, unit 1 = rows (1, 9, 17, 25), and so on. The existing packer
+emits i=0..31 -> base + 8*(i%4) + i/4, i.e. rows (0,8,16,24, 1,9,17,25, 2,10,18,26, ...) -- the same
+sequence. I derived it by hashing the capture; the tree derived it earlier ("tools/verify_moe_current_layout.py
+is the reference implementation; these C functions reproduce it byte-for-byte, Round 50 and the
+checksums"), and the two match. The down order agrees too: my (0,2,1,3) slot interleave inside
+8-row groups is the same family as their explicit [0,2,4,6,1,3,5,7].
+
+SO THE PORT IS NEARLY TRIVIAL AND NOT A REWRITE: the harness must call npu_pack_moe_expert_pool for
+arg-3's head instead of packing the head tensors there (npu_pack_moe_region_b's job is the
+region-B tail at 0x1bc00000, which already matches byte-for-byte). The expert pool function exists,
+carries its own verification history, and is confirmed by my exhaustive 65,536-slot check.
+
+WHY THIS WAS INVISIBLE FOR SO LONG, worth recording: npu_pack_moe_region_b (the function the harness
+calls) sits in the same file, packs the RIGHT tensors for the TAIL, and its name was close enough to
+"the MoE packer" that the existence of a separate expert-pool packer never came up -- while
+npu_pack_moe_expert_pool went uncalled for exactly the head region that was producing all-NaN.
