@@ -321,3 +321,17 @@ KV prefix. This closes ra-3's open question: the host passes (§10) are NOT the
 @2k gap; the gap is device-side, and the native exec scales ~2.5x more steeply
 than FLM's (12.5→15.3 vs 12.8→13.9 ms), which is the one remaining unexplained
 delta (KV layout / per-ctx ELF vs FLM's internal sequence).
+
+### 12b. ra-6 device-free narrowing: FLM's forward uses the SAME mechanism
+
+Disassembly of `qwen3_npu::Impl::forward` (libqwen3_npu.so @0x42960) shows it
+calls `xrt::runlist::execute/wait`, `npu_app::_setup_kernel`, `set_context_length`,
+and per-run `set_arg_at_index` — the SAME per-ctx-kernel + runlist structure the
+native's `RuntimeLayerEngine::build_runlist` replicates (28 layer runs + lm_head
+in one runlist). `gen_layer_seq`/`gen_mha_engine_seq` are not called in forward
+itself (the sequence is generated inside `_setup_kernel`, matching the native's
+pre-generated per-ctx ELF). So the ~2.5x-steeper native exec scaling is **not a
+different-mechanism effect** — it is either a KV-layout/BO-size difference or a
+measurement-condition artifact (FLM's 12.8/13.9 ms were taken clean 2026-09-12,
+the native's 12.5/15.3 ms today with the 35B serve loaded). Both need the clean
+A/B of ra-6 to settle.
