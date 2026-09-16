@@ -28,28 +28,42 @@ int main(int argc, char** argv) {
     const char* xclbin = argc > 4 ? argv[4]
         : "/home/bcloud/amd-oss/fastflowlm/src/xclbins/Qwen3.6-35B-A3B-NPU2/layer.xclbin";
 
+    // Which model layer to pack and run. This is a LAYER INDEX (0..39), not a
+    // context length — moe_layer_ctx<N>.elf is layer N. The two must be the same
+    // layer: the engine packs one layer's weights into the BOs and refuses an ELF
+    // for any other. Default 1 = the layer this harness has always loaded; the
+    // reference token below is only meaningful for the layer it was derived on,
+    // so re-derive it if you change this.
+    int layer = argc > 5 ? atoi(argv[5]) : (getenv("MOE_LAYER") ? atoi(getenv("MOE_LAYER")) : 1);
+
     ModelConfig cfg = QWEN3_0_6B_CONFIG;
     ModelWeights* mw = model_load(model_path, cfg);
     if (!mw) { fprintf(stderr, "model_load failed\n"); return 1; }
     fprintf(stderr, "model: %d layers, hidden %d, vocab %d\n",
             mw->config.num_layers, mw->config.hidden_size, mw->config.vocab_size);
+    if (layer < 0 || layer >= mw->config.num_layers) {
+        fprintf(stderr, "layer %d out of range (model has %d layers)\n", layer, mw->config.num_layers);
+        return 1;
+    }
+    fprintf(stderr, "layer: %d (moe_layer_ctx%d.elf), set via argv[5] or MOE_LAYER\n", layer, layer);
 
     xrt::device dev(0);
     fprintf(stderr, "device opened\n");
 
     MoERuntimeLayerEngine eng;
-    if (!eng.init(dev, mw, mw->config, elf_dir, lm_elf, xclbin)) {
+    if (!eng.init(dev, mw, mw->config, elf_dir, lm_elf, xclbin, layer)) {
         fprintf(stderr, "MoERuntimeLayerEngine::init FAILED\n");
         return 1;
     }
-    fprintf(stderr, "engine init OK\n");
+    fprintf(stderr, "engine init OK (packed layer %d)\n", eng.packed_layer());
 
     // token 151644 (the reference prompt's first token)
     if (!eng.embed(151644)) { fprintf(stderr, "embed failed\n"); return 1; }
-    eng.dump_act("/tmp/moe_act_pre.bin"); fprintf(stderr, "embed done (pre-embed act dumped); running forward(1)...\n");
+    eng.dump_act("/tmp/moe_act_pre.bin");
+    fprintf(stderr, "embed done (pre-embed act dumped); running forward(%d)...\n", layer);
 
-    bool ok = eng.forward(1);
-    fprintf(stderr, "forward(1): %s\n", ok ? "EXECUTED" : "FAILED");
+    bool ok = eng.forward(layer);
+    fprintf(stderr, "forward(%d): %s\n", layer, ok ? "EXECUTED" : "FAILED");
     if (!ok) return 1;
 
     int vocab = mw->config.vocab_size;

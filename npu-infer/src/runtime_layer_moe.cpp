@@ -45,10 +45,14 @@ MoERuntimeLayerEngine::~MoERuntimeLayerEngine() {}
 
 bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const ModelConfig& cfg,
                                  const char* layer_elf_dir, const char* lmhead_elf_path,
-                                 const char* xclbin_path) {
+                                 const char* xclbin_path, int layer) {
     dev_ = &dev; mw_ = mw; cfg_ = cfg;
     elf_dir_ = layer_elf_dir ? layer_elf_dir : "";
     lmhead_elf_path_ = lmhead_elf_path ? lmhead_elf_path : "";
+    // The weight/router/norms BOs below hold ONE layer's weights, and the ELF run
+    // by forward() must be that same layer. Record it so a mismatch is refused
+    // instead of silently computing layer L's program with layer M's weights.
+    packed_layer_ = layer;
 
     // ---- xclbin + hw context (the 35B layer.xclbin, "MLIR_AIE" kernel) ----
     FILE* f = fopen(xclbin_path, "rb");
@@ -59,7 +63,9 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     auto xclbin = std::make_unique<xrt::xclbin>(raw);
     dev.register_xclbin(*xclbin);
     hwctx_ = std::make_unique<xrt::hw_context>(dev, xclbin->get_uuid());
-    if (!ensure_layer_kernel(1)) return false;
+    if (!ensure_layer_kernel(layer)) return false;
+    fprintf(stderr, "MoERuntimeLayer: packing LAYER %d weights (moe_layer_ctx%d.elf)\n",
+            layer, layer);
 
     // ---- act BO (hidden state, 2048 bf16) ----
     bo_act_ = std::make_unique<xrt::ext::bo>(dev, 1048576);
@@ -79,12 +85,12 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     // runs past 0x1bc00000, but the region-B pack below is issued AFTER this one and covers the
     // whole overlap, so region-B ends up intact.
     {
-        int64_t pa = npu_pack_moe_expert_pool(w, mw_, 0);
+        int64_t pa = npu_pack_moe_expert_pool(w, mw_, layer);
         if (pa <= 0) { fprintf(stderr, "MoERuntimeLayer: expert pool pack failed\n"); return false; }
         fprintf(stderr, "MoERuntimeLayer: region-A = EXPERT POOL (%lld B, verified layout)\n",
                 (long long)pa);
     }
-    int64_t rb = npu_pack_moe_region_b(w + REGION_B_BASE, mw_, 0);
+    int64_t rb = npu_pack_moe_region_b(w + REGION_B_BASE, mw_, layer);
     if (rb != (int64_t)3456 * 4736) {
         fprintf(stderr, "MoERuntimeLayer: region-B pack failed (%lld)\n", (long long)rb);
         return false;
@@ -95,7 +101,7 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     bo_router_ = std::make_unique<xrt::ext::bo>(dev, 0x3000 + 2048ull * 256ull * 2);
     uint8_t* r = static_cast<uint8_t*>(bo_router_->map());
     memset(r, 0, 0x3000 + 2048ull * 256ull * 2);
-    npu_pack_moe_router_bo(r, mw_, 0);
+    npu_pack_moe_router_bo(r, mw_, layer);
     if (getenv("MOE_ZERO_ROUTER")) {
         memset(r + 0x3000, 0, 2048ull * 256ull * 2);   // zero the router, keep iln/paln/sg
         fprintf(stderr, "MoERuntimeLayer: ROUTER ZEROED (input-independence probe)\n");
@@ -106,7 +112,7 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     bo_norms_ = std::make_unique<xrt::ext::bo>(dev, 5242880);
     uint8_t* n = static_cast<uint8_t*>(bo_norms_->map());
     memset(n, 0, 5242880);
-    npu_pack_moe_linear5_bo(n, mw_, 0);
+    npu_pack_moe_linear5_bo(n, mw_, layer);
     if (getenv("MOE_ZERO_NORMS_HEAD")) {
         memset(n, 0, 66048);   // conv1d + norm + a + dt (the SSM head)
         fprintf(stderr, "MoERuntimeLayer: NORMS HEAD ZEROED (SSM-param probe)\n");
@@ -159,11 +165,25 @@ bool MoERuntimeLayerEngine::init(xrt::device& dev, ModelWeights* mw, const Model
     return true;
 }
 
-bool MoERuntimeLayerEngine::ensure_layer_kernel(int ctx_len) {
-    auto it = layer_kernels_.find(ctx_len);
+bool MoERuntimeLayerEngine::ensure_layer_kernel(int layer) {
+    // The number in moe_layer_ctx<N>.elf is the MODEL LAYER INDEX (0..39), not a
+    // context length — see the header. Because the weight BO holds exactly one
+    // layer's weights, running any other layer's ELF would compute layer `layer`
+    // with layer packed_layer_'s weights and report it as a result. Refuse.
+    if (packed_layer_ >= 0 && layer != packed_layer_) {
+        fprintf(stderr,
+            "MoERuntimeLayer: REFUSING layer %d — this engine packed LAYER %d's weights "
+            "(moe_layer_ctx%d.elf).\n"
+            "  The weight/router/norms BOs hold one layer; running another layer's ELF mixes "
+            "layer %d's program with layer %d's weights, which is wrong output, not an error.\n"
+            "  Fix: init(..., layer=%d) to match, or call forward(%d).\n",
+            layer, packed_layer_, packed_layer_, layer, packed_layer_, layer, packed_layer_);
+        return false;
+    }
+    auto it = layer_kernels_.find(layer);
     if (it != layer_kernels_.end()) return true;
     char fname[512];
-    snprintf(fname, sizeof(fname), "%s/moe_layer_ctx%d.elf", elf_dir_.c_str(), ctx_len);
+    snprintf(fname, sizeof(fname), "%s/moe_layer_ctx%d.elf", elf_dir_.c_str(), layer);
     std::vector<uint8_t> elfb;
     if (!read_file(fname, elfb)) {
         fprintf(stderr, "MoERuntimeLayer: missing layer ELF %s\n", fname);
@@ -172,12 +192,12 @@ bool MoERuntimeLayerEngine::ensure_layer_kernel(int ctx_len) {
     try {
         xrt::elf elf((const char*)elfb.data(), elfb.size());
         xrt::module mod(elf);
-        layer_kernels_[ctx_len] = std::make_unique<xrt::ext::kernel>(*hwctx_, mod, "MLIR_AIE");
+        layer_kernels_[layer] = std::make_unique<xrt::ext::kernel>(*hwctx_, mod, "MLIR_AIE");
     } catch (const std::exception& e) {
-        fprintf(stderr, "MoERuntimeLayer: kernel build ctx=%d failed: %s\n", ctx_len, e.what());
+        fprintf(stderr, "MoERuntimeLayer: kernel build layer=%d failed: %s\n", layer, e.what());
         return false;
     }
-    fprintf(stderr, "MoERuntimeLayer: layer kernel ctx=%d ready\n", ctx_len);
+    fprintf(stderr, "MoERuntimeLayer: layer kernel layer=%d ready\n", layer);
     return true;
 }
 
@@ -192,8 +212,8 @@ bool MoERuntimeLayerEngine::embed(int token) {
     return true;
 }
 
-bool MoERuntimeLayerEngine::forward(int ctx_len) {
-    if (!ensure_layer_kernel(ctx_len)) return false;
+bool MoERuntimeLayerEngine::forward(int layer) {
+    if (!ensure_layer_kernel(layer)) return false;
     if (getenv("MOE_ZERO_ACT")) {
         memset(bo_act_->map(), 0, 4096);
         bo_act_->sync(XCL_BO_SYNC_BO_TO_DEVICE);
@@ -203,7 +223,7 @@ bool MoERuntimeLayerEngine::forward(int ctx_len) {
     std::vector<xrt::run> runs;
     xrt::runlist rl(*hwctx_);
     {
-        runs.emplace_back(*layer_kernels_[ctx_len]);
+        runs.emplace_back(*layer_kernels_[layer]);
         xrt::run& run = runs.back();
         uint32_t v0 = 3, v1 = 0, v2 = 0;
         run.set_arg(0, (const void*)&v0, sizeof(v0));
@@ -242,7 +262,7 @@ bool MoERuntimeLayerEngine::forward(int ctx_len) {
         return false;
     }
     if (getenv("NPU_RUNLIST_STATS"))
-        fprintf(stderr, "[runlist] %zu runs batched -> 1 submit (ctx=%d)\n", runs.size(), ctx_len);
+        fprintf(stderr, "[runlist] %zu runs batched -> 1 submit (layer=%d)\n", runs.size(), layer);
     return true;
 }
 

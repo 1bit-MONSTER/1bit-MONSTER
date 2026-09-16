@@ -31,33 +31,55 @@ namespace xrt { namespace ext { class kernel; class bo; } }
 // are not yet pinned (Round 74 shows them as 4736-row RTP reads) — this
 // engine packs region B + the router/norms BOs and leaves region A zeroed;
 // the correctness gate (task-4 vs moe_ffn_cpu) will expose any mismatch.
+//
+// LAYER INDEX vs CONTEXT LENGTH — read this before calling anything. For this
+// engine the number in `moe_layer_ctx<N>.elf` is the MODEL LAYER INDEX (0..39),
+// NOT a context length: the directory holds all 40 of them. That differs from
+// the dense RuntimeLayerEngine, whose `layer_ctx<N>.elf` really IS a context
+// length (layer_ctx2086.elf, layer_ctx444.elf, ...). The two conventions share a
+// filename prefix and were previously conflated here — the parameter was named
+// `ctx_len` and documented as a context length while the files ran 0..39, which
+// let the harness pack layer 0's weights and run layer 1's ELF with nothing
+// complaining (addendum 148, finding 4).
+//
+// The weight BO holds exactly ONE layer's weights, so the engine now records
+// which layer it packed and REFUSES to run a different layer's ELF.
 // ===========================================================================
 class MoERuntimeLayerEngine {
 public:
     MoERuntimeLayerEngine();
     ~MoERuntimeLayerEngine();
 
+    /// `layer` selects which model layer's weights are packed into the weight,
+    /// router and norms BOs, and must match the layer later passed to forward().
+    /// Default 1 = the layer whose ELF moe_smoke has always loaded.
     bool init(xrt::device& dev, ModelWeights* mw, const ModelConfig& cfg,
               const char* layer_elf_dir, const char* lmhead_elf_path,
-              const char* xclbin_path);
+              const char* xclbin_path, int layer = 1);
 
     /// Write token's embedding row into the act BO.
     bool embed(int token);
-    /// Run one layer forward (single layer, linear layer 0) + lm_head in one
-    /// xrt::runlist submit. ctx_len is the 1-based context length.
-    bool forward(int ctx_len);
+    /// Run one model layer forward + lm_head in a single xrt::runlist submit.
+    /// `layer` is the MODEL LAYER INDEX (0..39) and must equal the layer packed
+    /// by init(); a mismatch is refused rather than silently computed, because
+    /// the weight BO cannot hold two layers at once.
+    bool forward(int layer);
     /// Copy the logits BO's first `vocab` bf16 values as float.
     bool get_logits(float* out, int vocab);
     /// Dump the act BO (first `n` bytes) to a file.
     bool dump_act(const char* path, size_t n = 4096);
     bool dump_bos(const char* dir);
 
+    /// The layer whose weights are currently packed, or -1 before init().
+    int packed_layer() const { return packed_layer_; }
+
 private:
-    bool ensure_layer_kernel(int ctx_len);
+    bool ensure_layer_kernel(int layer);
 
     xrt::device* dev_ = nullptr;
     ModelWeights* mw_ = nullptr;
     ModelConfig cfg_;
+    int packed_layer_ = -1;
 
     std::unique_ptr<xrt::hw_context> hwctx_;
     std::unique_ptr<xrt::ext::kernel> kern_lmhead_;
