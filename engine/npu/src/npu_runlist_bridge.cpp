@@ -233,6 +233,25 @@ static const char* shipped_elf_dir(int H) {
                      : "npu-infer/captures/txn-elfs";
 }
 
+// Rewrite of the H table above, because the SHIPPED sets are Qwen3's ONLY and the
+// directory names are Qwen3-specific.
+//
+// shipped_elf_dir(H) is keyed on a single dimension, so seeding another family from
+// it plants QWEN3 ELFs in that model's cache. Measured 2026-09-16: Nanbeige4.1-3B
+// (H=2560) resolved to npu-infer/captures/txn-elfs-4b and its cache was created with
+// 4,249 symlinks to Qwen3-4B's per-context ELFs, after which the first runlist forward
+// timed out (ERT_CMD_STATE_TIMEOUT, "[unified] decode step 1 failed") -- with the
+// layer.xclbin already correct, so this is a second, independent cause of the same
+// symptom. A model with no shipped set of its own must have its cache GENERATED, not
+// seeded from someone else's, so this returns null for anything but the Qwen3 family.
+static const char* shipped_elf_dir_for_model(const std::string& base) {
+    if (base == "Qwen3-0.6B-NPU2") return "npu-infer/captures/txn-elfs";
+    if (base == "Qwen3-1.7B-NPU2") return "npu-infer/captures/txn-elfs-1p7b";
+    if (base == "Qwen3-4B-NPU2")   return "npu-infer/captures/txn-elfs-4b";
+    if (base == "Qwen3-8B-NPU2")   return "npu-infer/captures/txn-elfs-8b";
+    return nullptr;
+}
+
 static void mkdir_p(const std::string& d) {
     std::string cur;
     for (size_t i = 0; i <= d.size(); i++) {
@@ -314,11 +333,11 @@ static void ensure_elf_gen_env(const char* model_path, int H) {
             if (!base.empty()) {
                 const std::string dir = root + "/" + base;
                 mkdir_p(dir);
-                const char* ship = shipped_elf_dir(H);
+                const char* ship = shipped_elf_dir_for_model(base);
                 struct stat st;
-                if (stat(ship, &st) == 0 && S_ISDIR(st.st_mode)) seed_symlinks(ship, dir);
+                if (ship && stat(ship, &st) == 0 && S_ISDIR(st.st_mode)) seed_symlinks(ship, dir);
                 setenv("NPU_LAYER_ELF_DIR", dir.c_str(), 0);
-                if (npu_dbg_elf()) fprintf(stderr, "[runlist] generated ELFs go to %s (shipped set symlinked in)\n", dir.c_str());
+                if (npu_dbg_elf()) fprintf(stderr, "[runlist] generated ELFs go to %s (%s)\n", dir.c_str(), ship ? "shipped set symlinked in" : "no shipped set for this model; cache will be generated");
             }
         }
     }
