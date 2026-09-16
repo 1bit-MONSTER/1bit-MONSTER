@@ -5409,3 +5409,59 @@ to expose it. Two agreeing measurements are not confirmation when both have the 
 had written that rule down and then broken it within the hour. The specific error was comparing across a
 variable I had changed myself (the column count) and attributing the result to a variable I had not (the
 tap).
+
+### Addendum 146 — the clean A/B refutes my tap claim, and the real gap is XCLBIN vs PER-CTX ELF
+
+I finally ran the confound-free comparison. final_i8_QKV_qwen3_6_35b_a3b_m1.xclbin and
+..._m1lin.xclbin are the SAME SHAPE from the SAME generator with and without the linear tap, so the tap is
+the only variable:
+
+  m1    (row-major tap): 10.595 ms/submit over 20, B=16.00 MB -> 1510 MB/s, GEMM 8192/8192
+  m1lin (LINEAR tap):    10.532 ms/submit over 20, B=16.00 MB -> 1519 MB/s, GEMM 8192/8192
+
+0.6% APART. THE LINEAR TAP IS NOT FASTER. My addendum 145's "the linear tap is worth 2x and is vindicated"
+was WRONG — I had correctly named the column count as the confound and then mis-attributed the difference
+anyway. That is now three measurement claims of mine in four addenda that a better instrument overturned
+(144 said 0.8 GB/s was the device; 145 said the tap was worth 2x; both wrong). The peer lane's 0.86% is
+the same finding, so THREE INDEPENDENT MEASUREMENTS now say the tap does not matter.
+
+WHAT IS REAL, tested the same way:
+
+  SHAPE SCALING (does the time track bytes or is it fixed overhead?):
+      QKV  K=2048 N=8192  B=16.00 MB -> 10.532 ms -> 1519 MB/s
+      O    K=4096 N=2048  B= 8.00 MB ->  5.308 ms -> 1507 MB/s
+  EXACTLY HALF THE TIME FOR HALF THE BYTES. So it is genuine bandwidth, not per-submit overhead, and the
+  bandwidth framing survives this particular test.
+
+  RUNLIST vs PER-SUBMIT (is one execute()/wait() around many kernels the lever?):
+      one runlist, n=2/5/10/20 invocations: 11.328 / 10.495 / 10.347 / 10.237 ms
+      per-submit repeat loop, n=20:         10.265 ms
+  IDENTICAL. The runlist does not unlock bandwidth for my designs; my per-submit loop already saturated
+  the same path.
+
+  WEIGHT BO FLAGS (the peer's lead, from the comment at npu_engine_i8ctx_inc.h:273-278):
+      host_only (current): 10.265 ms -> 1559 MB/s, GEMM 8192/8192
+      cacheable:           10.264 ms -> 1559 MB/s, GEMM 3/8192   <- identical speed, BROKEN result
+      normal, device_only: failed outright
+  The flags do not move the bandwidth at all, and cacheable breaks correctness. Refuted for my path.
+
+SO EVERY MLIR_AIE XCLBIN DESIGN I CAN MEASURE DELIVERS ~1.5 GB/s OF WEIGHT BANDWIDTH — independent of tap,
+of runlist vs per-submit, and of BO flags. Meanwhile the peer lane reports 45-69 GB/s through the per-ctx
+ELF runlist path ON THE SAME DEVICE IN THE SAME SESSION. That is a 30-45x gap that none of the settings
+I have tested explains, and the only structural difference left is THE KERNEL ITSELF: their
+layer_kernels_/kern_lmhead_ are COMPILED WHOLE-LAYER ELF KERNELS, while mine are MLIR_AIE xclbins built
+from generators.
+
+WHAT THAT MEANS FOR THE OBJECTIVE, and it is a reframing rather than a result: the objective says "extend
+the single-launch whole-layer per-ctx ELF runlist path to Qwen3.6-35B-A3B". The measurement now says the
+PER-CTX ELF PATH IS THE FAST PATH — about 30x faster than anything the generator/xclbin rebuild route
+produces — and this lane's rebuild workstream has spent its effort measuring the slow one. The work the
+objective actually asks for is to EXTEND THE EXISTING ELF PATH to the MoE, not to rebuild it from
+generators. I have produced a correct, verified, single-submit fused xclbin design (addendum 141) and it
+is the wrong instrument for this objective.
+
+I am not going to over-claim again on one measurement, so: the ELF-vs-xclbin explanation is an INFERENCE
+from (a) the peer's 45-69 GB/s, which rests on their stated assumption that a dense decode reads its full
+weight set, and (b) the elimination of tap, runlist, flags and shape as causes. The cheap test that would
+settle it is to run ONE compiled layer ELF kernel through my own timed harness and see whether it delivers
+GB/s rather than ~1.5.

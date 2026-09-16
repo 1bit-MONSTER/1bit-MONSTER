@@ -27,6 +27,7 @@
 #include <xrt/xrt_device.h>
 #include <xrt/xrt_bo.h>
 #include <chrono>
+#include <xrt/experimental/xrt_kernel.h>
 #include <xrt/xrt_kernel.h>
 #include <xrt/xrt_hw_context.h>
 
@@ -100,7 +101,20 @@ int main(int argc, char** argv) {
     auto bo_nW   = xrt::bo(dev, H * 4,          xrt::bo::flags::host_only, k.group_id(3)); // same SIZE as nA -> same group
     auto bo_nO   = xrt::bo(dev, 4096 * 2048,    xrt::bo::flags::host_only, k.group_id(4));  // re-used as OB
     auto bo_gA   = xrt::bo(dev, 4096,           xrt::bo::flags::host_only, k.group_id(5));
-    auto bo_gB   = xrt::bo(dev, (size_t)K * N,  xrt::bo::flags::host_only, k.group_id(6));
+    // Addendum 146: THE WEIGHT BO FLAGS. npu_engine_i8ctx_inc.h:273-278 says, verbatim: "Weight BOs
+    // are written once (packB_into) and read every token by the shim DMA. HOST_ONLY forces the device
+    // through the slow cache-coherent path (~3.6 GB/s measured); try normal/cacheable/svm for faster
+    // reads." My driver created EVERY weight BO with host_only, which is that slow path -- including
+    // the m1lin QKV run that measured 1559 MB/s. This env makes the flag switchable so the claim can
+    // be tested rather than trusted: WBO_FLAGS=0 normal, 1 cacheable, 2 device_only (default host_only).
+    const int wbo_sel = getenv("WBO_FLAGS") ? atoi(getenv("WBO_FLAGS")) : -1;
+    const xrt::bo::flags wbo_fl = wbo_sel == 0 ? xrt::bo::flags::normal
+                              : wbo_sel == 1 ? xrt::bo::flags::cacheable
+                              : wbo_sel == 2 ? xrt::bo::flags::device_only
+                              : xrt::bo::flags::host_only;
+    fprintf(stderr, "weight BO flags: %s\n", wbo_sel == 0 ? "normal" : wbo_sel == 1 ? "cacheable"
+                                        : wbo_sel == 2 ? "device_only" : "host_only");
+    auto bo_gB   = xrt::bo(dev, (size_t)K * N,  wbo_fl, k.group_id(6));
     auto bo_gC   = xrt::bo(dev, N * 4 + 2048 * 4, xrt::bo::flags::host_only, k.group_id(7));
 
     // ---- synthetic inputs + INDEPENDENTLY-DERIVED host references ----------------
@@ -426,6 +440,43 @@ int main(int argc, char** argv) {
             if (f3) { fwrite(gA.data(), 1, K, f3); fwrite(gB.data(), 1, (size_t)K * N, f3); fclose(f3); }
         }
         fprintf(stderr, "FOUR-arg GEMM: %d/%d columns match\n", N - cb, N);
+        return 0;
+    }
+    if (getenv("RUNLIST")) {
+        // Addendum 146: THE POINT OF THE RUNLIST. My REPEAT loop submits one kernel, waits, submits the
+        // next -- so the DMA engines drain between submits. A runlist adds N kernel invocations and
+        // executes them with ONE execute()/wait(), which is what RuntimeLayerEngine::build_runlist does
+        // for a whole layer (npu-infer/src/runtime_layer.cpp:431) and what the objective means by "one
+        // xrt::runlist submit/token". This mode exists to measure whether that is where the bandwidth
+        // is: a peer lane reports 45-69 GB/s through the runlist on this same device, against my
+        // 1.5-3.6 GB/s per-submit. NOTE: for a pure timing probe every invocation aliases the SAME
+        // output BO, so the RESULTS ARE MEANINGLESS and only the elapsed time is used.
+        const int n = atoi(getenv("RUNLIST"));
+        if (n > 0) {
+            xrt::runlist rl(hc);
+            std::vector<xrt::run> runs;
+            runs.reserve(n);
+            for (int i = 0; i < n; i++) {
+                runs.emplace_back(k);
+                xrt::run& r = runs.back();
+                unsigned v0 = 3, nin = (unsigned)ins.size();
+                r.set_arg(0, (const void*)&v0, sizeof(v0));
+                r.set_arg(1, (const xrt::bo&)bo_ins);
+                r.set_arg(2, (const void*)&nin, sizeof(nin));
+                r.set_arg(3, (const xrt::bo&)bo_gA);
+                r.set_arg(4, (const xrt::bo&)bo_gB);
+                r.set_arg(5, (const xrt::bo&)bo_gC);
+                rl.add(r);
+            }
+            auto t0 = std::chrono::steady_clock::now();
+            rl.execute();
+            rl.wait();
+            auto t1 = std::chrono::steady_clock::now();
+            double ms = std::chrono::duration<double, std::milli>(t1 - t0).count() / n;
+            double mb = (double)K * N / (1024.0 * 1024.0);
+            fprintf(stderr, "RUNLIST TIMING: %.3f ms/invocation over %d invocations in ONE runlist "
+                            "submit, B=%.2f MB -> %.0f MB/s\n", ms, n, mb, mb / (ms / 1000.0));
+        }
         return 0;
     }
     if (getenv("THREE_BO")) {
