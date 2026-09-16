@@ -3173,3 +3173,41 @@ bug (fixed, and it removed the pure hang for num_col_group=1), the GEMM alone is
 (addendum 85) and completes at both group counts (here), and every remaining failure -- hang at
 num_col_group=2, XRT bitset at num_col_group=1 -- appears only when the norm and the GEMM are in the
 same design.
+
+### Addendum 91 — my B DMA offset is CORRECT (matches the proven default); the value defect is elsewhere
+
+Diffed the runtime's B task against the proven generator's, which turned out to have TWO paths:
+
+  n1_core_i8_m1.py, LINEAR (-L):  b_off = (n_tile * n_k + ki) * (k * n), sizes=[1,1,1,k*n]
+  n1_core_i8_m1.py, DEFAULT:      b_off = ki * k * N + n_tile * n,     sizes=[k//8,n//8,8,8],
+                                                                        strides=[8*N,8,N,1]
+  n1_combined_norm_qkv.py:        offset = ki * k * N + n_tile * n,    sizes=[k//8,n//8,8,8],
+                                                                        strides=[8*N,8,N,1]
+
+My combined design uses the DEFAULT tap, and its offset, sizes and strides are IDENTICAL to the
+proven default's. So the B DMA is structurally correct and is NOT the explanation for addendum 90's
+finding that my GEMM output is independent of the B feed -- while the m1 QKV `_m1lin` xclbin, which
+uses the LINEAR path, responds to the feed exactly as predicted (3/8192 row-major, 8192/8192 chunk).
+
+I could not complete the obvious follow-up -- run the m1 QKV xclbin built with the DEFAULT tap
+(final_i8_QKV_..._m1.xclbin) under the same driver to see whether the default tap responds to B at
+all. Every attempt at that size now fails at context creation with err=-28, on a device the preflight
+reports IDLE with hwctx_limit=16. Small designs create contexts; the 16.8 MB-B ones now do not. I am
+recording this as an unfinished comparison, not as a result.
+
+ALSO RE-CHECKED, because it decided a claim I published as SOLVED: addendum 88's column-8 result had
+a run-order confound -- c=8 ran first and failed, c=4 ran second and succeeded, which is exactly the
+signature of a device-state effect. I reran the pair in REVERSE order: c=4 first (context created,
+submit reached), c=8 second (err=-28). The column finding SURVIVES the reversal and is not a
+device-state artifact. That is the one claim from this run I have now tried to falsify against my own
+suspicion and it held.
+
+WHERE THIS LEAVES THE REBUILD (addenda 84-91): (a) compiles -- MET. (c) one submit -- MET; driver
+validated 8192/8192 on the linear-tap m1 xclbin, and it reproduces that xclbin's documented failure
+mode (3/8192) exactly. (b) both phases correct together -- NOT met. The failures are now known to be a
+pure COMBINATION problem: the GEMM alone completes at both num_col_group values and the norm alone
+completes; the hang needs both present. TWO real defects were found and fixed this run -- the norm's
+missing W release, and the impossible ninth column. One unexplained conflict stands: my own GEMM-only
+run reported 256/256 in addendum 85 and reports 2/256 now, from the same generator, same driver mode,
+same insts (verified byte-identical), and the output does not change when the B feed order is changed,
+which means 256/256 had no mechanism to begin with. That is the thread to pull next.
