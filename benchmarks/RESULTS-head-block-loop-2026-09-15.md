@@ -1038,3 +1038,35 @@ What that leaves, unchanged from the three options but now with the first measur
 My recommendation is now **2**, with **3** as the only route to actual family parity
 above 1024 keys if that is wanted — and it is a decision for the user, because 3
 discards the verification set that makes the rest of this lane trustworthy.
+
+### hd256 fix verified inert; Gemma3-1B's blocker moves upstream
+
+**Inertness measured, not argued.** Same ids, same conditions, 1024 keys, Qwen3-0.6B
+bf16 prefill:
+
+| build | boot |
+|---|---|
+| without the `4*HD` slot fix | **429** |
+| with it | **429** |
+
+So the six working models are untouched by the change empirically, not just because
+`4*128 == 512` and the `HD > 128` branch is not taken.
+
+**Gemma3-1B (hd256) no longer fails in attention — it fails earlier.** With the fix:
+
+```
+bf16 attn: kv_region=8388608 v_region_add=2 (H=1152 NKV=1)     <- the HD/128 scaling took effect
+D_in % k_tile_q4 != 0                                          <- and the run stops before attention
+```
+
+Two things follow. The region scaling does what it says (`4194304 * 256/128 =
+8388608` reported by the engine). And **the attention slot overrun was real but was not
+Gemma3-1B's binding constraint**: the model dies in the dequant tiling step
+(`D_in % k_tile_q4 != 0`) because `H = 1152` is not a multiple of the q4 tile — a
+*separate* hd/shape constraint, upstream of attention, that has to be solved before any
+attention result for this family can exist.
+
+So the hd256 row of the family table stays "not at parity", but the reason is now the
+right one: not "the KV slot overwrites the next token" (fixed) but "H=1152 does not
+tile the q4 dequant". Recording it as the next item rather than leaving the old cause
+attached to a failure that no longer happens.
