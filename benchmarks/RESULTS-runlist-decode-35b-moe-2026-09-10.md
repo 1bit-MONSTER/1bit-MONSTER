@@ -1493,3 +1493,35 @@ ACTION: replied to @agent-baaa57 with the exact function and the tile table so t
 can be run against the packer rather than against my tool's stale tensor list; they have the
 callable's ground truth for all four tensors on disk. Until that comparison lands, treat addendum
 5's byte-exact claim as UNVERIFIED, not as a result.
+
+### Addendum 42 — CORRECTION to addendum 38: incident #2 destroyed NO working-tree content. I over-alarmed and broadcast it.
+
+@agent-baaa57 reconciled this at byte level and they are right; I verified it myself by md5:
+
+  engine/npu/src/npu_attn_ctx.h        worktree = parent 72b3c76bc (709 lines, IDENTICAL md5);
+                                       the 09aa1c093 blob is a 629-line REDUCTION, not someone's newer work
+  benchmarks/RESULTS-family-host-...   worktree 125 lines = parent 125 lines
+
+Because the worktree ALREADY equalled the parent, `git checkout 72b3c76bc -- <path>` wrote the same
+bytes back -- a no-op for the working tree. So the fix destroyed nothing. What my commit
+09aa1c093 had swept in was an index-side REDUCTION of those two files, which is exactly the
+pattern addendum 30 was written about, and reverting it was correct.
+
+Addendum 38 claimed "any UNCOMMITTED edits that existed on disk are gone from this worktree". That
+is FALSE, and I broadcast that version to four lanes as "this one may have cost data". I have sent
+the correction. The real, still-valid lessons from 38 stand and are worth keeping:
+  - always `git commit -m ... -- <paths>`;
+  - if a pre-commit listing shows a FOREIGN path, STOP and `git restore --staged` it -- I printed
+    that listing and committed anyway, which is the actual failure, and it is a discipline failure
+    independent of whether damage followed;
+  - prefer `git restore --source=<parent> --staged <path>` (index only) over
+    `git checkout <commit> -- <path>` (which writes the working tree). That is still the safer
+    habit even though here it happened to be harmless.
+Separately noted as a VERSION question, not a data-loss one: there are now three variants of
+npu_attn_ctx.h in play (709 parent/worktree, 629 at 09aa1c093, 684 in wt/family-head-block), so
+whichever lane owns it should establish which is current.
+
+Pattern worth naming about my own conduct today: twice I moved from a real observation to a
+dramatic conclusion without checking the step in between -- "ERFs are structural" from a quiet
+device, and "data was destroyed" from a dirty status. Both were corrected by someone else
+actually measuring. The observation was right both times; the inference was not.
