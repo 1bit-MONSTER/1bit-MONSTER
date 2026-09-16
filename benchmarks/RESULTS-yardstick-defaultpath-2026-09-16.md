@@ -125,3 +125,60 @@ no bf16 tiles at all. Built Qwen3-1.7B's four with
 Honest status of (c): **0.6B fully gated parity on all three metrics at 1k-8k**;
 **1.7B prefill + mostly TTFT, decode behind**; 4B/8B/VL-4B/Llama still need their bf16
 tiles built (4 each) and then the same sweep.
+
+## Addendum 3: the four remaining models — tiles built, and the shape constraint
+
+### The `gu_split` trap and the column constraint
+
+Two engine/generator rules decide whether a bf16 sweep is even possible:
+
+1. **`gu_split` differs per model.** Qwen3-0.6B and 1.7B take the **fused `GU`** tile;
+   Qwen3-4B, 8B and Llama-3.1-8B take **separate `G` and `U`** tiles. Building `GU` for
+   8B produced `FAIL bf16 G: ... final_bf16_G_K4096_N12288.xclbin not found`, and the
+   same for 4B. (The tiles I built first were the wrong kind; the correct ones are now
+   in the tree.)
+2. **`n1_core_bf16_v1.py` asserts `(N/128) % cols == 0`**, and the builder defaults to
+   `cols=8`. Qwen3-4B / VL-4B are **H=2560**, so their `O`/`D`/`G`/`U` tiles have
+   `N/128 = 20` or `76`, which are **not** multiples of 8:
+   `AssertionError: N//n must be a multiple of n_aie_cols`. Those tiles build at
+   `cols=4` (verified: `O:4096:2560:4` → `final_bf16_O_K4096_N2560.xclbin`), but the
+   engine initialises every bf16 context with ONE column count, so a set that mixes
+   cols=8 (QKV) with cols=4 (O/D/G/U) is not a configuration the engine can currently
+   load. **That is the honest blocker for the H=2560 pair (Qwen3-4B, Qwen3-VL-4B).**
+
+### Tiles now in the tree (built this session)
+
+| model | tiles | state |
+|---|---|---|
+| Qwen3-0.6B | QKV/O/GU/D (H=1024) | already present |
+| Qwen3-1.7B | QKV:2048:4096, O:2048:2048, GU:2048:12288, D:6144:2048 | **built**, swept |
+| Qwen3-8B | QKV:4096:6144, O:4096:4096, D:12288:4096, **G/U:4096:12288** | **built**, swept |
+| Llama-3.1-8B | QKV:4096:6144, O:4096:4096, D:14336:4096, **G/U:4096:14336** | **built**, sweep pending |
+| Qwen3-4B, VL-4B | QKV:2560:6144, O (cols=4), GU, D (cols=4) | **partial**; blocked by (2) |
+
+### Qwen3-8B sweep (bf16 default path vs FLM on this box, 8 decode tokens)
+
+| ctx | native prefill | t/s | FLM t/s | ratio | native TTFT | FLM TTFT | native decode | FLM decode | decode ratio |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1k | 2338 ms | 438 | 107.02 | **4.09x** | 2.338 s | 9.17 s | 12 | 10.70 | **1.12x** |
+| 8k | 35171 ms | 233 | 330.29 | **0.71x** | 35.17 s | 23.47 s | 9 | 5.26 | **1.71x** |
+
+So for 8B the verdict is **context-dependent**: at 1k the native bf16 path beats FLM on
+all three metrics (prefill 4.09x, TTFT 3.9x faster, decode 1.12x), but at 8k the prefill
+and TTFT fall behind (0.71x, 35.2 s vs 23.5 s) while decode stays ahead (1.71x). The
+native prefill rate degrades 438 → 233 t/s between 1k and 8k, driven by the attention
+term (366 ms → 6074 ms).
+
+### (c) status, metric by metric
+
+| model | prefill >= FLM | TTFT | decode >= FLM |
+|---|---|---|---|
+| Qwen3-0.6B | **yes**, 1.01-1.34x at 1k-8k | faster 1k-4k, −2% at 8k | **yes** |
+| Qwen3-1.7B | **yes**, 1.03-1.34x | faster 1k-4k, −2% at 8k | **no**, 0.64-0.98x |
+| Qwen3-8B | 4.09x at 1k, **0.71x at 8k** | 3.9x faster at 1k, **slower at 8k** | **yes**, 1.12-1.71x |
+| Qwen3-4B / VL-4B | blocked by the mixed-column constraint (2) | — | — |
+| Llama-3.1-8B | tiles built, sweep pending | — | — |
+
+So **no single "prefill/TTFT/decode all >= FLM at 1k..8191 for all six" claim can be
+made**: 0.6B satisfies it, 1.7B fails decode, 8B fails prefill above ~1k, and the
+H=2560 pair cannot load the bf16 set at all. That is the criterion's honest state.
