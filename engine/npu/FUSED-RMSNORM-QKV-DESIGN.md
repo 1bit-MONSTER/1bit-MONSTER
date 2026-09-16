@@ -4046,3 +4046,38 @@ thing never checked. Every later contradiction traced back to it.
   epsilon 1e-5 vs the engine's 1e-6;
 * and the honest summary: the fused layer's own numerics are now right; what was wrong was my
   assumption about the interface it was built against.
+
+## Correction and the surviving contradiction
+
+The grep settles the round-trip question in the opposite direction to my last section:
+`bf16mm_dump_w` is the library's own read-back (`g_mm.dump_w`), and I already compared its output
+(`/tmp/bf16_l0_Wqkv.bin`) against my raw dequant array - **bit-identical, maxabs 0.64062, zero diff.**
+So the effective weight *is* the raw array; the upload's read-back is an identity, and the
+round-trip fix proposed in the previous section would change nothing.
+
+Which leaves a clean, hard contradiction, stated exactly:
+
+* the engine's effective `Wqkv` == my raw array (verified, bit-identical, via the library's own
+  `dump_w`);
+* the engine's own normed activation `bf16_l0_bA.bin` maxabs 2.54688 (dumped from `bA` immediately
+  after `rn_bf16` writes it);
+* a CPU bf16 GEMM of those two gives maxabs 0.98047;
+* the engine's own QKV buffer gives maxabs 4.68750, with 0.08% of elements matching.
+
+Both operands verified, both on the engine's side, and the engine's own output is not their product.
+So the engine's QKV GEMM is **not a plain bf16 GEMM of the activation in `bA` and the weight it
+uploaded** - which means one of the two is staged, scaled or converted between the dump point and the
+GEMM. The code comment names the mechanism: `ensure_a()` "stages both halves from the SAME pointer",
+so the GEMM consumes a staged copy of `bA`, not `bA` itself, and `bA` is not necessarily what the
+multiply sees. `ensure_a` is in the prebuilt library and cannot be read.
+
+That is the single remaining unknown in fk-3, and it is now precisely characterized rather than
+vague: the discrepancy is inside the engine's GEMM staging, between a dumped activation and a dumped
+weight that are both individually correct, and an output that is not their product.
+
+**The right way to settle it** - and the one I would take next - is not to read more of the engine
+but to **measure the engine's GEMM as a black box**: feed `bf16mm_gemm_launch` a known activation
+(a single 1.0 in one K position, zeros elsewhere) and read back the output. That returns a column of
+the effective weight, directly, with no assumptions about staging, layout or scale. Repeating it for
+a few K positions identifies whatever transform is applied, and unlike everything attempted this
+session it cannot be misread, because the input is chosen so that the output *is* the answer.
