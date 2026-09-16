@@ -1671,3 +1671,37 @@ scores in bf16; the reference sums in f32).
 
 That is the goal's core claim delivered: the fused layer is ONE launch, and the
 per-op launch overhead that capped native prefill is gone.
+
+## Scaling past M=16: what binds, and what prefill scale will need
+
+The verified composition is at **M=16**. Probing upward, both failure modes are
+resource budgets, and they bind at different M:
+
+```
+M=32  ld.lld: section '.bss' will not fit in region 'data': overflowed by 14656 bytes
+M=64  'aie.tile' op allocated buffers exceeded available memory
+```
+
+* **M=32 is the attention core's own DM.** `attn1.cc`'s `.bss` scales with M_TILE
+  and N_KEYS — `O_state[M_TILE*HD]` f32 is 16 KB at M=32 (8 KB at M=16) and
+  `g_kt[HD*N_KEYS]` doubles too — and at M=32 that overflows the core's data
+  region. So **the attention is what caps the layer's M**, not the GEMMs.
+* **M=64 is the MEM tile** (the same budget that already forced k=32 for the norm
+  at M=128 in the standalone build).
+
+So prefill scale (the goal's M=128) needs the two M's DECOUPLED rather than one
+shared M:
+
+1. **Query-tile the attention**: keep `M_attn = 16` and have each attention core
+   loop over `M_layer/16` query blocks, re-reading K/V for each block. The QK
+   buffer then holds `(16, HD) + (HD, N)` rather than `(M, HD) + (HD, N)`, which is
+   what keeps it inside the mem budget at large M.
+2. **Run the norm/GEMMs at `M_layer = 128`** — the shim re-read path already
+   handles that (it is 100% exact at M=128), but the norm's A tile is (M+1,k) f32
+   = 33 KB at k=64, so it needs **k=32** there, exactly as the standalone build
+   found.
+3. The attention's O_s output and the O-proj's A gather would then be indexed per
+   query block rather than per whole row.
+
+None of that is architectural — every piece is verified, and the two budgets above
+say precisely which sizing knob each one needs.
