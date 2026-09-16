@@ -1160,3 +1160,38 @@ compared it to a reference.
 NEXT: find the 44x. Targeted question sent to @agent-baaa57 (owner of the path that achieves
 40-88 GB/s) on how their runlist streams weights: BO layout/size, sync cadence, whether weights
 are re-synced per token, and whether the same mechanism is applicable to per-layer MoE weights.
+
+### Addendum 34 — narrowing the 44x: it is NOT the BO/host path (and the engine already documented a ~1.5 GB/s ceiling)
+
+Device-free half of "find the 44x", since accel0 was busy with a peer diagnostic.
+
+1. **BO flags are IDENTICAL on both paths.** The engine's `I8Ctx` creates its weight BOs
+   `XRT_BO_FLAGS_HOST_ONLY` with the kernel's `group_id(4)`
+   (npu_engine_i8ctx_inc.h:144-145), and the runlist harness creates them
+   `xrt::bo::flags::host_only` with a group id (npu-infer/src/engine.cpp:52). Same flags, same
+   group-id scheme, both passed per-run/per-layer as an argument. So the ~44x is NOT a
+   cacheability/zero-copy/group-id difference, and the hypothesis that the runlist simply has a
+   better host memory path is NOT supported by the code.
+
+2. **The engine's own notes already record a ~1.5 GB/s ceiling for its kernel design.**
+   n1_core_i8_m1.py's comment: a microtiled [K/8][N/8][8][8] B source with contiguous 64-byte
+   reads "was measured NO faster (~4.05 vs ~4.36 ms for 6.3 MB -- the single-launch DMA path is
+   ~1.4-1.5 GB/s regardless of source layout, BD count, or tile size)". That is 6.3 MB / 4.36 ms
+   = 1.44 GB/s and 6.3 / 4.05 = 1.56 GB/s -- independently consistent with the 1.68-2.07 GB/s I
+   measured per-GEMM via NPU_GO_STATS/NPU_STAGE_SPLIT in addendum 32. Two independent
+   measurements and one prior note agree on ~1.5-2 GB/s for THIS design.
+
+3. Therefore the 44x gap versus the dense runlist lane's implied 40-88 GB/s is most likely in the
+   KERNEL'S WEIGHT-FLOW DESIGN -- how B tiles are pulled through the array -- not in the host,
+   the BO layer, or the submit mechanism. That is a materially different target from addendum
+   27's (submit count) and from addendum 32's (raw bandwidth wall): the array can evidently
+   sustain far more than 2 GB/s, but this 8-column x 1-row m=1 design cannot pull it.
+
+DECISIVE NEXT EXPERIMENT (needs accel0): measure the SAME 35B QKV m=1 kernel through the runlist
+harness (npu-infer/tools/moe_smoke) and compare its weight-stream rate against the engine's
+legacy invocation of the identical xclbin. Same kernel, same weights, two invocation paths:
+ - if the runlist is ~as slow (~2 GB/s), the ceiling is the KERNEL DESIGN and the lever is a
+   different B-tile/weight-flow design (which is what the dense lane's kernels evidently have);
+ - if the runlist is much faster (tens of GB/s), the lever is the invocation path and the
+   objective's mechanism is vindicated for a reason quite different from the one first assumed.
+Either branch is decisive and neither requires the AIE fusion project.
