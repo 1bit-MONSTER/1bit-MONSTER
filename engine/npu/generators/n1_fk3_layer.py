@@ -109,7 +109,7 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
         QKV_ty = np.ndarray[(M, NT), np.dtype[bfloat16]]
         QK_ty = np.ndarray[(MA * HD + HD * NC,), np.dtype[bfloat16]]  # Q tile + K^T chunk
         V_ty = np.ndarray[(NC * HD,), np.dtype[bfloat16]]
-        OUT_ty = np.ndarray[(M, HD), np.dtype[bfloat16]]
+        OUT_ty = np.ndarray[(MA, HD), np.dtype[bfloat16]]   # the QUERY TILE, not M
         AOT_ty = np.ndarray[(M, KO), np.dtype[bfloat16]]
         WO_ty = np.ndarray[(KO, 64), np.dtype[bfloat16]]
         CO_ty = np.ndarray[(M, 64), np.dtype[np.float32]]   # f32: the FFN norm adds it to x
@@ -185,8 +185,14 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
                 cm = cols[cc]
                 f = {"col": cc, "slot": slot, "shim": cm["shim"], "mem": cm["mem"]}
                 f["ac"] = tile(cc, 2 + slot)
-                f["O_f"] = object_fifo(f"O_F_{cc}_{slot}", f["ac"], f["mem"], 1, OUT_ty)
-                f["O_s"] = object_fifo(f"O_S_{cc}_{slot}", f["mem"], f["shim"], 1, OUT_ty)
+                # Depth 2, not 1: a core produces one O per QUERY BLOCK per pass,
+                # so with depth 1 the sequence desyncs (that is exactly what made
+                # the second query block's result insensitive to its own Q). Two
+                # slots is enough for the core to stay one block ahead, and keeps
+                # the mem tile affordable at larger n_qb (n_qb slots overflowed at
+                # M=64).
+                f["O_f"] = object_fifo(f"O_F_{cc}_{slot}", f["ac"], f["mem"], 2, OUT_ty)
+                f["O_s"] = object_fifo(f"O_S_{cc}_{slot}", f["mem"], f["shim"], 2, OUT_ty)
                 object_fifo_link(f["O_f"], f["O_s"])
                 pipes.append(f)
         for c in range(ncol):

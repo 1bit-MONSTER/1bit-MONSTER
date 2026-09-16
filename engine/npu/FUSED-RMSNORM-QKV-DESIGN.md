@@ -1908,3 +1908,40 @@ Next hypotheses, in order: (1) the O_F/O_S handshake when a core produces MORE
 THAN ONE O per loop body (at M=16 it produced one per pass; now it produces
 qb-times that), i.e. give each query block its own O_F/O_S fifo pair; (2) the
 QK/V broadcast fifo's item accounting across the qb boundary.
+
+## ✅ THE M-SCALING IS FIXED: 16 -> 32 -> 64, and the qb desync was an O-FIFO DEPTH
+
+The second query block's "insensitive to its own Q" behaviour was the tell: the
+attention core produces **one O per QUERY BLOCK per pass**, but `O_F`/`O_S` were
+created with **depth 1**. With more than one produce outstanding the sequence
+desynced — and because only the O path desynced, every non-attention stage stayed
+bit-exact, which is exactly what the symptom looked like.
+
+```
+O_F/O_S depth 1  -> M=32: attn 23.4%, heads 0-7 ~46%, 8-15 0%
+O_F/O_S depth 2  -> M=32: attn 92.6% exact, 95.7% <=2ULP, every head 88-97%
+```
+Two more fixes came with it:
+
+* `OUT_ty` was still `(M, HD)` — the LAYER's M — instead of the attention's
+  `(MA, HD)`; that wasted 2x the mem-tile budget for the O fifos and would have
+  blocked scaling.
+* depth `n_qb` (rather than a flat 2) overflows the mem tile at n_qb=4, so 2 is
+  the right value: enough for the core to stay one query block ahead.
+
+**Verified at M=64** (MA=16 => n_qb=4, NC=16 => C=4 key chunks, and norm k=32 to
+fit the `(M+1,k)` f32 A tile in the mem tile):
+
+```
+  QKV      bit-exact 262144/262144
+  attn     92.4% exact, 95.8% <=2ULP, every head 88-96%
+  o (f32)  correct, worst_rel 2.8e-05
+  h = x+o  H_BF 65529/65536 = 100%          <- residual 1
+  GU       97.7% exact, 99.8% <=2ULP
+  SiLU     96.9% exact, 99.3% <=2ULP
+  D        99.3% exact, 99.9% <=1ULP        <- residual 2 fused, the LAYER OUTPUT
+```
+So the fused layer now runs at 4x the M it did this morning, in ONE launch, with
+the same arithmetic. Build at M=64:
+`MA=16 NC=16 bash build_fk3_layer.sh 64 1024 16 128 1024 2 2 32 64 32`
+(note `k=32 KO=32` — the norm's A tile is what bounds M now, not the attention).

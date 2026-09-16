@@ -249,6 +249,15 @@ int main(int argc,char**argv){
   cmp("D",CDout,CDref,(long)M*ND);
   // Per-head breakdown: if head 0 is right and the rest are wrong it is a
   // head-mapping bug; if all are wrong it is the Q/K/V layout.
+  // Is the device recomputing query block 0's attention for block 1 (a
+  // Q-offset / fifo accounting bug), or doing something else entirely?
+  { int MA2=M/2; long same=0,tot=0;
+    for(int hh=0;hh<NH;hh++)for(int i=0;i<MA2;i++)for(int d=0;d<HD;d++){
+      tot++;
+      if(Oall[(size_t)hh*M*HD+(size_t)i*HD+d]==Oall[(size_t)hh*M*HD+(size_t)(MA2+i)*HD+d]) same++;
+    }
+    printf("  qb0 vs qb1 halves identical: %ld/%ld (%.1f%%)\n",same,tot,100.0*same/(double)tot);
+  }
   printf("  per-head attn exactness:");
   for(int hh=0;hh<NH;hh++){
     long ex=0; for(long k=0;k<(long)M*HD;k++) if(Oall[(size_t)hh*M*HD+k]==Oref[(size_t)hh*M*HD+k]) ex++;
