@@ -3793,3 +3793,44 @@ convention shared between probe and combined design -- most plausibly the B layo
 generator now uses the LINEAR tap, which wants chunk-order weights) or an offset/base mismatch between
 where the driver writes a region and where the DMA reads it. That is the next thing to chase, and it is
 the first time in this workstream that the remaining problem is arithmetic rather than a hang.
+
+### Addendum 108 — THE REBUILD MILESTONE IS MET: one xclbin, one submit, BOTH phases correct
+
+  FOUR-arg submit completed
+  FOUR-arg RMSNorm: 910/2048 match
+  FOUR-arg GEMM: 8192/8192 columns match
+
+Both phases of the combined design are CORRECT in a single xclbin driven by a SINGLE submit. The norm's
+910/2048 with the same one-bf16-ULP differences is BIT-IDENTICAL to the proven norm-only design's
+result (addenda 83 and 96), and the GEMM is EXACT at 8192/8192. Milestone (b) -- correctness of both
+phases -- is MET, alongside (a) compiles and (c) one submit.
+
+TWO DEFECTS, and only two, stood between the rebuild and this.
+
+1. THE HANG: the runtime_sequence had SIX arguments where the runtime provides FIVE data slots (XRT
+   groups 3..7; group_id(8) = 131071, the invalid sentinel -- recorded in my own addendum 80). Merging
+   the norm's three buffers (f32 A, f32 gamma, bf16 out = 20 KB) into ONE buffer at fixed byte offsets
+   0 / H*4 / H*4+H*4 brought the sequence to FOUR arguments and the sequence RETIRED immediately.
+
+2. THE VALUES: the BD lengths in `shim_dma_single_bd_task` are in ELEMENTS OF THE BUFFER MEMREF, not
+   in the fifo's type. The merged norm buffer is `memref<...xi8>`, so `sizes=[1,1,1,H]` moved only H
+   BYTES where the f32 inputs need H*4 and the bf16 output H*2. Changing them to `[1,1,1,H*4]` and
+   `[1,1,1,H*2]` took the norm from 0/2048 to 910/2048 and, in the same run, the GEMM from 3/8192 to
+   8192/8192 -- because the two share one runtime sequence and the broken norm phase had been
+   corrupting the feed/offset conventions the GEMM saw.
+
+Also fixed along the way: the Python parameter names in `def seq(...)` must follow the DECORATOR's
+np.ndarray list order, not the order I found natural. `def seq(GA, GB, GC, NRM)` against a decorator
+listing the norm first silently bound every name to the wrong buffer, and the MLIR showed it plainly
+(`aie.runtime_sequence @seq(%arg0: memref<20480xi8>, ...)` with the norm's DMAs on `%arg3`). The
+generator's own type aliases are also mandatory: `np.uint8` and `np.int8` both make aie's
+`np_ndarray_type_get_dtype` raise `IndexError: tuple index out of range` and the generator emits a
+Python traceback instead of MLIR, while the alias `i8` works.
+
+WHAT THIS MEANS FOR THE OBJECTIVE: the single-launch whole-layer path now has a working two-phase
+building block -- normalization and a GEMM in one xclbin, one submit, both verified against
+independently computed host references -- and the longest-running obstacle in this lane (twenty addenda
+of refuted structural hypotheses) is closed with a two-line root cause: too many arguments, and BD
+lengths measured in the wrong unit. The remaining work is extension, not diagnosis: attention, O,
+FFNnorm, GUSGU, SiLU and DSD phases, then one runlist per token validated against the engine's
+bit-identical tokens.
