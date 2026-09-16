@@ -5583,3 +5583,49 @@ should name the stage in one run each.
 is exact means the error is introduced *after* the QKV. The `bQ` post-RoPE dump (`fk3_drv_Q.bin`) is
 already emitted and is the first thing to check against the engine's `bf16_l0_qkv` - if RoPE/scatter is
 wrong, everything downstream inherits it.
+
+## THE DEFECT IS RoPE. V matches exactly; Q and K do not.
+
+Same-prompt comparison of the driver's post-RoPE `bQ` (`fk3_drv_Q.bin`, row 0) against the engine's own
+post-norm+RoPE `bqo` (`bf16_l0_qkv.bin`, row 0), split by slice:
+
+```
+slice         corr      mine |mean|   engine |mean|
+Q (rope)      0.4902    0.21252       1.22673
+K (rope)      0.2594    0.24863       2.79176
+V (no rope)   0.9999    0.08013       0.08083      <- MATCHES
+```
+
+**V is the slice RoPE does not touch, and it matches at 0.9999.** That confirms the QKV itself - launch A's
+output and everything up to the split - and isolates the defect to **the rotation**: Q and K are the two
+slices RoPE acts on, and they are wrong in both direction (corr 0.49 / 0.26) and magnitude (mine 6-11x
+smaller).
+
+**Which contradicts a claim already in this file.** It records host RoPE as verified - "verified 0/160 vs
+an independent ra2 transcription, V untouched". The "V untouched" half is now independently confirmed;
+the rotation half is not. And the reason is visible in the phrasing: the reference was an independent
+*transcription of the same ra2 convention*. Same assumption, independently typed - which is the failure
+class this whole file keeps recording, and it produced a green check on a step that is wrong.
+
+**A second anomaly, recorded not explained.** The engine's own Q and K means (1.23 and 2.79) are 15-35x
+larger than its own V mean (0.081), while mine are comparable to V (0.21, 0.25). A rotation cannot change
+a vector's norm, so if both paths rotate the same vector, their Q/K magnitudes should be the same as each
+other's *and* the same as V's. Neither holds for the engine's. Either the engine applies something to Q/K
+that I am not, or its `bqo` is not the same quantity I am comparing against. Given the engine also
+sanitises any `|v| > 100` to zero, and its `bqo` reaches maxabs 215, that is worth checking before
+concluding the engine is wrong - **I am not naming a cause from this, only reporting that V matches and
+Q/K do not.**
+
+**Where that leaves fk-3, exactly:**
+
+* **launch A: verified correct** (corr 1.0000 against the engine's QKV, same prompt);
+* **V: verified correct** (corr 0.9999), so the QKV split and scatter are right;
+* **Q/K: wrong** - so RoPE, or the Q/K handling around it, is the defect;
+* the fused tokens are wrong for that reason alone, and everything downstream (attention, O, GU, D)
+  inherits it.
+
+**Next, and it is narrow now:** establish the engine's actual rotation convention from its own bytes -
+take the engine's `bqo` and its pre-RoPE Q (recoverable from `bA @ W_eff` for the Q slice, which is verified
+to corr 1.0000) and solve for the transform that maps one to the other, rather than transcribing a
+convention and assuming it is the same one. That is the same *solve-rather-than-search* move that resolved
+the weight permutation, and the operands for it are already dumped.
