@@ -2183,3 +2183,39 @@ defect to chase, but also not yet "bit-identical to the native path", which is w
 token parity will actually adjudicate.
 
 Remaining for a valid model layer: **partial RoPE**.
+
+## RoPE: attempted, reverted, and the constraint is now precise
+
+Everyone should know this before trying it: **there is no trig for aie2p.**
+
+* bare `sin`/`cos`/`cosf`/`sinf` **fail to link** (`undefined symbol: sin`);
+* `aie::sin` / `aie::cos` exist but their scalar overloads are gated on
+  `arch::is(arch::AIE)` — the compiler says so explicitly — so they are AIE1-only;
+* the official `aie2p` kernel `mlir-aie/aie_kernels/aie2p/rope.cc` therefore takes a
+  **LUT** (`const T* lut`) instead of computing anything.
+
+**And that LUT has nowhere to go here.** The attention columns are already at the
+shim limit (2 MM2S: QK and V; 1 S2MM: O), so a table fifo would need a third MM2S
+that does not exist.
+
+Convention, which is the other trap: the ENGINE is **half-split**
+(`ri2_build`/`ra2`: pairs `(d, d + rope_dim/2)`, `x[d]=x[d]*c - x[d+hd2]*s`,
+`x[d+hd2]=x[d+hd2]*c + x[d]*s`, `f_d = 1/theta^(d/hd2)`), whereas the official
+`rope.cc` is **interleaved** (even/odd pairs via `filter_even`/`filter_odd`). So
+`rope.cc` cannot be dropped in either — it would silently compute a different RoPE.
+
+Parameters for 0.6B are simple, at least: `config.json` has **no**
+`partial_rotary_factor`, so it is FULL rotary, `rope_dim = HD = 128`, `theta = 1e6`.
+
+So there are exactly two viable routes, and both are real work:
+1. **in-kernel polynomial sin/cos** with coarse range reduction (a = pos*f_d reaches
+   ~4096 rad at d=0). Precision only needs to beat the bf16 rounding of Q/K
+   (~1e-3 relative is comfortably below it), so a 4-term polynomial is enough — and
+   `pos` is already available as `q0+r` / `k0+j` from the causal-mask counters.
+2. **give the attention a table**: one extra shim channel, which means reducing the
+   attention to fewer columns or folding RoPE into a stage that still has one.
+
+Cost note for route 1: it is `(MA + NC) * rope_dim/2` trig calls per chunk, i.e. 32*64
+= 2048 per chunk here, which is comparable to the chunk's own MACs — so it needs the
+cheap polynomial, not a libm call, even if libm existed. This is the one remaining
+piece between the current fused layer and a valid model layer.
