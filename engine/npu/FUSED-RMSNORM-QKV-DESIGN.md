@@ -4208,3 +4208,53 @@ row-for-row.
 Two results from this session are secure regardless, and both are fixes rather than analysis: the
 missing `1/sqrt(HD)` score scaling (verified against an independent NumPy attention), and the
 measured `256`-row staging contract for `bf16mm_gemm_launch`.
+
+## The norm loop covers all rows too. One question is left, and it is a single dump.
+
+```c
+#pragma omp parallel for schedule(static) num_threads(host_threads())
+for (int pi = 0; pi < npt; pi++) {
+    for (int i = 0; i < H; i++) bsb[pi * H + i] = bh[pi * H + i];
+    rn_bf16(&bA[pi * H], &bh[pi * H], in_n[l].data(), H);
+}
+if (l == 0 && getenv("NPU_DUMP_L0")) { ... fwrite(bA.data(), 2, 4 * H, ...); }
+```
+
+The loop covers `pi < npt` (128), not a block, and the dump follows it immediately - so the first
+four rows I dumped are rows 0-3 of the full normed activation, and the launch at 4742 reads
+`bA.data() + 0` with batch 0 = rows 0..127. The rows agree. That candidate is refuted as well.
+
+**So every link is verified and the set is inconsistent. Exactly one verification is wrong, and there
+is now precisely one question left:**
+
+> **Are the first 128 rows of `bA` at line 4742 the same bytes as they were at line 4692?**
+
+If yes, then `bC` genuinely is not `bA @ W` and the difference is inside `bf16mm_gemm_launch`'s
+handling of a *dense* A - the probe proved the GEMM exact only for a one-hot A, and a one-hot A
+cannot distinguish "stages the whole row" from "stages only the non-zero part", which is exactly the
+kind of distinction that has produced every wrong turn in this file. If no, `bA` is modified between
+the two lines and the six lines I read between them are not the whole story.
+
+Both outcomes are actionable and the measurement is one dump at the launch site.
+
+**What this session produced, plainly.**
+
+Landed and verified:
+
+* the missing `1/sqrt(HD)` score scaling in `attn1.cc`, found by instrumentation and confirmed
+  against an independent NumPy attention (the fused attention now reads 0.7148 vs 0.71484), with
+  `O(f32)`'s relative error down 260x to 4.326e-06;
+* the wrong weight BOs in launch B, three object-lifetime bugs, the `SKIP_A` UB, an unsigned
+  wraparound in my test rig, and the missing f32 KV-cache write;
+* a measured call contract for `bf16mm_gemm_launch` (**256 rows** are read from the A pointer - my
+  first probe passed `H` and the engine died of heap corruption, which is how it was learned);
+* and the effective weight proved to be my raw array by two independent black-box measurements.
+
+Still open: the single dump above, and the kernel's norm epsilon `1e-5` against the engine's `1e-6`.
+
+**Seven retractions.** Every one came from a statistic or a label standing in for a measurement, and
+the two that mattered most were both resolved only by making the engine answer directly. The most
+useful habit this file records is not any single finding but the rule that emerged from them: when a
+verification and reality disagree, the *verification* is the prime suspect, and the check to trust is
+the one whose reference is derived a different way - the NumPy attention, the black-box probe, the
+crash.
