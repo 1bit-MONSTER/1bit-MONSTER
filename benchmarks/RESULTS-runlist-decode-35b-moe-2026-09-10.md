@@ -2230,3 +2230,37 @@ header hypothesis -- was rearranging head tensors in a buffer that holds expert 
 NEXT: build the unit-interleaved head for the expert tensors (up/gate/down per the anchors, then
 whatever fills units 16385..25651 and slots 1..3), verify byte-for-byte against the capture, and
 re-run gating on the act (pre-act CLEAN, post-act ALL NaN 1024/1024, exit 0, no ERT).
+
+### Addendum 64 — THE ARG-3 HEAD LAYOUT IS DECODED (closed form, verified against the capture)
+
+Hashed every row of every layer-0 I8 tensor and looked up each unit's row-slots by hash. The map is
+not merely regular, it is closed-form:
+
+  for unit u:   b = u // 16,   w = u % 16
+                tensor   = mlp.up_exps_proj   if w < 8   else   mlp.gate_exps_proj
+                row_base = b*32 + (w % 8)
+                row-slot s (s = 0..3), at byte offset u*18944 + s*4736, holds row (row_base + 8*s)
+
+VERIFIED against every unit from 0 to 47, e.g.:
+  u=0  -> up,   row_base=0   slots hold rows 0, 8, 16, 24
+  u=7  -> up,   row_base=7   slots hold rows 7, 15, 23, 31
+  u=8  -> gate, row_base=0   slots hold rows 0, 8, 16, 24
+  u=16 -> up,   row_base=32  slots hold rows 32, 40, 48, 56
+  u=47 -> gate, row_base=71  slots hold rows 71, 79, 87, 95
+
+So the head is built in 16-unit groups: 8 units of up_exps then 8 units of gate_exps, each unit
+carrying 4 row-slots that are 8 rows apart, and the next group starts 32 rows on. One 16-unit group
+therefore holds 32 up rows and 32 gate rows = 64 rows, and everything advances in multiples of 8 and
+32 -- the loop shape the round anchors (unit 0, unit 8, unit 16384) were hinting at from the start.
+
+WHY THIS IS THE UNLOCK: the layout is now DERIVABLE, not guessable. Combined with addendum 63's
+conclusion (region-A must hold the expert weights, not the head tensors), the repair is a concrete
+packer: iterate units, place up/gate rows by the formula above, then extend the same method to find
+what fills units beyond the up/gate region and which slots carry down_exps (anchored at unit 16384).
+No transform needs to be invented -- the reorder we already proved byte-exact (addendum 45) covers
+the transformed tensors, and this formula covers the head.
+
+CAVEAT, stated plainly: this formula is verified over units 0..47 and against the anchors at units
+8/16384/25652, not over the whole 512 MB. The next run should extend the verification before
+rewriting the packer, exactly as the region-B transform was verified row by row before being
+trusted.
