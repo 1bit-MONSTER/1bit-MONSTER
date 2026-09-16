@@ -3986,3 +3986,41 @@ STATE OF THE REBUILD, complete and verified:
   - Defects found and fixed to get here: the six-argument runtime_sequence that never retires (the
     entire long hang); BD lengths measured in the wrong unit; decorator-vs-signature argument order;
     and lazily declared tiles causing a misleading "operand #0 does not dominate this use".
+
+### Addendum 113 — SECOND HARD LIMIT FOUND: the runtime sequence's BUFFER DESCRIPTOR pool
+
+Added the O projection as a fourth phase (a second GEMM: K2=4096, N2=2048, its own two columns 6 and
+7, its weights as the FIFTH runtime argument -- the sequence limit is five data slots, so this is the
+last phase that fits without a shared workspace buffer). All 24 tiles are declared at the top as the
+rule requires, the generator parses, the driver gained a FIVE_BO mode with its own chunk-order packing
+and host reference. aiecc then refuses the design:
+
+  error: 'aiex.dma_configure_task' op Allocator exhausted available buffer descriptor IDs.
+
+THIS IS A SECOND HARD LIMIT, of the same character as the five-argument limit, and it matters directly
+for the objective. The runtime sequence has a FINITE POOL OF BUFFER DESCRIPTOR IDs, and the design
+spends one per DMA task. Counting the tasks the generator emits:
+
+  phase 2 (the GEMM, c=4, n_k=32, num_col_group=16):  16 * (32 A + 32*4 B + 4 C) = 2,624
+  phase 4 (the O projection, C2=2, n_k2=64, nc2=8):     8 * (64 A + 64*2 B + 2 C) = 1,552
+  phases 1 and 3 (two norms, 3 DMAs each):             6
+                                                       -----
+                                                       ~4,182 tasks
+
+The THREE-phase design used only the first ~2,624 plus 6, and it COMPILES AND RETIRES. So the pool sits
+somewhere between roughly 2,630 and 4,182 -- a narrow, useful bracket, and the first quantitative
+budget this lane has had for how much work one submit can describe.
+
+THE FIX IS CLEAR AND CHEAP, and it also serves the objective's speed goal: AMORTISE THE DMAs. The B
+feed currently issues one task per (ki, column) inside each batch. With the LINEAR tap the tiles for
+consecutive ki are CONTIGUOUS in the buffer -- tile (nt, ki) sits at (nt*n_k + ki)*(k*n) -- so a single
+BD can stream all BATCH_SIZE tiles for one column, which is exactly the data the fifo already accepts
+(BATCH_SIZE tiles into a depth-BATCH_SIZE+1 fifo). That alone takes the GEMM's B tasks from 32*4 = 128
+per column-group to 4 per batch, i.e. from 2,048 to ~448 across the design. The A feed is likewise
+contiguous (offset = ki*k, stride k) and collapses from 32 tasks per group to 7. Estimated total after
+the change: 16*(7 A + 7*4 B + 4 C) + 8*(13 A + 13*2 B + 2 C) + 6 = roughly 950-1,000 tasks, comfortably
+inside the pool -- and with far less DMA-issue overhead, which is the direction the objective wants.
+
+WHAT THE THREE-PHASE DESIGN STILL DOES, unaffected by this: ONE xclbin, ONE submit, RMSNorm and
+FFNnorm proven bit-identical to each other (2048/2048) and the GEMM exact (8192/8192). The fourth phase
+is written and waiting on the BD budget, not on any question of correctness.

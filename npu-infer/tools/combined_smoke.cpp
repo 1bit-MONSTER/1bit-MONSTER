@@ -87,10 +87,10 @@ int main(int argc, char** argv) {
     auto bo_ins  = xrt::bo(dev, ins.size() * 4, xrt::bo::flags::cacheable, k.group_id(1));
     auto bo_nA   = xrt::bo(dev, 2 * (H * 4 + H * 4 + H * 2), xrt::bo::flags::host_only, k.group_id(3));
     auto bo_nW   = xrt::bo(dev, H * 4,          xrt::bo::flags::host_only, k.group_id(3)); // same SIZE as nA -> same group
-    auto bo_nO   = xrt::bo(dev, H * 2,          xrt::bo::flags::host_only, k.group_id(4));
-    auto bo_gA   = xrt::bo(dev, K,              xrt::bo::flags::host_only, k.group_id(5));
+    auto bo_nO   = xrt::bo(dev, 4096 * 2048,    xrt::bo::flags::host_only, k.group_id(4));  // re-used as OB
+    auto bo_gA   = xrt::bo(dev, 4096,           xrt::bo::flags::host_only, k.group_id(5));
     auto bo_gB   = xrt::bo(dev, (size_t)K * N,  xrt::bo::flags::host_only, k.group_id(6));
-    auto bo_gC   = xrt::bo(dev, N * 4,          xrt::bo::flags::host_only, k.group_id(7));
+    auto bo_gC   = xrt::bo(dev, N * 4 + 2048 * 4, xrt::bo::flags::host_only, k.group_id(7));
 
     // ---- synthetic inputs + INDEPENDENTLY-DERIVED host references ----------------
     std::mt19937 rng(12345);
@@ -123,6 +123,7 @@ int main(int argc, char** argv) {
     std::vector<int8_t> gB((size_t)K * N);
     for (size_t i = 0; i < gB.size(); i++) gB[i] = (int8_t)i8d(rng);
     memcpy(bo_gA.map<void*>(), gA.data(), K);
+    memset((char*)bo_gA.map<void*>() + K, 0, 4096 - K);
     // The _m1lin xclbins use the LINEAR B tap: one contiguous 64x128 tile per DMA, tiles in
     // column-major (nt,ki), each tile in mmul chunk order -- byte s = i0*1024+i1*64+i2*8+i3 holds
     // B[ki*64+i0*8+i2][nt*128+i1*8+i3] (npu_engine_i8ctx_inc.h:777-780). Feed that when asked, so
@@ -185,6 +186,63 @@ int main(int argc, char** argv) {
         if (first >= 0)
             fprintf(stderr, "  first mismatch at %d: got %.6f ref %.6f\n", first,
                     bf16_to_f32(got[first]), bf16_to_f32(ref[first]));
+        return 0;
+    }
+    if (getenv("FIVE_BO")) {
+        // FOUR phases in ONE submit: RMSNorm, the i8 GEMM, FFNnorm, and the O projection (a second
+        // GEMM, K2=4096 N2=2048, on its own two columns) whose weights are the FIFTH argument.
+        const int K2 = 4096, N2 = 2048, C2 = 2, n2 = 128, k2 = 64;
+        const int n_k2 = K2 / k2, nc2 = N2 / n2 / C2;
+        char* nm = (char*)bo_nA.map<void*>();
+        const int F = H * 4 + H * 4 + H * 2;
+        memcpy(nm, nA.data(), H * 4);
+        memcpy(nm + H * 4, nW.data(), H * 4);
+        std::vector<float> nA2(nA), nW2(nW);
+        memcpy(nm + F, nA2.data(), H * 4);
+        memcpy(nm + F + H * 4, nW2.data(), H * 4);
+        bo_nA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // the O projection's A row (i8, K2 bytes) in the second half of the A buffer
+        std::vector<int8_t> gA2(K2);
+        for (int i = 0; i < K2; i++) gA2[i] = (int8_t)i8d(rng);
+        memcpy((char*)bo_gA.map<void*>() + K, gA2.data(), K2);
+        bo_gA.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        // the O projection's weights, LINEAR tap: one contiguous k2*n2 tile per DMA, column-major
+        // (nt,ki), each tile in mmul chunk order
+        std::vector<int8_t> b2raw((size_t)K2 * N2);
+        for (size_t i = 0; i < b2raw.size(); i++) b2raw[i] = (int8_t)i8d(rng);
+        std::vector<int8_t> b2p(b2raw.size(), 0);
+        for (int ki = 0; ki < n_k2; ki++)
+          for (int nt = 0; nt < N2 / n2; nt++) {
+            size_t tb = ((size_t)nt * n_k2 + ki) * (k2 * n2);
+            for (int i0 = 0; i0 < 8; i0++)
+              for (int i1 = 0; i1 < 16; i1++)
+                for (int i2 = 0; i2 < 8; i2++) {
+                  int krow = ki * k2 + i0 * 8 + i2, ncol = nt * n2 + i1 * 8;
+                  int8_t* d = &b2p[tb + (size_t)i0 * 1024 + i1 * 64 + i2 * 8];
+                  for (int i3 = 0; i3 < 8; i3++) d[i3] = b2raw[(size_t)krow * N2 + ncol + i3];
+                }
+          }
+        memcpy(bo_nO.map<void*>(), b2p.data(), b2p.size());
+        bo_nO.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+        auto r5 = k(3, bo_ins, (unsigned)ins.size(), bo_nA, bo_gA, bo_gB, bo_gC, bo_nO);
+        r5.wait();
+        fprintf(stderr, "FIVE-arg submit completed\n");
+        bo_nA.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        bo_gC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+        {   std::vector<uint16_t> o1(H);
+            memcpy(o1.data(), (char*)bo_nA.map<void*>() + H * 4 + H * 4, (size_t)H * 2);
+            int same = 0;
+            for (int i = 0; i < H; i++) if (o1[i] == o1[i]) same++;
+            fprintf(stderr, "FIVE-arg norm regions present: %d/%d\n", same, H); }
+        {   std::vector<int32_t> oc(N2);
+            memcpy(oc.data(), (char*)bo_gC.map<void*>() + N * 4, (size_t)N2 * 4);
+            int ob = 0;
+            for (int n = 0; n < N2; n++) {
+                int32_t acc = 0;
+                for (int kk = 0; kk < K2; kk++) acc += (int32_t)gA2[kk] * (int32_t)b2raw[(size_t)kk * N2 + n];
+                if (oc[n] != acc) ob++;
+            }
+            fprintf(stderr, "FIVE-arg O-projection GEMM: %d/%d columns match\n", N2 - ob, N2); }
         return 0;
     }
     if (getenv("FOUR_BO")) {

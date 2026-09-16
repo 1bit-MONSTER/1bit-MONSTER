@@ -85,6 +85,10 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
         ffn_shim = tile(NC + 1, 0)
         ffn_mem = tile(NC + 1, 1)
         ffn_core = tile(NC + 1, 2)
+        # PHASE 4 (the O projection) tiles, declared here too -- see rule above.
+        o_shim = [tile(NC + 2 + i, 0) for i in range(2)]
+        o_mem = [tile(NC + 2 + i, 1) for i in range(2)]
+        o_core = [tile(NC + 2 + i, 2) for i in range(2)]
         qkv_mem = [tile(c, 1) for c in range(n_aie_cols)]
         qkv_core = [tile(c, 2) for c in range(n_aie_cols)]
         qkv_shim = [tile(c, 0) for c in range(n_aie_cols)]
@@ -175,14 +179,51 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                             gB_c[c].release(ObjectFifoPort.Consume, 1)
                         gC_c[c].release(ObjectFifoPort.Produce, 1)
 
+        # ---- PHASE 4: the O projection (ssm_out_proj), a SECOND GEMM: K2 x N2 on TWO columns ----
+        # Copy of the PHASE 2 block with its own names, geometry and columns. Its weights are the
+        # FIFTH runtime argument (OB) -- the sequence limit is five data slots, so this is the last
+        # phase that can be added without moving to a shared workspace buffer.
+        K2, N2, C2 = 4096, 2048, 2
+        n_k2 = K2 // k
+        nc2 = N2 // n // C2
+        oA_c = object_fifo("O_A_C", o_shim[0],
+                           [o_core[c] for c in range(C2)], BATCH_SIZE + 1, Ga_ty)
+        oB_s = {}
+        oB_c = {}
+        oC_c = {}
+        oC_s = {}
+        for c in range(C2):
+            oB_s[c] = object_fifo(f"O_B_S{c}", o_shim[c], o_mem[c], BATCH_SIZE + 1, Gb_ty)
+            oB_c[c] = object_fifo(f"O_B_C{c}", o_mem[c], [o_core[c]], BATCH_SIZE + 1, Gb_ty)
+            object_fifo_link(oB_s[c], oB_c[c])
+            oC_c[c] = object_fifo(f"O_C_C{c}", o_core[c], o_mem[c], 1, Gc_ty)
+            oC_s[c] = object_fifo(f"O_C_S{c}", o_mem[c], o_shim[c], 1, Gc_l2)
+            object_fifo_link(oC_c[c], oC_s[c])
+
+        for c in range(C2):
+            @core(o_core[c], stack_size=0x2000)
+            def o_gemm_body():
+                for _ in range_(0xFFFFFFFF):
+                    for _ in range_(nc2):
+                        cbuf = oC_c[c].acquire(ObjectFifoPort.Produce, 1)
+                        zero(cbuf)
+                        for _ in range_(n_k2):
+                            abuf = oA_c.acquire(ObjectFifoPort.Consume, 1)
+                            bbuf = oB_c[c].acquire(ObjectFifoPort.Consume, 1)
+                            matmul(abuf, bbuf, cbuf)
+                            oA_c.release(ObjectFifoPort.Consume, 1)
+                            oB_c[c].release(ObjectFifoPort.Consume, 1)
+                        oC_c[c].release(ObjectFifoPort.Produce, 1)
+
         # ---- runtime sequence: ONE host-side sequence driving BOTH phases ----
         @runtime_sequence(
             np.ndarray[(2 * (H * 4 + H * 4 + H * 2),), i8],   # TWO norm buffers: A1|W1|O1|A2|W2|O2
-            np.ndarray[(K,), i8],             # gemm A
+            np.ndarray[(4096,), i8],          # gemm A (the O projection's A at offset 2048)
             np.ndarray[(K * N,), i8],         # gemm B
-            np.ndarray[(N,), i32],            # gemm C
+            np.ndarray[(N * 4 + 2048 * 4,), i32],   # gemm C, then the O projection's C at N*4
+            np.ndarray[(4096 * 2048,), i8],   # OB: the O projection's weights (LINEAR tap)
         )
-        def seq(NRM, GA, GB, GC):   # MUST match the decorator list order (norm first)
+        def seq(NRM, GA, GB, GC, OB):   # MUST match the decorator list order (norm first)
             # phase 1: one norm row
             # gamma ONCE, awaited before any A -- then INTERLEAVED A-in / O-out. Both are the
             # pattern n1_rms_norm.py proved: pushing A and W together and reading O only
@@ -238,6 +279,30 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
                                                  sizes=[1, 1, 1, n], issue_token=True)
                     dma_start_task(ct); c_tasks.append(ct)
                 dma_await_task(*c_tasks); dma_free_task(*c_tasks)
+            # phase 4: the O projection -- LINEAR B tap from OB, C into GC at offset N*4
+            for gi in range(nc2):
+                col_group = gi % nc2
+                oa_list = []
+                ob_list = []
+                for ki in range(n_k2):
+                    a = shim_dma_single_bd_task(oA_c, GA, offset=K + ki * k,
+                                                sizes=[1, 1, 1, k], issue_token=True)
+                    dma_start_task(a); oa_list.append(a)
+                    for c in range(C2):
+                        n_tile = col_group * C2 + c
+                        b = shim_dma_single_bd_task(
+                            oB_s[c], OB, offset=(n_tile * n_k2 + ki) * (k * n),
+                            sizes=[1, 1, 1, k * n], issue_token=True)
+                        dma_start_task(b); ob_list.append(b)
+                dma_await_task(*oa_list, *ob_list)
+                dma_free_task(*oa_list, *ob_list)
+            oc_tasks = []
+            for c in range(C2):
+                n_tile = col_group * C2 + c
+                ct = shim_dma_single_bd_task(oC_s[c], GC, offset=N * 4 + n_tile * n,
+                                             sizes=[1, 1, 1, n], issue_token=True)
+                dma_start_task(ct); oc_tasks.append(ct)
+            dma_await_task(*oc_tasks); dma_free_task(*oc_tasks)
 
 
 main()
