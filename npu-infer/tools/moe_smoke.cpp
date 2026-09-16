@@ -94,8 +94,65 @@ int main(int argc, char** argv) {
                 argmax, mx, nan, nz_finite, vocab);
     fprintf(stderr, "reference: greedy next token = 76740 (for a SINGLE layer this is informational only)\n");
     if (getenv("NPU_DUMP_BOS")) eng.dump_bos("/tmp/bo");
-    eng.dump_act("/tmp/moe_act.bin");
-    fprintf(stderr, "act dumped to /tmp/moe_act.bin\n");
+    // The dump above reads only the first 4096 B of a 1 MB act BO. If the layer
+    // writes its result at an offset, that dump shows scratch and "all NaN" is an
+    // artifact of the dump, not a defect. Dump the whole BO and scan it page by
+    // page: a NaN confined to page 0 and finite data later is a dump-offset
+    // artifact; NaN in every page is a real upstream failure.
+    size_t act_bytes = 1048576;
+    if (const char* e = getenv("MOE_ACT_DUMP_BYTES")) {
+        long v = atol(e);
+        if (v > 0 && (size_t)v <= act_bytes) act_bytes = (size_t)v;
+    }
+    eng.dump_act("/tmp/moe_act.bin", act_bytes);
+    fprintf(stderr, "act dumped to /tmp/moe_act.bin (%zu bytes)\n", act_bytes);
+    {
+        FILE* f = fopen("/tmp/moe_act.bin", "rb");
+        if (f) {
+            std::vector<uint8_t> buf(act_bytes);
+            size_t got = fread(buf.data(), 1, act_bytes, f);
+            fclose(f);
+            const size_t PAGE = 4096;
+            size_t pages = got / PAGE, nan_pages = 0, fin_pages = 0, fin_total = 0;
+            size_t zero_pages = 0, nz_total = 0;
+            size_t first_fin_page = (size_t)-1;
+            // bf16 -> f32 for the scan (the act BO is bf16 hidden state).
+            auto b2f = [](uint16_t u) { uint32_t w = (uint32_t)u << 16;
+                                        float r; memcpy(&r, &w, 4); return r; };
+            for (size_t p = 0; p < pages; p++) {
+                const uint8_t* base = buf.data() + p * PAGE;
+                size_t fin = 0, nz = 0, n = PAGE / 2;
+                for (size_t i = 0; i < n; i++) {
+                    uint16_t u = (uint16_t)(base[2 * i] | (base[2 * i + 1] << 8));
+                    float v = b2f(u);
+                    if (std::isfinite(v)) { fin++; if (v != 0.0f) nz++; }
+                }
+                // NB: isfinite(0.0f) is TRUE, so counting "finite" alone reports the
+                // init memset as if it were data. That mistake was made once here and
+                // nearly reported as "finite data past page 0". Count NON-ZERO too.
+                if (fin == 0) nan_pages++;
+                else if (nz == 0) zero_pages++;
+                else { fin_pages++; nz_total += nz;
+                    if (first_fin_page == (size_t)-1) first_fin_page = p; }
+                fin_total += fin;
+            }
+            fprintf(stderr, "ACT BO SCAN: %zu pages of %zu B -- %zu all-NaN, %zu all-zero "
+                            "(untouched), %zu with real data (%zu non-zero values, first at page=%zd)\n",
+                    pages, PAGE, nan_pages, zero_pages, fin_pages, nz_total,
+                    first_fin_page == (size_t)-1 ? (ssize_t)-1 : (ssize_t)first_fin_page);
+            if (nan_pages == pages)
+                fprintf(stderr, "  -> NaN spans the WHOLE act BO: not a dump-offset artifact\n");
+            else if (fin_pages == 0)
+                fprintf(stderr, "  -> no real data anywhere in the act BO: the NaN slot is the "
+                                "output and the rest is untouched memset -- the layer wrote "
+                                "NOTHING but NaN\n");
+            else if (fin_pages == 1 && first_fin_page == 0)
+                fprintf(stderr, "  -> page 0 is the only page with data: output written in place "
+                                "at the hidden slot, which is where logits_host reads -- OK\n");
+            else
+                fprintf(stderr, "  -> real data exists outside the NaN pages: CHECK THE DUMP OFFSET\n");
+        }
+    }
     fprintf(stderr, "DONE\n");
     model_free(mw);
     return 0;
