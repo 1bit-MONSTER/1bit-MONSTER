@@ -3211,3 +3211,49 @@ missing W release, and the impossible ninth column. One unexplained conflict sta
 run reported 256/256 in addendum 85 and reports 2/256 now, from the same generator, same driver mode,
 same insts (verified byte-identical), and the output does not change when the B feed order is changed,
 which means 256/256 had no mechanism to begin with. That is the thread to pull next.
+
+### Addendum 92 — the small test configurations are themselves broken; my GEMM is NOT the defect; err=-28 confirmed at full size
+
+Two experiments that together overturn the premise of addenda 90 and 91.
+
+FIRST: I asked whether the DEFAULT B tap is the defect by building the PROVEN m1 generator's design at
+the small size I had been testing (K=64 N=256 c=2) and driving it with the same driver:
+
+  m1 generator, DEFAULT tap, K=64 N=256 c=2:   row-major 2/256, chunk 2/256
+  m1 generator, LINEAR  tap, K=64 N=256 c=2:   row-major 2/256, chunk 2/256
+
+The PROVEN generator gives 2/256 too, with either tap, and does not respond to the B feed either. My
+combined design gave exactly the same 2/256. So addendum 90's finding -- "my GEMM output is independent
+of the B feed" -- is TRUE but is a property of THIS CONFIGURATION, not of my design, and my GEMM
+section reproduces the proven generator's behaviour exactly at that size. Addendum 85's "256/256" was
+measured at this same configuration, which is a second reason to distrust it (the first being that it
+does not reproduce).
+
+Probing the shape instead of the tap, with the proven generator's DEFAULT tap:
+  K=64  (n_k=1) N=256 c=2:  row-major 2/256,   chunk 2/256     -- no response to B
+  K=128 (n_k=2) N=256 c=2:  row-major 112/256, chunk 0/256     -- responds, partially
+  K=256 (n_k=4) N=256 c=2:  row-major 0/256,   chunk 0/256
+and the LINEAR tap: K=64 chunk 2/256; K=128 both 0/256; K=256 chunk 160/256. No configuration at
+c=2, N=256 is exact for either tap. The configuration that IS exact -- 8192/8192, verified in
+addendum 82 -- is c=8, N=8192, K=2048, n_k=32, and its runtime num_col_group is 8. Every small test I
+have run, including all of addenda 83-91, had num_col_group of 1 or 2. THE SMALL CONFIGURATIONS ARE
+BROKEN IN THE SHARED GENERATOR, for both taps, and were never a valid place to test anything.
+
+SECOND, and this vindicates addendum 88 at full size: built the combined design at the REAL shape
+(K=2048 N=8192) with c=4 so the norm sits on column 4, num_col_group=16:
+
+  compiled: 1
+  allocated all BOs; submitting ONE run            <- context created with the SAME 16.8 MB B BO
+
+With c=8 (norm on column 8) that exact design fails CREATE_HWCTX err=-28; with c=4 it creates the
+context and allocates the 16.8 MB B BO without complaint. Same size, same buffer, only the column
+differs. err=-28 IS THE COLUMN, NOT THE ALLOCATION, now confirmed at full size as well as at 65 KB.
+
+THAT DESIGN THEN HANGS AT THE SUBMIT. So the two-phase failure is real at a VALID configuration and is
+not an artefact of the broken small shapes -- and, unlike every previous case, it is now reproducible
+at the real shape on a legal column, which makes it a usable test case at last.
+
+REVISED STATE: (a) compiles -- MET. (c) one submit -- MET. (b) both phases correct together -- NOT
+met. My GEMM section is not implicated (it matches the proven generator at the tested size); the norm
+half now matches the proven implementation; the remaining failure is a pure norm+GEMM combination
+hang, reproducible at K=2048 N=8192 c=4.
