@@ -2826,3 +2826,41 @@ same buffer as garbage. Both were "measurements". The one that proved anything w
 against the exact host array. When a probe disagrees with another probe, suspect the probes
 before rewriting the code; the destructive version of that round trip has been removed
 because it would corrupt a real run if `NPU_FK3_DUMP` were set.
+
+## After the weight-BO fix: the pipeline is ALIVE with the real weights
+
+Re-linked the engine and re-ran the same 208-token prompt, same artifacts, same
+NPU_PREFILL_MAX=128, with NPU_FK3=1:
+
+```
+before the fix : tokens 0, 16930, 91, 10            (degenerate zero)
+after  the fix : tokens 105199, 100889, 100889, 100889
+baseline       : tokens 220, 49789, 220, 11141
+prefill        : 28282 ms (220.951 ms/tok)   [baseline 357 ms / 2.786 ms/tok]
+```
+
+Two things to read from that. First, the change from "always token 0" to "a constant
+non-zero token repeated three times" is the signature of a layer that now computes with
+real data but computes it wrongly: the hidden state is finite and non-degenerate enough to
+produce a real token id, then saturates. Before the fix the layer output was literally zero,
+so the model could only emit token 0. That is progress, not a regression - the weight-BO
+bug was genuinely blocking everything downstream of it.
+
+Second, 221 ms/tok against the baseline's 2.786 is 79x, and that is now the thing to
+explain rather than a footnote: with both launches doing real work the fused path is far
+SLOWER than the per-op path it replaces. That is the opposite of the objective's intent and
+it needs to be understood before any tok/s number from this path means anything. The
+plausible contributors, in order: two hw_contexts alternating per layer (launch A's context
+and launch B's), a full host round-trip between them (read A's C back, RoPE, scatter to
+K/V, write B's Q), four BO syncs per layer, and a full layer-output readback - versus the
+per-op path's resident, pipelined, mostly-async structure. The fused path currently buys
+launch-count reduction and pays for it in synchronisation.
+
+So the remaining work on fk-3 splits cleanly:
+1. correctness - the layer's numerics are wrong with the real dequantized weights, while
+   the same code path with the bench's random weights reproduces the bench's zero-attention
+   case. The prime suspect is a layout/shape disagreement between what
+   `bf16mm_dequant`/`prepare_layer` upload and what the kernel's phases consume, since the
+   uploads themselves are now proven byte-correct by memcmp.
+2. speed - see above; this is where the objective's "one launch" argument actually gets
+   tested.
