@@ -4509,6 +4509,12 @@ struct Bf16Ctx {
             // correct one — and with the narrow one the kernel would read past
             // the region, which is wrong rather than slower.
             if (npt > 4096 && (H == 2560 || H == 4096)) kv_region = 4194304;
+            // The table above is written for hd128 (region = MAX_L x 4 heads x 128
+            // dims x 2 B). An hd256 family needs the same token count at twice the
+            // width, so scale by HD/128; inert at HD=128. Without this the kernel
+            // reads past the region, and the fill above now writes a 4*HD slot into
+            // a region sized for 4*128.
+            if (HD > 128) kv_region = (uint32_t)((uint64_t)kv_region * (uint64_t)HD / 128u);
             // NPU_ATTN_KV_REGION: override for the shape the H table conflates.
             // The table keys on H (a proxy for nh16-vs-nh32), so Nanbeige (H=2560,
             // nh20) inherits Qwen3-4B's nh32 4MB region even though it runs the
@@ -4633,9 +4639,15 @@ struct Bf16Ctx {
                         // build bKv directly from the norm'd+RoPE'd ks/vs (skip
                         // the kv_caches re-read round-trip)
                         int region = kvh < 4 ? 0 : 1, lh = kvh & 3;
+                        // The per-token slot is FOUR heads wide, i.e. 4*HD elements
+                        // (bf16). It used to be a literal 512, which is 4x128 and
+                        // silently overruns at HD=256: the write index reached 1023
+                        // inside a 512-element slot, so a token K wrote over the next
+                        // token V. Inert for HD=128 (4*128 == 512).
+                        const size_t slot = (size_t)4 * HD;
                         for (int d = 0; d < HD; d++) {
-                            bKv[(size_t)region * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(ks[d]);
-                            bKv[(size_t)(region + v_add) * kv_region + (size_t)pi * 512 + lh * HD + d] = f32_to_bf16(vs[d]);
+                            bKv[(size_t)region * kv_region + (size_t)pi * slot + lh * HD + d] = f32_to_bf16(ks[d]);
+                            bKv[(size_t)(region + v_add) * kv_region + (size_t)pi * slot + lh * HD + d] = f32_to_bf16(vs[d]);
                         }
                     }
                 };
