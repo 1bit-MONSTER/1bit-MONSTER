@@ -1945,3 +1945,38 @@ So the fused layer now runs at 4x the M it did this morning, in ONE launch, with
 the same arithmetic. Build at M=64:
 `MA=16 NC=16 bash build_fk3_layer.sh 64 1024 16 128 1024 2 2 32 64 32`
 (note `k=32 KO=32` — the norm's A tile is what bounds M now, not the attention).
+
+## ✅✅ PREFILL M=128: THE WHOLE LAYER, ONE LAUNCH, 0.6B-CORRECT
+
+`bash build_fk3_layer.sh 128 1024 16 128 1024 2 2 16 32 16` with
+`MA=16 NC=16 NDEP=1`. One xclbin, one runtime sequence, 11.5 MB of instructions:
+
+```
+  QKV      bit-exact 524288/524288
+  attn     92.6% exact, 95.9% <=2 ULP, mean ULP 34.25, every head 88-96%
+  o (f32)  correct, worst_rel 2.83e-05
+  h = x+o  H_BF 131058/131072 = 100.0%      <- RESIDUAL 1
+  GU       97.8% exact, 99.8% <=2 ULP
+  SiLU     97.1% exact, 99.3% <=2 ULP
+  D        99.5% exact, 99.9% <=1 ULP       <- RESIDUAL 2 FUSED = THE LAYER OUTPUT
+```
+That is the goal's target M for dense Qwen3-0.6B prefill, with the same arithmetic
+as the per-op path, in a single launch.
+
+**The three budgets that decide what M fits** (each was found the hard way):
+
+| knob | bound by | M=128 value |
+|---|---|---|
+| `NT` | the GEMM core's f32 accumulator `DIM_M*DIM_N*4` of **.bss in a ~20 KB core data region** (a link failure: `.bss will not fit in region 'data'`) | 32 |
+| `k` | the norm's `(M+1,k)` f32 A tile in the **64 KB mem tile** (4 such fifos) | 16 |
+| `NDEP` | the same mem tile, for the norm and SiLU (their tiles span the whole M) | 1 |
+| `MA`/`NC` | attn1's statics in the **16 KB program memory** | 16 / 16 |
+
+Two dead-code removals made this possible at all: `nq_nt.cc`'s core-local A_norm
+plus `nq_store`/`nq_gemm` are never called by the re-read design, and they were
+costing `N_K*DIM_M*DIM_K*2` bytes of `.bss` **in every GEMM core** — deleting them
+freed 8 KB and is what let `NT=32` fit; and the O-proj's C/W tiles had to stop
+being hardcoded 64 wide so `NT` could actually be reduced.
+
+The result is the milestone the objective asked for: the per-op path's ~9 launches
+per layer are now ONE, at prefill M, with token-equivalent arithmetic.

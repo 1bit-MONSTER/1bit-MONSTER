@@ -43,6 +43,11 @@ def main():
                    help="ATTENTION query tile: attn1's statics are sized by THIS, "
                         "not by the layer's M, which is what lets prefill scale")
     p.add_argument("-NC", type=int, default=16, help="attention KEY chunk (K/V per chunk)")
+    p.add_argument("-NDEP", type=int, default=2,
+                   help="depth of the norm column's fifos. The norm's A tile is a "
+                        "whole (M+1,k) f32 COLUMN strip, so 4 fifos x depth 2 is "
+                        "66 KB at M=128/k=16 - it alone blows the 64 KB mem tile. "
+                        "Depth 1 is what makes prefill M fit.")
     p.add_argument("-P", "--percol", type=int, default=2)
     p.add_argument("--passes", type=int, default=2)
     p.add_argument("-k", type=int, default=64, help="QKV K-tile")
@@ -53,12 +58,12 @@ def main():
     a = p.parse_args()
     with mlir_mod_ctx() as ctx:
         layer(a.M, a.H, a.NH, a.HD, a.NO, a.percol, a.passes,
-              a.k, a.NT, a.kO, a.stack, a.gstack, a.N2, a.NI, a.ND, a.MA, a.NC)
+              a.k, a.NT, a.kO, a.stack, a.gstack, a.N2, a.NI, a.ND, a.MA, a.NC, a.NDEP)
         print(ctx.module)
 
 
 def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
-          NI=3072, ND=1024, MA=16, NC=16):
+          NI=3072, ND=1024, MA=16, NC=16, NDEP=2):
     N = M                       # single chunk: the keys ARE the query tokens
     C = 1                       # one chunk => a full self-attention over M
     NQKV = NH * HD + 2 * (NH // 2) * HD   # 4096 for Qwen3-0.6B: Q=NH*HD, K=V=(NH/2)*HD
@@ -111,8 +116,11 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
         V_ty = np.ndarray[(NC * HD,), np.dtype[bfloat16]]
         OUT_ty = np.ndarray[(MA, HD), np.dtype[bfloat16]]   # the QUERY TILE, not M
         AOT_ty = np.ndarray[(M, KO), np.dtype[bfloat16]]
-        WO_ty = np.ndarray[(KO, 64), np.dtype[bfloat16]]
-        CO_ty = np.ndarray[(M, 64), np.dtype[np.float32]]   # f32: the FFN norm adds it to x
+        WO_ty = np.ndarray[(KO, NT), np.dtype[bfloat16]]   # NT, not a hardcoded 64
+        CO_ty = np.ndarray[(M, NT), np.dtype[np.float32]]   # f32: the FFN norm adds it to x
+        # (NT-wide, not hardcoded 64: with the GEMM core’s f32 accumulator being
+        #  DIM_M*DIM_N*4 bytes of .bss in a ~20 KB data region, NT is the knob that
+        #  decides how large an M fits.)
 
         ko = "rms_split.o"
         reduce_f = external_func("rms_reduce_f32", inputs=[A_ty, SS_ty], link_with=ko)
@@ -137,18 +145,18 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
 
         # ---- col NCOL: the RMSNorm half ----------------------------------
         s0, m0, nc = tile(NCOL, 0), tile(NCOL, 1), tile(NCOL, 2)
-        A_s = object_fifo("A_S", s0, m0, 2, A_ty)
-        A_c = object_fifo("A_C", m0, nc, 2, A_ty)
+        A_s = object_fifo("A_S", s0, m0, NDEP, A_ty)
+        A_c = object_fifo("A_C", m0, nc, NDEP, A_ty)
         object_fifo_link(A_s, A_c)
-        A2_s = object_fifo("A2_S", s0, m0, 2, A_ty)
-        A2_c = object_fifo("A2_C", m0, nc, 2, A_ty)
+        A2_s = object_fifo("A2_S", s0, m0, NDEP, A_ty)
+        A2_c = object_fifo("A2_C", m0, nc, NDEP, A_ty)
         object_fifo_link(A2_s, A2_c)
         # The FFN norm SHARES the QKV norm's A_norm output fifo: the two phases
         # never overlap, and the runtime sequence points the drain at AN or AN2.
         # That keeps the column at 2 MM2S + 1 S2MM, which is the shim's limit.
         SS = object_fifo("SS", nc, m0, 2, SS_ty)
-        AN_w = object_fifo("AN_W", nc, m0, 2, AN_ty)
-        AN_s = object_fifo("AN_S", m0, s0, 2, AN_ty)
+        AN_w = object_fifo("AN_W", nc, m0, NDEP, AN_ty)
+        AN_s = object_fifo("AN_S", m0, s0, NDEP, AN_ty)
         object_fifo_link(AN_w, AN_s)
 
         # ---- col GCOL: the QKV GEMM half (re-reads A_norm) ----------------
@@ -165,14 +173,16 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
 
         # ---- col SCOL: SiLU over the GU output (gate|up) ----------------
         s7, m7, sc7 = tile(SCOL, 0), tile(SCOL, 1), tile(SCOL, 2)
-        G_s = object_fifo("G_S", s7, m7, 2, QKV_ty)
-        G_c = object_fifo("G_C", m7, sc7, 2, QKV_ty)
+        # The SiLU's tiles are (M, NT), so like the norm they scale with the whole
+        # M: three of them at depth 2 is 96 KB at M=128. NDEP applies here too.
+        G_s = object_fifo("G_S", s7, m7, NDEP, QKV_ty)
+        G_c = object_fifo("G_C", m7, sc7, NDEP, QKV_ty)
         object_fifo_link(G_s, G_c)
-        U_s = object_fifo("U_S", s7, m7, 2, QKV_ty)
-        U_c = object_fifo("U_C", m7, sc7, 2, QKV_ty)
+        U_s = object_fifo("U_S", s7, m7, NDEP, QKV_ty)
+        U_c = object_fifo("U_C", m7, sc7, NDEP, QKV_ty)
         object_fifo_link(U_s, U_c)
-        SL_f = object_fifo("SL_F", sc7, m7, 2, QKV_ty)
-        SL_s = object_fifo("SL_S", m7, s7, 2, QKV_ty)
+        SL_f = object_fifo("SL_F", sc7, m7, NDEP, QKV_ty)
+        SL_s = object_fifo("SL_S", m7, s7, NDEP, QKV_ty)
         object_fifo_link(SL_f, SL_s)
 
         # ---- cols 0..ncol-1: attention, PERCOL cores per column ----------
@@ -218,7 +228,7 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
         OC_f = object_fifo("OC_F", oc["core"], oc["mem"], 1, CO_ty)
         OC_s = object_fifo("OC_S", oc["mem"], oc["shim"], 1, CO_ty)
         object_fifo_link(OC_f, OC_s)
-        n_ko, n_no = KO_TOT // KO, NO // 64
+        n_ko, n_no = KO_TOT // KO, NO // NT
 
         @core(sc7, stack_size=0x2000)
         def silu_body():
@@ -481,14 +491,14 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
                                                  sizes=[M // 4, KO // 8, 4, 8],
                                                  strides=[4 * HD, 8, HD, 1], issue_token=True)
                     dma_start_task(at); dma_await_task(at); dma_free_task(at)
-                    wt = shim_dma_single_bd_task(OW_s, W_O, offset=kt * KO * NO + nt * 64,
-                                                 sizes=[KO // 8, 8, 8, 8],
+                    wt = shim_dma_single_bd_task(OW_s, W_O, offset=kt * KO * NO + nt * NT,
+                                                 sizes=[KO // 8, NT // 8, 8, 8],
                                                  strides=[8 * NO, 8, NO, 1], issue_token=True)
                     dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
                 # o is written into A2's rows 0..M-1 (f32, row stride H); row M
                 # is left alone because it holds the FFN's gamma.
-                ct = shim_dma_single_bd_task(OC_s, A2, offset=nt * 64,
-                                             sizes=[M // 4, 8, 4, 8],
+                ct = shim_dma_single_bd_task(OC_s, A2, offset=nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
                                              strides=[4 * H, 8, H, 1], issue_token=True)
                 dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
 

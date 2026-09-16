@@ -39,21 +39,10 @@
 // never meet in one link.
 #include "mm.cc"
 
-// Core-local A_norm: N_K K-tiles of (DIM_M x DIM_K) bf16, in the matmul's
-// 4x8-microtiled A layout (exactly what rms_scale_f32_bf16 emits).
-static uint16_t g_an[(size_t)N_K * DIM_M * DIM_K] __attribute__((aligned(64)));
-
-// Copy one A_norm K-tile (already microtiled) into local memory at slot kt.
-extern "C" void nq_store(const uint16_t *an_tile, int32_t kt) {
-    uint16_t *dst = g_an + (size_t)kt * DIM_M * DIM_K;
-    for (int i = 0; i < DIM_M * DIM_K; i++) dst[i] = an_tile[i];
-}
-
-// c += A_norm[kt] x w   (f32 accumulate; w is the k x DIM_N B tile).
-extern "C" void nq_gemm(const uint16_t *w, int32_t kt, float *c) {
-    matmul_bf16_f32((bfloat16 *)(g_an + (size_t)kt * DIM_M * DIM_K),
-                    (bfloat16 *)w, c);
-}
+// (The core-local A_norm buffer and nq_store/nq_gemm used to live here. The
+//  re-read design never calls them - the shim re-delivers A per N-tile - so
+//  they were removed: they cost N_K*DIM_M*DIM_K*2 bytes of .bss in every GEMM
+//  core, and the core data region is only ~20 KB, which is what capped M.)
 
 // ---- static f32 accumulator with an RNE bf16 store -------------------------
 // For stages whose CONSUMER needs bf16 (the QKV projection feeding the attention,
