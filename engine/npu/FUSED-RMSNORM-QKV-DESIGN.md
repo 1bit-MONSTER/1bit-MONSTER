@@ -1053,3 +1053,10 @@ So the composition runs at **M=8**, and the QKV/GU generators should be built wi
 4 columns, M=8 builds (218400 B) and gives all 16 heads their own correct results
 under distinct data (55..265/1024 exact, max_delta ~33000 — the same
 online-softmax truncation delta as M=16). The build script now takes `MGEN` for M.
+
+**All five stages now verified at the composition's M=8** (not just at their own
+best M): fused RMSNorm+QKV N=4096 (95.2% exact, worst 1.587e-06), fused
+RMSNorm+GU N=6144 (88.5% exact, beyond=0, worst 3.663e-07), plain O-proj K=2048
+and D K=3072 (100% exact each), and the attention NH=16/N=64/C=16/PASSES=2
+(16 heads correct under distinct data). So the composition's M is settled with no
+stage left at a different one.
