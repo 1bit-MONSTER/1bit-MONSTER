@@ -3965,3 +3965,45 @@ It also explains every false trail of the last several rounds at once:
 values in hand, structured candidates (tile shapes, intra-tile transposes, row/column block orders)
 can be tested in pure NumPy - no device, no rebuild - and the winner applied in the driver before
 upload. That closes fk-3's correctness gap.
+
+## RETRACTION (sixth): the "permutation" claim was an over-inference. Real narrowing instead.
+
+I concluded the weight must be permuted because the mean magnitudes agreed to 3% while the elements
+did not. **That reasoning is empty**: a GEMM's output magnitude depends on `|A|` and `|W|`
+independently of how the two are paired, so *any* pairing - including random weights - reproduces
+the mean. The statistic I used cannot distinguish a permutation from any other rearrangement, or
+from noise. Tested directly: nine structured tilings of the raw array (32x256, 64x64, 32x32, ...)
+all give 0.03-0.13% element match with mean abs diff ~0.27, i.e. no better than row-major. There is
+no evidence of a permutation.
+
+**What is actually established, by arithmetic:**
+
+```
+engine A_norm                        2.54688 max
+my raw W                             0.64062 max
+engine's own QKV (from its own GEMM) 4.68750 max
+CPU: engine's A_norm @ my raw W      0.98047 max      matched 0.08%
+```
+
+**The engine's own QKV is not a plain GEMM of its own dumped activation and that weight.** Four
+times larger, and elementally unrelated. Separately, my kernel *is* a faithful plain GEMM of those
+inputs - a CPU reference using the driver's activation reproduces my launch A exactly (Q 1.03906 /
+K 1.04688 / V 1.05469), and the bench confirms it byte-for-byte.
+
+So the difference is on the engine's side of that GEMM, and the candidate I had not considered is
+the one the code names: `bf16mm_gemm_launch` does not read the caller's activation directly. The
+bridge stages it - this document already records that `ensure_a()` "stages both halves from the SAME
+pointer" - so the GEMM consumes a **staged copy of `bA`**, not `bA`. If that staging reorders or
+converts the activation, then the dumped `bf16_l0_bA.bin` is not what the GEMM multiplies, and every
+comparison I have made against it has been against the wrong operand.
+
+That is the next thing to read: `ensure_a()` in the bf16mm bridge, and what exactly it writes. It is
+a concrete, bounded question - and it is the last one, because everything on my side of the boundary
+is now verified by an independent route.
+
+**Tally worth recording**: six retractions this session, every one from inferring rather than reading
+or measuring - a grep that missed a line, a mean used as a structural statistic, a buffer identity
+assumed from a label, an open-ended quantity read as a specific one. The two findings that have
+survived every correction were both obtained by *measuring an internal quantity against an
+independently derived one* (the softmax statistics, and the QKV-versus-CPU-GEMM comparison). That
+asymmetry is the most transferable result in this file.
