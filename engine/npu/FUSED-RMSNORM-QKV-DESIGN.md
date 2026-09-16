@@ -1705,3 +1705,23 @@ shared M:
 
 None of that is architectural — every piece is verified, and the two budgets above
 say precisely which sizing knob each one needs.
+
+### Tried and FAILED: eliminating attn1's `g_at` to raise the M cap
+
+`g_at[M_TILE*HD]` f32 is redundant — the alpha rescale can happen BEFORE the PV
+mmul, which then accumulates straight into `O_state`, saving `M*HD*4` bytes
+(1 KB per query row, i.e. the dominant static). Implemented it (drop g_at, rescale
+O_state in place in the mmul's microtiled layout, PV into O_state, finalize reads
+microtiled):
+
+```
+[AIE ERROR] _XAie_LoadProgMemSection():231: Overflow of program memory
+XAie_LoadElf failed with XAIE_INVALID_ELF
+```
+
+So the attention core is near its **program** memory limit as well as its data
+limit: trading the static for a slightly larger kernel body overflows the
+instruction store. Reverted. Raising M therefore cannot come from shrinking
+attn1's data alone — it needs the query-tiling (M_attn=16 with the outer query
+loop) so that `O_state`/`g_at` are sized by the QUERY TILE rather than by the
+layer's M, which is the plan recorded above anyway.
