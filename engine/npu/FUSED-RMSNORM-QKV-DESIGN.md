@@ -1316,3 +1316,54 @@ is not `d*N+j`.)
 
 So the whole QKV -> attention handoff needs **no extra kernel and no extra
 buffer**: it is three BD parameterisations of the one QKV output.
+
+## ONE-LAUNCH ATTENTION BLOCK: 3 of 4 stages bit-exact
+
+`n1_fk3_layer.py` + `build_fk3_layer.sh` compose the whole attention block into a
+single xclbin (307 KB, 535 KB of instructions): RMSNorm+QKV (cols 5,6, re-read,
+bf16 out) -> attention (cols 0-3, Q/K^T/V gathered out of the QKV buffer) ->
+O-proj (col 4). `tests/bench_fk3_layer.cpp`, M=16 H=1024 NH=16 HD=128 NO=1024:
+
+```
+  QKV      exact=65536/65536 (100.0%)   <- bit-exact
+  attn     exact=295/32768     (0.9%)   <- the K^T tap (see below)
+  O-proj   exact=0/16384       (0.0%)   (inherits the wrong attention input)
+  O-proj*  exact=16384/16384 (100.0%)   <- bit-exact when fed the DEVICE's own O_all
+```
+`O-proj*` is the isolation check: recomputing the O-proj from the device's own
+attention output shows the O-proj itself is perfect, so exactly ONE stage is
+wrong and it names itself.
+
+### The `aie.dma_bd` legality rule (this is what all the tap constraints come from)
+
+`lib/Dialect/AIEX/IR/AIEXDialect.cpp` (~line 236) checks every BD:
+
+```cpp
+for (int i = 0; i < 4; i++) {
+  if (i == 0 && inputStrides[i] == 1) continue;   // <- applied to the REVERSED array
+  if (inputStrides[i] * elemWidth % addressGranularity != 0) error("Stride i ...");
+}
+```
+i.e. **the LAST stride may be anything; every other stride must satisfy
+`stride * elemWidth % 256 == 0`** — for bf16 that means *every stride except the
+last must be EVEN*. This single rule explains why:
+* f32 taps happily carry `strides=[1,1,H,1]` (1 element = 4 bytes divides 4) but
+  the same shape in bf16 fails;
+* leading size-1 dims are NOT exempt (they still trip the check), so they should
+  just be dropped;
+* and a BD's `sizes` order IS the layout permutation of the destination (the
+  destination is filled contiguously in `sizes` order, fastest last).
+
+### Consequence: a BD CANNOT transpose for the attention
+
+The verified attention expects the K buffer blocked as `[d/8][j/8][d%8][j%8]`.
+Producing that from K row-major needs dims `(d/8, j/8, d%8, j%8)`, whose source
+strides are `[8, 8*NQKV, 1, NQKV]` — the stride-1 dim (`d%8`, the only contiguous
+axis of a row-major K) sits at index 2, and it can only be legal as the LAST
+entry, which would force the destination's fastest axis to be `d` (i.e. K
+row-major). **So no choice of `sizes`/`strides` can produce K^T**: the transpose
+has to happen in a core (either a transposing pass into the attention's K buffer,
+or a `-DK_ROW_MAJOR` mode in `attn1.cc` that reads K row-major and lays it into
+the blocked order locally). The current generator uses the legal-but-swapped
+`sizes=[HD/8,N/8,8,8], strides=[8,8*NQKV,NQKV,1]`, which is why only the
+attention fails.
