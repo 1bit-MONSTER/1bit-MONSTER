@@ -4870,3 +4870,49 @@ path the engine keeps for exactly this reason -- rather than by my hand-derived 
 
 If v27 is ALSO flaky at 8 runs, then the fault really is in the shared pattern and the instruction-stream
 pairing becomes the prime suspect instead, which is a reading task with two concrete artifacts to compare.
+
+### Addendum 134 — v27 IS A DIFFERENT TOPOLOGY, AND THE ENGINE SUPERSEDED THE SINGLE-ROW FORM
+
+Built the engine's production generator at its own parameters and compared the result to mine:
+
+  n1_core_i8_v27.py -M 128 -K 2048 -N 8192 -m 32 -k 64 -n 128 -c 4 -r 4 -b 5
+
+  v27:  4,160 BDs, 32 objectfifos, a 4x4 grid of compute cores (tile_{r}_{2+c}), and per-column A fifos
+        @A_C{c} from shim_noc_tile_{c}_0 to the FOUR cores of that column with element memref<32x64xi8>
+  mine: 2,630 BDs, per-column A fifos with element memref<1x64xi8>, one core row
+
+THREE THINGS THIS SETTLES, AND ONE IT SUGGESTS.
+
+1. THE BD COUNT IS NOT THE PROBLEM. v27 uses 4,160 descriptors -- MORE than my 2,630 -- and v27 is the
+   design that runs at 1.9 s/tok. So a high descriptor count, and the allocator pressure I chased in
+   addendum 113, is not what makes a design flaky.
+
+2. THE A TILE SIZE IS A REAL DIFFERENCE. v27 moves 32 rows x 64 K per A DMA (2,048 bytes) where mine
+   moves 1 row x 64 K (64 bytes). v27 therefore issues 32 times fewer A transfers per row of output, and
+   each transfer is a single BD carrying a fat tile, in a fifo of depth 6 -- the generator's own help text
+   says "6 keeps BDs <= 16", i.e. the number of BDs LIVE PER CHANNEL is what its authors designed around,
+   not the total.
+
+3. THE ENGINE SUPERSEDED THE SINGLE-ROW FORM. Its header names the single-core-row topology as what
+   `n1_core_i8_v26.py` emitted -- "v26 used only row 2, i.e. 8 of the 32 compute tiles" -- and its
+   production build uses v27 with `-r 4`, spreading the grid over all four rows. A later generator that
+   uses four times the tiles is a plausible response to exactly the kind of under-utilisation and timing
+   fragility I have been measuring, and my n1_core_i8_m1.py is a v26-style single-row derivation.
+
+4. WHAT IT SUGGESTS: my GEMM phase is built on the topology the engine's own lineage moved AWAY from. That
+   is the best-supported hypothesis this lane has had, and it is consistent with everything measured: the
+   single-row design has the least work in flight, the fewest tiles, and -- as the engine's own warning
+   says of the single-row form -- the failure mode is silent rather than loud.
+
+NEXT, CONCRETELY:
+  a. Measure v27's own GEMM for reliability over at least 8 runs against a 128-row host reference. That is
+     the direct test my addendum-133 plan called for, and the reference has to be M=128 so the driver
+     needs an M=128 mode (A of M*K bytes, C of M*N i32).
+  b. Rebuild the combined norm+GEMM design on v27's topology -- per-column A fifos with 32-row tiles, 4
+     core rows -- keeping the runtime_sequence at four arguments by the same buffer-merge trick, and
+     re-measure both phases.
+  c. For the objective's M=1 single-token decode, use the ENGINE'S OWN route rather than my hand-derived
+     single-row generator: either batch rows (v27 at M=128 gives 128 tokens per submit, which is what the
+     engine's 1.9 s/tok figure is made of) or the separate scalar i8 M=1 path the engine keeps for exactly
+     this case. The engine's production path is the existence proof that this works, and it is built on
+     v27, not on a single-row design.
