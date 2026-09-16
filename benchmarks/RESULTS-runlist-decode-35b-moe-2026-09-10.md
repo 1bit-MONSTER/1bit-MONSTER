@@ -283,3 +283,25 @@ weight regions (region-B proof above), or (b) the lib's own 35B layer sequence
 (R59's conclusion). Disambiguating needs region-A derived the same way region-B
 was — i.e. locating the runtime's norm/router transform (the `reorder_cpy`
 dtype=8 BF16 path is the candidate) — or an engine-side layer sequence.
+
+## Addendum 6 — the lib's sequence path is unusable (localized on-device)
+
+Ran the engine with the repaired region-B and dumped the act BOTH sides of the layer:
+- pre-layer act (after embed): **nan=0, 2038/2048 nonzero** (values ~0.016, -0.022) — clean;
+- post-layer act: **2048/2048 NaN** — so the NaN enters inside the layer computation,
+  not the embedding.
+
+Then generated lib sequences STAGE BY STAGE (new tool `gen_layer_stages_moe.cpp`,
+driving the exported `qwen3_6_moe_npu_sequence` generators) and ran each through the
+engine:
+- `_send_hidden_states` alone (34 words, 768 B ELF) → act **all-NaN**;
+- `_send_hidden_states`+`_send_rms_weights` (64 words) → all-NaN;
+- hidden+rms+conv weights+conv1d (1656 words) → all-NaN;
+- full `gen_layer_seq` linear layer (24636 words) → all-NaN.
+
+Every subset NaNs, and a "send hidden states" cannot itself change the act — so the
+lib's instruction streams are not a valid decomposition to truncate: the whole
+sequence path (or its arg/BO contract with this engine) is broken for the 35B. This
+substantiates R59 and means the objective's layer must be **rebuilt** with
+engine-authored kernels (the engine's own mm/dequant xclbins), not reused from the
+lib. That is the multi-kernel per-layer rebuild now underway.
