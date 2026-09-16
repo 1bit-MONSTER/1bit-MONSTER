@@ -37,7 +37,7 @@ N_K=$(( K / KT ))
 
 echo "== generator: n1_nt_gemm.py -m $M -K $K -N $N -k $KT -NT $NT -wdepth $WDEPTH -stack $STACK"
 "$PY" "$G/n1_nt_gemm.py" -m "$M" -K "$K" -N "$N" -k "$KT" -NT "$NT" \
-      -wdepth "$WDEPTH" -stack "$STACK" >design.mlir 2>gen.err \
+      -wdepth "$WDEPTH" -stack "$STACK" ${REREAD:+--reread-a} >design.mlir 2>gen.err \
   || { echo "== GENERATOR FAILED"; tail -20 gen.err; exit 1; }
 [ -s design.mlir ] || { echo "== EMPTY design.mlir"; tail -20 gen.err; exit 1; }
 echo "   design.mlir: $(wc -l <design.mlir) lines"

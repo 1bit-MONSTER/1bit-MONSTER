@@ -36,13 +36,16 @@ def main():
     p.add_argument("-NT", type=int, default=64)
     p.add_argument("-wdepth", type=int, default=2, help="W fifo depth (1 frees DM for big K)")
     p.add_argument("-stack", type=int, default=4096)
+    p.add_argument("--reread-a", action="store_true",
+                   help="N-outer/K-inner with A RE-READ from the shim each N-tile "
+                        "(tests shim re-delivery vs the on-chip handoff blocker)")
     a = p.parse_args()
     with mlir_mod_ctx() as ctx:
-        gemm(a.m, a.K, a.N, a.k, a.NT, a.wdepth, a.stack)
+        gemm(a.m, a.K, a.N, a.k, a.NT, a.wdepth, a.stack, a.reread_a)
         print(ctx.module)
 
 
-def gemm(M, K, N, k, NT, WDEPTH, STACK):
+def gemm(M, K, N, k, NT, WDEPTH, STACK, REREAD_A=False):
     n_k = K // k
     n_n = N // NT
     assert K % k == 0 and N % NT == 0
@@ -55,6 +58,9 @@ def gemm(M, K, N, k, NT, WDEPTH, STACK):
         C_ty = np.ndarray[(M, NT), np.dtype[np.float32]]
 
         store_a = external_func("nq_store", inputs=[A_ty, np.int32], link_with="nq_nt.o")
+        # re-read path: a plain (A x W -> C) accumulate, no core-local A at all
+        mm_pair = external_func("matmul_bf16_f32", inputs=[A_ty, W_ty, C_ty],
+                                link_with="nq_nt.o")
         gemm_f = external_func("nq_gemm", inputs=[W_ty, np.int32, C_ty], link_with="nq_nt.o")
         accz = external_func("acc_zero", inputs=[C_ty], link_with="mm_acc.o")
 
@@ -75,18 +81,32 @@ def gemm(M, K, N, k, NT, WDEPTH, STACK):
         @core(gemm_core, stack_size=STACK)
         def gemm_body():
             for _ in range_(0xFFFFFFFF):
-                for kt in range_(n_k):
-                    at = A_c.acquire(ObjectFifoPort.Consume, 1)
-                    store_a(at, kt)
-                    A_c.release(ObjectFifoPort.Consume, 1)
-                for _nt in range_(n_n):
-                    cbuf = C_f.acquire(ObjectFifoPort.Produce, 1)
-                    accz(cbuf)
+                if not REREAD_A:
                     for kt in range_(n_k):
-                        wt = W_c.acquire(ObjectFifoPort.Consume, 1)
-                        gemm_f(wt, kt, cbuf)
-                        W_c.release(ObjectFifoPort.Consume, 1)
-                    C_f.release(ObjectFifoPort.Produce, 1)
+                        at = A_c.acquire(ObjectFifoPort.Consume, 1)
+                        store_a(at, kt)
+                        A_c.release(ObjectFifoPort.Consume, 1)
+                    for _nt in range_(n_n):
+                        cbuf = C_f.acquire(ObjectFifoPort.Produce, 1)
+                        accz(cbuf)
+                        for kt in range_(n_k):
+                            wt = W_c.acquire(ObjectFifoPort.Consume, 1)
+                            gemm_f(wt, kt, cbuf)
+                            W_c.release(ObjectFifoPort.Consume, 1)
+                        C_f.release(ObjectFifoPort.Produce, 1)
+                else:
+                    # No core-local A: each N-tile accumulates A(kt) x W(kt,nt) over
+                    # ALL k, with A and W both re-delivered by the shim per N-tile.
+                    for _nt in range_(n_n):
+                        cbuf = C_f.acquire(ObjectFifoPort.Produce, 1)
+                        accz(cbuf)
+                        for kt in range_(n_k):
+                            at = A_c.acquire(ObjectFifoPort.Consume, 1)
+                            wt = W_c.acquire(ObjectFifoPort.Consume, 1)
+                            mm_pair(at, wt, cbuf)
+                            A_c.release(ObjectFifoPort.Consume, 1)
+                            W_c.release(ObjectFifoPort.Consume, 1)
+                        C_f.release(ObjectFifoPort.Produce, 1)
 
         @runtime_sequence(
             np.ndarray[(M * K,), np.dtype[bfloat16]],
@@ -94,14 +114,21 @@ def gemm(M, K, N, k, NT, WDEPTH, STACK):
             np.ndarray[(M * N,), np.dtype[np.float32]],
         )
         def seq(A, W, C):
-            for kt in range(n_k):
-                at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
-                                             sizes=[M // 4, k // 8, 4, 8],
-                                             strides=[4 * K, 8, K, 1],
-                                             issue_token=True)
-                dma_start_task(at); dma_await_task(at); dma_free_task(at)
+            if not REREAD_A:
+                for kt in range(n_k):
+                    at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
+                                                 sizes=[M // 4, k // 8, 4, 8],
+                                                 strides=[4 * K, 8, K, 1],
+                                                 issue_token=True)
+                    dma_start_task(at); dma_await_task(at); dma_free_task(at)
             for nt in range(n_n):
                 for kt in range(n_k):
+                    if REREAD_A:
+                        at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
+                                                     sizes=[M // 4, k // 8, 4, 8],
+                                                     strides=[4 * K, 8, K, 1],
+                                                     issue_token=True)
+                        dma_start_task(at); dma_await_task(at); dma_free_task(at)
                     wt = shim_dma_single_bd_task(W_s, W, offset=kt * k * N + nt * NT,
                                                  sizes=[k // 8, NT // 8, 8, 8],
                                                  strides=[8 * N, 8, N, 1],

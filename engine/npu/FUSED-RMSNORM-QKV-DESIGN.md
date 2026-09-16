@@ -1134,3 +1134,31 @@ Two structural ways out, neither built:
 2. **Keep the KV projection as the engine's existing per-op large-M GEMM** and use
    the fused layer only for the query-tiled parts. That is a hybrid, and it is
    what the numbers in FK3-STATUS already pointed at.
+
+### ✅✅ DECISIVE: the M cap is gone — shim re-delivery works
+
+The experiment that decides the whole architecture (see the section above):
+`n1_nt_gemm.py --reread-a` runs the O-proj shape with **no core-local A at all** —
+each N-tile accumulates `A(kt) x W(kt,nt)` over all K with BOTH A and W
+re-delivered by the shim from DDR for every N-tile (16 N-tiles x 32 K-tiles =
+512 A re-deliveries of the same region).
+
+**Result on the NPU: exact = 8192/8192 (100.0%)**, identical to the
+core-local-A build.
+
+So the documented "multi-shot re-stream returns stale/zero data" blocker is
+specific to the **on-chip objectfifo handoff** (core->core / mem-routed, the
+AN/AT/SC class of fifos). A **shim -> core** re-delivery from DDR — the same
+`dma_bd` tasks issued once per N-tile — is perfectly repeatable.
+
+**Consequence: the linear stages can process ANY M.** The core-local-A mechanism
+(`M*K*2 <= ~40 KB`) was only ever a way to avoid the on-chip re-stream; with the
+shim path proven, the fused RMSNorm+QKV / GU / O-proj / D can run at
+M = npt (the prompt length), which is exactly what the engine's prefill needs
+(`qkv_ascales(npt)`). The cost is DMA bandwidth: A is re-read `n_n` times per
+launch (for the QKV shape, 32 N-tiles -> 32 reads of the A_norm), which is a
+throughput question, not a correctness one.
+
+This also means the composition no longer has to be pinned at M=8 — the M from
+the attention (which query-tiles naturally) and the M of the linear stages can
+both be the real prefill length.
