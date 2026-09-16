@@ -50,3 +50,28 @@ NPU_ATTN_EMU=1 /tmp/ck2 "$XC" "$IN" 2048 2  # EMU: 8.575258e-02
 Logs on the box: this run's stdout is summarized above; the bench is
 `engine/npu/tools/attn_kernel_bench.cpp` (env-driven NQ/NKV/HD) and the generator
 is committed in the family branch.
+
+## CORRECTION (2026-09-16 02:30 ADT): the gate PASSES — the binary was stale
+
+The FAIL rows above are an artifact of a **stale bench binary**, not the kernel.
+`/tmp/ck2` was built Sep 15 18:55; the generated kernel was rebuilt Sep 15 20:03,
+so the bench and the xclbin described different layouts. Rebuilt the bench from
+the current `engine/npu/tools/attn_kernel_bench.cpp` +
+`engine/npu/src/npu_attn_ctx.h` (`/tmp/ck2_new`, Sep 16 02:26) and re-ran the
+same cases:
+
+| seq | NPU | EMU | verdict |
+|---:|---|---|---|
+| 2048 | C2 **2/2**, `max_abs_err=8.575258e-02`, 10.05 ms/call | `8.575258e-02` | **PASS (identical)** |
+| 513 | C2 **2/2**, `max_abs_err=2.377548e-01`, 6.01 ms/call | `2.377548e-01` | **PASS (identical)** |
+
+No `free(): invalid size`. The generated nh20/nkv4/cols4 head-block kernel
+implements its contract at both the chunked boundary (513) and 2048 keys —
+**NPU == EMU to the digit**. So `task-family-nanbeige`'s bench gate ("NPU
+max_abs_err == EMU max_abs_err, non-zero C2") **IS met**, and the earlier
+conclusion is retracted.
+
+The tell was already in the first run: the EMU arm gave a sane 8.575258e-02 while
+the NPU arm gave 1.6e+03, and an ASan build of the same code reported no overflow
+at all — a binary/kernel mismatch, not a kernel bug. Rebuild the bench after any
+generator change.
