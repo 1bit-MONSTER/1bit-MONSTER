@@ -378,3 +378,42 @@ mismatch (int8 attention vs the bf16 prefill)** compounded by the prefill stack 
 differing from FLM even with float attention (CPU path 166103 vs FLM 13). Closing it
 needs either a bf16/higher-precision variant of the generated kernel or a
 quantisation scheme matched to the prefill's value range.
+
+## Addendum 9: DECISIVE — it is the int8 contract, not the kernel (npu == its own EMU)
+
+`NPU_ATTN_EMU_DIFF=1` runs the AttnCtx's **own host EMU** (`run_emu`, the
+float-dequantised int8 contract) and `attn_omp` (pure float) on the same in-situ bytes,
+then compares both to `attn_omp`. Last row of the 8-token block, per layer:
+
+| layer | max\|emu-float\| | max\|npu-float\| | mean\|emu-float\| | mean\|npu-float\| |
+|---|---:|---:|---:|---:|
+| L0 | 0.000214 | 0.000290 | 3.11e-05 | 3.76e-05 |
+| L1 | 0.197073 | 0.197524 | 0.0110877 | 0.0110882 |
+| L2 | 0.784570 | 0.784974 | 0.0229454 | 0.0229443 |
+| L3 | 0.351938 | 0.349967 | 0.0285645 | 0.0285644 |
+| L4 | 0.635414 | 0.634633 | 0.0409032 | 0.0408971 |
+| L5 | 0.691580 | 0.690879 | 0.0433834 | 0.0433841 |
+| L7 | 1.231850 | 1.233040 | 0.0441776 | 0.0441805 |
+
+**`npu` and `emu` agree to ~1e-4 while BOTH diverge from float by 0.2-1.2 max /
+0.01-0.044 mean.** That settles it:
+
+1. **The kernel is faithful** — it reproduces its own host contract essentially
+   exactly (and this is the same kernel that gates NPU==EMU 8.575258e-02 on the bench).
+2. **The disagreement is the int8 contract itself**: quantising the prefill's
+   Q/K/V (max|q| = 26.75 -> int8 step ~0.21) costs 0.01-0.044 mean on the attention
+   output, and up to 1.23 worst-case. The standalone bench's 1.2e-1 figure is smaller
+   only because the bench's synthetic buffers have a smaller dynamic range.
+3. **L0 is the control**: at layer 0 the same contract costs 2.1e-4 — the contract is
+   not "broken", it is *precision-limited on this data*, and the error compounds with
+   depth (L1 -> L7).
+
+So the residual Nanbeige gap needs a **higher-precision generated attention** (a
+bf16-KV/bf16-Q variant, or a quantisation scheme matched to the prefill's range), not
+a wiring or kernel fix. This is the same dtype mismatch @agent-baaa57 flagged for the
+beyond-8192 route (int8 KV there vs bf16 KV in the dense bf16 path).
+
+Cited status for Nanbeige: the `AttnCtx` adapter is implemented, deterministic, and
+verified correct at the interface; end-to-end parity is **blocked by the int8
+attention contract** (quantified above) and, independently, by the bf16 prefill stack
+differing from FLM even with float attention (CPU 166103 vs FLM 13).
