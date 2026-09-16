@@ -1573,3 +1573,43 @@ between launches. runtime_layer_moe.cpp:189 -- "single-launch: layer + lm_head b
 xrt::runlist submit" -- the whole layer is ONE ELF launch, so post-norm/post-QKV/post-attention/
 post-O/post-FFN do not exist as buffers and "name the first intermediate that goes non-finite" is
 not directly answerable. The input dump was the right substitute.
+
+### Addendum 44 — the region-A tail is REFUTED as the NaN source (ran the decisive test)
+
+I ran @agent-baaa57's check 3 myself rather than accept the hypothesis, because it is exactly the
+kind of mechanism that sounds right and is cheap to falsify. Method: copied
+npu-infer/src/runtime_layer_moe.cpp, added an env-gated (RLM_TAIL_ONES) overwrite of the last
+256 B of region A with bf16 1.0 immediately after the region-A pack and BEFORE the sync, built
+moe_smoke against the patched copy, and re-ran.
+
+  MoERuntimeLayer: TAIL OVERWRITE -> bf16 1.0 over last 256 B (off=74240)
+  forward(1): EXECUTED
+  logits: argmax=0 max=0.0000 NaN=0
+
+  BASELINE  act: n=1024 NaN=1024 finite=0
+  TAIL=1.0  act: n=1024 NaN=1024 finite=0     <-- UNCHANGED
+
+So the sequence "region-A tail 1e36 -> inf -> all-NaN" is REFUTED. The pack size is confirmed at
+74240 B, the overwrite landed on the intended bytes, and the output is bit-for-bit the same failure.
+
+What survives and what does not:
+ - SURVIVES (addendum 43): the dtype mismatch is REAL and is a genuine defect. The model header
+   declares linear_attn.ssm_a and linear_attn.ssm_dt.bias as dtype=F32 shape=[32] (128 B each)
+   while runtime_layer_moe.cpp:75-84 raw-memcpys them with no conversion into a region the ELF
+   consumes as bf16, and the function's own comment says "region A TODO". That must be fixed on its
+   own merits -- it corrupts 256 B of layer input -- but it is not this NaN.
+ - REFUTED: that this corruption is the NaN's origin. The NaN is born elsewhere in the ELF's
+   single launch.
+
+Note the shape of the trap I have now hit twice in the other direction: an appealing mechanism
+plus a plausible datum (9 huge values exactly at the region's end -- a genuinely suspicious
+signature) is still not evidence until the intervention is run. The signature was real; the causal
+claim was wrong. Running it cost one build and one run, and it saved the next session from
+"fixing" region-A and concluding the NaN was solved.
+
+NEXT: the NaN is inside the single ELF launch, and there are NO host-visible intermediates
+(runtime_layer_moe.cpp:189 -- layer + lm_head batched into ONE xrt::runlist submit). So bisection
+has to happen either inside the ELF's sequence or by varying its INPUTS in ways that are not
+confounded by the zero-variance RMSNorm trap. Candidates: region-B content as produced by
+npu_pack_8704_tiles (still unverified -- addendum 41), the norms/linear5 BO (which showed the same
+2.783e36 value), and the remaining region-A tensors beyond the tail.
