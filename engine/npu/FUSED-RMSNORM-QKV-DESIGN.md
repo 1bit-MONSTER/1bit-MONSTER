@@ -5762,3 +5762,51 @@ checkable the same way: read the line, or compare one head at a time rather than
 splitting a comparison by *what each operation acts on* - V matched, Q and K did not, and that named the
 rotation. Everything before it was measured carefully and still misled, because it was measured on the
 wrong axis.
+
+## Per-head comparison: QK-norm is directionally right, and STILL not the whole story
+
+Read the exact reduction first, from the engine's `qk_norm_pi`:
+
+```c
+double s = 0;
+for (int d = 0; d < HD; d++) s += (double)bqo[...+hh*HD+d] * bqo[...+hh*HD+d];
+float iq = 1.0f / sqrtf((float)(s / HD) + EPS);
+if (cfg.has_q_norm) for (int d = 0; d < HD; d++) bqo[...+hh*HD+d] *= iq * qn_w[l][d];
+ra(&bqo[...+hh*HD], HD, sp + pi);
+```
+
+So: mean over **HD** (128, per head), `iq = 1/sqrt(mean(q^2) + EPS)`, then `* qn_w`, then `ra(..., sp+pi)`.
+My test matched that, with `eps=1e-6`.
+
+Per-head result, my qk-normed pre-RoPE Q against the engine's post-RoPE Q:
+
+```
+head  corr     |mine|    |eng|
+0     0.7679   0.70903   1.36065
+1     0.6597   0.69817   1.31949
+2     0.5971   0.55983   1.02764
+3     0.8780   0.77666   1.58881
+4     0.6782   0.73876   1.56976
+5     0.5792   0.65616   1.28118
+(solved per-head aggregate rotation angle: -0.081, 0.381, 0.412, 0.056, -0.297, 0.036, ... - scattered)
+```
+
+Three things, none of which resolves it:
+
+1. **QK-norm is directionally confirmed** - per-head correlation is 0.58-0.88, against 0.49 for the whole
+   slice without it.
+2. **The engine's Q is ~1.8x larger than a properly qk-normed head.** A qk-normed head has RMS 1, so
+   `mean|v|` should be ~0.8; mine is 0.56-0.78 (right) and the engine's is 1.03-1.59 (1.8x too big). A
+   rotation cannot change a norm, so `ra(..., sp+pi)` does not explain it either.
+3. **The solved per-head angles are inconsistent** (-0.40 to +0.70 rad across heads), so it is also not a
+   simple position offset - which rules out my leading hypothesis that `sp != 0` makes row 0 non-identity.
+
+**So there is still an unknown factor, and I am recording that rather than the conclusion I nearly wrote.**
+The fix - give the driver `qn_w`/`kn_w` and apply per-head RMSNorm before RoPE - is necessary and probably
+the largest single missing piece, but implementing it against a 0.65 correlation would produce a fused path
+that is closer and still wrong. That is the state this session spent hours in.
+
+**The cleanest remaining explanation, and it is testable in one command**: my `pre` is `bA @ W_eff` for the Q
+slice, and it matches the engine's `rawqkv` (bC) at corr 1.0000 - but `bqo` is a *copy* of `bC` made inside
+`qk_norm_pi`, and it is possible the engine's `bqo` row 0 is not the row I think it is, or that `qn_w` is
+indexed differently (per head-slot rather than per dimension, say). Both are reads, not measurements.
