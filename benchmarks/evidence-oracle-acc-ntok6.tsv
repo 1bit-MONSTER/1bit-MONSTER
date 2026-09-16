@@ -1,0 +1,21 @@
+prompt	expected	flm	runlist	dense	flm_ok	rl_ok	dense_ok	ids	rl_toks	dense_toks
+The capital of France is	paris	The capital of France is **Paris**.	A)ĠĠParisĊB 	A)ĠĠ7,0 	Y	Y	N	10	6	7
+The capital of Japan is	tokyo	The capital of Japan is **Osaka**.	A.ĠĠKyotoĊB 	A).ĠlocatedĠinĠthe' 	N	N	N	10	6	7
+The capital of Italy is	rome	The capital of Italy is **Rome**.	A.ĠRomeĊB. 	A)ĠinĠFlorence.ĠB0 	Y	Y	N	10	6	7
+The capital of Spain is	madrid	The capital of Spain is Madrid.	A)ĠĠBarcelonaĊB 	A)ĠlocatedĠinĠaĠcertain- 	Y	N	N	10	6	7
+The opposite of hot is	cold	The opposite of hot is **cold**.	A)ĠĠcoldĊB 	A.ĠĊĊToĠanswerĠthis. 	Y	Y	N	11	6	7
+The opposite of up is	down	The opposite of "up" is **down**.	A)ĠdownĊB) 	A)ĠĠ1)- 	Y	Y	N	11	6	7
+The opposite of day is	night	The opposite of **day** is **night**.	A)ĠĠnightĊB 	A)Ġ12:, 	Y	Y	N	11	6	7
+Water is made of hydrogen and	oxygen	Water is made of hydrogen and oxygen.	helium.ĠĠTheĠ 	oxygen.ĠĠIfĠthe( 	Y	N	Y	13	6	7
+2 + 2 =	4	2 + 2 = 4.	LetĠmeĠsolveĠthisĠproblemĠstep 	TheĊĠ2ĠĠ' 	Y	N	N	8	6	7
+3 + 4 =	7	3 + 4 = 7	LetĠmeĠsolveĠthisĠproblemĠstep 	ĊOkay,Ġlet'sĠsee' 	Y	N	N	8	6	7
+How many days are in a week?	7	A week consists of **7 days**.	ĊĊĊĊĊĊ 	Ċ#ĠAnswer:ĊTheĠnumber. 	Y	N	N	15	6	7
+How many minutes are in an hour?	60	An hour is equal to **60 minutes**.	ĊTheĠquestionĠis:ĠHow 	ĊTheĠquestionĠisĠaskingĠfor/ 	Y	N	N	15	6	7
+The color of the sky on a clear day is	blue	On a clear day, the color of the sky is typically **blue**. 🌇	A)ĠĠblackĊB 	A)Ġĉ19/ 	Y	N	N	20	6	7
+A baby cat is called a	kitten	A baby cat is called a kitten.	A.ĠĠAĠĠbaby 	A:Ġ1.Ġ0 	Y	N	N	12	6	7
+A baby dog is called a	puppy	A baby dog is called a **puppy**.	A.ĠA.ĠA. 	A.)ĠĠaĠ' 	Y	N	N	12	6	7
+The largest planet in the solar system is	jupiter	The largest planet in the solar system is **Jupiter** (Satellite of the Moon).	A)ĠNeptuneĊB) 	A.ĠĠSunĊB0 	Y	N	N	18	6	7
+The chemical symbol for gold is	au	The chemical symbol for gold is **Au**.	A)ĠĠAuĊB 	A)ĠĠnoneĠofĠthe' 	Y	Y	N	12	6	7
+The first month of the year is	january	The first month of the year is **January**.	A)ĠtheĠbeginningĠofĠthe 	A)Ġ1/4' 	Y	N	N	14	6	7
+The opposite of black is	white	The opposite of "black" is **white**.	A)ĠblackĊB) 	A)Ġ1,Ġ. 	Y	N	N	11	6	7
+The capital of Germany is	berlin	The capital of Germany is **Bremen**.	A)ĠĠBerlinĊB 	A)ĠinĠtheĠcityĊ) 	N	Y	N	10	6	7
