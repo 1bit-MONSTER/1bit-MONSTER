@@ -2026,3 +2026,44 @@ or on an intervention, not on the sanitised logits, so none of them need revisit
 Also noted: their line-295 citation is tree-dependent and my copy has diverged -- the same
 branch-divergence phenomenon as addendum 56, now visible in a second file. Cross-branch line-number
 citations are not stable references in this repo; quote the code, not the line.
+
+### Addendum 58 — a tautology caught before it became a result, and the real finding underneath
+
+I compared /tmp/cap/full_L0.bin[0:94720] against /tmp/cap/L0_arg3.bin[0:94720] and got 100.0%
+byte-identity across all 20 rows, which looked like a strong confirmation of the arg-3 layout. It
+was not a result: 100% identity between two CAPTURES is the signature of comparing a file with
+itself. Checked, and that is exactly what it is --
+
+  full_L0 and L0_arg3 are identical over the first 16 MB (0 mismatching bytes); they are two dumps
+  of the SAME runtime BO with different lengths (482,344,960 vs 536,870,912).
+
+So the "result" was a tautology, and I caught it by asking why the agreement was perfect rather
+than merely good. Worth recording because it is the first time today the discipline fired BEFORE
+the claim went into the record rather than after.
+
+THE REAL FINDING UNDERNEATH, which is decisive and was hiding behind the tautology: NEITHER capture
+begins with my region-A. I regenerated the packer's region-A exactly as
+npu_pack_moe_region_b does it (raw memcpy of input_layernorm, post_attention_layernorm, conv1d,
+ssm_norm, ssm_a, ssm_dt = 74,240 B) and compared:
+
+  full_L0[0:74240]  == MY region-A ?  False
+  L0_arg3[0:74240]  == MY region-A ?  False
+
+Both differ. So the runtime's arg-3 does NOT start with the raw concatenated head tensors the way
+our packer writes them. Combined with addendum 53 (the layer-0 layernorms are not present
+verbatim anywhere in the first 4 MB, in bf16, f32 or by prefix), the conclusion is that the runtime
+TRANSFORMS the head tensors -- the same situation region-B was in before qwen3_6_reorder_cpy was
+derived -- rather than copying them.
+
+WHAT IS NOW ESTABLISHED about arg-3, on solid ground:
+ - size: 20 rows x 4736 = 94,720 B declared for group 3 (addendum 52), while our packer writes 74,240;
+ - our region-B pack DOES appear in the runtime's BO at offset 465,567,744 = 0x1bc00000, exactly
+   the region-B base from the harness log (found by searching rb_L0.bin's first 4096 bytes), so
+   region-B's placement and transform match the runtime;
+ - the HEAD (first 94,720 B) does NOT match our packing, and the head tensors are not present
+   verbatim in any encoding I tried;
+ - the capture's head is rich in huge values (5,154 elements with |v| > 1e6), which is normal there
+   and therefore not diagnostic.
+NEXT: derive the HEAD transform the way the region-B one was derived -- from the lib's own callable
+or gen_layer_seq -- and verify against the capture. Reuse the region-B method; it is the one that
+has worked twice.
