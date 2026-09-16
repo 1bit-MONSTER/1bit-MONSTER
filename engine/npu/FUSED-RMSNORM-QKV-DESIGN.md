@@ -1598,3 +1598,44 @@ that are already full:
 
 Net: the two residual adds disappear as stages. They cost one kernel variant, one
 f32 store variant, one extra norm phase, and one identity block in W_D.
+
+## RESIDUAL 1 IS IN: the layer runs in the REAL order, in one launch
+
+The sequence now runs the layer in its true data order (the earlier composition had
+the FFN norm fed from a host buffer, which was a staging approximation):
+
+```
+  QKV norm -> QKV GEMM -> attention -> O-proj -> FFN add-norm -> h = x+o -> GU -> SiLU -> D
+```
+
+* the O-proj now stores **f32** (`nq_acc_store_f32`) into **A2's rows 0..M-1**, so
+  A2 carries `o`; row M stays host-provided and holds the FFN's gamma;
+* the FFN norm is the **add-aware** one: it streams x (from A) and o (from A2)
+  together and reduces `(x+o)^2`, emitting `(x+o)*inv*gamma` — **h is never
+  materialised**;
+* a third phase of the same norm core writes `h = x+o` as bf16 into H_BF,
+  microtiled per K-tile exactly like A_norm (which is what the D GEMM's identity
+  block will read).
+
+Verified at M=16 H=1024 NH=16 HD=128 NO=1024, ONE launch:
+
+```
+  QKV      bit-exact 65536/65536
+  attn     90.5% exact, 94.4% <=2ULP, every head 82-100%
+  o (f32, in A2)  matches the reference exactly at sampled points; worst_rel 1.1e-04
+                  (38.6% bit-exact is just f32 accumulation order)
+  h = x+o  H_BF 16383/16384 = 100.0%
+  GU       bit-exact 98304/98304      <- through the ADD-AWARE norm, i.e. residual 1
+  SiLU     bit-exact 49152/49152
+  D        bit-exact 16384/16384
+```
+GU/SiLU/D being bit-exact is the actual proof that residual 1 is correct: they are
+computed from the add-aware norm's output, so `(x+o)` must be right for them to be.
+
+Two traps worth keeping: (a) a dropped or misplaced string patch had silently left
+the core bodies without their later phases, so every phase insertion now ASSERTS
+its anchor matched and the emitted MLIR is checked (GEMM core: 7 loops
+[64x16, 96x16, 16x48]; norm core: 6 loops with A x5, A2 x3, AN x3); (b) H_BF (like
+A_norm) is NOT row-major — it is microtiled per K-tile with the blocks
+concatenated, so a row-major reference reports ~0.5% "exact" on data that is
+actually perfect.

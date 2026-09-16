@@ -47,6 +47,8 @@ int main(int argc,char**argv){
   auto bAN2=xrt::bo(dev,sAN2,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(11));
   auto bW2 =xrt::bo(dev,sW2 ,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(12));
   auto bC2 =xrt::bo(dev,sC2 ,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(13));
+  size_t sHBF=(size_t)M*H*2;
+  auto bHBF=xrt::bo(dev,sHBF,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(17));
   size_t sSL=(size_t)M*NI*2, sWD=(size_t)NI*ND*2, sCD=(size_t)M*ND*2;
   auto bSL=xrt::bo(dev,sSL,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(14));
   auto bWD=xrt::bo(dev,sWD,XRT_BO_FLAGS_HOST_ONLY,kr.group_id(15));
@@ -58,8 +60,10 @@ int main(int argc,char**argv){
   for(int i=0;i<H;i++) Am[(size_t)M*H+i]=1.0f;                       // gamma
   for(long i=0;i<(long)H*NQKV;i++) Wm[i]=rne((float)((i%13)-6)*0.05f);
   for(long i=0;i<(long)(NH*HD)*NO;i++) WOm[i]=rne((float)((i%11)-5)*0.05f);
+  // A2 is now an OUTPUT for rows 0..M-1 (o, written by the O-proj); only row M
+  // is host-provided, carrying the FFN norm's gamma.
   float*A2m=(float*)bA2.map();uint16_t*W2m=(uint16_t*)bW2.map();
-  for(long i=0;i<(long)M*H;i++) A2m[i]=(float)((i%47)-23)*0.02f;
+  for(long i=0;i<(long)M*H;i++) A2m[i]=0.0f;
   for(int i=0;i<H;i++) A2m[(size_t)M*H+i]=1.0f;
   for(long i=0;i<(long)H*N2;i++) W2m[i]=rne((float)((i%13)-6)*0.05f);
   memset(bAN2.map(),0,sAN2);memset(bC2.map(),0,sC2);
@@ -70,15 +74,19 @@ int main(int argc,char**argv){
   bA.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW.sync(XCL_BO_SYNC_BO_TO_DEVICE);bWO.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bA2.sync(XCL_BO_SYNC_BO_TO_DEVICE);bW2.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bAN2.sync(XCL_BO_SYNC_BO_TO_DEVICE);bC2.sync(XCL_BO_SYNC_BO_TO_DEVICE);
+  memset(bHBF.map(),0,sHBF);bHBF.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bWD.sync(XCL_BO_SYNC_BO_TO_DEVICE);bSL.sync(XCL_BO_SYNC_BO_TO_DEVICE);bCD.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bAN.sync(XCL_BO_SYNC_BO_TO_DEVICE);bQ.sync(XCL_BO_SYNC_BO_TO_DEVICE);
   bO.sync(XCL_BO_SYNC_BO_TO_DEVICE);bC.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
-  auto r=kr((unsigned)3,bI,(unsigned)ins.size(),bA,bW,bAN,bQ,bO,bWO,bC,bA2,bAN2,bW2,bC2,bSL,bWD,bCD);
+  auto r=kr((unsigned)3,bI,(unsigned)ins.size(),bA,bW,bAN,bQ,bO,bWO,bC,bA2,bAN2,bW2,bC2,bSL,bWD,bCD,bHBF);
   r.wait();
   bQ.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bO.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bC.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
   bC2.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bSL.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
-  bCD.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  bCD.sync(XCL_BO_SYNC_BO_FROM_DEVICE);bA2.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  bHBF.sync(XCL_BO_SYNC_BO_FROM_DEVICE);
+  const uint16_t*HBFout=(const uint16_t*)bHBF.map();
+  const float*A2out=(const float*)bA2.map();
   const uint16_t*C2out=(const uint16_t*)bC2.map();
   const uint16_t*SLout=(const uint16_t*)bSL.map();
   const uint16_t*CDout=(const uint16_t*)bCD.map();
@@ -152,11 +160,31 @@ int main(int argc,char**argv){
            100.0*u8/(double)n,sumulp/(double)n);
   };
   // ---- reference: the FFN norm + GU GEMM ----
+  // o comes from the DEVICE's own O_all, so the residual arithmetic is isolated
+  // from the attention's few-ULP residual; h = x + o, and the FFN norm is the
+  // ADD-aware one (h is never materialised on device).
+  std::vector<float> oref((size_t)M*H);
+  for(int i=0;i<M;i++)for(int n=0;n<H;n++){
+    float acc=0;
+    for(int hh=0;hh<NH;hh++)for(int d=0;d<HD;d++)
+      acc+=b2f(Oall[(size_t)hh*M*HD+(size_t)i*HD+d])*b2f(WOm[(size_t)(hh*HD+d)*NO+n]);
+    oref[(size_t)i*H+n]=acc;
+  }
+  std::vector<float> href((size_t)M*H);
+  for(long i=0;i<(long)M*H;i++) href[i]=Am[i]+oref[i];
+  // H_BF is stored like A_norm: MICROTILED per K-tile, blocks concatenated
+  // (the verbatim copy the GEMM's re-read tap expects), NOT row-major.
+  std::vector<uint16_t> HBFref((size_t)M*H);
+  for(int r=0;r<M;r++)for(int kt=0;kt<H/KO;kt++)for(int c=0;c<KO;c++){
+    int g=kt*KO+c;
+    size_t idx=(size_t)kt*M*KO + ((r/4)*(KO/8)+(c/8))*32 + (r%4)*8 + (c%8);
+    HBFref[idx]=rne(href[(size_t)r*H+g]);
+  }
   std::vector<uint16_t> An2((size_t)M*H);
   for(int i=0;i<M;i++){
-    float ss=0;for(int h=0;h<H;h++){float v=A2m[(size_t)i*H+h];ss+=v*v;}
+    float ss=0;for(int h=0;h<H;h++){float v=href[(size_t)i*H+h];ss+=v*v;}
     float ir=1.0f/sqrtf(ss/(float)H+1e-5f);
-    for(int h=0;h<H;h++) An2[(size_t)i*H+h]=rne(A2m[(size_t)i*H+h]*ir*A2m[(size_t)M*H+h]);
+    for(int h=0;h<H;h++) An2[(size_t)i*H+h]=rne(href[(size_t)i*H+h]*ir*A2m[(size_t)M*H+h]);
   }
   std::vector<uint16_t> C2ref((size_t)M*N2);
   for(int i=0;i<M;i++)for(int c=0;c<N2;c++){
@@ -197,6 +225,20 @@ int main(int argc,char**argv){
   }
   cmp("O-proj*",Cout,Cdev,(long)M*NO);
   cmp("GU",C2out,C2ref,(long)M*N2);
+  cmp("H_BF",HBFout,HBFref,(long)M*H);
+  printf("  H_BF dev[0..3]=%.5f %.5f %.5f %.5f  ref=%.5f %.5f %.5f %.5f\n",
+    b2f(HBFout[0]),b2f(HBFout[1]),b2f(HBFout[2]),b2f(HBFout[3]),
+    b2f(HBFref[0]),b2f(HBFref[1]),b2f(HBFref[2]),b2f(HBFref[3]));
+  printf("  x dev[0..3]=%.5f %.5f %.5f %.5f   o dev(A2)=%.5f %.5f %.5f %.5f  o ref=%.5f %.5f %.5f %.5f\n",
+    Am[0],Am[1],Am[2],Am[3], A2out[0],A2out[1],A2out[2],A2out[3],
+    oref[0],oref[1],oref[2],oref[3]);
+  { long ex=0;double worst=0;
+    for(int i=0;i<M;i++)for(int n=0;n<H;n++){
+      float g=A2out[(size_t)i*H+n], w=oref[(size_t)i*H+n];
+      if(g==w) ex++; else { double r=fabs((double)g-w)/(fabs((double)w)+1e-30); if(r>worst)worst=r; }
+    }
+    printf("  %-8s exact=%ld/%ld (%.1f%%) worst_rel=%.3e\n","O(f32)",ex,(long)M*H,100.0*ex/(double)(M*H),worst);
+  }
   cmp("SiLU",SLout,SLref,(long)M*NI);
   cmp("D",CDout,CDref,(long)M*ND);
   // Per-head breakdown: if head 0 is right and the rest are wrong it is a

@@ -96,7 +96,7 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
         OUT_ty = np.ndarray[(M, HD), np.dtype[bfloat16]]
         AOT_ty = np.ndarray[(M, KO), np.dtype[bfloat16]]
         WO_ty = np.ndarray[(KO, 64), np.dtype[bfloat16]]
-        CO_ty = np.ndarray[(M, 64), np.dtype[bfloat16]]
+        CO_ty = np.ndarray[(M, 64), np.dtype[np.float32]]   # f32: the FFN norm adds it to x
 
         ko = "rms_split.o"
         reduce_f = external_func("rms_reduce_f32", inputs=[A_ty, SS_ty], link_with=ko)
@@ -105,6 +105,10 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
         acc0 = external_func("nq_acc_zero", inputs=[], link_with="nq_nt.o")
         accm = external_func("nq_acc_mac", inputs=[AN_ty, W_ty], link_with="nq_nt.o")
         accs = external_func("nq_acc_store_bf16", inputs=[QKV_ty], link_with="nq_nt.o")
+        accs_f32 = external_func("nq_acc_store_f32", inputs=[CO_ty], link_with="nq_nt.o")
+        red_add = external_func("rms_reduce_add_f32", inputs=[A_ty, A_ty, SS_ty], link_with=ko)
+        scl_add = external_func("rms_scale_add_f32_bf16", inputs=[A_ty, A_ty, SS_ty, AN_ty], link_with=ko)
+        add_h = external_func("add_f32_bf16", inputs=[A_ty, A_ty, AN_ty], link_with=ko)
         silu = external_func("silu_split", inputs=[QKV_ty, QKV_ty, QKV_ty],
                              link_with="silu_split.o")
         # The O-proj reuses the QKV's nq_acc_* helpers with the QKV's own
@@ -217,7 +221,7 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
                         accm(at, wt)
                         OA_c.release(ObjectFifoPort.Consume, 1)
                         OW_c.release(ObjectFifoPort.Consume, 1)
-                    accs(cbuf)
+                    accs_f32(cbuf)          # f32: this feeds the FFN norm's add
                     OC_f.release(ObjectFifoPort.Produce, 1)
 
         core(oc["core"], stack_size=0x1000)(oproj_body)
@@ -239,21 +243,37 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
                     A_c.release(ObjectFifoPort.Consume, 1)
                     AN_w.release(ObjectFifoPort.Produce, 1)
                 SS.release(ObjectFifoPort.Produce, 1)
-                # phase 2: the FFN norm, from the post-attention input A2. Same
-                # core and same kernel, a different input/scratch pair.
+                # phase 2: the FFN norm over h = x + o, where o is the O-proj's f32
+                # output sitting in A2. h is NEVER materialised: the reduce takes
+                # (x+o)^2 and the scale emits (x+o)*inv*gamma. Col 5 already has
+                # exactly the two f32 inputs this needs.
                 ss2 = SS.acquire(ObjectFifoPort.Produce, 1)
                 zf32(ss2)
                 for _kt in range_(n_k):
-                    a = A2_c.acquire(ObjectFifoPort.Consume, 1)
-                    reduce_f(a, ss2)
+                    a = A_c.acquire(ObjectFifoPort.Consume, 1)
+                    o = A2_c.acquire(ObjectFifoPort.Consume, 1)
+                    red_add(a, o, ss2)
+                    A_c.release(ObjectFifoPort.Consume, 1)
                     A2_c.release(ObjectFifoPort.Consume, 1)
                 for _kt in range_(n_k):
-                    a = A2_c.acquire(ObjectFifoPort.Consume, 1)
+                    a = A_c.acquire(ObjectFifoPort.Consume, 1)
+                    o = A2_c.acquire(ObjectFifoPort.Consume, 1)
                     an = AN_w.acquire(ObjectFifoPort.Produce, 1)
-                    scale_f(a, ss2, an)
+                    scl_add(a, o, ss2, an)
+                    A_c.release(ObjectFifoPort.Consume, 1)
                     A2_c.release(ObjectFifoPort.Consume, 1)
                     AN_w.release(ObjectFifoPort.Produce, 1)
                 SS.release(ObjectFifoPort.Produce, 1)
+                # phase 3: h = x + o as bf16 (microtiled like A_norm), for the D
+                # GEMM's identity block. Reuses the bf16 A_norm output fifo.
+                for _kt in range_(n_k):
+                    a = A_c.acquire(ObjectFifoPort.Consume, 1)
+                    o = A2_c.acquire(ObjectFifoPort.Consume, 1)
+                    hb = AN_w.acquire(ObjectFifoPort.Produce, 1)
+                    add_h(a, o, hb)
+                    A_c.release(ObjectFifoPort.Consume, 1)
+                    A2_c.release(ObjectFifoPort.Consume, 1)
+                    AN_w.release(ObjectFifoPort.Produce, 1)
 
         @core(gc, stack_size=GSTACK)
         def gemm_body():
@@ -340,8 +360,9 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
             np.ndarray[(M * NI,), np.dtype[bfloat16]],          # SILU (D's A)
             np.ndarray[(NI * ND,), np.dtype[bfloat16]],         # W_D
             np.ndarray[(M * ND,), np.dtype[bfloat16]],          # C_D
+            np.ndarray[(M * H,), np.dtype[bfloat16]],           # H_BF (h = x+o)
         )
-        def seq(A, W, AN, QKV, O_all, W_O, C_O, A2, AN2, W2, C2, SILU, W_D, C_D):
+        def seq(A, W, AN, QKV, O_all, W_O, C_O, A2, AN2, W2, C2, SILU, W_D, C_D, H_BF):
             # === phase 1: fused RMSNorm. A_norm leaves for DDR microtiled, so
             # its DDR copy is verbatim; the drain is armed during the scale pass
             # (before the scale pass it would deadlock) and windowed, because the
@@ -355,23 +376,6 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
                     dma_start_task(at); dma_await_task(at); dma_free_task(at)
                     if _rep == 1:
                         ant = shim_dma_single_bd_task(AN_s, AN, offset=kt * M * k,
-                                                      sizes=[1, 1, M, k],
-                                                      strides=[1, 1, k, 1], issue_token=True)
-                        dma_start_task(ant); pend.append(ant)
-                        while len(pend) >= 8:
-                            dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
-            while pend:
-                dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
-
-            # === phase 2: the FFN's RMSNorm, same two-pass shape from A2. ===
-            for _rep in range(2):
-                for kt in range(n_k):
-                    at = shim_dma_single_bd_task(A2_s, A2, offset=kt * k,
-                                                 sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
-                                                 issue_token=True)
-                    dma_start_task(at); dma_await_task(at); dma_free_task(at)
-                    if _rep == 1:
-                        ant = shim_dma_single_bd_task(AN_s, AN2, offset=kt * M * k,
                                                       sizes=[1, 1, M, k],
                                                       strides=[1, 1, k, 1], issue_token=True)
                         dma_start_task(ant); pend.append(ant)
@@ -394,57 +398,6 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
                 ct = shim_dma_single_bd_task(QKV_s, QKV, offset=nt * NT,
                                              sizes=[M // 4, NT // 8, 4, 8],
                                              strides=[4 * NQKV, 8, NQKV, 1], issue_token=True)
-                dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
-
-            # === phase 4: fused RMSNorm+GU, the SAME fifos as the QKV: only the
-            # DDR source (AN2/W2) and destination (C2) change.
-            for nt in range(n_n_gu):
-                for kt in range(n_k):
-                    ant = shim_dma_single_bd_task(ANR_s, AN2, offset=kt * M * k,
-                                                  sizes=[1, 1, M, k],
-                                                  strides=[1, 1, k, 1], issue_token=True)
-                    dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
-                    wt = shim_dma_single_bd_task(W_s, W2, offset=kt * k * N2 + nt * NT,
-                                                 sizes=[k // 8, NT // 8, 8, 8],
-                                                 strides=[8 * N2, 8, N2, 1], issue_token=True)
-                    dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
-                ct = shim_dma_single_bd_task(QKV_s, C2, offset=nt * NT,
-                                             sizes=[M // 4, NT // 8, 4, 8],
-                                             strides=[4 * N2, 8, N2, 1], issue_token=True)
-                dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
-
-            # === phase 5: SiLU over the GU output. gate[nt] is C2's row-major
-            # N-tile nt, up[nt] is the same tile shifted by NI columns.
-            for nt in range(n_si):
-                gt = shim_dma_single_bd_task(G_s, C2, offset=nt * NT,
-                                             sizes=[M // 4, NT // 8, 4, 8],
-                                             strides=[4 * N2, 8, N2, 1], issue_token=True)
-                dma_start_task(gt); dma_await_task(gt); dma_free_task(gt)
-                ut = shim_dma_single_bd_task(U_s, C2, offset=NI + nt * NT,
-                                             sizes=[M // 4, NT // 8, 4, 8],
-                                             strides=[4 * N2, 8, N2, 1], issue_token=True)
-                dma_start_task(ut); dma_await_task(ut); dma_free_task(ut)
-                st = shim_dma_single_bd_task(SL_s, SILU, offset=nt * NT,
-                                             sizes=[M // 4, NT // 8, 4, 8],
-                                             strides=[4 * NI, 8, NI, 1], issue_token=True)
-                dma_start_task(st); dma_await_task(st); dma_free_task(st)
-
-            # === phase 6: the D projection. A is the row-major silu buffer, so the
-            # A tile is DE-MICROTILED into the mmul's (M,k) layout (the QKV's
-            # A_norm is already microtiled, which is why its tap is a verbatim copy).
-            for nt in range(n_n_d):
-                for kt in range(n_k_d):
-                    ant = shim_dma_single_bd_task(ANR_s, SILU, offset=kt * k,
-                                                  sizes=[M // 4, k // 8, 4, 8],
-                                                  strides=[4 * NI, 8, NI, 1], issue_token=True)
-                    dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
-                    wt = shim_dma_single_bd_task(W_s, W_D, offset=kt * k * ND + nt * NT,
-                                                 sizes=[k // 8, NT // 8, 8, 8],
-                                                 strides=[8 * ND, 8, ND, 1], issue_token=True)
-                    dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
-                ct = shim_dma_single_bd_task(QKV_s, C_D, offset=nt * NT,
-                                             sizes=[M // 4, NT // 8, 4, 8],
-                                             strides=[4 * ND, 8, ND, 1], issue_token=True)
                 dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
 
             # === phase 7: attention, Q / K^T / V gathered STRAIGHT OUT OF QKV.
@@ -502,10 +455,101 @@ def layer(M, H, NH, HD, NO, PERCOL, PASSES, k, NT, KO, NSTACK, GSTACK, N2=6144,
                                                  sizes=[KO // 8, 8, 8, 8],
                                                  strides=[8 * NO, 8, NO, 1], issue_token=True)
                     dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
-                ct = shim_dma_single_bd_task(OC_s, C_O, offset=nt * 64,
+                # o is written into A2's rows 0..M-1 (f32, row stride H); row M
+                # is left alone because it holds the FFN's gamma.
+                ct = shim_dma_single_bd_task(OC_s, A2, offset=nt * 64,
                                              sizes=[M // 4, 8, 4, 8],
-                                             strides=[4 * NO, 8, NO, 1], issue_token=True)
+                                             strides=[4 * H, 8, H, 1], issue_token=True)
                 dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
 
+            # === phase 9: the FFN's RMSNorm over h = x + o. x and o are streamed
+            # TOGETHER (the core acquires both per K-tile), and h is never stored:
+            # the reduce takes (x+o)^2 and the scale emits (x+o)*inv*gamma.
+            pend = []
+            for _rep in range(2):
+                for kt in range(n_k):
+                    at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
+                                                 sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
+                                                 issue_token=True)
+                    dma_start_task(at); dma_await_task(at); dma_free_task(at)
+                    ot = shim_dma_single_bd_task(A2_s, A2, offset=kt * k,
+                                                 sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
+                                                 issue_token=True)
+                    dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
+                    if _rep == 1:
+                        ant = shim_dma_single_bd_task(AN_s, AN2, offset=kt * M * k,
+                                                      sizes=[1, 1, M, k],
+                                                      strides=[1, 1, k, 1], issue_token=True)
+                        dma_start_task(ant); pend.append(ant)
+                        while len(pend) >= 8:
+                            dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
+            while pend:
+                dma_await_task(pend[0]); dma_free_task(pend[0]); pend.pop(0)
+
+            # === phase 10: h = x + o as bf16, for the D GEMM's identity block.
+            for kt in range(n_k):
+                at = shim_dma_single_bd_task(A_s, A, offset=kt * k,
+                                             sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
+                                             issue_token=True)
+                dma_start_task(at); dma_await_task(at); dma_free_task(at)
+                ot = shim_dma_single_bd_task(A2_s, A2, offset=kt * k,
+                                             sizes=[1, 1, M + 1, k], strides=[1, 1, H, 1],
+                                             issue_token=True)
+                dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
+                ht = shim_dma_single_bd_task(AN_s, H_BF, offset=kt * M * k,
+                                             sizes=[1, 1, M, k],
+                                             strides=[1, 1, k, 1], issue_token=True)
+                dma_start_task(ht); dma_await_task(ht); dma_free_task(ht)
+
+            # === phase 4: fused RMSNorm+GU, the SAME fifos as the QKV: only the
+            # DDR source (AN2/W2) and destination (C2) change.
+            for nt in range(n_n_gu):
+                for kt in range(n_k):
+                    ant = shim_dma_single_bd_task(ANR_s, AN2, offset=kt * M * k,
+                                                  sizes=[1, 1, M, k],
+                                                  strides=[1, 1, k, 1], issue_token=True)
+                    dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
+                    wt = shim_dma_single_bd_task(W_s, W2, offset=kt * k * N2 + nt * NT,
+                                                 sizes=[k // 8, NT // 8, 8, 8],
+                                                 strides=[8 * N2, 8, N2, 1], issue_token=True)
+                    dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
+                ct = shim_dma_single_bd_task(QKV_s, C2, offset=nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * N2, 8, N2, 1], issue_token=True)
+                dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
+
+            # === phase 5: SiLU over the GU output. gate[nt] is C2's row-major
+            # N-tile nt, up[nt] is the same tile shifted by NI columns.
+            for nt in range(n_si):
+                gt = shim_dma_single_bd_task(G_s, C2, offset=nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * N2, 8, N2, 1], issue_token=True)
+                dma_start_task(gt); dma_await_task(gt); dma_free_task(gt)
+                ut = shim_dma_single_bd_task(U_s, C2, offset=NI + nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * N2, 8, N2, 1], issue_token=True)
+                dma_start_task(ut); dma_await_task(ut); dma_free_task(ut)
+                st = shim_dma_single_bd_task(SL_s, SILU, offset=nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * NI, 8, NI, 1], issue_token=True)
+                dma_start_task(st); dma_await_task(st); dma_free_task(st)
+
+            # === phase 6: the D projection. A is the row-major silu buffer, so the
+            # A tile is DE-MICROTILED into the mmul's (M,k) layout (the QKV's
+            # A_norm is already microtiled, which is why its tap is a verbatim copy).
+            for nt in range(n_n_d):
+                for kt in range(n_k_d):
+                    ant = shim_dma_single_bd_task(ANR_s, SILU, offset=kt * k,
+                                                  sizes=[M // 4, k // 8, 4, 8],
+                                                  strides=[4 * NI, 8, NI, 1], issue_token=True)
+                    dma_start_task(ant); dma_await_task(ant); dma_free_task(ant)
+                    wt = shim_dma_single_bd_task(W_s, W_D, offset=kt * k * ND + nt * NT,
+                                                 sizes=[k // 8, NT // 8, 8, 8],
+                                                 strides=[8 * ND, 8, ND, 1], issue_token=True)
+                    dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
+                ct = shim_dma_single_bd_task(QKV_s, C_D, offset=nt * NT,
+                                             sizes=[M // 4, NT // 8, 4, 8],
+                                             strides=[4 * ND, 8, ND, 1], issue_token=True)
+                dma_start_task(ct); dma_await_task(ct); dma_free_task(ct)
 
 main()
