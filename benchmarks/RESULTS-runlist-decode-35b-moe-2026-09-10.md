@@ -3391,3 +3391,37 @@ test: these are the first designs in this work to contain TWO DIFFERENT external
 REBUILD POSITION: (a) compiles -- MET. (c) one submit -- MET. (b) both phases correct together -- each
 phase is now PROVEN correct alone at the real shape through this driver, and the only remaining defect
 is the interaction of their cores, with a named candidate mechanism and a one-command next test.
+
+### Addendum 97 — the unfed-core explanation is REFUTED. What is left is TWO DIFFERENT EXTERNAL FUNCTIONS.
+
+Built the probe that isolates the mechanism addendum 96 named. Took the combined generator and made a
+variant in which NO CORE IS EVER UNFED: the norm phase is fully fed as before, and the GEMM cores were
+reduced to `zero(cbuf)` only -- the A/B acquires and the `matmul` call removed -- while the runtime
+still issues the C reads, so every core has exactly the work it is given and waits for nothing.
+
+  TWO KERNELS, both fed, no core unfed, H=2048 K=64 N=256 c=2 (nc=1):     HANGS
+  TWO KERNELS, both fed, no core unfed, H=2048 K=2048 N=8192 c=4 (nc=16): HANGS
+
+Both hang, at both group counts. So "a core with no data waiting for it prevents retirement" is WRONG,
+and the third of addendum 96's probes (norm DMAs removed) is explained the same way as the rest rather
+than by starvation.
+
+WHAT SURVIVES, and it is now the only structural difference between designs that work and designs that
+hang in this lane: THESE ARE THE FIRST DESIGNS TO CONTAIN TWO DIFFERENT EXTERNAL FUNCTIONS -- two
+separate `link_with` kernel objects, `rms_norm_f32_bf16.o` alongside `mm_32x64x128.o`. Every working
+design here used exactly one. The m1 QKV GEMM already settles the neighbouring hypothesis: it has
+EIGHT cores and ONE kernel and completes at 8192/8192, so "a second core" is not the issue; and the
+norm-only design has one core and one kernel and completes. Two cores with two kernels is the only
+combination that has never worked, and this probe is the first in which every core is fed.
+
+NEXT, one command and one build: put BOTH cores on ONE kernel object -- e.g. the m1 GEMM (one .o) plus
+a dummy core in a spare column that also calls `zero_i32` from the SAME `mm_32x64x128.o`, both fed. If
+that COMPLETES, the two-object/two-function structure is the cause and the fix direction is to build
+the norm into the same object as the GEMM (or to merge the two phases into one kernel object). If it
+HANGS, then merely having two cores with different work is enough, and the investigation moves to the
+control/runtime side of the sequence.
+
+INTERIM STATE: (a) compiles -- MET. (c) one submit -- MET, driver validated (8192/8192 on the m1 QKV
+xclbin). (b) both phases correct together -- my GEMM is exact at the real shape (8192/8192) and my NORM
+is exact alone (910/2048, bit-identical to the proven design), so neither phase is broken and the
+failure is a property of the COMBINATION, now narrowed to a single structural candidate.
