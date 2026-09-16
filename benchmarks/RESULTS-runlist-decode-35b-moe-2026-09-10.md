@@ -2979,3 +2979,47 @@ STATE OF THE REBUILD: (a) compiles -- MET. (c) one submit -- MET, driver validat
 both phases correct -- the NORM and the GEMM are each now PROVEN correct alone through this driver;
 what is left is making them correct TOGETHER, and that is one bounded experiment away from being
 either fixed or pinned to a specific shared resource.
+
+### Addendum 86 — the real divergence found: MY NORM CORE NEVER RELEASED W. Fixing it KILLS THE HANG.
+
+Read n1_rms_norm.py's core body instead of reasoning about my own, and the difference is not the one
+I had been chasing:
+
+    # n1_rms_norm.py -- the WORKING design
+    for _ in range_(0xFFFFFFFF):
+        wbuf = W_c.acquire(ObjectFifoPort.Consume, 1)   # W once
+        for _ in range_(M):                             # INNER loop over rows
+            arow = A_c.acquire(...); orow = O_c.acquire(Produce, 1)
+            rms(arow, wbuf, orow)
+            A_c.release(...); O_c.release(...)
+        W_c.release(ObjectFifoPort.Consume, 1)          # <-- W IS RELEASED
+
+My combined norm acquired W and NEVER RELEASED IT -- in the original form (acquire inside the loop,
+no release) and, worse, in my addendum-83 "fix", which hoisted the acquire outside the loop and so
+removed the release from the code entirely. Its fifo depth is 1, so W stayed full forever. Neither of
+my versions was ever the proven structure; the norm-alone success in addendum 83 came from the
+SEPARATE norm-only xclbin built by build_rms35b_m1.sh from n1_rms_norm.py, not from my generator. My
+own norm core had never been shown to work, and addendum 83's "the norm phase works alone" sentence
+was about the wrong artifact. That is the sharpest form of this lane's recurring error: I validated a
+component that was not the component under test.
+
+Restored the exact proven structure (W acquired inside the outer loop, inner loop over rows, W
+released at the end of each outer iteration). Rebuilt the small two-phase design and re-ran:
+
+    Compilation completed successfully
+    allocated all BOs; submitting ONE run
+    terminate called after throwing an instance of 'std::out_of_range'
+      what():  bitset::test: __position (which is 140401038681840) >= _Nb (which is 64)
+
+THE HANG IS GONE. The failure mode CHANGED, which is the first time this deadlock has moved under an
+intervention. It is now an XRT-internal exception -- a bitset indexed by a garbage value -- and it is
+the SAME exception the addendum-83 core-exit probe produced. That is consistent and it is informative:
+both variants are ones in which the norm core makes progress past its first row, whereas every
+variant that hung had the core stalled holding an unreleased W. So the sequence retires further than
+before and then XRT's own bookkeeping fails. The next question is no longer "why does it hang" but
+"what does XRT do when this design's runtime sequence completes", and the same probe should be run
+against the FULL-SIZE combined design, which has not been tried with this fix.
+
+STATE: (a) MET. (c) MET, driver validated 8192/8192. (b) the GEMM half is proven correct alone
+(256/256, addendum 85); the norm half is now structurally identical to the proven implementation; the
+combination no longer deadlocks and instead trips an XRT-internal bitset exception.

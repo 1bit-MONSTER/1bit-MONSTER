@@ -96,16 +96,19 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
 
         @core(norm_core, stack_size=0x2000)
         def norm_body():
-            # gamma is acquired ONCE, outside the loop -- the comment always said "once" but the
-            # acquire sat inside, on a depth-1 fifo that is never released, so iteration 2 could
-            # never acquire it. (Addendum 83.)
-            wbuf = nW_c.acquire(ObjectFifoPort.Consume, 1)
+            # EXACTLY n1_rms_norm.py's structure: W acquired inside the outer loop, an inner loop
+            # over rows, and -- the part my version never had -- W RELEASED at the end of each outer
+            # iteration. Without that release the depth-1 W fifo stays full forever, which the
+            # single-phase design tolerates but the two-phase sequence does not. (Addendum 86.)
             for _ in range_(0xFFFFFFFF):
-                arow = nA_c.acquire(ObjectFifoPort.Consume, 1)
-                orow = nO_c.acquire(ObjectFifoPort.Produce, 1)
-                rms(arow, wbuf, orow)
-                nA_c.release(ObjectFifoPort.Consume, 1)
-                nO_c.release(ObjectFifoPort.Produce, 1)
+                wbuf = nW_c.acquire(ObjectFifoPort.Consume, 1)
+                for _ in range_(1):
+                    arow = nA_c.acquire(ObjectFifoPort.Consume, 1)
+                    orow = nO_c.acquire(ObjectFifoPort.Produce, 1)
+                    rms(arow, wbuf, orow)
+                    nA_c.release(ObjectFifoPort.Consume, 1)
+                    nO_c.release(ObjectFifoPort.Produce, 1)
+                nW_c.release(ObjectFifoPort.Consume, 1)
 
         # ---- PHASE 2 fifos: A broadcast to every column, B and C per column ----
         gA_c = object_fifo("G_A_C", qkv_shim[0],
