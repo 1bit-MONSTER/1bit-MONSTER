@@ -92,12 +92,38 @@ static bool npu_dbg_elf() { const char* e = getenv("NPU_ELF_DEBUG"); return e &&
 
 static void ensure_elf_gen_env(const char* model_path, int H);   // defined below
 
+// The runlist session's layer.xclbin must belong to the MODEL. It cannot be inferred
+// from a single model dimension, and sess_model_dir(H) below maps EVERY H to a Qwen3
+// directory — so Nanbeige4.1-3B (H=2560) was handed Qwen3-4B's xclbin and Phi-4-mini
+// (H=3072) fell through to Qwen3-0.6B's. The first runlist forward then timed out:
+//   RuntimeLayer: runlist wait FAILED: runlist failed execution (ERT_CMD_STATE_TIMEOUT)
+//   [unified] decode step 1 failed
+// Measured 2026-09-16: with the model's own xclbin, Nanbeige completes the unified path
+// at 742 ms prefill / 27 tok/s and Phi-4 at 1650 ms / 25 tok/s, both beating FLM's
+// 1893 ms / 21 and 1747 ms / 19. The ELF root was already fixed to resolve from the
+// model path (b35f0914d); this is the sibling derivation that was left behind.
+static std::string sess_model_dir_from_path(const char* model_path) {
+    if (!model_path || !model_path[0]) return std::string();
+    const std::string mp(model_path);
+    const size_t slash = mp.rfind('/');
+    if (slash == std::string::npos || slash == 0) return std::string();
+    const std::string parent = mp.substr(0, slash);
+    const size_t pslash = parent.rfind('/');
+    return (pslash == std::string::npos) ? parent : parent.substr(pslash + 1);
+}
+
 extern "C" int npu_runlist_session_init(const char* model_path, int H, int NC, int NH, int NKV, int IM, int NV) {
     ensure_elf_gen_env(model_path, H);
     sess_build_cfg(H, NC, NH, NKV, IM, NV);
     if (!getenv("LAYER_XCLBIN")) {
-        std::string xb = std::string("/home/bcloud/amd-oss/fastflowlm/src/xclbins/") + sess_model_dir(H) + "/layer.xclbin";
-        setenv("LAYER_XCLBIN", xb.c_str(), 0);
+        const std::string base = "/home/bcloud/amd-oss/fastflowlm/src/xclbins/";
+        std::string md = sess_model_dir_from_path(model_path);
+        struct stat st;
+        // Only take the model's own directory when the xclbin is actually there, so a
+        // model with no xclbin of its own keeps the previous behaviour exactly.
+        if (md.empty() || stat((base + md + "/layer.xclbin").c_str(), &st) != 0)
+            md = sess_model_dir(H);
+        setenv("LAYER_XCLBIN", (base + md + "/layer.xclbin").c_str(), 0);
     }
     const char* env_elf = getenv("NPU_LAYER_ELF_DIR");
     g_sess_elf_dir = (env_elf && env_elf[0]) ? env_elf : sess_elf_default(H);
