@@ -3574,3 +3574,33 @@ the pre-softmax scores) for one head, and compare against the same slices of
 `/tmp/fk3_drv_Q.bin`. The tap is where a row-major (M, NQKV) buffer meets the mmul's blocked
 operand layouts, and a 32-element-block loader reading the wrong stride is precisely the failure
 this document already recorded once for the Q tap ("row-major Q scored 0.9%, microtiled 90.5%").
+
+## RETRACTION (fourth time): the "N_CH is undefined in the build" claim was wrong
+
+I claimed the build script never defines `NCH`, so `${NCH:-1}` silently became 1 while the real
+chunk count is M/NC = 8, wrapping `g_ch` to 0 every chunk and breaking the causal mask. That was
+wrong. `build_fk3_layer.sh` line 54 is:
+
+```bash
+NCH=$(( M / ${NC:-16} ))     # key chunks per query block
+```
+
+It is defined, right next to `NQB`, and passed as `-DN_CH=${NCH}`. My grep pattern simply did not
+match that line, and I published a root cause on the strength of a missing line in grep output -
+the same failure mode this document warns about twice, committed again while writing the warning.
+
+The chunk indexing is therefore fine: `N_KEYS = NC` (the tap's chunk stride and the mask's
+`k0 = g_ch * N_KEYS` agree), `N_CH = M/NC`, and `N_QB = M/MA`.
+
+Where that leaves it: the taps themselves are structurally correct on inspection (Q microtiled
+4x8 at `qb*MA*NQKV + QOFF + h*HD`; K row-major `sizes=[NC,HD]` strides `[NQKV,1]` at
+`ch*NC*NQKV + KOFF + (h//GQA)*HD`; V microtiled; `QOFF/KOFF/VOFF = 0/2048/3072` matching the
+buffer), and the mask's chunk indexing is correct. The one piece that remains both load-bearing
+and unverified is the in-kernel **K^T → blocked-B conversion** in `attn1.cc` (`-DK_ROW_MAJOR`,
+the loop that writes `g_kt`), which is what turns the row-major K tap into the operand `mm.cc`
+actually consumes - and this document already records that no BD can transpose, so that loop is
+the only place the transpose can be wrong.
+
+**Standing rule from four occurrences**: never state a root cause from grep output. Read the
+line, or better, read the compiled artefact. Every one of these four retractions would have been
+avoided by dumping the constant or the buffer instead of inferring it.
