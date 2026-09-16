@@ -219,7 +219,9 @@ int main(int argc,char**argv){
   printf("fk-3 attention block, ONE launch: M=%d H=%d NH=%d HD=%d NO=%d (N=%d keys)\n",M,H,NH,HD,NO,N);
   cmp("QKV",QKV,Qref,(long)M*NQKV);
   cmp("attn",Oall,Oref,(long)NH*M*HD);
-  cmp("O-proj",Cout,Cref,(long)M*NO);
+  // C_O is DEAD: the O-proj writes into A2 so the FFN norm can add it to x in f32
+  // (that is how residual 1 is fused into the norm). The live check is "O(f32)".
+  printf("  %-8s (C_O unused - the O-proj writes A2; see O(f32))\n","O-proj");
   // Isolate the O-proj: recompute it from the DEVICE's own attention output, so a
   // wrong attention cannot mask a correct O-proj (and vice versa).
   std::vector<uint16_t> Cdev((size_t)M*NO);
@@ -229,7 +231,7 @@ int main(int argc,char**argv){
       acc+=b2f(Oall[(size_t)hh*M*HD+(size_t)i*HD+d])*b2f(WOm[(size_t)(hh*HD+d)*NO+n]);
     Cdev[(size_t)i*NO+n]=rne(acc);
   }
-  cmp("O-proj*",Cout,Cdev,(long)M*NO);
+  (void)Cdev;
   cmp("GU",C2out,C2ref,(long)M*N2);
   cmp("H_BF",HBFout,HBFref,(long)M*H);
   printf("  H_BF dev[0..3]=%.5f %.5f %.5f %.5f  ref=%.5f %.5f %.5f %.5f\n",
