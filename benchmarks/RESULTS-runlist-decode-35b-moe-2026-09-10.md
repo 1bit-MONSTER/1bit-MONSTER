@@ -3641,3 +3641,45 @@ sequence and the fix is a fifo or DMA restructuring; if it does not, then the tw
 from a working two-core design in no respect I have been able to construct, and the remaining
 explanation would have to be scale (the norm's fifos are 8 KB f32 rows against the dummy's, and its
 second phase spans 16 column-groups).
+
+### Addendum 104 — THE LAST VARIABLE IS REFUTED. A two-core design with ALL of the norm's structure completes.
+
+Built the final probe: gave the dummy core a THIRD fifo -- W as a separate input on its own
+shim->mem->core pair, depth 1, linked, mirroring the m1's B path -- fed by a SECOND runtime input DMA
+from a different offset of the same buffer, with the acquire order W then A then O and W released at
+the end of the outer iteration, and calling `rms(Ebuf, Wbuf, Dbuf)` with two genuinely separate inputs:
+
+  dummy with THREE fifos / TWO input DMAs, K=64 N=256 c=2:
+    compiled; insts blob 1328 B; submit COMPLETED; GEMM 2/256
+  ... same, at the REAL shape K=2048 N=8192 c=4:
+    compiled; insts blob 430,844 B; submit COMPLETED; GEMM 3/8192
+
+IT COMPLETES AT THE REAL SHAPE. The three-fifo, two-input, asymmetric-depth, W-first acquire sequence
+is NOT the cause. (The low match counts remain the probe's own artefact -- the dummy's output DMA is
+pointed at the same C buffer -- and do not bear on whether the sequence retires.)
+
+SO THE TWO-PHASE DESIGN NOW DIFFERS FROM A WORKING TWO-CORE DESIGN IN NO RESPECT I HAVE BEEN ABLE TO
+CONSTRUCT. Every structural difference has been eliminated, each by an actual build and an actual run:
+
+  two link_with objects ......................... REFUTED (add.99)
+  an unfed core ................................. REFUTED (add.97)
+  the mem-tile OUTPUT path ...................... REFUTED (add.101)
+  the mem-tile INPUT path ....................... REFUTED (add.102)
+  a second core on its OWN column ............... REFUTED (add.102)
+  the norm's KERNEL rms_norm_f32_bf16 ........... REFUTED (add.103)
+  the THIRD FIFO and two-input DMA sequence ..... REFUTED (add.104, here)
+  and earlier: the B tap, phase order, BO order, XRT groups, the norm's fifo depths, a second core
+  as such, the norm's missing W release (a real bug, fixed).
+
+The working probe now matches the failing design on: core count and placement, kernel, kernel object,
+mem-tile paths on both sides, fifo count and depths, acquire order, DMA count and order, the real shape
+(K=2048 N=8192), num_col_group=16, 8 KB f32 rows, and insts blob size (430,844 vs 430,680 B).
+
+WHAT REMAINS UNTESTED AND IS NOW THE ONLY THING LEFT: the runtime_sequence's ARGUMENT COUNT and BO
+COUNT. My working probe has THREE runtime arguments (A, B, C) and reuses B and C for the dummy's input
+and output; the combined design has SIX (norm A, norm gamma, norm out, gemm A, gemm B, gemm C), i.e. a
+NINE-argument kernel call against my six. Addenda 80/84 showed the extra arguments land on XRT groups
+5..7 in ways that did not match my assumption. Give the working probe three EXTRA runtime arguments
+(pointing at additional BOs) and see whether IT starts to hang: if it does, the trigger is the argument
+or BO count, and the fix is to alias the norm's three buffers onto the existing ones rather than adding
+BOs -- which would also simplify the eventual engine integration.
