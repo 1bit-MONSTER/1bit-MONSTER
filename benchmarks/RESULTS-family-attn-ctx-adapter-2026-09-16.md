@@ -95,3 +95,45 @@ section that may not be what FLM actually feeds).
 So: cited **partial** for Nanbeige — attention ABI route established and driven;
 token parity at >1024 keys NOT established, with the mismatch pinned to the prefill
 stack rather than the kernel (the kernel is separately gated).
+
+## Addendum 2: the AttnCtx path is NON-DETERMINISTIC in the engine (blocker)
+
+Chasing the 764-vs-166103-vs-13 discrepancy exposed something more basic: **the
+`NPU_ATTN_CTX` path does not return the same answer twice.**
+
+Same 8-token prompt, byte-identical command, repeated:
+
+| path | runs |
+|---|---|
+| `NPU_ATTN_CTX=1` (generated kernel via AttnCtx) | 152369, 152367, 8900, 6037, 152360, 152552, **2092** |
+| captured-ELF bf16 prefill (no AttnCtx) | 152343, 152343 — **stable** |
+| plain fallback (no bf16 prefill) | 152367, 152367 — **stable** |
+
+Ruled out:
+
+- **Device contention** — no other process on `/dev/accel/accel0`, no new
+  `Firmware timeout state capture` in dmesg during these runs, `device.lock` held.
+- **Host-thread race on the KV cache** — `NPU_HOST_THREADS=1` still varies
+  (152360 / 152552 / 2092).
+- **A stale-KV cache in `AttnCtx::run`** — `repack` is true on every call here
+  (`seq` strictly increases within a layer, and `kv_caches[l]` moves per layer).
+- The kernel itself syncs (`r.wait(); bC2->sync(FROM_DEVICE)`), and on the standalone
+  bench the same AttnCtx reproduces NPU==EMU to 8.575258e-02 across runs.
+
+So the variance is introduced by running AttnCtx **interleaved with the engine's
+other NPU contexts** (the bf16 GEMM contexts on the same device) — a condition the
+standalone bench never exercised. It is not a property of the generated kernel.
+
+**Consequence: no token identity is claimable for Nanbeige.** The adapter is a
+working *vehicle* (32/32 layers, no hang, no ERT, and the kernel gates NPU==EMU on
+the bench), but this path cannot support a parity claim until the variance is
+root-caused. The earlier "boot 13 == FLM 13" line is fully retracted; the 1202-token
+template-matched run (764) and the CPU-attention run (166103) are both unreliable
+**for the AttnCtx side**, though the CPU-attention run is itself deterministic.
+
+Next diagnostic (if resumed): dump the AttnCtx's layer-0 output inside the engine
+and compare against the host packing for the same row, and check the engine's
+hw_context count at the time AttnCtx launches (`hwctx_limit=16`) — if the engine
+already holds its full complement of contexts, the AttnCtx launch may be silently
+degraded. Also worth testing: create the AttnCtx **before** the bf16 contexts, and
+force an explicit device-level sync between the last GEMM and the AttnCtx launch.
