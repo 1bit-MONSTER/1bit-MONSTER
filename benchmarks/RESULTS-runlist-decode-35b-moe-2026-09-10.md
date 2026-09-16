@@ -305,3 +305,25 @@ sequence path (or its arg/BO contract with this engine) is broken for the 35B. T
 substantiates R59 and means the objective's layer must be **rebuilt** with
 engine-authored kernels (the engine's own mm/dequant xclbins), not reused from the
 lib. That is the multi-kernel per-layer rebuild now underway.
+
+### Addendum 6 CORRECTION (the earlier stage-subset claim was wrong)
+
+The four stage-subset runs in Addendum 6 passed the model **directory** as argv[1]
+instead of model.q4nx, so they all died at `model_load` (`mmap failed: No such
+device`) and the act files read afterwards were STALE from the full-layer run. The
+"even _send_hidden_states alone NaNs the act" conclusion is therefore VOID.
+
+Re-ran correctly (full model path, ELF named `moe_layer_ctx1.elf` in the elf dir):
+
+| sequence | words | result |
+|---|---|---|
+| `_send_hidden_states` | 34 | EXECUTED; act **unchanged** (nan=0, pre == post) |
+| `_send_rms_weights` | 34 | EXECUTED; act unchanged |
+| hidden + rms | 64 | EXECUTED; act unchanged |
+| hidden + rms + conv-weights + `gen_seq_conv1d` | 1656 | **`ERT_CMD_STATE_TIMEOUT`** (runlist failed) |
+| full `gen_layer_seq` linear layer | 24636 | EXECUTED; act **all-NaN** |
+
+So the first real localisation is: the DMA-only prefix is harmless and does not
+touch the act; the **conv1d stage is where the failure signature first appears**
+(ERT timeout in isolation; the full layer gets past it but then NaNs the act).
+That is the stage to rebuild first — not a blanket "the lib path is broken".
