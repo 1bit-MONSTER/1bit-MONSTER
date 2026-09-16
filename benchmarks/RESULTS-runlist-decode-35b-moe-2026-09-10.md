@@ -5763,3 +5763,20 @@ down_exps [0,2,4,6,1,3,5,7] 8-window order, a [64,16] dim interleave, or it is a
 Impl::load_weights' final assembly). ssm_out is the last GEMM of the layer and unlikely to be the
 NaN source; the NaN is more plausibly the SSM (alpha/beta/dt/a) or the router, both now corrected.
 Next: moe_smoke on a quiet device; if the act is still all-NaN, derive ssm_out from a final-BO dump.
+
+### Addendum 157 — ssm_out is NOT packed by load_linear_weights; it is an 8704-byte-row memcpy in Impl::load_weights
+
+Exhaustive search of the full 512 MB pool + both 5 MB b1/b2 dumps: ssm_out_proj appears in NONE of
+them (not raw slice/row, not 4736-slice H-interleave for H in 1..256, not 8704-row-trim, not int8-only,
+not scales-only). So load_linear_weights does NOT pack ssm_out — unlike beta/conv1d/norm (raw in b2)
+and alpha (reordered in b1). ssm_out is packed later, in Impl::load_weights, where the disassembly
+shows the per-tensor loader SafeTensors::load_weights("...ssm_out_proj.weight" @.rodata 0x18b280)
+followed by an 8704-byte (0x2200) row-pair memcpy loop at 0x7a4d4/0x7a508 (row A src = tensor + (x+ebp)*8704,
+row B src = tensor + r14d*8704, dest advances 2 rows per iter) — i.e. an 8704-byte-row interleave, then
+presumably trimmed to the 4736-byte rows the ELF reads at @328192.
+
+CONSEQUENCE: the committed ssm_out H=4 repack (which reorders 4736-byte slices) is a HYPOTHESIS, not
+derived from the vendor's actual path; the vendor packs ssm_out as 8704-byte rows with a row-pair
+interleave first. ssm_out is the layer's last GEMM so it is unlikely to be the NaN source; the router
+transpose + raw alpha/beta/conv1d remain the substantive fix. Leave ssm_out as-is until a device test
+or a final-BO dump settles the 8704-row interleave + 4736 trim.
