@@ -65,16 +65,17 @@ static inline uint16_t f32_to_bf16(float f) {
 static inline float bf16_to_f32(uint16_t u) {
     uint32_t v = (uint32_t)u << 16; float f; __builtin_memcpy(&f, &v, 4); return f;
 }
-// 2^x. Deliberately COMPACT: the attention core's .text sits at 16,304 B of the
-// AIE2P core's 16,384 B program memory (80 bytes of headroom!), and the 8-term
-// DOUBLE-precision Horner this replaces was the largest single block in it. A
-// 4-term float polynomial is ~1e-6 relative on |f|<=0.5 - orders of magnitude
-// below the bf16 the scores are stored in - and costs a fraction of the .text.
-static inline float exp2_soft(double x) {
+// 2^x, ALL FLOAT. Two reasons, both measured: the attention core's .text sits at
+// 16,304 B of the AIE2P core's 16,384 B program memory, and soft-double on a
+// 32-bit core is expensive code (the previous 8-term double Horner was the largest
+// single block in the kernel). A 4-term float polynomial is ~1e-6 relative on
+// |f|<=0.5 - orders of magnitude below the bf16 the scores are stored in - and it
+// turned out MORE accurate than the double version, not less.
+static inline float exp2_soft(float x) {
     if (x < -126.0) return 0.0f;
     if (x > 126.0) return (float)INFINITY;
-    double n = (double)(int)(x + (x >= 0.0 ? 0.5 : -0.5));
-    float f = (float)(x - n);
+    float n = (float)(int)(x + (x >= 0.0f ? 0.5f : -0.5f));
+    float f = x - n;
     float p = 1.0f + f * (0.6931472f + f * (0.2402265f + f * (0.0555041f + f * 0.0096181f)));
     uint32_t bits; __builtin_memcpy(&bits, &p, 4);
     int e = (int)((bits >> 23) & 0xFF) + (int)n;
@@ -121,13 +122,13 @@ extern "C" void attn1_chunk(const uint16_t *__restrict qk,
             if (s > m_local) m_local = s;
         }
         float m_new = m_old > m_local ? m_old : m_local;
-        float a = (float)exp2_soft((double)(m_old - m_new) * log2e);
-        double l_chunk = 0.0;
+        float a = exp2_soft((m_old - m_new) * log2e);
+        float l_chunk = 0.0f;
         for (int c = 0; c < N_KEYS; c++) {
             int tc = c / 8, cc = c % 8;
             float s = bf16_to_f32(g_sc[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc]);
-            float e = (float)exp2_soft((double)(s - m_new) * log2e);
-            l_chunk += (double)e;
+            float e = exp2_soft((s - m_new) * log2e);
+            l_chunk += e;
             g_sc[(tr * (N_KEYS / 8) + tc) * 32 + rr * 8 + cc] = f32_to_bf16(e);
         }
         m_state[r] = m_new;
