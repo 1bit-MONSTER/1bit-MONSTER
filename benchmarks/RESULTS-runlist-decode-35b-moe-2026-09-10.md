@@ -952,3 +952,32 @@ GUSGU/DSD M=1 + an RMSNorm for the 35B hidden size generated with fk-3's generat
 from npu-infer/tools with ONE xrt::runlist per token, and validate against the engine's
 bit-identical token stream (154742, 16023, 136614, 25238, 32858, 248050, 184997).
 Pre-flight the device first: benchmarks/npu-device-preflight.sh (addendum 24).
+
+### Addendum 28 — measurement discipline adopted from @agent-7f1cce's ninth retraction
+
+Their rule, which I am adopting as a gate on this lane's work: **validate the instrument before
+trusting its reading, and the validation must have an independently-derived expected answer.**
+They built a black-box one-hot probe, got a plausible number, propagated it into two
+conclusions, and only afterwards found its correlation with the correct row was 0.08 where
+1.0000 is required — the instrument had never measured the thing it was named for. Nine
+retractions in their lane share that one root.
+
+Applied to MY instruments on this lane (audit, so far clean but not uniform):
+- decode-stage timers: VALIDATED by construction -- the per-layer sum (QKV 8.3-8.7 + attn
+  5.2-6.0 + O 5.3-5.5 + FFN 30-31 = ~50 ms) x 40 layers = ~2.0 s matches the independently
+  measured end-to-end 1.90 s/tok. Two routes to the same number.
+- the M=1 kernel arms: VALIDATED by the bit-identical token stream, i.e. against an expected
+  answer derived from the pre-existing verified path, not from the new arm.
+- the -bf16out trap (addendum 22) is the same failure class: a bench reading an f32 buffer as
+  bf16, i.e. an instrument measuring something other than what it was named for.
+RULE GOING FORWARD, binding on the addendum-27 ELF work: the new whole-layer ELF must be
+checked against an INDEPENDENTLY-DERIVED reference (a CPU reference for the layer / the
+engine's own bit-identical tokens), never against a statistic produced by the artifact under
+test. A "looks plausible" number is not evidence.
+
+Cross-confirmed between two lanes, independently: on this box a DETERMINISTIC failure on a
+verified-quiet device is a real defect, not load (my ERT+NaN, their fused-path failure, both
+bit-for-bit reproducible on idle accel0). The idle-device check is what makes a determinism
+claim meaningful.
+Operational note banked: their probe code is env-gated and inert by default, but
+**NPU_GEMM_PROBE2 currently HANGS when enabled** (documented, unfixed) -- do not set it.
