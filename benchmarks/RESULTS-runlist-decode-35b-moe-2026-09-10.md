@@ -3023,3 +3023,47 @@ against the FULL-SIZE combined design, which has not been tried with this fix.
 STATE: (a) MET. (c) MET, driver validated 8192/8192. (b) the GEMM half is proven correct alone
 (256/256, addendum 85); the norm half is now structurally identical to the proven implementation; the
 combination no longer deadlocks and instead trips an XRT-internal bitset exception.
+
+### Addendum 87 — the full-size design cannot create a hw_context, though an equally large one can
+
+Built the FULL-SIZE combined design (H=2048, K=2048, N=8192, 8 GEMM columns + the norm's own column)
+with the addendum-86 norm fix. It compiles to 43,354 B. Running it:
+
+  terminate called after throwing an instance of 'xrt_core::system_error'
+    what():  DRM_IOCTL_AMDXDNA_CREATE_HWCTX IOCTL failed (err=-28): No space left on device
+
+This is the SAME error the pre-fix full-size design gave, and it happens BEFORE any submit, so the
+addendum-86 fix has not been exercised at full size at all -- the small design is the only artifact
+that has run with it.
+
+THE PUZZLE, stated so it can be falsified: the m1 QKV xclbin allocates the SAME 16.8 MB gemm-B BO and
+creates its hw_context successfully -- it ran to 8192/8192 in this same session. My combined design is
+merely 5,248 B larger as an xclbin and adds three tiny norm buffers (8 KB + 8 KB + 4 KB), yet its
+context creation fails. So err=-28 is not simply "the gemm-B BO is too big": something about the
+combined design's context footprint is materially larger than the m1 design's, and the cheap way to
+find out is to bisect it rather than to theorise -- e.g. build the combined design with a small N
+(which fits, as the 256-column variant proves) and grow it, or build the m1 design with the norm's
+column present but unused.
+
+WHAT THIS RUN ESTABLISHED, in order of importance:
+ 1. THE REAL BUG: my norm core never released W. The proven n1_rms_norm.py acquires W inside its
+    outer loop, loops over rows INNER, and releases W each outer iteration. Mine never released it,
+    in either version -- and my addendum-83 "fix" removed the release from the code entirely. The
+    norm-alone result in addendum 83 came from the SEPARATE norm-only xclbin, so my own norm core had
+    never been validated. Fixed to the proven structure.
+ 2. WITH THAT FIX THE HANG IS GONE. The small two-phase design now compiles, submits, and throws
+    XRT's "bitset::test: __position (140401038681840) >= _Nb (which is 64)" instead of hanging. The
+    first movement this deadlock has shown under any intervention, and it is the same exception the
+    core-exit probe produced -- consistent, since both are variants where the norm core progresses
+    past its first row.
+ 3. EACH PHASE IS CORRECT ALONE: my generator's GEMM half, driven by the same driver, gives 256/256
+    columns exact (addendum 85); the norm half is now structurally identical to the proven one.
+ 4. HYPOTHESES KILLED, each by reading or by test rather than by argument: the silent BO-order swap
+    (declared order matches the driver exactly); XRT group assignment (groups are just a pool of
+    valid ids -- group_id(6) and (7) are valid even for the 3-argument m1 xclbin, retracting part of
+    addendum 80); and the norm's fifo depths (identical to the proven design's, 2/2, 1/1, 2/2).
+
+REBUILD STATE: (a) compiles -- MET. (c) one submit -- MET; driver validated 8192/8192. (b) both
+phases correct: both halves now correct ALONE, and the combination's deadlock is replaced by a
+different, more specific failure that only shows up at small size because the full-size design cannot
+yet allocate a context.
