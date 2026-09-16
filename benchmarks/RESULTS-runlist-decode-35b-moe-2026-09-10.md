@@ -4135,3 +4135,48 @@ NOTE ON STATE: I restored n1_combined_norm_qkv.py to the addendum-111 commit (th
 version, 910/2048 + 2048/2048 + 8192/8192) so the tree holds a design that builds. The O-projection
 generator block, its runtime DMAs and the driver's FIVE_BO mode are all retrievable from commit
 da7371b9e for re-application as a SEPARATE SUBMIT rather than as a fourth argument-set in the same one.
+
+### Addendum 117 — the GEMM is INTERMITTENTLY INEXACT, and the design sits EXACTLY on the BD boundary
+
+Two findings from re-checking the restored, verified three-phase design.
+
+FIRST, THE DESCRIPTOR BUDGET IS EXACTLY AS BRACKETED: this design emits
+
+  BDs: 2630
+
+which is precisely the top of addendum 113's bracket (~2,630 works, ~4,182 refused). The verified
+three-phase design is not comfortably inside the pool -- it is sitting ON the boundary, which also means
+the fourth phase had no chance of fitting without either amortisation (blocked, addendum 116) or a
+separate submit.
+
+SECOND, AND MORE IMPORTANT, THE GEMM IS NOT STABLY EXACT. Re-running the SAME xclbin with the SAME
+inputs, four times:
+
+  run 1: PHASE1 vs PHASE3 2048/2048   GEMM 8192/8192
+  run 2: PHASE1 vs PHASE3 2048/2048   GEMM 8192/8192
+  run 3: PHASE1 vs PHASE3 2048/2048   GEMM 8192/8192
+  run 4: PHASE1 vs PHASE3 2048/2048   GEMM 8080/8192
+
+and earlier the same design gave 6336/8192 and 7536/8192. The norm phases -- including the
+phase-against-phase comparison, which needs no reference at all -- are perfectly stable at 2048/2048 in
+every run. Only the GEMM fluctuates, and it does so on a device the preflight reports IDLE with no
+holder. Note 8080 is 112 short of 8192, i.e. LESS THAN ONE n-tile (128), which points at a PARTIAL-tile
+corruption rather than a whole tile being wrong -- the signature of a readback that caught the core
+mid-write rather than of a wrong address or a wrong layout.
+
+ADDENDUM 112's "stable over five consecutive runs" was therefore true of the runs I took and did not
+establish what I claimed for it. The earlier five were all 8192/8192; the failures appear only over a
+longer sequence. This is the same class of error as everything else in this lane: the instrument (a
+small number of runs) was trusted more than it deserved.
+
+WORKING HYPOTHESIS, to be tested rather than assumed: the runtime's C readback can observe the core's
+write to the C fifo before it is complete, i.e. the core's release is not ordered after its stores from
+the shim DMA's point of view -- a fence/ordering issue in the readback path, not an addressing bug. Two
+cheap probes: (a) deepen the C fifo from 1 to 2 so the core can double-buffer and the readback has a
+full buffer to take, and (b) re-run the GEMM in a tight loop and count the failure rate as a baseline
+before and after. If (a) removes the flakiness, the mechanism is the single-slot C fifo; if not, the next
+suspect is the BD pool being saturated at exactly 2,630, since a design at the boundary may be reusing
+descriptors in a way that races.
+
+THIS IS NOW THE TOP PRIORITY, ABOVE THE O PROJECTION: a design whose GEMM is right three times out of
+four is not something the objective can build on, and the fix is likely small.
