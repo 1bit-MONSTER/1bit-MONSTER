@@ -1353,3 +1353,53 @@ What I should have done, and what I am adopting as a hard rule:
      <path>` plus a path-scoped commit, which touches the INDEX ONLY. `git checkout <commit> --
      <path>` writes the working tree too and can destroy someone's uncommitted work -- that is
      the mistake inside the fix, and it is the one that actually cost something.
+
+### Addendum 39 — MAJOR CORRECTION: the runlist path is NOT "structurally broken". It submits, it executes, and it computes ZEROS.
+
+@agent-baaa57 built this lane's harness with my exact commands and ran the 35B whole-layer ELF
+(log kept at /tmp/moe35.log). Raw result:
+
+  [runlist] 1 runs batched -> 1 submit (ctx=1)
+  forward(1): EXECUTED
+  logits: argmax=0 max=0.0000 NaN=0 (of 248320)
+  reference: greedy next token = 76740
+
+Three facts, and together they overturn addenda 11/13/14:
+ 1. It BATCHES -- "1 runs batched -> 1 submit" -- so runlist eligibility and the submit path are
+    both live. Any theory of the form "the fault is upstream of submission (ELF/kernel build)"
+    is dead.
+ 2. It EXECUTES, exit 0, NO ERT.
+ 3. It is WRONG: all-zero logits, zero NaN.
+
+So the layer is COMPUTING, and computing zeros -- which is a completely different defect from the
+one I recorded. Addendum 14 concluded "the 35B ERT is structural" because it reproduced 3/3 with
+accel0 quiet. That conclusion no longer reproduces. The likeliest reading, and it is
+@agent-baaa57's: the ERT was the ENVIRONMENTAL contention/TDR class -- the one their dense lane
+hit and that was repaired by the flock plus timeout_in_sec=15 -- not a property of this ELF. My
+"quiet accel0" test checked that no PID held /dev/accel/accel0, which does NOT rule out an
+environmental/TDR condition left over from earlier contention. I over-read a quiet device as a
+clean device; those are different claims and I treated them as the same.
+
+Second correction implied: "reuse the lib ELF is a dead end" (addenda 6-14) is now WRONG as
+stated. The reuse path submits and executes; it has a zeros bug. The objective's ORIGINAL route
+is therefore REOPENED, and that is a materially better position than where I left the lane.
+
+THE ZEROS ARE THE LEAD, and the most suspicious line in the log is one @agent-baaa57 flagged:
+  MoERuntimeLayer: region-A head packed (74240 B, BEST-EFFORT)
+"best-effort" is exactly the qualifier you do not want on the buffer the layer reads. Addendum 22
+already banks the sibling hazard from @agent-7f1cce: the same group_id in a DIFFERENT hw_context
+is a DIFFERENT buffer, and a multi-launch chain that fills only one of them produces a
+legitimate-looking all-zero output. Between "region-A packed best-effort" and that buffer-identity
+hazard, there are two concrete, checkable explanations for zeros-with-no-error -- and neither of
+them is the ERT I spent addenda 11-14 on.
+
+UNRESOLVED DISCREPANCY, recorded rather than smoothed over: my symptom was NaN (post-layer act
+2048/2048 NaN, addendum 6) and theirs is zeros with NaN=0. One live possibility is that MY run
+consumed the WRONG MODEL QUANT -- this lane has two 35B trees with different region-B row sizes
+(8704-byte rows at ~/.config/flm/... vs all-4736-byte rows at ~/flm104/...), and mixing them is a
+documented trap in my own notes. That would explain NaN-vs-zeros without either result being
+wrong.
+
+NEXT ACTION CHANGES ENTIRELY: diagnose the ZEROS, starting from region-A's best-effort pack and
+the act/weight BO identity across hw_contexts; re-run the harness with NPU_RUNLIST_STATS=1 to
+confirm no-ERT reproduces for me, and verify I am on the 8704-byte-row model.
