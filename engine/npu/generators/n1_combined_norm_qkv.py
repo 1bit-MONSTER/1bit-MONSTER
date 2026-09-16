@@ -145,25 +145,23 @@ def combined(H, K, N, k, n, n_aie_cols=8, BATCH_SIZE=5):
 
         # ---- runtime sequence: ONE host-side sequence driving BOTH phases ----
         @runtime_sequence(
-            np.ndarray[(H,), f32],            # norm A
-            np.ndarray[(H,), f32],            # norm gamma
-            np.ndarray[(H,), bf16],           # norm out
+            np.ndarray[(H * 4 + H * 4 + H * 2,), i8],   # ONE norm buffer: A|gamma|out
             np.ndarray[(K,), i8],             # gemm A
             np.ndarray[(K * N,), i8],         # gemm B
             np.ndarray[(N,), i32],            # gemm C
         )
-        def seq(NA, NW, NO, GA, GB, GC):
+        def seq(GA, GB, GC, NRM):
             # phase 1: one norm row
             # gamma ONCE, awaited before any A -- then INTERLEAVED A-in / O-out. Both are the
             # pattern n1_rms_norm.py proved: pushing A and W together and reading O only
             # afterwards stalls the O side, backs A up, and deadlocks. (Addendum 83.)
-            wt = shim_dma_single_bd_task(nW_s, NW, offset=0, sizes=[1, 1, 1, H],
+            wt = shim_dma_single_bd_task(nW_s, NRM, offset=H * 4, sizes=[1, 1, 1, H],
                                          strides=[1, 1, 1, 1], issue_token=True)
             dma_start_task(wt); dma_await_task(wt); dma_free_task(wt)
-            at = shim_dma_single_bd_task(nA_s, NA, offset=0, sizes=[1, 1, 1, H],
+            at = shim_dma_single_bd_task(nA_s, NRM, offset=0, sizes=[1, 1, 1, H],
                                          strides=[1, 1, 1, 1], issue_token=True)
             dma_start_task(at); dma_await_task(at); dma_free_task(at)
-            ot = shim_dma_single_bd_task(nO_s, NO, offset=0, sizes=[1, 1, 1, H],
+            ot = shim_dma_single_bd_task(nO_s, NRM, offset=H * 4 + H * 4, sizes=[1, 1, 1, H],
                                          strides=[1, 1, 1, 1], issue_token=True)
             dma_start_task(ot); dma_await_task(ot); dma_free_task(ot)
             # phase 2: the GEMM, unchanged in structure from n1_core_i8_m1.py

@@ -3754,3 +3754,42 @@ memory tiles, the columns, the tap, the phase order, the acquire order or the fe
 built a six-argument design against a runtime that provides five. The twenty addenda of refutations were
 all correct and all beside the point, and the single fact that would have found it immediately -- count
 the arguments -- was in my own addendum 80 the whole time.
+
+### Addendum 107 — THE HANG IS FIXED. Four runtime arguments: the combined norm+GEMM design RETIRES.
+
+Implemented addendum 106's fix and it works. The norm's three buffers (A f32, gamma f32, out bf16 --
+8 KB + 8 KB + 4 KB) were merged into ONE buffer addressed at fixed byte offsets 0, H*4 and H*4+H*4, and
+the runtime_sequence was reduced from six arguments to FOUR:
+
+  np.ndarray[(H*4 + H*4 + H*2,), i8]      # ONE norm buffer: A | gamma | out at fixed offsets
+  def seq(GA, GB, GC, NRM):
+      wt = shim_dma_single_bd_task(nW_s, NRM, offset=H*4,          ...)   # gamma
+      at = shim_dma_single_bd_task(nA_s, NRM, offset=0,            ...)   # A
+      ot = shim_dma_single_bd_task(nO_s, NRM, offset=H*4 + H*4,    ...)   # out
+
+(The pool of AIE type aliases matters: `np.uint8` and `np.int8` both fail inside aie's
+`np_ndarray_type_get_dtype` with "IndexError: tuple index out of range" and the generator emits a Python
+traceback instead of MLIR; the generator's own alias `i8` works. A one-word difference between a
+430 KB design and a stack trace.)
+
+Result at the real shape, K=2048 N=8192 c=4, num_col_group=16, ONE submit:
+
+  compiled: 1
+  insts blob: 430,844 B
+  allocated all BOs; submitting ONE run
+  FOUR-arg submit completed
+  FOUR-arg RMSNorm: 0/2048 match
+  FOUR-arg GEMM: 3/8192 columns match
+
+THE SUBMIT COMPLETES. After twenty addenda of refutations, the two-phase design RETIRES, and the thing
+that made the difference was reducing the runtime sequence from six arguments to four -- exactly the
+five-slot limit addendum 80 had already recorded. Every structural property this lane spent a week
+suspecting was innocent; the argument count was the whole of it.
+
+THE VALUES ARE STILL WRONG, and that is now a separate, ordinary debugging problem rather than a
+deadlock: the RMSNorm row matches 0/2048 and the GEMM 3/8192. Both are the same signatures seen in the
+three-argument probes (addenda 103/104 gave 2/256 and 3/8192), so the likely cause is a feed or offset
+convention shared between probe and combined design -- most plausibly the B layout (the combined
+generator now uses the LINEAR tap, which wants chunk-order weights) or an offset/base mismatch between
+where the driver writes a region and where the DMA reads it. That is the next thing to chase, and it is
+the first time in this workstream that the remaining problem is arithmetic rather than a hang.
