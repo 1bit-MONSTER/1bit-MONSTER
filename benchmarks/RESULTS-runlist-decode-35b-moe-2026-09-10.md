@@ -3138,3 +3138,38 @@ RUN SUMMARY (addenda 84-89), for whoever picks this up:
    matches the driver); XRT group assignment (a pool of valid ids -- retracts part of addendum 80).
  - STILL STANDING: the GEMM half is proven correct ALONE (256/256 columns, addendum 85). Everything
    that fails, fails only when a second phase or a second column-group is present.
+
+### Addendum 90 — the GEMM ALONE never hangs, at either group count; and an UNEXPLAINED value regression I am not going to paper over
+
+Ran the GEMM half alone (fresh strip of this generator, SINGLE_PHASE driver mode) at both group counts:
+
+  GEMM ONLY, c=2 N=256 num_col_group=1:  submit completed
+  GEMM ONLY, c=2 N=512 num_col_group=2:  submit completed
+
+Both COMPLETE. Neither hangs and neither trips XRT's bitset. So the two failure modes in addendum 89
+are NOT properties of the GEMM's multi-group loop on its own -- they require the norm to be present
+as well. That is a third independent confirmation that every failure in this rebuild lives in the
+COMBINATION, and it kills the specific hypothesis addendum 89 ended on (that the second A/B batch
+cannot be reached because the depth-1 C fifo still holds group 1's buffer): if that were true, the
+GEMM alone would have shown it at num_col_group=2, and it does not.
+
+BUT the same runs report the GEMM VALUES as wrong, and this CONTRADICTS an earlier run of mine:
+  addendum 85, GEMM only, c=2 N=256, same generator, row-major B:  256/256 columns matched
+  here,        GEMM only, c=2 N=256, same generator, row-major B:    2/256 columns matched
+  here,        GEMM only, c=2 N=512:                                 1/512 columns matched
+Same generator, same driver mode, same feed order, same K -- and a 256/256 has become a 2/256. I did
+not change the GEMM section (addendum 86 touched only `norm_body`), so one of the two runs is not
+measuring what I think it measures. I do not have the explanation and I am recording the conflict
+rather than choosing the flattering number: in this lane the arithmetic has been right every time and
+the causal story wrong, so a 256/256 that will not reproduce is more likely to be my instrument than a
+regression in a section I did not touch. The immediate task is to reconcile the two -- most cheaply by
+re-running the addendum-85 artifact (/tmp/cap/gonly4) unchanged and seeing whether it still says
+256/256, which decides whether the strip or the generator changed underneath it.
+
+NET FOR THE REBUILD, addenda 84-90: (a) compiles -- MET. (c) one submit -- MET; driver validated at
+8192/8192. (b) both phases correct together -- NOT met, and now known to be a pure COMBINATION
+problem: err=-28 was the impossible ninth column (solved), the norm's missing W release was a real
+bug (fixed, and it removed the pure hang for num_col_group=1), the GEMM alone is proven correct once
+(addendum 85) and completes at both group counts (here), and every remaining failure -- hang at
+num_col_group=2, XRT bitset at num_col_group=1 -- appears only when the norm and the GEMM are in the
+same design.
