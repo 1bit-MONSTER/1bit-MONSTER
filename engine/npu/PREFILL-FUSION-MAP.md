@@ -248,3 +248,34 @@ At short context the fused decode beats FLM; at 2k context it trails by 10.6%
 because the per-token attention cost scales with the KV prefix length (2k keys
 vs 10). That context-length scaling — not the fusion structure — is the open
 decode gap (ra-3/ra-4).
+
+## 10. DECODE HOST-OP QUANTIFICATION (ra-3)
+
+Already measured (`benchmarks/RESULTS-npu-prefill-parity-2026-09-12.md` §"Decode
+breakdown" and §"Precise forward() breakdown"): `NPU_FWD_TIMING=1` on 0.6B gives
+`[fwd] rope=0.51 build=0.78 exec=12.53 total=13.87 ms` steady-state. Decomposed:
+
+| piece | ms/tok | overlappable with current exec? |
+|---|---:|---|
+| device exec (29 runs, 1 runlist) | ~12.5 | — (it is the device) |
+| runlist build (29×8 set_arg) | 0.8 | yes — **already overlapped** (double-buffered sa/sb slots) |
+| RoPE writes (28 BO writes + 28 syncs) | 0.5 | yes, **needs a double-buffered i6** (not yet done) |
+| argmax (logits sync 304 KB + scan) | ~1.5 | no (needs this token's logits) |
+| embed (memcpy + sync) | ~0.5 | no (needs this token's argmax) |
+
+Already done and recorded: argmax was vectorised (OpenMP over a monotonic bf16
+key) and was **neutral** — the scan was not the bottleneck; the 304 KB logits
+`sync` is. Build overlap via the double-buffered runlist slots is already in
+`npu_runlist_bridge.cpp` (raised decode 62 → 67 tok/s).
+
+**Remaining actionable fix** — overlap the RoPE write by double-buffering `i6_bos_`
+(28 → 56 BOs, one per runlist slot): `apply_rope(next_ctx, slot)` writes the next
+slot's table BEFORE `wait_runlist`, so the 28×256 B syncs overlap the current exec.
+Expected ~0.5 ms/tok (≈3-4% decode), taking ~67 → ~69-70 tok/s. The argmax+embed
+(~2 ms) sit in the strict `logits→argmax→embed→next-exec` chain and are inherent.
+
+**Honest ceiling** (from the same doc): best case ≈ 14.7 ms ≈ **68-70 tok/s** vs
+FLM's 73.58-74.92 — the residual is host logits-sync/embed plus device time that
+FLM shares. The i6 double-buffer is a correctness-sensitive hot-path change (the
+wrong slot silently corrupts decode), so it is implemented only when the device
+is free to validate token parity.
