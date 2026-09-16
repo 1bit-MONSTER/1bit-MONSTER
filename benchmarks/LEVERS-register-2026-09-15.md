@@ -801,17 +801,9 @@ worktree and measures a stale binary.
   This applies to any generated-kernel route, not just the family adapter.
 - **Corrected family >1024 status:** the `AttnCtx` adapter now drives the generated
   kernel in a real prefill deterministically, but Nanbeige is still **not** at
-  parity, and the cause is now DECISIVE rather than suspected. `NPU_ATTN_EMU_DIFF`
-  shows the NPU and the AttnCtx's **own host EMU** agree to ~1e-4 while **both**
-  diverge from the engine's float `attn_omp` by 0.2-1.2 max / 0.01-0.044 mean
-  (L0 control 2.1e-4). So the kernel is faithful and the gap is the **int8
-  attention contract**: quantising the prefill's Q/K/V (max|q| = 26.75 -> int8
-  step ~0.21) into int8 Q, int8 K, int8 A2 and int8 V with a GLOBAL sq/sk costs
-  0.01-0.044 mean on the attention output, compounding with depth. The bench's
-  smaller 1.2e-1 figure is just its smaller synthetic dynamic range. Ruled out
-  along the way: pre-RoPE convention (`attn_omp` has no RoPE; both paths get the
-  same post-RoPE bytes) and score-range saturation (measured spans only 4-11).
-  Parity therefore needs a **wider generated kernel** (bf16 Q/KV, or a wider A2) —
-  the same dtype change the beyond-8192 route needs (int8 KV there vs bf16 in the
-  dense path). Bench gate remains NPU==EMU 8.575258e-02 (the kernel matches its
+  parity. With determinism restored, the in-situ `NPU_ATTN_DIFF` localises the gap
+  to the **AttnCtx Q/K/V contract** vs the engine's `attn_omp` (max |npu-host| =
+  0.15-0.82 against head outputs scaled ~0.15-0.32, with `npu[0][0] ==
+  host[0][0]` exactly), i.e. the pre-RoPE/scale/int8 convention — not the kernel
+  and not a race. Bench gate remains NPU==EMU 8.575258e-02 (the kernel matches its
   *own* EMU).

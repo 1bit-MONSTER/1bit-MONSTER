@@ -4791,22 +4791,6 @@ struct Bf16Ctx {
                                    keys2, ac_ao.data());
                             for (int j = 0; j < qout; j++)
                                 bA[(size_t)pi * qout + j] = f32_to_bf16(ac_ao[j]);
-                            if (getenv("NPU_ATTN_EMU_DIFF") && pi == npt - 1) {
-                                std::vector<float> emu_out((size_t)qout), f_out((size_t)qout);
-                                ac.emu_vo = kv_caches[l][0].v.data();
-                                ac.run_emu(emu_out.data(), ac.kv_sv, keys2);
-                                attn_omp(&bqo[(size_t)pi * qkvn], f_out.data(),
-                                         kv_caches[l][0].n, kv_caches[l][0].k.data(),
-                                         kv_caches[l][0].v.data(), NH, NKV, HD, GQA, keys2);
-                                double d_emu = 0, d_npu = 0, s_emu = 0, s_npu = 0;
-                                for (int j = 0; j < qout; j++) {
-                                    double a = std::fabs(emu_out[j] - f_out[j]); if (a > d_emu) d_emu = a;
-                                    double b = std::fabs((double)bf16g(bA[(size_t)pi * qout + j]) - f_out[j]); if (b > d_npu) d_npu = b;
-                                    s_emu += a; s_npu += b;
-                                }
-                                fprintf(stderr, "[ACTX-EMU] L%d row=%d keys=%d max|emu-float|=%.6g max|npu-float|=%.6g mean|emu-float|=%.6g mean|npu-float|=%.6g\n",
-                                        l, pi, keys2, d_emu, d_npu, s_emu / qout, s_npu / qout);
-                            }
                         }
                         attn_ctx_ok = true;
                         if (l == 0 || l == NC - 1)
