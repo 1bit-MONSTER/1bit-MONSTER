@@ -546,33 +546,48 @@ int64_t npu_pack_moe_expert_pool(uint8_t* bo, ModelWeights* mw, int layer) {
 
 // ===========================================================================
 // 35B MoE region-B packing (the layer ELF's arg-0 weight BO, desc-logical
-// offsets relative to 0x1bc00000). Each 8704-B Q8_0 tile (256 bf16 scales +
-// 8192 int8) is TRIMMED to 4736 B (keep the first 4736 B: scales + 4224
-// int8), then the tiles are A/B-interleaved in 16-tile blocks — the same
-// reorder formula byte-verified in Round 79 (out[o] = in[o/2 + 8*(o%2)]),
-// now applied to PRE-TRIMMED tiles (the load_linear_weights trim is a
-// separate step from the reorder_cpy A/B shuffle).
+// offsets relative to 0x1bc00000).
 //
-// Desc offsets (rows, relative to region-B base):
-//   share_up   0     128 tiles  [16,8,8704]
-//   share_gate 128   128 tiles  [16,8,8704]
-//   share_down 256   128 tiles  [64,2,8704]
-//   qkv        384  2048 tiles  [256,8,8704]
-//   gate_proj  2432 1024 tiles  [128,8,8704]
+// REPAIRED (goal mtusoiy1, on-box oracle): the runtime's own
+// qwen3_6_reorder_cpy was called on the live model (tools/verify_moe_reorder_qkv)
+// and its output is byte-exact for 221/221 windows as:
+//     out[o] = in[o/2 + 8*(o%2)]     per 16-window block
+// where `in` are 4736-B windows read at a **4736-B stride** from the Q8_0
+// tensor (NOT row-aligned 8704-B trims — that convention matches only 1/221).
+// There is NO re-quantisation: the Q8_0 bytes (scales + int8) are preserved.
+// The previous version read at 8704 stride (row-aligned trim), which is the
+// bug that made the layer produce NaN.
+//
+// Desc offsets (windows, relative to region-B base):
+//   share_up   0     128  [16,8,8704]
+//   share_gate 128   128  [16,8,8704]
+//   share_down 256   128  [64,2,8704]
+//   qkv        384  2048  [256,8,8704]
+//   gate_proj  2432 1024  [128,8,8704]
 // Total 3456 rows x 4736 B = 16,367,616 B (the layer ELF reads via 4736-B
 // LINEAR BDs at 16-row strides, Round 72).
 // ===========================================================================
-#define NPU_MOE_8704_ROW 8704
 
-// Trim each 8704-B tile to 4736 + A/B interleave in 16-tile blocks, into `bo`
-// starting at `row_start` (4736-B rows). n_tiles must be a multiple of 16.
+// A/B-interleave of 4736-B windows, byte-verified against the runtime's
+// qwen3_6_reorder_cpy (tools/verify_moe_reorder_qkv.cpp) on the live model:
+//     out[blk*B + i] = in[blk*B + i/2 + H*(i%2)],   B = 2*H,  H = n_tiles/256
+// Verified: qkv n=2048 -> H=8 (2048/2048), gate_proj n=1024 -> H=4 (1024/1024),
+// and for n<=256 the interleave degenerates to the identity (n=256 test).
+// `in` windows are 4736-B slices at a 4736-B stride from `tensor` (NOT
+// row-aligned 8704-B trims), and there is NO re-quantisation.
 static void npu_pack_8704_tiles(uint8_t* bo, const uint8_t* tensor, int n_tiles,
                                 int row_start) {
-    for (int blk = 0; blk < n_tiles / 16; blk++) {
-        for (int o = 0; o < 16; o++) {
-            int ti = o / 2 + 8 * (o % 2);
-            memcpy(bo + (size_t)(row_start + blk * 16 + o) * NPU_MOE_ROW_BYTES,
-                   tensor + (size_t)(blk * 16 + ti) * NPU_MOE_8704_ROW,
+    if (n_tiles <= 0) return;
+    int H = n_tiles / 256;
+    if (H < 1) H = 1;
+    int B = 2 * H;
+    for (int blk = 0; blk * B < n_tiles; blk++) {
+        for (int i = 0; i < B; i++) {
+            int o = blk * B + i;
+            if (o >= n_tiles) break;
+            int j = blk * B + i / 2 + H * (i % 2);
+            memcpy(bo + (size_t)(row_start + o) * NPU_MOE_ROW_BYTES,
+                   tensor + (size_t)j * NPU_MOE_ROW_BYTES,
                    NPU_MOE_ROW_BYTES);
         }
     }
