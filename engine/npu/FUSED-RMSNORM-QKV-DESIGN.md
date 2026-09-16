@@ -7105,3 +7105,44 @@ order-of-magnitude I wrote a moment ago, and I am correcting that before anyone 
 The per-descriptor cost model (launch A 7.54 us/BD contiguous vs launch B 18.56 us/BD strided) and the
 in-tree evidence against a fixed shim limit both still stand. What I corrected here is only the SIZE of the
 win I can claim from aggregation before measuring.
+
+## THE HARD FLOOR: depth-2 fifos cap aggregation at ~2x, so tuning cannot close this gap
+
+The generator states its own constraints: **fifo depth = 2** (`n1_fk3_layer.py:54`, and again at `:184`), and
+"three of them at depth 2 is 96 KB at M=128" - i.e. the **MEM TILE buffers**, not the core, are the binding
+budget. Aggregating kt-tiles into one BD therefore requires `AGG x M x k` to fit a depth-2 fifo:
+
+```
+AGG= 1:   2048 elements =   4.0 KB per BD   fits depth 2
+AGG= 2:   4096 elements =   8.0 KB per BD   fits depth 2
+AGG= 4:   8192 elements =  16.0 KB per BD   EXCEEDS depth 2
+AGG=64: 131072 elements = 256.0 KB per BD   EXCEEDS depth 2
+```
+
+**Best case AGG=2: 8192 -> 4096 descriptors per phase, i.e. ~2x fewer.** That is 991.34 ms -> ~500 ms at
+best - still ~20x slower than the per-op path's ~19-27 ms/layer. The 64x I briefly projected is not available
+at this fifo depth, and raising the depth is not free either, because the mem tile - not the core - is what
+runs out.
+
+**So the conclusion is architectural, and I should state it plainly rather than keep proposing tweaks.**
+This design - depth-2 objectfifos, one shim-DMA task per tile, a host-side generator - has a **hard floor** on
+descriptor-bound performance at roughly 18.6 us per descriptor with ~53,408 descriptors per layer. No
+scheduling change (pipelining: refuted, 997.09 ms) and no aggregation available within the fifo budget (<=2x)
+reaches the per-op path. The per-op path is 56x faster because it uses the engine's runlist/ELF mechanism,
+which this kernel does not use at all - a different architecture, not a tuned version of this one.
+
+**What this means for the objective, honestly.** The objective asks for a *fused* path that *closes the gap*.
+The evidence now says that is not reachable by tuning this architecture, and that the gap it targets does not
+exist anyway (the un-fused native path measures 1945.5 tok/s @1k, above the published 1494 bar). The three
+honest options are: (a) keep the fused path as what it actually is - a verified-correct artifact that
+reproduces the engine's tokens exactly, useful as a testbed, not as a speed win; (b) re-architect onto the
+runlist/ELF mechanism, which is a new design rather than a continuation of this one; or (c) treat the
+objective's premise as refuted and retire the performance half. All three are the user's call, which is why
+the goal is paused rather than re-attempted.
+
+**What is not in doubt**: fk-1 and fk-2 are real; fk-3's token parity is provable from kept files
+(`/tmp/tok_kvfix.txt`, `/tmp/clean_perop.txt` both emit `220 49789 220 11141`); the fk-4 measurement
+(1945.5 tok/s @1k) is corroborated by a kept log with no `[fk3]` markers; and the diagnosis of launch B
+(53,408 descriptors at 18.6 us, per-descriptor cost scaling with descriptor complexity - launch A achieves
+132,577 BDs/s on contiguous 2-D taps where launch B manages 53,875 on strided 4-D taps) rests on measured
+quantities.
