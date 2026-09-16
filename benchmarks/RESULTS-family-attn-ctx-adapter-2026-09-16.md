@@ -337,3 +337,44 @@ kernel; (c) accept that the generated int8 kernel serves bounded-Q/K families on
 and cite the range limit as the exclusion for the bf16 prefill. The `NPU_ATTN_DBG`
 probe stays in `npu_attn_ctx.h` (env-gated, first three calls only) for the next
 round.
+
+## Addendum 8: the score-range estimate was WRONG — scores are small (range hypothesis refuted)
+
+Addendum 7 estimated the raw score magnitude at ~6e3 from `max|q|·max|k|·hd`. That
+estimate was an upper bound assuming every term aligns; it is not what the data does.
+Measured directly in-engine (`NPU_ATTN_DBG=1 NPU_ATTN_DBG_SEQ=8`, head 0, `q·k/sqrt(hd)`
+over the 8 keys), per layer:
+
+```
+L0: min=0        max=0        span=0        (first call, KV not yet populated)
+L1: min=-0.679   max=5.059    span=5.738
+L2: min=-6.637   max=3.987    span=10.624
+L3: min=-1.133   max=3.026    span=4.159
+L4: min=-4.172   max=4.115    span=8.287
+L5: min=-4.776   max=3.610    span=8.386
+```
+
+**Spans of 4-11 are ordinary softmax territory**, so the AttnCtx softmax has no range
+problem here and the "large-Q/K score range" explanation is **refuted**. That also
+removes the reason to trust addendum 6's `A2 = 127` reading: with normal scores the
+softmax cannot saturate, and the DUMP path is the one that *segfaults* in-engine, so
+`A2 = 127` (0x7F — a fill pattern) is most likely a bad SCR read in the diagnostic,
+not the kernel's output.
+
+Where this leaves the Nanbeige gap — the surviving explanation is **precision**, which
+addendum 5's ruling-out does not actually cover:
+
+- The bench's int8-vs-float error was measured on the **bench's own** random buffers.
+  In-engine the data is larger (`max|q| = 26.75`, `sq = 4.75` -> int8 step ~0.21 in
+  q-units), so the same int8 contract is materially coarser on the real prefill than
+  the bench numbers suggest — which is exactly why the bench's 1.2e-1 does not bound
+  the in-situ 0.82.
+- The generated kernel is **int8 KV + int8 Q**, while the dense bf16 prefill is bf16
+  throughout — the dtype mismatch @agent-baaa57 flagged in the beyond-8192 handoff.
+
+So the honest status for Nanbeige: the adapter is fixed, deterministic, and its input
+conversion is verified correct; the residual divergence is a **precision/contract
+mismatch (int8 attention vs the bf16 prefill)** compounded by the prefill stack itself
+differing from FLM even with float attention (CPU path 166103 vs FLM 13). Closing it
+needs either a bf16/higher-precision variant of the generated kernel or a
+quantisation scheme matched to the prefill's value range.

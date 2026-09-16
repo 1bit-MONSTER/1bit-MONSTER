@@ -354,7 +354,7 @@ struct AttnCtx {
         const std::vector<float>& sv = kv_sv;
         static const bool ACTX_DBG = getenv("NPU_ATTN_DBG") && atoi(getenv("NPU_ATTN_DBG")) == 1;
         static int actx_dbg_n = 0;
-        if (ACTX_DBG && actx_dbg_n < 3) {
+        if (ACTX_DBG && actx_dbg_n < 64) {
             actx_dbg_n++;
             float qmx = 0, kmx = 0, vmx = 0;
             for (int i = 0; i < qd; i++) { float a = std::fabs(qo[i]); if (a > qmx) qmx = a; }
@@ -365,6 +365,23 @@ struct AttnCtx {
             fprintf(stderr, "[ACTX-DBG] seq=%d nq=%d nkv=%d hd=%d sq=%.6g sk=%.6g maxq=%.6g maxk=%.6g maxv=%.6g p0=%.6g sv0..3=%.4g %.4g %.4g %.4g\n",
                     seq, nq, nkv, hd, sq, sk, qmx, kmx, vmx,
                     1.0f / (sq * sk * std::sqrt((float)hd)), sv[0], sv[1], sv[2], sv[3]);
+            // head-0 raw score range (the quantity the softmax must hold) and the
+            // per-token max score for the first 8 keys.
+            {
+                const int tgt = getenv("NPU_ATTN_DBG_SEQ") ? atoi(getenv("NPU_ATTN_DBG_SEQ")) : 8;
+                if (seq == tgt) {
+                    float smax = -1e30f, smin = 1e30f;
+                    for (int t = 0; t < seq; t++) {
+                        double sc = 0;
+                        for (int d = 0; d < hd; d++) sc += (double)qo[d] * (double)ko[(size_t)t * kd + d];
+                        sc /= std::sqrt((double)hd);
+                        if ((float)sc > smax) smax = (float)sc;
+                        if ((float)sc < smin) smin = (float)sc;
+                    }
+                    fprintf(stderr, "[ACTX-DBG] score range (head0, seq=%d): min=%.6g max=%.6g span=%.6g\n",
+                            seq, smin, smax, smax - smin);
+                }
+            }
         }
 
         // ── bo0: A-frame (head h at row h·2048) + params at PARAM_ROW ──
