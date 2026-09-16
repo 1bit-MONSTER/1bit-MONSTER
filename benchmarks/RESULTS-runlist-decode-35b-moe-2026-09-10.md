@@ -237,3 +237,31 @@ tensor, so it is not region-A/B in any raw form.
 Conclusion unchanged: on this box the region-A/B weight BO is not reachable from
 a failing forward, and the runtime's own 35B forward cannot complete
 (v1.0.4 SIGSEGV at load, v1.0.5 ERT_CMD_STATE_TIMEOUT at the first runlist).
+
+## Addendum 5 — REPAIR: region-B packer derived from the runtime's own reorder (2026-09-16)
+
+`qwen3_6_reorder_cpy` in the on-box `libqwen3_6_moe_npu.so` is callable at
+`(gen_layer_seq - 0x97ad0) + 0x68b80` (as `tools/verify_moe_reorder_qkv.cpp`
+does). Calling it on the LIVE model's region-B tensors yields the ground truth
+the engine's packer was missing.
+
+Findings (byte-verified against the runtime function):
+- The source windows are **4736-B slices at a 4736-B stride** from the Q8_0
+  tensor — *not* row-aligned 8704-B trims (that convention matched 1/221).
+- There is **NO re-quantisation**; the Q8_0 bytes (256 bf16 scales + int8) are
+  preserved.
+- The reorder is an A/B interleave inside `2H`-window blocks:
+  `out[blk*2H + i] = in[blk*2H + i/2 + H*(i%2)]` with **H = n/256**, where `n`
+  is the tensor's row count (the count passed to reorder_cpy).
+
+Verified: qkv `n=2048 -> H=8` matches **2048/2048**; gate_proj `n=1024 -> H=4`
+matches **1024/1024**; share_* (`n=128 -> H<1 -> identity`) confirmed via an
+`n=256` call whose first 128 windows are the raw windows (128/128).
+
+**Repair applied** to `npu-infer/src/model.c:npu_pack_8704_tiles`: the old code
+read at the `NPU_MOE_8704_ROW` (8704) stride and trimmed rows; it now reads at
+`NPU_MOE_ROW_BYTES` (4736) and applies the H=n/256 interleave. Rebuilt packer
+output is byte-identical to the runtime's reorder for qkv (2048/2048) and
+gate_proj (1024/1024). This removes the "wrong region-B weights" cause of the
+engine layer's all-NaN output (R90/R92/R93/R114); the end-to-end NPU re-test
+(`tools/moe_smoke`) is pending the device being free.
