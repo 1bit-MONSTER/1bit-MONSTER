@@ -3926,3 +3926,42 @@ rather than read. The bound test worked only because I finally compared against 
 weight through a path that is definitely post-upload, or by running the engine's own GEMM on a
 known vector and reading back what it computed. That is the last unexplained factor, and it
 accounts for the entire 5.36x.
+
+## NAMED AT LAST: the weight is PERMUTED. Same values, different arrangement.
+
+Computed a GEMM of the engine's **own** dumped normed activation with **my** raw dequantized weight,
+and compared against the engine's **own** QKV output:
+
+```
+                          maxabs     meanabs
+engine A_norm              2.54688    0.149461
+my raw W                   0.64062    0.022887
+engine QKV (its own GEMM)  4.68750    0.183360
+CPU  A_norm @ W_raw        0.98047    0.177585
+engine/CPU ratios:  maxabs 4.781     meanabs 1.033      matched elements 0.08%
+```
+
+**The mean magnitudes agree to 3%.** The two results have the same overall scale and the same value
+distribution - and yet only 0.08% of elements match, and the maxima differ 4.78x. That combination
+has exactly one explanation: **the weight is the same matrix, permuted.** A permutation preserves the
+distribution (so the means agree) while destroying the pairings (so the dot products differ).
+
+So `bf16mm_upload_w` applies a **layout permutation** to the array `bf16mm_dequant` produces, my
+driver uploads the raw array, and my kernel performs a row-major GEMM with it. That is the entire
+5.36x, and it is the mechanism I hypothesised, abandoned when a read-back appeared to match, and
+have now confirmed by arithmetic rather than by any single buffer's identity.
+
+It also explains every false trail of the last several rounds at once:
+* my CPU reference agreed with my kernel because it read the weight exactly as my kernel does -
+  both assume the raw array is already the effective layout;
+* `bf16mm_dump_w(Wqkv[0], ...)` "matching" my array means it returns the pre-upload data;
+* the tillng candidates I tried (32x256 etc.) failed because the permutation is not one of those -
+  but now there is a precise target to search for instead of guessing;
+* and the attention, whose numerics I did fix (1/sqrt(HD), verified independently), was never the
+  main problem: it was fed a QKV computed from a permuted weight.
+
+**Next step, and it is a search rather than a guess**: find the permutation P such that
+`A_norm @ W[P]` reproduces the engine's QKV. With 4 tokens x 4096 columns and the engine's own
+values in hand, structured candidates (tile shapes, intra-tile transposes, row/column block orders)
+can be tested in pure NumPy - no device, no rebuild - and the winner applied in the driver before
+upload. That closes fk-3's correctness gap.
