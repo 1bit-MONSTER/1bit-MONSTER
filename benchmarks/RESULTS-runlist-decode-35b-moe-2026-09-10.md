@@ -4647,3 +4647,51 @@ work that precedes it. The three-phase design's STRUCTURE -- one xclbin, one sub
 arguments, phases sharing a single buffer at fixed byte offsets -- is sound and compiles, and its norms
 are correct. What it does not yet have is a trustworthy GEMM, and every 8192/8192 quoted in this lane
 before addendum 117 was a single lucky sample.
+
+### Addendum 129 — DIRECTION 2 EXHAUSTED: the m1 design is structurally IDENTICAL to mine. The fault is in the shared pattern.
+
+Read n1_core_i8_m1.py's GEMM against mine, line by line, as addendum 128's direction 2 asked. They are
+the same design:
+
+  C fifos:      C_c[j][c] = object_fifo(..., core -> mem, 1, C_ty);  C_s[c] = object_fifo(..., mem -> shim, 1, C_l2_ty);
+                object_fifo_link([C_c...], C_s[c], [offsets])          -- depth 1, same as mine now
+  core body:    for _ in range_(num_groups): Cbuf = acquire(Produce); zero(Cbuf);
+                    for _ in range_(n_k): Abuf = acquire; Bbuf = acquire; matmul(Abuf, Bbuf, Cbuf);
+                                          release; release
+                    release(Produce)                                   -- character for character mine
+  runtime:      A/B batch loop with at_list/bt_list, dma_await_task then dma_free_task;
+                then c_tasks = [] ... for c: ct = shim_dma_single_bd_task(..., issue_token=True)
+                dma_await_task(*c_tasks); dma_free_task(*c_tasks)      -- SAME ORDER as mine
+  A feed:       a per-ROW broadcast fifo from shim_tiles[j] to every core of that row -- a broadcast,
+                just like the one I removed and blamed in addendum 120
+
+THERE IS NO DE-FACTOR BARRIER IN THE m1 THAT MINE LACKS. Its lower failure rate (1 in 8 versus my 5-6 in
+8) is a property of its shape and geometry, not of any extra synchronization: it runs c=8 with
+num_col_group=8 at the QKV shape where mine runs c=4 with num_col_group=16 plus a second GEMM. The m1 is
+the same design with a LUCKIER window.
+
+CONSEQUENCE, and it is the most important single sentence in this lane: the GEMM's C read is separated
+from the C read's own column-group's A/B feed by exactly ONE batch's worth of DMA work, and the object
+fifo's release accounting is what is supposed to guarantee the core has finished. The evidence says it
+does not, in this design, reliably -- sometimes the read lands on a slot the core has zeroed and not yet
+accumulated into, which is an all-zero output with no error and perfect post-hoc stability. And the
+structure cannot be re-ordered out of the problem: the mem tile is ~64 KB, so the A/B feeds for all
+column-groups CANNOT all precede the C reads; the interleaving is inherent to the geometry.
+
+SO THE FIX HAS TO BE AN EXPLICIT COMPLETION HANDOFF THAT THE FIFO IS NOT PROVIDING. Options, roughly in
+order of how much I would trust them without further reading:
+  1. A dedicated, tiny handshake: the core writes a sentinel to a small output fifo AFTER its release, and
+     the runtime reads that sentinel before the C read. Costs one descriptor per group and makes the
+     dependency explicit rather than implied.
+  2. Read C only ONCE per phase, at the very end, from a per-column accumulator that the core has
+     finished with -- same idea, fewer descriptors.
+  3. Establish whether this is a known aiecc/dynamic-objfifo issue: the compiled control program's
+     core-release versus shim-S2MM ordering is aiecc's business, and if the release is not ordered
+     against the S2MM the generator cannot fix it by arranging fifos differently.
+  4. Multi-submit per runlist (addendum 116): put the GEMM's C readback in a SEPARATE submit from its
+     feeds, so the kernel invocation boundary -- which does imply completion -- sits between them.
+
+WHATEVER THE ANSWER, THE LANE'S REFERENCE DESIGN IS NOT EXEMPT. Every "8192/8192" quoted here before
+addendum 117, including the m1 QKV result that this workstream treated as ground truth since addendum 82,
+was a single sample of a design that fails in roughly one run in eight. Anything built on it inherits
+that.
