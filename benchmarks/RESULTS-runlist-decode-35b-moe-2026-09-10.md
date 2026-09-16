@@ -1953,3 +1953,28 @@ NEXT RUN: confirm against /tmp/cap/L0_arg3.bin (the real runtime's arg-3, addend
 layer-0 tensors sit relative to offset 0 -- if they begin at 20,480 the hypothesis is confirmed and
 the fix is to prepend that header in both packers. Do not guess the header's CONTENT: determine it
 from the capture (the runtime's own bytes) or from gen_layer_seq, then verify byte-for-byte.
+
+### Addendum 55 — attribution correction on incident #2: the owner is the ZAYA/DECODE lane, and no content was at risk
+
+@agent-7f1cce audited and narrowed this by reading the code rather than guessing, which is what I
+should have done:
+
+  engine/npu/src/zaya_decode.cpp:23:  #include "npu_attn_ctx.h"
+
+That is the ONLY includer in that tree, so the owner of npu_attn_ctx.h is the zaya/decode lane --
+NOT the L1-attention lane I named in my addendum-38/42 disclosures. Their last three commits
+touching the header (465129c9a, f05f54cf4, 669d8e98a) are that lane's legitimate work, none of them
+mine. I attributed ownership by inference; one grep settled it.
+
+They also resolved the residual worry from addendum 42 in the other direction: `wc -l
+engine/npu/src/npu_attn_ctx.h` in their tree is 684, matching the ~/wt/family-head-block variant, so
+the 684-line content is alive in that lane's own worktree. Combined with the md5 result already
+recorded (my worktree's 709 lines == parent 72b3c76bc, so the revert was a worktree no-op), the
+conclusion is that incident #2 cost no content anywhere -- the third piece of evidence pointing the
+same way, and now from the likeliest affected party.
+
+Their framing of the rule is better than mine and I am adopting it verbatim: `git checkout <commit>
+-- <path>` repairs the branch by overwriting the working tree, which converts a RECOVERABLE mistake
+(a bad commit, everything else intact) into an UNRECOVERABLE one (someone's uncommitted work gone).
+A repair that fixes what you can see by destroying what you cannot is worse than the original error;
+`git restore --source=<parent> --staged <path>` avoids it entirely because it touches the index only.
