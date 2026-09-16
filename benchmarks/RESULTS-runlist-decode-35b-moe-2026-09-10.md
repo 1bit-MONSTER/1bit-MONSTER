@@ -2331,3 +2331,36 @@ this is now a porting task, not a discovery task.
 This closes the arc that began with "the runlist ERTs structurally": the runlist works, the layer
 computes, and the reason it computed NaN is that we were handing it layernorm weights where the
 runtime hands it expert weights, in a unit-interleaved layout that is now fully written down.
+
+### Addendum 67 — EXHAUSTIVE verification: units 0..16383, all 65,536 slots, BAD = 0
+
+Replaced the 214-unit sample with a full sweep of the whole up/gate region:
+
+  units 0..16383, all 4 row-slots each
+  slots checked = 65,536      BAD = 0      first_bad = None
+
+across 310 MB of the runtime's own arg-3. The formula from addendum 64 is therefore not merely
+supported by a sample: it reproduces the runtime's weight image EXACTLY, slot for slot, over the
+entire up/gate region.
+
+  for unit u:  b = u//16, w = u%16
+               tensor   = mlp.up_exps_proj if w < 8 else mlp.gate_exps_proj
+               row_base = b*32 + (w%8)
+               slot s (0..3) at u*18944 + s*4736  <-  row (row_base + 8*s)
+  rows consumed: 0..32767 = exactly the 4096x8 core of up_exps/gate_exps ([4096,8,5120])
+
+with down_exps anchored at unit 16384 under the analogous formula
+row_base = (k//8)*32 + (k%8), k = u-16384, slots interleaved (0,2,1,3).
+
+WHAT THIS MEANS, stated plainly: the reason this lane's whole-layer ELF produced all-NaN is that
+region-A was packed with the wrong content entirely. The runtime's arg-3 head holds the EXPERT
+weights in a unit-interleaved layout -- now written down exactly and verified exhaustively against
+the runtime's own bytes -- while our packer put input_layernorm, post_attention_layernorm, conv1d,
+ssm_norm, ssm_a and ssm_dt there, tensors that live in the norms BO and match none of the located
+offsets. Every failed experiment along the way (the tail overwrite, the F32/bf16 neutralisation,
+the 66,048 repack, the 20,480-byte header idea) was rearranging head tensors inside a buffer that
+holds expert weights.
+
+REMAINING WORK IS A PORT, NOT A DISCOVERY: move this loop into npu_pack_moe_region_b, drop the head
+tensors from region-A, re-run with NPU_RUNLIST_STATS=1, and check the act goes finite. The
+correctness gate is the capture: the packer reproduces it byte-for-byte over 65,536 slots today.
