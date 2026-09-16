@@ -2904,6 +2904,35 @@ This also retires a hypothesis I had ranked first: the weights are NOT mis-laid-
 exactly what it is given and produces the reference's answer. Whatever is wrong in the
 engine is upstream of that, or in the weights as the engine dequantizes them.
 
+## RETRACTION: the "H_BF is normalized" conclusion above is NOT supported
+
+I claimed residual 1 carries `normalize(x+o)` rather than the raw sum, on the grounds that
+`HBF maxabs = 0.9414` is smaller than both `A (1.0469)` and `A2 (1.4922)`. **That inference
+is invalid**: the residual add is ELEMENTWISE, and an elementwise sum of two vectors can
+easily have a smaller max than either input - `x = [1, -1]`, `o = [-0.9, 0.9]` sums to
+`[0.1, -0.1]`. Measuring maxima cannot distinguish "sum" from "normalized", and I treated a
+single summary statistic as if it were a structural proof.
+
+Checking the thing I should have checked first: `add_f32_bf16` - the raw adder - **is**
+emitted and called, in both builds:
+
+```
+fk3_B128/design.mlir     add_f32_bf16 calls=1   rms_scale_add_f32_bf16 calls=1
+fk3_full128/design.mlir  add_f32_bf16 calls=1   rms_scale_add_f32_bf16 calls=1
+```
+
+So the kernel does contain a raw `x+o` phase feeding H_BF, exactly as `n1_fk3_layer.py` line
+313 (`add_h(a, o, hb)`) intends. The design-doc ambiguity I flagged is real but the code
+followed the correct reading. **The root cause of the engine's wrong tokens is still
+unknown**; what remains solid is the measurement that the fused path's layer-0 output is
+`maxabs 1.2344` against the baseline's `6.6196`, and that the fused state stays near unit
+scale for all 28 layers.
+
+The honest next step is to stop comparing summary statistics and compare the per-op path's
+own layer-0 intermediates to the fused path's, using the `NPU_DUMP_L0` hook the engine
+already has. Two wrong "root causes" in a row both came from reading a number as a
+structure; the fix is to diff the actual buffers.
+
 ## ROOT CAUSE of the engine's wrong tokens: residual 1 carries the NORMALIZED (x+o), not the raw sum
 
 With the driver's launch now proven bit-identical to the bench, the engine's remaining
