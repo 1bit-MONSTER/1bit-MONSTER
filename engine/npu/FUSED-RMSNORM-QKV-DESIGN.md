@@ -2382,3 +2382,20 @@ V untouched: yes
 ```
 So the pass between launch A and launch B is done and self-checked. It is
 microseconds at M=128 (M*24 heads*HD/2 rotations, all host-side).
+
+### One more requirement for the engine driver: the KV CACHE
+
+Realised while planning the hook-up, and it is easy to miss: the fused layer computes
+K and V internally and **does not write a KV cache**. The engine's decode path needs
+one. My attention is a self-contained prefill attention over the M tokens, so the
+keys and values never leave the layer.
+
+That is not a blocker, just a host-side copy: launch A's QKV buffer already holds all
+of K and V for the chunk, row-major, in columns `[KOFF, VOFF)` and `[VOFF, NQKV)`.
+After launch A (and after the RoPE pass, so the cache holds ROTATED keys — which is
+what decode expects), the driver appends those rows into the engine's KV cache in
+whatever layout decode reads. At M=128 that is 128 x 1024 x 2 B for K and the same
+for V, i.e. ~0.5 MB of memcpy, once per layer.
+
+Worth stating because "the layer is verified" and "the engine works" differ by
+exactly this kind of interface detail, and this is the last one I can see.
