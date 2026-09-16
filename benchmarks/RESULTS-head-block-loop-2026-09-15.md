@@ -1070,3 +1070,36 @@ So the hd256 row of the family table stays "not at parity", but the reason is no
 right one: not "the KV slot overwrites the next token" (fixed) but "H=1152 does not
 tile the q4 dequant". Recording it as the next item rather than leaving the old cause
 attached to a failure that no longer happens.
+
+### hd256 residual narrowed: the error is in the scores, not the second output tile
+
+Isolated it the same way as the head-block bug — hd256 with one pass and one group, so
+only the PV N-split is active:
+
+| shape | EMU | NPU | verdict |
+|---|---:|---:|---|
+| hd256, nh8/cols8/nkv2, N=512 | 3.288339e-01 | 3.829688e-01 | ~16% gap |
+| hd128 control (guard) | 4.564293e-02 | 4.564293e-02 | MATCH |
+
+Then `CK_PER_HEAD=3` splits head 0's error at the 128-dim tile boundary:
+
+```
+hd256 : d<128 max=3.068e-01   d>=128 max=2.618e-01     <- both halves wrong
+hd128 : d<128 max=8.046e-03   d>=128 max=0.000e+00     <- control
+```
+
+That clears the candidate I would have tested first: if the *second output tile's* feed
+or writeback were wrong, the error would be confined to `d>=128`. It is not — both
+halves carry the same ~0.3 error, which is what a wrong **score** produces (every
+output dim inherits it), not a wrong output tile.
+
+So the remaining candidate is the **contraction**: at hd256 the QK^T runs `n_k = K/64 =
+4` chunks instead of 2, and its inputs are the A-tile taps and the packed K^T. Both are
+sized by `K` and were exercised only at K=128 before this lane, so the next test is a
+per-chunk comparison (feed one chunk's worth of K and see whether the scores move at
+all) rather than another look at the PV.
+
+Two things this does NOT change: nothing about the five verified shapes, and nothing
+about the `4*HD` KV-slot fix (different mechanism, and its inertness is measured at
+429/429). It is a narrower open item than "hd256 is broken", which is the point of
+isolating it.
