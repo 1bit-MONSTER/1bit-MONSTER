@@ -72,3 +72,31 @@ sketches.
   yet matching, with the exact host location named.
 - The generated kernels and logs: `/tmp/attn_phi4_512.{xclbin,insts.txt}`,
   `/tmp/attn_q35_512.{xclbin,insts.txt}`, `/tmp/attn_v4_2048/*`; bench `/tmp/ck_goal`.
+
+## PV N-split host update (2026-09-16, later)
+
+Implemented the `n_hd = hd/128` host packing in `npu_attn_ctx.h`:
+
+- The V pack now branches. For `n_hd > 1` it writes V **row-major** `[t][d]` with
+  row stride `hd`, matching the generator's PV feed
+  (`offset = kv*N*K + ki*(k*hd) + hi*n`, `strides = (hd, 1)` — read it in
+  `n1_core_attn.py`'s PV phase). For `n_hd == 1` the original chunk-interleaved
+  pack is kept byte-identical (guarded).
+- The EMU V read matches the same two layouts.
+- The C2 read walks the head-dim tiles:
+  `cidx = nh_i*1024 + (dl/8)*64 + (dl%8)`.
+
+**hd128 is untouched and re-verified**: Nanbeige nh20/nkv4 N2048 and Phi4
+nh24/nkv8 N512 both still `C2 2/2` (the `n_hd == 1` guards).
+
+**hd256 after the change**: the EMU `max_abs_err` drops from `4.791975e-01` to
+`2.126317e-02` — the host packing is now a valid attention computation — but the
+NPU is `3.752225e-01`, still not matching. So the host layout is no longer the
+(only) difference: the kernel's second head-dim tile writeback/read does not
+agree with the seq's stated offsets, or the hd256 build's `n_hd` path is not what
+the seq describes. Next: `NPU_ATTN_DUMP=1` on the hd256 kernel and compare the
+per-tile C2 offsets with the seq writeback (`(hp*cols+c)*(M*K) + hi*(M*n)`), and
+confirm the built ELF actually carries `n_hd = 2`.
+
+The build for the measurement: `n1_core_attn.py -H 16 -c 8 --nkv 4 -K 256 -N 512`
+(goal tree's generator), gated with `CK_NQ=16 CK_NKV=4 CK_HD=256 NPU_ATTN_COLS=8`.
