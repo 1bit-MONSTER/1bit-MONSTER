@@ -61,3 +61,37 @@ Same passage, same model dir, `flm run nanbeige4.1:3b -c 4096`:
   `engine/npu/xclbins/`, which does not carry the nh20 build yet — pass
   `NPU_ATTN_XCLBIN`/`NPU_ATTN_INSTS` (the family worktree's artifacts) until it is
   vendored.
+
+## Addendum: the strict (template-matched) identity FAILS
+
+The 1172-token raw-id run's "boot 13 == FLM's first token 13" was a **coincidence**
+(newline is a common opener); the strict test resolves it.
+
+Building the prompt with the model's own chat template (`tokenizer_config.json`'s
+`chat_template`, rendered with jinja2) yields **1202 tokens** — exactly the count
+`flm run nanbeige4.1:3b` reported for the same passage. Running the engine on those
+ids:
+
+```
+NPU_ATTN_CTX=1 ... /tmp/nb_ids_tmpl.txt   (1202 ids, template-matched)
+-> Prefill 1202 [bf16], 32/32 layers [NPU_ATTN_CTX], attn 334 s
+-> boot = 764
+```
+
+FLM's first generated token on the same passage is **13**. So with the tokenisation
+matched, the engine's first token is **764 vs FLM 13 — NOT identical.** The earlier
+"first token matches" line must be read as raw-id-only and is superseded by this.
+
+Conclusion for the family status: the AttnCtx adapter is a working **vehicle** (the
+generated kernel drives a real prefill, 32/32 layers, no hang/ERT, and the kernel
+itself gates NPU==EMU on the bench), but Nanbeige is **not at token parity**: at
+>1024 keys the end-to-end prefill diverges from FLM (764 vs 13). The divergence is
+downstream of the attention kernel — candidates are the bf16 prefill's Q/K/V
+normalisation/RoPE ordering relative to the kernel's pre-RoPE contract, the GDN
+layers in the 32-layer stack, and the chat-template system prefix (the template is
+Nanbeige's tool-calling template, whose rendered 1202 tokens include a system
+section that may not be what FLM actually feeds).
+
+So: cited **partial** for Nanbeige — attention ABI route established and driven;
+token parity at >1024 keys NOT established, with the mismatch pinned to the prefill
+stack rather than the kernel (the kernel is separately gated).
