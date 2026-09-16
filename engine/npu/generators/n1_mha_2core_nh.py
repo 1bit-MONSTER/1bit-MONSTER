@@ -118,30 +118,32 @@ def mha2(M, N, C, HD, NH, DEPTH=2, PERCOL=1):
             def qk_body():
                 qk_reset()
                 for _ in range_(C_):
+                    # E/alpha are PER-HEAD (C tiles); only QK_c is a column-wide
+                    # broadcast (PERCOL*C tiles), so acquire them outside the loop.
+                    e = f["E"].acquire(ObjectFifoPort.Produce, 1)
+                    al = f["AL"].acquire(ObjectFifoPort.Produce, 1)
                     for s2 in range(PERCOL):     # Python-unrolled: this core's tile
                         qk = f["QK_c"].acquire(ObjectFifoPort.Consume, 1)
                         if s2 == SLOT:
-                            e = f["E"].acquire(ObjectFifoPort.Produce, 1)
-                            al = f["AL"].acquire(ObjectFifoPort.Produce, 1)
                             qk_softmax(qk, e, al)
-                            f["E"].release(ObjectFifoPort.Produce, 1)
-                            f["AL"].release(ObjectFifoPort.Produce, 1)
                         f["QK_c"].release(ObjectFifoPort.Consume, 1)
+                    f["E"].release(ObjectFifoPort.Produce, 1)
+                    f["AL"].release(ObjectFifoPort.Produce, 1)
                 lout = f["L_f"].acquire(ObjectFifoPort.Produce, 1)
                 qk_get_l(lout)
                 f["L_f"].release(ObjectFifoPort.Produce, 1)
 
             def pv_body():
                 for _ in range_(C_):
+                    e = f["E"].acquire(ObjectFifoPort.Consume, 1)
+                    al = f["AL"].acquire(ObjectFifoPort.Consume, 1)
                     for s2 in range(PERCOL):
-                        e = f["E"].acquire(ObjectFifoPort.Consume, 1)
                         v = f["V_c"].acquire(ObjectFifoPort.Consume, 1)
-                        al = f["AL"].acquire(ObjectFifoPort.Consume, 1)
                         if s2 == SLOT:
                             pv_combine(e, v, al)
-                        f["E"].release(ObjectFifoPort.Consume, 1)
                         f["V_c"].release(ObjectFifoPort.Consume, 1)
-                        f["AL"].release(ObjectFifoPort.Consume, 1)
+                    f["E"].release(ObjectFifoPort.Consume, 1)
+                    f["AL"].release(ObjectFifoPort.Consume, 1)
                 lf = f["L_c"].acquire(ObjectFifoPort.Consume, 1)
                 o = f["O_f"].acquire(ObjectFifoPort.Produce, 1)
                 pv_norm(lf, o)
