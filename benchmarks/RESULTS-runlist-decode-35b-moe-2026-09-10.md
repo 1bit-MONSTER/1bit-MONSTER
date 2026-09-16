@@ -193,3 +193,31 @@ layer ELF reads is created/filled outside `load_linear_weights`' three args).
 The next concrete on-box step is to hook the layer kernel's arg-0 BO at submit
 (e.g. via `cap_interposer` on `xrt::bo` creation, or a breakpoint on the runlist
 arg setup) and dump it — the runtime's own forward need not succeed for that.
+
+## Addendum 3 — on-box BO hunt via the set_arg interposer (2026-09-16)
+
+Ran the live v1.0.5 runtime under `tools/capture/cap_interposer.cpp`
+(LD_PRELOAD; it hooks `xrt::run::set_arg_at_index`, `xrt::ext::bo::bo`,
+`xrt::runlist::{add,execute,wait}`, `xrt::elf`) to find the layer kernel's
+region-A/B weight BO.
+
+Result (652 SETARGs captured before the interposer's own SIGSEGV):
+idx -> size map for the runs reached before the ERT timeout:
+  idx3 = 536,870,912 (expert pool, 80x) ; idx4 = 1 MB ; idx5 = 2 MB ;
+  idx6 = 5 MB / 1 MB ; idx7 = 128 MB / 3 MB ; (one 542,113,792 full-attn pool).
+A probe that dumped `[map()+0x1bc00000, +16 MB]` of the first 40 distinct
+512 MB idx-3 BOs found **all 40 zero** at both offset 0 and 0x1bc00000 — i.e.
+the 512 MB BOs bound at `set_arg` are fresh/zero, NOT the R50 pool (whose
+0x1bc00000 region is live `down` data, per Addendum 2). So no ~460 MB or ~16 MB
+region-A/B BO is bound before the runtime's first runlist dies.
+
+Interpretation: the v1.0.5 forward fails at (or before) the first runlist
+execute, so the LAYER-ELF run's args (arg0 = region-A/B) are never reached; and
+`load_linear_weights`' three args (512 MB pool, 5 MB, 5 MB) do not include it
+either (Addendum 2). The region-A/B BO is therefore created/filled on a path not
+exercised by a failing forward — it needs either a forward that at least binds
+the layer run (v1.0.4 crashes at load; v1.0.5 times out before it), or a
+breakpoint on the BO-creation/resident-object path inside `Impl::load_weights`.
+
+Net on-box assets now banked: FastFlowLM source tree (Addendum 2), the live
+expert-pool BO (R50 verified 206/206), and the interposer idx/size run map.
