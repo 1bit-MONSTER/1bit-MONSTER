@@ -4524,3 +4524,45 @@ NEXT, precisely: move the two overrides above the fill and re-run. With B = all 
 identically for every n, so a zero C means the A arrived empty and any nonzero C means the A arrived --
 and vice versa for A = all ones. That cleanly identifies WHICH feed is failing, which is the last thing
 standing between this and a fix.
+
+### Addendum 126 — the output is BIMODAL: all or nothing. And the C reads can return a zeroed, unfilled slot.
+
+Corrected probe (overrides applied before the fill this time), four runs per case at n_k=1:
+
+  none (random A, random B):   7/2048 C-nonzero 0     | 2/2048 C-nonzero 2041 | 2/2048 2041 | 7/2048 0
+  ALLONES_B (A random, B = 1): 2048/2048 2048 | 2048/2048 2048 | 32/2048 32 | 2048/2048 2048
+  ALLONES_A (A = 1, B random): 15/2048 1137 | 20/2048 15 | 9/2048 2027 | 19/2048 0
+
+WHAT THIS ESTABLISHES. With B = all ones the B's CONTENT stops mattering, and the GEMM is EXACT
+2048/2048 in three runs out of four. So the A feed, the core, the kernel, the accumulation and the C
+readback are all capable of being correct at this shape. Nothing is fundamentally mis-wired.
+
+AND THE OUTPUT IS BIMODAL. In the random case, two runs produced an ALL-ZERO C and two produced 2041 of
+2048 nonzero. Not "a few tiles wrong" -- NOTHING, or essentially EVERYTHING. That is a completely
+different signature from the partial-column failures at large K, and it is the cleanest statement of the
+fault so far: the sequence sometimes retires having done NO WORK AT ALL, and the C readback returns a
+buffer that was zeroed but never filled.
+
+THE HYPOTHESIS THAT FITS: the core's first act is `zero(cbuf)`, and the C fifo has depth 2. If the shim's
+C read takes a slot the core has zeroed but not yet accumulated into, the host sees exactly this -- an
+all-zero result with no error, no partial corruption, and perfect stability once read (as addendum 121
+showed). The runtime waits on the DMA, not on the core's arithmetic, and the fifo's release accounting
+is what is supposed to bridge that gap.
+
+A SECOND ERROR OF MINE, worth recording because it invalidated one of the three columns above: the
+ALLONES_A runs were made WITHOUT CHUNK_B, and the design uses the LINEAR B tap, which reads chunk-ordered
+weights. With B = all ones the packing is irrelevant, which is why ALLONES_B works; with A = all ones the
+B's LAYOUT matters and the comparison is meaningless. So the A=ones column says nothing about the B feed
+and must be repeated with CHUNK_B set. That is the sixth instrument error of this session, and the third
+in four addenda -- the pattern is consistent: when a measurement surprises me, the odds strongly favour
+my instrument over the device.
+
+NEXT, precisely:
+  1. Re-run ALLONES_A with CHUNK_B=1 to actually test the B feed, 8 runs.
+  2. Attack the bimodality directly: set the C fifo back to depth 1 and see whether the all-zero runs
+     change in frequency. If depth 1 eliminates them, the double-buffered C slot is the hole and the
+     fix is a synchronization the fifo cannot provide on its own -- e.g. reading C only after a barrier
+     that the core's completion (not the DMA's) gates.
+  3. Diff against n1_core_i8_m1.py's C path: if the m1 design has the same depth-1 C fifo and the same
+     bimodality at small shapes, this is a generator-level hazard and the fix belongs in the pattern;
+     if the m1 is stable there, the difference between the two is the answer.

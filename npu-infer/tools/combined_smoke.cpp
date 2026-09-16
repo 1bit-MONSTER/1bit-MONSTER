@@ -123,6 +123,12 @@ int main(int argc, char** argv) {
     for (int i = 0; i < K; i++) gA[i] = (int8_t)i8d(rng);
     std::vector<int8_t> gB((size_t)K * N);
     for (size_t i = 0; i < gB.size(); i++) gB[i] = (int8_t)i8d(rng);
+
+    // FAULT LOCALISATION (addendum 126), applied BEFORE the buffers are filled this time:
+    // B = all ones makes C[n] = sum(A) identically for every n, so a zero C means the A arrived
+    // EMPTY; A = all ones makes C[n] = sum_k B[k][n], so a zero C means the B arrived empty.
+    if (getenv("ALLONES_B")) { for (size_t i = 0; i < gB.size(); i++) gB[i] = 1; }
+    if (getenv("ALLONES_A")) { for (int i = 0; i < K; i++) gA[i] = 1; }
     memcpy(bo_gA.map<void*>(), gA.data(), K);
     memset((char*)bo_gA.map<void*>() + K, 0, 4096 - K);
     // The _m1lin xclbins use the LINEAR B tap: one contiguous 64x128 tile per DMA, tiles in
@@ -168,11 +174,6 @@ int main(int argc, char** argv) {
     bo_gB.sync(XCL_BO_SYNC_BO_TO_DEVICE);
 
     // ---- ONE submit --------------------------------------------------------------
-    // FAULT LOCALISATION (addendum 125): which feed arrives EMPTY? All-ones B makes C[n] = sum(A)
-    // for every n, so a zero C means the A is empty; all-ones A makes C[n] = sum_k B[k][n], so a
-    // zero C means the B is empty. Either way the ORDER of the packed feed stops mattering.
-    if (getenv("ALLONES_B")) { for (size_t i = 0; i < gB.size(); i++) gB[i] = 1; }
-    if (getenv("ALLONES_A")) { for (int i = 0; i < K; i++) gA[i] = 1; }
     fprintf(stderr, "allocated all BOs; submitting ONE run\n"); fflush(stderr);
     if (getenv("NORM_ONLY")) {
         // ISOLATION PROBE (addendum 82 -> next action): does the NORM phase work ALONE?
