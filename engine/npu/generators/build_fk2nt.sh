@@ -8,10 +8,17 @@
 # C output is f32 (f32 K-tile accumulator), same as fk-2.
 #
 # Usage: bash build_fk2nt.sh [M] [H] [N] [k] [NT] [outdir]
-#   defaults: M=16 H=1024 N=4096 k=64 NT=128  (Qwen3-0.6B QKV)
+#   defaults: M=16 H=1024 N=4096 k=64 NT=64  (Qwen3-0.6B QKV, the M that fits)
+#   env: STACK (per-core stack bytes, default 4096)
+#
+# M=16 needs NT=64: the core DM is shared by the core-local A_norm
+# (N_K*M*k*2 = 32 KB at M=16,H=1024) and the FIFO buffers (W_C depth 2 costs
+# 2*k*NT*2 B). At NT=128 that is 32 KB and M=16 overflows by 20544 B; NT=64
+# halves the W buffers and M=16 fits. M=8 fits with either NT.
 set -euo pipefail
 
-M="${1:-16}"; H="${2:-1024}"; N="${3:-4096}"; K="${4:-64}"; NT="${5:-128}"
+M="${1:-16}"; H="${2:-1024}"; N="${3:-4096}"; K="${4:-64}"; NT="${5:-64}"
+STACK="${STACK:-4096}"
 OUT="${6:-$HOME/npu-build/fk2nt_m${M}_H${H}_N${N}_k${K}_NT${NT}}"
 
 G="$(cd "$(dirname "$0")" && pwd)"
@@ -34,8 +41,8 @@ CFLAGS=(--target=aie2p-none-unknown-elf --std=c++20 -O2 -DNDEBUG -D__AIE_API_AIE
 
 rm -rf "$OUT"; mkdir -p "$OUT"; cd "$OUT"
 
-echo "== generator: n1_fused_norm_qkv_nt.py -m $M -H $H -N $N -k $K -NT $NT"
-"$PY" "$G/n1_fused_norm_qkv_nt.py" -m "$M" -H "$H" -N "$N" -k "$K" -NT "$NT" \
+echo "== generator: n1_fused_norm_qkv_nt.py -m $M -H $H -N $N -k $K -NT $NT -stack $STACK"
+"$PY" "$G/n1_fused_norm_qkv_nt.py" -m "$M" -H "$H" -N "$N" -k "$K" -NT "$NT" -stack "$STACK" \
     >design.mlir 2>gen.err \
   || { echo "== GENERATOR FAILED"; tail -20 gen.err; exit 1; }
 [ -s design.mlir ] || { echo "== EMPTY design.mlir"; tail -20 gen.err; exit 1; }

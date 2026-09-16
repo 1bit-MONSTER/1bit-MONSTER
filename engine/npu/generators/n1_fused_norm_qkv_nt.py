@@ -41,13 +41,14 @@ def main():
     p.add_argument("-N", type=int, default=4096)
     p.add_argument("-k", type=int, default=64)
     p.add_argument("-NT", type=int, default=128, help="N-tile width (mmul C tile)")
+    p.add_argument("-stack", type=int, default=4096, help="per-core stack bytes")
     a = p.parse_args()
     with mlir_mod_ctx() as ctx:
-        fused(a.m, a.H, a.N, a.k, a.NT)
+        fused(a.m, a.H, a.N, a.k, a.NT, getattr(a, "stack"))
         print(ctx.module)
 
 
-def fused(M, H, N, k, NT):
+def fused(M, H, N, k, NT, STACK=4096):
     n_k = H // k
     n_n = N // NT
     assert H % k == 0, "H must be a multiple of k"
@@ -89,7 +90,7 @@ def fused(M, H, N, k, NT):
         C_s = object_fifo("C_S", mem, shim, 1, C_ty)
         object_fifo_link(C_f, C_s)
 
-        @core(norm_core, stack_size=0x2000)
+        @core(norm_core, stack_size=STACK)
         def norm_body():
             for _ in range_(0xFFFFFFFF):
                 ss = SS.acquire(ObjectFifoPort.Produce, 1)
@@ -106,7 +107,7 @@ def fused(M, H, N, k, NT):
                     AN_w.release(ObjectFifoPort.Produce, 1)
                 SS.release(ObjectFifoPort.Produce, 1)
 
-        @core(gemm_core, stack_size=0x2000)
+        @core(gemm_core, stack_size=STACK)
         def gemm_body():
             for _ in range_(0xFFFFFFFF):
                 # A_norm: stream the n_k K-tiles ONCE into core-local memory.
