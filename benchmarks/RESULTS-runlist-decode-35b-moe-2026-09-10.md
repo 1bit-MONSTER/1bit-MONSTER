@@ -803,3 +803,26 @@ So:
 
 FINAL steady state on this lane: **~1.83 s/tok = 0.55 tok/s**, 1.9x the 0.29 of the
 M=128 cold baseline, tokens identical, cost ~2-2.5 min init (warm) and ~30 GB RAM.
+
+### Addendum 22 — three more engine/NPU hazards banked (from @agent-7f1cce's fk-3 work)
+
+1. **Same group_id in a DIFFERENT hw_context is a DIFFERENT buffer.** A multi-launch
+   chain where launch B has its own A buffer (XRT group 3) must fill BOTH A's; nothing
+   warns you, and the symptom is a legitimate-looking all-zero output (x=0 -> silu=0 ->
+   D=0*W_D+h=0).
+2. **Device-state starvation of a dataflow kernel.** Measured: launch A 63 ms healthy,
+   launch B 792 ms -> zeros, and launch B ALONE (bench-style pseudo-random inputs,
+   launch A's context never created) still 744 ms -> zeros. The bench runs on an idle
+   device; the driver runs immediately after that engine's own NPU work (dequant +
+   bf16mm + runlist contexts live). With many resident hw_contexts serialising at
+   submission granularity and no fine preemption, a kernel waiting on its own
+   objectfifos while other contexts' dispatches occupy the array makes no progress:
+   enormous wall time, NO error, NO timeout, NO XRT failure, zeroed buffers — one
+   mechanism explaining both the 60x slowdown and the zeros. Proposed fix: quiesce the
+   device around the fused layer before submitting.
+   NOTE for this lane: this does NOT explain the 35B runtime ERT (addendum 14 measured
+   that with accel0 fully quiet and no other contexts) nor the 35B layer NaN (a NaN, not
+   zeros) — those remain as recorded.
+3. `-bf16out` is argparse `store_true` (BF16OUT=1), NOT positional; omitting it silently
+   leaves an f32 C store. xclbin size discriminates: 37,210 B = bf16-out (correct),
+   20,474 B = f32-out (wrong).
