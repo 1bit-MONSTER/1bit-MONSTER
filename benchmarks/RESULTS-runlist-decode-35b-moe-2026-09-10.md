@@ -1039,3 +1039,40 @@ caught it:
   2. ALWAYS `git commit -m ... -- <paths>`;
   3. verify with `git show --name-status --format="" HEAD` AFTER every commit, before moving on.
 Step 3 alone would have caught this in one line.
+
+### Addendum 31 — the co-residency question, answered with evidence (and a hard M=1 constraint)
+
+Tested whether the per-op kernels can be CO-RESIDENT so one `xrt::runlist` submit/token is
+real, against the patterns that already exist in this repo.
+
+WHAT EXISTS AND WORKS: `n1_fused_rmsnorm_qkv.py` (fk-2/fk-3) genuinely fuses RMSNorm + a GEMM
+on TWO cores in one column, with `A_norm` flowing norm -> mem -> GEMM **with no host
+round-trip** -- exactly the mechanism the objective needs. Its proven dims (build_fk2.sh
+defaults) are **M=16, H=1024, N=128, k=64**, using `mm.cc -Dbf16_f32_ONLY` + `mm_acc.cc` +
+`rms_norm_split.cc`.
+
+THE HARD CONSTRAINT, found by compiling at 35B shapes: **that fused bf16 path cannot do M=1.**
+`mm.cc` uses `matmul_vectorized_4x8x8_bf16_f32`, whose `static_assert(m % (2*r) == 0)` with
+r=4 requires **M to be a multiple of 8**; compiling build_fk2.sh with M=1 fails with
+"expression evaluates to '1 == 0'". So fk-3's fusion pattern does NOT transfer to M=1 decode.
+This is why the engine has a separate scalar i8 M=1 path (`mm_kernel_reference.cc` with
+`-DDIM_M=1`, the scalar alias) -- and that is the path every 35B M=1 kernel I built uses.
+
+SECOND CONSTRAINT: N=8192 cannot be one column. A single W tile (64,N) bf16 is 16 KB at N=128
+but **1 MB at N=8192**, against ~64 KB of tile memory, and 128 KB already at N=1024. So the
+35B QKV (K=2048 N=8192) must be REPLICATED across 8 columns (as the shipped i8 m1 design
+already does, 8 cols x 1 row), with the norm feeding all of them.
+
+CONCLUSION (this is the go/no-go the next run needed): co-residency is **possible but not
+assembled** -- the two proven ingredients are (a) a multi-core, no-host-round-trip fusion
+pattern that exists and works, and (b) M=1 i8 scalar kernels for every 35B op, built. They
+have NOT yet been combined, and the combination must be authored from scratch because the
+existing fusion pattern is bf16/M>=8 and the M=1 requirement forces the scalar i8 path. This
+is a real AIE design project (norm core fanning out to 8 GEMM columns, then attn, then O, then
+FFNnorm, then the routed experts, then SiLU+D), NOT a matter of wiring existing xclbins
+together -- a single runlist cannot span separate xclbins, since it submits against one
+hw_context.
+
+Recorded honestly as the state of the lever: the objective's path is OPEN and its premise is
+measured (per-kernel host overhead dominates), but the remaining work is a multi-phase
+multi-column AIE design, not an assembly step.
