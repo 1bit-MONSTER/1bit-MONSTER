@@ -75,6 +75,13 @@ def _known_mappings():
     mapped at two places in that chain (-> QWEN35 early, -> QWEN3 late), so the
     engine resolves QWEN35 while this table reported QWEN3. Querying the header
     this way means the tool can never be more wrong than the engine.
+
+    The character class includes `-`: eleven aliases in the table contain one
+    (`command-r`, `gmma-jepa`, `gpt-bert`, `grin-moe`, `iknn-rl1-a1`,
+    `iknn-rl1-a1forcausallm`, `loop-lm`, `modernbert-decoder`, `pzdrk-reasoning`,
+    `rwkv-6`, `tnl1-385m-10b-token_no-act`) and `[a-z0-9_]+` cannot see any of
+    them — 2,009 keys instead of 2,020. They are all reachable in the engine, so
+    leaving them out silently under-reports the table.
     """
     global _KNOWN
     if _KNOWN is not None:
@@ -83,7 +90,7 @@ def _known_mappings():
     try:
         with open(ENGINE) as f:
             for line in f:
-                m = re.search(r'strcmp\(s,\s*"([a-z0-9_]+)"\)\s*==\s*0\)\s*return\s+(RCPP_ARCH_[A-Z0-9_]+)', line)
+                m = re.search(r'strcmp\(s,\s*"([a-z0-9_-]+)"\)\s*==\s*0\)\s*return\s+(RCPP_ARCH_[A-Z0-9_]+)', line)
                 if m:
                     known.setdefault(m.group(1), m.group(2))
     except OSError as e:
@@ -406,6 +413,15 @@ def _self_test():
     if disagree:
         bad.append(f"table disagrees with the engine (first match wins) on "
                    f"{len(disagree)} alias(es), e.g. {disagree[:3]}")
+
+    # The key regex must keep the hyphen: eleven real aliases contain one, and
+    # `[a-z0-9_]+` cannot match them (2,009 keys instead of 2,020). Asserting on
+    # the parsed table catches a "tidy-up" of the character class, which reads
+    # like an obvious simplification and is not one.
+    for _alias in ("command-r", "gmma-jepa", "loop-lm"):
+        if _alias not in known:
+            bad.append(f"hyphenated alias {_alias!r} is missing from the table — "
+                       f"the key regex has lost its hyphen")
 
     # Rule 1 must still recognize a real rename — this is the case that files.
     if _guess_ex("kimik3") != ("kimi_k3", "RCPP_ARCH_KIMI_K3", "exact"):
