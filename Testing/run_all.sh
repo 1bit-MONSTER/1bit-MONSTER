@@ -122,6 +122,21 @@ else
     printf '%s\n' "$docs_out" | tail -8 | sed 's/^/    /'
     fail=$((fail+1))
 fi
+# Version manifest sync: Version consistency is a REQUIRED check (ruleset 19117606), and its
+# script began with `[ -f "$file" ] || return 0` — so a manifest that moved out of the tree
+# took its version check with it, silently. Two of its entries named a Homebrew formula that
+# has never existed here, and with every manifest deleted it still exited 0 (issue #2488).
+# The fix gives absence a failure path; these cases are what keeps it one.
+echo "== version manifest sync =="
+total=$((total+1))
+if vsync_out=$(bash Testing/version_sync_selfcheck.sh 2>&1); then
+    printf '%s\n' "$vsync_out" | sed 's/^/  /'
+    echo "✓ version_sync"
+else
+    echo "✗ version_sync"
+    printf '%s\n' "$vsync_out" | tail -8 | sed 's/^/    /'
+    fail=$((fail+1))
+fi
 # Census diagnostics: one repo root, one policy set. Three scripts pinned ROOT
 # to the shared checkout and two carried a stale NON_TEXT_GEN copy (#2387), so a
 # worktree run read the wrong inputs and wrote the wrong tree — invisible,

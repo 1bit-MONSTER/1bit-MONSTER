@@ -222,7 +222,6 @@ cmake --build build -j$(nproc)
 │   ├── appimage/              AppImage packaging
 │   ├── docker/                Docker image
 │   ├── aur/                   Arch AUR scripts
-│   └── homebrew/              Homebrew formula
 ├── .github/workflows/         CI/CD pipelines
 ├── docs/                      Architecture, build guide, roadmap
 ├── site/                      1bit.MONSTER website (Cloudflare Pages)
